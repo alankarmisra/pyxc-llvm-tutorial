@@ -1,4 +1,8 @@
-def foo(x,y): return x+foo(y, 4.0)
-def foo(x,y): return x+y y
-def foo(x,y): return x+y )
+def foo(x,y): 
+    return x+foo(y, 4.0)
+def foo(x,y): 
+    return x+y y
+def foo(x,y): 
+    return x+y )
+
 extern def sin(a)

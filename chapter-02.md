@@ -422,6 +422,13 @@ static std::unique_ptr<FunctionAST> ParseDefinition() {
     return LogErrorF("Expected ':' in function definition");
   getNextToken(); // eat ':'
 
+  // This takes care of a situation where we decide to split the
+  // function and expression
+  // ready> def foo(x):
+  // ready>  return x + 1
+  while (CurTok == tok_eol)
+    getNextToken();
+
   if (CurTok != tok_return)
     return LogErrorF("Expected 'return' before return expression");
   getNextToken(); // eat return
@@ -893,6 +900,13 @@ static std::unique_ptr<FunctionAST> ParseDefinition() {
   if (CurTok != ':')
     return LogErrorF("Expected ':' in function definition");
   getNextToken(); // eat ':'
+
+  // This takes care of a situation where we decide to split the
+  // function and expression
+  // ready> def foo(x):
+  // ready>  return x + 1
+  while (CurTok == tok_eol)
+    getNextToken(); 
 
   if (CurTok != tok_return)
     return LogErrorF("Expected 'return' before return expression");
