@@ -564,6 +564,9 @@ Function *PrototypeAST::codegen() {
   for (auto &Arg : F->args())
     Arg.setName(Args[Idx++]);
 
+  F->setDoesNotAccessMemory();
+  F->setDoesNotThrow();
+
   return F;
 }
 
