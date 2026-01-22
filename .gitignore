@@ -1,0 +1,67 @@
+# Build artifacts
+/build/
+/bin/
+/out/
+/dist/
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# Object files
+*.o
+*.obj
+*.lo
+*.la
+*.al
+*.libs
+
+# Static / dynamic libs
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Debug / profiling
+*.dSYM/
+*.su
+*.gcno
+*.gcda
+*.gcov
+gmon.out
+perf.data*
+vgcore.*
+
+# IDEs / editors
+.vscode/
+.idea/
+*.code-workspace
+*.sublime-project
+*.sublime-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Package managers
+conan.lock
+conanbuildinfo.*
+vcpkg_installed/
+
+# Logs
+*.log
+
+# Misc
+*.tmp
+*.swp
+*.bak
