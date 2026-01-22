@@ -1,12 +1,12 @@
 # 3. Pyxc: Code generation to LLVM IR
 
-## 3.1 Introduction
+## Introduction
 
 Welcome to Chapter 3 of the [Pyxc: My First Language Frontend with LLVM](chapter00.md) tutorial. This chapter shows you how to transform the [Abstract Syntax Tree](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/LangImpl02.html), built in [Chapter 2](chapter02.md), into LLVM IR. This will teach you a little bit about how LLVM does things, as well as demonstrate how easy it is to use. It’s much more work to build a lexer and parser than it is to generate LLVM IR code. :)
 
 !!!note The code in this chapter and later require LLVM 3.7 or later. LLVM 3.6 and before will not work with it. Also note that you need to use a version of this tutorial that matches your LLVM release: If you are using an official LLVM release, use the version of the documentation included with your release or on the [llvm.org releases page](https://llvm.org/releases/).
 
-## 3.2 Code Generation Setup
+## Code Generation Setup
 
 In order to generate LLVM IR, we want some simple setup to get started. First we define virtual code generation (codegen) methods in each AST class:
 
@@ -57,7 +57,7 @@ The NamedValues map keeps track of which values are defined in the current scope
 
 With these basics in place, we can start talking about how to generate code for each expression. Note that this assumes that the Builder has been set up to generate code into something. For now, we’ll assume that this has already been done, and we’ll just use it to emit code.
 
-## 3.3 Expression Code Generation
+## Expression Code Generation
 Generating LLVM code for expression nodes is very straightforward: less than 45 lines of commented code for all four of our expression nodes. First we’ll do numeric literals:
 
 ```cpp
@@ -143,7 +143,7 @@ Once we have the function to call, we recursively codegen each argument that is 
 
 This wraps up our handling of the four basic expressions that we have so far in Pyxc. Feel free to go in and add some more. For example, by browsing the [LLVM language reference](https://llvm.org/docs/LangRef.html) you’ll find several other interesting instructions that are really easy to plug into our basic framework.
 
-## 3.4 Function Code Generation
+## Function Code Generation
 Code generation for prototypes and functions must handle a number of details, which make their code less beautiful than expression code generation, but allows us to illustrate some important points. First, let’s talk about code generation for prototypes: they are used both for function bodies and external function declarations. The code starts with:
 
 ```cpp
@@ -239,7 +239,7 @@ extern def foo(a) # ok, defines foo.
 def foo(b): return b # Error: Unknown variable name. (decl using 'a' takes precedence).
 ```
 
-## 3.5 Driver Changes and Closing Thoughts
+## Driver Changes and Closing Thoughts
 For now, code generation to LLVM doesn’t really get us much, except that we can look at the pretty IR calls. The sample code inserts calls to codegen into the “HandleDefinition”, “HandleExtern” etc functions, and then dumps out the LLVM IR. This gives a nice way to look at the LLVM IR for simple functions. For example:
 
 ```cpp
@@ -341,7 +341,7 @@ When you quit the current demo (by sending an EOF via CTRL+D on Linux or CTRL+Z 
 
 This wraps up the third chapter of the Pyxc tutorial. Up next, we’ll describe how to add JIT codegen and optimizer support to this so we can actually start running code!
 
-## 3.6 Full Code Listing
+## Full Code Listing
 
 Here is the complete code listing for our running example, enhanced with the LLVM code generator. Because this uses the LLVM libraries, we need to link them in. To do this, we use the [llvm-config](https://llvm.org/cmds/llvm-config.html) tool to inform our makefile/command line about which options to use:
 
@@ -1002,7 +1002,7 @@ int main() {
 }
 ```
 
-## 3.7 Compliling
+## Compliling
 
 ```bash
 # Compile

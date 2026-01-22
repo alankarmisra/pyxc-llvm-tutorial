@@ -1,6 +1,6 @@
 # 1. Pyxc: Introduction and the Lexer
 
-## 1.1. The Pyxc Language
+## The Pyxc Language
 
 This tutorial is illustrated with a language called "Pyxc" (pronounced "Pixie"), short for "Python executable". Pyxc is a procedural language that allows you to define functions, use conditionals, math, etc. Over the course of the tutorial, we’ll extend pyxc to support the if/then/else construct, a for loop, user defined operators, JIT compilation with a simple command line interface, debug info, etc.
 
@@ -45,7 +45,7 @@ In more advanced chapters, we will extend on the data types, add type checking, 
 
 Let’s dive into the implementation of this language!
 
-## 1.2. The Lexer
+## The Lexer
 
 !!!note The full code listing for the Lexer is available at the end of the next chapter of the tutorial where we add the Parser to create some testable code. 
 
