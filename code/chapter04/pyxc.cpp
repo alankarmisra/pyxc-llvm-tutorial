@@ -1,6 +1,5 @@
 #include "../include/PyxcJIT.h"
 #include "llvm/ADT/APFloat.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -20,10 +19,8 @@
 #include "llvm/Transforms/Scalar/GVN.h"
 #include "llvm/Transforms/Scalar/Reassociate.h"
 #include "llvm/Transforms/Scalar/SimplifyCFG.h"
-#include <algorithm>
 #include <cassert>
 #include <cctype>
-#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -33,8 +30,6 @@
 
 using namespace llvm;
 using namespace llvm::orc;
-
-using namespace llvm;
 
 //===----------------------------------------------------------------------===//
 // Lexer
@@ -219,6 +214,8 @@ public:
 /// lexer and updates CurTok with its results.
 static int CurTok;
 static int getNextToken() { return CurTok = gettok(); }
+// Tracks all previously defined function prototypes
+static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 
 /// BinopPrecedence - This holds the precedence for each binary operator that is
 /// defined.
@@ -383,7 +380,14 @@ static std::unique_ptr<PrototypeAST> ParsePrototype() {
     return LogErrorP("Expected function name in prototype");
 
   std::string FnName = IdentifierStr;
-  getNextToken();
+  getNextToken(); // eat identifier
+
+  // Reject duplicate function definitions
+  auto FI = FunctionProtos.find(FnName);
+  if (FI != FunctionProtos.end())
+    // Ideally we should eat all remaining prototype symbols to prevent a
+    // cascade of unexpected symbol errors but we'll leave that for now.
+    return LogErrorP(("Duplicate definition for " + FnName).c_str());
 
   if (CurTok != '(')
     return LogErrorP("Expected '(' in prototype");
@@ -473,7 +477,6 @@ static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
 static std::unique_ptr<ModuleAnalysisManager> TheMAM;
 static std::unique_ptr<PassInstrumentationCallbacks> ThePIC;
 static std::unique_ptr<StandardInstrumentations> TheSI;
-static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 static ExitOnError ExitOnErr;
 
 Value *LogErrorV(const char *Str) {
@@ -564,9 +567,6 @@ Function *PrototypeAST::codegen() {
   for (auto &Arg : F->args())
     Arg.setName(Args[Idx++]);
 
-  F->setDoesNotAccessMemory();
-  F->setDoesNotThrow();
-
   return F;
 }
 
@@ -594,6 +594,9 @@ Function *FunctionAST::codegen() {
 
     // Validate the generated code, checking for consistency.
     verifyFunction(*TheFunction);
+
+    // Run the optimizer on the function.
+    TheFPM->run(*TheFunction, *TheFAM);
 
     return TheFunction;
   }

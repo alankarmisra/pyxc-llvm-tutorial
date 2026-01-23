@@ -290,7 +290,7 @@ declare double @cos(double)
 
 ready> cos(1.234);
 Read top-level expression:
-define double @1() {
+define double @__anon_expr() {
 entry:
   %calltmp = call double @cos(double 1.234000e+00)
   ret double %calltmp
