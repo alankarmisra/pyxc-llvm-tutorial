@@ -33,11 +33,11 @@ This tutorial is structured into chapters covering individual topics, allowing y
 
 [Chapter #3: Code generation to LLVM IR](chapter-03.md) - with the AST ready, we show how easy it is to generate LLVM IR, and show a simple way to incorporate LLVM into your project.
 
-**Chapter #4: Adding JIT and Optimizer Support** - One great thing about LLVM is its support for JIT compilation, so we’ll dive right into it and show you the 3 lines it takes to add JIT support. Later chapters show how to generate .o files.
+[Chapter #4: Adding JIT and Optimizer Support](chapter-04.md) - One great thing about LLVM is its support for JIT compilation, so we’ll dive right into it and show you the 3 lines it takes to add JIT support. Later chapters show how to generate .o files.
 
-**Chapter #5: Extending the Language: Control Flow** - With the basic language up and running, we show how to extend it with control flow operations (‘if’ statement and a ‘for’ loop). This gives us a chance to talk about SSA construction and control flow.
+[Chapter #5: Extending the Language: Control Flow](chapter-05.md) - With the basic language up and running, we show how to extend it with control flow operations (‘if’ statement and a ‘for’ loop). This gives us a chance to talk about SSA construction and control flow.
 
-**Chapter #6: Extending the Language: User-defined Operators** - This chapter extends the language to let users define arbitrary unary and binary operators - with assignable precedence! This allows us to build a significant piece of the “language” as library routines.
+[Chapter #6: Extending the Language: User-defined Operators](chapter-06.md) - This chapter extends the language to let users define arbitrary unary and binary operators - with assignable precedence! This allows us to build a significant piece of the “language” as library routines.
 
 **Chapter #7: Extending the Language: Mutable Variables** - This chapter talks about adding user-defined local variables along with an assignment operator. This shows how easy it is to construct SSA form in LLVM: LLVM does not require your front-end to construct SSA form in order to use it!
 
