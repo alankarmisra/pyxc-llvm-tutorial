@@ -224,7 +224,11 @@ ifcont:     ; preds = %else, %then
 }
 ```
 
-To visualize the control flow graph, you can use a nifty feature of the LLVM [opt](https://llvm.org/cmds/opt.html) tool. If you put this LLVM IR into “t.ll” and run `llvm-as < t.ll | opt -passes=view-cfg`, [a window will pop up](https://llvm.org/docs/ProgrammersManual.html#viewing-graphs-while-debugging-code) and you’ll see this graph:
+To visualize the control flow graph, you can use a nifty feature of the LLVM [opt](https://llvm.org/cmds/opt.html) tool. If you put this LLVM IR into “t.ll” and run `llvm-as < t.ll | opt -passes=view-cfg`, [a window will pop up](https://llvm.org/docs/ProgrammersManual.html#viewing-graphs-while-debugging-code) and you’ll see a graph similar to this:
+
+<p align="center">
+  <img src="phi.jpg" width="600">
+</p>
 
 Another way to get this is to call “F->viewCFG()” or “F->viewCFGOnly()” (where F is a “Function*”) either by inserting actual calls into the code and recompiling or by calling these in the debugger. LLVM has many nice features for visualizing various graphs.
 
