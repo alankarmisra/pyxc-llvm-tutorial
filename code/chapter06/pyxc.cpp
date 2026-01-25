@@ -609,83 +609,39 @@ static std::unique_ptr<ExprAST> ParseExpression() {
   return ParseBinOpRHS(0, std::move(LHS));
 }
 
-static std::string TokToString(int Tok) {
-  if (Tok == tok_identifier)
-    return "tok_identifier";
-  if (Tok == tok_number)
-    return "tok_number";
-  if (isascii(Tok))
-    return std::string("'") + (char)Tok + "'";
-  return "tok_" + std::to_string(Tok);
-}
-
 /// prototype
 ///   ::= id '(' (id (',' id)*)? ')'
 static std::unique_ptr<PrototypeAST>
 ParsePrototype(OperatorType operatorType = Undefined, int precedence = 0) {
   std::string FnName;
 
-  //   fprintf(stderr,
-  //           "[ParsePrototype] ENTER\n"
-  //           "  CurTok        = %s (%d)\n"
-  //           "  operatorType  = %d\n"
-  //           "  precedence    = %d\n",
-  //           TokToString(CurTok).c_str(), CurTok, operatorType, precedence);
-
   if (operatorType != Undefined) {
-    fprintf(stderr, "[ParsePrototype] Parsing OPERATOR prototype\n");
-
     // Expect a single-character operator
     if (CurTok == tok_identifier) {
-      fprintf(stderr, "[ParsePrototype][ERROR] CurTok is identifier in "
-                      "operator prototype\n");
       return LogErrorP("Expected single character operator");
     }
 
     if (!isascii(CurTok)) {
-      fprintf(stderr, "[ParsePrototype][ERROR] CurTok is non-ascii: %d\n",
-              CurTok);
       return LogErrorP("Expected single character operator");
     }
 
     FnName = (operatorType == Unary ? "unary" : "binary");
     FnName += (char)CurTok;
 
-    fprintf(stderr, "[ParsePrototype] Operator name = %s\n", FnName.c_str());
-
     getNextToken();
-
-    fprintf(stderr, "[ParsePrototype] After operator token, CurTok = %s (%d)\n",
-            TokToString(CurTok).c_str(), CurTok);
-
   } else {
-    fprintf(stderr, "[ParsePrototype] Parsing REGULAR function prototype\n");
-
     if (CurTok != tok_identifier) {
-      fprintf(stderr,
-              "[ParsePrototype][ERROR] Expected identifier, got %s (%d)\n",
-              TokToString(CurTok).c_str(), CurTok);
       return LogErrorP("Expected function name in prototype");
     }
 
     FnName = IdentifierStr;
 
-    fprintf(stderr, "[ParsePrototype] Function name = %s\n", FnName.c_str());
-
     getNextToken();
-
-    fprintf(stderr, "[ParsePrototype] After identifier, CurTok = %s (%d)\n",
-            TokToString(CurTok).c_str(), CurTok);
   }
 
   if (CurTok != '(') {
-    fprintf(stderr, "[ParsePrototype][ERROR] Expected '(' but got %s (%d)\n",
-            TokToString(CurTok).c_str(), CurTok);
     return LogErrorP("Expected '(' in prototype");
   }
-
-  fprintf(stderr, "[ParsePrototype] Found '(' — prototype name = %s\n",
-          FnName.c_str());
 
   std::vector<std::string> ArgNames;
   while (getNextToken() == tok_identifier) {
@@ -866,7 +822,6 @@ Value *UnaryExprAST::codegen() {
 
   Function *F = getFunction(std::string("unary") + Opcode);
   if (!F) {
-    fprintf(stderr, "[UnaryOp] Opcode = '%c' (%d)\n", Opcode, Opcode);
     return LogErrorV("Unknown unary operator");
   }
 
