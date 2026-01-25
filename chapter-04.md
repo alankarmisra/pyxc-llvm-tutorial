@@ -201,7 +201,7 @@ void InitializeModuleAndPassManager(void) {
   ...
 ```
 
-The PyxcJIT class is a simple JIT built specifically for these tutorials, available at code/include/PyxcJIT.h. In later chapters we will look at how it works and extend it with new features, but for now we will take it as given. Its API is very simple: addModule adds an LLVM IR module to the JIT, making its functions available for execution (with its memory managed by a ResourceTracker); and lookup allows us to look up pointers to the compiled code.
+The PyxcJIT class is a simple JIT built specifically for these tutorials, available [on github](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/include/PyxcJIT.h). In later chapters we will look at how it works and extend it with new features, but for now we will take it as given. Its API is very simple: addModule adds an LLVM IR module to the JIT, making its functions available for execution (with its memory managed by a ResourceTracker); and lookup allows us to look up pointers to the compiled code.
 
 We can take this simple API and change our code that parses top-level expressions to look like this:
 
@@ -1269,6 +1269,121 @@ int main() {
 
   return 0;
 }
+```
+
+And here's the `include/PyxcJIT.h`. Since it's a copy of the JIT from the [original Kaleidoscope tutorial](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html), I have reproduced their license within the source posted here. 
+
+```cpp
+//===- PyxcJIT.h - A simple JIT for pyxc --------*- C++ -*-===//
+//
+// This is a copy of KaleidoscopeJIT from the Kaleidoscope tutorial on llvm.org.
+// The license for the same is as under.
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// Contains a simple JIT definition for use in the pyxc tutorials.
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef LLVM_EXECUTIONENGINE_ORC_PYXCJIT_H
+#define LLVM_EXECUTIONENGINE_ORC_PYXCJIT_H
+
+#include "llvm/ADT/StringRef.h"
+#include "llvm/ExecutionEngine/Orc/CompileUtils.h"
+#include "llvm/ExecutionEngine/Orc/Core.h"
+#include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
+#include "llvm/ExecutionEngine/Orc/ExecutorProcessControl.h"
+#include "llvm/ExecutionEngine/Orc/IRCompileLayer.h"
+#include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
+#include "llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h"
+#include "llvm/ExecutionEngine/Orc/SelfExecutorProcessControl.h"
+#include "llvm/ExecutionEngine/Orc/Shared/ExecutorSymbolDef.h"
+#include "llvm/ExecutionEngine/SectionMemoryManager.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/LLVMContext.h"
+#include <memory>
+
+namespace llvm {
+namespace orc {
+
+class PyxcJIT {
+private:
+  std::unique_ptr<ExecutionSession> ES;
+
+  DataLayout DL;
+  MangleAndInterner Mangle;
+
+  RTDyldObjectLinkingLayer ObjectLayer;
+  IRCompileLayer CompileLayer;
+
+  JITDylib &MainJD;
+
+public:
+  PyxcJIT(std::unique_ptr<ExecutionSession> ES, JITTargetMachineBuilder JTMB,
+          DataLayout DL)
+      : ES(std::move(ES)), DL(std::move(DL)), Mangle(*this->ES, this->DL),
+        ObjectLayer(*this->ES,
+                    [](const MemoryBuffer &) {
+                      return std::make_unique<SectionMemoryManager>();
+                    }),
+        CompileLayer(*this->ES, ObjectLayer,
+                     std::make_unique<ConcurrentIRCompiler>(std::move(JTMB))),
+        MainJD(this->ES->createBareJITDylib("<main>")) {
+    MainJD.addGenerator(
+        cantFail(DynamicLibrarySearchGenerator::GetForCurrentProcess(
+            DL.getGlobalPrefix())));
+    if (JTMB.getTargetTriple().isOSBinFormatCOFF()) {
+      ObjectLayer.setOverrideObjectFlagsWithResponsibilityFlags(true);
+      ObjectLayer.setAutoClaimResponsibilityForObjectSymbols(true);
+    }
+  }
+
+  ~PyxcJIT() {
+    if (auto Err = ES->endSession())
+      ES->reportError(std::move(Err));
+  }
+
+  static Expected<std::unique_ptr<PyxcJIT>> Create() {
+    auto EPC = SelfExecutorProcessControl::Create();
+    if (!EPC)
+      return EPC.takeError();
+
+    auto ES = std::make_unique<ExecutionSession>(std::move(*EPC));
+
+    JITTargetMachineBuilder JTMB(
+        ES->getExecutorProcessControl().getTargetTriple());
+
+    auto DL = JTMB.getDefaultDataLayoutForTarget();
+    if (!DL)
+      return DL.takeError();
+
+    return std::make_unique<PyxcJIT>(std::move(ES), std::move(JTMB),
+                                     std::move(*DL));
+  }
+
+  const DataLayout &getDataLayout() const { return DL; }
+
+  JITDylib &getMainJITDylib() { return MainJD; }
+
+  Error addModule(ThreadSafeModule TSM, ResourceTrackerSP RT = nullptr) {
+    if (!RT)
+      RT = MainJD.getDefaultResourceTracker();
+    return CompileLayer.add(RT, std::move(TSM));
+  }
+
+  Expected<ExecutorSymbolDef> lookup(StringRef Name) {
+    return ES->lookup({&MainJD}, Mangle(Name.str()));
+  }
+};
+
+} // end namespace orc
+} // end namespace llvm
+
+#endif // LLVM_EXECUTIONENGINE_ORC_PYXCJIT_H
 ```
 
 ## Compiling
