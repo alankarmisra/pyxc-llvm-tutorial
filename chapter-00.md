@@ -39,7 +39,7 @@ This tutorial is structured into chapters covering individual topics, allowing y
 
 [Chapter #6: Extending the Language: User-defined Operators](chapter-06.md) - This chapter extends the language to let users define arbitrary unary and binary operators - with assignable precedence! This allows us to build a significant piece of the “language” as library routines.
 
-**Chapter #7: Extending the Language: Mutable Variables** - This chapter talks about adding user-defined local variables along with an assignment operator. This shows how easy it is to construct SSA form in LLVM: LLVM does not require your front-end to construct SSA form in order to use it!
+[Chapter #7: Extending the Language: Mutable Variables](chapter-07.md) - This chapter talks about adding user-defined local variables along with an assignment operator. This shows how easy it is to construct SSA form in LLVM: LLVM does not require your front-end to construct SSA form in order to use it!
 
 **Chapter #8: Compiling to Object Files** - This chapter explains how to take LLVM IR and compile it down to object files, like a static compiler does.
 

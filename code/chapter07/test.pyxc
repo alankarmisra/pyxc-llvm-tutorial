@@ -1,0 +1,9 @@
+@binary(precedence=1)
+def ;(x, y):
+    return y
+
+def fibi(x):
+    var a = 1, b = 1, c in 
+        (for i in range(3, x): c = a + b ; a = b ; b = c)  ; b
+
+fibi(10)
