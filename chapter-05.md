@@ -346,7 +346,7 @@ Now that we know how to add basic control flow constructs to the language, we ha
 extern def putchard(x)
 
 def printstar(n):
-  for i in range(1, n, 1):
+  for i in range(1, n+1, 1):
     # Notice we don't add `return`. 
     # `for` expressions return 0 by default.
     putchard(42)  # ascii 42 = '*'
@@ -595,16 +595,20 @@ Now we get to the good part: the LLVM IR we want to generate for this thing. Wit
 ```cpp
 define double @printstar(double %n) {
 entry:
-  br label %loop
+  br label %loopcond
 
-loop:                                             ; preds = %loop, %entry
+loopcond:                                         ; preds = %loop, %entry
   %i = phi double [ 1.000000e+00, %entry ], [ %nextvar, %loop ]
+  %addtmp = fadd double %n, 1.000000e+00
+  %endcond = fcmp ult double %i, %addtmp
+  br i1 %endcond, label %loop, label %endloop
+
+loop:                                             ; preds = %loopcond
   %calltmp = call double @putchard(double 4.200000e+01)
   %nextvar = fadd double %i, 1.000000e+00
-  %loopcond = fcmp ult double %i, %n
-  br i1 %loopcond, label %loop, label %afterloop
+  br label %loopcond
 
-afterloop:                                        ; preds = %loop
+endloop:                                          ; preds = %loopcond
   ret double 0.000000e+00
 }
 ```
@@ -625,47 +629,74 @@ Value *ForExprAST::codegen() {
 With this out of the way, the next step is to set up the LLVM basic block for the start of the loop body. In the case above, the whole loop body is one block, but remember that the body code itself could consist of multiple blocks (e.g. if it contains an if/then/else or a for/in expression).
 
 ```cpp
-// Make the new basic block for the loop header, inserting after current
-// block.
+// Make new basic blocks for pre-loop, loop condition, loop body and
+// end-loop code.
 Function *TheFunction = Builder->GetInsertBlock()->getParent();
-BasicBlock *PreheaderBB = Builder->GetInsertBlock();
-BasicBlock *LoopBB =
-    BasicBlock::Create(*TheContext, "loop", TheFunction);
+BasicBlock *PreLoopBB = Builder->GetInsertBlock();
+BasicBlock *LoopConditionBB =
+    BasicBlock::Create(*TheContext, "loopcond", TheFunction);
+BasicBlock *LoopBB = BasicBlock::Create(*TheContext, "loop");
+BasicBlock *EndLoopBB = BasicBlock::Create(*TheContext, "endloop");
 
-// Insert an explicit fall through from the current block to the LoopBB.
-Builder->CreateBr(LoopBB);
+// Insert an explicit fall through from current block to LoopConditionBB.
+Builder->CreateBr(LoopConditionBB);
 ```
 
-This code is similar to what we saw for if/then/else. Because we will need it to create the Phi node, we remember the block that falls through into the loop. Once we have that, we create the actual block that starts the loop and create an unconditional branch for the fall-through between the two blocks.
+This code is similar to what we saw for if/then/else. Because we will need it to create the Phi node, we remember the block that falls through into the loop condition check. Once we have that, we create the actual block that determines if control should enter the loop and attach it directly to the end of our parent function. The other two blocks (`LoopBB` and `EndLoopBB`) are created, but aren't inserted into the function, similarly to our previous work on if/then/else. These will be used to complete our loop IR later on.
+
+We also create an unconditional branch into the loop condition block from the pre-loop code.
 
 ```cpp
-// Start insertion in LoopBB.
-Builder->SetInsertPoint(LoopBB);
+// Start insertion in LoopConditionBB.
+Builder->SetInsertPoint(LoopConditionBB);
 
 // Start the PHI node with an entry for Start.
-PHINode *Variable = Builder->CreatePHI(Type::getDoubleTy(*TheContext),
-                                       2, VarName);
-Variable->addIncoming(StartVal, PreheaderBB);
+PHINode *Variable =
+      Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
+Variable->addIncoming(StartVal, PreLoopBB);
 ```
-
-Now that the “preheader” for the loop is set up, we switch to emitting code for the loop body. To begin with, we move the insertion point and create the PHI node for the loop induction variable. Since we already know the incoming value for the starting value, we add it to the Phi node. Note that the Phi will eventually get a second value for the backedge, but we can’t set it up yet (because it doesn’t exist!).
+Now that the "preheader" for the loop is set up, we switch to emitting code for the loop condition check. To begin with, we move the insertion point and create the Phi node for the loop induction variable. Since we already know the incoming value for the starting value, we add it to the Phi node. Note that the Phi node will eventually get a second value for the backedge, but we can't set it up yet (because it doesn't exist!).
 
 ```cpp
 // Within the loop, the variable is defined equal to the PHI node.  If it
 // shadows an existing variable, we have to restore it, so save it now.
 Value *OldVal = NamedValues[VarName];
 NamedValues[VarName] = Variable;
-
-// Emit the body of the loop.  This, like any other expr, can change the
-// current BB.  Note that we ignore the value computed by the body, but don't
-// allow an error.
-if (!Body->codegen())
-  return nullptr;
+// Compute the end condition.
+Value *EndCond = End->codegen();
+if (!EndCond)
+    return nullptr;
 ```
 
-Now the code starts to get more interesting. Our ‘for’ loop introduces a new variable to the symbol table. This means that our symbol table can now contain either function arguments or loop variables. To handle this, before we codegen the body of the loop, we add the loop variable as the current value for its name. Note that it is possible that there is a variable of the same name in the outer scope. It would be easy to make this an error (emit an error and return null if there is already an entry for VarName) but we choose to allow shadowing of variables. In order to handle this correctly, we remember the Value that we are potentially shadowing in OldVal (which will be null if there is no shadowed variable).
+Our for-loop introduces a new variable to the symbol table. This means that our symbol table can now contain either function arguments or loop variables. To handle this, before we codegen the remainder of the loop, we add the loop variable as the current value for its name. Note that it is possible there is a variable of the same name in the outer scope. It would be easy to make this an error (emit an error and return null if there is already an entry for VarName) but we choose to allow shadowing of variables. In order to handle this correctly, we remember the Value that we are potentially shadowing in OldVal (which will be null if there is no shadowed variable). This allows the loop body (which we will codegen soon) to use the loop variable: any references to it will naturally find it in the symbol table.
 
-Once the loop variable is set into the symbol table, the code recursively codegen’s the body. This allows the body to use the loop variable: any references to it will naturally find it in the symbol table.
+Once the loop variable is set into the symbol table, we codegen the condition that determines if we can enter into the loop (or continue looping, depending on if we are arriving from the "preheader" or the loop body).
+
+```cpp
+// Check if Variable < End
+EndCond = Builder->CreateFCmpULT(Variable, EndCond, "endcond");
+
+// Insert the conditional branch that either continues the loop, or exits
+// the loop.
+Builder->CreateCondBr(EndCond, LoopBB, EndLoopBB);
+```
+
+As with if/then/else, after emitting the condition, we compare that value to zero to get a truth value as a 1-bit (bool) value. Next we emit the conditional branch that chooses if we enter the loop body, or move on to the post-loop code.
+
+```cpp
+// Attach the basic block that will soon hold the loop body to the end of
+// the parent function.
+TheFunction->insert(TheFunction->end(), LoopBB);
+
+// Emit the loop body within the LoopBB. This, like any other expr, can
+// change the current BB. Note that we ignore the value computed by the
+// body, but don't allow an error.
+Builder->SetInsertPoint(LoopBB);
+if (!Body->codegen()) {
+return nullptr;
+}
+```
+Next, we insert our basic block that will soon hold the loop body to the end of the specified function. We recursively codegen the body, remembering to update the IRBuilder's insert point to the basic block that is supposed to hold the loop body beforehand.
 
 ```cpp
 // Emit the step value.
@@ -682,19 +713,27 @@ if (Step) {
 Value *NextVar = Builder->CreateFAdd(Variable, StepVal, "nextvar");
 ```
 
-Now that the body is emitted, we compute the next value of the iteration variable by adding the step value, or 1.0 if it isn’t present. ‘NextVar’ will be the value of the loop variable on the next iteration of the loop.
+Now that the body is emitted, we compute the next value of the iteration variable by adding the step value, or 1.0 if it isn't present. NextVar will be the value of the loop variable on the next iteration of the loop.
 
 ```cpp
-  // Generate the end condition.
-  Value *EndCond = End->codegen();
-  if (!EndCond)
-    return nullptr;
+// Add a new entry to the PHI node for the backedge.
+LoopBB = Builder->GetInsertBlock();
+Variable->addIncoming(NextVar, LoopBB);
 
-  // return true if Variable < End OR either is NaN
-  EndCond = Builder->CreateFCmpULT(Variable, EndCond, "loopcond");
+// Create the unconditional branch that returns to LoopConditionBB to
+// determine if we should continue looping.
+Builder->CreateBr(LoopConditionBB);
 ```
+Here, similarly to how we did it in our implementation of the if/then/else statement, we get an up-to-date value for LoopBB (because it's possible that the loop body has changed the basic block that the Builder is emitting into) and use it to add a backedge to our Phi node. This backedge denotes the value of the incremented loop variable. We also create an unconditional branch back to the basic block that performs the check if we should continue looping. This completes the loop body code.
 
-Finally, we evaluate the exit value of the loop, to determine whether the loop should exit. This mirrors the condition evaluation for the if/then/else statement.
+```cpp
+// Append EndLoopBB after the loop body. We go to this basic block if the
+// loop condition says we should not loop anymore.
+TheFunction->insert(TheFunction->end(), EndLoopBB);
+
+// Any new code will be inserted after the loop.
+Builder->SetInsertPoint(EndLoopBB);
+```
 
 ```cpp
 // Create the "after loop" block and insert it.
@@ -709,12 +748,9 @@ Builder->CreateCondBr(EndCond, LoopBB, AfterBB);
 Builder->SetInsertPoint(AfterBB);
 ```
 
-With the code for the body of the loop complete, we just need to finish up the control flow for it. This code remembers the end block (for the phi node), then creates the block for the loop exit (“afterloop”). Based on the value of the exit condition, it creates a conditional branch that chooses between executing the loop again and exiting the loop. Any future code is emitted in the “afterloop” block, so it sets the insertion position to it.
+Finally, we append the post-loop basic block created earlier (denoted by EndLoopBB) to the parent function, and update the IRBuilder's insert point such that any new subsequent code is generated in that post-loop basic block.
 
 ```cpp
-  // Add a new entry to the PHI node for the backedge.
-  Variable->addIncoming(NextVar, LoopEndBB);
-
   // Restore the unshadowed variable.
   if (OldVal)
     NamedValues[VarName] = OldVal;
@@ -725,6 +761,8 @@ With the code for the body of the loop complete, we just need to finish up the c
   return Constant::getNullValue(Type::getDoubleTy(*TheContext));
 }
 ```
+
+The final bit of code handles some clean-ups: We remove the loop variable from the symbol table so that it isn't in scope after the for-loop, and return a 0.0 value.
 
 With these changes in place, you can mix and match `for` loops and `if` like so:
 
@@ -755,8 +793,6 @@ Evaluated to 0.000000
 !!******************
 Evaluated to 0.000000
 ```
-
-The final code handles various cleanups: now that we have the “NextVar” value, we can add the incoming value to the loop PHI node. After that, we remove the loop variable from the symbol table, so that it isn’t in scope after the for loop. Finally, code generation of the for loop always returns 0.0, so that is what we return from ForExprAST::codegen().
 
 With this, we conclude the “adding control flow to Pyxc chapter of the tutorial. In this chapter we added two control flow constructs, and used them to motivate a couple of aspects of the LLVM IR that are important for front-end implementors to know. In the next chapter of our saga, we will get a bit crazier and add user-defined operators to our poor innocent language.
 
@@ -824,6 +860,7 @@ enum Token {
   tok_for = -10,
   tok_in = -11,
   tok_range = -12,
+
 };
 
 static std::string IdentifierStr; // Filled in if tok_identifier
@@ -1183,7 +1220,7 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
                                      std::move(Else));
 }
 
-// `for` identifier `in` `range` `(`expression `,` expression 
+// `for` identifier `in` `range` `(`expression `,` expression
 //   (`,` expression)? # optional
 // `)`: expression
 static std::unique_ptr<ExprAST> ParseForExpr() {
@@ -1200,7 +1237,7 @@ static std::unique_ptr<ExprAST> ParseForExpr() {
     return LogError("Expected `in` after identifier in for");
   getNextToken(); // eat 'in'
 
-  if (CurTok != tok_range)                            
+  if (CurTok != tok_range)
     return LogError("Expected `range` after identifier in for");
   getNextToken(); // eat range
 
@@ -1561,33 +1598,54 @@ Value *ForExprAST::codegen() {
   if (!StartVal)
     return nullptr;
 
-  // Make the new basic block for the loop header, inserting after current
-  // block.
+  // Make new basic blocks for pre-loop, loop condition, loop body and
+  // end-loop code.
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
-  BasicBlock *PreheaderBB = Builder->GetInsertBlock();
-  BasicBlock *LoopBB = BasicBlock::Create(*TheContext, "loop", TheFunction);
+  BasicBlock *PreLoopBB = Builder->GetInsertBlock();
+  BasicBlock *LoopConditionBB =
+      BasicBlock::Create(*TheContext, "loopcond", TheFunction);
+  BasicBlock *LoopBB = BasicBlock::Create(*TheContext, "loop");
+  BasicBlock *EndLoopBB = BasicBlock::Create(*TheContext, "endloop");
 
-  // Insert an explicit fall through from the current block to the LoopBB.
-  Builder->CreateBr(LoopBB);
+  // Insert an explicit fall through from current block to LoopConditionBB.
+  Builder->CreateBr(LoopConditionBB);
 
-  // Start insertion in LoopBB.
-  Builder->SetInsertPoint(LoopBB);
+  // Start insertion in LoopConditionBB.
+  Builder->SetInsertPoint(LoopConditionBB);
 
   // Start the PHI node with an entry for Start.
   PHINode *Variable =
       Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
-  Variable->addIncoming(StartVal, PreheaderBB);
+  Variable->addIncoming(StartVal, PreLoopBB);
 
-  // Within the loop, the variable is defined equal to the PHI node.  If it
+  // Within the loop, the variable is defined equal to the PHI node. If it
   // shadows an existing variable, we have to restore it, so save it now.
   Value *OldVal = NamedValues[VarName];
   NamedValues[VarName] = Variable;
 
-  // Emit the body of the loop.  This, like any other expr, can change the
-  // current BB.  Note that we ignore the value computed by the body, but
-  // don't allow an error.
-  if (!Body->codegen())
+  // Compute the end condition.
+  Value *EndCond = End->codegen();
+  if (!EndCond)
     return nullptr;
+
+  // Check if Variable < End
+  EndCond = Builder->CreateFCmpULT(Variable, EndCond, "endcond");
+
+  // Insert the conditional branch that either continues the loop, or exits
+  // the loop.
+  Builder->CreateCondBr(EndCond, LoopBB, EndLoopBB);
+
+  // Attach the basic block that will soon hold the loop body to the end of
+  // the parent function.
+  TheFunction->insert(TheFunction->end(), LoopBB);
+
+  // Emit the loop body within the LoopBB. This, like any other expr, can
+  // change the current BB. Note that we ignore the value computed by the
+  // body, but don't allow an error.
+  Builder->SetInsertPoint(LoopBB);
+  if (!Body->codegen()) {
+    return nullptr;
+  }
 
   // Emit the step value.
   Value *StepVal = nullptr;
@@ -1602,27 +1660,20 @@ Value *ForExprAST::codegen() {
 
   Value *NextVar = Builder->CreateFAdd(Variable, StepVal, "nextvar");
 
-  // Generate the end condition.
-  Value *EndCond = End->codegen();
-  if (!EndCond)
-    return nullptr;
-
-  // Compare Variable < End
-  EndCond = Builder->CreateFCmpULT(Variable, EndCond, "loopcond");
-
-  // Create the "after loop" block and insert it.
-  BasicBlock *LoopEndBB = Builder->GetInsertBlock();
-  BasicBlock *AfterBB =
-      BasicBlock::Create(*TheContext, "afterloop", TheFunction);
-
-  // Insert the conditional branch into the end of LoopEndBB.
-  Builder->CreateCondBr(EndCond, LoopBB, AfterBB);
-
-  // Any new code will be inserted in AfterBB.
-  Builder->SetInsertPoint(AfterBB);
-
   // Add a new entry to the PHI node for the backedge.
-  Variable->addIncoming(NextVar, LoopEndBB);
+  LoopBB = Builder->GetInsertBlock();
+  Variable->addIncoming(NextVar, LoopBB);
+
+  // Create the unconditional branch that returns to LoopConditionBB to
+  // determine if we should continue looping.
+  Builder->CreateBr(LoopConditionBB);
+
+  // Append EndLoopBB after the loop body. We go to this basic block if the
+  // loop condition says we should not loop anymore.
+  TheFunction->insert(TheFunction->end(), EndLoopBB);
+
+  // Any new code will be inserted after the loop.
+  Builder->SetInsertPoint(EndLoopBB);
 
   // Restore the unshadowed variable.
   if (OldVal)

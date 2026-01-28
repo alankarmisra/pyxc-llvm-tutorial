@@ -1871,6 +1871,10 @@ Function *FunctionAST::codegen() {
 
   // Error reading body, remove function.
   TheFunction->eraseFromParent();
+
+  if (P.isBinaryOp())
+    BinopPrecedence.erase(P.getOperatorName());
+
   return nullptr;
 }
 

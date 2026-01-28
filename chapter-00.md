@@ -41,7 +41,7 @@ This tutorial is structured into chapters covering individual topics, allowing y
 
 [Chapter #7: Extending the Language: Mutable Variables](chapter-07.md) - This chapter talks about adding user-defined local variables along with an assignment operator. This shows how easy it is to construct SSA form in LLVM: LLVM does not require your front-end to construct SSA form in order to use it!
 
-**Chapter #8: Compiling to Object Files** - This chapter explains how to take LLVM IR and compile it down to object files, like a static compiler does.
+[Chapter #8: Compiling to Object Files](chapter-08.md) - This chapter explains how to take LLVM IR and compile it down to object files, like a static compiler does.
 
 **Chapter #9: Debug Information** - A real language needs to support debuggers, so we add debug information that allows setting breakpoints in Pyxc functions, print out argument variables, and call functions!
 
