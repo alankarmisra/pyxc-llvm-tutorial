@@ -1,24 +1,22 @@
-#include "../include/PyxcJIT.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
-#include "llvm/IR/PassManager.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Verifier.h"
-#include "llvm/Passes/PassBuilder.h"
-#include "llvm/Passes/StandardInstrumentations.h"
+#include "llvm/MC/TargetRegistry.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/TargetSelect.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
-#include "llvm/Transforms/InstCombine/InstCombine.h"
-#include "llvm/Transforms/Scalar.h"
-#include "llvm/Transforms/Scalar/GVN.h"
-#include "llvm/Transforms/Scalar/Reassociate.h"
-#include "llvm/Transforms/Scalar/SimplifyCFG.h"
+#include "llvm/Target/TargetOptions.h"
+#include "llvm/TargetParser/Host.h"
 #include <cassert>
 #include <cctype>
 #include <cstdio>
@@ -26,10 +24,12 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <system_error>
+#include <utility>
 #include <vector>
 
 using namespace llvm;
-using namespace llvm::orc;
+using namespace llvm::sys;
 
 //===----------------------------------------------------------------------===//
 // Lexer
@@ -61,6 +61,9 @@ enum Token {
 
   // decorator
   tok_decorator = -13,
+
+  // var definition
+  tok_var = -14,
 };
 
 static std::string IdentifierStr; // Filled in if tok_identifier
@@ -72,7 +75,7 @@ static bool InForExpression;      // Track global parsing context
 static std::map<std::string, Token> Keywords = {
     {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return},
     {"if", tok_if},   {"else", tok_else},     {"for", tok_for},
-    {"in", tok_in},   {"range", tok_range}};
+    {"in", tok_in},   {"range", tok_range},   {"var", tok_var}};
 
 enum OperatorType { Undefined, Unary, Binary };
 
@@ -168,13 +171,28 @@ public:
   Value *codegen() override;
 };
 
+/// VarExprAST - Expression class for var/in
+class VarExprAST : public ExprAST {
+  std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames;
+  std::unique_ptr<ExprAST> Body;
+
+public:
+  VarExprAST(
+      std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames,
+      std::unique_ptr<ExprAST> Body)
+      : VarNames(std::move(VarNames)), Body(std::move(Body)) {}
+  Value *codegen() override;
+};
+
 /// VariableExprAST - Expression class for referencing a variable, like "a".
 class VariableExprAST : public ExprAST {
   std::string Name;
 
 public:
   VariableExprAST(const std::string &Name) : Name(Name) {}
+
   Value *codegen() override;
+  const std::string &getName() const { return Name; }
 };
 
 /// BinaryExprAST - Expression class for a binary operator.
@@ -297,7 +315,7 @@ static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 /// BinopPrecedence - This holds the precedence for each binary operator that is
 /// defined.
 static std::map<char, int> BinopPrecedence = {
-    {'<', 10}, {'+', 20}, {'-', 20}, {'*', 40}};
+    {'=', 2}, {'<', 10}, {'+', 20}, {'-', 20}, {'*', 40}};
 
 /// GetTokPrecedence - Get the precedence of the pending binary operator token.
 static int GetTokPrecedence() {
@@ -324,6 +342,11 @@ std::unique_ptr<PrototypeAST> LogErrorP(const char *Str) {
 }
 
 std::unique_ptr<FunctionAST> LogErrorF(const char *Str) {
+  LogError(Str);
+  return nullptr;
+}
+
+Value *LogErrorV(const char *Str) {
   LogError(Str);
   return nullptr;
 }
@@ -522,6 +545,55 @@ static std::unique_ptr<ExprAST> ParseForExpr() {
                                       std::move(Step), std::move(Body));
 }
 
+/// varexpr ::= 'var' identifier ('=' expression)?
+//                    (',' identifier ('=' expression)?)* 'in' expression
+static std::unique_ptr<ExprAST> ParseVarExpr() {
+  getNextToken(); // eat `var`
+  std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames;
+
+  // At least one variable name is required.
+  if (CurTok != tok_identifier)
+    return LogError("expected identifier after var");
+
+  while (true) {
+    std::string Name = IdentifierStr;
+    getNextToken(); // eat identifier.
+
+    // Read the optional initializer.
+    std::unique_ptr<ExprAST> Init;
+    if (CurTok == '=') {
+      getNextToken(); // eat the '='.
+
+      Init = ParseExpression();
+      if (!Init)
+        return nullptr;
+    }
+
+    VarNames.push_back(std::make_pair(Name, std::move(Init)));
+
+    // End of var list, exit loop.
+    if (CurTok != ',')
+      break;
+    getNextToken(); // eat the ','.
+
+    if (CurTok != tok_identifier)
+      return LogError("expected identifier list after var");
+  }
+
+  // At this point, we have to have 'in'.
+  if (CurTok != tok_in)
+    return LogError("expected 'in' keyword after 'var'");
+  getNextToken(); // eat 'in'.
+
+  EatNewLines();
+
+  auto Body = ParseExpression();
+  if (!Body)
+    return nullptr;
+
+  return std::make_unique<VarExprAST>(std::move(VarNames), std::move(Body));
+}
+
 /// primary
 ///   ::= identifierexpr
 ///   ::= numberexpr
@@ -542,6 +614,8 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
     return ParseIfExpr();
   case tok_for:
     return ParseForExpr();
+  case tok_var:
+    return ParseVarExpr();
   }
 }
 
@@ -733,9 +807,10 @@ static std::unique_ptr<FunctionAST> ParseDefinition() {
 
   EatNewLines();
 
-  if (!InForExpression && CurTok != tok_if && CurTok != tok_for) {
+  if (!InForExpression && CurTok != tok_if && CurTok != tok_for &&
+      CurTok != tok_var) {
     if (CurTok != tok_return)
-      return LogErrorF("Expected 'return' before return expression");
+      return LogErrorF("Expected 'return' before expression");
     getNextToken(); // eat return
   }
 
@@ -772,21 +847,8 @@ static std::unique_ptr<PrototypeAST> ParseExtern() {
 static std::unique_ptr<LLVMContext> TheContext;
 static std::unique_ptr<Module> TheModule;
 static std::unique_ptr<IRBuilder<>> Builder;
-static std::map<std::string, Value *> NamedValues;
-static std::unique_ptr<PyxcJIT> TheJIT;
-static std::unique_ptr<FunctionPassManager> TheFPM;
-static std::unique_ptr<LoopAnalysisManager> TheLAM;
-static std::unique_ptr<FunctionAnalysisManager> TheFAM;
-static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
-static std::unique_ptr<ModuleAnalysisManager> TheMAM;
-static std::unique_ptr<PassInstrumentationCallbacks> ThePIC;
-static std::unique_ptr<StandardInstrumentations> TheSI;
+static std::map<std::string, AllocaInst *> NamedValues;
 static ExitOnError ExitOnErr;
-
-Value *LogErrorV(const char *Str) {
-  LogError(Str);
-  return nullptr;
-}
 
 Function *getFunction(std::string Name) {
   // First, see if the function has already been added to the current module.
@@ -803,16 +865,26 @@ Function *getFunction(std::string Name) {
   return nullptr;
 }
 
+/// CreateEntryBlockAlloca - Create an alloca instruction in the entry block of
+/// the function.  This is used for mutable variables etc.
+static AllocaInst *CreateEntryBlockAlloca(Function *TheFunction,
+                                          StringRef VarName) {
+  IRBuilder<> TmpB(&TheFunction->getEntryBlock(),
+                   TheFunction->getEntryBlock().begin());
+  return TmpB.CreateAlloca(Type::getDoubleTy(*TheContext), nullptr, VarName);
+}
+
 Value *NumberExprAST::codegen() {
   return ConstantFP::get(*TheContext, APFloat(Val));
 }
 
 Value *VariableExprAST::codegen() {
   // Look this variable up in the function.
-  Value *V = NamedValues[Name];
-  if (!V)
+  AllocaInst *A = NamedValues[Name];
+  if (!A)
     return LogErrorV(("Unknown variable name " + Name).c_str());
-  return V;
+  // Load the value.
+  return Builder->CreateLoad(A->getAllocatedType(), A, Name.c_str());
 }
 
 Value *UnaryExprAST::codegen() {
@@ -829,6 +901,29 @@ Value *UnaryExprAST::codegen() {
 }
 
 Value *BinaryExprAST::codegen() {
+  // Special case '=' because we don't want to emit the LHS as an expression.
+  if (Op == '=') {
+    // Assignment requires the LHS to be an identifier.
+    // This assume we're building without RTTI because LLVM builds that way by
+    // default.  If you build LLVM with RTTI this can be changed to a
+    // dynamic_cast for automatic error checking.
+    VariableExprAST *LHSE = static_cast<VariableExprAST *>(LHS.get());
+    if (!LHSE)
+      return LogErrorV("destination of '=' must be a variable");
+    // Codegen the RHS.
+    Value *Val = RHS->codegen();
+    if (!Val)
+      return nullptr;
+
+    // Look up the name.
+    Value *Variable = NamedValues[LHSE->getName()];
+    if (!Variable)
+      return LogErrorV("Unknown variable name");
+
+    Builder->CreateStore(Val, Variable);
+    return Val;
+  }
+
   Value *L = LHS->codegen();
   Value *R = RHS->codegen();
   if (!L || !R)
@@ -933,15 +1028,25 @@ Value *IfExprAST::codegen() {
 }
 
 Value *ForExprAST::codegen() {
+  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+
+  // Create an alloca for the variable in the entry block.
+  AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
+
   // Emit the start code first, without 'variable' in scope.
   Value *StartVal = Start->codegen();
   if (!StartVal)
     return nullptr;
 
-  // Make new basic blocks for pre-loop, loop condition, loop body and
-  // end-loop code.
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
-  BasicBlock *PreLoopBB = Builder->GetInsertBlock();
+  // Store the value into the alloca.
+  Builder->CreateStore(StartVal, Alloca);
+
+  // If the loop variable shadows an existing variable, we have to restore it,
+  // so save it now. Set VarName to refer to our recently created alloca.
+  AllocaInst *OldVal = NamedValues[VarName];
+  NamedValues[VarName] = Alloca;
+
+  // Make new basic blocks for loop condition, loop body and end-loop code.
   BasicBlock *LoopConditionBB =
       BasicBlock::Create(*TheContext, "loopcond", TheFunction);
   BasicBlock *LoopBB = BasicBlock::Create(*TheContext, "loop");
@@ -953,35 +1058,29 @@ Value *ForExprAST::codegen() {
   // Start insertion in LoopConditionBB.
   Builder->SetInsertPoint(LoopConditionBB);
 
-  // Start the PHI node with an entry for Start.
-  PHINode *Variable =
-      Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
-  Variable->addIncoming(StartVal, PreLoopBB);
-
-  // Within the loop, the variable is defined equal to the PHI node. If it
-  // shadows an existing variable, we have to restore it, so save it now.
-  Value *OldVal = NamedValues[VarName];
-  NamedValues[VarName] = Variable;
-
   // Compute the end condition.
   Value *EndCond = End->codegen();
   if (!EndCond)
     return nullptr;
 
-  // Check if Variable < End
-  EndCond = Builder->CreateFCmpULT(Variable, EndCond, "endcond");
+  // Load new loop variable
+  Value *CurVar =
+      Builder->CreateLoad(Alloca->getAllocatedType(), Alloca, VarName);
 
-  // Insert the conditional branch that either continues the loop, or exits
-  // the loop.
+  // Check if Variable < End
+  EndCond = Builder->CreateFCmpULT(CurVar, EndCond, "loopcond");
+
+  // Insert the conditional branch that either continues the loop, or exits the
+  // loop.
   Builder->CreateCondBr(EndCond, LoopBB, EndLoopBB);
 
-  // Attach the basic block that will soon hold the loop body to the end of
-  // the parent function.
+  // Attach the basic block that will soon hold the loop body to the end of the
+  // parent function.
   TheFunction->insert(TheFunction->end(), LoopBB);
 
-  // Emit the loop body within the LoopBB. This, like any other expr, can
-  // change the current BB. Note that we ignore the value computed by the
-  // body, but don't allow an error.
+  // Emit the loop body within the LoopBB. This, like any other expr, can change
+  // the current BB. Note that we ignore the value computed by the body, but
+  // don't allow an error.
   Builder->SetInsertPoint(LoopBB);
   if (!Body->codegen()) {
     return nullptr;
@@ -998,11 +1097,8 @@ Value *ForExprAST::codegen() {
     StepVal = ConstantFP::get(*TheContext, APFloat(1.0));
   }
 
-  Value *NextVar = Builder->CreateFAdd(Variable, StepVal, "nextvar");
-
-  // Add a new entry to the PHI node for the backedge.
-  LoopBB = Builder->GetInsertBlock();
-  Variable->addIncoming(NextVar, LoopBB);
+  Value *NextVar = Builder->CreateFAdd(CurVar, StepVal, "nextvar");
+  Builder->CreateStore(NextVar, Alloca);
 
   // Create the unconditional branch that returns to LoopConditionBB to
   // determine if we should continue looping.
@@ -1025,6 +1121,54 @@ Value *ForExprAST::codegen() {
   return Constant::getNullValue(Type::getDoubleTy(*TheContext));
 }
 
+Value *VarExprAST::codegen() {
+  std::vector<AllocaInst *> OldBindings;
+
+  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+
+  // Register all variables and emit their initializer.
+  for (unsigned i = 0, e = VarNames.size(); i != e; ++i) {
+    const std::string &VarName = VarNames[i].first;
+    ExprAST *Init = VarNames[i].second.get();
+
+    // Emit the initializer before adding the variable to scope, this prevents
+    // the initializer from referencing the variable itself, and permits stuff
+    // like this:
+    //  var a = 1 in
+    //    var a = a in ...   # refers to outer 'a'.
+    Value *InitVal;
+    if (Init) {
+      InitVal = Init->codegen();
+      if (!InitVal)
+        return nullptr;
+    } else { // If not specified, use 0.0.
+      InitVal = ConstantFP::get(*TheContext, APFloat(0.0));
+    }
+
+    AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
+    Builder->CreateStore(InitVal, Alloca);
+
+    // Remember the old variable binding so that we can restore the binding when
+    // we unrecurse.
+    OldBindings.push_back(NamedValues[VarName]);
+
+    // Remember this binding.
+    NamedValues[VarName] = Alloca;
+  }
+
+  // Codegen the body, now that all vars are in scope.
+  Value *BodyVal = Body->codegen();
+  if (!BodyVal)
+    return nullptr;
+
+  // Pop all our variables from scope.
+  for (unsigned i = 0, e = VarNames.size(); i != e; ++i)
+    NamedValues[VarNames[i].first] = OldBindings[i];
+
+  // Return the body computation.
+  return BodyVal;
+}
+
 Function *PrototypeAST::codegen() {
   // Make the function type:  double(double,double) etc.
   std::vector<Type *> Doubles(Args.size(), Type::getDoubleTy(*TheContext));
@@ -1043,8 +1187,8 @@ Function *PrototypeAST::codegen() {
 }
 
 Function *FunctionAST::codegen() {
-  // Transfer ownership of the prototype to the FunctionProtos map, but keep a
-  // reference to it for use below.
+  // Transfer ownership of the prototype to the FunctionProtos map, but keep
+  // a reference to it for use below.
   auto &P = *Proto;
   FunctionProtos[Proto->getName()] = std::move(Proto);
   Function *TheFunction = getFunction(P.getName());
@@ -1061,8 +1205,16 @@ Function *FunctionAST::codegen() {
 
   // Record the function arguments in the NamedValues map.
   NamedValues.clear();
-  for (auto &Arg : TheFunction->args())
-    NamedValues[std::string(Arg.getName())] = &Arg;
+  for (auto &Arg : TheFunction->args()) {
+    // Create an alloca for this variable.
+    AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, Arg.getName());
+
+    // Store the initial value into the alloca.
+    Builder->CreateStore(&Arg, Alloca);
+
+    // Add arguments to variable symbol table.
+    NamedValues[std::string(Arg.getName())] = Alloca;
+  }
 
   if (Value *RetVal = Body->codegen()) {
     // Finish off the function.
@@ -1071,17 +1223,14 @@ Function *FunctionAST::codegen() {
     // Validate the generated code, checking for consistency.
     verifyFunction(*TheFunction);
 
-    // Run the optimizer on the function.
-    TheFPM->run(*TheFunction, *TheFAM);
-
     return TheFunction;
   }
 
   // Error reading body, remove function.
   TheFunction->eraseFromParent();
+
   if (P.isBinaryOp())
     BinopPrecedence.erase(P.getOperatorName());
-
   return nullptr;
 }
 
@@ -1089,41 +1238,13 @@ Function *FunctionAST::codegen() {
 // Top-Level parsing and JIT Driver
 //===----------------------------------------------------------------------===//
 
-static void InitializeModuleAndManagers() {
+static void InitializeModuleAndBuilder() {
   // Open a new context and module.
   TheContext = std::make_unique<LLVMContext>();
   TheModule = std::make_unique<Module>("PyxcJIT", *TheContext);
-  TheModule->setDataLayout(TheJIT->getDataLayout());
 
   // Create a new builder for the module.
   Builder = std::make_unique<IRBuilder<>>(*TheContext);
-
-  // Create new pass and analysis managers.
-  TheFPM = std::make_unique<FunctionPassManager>();
-  TheLAM = std::make_unique<LoopAnalysisManager>();
-  TheFAM = std::make_unique<FunctionAnalysisManager>();
-  TheCGAM = std::make_unique<CGSCCAnalysisManager>();
-  TheMAM = std::make_unique<ModuleAnalysisManager>();
-  ThePIC = std::make_unique<PassInstrumentationCallbacks>();
-  TheSI = std::make_unique<StandardInstrumentations>(*TheContext,
-                                                     /*DebugLogging*/ true);
-  TheSI->registerCallbacks(*ThePIC, TheMAM.get());
-
-  // Add transform passes.
-  // Do simple "peephole" optimizations and bit-twiddling optzns.
-  TheFPM->addPass(InstCombinePass());
-  // Reassociate expressions.
-  TheFPM->addPass(ReassociatePass());
-  // Eliminate Common SubExpressions.
-  TheFPM->addPass(GVNPass());
-  // Simplify the control flow graph (deleting unreachable blocks, etc).
-  TheFPM->addPass(SimplifyCFGPass());
-
-  // Register analysis passes used in these transform passes.
-  PassBuilder PB;
-  PB.registerModuleAnalyses(*TheMAM);
-  PB.registerFunctionAnalyses(*TheFAM);
-  PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
 }
 
 static void HandleDefinition() {
@@ -1132,9 +1253,6 @@ static void HandleDefinition() {
       fprintf(stderr, "Read function definition:\n");
       FnIR->print(errs());
       fprintf(stderr, "\n");
-      ExitOnErr(TheJIT->addModule(
-          ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
-      InitializeModuleAndManagers();
     }
   } else {
     // Skip token for error recovery.
@@ -1160,31 +1278,9 @@ static void HandleTopLevelExpression() {
   // Evaluate a top-level expression into an anonymous function.
   if (auto FnAST = ParseTopLevelExpr()) {
     if (auto *FnIR = FnAST->codegen()) {
-      // Create a ResourceTracker to track JIT'd memory allocated to our
-      // anonymous expression -- that way we can free it after executing.
-      auto RT = TheJIT->getMainJITDylib().createResourceTracker();
-
-      auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
-      ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
-      InitializeModuleAndManagers();
-
       fprintf(stderr, "Read top-level expression:\n");
       FnIR->print(errs());
       fprintf(stderr, "\n");
-
-      // Search the JIT for the __anon_expr symbol.
-      auto ExprSymbol = ExitOnErr(TheJIT->lookup("__anon_expr"));
-
-      // Get the symbol's address and cast it to the right type (takes no
-      // arguments, returns a double) so we can call it as a native function.
-      double (*FP)() = ExprSymbol.toPtr<double (*)()>();
-      fprintf(stderr, "\nEvaluated to %f\n", FP());
-
-      // Delete the anonymous expression module from the JIT.
-      ExitOnErr(RT->remove());
-
-      // Remove the anonymous expression.
-      //   FnIR->eraseFromParent();
     }
   } else {
     // Skip token for error recovery.
@@ -1243,22 +1339,67 @@ extern "C" DLLEXPORT double printd(double X) {
 //===----------------------------------------------------------------------===//
 
 int main() {
-  InitializeNativeTarget();
-  InitializeNativeTargetAsmPrinter();
-  InitializeNativeTargetAsmParser();
-
   // Prime the first token.
   fprintf(stderr, "ready> ");
   getNextToken();
 
-  TheJIT = ExitOnErr(PyxcJIT::Create());
-  InitializeModuleAndManagers();
+  InitializeModuleAndBuilder();
 
   // Run the main "interpreter loop" now.
   MainLoop();
 
-  // Run the main "interpreter loop" now.
-  TheModule->print(errs(), nullptr);
+  // Initialize the target registry etc.
+  InitializeAllTargetInfos();
+  InitializeAllTargets();
+  InitializeAllTargetMCs();
+  InitializeAllAsmParsers();
+  InitializeAllAsmPrinters();
+
+  auto TargetTriple = sys::getDefaultTargetTriple();
+  TheModule->setTargetTriple(Triple(TargetTriple));
+
+  std::string Error;
+  auto Target =
+      TargetRegistry::lookupTarget(TheModule->getTargetTriple(), Error);
+
+  // Print an error and exit if we couldn't find the requested target.
+  // This generally occurs if we've forgotten to initialise the
+  // TargetRegistry or we have a bogus target triple.
+  if (!Target) {
+    errs() << Error;
+    return 1;
+  }
+
+  auto CPU = "generic";
+  auto Features = "";
+
+  TargetOptions opt;
+  auto TheTargetMachine = Target->createTargetMachine(
+      Triple(TargetTriple), CPU, Features, opt, Reloc::PIC_);
+
+  TheModule->setDataLayout(TheTargetMachine->createDataLayout());
+
+  auto Filename = "output.o";
+  std::error_code EC;
+  raw_fd_ostream dest(Filename, EC, sys::fs::OF_None);
+
+  if (EC) {
+    errs() << "Could not open file: " << EC.message();
+    return 1;
+  }
+
+  legacy::PassManager pass;
+  auto FileType = CodeGenFileType::ObjectFile;
+
+  if (TheTargetMachine->addPassesToEmitFile(pass, dest, nullptr, FileType)) {
+    errs() << "TheTargetMachine can't emit a file of this type";
+    return 1;
+  }
+
+  pass.run(*TheModule);
+  dest.flush();
+
+  outs() << "Wrote " << Filename << "\n";
 
   return 0;
 }

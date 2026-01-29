@@ -153,30 +153,21 @@ Now that we know the sort of problem we want to tackle, let’s see what this lo
 While the first item is really what this is about, we only have variables for incoming arguments as well as for induction variables, and redefining those only goes so far :). Also, the ability to define new variables is a useful thing regardless of whether you will be mutating them. Here’s a motivating example that shows how we could use these:
 
 ```python
-# Define ':' for sequencing: as a low-precedence operator that ignores operands
+extern def putchard(x)
+
+# Define ';' for sequencing: as a low-precedence operator that ignores operands
 # and just returns the RHS.
 @binary(precedence=1)
-def :(x, y) 
+def ;(x, y):
     return y
-
-# Recursive fib, we could do this before.
-def fib(x):
-  if (x < 3):
-    return 1
-  else:
-    return fib(x-1)+fib(x-2)
 
 # Iterative fib.
 def fibi(x):
-  var a = 1, b = 1, c
-  ( for i in range(3, x): 
-     c = a + b ;
-     a = b ;
-     b = c ) 
-  return b
+    var a = 1, b = 1, c in 
+        (for i in range(3, x+1): c = a + b ; a = b ; b = c)  ; b
 
-# Call it.
-fibi(10)
+# Call it
+fibi(10)        
 ```
 
 In order to mutate variables, we have to change our existing variables to use the “alloca trick”. Once we have that, we’ll add our new operator, then extend Pyxc to support new variable definitions.
@@ -248,8 +239,9 @@ if (!EndCond)
 // the body of the loop mutates the variable.
 Value *CurVar = Builder->CreateLoad(Alloca->getAllocatedType(), Alloca,
                                     VarName.c_str());
-Value *NextVar = Builder->CreateFAdd(CurVar, StepVal, "nextvar");
-Builder->CreateStore(NextVar, Alloca);
+// Compare i < n
+  EndCond = Builder->CreateFCmpULT(CurVar, EndCond, "loopcond");
+
 ...
 ```
 
@@ -1694,26 +1686,50 @@ Value *ForExprAST::codegen() {
   // Store the value into the alloca.
   Builder->CreateStore(StartVal, Alloca);
 
-  // Make the new basic block for the loop header, inserting after current
-  // block.
-  BasicBlock *LoopBB = BasicBlock::Create(*TheContext, "loop", TheFunction);
-
-  // Insert an explicit fall through from the current block to the LoopBB.
-  Builder->CreateBr(LoopBB);
-
-  // Start insertion in LoopBB.
-  Builder->SetInsertPoint(LoopBB);
-
-  // Within the loop, the variable is defined equal to the PHI node.  If it
-  // shadows an existing variable, we have to restore it, so save it now.
+  // If the loop variable shadows an existing variable, we have to restore it,
+  // so save it now. Set VarName to refer to our recently created alloca.
   AllocaInst *OldVal = NamedValues[VarName];
   NamedValues[VarName] = Alloca;
 
-  // Emit the body of the loop.  This, like any other expr, can change the
-  // current BB.  Note that we ignore the value computed by the body, but don't
-  // allow an error.
-  if (!Body->codegen())
+  // Make new basic blocks for loop condition, loop body and end-loop code.
+  BasicBlock *LoopConditionBB =
+      BasicBlock::Create(*TheContext, "loopcond", TheFunction);
+  BasicBlock *LoopBB = BasicBlock::Create(*TheContext, "loop");
+  BasicBlock *EndLoopBB = BasicBlock::Create(*TheContext, "endloop");
+
+  // Insert an explicit fall through from current block to LoopConditionBB.
+  Builder->CreateBr(LoopConditionBB);
+
+  // Start insertion in LoopConditionBB.
+  Builder->SetInsertPoint(LoopConditionBB);
+
+  // Compute the end condition.
+  Value *EndCond = End->codegen();
+  if (!EndCond)
     return nullptr;
+
+  // Load new loop variable
+  Value *CurVar =
+      Builder->CreateLoad(Alloca->getAllocatedType(), Alloca, VarName);
+
+  // Check if Variable < End
+  EndCond = Builder->CreateFCmpULT(CurVar, EndCond, "loopcond");
+
+  // Insert the conditional branch that either continues the loop, or exits the
+  // loop.
+  Builder->CreateCondBr(EndCond, LoopBB, EndLoopBB);
+
+  // Attach the basic block that will soon hold the loop body to the end of the
+  // parent function.
+  TheFunction->insert(TheFunction->end(), LoopBB);
+
+  // Emit the loop body within the LoopBB. This, like any other expr, can change
+  // the current BB. Note that we ignore the value computed by the body, but
+  // don't allow an error.
+  Builder->SetInsertPoint(LoopBB);
+  if (!Body->codegen()) {
+    return nullptr;
+  }
 
   // Emit the step value.
   Value *StepVal = nullptr;
@@ -1726,30 +1742,19 @@ Value *ForExprAST::codegen() {
     StepVal = ConstantFP::get(*TheContext, APFloat(1.0));
   }
 
-  // Compute the end condition.
-  Value *EndCond = End->codegen();
-  if (!EndCond)
-    return nullptr;
-
-  // Reload, increment, and restore the alloca.  This handles the case where
-  // the body of the loop mutates the variable.
-  Value *CurVar =
-      Builder->CreateLoad(Alloca->getAllocatedType(), Alloca, VarName.c_str());
   Value *NextVar = Builder->CreateFAdd(CurVar, StepVal, "nextvar");
   Builder->CreateStore(NextVar, Alloca);
 
-  // Compare NextVar < End
-  EndCond = Builder->CreateFCmpULT(CurVar, EndCond, "loopcond");
+  // Create the unconditional branch that returns to LoopConditionBB to
+  // determine if we should continue looping.
+  Builder->CreateBr(LoopConditionBB);
 
-  // Create the "after loop" block and insert it.
-  BasicBlock *AfterBB =
-      BasicBlock::Create(*TheContext, "afterloop", TheFunction);
+  // Append EndLoopBB after the loop body. We go to this basic block if the
+  // loop condition says we should not loop anymore.
+  TheFunction->insert(TheFunction->end(), EndLoopBB);
 
-  // Insert the conditional branch into the end of LoopEndBB.
-  Builder->CreateCondBr(EndCond, LoopBB, AfterBB);
-
-  // Any new code will be inserted in AfterBB.
-  Builder->SetInsertPoint(AfterBB);
+  // Any new code will be inserted after the loop.
+  Builder->SetInsertPoint(EndLoopBB);
 
   // Restore the unshadowed variable.
   if (OldVal)
@@ -2080,7 +2085,7 @@ def ;(x, y):
 
 def fibi(x):
     var a = 1, b = 1, c in 
-        (for i in range(3, x): c = a + b ; a = b ; b = c) ; b
+        (for i in range(3, x+1): c = a + b ; a = b ; b = c) ; b
 ```
 
 Notice how we wrap the `for` loop in parentheses and use `;` to sequence it with the final value `b`. This is admittedly clunky—we're using the semicolon operator to "discard" the result of the `for` loop (which returns 0.0) and return `b` instead. We've also made `var` expressions exempt from requiring explicit `return` keywords to avoid the even more awkward `return var ...` syntax.
@@ -2092,7 +2097,7 @@ The good news: this will change in a future chapter when we introduce proper blo
 ```python
 def fibi(x):
     var a = 1, b = 1, c
-    for i in range(3, x):
+    for i in range(3, x+1):
         c = a + b
         a = b
         b = c

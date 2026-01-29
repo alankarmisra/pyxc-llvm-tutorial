@@ -402,7 +402,7 @@ Value *UnaryExprAST::codegen() {
 ## Kicking the Tires
 It is somewhat hard to believe, but with a few simple extensions we’ve covered in the last chapters, we have grown a real-ish language. With this, we can do a lot of interesting things, including I/O, math, and a bunch of other things. For example, we can now add a nice sequencing operator (printd is defined to print out the specified value and a newline):
 
-```
+```bash
 ready> extern def printd(x)
 ready> Read extern:
 declare double @printd(double)
@@ -1609,33 +1609,54 @@ Value *ForExprAST::codegen() {
   if (!StartVal)
     return nullptr;
 
-  // Make the new basic block for the loop header, inserting after current
-  // block.
+  // Make new basic blocks for pre-loop, loop condition, loop body and
+  // end-loop code.
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
-  BasicBlock *PreheaderBB = Builder->GetInsertBlock();
-  BasicBlock *LoopBB = BasicBlock::Create(*TheContext, "loop", TheFunction);
+  BasicBlock *PreLoopBB = Builder->GetInsertBlock();
+  BasicBlock *LoopConditionBB =
+      BasicBlock::Create(*TheContext, "loopcond", TheFunction);
+  BasicBlock *LoopBB = BasicBlock::Create(*TheContext, "loop");
+  BasicBlock *EndLoopBB = BasicBlock::Create(*TheContext, "endloop");
 
-  // Insert an explicit fall through from the current block to the LoopBB.
-  Builder->CreateBr(LoopBB);
+  // Insert an explicit fall through from current block to LoopConditionBB.
+  Builder->CreateBr(LoopConditionBB);
 
-  // Start insertion in LoopBB.
-  Builder->SetInsertPoint(LoopBB);
+  // Start insertion in LoopConditionBB.
+  Builder->SetInsertPoint(LoopConditionBB);
 
   // Start the PHI node with an entry for Start.
   PHINode *Variable =
       Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
-  Variable->addIncoming(StartVal, PreheaderBB);
+  Variable->addIncoming(StartVal, PreLoopBB);
 
-  // Within the loop, the variable is defined equal to the PHI node.  If it
+  // Within the loop, the variable is defined equal to the PHI node. If it
   // shadows an existing variable, we have to restore it, so save it now.
   Value *OldVal = NamedValues[VarName];
   NamedValues[VarName] = Variable;
 
-  // Emit the body of the loop.  This, like any other expr, can change the
-  // current BB.  Note that we ignore the value computed by the body, but
-  // don't allow an error.
-  if (!Body->codegen())
+  // Compute the end condition.
+  Value *EndCond = End->codegen();
+  if (!EndCond)
     return nullptr;
+
+  // Check if Variable < End
+  EndCond = Builder->CreateFCmpULT(Variable, EndCond, "endcond");
+
+  // Insert the conditional branch that either continues the loop, or exits
+  // the loop.
+  Builder->CreateCondBr(EndCond, LoopBB, EndLoopBB);
+
+  // Attach the basic block that will soon hold the loop body to the end of
+  // the parent function.
+  TheFunction->insert(TheFunction->end(), LoopBB);
+
+  // Emit the loop body within the LoopBB. This, like any other expr, can
+  // change the current BB. Note that we ignore the value computed by the
+  // body, but don't allow an error.
+  Builder->SetInsertPoint(LoopBB);
+  if (!Body->codegen()) {
+    return nullptr;
+  }
 
   // Emit the step value.
   Value *StepVal = nullptr;
@@ -1650,27 +1671,20 @@ Value *ForExprAST::codegen() {
 
   Value *NextVar = Builder->CreateFAdd(Variable, StepVal, "nextvar");
 
-  // Generate the end condition.
-  Value *EndCond = End->codegen();
-  if (!EndCond)
-    return nullptr;
-
-  // Compare Variable < End
-  EndCond = Builder->CreateFCmpULT(Variable, EndCond, "loopcond");
-
-  // Create the "after loop" block and insert it.
-  BasicBlock *LoopEndBB = Builder->GetInsertBlock();
-  BasicBlock *AfterBB =
-      BasicBlock::Create(*TheContext, "afterloop", TheFunction);
-
-  // Insert the conditional branch into the end of LoopEndBB.
-  Builder->CreateCondBr(EndCond, LoopBB, AfterBB);
-
-  // Any new code will be inserted in AfterBB.
-  Builder->SetInsertPoint(AfterBB);
-
   // Add a new entry to the PHI node for the backedge.
-  Variable->addIncoming(NextVar, LoopEndBB);
+  LoopBB = Builder->GetInsertBlock();
+  Variable->addIncoming(NextVar, LoopBB);
+
+  // Create the unconditional branch that returns to LoopConditionBB to
+  // determine if we should continue looping.
+  Builder->CreateBr(LoopConditionBB);
+
+  // Append EndLoopBB after the loop body. We go to this basic block if the
+  // loop condition says we should not loop anymore.
+  TheFunction->insert(TheFunction->end(), EndLoopBB);
+
+  // Any new code will be inserted after the loop.
+  Builder->SetInsertPoint(EndLoopBB);
 
   // Restore the unshadowed variable.
   if (OldVal)

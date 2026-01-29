@@ -43,9 +43,9 @@ This tutorial is structured into chapters covering individual topics, allowing y
 
 [Chapter #8: Compiling to Object Files](chapter-08.md) - This chapter explains how to take LLVM IR and compile it down to object files, like a static compiler does.
 
-**Chapter #9: Debug Information** - A real language needs to support debuggers, so we add debug information that allows setting breakpoints in Pyxc functions, print out argument variables, and call functions!
+[Chapter #9: Debug Information](chapter-09.md) - A real language needs to support debuggers, so we add debug information that allows setting breakpoints in Pyxc functions, print out argument variables, and call functions!
 
-**Chapter #10: Conclusion and other tidbits** - This chapter wraps up the *Core Foundation* series by discussing ways to extend the language and includes pointers to info on *special topics* like adding garbage collection support, exceptions, debugging, support for *spaghetti stacks*, etc.
+[Chapter #10: Conclusion and other tidbits](chapter-10.md) - This chapter wraps up the *Core Foundation* series by discussing ways to extend the language and includes pointers to info on *special topics* like adding garbage collection support, exceptions, debugging, support for *spaghetti stacks*, etc.
 
 ## Intermediate topics
 
