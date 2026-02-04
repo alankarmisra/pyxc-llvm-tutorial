@@ -1583,7 +1583,7 @@ int main() {
 
   DBuilder->finalize();
 
-  // Run the main "interpreter loop" now.
+  // Print the module
   TheModule->print(errs(), nullptr);
 
   return 0;

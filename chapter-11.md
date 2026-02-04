@@ -1,3 +1,730 @@
+# 11. From REPL-Only to a Real Compiler Pipeline
+
+This chapter evolves `pyxc` from a REPL-centric JIT into a full compiler front-end with command-line modes, source locations, debug info, and object/executable output. Every major change block below includes a small code snippet with a few lines of context, and I call out **the function where the change lives** so you can trace it quickly.
+
+
+## CLI options, output naming, and colorized diagnostics
+
+**Where:** global scope (new helpers and option definitions)
+
+We add compiler-style command-line flags, an execution mode, and a helper to compute output filenames. We also add a minimal colorized error prefix for better UX.
+
+```cpp
+//===----------------------------------------------------------------------===//
+// Color
+//===----------------------------------------------------------------------===//
+bool UseColor = isatty(fileno(stderr));
+const char *Red = UseColor ? "\x1b[31m" : "";
+const char *Bold = UseColor ? "\x1b[1m" : "";
+const char *Reset = UseColor ? "\x1b[0m" : "";
+
+//===----------------------------------------------------------------------===//
+// Command line arguments
+//===----------------------------------------------------------------------===//
+static cl::OptionCategory PyxcCategory("Pyxc Options");
+
+static cl::opt<std::string> InputFilename(cl::Positional,
+                                          cl::desc("<input file>"),
+                                          cl::Optional, cl::cat(PyxcCategory));
+
+enum ExecutionMode { Interpret, Executable, Object };
+
+static cl::opt<ExecutionMode> Mode(
+    cl::desc("Execution mode:"),
+    cl::values(clEnumValN(Interpret, "i",
+                          "Interpret the input file immediately (default)"),
+               clEnumValN(Object, "c", "Compile to object file")),
+    cl::init(Executable), cl::cat(PyxcCategory));
+
+static cl::opt<std::string> OutputFilename(
+    "o",
+    cl::desc("Specify output filename (optional, defaults to input basename)"),
+    cl::value_desc("filename"), cl::Optional);
+```
+
+```cpp
+std::string getOutputFilename(const std::string &input,
+                              const std::string &ext) {
+  if (!OutputFilename.empty())
+    return OutputFilename;
+
+  size_t lastDot = input.find_last_of('.');
+  size_t lastSlash = input.find_last_of("/\\");
+
+  std::string base;
+  if (lastDot != std::string::npos &&
+      (lastSlash == std::string::npos || lastDot > lastSlash)) {
+    base = input.substr(0, lastDot);
+  } else {
+    base = input;
+  }
+
+  return base + ext;
+}
+```
+
+**Why:** This turns `pyxc` into a real compiler frontend with standard flags and clean output naming. Once compiled, pyxc can now display `help`.
+
+```bash
+./pyxc --help
+OVERVIEW: Pyxc - Compiler and Interpreter
+
+USAGE: pyxc [options] <input file>
+
+OPTIONS:
+
+Generic Options:
+
+  --help      - Display available options (--help-hidden for more)
+  --help-list - Display list of available options (--help-list-hidden for more)
+  --version   - Display the version of this program
+
+Pyxc Options:
+
+  Execution mode:
+      -i        - Interpret the input file immediately (default)
+      -c        - Compile to object file
+  -g          - Emit debug information
+```
+
+
+## Source locations in the lexer
+
+**Where:** `advance()` + `gettok()`
+
+We introduce a `SourceLocation` structure and track line/column as we read characters. Every token now records where it came from.
+
+```cpp
+struct SourceLocation {
+  int Line;
+  int Col;
+};
+static SourceLocation CurLoc;
+static SourceLocation LexLoc = {1, 0};
+
+static int advance() {
+  int LastChar = getc(InputFile);
+
+  if (LastChar == '\n' || LastChar == '\r') {
+    LexLoc.Line++;
+    LexLoc.Col = 0;
+  } else
+    LexLoc.Col++;
+  return LastChar;
+}
+```
+
+```cpp
+static int gettok() {
+  static int LastChar = ' ';
+
+  while (isspace(LastChar) && LastChar != '\n' && LastChar != '\r')
+    LastChar = advance();
+
+  CurLoc = LexLoc;
+
+  if (LastChar == '\n' || LastChar == '\r') {
+    LastChar = ' ';
+    return tok_eol;
+  }
+
+  if (LastChar == '@') {
+    LastChar = advance();
+    return tok_decorator;
+  }
+  // ...
+}
+```
+
+**Why:** Once we have a location per token, we can print precise error messages and emit accurate debug info.
+
+
+## AST nodes carry source locations + AST dumps
+
+**Where:** `ExprAST` and derived classes
+
+Each AST node captures the location at creation time, and we add `dump()` functions to print structured ASTs with line/column info.
+
+```cpp
+class ExprAST {
+  SourceLocation Loc;
+
+public:
+  ExprAST(SourceLocation Loc = CurLoc) : Loc(Loc) {}
+  virtual ~ExprAST() = default;
+  virtual Value *codegen() = 0;
+  int getLine() const { return Loc.Line; }
+  int getCol() const { return Loc.Col; }
+  virtual raw_ostream &dump(raw_ostream &out, int ind) {
+    return out << ':' << getLine() << ':' << getCol() << '\n';
+  }
+};
+```
+
+```cpp
+class BinaryExprAST : public ExprAST {
+  char Op;
+  std::unique_ptr<ExprAST> LHS, RHS;
+
+public:
+  BinaryExprAST(SourceLocation Loc, char Op, std::unique_ptr<ExprAST> LHS,
+                std::unique_ptr<ExprAST> RHS)
+      : ExprAST(Loc), Op(Op), LHS(std::move(LHS)), RHS(std::move(RHS)) {}
+  raw_ostream &dump(raw_ostream &out, int ind) override {
+    ExprAST::dump(out << "binary" << Op, ind);
+    LHS->dump(indent(out, ind) << "LHS:", ind + 1);
+    RHS->dump(indent(out, ind) << "RHS:", ind + 1);
+    return out;
+  }
+  Value *codegen() override;
+};
+```
+
+**Why:** This is essential for debug info and for tooling that wants to inspect the AST.
+
+
+## Location-aware error messages
+
+**Where:** `LogError()`
+
+We include line/column and add color (when available).
+
+```cpp
+std::unique_ptr<ExprAST> LogError(const char *Str) {
+  InForExpression = false;
+  fprintf(stderr, "%sError (Line: %d, Column: %d): %s\n%s", Red, CurLoc.Line,
+          CurLoc.Col, Str, Reset);
+  return nullptr;
+}
+```
+
+**Why:** Diagnostic quality is a top user experience improvement for compiler tools.
+
+
+## Capturing locations during parsing
+
+**Where:** `ParseIdentifierExpr()`, `ParseIfExpr()`, `ParseBinOpRHS()`, `ParsePrototype()`, `ParseTopLevelExpr()`
+
+We snapshot `CurLoc` before parsing constructs, then pass it into AST constructors. This keeps locations pinned to the token that introduced each construct.
+
+```cpp
+static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
+  std::string IdName = IdentifierStr;
+  SourceLocation LitLoc = CurLoc;
+
+  getNextToken(); // eat identifier.
+
+  if (CurTok != '(')
+    return std::make_unique<VariableExprAST>(LitLoc, IdName);
+
+  // Call.
+  getNextToken(); // eat (
+  // ...
+  return std::make_unique<CallExprAST>(LitLoc, IdName, std::move(Args));
+}
+```
+
+```cpp
+static std::unique_ptr<ExprAST> ParseIfExpr() {
+  SourceLocation IfLoc = CurLoc;
+  getNextToken(); // eat 'if'
+
+  auto Cond = ParseExpression();
+  // ...
+  return std::make_unique<IfExprAST>(IfLoc, std::move(Cond), std::move(Then),
+                                     std::move(Else));
+}
+```
+
+```cpp
+int BinOp = CurTok;
+SourceLocation BinLoc = CurLoc;
+getNextToken(); // eat binop
+// ...
+LHS = std::make_unique<BinaryExprAST>(BinLoc, BinOp, std::move(LHS),
+                                      std::move(RHS));
+```
+
+**Why:** Now every AST node is tied to where it was parsed, which fuels both error messages and debug data.
+
+
+## Debug info infrastructure (DIBuilder)
+
+**Where:** Debug Info block + `emitLocation()` helper
+
+We add a small `DebugInfo` struct with a `DICompileUnit`, cached double type, and lexical scope stack. We then wire `emitLocation()` into codegen.
+
+```cpp
+struct DebugInfo {
+  DICompileUnit *TheCU;
+  DIType *DblTy;
+  std::vector<DIScope *> LexicalBlocks;
+
+  void emitLocation(ExprAST *AST);
+  DIType *getDoubleTy();
+};
+
+static std::unique_ptr<DebugInfo> KSDbgInfo;
+static std::unique_ptr<DIBuilder> DBuilder;
+
+inline void emitLocation(ExprAST *AST) {
+  if (KSDbgInfo)
+    KSDbgInfo->emitLocation(AST);
+}
+```
+
+```cpp
+void DebugInfo::emitLocation(ExprAST *AST) {
+  if (!AST)
+    return Builder->SetCurrentDebugLocation(DebugLoc());
+  DIScope *Scope = LexicalBlocks.empty() ? TheCU : LexicalBlocks.back();
+  Builder->SetCurrentDebugLocation(DILocation::get(
+      Scope->getContext(), AST->getLine(), AST->getCol(), Scope));
+}
+```
+
+**Why:** LLVM debug info must be emitted as metadata. This is the foundation for line-accurate debugging in tools like `lldb` or `gdb`.
+
+
+## Emitting locations in codegen
+
+**Where:** `NumberExprAST::codegen()`, `VariableExprAST::codegen()`, `BinaryExprAST::codegen()` and others
+
+We simply call `emitLocation(this)` at the top of each codegen function.
+
+```cpp
+Value *NumberExprAST::codegen() {
+  emitLocation(this);
+  return ConstantFP::get(*TheContext, APFloat(Val));
+}
+```
+
+```cpp
+Value *BinaryExprAST::codegen() {
+  emitLocation(this);
+  if (Op == '=') {
+    // ...
+  }
+  // ...
+}
+```
+
+**Why:** This attaches the correct source location to each emitted instruction in the IR.
+
+
+## main returns int (real executable behavior)
+
+**Where:** `PrototypeAST::codegen()` and `FunctionAST::codegen()`
+
+We special-case `main` to return `i32` and cast the return value accordingly.
+
+```cpp
+Function *PrototypeAST::codegen() {
+  // Special case: main function returns int, everything else returns double
+  Type *RetType;
+  if (Name == "main") {
+    RetType = Type::getInt32Ty(*TheContext);
+  } else {
+    RetType = Type::getDoubleTy(*TheContext);
+  }
+
+  std::vector<Type *> Doubles(Args.size(), Type::getDoubleTy(*TheContext));
+  FunctionType *FT = FunctionType::get(RetType, Doubles, false);
+  // ...
+}
+```
+
+```cpp
+if (Value *RetVal = Body->codegen()) {
+  if (P.getName() == "main") {
+    RetVal = Builder->CreateFPToSI(RetVal, Type::getInt32Ty(*TheContext),
+                                   "mainret");
+  }
+  Builder->CreateRet(RetVal);
+  // ...
+}
+```
+
+**Why:** This is required for executables to exit cleanly with a status code.
+
+
+## Debug subprogram and parameter metadata
+
+**Where:** `FunctionAST::codegen()`
+
+We create a `DISubprogram` for the function and attach parameter info with `createParameterVariable()`.
+
+```cpp
+if (KSDbgInfo) {
+  Unit = DBuilder->createFile(KSDbgInfo->TheCU->getFilename(),
+                              KSDbgInfo->TheCU->getDirectory());
+  DIScope *FContext = Unit;
+  unsigned LineNo = P.getLine();
+  unsigned ScopeLine = LineNo;
+  SP = DBuilder->createFunction(
+      FContext, P.getName(), StringRef(), Unit, LineNo,
+      CreateFunctionType(TheFunction->arg_size()), ScopeLine,
+      DINode::FlagPrototyped, DISubprogram::SPFlagDefinition);
+  TheFunction->setSubprogram(SP);
+
+  KSDbgInfo->LexicalBlocks.push_back(SP);
+  emitLocation(nullptr);
+}
+```
+
+```cpp
+for (auto &Arg : TheFunction->args()) {
+  AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, Arg.getName());
+  // ...
+  if (KSDbgInfo) {
+    DILocalVariable *D = DBuilder->createParameterVariable(
+        SP, Arg.getName(), ++ArgIdx, Unit, LineNo, KSDbgInfo->getDoubleTy(),
+        true);
+
+    DBuilder->insertDeclare(Alloca, D, DBuilder->createExpression(),
+                            DILocation::get(SP->getContext(), LineNo, 0, SP),
+                            Builder->GetInsertBlock());
+  }
+  // ...
+}
+```
+
+**Why:** This gives debuggers full visibility into function boundaries and parameters.
+
+
+## Splitting initialization (context vs passes)
+
+**Where:** `InitializeContext()`, `InitializeOptimizationPasses()`, `InitializeModuleAndManagers()`
+
+This makes the compiler reusable for JIT, file interpretation, and object output.
+
+```cpp
+static void InitializeContext() {
+  TheContext = std::make_unique<LLVMContext>();
+  TheModule = std::make_unique<Module>("PyxcModule", *TheContext);
+  Builder = std::make_unique<IRBuilder<>>(*TheContext);
+}
+
+static void InitializeOptimizationPasses() {
+  TheFPM = std::make_unique<FunctionPassManager>();
+  TheLAM = std::make_unique<LoopAnalysisManager>();
+  TheFAM = std::make_unique<FunctionAnalysisManager>();
+  // ...
+  TheFPM->addPass(PromotePass());
+  TheFPM->addPass(InstCombinePass());
+  TheFPM->addPass(ReassociatePass());
+  TheFPM->addPass(GVNPass());
+  TheFPM->addPass(SimplifyCFGPass());
+  // ...
+}
+
+static void InitializeModuleAndManagers() {
+  InitializeContext();
+  TheModule->setDataLayout(TheJIT->getDataLayout());
+  InitializeOptimizationPasses();
+}
+```
+
+**Why:** We now create LLVM state in different modes, so separation improves clarity and reuse.
+
+
+## File parsing support (non-REPL)
+
+**Where:** `ParseSourceFile()`
+
+This helper consumes all tokens from a file and emits IR for each top-level construct.
+
+```cpp
+static void ParseSourceFile() {
+  while (CurTok != tok_eof) {
+    switch (CurTok) {
+    case tok_def:
+    case tok_decorator:
+      if (auto FnAST = ParseDefinition()) {
+        if (auto *FnIR = FnAST->codegen()) {
+          if (Verbose) {
+            fprintf(stderr, "Read function definition:\n");
+            FnIR->print(errs());
+            fprintf(stderr, "\n");
+          }
+        }
+      } else {
+        getNextToken();
+      }
+      break;
+    // ... extern, eol, top-level expr ...
+    }
+  }
+}
+```
+
+**Why:** This is the core for compiling files instead of just running a REPL loop.
+
+
+## Interpret file via JIT
+
+**Where:** `InterpretFile()`
+
+We open a file, parse it, and JIT execute top-level expressions.
+
+```cpp
+void InterpretFile(const std::string &filename) {
+  InitializeNativeTarget();
+  InitializeNativeTargetAsmPrinter();
+  InitializeNativeTargetAsmParser();
+
+  TheJIT = ExitOnErr(PyxcJIT::Create());
+  InitializeModuleAndManagers();
+
+  InputFile = fopen(filename.c_str(), "r");
+  if (!InputFile) {
+    errs() << "Error: Could not open file " << filename << "\n";
+    InputFile = stdin;
+    return;
+  }
+
+  getNextToken();
+  // ... parse like REPL, execute top-level expressions ...
+
+  fclose(InputFile);
+  InputFile = stdin;
+}
+```
+
+**Why:** This enables `pyxc -i file.pyxc` to run a whole file using the JIT.
+
+
+## Emit object files
+
+**Where:** `CompileToObjectFile()`
+
+We use the native target, set the target triple, and emit `.o` via the legacy pass manager.
+
+```cpp
+void CompileToObjectFile(const std::string &filename) {
+  InitializeNativeTarget();
+  InitializeNativeTargetAsmPrinter();
+  InitializeNativeTargetAsmParser();
+
+  InitializeContext();
+  InitializeOptimizationPasses();
+
+  InputFile = fopen(filename.c_str(), "r");
+  // ... parse ...
+
+  auto TargetTriple = sys::getDefaultTargetTriple();
+  TheModule->setTargetTriple(Triple(TargetTriple));
+
+  auto Target = TargetRegistry::lookupTarget(TargetTriple, Error);
+  // ... create TargetMachine ...
+
+  std::string outputFilename = getOutputFilename(filename, ".o");
+  raw_fd_ostream dest(outputFilename, EC, sys::fs::OF_None);
+
+  legacy::PassManager pass;
+  auto FileType = CodeGenFileType::ObjectFile;
+
+  if (TargetMachine->addPassesToEmitFile(pass, dest, nullptr, FileType)) {
+    errs() << "TargetMachine can't emit a file of this type\n";
+    return;
+  }
+
+  pass.run(*TheModule);
+  dest.flush();
+}
+```
+
+**Why:** This adds a true compiler mode: `pyxc -c file.pyxc`.
+
+
+## Build executables by linking runtime
+
+**Where:** `main()` (Executable case)
+
+We compile `pyxc` source to an object file, compile `runtime.c`, then link with `clang`.
+
+```cpp
+case Executable: {
+  std::string exeFile = getOutputFilename(InputFilename, "");
+
+  std::string scriptObj = getOutputFilename(InputFilename, ".o");
+  CompileToObjectFile(InputFilename);
+
+  std::string runtimeC = "runtime.c";
+  std::string runtimeObj = "runtime.o";
+
+  std::string compileRuntime = "clang -c " + runtimeC + " -o " + runtimeObj;
+  int compileResult = system(compileRuntime.c_str());
+  if (compileResult != 0) {
+    errs() << "Error: Failed to compile runtime library\n";
+    return 1;
+  }
+
+  std::string linkCmd =
+      "clang " + scriptObj + " " + runtimeObj + " -o " + exeFile;
+  int linkResult = system(linkCmd.c_str());
+  if (linkResult != 0) {
+    errs() << "Error: Linking failed\n";
+    return 1;
+  }
+
+  remove(scriptObj.c_str());
+  remove(runtimeObj.c_str());
+  break;
+}
+```
+
+**Why:** This is the final step: the language now produces standalone binaries.
+
+
+## REPL loop tweaks (prompts and verbosity)
+
+**Where:** `MainLoop()` and `Handle*()` helpers
+
+We only print IR when `-v` is set, and we move the prompt so it doesn’t interfere with blank lines.
+
+```cpp
+if (Verbose) {
+  fprintf(stderr, "Read function definition:\n");
+  FnIR->print(errs());
+  fprintf(stderr, "\n");
+}
+```
+
+```cpp
+case tok_eol:
+  getNextToken();
+  break;
+
+default:
+  fprintf(stderr, "ready> ");
+  switch (CurTok) {
+  case tok_decorator:
+  case tok_def:
+    HandleDefinition();
+    break;
+  // ...
+  }
+  break;
+```
+
+**Why:** This makes the REPL smoother, and keeps output clean unless verbose mode is requested.
+
+
+## Wrap-up
+
+By the end of this chapter, `pyxc` is no longer just a toy REPL. It has:
+
+- Accurate line/column tracking
+- Debug metadata generation
+- File-based compilation
+- Object file output
+- Executable linking
+- Cleaner CLI and diagnostics
+
+This is the pivot point where your language becomes a *real compiler toolchain*.
+
+Here are some samples you can try:
+
+Let's first try the interpreter.
+
+```python
+# fib.pyxc
+extern def printd(x)
+
+def fib(x):
+    if(x < 3): 
+        return 1
+    else:
+        return fib(x-1) + fib(x-2)
+
+def main():
+    return printd(fib(10))
+
+main()
+```
+
+```bash
+$ ./pyxc fib.pyxc -i
+55.000000
+```
+
+Next we try the executable. For this, we have to remove the call to main in our script.
+
+```python
+# fib.pyxc
+extern def printd(x)
+
+def fib(x):
+    if(x < 3): 
+        return 1
+    else:
+        return fib(x-1) + fib(x-2)
+
+def main():
+    return printd(fib(10))
+
+# main() <-- REMOVE THIS
+```
+
+```bash
+$./pyxc fib.pyxc
+fib
+
+$./fib
+55.000000
+```
+
+Now let's try generating an object file with our fib function and call it from C++ (What?!! YES!). For this we have to remove the main function from our script entirely and add it to the C++ file.
+
+```python
+# fib.pyxc
+# extern def printd(x) # <-- REMOVE THIS
+
+def fib(x):
+    if(x < 3): 
+        return 1
+    else:
+        return fib(x-1) + fib(x-2)
+
+## REMOVE EVERYTHING BELOW. 
+# def main():
+#     return printd(fib(10))
+
+# main() 
+```
+
+```cpp
+// main.cpp
+// clang++ main.cpp fib.o -o main
+#include <iostream>
+
+// We reference the function written in pyxc.
+// extern "C" because pyxc object files adhere
+// to C ABI / calling conventions.
+extern "C" {
+double fib(double);
+}
+
+int main() { std::cout << fib(10.0) << std::endl; }
+```
+
+```bash
+# compile fib.pyxc to fib.o
+$ ./pyxc fib.pyxc -c
+fib.o
+
+# compile main.cpp and link in fib.o
+$ clang++ main.cpp fib.o -o main
+
+# run
+$ ./main
+55
+```
+
+## Full Source Listing
+
+```cpp
 #include "../include/PyxcJIT.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/IR/BasicBlock.h"
@@ -2086,3 +2813,11 @@ int main(int argc, char **argv) {
 
   return 0;
 }
+
+```
+
+## Clang Compile Command
+
+```bash
+clang++ -g -O3 -o pyxc pyxc.cpp `llvm-config --cxxflags --ldflags --system-libs --libs all`
+```
