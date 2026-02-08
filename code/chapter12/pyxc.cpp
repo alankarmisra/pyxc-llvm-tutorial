@@ -117,6 +117,9 @@ static FILE *InputFile = stdin;
 enum Token {
   tok_eof = -1,
   tok_eol = -2,
+  tok_indent = -15,
+  tok_dedent = -16,
+  tok_error = -17,
 
   // commands
   tok_def = -3,
@@ -168,6 +171,12 @@ struct SourceLocation {
 static SourceLocation CurLoc;
 static SourceLocation LexLoc = {1, 0};
 
+// Indentation related variables
+static int ModuleIndentType = -1;
+static bool AtStartOfLine = true;
+static std::vector<int> Indents = {0};
+static std::deque<int> PendingTokens;
+
 static int advance() {
   int LastChar = getc(InputFile);
 
@@ -179,11 +188,144 @@ static int advance() {
   return LastChar;
 }
 
+namespace {
+class ExprAST;
+}
+std::unique_ptr<ExprAST> LogError(const char *Str);
+
+/// countIndent - count the indent in terms of spaces
+// LastChar is the current unconsumed character at the start of the line.
+// LexLoc.Col already reflects that character’s column (0-based, after
+// reading it), so for tabs we advance to the next tab stop using
+// (LexLoc.Col % 8).
+static int countLeadingWhitespace(int &LastChar) {
+  //   fprintf(stderr, "countLeadingWhitespace(%d, %d)", LexLoc.Line,
+  //   LexLoc.Col);
+
+  int indentCount = 0;
+  bool didSetIndent = false;
+
+  while (true) {
+    while (LastChar == ' ' || LastChar == '\t') {
+      if (ModuleIndentType == -1) {
+        didSetIndent = true;
+        ModuleIndentType = LastChar;
+      } else {
+        if (LastChar != ModuleIndentType) {
+          LogError("You cannot mix tabs and spaces.");
+          return -1;
+        }
+      }
+      indentCount += LastChar == '\t' ? 8 - (LexLoc.Col % 8) : 1;
+      LastChar = advance();
+    }
+
+    if (LastChar == '\r' || LastChar == '\n') { // encountered a blank line
+      if (didSetIndent) {
+        didSetIndent = false;
+        indentCount = 0;
+        ModuleIndentType = -1;
+      }
+
+      LastChar = advance(); // eat the newline
+      continue;
+    }
+
+    break;
+  }
+  //   fprintf(stderr, " = %d | AtStartOfLine = %s\n", indentCount,
+  //           AtStartOfLine ? "true" : "false");
+  return indentCount;
+}
+
+static bool IsIndent(int leadingWhitespace) {
+  assert(!Indents.empty());
+  assert(leadingWhitespace >= 0);
+  //   fprintf(stderr, "IsIndent(%d) = (%d)\n", leadingWhitespace,
+  //           leadingWhitespace > Indents.back());
+  return leadingWhitespace > Indents.back();
+}
+
+static int HandleIndent(int leadingWhitespace) {
+  assert(!Indents.empty());
+  assert(leadingWhitespace >= 0);
+
+  Indents.push_back(leadingWhitespace);
+  return tok_indent;
+}
+
+static int HandleDedent(int leadingWhitespace) {
+  assert(!Indents.empty());
+  assert(leadingWhitespace >= 0);
+  assert(leadingWhitespace < Indents.back());
+
+  int dedents = 0;
+
+  while (leadingWhitespace < Indents.back()) {
+    Indents.pop_back();
+    dedents++;
+  }
+
+  if (leadingWhitespace != Indents.back()) {
+    LogError("Expected indentation.");
+    Indents.clear();
+    PendingTokens.clear();
+    return tok_error;
+  }
+
+  if (!dedents) // this should never happen
+  {
+    LogError("Internal error.");
+    return tok_error;
+  }
+
+  //   fprintf(stderr, "Pushing %d dedents for whitespace %d on %d, %d\n",
+  //   dedents,
+  //           leadingWhitespace, LexLoc.Line, LexLoc.Col);
+  while (dedents-- > 1) {
+    PendingTokens.push_back(tok_dedent);
+  }
+  return tok_dedent;
+}
+
+static bool IsDedent(int leadingWhitespace) {
+  assert(!Indents.empty());
+  //   fprintf(stderr, "Return %s for IsDedent(%d), Indents.back = %d\n",
+  //           (leadingWhitespace < Indents.back()) ? "true" : "false",
+  //           leadingWhitespace, Indents.back());
+  return leadingWhitespace < Indents.back();
+}
+
 /// gettok - Return the next token from standard input.
 static int gettok() {
-  static int LastChar = ' ';
+  static int LastChar = '\0';
 
-  // Skip whitespace EXCEPT newlines
+  if (LastChar == '\0')
+    LastChar = advance();
+
+  if (!PendingTokens.empty()) {
+    int tok = PendingTokens.front();
+    PendingTokens.pop_front();
+    return tok;
+  }
+
+  if (AtStartOfLine) {
+    int leadingWhitespace = countLeadingWhitespace(LastChar);
+    AtStartOfLine = false;
+    if (leadingWhitespace < 0)
+      return tok_error;
+    if (IsIndent(leadingWhitespace)) {
+      return HandleIndent(leadingWhitespace);
+    }
+    if (IsDedent(leadingWhitespace)) {
+      //   fprintf(stderr, "Pushing dedent on row:%d, col:%d\n", LexLoc.Line,
+      //           LexLoc.Col);
+      return HandleDedent(leadingWhitespace);
+    }
+  }
+
+  // Skip whitespace EXCEPT newlines (this will take care of spaces
+  // mid-expressions)
   while (isspace(LastChar) && LastChar != '\n' && LastChar != '\r')
     LastChar = advance();
 
@@ -195,7 +337,8 @@ static int gettok() {
     // If we called advance() here, it would block waiting for input,
     // requiring the user to press Enter twice in the REPL.
     // Setting LastChar = ' ' avoids this blocking read.
-    LastChar = ' ';
+    LastChar = '\0';
+    AtStartOfLine = true; // Modify state only when you're emitting the token.
     return tok_eol;
   }
 
@@ -580,9 +723,11 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
  * In later chapters, we will need to check the indentation
  * whenever we eat new lines.
  */
-static void EatNewLines() {
+static bool EatNewLines() {
+  bool consumedNewLine = CurTok == tok_eol;
   while (CurTok == tok_eol)
     getNextToken();
+  return consumedNewLine;
 }
 
 // ifexpr ::= 'if' expression ':' expression 'else' ':' expression
@@ -599,7 +744,14 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
     return LogError("expected `:`");
   getNextToken(); // eat ':'
 
-  EatNewLines();
+  bool ConditionUsesNewLines = EatNewLines();
+
+  if (ConditionUsesNewLines) {
+    if (CurTok != tok_indent) {
+      return LogError("Expected indent");
+    }
+    getNextToken(); // eat indent
+  }
 
   // Handle nested `if` and `for` expressions:
   // For `if` expressions, `return` statements are emitted inside the
@@ -619,10 +771,20 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
   if (!Then)
     return nullptr;
 
-  EatNewLines();
+  //   fprintf(stderr, "CurTok = %d\n", CurTok);
+  bool ThenUsesNewLines = EatNewLines();
+  if (!ThenUsesNewLines) {
+    // fprintf(stderr, "CurTok = %d\n", CurTok);
+    return LogError("Expected newline before else condition");
+  }
+
+  if (ThenUsesNewLines && CurTok != tok_dedent) {
+    return LogError("Expected dedent after else");
+  }
+  getNextToken(); // eat dedent
 
   if (CurTok != tok_else)
-    return LogError("expected `else`");
+    return LogError("Expected `else`");
 
   getNextToken(); // eat else
 
@@ -631,7 +793,18 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
 
   getNextToken(); // eat ':'
 
-  EatNewLines();
+  bool ElseUsesNewLines = EatNewLines();
+  if (ThenUsesNewLines != ElseUsesNewLines) {
+    return LogError("Both `then` and `else` clause should be consistent in "
+                    "their usage of newlines.");
+  }
+
+  if (ElseUsesNewLines) {
+    if (CurTok != tok_indent) {
+      return LogError("Expected indent.");
+    }
+    getNextToken(); // eat indent
+  }
 
   if (!InForExpression && CurTok != tok_if && CurTok != tok_for) {
     if (CurTok != tok_return)
@@ -643,6 +816,11 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
   auto Else = ParseExpression();
   if (!Else)
     return nullptr;
+
+  EatNewLines();
+
+  while (CurTok == tok_dedent)
+    getNextToken();
 
   return std::make_unique<IfExprAST>(IfLoc, std::move(Cond), std::move(Then),
                                      std::move(Else));
@@ -771,6 +949,7 @@ static std::unique_ptr<ExprAST> ParseVarExpr() {
 static std::unique_ptr<ExprAST> ParsePrimary() {
   switch (CurTok) {
   default:
+    fprintf(stderr, "CurTok = %d", CurTok);
     return LogError("Unknown token when expecting an expression");
   case tok_identifier:
     return ParseIdentifierExpr();
@@ -977,17 +1156,28 @@ static std::unique_ptr<FunctionAST> ParseDefinition() {
 
   EatNewLines();
 
+  if (CurTok != tok_indent)
+    return LogErrorF("Expected indentation.");
+  getNextToken(); // eat tok_indent
+
   if (!InForExpression && CurTok != tok_if && CurTok != tok_for &&
       CurTok != tok_var) {
-    if (CurTok != tok_return)
+    if (CurTok != tok_return) {
+      //   fprintf(stderr, "CurTok = %d\n", CurTok);
       return LogErrorF("Expected 'return' before expression");
+    }
+
     getNextToken(); // eat return
   }
 
-  if (auto E = ParseExpression())
-    return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
+  auto E = ParseExpression();
+  if (!E)
+    return nullptr;
 
-  return nullptr;
+  EatNewLines();
+  while (CurTok == tok_dedent)
+    getNextToken();
+  return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
 }
 
 /// toplevelexpr ::= expression
@@ -1800,7 +1990,7 @@ void InterpretFile(const std::string &filename) {
   // Parse the source file
   getNextToken();
 
-  while (CurTok != tok_eof) {
+  while (CurTok != tok_eof && CurTok != tok_error) {
     switch (CurTok) {
     case tok_def:
     case tok_decorator:
