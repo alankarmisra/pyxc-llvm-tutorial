@@ -1,0 +1,4 @@
+#!/usr/bin/env zsh
+
+time ./fib
+time python3 fib.py

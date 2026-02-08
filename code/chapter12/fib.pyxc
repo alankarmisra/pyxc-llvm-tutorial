@@ -3,10 +3,10 @@ extern def printd(x)
 def fib(x):
     if(x < 3): 
         return 1
-    else:
+    else: 
         return fib(x-1) + fib(x-2)
 
-def main():
-    return fib(40)
+def main(): 
+    return printd(fib(9))
 
-# main()
+main()

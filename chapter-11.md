@@ -537,40 +537,104 @@ void CompileToObjectFile(const std::string &filename) {
 **Why:** This adds a true compiler mode: `pyxc -c file.pyxc`.
 
 
-## Build executables by linking runtime
+## Build executables by linking runtime (if any)
 
 **Where:** `main()` (Executable case)
 
-We compile `pyxc` source to an object file, compile `runtime.c`, then link with `clang`.
+We compile `pyxc` source to an object file, compile `runtime.c` if it exists, then link with `clang`. 
 
 ```cpp
 case Executable: {
-  std::string exeFile = getOutputFilename(InputFilename, "");
+    std::string exeFile = getOutputFilename(InputFilename, "");
+    if (Verbose)
+    std::cout << "Compiling " << InputFilename
+                << " to executable: " << exeFile << "\n";
 
-  std::string scriptObj = getOutputFilename(InputFilename, ".o");
-  CompileToObjectFile(InputFilename);
+    // Step 1: Compile the script to object file
+    std::string scriptObj = getOutputFilename(InputFilename, ".o");
+    CompileToObjectFile(InputFilename);
 
-  std::string runtimeC = "runtime.c";
-  std::string runtimeObj = "runtime.o";
+    // Step 2: Optionally compile runtime.c to runtime.o if it exists
+    std::string runtimeC = "runtime.c"; // Or use absolute path if needed
+    std::string runtimeObj = "runtime.o";
+    bool hasRuntime = sys::fs::exists(runtimeC);
 
-  std::string compileRuntime = "clang -c " + runtimeC + " -o " + runtimeObj;
-  int compileResult = system(compileRuntime.c_str());
-  if (compileResult != 0) {
-    errs() << "Error: Failed to compile runtime library\n";
-    return 1;
-  }
+    if (hasRuntime) {
+    if (Verbose)
+        std::cout << "Compiling runtime library...\n";
 
-  std::string linkCmd =
-      "clang " + scriptObj + " " + runtimeObj + " -o " + exeFile;
-  int linkResult = system(linkCmd.c_str());
-  if (linkResult != 0) {
+    std::string compileRuntime =
+        "clang -c " + runtimeC + " -o " + runtimeObj;
+    int compileResult = system(compileRuntime.c_str());
+
+    if (compileResult != 0) {
+        errs() << "Error: Failed to compile runtime library\n";
+        errs() << "Make sure runtime.c exists in the current directory\n";
+        return 1;
+    }
+    } else if (Verbose) {
+    std::cout << "No runtime.c found; linking without runtime support\n";
+    }
+
+    // Step 3: Link object files
+    if (Verbose)
+    std::cout << "Linking...\n";
+
+    std::string linkCmd = "clang " + scriptObj;
+    if (hasRuntime)
+    linkCmd += " " + runtimeObj;
+    linkCmd += " -o " + exeFile;
+    int linkResult = system(linkCmd.c_str());
+
+    if (linkResult != 0) {
     errs() << "Error: Linking failed\n";
     return 1;
-  }
+    }
 
-  remove(scriptObj.c_str());
-  remove(runtimeObj.c_str());
-  break;
+    if (Verbose) {
+    std::cout << "Successfully created executable: " << exeFile << "\n";
+    // Optionally clean up intermediate files
+    std::cout << "Cleaning up intermediate files...\n";
+    remove(scriptObj.c_str());
+    if (hasRuntime)
+        remove(runtimeObj.c_str());
+    } else {
+    std::cout << exeFile << "\n";
+    remove(scriptObj.c_str());
+    if (hasRuntime)
+        remove(runtimeObj.c_str());
+    }
+
+    break;
+}
+```
+
+### Runtime support (why/when)
+
+In JIT/REPL mode, `pyxc` runs inside a host process that already contains built-in functions like `printd` and `putchard`, so the JIT can resolve them by symbol name. In executable mode, there is no host process, so those symbols must come from somewhere else.
+
+That’s what `runtime.c` is for: a tiny C runtime that defines the built-ins. It’s **optional** because you only need it if your program references those functions. If `runtime.c` is present, `pyxc` compiles and links it; otherwise it links only your program object.
+
+```c
+// runtime.c
+#include <stdio.h>
+
+#ifdef _WIN32
+#define DLLEXPORT __declspec(dllexport)
+#else
+#define DLLEXPORT
+#endif
+
+/// putchard - putchar that takes a double and returns 0.
+DLLEXPORT double putchard(double X) {
+  fputc((char)X, stderr);
+  return 0;
+}
+
+/// printd - printf that takes a double prints it as "%f\n", returning 0.
+DLLEXPORT double printd(double X) {
+  fprintf(stderr, "%f\n", X);
+  return 0;
 }
 ```
 
@@ -666,6 +730,8 @@ def main():
 
 # main() <-- REMOVE THIS
 ```
+
+We are ready to compile the file into an executable.
 
 ```bash
 $./pyxc fib.pyxc
