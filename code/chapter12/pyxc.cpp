@@ -225,6 +225,7 @@ static int countLeadingWhitespace(int &LastChar) {
     }
 
     if (LastChar == '\r' || LastChar == '\n') { // encountered a blank line
+      //   PendingTokens.push_back(tok_eol);
       if (didSetIndent) {
         didSetIndent = false;
         indentCount = 0;
@@ -887,10 +888,8 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
   if (!Then)
     return nullptr;
 
-  fprintf(stderr, "CurTok = %d\n", CurTok);
   bool ThenUsesNewLines = EatNewLines();
   if (!ThenUsesNewLines) {
-    fprintf(stderr, "CurTok = %d\n", CurTok);
     return LogError("Expected newline before else condition");
   }
 
