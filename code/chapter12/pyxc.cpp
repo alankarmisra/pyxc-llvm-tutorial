@@ -149,7 +149,7 @@ enum Token {
 
 static std::string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;             // Filled in if tok_number
-static bool InForExpression;      // Track global parsing context
+static int InForExpression;       // Track global parsing context
 
 // Keywords words like `def`, `extern` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
@@ -753,7 +753,7 @@ static int GetTokPrecedence() {
 
 /// LogError* - These are little helper functions for error handling.
 std::unique_ptr<ExprAST> LogError(const char *Str) {
-  InForExpression = false;
+  InForExpression = 0;
   fprintf(stderr, "%sError (Line: %d, Column: %d): %s\n%s", Red, CurLoc.Line,
           CurLoc.Col, Str, Reset);
   return nullptr;
@@ -896,7 +896,9 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
   if (ThenUsesNewLines && CurTok != tok_dedent) {
     return LogError("Expected dedent after else");
   }
-  getNextToken(); // eat dedent
+  // We could get multiple dedents from nested if's and for's
+  while (getNextToken() == tok_dedent)
+    ;
 
   if (CurTok != tok_else)
     return LogError("Expected `else`");
@@ -936,7 +938,14 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
   if (!Else)
     return nullptr;
 
-  EatNewLines();
+  //   EatNewLines();
+
+  //   if (ThenUsesNewLines && CurTok != tok_dedent) {
+  //     return LogError("Expected dedent");
+  //   }
+  //   while (getNextToken() == tok_dedent)
+  //     ;
+  //   // getNextToken(); // eat dedent
 
   return std::make_unique<IfExprAST>(IfLoc, std::move(Cond), std::move(Then),
                                      std::move(Else));
@@ -946,7 +955,7 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
 //   (`,` expression)? # optional
 // `)`: expression
 static std::unique_ptr<ExprAST> ParseForExpr() {
-  InForExpression = true;
+  InForExpression++;
   getNextToken(); // eat for
 
   if (CurTok != tok_identifier)
@@ -1007,13 +1016,7 @@ static std::unique_ptr<ExprAST> ParseForExpr() {
   if (!Body)
     return nullptr;
 
-  InForExpression = false;
-
-  EatNewLines();
-
-  if (CurTok != tok_dedent)
-    return LogError("Expected dedent");
-  getNextToken(); // eat dedent
+  InForExpression--;
 
   return std::make_unique<ForExprAST>(IdName, std::move(Start), std::move(End),
                                       std::move(Step), std::move(Body));
@@ -1077,7 +1080,7 @@ static std::unique_ptr<ExprAST> ParseVarExpr() {
 static std::unique_ptr<ExprAST> ParsePrimary() {
   switch (CurTok) {
   default:
-    // fprintf(stderr, "CurTok = %d", CurTok);
+    fprintf(stderr, "CurTok = %d\n", CurTok);
     return LogError("Unknown token when expecting an expression");
   case tok_identifier:
     return ParseIdentifierExpr();

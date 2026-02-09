@@ -1,0 +1,16 @@
+# CHATGPT: START
+extern def printd(x)
+
+def main():
+    if(1):
+        for i in range(0, 3):
+            if(i < 2):
+                printd(i)
+            else:
+                printd(i + 10)
+    else:
+        for j in range(0, 2):
+            printd(j)
+
+main()
+# CHATGPT: END
