@@ -64,13 +64,14 @@ static cl::opt<std::string> InputFilename(cl::Positional,
                                           cl::Optional, cl::cat(PyxcCategory));
 
 // Execution mode enum
-enum ExecutionMode { Interpret, Executable, Object };
+enum ExecutionMode { Interpret, Executable, Object, Tokens };
 
 static cl::opt<ExecutionMode> Mode(
     cl::desc("Execution mode:"),
     cl::values(clEnumValN(Interpret, "i",
                           "Interpret the input file immediately (default)"),
-               clEnumValN(Object, "c", "Compile to object file")),
+               clEnumValN(Object, "c", "Compile to object file"),
+               clEnumValN(Tokens, "t", "Print tokens")),
     cl::init(Executable), cl::cat(PyxcCategory));
 
 static cl::opt<std::string> OutputFilename(
@@ -176,6 +177,9 @@ static int ModuleIndentType = -1;
 static bool AtStartOfLine = true;
 static std::vector<int> Indents = {0};
 static std::deque<int> PendingTokens;
+// CHATGPT: START
+static int LastIndentWidth = 0;
+// CHATGPT: END
 
 static int advance() {
   int LastChar = getc(InputFile);
@@ -250,8 +254,28 @@ static int HandleIndent(int leadingWhitespace) {
   assert(!Indents.empty());
   assert(leadingWhitespace >= 0);
 
+  // CHATGPT: START
+  LastIndentWidth = leadingWhitespace;
+  // CHATGPT: END
   Indents.push_back(leadingWhitespace);
   return tok_indent;
+}
+
+static int DrainIndents() {
+  int dedents = 0;
+  while (Indents.size() > 1) {
+    Indents.pop_back();
+    dedents++;
+  }
+
+  if (dedents > 0) {
+    while (dedents-- > 1) {
+      PendingTokens.push_back(tok_dedent);
+    }
+    return tok_dedent;
+  }
+
+  return tok_eof;
 }
 
 static int HandleDedent(int leadingWhitespace) {
@@ -268,7 +292,7 @@ static int HandleDedent(int leadingWhitespace) {
 
   if (leadingWhitespace != Indents.back()) {
     LogError("Expected indentation.");
-    Indents.clear();
+    Indents = {0};
     PendingTokens.clear();
     return tok_error;
   }
@@ -311,9 +335,10 @@ static int gettok() {
 
   if (AtStartOfLine) {
     int leadingWhitespace = countLeadingWhitespace(LastChar);
-    AtStartOfLine = false;
     if (leadingWhitespace < 0)
       return tok_error;
+
+    AtStartOfLine = false;
     if (IsIndent(leadingWhitespace)) {
       return HandleIndent(leadingWhitespace);
     }
@@ -380,14 +405,94 @@ static int gettok() {
   }
 
   // Check for end of file.  Don't eat the EOF.
-  if (LastChar == EOF)
-    return tok_eof;
+  if (LastChar == EOF) {
+    return DrainIndents();
+  }
 
   // Otherwise, just return the character as its ascii value.
   int ThisChar = LastChar;
   LastChar = advance();
   return ThisChar;
 }
+
+// CHATGPT: START
+static const char *TokenName(int Tok) {
+  switch (Tok) {
+  case tok_eof:
+    return "<eof>";
+  case tok_eol:
+    return "<eol>";
+  case tok_indent:
+    return "<indent>";
+  case tok_dedent:
+    return "<dedent>";
+  case tok_error:
+    return "<error>";
+  case tok_def:
+    return "<def>";
+  case tok_extern:
+    return "<extern>";
+  case tok_identifier:
+    return "<identifier>";
+  case tok_number:
+    return "<number>";
+  case tok_if:
+    return "<if>";
+  case tok_else:
+    return "<else>";
+  case tok_return:
+    return "<return>";
+  case tok_for:
+    return "<for>";
+  case tok_in:
+    return "<in>";
+  case tok_range:
+    return "<range>";
+  case tok_decorator:
+    return "<decorator>";
+  case tok_var:
+    return "<var>";
+  default:
+    return nullptr;
+  }
+}
+
+static void PrintTokens() {
+  int Tok = gettok();
+  bool FirstOnLine = true;
+
+  while (Tok != tok_eof) {
+    if (Tok == tok_eol) {
+      fprintf(stderr, "\n");
+      FirstOnLine = true;
+      Tok = gettok();
+      continue;
+    }
+
+    if (!FirstOnLine)
+      fprintf(stderr, " ");
+    FirstOnLine = false;
+
+    if (Tok == tok_indent) {
+      fprintf(stderr, "<indent=%d>", LastIndentWidth);
+    } else {
+      const char *Name = TokenName(Tok);
+      if (Name)
+        fprintf(stderr, "%s", Name);
+      else if (isascii(Tok))
+        fprintf(stderr, "<%c>", Tok);
+      else
+        fprintf(stderr, "<tok=%d>", Tok);
+    }
+
+    Tok = gettok();
+  }
+
+  if (!FirstOnLine)
+    fprintf(stderr, " ");
+  fprintf(stderr, "<eof>\n");
+}
+// CHATGPT: END
 
 //===----------------------------------------------------------------------===//
 // Abstract Syntax Tree (aka Parse Tree)
@@ -745,11 +850,14 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
   getNextToken(); // eat ':'
 
   bool ConditionUsesNewLines = EatNewLines();
+  int thenIndentLevel = 0, elseIndentLevel = 0;
 
+  // Parse `then` clause
   if (ConditionUsesNewLines) {
     if (CurTok != tok_indent) {
       return LogError("Expected indent");
     }
+    thenIndentLevel = Indents.back();
     getNextToken(); // eat indent
   }
 
@@ -771,10 +879,10 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
   if (!Then)
     return nullptr;
 
-  //   fprintf(stderr, "CurTok = %d\n", CurTok);
+  fprintf(stderr, "CurTok = %d\n", CurTok);
   bool ThenUsesNewLines = EatNewLines();
   if (!ThenUsesNewLines) {
-    // fprintf(stderr, "CurTok = %d\n", CurTok);
+    fprintf(stderr, "CurTok = %d\n", CurTok);
     return LogError("Expected newline before else condition");
   }
 
@@ -785,7 +893,6 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
 
   if (CurTok != tok_else)
     return LogError("Expected `else`");
-
   getNextToken(); // eat else
 
   if (CurTok != ':')
@@ -803,7 +910,12 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
     if (CurTok != tok_indent) {
       return LogError("Expected indent.");
     }
+    elseIndentLevel = Indents.back();
     getNextToken(); // eat indent
+  }
+
+  if (thenIndentLevel != elseIndentLevel) {
+    return LogError("Indent mismatch between if and else");
   }
 
   if (!InForExpression && CurTok != tok_if && CurTok != tok_for) {
@@ -818,9 +930,6 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
     return nullptr;
 
   EatNewLines();
-
-  while (CurTok == tok_dedent)
-    getNextToken();
 
   return std::make_unique<IfExprAST>(IfLoc, std::move(Cond), std::move(Then),
                                      std::move(Else));
@@ -878,7 +987,12 @@ static std::unique_ptr<ExprAST> ParseForExpr() {
     return LogError("expected `:` after range operator");
   getNextToken(); // eat `:`
 
-  EatNewLines();
+  bool UsesNewLines = EatNewLines();
+
+  if (UsesNewLines && CurTok != tok_indent)
+    return LogError("expected indent.");
+
+  getNextToken(); // eat indent
 
   // `for` expressions don't have the return statement
   // they return 0 by default.
@@ -887,6 +1001,13 @@ static std::unique_ptr<ExprAST> ParseForExpr() {
     return nullptr;
 
   InForExpression = false;
+
+  EatNewLines();
+
+  if (CurTok != tok_dedent)
+    return LogError("Expected dedent");
+  getNextToken(); // eat dedent
+
   return std::make_unique<ForExprAST>(IdName, std::move(Start), std::move(End),
                                       std::move(Step), std::move(Body));
 }
@@ -949,7 +1070,7 @@ static std::unique_ptr<ExprAST> ParseVarExpr() {
 static std::unique_ptr<ExprAST> ParsePrimary() {
   switch (CurTok) {
   default:
-    fprintf(stderr, "CurTok = %d", CurTok);
+    // fprintf(stderr, "CurTok = %d", CurTok);
     return LogError("Unknown token when expecting an expression");
   case tok_identifier:
     return ParseIdentifierExpr();
@@ -1861,13 +1982,16 @@ static void HandleTopLevelExpression() {
 static void MainLoop() {
   while (true) {
     switch (CurTok) {
+    case tok_error:
+      return;
     case tok_eof:
       return;
-
     case tok_eol: // Skip newlines
       getNextToken();
       break;
-
+    case tok_dedent:
+      getNextToken();
+      break;
     default:
       fprintf(stderr, "ready> ");
       switch (CurTok) {
@@ -1915,7 +2039,7 @@ extern "C" DLLEXPORT double printd(double X) {
 
 static void ParseSourceFile() {
   // Parse all definitions from the file
-  while (CurTok != tok_eof) {
+  while (CurTok != tok_eof && CurTok != tok_error) {
     switch (CurTok) {
     case tok_def:
     case tok_decorator:
@@ -2278,6 +2402,10 @@ int main(int argc, char **argv) {
         outs() << "Wrote " << scriptObj << "\n";
       else
         outs() << scriptObj << "\n";
+      break;
+    }
+    case Tokens: {
+      PrintTokens();
       break;
     }
     }
