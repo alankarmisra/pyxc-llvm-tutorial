@@ -457,13 +457,21 @@ static const char *TokenName(int Tok) {
   }
 }
 
-static void PrintTokens() {
+static void PrintTokens(const std::string &filename) {
+  // Open input file
+  InputFile = fopen(filename.c_str(), "r");
+  if (!InputFile) {
+    errs() << "Error: Could not open file " << filename << "\n";
+    InputFile = stdin;
+    return;
+  }
+
   int Tok = gettok();
   bool FirstOnLine = true;
 
   while (Tok != tok_eof) {
     if (Tok == tok_eol) {
-      fprintf(stderr, "\n");
+      fprintf(stderr, "<eol>\n");
       FirstOnLine = true;
       Tok = gettok();
       continue;
@@ -2302,15 +2310,21 @@ int main(int argc, char **argv) {
       errs() << "Error: -x and -c flags require an input file\n";
       return 1;
     }
+
+    if (Mode == Tokens) {
+      errs() << "Error: -t flag requires an input file\n";
+      return 1;
+    }
+
     if (!OutputFilename.empty()) {
-      errs() << "Error: -o flag requires an input file\n";
+      errs() << "Error: REPL mode cannot work with an output file\n";
       return 1;
     }
 
     // Start REPL
     REPL();
   } else {
-    if (Mode != Executable && Mode != Object && EmitDebug) {
+    if (EmitDebug && Mode != Executable && Mode != Object) {
       errs() << "Error: -g is only allowed with executable builds (-x) or "
                 "object builds (-o)\n";
       return 1;
@@ -2405,7 +2419,9 @@ int main(int argc, char **argv) {
       break;
     }
     case Tokens: {
-      PrintTokens();
+      if (Verbose)
+        std::cout << "Tokenizing " << InputFilename << "...\n";
+      PrintTokens(InputFilename);
       break;
     }
     }
