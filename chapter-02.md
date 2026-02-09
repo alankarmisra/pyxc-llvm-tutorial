@@ -1024,13 +1024,13 @@ Here is a sample interaction:
 ```bash
 $ ./a.out
 ready> def foo(x,y): return x+foo(y, 4.0)
-Parsed a function definition.
+ready> Parsed a function definition.
 ready> def foo(x,y): return x+y y
-Parsed a function definition.
-Parsed a top-level expr
+ready> Parsed a function definition.
+ready> Parsed a top-level expr
 ready> def foo(x,y): return x+y )
-Parsed a function definition.
-Error: unknown token when expecting an expression
+ready> Parsed a function definition.
+ready> Error: unknown token when expecting an expression
 ready> extern def sin(a)
 ready> Parsed an extern
 ready> ^D

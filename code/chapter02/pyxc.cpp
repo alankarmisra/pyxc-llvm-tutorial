@@ -460,14 +460,13 @@ static void MainLoop() {
     switch (CurTok) {
     case tok_eof:
       return;
+    case tok_eol: // Skip newlines
+      getNextToken();
     case tok_def:
       HandleDefinition();
       break;
     case tok_extern:
       HandleExtern();
-      break;
-    case tok_eol: // Skip newlines
-      getNextToken();
       break;
     default:
       HandleTopLevelExpression();

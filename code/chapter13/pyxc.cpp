@@ -601,6 +601,41 @@ public:
   Value *codegen() override;
 };
 
+/// StmtAST - Base class for all statement nodes.
+class StmtAST {
+  SourceLocation Loc;
+
+public:
+  StmtAST(SourceLocation Loc = CurLoc) : Loc(Loc) {}
+  virtual ~StmtAST() = default;
+  virtual Value *codegen() = 0;
+  int getLine() const { return Loc.Line; }
+  int getCol() const { return Loc.Col; }
+  virtual raw_ostream &dump(raw_ostream &out, int ind) {
+    return out << ':' << getLine() << ':' << getCol() << '\n';
+  }
+};
+
+/// ReturnStmtAST - Return statements
+/// ReturnStmtAST - Return statements
+class ReturnStmtAST : public StmtAST {
+  std::unique_ptr<ExprAST> Expr;
+
+public:
+  ReturnStmtAST(SourceLocation Loc, std::unique_ptr<ExprAST> Expr)
+      : StmtAST(Loc), Expr(std::move(Expr)) {}
+
+  Value *codegen() override;
+
+  raw_ostream &dump(raw_ostream &out, int ind) override {
+    out << std::string(ind, ' ') << "return";
+    StmtAST::dump(out, ind);
+    if (Expr)
+      Expr->dump(out, ind + 2);
+    return out;
+  }
+};
+
 /// IfExprAST - Expression class for if/else.
 class IfExprAST : public ExprAST {
   std::unique_ptr<ExprAST> Cond, Then, Else;
@@ -1740,6 +1775,15 @@ Value *VarExprAST::codegen() {
   return BodyVal;
 }
 
+Value *ReturnStmtAST::codegen() {
+  Value *RetVal = Expr->codegen();
+  if (!RetVal)
+    return nullptr;
+
+  Builder->CreateRet(RetVal);
+  return RetVal;
+}
+
 Function *PrototypeAST::codegen() {
   // Special case: main function returns int, everything else returns double
   Type *RetType;
@@ -1990,7 +2034,7 @@ static void MainLoop() {
       return;
     case tok_eof:
       return;
-    case tok_eol: // Skip newlines
+    case tok_eol:
       getNextToken();
       break;
     case tok_dedent:
