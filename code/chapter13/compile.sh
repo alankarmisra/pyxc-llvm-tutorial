@@ -1,0 +1,1 @@
+clang++ -g -O3 -o pyxc pyxc.cpp `llvm-config --cxxflags --ldflags --system-libs --libs all`
