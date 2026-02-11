@@ -602,11 +602,11 @@ public:
 };
 
 /// IfExprAST - Expression class for if/else.
-class IfExprAST : public ExprAST {
+class IfStmtAST : public ExprAST {
   std::unique_ptr<ExprAST> Cond, Then, Else;
 
 public:
-  IfExprAST(SourceLocation Loc, std::unique_ptr<ExprAST> Cond,
+  IfStmtAST(SourceLocation Loc, std::unique_ptr<ExprAST> Cond,
             std::unique_ptr<ExprAST> Then, std::unique_ptr<ExprAST> Else)
       : ExprAST(Loc), Cond(std::move(Cond)), Then(std::move(Then)),
         Else(std::move(Else)) {}
@@ -622,12 +622,12 @@ public:
 };
 
 /// ForExprAST - Expression class for for/in.
-class ForExprAST : public ExprAST {
+class ForStmtAST : public ExprAST {
   std::string VarName;
   std::unique_ptr<ExprAST> Start, End, Step, Body;
 
 public:
-  ForExprAST(std::string VarName, std::unique_ptr<ExprAST> Start,
+  ForStmtAST(std::string VarName, std::unique_ptr<ExprAST> Start,
              std::unique_ptr<ExprAST> End, std::unique_ptr<ExprAST> Step,
              std::unique_ptr<ExprAST> Body)
       : VarName(std::move(VarName)), Start(std::move(Start)),
@@ -941,7 +941,7 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
   //     ;
   //   // getNextToken(); // eat dedent
 
-  return std::make_unique<IfExprAST>(IfLoc, std::move(Cond), std::move(Then),
+  return std::make_unique<IfStmtAST>(IfLoc, std::move(Cond), std::move(Then),
                                      std::move(Else));
 }
 
@@ -1012,7 +1012,7 @@ static std::unique_ptr<ExprAST> ParseForExpr() {
 
   InForExpression--;
 
-  return std::make_unique<ForExprAST>(IdName, std::move(Start), std::move(End),
+  return std::make_unique<ForStmtAST>(IdName, std::move(Start), std::move(End),
                                       std::move(Step), std::move(Body));
 }
 
@@ -1540,7 +1540,7 @@ Value *CallExprAST::codegen() {
   return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
-Value *IfExprAST::codegen() {
+Value *IfStmtAST::codegen() {
   emitLocation(this);
 
   Value *CondV = Cond->codegen();
@@ -1596,7 +1596,7 @@ Value *IfExprAST::codegen() {
   return PN;
 }
 
-Value *ForExprAST::codegen() {
+Value *ForStmtAST::codegen() {
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
 
   // Create an alloca for the variable in the entry block.

@@ -1,27 +1,24 @@
-[
- {
-  "directory": "/Users/alankar/Documents/opensource/pyxc-llvm",
-  "arguments": [
-   "/opt/homebrew/opt/llvm/bin/clang++",
-   "-g",
-   "-O3",
-   "-I/opt/homebrew/Cellar/llvm/21.1.8/include",
-   "-std=c++17",
-   "-stdlib=libc++",
-   "-fno-exceptions",
-   "-funwind-tables",
-   "-DEXPERIMENTAL_KEY_INSTRUCTIONS",
-   "-D__STDC_CONSTANT_MACROS",
-   "-D__STDC_FORMAT_MACROS",
-   "-D__STDC_LIMIT_MACROS",
-   "pyxc.cpp",
-   "-L/opt/homebrew/Cellar/llvm/21.1.8/lib",
-   "-Wl,-search_paths_first",
-   "-Wl,-headerpad_max_install_names",
-   "-lLLVM-21",
-   "-o",
-   "pyxc"
-  ],
-  "file": "pyxc.cpp"
- }
-]
+{
+    "directory": "~/Documents/opensource/portfolio-dev/pyxc-llvm-tutorial",
+    "arguments": [
+        "~/llvm-21-with-clang-lld-lldb/bin/clang++",
+        "-g",
+        "-O3",
+        "-I~/llvm-21-with-clang-lld-lldb/include",
+        "-Iinclude",
+        "-std=c++17",
+        "-stdlib=libc++",
+        "-fno-exceptions",
+        "-funwind-tables",
+        "pyxc.cpp",
+        "-L~/llvm-21-with-clang-lld-lldb/lib",
+        "-lLLVM-21",
+        "-llldCommon",
+        "-llldELF",
+        "-llldMachO",
+        "-llldCOFF",
+        "-o",
+        "pyxc"
+    ],
+    "file": "pyxc.cpp"
+}

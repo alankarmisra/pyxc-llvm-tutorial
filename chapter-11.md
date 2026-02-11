@@ -2885,5 +2885,47 @@ int main(int argc, char **argv) {
 ## Clang Compile Command
 
 ```bash
-clang++ -g -O3 -o pyxc pyxc.cpp `llvm-config --cxxflags --ldflags --system-libs --libs all`
+/usr/bin/clang++ -g -O3 pyxc.cpp \
+  `/Users/alankar/llvm-21-with-clang-lld-lldb-mlir/bin/llvm-config --cxxflags --ldflags --system-libs --libs all` \
+  -L/opt/homebrew/lib \
+  -Wl,-rpath,/opt/homebrew/lib \
+  -L/Users/alankar/llvm-21-with-clang-lld-lldb-mlir/lib \
+  -llldCommon -llldELF -llldMachO -llldCOFF \
+  -o pyxc
+```
+
+## Making builds simpler
+
+If you do not want to type the full compile command every time, create a project-local `.env` file and a `build.sh` script.
+
+`.env`:
+
+```bash
+LLVM_PREFIX=$HOME/llvm-21-with-clang-lld-lldb-mlir
+HOMEBREW_LIB=/opt/homebrew/lib
+```
+
+`build.sh`:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+set -a
+source "$(dirname "$0")/.env"
+set +a
+
+/usr/bin/clang++ -g -O3 pyxc.cpp \
+  `$LLVM_PREFIX/bin/llvm-config --cxxflags --ldflags --system-libs --libs all` \
+  -L$HOMEBREW_LIB \
+  -Wl,-rpath,$HOMEBREW_LIB \
+  -L$LLVM_PREFIX/lib \
+  -llldCommon -llldELF -llldMachO -llldCOFF \
+  -o pyxc
+```
+
+Run the build with:
+
+```bash
+./build.sh
 ```

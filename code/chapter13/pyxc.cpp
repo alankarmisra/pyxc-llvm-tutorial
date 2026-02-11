@@ -609,6 +609,7 @@ public:
   StmtAST(SourceLocation Loc = CurLoc) : Loc(Loc) {}
   virtual ~StmtAST() = default;
   virtual Value *codegen() = 0;
+  virtual bool isTerminator() { return false; }
   int getLine() const { return Loc.Line; }
   int getCol() const { return Loc.Col; }
   virtual raw_ostream &dump(raw_ostream &out, int ind) {
@@ -616,7 +617,6 @@ public:
   }
 };
 
-/// ReturnStmtAST - Return statements
 /// ReturnStmtAST - Return statements
 class ReturnStmtAST : public StmtAST {
   std::unique_ptr<ExprAST> Expr;
@@ -627,6 +627,8 @@ public:
 
   Value *codegen() override;
 
+  bool isTerminator() override { return true; }
+
   raw_ostream &dump(raw_ostream &out, int ind) override {
     out << std::string(ind, ' ') << "return";
     StmtAST::dump(out, ind);
@@ -636,18 +638,38 @@ public:
   }
 };
 
-/// IfExprAST - Expression class for if/else.
-class IfExprAST : public ExprAST {
-  std::unique_ptr<ExprAST> Cond, Then, Else;
+/// BlockAST - a block
+class BlockAST : public StmtAST {
+  std::vector<std::unique_ptr<StmtAST>> Stmts;
 
 public:
-  IfExprAST(SourceLocation Loc, std::unique_ptr<ExprAST> Cond,
-            std::unique_ptr<ExprAST> Then, std::unique_ptr<ExprAST> Else)
-      : ExprAST(Loc), Cond(std::move(Cond)), Then(std::move(Then)),
+  BlockAST(SourceLocation Loc, std::vector<std::unique_ptr<StmtAST>> Stmts)
+      : StmtAST(Loc), Stmts(std::move(Stmts)) {}
+
+  Value *codegen() override;
+
+  raw_ostream &dump(raw_ostream &out, int ind) override {
+    out << std::string(ind, ' ') << "block";
+    StmtAST::dump(out, ind);
+    for (auto &S : Stmts)
+      S->dump(out, ind + 2);
+    return out;
+  }
+};
+
+/// IfStmtAST - Expression class for if/else.
+class IfStmtAST : public StmtAST {
+  std::unique_ptr<ExprAST> Cond;
+  std::unique_ptr<BlockAST> Then, Else;
+
+public:
+  IfStmtAST(SourceLocation Loc, std::unique_ptr<ExprAST> Cond,
+            std::unique_ptr<BlockAST> Then, std::unique_ptr<BlockAST> Else)
+      : StmtAST(Loc), Cond(std::move(Cond)), Then(std::move(Then)),
         Else(std::move(Else)) {}
 
   raw_ostream &dump(raw_ostream &out, int ind) override {
-    ExprAST::dump(out << "if", ind);
+    StmtAST::dump(out << "if", ind);
     Cond->dump(indent(out, ind) << "Cond:", ind + 1);
     Then->dump(indent(out, ind) << "Then:", ind + 1);
     Else->dump(indent(out, ind) << "Else:", ind + 1);
@@ -657,19 +679,20 @@ public:
 };
 
 /// ForExprAST - Expression class for for/in.
-class ForExprAST : public ExprAST {
+class ForStmtAST : public StmtAST {
   std::string VarName;
-  std::unique_ptr<ExprAST> Start, End, Step, Body;
+  std::unique_ptr<ExprAST> Start, End, Step;
+  std::unique_ptr<BlockAST> Body;
 
 public:
-  ForExprAST(std::string VarName, std::unique_ptr<ExprAST> Start,
+  ForStmtAST(std::string VarName, std::unique_ptr<ExprAST> Start,
              std::unique_ptr<ExprAST> End, std::unique_ptr<ExprAST> Step,
-             std::unique_ptr<ExprAST> Body)
+             std::unique_ptr<BlockAST> Body)
       : VarName(std::move(VarName)), Start(std::move(Start)),
         End(std::move(End)), Step(std::move(Step)), Body(std::move(Body)) {}
 
   raw_ostream &dump(raw_ostream &out, int ind) override {
-    ExprAST::dump(out << "for", ind);
+    StmtAST::dump(out << "for", ind);
     Start->dump(indent(out, ind) << "Cond:", ind + 1);
     End->dump(indent(out, ind) << "End:", ind + 1);
     Step->dump(indent(out, ind) << "Step:", ind + 1);
@@ -976,7 +999,7 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
   //     ;
   //   // getNextToken(); // eat dedent
 
-  return std::make_unique<IfExprAST>(IfLoc, std::move(Cond), std::move(Then),
+  return std::make_unique<IfStmtAST>(IfLoc, std::move(Cond), std::move(Then),
                                      std::move(Else));
 }
 
@@ -1047,7 +1070,7 @@ static std::unique_ptr<ExprAST> ParseForExpr() {
 
   InForExpression--;
 
-  return std::make_unique<ForExprAST>(IdName, std::move(Start), std::move(End),
+  return std::make_unique<ForStmtAST>(IdName, std::move(Start), std::move(End),
                                       std::move(Step), std::move(Body));
 }
 
@@ -1575,7 +1598,7 @@ Value *CallExprAST::codegen() {
   return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
-Value *IfExprAST::codegen() {
+Value *IfStmtAST::codegen() {
   emitLocation(this);
 
   Value *CondV = Cond->codegen();
@@ -1631,7 +1654,7 @@ Value *IfExprAST::codegen() {
   return PN;
 }
 
-Value *ForExprAST::codegen() {
+Value *ForStmtAST::codegen() {
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
 
   // Create an alloca for the variable in the entry block.
