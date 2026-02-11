@@ -2850,35 +2850,23 @@ int main(int argc, char **argv) {
 
 ## Compiling
 
-From `code/chapter12`, compile `pyxc.cpp` directly:
+From `code/chapter12`, build with `make`:
 
 ```bash
-SDKROOT="$(xcrun --show-sdk-path)" # macOS only
-"$LLVM_PREFIX/bin/clang++" -g -O3 pyxc.cpp \
-  -isysroot "$SDKROOT" -stdlib=libc++ \
-  -I/Library/Developer/CommandLineTools/usr/include/c++/v1 \
-  $("$LLVM_PREFIX/bin/llvm-config" --cxxflags --ldflags --system-libs --libs all) \
-  -L/opt/homebrew/lib -Wl,-rpath,/opt/homebrew/lib \
-  -llldCommon -llldELF -llldMachO -llldCOFF \
-  -o pyxc
+cd code/chapter12
+make
 ```
 
-If `runtime.c` exists, compile it once for executable mode:
-
-```bash
-"$LLVM_PREFIX/bin/clang" -isysroot "$SDKROOT" -c runtime.c -o runtime.o
-```
+This produces `code/chapter12/pyxc`. If `runtime.c` exists, `make` also builds `code/chapter12/runtime.o` automatically.
 
 ## Shell Environment Setup (`~/.zshrc`)
 
 If you use a source-built LLVM toolchain, add these to `~/.zshrc`:
 
 ```bash
-export LLVM_PREFIX="$HOME/llvm-21-with-clang-lld-lldb"
+export LLVM_PREFIX="$HOME/llvm-21-with-clang-lld-lldb-mlir"
 export PATH="$LLVM_PREFIX/bin:$PATH"
 export LLVM_DIR="$LLVM_PREFIX/lib/cmake/llvm"
-export CXX="$LLVM_PREFIX/bin/clang++"
-export CC="$LLVM_PREFIX/bin/clang"
 ```
 
 Reload your shell:
@@ -2889,9 +2877,9 @@ source ~/.zshrc
 
 ## Easier Builds with `Makefile`
 
-This chapter ships with a ready-to-use `Makefile` in `code/chapter12`. If you are reading this online, you can copy/download that `Makefile`, place it in your current chapter directory, and run `make`.
+This chapter ships with a ready-to-use `Makefile` in `code/chapter12`. If you are reading this online, you can copy/download that file, place it in your current chapter directory, and run `make`.
 
-For this tutorial, `make` is the default path. If you prefer integrating the project into a larger build system, you can move to CMake later.
+For this tutorial, `make` is the default path.
 
 Run:
 
@@ -2904,5 +2892,6 @@ Optional overrides:
 
 ```bash
 make LLVM_PREFIX="$HOME/llvm-21-with-clang-lld-lldb-mlir"
-make LLVM_PREFIX="$HOME/llvm-21-with-clang-lld-lldb-mlir" HOMEBREW_LIB="/opt/homebrew/lib"
+make HOMEBREW_LIB="/opt/homebrew/lib"
+make clean && make
 ```

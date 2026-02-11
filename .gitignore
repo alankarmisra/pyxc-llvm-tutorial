@@ -8,7 +8,7 @@
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
-Makefile
+# Makefile
 compile_commands.json
 
 # Object files
