@@ -1,4 +1,4 @@
-# 9. Pyxc: Adding Debug Information
+# 10. Pyxc: Adding Debug Information
 
 ## Introduction
 Welcome to Chapter 9 of the [Implementing a language with LLVM](chapter-00.md) tutorial. In chapters 1 through 8, we’ve built a decent little programming language with functions and variables. What happens if something goes wrong though, how do you debug your program?

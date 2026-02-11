@@ -1,4 +1,4 @@
-# 3. Pyxc: Code generation to LLVM IR
+# 4. Pyxc: Code generation to LLVM IR
 
 ## Introduction
 

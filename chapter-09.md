@@ -1,4 +1,4 @@
-# 8. Pyxc: Compiling to Object Code
+# 9. Pyxc: Compiling to Object Code
 
 ## Introduction
 Welcome to Chapter 8 of the [Implementing a language with LLVM](chapter-00.md) tutorial. This chapter describes how to compile our language down to object files.

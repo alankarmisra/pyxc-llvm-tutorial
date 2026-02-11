@@ -1,4 +1,4 @@
-# 4. Pyxc: Adding JIT and Optimizer Support
+# 5. Pyxc: Adding JIT and Optimizer Support
 
 ## Introduction
 Welcome to Chapter 4 of the [Implementing a language with LLVM](chapter-00.md) tutorial. Chapters 1-3 described the implementation of a simple language and added support for generating LLVM IR. This chapter describes two new techniques: adding optimizer support to your language, and adding JIT compiler support. These additions will demonstrate how to get nice, efficient code for the Pyxc language.

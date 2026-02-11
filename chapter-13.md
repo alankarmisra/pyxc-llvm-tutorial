@@ -1,4 +1,4 @@
-# 12. Python-Style Indentation
+# 13. Python-Style Indentation
 
 This chapter adds Python 3–style indentation to the language. We move from newline‑only structure to explicit `indent`/`dedent` tokens, and wire a token stream printer so you can see how the lexer is shaping the input. Each section names the functions that changed and why.
 

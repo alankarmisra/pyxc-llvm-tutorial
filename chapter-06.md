@@ -1,4 +1,4 @@
-# 5. Pyxc: Extending the Language: Control Flow
+# 6. Pyxc: Extending the Language: Control Flow
 
 ## Introduction
 Welcome to Chapter 5 of the [Implementing a language with LLVM](chapter-00.md) tutorial. Parts 1-4 described the implementation of the simple Pyxc language and included support for generating LLVM IR, followed by optimizations and a JIT compiler. Unfortunately, as presented, Pyxc is mostly useless: it has no control flow other than call and return. This means that you can’t have conditional branches in the code, significantly limiting its power. In this episode of “build that compiler”, we’ll extend Pyxc to have an if/then/else expression plus a simple ‘for’ loop.

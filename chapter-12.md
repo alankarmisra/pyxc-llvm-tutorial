@@ -1,4 +1,4 @@
-# 11. From REPL-Only to a Real Compiler Pipeline
+# 12. From REPL-Only to a Real Compiler Pipeline
 
 This chapter evolves `pyxc` from a REPL-centric JIT into a full compiler front-end with command-line modes, source locations, debug info, and object/executable output. Every major change block below includes a small code snippet with a few lines of context, and I call out **the function where the change lives** so you can trace it quickly.
 

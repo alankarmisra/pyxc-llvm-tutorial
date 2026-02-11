@@ -1,4 +1,4 @@
-# 6. Pyxc: Extending the Language: User-defined Operators
+# 7. Pyxc: Extending the Language: User-defined Operators
 
 ## Introduction
 Welcome to Chapter 6 of the [Implementing a language with LLVM](chapter-00.md) tutorial. At this point in our tutorial, we now have a fully functional language that is fairly minimal, but also useful. There is still one big problem with it, however. Our language doesn’t have many useful operators (like division, logical negation, or even any comparisons besides less-than).

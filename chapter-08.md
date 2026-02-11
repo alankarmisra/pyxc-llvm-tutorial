@@ -1,4 +1,4 @@
-# 7. Pyxc:  Extending the Language: Mutable Variables
+# 8. Pyxc:  Extending the Language: Mutable Variables
 
 ## Introduction
 
