@@ -1,7 +1,0 @@
-extern def printd(x)
-
-def main():
-	return printd(1)
-    return printd(2)
-
-main()

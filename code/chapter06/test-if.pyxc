@@ -1,0 +1,10 @@
+def lt2(x):
+    if x < 2:
+        return 1
+    else:
+        return 0
+
+
+lt2(1)
+lt2(2)
+lt2(3)

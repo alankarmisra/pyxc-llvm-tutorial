@@ -1,0 +1,15 @@
+extern def printd(x)
+
+def main():
+    if(1):
+        if(1):
+            if(1):
+                return printd(1)
+            else:
+                return printd(2)
+        else:
+            return printd(3)
+    else:
+        return printd(4)
+
+main()

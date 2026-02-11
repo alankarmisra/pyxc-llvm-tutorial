@@ -59,8 +59,6 @@ enum Token {
   tok_in = -11,
   tok_range = -12,
 
-  // decorator
-  tok_decorator = -13,
 };
 
 static std::string IdentifierStr; // Filled in if tok_identifier
@@ -73,13 +71,6 @@ static std::map<std::string, Token> Keywords = {
     {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return},
     {"if", tok_if},   {"else", tok_else},     {"for", tok_for},
     {"in", tok_in},   {"range", tok_range}};
-
-enum OperatorType { Undefined, Unary, Binary };
-
-static constexpr int DEFAULT_BINARY_PRECEDENCE = 30;
-
-static std::map<std::string, OperatorType> Decorators = {
-    {"unary", OperatorType::Unary}, {"binary", OperatorType::Binary}};
 
 /// gettok - Return the next token from standard input.
 static int gettok() {
@@ -97,11 +88,6 @@ static int gettok() {
     // Setting LastChar = ' ' avoids this blocking read.
     LastChar = ' ';
     return tok_eol;
-  }
-
-  if (LastChar == '@') {
-    LastChar = getchar(); // consume '@'
-    return tok_decorator;
   }
 
   if (isalpha(LastChar)) { // identifier: [a-zA-Z][a-zA-Z0-9]*
@@ -228,44 +214,19 @@ public:
   Value *codegen();
 };
 
-/// UnaryExprAST - Expression class for a unary operator.
-class UnaryExprAST : public ExprAST {
-  char Opcode;
-  std::unique_ptr<ExprAST> Operand;
-
-public:
-  UnaryExprAST(char Opcode, std::unique_ptr<ExprAST> Operand)
-      : Opcode(Opcode), Operand(std::move(Operand)) {}
-
-  Value *codegen() override;
-};
-
 /// PrototypeAST - This class represents the "prototype" for a function,
-/// which captures its argument names as well as if it is an operator.
+/// which captures its name, and its argument names (thus implicitly the number
+/// of arguments the function takes).
 class PrototypeAST {
   std::string Name;
   std::vector<std::string> Args;
-  bool IsOperator;
-  unsigned Precedence; // Precedence if a binary op.
 
 public:
-  PrototypeAST(const std::string &Name, std::vector<std::string> Args,
-               bool IsOperator = false, unsigned Prec = 0)
-      : Name(Name), Args(std::move(Args)), IsOperator(IsOperator),
-        Precedence(Prec) {}
+  PrototypeAST(const std::string &Name, std::vector<std::string> Args)
+      : Name(Name), Args(std::move(Args)) {}
 
   Function *codegen();
   const std::string &getName() const { return Name; }
-
-  bool isUnaryOp() const { return IsOperator && Args.size() == 1; }
-  bool isBinaryOp() const { return IsOperator && Args.size() == 2; }
-
-  char getOperatorName() const {
-    assert(isUnaryOp() || isBinaryOp());
-    return Name[Name.size() - 1];
-  }
-
-  unsigned getBinaryPrecedence() const { return Precedence; }
 };
 
 /// FunctionAST - This class represents a function definition itself.
@@ -545,22 +506,6 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
   }
 }
 
-/// unary
-///   ::= primary
-///   ::= '!' unary
-static std::unique_ptr<ExprAST> ParseUnary() {
-  // If the current token is not an operator, it must be a primary expr.
-  if (!isascii(CurTok) || CurTok == '(' || CurTok == ',')
-    return ParsePrimary();
-
-  // If this is a unary operator, read it.
-  int Opc = CurTok;
-  getNextToken();
-  if (auto Operand = ParseUnary())
-    return std::make_unique<UnaryExprAST>(Opc, std::move(Operand));
-  return nullptr;
-}
-
 /// binoprhs
 ///   ::= ('+' primary)*
 static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
@@ -579,7 +524,7 @@ static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
     getNextToken(); // eat binop
 
     // Parse the primary expression after the binary operator.
-    auto RHS = ParseUnary();
+    auto RHS = ParsePrimary();
     if (!RHS)
       return nullptr;
 
@@ -599,10 +544,10 @@ static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
 }
 
 /// expression
-///   ::= unary binoprhs
+///   ::= primary binoprhs
 ///
 static std::unique_ptr<ExprAST> ParseExpression() {
-  auto LHS = ParseUnary();
+  auto LHS = ParsePrimary();
   if (!LHS)
     return nullptr;
 
@@ -611,42 +556,27 @@ static std::unique_ptr<ExprAST> ParseExpression() {
 
 /// prototype
 ///   ::= id '(' (id (',' id)*)? ')'
-static std::unique_ptr<PrototypeAST>
-ParsePrototype(OperatorType operatorType = Undefined, int precedence = 0) {
-  std::string FnName;
+static std::unique_ptr<PrototypeAST> ParsePrototype() {
+  if (CurTok != tok_identifier)
+    return LogErrorP("Expected function name in prototype");
 
-  if (operatorType != Undefined) {
-    // Expect a single-character operator
-    if (CurTok == tok_identifier) {
-      return LogErrorP("Expected single character operator");
-    }
+  std::string FnName = IdentifierStr;
+  getNextToken(); // eat identifier
 
-    if (!isascii(CurTok)) {
-      return LogErrorP("Expected single character operator");
-    }
+  // Reject duplicate function definitions
+  auto FI = FunctionProtos.find(FnName);
+  if (FI != FunctionProtos.end())
+    // Ideally we should eat all remaining prototype symbols to prevent a
+    // cascade of unexpected symbol errors but we'll leave that for now.
+    return LogErrorP(("Duplicate definition for " + FnName).c_str());
 
-    FnName = (operatorType == Unary ? "unary" : "binary");
-    FnName += (char)CurTok;
-
-    getNextToken();
-  } else {
-    if (CurTok != tok_identifier) {
-      return LogErrorP("Expected function name in prototype");
-    }
-
-    FnName = IdentifierStr;
-
-    getNextToken();
-  }
-
-  if (CurTok != '(') {
+  if (CurTok != '(')
     return LogErrorP("Expected '(' in prototype");
-  }
 
   std::vector<std::string> ArgNames;
   while (getNextToken() == tok_identifier) {
     ArgNames.push_back(IdentifierStr);
-    getNextToken(); // Eat idenfitier
+    getNextToken(); // eat identifier
 
     if (CurTok == ')')
       break;
@@ -660,77 +590,27 @@ ParsePrototype(OperatorType operatorType = Undefined, int precedence = 0) {
 
   // success.
   getNextToken(); // eat ')'.
-  return std::make_unique<PrototypeAST>(FnName, std::move(ArgNames),
-                                        operatorType != OperatorType::Undefined,
-                                        precedence);
+
+  return std::make_unique<PrototypeAST>(FnName, std::move(ArgNames));
 }
 
-/// definition ::= (@unary | @binary | @binary() | @binary(precedence=\d+))*
-///                 'def' prototype:
-///                     expression
+/// definition ::= 'def' prototype ':' expression
 static std::unique_ptr<FunctionAST> ParseDefinition() {
-  OperatorType OpType = Undefined;
-  int Precedence = DEFAULT_BINARY_PRECEDENCE;
-
-  if (CurTok == tok_decorator) {
-    getNextToken(); // eat '@'
-
-    if (CurTok != tok_identifier)
-      return LogErrorF("expected decorator name after '@'");
-
-    auto it = Decorators.find(IdentifierStr);
-    OpType = it == Decorators.end() ? OperatorType::Undefined : it->second;
-    getNextToken(); // eat decorator name
-
-    if (OpType == Undefined)
-      return LogErrorF(("unknown decorator '" + IdentifierStr + "'").c_str());
-
-    if (OpType == Binary) {
-      if (CurTok == '(') {
-        getNextToken(); // eat '('
-        if (CurTok != ')') {
-          // Parse "precedence=N"
-          // If we want to introduce more attributes, we would add "precedence"
-          // to a map and associate it with a binary operator.
-          if (CurTok != tok_identifier || IdentifierStr != "precedence") {
-            return LogErrorF("expected 'precedence' parameter in decorator");
-          }
-
-          getNextToken(); // eat 'precedence'
-
-          if (CurTok != '=')
-            return LogErrorF("expected '=' after 'precedence'");
-
-          getNextToken(); // eat '='
-
-          if (CurTok != tok_number)
-            return LogErrorF("expected number for precedence value");
-
-          Precedence = NumVal;
-          getNextToken(); // eat number
-        }
-        if (CurTok != ')')
-          return LogErrorF("expected ')' after precedence value");
-        getNextToken(); // eat ')'
-      }
-    }
-  }
-
-  EatNewLines();
-
-  if (CurTok != tok_def)
-    return LogErrorF("expected 'def'");
-
   getNextToken(); // eat def.
-  auto Proto = ParsePrototype(OpType, Precedence);
+
+  auto Proto = ParsePrototype();
   if (!Proto)
     return nullptr;
 
   if (CurTok != ':')
     return LogErrorF("Expected ':' in function definition");
-
   getNextToken(); // eat ':'
 
+  // Consume newlines between a function header and its body.
+  // This allows definitions to be split across multiple lines, e.g.:
+  //
+  // ready> def foo(x):
+  // ready>   return x + 1
   EatNewLines();
 
   if (!InForExpression && CurTok != tok_if && CurTok != tok_for) {
@@ -741,7 +621,6 @@ static std::unique_ptr<FunctionAST> ParseDefinition() {
 
   if (auto E = ParseExpression())
     return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
-
   return nullptr;
 }
 
@@ -815,19 +694,6 @@ Value *VariableExprAST::codegen() {
   return V;
 }
 
-Value *UnaryExprAST::codegen() {
-  Value *OperandV = Operand->codegen();
-  if (!OperandV)
-    return nullptr;
-
-  Function *F = getFunction(std::string("unary") + Opcode);
-  if (!F) {
-    return LogErrorV("Unknown unary operator");
-  }
-
-  return Builder->CreateCall(F, OperandV, "unop");
-}
-
 Value *BinaryExprAST::codegen() {
   Value *L = LHS->codegen();
   Value *R = RHS->codegen();
@@ -846,16 +712,8 @@ Value *BinaryExprAST::codegen() {
     // Convert bool 0/1 to double 0.0 or 1.0
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   default:
-    break;
+    return LogErrorV("invalid binary operator");
   }
-
-  // If it wasn't a builtin binary operator, it must be a user defined one. Emit
-  // a call to it.
-  Function *F = getFunction(std::string("binary") + Op);
-  assert(F && "binary operator not found!");
-
-  Value *Ops[2] = {L, R};
-  return Builder->CreateCall(F, Ops, "binop");
 }
 
 Value *CallExprAST::codegen() {
@@ -1051,10 +909,6 @@ Function *FunctionAST::codegen() {
   if (!TheFunction)
     return nullptr;
 
-  // If this is an operator, install it.
-  if (P.isBinaryOp())
-    BinopPrecedence[P.getOperatorName()] = P.getBinaryPrecedence();
-
   // Create a new basic block to start insertion into.
   BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
   Builder->SetInsertPoint(BB);
@@ -1079,9 +933,6 @@ Function *FunctionAST::codegen() {
 
   // Error reading body, remove function.
   TheFunction->eraseFromParent();
-  if (P.isBinaryOp())
-    BinopPrecedence.erase(P.getOperatorName());
-
   return nullptr;
 }
 
@@ -1199,7 +1050,6 @@ static void MainLoop() {
     switch (CurTok) {
     case tok_eof:
       return;
-    case tok_decorator:
     case tok_def:
       HandleDefinition();
       break;

@@ -1,0 +1,13 @@
+extern def printd(x)
+
+def main():
+    if(1):
+        for i in range(0, 2):
+            if(i < 1):
+                printd(i)
+            else:
+                printd(i + 10)
+    else:
+        return printd(99)
+
+main()

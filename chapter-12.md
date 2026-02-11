@@ -541,7 +541,7 @@ void CompileToObjectFile(const std::string &filename) {
 
 **Where:** `main()` (Executable case)
 
-We compile `pyxc` source to an object file, compile `runtime.c` if it exists, then link with our in-process linker helper.
+We compile `pyxc` source to an object file, then link with our in-process linker helper (`PyxcLinker`), passing `runtime.o` as the runtime object.
 
 ### Linker helper
 
@@ -549,71 +549,43 @@ For executable output, we add a small linker wrapper at `../include/PyxcLinker.h
 
 Full file reference: [PyxcLinker.h](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/include/PyxcLinker.h)
 
-The code below focuses on the overall executable build flow. In the current implementation, the external linker command is replaced by a call to `PyxcLinker::Link(...)`.
+The code below matches the current executable build flow in `main()`.
 
 ```cpp
 case Executable: {
-    std::string exeFile = getOutputFilename(InputFilename, "");
-    if (Verbose)
+  std::string exeFile = getOutputFilename(InputFilename, "");
+  if (Verbose)
     std::cout << "Compiling " << InputFilename
-                << " to executable: " << exeFile << "\n";
+              << " to executable: " << exeFile << "\n";
 
-    // Step 1: Compile the script to object file
-    std::string scriptObj = getOutputFilename(InputFilename, ".o");
-    CompileToObjectFile(InputFilename);
+  // Step 1: Compile the script to object file
+  std::string scriptObj = getOutputFilename(InputFilename, ".o");
+  CompileToObjectFile(InputFilename);
 
-    // Step 2: Optionally compile runtime.c to runtime.o if it exists
-    std::string runtimeC = "runtime.c"; // Or use absolute path if needed
-    std::string runtimeObj = "runtime.o";
-    bool hasRuntime = sys::fs::exists(runtimeC);
-
-    if (hasRuntime) {
-    if (Verbose)
-        std::cout << "Compiling runtime library...\n";
-
-    std::string compileRuntime =
-        "clang -c " + runtimeC + " -o " + runtimeObj;
-    int compileResult = system(compileRuntime.c_str());
-
-    if (compileResult != 0) {
-        errs() << "Error: Failed to compile runtime library\n";
-        errs() << "Make sure runtime.c exists in the current directory\n";
-        return 1;
-    }
-    } else if (Verbose) {
-    std::cout << "No runtime.c found; linking without runtime support\n";
-    }
-
-    // Step 3: Link object files
-    if (Verbose)
+  // Step 2: Link object files
+  if (Verbose)
     std::cout << "Linking...\n";
 
-    std::string linkCmd = "clang " + scriptObj;
-    if (hasRuntime)
-    linkCmd += " " + runtimeObj;
-    linkCmd += " -o " + exeFile;
-    int linkResult = system(linkCmd.c_str());
+  std::string runtimeObj = "runtime.o";
 
-    if (linkResult != 0) {
-    errs() << "Error: Linking failed\n";
+  // Step 3: Link using in-process lld via PyxcLinker.
+  if (!PyxcLinker::Link(scriptObj, runtimeObj, exeFile)) {
+    errs() << "Linking failed\n";
     return 1;
-    }
+  }
 
-    if (Verbose) {
+  if (Verbose) {
     std::cout << "Successfully created executable: " << exeFile << "\n";
-    // Optionally clean up intermediate files
     std::cout << "Cleaning up intermediate files...\n";
     remove(scriptObj.c_str());
-    if (hasRuntime)
-        remove(runtimeObj.c_str());
-    } else {
+    // remove(runtimeObj.c_str());
+  } else {
     std::cout << exeFile << "\n";
     remove(scriptObj.c_str());
-    if (hasRuntime)
-        remove(runtimeObj.c_str());
-    }
+    // remove(runtimeObj.c_str());
+  }
 
-    break;
+  break;
 }
 ```
 
@@ -621,7 +593,7 @@ case Executable: {
 
 In JIT/REPL mode, `pyxc` runs inside a host process that already contains built-in functions like `printd` and `putchard`, so the JIT can resolve them by symbol name. In executable mode, there is no host process, so those symbols must come from somewhere else.
 
-That’s what `runtime.c` is for: a tiny C runtime that defines the built-ins. It’s **optional** because you only need it if your program references those functions. If `runtime.c` is present, `pyxc` compiles and links it; otherwise it links only your program object.
+That’s what `runtime.c` is for: a tiny C runtime that defines the built-ins. In the current code path, executable linking passes `runtime.o` to `PyxcLinker`, so you should build `runtime.c` to `runtime.o` beforehand if your program uses runtime-provided symbols.
 
 ```c
 // runtime.c
@@ -2825,43 +2797,13 @@ int main(int argc, char **argv) {
       std::string scriptObj = getOutputFilename(InputFilename, ".o");
       CompileToObjectFile(InputFilename);
 
-      // Step 2: Optionally compile runtime.c to runtime.o if it exists
-    //   std::string runtimeC = "runtime.c"; // Or use absolute path if needed
-      std::string runtimeObj = "runtime.o";
-    //   bool hasRuntime = sys::fs::exists(runtimeObj);
-
-    //   if (hasRuntime) {
-    //     if (Verbose)
-    //       std::cout << "Compiling runtime library...\n";
-
-    //     std::string compileRuntime =
-    //         "clang -c " + runtimeC + " -o " + runtimeObj;
-    //     int compileResult = system(compileRuntime.c_str());
-
-    //     if (compileResult != 0) {
-    //       errs() << "Error: Failed to compile runtime library\n";
-    //       errs() << "Make sure runtime.c exists in the current directory\n";
-    //       return 1;
-    //     }
-    //   } else if (Verbose) {
-    //     std::cout << "No runtime.c found; linking without runtime support\n";
-    //   }
-
+      
       // Step 3: Link object files
       if (Verbose)
         std::cout << "Linking...\n";
 
-    //   std::string linkCmd = "clang " + scriptObj;
-    //   if (hasRuntime)
-    //     linkCmd += " " + runtimeObj;
-    //   linkCmd += " -o " + exeFile;
-    //   int linkResult = system(linkCmd.c_str());
-
-    //   if (linkResult != 0) {
-    //     errs() << "Error: Linking failed\n";
-    //     return 1;
-    //   }
-
+    std::string runtimeObj = "runtime.o";
+    
     // Step 3: Link using PyxcLinker (NO MORE system() calls!)
     if (!PyxcLinker::Link(scriptObj, runtimeObj, exeFile)) {
         errs() << "Linking failed\n";
@@ -2903,50 +2845,5 @@ int main(int argc, char **argv) {
 
   return 0;
 }
-```
 
-## Clang Compile Command
-
-```bash
-clang++ -g -O3 pyxc.cpp \
-  "$($HOME/llvm-21-with-clang-lld-lldb-mlir/bin/llvm-config --cxxflags --ldflags --system-libs --libs all)" \
-  -L"$HOME/llvm-21-with-clang-lld-lldb-mlir/lib" \
-  -llldCommon -llldELF -llldMachO -llldCOFF \
-  -o pyxc
-```
-
-## Making builds simpler
-
-If you do not want to type the full compile command every time, create a project-local `.env` file and a `build.sh` script.
-
-`.env`:
-
-```bash
-LLVM_PREFIX=$HOME/llvm-21-with-clang-lld-lldb-mlir
-HOMEBREW_LIB=/opt/homebrew/lib
-```
-
-`build.sh`:
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-set -a
-source "$(dirname "$0")/.env"
-set +a
-
-/usr/bin/clang++ -g -O3 pyxc.cpp \
-  `$LLVM_PREFIX/bin/llvm-config --cxxflags --ldflags --system-libs --libs all` \
-  -L$HOMEBREW_LIB \
-  -Wl,-rpath,$HOMEBREW_LIB \
-  -L$LLVM_PREFIX/lib \
-  -llldCommon -llldELF -llldMachO -llldCOFF \
-  -o pyxc
-```
-
-Run the build with:
-
-```bash
-./build.sh
 ```

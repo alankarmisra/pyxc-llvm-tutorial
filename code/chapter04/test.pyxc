@@ -1,12 +1,9 @@
-def addone(x): 
-    return x + 1
-
-extern def sin(x)
+# ./pyxc < test.pyxc
+4+5
+def foo(a,b): return a*a + 2*a*b + b*b
+def bar(a): return foo(a, 4.0) + bar(31337)
 extern def cos(x)
+cos(1.234)
 
-sin(1.0)
-
-def ident(x): 
-    return sin(x)*sin(x)+cos(x)*cos(x)
-
-ident(4.0)
+# To compile pyxc use
+# clang++ -g -O3 pyxc.cpp `llvm-config --cxxflags --ldflags --system-libs --libs core` -o pyxc

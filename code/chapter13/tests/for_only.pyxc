@@ -1,0 +1,9 @@
+extern def printd(x)
+
+def main():
+    for i in range(0, 3):
+        for j in range(0, 2):
+            for k in range(0, 1):
+                printd(k)
+
+main()
