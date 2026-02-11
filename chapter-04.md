@@ -1,492 +1,342 @@
-# 4. Pyxc: Adding JIT and Optimizer Support
+# 3. Pyxc: Code generation to LLVM IR
 
 ## Introduction
-Welcome to Chapter 4 of the [Implementing a language with LLVM](chapter-00.md) tutorial. Chapters 1-3 described the implementation of a simple language and added support for generating LLVM IR. This chapter describes two new techniques: adding optimizer support to your language, and adding JIT compiler support. These additions will demonstrate how to get nice, efficient code for the Pyxc language.
 
-## Trivial Constant Folding
-Our demonstration for Chapter 3 is elegant and easy to extend. Unfortunately, it does not produce wonderful code. The IRBuilder, however, does give us obvious optimizations when compiling simple code:
+Welcome to Chapter 3 of the [Pyxc: My First Language Frontend with LLVM](chapter-00.md) tutorial. This chapter shows you how to transform the [Abstract Syntax Tree](chapter-02.md), built in [Chapter 2](chapter-02.md), into LLVM IR. This will teach you a little bit about how LLVM does things, as well as demonstrate how easy it is to use. It’s much more work to build a lexer and parser than it is to generate LLVM IR code. :)
+
+!!!note The code in this chapter and later require LLVM 3.7 or later. LLVM 3.6 and before will not work with it. Also note that you need to use a version of this tutorial that matches your LLVM release: If you are using an official LLVM release, use the version of the documentation included with your release or on the [llvm.org releases page](https://llvm.org/releases/).
+
+## Code Generation Setup
+
+In order to generate LLVM IR, we want some simple setup to get started. First we define virtual code generation (codegen) methods in each AST class:
 
 ```cpp
-ready> def test(x): return 1+2+x
-Read function definition:
-define double @test(double %x) {
-entry:
-        %addtmp = fadd double 3.000000e+00, %x
-        ret double %addtmp
+/// ExprAST - Base class for all expression nodes.
+class ExprAST {
+public:
+  virtual ~ExprAST() = default;
+  virtual Value *codegen() = 0;
+};
+
+/// NumberExprAST - Expression class for numeric literals like "1.0".
+class NumberExprAST : public ExprAST {
+  double Val;
+
+public:
+  NumberExprAST(double Val) : Val(Val) {}
+  Value *codegen() override;
+};
+...
+```
+
+The codegen() method says to emit IR for that AST node along with all the things it depends on, and they all return an LLVM Value object. “Value” is the class used to represent a [Static Single Assignment (SSA) register](http://en.wikipedia.org/wiki/Static_single_assignment_form) or “SSA value” in LLVM. The most distinct aspect of SSA values is that their value is computed as the related instruction executes, and it does not get a new value until (and if) the instruction re-executes. In other words, there is no way to “change” an SSA value. For more information, please read up on [Static Single Assignment](http://en.wikipedia.org/wiki/Static_single_assignment_form) - the concepts are really quite natural once you grok them.
+
+Note that instead of adding virtual methods to the ExprAST class hierarchy, it could also make sense to use a [visitor pattern](http://en.wikipedia.org/wiki/Visitor_pattern) or some other way to model this. Again, this tutorial won’t dwell on good software engineering practices: for our purposes, adding a virtual method is simplest.
+
+The second thing we want is a “LogError” method like we used for the parser, which will be used to report errors found during code generation (for example, use of an undeclared parameter):
+
+```cpp
+static std::unique_ptr<LLVMContext> TheContext;
+static std::unique_ptr<IRBuilder<>> Builder;
+static std::unique_ptr<Module> TheModule;
+static std::map<std::string, Value *> NamedValues;
+
+Value *LogErrorV(const char *Str) {
+  LogError(Str);
+  return nullptr;
 }
 ```
 
-This code is not a literal transcription of the AST built by parsing the input. That would be:
+The static variables will be used during code generation. TheContext is an opaque object that owns a lot of core LLVM data structures, such as the type and constant value tables. We don’t need to understand it in detail, we just need a single instance to pass into APIs that require it.
+
+The Builder object is a helper object that makes it easy to generate LLVM instructions. Instances of the [IRBuilder](https://llvm.org/doxygen/IRBuilder_8h_source.html) class template keep track of the current place to insert instructions and has methods to create new instructions.
+
+TheModule is an LLVM construct that contains functions and global variables. In many ways, it is the top-level structure that the LLVM IR uses to contain code. It will own the memory for all of the IR that we generate, which is why the codegen() method returns a raw Value*, rather than a unique_ptr<Value>.
+
+The NamedValues map keeps track of which values are defined in the current scope and what their LLVM representation is. (In other words, it is a symbol table for the code). In this form of Pyxc, the only things that can be referenced are function parameters. As such, function parameters will be in this map when generating code for their function body.
+
+With these basics in place, we can start talking about how to generate code for each expression. Note that this assumes that the Builder has been set up to generate code into something. For now, we’ll assume that this has already been done, and we’ll just use it to emit code.
+
+## Expression Code Generation
+Generating LLVM code for expression nodes is very straightforward: less than 45 lines of commented code for all four of our expression nodes. First we’ll do numeric literals:
 
 ```cpp
-ready> def test(x): return 1+2+x
-Read function definition:
-define double @test(double %x) {
-entry:
-        %addtmp = fadd double 2.000000e+00, 1.000000e+00
-        %addtmp1 = fadd double %addtmp, %x
-        ret double %addtmp1
+Value *NumberExprAST::codegen() {
+  return ConstantFP::get(*TheContext, APFloat(Val));
 }
 ```
 
-Constant folding, as seen above, in particular, is a very common and very important optimization: so much so that many language implementors implement constant folding support in their AST representation.
-
-With LLVM, you don’t need this support in the AST. Since all calls to build LLVM IR go through the LLVM IR builder, the builder itself checked to see if there was a constant folding opportunity when you call it. If so, it just does the constant fold and return the constant instead of creating an instruction.
-
-Well, that was easy :). In practice, we recommend always using IRBuilder when generating code like this. It has no “syntactic overhead” for its use (you don’t have to uglify your compiler with constant checks everywhere) and it can dramatically reduce the amount of LLVM IR that is generated in some cases (particular for languages with a macro preprocessor or that use a lot of constants).
-
-On the other hand, the IRBuilder is limited by the fact that it does all of its analysis inline with the code as it is built. If you take a slightly more complex example:
+In the LLVM IR, numeric constants are represented with the ConstantFP class, which holds the numeric value in an APFloat internally (APFloat has the capability of holding floating point constants of Arbitrary Precision). This code basically just creates and returns a ConstantFP. Note that in the LLVM IR that constants are all uniqued together and shared. For this reason, the API uses the “foo::get(…)” idiom instead of “new foo(..)” or “foo::Create(..)”.
 
 ```cpp
-ready> def test(x): return (1+2+x)*(x+(1+2))
-ready> Read function definition:
-define double @test(double %x) {
-entry:
-        %addtmp = fadd double 3.000000e+00, %x
-        %addtmp1 = fadd double %x, 3.000000e+00
-        %multmp = fmul double %addtmp, %addtmp1
-        ret double %multmp
+Value *VariableExprAST::codegen() {
+  // Look this variable up in the function.
+  Value *V = NamedValues[Name];
+  if (!V)
+    LogErrorV("Unknown variable name");
+  return V;
 }
 ```
 
-In this case, the LHS and RHS of the multiplication are the same value. We’d really like to see this generate “tmp = x+3; result = tmp*tmp;” instead of computing “x+3” twice.
-
-Unfortunately, no amount of local analysis will be able to detect and correct this. This requires two transformations: reassociation of expressions (to make the adds lexically identical) and Common Subexpression Elimination (CSE) to delete the redundant add instruction. Fortunately, LLVM provides a broad range of optimizations that you can use, in the form of “passes”.
-
-## LLVM Optimization Passes
-LLVM provides many optimization passes, which do many different sorts of things and have different tradeoffs. Unlike other systems, LLVM doesn’t hold to the mistaken notion that one set of optimizations is right for all languages and for all situations. LLVM allows a compiler implementor to make complete decisions about what optimizations to use, in which order, and in what situation.
-
-As a concrete example, LLVM supports both “whole module” passes, which look across as large of body of code as they can (often a whole file, but if run at link time, this can be a substantial portion of the whole program). It also supports and includes “per-function” passes which just operate on a single function at a time, without looking at other functions. For more information on passes and how they are run, see the [How to Write a Pass](https://llvm.org/docs/WritingAnLLVMPass.html) document and the [List of LLVM Passes](https://llvm.org/docs/Passes.html).
-
-For Pyxc, we are currently generating functions on the fly, one at a time, as the user types them in. We aren’t shooting for the ultimate optimization experience in this setting, but we also want to catch the easy and quick stuff where possible. As such, we will choose to run a few per-function optimizations as the user types the function in. If we wanted to make a “static Pyxc compiler”, we would use exactly the code we have now, except that we would defer running the optimizer until the entire file has been parsed.
-
-In addition to the distinction between function and module passes, passes can be divided into transform and analysis passes. Transform passes mutate the IR, and analysis passes compute information that other passes can use. In order to add a transform pass, all analysis passes it depends upon must be registered in advance.
-
-In order to get per-function optimizations going, we need to set up a [FunctionPassManager](https://llvm.org/docs/WritingAnLLVMPass.html#what-passmanager-doesr) to hold and organize the LLVM optimizations that we want to run. Once we have that, we can add a set of optimizations to run. We’ll need a new FunctionPassManager for each module that we want to optimize, so we’ll add to a function created in the previous chapter (InitializeModule()):
+References to variables are also quite simple using LLVM. In the simple version of Pyxc, we assume that the variable has already been emitted somewhere and its value is available. In practice, the only values that can be in the NamedValues map are function arguments. This code simply checks to see that the specified name is in the map (if not, an unknown variable is being referenced) and returns the value for it. In future chapters, we’ll add support for loop induction variables in the symbol table, and for local variables.
 
 ```cpp
-void InitializeModuleAndManagers(void) {
-  // Open a new context and module.
-  TheContext = std::make_unique<LLVMContext>();
-  TheModule = std::make_unique<Module>("PyxcJIT", *TheContext);
-  TheModule->setDataLayout(TheJIT->getDataLayout());
+Value *BinaryExprAST::codegen() {
+  Value *L = LHS->codegen();
+  Value *R = RHS->codegen();
+  if (!L || !R)
+    return nullptr;
 
-  // Create a new builder for the module.
-  Builder = std::make_unique<IRBuilder<>>(*TheContext);
-
-  // Create new pass and analysis managers.
-  TheFPM = std::make_unique<FunctionPassManager>();
-  TheLAM = std::make_unique<LoopAnalysisManager>();
-  TheFAM = std::make_unique<FunctionAnalysisManager>();
-  TheCGAM = std::make_unique<CGSCCAnalysisManager>();
-  TheMAM = std::make_unique<ModuleAnalysisManager>();
-  ThePIC = std::make_unique<PassInstrumentationCallbacks>();
-  TheSI = std::make_unique<StandardInstrumentations>(*TheContext,
-                                                    /*DebugLogging*/ true);
-  TheSI->registerCallbacks(*ThePIC, TheMAM.get());
-  ...
-```
-
-After initializing the global module TheModule and the FunctionPassManager, we need to initialize other parts of the framework. The four AnalysisManagers allow us to add analysis passes that run across the four levels of the IR hierarchy. PassInstrumentationCallbacks and StandardInstrumentations are required for the pass instrumentation framework, which allows developers to customize what happens between passes.
-
-Once these managers are set up, we use a series of “addPass” calls to add a bunch of LLVM transform passes:
-
-```cpp
-// Add transform passes.
-// Do simple "peephole" optimizations and bit-twiddling optzns.
-TheFPM->addPass(InstCombinePass());
-// Reassociate expressions.
-TheFPM->addPass(ReassociatePass());
-// Eliminate Common SubExpressions.
-TheFPM->addPass(GVNPass());
-// Simplify the control flow graph (deleting unreachable blocks, etc).
-TheFPM->addPass(SimplifyCFGPass());
-```
-
-In this case, we choose to add four optimization passes. The passes we choose here are a pretty standard set of “cleanup” optimizations that are useful for a wide variety of code. I won’t delve into what they do but, believe me, they are a good starting place :).
-
-Next, we register the analysis passes used by the transform passes.
-
-```cpp
-  // Register analysis passes used in these transform passes.
-  PassBuilder PB;
-  PB.registerModuleAnalyses(*TheMAM);
-  PB.registerFunctionAnalyses(*TheFAM);
-  PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
+  switch (Op) {
+  case '+':
+    return Builder->CreateFAdd(L, R, "addtmp");
+  case '-':
+    return Builder->CreateFSub(L, R, "subtmp");
+  case '*':
+    return Builder->CreateFMul(L, R, "multmp");
+  case '<':
+    L = Builder->CreateFCmpULT(L, R, "cmptmp");
+    // Convert bool 0/1 to double 0.0 or 1.0
+    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext),
+                                 "booltmp");
+  default:
+    return LogErrorV("invalid binary operator");
+  }
 }
 ```
 
-Once the PassManager is set up, we need to make use of it. We do this by running it after our newly created function is constructed (in FunctionAST::codegen()), but before it is returned to the client:
+Binary operators start to get more interesting. The basic idea here is that we recursively emit code for the left-hand side of the expression, then the right-hand side, then we compute the result of the binary expression. In this code, we do a simple switch on the opcode to create the right LLVM instruction.
+
+In the example above, the LLVM builder class is starting to show its value. IRBuilder knows where to insert the newly created instruction, all you have to do is specify what instruction to create (e.g. with CreateFAdd), which operands to use (L and R here) and optionally provide a name for the generated instruction.
+
+One nice thing about LLVM is that the name is just a hint. For instance, if the code above emits multiple “addtmp” variables, LLVM will automatically provide each one with an increasing, unique numeric suffix. Local value names for instructions are purely optional, but it makes it much easier to read the IR dumps.
+
+[LLVM instructions](https://llvm.org/docs/LangRef.html#instruction-reference) are constrained by strict rules: for example, the Left and Right operands of an [add instruction](https://llvm.org/docs/LangRef.html#add-instruction) must have the same type, and the result type of the add must match the operand types. Because all values in Pyxc are doubles, this makes for very simple code for add, sub and mul.
+
+On the other hand, LLVM specifies that the [fcmp instruction](https://llvm.org/docs/LangRef.html#fcmp-instruction) always returns an ‘i1’ value (a one bit integer). The problem with this is that Pyxc wants the value to be a 0.0 or 1.0 value. In order to get these semantics, we combine the fcmp instruction with a [uitofp instruction](https://llvm.org/docs/LangRef.html#uitofp-to-instruction). This instruction converts its input integer into a floating point value by treating the input as an unsigned value. In contrast, if we used the [sitofp](https://llvm.org/docs/LangRef.html#sitofp-to-instruction) instruction, the Pyxc ‘<’ operator would return 0.0 and -1.0, depending on the input value.
+
+```cpp
+Value *CallExprAST::codegen() {
+  // Look up the name in the global module table.
+  Function *CalleeF = TheModule->getFunction(Callee);
+  if (!CalleeF)
+    return LogErrorV("Unknown function referenced");
+
+  // If argument mismatch error.
+  if (CalleeF->arg_size() != Args.size())
+    return LogErrorV("Incorrect # arguments passed");
+
+  std::vector<Value *> ArgsV;
+  for (unsigned i = 0, e = Args.size(); i != e; ++i) {
+    ArgsV.push_back(Args[i]->codegen());
+    if (!ArgsV.back())
+      return nullptr;
+  }
+
+  return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
+}
+```
+
+Code generation for function calls is quite straightforward with LLVM. The code above initially does a function name lookup in the LLVM Module’s symbol table. Recall that the LLVM Module is the container that holds the functions we are JIT’ing. By giving each function the same name as what the user specifies, we can use the LLVM symbol table to resolve function names for us.
+
+Once we have the function to call, we recursively codegen each argument that is to be passed in, and create an LLVM [call instruction](https://llvm.org/docs/LangRef.html#call-instruction). Note that LLVM uses the native C calling conventions by default, allowing these calls to also call into standard library functions like “sin” and “cos”, with no additional effort.
+
+This wraps up our handling of the four basic expressions that we have so far in Pyxc. Feel free to go in and add some more. For example, by browsing the [LLVM language reference](https://llvm.org/docs/LangRef.html) you’ll find several other interesting instructions that are really easy to plug into our basic framework.
+
+## Function Code Generation
+Code generation for prototypes and functions must handle a number of details, which make their code less beautiful than expression code generation, but allows us to illustrate some important points. First, let’s talk about code generation for prototypes: they are used both for function bodies and external function declarations. The code starts with:
+
+```cpp
+Function *PrototypeAST::codegen() {
+  // Make the function type:  double(double,double) etc.
+  std::vector<Type*> Doubles(Args.size(),
+                             Type::getDoubleTy(*TheContext));
+  FunctionType *FT =
+    FunctionType::get(Type::getDoubleTy(*TheContext), Doubles, false);
+
+  Function *F =
+    Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
+```
+
+This code packs a lot of power into a few lines. Note first that this function returns a “Function*” instead of a “Value*”. Because a “prototype” really talks about the external interface for a function (not the value computed by an expression), it makes sense for it to return the LLVM Function it corresponds to when codegen’d.
+
+The call to FunctionType::get creates the FunctionType that should be used for a given Prototype. Since all function arguments in Pyxc are of type double, the first line creates a vector of “N” LLVM double types. It then uses the Functiontype::get method to create a function type that takes “N” doubles as arguments, returns one double as a result, and that is not vararg (the false parameter indicates this). Note that Types in LLVM are uniqued just like Constants are, so you don’t “new” a type, you “get” it.
+
+The final line above actually creates the IR Function corresponding to the Prototype. This indicates the type, linkage and name to use, as well as which module to insert into. “[external linkage](https://llvm.org/docs/LangRef.html#linkage)” means that the function may be defined outside the current module and/or that it is callable by functions outside the module. The Name passed in is the name the user specified: since “TheModule” is specified, this name is registered in “TheModule”s symbol table.
+
+```cpp
+// Set names for all arguments.
+unsigned Idx = 0;
+for (auto &Arg : F->args())
+  Arg.setName(Args[Idx++]);
+
+return F;
+```
+
+Finally, we set the name of each of the function’s arguments according to the names given in the Prototype. This step isn’t strictly necessary, but keeping the names consistent makes the IR more readable, and allows subsequent code to refer directly to the arguments for their names, rather than having to look them up in the Prototype AST.
+
+At this point we have a function prototype with no body. This is how LLVM IR represents function declarations. For extern statements in Pyxc, this is as far as we need to go. For function definitions however, we need to codegen and attach a function body.
+
+```cpp
+Function *FunctionAST::codegen() {
+    // First, check for an existing function from a previous 'extern' declaration.
+  Function *TheFunction = TheModule->getFunction(Proto->getName());
+
+  if (!TheFunction)
+    TheFunction = Proto->codegen();
+
+  if (!TheFunction)
+    return nullptr;
+
+  if (!TheFunction->empty())
+    return (Function*)LogErrorV("Function cannot be redefined.");
+```
+
+For function definitions, we start by searching TheModule’s symbol table for an existing version of this function, in case one has already been created using an ‘extern’ statement. If Module::getFunction returns null then no previous version exists, so we’ll codegen one from the Prototype. In either case, we want to assert that the function is empty (i.e. has no body yet) before we start.
+
+```cpp
+// Create a new basic block to start insertion into.
+BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
+Builder->SetInsertPoint(BB);
+
+// Record the function arguments in the NamedValues map.
+NamedValues.clear();
+for (auto &Arg : TheFunction->args())
+  NamedValues[std::string(Arg.getName())] = &Arg;
+```
+
+Now we get to the point where the Builder is set up. The first line creates a new [basic block](http://en.wikipedia.org/wiki/Basic_block) (named “entry”), which is inserted into TheFunction. The second line then tells the builder that new instructions should be inserted into the end of the new basic block. Basic blocks in LLVM are an important part of functions that define the [Control Flow Graph](http://en.wikipedia.org/wiki/Control_flow_graph). Since we don’t have any control flow, our functions will only contain one block at this point. We’ll fix this in Chapter 5 :).
+
+Next we add the function arguments to the NamedValues map (after first clearing it out) so that they’re accessible to VariableExprAST nodes.
 
 ```cpp
 if (Value *RetVal = Body->codegen()) {
   // Finish off the function.
-  Builder.CreateRet(RetVal);
+  Builder->CreateRet(RetVal);
 
   // Validate the generated code, checking for consistency.
   verifyFunction(*TheFunction);
-
-  // Optimize the function.
-  TheFPM->run(*TheFunction, *TheFAM);
 
   return TheFunction;
 }
 ```
 
-As you can see, this is pretty straightforward. The FunctionPassManager optimizes and updates the LLVM Function* in place, improving (hopefully) its body. With this in place, we can try our test above again:
+Once the insertion point has been set up and the NamedValues map populated, we call the codegen() method for the root expression of the function. If no error happens, this emits code to compute the expression into the entry block and returns the value that was computed. Assuming no error, we then create an LLVM [ret instruction](https://llvm.org/docs/LangRef.html#ret-instruction), which completes the function. Once the function is built, we call verifyFunction, which is provided by LLVM. This function does a variety of consistency checks on the generated code, to determine if our compiler is doing everything right. Using this is important: it can catch a lot of bugs. Once the function is finished and validated, we return it.
 
 ```cpp
-ready> def test(x): return (1+2+x)*(x+(1+2))
-ready> Read function definition:
-define double @test(double %x) {
-entry:
-  %addtmp = fadd double %x, 3.000000e+00
-  %multmp = fmul double %addtmp, %addtmp
-  ret double %multmp
+  // Error reading body, remove function.
+  TheFunction->eraseFromParent();
+  return nullptr;
 }
 ```
 
-As expected, we now get our nicely optimized code, saving a floating point add instruction from every execution of this function.
+The only piece left here is handling of the error case. For simplicity, we handle this by merely deleting the function we produced with the eraseFromParent method. This allows the user to redefine a function that they incorrectly typed in before: if we didn’t delete it, it would live in the symbol table, with a body, preventing future redefinition.
 
-LLVM provides a wide variety of optimizations that can be used in certain circumstances. Some [documentation about the various passes](https://llvm.org/docs/Passes.html) is available, but it isn’t very complete. Another good source of ideas can come from looking at the passes that Clang runs to get started. The “opt” tool allows you to experiment with passes from the command line, so you can see if they do anything.
+This code does have a bug, though: If the FunctionAST::codegen() method finds an existing IR Function, it does not validate its signature against the definition’s own prototype. This means that an earlier ‘extern’ declaration will take precedence over the function definition’s signature, which can cause codegen to fail, for instance if the function arguments are named differently. There are a number of ways to fix this bug, see what you can come up with! Here is a testcase:
 
-Now that we have reasonable code coming out of our front-end, let’s talk about executing it!
-
-## Adding a JIT Compiler
-Code that is available in LLVM IR can have a wide variety of tools applied to it. For example, you can run optimizations on it (as we did above), you can dump it out in textual or binary forms, you can compile the code to an assembly file (.s) for some target, or you can JIT compile it. The nice thing about the LLVM IR representation is that it is the “common currency” between many different parts of the compiler.
-
-In this section, we’ll add JIT compiler support to our interpreter. The basic idea that we want for Pyxc is to have the user enter function bodies as they do now, but immediately evaluate the top-level expressions they type in. For example, if they type in “1 + 2;”, we should evaluate and print out 3. If they define a function, they should be able to call it from the command line.
-
-In order to do this, we first prepare the environment to create code for the current native target and declare and initialize the JIT. This is done by calling some InitializeNativeTarget\* functions and adding a global variable TheJIT, and initializing it in main:
-
-```cpp
-static std::unique_ptr<PyxcJIT> TheJIT;
-...
-int main() {
-  InitializeNativeTarget();
-  InitializeNativeTargetAsmPrinter();
-  InitializeNativeTargetAsmParser();
-
-  // Prime the first token.
-  fprintf(stderr, "ready> ");
-  getNextToken();
-
-  TheJIT = ExitOnErr(PyxcJIT::Create());
-
-  // Make the module, which holds all the code.
-  InitializeModuleAndPassManager();
-
-  // Run the main "interpreter loop" now.
-  MainLoop();
-
-  return 0;
-}
+```python
+extern def foo(a) # ok, defines foo.
+def foo(b): return b # Error: Unknown variable name. (decl using 'a' takes precedence).
 ```
 
-We also need to setup the data layout for the JIT:
+## Driver Changes and Closing Thoughts
+For now, code generation to LLVM doesn’t really get us much, except that we can look at the pretty IR calls. The sample code inserts calls to codegen into the “HandleDefinition”, “HandleExtern” etc functions, and then dumps out the LLVM IR. This gives a nice way to look at the LLVM IR for simple functions. For example:
 
 ```cpp
-void InitializeModuleAndPassManager(void) {
-  // Open a new context and module.
-  TheContext = std::make_unique<LLVMContext>();
-  TheModule = std::make_unique<Module>("PyxcJIT", TheContext);
-  // Set the data layout
-  TheModule->setDataLayout(TheJIT->getDataLayout());
-
-  // Create a new builder for the module.
-  Builder = std::make_unique<IRBuilder<>>(*TheContext);
-
-  // Create a new pass manager attached to it.
-  TheFPM = std::make_unique<legacy::FunctionPassManager>(TheModule.get());
-  ...
-```
-
-The PyxcJIT class is a simple JIT built specifically for these tutorials, available [on github](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/include/PyxcJIT.h). In later chapters we will look at how it works and extend it with new features, but for now we will take it as given. Its API is very simple: addModule adds an LLVM IR module to the JIT, making its functions available for execution (with its memory managed by a ResourceTracker); and lookup allows us to look up pointers to the compiled code.
-
-We can take this simple API and change our code that parses top-level expressions to look like this:
-
-```cpp
-static ExitOnError ExitOnErr;
-...
-static void HandleTopLevelExpression() {
-  // Evaluate a top-level expression into an anonymous function.
-  if (auto FnAST = ParseTopLevelExpr()) {
-    if (FnAST->codegen()) {
-      // Create a ResourceTracker to track JIT'd memory allocated to our
-      // anonymous expression -- that way we can free it after executing.
-      auto RT = TheJIT->getMainJITDylib().createResourceTracker();
-
-      auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
-      ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
-      InitializeModuleAndPassManager();
-
-      // Search the JIT for the __anon_expr symbol.
-      auto ExprSymbol = ExitOnErr(TheJIT->lookup("__anon_expr"));
-
-      // Get the symbol's address and cast it to the right type (takes no
-      // arguments, returns a double) so we can call it as a native function.
-      double (*FP)() = ExprSymbol.toPtr<double (*)()>();
-      fprintf(stderr, "Evaluated to %f\n", FP());
-
-      // Delete the anonymous expression module from the JIT.
-      ExitOnErr(RT->remove());
-    }
-```
-
-If parsing and codegen succeed, the next step is to add the module containing the top-level expression to the JIT. We do this by calling addModule, which triggers code generation for all the functions in the module, and accepts a ResourceTracker which can be used to remove the module from the JIT later. Once the module has been added to the JIT it can no longer be modified, so we also open a new module to hold subsequent code by calling InitializeModuleAndPassManager().
-
-Once we’ve added the module to the JIT we need to get a pointer to the final generated code. We do this by calling the JIT’s lookup method, and passing the name of the top-level expression function: __anon_expr.
-
-Next, we get the in-memory address of the __anon_expr function. Recall that we compile top-level expressions into a self-contained LLVM function that takes no arguments and returns the computed double. Because the LLVM JIT compiler matches the native platform ABI, this means that you can just cast the result pointer to a function pointer of that type and call it directly. This means, there is no difference between JIT compiled code and native machine code that is statically linked into your application.
-
-Finally, since we don’t support re-evaluation of top-level expressions, we remove the module from the JIT when we’re done to free the associated memory. Recall, however, that the module we created a few lines earlier (via InitializeModuleAndPassManager) is still open and waiting for new code to be added.
-
-With just these two changes, let’s see how Pyxc works now!
-
-```cpp
-ready> 4+5
-ready> Read top-level expression:
+ready> 4+5;
+Read top-level expression:
 define double @__anon_expr() {
 entry:
   ret double 9.000000e+00
 }
-
-Evaluated to 9.000000
 ```
 
-Well this looks like it is basically working. The dump of the function shows the “no argument function that always returns double” that we synthesize for each top-level expression that is typed in. This demonstrates very basic functionality, but can we do more?
+Note how the parser turns the top-level expression into anonymous functions for us. This will be handy when we add JIT support in the next chapter. Also note that the code is very literally transcribed, no optimizations are being performed except simple constant folding done by IRBuilder. We will add optimizations explicitly in the next chapter.
 
 ```cpp
-ready> def testfunc(x,y): return x + y*2
-ready> Read function definition:
-define double @testfunc(double %x, double %y) {
+ready> def foo(a,b): return a*a + 2*a*b + b*b
+Read function definition:
+define double @foo(double %a, double %b) {
 entry:
-  %multmp = fmul double %y, 2.000000e+00
-  %addtmp = fadd double %x, %multmp
+  %multmp = fmul double %a, %a
+  %multmp1 = fmul double 2.000000e+00, %a
+  %multmp2 = fmul double %multmp1, %b
+  %addtmp = fadd double %multmp, %multmp2
+  %multmp3 = fmul double %b, %b
+  %addtmp4 = fadd double %addtmp, %multmp3
+  ret double %addtmp4
+}
+```
+
+This shows some simple arithmetic. Notice the striking similarity to the LLVM builder calls that we use to create the instructions.
+```cpp
+ready> def bar(a): return foo(a, 4.0) + bar(31337)
+Read function definition:
+define double @bar(double %a) {
+entry:
+  %calltmp = call double @foo(double %a, double 4.000000e+00)
+  %calltmp1 = call double @bar(double 3.133700e+04)
+  %addtmp = fadd double %calltmp, %calltmp1
   ret double %addtmp
 }
-
-ready> testfunc(4,10)
-ready> Read top-level expression:
-define double @__anon_expr() {
-entry:
-  %calltmp = call double @testfunc(double 4.000000e+00, double 1.000000e+01)
-  ret double %calltmp
-}
-
-Evaluated to 24.000000
-
-ready> testfunc(5,10)
-ready> Error: Unknown function referenced
 ```
 
-Function definitions and calls also work, but something went very wrong on that last line. The call looks valid, so what happened? As you may have guessed from the API a Module is a unit of allocation for the JIT, and testfunc was part of the same module that contained anonymous expression. When we removed that module from the JIT to free the memory for the anonymous expression, we deleted the definition of testfunc along with it. Then, when we tried to call testfunc a second time, the JIT could no longer find it.
-
-The easiest way to fix this is to put the anonymous expression in a separate module from the rest of the function definitions. The JIT will happily resolve function calls across module boundaries, as long as each of the functions called has a prototype, and is added to the JIT before it is called. By putting the anonymous expression in a different module we can delete it without affecting the rest of the functions.
-
-Restricting module creation to anonymous functions would require introducing a module stack and managing module state explicitly. While there are more robust architectural approaches, they are not essential for understanding LLVM. For simplicity, we will place each function in its own module. 
-
-To allow each function to live in its own module we’ll need a way to re-generate previous function declarations into each new module we open:
+This shows some function calls. Note that this function will take a long time to execute if you call it. In the future we’ll add conditional control flow to actually make recursion useful :).
 
 ```cpp
-static std::unique_ptr<PyxcJIT> TheJIT;
-
-...
-
-Function *getFunction(std::string Name) {
-  // First, see if the function has already been added to the current module.
-  if (auto *F = TheModule->getFunction(Name))
-    return F;
-
-  // If not, check whether we can codegen the declaration from some existing
-  // prototype.
-  auto FI = FunctionProtos.find(Name);
-  if (FI != FunctionProtos.end())
-    return FI->second->codegen();
-
-  // If no existing prototype exists, return null.
-  return nullptr;
-}
-
-...
-
-Value *CallExprAST::codegen() {
-  // Look up the name in the global module table.
-  Function *CalleeF = getFunction(Callee);
-
-...
-
-Function *FunctionAST::codegen() {
-  // Transfer ownership of the prototype to the FunctionProtos map, but keep a
-  // reference to it for use below.
-  auto &P = *Proto;
-  FunctionProtos[Proto->getName()] = std::move(Proto);
-  Function *TheFunction = getFunction(P.getName());
-  if (!TheFunction)
-    return nullptr;
-```
-
-To enable this, we’ll start by adding a new global, FunctionProtos, that holds the most recent prototype for each function. We’ll also add a convenience method, getFunction(), to replace calls to TheModule->getFunction(). Our convenience method searches TheModule for an existing function declaration, falling back to generating a new declaration from FunctionProtos if it doesn’t find one. In CallExprAST::codegen() we just need to replace the call to TheModule->getFunction(). In FunctionAST::codegen() we need to update the FunctionProtos map first, then call getFunction(). With this done, we can always obtain a function declaration in the current module for any previously declared function.
-
-We also need to update HandleDefinition and HandleExtern:
-
-```cpp
-static void HandleDefinition() {
-  if (auto FnAST = ParseDefinition()) {
-    if (auto *FnIR = FnAST->codegen()) {
-      fprintf(stderr, "Read function definition:");
-      FnIR->print(errs());
-      fprintf(stderr, "\n");
-      ExitOnErr(TheJIT->addModule(
-          ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
-      InitializeModuleAndPassManager();
-    }
-  } else {
-    // Skip token for error recovery.
-     getNextToken();
-  }
-}
-
-static void HandleExtern() {
-  if (auto ProtoAST = ParseExtern()) {
-    if (auto *FnIR = ProtoAST->codegen()) {
-      fprintf(stderr, "Read extern: ");
-      FnIR->print(errs());
-      fprintf(stderr, "\n");
-      FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
-    }
-  } else {
-    // Skip token for error recovery.
-    getNextToken();
-  }
-}
-```
-
-In HandleDefinition, we add two lines to transfer the newly defined function to the JIT and open a new module. In HandleExtern, we just need to add one line to add the prototype to FunctionProtos.
-
-!!!note Duplication of symbols in separate modules is not allowed since LLVM-9. That means you can not redefine function in  Pyxc even in the REPL. The reason is that the newer OrcV2 JIT APIs are trying to stay very close to the static and dynamic linker rules, including rejecting duplicate symbols. Requiring symbol names to be unique allows us to support concurrent compilation for symbols using the (unique) symbol names as keys for tracking. If you still wanted to allow for function redefinition, you'd have to introduce symbol [name mangling](https://en.wikipedia.org/wiki/Name_mangling) to create unique versions of symbols repeated across modules.
-
-To prevent duplicate symbol definitions—and the resulting segmentation faults—we track previously defined function prototypes and reject redefinitions during parsing.
-
-To do this, we declare a global prototype table immediately after PrototypeAST and validate new prototypes during parsing:
-
-```cpp
-class PrototypeAST {
-    ...
-}
-
-//===----------------------------------------------------------------------===//
-// Parser
-//===----------------------------------------------------------------------===//
-...
-static int getNextToken() { return CurTok = gettok(); }
-// Tracks all previously defined function prototypes
-static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
-
-static std::unique_ptr<PrototypeAST> ParsePrototype() {
-  if (CurTok != tok_identifier)
-    return LogErrorP("Expected function name in prototype");
-
-  std::string FnName = IdentifierStr;
-  getNextToken(); // eat identifier
-  
-
-  // Reject duplicate function definitions
-  auto FI = FunctionProtos.find(FnName);
-  if (FI != FunctionProtos.end())
-    return LogErrorP(("Duplicate definition for " + FnName).c_str());
-```
-
-With these changes made, let’s try our REPL again (I removed the dump of the anonymous functions this time, you should get the idea by now :) :
-
-```cpp
-ready> def testfunc(x,y): return x + y*2
-ready> testfunc(4,10)
-Evaluated to 24.000000
-ready> testfunc(5,10)
-Evaluated to 25.000000
-```
-
-It works!
-
-Even with this simple code, we get some surprisingly powerful capabilities - check this out:
-
-```cpp
-ready> extern def sin(x)    
-ready> Read extern:
-declare double @sin(double)
-
-ready> extern def cos(x)
-ready> Read extern:
+ready> extern def cos(x);
+Read extern:
 declare double @cos(double)
 
-ready> sin(1.0)
-ready> Read top-level expression:
+ready> cos(1.234);
+Read top-level expression:
 define double @__anon_expr() {
 entry:
-  %calltmp = call double @sin(double 1.000000e+00)
-  ret double 0x3FEAED548F090CEE
+  %calltmp = call double @cos(double 1.234000e+00)
+  ret double %calltmp
+}
+```
+
+This shows an extern for the libm “cos” function, and a call to it.
+
+```cpp
+ready> ^D
+; ModuleID = 'pyxc jit'
+source_filename = "pyxc jit"
+
+define double @foo(double %a, double %b) {
+entry:
+  %multmp = fmul double %a, %a
+  %multmp1 = fmul double 2.000000e+00, %a
+  %multmp2 = fmul double %multmp1, %b
+  %addtmp = fadd double %multmp, %multmp2
+  %multmp3 = fmul double %b, %b
+  %addtmp4 = fadd double %addtmp, %multmp3
+  ret double %addtmp4
 }
 
-Evaluated to 0.841471
-ready> def ident(x): return sin(x)*sin(x)+cos(x)*cos(x)
-ready> Read function definition:
-define double @ident(double %x) {
+define double @bar(double %a) {
 entry:
-  %calltmp = call double @sin(double %x)
-  %calltmp1 = call double @sin(double %x)
-  %multmp = fmul double %calltmp, %calltmp1
-  %calltmp2 = call double @cos(double %x)
-  %calltmp3 = call double @cos(double %x)
-  %multmp4 = fmul double %calltmp2, %calltmp3
-  %addtmp = fadd double %multmp, %multmp4
+  %calltmp = call double @foo(double %a, double 4.000000e+00)
+  %calltmp1 = call double @bar(double 3.133700e+04)
+  %addtmp = fadd double %calltmp, %calltmp1
   ret double %addtmp
 }
 
-ready> ident(4.0) 
-ready> Read top-level expression:
-define double @__anon_expr() {
-entry:
-  %calltmp = call double @ident(double 4.000000e+00)
-  ret double %calltmp
-}
-
-Evaluated to 1.000000
+declare double @cos(double)
 ```
 
-Whoa, how does the JIT know about sin and cos? The answer is surprisingly simple: The PyxcJIT has a straightforward symbol resolution rule that it uses to find symbols that aren’t available in any given module: First it searches all the modules that have already been added to the JIT, from the most recent to the oldest, to find the newest definition. If no definition is found inside the JIT, it falls back to calling “dlsym("sin")” on the Pyxc process itself. Since “sin” is defined within the JIT’s address space, it simply patches up calls in the module to call the libm version of sin directly. But in some cases this even goes further: as sin and cos are names of standard math functions, the constant folder will directly evaluate the function calls to the correct result when called with constants like in the “sin(1.0)” above.
+When you quit the current demo (by sending an EOF via CTRL+D on Linux or CTRL+Z and ENTER on Windows), it dumps out the IR for the entire module generated. Here you can see the big picture with all the functions referencing each other.
 
-In the future we’ll see how tweaking this symbol resolution rule can be used to enable all sorts of useful features, from security (restricting the set of symbols available to JIT’d code), to dynamic code generation based on symbol names, and even lazy compilation.
-
-One immediate benefit of the symbol resolution rule is that we can now extend the language by writing arbitrary C++ code to implement operations. For example, if we add:
-
-```cpp
-#ifdef _WIN32
-#define DLLEXPORT __declspec(dllexport)
-#else
-#define DLLEXPORT
-#endif
-
-/// putchard - putchar that takes a double and returns 0.
-extern "C" DLLEXPORT double putchard(double X) {
-  fputc((char)X, stderr);
-  return 0;
-}
-```
-
-Note, that for Windows we need to actually export the functions because the dynamic symbol loader will use GetProcAddress to find the symbols.
-
-Now we can produce simple output to the console by using things like: “extern putchard(x); putchard(120);”, which prints a lowercase ‘x’ on the console (120 is the ASCII code for ‘x’). Similar code could be used to implement file I/O, console input, and many other capabilities in Pyxc.
-
-This completes the JIT and optimizer chapter of the Pyxc tutorial. At this point, we can compile a non-Turing-complete programming language, optimize and JIT compile it in a user-driven way. Next up we’ll look into extending the language with control flow constructs, tackling some interesting LLVM IR issues along the way.
+This wraps up the third chapter of the Pyxc tutorial. Up next, we’ll describe how to add JIT codegen and optimizer support to this so we can actually start running code!
 
 ## Full Code Listing
 
-Here is the code.
+Here is the complete code listing for our running example, enhanced with the LLVM code generator. Because this uses the LLVM libraries, we need to link them in. To do this, we use the [llvm-config](https://llvm.org/cmds/llvm-config.html) tool to inform our makefile/command line about which options to use:
 
 ```cpp
-#include "../include/PyxcJIT.h"
 #include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -494,29 +344,18 @@ Here is the code.
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
-#include "llvm/IR/PassManager.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Verifier.h"
-#include "llvm/Passes/PassBuilder.h"
-#include "llvm/Passes/StandardInstrumentations.h"
-#include "llvm/Support/TargetSelect.h"
-#include "llvm/Target/TargetMachine.h"
-#include "llvm/Transforms/InstCombine/InstCombine.h"
-#include "llvm/Transforms/Scalar.h"
-#include "llvm/Transforms/Scalar/GVN.h"
-#include "llvm/Transforms/Scalar/Reassociate.h"
-#include "llvm/Transforms/Scalar/SimplifyCFG.h"
-#include <cassert>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace llvm;
-using namespace llvm::orc;
 
 //===----------------------------------------------------------------------===//
 // Lexer
@@ -701,8 +540,6 @@ public:
 /// lexer and updates CurTok with its results.
 static int CurTok;
 static int getNextToken() { return CurTok = gettok(); }
-// Tracks all previously defined function prototypes
-static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 
 /// BinopPrecedence - This holds the precedence for each binary operator that is
 /// defined.
@@ -867,14 +704,7 @@ static std::unique_ptr<PrototypeAST> ParsePrototype() {
     return LogErrorP("Expected function name in prototype");
 
   std::string FnName = IdentifierStr;
-  getNextToken(); // eat identifier
-
-  // Reject duplicate function definitions
-  auto FI = FunctionProtos.find(FnName);
-  if (FI != FunctionProtos.end())
-    // Ideally we should eat all remaining prototype symbols to prevent a
-    // cascade of unexpected symbol errors but we'll leave that for now.
-    return LogErrorP(("Duplicate definition for " + FnName).c_str());
+  getNextToken();
 
   if (CurTok != '(')
     return LogErrorP("Expected '(' in prototype");
@@ -956,33 +786,9 @@ static std::unique_ptr<LLVMContext> TheContext;
 static std::unique_ptr<Module> TheModule;
 static std::unique_ptr<IRBuilder<>> Builder;
 static std::map<std::string, Value *> NamedValues;
-static std::unique_ptr<PyxcJIT> TheJIT;
-static std::unique_ptr<FunctionPassManager> TheFPM;
-static std::unique_ptr<LoopAnalysisManager> TheLAM;
-static std::unique_ptr<FunctionAnalysisManager> TheFAM;
-static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
-static std::unique_ptr<ModuleAnalysisManager> TheMAM;
-static std::unique_ptr<PassInstrumentationCallbacks> ThePIC;
-static std::unique_ptr<StandardInstrumentations> TheSI;
-static ExitOnError ExitOnErr;
 
 Value *LogErrorV(const char *Str) {
   LogError(Str);
-  return nullptr;
-}
-
-Function *getFunction(std::string Name) {
-  // First, see if the function has already been added to the current module.
-  if (auto *F = TheModule->getFunction(Name))
-    return F;
-
-  // If not, check whether we can codegen the declaration from some existing
-  // prototype.
-  auto FI = FunctionProtos.find(Name);
-  if (FI != FunctionProtos.end())
-    return FI->second->codegen();
-
-  // If no existing prototype exists, return null.
   return nullptr;
 }
 
@@ -1022,7 +828,7 @@ Value *BinaryExprAST::codegen() {
 
 Value *CallExprAST::codegen() {
   // Look up the name in the global module table.
-  Function *CalleeF = getFunction(Callee);
+  Function *CalleeF = TheModule->getFunction(Callee);
   if (!CalleeF)
     return LogErrorV("Unknown function referenced");
 
@@ -1058,11 +864,12 @@ Function *PrototypeAST::codegen() {
 }
 
 Function *FunctionAST::codegen() {
-  // Transfer ownership of the prototype to the FunctionProtos map, but keep a
-  // reference to it for use below.
-  auto &P = *Proto;
-  FunctionProtos[Proto->getName()] = std::move(Proto);
-  Function *TheFunction = getFunction(P.getName());
+  // First, check for an existing function from a previous 'extern' declaration.
+  Function *TheFunction = TheModule->getFunction(Proto->getName());
+
+  if (!TheFunction)
+    TheFunction = Proto->codegen();
+
   if (!TheFunction)
     return nullptr;
 
@@ -1082,9 +889,6 @@ Function *FunctionAST::codegen() {
     // Validate the generated code, checking for consistency.
     verifyFunction(*TheFunction);
 
-    // Run the optimizer on the function.
-    TheFPM->run(*TheFunction, *TheFAM);
-
     return TheFunction;
   }
 
@@ -1097,41 +901,13 @@ Function *FunctionAST::codegen() {
 // Top-Level parsing and JIT Driver
 //===----------------------------------------------------------------------===//
 
-static void InitializeModuleAndManagers() {
+static void InitializeModule() {
   // Open a new context and module.
   TheContext = std::make_unique<LLVMContext>();
-  TheModule = std::make_unique<Module>("PyxcJIT", *TheContext);
-  TheModule->setDataLayout(TheJIT->getDataLayout());
+  TheModule = std::make_unique<Module>("pyxc jit", *TheContext);
 
   // Create a new builder for the module.
   Builder = std::make_unique<IRBuilder<>>(*TheContext);
-
-  // Create new pass and analysis managers.
-  TheFPM = std::make_unique<FunctionPassManager>();
-  TheLAM = std::make_unique<LoopAnalysisManager>();
-  TheFAM = std::make_unique<FunctionAnalysisManager>();
-  TheCGAM = std::make_unique<CGSCCAnalysisManager>();
-  TheMAM = std::make_unique<ModuleAnalysisManager>();
-  ThePIC = std::make_unique<PassInstrumentationCallbacks>();
-  TheSI = std::make_unique<StandardInstrumentations>(*TheContext,
-                                                     /*DebugLogging*/ true);
-  TheSI->registerCallbacks(*ThePIC, TheMAM.get());
-
-  // Add transform passes.
-  // Do simple "peephole" optimizations and bit-twiddling optzns.
-  TheFPM->addPass(InstCombinePass());
-  // Reassociate expressions.
-  TheFPM->addPass(ReassociatePass());
-  // Eliminate Common SubExpressions.
-  TheFPM->addPass(GVNPass());
-  // Simplify the control flow graph (deleting unreachable blocks, etc).
-  TheFPM->addPass(SimplifyCFGPass());
-
-  // Register analysis passes used in these transform passes.
-  PassBuilder PB;
-  PB.registerModuleAnalyses(*TheMAM);
-  PB.registerFunctionAnalyses(*TheFAM);
-  PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
 }
 
 static void HandleDefinition() {
@@ -1140,9 +916,6 @@ static void HandleDefinition() {
       fprintf(stderr, "Read function definition:\n");
       FnIR->print(errs());
       fprintf(stderr, "\n");
-      ExitOnErr(TheJIT->addModule(
-          ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
-      InitializeModuleAndManagers();
     }
   } else {
     // Skip token for error recovery.
@@ -1156,7 +929,6 @@ static void HandleExtern() {
       fprintf(stderr, "Read extern:\n");
       FnIR->print(errs());
       fprintf(stderr, "\n");
-      FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
     }
   } else {
     // Skip token for error recovery.
@@ -1168,31 +940,12 @@ static void HandleTopLevelExpression() {
   // Evaluate a top-level expression into an anonymous function.
   if (auto FnAST = ParseTopLevelExpr()) {
     if (auto *FnIR = FnAST->codegen()) {
-      // Create a ResourceTracker to track JIT'd memory allocated to our
-      // anonymous expression -- that way we can free it after executing.
-      auto RT = TheJIT->getMainJITDylib().createResourceTracker();
-
-      auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
-      ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
-      InitializeModuleAndManagers();
-
       fprintf(stderr, "Read top-level expression:\n");
       FnIR->print(errs());
       fprintf(stderr, "\n");
 
-      // Search the JIT for the __anon_expr symbol.
-      auto ExprSymbol = ExitOnErr(TheJIT->lookup("__anon_expr"));
-
-      // Get the symbol's address and cast it to the right type (takes no
-      // arguments, returns a double) so we can call it as a native function.
-      double (*FP)() = ExprSymbol.toPtr<double (*)()>();
-      fprintf(stderr, "Evaluated to %f\n", FP());
-
-      // Delete the anonymous expression module from the JIT.
-      ExitOnErr(RT->remove());
-
       // Remove the anonymous expression.
-      //   FnIR->eraseFromParent();
+      FnIR->eraseFromParent();
     }
   } else {
     // Skip token for error recovery.
@@ -1224,177 +977,32 @@ static void MainLoop() {
 }
 
 //===----------------------------------------------------------------------===//
-// "Library" functions that can be "extern'd" from user code.
-//===----------------------------------------------------------------------===//
-
-#ifdef _WIN32
-#define DLLEXPORT __declspec(dllexport)
-#else
-#define DLLEXPORT
-#endif
-
-/// putchard - putchar that takes a double and returns 0.
-extern "C" DLLEXPORT double putchard(double X) {
-  fputc((char)X, stderr);
-  return 0;
-}
-
-/// printd - printf that takes a double prints it as "%f\n", returning 0.
-extern "C" DLLEXPORT double printd(double X) {
-  fprintf(stderr, "%f\n", X);
-  return 0;
-}
-
-//===----------------------------------------------------------------------===//
 // Main driver code.
 //===----------------------------------------------------------------------===//
 
 int main() {
-  InitializeNativeTarget();
-  InitializeNativeTargetAsmPrinter();
-  InitializeNativeTargetAsmParser();
-
   // Prime the first token.
   fprintf(stderr, "ready> ");
   getNextToken();
 
-  TheJIT = ExitOnErr(PyxcJIT::Create());
-  InitializeModuleAndManagers();
+  // Make the module, which holds all the code.
+  InitializeModule();
 
   // Run the main "interpreter loop" now.
   MainLoop();
 
-  // Run the main "interpreter loop" now.
+  // Print out all of the generated code.
   TheModule->print(errs(), nullptr);
 
   return 0;
 }
 ```
 
-And here's the `include/PyxcJIT.h`. Since it's a copy of the JIT from the [original Kaleidoscope tutorial](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html), I have reproduced their license within the source posted here. 
-
-```cpp
-//===- PyxcJIT.h - A simple JIT for pyxc --------*- C++ -*-===//
-//
-// This is a copy of KaleidoscopeJIT from the Kaleidoscope tutorial on llvm.org.
-// The license for the same is as under.
-//
-// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-//===----------------------------------------------------------------------===//
-//
-// Contains a simple JIT definition for use in the pyxc tutorials.
-//
-//===----------------------------------------------------------------------===//
-
-#ifndef LLVM_EXECUTIONENGINE_ORC_PYXCJIT_H
-#define LLVM_EXECUTIONENGINE_ORC_PYXCJIT_H
-
-#include "llvm/ADT/StringRef.h"
-#include "llvm/ExecutionEngine/Orc/CompileUtils.h"
-#include "llvm/ExecutionEngine/Orc/Core.h"
-#include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
-#include "llvm/ExecutionEngine/Orc/ExecutorProcessControl.h"
-#include "llvm/ExecutionEngine/Orc/IRCompileLayer.h"
-#include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
-#include "llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h"
-#include "llvm/ExecutionEngine/Orc/SelfExecutorProcessControl.h"
-#include "llvm/ExecutionEngine/Orc/Shared/ExecutorSymbolDef.h"
-#include "llvm/ExecutionEngine/SectionMemoryManager.h"
-#include "llvm/IR/DataLayout.h"
-#include "llvm/IR/LLVMContext.h"
-#include <memory>
-
-namespace llvm {
-namespace orc {
-
-class PyxcJIT {
-private:
-  std::unique_ptr<ExecutionSession> ES;
-
-  DataLayout DL;
-  MangleAndInterner Mangle;
-
-  RTDyldObjectLinkingLayer ObjectLayer;
-  IRCompileLayer CompileLayer;
-
-  JITDylib &MainJD;
-
-public:
-  PyxcJIT(std::unique_ptr<ExecutionSession> ES, JITTargetMachineBuilder JTMB,
-          DataLayout DL)
-      : ES(std::move(ES)), DL(std::move(DL)), Mangle(*this->ES, this->DL),
-        ObjectLayer(*this->ES,
-                    [](const MemoryBuffer &) {
-                      return std::make_unique<SectionMemoryManager>();
-                    }),
-        CompileLayer(*this->ES, ObjectLayer,
-                     std::make_unique<ConcurrentIRCompiler>(std::move(JTMB))),
-        MainJD(this->ES->createBareJITDylib("<main>")) {
-    MainJD.addGenerator(
-        cantFail(DynamicLibrarySearchGenerator::GetForCurrentProcess(
-            DL.getGlobalPrefix())));
-    if (JTMB.getTargetTriple().isOSBinFormatCOFF()) {
-      ObjectLayer.setOverrideObjectFlagsWithResponsibilityFlags(true);
-      ObjectLayer.setAutoClaimResponsibilityForObjectSymbols(true);
-    }
-  }
-
-  ~PyxcJIT() {
-    if (auto Err = ES->endSession())
-      ES->reportError(std::move(Err));
-  }
-
-  static Expected<std::unique_ptr<PyxcJIT>> Create() {
-    auto EPC = SelfExecutorProcessControl::Create();
-    if (!EPC)
-      return EPC.takeError();
-
-    auto ES = std::make_unique<ExecutionSession>(std::move(*EPC));
-
-    JITTargetMachineBuilder JTMB(
-        ES->getExecutorProcessControl().getTargetTriple());
-
-    auto DL = JTMB.getDefaultDataLayoutForTarget();
-    if (!DL)
-      return DL.takeError();
-
-    return std::make_unique<PyxcJIT>(std::move(ES), std::move(JTMB),
-                                     std::move(*DL));
-  }
-
-  const DataLayout &getDataLayout() const { return DL; }
-
-  JITDylib &getMainJITDylib() { return MainJD; }
-
-  Error addModule(ThreadSafeModule TSM, ResourceTrackerSP RT = nullptr) {
-    if (!RT)
-      RT = MainJD.getDefaultResourceTracker();
-    return CompileLayer.add(RT, std::move(TSM));
-  }
-
-  Expected<ExecutorSymbolDef> lookup(StringRef Name) {
-    return ES->lookup({&MainJD}, Mangle(Name.str()));
-  }
-};
-
-} // end namespace orc
-} // end namespace llvm
-
-#endif // LLVM_EXECUTIONENGINE_ORC_PYXCJIT_H
-```
-
-## Compiling
-
-To build this example, use:
+## Compliling
 
 ```bash
 # Compile
-clang++ -g pyxc.cpp `llvm-config --cxxflags --ldflags --system-libs --libs core orcjit native` -O3 -o pyxc
+clang++ -g -O3 pyxc.cpp `llvm-config --cxxflags --ldflags --system-libs --libs core` -o pyxc
 # Run
 ./pyxc
 ```
-
-If you are compiling this on Linux, make sure to add the “-rdynamic” option as well. This makes sure that the external functions are resolved properly at runtime.

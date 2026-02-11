@@ -1,262 +1,806 @@
-# 12. Python-Style Indentation
+# 11. From REPL-Only to a Real Compiler Pipeline
 
-This chapter adds Python 3–style indentation to the language. We move from newline‑only structure to explicit `indent`/`dedent` tokens, and wire a token stream printer so you can see how the lexer is shaping the input. Each section names the functions that changed and why.
+This chapter evolves `pyxc` from a REPL-centric JIT into a full compiler front-end with command-line modes, source locations, debug info, and object/executable output. Every major change block below includes a small code snippet with a few lines of context, and I call out **the function where the change lives** so you can trace it quickly.
 
-## Indentation rules (Python 3 style)
 
-- A new block starts after `:` and is defined by **greater indentation** than its parent line.
-- A block ends when indentation **decreases** to a previous indentation level.
-- Indentation levels are **absolute** column widths; a dedent must match a previous level exactly.
-- Blank lines are ignored (they do not start or end blocks).
-- Tabs and spaces must **not be mixed** for indentation (we enforce one style for the module).
-- At end‑of‑file, any open indentation levels are **implicitly closed** with `dedent` tokens.
+## CLI options, output naming, and colorized diagnostics
 
-## Tracking indentation with a stack + pending tokens
+**Where:** global scope (new helpers and option definitions)
 
-We track indentation levels in a stack (`Indents`) and accumulate `dedent` tokens in a small deque (`PendingTokens`). Each line start computes its leading whitespace and compares it to the top of the stack.
-
-For example, consider this `fib.pyxc`:
-
-```py
-extern def printd(x)
-
-def fib(x):
-    if(x < 3):
-        return 1
-    else:
-        return fib(x-1) + fib(x-2)
-```
-
-As we scan line by line, the indentation stack evolves like this (comments show the stack at each step):
-
-```text
-# start: [0]
-"def fib": indent=0   -> [0]
-"    if": indent=4    -> push 4      -> [0, 4]
-"        return": 8   -> push 8      -> [0, 4, 8]
-"    else": 4         -> pop 8       -> [0, 4]  (emit dedent)
-"        return": 8   -> push 8      -> [0, 4, 8]
-"<eof>":               -> pop to 0    -> [0]     (emit dedent, dedent)
-```
-
-This is why a **stack + queue** design works well: the stack records indentation levels, while the queue lets the lexer return `dedent` tokens one at a time.
-
-## New tokens for indentation
-
-**Where:** `enum Token`
-
-We add three new tokens:
-
-- `tok_indent` for the start of a block
-- `tok_dedent` for the end of a block
-- `tok_error` for indentation errors
-
-These are used by the lexer and parser to preserve the block structure.
-
-## Counting leading whitespace
-
-**Where:** `countLeadingWhitespace()`
-
-We scan the leading spaces/tabs at the start of each logical line. Tabs are expanded to the next tab stop, and we enforce a single indentation style per module (spaces **or** tabs).
+We add compiler-style command-line flags, an execution mode, and a helper to compute output filenames. We also add a minimal colorized error prefix for better UX.
 
 ```cpp
-static int countLeadingWhitespace(int &LastChar) {
-  int indentCount = 0;
-  bool didSetIndent = false;
+//===----------------------------------------------------------------------===//
+// Color
+//===----------------------------------------------------------------------===//
+bool UseColor = isatty(fileno(stderr));
+const char *Red = UseColor ? "\x1b[31m" : "";
+const char *Bold = UseColor ? "\x1b[1m" : "";
+const char *Reset = UseColor ? "\x1b[0m" : "";
 
-  while (true) {
-    while (LastChar == ' ' || LastChar == '\t') {
-      if (ModuleIndentType == -1) {
-        didSetIndent = true;
-        ModuleIndentType = LastChar;
-      } else if (LastChar != ModuleIndentType) {
-        LogError("You cannot mix tabs and spaces.");
-        return -1;
+//===----------------------------------------------------------------------===//
+// Command line arguments
+//===----------------------------------------------------------------------===//
+static cl::OptionCategory PyxcCategory("Pyxc Options");
+
+static cl::opt<std::string> InputFilename(cl::Positional,
+                                          cl::desc("<input file>"),
+                                          cl::Optional, cl::cat(PyxcCategory));
+
+enum ExecutionMode { Interpret, Executable, Object };
+
+static cl::opt<ExecutionMode> Mode(
+    cl::desc("Execution mode:"),
+    cl::values(clEnumValN(Interpret, "i",
+                          "Interpret the input file immediately (default)"),
+               clEnumValN(Object, "c", "Compile to object file")),
+    cl::init(Executable), cl::cat(PyxcCategory));
+
+static cl::opt<std::string> OutputFilename(
+    "o",
+    cl::desc("Specify output filename (optional, defaults to input basename)"),
+    cl::value_desc("filename"), cl::Optional);
+```
+
+```cpp
+std::string getOutputFilename(const std::string &input,
+                              const std::string &ext) {
+  if (!OutputFilename.empty())
+    return OutputFilename;
+
+  size_t lastDot = input.find_last_of('.');
+  size_t lastSlash = input.find_last_of("/\\");
+
+  std::string base;
+  if (lastDot != std::string::npos &&
+      (lastSlash == std::string::npos || lastDot > lastSlash)) {
+    base = input.substr(0, lastDot);
+  } else {
+    base = input;
+  }
+
+  return base + ext;
+}
+```
+
+**Why:** This turns `pyxc` into a real compiler frontend with standard flags and clean output naming. Once compiled, pyxc can now display `help`.
+
+```bash
+./pyxc --help
+OVERVIEW: Pyxc - Compiler and Interpreter
+
+USAGE: pyxc [options] <input file>
+
+OPTIONS:
+
+Generic Options:
+
+  --help      - Display available options (--help-hidden for more)
+  --help-list - Display list of available options (--help-list-hidden for more)
+  --version   - Display the version of this program
+
+Pyxc Options:
+
+  Execution mode:
+      -i        - Interpret the input file immediately (default)
+      -c        - Compile to object file
+  -g          - Emit debug information
+```
+
+
+## Source locations in the lexer
+
+**Where:** `advance()` + `gettok()`
+
+We introduce a `SourceLocation` structure and track line/column as we read characters. Every token now records where it came from.
+
+```cpp
+struct SourceLocation {
+  int Line;
+  int Col;
+};
+static SourceLocation CurLoc;
+static SourceLocation LexLoc = {1, 0};
+
+static int advance() {
+  int LastChar = getc(InputFile);
+
+  if (LastChar == '\n' || LastChar == '\r') {
+    LexLoc.Line++;
+    LexLoc.Col = 0;
+  } else
+    LexLoc.Col++;
+  return LastChar;
+}
+```
+
+```cpp
+static int gettok() {
+  static int LastChar = ' ';
+
+  while (isspace(LastChar) && LastChar != '\n' && LastChar != '\r')
+    LastChar = advance();
+
+  CurLoc = LexLoc;
+
+  if (LastChar == '\n' || LastChar == '\r') {
+    LastChar = ' ';
+    return tok_eol;
+  }
+
+  if (LastChar == '@') {
+    LastChar = advance();
+    return tok_decorator;
+  }
+  // ...
+}
+```
+
+**Why:** Once we have a location per token, we can print precise error messages and emit accurate debug info.
+
+
+## AST nodes carry source locations + AST dumps
+
+**Where:** `ExprAST` and derived classes
+
+Each AST node captures the location at creation time, and we add `dump()` functions to print structured ASTs with line/column info.
+
+```cpp
+class ExprAST {
+  SourceLocation Loc;
+
+public:
+  ExprAST(SourceLocation Loc = CurLoc) : Loc(Loc) {}
+  virtual ~ExprAST() = default;
+  virtual Value *codegen() = 0;
+  int getLine() const { return Loc.Line; }
+  int getCol() const { return Loc.Col; }
+  virtual raw_ostream &dump(raw_ostream &out, int ind) {
+    return out << ':' << getLine() << ':' << getCol() << '\n';
+  }
+};
+```
+
+```cpp
+class BinaryExprAST : public ExprAST {
+  char Op;
+  std::unique_ptr<ExprAST> LHS, RHS;
+
+public:
+  BinaryExprAST(SourceLocation Loc, char Op, std::unique_ptr<ExprAST> LHS,
+                std::unique_ptr<ExprAST> RHS)
+      : ExprAST(Loc), Op(Op), LHS(std::move(LHS)), RHS(std::move(RHS)) {}
+  raw_ostream &dump(raw_ostream &out, int ind) override {
+    ExprAST::dump(out << "binary" << Op, ind);
+    LHS->dump(indent(out, ind) << "LHS:", ind + 1);
+    RHS->dump(indent(out, ind) << "RHS:", ind + 1);
+    return out;
+  }
+  Value *codegen() override;
+};
+```
+
+**Why:** This is essential for debug info and for tooling that wants to inspect the AST.
+
+
+## Location-aware error messages
+
+**Where:** `LogError()`
+
+We include line/column and add color (when available).
+
+```cpp
+std::unique_ptr<ExprAST> LogError(const char *Str) {
+  InForExpression = false;
+  fprintf(stderr, "%sError (Line: %d, Column: %d): %s\n%s", Red, CurLoc.Line,
+          CurLoc.Col, Str, Reset);
+  return nullptr;
+}
+```
+
+**Why:** Diagnostic quality is a top user experience improvement for compiler tools.
+
+
+## Capturing locations during parsing
+
+**Where:** `ParseIdentifierExpr()`, `ParseIfExpr()`, `ParseBinOpRHS()`, `ParsePrototype()`, `ParseTopLevelExpr()`
+
+We snapshot `CurLoc` before parsing constructs, then pass it into AST constructors. This keeps locations pinned to the token that introduced each construct.
+
+```cpp
+static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
+  std::string IdName = IdentifierStr;
+  SourceLocation LitLoc = CurLoc;
+
+  getNextToken(); // eat identifier.
+
+  if (CurTok != '(')
+    return std::make_unique<VariableExprAST>(LitLoc, IdName);
+
+  // Call.
+  getNextToken(); // eat (
+  // ...
+  return std::make_unique<CallExprAST>(LitLoc, IdName, std::move(Args));
+}
+```
+
+```cpp
+static std::unique_ptr<ExprAST> ParseIfExpr() {
+  SourceLocation IfLoc = CurLoc;
+  getNextToken(); // eat 'if'
+
+  auto Cond = ParseExpression();
+  // ...
+  return std::make_unique<IfExprAST>(IfLoc, std::move(Cond), std::move(Then),
+                                     std::move(Else));
+}
+```
+
+```cpp
+int BinOp = CurTok;
+SourceLocation BinLoc = CurLoc;
+getNextToken(); // eat binop
+// ...
+LHS = std::make_unique<BinaryExprAST>(BinLoc, BinOp, std::move(LHS),
+                                      std::move(RHS));
+```
+
+**Why:** Now every AST node is tied to where it was parsed, which fuels both error messages and debug data.
+
+
+## Debug info infrastructure (DIBuilder)
+
+**Where:** Debug Info block + `emitLocation()` helper
+
+We add a small `DebugInfo` struct with a `DICompileUnit`, cached double type, and lexical scope stack. We then wire `emitLocation()` into codegen.
+
+```cpp
+struct DebugInfo {
+  DICompileUnit *TheCU;
+  DIType *DblTy;
+  std::vector<DIScope *> LexicalBlocks;
+
+  void emitLocation(ExprAST *AST);
+  DIType *getDoubleTy();
+};
+
+static std::unique_ptr<DebugInfo> KSDbgInfo;
+static std::unique_ptr<DIBuilder> DBuilder;
+
+inline void emitLocation(ExprAST *AST) {
+  if (KSDbgInfo)
+    KSDbgInfo->emitLocation(AST);
+}
+```
+
+```cpp
+void DebugInfo::emitLocation(ExprAST *AST) {
+  if (!AST)
+    return Builder->SetCurrentDebugLocation(DebugLoc());
+  DIScope *Scope = LexicalBlocks.empty() ? TheCU : LexicalBlocks.back();
+  Builder->SetCurrentDebugLocation(DILocation::get(
+      Scope->getContext(), AST->getLine(), AST->getCol(), Scope));
+}
+```
+
+**Why:** LLVM debug info must be emitted as metadata. This is the foundation for line-accurate debugging in tools like `lldb` or `gdb`.
+
+
+## Emitting locations in codegen
+
+**Where:** `NumberExprAST::codegen()`, `VariableExprAST::codegen()`, `BinaryExprAST::codegen()` and others
+
+We simply call `emitLocation(this)` at the top of each codegen function.
+
+```cpp
+Value *NumberExprAST::codegen() {
+  emitLocation(this);
+  return ConstantFP::get(*TheContext, APFloat(Val));
+}
+```
+
+```cpp
+Value *BinaryExprAST::codegen() {
+  emitLocation(this);
+  if (Op == '=') {
+    // ...
+  }
+  // ...
+}
+```
+
+**Why:** This attaches the correct source location to each emitted instruction in the IR.
+
+
+## main returns int (real executable behavior)
+
+**Where:** `PrototypeAST::codegen()` and `FunctionAST::codegen()`
+
+We special-case `main` to return `i32` and cast the return value accordingly.
+
+```cpp
+Function *PrototypeAST::codegen() {
+  // Special case: main function returns int, everything else returns double
+  Type *RetType;
+  if (Name == "main") {
+    RetType = Type::getInt32Ty(*TheContext);
+  } else {
+    RetType = Type::getDoubleTy(*TheContext);
+  }
+
+  std::vector<Type *> Doubles(Args.size(), Type::getDoubleTy(*TheContext));
+  FunctionType *FT = FunctionType::get(RetType, Doubles, false);
+  // ...
+}
+```
+
+```cpp
+if (Value *RetVal = Body->codegen()) {
+  if (P.getName() == "main") {
+    RetVal = Builder->CreateFPToSI(RetVal, Type::getInt32Ty(*TheContext),
+                                   "mainret");
+  }
+  Builder->CreateRet(RetVal);
+  // ...
+}
+```
+
+**Why:** This is required for executables to exit cleanly with a status code.
+
+
+## Debug subprogram and parameter metadata
+
+**Where:** `FunctionAST::codegen()`
+
+We create a `DISubprogram` for the function and attach parameter info with `createParameterVariable()`.
+
+```cpp
+if (KSDbgInfo) {
+  Unit = DBuilder->createFile(KSDbgInfo->TheCU->getFilename(),
+                              KSDbgInfo->TheCU->getDirectory());
+  DIScope *FContext = Unit;
+  unsigned LineNo = P.getLine();
+  unsigned ScopeLine = LineNo;
+  SP = DBuilder->createFunction(
+      FContext, P.getName(), StringRef(), Unit, LineNo,
+      CreateFunctionType(TheFunction->arg_size()), ScopeLine,
+      DINode::FlagPrototyped, DISubprogram::SPFlagDefinition);
+  TheFunction->setSubprogram(SP);
+
+  KSDbgInfo->LexicalBlocks.push_back(SP);
+  emitLocation(nullptr);
+}
+```
+
+```cpp
+for (auto &Arg : TheFunction->args()) {
+  AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, Arg.getName());
+  // ...
+  if (KSDbgInfo) {
+    DILocalVariable *D = DBuilder->createParameterVariable(
+        SP, Arg.getName(), ++ArgIdx, Unit, LineNo, KSDbgInfo->getDoubleTy(),
+        true);
+
+    DBuilder->insertDeclare(Alloca, D, DBuilder->createExpression(),
+                            DILocation::get(SP->getContext(), LineNo, 0, SP),
+                            Builder->GetInsertBlock());
+  }
+  // ...
+}
+```
+
+**Why:** This gives debuggers full visibility into function boundaries and parameters.
+
+
+## Splitting initialization (context vs passes)
+
+**Where:** `InitializeContext()`, `InitializeOptimizationPasses()`, `InitializeModuleAndManagers()`
+
+This makes the compiler reusable for JIT, file interpretation, and object output.
+
+```cpp
+static void InitializeContext() {
+  TheContext = std::make_unique<LLVMContext>();
+  TheModule = std::make_unique<Module>("PyxcModule", *TheContext);
+  Builder = std::make_unique<IRBuilder<>>(*TheContext);
+}
+
+static void InitializeOptimizationPasses() {
+  TheFPM = std::make_unique<FunctionPassManager>();
+  TheLAM = std::make_unique<LoopAnalysisManager>();
+  TheFAM = std::make_unique<FunctionAnalysisManager>();
+  // ...
+  TheFPM->addPass(PromotePass());
+  TheFPM->addPass(InstCombinePass());
+  TheFPM->addPass(ReassociatePass());
+  TheFPM->addPass(GVNPass());
+  TheFPM->addPass(SimplifyCFGPass());
+  // ...
+}
+
+static void InitializeModuleAndManagers() {
+  InitializeContext();
+  TheModule->setDataLayout(TheJIT->getDataLayout());
+  InitializeOptimizationPasses();
+}
+```
+
+**Why:** We now create LLVM state in different modes, so separation improves clarity and reuse.
+
+
+## File parsing support (non-REPL)
+
+**Where:** `ParseSourceFile()`
+
+This helper consumes all tokens from a file and emits IR for each top-level construct.
+
+```cpp
+static void ParseSourceFile() {
+  while (CurTok != tok_eof) {
+    switch (CurTok) {
+    case tok_def:
+    case tok_decorator:
+      if (auto FnAST = ParseDefinition()) {
+        if (auto *FnIR = FnAST->codegen()) {
+          if (Verbose) {
+            fprintf(stderr, "Read function definition:\n");
+            FnIR->print(errs());
+            fprintf(stderr, "\n");
+          }
+        }
+      } else {
+        getNextToken();
       }
-      indentCount += LastChar == '\t' ? 8 - (LexLoc.Col % 8) : 1;
-      LastChar = advance();
+      break;
+    // ... extern, eol, top-level expr ...
+    }
+  }
+}
+```
+
+**Why:** This is the core for compiling files instead of just running a REPL loop.
+
+
+## Interpret file via JIT
+
+**Where:** `InterpretFile()`
+
+We open a file, parse it, and JIT execute top-level expressions.
+
+```cpp
+void InterpretFile(const std::string &filename) {
+  InitializeNativeTarget();
+  InitializeNativeTargetAsmPrinter();
+  InitializeNativeTargetAsmParser();
+
+  TheJIT = ExitOnErr(PyxcJIT::Create());
+  InitializeModuleAndManagers();
+
+  InputFile = fopen(filename.c_str(), "r");
+  if (!InputFile) {
+    errs() << "Error: Could not open file " << filename << "\n";
+    InputFile = stdin;
+    return;
+  }
+
+  getNextToken();
+  // ... parse like REPL, execute top-level expressions ...
+
+  fclose(InputFile);
+  InputFile = stdin;
+}
+```
+
+**Why:** This enables `pyxc -i file.pyxc` to run a whole file using the JIT.
+
+
+## Emit object files
+
+**Where:** `CompileToObjectFile()`
+
+We use the native target, set the target triple, and emit `.o` via the legacy pass manager.
+
+```cpp
+void CompileToObjectFile(const std::string &filename) {
+  InitializeNativeTarget();
+  InitializeNativeTargetAsmPrinter();
+  InitializeNativeTargetAsmParser();
+
+  InitializeContext();
+  InitializeOptimizationPasses();
+
+  InputFile = fopen(filename.c_str(), "r");
+  // ... parse ...
+
+  auto TargetTriple = sys::getDefaultTargetTriple();
+  TheModule->setTargetTriple(Triple(TargetTriple));
+
+  auto Target = TargetRegistry::lookupTarget(TargetTriple, Error);
+  // ... create TargetMachine ...
+
+  std::string outputFilename = getOutputFilename(filename, ".o");
+  raw_fd_ostream dest(outputFilename, EC, sys::fs::OF_None);
+
+  legacy::PassManager pass;
+  auto FileType = CodeGenFileType::ObjectFile;
+
+  if (TargetMachine->addPassesToEmitFile(pass, dest, nullptr, FileType)) {
+    errs() << "TargetMachine can't emit a file of this type\n";
+    return;
+  }
+
+  pass.run(*TheModule);
+  dest.flush();
+}
+```
+
+**Why:** This adds a true compiler mode: `pyxc -c file.pyxc`.
+
+
+## Build executables by linking runtime (if any)
+
+**Where:** `main()` (Executable case)
+
+We compile `pyxc` source to an object file, compile `runtime.c` if it exists, then link with our in-process linker helper.
+
+### Linker helper
+
+For executable output, we add a small linker wrapper at `../include/PyxcLinker.h`. It uses `lld` from inside `pyxc`, so we do not need to invoke an external linker command at runtime.
+
+Full file reference: [PyxcLinker.h](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/include/PyxcLinker.h)
+
+The code below focuses on the overall executable build flow. In the current implementation, the external linker command is replaced by a call to `PyxcLinker::Link(...)`.
+
+```cpp
+case Executable: {
+    std::string exeFile = getOutputFilename(InputFilename, "");
+    if (Verbose)
+    std::cout << "Compiling " << InputFilename
+                << " to executable: " << exeFile << "\n";
+
+    // Step 1: Compile the script to object file
+    std::string scriptObj = getOutputFilename(InputFilename, ".o");
+    CompileToObjectFile(InputFilename);
+
+    // Step 2: Optionally compile runtime.c to runtime.o if it exists
+    std::string runtimeC = "runtime.c"; // Or use absolute path if needed
+    std::string runtimeObj = "runtime.o";
+    bool hasRuntime = sys::fs::exists(runtimeC);
+
+    if (hasRuntime) {
+    if (Verbose)
+        std::cout << "Compiling runtime library...\n";
+
+    std::string compileRuntime =
+        "clang -c " + runtimeC + " -o " + runtimeObj;
+    int compileResult = system(compileRuntime.c_str());
+
+    if (compileResult != 0) {
+        errs() << "Error: Failed to compile runtime library\n";
+        errs() << "Make sure runtime.c exists in the current directory\n";
+        return 1;
+    }
+    } else if (Verbose) {
+    std::cout << "No runtime.c found; linking without runtime support\n";
     }
 
-    if (LastChar == '\r' || LastChar == '\n') {
-      if (didSetIndent) {
-        didSetIndent = false;
-        indentCount = 0;
-        ModuleIndentType = -1;
-      }
-      LastChar = advance();
-      continue;
+    // Step 3: Link object files
+    if (Verbose)
+    std::cout << "Linking...\n";
+
+    std::string linkCmd = "clang " + scriptObj;
+    if (hasRuntime)
+    linkCmd += " " + runtimeObj;
+    linkCmd += " -o " + exeFile;
+    int linkResult = system(linkCmd.c_str());
+
+    if (linkResult != 0) {
+    errs() << "Error: Linking failed\n";
+    return 1;
+    }
+
+    if (Verbose) {
+    std::cout << "Successfully created executable: " << exeFile << "\n";
+    // Optionally clean up intermediate files
+    std::cout << "Cleaning up intermediate files...\n";
+    remove(scriptObj.c_str());
+    if (hasRuntime)
+        remove(runtimeObj.c_str());
+    } else {
+    std::cout << exeFile << "\n";
+    remove(scriptObj.c_str());
+    if (hasRuntime)
+        remove(runtimeObj.c_str());
     }
 
     break;
-  }
-
-  return indentCount;
 }
 ```
 
-**Why:** We need a reliable indentation width at line start, and we need to ignore blank lines entirely.
+### Runtime support (why/when)
 
-## Indent / dedent detection and emission
+In JIT/REPL mode, `pyxc` runs inside a host process that already contains built-in functions like `printd` and `putchard`, so the JIT can resolve them by symbol name. In executable mode, there is no host process, so those symbols must come from somewhere else.
 
-**Where:** `IsIndent()`, `IsDedent()`, `HandleIndent()`, `HandleDedent()`
+That’s what `runtime.c` is for: a tiny C runtime that defines the built-ins. It’s **optional** because you only need it if your program references those functions. If `runtime.c` is present, `pyxc` compiles and links it; otherwise it links only your program object.
 
-We compare the computed `leadingWhitespace` against the top of the stack to decide whether to emit `indent`/`dedent` tokens.
+```c
+// runtime.c
+#include <stdio.h>
+
+#ifdef _WIN32
+#define DLLEXPORT __declspec(dllexport)
+#else
+#define DLLEXPORT
+#endif
+
+/// putchard - putchar that takes a double and returns 0.
+DLLEXPORT double putchard(double X) {
+  fputc((char)X, stderr);
+  return 0;
+}
+
+/// printd - printf that takes a double prints it as "%f\n", returning 0.
+DLLEXPORT double printd(double X) {
+  fprintf(stderr, "%f\n", X);
+  return 0;
+}
+```
+
+**Why:** This is the final step: the language now produces standalone binaries.
+
+
+## REPL loop tweaks (prompts and verbosity)
+
+**Where:** `MainLoop()` and `Handle*()` helpers
+
+We only print IR when `-v` is set, and we move the prompt so it doesn’t interfere with blank lines.
 
 ```cpp
-static bool IsIndent(int leadingWhitespace) {
-  return leadingWhitespace > Indents.back();
-}
-
-static bool IsDedent(int leadingWhitespace) {
-  return leadingWhitespace < Indents.back();
+if (Verbose) {
+  fprintf(stderr, "Read function definition:\n");
+  FnIR->print(errs());
+  fprintf(stderr, "\n");
 }
 ```
-
-On indent, we push the new level and emit `tok_indent`. On dedent, we pop until we reach a prior level and queue `tok_dedent` tokens. If the dedent doesn’t match any prior level, we emit `tok_error`.
 
 ```cpp
-static int HandleIndent(int leadingWhitespace) {
-  Indents.push_back(leadingWhitespace);
-  return tok_indent;
-}
+case tok_eol:
+  getNextToken();
+  break;
 
-static int HandleDedent(int leadingWhitespace) {
-  int dedents = 0;
-  while (leadingWhitespace < Indents.back()) {
-    Indents.pop_back();
-    dedents++;
+default:
+  fprintf(stderr, "ready> ");
+  switch (CurTok) {
+  case tok_decorator:
+  case tok_def:
+    HandleDefinition();
+    break;
+  // ...
   }
-
-  if (leadingWhitespace != Indents.back()) {
-    LogError("Expected indentation.");
-    Indents = {0};
-    PendingTokens.clear();
-    return tok_error;
-  }
-
-  while (dedents-- > 1) {
-    PendingTokens.push_back(tok_dedent);
-  }
-  return tok_dedent;
-}
+  break;
 ```
 
-**Why:** This mirrors Python’s block model. A dedent must land exactly on a prior indentation level.
+**Why:** This makes the REPL smoother, and keeps output clean unless verbose mode is requested.
 
-## EOF: draining open indents
 
-**Where:** `DrainIndents()` and `gettok()`
+## Wrap-up
 
-At EOF we emit any remaining dedents (implicitly closing all open blocks).
+By the end of this chapter, `pyxc` is no longer just a toy REPL. It has:
 
-```cpp
-static int DrainIndents() {
-  int dedents = 0;
-  while (Indents.size() > 1) {
-    Indents.pop_back();
-    dedents++;
-  }
+- Accurate line/column tracking
+- Debug metadata generation
+- File-based compilation
+- Object file output
+- Executable linking
+- Cleaner CLI and diagnostics
 
-  if (dedents > 0) {
-    while (dedents-- > 1)
-      PendingTokens.push_back(tok_dedent);
-    return tok_dedent;
-  }
+This is the pivot point where your language becomes a *real compiler toolchain*.
 
-  return tok_eof;
-}
-```
+Here are some samples you can try:
 
-**Why:** Python implicitly closes open blocks at EOF. This ensures the parser sees the dedents.
+Let's first try the interpreter.
 
-## The lexer control flow
+```python
+# fib.pyxc
+extern def printd(x)
 
-**Where:** `gettok()`
+def fib(x):
+    if(x < 3): 
+        return 1
+    else:
+        return fib(x-1) + fib(x-2)
 
-We added:
+def main():
+    return printd(fib(10))
 
-- A **line‑start** indentation phase (before regular token scanning)
-- A **pending token** phase (dedents queued from a previous line)
-- EOF handling via `DrainIndents()`
-
-The indentation phase calls `countLeadingWhitespace()` and then uses `IsIndent`/`IsDedent` to emit tokens.
-
-## Token printing for debugging
-
-**Where:** `TokenName()` and `PrintTokens()`
-
-A token stream printer makes it much easier to debug indentation. It prints one line of tokens per source line, including explicit `<indent=...>` and `<dedent>` tokens and a trailing `<eof>`.
-
-```cpp
-static const char *TokenName(int Tok) { /* ... */ }
-
-static void PrintTokens(const std::string &filename) {
-  int Tok = gettok();
-  bool FirstOnLine = true;
-
-  while (Tok != tok_eof) {
-    if (Tok == tok_eol) {
-      fprintf(stderr, "<eol>\n");
-      FirstOnLine = true;
-      Tok = gettok();
-      continue;
-    }
-
-    if (!FirstOnLine)
-      fprintf(stderr, " ");
-    FirstOnLine = false;
-
-    if (Tok == tok_indent) {
-      fprintf(stderr, "<indent=%d>", LastIndentWidth);
-    } else {
-      const char *Name = TokenName(Tok);
-      if (Name)
-        fprintf(stderr, "%s", Name);
-      else if (isascii(Tok))
-        fprintf(stderr, "<%c>", Tok);
-      else
-        fprintf(stderr, "<tok=%d>", Tok);
-    }
-
-    Tok = gettok();
-  }
-
-  if (!FirstOnLine)
-    fprintf(stderr, " ");
-  fprintf(stderr, "<eof>\n");
-}
-```
-
-**Why:** When debugging indentation, seeing explicit `indent`/`dedent` tokens is the fastest way to find mismatches between the lexer and the parser.
-
-## Command‑line mode: `-t` (tokens)
-
-**Where:** `ExecutionMode` enum + `main()`
-
-We add a `-t` mode to print the token stream for a file:
-
-```bash
-./pyxc fib.pyxc -t
+main()
 ```
 
 ```bash
-<extern> <def> <identifier> <(> <identifier> <)><eol>
-<def> <identifier> <(> <identifier> <)> <:><eol>
-<indent=4> <if> <(> <identifier> <<> <number> <)> <:><eol>
-<indent=8> <return> <number><eol>
-<dedent> <else> <:><eol>
-<indent=8> <return> <identifier> <(> <identifier> <-> <number> <)> <+> <identifier> <(> <identifier> <-> <number> <)><eol>
-<dedent> <dedent> <def> <identifier> <(> <)> <:><eol>
-<indent=4> <return> <identifier> <(> <identifier> <(> <number> <)> <)><eol>
-<dedent> <identifier> <(> <)><eol>
-<eof>
+$ ./pyxc fib.pyxc -i
+55.000000
 ```
 
-This pairs naturally with `PrintTokens()` and gives a fast, deterministic view of how the lexer is classifying the input.
+Next we try the executable. For this, we have to remove the call to main in our script.
 
-## Full Source Code Listing
+```python
+# fib.pyxc
+extern def printd(x)
+
+def fib(x):
+    if(x < 3): 
+        return 1
+    else:
+        return fib(x-1) + fib(x-2)
+
+def main():
+    return printd(fib(10))
+
+# main() <-- REMOVE THIS
+```
+
+We are ready to compile the file into an executable.
+
+```bash
+$./pyxc fib.pyxc
+fib
+
+$./fib
+55.000000
+```
+
+Now let's try generating an object file with our fib function and call it from C++ (What?!! YES!). For this we have to remove the main function from our script entirely and add it to the C++ file.
+
+```python
+# fib.pyxc
+# extern def printd(x) # <-- REMOVE THIS
+
+def fib(x):
+    if(x < 3): 
+        return 1
+    else:
+        return fib(x-1) + fib(x-2)
+
+## REMOVE EVERYTHING BELOW. 
+# def main():
+#     return printd(fib(10))
+
+# main() 
+```
+
+```cpp
+// main.cpp
+// clang++ main.cpp fib.o -o main
+#include <iostream>
+
+// We reference the function written in pyxc.
+// extern "C" because pyxc object files adhere
+// to C ABI / calling conventions.
+extern "C" {
+double fib(double);
+}
+
+int main() { std::cout << fib(10.0) << std::endl; }
+```
+
+```bash
+# compile fib.pyxc to fib.o
+$ ./pyxc fib.pyxc -c
+fib.o
+
+# compile main.cpp and link in fib.o
+$ clang++ main.cpp fib.o -o main
+
+# run
+$ ./main
+55
+```
+
+## Full Source Listing
+
 ```cpp
 #include "../include/PyxcJIT.h"
+#include "../include/PyxcLinker.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
@@ -322,14 +866,13 @@ static cl::opt<std::string> InputFilename(cl::Positional,
                                           cl::Optional, cl::cat(PyxcCategory));
 
 // Execution mode enum
-enum ExecutionMode { Interpret, Executable, Object, Tokens };
+enum ExecutionMode { Interpret, Executable, Object };
 
 static cl::opt<ExecutionMode> Mode(
     cl::desc("Execution mode:"),
     cl::values(clEnumValN(Interpret, "i",
                           "Interpret the input file immediately (default)"),
-               clEnumValN(Object, "c", "Compile to object file"),
-               clEnumValN(Tokens, "t", "Print tokens")),
+               clEnumValN(Object, "c", "Compile to object file")),
     cl::init(Executable), cl::cat(PyxcCategory));
 
 static cl::opt<std::string> OutputFilename(
@@ -376,9 +919,6 @@ static FILE *InputFile = stdin;
 enum Token {
   tok_eof = -1,
   tok_eol = -2,
-  tok_indent = -15,
-  tok_dedent = -16,
-  tok_error = -17,
 
   // commands
   tok_def = -3,
@@ -407,7 +947,7 @@ enum Token {
 
 static std::string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;             // Filled in if tok_number
-static int InForExpression;       // Track global parsing context
+static bool InForExpression;      // Track global parsing context
 
 // Keywords words like `def`, `extern` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
@@ -430,13 +970,6 @@ struct SourceLocation {
 static SourceLocation CurLoc;
 static SourceLocation LexLoc = {1, 0};
 
-// Indentation related variables
-static int ModuleIndentType = -1;
-static bool AtStartOfLine = true;
-static std::vector<int> Indents = {0};
-static std::deque<int> PendingTokens;
-static int LastIndentWidth = 0;
-
 static int advance() {
   int LastChar = getc(InputFile);
 
@@ -448,164 +981,11 @@ static int advance() {
   return LastChar;
 }
 
-namespace {
-class ExprAST;
-}
-std::unique_ptr<ExprAST> LogError(const char *Str);
-
-/// countIndent - count the indent in terms of spaces
-// LastChar is the current unconsumed character at the start of the line.
-// LexLoc.Col already reflects that character’s column (0-based, after
-// reading it), so for tabs we advance to the next tab stop using
-// (LexLoc.Col % 8).
-static int countLeadingWhitespace(int &LastChar) {
-  //   fprintf(stderr, "countLeadingWhitespace(%d, %d)", LexLoc.Line,
-  //   LexLoc.Col);
-
-  int indentCount = 0;
-  bool didSetIndent = false;
-
-  while (true) {
-    while (LastChar == ' ' || LastChar == '\t') {
-      if (ModuleIndentType == -1) {
-        didSetIndent = true;
-        ModuleIndentType = LastChar;
-      } else {
-        if (LastChar != ModuleIndentType) {
-          LogError("You cannot mix tabs and spaces.");
-          return -1;
-        }
-      }
-      indentCount += LastChar == '\t' ? 8 - (LexLoc.Col % 8) : 1;
-      LastChar = advance();
-    }
-
-    if (LastChar == '\r' || LastChar == '\n') { // encountered a blank line
-      //   PendingTokens.push_back(tok_eol);
-      if (didSetIndent) {
-        didSetIndent = false;
-        indentCount = 0;
-        ModuleIndentType = -1;
-      }
-
-      LastChar = advance(); // eat the newline
-      continue;
-    }
-
-    break;
-  }
-  //   fprintf(stderr, " = %d | AtStartOfLine = %s\n", indentCount,
-  //           AtStartOfLine ? "true" : "false");
-  return indentCount;
-}
-
-static bool IsIndent(int leadingWhitespace) {
-  assert(!Indents.empty());
-  assert(leadingWhitespace >= 0);
-  //   fprintf(stderr, "IsIndent(%d) = (%d)\n", leadingWhitespace,
-  //           leadingWhitespace > Indents.back());
-  return leadingWhitespace > Indents.back();
-}
-
-static int HandleIndent(int leadingWhitespace) {
-  assert(!Indents.empty());
-  assert(leadingWhitespace >= 0);
-
-  LastIndentWidth = leadingWhitespace;
-  Indents.push_back(leadingWhitespace);
-  return tok_indent;
-}
-
-static int DrainIndents() {
-  int dedents = 0;
-  while (Indents.size() > 1) {
-    Indents.pop_back();
-    dedents++;
-  }
-
-  if (dedents > 0) {
-    while (dedents-- > 1) {
-      PendingTokens.push_back(tok_dedent);
-    }
-    return tok_dedent;
-  }
-
-  return tok_eof;
-}
-
-static int HandleDedent(int leadingWhitespace) {
-  assert(!Indents.empty());
-  assert(leadingWhitespace >= 0);
-  assert(leadingWhitespace < Indents.back());
-
-  int dedents = 0;
-
-  while (leadingWhitespace < Indents.back()) {
-    Indents.pop_back();
-    dedents++;
-  }
-
-  if (leadingWhitespace != Indents.back()) {
-    LogError("Expected indentation.");
-    Indents = {0};
-    PendingTokens.clear();
-    return tok_error;
-  }
-
-  if (!dedents) // this should never happen
-  {
-    LogError("Internal error.");
-    return tok_error;
-  }
-
-  //   fprintf(stderr, "Pushing %d dedents for whitespace %d on %d, %d\n",
-  //   dedents,
-  //           leadingWhitespace, LexLoc.Line, LexLoc.Col);
-  while (dedents-- > 1) {
-    PendingTokens.push_back(tok_dedent);
-  }
-  return tok_dedent;
-}
-
-static bool IsDedent(int leadingWhitespace) {
-  assert(!Indents.empty());
-  //   fprintf(stderr, "Return %s for IsDedent(%d), Indents.back = %d\n",
-  //           (leadingWhitespace < Indents.back()) ? "true" : "false",
-  //           leadingWhitespace, Indents.back());
-  return leadingWhitespace < Indents.back();
-}
-
 /// gettok - Return the next token from standard input.
 static int gettok() {
-  static int LastChar = '\0';
+  static int LastChar = ' ';
 
-  if (LastChar == '\0')
-    LastChar = advance();
-
-  if (!PendingTokens.empty()) {
-    int tok = PendingTokens.front();
-    PendingTokens.pop_front();
-    return tok;
-  }
-
-  if (AtStartOfLine) {
-    int leadingWhitespace = countLeadingWhitespace(LastChar);
-    if (leadingWhitespace < 0)
-      return tok_error;
-
-    AtStartOfLine = false;
-    if (IsIndent(leadingWhitespace)) {
-      return HandleIndent(leadingWhitespace);
-    }
-    if (IsDedent(leadingWhitespace)) {
-      //   fprintf(stderr, "Pushing dedent on row:%d, col:%d\n", LexLoc.Line,
-      //           LexLoc.Col);
-      return HandleDedent(leadingWhitespace);
-    }
-  }
-
-  // Skip whitespace EXCEPT newlines (this will take care of spaces
-  // mid-expressions)
+  // Skip whitespace EXCEPT newlines
   while (isspace(LastChar) && LastChar != '\n' && LastChar != '\r')
     LastChar = advance();
 
@@ -617,8 +997,7 @@ static int gettok() {
     // If we called advance() here, it would block waiting for input,
     // requiring the user to press Enter twice in the REPL.
     // Setting LastChar = ' ' avoids this blocking read.
-    LastChar = '\0';
-    AtStartOfLine = true; // Modify state only when you're emitting the token.
+    LastChar = ' ';
     return tok_eol;
   }
 
@@ -660,99 +1039,13 @@ static int gettok() {
   }
 
   // Check for end of file.  Don't eat the EOF.
-  if (LastChar == EOF) {
-    return DrainIndents();
-  }
+  if (LastChar == EOF)
+    return tok_eof;
 
   // Otherwise, just return the character as its ascii value.
   int ThisChar = LastChar;
   LastChar = advance();
   return ThisChar;
-}
-
-static const char *TokenName(int Tok) {
-  switch (Tok) {
-  case tok_eof:
-    return "<eof>";
-  case tok_eol:
-    return "<eol>";
-  case tok_indent:
-    return "<indent>";
-  case tok_dedent:
-    return "<dedent>";
-  case tok_error:
-    return "<error>";
-  case tok_def:
-    return "<def>";
-  case tok_extern:
-    return "<extern>";
-  case tok_identifier:
-    return "<identifier>";
-  case tok_number:
-    return "<number>";
-  case tok_if:
-    return "<if>";
-  case tok_else:
-    return "<else>";
-  case tok_return:
-    return "<return>";
-  case tok_for:
-    return "<for>";
-  case tok_in:
-    return "<in>";
-  case tok_range:
-    return "<range>";
-  case tok_decorator:
-    return "<decorator>";
-  case tok_var:
-    return "<var>";
-  default:
-    return nullptr;
-  }
-}
-
-static void PrintTokens(const std::string &filename) {
-  // Open input file
-  InputFile = fopen(filename.c_str(), "r");
-  if (!InputFile) {
-    errs() << "Error: Could not open file " << filename << "\n";
-    InputFile = stdin;
-    return;
-  }
-
-  int Tok = gettok();
-  bool FirstOnLine = true;
-
-  while (Tok != tok_eof) {
-    if (Tok == tok_eol) {
-      fprintf(stderr, "<eol>\n");
-      FirstOnLine = true;
-      Tok = gettok();
-      continue;
-    }
-
-    if (!FirstOnLine)
-      fprintf(stderr, " ");
-    FirstOnLine = false;
-
-    if (Tok == tok_indent) {
-      fprintf(stderr, "<indent=%d>", LastIndentWidth);
-    } else {
-      const char *Name = TokenName(Tok);
-      if (Name)
-        fprintf(stderr, "%s", Name);
-      else if (isascii(Tok))
-        fprintf(stderr, "<%c>", Tok);
-      else
-        fprintf(stderr, "<tok=%d>", Tok);
-    }
-
-    Tok = gettok();
-  }
-
-  if (!FirstOnLine)
-    fprintf(stderr, " ");
-  fprintf(stderr, "<eof>\n");
 }
 
 //===----------------------------------------------------------------------===//
@@ -860,11 +1153,11 @@ public:
 };
 
 /// IfExprAST - Expression class for if/else.
-class IfExprAST : public ExprAST {
+class IfStmtAST : public ExprAST {
   std::unique_ptr<ExprAST> Cond, Then, Else;
 
 public:
-  IfExprAST(SourceLocation Loc, std::unique_ptr<ExprAST> Cond,
+  IfStmtAST(SourceLocation Loc, std::unique_ptr<ExprAST> Cond,
             std::unique_ptr<ExprAST> Then, std::unique_ptr<ExprAST> Else)
       : ExprAST(Loc), Cond(std::move(Cond)), Then(std::move(Then)),
         Else(std::move(Else)) {}
@@ -880,12 +1173,12 @@ public:
 };
 
 /// ForExprAST - Expression class for for/in.
-class ForExprAST : public ExprAST {
+class ForStmtAST : public ExprAST {
   std::string VarName;
   std::unique_ptr<ExprAST> Start, End, Step, Body;
 
 public:
-  ForExprAST(std::string VarName, std::unique_ptr<ExprAST> Start,
+  ForStmtAST(std::string VarName, std::unique_ptr<ExprAST> Start,
              std::unique_ptr<ExprAST> End, std::unique_ptr<ExprAST> Step,
              std::unique_ptr<ExprAST> Body)
       : VarName(std::move(VarName)), Start(std::move(Start)),
@@ -1005,7 +1298,7 @@ static int GetTokPrecedence() {
 
 /// LogError* - These are little helper functions for error handling.
 std::unique_ptr<ExprAST> LogError(const char *Str) {
-  InForExpression = 0;
+  InForExpression = false;
   fprintf(stderr, "%sError (Line: %d, Column: %d): %s\n%s", Red, CurLoc.Line,
           CurLoc.Col, Str, Reset);
   return nullptr;
@@ -1089,11 +1382,9 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
  * In later chapters, we will need to check the indentation
  * whenever we eat new lines.
  */
-static bool EatNewLines() {
-  bool consumedNewLine = CurTok == tok_eol;
+static void EatNewLines() {
   while (CurTok == tok_eol)
     getNextToken();
-  return consumedNewLine;
 }
 
 // ifexpr ::= 'if' expression ':' expression 'else' ':' expression
@@ -1110,17 +1401,7 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
     return LogError("expected `:`");
   getNextToken(); // eat ':'
 
-  bool ConditionUsesNewLines = EatNewLines();
-  int thenIndentLevel = 0, elseIndentLevel = 0;
-
-  // Parse `then` clause
-  if (ConditionUsesNewLines) {
-    if (CurTok != tok_indent) {
-      return LogError("Expected indent");
-    }
-    thenIndentLevel = Indents.back();
-    getNextToken(); // eat indent
-  }
+  EatNewLines();
 
   // Handle nested `if` and `for` expressions:
   // For `if` expressions, `return` statements are emitted inside the
@@ -1140,20 +1421,11 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
   if (!Then)
     return nullptr;
 
-  bool ThenUsesNewLines = EatNewLines();
-  if (!ThenUsesNewLines) {
-    return LogError("Expected newline before else condition");
-  }
-
-  if (ThenUsesNewLines && CurTok != tok_dedent) {
-    return LogError("Expected dedent after else");
-  }
-  // We could get multiple dedents from nested if's and for's
-  while (getNextToken() == tok_dedent)
-    ;
+  EatNewLines();
 
   if (CurTok != tok_else)
-    return LogError("Expected `else`");
+    return LogError("expected `else`");
+
   getNextToken(); // eat else
 
   if (CurTok != ':')
@@ -1161,23 +1433,7 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
 
   getNextToken(); // eat ':'
 
-  bool ElseUsesNewLines = EatNewLines();
-  if (ThenUsesNewLines != ElseUsesNewLines) {
-    return LogError("Both `then` and `else` clause should be consistent in "
-                    "their usage of newlines.");
-  }
-
-  if (ElseUsesNewLines) {
-    if (CurTok != tok_indent) {
-      return LogError("Expected indent.");
-    }
-    elseIndentLevel = Indents.back();
-    getNextToken(); // eat indent
-  }
-
-  if (thenIndentLevel != elseIndentLevel) {
-    return LogError("Indent mismatch between if and else");
-  }
+  EatNewLines();
 
   if (!InForExpression && CurTok != tok_if && CurTok != tok_for) {
     if (CurTok != tok_return)
@@ -1190,16 +1446,7 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
   if (!Else)
     return nullptr;
 
-  //   EatNewLines();
-
-  //   if (ThenUsesNewLines && CurTok != tok_dedent) {
-  //     return LogError("Expected dedent");
-  //   }
-  //   while (getNextToken() == tok_dedent)
-  //     ;
-  //   // getNextToken(); // eat dedent
-
-  return std::make_unique<IfExprAST>(IfLoc, std::move(Cond), std::move(Then),
+  return std::make_unique<IfStmtAST>(IfLoc, std::move(Cond), std::move(Then),
                                      std::move(Else));
 }
 
@@ -1207,7 +1454,7 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
 //   (`,` expression)? # optional
 // `)`: expression
 static std::unique_ptr<ExprAST> ParseForExpr() {
-  InForExpression++;
+  InForExpression = true;
   getNextToken(); // eat for
 
   if (CurTok != tok_identifier)
@@ -1255,12 +1502,7 @@ static std::unique_ptr<ExprAST> ParseForExpr() {
     return LogError("expected `:` after range operator");
   getNextToken(); // eat `:`
 
-  bool UsesNewLines = EatNewLines();
-
-  if (UsesNewLines && CurTok != tok_indent)
-    return LogError("expected indent.");
-
-  getNextToken(); // eat indent
+  EatNewLines();
 
   // `for` expressions don't have the return statement
   // they return 0 by default.
@@ -1268,9 +1510,8 @@ static std::unique_ptr<ExprAST> ParseForExpr() {
   if (!Body)
     return nullptr;
 
-  InForExpression--;
-
-  return std::make_unique<ForExprAST>(IdName, std::move(Start), std::move(End),
+  InForExpression = false;
+  return std::make_unique<ForStmtAST>(IdName, std::move(Start), std::move(End),
                                       std::move(Step), std::move(Body));
 }
 
@@ -1332,7 +1573,6 @@ static std::unique_ptr<ExprAST> ParseVarExpr() {
 static std::unique_ptr<ExprAST> ParsePrimary() {
   switch (CurTok) {
   default:
-    fprintf(stderr, "CurTok = %d\n", CurTok);
     return LogError("Unknown token when expecting an expression");
   case tok_identifier:
     return ParseIdentifierExpr();
@@ -1539,28 +1779,17 @@ static std::unique_ptr<FunctionAST> ParseDefinition() {
 
   EatNewLines();
 
-  if (CurTok != tok_indent)
-    return LogErrorF("Expected indentation.");
-  getNextToken(); // eat tok_indent
-
   if (!InForExpression && CurTok != tok_if && CurTok != tok_for &&
       CurTok != tok_var) {
-    if (CurTok != tok_return) {
-      //   fprintf(stderr, "CurTok = %d\n", CurTok);
+    if (CurTok != tok_return)
       return LogErrorF("Expected 'return' before expression");
-    }
-
     getNextToken(); // eat return
   }
 
-  auto E = ParseExpression();
-  if (!E)
-    return nullptr;
+  if (auto E = ParseExpression())
+    return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
 
-  EatNewLines();
-  while (CurTok == tok_dedent)
-    getNextToken();
-  return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
+  return nullptr;
 }
 
 /// toplevelexpr ::= expression
@@ -1798,7 +2027,7 @@ Value *CallExprAST::codegen() {
   return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
-Value *IfExprAST::codegen() {
+Value *IfStmtAST::codegen() {
   emitLocation(this);
 
   Value *CondV = Cond->codegen();
@@ -1854,7 +2083,7 @@ Value *IfExprAST::codegen() {
   return PN;
 }
 
-Value *ForExprAST::codegen() {
+Value *ForStmtAST::codegen() {
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
 
   // Create an alloca for the variable in the entry block.
@@ -2244,16 +2473,13 @@ static void HandleTopLevelExpression() {
 static void MainLoop() {
   while (true) {
     switch (CurTok) {
-    case tok_error:
-      return;
     case tok_eof:
       return;
+
     case tok_eol: // Skip newlines
       getNextToken();
       break;
-    case tok_dedent:
-      getNextToken();
-      break;
+
     default:
       fprintf(stderr, "ready> ");
       switch (CurTok) {
@@ -2301,7 +2527,7 @@ extern "C" DLLEXPORT double printd(double X) {
 
 static void ParseSourceFile() {
   // Parse all definitions from the file
-  while (CurTok != tok_eof && CurTok != tok_error) {
+  while (CurTok != tok_eof) {
     switch (CurTok) {
     case tok_def:
     case tok_decorator:
@@ -2376,7 +2602,7 @@ void InterpretFile(const std::string &filename) {
   // Parse the source file
   getNextToken();
 
-  while (CurTok != tok_eof && CurTok != tok_error) {
+  while (CurTok != tok_eof) {
     switch (CurTok) {
     case tok_def:
     case tok_decorator:
@@ -2564,21 +2790,15 @@ int main(int argc, char **argv) {
       errs() << "Error: -x and -c flags require an input file\n";
       return 1;
     }
-
-    if (Mode == Tokens) {
-      errs() << "Error: -t flag requires an input file\n";
-      return 1;
-    }
-
     if (!OutputFilename.empty()) {
-      errs() << "Error: REPL mode cannot work with an output file\n";
+      errs() << "Error: -o flag requires an input file\n";
       return 1;
     }
 
     // Start REPL
     REPL();
   } else {
-    if (EmitDebug && Mode != Executable && Mode != Object) {
+    if (Mode != Executable && Mode != Object && EmitDebug) {
       errs() << "Error: -g is only allowed with executable builds (-x) or "
                 "object builds (-o)\n";
       return 1;
@@ -2606,54 +2826,60 @@ int main(int argc, char **argv) {
       CompileToObjectFile(InputFilename);
 
       // Step 2: Optionally compile runtime.c to runtime.o if it exists
-      std::string runtimeC = "runtime.c"; // Or use absolute path if needed
+    //   std::string runtimeC = "runtime.c"; // Or use absolute path if needed
       std::string runtimeObj = "runtime.o";
-      bool hasRuntime = sys::fs::exists(runtimeC);
+    //   bool hasRuntime = sys::fs::exists(runtimeObj);
 
-      if (hasRuntime) {
-        if (Verbose)
-          std::cout << "Compiling runtime library...\n";
+    //   if (hasRuntime) {
+    //     if (Verbose)
+    //       std::cout << "Compiling runtime library...\n";
 
-        std::string compileRuntime =
-            "clang -c " + runtimeC + " -o " + runtimeObj;
-        int compileResult = system(compileRuntime.c_str());
+    //     std::string compileRuntime =
+    //         "clang -c " + runtimeC + " -o " + runtimeObj;
+    //     int compileResult = system(compileRuntime.c_str());
 
-        if (compileResult != 0) {
-          errs() << "Error: Failed to compile runtime library\n";
-          errs() << "Make sure runtime.c exists in the current directory\n";
-          return 1;
-        }
-      } else if (Verbose) {
-        std::cout << "No runtime.c found; linking without runtime support\n";
-      }
+    //     if (compileResult != 0) {
+    //       errs() << "Error: Failed to compile runtime library\n";
+    //       errs() << "Make sure runtime.c exists in the current directory\n";
+    //       return 1;
+    //     }
+    //   } else if (Verbose) {
+    //     std::cout << "No runtime.c found; linking without runtime support\n";
+    //   }
 
       // Step 3: Link object files
       if (Verbose)
         std::cout << "Linking...\n";
 
-      std::string linkCmd = "clang " + scriptObj;
-      if (hasRuntime)
-        linkCmd += " " + runtimeObj;
-      linkCmd += " -o " + exeFile;
-      int linkResult = system(linkCmd.c_str());
+    //   std::string linkCmd = "clang " + scriptObj;
+    //   if (hasRuntime)
+    //     linkCmd += " " + runtimeObj;
+    //   linkCmd += " -o " + exeFile;
+    //   int linkResult = system(linkCmd.c_str());
 
-      if (linkResult != 0) {
-        errs() << "Error: Linking failed\n";
+    //   if (linkResult != 0) {
+    //     errs() << "Error: Linking failed\n";
+    //     return 1;
+    //   }
+
+    // Step 3: Link using PyxcLinker (NO MORE system() calls!)
+    if (!PyxcLinker::Link(scriptObj, runtimeObj, exeFile)) {
+        errs() << "Linking failed\n";
         return 1;
-      }
+    }    
 
       if (Verbose) {
         std::cout << "Successfully created executable: " << exeFile << "\n";
         // Optionally clean up intermediate files
         std::cout << "Cleaning up intermediate files...\n";
         remove(scriptObj.c_str());
-        if (hasRuntime)
-          remove(runtimeObj.c_str());
+        // if (hasRuntime)
+        //   remove(runtimeObj.c_str());
       } else {
         std::cout << exeFile << "\n";
         remove(scriptObj.c_str());
-        if (hasRuntime)
-          remove(runtimeObj.c_str());
+        // if (hasRuntime)
+        //   remove(runtimeObj.c_str());
       }
 
       break;
@@ -2672,12 +2898,6 @@ int main(int argc, char **argv) {
         outs() << scriptObj << "\n";
       break;
     }
-    case Tokens: {
-      if (Verbose)
-        std::cout << "Tokenizing " << InputFilename << "...\n";
-      PrintTokens(InputFilename);
-      break;
-    }
     }
   }
 
@@ -2685,11 +2905,50 @@ int main(int argc, char **argv) {
 }
 ```
 
-## Compile and Run
+## Clang Compile Command
+
 ```bash
-# Compile
-$ clang++ -g -O3 -o pyxc pyxc.cpp `llvm-config --cxxflags --ldflags --system-libs --libs all`
+/usr/bin/clang++ -g -O3 pyxc.cpp \
+  `/Users/alankar/llvm-21-with-clang-lld-lldb-mlir/bin/llvm-config --cxxflags --ldflags --system-libs --libs all` \
+  -L/opt/homebrew/lib \
+  -Wl,-rpath,/opt/homebrew/lib \
+  -L/Users/alankar/llvm-21-with-clang-lld-lldb-mlir/lib \
+  -llldCommon -llldELF -llldMachO -llldCOFF \
+  -o pyxc
 ```
 
-## Conclusion
-Next, we'll handle multi‑expression blocks which will remove some of the weirdness of our rather limited single-expression syntax and allow us to write more expressive programs.
+## Making builds simpler
+
+If you do not want to type the full compile command every time, create a project-local `.env` file and a `build.sh` script.
+
+`.env`:
+
+```bash
+LLVM_PREFIX=$HOME/llvm-21-with-clang-lld-lldb-mlir
+HOMEBREW_LIB=/opt/homebrew/lib
+```
+
+`build.sh`:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+set -a
+source "$(dirname "$0")/.env"
+set +a
+
+/usr/bin/clang++ -g -O3 pyxc.cpp \
+  `$LLVM_PREFIX/bin/llvm-config --cxxflags --ldflags --system-libs --libs all` \
+  -L$HOMEBREW_LIB \
+  -Wl,-rpath,$HOMEBREW_LIB \
+  -L$LLVM_PREFIX/lib \
+  -llldCommon -llldELF -llldMachO -llldCOFF \
+  -o pyxc
+```
+
+Run the build with:
+
+```bash
+./build.sh
+```

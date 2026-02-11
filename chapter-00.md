@@ -31,21 +31,23 @@ This tutorial is structured into chapters covering individual topics, allowing y
 
 [Chapter #2: Implementing a Parser and AST](chapter-02.md) - With the lexer in place, we can talk about parsing techniques and basic AST construction. This tutorial describes recursive descent parsing and operator precedence parsing.
 
-[Chapter #3: Code generation to LLVM IR](chapter-03.md) - with the AST ready, we show how easy it is to generate LLVM IR, and show a simple way to incorporate LLVM into your project.
+[Chapter #3: Building LLVM from Source](chapter-03.md) - This chapter focuses on installation and toolchain setup. We build LLVM from source with `clang`, `clangd`, `lld`, and `lldb`, configure `PATH`/`LLVM_DIR`, and wire VS Code to the locally built `clangd` and `compile_commands.json`.
 
-[Chapter #4: Adding JIT and Optimizer Support](chapter-04.md) - One great thing about LLVM is its support for JIT compilation, so we’ll dive right into it and show you the 3 lines it takes to add JIT support. Later chapters show how to generate .o files.
+[Chapter #4: Code generation to LLVM IR](chapter-04.md) - With the AST ready, we show how easy it is to generate LLVM IR, and show a simple way to incorporate LLVM into your project.
 
-[Chapter #5: Extending the Language: Control Flow](chapter-05.md) - With the basic language up and running, we show how to extend it with control flow operations (‘if’ statement and a ‘for’ loop). This gives us a chance to talk about SSA construction and control flow.
+[Chapter #5: Adding JIT and Optimizer Support](chapter-05.md) - One great thing about LLVM is its support for JIT compilation, so we’ll dive right into it and show you the 3 lines it takes to add JIT support. Later chapters show how to generate .o files.
 
-[Chapter #6: Extending the Language: User-defined Operators](chapter-06.md) - This chapter extends the language to let users define arbitrary unary and binary operators - with assignable precedence! This allows us to build a significant piece of the “language” as library routines.
+[Chapter #6: Extending the Language: Control Flow](chapter-06.md) - With the basic language up and running, we show how to extend it with control flow operations (‘if’ statement and a ‘for’ loop). This gives us a chance to talk about SSA construction and control flow.
 
-[Chapter #7: Extending the Language: Mutable Variables](chapter-07.md) - This chapter talks about adding user-defined local variables along with an assignment operator. This shows how easy it is to construct SSA form in LLVM: LLVM does not require your front-end to construct SSA form in order to use it!
+[Chapter #7: Extending the Language: User-defined Operators](chapter-07.md) - This chapter extends the language to let users define arbitrary unary and binary operators - with assignable precedence! This allows us to build a significant piece of the “language” as library routines.
 
-[Chapter #8: Compiling to Object Files](chapter-08.md) - This chapter explains how to take LLVM IR and compile it down to object files, like a static compiler does.
+[Chapter #8: Extending the Language: Mutable Variables](chapter-08.md) - This chapter talks about adding user-defined local variables along with an assignment operator. This shows how easy it is to construct SSA form in LLVM: LLVM does not require your front-end to construct SSA form in order to use it!
 
-[Chapter #9: Debug Information](chapter-09.md) - A real language needs to support debuggers, so we add debug information that allows setting breakpoints in Pyxc functions, print out argument variables, and call functions!
+[Chapter #9: Compiling to Object Files](chapter-09.md) - This chapter explains how to take LLVM IR and compile it down to object files, like a static compiler does.
 
-[Chapter #10: Conclusion and other tidbits](chapter-10.md) - This chapter wraps up the *Core Foundation* series by discussing ways to extend the language and includes pointers to info on *special topics* like adding garbage collection support, exceptions, debugging, support for *spaghetti stacks*, etc.
+[Chapter #10: Debug Information](chapter-10.md) - A real language needs to support debuggers, so we add debug information that allows setting breakpoints in Pyxc functions, print out argument variables, and call functions!
+
+[Chapter #11: Conclusion and other tidbits](chapter-11.md) - This chapter wraps up the *Core Foundation* series by discussing ways to extend the language and includes pointers to info on *special topics* like adding garbage collection support, exceptions, debugging, support for *spaghetti stacks*, etc.
 
 ## Intermediate topics
 

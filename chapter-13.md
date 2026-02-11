@@ -1,278 +1,371 @@
-# 9. Pyxc: Adding Debug Information
+# 12. Python-Style Indentation
 
-## Introduction
-Welcome to Chapter 9 of the [Implementing a language with LLVM](chapter-00.md) tutorial. In chapters 1 through 8, we’ve built a decent little programming language with functions and variables. What happens if something goes wrong though, how do you debug your program?
+This chapter adds Python 3–style indentation to the language. We move from newline‑only structure to explicit `indent`/`dedent` tokens, and wire a token stream printer so you can see how the lexer is shaping the input. Each section names the functions that changed and why.
 
-Source level debugging uses formatted data that helps a debugger translate from binary and the state of the machine back to the source that the programmer wrote. In LLVM we generally use a format called DWARF. DWARF is a compact encoding that represents types, source locations, and variable locations.
+## Indentation rules (Python 3 style)
 
-The short summary of this chapter is that we’ll go through the various things you have to add to a programming language to support debug info, and how you translate that into DWARF.
+- A new block starts after `:` and is defined by **greater indentation** than its parent line.
+- A block ends when indentation **decreases** to a previous indentation level.
+- Indentation levels are **absolute** column widths; a dedent must match a previous level exactly.
+- Blank lines are ignored (they do not start or end blocks).
+- Tabs and spaces must **not be mixed** for indentation (we enforce one style for the module).
+- At end‑of‑file, any open indentation levels are **implicitly closed** with `dedent` tokens.
 
-Caveat: We’ll need to compile our program down to a standalone. This means that we’ll have a source file with a simple program written in Pyxc rather than the interactive JIT. It does involve a limitation that we can only have one “top level” command at a time to reduce the number of changes necessary.
+## Tracking indentation with a stack + pending tokens
 
-Here’s the sample program we’ll be compiling:
+We track indentation levels in a stack (`Indents`) and accumulate `dedent` tokens in a small deque (`PendingTokens`). Each line start computes its leading whitespace and compares it to the top of the stack.
 
-```cpp
-def fib(x): 
-    if x < 3: 
-        return 1 
-    else: 
-        return fib(x-1)+fib(x-2)
+For example, consider this `fib.pyxc`:
 
-fib(10) 
+```py
+extern def printd(x)
+
+def fib(x):
+    if(x < 3):
+        return 1
+    else:
+        return fib(x-1) + fib(x-2)
 ```
 
-## Why is this a hard problem?
-Debug information is a hard problem for a few different reasons - mostly centered around optimized code. First, optimization makes keeping source locations more difficult. In LLVM IR we keep the original source location for each IR level instruction on the instruction. Optimization passes should keep the source locations for newly created instructions, but merged instructions only get to keep a single location - this can cause jumping around when stepping through optimized programs. Secondly, optimization can move variables in ways that are either optimized out, shared in memory with other variables, or difficult to track. For the purposes of this tutorial we’re going to avoid optimization (as you’ll see with one of the next sets of patches).
+As we scan line by line, the indentation stack evolves like this (comments show the stack at each step):
 
-double main()
-
-To keep things simple, we follow the Kaleidoscope approach and wrap the program’s top-level expression in an implicit main function.
-
-In pyxc, all functions currently return double, so main is also emitted as a double-returning function. This is not a valid C/ABI entry point, and if you try to run the resulting executable normally, it may crash or exit unpredictably.
-
-For now, this is acceptable.
-
-At this stage, our goal is debugging and code generation, not producing a fully well-behaved executable. We only need the program to run far enough for a debugger (lldb) to enter main, step through the generated code, and correlate LLVM IR with source locations.
-
-In later chapters, we will fix this properly by:
-- JIT-executing code directly instead of relying on the OS entry point
-- Emitting object files and linking them with a small C/C++ wrapper that provides a correct int main()
-- Adding a real type system so main can explicitly return an int
-
-Until then, treating main as a double-returning function is a deliberate and temporary simplification that lets us focus on the compiler pipeline itself.
-
-## Compile Unit
-The top level container for a section of code in DWARF is a compile unit. This contains the type and function data for an individual translation unit (read: one file of source code). So the first thing we need to do is construct one for our fig.pyxc file.
-
-## DWARF Emission Setup
-Similar to the IRBuilder class we have a [DIBuilder](https://llvm.org/doxygen/classllvm_1_1DIBuilder.html) class that helps in constructing debug metadata for an LLVM IR file. It corresponds 1:1 similarly to IRBuilder and LLVM IR, but with nicer names. Using it does require that you be more familiar with DWARF terminology than you needed to be with IRBuilder and Instruction names, but if you read through the general documentation on the [Metadata Format](https://llvm.org/docs/SourceLevelDebugging.html) it should be a little more clear. We’ll be using this class to construct all of our IR level descriptions. Construction for it takes a module so we need to construct it shortly after we construct our module. We’ve left it as a global static variable to make it a bit easier to use.
-
-Next we’re going to create a small container to cache some of our frequent data. The first will be our compile unit, but we’ll also write a bit of code for our one type since we won’t have to worry about multiple typed expressions:
-
-```cpp
-static std::unique_ptr<DIBuilder> DBuilder;
-
-struct DebugInfo {
-  DICompileUnit *TheCU;
-  DIType *DblTy;
-
-  DIType *getDoubleTy();
-} KSDbgInfo;
-
-DIType *DebugInfo::getDoubleTy() {
-  if (DblTy)
-    return DblTy;
-
-  DblTy = DBuilder->createBasicType("double", 64, dwarf::DW_ATE_float);
-  return DblTy;
-}
+```text
+# start: [0]
+"def fib": indent=0   -> [0]
+"    if": indent=4    -> push 4      -> [0, 4]
+"        return": 8   -> push 8      -> [0, 4, 8]
+"    else": 4         -> pop 8       -> [0, 4]  (emit dedent)
+"        return": 8   -> push 8      -> [0, 4, 8]
+"<eof>":               -> pop to 0    -> [0]     (emit dedent, dedent)
 ```
 
-And then later on in main when we’re constructing our module:
+This is why a **stack + queue** design works well: the stack records indentation levels, while the queue lets the lexer return `dedent` tokens one at a time.
+
+## New tokens for indentation
+
+**Where:** `enum Token`
+
+We add three new tokens:
+
+- `tok_indent` for the start of a block
+- `tok_dedent` for the end of a block
+- `tok_error` for indentation errors
+
+These are used by the lexer and parser to preserve the block structure.
+
+## Counting leading whitespace
+
+**Where:** `countLeadingWhitespace()`
+
+We scan the leading spaces/tabs at the start of each logical line. Tabs are expanded to the next tab stop, and we enforce a single indentation style per module (spaces **or** tabs).
 
 ```cpp
-DBuilder = std::make_unique<DIBuilder>(*TheModule);
+static int countLeadingWhitespace(int &LastChar) {
+  int indentCount = 0;
+  bool didSetIndent = false;
 
-KSDbgInfo.TheCU = DBuilder->createCompileUnit(
-    dwarf::DW_LANG_C, DBuilder->createFile("fib.pyxc", "."),
-    "Pyxc Compiler", false, "", 0);    
-```
-
-There are a couple of things to note here. First, while we’re producing a compile unit for a language called Kaleidoscope we used the language constant for C. This is because a debugger wouldn’t necessarily understand the calling conventions or default ABI for a language it doesn’t recognize and we follow the C ABI in our LLVM code generation so it’s the closest thing to accurate. This ensures we can actually call functions from the debugger and have them execute. Secondly, you’ll see the “fib.ks” in the call to createCompileUnit. This is a default hard coded value since we’re using shell redirection to put our source into the Kaleidoscope compiler. In a usual front end you’d have an input file name and it would go there.
-
-One last thing as part of emitting debug information via DIBuilder is that we need to “finalize” the debug information. The reasons are part of the underlying API for DIBuilder, but make sure you do this near the end of main:
-
-```cpp
-DBuilder->finalize();
-```
-
-before you dump out the module.
-
-## Functions
-Now that we have our Compile Unit and our source locations, we can add function definitions to the debug info. So in FunctionAST::codegen() we add a few lines of code to describe a context for our subprogram, in this case the “File”, and the actual definition of the function itself.
-
-So the context:
-```cpp
-DIFile *Unit = DBuilder->createFile(KSDbgInfo.TheCU->getFilename(),
-                                    KSDbgInfo.TheCU->getDirectory());
-```
-
-giving us an DIFile and asking the Compile Unit we created above for the directory and filename where we are currently. Then, for now, we use some source locations of 0 (since our AST doesn’t currently have source location information) and construct our function definition:
-
-```cpp
-DIScope *FContext = Unit;
-unsigned LineNo = 0;
-unsigned ScopeLine = 0;
-DISubprogram *SP = DBuilder->createFunction(
-    FContext, P.getName(), StringRef(), Unit, LineNo,
-    CreateFunctionType(TheFunction->arg_size()),
-    ScopeLine,
-    DINode::FlagPrototyped,
-    DISubprogram::SPFlagDefinition);
-TheFunction->setSubprogram(SP);
-```
-
-## Source Locations
-The most important thing for debug information is accurate source location - this makes it possible to map your source code back. We have a problem though, Kaleidoscope really doesn’t have any source location information in the lexer or parser so we’ll need to add it.
-
-```cpp
-struct SourceLocation {
-  int Line;
-  int Col;
-};
-static SourceLocation CurLoc;
-static SourceLocation LexLoc = {1, 0};
-
-static int advance() {
-  int LastChar = getchar();
-
-  if (LastChar == '\n' || LastChar == '\r') {
-    LexLoc.Line++;
-    LexLoc.Col = 0;
-  } else
-    LexLoc.Col++;
-  return LastChar;
-}
-```
-
-In this set of code we’ve added some functionality on how to keep track of the line and column of the “source file”. As we lex every token we set our current “lexical location” to the assorted line and column for the beginning of the token. We do this by overriding all of the previous calls to getchar() with our new advance() that keeps track of the information and then we have added to all of our AST classes a source location:
-
-```cpp
-class ExprAST {
-  SourceLocation Loc;
-
-  public:
-    ExprAST(SourceLocation Loc = CurLoc) : Loc(Loc) {}
-    virtual ~ExprAST() {}
-    virtual Value* codegen() = 0;
-    int getLine() const { return Loc.Line; }
-    int getCol() const { return Loc.Col; }
-    virtual raw_ostream &dump(raw_ostream &out, int ind) {
-      return out << ':' << getLine() << ':' << getCol() << '\n';
+  while (true) {
+    while (LastChar == ' ' || LastChar == '\t') {
+      if (ModuleIndentType == -1) {
+        didSetIndent = true;
+        ModuleIndentType = LastChar;
+      } else if (LastChar != ModuleIndentType) {
+        LogError("You cannot mix tabs and spaces.");
+        return -1;
+      }
+      indentCount += LastChar == '\t' ? 8 - (LexLoc.Col % 8) : 1;
+      LastChar = advance();
     }
-```
 
-that we pass down through when we create a new expression:
+    if (LastChar == '\r' || LastChar == '\n') {
+      if (didSetIndent) {
+        didSetIndent = false;
+        indentCount = 0;
+        ModuleIndentType = -1;
+      }
+      LastChar = advance();
+      continue;
+    }
 
-```cpp
-LHS = std::make_unique<BinaryExprAST>(BinLoc, BinOp, std::move(LHS),
-                                       std::move(RHS));
-```
+    break;
+  }
 
-giving us locations for each of our expressions and variables.
-
-To make sure that every instruction gets proper source location information, we have to tell Builder whenever we’re at a new source location. We use a small helper function for this:
-
-```cpp
-void DebugInfo::emitLocation(ExprAST *AST) {
-  if (!AST)
-    return Builder->SetCurrentDebugLocation(DebugLoc());
-  DIScope *Scope;
-  if (LexicalBlocks.empty())
-    Scope = TheCU;
-  else
-    Scope = LexicalBlocks.back();
-  Builder->SetCurrentDebugLocation(
-      DILocation::get(Scope->getContext(), AST->getLine(), AST->getCol(), Scope));
+  return indentCount;
 }
 ```
 
-This both tells the main IRBuilder where we are, but also what scope we’re in. The scope can either be on compile-unit level or be the nearest enclosing lexical block like the current function. To represent this we create a stack of scopes in DebugInfo:
+**Why:** We need a reliable indentation width at line start, and we need to ignore blank lines entirely.
+
+## Indent / dedent detection and emission
+
+**Where:** `IsIndent()`, `IsDedent()`, `HandleIndent()`, `HandleDedent()`
+
+We compare the computed `leadingWhitespace` against the top of the stack to decide whether to emit `indent`/`dedent` tokens.
 
 ```cpp
-std::vector<DIScope *> LexicalBlocks;
-```
+static bool IsIndent(int leadingWhitespace) {
+  return leadingWhitespace > Indents.back();
+}
 
-and push the scope (function) to the top of the stack when we start generating the code for each function:
-
-```cpp
-KSDbgInfo.LexicalBlocks.push_back(SP);
-```
-
-Also, we may not forget to pop the scope back off of the scope stack at the end of the code generation for the function:
-
-```cpp
-// Pop off the lexical block for the function since we added it
-// unconditionally.
-KSDbgInfo.LexicalBlocks.pop_back();
-```
-
-Then we make sure to emit the location every time we start to generate code for a new AST object:
-
-```cpp
-KSDbgInfo.emitLocation(this);
-```
-
-## Variables
-Now that we have functions, we need to be able to print out the variables we have in scope. Let’s get our function arguments set up so we can get decent backtraces and see how our functions are being called. It isn’t a lot of code, and we generally handle it when we’re creating the argument allocas in FunctionAST::codegen.
-
-```cpp
-// Record the function arguments in the NamedValues map.
-NamedValues.clear();
-unsigned ArgIdx = 0;
-for (auto &Arg : TheFunction->args()) {
-  // Create an alloca for this variable.
-  AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, Arg.getName());
-
-  // Create a debug descriptor for the variable.
-  DILocalVariable *D = DBuilder->createParameterVariable(
-      SP, Arg.getName(), ++ArgIdx, Unit, LineNo, KSDbgInfo.getDoubleTy(),
-      true);
-
-  DBuilder->insertDeclare(Alloca, D, DBuilder->createExpression(),
-                          DILocation::get(SP->getContext(), LineNo, 0, SP),
-                          Builder->GetInsertBlock());
-
-  // Store the initial value into the alloca.
-  Builder->CreateStore(&Arg, Alloca);
-
-  // Add arguments to variable symbol table.
-  NamedValues[std::string(Arg.getName())] = Alloca;
+static bool IsDedent(int leadingWhitespace) {
+  return leadingWhitespace < Indents.back();
 }
 ```
 
-Here we’re first creating the variable, giving it the scope (SP), the name, source location, type, and since it’s an argument, the argument index. Next, we create a #dbg_declare record to indicate at the IR level that we’ve got a variable in an alloca (and it gives a starting location for the variable), and setting a source location for the beginning of the scope on the declare.
-
-One interesting thing to note at this point is that various debuggers have assumptions based on how code and debug information was generated for them in the past. In this case we need to do a little bit of a hack to avoid generating line information for the function prologue so that the debugger knows to skip over those instructions when setting a breakpoint. So in FunctionAST::CodeGen we add some more lines:
+On indent, we push the new level and emit `tok_indent`. On dedent, we pop until we reach a prior level and queue `tok_dedent` tokens. If the dedent doesn’t match any prior level, we emit `tok_error`.
 
 ```cpp
-// Unset the location for the prologue emission (leading instructions with no
-// location in a function are considered part of the prologue and the debugger
-// will run past them when breaking on a function)
-KSDbgInfo.emitLocation(nullptr);
+static int HandleIndent(int leadingWhitespace) {
+  Indents.push_back(leadingWhitespace);
+  return tok_indent;
+}
+
+static int HandleDedent(int leadingWhitespace) {
+  int dedents = 0;
+  while (leadingWhitespace < Indents.back()) {
+    Indents.pop_back();
+    dedents++;
+  }
+
+  if (leadingWhitespace != Indents.back()) {
+    LogError("Expected indentation.");
+    Indents = {0};
+    PendingTokens.clear();
+    return tok_error;
+  }
+
+  while (dedents-- > 1) {
+    PendingTokens.push_back(tok_dedent);
+  }
+  return tok_dedent;
+}
 ```
 
-and then emit a new location when we actually start generating code for the body of the function:
+**Why:** This mirrors Python’s block model. A dedent must land exactly on a prior indentation level.
+
+## EOF: draining open indents
+
+**Where:** `DrainIndents()` and `gettok()`
+
+At EOF we emit any remaining dedents (implicitly closing all open blocks).
 
 ```cpp
-KSDbgInfo.emitLocation(Body.get());
+static int DrainIndents() {
+  int dedents = 0;
+  while (Indents.size() > 1) {
+    Indents.pop_back();
+    dedents++;
+  }
+
+  if (dedents > 0) {
+    while (dedents-- > 1)
+      PendingTokens.push_back(tok_dedent);
+    return tok_dedent;
+  }
+
+  return tok_eof;
+}
 ```
 
-With this we have enough debug information to set breakpoints in functions, print out argument variables, and call functions. Not too bad for just a few simple lines of code!
+**Why:** Python implicitly closes open blocks at EOF. This ensures the parser sees the dedents.
 
+## The lexer control flow
 
-## Full Code Listing
-Here is the complete code listing for our running example:
+**Where:** `gettok()`
+
+We added:
+
+- A **line‑start** indentation phase (before regular token scanning)
+- A **pending token** phase (dedents queued from a previous line)
+- EOF handling via `DrainIndents()`
+
+The indentation phase calls `countLeadingWhitespace()` and then uses `IsIndent`/`IsDedent` to emit tokens.
+
+## Token printing for debugging
+
+**Where:** `TokenName()` and `PrintTokens()`
+
+A token stream printer makes it much easier to debug indentation. It prints one line of tokens per source line, including explicit `<indent=...>` and `<dedent>` tokens and a trailing `<eof>`.
 
 ```cpp
-#include "llvm/Analysis/BasicAliasAnalysis.h"
+static const char *TokenName(int Tok) { /* ... */ }
+
+static void PrintTokens(const std::string &filename) {
+  int Tok = gettok();
+  bool FirstOnLine = true;
+
+  while (Tok != tok_eof) {
+    if (Tok == tok_eol) {
+      fprintf(stderr, "<eol>\n");
+      FirstOnLine = true;
+      Tok = gettok();
+      continue;
+    }
+
+    if (!FirstOnLine)
+      fprintf(stderr, " ");
+    FirstOnLine = false;
+
+    if (Tok == tok_indent) {
+      fprintf(stderr, "<indent=%d>", LastIndentWidth);
+    } else {
+      const char *Name = TokenName(Tok);
+      if (Name)
+        fprintf(stderr, "%s", Name);
+      else if (isascii(Tok))
+        fprintf(stderr, "<%c>", Tok);
+      else
+        fprintf(stderr, "<tok=%d>", Tok);
+    }
+
+    Tok = gettok();
+  }
+
+  if (!FirstOnLine)
+    fprintf(stderr, " ");
+  fprintf(stderr, "<eof>\n");
+}
+```
+
+**Why:** When debugging indentation, seeing explicit `indent`/`dedent` tokens is the fastest way to find mismatches between the lexer and the parser.
+
+## Command‑line mode: `-t` (tokens)
+
+**Where:** `ExecutionMode` enum + `main()`
+
+We add a `-t` mode to print the token stream for a file:
+
+```bash
+./pyxc fib.pyxc -t
+```
+
+```bash
+<extern> <def> <identifier> <(> <identifier> <)><eol>
+<def> <identifier> <(> <identifier> <)> <:><eol>
+<indent=4> <if> <(> <identifier> <<> <number> <)> <:><eol>
+<indent=8> <return> <number><eol>
+<dedent> <else> <:><eol>
+<indent=8> <return> <identifier> <(> <identifier> <-> <number> <)> <+> <identifier> <(> <identifier> <-> <number> <)><eol>
+<dedent> <dedent> <def> <identifier> <(> <)> <:><eol>
+<indent=4> <return> <identifier> <(> <identifier> <(> <number> <)> <)><eol>
+<dedent> <identifier> <(> <)><eol>
+<eof>
+```
+
+This pairs naturally with `PrintTokens()` and gives a fast, deterministic view of how the lexer is classifying the input.
+
+## Full Source Code Listing
+```cpp
+#include "../include/PyxcJIT.h"
+#include "llvm/ADT/APFloat.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/DIBuilder.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/PassManager.h"
+#include "llvm/IR/Type.h"
 #include "llvm/IR/Verifier.h"
+#include "llvm/MC/TargetRegistry.h"
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Passes/StandardInstrumentations.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/TargetSelect.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/Target/TargetMachine.h"
+#include "llvm/Target/TargetOptions.h"
 #include "llvm/TargetParser/Host.h"
+#include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Scalar.h"
+#include "llvm/Transforms/Scalar/GVN.h"
+#include "llvm/Transforms/Scalar/Reassociate.h"
+#include "llvm/Transforms/Scalar/SimplifyCFG.h"
+#include "llvm/Transforms/Utils/Mem2Reg.h"
+#include <cassert>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
+#include <iostream>
 #include <map>
+#include <memory>
 #include <string>
+#include <unistd.h>
+#include <utility>
 #include <vector>
 
 using namespace llvm;
-using namespace llvm::sys;
+using namespace llvm::orc;
+
+//===----------------------------------------------------------------------===//
+// Color
+//===----------------------------------------------------------------------===//
+bool UseColor = isatty(fileno(stderr));
+const char *Red = UseColor ? "\x1b[31m" : "";
+const char *Bold = UseColor ? "\x1b[1m" : "";
+const char *Reset = UseColor ? "\x1b[0m" : "";
+
+//===----------------------------------------------------------------------===//
+// Command line arguments
+//===----------------------------------------------------------------------===//
+// Create a category for your options
+static cl::OptionCategory PyxcCategory("Pyxc Options");
+
+// Positional input file (optional)
+static cl::opt<std::string> InputFilename(cl::Positional,
+                                          cl::desc("<input file>"),
+                                          cl::Optional, cl::cat(PyxcCategory));
+
+// Execution mode enum
+enum ExecutionMode { Interpret, Executable, Object, Tokens };
+
+static cl::opt<ExecutionMode> Mode(
+    cl::desc("Execution mode:"),
+    cl::values(clEnumValN(Interpret, "i",
+                          "Interpret the input file immediately (default)"),
+               clEnumValN(Object, "c", "Compile to object file"),
+               clEnumValN(Tokens, "t", "Print tokens")),
+    cl::init(Executable), cl::cat(PyxcCategory));
+
+static cl::opt<std::string> OutputFilename(
+    "o",
+    cl::desc("Specify output filename (optional, defaults to input basename)"),
+    cl::value_desc("filename"), cl::Optional);
+
+static cl::opt<bool> Verbose("v", cl::desc("Enable verbose output"));
+
+static cl::opt<bool> EmitDebug("g", cl::desc("Emit debug information"),
+                               cl::init(false), cl::cat(PyxcCategory));
+
+std::string getOutputFilename(const std::string &input,
+                              const std::string &ext) {
+  if (!OutputFilename.empty())
+    return OutputFilename;
+
+  // Strip extension from input and add new extension
+  size_t lastDot = input.find_last_of('.');
+  size_t lastSlash = input.find_last_of("/\\");
+
+  std::string base;
+  if (lastDot != std::string::npos &&
+      (lastSlash == std::string::npos || lastDot > lastSlash)) {
+    base = input.substr(0, lastDot);
+  } else {
+    base = input;
+  }
+
+  return base + ext;
+}
+
+//===----------------------------------------------------------------------===//
+// I/O
+//===----------------------------------------------------------------------===//
+static FILE *InputFile = stdin;
 
 //===----------------------------------------------------------------------===//
 // Lexer
@@ -283,6 +376,9 @@ using namespace llvm::sys;
 enum Token {
   tok_eof = -1,
   tok_eol = -2,
+  tok_indent = -15,
+  tok_dedent = -16,
+  tok_error = -17,
 
   // commands
   tok_def = -3,
@@ -309,43 +405,9 @@ enum Token {
   tok_var = -14,
 };
 
-std::string getTokName(int Tok) {
-  switch (Tok) {
-  case tok_eof:
-    return "eof";
-  case tok_eol:
-    return "eol";
-  case tok_def:
-    return "def";
-  case tok_extern:
-    return "extern";
-  case tok_identifier:
-    return "identifier";
-  case tok_number:
-    return "number";
-  case tok_if:
-    return "if";
-  case tok_else:
-    return "else";
-  case tok_return:
-    return "return";
-  case tok_for:
-    return "for";
-  case tok_in:
-    return "in";
-  case tok_range:
-    return "range";
-  case tok_decorator:
-    return "decorator";
-  case tok_var:
-    return "var";
-  }
-  return std::string(1, (char)Tok);
-}
-
 static std::string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;             // Filled in if tok_number
-static bool InForExpression;      // Track global parsing context
+static int InForExpression;       // Track global parsing context
 
 // Keywords words like `def`, `extern` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
@@ -361,20 +423,6 @@ static constexpr int DEFAULT_BINARY_PRECEDENCE = 30;
 static std::map<std::string, OperatorType> Decorators = {
     {"unary", OperatorType::Unary}, {"binary", OperatorType::Binary}};
 
-namespace {
-class PrototypeAST;
-class ExprAST;
-} // namespace
-
-struct DebugInfo {
-  DICompileUnit *TheCU;
-  DIType *DblTy;
-  std::vector<DIScope *> LexicalBlocks;
-
-  void emitLocation(ExprAST *AST);
-  DIType *getDoubleTy();
-} KSDbgInfo;
-
 struct SourceLocation {
   int Line;
   int Col;
@@ -382,8 +430,15 @@ struct SourceLocation {
 static SourceLocation CurLoc;
 static SourceLocation LexLoc = {1, 0};
 
+// Indentation related variables
+static int ModuleIndentType = -1;
+static bool AtStartOfLine = true;
+static std::vector<int> Indents = {0};
+static std::deque<int> PendingTokens;
+static int LastIndentWidth = 0;
+
 static int advance() {
-  int LastChar = getchar();
+  int LastChar = getc(InputFile);
 
   if (LastChar == '\n' || LastChar == '\r') {
     LexLoc.Line++;
@@ -393,11 +448,164 @@ static int advance() {
   return LastChar;
 }
 
+namespace {
+class ExprAST;
+}
+std::unique_ptr<ExprAST> LogError(const char *Str);
+
+/// countIndent - count the indent in terms of spaces
+// LastChar is the current unconsumed character at the start of the line.
+// LexLoc.Col already reflects that character’s column (0-based, after
+// reading it), so for tabs we advance to the next tab stop using
+// (LexLoc.Col % 8).
+static int countLeadingWhitespace(int &LastChar) {
+  //   fprintf(stderr, "countLeadingWhitespace(%d, %d)", LexLoc.Line,
+  //   LexLoc.Col);
+
+  int indentCount = 0;
+  bool didSetIndent = false;
+
+  while (true) {
+    while (LastChar == ' ' || LastChar == '\t') {
+      if (ModuleIndentType == -1) {
+        didSetIndent = true;
+        ModuleIndentType = LastChar;
+      } else {
+        if (LastChar != ModuleIndentType) {
+          LogError("You cannot mix tabs and spaces.");
+          return -1;
+        }
+      }
+      indentCount += LastChar == '\t' ? 8 - (LexLoc.Col % 8) : 1;
+      LastChar = advance();
+    }
+
+    if (LastChar == '\r' || LastChar == '\n') { // encountered a blank line
+      //   PendingTokens.push_back(tok_eol);
+      if (didSetIndent) {
+        didSetIndent = false;
+        indentCount = 0;
+        ModuleIndentType = -1;
+      }
+
+      LastChar = advance(); // eat the newline
+      continue;
+    }
+
+    break;
+  }
+  //   fprintf(stderr, " = %d | AtStartOfLine = %s\n", indentCount,
+  //           AtStartOfLine ? "true" : "false");
+  return indentCount;
+}
+
+static bool IsIndent(int leadingWhitespace) {
+  assert(!Indents.empty());
+  assert(leadingWhitespace >= 0);
+  //   fprintf(stderr, "IsIndent(%d) = (%d)\n", leadingWhitespace,
+  //           leadingWhitespace > Indents.back());
+  return leadingWhitespace > Indents.back();
+}
+
+static int HandleIndent(int leadingWhitespace) {
+  assert(!Indents.empty());
+  assert(leadingWhitespace >= 0);
+
+  LastIndentWidth = leadingWhitespace;
+  Indents.push_back(leadingWhitespace);
+  return tok_indent;
+}
+
+static int DrainIndents() {
+  int dedents = 0;
+  while (Indents.size() > 1) {
+    Indents.pop_back();
+    dedents++;
+  }
+
+  if (dedents > 0) {
+    while (dedents-- > 1) {
+      PendingTokens.push_back(tok_dedent);
+    }
+    return tok_dedent;
+  }
+
+  return tok_eof;
+}
+
+static int HandleDedent(int leadingWhitespace) {
+  assert(!Indents.empty());
+  assert(leadingWhitespace >= 0);
+  assert(leadingWhitespace < Indents.back());
+
+  int dedents = 0;
+
+  while (leadingWhitespace < Indents.back()) {
+    Indents.pop_back();
+    dedents++;
+  }
+
+  if (leadingWhitespace != Indents.back()) {
+    LogError("Expected indentation.");
+    Indents = {0};
+    PendingTokens.clear();
+    return tok_error;
+  }
+
+  if (!dedents) // this should never happen
+  {
+    LogError("Internal error.");
+    return tok_error;
+  }
+
+  //   fprintf(stderr, "Pushing %d dedents for whitespace %d on %d, %d\n",
+  //   dedents,
+  //           leadingWhitespace, LexLoc.Line, LexLoc.Col);
+  while (dedents-- > 1) {
+    PendingTokens.push_back(tok_dedent);
+  }
+  return tok_dedent;
+}
+
+static bool IsDedent(int leadingWhitespace) {
+  assert(!Indents.empty());
+  //   fprintf(stderr, "Return %s for IsDedent(%d), Indents.back = %d\n",
+  //           (leadingWhitespace < Indents.back()) ? "true" : "false",
+  //           leadingWhitespace, Indents.back());
+  return leadingWhitespace < Indents.back();
+}
+
 /// gettok - Return the next token from standard input.
 static int gettok() {
-  static int LastChar = ' ';
+  static int LastChar = '\0';
 
-  // Skip whitespace EXCEPT newlines
+  if (LastChar == '\0')
+    LastChar = advance();
+
+  if (!PendingTokens.empty()) {
+    int tok = PendingTokens.front();
+    PendingTokens.pop_front();
+    return tok;
+  }
+
+  if (AtStartOfLine) {
+    int leadingWhitespace = countLeadingWhitespace(LastChar);
+    if (leadingWhitespace < 0)
+      return tok_error;
+
+    AtStartOfLine = false;
+    if (IsIndent(leadingWhitespace)) {
+      return HandleIndent(leadingWhitespace);
+    }
+    if (IsDedent(leadingWhitespace)) {
+      //   fprintf(stderr, "Pushing dedent on row:%d, col:%d\n", LexLoc.Line,
+      //           LexLoc.Col);
+      return HandleDedent(leadingWhitespace);
+    }
+  }
+
+  // Skip whitespace EXCEPT newlines (this will take care of spaces
+  // mid-expressions)
   while (isspace(LastChar) && LastChar != '\n' && LastChar != '\r')
     LastChar = advance();
 
@@ -406,11 +614,11 @@ static int gettok() {
   // Return end-of-line token
   if (LastChar == '\n' || LastChar == '\r') {
     // Reset LastChar to a space instead of reading the next character.
-    // If we called getchar() here, it would block waiting for input,
+    // If we called advance() here, it would block waiting for input,
     // requiring the user to press Enter twice in the REPL.
     // Setting LastChar = ' ' avoids this blocking read.
-    LastChar = advance();
-    // LastChar = ' ';
+    LastChar = '\0';
+    AtStartOfLine = true; // Modify state only when you're emitting the token.
     return tok_eol;
   }
 
@@ -421,7 +629,7 @@ static int gettok() {
 
   if (isalpha(LastChar)) { // identifier: [a-zA-Z][a-zA-Z0-9]*
     IdentifierStr = LastChar;
-    while (isalnum((LastChar = getchar())))
+    while (isalnum((LastChar = advance())))
       IdentifierStr += LastChar;
 
     // Is this a known keyword? If yes, return that.
@@ -452,13 +660,99 @@ static int gettok() {
   }
 
   // Check for end of file.  Don't eat the EOF.
-  if (LastChar == EOF)
-    return tok_eof;
+  if (LastChar == EOF) {
+    return DrainIndents();
+  }
 
   // Otherwise, just return the character as its ascii value.
   int ThisChar = LastChar;
   LastChar = advance();
   return ThisChar;
+}
+
+static const char *TokenName(int Tok) {
+  switch (Tok) {
+  case tok_eof:
+    return "<eof>";
+  case tok_eol:
+    return "<eol>";
+  case tok_indent:
+    return "<indent>";
+  case tok_dedent:
+    return "<dedent>";
+  case tok_error:
+    return "<error>";
+  case tok_def:
+    return "<def>";
+  case tok_extern:
+    return "<extern>";
+  case tok_identifier:
+    return "<identifier>";
+  case tok_number:
+    return "<number>";
+  case tok_if:
+    return "<if>";
+  case tok_else:
+    return "<else>";
+  case tok_return:
+    return "<return>";
+  case tok_for:
+    return "<for>";
+  case tok_in:
+    return "<in>";
+  case tok_range:
+    return "<range>";
+  case tok_decorator:
+    return "<decorator>";
+  case tok_var:
+    return "<var>";
+  default:
+    return nullptr;
+  }
+}
+
+static void PrintTokens(const std::string &filename) {
+  // Open input file
+  InputFile = fopen(filename.c_str(), "r");
+  if (!InputFile) {
+    errs() << "Error: Could not open file " << filename << "\n";
+    InputFile = stdin;
+    return;
+  }
+
+  int Tok = gettok();
+  bool FirstOnLine = true;
+
+  while (Tok != tok_eof) {
+    if (Tok == tok_eol) {
+      fprintf(stderr, "<eol>\n");
+      FirstOnLine = true;
+      Tok = gettok();
+      continue;
+    }
+
+    if (!FirstOnLine)
+      fprintf(stderr, " ");
+    FirstOnLine = false;
+
+    if (Tok == tok_indent) {
+      fprintf(stderr, "<indent=%d>", LastIndentWidth);
+    } else {
+      const char *Name = TokenName(Tok);
+      if (Name)
+        fprintf(stderr, "%s", Name);
+      else if (isascii(Tok))
+        fprintf(stderr, "<%c>", Tok);
+      else
+        fprintf(stderr, "<tok=%d>", Tok);
+    }
+
+    Tok = gettok();
+  }
+
+  if (!FirstOnLine)
+    fprintf(stderr, " ");
+  fprintf(stderr, "<eof>\n");
 }
 
 //===----------------------------------------------------------------------===//
@@ -711,8 +1005,9 @@ static int GetTokPrecedence() {
 
 /// LogError* - These are little helper functions for error handling.
 std::unique_ptr<ExprAST> LogError(const char *Str) {
-  InForExpression = false;
-  fprintf(stderr, "Error: %s\n", Str);
+  InForExpression = 0;
+  fprintf(stderr, "%sError (Line: %d, Column: %d): %s\n%s", Red, CurLoc.Line,
+          CurLoc.Col, Str, Reset);
   return nullptr;
 }
 
@@ -794,9 +1089,11 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
  * In later chapters, we will need to check the indentation
  * whenever we eat new lines.
  */
-static void EatNewLines() {
+static bool EatNewLines() {
+  bool consumedNewLine = CurTok == tok_eol;
   while (CurTok == tok_eol)
     getNextToken();
+  return consumedNewLine;
 }
 
 // ifexpr ::= 'if' expression ':' expression 'else' ':' expression
@@ -813,7 +1110,17 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
     return LogError("expected `:`");
   getNextToken(); // eat ':'
 
-  EatNewLines();
+  bool ConditionUsesNewLines = EatNewLines();
+  int thenIndentLevel = 0, elseIndentLevel = 0;
+
+  // Parse `then` clause
+  if (ConditionUsesNewLines) {
+    if (CurTok != tok_indent) {
+      return LogError("Expected indent");
+    }
+    thenIndentLevel = Indents.back();
+    getNextToken(); // eat indent
+  }
 
   // Handle nested `if` and `for` expressions:
   // For `if` expressions, `return` statements are emitted inside the
@@ -833,11 +1140,20 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
   if (!Then)
     return nullptr;
 
-  EatNewLines();
+  bool ThenUsesNewLines = EatNewLines();
+  if (!ThenUsesNewLines) {
+    return LogError("Expected newline before else condition");
+  }
+
+  if (ThenUsesNewLines && CurTok != tok_dedent) {
+    return LogError("Expected dedent after else");
+  }
+  // We could get multiple dedents from nested if's and for's
+  while (getNextToken() == tok_dedent)
+    ;
 
   if (CurTok != tok_else)
-    return LogError("expected `else`");
-
+    return LogError("Expected `else`");
   getNextToken(); // eat else
 
   if (CurTok != ':')
@@ -845,7 +1161,23 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
 
   getNextToken(); // eat ':'
 
-  EatNewLines();
+  bool ElseUsesNewLines = EatNewLines();
+  if (ThenUsesNewLines != ElseUsesNewLines) {
+    return LogError("Both `then` and `else` clause should be consistent in "
+                    "their usage of newlines.");
+  }
+
+  if (ElseUsesNewLines) {
+    if (CurTok != tok_indent) {
+      return LogError("Expected indent.");
+    }
+    elseIndentLevel = Indents.back();
+    getNextToken(); // eat indent
+  }
+
+  if (thenIndentLevel != elseIndentLevel) {
+    return LogError("Indent mismatch between if and else");
+  }
 
   if (!InForExpression && CurTok != tok_if && CurTok != tok_for) {
     if (CurTok != tok_return)
@@ -858,6 +1190,15 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
   if (!Else)
     return nullptr;
 
+  //   EatNewLines();
+
+  //   if (ThenUsesNewLines && CurTok != tok_dedent) {
+  //     return LogError("Expected dedent");
+  //   }
+  //   while (getNextToken() == tok_dedent)
+  //     ;
+  //   // getNextToken(); // eat dedent
+
   return std::make_unique<IfExprAST>(IfLoc, std::move(Cond), std::move(Then),
                                      std::move(Else));
 }
@@ -866,7 +1207,7 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
 //   (`,` expression)? # optional
 // `)`: expression
 static std::unique_ptr<ExprAST> ParseForExpr() {
-  InForExpression = true;
+  InForExpression++;
   getNextToken(); // eat for
 
   if (CurTok != tok_identifier)
@@ -914,7 +1255,12 @@ static std::unique_ptr<ExprAST> ParseForExpr() {
     return LogError("expected `:` after range operator");
   getNextToken(); // eat `:`
 
-  EatNewLines();
+  bool UsesNewLines = EatNewLines();
+
+  if (UsesNewLines && CurTok != tok_indent)
+    return LogError("expected indent.");
+
+  getNextToken(); // eat indent
 
   // `for` expressions don't have the return statement
   // they return 0 by default.
@@ -922,7 +1268,8 @@ static std::unique_ptr<ExprAST> ParseForExpr() {
   if (!Body)
     return nullptr;
 
-  InForExpression = false;
+  InForExpression--;
+
   return std::make_unique<ForExprAST>(IdName, std::move(Start), std::move(End),
                                       std::move(Step), std::move(Body));
 }
@@ -985,7 +1332,8 @@ static std::unique_ptr<ExprAST> ParseVarExpr() {
 static std::unique_ptr<ExprAST> ParsePrimary() {
   switch (CurTok) {
   default:
-    return LogError("unknown token when expecting an expression");
+    fprintf(stderr, "CurTok = %d\n", CurTok);
+    return LogError("Unknown token when expecting an expression");
   case tok_identifier:
     return ParseIdentifierExpr();
   case tok_number:
@@ -1191,25 +1539,37 @@ static std::unique_ptr<FunctionAST> ParseDefinition() {
 
   EatNewLines();
 
+  if (CurTok != tok_indent)
+    return LogErrorF("Expected indentation.");
+  getNextToken(); // eat tok_indent
+
   if (!InForExpression && CurTok != tok_if && CurTok != tok_for &&
       CurTok != tok_var) {
-    if (CurTok != tok_return)
+    if (CurTok != tok_return) {
+      //   fprintf(stderr, "CurTok = %d\n", CurTok);
       return LogErrorF("Expected 'return' before expression");
+    }
+
     getNextToken(); // eat return
   }
 
-  if (auto E = ParseExpression())
-    return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
+  auto E = ParseExpression();
+  if (!E)
+    return nullptr;
 
-  return nullptr;
+  EatNewLines();
+  while (CurTok == tok_dedent)
+    getNextToken();
+  return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
 }
 
 /// toplevelexpr ::= expression
 static std::unique_ptr<FunctionAST> ParseTopLevelExpr() {
   SourceLocation FnLoc = CurLoc;
   if (auto E = ParseExpression()) {
-    // Make the top-level expression be our "main" function.
-    auto Proto = std::make_unique<PrototypeAST>(FnLoc, "main",
+    // Make an anonymous proto.
+    // TODO: What happens to do this in a binary?
+    auto Proto = std::make_unique<PrototypeAST>(FnLoc, "__anon_expr",
                                                 std::vector<std::string>());
     return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
   }
@@ -1233,13 +1593,42 @@ static std::unique_ptr<LLVMContext> TheContext;
 static std::unique_ptr<Module> TheModule;
 static std::unique_ptr<IRBuilder<>> Builder;
 static std::map<std::string, AllocaInst *> NamedValues;
+static std::unique_ptr<PyxcJIT> TheJIT;
+static std::unique_ptr<FunctionPassManager> TheFPM;
+static std::unique_ptr<LoopAnalysisManager> TheLAM;
+static std::unique_ptr<FunctionAnalysisManager> TheFAM;
+static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
+static std::unique_ptr<ModuleAnalysisManager> TheMAM;
+static std::unique_ptr<PassInstrumentationCallbacks> ThePIC;
+static std::unique_ptr<StandardInstrumentations> TheSI;
 static ExitOnError ExitOnErr;
 
 //===----------------------------------------------------------------------===//
 // Debug Info Support
 //===----------------------------------------------------------------------===//
 
+namespace {
+class ExprAST;
+class PrototypeAST;
+} // namespace
+
+struct DebugInfo {
+  DICompileUnit *TheCU;
+  DIType *DblTy;
+  std::vector<DIScope *> LexicalBlocks;
+
+  void emitLocation(ExprAST *AST);
+  DIType *getDoubleTy();
+};
+
+static std::unique_ptr<DebugInfo> KSDbgInfo;
 static std::unique_ptr<DIBuilder> DBuilder;
+
+// Helper to safely emit location
+inline void emitLocation(ExprAST *AST) {
+  if (KSDbgInfo)
+    KSDbgInfo->emitLocation(AST);
+}
 
 DIType *DebugInfo::getDoubleTy() {
   if (DblTy)
@@ -1262,8 +1651,11 @@ void DebugInfo::emitLocation(ExprAST *AST) {
 }
 
 static DISubroutineType *CreateFunctionType(unsigned NumArgs) {
+  if (!EmitDebug)
+    return nullptr;
+
   SmallVector<Metadata *, 8> EltTys;
-  DIType *DblTy = KSDbgInfo.getDoubleTy();
+  DIType *DblTy = KSDbgInfo->getDoubleTy();
 
   // Add the result type.
   EltTys.push_back(DblTy);
@@ -1303,7 +1695,7 @@ static AllocaInst *CreateEntryBlockAlloca(Function *TheFunction,
 }
 
 Value *NumberExprAST::codegen() {
-  KSDbgInfo.emitLocation(this);
+  emitLocation(this);
   return ConstantFP::get(*TheContext, APFloat(Val));
 }
 
@@ -1312,7 +1704,7 @@ Value *VariableExprAST::codegen() {
   AllocaInst *A = NamedValues[Name];
   if (!A)
     return LogErrorV(("Unknown variable name " + Name).c_str());
-  KSDbgInfo.emitLocation(this);
+  emitLocation(this);
   // Load the value.
   return Builder->CreateLoad(A->getAllocatedType(), A, Name.c_str());
 }
@@ -1326,12 +1718,12 @@ Value *UnaryExprAST::codegen() {
   if (!F) {
     return LogErrorV("Unknown unary operator");
   }
-  KSDbgInfo.emitLocation(this);
+  emitLocation(this);
   return Builder->CreateCall(F, OperandV, "unop");
 }
 
 Value *BinaryExprAST::codegen() {
-  KSDbgInfo.emitLocation(this);
+  emitLocation(this);
   // Special case '=' because we don't want to emit the LHS as an expression.
   if (Op == '=') {
     // Assignment requires the LHS to be an identifier.
@@ -1385,7 +1777,7 @@ Value *BinaryExprAST::codegen() {
 }
 
 Value *CallExprAST::codegen() {
-  KSDbgInfo.emitLocation(this);
+  emitLocation(this);
 
   // Look up the name in the global module table.
   Function *CalleeF = getFunction(Callee);
@@ -1407,7 +1799,7 @@ Value *CallExprAST::codegen() {
 }
 
 Value *IfExprAST::codegen() {
-  KSDbgInfo.emitLocation(this);
+  emitLocation(this);
 
   Value *CondV = Cond->codegen();
   if (!CondV)
@@ -1591,7 +1983,7 @@ Value *VarExprAST::codegen() {
     NamedValues[VarName] = Alloca;
   }
 
-  KSDbgInfo.emitLocation(this);
+  emitLocation(this);
 
   // Codegen the body, now that all vars are in scope.
   Value *BodyVal = Body->codegen();
@@ -1607,10 +1999,17 @@ Value *VarExprAST::codegen() {
 }
 
 Function *PrototypeAST::codegen() {
-  // Make the function type:  double(double,double) etc.
+  // Special case: main function returns int, everything else returns double
+  Type *RetType;
+  if (Name == "main") {
+    RetType = Type::getInt32Ty(*TheContext);
+  } else {
+    RetType = Type::getDoubleTy(*TheContext);
+  }
+
+  // Make the function type
   std::vector<Type *> Doubles(Args.size(), Type::getDoubleTy(*TheContext));
-  FunctionType *FT =
-      FunctionType::get(Type::getDoubleTy(*TheContext), Doubles, false);
+  FunctionType *FT = FunctionType::get(RetType, Doubles, false);
 
   Function *F =
       Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
@@ -1640,41 +2039,52 @@ Function *FunctionAST::codegen() {
   BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
   Builder->SetInsertPoint(BB);
 
-  // Create a subprogram DIE for this function.
-  DIFile *Unit = DBuilder->createFile(KSDbgInfo.TheCU->getFilename(),
-                                      KSDbgInfo.TheCU->getDirectory());
-  DIScope *FContext = Unit;
-  unsigned LineNo = P.getLine();
-  unsigned ScopeLine = LineNo;
-  DISubprogram *SP = DBuilder->createFunction(
-      FContext, P.getName(), StringRef(), Unit, LineNo,
-      CreateFunctionType(TheFunction->arg_size()), ScopeLine,
-      DINode::FlagPrototyped, DISubprogram::SPFlagDefinition);
-  TheFunction->setSubprogram(SP);
+  DIFile *Unit;
+  DISubprogram *SP;
 
-  // Push the current scope.
-  KSDbgInfo.LexicalBlocks.push_back(SP);
+  if (KSDbgInfo) {
+    // Create a subprogram DIE for this function.
+    Unit = DBuilder->createFile(KSDbgInfo->TheCU->getFilename(),
+                                KSDbgInfo->TheCU->getDirectory());
+    DIScope *FContext = Unit;
+    unsigned LineNo = P.getLine();
+    unsigned ScopeLine = LineNo;
+    SP = DBuilder->createFunction(
+        FContext, P.getName(), StringRef(), Unit, LineNo,
+        CreateFunctionType(TheFunction->arg_size()), ScopeLine,
+        DINode::FlagPrototyped, DISubprogram::SPFlagDefinition);
+    TheFunction->setSubprogram(SP);
 
-  // Unset the location for the prologue emission (leading instructions with no
-  // location in a function are considered part of the prologue and the debugger
-  // will run past them when breaking on a function)
-  KSDbgInfo.emitLocation(nullptr);
+    // Push the current scope.
+    KSDbgInfo->LexicalBlocks.push_back(SP);
+
+    // Unset the location for the prologue emission (leading instructions with
+    // no location in a function are considered part of the prologue and the
+    // debugger will run past them when breaking on a function)
+    emitLocation(nullptr);
+  }
 
   // Record the function arguments in the NamedValues map.
   NamedValues.clear();
   unsigned ArgIdx = 0;
+
   for (auto &Arg : TheFunction->args()) {
     // Create an alloca for this variable.
     AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, Arg.getName());
+    DIScope *FContext = Unit;
+    unsigned LineNo = P.getLine();
+    unsigned ScopeLine = LineNo;
 
     // Create a debug descriptor for the variable.
-    DILocalVariable *D = DBuilder->createParameterVariable(
-        SP, Arg.getName(), ++ArgIdx, Unit, LineNo, KSDbgInfo.getDoubleTy(),
-        true);
+    if (KSDbgInfo) {
+      DILocalVariable *D = DBuilder->createParameterVariable(
+          SP, Arg.getName(), ++ArgIdx, Unit, LineNo, KSDbgInfo->getDoubleTy(),
+          true);
 
-    DBuilder->insertDeclare(Alloca, D, DBuilder->createExpression(),
-                            DILocation::get(SP->getContext(), LineNo, 0, SP),
-                            Builder->GetInsertBlock());
+      DBuilder->insertDeclare(Alloca, D, DBuilder->createExpression(),
+                              DILocation::get(SP->getContext(), LineNo, 0, SP),
+                              Builder->GetInsertBlock());
+    }
 
     // Store the initial value into the alloca.
     Builder->CreateStore(&Arg, Alloca);
@@ -1683,17 +2093,22 @@ Function *FunctionAST::codegen() {
     NamedValues[std::string(Arg.getName())] = Alloca;
   }
 
-  KSDbgInfo.emitLocation(Body.get());
-
   if (Value *RetVal = Body->codegen()) {
+    // Special handling for main function: convert double to int
+    if (P.getName() == "main") {
+      // Convert double to i32
+      RetVal = Builder->CreateFPToSI(RetVal, Type::getInt32Ty(*TheContext),
+                                     "mainret");
+    }
+
     // Finish off the function.
     Builder->CreateRet(RetVal);
 
-    // Pop off the lexical block for the function.
-    KSDbgInfo.LexicalBlocks.pop_back();
-
     // Validate the generated code, checking for consistency.
     verifyFunction(*TheFunction);
+
+    // Run the optimizer on the function.
+    TheFPM->run(*TheFunction, *TheFAM);
 
     return TheFunction;
   }
@@ -1704,30 +2119,66 @@ Function *FunctionAST::codegen() {
   if (P.isBinaryOp())
     BinopPrecedence.erase(P.getOperatorName());
 
-  // Pop off the lexical block for the function since we added it
-  // unconditionally.
-  KSDbgInfo.LexicalBlocks.pop_back();
-
   return nullptr;
 }
 
 //===----------------------------------------------------------------------===//
-// Top-Level parsing
+// Initialization helpers
 //===----------------------------------------------------------------------===//
 
-static void InitializeModuleAndBuilder() {
-  // Open a new context and module.
+static void InitializeContext() {
   TheContext = std::make_unique<LLVMContext>();
-  TheModule = std::make_unique<Module>("PyxcJIT", *TheContext);
-
-  // Create a new builder for the module.
+  TheModule = std::make_unique<Module>("PyxcModule", *TheContext);
   Builder = std::make_unique<IRBuilder<>>(*TheContext);
 }
 
+static void InitializeOptimizationPasses() {
+  TheFPM = std::make_unique<FunctionPassManager>();
+  TheLAM = std::make_unique<LoopAnalysisManager>();
+  TheFAM = std::make_unique<FunctionAnalysisManager>();
+  TheCGAM = std::make_unique<CGSCCAnalysisManager>();
+  TheMAM = std::make_unique<ModuleAnalysisManager>();
+  ThePIC = std::make_unique<PassInstrumentationCallbacks>();
+  TheSI = std::make_unique<StandardInstrumentations>(*TheContext,
+                                                     /*DebugLogging*/ true);
+  TheSI->registerCallbacks(*ThePIC, TheMAM.get());
+
+  // Add transform passes
+  TheFPM->addPass(PromotePass());
+  TheFPM->addPass(InstCombinePass());
+  TheFPM->addPass(ReassociatePass());
+  TheFPM->addPass(GVNPass());
+  TheFPM->addPass(SimplifyCFGPass());
+
+  // Register analysis passes
+  PassBuilder PB;
+  PB.registerModuleAnalyses(*TheMAM);
+  PB.registerFunctionAnalyses(*TheFAM);
+  PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
+}
+
+static void InitializeModuleAndManagers() {
+  InitializeContext();
+  TheModule->setDataLayout(TheJIT->getDataLayout());
+  InitializeOptimizationPasses();
+}
+
+//===----------------------------------------------------------------------===//
+// Top-Level parsing and JIT Driver
+//===----------------------------------------------------------------------===//
+
 static void HandleDefinition() {
   if (auto FnAST = ParseDefinition()) {
-    if (!FnAST->codegen())
-      fprintf(stderr, "Error reading function definition:");
+    if (auto *FnIR = FnAST->codegen()) {
+      if (Verbose) {
+        fprintf(stderr, "Read function definition:\n");
+        FnIR->print(errs());
+        fprintf(stderr, "\n");
+      }
+      ExitOnErr(TheJIT->addModule(
+          ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
+      InitializeModuleAndManagers();
+    }
   } else {
     // Skip token for error recovery.
     getNextToken();
@@ -1736,10 +2187,14 @@ static void HandleDefinition() {
 
 static void HandleExtern() {
   if (auto ProtoAST = ParseExtern()) {
-    if (!ProtoAST->codegen())
-      fprintf(stderr, "Error reading extern");
-    else
+    if (auto *FnIR = ProtoAST->codegen()) {
+      if (Verbose) {
+        fprintf(stderr, "Read extern:\n");
+        FnIR->print(errs());
+        fprintf(stderr, "\n");
+      }
       FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
+    }
   } else {
     // Skip token for error recovery.
     getNextToken();
@@ -1749,8 +2204,35 @@ static void HandleExtern() {
 static void HandleTopLevelExpression() {
   // Evaluate a top-level expression into an anonymous function.
   if (auto FnAST = ParseTopLevelExpr()) {
-    if (!FnAST->codegen()) {
-      fprintf(stderr, "Error generating code for top level expr");
+    if (auto *FnIR = FnAST->codegen()) {
+      // Create a ResourceTracker to track JIT'd memory allocated to our
+      // anonymous expression -- that way we can free it after executing.
+      auto RT = TheJIT->getMainJITDylib().createResourceTracker();
+
+      auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
+      ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
+      InitializeModuleAndManagers();
+
+      if (Verbose) {
+        fprintf(stderr, "Read top-level expression:\n");
+        FnIR->print(errs());
+        fprintf(stderr, "\n");
+      }
+
+      // Search the JIT for the __anon_expr symbol.
+      auto ExprSymbol = ExitOnErr(TheJIT->lookup("__anon_expr"));
+
+      // Get the symbol's address and cast it to the right type (takes no
+      // arguments, returns a double) so we can call it as a native
+      // function.
+      double (*FP)() = ExprSymbol.toPtr<double (*)()>();
+      fprintf(stderr, "Evaluated to %f\nready> ", FP());
+
+      // Delete the anonymous expression module from the JIT.
+      ExitOnErr(RT->remove());
+
+      // Remove the anonymous expression.
+      //   FnIR->eraseFromParent();
     }
   } else {
     // Skip token for error recovery.
@@ -1762,20 +2244,30 @@ static void HandleTopLevelExpression() {
 static void MainLoop() {
   while (true) {
     switch (CurTok) {
+    case tok_error:
+      return;
     case tok_eof:
       return;
-    case tok_decorator:
-    case tok_def:
-      HandleDefinition();
-      break;
-    case tok_extern:
-      HandleExtern();
-      break;
     case tok_eol: // Skip newlines
       getNextToken();
       break;
+    case tok_dedent:
+      getNextToken();
+      break;
     default:
-      HandleTopLevelExpression();
+      fprintf(stderr, "ready> ");
+      switch (CurTok) {
+      case tok_decorator:
+      case tok_def:
+        HandleDefinition();
+        break;
+      case tok_extern:
+        HandleExtern();
+        break;
+      default:
+        HandleTopLevelExpression();
+        break;
+      }
       break;
     }
   }
@@ -1804,77 +2296,400 @@ extern "C" DLLEXPORT double printd(double X) {
 }
 
 //===----------------------------------------------------------------------===//
-// Main driver code.
+// Parsing helpers
 //===----------------------------------------------------------------------===//
 
-int main() {
+static void ParseSourceFile() {
+  // Parse all definitions from the file
+  while (CurTok != tok_eof && CurTok != tok_error) {
+    switch (CurTok) {
+    case tok_def:
+    case tok_decorator:
+      if (auto FnAST = ParseDefinition()) {
+        if (auto *FnIR = FnAST->codegen()) {
+          if (Verbose) {
+            fprintf(stderr, "Read function definition:\n");
+            FnIR->print(errs());
+            fprintf(stderr, "\n");
+          }
+        }
+      } else {
+        getNextToken(); // Skip for error recovery
+      }
+      break;
+    case tok_extern:
+      if (auto ProtoAST = ParseExtern()) {
+        if (auto *FnIR = ProtoAST->codegen()) {
+          if (Verbose) {
+            fprintf(stderr, "Read extern:\n");
+            FnIR->print(errs());
+            fprintf(stderr, "\n");
+          }
+          FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
+        }
+      } else {
+        getNextToken(); // Skip for error recovery
+      }
+      break;
+    case tok_eol:
+      getNextToken(); // Skip newlines
+      break;
+    default:
+      // Top-level expressions
+      if (auto FnAST = ParseTopLevelExpr()) {
+        if (auto *FnIR = FnAST->codegen()) {
+          if (Verbose) {
+            fprintf(stderr, "Read top-level expression:\n");
+            FnIR->print(errs());
+            fprintf(stderr, "\n");
+          }
+        }
+      } else {
+        getNextToken(); // Skip for error recovery
+      }
+      break;
+    }
+  }
+}
+
+//===----------------------------------------------------------------------===//
+// Interpreter (JIT execution of file)
+//===----------------------------------------------------------------------===//
+
+void InterpretFile(const std::string &filename) {
   InitializeNativeTarget();
   InitializeNativeTargetAsmPrinter();
   InitializeNativeTargetAsmParser();
 
-  // Prime the first token.
+  // Create JIT
+  TheJIT = ExitOnErr(PyxcJIT::Create());
+  InitializeModuleAndManagers();
+
+  // Open input file
+  InputFile = fopen(filename.c_str(), "r");
+  if (!InputFile) {
+    errs() << "Error: Could not open file " << filename << "\n";
+    InputFile = stdin;
+    return;
+  }
+
+  // Parse the source file
   getNextToken();
 
-  InitializeModuleAndBuilder();
+  while (CurTok != tok_eof && CurTok != tok_error) {
+    switch (CurTok) {
+    case tok_def:
+    case tok_decorator:
+      if (auto FnAST = ParseDefinition()) {
+        if (auto *FnIR = FnAST->codegen()) {
+          if (Verbose) {
+            fprintf(stderr, "Read function definition:\n");
+            FnIR->print(errs());
+            fprintf(stderr, "\n");
+          }
+          // Add to JIT
+          ExitOnErr(TheJIT->addModule(
+              ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
+          InitializeModuleAndManagers();
+        }
+      } else {
+        getNextToken();
+      }
+      break;
+    case tok_extern:
+      if (auto ProtoAST = ParseExtern()) {
+        if (auto *FnIR = ProtoAST->codegen()) {
+          if (Verbose) {
+            fprintf(stderr, "Read extern:\n");
+            FnIR->print(errs());
+            fprintf(stderr, "\n");
+          }
+          FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
+        }
+      } else {
+        getNextToken();
+      }
+      break;
+    case tok_eol:
+      getNextToken();
+      break;
+    default:
+      // Top-level expressions - execute them
+      if (auto FnAST = ParseTopLevelExpr()) {
+        if (auto *FnIR = FnAST->codegen()) {
+          auto RT = TheJIT->getMainJITDylib().createResourceTracker();
 
-  // Add the current debug info version into the module.
-  TheModule->addModuleFlag(Module::Warning, "Debug Info Version",
-                           DEBUG_METADATA_VERSION);
+          auto TSM =
+              ThreadSafeModule(std::move(TheModule), std::move(TheContext));
+          ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
+          InitializeModuleAndManagers();
 
-  // Darwin only supports dwarf2.
-  if (Triple(sys::getProcessTriple()).isOSDarwin())
-    TheModule->addModuleFlag(llvm::Module::Warning, "Dwarf Version", 2);
+          if (Verbose) {
+            fprintf(stderr, "Read top-level expression:\n");
+            FnIR->print(errs());
+            fprintf(stderr, "\n");
+          }
 
-  // Construct the DIBuilder, we do this here because we need the module.
-  DBuilder = std::make_unique<DIBuilder>(*TheModule);
+          // Execute the expression
+          auto ExprSymbol = ExitOnErr(TheJIT->lookup("__anon_expr"));
+          double (*FP)() = ExprSymbol.toPtr<double (*)()>();
+          double result = FP();
 
-  // Create the compile unit for the module.
-  // Currently down as "fib.pyxc" as a filename since we're redirecting stdin
-  // but we'd like actual source locations.
-  KSDbgInfo.TheCU = DBuilder->createCompileUnit(
-      dwarf::DW_LANG_C, DBuilder->createFile("fib.pyxc", "."), "Pyxc Compiler",
-      false, "", 0);
+          if (Verbose)
+            fprintf(stderr, "Result: %f\n", result);
 
-  // Run the main "interpreter loop" now.
+          // Clean up the anonymous expression
+          ExitOnErr(RT->remove());
+        }
+      } else {
+        getNextToken();
+      }
+      break;
+    }
+  }
+
+  // Close file and restore stdin
+  fclose(InputFile);
+  InputFile = stdin;
+}
+
+//===----------------------------------------------------------------------===//
+// Object file compilation
+//===----------------------------------------------------------------------===//
+
+void CompileToObjectFile(const std::string &filename) {
+  InitializeNativeTarget();
+  InitializeNativeTargetAsmPrinter();
+  InitializeNativeTargetAsmParser();
+
+  // Initialize LLVM context and optimization passes
+  InitializeContext();
+  InitializeOptimizationPasses();
+
+  // Open input file
+  InputFile = fopen(filename.c_str(), "r");
+  if (!InputFile) {
+    errs() << "Error: Could not open file " << filename << "\n";
+    InputFile = stdin;
+    return;
+  }
+
+  // Parse the source file
+  getNextToken();
+  ParseSourceFile();
+
+  // Close file and restore stdin
+  fclose(InputFile);
+  InputFile = stdin;
+
+  // Setup target triple
+  auto TargetTriple = sys::getDefaultTargetTriple();
+  TheModule->setTargetTriple(Triple(TargetTriple));
+
+  std::string Error;
+  auto Target = TargetRegistry::lookupTarget(TargetTriple, Error);
+
+  if (!Target) {
+    errs() << "Error: " << Error << "\n";
+    return;
+  }
+
+  auto CPU = "generic";
+  auto Features = "";
+
+  TargetOptions opt;
+  llvm::Triple TheTriple(TargetTriple);
+
+  auto TargetMachine =
+      Target->createTargetMachine(TheTriple, CPU, Features, opt, Reloc::PIC_);
+
+  TheModule->setDataLayout(TargetMachine->createDataLayout());
+
+  // Determine output filename
+  std::string outputFilename = getOutputFilename(filename, ".o");
+
+  std::error_code EC;
+  raw_fd_ostream dest(outputFilename, EC, sys::fs::OF_None);
+
+  if (EC) {
+    errs() << "Could not open file: " << EC.message() << "\n";
+    return;
+  }
+
+  legacy::PassManager pass;
+  auto FileType = CodeGenFileType::ObjectFile;
+
+  if (TargetMachine->addPassesToEmitFile(pass, dest, nullptr, FileType)) {
+    errs() << "TargetMachine can't emit a file of this type\n";
+    return;
+  }
+
+  // Run the pass to emit object code
+  pass.run(*TheModule);
+  dest.flush();
+}
+
+//===----------------------------------------------------------------------===//
+// REPL
+//===----------------------------------------------------------------------===//
+
+void REPL() {
+  InitializeNativeTarget();
+  InitializeNativeTargetAsmPrinter();
+  InitializeNativeTargetAsmParser();
+
+  fprintf(stderr, "ready> ");
+  getNextToken();
+
+  TheJIT = ExitOnErr(PyxcJIT::Create());
+  InitializeModuleAndManagers();
+
   MainLoop();
 
-  DBuilder->finalize();
+  if (Verbose)
+    TheModule->print(errs(), nullptr);
+}
 
-  // Run the main "interpreter loop" now.
-  TheModule->print(errs(), nullptr);
+//===----------------------------------------------------------------------===//
+// Main driver code.
+//===----------------------------------------------------------------------===//
+
+int main(int argc, char **argv) {
+  cl::HideUnrelatedOptions(PyxcCategory);
+  cl::ParseCommandLineOptions(argc, argv, "Pyxc - Compiler and Interpreter\n");
+
+  if (InputFilename.empty()) {
+    // REPL mode - only -v is allowed
+    if (Mode != Interpret) {
+      errs() << "Error: -x and -c flags require an input file\n";
+      return 1;
+    }
+
+    if (Mode == Tokens) {
+      errs() << "Error: -t flag requires an input file\n";
+      return 1;
+    }
+
+    if (!OutputFilename.empty()) {
+      errs() << "Error: REPL mode cannot work with an output file\n";
+      return 1;
+    }
+
+    // Start REPL
+    REPL();
+  } else {
+    if (EmitDebug && Mode != Executable && Mode != Object) {
+      errs() << "Error: -g is only allowed with executable builds (-x) or "
+                "object builds (-o)\n";
+      return 1;
+    }
+
+    // File mode - all options are valid
+    if (Verbose)
+      std::cout << "Processing file: " << InputFilename << "\n";
+
+    switch (Mode) {
+    case Interpret:
+      if (Verbose)
+        std::cout << "Interpreting " << InputFilename << "...\n";
+      InterpretFile(InputFilename);
+      break;
+
+    case Executable: {
+      std::string exeFile = getOutputFilename(InputFilename, "");
+      if (Verbose)
+        std::cout << "Compiling " << InputFilename
+                  << " to executable: " << exeFile << "\n";
+
+      // Step 1: Compile the script to object file
+      std::string scriptObj = getOutputFilename(InputFilename, ".o");
+      CompileToObjectFile(InputFilename);
+
+      // Step 2: Optionally compile runtime.c to runtime.o if it exists
+      std::string runtimeC = "runtime.c"; // Or use absolute path if needed
+      std::string runtimeObj = "runtime.o";
+      bool hasRuntime = sys::fs::exists(runtimeC);
+
+      if (hasRuntime) {
+        if (Verbose)
+          std::cout << "Compiling runtime library...\n";
+
+        std::string compileRuntime =
+            "clang -c " + runtimeC + " -o " + runtimeObj;
+        int compileResult = system(compileRuntime.c_str());
+
+        if (compileResult != 0) {
+          errs() << "Error: Failed to compile runtime library\n";
+          errs() << "Make sure runtime.c exists in the current directory\n";
+          return 1;
+        }
+      } else if (Verbose) {
+        std::cout << "No runtime.c found; linking without runtime support\n";
+      }
+
+      // Step 3: Link object files
+      if (Verbose)
+        std::cout << "Linking...\n";
+
+      std::string linkCmd = "clang " + scriptObj;
+      if (hasRuntime)
+        linkCmd += " " + runtimeObj;
+      linkCmd += " -o " + exeFile;
+      int linkResult = system(linkCmd.c_str());
+
+      if (linkResult != 0) {
+        errs() << "Error: Linking failed\n";
+        return 1;
+      }
+
+      if (Verbose) {
+        std::cout << "Successfully created executable: " << exeFile << "\n";
+        // Optionally clean up intermediate files
+        std::cout << "Cleaning up intermediate files...\n";
+        remove(scriptObj.c_str());
+        if (hasRuntime)
+          remove(runtimeObj.c_str());
+      } else {
+        std::cout << exeFile << "\n";
+        remove(scriptObj.c_str());
+        if (hasRuntime)
+          remove(runtimeObj.c_str());
+      }
+
+      break;
+    }
+
+    case Object: {
+      std::string output = getOutputFilename(InputFilename, ".o");
+      if (Verbose)
+        std::cout << "Compiling " << InputFilename
+                  << " to object file: " << output << "\n";
+      CompileToObjectFile(InputFilename);
+      std::string scriptObj = getOutputFilename(InputFilename, ".o");
+      if (Verbose)
+        outs() << "Wrote " << scriptObj << "\n";
+      else
+        outs() << scriptObj << "\n";
+      break;
+    }
+    case Tokens: {
+      if (Verbose)
+        std::cout << "Tokenizing " << InputFilename << "...\n";
+      PrintTokens(InputFilename);
+      break;
+    }
+    }
+  }
 
   return 0;
 }
 ```
 
-## Compiling
+## Compile and Run
 ```bash
-# Compile pyxc
-clang++ -g -O3 pyxc.cpp `llvm-config --cxxflags --ldflags --system-libs --libs all` -o pyxc
+# Compile
+$ clang++ -g -O3 -o pyxc pyxc.cpp `llvm-config --cxxflags --ldflags --system-libs --libs all`
 ```
 
-```bash
-# Compile fib using pyxc
-./pyxc < fib.pyxc |& clang -g -x ir - -o fib
-```
-
-```bash
-# Debug
-$ lldb ./fib
-(lldb) target create "./fib"
-Current executable set to './fib' (arm64).
-(lldb) b main
-Breakpoint 1: where = fib`main at fib.pyxc:7:2
-(lldb) run
-Process launched: './fib'
-Process stopped
-* thread #1, stop reason = breakpoint
-    frame #0: fib`main at fib.pyxc:7:2
-   4           else:
-   5               return fib(x-1)+fib(x-2)
-   6
--> 7       fib(10)
-(lldb) q
-(lldb) Quitting LLDB will kill one or more processes. Do you really want to proceed: [Y/n] y
-$
-```
+## Conclusion
+Next, we'll handle multi‑expression blocks which will remove some of the weirdness of our rather limited single-expression syntax and allow us to write more expressive programs.
