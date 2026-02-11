@@ -2659,9 +2659,13 @@ int main(int argc, char **argv) {
 ```
 
 ## Compile and Run
+
+Use the same `Makefile` setup from Chapter 12.
+
+Run:
+
 ```bash
-# Compile
-$ clang++ -g -O3 -o pyxc pyxc.cpp `llvm-config --cxxflags --ldflags --system-libs --libs all`
+make
 ```
 
 ## Conclusion
