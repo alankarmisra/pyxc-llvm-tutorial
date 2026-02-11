@@ -2348,27 +2348,10 @@ int main(int argc, char **argv) {
       std::string scriptObj = getOutputFilename(InputFilename, ".o");
       CompileToObjectFile(InputFilename);
 
-      // Step 2: Optionally compile runtime.c to runtime.o if it exists
-      std::string runtimeC = "runtime.c"; // Or use absolute path if needed
-      std::string runtimeObj = "runtime.o";
-      bool hasRuntime = sys::fs::exists(runtimeC);
-
-      if (hasRuntime) {
-        if (Verbose)
-          std::cout << "Compiling runtime library...\n";
-
-        std::string compileRuntime =
-            "clang -c " + runtimeC + " -o " + runtimeObj;
-        int compileResult = system(compileRuntime.c_str());
-
-        if (compileResult != 0) {
-          errs() << "Error: Failed to compile runtime library\n";
-          errs() << "Make sure runtime.c exists in the current directory\n";
-          return 1;
-        }
-      } else if (Verbose) {
-        std::cout << "No runtime.c found; linking without runtime support\n";
-      }
+      
+      // Step 3: Link object files
+      if (Verbose)
+        std::cout << "Linking...\n";
 
     std::string runtimeObj = "runtime.o";
     
@@ -2383,31 +2366,9 @@ int main(int argc, char **argv) {
         // Optionally clean up intermediate files
         std::cout << "Cleaning up intermediate files...\n";
         remove(scriptObj.c_str());
-        // if (hasRuntime)
-        //   remove(runtimeObj.c_str());
       } else {
         std::cout << exeFile << "\n";
         remove(scriptObj.c_str());
-        // if (hasRuntime)
-        //   remove(runtimeObj.c_str());
-      }
-
-      break;
-    }
-
-
-      if (Verbose) {
-        std::cout << "Successfully created executable: " << exeFile << "\n";
-        // Optionally clean up intermediate files
-        std::cout << "Cleaning up intermediate files...\n";
-        remove(scriptObj.c_str());
-        if (hasRuntime)
-          remove(runtimeObj.c_str());
-      } else {
-        std::cout << exeFile << "\n";
-        remove(scriptObj.c_str());
-        if (hasRuntime)
-          remove(runtimeObj.c_str());
       }
 
       break;

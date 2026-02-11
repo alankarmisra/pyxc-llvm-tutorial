@@ -257,6 +257,7 @@ This pairs naturally with `PrintTokens()` and gives a fast, deterministic view o
 ## Full Source Code Listing
 ```cpp
 #include "../include/PyxcJIT.h"
+#include "../include/PyxcLinker.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
@@ -860,11 +861,11 @@ public:
 };
 
 /// IfExprAST - Expression class for if/else.
-class IfExprAST : public ExprAST {
+class IfStmtAST : public ExprAST {
   std::unique_ptr<ExprAST> Cond, Then, Else;
 
 public:
-  IfExprAST(SourceLocation Loc, std::unique_ptr<ExprAST> Cond,
+  IfStmtAST(SourceLocation Loc, std::unique_ptr<ExprAST> Cond,
             std::unique_ptr<ExprAST> Then, std::unique_ptr<ExprAST> Else)
       : ExprAST(Loc), Cond(std::move(Cond)), Then(std::move(Then)),
         Else(std::move(Else)) {}
@@ -880,12 +881,12 @@ public:
 };
 
 /// ForExprAST - Expression class for for/in.
-class ForExprAST : public ExprAST {
+class ForStmtAST : public ExprAST {
   std::string VarName;
   std::unique_ptr<ExprAST> Start, End, Step, Body;
 
 public:
-  ForExprAST(std::string VarName, std::unique_ptr<ExprAST> Start,
+  ForStmtAST(std::string VarName, std::unique_ptr<ExprAST> Start,
              std::unique_ptr<ExprAST> End, std::unique_ptr<ExprAST> Step,
              std::unique_ptr<ExprAST> Body)
       : VarName(std::move(VarName)), Start(std::move(Start)),
@@ -1199,7 +1200,7 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
   //     ;
   //   // getNextToken(); // eat dedent
 
-  return std::make_unique<IfExprAST>(IfLoc, std::move(Cond), std::move(Then),
+  return std::make_unique<IfStmtAST>(IfLoc, std::move(Cond), std::move(Then),
                                      std::move(Else));
 }
 
@@ -1270,7 +1271,7 @@ static std::unique_ptr<ExprAST> ParseForExpr() {
 
   InForExpression--;
 
-  return std::make_unique<ForExprAST>(IdName, std::move(Start), std::move(End),
+  return std::make_unique<ForStmtAST>(IdName, std::move(Start), std::move(End),
                                       std::move(Step), std::move(Body));
 }
 
@@ -1798,7 +1799,7 @@ Value *CallExprAST::codegen() {
   return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
-Value *IfExprAST::codegen() {
+Value *IfStmtAST::codegen() {
   emitLocation(this);
 
   Value *CondV = Cond->codegen();
@@ -1854,7 +1855,7 @@ Value *IfExprAST::codegen() {
   return PN;
 }
 
-Value *ForExprAST::codegen() {
+Value *ForStmtAST::codegen() {
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
 
   // Create an alloca for the variable in the entry block.
@@ -2605,55 +2606,27 @@ int main(int argc, char **argv) {
       std::string scriptObj = getOutputFilename(InputFilename, ".o");
       CompileToObjectFile(InputFilename);
 
-      // Step 2: Optionally compile runtime.c to runtime.o if it exists
-      std::string runtimeC = "runtime.c"; // Or use absolute path if needed
-      std::string runtimeObj = "runtime.o";
-      bool hasRuntime = sys::fs::exists(runtimeC);
-
-      if (hasRuntime) {
-        if (Verbose)
-          std::cout << "Compiling runtime library...\n";
-
-        std::string compileRuntime =
-            "clang -c " + runtimeC + " -o " + runtimeObj;
-        int compileResult = system(compileRuntime.c_str());
-
-        if (compileResult != 0) {
-          errs() << "Error: Failed to compile runtime library\n";
-          errs() << "Make sure runtime.c exists in the current directory\n";
-          return 1;
-        }
-      } else if (Verbose) {
-        std::cout << "No runtime.c found; linking without runtime support\n";
-      }
-
+      
       // Step 3: Link object files
       if (Verbose)
         std::cout << "Linking...\n";
 
-      std::string linkCmd = "clang " + scriptObj;
-      if (hasRuntime)
-        linkCmd += " " + runtimeObj;
-      linkCmd += " -o " + exeFile;
-      int linkResult = system(linkCmd.c_str());
-
-      if (linkResult != 0) {
-        errs() << "Error: Linking failed\n";
+    std::string runtimeObj = "runtime.o";
+    
+    // Step 3: Link using PyxcLinker (NO MORE system() calls!)
+    if (!PyxcLinker::Link(scriptObj, runtimeObj, exeFile)) {
+        errs() << "Linking failed\n";
         return 1;
-      }
+    }    
 
       if (Verbose) {
         std::cout << "Successfully created executable: " << exeFile << "\n";
         // Optionally clean up intermediate files
         std::cout << "Cleaning up intermediate files...\n";
         remove(scriptObj.c_str());
-        if (hasRuntime)
-          remove(runtimeObj.c_str());
       } else {
         std::cout << exeFile << "\n";
         remove(scriptObj.c_str());
-        if (hasRuntime)
-          remove(runtimeObj.c_str());
       }
 
       break;

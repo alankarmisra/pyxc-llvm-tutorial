@@ -2042,13 +2042,9 @@ int main(int argc, char **argv) {
         // Optionally clean up intermediate files
         std::cout << "Cleaning up intermediate files...\n";
         remove(scriptObj.c_str());
-        // if (hasRuntime)
-        //   remove(runtimeObj.c_str());
       } else {
         std::cout << exeFile << "\n";
         remove(scriptObj.c_str());
-        // if (hasRuntime)
-        //   remove(runtimeObj.c_str());
       }
 
       break;
