@@ -1,4 +1,5 @@
 #include "../include/PyxcJIT.h"
+#include "../include/PyxcLinker.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
@@ -2369,20 +2370,31 @@ int main(int argc, char **argv) {
         std::cout << "No runtime.c found; linking without runtime support\n";
       }
 
-      // Step 3: Link object files
-      if (Verbose)
-        std::cout << "Linking...\n";
-
-      std::string linkCmd = "clang " + scriptObj;
-      if (hasRuntime)
-        linkCmd += " " + runtimeObj;
-      linkCmd += " -o " + exeFile;
-      int linkResult = system(linkCmd.c_str());
-
-      if (linkResult != 0) {
-        errs() << "Error: Linking failed\n";
+    std::string runtimeObj = "runtime.o";
+    
+    // Step 3: Link using PyxcLinker (NO MORE system() calls!)
+    if (!PyxcLinker::Link(scriptObj, runtimeObj, exeFile)) {
+        errs() << "Linking failed\n";
         return 1;
+    }    
+
+      if (Verbose) {
+        std::cout << "Successfully created executable: " << exeFile << "\n";
+        // Optionally clean up intermediate files
+        std::cout << "Cleaning up intermediate files...\n";
+        remove(scriptObj.c_str());
+        // if (hasRuntime)
+        //   remove(runtimeObj.c_str());
+      } else {
+        std::cout << exeFile << "\n";
+        remove(scriptObj.c_str());
+        // if (hasRuntime)
+        //   remove(runtimeObj.c_str());
       }
+
+      break;
+    }
+
 
       if (Verbose) {
         std::cout << "Successfully created executable: " << exeFile << "\n";
