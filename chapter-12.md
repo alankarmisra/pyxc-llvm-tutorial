@@ -2908,11 +2908,9 @@ int main(int argc, char **argv) {
 ## Clang Compile Command
 
 ```bash
-/usr/bin/clang++ -g -O3 pyxc.cpp \
-  `/Users/alankar/llvm-21-with-clang-lld-lldb-mlir/bin/llvm-config --cxxflags --ldflags --system-libs --libs all` \
-  -L/opt/homebrew/lib \
-  -Wl,-rpath,/opt/homebrew/lib \
-  -L/Users/alankar/llvm-21-with-clang-lld-lldb-mlir/lib \
+clang++ -g -O3 pyxc.cpp \
+  "$($HOME/llvm-21-with-clang-lld-lldb-mlir/bin/llvm-config --cxxflags --ldflags --system-libs --libs all)" \
+  -L"$HOME/llvm-21-with-clang-lld-lldb-mlir/lib" \
   -llldCommon -llldELF -llldMachO -llldCOFF \
   -o pyxc
 ```
