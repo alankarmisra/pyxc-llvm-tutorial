@@ -135,33 +135,36 @@ using FuncPtr = std::unique_ptr<FunctionAST>;
 enum Token {
   tok_eof = -1,
   tok_eol = -2,
-  tok_indent = -15,
-  tok_dedent = -16,
-  tok_error = -17,
+  tok_error = -3,
 
   // commands
-  tok_def = -3,
-  tok_extern = -4,
+  tok_def = -4,
+  tok_extern = -5,
 
   // primary
-  tok_identifier = -5,
-  tok_number = -6,
+  tok_identifier = -6,
+  tok_number = -7,
 
   // control
-  tok_if = -7,
-  tok_else = -8,
-  tok_return = -9,
+  tok_if = -8,
+  tok_elif = -9,
+  tok_else = -10,
+  tok_return = -11,
 
   // loop
-  tok_for = -10,
-  tok_in = -11,
-  tok_range = -12,
+  tok_for = -12,
+  tok_in = -13,
+  tok_range = -14,
 
   // decorator
-  tok_decorator = -13,
+  tok_decorator = -15,
 
   // var definition
-  tok_var = -14,
+  tok_var = -16,
+
+  // indentation
+  tok_indent = -17,
+  tok_dedent = -18,
 };
 
 static std::string IdentifierStr; // Filled in if tok_identifier
@@ -171,8 +174,9 @@ static double NumVal;             // Filled in if tok_number
 // associated Token. Additional language keywords can easily be added here.
 static std::map<std::string, Token> Keywords = {
     {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return},
-    {"if", tok_if},   {"else", tok_else},     {"for", tok_for},
-    {"in", tok_in},   {"range", tok_range},   {"var", tok_var}};
+    {"if", tok_if},   {"elif", tok_elif},     {"else", tok_else},
+    {"for", tok_for}, {"in", tok_in},         {"range", tok_range},
+    {"var", tok_var}};
 
 enum OperatorType { Undefined, Unary, Binary };
 
@@ -462,6 +466,8 @@ static const char *TokenName(int Tok) {
     return "<number>";
   case tok_if:
     return "<if>";
+  case tok_elif:
+    return "<elif>";
   case tok_else:
     return "<else>";
   case tok_return:
@@ -722,7 +728,8 @@ public:
     StmtAST::dump(out << "if", ind);
     Cond->dump(indent(out, ind) << "Cond:", ind + 1);
     Then->dump(indent(out, ind) << "Then:", ind + 1);
-    Else->dump(indent(out, ind) << "Else:", ind + 1);
+    if (Else)
+      Else->dump(indent(out, ind) << "Else:", ind + 1);
     return out;
   }
   Value *codegen() override;
@@ -926,10 +933,13 @@ static bool EatNewLines() {
 }
 
 // if_stmt        = "if" , expression , ":" , suite ,
-//                  "else" , ":" , suite ;
+//                  { "elif" , expression , ":" , suite } ,
+//                  [ "else" , ":" , suite ] ;
 static std::unique_ptr<StmtAST> ParseIfStmt() {
   SourceLocation IfLoc = CurLoc;
-  getNextToken(); // eat 'if'
+  if (CurTok != tok_if && CurTok != tok_elif)
+    return LogError<StmtPtr>("expected `if`/`elif`");
+  getNextToken(); // eat 'if' or 'elif'
 
   // condition
   auto Cond = ParseExpression();
@@ -944,18 +954,25 @@ static std::unique_ptr<StmtAST> ParseIfStmt() {
   if (!Then)
     return nullptr;
 
-  if (CurTok != tok_else) {
-    return LogError<std::unique_ptr<StmtAST>>("expected `else`");
+  std::unique_ptr<BlockSuiteAST> Else;
+  if (CurTok == tok_elif) {
+    auto ElseIfStmt = ParseIfStmt();
+    if (!ElseIfStmt)
+      return nullptr;
+    std::vector<StmtPtr> ElseStmts;
+    ElseStmts.push_back(std::move(ElseIfStmt));
+    Else = std::make_unique<BlockSuiteAST>(IfLoc, std::move(ElseStmts));
+  } else if (CurTok == tok_else) {
+    getNextToken(); // eat 'else'
+
+    if (CurTok != ':')
+      return LogError<std::unique_ptr<StmtAST>>("expected `:`");
+    getNextToken(); // eat ':'
+
+    Else = ParseSuite();
+    if (!Else)
+      return nullptr;
   }
-  getNextToken(); // eat 'else'
-
-  if (CurTok != ':')
-    return LogError<std::unique_ptr<StmtAST>>("expected `:`");
-  getNextToken(); // eat ':'
-
-  auto Else = ParseSuite();
-  if (!Else)
-    return nullptr;
 
   // TODO: Check indent levels and check for consistent newlines usage.
 
@@ -1099,6 +1116,10 @@ static std::unique_ptr<StmtAST> ParseStmt() {
   switch (CurTok) {
   case tok_if:
     return ParseIfStmt();
+  case tok_elif:
+    return LogError<StmtPtr>("Unexpected `elif` without matching `if`");
+  case tok_else:
+    return LogError<StmtPtr>("Unexpected `else` without matching `if`");
   case tok_for:
     return ParseForStmt();
   case tok_return:
@@ -1684,10 +1705,16 @@ Value *IfStmtAST::codegen() {
   TheFunction->insert(TheFunction->end(), ElseBB);
   Builder->SetInsertPoint(ElseBB);
 
-  Value *ElseV = Else->codegen();
-  if (!ElseV)
-    return nullptr;
-  bool ElseTerminated = Builder->GetInsertBlock()->getTerminator() != nullptr;
+  Value *ElseV = nullptr;
+  bool ElseTerminated = false;
+  if (Else) {
+    ElseV = Else->codegen();
+    if (!ElseV)
+      return nullptr;
+    ElseTerminated = Builder->GetInsertBlock()->getTerminator() != nullptr;
+  } else {
+    ElseV = ConstantFP::get(*TheContext, APFloat(0.0));
+  }
   if (!ElseTerminated)
     Builder->CreateBr(MergeBB);
   // Codegen of 'Else' can change the current block, update ElseBB for the
