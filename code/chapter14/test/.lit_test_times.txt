@@ -1,0 +1,5 @@
+2.889490e-02 blocks_bad_indent.pyxc
+3.197598e-02 blocks_for_if.pyxc
+3.775287e-02 blocks_if_nested.pyxc
+3.195620e-02 mandel.pyxc
+9.769607e-02 showcase_tools.pyxc

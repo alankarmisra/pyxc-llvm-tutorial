@@ -1,4 +1,5 @@
 #include "../include/PyxcJIT.h"
+#include "../include/PyxcLinker.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
@@ -108,6 +109,22 @@ std::string getOutputFilename(const std::string &input,
 // I/O
 //===----------------------------------------------------------------------===//
 static FILE *InputFile = stdin;
+static bool UseCMainSignature = false;
+
+//===----------------------------------------------------------------------===//
+// Error reporting convenience types
+//===----------------------------------------------------------------------===//
+namespace {
+class ExprAST;
+class StmtAST;
+class PrototypeAST;
+class FunctionAST;
+} // namespace
+
+using ExprPtr = std::unique_ptr<ExprAST>;
+using StmtPtr = std::unique_ptr<StmtAST>;
+using ProtoPtr = std::unique_ptr<PrototypeAST>;
+using FuncPtr = std::unique_ptr<FunctionAST>;
 
 //===----------------------------------------------------------------------===//
 // Lexer
@@ -149,7 +166,6 @@ enum Token {
 
 static std::string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;             // Filled in if tok_number
-static int InForExpression;       // Track global parsing context
 
 // Keywords words like `def`, `extern` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
@@ -193,7 +209,19 @@ static int advance() {
 namespace {
 class ExprAST;
 }
-std::unique_ptr<ExprAST> LogError(const char *Str);
+
+/// LogError* - These are little helper functions for error handling.
+static int CurTok;
+template <typename T = void> T LogError(const char *Str) {
+  // print CurTok with the error instead of two separate lines.
+  fprintf(stderr, "%sError (Line: %d, Column: %d): %s\nCurTok = %d\n%s", Red,
+          CurLoc.Line, CurLoc.Col, Str, CurTok, Reset);
+
+  if constexpr (std::is_pointer_v<T>)
+    return nullptr;
+  else
+    return T{};
+}
 
 /// countIndent - count the indent in terms of spaces
 // LastChar is the current unconsumed character at the start of the line.
@@ -214,7 +242,7 @@ static int countLeadingWhitespace(int &LastChar) {
         ModuleIndentType = LastChar;
       } else {
         if (LastChar != ModuleIndentType) {
-          LogError("You cannot mix tabs and spaces.");
+          LogError<ExprPtr>("You cannot mix tabs and spaces.");
           return -1;
         }
       }
@@ -522,6 +550,43 @@ public:
   }
 };
 
+/// StmtAST - Base class for all statement nodes.
+class StmtAST {
+  SourceLocation Loc;
+
+public:
+  StmtAST(SourceLocation Loc = CurLoc) : Loc(Loc) {}
+  virtual ~StmtAST() = default;
+  virtual Value *codegen() = 0;
+  virtual bool isTerminator() { return false; }
+  int getLine() const { return Loc.Line; }
+  int getCol() const { return Loc.Col; }
+  virtual raw_ostream &dump(raw_ostream &out, int ind) {
+    return out << ':' << getLine() << ':' << getCol() << '\n';
+  }
+};
+
+class ExprStmtAST : public StmtAST {
+  std::unique_ptr<ExprAST> Expr;
+
+public:
+  ExprStmtAST(SourceLocation Loc, std::unique_ptr<ExprAST> Expr)
+      : StmtAST(Loc), Expr(std::move(Expr)) {}
+
+  Value *codegen() override {
+    // Evaluate expression for side effects / value, then discard result.
+    return Expr ? Expr->codegen() : nullptr;
+  }
+
+  raw_ostream &dump(raw_ostream &out, int ind) override {
+    out << std::string(ind, ' ') << "exprstmt";
+    StmtAST::dump(out, ind);
+    if (Expr)
+      Expr->dump(out, ind + 2);
+    return out;
+  }
+};
+
 /// NumberExprAST - Expression class for numeric literals like "1.0".
 class NumberExprAST : public ExprAST {
   double Val;
@@ -601,22 +666,6 @@ public:
   Value *codegen() override;
 };
 
-/// StmtAST - Base class for all statement nodes.
-class StmtAST {
-  SourceLocation Loc;
-
-public:
-  StmtAST(SourceLocation Loc = CurLoc) : Loc(Loc) {}
-  virtual ~StmtAST() = default;
-  virtual Value *codegen() = 0;
-  virtual bool isTerminator() { return false; }
-  int getLine() const { return Loc.Line; }
-  int getCol() const { return Loc.Col; }
-  virtual raw_ostream &dump(raw_ostream &out, int ind) {
-    return out << ':' << getLine() << ':' << getCol() << '\n';
-  }
-};
-
 /// ReturnStmtAST - Return statements
 class ReturnStmtAST : public StmtAST {
   std::unique_ptr<ExprAST> Expr;
@@ -638,12 +687,12 @@ public:
   }
 };
 
-/// BlockAST - a block
-class BlockAST : public StmtAST {
+/// SuiteAST - a suite ie a single or multi statement block
+class BlockSuiteAST : public StmtAST {
   std::vector<std::unique_ptr<StmtAST>> Stmts;
 
 public:
-  BlockAST(SourceLocation Loc, std::vector<std::unique_ptr<StmtAST>> Stmts)
+  BlockSuiteAST(SourceLocation Loc, std::vector<std::unique_ptr<StmtAST>> Stmts)
       : StmtAST(Loc), Stmts(std::move(Stmts)) {}
 
   Value *codegen() override;
@@ -660,11 +709,12 @@ public:
 /// IfStmtAST - Expression class for if/else.
 class IfStmtAST : public StmtAST {
   std::unique_ptr<ExprAST> Cond;
-  std::unique_ptr<BlockAST> Then, Else;
+  std::unique_ptr<BlockSuiteAST> Then, Else;
 
 public:
   IfStmtAST(SourceLocation Loc, std::unique_ptr<ExprAST> Cond,
-            std::unique_ptr<BlockAST> Then, std::unique_ptr<BlockAST> Else)
+            std::unique_ptr<BlockSuiteAST> Then,
+            std::unique_ptr<BlockSuiteAST> Else)
       : StmtAST(Loc), Cond(std::move(Cond)), Then(std::move(Then)),
         Else(std::move(Else)) {}
 
@@ -682,12 +732,12 @@ public:
 class ForStmtAST : public StmtAST {
   std::string VarName;
   std::unique_ptr<ExprAST> Start, End, Step;
-  std::unique_ptr<BlockAST> Body;
+  std::unique_ptr<BlockSuiteAST> Body;
 
 public:
   ForStmtAST(std::string VarName, std::unique_ptr<ExprAST> Start,
              std::unique_ptr<ExprAST> End, std::unique_ptr<ExprAST> Step,
-             std::unique_ptr<BlockAST> Body)
+             std::unique_ptr<BlockSuiteAST> Body)
       : VarName(std::move(VarName)), Start(std::move(Start)),
         End(std::move(End)), Step(std::move(Step)), Body(std::move(Body)) {}
 
@@ -757,11 +807,11 @@ public:
 /// FunctionAST - This class represents a function definition itself.
 class FunctionAST {
   std::unique_ptr<PrototypeAST> Proto;
-  std::unique_ptr<ExprAST> Body;
+  std::unique_ptr<BlockSuiteAST> Body;
 
 public:
   FunctionAST(std::unique_ptr<PrototypeAST> Proto,
-              std::unique_ptr<ExprAST> Body)
+              std::unique_ptr<BlockSuiteAST> Body)
       : Proto(std::move(Proto)), Body(std::move(Body)) {}
   raw_ostream &dump(raw_ostream &out, int ind) {
     indent(out, ind) << "FunctionAST\n";
@@ -781,7 +831,7 @@ public:
 /// CurTok/getNextToken - Provide a simple token buffer.  CurTok is the current
 /// token the parser is looking at.  getNextToken reads another token from the
 /// lexer and updates CurTok with its results.
-static int CurTok;
+// static int CurTok;
 static int getNextToken() { return CurTok = gettok(); }
 // Tracks all previously defined function prototypes
 static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
@@ -803,30 +853,9 @@ static int GetTokPrecedence() {
   return TokPrec;
 }
 
-/// LogError* - These are little helper functions for error handling.
-std::unique_ptr<ExprAST> LogError(const char *Str) {
-  InForExpression = 0;
-  fprintf(stderr, "%sError (Line: %d, Column: %d): %s\n%s", Red, CurLoc.Line,
-          CurLoc.Col, Str, Reset);
-  return nullptr;
-}
-
-std::unique_ptr<PrototypeAST> LogErrorP(const char *Str) {
-  LogError(Str);
-  return nullptr;
-}
-
-std::unique_ptr<FunctionAST> LogErrorF(const char *Str) {
-  LogError(Str);
-  return nullptr;
-}
-
-Value *LogErrorV(const char *Str) {
-  LogError(Str);
-  return nullptr;
-}
-
 static std::unique_ptr<ExprAST> ParseExpression();
+static std::unique_ptr<BlockSuiteAST> ParseSuite();
+static std::unique_ptr<BlockSuiteAST> ParseBlockSuite();
 
 /// numberexpr ::= number
 static std::unique_ptr<ExprAST> ParseNumberExpr() {
@@ -843,7 +872,7 @@ static std::unique_ptr<ExprAST> ParseParenExpr() {
     return nullptr;
 
   if (CurTok != ')')
-    return LogError("expected ')'");
+    return LogError<ExprPtr>("expected ')'");
   getNextToken(); // eat ).
   return V;
 }
@@ -874,7 +903,7 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
         break;
 
       if (CurTok != ',')
-        return LogError("Expected ')' or ',' in argument list");
+        return LogError<ExprPtr>("Expected ')' or ',' in argument list");
       getNextToken();
     }
   }
@@ -896,8 +925,9 @@ static bool EatNewLines() {
   return consumedNewLine;
 }
 
-// ifexpr ::= 'if' expression ':' expression 'else' ':' expression
-static std::unique_ptr<ExprAST> ParseIfExpr() {
+// if_stmt        = "if" , expression , ":" , suite ,
+//                  "else" , ":" , suite ;
+static std::unique_ptr<StmtAST> ParseIfStmt() {
   SourceLocation IfLoc = CurLoc;
   getNextToken(); // eat 'if'
 
@@ -907,125 +937,55 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
     return nullptr;
 
   if (CurTok != ':')
-    return LogError("expected `:`");
+    return LogError<std::unique_ptr<StmtAST>>("expected `:`");
   getNextToken(); // eat ':'
 
-  bool ConditionUsesNewLines = EatNewLines();
-  int thenIndentLevel = 0, elseIndentLevel = 0;
-
-  // Parse `then` clause
-  if (ConditionUsesNewLines) {
-    if (CurTok != tok_indent) {
-      return LogError("Expected indent");
-    }
-    thenIndentLevel = Indents.back();
-    getNextToken(); // eat indent
-  }
-
-  // Handle nested `if` and `for` expressions:
-  // For `if` expressions, `return` statements are emitted inside the
-  // true and false branches, so we only require an explicit `return`
-  // when we are not parsing an `if`.
-  // For `for` expressions, control flow and the resulting value are
-  // handled entirely within the loop body, so an explicit `return`
-  // is not required at this level.
-  if (!InForExpression && CurTok != tok_if && CurTok != tok_for) {
-    if (CurTok != tok_return)
-      return LogError("Expected 'return'");
-
-    getNextToken(); // eat return
-  }
-
-  auto Then = ParseExpression();
+  auto Then = ParseSuite();
   if (!Then)
     return nullptr;
 
-  bool ThenUsesNewLines = EatNewLines();
-  if (!ThenUsesNewLines) {
-    return LogError("Expected newline before else condition");
+  if (CurTok != tok_else) {
+    return LogError<std::unique_ptr<StmtAST>>("expected `else`");
   }
-
-  if (ThenUsesNewLines && CurTok != tok_dedent) {
-    return LogError("Expected dedent after else");
-  }
-  // We could get multiple dedents from nested if's and for's
-  while (getNextToken() == tok_dedent)
-    ;
-
-  if (CurTok != tok_else)
-    return LogError("Expected `else`");
-  getNextToken(); // eat else
+  getNextToken(); // eat 'else'
 
   if (CurTok != ':')
-    return LogError("expected `:`");
-
+    return LogError<std::unique_ptr<StmtAST>>("expected `:`");
   getNextToken(); // eat ':'
 
-  bool ElseUsesNewLines = EatNewLines();
-  if (ThenUsesNewLines != ElseUsesNewLines) {
-    return LogError("Both `then` and `else` clause should be consistent in "
-                    "their usage of newlines.");
-  }
-
-  if (ElseUsesNewLines) {
-    if (CurTok != tok_indent) {
-      return LogError("Expected indent.");
-    }
-    elseIndentLevel = Indents.back();
-    getNextToken(); // eat indent
-  }
-
-  if (thenIndentLevel != elseIndentLevel) {
-    return LogError("Indent mismatch between if and else");
-  }
-
-  if (!InForExpression && CurTok != tok_if && CurTok != tok_for) {
-    if (CurTok != tok_return)
-      return LogError("Expected 'return'");
-
-    getNextToken(); // eat return
-  }
-
-  auto Else = ParseExpression();
+  auto Else = ParseSuite();
   if (!Else)
     return nullptr;
 
-  //   EatNewLines();
-
-  //   if (ThenUsesNewLines && CurTok != tok_dedent) {
-  //     return LogError("Expected dedent");
-  //   }
-  //   while (getNextToken() == tok_dedent)
-  //     ;
-  //   // getNextToken(); // eat dedent
+  // TODO: Check indent levels and check for consistent newlines usage.
 
   return std::make_unique<IfStmtAST>(IfLoc, std::move(Cond), std::move(Then),
                                      std::move(Else));
 }
 
-// `for` identifier `in` `range` `(`expression `,` expression
-//   (`,` expression)? # optional
-// `)`: expression
-static std::unique_ptr<ExprAST> ParseForExpr() {
-  InForExpression++;
+// for_stmt       = "for" , identifier , "in" , "range" , "(" ,
+//                  expression , "," , expression ,
+//                  [ "," , expression ] ,
+//                  ")" , ":" , suite ;
+static std::unique_ptr<StmtAST> ParseForStmt() {
   getNextToken(); // eat for
 
   if (CurTok != tok_identifier)
-    return LogError("Expected identifier after for");
+    return LogError<StmtPtr>("Expected identifier after for");
 
   std::string IdName = IdentifierStr;
   getNextToken(); // eat identifier
 
   if (CurTok != tok_in)
-    return LogError("Expected `in` after identifier in for");
+    return LogError<StmtPtr>("Expected `in` after identifier in for");
   getNextToken(); // eat 'in'
 
   if (CurTok != tok_range)
-    return LogError("Expected `range` after identifier in for");
+    return LogError<StmtPtr>("Expected `range` after identifier in for");
   getNextToken(); // eat range
 
   if (CurTok != '(')
-    return LogError("Expected `(` after `range` in for");
+    return LogError<StmtPtr>("Expected `(` after `range` in for");
   getNextToken(); // eat '('
 
   auto Start = ParseExpression();
@@ -1033,7 +993,7 @@ static std::unique_ptr<ExprAST> ParseForExpr() {
     return nullptr;
 
   if (CurTok != ',')
-    return LogError("expected `,` after range start");
+    return LogError<StmtPtr>("expected `,` after range start");
   getNextToken(); // eat ','
 
   auto End = ParseExpression();
@@ -1048,27 +1008,16 @@ static std::unique_ptr<ExprAST> ParseForExpr() {
   }
 
   if (CurTok != ')')
-    return LogError("expected `)` after range operator");
+    return LogError<StmtPtr>("expected `)` after range operator");
   getNextToken(); // eat `)`
 
   if (CurTok != ':')
-    return LogError("expected `:` after range operator");
+    return LogError<StmtPtr>("expected `:` after range operator");
   getNextToken(); // eat `:`
 
-  bool UsesNewLines = EatNewLines();
-
-  if (UsesNewLines && CurTok != tok_indent)
-    return LogError("expected indent.");
-
-  getNextToken(); // eat indent
-
-  // `for` expressions don't have the return statement
-  // they return 0 by default.
-  auto Body = ParseExpression();
+  auto Body = ParseSuite();
   if (!Body)
     return nullptr;
-
-  InForExpression--;
 
   return std::make_unique<ForStmtAST>(IdName, std::move(Start), std::move(End),
                                       std::move(Step), std::move(Body));
@@ -1082,7 +1031,7 @@ static std::unique_ptr<ExprAST> ParseVarExpr() {
 
   // At least one variable name is required.
   if (CurTok != tok_identifier)
-    return LogError("expected identifier after var");
+    return LogError<ExprPtr>("expected identifier after var");
 
   while (true) {
     std::string Name = IdentifierStr;
@@ -1106,12 +1055,12 @@ static std::unique_ptr<ExprAST> ParseVarExpr() {
     getNextToken(); // eat the ','.
 
     if (CurTok != tok_identifier)
-      return LogError("expected identifier list after var");
+      return LogError<ExprPtr>("expected identifier list after var");
   }
 
   // At this point, we have to have 'in'.
   if (CurTok != tok_in)
-    return LogError("expected 'in' keyword after 'var'");
+    return LogError<ExprPtr>("expected 'in' keyword after 'var'");
   getNextToken(); // eat 'in'.
 
   EatNewLines();
@@ -1123,27 +1072,114 @@ static std::unique_ptr<ExprAST> ParseVarExpr() {
   return std::make_unique<VarExprAST>(std::move(VarNames), std::move(Body));
 }
 
-/// primary
-///   ::= identifierexpr
-///   ::= numberexpr
-///   ::= parenexpr
-///   ::= ifexpr
-///   ::= forexpr
+// expr_stmt      = expression ;
+static std::unique_ptr<ExprStmtAST> ParseExprStmt() {
+  auto ExprLoc = CurLoc;
+  auto Expr = ParseExpression();
+  if (!Expr)
+    return nullptr;
+  return std::make_unique<ExprStmtAST>(ExprLoc, std::move(Expr));
+}
+
+static std::unique_ptr<ReturnStmtAST> ParseReturnStmt() {
+  auto ReturnLoc = CurLoc;
+  getNextToken(); // eat `return`
+  auto Expr = ParseExpression();
+  if (!Expr)
+    return nullptr;
+  return std::make_unique<ReturnStmtAST>(ReturnLoc, std::move(Expr));
+}
+
+// statement      = if_stmt
+//                | for_stmt
+//                | return_stmt
+//                | expr_stmt ;
+static std::unique_ptr<StmtAST> ParseStmt() {
+  // This should parse statements
+  switch (CurTok) {
+  case tok_if:
+    return ParseIfStmt();
+  case tok_for:
+    return ParseForStmt();
+  case tok_return:
+    return ParseReturnStmt();
+  default:
+    return ParseExprStmt();
+  }
+}
+
+/// statement_list = statement , { newline , statement } , [ newline ] ;
+static std::vector<std::unique_ptr<StmtAST>> ParseStatementList() {
+  std::vector<std::unique_ptr<StmtAST>> Stmts;
+  while (CurTok != tok_dedent && CurTok != tok_eof) {
+    EatNewLines();
+    if (CurTok == tok_dedent || CurTok == tok_eof)
+      break;
+    auto Stmt = ParseStmt();
+    if (!Stmt)
+      return {}; // Error: return empty to signal failure
+    Stmts.push_back(std::move(Stmt));
+  }
+  return Stmts;
+}
+
+// inline_suite = statement;
+static std::unique_ptr<BlockSuiteAST> ParseInlineSuite() {
+  auto BlockLoc = CurLoc;
+  auto Stmt = ParseStmt();
+  if (!Stmt)
+    return nullptr;
+
+  std::vector<StmtPtr> Stmts;
+  Stmts.push_back(std::move(Stmt));
+  return std::make_unique<BlockSuiteAST>(BlockLoc, std::move(Stmts));
+}
+
+/// block_suite    = newline , indent , statement_list , dedent ;
+static std::unique_ptr<BlockSuiteAST> ParseBlockSuite() {
+  auto BlockLoc = CurLoc;
+  // check if newline or error
+  if (CurTok != tok_eol) {
+    return LogError<std::unique_ptr<BlockSuiteAST>>("Expected newline");
+  }
+
+  // check if indent or error
+  if (getNextToken() != tok_indent) {
+    return LogError<std::unique_ptr<BlockSuiteAST>>("Expected indent");
+  }
+  getNextToken(); // eat indent
+
+  auto Stmts = ParseStatementList();
+  if (Stmts.empty())
+    return nullptr;
+  getNextToken(); // eat dedent
+  return std::make_unique<BlockSuiteAST>(BlockLoc, std::move(Stmts));
+}
+
+// suite          = inline_suite
+//                | block_suite ;
+static std::unique_ptr<BlockSuiteAST> ParseSuite() {
+  if (CurTok == tok_eol) {
+    return ParseBlockSuite();
+  } else {
+    return ParseInlineSuite();
+  }
+}
+
+// primary        = number
+//                | identifier | call_expr
+//                | paren_expr
+//                | var_expr ;
 static std::unique_ptr<ExprAST> ParsePrimary() {
   switch (CurTok) {
   default:
-    fprintf(stderr, "CurTok = %d\n", CurTok);
-    return LogError("Unknown token when expecting an expression");
+    return LogError<ExprPtr>("Unknown token when expecting an expression");
   case tok_identifier:
-    return ParseIdentifierExpr();
+    return ParseIdentifierExpr(); // Also looks for call expressions
   case tok_number:
     return ParseNumberExpr();
   case '(':
     return ParseParenExpr();
-  case tok_if:
-    return ParseIfExpr();
-  case tok_for:
-    return ParseForExpr();
   case tok_var:
     return ParseVarExpr();
   }
@@ -1224,11 +1260,11 @@ ParsePrototype(OperatorType operatorType = Undefined, int precedence = 0) {
   if (operatorType != Undefined) {
     // Expect a single-character operator
     if (CurTok == tok_identifier) {
-      return LogErrorP("Expected single character operator");
+      return LogError<ProtoPtr>("Expected single character operator");
     }
 
     if (!isascii(CurTok)) {
-      return LogErrorP("Expected single character operator");
+      return LogError<ProtoPtr>("Expected single character operator");
     }
 
     FnName = (operatorType == Unary ? "unary" : "binary");
@@ -1237,7 +1273,7 @@ ParsePrototype(OperatorType operatorType = Undefined, int precedence = 0) {
     getNextToken();
   } else {
     if (CurTok != tok_identifier) {
-      return LogErrorP("Expected function name in prototype");
+      return LogError<ProtoPtr>("Expected function name in prototype");
     }
 
     FnName = IdentifierStr;
@@ -1246,7 +1282,7 @@ ParsePrototype(OperatorType operatorType = Undefined, int precedence = 0) {
   }
 
   if (CurTok != '(') {
-    return LogErrorP("Expected '(' in prototype");
+    return LogError<ProtoPtr>("Expected '(' in prototype");
   }
 
   std::vector<std::string> ArgNames;
@@ -1258,11 +1294,11 @@ ParsePrototype(OperatorType operatorType = Undefined, int precedence = 0) {
       break;
 
     if (CurTok != ',')
-      return LogErrorP("Expected ')' or ',' in parameter list");
+      return LogError<ProtoPtr>("Expected ')' or ',' in parameter list");
   }
 
   if (CurTok != ')')
-    return LogErrorP("Expected ')' in prototype");
+    return LogError<ProtoPtr>("Expected ')' in prototype");
 
   // success.
   getNextToken(); // eat ')'.
@@ -1282,14 +1318,15 @@ static std::unique_ptr<FunctionAST> ParseDefinition() {
     getNextToken(); // eat '@'
 
     if (CurTok != tok_identifier)
-      return LogErrorF("expected decorator name after '@'");
+      return LogError<FuncPtr>("expected decorator name after '@'");
 
     auto it = Decorators.find(IdentifierStr);
     OpType = it == Decorators.end() ? OperatorType::Undefined : it->second;
     getNextToken(); // eat decorator name
 
     if (OpType == Undefined)
-      return LogErrorF(("unknown decorator '" + IdentifierStr + "'").c_str());
+      return LogError<FuncPtr>(
+          ("unknown decorator '" + IdentifierStr + "'").c_str());
 
     if (OpType == Binary) {
       if (CurTok == '(') {
@@ -1299,24 +1336,25 @@ static std::unique_ptr<FunctionAST> ParseDefinition() {
           // If we want to introduce more attributes, we would add "precedence"
           // to a map and associate it with a binary operator.
           if (CurTok != tok_identifier || IdentifierStr != "precedence") {
-            return LogErrorF("expected 'precedence' parameter in decorator");
+            return LogError<FuncPtr>(
+                "expected 'precedence' parameter in decorator");
           }
 
           getNextToken(); // eat 'precedence'
 
           if (CurTok != '=')
-            return LogErrorF("expected '=' after 'precedence'");
+            return LogError<FuncPtr>("expected '=' after 'precedence'");
 
           getNextToken(); // eat '='
 
           if (CurTok != tok_number)
-            return LogErrorF("expected number for precedence value");
+            return LogError<FuncPtr>("expected number for precedence value");
 
           Precedence = NumVal;
           getNextToken(); // eat number
         }
         if (CurTok != ')')
-          return LogErrorF("expected ')' after precedence value");
+          return LogError<FuncPtr>("expected ')' after precedence value");
         getNextToken(); // eat ')'
       }
     }
@@ -1325,7 +1363,7 @@ static std::unique_ptr<FunctionAST> ParseDefinition() {
   EatNewLines();
 
   if (CurTok != tok_def)
-    return LogErrorF("expected 'def'");
+    return LogError<FuncPtr>("expected 'def'");
 
   getNextToken(); // eat def.
   auto Proto = ParsePrototype(OpType, Precedence);
@@ -1333,33 +1371,20 @@ static std::unique_ptr<FunctionAST> ParseDefinition() {
     return nullptr;
 
   if (CurTok != ':')
-    return LogErrorF("Expected ':' in function definition");
+    return LogError<FuncPtr>("Expected ':' in function definition");
 
   getNextToken(); // eat ':'
 
-  EatNewLines();
-
-  if (CurTok != tok_indent)
-    return LogErrorF("Expected indentation.");
-  getNextToken(); // eat tok_indent
-
-  if (!InForExpression && CurTok != tok_if && CurTok != tok_for &&
-      CurTok != tok_var) {
-    if (CurTok != tok_return) {
-      //   fprintf(stderr, "CurTok = %d\n", CurTok);
-      return LogErrorF("Expected 'return' before expression");
-    }
-
-    getNextToken(); // eat return
-  }
-
-  auto E = ParseExpression();
+  auto E = ParseSuite();
   if (!E)
     return nullptr;
 
   EatNewLines();
-  while (CurTok == tok_dedent)
+  // TODO: Check indent levels and check for consistent newlines usage.
+  while (CurTok == tok_dedent) {
     getNextToken();
+  }
+
   return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
 }
 
@@ -1367,11 +1392,16 @@ static std::unique_ptr<FunctionAST> ParseDefinition() {
 static std::unique_ptr<FunctionAST> ParseTopLevelExpr() {
   SourceLocation FnLoc = CurLoc;
   if (auto E = ParseExpression()) {
+    // Wrap expression in ExprStmtAST -> BlockSuiteAST
+    auto ExprStmt = std::make_unique<ExprStmtAST>(FnLoc, std::move(E));
+    std::vector<StmtPtr> Stmts;
+    Stmts.push_back(std::move(ExprStmt));
+    auto Body = std::make_unique<BlockSuiteAST>(FnLoc, std::move(Stmts));
+
     // Make an anonymous proto.
-    // TODO: What happens to do this in a binary?
     auto Proto = std::make_unique<PrototypeAST>(FnLoc, "__anon_expr",
                                                 std::vector<std::string>());
-    return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
+    return std::make_unique<FunctionAST>(std::move(Proto), std::move(Body));
   }
   return nullptr;
 }
@@ -1380,7 +1410,7 @@ static std::unique_ptr<FunctionAST> ParseTopLevelExpr() {
 static std::unique_ptr<PrototypeAST> ParseExtern() {
   getNextToken(); // eat extern.
   if (CurTok != tok_def)
-    return LogErrorP("Expected `def` after extern.");
+    return LogError<ProtoPtr>("Expected `def` after extern.");
   getNextToken(); // eat def
   return ParsePrototype();
 }
@@ -1418,6 +1448,7 @@ struct DebugInfo {
   std::vector<DIScope *> LexicalBlocks;
 
   void emitLocation(ExprAST *AST);
+  void emitLocation(StmtAST *AST);
   DIType *getDoubleTy();
 };
 
@@ -1426,6 +1457,11 @@ static std::unique_ptr<DIBuilder> DBuilder;
 
 // Helper to safely emit location
 inline void emitLocation(ExprAST *AST) {
+  if (KSDbgInfo)
+    KSDbgInfo->emitLocation(AST);
+}
+
+inline void emitLocation(StmtAST *AST) {
   if (KSDbgInfo)
     KSDbgInfo->emitLocation(AST);
 }
@@ -1439,6 +1475,18 @@ DIType *DebugInfo::getDoubleTy() {
 }
 
 void DebugInfo::emitLocation(ExprAST *AST) {
+  if (!AST)
+    return Builder->SetCurrentDebugLocation(DebugLoc());
+  DIScope *Scope;
+  if (LexicalBlocks.empty())
+    Scope = TheCU;
+  else
+    Scope = LexicalBlocks.back();
+  Builder->SetCurrentDebugLocation(DILocation::get(
+      Scope->getContext(), AST->getLine(), AST->getCol(), Scope));
+}
+
+void DebugInfo::emitLocation(StmtAST *AST) {
   if (!AST)
     return Builder->SetCurrentDebugLocation(DebugLoc());
   DIScope *Scope;
@@ -1503,7 +1551,7 @@ Value *VariableExprAST::codegen() {
   // Look this variable up in the function.
   AllocaInst *A = NamedValues[Name];
   if (!A)
-    return LogErrorV(("Unknown variable name " + Name).c_str());
+    return LogError<Value *>(("Unknown variable name " + Name).c_str());
   emitLocation(this);
   // Load the value.
   return Builder->CreateLoad(A->getAllocatedType(), A, Name.c_str());
@@ -1516,7 +1564,7 @@ Value *UnaryExprAST::codegen() {
 
   Function *F = getFunction(std::string("unary") + Opcode);
   if (!F) {
-    return LogErrorV("Unknown unary operator");
+    return LogError<Value *>("Unknown unary operator");
   }
   emitLocation(this);
   return Builder->CreateCall(F, OperandV, "unop");
@@ -1532,7 +1580,7 @@ Value *BinaryExprAST::codegen() {
     // dynamic_cast for automatic error checking.
     VariableExprAST *LHSE = static_cast<VariableExprAST *>(LHS.get());
     if (!LHSE)
-      return LogErrorV("destination of '=' must be a variable");
+      return LogError<Value *>("destination of '=' must be a variable");
     // Codegen the RHS.
     Value *Val = RHS->codegen();
     if (!Val)
@@ -1541,7 +1589,7 @@ Value *BinaryExprAST::codegen() {
     // Look up the name.
     Value *Variable = NamedValues[LHSE->getName()];
     if (!Variable)
-      return LogErrorV("Unknown variable name");
+      return LogError<Value *>("Unknown variable name");
 
     Builder->CreateStore(Val, Variable);
     return Val;
@@ -1582,11 +1630,11 @@ Value *CallExprAST::codegen() {
   // Look up the name in the global module table.
   Function *CalleeF = getFunction(Callee);
   if (!CalleeF)
-    return LogErrorV("Unknown function referenced");
+    return LogError<Value *>("Unknown function referenced");
 
   // If argument mismatch error.
   if (CalleeF->arg_size() != Args.size())
-    return LogErrorV("Incorrect # arguments passed");
+    return LogError<Value *>("Incorrect # arguments passed");
 
   std::vector<Value *> ArgsV;
   for (unsigned i = 0, e = Args.size(); i != e; ++i) {
@@ -1611,8 +1659,8 @@ Value *IfStmtAST::codegen() {
 
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
 
-  // Create blocks for the then and else cases.  Insert the 'then' block at
-  // the end of the function.
+  // Create blocks for the then and else cases. Insert the 'then' block at the
+  // end of the function.
   BasicBlock *ThenBB = BasicBlock::Create(*TheContext, "then", TheFunction);
   BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else");
   BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont");
@@ -1625,10 +1673,11 @@ Value *IfStmtAST::codegen() {
   Value *ThenV = Then->codegen();
   if (!ThenV)
     return nullptr;
-
-  Builder->CreateBr(MergeBB);
+  bool ThenTerminated = Builder->GetInsertBlock()->getTerminator() != nullptr;
+  if (!ThenTerminated)
+    Builder->CreateBr(MergeBB);
   // Codegen of 'Then' can change the current block, update ThenBB for the
-  // PHI.
+  // result selection.
   ThenBB = Builder->GetInsertBlock();
 
   // Emit else block.
@@ -1638,20 +1687,35 @@ Value *IfStmtAST::codegen() {
   Value *ElseV = Else->codegen();
   if (!ElseV)
     return nullptr;
-
-  Builder->CreateBr(MergeBB);
+  bool ElseTerminated = Builder->GetInsertBlock()->getTerminator() != nullptr;
+  if (!ElseTerminated)
+    Builder->CreateBr(MergeBB);
   // Codegen of 'Else' can change the current block, update ElseBB for the
-  // PHI.
+  // result selection.
   ElseBB = Builder->GetInsertBlock();
 
-  // Emit merge block.
+  // If both sides already terminated (e.g. both returned), there is no
+  // reachable continuation.
+  if (ThenTerminated && ElseTerminated) {
+    BasicBlock *DeadCont =
+        BasicBlock::Create(*TheContext, "ifcont.dead", TheFunction);
+    Builder->SetInsertPoint(DeadCont);
+    return ConstantFP::get(*TheContext, APFloat(0.0));
+  }
+
+  // Emit merge block for any non-terminated path.
   TheFunction->insert(TheFunction->end(), MergeBB);
   Builder->SetInsertPoint(MergeBB);
-  PHINode *PN = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
+  if (!ThenTerminated && !ElseTerminated) {
+    PHINode *PN =
+        Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
+    PN->addIncoming(ThenV, ThenBB);
+    PN->addIncoming(ElseV, ElseBB);
+    return PN;
+  }
 
-  PN->addIncoming(ThenV, ThenBB);
-  PN->addIncoming(ElseV, ElseBB);
-  return PN;
+  // Exactly one side flows through to merge.
+  return ThenTerminated ? ElseV : ThenV;
 }
 
 Value *ForStmtAST::codegen() {
@@ -1803,14 +1867,42 @@ Value *ReturnStmtAST::codegen() {
   if (!RetVal)
     return nullptr;
 
+  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+  Type *ExpectedTy = TheFunction->getReturnType();
+  if (ExpectedTy->isIntegerTy(32) && RetVal->getType()->isDoubleTy()) {
+    RetVal = Builder->CreateFPToSI(RetVal, ExpectedTy, "ret_i32");
+  } else if (ExpectedTy->isDoubleTy() && RetVal->getType()->isIntegerTy(32)) {
+    RetVal = Builder->CreateSIToFP(RetVal, ExpectedTy, "ret_double");
+  }
+
   Builder->CreateRet(RetVal);
   return RetVal;
 }
 
+Value *BlockSuiteAST::codegen() {
+  Value *Last = nullptr;
+  for (size_t i = 0; i < Stmts.size(); ++i) {
+    Last = Stmts[i]->codegen();
+    if (!Last)
+      return nullptr;
+    // Stop generating after a terminator (e.g. return).
+    if (Stmts[i]->isTerminator()) {
+      if (i + 1 < Stmts.size()) {
+        fprintf(stderr,
+                "Warning (Line %d): unreachable code after return statement\n",
+                Stmts[i + 1]->getLine());
+      }
+      break;
+    }
+  }
+  return Last;
+}
+
 Function *PrototypeAST::codegen() {
-  // Special case: main function returns int, everything else returns double
+  // For native executable/object builds, emit C-style `int main`.
+  // In interpreter mode, keep all functions (including `main`) as `double`.
   Type *RetType;
-  if (Name == "main") {
+  if (UseCMainSignature && Name == "main") {
     RetType = Type::getInt32Ty(*TheContext);
   } else {
     RetType = Type::getDoubleTy(*TheContext);
@@ -1848,8 +1940,8 @@ Function *FunctionAST::codegen() {
   BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
   Builder->SetInsertPoint(BB);
 
-  DIFile *Unit;
-  DISubprogram *SP;
+  DIFile *Unit = nullptr;
+  DISubprogram *SP = nullptr;
 
   if (KSDbgInfo) {
     // Create a subprogram DIE for this function.
@@ -1870,7 +1962,7 @@ Function *FunctionAST::codegen() {
     // Unset the location for the prologue emission (leading instructions with
     // no location in a function are considered part of the prologue and the
     // debugger will run past them when breaking on a function)
-    emitLocation(nullptr);
+    emitLocation((StmtAST *)nullptr);
   }
 
   // Record the function arguments in the NamedValues map.
@@ -1880,12 +1972,10 @@ Function *FunctionAST::codegen() {
   for (auto &Arg : TheFunction->args()) {
     // Create an alloca for this variable.
     AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, Arg.getName());
-    DIScope *FContext = Unit;
-    unsigned LineNo = P.getLine();
-    unsigned ScopeLine = LineNo;
 
     // Create a debug descriptor for the variable.
     if (KSDbgInfo) {
+      unsigned LineNo = P.getLine();
       DILocalVariable *D = DBuilder->createParameterVariable(
           SP, Arg.getName(), ++ArgIdx, Unit, LineNo, KSDbgInfo->getDoubleTy(),
           true);
@@ -1903,15 +1993,15 @@ Function *FunctionAST::codegen() {
   }
 
   if (Value *RetVal = Body->codegen()) {
-    // Special handling for main function: convert double to int
-    if (P.getName() == "main") {
-      // Convert double to i32
-      RetVal = Builder->CreateFPToSI(RetVal, Type::getInt32Ty(*TheContext),
-                                     "mainret");
+    // Finish off the function if the current block is still open.
+    if (!Builder->GetInsertBlock()->getTerminator()) {
+      // Special handling for native `main`: convert double to i32.
+      if (UseCMainSignature && P.getName() == "main") {
+        RetVal = Builder->CreateFPToSI(RetVal, Type::getInt32Ty(*TheContext),
+                                       "mainret");
+      }
+      Builder->CreateRet(RetVal);
     }
-
-    // Finish off the function.
-    Builder->CreateRet(RetVal);
 
     // Validate the generated code, checking for consistency.
     verifyFunction(*TheFunction);
@@ -2166,6 +2256,7 @@ static void ParseSourceFile() {
 //===----------------------------------------------------------------------===//
 
 void InterpretFile(const std::string &filename) {
+  UseCMainSignature = false;
   InitializeNativeTarget();
   InitializeNativeTargetAsmPrinter();
   InitializeNativeTargetAsmParser();
@@ -2267,6 +2358,7 @@ void InterpretFile(const std::string &filename) {
 //===----------------------------------------------------------------------===//
 
 void CompileToObjectFile(const std::string &filename) {
+  UseCMainSignature = true;
   InitializeNativeTarget();
   InitializeNativeTargetAsmPrinter();
   InitializeNativeTargetAsmParser();
@@ -2343,6 +2435,7 @@ void CompileToObjectFile(const std::string &filename) {
 //===----------------------------------------------------------------------===//
 
 void REPL() {
+  UseCMainSignature = false;
   InitializeNativeTarget();
   InitializeNativeTargetAsmPrinter();
   InitializeNativeTargetAsmParser();
@@ -2414,40 +2507,15 @@ int main(int argc, char **argv) {
       std::string scriptObj = getOutputFilename(InputFilename, ".o");
       CompileToObjectFile(InputFilename);
 
-      // Step 2: Optionally compile runtime.c to runtime.o if it exists
-      std::string runtimeC = "runtime.c"; // Or use absolute path if needed
-      std::string runtimeObj = "runtime.o";
-      bool hasRuntime = sys::fs::exists(runtimeC);
-
-      if (hasRuntime) {
-        if (Verbose)
-          std::cout << "Compiling runtime library...\n";
-
-        std::string compileRuntime =
-            "clang -c " + runtimeC + " -o " + runtimeObj;
-        int compileResult = system(compileRuntime.c_str());
-
-        if (compileResult != 0) {
-          errs() << "Error: Failed to compile runtime library\n";
-          errs() << "Make sure runtime.c exists in the current directory\n";
-          return 1;
-        }
-      } else if (Verbose) {
-        std::cout << "No runtime.c found; linking without runtime support\n";
-      }
-
       // Step 3: Link object files
       if (Verbose)
         std::cout << "Linking...\n";
 
-      std::string linkCmd = "clang " + scriptObj;
-      if (hasRuntime)
-        linkCmd += " " + runtimeObj;
-      linkCmd += " -o " + exeFile;
-      int linkResult = system(linkCmd.c_str());
+      std::string runtimeObj = "runtime.o";
 
-      if (linkResult != 0) {
-        errs() << "Error: Linking failed\n";
+      // Step 3: Link using PyxcLinker (NO MORE system() calls!)
+      if (!PyxcLinker::Link(scriptObj, runtimeObj, exeFile)) {
+        errs() << "Linking failed\n";
         return 1;
       }
 
@@ -2456,13 +2524,9 @@ int main(int argc, char **argv) {
         // Optionally clean up intermediate files
         std::cout << "Cleaning up intermediate files...\n";
         remove(scriptObj.c_str());
-        if (hasRuntime)
-          remove(runtimeObj.c_str());
       } else {
         std::cout << exeFile << "\n";
         remove(scriptObj.c_str());
-        if (hasRuntime)
-          remove(runtimeObj.c_str());
       }
 
       break;
