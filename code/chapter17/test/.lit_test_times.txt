@@ -1,0 +1,8 @@
+8.564997e-02 print_basic_empty.pyxc
+7.595181e-02 print_basic_scalars.pyxc
+3.018498e-02 print_error_keyword_args.pyxc
+2.287793e-02 print_error_trailing_comma.pyxc
+2.987289e-02 print_error_unsupported_pointer.pyxc
+4.222322e-02 print_mixed_types.pyxc
+6.552410e-02 print_narrow_signed.pyxc
+4.557729e-02 print_unsigned_widths.pyxc

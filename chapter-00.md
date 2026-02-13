@@ -57,20 +57,22 @@ This tutorial is structured into chapters covering individual topics, allowing y
 
 [Chapter #14: Blocks, elif, Optional else, and Benchmarking](chapter-14.md) - Until now, we could *lex* indentation. In this chapter, we use that structure to parse real statement blocks, support `elif`, make `else` optional, and tighten codegen.
 
-**Chapter #15: Basic Type System and Annotations** - Every practical language needs some form of type checking. We implement basic type annotations for functions, simple type inference for local variables, and show how to generate appropriate LLVM types from our AST nodes.
+[Chapter #15: Clean Operator Rules and Short-Circuit Logic](chapter-15.md) - Before introducing types, we simplify operators. We add `not`, `and`, `or`, `==`, `!=`, `<=`, and `>=`, disable custom operators for now, and implement short-circuit codegen for logical expressions.
 
-**Chapter #16: Structures and Named Tuples** - Adding structured data types to Pyxc. We implement simple structs (similar to C structs) with field access, and Python-style named tuples. This demonstrates how to use LLVM's struct types and handle memory layout for composite types.
+[Chapter #16: Typed Interop (Core Types, Pointers, and ABI)](chapter-16.md) - We add explicit scalar and pointer types, typed function signatures, type aliases, typed local declarations, and pointer operations (`addr`, indexing). We also enforce interop-focused typing rules and ABI-correct narrow signed/unsigned extern behavior.
 
-**Chapter #17: First-class Functions and Closures** - Making functions truly first-class citizens. We implement function pointers, higher-order functions, and simple closures with explicit capture lists. This chapter shows how LLVM handles indirect calls and closure environments.
+**Chapter #17: Structures and Named Tuples** - Adding structured data types to Pyxc. We implement simple structs (similar to C structs) with field access, and Python-style named tuples. This demonstrates how to use LLVM's struct types and handle memory layout for composite types.
 
-**Chapter #18: Simple Classes and Methods** - Adding object-oriented features without complexity. We implement single inheritance, methods with explicit self parameter, and basic constructors. This demonstrates vtables and dynamic dispatch in LLVM.
+**Chapter #18: First-class Functions and Closures** - Making functions truly first-class citizens. We implement function pointers, higher-order functions, and simple closures with explicit capture lists. This chapter shows how LLVM handles indirect calls and closure environments.
 
-**Chapter #19: Arrays and Basic Collections** - Practical data structures for Pyxc. We implement fixed-size arrays, bounds checking, and show how to create simple list-like types. This introduces LLVM's array types and pointer operations.
+**Chapter #19: Simple Classes and Methods** - Adding object-oriented features without complexity. We implement single inheritance, methods with explicit self parameter, and basic constructors. This demonstrates vtables and dynamic dispatch in LLVM.
 
-**Chapter #20: Modules and Separate Compilation** - Breaking code into multiple files. We implement a simple module system with import statements and show how to compile and link multiple modules together using LLVM's module linking capabilities.
+**Chapter #20: Arrays and Basic Collections** - Practical data structures for Pyxc. We implement fixed-size arrays, bounds checking, and show how to create simple list-like types. This introduces LLVM's array types and pointer operations.
 
-**Chapter #21: Standard Library and Built-in Functions** - A language isn't complete without basic utilities. We show how to implement essential built-in functions (print, len, file I/O) by calling the C standard library, and create a minimal runtime for Pyxc.
+**Chapter #21: Modules and Separate Compilation** - Breaking code into multiple files. We implement a simple module system with import statements and show how to compile and link multiple modules together using LLVM's module linking capabilities.
 
-**Chapter #22: Better Error Handling and Diagnostics** - Improving the developer experience. We add source location tracking, better error messages with context, and simple warning systems. This shows how to integrate diagnostics throughout the compiler pipeline.
+**Chapter #22: Standard Library and Built-in Functions** - A language isn't complete without basic utilities. We show how to implement essential built-in functions (print, len, file I/O) by calling the C standard library, and create a minimal runtime for Pyxc.
 
-**Chapter #23: Concluding Intermediate Topics** - This chapter wraps up the Intermediate Topics series by discussing advanced extension possibilities and includes pointers to further topics like concurrency support, foreign function interfaces, custom optimizations, and language interoperability.
+**Chapter #23: Better Error Handling and Diagnostics** - Improving the developer experience. We add source location tracking, better error messages with context, and simple warning systems. This shows how to integrate diagnostics throughout the compiler pipeline.
+
+**Chapter #24: Concluding Intermediate Topics** - This chapter wraps up the Intermediate Topics series by discussing advanced extension possibilities and includes pointers to further topics like concurrency support, foreign function interfaces, custom optimizations, and language interoperability.

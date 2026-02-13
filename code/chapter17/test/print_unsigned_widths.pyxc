@@ -1,0 +1,13 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '250 60000 4000000000 9000000000' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    a: u8 = 250
+    b: u16 = 60000
+    c: u32 = 4000000000
+    d: u64 = 9000000000
+    print(a, b, c, d)
+    return 0
+
+main()

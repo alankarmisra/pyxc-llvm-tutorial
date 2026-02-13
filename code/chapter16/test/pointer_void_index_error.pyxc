@@ -1,10 +1,7 @@
-# XFAIL: *
 # RUN: %pyxc -i %s > %t 2>&1
 # RUN: grep -q "Error (Line:" %t
 
-def main():
+def main() -> i32:
     p: ptr[void]
     x: i32 = p[0]
     return x
-
-main()

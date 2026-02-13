@@ -1,11 +1,10 @@
-# XFAIL: *
 # RUN: %pyxc -i %s > %t 2>&1
 # RUN: grep -q "10.000000" %t
 # RUN: ! grep -q "Error (Line:" %t
 
-extern def printd(x)
+extern def printd(x: f64) -> f64
 
-def main():
+def main() -> i32:
     x: i32 = 10
     n: i32 = 0
     p: ptr[i32] = addr(x)

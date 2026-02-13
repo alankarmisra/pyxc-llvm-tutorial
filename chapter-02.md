@@ -1008,7 +1008,7 @@ int main() {
 }
 ```
 
-## Compliling
+## Compiling
 To compile this file (assuming you named it `pyxc.cpp`)
 
 ```bash
@@ -1016,6 +1016,31 @@ To compile this file (assuming you named it `pyxc.cpp`)
 clang++ -g -O3 pyxc.cpp
 # Run
 ./a.out
+```
+
+## One-Time Shell Setup for `llvm-lit` (Needed in Later Chapters)
+
+Later chapters add automated tests. We run them with `llvm-lit`.
+
+On many machines, `llvm-lit` exists in your LLVM build tree but is not on your shell `PATH` by default. If `llvm-lit` says `command not found`, add your LLVM build `bin` directory to your shell loader file (`~/.zshrc` for zsh).
+
+For this repo setup, you can run:
+
+```bash
+echo 'export PATH="/Users/alankar/Documents/opensource/llvm-project/build/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+Verify:
+
+```bash
+which llvm-lit
+```
+
+If that prints a path, you are set. In later chapters you can run:
+
+```bash
+llvm-lit test
 ```
 
 ## Testing
