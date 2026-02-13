@@ -2640,7 +2640,9 @@ static Type *ResolveTypeExpr(const TypeExprPtr &Ty,
       return LogError<Type *>(
           ("Alias cycle detected at type: " + Ty->Name).c_str());
     Visited.insert(Ty->Name);
-    return ResolveTypeExpr(It->second, Visited);
+    Type *Resolved = ResolveTypeExpr(It->second, Visited);
+    Visited.erase(Ty->Name);
+    return Resolved;
   }
 
   if (StructDecls.count(Ty->Name)) {
@@ -2671,7 +2673,9 @@ static Type *ResolvePointeeTypeExpr(const TypeExprPtr &Ty,
     if (It == TypeAliases.end() || Visited.count(Ty->Name))
       return nullptr;
     Visited.insert(Ty->Name);
-    return ResolvePointeeTypeExpr(It->second, Visited);
+    Type *Resolved = ResolvePointeeTypeExpr(It->second, Visited);
+    Visited.erase(Ty->Name);
+    return Resolved;
   }
   return nullptr;
 }
@@ -2695,7 +2699,9 @@ static std::string ResolveBuiltinLeafName(const TypeExprPtr &Ty,
   if (It == TypeAliases.end() || Visited.count(Ty->Name))
     return "";
   Visited.insert(Ty->Name);
-  return ResolveBuiltinLeafName(It->second, Visited);
+  std::string Resolved = ResolveBuiltinLeafName(It->second, Visited);
+  Visited.erase(Ty->Name);
+  return Resolved;
 }
 
 static std::string ResolveBuiltinLeafName(const TypeExprPtr &Ty) {
@@ -2716,7 +2722,9 @@ static std::string ResolvePointeeBuiltinLeafName(const TypeExprPtr &Ty,
     if (It == TypeAliases.end() || Visited.count(Ty->Name))
       return "";
     Visited.insert(Ty->Name);
-    return ResolvePointeeBuiltinLeafName(It->second, Visited);
+    std::string Resolved = ResolvePointeeBuiltinLeafName(It->second, Visited);
+    Visited.erase(Ty->Name);
+    return Resolved;
   }
   return "";
 }
