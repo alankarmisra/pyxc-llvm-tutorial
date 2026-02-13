@@ -1,5 +1,9 @@
 # 8. Pyxc:  Extending the Language: Mutable Variables
 
+!!!note
+    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter08](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter08).
+
+
 ## Introduction
 
 Welcome to Chapter 7 of the [Implementing a language with LLVM](chapter-00.md) tutorial. In chapters 1 through 6, we’ve built a very respectable, albeit simple, functional programming language. In our journey, we learned some parsing techniques, how to build and represent an AST, how to build LLVM IR, and how to optimize the resultant code as well as JIT compile it.

@@ -1,5 +1,9 @@
 # 7. Pyxc: Extending the Language: User-defined Operators
 
+!!!note
+    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter07](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter07).
+
+
 ## Introduction
 Welcome to Chapter 6 of the [Implementing a language with LLVM](chapter-00.md) tutorial. At this point in our tutorial, we now have a fully functional language that is fairly minimal, but also useful. There is still one big problem with it, however. Our language doesn’t have many useful operators (like division, logical negation, or even any comparisons besides less-than).
 

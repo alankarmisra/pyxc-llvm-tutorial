@@ -2,8 +2,6 @@
 
 This chapter evolves `pyxc` from a REPL-centric JIT into a full compiler front-end with command-line modes, source locations, debug info, errors in color(!) and object/executable output. 
 
-
-
 !!!note
     To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter12](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter12).
 

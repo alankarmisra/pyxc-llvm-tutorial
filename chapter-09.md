@@ -1,5 +1,9 @@
 # 9. Pyxc: Compiling to Object Code
 
+!!!note
+    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter09](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter09).
+
+
 ## Introduction
 Welcome to Chapter 8 of the [Implementing a language with LLVM](chapter-00.md) tutorial. This chapter describes how to compile our language down to object files.
 

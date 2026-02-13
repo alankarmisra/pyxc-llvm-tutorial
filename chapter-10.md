@@ -1,6 +1,11 @@
 # 10. Pyxc: Adding Debug Information
 
+!!!note
+    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter10](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter10).
+
+
 ## Introduction
+
 Welcome to Chapter 9 of the [Implementing a language with LLVM](chapter-00.md) tutorial. In chapters 1 through 8, we’ve built a decent little programming language with functions and variables. What happens if something goes wrong though, how do you debug your program?
 
 Source level debugging uses formatted data that helps a debugger translate from binary and the state of the machine back to the source that the programmer wrote. In LLVM we generally use a format called DWARF. DWARF is a compact encoding that represents types, source locations, and variable locations.
