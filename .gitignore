@@ -65,3 +65,6 @@ vcpkg_installed/
 *.tmp
 *.swp
 *.bak
+
+pyxc
+runtime.o
