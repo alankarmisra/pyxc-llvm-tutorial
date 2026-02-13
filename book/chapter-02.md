@@ -112,7 +112,7 @@ def sumsq(a, b):
     return var x = a * a, y = b * b in x + y
 ```
 
-## 2.10 Conditional Expressions by `if`
+## 2.10 Conditional Expressions by if
 
 Condition-driven value selection is written with `if`/`elif`/`else`:
 

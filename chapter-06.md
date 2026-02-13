@@ -181,7 +181,7 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
 }
 ```
 
-## LLVM IR for the `if` Expression
+## LLVM IR for the if Expression
 Now that we have it parsing and building the AST, the final piece is adding LLVM code generation support. This is the most interesting part of the if/then/else example, because this is where it starts to introduce new concepts. All of the code above has been thoroughly described in previous chapters.
 
 Internally, we still refer to the true and false branches as the “then” and “else” blocks, even though 'then' is *not* a keyword in pyxc.
@@ -338,7 +338,7 @@ Finally, the CodeGen function returns the phi node as the value computed by the 
 
 Overall, we now have the ability to execute conditional code in Pyxc. With this extension, Pyxc is a fairly complete language that can calculate a wide variety of numeric functions. Next up we’ll add another useful expression that is familiar from non-functional languages…
 
-## A Python-style `for` Expression
+## A Python-style for Expression
 
 Now that we know how to add basic control flow constructs to the language, we have the tools to add more powerful things. Let’s add something more aggressive, a ‘for’ expression. To keep the syntax familiar and Pythonic, we initially pair 'for' with a 'range' operator. In later chapters, we will decouple the two and allow 'for' to iterate over any iterable.
 

@@ -1,0 +1,12 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Error (Line:" %t
+# RUN: grep -q "Duplicate field 'x' in struct 'Point'" %t
+
+struct Point:
+    x: i32
+    x: i64
+
+def main() -> i32:
+    return 0
+
+main()

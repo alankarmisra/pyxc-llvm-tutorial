@@ -1,8 +1,14 @@
-# 14. Blocks, `elif`, Optional `else`, and Benchmarking
+# 14. Blocks, elif, Optional else, and Benchmarking
 
 If Chapter 13 gave us indentation tokens, Chapter 14 is where we finally cash that check.
 
 Until now, we could *lex* indentation. In this chapter, we use that structure to parse real statement blocks, support `elif`, make `else` optional, and tighten codegen so branch-heavy code doesn’t generate weird IR.
+
+> Note from the future:
+> This chapter still carries one Kaleidoscope legacy semantic: boolean/comparison-style results in parts of codegen are represented via floating values (`0.0` / `1.0`) instead of integer truth values.
+> We *should* have cleaned that up around here, but we didn’t.
+> We finally fixed it in Chapter 23 when we revisited signed/unsigned and truth-value correctness.
+> We could pretend this was a grand long-term plan, but realistically we were lazy programmers optimizing for forward progress.
 
 ## What We’re Building
 
@@ -74,7 +80,7 @@ return_stmt     = "return" , expression ;
 expr_stmt       = expression ;
 ```
 
-## Lexer Update: Teach It `elif`
+## Lexer Update: Teach It elif
 
 Before parser work, the lexer must recognize `elif` as a keyword.
 
@@ -128,7 +134,7 @@ We use the name `suite` because Python grammar uses that term for:
 - a single inline statement after `:`
 - or a newline + indented statement list
 
-### `ParseBlockSuite()`
+### ParseBlockSuite()
 
 ```cpp
 static std::unique_ptr<BlockSuiteAST> ParseBlockSuite() {
@@ -149,7 +155,7 @@ static std::unique_ptr<BlockSuiteAST> ParseBlockSuite() {
 }
 ```
 
-### `ParseSuite()`
+### ParseSuite()
 
 ```cpp
 static std::unique_ptr<BlockSuiteAST> ParseSuite() {
@@ -161,7 +167,7 @@ static std::unique_ptr<BlockSuiteAST> ParseSuite() {
 
 This is one of those deceptively small changes that unlocks half the chapter.
 
-## `if / elif / else`, with Optional `else`
+## if / elif / else, with Optional else
 
 Here’s the heart of the parser work.
 
@@ -226,7 +232,7 @@ Why this shape works well:
 
 If parser support expands and codegen doesn’t evolve, the compiler *seems* fine until it really isn’t.
 
-### `IfStmtAST::codegen()` handles terminated branches
+### IfStmtAST::codegen() handles terminated branches
 
 ```cpp
 bool ThenTerminated = Builder->GetInsertBlock()->getTerminator() != nullptr;
@@ -313,7 +319,7 @@ That is how we avoid duplicate final `ret` instructions, and it also keeps retur
 
 (And yes, this is one of those C++ compiler spots where one extra `CreateRet` can ruin your afternoon in under 30 seconds.)
 
-## Interpreter vs Executable `main`
+## Interpreter vs Executable main
 
 Chapter 14 introduces mode-aware `main` handling:
 
@@ -329,7 +335,7 @@ Why:
 - JIT/interpreter paths want language-level function signatures.
 - executable/object mode still needs native entrypoint behavior.
 
-## Benchmarking (Python vs `pyxc`)
+## Benchmarking (Python vs pyxc)
 
 We added a benchmark suite under:
 

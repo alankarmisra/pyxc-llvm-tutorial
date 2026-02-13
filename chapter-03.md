@@ -202,7 +202,7 @@ For the purposes of this tutorial, we assume you are using VS Code. If you use a
 
 If IntelliSense conflicts with clangd, disable the built-in C/C++ extension or set `C_Cpp.intelliSenseEngine` to `Disabled` in VS Code settings.
 
-### Example `compile_commands.json`
+### Example compile_commands.json
 
 If you need to recreate or edit `compile_commands.json`, use this as a starting point and update the paths for your install and repo location:
 

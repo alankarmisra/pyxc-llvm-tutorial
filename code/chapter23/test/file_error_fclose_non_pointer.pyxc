@@ -1,0 +1,10 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Error (Line:" %t
+# RUN: grep -q "fclose expects pointer file argument" %t
+
+def main() -> i32:
+    x: i32 = 1
+    fclose(x)
+    return 0
+
+main()

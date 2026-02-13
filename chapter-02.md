@@ -1018,7 +1018,7 @@ clang++ -g -O3 pyxc.cpp
 ./a.out
 ```
 
-## One-Time Shell Setup for `llvm-lit` (Needed in Later Chapters)
+## One-Time Shell Setup for llvm-lit (Needed in Later Chapters)
 
 Later chapters add automated tests. We run them with `llvm-lit`.
 
@@ -1027,7 +1027,7 @@ On many machines, `llvm-lit` exists in your LLVM build tree but is not on your s
 For this repo setup, you can run:
 
 ```bash
-echo 'export PATH="/Users/alankar/Documents/opensource/llvm-project/build/bin:$PATH"' >> ~/.zshrc
+echo 'export PATH="$HOME/Documents/opensource/llvm-project/build/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
 

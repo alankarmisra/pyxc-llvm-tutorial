@@ -1,4 +1,4 @@
-# 17. A Real `print(...)` Builtin (Without Variadics)
+# 17. A Real print(...) Builtin (Without Variadics)
 
 Chapter 16 gave us typed values, typed locals, pointer syntax, and ABI-correct extern signatures.
 
@@ -134,7 +134,7 @@ case tok_print:
 
 This is small, but it keeps the parser branch clean and diagnostics readable.
 
-## AST Changes: A Dedicated `PrintStmtAST`
+## AST Changes: A Dedicated PrintStmtAST
 
 Instead of pretending `print` is a normal function call expression, Chapter 17 adds an explicit statement node:
 
@@ -376,7 +376,7 @@ When your own tests pass and fail exactly where you expect, the implementation m
 
 ## Full Source Code Listing
 
-### `code/chapter17/pyxc.cpp`
+### code/chapter17/pyxc.cpp
 
 ```cpp
 #include "../include/PyxcJIT.h"
@@ -3968,7 +3968,7 @@ int main(int argc, char **argv) {
 }
 ```
 
-### `code/chapter17/runtime.c`
+### code/chapter17/runtime.c
 
 ```c
 #include <stdio.h>

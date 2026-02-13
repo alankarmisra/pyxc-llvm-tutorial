@@ -1,0 +1,9 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Error (Line:" %t
+# RUN: grep -q "malloc count must be an integer type" %t
+
+def main() -> i32:
+    p: ptr[i32] = malloc[i32](2.5)
+    return 0
+
+main()

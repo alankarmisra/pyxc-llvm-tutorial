@@ -1,4 +1,4 @@
-# 18. Real Loop Control (`while`, `do`, `break`, `continue`) and Finishing Core Integer Operators
+# 18. Real Loop Control (while, do, break, continue) and Finishing Core Integer Operators
 
 Chapter 17 gave us a typed language with practical output (`print(...)`) and a solid test workflow.
 
@@ -186,7 +186,7 @@ case tok_continue:
   return ParseContinueStmt();
 ```
 
-### Parsing `while`
+### Parsing while
 
 `while` follows the same design style as `if` and `for`:
 
@@ -203,7 +203,7 @@ The parser:
 
 No surprises, and that consistency helps readability.
 
-### Parsing `do-while`
+### Parsing do-while
 
 The Chapter 18 grammar shape is:
 
@@ -220,7 +220,7 @@ The ordering matters here and is intentional:
 
 That parse order directly matches post-test loop semantics.
 
-### Parsing `break` / `continue`
+### Parsing break / continue
 
 Parse-time behavior is intentionally simple:
 
@@ -267,7 +267,7 @@ This gives us clean behavior for nested loops:
 
 ## LLVM Lowering for Loop Control
 
-### `break` and `continue`
+### break and continue
 
 Codegen first verifies loop context exists:
 
@@ -281,7 +281,7 @@ Builder->CreateBr(LoopContextStack.back().BreakTarget);
 
 This gives clear diagnostics for invalid usage and clean branches for valid usage.
 
-### `while` lowering
+### while lowering
 
 The block layout is:
 
@@ -305,7 +305,7 @@ if (!Builder->GetInsertBlock()->getTerminator())
 
 A useful consequence is that `continue` inside `while` naturally returns to condition evaluation.
 
-### `do-while` lowering
+### do-while lowering
 
 The block layout is:
 
@@ -329,7 +329,7 @@ Builder->CreateCondBr(CondV, BodyBB, ExitBB);
 
 The initial unconditional branch into `BodyBB` is the defining property: the loop body executes at least once.
 
-### Existing `for` behavior, now with `continue` correctness
+### Existing for behavior, now with continue correctness
 
 `for range(...)` already existed, but Chapter 18 adapts its loop context so `continue` targets the step block:
 
@@ -343,7 +343,7 @@ So `continue` in a `for` body does what users expect:
 2. update induction variable
 3. re-check loop condition
 
-## Operator Coverage: `%`, `&`, `^`, `|`, `~`
+## Operator Coverage: %, &, ^, |, ~
 
 This chapter line also closes a practical operator gap.
 
@@ -357,7 +357,7 @@ This chapter line also closes a practical operator gap.
 
 This preserves sensible C-style relative precedence among bitwise operators and keeps `%` at multiplicative precedence.
 
-### Unary `~`
+### Unary ~
 
 Unary bit-not is now implemented for integers:
 
@@ -370,7 +370,7 @@ case '~':
 
 If the operand is floating-point, the user gets a direct diagnostic.
 
-### Binary `%`, `&`, `^`, `|`
+### Binary %, &, ^, |
 
 These are intentionally integer-only in this chapter.
 
@@ -454,7 +454,7 @@ lit -sv -j 1 test
 
 ## Full Source Code Listing
 
-### `code/chapter18/Makefile`
+### code/chapter18/Makefile
 
 ```make
 UNAME_S := $(shell uname -s)
@@ -514,7 +514,7 @@ clean:
 	rm -f $(TARGET) $(RUNTIME_OBJ)
 ```
 
-### `code/chapter18/pyxc.ebnf`
+### code/chapter18/pyxc.ebnf
 
 ```ebnf
 (* Pyxc Grammar (Chapter 15 draft: explicit types + pointer types) *)
@@ -656,7 +656,7 @@ custom_op       = "?" | "$" | "%" | "^" | "&" | "|" | "@" | ":" ;
 (* Actual precedence/associativity comes from parser tables, not EBNF. *)
 ```
 
-### `code/chapter18/pyxc.cpp`
+### code/chapter18/pyxc.cpp
 
 ```cpp
 #include "../include/PyxcJIT.h"
@@ -4499,7 +4499,7 @@ int main(int argc, char **argv) {
 }
 ```
 
-### `code/chapter18/runtime.c`
+### code/chapter18/runtime.c
 
 ```c
 #include <stdio.h>
@@ -4614,7 +4614,7 @@ DLLEXPORT double printd(double X) {
 }
 ```
 
-### `code/chapter18/test/lit.cfg.py`
+### code/chapter18/test/lit.cfg.py
 
 ```py
 import os
@@ -4631,7 +4631,7 @@ chapter_dir = os.path.abspath(os.path.join(config.test_source_root, ".."))
 config.substitutions.append(("%pyxc", os.path.join(chapter_dir, "pyxc")))
 ```
 
-### `code/chapter18/test/break_outside_loop.pyxc`
+### code/chapter18/test/break_outside_loop.pyxc
 
 ```py
 # RUN: %pyxc -i %s > %t 2>&1
@@ -4645,7 +4645,7 @@ def main() -> i32:
 main()
 ```
 
-### `code/chapter18/test/continue_outside_loop.pyxc`
+### code/chapter18/test/continue_outside_loop.pyxc
 
 ```py
 # RUN: %pyxc -i %s > %t 2>&1
@@ -4659,7 +4659,7 @@ def main() -> i32:
 main()
 ```
 
-### `code/chapter18/test/continue_skips_body.pyxc`
+### code/chapter18/test/continue_skips_body.pyxc
 
 ```py
 # RUN: %pyxc -i %s > %t 2>&1
@@ -4680,7 +4680,7 @@ def main() -> i32:
 main()
 ```
 
-### `code/chapter18/test/do_while_runs_once.pyxc`
+### code/chapter18/test/do_while_runs_once.pyxc
 
 ```py
 # RUN: %pyxc -i %s > %t 2>&1
@@ -4698,7 +4698,7 @@ def main() -> i32:
 main()
 ```
 
-### `code/chapter18/test/for_continue_step_path.pyxc`
+### code/chapter18/test/for_continue_step_path.pyxc
 
 ```py
 # RUN: %pyxc -i %s > %t 2>&1
@@ -4717,7 +4717,7 @@ def main() -> i32:
 main()
 ```
 
-### `code/chapter18/test/malformed_do_while.pyxc`
+### code/chapter18/test/malformed_do_while.pyxc
 
 ```py
 # RUN: %pyxc -i %s > %t 2>&1
@@ -4732,7 +4732,7 @@ def main() -> i32:
 main()
 ```
 
-### `code/chapter18/test/nested_break_outer_continue.pyxc`
+### code/chapter18/test/nested_break_outer_continue.pyxc
 
 ```py
 # RUN: %pyxc -i %s > %t 2>&1
@@ -4757,7 +4757,7 @@ def main() -> i32:
 main()
 ```
 
-### `code/chapter18/test/operator_bitwise_basic.pyxc`
+### code/chapter18/test/operator_bitwise_basic.pyxc
 
 ```py
 # RUN: %pyxc -i %s > %t 2>&1
@@ -4773,7 +4773,7 @@ def main() -> i32:
 main()
 ```
 
-### `code/chapter18/test/operator_bitwise_precedence.pyxc`
+### code/chapter18/test/operator_bitwise_precedence.pyxc
 
 ```py
 # RUN: %pyxc -i %s > %t 2>&1
@@ -4791,7 +4791,7 @@ def main() -> i32:
 main()
 ```
 
-### `code/chapter18/test/operator_error_bitwise_float.pyxc`
+### code/chapter18/test/operator_error_bitwise_float.pyxc
 
 ```py
 # RUN: %pyxc -i %s > %t 2>&1
@@ -4807,7 +4807,7 @@ def main() -> i32:
 main()
 ```
 
-### `code/chapter18/test/operator_error_modulo_float.pyxc`
+### code/chapter18/test/operator_error_modulo_float.pyxc
 
 ```py
 # RUN: %pyxc -i %s > %t 2>&1
@@ -4823,7 +4823,7 @@ def main() -> i32:
 main()
 ```
 
-### `code/chapter18/test/operator_error_unary_bitnot_float.pyxc`
+### code/chapter18/test/operator_error_unary_bitnot_float.pyxc
 
 ```py
 # RUN: %pyxc -i %s > %t 2>&1
@@ -4838,7 +4838,7 @@ def main() -> i32:
 main()
 ```
 
-### `code/chapter18/test/operator_modulo_signed.pyxc`
+### code/chapter18/test/operator_modulo_signed.pyxc
 
 ```py
 # RUN: %pyxc -i %s > %t 2>&1
@@ -4858,7 +4858,7 @@ def main() -> i32:
 main()
 ```
 
-### `code/chapter18/test/operator_unary_bitnot.pyxc`
+### code/chapter18/test/operator_unary_bitnot.pyxc
 
 ```py
 # RUN: %pyxc -i %s > %t 2>&1
@@ -4876,7 +4876,7 @@ def main() -> i32:
 main()
 ```
 
-### `code/chapter18/test/while_counting.pyxc`
+### code/chapter18/test/while_counting.pyxc
 
 ```py
 # RUN: %pyxc -i %s > %t 2>&1

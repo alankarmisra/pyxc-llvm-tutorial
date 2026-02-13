@@ -229,7 +229,7 @@ static void PrintTokens(const std::string &filename) {
 
 **Why:** When debugging indentation, seeing explicit `indent`/`dedent` tokens is the fastest way to find mismatches between the lexer and the parser.
 
-## Command‑line mode: `-t` (tokens)
+## Command‑line mode: -t (tokens)
 
 **Where:** `ExecutionMode` enum + `main()`
 

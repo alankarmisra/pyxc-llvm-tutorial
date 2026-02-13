@@ -325,7 +325,7 @@ You can also browse these files directly on GitHub:
 - [Chapter 16 `runtime.c`](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter16/runtime.c)
 - [Chapter 16 tests](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter16/test)
 
-### `code/chapter16/pyxc.cpp`
+### code/chapter16/pyxc.cpp
 
 ```cpp
 #include "../include/PyxcJIT.h"
@@ -3731,7 +3731,7 @@ int main(int argc, char **argv) {
 }
 ```
 
-### `code/chapter16/runtime.c`
+### code/chapter16/runtime.c
 
 ```c
 #include <stdio.h>

@@ -65,18 +65,12 @@ This tutorial is structured into chapters covering individual topics, allowing y
 
 [Chapter #18: Real Loop Control (`while`, `do`, `break`, `continue`) and Finishing Core Integer Operators](chapter-18.md) - We add structured loop control statements and semantic loop-context handling in codegen. We also complete key integer operators (`~`, `%`, `&`, `^`, `|`) with clear diagnostics and tests.
 
-**Chapter #19: Structures and Named Tuples** - Adding structured data types to Pyxc. We implement simple structs (similar to C structs) with field access, and Python-style named tuples. This demonstrates how to use LLVM's struct types and handle memory layout for composite types.
+[Chapter #19: Structs and Named Field Access](chapter-19.md) - We add top-level `struct` declarations, struct-typed values, and field access/assignment (`obj.field`) including nested field chains.
 
-**Chapter #20: First-class Functions and Closures** - Making functions truly first-class citizens. We implement function pointers, higher-order functions, and simple closures with explicit capture lists. This chapter shows how LLVM handles indirect calls and closure environments.
+[Chapter #20: Fixed-Size Arrays](chapter-20.md) - We add `array[T, N]` types with compile-time sizes and array indexing for reads/writes, including arrays with structs and structs containing arrays.
 
-**Chapter #21: Simple Classes and Methods** - Adding object-oriented features without complexity. We implement single inheritance, methods with explicit self parameter, and basic constructors. This demonstrates vtables and dynamic dispatch in LLVM.
+[Chapter #21: Dynamic Memory with `malloc` and `free`](chapter-21.md) - We add typed heap allocation `malloc[T](count)` and explicit deallocation `free(ptr)` with pointer-focused semantic checks.
 
-**Chapter #22: Arrays and Basic Collections** - Practical data structures for Pyxc. We implement fixed-size arrays, bounds checking, and show how to create simple list-like types. This introduces LLVM's array types and pointer operations.
+[Chapter #22: C-style I/O Baseline (`putchar`, `getchar`, `puts`, minimal `printf`)](chapter-22.md) - We add string literals, libc-style I/O calls, vararg call support for `printf`, and a strict format subset (`%d`, `%s`, `%c`, `%p`, `%%`).
 
-**Chapter #23: Modules and Separate Compilation** - Breaking code into multiple files. We implement a simple module system with import statements and show how to compile and link multiple modules together using LLVM's module linking capabilities.
-
-**Chapter #24: Standard Library and Built-in Functions** - A language isn't complete without basic utilities. We show how to implement essential built-in functions (print, len, file I/O) by calling the C standard library, and create a minimal runtime for Pyxc.
-
-**Chapter #25: Better Error Handling and Diagnostics** - Improving the developer experience. We add source location tracking, better error messages with context, and simple warning systems. This shows how to integrate diagnostics throughout the compiler pipeline.
-
-**Chapter #26: Concluding Intermediate Topics** - This chapter wraps up the Intermediate Topics series by discussing advanced extension possibilities and includes pointers to further topics like concurrency support, foreign function interfaces, custom optimizations, and language interoperability.
+[Chapter #23: File I/O with `fopen`, `fclose`, `fgets`, `fputs`, `fread`, `fwrite`](chapter-23.md) - We extend libc interop to file handles and block/text file operations, with call-site type checks and tests for both positive paths and misuse diagnostics.

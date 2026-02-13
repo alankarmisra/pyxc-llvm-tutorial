@@ -1,0 +1,10 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Error (Line:" %t
+# RUN: grep -q "Member access requires a struct-typed base" %t
+
+def main() -> i32:
+    x: i32 = 9
+    print(x.y)
+    return 0
+
+main()
