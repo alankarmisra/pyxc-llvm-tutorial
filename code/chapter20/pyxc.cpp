@@ -2348,7 +2348,7 @@ static Type *ResolveTypeExpr(const TypeExprPtr &Ty,
     if (!ElemTy)
       return nullptr;
     (void)ElemTy;
-    return PointerType::get(*TheContext, 0);
+    return PointerType::getUnqual(*TheContext);
   }
 
   if (Ty->Kind == TypeExprKind::Array) {
@@ -2601,7 +2601,7 @@ Value *AddrExprAST::codegen() {
 }
 
 Type *AddrExprAST::getValueTypeHint() const {
-  return PointerType::get(*TheContext, 0);
+  return PointerType::getUnqual(*TheContext);
 }
 
 Type *AddrExprAST::getPointeeTypeHint() const {

@@ -1,105 +1,144 @@
-# Pyxc (Pixie) - Building a Pythonic Compiled Language
+# pyxc (Pixie)
 
-## Overview
-Pyxc (pronounced "Pixie") is a compiled language with Python-inspired syntax, built from scratch using LLVM. This tutorial guides you through implementing a real programming language—from lexer to code generation—while keeping the familiar feel of Python that developers already know.
+`pyxc` is a Pythonic language and compiler built with LLVM as an educational tool.
 
-Unlike interpreters, pyxc compiles to native code for performance, but maintains the clean, readable syntax that makes Python popular. This makes it an ideal learning project for understanding how compiled languages work under the hood.
+It is designed to be readable like Python, but much closer to C in behavior and power: pointers are first-class, memory can be manually managed, and you can absolutely shoot yourself in the foot. That is intentional. The project is about learning how languages and compilers work close to the machine, not hiding those edges.
 
-## Why Pyxc?
-- **Familiar syntax**: If you know Python, you already know most of pyxc
-- **Real compilation**: Generates native machine code via LLVM
-- **Educational**: Learn compiler design by building something practical
-- **Extensible**: Foundation for adding advanced features like classes, type systems, and more
+## What this repo is
 
-## What You'll Build
+- A step-by-step compiler construction tutorial (`chapter-00.md` ... `chapter-27.md`).
+- Full source code per chapter (`code/chapterXX`), so you can compare progression.
+- A language tutorial (in progress) for writing non-trivial programs in `pyxc`.
 
-### Core Tutorial
-1. **Lexer**: Tokenizing Python-like syntax (indentation-aware)
-2. **Parser & AST**: Building an abstract syntax tree
-3. **Code Generation**: LLVM IR generation and JIT compilation
-4. **Optimizer**: Applying LLVM optimization passes
-5. **Control Flow**: `if`/`then`/`else` expressions
-6. **Loops**: `for` loops with ranges
-7. **Mutable Variables**: `var` keyword for explicit mutability
-8. **User-Defined Operators**: Custom unary and binary operators with decorators
+## Why pyxc exists
 
-### Extended Features (Planned)
-- **Structs**: Value types and data structures
-- **Classes**: Object-oriented programming with inheritance
-- **Type System**: Static type checking and inference
-- **Standard Library**: Built-in functions and utilities
-- **Module System**: Code organization and imports
+- Teach compiler internals with a real codebase.
+- Keep syntax approachable (Python-style indentation and control flow).
+- Expose low-level behavior directly (types, pointers, allocation, file I/O, syscalls-ish APIs).
+- Make it easy to inspect IR, assembly, and memory effects.
 
-### Future Possibilities
-- **MLIR Backend**: Once the language stabilizes, explore MLIR for advanced optimizations and multi-level representation
+## Current language snapshot
 
-## Prerequisites
-- **C++ knowledge**: Comfortable with modern C++ (C++14 or later)
-- **LLVM installed**: Version 14.0 or higher recommended
-- **Compiler basics**: Helpful but not required—we'll explain as we go
+Larger example from current chapters: typed values, loops, `scanf`, `printf`,
+file I/O, structs, pointers, and manual memory management.
 
-## Getting Started
+```py
+struct Complex:
+    re: double
+    im: double
 
-### Building the Compiler
+def mandel_escape(c: Complex, max_iter: int) -> int:
+    z_re: double = 0.0
+    z_im: double = 0.0
+    i: int = 0
+
+    while i < max_iter:
+        next_re: double = z_re * z_re - z_im * z_im + c.re
+        next_im: double = 2.0 * z_re * z_im + c.im
+        z_re = next_re
+        z_im = next_im
+
+        if z_re * z_re + z_im * z_im > 4.0:
+            return i
+        i = i + 1
+
+    return max_iter
+
+def main() -> i32:
+    width: int = 120
+    height: int = 48
+    max_iter: int = 64
+
+    printf("max_iter (e.g. 64): ")
+    scanf("%d", addr(max_iter))
+    if max_iter < 1:
+        max_iter = 64
+
+    out: ptr[void] = fopen("mandel.pbm", "w")
+
+    # PBM (plain text) header.
+    fputs("P1\n", out)
+    fputs("120 48\n", out)
+
+    # 2-byte token + terminator: either "1 " or "0 ", reused for each pixel.
+    pix: ptr[i8] = malloc[i8](3)
+    pix[1] = 32   # ' '
+    pix[2] = 0
+
+    y: int = 0
+    while y < height:
+        x: int = 0
+        while x < width:
+            c: Complex
+            c.re = -2.2 + 3.2 * x / width
+            c.im = -1.2 + 2.4 * y / height
+
+            it: int = mandel_escape(c, max_iter)
+            if it == max_iter:
+                pix[0] = 49  # '1'
+            else:
+                pix[0] = 48  # '0'
+            fputs(pix, out)
+            x = x + 1
+
+        pix[0] = 10  # '\n'
+        pix[1] = 0
+        fputs(pix, out)
+        pix[1] = 32
+        pix[2] = 0
+        y = y + 1
+
+    free(pix)
+    fclose(out)
+    printf("wrote mandel.pbm\n")
+    return 0
+
+main()
+```
+
+This is the vibe of `pyxc`: Pythonic syntax, C-like control.
+
+## Build and run
+
+Use any chapter directory you want to explore.
+
 ```bash
-# Clone the repository
-git clone https://github.com/alankarmisra/pyxc-llvm
-cd pyxc-llvm
-
-# Build a specific chapter
-cd code/chapter1
-clang++ -g pyxc.cpp `llvm-config --cxxflags --ldflags --system-libs --libs core` -o pyxc
-
-# Run the REPL
-./pyxc
+cd code/chapter27
+make
+./pyxc -i test/malloc_struct_roundtrip.pyxc
 ```
 
-### Example Code
-```python
-# Define a function
-def fib(n):
-    if n < 2:
-        return n
-    else:
-        return fib(n-1) + fib(n-2)
+To run chapter tests (where available):
 
-# Call it
-fib(10)
+```bash
+cd code/chapter27/test
+lit -sv .
 ```
 
-## Project Structure
+## Project layout
+
+```text
+.
+├── chapter-00.md ... chapter-27.md   # tutorial text
+├── code/
+│   ├── chapter12/
+│   ├── chapter13/
+│   └── ... chapter27/
+└── README.md
 ```
-pyxc-llvm/
-├───── docs/           # Tutorial chapters in markdown
-├───── code/           # Complete code for each chapter
-│   ├── chapter1/
-│   ├── chapter2/
-│   └── ...
-└───── README.md
-```
-
-## Credits
-This tutorial is inspired by and builds upon the excellent [LLVM Kaleidoscope Tutorial](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html) by Chris Lattner and others. The original tutorial introduces compiler concepts through a simple functional language. Pyxc extends these ideas with:
-
-- Python-inspired syntax (indentation, colons, familiar keywords)
-- Explicit mutability with `var`/`let` keywords
-- Object-oriented features (classes, structs)
-- More extensive type system
-- Additional chapters covering real-world language features
-
-Many thanks to the LLVM team for their outstanding educational materials and to the open-source community for making compiler development accessible.
-
-## License
-MIT
-
-## Contributing
-Contributions, issues, and feature requests are welcome! Feel free to check the issues page.
 
 ## Roadmap
-- [x] Core language features (chapters 1-8)
-- [ ] Structs and value types
-- [ ] Classes and OOP
-- [ ] Type checking and inference
-- [ ] Standard library
-- [ ] Module system
-- [ ] MLIR backend (long-term)
+
+- Continue expanding the language tutorial.
+- Continue hardening the compiler tutorial chapters.
+- Self-hosting is a long-term direction: compile `pyxc` with `pyxc`, then document how.
+
+## Credits
+
+This project builds on ideas popularized by the LLVM Kaleidoscope tutorial and extends them into a Pythonic, systems-oriented learning track.
+
+Kaleidoscope: <https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html>
+
+## License
+
+MIT

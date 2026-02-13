@@ -2622,7 +2622,7 @@ static Type *ResolveTypeExpr(const TypeExprPtr &Ty,
     if (!ElemTy)
       return nullptr;
     (void)ElemTy;
-    return PointerType::get(*TheContext, 0);
+    return PointerType::getUnqual(*TheContext);
   }
 
   if (Ty->Kind == TypeExprKind::Array) {
@@ -2799,7 +2799,7 @@ static Function *GetOrCreateLibcIOFunction(const std::string &Name) {
 
   Type *I32Ty = Type::getInt32Ty(*TheContext);
   Type *I64Ty = Type::getInt64Ty(*TheContext);
-  Type *PtrTy = PointerType::get(*TheContext, 0);
+  Type *PtrTy = PointerType::getUnqual(*TheContext);
   FunctionType *FT = nullptr;
 
   if (Name == "putchar")
@@ -2892,7 +2892,7 @@ Value *StringExprAST::codegen() {
 }
 
 Type *StringExprAST::getValueTypeHint() const {
-  return PointerType::get(*TheContext, 0);
+  return PointerType::getUnqual(*TheContext);
 }
 
 Type *StringExprAST::getPointeeTypeHint() const {
@@ -2959,7 +2959,7 @@ Value *AddrExprAST::codegen() {
 }
 
 Type *AddrExprAST::getValueTypeHint() const {
-  return PointerType::get(*TheContext, 0);
+  return PointerType::getUnqual(*TheContext);
 }
 
 Type *AddrExprAST::getPointeeTypeHint() const {
@@ -3081,7 +3081,7 @@ static Function *GetOrCreateMallocHelper();
 static Function *GetOrCreateFreeHelper();
 
 Type *MallocExprAST::getValueTypeHint() const {
-  return PointerType::get(*TheContext, 0);
+  return PointerType::getUnqual(*TheContext);
 }
 
 Type *MallocExprAST::getPointeeTypeHint() const {
@@ -3635,7 +3635,7 @@ static Function *GetOrCreateMallocHelper() {
   if (Function *F = TheModule->getFunction("malloc"))
     return F;
   FunctionType *FT = FunctionType::get(
-      PointerType::get(*TheContext, 0), {Type::getInt64Ty(*TheContext)}, false);
+      PointerType::getUnqual(*TheContext), {Type::getInt64Ty(*TheContext)}, false);
   return Function::Create(FT, Function::ExternalLinkage, "malloc",
                           TheModule.get());
 }
@@ -3644,7 +3644,7 @@ static Function *GetOrCreateFreeHelper() {
   if (Function *F = TheModule->getFunction("free"))
     return F;
   FunctionType *FT = FunctionType::get(
-      Type::getVoidTy(*TheContext), {PointerType::get(*TheContext, 0)}, false);
+      Type::getVoidTy(*TheContext), {PointerType::getUnqual(*TheContext)}, false);
   return Function::Create(FT, Function::ExternalLinkage, "free", TheModule.get());
 }
 
@@ -4135,7 +4135,7 @@ Function *PrototypeAST::codegen() {
           "main must have either 0 arguments or (i32, ptr[ptr[i8]])");
     if (ParamTypes.size() == 2) {
       Type *ExpectedArgc = Type::getInt32Ty(*TheContext);
-      Type *ExpectedArgv = PointerType::get(PointerType::get(Type::getInt8Ty(*TheContext), 0), 0);
+      Type *ExpectedArgv = PointerType::getUnqual(*TheContext);
       if (ParamTypes[0] != ExpectedArgc || ParamTypes[1] != ExpectedArgv)
         return LogError<Function *>(
             "main arguments must be exactly (i32, ptr[ptr[i8]])");
