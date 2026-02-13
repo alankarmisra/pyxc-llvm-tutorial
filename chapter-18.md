@@ -1,3 +1,664 @@
+# 18. Real Loop Control (`while`, `do`, `break`, `continue`) and Finishing Core Integer Operators
+
+Chapter 17 gave us a typed language with practical output (`print(...)`) and a solid test workflow.
+
+Chapter 18 moves the language forward in two ways:
+
+- control-flow expressiveness (`while`, `do-while`, `break`, `continue`)
+- operator completeness for common integer work (`~`, `%`, `&`, `^`, `|`)
+
+The key theme is still the same as Chapter 17: make targeted compiler changes, lock behavior with `lit` tests, and keep each feature small and understandable.
+
+## What Changed from Chapter 17
+
+If you compare:
+
+- `code/chapter17/pyxc.cpp`
+- `code/chapter18/pyxc.cpp`
+
+you will see Chapter 18 adds four layers:
+
+1. new lexer tokens/keywords for loop-control statements
+2. new AST statement nodes + parser paths for those statements
+3. loop-context plumbing in codegen so `break` and `continue` always know where to branch
+4. integer operator support in expression codegen for `%`, `&`, `^`, `|`, and unary `~`
+
+We also expanded the Chapter 18 test suite in `code/chapter18/test/` to cover both positive and negative cases.
+
+## Language Surface in This Chapter
+
+New statement forms:
+
+```py
+while cond:
+    body
+```
+
+```py
+do:
+    body
+while cond
+```
+
+```py
+while cond:
+    if should_exit:
+        break
+    continue
+```
+
+Additional operators supported in this chapter:
+
+```py
+~x
+x % y
+x & y
+x ^ y
+x | y
+```
+
+## Tests First: Chapter 18 lit Suite
+
+Before discussing implementation details, it helps to look at the behavior we pinned down in tests.
+
+Representative loop/control tests:
+
+- `code/chapter18/test/while_counting.pyxc`
+- `code/chapter18/test/do_while_runs_once.pyxc`
+- `code/chapter18/test/nested_break_outer_continue.pyxc`
+- `code/chapter18/test/continue_skips_body.pyxc`
+- `code/chapter18/test/break_outside_loop.pyxc`
+- `code/chapter18/test/continue_outside_loop.pyxc`
+- `code/chapter18/test/malformed_do_while.pyxc`
+
+Representative operator tests:
+
+- `code/chapter18/test/operator_modulo_signed.pyxc`
+- `code/chapter18/test/operator_bitwise_basic.pyxc`
+- `code/chapter18/test/operator_bitwise_precedence.pyxc`
+- `code/chapter18/test/operator_unary_bitnot.pyxc`
+- `code/chapter18/test/operator_error_modulo_float.pyxc`
+- `code/chapter18/test/operator_error_bitwise_float.pyxc`
+- `code/chapter18/test/operator_error_unary_bitnot_float.pyxc`
+
+Example positive loop test:
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '0' %t
+# RUN: grep -x '1' %t
+# RUN: grep -x '2' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    i: i32 = 0
+    while i < 3:
+        print(i)
+        i = i + 1
+    return 0
+
+main()
+```
+
+Example negative loop-control test:
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "break" %t
+# RUN: grep -q "outside of a loop" %t
+
+def main() -> i32:
+    break
+    return 0
+
+main()
+```
+
+Example positive operator test:
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '2 7 5' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    a: i32 = 6
+    b: i32 = 3
+    print(a & b, a | b, a ^ b)
+    return 0
+
+main()
+```
+
+## Lexer and Token Updates
+
+Chapter 18 adds dedicated loop-control tokens to the existing `Token` enum:
+
+```cpp
+tok_while = -28,
+tok_do = -29,
+tok_break = -30,
+tok_continue = -31,
+```
+
+Then it wires the corresponding keywords into the keyword map:
+
+```cpp
+{"and", tok_and}, {"print", tok_print},   {"while", tok_while},
+{"do", tok_do},   {"break", tok_break},   {"continue", tok_continue},
+{"or", tok_or}
+```
+
+The practical benefit is that parser dispatch stays explicit and straightforward: no special identifier heuristics are needed for these statements.
+
+## AST Additions for New Statements
+
+Chapter 17 already had dedicated statement nodes (`IfStmtAST`, `ForStmtAST`, `PrintStmtAST`, etc.).
+
+Chapter 18 continues that pattern with:
+
+```cpp
+class WhileStmtAST : public StmtAST { ... };
+class DoWhileStmtAST : public StmtAST { ... };
+class BreakStmtAST : public StmtAST { ... };
+class ContinueStmtAST : public StmtAST { ... };
+```
+
+Two subtle details are important:
+
+- `BreakStmtAST` and `ContinueStmtAST` return `true` from `isTerminator()`
+- they are statements, not expressions, so they slot naturally into suites/blocks
+
+That terminator flag keeps later codegen logic from accidentally adding extra fallthrough branches after a `break` or `continue`.
+
+## Parser Additions (Step by Step)
+
+`ParseStmt()` in Chapter 18 now dispatches loop-control forms directly:
+
+```cpp
+case tok_while:
+  return ParseWhileStmt();
+case tok_do:
+  return ParseDoWhileStmt();
+case tok_break:
+  return ParseBreakStmt();
+case tok_continue:
+  return ParseContinueStmt();
+```
+
+### Parsing `while`
+
+`while` follows the same design style as `if` and `for`:
+
+```cpp
+// while_stmt = "while" , expression , ":" , suite ;
+```
+
+The parser:
+
+1. consumes `while`
+2. parses the condition expression
+3. requires `:`
+4. parses a suite (inline or block)
+
+No surprises, and that consistency helps readability.
+
+### Parsing `do-while`
+
+The Chapter 18 grammar shape is:
+
+```cpp
+// do_while_stmt = "do" , ":" , suite , "while" , expression ;
+```
+
+The ordering matters here and is intentional:
+
+1. parse `do:`
+2. parse body suite first
+3. require trailing `while`
+4. parse condition expression
+
+That parse order directly matches post-test loop semantics.
+
+### Parsing `break` / `continue`
+
+Parse-time behavior is intentionally simple:
+
+```cpp
+getNextToken(); // eat break or continue
+return std::make_unique<BreakStmtAST>(Loc);
+```
+
+Syntactically this accepts the statement where it appears. Semantic validation (inside loop or not) is delayed to codegen, where loop nesting context is available.
+
+## Semantic Backbone: Loop Context Stack
+
+`break` and `continue` need target blocks, and those targets depend on which loop we are currently inside.
+
+Chapter 18 introduces:
+
+```cpp
+struct LoopContext {
+  BasicBlock *BreakTarget = nullptr;
+  BasicBlock *ContinueTarget = nullptr;
+};
+static std::vector<LoopContext> LoopContextStack;
+```
+
+Then it uses a small RAII helper:
+
+```cpp
+class LoopContextGuard {
+public:
+  LoopContextGuard(BasicBlock *BreakTarget, BasicBlock *ContinueTarget) {
+    LoopContextStack.push_back({BreakTarget, ContinueTarget});
+  }
+  ~LoopContextGuard() {
+    LoopContextStack.pop_back();
+  }
+};
+```
+
+This gives us clean behavior for nested loops:
+
+- inner loop pushes its context
+- `break`/`continue` bind to the nearest loop (top of stack)
+- context is restored automatically when leaving the loop body
+
+## LLVM Lowering for Loop Control
+
+### `break` and `continue`
+
+Codegen first verifies loop context exists:
+
+```cpp
+if (LoopContextStack.empty())
+  return LogError<Value *>("`break` used outside of a loop");
+Builder->CreateBr(LoopContextStack.back().BreakTarget);
+```
+
+`continue` is the same shape, branching to `ContinueTarget`.
+
+This gives clear diagnostics for invalid usage and clean branches for valid usage.
+
+### `while` lowering
+
+The block layout is:
+
+- `while.cond`
+- `while.body`
+- `while.exit`
+
+Core structure:
+
+```cpp
+Builder->CreateBr(CondBB);
+Builder->SetInsertPoint(CondBB);
+CondV = ToBoolI1(Cond->codegen(), "whilecond");
+Builder->CreateCondBr(CondV, BodyBB, ExitBB);
+
+LoopContextGuard Guard(ExitBB, CondBB);
+Body->codegen();
+if (!Builder->GetInsertBlock()->getTerminator())
+  Builder->CreateBr(CondBB);
+```
+
+A useful consequence is that `continue` inside `while` naturally returns to condition evaluation.
+
+### `do-while` lowering
+
+The block layout is:
+
+- `do.body`
+- `do.cond`
+- `do.exit`
+
+Core structure:
+
+```cpp
+Builder->CreateBr(BodyBB); // enter body first
+
+LoopContextGuard Guard(ExitBB, CondBB);
+Body->codegen();
+if (!Builder->GetInsertBlock()->getTerminator())
+  Builder->CreateBr(CondBB);
+
+CondV = ToBoolI1(Cond->codegen(), "docond");
+Builder->CreateCondBr(CondV, BodyBB, ExitBB);
+```
+
+The initial unconditional branch into `BodyBB` is the defining property: the loop body executes at least once.
+
+### Existing `for` behavior, now with `continue` correctness
+
+`for range(...)` already existed, but Chapter 18 adapts its loop context so `continue` targets the step block:
+
+```cpp
+LoopContextGuard Guard(EndLoopBB, StepBB);
+```
+
+So `continue` in a `for` body does what users expect:
+
+1. jump to step
+2. update induction variable
+3. re-check loop condition
+
+## Operator Coverage: `%`, `&`, `^`, `|`, `~`
+
+This chapter line also closes a practical operator gap.
+
+### Precedence table extension
+
+`BinopPrecedence` now includes:
+
+```cpp
+{'|', 7}, {'^', 8}, {'&', 9}, ... {'%', 40}
+```
+
+This preserves sensible C-style relative precedence among bitwise operators and keeps `%` at multiplicative precedence.
+
+### Unary `~`
+
+Unary bit-not is now implemented for integers:
+
+```cpp
+case '~':
+  if (!OperandV->getType()->isIntegerTy())
+    return LogError<Value *>("Unary '~' requires integer operand");
+  return Builder->CreateNot(OperandV, "bnottmp");
+```
+
+If the operand is floating-point, the user gets a direct diagnostic.
+
+### Binary `%`, `&`, `^`, `|`
+
+These are intentionally integer-only in this chapter.
+
+First, codegen detects operators that require integer operands:
+
+```cpp
+bool RequiresIntOnly = (Op == '%' || Op == '&' || Op == '^' || Op == '|');
+```
+
+Then it enforces type rules with explicit diagnostics:
+
+```cpp
+if (!(L->getType()->isIntegerTy() && R->getType()->isIntegerTy())) {
+  if (Op == '%')
+    return LogError<Value *>("Modulo operator '%' requires integer operands");
+  return LogError<Value *>("Bitwise operators require integer operands");
+}
+```
+
+After harmonizing integer widths, lowering is direct:
+
+```cpp
+case '%': return Builder->CreateSRem(L, R, "modtmp");
+case '&': return Builder->CreateAnd(L, R, "andtmp");
+case '^': return Builder->CreateXor(L, R, "xortmp");
+case '|': return Builder->CreateOr(L, R, "ortmp");
+```
+
+## Validation Commands
+
+Run the Chapter 18 suite:
+
+```bash
+lit -sv code/chapter18/test
+```
+
+Optional: verify Chapter 17 behavior in the same environment:
+
+```bash
+lit -sv -j 1 code/chapter17/test
+```
+
+(`-j 1` can be useful if your local setup shows parallel-test flakiness.)
+
+## Closing Thoughts
+
+Chapter 18 is a good example of incremental compiler growth.
+
+We did not redesign the compiler. We extended the existing architecture in place:
+
+- lexer: a few new tokens
+- parser: a few new statement branches
+- AST: a few new statement nodes
+- codegen: explicit loop context and branch targets
+- tests: concrete behavior first, including failure paths
+
+By the end of the chapter, control flow is much closer to what users expect in day-to-day code, and integer expression support is meaningfully more complete.
+
+## Build and Test (Chapter 18)
+
+From the repository root:
+
+```bash
+cd code/chapter18
+make
+```
+
+Run the chapter test suite:
+
+```bash
+lit -sv test
+```
+
+If you also want to sanity-check the previous chapter in the same environment:
+
+```bash
+cd ../chapter17
+make
+lit -sv -j 1 test
+```
+
+## Full Source Code Listing
+
+### `code/chapter18/Makefile`
+
+```make
+UNAME_S := $(shell uname -s)
+
+LLVM_PREFIX ?= $(HOME)/llvm-21-with-clang-lld-lldb-mlir
+LLVM_CONFIG = $(LLVM_PREFIX)/bin/llvm-config
+CXX = $(LLVM_PREFIX)/bin/clang++
+CC = $(LLVM_PREFIX)/bin/clang
+HOMEBREW_LIB ?= /opt/homebrew/lib
+
+TARGET := pyxc
+SRC := pyxc.cpp
+RUNTIME_SRC := runtime.c
+RUNTIME_OBJ := runtime.o
+
+LLVM_FLAGS := $(shell $(LLVM_CONFIG) --cxxflags --ldflags --system-libs --libs all)
+LLD_FLAGS := -llldCommon -llldELF -llldMachO -llldCOFF
+
+CXXFLAGS := -g -O3
+CFLAGS :=
+LDFLAGS :=
+
+ifeq ($(UNAME_S),Darwin)
+SDKROOT ?= $(shell xcrun --show-sdk-path)
+CFLAGS += -isysroot $(SDKROOT)
+CXXFLAGS += -isysroot $(SDKROOT) -stdlib=libc++
+ifneq (,$(wildcard /Library/Developer/CommandLineTools/usr/include/c++/v1))
+CXXFLAGS += -I/Library/Developer/CommandLineTools/usr/include/c++/v1
+endif
+ifneq ($(strip $(HOMEBREW_LIB)),)
+LDFLAGS += -L$(HOMEBREW_LIB) -Wl,-rpath,$(HOMEBREW_LIB)
+endif
+endif
+
+ifeq ($(UNAME_S),Linux)
+ifneq ($(strip $(HOMEBREW_LIB)),)
+LDFLAGS += -L$(HOMEBREW_LIB) -Wl,-rpath,$(HOMEBREW_LIB)
+endif
+endif
+
+RUNTIME_TARGET :=
+ifneq (,$(wildcard $(RUNTIME_SRC)))
+RUNTIME_TARGET := $(RUNTIME_OBJ)
+endif
+
+.PHONY: all clean
+
+all: $(TARGET) $(RUNTIME_TARGET)
+
+$(TARGET): $(SRC)
+	$(CXX) $(CXXFLAGS) $< $(LLVM_FLAGS) $(LDFLAGS) $(LLD_FLAGS) -o $@
+
+$(RUNTIME_OBJ): $(RUNTIME_SRC)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+clean:
+	rm -f $(TARGET) $(RUNTIME_OBJ)
+```
+
+### `code/chapter18/pyxc.ebnf`
+
+```ebnf
+(* Pyxc Grammar (Chapter 15 draft: explicit types + pointer types) *)
+
+(* ---------- Lexical ---------- *)
+
+letter         = "A".."Z" | "a".."z" | "_" ;
+digit          = "0".."9" ;
+identifier     = letter , { letter | digit } ;
+number         = digit , { digit } , [ "." , { digit } ]
+               | "." , digit , { digit } ;
+
+newline        = "<EOL>" ;
+indent         = "<INDENT>" ;
+dedent         = "<DEDENT>" ;
+eof            = "<EOF>" ;
+
+(* Produced by lexer indentation logic; parser consumes these as tokens. *)
+
+(* ---------- Program ---------- *)
+
+program         = { top_item } , eof ;
+
+top_item        = newline
+                | type_alias_decl
+                | function_def
+                | extern_decl
+                | statement ;
+
+(* ---------- Types ---------- *)
+
+type_alias_decl = "type" , identifier , "=" , type_expr ;
+
+type_expr       = pointer_type
+                | base_type ;
+
+pointer_type    = "ptr" , "[" , type_expr , "]" ;
+
+base_type       = builtin_type
+                | identifier ;
+
+builtin_type    = "void"
+                | "i8" | "i16" | "i32" | "i64"
+                | "u8" | "u16" | "u32" | "u64"
+                | "f32" | "f64" ;
+
+(* ---------- Functions ---------- *)
+
+function_def    = [ decorator ] , "def" , prototype , ":" , suite ;
+extern_decl     = "extern" , "def" , prototype ;
+
+prototype       = identifier , "(" , [ param_list ] , ")" , "->" , type_expr ;
+param_list      = param , { "," , param } ;
+param           = identifier , ":" , type_expr ;
+
+(* Current decorator model used for unary/binary operator definitions. *)
+decorator       = "@" , ( "unary" | "binary" ) , [ number ] ;
+
+(* ---------- Statements ---------- *)
+
+statement       = if_stmt
+                | for_stmt
+                | while_stmt
+                | do_while_stmt
+                | break_stmt
+                | continue_stmt
+                | print_stmt
+                | return_stmt
+                | typed_assign_stmt
+                | assign_stmt
+                | expr_stmt ;
+
+typed_assign_stmt = identifier , ":" , type_expr , [ "=" , expression ] ;
+assign_stmt     = lvalue , "=" , expression ;
+lvalue          = identifier
+                | index_expr ;
+
+expr_stmt       = expression ;
+
+return_stmt     = "return" , [ expression ] ;
+
+print_stmt      = "print" , "(" , [ arg_list ] , ")" ;
+
+if_stmt         = "if" , expression , ":" , suite ,
+                  [ "elif" , expression , ":" , suite ] ,
+                  [ "else" , ":" , suite ] ;
+
+for_stmt        = "for" , identifier , "in" , "range" , "(" ,
+                  expression , "," , expression ,
+                  [ "," , expression ] ,
+                  ")" , ":" , suite ;
+
+while_stmt      = "while" , expression , ":" , suite ;
+do_while_stmt   = "do" , ":" , suite , "while" , expression ;
+break_stmt      = "break" ;
+continue_stmt   = "continue" ;
+
+(* Python-style suite: either one inline statement or an indented block. *)
+suite           = inline_suite
+                | block_suite ;
+
+inline_suite    = statement ;
+block_suite     = newline , indent , statement_list , dedent ;
+statement_list  = statement , { newline , statement } , [ newline ] ;
+
+(* ---------- Expressions ---------- *)
+
+expression      = unary_expr , { binary_op , unary_expr } ;
+
+unary_expr      = [ unary_op ] , postfix_expr ;
+unary_op        = "+" | "-" | "!" | "~" ;
+
+postfix_expr    = primary , { call_suffix | index_suffix } ;
+call_suffix     = "(" , [ arg_list ] , ")" ;
+index_suffix    = "[" , expression , "]" ;
+index_expr      = postfix_expr , index_suffix ;
+
+primary         = number
+                | identifier
+                | addr_expr
+                | paren_expr
+                | var_expr ;
+
+addr_expr       = "addr" , "(" , expression , ")" ;
+paren_expr      = "(" , expression , ")" ;
+
+arg_list        = expression , { "," , expression } ;
+
+var_expr        = "var" , var_binding , { "," , var_binding } , "in" , expression ;
+var_binding     = identifier , [ "=" , expression ] ;
+
+binary_op       = "<"
+                | "+" | "-" | "*" | "/"
+                | "="
+                | custom_op ;
+
+custom_op       = "?" | "$" | "%" | "^" | "&" | "|" | "@" | ":" ;
+
+(* Actual precedence/associativity comes from parser tables, not EBNF. *)
+```
+
+### `code/chapter18/pyxc.cpp`
+
+```cpp
 #include "../include/PyxcJIT.h"
 #include "../include/PyxcLinker.h"
 #include "llvm/ADT/APFloat.h"
@@ -3836,3 +4497,400 @@ int main(int argc, char **argv) {
 
   return 0;
 }
+```
+
+### `code/chapter18/runtime.c`
+
+```c
+#include <stdio.h>
+#include <stdint.h>
+
+#ifdef _WIN32
+#define DLLEXPORT __declspec(dllexport)
+#else
+#define DLLEXPORT
+#endif
+
+DLLEXPORT int8_t putchari8(int8_t X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+DLLEXPORT int16_t putchari16(int16_t X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+DLLEXPORT int32_t putchari32(int32_t X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+DLLEXPORT int64_t putchari64(int64_t X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+DLLEXPORT uint8_t putcharu8(uint8_t X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+DLLEXPORT uint16_t putcharu16(uint16_t X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+DLLEXPORT uint32_t putcharu32(uint32_t X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+DLLEXPORT uint64_t putcharu64(uint64_t X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+DLLEXPORT float putcharf32(float X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+DLLEXPORT double putcharf64(double X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+DLLEXPORT int64_t putchari(int64_t X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+DLLEXPORT double putchard(double X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+DLLEXPORT double printchard(double X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+
+DLLEXPORT int8_t printi8(int8_t X) {
+  fprintf(stderr, "%d", (int)X);
+  return 0;
+}
+DLLEXPORT int16_t printi16(int16_t X) {
+  fprintf(stderr, "%d", (int)X);
+  return 0;
+}
+DLLEXPORT int32_t printi32(int32_t X) {
+  fprintf(stderr, "%d", X);
+  return 0;
+}
+DLLEXPORT int64_t printi64(int64_t X) {
+  fprintf(stderr, "%lld", (long long)X);
+  return 0;
+}
+DLLEXPORT uint8_t printu8(uint8_t X) {
+  fprintf(stderr, "%u", (unsigned)X);
+  return 0;
+}
+DLLEXPORT uint16_t printu16(uint16_t X) {
+  fprintf(stderr, "%u", (unsigned)X);
+  return 0;
+}
+DLLEXPORT uint32_t printu32(uint32_t X) {
+  fprintf(stderr, "%u", X);
+  return 0;
+}
+DLLEXPORT uint64_t printu64(uint64_t X) {
+  fprintf(stderr, "%llu", (unsigned long long)X);
+  return 0;
+}
+DLLEXPORT float printfloat32(float X) {
+  fprintf(stderr, "%f", (double)X);
+  return 0;
+}
+DLLEXPORT double printfloat64(double X) {
+  fprintf(stderr, "%f", X);
+  return 0;
+}
+DLLEXPORT int64_t printi(int64_t X) {
+  fprintf(stderr, "%lld", (long long)X);
+  return 0;
+}
+DLLEXPORT double printd(double X) {
+  fprintf(stderr, "%f", X);
+  return 0;
+}
+```
+
+### `code/chapter18/test/lit.cfg.py`
+
+```py
+import os
+
+import lit.formats
+
+config.name = "pyxc-chapter18"
+config.test_format = lit.formats.ShTest(True)
+config.suffixes = [".pyxc"]
+config.test_source_root = os.path.dirname(__file__)
+config.test_exec_root = config.test_source_root
+
+chapter_dir = os.path.abspath(os.path.join(config.test_source_root, ".."))
+config.substitutions.append(("%pyxc", os.path.join(chapter_dir, "pyxc")))
+```
+
+### `code/chapter18/test/break_outside_loop.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "break" %t
+# RUN: grep -q "outside of a loop" %t
+
+def main() -> i32:
+    break
+    return 0
+
+main()
+```
+
+### `code/chapter18/test/continue_outside_loop.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "continue" %t
+# RUN: grep -q "outside of a loop" %t
+
+def main() -> i32:
+    continue
+    return 0
+
+main()
+```
+
+### `code/chapter18/test/continue_skips_body.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '12' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    i: i32 = 0
+    s: i32 = 0
+    while i < 5:
+        i = i + 1
+        if i == 3:
+            continue
+        s = s + i
+    print(s)
+    return 0
+
+main()
+```
+
+### `code/chapter18/test/do_while_runs_once.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '1' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    x: i32 = 0
+    do:
+        x = x + 1
+    while x < 0
+    print(x)
+    return 0
+
+main()
+```
+
+### `code/chapter18/test/for_continue_step_path.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '8' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    s: i32 = 0
+    for i in range(0, 5):
+        if i == 2:
+            continue
+        s = s + i
+    print(s)
+    return 0
+
+main()
+```
+
+### `code/chapter18/test/malformed_do_while.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "expected .*while.* after do suite" %t
+
+def main() -> i32:
+    do:
+        print(1)
+    print(2)
+    return 0
+
+main()
+```
+
+### `code/chapter18/test/nested_break_outer_continue.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '0 2' %t
+# RUN: grep -x '1 2' %t
+# RUN: grep -x '2 2' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    i: i32 = 0
+    while i < 3:
+        j: i32 = 0
+        while j < 5:
+            if j == 2:
+                break
+            j = j + 1
+        print(i, j)
+        i = i + 1
+        continue
+    return 0
+
+main()
+```
+
+### `code/chapter18/test/operator_bitwise_basic.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '2 7 5' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    a: i32 = 6
+    b: i32 = 3
+    print(a & b, a | b, a ^ b)
+    return 0
+
+main()
+```
+
+### `code/chapter18/test/operator_bitwise_precedence.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '7' %t
+# RUN: grep -x '3' %t
+# RUN: grep -x '1' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    print(1 | 2 & 4 | 6)
+    print(1 ^ 3 & 2)
+    print(1 | 2 ^ 3)
+    return 0
+
+main()
+```
+
+### `code/chapter18/test/operator_error_bitwise_float.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Error (Line:" %t
+# RUN: grep -q "Bitwise operators require integer operands" %t
+
+def main() -> i32:
+    a: f64 = 6.0
+    b: i32 = 3
+    print(a & b)
+    return 0
+
+main()
+```
+
+### `code/chapter18/test/operator_error_modulo_float.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Error (Line:" %t
+# RUN: grep -q "Modulo operator '%' requires integer operands" %t
+
+def main() -> i32:
+    a: f32 = 10.0
+    b: i32 = 3
+    print(a % b)
+    return 0
+
+main()
+```
+
+### `code/chapter18/test/operator_error_unary_bitnot_float.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Error (Line:" %t
+# RUN: grep -q "Unary '~' requires integer operand" %t
+
+def main() -> i32:
+    x: f64 = 7.5
+    print(~x)
+    return 0
+
+main()
+```
+
+### `code/chapter18/test/operator_modulo_signed.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '1 0 -2' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    a: i32 = 10
+    b: i32 = 3
+    c: i32 = 8
+    d: i32 = 4
+    e: i32 = -10
+    f: i32 = 4
+    print(a % b, c % d, e % f)
+    return 0
+
+main()
+```
+
+### `code/chapter18/test/operator_unary_bitnot.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x -- '-8' %t
+# RUN: grep -x -- '2' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    x: i32 = 7
+    y: i8 = -3
+    print(~x)
+    print(~y)
+    return 0
+
+main()
+```
+
+### `code/chapter18/test/while_counting.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '0' %t
+# RUN: grep -x '1' %t
+# RUN: grep -x '2' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    i: i32 = 0
+    while i < 3:
+        print(i)
+        i = i + 1
+    return 0
+
+main()
+```

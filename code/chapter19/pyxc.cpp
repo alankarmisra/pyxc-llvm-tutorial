@@ -169,6 +169,7 @@ enum Token {
   tok_do = -29,
   tok_break = -30,
   tok_continue = -31,
+  tok_struct = -32,
 
   // indentation
   tok_indent = -16,
@@ -201,7 +202,7 @@ static std::map<std::string, Token> Keywords = {
     {"var", tok_var}, {"type", tok_type},     {"not", tok_not},
     {"and", tok_and}, {"print", tok_print},   {"while", tok_while},
     {"do", tok_do},   {"break", tok_break},   {"continue", tok_continue},
-    {"or", tok_or}};
+    {"or", tok_or},   {"struct", tok_struct}};
 
 struct SourceLocation {
   int Line;
@@ -449,7 +450,15 @@ static int gettok() {
     return (it != Keywords.end()) ? it->second : tok_identifier;
   }
 
-  if (isdigit(LastChar) || LastChar == '.') { // Number: [0-9.]+
+  bool DotStartsNumber = false;
+  if (LastChar == '.') {
+    int NextCh = getc(InputFile);
+    if (NextCh != EOF)
+      ungetc(NextCh, InputFile);
+    DotStartsNumber = isdigit(NextCh);
+  }
+
+  if (isdigit(LastChar) || DotStartsNumber) { // Number: [0-9.]+
     std::string NumStr;
     bool SawDot = false;
     do {
@@ -580,6 +589,8 @@ static const char *TokenName(int Tok) {
     return "<break>";
   case tok_continue:
     return "<continue>";
+  case tok_struct:
+    return "<struct>";
   case tok_not:
     return "<not>";
   case tok_and:
@@ -808,6 +819,26 @@ public:
     ExprAST::dump(out << "index", ind);
     Base->dump(indent(out, ind) << "Base:", ind + 1);
     Index->dump(indent(out, ind) << "Index:", ind + 1);
+    return out;
+  }
+  Value *codegen() override;
+  Value *codegenAddress() override;
+  Type *getValueTypeHint() const override;
+  std::string getBuiltinLeafTypeHint() const override;
+};
+
+class MemberExprAST : public ExprAST {
+  std::unique_ptr<ExprAST> Base;
+  std::string FieldName;
+
+public:
+  MemberExprAST(SourceLocation Loc, std::unique_ptr<ExprAST> Base,
+                std::string FieldName)
+      : ExprAST(Loc), Base(std::move(Base)), FieldName(std::move(FieldName)) {}
+
+  raw_ostream &dump(raw_ostream &out, int ind) override {
+    ExprAST::dump(out << "member ." << FieldName, ind);
+    Base->dump(indent(out, ind) << "Base:", ind + 1);
     return out;
   }
   Value *codegen() override;
@@ -1086,6 +1117,18 @@ static int getNextToken() { return CurTok = gettok(); }
 // Tracks all previously defined function prototypes
 static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 static std::map<std::string, TypeExprPtr> TypeAliases;
+struct StructFieldDecl {
+  std::string Name;
+  TypeExprPtr Ty;
+};
+struct StructDeclInfo {
+  std::string Name;
+  std::vector<StructFieldDecl> Fields;
+  std::map<std::string, unsigned> FieldIndex;
+  StructType *LLTy = nullptr;
+};
+static std::map<std::string, StructDeclInfo> StructDecls;
+static std::map<const StructType *, std::string> StructTypeNames;
 
 /// BinopPrecedence - This holds the precedence for each binary operator that is
 /// defined.
@@ -1114,6 +1157,7 @@ static std::unique_ptr<BlockSuiteAST> ParseSuite();
 static std::unique_ptr<BlockSuiteAST> ParseBlockSuite();
 static std::unique_ptr<StmtAST> ParsePrintStmt();
 static TypeExprPtr ParseTypeExpr();
+static bool ParseStructDecl();
 
 static void SkipToNextLine() {
   while (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_error)
@@ -1210,6 +1254,18 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
       continue;
     }
 
+    if (CurTok == '.') {
+      SourceLocation MemberLoc = CurLoc;
+      getNextToken(); // eat '.'
+      if (CurTok != tok_identifier)
+        return LogError<ExprPtr>("Expected field name after '.'");
+      std::string FieldName = IdentifierStr;
+      getNextToken(); // eat field name
+      Expr = std::make_unique<MemberExprAST>(MemberLoc, std::move(Expr),
+                                             std::move(FieldName));
+      continue;
+    }
+
     return Expr;
   }
 }
@@ -1270,6 +1326,99 @@ static bool ParseTypeAliasDecl() {
   if (!AliasedTy)
     return false;
   TypeAliases[AliasName] = std::move(AliasedTy);
+  return true;
+}
+
+static bool ParseStructDecl() {
+  if (CurTok != tok_struct)
+    return false;
+
+  getNextToken(); // eat 'struct'
+  if (CurTok != tok_identifier) {
+    LogError("Expected struct name after 'struct'");
+    return false;
+  }
+
+  std::string StructName = IdentifierStr;
+  SourceLocation StructLoc = CurLoc;
+  getNextToken(); // eat name
+
+  if (StructDecls.count(StructName)) {
+    LogError(("Struct '" + StructName + "' is already defined").c_str());
+    return false;
+  }
+
+  if (CurTok != ':') {
+    LogError("Expected ':' after struct name");
+    return false;
+  }
+  getNextToken(); // eat ':'
+
+  if (CurTok != tok_eol) {
+    LogError("Expected newline after struct declaration header");
+    return false;
+  }
+
+  if (getNextToken() != tok_indent) {
+    LogError("Expected indent for struct field list");
+    return false;
+  }
+  getNextToken(); // eat indent
+
+  StructDeclInfo Decl;
+  Decl.Name = StructName;
+
+  while (CurTok != tok_dedent && CurTok != tok_eof) {
+    EatNewLines();
+    if (CurTok == tok_dedent || CurTok == tok_eof)
+      break;
+
+    if (CurTok != tok_identifier) {
+      LogError("Expected field name in struct declaration");
+      return false;
+    }
+    std::string FieldName = IdentifierStr;
+    getNextToken(); // eat field name
+
+    if (Decl.FieldIndex.count(FieldName)) {
+      LogError(("Duplicate field '" + FieldName + "' in struct '" + StructName +
+                "'")
+                   .c_str());
+      return false;
+    }
+
+    if (CurTok != ':') {
+      LogError("Expected ':' after struct field name");
+      return false;
+    }
+    getNextToken(); // eat ':'
+
+    auto FieldTy = ParseTypeExpr();
+    if (!FieldTy)
+      return false;
+
+    unsigned Idx = static_cast<unsigned>(Decl.Fields.size());
+    Decl.FieldIndex[FieldName] = Idx;
+    Decl.Fields.push_back({FieldName, std::move(FieldTy)});
+
+    if (CurTok == tok_eol)
+      getNextToken();
+  }
+
+  if (Decl.Fields.empty()) {
+    CurLoc = StructLoc;
+    LogError(("Struct '" + StructName + "' must declare at least one field")
+                 .c_str());
+    return false;
+  }
+
+  if (CurTok != tok_dedent) {
+    LogError("Expected dedent after struct field list");
+    return false;
+  }
+  getNextToken(); // eat dedent
+
+  StructDecls[StructName] = std::move(Decl);
   return true;
 }
 
@@ -1609,6 +1758,8 @@ static std::unique_ptr<StmtAST> ParseStmt() {
     return ParsePrintStmt();
   case tok_type:
     return LogError<StmtPtr>("Type aliases are only allowed at top-level");
+  case tok_struct:
+    return LogError<StmtPtr>("Struct declarations are only allowed at top-level");
   case tok_identifier:
     return ParseIdentifierLeadingStmt();
   default:
@@ -2019,6 +2170,9 @@ static Type *BuiltinTypeToLLVM(const std::string &Name) {
   return nullptr;
 }
 
+static Type *ResolveTypeExpr(const TypeExprPtr &Ty,
+                             std::set<std::string> &Visited);
+
 static void EnsureDefaultTypeAliases() {
   auto ensure = [](const std::string &Alias, TypeExprPtr Ty) {
     if (TypeAliases.find(Alias) == TypeAliases.end())
@@ -2034,6 +2188,75 @@ static void EnsureDefaultTypeAliases() {
   unsigned PtrBits = DL.getPointerSizeInBits(0);
   ensure("long", TypeExpr::Builtin(PtrBits == 32 ? "i32" : "i64"));
   ensure("size_t", TypeExpr::Builtin(PtrBits == 32 ? "u32" : "u64"));
+}
+
+static StructType *ResolveStructTypeByName(const std::string &Name,
+                                           std::set<std::string> &Visited);
+
+static const StructDeclInfo *GetStructInfoForType(Type *Ty) {
+  auto *ST = dyn_cast_or_null<StructType>(Ty);
+  if (!ST)
+    return nullptr;
+  auto ItName = StructTypeNames.find(ST);
+  if (ItName == StructTypeNames.end())
+    return nullptr;
+  auto ItDecl = StructDecls.find(ItName->second);
+  if (ItDecl == StructDecls.end())
+    return nullptr;
+  return &ItDecl->second;
+}
+
+static const StructFieldDecl *
+GetStructFieldByName(const StructDeclInfo &Decl, const std::string &FieldName,
+                     unsigned *FieldIdx = nullptr) {
+  auto It = Decl.FieldIndex.find(FieldName);
+  if (It == Decl.FieldIndex.end())
+    return nullptr;
+  if (FieldIdx)
+    *FieldIdx = It->second;
+  return &Decl.Fields[It->second];
+}
+
+static StructType *ResolveStructTypeByName(const std::string &Name,
+                                           std::set<std::string> &Visited) {
+  auto It = StructDecls.find(Name);
+  if (It == StructDecls.end())
+    return nullptr;
+  StructDeclInfo &Decl = It->second;
+  if (Decl.LLTy)
+    return Decl.LLTy;
+
+  if (Visited.count(Name))
+    return nullptr;
+  Visited.insert(Name);
+
+  StructType *ST = StructType::create(*TheContext, "struct." + Name);
+  Decl.LLTy = ST;
+  StructTypeNames[ST] = Name;
+
+  std::vector<Type *> FieldTys;
+  FieldTys.reserve(Decl.Fields.size());
+  for (const auto &Field : Decl.Fields) {
+    Type *FTy = nullptr;
+    if (Field.Ty->Kind == TypeExprKind::AliasRef &&
+        StructDecls.count(Field.Ty->Name) != 0) {
+      StructType *Nested = ResolveStructTypeByName(Field.Ty->Name, Visited);
+      if (!Nested)
+        return LogError<StructType *>(
+            ("Unknown struct field type: " + Field.Ty->Name).c_str());
+      FTy = Nested;
+    } else {
+      FTy = ResolveTypeExpr(Field.Ty, Visited);
+    }
+    if (!FTy)
+      return LogError<StructType *>(
+          ("Failed to resolve field type in struct '" + Name + "'").c_str());
+    FieldTys.push_back(FTy);
+  }
+
+  ST->setBody(FieldTys, false);
+  Visited.erase(Name);
+  return ST;
 }
 
 static Type *ResolveTypeExpr(const TypeExprPtr &Ty,
@@ -2053,12 +2276,22 @@ static Type *ResolveTypeExpr(const TypeExprPtr &Ty,
   }
 
   auto It = TypeAliases.find(Ty->Name);
-  if (It == TypeAliases.end())
-    return LogError<Type *>(("Unknown type alias: " + Ty->Name).c_str());
-  if (Visited.count(Ty->Name))
-    return LogError<Type *>(("Alias cycle detected at type: " + Ty->Name).c_str());
-  Visited.insert(Ty->Name);
-  return ResolveTypeExpr(It->second, Visited);
+  if (It != TypeAliases.end()) {
+    if (Visited.count(Ty->Name))
+      return LogError<Type *>(
+          ("Alias cycle detected at type: " + Ty->Name).c_str());
+    Visited.insert(Ty->Name);
+    return ResolveTypeExpr(It->second, Visited);
+  }
+
+  if (StructDecls.count(Ty->Name)) {
+    StructType *ST = ResolveStructTypeByName(Ty->Name, Visited);
+    if (!ST)
+      return LogError<Type *>(("Unknown struct type: " + Ty->Name).c_str());
+    return ST;
+  }
+
+  return LogError<Type *>(("Unknown type alias: " + Ty->Name).c_str());
 }
 
 static Type *ResolveTypeExpr(const TypeExprPtr &Ty) {
@@ -2330,6 +2563,59 @@ std::string IndexExprAST::getBuiltinLeafTypeHint() const {
   return Base->getPointeeBuiltinLeafTypeHint();
 }
 
+Value *MemberExprAST::codegenAddress() {
+  emitLocation(this);
+  Value *BaseAddr = Base->codegenAddress();
+  if (!BaseAddr)
+    return LogError<Value *>("Member access requires an addressable base");
+  Type *BaseTy = Base->getValueTypeHint();
+  const StructDeclInfo *Decl = GetStructInfoForType(BaseTy);
+  if (!Decl)
+    return LogError<Value *>("Member access requires a struct-typed base");
+
+  unsigned FieldIdx = 0;
+  const StructFieldDecl *Field =
+      GetStructFieldByName(*Decl, FieldName, &FieldIdx);
+  if (!Field)
+    return LogError<Value *>(
+        ("Unknown field '" + FieldName + "' on struct '" + Decl->Name + "'")
+            .c_str());
+  auto *ST = dyn_cast<StructType>(BaseTy);
+  return Builder->CreateStructGEP(ST, BaseAddr, FieldIdx, "field.addr");
+}
+
+Value *MemberExprAST::codegen() {
+  Value *AddrV = codegenAddress();
+  if (!AddrV)
+    return nullptr;
+  Type *FieldTy = getValueTypeHint();
+  if (!FieldTy)
+    return LogError<Value *>("Cannot determine member field type");
+  return Builder->CreateLoad(FieldTy, AddrV, "field.load");
+}
+
+Type *MemberExprAST::getValueTypeHint() const {
+  Type *BaseTy = Base->getValueTypeHint();
+  const StructDeclInfo *Decl = GetStructInfoForType(BaseTy);
+  if (!Decl)
+    return nullptr;
+  const StructFieldDecl *Field = GetStructFieldByName(*Decl, FieldName);
+  if (!Field)
+    return nullptr;
+  return ResolveTypeExpr(Field->Ty);
+}
+
+std::string MemberExprAST::getBuiltinLeafTypeHint() const {
+  Type *BaseTy = Base->getValueTypeHint();
+  const StructDeclInfo *Decl = GetStructInfoForType(BaseTy);
+  if (!Decl)
+    return "";
+  const StructFieldDecl *Field = GetStructFieldByName(*Decl, FieldName);
+  if (!Field)
+    return "";
+  return ResolveBuiltinLeafName(Field->Ty);
+}
+
 Value *TypedAssignStmtAST::codegen() {
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
   Type *DeclTy = ResolveTypeExpr(DeclType);
@@ -2341,6 +2627,9 @@ Value *TypedAssignStmtAST::codegen() {
   AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, Name, DeclTy);
   Value *InitVal = nullptr;
   if (InitExpr) {
+    if (DeclTy->isStructTy())
+      return LogError<Value *>(
+          "Struct variables do not support direct initializer expressions");
     InitVal = InitExpr->codegen();
     if (!InitVal)
       return nullptr;
@@ -3260,6 +3549,15 @@ static void HandleTypeAlias() {
   }
 }
 
+static void HandleStructDecl() {
+  if (ParseStructDecl()) {
+    if (CurTok == tok_eol)
+      getNextToken();
+  } else {
+    getNextToken();
+  }
+}
+
 static void HandleTopLevelExpression() {
   // Evaluate a top-level expression into an anonymous function.
   if (auto FnAST = ParseTopLevelExpr()) {
@@ -3328,6 +3626,9 @@ static void MainLoop() {
         break;
       case tok_type:
         HandleTypeAlias();
+        break;
+      case tok_struct:
+        HandleStructDecl();
         break;
       default:
         HandleTopLevelExpression();
@@ -3494,6 +3795,14 @@ static void ParseSourceFile() {
         getNextToken(); // Skip for error recovery
       }
       break;
+    case tok_struct:
+      if (ParseStructDecl()) {
+        if (CurTok == tok_eol)
+          getNextToken();
+      } else {
+        getNextToken(); // Skip for error recovery
+      }
+      break;
     case tok_eol:
       getNextToken(); // Skip newlines
       break;
@@ -3580,6 +3889,14 @@ void InterpretFile(const std::string &filename) {
       break;
     case tok_type:
       if (ParseTypeAliasDecl()) {
+        if (CurTok == tok_eol)
+          getNextToken();
+      } else {
+        getNextToken();
+      }
+      break;
+    case tok_struct:
+      if (ParseStructDecl()) {
         if (CurTok == tok_eol)
           getNextToken();
       } else {

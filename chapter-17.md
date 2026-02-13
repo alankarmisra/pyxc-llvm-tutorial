@@ -356,7 +356,7 @@ make
 Run the chapter test suite:
 
 ```bash
-/Users/alankar/Documents/opensource/llvm-project/build/bin/llvm-lit -sv test
+llvm-lit -sv test
 ```
 
 If you want to sanity-check compatibility with the previous chapter as well:
@@ -364,7 +364,7 @@ If you want to sanity-check compatibility with the previous chapter as well:
 ```bash
 cd ../chapter16
 make
-/Users/alankar/Documents/opensource/llvm-project/build/bin/llvm-lit -sv test
+llvm-lit -sv test
 ```
 
 Try writing a few of your own `print` tests in `code/chapter17/test/` too. A good way to check your understanding is to add both:

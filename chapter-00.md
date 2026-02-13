@@ -61,18 +61,22 @@ This tutorial is structured into chapters covering individual topics, allowing y
 
 [Chapter #16: Typed Interop (Core Types, Pointers, and ABI)](chapter-16.md) - We add explicit scalar and pointer types, typed function signatures, type aliases, typed local declarations, and pointer operations (`addr`, indexing). We also enforce interop-focused typing rules and ABI-correct narrow signed/unsigned extern behavior.
 
-**Chapter #17: Structures and Named Tuples** - Adding structured data types to Pyxc. We implement simple structs (similar to C structs) with field access, and Python-style named tuples. This demonstrates how to use LLVM's struct types and handle memory layout for composite types.
+[Chapter #17: A Real `print(...)` Builtin (Without Variadics)](chapter-17.md) - We add a language-level `print(...)` statement builtin without introducing general variadic functions. This chapter covers parser/AST integration, type-directed runtime helper dispatch, and a dedicated lit test suite.
 
-**Chapter #18: First-class Functions and Closures** - Making functions truly first-class citizens. We implement function pointers, higher-order functions, and simple closures with explicit capture lists. This chapter shows how LLVM handles indirect calls and closure environments.
+[Chapter #18: Real Loop Control (`while`, `do`, `break`, `continue`) and Finishing Core Integer Operators](chapter-18.md) - We add structured loop control statements and semantic loop-context handling in codegen. We also complete key integer operators (`~`, `%`, `&`, `^`, `|`) with clear diagnostics and tests.
 
-**Chapter #19: Simple Classes and Methods** - Adding object-oriented features without complexity. We implement single inheritance, methods with explicit self parameter, and basic constructors. This demonstrates vtables and dynamic dispatch in LLVM.
+**Chapter #19: Structures and Named Tuples** - Adding structured data types to Pyxc. We implement simple structs (similar to C structs) with field access, and Python-style named tuples. This demonstrates how to use LLVM's struct types and handle memory layout for composite types.
 
-**Chapter #20: Arrays and Basic Collections** - Practical data structures for Pyxc. We implement fixed-size arrays, bounds checking, and show how to create simple list-like types. This introduces LLVM's array types and pointer operations.
+**Chapter #20: First-class Functions and Closures** - Making functions truly first-class citizens. We implement function pointers, higher-order functions, and simple closures with explicit capture lists. This chapter shows how LLVM handles indirect calls and closure environments.
 
-**Chapter #21: Modules and Separate Compilation** - Breaking code into multiple files. We implement a simple module system with import statements and show how to compile and link multiple modules together using LLVM's module linking capabilities.
+**Chapter #21: Simple Classes and Methods** - Adding object-oriented features without complexity. We implement single inheritance, methods with explicit self parameter, and basic constructors. This demonstrates vtables and dynamic dispatch in LLVM.
 
-**Chapter #22: Standard Library and Built-in Functions** - A language isn't complete without basic utilities. We show how to implement essential built-in functions (print, len, file I/O) by calling the C standard library, and create a minimal runtime for Pyxc.
+**Chapter #22: Arrays and Basic Collections** - Practical data structures for Pyxc. We implement fixed-size arrays, bounds checking, and show how to create simple list-like types. This introduces LLVM's array types and pointer operations.
 
-**Chapter #23: Better Error Handling and Diagnostics** - Improving the developer experience. We add source location tracking, better error messages with context, and simple warning systems. This shows how to integrate diagnostics throughout the compiler pipeline.
+**Chapter #23: Modules and Separate Compilation** - Breaking code into multiple files. We implement a simple module system with import statements and show how to compile and link multiple modules together using LLVM's module linking capabilities.
 
-**Chapter #24: Concluding Intermediate Topics** - This chapter wraps up the Intermediate Topics series by discussing advanced extension possibilities and includes pointers to further topics like concurrency support, foreign function interfaces, custom optimizations, and language interoperability.
+**Chapter #24: Standard Library and Built-in Functions** - A language isn't complete without basic utilities. We show how to implement essential built-in functions (print, len, file I/O) by calling the C standard library, and create a minimal runtime for Pyxc.
+
+**Chapter #25: Better Error Handling and Diagnostics** - Improving the developer experience. We add source location tracking, better error messages with context, and simple warning systems. This shows how to integrate diagnostics throughout the compiler pipeline.
+
+**Chapter #26: Concluding Intermediate Topics** - This chapter wraps up the Intermediate Topics series by discussing advanced extension possibilities and includes pointers to further topics like concurrency support, foreign function interfaces, custom optimizations, and language interoperability.

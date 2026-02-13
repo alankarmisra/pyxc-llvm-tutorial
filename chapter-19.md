@@ -1,3 +1,551 @@
+# 19. Structs and Named Field Access
+
+Chapter 18 gave us robust control flow and practical integer operators.
+
+In Chapter 19, we add structured data with named fields. The goal is to let Pyxc model aggregate data without introducing classes or methods yet.
+
+The feature set in this chapter is intentionally focused:
+
+- top-level `struct` declarations
+- struct-typed locals and signatures
+- field reads (`obj.field`)
+- field assignments (`obj.field = expr`)
+- nested field access (`outer.inner.x`)
+
+This chapter builds directly on the Chapter 18 compiler in `code/chapter18/pyxc.cpp`, and all changes are implemented in `code/chapter19/pyxc.cpp`.
+
+## What Changed from Chapter 18
+
+At a high level, Chapter 19 adds:
+
+1. a new keyword/token: `struct`
+2. a top-level parser for struct declarations
+3. member-expression parsing for `.` postfix access
+4. struct type metadata tables
+5. LLVM `StructType` resolution and caching
+6. field address/load codegen through a new `MemberExprAST`
+7. struct-specific diagnostics and test coverage
+
+## Language Surface in This Chapter
+
+### Struct declaration
+
+```py
+struct Point:
+    x: i32
+    y: i32
+```
+
+### Struct local + field writes
+
+```py
+p: Point
+p.x = 10
+p.y = 20
+```
+
+### Struct field reads
+
+```py
+print(p.x, p.y)
+```
+
+### Nested field access
+
+```py
+o.i.x = 7
+print(o.i.x)
+```
+
+## Grammar Update (EBNF)
+
+Compared to Chapter 18, we add:
+
+- `struct_decl` as a top-level item
+- `member_suffix`/`member_expr` in postfix grammar
+- `member_expr` as a valid lvalue
+
+Excerpt from `code/chapter19/pyxc.ebnf`:
+
+```ebnf
+top_item        = newline
+                | type_alias_decl
+                | struct_decl
+                | function_def
+                | extern_decl
+                | statement ;
+
+struct_decl     = "struct" , identifier , ":" , newline , indent ,
+                  struct_field , { newline , struct_field } , [ newline ] ,
+                  dedent ;
+
+postfix_expr    = primary , { call_suffix | index_suffix | member_suffix } ;
+member_suffix   = "." , identifier ;
+member_expr     = postfix_expr , member_suffix ;
+
+lvalue          = identifier
+                | index_expr
+                | member_expr ;
+```
+
+## Tests First: Chapter 19 Struct Suite
+
+Chapter 19 keeps all copied Chapter 18 tests and adds dedicated struct tests:
+
+- `code/chapter19/test/struct_basic_fields.pyxc`
+- `code/chapter19/test/struct_nested_fields.pyxc`
+- `code/chapter19/test/struct_alias_type.pyxc`
+- `code/chapter19/test/struct_error_unknown_field.pyxc`
+- `code/chapter19/test/struct_error_nonstruct_member.pyxc`
+- `code/chapter19/test/struct_error_duplicate_field.pyxc`
+- `code/chapter19/test/struct_error_duplicate_struct.pyxc`
+
+Example positive test:
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '10 20' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+struct Point:
+    x: i32
+    y: i32
+
+def main() -> i32:
+    p: Point
+    p.x = 10
+    p.y = 20
+    print(p.x, p.y)
+    return 0
+
+main()
+```
+
+Example negative test:
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Error (Line:" %t
+# RUN: grep -q "Unknown field 'z'" %t
+
+struct Point:
+    x: i32
+
+def main() -> i32:
+    p: Point
+    print(p.z)
+    return 0
+
+main()
+```
+
+## Lexer Changes
+
+### New token and keyword
+
+`Token` gets:
+
+```cpp
+tok_struct = -32,
+```
+
+Keyword map gets:
+
+```cpp
+{"struct", tok_struct}
+```
+
+### Dot handling fix for member access
+
+In Chapter 18, a standalone `.` could be consumed as number-start logic. For member access in Chapter 19, we refine lexing so `.` starts a number only when followed by a digit.
+
+```cpp
+bool DotStartsNumber = false;
+if (LastChar == '.') {
+  int NextCh = getc(InputFile);
+  if (NextCh != EOF)
+    ungetc(NextCh, InputFile);
+  DotStartsNumber = isdigit(NextCh);
+}
+
+if (isdigit(LastChar) || DotStartsNumber) {
+  ...
+}
+```
+
+That preserves numeric literals like `.5` while allowing `obj.field` parsing.
+
+## AST and Parser Additions
+
+### `MemberExprAST`
+
+New expression node:
+
+```cpp
+class MemberExprAST : public ExprAST {
+  std::unique_ptr<ExprAST> Base;
+  std::string FieldName;
+  ...
+  Value *codegen() override;
+  Value *codegenAddress() override;
+  Type *getValueTypeHint() const override;
+  std::string getBuiltinLeafTypeHint() const override;
+};
+```
+
+The key point is that member access supports both:
+
+- value codegen (load field)
+- address codegen (for lvalue assignment path)
+
+### Struct declaration parser
+
+A dedicated top-level parser is added:
+
+```cpp
+static bool ParseStructDecl();
+```
+
+It validates:
+
+- `struct <Name>:` header shape
+- indented typed field list
+- no duplicate struct names
+- no duplicate field names within a struct
+- at least one field
+
+### Top-level dispatch integration
+
+`struct` is handled in all top-level parsing loops (`MainLoop`, file parse, interpreter parse), and rejected inside statement contexts:
+
+```cpp
+case tok_struct:
+  return LogError<StmtPtr>("Struct declarations are only allowed at top-level");
+```
+
+### Postfix `.` parser support
+
+`ParseIdentifierExpr()` now handles member postfix in its chaining loop:
+
+```cpp
+if (CurTok == '.') {
+  ...
+  Expr = std::make_unique<MemberExprAST>(MemberLoc, std::move(Expr),
+                                         std::move(FieldName));
+  continue;
+}
+```
+
+This composes with existing postfixes, so `o.i.x` works naturally.
+
+## Struct Type Metadata and Resolution
+
+Chapter 19 introduces compiler-side struct metadata:
+
+```cpp
+struct StructFieldDecl {
+  std::string Name;
+  TypeExprPtr Ty;
+};
+struct StructDeclInfo {
+  std::string Name;
+  std::vector<StructFieldDecl> Fields;
+  std::map<std::string, unsigned> FieldIndex;
+  StructType *LLTy = nullptr;
+};
+static std::map<std::string, StructDeclInfo> StructDecls;
+static std::map<const StructType *, std::string> StructTypeNames;
+```
+
+`ResolveTypeExpr(...)` now resolves struct names in addition to aliases. `ResolveStructTypeByName(...)` builds/caches LLVM `StructType` bodies in declaration order and supports nested structs.
+
+## Member Access Codegen
+
+### Address generation
+
+`MemberExprAST::codegenAddress()`:
+
+1. gets base address (`Base->codegenAddress()`)
+2. verifies base type is struct
+3. resolves field index by name
+4. emits struct GEP (`CreateStructGEP`)
+
+```cpp
+return Builder->CreateStructGEP(ST, BaseAddr, FieldIdx, "field.addr");
+```
+
+### Value generation
+
+`MemberExprAST::codegen()` loads from the computed field address:
+
+```cpp
+return Builder->CreateLoad(FieldTy, AddrV, "field.load");
+```
+
+Because assignment already uses `codegenAddress()` on lvalues, `obj.field = ...` works with existing `AssignStmtAST` code paths.
+
+## Diagnostics Added
+
+Chapter 19 adds focused diagnostics for struct usage errors:
+
+- `Struct '<name>' is already defined`
+- `Duplicate field '<field>' in struct '<name>'`
+- `Unknown field '<field>' on struct '<name>'`
+- `Member access requires a struct-typed base`
+
+Additionally, direct initializer expressions for struct-typed locals are currently blocked with a clear message:
+
+```cpp
+"Struct variables do not support direct initializer expressions"
+```
+
+This keeps semantics explicit until struct literals/constructors are introduced later.
+
+## Validation Status
+
+Chapter 19 build and test status:
+
+- `code/chapter19`: `make` succeeded
+- `code/chapter19`: `lit -sv test` passed (`22/22`)
+- `code/chapter18`: `lit -sv test` passed (`15/15`) as regression sanity check
+
+## Build and Test (Chapter 19)
+
+From repository root:
+
+```bash
+cd code/chapter19
+make
+```
+
+Run Chapter 19 tests:
+
+```bash
+lit -sv test
+```
+
+Optional regression sanity check:
+
+```bash
+cd ../chapter18
+lit -sv test
+```
+
+## Full Source Code Listing
+
+### `code/chapter19/Makefile`
+
+```make
+UNAME_S := $(shell uname -s)
+
+LLVM_PREFIX ?= $(HOME)/llvm-21-with-clang-lld-lldb-mlir
+LLVM_CONFIG = $(LLVM_PREFIX)/bin/llvm-config
+CXX = $(LLVM_PREFIX)/bin/clang++
+CC = $(LLVM_PREFIX)/bin/clang
+HOMEBREW_LIB ?= /opt/homebrew/lib
+
+TARGET := pyxc
+SRC := pyxc.cpp
+RUNTIME_SRC := runtime.c
+RUNTIME_OBJ := runtime.o
+
+LLVM_FLAGS := $(shell $(LLVM_CONFIG) --cxxflags --ldflags --system-libs --libs all)
+LLD_FLAGS := -llldCommon -llldELF -llldMachO -llldCOFF
+
+CXXFLAGS := -g -O3
+CFLAGS :=
+LDFLAGS :=
+
+ifeq ($(UNAME_S),Darwin)
+SDKROOT ?= $(shell xcrun --show-sdk-path)
+CFLAGS += -isysroot $(SDKROOT)
+CXXFLAGS += -isysroot $(SDKROOT) -stdlib=libc++
+ifneq (,$(wildcard /Library/Developer/CommandLineTools/usr/include/c++/v1))
+CXXFLAGS += -I/Library/Developer/CommandLineTools/usr/include/c++/v1
+endif
+ifneq ($(strip $(HOMEBREW_LIB)),)
+LDFLAGS += -L$(HOMEBREW_LIB) -Wl,-rpath,$(HOMEBREW_LIB)
+endif
+endif
+
+ifeq ($(UNAME_S),Linux)
+ifneq ($(strip $(HOMEBREW_LIB)),)
+LDFLAGS += -L$(HOMEBREW_LIB) -Wl,-rpath,$(HOMEBREW_LIB)
+endif
+endif
+
+RUNTIME_TARGET :=
+ifneq (,$(wildcard $(RUNTIME_SRC)))
+RUNTIME_TARGET := $(RUNTIME_OBJ)
+endif
+
+.PHONY: all clean
+
+all: $(TARGET) $(RUNTIME_TARGET)
+
+$(TARGET): $(SRC)
+	$(CXX) $(CXXFLAGS) $< $(LLVM_FLAGS) $(LDFLAGS) $(LLD_FLAGS) -o $@
+
+$(RUNTIME_OBJ): $(RUNTIME_SRC)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+clean:
+	rm -f $(TARGET) $(RUNTIME_OBJ)
+```
+
+### `code/chapter19/pyxc.ebnf`
+
+```ebnf
+(* Pyxc Grammar (Chapter 15 draft: explicit types + pointer types) *)
+
+(* ---------- Lexical ---------- *)
+
+letter         = "A".."Z" | "a".."z" | "_" ;
+digit          = "0".."9" ;
+identifier     = letter , { letter | digit } ;
+number         = digit , { digit } , [ "." , { digit } ]
+               | "." , digit , { digit } ;
+
+newline        = "<EOL>" ;
+indent         = "<INDENT>" ;
+dedent         = "<DEDENT>" ;
+eof            = "<EOF>" ;
+
+(* Produced by lexer indentation logic; parser consumes these as tokens. *)
+
+(* ---------- Program ---------- *)
+
+program         = { top_item } , eof ;
+
+top_item        = newline
+                | type_alias_decl
+                | struct_decl
+                | function_def
+                | extern_decl
+                | statement ;
+
+(* ---------- Types ---------- *)
+
+type_alias_decl = "type" , identifier , "=" , type_expr ;
+struct_decl     = "struct" , identifier , ":" , newline , indent ,
+                  struct_field , { newline , struct_field } , [ newline ] ,
+                  dedent ;
+struct_field    = identifier , ":" , type_expr ;
+
+type_expr       = pointer_type
+                | base_type ;
+
+pointer_type    = "ptr" , "[" , type_expr , "]" ;
+
+base_type       = builtin_type
+                | identifier ;
+
+builtin_type    = "void"
+                | "i8" | "i16" | "i32" | "i64"
+                | "u8" | "u16" | "u32" | "u64"
+                | "f32" | "f64" ;
+
+(* ---------- Functions ---------- *)
+
+function_def    = [ decorator ] , "def" , prototype , ":" , suite ;
+extern_decl     = "extern" , "def" , prototype ;
+
+prototype       = identifier , "(" , [ param_list ] , ")" , "->" , type_expr ;
+param_list      = param , { "," , param } ;
+param           = identifier , ":" , type_expr ;
+
+(* Current decorator model used for unary/binary operator definitions. *)
+decorator       = "@" , ( "unary" | "binary" ) , [ number ] ;
+
+(* ---------- Statements ---------- *)
+
+statement       = if_stmt
+                | for_stmt
+                | while_stmt
+                | do_while_stmt
+                | break_stmt
+                | continue_stmt
+                | print_stmt
+                | return_stmt
+                | typed_assign_stmt
+                | assign_stmt
+                | expr_stmt ;
+
+typed_assign_stmt = identifier , ":" , type_expr , [ "=" , expression ] ;
+assign_stmt     = lvalue , "=" , expression ;
+lvalue          = identifier
+                | index_expr
+                | member_expr ;
+
+expr_stmt       = expression ;
+
+return_stmt     = "return" , [ expression ] ;
+
+print_stmt      = "print" , "(" , [ arg_list ] , ")" ;
+
+if_stmt         = "if" , expression , ":" , suite ,
+                  [ "elif" , expression , ":" , suite ] ,
+                  [ "else" , ":" , suite ] ;
+
+for_stmt        = "for" , identifier , "in" , "range" , "(" ,
+                  expression , "," , expression ,
+                  [ "," , expression ] ,
+                  ")" , ":" , suite ;
+
+while_stmt      = "while" , expression , ":" , suite ;
+do_while_stmt   = "do" , ":" , suite , "while" , expression ;
+break_stmt      = "break" ;
+continue_stmt   = "continue" ;
+
+(* Python-style suite: either one inline statement or an indented block. *)
+suite           = inline_suite
+                | block_suite ;
+
+inline_suite    = statement ;
+block_suite     = newline , indent , statement_list , dedent ;
+statement_list  = statement , { newline , statement } , [ newline ] ;
+
+(* ---------- Expressions ---------- *)
+
+expression      = unary_expr , { binary_op , unary_expr } ;
+
+unary_expr      = [ unary_op ] , postfix_expr ;
+unary_op        = "+" | "-" | "!" | "~" ;
+
+postfix_expr    = primary , { call_suffix | index_suffix | member_suffix } ;
+call_suffix     = "(" , [ arg_list ] , ")" ;
+index_suffix    = "[" , expression , "]" ;
+member_suffix   = "." , identifier ;
+index_expr      = postfix_expr , index_suffix ;
+member_expr     = postfix_expr , member_suffix ;
+
+primary         = number
+                | identifier
+                | addr_expr
+                | paren_expr
+                | var_expr ;
+
+addr_expr       = "addr" , "(" , expression , ")" ;
+paren_expr      = "(" , expression , ")" ;
+
+arg_list        = expression , { "," , expression } ;
+
+var_expr        = "var" , var_binding , { "," , var_binding } , "in" , expression ;
+var_binding     = identifier , [ "=" , expression ] ;
+
+binary_op       = "<"
+                | "+" | "-" | "*" | "/"
+                | "="
+                | custom_op ;
+
+custom_op       = "?" | "$" | "%" | "^" | "&" | "|" | "@" | ":" ;
+
+(* Actual precedence/associativity comes from parser tables, not EBNF. *)
+```
+
+### `code/chapter19/pyxc.cpp`
+
+```cpp
 #include "../include/PyxcJIT.h"
 #include "../include/PyxcLinker.h"
 #include "llvm/ADT/APFloat.h"
@@ -169,6 +717,7 @@ enum Token {
   tok_do = -29,
   tok_break = -30,
   tok_continue = -31,
+  tok_struct = -32,
 
   // indentation
   tok_indent = -16,
@@ -201,7 +750,7 @@ static std::map<std::string, Token> Keywords = {
     {"var", tok_var}, {"type", tok_type},     {"not", tok_not},
     {"and", tok_and}, {"print", tok_print},   {"while", tok_while},
     {"do", tok_do},   {"break", tok_break},   {"continue", tok_continue},
-    {"or", tok_or}};
+    {"or", tok_or},   {"struct", tok_struct}};
 
 struct SourceLocation {
   int Line;
@@ -449,7 +998,15 @@ static int gettok() {
     return (it != Keywords.end()) ? it->second : tok_identifier;
   }
 
-  if (isdigit(LastChar) || LastChar == '.') { // Number: [0-9.]+
+  bool DotStartsNumber = false;
+  if (LastChar == '.') {
+    int NextCh = getc(InputFile);
+    if (NextCh != EOF)
+      ungetc(NextCh, InputFile);
+    DotStartsNumber = isdigit(NextCh);
+  }
+
+  if (isdigit(LastChar) || DotStartsNumber) { // Number: [0-9.]+
     std::string NumStr;
     bool SawDot = false;
     do {
@@ -580,6 +1137,8 @@ static const char *TokenName(int Tok) {
     return "<break>";
   case tok_continue:
     return "<continue>";
+  case tok_struct:
+    return "<struct>";
   case tok_not:
     return "<not>";
   case tok_and:
@@ -808,6 +1367,26 @@ public:
     ExprAST::dump(out << "index", ind);
     Base->dump(indent(out, ind) << "Base:", ind + 1);
     Index->dump(indent(out, ind) << "Index:", ind + 1);
+    return out;
+  }
+  Value *codegen() override;
+  Value *codegenAddress() override;
+  Type *getValueTypeHint() const override;
+  std::string getBuiltinLeafTypeHint() const override;
+};
+
+class MemberExprAST : public ExprAST {
+  std::unique_ptr<ExprAST> Base;
+  std::string FieldName;
+
+public:
+  MemberExprAST(SourceLocation Loc, std::unique_ptr<ExprAST> Base,
+                std::string FieldName)
+      : ExprAST(Loc), Base(std::move(Base)), FieldName(std::move(FieldName)) {}
+
+  raw_ostream &dump(raw_ostream &out, int ind) override {
+    ExprAST::dump(out << "member ." << FieldName, ind);
+    Base->dump(indent(out, ind) << "Base:", ind + 1);
     return out;
   }
   Value *codegen() override;
@@ -1086,6 +1665,18 @@ static int getNextToken() { return CurTok = gettok(); }
 // Tracks all previously defined function prototypes
 static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 static std::map<std::string, TypeExprPtr> TypeAliases;
+struct StructFieldDecl {
+  std::string Name;
+  TypeExprPtr Ty;
+};
+struct StructDeclInfo {
+  std::string Name;
+  std::vector<StructFieldDecl> Fields;
+  std::map<std::string, unsigned> FieldIndex;
+  StructType *LLTy = nullptr;
+};
+static std::map<std::string, StructDeclInfo> StructDecls;
+static std::map<const StructType *, std::string> StructTypeNames;
 
 /// BinopPrecedence - This holds the precedence for each binary operator that is
 /// defined.
@@ -1114,6 +1705,7 @@ static std::unique_ptr<BlockSuiteAST> ParseSuite();
 static std::unique_ptr<BlockSuiteAST> ParseBlockSuite();
 static std::unique_ptr<StmtAST> ParsePrintStmt();
 static TypeExprPtr ParseTypeExpr();
+static bool ParseStructDecl();
 
 static void SkipToNextLine() {
   while (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_error)
@@ -1210,6 +1802,18 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
       continue;
     }
 
+    if (CurTok == '.') {
+      SourceLocation MemberLoc = CurLoc;
+      getNextToken(); // eat '.'
+      if (CurTok != tok_identifier)
+        return LogError<ExprPtr>("Expected field name after '.'");
+      std::string FieldName = IdentifierStr;
+      getNextToken(); // eat field name
+      Expr = std::make_unique<MemberExprAST>(MemberLoc, std::move(Expr),
+                                             std::move(FieldName));
+      continue;
+    }
+
     return Expr;
   }
 }
@@ -1270,6 +1874,99 @@ static bool ParseTypeAliasDecl() {
   if (!AliasedTy)
     return false;
   TypeAliases[AliasName] = std::move(AliasedTy);
+  return true;
+}
+
+static bool ParseStructDecl() {
+  if (CurTok != tok_struct)
+    return false;
+
+  getNextToken(); // eat 'struct'
+  if (CurTok != tok_identifier) {
+    LogError("Expected struct name after 'struct'");
+    return false;
+  }
+
+  std::string StructName = IdentifierStr;
+  SourceLocation StructLoc = CurLoc;
+  getNextToken(); // eat name
+
+  if (StructDecls.count(StructName)) {
+    LogError(("Struct '" + StructName + "' is already defined").c_str());
+    return false;
+  }
+
+  if (CurTok != ':') {
+    LogError("Expected ':' after struct name");
+    return false;
+  }
+  getNextToken(); // eat ':'
+
+  if (CurTok != tok_eol) {
+    LogError("Expected newline after struct declaration header");
+    return false;
+  }
+
+  if (getNextToken() != tok_indent) {
+    LogError("Expected indent for struct field list");
+    return false;
+  }
+  getNextToken(); // eat indent
+
+  StructDeclInfo Decl;
+  Decl.Name = StructName;
+
+  while (CurTok != tok_dedent && CurTok != tok_eof) {
+    EatNewLines();
+    if (CurTok == tok_dedent || CurTok == tok_eof)
+      break;
+
+    if (CurTok != tok_identifier) {
+      LogError("Expected field name in struct declaration");
+      return false;
+    }
+    std::string FieldName = IdentifierStr;
+    getNextToken(); // eat field name
+
+    if (Decl.FieldIndex.count(FieldName)) {
+      LogError(("Duplicate field '" + FieldName + "' in struct '" + StructName +
+                "'")
+                   .c_str());
+      return false;
+    }
+
+    if (CurTok != ':') {
+      LogError("Expected ':' after struct field name");
+      return false;
+    }
+    getNextToken(); // eat ':'
+
+    auto FieldTy = ParseTypeExpr();
+    if (!FieldTy)
+      return false;
+
+    unsigned Idx = static_cast<unsigned>(Decl.Fields.size());
+    Decl.FieldIndex[FieldName] = Idx;
+    Decl.Fields.push_back({FieldName, std::move(FieldTy)});
+
+    if (CurTok == tok_eol)
+      getNextToken();
+  }
+
+  if (Decl.Fields.empty()) {
+    CurLoc = StructLoc;
+    LogError(("Struct '" + StructName + "' must declare at least one field")
+                 .c_str());
+    return false;
+  }
+
+  if (CurTok != tok_dedent) {
+    LogError("Expected dedent after struct field list");
+    return false;
+  }
+  getNextToken(); // eat dedent
+
+  StructDecls[StructName] = std::move(Decl);
   return true;
 }
 
@@ -1609,6 +2306,8 @@ static std::unique_ptr<StmtAST> ParseStmt() {
     return ParsePrintStmt();
   case tok_type:
     return LogError<StmtPtr>("Type aliases are only allowed at top-level");
+  case tok_struct:
+    return LogError<StmtPtr>("Struct declarations are only allowed at top-level");
   case tok_identifier:
     return ParseIdentifierLeadingStmt();
   default:
@@ -2019,6 +2718,9 @@ static Type *BuiltinTypeToLLVM(const std::string &Name) {
   return nullptr;
 }
 
+static Type *ResolveTypeExpr(const TypeExprPtr &Ty,
+                             std::set<std::string> &Visited);
+
 static void EnsureDefaultTypeAliases() {
   auto ensure = [](const std::string &Alias, TypeExprPtr Ty) {
     if (TypeAliases.find(Alias) == TypeAliases.end())
@@ -2034,6 +2736,75 @@ static void EnsureDefaultTypeAliases() {
   unsigned PtrBits = DL.getPointerSizeInBits(0);
   ensure("long", TypeExpr::Builtin(PtrBits == 32 ? "i32" : "i64"));
   ensure("size_t", TypeExpr::Builtin(PtrBits == 32 ? "u32" : "u64"));
+}
+
+static StructType *ResolveStructTypeByName(const std::string &Name,
+                                           std::set<std::string> &Visited);
+
+static const StructDeclInfo *GetStructInfoForType(Type *Ty) {
+  auto *ST = dyn_cast_or_null<StructType>(Ty);
+  if (!ST)
+    return nullptr;
+  auto ItName = StructTypeNames.find(ST);
+  if (ItName == StructTypeNames.end())
+    return nullptr;
+  auto ItDecl = StructDecls.find(ItName->second);
+  if (ItDecl == StructDecls.end())
+    return nullptr;
+  return &ItDecl->second;
+}
+
+static const StructFieldDecl *
+GetStructFieldByName(const StructDeclInfo &Decl, const std::string &FieldName,
+                     unsigned *FieldIdx = nullptr) {
+  auto It = Decl.FieldIndex.find(FieldName);
+  if (It == Decl.FieldIndex.end())
+    return nullptr;
+  if (FieldIdx)
+    *FieldIdx = It->second;
+  return &Decl.Fields[It->second];
+}
+
+static StructType *ResolveStructTypeByName(const std::string &Name,
+                                           std::set<std::string> &Visited) {
+  auto It = StructDecls.find(Name);
+  if (It == StructDecls.end())
+    return nullptr;
+  StructDeclInfo &Decl = It->second;
+  if (Decl.LLTy)
+    return Decl.LLTy;
+
+  if (Visited.count(Name))
+    return nullptr;
+  Visited.insert(Name);
+
+  StructType *ST = StructType::create(*TheContext, "struct." + Name);
+  Decl.LLTy = ST;
+  StructTypeNames[ST] = Name;
+
+  std::vector<Type *> FieldTys;
+  FieldTys.reserve(Decl.Fields.size());
+  for (const auto &Field : Decl.Fields) {
+    Type *FTy = nullptr;
+    if (Field.Ty->Kind == TypeExprKind::AliasRef &&
+        StructDecls.count(Field.Ty->Name) != 0) {
+      StructType *Nested = ResolveStructTypeByName(Field.Ty->Name, Visited);
+      if (!Nested)
+        return LogError<StructType *>(
+            ("Unknown struct field type: " + Field.Ty->Name).c_str());
+      FTy = Nested;
+    } else {
+      FTy = ResolveTypeExpr(Field.Ty, Visited);
+    }
+    if (!FTy)
+      return LogError<StructType *>(
+          ("Failed to resolve field type in struct '" + Name + "'").c_str());
+    FieldTys.push_back(FTy);
+  }
+
+  ST->setBody(FieldTys, false);
+  Visited.erase(Name);
+  return ST;
 }
 
 static Type *ResolveTypeExpr(const TypeExprPtr &Ty,
@@ -2053,12 +2824,22 @@ static Type *ResolveTypeExpr(const TypeExprPtr &Ty,
   }
 
   auto It = TypeAliases.find(Ty->Name);
-  if (It == TypeAliases.end())
-    return LogError<Type *>(("Unknown type alias: " + Ty->Name).c_str());
-  if (Visited.count(Ty->Name))
-    return LogError<Type *>(("Alias cycle detected at type: " + Ty->Name).c_str());
-  Visited.insert(Ty->Name);
-  return ResolveTypeExpr(It->second, Visited);
+  if (It != TypeAliases.end()) {
+    if (Visited.count(Ty->Name))
+      return LogError<Type *>(
+          ("Alias cycle detected at type: " + Ty->Name).c_str());
+    Visited.insert(Ty->Name);
+    return ResolveTypeExpr(It->second, Visited);
+  }
+
+  if (StructDecls.count(Ty->Name)) {
+    StructType *ST = ResolveStructTypeByName(Ty->Name, Visited);
+    if (!ST)
+      return LogError<Type *>(("Unknown struct type: " + Ty->Name).c_str());
+    return ST;
+  }
+
+  return LogError<Type *>(("Unknown type alias: " + Ty->Name).c_str());
 }
 
 static Type *ResolveTypeExpr(const TypeExprPtr &Ty) {
@@ -2330,6 +3111,59 @@ std::string IndexExprAST::getBuiltinLeafTypeHint() const {
   return Base->getPointeeBuiltinLeafTypeHint();
 }
 
+Value *MemberExprAST::codegenAddress() {
+  emitLocation(this);
+  Value *BaseAddr = Base->codegenAddress();
+  if (!BaseAddr)
+    return LogError<Value *>("Member access requires an addressable base");
+  Type *BaseTy = Base->getValueTypeHint();
+  const StructDeclInfo *Decl = GetStructInfoForType(BaseTy);
+  if (!Decl)
+    return LogError<Value *>("Member access requires a struct-typed base");
+
+  unsigned FieldIdx = 0;
+  const StructFieldDecl *Field =
+      GetStructFieldByName(*Decl, FieldName, &FieldIdx);
+  if (!Field)
+    return LogError<Value *>(
+        ("Unknown field '" + FieldName + "' on struct '" + Decl->Name + "'")
+            .c_str());
+  auto *ST = dyn_cast<StructType>(BaseTy);
+  return Builder->CreateStructGEP(ST, BaseAddr, FieldIdx, "field.addr");
+}
+
+Value *MemberExprAST::codegen() {
+  Value *AddrV = codegenAddress();
+  if (!AddrV)
+    return nullptr;
+  Type *FieldTy = getValueTypeHint();
+  if (!FieldTy)
+    return LogError<Value *>("Cannot determine member field type");
+  return Builder->CreateLoad(FieldTy, AddrV, "field.load");
+}
+
+Type *MemberExprAST::getValueTypeHint() const {
+  Type *BaseTy = Base->getValueTypeHint();
+  const StructDeclInfo *Decl = GetStructInfoForType(BaseTy);
+  if (!Decl)
+    return nullptr;
+  const StructFieldDecl *Field = GetStructFieldByName(*Decl, FieldName);
+  if (!Field)
+    return nullptr;
+  return ResolveTypeExpr(Field->Ty);
+}
+
+std::string MemberExprAST::getBuiltinLeafTypeHint() const {
+  Type *BaseTy = Base->getValueTypeHint();
+  const StructDeclInfo *Decl = GetStructInfoForType(BaseTy);
+  if (!Decl)
+    return "";
+  const StructFieldDecl *Field = GetStructFieldByName(*Decl, FieldName);
+  if (!Field)
+    return "";
+  return ResolveBuiltinLeafName(Field->Ty);
+}
+
 Value *TypedAssignStmtAST::codegen() {
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
   Type *DeclTy = ResolveTypeExpr(DeclType);
@@ -2341,6 +3175,9 @@ Value *TypedAssignStmtAST::codegen() {
   AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, Name, DeclTy);
   Value *InitVal = nullptr;
   if (InitExpr) {
+    if (DeclTy->isStructTy())
+      return LogError<Value *>(
+          "Struct variables do not support direct initializer expressions");
     InitVal = InitExpr->codegen();
     if (!InitVal)
       return nullptr;
@@ -3260,6 +4097,15 @@ static void HandleTypeAlias() {
   }
 }
 
+static void HandleStructDecl() {
+  if (ParseStructDecl()) {
+    if (CurTok == tok_eol)
+      getNextToken();
+  } else {
+    getNextToken();
+  }
+}
+
 static void HandleTopLevelExpression() {
   // Evaluate a top-level expression into an anonymous function.
   if (auto FnAST = ParseTopLevelExpr()) {
@@ -3328,6 +4174,9 @@ static void MainLoop() {
         break;
       case tok_type:
         HandleTypeAlias();
+        break;
+      case tok_struct:
+        HandleStructDecl();
         break;
       default:
         HandleTopLevelExpression();
@@ -3494,6 +4343,14 @@ static void ParseSourceFile() {
         getNextToken(); // Skip for error recovery
       }
       break;
+    case tok_struct:
+      if (ParseStructDecl()) {
+        if (CurTok == tok_eol)
+          getNextToken();
+      } else {
+        getNextToken(); // Skip for error recovery
+      }
+      break;
     case tok_eol:
       getNextToken(); // Skip newlines
       break;
@@ -3580,6 +4437,14 @@ void InterpretFile(const std::string &filename) {
       break;
     case tok_type:
       if (ParseTypeAliasDecl()) {
+        if (CurTok == tok_eol)
+          getNextToken();
+      } else {
+        getNextToken();
+      }
+      break;
+    case tok_struct:
+      if (ParseStructDecl()) {
         if (CurTok == tok_eol)
           getNextToken();
       } else {
@@ -3836,3 +4701,535 @@ int main(int argc, char **argv) {
 
   return 0;
 }
+```
+
+### `code/chapter19/runtime.c`
+
+```c
+#include <stdio.h>
+#include <stdint.h>
+
+#ifdef _WIN32
+#define DLLEXPORT __declspec(dllexport)
+#else
+#define DLLEXPORT
+#endif
+
+DLLEXPORT int8_t putchari8(int8_t X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+DLLEXPORT int16_t putchari16(int16_t X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+DLLEXPORT int32_t putchari32(int32_t X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+DLLEXPORT int64_t putchari64(int64_t X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+DLLEXPORT uint8_t putcharu8(uint8_t X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+DLLEXPORT uint16_t putcharu16(uint16_t X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+DLLEXPORT uint32_t putcharu32(uint32_t X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+DLLEXPORT uint64_t putcharu64(uint64_t X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+DLLEXPORT float putcharf32(float X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+DLLEXPORT double putcharf64(double X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+DLLEXPORT int64_t putchari(int64_t X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+DLLEXPORT double putchard(double X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+DLLEXPORT double printchard(double X) {
+  fputc((unsigned char)X, stderr);
+  return 0;
+}
+
+DLLEXPORT int8_t printi8(int8_t X) {
+  fprintf(stderr, "%d", (int)X);
+  return 0;
+}
+DLLEXPORT int16_t printi16(int16_t X) {
+  fprintf(stderr, "%d", (int)X);
+  return 0;
+}
+DLLEXPORT int32_t printi32(int32_t X) {
+  fprintf(stderr, "%d", X);
+  return 0;
+}
+DLLEXPORT int64_t printi64(int64_t X) {
+  fprintf(stderr, "%lld", (long long)X);
+  return 0;
+}
+DLLEXPORT uint8_t printu8(uint8_t X) {
+  fprintf(stderr, "%u", (unsigned)X);
+  return 0;
+}
+DLLEXPORT uint16_t printu16(uint16_t X) {
+  fprintf(stderr, "%u", (unsigned)X);
+  return 0;
+}
+DLLEXPORT uint32_t printu32(uint32_t X) {
+  fprintf(stderr, "%u", X);
+  return 0;
+}
+DLLEXPORT uint64_t printu64(uint64_t X) {
+  fprintf(stderr, "%llu", (unsigned long long)X);
+  return 0;
+}
+DLLEXPORT float printfloat32(float X) {
+  fprintf(stderr, "%f", (double)X);
+  return 0;
+}
+DLLEXPORT double printfloat64(double X) {
+  fprintf(stderr, "%f", X);
+  return 0;
+}
+DLLEXPORT int64_t printi(int64_t X) {
+  fprintf(stderr, "%lld", (long long)X);
+  return 0;
+}
+DLLEXPORT double printd(double X) {
+  fprintf(stderr, "%f", X);
+  return 0;
+}
+```
+
+### `code/chapter19/test/lit.cfg.py`
+
+```py
+import os
+
+import lit.formats
+
+config.name = "pyxc-chapter19"
+config.test_format = lit.formats.ShTest(True)
+config.suffixes = [".pyxc"]
+config.test_source_root = os.path.dirname(__file__)
+config.test_exec_root = config.test_source_root
+
+chapter_dir = os.path.abspath(os.path.join(config.test_source_root, ".."))
+config.substitutions.append(("%pyxc", os.path.join(chapter_dir, "pyxc")))
+```
+
+### `code/chapter19/test/break_outside_loop.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "break" %t
+# RUN: grep -q "outside of a loop" %t
+
+def main() -> i32:
+    break
+    return 0
+
+main()
+```
+
+### `code/chapter19/test/continue_outside_loop.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "continue" %t
+# RUN: grep -q "outside of a loop" %t
+
+def main() -> i32:
+    continue
+    return 0
+
+main()
+```
+
+### `code/chapter19/test/continue_skips_body.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '12' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    i: i32 = 0
+    s: i32 = 0
+    while i < 5:
+        i = i + 1
+        if i == 3:
+            continue
+        s = s + i
+    print(s)
+    return 0
+
+main()
+```
+
+### `code/chapter19/test/do_while_runs_once.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '1' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    x: i32 = 0
+    do:
+        x = x + 1
+    while x < 0
+    print(x)
+    return 0
+
+main()
+```
+
+### `code/chapter19/test/for_continue_step_path.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '8' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    s: i32 = 0
+    for i in range(0, 5):
+        if i == 2:
+            continue
+        s = s + i
+    print(s)
+    return 0
+
+main()
+```
+
+### `code/chapter19/test/malformed_do_while.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "expected .*while.* after do suite" %t
+
+def main() -> i32:
+    do:
+        print(1)
+    print(2)
+    return 0
+
+main()
+```
+
+### `code/chapter19/test/nested_break_outer_continue.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '0 2' %t
+# RUN: grep -x '1 2' %t
+# RUN: grep -x '2 2' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    i: i32 = 0
+    while i < 3:
+        j: i32 = 0
+        while j < 5:
+            if j == 2:
+                break
+            j = j + 1
+        print(i, j)
+        i = i + 1
+        continue
+    return 0
+
+main()
+```
+
+### `code/chapter19/test/operator_bitwise_basic.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '2 7 5' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    a: i32 = 6
+    b: i32 = 3
+    print(a & b, a | b, a ^ b)
+    return 0
+
+main()
+```
+
+### `code/chapter19/test/operator_bitwise_precedence.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '7' %t
+# RUN: grep -x '3' %t
+# RUN: grep -x '1' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    print(1 | 2 & 4 | 6)
+    print(1 ^ 3 & 2)
+    print(1 | 2 ^ 3)
+    return 0
+
+main()
+```
+
+### `code/chapter19/test/operator_error_bitwise_float.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Error (Line:" %t
+# RUN: grep -q "Bitwise operators require integer operands" %t
+
+def main() -> i32:
+    a: f64 = 6.0
+    b: i32 = 3
+    print(a & b)
+    return 0
+
+main()
+```
+
+### `code/chapter19/test/operator_error_modulo_float.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Error (Line:" %t
+# RUN: grep -q "Modulo operator '%' requires integer operands" %t
+
+def main() -> i32:
+    a: f32 = 10.0
+    b: i32 = 3
+    print(a % b)
+    return 0
+
+main()
+```
+
+### `code/chapter19/test/operator_error_unary_bitnot_float.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Error (Line:" %t
+# RUN: grep -q "Unary '~' requires integer operand" %t
+
+def main() -> i32:
+    x: f64 = 7.5
+    print(~x)
+    return 0
+
+main()
+```
+
+### `code/chapter19/test/operator_modulo_signed.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '1 0 -2' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    a: i32 = 10
+    b: i32 = 3
+    c: i32 = 8
+    d: i32 = 4
+    e: i32 = -10
+    f: i32 = 4
+    print(a % b, c % d, e % f)
+    return 0
+
+main()
+```
+
+### `code/chapter19/test/operator_unary_bitnot.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x -- '-8' %t
+# RUN: grep -x -- '2' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    x: i32 = 7
+    y: i8 = -3
+    print(~x)
+    print(~y)
+    return 0
+
+main()
+```
+
+### `code/chapter19/test/struct_alias_type.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '42' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+struct Point:
+    x: i32
+
+type P = Point
+
+def main() -> i32:
+    p: P
+    p.x = 42
+    print(p.x)
+    return 0
+
+main()
+```
+
+### `code/chapter19/test/struct_basic_fields.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '10 20' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+struct Point:
+    x: i32
+    y: i32
+
+def main() -> i32:
+    p: Point
+    p.x = 10
+    p.y = 20
+    print(p.x, p.y)
+    return 0
+
+main()
+```
+
+### `code/chapter19/test/struct_error_duplicate_field.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Error (Line:" %t
+# RUN: grep -q "Duplicate field 'x' in struct 'Point'" %t
+
+struct Point:
+    x: i32
+    x: i64
+
+def main() -> i32:
+    return 0
+
+main()
+```
+
+### `code/chapter19/test/struct_error_duplicate_struct.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Error (Line:" %t
+# RUN: grep -q "Struct 'Point' is already defined" %t
+
+struct Point:
+    x: i32
+
+struct Point:
+    y: i32
+
+def main() -> i32:
+    return 0
+
+main()
+```
+
+### `code/chapter19/test/struct_error_nonstruct_member.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Error (Line:" %t
+# RUN: grep -q "Member access requires a struct-typed base" %t
+
+def main() -> i32:
+    x: i32 = 9
+    print(x.y)
+    return 0
+
+main()
+```
+
+### `code/chapter19/test/struct_error_unknown_field.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Error (Line:" %t
+# RUN: grep -q "Unknown field 'z'" %t
+
+struct Point:
+    x: i32
+
+def main() -> i32:
+    p: Point
+    print(p.z)
+    return 0
+
+main()
+```
+
+### `code/chapter19/test/struct_nested_fields.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '7 11' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+struct Inner:
+    x: i32
+
+struct Outer:
+    i: Inner
+    y: i32
+
+def main() -> i32:
+    o: Outer
+    o.i.x = 7
+    o.y = 11
+    print(o.i.x, o.y)
+    return 0
+
+main()
+```
+
+### `code/chapter19/test/while_counting.pyxc`
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '0' %t
+# RUN: grep -x '1' %t
+# RUN: grep -x '2' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    i: i32 = 0
+    while i < 3:
+        print(i)
+        i = i + 1
+    return 0
+
+main()
+```
