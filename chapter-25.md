@@ -11,6 +11,24 @@ You can now compile multiple `.pyxc` files in one invocation and either:
 !!!note
     To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter25](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter25).
 
+## Grammar (EBNF)
+
+Chapter 25 is primarily a driver/linker architecture chapter (multi-file compile/link).
+Language grammar is effectively unchanged from Chapter 24.
+
+Reference: `code/chapter25/pyxc.ebnf`
+
+```ebnf
+program      = { top_item } , eof ;
+top_item     = newline | type_alias_decl | struct_decl
+             | function_def | extern_decl | statement ;
+
+statement    = if_stmt | for_stmt | while_stmt | do_while_stmt
+             | break_stmt | continue_stmt | free_stmt | print_stmt
+             | return_stmt | const_decl_stmt
+             | typed_assign_stmt | assign_stmt | expr_stmt ;
+```
+
 ## What we are building
 
 We want this to work:

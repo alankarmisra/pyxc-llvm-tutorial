@@ -21,6 +21,25 @@ The implementation for this chapter lives in:
 !!!note
     To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter16](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter16).
 
+## Grammar (EBNF)
+
+Chapter 16 introduces the typed grammar surface: `type` aliases, typed params/returns, typed local declarations, and `ptr[...]`.
+
+Reference: `code/chapter16/pyxc.ebnf`
+
+```ebnf
+top_item        = newline | type_alias_decl | function_def | extern_decl | statement ;
+type_alias_decl = "type" , identifier , "=" , type_expr ;
+
+prototype       = identifier , "(" , [ param_list ] , ")" , "->" , type_expr ;
+param_list      = param , { "," , param } ;
+param           = identifier , ":" , type_expr ;
+
+typed_assign_stmt = identifier , ":" , type_expr , [ "=" , expression ] ;
+type_expr       = pointer_type | base_type ;
+pointer_type    = "ptr" , "[" , type_expr , "]" ;
+```
+
 ## Why This Chapter Exists
 
 Until Chapter 15, Pyxc effectively treated most values like doubles. That keeps early chapters simple, but it is not enough if you want real C interop.

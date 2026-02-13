@@ -1,0 +1,7 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Evaluated to 10.000000" %t
+
+def f(a):
+  return var x = a, y = 3 in x + y
+
+f(7)

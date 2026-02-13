@@ -15,6 +15,23 @@ This chapter keeps python-style syntax and adds capability through explicit, typ
 !!!note
     To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter26](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter26).
 
+## Grammar (EBNF)
+
+Chapter 26 is mostly runtime interop and semantic validation (`scanf`, low-level fd I/O, ctype helpers, `main(argc, argv)` constraints).
+Core grammar remains the same shape as Chapter 25.
+
+Reference: `code/chapter26/pyxc.ebnf`
+
+```ebnf
+prototype       = identifier , "(" , [ param_list ] , ")" , "->" , type_expr ;
+param_list      = param , { "," , param } ;
+param           = identifier , ":" , type_expr ;
+
+(* executable main forms are enforced semantically in codegen:
+   def main() -> i32
+   def main(argc: i32, argv: ptr[ptr[i8]]) -> i32 *)
+```
+
 ## What this chapter adds
 
 ### `main(argc, argv)` support

@@ -13,6 +13,32 @@ The key theme is still the same as Chapter 17: make targeted compiler changes, l
 !!!note
     To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter18](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter18).
 
+## Grammar (EBNF)
+
+Chapter 18 extends statement grammar with `while`, `do ... while`, `break`, and `continue`.
+Operator additions (`~`, `%`, `&`, `^`, `|`) are expression-operator table changes, not new non-terminals.
+
+Reference: `code/chapter18/pyxc.ebnf`
+
+```ebnf
+statement      = if_stmt
+               | for_stmt
+               | while_stmt
+               | do_while_stmt
+               | break_stmt
+               | continue_stmt
+               | print_stmt
+               | return_stmt
+               | typed_assign_stmt
+               | assign_stmt
+               | expr_stmt ;
+
+while_stmt     = "while" , expression , ":" , suite ;
+do_while_stmt  = "do" , ":" , suite , "while" , expression ;
+break_stmt     = "break" ;
+continue_stmt  = "continue" ;
+```
+
 ## What Changed from Chapter 17
 
 If you compare:

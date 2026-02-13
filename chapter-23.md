@@ -12,6 +12,21 @@ This chapter intentionally stays close to C semantics: explicit open/close, expl
 !!!note
     To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter23](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter23).
 
+## Grammar (EBNF)
+
+Chapter 23 adds file I/O through normal function calls (`fopen`, `fclose`, `fgets`, `fputs`, `fread`, `fwrite`), so grammar is unchanged from Chapter 22.
+The implementation change is semantic/type-checking in call codegen.
+
+Reference: `code/chapter23/pyxc.ebnf`
+
+```ebnf
+statement    = ... | expr_stmt ;
+expr_stmt    = expression ;
+expression   = unary_expr , { binary_op , unary_expr } ;
+postfix_expr = primary , { call_suffix | index_suffix | member_suffix } ;
+call_suffix  = "(" , [ arg_list ] , ")" ;
+```
+
 ## Why this chapter matters
 
 Without file I/O, many practical programs are blocked:

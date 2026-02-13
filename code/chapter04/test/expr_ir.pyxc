@@ -1,0 +1,5 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Read top-level expression" %t
+# RUN: grep -q "ret double 7.000000e+00" %t
+
+1+2*3

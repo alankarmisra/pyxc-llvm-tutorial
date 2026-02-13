@@ -6,6 +6,27 @@ This chapter adds Python 3–style indentation to the language. We move from new
 !!!note
     To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter13](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter13).
 
+## Grammar (EBNF)
+
+Chapter 13 keeps the same language constructs as Chapter 12, but changes block structure from newline-only behavior to explicit `indent`/`dedent` tokens.
+
+```ebnf
+program      = { top_item } , eof ;
+top_item     = newline | function_def | extern_decl | statement ;
+
+statement    = if_stmt | for_stmt | return_stmt | expr_stmt ;
+
+if_stmt      = "if" , expression , ":" , suite ,
+               "else" , ":" , suite ;
+for_stmt     = "for" , identifier , "in" , "range" , "(" ,
+               expression , "," , expression , [ "," , expression ] ,
+               ")" , ":" , suite ;
+
+suite        = inline_suite | block_suite ;
+inline_suite = statement ;
+block_suite  = newline , indent , statement_list , dedent ;
+```
+
 ## Indentation rules (Python 3 style)
 
 - A new block starts after `:` and is defined by **greater indentation** than its parent line.

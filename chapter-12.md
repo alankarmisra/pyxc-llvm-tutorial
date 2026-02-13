@@ -5,6 +5,29 @@ This chapter evolves `pyxc` from a REPL-centric JIT into a full compiler front-e
 !!!note
     To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter12](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter12).
 
+## Grammar (EBNF)
+
+Chapter 12 still uses the pre-indentation grammar shape (newline-delimited statements).
+The major chapter work is compiler plumbing (CLI, diagnostics, debug info, object/exe flow), not new syntax.
+
+```ebnf
+program      = { top_item } , eof ;
+top_item     = newline | function_def | extern_decl | statement ;
+
+function_def = [ decorator ] , "def" , prototype , ":" , expression ;
+extern_decl  = "extern" , "def" , prototype ;
+prototype    = identifier , "(" , [ identifier , { "," , identifier } ] , ")" ;
+
+statement    = if_stmt | for_stmt | return_stmt | expr_stmt ;
+if_stmt      = "if" , expression , ":" , expression ,
+               "else" , ":" , expression ;
+for_stmt     = "for" , identifier , "in" , "range" , "(" ,
+               expression , "," , expression , [ "," , expression ] ,
+               ")" , ":" , expression ;
+return_stmt  = "return" , expression ;
+expr_stmt    = expression ;
+```
+
 ## CLI options and output naming
 
 **Where:** global scope (new helpers and option definitions)
