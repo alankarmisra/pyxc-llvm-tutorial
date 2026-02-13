@@ -1,0 +1,11 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x 'ok' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    c: i32 = ' '
+    if c == 32:
+        printf("ok\n")
+    return 0
+
+main()

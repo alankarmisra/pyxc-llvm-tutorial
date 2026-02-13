@@ -1,0 +1,10 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Error (Line:" %t
+# RUN: grep -q "scanf destination argument must be a pointer" %t
+
+def main() -> i32:
+    x: i32 = 0
+    scanf("%d", x)
+    return 0
+
+main()

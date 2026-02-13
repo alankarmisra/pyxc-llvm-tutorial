@@ -1,0 +1,12 @@
+# Test that wrong argument count is rejected.
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Incorrect # arguments" %t
+
+def add(a: i32, b: i32) -> i32:
+    return a + b
+
+def main() -> i32:
+    add(1, 2, 3)
+    return 0
+
+main()

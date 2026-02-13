@@ -1,0 +1,20 @@
+# BUG: Integer comparisons always use signed predicates (ICmpSLT etc).
+# For unsigned types, u8 200 > u8 100 should be true.
+# But if values get sign-extended, 200 becomes -56 and -56 > 100 is false.
+#
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x 'greater' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    a: u8 = 200
+    b: u8 = 100
+    # Unsigned comparison: 200 > 100 should be true
+    # But signed comparison with 8-bit: -56 > 100 is false
+    if a > b:
+        printf("greater\n")
+    else:
+        printf("not-greater\n")
+    return 0
+
+main()

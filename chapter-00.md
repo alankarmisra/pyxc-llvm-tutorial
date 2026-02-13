@@ -83,5 +83,6 @@ This tutorial is structured into chapters covering individual topics, allowing y
 
 [Chapter #26: Program Arguments, scanf Baseline, and Low-Level File Descriptor I/O](chapter-26.md) - We add `main(argc, argv)` entrypoint support, a strict `scanf` subset, and descriptor-style interop (`open/read/write/close` + helpers) with compile-time call validation.
 
-
 [Chapter #27: Python-style match/case](chapter-27.md) - We add integer-pattern `match/case` with optional `case _` default and no fallthrough, using Pythonic syntax only.
+
+[Chapter #28: Forward Function References and Mutual Recursion](chapter-28.md) - We switch file compilation to a two-phase translation-unit pipeline (collect declarations first, codegen second), enabling reliable forward calls and mutual recursion with signature compatibility checks.

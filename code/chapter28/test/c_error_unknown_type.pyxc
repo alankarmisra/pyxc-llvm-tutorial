@@ -1,0 +1,9 @@
+# Test that using an unknown type name gives an error.
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Unknown type alias" %t
+
+def main() -> i32:
+    x: Nonexistent = 5
+    return 0
+
+main()
