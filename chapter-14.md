@@ -4,8 +4,6 @@ If Chapter 13 gave us indentation tokens, Chapter 14 is where we finally cash th
 
 Until now, we could *lex* indentation. In this chapter, we use that structure to parse real statement blocks, support `elif`, make `else` optional, and tighten codegen so branch-heavy code doesn’t generate weird IR.
 
-If you’re new-ish to C++ compiler code: you’re in the right chapter. This is where the pieces start feeling like a language and not just a token machine.
-
 ## What We’re Building
 
 By the end of this chapter, `pyxc` supports:
@@ -76,7 +74,7 @@ return_stmt     = "return" , expression ;
 expr_stmt       = expression ;
 ```
 
-## 1) Lexer Update: Teach It `elif`
+## Lexer Update: Teach It `elif`
 
 Before parser work, the lexer must recognize `elif` as a keyword.
 
@@ -120,7 +118,7 @@ Two subtle wins here:
 - Token IDs are grouped cleanly by category, which helps while debugging parser traces.
   Meaning: when you print raw `CurTok` numbers while stepping through parser code, nearby values tend to belong to related syntax groups (`if/elif/else/return`, loop tokens, etc.). That makes parser state dumps easier to read.
 
-## 2) From Indentation Tokens to Real Blocks
+## From Indentation Tokens to Real Blocks
 
 Chapter 13 gave us `indent`/`dedent`. Chapter 14 turns those into a suite AST.
 
@@ -163,7 +161,7 @@ static std::unique_ptr<BlockSuiteAST> ParseSuite() {
 
 This is one of those deceptively small changes that unlocks half the chapter.
 
-## 3) `if / elif / else`, with Optional `else`
+## `if / elif / else`, with Optional `else`
 
 Here’s the heart of the parser work.
 
@@ -224,7 +222,7 @@ Why this shape works well:
 - optional `else` means `Else` can be `nullptr`.
 - this keeps the AST simple and codegen predictable.
 
-## 4) Codegen Fixes That Matter More Than They Look
+## Codegen Fixes That Matter More Than They Look
 
 If parser support expands and codegen doesn’t evolve, the compiler *seems* fine until it really isn’t.
 
@@ -315,7 +313,7 @@ That is how we avoid duplicate final `ret` instructions, and it also keeps retur
 
 (And yes, this is one of those C++ compiler spots where one extra `CreateRet` can ruin your afternoon in under 30 seconds.)
 
-## 5) Interpreter vs Executable `main`
+## Interpreter vs Executable `main`
 
 Chapter 14 introduces mode-aware `main` handling:
 
@@ -331,7 +329,7 @@ Why:
 - JIT/interpreter paths want language-level function signatures.
 - executable/object mode still needs native entrypoint behavior.
 
-## 6) Benchmarking (Python vs `pyxc`)
+## Benchmarking (Python vs `pyxc`)
 
 We added a benchmark suite under:
 
@@ -2957,4 +2955,9 @@ int main(int argc, char **argv) {
 
   return 0;
 }
+```
+
+## Compiling
+```bash
+make
 ```

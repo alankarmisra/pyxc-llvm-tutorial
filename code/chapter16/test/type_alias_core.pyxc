@@ -1,0 +1,19 @@
+# XFAIL: *
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "3.000000" %t
+# RUN: ! grep -q "Error (Line:" %t
+
+extern def printd(x)
+
+type int = i32
+type char = i8
+type float = f32
+type double = f64
+
+def main():
+    a: int = 1
+    b: char = 2
+    printd(a + b)
+    return 0
+
+main()

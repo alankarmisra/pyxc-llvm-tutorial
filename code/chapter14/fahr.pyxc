@@ -1,0 +1,16 @@
+extern def printd(x)
+extern def putchard(c)
+
+def ftoc(fahr):
+    return (5 * (fahr - 32)) / 9
+
+def main():
+    for fahr in range(0, 101, 10):
+        printd(fahr)
+        putchard(32)
+        printd(ftoc(fahr))
+        putchard(10)
+    putchard(10)
+    return 0
+
+main()

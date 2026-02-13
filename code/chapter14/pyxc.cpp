@@ -2217,7 +2217,7 @@ extern "C" DLLEXPORT double putchard(double X) {
 
 /// printd - printf that takes a double prints it as "%f\n", returning 0.
 extern "C" DLLEXPORT double printd(double X) {
-  fprintf(stderr, "%f\n", X);
+  fprintf(stderr, "%f", X);
   return 0;
 }
 

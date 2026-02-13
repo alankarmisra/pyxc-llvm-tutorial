@@ -1,0 +1,90 @@
+(* Pyxc Grammar (Chapter 15: logical/comparison cleanup) *)
+
+(* ---------- Lexical ---------- *)
+
+letter        = "A".."Z" | "a".."z" | "_" ;
+digit         = "0".."9" ;
+identifier    = letter , { letter | digit } ;
+number        = digit , { digit } , [ "." , { digit } ]
+              | "." , digit , { digit } ;
+
+newline       = "<EOL>" ;
+indent        = "<INDENT>" ;
+dedent        = "<DEDENT>" ;
+eof           = "<EOF>" ;
+
+(* Produced by lexer indentation logic; parser consumes these as tokens. *)
+
+(* ---------- Program ---------- *)
+
+program        = { top_item } , eof ;
+
+top_item       = newline
+               | function_def
+               | extern_decl
+               | statement ;
+
+(* ---------- Functions ---------- *)
+
+function_def   = "def" , prototype , ":" , suite ;
+extern_decl    = "extern" , "def" , prototype ;
+
+prototype      = identifier , "(" , [ param_list ] , ")" ;
+param_list     = identifier , { "," , identifier } ;
+
+(* ---------- Statements ---------- *)
+
+statement      = if_stmt
+               | for_stmt
+               | return_stmt
+               | expr_stmt ;
+
+expr_stmt      = expression ;
+
+return_stmt    = "return" , expression ;
+
+if_stmt        = "if" , expression , ":" , suite ,
+                 { "elif" , expression , ":" , suite } ,
+                 [ "else" , ":" , suite ] ;
+
+for_stmt       = "for" , identifier , "in" , "range" , "(" ,
+                 expression , "," , expression ,
+                 [ "," , expression ] ,
+                 ")" , ":" , suite ;
+
+(* Python-style suite: either one inline statement or an indented block. *)
+suite          = inline_suite
+               | block_suite ;
+
+inline_suite   = statement ;
+block_suite    = newline , indent , statement_list , dedent ;
+statement_list = statement , { newline , statement } , [ newline ] ;
+
+(* ---------- Expressions ---------- *)
+
+expression     = unary_expr , { binary_op , unary_expr } ;
+
+unary_expr     = [ unary_op ] , primary ;
+unary_op       = "+" | "-" | "!" | "~" | "not" ;
+
+primary        = number
+               | identifier
+               | call_expr
+               | paren_expr
+               | var_expr ;
+
+paren_expr     = "(" , expression , ")" ;
+
+call_expr      = identifier , "(" , [ arg_list ] , ")" ;
+arg_list       = expression , { "," , expression } ;
+
+var_expr       = "var" , var_binding , { "," , var_binding } , "in" , expression ;
+var_binding    = identifier , [ "=" , expression ] ;
+
+binary_op      = "<" | "<=" | ">" | ">="
+               | "==" | "!="
+               | "and" | "or"
+               | "+" | "-" | "*" | "/"
+               | "=" ;
+
+(* Actual precedence/associativity comes from parser tables, not EBNF. *)

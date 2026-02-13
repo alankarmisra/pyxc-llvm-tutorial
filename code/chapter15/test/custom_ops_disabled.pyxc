@@ -1,0 +1,6 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Decorators/custom operators are disabled in Chapter 15" %t
+
+@unary
+def !(v):
+    return v

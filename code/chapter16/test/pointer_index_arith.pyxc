@@ -1,0 +1,15 @@
+# XFAIL: *
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "10.000000" %t
+# RUN: ! grep -q "Error (Line:" %t
+
+extern def printd(x)
+
+def main():
+    x: i32 = 10
+    n: i32 = 0
+    p: ptr[i32] = addr(x)
+    printd(p[n])  # pointer arithmetic form with variable index
+    return 0
+
+main()
