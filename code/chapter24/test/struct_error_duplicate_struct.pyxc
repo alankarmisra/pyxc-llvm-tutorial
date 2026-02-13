@@ -1,0 +1,14 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Error (Line:" %t
+# RUN: grep -q "Struct 'Point' is already defined" %t
+
+struct Point:
+    x: i32
+
+struct Point:
+    y: i32
+
+def main() -> i32:
+    return 0
+
+main()

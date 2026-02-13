@@ -306,3 +306,29 @@ Chapter 23 keeps language complexity under control by reusing existing machinery
 But capability jumps significantly: Pyxc can now do persistent text and binary I/O with standard libc semantics.
 
 That is enough to support realistic tooling-style programs and sets up future chapters for modules, headers, and broader C interop.
+
+## Full Source Code
+
+Chapter 23 implementation lives in:
+
+- `code/chapter23/pyxc.ebnf`
+- `code/chapter23/pyxc.cpp`
+- `code/chapter23/runtime.c`
+- `code/chapter23/Makefile`
+- `code/chapter23/test/`
+
+## Compiling
+
+From repository root:
+
+```bash
+make -C code/chapter23 clean all
+```
+
+## Testing
+
+From repository root:
+
+```bash
+lit -sv code/chapter23/test
+```

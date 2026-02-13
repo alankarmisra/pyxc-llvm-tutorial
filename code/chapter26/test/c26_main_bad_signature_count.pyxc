@@ -1,0 +1,6 @@
+# RUN: %pyxc -c %s > %t 2>&1
+# RUN: grep -q "Error (Line:" %t
+# RUN: grep -q "main must have either 0 arguments or (i32, ptr\[ptr\[i8\]\])" %t
+
+def main(argc: i32) -> i32:
+    return 0

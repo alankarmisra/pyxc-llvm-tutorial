@@ -332,3 +332,29 @@ Chapter 21 is intentionally small but strategic:
 - It builds the bridge to practical C interop patterns.
 
 This chapter also sets up Chapter 22 naturally, where we add C-style I/O (`putchar`, `puts`, `printf`) and string literals, making it possible to build more complete small programs.
+
+## Full Source Code
+
+Chapter 21 implementation lives in:
+
+- `code/chapter21/pyxc.ebnf`
+- `code/chapter21/pyxc.cpp`
+- `code/chapter21/runtime.c`
+- `code/chapter21/Makefile`
+- `code/chapter21/test/`
+
+## Compiling
+
+From repository root:
+
+```bash
+make -C code/chapter21 clean all
+```
+
+## Testing
+
+From repository root:
+
+```bash
+lit -sv code/chapter21/test
+```

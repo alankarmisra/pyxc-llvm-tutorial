@@ -536,3 +536,29 @@ With Chapter 22 complete, the next high-leverage topics are:
 - richer standard-library interop (`strlen`, `strcmp`, etc.)
 
 Those build directly on the I/O and pointer groundwork laid here.
+
+## Full Source Code
+
+Chapter 22 implementation lives in:
+
+- `code/chapter22/pyxc.ebnf`
+- `code/chapter22/pyxc.cpp`
+- `code/chapter22/runtime.c`
+- `code/chapter22/Makefile`
+- `code/chapter22/test/`
+
+## Compiling
+
+From repository root:
+
+```bash
+make -C code/chapter22 clean all
+```
+
+## Testing
+
+From repository root:
+
+```bash
+lit -sv code/chapter22/test
+```

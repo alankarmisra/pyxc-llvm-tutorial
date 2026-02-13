@@ -1,0 +1,29 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x 'n=6 s=HELLO' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    fd: i32 = creat("chapter26_lowio.txt", 420)
+    if fd < 0:
+        printf("create-fail\n")
+        return 1
+
+    write(fd, "HELLO\n", 6)
+    close(fd)
+
+    fd = open("chapter26_lowio.txt", 0, 0)
+    if fd < 0:
+        printf("open-fail\n")
+        return 2
+
+    buf: ptr[i8] = malloc[i8](16)
+    n: i64 = read(fd, buf, 6)
+    close(fd)
+    buf[5] = 0
+
+    printf("n=%d s=%s\n", n, buf)
+    free(buf)
+    unlink("chapter26_lowio.txt")
+    return 0
+
+main()

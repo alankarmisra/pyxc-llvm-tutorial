@@ -1,0 +1,13 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '10 9 39 92' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    nl: i32 = '\n'
+    tab: i32 = '\t'
+    sq: i32 = '\''
+    bs: i32 = '\\'
+    printf("%d %d %d %d\n", nl, tab, sq, bs)
+    return 0
+
+main()

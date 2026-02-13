@@ -1,0 +1,16 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '5 8 13' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+struct Bucket:
+    vals: array[i32, 3]
+
+def main() -> i32:
+    b: Bucket
+    b.vals[0] = 5
+    b.vals[1] = 8
+    b.vals[2] = 13
+    print(b.vals[0], b.vals[1], b.vals[2])
+    return 0
+
+main()

@@ -7,12 +7,14 @@ title: "My First Language Frontend with LLVM Tutorial"
 !!!note Requirements: This tutorial assumes you know C++, but no previous compiler experience is necessary.
 
 ## Credits
-This tutorial is HEAVILY inspired by and builds upon the excellent [LLVM Kaleidoscope Tutorial](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html) by Chris Lattner and others. In fact, for the Core Foundation section, the tutorial reproduces the code from the original tutorial with minor adapatations to the python syntax. All credit goes to the original authors! In the later chapters, however, the tutorial's mission is to extend these ideas with:
+The Core Foundation chapters are heavily inspired by the excellent [LLVM Kaleidoscope Tutorial](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html) by Chris Lattner and others. That tutorial provided the launchpad, but this project has grown far beyond minor syntax tweaks: `Pyxc` now evolves as a Pythonic, C-interoperable systems language frontend with its own parser design, type system, runtime library, and tooling.
 
-- Python-inspired syntax (colons, familiar keywords, and in later chapters, indentation)
-- Object-oriented features (classes, structs)
-- More extensive type system
-- Additional chapters covering real-world language features
+In the later chapters, the tutorial extends well past the Kaleidoscope scope with:
+
+- Python-style language structure (indentation blocks, `elif`, `match/case`, and explicit suites)
+- A practical typed systems model (scalars, pointers, arrays, structs, `const`, and ABI-conscious interop)
+- Real toolchain workflows (object/executable builds, separate compilation, linking, debug info, and tests)
+- Runtime and libc interop features used in real programs (`malloc/free`, stdio, file I/O, low-level fd I/O, `scanf` subset, argc/argv)
 
 Many thanks to the LLVM team for their outstanding educational materials and to the open-source community for making compiler development accessible.
 
@@ -74,3 +76,12 @@ This tutorial is structured into chapters covering individual topics, allowing y
 [Chapter #22: C-style I/O Baseline (`putchar`, `getchar`, `puts`, minimal `printf`)](chapter-22.md) - We add string literals, libc-style I/O calls, vararg call support for `printf`, and a strict format subset (`%d`, `%s`, `%c`, `%p`, `%%`).
 
 [Chapter #23: File I/O with `fopen`, `fclose`, `fgets`, `fputs`, `fread`, `fwrite`](chapter-23.md) - We extend libc interop to file handles and block/text file operations, with call-site type checks and tests for both positive paths and misuse diagnostics.
+
+[Chapter #24: Immutable Bindings with `const`](chapter-24.md) - We add const declarations with mandatory initialization and enforce reassignment errors at compile time using symbol-binding metadata.
+
+[Chapter #25: Separate Compilation and Multi-File Linking](chapter-25.md) - We add multi-file CLI input handling, per-translation-unit object emission, and list-based linker integration for executable and object workflows.
+
+[Chapter #26: Program Arguments, scanf Baseline, and Low-Level File Descriptor I/O](chapter-26.md) - We add `main(argc, argv)` entrypoint support, a strict `scanf` subset, and descriptor-style interop (`open/read/write/close` + helpers) with compile-time call validation.
+
+
+[Chapter #27: Python-style match/case](chapter-27.md) - We add integer-pattern `match/case` with optional `case _` default and no fallthrough, using Pythonic syntax only.

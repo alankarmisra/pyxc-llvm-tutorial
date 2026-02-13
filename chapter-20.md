@@ -270,3 +270,29 @@ Because both integrate with shared postfix/index infrastructure, the language no
 - combinations like `arr[i].field`
 
 That sets up Chapter 21 naturally: once arrays and struct layout are stable, dynamic allocation (`malloc/free`) becomes much more valuable.
+
+## Full Source Code
+
+Chapter 20 implementation lives in:
+
+- `code/chapter20/pyxc.ebnf`
+- `code/chapter20/pyxc.cpp`
+- `code/chapter20/runtime.c`
+- `code/chapter20/Makefile`
+- `code/chapter20/test/`
+
+## Compiling
+
+From repository root:
+
+```bash
+make -C code/chapter20 clean all
+```
+
+## Testing
+
+From repository root:
+
+```bash
+lit -sv code/chapter20/test
+```

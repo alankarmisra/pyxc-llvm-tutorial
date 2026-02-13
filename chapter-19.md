@@ -357,3 +357,29 @@ This chapter is a foundational dependency for the next two:
 - Chapter 21 allocates structs on heap (`ptr[Point] = malloc[Point](...)`)
 
 In short: Chapter 19 is where the language stops being scalar-centric.
+
+## Full Source Code
+
+Chapter 19 implementation lives in:
+
+- `code/chapter19/pyxc.ebnf`
+- `code/chapter19/pyxc.cpp`
+- `code/chapter19/runtime.c`
+- `code/chapter19/Makefile`
+- `code/chapter19/test/`
+
+## Compiling
+
+From repository root:
+
+```bash
+make -C code/chapter19 clean all
+```
+
+## Testing
+
+From repository root:
+
+```bash
+lit -sv code/chapter19/test
+```

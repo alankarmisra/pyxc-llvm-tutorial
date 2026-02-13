@@ -1,0 +1,7 @@
+# RUN: rm -f %t.o
+# RUN: %pyxc -c %s -o %t.o > %t 2>&1
+# RUN: test -f %t.o
+# RUN: ! grep -q "Error (Line:" %t
+
+def add(a: i32, b: i32) -> i32:
+    return a + b

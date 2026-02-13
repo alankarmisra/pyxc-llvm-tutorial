@@ -1,0 +1,9 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Error (Line:" %t
+# RUN: grep -q "Expected '(' after addr" %t
+
+def main() -> i32:
+    addr: i32 = 5
+    return 0
+
+main()

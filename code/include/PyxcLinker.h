@@ -20,16 +20,23 @@ class PyxcLinker {
 public:
   static bool Link(const std::string &objFile, const std::string &runtimeObj,
                    const std::string &outputExe) {
+    std::vector<std::string> ObjFiles = {objFile};
+    return Link(ObjFiles, runtimeObj, outputExe);
+  }
+
+  static bool Link(const std::vector<std::string> &objFiles,
+                   const std::string &runtimeObj,
+                   const std::string &outputExe) {
 
     // Determine platform
     llvm::Triple triple((llvm::sys::getDefaultTargetTriple()));
 
     if (triple.isOSLinux()) {
-      return LinkELF(objFile, runtimeObj, outputExe);
+      return LinkELF(objFiles, runtimeObj, outputExe);
     } else if (triple.isOSDarwin()) {
-      return LinkMachO(objFile, runtimeObj, outputExe);
+      return LinkMachO(objFiles, runtimeObj, outputExe);
     } else if (triple.isOSWindows()) {
-      return LinkPE(objFile, runtimeObj, outputExe);
+      return LinkPE(objFiles, runtimeObj, outputExe);
     }
 
     llvm::errs() << "Unsupported platform\n";
@@ -37,14 +44,16 @@ public:
   }
 
 private:
-  static bool LinkELF(const std::string &objFile, const std::string &runtimeObj,
+  static bool LinkELF(const std::vector<std::string> &objFiles,
+                      const std::string &runtimeObj,
                       const std::string &outputExe) {
     std::vector<const char *> args = {
         "ld.lld",
         "-o",
         outputExe.c_str(),
-        objFile.c_str(),
     };
+    for (const auto &Obj : objFiles)
+      args.push_back(Obj.c_str());
 
     if (!runtimeObj.empty()) {
       args.push_back(runtimeObj.c_str());
@@ -58,7 +67,7 @@ private:
     return lld::elf::link(args, llvm::outs(), llvm::errs(), false, false);
   }
 
-  static bool LinkMachO(const std::string &objFile,
+  static bool LinkMachO(const std::vector<std::string> &objFiles,
                         const std::string &runtimeObj,
                         const std::string &outputExe) {
     llvm::Triple triple((llvm::sys::getDefaultTargetTriple()));
@@ -113,7 +122,8 @@ private:
       args.push_back(sdkRoot.c_str());
     }
 
-    args.push_back(objFile.c_str());
+    for (const auto &Obj : objFiles)
+      args.push_back(Obj.c_str());
 
     if (!runtimeObj.empty()) {
       args.push_back(runtimeObj.c_str());
@@ -124,7 +134,8 @@ private:
     return lld::macho::link(args, llvm::outs(), llvm::errs(), false, false);
   }
 
-  static bool LinkPE(const std::string &objFile, const std::string &runtimeObj,
+  static bool LinkPE(const std::vector<std::string> &objFiles,
+                     const std::string &runtimeObj,
                      const std::string &outputExe) {
     // Create persistent string before building args
     std::string outArg = "/out:" + outputExe;
@@ -132,8 +143,9 @@ private:
     std::vector<const char *> args = {
         "lld-link",
         outArg.c_str(),
-        objFile.c_str(),
     };
+    for (const auto &Obj : objFiles)
+      args.push_back(Obj.c_str());
 
     if (!runtimeObj.empty()) {
       args.push_back(runtimeObj.c_str());

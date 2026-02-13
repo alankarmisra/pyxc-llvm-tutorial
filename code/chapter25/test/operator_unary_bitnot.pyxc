@@ -1,0 +1,13 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x -- '-8' %t
+# RUN: grep -x -- '2' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    x: i32 = 7
+    y: i8 = -3
+    print(~x)
+    print(~y)
+    return 0
+
+main()

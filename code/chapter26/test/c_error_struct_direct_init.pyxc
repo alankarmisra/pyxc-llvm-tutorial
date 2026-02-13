@@ -1,0 +1,12 @@
+# Test that struct variables cannot have direct initializer expressions.
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Struct/array variables do not support direct initializer" %t
+
+struct Foo:
+    x: i32
+
+def main() -> i32:
+    f: Foo = 42
+    return 0
+
+main()

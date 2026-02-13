@@ -1,0 +1,23 @@
+# BUG: Integer division uses CreateSDiv (signed) for all integer types.
+# For unsigned types this should be CreateUDiv.
+# Example: u32 max value (4294967295) / 2 should be 2147483647,
+# but SDiv treats it as -1 / 2 = 0.
+#
+# We test with a smaller example: u8 200 / 2 should be 100.
+# With signed interpretation, 200 as i8 = -56, -56 / 2 = -28.
+# After widening to u32 first via (buggy signed) cast, 200 becomes
+# -56 as i32, then -56 / 2 = -28. Expected: 100.
+#
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '100' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    x: u8 = 200
+    # Division should be unsigned: 200 / 2 = 100
+    # But signed cast + signed div gives: -56 / 2 = -28
+    r: i32 = x / 2
+    print(r)
+    return 0
+
+main()

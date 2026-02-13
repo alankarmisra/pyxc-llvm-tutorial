@@ -2,9 +2,9 @@
 
 ## Introduction
 
-This chapter focuses entirely on installing LLVM from source so you can build a real compiler that emits executables. Early chapters can use `brew install llvm`, but once we integrate `lld` (the LLVM linker), we need a source build with the right configuration. We will build LLVM with `clang`, `clang-tools-extra` (for `clangd`), `lld`, and `lldb` enabled.
+This chapter focuses entirely on installing LLVM from source so you can build a real compiler that emits executables. Early chapters can use `brew install llvm`, but once we integrate `lld` (the LLVM linker), we need a source build with the right configuration. We will build LLVM with `clang`, `clang-tools-extra` (for `clangd`), `lld`, `lldb`, and `llvm-lit` enabled.
 
-The commands below install into `~/llvm-21-with-clang-lld-lldb`.
+The commands below install into `/Users/yourname/llvm-21-with-clang-lld-lldb`.
 
 ## Prerequisites
 
@@ -28,6 +28,30 @@ You need a C/C++ compiler, CMake, and Ninja. These are not always installed by d
   - Install Visual Studio Build Tools (C++ workload).
   - Install CMake and Ninja and ensure they are on `PATH`.
 
+## Common linker dependency: zstd
+
+Some LLVM builds (especially when `llvm-config --system-libs` includes `-lzstd`) require the zstd development library at link time. If it is missing, you may see an error like:
+
+```text
+ld: library 'zstd' not found
+```
+
+Install zstd development packages for your platform:
+
+- macOS (Homebrew): `brew install zstd`
+- Ubuntu/Debian: `sudo apt install libzstd-dev`
+- Fedora: `sudo dnf install libzstd-devel`
+
+The chapter Makefiles support both auto-detection and manual override:
+
+```bash
+# If auto-detection fails, set it explicitly:
+make ZSTD_LIBDIR="$(brew --prefix zstd)/lib"
+
+# Generic escape hatch for any extra library directory:
+make EXTRA_LIBDIR=/custom/lib/path
+```
+
 ## Build LLVM 21.1.6 (latest stable)
 
 ### Linux 64 (x86_64)
@@ -47,7 +71,7 @@ cmake -G Ninja ../llvm \
   -DCMAKE_INSTALL_PREFIX=$HOME/llvm-21-with-clang-lld-lldb \
   -DLLVM_TARGETS_TO_BUILD="X86" \
   -DLLVM_INCLUDE_EXAMPLES=OFF \
-  -DLLVM_INCLUDE_TESTS=OFF \
+  -DLLVM_INCLUDE_TESTS=ON \
   -DLLVM_INCLUDE_BENCHMARKS=OFF \
   -DLLVM_ENABLE_ASSERTIONS=OFF
 
@@ -197,7 +221,7 @@ For the purposes of this tutorial, we assume you are using VS Code. If you use a
 4. Tell VS Code to use the `clangd` you just built by adding this to your settings (edit the path for your platform):
 
 ```json
-"clangd.path": "~/llvm-21-with-clang-lld-lldb/bin/clangd"
+"clangd.path": "/Users/yourname/llvm-21-with-clang-lld-lldb/bin/clangd"
 ```
 
 If IntelliSense conflicts with clangd, disable the built-in C/C++ extension or set `C_Cpp.intelliSenseEngine` to `Disabled` in VS Code settings.
@@ -208,19 +232,19 @@ If you need to recreate or edit `compile_commands.json`, use this as a starting 
 
 ```json
 {
-  "directory": "~/path/to/your/repo",
+  "directory": "/Users/yourname/path/to/your/repo",
   "arguments": [
-    "~/llvm-21-with-clang-lld-lldb/bin/clang++",
+    "/Users/yourname/llvm-21-with-clang-lld-lldb/bin/clang++",
     "-g",
     "-O3",
-    "-I~/llvm-21-with-clang-lld-lldb/include",
+    "-I/Users/yourname/llvm-21-with-clang-lld-lldb/include",
     "-Iinclude",
     "-std=c++17",
     "-stdlib=libc++",
     "-fno-exceptions",
     "-funwind-tables",
     "pyxc.cpp",
-    "-L~/llvm-21-with-clang-lld-lldb/lib",
+    "-L/Users/yourname/llvm-21-with-clang-lld-lldb/lib",
     "-lLLVM-21",
     "-llldCommon",
     "-llldELF",
@@ -231,4 +255,12 @@ If you need to recreate or edit `compile_commands.json`, use this as a starting 
   ],
   "file": "pyxc.cpp"
 }
+```
+
+## Easy option
+Just clone the repo for this project
+```bash
+$ git clone https://github.com/alankarmisra/pyxc-llvm-tutorial.git
+$ cd pyxc-llvm-tutorial/chapter02
+$ make
 ```

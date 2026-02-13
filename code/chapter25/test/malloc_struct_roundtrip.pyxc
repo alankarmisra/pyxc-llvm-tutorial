@@ -1,0 +1,17 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '7 11' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+struct Point:
+    x: i32
+    y: i32
+
+def main() -> i32:
+    p: ptr[Point] = malloc[Point](1)
+    p[0].x = 7
+    p[0].y = 11
+    print(p[0].x, p[0].y)
+    free(p)
+    return 0
+
+main()

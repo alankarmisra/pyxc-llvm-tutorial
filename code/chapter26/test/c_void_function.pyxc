@@ -1,0 +1,13 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x 'hello from void' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def greet() -> void:
+    printf("hello from void\n")
+    return
+
+def main() -> i32:
+    greet()
+    return 0
+
+main()

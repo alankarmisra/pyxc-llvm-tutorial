@@ -4,7 +4,6 @@ LLVM_PREFIX ?= $(HOME)/llvm-21-with-clang-lld-lldb-mlir
 LLVM_CONFIG = $(LLVM_PREFIX)/bin/llvm-config
 CXX = $(LLVM_PREFIX)/bin/clang++
 CC = $(LLVM_PREFIX)/bin/clang
-HOMEBREW_LIB ?= /opt/homebrew/lib
 
 TARGET := pyxc
 SRC := pyxc.cpp
@@ -18,21 +17,39 @@ CXXFLAGS := -g -O3
 CFLAGS :=
 LDFLAGS :=
 
+# Optional user override for extra linker search path.
+EXTRA_LIBDIR ?=
+# Optional override for zstd library directory.
+ZSTD_LIBDIR ?=
+
+# Auto-detect zstd via pkg-config first.
+ifeq ($(strip $(ZSTD_LIBDIR)),)
+ifneq ($(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libzstd && echo yes),)
+ZSTD_LIBDIR := $(shell pkg-config --variable=libdir libzstd)
+endif
+endif
+
+# Fallback auto-detect for Homebrew installs.
+ifeq ($(strip $(ZSTD_LIBDIR)),)
+ifneq ($(shell command -v brew >/dev/null 2>&1 && brew --prefix zstd >/dev/null 2>&1 && echo yes),)
+ZSTD_LIBDIR := $(shell brew --prefix zstd)/lib
+endif
+endif
+
+ifneq ($(strip $(EXTRA_LIBDIR)),)
+LDFLAGS += -L$(EXTRA_LIBDIR) -Wl,-rpath,$(EXTRA_LIBDIR)
+endif
+
+ifneq ($(strip $(ZSTD_LIBDIR)),)
+LDFLAGS += -L$(ZSTD_LIBDIR) -Wl,-rpath,$(ZSTD_LIBDIR)
+endif
+
 ifeq ($(UNAME_S),Darwin)
 SDKROOT ?= $(shell xcrun --show-sdk-path)
 CFLAGS += -isysroot $(SDKROOT)
 CXXFLAGS += -isysroot $(SDKROOT) -stdlib=libc++
 ifneq (,$(wildcard /Library/Developer/CommandLineTools/usr/include/c++/v1))
 CXXFLAGS += -I/Library/Developer/CommandLineTools/usr/include/c++/v1
-endif
-ifneq ($(strip $(HOMEBREW_LIB)),)
-LDFLAGS += -L$(HOMEBREW_LIB) -Wl,-rpath,$(HOMEBREW_LIB)
-endif
-endif
-
-ifeq ($(UNAME_S),Linux)
-ifneq ($(strip $(HOMEBREW_LIB)),)
-LDFLAGS += -L$(HOMEBREW_LIB) -Wl,-rpath,$(HOMEBREW_LIB)
 endif
 endif
 

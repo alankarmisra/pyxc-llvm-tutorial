@@ -1,0 +1,10 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Error (Line:" %t
+# RUN: grep -q "Unary '~' requires integer operand" %t
+
+def main() -> i32:
+    x: f64 = 7.5
+    print(~x)
+    return 0
+
+main()

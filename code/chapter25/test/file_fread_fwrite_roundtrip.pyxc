@@ -1,0 +1,20 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x 'w=5 r=5 s=HELLO' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    f: ptr[void] = fopen("chapter23_io_b.bin", "wb")
+    written: i64 = fwrite("HELLO", 1, 5, f)
+    fclose(f)
+
+    f = fopen("chapter23_io_b.bin", "rb")
+    buf: ptr[i8] = malloc[i8](6)
+    read: i64 = fread(buf, 1, 5, f)
+    buf[5] = 0
+    fclose(f)
+
+    printf("w=%d r=%d s=%s\n", written, read, buf)
+    free(buf)
+    return 0
+
+main()
