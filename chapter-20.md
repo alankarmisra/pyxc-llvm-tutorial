@@ -13,6 +13,10 @@ This is a major usability milestone because many real programs need both:
 
 and the ability to combine them.
 
+
+!!!note
+    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter20](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter20).
+
 ## Why this chapter matters
 
 Before Chapter 20, we could index pointers, but we had no first-class array type.
@@ -271,16 +275,6 @@ Because both integrate with shared postfix/index infrastructure, the language no
 
 That sets up Chapter 21 naturally: once arrays and struct layout are stable, dynamic allocation (`malloc/free`) becomes much more valuable.
 
-## Full Source Code
-
-Chapter 20 implementation lives in:
-
-- `code/chapter20/pyxc.ebnf`
-- `code/chapter20/pyxc.cpp`
-- `code/chapter20/runtime.c`
-- `code/chapter20/Makefile`
-- `code/chapter20/test/`
-
 ## Compiling
 
 From repository root:
@@ -295,4 +289,33 @@ From repository root:
 
 ```bash
 lit -sv code/chapter20/test
+```
+
+## Compile / Run / Test (Hands-on)
+
+Build this chapter:
+
+```bash
+make -C code/chapter20 clean all
+```
+
+Run one sample program:
+
+```bash
+code/chapter20/pyxc -i code/chapter20/test/array_alias_type.pyxc
+```
+
+Run the chapter tests (when a test suite exists):
+
+```bash
+cd code/chapter20/test
+lit -sv .
+```
+
+Pick a couple of tests, mutate the inputs, and watch how diagnostics respond.
+
+When you're done, clean artifacts:
+
+```bash
+make -C code/chapter20 clean
 ```

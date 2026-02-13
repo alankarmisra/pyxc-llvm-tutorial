@@ -4,6 +4,10 @@ Chapter 24 introduces `const` local declarations with compile-time reassignment 
 
 This chapter is small in syntax but important in semantics: we are teaching the compiler to remember mutability intent for each binding.
 
+
+!!!note
+    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter24](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter24).
+
 ## What we are building
 
 A declaration like this:
@@ -202,16 +206,6 @@ With Chapter 24 complete:
 
 This gives us safer local semantics before we scale into multi-file workflows in Chapter 25.
 
-## Full Source Code
-
-Chapter 24 implementation lives in:
-
-- `code/chapter24/pyxc.ebnf`
-- `code/chapter24/pyxc.cpp`
-- `code/chapter24/runtime.c`
-- `code/chapter24/Makefile`
-- `code/chapter24/test/`
-
 ## Compiling
 
 From repository root:
@@ -226,4 +220,33 @@ From repository root:
 
 ```bash
 lit -sv code/chapter24/test
+```
+
+## Compile / Run / Test (Hands-on)
+
+Build this chapter:
+
+```bash
+make -C code/chapter24 clean all
+```
+
+Run one sample program:
+
+```bash
+code/chapter24/pyxc -i code/chapter24/test/addr_is_keyword.pyxc
+```
+
+Run the chapter tests (when a test suite exists):
+
+```bash
+cd code/chapter24/test
+lit -sv .
+```
+
+Explore the test folder a bit and add one tiny edge case of your own.
+
+When you're done, clean artifacts:
+
+```bash
+make -C code/chapter24 clean
 ```

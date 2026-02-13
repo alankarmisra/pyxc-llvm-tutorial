@@ -11,6 +11,10 @@ Chapter 21 adds the missing runtime allocation primitive:
 
 This is the first chapter where memory lifetime becomes an explicit programming concern in Pyxc.
 
+
+!!!note
+    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter21](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter21).
+
 ## Why this chapter matters
 
 With only fixed-size stack values, many common patterns are blocked:
@@ -333,16 +337,6 @@ Chapter 21 is intentionally small but strategic:
 
 This chapter also sets up Chapter 22 naturally, where we add C-style I/O (`putchar`, `puts`, `printf`) and string literals, making it possible to build more complete small programs.
 
-## Full Source Code
-
-Chapter 21 implementation lives in:
-
-- `code/chapter21/pyxc.ebnf`
-- `code/chapter21/pyxc.cpp`
-- `code/chapter21/runtime.c`
-- `code/chapter21/Makefile`
-- `code/chapter21/test/`
-
 ## Compiling
 
 From repository root:
@@ -357,4 +351,33 @@ From repository root:
 
 ```bash
 lit -sv code/chapter21/test
+```
+
+## Compile / Run / Test (Hands-on)
+
+Build this chapter:
+
+```bash
+make -C code/chapter21 clean all
+```
+
+Run one sample program:
+
+```bash
+code/chapter21/pyxc -i code/chapter21/test/array_alias_type.pyxc
+```
+
+Run the chapter tests (when a test suite exists):
+
+```bash
+cd code/chapter21/test
+lit -sv .
+```
+
+Have some fun stress-testing the suite with small variations.
+
+When you're done, clean artifacts:
+
+```bash
+make -C code/chapter21 clean
 ```

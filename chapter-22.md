@@ -16,6 +16,10 @@ The goal is not to implement all of C stdio. The goal is to establish a *clean b
 
 We intentionally keep this chapter narrow so behavior stays predictable and testable.
 
+
+!!!note
+    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter22](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter22).
+
 ## Why this chapter matters
 
 Without this chapter, even simple tasks like printing formatted text need custom language helpers.
@@ -537,16 +541,6 @@ With Chapter 22 complete, the next high-leverage topics are:
 
 Those build directly on the I/O and pointer groundwork laid here.
 
-## Full Source Code
-
-Chapter 22 implementation lives in:
-
-- `code/chapter22/pyxc.ebnf`
-- `code/chapter22/pyxc.cpp`
-- `code/chapter22/runtime.c`
-- `code/chapter22/Makefile`
-- `code/chapter22/test/`
-
 ## Compiling
 
 From repository root:
@@ -561,4 +555,33 @@ From repository root:
 
 ```bash
 lit -sv code/chapter22/test
+```
+
+## Compile / Run / Test (Hands-on)
+
+Build this chapter:
+
+```bash
+make -C code/chapter22 clean all
+```
+
+Run one sample program:
+
+```bash
+code/chapter22/pyxc -i code/chapter22/test/array_alias_type.pyxc
+```
+
+Run the chapter tests (when a test suite exists):
+
+```bash
+cd code/chapter22/test
+lit -sv .
+```
+
+Poke around the tests and tweak a few cases to see what breaks first.
+
+When you're done, clean artifacts:
+
+```bash
+make -C code/chapter22 clean
 ```

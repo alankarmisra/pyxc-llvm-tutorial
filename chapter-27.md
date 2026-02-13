@@ -4,6 +4,10 @@ Chapter 27 adds `match/case` in a Python-style form.
 
 The goal is simple: make multi-way branching readable without introducing C syntax. This is our language, so the control flow should stay consistent with indentation-based blocks and explicit suites.
 
+
+!!!note
+    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter27](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter27).
+
 ## Feature summary
 
 New statement form:
@@ -259,14 +263,6 @@ These cover:
 - semantic errors for non-integer match/case values
 - parser-level duplicate-default validation
 
-## Full Source Code
-
-- [code/chapter27/pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter27/pyxc.ebnf)
-- [code/chapter27/pyxc.cpp](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter27/pyxc.cpp)
-- [code/chapter27/runtime.c](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter27/runtime.c)
-- [code/chapter27/Makefile](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter27/Makefile)
-- [code/chapter27/test/](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter27/test)
-
 ## Compile / Run / Test
 
 Compile:
@@ -291,3 +287,32 @@ Validation for this implementation pass:
 
 - 123 tests discovered
 - 123 passed
+
+## Compile / Run / Test (Hands-on)
+
+Build this chapter:
+
+```bash
+make -C code/chapter27 clean all
+```
+
+Run one sample program:
+
+```bash
+code/chapter27/pyxc -i code/chapter27/test/c25_mod_add.pyxc
+```
+
+Run the chapter tests (when a test suite exists):
+
+```bash
+cd code/chapter27/test
+lit -sv .
+```
+
+Poke around the tests and tweak a few cases to see what breaks first.
+
+When you're done, clean artifacts:
+
+```bash
+make -C code/chapter27 clean
+```

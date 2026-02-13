@@ -7,6 +7,10 @@ You can now compile multiple `.pyxc` files in one invocation and either:
 - produce one object per source file (`-c file1 file2`), or
 - link all compiled objects into one executable (`pyxc file1 file2` or `pyxc -o app file1 file2`).
 
+
+!!!note
+    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter25](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter25).
+
 ## What we are building
 
 We want this to work:
@@ -253,17 +257,6 @@ After these changes:
 
 Chapter 25 is the bridge from language features to practical project-scale compilation.
 
-## Full Source Code
-
-Chapter 25 implementation lives in:
-
-- `code/chapter25/pyxc.ebnf`
-- `code/chapter25/pyxc.cpp`
-- `code/chapter25/runtime.c`
-- `code/chapter25/Makefile`
-- `code/chapter25/test/`
-- `code/include/PyxcLinker.h`
-
 ## Compiling
 
 From repository root:
@@ -278,4 +271,33 @@ From repository root:
 
 ```bash
 lit -sv code/chapter25/test
+```
+
+## Compile / Run / Test (Hands-on)
+
+Build this chapter:
+
+```bash
+make -C code/chapter25 clean all
+```
+
+Run one sample program:
+
+```bash
+code/chapter25/pyxc -i code/chapter25/test/c25_mod_add.pyxc
+```
+
+Run the chapter tests (when a test suite exists):
+
+```bash
+cd code/chapter25/test
+lit -sv .
+```
+
+Pick a couple of tests, mutate the inputs, and watch how diagnostics respond.
+
+When you're done, clean artifacts:
+
+```bash
+make -C code/chapter25 clean
 ```

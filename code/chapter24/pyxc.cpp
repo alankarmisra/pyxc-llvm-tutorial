@@ -90,6 +90,11 @@ static cl::opt<bool> Verbose("v", cl::desc("Enable verbose output"));
 static cl::opt<bool> EmitDebug("g", cl::desc("Emit debug information"),
                                cl::init(false), cl::cat(PyxcCategory));
 
+// Accepts -O0, -O1, -O2, -O3
+static cl::opt<std::string> OptLevel(
+    "O", cl::desc("Optimization level (0-3)"), cl::value_desc("level"),
+    cl::init("2"), cl::Prefix, cl::cat(PyxcCategory));
+
 std::string getOutputFilename(const std::string &input,
                               const std::string &ext) {
   if (!OutputFilename.empty())
@@ -958,8 +963,8 @@ class UnaryExprAST : public ExprAST {
   std::unique_ptr<ExprAST> Operand;
 
 public:
-  UnaryExprAST(int Opcode, std::unique_ptr<ExprAST> Operand)
-      : Opcode(Opcode), Operand(std::move(Operand)) {}
+  UnaryExprAST(SourceLocation Loc, int Opcode, std::unique_ptr<ExprAST> Operand)
+      : ExprAST(Loc), Opcode(Opcode), Operand(std::move(Operand)) {}
   raw_ostream &dump(raw_ostream &out, int ind) override {
     if (const char *Name = TokenName(Opcode))
       ExprAST::dump(out << "unary" << Name, ind);
@@ -1179,9 +1184,10 @@ class VarExprAST : public ExprAST {
 
 public:
   VarExprAST(
+      SourceLocation Loc,
       std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames,
       std::unique_ptr<ExprAST> Body)
-      : VarNames(std::move(VarNames)), Body(std::move(Body)) {}
+      : ExprAST(Loc), VarNames(std::move(VarNames)), Body(std::move(Body)) {}
   raw_ostream &dump(raw_ostream &out, int ind) override {
     ExprAST::dump(out << "var", ind);
     for (const auto &NamedVar : VarNames)
@@ -1750,6 +1756,7 @@ static std::unique_ptr<StmtAST> ParseContinueStmt() {
 /// varexpr ::= 'var' identifier ('=' expression)?
 //                    (',' identifier ('=' expression)?)* 'in' expression
 static std::unique_ptr<ExprAST> ParseVarExpr() {
+  SourceLocation VarLoc = CurLoc;
   getNextToken(); // eat `var`
   std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames;
 
@@ -1793,7 +1800,7 @@ static std::unique_ptr<ExprAST> ParseVarExpr() {
   if (!Body)
     return nullptr;
 
-  return std::make_unique<VarExprAST>(std::move(VarNames), std::move(Body));
+  return std::make_unique<VarExprAST>(VarLoc, std::move(VarNames), std::move(Body));
 }
 
 // expr_stmt      = expression ;
@@ -2102,9 +2109,10 @@ static std::unique_ptr<ExprAST> ParseUnary() {
 
   // If this is a unary operator, read it.
   int Opc = CurTok;
+  SourceLocation OpLoc = CurLoc;
   getNextToken();
   if (auto Operand = ParseUnary())
-    return std::make_unique<UnaryExprAST>(Opc, std::move(Operand));
+    return std::make_unique<UnaryExprAST>(OpLoc, Opc, std::move(Operand));
   return nullptr;
 }
 
@@ -2317,7 +2325,39 @@ static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
 static std::unique_ptr<ModuleAnalysisManager> TheMAM;
 static std::unique_ptr<PassInstrumentationCallbacks> ThePIC;
 static std::unique_ptr<StandardInstrumentations> TheSI;
+static bool EnableFunctionOptimizations = true;
 static ExitOnError ExitOnErr;
+
+static bool TryGetOptimizationLevel(OptimizationLevel &Level) {
+  if (OptLevel == "0") {
+    Level = OptimizationLevel::O0;
+    return true;
+  }
+  if (OptLevel == "1") {
+    Level = OptimizationLevel::O1;
+    return true;
+  }
+  if (OptLevel == "2") {
+    Level = OptimizationLevel::O2;
+    return true;
+  }
+  if (OptLevel == "3") {
+    Level = OptimizationLevel::O3;
+    return true;
+  }
+  return false;
+}
+
+class ScopedFunctionOptimization {
+  bool Prev;
+
+public:
+  explicit ScopedFunctionOptimization(bool Enabled)
+      : Prev(EnableFunctionOptimizations) {
+    EnableFunctionOptimizations = Enabled;
+  }
+  ~ScopedFunctionOptimization() { EnableFunctionOptimizations = Prev; }
+};
 
 //===----------------------------------------------------------------------===//
 // Debug Info Support
@@ -4022,8 +4062,9 @@ Function *FunctionAST::codegen() {
     // Validate the generated code, checking for consistency.
     verifyFunction(*TheFunction);
 
-    // Run the optimizer on the function.
-    TheFPM->run(*TheFunction, *TheFAM);
+    // Run the optimizer on the function (JIT/REPL path).
+    if (EnableFunctionOptimizations && TheFPM && TheFAM)
+      TheFPM->run(*TheFunction, *TheFAM);
 
     return TheFunction;
   }
@@ -4056,12 +4097,20 @@ static void InitializeOptimizationPasses() {
                                                      /*DebugLogging*/ true);
   TheSI->registerCallbacks(*ThePIC, TheMAM.get());
 
-  // Add transform passes
-  TheFPM->addPass(PromotePass());
-  TheFPM->addPass(InstCombinePass());
-  TheFPM->addPass(ReassociatePass());
-  TheFPM->addPass(GVNPass());
-  TheFPM->addPass(SimplifyCFGPass());
+  // Add function transform passes based on -O level (used by JIT paths).
+  OptimizationLevel Level = OptimizationLevel::O2;
+  (void)TryGetOptimizationLevel(Level);
+  if (Level == OptimizationLevel::O1) {
+    TheFPM->addPass(PromotePass());
+    TheFPM->addPass(InstCombinePass());
+    TheFPM->addPass(SimplifyCFGPass());
+  } else if (Level == OptimizationLevel::O2 || Level == OptimizationLevel::O3) {
+    TheFPM->addPass(PromotePass());
+    TheFPM->addPass(InstCombinePass());
+    TheFPM->addPass(ReassociatePass());
+    TheFPM->addPass(GVNPass());
+    TheFPM->addPass(SimplifyCFGPass());
+  }
 
   // Register analysis passes
   PassBuilder PB;
@@ -4075,6 +4124,30 @@ static void InitializeModuleAndManagers() {
   TheModule->setDataLayout(TheJIT->getDataLayout());
   EnsureDefaultTypeAliases();
   InitializeOptimizationPasses();
+}
+
+static void OptimizeModuleForCodeGen(Module &M, TargetMachine *TM) {
+  OptimizationLevel Level;
+  if (!TryGetOptimizationLevel(Level))
+    return;
+
+  if (Level == OptimizationLevel::O0)
+    return;
+
+  LoopAnalysisManager LAM;
+  FunctionAnalysisManager FAM;
+  CGSCCAnalysisManager CGAM;
+  ModuleAnalysisManager MAM;
+  PassBuilder PB(TM);
+
+  PB.registerModuleAnalyses(MAM);
+  PB.registerFunctionAnalyses(FAM);
+  PB.registerCGSCCAnalyses(CGAM);
+  PB.registerLoopAnalyses(LAM);
+  PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+  ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(Level);
+  MPM.run(M, MAM);
 }
 
 //===----------------------------------------------------------------------===//
@@ -4529,7 +4602,8 @@ void InterpretFile(const std::string &filename) {
 // Object file compilation
 //===----------------------------------------------------------------------===//
 
-void CompileToObjectFile(const std::string &filename) {
+void CompileToObjectFile(const std::string &filename,
+                         const std::string &explicitOutput = "") {
   UseCMainSignature = true;
   InitializeNativeTarget();
   InitializeNativeTargetAsmPrinter();
@@ -4538,6 +4612,8 @@ void CompileToObjectFile(const std::string &filename) {
   // Initialize LLVM context and optimization passes
   InitializeContext();
   InitializeOptimizationPasses();
+  // Object/executable mode uses a whole-module pipeline later.
+  ScopedFunctionOptimization DisableFunctionPasses(false);
 
   // Open input file
   InputFile = fopen(filename.c_str(), "r");
@@ -4577,9 +4653,11 @@ void CompileToObjectFile(const std::string &filename) {
       Target->createTargetMachine(TheTriple, CPU, Features, opt, Reloc::PIC_);
 
   TheModule->setDataLayout(TargetMachine->createDataLayout());
+  OptimizeModuleForCodeGen(*TheModule, TargetMachine);
 
   // Determine output filename
-  std::string outputFilename = getOutputFilename(filename, ".o");
+  std::string outputFilename =
+      explicitOutput.empty() ? getOutputFilename(filename, ".o") : explicitOutput;
 
   std::error_code EC;
   raw_fd_ostream dest(outputFilename, EC, sys::fs::OF_None);
@@ -4632,6 +4710,13 @@ int main(int argc, char **argv) {
   cl::HideUnrelatedOptions(PyxcCategory);
   cl::ParseCommandLineOptions(argc, argv, "Pyxc - Compiler and Interpreter\n");
 
+  OptimizationLevel ParsedOptLevel;
+  if (!TryGetOptimizationLevel(ParsedOptLevel)) {
+    errs() << "Error: invalid optimization level '" << OptLevel
+           << "'. Use -O0, -O1, -O2, or -O3\n";
+    return 1;
+  }
+
   if (InputFilename.empty()) {
     // REPL mode - only -v is allowed
     if (Mode != Interpret) {
@@ -4676,8 +4761,8 @@ int main(int argc, char **argv) {
                   << " to executable: " << exeFile << "\n";
 
       // Step 1: Compile the script to object file
-      std::string scriptObj = getOutputFilename(InputFilename, ".o");
-      CompileToObjectFile(InputFilename);
+      std::string scriptObj = exeFile + ".tmp.o";
+      CompileToObjectFile(InputFilename, scriptObj);
 
       // Step 3: Link object files
       if (Verbose)
@@ -4709,8 +4794,8 @@ int main(int argc, char **argv) {
       if (Verbose)
         std::cout << "Compiling " << InputFilename
                   << " to object file: " << output << "\n";
-      CompileToObjectFile(InputFilename);
-      std::string scriptObj = getOutputFilename(InputFilename, ".o");
+      CompileToObjectFile(InputFilename, output);
+      std::string scriptObj = output;
       if (Verbose)
         outs() << "Wrote " << scriptObj << "\n";
       else

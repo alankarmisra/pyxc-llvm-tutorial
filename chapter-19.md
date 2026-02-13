@@ -16,6 +16,10 @@ The chapter is intentionally focused. We do **not** add methods, constructors, c
 
 That limited scope keeps the parser and type resolver understandable while still unlocking a major jump in language expressiveness.
 
+
+!!!note
+    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter19](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter19).
+
 ## Why this chapter matters
 
 Once you have loops and conditionals, the next real bottleneck is data shape.
@@ -358,16 +362,6 @@ This chapter is a foundational dependency for the next two:
 
 In short: Chapter 19 is where the language stops being scalar-centric.
 
-## Full Source Code
-
-Chapter 19 implementation lives in:
-
-- `code/chapter19/pyxc.ebnf`
-- `code/chapter19/pyxc.cpp`
-- `code/chapter19/runtime.c`
-- `code/chapter19/Makefile`
-- `code/chapter19/test/`
-
 ## Compiling
 
 From repository root:
@@ -382,4 +376,33 @@ From repository root:
 
 ```bash
 lit -sv code/chapter19/test
+```
+
+## Compile / Run / Test (Hands-on)
+
+Build this chapter:
+
+```bash
+make -C code/chapter19 clean all
+```
+
+Run one sample program:
+
+```bash
+code/chapter19/pyxc -i code/chapter19/test/break_outside_loop.pyxc
+```
+
+Run the chapter tests (when a test suite exists):
+
+```bash
+cd code/chapter19/test
+lit -sv .
+```
+
+Explore the test folder a bit and add one tiny edge case of your own.
+
+When you're done, clean artifacts:
+
+```bash
+make -C code/chapter19 clean
 ```

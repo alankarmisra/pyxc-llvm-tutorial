@@ -8,6 +8,10 @@ Chapter 23 extends libc interop to file APIs so Pyxc programs can read and write
 
 This chapter intentionally stays close to C semantics: explicit open/close, explicit buffer pointers, explicit byte counts.
 
+
+!!!note
+    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter23](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter23).
+
 ## Why this chapter matters
 
 Without file I/O, many practical programs are blocked:
@@ -307,16 +311,6 @@ But capability jumps significantly: Pyxc can now do persistent text and binary I
 
 That is enough to support realistic tooling-style programs and sets up future chapters for modules, headers, and broader C interop.
 
-## Full Source Code
-
-Chapter 23 implementation lives in:
-
-- `code/chapter23/pyxc.ebnf`
-- `code/chapter23/pyxc.cpp`
-- `code/chapter23/runtime.c`
-- `code/chapter23/Makefile`
-- `code/chapter23/test/`
-
 ## Compiling
 
 From repository root:
@@ -331,4 +325,33 @@ From repository root:
 
 ```bash
 lit -sv code/chapter23/test
+```
+
+## Compile / Run / Test (Hands-on)
+
+Build this chapter:
+
+```bash
+make -C code/chapter23 clean all
+```
+
+Run one sample program:
+
+```bash
+code/chapter23/pyxc -i code/chapter23/test/addr_is_keyword.pyxc
+```
+
+Run the chapter tests (when a test suite exists):
+
+```bash
+cd code/chapter23/test
+lit -sv .
+```
+
+Try editing a test or two and see how quickly you can predict the outcome.
+
+When you're done, clean artifacts:
+
+```bash
+make -C code/chapter23 clean
 ```

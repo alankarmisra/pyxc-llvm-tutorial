@@ -69,4 +69,11 @@ $(RUNTIME_OBJ): $(RUNTIME_SRC)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(TARGET) $(RUNTIME_OBJ)
+	@rm -f $(TARGET) $(RUNTIME_OBJ) *.o *.tmp.o
+	@rm -rf *.dSYM
+	@for f in *.pyxc; do \
+		[ -e "$$f" ] || continue; \
+		base="$${f%.pyxc}"; \
+		rm -f "$$base" "$$base.o" "$$base.tmp.o"; \
+	done
+	@find . -maxdepth 1 -type f -perm -111 ! -name "*.sh" -delete

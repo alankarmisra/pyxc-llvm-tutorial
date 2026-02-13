@@ -11,6 +11,10 @@ Chapter 26 extends runtime interop in four practical directions:
 
 This chapter keeps python-style syntax and adds capability through explicit, typed function calls.
 
+
+!!!note
+    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter26](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter26).
+
 ## What this chapter adds
 
 ### `main(argc, argv)` support
@@ -218,26 +222,6 @@ def main() -> i32:
 main()
 ```
 
-## Full Source Code
-
-Complete Chapter 26 source lives in:
-
-- [code/chapter26/pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter26/pyxc.ebnf)
-- [code/chapter26/pyxc.cpp](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter26/pyxc.cpp)
-- [code/chapter26/runtime.c](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter26/runtime.c)
-- [code/chapter26/Makefile](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter26/Makefile)
-- [code/chapter26/test/](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter26/test)
-
-To view full source at the terminal:
-
-```bash
-cat code/chapter26/pyxc.ebnf
-cat code/chapter26/pyxc.cpp
-cat code/chapter26/runtime.c
-cat code/chapter26/Makefile
-find code/chapter26/test -maxdepth 1 -type f -name '*.pyxc' | sort
-```
-
 ## Compile / Run / Test
 
 ### Compile
@@ -277,3 +261,32 @@ Validation result for this implementation pass:
 This chapter intentionally avoids C-syntax sugar. We keep Pythonic syntax and explicit calls, even when code is a little longer.
 
 That tradeoff improves readability and keeps the language direction clear.
+
+## Compile / Run / Test (Hands-on)
+
+Build this chapter:
+
+```bash
+make -C code/chapter26 clean all
+```
+
+Run one sample program:
+
+```bash
+code/chapter26/pyxc -i code/chapter26/test/c25_mod_add.pyxc
+```
+
+Run the chapter tests (when a test suite exists):
+
+```bash
+cd code/chapter26/test
+lit -sv .
+```
+
+Have some fun stress-testing the suite with small variations.
+
+When you're done, clean artifacts:
+
+```bash
+make -C code/chapter26 clean
+```
