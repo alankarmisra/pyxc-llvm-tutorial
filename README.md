@@ -2,6 +2,9 @@
 
 `pyxc` is a Pythonic language and compiler built with LLVM as an educational tool.
 
+Prefer HTML over markdown walls of text? Read it here:
+<https://whereisalan.dev/blog/pyxc-llvm-tutorial>
+
 It is designed to be readable like Python, but much closer to C in behavior and power: pointers are first-class, memory can be manually managed, and you can absolutely shoot yourself in the foot. That is intentional. The project is about learning how languages and compilers work close to the machine, not hiding those edges.
 
 ## What this repo is
