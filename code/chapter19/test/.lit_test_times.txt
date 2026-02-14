@@ -20,3 +20,6 @@
 3.368616e-02 struct_error_nonstruct_member.pyxc
 3.051496e-02 struct_error_unknown_field.pyxc
 3.598118e-02 struct_nested_fields.pyxc
+8.776808e-02 c28_forward_call.pyxc
+8.362293e-02 c28_mutual_recursion.pyxc
+2.554488e-02 c28_signature_mismatch.pyxc

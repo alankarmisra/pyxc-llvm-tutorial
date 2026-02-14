@@ -1945,3 +1945,15 @@ clang++ -g pyxc.cpp `llvm-config --cxxflags --ldflags --system-libs --libs core 
 ```
 
 On some platforms, you will need to specify -rdynamic or -Wl,–export-dynamic when linking. This ensures that symbols defined in the main executable are exported to the dynamic linker and so are available for symbol resolution at run time. This is not needed if you compile your support code into a shared library, although doing that will cause problems on Windows.
+
+## Known Bugs / Shortcomings
+
+As of this chapter, multi-character operators (for example `==`, `!=`, `<=`, `>=`) are not tokenized as single operators. The lexer currently emits them as separate single-character tokens.
+
+This can corrupt the parse tree for some expressions, and the eventual diagnostic may appear late (often near end-of-file) instead of at the exact source of the problem. A common symptom is an error like:
+
+```text
+Error (Line: N, Column: M): Unknown unary operator
+```
+
+So if you see an EOF-adjacent or late-location operator error, check for multi-character operators first.

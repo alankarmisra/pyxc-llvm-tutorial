@@ -1,0 +1,8 @@
+# RUN: not %pyxc < %s > %t 2>&1
+# RUN: grep -q "Incorrect # arguments passed" %t
+
+extern def add(a, b)
+
+def add(a) : return a
+
+add(1)

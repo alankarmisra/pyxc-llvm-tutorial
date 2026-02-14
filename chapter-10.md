@@ -1883,3 +1883,11 @@ Process stopped
 (lldb) Quitting LLDB will kill one or more processes. Do you really want to proceed: [Y/n] y
 $
 ```
+
+## Core Foundation Conclusion
+
+This is the last chapter of the original Core Foundation run.
+
+From here onward, we treat the frontend like a real compiler project: parser architecture, semantic stability, toolchain UX, interop, and regression tests become first-class concerns.
+
+If you want a practical handoff point, Chapter 11 is now that bridge.

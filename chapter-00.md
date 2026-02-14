@@ -49,7 +49,7 @@ This tutorial is structured into chapters covering individual topics, allowing y
 
 [Chapter #10: Debug Information](chapter-10.md) - A real language needs to support debuggers, so we add debug information that allows setting breakpoints in Pyxc functions, print out argument variables, and call functions!
 
-[Chapter #11: Conclusion and other tidbits](chapter-11.md) - This chapter wraps up the *Core Foundation* series by discussing ways to extend the language and includes pointers to info on *special topics* like adding garbage collection support, exceptions, debugging, support for *spaghetti stacks*, etc.
+[Chapter #11: Forward Function References and Mutual Recursion](chapter-11.md) - This chapter introduces a two-phase translation-unit pipeline (collect declarations first, codegen second), so file compilation supports forward calls and mutual recursion reliably.
 
 ## Intermediate topics
 
@@ -85,4 +85,3 @@ This tutorial is structured into chapters covering individual topics, allowing y
 
 [Chapter #27: Python-style match/case](chapter-27.md) - We add integer-pattern `match/case` with optional `case _` default and no fallthrough, using Pythonic syntax only.
 
-[Chapter #28: Forward Function References and Mutual Recursion](chapter-28.md) - We switch file compilation to a two-phase translation-unit pipeline (collect declarations first, codegen second), enabling reliable forward calls and mutual recursion with signature compatibility checks.

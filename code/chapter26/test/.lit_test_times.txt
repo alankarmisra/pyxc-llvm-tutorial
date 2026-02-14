@@ -115,3 +115,6 @@
 3.443098e-02 c26_ctype_basic.pyxc
 3.093195e-02 c26_ctype_error_non_integer.pyxc
 7.950521e-02 c26_ctype_scanner.pyxc
+3.264880e-02 c28_forward_call.pyxc
+3.260779e-02 c28_mutual_recursion.pyxc
+2.565622e-02 c28_signature_mismatch.pyxc

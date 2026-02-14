@@ -1,0 +1,4 @@
+# RUN: %pyxc < %s > %t 2>/dev/null
+# RUN: grep -F "<tok_extern><tok_def><tok_identifier><tok_char, '('><tok_identifier><tok_char, ','><tok_identifier><tok_char, ')'><tok_eol>" %t
+
+extern def add(a,b)

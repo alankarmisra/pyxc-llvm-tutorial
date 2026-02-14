@@ -9,6 +9,37 @@ Welcome to Chapter 2 of the [Pyxc: My First Language Frontend with LLVM](chapter
 
 The parser we will build uses a combination of [Recursive Descent Parsing](http://en.wikipedia.org/wiki/Recursive_descent_parser) and [Operator-Precedence Parsing](http://en.wikipedia.org/wiki/Operator-precedence_parser) to parse the Pyxc language (the latter for binary expressions and the former for everything else). Before we get to parsing though, let’s talk about the output of the parser: the Abstract Syntax Tree.
 
+## EBNF (Chapter 2)
+
+```ebnf
+program        = { top }
+
+top            = definition
+                 | external
+                 | expression
+
+definition     = "def" prototype ":" expression
+external       = "extern" "def" prototype
+toplevelexpr   = expression
+
+(* Construct *)
+prototype      = identifier "(" [ identifier { "," identifier } ] ")"
+
+(* Construct *)
+expression     = primary { binaryop primary }
+primary        = identifierexpr
+                 | numberexpr
+                 | parenexpr
+
+identifierexpr = identifier
+                 | identifier "(" [ expression { "," expression } ] ")"
+numberexpr     = number
+parenexpr      = "(" expression ")"
+
+binaryop       = "<" | "+" | "-" | "*"
+```
+
+
 ## The Abstract Syntax Tree (AST)
 The AST for a program captures its behavior in such a way that it is easy for later stages of the compiler (e.g. code generation) to interpret. We basically want one object for each construct in the language, and the AST should closely model the language. In Pyxc, we have expressions, a prototype, and a function object. We’ll start with expressions first:
 

@@ -95,3 +95,6 @@
 4.884887e-02 logic_results_are_ints.pyxc
 4.323387e-02 printf_unsigned_promotion.pyxc
 5.815005e-02 unsigned_div_mod_cmp.pyxc
+4.736495e-02 c28_forward_call.pyxc
+4.032898e-02 c28_mutual_recursion.pyxc
+3.067803e-02 c28_signature_mismatch.pyxc

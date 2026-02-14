@@ -26,3 +26,6 @@
 2.813220e-02 array_error_non_integer_index.pyxc
 3.783607e-02 array_of_structs.pyxc
 2.922702e-02 array_struct_field.pyxc
+9.481096e-02 c28_forward_call.pyxc
+8.454299e-02 c28_mutual_recursion.pyxc
+2.793074e-02 c28_signature_mismatch.pyxc

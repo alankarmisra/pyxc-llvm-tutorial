@@ -1,0 +1,4 @@
+# RUN: %pyxc < %s > %t 2>/dev/null
+# RUN: grep -F "<tok_char, '!'><tok_eol>" %t
+
+! # comment after a character token

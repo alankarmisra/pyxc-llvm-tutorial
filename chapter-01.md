@@ -2,9 +2,9 @@
 
 ## The Pyxc Language
 
-This tutorial is illustrated with a language called "Pyxc" (pronounced "Pixie"), short for "Python executable". Pyxc is a procedural language that allows you to define functions, use conditionals, math, etc. Over the course of the tutorial, we’ll extend pyxc to support the if/then/else construct, a for loop, user defined operators, JIT compilation with a simple command line interface, debug info, etc.
+This tutorial is illustrated with a language called "Pyxc" (pronounced "Pixie"). Pyxc is a procedural language that allows you to define functions, use conditionals, math, etc. Over the course of the tutorial, we’ll extend pyxc to support the if/then/else construct, a for loop, user defined operators, JIT compilation with a simple command line interface, debug info, etc.
 
-Beyond the core tutorial, pyxc is designed to grow into a more complete language with structs, classes, a type system, and eventually explore advanced compiler infrastructure like MLIR. The goal is to build something real — not just a toy — while keeping the approachable, Python-like syntax that developers already know.
+Beyond the core tutorial, pyxc is built with a real compiler architecture in mind: a proper front end, a typed IR pipeline, optimization passes, code generation, and tooling hooks you would expect in serious language projects. As we move forward, we will add structs, classes, and richer type semantics, then push into advanced infrastructure like MLIR to model multi-level lowering and reusable compiler components. The aim is to use a readable, Python-like syntax as the surface language while implementing the same foundations used by production compilers.
 
 We want to keep things simple at the start, so the only datatype in pyxc is a 64-bit floating point type (aka ‘double’ in C parlance). As such, all values are implicitly double precision and the language doesn’t require type declarations. This gives the language a very nice and simple syntax. For example, the following simple example computes [Fibonacci numbers](http://en.wikipedia.org/wiki/Fibonacci_number):
 
@@ -27,7 +27,7 @@ def fib(n): if n < 2: return n else: return fib(n-1) + fib(n-2)
 
 fib(10)
 ```
-Granted this can look confusing, so we will write our programs with the indentation, but knowing that, for now, this is not enforced. In later chapters, once you are more familiar with the code, we will enforce indentation rules and add other advanced features.
+For now, indentation is optional to keep the parser small and easy to understand; once the core pipeline is in place, later chapters will make indentation significant and progressively introduce richer language features.
 
 We also allow pyxc to call into standard library functions - the LLVM JIT makes this really easy. This means that you can use the ‘extern’ keyword to define a function before you use it (this is also useful for mutually recursive functions). For example:
 
@@ -39,11 +39,16 @@ extern def atan2(arg1 arg2)
 atan2(sin(.4), cos(42))
 ```
 
-A more interesting example is included in Chapter 6 where we write a little pyxc application that displays a Mandelbrot Set at various levels of magnification.
-
-In more advanced chapters, we will extend on the data types, add type checking, and enforce python indentation rules. 
+A more interesting example is included in [Chapter 7](chapter-07.md) where we write a little pyxc application that displays a Mandelbrot Set at various levels of magnification.
 
 Let’s dive into the implementation of this language!
+
+## Getting Source and Compiling
+
+```bash
+cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+cmake --build build
+```
 
 ## The Lexer
 
@@ -113,9 +118,9 @@ static std::map<std::string, Token> Keywords = {
     {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return}};
 
 ...
-if (isalpha(LastChar)) { // identifier: [a-zA-Z][a-zA-Z0-9]*
+if (isalpha(LastChar) || LastChar == '_') { // identifier: [a-zA-Z_][a-zA-Z0-9_]*
   IdentifierStr = LastChar;
-  while (isalnum((LastChar = getchar())))
+  while (isalnum((LastChar = getchar())) || LastChar == '_')
     IdentifierStr += LastChar;
 
     // Is this a known keyword? If yes, return that.
@@ -169,3 +174,24 @@ We handle comments by skipping to the end of the line and then return the end of
 With this, we have the complete lexer for the basic pyxc language. Next we’ll build a simple parser that uses this to build an Abstract Syntax Tree. When we have that, we’ll include a driver so that you can use the lexer and parser together.
 
 !!!note Reminder: The full code listing for the Lexer is available at the end of the next chapter of the tutorial where we add the Parser to create some testable code. 
+
+## Interaction samples
+
+```text
+$ build/pyxc
+
+ready> def foo(x):
+<tok_def><tok_identifier><tok_char, '('><tok_identifier><tok_char, ')'><tok_char, ':'><tok_eol>
+ready> return x + 1
+<tok_return><tok_identifier><tok_char, '+'><tok_number><tok_eol>
+ready> extern def add(a,b)
+<tok_extern><tok_def><tok_identifier><tok_char, '('><tok_identifier><tok_char, ','><tok_identifier><tok_char, ')'><tok_eol>
+ready> ! # comment after a character token
+<tok_char, '!'><tok_eol>
+ready> <tok_eol>
+ready> ^D
+```
+
+## Testing
+
+You can run tests with `llvm-lit` if you have an LLVM build available on your machine, or with `lit` if you installed it through Python. If you do not have either yet, that is okay: running tests is optional at this stage, and the interaction samples above are enough to continue. We will cover LLVM setup in [Chapter 3](chapter-03.md).

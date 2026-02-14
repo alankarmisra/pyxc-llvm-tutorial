@@ -1,0 +1,9 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Function redeclared with incompatible signature" %t
+
+extern def add(a: i32, b: i32) -> i32
+
+def add(a: f64, b: f64) -> f64:
+    return a + b
+
+add(1.0, 2.0)

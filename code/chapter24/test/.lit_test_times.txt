@@ -99,3 +99,6 @@
 2.414489e-02 const_error_missing_initializer.pyxc
 3.139091e-02 const_error_reassign.pyxc
 3.724384e-02 const_pointer_string.pyxc
+3.359818e-02 c28_forward_call.pyxc
+3.178024e-02 c28_mutual_recursion.pyxc
+2.564096e-02 c28_signature_mismatch.pyxc

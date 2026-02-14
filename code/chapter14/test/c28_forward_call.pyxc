@@ -1,0 +1,14 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '42.000000' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+extern def printd(x)
+
+def main():
+    printd(add(20, 22))
+    return 0
+
+def add(a, b):
+    return a + b
+
+main()

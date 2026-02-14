@@ -103,3 +103,6 @@
 4.869390e-02 multifile_error_tokens_requires_single.pyxc
 2.214001e+00 multifile_executable_link.pyxc
 6.291604e-02 multifile_object_mode.pyxc
+4.076195e-02 c28_forward_call.pyxc
+3.292799e-02 c28_mutual_recursion.pyxc
+2.563095e-02 c28_signature_mismatch.pyxc

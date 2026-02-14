@@ -1,0 +1,25 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '1.000000' %t
+# RUN: grep -x '0.000000' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+extern def printd(x)
+
+def iseven(n):
+    if(n == 0):
+        return 1
+    else:
+        return isodd(n - 1)
+
+def isodd(n):
+    if(n == 0):
+        return 0
+    else:
+        return iseven(n - 1)
+
+def main():
+    printd(iseven(10))
+    printd(isodd(10))
+    return 0
+
+main()

@@ -1,0 +1,19 @@
+# RUN: not %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Error (Line:" %t
+
+def iseven(n):
+    if(n == 0):
+        return 1
+    else:
+        return isodd(n - 1)
+
+def isodd(n):
+    if(n == 0):
+        return 0
+    else:
+        return iseven(n - 1)
+
+def main():
+    return iseven(10)
+
+main()

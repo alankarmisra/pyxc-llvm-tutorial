@@ -4,3 +4,6 @@
 3.550601e-02 mandel.pyxc
 8.495688e-02 showcase_tools.pyxc
 6.791306e-02 if_elif_optional.pyxc
+1.459982e+00 c28_forward_call.pyxc
+-1.448407e+00 c28_mutual_recursion.pyxc
+1.449962e+00 c28_signature_mismatch.pyxc

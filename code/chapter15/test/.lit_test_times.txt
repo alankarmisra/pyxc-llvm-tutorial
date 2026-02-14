@@ -7,3 +7,6 @@
 -3.624606e-02 pointer_void_index_error.pyxc
 3.143787e-02 type_alias_core.pyxc
 1.592121e-01 logic_short_circuit.pyxc
+1.293895e+00 c28_forward_call.pyxc
+-1.291598e+00 c28_mutual_recursion.pyxc
+1.286291e+00 c28_signature_mismatch.pyxc

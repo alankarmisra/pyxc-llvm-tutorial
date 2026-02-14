@@ -5,3 +5,6 @@
 1.528259e+00 pointer_void_index_error.pyxc
 1.588989e+00 runtime_print_all_types.pyxc
 1.544080e+00 type_alias_core.pyxc
+4.253578e-02 c28_forward_call.pyxc
+4.089117e-02 c28_mutual_recursion.pyxc
+2.528715e-02 c28_signature_mismatch.pyxc

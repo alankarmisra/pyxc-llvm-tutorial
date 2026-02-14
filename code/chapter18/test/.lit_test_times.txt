@@ -13,3 +13,6 @@
 2.912903e-02 operator_error_unary_bitnot_float.pyxc
 4.213881e-02 operator_modulo_signed.pyxc
 4.067993e-02 operator_unary_bitnot.pyxc
+4.183984e-02 c28_forward_call.pyxc
+3.983784e-02 c28_mutual_recursion.pyxc
+2.732706e-02 c28_signature_mismatch.pyxc

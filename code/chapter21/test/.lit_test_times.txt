@@ -31,3 +31,6 @@
 4.159594e-02 malloc_basic_i32.pyxc
 3.835988e-02 malloc_error_float_count.pyxc
 4.731011e-02 malloc_struct_roundtrip.pyxc
+8.692479e-02 c28_forward_call.pyxc
+8.568501e-02 c28_mutual_recursion.pyxc
+2.979422e-02 c28_signature_mismatch.pyxc

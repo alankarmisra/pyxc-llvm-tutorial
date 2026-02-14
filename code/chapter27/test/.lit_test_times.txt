@@ -124,3 +124,6 @@
 3.541875e-02 c27_char_literal_basic.pyxc
 3.040814e-02 c27_char_literal_error_multi_char.pyxc
 3.127813e-02 c27_char_literal_escapes.pyxc
+3.516698e-02 c28_forward_call.pyxc
+3.257489e-02 c28_mutual_recursion.pyxc
+2.517772e-02 c28_signature_mismatch.pyxc

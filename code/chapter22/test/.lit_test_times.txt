@@ -38,3 +38,6 @@
 3.046131e-02 io_getchar_decl_only.pyxc
 3.453898e-02 io_printf_subset.pyxc
 3.490996e-02 io_string_ptr_assign.pyxc
+3.936601e-02 c28_forward_call.pyxc
+4.079604e-02 c28_mutual_recursion.pyxc
+3.005004e-02 c28_signature_mismatch.pyxc

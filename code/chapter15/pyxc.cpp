@@ -403,9 +403,9 @@ static int gettok() {
     return tok_eol;
   }
 
-  if (isalpha(LastChar)) { // identifier: [a-zA-Z][a-zA-Z0-9]*
+  if (isalpha(LastChar) || LastChar == '_') { // identifier: [a-zA-Z_][a-zA-Z0-9_]*
     IdentifierStr = LastChar;
-    while (isalnum((LastChar = advance())))
+    while (isalnum((LastChar = advance())) || LastChar == '_')
       IdentifierStr += LastChar;
 
     // Is this a known keyword? If yes, return that.
@@ -870,6 +870,8 @@ public:
     indent(out, ind) << "Body:";
     return Body ? Body->dump(out, ind) : out << "null\n";
   }
+    const PrototypeAST &getProto() const { return *Proto; }
+    Function *codegenDeclaration() const { return Proto ? Proto->codegen() : nullptr; }
   Function *codegen();
 };
 
@@ -2339,67 +2341,107 @@ extern "C" DLLEXPORT double printd(double X) {
 // Parsing helpers
 //===----------------------------------------------------------------------===//
 
-static void ParseSourceFile() {
-  // Parse all definitions from the file
+struct ParsedTranslationUnit {
+  std::vector<std::unique_ptr<FunctionAST>> Definitions;
+  std::vector<std::unique_ptr<PrototypeAST>> Externs;
+  std::vector<std::unique_ptr<FunctionAST>> TopLevelExprs;
+};
+
+static bool RegisterPrototypeForLookup(const PrototypeAST &Proto) {
+  if (FunctionProtos.find(Proto.getName()) == FunctionProtos.end())
+    return true;
+  return true;
+}
+
+static bool ParseTranslationUnit(ParsedTranslationUnit &TU) {
   while (CurTok != tok_eof && CurTok != tok_error) {
     switch (CurTok) {
     case tok_def:
       if (auto FnAST = ParseDefinition()) {
-        if (auto *FnIR = FnAST->codegen()) {
-          if (Verbose) {
-            fprintf(stderr, "Read function definition:\n");
-            FnIR->print(errs());
-            fprintf(stderr, "\n");
-          }
-        }
+        if (!RegisterPrototypeForLookup(FnAST->getProto()))
+          return false;
+        TU.Definitions.push_back(std::move(FnAST));
       } else {
-        getNextToken(); // Skip for error recovery
+        getNextToken();
       }
       break;
     case tok_extern:
       if (auto ProtoAST = ParseExtern()) {
-        if (auto *FnIR = ProtoAST->codegen()) {
-          if (Verbose) {
-            fprintf(stderr, "Read extern:\n");
-            FnIR->print(errs());
-            fprintf(stderr, "\n");
-          }
-          FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
-        }
+        if (!RegisterPrototypeForLookup(*ProtoAST))
+          return false;
+        TU.Externs.push_back(std::move(ProtoAST));
       } else {
-        getNextToken(); // Skip for error recovery
+        getNextToken();
       }
       break;
     case tok_eol:
-      getNextToken(); // Skip newlines
+      getNextToken();
       break;
     case '@':
       LogError("Decorators/custom operators are disabled in Chapter 15");
       SkipToNextLine();
       break;
     default:
-      // Top-level expressions
       if (auto FnAST = ParseTopLevelExpr()) {
-        if (auto *FnIR = FnAST->codegen()) {
-          if (Verbose) {
-            fprintf(stderr, "Read top-level expression:\n");
-            FnIR->print(errs());
-            fprintf(stderr, "\n");
-          }
-        }
+        TU.TopLevelExprs.push_back(std::move(FnAST));
       } else {
-        getNextToken(); // Skip for error recovery
+        getNextToken();
       }
       break;
     }
   }
+
+  return true;
 }
 
-//===----------------------------------------------------------------------===//
+static bool CodegenTranslationUnit(ParsedTranslationUnit &TU) {
+  for (auto &ProtoAST : TU.Externs) {
+    if (auto *FnIR = ProtoAST->codegen()) {
+      if (Verbose) {
+        fprintf(stderr, "Read extern:\n");
+        FnIR->print(errs());
+        fprintf(stderr, "\n");
+      }
+      FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
+    } else {
+      return false;
+    }
+  }
+
+  for (auto &FnAST : TU.Definitions) {
+    if (!FnAST->codegenDeclaration())
+      return false;
+  }
+  for (auto &FnAST : TU.Definitions) {
+    if (auto *FnIR = FnAST->codegen()) {
+      if (Verbose) {
+        fprintf(stderr, "Read function definition:\n");
+        FnIR->print(errs());
+        fprintf(stderr, "\n");
+      }
+    } else {
+      return false;
+    }
+  }
+
+  for (auto &FnAST : TU.TopLevelExprs) {
+    if (auto *FnIR = FnAST->codegen()) {
+      if (Verbose) {
+        fprintf(stderr, "Read top-level expression:\n");
+        FnIR->print(errs());
+        fprintf(stderr, "\n");
+      }
+    } else {
+      return false;
+    }
+  }
+
+  return true;
+}
 // Interpreter (JIT execution of file)
 //===----------------------------------------------------------------------===//
 
-void InterpretFile(const std::string &filename) {
+bool InterpretFile(const std::string &filename) {
   UseCMainSignature = false;
   InitializeNativeTarget();
   InitializeNativeTargetAsmPrinter();
@@ -2414,90 +2456,93 @@ void InterpretFile(const std::string &filename) {
   if (!InputFile) {
     errs() << "Error: Could not open file " << filename << "\n";
     InputFile = stdin;
-    return;
+    return false;
   }
-
   // Parse the source file
   getNextToken();
+  ParsedTranslationUnit TU;
+  if (!ParseTranslationUnit(TU)) {
+    fclose(InputFile);
+    InputFile = stdin;
+    return false;
+  }
 
-  while (CurTok != tok_eof && CurTok != tok_error) {
-    switch (CurTok) {
-    case tok_def:
-      if (auto FnAST = ParseDefinition()) {
-        if (auto *FnIR = FnAST->codegen()) {
-          if (Verbose) {
-            fprintf(stderr, "Read function definition:\n");
-            FnIR->print(errs());
-            fprintf(stderr, "\n");
-          }
-          // Add to JIT
-          ExitOnErr(TheJIT->addModule(
-              ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
-          InitializeModuleAndManagers();
-        }
-      } else {
-        getNextToken();
+  for (auto &ProtoAST : TU.Externs) {
+    if (auto *FnIR = ProtoAST->codegen()) {
+      if (Verbose) {
+        fprintf(stderr, "Read extern:\n");
+        FnIR->print(errs());
+        fprintf(stderr, "\n");
       }
-      break;
-    case tok_extern:
-      if (auto ProtoAST = ParseExtern()) {
-        if (auto *FnIR = ProtoAST->codegen()) {
-          if (Verbose) {
-            fprintf(stderr, "Read extern:\n");
-            FnIR->print(errs());
-            fprintf(stderr, "\n");
-          }
-          FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
-        }
-      } else {
-        getNextToken();
-      }
-      break;
-    case tok_eol:
-      getNextToken();
-      break;
-    case '@':
-      LogError("Decorators/custom operators are disabled in Chapter 15");
-      SkipToNextLine();
-      break;
-    default:
-      // Top-level expressions - execute them
-      if (auto FnAST = ParseTopLevelExpr()) {
-        if (auto *FnIR = FnAST->codegen()) {
-          auto RT = TheJIT->getMainJITDylib().createResourceTracker();
-
-          auto TSM =
-              ThreadSafeModule(std::move(TheModule), std::move(TheContext));
-          ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
-          InitializeModuleAndManagers();
-
-          if (Verbose) {
-            fprintf(stderr, "Read top-level expression:\n");
-            FnIR->print(errs());
-            fprintf(stderr, "\n");
-          }
-
-          // Execute the expression
-          auto ExprSymbol = ExitOnErr(TheJIT->lookup("__anon_expr"));
-          double (*FP)() = ExprSymbol.toPtr<double (*)()>();
-          double result = FP();
-
-          if (Verbose)
-            fprintf(stderr, "Result: %f\n", result);
-
-          // Clean up the anonymous expression
-          ExitOnErr(RT->remove());
-        }
-      } else {
-        getNextToken();
-      }
-      break;
+      FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
+    } else {
+      fclose(InputFile);
+      InputFile = stdin;
+      return false;
     }
   }
+
+  for (auto &FnAST : TU.Definitions) {
+    if (!FnAST->codegenDeclaration()) {
+      fclose(InputFile);
+      InputFile = stdin;
+      return false;
+    }
+  }
+
+  for (auto &FnAST : TU.Definitions) {
+    if (auto *FnIR = FnAST->codegen()) {
+      if (Verbose) {
+        fprintf(stderr, "Read function definition:\n");
+        FnIR->print(errs());
+        fprintf(stderr, "\n");
+      }
+    } else {
+      fclose(InputFile);
+      InputFile = stdin;
+      return false;
+    }
+  }
+
+  ExitOnErr(TheJIT->addModule(
+      ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
+  InitializeModuleAndManagers();
+
+  for (auto &FnAST : TU.TopLevelExprs) {
+    if (auto *FnIR = FnAST->codegen()) {
+      auto RT = TheJIT->getMainJITDylib().createResourceTracker();
+
+      auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
+      ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
+      InitializeModuleAndManagers();
+
+      if (Verbose) {
+        fprintf(stderr, "Read top-level expression:\n");
+        FnIR->print(errs());
+        fprintf(stderr, "\n");
+      }
+
+      auto ExprSymbol = ExitOnErr(TheJIT->lookup("__anon_expr"));
+      double (*FP)() = ExprSymbol.toPtr<double (*)()>();
+      double result = FP();
+
+      if (Verbose)
+        fprintf(stderr, "Result: %f\n", result);
+
+      ExitOnErr(RT->remove());
+    } else {
+      fclose(InputFile);
+      InputFile = stdin;
+      return false;
+    }
+  }
+
 
   // Close file and restore stdin
   fclose(InputFile);
   InputFile = stdin;
+
+  return true;
 }
 
 //===----------------------------------------------------------------------===//
@@ -2527,7 +2572,13 @@ void CompileToObjectFile(const std::string &filename,
 
   // Parse the source file
   getNextToken();
-  ParseSourceFile();
+  ParsedTranslationUnit TU;
+  if (!ParseTranslationUnit(TU) || !CodegenTranslationUnit(TU)) {
+    errs() << "Error: failed to compile " << filename << "\n";
+    fclose(InputFile);
+    InputFile = stdin;
+    return;
+  }
 
   // Close file and restore stdin
   fclose(InputFile);
@@ -2653,7 +2704,8 @@ int main(int argc, char **argv) {
     case Interpret:
       if (Verbose)
         std::cout << "Interpreting " << InputFilename << "...\n";
-      InterpretFile(InputFilename);
+      if (!InterpretFile(InputFilename))
+        return 1;
       break;
 
     case Executable: {

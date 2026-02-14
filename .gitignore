@@ -66,5 +66,9 @@ vcpkg_installed/
 *.swp
 *.bak
 
+# Lit
+**/test/Output
+.lit_test_times.txt
+
 pyxc
 runtime.o
