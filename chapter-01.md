@@ -227,7 +227,7 @@ int main() {
 
 This is not a full interpreter yet. It is only a quick feedback loop to verify that the lexer tokenizes input the way we expect.
 
-## Interaction samples
+## Sample interaction
 
 ```python
 $ build/pyxc
