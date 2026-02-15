@@ -127,8 +127,15 @@ static SourceLocation LexLoc = {1, 0};
 
 static int advance() {
   int LastChar = getchar();
-
-  if (LastChar == '\n' || LastChar == '\r') {
+  if (LastChar == '\r') {
+    int NextChar = getchar();
+    if (NextChar != '\n' && NextChar != EOF)
+      ungetc(NextChar, stdin);
+    LexLoc.Line++;
+    LexLoc.Col = 0;
+    return '\n';
+  }
+  if (LastChar == '\n') {
     LexLoc.Line++;
     LexLoc.Col = 0;
   } else
@@ -139,21 +146,15 @@ static int advance() {
 /// gettok - Return the next token from standard input.
 static int gettok() {
   static int LastChar = ' ';
-
   // Skip whitespace EXCEPT newlines
-  while (isspace(LastChar) && LastChar != '\n' && LastChar != '\r')
+  while (isspace(LastChar) && LastChar != '\n')
     LastChar = advance();
 
   CurLoc = LexLoc;
 
-  // Return end-of-line token
-  if (LastChar == '\n' || LastChar == '\r') {
-    // Reset LastChar to a space instead of reading the next character.
-    // If we called getchar() here, it would block waiting for input,
-    // requiring the user to press Enter twice in the REPL.
-    // Setting LastChar = ' ' avoids this blocking read.
-    LastChar = advance();
-    // LastChar = ' ';
+  // Return end-of-line token.
+  if (LastChar == '\n') {
+    LastChar = ' ';
     return tok_eol;
   }
 
@@ -164,7 +165,7 @@ static int gettok() {
 
   if (isalpha(LastChar) || LastChar == '_') { // identifier: [a-zA-Z_][a-zA-Z0-9_]*
     IdentifierStr = LastChar;
-    while (isalnum((LastChar = getchar())) || LastChar == '_')
+    while (isalnum((LastChar = advance())) || LastChar == '_')
       IdentifierStr += LastChar;
 
     // Is this a known keyword? If yes, return that.
@@ -188,7 +189,7 @@ static int gettok() {
     // Comment until end of line.
     do
       LastChar = advance();
-    while (LastChar != EOF && LastChar != '\n' && LastChar != '\r');
+    while (LastChar != EOF && LastChar != '\n');
 
     if (LastChar != EOF)
       return tok_eol;
@@ -440,15 +441,19 @@ static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 static std::map<char, int> BinopPrecedence = {
     {'=', 2}, {'<', 10}, {'+', 20}, {'-', 20}, {'*', 40}};
 
+/// Explanation-friendly precedence anchors used by parser control flow.
+static constexpr int NO_OP_PREC = -1;
+static constexpr int MIN_BINOP_PREC = 1;
+
 /// GetTokPrecedence - Get the precedence of the pending binary operator token.
 static int GetTokPrecedence() {
   if (!isascii(CurTok))
-    return -1;
+    return NO_OP_PREC;
 
   // Make sure it's a declared binop.
   int TokPrec = BinopPrecedence[CurTok];
-  if (TokPrec <= 0)
-    return -1;
+  if (TokPrec < MIN_BINOP_PREC)
+    return NO_OP_PREC;
   return TokPrec;
 }
 
@@ -806,7 +811,7 @@ static std::unique_ptr<ExprAST> ParseExpression() {
   if (!LHS)
     return nullptr;
 
-  return ParseBinOpRHS(0, std::move(LHS));
+  return ParseBinOpRHS(MIN_BINOP_PREC, std::move(LHS));
 }
 
 /// prototype
@@ -1472,8 +1477,11 @@ static void HandleDefinition() {
     if (!FnAST->codegen())
       fprintf(stderr, "Error reading function definition:");
   } else {
-    // Skip token for error recovery.
-    getNextToken();
+    // Error recovery: consume one token only when we are not already at
+    // a line/end boundary. This avoids blocking for input after errors
+    // like "2 + <eol>".
+    if (CurTok != tok_eol && CurTok != tok_eof)
+      getNextToken();
   }
 }
 
@@ -1484,8 +1492,11 @@ static void HandleExtern() {
     else
       FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
   } else {
-    // Skip token for error recovery.
-    getNextToken();
+    // Error recovery: consume one token only when we are not already at
+    // a line/end boundary. This avoids blocking for input after errors
+    // like "2 + <eol>".
+    if (CurTok != tok_eol && CurTok != tok_eof)
+      getNextToken();
   }
 }
 
@@ -1496,8 +1507,11 @@ static void HandleTopLevelExpression() {
       fprintf(stderr, "Error generating code for top level expr");
     }
   } else {
-    // Skip token for error recovery.
-    getNextToken();
+    // Error recovery: consume one token only when we are not already at
+    // a line/end boundary. This avoids blocking for input after errors
+    // like "2 + <eol>".
+    if (CurTok != tok_eol && CurTok != tok_eof)
+      getNextToken();
   }
 }
 

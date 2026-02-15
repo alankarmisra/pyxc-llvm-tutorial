@@ -9,4 +9,4 @@ config.test_source_root = os.path.dirname(__file__)
 config.test_exec_root = config.test_source_root
 
 chapter_dir = os.path.abspath(os.path.join(config.test_source_root, ".."))
-config.substitutions.append(("%pyxc", os.path.join(chapter_dir, "pyxc")))
+config.substitutions.append(("%pyxc", os.path.join(chapter_dir, "build", "pyxc")))

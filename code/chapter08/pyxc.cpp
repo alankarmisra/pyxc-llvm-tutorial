@@ -80,6 +80,31 @@ static std::map<std::string, Token> Keywords = {
     {"if", tok_if},   {"else", tok_else},     {"for", tok_for},
     {"in", tok_in},   {"range", tok_range},   {"var", tok_var}};
 
+struct SourceLocation {
+  int Line;
+  int Col;
+};
+static SourceLocation CurLoc;
+static SourceLocation LexLoc = {1, 0};
+
+static int advance() {
+  int LastChar = getchar();
+  if (LastChar == '\r') {
+    int NextChar = getchar();
+    if (NextChar != '\n' && NextChar != EOF)
+      ungetc(NextChar, stdin);
+    LexLoc.Line++;
+    LexLoc.Col = 0;
+    return '\n';
+  }
+  if (LastChar == '\n') {
+    LexLoc.Line++;
+    LexLoc.Col = 0;
+  } else
+    LexLoc.Col++;
+  return LastChar;
+}
+
 enum OperatorType { Undefined, Unary, Binary };
 
 static constexpr int DEFAULT_BINARY_PRECEDENCE = 30;
@@ -90,29 +115,26 @@ static std::map<std::string, OperatorType> Decorators = {
 /// gettok - Return the next token from standard input.
 static int gettok() {
   static int LastChar = ' ';
-
   // Skip whitespace EXCEPT newlines
-  while (isspace(LastChar) && LastChar != '\n' && LastChar != '\r')
-    LastChar = getchar();
+  while (isspace(LastChar) && LastChar != '\n')
+    LastChar = advance();
 
-  // Return end-of-line token
-  if (LastChar == '\n' || LastChar == '\r') {
-    // Reset LastChar to a space instead of reading the next character.
-    // If we called getchar() here, it would block waiting for input,
-    // requiring the user to press Enter twice in the REPL.
-    // Setting LastChar = ' ' avoids this blocking read.
+  // Return end-of-line token.
+  if (LastChar == '\n') {
     LastChar = ' ';
     return tok_eol;
   }
 
+  CurLoc = LexLoc;
+
   if (LastChar == '@') {
-    LastChar = getchar(); // consume '@'
+    LastChar = advance(); // consume '@'
     return tok_decorator;
   }
 
   if (isalpha(LastChar) || LastChar == '_') { // identifier: [a-zA-Z_][a-zA-Z0-9_]*
     IdentifierStr = LastChar;
-    while (isalnum((LastChar = getchar())) || LastChar == '_')
+    while (isalnum((LastChar = advance())) || LastChar == '_')
       IdentifierStr += LastChar;
 
     // Is this a known keyword? If yes, return that.
@@ -125,7 +147,7 @@ static int gettok() {
     std::string NumStr;
     do {
       NumStr += LastChar;
-      LastChar = getchar();
+      LastChar = advance();
     } while (isdigit(LastChar) || LastChar == '.');
 
     NumVal = strtod(NumStr.c_str(), 0);
@@ -135,8 +157,8 @@ static int gettok() {
   if (LastChar == '#') {
     // Comment until end of line.
     do
-      LastChar = getchar();
-    while (LastChar != EOF && LastChar != '\n' && LastChar != '\r');
+      LastChar = advance();
+    while (LastChar != EOF && LastChar != '\n');
 
     if (LastChar != EOF)
       return tok_eol;
@@ -148,7 +170,7 @@ static int gettok() {
 
   // Otherwise, just return the character as its ascii value.
   int ThisChar = LastChar;
-  LastChar = getchar();
+  LastChar = advance();
   return ThisChar;
 }
 
@@ -320,22 +342,26 @@ static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 static std::map<char, int> BinopPrecedence = {
     {'=', 2}, {'<', 10}, {'+', 20}, {'-', 20}, {'*', 40}};
 
+/// Explanation-friendly precedence anchors used by parser control flow.
+static constexpr int NO_OP_PREC = -1;
+static constexpr int MIN_BINOP_PREC = 1;
+
 /// GetTokPrecedence - Get the precedence of the pending binary operator token.
 static int GetTokPrecedence() {
   if (!isascii(CurTok))
-    return -1;
+    return NO_OP_PREC;
 
   // Make sure it's a declared binop.
   int TokPrec = BinopPrecedence[CurTok];
-  if (TokPrec <= 0)
-    return -1;
+  if (TokPrec < MIN_BINOP_PREC)
+    return NO_OP_PREC;
   return TokPrec;
 }
 
 /// LogError* - These are little helper functions for error handling.
 std::unique_ptr<ExprAST> LogError(const char *Str) {
   InForExpression = false;
-  fprintf(stderr, "Error: %s\n", Str);
+  fprintf(stderr, "Error at %d:%d: %s\n", CurLoc.Line, CurLoc.Col, Str);
   return nullptr;
 }
 
@@ -683,7 +709,7 @@ static std::unique_ptr<ExprAST> ParseExpression() {
   if (!LHS)
     return nullptr;
 
-  return ParseBinOpRHS(0, std::move(LHS));
+  return ParseBinOpRHS(MIN_BINOP_PREC, std::move(LHS));
 }
 
 /// prototype
@@ -1303,8 +1329,11 @@ static void HandleDefinition() {
       InitializeModuleAndManagers();
     }
   } else {
-    // Skip token for error recovery.
-    getNextToken();
+    // Error recovery: consume one token only when we are not already at
+    // a line/end boundary. This avoids blocking for input after errors
+    // like "2 + <eol>".
+    if (CurTok != tok_eol && CurTok != tok_eof)
+      getNextToken();
   }
 }
 
@@ -1317,8 +1346,11 @@ static void HandleExtern() {
       FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
     }
   } else {
-    // Skip token for error recovery.
-    getNextToken();
+    // Error recovery: consume one token only when we are not already at
+    // a line/end boundary. This avoids blocking for input after errors
+    // like "2 + <eol>".
+    if (CurTok != tok_eol && CurTok != tok_eof)
+      getNextToken();
   }
 }
 
@@ -1354,8 +1386,11 @@ static void HandleTopLevelExpression() {
       //   FnIR->eraseFromParent();
     }
   } else {
-    // Skip token for error recovery.
-    getNextToken();
+    // Error recovery: consume one token only when we are not already at
+    // a line/end boundary. This avoids blocking for input after errors
+    // like "2 + <eol>".
+    if (CurTok != tok_eol && CurTok != tok_eof)
+      getNextToken();
   }
 }
 

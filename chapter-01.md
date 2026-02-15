@@ -43,16 +43,12 @@ A more interesting example is included in [Chapter 7](chapter-07.md) where we wr
 
 Let’s dive into the implementation of this language!
 
-## Getting Source and Compiling
+## Source Code
 
-```bash
-cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-cmake --build build
-```
+To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter01](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter01).
+
 
 ## The Lexer
-
-!!!note The full code listing for the Lexer is available at the end of the next chapter of the tutorial where we add the Parser to create some testable code. 
 
 When it comes to implementing a language, the first thing needed is the ability to process a text file and recognize what it says. The traditional way to do this is to use a [lexer](https://en.wikipedia.org/wiki/Lexical_analysis) (aka *scanner*) to break the input up into *tokens*. Each token returned by the lexer includes a token code and potentially some metadata (e.g. the numeric value of a number). First, we define the possibilities:
 
@@ -81,7 +77,39 @@ static double NumVal;             // Filled in if tok_number
 
 Each token returned by our lexer will either be one of the Token enum values or it will be an ‘unknown’ character like ‘+’, which is returned as its ASCII value. If the current token is an identifier, the IdentifierStr global variable holds the name of the identifier. If the current token is a numeric literal (like 1.0), NumVal holds its value. We use global variables for simplicity, but this is not the best choice for a real language implementation :).
 
-The actual implementation of the lexer is a single function named gettok. The gettok function is called to return the next token from standard input. Its definition starts as:
+Before we look at `gettok()`, we add two tiny location-tracking structures and one helper:
+
+```cpp
+struct SourceLocation {
+  int Line;
+  int Col;
+};
+static SourceLocation CurLoc;
+static SourceLocation LexLoc = {1, 0};
+
+static int advance() {
+  int LastChar = std::getchar();
+  if (LastChar == '\r') {
+    int NextChar = std::getchar();
+    if (NextChar != '\n' && NextChar != EOF)
+      std::ungetc(NextChar, stdin);
+    LexLoc.Line++;
+    LexLoc.Col = 0;
+    return '\n';
+  }
+  if (LastChar == '\n') {
+    LexLoc.Line++;
+    LexLoc.Col = 0;
+  } else {
+    LexLoc.Col++;
+  }
+  return LastChar;
+}
+```
+
+`LexLoc` tracks where the lexer is currently reading. `CurLoc` is the start location of the current token. The `advance()` helper centralizes character reading and location updates so `gettok()` does not need to manually keep line/column counters in every branch. It also normalizes Windows `\r\n` into one logical newline by peeking one character ahead and pushing non-`\n` characters back with `std::ungetc`.
+
+Now the actual implementation of the lexer is a single function named `gettok()`. It is called to return the next token from standard input. Its definition starts as:
 
 ```cpp
 /// gettok - Return the next token from standard input.
@@ -89,24 +117,22 @@ static int gettok() {
   static int LastChar = ' ';
 
   // Skip whitespace EXCEPT newlines
-  while (isspace(LastChar) && LastChar != '\n' && LastChar != '\r')
-    LastChar = getchar();
+  while (std::isspace(LastChar) && LastChar != '\n')
+    LastChar = advance();
 ```
 
-gettok works by calling the C getchar() function to read characters one at a time from standard input. It eats them as it recognizes them and stores the last character read, but not processed, in LastChar. The first thing that it has to do is ignore whitespace between tokens except new lines. This is accomplished with the loop above.
+`gettok()` works by consuming one character at a time from standard input via `advance()`. It eats characters as it recognizes them and stores the last character read, but not yet processed, in `LastChar`. The first thing it does is ignore whitespace between tokens except new lines. This is accomplished with the loop above.
 
 The next thing we do is recognize newlines. In pyxc, newlines are significant - they mark the end of a statement, similar to Python's REPL behavior. We'll discuss why this matters and how the parser handles it in [Chapter 2](chapter-02.md), but for now, just know that the lexer treats newlines as a distinct token (`tok_eol`) rather than ignoring them like other whitespace.
 
 ```cpp
-  // Return end-of-line token
-  if (LastChar == '\n' || LastChar == '\r') {
-    // Reset LastChar to a space instead of reading the next character.
-    // If we called getchar() here, it would block waiting for input,
-    // requiring the user to press Enter twice in the REPL.
-    // Setting LastChar = ' ' avoids this blocking read.
+  // Return end-of-line token.
+  if (LastChar == '\n') {
     LastChar = ' ';
     return tok_eol;
   }
+
+  CurLoc = LexLoc;
 ```
 
 The next thing gettok needs to do is recognize identifiers and specific keywords like `def`. Pyxc does this with this simple loop:
@@ -118,28 +144,28 @@ static std::map<std::string, Token> Keywords = {
     {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return}};
 
 ...
-if (isalpha(LastChar) || LastChar == '_') { // identifier: [a-zA-Z_][a-zA-Z0-9_]*
+if (std::isalpha(LastChar) || LastChar == '_') { // identifier: [a-zA-Z_][a-zA-Z0-9_]*
   IdentifierStr = LastChar;
-  while (isalnum((LastChar = getchar())) || LastChar == '_')
+  while (std::isalnum((LastChar = advance())) || LastChar == '_')
     IdentifierStr += LastChar;
 
     // Is this a known keyword? If yes, return that.
     // Else it is an ordinary identifier.
-    const auto it = Keywords.find(IdentifierStr);
-    return (it != Keywords.end()) ? it->second : tok_identifier;
+    const auto It = Keywords.find(IdentifierStr);
+    return (It != Keywords.end()) ? It->second : tok_identifier;
 }
 ```
 Note that this code sets the `IdentifierStr` global whenever it lexes an identifier. Also, since language keywords are matched by the same loop, we handle them here. Numeric values are similar:
 
 ```cpp
-if (isdigit(LastChar) || LastChar == '.') {   // Number: [0-9.]+
+if (std::isdigit(LastChar) || LastChar == '.') {   // Number: [0-9.]+
   std::string NumStr;
   do {
     NumStr += LastChar;
-    LastChar = getchar();
-  } while (isdigit(LastChar) || LastChar == '.');
+    LastChar = advance();
+  } while (std::isdigit(LastChar) || LastChar == '.');
 
-  NumVal = strtod(NumStr.c_str(), 0);
+  NumVal = std::strtod(NumStr.c_str(), nullptr);
   return tok_number;
 }
 ```
@@ -149,8 +175,8 @@ This is all pretty straightforward code for processing input. When reading a num
 if (LastChar == '#') {
     // Comment until end of line.
     do
-      LastChar = getchar();
-    while (LastChar != EOF && LastChar != '\n' && LastChar != '\r');
+      LastChar = advance();
+    while (LastChar != EOF && LastChar != '\n');
 
     if (LastChar != EOF)
       return tok_eol;
@@ -166,18 +192,44 @@ We handle comments by skipping to the end of the line and then return the end of
 
   // Otherwise, just return the character as its ascii value.
   int ThisChar = LastChar;
-  LastChar = getchar();
+  LastChar = advance();
   return ThisChar;
 }
 ```
 
 With this, we have the complete lexer for the basic pyxc language. Next we’ll build a simple parser that uses this to build an Abstract Syntax Tree. When we have that, we’ll include a driver so that you can use the lexer and parser together.
 
-!!!note Reminder: The full code listing for the Lexer is available at the end of the next chapter of the tutorial where we add the Parser to create some testable code. 
+## Rudimentary REPL
+
+To make the lexer easy to observe, we add a small REPL-style loop in `main()`. It reads one token at a time from standard input with `gettok()`, prints the token name, and prints a fresh `ready>` prompt whenever we hit `tok_eol`.
+
+```cpp
+/// A rudimentary REPL. Type things in, see them convert to tokens.
+void MainLoop() {
+  fprintf(stderr, "ready> ");
+  while (true) {
+    const int Tok = gettok();
+    if (Tok == tok_eof)
+      break;
+
+    std::printf("<%s>", GetTokenName(Tok).c_str());
+
+    if (Tok == tok_eol)
+      std::printf("\nready> ");
+  }
+}
+
+int main() {
+  MainLoop();
+  return 0;
+}
+```
+
+This is not a full interpreter yet. It is only a quick feedback loop to verify that the lexer tokenizes input the way we expect.
 
 ## Interaction samples
 
-```text
+```python
 $ build/pyxc
 
 ready> def foo(x):
@@ -190,6 +242,27 @@ ready> ! # comment after a character token
 <tok_char, '!'><tok_eol>
 ready> <tok_eol>
 ready> ^D
+```
+
+## Building
+We will use [CMake](https://cmake.org/) for our builds so that when we have an explosion of LLVM related switches, we can look at each other with positive approval for having the insight to use CMake early on.
+
+```bash
+# build.sh
+
+# Configure step:
+# -S .   -> source dir is current directory (where CMakeLists.txt lives)
+# -B build -> generate build files in ./build
+cmake -S . -B build
+
+# Build step:
+# --build build -> compile using the generated build system in ./build
+cmake --build build
+```
+
+If you are running a Unix-y OS (including MacOS), you can just run
+```bash
+./build.sh
 ```
 
 ## Testing

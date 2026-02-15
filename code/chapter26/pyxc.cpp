@@ -33,9 +33,9 @@
 #include <algorithm>
 #include <cassert>
 #include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstdint>
 #include <cstring>
 #include <deque>
 #include <iostream>
@@ -93,9 +93,9 @@ static cl::opt<bool> EmitDebug("g", cl::desc("Emit debug information"),
                                cl::init(false), cl::cat(PyxcCategory));
 
 // Accepts -O0, -O1, -O2, -O3
-static cl::opt<std::string> OptLevel(
-    "O", cl::desc("Optimization level (0-3)"), cl::value_desc("level"),
-    cl::init("2"), cl::Prefix, cl::cat(PyxcCategory));
+static cl::opt<std::string> OptLevel("O", cl::desc("Optimization level (0-3)"),
+                                     cl::value_desc("level"), cl::init("2"),
+                                     cl::Prefix, cl::cat(PyxcCategory));
 
 std::string getOutputFilename(const std::string &input,
                               const std::string &ext) {
@@ -206,10 +206,10 @@ enum Token {
   tok_or = -20,
 
   // multi-character comparison operators
-  tok_eq = -21, // ==
-  tok_ne = -22, // !=
-  tok_le = -23, // <=
-  tok_ge = -24, // >=
+  tok_eq = -21,    // ==
+  tok_ne = -22,    // !=
+  tok_le = -23,    // <=
+  tok_ge = -24,    // >=
   tok_arrow = -26, // ->
 };
 
@@ -222,14 +222,14 @@ static std::string StringVal;     // Filled in if tok_string
 // Keywords words like `def`, `extern` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
 static std::map<std::string, Token> Keywords = {
-    {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return},
-    {"if", tok_if},   {"elif", tok_elif},     {"else", tok_else},
-    {"for", tok_for}, {"in", tok_in},         {"range", tok_range},
-    {"var", tok_var}, {"type", tok_type},     {"not", tok_not},
-    {"and", tok_and}, {"print", tok_print},   {"while", tok_while},
-    {"do", tok_do},   {"break", tok_break},   {"continue", tok_continue},
-    {"or", tok_or},   {"struct", tok_struct}, {"malloc", tok_malloc},
-    {"free", tok_free}, {"addr", tok_addr}, {"const", tok_const}};
+    {"def", tok_def},   {"extern", tok_extern}, {"return", tok_return},
+    {"if", tok_if},     {"elif", tok_elif},     {"else", tok_else},
+    {"for", tok_for},   {"in", tok_in},         {"range", tok_range},
+    {"var", tok_var},   {"type", tok_type},     {"not", tok_not},
+    {"and", tok_and},   {"print", tok_print},   {"while", tok_while},
+    {"do", tok_do},     {"break", tok_break},   {"continue", tok_continue},
+    {"or", tok_or},     {"struct", tok_struct}, {"malloc", tok_malloc},
+    {"free", tok_free}, {"addr", tok_addr},     {"const", tok_const}};
 
 struct SourceLocation {
   int Line;
@@ -281,7 +281,15 @@ static int LastChar = '\0';
 static int advance() {
   int LastChar = getc(InputFile);
 
-  if (LastChar == '\n' || LastChar == '\r') {
+  if (LastChar == '\r') {
+    int NextChar = getc(InputFile);
+    if (NextChar != '\n' && NextChar != EOF)
+      ungetc(NextChar, InputFile);
+    LexLoc.Line++;
+    LexLoc.Col = 0;
+    return '\n';
+  }
+  if (LastChar == '\n') {
     LexLoc.Line++;
     LexLoc.Col = 0;
   } else
@@ -296,13 +304,16 @@ class ExprAST;
 /// LogError* - These are little helper functions for error handling.
 static int CurTok;
 static bool HadError = false;
+
 template <typename T = void> T LogError(const char *Str) {
   HadError = true;
   // print CurTok with the error instead of two separate lines.
-  fprintf(stderr, "%sError (Line: %d, Column: %d): %s\nCurTok = %d\n%s", Red,
+  fprintf(stderr, "%sError (Line: %d, Column: %d): %s | CurTok = %d\n%s", Red,
           CurLoc.Line, CurLoc.Col, Str, CurTok, Reset);
 
-  if constexpr (std::is_pointer_v<T>)
+  if constexpr (std::is_void_v<T>)
+    return;
+  else if constexpr (std::is_pointer_v<T>)
     return nullptr;
   else
     return T{};
@@ -477,23 +488,20 @@ static int gettok() {
 
   // Skip whitespace EXCEPT newlines (this will take care of spaces
   // mid-expressions)
-  while (isspace(LastChar) && LastChar != '\n' && LastChar != '\r')
+  while (isspace(LastChar) && LastChar != '\n')
     LastChar = advance();
-
   CurLoc = LexLoc;
 
-  // Return end-of-line token
-  if (LastChar == '\n' || LastChar == '\r') {
-    // Reset LastChar to a space instead of reading the next character.
-    // If we called advance() here, it would block waiting for input,
-    // requiring the user to press Enter twice in the REPL.
-    // Setting LastChar = ' ' avoids this blocking read.
+  // Return end-of-line token. For \r\n (Windows) or bare \r (old Mac),
+  // peek ahead: if the next char is \n, consume it so we emit one tok_eol.
+  if (LastChar == '\n') {
     LastChar = '\0';
-    AtStartOfLine = true; // Modify state only when you're emitting the token.
+    AtStartOfLine = true;
     return tok_eol;
   }
 
-  if (isalpha(LastChar) || LastChar == '_') { // identifier: [a-zA-Z_][a-zA-Z0-9_]*
+  if (isalpha(LastChar) ||
+      LastChar == '_') { // identifier: [a-zA-Z_][a-zA-Z0-9_]*
     IdentifierStr = LastChar;
     while (isalnum((LastChar = advance())) || LastChar == '_')
       IdentifierStr += LastChar;
@@ -575,7 +583,7 @@ static int gettok() {
     // Comment until end of line.
     do
       LastChar = advance();
-    while (LastChar != EOF && LastChar != '\n' && LastChar != '\r');
+    while (LastChar != EOF && LastChar != '\n');
 
     if (LastChar != EOF)
       return tok_eol;
@@ -1153,9 +1161,9 @@ class ForStmtAST : public StmtAST {
   std::unique_ptr<BlockSuiteAST> Body;
 
 public:
-  ForStmtAST(SourceLocation Loc, std::string VarName, std::unique_ptr<ExprAST> Start,
-             std::unique_ptr<ExprAST> End, std::unique_ptr<ExprAST> Step,
-             std::unique_ptr<BlockSuiteAST> Body)
+  ForStmtAST(SourceLocation Loc, std::string VarName,
+             std::unique_ptr<ExprAST> Start, std::unique_ptr<ExprAST> End,
+             std::unique_ptr<ExprAST> Step, std::unique_ptr<BlockSuiteAST> Body)
       : StmtAST(Loc), VarName(std::move(VarName)), Start(std::move(Start)),
         End(std::move(End)), Step(std::move(Step)), Body(std::move(Body)) {}
 
@@ -1242,8 +1250,8 @@ class PrototypeAST {
 
 public:
   PrototypeAST(SourceLocation Loc, const std::string &Name,
-               std::vector<std::string> Args,
-               std::vector<TypeExprPtr> ArgTypes, TypeExprPtr RetType)
+               std::vector<std::string> Args, std::vector<TypeExprPtr> ArgTypes,
+               TypeExprPtr RetType)
       : Name(Name), Args(std::move(Args)), ArgTypes(std::move(ArgTypes)),
         RetType(std::move(RetType)), Line(Loc.Line) {}
   Function *codegen();
@@ -1269,7 +1277,7 @@ public:
     indent(out, ind) << "Body:";
     return Body ? Body->dump(out, ind) : out << "null\n";
   }
-    const PrototypeAST &getProto() const { return *Proto; }
+  const PrototypeAST &getProto() const { return *Proto; }
   Function *codegen();
 };
 
@@ -1312,18 +1320,22 @@ static void ResetCompilationState() {
 static std::map<int, int> BinopPrecedence = {
     {tok_or, 5}, {tok_and, 6}, {tok_eq, 10}, {tok_ne, 10},
     {'|', 7},    {'^', 8},     {'&', 9},     {'<', 12},
-    {'>', 12},   {tok_le, 12}, {tok_ge, 12},
-    {'+', 20},   {'-', 20},    {'*', 40},    {'/', 40}, {'%', 40}};
+    {'>', 12},   {tok_le, 12}, {tok_ge, 12}, {'+', 20},
+    {'-', 20},   {'*', 40},    {'/', 40},    {'%', 40}};
+
+/// Explanation-friendly precedence anchors used by parser control flow.
+static constexpr int NO_OP_PREC = -1;
+static constexpr int MIN_BINOP_PREC = 1;
 
 /// GetTokPrecedence - Get the precedence of the pending binary operator token.
 static int GetTokPrecedence() {
   // Make sure it's a declared binop.
   auto It = BinopPrecedence.find(CurTok);
   if (It == BinopPrecedence.end())
-    return -1;
+    return NO_OP_PREC;
   int TokPrec = It->second;
-  if (TokPrec <= 0)
-    return -1;
+  if (TokPrec < MIN_BINOP_PREC)
+    return NO_OP_PREC;
   return TokPrec;
 }
 
@@ -1349,9 +1361,9 @@ static void SkipToNextLine() {
 }
 
 static bool IsBuiltinTypeName(const std::string &Name) {
-  static const std::set<std::string> Builtins = {
-      "void", "i8",  "i16", "i32", "i64", "u8", "u16",
-      "u32",  "u64", "f32", "f64"};
+  static const std::set<std::string> Builtins = {"void", "i8",  "i16", "i32",
+                                                 "i64",  "u8",  "u16", "u32",
+                                                 "u64",  "f32", "f64"};
   return Builtins.find(Name) != Builtins.end();
 }
 
@@ -1427,8 +1439,8 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
       if (CurTok != ']')
         return LogError<ExprPtr>("Expected ']'");
       getNextToken(); // eat ']'
-      Expr =
-          std::make_unique<IndexExprAST>(IndexLoc, std::move(Expr), std::move(Index));
+      Expr = std::make_unique<IndexExprAST>(IndexLoc, std::move(Expr),
+                                            std::move(Index));
       continue;
     }
 
@@ -1585,9 +1597,9 @@ static bool ParseStructDecl() {
     getNextToken(); // eat field name
 
     if (Decl.FieldIndex.count(FieldName)) {
-      LogError(("Duplicate field '" + FieldName + "' in struct '" + StructName +
-                "'")
-                   .c_str());
+      LogError(
+          ("Duplicate field '" + FieldName + "' in struct '" + StructName + "'")
+              .c_str());
       return false;
     }
 
@@ -1731,8 +1743,9 @@ static std::unique_ptr<StmtAST> ParseForStmt() {
   if (!Body)
     return nullptr;
 
-  return std::make_unique<ForStmtAST>(ForLoc, IdName, std::move(Start), std::move(End),
-                                      std::move(Step), std::move(Body));
+  return std::make_unique<ForStmtAST>(ForLoc, IdName, std::move(Start),
+                                      std::move(End), std::move(Step),
+                                      std::move(Body));
 }
 
 // while_stmt     = "while" , expression , ":" , suite ;
@@ -1840,7 +1853,8 @@ static std::unique_ptr<ExprAST> ParseVarExpr() {
   if (!Body)
     return nullptr;
 
-  return std::make_unique<VarExprAST>(VarLoc, std::move(VarNames), std::move(Body));
+  return std::make_unique<VarExprAST>(VarLoc, std::move(VarNames),
+                                      std::move(Body));
 }
 
 // expr_stmt      = expression ;
@@ -1967,9 +1981,8 @@ static std::unique_ptr<StmtAST> ParseConstDeclStmt() {
   auto InitExpr = ParseExpression();
   if (!InitExpr)
     return nullptr;
-  return std::make_unique<ConstAssignStmtAST>(ConstLoc, std::move(Name),
-                                              std::move(DeclType),
-                                              std::move(InitExpr));
+  return std::make_unique<ConstAssignStmtAST>(
+      ConstLoc, std::move(Name), std::move(DeclType), std::move(InitExpr));
 }
 
 static std::unique_ptr<StmtAST> ParseIdentifierLeadingStmt() {
@@ -1993,9 +2006,8 @@ static std::unique_ptr<StmtAST> ParseIdentifierLeadingStmt() {
       if (!InitExpr)
         return nullptr;
     }
-    return std::make_unique<TypedAssignStmtAST>(StmtLoc, *Name,
-                                                std::move(DeclType),
-                                                std::move(InitExpr));
+    return std::make_unique<TypedAssignStmtAST>(
+        StmtLoc, *Name, std::move(DeclType), std::move(InitExpr));
   }
 
   if (CurTok == '=') {
@@ -2007,7 +2019,7 @@ static std::unique_ptr<StmtAST> ParseIdentifierLeadingStmt() {
                                            std::move(RHS));
   }
 
-  auto Expr = ParseBinOpRHS(0, std::move(LHS));
+  auto Expr = ParseBinOpRHS(MIN_BINOP_PREC, std::move(LHS));
   if (!Expr)
     return nullptr;
   return std::make_unique<ExprStmtAST>(StmtLoc, std::move(Expr));
@@ -2047,7 +2059,8 @@ static std::unique_ptr<StmtAST> ParseStmt() {
   case tok_type:
     return LogError<StmtPtr>("Type aliases are only allowed at top-level");
   case tok_struct:
-    return LogError<StmtPtr>("Struct declarations are only allowed at top-level");
+    return LogError<StmtPtr>(
+        "Struct declarations are only allowed at top-level");
   case tok_identifier:
     return ParseIdentifierLeadingStmt();
   default:
@@ -2202,7 +2215,7 @@ static std::unique_ptr<ExprAST> ParseExpression() {
   if (!LHS)
     return nullptr;
 
-  return ParseBinOpRHS(0, std::move(LHS));
+  return ParseBinOpRHS(MIN_BINOP_PREC, std::move(LHS));
 }
 
 /// prototype
@@ -2710,8 +2723,9 @@ static std::string ResolveBuiltinLeafName(const TypeExprPtr &Ty) {
   return ResolveBuiltinLeafName(Ty, Visited);
 }
 
-static std::string ResolvePointeeBuiltinLeafName(const TypeExprPtr &Ty,
-                                                 std::set<std::string> &Visited) {
+static std::string
+ResolvePointeeBuiltinLeafName(const TypeExprPtr &Ty,
+                              std::set<std::string> &Visited) {
   if (!Ty)
     return "";
   if (Ty->Kind == TypeExprKind::Pointer)
@@ -2787,14 +2801,12 @@ static Value *ToBoolI1(Value *V, const Twine &Name) {
   if (Ty->isIntegerTy(1))
     return V;
   if (Ty->isFloatingPointTy())
-    return Builder->CreateFCmpONE(
-        V, ConstantFP::get(Ty, 0.0), Name);
+    return Builder->CreateFCmpONE(V, ConstantFP::get(Ty, 0.0), Name);
   if (Ty->isIntegerTy())
     return Builder->CreateICmpNE(V, ConstantInt::get(Ty, 0), Name);
   if (Ty->isPointerTy())
-    return Builder->CreateICmpNE(V, ConstantPointerNull::get(
-                                        cast<PointerType>(Ty)),
-                                 Name);
+    return Builder->CreateICmpNE(
+        V, ConstantPointerNull::get(cast<PointerType>(Ty)), Name);
   return LogError<Value *>("Cannot convert value to boolean");
 }
 
@@ -2994,9 +3006,11 @@ Value *IndexExprAST::codegenAddress() {
   if (BaseValTy && BaseValTy->isArrayTy()) {
     Value *BaseAddr = Base->codegenAddress();
     if (!BaseAddr)
-      return LogError<Value *>("Indexing an array requires an addressable base");
+      return LogError<Value *>(
+          "Indexing an array requires an addressable base");
     Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
-    return Builder->CreateGEP(BaseValTy, BaseAddr, {Zero, IdxV}, "arr.idx.addr");
+    return Builder->CreateGEP(BaseValTy, BaseAddr, {Zero, IdxV},
+                              "arr.idx.addr");
   }
 
   Value *BaseV = Base->codegen();
@@ -3138,8 +3152,8 @@ Value *TypedAssignStmtAST::codegen() {
   Value *InitVal = nullptr;
   if (InitExpr) {
     if (DeclTy->isStructTy() || DeclTy->isArrayTy())
-      return LogError<Value *>(
-          "Struct/array variables do not support direct initializer expressions");
+      return LogError<Value *>("Struct/array variables do not support direct "
+                               "initializer expressions");
     InitVal = InitExpr->codegen();
     if (!InitVal)
       return nullptr;
@@ -3151,9 +3165,12 @@ Value *TypedAssignStmtAST::codegen() {
     InitVal = Constant::getNullValue(DeclTy);
   }
   Builder->CreateStore(InitVal, Alloca);
-  NamedValues[Name] = {Alloca, DeclTy, ResolvePointeeTypeExpr(DeclType),
+  NamedValues[Name] = {Alloca,
+                       DeclTy,
+                       ResolvePointeeTypeExpr(DeclType),
                        ResolveBuiltinLeafName(DeclType),
-                       ResolvePointeeBuiltinLeafName(DeclType), false};
+                       ResolvePointeeBuiltinLeafName(DeclType),
+                       false};
   return InitVal;
 }
 
@@ -3180,9 +3197,12 @@ Value *ConstAssignStmtAST::codegen() {
 
   AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, Name, DeclTy);
   Builder->CreateStore(InitVal, Alloca);
-  NamedValues[Name] = {Alloca, DeclTy, ResolvePointeeTypeExpr(DeclType),
+  NamedValues[Name] = {Alloca,
+                       DeclTy,
+                       ResolvePointeeTypeExpr(DeclType),
                        ResolveBuiltinLeafName(DeclType),
-                       ResolvePointeeBuiltinLeafName(DeclType), true};
+                       ResolvePointeeBuiltinLeafName(DeclType),
+                       true};
   return InitVal;
 }
 
@@ -3256,7 +3276,8 @@ Value *BinaryExprAST::codegen() {
       return nullptr;
 
     BasicBlock *LHSBB = Builder->GetInsertBlock();
-    BasicBlock *RHSBB = BasicBlock::Create(*TheContext, "logic.rhs", TheFunction);
+    BasicBlock *RHSBB =
+        BasicBlock::Create(*TheContext, "logic.rhs", TheFunction);
     BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "logic.cont");
 
     if (Op == tok_and) {
@@ -3279,8 +3300,8 @@ Value *BinaryExprAST::codegen() {
 
     TheFunction->insert(TheFunction->end(), MergeBB);
     Builder->SetInsertPoint(MergeBB);
-    PHINode *LogicPhi = Builder->CreatePHI(Type::getInt1Ty(*TheContext), 2,
-                                           "logic.bool");
+    PHINode *LogicPhi =
+        Builder->CreatePHI(Type::getInt1Ty(*TheContext), 2, "logic.bool");
     if (Op == tok_and) {
       LogicPhi->addIncoming(ConstantInt::getFalse(*TheContext), LHSBB);
     } else {
@@ -3486,13 +3507,16 @@ Value *CallExprAST::codegen() {
     for (size_t I = 0; I < Specs.size(); ++I) {
       Value *ArgV = RawArgs[I + 1];
       if (!ArgV->getType()->isPointerTy())
-        return LogError<Value *>("scanf destination argument must be a pointer");
+        return LogError<Value *>(
+            "scanf destination argument must be a pointer");
 
-      const std::string PointeeLeaf = Args[I + 1]->getPointeeBuiltinLeafTypeHint();
+      const std::string PointeeLeaf =
+          Args[I + 1]->getPointeeBuiltinLeafTypeHint();
       char Spec = Specs[I];
       if (Spec == 'd') {
-        if (PointeeLeaf != "i8" && PointeeLeaf != "i16" && PointeeLeaf != "i32" &&
-            PointeeLeaf != "i64" && PointeeLeaf != "u8" && PointeeLeaf != "u16" &&
+        if (PointeeLeaf != "i8" && PointeeLeaf != "i16" &&
+            PointeeLeaf != "i32" && PointeeLeaf != "i64" &&
+            PointeeLeaf != "u8" && PointeeLeaf != "u16" &&
             PointeeLeaf != "u32" && PointeeLeaf != "u64")
           return LogError<Value *>("scanf type mismatch for integer format");
       } else if (Spec == 'f') {
@@ -3643,8 +3667,8 @@ Value *CallExprAST::codegen() {
 static Function *GetOrCreateMallocHelper() {
   if (Function *F = TheModule->getFunction("malloc"))
     return F;
-  FunctionType *FT = FunctionType::get(
-      PointerType::getUnqual(*TheContext), {Type::getInt64Ty(*TheContext)}, false);
+  FunctionType *FT = FunctionType::get(PointerType::getUnqual(*TheContext),
+                                       {Type::getInt64Ty(*TheContext)}, false);
   return Function::Create(FT, Function::ExternalLinkage, "malloc",
                           TheModule.get());
 }
@@ -3652,9 +3676,11 @@ static Function *GetOrCreateMallocHelper() {
 static Function *GetOrCreateFreeHelper() {
   if (Function *F = TheModule->getFunction("free"))
     return F;
-  FunctionType *FT = FunctionType::get(
-      Type::getVoidTy(*TheContext), {PointerType::getUnqual(*TheContext)}, false);
-  return Function::Create(FT, Function::ExternalLinkage, "free", TheModule.get());
+  FunctionType *FT =
+      FunctionType::get(Type::getVoidTy(*TheContext),
+                        {PointerType::getUnqual(*TheContext)}, false);
+  return Function::Create(FT, Function::ExternalLinkage, "free",
+                          TheModule.get());
 }
 
 static Function *GetOrCreatePrintHelper(const std::string &Name, Type *Ty,
@@ -3678,7 +3704,8 @@ static Function *GetPrintCharHelper() {
                                 false);
 }
 
-static Function *GetPrintHelperForArg(Type *ArgTy, const std::string &LeafHint) {
+static Function *GetPrintHelperForArg(Type *ArgTy,
+                                      const std::string &LeafHint) {
   if (!ArgTy)
     return nullptr;
 
@@ -3725,11 +3752,13 @@ Value *PrintStmtAST::codegen() {
     if (ArgTy->isPointerTy())
       return LogError<Value *>("Unsupported print argument type: pointer");
 
-    Function *PrintF = GetPrintHelperForArg(ArgTy, Args[I]->getBuiltinLeafTypeHint());
+    Function *PrintF =
+        GetPrintHelperForArg(ArgTy, Args[I]->getBuiltinLeafTypeHint());
     if (!PrintF)
       return LogError<Value *>("Unsupported print argument type");
 
-    Value *CastArg = CastValueTo(ArgV, PrintF->getFunctionType()->getParamType(0));
+    Value *CastArg =
+        CastValueTo(ArgV, PrintF->getFunctionType()->getParamType(0));
     if (!CastArg)
       return nullptr;
     Builder->CreateCall(PrintF, {CastArg});
@@ -3847,7 +3876,8 @@ Value *ContinueStmtAST::codegen() {
 Value *WhileStmtAST::codegen() {
   emitLocation(this);
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
-  BasicBlock *CondBB = BasicBlock::Create(*TheContext, "while.cond", TheFunction);
+  BasicBlock *CondBB =
+      BasicBlock::Create(*TheContext, "while.cond", TheFunction);
   BasicBlock *BodyBB = BasicBlock::Create(*TheContext, "while.body");
   BasicBlock *ExitBB = BasicBlock::Create(*TheContext, "while.exit");
 
@@ -3951,7 +3981,8 @@ Value *ForStmtAST::codegen() {
       Builder->CreateLoad(Alloca->getAllocatedType(), Alloca, VarName);
 
   // Check if Variable < End
-  if (CurVar->getType()->isFloatingPointTy() || EndCond->getType()->isFloatingPointTy()) {
+  if (CurVar->getType()->isFloatingPointTy() ||
+      EndCond->getType()->isFloatingPointTy()) {
     CurVar = CastValueTo(CurVar, Type::getDoubleTy(*TheContext));
     EndCond = CastValueTo(EndCond, Type::getDoubleTy(*TheContext));
     EndCond = Builder->CreateFCmpULT(CurVar, EndCond, "loopcond");
@@ -4111,9 +4142,10 @@ Value *BlockSuiteAST::codegen() {
     // Stop generating after a terminator (e.g. return).
     if (Stmts[i]->isTerminator()) {
       if (i + 1 < Stmts.size()) {
-        fprintf(stderr,
-                "Warning (Line %d): unreachable code after terminator statement\n",
-                Stmts[i + 1]->getLine());
+        fprintf(
+            stderr,
+            "Warning (Line %d): unreachable code after terminator statement\n",
+            Stmts[i + 1]->getLine());
       }
       break;
     }
@@ -4241,8 +4273,8 @@ Function *FunctionAST::codegen() {
     Type *PointeeTy = nullptr;
     if (ArgTyIdx < P.getArgTypes().size())
       PointeeTy = ResolvePointeeTypeExpr(P.getArgTypes()[ArgTyIdx]);
-    NamedValues[std::string(Arg.getName())] = {Alloca, Arg.getType(), PointeeTy,
-                                               "", "", false};
+    NamedValues[std::string(Arg.getName())] = {
+        Alloca, Arg.getType(), PointeeTy, "", "", false};
     ++ArgTyIdx;
   }
 
@@ -4368,8 +4400,11 @@ static void HandleDefinition() {
       InitializeModuleAndManagers();
     }
   } else {
-    // Skip token for error recovery.
-    getNextToken();
+    // Error recovery: consume one token only when we are not already at
+    // a line/end boundary. This avoids blocking for input after errors
+    // like "2 + <eol>".
+    if (CurTok != tok_eol && CurTok != tok_eof)
+      getNextToken();
   }
 }
 
@@ -4384,8 +4419,11 @@ static void HandleExtern() {
       FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
     }
   } else {
-    // Skip token for error recovery.
-    getNextToken();
+    // Error recovery: consume one token only when we are not already at
+    // a line/end boundary. This avoids blocking for input after errors
+    // like "2 + <eol>".
+    if (CurTok != tok_eol && CurTok != tok_eof)
+      getNextToken();
   }
 }
 
@@ -4441,8 +4479,11 @@ static void HandleTopLevelExpression() {
       //   FnIR->eraseFromParent();
     }
   } else {
-    // Skip token for error recovery.
-    getNextToken();
+    // Error recovery: consume one token only when we are not already at
+    // a line/end boundary. This avoids blocking for input after errors
+    // like "2 + <eol>".
+    if (CurTok != tok_eol && CurTok != tok_eof)
+      getNextToken();
   }
 }
 
@@ -4642,7 +4683,8 @@ static std::unique_ptr<PrototypeAST> ClonePrototype(const PrototypeAST &P) {
   std::vector<TypeExprPtr> ArgTypes = P.getArgTypes();
   TypeExprPtr RetType = P.getRetType();
   return std::make_unique<PrototypeAST>(Loc, P.getName(), std::move(Args),
-                                        std::move(ArgTypes), std::move(RetType));
+                                        std::move(ArgTypes),
+                                        std::move(RetType));
 }
 
 static bool RegisterPrototypeForLookup(const PrototypeAST &Proto) {
@@ -4836,7 +4878,8 @@ bool InterpretFile(const std::string &filename) {
       if (auto *FnIR = FnAST->codegen()) {
         auto RT = TheJIT->getMainJITDylib().createResourceTracker();
 
-        auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
+        auto TSM =
+            ThreadSafeModule(std::move(TheModule), std::move(TheContext));
         ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
         InitializeModuleAndManagers();
 
@@ -5027,7 +5070,8 @@ int main(int argc, char **argv) {
       errs() << "Error: token mode requires exactly one input file\n";
       return 1;
     }
-    if (Mode == Object && !OutputFilename.empty() && InputFilenames.size() != 1) {
+    if (Mode == Object && !OutputFilename.empty() &&
+        InputFilenames.size() != 1) {
       errs() << "Error: -o with object mode requires exactly one input file\n";
       return 1;
     }
@@ -5103,8 +5147,8 @@ int main(int argc, char **argv) {
                 ? OutputFilename
                 : getIntermediateObjectFilename(InFile);
         if (Verbose)
-          std::cout << "Compiling " << InFile
-                    << " to object file: " << output << "\n";
+          std::cout << "Compiling " << InFile << " to object file: " << output
+                    << "\n";
         CompileToObjectFile(InFile, output);
         if (Verbose)
           outs() << "Wrote " << output << "\n";

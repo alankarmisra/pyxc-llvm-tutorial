@@ -207,7 +207,15 @@ static int LastIndentWidth = 0;
 static int advance() {
   int LastChar = getc(InputFile);
 
-  if (LastChar == '\n' || LastChar == '\r') {
+  if (LastChar == '\r') {
+    int NextChar = getc(InputFile);
+    if (NextChar != '\n' && NextChar != EOF)
+      ungetc(NextChar, InputFile);
+    LexLoc.Line++;
+    LexLoc.Col = 0;
+    return '\n';
+  }
+  if (LastChar == '\n') {
     LexLoc.Line++;
     LexLoc.Col = 0;
   } else
@@ -226,7 +234,9 @@ template <typename T = void> T LogError(const char *Str) {
   fprintf(stderr, "%sError (Line: %d, Column: %d): %s\nCurTok = %d\n%s", Red,
           CurLoc.Line, CurLoc.Col, Str, CurTok, Reset);
 
-  if constexpr (std::is_pointer_v<T>)
+  if constexpr (std::is_void_v<T>)
+    return;
+  else if constexpr (std::is_pointer_v<T>)
     return nullptr;
   else
     return T{};
@@ -385,19 +395,16 @@ static int gettok() {
 
   // Skip whitespace EXCEPT newlines (this will take care of spaces
   // mid-expressions)
-  while (isspace(LastChar) && LastChar != '\n' && LastChar != '\r')
+  while (isspace(LastChar) && LastChar != '\n')
     LastChar = advance();
 
   CurLoc = LexLoc;
 
-  // Return end-of-line token
-  if (LastChar == '\n' || LastChar == '\r') {
-    // Reset LastChar to a space instead of reading the next character.
-    // If we called advance() here, it would block waiting for input,
-    // requiring the user to press Enter twice in the REPL.
-    // Setting LastChar = ' ' avoids this blocking read.
+  // Return end-of-line token. For \r\n (Windows) or bare \r (old Mac),
+  // peek ahead: if the next char is \n, consume it so we emit one tok_eol.
+  if (LastChar == '\n') {
     LastChar = '\0';
-    AtStartOfLine = true; // Modify state only when you're emitting the token.
+    AtStartOfLine = true;
     return tok_eol;
   }
 
@@ -432,7 +439,7 @@ static int gettok() {
     // Comment until end of line.
     do
       LastChar = advance();
-    while (LastChar != EOF && LastChar != '\n' && LastChar != '\r');
+    while (LastChar != EOF && LastChar != '\n');
 
     if (LastChar != EOF)
       return tok_eol;
@@ -856,15 +863,19 @@ static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 static std::map<char, int> BinopPrecedence = {
     {'=', 2}, {'<', 10}, {'+', 20}, {'-', 20}, {'*', 40}};
 
+/// Explanation-friendly precedence anchors used by parser control flow.
+static constexpr int NO_OP_PREC = -1;
+static constexpr int MIN_BINOP_PREC = 1;
+
 /// GetTokPrecedence - Get the precedence of the pending binary operator token.
 static int GetTokPrecedence() {
   if (!isascii(CurTok))
-    return -1;
+    return NO_OP_PREC;
 
   // Make sure it's a declared binop.
   int TokPrec = BinopPrecedence[CurTok];
-  if (TokPrec <= 0)
-    return -1;
+  if (TokPrec < MIN_BINOP_PREC)
+    return NO_OP_PREC;
   return TokPrec;
 }
 
@@ -1280,7 +1291,7 @@ static std::unique_ptr<ExprAST> ParseExpression() {
   if (!LHS)
     return nullptr;
 
-  return ParseBinOpRHS(0, std::move(LHS));
+  return ParseBinOpRHS(MIN_BINOP_PREC, std::move(LHS));
 }
 
 /// prototype
@@ -2184,8 +2195,11 @@ static void HandleDefinition() {
       InitializeModuleAndManagers();
     }
   } else {
-    // Skip token for error recovery.
-    getNextToken();
+    // Error recovery: consume one token only when we are not already at
+    // a line/end boundary. This avoids blocking for input after errors
+    // like "2 + <eol>".
+    if (CurTok != tok_eol && CurTok != tok_eof)
+      getNextToken();
   }
 }
 
@@ -2200,8 +2214,11 @@ static void HandleExtern() {
       FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
     }
   } else {
-    // Skip token for error recovery.
-    getNextToken();
+    // Error recovery: consume one token only when we are not already at
+    // a line/end boundary. This avoids blocking for input after errors
+    // like "2 + <eol>".
+    if (CurTok != tok_eol && CurTok != tok_eof)
+      getNextToken();
   }
 }
 
@@ -2239,8 +2256,11 @@ static void HandleTopLevelExpression() {
       //   FnIR->eraseFromParent();
     }
   } else {
-    // Skip token for error recovery.
-    getNextToken();
+    // Error recovery: consume one token only when we are not already at
+    // a line/end boundary. This avoids blocking for input after errors
+    // like "2 + <eol>".
+    if (CurTok != tok_eol && CurTok != tok_eof)
+      getNextToken();
   }
 }
 

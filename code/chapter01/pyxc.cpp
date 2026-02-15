@@ -59,28 +59,52 @@ static std::map<int, std::string> TokenNames = [] {
   return Names;
 }();
 
+struct SourceLocation {
+  int Line;
+  int Col;
+};
+static SourceLocation CurLoc;
+static SourceLocation LexLoc = {1, 0};
+
+static int advance() {
+  int LastChar = std::getchar();
+  if (LastChar == '\r') {
+    int NextChar = std::getchar();
+    if (NextChar != '\n' && NextChar != EOF)
+      std::ungetc(NextChar, stdin);
+    LexLoc.Line++;
+    LexLoc.Col = 0;
+    return '\n';
+  }
+  if (LastChar == '\n') {
+    LexLoc.Line++;
+    LexLoc.Col = 0;
+  } else {
+    LexLoc.Col++;
+  }
+  return LastChar;
+}
+
 /// gettok - Return the next token from standard input.
 static int gettok() {
   static int LastChar = ' ';
 
   // Skip whitespace EXCEPT newlines
-  while (std::isspace(LastChar) && LastChar != '\n' && LastChar != '\r')
-    LastChar = std::getchar();
+  while (std::isspace(LastChar) && LastChar != '\n')
+    LastChar = advance();
 
-  // Return end-of-line token
-  if (LastChar == '\n' || LastChar == '\r') {
-    // Reset LastChar to a space instead of reading the next character.
-    // If we called getchar() here, it would block waiting for input,
-    // requiring the user to press Enter twice in the REPL.
-    // Setting LastChar = ' ' avoids this blocking read.
+  // Return end-of-line token.
+  if (LastChar == '\n') {
     LastChar = ' ';
     return tok_eol;
   }
 
+  CurLoc = LexLoc;
+
   if (std::isalpha(LastChar) ||
       LastChar == '_') { // identifier: [a-zA-Z_][a-zA-Z0-9_]*
     IdentifierStr = LastChar;
-    while (std::isalnum((LastChar = std::getchar())) || LastChar == '_')
+    while (std::isalnum((LastChar = advance())) || LastChar == '_')
       IdentifierStr += LastChar;
 
     // Is this a known keyword? If yes, return that.
@@ -93,7 +117,7 @@ static int gettok() {
     std::string NumStr;
     do {
       NumStr += LastChar;
-      LastChar = std::getchar();
+      LastChar = advance();
     } while (std::isdigit(LastChar) || LastChar == '.');
 
     NumVal = std::strtod(NumStr.c_str(), nullptr);
@@ -103,8 +127,8 @@ static int gettok() {
   if (LastChar == '#') {
     // Comment until end of line.
     do
-      LastChar = std::getchar();
-    while (LastChar != EOF && LastChar != '\n' && LastChar != '\r');
+      LastChar = advance();
+    while (LastChar != EOF && LastChar != '\n');
 
     if (LastChar != EOF)
       return tok_eol;
@@ -116,7 +140,7 @@ static int gettok() {
 
   // Otherwise, just return the character as its ascii value.
   int ThisChar = LastChar;
-  LastChar = std::getchar();
+  LastChar = advance();
   return ThisChar;
 }
 
@@ -129,8 +153,8 @@ static const std::string &GetTokenName(int Tok) {
   return Unknown;
 }
 
-int main() {
-  /// A rudimentary REPL. Type things in, see them convert to tokens.
+/// A rudimentary REPL. Type things in, see them convert to tokens.
+void MainLoop() {
   fprintf(stderr, "ready> ");
   while (true) {
     const int Tok = gettok();
@@ -142,6 +166,9 @@ int main() {
     if (Tok == tok_eol)
       std::printf("\nready> ");
   }
+}
 
+int main() {
+  MainLoop();
   return 0;
 }

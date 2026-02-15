@@ -4,6 +4,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -37,27 +38,50 @@ static double NumVal;             // Filled in if tok_number
 static std::map<std::string, Token> Keywords = {
     {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return}};
 
+struct SourceLocation {
+  int Line;
+  int Col;
+};
+static SourceLocation CurLoc;
+static SourceLocation LexLoc = {1, 0};
+
+static int advance() {
+  int LastChar = getchar();
+  if (LastChar == '\r') {
+    int NextChar = getchar();
+    if (NextChar != '\n' && NextChar != EOF)
+      ungetc(NextChar, stdin);
+    LexLoc.Line++;
+    LexLoc.Col = 0;
+    return '\n';
+  }
+  if (LastChar == '\n') {
+    LexLoc.Line++;
+    LexLoc.Col = 0;
+  } else
+    LexLoc.Col++;
+  return LastChar;
+}
+
 /// gettok - Return the next token from standard input.
 static int gettok() {
   static int LastChar = ' ';
-
   // Skip whitespace EXCEPT newlines
-  while (isspace(LastChar) && LastChar != '\n' && LastChar != '\r')
-    LastChar = getchar();
+  while (isspace(LastChar) && LastChar != '\n')
+    LastChar = advance();
 
-  // Return end-of-line token
-  if (LastChar == '\n' || LastChar == '\r') {
-    // Reset LastChar to a space instead of reading the next character.
-    // If we called getchar() here, it would block waiting for input,
-    // requiring the user to press Enter twice in the REPL.
-    // Setting LastChar = ' ' avoids this blocking read.
+  // Return end-of-line token.
+  if (LastChar == '\n') {
     LastChar = ' ';
     return tok_eol;
   }
 
-  if (isalpha(LastChar) || LastChar == '_') { // identifier: [a-zA-Z_][a-zA-Z0-9_]*
+  CurLoc = LexLoc;
+
+  // identifier terminal rule: identifier = /[A-Za-z_][A-Za-z0-9_]*/
+  if (isalpha(LastChar) || LastChar == '_') {
     IdentifierStr = LastChar;
-    while (isalnum((LastChar = getchar())) || LastChar == '_')
+    while (isalnum((LastChar = advance())) || LastChar == '_')
       IdentifierStr += LastChar;
 
     // Is this a known keyword? If yes, return that.
@@ -66,11 +90,12 @@ static int gettok() {
     return (it != Keywords.end()) ? it->second : tok_identifier;
   }
 
-  if (isdigit(LastChar) || LastChar == '.') { // Number: [0-9.]+
+  // number terminal rule: number = /[0-9]+(\.[0-9]+)?/
+  if (isdigit(LastChar) || LastChar == '.') {
     std::string NumStr;
     do {
       NumStr += LastChar;
-      LastChar = getchar();
+      LastChar = advance();
     } while (isdigit(LastChar) || LastChar == '.');
 
     NumVal = strtod(NumStr.c_str(), 0);
@@ -80,8 +105,8 @@ static int gettok() {
   if (LastChar == '#') {
     // Comment until end of line.
     do
-      LastChar = getchar();
-    while (LastChar != EOF && LastChar != '\n' && LastChar != '\r');
+      LastChar = advance();
+    while (LastChar != EOF && LastChar != '\n');
 
     if (LastChar != EOF)
       return tok_eol;
@@ -93,7 +118,7 @@ static int gettok() {
 
   // Otherwise, just return the character as its ascii value.
   int ThisChar = LastChar;
-  LastChar = getchar();
+  LastChar = advance();
   return ThisChar;
 }
 
@@ -174,6 +199,10 @@ public:
 
 } // end anonymous namespace
 
+using ExprPtr = std::unique_ptr<ExprAST>;
+using ProtoPtr = std::unique_ptr<PrototypeAST>;
+using FuncPtr = std::unique_ptr<FunctionAST>;
+
 //===----------------------------------------------------------------------===//
 // Parser
 //===----------------------------------------------------------------------===//
@@ -189,44 +218,67 @@ static int getNextToken() { return CurTok = gettok(); }
 static std::map<char, int> BinopPrecedence = {
     {'<', 10}, {'+', 20}, {'-', 20}, {'*', 40}};
 
+/// Explanation-friendly precedence anchors used by parser control flow.
+static constexpr int NO_OP_PREC = -1;
+static constexpr int MIN_BINOP_PREC = 1; // one higher than NO_OP_PREC
+
 /// GetTokPrecedence - Get the precedence of the pending binary operator token.
 static int GetTokPrecedence() {
   if (!isascii(CurTok))
-    return -1;
+    return NO_OP_PREC;
 
   // Make sure it's a declared binop.
   int TokPrec = BinopPrecedence[CurTok];
-  if (TokPrec <= 0)
-    return -1;
+  if (TokPrec < MIN_BINOP_PREC)
+    return NO_OP_PREC;
   return TokPrec;
 }
 
-/// LogError* - These are little helper functions for error handling.
-std::unique_ptr<ExprAST> LogError(const char *Str) {
-  fprintf(stderr, "Error: %s\n", Str);
-  return nullptr;
-}
+template <typename T = void> T LogError(const char *Str) {
+  auto CurTokToString = []() -> std::string {
+    switch (CurTok) {
+    case tok_eof:
+      return "tok_eof";
+    case tok_eol:
+      return "tok_eol";
+    case tok_def:
+      return "tok_def";
+    case tok_extern:
+      return "tok_extern";
+    case tok_identifier:
+      return "tok_identifier(" + IdentifierStr + ")";
+    case tok_number:
+      return "tok_number";
+    case tok_return:
+      return "tok_return";
+    default:
+      if (CurTok >= 0 && CurTok <= 255 && isprint(CurTok))
+        return std::string("'") + static_cast<char>(CurTok) + "'";
+      return "unknown";
+    }
+  };
 
-std::unique_ptr<PrototypeAST> LogErrorP(const char *Str) {
-  LogError(Str);
-  return nullptr;
-}
-
-std::unique_ptr<FunctionAST> LogErrorF(const char *Str) {
-  LogError(Str);
-  return nullptr;
+  const std::string TokStr = CurTokToString();
+  fprintf(stderr, "Error: (Line: %d, Column: %d): %s | CurTok = %d (%s)\n",
+          CurLoc.Line, CurLoc.Col, Str, CurTok, TokStr.c_str());
+  if constexpr (std::is_void_v<T>)
+    return;
+  else if constexpr (std::is_pointer_v<T>)
+    return nullptr;
+  else
+    return T{};
 }
 
 static std::unique_ptr<ExprAST> ParseExpression();
 
-/// numberexpr ::= number
+/// numberexpr = number
 static std::unique_ptr<ExprAST> ParseNumberExpr() {
   auto Result = std::make_unique<NumberExprAST>(NumVal);
   getNextToken(); // consume the number
   return std::move(Result);
 }
 
-/// parenexpr ::= '(' expression ')'
+/// parenexpr = '(' expression ')'
 static std::unique_ptr<ExprAST> ParseParenExpr() {
   getNextToken(); // eat (.
   auto V = ParseExpression();
@@ -234,14 +286,14 @@ static std::unique_ptr<ExprAST> ParseParenExpr() {
     return nullptr;
 
   if (CurTok != ')')
-    return LogError("expected ')'");
+    return LogError<ExprPtr>("expected ')'");
   getNextToken(); // eat ).
   return V;
 }
 
 /// identifierexpr
-///   ::= identifier
-///   ::= identifier '(' expression* ')'
+///   = identifier
+///   = identifier '(' [ expression { ',' expression } ] ')'
 static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
   std::string IdName = IdentifierStr;
 
@@ -264,7 +316,7 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
         break;
 
       if (CurTok != ',')
-        return LogError("Expected ')' or ',' in argument list");
+        return LogError<ExprPtr>("Expected ')' or ',' in argument list");
       getNextToken();
     }
   }
@@ -276,13 +328,13 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
 }
 
 /// primary
-///   ::= identifierexpr
-///   ::= numberexpr
-///   ::= parenexpr
+///   = identifierexpr
+///   = numberexpr
+///   = parenexpr
 static std::unique_ptr<ExprAST> ParsePrimary() {
   switch (CurTok) {
   default:
-    return LogError("unknown token when expecting an expression");
+    return LogError<ExprPtr>("unknown token when expecting an expression");
   case tok_identifier:
     return ParseIdentifierExpr();
   case tok_number:
@@ -292,17 +344,15 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
   }
 }
 
-/// binoprhs
-///   ::= ('+' primary)*
-static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
+/// Parse helper (for expression): consumes { binaryop primary }
+static std::unique_ptr<ExprAST> ParseBinOpRHS(int MinimumPrec,
                                               std::unique_ptr<ExprAST> LHS) {
-  // If this is a binop, find its precedence.
   while (true) {
     int TokPrec = GetTokPrecedence();
 
     // If this is a binop that binds at least as tightly as the current binop,
     // consume it, otherwise we are done.
-    if (TokPrec < ExprPrec)
+    if (TokPrec < MinimumPrec)
       return LHS;
 
     // Okay, we know this is a binop.
@@ -318,7 +368,8 @@ static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
     // the pending operator take RHS as its LHS.
     int NextPrec = GetTokPrecedence();
     if (TokPrec < NextPrec) {
-      RHS = ParseBinOpRHS(TokPrec + 1, std::move(RHS));
+      const int HigherPrecThanCurrent = TokPrec + 1;
+      RHS = ParseBinOpRHS(HigherPrecThanCurrent, std::move(RHS));
       if (!RHS)
         return nullptr;
     }
@@ -330,27 +381,28 @@ static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
 }
 
 /// expression
-///   ::= primary binoprhs
+///   = primary { binaryop primary }
 ///
 static std::unique_ptr<ExprAST> ParseExpression() {
   auto LHS = ParsePrimary();
   if (!LHS)
     return nullptr;
 
-  return ParseBinOpRHS(0, std::move(LHS));
+  // Only parse further if the next token is a BinOp
+  return ParseBinOpRHS(MIN_BINOP_PREC, std::move(LHS));
 }
 
 /// prototype
-///   ::= id '(' (id (',' id)*)? ')'
+///   = identifier '(' [ identifier { ',' identifier } ] ')'
 static std::unique_ptr<PrototypeAST> ParsePrototype() {
   if (CurTok != tok_identifier)
-    return LogErrorP("Expected function name in prototype");
+    return LogError<ProtoPtr>("Expected function name in prototype");
 
   std::string FnName = IdentifierStr;
   getNextToken();
 
   if (CurTok != '(')
-    return LogErrorP("Expected '(' in prototype");
+    return LogError<ProtoPtr>("Expected '(' in prototype");
 
   std::vector<std::string> ArgNames;
   while (getNextToken() == tok_identifier) {
@@ -361,11 +413,11 @@ static std::unique_ptr<PrototypeAST> ParsePrototype() {
       break;
 
     if (CurTok != ',')
-      return LogErrorP("Expected ')' or ',' in parameter list");
+      return LogError<ProtoPtr>("Expected ')' or ',' in parameter list");
   }
 
   if (CurTok != ')')
-    return LogErrorP("Expected ')' in prototype");
+    return LogError<ProtoPtr>("Expected ')' in prototype");
 
   // success.
   getNextToken(); // eat ')'.
@@ -373,7 +425,7 @@ static std::unique_ptr<PrototypeAST> ParsePrototype() {
   return std::make_unique<PrototypeAST>(FnName, std::move(ArgNames));
 }
 
-/// definition ::= 'def' prototype ':' expression
+/// definition = 'def' prototype ':' expression
 static std::unique_ptr<FunctionAST> ParseDefinition() {
   getNextToken(); // eat def.
 
@@ -382,7 +434,7 @@ static std::unique_ptr<FunctionAST> ParseDefinition() {
     return nullptr;
 
   if (CurTok != ':')
-    return LogErrorF("Expected ':' in function definition");
+    return LogError<FuncPtr>("Expected ':' in function definition");
   getNextToken(); // eat ':'
 
   // This takes care of a situation where we decide to split the
@@ -393,7 +445,7 @@ static std::unique_ptr<FunctionAST> ParseDefinition() {
     getNextToken();
 
   if (CurTok != tok_return)
-    return LogErrorF("Expected 'return' before return expression");
+    return LogError<FuncPtr>("Expected 'return' before return expression");
   getNextToken(); // eat return
 
   if (auto E = ParseExpression())
@@ -401,7 +453,7 @@ static std::unique_ptr<FunctionAST> ParseDefinition() {
   return nullptr;
 }
 
-/// toplevelexpr ::= expression
+/// toplevelexpr = expression
 static std::unique_ptr<FunctionAST> ParseTopLevelExpr() {
   if (auto E = ParseExpression()) {
     // Make an anonymous proto.
@@ -412,11 +464,11 @@ static std::unique_ptr<FunctionAST> ParseTopLevelExpr() {
   return nullptr;
 }
 
-/// external ::= 'extern' 'def' prototype
+/// external = 'extern' 'def' prototype
 static std::unique_ptr<PrototypeAST> ParseExtern() {
   getNextToken(); // eat extern.
   if (CurTok != tok_def)
-    return LogErrorP("Expected `def` after extern.");
+    return LogError<ProtoPtr>("Expected `def` after extern.");
   getNextToken(); // eat def
   return ParsePrototype();
 }
@@ -429,8 +481,11 @@ static void HandleDefinition() {
   if (ParseDefinition()) {
     fprintf(stderr, "Parsed a function definition.\n");
   } else {
-    // Skip token for error recovery.
-    getNextToken();
+    // Error recovery: consume one token only when we're not already at a
+    // line/end boundary. This avoids blocking for input after errors like
+    // "2 + <eol>".
+    if (CurTok != tok_eol && CurTok != tok_eof)
+      getNextToken();
   }
 }
 
@@ -438,8 +493,8 @@ static void HandleExtern() {
   if (ParseExtern()) {
     fprintf(stderr, "Parsed an extern\n");
   } else {
-    // Skip token for error recovery.
-    getNextToken();
+    if (CurTok != tok_eol && CurTok != tok_eof)
+      getNextToken();
   }
 }
 
@@ -448,12 +503,12 @@ static void HandleTopLevelExpression() {
   if (ParseTopLevelExpr()) {
     fprintf(stderr, "Parsed a top-level expr\n");
   } else {
-    // Skip token for error recovery.
-    getNextToken();
+    if (CurTok != tok_eol && CurTok != tok_eof)
+      getNextToken();
   }
 }
 
-/// top ::= definition | external | expression | eol
+/// top = definition | external | expression | eol
 static void MainLoop() {
   while (true) {
     fprintf(stderr, "ready> ");
@@ -462,6 +517,7 @@ static void MainLoop() {
       return;
     case tok_eol: // Skip newlines
       getNextToken();
+      continue;
     case tok_def:
       HandleDefinition();
       break;
