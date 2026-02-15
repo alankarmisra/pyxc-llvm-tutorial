@@ -286,25 +286,30 @@ static int getNextToken() {
 This implements a simple token buffer around the lexer. This allows us to look one token ahead at what the lexer is returning. Every function in our parser will assume that CurTok is the current token that needs to be parsed.
 
 ```cpp
-// Type aliases keep parser signatures readable; 
-// LogError<T>() returns an empty value matching 
-// the caller's expected type.
 using ExprPtr = std::unique_ptr<ExprAST>;
 using ProtoPtr = std::unique_ptr<PrototypeAST>;
 using FuncPtr = std::unique_ptr<FunctionAST>;
 
+...
+
 template <typename T = void> T LogError(const char *Str) {
-  fprintf(stderr, "Error: (Line: %d, Column: %d): %s | CurTok = %d\n",
-          CurLoc.Line, CurLoc.Col, Str, CurTok);
-  if constexpr (std::is_same_v<T, void>) {
+  const auto TokIt = TokenNames.find(CurTok);
+  const std::string TokStr =
+      (TokIt != TokenNames.end()) ? TokIt->second : "unknown token";
+  fprintf(stderr, "Error: (Line: %d, Column: %d): %s | CurTok = %d (%s)\n",
+          CurLoc.Line, CurLoc.Col, Str, CurTok, TokStr.c_str());
+  if constexpr (std::is_void_v<T>)
     return;
-  } else {
+  else if constexpr (std::is_pointer_v<T>)
+    return nullptr;
+  else
     return T{};
-  }
 }
+
 ```
 
-This template helper gives us one error reporting function for all parser return types. We pick the return type at the call site (`LogError<ExprPtr>(...)`, `LogError<ProtoPtr>(...)`, etc.), and the helper returns an empty value of that type. The error recovery in our parser is still basic, but this keeps the code much cleaner.
+This template helper gives us one error-reporting function for all parser return types. When we call it, we choose the return type (`LogError<ExprPtr>`(...), `LogError<ProtoPtr>`(...), etc.), and the helper returns an empty value of that type. It also supports void calls (`LogError`(...) with no template argument).
+In that case, it just reports the error and returns normally.
 
 With these basic helper functions, we can implement the first piece of our grammar: numeric literals.
 
@@ -899,7 +904,7 @@ There is a lot of room for extension here. You can define new AST nodes, extend 
 ## Sample interaction
 
 ```python
-$ ./a.out
+$ build/pyxc
 ready> def foo(x,y): return x+foo(y, 4.0)
 ready> Parsed a function definition.
 ready> def foo(x,y): return x+y y
@@ -907,7 +912,7 @@ ready> Parsed a function definition.
 ready> Parsed a top-level expr
 ready> def foo(x,y): return x+y )
 ready> Parsed a function definition.
-ready> Error: unknown token when expecting an expression
+ready> Error: (Line: 3, Column: 26): unknown token when expecting an expression | CurTok = 41 (')')
 ready> extern def sin(a)
 ready> Parsed an extern
 ready> ^D

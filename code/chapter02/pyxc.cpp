@@ -38,6 +38,29 @@ static double NumVal;             // Filled in if tok_number
 static std::map<std::string, Token> Keywords = {
     {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return}};
 
+static std::map<int, std::string> TokenNames = [] {
+  // Unprintable character tokens, and multi-character tokens.
+  std::map<int, std::string> Names = {
+      {tok_eof, "tok_eof"},
+      {tok_eol, "tok_eol"},
+      {tok_def, "tok_def"},
+      {tok_extern, "tok_extern"},
+      {tok_identifier, "tok_identifier"},
+      {tok_number, "tok_number"},
+      {tok_return, "tok_return"},
+  };
+
+  // Single character tokens.
+  for (int C = 0; C <= 255; ++C) {
+    if (std::isprint(static_cast<unsigned char>(C)))
+      Names[C] = "tok_char, '" + std::string(1, static_cast<char>(C)) + "'";
+    else
+      Names[C] = "tok_char, " + std::to_string(C);
+  }
+
+  return Names;
+}();
+
 struct SourceLocation {
   int Line;
   int Col;
@@ -235,30 +258,9 @@ static int GetTokPrecedence() {
 }
 
 template <typename T = void> T LogError(const char *Str) {
-  auto CurTokToString = []() -> std::string {
-    switch (CurTok) {
-    case tok_eof:
-      return "tok_eof";
-    case tok_eol:
-      return "tok_eol";
-    case tok_def:
-      return "tok_def";
-    case tok_extern:
-      return "tok_extern";
-    case tok_identifier:
-      return "tok_identifier(" + IdentifierStr + ")";
-    case tok_number:
-      return "tok_number";
-    case tok_return:
-      return "tok_return";
-    default:
-      if (CurTok >= 0 && CurTok <= 255 && isprint(CurTok))
-        return std::string("'") + static_cast<char>(CurTok) + "'";
-      return "unknown";
-    }
-  };
-
-  const std::string TokStr = CurTokToString();
+  const auto TokIt = TokenNames.find(CurTok);
+  const std::string TokStr =
+      (TokIt != TokenNames.end()) ? TokIt->second : "unknown token";
   fprintf(stderr, "Error: (Line: %d, Column: %d): %s | CurTok = %d (%s)\n",
           CurLoc.Line, CurLoc.Col, Str, CurTok, TokStr.c_str());
   if constexpr (std::is_void_v<T>)
@@ -511,10 +513,12 @@ static void HandleTopLevelExpression() {
 /// top = definition | external | expression | eol
 static void MainLoop() {
   while (true) {
+    // Don't print a prompt when we already know we're at EOF.
+    if (CurTok == tok_eof)
+      return;
+
     fprintf(stderr, "ready> ");
     switch (CurTok) {
-    case tok_eof:
-      return;
     case tok_eol: // Skip newlines
       getNextToken();
       continue;
