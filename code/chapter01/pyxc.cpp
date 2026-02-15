@@ -4,6 +4,8 @@
 #include <map>
 #include <string>
 
+using namespace std;
+
 //===----------------------------------------------------------------------===//
 // Lexer
 //===----------------------------------------------------------------------===//
@@ -26,19 +28,19 @@ enum Token {
   tok_return = -7
 };
 
-static std::string IdentifierStr; // Filled in if tok_identifier
-static double NumVal;             // Filled in if tok_number
+static string IdentifierStr; // Filled in if tok_identifier
+static double NumVal;        // Filled in if tok_number
 
 // Keywords words like `def`, `extern` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
-static std::map<std::string, Token> Keywords = {
+static map<string, Token> Keywords = {
     {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return}};
 
 // Debug-only token names. Kept separate from Keywords because this map is
 // purely for printing token stream output.
-static std::map<int, std::string> TokenNames = [] {
+static map<int, string> TokenNames = [] {
   // Unprintable character tokens, and multi-character tokens.
-  std::map<int, std::string> Names = {
+  map<int, string> Names = {
       {tok_eof, "tok_eof"},
       {tok_eol, "tok_eol"},
       {tok_def, "tok_def"},
@@ -50,10 +52,10 @@ static std::map<int, std::string> TokenNames = [] {
 
   // Single character tokens.
   for (int C = 0; C <= 255; ++C) {
-    if (std::isprint(static_cast<unsigned char>(C)))
-      Names[C] = "tok_char, '" + std::string(1, static_cast<char>(C)) + "'";
+    if (isprint(static_cast<unsigned char>(C)))
+      Names[C] = "tok_char, '" + string(1, static_cast<char>(C)) + "'";
     else
-      Names[C] = "tok_char, " + std::to_string(C);
+      Names[C] = "tok_char, " + to_string(C);
   }
 
   return Names;
@@ -67,11 +69,11 @@ static SourceLocation CurLoc;
 static SourceLocation LexLoc = {1, 0};
 
 static int advance() {
-  int LastChar = std::getchar();
+  int LastChar = getchar();
   if (LastChar == '\r') {
-    int NextChar = std::getchar();
+    int NextChar = getchar();
     if (NextChar != '\n' && NextChar != EOF)
-      std::ungetc(NextChar, stdin);
+      ungetc(NextChar, stdin);
     LexLoc.Line++;
     LexLoc.Col = 0;
     return '\n';
@@ -90,7 +92,7 @@ static int gettok() {
   static int LastChar = ' ';
 
   // Skip whitespace EXCEPT newlines
-  while (std::isspace(LastChar) && LastChar != '\n')
+  while (isspace(LastChar) && LastChar != '\n')
     LastChar = advance();
 
   // Return end-of-line token.
@@ -101,10 +103,10 @@ static int gettok() {
 
   CurLoc = LexLoc;
 
-  if (std::isalpha(LastChar) ||
+  if (isalpha(LastChar) ||
       LastChar == '_') { // identifier: [a-zA-Z_][a-zA-Z0-9_]*
     IdentifierStr = LastChar;
-    while (std::isalnum((LastChar = advance())) || LastChar == '_')
+    while (isalnum((LastChar = advance())) || LastChar == '_')
       IdentifierStr += LastChar;
 
     // Is this a known keyword? If yes, return that.
@@ -113,14 +115,14 @@ static int gettok() {
     return (It != Keywords.end()) ? It->second : tok_identifier;
   }
 
-  if (std::isdigit(LastChar) || LastChar == '.') { // Number: [0-9.]+
-    std::string NumStr;
+  if (isdigit(LastChar) || LastChar == '.') { // Number: [0-9.]+
+    string NumStr;
     do {
       NumStr += LastChar;
       LastChar = advance();
-    } while (std::isdigit(LastChar) || LastChar == '.');
+    } while (isdigit(LastChar) || LastChar == '.');
 
-    NumVal = std::strtod(NumStr.c_str(), nullptr);
+    NumVal = strtod(NumStr.c_str(), nullptr);
     return tok_number;
   }
 
@@ -144,12 +146,12 @@ static int gettok() {
   return ThisChar;
 }
 
-static const std::string &GetTokenName(int Tok) {
+static const string &GetTokenName(int Tok) {
   const auto It = TokenNames.find(Tok);
   if (It != TokenNames.end())
     return It->second;
 
-  static const std::string Unknown = "tok_unknown";
+  static const string Unknown = "tok_unknown";
   return Unknown;
 }
 
@@ -161,10 +163,10 @@ void MainLoop() {
     if (Tok == tok_eof)
       break;
 
-    std::printf("<%s>", GetTokenName(Tok).c_str());
+    printf("<%s>", GetTokenName(Tok).c_str());
 
     if (Tok == tok_eol)
-      std::printf("\nready> ");
+      printf("\nready> ");
   }
 }
 

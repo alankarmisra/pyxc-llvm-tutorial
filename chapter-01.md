@@ -71,7 +71,7 @@ enum Token {
   tok_return = -7
 };
 
-static std::string IdentifierStr; // Filled in if tok_identifier
+static string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;             // Filled in if tok_number
 ```
 
@@ -88,11 +88,11 @@ static SourceLocation CurLoc;
 static SourceLocation LexLoc = {1, 0};
 
 static int advance() {
-  int LastChar = std::getchar();
+  int LastChar = getchar();
   if (LastChar == '\r') {
-    int NextChar = std::getchar();
+    int NextChar = getchar();
     if (NextChar != '\n' && NextChar != EOF)
-      std::ungetc(NextChar, stdin);
+      ungetc(NextChar, stdin);
     LexLoc.Line++;
     LexLoc.Col = 0;
     return '\n';
@@ -107,7 +107,7 @@ static int advance() {
 }
 ```
 
-`LexLoc` tracks where the lexer is currently reading. `CurLoc` is the start location of the current token. The `advance()` helper centralizes character reading and location updates so `gettok()` does not need to manually keep line/column counters in every branch. It also normalizes Windows `\r\n` into one logical newline by peeking one character ahead and pushing non-`\n` characters back with `std::ungetc`.
+`LexLoc` tracks where the lexer is currently reading. `CurLoc` is the start location of the current token. The `advance()` helper centralizes character reading and location updates so `gettok()` does not need to manually keep line/column counters in every branch. It also normalizes Windows `\r\n` into one logical newline by peeking one character ahead and pushing non-`\n` characters back with `ungetc`.
 
 Now the actual implementation of the lexer is a single function named `gettok()`. It is called to return the next token from standard input. Its definition starts as:
 
@@ -117,7 +117,7 @@ static int gettok() {
   static int LastChar = ' ';
 
   // Skip whitespace EXCEPT newlines
-  while (std::isspace(LastChar) && LastChar != '\n')
+  while (isspace(LastChar) && LastChar != '\n')
     LastChar = advance();
 ```
 
@@ -140,13 +140,13 @@ The next thing gettok needs to do is recognize identifiers and specific keywords
 ```cpp
 // Keywords words like `def`, `extern` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
-static std::map<std::string, Token> Keywords = {
+static map<string, Token> Keywords = {
     {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return}};
 
 ...
-if (std::isalpha(LastChar) || LastChar == '_') { // identifier: [a-zA-Z_][a-zA-Z0-9_]*
+if (isalpha(LastChar) || LastChar == '_') { // identifier: [a-zA-Z_][a-zA-Z0-9_]*
   IdentifierStr = LastChar;
-  while (std::isalnum((LastChar = advance())) || LastChar == '_')
+  while (isalnum((LastChar = advance())) || LastChar == '_')
     IdentifierStr += LastChar;
 
     // Is this a known keyword? If yes, return that.
@@ -158,14 +158,14 @@ if (std::isalpha(LastChar) || LastChar == '_') { // identifier: [a-zA-Z_][a-zA-Z
 Note that this code sets the `IdentifierStr` global whenever it lexes an identifier. Also, since language keywords are matched by the same loop, we handle them here. Numeric values are similar:
 
 ```cpp
-if (std::isdigit(LastChar) || LastChar == '.') {   // Number: [0-9.]+
-  std::string NumStr;
+if (isdigit(LastChar) || LastChar == '.') {   // Number: [0-9.]+
+  string NumStr;
   do {
     NumStr += LastChar;
     LastChar = advance();
-  } while (std::isdigit(LastChar) || LastChar == '.');
+  } while (isdigit(LastChar) || LastChar == '.');
 
-  NumVal = std::strtod(NumStr.c_str(), nullptr);
+  NumVal = strtod(NumStr.c_str(), nullptr);
   return tok_number;
 }
 ```
@@ -212,10 +212,10 @@ void MainLoop() {
     if (Tok == tok_eof)
       break;
 
-    std::printf("<%s>", GetTokenName(Tok).c_str());
+    printf("<%s>", GetTokenName(Tok).c_str());
 
     if (Tok == tok_eol)
-      std::printf("\nready> ");
+      printf("\nready> ");
   }
 }
 

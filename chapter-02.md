@@ -190,31 +190,31 @@ Here are the other expression AST node definitions that we’ll use in the basic
 ```cpp
 /// VariableExprAST - Expression class for referencing a variable, like "a".
 class VariableExprAST : public ExprAST {
-  std::string Name;
+  string Name;
 
 public:
-  VariableExprAST(const std::string &Name) : Name(Name) {}
+  VariableExprAST(const string &Name) : Name(Name) {}
 };
 
 /// BinaryExprAST - Expression class for a binary operator.
 class BinaryExprAST : public ExprAST {
   char Op;
-  std::unique_ptr<ExprAST> LHS, RHS;
+  unique_ptr<ExprAST> LHS, RHS;
 
 public:
-  BinaryExprAST(char Op, std::unique_ptr<ExprAST> LHS,
-                std::unique_ptr<ExprAST> RHS)
+  BinaryExprAST(char Op, unique_ptr<ExprAST> LHS,
+                unique_ptr<ExprAST> RHS)
     : Op(Op), LHS(std::move(LHS)), RHS(std::move(RHS)) {}
 };
 
 /// CallExprAST - Expression class for function calls.
 class CallExprAST : public ExprAST {
-  std::string Callee;
-  std::vector<std::unique_ptr<ExprAST>> Args;
+  string Callee;
+  vector<unique_ptr<ExprAST>> Args;
 
 public:
-  CallExprAST(const std::string &Callee,
-              std::vector<std::unique_ptr<ExprAST>> Args)
+  CallExprAST(const string &Callee,
+              vector<unique_ptr<ExprAST>> Args)
     : Callee(Callee), Args(std::move(Args)) {}
 };
 ```
@@ -228,24 +228,24 @@ For our basic language, these are all of the expression nodes we’ll define. Th
 /// which captures its name, and its argument names (thus implicitly the number
 /// of arguments the function takes).
 class PrototypeAST {
-  std::string Name;
-  std::vector<std::string> Args;
+  string Name;
+  vector<string> Args;
 
 public:
-  PrototypeAST(const std::string &Name, std::vector<std::string> Args)
+  PrototypeAST(const string &Name, vector<string> Args)
     : Name(Name), Args(std::move(Args)) {}
 
-  const std::string &getName() const { return Name; }
+  const string &getName() const { return Name; }
 };
 
 /// FunctionAST - This class represents a function definition itself.
 class FunctionAST {
-  std::unique_ptr<PrototypeAST> Proto;
-  std::unique_ptr<ExprAST> Body;
+  unique_ptr<PrototypeAST> Proto;
+  unique_ptr<ExprAST> Body;
 
 public:
-  FunctionAST(std::unique_ptr<PrototypeAST> Proto,
-              std::unique_ptr<ExprAST> Body)
+  FunctionAST(unique_ptr<PrototypeAST> Proto,
+              unique_ptr<ExprAST> Body)
     : Proto(std::move(Proto)), Body(std::move(Body)) {}
 };
 ```
@@ -258,9 +258,9 @@ With these basics in place, we can now talk about parsing expressions and functi
 Now that we have an AST to build, we need to define the parser code to build it. The idea here is that we want to parse something like `x+y` (which is returned as three tokens by the lexer) into an AST that could be generated with calls like this:
 
 ```cpp
-auto LHS = std::make_unique<VariableExprAST>("x");
-auto RHS = std::make_unique<VariableExprAST>("y");
-auto Result = std::make_unique<BinaryExprAST>('+', std::move(LHS), std::move(RHS));
+auto LHS = make_unique<VariableExprAST>("x");
+auto RHS = make_unique<VariableExprAST>("y");
+auto Result = make_unique<BinaryExprAST>('+', std::move(LHS), std::move(RHS));
 ```
 
 ```mermaid
@@ -286,21 +286,21 @@ static int getNextToken() {
 This implements a simple token buffer around the lexer. This allows us to look one token ahead at what the lexer is returning. Every function in our parser will assume that CurTok is the current token that needs to be parsed.
 
 ```cpp
-using ExprPtr = std::unique_ptr<ExprAST>;
-using ProtoPtr = std::unique_ptr<PrototypeAST>;
-using FuncPtr = std::unique_ptr<FunctionAST>;
+using ExprPtr = unique_ptr<ExprAST>;
+using ProtoPtr = unique_ptr<PrototypeAST>;
+using FuncPtr = unique_ptr<FunctionAST>;
 
 ...
 
 template <typename T = void> T LogError(const char *Str) {
   const auto TokIt = TokenNames.find(CurTok);
-  const std::string TokStr =
+  const string TokStr =
       (TokIt != TokenNames.end()) ? TokIt->second : "unknown token";
   fprintf(stderr, "Error: (Line: %d, Column: %d): %s | CurTok = %d (%s)\n",
           CurLoc.Line, CurLoc.Col, Str, CurTok, TokStr.c_str());
-  if constexpr (std::is_void_v<T>)
+  if constexpr (is_void_v<T>)
     return;
-  else if constexpr (std::is_pointer_v<T>)
+  else if constexpr (is_pointer_v<T>)
     return nullptr;
   else
     return T{};
@@ -319,8 +319,8 @@ We start with numeric literals, because they are the simplest to process. For ea
 
 ```cpp
 /// numberexpr = number
-static std::unique_ptr<ExprAST> ParseNumberExpr() {
-  auto Result = std::make_unique<NumberExprAST>(NumVal);
+static unique_ptr<ExprAST> ParseNumberExpr() {
+  auto Result = make_unique<NumberExprAST>(NumVal);
   getNextToken(); // consume the number
   return std::move(Result);
 }
@@ -332,7 +332,7 @@ There are some interesting aspects to this. The most important one is that this 
 
 ```cpp
 /// parenexpr = '(' expression ')'
-static std::unique_ptr<ExprAST> ParseParenExpr() {
+static unique_ptr<ExprAST> ParseParenExpr() {
   getNextToken(); // eat (.
   auto V = ParseExpression();
   if (!V)
@@ -360,17 +360,17 @@ The next simple production is for handling variable references and function call
 /// identifierexpr
 ///   = identifier
 ///   = identifier '(' [ expression { ',' expression } ] ')'
-static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
-  std::string IdName = IdentifierStr;
+static unique_ptr<ExprAST> ParseIdentifierExpr() {
+  string IdName = IdentifierStr;
 
   getNextToken();  // eat identifier.
 
   if (CurTok != '(') // simple variable ref.
-    return std::make_unique<VariableExprAST>(IdName);
+    return make_unique<VariableExprAST>(IdName);
 
   // Call.
   getNextToken();  // eat (
-  std::vector<std::unique_ptr<ExprAST>> Args;
+  vector<unique_ptr<ExprAST>> Args;
   if (CurTok != ')') {
     while (true) {
       if (auto Arg = ParseExpression())
@@ -390,7 +390,7 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
   // Eat the ')'.
   getNextToken();
 
-  return std::make_unique<CallExprAST>(IdName, std::move(Args));
+  return make_unique<CallExprAST>(IdName, std::move(Args));
 }
 ```
 
@@ -403,7 +403,7 @@ Now that we have all of our simple expression-parsing logic in place, we can def
 ///   = identifierexpr
 ///   | numberexpr
 ///   | parenexpr
-static std::unique_ptr<ExprAST> ParsePrimary() {
+static unique_ptr<ExprAST> ParsePrimary() {
   switch (CurTok) {
   case tok_identifier:
     return ParseIdentifierExpr();
@@ -434,7 +434,7 @@ To encode this behavior, we use an operator precedence table, which tells the pa
 // all the *'s are processed first
 // then `+` and `-` 
 // and finally '<'
-static std::map<char, int> BinopPrecedence = {
+static map<char, int> BinopPrecedence = {
     {'<', 10}, {'+', 20}, {'-', 20}, {'*', 40}};
 ```
 We define a few convenience constants.
@@ -480,7 +480,7 @@ Let's see how we would parse a simple single-item expression like:
 /// expression
 ///   = primary binoprhs
 ///
-static std::unique_ptr<ExprAST> ParseExpression() {
+static unique_ptr<ExprAST> ParseExpression() {
   auto LHS = ParsePrimary();
   if (!LHS)
     return nullptr;
@@ -515,8 +515,8 @@ Here's the `ParseBinOpRHS` function.
 ```cpp
 /// binoprhs
 ///   = ('+' primary)*
-static std::unique_ptr<ExprAST> ParseBinOpRHS(int MinimumPrec,
-                                              std::unique_ptr<ExprAST> LHS) {
+static unique_ptr<ExprAST> ParseBinOpRHS(int MinimumPrec,
+                                              unique_ptr<ExprAST> LHS) {
   while (true) {
     int TokPrec = GetTokPrecedence();
 
@@ -638,7 +638,7 @@ if (TokPrec < NextPrec) {            // 40 < 20 ? false
   ...
 }
 
-LHS = std::make_unique<BinaryExprAST>(BinOp, std::move(LHS), std::move(RHS));
+LHS = make_unique<BinaryExprAST>(BinOp, std::move(LHS), std::move(RHS));
 // LHS is now BinOp('*', b, c)
 ```
 
@@ -674,7 +674,7 @@ So recursion returns `RHS = (b * c)` to the outer call.
 //   BinOp = '+'
 //   LHS   = VarExprAST("a")
 //   RHS   = BinOp('*', b, c)
-LHS = std::make_unique<BinaryExprAST>(BinOp, std::move(LHS), std::move(RHS));
+LHS = make_unique<BinaryExprAST>(BinOp, std::move(LHS), std::move(RHS));
 // LHS is now BinOp('+', a, (b*c))
 ```
 
@@ -718,7 +718,7 @@ if (TokPrec < NextPrec) {            // ADD_PREC < NO_OP_PREC ? false
   ...
 }
 
-LHS = std::make_unique<BinaryExprAST>(BinOp, std::move(LHS), std::move(RHS));
+LHS = make_unique<BinaryExprAST>(BinOp, std::move(LHS), std::move(RHS));
 // LHS is now BinOp('+', BinOp('+', a, (b*c)), d)
 ```
 
@@ -766,17 +766,17 @@ The next thing missing is handling of function prototypes. In Pyxc, these are us
 ```cpp
 /// prototype
 ///   = identifier '(' [ identifier { ',' identifier } ] ')'
-static std::unique_ptr<PrototypeAST> ParsePrototype() {
+static unique_ptr<PrototypeAST> ParsePrototype() {
   if (CurTok != tok_identifier)
     return LogError<ProtoPtr>("Expected function name in prototype");
 
-  std::string FnName = IdentifierStr;
+  string FnName = IdentifierStr;
   getNextToken();
 
   if (CurTok != '(')
     return LogError<ProtoPtr>("Expected '(' in prototype");
 
-  std::vector<std::string> ArgNames;
+  vector<string> ArgNames;
   while (getNextToken() == tok_identifier) {
     ArgNames.push_back(IdentifierStr);
     getNextToken(); // eat identifier
@@ -794,7 +794,7 @@ static std::unique_ptr<PrototypeAST> ParsePrototype() {
   // success.
   getNextToken(); // eat ')'.
 
-  return std::make_unique<PrototypeAST>(FnName, std::move(ArgNames));
+  return make_unique<PrototypeAST>(FnName, std::move(ArgNames));
 }
 ```
 
@@ -802,7 +802,7 @@ Given this, a function definition is very simple, just a prototype plus an expre
 
 ```cpp
 /// definition = 'def' prototype ':' expression
-static std::unique_ptr<FunctionAST> ParseDefinition() {
+static unique_ptr<FunctionAST> ParseDefinition() {
   getNextToken(); // eat def.
 
   auto Proto = ParsePrototype();
@@ -825,7 +825,7 @@ static std::unique_ptr<FunctionAST> ParseDefinition() {
   getNextToken(); // eat return
 
   if (auto E = ParseExpression())
-    return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
+    return make_unique<FunctionAST>(std::move(Proto), std::move(E));
   return nullptr;
 }
 ```
@@ -834,7 +834,7 @@ In addition, we support `extern` to declare functions like `sin` and `cos` as we
 
 ```cpp
 /// external = 'extern' 'def' prototype
-static std::unique_ptr<PrototypeAST> ParseExtern() {
+static unique_ptr<PrototypeAST> ParseExtern() {
   getNextToken(); // eat extern.
   if (CurTok != tok_def)
     return LogError<ProtoPtr>("Expected `def` after extern.");
@@ -846,11 +846,11 @@ Finally, we’ll also let the user type in arbitrary top-level expressions and e
 
 ```cpp
 /// toplevelexpr = expression
-static std::unique_ptr<FunctionAST> ParseTopLevelExpr() {
+static unique_ptr<FunctionAST> ParseTopLevelExpr() {
   if (auto E = ParseExpression()) {
     // Make an anonymous proto.
-    auto Proto = std::make_unique<PrototypeAST>("__anon_expr", std::vector<std::string>());
-    return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
+    auto Proto = make_unique<PrototypeAST>("__anon_expr", vector<string>());
+    return make_unique<FunctionAST>(std::move(Proto), std::move(E));
   }
   return nullptr;
 }
@@ -862,21 +862,23 @@ Now that we have all the pieces, let’s build a little driver that will let us 
 The driver for this simply invokes all of the parsing pieces with a top-level dispatch loop. There isn’t much interesting here, so I’ll just include the top-level loop. 
 
 ```cpp
-/// top = definition | external | expression | eol
+/// mainloop = definition | external | expression | eol
 static void MainLoop() {
   while (true) {
+    // Don't print a prompt when we already know we're at EOF.
+    if (CurTok == tok_eof)
+      return;
+
     fprintf(stderr, "ready> ");
     switch (CurTok) {
-    case tok_eof:
-      return;
+    case tok_eol: // Skip newlines
+      getNextToken();
+      continue;
     case tok_def:
       HandleDefinition();
       break;
     case tok_extern:
       HandleExtern();
-      break;
-    case tok_eol: // Skip newlines
-      getNextToken();
       break;
     default:
       HandleTopLevelExpression();
