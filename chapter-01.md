@@ -268,3 +268,20 @@ If you are running a Unix-y OS (including MacOS), you can just run
 ## Testing
 
 You can run tests with `llvm-lit` if you have an LLVM build available on your machine, or with `lit` if you installed it through Python. If you do not have either yet, that is okay: running tests is optional at this stage, and the interaction samples above are enough to continue. We will cover LLVM setup in [Chapter 3](chapter-03.md).
+
+
+## Need Help?
+
+Stuck on something? Have questions about this chapter? Found an error?
+
+- **Open an issue:** [GitHub Issues](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues) - Report bugs, errors, or problems
+- **Start a discussion:** [GitHub Discussions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions) - Ask questions, share tips, or discuss the tutorial
+- **Contribute:** Found a typo? Have a better explanation? [Pull requests](https://github.com/alankarmisra/pyxc-llvm-tutorial/pulls) are welcome!
+
+**When reporting issues, please include:**
+- The chapter you're working on
+- Your platform (e.g., macOS 14 M2, Ubuntu 24.04, Windows 11)
+- The complete error message or unexpected behavior
+- What you've already tried
+
+The goal is to make this tutorial work smoothly for everyone. Your feedback helps improve it for the next person!

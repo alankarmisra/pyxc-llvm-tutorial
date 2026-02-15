@@ -8,7 +8,7 @@ The commands below install into your home directory (e.g., `~/llvm-21-with-clang
 
 ## Prerequisites
 
-You need a C/C++ compiler, CMake, and Ninja. These are not always installed by default.
+You need a C/C++ compiler, [CMake](https://cmake.org/), and [Ninja](https://ninja-build.org/). These are not always installed by default.
 
 - macOS (Apple Silicon / Intel):
   - Install Xcode Command Line Tools:

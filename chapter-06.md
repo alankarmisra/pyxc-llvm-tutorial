@@ -1930,3 +1930,20 @@ clang++ -g pyxc.cpp `llvm-config --cxxflags --ldflags --system-libs --libs core 
 ```
 
 !!!note You may have noticed that our approach to handling `return` keywords using the `InForExpression` flag is somewhat ad-hoc. In a production compiler, these patterns would be handled more elegantly through a formal grammar specification and proper context tracking in the parser. However, for this tutorial, we've intentionally chosen a simpler approach that lets you focus on the core LLVM concepts—control flow, PHI nodes, and basic block manipulation—without getting bogged down in parser theory. As your language grows more complex, you'll naturally develop better abstractions for managing parsing context. For now, this solution works well enough to let us explore the interesting parts of code generation.
+
+
+## Need Help?
+
+Stuck on something? Have questions about this chapter? Found an error?
+
+- **Open an issue:** [GitHub Issues](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues) - Report bugs, errors, or problems
+- **Start a discussion:** [GitHub Discussions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions) - Ask questions, share tips, or discuss the tutorial
+- **Contribute:** Found a typo? Have a better explanation? [Pull requests](https://github.com/alankarmisra/pyxc-llvm-tutorial/pulls) are welcome!
+
+**When reporting issues, please include:**
+- The chapter you're working on
+- Your platform (e.g., macOS 14 M2, Ubuntu 24.04, Windows 11)
+- The complete error message or unexpected behavior
+- What you've already tried
+
+The goal is to make this tutorial work smoothly for everyone. Your feedback helps improve it for the next person!

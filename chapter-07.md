@@ -1957,3 +1957,20 @@ Error (Line: N, Column: M): Unknown unary operator
 ```
 
 So if you see an EOF-adjacent or late-location operator error, check for multi-character operators first.
+
+
+## Need Help?
+
+Stuck on something? Have questions about this chapter? Found an error?
+
+- **Open an issue:** [GitHub Issues](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues) - Report bugs, errors, or problems
+- **Start a discussion:** [GitHub Discussions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions) - Ask questions, share tips, or discuss the tutorial
+- **Contribute:** Found a typo? Have a better explanation? [Pull requests](https://github.com/alankarmisra/pyxc-llvm-tutorial/pulls) are welcome!
+
+**When reporting issues, please include:**
+- The chapter you're working on
+- Your platform (e.g., macOS 14 M2, Ubuntu 24.04, Windows 11)
+- The complete error message or unexpected behavior
+- What you've already tried
+
+The goal is to make this tutorial work smoothly for everyone. Your feedback helps improve it for the next person!
