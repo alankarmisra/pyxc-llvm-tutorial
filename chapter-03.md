@@ -4,7 +4,7 @@
 
 This chapter focuses entirely on installing LLVM from source so you can build a real compiler that emits executables. Early chapters can use `brew install llvm`, but once we integrate `lld` (the LLVM linker), we need a source build with the right configuration. We will build LLVM with `clang`, `clang-tools-extra` (for `clangd`), `lld`, `lldb`, and `llvm-lit` enabled.
 
-The commands below install into `/Users/yourname/llvm-21-with-clang-lld-lldb`.
+The commands below install into your home directory (e.g., `~/llvm-21-with-clang-lld-lldb` on Unix-like systems).
 
 ## Prerequisites
 
@@ -88,6 +88,10 @@ After install, add the new LLVM tools to your `PATH`:
 export PATH="$HOME/llvm-21-with-clang-lld-lldb/bin:$PATH"
 ```
 
+To make this permanent, add the export line to your shell profile:
+- Bash: `~/.bashrc` or `~/.bash_profile`
+- Zsh: `~/.zshrc`
+
 If you are building other projects with CMake that need this LLVM, you can also set:
 
 ```bash
@@ -111,7 +115,7 @@ cmake -G Ninja ../llvm \
   -DCMAKE_INSTALL_PREFIX=$HOME/llvm-21-with-clang-lld-lldb \
   -DLLVM_TARGETS_TO_BUILD="AArch64" \
   -DLLVM_INCLUDE_EXAMPLES=OFF \
-  -DLLVM_INCLUDE_TESTS=OFF \
+  -DLLVM_INCLUDE_TESTS=ON \
   -DLLVM_INCLUDE_BENCHMARKS=OFF \
   -DLLVM_ENABLE_ASSERTIONS=OFF
 
@@ -151,7 +155,7 @@ cmake -G Ninja ../llvm \
   -DCMAKE_INSTALL_PREFIX=$HOME/llvm-21-with-clang-lld-lldb \
   -DLLVM_TARGETS_TO_BUILD="X86" \
   -DLLVM_INCLUDE_EXAMPLES=OFF \
-  -DLLVM_INCLUDE_TESTS=OFF \
+  -DLLVM_INCLUDE_TESTS=ON \
   -DLLVM_INCLUDE_BENCHMARKS=OFF \
   -DLLVM_ENABLE_ASSERTIONS=OFF
 
@@ -209,58 +213,66 @@ $env:LLVM_DIR = "$env:USERPROFILE\llvm-21-with-clang-lld-lldb\lib\cmake\llvm"
 
 ## VS Code: clangd + compile_commands.json
 
-This tutorial includes `compile_commands.json`, which lets `clangd` provide accurate code navigation and diagnostics. `clangd` is built by enabling `clang-tools-extra` in the LLVM build above.
+This tutorial uses `clangd` for code navigation and diagnostics. The `clangd` language server needs `compile_commands.json` to understand how your code is built. CMake can generate this file automatically.
 
-For the purposes of this tutorial, we assume you are using VS Code. If you use another editor or IDE, the steps to point it at your LLVM/clangd install will be a little different.
+### Generate compile_commands.json with CMake
+
+When building the tutorial chapters, CMake will create `compile_commands.json` automatically. If you're creating your own project, add this flag to your CMake configuration:
+
+```bash
+cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ...
+```
+
+This generates `compile_commands.json` in your build directory. You can then:
+
+**Option 1:** Copy or symlink it to your source root:
+```bash
+# From your build directory
+ln -s $(pwd)/compile_commands.json ../compile_commands.json
+```
+
+**Option 2:** Tell clangd where to find it via `.clangd` config file in your source root:
+```yaml
+CompileFlags:
+  CompilationDatabase: build/
+```
 
 ### Configure VS Code
 
-1. Install the VS Code extension: `clangd`.
-2. Open the repository folder in VS Code.
-3. Ensure `compile_commands.json` is at the repository root (it already is in this tutorial).
-4. Tell VS Code to use the `clangd` you just built by adding this to your settings (edit the path for your platform):
+For this tutorial, we assume you are using VS Code. If you use another editor or IDE, the steps to configure clangd will be slightly different.
 
+1. Install the VS Code extension: `clangd`
+2. Open the tutorial repository folder in VS Code
+3. The repository already includes `compile_commands.json` at the root
+4. Tell VS Code to use the `clangd` you just built by adding this to your settings (adjust the path for your platform):
+
+**macOS/Linux:**
 ```json
-"clangd.path": "/Users/yourname/llvm-21-with-clang-lld-lldb/bin/clangd"
+{
+  "clangd.path": "/Users/yourname/llvm-21-with-clang-lld-lldb/bin/clangd"
+}
+```
+
+**Windows:**
+```json
+{
+  "clangd.path": "C:\\Users\\yourname\\llvm-21-with-clang-lld-lldb\\bin\\clangd.exe"
+}
 ```
 
 If IntelliSense conflicts with clangd, disable the built-in C/C++ extension or set `C_Cpp.intelliSenseEngine` to `Disabled` in VS Code settings.
 
-### Example compile_commands.json
+## Need Help?
 
-If you need to recreate or edit `compile_commands.json`, use this as a starting point and update the paths for your install and repo location:
+Building LLVM from source can be challenging, especially with different system configurations. If you hit a snag or have questions:
 
-```json
-{
-  "directory": "/Users/yourname/path/to/your/repo",
-  "arguments": [
-    "/Users/yourname/llvm-21-with-clang-lld-lldb/bin/clang++",
-    "-g",
-    "-O3",
-    "-I/Users/yourname/llvm-21-with-clang-lld-lldb/include",
-    "-Iinclude",
-    "-std=c++17",
-    "-stdlib=libc++",
-    "-fno-exceptions",
-    "-funwind-tables",
-    "pyxc.cpp",
-    "-L/Users/yourname/llvm-21-with-clang-lld-lldb/lib",
-    "-lLLVM-21",
-    "-llldCommon",
-    "-llldELF",
-    "-llldMachO",
-    "-llldCOFF",
-    "-o",
-    "pyxc"
-  ],
-  "file": "pyxc.cpp"
-}
-```
+- **Open an issue:** [GitHub Issues](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues) - Report build problems, errors, or bugs
+- **Start a discussion:** [GitHub Discussions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions) - Ask questions, share tips, or discuss the tutorial
+- **Contribute:** Found a typo? Have a better explanation? [Pull requests](https://github.com/alankarmisra/pyxc-llvm-tutorial/pulls) are welcome!
 
-## Easy option
-Just clone the repo for this project
-```bash
-$ git clone https://github.com/alankarmisra/pyxc-llvm-tutorial.git
-$ cd pyxc-llvm-tutorial/chapter02
-$ make
-```
+**When reporting issues, please include:**
+- Your platform (e.g., macOS 14 M2, Ubuntu 24.04, Windows 11)
+- The complete error message
+- The command you ran
+
+The goal is to make this tutorial work smoothly for everyone. Your feedback helps improve it for the next person!
