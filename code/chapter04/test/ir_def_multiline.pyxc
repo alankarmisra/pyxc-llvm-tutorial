@@ -1,0 +1,8 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "define double @complex(double %x, double %y)" %t
+# RUN: grep -q "fmul double" %t
+# RUN: grep -q "fadd double" %t
+# RUN: grep -q "ret double" %t
+
+def complex(x, y):
+    return x * x + y * y

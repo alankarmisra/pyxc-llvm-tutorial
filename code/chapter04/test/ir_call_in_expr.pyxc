@@ -1,0 +1,7 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "call double @foo(double" %t
+# RUN: grep -q "fadd double" %t
+# RUN: grep -q "define double @__anon_expr" %t
+
+extern def foo(x)
+foo(10) + 20

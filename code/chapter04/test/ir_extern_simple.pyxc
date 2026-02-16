@@ -1,0 +1,4 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "declare double @sin(double)" %t
+
+extern def sin(x)

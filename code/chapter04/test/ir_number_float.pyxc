@@ -1,0 +1,5 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "ret double 3.140000e+00" %t
+# RUN: grep -q "define double @__anon_expr" %t
+
+3.14

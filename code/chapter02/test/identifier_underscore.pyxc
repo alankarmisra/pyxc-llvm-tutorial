@@ -1,0 +1,7 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed a top-level expr" %t
+
+# Test identifiers with underscores
+_foo
+foo_bar
+_123

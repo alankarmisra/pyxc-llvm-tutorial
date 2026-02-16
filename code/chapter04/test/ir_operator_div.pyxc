@@ -1,0 +1,6 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "fdiv double" %t
+# RUN: grep -q "define double @test_div" %t
+
+def test_div(x, y):
+    return x / y

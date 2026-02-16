@@ -12,9 +12,12 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <iomanip>
 #include <map>
 #include <memory>
+#include <sstream>
 #include <string>
+#include <type_traits>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -53,11 +56,49 @@ enum Token {
 
 static std::string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;             // Filled in if tok_number
+static std::string NumLiteralStr; // Filled in if tok_number
 
 // Keywords words like `def`, `extern` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
 static std::map<std::string, Token> Keywords = {
     {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return}};
+
+// Debug-only token names. Kept separate from Keywords because this map is
+// purely for printing token stream output.
+static std::map<int, std::string> TokenNames = [] {
+  // Unprintable character tokens, and multi-character tokens.
+  std::map<int, std::string> Names = {
+      {tok_eof, "end of input"},
+      {tok_eol, "newline"},
+      {tok_def, "'def'"},
+      {tok_extern, "'extern'"},
+      {tok_identifier, "identifier"},
+      {tok_number, "number"},
+      {tok_return, "'return'"},
+  };
+
+  // Single character tokens.
+  for (int C = 0; C <= 255; ++C) {
+    if (isprint(static_cast<unsigned char>(C)))
+      Names[C] = "'" + std::string(1, static_cast<char>(C)) + "'";
+    else if (C == '\n')
+      Names[C] = "'\\n'";
+    else if (C == '\t')
+      Names[C] = "'\\t'";
+    else if (C == '\r')
+      Names[C] = "'\\r'";
+    else if (C == '\0')
+      Names[C] = "'\\0'";
+    else {
+      std::ostringstream OS;
+      OS << "0x" << std::uppercase << std::hex << std::setw(2)
+         << std::setfill('0') << C;
+      Names[C] = OS.str();
+    }
+  }
+
+  return Names;
+}();
 
 struct SourceLocation {
   int Line;
@@ -98,31 +139,22 @@ public:
   }
 };
 
-static SourceManager DiagSourceMgr;
+static SourceManager SourceMgr;
 
-static std::string FormatTokenForError(int Tok) {
+static std::string FormatTokenForMessage(int Tok) {
   if (Tok == tok_identifier)
     return "identifier '" + IdentifierStr + "'";
   if (Tok == tok_number)
-    return "number";
-  if (Tok == tok_eol)
-    return "newline";
-  if (Tok == tok_eof)
-    return "end of input";
+    return "number '" + NumLiteralStr + "'";
 
-  for (const auto &Kw : Keywords)
-    if (Kw.second == Tok)
-      return "keyword '" + Kw.first + "'";
-
-  if (isascii(Tok) && isprint(Tok))
-    return std::string("'") + static_cast<char>(Tok) + "'";
-  if (isascii(Tok))
-    return "ascii(" + std::to_string(Tok) + ")";
+  const auto TokIt = TokenNames.find(Tok);
+  if (TokIt != TokenNames.end())
+    return TokIt->second;
   return "unknown token";
 }
 
 static void PrintErrorSourceContext(SourceLocation Loc) {
-  const std::string *LineText = DiagSourceMgr.getLine(Loc.Line);
+  const std::string *LineText = SourceMgr.getLine(Loc.Line);
   if (!LineText)
     return;
 
@@ -133,7 +165,28 @@ static void PrintErrorSourceContext(SourceLocation Loc) {
     Spaces = 0;
   for (int I = 0; I < Spaces; ++I)
     fputc(' ', stderr);
-  fprintf(stderr, "%s^%s~~~\n", Bold, Reset);
+  fprintf(stderr, "%s^%s", Bold, Reset);
+  fputc('~', stderr);
+  fputc('~', stderr);
+  fputc('~', stderr);
+  fputc('\n', stderr);
+}
+
+static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
+  if (Tok != tok_eol)
+    return Loc;
+
+  // Keep CurLoc token-semantic for tok_eol (next-line boundary), but render
+  // newline diagnostics at the end of the previous source line.
+  int PrevLine = Loc.Line - 1;
+  if (PrevLine <= 0)
+    return Loc;
+
+  const std::string *PrevLineText = SourceMgr.getLine(PrevLine);
+  if (!PrevLineText)
+    return Loc;
+
+  return SourceLocation{PrevLine, static_cast<int>(PrevLineText->size()) + 1};
 }
 
 static int advance() {
@@ -142,17 +195,17 @@ static int advance() {
     int NextChar = getchar();
     if (NextChar != '\n' && NextChar != EOF)
       ungetc(NextChar, stdin);
-    DiagSourceMgr.onChar('\n');
+    SourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
     return '\n';
   }
   if (LastChar == '\n') {
-    DiagSourceMgr.onChar('\n');
+    SourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
   } else {
-    DiagSourceMgr.onChar(LastChar);
+    SourceMgr.onChar(LastChar);
     LexLoc.Col++;
   }
   return LastChar;
@@ -167,6 +220,7 @@ static int gettok() {
 
   // Return end-of-line token.
   if (LastChar == '\n') {
+    CurLoc = LexLoc;
     LastChar = ' ';
     return tok_eol;
   }
@@ -192,6 +246,7 @@ static int gettok() {
       LastChar = advance();
     } while (isdigit(LastChar) || LastChar == '.');
 
+    NumLiteralStr = NumStr;
     NumVal = strtod(NumStr.c_str(), 0);
     return tok_number;
   }
@@ -203,6 +258,7 @@ static int gettok() {
     while (LastChar != EOF && LastChar != '\n');
 
     if (LastChar != EOF) {
+      CurLoc = LexLoc;
       LastChar = ' ';
       return tok_eol;
     }
@@ -315,7 +371,7 @@ static int getNextToken() { return CurTok = gettok(); }
 /// BinopPrecedence - This holds the precedence for each binary operator that is
 /// defined.
 static std::map<char, int> BinopPrecedence = {
-    {'<', 10}, {'+', 20}, {'-', 20}, {'*', 40}};
+    {'<', 10}, {'>', 10}, {'+', 20}, {'-', 20}, {'*', 40}, {'/', 40}, {'%', 40}};
 
 /// Explanation-friendly precedence anchors used by parser control flow.
 static constexpr int NO_OP_PREC = -1;
@@ -333,23 +389,22 @@ static int GetTokPrecedence() {
   return TokPrec;
 }
 
-/// LogError* - These are little helper functions for error handling.
-std::unique_ptr<ExprAST> LogError(const char *Str) {
-  const std::string TokDisplay = FormatTokenForError(CurTok);
-  fprintf(stderr, "%sError%s (Line: %d, Column: %d): %s near %s\n", Red, Reset,
-          CurLoc.Line, CurLoc.Col, Str, TokDisplay.c_str());
-  PrintErrorSourceContext(CurLoc);
-  return nullptr;
-}
+using ExprPtr = std::unique_ptr<ExprAST>;
+using ProtoPtr = std::unique_ptr<PrototypeAST>;
+using FuncPtr = std::unique_ptr<FunctionAST>;
 
-std::unique_ptr<PrototypeAST> LogErrorP(const char *Str) {
-  LogError(Str);
-  return nullptr;
-}
-
-std::unique_ptr<FunctionAST> LogErrorF(const char *Str) {
-  LogError(Str);
-  return nullptr;
+/// LogError - Unified error reporting template.
+template <typename T = void> T LogError(const char *Str) {
+  SourceLocation DiagLoc = GetDiagnosticAnchorLoc(CurLoc, CurTok);
+  fprintf(stderr, "%sError%s (Line: %d, Column: %d): %s\n", Red, Reset,
+          DiagLoc.Line, DiagLoc.Col, Str);
+  PrintErrorSourceContext(DiagLoc);
+  if constexpr (std::is_void_v<T>)
+    return;
+  else if constexpr (std::is_pointer_v<T>)
+    return nullptr;
+  else
+    return T{};
 }
 
 static std::unique_ptr<ExprAST> ParseExpression();
@@ -369,7 +424,7 @@ static std::unique_ptr<ExprAST> ParseParenExpr() {
     return nullptr;
 
   if (CurTok != ')')
-    return LogError("expected ')'");
+    return LogError<ExprPtr>("expected ')'");
   getNextToken(); // eat ).
   return V;
 }
@@ -399,7 +454,7 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
         break;
 
       if (CurTok != ',')
-        return LogError("Expected ')' or ',' in argument list");
+        return LogError<ExprPtr>("Expected ')' or ',' in argument list");
       getNextToken();
     }
   }
@@ -416,14 +471,17 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
 ///   ::= parenexpr
 static std::unique_ptr<ExprAST> ParsePrimary() {
   switch (CurTok) {
-  default:
-    return LogError("unknown token when expecting an expression");
   case tok_identifier:
     return ParseIdentifierExpr();
   case tok_number:
     return ParseNumberExpr();
   case '(':
     return ParseParenExpr();
+  default: {
+    std::string Msg = "Unexpected " + FormatTokenForMessage(CurTok) +
+                      " when expecting an expression";
+    return LogError<ExprPtr>(Msg.c_str());
+  }
   }
 }
 
@@ -479,13 +537,13 @@ static std::unique_ptr<ExprAST> ParseExpression() {
 ///   ::= id '(' (id (',' id)*)? ')'
 static std::unique_ptr<PrototypeAST> ParsePrototype() {
   if (CurTok != tok_identifier)
-    return LogErrorP("Expected function name in prototype");
+    return LogError<ProtoPtr>("Expected function name in prototype");
 
   std::string FnName = IdentifierStr;
   getNextToken();
 
   if (CurTok != '(')
-    return LogErrorP("Expected '(' in prototype");
+    return LogError<ProtoPtr>("Expected '(' in prototype");
 
   std::vector<std::string> ArgNames;
   while (getNextToken() == tok_identifier) {
@@ -496,11 +554,11 @@ static std::unique_ptr<PrototypeAST> ParsePrototype() {
       break;
 
     if (CurTok != ',')
-      return LogErrorP("Expected ')' or ',' in parameter list");
+      return LogError<ProtoPtr>("Expected ')' or ',' in parameter list");
   }
 
   if (CurTok != ')')
-    return LogErrorP("Expected ')' in prototype");
+    return LogError<ProtoPtr>("Expected ')' in prototype");
 
   // success.
   getNextToken(); // eat ')'.
@@ -517,7 +575,7 @@ static std::unique_ptr<FunctionAST> ParseDefinition() {
     return nullptr;
 
   if (CurTok != ':')
-    return LogErrorF("Expected ':' in function definition");
+    return LogError<FuncPtr>("Expected ':' in function definition");
   getNextToken(); // eat ':'
 
   // This takes care of a situation where we decide to split the
@@ -528,7 +586,7 @@ static std::unique_ptr<FunctionAST> ParseDefinition() {
     getNextToken();
 
   if (CurTok != tok_return)
-    return LogErrorF("Expected 'return' before return expression");
+    return LogError<FuncPtr>("Expected 'return' before return expression");
   getNextToken(); // eat return
 
   if (auto E = ParseExpression())
@@ -551,7 +609,7 @@ static std::unique_ptr<FunctionAST> ParseTopLevelExpr() {
 static std::unique_ptr<PrototypeAST> ParseExtern() {
   getNextToken(); // eat extern.
   if (CurTok != tok_def)
-    return LogErrorP("Expected `def` after extern.");
+    return LogError<ProtoPtr>("Expected `def` after extern.");
   getNextToken(); // eat def
   return ParsePrototype();
 }
@@ -565,11 +623,6 @@ static std::unique_ptr<Module> TheModule;
 static std::unique_ptr<IRBuilder<>> Builder;
 static std::map<std::string, Value *> NamedValues;
 
-Value *LogErrorV(const char *Str) {
-  LogError(Str);
-  return nullptr;
-}
-
 Value *NumberExprAST::codegen() {
   return ConstantFP::get(*TheContext, APFloat(Val));
 }
@@ -578,7 +631,7 @@ Value *VariableExprAST::codegen() {
   // Look this variable up in the function.
   Value *V = NamedValues[Name];
   if (!V)
-    return LogErrorV("Unknown variable name");
+    return LogError<Value *>("Unknown variable name");
   return V;
 }
 
@@ -595,12 +648,20 @@ Value *BinaryExprAST::codegen() {
     return Builder->CreateFSub(L, R, "subtmp");
   case '*':
     return Builder->CreateFMul(L, R, "multmp");
+  case '/':
+    return Builder->CreateFDiv(L, R, "divtmp");
+  case '%':
+    return Builder->CreateFRem(L, R, "remtmp");
   case '<':
     L = Builder->CreateFCmpULT(L, R, "cmptmp");
     // Convert bool 0/1 to double 0.0 or 1.0
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+  case '>':
+    L = Builder->CreateFCmpUGT(L, R, "cmptmp");
+    // Convert bool 0/1 to double 0.0 or 1.0
+    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   default:
-    return LogErrorV("invalid binary operator");
+    return LogError<Value *>("invalid binary operator");
   }
 }
 
@@ -608,11 +669,11 @@ Value *CallExprAST::codegen() {
   // Look up the name in the global module table.
   Function *CalleeF = TheModule->getFunction(Callee);
   if (!CalleeF)
-    return LogErrorV("Unknown function referenced");
+    return LogError<Value *>("Unknown function referenced");
 
   // If argument mismatch error.
   if (CalleeF->arg_size() != Args.size())
-    return LogErrorV("Incorrect # arguments passed");
+    return LogError<Value *>("Incorrect # arguments passed");
 
   std::vector<Value *> ArgsV;
   for (unsigned i = 0, e = Args.size(); i != e; ++i) {
@@ -688,41 +749,62 @@ static void InitializeModule() {
   Builder = std::make_unique<IRBuilder<>>(*TheContext);
 }
 
+//===----------------------------------------------------------------------===//
+// Top-Level parsing
+//===----------------------------------------------------------------------===//
+
+static void SynchronizeToLineBoundary() {
+  while (CurTok != tok_eol && CurTok != tok_eof)
+    getNextToken();
+}
+
 static void HandleDefinition() {
   if (auto FnAST = ParseDefinition()) {
+    if (CurTok != tok_eol && CurTok != tok_eof) {
+      std::string Msg = "Unexpected " + FormatTokenForMessage(CurTok);
+      LogError<void>(Msg.c_str());
+      SynchronizeToLineBoundary();
+      return;
+    }
     if (auto *FnIR = FnAST->codegen()) {
       fprintf(stderr, "Parsed a function definition\n");
       FnIR->print(errs());
       fprintf(stderr, "\n");
     }
   } else {
-    // Error recovery: consume one token only when we are not already at
-    // a line/end boundary. This avoids blocking for input after errors
-    // like "2 + <eol>".
-    if (CurTok != tok_eol && CurTok != tok_eof)
-      getNextToken();
+    // Error recovery: skip the rest of the current line so leftover tokens
+    // from a malformed construct don't get parsed as a new top-level form.
+    SynchronizeToLineBoundary();
   }
 }
 
 static void HandleExtern() {
   if (auto ProtoAST = ParseExtern()) {
+    if (CurTok != tok_eol && CurTok != tok_eof) {
+      std::string Msg = "Unexpected " + FormatTokenForMessage(CurTok);
+      LogError<void>(Msg.c_str());
+      SynchronizeToLineBoundary();
+      return;
+    }
     if (auto *FnIR = ProtoAST->codegen()) {
       fprintf(stderr, "Parsed an extern\n");
       FnIR->print(errs());
       fprintf(stderr, "\n");
     }
   } else {
-    // Error recovery: consume one token only when we are not already at
-    // a line/end boundary. This avoids blocking for input after errors
-    // like "2 + <eol>".
-    if (CurTok != tok_eol && CurTok != tok_eof)
-      getNextToken();
+    SynchronizeToLineBoundary();
   }
 }
 
 static void HandleTopLevelExpression() {
   // Evaluate a top-level expression into an anonymous function.
   if (auto FnAST = ParseTopLevelExpr()) {
+    if (CurTok != tok_eol && CurTok != tok_eof) {
+      std::string Msg = "Unexpected " + FormatTokenForMessage(CurTok);
+      LogError<void>(Msg.c_str());
+      SynchronizeToLineBoundary();
+      return;
+    }
     if (auto *FnIR = FnAST->codegen()) {
       fprintf(stderr, "Parsed a top-level expr\n");
       FnIR->print(errs());
@@ -732,11 +814,7 @@ static void HandleTopLevelExpression() {
       FnIR->eraseFromParent();
     }
   } else {
-    // Error recovery: consume one token only when we are not already at
-    // a line/end boundary. This avoids blocking for input after errors
-    // like "2 + <eol>".
-    if (CurTok != tok_eol && CurTok != tok_eof)
-      getNextToken();
+    SynchronizeToLineBoundary();
   }
 }
 
@@ -768,7 +846,7 @@ static void MainLoop() {
 //===----------------------------------------------------------------------===//
 
 int main() {
-  DiagSourceMgr.reset();
+  SourceMgr.reset();
 
   // Prime the first token.
   fprintf(stderr, "ready> ");

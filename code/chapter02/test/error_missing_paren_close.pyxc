@@ -1,0 +1,7 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error (" %t
+# RUN: grep -q "expected ')'" %t
+# RUN: grep -q "\\^~~~" %t
+
+# Test missing closing parenthesis
+(1 + 2

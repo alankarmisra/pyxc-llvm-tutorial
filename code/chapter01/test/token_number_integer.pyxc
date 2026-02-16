@@ -1,0 +1,4 @@
+# RUN: %pyxc < %s > %t 2>/dev/null
+# RUN: grep -F "number number number newline" %t
+
+42 0 999

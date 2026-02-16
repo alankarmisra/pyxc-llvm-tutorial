@@ -1,0 +1,7 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "fmul double" %t
+# RUN: grep -q "fadd double" %t
+# Test that multiplication happens before addition (correct precedence)
+
+def test_precedence(a, b, c):
+    return a + b * c

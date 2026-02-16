@@ -374,7 +374,7 @@ static int GetTokPrecedence() {
 
 template <typename T = void> T LogError(const char *Str) {
   SourceLocation DiagLoc = GetDiagnosticAnchorLoc(CurLoc, CurTok);
-  fprintf(stderr, "%sError%s: (Line: %d, Column: %d): %s\n", Red, Reset,
+  fprintf(stderr, "%sError%s (Line: %d, Column: %d): %s\n", Red, Reset,
           DiagLoc.Line, DiagLoc.Col, Str);
   PrintErrorSourceContext(DiagLoc);
   if constexpr (is_void_v<T>)

@@ -1,0 +1,7 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error (" %t
+# RUN: grep -q "Unexpected" %t
+# RUN: grep -q "\\^~~~" %t
+
+# Test unexpected token in expression
+1 + + 2

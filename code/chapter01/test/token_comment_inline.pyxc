@@ -1,0 +1,5 @@
+# RUN: %pyxc < %s > %t 2>/dev/null
+# RUN: grep -F "identifier '+' identifier newline" %t
+# Comments should be ignored and not appear in output
+
+x + y # this is a comment

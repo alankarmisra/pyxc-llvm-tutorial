@@ -1,12 +1,12 @@
 # 4. Pyxc: Code generation to LLVM IR
 
-!!!note
-    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter04](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter04).
-
-
 ## Introduction
 
 Welcome to Chapter 4 of the [Pyxc: My First Language Frontend with LLVM](chapter-00.md) tutorial. This chapter shows you how to transform the Abstract Syntax Tree built in [Chapter 2](chapter-02.md), into LLVM IR. This will teach you a little bit about how LLVM does things, as well as demonstrate how easy it is to use. It’s much more work to build a lexer and parser than it is to generate LLVM IR code. :)
+
+## Source Code
+
+To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter04](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter04).
 
 ## What is Internal Representation (IR)?
 
@@ -25,10 +25,36 @@ entry:
 }
 ```
 
-Since all are values are double, and all our functions return double, you can see the IR helpfully reproduce the types. `fadd` is float add. What is %addtmp? A temporary variable to hold the value of the add function. 
+Let's break this down piece by piece:
+
+### Understanding LLVM IR Syntax
+
+**Type annotations everywhere:**
+Since all our values are `double` and all our functions return `double`, you can see the IR explicitly annotates types. LLVM is strongly typed—every value must have a type.
+
+**`fadd` means "floating-point add":**
+LLVM has different instructions for different data types. `fadd` performs floating-point addition (for `float` and `double` types). If we were working with integers, we'd use `add` instead. Other floating-point operations include:
+- `fsub` - floating-point subtraction
+- `fmul` - floating-point multiplication
+- `fdiv` - floating-point division
+- `fcmp` - floating-point comparison
+
+**Variable naming in LLVM:**
+LLVM uses prefixes to distinguish different kinds of values:
+- **`%name`** - Local variables/values (SSA registers) within a function. Examples: `%a`, `%b`, `%addtmp`
+- **`@name`** - Global symbols like function names. Examples: `@add`, `@foo`, `@cos`
+
+The `%` prefix tells you this is a local SSA value that exists only within the current function. The `@` prefix indicates a global identifier visible across the entire module.
+
+**Why do we need `%addtmp`?**
+You might wonder: "Why create a temporary variable to hold the result of `a + b`? Why not just return the addition directly?"
+
+The answer is: **Static Single Assignment (SSA) form**. In SSA, every variable can only be assigned once. The `fadd` instruction computes a result and assigns it to `%addtmp`. That value is then used by the `ret` instruction. This intermediate value is required by SSA—we can't perform the addition "inline" in the return statement.
+
+Let's explore why this matters in a dedicated section at the end of this chapter.
 
 ## Handwritten IR
-Now it's completely possibly to take our AST and emit this IR directly. However, LLVM saves us from this by providing us with builders that all us to abstract away the IR related semantics and focus on building our tree.
+Now it's completely possible to take our AST and emit this IR directly. However, LLVM saves us from this by providing us with builders that allow us to abstract away the IR related semantics and focus on building our tree.
 
 
 ## Code Generation Setup
@@ -344,7 +370,88 @@ declare double @cos(double)
 
 When you quit the current demo (by sending an EOF via CTRL+D on Linux or CTRL+Z and ENTER on Windows), it dumps out the IR for the entire module generated. Here you can see the big picture with all the functions referencing each other.
 
-This wraps up the third chapter of the Pyxc tutorial. Up next, we’ll describe how to add JIT codegen and optimizer support to this so we can actually start running code!
+This wraps up the third chapter of the Pyxc tutorial. Up next, we'll describe how to add JIT codegen and optimizer support to this so we can actually start running code!
+
+## Understanding Static Single Assignment (SSA)
+
+SSA is one of the most important concepts in modern compilers. It makes optimization much easier by ensuring that each variable is defined exactly once and never changes.
+
+### From Mutable Variables to SSA
+
+Consider this typical imperative code:
+
+```python
+i = 5
+i = 10
+fib(i)
+i = i + 1
+fib(i)
+j = i
+```
+
+In normal programming, the variable `i` changes value multiple times. But in SSA form, each assignment creates a *new* version of the variable:
+
+```llvm
+  %i.1 = 5
+  %i.2 = 10
+  %call1 = call fib(%i.2)
+  %i.3 = add %i.2, 1
+  %call2 = call fib(%i.3)
+  %j.1 = %i.3
+```
+
+Notice how:
+- Each assignment to `i` creates a new SSA value: `%i.1`, `%i.2`, `%i.3`
+- The value `%i.1 = 5` is never used (dead code)
+- `%i.2 = 10` is used once by `%call1` and once by the add instruction
+- `%i.3` is used by `%call2` and assigned to `%j.1`
+
+### Why SSA Makes Optimization Easy
+
+SSA form makes it trivial to answer questions like:
+- "Where is this value defined?" → Look at the unique assignment
+- "Where is this value used?" → Follow all uses of that SSA name
+- "Can I eliminate this computation?" → Check if anyone uses this SSA value
+
+**Dead Code Elimination:**
+Since `%i.1 = 5` is never used by any other instruction, a compiler can simply delete it.
+
+**Copy Propagation:**
+Since `%j.1 = %i.3` is just a copy, we can replace all uses of `%j.1` with `%i.3` directly and eliminate the copy:
+
+```llvm
+  %i.2 = 10
+  %call1 = call fib(%i.2)
+  %i.3 = add %i.2, 1
+  %call2 = call fib(%i.3)
+  ; %j.1 eliminated - all its uses replaced with %i.3
+```
+
+**Constant Propagation:**
+Since we know `%i.2` is always `10`, we can compute `%i.3 = add 10, 1` at compile time:
+
+```llvm
+  %call1 = call fib(10)
+  %call2 = call fib(11)
+```
+
+All this optimization happened automatically because SSA made the data flow explicit. Without SSA, the compiler would have to perform complex analysis to determine that `i` has different values at different program points.
+
+### SSA in Our Code
+
+This is why our simple `add` function needs `%addtmp`:
+
+```llvm
+define double @add(double %a, double %b) {
+entry:
+  %addtmp = fadd double %a, %b
+  ret double %addtmp
+}
+```
+
+The `fadd` instruction defines a new SSA value `%addtmp` that holds the result. The `ret` instruction uses that value. Each step is explicit, making the data flow crystal clear for optimization passes.
+
+Later, when we introduce control flow (if statements, loops), you'll see **phi nodes**—SSA's way of merging values from different control flow paths. But for now, our straight-line code gives you the core SSA concept: every value is defined exactly once.
 
 ## Compiling
 

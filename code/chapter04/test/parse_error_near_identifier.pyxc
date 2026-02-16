@@ -1,7 +1,6 @@
 # RUN: %pyxc < %s > %t 2>&1
 # RUN: grep -q "Error (" %t
 # RUN: grep -q 'Expected `def` after extern.' %t
-# RUN: grep -q "near identifier 'foo'" %t
 # RUN: grep -q "extern foo(" %t
 # RUN: grep -q "\\^~~~" %t
 

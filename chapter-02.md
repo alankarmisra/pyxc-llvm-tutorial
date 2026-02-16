@@ -994,11 +994,11 @@ Note that, as with Python, this is not legal:
 ```
 In Python you could put the entire expression in delimiters or use an explicit continuation character `\`. We don't implement that just yet. 
 
-## Conclusion
+## Compiling
 
-With just under 600 lines of commented code, we defined our minimal language, including a lexer, parser, and AST builder. With this done, the executable will validate Pyxc code and tell us if it is grammatically invalid. 
-
-There is a lot of room for extension here. You can define new AST nodes, extend the language in many ways, etc. In the next installment, we will describe how to generate LLVM Intermediate Representation (IR) from the AST.
+```bash
+cd code/chapter04 && ./build.sh
+```
 
 ## Sample interaction
 
@@ -1022,6 +1022,11 @@ ready> ^D
 $
 ```
 
+## Conclusion
+
+With just under 600 lines of commented code, we defined our minimal language, including a lexer, parser, and AST builder. With this done, the executable will validate Pyxc code and tell us if it is grammatically invalid. 
+
+There is a lot of room for extension here. You can define new AST nodes, extend the language in many ways, etc. In the next installment, we will describe how to generate LLVM Intermediate Representation (IR) from the AST.
 
 ## Need Help?
 
