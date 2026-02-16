@@ -211,7 +211,7 @@ This gives us safer local semantics before we scale into multi-file workflows in
 From repository root:
 
 ```bash
-make -C code/chapter24 clean all
+cd code/chapter24 && ./build.sh
 ```
 
 ## Testing
@@ -227,7 +227,7 @@ lit -sv code/chapter24/test
 Build this chapter:
 
 ```bash
-make -C code/chapter24 clean all
+cd code/chapter24 && ./build.sh
 ```
 
 Run one sample program:
@@ -248,7 +248,7 @@ Explore the test folder a bit and add one tiny edge case of your own.
 When you're done, clean artifacts:
 
 ```bash
-make -C code/chapter24 clean
+cd code/chapter24 && ./build.sh
 ```
 
 

@@ -75,9 +75,44 @@ static string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;             // Filled in if tok_number
 ```
 
-Each token returned by our lexer will either be one of the Token enum values or it will be an ‘unknown’ character like ‘+’, which is returned as its ASCII value. If the current token is an identifier, the IdentifierStr global variable holds the name of the identifier. If the current token is a numeric literal (like 1.0), NumVal holds its value. We use global variables for simplicity, but this is not the best choice for a real language implementation :).
+Each token returned by our lexer will either be one of the `Token` enum values or it will be an unknown character like `+`, which is returned as its character code. If the current token is an identifier, the `IdentifierStr` global variable holds the name of the identifier. If the current token is a numeric literal (like `1.0`), `NumVal` holds its value. We use global variables for simplicity, but this is not the best choice for a real language implementation :).
 
-Before we look at `gettok()`, we add two tiny location-tracking structures and one helper:
+To make output easier to read (both in the REPL and in diagnostics in later chapters), we map tokens to user-friendly strings:
+
+```cpp
+static map<int, string> TokenNames = [] {
+  map<int, string> Names = {
+      {tok_eof, "end of input"},
+      {tok_eol, "newline"},
+      {tok_def, "'def'"},
+      {tok_extern, "'extern'"},
+      {tok_identifier, "identifier"},
+      {tok_number, "number"},
+      {tok_return, "'return'"},
+  };
+
+  for (int C = 0; C <= 255; ++C) {
+    if (isprint(static_cast<unsigned char>(C)))
+      Names[C] = "'" + string(1, static_cast<char>(C)) + "'";
+    else if (C == '\n')
+      Names[C] = "'\\n'";
+    else if (C == '\t')
+      Names[C] = "'\\t'";
+    else if (C == '\r')
+      Names[C] = "'\\r'";
+    else if (C == '\0')
+      Names[C] = "'\\0'";
+    else {
+      ostringstream OS;
+      OS << "0x" << uppercase << hex << setw(2) << setfill('0') << C;
+      Names[C] = OS.str();
+    }
+  }
+  return Names;
+}();
+```
+
+Before we look at `gettok()`, we add two location-tracking structs, a small `SourceManager`, and one helper:
 
 ```cpp
 struct SourceLocation {
@@ -86,28 +121,73 @@ struct SourceLocation {
 };
 static SourceLocation CurLoc;
 static SourceLocation LexLoc = {1, 0};
+```
 
+`LexLoc` tracks where the lexer is currently reading. `CurLoc` is the start location of the current token.
+
+```cpp
+class SourceManager {
+  vector<string> CompletedLines;
+  string CurrentLine;
+
+public:
+  void reset() {
+    CompletedLines.clear();
+    CurrentLine.clear();
+  }
+
+  void onChar(int C) {
+    if (C == '\n') {
+      CompletedLines.push_back(CurrentLine);
+      CurrentLine.clear();
+      return;
+    }
+    if (C != EOF)
+      CurrentLine.push_back(static_cast<char>(C));
+  }
+
+  const string *getLine(int OneBasedLine) const {
+    if (OneBasedLine <= 0)
+      return nullptr;
+    size_t Index = static_cast<size_t>(OneBasedLine - 1);
+    if (Index < CompletedLines.size())
+      return &CompletedLines[Index];
+    if (Index == CompletedLines.size())
+      return &CurrentLine;
+    return nullptr;
+  }
+};
+
+static SourceManager SourceMgr;
+```
+
+`SourceMgr` stores source lines as characters are read, which we use for line-aware diagnostics in later chapters. Every time `advance()` reads a character, it calls `SourceMgr.onChar(...)`; the source manager buffers characters into the current line and pushes completed lines into its internal vector when it sees `\n`.
+
+```cpp
 static int advance() {
   int LastChar = getchar();
   if (LastChar == '\r') {
     int NextChar = getchar();
     if (NextChar != '\n' && NextChar != EOF)
       ungetc(NextChar, stdin);
+    SourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
     return '\n';
   }
   if (LastChar == '\n') {
+    SourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
   } else {
+    SourceMgr.onChar(LastChar);
     LexLoc.Col++;
   }
   return LastChar;
 }
 ```
 
-`LexLoc` tracks where the lexer is currently reading. `CurLoc` is the start location of the current token. The `advance()` helper centralizes character reading and location updates so `gettok()` does not need to manually keep line/column counters in every branch. It also normalizes Windows `\r\n` into one logical newline by peeking one character ahead and pushing non-`\n` characters back with `ungetc`.
+The `advance()` helper centralizes character reading and location updates so `gettok()` does not need to manually keep line/column counters in every branch. It also normalizes Windows `\r\n` into one logical newline by peeking one character ahead and pushing non-`\n` characters back with `ungetc`.
 
 Now the actual implementation of the lexer is a single function named `gettok()`. It is called to return the next token from standard input. Its definition starts as:
 
@@ -173,17 +253,19 @@ This is all pretty straightforward code for processing input. When reading a num
 
 ```cpp
 if (LastChar == '#') {
-    // Comment until end of line.
-    do
-      LastChar = advance();
-    while (LastChar != EOF && LastChar != '\n');
+  // Comment until end of line.
+  do
+    LastChar = advance();
+  while (LastChar != EOF && LastChar != '\n');
 
-    if (LastChar != EOF)
-      return tok_eol;
+  if (LastChar != EOF) {
+    LastChar = ' '; // consume newline once (avoid double tok_eol)
+    return tok_eol;
+  }
 }
 ```
 
-We handle comments by skipping to the end of the line and then return the end of line token. Finally, if the input doesn’t match one of the above cases, it is either an operator character like ‘+’ or the end of the file. These are handled with this code:
+We handle comments by skipping to the end of the line and returning a single `tok_eol`. Setting `LastChar = ' '` is important here: it prevents the newline that was just consumed by `advance()` from being emitted a second time on the next `gettok()` call. Finally, if the input doesn’t match one of the above cases, it is either an operator character like `+` or the end of the file. These are handled with this code:
 
 ```cpp
   // Check for end of file.  Don't eat the EOF.
@@ -212,14 +294,16 @@ void MainLoop() {
     if (Tok == tok_eof)
       break;
 
-    printf("<%s>", GetTokenName(Tok).c_str());
-
+    printf("%s", GetTokenName(Tok).c_str());
     if (Tok == tok_eol)
       printf("\nready> ");
+    else
+      printf(" ");
   }
 }
 
 int main() {
+  SourceMgr.reset();
   MainLoop();
   return 0;
 }
@@ -227,43 +311,32 @@ int main() {
 
 This is not a full interpreter yet. It is only a quick feedback loop to verify that the lexer tokenizes input the way we expect.
 
+## Building
+From repository root:
+
+```bash
+cd code/chapter01 && ./build.sh
+```
+
 ## Sample interaction
 
 ```python
 $ build/pyxc
 
 ready> def foo(x):
-<tok_def><tok_identifier><tok_char, '('><tok_identifier><tok_char, ')'><tok_char, ':'><tok_eol>
+'def' identifier '(' identifier ')' ':' newline
 ready> return x + 1
-<tok_return><tok_identifier><tok_char, '+'><tok_number><tok_eol>
+'return' identifier '+' number newline
 ready> extern def add(a,b)
-<tok_extern><tok_def><tok_identifier><tok_char, '('><tok_identifier><tok_char, ','><tok_identifier><tok_char, ')'><tok_eol>
+'extern' 'def' identifier '(' identifier ',' identifier ')' newline
 ready> ! # comment after a character token
-<tok_char, '!'><tok_eol>
-ready> <tok_eol>
+'!' newline
+ready> # full-line comment
+newline
 ready> ^D
 ```
 
-## Building
-We will use [CMake](https://cmake.org/) for our builds so that when we have an explosion of LLVM related switches, we can look at each other with positive approval for having the insight to use CMake early on.
-
-```bash
-# build.sh
-
-# Configure step:
-# -S .   -> source dir is current directory (where CMakeLists.txt lives)
-# -B build -> generate build files in ./build
-cmake -S . -B build
-
-# Build step:
-# --build build -> compile using the generated build system in ./build
-cmake --build build
-```
-
-If you are running a Unix-y OS (including MacOS), you can just run
-```bash
-./build.sh
-```
+Notice above, that comments will not yield a token, but the newline token after it will.
 
 ## Testing
 

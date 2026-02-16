@@ -9,9 +9,6 @@ Welcome to Chapter 2 of the [Pyxc: My First Language Frontend with LLVM](chapter
 
 ## It's Grammar Time
 
-!!!note
-    This section is skippable on first read. If you do, be sure to return to it later. As the language grows, the grammar will genuinely help guide us to write the parser.
-
 Before we try and parse the language, we should have an idea of what we are trying to parse. We can start at the top (`program`) and then, little by little, break it down into smaller parts.
 
 For text we want to match exactly (keywords), we put it in `quotes`.

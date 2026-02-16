@@ -174,6 +174,76 @@ struct SourceLocation {
 static SourceLocation CurLoc;
 static SourceLocation LexLoc = {1, 0};
 
+class SourceManager {
+  std::vector<std::string> CompletedLines;
+  std::string CurrentLine;
+
+public:
+  void reset() {
+    CompletedLines.clear();
+    CurrentLine.clear();
+  }
+
+  void onChar(int C) {
+    if (C == '\n') {
+      CompletedLines.push_back(CurrentLine);
+      CurrentLine.clear();
+      return;
+    }
+    if (C != EOF)
+      CurrentLine.push_back(static_cast<char>(C));
+  }
+
+  const std::string *getLine(int OneBasedLine) const {
+    if (OneBasedLine <= 0)
+      return nullptr;
+    size_t Index = static_cast<size_t>(OneBasedLine - 1);
+    if (Index < CompletedLines.size())
+      return &CompletedLines[Index];
+    if (Index == CompletedLines.size())
+      return &CurrentLine;
+    return nullptr;
+  }
+};
+
+static SourceManager DiagSourceMgr;
+
+static std::string FormatTokenForError(int Tok) {
+  if (Tok == tok_identifier)
+    return "identifier '" + IdentifierStr + "'";
+  if (Tok == tok_number)
+    return "number";
+  if (Tok == tok_eol)
+    return "newline";
+  if (Tok == tok_eof)
+    return "end of input";
+
+  for (const auto &Kw : Keywords)
+    if (Kw.second == Tok)
+      return "keyword '" + Kw.first + "'";
+
+  if (isascii(Tok) && isprint(Tok))
+    return std::string("'") + static_cast<char>(Tok) + "'";
+  if (isascii(Tok))
+    return "ascii(" + std::to_string(Tok) + ")";
+  return "unknown token";
+}
+
+static void PrintErrorSourceContext(SourceLocation Loc) {
+  const std::string *LineText = DiagSourceMgr.getLine(Loc.Line);
+  if (!LineText)
+    return;
+
+  fprintf(stderr, "%s\n", LineText->c_str());
+
+  int Spaces = Loc.Col - 1;
+  if (Spaces < 0)
+    Spaces = 0;
+  for (int I = 0; I < Spaces; ++I)
+    fputc(' ', stderr);
+  fprintf(stderr, "%s^%s~~~\n", Bold, Reset);
+}
+
 static int advance() {
   int LastChar = getc(InputFile);
 
@@ -181,15 +251,19 @@ static int advance() {
     int NextChar = getc(InputFile);
     if (NextChar != '\n' && NextChar != EOF)
       ungetc(NextChar, InputFile);
+    DiagSourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
     return '\n';
   }
   if (LastChar == '\n') {
+    DiagSourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
-  } else
+  } else {
+    DiagSourceMgr.onChar(LastChar);
     LexLoc.Col++;
+  }
   return LastChar;
 }
 
@@ -241,8 +315,10 @@ static int gettok() {
       LastChar = advance();
     while (LastChar != EOF && LastChar != '\n');
 
-    if (LastChar != EOF)
+    if (LastChar != EOF) {
+      LastChar = ' ';
       return tok_eol;
+    }
   }
 
   // Check for end of file.  Don't eat the EOF.
@@ -516,8 +592,10 @@ static int GetTokPrecedence() {
 /// LogError* - These are little helper functions for error handling.
 std::unique_ptr<ExprAST> LogError(const char *Str) {
   InForExpression = false;
-  fprintf(stderr, "%sError (Line: %d, Column: %d): %s\n%s", Red, CurLoc.Line,
-          CurLoc.Col, Str, Reset);
+  const std::string TokDisplay = FormatTokenForError(CurTok);
+  fprintf(stderr, "%sError%s (Line: %d, Column: %d): %s near %s\n", Red, Reset,
+          CurLoc.Line, CurLoc.Col, Str, TokDisplay.c_str());
+  PrintErrorSourceContext(CurLoc);
   return nullptr;
 }
 
@@ -2135,6 +2213,8 @@ void REPL() {
 //===----------------------------------------------------------------------===//
 
 int main(int argc, char **argv) {
+  DiagSourceMgr.reset();
+
   cl::HideUnrelatedOptions(PyxcCategory);
   cl::ParseCommandLineOptions(argc, argv, "Pyxc - Compiler and Interpreter\n");
 

@@ -981,32 +981,29 @@ def fib(x):
         return fib(x-1) + fib(x-2)
 
 ## Compiling
-```
 
-This chapter ships with a ready-to-use `Makefile` in [`code/chapter12`](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter12). If you are reading this online, you can copy/download that file, place it in your current chapter directory, and run `make`.
-
-For this tutorial, `make` is the default path.
+This chapter ships with a ready-to-use build script in [`code/chapter12`](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter12).
 
 Run:
 
 ```bash
-make
+cd code/chapter12 && ./build.sh
 ```
 
-This produces `pyxc`. If `runtime.c` exists, `make` also builds `runtime.o` automatically.
+This produces `build/pyxc`. If `runtime.c` exists, the build also produces `runtime.o`.
 
 ## Compile / Run / Test (Hands-on)
 
 Build this chapter:
 
 ```bash
-make -C code/chapter12 clean all
+cd code/chapter12 && ./build.sh
 ```
 
 Run one sample program:
 
 ```bash
-code/chapter12/pyxc -i code/chapter12/fib.pyxc
+code/chapter12/build/pyxc -i code/chapter12/fib.pyxc
 ```
 
 Run the chapter tests (when a test suite exists):
@@ -1021,7 +1018,7 @@ Poke around the tests and tweak a few cases to see what breaks first.
 When you're done, clean artifacts:
 
 ```bash
-make -C code/chapter12 clean
+cd code/chapter12 && ./build.sh
 ```
 
 

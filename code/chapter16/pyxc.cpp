@@ -477,8 +477,10 @@ static int gettok() {
       LastChar = advance();
     while (LastChar != EOF && LastChar != '\n');
 
-    if (LastChar != EOF)
+    if (LastChar != EOF) {
+      LastChar = ' ';
       return tok_eol;
+    }
   }
 
   // Check for end of file.  Don't eat the EOF.

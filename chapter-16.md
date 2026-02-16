@@ -343,8 +343,7 @@ With this foundation in place, Chapter 17 can add language-level printing ergono
 Now compile Chapter 16 and run the test suite.
 
 ```bash
-cd code/chapter16
-make all
+cd code/chapter16 && ./build.sh
 llvm-lit test -sv
 ```
 
@@ -374,7 +373,7 @@ If your mental model matches the compiler behavior, your tests should pass on fi
 Build this chapter:
 
 ```bash
-make -C code/chapter16 clean all
+cd code/chapter16 && ./build.sh
 ```
 
 Run one sample program:
@@ -395,7 +394,7 @@ Have some fun stress-testing the suite with small variations.
 When you're done, clean artifacts:
 
 ```bash
-make -C code/chapter16 clean
+cd code/chapter16 && ./build.sh
 ```
 
 

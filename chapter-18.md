@@ -464,8 +464,7 @@ By the end of the chapter, control flow is much closer to what users expect in d
 From the repository root:
 
 ```bash
-cd code/chapter18
-make
+cd code/chapter18 && ./build.sh
 ```
 
 Run the chapter test suite:
@@ -477,8 +476,7 @@ lit -sv test
 If you also want to sanity-check the previous chapter in the same environment:
 
 ```bash
-cd ../chapter17
-make
+cd ../chapter17 && ./build.sh
 lit -sv -j 1 test
 ```
 
@@ -488,7 +486,7 @@ lit -sv -j 1 test
 Build this chapter:
 
 ```bash
-make -C code/chapter18 clean all
+cd code/chapter18 && ./build.sh
 ```
 
 Run one sample program:
@@ -509,7 +507,7 @@ Try editing a test or two and see how quickly you can predict the outcome.
 When you're done, clean artifacts:
 
 ```bash
-make -C code/chapter18 clean
+cd code/chapter18 && ./build.sh
 ```
 
 

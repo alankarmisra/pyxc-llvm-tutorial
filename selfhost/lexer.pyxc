@@ -1,0 +1,252 @@
+# lexer.pyxc - Tokenizer for Pyxc written in Pyxc itself
+# Phase 1 self-hosting: lexer prototype
+
+# Token values:
+#   tok_eof        = -1
+#   tok_eol        = -2
+#   tok_def        = -4
+#   tok_extern     = -5
+#   tok_identifier = -6
+#   tok_number     = -7
+#   tok_if         = -8
+#   tok_else       = -10
+#   tok_return     = -11
+
+extern def strcmp(a: ptr[i8], b: ptr[i8]) -> i32
+extern def atof(s: ptr[i8]) -> f64
+
+struct Token:
+    kind: i32
+    line: i32
+    col: i32
+    str_val: ptr[i8]
+    num_val: f64
+    int_val: i64
+    is_int: i32
+
+struct Lexer:
+    source: ptr[i8]
+    pos: i64
+    line: i32
+    col: i32
+    current_char: i8
+
+def create_token(tok_type: i32, line: i32, col: i32) -> ptr[Token]:
+    tok: ptr[Token] = malloc[Token](1)
+    tok[0].kind = tok_type
+    tok[0].line = line
+    tok[0].col = col
+    tok[0].str_val = 0
+    tok[0].num_val = 0.0
+    tok[0].int_val = 0
+    tok[0].is_int = 0
+    return tok
+
+def free_token(tok: ptr[Token]) -> void:
+    free(tok[0].str_val)
+    free(tok)
+
+def create_lexer(source: ptr[i8]) -> ptr[Lexer]:
+    lex: ptr[Lexer] = malloc[Lexer](1)
+    lex[0].source = source
+    lex[0].pos = 0
+    lex[0].line = 1
+    lex[0].col = 0
+    lex[0].current_char = source[0]
+    return lex
+
+def free_lexer(lex: ptr[Lexer]) -> void:
+    free(lex)
+
+def advance(lex: ptr[Lexer]) -> void:
+    if lex[0].current_char == 0:
+        return
+
+    if lex[0].current_char == 10:
+        lex[0].line = lex[0].line + 1
+        lex[0].col = 0
+    else:
+        lex[0].col = lex[0].col + 1
+
+    lex[0].pos = lex[0].pos + 1
+    src: ptr[i8] = lex[0].source
+    lex[0].current_char = src[lex[0].pos]
+
+def peek(lex: ptr[Lexer], offset: i64) -> i8:
+    src: ptr[i8] = lex[0].source
+    return src[lex[0].pos + offset]
+
+def is_ident_start(ch: i32) -> i32:
+    if isalpha(ch):
+        return 1
+    if ch == 95:
+        return 1
+    return 0
+
+def is_ident_continue(ch: i32) -> i32:
+    if isalpha(ch):
+        return 1
+    if isdigit(ch):
+        return 1
+    if ch == 95:
+        return 1
+    return 0
+
+def skip_whitespace(lex: ptr[Lexer]) -> void:
+    while lex[0].current_char != 0 and isspace(lex[0].current_char) and lex[0].current_char != 10:
+        advance(lex)
+
+def skip_comment(lex: ptr[Lexer]) -> void:
+    while lex[0].current_char != 0 and lex[0].current_char != 10:
+        advance(lex)
+
+def get_keyword_token(word: ptr[i8]) -> i32:
+    if strcmp(word, "def") == 0:
+        return -4
+    if strcmp(word, "extern") == 0:
+        return -5
+    if strcmp(word, "return") == 0:
+        return -11
+    if strcmp(word, "if") == 0:
+        return -8
+    if strcmp(word, "else") == 0:
+        return -10
+    return -6
+
+def lex_identifier(lex: ptr[Lexer]) -> ptr[Token]:
+    start_line: i32 = lex[0].line
+    start_col: i32 = lex[0].col
+    start_pos: i64 = lex[0].pos
+
+    while lex[0].current_char != 0 and is_ident_continue(lex[0].current_char):
+        advance(lex)
+
+    length: i64 = lex[0].pos - start_pos
+    str: ptr[i8] = malloc[i8](length + 1)
+
+    src: ptr[i8] = lex[0].source
+    i: i64 = 0
+    while i < length:
+        str[i] = src[start_pos + i]
+        i = i + 1
+    str[length] = 0
+
+    tok_type: i32 = get_keyword_token(str)
+    tok: ptr[Token] = create_token(tok_type, start_line, start_col)
+    tok[0].str_val = str
+    return tok
+
+def lex_number(lex: ptr[Lexer]) -> ptr[Token]:
+    start_line: i32 = lex[0].line
+    start_col: i32 = lex[0].col
+    start_pos: i64 = lex[0].pos
+    has_dot: i32 = 0
+
+    while lex[0].current_char != 0:
+        if isdigit(lex[0].current_char):
+            advance(lex)
+        elif lex[0].current_char == 46 and has_dot == 0 and isdigit(peek(lex, 1)):
+            has_dot = 1
+            advance(lex)
+        else:
+            break
+
+    length: i64 = lex[0].pos - start_pos
+    num_str: ptr[i8] = malloc[i8](length + 1)
+
+    src: ptr[i8] = lex[0].source
+    i: i64 = 0
+    while i < length:
+        num_str[i] = src[start_pos + i]
+        i = i + 1
+    num_str[length] = 0
+
+    before_dot: i64 = 0
+    found_dot: i32 = 0
+    i = 0
+
+    while num_str[i] != 0:
+        if num_str[i] == 46:
+            found_dot = 1
+        elif found_dot == 0:
+            before_dot = before_dot * 10 + (num_str[i] - 48)
+        i = i + 1
+
+    tok: ptr[Token] = create_token(-7, start_line, start_col)
+    tok[0].num_val = atof(num_str)
+    tok[0].int_val = before_dot
+    tok[0].is_int = 1
+    if has_dot != 0:
+        tok[0].is_int = 0
+
+    free(num_str)
+    return tok
+
+def get_next_token(lex: ptr[Lexer]) -> ptr[Token]:
+    skip_whitespace(lex)
+
+    tok_line: i32 = lex[0].line
+    tok_col: i32 = lex[0].col
+
+    if lex[0].current_char == 0:
+        return create_token(-1, tok_line, tok_col)
+
+    if lex[0].current_char == 10:
+        advance(lex)
+        return create_token(-2, tok_line, tok_col)
+
+    if lex[0].current_char == 35:
+        skip_comment(lex)
+        return get_next_token(lex)
+
+    if is_ident_start(lex[0].current_char):
+        return lex_identifier(lex)
+
+    if isdigit(lex[0].current_char):
+        return lex_number(lex)
+    if lex[0].current_char == 46 and isdigit(peek(lex, 1)):
+        return lex_number(lex)
+
+    ch: i32 = lex[0].current_char
+    advance(lex)
+    return create_token(ch, tok_line, tok_col)
+
+def print_token(tok: ptr[Token]) -> void:
+    printf("Token(type=%d, line=%d, col=%d", tok[0].kind, tok[0].line, tok[0].col)
+
+    if tok[0].kind == -6 or tok[0].kind == -4 or tok[0].kind == -5 or tok[0].kind == -8 or tok[0].kind == -10 or tok[0].kind == -11:
+        printf(", str=\"%s\"", tok[0].str_val)
+
+    if tok[0].kind == -7:
+        if tok[0].is_int:
+            printf(", int_val=%lld", tok[0].int_val)
+        else:
+            printf(", num_val=%f", tok[0].num_val)
+
+    printf(")\n")
+
+def main() -> i32:
+    source: ptr[i8] = "def add(x, y):\n    # comment\n    return x + y\n"
+
+    printf("=== Testing Lexer ===\n")
+    printf("Source:\n%s\n", source)
+    printf("\nTokens:\n")
+
+    lex: ptr[Lexer] = create_lexer(source)
+    tok: ptr[Token] = get_next_token(lex)
+
+    while tok[0].kind != -1:
+        printf("  ")
+        print_token(tok)
+        free_token(tok)
+        tok = get_next_token(lex)
+
+    printf("  ")
+    print_token(tok)
+    free_token(tok)
+    free_lexer(lex)
+
+    printf("\n=== Test Complete ===\n")
+    return 0
+
+main()

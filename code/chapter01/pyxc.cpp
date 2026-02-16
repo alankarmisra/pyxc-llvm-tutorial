@@ -1,8 +1,11 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <iomanip>
 #include <map>
+#include <sstream>
 #include <string>
+#include <vector>
 
 using namespace std;
 
@@ -41,21 +44,32 @@ static map<string, Token> Keywords = {
 static map<int, string> TokenNames = [] {
   // Unprintable character tokens, and multi-character tokens.
   map<int, string> Names = {
-      {tok_eof, "tok_eof"},
-      {tok_eol, "tok_eol"},
-      {tok_def, "tok_def"},
-      {tok_extern, "tok_extern"},
-      {tok_identifier, "tok_identifier"},
-      {tok_number, "tok_number"},
-      {tok_return, "tok_return"},
+      {tok_eof, "end of input"},
+      {tok_eol, "newline"},
+      {tok_def, "'def'"},
+      {tok_extern, "'extern'"},
+      {tok_identifier, "identifier"},
+      {tok_number, "number"},
+      {tok_return, "'return'"},
   };
 
   // Single character tokens.
   for (int C = 0; C <= 255; ++C) {
     if (isprint(static_cast<unsigned char>(C)))
-      Names[C] = "tok_char, '" + string(1, static_cast<char>(C)) + "'";
-    else
-      Names[C] = "tok_char, " + to_string(C);
+      Names[C] = "'" + string(1, static_cast<char>(C)) + "'";
+    else if (C == '\n')
+      Names[C] = "'\\n'";
+    else if (C == '\t')
+      Names[C] = "'\\t'";
+    else if (C == '\r')
+      Names[C] = "'\\r'";
+    else if (C == '\0')
+      Names[C] = "'\\0'";
+    else {
+      ostringstream OS;
+      OS << "0x" << uppercase << hex << setw(2) << setfill('0') << C;
+      Names[C] = OS.str();
+    }
   }
 
   return Names;
@@ -68,20 +82,57 @@ struct SourceLocation {
 static SourceLocation CurLoc;
 static SourceLocation LexLoc = {1, 0};
 
+class SourceManager {
+  vector<string> CompletedLines;
+  string CurrentLine;
+
+public:
+  void reset() {
+    CompletedLines.clear();
+    CurrentLine.clear();
+  }
+
+  void onChar(int C) {
+    if (C == '\n') {
+      CompletedLines.push_back(CurrentLine);
+      CurrentLine.clear();
+      return;
+    }
+    if (C != EOF)
+      CurrentLine.push_back(static_cast<char>(C));
+  }
+
+  const string *getLine(int OneBasedLine) const {
+    if (OneBasedLine <= 0)
+      return nullptr;
+    size_t Index = static_cast<size_t>(OneBasedLine - 1);
+    if (Index < CompletedLines.size())
+      return &CompletedLines[Index];
+    if (Index == CompletedLines.size())
+      return &CurrentLine;
+    return nullptr;
+  }
+};
+
+static SourceManager SourceMgr;
+
 static int advance() {
   int LastChar = getchar();
   if (LastChar == '\r') {
     int NextChar = getchar();
     if (NextChar != '\n' && NextChar != EOF)
       ungetc(NextChar, stdin);
+    SourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
     return '\n';
   }
   if (LastChar == '\n') {
+    SourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
   } else {
+    SourceMgr.onChar(LastChar);
     LexLoc.Col++;
   }
   return LastChar;
@@ -132,8 +183,10 @@ static int gettok() {
       LastChar = advance();
     while (LastChar != EOF && LastChar != '\n');
 
-    if (LastChar != EOF)
+    if (LastChar != EOF) {
+      LastChar = ' ';
       return tok_eol;
+    }
   }
 
   // Check for end of file. Don't eat the EOF.
@@ -163,14 +216,17 @@ void MainLoop() {
     if (Tok == tok_eof)
       break;
 
-    printf("<%s>", GetTokenName(Tok).c_str());
+    printf("%s", GetTokenName(Tok).c_str());
 
     if (Tok == tok_eol)
       printf("\nready> ");
+    else
+      printf(" ");
   }
 }
 
 int main() {
+  SourceMgr.reset();
   MainLoop();
   return 0;
 }

@@ -152,7 +152,7 @@ Added tests:
 Build:
 
 ```bash
-make -C code/chapter12 clean all
+cd code/chapter12 && ./build.sh
 ```
 
 Run one sample:
@@ -173,7 +173,7 @@ Explore by reordering functions or introducing a mismatched `extern` signature a
 Clean artifacts:
 
 ```bash
-make -C code/chapter12 clean
+cd code/chapter12 && ./build.sh
 ```
 
 

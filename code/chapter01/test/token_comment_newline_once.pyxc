@@ -1,0 +1,6 @@
+# RUN: printf '! # trailing comment should end line once\n# full-line comment should still count as one line break\n42\nreturn 1 # trailing comment\n' | %pyxc > %t 2>/dev/null
+# RUN: grep -F "'!' newline" %t
+# RUN: grep -F "number newline" %t
+# RUN: grep -F "'return' number newline" %t
+# RUN: test "$(grep -o 'newline' %t | wc -l | tr -d '[:space:]')" = "4"
+# RUN: test "$(grep -o "'!' newline" %t | wc -l | tr -d '[:space:]')" = "1"

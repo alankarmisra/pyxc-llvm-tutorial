@@ -205,8 +205,7 @@ Type/pointer tests moved to Chapter 16.
 ## Compile and Run
 
 ```bash
-cd code/chapter15
-make
+cd code/chapter15 && ./build.sh
 ```
 
 Run sample programs:
@@ -234,7 +233,7 @@ Repo:
 Build this chapter:
 
 ```bash
-make -C code/chapter15 clean all
+cd code/chapter15 && ./build.sh
 ```
 
 Run one sample program:
@@ -255,7 +254,7 @@ Pick a couple of tests, mutate the inputs, and watch how diagnostics respond.
 When you're done, clean artifacts:
 
 ```bash
-make -C code/chapter15 clean
+cd code/chapter15 && ./build.sh
 ```
 
 

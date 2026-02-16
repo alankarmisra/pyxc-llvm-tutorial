@@ -5,10 +5,19 @@
 #include <memory>
 #include <string>
 #include <type_traits>
+#include <unistd.h>
 #include <utility>
 #include <vector>
 
 using namespace std;
+
+//===----------------------------------------------------------------------===//
+// Color
+//===----------------------------------------------------------------------===//
+static bool UseColor = isatty(fileno(stderr));
+static const char *Red = UseColor ? "\x1b[31m" : "";
+static const char *Bold = UseColor ? "\x1b[1m" : "";
+static const char *Reset = UseColor ? "\x1b[0m" : "";
 
 //===----------------------------------------------------------------------===//
 // Lexer
@@ -34,6 +43,7 @@ enum Token {
 
 static string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;        // Filled in if tok_number
+static string NumLiteralStr; // Filled in if tok_number
 
 // Keywords words like `def`, `extern` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
@@ -43,21 +53,21 @@ static map<string, Token> Keywords = {
 static map<int, string> TokenNames = [] {
   // Unprintable character tokens, and multi-character tokens.
   map<int, string> Names = {
-      {tok_eof, "tok_eof"},
-      {tok_eol, "tok_eol"},
-      {tok_def, "tok_def"},
-      {tok_extern, "tok_extern"},
-      {tok_identifier, "tok_identifier"},
-      {tok_number, "tok_number"},
-      {tok_return, "tok_return"},
+      {tok_eof, "end of input"},
+      {tok_eol, "newline"},
+      {tok_def, "'def'"},
+      {tok_extern, "'extern'"},
+      {tok_identifier, "identifier"},
+      {tok_number, "number"},
+      {tok_return, "'return'"},
   };
 
   // Single character tokens.
   for (int C = 0; C <= 255; ++C) {
     if (isprint(static_cast<unsigned char>(C)))
-      Names[C] = "tok_char, '" + string(1, static_cast<char>(C)) + "'";
+      Names[C] = "'" + string(1, static_cast<char>(C)) + "'";
     else
-      Names[C] = "tok_char, " + to_string(C);
+      Names[C] = "character code " + to_string(C);
   }
 
   return Names;
@@ -70,21 +80,90 @@ struct SourceLocation {
 static SourceLocation CurLoc;
 static SourceLocation LexLoc = {1, 0};
 
+class SourceManager {
+  vector<string> CompletedLines;
+  string CurrentLine;
+
+public:
+  void reset() {
+    CompletedLines.clear();
+    CurrentLine.clear();
+  }
+
+  void onChar(int C) {
+    if (C == '\n') {
+      CompletedLines.push_back(CurrentLine);
+      CurrentLine.clear();
+      return;
+    }
+    if (C != EOF)
+      CurrentLine.push_back(static_cast<char>(C));
+  }
+
+  const string *getLine(int OneBasedLine) const {
+    if (OneBasedLine <= 0)
+      return nullptr;
+    size_t Index = static_cast<size_t>(OneBasedLine - 1);
+    if (Index < CompletedLines.size())
+      return &CompletedLines[Index];
+    if (Index == CompletedLines.size())
+      return &CurrentLine;
+    return nullptr;
+  }
+};
+
+static SourceManager SourceMgr;
+
+static string FormatTokenForError(int Tok) {
+  if (Tok == tok_identifier)
+    return "identifier '" + IdentifierStr + "'";
+  if (Tok == tok_number)
+    return "number '" + NumLiteralStr + "'";
+
+  const auto TokIt = TokenNames.find(Tok);
+  if (TokIt != TokenNames.end())
+    return TokIt->second;
+  return "unknown token";
+}
+
+static void PrintErrorSourceContext(SourceLocation Loc) {
+  const string *LineText = SourceMgr.getLine(Loc.Line);
+  if (!LineText)
+    return;
+
+  fprintf(stderr, "%s\n", LineText->c_str());
+
+  int Spaces = Loc.Col - 1;
+  if (Spaces < 0)
+    Spaces = 0;
+  for (int I = 0; I < Spaces; ++I)
+    fputc(' ', stderr);
+  fprintf(stderr, "%s^%s", Bold, Reset);
+  fputc('~', stderr);
+  fputc('~', stderr);
+  fputc('~', stderr);
+  fputc('\n', stderr);
+}
+
 static int advance() {
   int LastChar = getchar();
   if (LastChar == '\r') {
     int NextChar = getchar();
     if (NextChar != '\n' && NextChar != EOF)
       ungetc(NextChar, stdin);
+    SourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
     return '\n';
   }
   if (LastChar == '\n') {
+    SourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
-  } else
+  } else {
+    SourceMgr.onChar(LastChar);
     LexLoc.Col++;
+  }
   return LastChar;
 }
 
@@ -123,6 +202,7 @@ static int gettok() {
       LastChar = advance();
     } while (isdigit(LastChar) || LastChar == '.');
 
+    NumLiteralStr = NumStr;
     NumVal = strtod(NumStr.c_str(), 0);
     return tok_number;
   }
@@ -133,8 +213,10 @@ static int gettok() {
       LastChar = advance();
     while (LastChar != EOF && LastChar != '\n');
 
-    if (LastChar != EOF)
+    if (LastChar != EOF) {
+      LastChar = ' ';
       return tok_eol;
+    }
   }
 
   // Check for end of file.  Don't eat the EOF.
@@ -257,11 +339,10 @@ static int GetTokPrecedence() {
 }
 
 template <typename T = void> T LogError(const char *Str) {
-  const auto TokIt = TokenNames.find(CurTok);
-  const string TokStr =
-      (TokIt != TokenNames.end()) ? TokIt->second : "unknown token";
-  fprintf(stderr, "Error: (Line: %d, Column: %d): %s | CurTok = %d (%s)\n",
-          CurLoc.Line, CurLoc.Col, Str, CurTok, TokStr.c_str());
+  const string TokStr = FormatTokenForError(CurTok);
+  fprintf(stderr, "%sError%s: (Line: %d, Column: %d): %s near %s\n", Red, Reset,
+          CurLoc.Line, CurLoc.Col, Str, TokStr.c_str());
+  PrintErrorSourceContext(CurLoc);
   if constexpr (is_void_v<T>)
     return;
   else if constexpr (is_pointer_v<T>)
@@ -478,7 +559,7 @@ static unique_ptr<PrototypeAST> ParseExtern() {
 
 static void HandleDefinition() {
   if (ParseDefinition()) {
-    fprintf(stderr, "Parsed a function definition.\n");
+    fprintf(stderr, "Parsed a function definition\n");
   } else {
     // Error recovery: consume one token only when we're not already at a
     // line/end boundary. This avoids blocking for input after errors like
@@ -537,6 +618,8 @@ static void MainLoop() {
 //===----------------------------------------------------------------------===//
 
 int main() {
+  SourceMgr.reset();
+
   // Prime the first token.
   fprintf(stderr, "ready> ");
   getNextToken();

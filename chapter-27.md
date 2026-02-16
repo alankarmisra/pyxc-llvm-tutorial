@@ -268,7 +268,7 @@ These cover:
 Compile:
 
 ```bash
-make -C code/chapter27 clean all
+cd code/chapter27 && ./build.sh
 ```
 
 Run one sample:
@@ -293,7 +293,7 @@ Validation for this implementation pass:
 Build this chapter:
 
 ```bash
-make -C code/chapter27 clean all
+cd code/chapter27 && ./build.sh
 ```
 
 Run one sample program:
@@ -314,7 +314,7 @@ Poke around the tests and tweak a few cases to see what breaks first.
 When you're done, clean artifacts:
 
 ```bash
-make -C code/chapter27 clean
+cd code/chapter27 && ./build.sh
 ```
 
 

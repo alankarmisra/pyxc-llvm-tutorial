@@ -1,4 +1,4 @@
 # RUN: %pyxc < %s > %t 2>/dev/null
-# RUN: grep -F "<tok_number><tok_char, '+'><tok_number><tok_eol>" %t
+# RUN: grep -F "number '+' number newline" %t
 
 3.14 + 42

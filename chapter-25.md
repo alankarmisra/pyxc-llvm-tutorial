@@ -280,7 +280,7 @@ Chapter 25 is the bridge from language features to practical project-scale compi
 From repository root:
 
 ```bash
-make -C code/chapter25 clean all
+cd code/chapter25 && ./build.sh
 ```
 
 ## Testing
@@ -296,7 +296,7 @@ lit -sv code/chapter25/test
 Build this chapter:
 
 ```bash
-make -C code/chapter25 clean all
+cd code/chapter25 && ./build.sh
 ```
 
 Run one sample program:
@@ -317,7 +317,7 @@ Pick a couple of tests, mutate the inputs, and watch how diagnostics respond.
 When you're done, clean artifacts:
 
 ```bash
-make -C code/chapter25 clean
+cd code/chapter25 && ./build.sh
 ```
 
 

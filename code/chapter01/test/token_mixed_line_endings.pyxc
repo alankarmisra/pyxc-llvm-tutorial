@@ -1,5 +1,5 @@
 # RUN: printf 'def a(x):\r\nreturn x\nextern def b(y)\r' | %pyxc > %t 2>/dev/null
-# RUN: grep -F "<tok_def><tok_identifier><tok_char, '('><tok_identifier><tok_char, ')'><tok_char, ':'><tok_eol>" %t
-# RUN: grep -F "<tok_return><tok_identifier><tok_eol>" %t
-# RUN: grep -F "<tok_extern><tok_def><tok_identifier><tok_char, '('><tok_identifier><tok_char, ')'><tok_eol>" %t
-# RUN: test "$(grep -o '<tok_eol>' %t | wc -l | tr -d '[:space:]')" = "3"
+# RUN: grep -F "'def' identifier '(' identifier ')' ':' newline" %t
+# RUN: grep -F "'return' identifier newline" %t
+# RUN: grep -F "'extern' 'def' identifier '(' identifier ')' newline" %t
+# RUN: test "$(grep -o 'newline' %t | wc -l | tr -d '[:space:]')" = "3"

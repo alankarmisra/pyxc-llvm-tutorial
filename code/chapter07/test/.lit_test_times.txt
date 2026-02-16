@@ -1,2 +1,2 @@
-2.756906e-02 call_eval.pyxc
-3.910398e-02 custom_ops.pyxc
+1.268830e+00 call_eval.pyxc
+1.270876e+00 custom_ops.pyxc

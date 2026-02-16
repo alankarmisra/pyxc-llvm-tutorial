@@ -505,7 +505,7 @@ This exercises integer, char, pointer, string, and escaped percent paths togethe
 Chapter 22 was validated with:
 
 ```bash
-make -C code/chapter22 clean all
+cd code/chapter22 && ./build.sh
 lit -sv code/chapter22/test
 ```
 
@@ -546,7 +546,7 @@ Those build directly on the I/O and pointer groundwork laid here.
 From repository root:
 
 ```bash
-make -C code/chapter22 clean all
+cd code/chapter22 && ./build.sh
 ```
 
 ## Testing
@@ -562,7 +562,7 @@ lit -sv code/chapter22/test
 Build this chapter:
 
 ```bash
-make -C code/chapter22 clean all
+cd code/chapter22 && ./build.sh
 ```
 
 Run one sample program:
@@ -583,7 +583,7 @@ Poke around the tests and tweak a few cases to see what breaks first.
 When you're done, clean artifacts:
 
 ```bash
-make -C code/chapter22 clean
+cd code/chapter22 && ./build.sh
 ```
 
 

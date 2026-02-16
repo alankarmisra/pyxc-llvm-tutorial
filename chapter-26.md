@@ -244,7 +244,7 @@ main()
 ### Compile
 
 ```bash
-make -C code/chapter26 clean all
+cd code/chapter26 && ./build.sh
 ```
 
 ### Run sample programs
@@ -284,7 +284,7 @@ That tradeoff improves readability and keeps the language direction clear.
 Build this chapter:
 
 ```bash
-make -C code/chapter26 clean all
+cd code/chapter26 && ./build.sh
 ```
 
 Run one sample program:
@@ -305,7 +305,7 @@ Have some fun stress-testing the suite with small variations.
 When you're done, clean artifacts:
 
 ```bash
-make -C code/chapter26 clean
+cd code/chapter26 && ./build.sh
 ```
 
 

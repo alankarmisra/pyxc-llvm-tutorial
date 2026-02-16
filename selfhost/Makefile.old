@@ -1,0 +1,69 @@
+# Makefile for LLVM Bridge and Self-Hosting Project
+
+# LLVM configuration
+LLVM_CONFIG = llvm-config
+LLVM_CXXFLAGS = $(shell $(LLVM_CONFIG) --cxxflags)
+LLVM_LDFLAGS = $(shell $(LLVM_CONFIG) --ldflags)
+LLVM_LIBS = $(shell $(LLVM_CONFIG) --libs core support)
+
+# Compiler settings
+CXX = clang++
+CC = clang
+CXXFLAGS = -std=c++17 -g -O0 $(LLVM_CXXFLAGS)
+CFLAGS = -std=c11 -g -O0
+
+# Targets
+all: test_bridge
+
+# Build LLVM bridge
+llvm_bridge.o: llvm_bridge.cpp llvm_bridge.h
+	$(CXX) $(CXXFLAGS) -c llvm_bridge.cpp -o llvm_bridge.o
+
+# Build string utils
+string_utils.o: string_utils.c
+	$(CC) $(CFLAGS) -c string_utils.c -o string_utils.o
+
+# Build file utils
+file_utils.o: file_utils.c
+	$(CC) $(CFLAGS) -c file_utils.c -o file_utils.o
+
+# Build test program
+test_bridge.o: test_bridge.c llvm_bridge.h
+	$(CC) $(CFLAGS) -c test_bridge.c -o test_bridge.o
+
+# Link test program
+test_bridge: test_bridge.o llvm_bridge.o string_utils.o file_utils.o
+	$(CXX) $(CXXFLAGS) test_bridge.o llvm_bridge.o string_utils.o file_utils.o \
+		$(LLVM_LDFLAGS) $(LLVM_LIBS) -o test_bridge
+
+# Run test
+test: test_bridge
+	@echo "Running bridge test..."
+	@./test_bridge
+	@echo ""
+	@echo "Checking generated object file..."
+	@if [ -f test_add.o ]; then \
+		echo "✓ test_add.o created successfully"; \
+		file test_add.o; \
+	else \
+		echo "✗ test_add.o not found"; \
+	fi
+
+# Clean
+clean:
+	rm -f *.o test_bridge test_add.o
+
+# Help
+help:
+	@echo "Available targets:"
+	@echo "  all         - Build everything (default)"
+	@echo "  test        - Build and run the bridge test"
+	@echo "  clean       - Remove all build artifacts"
+	@echo "  help        - Show this help message"
+	@echo ""
+	@echo "Phase 0 completion checklist:"
+	@echo "  [ ] make all   - compiles without errors"
+	@echo "  [ ] make test  - test passes and creates test_add.o"
+	@echo "  [ ] Ready for Phase 1 - Lexer in Pyxc"
+
+.PHONY: all test clean help

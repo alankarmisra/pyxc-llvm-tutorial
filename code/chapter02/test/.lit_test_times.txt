@@ -1,3 +1,4 @@
-2.779291e-01 def_and_extern.pyxc
-2.787611e-01 parse_error.pyxc
-2.787683e-01 top_expr.pyxc
+6.241181e-01 def_and_extern.pyxc
+6.397421e-01 parse_error.pyxc
+6.299939e-01 top_expr.pyxc
+6.437321e-01 parse_error_near_identifier.pyxc

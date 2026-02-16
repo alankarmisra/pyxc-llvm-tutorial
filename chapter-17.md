@@ -353,8 +353,7 @@ You can browse the full project directly here:
 From the repository root:
 
 ```bash
-cd code/chapter17
-make
+cd code/chapter17 && ./build.sh
 ```
 
 Run the chapter test suite:
@@ -366,8 +365,7 @@ llvm-lit -sv test
 If you want to sanity-check compatibility with the previous chapter as well:
 
 ```bash
-cd ../chapter16
-make
+cd ../chapter16 && ./build.sh
 llvm-lit -sv test
 ```
 
@@ -384,7 +382,7 @@ When your own tests pass and fail exactly where you expect, the implementation m
 Build this chapter:
 
 ```bash
-make -C code/chapter17 clean all
+cd code/chapter17 && ./build.sh
 ```
 
 Run one sample program:
@@ -405,7 +403,7 @@ Poke around the tests and tweak a few cases to see what breaks first.
 When you're done, clean artifacts:
 
 ```bash
-make -C code/chapter17 clean
+cd code/chapter17 && ./build.sh
 ```
 
 

@@ -281,12 +281,12 @@ This pairs naturally with `PrintTokens()` and gives a fast, deterministic view o
 
 ## Compile and Run
 
-Use the same `Makefile` setup from Chapter 12.
+Use the same build setup style from Chapter 12.
 
 Run:
 
 ```bash
-make
+cd code/chapter13 && ./build.sh
 ```
 
 ## Conclusion
@@ -297,7 +297,7 @@ Next, we'll handle multi‑expression blocks which will remove some of the weird
 Build this chapter:
 
 ```bash
-make -C code/chapter13 clean all
+cd code/chapter13 && ./build.sh
 ```
 
 Run one sample program:
@@ -318,7 +318,7 @@ Try editing a test or two and see how quickly you can predict the outcome.
 When you're done, clean artifacts:
 
 ```bash
-make -C code/chapter13 clean
+cd code/chapter13 && ./build.sh
 ```
 
 

@@ -252,8 +252,7 @@ This ensures index typing rules are actually enforced.
 From repository root:
 
 ```bash
-cd code/chapter20
-make
+cd code/chapter20 && ./build.sh
 lit -sv test
 ```
 
@@ -280,7 +279,7 @@ That sets up Chapter 21 naturally: once arrays and struct layout are stable, dyn
 From repository root:
 
 ```bash
-make -C code/chapter20 clean all
+cd code/chapter20 && ./build.sh
 ```
 
 ## Testing
@@ -296,7 +295,7 @@ lit -sv code/chapter20/test
 Build this chapter:
 
 ```bash
-make -C code/chapter20 clean all
+cd code/chapter20 && ./build.sh
 ```
 
 Run one sample program:
@@ -317,7 +316,7 @@ Pick a couple of tests, mutate the inputs, and watch how diagnostics respond.
 When you're done, clean artifacts:
 
 ```bash
-make -C code/chapter20 clean
+cd code/chapter20 && ./build.sh
 ```
 
 

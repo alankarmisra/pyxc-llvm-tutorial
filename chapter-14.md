@@ -51,8 +51,7 @@ $(RUNTIME_OBJ): $(RUNTIME_SRC)
 Build and smoke test:
 
 ```bash
-cd code/chapter14
-make
+cd code/chapter14 && ./build.sh
 ./pyxc -t test/if_elif_optional.pyxc
 ./pyxc -i test/showcase_tools.pyxc
 ```
@@ -378,7 +377,7 @@ If something fails locally, open an issue with:
 
 ## Compiling
 ```bash
-make
+cd code/chapter14 && ./build.sh
 ```
 
 ## Compile / Run / Test (Hands-on)
@@ -386,7 +385,7 @@ make
 Build this chapter:
 
 ```bash
-make -C code/chapter14 clean all
+cd code/chapter14 && ./build.sh
 ```
 
 Run one sample program:
@@ -407,7 +406,7 @@ Explore the test folder a bit and add one tiny edge case of your own.
 When you're done, clean artifacts:
 
 ```bash
-make -C code/chapter14 clean
+cd code/chapter14 && ./build.sh
 ```
 
 

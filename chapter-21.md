@@ -320,8 +320,7 @@ These tests validate both positive flows (allocation + access + deallocation) an
 From repository root:
 
 ```bash
-cd code/chapter21
-make
+cd code/chapter21 && ./build.sh
 lit -sv test
 ```
 
@@ -342,7 +341,7 @@ This chapter also sets up Chapter 22 naturally, where we add C-style I/O (`putch
 From repository root:
 
 ```bash
-make -C code/chapter21 clean all
+cd code/chapter21 && ./build.sh
 ```
 
 ## Testing
@@ -358,7 +357,7 @@ lit -sv code/chapter21/test
 Build this chapter:
 
 ```bash
-make -C code/chapter21 clean all
+cd code/chapter21 && ./build.sh
 ```
 
 Run one sample program:
@@ -379,7 +378,7 @@ Have some fun stress-testing the suite with small variations.
 When you're done, clean artifacts:
 
 ```bash
-make -C code/chapter21 clean
+cd code/chapter21 && ./build.sh
 ```
 
 

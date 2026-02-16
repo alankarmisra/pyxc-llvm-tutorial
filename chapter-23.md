@@ -288,7 +288,7 @@ These run in addition to inherited Chapter 22 coverage.
 Build:
 
 ```bash
-make -C code/chapter23 clean all
+cd code/chapter23 && ./build.sh
 ```
 
 Tests:
@@ -331,7 +331,7 @@ That is enough to support realistic tooling-style programs and sets up future ch
 From repository root:
 
 ```bash
-make -C code/chapter23 clean all
+cd code/chapter23 && ./build.sh
 ```
 
 ## Testing
@@ -347,7 +347,7 @@ lit -sv code/chapter23/test
 Build this chapter:
 
 ```bash
-make -C code/chapter23 clean all
+cd code/chapter23 && ./build.sh
 ```
 
 Run one sample program:
@@ -368,7 +368,7 @@ Try editing a test or two and see how quickly you can predict the outcome.
 When you're done, clean artifacts:
 
 ```bash
-make -C code/chapter23 clean
+cd code/chapter23 && ./build.sh
 ```
 
 

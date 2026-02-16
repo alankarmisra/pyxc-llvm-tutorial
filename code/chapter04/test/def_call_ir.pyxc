@@ -1,5 +1,5 @@
 # RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Read function definition" %t
+# RUN: grep -q "Parsed a function definition" %t
 # RUN: grep -q "call double @add" %t
 
 def add(x, y):

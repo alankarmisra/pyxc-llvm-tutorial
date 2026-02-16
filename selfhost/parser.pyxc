@@ -1,0 +1,412 @@
+# parser.pyxc - Phase 3 parser prototype
+# Supports:
+#   def name(arg1, arg2, ...):
+#       return <expression>
+
+extern def strcmp(a: ptr[i8], b: ptr[i8]) -> i32
+extern def strlen(s: ptr[i8]) -> i64
+extern def atof(s: ptr[i8]) -> f64
+
+# Token kinds:
+#   -1 eof, -2 eol, -4 def, -6 identifier, -7 number
+
+struct Token:
+    kind: i32
+    line: i32
+    col: i32
+    str_val: ptr[i8]
+    num_val: f64
+    int_val: i64
+    is_int: i32
+
+struct Lexer:
+    source: ptr[i8]
+    pos: i64
+    line: i32
+    col: i32
+    current_char: i8
+
+struct ExprNode:
+    node_type: i32  # 1 number, 2 variable, 3 binary
+    op: i32
+    num_val: f64
+    int_val: i64
+    is_int: i32
+    name: ptr[i8]
+    lhs: ptr[ExprNode]
+    rhs: ptr[ExprNode]
+
+struct ReturnStmtNode:
+    node_type: i32  # 20 return
+    value: ptr[ExprNode]
+
+struct FunctionNode:
+    node_type: i32  # 41 function
+    name: ptr[i8]
+    params: ptr[ptr[i8]]
+    num_params: i32
+    ret_stmt: ptr[ReturnStmtNode]
+
+struct Parser:
+    lexer: ptr[Lexer]
+    current_tok: ptr[Token]
+    had_error: i32
+
+def dup_str(s: ptr[i8]) -> ptr[i8]:
+    n: i64 = strlen(s)
+    out: ptr[i8] = malloc[i8](n + 1)
+    i: i64 = 0
+    while i < n:
+        out[i] = s[i]
+        i = i + 1
+    out[n] = 0
+    return out
+
+def create_token(tok_type: i32, line: i32, col: i32) -> ptr[Token]:
+    tok: ptr[Token] = malloc[Token](1)
+    tok[0].kind = tok_type
+    tok[0].line = line
+    tok[0].col = col
+    tok[0].str_val = 0
+    tok[0].num_val = 0.0
+    tok[0].int_val = 0
+    tok[0].is_int = 0
+    return tok
+
+def free_token(tok: ptr[Token]) -> void:
+    if tok[0].str_val:
+        free(tok[0].str_val)
+    free(tok)
+
+def create_lexer(source: ptr[i8]) -> ptr[Lexer]:
+    lex: ptr[Lexer] = malloc[Lexer](1)
+    lex[0].source = source
+    lex[0].pos = 0
+    lex[0].line = 1
+    lex[0].col = 0
+    lex[0].current_char = source[0]
+    return lex
+
+def advance(lex: ptr[Lexer]) -> void:
+    if lex[0].current_char == 0:
+        return
+    if lex[0].current_char == 10:
+        lex[0].line = lex[0].line + 1
+        lex[0].col = 0
+    else:
+        lex[0].col = lex[0].col + 1
+    lex[0].pos = lex[0].pos + 1
+    src: ptr[i8] = lex[0].source
+    lex[0].current_char = src[lex[0].pos]
+
+def peek(lex: ptr[Lexer], offset: i64) -> i8:
+    src: ptr[i8] = lex[0].source
+    return src[lex[0].pos + offset]
+
+def is_ident_start(ch: i32) -> i32:
+    if isalpha(ch):
+        return 1
+    if ch == 95:
+        return 1
+    return 0
+
+def is_ident_continue(ch: i32) -> i32:
+    if isalpha(ch):
+        return 1
+    if isdigit(ch):
+        return 1
+    if ch == 95:
+        return 1
+    return 0
+
+def get_keyword_token(word: ptr[i8]) -> i32:
+    if strcmp(word, "def") == 0:
+        return -4
+    if strcmp(word, "return") == 0:
+        return -11
+    return -6
+
+def skip_whitespace(lex: ptr[Lexer]) -> void:
+    while lex[0].current_char != 0 and isspace(lex[0].current_char) and lex[0].current_char != 10:
+        advance(lex)
+
+def skip_comment(lex: ptr[Lexer]) -> void:
+    while lex[0].current_char != 0 and lex[0].current_char != 10:
+        advance(lex)
+
+def lex_identifier(lex: ptr[Lexer]) -> ptr[Token]:
+    start_line: i32 = lex[0].line
+    start_col: i32 = lex[0].col
+    start_pos: i64 = lex[0].pos
+    while lex[0].current_char != 0 and is_ident_continue(lex[0].current_char):
+        advance(lex)
+    n: i64 = lex[0].pos - start_pos
+    src: ptr[i8] = lex[0].source
+    s: ptr[i8] = malloc[i8](n + 1)
+    i: i64 = 0
+    while i < n:
+        s[i] = src[start_pos + i]
+        i = i + 1
+    s[n] = 0
+    tok: ptr[Token] = create_token(get_keyword_token(s), start_line, start_col)
+    tok[0].str_val = s
+    return tok
+
+def lex_number(lex: ptr[Lexer]) -> ptr[Token]:
+    start_line: i32 = lex[0].line
+    start_col: i32 = lex[0].col
+    start_pos: i64 = lex[0].pos
+    has_dot: i32 = 0
+    while lex[0].current_char != 0:
+        if isdigit(lex[0].current_char):
+            advance(lex)
+        elif lex[0].current_char == 46 and has_dot == 0 and isdigit(peek(lex, 1)):
+            has_dot = 1
+            advance(lex)
+        else:
+            break
+    n: i64 = lex[0].pos - start_pos
+    src: ptr[i8] = lex[0].source
+    s: ptr[i8] = malloc[i8](n + 1)
+    i: i64 = 0
+    while i < n:
+        s[i] = src[start_pos + i]
+        i = i + 1
+    s[n] = 0
+    tok: ptr[Token] = create_token(-7, start_line, start_col)
+    tok[0].num_val = atof(s)
+    tok[0].is_int = 1
+    if has_dot:
+        tok[0].is_int = 0
+    tok[0].int_val = 0
+    i = 0
+    while s[i] != 0 and s[i] != 46:
+        tok[0].int_val = tok[0].int_val * 10 + (s[i] - 48)
+        i = i + 1
+    free(s)
+    return tok
+
+def get_next_token(lex: ptr[Lexer]) -> ptr[Token]:
+    skip_whitespace(lex)
+    line: i32 = lex[0].line
+    col: i32 = lex[0].col
+    if lex[0].current_char == 0:
+        return create_token(-1, line, col)
+    if lex[0].current_char == 10:
+        advance(lex)
+        return create_token(-2, line, col)
+    if lex[0].current_char == 35:
+        skip_comment(lex)
+        return get_next_token(lex)
+    if is_ident_start(lex[0].current_char):
+        return lex_identifier(lex)
+    if isdigit(lex[0].current_char):
+        return lex_number(lex)
+    if lex[0].current_char == 46 and isdigit(peek(lex, 1)):
+        return lex_number(lex)
+    ch: i32 = lex[0].current_char
+    advance(lex)
+    return create_token(ch, line, col)
+
+def create_number_expr(val: f64, is_int: i32, int_val: i64) -> ptr[ExprNode]:
+    e: ptr[ExprNode] = malloc[ExprNode](1)
+    e[0].node_type = 1
+    e[0].op = 0
+    e[0].num_val = val
+    e[0].is_int = is_int
+    e[0].int_val = int_val
+    e[0].name = 0
+    e[0].lhs = 0
+    e[0].rhs = 0
+    return e
+
+def create_variable_expr(name: ptr[i8]) -> ptr[ExprNode]:
+    e: ptr[ExprNode] = malloc[ExprNode](1)
+    e[0].node_type = 2
+    e[0].op = 0
+    e[0].num_val = 0.0
+    e[0].is_int = 0
+    e[0].int_val = 0
+    e[0].name = dup_str(name)
+    e[0].lhs = 0
+    e[0].rhs = 0
+    return e
+
+def create_binary_expr(op: i32, lhs: ptr[ExprNode], rhs: ptr[ExprNode]) -> ptr[ExprNode]:
+    e: ptr[ExprNode] = malloc[ExprNode](1)
+    e[0].node_type = 3
+    e[0].op = op
+    e[0].num_val = 0.0
+    e[0].is_int = 0
+    e[0].int_val = 0
+    e[0].name = 0
+    e[0].lhs = lhs
+    e[0].rhs = rhs
+    return e
+
+def create_return_stmt(value: ptr[ExprNode]) -> ptr[ReturnStmtNode]:
+    s: ptr[ReturnStmtNode] = malloc[ReturnStmtNode](1)
+    s[0].node_type = 20
+    s[0].value = value
+    return s
+
+def create_function(name: ptr[i8], params: ptr[ptr[i8]], num_params: i32, ret_stmt: ptr[ReturnStmtNode]) -> ptr[FunctionNode]:
+    f: ptr[FunctionNode] = malloc[FunctionNode](1)
+    f[0].node_type = 41
+    f[0].name = dup_str(name)
+    f[0].params = params
+    f[0].num_params = num_params
+    f[0].ret_stmt = ret_stmt
+    return f
+
+def create_parser(lex: ptr[Lexer]) -> ptr[Parser]:
+    p: ptr[Parser] = malloc[Parser](1)
+    p[0].lexer = lex
+    p[0].current_tok = get_next_token(lex)
+    p[0].had_error = 0
+    return p
+
+def advance_parser(p: ptr[Parser]) -> void:
+    if p[0].current_tok:
+        free_token(p[0].current_tok)
+    p[0].current_tok = get_next_token(p[0].lexer)
+
+def current_kind(p: ptr[Parser]) -> i32:
+    tok: ptr[Token] = p[0].current_tok
+    return tok[0].kind
+
+def parser_error(p: ptr[Parser], msg: ptr[i8]) -> void:
+    tok: ptr[Token] = p[0].current_tok
+    printf("Parse error at line=%d col=%d: %s (kind=%d)\n", tok[0].line, tok[0].col, msg, tok[0].kind)
+    p[0].had_error = 1
+
+def expect_kind(p: ptr[Parser], kind: i32) -> i32:
+    if current_kind(p) == kind:
+        return 1
+    parser_error(p, "unexpected token")
+    return 0
+
+def skip_eol(p: ptr[Parser]) -> void:
+    while current_kind(p) == -2:
+        advance_parser(p)
+
+def get_precedence(kind: i32) -> i32:
+    if kind == 42:
+        return 40
+    if kind == 47:
+        return 40
+    if kind == 43:
+        return 20
+    if kind == 45:
+        return 20
+    return -1
+
+def parse_primary(p: ptr[Parser]) -> ptr[ExprNode]:
+    kind: i32 = current_kind(p)
+    tok: ptr[Token] = p[0].current_tok
+    if kind == -7:
+        n: ptr[ExprNode] = create_number_expr(tok[0].num_val, tok[0].is_int, tok[0].int_val)
+        advance_parser(p)
+        return n
+    if kind == -6:
+        v: ptr[ExprNode] = create_variable_expr(tok[0].str_val)
+        advance_parser(p)
+        return v
+    parser_error(p, "expected primary")
+    return 0
+
+def parse_bin_op_rhs(p: ptr[Parser], min_prec: i32, lhs: ptr[ExprNode]) -> ptr[ExprNode]:
+    out_lhs: ptr[ExprNode] = lhs
+    while 1:
+        tok_prec: i32 = get_precedence(current_kind(p))
+        if tok_prec < min_prec:
+            return out_lhs
+        op: i32 = current_kind(p)
+        advance_parser(p)
+        rhs: ptr[ExprNode] = parse_primary(p)
+        if not rhs:
+            return 0
+        next_prec: i32 = get_precedence(current_kind(p))
+        if tok_prec < next_prec:
+            rhs = parse_bin_op_rhs(p, tok_prec + 1, rhs)
+            if not rhs:
+                return 0
+        out_lhs = create_binary_expr(op, out_lhs, rhs)
+
+def parse_expression(p: ptr[Parser]) -> ptr[ExprNode]:
+    lhs: ptr[ExprNode] = parse_primary(p)
+    if not lhs:
+        return 0
+    return parse_bin_op_rhs(p, 0, lhs)
+
+def parse_return_stmt(p: ptr[Parser]) -> ptr[ReturnStmtNode]:
+    if not expect_kind(p, -11):
+        return 0
+    advance_parser(p)
+    e: ptr[ExprNode] = parse_expression(p)
+    if not e:
+        return 0
+    if current_kind(p) == -2:
+        advance_parser(p)
+    return create_return_stmt(e)
+
+def parse_function(p: ptr[Parser]) -> ptr[FunctionNode]:
+    skip_eol(p)
+    if not expect_kind(p, -4):
+        return 0
+    advance_parser(p)
+
+    if not expect_kind(p, -6):
+        return 0
+    name_tok: ptr[Token] = p[0].current_tok
+    fn_name: ptr[i8] = dup_str(name_tok[0].str_val)
+    advance_parser(p)
+
+    if not expect_kind(p, 40):
+        free(fn_name)
+        return 0
+    advance_parser(p)
+
+    params: ptr[ptr[i8]] = malloc[ptr[i8]](32)
+    count: i32 = 0
+    while current_kind(p) != 41 and current_kind(p) != -1:
+        if not expect_kind(p, -6):
+            free(fn_name)
+            return 0
+        tok: ptr[Token] = p[0].current_tok
+        params[count] = dup_str(tok[0].str_val)
+        count = count + 1
+        advance_parser(p)
+        if current_kind(p) == 44:
+            advance_parser(p)
+
+    if not expect_kind(p, 41):
+        free(fn_name)
+        return 0
+    advance_parser(p)
+
+    if not expect_kind(p, 58):
+        free(fn_name)
+        return 0
+    advance_parser(p)
+    skip_eol(p)
+
+    ret: ptr[ReturnStmtNode] = parse_return_stmt(p)
+    if not ret:
+        free(fn_name)
+        return 0
+
+    f: ptr[FunctionNode] = create_function(fn_name, params, count, ret)
+    free(fn_name)
+    return f
+
+def print_expr(e: ptr[ExprNode]) -> void:
+    printf("<expr type=%d>", e[0].node_type)
+
+def print_function_ast(f: ptr[FunctionNode]) -> void:
+    return
+
+def main() -> i32:
+    return 0
+
+main()

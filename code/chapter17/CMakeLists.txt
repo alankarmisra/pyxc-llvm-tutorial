@@ -38,11 +38,23 @@ execute_process(
 string(REGEX REPLACE "[\r\n]+" " " LLVM_CXXFLAGS "${LLVM_CXXFLAGS}")
 string(REGEX REPLACE "[\r\n]+" " " LLVM_LDFLAGS "${LLVM_LDFLAGS}")
 
-set(_PYXC_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -O3 ${LLVM_CXXFLAGS}")
+# Deduplicate linker flags emitted by llvm-config, preserving first-seen order.
+separate_arguments(_PYXC_LLVM_LDFLAGS NATIVE_COMMAND "${LLVM_LDFLAGS}")
+set(_PYXC_LLVM_LDFLAGS_DEDUP)
+foreach(_flag IN LISTS _PYXC_LLVM_LDFLAGS)
+  if(NOT _flag IN_LIST _PYXC_LLVM_LDFLAGS_DEDUP)
+    list(APPEND _PYXC_LLVM_LDFLAGS_DEDUP "${_flag}")
+  endif()
+endforeach()
+list(JOIN _PYXC_LLVM_LDFLAGS_DEDUP " " LLVM_LDFLAGS)
+
+# Set deterministic flag baselines so repeated configure runs do not keep
+# appending duplicate LLVM flags.
+set(_PYXC_CXX_FLAGS "-g -O3 ${LLVM_CXXFLAGS}")
 string(REGEX REPLACE "[\r\n]+" " " _PYXC_CXX_FLAGS "${_PYXC_CXX_FLAGS}")
 set(CMAKE_CXX_FLAGS "${_PYXC_CXX_FLAGS}" CACHE STRING "C++ flags" FORCE)
 
-set(_PYXC_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${LLVM_LDFLAGS}")
+set(_PYXC_EXE_LINKER_FLAGS "${LLVM_LDFLAGS}")
 string(REGEX REPLACE "[\r\n]+" " " _PYXC_EXE_LINKER_FLAGS
                      "${_PYXC_EXE_LINKER_FLAGS}")
 set(CMAKE_EXE_LINKER_FLAGS "${_PYXC_EXE_LINKER_FLAGS}" CACHE STRING

@@ -340,8 +340,7 @@ This validates that declared fields work and undeclared fields fail cleanly.
 From repository root:
 
 ```bash
-cd code/chapter19
-make
+cd code/chapter19 && ./build.sh
 lit -sv test
 ```
 
@@ -367,7 +366,7 @@ In short: Chapter 19 is where the language stops being scalar-centric.
 From repository root:
 
 ```bash
-make -C code/chapter19 clean all
+cd code/chapter19 && ./build.sh
 ```
 
 ## Testing
@@ -383,7 +382,7 @@ lit -sv code/chapter19/test
 Build this chapter:
 
 ```bash
-make -C code/chapter19 clean all
+cd code/chapter19 && ./build.sh
 ```
 
 Run one sample program:
@@ -404,7 +403,7 @@ Explore the test folder a bit and add one tiny edge case of your own.
 When you're done, clean artifacts:
 
 ```bash
-make -C code/chapter19 clean
+cd code/chapter19 && ./build.sh
 ```
 
 

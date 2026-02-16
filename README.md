@@ -7,6 +7,9 @@ Prefer HTML over markdown walls of text? Read it here:
 
 It is designed to be readable like Python, but much closer to C in behavior and power: pointers are first-class, memory can be manually managed, and you can absolutely shoot yourself in the foot. That is intentional. The project is about learning how languages and compilers work close to the machine, not hiding those edges.
 
+!!!warning
+    Pyxc is rapidly evolving as is the documentation. Builds might fail, tests might fail too. This message will be removed once I've stabilized the core tutorial set. Thank you for your patience!
+
 ## What this repo is
 
 - A step-by-step compiler construction tutorial (`chapter-00.md` ... `chapter-27.md`).
