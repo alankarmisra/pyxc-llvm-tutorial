@@ -1,67 +1,50 @@
-# Chapter 26 Design Requirements
+# Chapter 25 Design Requirements
 
 ## Theme
-Process-level entrypoint arguments and lower-level C/POSIX interop.
+Separate compilation and multi-file linking workflow.
 
 ## Goal
-Expand pyxc executable/runtime interop with:
-
-- C-style `main(argc, argv)` support
-- minimal `scanf` format support
-- low-level file descriptor I/O primitives (`open/read/write/close` + helpers)
-- ctype-style helpers (`isdigit`, `isalpha`, `isspace`, `tolower`, `toupper`)
+Allow Pyxc to compile and link multiple translation units in one command for executable and object workflows.
 
 ## Scope
 
 ### In Scope
-- `main` may be declared as either:
-  - `def main() -> i32`
-  - `def main(argc: i32, argv: ptr[ptr[i8]]) -> i32`
-- Minimal `scanf` support:
-  - format subset `%d`, `%f`, `%s`, `%c`, and `%%`
-  - format must be a string literal
-  - destination argument count must match format placeholders
-  - destination type checks enforced
-- Auto-declare and type-check low-level APIs:
-  - `open(path, flags, mode) -> i32`
-  - `creat(path, mode) -> i32`
-  - `close(fd) -> i32`
-  - `read(fd, buf, count) -> i64`
-  - `write(fd, buf, count) -> i64`
-  - `unlink(path) -> i32`
-- Auto-declare and type-check ctype helpers:
-  - `isdigit(ch) -> i32`
-  - `isalpha(ch) -> i32`
-  - `isspace(ch) -> i32`
-  - `tolower(ch) -> i32`
-  - `toupper(ch) -> i32`
+- Accept multiple positional input files.
+- Executable mode links all input translation units (+ runtime object).
+- Object mode compiles each input to a separate object file.
+- Token and interpret modes remain single-file only with clear diagnostics.
 
 ### Out of Scope
-- `switch`/pattern matching syntax
-- Full `scanf` grammar/locale handling
-- User-defined variadics (`stdarg`-style)
-- High-level module/import system
-- C preprocessor/macro compatibility
+- Full preprocessor/include implementation.
+- Dependency graph/build system integration.
+- Symbol visibility attributes.
 
-## Behavior Requirements
-- Invalid `main` signature in object/executable compile mode produces clear error.
-- `scanf` rejects unsupported format specifiers and mismatched destination types.
-- Low-level I/O calls reject incorrect argument classes (pointer vs integer).
+## CLI Requirements
+- Executable mode:
+  - `pyxc file1.pyxc file2.pyxc`
+  - `pyxc -o app file1.pyxc file2.pyxc`
+- Object mode:
+  - `pyxc -c file1.pyxc file2.pyxc`
+
+## Linker Requirements
+- Linker helper accepts multiple object files.
+- Runtime object remains linked as before.
+
+## Diagnostics Requirements
+- interpret mode with multiple files -> error
+- token mode with multiple files -> error
+- object mode with `-o` and multiple files -> error
 
 ## Tests
 
 ### Positive
-- executable with `main(argc, argv)` receives arguments and prints them
-- `scanf` integer and string read paths work
-- `creat/write/close/open/read/unlink` roundtrip works
+- two-file executable link with `extern def` declaration
+- multi-file object compilation emits both object paths
 
 ### Negative
-- invalid `main` signature (wrong arity or types)
-- `scanf` destination not pointer
-- `scanf` format/type mismatch
-- `read` with non-integer fd
+- token mode with multiple files errors
 
 ## Done Criteria
-- Chapter 26 builds cleanly.
-- Chapter 26 tests pass.
-- Existing Chapter 25 behavior remains green.
+- Chapter 25 tests pass with multi-file support.
+- Chapter 24 behavior remains green.
+- Chapter docs updated.

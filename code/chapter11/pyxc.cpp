@@ -476,8 +476,6 @@ public:
         Precedence(Prec), Line(Loc.Line) {}
   Function *codegen();
   const std::string &getName() const { return Name; }
-  const std::vector<std::string> &getArgs() const { return Args; }
-  bool isOperator() const { return IsOperator; }
 
   bool isUnaryOp() const { return IsOperator && Args.size() == 1; }
   bool isBinaryOp() const { return IsOperator && Args.size() == 2; }
@@ -506,8 +504,6 @@ public:
     indent(out, ind) << "Body:";
     return Body ? Body->dump(out, ind) : out << "null\n";
   }
-  const PrototypeAST &getProto() const { return *Proto; }
-  Function *codegenDeclaration() const { return Proto ? Proto->codegen() : nullptr; }
   Function *codegen();
 };
 
@@ -1564,94 +1560,6 @@ static void InitializeModuleAndBuilder() {
   Builder = std::make_unique<IRBuilder<>>(*TheContext);
 }
 
-struct ParsedTranslationUnit {
-  std::vector<std::unique_ptr<FunctionAST>> Definitions;
-  std::vector<std::unique_ptr<PrototypeAST>> Externs;
-  std::vector<std::unique_ptr<FunctionAST>> TopLevelExprs;
-};
-
-static bool PrototypeCompatible(const PrototypeAST &A, const PrototypeAST &B) {
-  if (A.getName() != B.getName())
-    return false;
-  if (A.isOperator() != B.isOperator())
-    return false;
-  return A.getArgs().size() == B.getArgs().size();
-}
-
-static bool RegisterPrototypeForLookup(const PrototypeAST &Proto) {
-  auto Existing = FunctionProtos.find(Proto.getName());
-  if (Existing == FunctionProtos.end())
-    return true;
-  if (!PrototypeCompatible(*Existing->second, Proto)) {
-    LogError("Function redeclared with incompatible signature");
-    return false;
-  }
-  return true;
-}
-
-static bool ParseTranslationUnit(ParsedTranslationUnit &TU) {
-  while (CurTok != tok_eof) {
-    switch (CurTok) {
-    case tok_decorator:
-    case tok_def:
-      if (auto FnAST = ParseDefinition()) {
-        if (!RegisterPrototypeForLookup(FnAST->getProto()))
-          return false;
-        TU.Definitions.push_back(std::move(FnAST));
-      } else {
-        getNextToken();
-      }
-      break;
-    case tok_extern:
-      if (auto ProtoAST = ParseExtern()) {
-        if (!RegisterPrototypeForLookup(*ProtoAST))
-          return false;
-        TU.Externs.push_back(std::move(ProtoAST));
-      } else {
-        getNextToken();
-      }
-      break;
-    case tok_eol:
-      getNextToken();
-      break;
-    default:
-      if (auto FnAST = ParseTopLevelExpr()) {
-        TU.TopLevelExprs.push_back(std::move(FnAST));
-      } else {
-        getNextToken();
-      }
-      break;
-    }
-  }
-  return true;
-}
-
-static bool CodegenTranslationUnit(ParsedTranslationUnit &TU) {
-  for (auto &ProtoAST : TU.Externs) {
-    if (!ProtoAST->codegen())
-      return false;
-    FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
-  }
-
-  // Predeclare all function signatures to allow forward and mutual calls.
-  for (auto &FnAST : TU.Definitions) {
-    if (!FnAST->codegenDeclaration())
-      return false;
-  }
-
-  for (auto &FnAST : TU.Definitions) {
-    if (!FnAST->codegen())
-      return false;
-  }
-
-  for (auto &FnAST : TU.TopLevelExprs) {
-    if (!FnAST->codegen())
-      return false;
-  }
-
-  return true;
-}
-
 static void HandleDefinition() {
   if (auto FnAST = ParseDefinition()) {
     if (!FnAST->codegen())
@@ -1775,9 +1683,7 @@ int main() {
       false, "", 0);
 
   // Run the main "interpreter loop" now.
-  ParsedTranslationUnit TU;
-  if (!ParseTranslationUnit(TU) || !CodegenTranslationUnit(TU))
-    return 1;
+  MainLoop();
 
   DBuilder->finalize();
 

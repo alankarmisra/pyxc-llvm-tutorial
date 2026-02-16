@@ -39,7 +39,7 @@ extern def atan2(arg1 arg2)
 atan2(sin(.4), cos(42))
 ```
 
-A more interesting example is included in [Chapter 7](chapter-07.md) where we write a little pyxc application that displays a Mandelbrot Set at various levels of magnification.
+A more interesting example is included in [Chapter 8](chapter-08.md) where we write a little pyxc application that displays a Mandelbrot Set at various levels of magnification.
 
 Let’s dive into the implementation of this language!
 

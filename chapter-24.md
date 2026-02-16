@@ -1,210 +1,330 @@
-# 24. Immutable Bindings with const
+# 24. File I/O with fopen, fclose, fgets, fputs, fread, fwrite
 
-Chapter 24 introduces `const` local declarations with compile-time reassignment protection.
+Chapter 23 added string literals and console-style stdio (`putchar`, `getchar`, `puts`, minimal `printf`).
 
-This chapter is small in syntax but important in semantics: we are teaching the compiler to remember mutability intent for each binding.
+That gave us interactive text output, but not persistent data.
+
+Chapter 24 extends libc interop to file APIs so Pyxc programs can read and write files directly.
+
+This chapter intentionally stays close to C semantics: explicit open/close, explicit buffer pointers, explicit byte counts.
 
 
 !!!note
     To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter24](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter24).
 
-## What we are building
+## Grammar (EBNF)
 
-A declaration like this:
+Chapter 24 adds file I/O through normal function calls (`fopen`, `fclose`, `fgets`, `fputs`, `fread`, `fwrite`), so grammar is unchanged from Chapter 23.
+The implementation change is semantic/type-checking in call codegen.
 
-```py
-const max_count: i32 = 64
-```
-
-should:
-
-- parse as a declaration statement
-- require an initializer
-- create a symbol-table binding marked immutable
-- reject later assignment to `max_count`
-
-## Grammar changes
-
-In `code/chapter24/pyxc.ebnf`, we add a dedicated statement production:
+Reference: `code/chapter24/pyxc.ebnf`
 
 ```ebnf
-const_decl_stmt = "const" , identifier , ":" , type_expr , "=" , expression ;
+statement    = ... | expr_stmt ;
+expr_stmt    = expression ;
+expression   = unary_expr , { binary_op , unary_expr } ;
+postfix_expr = primary , { call_suffix | index_suffix | member_suffix } ;
+call_suffix  = "(" , [ arg_list ] , ")" ;
 ```
 
-and include it in `statement`:
+## Why this chapter matters
 
-```ebnf
-statement =
-    print_stmt
-  | if_stmt
-  | for_stmt
-  | while_stmt
-  | do_while_stmt
-  | return_stmt
-  | var_assign_stmt
-  | const_decl_stmt
-  | free_stmt
-  | expr_stmt ;
-```
+Without file I/O, many practical programs are blocked:
 
-Why this matters:
+- writing logs or reports to disk
+- reading configuration files
+- binary serialization experiments
+- roundtrip tests that need persistent state
 
-- `const` is not “just assignment with a flag.”
-- It is a declaration form with stricter rules (initializer required).
+With Chapter 24 we can do both text and block I/O:
 
-## Lexer keyword support
+- text path: `fopen` + `fputs`/`fgets` + `fclose`
+- binary/block path: `fopen` + `fwrite`/`fread` + `fclose`
 
-In `code/chapter24/pyxc.cpp`, add a token kind and keyword mapping.
+This is a major interop milestone because these APIs are part of the standard C runtime most toolchains already provide.
 
-Token enum gets:
+## Scope and constraints
 
-```cpp
-tok_const = -37,
-```
+### In scope
 
-Keyword map gets:
+- Auto-declared libc file symbols:
+  - `fopen(path, mode) -> ptr`
+  - `fclose(file) -> i32`
+  - `fgets(buf, n, file) -> ptr`
+  - `fputs(str, file) -> i32`
+  - `fread(buf, size, count, file) -> i64`
+  - `fwrite(buf, size, count, file) -> i64`
+- Opaque file-handle usage via pointer types (`ptr[void]` works naturally)
+- Call-site type checks for known file APIs
+- Regression-safe integration with existing call/codegen pipeline
 
-```cpp
-{"const", tok_const}
-```
+### Out of scope
 
-Without this, parser logic would never see a distinct `const` token.
+- high-level file abstractions/classes
+- exception-style cleanup semantics
+- extra stdio state APIs (`feof`, `ferror`, etc.)
+- path utility helpers
 
-## Parser: dedicated const declaration function
+We keep the surface raw and explicit in this chapter.
 
-Parser entry in `ParseStmt()`:
+## What changed from Chapter 23
 
-```cpp
-case tok_const:
-  return ParseConstDeclStmt();
-```
+Primary diff:
 
-The new parser function (`ParseConstDeclStmt`) enforces the exact shape:
+- `code/chapter23/pyxc.cpp` -> `code/chapter24/pyxc.cpp`
+- `code/chapter23/test` -> `code/chapter24/test`
 
-```cpp
-// const name: Type = expr
-if (CurTok != tok_const) ...
-if (CurTok != tok_identifier) ...
-if (CurTok != ':') ...
-auto DeclTy = ParseTypeExpr();
-if (CurTok != '=') ...
-auto Init = ParseExpression();
-```
+No new parser grammar was required for file APIs because they are normal function calls.
 
-Key behavior: missing initializer errors immediately, instead of silently defaulting.
+Main implementation buckets:
 
-## AST and symbol metadata
+1. extend libc auto-declaration table with file APIs
+2. add file-API-specific argument type checks in `CallExprAST::codegen()`
+3. add positive and negative lit coverage
 
-Chapter 24 adds a separate AST node for const declaration and extends binding metadata.
+## Retrospective Note (Boolean/Comparison Semantics Cleanup)
 
-`VarBinding` in `code/chapter24/pyxc.cpp` now has:
+Chapter 24 is also where we finally fixed a long-running semantic debt from early Kaleidoscope-style behavior.
 
-```cpp
-struct VarBinding {
-  AllocaInst *Alloca = nullptr;
-  Type *Ty = nullptr;
-  Type *PointeeTy = nullptr;
-  std::string BuiltinLeafTy;
-  std::string PointeeBuiltinLeafTy;
-  bool IsConst = false;
-};
-```
+Historically (including Chapter 15 onward), logical/comparison-style operations produced floating values (`0.0` / `1.0`) in several paths, because the original tutorial flow leaned that way for simplicity.
 
-This is the core decision: mutability is tracked in symbol-table state.
+In Chapter 24, we switched this to C-like integer-style truth values and related signed/unsigned correctness:
 
-## Codegen for const declaration
+- `not` / `!` now yields integer truth values (not floating)
+- `and` / `or` result values are integer truth values
+- comparisons yield integer truth values
+- unsigned division/modulo/comparisons use unsigned LLVM ops
+- unsigned vararg promotions use zero-extension
 
-Const declaration lowering mirrors regular typed declaration flow:
+Honestly, we should have done this around Chapter 15 when control flow and branching got serious. We noticed it late, fixed it here, and kept momentum instead of stopping to rewrite every earlier chapter immediately. Pragmatic? Yes. A tiny bit lazy? Also yes.
 
-- resolve declared type
-- allocate storage
-- codegen initializer
-- cast initializer to declared type
-- store value
-- insert `NamedValues[name]` binding with `IsConst = true`
+## Design choice: no new syntax
 
-Representative insertion shape:
+Chapter 24 deliberately introduces no new statement keywords.
 
-```cpp
-NamedValues[Name] = {Alloca, DeclTy, ResolvePointeeTypeExpr(DeclType),
-                     BuiltinLeaf, PointeeBuiltinLeaf, true};
-```
-
-So the generated IR is normal; policy is enforced by semantic checks around stores.
-
-## Reassignment protection
-
-The assignment path checks mutability before emitting a store.
-
-In assignment codegen, Chapter 24 adds:
-
-```cpp
-auto It = NamedValues.find(*Name);
-if (It != NamedValues.end() && It->second.IsConst)
-  return LogError<Value *>("Cannot assign to const variable");
-```
-
-That ensures:
-
-- reassignment to mutable locals still works
-- reassignment to const locals fails at compile/lowering time
-
-No runtime check needed.
-
-## Test coverage
-
-Chapter 24 adds four focused tests in `code/chapter24/test`.
-
-Positive:
+All file operations use existing call syntax:
 
 ```py
-# const_basic_scalar.pyxc
-const base: i32 = 40
-print(base + 5)
+f: ptr[void] = fopen("out.txt", "w")
+fputs("hello\n", f)
+fclose(f)
 ```
+
+This keeps language growth small and pushes capability through interop, which is exactly what we want at this stage.
+
+## Extending libc symbol resolution
+
+In Chapter 23, libc auto-declaration supported only console I/O symbols.
+
+In Chapter 24, `GetOrCreateLibcIOFunction(...)` is extended:
+
+```cpp
+static Function *GetOrCreateLibcIOFunction(const std::string &Name) {
+  if (Function *F = TheModule->getFunction(Name))
+    return F;
+
+  Type *I32Ty = Type::getInt32Ty(*TheContext);
+  Type *I64Ty = Type::getInt64Ty(*TheContext);
+  Type *PtrTy = PointerType::get(*TheContext, 0);
+  FunctionType *FT = nullptr;
+
+  if (Name == "putchar")
+    FT = FunctionType::get(I32Ty, {I32Ty}, false);
+  else if (Name == "getchar")
+    FT = FunctionType::get(I32Ty, {}, false);
+  else if (Name == "puts")
+    FT = FunctionType::get(I32Ty, {PtrTy}, false);
+  else if (Name == "printf")
+    FT = FunctionType::get(I32Ty, {PtrTy}, true);
+  else if (Name == "fopen")
+    FT = FunctionType::get(PtrTy, {PtrTy, PtrTy}, false);
+  else if (Name == "fclose")
+    FT = FunctionType::get(I32Ty, {PtrTy}, false);
+  else if (Name == "fgets")
+    FT = FunctionType::get(PtrTy, {PtrTy, I32Ty, PtrTy}, false);
+  else if (Name == "fputs")
+    FT = FunctionType::get(I32Ty, {PtrTy, PtrTy}, false);
+  else if (Name == "fread")
+    FT = FunctionType::get(I64Ty, {PtrTy, I64Ty, I64Ty, PtrTy}, false);
+  else if (Name == "fwrite")
+    FT = FunctionType::get(I64Ty, {PtrTy, I64Ty, I64Ty, PtrTy}, false);
+  else
+    return nullptr;
+
+  return Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
+}
+```
+
+### Why this works cleanly
+
+`getFunction(...)` already had a fallback hook for libc-known functions. We simply broadened the allowlist.
+
+No parser changes were needed, and no runtime wrapper stubs were required.
+
+## Semantic checks in CallExprAST::codegen()
+
+Auto-declaration alone is not enough. We also need clear diagnostics when arguments are the wrong shape.
+
+Chapter 24 adds function-specific checks after argument codegen:
+
+```cpp
+auto CheckPointerArg = [&](size_t ArgIndex, const char *Err) -> bool { ... };
+auto CheckIntegerArg = [&](size_t ArgIndex, const char *Err) -> bool { ... };
+```
+
+Then per API:
+
+```cpp
+if (Callee == "fopen") {
+  if (!CheckPointerArg(0, "fopen expects pointer path argument") ||
+      !CheckPointerArg(1, "fopen expects pointer mode argument"))
+    return nullptr;
+} else if (Callee == "fclose") {
+  if (!CheckPointerArg(0, "fclose expects pointer file argument"))
+    return nullptr;
+} else if (Callee == "fgets") {
+  if (!CheckPointerArg(0, "fgets expects pointer buffer argument") ||
+      !CheckIntegerArg(1, "fgets expects integer length argument") ||
+      !CheckPointerArg(2, "fgets expects pointer file argument"))
+    return nullptr;
+} else if (Callee == "fputs") {
+  if (!CheckPointerArg(0, "fputs expects pointer string argument") ||
+      !CheckPointerArg(1, "fputs expects pointer file argument"))
+    return nullptr;
+} else if (Callee == "fread") {
+  if (!CheckPointerArg(0, "fread expects pointer buffer argument") ||
+      !CheckIntegerArg(1, "fread expects integer size argument") ||
+      !CheckIntegerArg(2, "fread expects integer count argument") ||
+      !CheckPointerArg(3, "fread expects pointer file argument"))
+    return nullptr;
+} else if (Callee == "fwrite") {
+  if (!CheckPointerArg(0, "fwrite expects pointer buffer argument") ||
+      !CheckIntegerArg(1, "fwrite expects integer size argument") ||
+      !CheckIntegerArg(2, "fwrite expects integer count argument") ||
+      !CheckPointerArg(3, "fwrite expects pointer file argument"))
+    return nullptr;
+}
+```
+
+These checks are intentionally direct. They catch misuse at compile-time/lowering time and produce clear messages.
+
+## Interaction with existing call lowering
+
+After checks, Chapter 24 still uses existing call machinery:
+
+- fixed-arity arity validation
+- per-formal cast via `CastValueTo`
+- normal LLVM `CreateCall`
+
+So this chapter extends behavior without forking the call path.
+
+This is important for maintainability: file APIs become “first-class interop calls” rather than special one-off nodes.
+
+## Example usage patterns
+
+### Text write/read roundtrip
 
 ```py
-# const_pointer_string.pyxc
-const msg: ptr[i8] = "hello const"
-puts(msg)
+def main() -> i32:
+    f: ptr[void] = fopen("chapter23_io_a.txt", "w")
+    fputs("alpha\n", f)
+    fclose(f)
+
+    f = fopen("chapter23_io_a.txt", "r")
+    buf: ptr[i8] = malloc[i8](64)
+    fgets(buf, 64, f)
+    fclose(f)
+
+    printf("%s", buf)
+    free(buf)
+    return 0
+
+main()
 ```
 
-Negative:
+### Block I/O roundtrip with byte counts
 
 ```py
-# const_error_reassign.pyxc
-const x: i32 = 7
-x = 8
+def main() -> i32:
+    f: ptr[void] = fopen("chapter23_io_b.bin", "wb")
+    written: i64 = fwrite("HELLO", 1, 5, f)
+    fclose(f)
+
+    f = fopen("chapter23_io_b.bin", "rb")
+    buf: ptr[i8] = malloc[i8](6)
+    read: i64 = fread(buf, 1, 5, f)
+    buf[5] = 0
+    fclose(f)
+
+    printf("w=%d r=%d s=%s\n", written, read, buf)
+    free(buf)
+    return 0
+
+main()
 ```
 
-Expected diagnostic includes:
+This pattern demonstrates both the return counts and pointer-buffer usage.
 
-```text
-Cannot assign to const variable
+## Tests added in Chapter 24
+
+New tests under `code/chapter24/test`:
+
+### Positive
+
+- `file_fputs_fgets_roundtrip.pyxc`
+- `file_fread_fwrite_roundtrip.pyxc`
+
+### Negative
+
+- `file_error_fopen_mode_not_pointer.pyxc`
+- `file_error_fgets_len_not_integer.pyxc`
+- `file_error_fread_buffer_not_pointer.pyxc`
+- `file_error_fclose_non_pointer.pyxc`
+
+These run in addition to inherited Chapter 23 coverage.
+
+## Validation result
+
+Build:
+
+```bash
+cd code/chapter24 && ./build.sh
 ```
 
-```py
-# const_error_missing_initializer.pyxc
-const y: i32
+Tests:
+
+```bash
+lit -sv code/chapter24/test
 ```
 
-Expected diagnostic includes:
+Result:
 
-```text
-Const declaration requires initializer
-```
+- 46 tests discovered
+- 46 passed
 
-## End-to-end behavior
+## Notes on typing and handles
 
-With Chapter 24 complete:
+Chapter 24 keeps file handles opaque and pointer-shaped (`ptr[void]` works well).
 
-- the language has explicit immutable local bindings
-- parser enforces strict declaration form
-- codegen carries immutability in symbol state
-- assignment path respects immutability
-- tests lock both happy paths and failures
+This is a good tradeoff now:
 
-This gives us safer local semantics before we scale into multi-file workflows in Chapter 25.
+- minimal type-system change
+- clear interoperability model
+- room to add a named alias (`type file_t = ptr[void]`) at user level
+
+You can add richer handle typing later if you want stricter API boundaries.
+
+## Design takeaways
+
+Chapter 24 keeps language complexity under control by reusing existing machinery:
+
+- existing call syntax
+- existing expression/type system
+- existing cast and call lowering flow
+
+But capability jumps significantly: Pyxc can now do persistent text and binary I/O with standard libc semantics.
+
+That is enough to support realistic tooling-style programs and sets up future chapters for modules, headers, and broader C interop.
 
 ## Compiling
 
@@ -243,7 +363,7 @@ cd code/chapter24/test
 lit -sv .
 ```
 
-Explore the test folder a bit and add one tiny edge case of your own.
+Try editing a test or two and see how quickly you can predict the outcome.
 
 When you're done, clean artifacts:
 

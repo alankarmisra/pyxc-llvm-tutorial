@@ -179,7 +179,6 @@ enum Token {
   tok_malloc = -33,
   tok_free = -34,
   tok_addr = -36,
-  tok_const = -37,
 
   // indentation
   tok_indent = -16,
@@ -214,7 +213,7 @@ static std::map<std::string, Token> Keywords = {
     {"and", tok_and}, {"print", tok_print},   {"while", tok_while},
     {"do", tok_do},   {"break", tok_break},   {"continue", tok_continue},
     {"or", tok_or},   {"struct", tok_struct}, {"malloc", tok_malloc},
-    {"free", tok_free}, {"addr", tok_addr}, {"const", tok_const}};
+    {"free", tok_free}, {"addr", tok_addr}};
 
 struct SourceLocation {
   int Line;
@@ -752,8 +751,6 @@ static const char *TokenName(int Tok) {
     return "<free>";
   case tok_addr:
     return "<addr>";
-  case tok_const:
-    return "<const>";
   case tok_not:
     return "<not>";
   case tok_and:
@@ -895,20 +892,6 @@ class TypedAssignStmtAST : public StmtAST {
 
 public:
   TypedAssignStmtAST(SourceLocation Loc, std::string Name, TypeExprPtr DeclType,
-                     std::unique_ptr<ExprAST> InitExpr)
-      : StmtAST(Loc), Name(std::move(Name)), DeclType(std::move(DeclType)),
-        InitExpr(std::move(InitExpr)) {}
-
-  Value *codegen() override;
-};
-
-class ConstAssignStmtAST : public StmtAST {
-  std::string Name;
-  TypeExprPtr DeclType;
-  std::unique_ptr<ExprAST> InitExpr;
-
-public:
-  ConstAssignStmtAST(SourceLocation Loc, std::string Name, TypeExprPtr DeclType,
                      std::unique_ptr<ExprAST> InitExpr)
       : StmtAST(Loc), Name(std::move(Name)), DeclType(std::move(DeclType)),
         InitExpr(std::move(InitExpr)) {}
@@ -1388,7 +1371,6 @@ static std::unique_ptr<BlockSuiteAST> ParseBlockSuite();
 static std::unique_ptr<ExprAST> ParseStringExpr();
 static std::unique_ptr<ExprAST> ParseAddrExpr();
 static std::unique_ptr<StmtAST> ParsePrintStmt();
-static std::unique_ptr<StmtAST> ParseConstDeclStmt();
 static std::unique_ptr<StmtAST> ParseFreeStmt();
 static std::unique_ptr<ExprAST> ParseMallocExpr();
 static TypeExprPtr ParseTypeExpr();
@@ -2001,30 +1983,6 @@ static std::unique_ptr<ExprAST> ParseAddrExpr() {
   return std::make_unique<AddrExprAST>(AddrLoc, std::move(Operand));
 }
 
-static std::unique_ptr<StmtAST> ParseConstDeclStmt() {
-  auto ConstLoc = CurLoc;
-  getNextToken(); // eat `const`
-  if (CurTok != tok_identifier)
-    return LogError<StmtPtr>("Expected identifier after const");
-  std::string Name = IdentifierStr;
-  getNextToken(); // eat identifier
-  if (CurTok != ':')
-    return LogError<StmtPtr>("Expected ':' after const identifier");
-  getNextToken(); // eat ':'
-  auto DeclType = ParseTypeExpr();
-  if (!DeclType)
-    return nullptr;
-  if (CurTok != '=')
-    return LogError<StmtPtr>("Const declaration requires initializer");
-  getNextToken(); // eat '='
-  auto InitExpr = ParseExpression();
-  if (!InitExpr)
-    return nullptr;
-  return std::make_unique<ConstAssignStmtAST>(ConstLoc, std::move(Name),
-                                              std::move(DeclType),
-                                              std::move(InitExpr));
-}
-
 static std::unique_ptr<StmtAST> ParseIdentifierLeadingStmt() {
   auto StmtLoc = CurLoc;
   auto LHS = ParseIdentifierExpr();
@@ -2093,8 +2051,6 @@ static std::unique_ptr<StmtAST> ParseStmt() {
     return ParseReturnStmt();
   case tok_print:
     return ParsePrintStmt();
-  case tok_const:
-    return ParseConstDeclStmt();
   case tok_free:
     return ParseFreeStmt();
   case tok_type:
@@ -2386,7 +2342,6 @@ struct VarBinding {
   Type *PointeeTy = nullptr;
   std::string BuiltinLeafTy;
   std::string PointeeBuiltinLeafTy;
-  bool IsConst = false;
 };
 static std::map<std::string, VarBinding> NamedValues;
 struct LoopContext {
@@ -3159,45 +3114,11 @@ Value *TypedAssignStmtAST::codegen() {
   Builder->CreateStore(InitVal, Alloca);
   NamedValues[Name] = {Alloca, DeclTy, ResolvePointeeTypeExpr(DeclType),
                        ResolveBuiltinLeafName(DeclType),
-                       ResolvePointeeBuiltinLeafName(DeclType), false};
-  return InitVal;
-}
-
-Value *ConstAssignStmtAST::codegen() {
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
-  Type *DeclTy = ResolveTypeExpr(DeclType);
-  if (!DeclTy)
-    return nullptr;
-  if (DeclTy->isVoidTy())
-    return LogError<Value *>("Variables cannot have type void");
-  if (!InitExpr)
-    return LogError<Value *>("Const declaration requires initializer");
-  if (DeclTy->isStructTy() || DeclTy->isArrayTy())
-    return LogError<Value *>(
-        "Struct/array variables do not support direct initializer expressions");
-
-  Value *InitVal = InitExpr->codegen();
-  if (!InitVal)
-    return nullptr;
-  bool InitUnsigned = IsUnsignedLeafName(InitExpr->getBuiltinLeafTypeHint());
-  InitVal = CastValueTo(InitVal, DeclTy, InitUnsigned);
-  if (!InitVal)
-    return nullptr;
-
-  AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, Name, DeclTy);
-  Builder->CreateStore(InitVal, Alloca);
-  NamedValues[Name] = {Alloca, DeclTy, ResolvePointeeTypeExpr(DeclType),
-                       ResolveBuiltinLeafName(DeclType),
-                       ResolvePointeeBuiltinLeafName(DeclType), true};
+                       ResolvePointeeBuiltinLeafName(DeclType)};
   return InitVal;
 }
 
 Value *AssignStmtAST::codegen() {
-  if (const std::string *Name = LHS->getVariableName()) {
-    auto It = NamedValues.find(*Name);
-    if (It != NamedValues.end() && It->second.IsConst)
-      return LogError<Value *>("Cannot assign to const variable");
-  }
   Value *AddrV = LHS->codegenAddress();
   if (!AddrV)
     return LogError<Value *>("Assignment destination must be an lvalue");
@@ -3839,7 +3760,7 @@ Value *ForStmtAST::codegen() {
   // If the loop variable shadows an existing variable, we have to restore it,
   // so save it now. Set VarName to refer to our recently created alloca.
   VarBinding OldVal = NamedValues[VarName];
-  NamedValues[VarName] = {Alloca, LoopTy, nullptr, "", "", false};
+  NamedValues[VarName] = {Alloca, LoopTy, nullptr};
 
   // Make new basic blocks for loop condition, loop body and end-loop code.
   BasicBlock *LoopConditionBB =
@@ -3973,7 +3894,7 @@ Value *VarExprAST::codegen() {
     OldBindings.push_back(NamedValues[VarName]);
 
     // Remember this binding.
-    NamedValues[VarName] = {Alloca, InitVal->getType(), nullptr, "", "", false};
+    NamedValues[VarName] = {Alloca, InitVal->getType(), nullptr};
   }
 
   emitLocation(this);
@@ -4141,8 +4062,7 @@ Function *FunctionAST::codegen() {
     Type *PointeeTy = nullptr;
     if (ArgTyIdx < P.getArgTypes().size())
       PointeeTy = ResolvePointeeTypeExpr(P.getArgTypes()[ArgTyIdx]);
-    NamedValues[std::string(Arg.getName())] = {Alloca, Arg.getType(), PointeeTy,
-                                               "", "", false};
+    NamedValues[std::string(Arg.getName())] = {Alloca, Arg.getType(), PointeeTy};
     ++ArgTyIdx;
   }
 

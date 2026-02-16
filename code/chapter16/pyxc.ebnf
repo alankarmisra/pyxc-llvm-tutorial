@@ -1,125 +1,90 @@
-(* Pyxc Grammar (Chapter 15 draft: explicit types + pointer types) *)
+(* Pyxc Grammar (Chapter 15: logical/comparison cleanup) *)
 
 (* ---------- Lexical ---------- *)
 
-letter         = "A".."Z" | "a".."z" | "_" ;
-digit          = "0".."9" ;
-identifier     = letter , { letter | digit } ;
-number         = digit , { digit } , [ "." , { digit } ]
-               | "." , digit , { digit } ;
+letter        = "A".."Z" | "a".."z" | "_" ;
+digit         = "0".."9" ;
+identifier    = letter , { letter | digit } ;
+number        = digit , { digit } , [ "." , { digit } ]
+              | "." , digit , { digit } ;
 
-newline        = "<EOL>" ;
-indent         = "<INDENT>" ;
-dedent         = "<DEDENT>" ;
-eof            = "<EOF>" ;
+newline       = "<EOL>" ;
+indent        = "<INDENT>" ;
+dedent        = "<DEDENT>" ;
+eof           = "<EOF>" ;
 
 (* Produced by lexer indentation logic; parser consumes these as tokens. *)
 
 (* ---------- Program ---------- *)
 
-program         = { top_item } , eof ;
+program        = { top_item } , eof ;
 
-top_item        = newline
-                | type_alias_decl
-                | function_def
-                | extern_decl
-                | statement ;
-
-(* ---------- Types ---------- *)
-
-type_alias_decl = "type" , identifier , "=" , type_expr ;
-
-type_expr       = pointer_type
-                | base_type ;
-
-pointer_type    = "ptr" , "[" , type_expr , "]" ;
-
-base_type       = builtin_type
-                | identifier ;
-
-builtin_type    = "void"
-                | "i8" | "i16" | "i32" | "i64"
-                | "u8" | "u16" | "u32" | "u64"
-                | "f32" | "f64" ;
+top_item       = newline
+               | function_def
+               | extern_decl
+               | statement ;
 
 (* ---------- Functions ---------- *)
 
-function_def    = [ decorator ] , "def" , prototype , ":" , suite ;
-extern_decl     = "extern" , "def" , prototype ;
+function_def   = "def" , prototype , ":" , suite ;
+extern_decl    = "extern" , "def" , prototype ;
 
-prototype       = identifier , "(" , [ param_list ] , ")" , "->" , type_expr ;
-param_list      = param , { "," , param } ;
-param           = identifier , ":" , type_expr ;
-
-(* Current decorator model used for unary/binary operator definitions. *)
-decorator       = "@" , ( "unary" | "binary" ) , [ number ] ;
+prototype      = identifier , "(" , [ param_list ] , ")" ;
+param_list     = identifier , { "," , identifier } ;
 
 (* ---------- Statements ---------- *)
 
-statement       = if_stmt
-                | for_stmt
-                | return_stmt
-                | typed_assign_stmt
-                | assign_stmt
-                | expr_stmt ;
+statement      = if_stmt
+               | for_stmt
+               | return_stmt
+               | expr_stmt ;
 
-typed_assign_stmt = identifier , ":" , type_expr , [ "=" , expression ] ;
-assign_stmt     = lvalue , "=" , expression ;
-lvalue          = identifier
-                | index_expr ;
+expr_stmt      = expression ;
 
-expr_stmt       = expression ;
+return_stmt    = "return" , expression ;
 
-return_stmt     = "return" , [ expression ] ;
+if_stmt        = "if" , expression , ":" , suite ,
+                 { "elif" , expression , ":" , suite } ,
+                 [ "else" , ":" , suite ] ;
 
-if_stmt         = "if" , expression , ":" , suite ,
-                  [ "elif" , expression , ":" , suite ] ,
-                  [ "else" , ":" , suite ] ;
-
-for_stmt        = "for" , identifier , "in" , "range" , "(" ,
-                  expression , "," , expression ,
-                  [ "," , expression ] ,
-                  ")" , ":" , suite ;
+for_stmt       = "for" , identifier , "in" , "range" , "(" ,
+                 expression , "," , expression ,
+                 [ "," , expression ] ,
+                 ")" , ":" , suite ;
 
 (* Python-style suite: either one inline statement or an indented block. *)
-suite           = inline_suite
-                | block_suite ;
+suite          = inline_suite
+               | block_suite ;
 
-inline_suite    = statement ;
-block_suite     = newline , indent , statement_list , dedent ;
-statement_list  = statement , { newline , statement } , [ newline ] ;
+inline_suite   = statement ;
+block_suite    = newline , indent , statement_list , dedent ;
+statement_list = statement , { newline , statement } , [ newline ] ;
 
 (* ---------- Expressions ---------- *)
 
-expression      = unary_expr , { binary_op , unary_expr } ;
+expression     = unary_expr , { binary_op , unary_expr } ;
 
-unary_expr      = [ unary_op ] , postfix_expr ;
-unary_op        = "+" | "-" | "!" | "~" ;
+unary_expr     = [ unary_op ] , primary ;
+unary_op       = "+" | "-" | "!" | "~" | "not" ;
 
-postfix_expr    = primary , { call_suffix | index_suffix } ;
-call_suffix     = "(" , [ arg_list ] , ")" ;
-index_suffix    = "[" , expression , "]" ;
-index_expr      = postfix_expr , index_suffix ;
+primary        = number
+               | identifier
+               | call_expr
+               | paren_expr
+               | var_expr ;
 
-primary         = number
-                | identifier
-                | addr_expr
-                | paren_expr
-                | var_expr ;
+paren_expr     = "(" , expression , ")" ;
 
-addr_expr       = "addr" , "(" , expression , ")" ;
-paren_expr      = "(" , expression , ")" ;
+call_expr      = identifier , "(" , [ arg_list ] , ")" ;
+arg_list       = expression , { "," , expression } ;
 
-arg_list        = expression , { "," , expression } ;
+var_expr       = "var" , var_binding , { "," , var_binding } , "in" , expression ;
+var_binding    = identifier , [ "=" , expression ] ;
 
-var_expr        = "var" , var_binding , { "," , var_binding } , "in" , expression ;
-var_binding     = identifier , [ "=" , expression ] ;
-
-binary_op       = "<"
-                | "+" | "-" | "*" | "/"
-                | "="
-                | custom_op ;
-
-custom_op       = "?" | "$" | "%" | "^" | "&" | "|" | "@" | ":" ;
+binary_op      = "<" | "<=" | ">" | ">="
+               | "==" | "!="
+               | "and" | "or"
+               | "+" | "-" | "*" | "/"
+               | "=" ;
 
 (* Actual precedence/associativity comes from parser tables, not EBNF. *)

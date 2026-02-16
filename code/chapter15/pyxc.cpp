@@ -161,23 +161,15 @@ enum Token {
   tok_in = -13,
   tok_range = -14,
 
+  // decorator
+  tok_decorator = -15,
+
   // var definition
-  tok_var = -15,
+  tok_var = -16,
 
   // indentation
-  tok_indent = -16,
-  tok_dedent = -17,
-
-  // logical keywords
-  tok_not = -18,
-  tok_and = -19,
-  tok_or = -20,
-
-  // multi-character comparison operators
-  tok_eq = -21, // ==
-  tok_ne = -22, // !=
-  tok_le = -23, // <=
-  tok_ge = -24, // >=
+  tok_indent = -17,
+  tok_dedent = -18,
 };
 
 static std::string IdentifierStr; // Filled in if tok_identifier
@@ -189,8 +181,14 @@ static std::map<std::string, Token> Keywords = {
     {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return},
     {"if", tok_if},   {"elif", tok_elif},     {"else", tok_else},
     {"for", tok_for}, {"in", tok_in},         {"range", tok_range},
-    {"var", tok_var}, {"not", tok_not},       {"and", tok_and},
-    {"or", tok_or}};
+    {"var", tok_var}};
+
+enum OperatorType { Undefined, Unary, Binary };
+
+static constexpr int DEFAULT_BINARY_PRECEDENCE = 30;
+
+static std::map<std::string, OperatorType> Decorators = {
+    {"unary", OperatorType::Unary}, {"binary", OperatorType::Binary}};
 
 struct SourceLocation {
   int Line;
@@ -275,10 +273,6 @@ static std::string FormatTokenForError(int Tok) {
     return "identifier '" + IdentifierStr + "'";
   if (Tok == tok_number)
     return "number";
-  if (Tok == tok_eol)
-    return "newline";
-  if (Tok == tok_eof)
-    return "end of file";
 
   const char *Name = TokenName(Tok);
   if (Name) {
@@ -490,6 +484,11 @@ static int gettok() {
     return tok_eol;
   }
 
+  if (LastChar == '@') {
+    LastChar = advance(); // consume '@'
+    return tok_decorator;
+  }
+
   if (isalpha(LastChar) || LastChar == '_') { // identifier: [a-zA-Z_][a-zA-Z0-9_]*
     IdentifierStr = LastChar;
     while (isalnum((LastChar = advance())) || LastChar == '_')
@@ -527,43 +526,6 @@ static int gettok() {
   // Check for end of file.  Don't eat the EOF.
   if (LastChar == EOF) {
     return DrainIndents();
-  }
-
-  // Multi-character comparison operators.
-  if (LastChar == '=') {
-    LastChar = advance();
-    if (LastChar == '=') {
-      LastChar = advance();
-      return tok_eq;
-    }
-    return '=';
-  }
-
-  if (LastChar == '!') {
-    LastChar = advance();
-    if (LastChar == '=') {
-      LastChar = advance();
-      return tok_ne;
-    }
-    return '!';
-  }
-
-  if (LastChar == '<') {
-    LastChar = advance();
-    if (LastChar == '=') {
-      LastChar = advance();
-      return tok_le;
-    }
-    return '<';
-  }
-
-  if (LastChar == '>') {
-    LastChar = advance();
-    if (LastChar == '=') {
-      LastChar = advance();
-      return tok_ge;
-    }
-    return '>';
   }
 
   // Otherwise, just return the character as its ascii value.
@@ -606,22 +568,10 @@ static const char *TokenName(int Tok) {
     return "<in>";
   case tok_range:
     return "<range>";
+  case tok_decorator:
+    return "<decorator>";
   case tok_var:
     return "<var>";
-  case tok_not:
-    return "<not>";
-  case tok_and:
-    return "<and>";
-  case tok_or:
-    return "<or>";
-  case tok_eq:
-    return "<eq>";
-  case tok_ne:
-    return "<ne>";
-  case tok_le:
-    return "<le>";
-  case tok_ge:
-    return "<ge>";
   default:
     return nullptr;
   }
@@ -762,17 +712,14 @@ public:
 
 /// UnaryExprAST - Expression class for a unary operator.
 class UnaryExprAST : public ExprAST {
-  int Opcode;
+  char Opcode;
   std::unique_ptr<ExprAST> Operand;
 
 public:
-  UnaryExprAST(SourceLocation Loc, int Opcode, std::unique_ptr<ExprAST> Operand)
+  UnaryExprAST(SourceLocation Loc, char Opcode, std::unique_ptr<ExprAST> Operand)
       : ExprAST(Loc), Opcode(Opcode), Operand(std::move(Operand)) {}
   raw_ostream &dump(raw_ostream &out, int ind) override {
-    if (const char *Name = TokenName(Opcode))
-      ExprAST::dump(out << "unary" << Name, ind);
-    else
-      ExprAST::dump(out << "unary" << static_cast<char>(Opcode), ind);
+    ExprAST::dump(out << "unary" << Opcode, ind);
     Operand->dump(out, ind + 1);
     return out;
   }
@@ -781,18 +728,15 @@ public:
 
 /// BinaryExprAST - Expression class for a binary operator.
 class BinaryExprAST : public ExprAST {
-  int Op;
+  char Op;
   std::unique_ptr<ExprAST> LHS, RHS;
 
 public:
-  BinaryExprAST(SourceLocation Loc, int Op, std::unique_ptr<ExprAST> LHS,
+  BinaryExprAST(SourceLocation Loc, char Op, std::unique_ptr<ExprAST> LHS,
                 std::unique_ptr<ExprAST> RHS)
       : ExprAST(Loc), Op(Op), LHS(std::move(LHS)), RHS(std::move(RHS)) {}
   raw_ostream &dump(raw_ostream &out, int ind) override {
-    if (const char *Name = TokenName(Op))
-      ExprAST::dump(out << "binary" << Name, ind);
-    else
-      ExprAST::dump(out << "binary" << static_cast<char>(Op), ind);
+    ExprAST::dump(out << "binary" << Op, ind);
     LHS->dump(indent(out, ind) << "LHS:", ind + 1);
     RHS->dump(indent(out, ind) << "RHS:", ind + 1);
     return out;
@@ -933,14 +877,28 @@ public:
 class PrototypeAST {
   std::string Name;
   std::vector<std::string> Args;
+  bool IsOperator;
+  unsigned Precedence; // Precedence if a binary op.
   int Line;
 
 public:
   PrototypeAST(SourceLocation Loc, const std::string &Name,
-               std::vector<std::string> Args)
-      : Name(Name), Args(std::move(Args)), Line(Loc.Line) {}
+               std::vector<std::string> Args, bool IsOperator = false,
+               unsigned Prec = 0)
+      : Name(Name), Args(std::move(Args)), IsOperator(IsOperator),
+        Precedence(Prec), Line(Loc.Line) {}
   Function *codegen();
   const std::string &getName() const { return Name; }
+
+  bool isUnaryOp() const { return IsOperator && Args.size() == 1; }
+  bool isBinaryOp() const { return IsOperator && Args.size() == 2; }
+
+  char getOperatorName() const {
+    assert(isUnaryOp() || isBinaryOp());
+    return Name[Name.size() - 1];
+  }
+
+  unsigned getBinaryPrecedence() const { return Precedence; }
   int getLine() const { return Line; }
 };
 
@@ -980,10 +938,8 @@ static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 
 /// BinopPrecedence - This holds the precedence for each binary operator that is
 /// defined.
-static std::map<int, int> BinopPrecedence = {
-    {'=', 2},       {tok_or, 5},   {tok_and, 6}, {tok_eq, 10}, {tok_ne, 10},
-    {'<', 12},      {'>', 12},     {tok_le, 12}, {tok_ge, 12},
-    {'+', 20},      {'-', 20},     {'*', 40},    {'/', 40}};
+static std::map<char, int> BinopPrecedence = {
+    {'=', 2}, {'<', 10}, {'+', 20}, {'-', 20}, {'*', 40}};
 
 /// Explanation-friendly precedence anchors used by parser control flow.
 static constexpr int NO_OP_PREC = -1;
@@ -991,11 +947,11 @@ static constexpr int MIN_BINOP_PREC = 1;
 
 /// GetTokPrecedence - Get the precedence of the pending binary operator token.
 static int GetTokPrecedence() {
-  // Make sure it's a declared binop.
-  auto It = BinopPrecedence.find(CurTok);
-  if (It == BinopPrecedence.end())
+  if (!isascii(CurTok))
     return NO_OP_PREC;
-  int TokPrec = It->second;
+
+  // Make sure it's a declared binop.
+  int TokPrec = BinopPrecedence[CurTok];
   if (TokPrec < MIN_BINOP_PREC)
     return NO_OP_PREC;
   return TokPrec;
@@ -1004,13 +960,6 @@ static int GetTokPrecedence() {
 static std::unique_ptr<ExprAST> ParseExpression();
 static std::unique_ptr<BlockSuiteAST> ParseSuite();
 static std::unique_ptr<BlockSuiteAST> ParseBlockSuite();
-
-static void SkipToNextLine() {
-  while (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_error)
-    getNextToken();
-  if (CurTok == tok_eol)
-    getNextToken();
-}
 
 /// numberexpr ::= number
 static std::unique_ptr<ExprAST> ParseNumberExpr() {
@@ -1361,9 +1310,8 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
 ///   ::= primary
 ///   ::= '!' unary
 static std::unique_ptr<ExprAST> ParseUnary() {
-  // Builtin unary operators only.
-  if (CurTok != '+' && CurTok != '-' && CurTok != '!' && CurTok != '~' &&
-      CurTok != tok_not)
+  // If the current token is not an operator, it must be a primary expr.
+  if (!isascii(CurTok) || CurTok == '(' || CurTok == ',')
     return ParsePrimary();
 
   // If this is a unary operator, read it.
@@ -1427,16 +1375,33 @@ static std::unique_ptr<ExprAST> ParseExpression() {
 /// prototype
 ///   ::= id '(' (id (',' id)*)? ')'
 static std::unique_ptr<PrototypeAST>
-ParsePrototype() {
+ParsePrototype(OperatorType operatorType = Undefined, int precedence = 0) {
   std::string FnName;
   SourceLocation FnLoc = CurLoc;
 
-  if (CurTok != tok_identifier) {
-    return LogError<ProtoPtr>("Expected function name in prototype");
-  }
+  if (operatorType != Undefined) {
+    // Expect a single-character operator
+    if (CurTok == tok_identifier) {
+      return LogError<ProtoPtr>("Expected single character operator");
+    }
 
-  FnName = IdentifierStr;
-  getNextToken();
+    if (!isascii(CurTok)) {
+      return LogError<ProtoPtr>("Expected single character operator");
+    }
+
+    FnName = (operatorType == Unary ? "unary" : "binary");
+    FnName += (char)CurTok;
+
+    getNextToken();
+  } else {
+    if (CurTok != tok_identifier) {
+      return LogError<ProtoPtr>("Expected function name in prototype");
+    }
+
+    FnName = IdentifierStr;
+
+    getNextToken();
+  }
 
   if (CurTok != '(') {
     return LogError<ProtoPtr>("Expected '(' in prototype");
@@ -1459,18 +1424,71 @@ ParsePrototype() {
 
   // success.
   getNextToken(); // eat ')'.
-  return std::make_unique<PrototypeAST>(FnLoc, FnName, std::move(ArgNames));
+  return std::make_unique<PrototypeAST>(FnLoc, FnName, std::move(ArgNames),
+                                        operatorType != OperatorType::Undefined,
+                                        precedence);
 }
 
-/// definition ::= 'def' prototype ':' suite
+/// definition ::= (@unary | @binary | @binary() | @binary(precedence=\d+))*
+///                 'def' prototype:
+///                     expression
 static std::unique_ptr<FunctionAST> ParseDefinition() {
+  OperatorType OpType = Undefined;
+  int Precedence = DEFAULT_BINARY_PRECEDENCE;
+
+  if (CurTok == tok_decorator) {
+    getNextToken(); // eat '@'
+
+    if (CurTok != tok_identifier)
+      return LogError<FuncPtr>("expected decorator name after '@'");
+
+    auto it = Decorators.find(IdentifierStr);
+    OpType = it == Decorators.end() ? OperatorType::Undefined : it->second;
+    getNextToken(); // eat decorator name
+
+    if (OpType == Undefined)
+      return LogError<FuncPtr>(
+          ("unknown decorator '" + IdentifierStr + "'").c_str());
+
+    if (OpType == Binary) {
+      if (CurTok == '(') {
+        getNextToken(); // eat '('
+        if (CurTok != ')') {
+          // Parse "precedence=N"
+          // If we want to introduce more attributes, we would add "precedence"
+          // to a map and associate it with a binary operator.
+          if (CurTok != tok_identifier || IdentifierStr != "precedence") {
+            return LogError<FuncPtr>(
+                "expected 'precedence' parameter in decorator");
+          }
+
+          getNextToken(); // eat 'precedence'
+
+          if (CurTok != '=')
+            return LogError<FuncPtr>("expected '=' after 'precedence'");
+
+          getNextToken(); // eat '='
+
+          if (CurTok != tok_number)
+            return LogError<FuncPtr>("expected number for precedence value");
+
+          Precedence = NumVal;
+          getNextToken(); // eat number
+        }
+        if (CurTok != ')')
+          return LogError<FuncPtr>("expected ')' after precedence value");
+        getNextToken(); // eat ')'
+      }
+    }
+  }
+
   EatNewLines();
 
   if (CurTok != tok_def)
     return LogError<FuncPtr>("expected 'def'");
 
   getNextToken(); // eat def.
-  auto Proto = ParsePrototype();
+  auto Proto = ParsePrototype(OpType, Precedence);
   if (!Proto)
     return nullptr;
 
@@ -1697,25 +1715,13 @@ Value *UnaryExprAST::codegen() {
   Value *OperandV = Operand->codegen();
   if (!OperandV)
     return nullptr;
-  emitLocation(this);
-  switch (Opcode) {
-  case '+':
-    return OperandV;
-  case '-':
-    return Builder->CreateFNeg(OperandV, "negtmp");
-  case '!':
-  case tok_not: {
-    Value *AsBool = Builder->CreateFCmpONE(
-        OperandV, ConstantFP::get(*TheContext, APFloat(0.0)), "nottmp.bool");
-    Value *NegBool = Builder->CreateNot(AsBool, "nottmp.inv");
-    return Builder->CreateUIToFP(NegBool, Type::getDoubleTy(*TheContext),
-                                 "nottmp");
-  }
-  case '~':
-    return LogError<Value *>("'~' is not supported in Chapter 15");
-  default:
+
+  Function *F = getFunction(std::string("unary") + Opcode);
+  if (!F) {
     return LogError<Value *>("Unknown unary operator");
   }
+  emitLocation(this);
+  return Builder->CreateCall(F, OperandV, "unop");
 }
 
 Value *BinaryExprAST::codegen() {
@@ -1744,51 +1750,8 @@ Value *BinaryExprAST::codegen() {
   }
 
   Value *L = LHS->codegen();
-  if (!L)
-    return nullptr;
-
-  if (Op == tok_and || Op == tok_or) {
-    Function *TheFunction = Builder->GetInsertBlock()->getParent();
-    Value *LBool = Builder->CreateFCmpONE(
-        L, ConstantFP::get(*TheContext, APFloat(0.0)), "logic.lbool");
-
-    BasicBlock *LHSBB = Builder->GetInsertBlock();
-    BasicBlock *RHSBB = BasicBlock::Create(*TheContext, "logic.rhs", TheFunction);
-    BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "logic.cont");
-
-    if (Op == tok_and) {
-      // false and X -> false (skip RHS), true and X -> evaluate RHS.
-      Builder->CreateCondBr(LBool, RHSBB, MergeBB);
-    } else {
-      // true or X -> true (skip RHS), false or X -> evaluate RHS.
-      Builder->CreateCondBr(LBool, MergeBB, RHSBB);
-    }
-
-    Builder->SetInsertPoint(RHSBB);
-    Value *R = RHS->codegen();
-    if (!R)
-      return nullptr;
-    Value *RBool = Builder->CreateFCmpONE(
-        R, ConstantFP::get(*TheContext, APFloat(0.0)), "logic.rbool");
-    Builder->CreateBr(MergeBB);
-    RHSBB = Builder->GetInsertBlock();
-
-    TheFunction->insert(TheFunction->end(), MergeBB);
-    Builder->SetInsertPoint(MergeBB);
-    PHINode *LogicPhi = Builder->CreatePHI(Type::getInt1Ty(*TheContext), 2,
-                                           "logic.bool");
-    if (Op == tok_and) {
-      LogicPhi->addIncoming(ConstantInt::getFalse(*TheContext), LHSBB);
-    } else {
-      LogicPhi->addIncoming(ConstantInt::getTrue(*TheContext), LHSBB);
-    }
-    LogicPhi->addIncoming(RBool, RHSBB);
-    return Builder->CreateUIToFP(LogicPhi, Type::getDoubleTy(*TheContext),
-                                 "logictmp");
-  }
-
   Value *R = RHS->codegen();
-  if (!R)
+  if (!L || !R)
     return nullptr;
 
   switch (Op) {
@@ -1798,30 +1761,21 @@ Value *BinaryExprAST::codegen() {
     return Builder->CreateFSub(L, R, "subtmp");
   case '*':
     return Builder->CreateFMul(L, R, "multmp");
-  case '/':
-    return Builder->CreateFDiv(L, R, "divtmp");
   case '<':
     L = Builder->CreateFCmpULT(L, R, "cmptmp");
     // Convert bool 0/1 to double 0.0 or 1.0
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
-  case '>':
-    L = Builder->CreateFCmpUGT(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
-  case tok_le:
-    L = Builder->CreateFCmpULE(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
-  case tok_ge:
-    L = Builder->CreateFCmpUGE(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
-  case tok_eq:
-    L = Builder->CreateFCmpUEQ(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
-  case tok_ne:
-    L = Builder->CreateFCmpUNE(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   default:
-    return LogError<Value *>("Unsupported binary operator");
+    break;
   }
+
+  // If it wasn't a builtin binary operator, it must be a user defined one. Emit
+  // a call to it.
+  Function *F = getFunction(std::string("binary") + Op);
+  assert(F && "binary operator not found!");
+
+  Value *Ops[2] = {L, R};
+  return Builder->CreateCall(F, Ops, "binop");
 }
 
 Value *CallExprAST::codegen() {
@@ -2139,6 +2093,10 @@ Function *FunctionAST::codegen() {
   if (!TheFunction)
     return nullptr;
 
+  // If this is an operator, install it.
+  if (P.isBinaryOp())
+    BinopPrecedence[P.getOperatorName()] = P.getBinaryPrecedence();
+
   // Create a new basic block to start insertion into.
   BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
   Builder->SetInsertPoint(BB);
@@ -2218,6 +2176,9 @@ Function *FunctionAST::codegen() {
 
   // Error reading body, remove function.
   TheFunction->eraseFromParent();
+
+  if (P.isBinaryOp())
+    BinopPrecedence.erase(P.getOperatorName());
 
   return nullptr;
 }
@@ -2395,13 +2356,10 @@ static void MainLoop() {
     case tok_dedent:
       getNextToken();
       break;
-    case '@':
-      LogError("Decorators/custom operators are disabled in Chapter 15");
-      SkipToNextLine();
-      break;
     default:
       fprintf(stderr, "ready> ");
       switch (CurTok) {
+      case tok_decorator:
       case tok_def:
         HandleDefinition();
         break;
@@ -2459,6 +2417,7 @@ static bool ParseTranslationUnit(ParsedTranslationUnit &TU) {
   while (CurTok != tok_eof && CurTok != tok_error) {
     switch (CurTok) {
     case tok_def:
+    case tok_decorator:
       if (auto FnAST = ParseDefinition()) {
         if (!RegisterPrototypeForLookup(FnAST->getProto()))
           return false;
@@ -2478,10 +2437,6 @@ static bool ParseTranslationUnit(ParsedTranslationUnit &TU) {
       break;
     case tok_eol:
       getNextToken();
-      break;
-    case '@':
-      LogError("Decorators/custom operators are disabled in Chapter 15");
-      SkipToNextLine();
       break;
     default:
       if (auto FnAST = ParseTopLevelExpr()) {

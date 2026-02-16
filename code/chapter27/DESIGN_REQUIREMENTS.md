@@ -1,47 +1,67 @@
-# Chapter 27 Design Requirements
+# Chapter 26 Design Requirements
 
 ## Theme
-Python-style `match/case` control flow.
+Process-level entrypoint arguments and lower-level C/POSIX interop.
 
 ## Goal
-Add a readable multi-branch statement form without introducing C-style `switch` syntax.
+Expand pyxc executable/runtime interop with:
+
+- C-style `main(argc, argv)` support
+- minimal `scanf` format support
+- low-level file descriptor I/O primitives (`open/read/write/close` + helpers)
+- ctype-style helpers (`isdigit`, `isalpha`, `isspace`, `tolower`, `toupper`)
 
 ## Scope
 
 ### In Scope
-- New statement syntax:
-  - `match <expr>:`
-  - one or more `case <expr>:` clauses
-  - optional wildcard default `case _:`
-- Case clause suites use existing suite rules (inline or indented block).
-- `match` expression must be integer-typed.
-- Case expressions must be integer-typed.
-- First matching case executes; no fallthrough.
+- `main` may be declared as either:
+  - `def main() -> i32`
+  - `def main(argc: i32, argv: ptr[ptr[i8]]) -> i32`
+- Minimal `scanf` support:
+  - format subset `%d`, `%f`, `%s`, `%c`, and `%%`
+  - format must be a string literal
+  - destination argument count must match format placeholders
+  - destination type checks enforced
+- Auto-declare and type-check low-level APIs:
+  - `open(path, flags, mode) -> i32`
+  - `creat(path, mode) -> i32`
+  - `close(fd) -> i32`
+  - `read(fd, buf, count) -> i64`
+  - `write(fd, buf, count) -> i64`
+  - `unlink(path) -> i32`
+- Auto-declare and type-check ctype helpers:
+  - `isdigit(ch) -> i32`
+  - `isalpha(ch) -> i32`
+  - `isspace(ch) -> i32`
+  - `tolower(ch) -> i32`
+  - `toupper(ch) -> i32`
 
 ### Out of Scope
-- Pattern matching on structs/arrays/strings.
-- Guard clauses (`case x if ...`).
-- Destructuring or capture patterns.
-- Exhaustiveness checks.
+- `switch`/pattern matching syntax
+- Full `scanf` grammar/locale handling
+- User-defined variadics (`stdarg`-style)
+- High-level module/import system
+- C preprocessor/macro compatibility
 
-## Diagnostics
-- Missing `case` inside `match` block should error clearly.
-- Duplicate default (`case _`) should error.
-- Non-integer match/case expressions should error.
+## Behavior Requirements
+- Invalid `main` signature in object/executable compile mode produces clear error.
+- `scanf` rejects unsupported format specifiers and mismatched destination types.
+- Low-level I/O calls reject incorrect argument classes (pointer vs integer).
 
 ## Tests
 
 ### Positive
-- integer match with multiple cases and wildcard default
-- integer match with no default where no case matches
-- nested statements inside case suites
+- executable with `main(argc, argv)` receives arguments and prints them
+- `scanf` integer and string read paths work
+- `creat/write/close/open/read/unlink` roundtrip works
 
 ### Negative
-- non-integer match expression
-- non-integer case expression
-- duplicate `case _`
+- invalid `main` signature (wrong arity or types)
+- `scanf` destination not pointer
+- `scanf` format/type mismatch
+- `read` with non-integer fd
 
 ## Done Criteria
-- Chapter 27 builds.
-- Chapter 27 tests pass.
-- Existing Chapter 26 behavior remains green.
+- Chapter 26 builds cleanly.
+- Chapter 26 tests pass.
+- Existing Chapter 25 behavior remains green.

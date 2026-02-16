@@ -1,122 +1,288 @@
-# 23. File I/O with fopen, fclose, fgets, fputs, fread, fwrite
+# 23. C-style I/O Baseline (putchar, getchar, puts, minimal printf)
 
-Chapter 22 added string literals and console-style stdio (`putchar`, `getchar`, `puts`, minimal `printf`).
+Chapter 22 gave us dynamic heap memory with `malloc` and `free`.
 
-That gave us interactive text output, but not persistent data.
+That was important, but it still left us in a place where writing small, practical programs felt awkward, because we had no direct string literals and no C-style I/O entry points.
 
-Chapter 23 extends libc interop to file APIs so Pyxc programs can read and write files directly.
+In this chapter we focus on exactly that gap.
 
-This chapter intentionally stays close to C semantics: explicit open/close, explicit buffer pointers, explicit byte counts.
+The goal is not to implement all of C stdio. The goal is to establish a *clean baseline* that unlocks many K&R-style programs quickly:
+
+- string literals
+- `putchar`
+- `getchar`
+- `puts`
+- a minimal, well-defined `printf`
+
+We intentionally keep this chapter narrow so behavior stays predictable and testable.
 
 
 !!!note
     To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter23](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter23).
 
-## Grammar (EBNF)
-
-Chapter 23 adds file I/O through normal function calls (`fopen`, `fclose`, `fgets`, `fputs`, `fread`, `fwrite`), so grammar is unchanged from Chapter 22.
-The implementation change is semantic/type-checking in call codegen.
-
-Reference: `code/chapter23/pyxc.ebnf`
-
-```ebnf
-statement    = ... | expr_stmt ;
-expr_stmt    = expression ;
-expression   = unary_expr , { binary_op , unary_expr } ;
-postfix_expr = primary , { call_suffix | index_suffix | member_suffix } ;
-call_suffix  = "(" , [ arg_list ] , ")" ;
-```
-
 ## Why this chapter matters
 
-Without file I/O, many practical programs are blocked:
+Without this chapter, even simple tasks like printing formatted text need custom language helpers.
 
-- writing logs or reports to disk
-- reading configuration files
-- binary serialization experiments
-- roundtrip tests that need persistent state
+With this chapter, we can directly write:
 
-With Chapter 23 we can do both text and block I/O:
+```py
+msg: ptr[i8] = "hello"
+puts(msg)
+printf("x=%d\n", 42)
+```
 
-- text path: `fopen` + `fputs`/`fgets` + `fclose`
-- binary/block path: `fopen` + `fwrite`/`fread` + `fclose`
-
-This is a major interop milestone because these APIs are part of the standard C runtime most toolchains already provide.
+That one improvement changes the feel of the language from “compiler exercise” to “actually usable for small systems-style experiments”.
 
 ## Scope and constraints
 
-### In scope
+What we support in Chapter 23:
 
-- Auto-declared libc file symbols:
-  - `fopen(path, mode) -> ptr`
-  - `fclose(file) -> i32`
-  - `fgets(buf, n, file) -> ptr`
-  - `fputs(str, file) -> i32`
-  - `fread(buf, size, count, file) -> i64`
-  - `fwrite(buf, size, count, file) -> i64`
-- Opaque file-handle usage via pointer types (`ptr[void]` works naturally)
-- Call-site type checks for known file APIs
-- Regression-safe integration with existing call/codegen pipeline
+- String literals as first-class expressions.
+- Auto-declared libc calls for:
+  - `putchar(i32) -> i32`
+  - `getchar() -> i32`
+  - `puts(ptr[i8]) -> i32`
+  - `printf(ptr[i8], ...) -> i32`
+- Vararg call lowering required for `printf`.
+- Strict format subset for `printf`:
+  - `%d`, `%s`, `%c`, `%p`, `%%`
 
-### Out of scope
+What we explicitly do *not* support yet:
 
-- high-level file abstractions/classes
-- exception-style cleanup semantics
-- extra stdio state APIs (`feof`, `ferror`, etc.)
-- path utility helpers
+- Full `printf` flags/width/precision/length modifiers.
+- `%f` formatting.
+- User-defined variadic prototypes in source syntax.
 
-We keep the surface raw and explicit in this chapter.
+This is a deliberate “minimum viable stdio” milestone.
 
 ## What changed from Chapter 22
 
-Primary diff:
+The key file diffs are:
 
 - `code/chapter22/pyxc.cpp` -> `code/chapter23/pyxc.cpp`
-- `code/chapter22/test` -> `code/chapter23/test`
+- `code/chapter22/pyxc.ebnf` -> `code/chapter23/pyxc.ebnf`
 
-No new parser grammar was required for file APIs because they are normal function calls.
+Conceptually, changes fall into five buckets:
 
-Main implementation buckets:
+1. lexer support for string literals
+2. parser + AST support for string expressions
+3. codegen for string literals
+4. libc function resolution for stdio symbols
+5. vararg call support + `printf` semantic checks
 
-1. extend libc auto-declaration table with file APIs
-2. add file-API-specific argument type checks in `CallExprAST::codegen()`
-3. add positive and negative lit coverage
+We will walk through each bucket in order.
 
-## Retrospective Note (Boolean/Comparison Semantics Cleanup)
+## Grammar and language surface
 
-Chapter 23 is also where we finally fixed a long-running semantic debt from early Kaleidoscope-style behavior.
+### EBNF updates
 
-Historically (including Chapter 14 onward), logical/comparison-style operations produced floating values (`0.0` / `1.0`) in several paths, because the original tutorial flow leaned that way for simplicity.
+In `code/chapter23/pyxc.ebnf`, we add `string_literal` and allow it as a primary expression:
 
-In Chapter 23, we switched this to C-like integer-style truth values and related signed/unsigned correctness:
+```ebnf
+string_literal = "\"" , { ? any char except " or newline; escapes allowed ? } , "\"" ;
 
-- `not` / `!` now yields integer truth values (not floating)
-- `and` / `or` result values are integer truth values
-- comparisons yield integer truth values
-- unsigned division/modulo/comparisons use unsigned LLVM ops
-- unsigned vararg promotions use zero-extension
-
-Honestly, we should have done this around Chapter 14 when control flow and branching got serious. We noticed it late, fixed it here, and kept momentum instead of stopping to rewrite every earlier chapter immediately. Pragmatic? Yes. A tiny bit lazy? Also yes.
-
-## Design choice: no new syntax
-
-Chapter 23 deliberately introduces no new statement keywords.
-
-All file operations use existing call syntax:
-
-```py
-f: ptr[void] = fopen("out.txt", "w")
-fputs("hello\n", f)
-fclose(f)
+primary         = number
+                | string_literal
+                | identifier
+                | malloc_expr
+                | addr_expr
+                | paren_expr
+                | var_expr ;
 ```
 
-This keeps language growth small and pushes capability through interop, which is exactly what we want at this stage.
+This is a small grammar change, but it has major downstream effects because literals can now participate in assignment and function calls naturally.
 
-## Extending libc symbol resolution
+### Resulting source syntax
 
-In Chapter 22, libc auto-declaration supported only console I/O symbols.
+```py
+s: ptr[i8] = "text"
+puts(s)
+printf("v=%d\n", 7)
+```
 
-In Chapter 23, `GetOrCreateLibcIOFunction(...)` is extended:
+## Lexer changes: tokenizing string literals safely
+
+### New token and lexer storage
+
+In `code/chapter23/pyxc.cpp` we add:
+
+```cpp
+tok_string = -35,
+```
+
+and:
+
+```cpp
+static std::string StringVal;     // Filled in if tok_string
+```
+
+This matches the existing `NumVal`/`IdentifierStr` pattern.
+
+### String scanning path in gettok()
+
+The lexer adds a new branch when it sees `"`:
+
+```cpp
+if (LastChar == '"') {
+  StringVal.clear();
+  while (true) {
+    LastChar = advance();
+    if (LastChar == EOF || LastChar == '\n' || LastChar == '\r') {
+      LogError("Unterminated string literal");
+      return tok_error;
+    }
+    if (LastChar == '"') {
+      LastChar = advance();
+      return tok_string;
+    }
+    if (LastChar == '\\') {
+      LastChar = advance();
+      switch (LastChar) {
+      case 'n': StringVal.push_back('\n'); break;
+      case 't': StringVal.push_back('\t'); break;
+      case 'r': StringVal.push_back('\r'); break;
+      case '0': StringVal.push_back('\0'); break;
+      case '\\': StringVal.push_back('\\'); break;
+      case '"': StringVal.push_back('"'); break;
+      default:
+        LogError("Invalid escape sequence in string literal");
+        return tok_error;
+      }
+    } else {
+      StringVal.push_back(static_cast<char>(LastChar));
+    }
+  }
+}
+```
+
+### Why this design
+
+- We unescape during lexing so parser/AST see normalized data.
+- We reject malformed strings early with precise diagnostics.
+- We allow common escapes only. This keeps behavior explicit and avoids silent surprises.
+
+### Token-name plumbing
+
+`TokenName(...)` also gets:
+
+```cpp
+case tok_string:
+  return "<string>";
+```
+
+This improves debug token dumps and parser debugging.
+
+## AST and parser: representing string literals explicitly
+
+### New AST node: StringExprAST
+
+In `code/chapter23/pyxc.cpp`, Chapter 23 adds:
+
+```cpp
+class StringExprAST : public ExprAST {
+  std::string Val;
+
+public:
+  StringExprAST(SourceLocation Loc, std::string Val)
+      : ExprAST(Loc), Val(std::move(Val)) {}
+  const std::string &getValue() const { return Val; }
+  Value *codegen() override;
+  Type *getValueTypeHint() const override;
+  Type *getPointeeTypeHint() const override;
+  std::string getPointeeBuiltinLeafTypeHint() const override;
+  bool getStringLiteralValue(std::string &Out) const override {
+    Out = Val;
+    return true;
+  }
+};
+```
+
+Two important details here:
+
+1. It is a dedicated node, not a special case in calls.
+2. It overrides `getStringLiteralValue(...)`, which we use later for `printf` validation *without RTTI*.
+
+### Why the virtual helper (getStringLiteralValue) matters
+
+This codebase builds with `-fno-rtti`. So using `dynamic_cast` for “is this node a string literal?” is not valid.
+
+Instead, the base `ExprAST` provides:
+
+```cpp
+virtual bool getStringLiteralValue(std::string &Out) const { return false; }
+```
+
+and `StringExprAST` overrides it to return true with payload.
+
+That gives us safe, low-overhead type query behavior compatible with current compile flags.
+
+### Parser entry point: ParseStringExpr()
+
+```cpp
+static std::unique_ptr<ExprAST> ParseStringExpr() {
+  auto StrLoc = CurLoc;
+  auto Result = std::make_unique<StringExprAST>(StrLoc, StringVal);
+  getNextToken(); // consume string literal
+  return std::move(Result);
+}
+```
+
+Then `ParsePrimary()` dispatch adds:
+
+```cpp
+case tok_string:
+  return ParseStringExpr();
+```
+
+This is the exact same parser architecture already used for numbers/identifiers, so complexity stays low.
+
+## Codegen for string literals
+
+`StringExprAST::codegen()` lowers a literal into a global string pointer:
+
+```cpp
+Value *StringExprAST::codegen() {
+  emitLocation(this);
+  return Builder->CreateGlobalStringPtr(Val, "strlit");
+}
+```
+
+And type hints are:
+
+```cpp
+Type *StringExprAST::getValueTypeHint() const {
+  return PointerType::get(*TheContext, 0);
+}
+
+Type *StringExprAST::getPointeeTypeHint() const {
+  return Type::getInt8Ty(*TheContext);
+}
+
+std::string StringExprAST::getPointeeBuiltinLeafTypeHint() const {
+  return "i8";
+}
+```
+
+### Why this is enough for interop
+
+Existing assignment/call casting logic already handles pointer-compatible values. So once string literals lower to pointer values and advertise pointee hints (`i8`), they naturally work with:
+
+- variable assignment to `ptr[i8]`
+- call arguments where pointer is expected (e.g., `puts`, `printf` format)
+
+No separate “string type system” is introduced in this chapter.
+
+## Auto-declaring libc stdio functions
+
+Before Chapter 23, unresolved functions were looked up only in:
+
+- module-defined functions
+- previously seen prototypes
+
+Chapter 23 adds a libc fallback for known stdio symbols.
+
+### Helper: GetOrCreateLibcIOFunction
 
 ```cpp
 static Function *GetOrCreateLibcIOFunction(const std::string &Name) {
@@ -124,7 +290,6 @@ static Function *GetOrCreateLibcIOFunction(const std::string &Name) {
     return F;
 
   Type *I32Ty = Type::getInt32Ty(*TheContext);
-  Type *I64Ty = Type::getInt64Ty(*TheContext);
   Type *PtrTy = PointerType::get(*TheContext, 0);
   FunctionType *FT = nullptr;
 
@@ -136,18 +301,6 @@ static Function *GetOrCreateLibcIOFunction(const std::string &Name) {
     FT = FunctionType::get(I32Ty, {PtrTy}, false);
   else if (Name == "printf")
     FT = FunctionType::get(I32Ty, {PtrTy}, true);
-  else if (Name == "fopen")
-    FT = FunctionType::get(PtrTy, {PtrTy, PtrTy}, false);
-  else if (Name == "fclose")
-    FT = FunctionType::get(I32Ty, {PtrTy}, false);
-  else if (Name == "fgets")
-    FT = FunctionType::get(PtrTy, {PtrTy, I32Ty, PtrTy}, false);
-  else if (Name == "fputs")
-    FT = FunctionType::get(I32Ty, {PtrTy, PtrTy}, false);
-  else if (Name == "fread")
-    FT = FunctionType::get(I64Ty, {PtrTy, I64Ty, I64Ty, PtrTy}, false);
-  else if (Name == "fwrite")
-    FT = FunctionType::get(I64Ty, {PtrTy, I64Ty, I64Ty, PtrTy}, false);
   else
     return nullptr;
 
@@ -155,176 +308,238 @@ static Function *GetOrCreateLibcIOFunction(const std::string &Name) {
 }
 ```
 
-### Why this works cleanly
-
-`getFunction(...)` already had a fallback hook for libc-known functions. We simply broadened the allowlist.
-
-No parser changes were needed, and no runtime wrapper stubs were required.
-
-## Semantic checks in CallExprAST::codegen()
-
-Auto-declaration alone is not enough. We also need clear diagnostics when arguments are the wrong shape.
-
-Chapter 23 adds function-specific checks after argument codegen:
+### Integration in getFunction
 
 ```cpp
-auto CheckPointerArg = [&](size_t ArgIndex, const char *Err) -> bool { ... };
-auto CheckIntegerArg = [&](size_t ArgIndex, const char *Err) -> bool { ... };
+if (Function *LibCF = GetOrCreateLibcIOFunction(Name))
+  return LibCF;
 ```
 
-Then per API:
+### Why this design
+
+- No new source syntax is required for these common calls.
+- We stay explicit: only a tiny allowlist is auto-declared.
+- We avoid surprising behavior from auto-creating arbitrary unresolved symbols.
+
+## Vararg call lowering in CallExprAST::codegen()
+
+This is the most important backend change in the chapter.
+
+Before Chapter 23, call lowering assumed fixed-arity calls only:
+
+- exact argument count
+- formal-by-formal cast loop
+
+That breaks for `printf`, because `printf` has one fixed arg (format string) and then variadic arguments.
+
+### Updated arity checks
 
 ```cpp
-if (Callee == "fopen") {
-  if (!CheckPointerArg(0, "fopen expects pointer path argument") ||
-      !CheckPointerArg(1, "fopen expects pointer mode argument"))
+size_t FixedArgCount = CalleeF->arg_size();
+if ((!CalleeF->isVarArg() && FixedArgCount != Args.size()) ||
+    (CalleeF->isVarArg() && Args.size() < FixedArgCount))
+  return LogError<Value *>("Incorrect # arguments passed");
+```
+
+For varargs, we now require “at least fixed args”.
+
+### Two-phase argument handling
+
+We first codegen all arguments into `RawArgs`:
+
+```cpp
+std::vector<Value *> RawArgs;
+RawArgs.reserve(Args.size());
+for (auto &Arg : Args) {
+  Value *ArgV = Arg->codegen();
+  if (!ArgV)
     return nullptr;
-} else if (Callee == "fclose") {
-  if (!CheckPointerArg(0, "fclose expects pointer file argument"))
-    return nullptr;
-} else if (Callee == "fgets") {
-  if (!CheckPointerArg(0, "fgets expects pointer buffer argument") ||
-      !CheckIntegerArg(1, "fgets expects integer length argument") ||
-      !CheckPointerArg(2, "fgets expects pointer file argument"))
-    return nullptr;
-} else if (Callee == "fputs") {
-  if (!CheckPointerArg(0, "fputs expects pointer string argument") ||
-      !CheckPointerArg(1, "fputs expects pointer file argument"))
-    return nullptr;
-} else if (Callee == "fread") {
-  if (!CheckPointerArg(0, "fread expects pointer buffer argument") ||
-      !CheckIntegerArg(1, "fread expects integer size argument") ||
-      !CheckIntegerArg(2, "fread expects integer count argument") ||
-      !CheckPointerArg(3, "fread expects pointer file argument"))
-    return nullptr;
-} else if (Callee == "fwrite") {
-  if (!CheckPointerArg(0, "fwrite expects pointer buffer argument") ||
-      !CheckIntegerArg(1, "fwrite expects integer size argument") ||
-      !CheckIntegerArg(2, "fwrite expects integer count argument") ||
-      !CheckPointerArg(3, "fwrite expects pointer file argument"))
-    return nullptr;
+  RawArgs.push_back(ArgV);
 }
 ```
 
-These checks are intentionally direct. They catch misuse at compile-time/lowering time and produce clear messages.
+Then we do:
 
-## Interaction with existing call lowering
+1. fixed-parameter casts to formal types
+2. vararg-specific promotion for trailing args
 
-After checks, Chapter 23 still uses existing call machinery:
+### Default promotions for varargs
 
-- fixed-arity arity validation
-- per-formal cast via `CastValueTo`
-- normal LLVM `CreateCall`
+```cpp
+while (I < RawArgs.size()) {
+  Value *ArgV = RawArgs[I++];
+  Type *ArgTy = ArgV->getType();
+  if (ArgTy->isFloatTy()) {
+    ArgV = Builder->CreateFPExt(ArgV, Type::getDoubleTy(*TheContext),
+                                "vararg.fpext");
+  } else if (ArgTy->isIntegerTy() && ArgTy->getIntegerBitWidth() < 32) {
+    ArgV = Builder->CreateSExt(ArgV, Type::getInt32Ty(*TheContext),
+                               "vararg.sext");
+  }
+  ArgsV.push_back(ArgV);
+}
+```
 
-So this chapter extends behavior without forking the call path.
+This implements the key ABI-relevant C default promotions for our use case.
 
-This is important for maintainability: file APIs become “first-class interop calls” rather than special one-off nodes.
+## printf semantic validation (minimal subset)
 
-## Example usage patterns
+If we only lower varargs and skip semantic checks, users get confusing runtime output or undefined behavior. So Chapter 23 adds compile-time checks specifically for `printf`.
 
-### Text write/read roundtrip
+### Rule 1: format must be a string literal
+
+```cpp
+std::string Fmt;
+if (!Args[0]->getStringLiteralValue(Fmt))
+  return LogError<Value *>("printf format must be a string literal");
+```
+
+We intentionally require a literal (not variable/expr) in this chapter so we can validate format shape statically.
+
+### Rule 2: only %d, %s, %c, %p, %%
+
+```cpp
+for (size_t I = 0; I < Fmt.size(); ++I) {
+  if (Fmt[I] != '%')
+    continue;
+  if (I + 1 >= Fmt.size())
+    return LogError<Value *>("Unsupported printf format specifier '%'");
+  char Spec = Fmt[++I];
+  if (Spec == '%')
+    continue;
+  if (Spec != 'd' && Spec != 's' && Spec != 'c' && Spec != 'p')
+    return LogError<Value *>("Unsupported printf format specifier");
+  Specs.push_back(Spec);
+}
+```
+
+### Rule 3: placeholder count must match arg count
+
+```cpp
+if (Specs.size() != Args.size() - 1)
+  return LogError<Value *>("printf format/argument count mismatch");
+```
+
+### Rule 4: type check each placeholder
+
+```cpp
+for (size_t I = 0; I < Specs.size(); ++I) {
+  Type *Ty = RawArgs[I + 1]->getType();
+  char Spec = Specs[I];
+  if ((Spec == 'd' || Spec == 'c') && !Ty->isIntegerTy())
+    return LogError<Value *>("printf type mismatch for integer format");
+  if ((Spec == 's' || Spec == 'p') && !Ty->isPointerTy())
+    return LogError<Value *>("printf type mismatch for pointer format");
+}
+```
+
+### Why this conservative approach is good here
+
+- Users get actionable compile-time errors.
+- Behavior is deterministic.
+- We avoid half-implemented format parsing that would be hard to reason about.
+
+We can loosen these constraints in a later chapter once we have richer type/format infrastructure.
+
+## Chapter 23 test suite
+
+Chapter 23 keeps all inherited Chapter 22 tests and adds dedicated I/O tests in `code/chapter23/test`.
+
+### Positive tests
+
+- `io_basic_putchar_puts.pyxc`
+  - checks `putchar` + `puts`
+- `io_printf_subset.pyxc`
+  - checks `%d/%s/%c/%p/%%`
+- `io_string_ptr_assign.pyxc`
+  - checks literal -> `ptr[i8]` assignment
+- `io_getchar_decl_only.pyxc`
+  - checks symbol resolution and typing path for `getchar`
+
+### Negative tests
+
+- `io_error_printf_bad_spec.pyxc`
+  - `%f` rejected
+- `io_error_printf_count_mismatch.pyxc`
+  - placeholder/arg mismatch rejected
+- `io_error_printf_type_mismatch.pyxc`
+  - `%d` with pointer rejected
+
+These tests enforce that our strict subset is not just documented, but actually implemented.
+
+## End-to-end behavior examples
+
+### Example 1: direct calls
 
 ```py
 def main() -> i32:
-    f: ptr[void] = fopen("chapter23_io_a.txt", "w")
-    fputs("alpha\n", f)
-    fclose(f)
-
-    f = fopen("chapter23_io_a.txt", "r")
-    buf: ptr[i8] = malloc[i8](64)
-    fgets(buf, 64, f)
-    fclose(f)
-
-    printf("%s", buf)
-    free(buf)
+    putchar(65)
+    putchar(32)
+    puts("hi")
     return 0
 
 main()
 ```
 
-### Block I/O roundtrip with byte counts
+Output:
+
+```text
+A hi
+```
+
+### Example 2: minimal printf
 
 ```py
 def main() -> i32:
-    f: ptr[void] = fopen("chapter23_io_b.bin", "wb")
-    written: i64 = fwrite("HELLO", 1, 5, f)
-    fclose(f)
-
-    f = fopen("chapter23_io_b.bin", "rb")
-    buf: ptr[i8] = malloc[i8](6)
-    read: i64 = fread(buf, 1, 5, f)
-    buf[5] = 0
-    fclose(f)
-
-    printf("w=%d r=%d s=%s\n", written, read, buf)
-    free(buf)
+    s: ptr[i8] = "ok"
+    printf("value=%d char=%c ptr=%p text=%s percent=%%\n", 42, 66, s, s)
     return 0
 
 main()
 ```
 
-This pattern demonstrates both the return counts and pointer-buffer usage.
+This exercises integer, char, pointer, string, and escaped percent paths together.
 
-## Tests added in Chapter 23
+## Validation run for this chapter
 
-New tests under `code/chapter23/test`:
-
-### Positive
-
-- `file_fputs_fgets_roundtrip.pyxc`
-- `file_fread_fwrite_roundtrip.pyxc`
-
-### Negative
-
-- `file_error_fopen_mode_not_pointer.pyxc`
-- `file_error_fgets_len_not_integer.pyxc`
-- `file_error_fread_buffer_not_pointer.pyxc`
-- `file_error_fclose_non_pointer.pyxc`
-
-These run in addition to inherited Chapter 22 coverage.
-
-## Validation result
-
-Build:
+Chapter 23 was validated with:
 
 ```bash
 cd code/chapter23 && ./build.sh
-```
-
-Tests:
-
-```bash
 lit -sv code/chapter23/test
 ```
 
 Result:
 
-- 46 tests discovered
-- 46 passed
-
-## Notes on typing and handles
-
-Chapter 23 keeps file handles opaque and pointer-shaped (`ptr[void]` works well).
-
-This is a good tradeoff now:
-
-- minimal type-system change
-- clear interoperability model
-- room to add a named alias (`type file_t = ptr[void]`) at user level
-
-You can add richer handle typing later if you want stricter API boundaries.
+- 40 tests discovered
+- 40 passed
 
 ## Design takeaways
 
-Chapter 23 keeps language complexity under control by reusing existing machinery:
+### What we gained
 
-- existing call syntax
-- existing expression/type system
-- existing cast and call lowering flow
+- Practical text I/O capability with minimal language surface growth.
+- String literals integrated into the existing expression/type pipeline.
+- First variadic call path in backend codegen.
+- Strong early diagnostics for common `printf` mistakes.
 
-But capability jumps significantly: Pyxc can now do persistent text and binary I/O with standard libc semantics.
+### What we intentionally postponed
 
-That is enough to support realistic tooling-style programs and sets up future chapters for modules, headers, and broader C interop.
+- full C format grammar
+- runtime formatting helpers
+- user-defined variadics
+
+This keeps Chapter 23 focused and stable while still unlocking a large amount of real program space.
+
+## Where to go next
+
+With Chapter 23 complete, the next high-leverage topics are:
+
+- pointer dereference (`*`) and address-of operator parity with C syntax
+- header/translation-unit workflow for separate compilation
+- richer standard-library interop (`strlen`, `strcmp`, etc.)
+
+Those build directly on the I/O and pointer groundwork laid here.
 
 ## Compiling
 
@@ -353,7 +568,7 @@ cd code/chapter23 && ./build.sh
 Run one sample program:
 
 ```bash
-code/chapter23/pyxc -i code/chapter23/test/addr_is_keyword.pyxc
+code/chapter23/pyxc -i code/chapter23/test/array_alias_type.pyxc
 ```
 
 Run the chapter tests (when a test suite exists):
@@ -363,7 +578,7 @@ cd code/chapter23/test
 lit -sv .
 ```
 
-Try editing a test or two and see how quickly you can predict the outcome.
+Poke around the tests and tweak a few cases to see what breaks first.
 
 When you're done, clean artifacts:
 

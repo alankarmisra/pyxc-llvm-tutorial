@@ -195,8 +195,6 @@ enum Token {
   tok_free = -34,
   tok_addr = -36,
   tok_const = -37,
-  tok_match = -38,
-  tok_case = -39,
 
   // indentation
   tok_indent = -16,
@@ -224,15 +222,14 @@ static std::string StringVal;     // Filled in if tok_string
 // Keywords words like `def`, `extern` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
 static std::map<std::string, Token> Keywords = {
-    {"def", tok_def},     {"extern", tok_extern}, {"return", tok_return},
-    {"if", tok_if},       {"elif", tok_elif},     {"else", tok_else},
-    {"for", tok_for},     {"in", tok_in},         {"range", tok_range},
-    {"var", tok_var},     {"type", tok_type},     {"not", tok_not},
-    {"and", tok_and},     {"print", tok_print},   {"while", tok_while},
-    {"do", tok_do},       {"break", tok_break},   {"continue", tok_continue},
-    {"or", tok_or},       {"struct", tok_struct}, {"malloc", tok_malloc},
-    {"free", tok_free},   {"addr", tok_addr},     {"const", tok_const},
-    {"match", tok_match}, {"case", tok_case}};
+    {"def", tok_def},   {"extern", tok_extern}, {"return", tok_return},
+    {"if", tok_if},     {"elif", tok_elif},     {"else", tok_else},
+    {"for", tok_for},   {"in", tok_in},         {"range", tok_range},
+    {"var", tok_var},   {"type", tok_type},     {"not", tok_not},
+    {"and", tok_and},   {"print", tok_print},   {"while", tok_while},
+    {"do", tok_do},     {"break", tok_break},   {"continue", tok_continue},
+    {"or", tok_or},     {"struct", tok_struct}, {"malloc", tok_malloc},
+    {"free", tok_free}, {"addr", tok_addr},     {"const", tok_const}};
 
 struct SourceLocation {
   int Line;
@@ -385,6 +382,7 @@ static void PrintErrorSourceContext(SourceLocation Loc) {
   fprintf(stderr, "%s^%s~~~\n", Bold, Reset);
 }
 static bool HadError = false;
+
 template <typename T = void> T LogError(const char *Str) {
   HadError = true;
   const std::string TokDisplay = FormatTokenForError(CurTok);
@@ -661,59 +659,6 @@ static int gettok() {
     }
   }
 
-  if (LastChar == '\'') {
-    LastChar = advance(); // consume opening quote
-    if (LastChar == EOF || LastChar == '\n' || LastChar == '\r') {
-      LogError("Unterminated character literal");
-      return tok_error;
-    }
-
-    unsigned char CharVal = 0;
-    if (LastChar == '\\') {
-      LastChar = advance();
-      switch (LastChar) {
-      case 'n':
-        CharVal = static_cast<unsigned char>('\n');
-        break;
-      case 't':
-        CharVal = static_cast<unsigned char>('\t');
-        break;
-      case 'r':
-        CharVal = static_cast<unsigned char>('\r');
-        break;
-      case '0':
-        CharVal = static_cast<unsigned char>('\0');
-        break;
-      case '\\':
-        CharVal = static_cast<unsigned char>('\\');
-        break;
-      case '\'':
-        CharVal = static_cast<unsigned char>('\'');
-        break;
-      case '"':
-        CharVal = static_cast<unsigned char>('"');
-        break;
-      default:
-        LogError("Invalid escape sequence in character literal");
-        return tok_error;
-      }
-    } else {
-      CharVal = static_cast<unsigned char>(LastChar);
-    }
-
-    LastChar = advance();
-    if (LastChar != '\'') {
-      LogError("Character literal must contain exactly one character");
-      return tok_error;
-    }
-
-    LastChar = advance(); // consume closing quote
-    NumIsIntegerLiteral = true;
-    NumIntVal = static_cast<int64_t>(CharVal);
-    NumVal = static_cast<double>(NumIntVal);
-    return tok_number;
-  }
-
   if (LastChar == '#') {
     // Comment until end of line.
     do
@@ -843,10 +788,6 @@ static const char *TokenName(int Tok) {
     return "<addr>";
   case tok_const:
     return "<const>";
-  case tok_match:
-    return "<match>";
-  case tok_case:
-    return "<case>";
   case tok_not:
     return "<not>";
   case tok_and:
@@ -1295,25 +1236,6 @@ public:
   Value *codegen() override;
 };
 
-class MatchStmtAST : public StmtAST {
-  std::unique_ptr<ExprAST> MatchExpr;
-  std::vector<
-      std::pair<std::unique_ptr<ExprAST>, std::unique_ptr<BlockSuiteAST>>>
-      Cases;
-  std::unique_ptr<BlockSuiteAST> DefaultCase;
-
-public:
-  MatchStmtAST(SourceLocation Loc, std::unique_ptr<ExprAST> MatchExpr,
-               std::vector<std::pair<std::unique_ptr<ExprAST>,
-                                     std::unique_ptr<BlockSuiteAST>>>
-                   Cases,
-               std::unique_ptr<BlockSuiteAST> DefaultCase)
-      : StmtAST(Loc), MatchExpr(std::move(MatchExpr)), Cases(std::move(Cases)),
-        DefaultCase(std::move(DefaultCase)) {}
-
-  Value *codegen() override;
-};
-
 /// ForExprAST - Expression class for for/in.
 class ForStmtAST : public StmtAST {
   std::string VarName;
@@ -1508,7 +1430,6 @@ static std::unique_ptr<ExprAST> ParseStringExpr();
 static std::unique_ptr<ExprAST> ParseAddrExpr();
 static std::unique_ptr<StmtAST> ParsePrintStmt();
 static std::unique_ptr<StmtAST> ParseConstDeclStmt();
-static std::unique_ptr<StmtAST> ParseMatchStmt();
 static std::unique_ptr<StmtAST> ParseFreeStmt();
 static std::unique_ptr<ExprAST> ParseMallocExpr();
 static TypeExprPtr ParseTypeExpr();
@@ -2146,75 +2067,6 @@ static std::unique_ptr<StmtAST> ParseConstDeclStmt() {
       ConstLoc, std::move(Name), std::move(DeclType), std::move(InitExpr));
 }
 
-static std::unique_ptr<StmtAST> ParseMatchStmt() {
-  auto MatchLoc = CurLoc;
-  getNextToken(); // eat `match`
-  auto MatchExpr = ParseExpression();
-  if (!MatchExpr)
-    return nullptr;
-  if (CurTok != ':')
-    return LogError<StmtPtr>("Expected ':' after match expression");
-  getNextToken(); // eat ':'
-
-  if (CurTok != tok_eol)
-    return LogError<StmtPtr>("Expected newline after match header");
-  getNextToken(); // eat newline
-  if (CurTok != tok_indent)
-    return LogError<StmtPtr>("Expected indent after match header");
-  getNextToken(); // eat indent
-
-  std::vector<
-      std::pair<std::unique_ptr<ExprAST>, std::unique_ptr<BlockSuiteAST>>>
-      Cases;
-  std::unique_ptr<BlockSuiteAST> DefaultCase;
-
-  while (CurTok != tok_dedent && CurTok != tok_eof) {
-    EatNewLines();
-    if (CurTok == tok_dedent || CurTok == tok_eof)
-      break;
-
-    if (CurTok != tok_case)
-      return LogError<StmtPtr>("Expected 'case' inside match block");
-    getNextToken(); // eat `case`
-
-    bool IsDefault = false;
-    std::unique_ptr<ExprAST> CaseExpr;
-    if (CurTok == tok_identifier && IdentifierStr == "_") {
-      IsDefault = true;
-      getNextToken(); // eat '_'
-    } else {
-      CaseExpr = ParseExpression();
-      if (!CaseExpr)
-        return nullptr;
-    }
-
-    if (CurTok != ':')
-      return LogError<StmtPtr>("Expected ':' after case pattern");
-    getNextToken(); // eat ':'
-    auto Body = ParseSuite();
-    if (!Body)
-      return nullptr;
-
-    if (IsDefault) {
-      if (DefaultCase)
-        return LogError<StmtPtr>("Duplicate default case '_' in match");
-      DefaultCase = std::move(Body);
-    } else {
-      Cases.push_back({std::move(CaseExpr), std::move(Body)});
-    }
-    EatNewLines();
-  }
-
-  if (CurTok != tok_dedent)
-    return LogError<StmtPtr>("Expected dedent after match block");
-  getNextToken(); // eat dedent
-
-  if (Cases.empty() && !DefaultCase)
-    return LogError<StmtPtr>("match requires at least one case");
-  return std::make_unique<MatchStmtAST>(
-      MatchLoc, std::move(MatchExpr), std::move(Cases), std::move(DefaultCase));
-}
-
 static std::unique_ptr<StmtAST> ParseIdentifierLeadingStmt() {
   auto StmtLoc = CurLoc;
   auto LHS = ParseIdentifierExpr();
@@ -2264,8 +2116,6 @@ static std::unique_ptr<StmtAST> ParseStmt() {
   switch (CurTok) {
   case tok_if:
     return ParseIfStmt();
-  case tok_match:
-    return ParseMatchStmt();
   case tok_elif:
     return LogError<StmtPtr>("Unexpected `elif` without matching `if`");
   case tok_else:
@@ -4087,86 +3937,6 @@ Value *IfStmtAST::codegen() {
   Builder->SetInsertPoint(MergeBB);
   // If as a statement does not need a merged value; return a neutral sentinel.
   return ConstantFP::get(*TheContext, APFloat(0.0));
-}
-
-Value *MatchStmtAST::codegen() {
-  emitLocation(this);
-
-  Value *MatchV = MatchExpr->codegen();
-  if (!MatchV)
-    return nullptr;
-  if (!MatchV->getType()->isIntegerTy())
-    return LogError<Value *>("match expression must be an integer type");
-
-  bool MatchUnsigned = IsUnsignedLeafName(MatchExpr->getBuiltinLeafTypeHint());
-  MatchV = CastValueTo(MatchV, Type::getInt64Ty(*TheContext), MatchUnsigned);
-  if (!MatchV)
-    return nullptr;
-
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
-  BasicBlock *AfterBB = BasicBlock::Create(*TheContext, "match.end");
-  BasicBlock *DefaultBB =
-      DefaultCase ? BasicBlock::Create(*TheContext, "match.default") : AfterBB;
-
-  if (Cases.empty()) {
-    if (DefaultCase) {
-      TheFunction->insert(TheFunction->end(), DefaultBB);
-      Builder->SetInsertPoint(DefaultBB);
-      if (!DefaultCase->codegen())
-        return nullptr;
-      if (!Builder->GetInsertBlock()->getTerminator())
-        Builder->CreateBr(AfterBB);
-    }
-    TheFunction->insert(TheFunction->end(), AfterBB);
-    Builder->SetInsertPoint(AfterBB);
-    return Constant::getNullValue(Type::getDoubleTy(*TheContext));
-  }
-
-  for (size_t I = 0; I < Cases.size(); ++I) {
-    Value *CaseV = Cases[I].first->codegen();
-    if (!CaseV)
-      return nullptr;
-    if (!CaseV->getType()->isIntegerTy())
-      return LogError<Value *>("match case expression must be an integer type");
-
-    bool CaseUnsigned =
-        IsUnsignedLeafName(Cases[I].first->getBuiltinLeafTypeHint());
-    CaseV = CastValueTo(CaseV, Type::getInt64Ty(*TheContext), CaseUnsigned);
-    if (!CaseV)
-      return nullptr;
-
-    Value *CmpV = Builder->CreateICmpEQ(MatchV, CaseV, "match.cmp");
-    BasicBlock *CaseBB = BasicBlock::Create(*TheContext, "match.case");
-    BasicBlock *NextCheckBB =
-        (I + 1 < Cases.size()) ? BasicBlock::Create(*TheContext, "match.next")
-                               : DefaultBB;
-    Builder->CreateCondBr(CmpV, CaseBB, NextCheckBB);
-
-    TheFunction->insert(TheFunction->end(), CaseBB);
-    Builder->SetInsertPoint(CaseBB);
-    if (!Cases[I].second->codegen())
-      return nullptr;
-    if (!Builder->GetInsertBlock()->getTerminator())
-      Builder->CreateBr(AfterBB);
-
-    if (I + 1 < Cases.size()) {
-      TheFunction->insert(TheFunction->end(), NextCheckBB);
-      Builder->SetInsertPoint(NextCheckBB);
-    }
-  }
-
-  if (DefaultCase) {
-    TheFunction->insert(TheFunction->end(), DefaultBB);
-    Builder->SetInsertPoint(DefaultBB);
-    if (!DefaultCase->codegen())
-      return nullptr;
-    if (!Builder->GetInsertBlock()->getTerminator())
-      Builder->CreateBr(AfterBB);
-  }
-
-  TheFunction->insert(TheFunction->end(), AfterBB);
-  Builder->SetInsertPoint(AfterBB);
-  return Constant::getNullValue(Type::getDoubleTy(*TheContext));
 }
 
 Value *BreakStmtAST::codegen() {

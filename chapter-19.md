@@ -1,381 +1,485 @@
-# 19. Structs and Named Field Access
+# 19. Real Loop Control (while, do, break, continue) and Finishing Core Integer Operators
 
-Chapter 18 gave us mature control flow and a stronger operator set.
+Chapter 18 gave us a typed language with practical output (`print(...)`) and a solid test workflow.
 
-But data modeling was still flat. We could pass scalars, pointers, and aliases, yet we had no way to express “a value with multiple named parts” in the language itself.
+Chapter 19 moves the language forward in two ways:
 
-Chapter 19 introduces that missing piece: `struct`.
+- control-flow expressiveness (`while`, `do-while`, `break`, `continue`)
+- operator completeness for common integer work (`~`, `%`, `&`, `^`, `|`)
 
-The chapter is intentionally focused. We do **not** add methods, constructors, classes, or inheritance. We add only what we need for C-style aggregate data:
-
-- top-level struct declarations
-- struct-typed variables
-- field reads (`obj.x`)
-- field writes (`obj.x = ...`)
-- nested member chains (`outer.inner.x`)
-
-That limited scope keeps the parser and type resolver understandable while still unlocking a major jump in language expressiveness.
+The key theme is still the same as Chapter 18: make targeted compiler changes, lock behavior with `lit` tests, and keep each feature small and understandable.
 
 
 !!!note
     To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter19](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter19).
 
-## Why this chapter matters
+## Grammar (EBNF)
 
-Once you have loops and conditionals, the next real bottleneck is data shape.
+Chapter 19 extends statement grammar with `while`, `do ... while`, `break`, and `continue`.
+Operator additions (`~`, `%`, `&`, `^`, `|`) are expression-operator table changes, not new non-terminals.
 
-Without structs, code quickly turns into parallel variables (`x`, `y`, `z`) that are hard to pass around safely. With structs, you can represent coherent records:
-
-```py
-struct Point:
-    x: i32
-    y: i32
-```
-
-That one construct creates a foundation for all later data features, including arrays-of-structs (Chapter 20), heap-allocated structs (Chapter 21), and pointer-oriented interop work.
-
-## Scope and constraints
-
-Chapter 19 supports:
-
-- `struct` declarations at top level only
-- named fields with explicit types
-- field selection with `.`
-- field assignment and nested field access
-
-Chapter 19 intentionally does *not* support:
-
-- struct literals
-- struct constructors
-- methods/member functions
-- inline struct declarations in local scope
-
-Keeping struct declarations top-level avoids many symbol/ownership complexities in this step.
-
-## What changed from Chapter 18
-
-Primary diff:
-
-- `code/chapter18/pyxc.cpp` -> `code/chapter19/pyxc.cpp`
-- `code/chapter18/pyxc.ebnf` -> `code/chapter19/pyxc.ebnf`
-
-Major implementation buckets:
-
-1. lexical keyword support for `struct`
-2. grammar/parser support for top-level struct declarations
-3. postfix parser support for `.` member access
-4. struct metadata tables in the compiler
-5. LLVM struct type resolution and caching
-6. member address/load codegen (`MemberExprAST`)
-7. struct diagnostics + test coverage
-
-We walk through these in order.
-
-## 1. Grammar updates
-
-In `code/chapter19/pyxc.ebnf`, Chapter 19 introduces `struct_decl` and member-expression forms.
+Reference: `code/chapter19/pyxc.ebnf`
 
 ```ebnf
-top_item        = newline
-                | type_alias_decl
-                | struct_decl
-                | function_def
-                | extern_decl
-                | statement ;
+statement      = if_stmt
+               | for_stmt
+               | while_stmt
+               | do_while_stmt
+               | break_stmt
+               | continue_stmt
+               | print_stmt
+               | return_stmt
+               | typed_assign_stmt
+               | assign_stmt
+               | expr_stmt ;
 
-struct_decl     = "struct" , identifier , ":" , newline , indent ,
-                  struct_field , { newline , struct_field } , [ newline ] ,
-                  dedent ;
-
-postfix_expr    = primary , { call_suffix | index_suffix | member_suffix } ;
-member_suffix   = "." , identifier ;
-member_expr     = postfix_expr , member_suffix ;
-
-lvalue          = identifier
-                | index_expr
-                | member_expr ;
+while_stmt     = "while" , expression , ":" , suite ;
+do_while_stmt  = "do" , ":" , suite , "while" , expression ;
+break_stmt     = "break" ;
+continue_stmt  = "continue" ;
 ```
 
-The important design choice is: member access is a **postfix chain**. That means `a.b.c[0].x` can be parsed naturally by repeating postfix rules.
+## What Changed from Chapter 18
 
-## 2. Lexer updates
+If you compare:
 
-Chapter 19 adds `struct` as a keyword token:
+- `code/chapter18/pyxc.cpp`
+- `code/chapter19/pyxc.cpp`
+
+you will see Chapter 19 adds four layers:
+
+1. new lexer tokens/keywords for loop-control statements
+2. new AST statement nodes + parser paths for those statements
+3. loop-context plumbing in codegen so `break` and `continue` always know where to branch
+4. integer operator support in expression codegen for `%`, `&`, `^`, `|`, and unary `~`
+
+We also expanded the Chapter 19 test suite in `code/chapter19/test/` to cover both positive and negative cases.
+
+## Language Surface in This Chapter
+
+New statement forms:
+
+```py
+while cond:
+    body
+```
+
+```py
+do:
+    body
+while cond
+```
+
+```py
+while cond:
+    if should_exit:
+        break
+    continue
+```
+
+Additional operators supported in this chapter:
+
+```py
+~x
+x % y
+x & y
+x ^ y
+x | y
+```
+
+## Tests First: Chapter 19 lit Suite
+
+Before discussing implementation details, it helps to look at the behavior we pinned down in tests.
+
+Representative loop/control tests:
+
+- `code/chapter19/test/while_counting.pyxc`
+- `code/chapter19/test/do_while_runs_once.pyxc`
+- `code/chapter19/test/nested_break_outer_continue.pyxc`
+- `code/chapter19/test/continue_skips_body.pyxc`
+- `code/chapter19/test/break_outside_loop.pyxc`
+- `code/chapter19/test/continue_outside_loop.pyxc`
+- `code/chapter19/test/malformed_do_while.pyxc`
+
+Representative operator tests:
+
+- `code/chapter19/test/operator_modulo_signed.pyxc`
+- `code/chapter19/test/operator_bitwise_basic.pyxc`
+- `code/chapter19/test/operator_bitwise_precedence.pyxc`
+- `code/chapter19/test/operator_unary_bitnot.pyxc`
+- `code/chapter19/test/operator_error_modulo_float.pyxc`
+- `code/chapter19/test/operator_error_bitwise_float.pyxc`
+- `code/chapter19/test/operator_error_unary_bitnot_float.pyxc`
+
+Example positive loop test:
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '0' %t
+# RUN: grep -x '1' %t
+# RUN: grep -x '2' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    i: i32 = 0
+    while i < 3:
+        print(i)
+        i = i + 1
+    return 0
+
+main()
+```
+
+Example negative loop-control test:
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "break" %t
+# RUN: grep -q "outside of a loop" %t
+
+def main() -> i32:
+    break
+    return 0
+
+main()
+```
+
+Example positive operator test:
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '2 7 5' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    a: i32 = 6
+    b: i32 = 3
+    print(a & b, a | b, a ^ b)
+    return 0
+
+main()
+```
+
+## Lexer and Token Updates
+
+Chapter 19 adds dedicated loop-control tokens to the existing `Token` enum:
 
 ```cpp
-tok_struct = -32,
+tok_while = -28,
+tok_do = -29,
+tok_break = -30,
+tok_continue = -31,
 ```
 
-and keyword-table entry:
+Then it wires the corresponding keywords into the keyword map:
 
 ```cpp
-{"struct", tok_struct}
+{"and", tok_and}, {"print", tok_print},   {"while", tok_while},
+{"do", tok_do},   {"break", tok_break},   {"continue", tok_continue},
+{"or", tok_or}
 ```
 
-### Dot/number disambiguation
+The practical benefit is that parser dispatch stays explicit and straightforward: no special identifier heuristics are needed for these statements.
 
-The lexer already supported numeric literals like `.5`. But adding member access means `.` must also work as a punctuation token for `obj.field`.
+## AST Additions for New Statements
 
-So Chapter 19 tightens the check: `.` starts a number **only if the next char is a digit**.
+Chapter 18 already had dedicated statement nodes (`IfStmtAST`, `ForStmtAST`, `PrintStmtAST`, etc.).
+
+Chapter 19 continues that pattern with:
 
 ```cpp
-bool DotStartsNumber = false;
-if (LastChar == '.') {
-  int NextCh = getc(InputFile);
-  if (NextCh != EOF)
-    ungetc(NextCh, InputFile);
-  DotStartsNumber = isdigit(NextCh);
-}
-
-if (isdigit(LastChar) || DotStartsNumber) {
-  ...
-}
+class WhileStmtAST : public StmtAST { ... };
+class DoWhileStmtAST : public StmtAST { ... };
+class BreakStmtAST : public StmtAST { ... };
+class ContinueStmtAST : public StmtAST { ... };
 ```
 
-That small lexer decision prevents member-access parsing bugs later.
+Two subtle details are important:
 
-## 3. AST additions: MemberExprAST
+- `BreakStmtAST` and `ContinueStmtAST` return `true` from `isTerminator()`
+- they are statements, not expressions, so they slot naturally into suites/blocks
+
+That terminator flag keeps later codegen logic from accidentally adding extra fallthrough branches after a `break` or `continue`.
+
+## Parser Additions (Step by Step)
+
+`ParseStmt()` in Chapter 19 now dispatches loop-control forms directly:
+
+```cpp
+case tok_while:
+  return ParseWhileStmt();
+case tok_do:
+  return ParseDoWhileStmt();
+case tok_break:
+  return ParseBreakStmt();
+case tok_continue:
+  return ParseContinueStmt();
+```
+
+### Parsing while
+
+`while` follows the same design style as `if` and `for`:
+
+```cpp
+// while_stmt = "while" , expression , ":" , suite ;
+```
+
+The parser:
+
+1. consumes `while`
+2. parses the condition expression
+3. requires `:`
+4. parses a suite (inline or block)
+
+No surprises, and that consistency helps readability.
+
+### Parsing do-while
+
+The Chapter 19 grammar shape is:
+
+```cpp
+// do_while_stmt = "do" , ":" , suite , "while" , expression ;
+```
+
+The ordering matters here and is intentional:
+
+1. parse `do:`
+2. parse body suite first
+3. require trailing `while`
+4. parse condition expression
+
+That parse order directly matches post-test loop semantics.
+
+### Parsing break / continue
+
+Parse-time behavior is intentionally simple:
+
+```cpp
+getNextToken(); // eat break or continue
+return std::make_unique<BreakStmtAST>(Loc);
+```
+
+Syntactically this accepts the statement where it appears. Semantic validation (inside loop or not) is delayed to codegen, where loop nesting context is available.
+
+## Semantic Backbone: Loop Context Stack
+
+`break` and `continue` need target blocks, and those targets depend on which loop we are currently inside.
 
 Chapter 19 introduces:
 
 ```cpp
-class MemberExprAST : public ExprAST {
-  std::unique_ptr<ExprAST> Base;
-  std::string FieldName;
-  ...
-  Value *codegen() override;
-  Value *codegenAddress() override;
-  Type *getValueTypeHint() const override;
-  std::string getBuiltinLeafTypeHint() const override;
+struct LoopContext {
+  BasicBlock *BreakTarget = nullptr;
+  BasicBlock *ContinueTarget = nullptr;
+};
+static std::vector<LoopContext> LoopContextStack;
+```
+
+Then it uses a small RAII helper:
+
+```cpp
+class LoopContextGuard {
+public:
+  LoopContextGuard(BasicBlock *BreakTarget, BasicBlock *ContinueTarget) {
+    LoopContextStack.push_back({BreakTarget, ContinueTarget});
+  }
+  ~LoopContextGuard() {
+    LoopContextStack.pop_back();
+  }
 };
 ```
 
-Two methods are central:
+This gives us clean behavior for nested loops:
 
-- `codegenAddress()` for lvalue use (`p.x = 10`)
-- `codegen()` for rvalue use (`print(p.x)`)
+- inner loop pushes its context
+- `break`/`continue` bind to the nearest loop (top of stack)
+- context is restored automatically when leaving the loop body
 
-This mirrors the same lvalue/rvalue split already used for variables and indexing.
+## LLVM Lowering for Loop Control
 
-## 4. Parsing struct declarations
+### break and continue
 
-Chapter 19 adds a dedicated top-level parser path:
+Codegen first verifies loop context exists:
 
 ```cpp
-static bool ParseStructDecl();
+if (LoopContextStack.empty())
+  return LogError<Value *>("`break` used outside of a loop");
+Builder->CreateBr(LoopContextStack.back().BreakTarget);
 ```
 
-Core behavior:
+`continue` is the same shape, branching to `ContinueTarget`.
 
-- parse header: `struct <Name>:`
-- require newline + indented field list
-- parse each field: `<name>: <type_expr>`
-- enforce constraints:
-  - no duplicate struct names
-  - no duplicate field names in one struct
-  - at least one field
+This gives clear diagnostics for invalid usage and clean branches for valid usage.
 
-Struct declarations are accepted only in top-level loops and explicitly rejected in statement context:
+### while lowering
+
+The block layout is:
+
+- `while.cond`
+- `while.body`
+- `while.exit`
+
+Core structure:
 
 ```cpp
-case tok_struct:
-  return LogError<StmtPtr>("Struct declarations are only allowed at top-level");
+Builder->CreateBr(CondBB);
+Builder->SetInsertPoint(CondBB);
+CondV = ToBoolI1(Cond->codegen(), "whilecond");
+Builder->CreateCondBr(CondV, BodyBB, ExitBB);
+
+LoopContextGuard Guard(ExitBB, CondBB);
+Body->codegen();
+if (!Builder->GetInsertBlock()->getTerminator())
+  Builder->CreateBr(CondBB);
 ```
 
-This keeps symbol lifetime and lookup simple for this phase.
+A useful consequence is that `continue` inside `while` naturally returns to condition evaluation.
 
-## 5. Parsing member access chains
+### do-while lowering
 
-`ParseIdentifierExpr()` already had a postfix loop for calls and indexing.
-Chapter 19 extends that loop with member suffix handling:
+The block layout is:
+
+- `do.body`
+- `do.cond`
+- `do.exit`
+
+Core structure:
 
 ```cpp
-if (CurTok == '.') {
-  SourceLocation MemberLoc = CurLoc;
-  getNextToken(); // eat '.'
-  if (CurTok != tok_identifier)
-    return LogError<ExprPtr>("Expected field name after '.'");
-  std::string FieldName = IdentifierStr;
-  getNextToken(); // eat field name
-  Expr = std::make_unique<MemberExprAST>(MemberLoc, std::move(Expr),
-                                         std::move(FieldName));
-  continue;
+Builder->CreateBr(BodyBB); // enter body first
+
+LoopContextGuard Guard(ExitBB, CondBB);
+Body->codegen();
+if (!Builder->GetInsertBlock()->getTerminator())
+  Builder->CreateBr(CondBB);
+
+CondV = ToBoolI1(Cond->codegen(), "docond");
+Builder->CreateCondBr(CondV, BodyBB, ExitBB);
+```
+
+The initial unconditional branch into `BodyBB` is the defining property: the loop body executes at least once.
+
+### Existing for behavior, now with continue correctness
+
+`for range(...)` already existed, but Chapter 19 adapts its loop context so `continue` targets the step block:
+
+```cpp
+LoopContextGuard Guard(EndLoopBB, StepBB);
+```
+
+So `continue` in a `for` body does what users expect:
+
+1. jump to step
+2. update induction variable
+3. re-check loop condition
+
+## Operator Coverage: %, &, ^, |, ~
+
+This chapter line also closes a practical operator gap.
+
+### Precedence table extension
+
+`BinopPrecedence` now includes:
+
+```cpp
+{'|', 7}, {'^', 8}, {'&', 9}, ... {'%', 40}
+```
+
+This preserves sensible C-style relative precedence among bitwise operators and keeps `%` at multiplicative precedence.
+
+### Unary ~
+
+Unary bit-not is now implemented for integers:
+
+```cpp
+case '~':
+  if (!OperandV->getType()->isIntegerTy())
+    return LogError<Value *>("Unary '~' requires integer operand");
+  return Builder->CreateNot(OperandV, "bnottmp");
+```
+
+If the operand is floating-point, the user gets a direct diagnostic.
+
+### Binary %, &, ^, |
+
+These are intentionally integer-only in this chapter.
+
+First, codegen detects operators that require integer operands:
+
+```cpp
+bool RequiresIntOnly = (Op == '%' || Op == '&' || Op == '^' || Op == '|');
+```
+
+Then it enforces type rules with explicit diagnostics:
+
+```cpp
+if (!(L->getType()->isIntegerTy() && R->getType()->isIntegerTy())) {
+  if (Op == '%')
+    return LogError<Value *>("Modulo operator '%' requires integer operands");
+  return LogError<Value *>("Bitwise operators require integer operands");
 }
 ```
 
-Because this is chained in the same postfix loop, nested forms like `o.i.x` require no special parser function.
-
-## 6. Struct metadata model inside the compiler
-
-Chapter 19 introduces internal metadata structures:
+After harmonizing integer widths, lowering is direct:
 
 ```cpp
-struct StructFieldDecl {
-  std::string Name;
-  TypeExprPtr Ty;
-};
-
-struct StructDeclInfo {
-  std::string Name;
-  std::vector<StructFieldDecl> Fields;
-  std::map<std::string, unsigned> FieldIndex;
-  StructType *LLTy = nullptr;
-};
-
-static std::map<std::string, StructDeclInfo> StructDecls;
-static std::map<const StructType *, std::string> StructTypeNames;
+case '%': return Builder->CreateSRem(L, R, "modtmp");
+case '&': return Builder->CreateAnd(L, R, "andtmp");
+case '^': return Builder->CreateXor(L, R, "xortmp");
+case '|': return Builder->CreateOr(L, R, "ortmp");
 ```
 
-Why both maps?
+## Validation Commands
 
-- `StructDecls`: source-name -> declaration/type data
-- `StructTypeNames`: LLVM struct pointer -> source-name
-
-That reverse map is useful when resolving field info from LLVM type handles during codegen.
-
-## 7. LLVM type resolution for structs
-
-Chapter 19 extends type resolution so alias/base names can resolve to struct types.
-
-A key helper is:
-
-```cpp
-static StructType *ResolveStructTypeByName(const std::string &Name,
-                                           std::set<std::string> &Visited);
-```
-
-It:
-
-1. finds source declaration
-2. creates/gets LLVM `StructType`
-3. resolves each field LLVM type in declaration order
-4. sets the LLVM struct body
-5. caches results to avoid rebuilding
-
-This enables nested struct fields and struct aliases to work consistently.
-
-## 8. Member access codegen
-
-### Address path (codegenAddress)
-
-`MemberExprAST::codegenAddress()` does:
-
-1. obtain base address (`Base->codegenAddress()`)
-2. verify base value type is struct
-3. resolve field index by name
-4. emit `CreateStructGEP`
-
-```cpp
-return Builder->CreateStructGEP(ST, BaseAddr, FieldIdx, "field.addr");
-```
-
-### Value path (codegen)
-
-`MemberExprAST::codegen()` uses the computed address and loads:
-
-```cpp
-return Builder->CreateLoad(FieldTy, AddrV, "field.load");
-```
-
-This keeps field assignment integrated with existing `AssignStmtAST` behavior because assignment already expects lvalue expressions to provide addresses.
-
-## 9. Diagnostics added in Chapter 19
-
-Examples of new diagnostics:
-
-- `Struct '<name>' is already defined`
-- `Duplicate field '<field>' in struct '<name>'`
-- `Unknown field '<field>' on struct '<name>'`
-- `Member access requires a struct-typed base`
-
-These errors are important for tutorial pace because they make failure modes obvious during incremental development.
-
-## 10. Tests added in Chapter 19
-
-Chapter 19 preserves Chapter 18 tests and adds struct-focused tests:
-
-- `code/chapter19/test/struct_basic_fields.pyxc`
-- `code/chapter19/test/struct_nested_fields.pyxc`
-- `code/chapter19/test/struct_alias_type.pyxc`
-- `code/chapter19/test/struct_error_unknown_field.pyxc`
-- `code/chapter19/test/struct_error_nonstruct_member.pyxc`
-- `code/chapter19/test/struct_error_duplicate_field.pyxc`
-- `code/chapter19/test/struct_error_duplicate_struct.pyxc`
-
-Representative positive test:
-
-```py
-struct Point:
-    x: i32
-    y: i32
-
-def main() -> i32:
-    p: Point
-    p.x = 10
-    p.y = 20
-    print(p.x, p.y)
-    return 0
-
-main()
-```
-
-Representative negative test:
-
-```py
-struct Point:
-    x: i32
-
-def main() -> i32:
-    p: Point
-    print(p.z)
-    return 0
-
-main()
-```
-
-This validates that declared fields work and undeclared fields fail cleanly.
-
-## 11. Build and test for this chapter
-
-From repository root:
-
-```bash
-cd code/chapter19 && ./build.sh
-lit -sv test
-```
-
-Chapter 19 was also checked against Chapter 18 behavior as a regression sanity step.
-
-## 12. Design takeaways
-
-What Chapter 19 establishes:
-
-- structured data is now a first-class part of the language
-- postfix expression machinery is now rich enough for chained data access
-- type resolution now handles named aggregate types
-
-This chapter is a foundational dependency for the next two:
-
-- Chapter 20 uses structs + indexing together (`array[Point, N]`)
-- Chapter 21 allocates structs on heap (`ptr[Point] = malloc[Point](...)`)
-
-In short: Chapter 19 is where the language stops being scalar-centric.
-
-## Compiling
-
-From repository root:
-
-```bash
-cd code/chapter19 && ./build.sh
-```
-
-## Testing
-
-From repository root:
+Run the Chapter 19 suite:
 
 ```bash
 lit -sv code/chapter19/test
 ```
+
+Optional: verify Chapter 18 behavior in the same environment:
+
+```bash
+lit -sv -j 1 code/chapter18/test
+```
+
+(`-j 1` can be useful if your local setup shows parallel-test flakiness.)
+
+## Closing Thoughts
+
+Chapter 19 is a good example of incremental compiler growth.
+
+We did not redesign the compiler. We extended the existing architecture in place:
+
+- lexer: a few new tokens
+- parser: a few new statement branches
+- AST: a few new statement nodes
+- codegen: explicit loop context and branch targets
+- tests: concrete behavior first, including failure paths
+
+By the end of the chapter, control flow is much closer to what users expect in day-to-day code, and integer expression support is meaningfully more complete.
+
+## Build and Test (Chapter 19)
+
+From the repository root:
+
+```bash
+cd code/chapter19 && ./build.sh
+```
+
+Run the chapter test suite:
+
+```bash
+lit -sv test
+```
+
+If you also want to sanity-check the previous chapter in the same environment:
+
+```bash
+cd ../chapter17 && ./build.sh
+lit -sv -j 1 test
+```
+
 
 ## Compile / Run / Test (Hands-on)
 
@@ -398,7 +502,7 @@ cd code/chapter19/test
 lit -sv .
 ```
 
-Explore the test folder a bit and add one tiny edge case of your own.
+Try editing a test or two and see how quickly you can predict the outcome.
 
 When you're done, clean artifacts:
 

@@ -58,7 +58,6 @@ decorator       = "@" , ( "unary" | "binary" ) , [ number ] ;
 
 statement       = if_stmt
                 | for_stmt
-                | print_stmt
                 | return_stmt
                 | typed_assign_stmt
                 | assign_stmt
@@ -72,8 +71,6 @@ lvalue          = identifier
 expr_stmt       = expression ;
 
 return_stmt     = "return" , [ expression ] ;
-
-print_stmt      = "print" , "(" , [ arg_list ] , ")" ;
 
 if_stmt         = "if" , expression , ":" , suite ,
                   [ "elif" , expression , ":" , suite ] ,

@@ -1,292 +1,283 @@
-# 27. Python-Style match/case
+# 27. Program Arguments, scanf Baseline, Low-Level FD I/O, and ctype Helpers
 
-Chapter 27 adds `match/case` in a Python-style form.
+Chapter 26 gave us separate compilation and multi-file linking.
 
-The goal is simple: make multi-way branching readable without introducing C syntax. This is our language, so the control flow should stay consistent with indentation-based blocks and explicit suites.
+Chapter 27 extends runtime interop in four practical directions:
+
+- executable entrypoint arguments (`main(argc, argv)`)
+- minimal `scanf` support for input parsing
+- low-level descriptor-style file APIs (`open/read/write/close` and helpers)
+- ctype helper interop (`isdigit`, `isalpha`, `isspace`, `tolower`, `toupper`)
+
+This chapter keeps python-style syntax and adds capability through explicit, typed function calls.
 
 
 !!!note
     To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter27](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter27).
 
-## Feature summary
+## Grammar (EBNF)
 
-New statement form:
+Chapter 27 is mostly runtime interop and semantic validation (`scanf`, low-level fd I/O, ctype helpers, `main(argc, argv)` constraints).
+Core grammar remains the same shape as Chapter 26.
 
-```py
-match expr:
-    case 1:
-        ...
-    case 2:
-        ...
-    case _:
-        ...
-```
-
-Supported in this chapter:
-
-- integer `match` expression
-- integer `case` expressions
-- optional wildcard default with `case _`
-- first matching case runs
-- no fallthrough
-- single-quoted character literals as integer values (`' '`, `'\n'`, `'\t'`, etc.)
-
-Not included in this chapter:
-
-- pattern destructuring
-- `case ... if ...` guards
-- string and struct pattern forms
-
-## Grammar design
-
-The grammar update in `code/chapter27/pyxc.ebnf` introduces two non-terminals:
+Reference: `code/chapter27/pyxc.ebnf`
 
 ```ebnf
-statement       = if_stmt
-                | match_stmt
-                | for_stmt
-                | ... ;
+prototype       = identifier , "(" , [ param_list ] , ")" , "->" , type_expr ;
+param_list      = param , { "," , param } ;
+param           = identifier , ":" , type_expr ;
 
-match_stmt      = "match" , expression , ":" , newline , indent ,
-                  case_clause , { newline , case_clause } , [ newline ] ,
-                  dedent ;
-case_clause     = "case" , ( "_" | expression ) , ":" , suite ;
+(* executable main forms are enforced semantically in codegen:
+   def main() -> i32
+   def main(argc: i32, argv: ptr[ptr[i8]]) -> i32 *)
 ```
 
-Design notes:
+## What this chapter adds
 
-- `match_stmt` is a statement, not an expression. This keeps it aligned with `if`, `for`, and `while`.
-- We require at least one `case_clause`.
-- We treat `_` as a dedicated wildcard token at parse time for default handling.
+### `main(argc, argv)` support
 
-## Lexer changes
+When compiling executables/objects, `main` is now valid in either form:
 
-In `code/chapter27/pyxc.cpp`, the lexer/token layer adds:
+- `def main() -> i32`
+- `def main(argc: i32, argv: ptr[ptr[i8]]) -> i32`
 
-- `tok_match`
-- `tok_case`
-- keyword mapping for `"match"` and `"case"`
-- token display names in `TokenName(...)`
+Anything else is rejected with a clear compile error.
 
-Code sample:
+### Minimal `scanf` subset
+
+Added `scanf` support with strict validation.
+
+Supported conversions:
+
+- `%d`
+- `%f`
+- `%s`
+- `%c`
+- `%%`
+
+Enforced rules:
+
+- format string must be a literal
+- format placeholder count must match destination arg count
+- each destination must be pointer-typed
+- destination pointee type must match conversion category
+
+### Low-level descriptor APIs
+
+Added interop declarations and checks for:
+
+- `open(path, flags, mode) -> i32`
+- `creat(path, mode) -> i32`
+- `close(fd) -> i32`
+- `read(fd, buf, count) -> i64`
+- `write(fd, buf, count) -> i64`
+- `unlink(path) -> i32`
+
+### ctype helper interop
+
+Added:
+
+- `isdigit(ch) -> i32`
+- `isalpha(ch) -> i32`
+- `isspace(ch) -> i32`
+- `tolower(ch) -> i32`
+- `toupper(ch) -> i32`
+
+All are validated as integer-argument calls.
+
+## How it was implemented (slow walkthrough)
+
+### Step 1: Add libc symbol declarations
+
+In `code/chapter27/pyxc.cpp`, `GetOrCreateLibcIOFunction(...)` was extended.
+
+For ctype:
 
 ```cpp
-tok_match = -38,
-tok_case = -39,
+else if (Name == "isdigit")
+  FT = FunctionType::get(I32Ty, {I32Ty}, false);
+else if (Name == "isalpha")
+  FT = FunctionType::get(I32Ty, {I32Ty}, false);
+else if (Name == "isspace")
+  FT = FunctionType::get(I32Ty, {I32Ty}, false);
+else if (Name == "tolower")
+  FT = FunctionType::get(I32Ty, {I32Ty}, false);
+else if (Name == "toupper")
+  FT = FunctionType::get(I32Ty, {I32Ty}, false);
 ```
 
+For descriptor I/O:
+
 ```cpp
-{"match", tok_match}, {"case", tok_case}
+else if (Name == "open")
+  FT = FunctionType::get(I32Ty, {PtrTy, I32Ty, I32Ty}, false);
+else if (Name == "creat")
+  FT = FunctionType::get(I32Ty, {PtrTy, I32Ty}, false);
+else if (Name == "close")
+  FT = FunctionType::get(I32Ty, {I32Ty}, false);
+else if (Name == "read")
+  FT = FunctionType::get(I64Ty, {I32Ty, PtrTy, I64Ty}, false);
+else if (Name == "write")
+  FT = FunctionType::get(I64Ty, {I32Ty, PtrTy, I64Ty}, false);
+else if (Name == "unlink")
+  FT = FunctionType::get(I32Ty, {PtrTy}, false);
 ```
 
-Why this matters:
+`scanf` was also added there as vararg declaration.
 
-- parser logic can branch directly on dedicated token kinds
-- debug token dumps remain readable when diagnosing parser errors
+Why this is nice:
 
-## Parser changes
+- parser stays simple
+- these APIs look like normal function calls in user programs
+- symbol creation stays centralized in one place
 
-We add `ParseMatchStmt()` and hook it into `ParseStmt()`.
+### Step 2: Add call-site semantic validation
 
-Code sample:
+In `CallExprAST::codegen()`, call arguments are validated before emitting LLVM call IR.
 
-```cpp
-static std::unique_ptr<StmtAST> ParseMatchStmt();
-```
-
-```cpp
-case tok_match:
-  return ParseMatchStmt();
-```
-
-`ParseMatchStmt()` flow:
-
-1. consume `match`
-2. parse the match expression
-3. require `:`
-4. require newline + indented block
-5. parse one or more `case` clauses
-6. allow at most one wildcard default (`case _`)
-7. require final dedent
-
-Code sample for duplicate default rejection:
+For ctype:
 
 ```cpp
-if (!CaseExpr) {
-  if (DefaultCase)
-    return LogError<StmtPtr>("Duplicate default case '_' in match");
-  DefaultCase = std::move(CaseBody);
+} else if (Callee == "isdigit") {
+  if (!CheckIntegerArg(0, "isdigit expects integer argument"))
+    return nullptr;
 }
 ```
 
-This parser shape keeps the behavior explicit and prevents ambiguous or accidental defaults.
-
-## AST model
-
-A new statement node stores:
-
-- `MatchExpr`
-- ordered case list: `(case-expression, case-suite)` pairs
-- optional `DefaultCase`
-
-Code sample:
+For descriptor I/O:
 
 ```cpp
-class MatchStmtAST : public StmtAST {
-  std::unique_ptr<ExprAST> MatchExpr;
-  std::vector<std::pair<std::unique_ptr<ExprAST>, std::unique_ptr<BlockSuiteAST>>> Cases;
-  std::unique_ptr<BlockSuiteAST> DefaultCase;
-  ...
-};
+} else if (Callee == "read") {
+  if (!CheckIntegerArg(0, "read expects integer fd argument") ||
+      !CheckPointerArg(1, "read expects pointer buffer argument") ||
+      !CheckIntegerArg(2, "read expects integer count argument"))
+    return nullptr;
+}
 ```
 
-Important detail:
-
-- case bodies are ordinary suites (`BlockSuiteAST`), so we reuse existing statement codegen and block semantics instead of inventing a special body representation.
-
-## Code generation strategy
-
-`MatchStmtAST::codegen()` lowers to a chain of integer comparisons and branches.
-
-The generated control-flow shape is:
-
-1. evaluate `MatchExpr` once
-2. for each case:
-   - evaluate case expression
-   - compare with `icmp eq`
-   - conditional branch to case body or next check
-3. if none match:
-   - jump to default block if present
-   - otherwise jump to end block
-4. merge at `match.end`
-
-Code sample:
+For `scanf`, we added a format parser and destination checks:
 
 ```cpp
-Value *CmpV = Builder->CreateICmpEQ(MatchV, CaseV, "match.cmp");
-Builder->CreateCondBr(CmpV, CaseBB, NextCheckBB);
+if (Callee == "scanf") {
+  // format must be string literal
+  // subset: %d %f %s %c %%
+  // count must match args
+  // each destination must be pointer
+  // pointee type must match spec
+}
 ```
 
-Type rules enforced in codegen:
+This is intentionally strict so errors are early and obvious.
 
-- `match` expression must be integer-typed
-- each `case` expression must be integer-typed
+### Step 3: Enforce `main` entrypoint signatures
 
-Code sample:
+In `PrototypeAST::codegen()`, executable entrypoint ABI checks were added.
+
+Core check shape:
 
 ```cpp
-if (!MatchV->getType()->isIntegerTy())
-  return LogError<Value *>("match expression must be an integer type");
+if (IsMainEntry) {
+  if (!(ParamTypes.empty() || ParamTypes.size() == 2))
+    return LogError<Function *>(
+        "main must have either 0 arguments or (i32, ptr[ptr[i8]])");
+  if (ParamTypes.size() == 2) {
+    // enforce exactly (i32, ptr[ptr[i8]])
+  }
+}
 ```
 
-```cpp
-if (!CaseV->getType()->isIntegerTy())
-  return LogError<Value *>("match case expression must be an integer type");
-```
+This avoids accidental signatures that compile but fail runtime expectations.
 
-Why enforce this now:
+## What is possible now (language examples)
 
-- first implementation stays deterministic and small
-- avoids introducing mixed-mode comparison semantics in this chapter
-- keeps future extension path open for strings/struct patterns
-
-## What you can write now
-
-Basic branch selection:
+### Example 1: Read command-line args
 
 ```py
-x: i32 = 2
-match x:
-    case 1:
-        printf("one\n")
-    case 2:
-        printf("two\n")
-    case _:
-        printf("other\n")
-```
 
-Nested control flow inside a case:
-
-```py
-total: i32 = 0
-match x:
-    case 3:
-        for i in range(1, 4, 1):
-            total = total + i
-    case _:
-        total = -1
-printf("%d\n", total)
-```
-
-No default case:
-
-```py
-match x:
-    case 10:
-        printf("ten\n")
-    case 20:
-        printf("twenty\n")
-printf("done\n")
-```
-
-If there is no match and no default, execution continues after the `match` block.
-
-Character literal comparisons (C-style ergonomics, Python syntax context):
-
-```py
-def is_space(c: i32) -> i32:
-    if c == ' ' or c == '\t' or c == '\n':
-        return 1
+def main(argc: i32, argv: ptr[ptr[i8]]) -> i32:
+    printf("argc=%d\n", argc)
+    if argc > 2:
+        printf("argv1=%s argv2=%s\n", argv[1], argv[2])
     return 0
 ```
 
-Character literals are lowered as integer literals during lexing, so they work directly in integer expressions and comparisons.
+### Example 2: Parse integer input with `scanf`
 
-## Tests added
+```py
 
-New tests in `code/chapter27/test`:
+def main() -> i32:
+    x: i32 = 0
+    scanf("%d", addr(x))
+    printf("x=%d\n", x)
+    return 0
 
-- `c27_match_basic_default.pyxc`
-- `c27_match_no_default.pyxc`
-- `c27_match_nested_suite.pyxc`
-- `c27_match_error_non_integer_match.pyxc`
-- `c27_match_error_non_integer_case.pyxc`
-- `c27_match_error_duplicate_default.pyxc`
-- `c27_char_literal_basic.pyxc`
-- `c27_char_literal_escapes.pyxc`
-- `c27_char_literal_error_multi_char.pyxc`
+main()
+```
 
-These cover:
+### Example 3: Descriptor write/read
 
-- normal execution with and without default
-- nested suite codegen
-- semantic errors for non-integer match/case values
-- parser-level duplicate-default validation
+```py
+
+def main() -> i32:
+    fd: i32 = creat("demo.txt", 420)
+    write(fd, "HELLO\n", 6)
+    close(fd)
+    return 0
+
+main()
+```
+
+### Example 4: ctype helpers
+
+```py
+
+def main() -> i32:
+    printf("%d %d %d\n", isdigit(57), isalpha(65), isspace(32))
+    printf("%c %c\n", tolower(65), toupper(122))
+    return 0
+
+main()
+```
 
 ## Compile / Run / Test
 
-Compile:
+### Compile
 
 ```bash
 cd code/chapter27 && ./build.sh
 ```
 
-Run one sample:
+### Run sample programs
+
+`main(argc, argv)` sample:
 
 ```bash
-code/chapter27/pyxc -i code/chapter27/test/c27_match_basic_default.pyxc
+code/chapter27/pyxc -o app code/chapter27/test/c26_main_argv_executable.pyxc
+./app alpha beta
 ```
 
-Run all chapter tests:
+`scanf` sample:
+
+```bash
+printf '42\n' | code/chapter27/pyxc -i code/chapter27/test/c26_scanf_int.pyxc
+```
+
+### Test
 
 ```bash
 lit -sv code/chapter27/test
 ```
 
-Validation for this implementation pass:
+Validation result for this implementation pass:
 
-- 123 tests discovered
-- 123 passed
+- 117 tests discovered
+- 117 passed
+
+## Notes
+
+This chapter intentionally avoids C-syntax sugar. We keep Pythonic syntax and explicit calls, even when code is a little longer.
+
+That tradeoff improves readability and keeps the language direction clear.
 
 ## Compile / Run / Test (Hands-on)
 
@@ -309,7 +300,7 @@ cd code/chapter27/test
 lit -sv .
 ```
 
-Poke around the tests and tweak a few cases to see what breaks first.
+Have some fun stress-testing the suite with small variations.
 
 When you're done, clean artifacts:
 

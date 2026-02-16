@@ -160,12 +160,7 @@ static void PrintErrorSourceContext(SourceLocation Loc) {
   fputc('\n', stderr);
 }
 
-static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
-  if (Tok != tok_eol)
-    return Loc;
-
-  // Keep CurLoc token-semantic for tok_eol (next-line boundary), but render
-  // newline diagnostics at the end of the previous source line.
+static SourceLocation GetNewlineTokenLoc(SourceLocation Loc) {
   int PrevLine = Loc.Line - 1;
   if (PrevLine <= 0)
     return Loc;
@@ -175,6 +170,18 @@ static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
     return Loc;
 
   return SourceLocation{PrevLine, static_cast<int>(PrevLineText->size()) + 1};
+}
+
+static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
+  if (Tok != tok_eol)
+    return Loc;
+
+  // Newline tokens should already be anchored to the previous line-end. Keep
+  // a fallback for any remaining boundary-style locations.
+  if (Loc.Col > 0)
+    return Loc;
+
+  return GetNewlineTokenLoc(Loc);
 }
 
 static int advance() {
@@ -208,7 +215,7 @@ static int gettok() {
 
   // Return end-of-line token.
   if (LastChar == '\n') {
-    CurLoc = LexLoc;
+    CurLoc = GetNewlineTokenLoc(LexLoc);
     LastChar = ' ';
     return tok_eol;
   }
@@ -247,7 +254,7 @@ static int gettok() {
     while (LastChar != EOF && LastChar != '\n');
 
     if (LastChar != EOF) {
-      CurLoc = LexLoc;
+      CurLoc = GetNewlineTokenLoc(LexLoc);
       LastChar = ' ';
       return tok_eol;
     }

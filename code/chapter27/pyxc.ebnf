@@ -67,7 +67,6 @@ param           = identifier , ":" , type_expr ;
 (* ---------- Statements ---------- *)
 
 statement       = if_stmt
-                | match_stmt
                 | for_stmt
                 | while_stmt
                 | do_while_stmt
@@ -98,10 +97,6 @@ free_stmt       = "free" , "(" , expression , ")" ;
 if_stmt         = "if" , expression , ":" , suite ,
                   [ "elif" , expression , ":" , suite ] ,
                   [ "else" , ":" , suite ] ;
-match_stmt      = "match" , expression , ":" , newline , indent ,
-                  case_clause , { newline , case_clause } , [ newline ] ,
-                  dedent ;
-case_clause     = "case" , ( "_" | expression ) , ":" , suite ;
 
 for_stmt        = "for" , identifier , "in" , "range" , "(" ,
                   expression , "," , expression ,

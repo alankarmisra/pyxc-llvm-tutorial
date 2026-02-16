@@ -1,384 +1,296 @@
-# 14. Blocks, elif, Optional else, and Benchmarking
+# 14. Python-Style Indentation
 
-If Chapter 13 gave us indentation tokens, Chapter 14 is where we finally cash that check.
-
-Until now, we could *lex* indentation. In this chapter, we use that structure to parse real statement blocks, support `elif`, make `else` optional, and tighten codegen so branch-heavy code doesn’t generate weird IR.
-
-> Note from the future:
-> This chapter still carries one Kaleidoscope legacy semantic: boolean/comparison-style results in parts of codegen are represented via floating values (`0.0` / `1.0`) instead of integer truth values.
-> We *should* have cleaned that up around here, but we didn’t.
-> We finally fixed it in Chapter 23 when we revisited signed/unsigned and truth-value correctness.
-> We could pretend this was a grand long-term plan, but realistically we were lazy programmers optimizing for forward progress.
+This chapter adds Python 3–style indentation to the language. We move from newline‑only structure to explicit `indent`/`dedent` tokens, and wire a token stream printer so you can see how the lexer is shaping the input. Each section names the functions that changed and why.
 
 
 !!!note
     To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter14](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter14).
 
-## What We’re Building
+## Grammar (EBNF)
 
-By the end of this chapter, `pyxc` supports:
-
-- statement suites (`suite`) as real block bodies
-- `if / elif / else` chains
-- optional `else`
-- safer control-flow codegen for early returns
-- interpreter vs executable handling for `main`
-- a benchmark harness against Python
-
-Not bad for one chapter.
-
-## Build Setup (same idea as Chapter 13)
-
-If you built Chapter 13, this should look familiar. Chapter 14 keeps the same Makefile shape and toolchain assumptions.
-
-From `code/chapter14/Makefile`:
-
-```make
-TARGET := pyxc
-SRC := pyxc.cpp
-RUNTIME_SRC := runtime.c
-RUNTIME_OBJ := runtime.o
-
-all: $(TARGET) $(RUNTIME_TARGET)
-
-$(TARGET): $(SRC)
-	$(CXX) $(CXXFLAGS) $< $(LLVM_FLAGS) $(LDFLAGS) $(LLD_FLAGS) -o $@
-
-$(RUNTIME_OBJ): $(RUNTIME_SRC)
-	$(CC) $(CFLAGS) -c $< -o $@
-```
-
-Build and smoke test:
-
-```bash
-cd code/chapter14 && ./build.sh
-./pyxc -t test/if_elif_optional.pyxc
-./pyxc -i test/showcase_tools.pyxc
-```
-
-## Grammar Target (EBNF)
-
-This is the exact syntax shape we’re aiming for. Writing it as EBNF keeps parser decisions crisp and prevents “I think this should parse” drift.
+Chapter 14 keeps the same language constructs as Chapter 13, but changes block structure from newline-only behavior to explicit `indent`/`dedent` tokens.
 
 ```ebnf
-program         = { top_level , newline } ;
-top_level       = definition | extern | expression ;
+program      = { top_item } , eof ;
+top_item     = newline | function_def | extern_decl | statement ;
 
-definition      = { decorator } , "def" , prototype , ":" , suite ;
-extern          = "extern" , "def" , prototype ;
+statement    = if_stmt | for_stmt | return_stmt | expr_stmt ;
 
-suite           = inline_suite | block_suite ;
-inline_suite    = statement ;
-block_suite     = newline , indent , statement_list , dedent ;
-statement_list  = statement , { newline , statement } , [ newline ] ;
+if_stmt      = "if" , expression , ":" , suite ,
+               "else" , ":" , suite ;
+for_stmt     = "for" , identifier , "in" , "range" , "(" ,
+               expression , "," , expression , [ "," , expression ] ,
+               ")" , ":" , suite ;
 
-statement       = if_stmt | for_stmt | return_stmt | expr_stmt ;
-if_stmt         = "if" , expression , ":" , suite ,
-                  { "elif" , expression , ":" , suite } ,
-                  [ "else" , ":" , suite ] ;
-for_stmt        = "for" , identifier , "in" , "range" , "(" ,
-                  expression , "," , expression , [ "," , expression ] , ")" ,
-                  ":" , suite ;
-return_stmt     = "return" , expression ;
-expr_stmt       = expression ;
+suite        = inline_suite | block_suite ;
+inline_suite = statement ;
+block_suite  = newline , indent , statement_list , dedent ;
 ```
 
-## Lexer Update: Teach It elif
+## Indentation rules (Python 3 style)
 
-Before parser work, the lexer must recognize `elif` as a keyword.
+- A new block starts after `:` and is defined by **greater indentation** than its parent line.
+- A block ends when indentation **decreases** to a previous indentation level.
+- Indentation levels are **absolute** column widths; a dedent must match a previous level exactly.
+- Blank lines are ignored (they do not start or end blocks).
+- Tabs and spaces must **not be mixed** for indentation (we enforce one style for the module).
+- At end‑of‑file, any open indentation levels are **implicitly closed** with `dedent` tokens.
 
-```cpp
-enum Token {
-  tok_eof = -1,
-  tok_eol = -2,
-  tok_error = -3,
+## Tracking indentation with a stack + pending tokens
 
-  tok_def = -4,
-  tok_extern = -5,
-  tok_identifier = -6,
-  tok_number = -7,
+We track indentation levels in a stack (`Indents`) and accumulate `dedent` tokens in a small deque (`PendingTokens`). Each line start computes its leading whitespace and compares it to the top of the stack.
 
-  tok_if = -8,
-  tok_elif = -9,
-  tok_else = -10,
-  tok_return = -11,
+For example, consider this `fib.pyxc`:
 
-  tok_for = -12,
-  tok_in = -13,
-  tok_range = -14,
-  tok_decorator = -15,
-  tok_var = -16,
+```py
+extern def printd(x)
 
-  tok_indent = -17,
-  tok_dedent = -18,
-};
-
-static std::map<std::string, Token> Keywords = {
-    {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return},
-    {"if", tok_if},   {"elif", tok_elif},     {"else", tok_else},
-    {"for", tok_for}, {"in", tok_in},         {"range", tok_range},
-    {"var", tok_var}};
+def fib(x):
+    if(x < 3):
+        return 1
+    else:
+        return fib(x-1) + fib(x-2)
 ```
 
-Two subtle wins here:
+As we scan line by line, the indentation stack evolves like this (comments show the stack at each step):
 
-- We get `elif` support directly in the token stream.
-  Meaning: the lexer emits `tok_elif` (a dedicated token), instead of treating `elif` like a regular identifier.
-- Token IDs are grouped cleanly by category, which helps while debugging parser traces.
-  Meaning: when you print raw `CurTok` numbers while stepping through parser code, nearby values tend to belong to related syntax groups (`if/elif/else/return`, loop tokens, etc.). That makes parser state dumps easier to read.
-
-## From Indentation Tokens to Real Blocks
-
-Chapter 13 gave us `indent`/`dedent`. Chapter 14 turns those into a suite AST.
-
-`suite` is essentially a block of statements.  
-We use the name `suite` because Python grammar uses that term for:
-
-- a single inline statement after `:`
-- or a newline + indented statement list
-
-### ParseBlockSuite()
-
-```cpp
-static std::unique_ptr<BlockSuiteAST> ParseBlockSuite() {
-  auto BlockLoc = CurLoc;
-  if (CurTok != tok_eol)
-    return LogError<std::unique_ptr<BlockSuiteAST>>("Expected newline");
-
-  if (getNextToken() != tok_indent)
-    return LogError<std::unique_ptr<BlockSuiteAST>>("Expected indent");
-  getNextToken(); // eat indent
-
-  auto Stmts = ParseStatementList();
-  if (Stmts.empty())
-    return nullptr;
-
-  getNextToken(); // eat dedent
-  return std::make_unique<BlockSuiteAST>(BlockLoc, std::move(Stmts));
-}
+```text
+# start: [0]
+"def fib": indent=0   -> [0]
+"    if": indent=4    -> push 4      -> [0, 4]
+"        return": 8   -> push 8      -> [0, 4, 8]
+"    else": 4         -> pop 8       -> [0, 4]  (emit dedent)
+"        return": 8   -> push 8      -> [0, 4, 8]
+"<eof>":               -> pop to 0    -> [0]     (emit dedent, dedent)
 ```
 
-### ParseSuite()
+This is why a **stack + queue** design works well: the stack records indentation levels, while the queue lets the lexer return `dedent` tokens one at a time.
+
+## New tokens for indentation
+
+**Where:** `enum Token`
+
+We add three new tokens:
+
+- `tok_indent` for the start of a block
+- `tok_dedent` for the end of a block
+- `tok_error` for indentation errors
+
+These are used by the lexer and parser to preserve the block structure.
+
+## Counting leading whitespace
+
+**Where:** `countLeadingWhitespace()`
+
+We scan the leading spaces/tabs at the start of each logical line. Tabs are expanded to the next tab stop, and we enforce a single indentation style per module (spaces **or** tabs).
 
 ```cpp
-static std::unique_ptr<BlockSuiteAST> ParseSuite() {
-  if (CurTok == tok_eol)
-    return ParseBlockSuite();
-  return ParseInlineSuite();
-}
-```
+static int countLeadingWhitespace(int &LastChar) {
+  int indentCount = 0;
+  bool didSetIndent = false;
 
-This is one of those deceptively small changes that unlocks half the chapter.
+  while (true) {
+    while (LastChar == ' ' || LastChar == '\t') {
+      if (ModuleIndentType == -1) {
+        didSetIndent = true;
+        ModuleIndentType = LastChar;
+      } else if (LastChar != ModuleIndentType) {
+        LogError("You cannot mix tabs and spaces.");
+        return -1;
+      }
+      indentCount += LastChar == '\t' ? 8 - (LexLoc.Col % 8) : 1;
+      LastChar = advance();
+    }
 
-## if / elif / else, with Optional else
+    if (LastChar == '\r' || LastChar == '\n') {
+      if (didSetIndent) {
+        didSetIndent = false;
+        indentCount = 0;
+        ModuleIndentType = -1;
+      }
+      LastChar = advance();
+      continue;
+    }
 
-Here’s the heart of the parser work.
-
-```cpp
-static std::unique_ptr<StmtAST> ParseIfStmt() {
-  SourceLocation IfLoc = CurLoc;
-  if (CurTok != tok_if && CurTok != tok_elif)
-    return LogError<StmtPtr>("expected `if`/`elif`");
-  getNextToken();
-
-  auto Cond = ParseExpression();
-  if (!Cond)
-    return nullptr;
-
-  if (CurTok != ':')
-    return LogError<std::unique_ptr<StmtAST>>("expected `:`");
-  getNextToken();
-
-  auto Then = ParseSuite();
-  if (!Then)
-    return nullptr;
-
-  std::unique_ptr<BlockSuiteAST> Else;
-  if (CurTok == tok_elif) {
-    auto ElseIfStmt = ParseIfStmt();
-    if (!ElseIfStmt)
-      return nullptr;
-    std::vector<StmtPtr> ElseStmts;
-    ElseStmts.push_back(std::move(ElseIfStmt));
-    Else = std::make_unique<BlockSuiteAST>(IfLoc, std::move(ElseStmts));
-  } else if (CurTok == tok_else) {
-    getNextToken();
-    if (CurTok != ':')
-      return LogError<std::unique_ptr<StmtAST>>("expected `:`");
-    getNextToken();
-    Else = ParseSuite();
-    if (!Else)
-      return nullptr;
+    break;
   }
 
-  return std::make_unique<IfStmtAST>(IfLoc, std::move(Cond), std::move(Then),
-                                     std::move(Else));
+  return indentCount;
 }
 ```
 
-Also important: guardrails for stray branches.
+**Why:** We need a reliable indentation width at line start, and we need to ignore blank lines entirely.
+
+## Indent / dedent detection and emission
+
+**Where:** `IsIndent()`, `IsDedent()`, `HandleIndent()`, `HandleDedent()`
+
+We compare the computed `leadingWhitespace` against the top of the stack to decide whether to emit `indent`/`dedent` tokens.
 
 ```cpp
-case tok_elif:
-  return LogError<StmtPtr>("Unexpected `elif` without matching `if`");
-case tok_else:
-  return LogError<StmtPtr>("Unexpected `else` without matching `if`");
-```
-
-Why this shape works well:
-
-- `elif` is represented as “`else` containing another `if`”.
-- optional `else` means `Else` can be `nullptr`.
-- this keeps the AST simple and codegen predictable.
-
-## Codegen Fixes That Matter More Than They Look
-
-If parser support expands and codegen doesn’t evolve, the compiler *seems* fine until it really isn’t.
-
-### IfStmtAST::codegen() handles terminated branches
-
-```cpp
-bool ThenTerminated = Builder->GetInsertBlock()->getTerminator() != nullptr;
-if (!ThenTerminated)
-  Builder->CreateBr(MergeBB);
-
-Value *ElseV = nullptr;
-bool ElseTerminated = false;
-if (Else) {
-  ElseV = Else->codegen();
-  if (!ElseV)
-    return nullptr;
-  ElseTerminated = Builder->GetInsertBlock()->getTerminator() != nullptr;
-} else {
-  ElseV = ConstantFP::get(*TheContext, APFloat(0.0));
+static bool IsIndent(int leadingWhitespace) {
+  return leadingWhitespace > Indents.back();
 }
-if (!ElseTerminated)
-  Builder->CreateBr(MergeBB);
 
-if (ThenTerminated && ElseTerminated) {
-  BasicBlock *DeadCont =
-      BasicBlock::Create(*TheContext, "ifcont.dead", TheFunction);
-  Builder->SetInsertPoint(DeadCont);
-  return ConstantFP::get(*TheContext, APFloat(0.0));
+static bool IsDedent(int leadingWhitespace) {
+  return leadingWhitespace < Indents.back();
 }
 ```
 
-Here, “terminated branch” means a branch that already ends with something final like `ret`.
-
-Bad shape (what we want to avoid):
-
-```llvm
-then:
-  ret double 1.0
-  br label %merge   ; invalid: jump after return
-```
-
-Good shape:
-
-```llvm
-then:
-  ret double 1.0
-
-else:
-  br label %merge
-```
-
-Why:
-
-- prevents generating jump instructions after a `return`
-- avoids malformed IR in branch-heavy functions
-
-### Return + function finalization
+On indent, we push the new level and emit `tok_indent`. On dedent, we pop until we reach a prior level and queue `tok_dedent` tokens. If the dedent doesn’t match any prior level, we emit `tok_error`.
 
 ```cpp
-Value *ReturnStmtAST::codegen() {
-  Value *RetVal = Expr->codegen();
-  ...
-  if (ExpectedTy->isIntegerTy(32) && RetVal->getType()->isDoubleTy())
-    RetVal = Builder->CreateFPToSI(RetVal, ExpectedTy, "ret_i32");
-  Builder->CreateRet(RetVal);
-  return RetVal;
+static int HandleIndent(int leadingWhitespace) {
+  Indents.push_back(leadingWhitespace);
+  return tok_indent;
 }
-```
 
-```cpp
-if (Value *RetVal = Body->codegen()) {
-  if (!Builder->GetInsertBlock()->getTerminator()) {
-    ...
-    Builder->CreateRet(RetVal);
+static int HandleDedent(int leadingWhitespace) {
+  int dedents = 0;
+  while (leadingWhitespace < Indents.back()) {
+    Indents.pop_back();
+    dedents++;
   }
-  verifyFunction(*TheFunction);
-  ...
+
+  if (leadingWhitespace != Indents.back()) {
+    LogError("Expected indentation.");
+    Indents = {0};
+    PendingTokens.clear();
+    return tok_error;
+  }
+
+  while (dedents-- > 1) {
+    PendingTokens.push_back(tok_dedent);
+  }
+  return tok_dedent;
 }
 ```
 
-`getTerminator()` is an LLVM API on a basic block.  
-We use it to ask: “is this block already finished?”
+**Why:** This mirrors Python’s block model. A dedent must land exactly on a prior indentation level.
 
-- If yes, do not emit another `ret`/`br`.
-- If no, emit the final return.
+## EOF: draining open indents
 
-That is how we avoid duplicate final `ret` instructions, and it also keeps return typing logic in one place.
+**Where:** `DrainIndents()` and `gettok()`
 
-(And yes, this is one of those C++ compiler spots where one extra `CreateRet` can ruin your afternoon in under 30 seconds.)
-
-## Interpreter vs Executable main
-
-Chapter 14 introduces mode-aware `main` handling:
+At EOF we emit any remaining dedents (implicitly closing all open blocks).
 
 ```cpp
-static bool UseCMainSignature = false;
+static int DrainIndents() {
+  int dedents = 0;
+  while (Indents.size() > 1) {
+    Indents.pop_back();
+    dedents++;
+  }
+
+  if (dedents > 0) {
+    while (dedents-- > 1)
+      PendingTokens.push_back(tok_dedent);
+    return tok_dedent;
+  }
+
+  return tok_eof;
+}
 ```
 
-- `InterpretFile(...)` and `REPL()` keep it `false`.
-- `CompileToObjectFile(...)` sets it `true`.
+**Why:** Python implicitly closes open blocks at EOF. This ensures the parser sees the dedents.
 
-Why:
+## The lexer control flow
 
-- JIT/interpreter paths want language-level function signatures.
-- executable/object mode still needs native entrypoint behavior.
+**Where:** `gettok()`
 
-## Benchmarking (Python vs pyxc)
+We added:
 
-We added a benchmark suite under:
+- A **line‑start** indentation phase (before regular token scanning)
+- A **pending token** phase (dedents queued from a previous line)
+- EOF handling via `DrainIndents()`
 
-- `code/chapter14/bench/run_suite.sh`
-- `code/chapter14/bench/cases/*.py`
-- `code/chapter14/bench/cases/*.pyxc`
+The indentation phase calls `countLeadingWhitespace()` and then uses `IsIndent`/`IsDedent` to emit tokens.
 
-Run it:
+## Token printing for debugging
+
+**Where:** `TokenName()` and `PrintTokens()`
+
+A token stream printer makes it much easier to debug indentation. It prints one line of tokens per source line, including explicit `<indent=...>` and `<dedent>` tokens and a trailing `<eof>`.
+
+```cpp
+static const char *TokenName(int Tok) { /* ... */ }
+
+static void PrintTokens(const std::string &filename) {
+  int Tok = gettok();
+  bool FirstOnLine = true;
+
+  while (Tok != tok_eof) {
+    if (Tok == tok_eol) {
+      fprintf(stderr, "<eol>\n");
+      FirstOnLine = true;
+      Tok = gettok();
+      continue;
+    }
+
+    if (!FirstOnLine)
+      fprintf(stderr, " ");
+    FirstOnLine = false;
+
+    if (Tok == tok_indent) {
+      fprintf(stderr, "<indent=%d>", LastIndentWidth);
+    } else {
+      const char *Name = TokenName(Tok);
+      if (Name)
+        fprintf(stderr, "%s", Name);
+      else if (isascii(Tok))
+        fprintf(stderr, "<%c>", Tok);
+      else
+        fprintf(stderr, "<tok=%d>", Tok);
+    }
+
+    Tok = gettok();
+  }
+
+  if (!FirstOnLine)
+    fprintf(stderr, " ");
+  fprintf(stderr, "<eof>\n");
+}
+```
+
+**Why:** When debugging indentation, seeing explicit `indent`/`dedent` tokens is the fastest way to find mismatches between the lexer and the parser.
+
+## Command‑line mode: -t (tokens)
+
+**Where:** `ExecutionMode` enum + `main()`
+
+We add a `-t` mode to print the token stream for a file:
 
 ```bash
-cd code/chapter14
-bench/run_suite.sh 3
+./pyxc fib.pyxc -t
 ```
 
-Current averages (seconds, 2 decimals):
+```bash
+<extern> <def> <identifier> <(> <identifier> <)><eol>
+<def> <identifier> <(> <identifier> <)> <:><eol>
+<indent=4> <if> <(> <identifier> <<> <number> <)> <:><eol>
+<indent=8> <return> <number><eol>
+<dedent> <else> <:><eol>
+<indent=8> <return> <identifier> <(> <identifier> <-> <number> <)> <+> <identifier> <(> <identifier> <-> <number> <)><eol>
+<dedent> <dedent> <def> <identifier> <(> <)> <:><eol>
+<indent=4> <return> <identifier> <(> <identifier> <(> <number> <)> <)><eol>
+<dedent> <identifier> <(> <)><eol>
+<eof>
+```
 
-- `fib(41)`: Python `11.66`, `pyxc -i` `0.46`, `pyxc exe` `0.44`
-- `loopsum(10000,10000)`: Python `3.39`, `pyxc -i` `0.15`, `pyxc exe` `0.10`
-- `primecount(1900) x 10`: Python `1.22`, `pyxc -i` `0.17`, `pyxc exe` `0.15`
+This pairs naturally with `PrintTokens()` and gives a fast, deterministic view of how the lexer is classifying the input.
 
-Overall case-average:
+## Compile and Run
 
-- Python: `5.42s`
-- `pyxc -i`: `0.26s`
-- `pyxc executable`: `0.23s`
+Use the same build setup style from Chapter 13.
 
-Repo:
+Run:
 
-- [https://github.com/alankarmisra/pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial)
-
-If something fails locally, open an issue with:
-
-- OS/toolchain details
-- exact command
-- full stderr output
-
-## Compiling
 ```bash
 cd code/chapter14 && ./build.sh
 ```
+
+## Conclusion
+Next, we'll handle multi‑expression blocks which will remove some of the weirdness of our rather limited single-expression syntax and allow us to write more expressive programs.
 
 ## Compile / Run / Test (Hands-on)
 
@@ -391,7 +303,7 @@ cd code/chapter14 && ./build.sh
 Run one sample program:
 
 ```bash
-code/chapter14/pyxc -i code/chapter14/test/blocks_bad_indent.pyxc
+code/chapter14/pyxc -i code/chapter14/fib.pyxc
 ```
 
 Run the chapter tests (when a test suite exists):
@@ -401,7 +313,7 @@ cd code/chapter14/test
 lit -sv .
 ```
 
-Explore the test folder a bit and add one tiny edge case of your own.
+Try editing a test or two and see how quickly you can predict the outcome.
 
 When you're done, clean artifacts:
 

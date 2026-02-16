@@ -1,9 +1,11 @@
 # RUN: %pyxc -i %s > %t 2>&1
-# RUN: grep -q "Function redeclared with incompatible signature" %t
+# RUN: grep -x '3.000000' %t
+# RUN: ! grep -q "Error (Line:" %t
 
-extern def add(a: i32, b: i32) -> i32
+extern def printd(x)
+extern def add(a, b)
 
-def add(a: f64, b: f64) -> f64:
+def add(a, b):
     return a + b
 
-add(1.0, 2.0)
+printd(add(1, 2))

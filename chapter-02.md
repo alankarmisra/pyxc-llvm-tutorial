@@ -997,7 +997,7 @@ In Python you could put the entire expression in delimiters or use an explicit c
 ## Compiling
 
 ```bash
-cd code/chapter04 && ./build.sh
+cd code/chapter05 && ./build.sh
 ```
 
 ## Sample interaction

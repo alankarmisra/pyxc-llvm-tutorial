@@ -35,55 +35,55 @@ This tutorial is structured into chapters covering individual topics, allowing y
 
 [Chapter #3: Building LLVM from Source](chapter-03.md) - This chapter focuses on installation and toolchain setup. We build LLVM from source with `clang`, `clangd`, `lld`, and `lldb`, configure `PATH`/`LLVM_DIR`, and wire VS Code to the locally built `clangd` and `compile_commands.json`.
 
-[Chapter #4: Code generation to LLVM IR](chapter-04.md) - With the AST ready, we show how easy it is to generate LLVM IR, and show a simple way to incorporate LLVM into your project.
+[Chapter #5: Code generation to LLVM IR](chapter-05.md) - With the AST ready, we show how easy it is to generate LLVM IR, and show a simple way to incorporate LLVM into your project.
 
-[Chapter #5: Adding JIT and Optimizer Support](chapter-05.md) - One great thing about LLVM is its support for JIT compilation, so we’ll dive right into it and show you the 3 lines it takes to add JIT support. Later chapters show how to generate .o files.
+[Chapter #6: Adding JIT and Optimizer Support](chapter-06.md) - One great thing about LLVM is its support for JIT compilation, so we’ll dive right into it and show you the 3 lines it takes to add JIT support. Later chapters show how to generate .o files.
 
-[Chapter #6: Extending the Language: Control Flow](chapter-06.md) - With the basic language up and running, we show how to extend it with control flow operations (‘if’ statement and a ‘for’ loop). This gives us a chance to talk about SSA construction and control flow.
+[Chapter #7: Extending the Language: Control Flow](chapter-07.md) - With the basic language up and running, we show how to extend it with control flow operations (‘if’ statement and a ‘for’ loop). This gives us a chance to talk about SSA construction and control flow.
 
-[Chapter #7: Extending the Language: User-defined Operators](chapter-07.md) - This chapter extends the language to let users define arbitrary unary and binary operators - with assignable precedence! This allows us to build a significant piece of the “language” as library routines.
+[Chapter #8: Extending the Language: User-defined Operators](chapter-08.md) - This chapter extends the language to let users define arbitrary unary and binary operators - with assignable precedence! This allows us to build a significant piece of the “language” as library routines.
 
-[Chapter #8: Extending the Language: Mutable Variables](chapter-08.md) - This chapter talks about adding user-defined local variables along with an assignment operator. This shows how easy it is to construct SSA form in LLVM: LLVM does not require your front-end to construct SSA form in order to use it!
+[Chapter #9: Extending the Language: Mutable Variables](chapter-09.md) - This chapter talks about adding user-defined local variables along with an assignment operator. This shows how easy it is to construct SSA form in LLVM: LLVM does not require your front-end to construct SSA form in order to use it!
 
-[Chapter #9: Compiling to Object Files](chapter-09.md) - This chapter explains how to take LLVM IR and compile it down to object files, like a static compiler does.
+[Chapter #10: Compiling to Object Files](chapter-10.md) - This chapter explains how to take LLVM IR and compile it down to object files, like a static compiler does.
 
-[Chapter #10: Debug Information](chapter-10.md) - A real language needs to support debuggers, so we add debug information that allows setting breakpoints in Pyxc functions, print out argument variables, and call functions!
+[Chapter #11: Debug Information](chapter-11.md) - A real language needs to support debuggers, so we add debug information that allows setting breakpoints in Pyxc functions, print out argument variables, and call functions!
 
-[Chapter #11: Forward Function References and Mutual Recursion](chapter-11.md) - This chapter introduces a two-phase translation-unit pipeline (collect declarations first, codegen second), so file compilation supports forward calls and mutual recursion reliably.
+[Chapter #12: Forward Function References and Mutual Recursion](chapter-12.md) - This chapter introduces a two-phase translation-unit pipeline (collect declarations first, codegen second), so file compilation supports forward calls and mutual recursion reliably.
 
 ## Intermediate topics
 
-[Chapter #12: From REPL to Real Compiler Toolchain](chapter-12.md) - This chapter turns pyxc into a full compiler frontend. We add CLI modes, file-based parsing, object/executable output, source locations, and DWARF debug info with DIBuilder. It’s the pivot from a JIT demo to a real toolchain.
+[Chapter #13: From REPL to Real Compiler Toolchain](chapter-13.md) - This chapter turns pyxc into a full compiler frontend. We add CLI modes, file-based parsing, object/executable output, source locations, and DWARF debug info with DIBuilder. It’s the pivot from a JIT demo to a real toolchain.
 
-[Chapter #13: Python-style Indentation and Blocks](chapter-13.md) - Pyxc's syntax uses indentation to denote blocks, just like Python. This chapter shows how to modify the lexer to track indentation levels and automatically generate INDENT/DEDENT tokens, making the parser indentation-aware without explicit braces.
+[Chapter #14: Python-style Indentation and Blocks](chapter-14.md) - Pyxc's syntax uses indentation to denote blocks, just like Python. This chapter shows how to modify the lexer to track indentation levels and automatically generate INDENT/DEDENT tokens, making the parser indentation-aware without explicit braces.
 
-[Chapter #14: Blocks, elif, Optional else, and Benchmarking](chapter-14.md) - Until now, we could *lex* indentation. In this chapter, we use that structure to parse real statement blocks, support `elif`, make `else` optional, and tighten codegen.
+[Chapter #15: Blocks, elif, Optional else, and Benchmarking](chapter-15.md) - Until now, we could *lex* indentation. In this chapter, we use that structure to parse real statement blocks, support `elif`, make `else` optional, and tighten codegen.
 
-[Chapter #15: Clean Operator Rules and Short-Circuit Logic](chapter-15.md) - Before introducing types, we simplify operators. We add `not`, `and`, `or`, `==`, `!=`, `<=`, and `>=`, disable custom operators for now, and implement short-circuit codegen for logical expressions.
+[Chapter #16: Clean Operator Rules and Short-Circuit Logic](chapter-16.md) - Before introducing types, we simplify operators. We add `not`, `and`, `or`, `==`, `!=`, `<=`, and `>=`, disable custom operators for now, and implement short-circuit codegen for logical expressions.
 
-[Chapter #16: Typed Interop (Core Types, Pointers, and ABI)](chapter-16.md) - We add explicit scalar and pointer types, typed function signatures, type aliases, typed local declarations, and pointer operations (`addr`, indexing). We also enforce interop-focused typing rules and ABI-correct narrow signed/unsigned extern behavior.
+[Chapter #17: Typed Interop (Core Types, Pointers, and ABI)](chapter-17.md) - We add explicit scalar and pointer types, typed function signatures, type aliases, typed local declarations, and pointer operations (`addr`, indexing). We also enforce interop-focused typing rules and ABI-correct narrow signed/unsigned extern behavior.
 
-[Chapter #17: A Real `print(...)` Builtin (Without Variadics)](chapter-17.md) - We add a language-level `print(...)` statement builtin without introducing general variadic functions. This chapter covers parser/AST integration, type-directed runtime helper dispatch, and a dedicated lit test suite.
+[Chapter #18: A Real `print(...)` Builtin (Without Variadics)](chapter-18.md) - We add a language-level `print(...)` statement builtin without introducing general variadic functions. This chapter covers parser/AST integration, type-directed runtime helper dispatch, and a dedicated lit test suite.
 
-[Chapter #18: Real Loop Control (`while`, `do`, `break`, `continue`) and Finishing Core Integer Operators](chapter-18.md) - We add structured loop control statements and semantic loop-context handling in codegen. We also complete key integer operators (`~`, `%`, `&`, `^`, `|`) with clear diagnostics and tests.
+[Chapter #19: Real Loop Control (`while`, `do`, `break`, `continue`) and Finishing Core Integer Operators](chapter-19.md) - We add structured loop control statements and semantic loop-context handling in codegen. We also complete key integer operators (`~`, `%`, `&`, `^`, `|`) with clear diagnostics and tests.
 
-[Chapter #19: Structs and Named Field Access](chapter-19.md) - We add top-level `struct` declarations, struct-typed values, and field access/assignment (`obj.field`) including nested field chains.
+[Chapter #20: Structs and Named Field Access](chapter-20.md) - We add top-level `struct` declarations, struct-typed values, and field access/assignment (`obj.field`) including nested field chains.
 
-[Chapter #20: Fixed-Size Arrays](chapter-20.md) - We add `array[T, N]` types with compile-time sizes and array indexing for reads/writes, including arrays with structs and structs containing arrays.
+[Chapter #21: Fixed-Size Arrays](chapter-21.md) - We add `array[T, N]` types with compile-time sizes and array indexing for reads/writes, including arrays with structs and structs containing arrays.
 
-[Chapter #21: Dynamic Memory with `malloc` and `free`](chapter-21.md) - We add typed heap allocation `malloc[T](count)` and explicit deallocation `free(ptr)` with pointer-focused semantic checks.
+[Chapter #22: Dynamic Memory with `malloc` and `free`](chapter-22.md) - We add typed heap allocation `malloc[T](count)` and explicit deallocation `free(ptr)` with pointer-focused semantic checks.
 
-[Chapter #22: C-style I/O Baseline (`putchar`, `getchar`, `puts`, minimal `printf`)](chapter-22.md) - We add string literals, libc-style I/O calls, vararg call support for `printf`, and a strict format subset (`%d`, `%s`, `%c`, `%p`, `%%`).
+[Chapter #23: C-style I/O Baseline (`putchar`, `getchar`, `puts`, minimal `printf`)](chapter-23.md) - We add string literals, libc-style I/O calls, vararg call support for `printf`, and a strict format subset (`%d`, `%s`, `%c`, `%p`, `%%`).
 
-[Chapter #23: File I/O with `fopen`, `fclose`, `fgets`, `fputs`, `fread`, `fwrite`](chapter-23.md) - We extend libc interop to file handles and block/text file operations, with call-site type checks and tests for both positive paths and misuse diagnostics.
+[Chapter #24: File I/O with `fopen`, `fclose`, `fgets`, `fputs`, `fread`, `fwrite`](chapter-24.md) - We extend libc interop to file handles and block/text file operations, with call-site type checks and tests for both positive paths and misuse diagnostics.
 
-[Chapter #24: Immutable Bindings with `const`](chapter-24.md) - We add const declarations with mandatory initialization and enforce reassignment errors at compile time using symbol-binding metadata.
+[Chapter #25: Immutable Bindings with `const`](chapter-25.md) - We add const declarations with mandatory initialization and enforce reassignment errors at compile time using symbol-binding metadata.
 
-[Chapter #25: Separate Compilation and Multi-File Linking](chapter-25.md) - We add multi-file CLI input handling, per-translation-unit object emission, and list-based linker integration for executable and object workflows.
+[Chapter #26: Separate Compilation and Multi-File Linking](chapter-26.md) - We add multi-file CLI input handling, per-translation-unit object emission, and list-based linker integration for executable and object workflows.
 
-[Chapter #26: Program Arguments, scanf Baseline, and Low-Level File Descriptor I/O](chapter-26.md) - We add `main(argc, argv)` entrypoint support, a strict `scanf` subset, and descriptor-style interop (`open/read/write/close` + helpers) with compile-time call validation.
+[Chapter #27: Program Arguments, scanf Baseline, and Low-Level File Descriptor I/O](chapter-27.md) - We add `main(argc, argv)` entrypoint support, a strict `scanf` subset, and descriptor-style interop (`open/read/write/close` + helpers) with compile-time call validation.
 
-[Chapter #27: Python-style match/case](chapter-27.md) - We add integer-pattern `match/case` with optional `case _` default and no fallthrough, using Pythonic syntax only.
+[Chapter #28: Python-style match/case](chapter-28.md) - We add integer-pattern `match/case` with optional `case _` default and no fallthrough, using Pythonic syntax only.
 
 
 
