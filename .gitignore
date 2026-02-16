@@ -73,4 +73,4 @@ vcpkg_installed/
 pyxc
 runtime.o
 
- .claude/
+.claude/
