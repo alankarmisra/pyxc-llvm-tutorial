@@ -1,0 +1,7 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error (" %t
+# RUN: grep -q "Expected 'return' before return expression" %t
+# RUN: grep -q "\\^~~~" %t
+
+# Test missing return keyword
+def foo(x): x + 1

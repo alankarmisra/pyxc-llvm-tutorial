@@ -1,0 +1,8 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -c "Parsed a top-level expr" %t | grep -q "4"
+
+# Test operator precedence: * binds tighter than +
+1 + 2 * 3
+2 * 3 + 1
+1 + 2 + 3 * 4
+5 * 6 - 7 + 8
