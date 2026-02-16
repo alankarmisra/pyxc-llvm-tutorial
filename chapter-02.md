@@ -1,44 +1,33 @@
 # 2. Pyxc: Implementing a Parser and AST
 
-!!!note
-    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter02](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter02).
-
-
 ## Introduction
-Welcome to Chapter 2 of the [Pyxc: My First Language Frontend with LLVM](chapter-00.md) tutorial. This chapter shows you how to use the lexer, built in [Chapter 1](chapter-01.md), to build a full parser for our Pyxc language. Once we have a [parser](http://en.wikipedia.org/wiki/Parsing), we’ll define and build an [Abstract Syntax Tree](http://en.wikipedia.org/wiki/Abstract_syntax_tree) (AST).
+Welcome to Chapter 2 of the [Pyxc: My First Language Frontend with LLVM](chapter-00.md) tutorial. This chapter shows you how to use the lexer, built in [Chapter 1](chapter-01.md), to build a full parser for our Pyxc language. Once we have a [parser](http://en.wikipedia.org/wiki/Parsing), we’ll define and build an [Abstract Syntax Tree](http://en.wikipedia.org/wiki/Abstract_syntax_tree) (AST). Don't worry if these terms seem alien to you at the moment. Everything will be explained in time. 
+
+## Source Code
+
+To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter02](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter02).
 
 ## It's Grammar Time
 
-Before we try and parse the language, we should have an idea of what we are trying to parse. We can start at the top (`program`) and then, little by little, break it down into smaller parts.
+Before we try and parse the language, we should have an idea of what we are trying to parse. We can start at the top (the `program`) and then, little by little, break it down into components parts.
 
-For text we want to match exactly (keywords), we put it in `quotes`.
-For text that follows a pattern, like variable names, we describe it with a regular expression.
-For things built from other things, we write rules like this:
+For text we want to match exactly (`keywords`), we put it in quotes. For text that follows a pattern, such as variable names, we describe it with a regular expression.
+
+For things built from other things, we write `productions` like this:
 
 ```ebnf
 thing = "keyword" other_thing "keyword" other_other_thing
 ```
 
-The `thing` before the equality sign is called a `rule`. The `other_thing` would have its own rule below, and `other_other_thing` would too. If we keep going, every rule eventually reduces to either exact text (a keyword) or a unit of text that matches a pattern.
+We call it a `production` because it specifies how that grammar symbol is produced (derived).
 
-One `thing` to watch out for while writing grammar rules (no pun intended) is definitions like:
+The `thing` before the equality sign is the `production` symbol. The `other_thing` would have its own production below, and `other_other_thing` would too. If we keep going, every production eventually reduces to either exact text (a `keyword`) or a unit of text that matches a regular expression pattern.
 
-```ebnf
-thing = thing "+" other_thing
-```
-
-This creates an infinite `thing` loop. Our grammar does not have this issue right now, so we will not dwell on it here. It is just something to keep in mind when you get into formal grammar theory. We can however refer to `thing` more than once.
-
-```ebnf
-thing = "+" thing
-```
-The above is fine. It will keep reading until it lands up on something that's not a `+`.
-
-When we build the parser, we can have a `ParseThing` for every `thing`. So we can have `ParseThing`, `ParseTheOtherThing`, `ParseTheOtherOtherThing`. Ok enough `things`. Let's get concrete. Here's what our grammar looks like right now. This style of writing down rules is called [EBNF](https://en.wikipedia.org/wiki/Extended_Backus%E2%80%93Naur_form).
+When we build the parser, we can have a `ParseThing` for every `thing`. So we can have `ParseThing`, `ParseTheOtherThing`, `ParseTheOtherOtherThing`. Ok enough `things`. Let's get concrete. Here's what our grammar looks like right now. This style of writing down productions is called [EBNF](https://en.wikipedia.org/wiki/Extended_Backus%E2%80%93Naur_form).
 
 ### A key to unlocking EBNF Grammar
 
-- `rule`: the name on the left side of `=`. It defines what that piece of the language looks like.
+- `production`: the name on the left side of `=`. It defines what that piece of the language looks like.
 - `"keyword"`: text in quotes means `match this exact text`.
 - `regexp`: a pattern that matches text with a shape (for example, an identifier or a number).
 - `[ ... ]`: optional. This part may appear once, or not at all.
@@ -107,9 +96,24 @@ Those starting tokens are distinct, so the parser can choose immediately with no
 
 The formal name for this style is `LL(1)`. Around here, we can call it `One Punch (token)` parsing.
 
+## A simple gotcha
+
+One `thing` to watch out for while writing grammar productions (no pun intended) is definitions like:
+
+```ebnf
+thing = thing "+" other_thing
+```
+
+This creates an infinite `thing` loop. Our grammar does not have this issue right now, so we will not dwell on it here. It is just something to keep in mind when you get into formal grammar theory. We can however refer to `thing` more than once.
+
+```ebnf
+thing = "+" thing
+```
+The above is fine. It will keep reading until it lands up on something that's not a `+`.
+
 ## Recursive Descent Parsing
 
-Since we start at the top symbol/rule, descend into the rules that make it up, and eventually encounter recursion (`things` made up of more `things`), we call it [Recursive Descent Parsing](http://en.wikipedia.org/wiki/Recursive_descent_parser). That is about all there is to this highly technical term.
+Since we start at the top symbol/production, descend into the productions that make it up, and eventually encounter recursion (`things` made up of more `things`), we call it [Recursive Descent Parsing](http://en.wikipedia.org/wiki/Recursive_descent_parser). That is about all there is to this highly technical term.
 
 ## Operator Precedence Parsing
 
@@ -155,7 +159,6 @@ graph TD
   A --> V2["RHS: VariableExprAST(Name:'b')"]
 ```
 
-
 ### What's so abstract about Abstract Syntax Trees?
 
 `Abstract` in this context means we keep only the structure and meaning of the code, and drop syntax that was inserted only to guide parsing it. 
@@ -180,7 +183,7 @@ public:
 };
 ```
 
-The code above shows the definition of the base `ExprAST` class and one subclass which we use for numeric literals. The important thing to note about this code is that the `NumberExprAST` class captures the numeric value of the literal as an instance variable. This allows later phases of the compiler to know what the stored numeric value is.
+The code above shows the definition of the base `ExprAST` class and one subclass which we use for numeric literals. The `NumberExprAST` class captures the numeric value of the literal as an instance variable. This allows later phases of the compiler to know what the stored numeric value is.
 
 Here are the other expression AST node definitions that we’ll use in the basic form of the Pyxc language:
 
@@ -290,11 +293,10 @@ using FuncPtr = unique_ptr<FunctionAST>;
 ...
 
 template <typename T = void> T LogError(const char *Str) {
-  const auto TokIt = TokenNames.find(CurTok);
-  const string TokStr =
-      (TokIt != TokenNames.end()) ? TokIt->second : "unknown token";
-  fprintf(stderr, "Error: (Line: %d, Column: %d): %s | CurTok = %d (%s)\n",
-          CurLoc.Line, CurLoc.Col, Str, CurTok, TokStr.c_str());
+  const string TokStr = FormatTokenForError(CurTok);
+  fprintf(stderr, "%sError%s: (Line: %d, Column: %d): %s near %s\n", Red, Reset,
+          CurLoc.Line, CurLoc.Col, Str, TokStr.c_str());
+  PrintErrorSourceContext(CurLoc);
   if constexpr (is_void_v<T>)
     return;
   else if constexpr (is_pointer_v<T>)
@@ -307,6 +309,45 @@ template <typename T = void> T LogError(const char *Str) {
 
 This template helper gives us one error-reporting function for all parser return types. When we call it, we choose the return type (`LogError<ExprPtr>`(...), `LogError<ProtoPtr>`(...), etc.), and the helper returns an empty value of that type. It also supports void calls (`LogError`(...) with no template argument).
 In that case, it just reports the error and returns normally.
+
+```cpp
+static string FormatTokenForError(int Tok) {
+  if (Tok == tok_identifier)
+    return "identifier '" + IdentifierStr + "'";
+  if (Tok == tok_number)
+    return "number '" + NumLiteralStr + "'";
+
+  const auto TokIt = TokenNames.find(Tok);
+  if (TokIt != TokenNames.end())
+    return TokIt->second;
+  return "unknown token";
+}
+```
+
+`FormatTokenForError` converts the current token into a user friendly string. For identifiers and numbers, it includes the captured string (`lexeme` in linguistics parlance) so errors can say exactly what was seen. For other tokens, it falls back to the shared TokenNames table, and if no mapping exists, it returns "unknown token".
+
+```cpp
+static void PrintErrorSourceContext(SourceLocation Loc) {
+  const string *LineText = SourceMgr.getLine(Loc.Line);
+  if (!LineText)
+    return;
+
+  fprintf(stderr, "%s\n", LineText->c_str());
+
+  int Spaces = Loc.Col - 1;
+  if (Spaces < 0)
+    Spaces = 0;
+  for (int I = 0; I < Spaces; ++I)
+    fputc(' ', stderr);
+  fprintf(stderr, "%s^%s", Bold, Reset);
+  fputc('~', stderr);
+  fputc('~', stderr);
+  fputc('~', stderr);
+  fputc('\n', stderr);
+}
+```
+
+`PrintErrorSourceContext` prints source context for an error location: first the full source line, then a caret-and-underline marker aligned to the reported column. It uses SourceMgr to fetch the line text and gracefully does nothing if that line is unavailable. The `^~~~` marker gives a fast visual pointer to where parsing failed.
 
 With these basic helper functions, we can implement the first piece of our grammar: numeric literals.
 
@@ -323,9 +364,9 @@ static unique_ptr<ExprAST> ParseNumberExpr() {
 }
 ```
 
-This routine is very simple: it expects to be called when the current token is a `tok_number` token. It takes the current number value, creates a NumberExprAST node, advances the lexer to the next token, and finally returns.
+The routine expects to be called when the current token is a `tok_number` token. It takes the current number value, creates a `NumberExprAST` node, advances the lexer to the next token, and finally returns.
 
-There are some interesting aspects to this. The most important one is that this routine eats all of the tokens that correspond to the rule and returns with the lexer sitting on the NEXT token ready to go. This is a fairly standard way to go for recursive descent parsers. For a better example, the parenthesis operator is defined like this:
+The routine eats all of the tokens that correspond to the production and returns with the lexer sitting on the NEXT token ready to go. This is a fairly standard way to go for recursive descent parsers. The parenthesis operator is defined like this:
 
 ```cpp
 /// parenexpr = '(' expression ')'
@@ -340,16 +381,16 @@ static unique_ptr<ExprAST> ParseParenExpr() {
   getNextToken(); // eat ).
 
   // The lexer is now sitting on the token AFTER ')'
-  // ie the entire parenexpr rule/production has been eaten.
+  // ie the entire parenexpr production has been eaten.
   return V;
 }
 ```
 
-This function illustrates a number of interesting things about the parser:
+This function illustrates a number of notable things about the parser:
 
 1) Because errors can occur, the parser needs a way to indicate that they happened: in our parser, we print the error, and return an empty pointer. 
 
-2) Note that parentheses do not cause construction of AST nodes themselves. While we could do it this way, the most important role of parentheses are to guide the parser and provide grouping. Once the parser constructs the AST, parentheses are not needed and parentheses tokens are discarded.
+2) Parentheses do not cause construction of AST nodes themselves. While we could do it this way, the most important role of parentheses are to guide the parser and provide grouping. Once the parser constructs the AST, parentheses are not needed and parentheses tokens are discarded.
 
 The next simple production is for handling variable references and function calls:
 
@@ -393,7 +434,7 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
 
 This routine follows the same style as the other routines. (It expects to be called if the current token is a `tok_identifier` token). It also has recursion and error handling. It uses look-ahead to determine if the current identifier is a stand alone variable reference or if it is a function call expression. It handles this by checking to see if the token after the identifier is a `(` token, constructing either a `VariableExprAST` or `CallExprAST` node as appropriate.
 
-Now that we have all of our simple expression-parsing logic in place, we can define a helper function to wrap it together into one entry point. We call this class of expressions `primary` expressions, for reasons that will become more clear later in the tutorial. In order to parse an arbitrary primary expression, we need to determine what sort of expression it is:
+Now that we have all of our simple expression-parsing logic in place, we can define a helper function to wrap it together into one entry point. We call this class of expressions `primary` expressions. In order to parse an arbitrary primary expression, we need to determine what sort of expression it is:
 
 ```cpp
 /// primary
@@ -758,7 +799,7 @@ graph TD
 
 
 ## Parsing the Rest
-The next thing missing is handling of function prototypes. In Pyxc, these are used both for `extern` function declarations as well as function body definitions. The code to do this is straight-forward and not very interesting (once you’ve survived expressions):
+The next thing missing is handling of function prototypes. In Pyxc, these are used both for `extern` function declarations as well as function body definitions. The code to do this is straight-forward:
 
 ```cpp
 /// prototype
@@ -853,10 +894,71 @@ static unique_ptr<FunctionAST> ParseTopLevelExpr() {
 }
 ```
 
+## Error Handling at the top level
+
+```cpp
+static void SynchronizeToLineBoundary() {
+  while (CurTok != tok_eol && CurTok != tok_eof)
+    getNextToken();
+}
+
+static void SynchronizeToLineBoundary() {
+  while (CurTok != tok_eol && CurTok != tok_eof)
+    getNextToken();
+}
+
+static void HandleDefinition() {
+  if (ParseDefinition()) {
+    if (CurTok != tok_eol && CurTok != tok_eof) {
+      string Msg = "Unexpected " + FormatTokenForMessage(CurTok);
+      LogError<void>(Msg.c_str());
+      SynchronizeToLineBoundary();
+      return;
+    }
+    fprintf(stderr, "Parsed a function definition\n");
+  } else {
+    // Error recovery: skip the rest of the current line so leftover tokens
+    // from a malformed construct don't get parsed as a new top-level form.
+    SynchronizeToLineBoundary();
+  }
+}
+
+static void HandleExtern() {
+  if (ParseExtern()) {
+    if (CurTok != tok_eol && CurTok != tok_eof) {
+      string Msg = "Unexpected " + FormatTokenForMessage(CurTok);
+      LogError<void>(Msg.c_str());
+      SynchronizeToLineBoundary();
+      return;
+    }
+    fprintf(stderr, "Parsed an extern\n");
+  } else {
+    SynchronizeToLineBoundary();
+  }
+}
+
+static void HandleTopLevelExpression() {
+  // Evaluate a top-level expression into an anonymous function.
+  if (ParseTopLevelExpr()) {
+    if (CurTok != tok_eol && CurTok != tok_eof) {
+      string Msg = "Unexpected " + FormatTokenForMessage(CurTok);
+      LogError<void>(Msg.c_str());
+      SynchronizeToLineBoundary();
+      return;
+    }
+    fprintf(stderr, "Parsed a top-level expr\n");
+  } else {
+    SynchronizeToLineBoundary();
+  }
+}
+```
+
+If a top-level form parses successfully, we only print "Parsed ..." when it also ends cleanly at a line boundary ie on a newline or end-of-file. If extra tokens remain on that same line, we report an "Unexpected <token>" error and recover. If parsing fails earlier, one of the `Parse*` functions reports the error. In both cases, the top-level handler calls `SynchronizeToLineBoundary()`, which skips the rest of the current line so leftover input cannot be misinterpreted as a new top-level construct, preventing cascading errors.
+
 Now that we have all the pieces, let’s build a little driver that will let us actually execute this code we’ve built!
 
 ## The Driver
-The driver for this simply invokes all of the parsing pieces with a top-level dispatch loop. There isn’t much interesting here, so I’ll just include the top-level loop. 
+The driver now invokes the parser through a top-level dispatch loop. We removed the Chapter 1 token-printing loop for now. We will bring token-stream mode back later, after LLVM setup, with command-line switches (for example, parse-only vs token-print).
 
 ```cpp
 /// mainloop = definition | external | expression | eol
@@ -885,18 +987,16 @@ static void MainLoop() {
 }
 ```
 
-The most interesting part of this is that we explicitly deal with newlines in pyxc. Why make this choice? The basic reason is ergonomics and familiarity with Python-like syntax. When you type `4 + 5` at the command line and press Enter, the parser treats the newline as the end of your expression and evaluates it immediately. This means you cannot split expressions across multiple lines in the REPL. For example, you cannot type:
+Note that, as with Python, this is not legal:
 ```python
 4 + 5
 * 6
 ```
-and expect it to parse as `(4 + 5) * 6`. The first line `4 + 5` is treated as complete when you press Enter.
-This is similar to Python's behavior in its REPL, where a newline typically ends a statement (unless you have an unclosed bracket or are in a multi-line context). The tradeoff is simplicity: users get immediate feedback after pressing Enter, and the implementation is straightforward. The downside is less flexibility in how you format your code in the REPL.
-If we wanted to allow multi-line expressions, we would need an explicit terminator (like semicolons) or more complex logic to detect incomplete expressions.
+In Python you could put the entire expression in delimiters or use an explicit continuation character `\`. We don't implement that just yet. 
 
-## Conclusions
+## Conclusion
 
-With just under 400 lines of commented code, we fully defined our minimal language, including a lexer, parser, and AST builder. With this done, the executable will validate Pyxc code and tell us if it is grammatically invalid. 
+With just under 600 lines of commented code, we defined our minimal language, including a lexer, parser, and AST builder. With this done, the executable will validate Pyxc code and tell us if it is grammatically invalid. 
 
 There is a lot of room for extension here. You can define new AST nodes, extend the language in many ways, etc. In the next installment, we will describe how to generate LLVM Intermediate Representation (IR) from the AST.
 
@@ -907,11 +1007,15 @@ $ build/pyxc
 ready> def foo(x,y): return x+foo(y, 4.0)
 ready> Parsed a function definition.
 ready> def foo(x,y): return x+y y
-ready> Parsed a function definition.
-ready> Parsed a top-level expr
+ready> Error: (Line: 2, Column: 26): Unexpected identifier 'y'
+def foo(x,y): return x+y y
+                         ^~~~
 ready> def foo(x,y): return x+y )
-ready> Parsed a function definition.
-ready> Error: (Line: 3, Column: 26): unknown token when expecting an expression | CurTok = 41 (')')
+ready> Error: (Line: 3, Column: 26): Unexpected ')'
+def foo(x,y): return x+y )
+                         ^~~~
+ready> 10 + 20
+ready> Parsed a top-level expr
 ready> extern def sin(a)
 ready> Parsed an extern
 ready> ^D

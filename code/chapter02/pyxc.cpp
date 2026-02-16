@@ -1,8 +1,10 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <iomanip>
 #include <map>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <type_traits>
 #include <unistd.h>
@@ -50,6 +52,8 @@ static string NumLiteralStr; // Filled in if tok_number
 static map<string, Token> Keywords = {
     {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return}};
 
+// Debug-only token names. Kept separate from Keywords because this map is
+// purely for printing token stream output.
 static map<int, string> TokenNames = [] {
   // Unprintable character tokens, and multi-character tokens.
   map<int, string> Names = {
@@ -66,8 +70,19 @@ static map<int, string> TokenNames = [] {
   for (int C = 0; C <= 255; ++C) {
     if (isprint(static_cast<unsigned char>(C)))
       Names[C] = "'" + string(1, static_cast<char>(C)) + "'";
-    else
-      Names[C] = "character code " + to_string(C);
+    else if (C == '\n')
+      Names[C] = "'\\n'";
+    else if (C == '\t')
+      Names[C] = "'\\t'";
+    else if (C == '\r')
+      Names[C] = "'\\r'";
+    else if (C == '\0')
+      Names[C] = "'\\0'";
+    else {
+      ostringstream OS;
+      OS << "0x" << uppercase << hex << setw(2) << setfill('0') << C;
+      Names[C] = OS.str();
+    }
   }
 
   return Names;
@@ -114,7 +129,7 @@ public:
 
 static SourceManager SourceMgr;
 
-static string FormatTokenForError(int Tok) {
+static string FormatTokenForMessage(int Tok) {
   if (Tok == tok_identifier)
     return "identifier '" + IdentifierStr + "'";
   if (Tok == tok_number)
@@ -143,6 +158,23 @@ static void PrintErrorSourceContext(SourceLocation Loc) {
   fputc('~', stderr);
   fputc('~', stderr);
   fputc('\n', stderr);
+}
+
+static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
+  if (Tok != tok_eol)
+    return Loc;
+
+  // Keep CurLoc token-semantic for tok_eol (next-line boundary), but render
+  // newline diagnostics at the end of the previous source line.
+  int PrevLine = Loc.Line - 1;
+  if (PrevLine <= 0)
+    return Loc;
+
+  const string *PrevLineText = SourceMgr.getLine(PrevLine);
+  if (!PrevLineText)
+    return Loc;
+
+  return SourceLocation{PrevLine, static_cast<int>(PrevLineText->size()) + 1};
 }
 
 static int advance() {
@@ -176,6 +208,7 @@ static int gettok() {
 
   // Return end-of-line token.
   if (LastChar == '\n') {
+    CurLoc = LexLoc;
     LastChar = ' ';
     return tok_eol;
   }
@@ -214,6 +247,7 @@ static int gettok() {
     while (LastChar != EOF && LastChar != '\n');
 
     if (LastChar != EOF) {
+      CurLoc = LexLoc;
       LastChar = ' ';
       return tok_eol;
     }
@@ -339,10 +373,10 @@ static int GetTokPrecedence() {
 }
 
 template <typename T = void> T LogError(const char *Str) {
-  const string TokStr = FormatTokenForError(CurTok);
-  fprintf(stderr, "%sError%s: (Line: %d, Column: %d): %s near %s\n", Red, Reset,
-          CurLoc.Line, CurLoc.Col, Str, TokStr.c_str());
-  PrintErrorSourceContext(CurLoc);
+  SourceLocation DiagLoc = GetDiagnosticAnchorLoc(CurLoc, CurTok);
+  fprintf(stderr, "%sError%s: (Line: %d, Column: %d): %s\n", Red, Reset,
+          DiagLoc.Line, DiagLoc.Col, Str);
+  PrintErrorSourceContext(DiagLoc);
   if constexpr (is_void_v<T>)
     return;
   else if constexpr (is_pointer_v<T>)
@@ -421,8 +455,11 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
     return ParseNumberExpr();
   case '(':
     return ParseParenExpr();
-  default:
-    return LogError<ExprPtr>("unknown token when expecting an expression");
+  default: {
+    string Msg = "Unexpected " + FormatTokenForMessage(CurTok) +
+                 " when expecting an expression";
+    return LogError<ExprPtr>(Msg.c_str());
+  }
   }
 }
 
@@ -557,34 +594,53 @@ static unique_ptr<PrototypeAST> ParseExtern() {
 // Top-Level parsing
 //===----------------------------------------------------------------------===//
 
+static void SynchronizeToLineBoundary() {
+  while (CurTok != tok_eol && CurTok != tok_eof)
+    getNextToken();
+}
+
 static void HandleDefinition() {
   if (ParseDefinition()) {
+    if (CurTok != tok_eol && CurTok != tok_eof) {
+      string Msg = "Unexpected " + FormatTokenForMessage(CurTok);
+      LogError<void>(Msg.c_str());
+      SynchronizeToLineBoundary();
+      return;
+    }
     fprintf(stderr, "Parsed a function definition\n");
   } else {
-    // Error recovery: consume one token only when we're not already at a
-    // line/end boundary. This avoids blocking for input after errors like
-    // "2 + <eol>".
-    if (CurTok != tok_eol && CurTok != tok_eof)
-      getNextToken();
+    // Error recovery: skip the rest of the current line so leftover tokens
+    // from a malformed construct don't get parsed as a new top-level form.
+    SynchronizeToLineBoundary();
   }
 }
 
 static void HandleExtern() {
   if (ParseExtern()) {
+    if (CurTok != tok_eol && CurTok != tok_eof) {
+      string Msg = "Unexpected " + FormatTokenForMessage(CurTok);
+      LogError<void>(Msg.c_str());
+      SynchronizeToLineBoundary();
+      return;
+    }
     fprintf(stderr, "Parsed an extern\n");
   } else {
-    if (CurTok != tok_eol && CurTok != tok_eof)
-      getNextToken();
+    SynchronizeToLineBoundary();
   }
 }
 
 static void HandleTopLevelExpression() {
   // Evaluate a top-level expression into an anonymous function.
   if (ParseTopLevelExpr()) {
+    if (CurTok != tok_eol && CurTok != tok_eof) {
+      string Msg = "Unexpected " + FormatTokenForMessage(CurTok);
+      LogError<void>(Msg.c_str());
+      SynchronizeToLineBoundary();
+      return;
+    }
     fprintf(stderr, "Parsed a top-level expr\n");
   } else {
-    if (CurTok != tok_eol && CurTok != tok_eof)
-      getNextToken();
+    SynchronizeToLineBoundary();
   }
 }
 

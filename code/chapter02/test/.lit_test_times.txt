@@ -1,4 +1,6 @@
 6.241181e-01 def_and_extern.pyxc
-6.397421e-01 parse_error.pyxc
-6.299939e-01 top_expr.pyxc
-6.437321e-01 parse_error_near_identifier.pyxc
+3.435721e-01 parse_error.pyxc
+3.182013e-01 top_expr.pyxc
+3.423271e-01 parse_error_near_identifier.pyxc
+3.222709e-01 op_expr_unknown_callee.pyxc
+3.425598e-01 top_level_recovery_line_sync.pyxc
