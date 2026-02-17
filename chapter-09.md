@@ -11,7 +11,7 @@ In this chapter, we add source-level debug information to our compiler. When you
 
 Without debug info, when you look at a crash or try to step through your code, all you see is assembly:
 
-```
+```nasm
 (lldb) disassemble
 ->  0x100003f80: fadd   d0, d0, d1
     0x100003f84: ret
@@ -19,7 +19,7 @@ Without debug info, when you look at a crash or try to step through your code, a
 
 With debug info, the debugger shows you the actual source:
 
-```
+```python
 (lldb) list
 1    def factorial(n):
 2      return n * factorial(n - 1.0)
@@ -55,7 +55,7 @@ $ dwarfdump --debug-info factorial.o
 
 You'll see output like:
 
-```
+```nasm
 .debug_info contents:
 0x0000000b: DW_TAG_compile_unit
               DW_AT_producer	("Pyxc Compiler")
@@ -90,7 +90,7 @@ $ dwarfdump --debug-line factorial.o
 
 You'll see a line table mapping addresses to source locations:
 
-```
+```nasm
 Address            Line   Column File   ISA Discriminator OpIndex Flags
 ------------------ ------ ------ ------ --- ------------- ------- -------------
 0x0000000000000000      1      0      1   0             0       0  is_stmt
@@ -522,7 +522,9 @@ Try it out:
 ```bash
 $ ./build/pyxc build factorial.pyxc --emit=obj -g -O0
 Wrote factorial.o
+```
 
+```nasm
 $ dwarfdump --debug-info factorial.o | grep -A5 DW_TAG_subprogram
   DW_TAG_subprogram
     DW_AT_low_pc	(0x0000000000000000)
