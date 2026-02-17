@@ -1,4 +1,4 @@
-# Chapter 9: Debug Information
+# Pyxc: Chapter 9: Debug Information
 
 ## Introduction
 

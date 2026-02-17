@@ -7,8 +7,18 @@ Prefer HTML over markdown walls of text? Read it here:
 
 It is designed to be readable like Python, but much closer to C in behavior and power: pointers are first-class, memory can be manually managed, and you can absolutely shoot yourself in the foot. That is intentional. The project is about learning how languages and compilers work close to the machine, not hiding those edges.
 
-!!!warning
-    Pyxc is rapidly evolving as is the documentation. Builds might fail, tests might fail too. This message will be removed once I've stabilized the core tutorial set. Thank you for your patience!
+## ⚠️ THIS IS A RAPIDLY EVOLVING REPOSITORY
+
+**Pyxc is under active development.** The codebase and documentation are evolving rapidly. You may encounter:
+
+- Build failures
+- Failing tests  
+- Incomplete or inconsistent documentation
+- Breaking changes between chapters
+
+This warning will be removed once the core tutorial has been stabilized. Thank you for your patience!
+
+**Current Status:** Chapters 1-9 are being actively revised and tested.
 
 ## What this repo is
 
