@@ -1,4 +1,7 @@
-# Pyxc: Chapter 9: Debug Information
+---
+description: "Add DWARF debug information to object files so debuggers can show source code and set breakpoints."
+---
+# 9. Pyxc: Debug Information
 
 ## Introduction
 

@@ -1,4 +1,7 @@
-# Chapter 7: Optimization and JIT Execution
+---
+description: "Add LLVM optimization passes and JIT compilation to execute Pyxc code immediately in the REPL."
+---
+# 7. Pyxc: Optimization and JIT Execution
 
 ## Introduction
 
