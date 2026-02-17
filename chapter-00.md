@@ -19,18 +19,12 @@ You'll learn:
 By the end, you'll have a working language that:
 - Compiles functions and expressions
 - Calls C libraries
-- Supports types, pointers, structs, arrays
-- Has control flow (if/while/for)
 - Generates optimized executables
+- Includes debug information
 
 ## Credits
 
-The early chapters are inspired by the excellent [LLVM Kaleidoscope Tutorial](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html). We start there, then go much further:
-
-- **Python-style syntax** - Indentation, `elif`, `match/case`
-- **Real type system** - Scalars, pointers, arrays, structs, `const`
-- **Full toolchain** - Build executables, link multiple files, generate debug info
-- **C interop** - Call `malloc/free`, `printf`, file I/O, everything
+The early chapters are inspired by the excellent [LLVM Kaleidoscope Tutorial](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html). We start there, then go further with Python-style syntax and a complete toolchain.
 
 If you finish this tutorial, you'll understand how real compilers work.
 
@@ -39,9 +33,9 @@ If you finish this tutorial, you'll understand how real compilers work.
 Each chapter builds on the previous one. You can:
 - Follow in order (recommended for beginners)
 - Skip ahead if you know lexing/parsing
-- Jump to specific topics (types, control flow, etc.)
+- Jump to specific topics (optimization, debug info, etc.)
 
-**Code style note:** Early chapters use globals and simple code to focus on concepts. Later chapters refactor toward production quality. This is intentional—learn the ideas first, polish later.
+**Code style note:** Early chapters use globals and simple code to focus on concepts. This is intentional—learn the ideas first, polish later.
 
 **Experiment!** Clone the code, break things, add features. That's how you learn.
 
@@ -61,67 +55,33 @@ Each chapter builds on the previous one. You can:
 
 **[Chapter 6: Understanding LLVM IR](chapter-06.md)** - Learn to read and understand the intermediate representation LLVM uses.
 
-**[Chapter 7: JIT and Optimization](chapter-07.md)** - Run code instantly with JIT compilation. Add LLVM's optimizer passes.
+**[Chapter 7: Optimization and JIT](chapter-07.md)** - Run code instantly with JIT compilation. Add LLVM's optimizer passes.
 
-**[Chapter 8: Control Flow](chapter-08.md)** - Add `if` statements and `for` loops. Learn SSA form and phi nodes.
+**[Chapter 8: Object Files and Optimizations](chapter-08.md)** - Generate `.o` files with proper optimization levels. Call Pyxc code from C++.
 
-**[Chapter 9: User-Defined Operators](chapter-09.md)** - Let users define custom binary and unary operators with precedence.
+**[Chapter 9: Debug Information](chapter-09.md)** - Add DWARF debug info so debuggers like `lldb` can show your source code.
 
-**[Chapter 10: Mutable Variables](chapter-10.md)** - Add local variables and assignment. LLVM handles SSA conversion for you.
+### Coming Soon
 
-**[Chapter 11: Object Files](chapter-11.md)** - Generate `.o` files like a real compiler. Link with the system linker.
-
-**[Chapter 12: Debug Information](chapter-12.md)** - Add DWARF debug info so `lldb` can debug your programs.
-
-**[Chapter 13: Forward References](chapter-13.md)** - Support calling functions before they're defined. Handle mutual recursion.
-
-### Advanced Topics
-
-**[Chapter 14: Real Compiler Toolchain](chapter-14.md)** - CLI modes, file parsing, object/executable output. Stop being a toy, become a compiler.
-
-**[Chapter 15: Python-Style Indentation](chapter-15.md)** - Make whitespace significant. Generate INDENT/DEDENT tokens.
-
-**[Chapter 16: Blocks and elif](chapter-16.md)** - Parse statement blocks, support `elif`, make `else` optional.
-
-**[Chapter 17: Clean Operators](chapter-17.md)** - Add `not`, `and`, `or`, `==`, `!=`, `<=`, `>=`. Implement short-circuit logic.
-
-**[Chapter 18: Types and Pointers](chapter-18.md)** - Explicit types, typed function signatures, pointer operations, ABI-correct extern calls.
-
-**[Chapter 19: print() Builtin](chapter-19.md)** - Add a real `print()` statement without general variadics.
-
-**[Chapter 20: Loop Control](chapter-20.md)** - Add `while`, `do`, `break`, `continue`. Complete integer operators.
-
-**[Chapter 21: Structs](chapter-21.md)** - Define struct types, field access, nested fields.
-
-**[Chapter 22: Arrays](chapter-22.md)** - Fixed-size arrays with compile-time sizes.
-
-**[Chapter 23: Dynamic Memory](chapter-23.md)** - Typed `malloc` and `free`.
-
-**[Chapter 24: C-Style I/O](chapter-24.md)** - String literals, `printf`, `putchar`, `getchar`, `puts`.
-
-**[Chapter 25: File I/O](chapter-25.md)** - `fopen`, `fclose`, `fgets`, `fputs`, `fread`, `fwrite`.
-
-**[Chapter 26: const Bindings](chapter-26.md)** - Immutable variables with compile-time checks.
-
-**[Chapter 27: Separate Compilation](chapter-27.md)** - Multi-file builds, linking multiple `.o` files.
-
-**[Chapter 28: Program Arguments and Low-Level I/O](chapter-28.md)** - `main(argc, argv)`, `scanf`, file descriptors.
-
-**[Chapter 29: match/case](chapter-29.md)** - Pattern matching with Python-style syntax.
+More chapters are being prepared and will be added after review:
+- Control flow (if/else, loops)
+- Mutable variables
+- Types and pointers
+- Structs and arrays
+- And much more...
 
 ## What You'll Learn
 
-By the end:
+By the end of the current chapters:
 - **Lexing** - Tokenizing source code
 - **Parsing** - Recursive descent, operator precedence
 - **AST** - Tree representations of code
 - **Code generation** - AST → LLVM IR
 - **Optimization** - LLVM's pass system
-- **Types** - Type checking, type inference basics
-- **Control flow** - SSA form, phi nodes
-- **Linking** - Object files, executables
+- **JIT compilation** - Execute code immediately
+- **Object files** - Generate relocatable object code
 - **Debugging** - DWARF debug info
-- **Toolchain** - CLI, multi-file builds, error messages
+- **Toolchain** - CLI, build modes, error messages
 
 And you'll have built a real compiler from scratch.
 
