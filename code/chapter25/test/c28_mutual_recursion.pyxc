@@ -13,7 +13,7 @@ def is_odd(n: i32) -> i32:
     return is_even(n - 1)
 
 def main() -> i32:
-    printf("%d %d\n", is_even(10), is_odd(10))
+    print(is_even(10), is_odd(10))
     return 0
 
 main()

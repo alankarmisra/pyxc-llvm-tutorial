@@ -1,184 +1,169 @@
 ---
-description: "Fix forward references and mutual recursion by moving to a translation-unit style pipeline that decouples function use from source order."
+description: "Compile Pyxc programs to object files by configuring targets and emitting machine-ready output instead of only in-memory IR/JIT execution."
 ---
-# 12. Pyxc: Forward Function References and Mutual Recursion
+# 11. Pyxc: Compiling to Object Code
 
-This chapter addresses a foundational frontend issue: function calls should not depend on source order in file compilation mode.
+## Introduction
+Welcome to Chapter 11 of the [Implementing a language with LLVM](chapter-00.md) tutorial. This chapter describes how to compile our language down to object files.
 
-We fix this with a translation-unit pipeline:
-
-- parse and collect declarations first
-- codegen function bodies second
-
-That gives reliable forward references and mutual recursion.
+!!!note For readers coming from Chapter 9: You'll notice in the full code listing that we've removed all JIT-related code, including the JIT execution engine and runtime optimization passes. This keeps the chapter focused on the essentials: lexing, parsing, and generating object files. This doesn't mean JIT and AOT compilation are mutually exclusive—far from it! In a future chapter, we'll refactor the codebase to support multiple compilation modes (JIT, object files, and LLVM IR output) with proper architectural separation. That chapter will focus less on LLVM concepts and more on practical software engineering: building extensible compiler architectures, advanced CLI parsing techniques, and applying solid C++ design patterns. For now, we're following the original tutorial's pedagogical approach: one concept at a time, clearly and simply.
 
 ## Source Code
-To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter14](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter14).
+To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter11](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter11).
 
-## Grammar (EBNF)
+## Choosing a Target
+LLVM has native support for cross-compilation. You can compile to the architecture of your current machine, or just as easily compile for other architectures. In this tutorial, we’ll target the current machine.
 
-This is a compiler pipeline chapter, not a syntax chapter. Grammar shape is unchanged.
+To specify the architecture that you want to target, we use a string called a “target triple”. This takes the form `<arch><sub>-<vendor>-<sys>-<abi>` (see the [cross compilation docs](https://clang.llvm.org/docs/CrossCompilation.html#target-triple)).
 
-Reference: `code/chapter14/pyxc.ebnf`
+As an example, we can see what clang thinks is our current target triple:
 
-```ebnf
-program      = { top_item } , eof ;
-top_item     = newline | type_alias_decl | struct_decl
-             | function_def | extern_decl | statement ;
-
-function_def = "def" , prototype , ":" , suite ;
-extern_decl  = "extern" , "def" , prototype ;
+```bash
+$ clang --version | grep Target
+Target: x86_64-unknown-linux-gnu
 ```
 
-## Problem to solve
+Running this command may show something different on your machine as you might be using a different architecture or operating system to me.
 
-Forward call example:
-
-```py
-
-def main() -> i32:
-    printf("%d\n", add(20, 22))
-    return 0
-
-def add(a: i32, b: i32) -> i32:
-    return a + b
-
-main()
-```
-
-Mutual recursion example:
-
-```py
-
-def is_even(n: i32) -> i32:
-    if n == 0:
-        return 1
-    return is_odd(n - 1)
-
-def is_odd(n: i32) -> i32:
-    if n == 0:
-        return 0
-    return is_even(n - 1)
-```
-
-Both should compile and run without requiring manual reordering.
-
-## Design
-
-Two explicit phases per file:
-
-1. Parse and collect
-- parse defs/externs/top-level expressions
-- pre-register prototypes for lookup
-
-2. Codegen
-- emit extern declarations
-- emit function bodies
-- emit top-level expressions
-
-This removes declaration-order fragility.
-
-## Translation unit container
+Fortunately, we don’t need to hard-code a target triple to target the current machine. LLVM provides sys::getDefaultTargetTriple, which returns the target triple of the current machine.
 
 ```cpp
-struct ParsedTranslationUnit {
-  std::vector<std::unique_ptr<FunctionAST>> Definitions;
-  std::vector<std::unique_ptr<PrototypeAST>> Externs;
-  std::vector<std::unique_ptr<FunctionAST>> TopLevelExprs;
-};
+auto TargetTriple = sys::getDefaultTargetTriple();
 ```
 
-## Prototype registration and compatibility
+LLVM doesn’t require us to link in all the target functionality. For example, if we’re just using the JIT, we don’t need the assembly printers. Similarly, if we’re only targeting certain architectures, we can only link in the functionality for those architectures.
 
-We register prototypes as soon as parsed, with compatibility checks:
-
-- `TypeExprEqual(...)`
-- `PrototypeCompatible(...)`
-- `ClonePrototype(...)`
-- `RegisterPrototypeForLookup(...)`
-
-If a name is redeclared with a different signature, emit:
-
-```text
-Function redeclared with incompatible signature
-```
-
-## Parse phase
-
-`ParseTranslationUnit(...)` collects nodes and registers prototypes early.
-
-Conceptually:
+For this example, we’ll initialize all the targets for emitting object code.
 
 ```cpp
-if (CurTok == tok_def) {
-  auto FnAST = ParseDefinition();
-  RegisterPrototypeForLookup(FnAST->getProto());
-  TU.Definitions.push_back(std::move(FnAST));
+InitializeAllTargetInfos();
+InitializeAllTargets();
+InitializeAllTargetMCs();
+InitializeAllAsmParsers();
+InitializeAllAsmPrinters();
+```
+
+We can now use our target triple to get a Target:
+
+```cpp
+std::string Error;
+auto Target = TargetRegistry::lookupTarget(TargetTriple, Error);
+
+// Print an error and exit if we couldn't find the requested target.
+// This generally occurs if we've forgotten to initialise the
+// TargetRegistry or we have a bogus target triple.
+if (!Target) {
+  errs() << Error;
+  return 1;
 }
 ```
 
-## Codegen phase
+## Target Machine
+We will also need a TargetMachine. This class provides a complete machine description of the machine we’re targeting. If we want to target a specific feature (such as SSE) or a specific CPU (such as Intel’s Sandylake), we do so now.
 
-`CodegenTranslationUnit(...)` runs in this order:
-
-1. externs
-2. definitions
-3. top-level expressions
-
-This is the key ordering guarantee.
-
-## Paths updated
-
-In `code/chapter14/pyxc.cpp`:
-
-- `InterpretFile(...)` now uses parse-then-codegen
-- `CompileToObjectFile(...)` now uses parse-then-codegen
-
-`FunctionAST` exposes:
+To see which features and CPUs that LLVM knows about, we can use llc. For example, let’s look at x86:
 
 ```cpp
-const PrototypeAST &getProto() const { return *Proto; }
+$ llvm-as < /dev/null | llc -march=x86 -mattr=help
+Available CPUs for this target:
+
+  amdfam10      - Select the amdfam10 processor.
+  athlon        - Select the athlon processor.
+  athlon-4      - Select the athlon-4 processor.
+  ...
+
+Available features for this target:
+
+  16bit-mode            - 16-bit mode (i8086).
+  32bit-mode            - 32-bit mode (80386).
+  3dnow                 - Enable 3DNow! instructions.
+  3dnowa                - Enable 3DNow! Athlon instructions.
+  ...
 ```
 
-so registration can happen before body codegen.
+For our example, we’ll use the generic CPU without any additional feature or target option.
 
-## Tests
+```cpp
+auto CPU = "generic";
+auto Features = "";
 
-Added tests:
+TargetOptions opt;
+auto TargetMachine = Target->createTargetMachine(TargetTriple, CPU, Features, opt, Reloc::PIC_);
+```
 
-- `code/chapter14/test/c28_forward_call.pyxc`
-- `code/chapter14/test/c28_mutual_recursion.pyxc`
-- `code/chapter14/test/c28_signature_mismatch.pyxc`
+## Configuring the Module
+We’re now ready to configure our module, to specify the target and data layout. This isn’t strictly necessary, but the frontend performance guide recommends this. Optimizations benefit from knowing about the target and data layout.
 
-## Compile / Run / Test
+```cpp
+TheModule->setDataLayout(TargetMachine->createDataLayout());
+TheModule->setTargetTriple(TargetTriple);
+```
 
-Build:
+## Emit Object Code
+We’re ready to emit object code! Let’s define where we want to write our file to:
+
+```cpp
+auto Filename = "output.o";
+std::error_code EC;
+raw_fd_ostream dest(Filename, EC, sys::fs::OF_None);
+
+if (EC) {
+  errs() << "Could not open file: " << EC.message();
+  return 1;
+}
+```
+
+Finally, we define a pass that emits object code, then we run that pass:
+
+```cpp
+legacy::PassManager pass;
+auto FileType = CodeGenFileType::ObjectFile;
+
+if (TargetMachine->addPassesToEmitFile(pass, dest, nullptr, FileType)) {
+  errs() << "TargetMachine can't emit a file of this type";
+  return 1;
+}
+
+pass.run(*TheModule);
+dest.flush();
+```
+
+## Putting It All Together
+Does it work? Let’s give it a try. We need to compile our code, but note that the arguments to llvm-config are different to the previous chapters.
 
 ```bash
-cd code/chapter14 && ./build.sh
+$ clang++ -g -O3 pyxc.cpp `llvm-config --cxxflags --ldflags --system-libs --libs all` -o pyxc
 ```
 
-Run one sample:
+Let’s run it, and define a simple average function. Press Ctrl-D when you’re done.
 
 ```bash
-code/chapter14/pyxc -i code/chapter14/test/c28_forward_call.pyxc
+$ ./pyxc
+ready> def average(x, y): return (x + y) * 0.5
+^D
+Wrote output.o
 ```
 
-Run tests:
+We have an object file! To test it, let’s write a simple program and link it with our output. Here’s the source code:
 
+```cpp
+#include <iostream>
+
+extern "C" {
+    double average(double, double);
+}
+
+int main() {
+    std::cout << "average of 3.0 and 4.0: " << average(3.0, 4.0) << std::endl;
+}
+```
+
+We link our program to output.o and check the result is what we expected:
 ```bash
-cd code/chapter14/test
-lit -sv .
+$ clang++ main.cpp output.o -o main
+$ ./main
+average of 3.0 and 4.0: 3.5
 ```
-
-Explore by reordering functions or introducing a mismatched `extern` signature and checking diagnostics.
-
-Clean artifacts:
-
-```bash
-cd code/chapter14 && ./build.sh
-```
-
 
 ## Need Help?
 

@@ -1,0 +1,15 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Evaluated to 1.000000" %t
+
+@unary
+def !(v):
+  if v:
+    return 0
+  else:
+    return 1
+
+@binary(precedence=10)
+def >(LHS, RHS):
+  return RHS < LHS
+
+!(2 > 3)

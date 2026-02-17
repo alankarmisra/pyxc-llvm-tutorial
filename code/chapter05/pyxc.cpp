@@ -44,33 +44,41 @@ static cl::opt<bool>
     ReplEmitTokens("emit-tokens", cl::sub(ReplCommand),
                    cl::desc("Print lexer tokens instead of parsing"),
                    cl::init(false));
+static cl::alias ReplEmitTokensShort(
+    "t", cl::desc("Alias for --emit-tokens"),
+    cl::aliasopt(ReplEmitTokens));
 
 static cl::opt<bool> ReplEmitLLVM("emit-llvm", cl::sub(ReplCommand),
                                   cl::desc("Print LLVM IR for parsed input"),
                                   cl::init(false));
+static cl::alias ReplEmitLLVMShort(
+    "l", cl::desc("Alias for --emit-llvm"),
+    cl::aliasopt(ReplEmitLLVM));
 
-static cl::list<std::string>
-    RunInputFiles(cl::Positional, cl::sub(RunCommand),
-                  cl::desc("<script.pyxc>"), cl::ZeroOrMore);
+static cl::list<std::string> RunInputFiles(cl::Positional, cl::sub(RunCommand),
+                                           cl::desc("<script.pyxc>"),
+                                           cl::ZeroOrMore);
 static cl::opt<bool> RunEmitLLVM("emit-llvm", cl::sub(RunCommand),
                                  cl::desc("Emit LLVM for the script"),
                                  cl::init(false));
 
 enum BuildOutputKind { BuildEmitLLVM, BuildEmitObj, BuildEmitExe };
-static cl::list<std::string>
-    BuildInputFiles(cl::Positional, cl::sub(BuildCommand),
-                    cl::desc("<script.pyxc>"), cl::ZeroOrMore);
-static cl::opt<BuildOutputKind> BuildEmit(
-    "emit", cl::sub(BuildCommand), cl::desc("Output kind for build"),
-    cl::values(clEnumValN(BuildEmitLLVM, "llvm", "Emit LLVM IR"),
-               clEnumValN(BuildEmitObj, "obj", "Emit object file"),
-               clEnumValN(BuildEmitExe, "exe", "Emit executable")),
-    cl::init(BuildEmitExe));
+static cl::list<std::string> BuildInputFiles(cl::Positional,
+                                             cl::sub(BuildCommand),
+                                             cl::desc("<script.pyxc>"),
+                                             cl::ZeroOrMore);
+static cl::opt<BuildOutputKind>
+    BuildEmit("emit", cl::sub(BuildCommand), cl::desc("Output kind for build"),
+              cl::values(clEnumValN(BuildEmitLLVM, "llvm", "Emit LLVM IR"),
+                         clEnumValN(BuildEmitObj, "obj", "Emit object file"),
+                         clEnumValN(BuildEmitExe, "exe", "Emit executable")),
+              cl::init(BuildEmitExe));
 static cl::opt<bool> BuildDebug("g", cl::sub(BuildCommand),
                                 cl::desc("Emit debug info"), cl::init(false));
-static cl::opt<unsigned> BuildOptLevel(
-    "O", cl::sub(BuildCommand),
-    cl::desc("Optimization level (use -O0..-O3)"), cl::Prefix, cl::init(0));
+static cl::opt<unsigned>
+    BuildOptLevel("O", cl::sub(BuildCommand),
+                  cl::desc("Optimization level (use -O0..-O3)"), cl::Prefix,
+                  cl::init(0));
 
 //===----------------------------------------------------------------------===//
 // Lexer
@@ -179,7 +187,7 @@ public:
   }
 };
 
-static SourceManager SourceMgr;
+static SourceManager DiagSourceMgr;
 
 static std::string FormatTokenForMessage(int Tok) {
   if (Tok == tok_identifier)
@@ -203,7 +211,7 @@ static const std::string &GetTokenName(int Tok) {
 }
 
 static void PrintErrorSourceContext(SourceLocation Loc) {
-  const std::string *LineText = SourceMgr.getLine(Loc.Line);
+  const std::string *LineText = DiagSourceMgr.getLine(Loc.Line);
   if (!LineText)
     return;
 
@@ -231,7 +239,7 @@ static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
   if (PrevLine <= 0)
     return Loc;
 
-  const std::string *PrevLineText = SourceMgr.getLine(PrevLine);
+  const std::string *PrevLineText = DiagSourceMgr.getLine(PrevLine);
   if (!PrevLineText)
     return Loc;
 
@@ -244,17 +252,17 @@ static int advance() {
     int NextChar = getchar();
     if (NextChar != '\n' && NextChar != EOF)
       ungetc(NextChar, stdin);
-    SourceMgr.onChar('\n');
+    DiagSourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
     return '\n';
   }
   if (LastChar == '\n') {
-    SourceMgr.onChar('\n');
+    DiagSourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
   } else {
-    SourceMgr.onChar(LastChar);
+    DiagSourceMgr.onChar(LastChar);
     LexLoc.Col++;
   }
   return LastChar;
@@ -419,8 +427,9 @@ static int getNextToken() { return CurTok = gettok(); }
 
 /// BinopPrecedence - This holds the precedence for each binary operator that is
 /// defined.
-static std::map<char, int> BinopPrecedence = {
-    {'<', 10}, {'>', 10}, {'+', 20}, {'-', 20}, {'*', 40}, {'/', 40}, {'%', 40}};
+static std::map<char, int> BinopPrecedence = {{'<', 10}, {'>', 10}, {'+', 20},
+                                              {'-', 20}, {'*', 40}, {'/', 40},
+                                              {'%', 40}};
 
 /// Explanation-friendly precedence anchors used by parser control flow.
 static constexpr int NO_OP_PREC = -1;
@@ -560,7 +569,8 @@ static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
     // the pending operator take RHS as its LHS.
     int NextPrec = GetTokPrecedence();
     if (TokPrec < NextPrec) {
-      RHS = ParseBinOpRHS(TokPrec + 1, std::move(RHS));
+      const int HigherPrecThanCurrent = TokPrec + 1;
+      RHS = ParseBinOpRHS(HigherPrecThanCurrent, std::move(RHS));
       if (!RHS)
         return nullptr;
     }
@@ -880,18 +890,22 @@ static void HandleTopLevelExpression() {
 /// top ::= definition | external | expression | eol
 static void MainLoop() {
   while (true) {
-    fprintf(stderr, "ready> ");
-    switch (CurTok) {
-    case tok_eof:
+    // Don't print a prompt when we already know we're at EOF.
+    if (CurTok == tok_eof)
       return;
+
+    if (CurTok == tok_eol) {
+      fprintf(stderr, "ready> ");
+      getNextToken();
+      continue;
+    }
+
+    switch (CurTok) {
     case tok_def:
       HandleDefinition();
       break;
     case tok_extern:
       HandleExtern();
-      break;
-    case tok_eol: // Skip newlines
-      getNextToken();
       break;
     default:
       HandleTopLevelExpression();
@@ -907,11 +921,11 @@ static void EmitTokenStream() {
     if (Tok == tok_eof)
       return;
 
-    printf("%s", GetTokenName(Tok).c_str());
+    fprintf(stderr, "%s", GetTokenName(Tok).c_str());
     if (Tok == tok_eol)
-      printf("\nready> ");
+      fprintf(stderr, "\nready> ");
     else
-      printf(" ");
+      fprintf(stderr, " ");
   }
 }
 
@@ -962,7 +976,7 @@ int main(int argc, const char **argv) {
     return 1;
   }
 
-  SourceMgr.reset();
+  DiagSourceMgr.reset();
 
   if (ReplCommand && ReplEmitTokens) {
     EmitTokenStream();

@@ -1,0 +1,15 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '2147483647 1' %t
+# RUN: grep -x '1 1' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    a: u32 = 4294967295
+    b: u32 = 2
+    c: u32 = 4000000000
+    d: u32 = 1
+    print(a / b, a % b)
+    print(c > d, d < c)
+    return 0
+
+main()

@@ -1,0 +1,17 @@
+def main() -> i32:
+    n: i64 = 200000000
+    modv: i64 = 2147483647
+
+    x: i64 = 1234567
+    acc: i64 = 0
+    i: i64 = 0
+
+    while i < n:
+        x = (x * 48271) % modv
+        acc = (acc + x + i) % modv
+        i = i + 1
+
+    print(acc)
+    return 0
+
+main()

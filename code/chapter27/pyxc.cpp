@@ -36,7 +36,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
-#include <cstring>
 #include <deque>
 #include <iostream>
 #include <map>
@@ -65,11 +64,10 @@ const char *Reset = UseColor ? "\x1b[0m" : "";
 // Create a category for your options
 static cl::OptionCategory PyxcCategory("Pyxc Options");
 
-// Positional input files (optional, one or more in file mode)
-static cl::list<std::string> InputFilenames(cl::Positional,
-                                            cl::desc("<input files>"),
-                                            cl::ZeroOrMore,
-                                            cl::cat(PyxcCategory));
+// Positional input file (optional)
+static cl::opt<std::string> InputFilename(cl::Positional,
+                                          cl::desc("<input file>"),
+                                          cl::Optional, cl::cat(PyxcCategory));
 
 // Execution mode enum
 enum ExecutionMode { Interpret, Executable, Object, Tokens };
@@ -115,19 +113,6 @@ std::string getOutputFilename(const std::string &input,
   }
 
   return base + ext;
-}
-
-static std::string getIntermediateObjectFilename(const std::string &input) {
-  size_t lastSlash = input.find_last_of("/\\");
-  size_t lastDot = input.find_last_of('.');
-  std::string base;
-  if (lastDot != std::string::npos &&
-      (lastSlash == std::string::npos || lastDot > lastSlash)) {
-    base = input.substr(0, lastDot);
-  } else {
-    base = input;
-  }
-  return base + ".o";
 }
 
 //===----------------------------------------------------------------------===//
@@ -194,7 +179,6 @@ enum Token {
   tok_malloc = -33,
   tok_free = -34,
   tok_addr = -36,
-  tok_const = -37,
 
   // indentation
   tok_indent = -16,
@@ -229,7 +213,7 @@ static std::map<std::string, Token> Keywords = {
     {"and", tok_and}, {"print", tok_print},   {"while", tok_while},
     {"do", tok_do},   {"break", tok_break},   {"continue", tok_continue},
     {"or", tok_or},   {"struct", tok_struct}, {"malloc", tok_malloc},
-    {"free", tok_free}, {"addr", tok_addr}, {"const", tok_const}};
+    {"free", tok_free}, {"addr", tok_addr}};
 
 struct SourceLocation {
   int Line;
@@ -310,7 +294,6 @@ static bool AtStartOfLine = true;
 static std::vector<int> Indents = {0};
 static std::deque<int> PendingTokens;
 static int LastIndentWidth = 0;
-static int LastChar = '\0';
 
 static int advance() {
   int LastChar = getc(InputFile);
@@ -395,25 +378,6 @@ template <typename T = void> T LogError(const char *Str) {
     return nullptr;
   else
     return T{};
-}
-
-static void ResetFrontendState() {
-  DiagSourceMgr.reset();
-  ModuleIndentType = -1;
-  AtStartOfLine = true;
-  Indents = {0};
-  PendingTokens.clear();
-  LastIndentWidth = 0;
-  LexLoc = {1, 0};
-  CurLoc = {1, 0};
-  CurTok = tok_eof;
-  HadError = false;
-  IdentifierStr.clear();
-  StringVal.clear();
-  NumVal = 0.0;
-  NumIsIntegerLiteral = false;
-  NumIntVal = 0;
-  LastChar = '\0';
 }
 
 /// countIndent - count the indent in terms of spaces
@@ -540,6 +504,8 @@ static bool IsDedent(int leadingWhitespace) {
 
 /// gettok - Return the next token from standard input.
 static int gettok() {
+  static int LastChar = '\0';
+
   if (LastChar == '\0')
     LastChar = advance();
 
@@ -569,6 +535,7 @@ static int gettok() {
   // mid-expressions)
   while (isspace(LastChar) && LastChar != '\n')
     LastChar = advance();
+
   CurLoc = LexLoc;
 
   // Return end-of-line token. For \r\n (Windows) or bare \r (old Mac),
@@ -784,8 +751,6 @@ static const char *TokenName(int Tok) {
     return "<free>";
   case tok_addr:
     return "<addr>";
-  case tok_const:
-    return "<const>";
   case tok_not:
     return "<not>";
   case tok_and:
@@ -927,20 +892,6 @@ class TypedAssignStmtAST : public StmtAST {
 
 public:
   TypedAssignStmtAST(SourceLocation Loc, std::string Name, TypeExprPtr DeclType,
-                     std::unique_ptr<ExprAST> InitExpr)
-      : StmtAST(Loc), Name(std::move(Name)), DeclType(std::move(DeclType)),
-        InitExpr(std::move(InitExpr)) {}
-
-  Value *codegen() override;
-};
-
-class ConstAssignStmtAST : public StmtAST {
-  std::string Name;
-  TypeExprPtr DeclType;
-  std::unique_ptr<ExprAST> InitExpr;
-
-public:
-  ConstAssignStmtAST(SourceLocation Loc, std::string Name, TypeExprPtr DeclType,
                      std::unique_ptr<ExprAST> InitExpr)
       : StmtAST(Loc), Name(std::move(Name)), DeclType(std::move(DeclType)),
         InitExpr(std::move(InitExpr)) {}
@@ -1388,13 +1339,6 @@ struct StructDeclInfo {
 static std::map<std::string, StructDeclInfo> StructDecls;
 static std::map<const StructType *, std::string> StructTypeNames;
 
-static void ResetCompilationState() {
-  FunctionProtos.clear();
-  TypeAliases.clear();
-  StructDecls.clear();
-  StructTypeNames.clear();
-}
-
 /// BinopPrecedence - This holds the precedence for each binary operator that is
 /// defined.
 static std::map<int, int> BinopPrecedence = {
@@ -1427,7 +1371,6 @@ static std::unique_ptr<BlockSuiteAST> ParseBlockSuite();
 static std::unique_ptr<ExprAST> ParseStringExpr();
 static std::unique_ptr<ExprAST> ParseAddrExpr();
 static std::unique_ptr<StmtAST> ParsePrintStmt();
-static std::unique_ptr<StmtAST> ParseConstDeclStmt();
 static std::unique_ptr<StmtAST> ParseFreeStmt();
 static std::unique_ptr<ExprAST> ParseMallocExpr();
 static TypeExprPtr ParseTypeExpr();
@@ -2040,30 +1983,6 @@ static std::unique_ptr<ExprAST> ParseAddrExpr() {
   return std::make_unique<AddrExprAST>(AddrLoc, std::move(Operand));
 }
 
-static std::unique_ptr<StmtAST> ParseConstDeclStmt() {
-  auto ConstLoc = CurLoc;
-  getNextToken(); // eat `const`
-  if (CurTok != tok_identifier)
-    return LogError<StmtPtr>("Expected identifier after const");
-  std::string Name = IdentifierStr;
-  getNextToken(); // eat identifier
-  if (CurTok != ':')
-    return LogError<StmtPtr>("Expected ':' after const identifier");
-  getNextToken(); // eat ':'
-  auto DeclType = ParseTypeExpr();
-  if (!DeclType)
-    return nullptr;
-  if (CurTok != '=')
-    return LogError<StmtPtr>("Const declaration requires initializer");
-  getNextToken(); // eat '='
-  auto InitExpr = ParseExpression();
-  if (!InitExpr)
-    return nullptr;
-  return std::make_unique<ConstAssignStmtAST>(ConstLoc, std::move(Name),
-                                              std::move(DeclType),
-                                              std::move(InitExpr));
-}
-
 static std::unique_ptr<StmtAST> ParseIdentifierLeadingStmt() {
   auto StmtLoc = CurLoc;
   auto LHS = ParseIdentifierExpr();
@@ -2132,8 +2051,6 @@ static std::unique_ptr<StmtAST> ParseStmt() {
     return ParseReturnStmt();
   case tok_print:
     return ParsePrintStmt();
-  case tok_const:
-    return ParseConstDeclStmt();
   case tok_free:
     return ParseFreeStmt();
   case tok_type:
@@ -2425,7 +2342,6 @@ struct VarBinding {
   Type *PointeeTy = nullptr;
   std::string BuiltinLeafTy;
   std::string PointeeBuiltinLeafTy;
-  bool IsConst = false;
 };
 static std::map<std::string, VarBinding> NamedValues;
 struct LoopContext {
@@ -2491,21 +2407,6 @@ public:
   ~ScopedFunctionOptimization() { EnableFunctionOptimizations = Prev; }
 };
 
-static void ResetLLVMStateForNextCompile() {
-  // Tear down passes/managers before context/module so no stale references
-  // survive into the next translation unit compile.
-  TheSI.reset();
-  ThePIC.reset();
-  TheFPM.reset();
-  TheLAM.reset();
-  TheFAM.reset();
-  TheCGAM.reset();
-  TheMAM.reset();
-  Builder.reset();
-  TheModule.reset();
-  TheContext.reset();
-}
-
 //===----------------------------------------------------------------------===//
 // Debug Info Support
 //===----------------------------------------------------------------------===//
@@ -2527,11 +2428,6 @@ struct DebugInfo {
 
 static std::unique_ptr<DebugInfo> KSDbgInfo;
 static std::unique_ptr<DIBuilder> DBuilder;
-
-static void ResetDebugInfoStateForNextCompile() {
-  DBuilder.reset();
-  KSDbgInfo.reset();
-}
 
 // Helper to safely emit location
 inline void emitLocation(ExprAST *AST) {
@@ -2624,11 +2520,8 @@ static void EnsureDefaultTypeAliases() {
   ensure("float", TypeExpr::Builtin("f32"));
   ensure("double", TypeExpr::Builtin("f64"));
 
-  unsigned PtrBits = sizeof(void *) * 8;
-  if (TheModule && !TheModule->getDataLayoutStr().empty()) {
-    const DataLayout &DL = TheModule->getDataLayout();
-    PtrBits = DL.getPointerSizeInBits(0);
-  }
+  const DataLayout &DL = TheModule->getDataLayout();
+  unsigned PtrBits = DL.getPointerSizeInBits(0);
   ensure("long", TypeExpr::Builtin(PtrBits == 32 ? "i32" : "i64"));
   ensure("size_t", TypeExpr::Builtin(PtrBits == 32 ? "u32" : "u64"));
 }
@@ -3221,45 +3114,11 @@ Value *TypedAssignStmtAST::codegen() {
   Builder->CreateStore(InitVal, Alloca);
   NamedValues[Name] = {Alloca, DeclTy, ResolvePointeeTypeExpr(DeclType),
                        ResolveBuiltinLeafName(DeclType),
-                       ResolvePointeeBuiltinLeafName(DeclType), false};
-  return InitVal;
-}
-
-Value *ConstAssignStmtAST::codegen() {
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
-  Type *DeclTy = ResolveTypeExpr(DeclType);
-  if (!DeclTy)
-    return nullptr;
-  if (DeclTy->isVoidTy())
-    return LogError<Value *>("Variables cannot have type void");
-  if (!InitExpr)
-    return LogError<Value *>("Const declaration requires initializer");
-  if (DeclTy->isStructTy() || DeclTy->isArrayTy())
-    return LogError<Value *>(
-        "Struct/array variables do not support direct initializer expressions");
-
-  Value *InitVal = InitExpr->codegen();
-  if (!InitVal)
-    return nullptr;
-  bool InitUnsigned = IsUnsignedLeafName(InitExpr->getBuiltinLeafTypeHint());
-  InitVal = CastValueTo(InitVal, DeclTy, InitUnsigned);
-  if (!InitVal)
-    return nullptr;
-
-  AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, Name, DeclTy);
-  Builder->CreateStore(InitVal, Alloca);
-  NamedValues[Name] = {Alloca, DeclTy, ResolvePointeeTypeExpr(DeclType),
-                       ResolveBuiltinLeafName(DeclType),
-                       ResolvePointeeBuiltinLeafName(DeclType), true};
+                       ResolvePointeeBuiltinLeafName(DeclType)};
   return InitVal;
 }
 
 Value *AssignStmtAST::codegen() {
-  if (const std::string *Name = LHS->getVariableName()) {
-    auto It = NamedValues.find(*Name);
-    if (It != NamedValues.end() && It->second.IsConst)
-      return LogError<Value *>("Cannot assign to const variable");
-  }
   Value *AddrV = LHS->codegenAddress();
   if (!AddrV)
     return LogError<Value *>("Assignment destination must be an lvalue");
@@ -3901,7 +3760,7 @@ Value *ForStmtAST::codegen() {
   // If the loop variable shadows an existing variable, we have to restore it,
   // so save it now. Set VarName to refer to our recently created alloca.
   VarBinding OldVal = NamedValues[VarName];
-  NamedValues[VarName] = {Alloca, LoopTy, nullptr, "", "", false};
+  NamedValues[VarName] = {Alloca, LoopTy, nullptr};
 
   // Make new basic blocks for loop condition, loop body and end-loop code.
   BasicBlock *LoopConditionBB =
@@ -4035,7 +3894,7 @@ Value *VarExprAST::codegen() {
     OldBindings.push_back(NamedValues[VarName]);
 
     // Remember this binding.
-    NamedValues[VarName] = {Alloca, InitVal->getType(), nullptr, "", "", false};
+    NamedValues[VarName] = {Alloca, InitVal->getType(), nullptr};
   }
 
   emitLocation(this);
@@ -4203,8 +4062,7 @@ Function *FunctionAST::codegen() {
     Type *PointeeTy = nullptr;
     if (ArgTyIdx < P.getArgTypes().size())
       PointeeTy = ResolvePointeeTypeExpr(P.getArgTypes()[ArgTyIdx]);
-    NamedValues[std::string(Arg.getName())] = {Alloca, Arg.getType(), PointeeTy,
-                                               "", "", false};
+    NamedValues[std::string(Arg.getName())] = {Alloca, Arg.getType(), PointeeTy};
     ++ArgTyIdx;
   }
 
@@ -4843,14 +4701,7 @@ bool InterpretFile(const std::string &filename) {
 //===----------------------------------------------------------------------===//
 
 void CompileToObjectFile(const std::string &filename,
-                         const std::string &forcedOutput = "") {
-  ResetFrontendState();
-  ResetCompilationState();
-  NamedValues.clear();
-  LoopContextStack.clear();
-  ResetDebugInfoStateForNextCompile();
-  ResetLLVMStateForNextCompile();
-
+                         const std::string &explicitOutput = "") {
   UseCMainSignature = true;
   InitializeNativeTarget();
   InitializeNativeTargetAsmPrinter();
@@ -4859,9 +4710,8 @@ void CompileToObjectFile(const std::string &filename,
   // Initialize LLVM context and optimization passes
   InitializeContext();
   InitializeOptimizationPasses();
-  // Object and executable mode uses a whole-module pipeline later.
+  // Object/executable mode uses a whole-module pipeline later.
   ScopedFunctionOptimization DisableFunctionPasses(false);
-  EnsureDefaultTypeAliases();
 
   // Open input file
   InputFile = fopen(filename.c_str(), "r");
@@ -4870,6 +4720,7 @@ void CompileToObjectFile(const std::string &filename,
     InputFile = stdin;
     return;
   }
+
   // Parse the source file
   getNextToken();
   ParsedTranslationUnit TU;
@@ -4910,7 +4761,7 @@ void CompileToObjectFile(const std::string &filename,
 
   // Determine output filename
   std::string outputFilename =
-      forcedOutput.empty() ? getOutputFilename(filename, ".o") : forcedOutput;
+      explicitOutput.empty() ? getOutputFilename(filename, ".o") : explicitOutput;
 
   std::error_code EC;
   raw_fd_ostream dest(outputFilename, EC, sys::fs::OF_None);
@@ -4971,10 +4822,10 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  if (InputFilenames.empty()) {
+  if (InputFilename.empty()) {
     // REPL mode - only -v is allowed
     if (Mode != Interpret) {
-      errs() << "Error: selected mode requires at least one input file\n";
+      errs() << "Error: -x and -c flags require an input file\n";
       return 1;
     }
 
@@ -4991,19 +4842,6 @@ int main(int argc, char **argv) {
     // Start REPL
     REPL();
   } else {
-    if (Mode == Interpret && InputFilenames.size() != 1) {
-      errs() << "Error: interpret mode requires exactly one input file\n";
-      return 1;
-    }
-    if (Mode == Tokens && InputFilenames.size() != 1) {
-      errs() << "Error: token mode requires exactly one input file\n";
-      return 1;
-    }
-    if (Mode == Object && !OutputFilename.empty() && InputFilenames.size() != 1) {
-      errs() << "Error: -o with object mode requires exactly one input file\n";
-      return 1;
-    }
-
     if (EmitDebug && Mode != Executable && Mode != Object) {
       errs() << "Error: -g is only allowed with executable builds (-x) or "
                 "object builds (-o)\n";
@@ -5012,42 +4850,34 @@ int main(int argc, char **argv) {
 
     // File mode - all options are valid
     if (Verbose)
-      std::cout << "Processing " << InputFilenames.size() << " file(s)\n";
+      std::cout << "Processing file: " << InputFilename << "\n";
 
     switch (Mode) {
     case Interpret:
       if (Verbose)
-        std::cout << "Interpreting " << InputFilenames[0] << "...\n";
-      if (!InterpretFile(InputFilenames[0]))
+        std::cout << "Interpreting " << InputFilename << "...\n";
+      if (!InterpretFile(InputFilename))
         return 1;
       break;
 
     case Executable: {
-      std::string exeFile = getOutputFilename(InputFilenames[0], "");
+      std::string exeFile = getOutputFilename(InputFilename, "");
       if (Verbose)
-        std::cout << "Compiling " << InputFilenames.size()
-                  << " input file(s) to executable: " << exeFile << "\n";
+        std::cout << "Compiling " << InputFilename
+                  << " to executable: " << exeFile << "\n";
 
-      std::vector<std::string> ScriptObjs;
-      ScriptObjs.reserve(InputFilenames.size());
-      for (const auto &InFile : InputFilenames) {
-        std::string Obj = getIntermediateObjectFilename(InFile);
-        if (Verbose)
-          std::cout << "Compiling " << InFile << " -> " << Obj << "\n";
-        CompileToObjectFile(InFile, Obj);
-        ScriptObjs.push_back(Obj);
-      }
+      // Step 1: Compile the script to object file
+      std::string scriptObj = exeFile + ".tmp.o";
+      CompileToObjectFile(InputFilename, scriptObj);
 
       // Step 3: Link object files
       if (Verbose)
         std::cout << "Linking...\n";
 
       std::string runtimeObj = "runtime.o";
-      if (const char *Slash = strrchr(argv[0], '/'))
-        runtimeObj = std::string(argv[0], Slash - argv[0] + 1) + "runtime.o";
 
       // Step 3: Link using PyxcLinker (NO MORE system() calls!)
-      if (!PyxcLinker::Link(ScriptObjs, runtimeObj, exeFile)) {
+      if (!PyxcLinker::Link(scriptObj, runtimeObj, exeFile)) {
         errs() << "Linking failed\n";
         return 1;
       }
@@ -5056,39 +4886,32 @@ int main(int argc, char **argv) {
         std::cout << "Successfully created executable: " << exeFile << "\n";
         // Optionally clean up intermediate files
         std::cout << "Cleaning up intermediate files...\n";
-        for (const auto &Obj : ScriptObjs)
-          remove(Obj.c_str());
+        remove(scriptObj.c_str());
       } else {
         std::cout << exeFile << "\n";
-        for (const auto &Obj : ScriptObjs)
-          remove(Obj.c_str());
+        remove(scriptObj.c_str());
       }
 
       break;
     }
 
     case Object: {
-      for (size_t I = 0; I < InputFilenames.size(); ++I) {
-        const std::string &InFile = InputFilenames[I];
-        std::string output =
-            (!OutputFilename.empty() && InputFilenames.size() == 1)
-                ? OutputFilename
-                : getIntermediateObjectFilename(InFile);
-        if (Verbose)
-          std::cout << "Compiling " << InFile
-                    << " to object file: " << output << "\n";
-        CompileToObjectFile(InFile, output);
-        if (Verbose)
-          outs() << "Wrote " << output << "\n";
-        else
-          outs() << output << "\n";
-      }
+      std::string output = getOutputFilename(InputFilename, ".o");
+      if (Verbose)
+        std::cout << "Compiling " << InputFilename
+                  << " to object file: " << output << "\n";
+      CompileToObjectFile(InputFilename, output);
+      std::string scriptObj = output;
+      if (Verbose)
+        outs() << "Wrote " << scriptObj << "\n";
+      else
+        outs() << scriptObj << "\n";
       break;
     }
     case Tokens: {
       if (Verbose)
-        std::cout << "Tokenizing " << InputFilenames[0] << "...\n";
-      PrintTokens(InputFilenames[0]);
+        std::cout << "Tokenizing " << InputFilename << "...\n";
+      PrintTokens(InputFilename);
       break;
     }
     }

@@ -1,709 +1,556 @@
----
-description: "Support user-defined operators by parsing custom unary/binary forms, precedence, and associativity, then lowering them through the existing codegen path."
----
-# 8. Pyxc: Extending the Language: User-defined Operators
+# Chapter 9: Debug Information
 
 ## Introduction
-Welcome to Chapter 9 of the [Implementing a language with LLVM](chapter-00.md) tutorial. At this point in our tutorial, we now have a fully functional language that is fairly minimal, but also useful. There is still one big problem with it, however. Our language doesn’t have many useful operators (like division, logical negation, or even any comparisons besides less-than).
 
-This chapter of the tutorial takes a wild digression into adding user-defined operators to the simple and beautiful Pyxc language. This digression now gives us a simple and ugly language in some ways, but also a powerful one at the same time. One of the great things about creating your own language is that you get to decide what is good or bad. In this tutorial we’ll assume that it is okay to use this as a way to show some interesting parsing techniques.
+In this chapter, we add source-level debug information to our compiler. When you compile with `-g`, the object files will contain DWARF debug info that debuggers like `lldb` and `gdb` can use to show your source code, set breakpoints, and step through execution line by line.
 
-At the end of this tutorial, we’ll run through an example Pyxc application that renders the Mandelbrot set. This gives an example of what you can build with Pyxc and its feature set.
+## Why Debug Info Matters
 
-## Source Code
-To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter09](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter09).
+Without debug info, when you look at a crash or try to step through your code, all you see is assembly:
 
-## User-defined Operators: the Idea
-The “operator overloading” that we will add to Pyxc is more general than in languages like C++. In C++, you are only allowed to redefine existing operators: you can’t programmatically change the grammar, introduce new operators, change precedence levels, etc. In this chapter, we will add this capability to Pyxc, which will let the user round out the set of operators that are supported.
+```
+(lldb) disassemble
+->  0x100003f80: fadd   d0, d0, d1
+    0x100003f84: ret
+```
 
-The point of going into user-defined operators in a tutorial like this is to show the power and flexibility of using a hand-written parser. Thus far, the parser we have been implementing uses recursive descent for most parts of the grammar and operator precedence parsing for the expressions. See [Chapter 2](chapter-02.md) for details. By using operator precedence parsing, it is very easy to allow the programmer to introduce new operators into the grammar: the grammar is dynamically extensible as the JIT runs.
+With debug info, the debugger shows you the actual source:
 
-The two specific features we’ll add are programmable unary operators (right now, Pyxc has no unary operators at all) as well as binary operators. We do this borrowing from the python decorator syntax. An example of this is:
+```
+(lldb) list
+1    def factorial(n):
+2      return n * factorial(n - 1.0)
+3
+4    def main():
+5      return factorial(5.0)
+```
+
+## Seeing Debug Info in Action
+
+Let's start by demonstrating what debug info looks like before we implement it. Create `factorial.pyxc`:
 
 ```python
-# Unary not.
-@unary
-def !(v):
-    if v: return 0
-    else: return 1
+def factorial(n):
+  return n * factorial(n - 1.0)
 
-# Unary negate.
-@unary
-def -(v):
-  return 0-v
-
-# Define > with the same precedence as <.
-@binary(precedence=10)
-def >(LHS,RHS):
-  return RHS < LHS
-
-# Binary logical or (no short-circuit)
-@binary(precedence=5)
-def |(LHS, RHS):
-    if LHS: 
-        return 1
-    else: 
-        if RHS: 
-            return 1
-        else: 
-            return 0
-
-
-# Binary logical and (no short-circuit)
-@binary(precedence=6)
-def &(LHS, RHS):
-    if !LHS:
-        return 0
-    else:
-        return !!RHS
-
-# Define = with slightly lower precedence than relationals
-@binary(precedence=9)
-def =(LHS, RHS):
-    return !(LHS < RHS | LHS > RHS)
+def main():
+  return factorial(5.0)
 ```
 
-Many languages aspire to being able to implement their standard runtime library in the language itself. In Pyxc, we can implement significant parts of the language in the library!
+Build it with debug info:
 
-We will break down implementation of these features into two parts: implementing support for user-defined binary operators and adding unary operators.
+```bash
+$ ./build/pyxc build factorial.pyxc --emit=obj -g -O0
+Wrote factorial.o
+```
 
-# User-defined Binary Operators
-Adding support for user-defined binary operators is pretty simple with our current framework. We’ll first add support for decorators:
+Now inspect the debug information with `dwarfdump`:
+
+```bash
+$ dwarfdump --debug-info factorial.o
+```
+
+You'll see output like:
+
+```
+.debug_info contents:
+0x0000000b: DW_TAG_compile_unit
+              DW_AT_producer	("Pyxc Compiler")
+              DW_AT_language	(DW_LANG_C)
+              DW_AT_name	("factorial.pyxc")
+              DW_AT_comp_dir	(".")
+
+0x0000002a:   DW_TAG_subprogram
+                DW_AT_name	("factorial")
+                DW_AT_decl_file	("./factorial.pyxc")
+                DW_AT_decl_line	(1)
+                DW_AT_type	(0x0000005c "double")
+
+0x00000043:   DW_TAG_subprogram
+                DW_AT_name	("main")
+                DW_AT_decl_file	("./factorial.pyxc")
+                DW_AT_decl_line	(4)
+                DW_AT_type	(0x0000005c "double")
+```
+
+The debug info includes:
+- **Compile unit**: The source file name and directory
+- **Subprograms**: Each function with its name and line number
+- **Type information**: The `double` type
+- **Line mappings**: Which machine code addresses correspond to which source lines
+
+Check line number information:
+
+```bash
+$ dwarfdump --debug-line factorial.o
+```
+
+You'll see a line table mapping addresses to source locations:
+
+```
+Address            Line   Column File   ISA Discriminator OpIndex Flags
+------------------ ------ ------ ------ --- ------------- ------- -------------
+0x0000000000000000      1      0      1   0             0       0  is_stmt
+0x0000000000000010      2     28      1   0             0       0  is_stmt prologue_end
+0x0000000000000028      4      0      1   0             0       0  is_stmt
+0x000000000000002c      5     20      1   0             0       0  is_stmt prologue_end
+```
+
+This table tells the debugger: "Address 0x0 is line 1, address 0x28 is line 4, address 0x2c is line 5, column 20."
+
+When you eventually link this into an executable and run it in a debugger, you'll be able to:
+- Set breakpoints by function name: `break factorial`
+- Set breakpoints by line: `break factorial.pyxc:2`
+- Step through code and see source lines
+- View the call stack with function names
+
+## Implementation Overview
+
+To emit debug info, we need to:
+
+1. **Track source locations** in our AST (line and column numbers)
+2. **Create a DIBuilder** to generate DWARF metadata
+3. **Create a compile unit** describing the source file
+4. **Create debug info for each function** (DISubprogram)
+5. **Emit location info** for each expression during code generation
+6. **Finalize** the debug info before emitting the object file
+
+LLVM's debug info system uses "metadata" - special IR nodes that don't affect program execution but provide information to debuggers.
+
+## Adding the DIBuilder Include
+
+First, add the LLVM debug info header:
 
 ```cpp
-enum Token {
-  ...
-  // decorator
-  tok_decorator = -13,
+#include "llvm/IR/DIBuilder.h"
+```
+
+This provides the `DIBuilder` class, which is LLVM's API for creating debug information.
+
+## Tracking Source Locations in the AST
+
+Our lexer already tracks `CurLoc` (current location) as a `SourceLocation`. We need to capture this in our AST nodes.
+
+Update `ExprAST` to store and expose location:
+
+```cpp
+class ExprAST {
+  SourceLocation Loc;
+
+public:
+  ExprAST(SourceLocation Loc = CurLoc) : Loc(Loc) {}  // <-- Capture location
+  virtual ~ExprAST() = default;
+  virtual Value *codegen() = 0;
+  int getLine() const { return Loc.Line; }   // <-- Add accessor
+  int getCol() const { return Loc.Col; }     // <-- Add accessor
 };
-
-static int gettok() {
-...
-  if (LastChar == '#') {
-    ...
-  }
-
-  if (LastChar == '@') {
-    LastChar = getchar(); // consume '@'
-    return tok_decorator;
-  }
 ```
 
-Next we add support for the different operator types.
-```cpp
-enum OperatorType { Undefined, Unary, Binary };
+The default parameter `Loc = CurLoc` automatically captures the current source location when an AST node is created.
 
-static std::map<std::string, OperatorType> Decorators = {
-    {"unary", OperatorType::Unary}, {"binary", OperatorType::Binary}};
-```
-
-We have to extend our parsing logic to parse our decorators. Since decorators just come before the function definition, let's add the parsing logic there. 
+Update `PrototypeAST` similarly:
 
 ```cpp
-..
-static constexpr int DEFAULT_BINARY_PRECEDENCE = 30; // <-- ADD THIS 
-...
-
-/// definition ::= (@unary | @binary | @binary() | @binary(precedence=\d+))*
-///                 'def' prototype:
-///                     expression
-static std::unique_ptr<FunctionAST> ParseDefinition() {
-  OperatorType OpType = Undefined;
-  int Precedence = DEFAULT_BINARY_PRECEDENCE;
-
-  if (CurTok == tok_decorator) {
-    getNextToken(); // eat '@'
-
-    if (CurTok != tok_identifier)
-      return LogErrorF("expected decorator name after '@'");
-
-    auto it = Decorators.find(IdentifierStr);
-    OpType = it == Decorators.end() ? OperatorType::Undefined : it->second;
-    getNextToken(); // eat decorator name
-
-    if (OpType == Undefined)
-      return LogErrorF(("unknown decorator '" + IdentifierStr + "'").c_str());
-
-    if (OpType == Binary) {
-      if (CurTok == '(') {
-        getNextToken(); // eat '('
-        if (CurTok != ')') {
-          // Parse "precedence=N"
-          // If we want to introduce more attributes, we would add "precedence"
-          // to a map and associate it with a binary operator.
-          if (CurTok != tok_identifier || IdentifierStr != "precedence") {
-            return LogErrorF("expected 'precedence' parameter in decorator");
-          }
-
-          getNextToken(); // eat 'precedence'
-
-          if (CurTok != '=')
-            return LogErrorF("expected '=' after 'precedence'");
-
-          getNextToken(); // eat '='
-
-          if (CurTok != tok_number)
-            return LogErrorF("expected number for precedence value");
-
-          Precedence = NumVal;
-          getNextToken(); // eat number
-        }
-        if (CurTok != ')')
-          return LogErrorF("expected ')' after precedence value");
-        getNextToken(); // eat ')'
-      }
-    }
-  }
-
-  EatNewLines();
-
-  if (CurTok != tok_def)
-    return LogErrorF("expected 'def'");
-  ...
-```
-
-We also adjust the Main loop to handle the decorator
-```cpp
-/// top ::= definition | external | expression | ';'
-static void MainLoop() {
-  while (true) {
-    fprintf(stderr, "ready> ");
-    switch (CurTok) {
-    case tok_eof:
-      return;
-    case tok_def: 
-    case tok_decorator: // <-- ADD THIS AND FALL THROUGH TO HandleDefinition()
-      HandleDefinition();
-      break;
-    case tok_extern:
-      HandleExtern();
-      break;
-    default:
-      HandleTopLevelExpression();
-      break;
-    }
-  }
-}
-```
-
-In our grammar so far, the “name” for the function definition is parsed as the “prototype” production and into the PrototypeAST AST node. To represent our new user-defined operators as prototypes, we have to extend the PrototypeAST AST node like this:
-
-```cpp
-/// PrototypeAST - This class represents the "prototype" for a function,
-/// which captures its argument names as well as if it is an operator.
 class PrototypeAST {
   std::string Name;
   std::vector<std::string> Args;
-  bool IsOperator;
-  unsigned Precedence;  // Precedence if a binary op.
+  SourceLocation Loc;  // <-- Add location field
 
 public:
-  PrototypeAST(const std::string &Name, std::vector<std::string> Args,
-               bool IsOperator = false, unsigned Prec = 0)
-  : Name(Name), Args(std::move(Args)), IsOperator(IsOperator),
-    Precedence(Prec) {}
+  PrototypeAST(SourceLocation Loc, const std::string &Name,
+               std::vector<std::string> Args)
+      : Name(Name), Args(std::move(Args)), Loc(Loc) {}
 
   Function *codegen();
   const std::string &getName() const { return Name; }
-
-  bool isUnaryOp() const { return IsOperator && Args.size() == 1; }
-  bool isBinaryOp() const { return IsOperator && Args.size() == 2; }
-
-  char getOperatorName() const {
-    assert(isUnaryOp() || isBinaryOp());
-    return Name[Name.size() - 1];
-  }
-
-  unsigned getBinaryPrecedence() const { return Precedence; }
+  int getLine() const { return Loc.Line; }  // <-- Add accessor
 };
 ```
 
-Basically, in addition to knowing a name for the prototype, we now keep track of whether it was an operator, and if it was, what precedence level the operator is at. The precedence is only used for binary operators (as you’ll see below, it just doesn’t apply for unary operators). 
-
-We need to pass OpType and Precedence read from the decorator in `ParseDefinition` to `ParsePrototype`, so it can create a `PrototypeAST` with the right parameters: 
+Now update `ParsePrototype()` to capture the location:
 
 ```cpp
-static std::unique_ptr<PrototypeAST>
-ParsePrototype(OperatorType operatorType = Undefined, int precedence = 0) {
-  std::string FnName;
-  
-  if (operatorType != Undefined) {
-    // Parsing operator definition: expect a single character operator token
-    if (CurTok == tok_identifier || !isascii(CurTok))
-      return LogErrorP("Expected single character operator");
+static std::unique_ptr<PrototypeAST> ParsePrototype() {
+  if (CurTok != tok_identifier)
+    return LogError<ProtoPtr>("Expected function name in prototype");
 
-    FnName = (operatorType == Unary ? "unary" : "binary");
-    FnName += (char)CurTok;
-    getNextToken();
-  } else {
-    // Parsing regular function: expect identifier
-    if (CurTok != tok_identifier)
-      return LogErrorP("Expected function name in prototype");
+  SourceLocation FnLoc = CurLoc;  // <-- Capture function location
+  std::string FnName = IdentifierStr;
+  getNextToken();
 
-    FnName = IdentifierStr;
-    getNextToken();
-  }
+  // ... parse arguments ...
 
-  if (CurTok != '(')
-    return LogErrorP("Expected '(' in prototype");
-
-  ...
-
-  // success.
-  getNextToken(); // eat ')'.
-
-  // Pass on the parameters to PrototypeAST constructor
-  return std::make_unique<PrototypeAST>(FnName, std::move(ArgNames),
-                                        operatorType != OperatorType::Undefined,
-                                        precedence);
+  return std::make_unique<PrototypeAST>(FnLoc, FnName, std::move(ArgNames));
 }
 ```
 
-This is all fairly straightforward parsing code, and we have already seen a lot of similar code in the past. One interesting part about the code above is the couple lines that set up FnName for binary operators. This builds names like “binary@” for a newly defined “@” operator. It then takes advantage of the fact that symbol names in the LLVM symbol table are allowed to have any character in them, including embedded nul characters.
-
-The next interesting thing to add, is codegen support for these binary operators. Given our current structure, this is a simple addition of a default case for our existing binary operator node:
+And update `ParseTopLevelExpr()`:
 
 ```cpp
+static std::unique_ptr<FunctionAST> ParseTopLevelExpr() {
+  SourceLocation FnLoc = CurLoc;  // <-- Capture location
+  if (auto E = ParseExpression()) {
+    auto Proto = std::make_unique<PrototypeAST>(FnLoc, "__anon_expr",
+                                                std::vector<std::string>());
+    return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
+  }
+  return nullptr;
+}
+```
+
+## Debug Info Infrastructure
+
+Add global variables and the `DebugInfo` struct after the other code generation globals:
+
+```cpp
+static bool InteractiveMode = true;
+static bool BuildObjectMode = false;
+static unsigned CurrentOptLevel = 0;
+
+// Debug info support
+struct DebugInfo {
+  DICompileUnit *TheCU;
+  DIType *DblTy;
+  std::vector<DIScope *> LexicalBlocks;
+
+  void emitLocation(ExprAST *AST);
+  DIType *getDoubleTy();
+} *KSDbgInfo = nullptr;
+
+static std::unique_ptr<DIBuilder> DBuilder;
+```
+
+**Key components:**
+
+- `DICompileUnit *TheCU`: The compile unit representing our source file
+- `DIType *DblTy`: Cached type info for `double` (all our values are doubles)
+- `std::vector<DIScope *> LexicalBlocks`: Stack of scopes (for nested functions, though we don't have those yet)
+- `DBuilder`: The LLVM DIBuilder that creates debug metadata
+- `KSDbgInfo`: Global pointer to our debug info state (null when `-g` is not used)
+
+Implement the helper methods:
+
+```cpp
+DIType *DebugInfo::getDoubleTy() {
+  if (DblTy)
+    return DblTy;
+  DblTy = DBuilder->createBasicType("double", 64, dwarf::DW_ATE_float);
+  return DblTy;
+}
+
+void DebugInfo::emitLocation(ExprAST *AST) {
+  if (!AST)
+    return Builder->SetCurrentDebugLocation(DebugLoc());
+  DIScope *Scope;
+  if (LexicalBlocks.empty())
+    Scope = TheCU;
+  else
+    Scope = LexicalBlocks.back();
+  Builder->SetCurrentDebugLocation(
+      DILocation::get(Scope->getContext(), AST->getLine(), AST->getCol(), Scope));
+}
+```
+
+**`getDoubleTy()`**: Creates a DWARF basic type for `double` (64-bit floating point, `DW_ATE_float` encoding). This is cached so we only create it once.
+
+**`emitLocation()`**: Sets the current debug location in the IR builder. When `AST` is null, it clears the location (used for function prologues). Otherwise, it creates a `DILocation` with the line and column from the AST node.
+
+Add a helper to create function types:
+
+```cpp
+static DISubroutineType *CreateFunctionType(unsigned NumArgs) {
+  SmallVector<Metadata *, 8> EltTys;
+  DIType *DblTy = KSDbgInfo->getDoubleTy();
+
+  // Add the result type.
+  EltTys.push_back(DblTy);
+
+  for (unsigned i = 0, e = NumArgs; i != e; ++i)
+    EltTys.push_back(DblTy);
+
+  return DBuilder->createSubroutineType(DBuilder->getOrCreateTypeArray(EltTys));
+}
+```
+
+This creates a function signature in DWARF: the first element is the return type, followed by parameter types. For `def add(x, y)`, this creates the signature `double(double, double)`.
+
+## Emitting Location Info in Expressions
+
+Update each expression's `codegen()` to emit its source location:
+
+```cpp
+Value *NumberExprAST::codegen() {
+  if (KSDbgInfo)
+    KSDbgInfo->emitLocation(this);
+  return ConstantFP::get(*TheContext, APFloat(Val));
+}
+
+Value *VariableExprAST::codegen() {
+  Value *V = NamedValues[Name];
+  if (!V)
+    return LogError<Value *>("Unknown variable name");
+  if (KSDbgInfo)
+    KSDbgInfo->emitLocation(this);
+  return V;
+}
+
 Value *BinaryExprAST::codegen() {
+  if (KSDbgInfo)
+    KSDbgInfo->emitLocation(this);
+
   Value *L = LHS->codegen();
   Value *R = RHS->codegen();
   if (!L || !R)
     return nullptr;
 
-  switch (Op) {
-  case '+':
-    return Builder->CreateFAdd(L, R, "addtmp");
-  case '-':
-    return Builder->CreateFSub(L, R, "subtmp");
-  case '*':
-    return Builder->CreateFMul(L, R, "multmp");
-  case '<':
-    L = Builder->CreateFCmpULT(L, R, "cmptmp");
-    // Convert bool 0/1 to double 0.0 or 1.0
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext),
-                                "booltmp");
-  default:
-    break;
-  }
+  // ... rest of binary op codegen ...
+}
 
-  // If it wasn't a builtin binary operator, it must be a user defined one. Emit
-  // a call to it.
-  Function *F = getFunction(std::string("binary") + Op);
-  assert(F && "binary operator not found!");
+Value *CallExprAST::codegen() {
+  if (KSDbgInfo)
+    KSDbgInfo->emitLocation(this);
 
-  Value *Ops[2] = { L, R };
-  return Builder->CreateCall(F, Ops, "binop");
+  Function *CalleeF = getFunction(Callee);
+  // ... rest of call codegen ...
 }
 ```
 
-As you can see above, the new code is actually really simple. It just does a lookup for the appropriate operator in the symbol table and generates a function call to it. Since user-defined operators are just built as normal functions (because the “prototype” boils down to a function with the right name) everything falls into place.
+The pattern is simple: check if `KSDbgInfo` exists (i.e., `-g` was used), and if so, emit the location before generating code.
 
-The final piece of code we are missing, is a bit of top-level magic:
+## Creating Debug Info for Functions
+
+This is the most complex part. Update `FunctionAST::codegen()`:
 
 ```cpp
 Function *FunctionAST::codegen() {
-  // Transfer ownership of the prototype to the FunctionProtos map, but keep a
-  // reference to it for use below.
   auto &P = *Proto;
   FunctionProtos[Proto->getName()] = std::move(Proto);
   Function *TheFunction = getFunction(P.getName());
+
   if (!TheFunction)
     return nullptr;
 
-  // If this is an operator, install it.
-  if (P.isBinaryOp())
-    BinopPrecedence[P.getOperatorName()] = P.getBinaryPrecedence();
-
-  // Create a new basic block to start insertion into.
   BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
-  ...
-```
-Basically, before codegening a function, if it is a user-defined operator, we register it in the precedence table. This allows the binary operator parsing logic we already have in place to handle it. Since we are working on a fully-general operator precedence parser, this is all we need to do to “extend the grammar”.
+  Builder->SetInsertPoint(BB);
 
-Now we have useful user-defined binary operators. This builds a lot on the previous framework we built for other operators. Adding unary operators is a bit more challenging, because we don’t have any framework for it yet - let’s see what it takes.
+  // Create a subprogram DIE for this function if debug info is enabled
+  DISubprogram *SP = nullptr;
+  if (KSDbgInfo) {
+    DIFile *Unit = DBuilder->createFile(KSDbgInfo->TheCU->getFilename(),
+                                        KSDbgInfo->TheCU->getDirectory());
+    DIScope *FContext = Unit;
+    unsigned LineNo = P.getLine();
+    unsigned ScopeLine = LineNo;
+    SP = DBuilder->createFunction(
+        FContext, P.getName(), StringRef(), Unit, LineNo,
+        CreateFunctionType(TheFunction->arg_size()), ScopeLine,
+        DINode::FlagPrototyped, DISubprogram::SPFlagDefinition);
+    TheFunction->setSubprogram(SP);
 
-## User-defined Unary Operators
-Since we don’t currently support unary operators in the Pyxc language, we’ll need to add everything to support them. Above, we added simple support for the ‘unary’ keyword to the lexer. In addition to that, we need an AST node:
+    // Push the current scope
+    KSDbgInfo->LexicalBlocks.push_back(SP);
 
-```cpp
-/// UnaryExprAST - Expression class for a unary operator.
-class UnaryExprAST : public ExprAST {
-  char Opcode;
-  std::unique_ptr<ExprAST> Operand;
+    // Unset the location for the prologue emission
+    KSDbgInfo->emitLocation(nullptr);
+  }
 
-public:
-  UnaryExprAST(char Opcode, std::unique_ptr<ExprAST> Operand)
-    : Opcode(Opcode), Operand(std::move(Operand)) {}
+  // Record the function arguments in the NamedValues map.
+  NamedValues.clear();
+  for (auto &Arg : TheFunction->args())
+    NamedValues[std::string(Arg.getName())] = &Arg;
 
-  Value *codegen() override;
-};
-```
+  if (Value *RetVal = Body->codegen()) {
+    Builder->CreateRet(RetVal);
 
-This AST node is very simple and obvious by now. It directly mirrors the binary operator AST node, except that it only has one child. With this, we need to add the parsing logic. Parsing a unary operator is pretty simple: we’ll add a new function to do it:
+    // Pop off the lexical block for the function
+    if (KSDbgInfo)
+      KSDbgInfo->LexicalBlocks.pop_back();
 
-```cpp
-/// unary
-///   ::= primary
-///   ::= '!' unary
-static std::unique_ptr<ExprAST> ParseUnary() {
-  // If the current token is not an operator, it must be a primary expr.
-  if (!isascii(CurTok) || CurTok == '(' || CurTok == ',')
-    return ParsePrimary();
+    verifyFunction(*TheFunction);
 
-  // If this is a unary operator, read it.
-  int Opc = CurTok;
-  getNextToken();
-  if (auto Operand = ParseUnary())
-    return std::make_unique<UnaryExprAST>(Opc, std::move(Operand));
+    if (!BuildObjectMode) {
+      TheFPM->run(*TheFunction, *TheFAM);
+    }
+
+    return TheFunction;
+  }
+
+  // Error reading body, remove function.
+  TheFunction->eraseFromParent();
+
+  if (KSDbgInfo)
+    KSDbgInfo->LexicalBlocks.pop_back();
+
   return nullptr;
 }
 ```
-The grammar we add is pretty straightforward here. If we see a unary operator when parsing a primary operator, we eat the operator as a prefix and parse the remaining piece as another unary operator. This allows us to handle multiple unary operators (e.g. “!!x”). Note that unary operators can’t have ambiguous parses like binary operators can, so there is no need for precedence information.
 
-The problem with this function, is that we need to call ParseUnary from somewhere. To do this, we change previous callers of ParsePrimary to call ParseUnary instead:
+**Key steps:**
 
-```cpp
-/// binoprhs
-///   ::= ('+' unary)*
-static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
-                                              std::unique_ptr<ExprAST> LHS) {
-  ...
-    // Parse the unary expression after the binary operator.
-    auto RHS = ParseUnary();
-    if (!RHS)
-      return nullptr;
-  ...
-}
+1. **Create a DIFile**: References the source file and directory from the compile unit
+2. **Create a DISubprogram**: This is the debug info for the function itself
+   - `FContext`: The lexical scope (the file)
+   - `P.getName()`: Function name (e.g., "factorial")
+   - `StringRef()`: Linkage name (empty for us)
+   - `Unit`: The file it's defined in
+   - `LineNo`: Line number where the function is defined
+   - `CreateFunctionType(...)`: The function signature (double(double, double), etc.)
+   - `ScopeLine`: Line where the function scope starts (same as LineNo for us)
+   - `DINode::FlagPrototyped`: Indicates the function has a prototype
+   - `DISubprogram::SPFlagDefinition`: This is a definition, not just a declaration
+3. **Attach to the function**: `TheFunction->setSubprogram(SP)` links the LLVM function to its debug metadata
+4. **Push the scope**: Add `SP` to the lexical blocks stack so expressions inside the function know their scope
+5. **Emit null location**: This ensures the function prologue (setup instructions) don't have a source location. Debuggers skip past these when stepping.
+6. **Pop the scope**: When the function is complete (or on error), remove it from the stack
 
-/// expression
-///   ::= unary binoprhs
-///
-static std::unique_ptr<ExprAST> ParseExpression() {
-  auto LHS = ParseUnary();
-  if (!LHS)
-    return nullptr;
+## Initializing Debug Info in Build Mode
 
-  return ParseBinOpRHS(0, std::move(LHS));
-}
-```
-
-With these two simple changes, we are now able to parse unary operators and build the AST for them. 
-
-As with binary operators, we name unary operators with a name that includes the operator character. This assists us at code generation time. Speaking of, the final piece we need to add is codegen support for unary operators. It looks like this:
+In the `BuildCommand` handler (in `main()`), initialize debug info right after `InitializeModuleAndManagers()`:
 
 ```cpp
-Value *UnaryExprAST::codegen() {
-  Value *OperandV = Operand->codegen();
-  if (!OperandV)
-    return nullptr;
+InitializeModuleAndManagers();
 
-  Function *F = getFunction(std::string("unary") + Opcode);
-  if (!F)
-    return LogErrorV("Unknown unary operator");
+// Initialize debug info if requested
+if (BuildDebug) {
+  DBuilder = std::make_unique<DIBuilder>(*TheModule);
 
-  return Builder->CreateCall(F, OperandV, "unop");
+  KSDbgInfo = new DebugInfo();
+  KSDbgInfo->TheCU = DBuilder->createCompileUnit(
+      dwarf::DW_LANG_C, DBuilder->createFile(BuildInputFile, "."),
+      "Pyxc Compiler", CurrentOptLevel > 0, "", 0);
+}
+
+getNextToken();
+MainLoop();
+
+if (HadError)
+  return 1;
+
+// Finalize debug info
+if (BuildDebug) {
+  DBuilder->finalize();
 }
 ```
 
-## Kicking the Tires
-It is somewhat hard to believe, but with a few simple extensions we’ve covered in the last chapters, we have grown a real-ish language. With this, we can do a lot of interesting things, including I/O, math, and a bunch of other things. For example, we can now add a nice sequencing operator (printd is defined to print out the specified value and a newline):
+**`createCompileUnit()` parameters:**
+
+- `dwarf::DW_LANG_C`: Source language (we say "C" since DWARF doesn't have a "Pyxc" constant)
+- `DBuilder->createFile(BuildInputFile, ".")`: The source file (e.g., "factorial.pyxc") and directory (".")
+- `"Pyxc Compiler"`: Producer string (shows up in debug info)
+- `CurrentOptLevel > 0`: Whether optimizations are enabled
+- `""`: Flags (none)
+- `0`: Runtime version (not applicable)
+
+**`DBuilder->finalize()`**: This must be called after all debug info is created but before emitting the module. It finalizes the metadata and makes sure everything is consistent.
+
+## Cleanup
+
+After emitting the module or object file, clean up the debug info:
+
+```cpp
+if (BuildEmit == BuildEmitLLVM) {
+  TheModule->print(outs(), nullptr);
+  // Clean up debug info
+  if (BuildDebug) {
+    delete KSDbgInfo;
+    KSDbgInfo = nullptr;
+    DBuilder.reset();
+  }
+  return 0;
+}
+
+const std::string OutputPath = DeriveObjectOutputPath(BuildInputFile);
+bool success = EmitObjectFile(OutputPath);
+
+// Clean up debug info
+if (BuildDebug) {
+  delete KSDbgInfo;
+  KSDbgInfo = nullptr;
+  DBuilder.reset();
+}
+
+return success ? 0 : 1;
+```
+
+## Testing
+
+Create a test file `test/cli_build_debug_info.pyxc`:
+
+```python
+# RUN: cp %s %t.pyxc
+# RUN: %pyxc build %t.pyxc --emit=obj -g -O0 > %t.out 2>&1
+# RUN: grep -q "Wrote " %t.out
+# RUN: test -f %t.o
+# RUN: dwarfdump --debug-info %t.o | grep -q "DW_TAG_subprogram"
+# RUN: dwarfdump --debug-info %t.o | grep -q "DW_AT_name.*add"
+# RUN: dwarfdump --debug-line %t.o | grep -q "\.pyxc"
+
+def add(x, y):
+  return x + y
+
+def main():
+  return add(3.0, 4.0)
+```
+
+This verifies:
+1. The object file is created
+2. Debug info contains subprogram entries
+3. Function names appear in debug info
+4. Line tables reference the .pyxc source file
+
+Run the tests:
 
 ```bash
-ready> extern def printd(x)
-ready> Read extern:
-declare double @printd(double)
-
-ready> @binary(precedence=1) def ;(x,y): return 0
-ready> Read function definition:
-...
-
-ready> printd(123) ; printd(456) ; printd(789)
-...
-
-123.000000
-456.000000
-789.000000
-
-Evaluated to 0.000000
+$ lit test/
+Testing Time: 0.48s
+  Total Discovered Tests: 48
+  Passed: 48 (100.00%)
 ```
 
-We can also define a bunch of other “primitive” operations, such as:
+## Compile and Test
 
-```python
-# unary not
-@unary
-def !(v):
-    if v: return 0
-    else: return 1
-
-# Unary negate.
-@unary
-def -(v):
-  return 0-v
-
-# Define > with the same precedence as <.
-@binary(precedence=10)
-def >(LHS,RHS):
-  return RHS < LHS
-
-# Binary logical or (no short-circuit)
-@binary(precedence=5)
-def |(LHS, RHS):
-    if LHS: 
-        return 1
-    else: 
-        if RHS: 
-            return 1
-        else: 
-            return 0
-
-
-# Binary logical and (no short-circuit)
-@binary(precedence=6)
-def &(LHS, RHS):
-    if !LHS:
-        return 0
-    else:
-        return !!RHS
-
-# Define = with slightly lower precedence than relationals
-@binary(precedence=9)
-def =(LHS, RHS):
-    return !(LHS < RHS | LHS > RHS)
-
-@binary(precedence=1)
-def ;(x, y):
-    return y
-```
-
-Given the previous if/then/else support, we can also define interesting functions for I/O. For example, the following prints out a character whose “density” reflects the value passed in: the lower the value, the denser the character:
-
-```python
-extern def putchard(char)
-
-def printdensity(d):
-    if d > 8: 
-        return putchard(32) # ' '
-    else: 
-        if d > 4:
-            return putchard(46)  # '.'
-        else: 
-            if d > 2:
-                return putchard(43) # '+'
-            else:
-                return putchard(42)  # '*'
-
-printdensity(1); printdensity(2); printdensity(3); printdensity(4); printdensity(5); printdensity(9); putchard(10)
-
-**++.
-Evaluated to 0.000000
-```
-
-Based on these simple primitive operations, we can start to define more interesting things. For example, here’s a little function that determines the number of iterations it takes for a certain function in the complex plane to diverge:
-
-```python
-# Determine whether the specific location diverges.
-# Solve for z = z^2 + c in the complex plane.
-def mandelconverger(real, imag, iters, creal, cimag):
-  if iters > 255 | (real*real + imag*imag > 4):
-    return iters
-  else:
-    return mandelconverger(real*real - imag*imag + creal, 2*real*imag + cimag, iters+1, creal, cimag)
-
-# Return the number of iterations required for the iteration to escape
-def mandelconverge(real, imag):
-  return mandelconverger(real, imag, 0, real, imag)
-```
-
-This “z = z2 + c” function is a beautiful little creature that is the basis for computation of the [Mandelbrot Set](http://en.wikipedia.org/wiki/Mandelbrot_set). Our mandelconverge function returns the number of iterations that it takes for a complex orbit to escape, saturating to 255. This is not a very useful function by itself, but if you plot its value over a two-dimensional plane, you can see the Mandelbrot set. Given that we are limited to using putchard here, our amazing graphical output is limited, but we can whip together something using the density plotter above:
-
-```python
-# Compute and plot the mandelbrot set with the specified 2 dimensional range
-# info.
-def mandelhelp(xmin, xmax, xstep, ymin, ymax, ystep):
-  for y in range(ymin, ymax, ystep):
-    (for x in range(xmin, xmax, xstep):
-       printdensity(mandelconverge(x,y))) ; putchard(10)
-
-# mandel - This is a convenient helper function for plotting the mandelbrot set
-# from the specified position with the specified Magnification.
-def mandel(realstart, imagstart, realmag, imagmag):
-  # NOTE: The entire expression needs to be on the same line. Line breaks won't work here.
-  return mandelhelp(realstart, realstart+realmag*78, realmag, imagstart, imagstart+imagmag*40, imagmag)
-```
-
-```python
-ready> mandel(-2.3, -1.3, 0.05, 0.07)
-*******************************************************************************
-*******************************************************************************
-****************************************++++++*********************************
-************************************+++++...++++++*****************************
-*********************************++++++++.. ...+++++***************************
-*******************************++++++++++..   ..+++++**************************
-******************************++++++++++.     ..++++++*************************
-****************************+++++++++....      ..++++++************************
-**************************++++++++.......      .....++++***********************
-*************************++++++++.   .            ... .++**********************
-***********************++++++++...                     ++**********************
-*********************+++++++++....                    .+++*********************
-******************+++..+++++....                      ..+++********************
-**************++++++. ..........                        +++********************
-***********++++++++..        ..                         .++********************
-*********++++++++++...                                 .++++*******************
-********++++++++++..                                   .++++*******************
-*******++++++.....                                    ..++++*******************
-*******+........                                     ...++++*******************
-*******+... ....                                     ...++++*******************
-*******+++++......                                    ..++++*******************
-*******++++++++++...                                   .++++*******************
-*********++++++++++...                                  ++++*******************
-**********+++++++++..        ..                        ..++********************
-*************++++++.. ..........                        +++********************
-******************+++...+++.....                      ..+++********************
-*********************+++++++++....                    ..++*********************
-***********************++++++++...                     +++*********************
-*************************+++++++..   .            ... .++**********************
-**************************++++++++.......      ......+++***********************
-****************************+++++++++....      ..++++++************************
-*****************************++++++++++..     ..++++++*************************
-*******************************++++++++++..  ...+++++**************************
-*********************************++++++++.. ...+++++***************************
-***********************************++++++....+++++*****************************
-***************************************++++++++********************************
-*******************************************************************************
-*******************************************************************************
-*******************************************************************************
-*******************************************************************************
-*******************************************************************************
-Evaluated to 0.000000
-
-ready> mandel(-2, -1, 0.02, 0.04)
-******************************************************************+++++++++++++
-****************************************************************+++++++++++++++
-*************************************************************++++++++++++++++++
-***********************************************************++++++++++++++++++++
-********************************************************+++++++++++++++++++++++
-******************************************************++++++++++++++++++++++...
-***************************************************+++++++++++++++++++++.......
-*************************************************++++++++++++++++++++..........
-***********************************************+++++++++++++++++++...       ...
-********************************************++++++++++++++++++++......         
-******************************************++++++++++++++++++++.......          
-***************************************+++++++++++++++++++++..........         
-************************************++++++++++++++++++++++...........          
-********************************++++++++++++++++++++++++.........              
-***************************++++++++...........+++++..............              
-*********************++++++++++++....  .........................               
-***************+++++++++++++++++....   .........   ............                
-***********+++++++++++++++++++++.....                   ......                 
-********+++++++++++++++++++++++.......                                         
-******+++++++++++++++++++++++++........                                        
-****+++++++++++++++++++++++++.......                                           
-***+++++++++++++++++++++++.........                                            
-**++++++++++++++++...........                                                  
-*++++++++++++................                                                  
-*++++....................                                                      
-                                                                               
-*++++....................                                                      
-*++++++++++++................                                                  
-**++++++++++++++++...........                                                  
-***+++++++++++++++++++++++.........                                            
-****+++++++++++++++++++++++++.......                                           
-******+++++++++++++++++++++++++........                                        
-********+++++++++++++++++++++++.......                                         
-***********+++++++++++++++++++++.....                   ......                 
-***************+++++++++++++++++....   .........   ............                
-*********************++++++++++++....  .........................               
-***************************++++++++...........+++++..............              
-********************************++++++++++++++++++++++++.........              
-************************************++++++++++++++++++++++...........          
-***************************************+++++++++++++++++++++..........         
-******************************************++++++++++++++++++++.......       
-Evaluated to 0.000000
-
-ready> mandel(-0.9, -1.4, 0.02, 0.03)
-*******************************************************************************
-*******************************************************************************
-*******************************************************************************
-*******************************************************************************
-*******************************************************************************
-*******************************************************************************
-*******************************************************************************
-*******************************************************************************
-****************************+++++++++++++++++**********************************
-***********************+++++++++++...++++++++++++******************************
-********************+++++++++++++.. . .++++++++++++++**************************
-*****************++++++++++++++++... ......++++++++++++************************
-**************+++++++++++++++++++...   .......+++++++++++**********************
-************++++++++++++++++++++....    .... ..++++++++++++********************
-**********++++++++++++++++++++++......       ...++++++++++++*******************
-********+++++++++++++++++++++++.......     .....++++++++++++++*****************
-******++++++++++++++++++++++++.......      .....+++++++++++++++****************
-****+++++++++++++++++++++++++.... .         .....+++++++++++++++***************
-**+++++++++++++++++++++++++....                ...++++++++++++++++*************
-*+++++++++++++++++++++++.......                ....++++++++++++++++************
-+++++++++++++++++++++..........                .....++++++++++++++++***********
-++++++++++++++++++.............                .......+++++++++++++++**********
-+++++++++++++++................                ............++++++++++**********
-+++++++++++++.................                  .................+++++*********
-+++++++++++...       ....                            ..........  .+++++********
-++++++++++.....                                       ........  ...+++++*******
-++++++++......                                                   ..++++++******
-+++++++........                                                   ..+++++******
-+++++..........                                                   ..++++++*****
-++++..........                                                  ....++++++*****
-++..........                                                    ....+++++++****
-..........                                                     ......+++++++***
-..........                                                      .....+++++++***
-..........                                                       .....++++++***
-.........                                                            .+++++++**
-........                                                             .+++++++**
- ......                                                             ...+++++++*
-   .                                                              ....++++++++*
-                                                                   ...++++++++*
-                                                                    ..+++++++++
-                                                                    ..+++++++++
-Evaluated to 0.000000
-ready> ^D
-```
-At this point, you may be starting to realize that Pyxc is a real and powerful language. It may not be self-similar :), but it can be used to plot things that are!
-
-With this, we conclude the “adding user-defined operators” chapter of the tutorial. We have successfully augmented our language, adding the ability to extend the language in the library, and we have shown how this can be used to build a simple but interesting end-user application in Pyxc. At this point, Pyxc can build a variety of applications that are functional and can call functions with side-effects, but it can’t actually define and mutate a variable itself.
-
-Strikingly, variable mutation is an important feature of some languages, and it is not at all obvious how to add support for mutable variables without having to add an “SSA construction” phase to your front-end. In the next chapter, we will describe how you can add variable mutation without building SSA in your front-end.
-
-## Compiling
 ```bash
-cd code/chapter09 && ./build.sh
+cd code/chapter09
+./build.sh
 ```
 
-On some platforms, you will need to specify -rdynamic or -Wl,–export-dynamic when linking. This ensures that symbols defined in the main executable are exported to the dynamic linker and so are available for symbol resolution at run time. This is not needed if you compile your support code into a shared library, although doing that will cause problems on Windows.
+Try it out:
 
-## Known Bugs / Shortcomings
+```bash
+$ ./build/pyxc build factorial.pyxc --emit=obj -g -O0
+Wrote factorial.o
 
-As of this chapter, multi-character operators (for example `==`, `!=`, `<=`, `>=`) are not tokenized as single operators. The lexer currently emits them as separate single-character tokens.
-
-This can corrupt the parse tree for some expressions, and the eventual diagnostic may appear late (often near end-of-file) instead of at the exact source of the problem. A common symptom is an error like:
-
-```text
-Error (Line: N, Column: M): Unknown unary operator
+$ dwarfdump --debug-info factorial.o | grep -A5 DW_TAG_subprogram
+  DW_TAG_subprogram
+    DW_AT_low_pc	(0x0000000000000000)
+    DW_AT_high_pc	(0x0000000000000028)
+    DW_AT_name	("factorial")
+    DW_AT_decl_file	("./factorial.pyxc")
+    DW_AT_decl_line	(1)
 ```
 
-So if you see an EOF-adjacent or late-location operator error, check for multi-character operators first.
+Perfect! The object file now has complete debug information.
 
+## What's Next?
 
-## Need Help?
+In later chapters, when we implement:
+- **Variables**: We'll add `DILocalVariable` for debugging local variables
+- **Executables**: We'll be able to run programs under `lldb` and step through Pyxc source code
+- **Optimizations**: We'll need to handle how aggressive optimizations can make debug info inaccurate
 
-Stuck on something? Have questions about this chapter? Found an error?
+For now, we have the foundation: source locations, function metadata, and line number mapping. This is enough for basic source-level debugging once we can create executables.
 
-- **Open an issue:** [GitHub Issues](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues) - Report bugs, errors, or problems
-- **Start a discussion:** [GitHub Discussions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions) - Ask questions, share tips, or discuss the tutorial
-- **Contribute:** Found a typo? Have a better explanation? [Pull requests](https://github.com/alankarmisra/pyxc-llvm-tutorial/pulls) are welcome!
+## Summary
 
-**When reporting issues, please include:**
-- The chapter you're working on
-- Your platform (e.g., macOS 14 M2, Ubuntu 24.04, Windows 11)
-- The complete error message or unexpected behavior
-- What you've already tried
+We added comprehensive debug info support:
 
-The goal is to make this tutorial work smoothly for everyone. Your feedback helps improve it for the next person!
+1. **Source locations**: Captured line and column numbers in all AST nodes
+2. **DIBuilder infrastructure**: Created `DebugInfo` struct and helpers
+3. **Compile unit**: Describes the source file being compiled
+4. **Function metadata**: Each function gets a `DISubprogram` with its name, line number, and type
+5. **Location tracking**: Every expression emits its source location during codegen
+6. **Finalization**: Debug metadata is finalized before object file emission
+
+All controlled by the `-g` flag. When you compile with `-g`, you get rich DWARF debug information. Without it, object files are smaller and contain no debug metadata.
+
+The pattern we established (check `if (KSDbgInfo)` before emitting debug info) keeps debug code cleanly separated and has zero runtime overhead when not debugging.

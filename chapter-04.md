@@ -1,44 +1,46 @@
 ---
-description: "Introduce a real command-line interface for pyxc with repl/run/build modes."
+description: "Add a real command-line interface with subcommands for repl, run, and build modes."
 ---
-# 4. Pyxc: A better command line interface
+# 4. Pyxc: Command Line Interface
 
-## Introduction
+## What We're Building
 
-Welcome to Chapter 4 of the [Pyxc: My First Language Frontend with LLVM](chapter-00.md) tutorial.
+In Chapter 2, we built a parser. To test it, we ran a hardcoded main loop. Every time we wanted to change behavior (print tokens vs parse vs generate IR), we had to rewrite `main()`.
 
-In [Chapter 2](chapter-02.md), we built a working recursive-descent parser and AST, and while doing that we quietly dropped the simple token-printing loop from Chapter 1 because parsing was the bigger priority at that point. This chapter is where we bring that back, but in a cleaner way, with real command-line switches so we can run `pyxc` in different modes without constantly rewriting `main()` every time we add a new capability.
-
-## Source Code
-
-To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter04](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter04).
-
-## What options are we trying to add?
-
-Before we write even a line of implementation code, it helps to lock in the command shapes we want, because that keeps us honest about what users should be able to type:
+That's fine for learning, but awkward for actual use. This chapter adds a proper command-line interface:
 
 ```bash
-./pyxc repl [--emit-tokens] [--emit-llvm]
+./pyxc repl [-t|--emit-tokens] [-l|--emit-llvm]
 ./pyxc run script.pyxc [--emit-llvm]
 ./pyxc build script.pyxc [--emit=llvm|obj|exe] [-g] [-O0|-O1|-O2|-O3]
 ```
 
-And just as important, here is what those commands mean *in Chapter 4 specifically*:
+We'll implement the parts we can do right now (`repl --emit-tokens`) and set up the structure for features we'll add later (`run` and `build`).
 
-- `repl --emit-tokens` should work now.
-- `repl --emit-llvm` should be accepted, but prints a "haven't learnt this yet" message.
-- `run ...` should parse arguments correctly, then print "haven't learnt this yet".
-- `build ...` should parse arguments correctly, validate values like `-O`, then print "haven't learnt this yet".
+## Source Code
 
-So the goal here is not to pretend everything is fully implemented yet. The goal is to put a clean command structure in place now, and make sure the program gives clear, truthful feedback for features we have not built yet.
+Grab the code: [code/chapter04](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter04)
 
-## Why use LLVM's command-line utility here?
+Or clone the whole repo:
+```bash
+git clone https://github.com/alankarmisra/pyxc-llvm-tutorial
+cd pyxc-llvm-tutorial/code/chapter04
+```
 
-You can absolutely parse `argv` by hand, and for tiny tools that is often fine, but LLVM already ships a really good command-line utility in `llvm/Support/CommandLine.h`. Since we are already building on LLVM, using `llvm::cl` keeps things consistent with the rest of the ecosystem and makes subcommands like `repl`, `run`, and `build` much less painful to wire up.
+## Why LLVM's Command Line Library?
 
-## Step 1: Define subcommands and flags
+You can parse `argv` by hand, but LLVM already ships a solid command-line parser in `llvm/Support/CommandLine.h`. Since we're building on LLVM anyway, using `llvm::cl` gives us:
 
-We start by declaring three subcommands, then attach each option to the command where it belongs.
+- Automatic help text
+- Subcommands
+- Validation
+- Consistent error messages
+
+It's less code than rolling our own, and it integrates with the rest of LLVM's tools.
+
+## Defining Subcommands
+
+We want three modes: `repl`, `run`, and `build`. Each is a subcommand:
 
 ```cpp
 static llvm::cl::SubCommand ReplCommand("repl",
@@ -47,19 +49,35 @@ static llvm::cl::SubCommand RunCommand("run", "Run a .pyxc script");
 static llvm::cl::SubCommand BuildCommand("build", "Build a .pyxc script");
 ```
 
-Next, we define flags for `repl` and `run`:
+## REPL Options
+
+The REPL needs two flags:
 
 ```cpp
 static llvm::cl::opt<bool>
     ReplEmitTokens("emit-tokens", llvm::cl::sub(ReplCommand),
                    llvm::cl::desc("Print lexer tokens instead of parsing"),
                    llvm::cl::init(false));
+static llvm::cl::alias ReplEmitTokensShort(
+    "t", llvm::cl::sub(ReplCommand),
+    llvm::cl::desc("Alias for --emit-tokens"),
+    llvm::cl::aliasopt(ReplEmitTokens));
 
 static llvm::cl::opt<bool>
     ReplEmitLLVM("emit-llvm", llvm::cl::sub(ReplCommand),
                  llvm::cl::desc("Emit LLVM from REPL input"),
                  llvm::cl::init(false));
+static llvm::cl::alias ReplEmitLLVMShort(
+    "l", llvm::cl::sub(ReplCommand),
+    llvm::cl::desc("Alias for --emit-llvm"),
+    llvm::cl::aliasopt(ReplEmitLLVM));
+```
 
+`llvm::cl::sub(ReplCommand)` attaches these options to the `repl` subcommand. They won't appear in `run` or `build`.
+
+## Run Options
+
+```cpp
 static llvm::cl::list<string>
     RunInputFiles(llvm::cl::Positional, llvm::cl::sub(RunCommand),
                   llvm::cl::desc("<script.pyxc>"), llvm::cl::ZeroOrMore);
@@ -69,9 +87,9 @@ static llvm::cl::opt<bool>
                 llvm::cl::desc("Emit LLVM for the script"), llvm::cl::init(false));
 ```
 
-One small detail here is worth calling out. We could have used `cl::opt<string>` for a single positional file, which sounds natural at first, but when the file is missing LLVM exits early with a generic “not enough positional arguments” style message. We use `cl::list<string>` with `ZeroOrMore` instead, because that lets parsing continue and gives us a chance to print clearer messages ourselves, like “run requires a file name” and “run accepts only one file name.”
+We use `cl::list` instead of `cl::opt` for the filename. Why? Because if we use `opt` and the user forgets the filename, LLVM exits with a generic "not enough arguments" error. With `list` and `ZeroOrMore`, we can check if the list is empty and print our own clearer error message.
 
-Here are the `build` options:
+## Build Options
 
 ```cpp
 enum BuildOutputKind { BuildEmitLLVM, BuildEmitObj, BuildEmitExe };
@@ -98,17 +116,23 @@ static llvm::cl::opt<unsigned> BuildOptLevel(
     llvm::cl::init(0));
 ```
 
-`cl::Prefix` is the piece that lets `-O2` parse as option `O` with value `2`.
+`cl::Prefix` lets `-O2` parse as option `O` with value `2`.
 
-## Step 2: Parse arguments and validate early
+The `BuildEmit` option uses `cl::values` to define valid choices. LLVM will reject `--emit=garbage` automatically.
 
-At the start of `main`, we parse once:
+## Parsing Arguments
+
+At the start of `main`:
 
 ```cpp
 llvm::cl::ParseCommandLineOptions(argc, argv, "pyxc chapter04\n");
 ```
 
-Then we validate `-O` immediately:
+This parses the command line and populates all our option variables.
+
+## Validating Early
+
+Check `-O` immediately:
 
 ```cpp
 if (BuildOptLevel > 3) {
@@ -118,11 +142,9 @@ if (BuildOptLevel > 3) {
 }
 ```
 
-Doing this early keeps mistakes obvious and avoids silently accepting garbage values that only fail later in confusing ways.
+Catching mistakes early makes errors obvious.
 
-## Step 3: Handle `run` and `build` (argument checks + honest stub)
-
-For `run`, we validate file count first, then print the chapter-appropriate message:
+## Handling Run (Stub)
 
 ```cpp
 if (RunCommand) {
@@ -142,7 +164,9 @@ if (RunCommand) {
 }
 ```
 
-`build` follows the exact same pattern:
+We validate the arguments (exactly one filename required), then print an honest message. We'll wire up the real behavior in later chapters.
+
+## Handling Build (Stub)
 
 ```cpp
 if (BuildCommand) {
@@ -164,11 +188,11 @@ if (BuildCommand) {
 }
 ```
 
-We will wire up the full behavior in later chapters, but the interface is already in place and predictable.
+Same pattern: validate arguments, print honest stub message.
 
-## Step 4: Add token mode to `repl`
+## Token Mode for REPL
 
-When `repl --emit-tokens` is passed, we run a token-printing loop:
+We bring back the Chapter 1 token-printing loop:
 
 ```cpp
 static void EmitTokenStream() {
@@ -178,11 +202,11 @@ static void EmitTokenStream() {
     if (Tok == tok_eof)
       return;
 
-    printf("%s", GetTokenName(Tok).c_str());
+    fprintf(stderr, "%s", GetTokenName(Tok).c_str());
     if (Tok == tok_eol)
-      printf("\nready> ");
+      fprintf(stderr, "\nready> ");
     else
-      printf(" ");
+      fprintf(stderr, " ");
   }
 }
 ```
@@ -196,11 +220,9 @@ if (ReplCommand && ReplEmitTokens) {
 }
 ```
 
-This brings back the Chapter 1 token view, which is still one of the easiest ways to sanity-check lexer behavior while we keep building.
+Now `./pyxc repl --emit-tokens` prints tokens again.
 
-## Step 5: Keep unsupported `repl --emit-llvm` explicit
-
-We still accept the option, but we do not fake support for it yet:
+## LLVM Mode for REPL (Stub)
 
 ```cpp
 if (ReplCommand && ReplEmitLLVM) {
@@ -208,80 +230,93 @@ if (ReplCommand && ReplEmitLLVM) {
 }
 ```
 
-After printing that message, normal REPL startup still runs.
+We accept the option but don't fake support. The normal REPL still runs afterward.
 
-## Compiling
+## Default REPL
 
-```bash
-cd code/chapter04 && \
-    cmake -S . -B build && \
-    cmake --build build
+If no special flags are set:
+
+```cpp
+DiagSourceMgr.reset();
+getNextToken();
+MainLoop();
+return 0;
 ```
 
-### macOS / Linux shortcut
+This is the Chapter 2 parser loop.
+
+## Compile and Run
 
 ```bash
-cd code/chapter04 && ./build.sh
+cd code/chapter04
+cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && cmake --build build
+./build/pyxc
 ```
 
-## Sample Interaction
-
-Here is a quick run-through of what Chapter 4 can do right now:
-
+Or use the shortcut:
 ```bash
-$ ./build/pyxc repl --emit-tokens
+cd code/chapter04
+./build.sh
+```
+
+## Sample Session
+
+Print tokens:
+```bash
+$ ./build/pyxc repl -t
 ready> def fib(a): return a + 10
 'def' identifier '(' identifier ')' ':' 'return' identifier '+' number newline
-ready>
+ready> ^D
 ```
 
+Try unsupported LLVM mode:
 ```bash
-$ ./build/pyxc repl --emit-llvm
+$ ./build/pyxc repl -l
 repl --emit-llvm: i havent learnt how to do that yet.
-ready>
+ready> ^D
 ```
 
+Try run without filename:
 ```bash
 $ ./build/pyxc run
 Error: run requires a file name.
 ```
 
+Try build without filename:
 ```bash
 $ ./build/pyxc build --emit=llvm
 Error: build requires a file name.
 ```
 
+Try invalid optimization level:
 ```bash
 $ ./build/pyxc build test/def_simple.pyxc -O9
 Error: invalid optimization level -O9 (expected 0..3)
 ```
 
-## Conclusion
+## What We Built
 
-By the end of Chapter 4, you have:
+- **Subcommands** - `repl`, `run`, `build` with independent options
+- **Validation** - Clear error messages for missing files and bad values
+- **Token mode** - `repl --emit-tokens` for debugging the lexer
+- **Honest stubs** - Unsupported features print clear messages
 
-- a clear command structure (`repl`, `run`, `build`),
-- chapter-appropriate behavior for incomplete commands,
-- token streaming in REPL (`--emit-tokens`),
-- validation for required file names and `-O` values,
-- and cleaner newline handling for diagnostics.
+The command-line interface is complete. Future chapters just need to replace the stub messages with real implementations.
 
-That gives us a solid base for the next chapter, where we start replacing these placeholders with real output behavior and real IR flow.
+## What's Next
 
-Next we will learn how to transform the Abstract Syntax Tree built in [Chapter 2](chapter-02.md), into LLVM IR. 
+In Chapter 5, we'll replace `repl --emit-llvm: i havent learnt how to do that yet.` with actual LLVM IR generation from the AST.
 
 ## Need Help?
 
-Stuck on something? Have questions about this chapter? Found an error?
+Stuck? Questions? Errors?
 
-- **Open an issue:** [GitHub Issues](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues) - Report bugs, errors, or problems
-- **Start a discussion:** [GitHub Discussions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions) - Ask questions, share tips, or discuss the tutorial
-- **Contribute:** Found a typo? Have a better explanation? [Pull requests](https://github.com/alankarmisra/pyxc-llvm-tutorial/pulls) are welcome!
+- **Issues:** [GitHub Issues](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues)
+- **Discussions:** [GitHub Discussions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
+- **Contribute:** Pull requests welcome!
 
-**When reporting issues, please include:**
-- The chapter you're working on
-- Your platform (e.g., macOS 14 M2, Ubuntu 24.04, Windows 11)
-- The complete error message or unexpected behavior
-- What you've already tried
-
-The goal is to make this tutorial work smoothly for everyone. Your feedback helps improve it for the next person!
+Include:
+- Chapter number
+- Your OS/platform
+- Full error message
+- What you tried

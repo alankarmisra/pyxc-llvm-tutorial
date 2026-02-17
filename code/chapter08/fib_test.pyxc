@@ -1,0 +1,2 @@
+def fib(n):
+  return fib(n - 1.0) + fib(n - 2.0)

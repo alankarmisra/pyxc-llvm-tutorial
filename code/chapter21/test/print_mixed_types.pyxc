@@ -1,0 +1,13 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x -- '-4 42 3.500000 7.250000' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    si: i32 = -4
+    ui: u64 = 42
+    f1: f32 = 3.5
+    f2: f64 = 7.25
+    print(si, ui, f1, f2)
+    return 0
+
+main()

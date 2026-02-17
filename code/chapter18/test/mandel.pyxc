@@ -1,0 +1,90 @@
+# RUN: %pyxc -t %s > %t 2>&1
+# RUN: grep -q "<eof>" %t
+
+extern def printd(x)
+extern def putchard(char)
+
+# unary not
+@unary
+def !(v):
+    if v: 
+        return 0
+    else: 
+        return 1
+
+# Unary negate.
+@unary
+def -(v):
+  return 0-v
+
+# Define > with the same precedence as <.
+@binary(precedence=10)
+def >(LHS,RHS):
+  return RHS < LHS
+
+# Binary logical or (no short-circuit)
+@binary(precedence=5)
+def |(LHS, RHS):
+    if LHS: 
+        return 1
+    elif RHS: 
+        return 1
+    else: 
+        return 0
+
+
+# Binary logical and (no short-circuit)
+@binary(precedence=6)
+def &(LHS, RHS):
+    if !LHS:
+        return 0
+    return !!RHS
+
+# Define = with slightly lower precedence than relationals
+@binary(precedence=9)
+def =(LHS, RHS):
+    return !(LHS < RHS | LHS > RHS)
+
+# @binary(precedence=1)
+# def ;(x, y):
+#     return y
+
+def printdensity(d):
+    if d > 8:
+        return putchard(32) # ' '
+    elif d > 4:
+        return putchard(46)  # '.'
+    elif d > 2:
+        return putchard(43) # '+'
+    else:
+        return putchard(42)  # '*'
+
+
+# Determine whether the specific location diverges.
+# Solve for z = z^2 + c in the complex plane.
+def mandelconverger(real, imag, iters, creal, cimag):
+  if iters > 255 | (real*real + imag*imag > 4):
+    return iters
+  return mandelconverger(real*real - imag*imag + creal, 2*real*imag + cimag, iters+1, creal, cimag)
+
+# Return the number of iterations required for the iteration to escape
+def mandelconverge(real, imag):
+  return mandelconverger(real, imag, 0, real, imag)
+
+# Compute and plot the mandelbrot set with the specified 2 dimensional range
+# info.
+def mandelhelp(xmin, xmax, xstep, ymin, ymax, ystep):
+  for y in range(ymin, ymax, ystep):
+    for x in range(xmin, xmax, xstep):
+       printdensity(mandelconverge(x,y))
+    putchard(10)
+
+# mandel - This is a convenient helper function for plotting the mandelbrot set
+# from the specified position with the specified Magnification.
+def mandel(realstart, imagstart, realmag, imagmag):
+  return mandelhelp(realstart, realstart+realmag*79, realmag, imagstart, imagstart+imagmag*41, imagmag)
+
+def main():
+    mandel(-2.3, -1.3, 0.05, 0.07)    
+
+main()

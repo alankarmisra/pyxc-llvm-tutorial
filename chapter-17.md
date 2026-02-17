@@ -1,263 +1,327 @@
 ---
-description: "Clean up operator semantics, precedence, and short-circuit logic to make expression behavior predictable before introducing richer type features."
+description: "Implement Python-style indentation handling with indent/dedent tokens and parser updates so block structure no longer relies on braces or explicit terminators."
 ---
-# 16. Pyxc: Clean Operator Rules and Short-Circuit Logic
+# 15. Pyxc: Python-Style Indentation
 
-In Chapter 16, we had custom operators and decorator syntax.
-
-For Chapter 17, we simplify the language before adding types:
-- add Python-like logical/comparison operators
-- remove custom operator definitions for now
-- add real short-circuit behavior for `and` and `or`
-
-This keeps the codebase easier to reason about before Chapter 18 (types).
+This chapter adds Python 3–style indentation to the language. We move from newline‑only structure to explicit `indent`/`dedent` tokens, and wire a token stream printer so you can see how the lexer is shaping the input. Each section names the functions that changed and why.
 
 
 !!!note
-    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter17](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter17).
+    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter15](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter15).
 
-## What We Added
+## Grammar (EBNF)
 
-- logical keywords: `not`, `and`, `or`
-- comparison operators: `==`, `!=`, `<=`, `>=`
-- short-circuit codegen for `and` and `or`
-
-## What We Removed (for now)
-
-- `@unary` / `@binary` custom operator definitions
-
-## Why Disable Custom Operators Before Types?
-
-Simple reason: typed custom operators are ambiguous without more language features.
-
-If we keep custom operators while introducing types, we must answer:
-- how many typed versions of the same operator are allowed?
-- how does the compiler pick the correct one?
-
-That requires one of:
-- overloading (same operator name, many signatures)
-- generics (one generic operator that works for a type family)
-
-We do not have overloading or generics yet.
-
-So Chapter 17 disables custom operators on purpose. We will bring them back later, after overloading/generics exist.
-
-## Grammar Target (Chapter 17)
-
-From [`code/chapter17/pyxc.ebnf`](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter17/pyxc.ebnf):
+Chapter 15 keeps the same language constructs as Chapter 14, but changes block structure from newline-only behavior to explicit `indent`/`dedent` tokens.
 
 ```ebnf
-function_def   = "def" , prototype , ":" , suite ;
+program      = { top_item } , eof ;
+top_item     = newline | function_def | extern_decl | statement ;
 
-unary_op       = "+" | "-" | "!" | "~" | "not" ;
+statement    = if_stmt | for_stmt | return_stmt | expr_stmt ;
 
-binary_op      = "<" | "<=" | ">" | ">="
-               | "==" | "!="
-               | "and" | "or"
-               | "+" | "-" | "*" | "/"
-               | "=" ;
+if_stmt      = "if" , expression , ":" , suite ,
+               "else" , ":" , suite ;
+for_stmt     = "for" , identifier , "in" , "range" , "(" ,
+               expression , "," , expression , [ "," , expression ] ,
+               ")" , ":" , suite ;
+
+suite        = inline_suite | block_suite ;
+inline_suite = statement ;
+block_suite  = newline , indent , statement_list , dedent ;
 ```
 
-## Lexer Changes
+## Indentation rules (Python 3 style)
 
-### New tokens
+- A new block starts after `:` and is defined by **greater indentation** than its parent line.
+- A block ends when indentation **decreases** to a previous indentation level.
+- Indentation levels are **absolute** column widths; a dedent must match a previous level exactly.
+- Blank lines are ignored (they do not start or end blocks).
+- Tabs and spaces must **not be mixed** for indentation (we enforce one style for the module).
+- At end‑of‑file, any open indentation levels are **implicitly closed** with `dedent` tokens.
+
+## Tracking indentation with a stack + pending tokens
+
+We track indentation levels in a stack (`Indents`) and accumulate `dedent` tokens in a small deque (`PendingTokens`). Each line start computes its leading whitespace and compares it to the top of the stack.
+
+For example, consider this `fib.pyxc`:
+
+```py
+extern def printd(x)
+
+def fib(x):
+    if(x < 3):
+        return 1
+    else:
+        return fib(x-1) + fib(x-2)
+```
+
+As we scan line by line, the indentation stack evolves like this (comments show the stack at each step):
+
+```text
+# start: [0]
+"def fib": indent=0   -> [0]
+"    if": indent=4    -> push 4      -> [0, 4]
+"        return": 8   -> push 8      -> [0, 4, 8]
+"    else": 4         -> pop 8       -> [0, 4]  (emit dedent)
+"        return": 8   -> push 8      -> [0, 4, 8]
+"<eof>":               -> pop to 0    -> [0]     (emit dedent, dedent)
+```
+
+This is why a **stack + queue** design works well: the stack records indentation levels, while the queue lets the lexer return `dedent` tokens one at a time.
+
+## New tokens for indentation
+
+**Where:** `enum Token`
+
+We add three new tokens:
+
+- `tok_indent` for the start of a block
+- `tok_dedent` for the end of a block
+- `tok_error` for indentation errors
+
+These are used by the lexer and parser to preserve the block structure.
+
+## Counting leading whitespace
+
+**Where:** `countLeadingWhitespace()`
+
+We scan the leading spaces/tabs at the start of each logical line. Tabs are expanded to the next tab stop, and we enforce a single indentation style per module (spaces **or** tabs).
 
 ```cpp
-tok_not = -18,
-tok_and = -19,
-tok_or = -20,
-tok_eq = -21, // ==
-tok_ne = -22, // !=
-tok_le = -23, // <=
-tok_ge = -24, // >=
-```
+static int countLeadingWhitespace(int &LastChar) {
+  int indentCount = 0;
+  bool didSetIndent = false;
 
-Keyword table includes:
+  while (true) {
+    while (LastChar == ' ' || LastChar == '\t') {
+      if (ModuleIndentType == -1) {
+        didSetIndent = true;
+        ModuleIndentType = LastChar;
+      } else if (LastChar != ModuleIndentType) {
+        LogError("You cannot mix tabs and spaces.");
+        return -1;
+      }
+      indentCount += LastChar == '\t' ? 8 - (LexLoc.Col % 8) : 1;
+      LastChar = advance();
+    }
 
-```cpp
-{"not", tok_not}, {"and", tok_and}, {"or", tok_or}
-```
+    if (LastChar == '\r' || LastChar == '\n') {
+      if (didSetIndent) {
+        didSetIndent = false;
+        indentCount = 0;
+        ModuleIndentType = -1;
+      }
+      LastChar = advance();
+      continue;
+    }
 
-### Multi-char operator lexing
+    break;
+  }
 
-Lexer now recognizes:
-- `==`
-- `!=`
-- `<=`
-- `>=`
-
-instead of trying to parse them as two separate chars.
-
-## Parser Changes
-
-### Precedence table now uses token IDs
-
-Because `tok_and`, `tok_eq`, etc are token IDs (not plain chars), precedence lookup moved to `std::map<int, int>`:
-
-```cpp
-static std::map<int, int> BinopPrecedence = {
-    {'=', 2},       {tok_or, 5},   {tok_and, 6}, {tok_eq, 10}, {tok_ne, 10},
-    {'<', 12},      {'>', 12},     {tok_le, 12}, {tok_ge, 12},
-    {'+', 20},      {'-', 20},     {'*', 40},    {'/', 40}};
-```
-
-### Builtin-only unary parsing
-
-```cpp
-if (CurTok != '+' && CurTok != '-' && CurTok != '!' && CurTok != '~' &&
-    CurTok != tok_not)
-  return ParsePrimary();
-```
-
-### Decorator/custom-operator parse path removed
-
-`ParseDefinition()` and `ParsePrototype()` now parse only normal `def` functions.
-
-If the parser sees `@...`, it emits a direct Chapter 17 error:
-
-```cpp
-LogError("Decorators/custom operators are disabled in Chapter 17");
-```
-
-## Short-Circuit Logic: What It Means
-
-Without short-circuit:
-- `a and b` evaluates both `a` and `b`
-- `a or b` evaluates both `a` and `b`
-
-With short-circuit:
-- `a and b`: if `a` is false, skip `b`
-- `a or b`: if `a` is true, skip `b`
-
-This matters for side effects and performance.
-
-## LLVM IR Shape We Want
-
-For `a and b`, we want control flow like this:
-
-```llvm
-entry:
-  %a = ...
-  %a_bool = fcmp one double %a, 0.0
-  br i1 %a_bool, label %rhs, label %merge
-
-rhs:
-  %b = ...
-  %b_bool = fcmp one double %b, 0.0
-  br label %merge
-
-merge:
-  %res = phi i1 [ false, %entry ], [ %b_bool, %rhs ]
-  %res_f = uitofp i1 %res to double
-```
-
-For `a or b`, branch directions and first PHI value flip:
-
-```llvm
-entry:
-  %a = ...
-  %a_bool = fcmp one double %a, 0.0
-  br i1 %a_bool, label %merge, label %rhs
-
-rhs:
-  %b = ...
-  %b_bool = fcmp one double %b, 0.0
-  br label %merge
-
-merge:
-  %res = phi i1 [ true, %entry ], [ %b_bool, %rhs ]
-  %res_f = uitofp i1 %res to double
-```
-
-That is exactly what we implemented in Chapter 17 codegen.
-
-## Codegen Changes
-
-### Unary
-
-`not` and `!` now map to builtin boolean inversion (still returned as `0.0/1.0`):
-
-```cpp
-case '!':
-case tok_not: {
-  Value *AsBool = Builder->CreateFCmpONE(
-      OperandV, ConstantFP::get(*TheContext, APFloat(0.0)), "nottmp.bool");
-  Value *NegBool = Builder->CreateNot(AsBool, "nottmp.inv");
-  return Builder->CreateUIToFP(NegBool, Type::getDoubleTy(*TheContext),
-                               "nottmp");
+  return indentCount;
 }
 ```
 
-### Binary
+**Why:** We need a reliable indentation width at line start, and we need to ignore blank lines entirely.
 
-`and` / `or` now use branch-based short-circuit codegen with PHI merge.
+## Indent / dedent detection and emission
 
-We still keep Chapter 17 result style:
-- boolean-like result as `double` (`0.0` or `1.0`)
-- not Python operand-return semantics yet
+**Where:** `IsIndent()`, `IsDedent()`, `HandleIndent()`, `HandleDedent()`
 
-## Tests in This Chapter
+We compare the computed `leadingWhitespace` against the top of the stack to decide whether to emit `indent`/`dedent` tokens.
 
-Operator-focused tests:
-- [`code/chapter17/test/logic_ops.pyxc`](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter17/test/logic_ops.pyxc)
-- [`code/chapter17/test/logic_short_circuit.pyxc`](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter17/test/logic_short_circuit.pyxc)
-- [`code/chapter17/test/custom_ops_disabled.pyxc`](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter17/test/custom_ops_disabled.pyxc)
+```cpp
+static bool IsIndent(int leadingWhitespace) {
+  return leadingWhitespace > Indents.back();
+}
 
-Type/pointer tests moved to Chapter 18.
+static bool IsDedent(int leadingWhitespace) {
+  return leadingWhitespace < Indents.back();
+}
+```
+
+On indent, we push the new level and emit `tok_indent`. On dedent, we pop until we reach a prior level and queue `tok_dedent` tokens. If the dedent doesn’t match any prior level, we emit `tok_error`.
+
+```cpp
+static int HandleIndent(int leadingWhitespace) {
+  Indents.push_back(leadingWhitespace);
+  return tok_indent;
+}
+
+static int HandleDedent(int leadingWhitespace) {
+  int dedents = 0;
+  while (leadingWhitespace < Indents.back()) {
+    Indents.pop_back();
+    dedents++;
+  }
+
+  if (leadingWhitespace != Indents.back()) {
+    LogError("Expected indentation.");
+    Indents = {0};
+    PendingTokens.clear();
+    return tok_error;
+  }
+
+  while (dedents-- > 1) {
+    PendingTokens.push_back(tok_dedent);
+  }
+  return tok_dedent;
+}
+```
+
+**Why:** This mirrors Python’s block model. A dedent must land exactly on a prior indentation level.
+
+## EOF: draining open indents
+
+**Where:** `DrainIndents()` and `gettok()`
+
+At EOF we emit any remaining dedents (implicitly closing all open blocks).
+
+```cpp
+static int DrainIndents() {
+  int dedents = 0;
+  while (Indents.size() > 1) {
+    Indents.pop_back();
+    dedents++;
+  }
+
+  if (dedents > 0) {
+    while (dedents-- > 1)
+      PendingTokens.push_back(tok_dedent);
+    return tok_dedent;
+  }
+
+  return tok_eof;
+}
+```
+
+**Why:** Python implicitly closes open blocks at EOF. This ensures the parser sees the dedents.
+
+## The lexer control flow
+
+**Where:** `gettok()`
+
+We added:
+
+- A **line‑start** indentation phase (before regular token scanning)
+- A **pending token** phase (dedents queued from a previous line)
+- EOF handling via `DrainIndents()`
+
+The indentation phase calls `countLeadingWhitespace()` and then uses `IsIndent`/`IsDedent` to emit tokens.
+
+## Token printing for debugging
+
+**Where:** `TokenName()` and `PrintTokens()`
+
+A token stream printer makes it much easier to debug indentation. It prints one line of tokens per source line, including explicit `<indent=...>` and `<dedent>` tokens and a trailing `<eof>`.
+
+```cpp
+static const char *TokenName(int Tok) { /* ... */ }
+
+static void PrintTokens(const std::string &filename) {
+  int Tok = gettok();
+  bool FirstOnLine = true;
+
+  while (Tok != tok_eof) {
+    if (Tok == tok_eol) {
+      fprintf(stderr, "<eol>\n");
+      FirstOnLine = true;
+      Tok = gettok();
+      continue;
+    }
+
+    if (!FirstOnLine)
+      fprintf(stderr, " ");
+    FirstOnLine = false;
+
+    if (Tok == tok_indent) {
+      fprintf(stderr, "<indent=%d>", LastIndentWidth);
+    } else {
+      const char *Name = TokenName(Tok);
+      if (Name)
+        fprintf(stderr, "%s", Name);
+      else if (isascii(Tok))
+        fprintf(stderr, "<%c>", Tok);
+      else
+        fprintf(stderr, "<tok=%d>", Tok);
+    }
+
+    Tok = gettok();
+  }
+
+  if (!FirstOnLine)
+    fprintf(stderr, " ");
+  fprintf(stderr, "<eof>\n");
+}
+```
+
+**Why:** When debugging indentation, seeing explicit `indent`/`dedent` tokens is the fastest way to find mismatches between the lexer and the parser.
+
+## Command‑line mode: -t (tokens)
+
+**Where:** `ExecutionMode` enum + `main()`
+
+We add a `-t` mode to print the token stream for a file:
+
+```bash
+./pyxc fib.pyxc -t
+```
+
+```bash
+<extern> <def> <identifier> <(> <identifier> <)><eol>
+<def> <identifier> <(> <identifier> <)> <:><eol>
+<indent=4> <if> <(> <identifier> <<> <number> <)> <:><eol>
+<indent=8> <return> <number><eol>
+<dedent> <else> <:><eol>
+<indent=8> <return> <identifier> <(> <identifier> <-> <number> <)> <+> <identifier> <(> <identifier> <-> <number> <)><eol>
+<dedent> <dedent> <def> <identifier> <(> <)> <:><eol>
+<indent=4> <return> <identifier> <(> <identifier> <(> <number> <)> <)><eol>
+<dedent> <identifier> <(> <)><eol>
+<eof>
+```
+
+This pairs naturally with `PrintTokens()` and gives a fast, deterministic view of how the lexer is classifying the input.
 
 ## Compile and Run
 
-```bash
-cd code/chapter17 && ./build.sh
-```
+Use the same build setup style from Chapter 14.
 
-Run sample programs:
+Run:
 
 ```bash
-./pyxc -t test/logic_ops.pyxc
-./pyxc -i test/logic_ops.pyxc
-./pyxc -i test/logic_short_circuit.pyxc
-./pyxc -i test/custom_ops_disabled.pyxc
+cd code/chapter15 && ./build.sh
 ```
 
-Run Chapter 17 test suite:
-
-```bash
-llvm-lit test
-```
-
-Repo:
-
-- [https://github.com/alankarmisra/pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial)
-
+## Conclusion
+Next, we'll handle multi‑expression blocks which will remove some of the weirdness of our rather limited single-expression syntax and allow us to write more expressive programs.
 
 ## Compile / Run / Test (Hands-on)
 
 Build this chapter:
 
 ```bash
-cd code/chapter17 && ./build.sh
+cd code/chapter15 && ./build.sh
 ```
 
 Run one sample program:
 
 ```bash
-code/chapter17/pyxc -i code/chapter17/test/custom_ops_disabled.pyxc
+code/chapter15/pyxc -i code/chapter15/fib.pyxc
 ```
 
 Run the chapter tests (when a test suite exists):
 
 ```bash
-cd code/chapter17/test
+cd code/chapter15/test
 lit -sv .
 ```
 
-Pick a couple of tests, mutate the inputs, and watch how diagnostics respond.
+Try editing a test or two and see how quickly you can predict the outcome.
 
 When you're done, clean artifacts:
 
 ```bash
-cd code/chapter17 && ./build.sh
+cd code/chapter15 && ./build.sh
 ```
 
 

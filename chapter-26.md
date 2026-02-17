@@ -1,220 +1,555 @@
 ---
-description: "Add const local bindings and compile-time reassignment checks to preserve immutability intent and reduce accidental state changes."
+description: "Establish C-style I/O basics with putchar/getchar/puts and minimal printf support, plus string literal groundwork for practical console programs."
 ---
-# 25. Pyxc: Immutable Bindings with const
+# 24. Pyxc: C-style I/O Baseline (putchar, getchar, puts, minimal printf)
 
-Chapter 26 introduces `const` local declarations with compile-time reassignment protection.
+Chapter 23 gave us dynamic heap memory with `malloc` and `free`.
 
-This chapter is small in syntax but important in semantics: we are teaching the compiler to remember mutability intent for each binding.
+That was important, but it still left us in a place where writing small, practical programs felt awkward, because we had no direct string literals and no C-style I/O entry points.
+
+In this chapter we focus on exactly that gap.
+
+The goal is not to implement all of C stdio. The goal is to establish a *clean baseline* that unlocks many K&R-style programs quickly:
+
+- string literals
+- `putchar`
+- `getchar`
+- `puts`
+- a minimal, well-defined `printf`
+
+We intentionally keep this chapter narrow so behavior stays predictable and testable.
 
 
 !!!note
-    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter26](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter26).
+    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter24](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter24).
 
-## What we are building
+## Why this chapter matters
 
-A declaration like this:
+Without this chapter, even simple tasks like printing formatted text need custom language helpers.
+
+With this chapter, we can directly write:
 
 ```py
-const max_count: i32 = 64
+msg: ptr[i8] = "hello"
+puts(msg)
+printf("x=%d\n", 42)
 ```
 
-should:
+That one improvement changes the feel of the language from “compiler exercise” to “actually usable for small systems-style experiments”.
 
-- parse as a declaration statement
-- require an initializer
-- create a symbol-table binding marked immutable
-- reject later assignment to `max_count`
+## Scope and constraints
 
-## Grammar changes
+What we support in Chapter 24:
 
-In `code/chapter26/pyxc.ebnf`, we add a dedicated statement production:
+- String literals as first-class expressions.
+- Auto-declared libc calls for:
+  - `putchar(i32) -> i32`
+  - `getchar() -> i32`
+  - `puts(ptr[i8]) -> i32`
+  - `printf(ptr[i8], ...) -> i32`
+- Vararg call lowering required for `printf`.
+- Strict format subset for `printf`:
+  - `%d`, `%s`, `%c`, `%p`, `%%`
+
+What we explicitly do *not* support yet:
+
+- Full `printf` flags/width/precision/length modifiers.
+- `%f` formatting.
+- User-defined variadic prototypes in source syntax.
+
+This is a deliberate “minimum viable stdio” milestone.
+
+## What changed from Chapter 23
+
+The key file diffs are:
+
+- `code/chapter23/pyxc.cpp` -> `code/chapter24/pyxc.cpp`
+- `code/chapter23/pyxc.ebnf` -> `code/chapter24/pyxc.ebnf`
+
+Conceptually, changes fall into five buckets:
+
+1. lexer support for string literals
+2. parser + AST support for string expressions
+3. codegen for string literals
+4. libc function resolution for stdio symbols
+5. vararg call support + `printf` semantic checks
+
+We will walk through each bucket in order.
+
+## Grammar and language surface
+
+### EBNF updates
+
+In `code/chapter24/pyxc.ebnf`, we add `string_literal` and allow it as a primary expression:
 
 ```ebnf
-const_decl_stmt = "const" , identifier , ":" , type_expr , "=" , expression ;
+string_literal = "\"" , { ? any char except " or newline; escapes allowed ? } , "\"" ;
+
+primary         = number
+                | string_literal
+                | identifier
+                | malloc_expr
+                | addr_expr
+                | paren_expr
+                | var_expr ;
 ```
 
-and include it in `statement`:
+This is a small grammar change, but it has major downstream effects because literals can now participate in assignment and function calls naturally.
 
-```ebnf
-statement =
-    print_stmt
-  | if_stmt
-  | for_stmt
-  | while_stmt
-  | do_while_stmt
-  | return_stmt
-  | var_assign_stmt
-  | const_decl_stmt
-  | free_stmt
-  | expr_stmt ;
+### Resulting source syntax
+
+```py
+s: ptr[i8] = "text"
+puts(s)
+printf("v=%d\n", 7)
 ```
 
-Why this matters:
+## Lexer changes: tokenizing string literals safely
 
-- `const` is not “just assignment with a flag.”
-- It is a declaration form with stricter rules (initializer required).
+### New token and lexer storage
 
-## Lexer keyword support
-
-In `code/chapter26/pyxc.cpp`, add a token kind and keyword mapping.
-
-Token enum gets:
+In `code/chapter24/pyxc.cpp` we add:
 
 ```cpp
-tok_const = -37,
+tok_string = -35,
 ```
 
-Keyword map gets:
+and:
 
 ```cpp
-{"const", tok_const}
+static std::string StringVal;     // Filled in if tok_string
 ```
 
-Without this, parser logic would never see a distinct `const` token.
+This matches the existing `NumVal`/`IdentifierStr` pattern.
 
-## Parser: dedicated const declaration function
+### String scanning path in gettok()
 
-Parser entry in `ParseStmt()`:
+The lexer adds a new branch when it sees `"`:
 
 ```cpp
-case tok_const:
-  return ParseConstDeclStmt();
+if (LastChar == '"') {
+  StringVal.clear();
+  while (true) {
+    LastChar = advance();
+    if (LastChar == EOF || LastChar == '\n' || LastChar == '\r') {
+      LogError("Unterminated string literal");
+      return tok_error;
+    }
+    if (LastChar == '"') {
+      LastChar = advance();
+      return tok_string;
+    }
+    if (LastChar == '\\') {
+      LastChar = advance();
+      switch (LastChar) {
+      case 'n': StringVal.push_back('\n'); break;
+      case 't': StringVal.push_back('\t'); break;
+      case 'r': StringVal.push_back('\r'); break;
+      case '0': StringVal.push_back('\0'); break;
+      case '\\': StringVal.push_back('\\'); break;
+      case '"': StringVal.push_back('"'); break;
+      default:
+        LogError("Invalid escape sequence in string literal");
+        return tok_error;
+      }
+    } else {
+      StringVal.push_back(static_cast<char>(LastChar));
+    }
+  }
+}
 ```
 
-The new parser function (`ParseConstDeclStmt`) enforces the exact shape:
+### Why this design
+
+- We unescape during lexing so parser/AST see normalized data.
+- We reject malformed strings early with precise diagnostics.
+- We allow common escapes only. This keeps behavior explicit and avoids silent surprises.
+
+### Token-name plumbing
+
+`TokenName(...)` also gets:
 
 ```cpp
-// const name: Type = expr
-if (CurTok != tok_const) ...
-if (CurTok != tok_identifier) ...
-if (CurTok != ':') ...
-auto DeclTy = ParseTypeExpr();
-if (CurTok != '=') ...
-auto Init = ParseExpression();
+case tok_string:
+  return "<string>";
 ```
 
-Key behavior: missing initializer errors immediately, instead of silently defaulting.
+This improves debug token dumps and parser debugging.
 
-## AST and symbol metadata
+## AST and parser: representing string literals explicitly
 
-Chapter 26 adds a separate AST node for const declaration and extends binding metadata.
+### New AST node: StringExprAST
 
-`VarBinding` in `code/chapter26/pyxc.cpp` now has:
+In `code/chapter24/pyxc.cpp`, Chapter 24 adds:
 
 ```cpp
-struct VarBinding {
-  AllocaInst *Alloca = nullptr;
-  Type *Ty = nullptr;
-  Type *PointeeTy = nullptr;
-  std::string BuiltinLeafTy;
-  std::string PointeeBuiltinLeafTy;
-  bool IsConst = false;
+class StringExprAST : public ExprAST {
+  std::string Val;
+
+public:
+  StringExprAST(SourceLocation Loc, std::string Val)
+      : ExprAST(Loc), Val(std::move(Val)) {}
+  const std::string &getValue() const { return Val; }
+  Value *codegen() override;
+  Type *getValueTypeHint() const override;
+  Type *getPointeeTypeHint() const override;
+  std::string getPointeeBuiltinLeafTypeHint() const override;
+  bool getStringLiteralValue(std::string &Out) const override {
+    Out = Val;
+    return true;
+  }
 };
 ```
 
-This is the core decision: mutability is tracked in symbol-table state.
+Two important details here:
 
-## Codegen for const declaration
+1. It is a dedicated node, not a special case in calls.
+2. It overrides `getStringLiteralValue(...)`, which we use later for `printf` validation *without RTTI*.
 
-Const declaration lowering mirrors regular typed declaration flow:
+### Why the virtual helper (getStringLiteralValue) matters
 
-- resolve declared type
-- allocate storage
-- codegen initializer
-- cast initializer to declared type
-- store value
-- insert `NamedValues[name]` binding with `IsConst = true`
+This codebase builds with `-fno-rtti`. So using `dynamic_cast` for “is this node a string literal?” is not valid.
 
-Representative insertion shape:
+Instead, the base `ExprAST` provides:
 
 ```cpp
-NamedValues[Name] = {Alloca, DeclTy, ResolvePointeeTypeExpr(DeclType),
-                     BuiltinLeaf, PointeeBuiltinLeaf, true};
+virtual bool getStringLiteralValue(std::string &Out) const { return false; }
 ```
 
-So the generated IR is normal; policy is enforced by semantic checks around stores.
+and `StringExprAST` overrides it to return true with payload.
 
-## Reassignment protection
+That gives us safe, low-overhead type query behavior compatible with current compile flags.
 
-The assignment path checks mutability before emitting a store.
-
-In assignment codegen, Chapter 26 adds:
+### Parser entry point: ParseStringExpr()
 
 ```cpp
-auto It = NamedValues.find(*Name);
-if (It != NamedValues.end() && It->second.IsConst)
-  return LogError<Value *>("Cannot assign to const variable");
+static std::unique_ptr<ExprAST> ParseStringExpr() {
+  auto StrLoc = CurLoc;
+  auto Result = std::make_unique<StringExprAST>(StrLoc, StringVal);
+  getNextToken(); // consume string literal
+  return std::move(Result);
+}
 ```
 
-That ensures:
+Then `ParsePrimary()` dispatch adds:
 
-- reassignment to mutable locals still works
-- reassignment to const locals fails at compile/lowering time
+```cpp
+case tok_string:
+  return ParseStringExpr();
+```
 
-No runtime check needed.
+This is the exact same parser architecture already used for numbers/identifiers, so complexity stays low.
 
-## Test coverage
+## Codegen for string literals
 
-Chapter 26 adds four focused tests in `code/chapter26/test`.
+`StringExprAST::codegen()` lowers a literal into a global string pointer:
 
-Positive:
+```cpp
+Value *StringExprAST::codegen() {
+  emitLocation(this);
+  return Builder->CreateGlobalStringPtr(Val, "strlit");
+}
+```
+
+And type hints are:
+
+```cpp
+Type *StringExprAST::getValueTypeHint() const {
+  return PointerType::get(*TheContext, 0);
+}
+
+Type *StringExprAST::getPointeeTypeHint() const {
+  return Type::getInt8Ty(*TheContext);
+}
+
+std::string StringExprAST::getPointeeBuiltinLeafTypeHint() const {
+  return "i8";
+}
+```
+
+### Why this is enough for interop
+
+Existing assignment/call casting logic already handles pointer-compatible values. So once string literals lower to pointer values and advertise pointee hints (`i8`), they naturally work with:
+
+- variable assignment to `ptr[i8]`
+- call arguments where pointer is expected (e.g., `puts`, `printf` format)
+
+No separate “string type system” is introduced in this chapter.
+
+## Auto-declaring libc stdio functions
+
+Before Chapter 24, unresolved functions were looked up only in:
+
+- module-defined functions
+- previously seen prototypes
+
+Chapter 24 adds a libc fallback for known stdio symbols.
+
+### Helper: GetOrCreateLibcIOFunction
+
+```cpp
+static Function *GetOrCreateLibcIOFunction(const std::string &Name) {
+  if (Function *F = TheModule->getFunction(Name))
+    return F;
+
+  Type *I32Ty = Type::getInt32Ty(*TheContext);
+  Type *PtrTy = PointerType::get(*TheContext, 0);
+  FunctionType *FT = nullptr;
+
+  if (Name == "putchar")
+    FT = FunctionType::get(I32Ty, {I32Ty}, false);
+  else if (Name == "getchar")
+    FT = FunctionType::get(I32Ty, {}, false);
+  else if (Name == "puts")
+    FT = FunctionType::get(I32Ty, {PtrTy}, false);
+  else if (Name == "printf")
+    FT = FunctionType::get(I32Ty, {PtrTy}, true);
+  else
+    return nullptr;
+
+  return Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
+}
+```
+
+### Integration in getFunction
+
+```cpp
+if (Function *LibCF = GetOrCreateLibcIOFunction(Name))
+  return LibCF;
+```
+
+### Why this design
+
+- No new source syntax is required for these common calls.
+- We stay explicit: only a tiny allowlist is auto-declared.
+- We avoid surprising behavior from auto-creating arbitrary unresolved symbols.
+
+## Vararg call lowering in CallExprAST::codegen()
+
+This is the most important backend change in the chapter.
+
+Before Chapter 24, call lowering assumed fixed-arity calls only:
+
+- exact argument count
+- formal-by-formal cast loop
+
+That breaks for `printf`, because `printf` has one fixed arg (format string) and then variadic arguments.
+
+### Updated arity checks
+
+```cpp
+size_t FixedArgCount = CalleeF->arg_size();
+if ((!CalleeF->isVarArg() && FixedArgCount != Args.size()) ||
+    (CalleeF->isVarArg() && Args.size() < FixedArgCount))
+  return LogError<Value *>("Incorrect # arguments passed");
+```
+
+For varargs, we now require “at least fixed args”.
+
+### Two-phase argument handling
+
+We first codegen all arguments into `RawArgs`:
+
+```cpp
+std::vector<Value *> RawArgs;
+RawArgs.reserve(Args.size());
+for (auto &Arg : Args) {
+  Value *ArgV = Arg->codegen();
+  if (!ArgV)
+    return nullptr;
+  RawArgs.push_back(ArgV);
+}
+```
+
+Then we do:
+
+1. fixed-parameter casts to formal types
+2. vararg-specific promotion for trailing args
+
+### Default promotions for varargs
+
+```cpp
+while (I < RawArgs.size()) {
+  Value *ArgV = RawArgs[I++];
+  Type *ArgTy = ArgV->getType();
+  if (ArgTy->isFloatTy()) {
+    ArgV = Builder->CreateFPExt(ArgV, Type::getDoubleTy(*TheContext),
+                                "vararg.fpext");
+  } else if (ArgTy->isIntegerTy() && ArgTy->getIntegerBitWidth() < 32) {
+    ArgV = Builder->CreateSExt(ArgV, Type::getInt32Ty(*TheContext),
+                               "vararg.sext");
+  }
+  ArgsV.push_back(ArgV);
+}
+```
+
+This implements the key ABI-relevant C default promotions for our use case.
+
+## printf semantic validation (minimal subset)
+
+If we only lower varargs and skip semantic checks, users get confusing runtime output or undefined behavior. So Chapter 24 adds compile-time checks specifically for `printf`.
+
+### Rule 1: format must be a string literal
+
+```cpp
+std::string Fmt;
+if (!Args[0]->getStringLiteralValue(Fmt))
+  return LogError<Value *>("printf format must be a string literal");
+```
+
+We intentionally require a literal (not variable/expr) in this chapter so we can validate format shape statically.
+
+### Rule 2: only %d, %s, %c, %p, %%
+
+```cpp
+for (size_t I = 0; I < Fmt.size(); ++I) {
+  if (Fmt[I] != '%')
+    continue;
+  if (I + 1 >= Fmt.size())
+    return LogError<Value *>("Unsupported printf format specifier '%'");
+  char Spec = Fmt[++I];
+  if (Spec == '%')
+    continue;
+  if (Spec != 'd' && Spec != 's' && Spec != 'c' && Spec != 'p')
+    return LogError<Value *>("Unsupported printf format specifier");
+  Specs.push_back(Spec);
+}
+```
+
+### Rule 3: placeholder count must match arg count
+
+```cpp
+if (Specs.size() != Args.size() - 1)
+  return LogError<Value *>("printf format/argument count mismatch");
+```
+
+### Rule 4: type check each placeholder
+
+```cpp
+for (size_t I = 0; I < Specs.size(); ++I) {
+  Type *Ty = RawArgs[I + 1]->getType();
+  char Spec = Specs[I];
+  if ((Spec == 'd' || Spec == 'c') && !Ty->isIntegerTy())
+    return LogError<Value *>("printf type mismatch for integer format");
+  if ((Spec == 's' || Spec == 'p') && !Ty->isPointerTy())
+    return LogError<Value *>("printf type mismatch for pointer format");
+}
+```
+
+### Why this conservative approach is good here
+
+- Users get actionable compile-time errors.
+- Behavior is deterministic.
+- We avoid half-implemented format parsing that would be hard to reason about.
+
+We can loosen these constraints in a later chapter once we have richer type/format infrastructure.
+
+## Chapter 24 test suite
+
+Chapter 24 keeps all inherited Chapter 23 tests and adds dedicated I/O tests in `code/chapter24/test`.
+
+### Positive tests
+
+- `io_basic_putchar_puts.pyxc`
+  - checks `putchar` + `puts`
+- `io_printf_subset.pyxc`
+  - checks `%d/%s/%c/%p/%%`
+- `io_string_ptr_assign.pyxc`
+  - checks literal -> `ptr[i8]` assignment
+- `io_getchar_decl_only.pyxc`
+  - checks symbol resolution and typing path for `getchar`
+
+### Negative tests
+
+- `io_error_printf_bad_spec.pyxc`
+  - `%f` rejected
+- `io_error_printf_count_mismatch.pyxc`
+  - placeholder/arg mismatch rejected
+- `io_error_printf_type_mismatch.pyxc`
+  - `%d` with pointer rejected
+
+These tests enforce that our strict subset is not just documented, but actually implemented.
+
+## End-to-end behavior examples
+
+### Example 1: direct calls
 
 ```py
-# const_basic_scalar.pyxc
-const base: i32 = 40
-print(base + 5)
+def main() -> i32:
+    putchar(65)
+    putchar(32)
+    puts("hi")
+    return 0
+
+main()
 ```
 
-```py
-# const_pointer_string.pyxc
-const msg: ptr[i8] = "hello const"
-puts(msg)
-```
-
-Negative:
-
-```py
-# const_error_reassign.pyxc
-const x: i32 = 7
-x = 8
-```
-
-Expected diagnostic includes:
+Output:
 
 ```text
-Cannot assign to const variable
+A hi
 ```
+
+### Example 2: minimal printf
 
 ```py
-# const_error_missing_initializer.pyxc
-const y: i32
+def main() -> i32:
+    s: ptr[i8] = "ok"
+    printf("value=%d char=%c ptr=%p text=%s percent=%%\n", 42, 66, s, s)
+    return 0
+
+main()
 ```
 
-Expected diagnostic includes:
+This exercises integer, char, pointer, string, and escaped percent paths together.
 
-```text
-Const declaration requires initializer
+## Validation run for this chapter
+
+Chapter 24 was validated with:
+
+```bash
+cd code/chapter24 && ./build.sh
+lit -sv code/chapter24/test
 ```
 
-## End-to-end behavior
+Result:
 
-With Chapter 26 complete:
+- 40 tests discovered
+- 40 passed
 
-- the language has explicit immutable local bindings
-- parser enforces strict declaration form
-- codegen carries immutability in symbol state
-- assignment path respects immutability
-- tests lock both happy paths and failures
+## Design takeaways
 
-This gives us safer local semantics before we scale into multi-file workflows in Chapter 27.
+### What we gained
+
+- Practical text I/O capability with minimal language surface growth.
+- String literals integrated into the existing expression/type pipeline.
+- First variadic call path in backend codegen.
+- Strong early diagnostics for common `printf` mistakes.
+
+### What we intentionally postponed
+
+- full C format grammar
+- runtime formatting helpers
+- user-defined variadics
+
+This keeps Chapter 24 focused and stable while still unlocking a large amount of real program space.
+
+## Where to go next
+
+With Chapter 24 complete, the next high-leverage topics are:
+
+- pointer dereference (`*`) and address-of operator parity with C syntax
+- header/translation-unit workflow for separate compilation
+- richer standard-library interop (`strlen`, `strcmp`, etc.)
+
+Those build directly on the I/O and pointer groundwork laid here.
 
 ## Compiling
 
 From repository root:
 
 ```bash
-cd code/chapter26 && ./build.sh
+cd code/chapter24 && ./build.sh
 ```
 
 ## Testing
@@ -222,7 +557,7 @@ cd code/chapter26 && ./build.sh
 From repository root:
 
 ```bash
-lit -sv code/chapter26/test
+lit -sv code/chapter24/test
 ```
 
 ## Compile / Run / Test (Hands-on)
@@ -230,28 +565,28 @@ lit -sv code/chapter26/test
 Build this chapter:
 
 ```bash
-cd code/chapter26 && ./build.sh
+cd code/chapter24 && ./build.sh
 ```
 
 Run one sample program:
 
 ```bash
-code/chapter26/pyxc -i code/chapter26/test/addr_is_keyword.pyxc
+code/chapter24/pyxc -i code/chapter24/test/array_alias_type.pyxc
 ```
 
 Run the chapter tests (when a test suite exists):
 
 ```bash
-cd code/chapter26/test
+cd code/chapter24/test
 lit -sv .
 ```
 
-Explore the test folder a bit and add one tiny edge case of your own.
+Poke around the tests and tweak a few cases to see what breaks first.
 
 When you're done, clean artifacts:
 
 ```bash
-cd code/chapter26 && ./build.sh
+cd code/chapter24 && ./build.sh
 ```
 
 

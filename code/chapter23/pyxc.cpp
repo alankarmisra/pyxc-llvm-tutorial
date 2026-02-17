@@ -175,8 +175,6 @@ enum Token {
   tok_break = -30,
   tok_continue = -31,
   tok_struct = -32,
-  tok_malloc = -33,
-  tok_free = -34,
 
   // indentation
   tok_indent = -16,
@@ -209,8 +207,7 @@ static std::map<std::string, Token> Keywords = {
     {"var", tok_var}, {"type", tok_type},     {"not", tok_not},
     {"and", tok_and}, {"print", tok_print},   {"while", tok_while},
     {"do", tok_do},   {"break", tok_break},   {"continue", tok_continue},
-    {"or", tok_or},   {"struct", tok_struct}, {"malloc", tok_malloc},
-    {"free", tok_free}};
+    {"or", tok_or},   {"struct", tok_struct}};
 
 struct SourceLocation {
   int Line;
@@ -253,33 +250,23 @@ public:
 
 static SourceManager DiagSourceMgr;
 
-enum class TypeExprKind { Builtin, AliasRef, Pointer, Array };
+enum class TypeExprKind { Builtin, AliasRef, Pointer };
 
 struct TypeExpr {
   TypeExprKind Kind;
   std::string Name;
   std::shared_ptr<TypeExpr> Elem;
-  uint64_t ArraySize = 0;
 
   static std::shared_ptr<TypeExpr> Builtin(const std::string &Name) {
-    return std::make_shared<TypeExpr>(
-        TypeExpr{TypeExprKind::Builtin, Name, nullptr, 0});
+    return std::make_shared<TypeExpr>(TypeExpr{TypeExprKind::Builtin, Name, nullptr});
   }
 
   static std::shared_ptr<TypeExpr> Alias(const std::string &Name) {
-    return std::make_shared<TypeExpr>(
-        TypeExpr{TypeExprKind::AliasRef, Name, nullptr, 0});
+    return std::make_shared<TypeExpr>(TypeExpr{TypeExprKind::AliasRef, Name, nullptr});
   }
 
   static std::shared_ptr<TypeExpr> Pointer(std::shared_ptr<TypeExpr> Elem) {
-    return std::make_shared<TypeExpr>(
-        TypeExpr{TypeExprKind::Pointer, "", std::move(Elem), 0});
-  }
-
-  static std::shared_ptr<TypeExpr> Array(std::shared_ptr<TypeExpr> Elem,
-                                         uint64_t Size) {
-    return std::make_shared<TypeExpr>(
-        TypeExpr{TypeExprKind::Array, "", std::move(Elem), Size});
+    return std::make_shared<TypeExpr>(TypeExpr{TypeExprKind::Pointer, "", std::move(Elem)});
   }
 };
 
@@ -697,10 +684,6 @@ static const char *TokenName(int Tok) {
     return "<continue>";
   case tok_struct:
     return "<struct>";
-  case tok_malloc:
-    return "<malloc>";
-  case tok_free:
-    return "<free>";
   case tok_not:
     return "<not>";
   case tok_and:
@@ -1015,22 +998,6 @@ public:
   Value *codegen() override;
 };
 
-class MallocExprAST : public ExprAST {
-  TypeExprPtr ElemType;
-  std::unique_ptr<ExprAST> CountExpr;
-
-public:
-  MallocExprAST(SourceLocation Loc, TypeExprPtr ElemType,
-                std::unique_ptr<ExprAST> CountExpr)
-      : ExprAST(Loc), ElemType(std::move(ElemType)),
-        CountExpr(std::move(CountExpr)) {}
-
-  Value *codegen() override;
-  Type *getValueTypeHint() const override;
-  Type *getPointeeTypeHint() const override;
-  std::string getPointeeBuiltinLeafTypeHint() const override;
-};
-
 /// ReturnStmtAST - Return statements
 class ReturnStmtAST : public StmtAST {
   std::unique_ptr<ExprAST> Expr;
@@ -1058,16 +1025,6 @@ class PrintStmtAST : public StmtAST {
 public:
   PrintStmtAST(SourceLocation Loc, std::vector<std::unique_ptr<ExprAST>> Args)
       : StmtAST(Loc), Args(std::move(Args)) {}
-
-  Value *codegen() override;
-};
-
-class FreeStmtAST : public StmtAST {
-  std::unique_ptr<ExprAST> PtrExpr;
-
-public:
-  FreeStmtAST(SourceLocation Loc, std::unique_ptr<ExprAST> PtrExpr)
-      : StmtAST(Loc), PtrExpr(std::move(PtrExpr)) {}
 
   Value *codegen() override;
 };
@@ -1298,8 +1255,6 @@ static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
 static std::unique_ptr<BlockSuiteAST> ParseSuite();
 static std::unique_ptr<BlockSuiteAST> ParseBlockSuite();
 static std::unique_ptr<StmtAST> ParsePrintStmt();
-static std::unique_ptr<StmtAST> ParseFreeStmt();
-static std::unique_ptr<ExprAST> ParseMallocExpr();
 static TypeExprPtr ParseTypeExpr();
 static bool ParseStructDecl();
 
@@ -1432,32 +1387,6 @@ static TypeExprPtr ParseTypeExpr() {
       return LogError<TypeExprPtr>("Expected ']' after ptr element type");
     getNextToken(); // eat ']'
     return TypeExpr::Pointer(std::move(Elem));
-  }
-
-  if (TyName == "array") {
-    if (CurTok != '[')
-      return LogError<TypeExprPtr>("Expected '[' after array");
-    getNextToken(); // eat '['
-
-    auto Elem = ParseTypeExpr();
-    if (!Elem)
-      return nullptr;
-
-    if (CurTok != ',')
-      return LogError<TypeExprPtr>("Expected ',' after array element type");
-    getNextToken(); // eat ','
-
-    if (CurTok != tok_number || !NumIsIntegerLiteral || NumIntVal <= 0)
-      return LogError<TypeExprPtr>(
-          "Expected positive integer literal array size");
-    uint64_t Size = static_cast<uint64_t>(NumIntVal);
-    getNextToken(); // eat size
-
-    if (CurTok != ']')
-      return LogError<TypeExprPtr>("Expected ']' after array size");
-    getNextToken(); // eat ']'
-
-    return TypeExpr::Array(std::move(Elem), Size);
   }
 
   if (IsBuiltinTypeName(TyName))
@@ -1859,46 +1788,6 @@ static std::unique_ptr<StmtAST> ParsePrintStmt() {
   return std::make_unique<PrintStmtAST>(PrintLoc, std::move(Args));
 }
 
-static std::unique_ptr<StmtAST> ParseFreeStmt() {
-  auto FreeLoc = CurLoc;
-  getNextToken(); // eat `free`
-  if (CurTok != '(')
-    return LogError<StmtPtr>("Expected '(' after free");
-  getNextToken(); // eat '('
-  auto PtrExpr = ParseExpression();
-  if (!PtrExpr)
-    return nullptr;
-  if (CurTok != ')')
-    return LogError<StmtPtr>("Expected ')' after free argument");
-  getNextToken(); // eat ')'
-  return std::make_unique<FreeStmtAST>(FreeLoc, std::move(PtrExpr));
-}
-
-static std::unique_ptr<ExprAST> ParseMallocExpr() {
-  auto MallocLoc = CurLoc;
-  getNextToken(); // eat `malloc`
-  if (CurTok != '[')
-    return LogError<ExprPtr>("Expected '[' after malloc");
-  getNextToken(); // eat '['
-  auto ElemTy = ParseTypeExpr();
-  if (!ElemTy)
-    return nullptr;
-  if (CurTok != ']')
-    return LogError<ExprPtr>("Expected ']' after malloc element type");
-  getNextToken(); // eat ']'
-  if (CurTok != '(')
-    return LogError<ExprPtr>("Expected '(' after malloc[type]");
-  getNextToken(); // eat '('
-  auto CountExpr = ParseExpression();
-  if (!CountExpr)
-    return nullptr;
-  if (CurTok != ')')
-    return LogError<ExprPtr>("Expected ')' after malloc count");
-  getNextToken(); // eat ')'
-  return std::make_unique<MallocExprAST>(MallocLoc, std::move(ElemTy),
-                                         std::move(CountExpr));
-}
-
 static std::unique_ptr<StmtAST> ParseIdentifierLeadingStmt() {
   auto StmtLoc = CurLoc;
   auto LHS = ParseIdentifierExpr();
@@ -1967,8 +1856,6 @@ static std::unique_ptr<StmtAST> ParseStmt() {
     return ParseReturnStmt();
   case tok_print:
     return ParsePrintStmt();
-  case tok_free:
-    return ParseFreeStmt();
   case tok_type:
     return LogError<StmtPtr>("Type aliases are only allowed at top-level");
   case tok_struct:
@@ -2054,8 +1941,6 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
     return ParseParenExpr();
   case tok_var:
     return ParseVarExpr();
-  case tok_malloc:
-    return ParseMallocExpr();
   }
 }
 
@@ -2523,15 +2408,6 @@ static Type *ResolveTypeExpr(const TypeExprPtr &Ty,
     return PointerType::getUnqual(*TheContext);
   }
 
-  if (Ty->Kind == TypeExprKind::Array) {
-    Type *ElemTy = ResolveTypeExpr(Ty->Elem, Visited);
-    if (!ElemTy)
-      return nullptr;
-    if (Ty->ArraySize == 0)
-      return LogError<Type *>("Array size must be positive");
-    return ArrayType::get(ElemTy, Ty->ArraySize);
-  }
-
   auto It = TypeAliases.find(Ty->Name);
   if (It != TypeAliases.end()) {
     if (Visited.count(Ty->Name))
@@ -2564,8 +2440,6 @@ static Type *ResolvePointeeTypeExpr(const TypeExprPtr &Ty,
     return nullptr;
   if (Ty->Kind == TypeExprKind::Pointer)
     return ResolveTypeExpr(Ty->Elem);
-  if (Ty->Kind == TypeExprKind::Array)
-    return ResolveTypeExpr(Ty->Elem);
   if (Ty->Kind == TypeExprKind::AliasRef) {
     auto It = TypeAliases.find(Ty->Name);
     if (It == TypeAliases.end() || Visited.count(Ty->Name))
@@ -2590,9 +2464,7 @@ static std::string ResolveBuiltinLeafName(const TypeExprPtr &Ty,
   if (Ty->Kind == TypeExprKind::Builtin)
     return Ty->Name;
   if (Ty->Kind == TypeExprKind::Pointer)
-    return ResolveBuiltinLeafName(Ty->Elem, Visited);
-  if (Ty->Kind == TypeExprKind::Array)
-    return ResolveBuiltinLeafName(Ty->Elem, Visited);
+    return "ptr";
   auto It = TypeAliases.find(Ty->Name);
   if (It == TypeAliases.end() || Visited.count(Ty->Name))
     return "";
@@ -2613,8 +2485,6 @@ static std::string ResolvePointeeBuiltinLeafName(const TypeExprPtr &Ty,
     return "";
   if (Ty->Kind == TypeExprKind::Pointer)
     return ResolveBuiltinLeafName(Ty->Elem);
-  if (Ty->Kind == TypeExprKind::Array)
-    return ResolveBuiltinLeafName(Ty->Elem, Visited);
   if (Ty->Kind == TypeExprKind::AliasRef) {
     auto It = TypeAliases.find(Ty->Name);
     if (It == TypeAliases.end() || Visited.count(Ty->Name))
@@ -2794,34 +2664,27 @@ std::string AddrExprAST::getPointeeBuiltinLeafTypeHint() const {
 
 Value *IndexExprAST::codegenAddress() {
   emitLocation(this);
-  Value *IdxV = Index->codegen();
-  if (!IdxV)
-    return nullptr;
-  if (!IsIntegerLike(IdxV->getType()))
-    return LogError<Value *>("Array index must be an integer type");
-  IdxV = CastValueTo(IdxV, Type::getInt64Ty(*TheContext));
-  if (!IdxV)
-    return nullptr;
-
-  Type *BaseValTy = Base->getValueTypeHint();
-  if (BaseValTy && BaseValTy->isArrayTy()) {
-    Value *BaseAddr = Base->codegenAddress();
-    if (!BaseAddr)
-      return LogError<Value *>("Indexing an array requires an addressable base");
-    Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
-    return Builder->CreateGEP(BaseValTy, BaseAddr, {Zero, IdxV}, "arr.idx.addr");
-  }
-
   Value *BaseV = Base->codegen();
   if (!BaseV)
     return nullptr;
-  if (!BaseV->getType()->isPointerTy())
-    return LogError<Value *>("Indexing requires a pointer or array base");
+  Type *BaseTy = BaseV->getType();
+  if (!BaseTy->isPointerTy())
+    return LogError<Value *>("Indexing requires a pointer base");
   Type *ElemTy = Base->getPointeeTypeHint();
   if (!ElemTy)
     return LogError<Value *>("Cannot determine pointee type for indexing");
   if (ElemTy->isVoidTy())
     return LogError<Value *>("Cannot index through ptr[void]");
+
+  Value *IdxV = Index->codegen();
+  if (!IdxV)
+    return nullptr;
+  if (!IsIntegerLike(IdxV->getType()))
+    return LogError<Value *>("Pointer index must be an integer type");
+
+  IdxV = CastValueTo(IdxV, Type::getInt64Ty(*TheContext));
+  if (!IdxV)
+    return nullptr;
   return Builder->CreateGEP(ElemTy, BaseV, IdxV, "idx.addr");
 }
 
@@ -2835,12 +2698,7 @@ Value *IndexExprAST::codegen() {
   return Builder->CreateLoad(ElemTy, AddrV, "idx.load");
 }
 
-Type *IndexExprAST::getValueTypeHint() const {
-  Type *BaseValTy = Base->getValueTypeHint();
-  if (auto *AT = dyn_cast_or_null<ArrayType>(BaseValTy))
-    return AT->getElementType();
-  return Base->getPointeeTypeHint();
-}
+Type *IndexExprAST::getValueTypeHint() const { return Base->getPointeeTypeHint(); }
 
 std::string IndexExprAST::getBuiltinLeafTypeHint() const {
   return Base->getPointeeBuiltinLeafTypeHint();
@@ -2899,46 +2757,6 @@ std::string MemberExprAST::getBuiltinLeafTypeHint() const {
   return ResolveBuiltinLeafName(Field->Ty);
 }
 
-static Function *GetOrCreateMallocHelper();
-static Function *GetOrCreateFreeHelper();
-
-Type *MallocExprAST::getValueTypeHint() const {
-  return PointerType::getUnqual(*TheContext);
-}
-
-Type *MallocExprAST::getPointeeTypeHint() const {
-  return ResolveTypeExpr(ElemType);
-}
-
-std::string MallocExprAST::getPointeeBuiltinLeafTypeHint() const {
-  return ResolveBuiltinLeafName(ElemType);
-}
-
-Value *MallocExprAST::codegen() {
-  emitLocation(this);
-  Type *ElemTy = ResolveTypeExpr(ElemType);
-  if (!ElemTy)
-    return nullptr;
-  if (ElemTy->isVoidTy())
-    return LogError<Value *>("malloc element type cannot be void");
-
-  Value *CountV = CountExpr->codegen();
-  if (!CountV)
-    return nullptr;
-  if (!IsIntegerLike(CountV->getType()))
-    return LogError<Value *>("malloc count must be an integer type");
-  CountV = CastValueTo(CountV, Type::getInt64Ty(*TheContext));
-  if (!CountV)
-    return nullptr;
-
-  uint64_t ElemSize = TheModule->getDataLayout().getTypeAllocSize(ElemTy);
-  Value *ElemSizeV =
-      ConstantInt::get(Type::getInt64Ty(*TheContext), ElemSize, false);
-  Value *BytesV = Builder->CreateMul(CountV, ElemSizeV, "malloc.bytes");
-
-  return Builder->CreateCall(GetOrCreateMallocHelper(), {BytesV}, "malloc.ptr");
-}
-
 Value *TypedAssignStmtAST::codegen() {
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
   Type *DeclTy = ResolveTypeExpr(DeclType);
@@ -2950,9 +2768,9 @@ Value *TypedAssignStmtAST::codegen() {
   AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, Name, DeclTy);
   Value *InitVal = nullptr;
   if (InitExpr) {
-    if (DeclTy->isStructTy() || DeclTy->isArrayTy())
+    if (DeclTy->isStructTy())
       return LogError<Value *>(
-          "Struct/array variables do not support direct initializer expressions");
+          "Struct variables do not support direct initializer expressions");
     InitVal = InitExpr->codegen();
     if (!InitVal)
       return nullptr;
@@ -3183,23 +3001,6 @@ Value *CallExprAST::codegen() {
   return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
-static Function *GetOrCreateMallocHelper() {
-  if (Function *F = TheModule->getFunction("malloc"))
-    return F;
-  FunctionType *FT = FunctionType::get(
-      PointerType::getUnqual(*TheContext), {Type::getInt64Ty(*TheContext)}, false);
-  return Function::Create(FT, Function::ExternalLinkage, "malloc",
-                          TheModule.get());
-}
-
-static Function *GetOrCreateFreeHelper() {
-  if (Function *F = TheModule->getFunction("free"))
-    return F;
-  FunctionType *FT = FunctionType::get(
-      Type::getVoidTy(*TheContext), {PointerType::getUnqual(*TheContext)}, false);
-  return Function::Create(FT, Function::ExternalLinkage, "free", TheModule.get());
-}
-
 static Function *GetOrCreatePrintHelper(const std::string &Name, Type *Ty,
                                         bool IsUnsignedInt) {
   if (Function *F = TheModule->getFunction(Name))
@@ -3285,18 +3086,6 @@ Value *PrintStmtAST::codegen() {
 
   Value *NewLine = ConstantFP::get(*TheContext, APFloat(10.0));
   Builder->CreateCall(PrintCharF, {NewLine});
-  return ConstantFP::get(*TheContext, APFloat(0.0));
-}
-
-Value *FreeStmtAST::codegen() {
-  emitLocation(this);
-  Value *PtrV = PtrExpr->codegen();
-  if (!PtrV)
-    return nullptr;
-  if (!PtrV->getType()->isPointerTy())
-    return LogError<Value *>("free expects a pointer argument");
-
-  Builder->CreateCall(GetOrCreateFreeHelper(), {PtrV});
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
@@ -4163,8 +3952,6 @@ static bool TypeExprEqual(const TypeExprPtr &L, const TypeExprPtr &R) {
   if (L->Kind != R->Kind)
     return false;
   if (L->Name != R->Name)
-    return false;
-  if (L->ArraySize != R->ArraySize)
     return false;
   return TypeExprEqual(L->Elem, R->Elem);
 }

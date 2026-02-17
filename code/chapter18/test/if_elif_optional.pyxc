@@ -1,0 +1,38 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "100.000000" %t
+# RUN: grep -q "200.000000" %t
+# RUN: grep -q "300.000000" %t
+# RUN: grep -q "400.000000" %t
+# RUN: grep -q "7.000000" %t
+# RUN: grep -q "0.000000" %t
+# RUN: ! grep -q "Error (Line:" %t
+
+extern def printd(x)
+
+def pick(x):
+    if x < 0:
+        return 100
+    elif x < 10:
+        return 200
+    elif x < 20:
+        return 300
+    else:
+        return 400
+
+def onlyif(x):
+    if x:
+        return 7
+
+def ifelif(x):
+    if x < 0:
+        return 1
+    elif x < 1:
+        return 2
+
+printd(pick(0-1))
+printd(pick(5))
+printd(pick(15))
+printd(pick(50))
+printd(onlyif(1))
+printd(onlyif(0))
+printd(ifelif(2))

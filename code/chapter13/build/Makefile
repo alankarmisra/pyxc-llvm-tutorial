@@ -57,10 +57,10 @@ RM = /opt/homebrew/Cellar/cmake/3.29.2/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /Users/alankar/Documents/opensource/portfolio-dev/pyxc-llvm-tutorial/code/chapter11
+CMAKE_SOURCE_DIR = /Users/alankar/Documents/opensource/portfolio-dev/pyxc-llvm-tutorial/code/chapter09
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /Users/alankar/Documents/opensource/portfolio-dev/pyxc-llvm-tutorial/code/chapter11/build
+CMAKE_BINARY_DIR = /Users/alankar/Documents/opensource/portfolio-dev/pyxc-llvm-tutorial/code/chapter09/build
 
 #=============================================================================
 # Targets provided globally by CMake.
@@ -87,9 +87,9 @@ rebuild_cache/fast: rebuild_cache
 
 # The main all target
 all: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /Users/alankar/Documents/opensource/portfolio-dev/pyxc-llvm-tutorial/code/chapter11/build/CMakeFiles /Users/alankar/Documents/opensource/portfolio-dev/pyxc-llvm-tutorial/code/chapter11/build//CMakeFiles/progress.marks
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/alankar/Documents/opensource/portfolio-dev/pyxc-llvm-tutorial/code/chapter09/build/CMakeFiles /Users/alankar/Documents/opensource/portfolio-dev/pyxc-llvm-tutorial/code/chapter09/build//CMakeFiles/progress.marks
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 all
-	$(CMAKE_COMMAND) -E cmake_progress_start /Users/alankar/Documents/opensource/portfolio-dev/pyxc-llvm-tutorial/code/chapter11/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/alankar/Documents/opensource/portfolio-dev/pyxc-llvm-tutorial/code/chapter09/build/CMakeFiles 0
 .PHONY : all
 
 # The main clean target
@@ -129,19 +129,6 @@ pyxc/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/pyxc.dir/build.make CMakeFiles/pyxc.dir/build
 .PHONY : pyxc/fast
 
-#=============================================================================
-# Target rules for targets named runtime_obj
-
-# Build rule for target.
-runtime_obj: cmake_check_build_system
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 runtime_obj
-.PHONY : runtime_obj
-
-# fast build rule for target.
-runtime_obj/fast:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/runtime_obj.dir/build.make CMakeFiles/runtime_obj.dir/build
-.PHONY : runtime_obj/fast
-
 pyxc.o: pyxc.cpp.o
 .PHONY : pyxc.o
 
@@ -166,30 +153,6 @@ pyxc.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/pyxc.dir/build.make CMakeFiles/pyxc.dir/pyxc.cpp.s
 .PHONY : pyxc.cpp.s
 
-runtime.o: runtime.c.o
-.PHONY : runtime.o
-
-# target to build an object file
-runtime.c.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/runtime_obj.dir/build.make CMakeFiles/runtime_obj.dir/runtime.c.o
-.PHONY : runtime.c.o
-
-runtime.i: runtime.c.i
-.PHONY : runtime.i
-
-# target to preprocess a source file
-runtime.c.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/runtime_obj.dir/build.make CMakeFiles/runtime_obj.dir/runtime.c.i
-.PHONY : runtime.c.i
-
-runtime.s: runtime.c.s
-.PHONY : runtime.s
-
-# target to generate assembly for a file
-runtime.c.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/runtime_obj.dir/build.make CMakeFiles/runtime_obj.dir/runtime.c.s
-.PHONY : runtime.c.s
-
 # Help Target
 help:
 	@echo "The following are some of the valid targets for this Makefile:"
@@ -199,13 +162,9 @@ help:
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
 	@echo "... pyxc"
-	@echo "... runtime_obj"
 	@echo "... pyxc.o"
 	@echo "... pyxc.i"
 	@echo "... pyxc.s"
-	@echo "... runtime.o"
-	@echo "... runtime.i"
-	@echo "... runtime.s"
 .PHONY : help
 
 

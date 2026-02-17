@@ -1,0 +1,9 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: ! grep -q "Error (Line:" %t
+
+extern def add(a, b)
+
+def add(a, b):
+    return a + b
+
+add(1, 2)

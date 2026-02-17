@@ -53,12 +53,15 @@ builtin_type    = "void"
 
 (* ---------- Functions ---------- *)
 
-function_def    = "def" , prototype , ":" , suite ;
+function_def    = [ decorator ] , "def" , prototype , ":" , suite ;
 extern_decl     = "extern" , "def" , prototype ;
 
 prototype       = identifier , "(" , [ param_list ] , ")" , "->" , type_expr ;
 param_list      = param , { "," , param } ;
 param           = identifier , ":" , type_expr ;
+
+(* Current decorator model used for unary/binary operator definitions. *)
+decorator       = "@" , ( "unary" | "binary" ) , [ number ] ;
 
 (* ---------- Statements ---------- *)
 
@@ -71,12 +74,10 @@ statement       = if_stmt
                 | free_stmt
                 | print_stmt
                 | return_stmt
-                | const_decl_stmt
                 | typed_assign_stmt
                 | assign_stmt
                 | expr_stmt ;
 
-const_decl_stmt = "const" , identifier , ":" , type_expr , "=" , expression ;
 typed_assign_stmt = identifier , ":" , type_expr , [ "=" , expression ] ;
 assign_stmt     = lvalue , "=" , expression ;
 lvalue          = identifier

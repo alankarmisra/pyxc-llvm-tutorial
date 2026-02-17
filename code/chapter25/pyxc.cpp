@@ -155,7 +155,6 @@ enum Token {
   // primary
   tok_identifier = -6,
   tok_number = -7,
-  tok_string = -35,
 
   // control
   tok_if = -8,
@@ -178,7 +177,6 @@ enum Token {
   tok_struct = -32,
   tok_malloc = -33,
   tok_free = -34,
-  tok_addr = -36,
 
   // indentation
   tok_indent = -16,
@@ -201,7 +199,6 @@ static std::string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;             // Filled in if tok_number
 static bool NumIsIntegerLiteral;  // Filled in if tok_number
 static int64_t NumIntVal;         // Filled in if tok_number
-static std::string StringVal;     // Filled in if tok_string
 
 // Keywords words like `def`, `extern` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
@@ -213,7 +210,7 @@ static std::map<std::string, Token> Keywords = {
     {"and", tok_and}, {"print", tok_print},   {"while", tok_while},
     {"do", tok_do},   {"break", tok_break},   {"continue", tok_continue},
     {"or", tok_or},   {"struct", tok_struct}, {"malloc", tok_malloc},
-    {"free", tok_free}, {"addr", tok_addr}};
+    {"free", tok_free}};
 
 struct SourceLocation {
   int Line;
@@ -581,49 +578,6 @@ static int gettok() {
     return tok_number;
   }
 
-  if (LastChar == '"') {
-    StringVal.clear();
-    while (true) {
-      LastChar = advance();
-      if (LastChar == EOF || LastChar == '\n' || LastChar == '\r') {
-        LogError("Unterminated string literal");
-        return tok_error;
-      }
-      if (LastChar == '"') {
-        LastChar = advance();
-        return tok_string;
-      }
-      if (LastChar == '\\') {
-        LastChar = advance();
-        switch (LastChar) {
-        case 'n':
-          StringVal.push_back('\n');
-          break;
-        case 't':
-          StringVal.push_back('\t');
-          break;
-        case 'r':
-          StringVal.push_back('\r');
-          break;
-        case '0':
-          StringVal.push_back('\0');
-          break;
-        case '\\':
-          StringVal.push_back('\\');
-          break;
-        case '"':
-          StringVal.push_back('"');
-          break;
-        default:
-          LogError("Invalid escape sequence in string literal");
-          return tok_error;
-        }
-      } else {
-        StringVal.push_back(static_cast<char>(LastChar));
-      }
-    }
-  }
-
   if (LastChar == '#') {
     // Comment until end of line.
     do
@@ -715,8 +669,6 @@ static const char *TokenName(int Tok) {
     return "<identifier>";
   case tok_number:
     return "<number>";
-  case tok_string:
-    return "<string>";
   case tok_if:
     return "<if>";
   case tok_elif:
@@ -749,8 +701,6 @@ static const char *TokenName(int Tok) {
     return "<malloc>";
   case tok_free:
     return "<free>";
-  case tok_addr:
-    return "<addr>";
   case tok_not:
     return "<not>";
   case tok_and:
@@ -840,7 +790,6 @@ public:
   virtual Type *getPointeeTypeHint() const { return nullptr; }
   virtual std::string getBuiltinLeafTypeHint() const { return ""; }
   virtual std::string getPointeeBuiltinLeafTypeHint() const { return ""; }
-  virtual bool getStringLiteralValue(std::string &Out) const { return false; }
   int getLine() const { return Loc.Line; }
   int getCol() const { return Loc.Col; }
   virtual raw_ostream &dump(raw_ostream &out, int ind) {
@@ -926,26 +875,6 @@ public:
     return ExprAST::dump(out << Val, ind);
   }
   Value *codegen() override;
-};
-
-class StringExprAST : public ExprAST {
-  std::string Val;
-
-public:
-  StringExprAST(SourceLocation Loc, std::string Val)
-      : ExprAST(Loc), Val(std::move(Val)) {}
-  raw_ostream &dump(raw_ostream &out, int ind) override {
-    return ExprAST::dump(out << "\"" << Val << "\"", ind);
-  }
-  const std::string &getValue() const { return Val; }
-  Value *codegen() override;
-  Type *getValueTypeHint() const override;
-  Type *getPointeeTypeHint() const override;
-  std::string getPointeeBuiltinLeafTypeHint() const override;
-  bool getStringLiteralValue(std::string &Out) const override {
-    Out = Val;
-    return true;
-  }
 };
 
 /// VariableExprAST - Expression class for referencing a variable, like "a".
@@ -1368,8 +1297,6 @@ static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
                                               std::unique_ptr<ExprAST> LHS);
 static std::unique_ptr<BlockSuiteAST> ParseSuite();
 static std::unique_ptr<BlockSuiteAST> ParseBlockSuite();
-static std::unique_ptr<ExprAST> ParseStringExpr();
-static std::unique_ptr<ExprAST> ParseAddrExpr();
 static std::unique_ptr<StmtAST> ParsePrintStmt();
 static std::unique_ptr<StmtAST> ParseFreeStmt();
 static std::unique_ptr<ExprAST> ParseMallocExpr();
@@ -1398,13 +1325,6 @@ static std::unique_ptr<ExprAST> ParseNumberExpr() {
   return std::move(Result);
 }
 
-static std::unique_ptr<ExprAST> ParseStringExpr() {
-  auto StrLoc = CurLoc;
-  auto Result = std::make_unique<StringExprAST>(StrLoc, StringVal);
-  getNextToken(); // consume string literal
-  return std::move(Result);
-}
-
 /// parenexpr ::= '(' expression ')'
 static std::unique_ptr<ExprAST> ParseParenExpr() {
   getNextToken(); // eat (.
@@ -1423,8 +1343,19 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
   SourceLocation IdLoc = CurLoc;
   getNextToken(); // eat identifier
 
-  std::unique_ptr<ExprAST> Expr =
-      std::make_unique<VariableExprAST>(IdLoc, IdName);
+  std::unique_ptr<ExprAST> Expr;
+  if (IdName == "addr" && CurTok == '(') {
+    getNextToken(); // eat '('
+    auto Operand = ParseExpression();
+    if (!Operand)
+      return nullptr;
+    if (CurTok != ')')
+      return LogError<ExprPtr>("Expected ')' after addr operand");
+    getNextToken(); // eat ')'
+    Expr = std::make_unique<AddrExprAST>(IdLoc, std::move(Operand));
+  } else {
+    Expr = std::make_unique<VariableExprAST>(IdLoc, IdName);
+  }
 
   while (true) {
     if (CurTok == '(') {
@@ -1968,21 +1899,6 @@ static std::unique_ptr<ExprAST> ParseMallocExpr() {
                                          std::move(CountExpr));
 }
 
-static std::unique_ptr<ExprAST> ParseAddrExpr() {
-  auto AddrLoc = CurLoc;
-  getNextToken(); // eat `addr`
-  if (CurTok != '(')
-    return LogError<ExprPtr>("Expected '(' after addr");
-  getNextToken(); // eat '('
-  auto Operand = ParseExpression();
-  if (!Operand)
-    return nullptr;
-  if (CurTok != ')')
-    return LogError<ExprPtr>("Expected ')' after addr operand");
-  getNextToken(); // eat ')'
-  return std::make_unique<AddrExprAST>(AddrLoc, std::move(Operand));
-}
-
 static std::unique_ptr<StmtAST> ParseIdentifierLeadingStmt() {
   auto StmtLoc = CurLoc;
   auto LHS = ParseIdentifierExpr();
@@ -2134,16 +2050,12 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
     return ParseIdentifierExpr(); // Also looks for call expressions
   case tok_number:
     return ParseNumberExpr();
-  case tok_string:
-    return ParseStringExpr();
   case '(':
     return ParseParenExpr();
   case tok_var:
     return ParseVarExpr();
   case tok_malloc:
     return ParseMallocExpr();
-  case tok_addr:
-    return ParseAddrExpr();
   }
 }
 
@@ -2735,11 +2647,7 @@ static Attribute::AttrKind GetExtAttrForTypeExpr(const TypeExprPtr &Ty) {
 
 static bool IsIntegerLike(Type *Ty) { return Ty && Ty->isIntegerTy(); }
 
-static bool IsUnsignedLeafName(const std::string &Leaf) {
-  return !Leaf.empty() && Leaf[0] == 'u';
-}
-
-static Value *CastValueTo(Value *V, Type *DstTy, bool SrcUnsigned = false) {
+static Value *CastValueTo(Value *V, Type *DstTy) {
   if (!V || !DstTy)
     return nullptr;
   Type *SrcTy = V->getType();
@@ -2751,10 +2659,9 @@ static Value *CastValueTo(Value *V, Type *DstTy, bool SrcUnsigned = false) {
   if (SrcTy->isFloatingPointTy() && DstTy->isIntegerTy())
     return Builder->CreateFPToSI(V, DstTy, "castfptosi");
   if (SrcTy->isIntegerTy() && DstTy->isFloatingPointTy())
-    return SrcUnsigned ? Builder->CreateUIToFP(V, DstTy, "castuitofp")
-                       : Builder->CreateSIToFP(V, DstTy, "castsitofp");
+    return Builder->CreateSIToFP(V, DstTy, "castsitofp");
   if (SrcTy->isIntegerTy() && DstTy->isIntegerTy())
-    return Builder->CreateIntCast(V, DstTy, !SrcUnsigned, "castint");
+    return Builder->CreateIntCast(V, DstTy, true, "castint");
   if (SrcTy->isPointerTy() && DstTy->isPointerTy())
     return Builder->CreatePointerCast(V, DstTy, "castptr");
   if (SrcTy->isPointerTy() && DstTy->isIntegerTy())
@@ -2787,41 +2694,6 @@ static Value *ToBoolI1(Value *V, const Twine &Name) {
 // Code Generation
 //===----------------------------------------------------------------------===//
 
-static Function *GetOrCreateLibcIOFunction(const std::string &Name) {
-  if (Function *F = TheModule->getFunction(Name))
-    return F;
-
-  Type *I32Ty = Type::getInt32Ty(*TheContext);
-  Type *I64Ty = Type::getInt64Ty(*TheContext);
-  Type *PtrTy = PointerType::getUnqual(*TheContext);
-  FunctionType *FT = nullptr;
-
-  if (Name == "putchar")
-    FT = FunctionType::get(I32Ty, {I32Ty}, false);
-  else if (Name == "getchar")
-    FT = FunctionType::get(I32Ty, {}, false);
-  else if (Name == "puts")
-    FT = FunctionType::get(I32Ty, {PtrTy}, false);
-  else if (Name == "printf")
-    FT = FunctionType::get(I32Ty, {PtrTy}, true);
-  else if (Name == "fopen")
-    FT = FunctionType::get(PtrTy, {PtrTy, PtrTy}, false);
-  else if (Name == "fclose")
-    FT = FunctionType::get(I32Ty, {PtrTy}, false);
-  else if (Name == "fgets")
-    FT = FunctionType::get(PtrTy, {PtrTy, I32Ty, PtrTy}, false);
-  else if (Name == "fputs")
-    FT = FunctionType::get(I32Ty, {PtrTy, PtrTy}, false);
-  else if (Name == "fread")
-    FT = FunctionType::get(I64Ty, {PtrTy, I64Ty, I64Ty, PtrTy}, false);
-  else if (Name == "fwrite")
-    FT = FunctionType::get(I64Ty, {PtrTy, I64Ty, I64Ty, PtrTy}, false);
-  else
-    return nullptr;
-
-  return Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
-}
-
 Function *getFunction(std::string Name) {
   // First, see if the function has already been added to the current module.
   if (auto *F = TheModule->getFunction(Name))
@@ -2832,9 +2704,6 @@ Function *getFunction(std::string Name) {
   auto FI = FunctionProtos.find(Name);
   if (FI != FunctionProtos.end())
     return FI->second->codegen();
-
-  if (Function *LibCF = GetOrCreateLibcIOFunction(Name))
-    return LibCF;
 
   // If no existing prototype exists, return null.
   return nullptr;
@@ -2854,23 +2723,6 @@ Value *NumberExprAST::codegen() {
   if (IsIntegerLiteral)
     return ConstantInt::get(Type::getInt64Ty(*TheContext), IntVal, true);
   return ConstantFP::get(*TheContext, APFloat(Val));
-}
-
-Value *StringExprAST::codegen() {
-  emitLocation(this);
-  return Builder->CreateGlobalString(Val, "strlit");
-}
-
-Type *StringExprAST::getValueTypeHint() const {
-  return PointerType::getUnqual(*TheContext);
-}
-
-Type *StringExprAST::getPointeeTypeHint() const {
-  return Type::getInt8Ty(*TheContext);
-}
-
-std::string StringExprAST::getPointeeBuiltinLeafTypeHint() const {
-  return "i8";
 }
 
 Value *VariableExprAST::codegen() {
@@ -3104,8 +2956,7 @@ Value *TypedAssignStmtAST::codegen() {
     InitVal = InitExpr->codegen();
     if (!InitVal)
       return nullptr;
-    bool InitUnsigned = IsUnsignedLeafName(InitExpr->getBuiltinLeafTypeHint());
-    InitVal = CastValueTo(InitVal, DeclTy, InitUnsigned);
+    InitVal = CastValueTo(InitVal, DeclTy);
     if (!InitVal)
       return nullptr;
   } else {
@@ -3128,8 +2979,7 @@ Value *AssignStmtAST::codegen() {
   Value *RHSV = RHS->codegen();
   if (!RHSV)
     return nullptr;
-  bool RHSUnsigned = IsUnsignedLeafName(RHS->getBuiltinLeafTypeHint());
-  RHSV = CastValueTo(RHSV, ElemTy, RHSUnsigned);
+  RHSV = CastValueTo(RHSV, ElemTy);
   if (!RHSV)
     return nullptr;
   Builder->CreateStore(RHSV, AddrV);
@@ -3156,8 +3006,8 @@ Value *UnaryExprAST::codegen() {
     if (!AsBool)
       return nullptr;
     Value *NegBool = Builder->CreateNot(AsBool, "nottmp.inv");
-    return Builder->CreateZExt(NegBool, Type::getInt32Ty(*TheContext),
-                               "nottmp");
+    return Builder->CreateUIToFP(NegBool, Type::getDoubleTy(*TheContext),
+                                 "nottmp");
   }
   case '~':
     if (!OperandV->getType()->isIntegerTy())
@@ -3173,8 +3023,6 @@ Value *BinaryExprAST::codegen() {
   Value *L = LHS->codegen();
   if (!L)
     return nullptr;
-  bool PreferUnsigned = IsUnsignedLeafName(LHS->getBuiltinLeafTypeHint()) ||
-                        IsUnsignedLeafName(RHS->getBuiltinLeafTypeHint());
 
   if (Op == tok_and || Op == tok_or) {
     Function *TheFunction = Builder->GetInsertBlock()->getParent();
@@ -3214,8 +3062,8 @@ Value *BinaryExprAST::codegen() {
       LogicPhi->addIncoming(ConstantInt::getTrue(*TheContext), LHSBB);
     }
     LogicPhi->addIncoming(RBool, RHSBB);
-    return Builder->CreateZExt(LogicPhi, Type::getInt32Ty(*TheContext),
-                               "logictmp");
+    return Builder->CreateUIToFP(LogicPhi, Type::getDoubleTy(*TheContext),
+                                 "logictmp");
   }
 
   Value *R = RHS->codegen();
@@ -3235,8 +3083,8 @@ Value *BinaryExprAST::codegen() {
     unsigned W = std::max(L->getType()->getIntegerBitWidth(),
                           R->getType()->getIntegerBitWidth());
     Type *IntTy = IntegerType::get(*TheContext, W);
-    L = CastValueTo(L, IntTy, PreferUnsigned);
-    R = CastValueTo(R, IntTy, PreferUnsigned);
+    L = CastValueTo(L, IntTy);
+    R = CastValueTo(R, IntTy);
   } else if (UseFP) {
     Type *FPType = Type::getDoubleTy(*TheContext);
     L = CastValueTo(L, FPType);
@@ -3245,8 +3093,8 @@ Value *BinaryExprAST::codegen() {
     unsigned W = std::max(L->getType()->getIntegerBitWidth(),
                           R->getType()->getIntegerBitWidth());
     Type *IntTy = IntegerType::get(*TheContext, W);
-    L = CastValueTo(L, IntTy, PreferUnsigned);
-    R = CastValueTo(R, IntTy, PreferUnsigned);
+    L = CastValueTo(L, IntTy);
+    R = CastValueTo(R, IntTy);
   } else {
     return LogError<Value *>("Unsupported operand types");
   }
@@ -3265,11 +3113,9 @@ Value *BinaryExprAST::codegen() {
                  : Builder->CreateMul(L, R, "multmp");
   case '/':
     return UseFP ? Builder->CreateFDiv(L, R, "divtmp")
-                 : (PreferUnsigned ? Builder->CreateUDiv(L, R, "divtmp")
-                                   : Builder->CreateSDiv(L, R, "divtmp"));
+                 : Builder->CreateSDiv(L, R, "divtmp");
   case '%':
-    return PreferUnsigned ? Builder->CreateURem(L, R, "modtmp")
-                          : Builder->CreateSRem(L, R, "modtmp");
+    return Builder->CreateSRem(L, R, "modtmp");
   case '&':
     return Builder->CreateAnd(L, R, "andtmp");
   case '^':
@@ -3278,32 +3124,29 @@ Value *BinaryExprAST::codegen() {
     return Builder->CreateOr(L, R, "ortmp");
   case '<':
     L = UseFP ? Builder->CreateFCmpULT(L, R, "cmptmp")
-              : (PreferUnsigned ? Builder->CreateICmpULT(L, R, "cmptmp")
-                                : Builder->CreateICmpSLT(L, R, "cmptmp"));
-    return Builder->CreateZExt(L, Type::getInt32Ty(*TheContext), "booltmp");
+              : Builder->CreateICmpSLT(L, R, "cmptmp");
+    // Convert bool 0/1 to double 0.0 or 1.0
+    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case '>':
     L = UseFP ? Builder->CreateFCmpUGT(L, R, "cmptmp")
-              : (PreferUnsigned ? Builder->CreateICmpUGT(L, R, "cmptmp")
-                                : Builder->CreateICmpSGT(L, R, "cmptmp"));
-    return Builder->CreateZExt(L, Type::getInt32Ty(*TheContext), "booltmp");
+              : Builder->CreateICmpSGT(L, R, "cmptmp");
+    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case tok_le:
     L = UseFP ? Builder->CreateFCmpULE(L, R, "cmptmp")
-              : (PreferUnsigned ? Builder->CreateICmpULE(L, R, "cmptmp")
-                                : Builder->CreateICmpSLE(L, R, "cmptmp"));
-    return Builder->CreateZExt(L, Type::getInt32Ty(*TheContext), "booltmp");
+              : Builder->CreateICmpSLE(L, R, "cmptmp");
+    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case tok_ge:
     L = UseFP ? Builder->CreateFCmpUGE(L, R, "cmptmp")
-              : (PreferUnsigned ? Builder->CreateICmpUGE(L, R, "cmptmp")
-                                : Builder->CreateICmpSGE(L, R, "cmptmp"));
-    return Builder->CreateZExt(L, Type::getInt32Ty(*TheContext), "booltmp");
+              : Builder->CreateICmpSGE(L, R, "cmptmp");
+    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case tok_eq:
     L = UseFP ? Builder->CreateFCmpUEQ(L, R, "cmptmp")
               : Builder->CreateICmpEQ(L, R, "cmptmp");
-    return Builder->CreateZExt(L, Type::getInt32Ty(*TheContext), "booltmp");
+    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case tok_ne:
     L = UseFP ? Builder->CreateFCmpUNE(L, R, "cmptmp")
               : Builder->CreateICmpNE(L, R, "cmptmp");
-    return Builder->CreateZExt(L, Type::getInt32Ty(*TheContext), "booltmp");
+    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   default:
     return LogError<Value *>("Unsupported binary operator");
   }
@@ -3317,153 +3160,19 @@ Value *CallExprAST::codegen() {
   if (!CalleeF)
     return LogError<Value *>("Unknown function referenced");
 
-  size_t FixedArgCount = CalleeF->arg_size();
-  if ((!CalleeF->isVarArg() && FixedArgCount != Args.size()) ||
-      (CalleeF->isVarArg() && Args.size() < FixedArgCount))
+  // If argument mismatch error.
+  if (CalleeF->arg_size() != Args.size())
     return LogError<Value *>("Incorrect # arguments passed");
 
-  std::vector<Value *> RawArgs;
-  RawArgs.reserve(Args.size());
-  for (auto &Arg : Args) {
-    Value *ArgV = Arg->codegen();
-    if (!ArgV)
-      return nullptr;
-    RawArgs.push_back(ArgV);
-  }
-
-  if (Callee == "printf") {
-    if (Args.empty())
-      return LogError<Value *>("printf requires a format string");
-    std::string Fmt;
-    if (!Args[0]->getStringLiteralValue(Fmt))
-      return LogError<Value *>("printf format must be a string literal");
-    std::vector<char> Specs;
-    for (size_t I = 0; I < Fmt.size(); ++I) {
-      if (Fmt[I] != '%')
-        continue;
-      if (I + 1 >= Fmt.size())
-        return LogError<Value *>("Unsupported printf format specifier '%'");
-      ++I;
-      if (Fmt[I] == '%')
-        continue;
-
-      // Skip optional printf flags/width/precision/length subset.
-      while (I < Fmt.size() &&
-             (Fmt[I] == '-' || Fmt[I] == '+' || Fmt[I] == ' ' ||
-              Fmt[I] == '#' || Fmt[I] == '0' || Fmt[I] == '.' ||
-              isdigit(static_cast<unsigned char>(Fmt[I])) || Fmt[I] == 'l' ||
-              Fmt[I] == 'h'))
-        ++I;
-
-      if (I >= Fmt.size())
-        return LogError<Value *>("Unsupported printf format specifier '%'");
-      char Spec = Fmt[I];
-      if (Spec != 'd' && Spec != 's' && Spec != 'c' && Spec != 'p' &&
-          Spec != 'f')
-        return LogError<Value *>("Unsupported printf format specifier");
-      Specs.push_back(Spec);
-    }
-
-    if (Specs.size() != Args.size() - 1)
-      return LogError<Value *>("printf format/argument count mismatch");
-
-    for (size_t I = 0; I < Specs.size(); ++I) {
-      Type *Ty = RawArgs[I + 1]->getType();
-      char Spec = Specs[I];
-      if ((Spec == 'd' || Spec == 'c') && !Ty->isIntegerTy())
-        return LogError<Value *>("printf type mismatch for integer format");
-      if ((Spec == 's' || Spec == 'p') && !Ty->isPointerTy())
-        return LogError<Value *>("printf type mismatch for pointer format");
-      if (Spec == 'f' && !Ty->isFloatingPointTy())
-        return LogError<Value *>("printf type mismatch for float format");
-    }
-  }
-
-  auto CheckPointerArg = [&](size_t ArgIndex, const char *Err) -> bool {
-    if (ArgIndex >= RawArgs.size())
-      return false;
-    if (!RawArgs[ArgIndex]->getType()->isPointerTy()) {
-      LogError(Err);
-      return false;
-    }
-    return true;
-  };
-  auto CheckIntegerArg = [&](size_t ArgIndex, const char *Err) -> bool {
-    if (ArgIndex >= RawArgs.size())
-      return false;
-    if (!RawArgs[ArgIndex]->getType()->isIntegerTy()) {
-      LogError(Err);
-      return false;
-    }
-    return true;
-  };
-  auto CheckI32Arg = [&](size_t ArgIndex, const char *Err) -> bool {
-    if (ArgIndex >= RawArgs.size())
-      return false;
-    if (!RawArgs[ArgIndex]->getType()->isIntegerTy(32)) {
-      LogError(Err);
-      return false;
-    }
-    return true;
-  };
-
-  if (Callee == "fopen") {
-    if (!CheckPointerArg(0, "fopen expects pointer path argument") ||
-        !CheckPointerArg(1, "fopen expects pointer mode argument"))
-      return nullptr;
-  } else if (Callee == "fclose") {
-    if (!CheckPointerArg(0, "fclose expects pointer file argument"))
-      return nullptr;
-  } else if (Callee == "fgets") {
-    if (!CheckPointerArg(0, "fgets expects pointer buffer argument") ||
-        !CheckI32Arg(1, "fgets expects i32 length argument") ||
-        !CheckPointerArg(2, "fgets expects pointer file argument"))
-      return nullptr;
-  } else if (Callee == "fputs") {
-    if (!CheckPointerArg(0, "fputs expects pointer string argument") ||
-        !CheckPointerArg(1, "fputs expects pointer file argument"))
-      return nullptr;
-  } else if (Callee == "fread") {
-    if (!CheckPointerArg(0, "fread expects pointer buffer argument") ||
-        !CheckIntegerArg(1, "fread expects integer size argument") ||
-        !CheckIntegerArg(2, "fread expects integer count argument") ||
-        !CheckPointerArg(3, "fread expects pointer file argument"))
-      return nullptr;
-  } else if (Callee == "fwrite") {
-    if (!CheckPointerArg(0, "fwrite expects pointer buffer argument") ||
-        !CheckIntegerArg(1, "fwrite expects integer size argument") ||
-        !CheckIntegerArg(2, "fwrite expects integer count argument") ||
-        !CheckPointerArg(3, "fwrite expects pointer file argument"))
-      return nullptr;
-  }
-
   std::vector<Value *> ArgsV;
-  size_t I = 0;
+  unsigned I = 0;
   for (auto &Formal : CalleeF->args()) {
-    Value *ArgV = RawArgs[I++];
-    bool ArgUnsigned =
-        IsUnsignedLeafName(Args[I - 1]->getBuiltinLeafTypeHint());
-    ArgV = CastValueTo(ArgV, Formal.getType(), ArgUnsigned);
+    Value *ArgV = Args[I++]->codegen();
     if (!ArgV)
       return nullptr;
-    ArgsV.push_back(ArgV);
-  }
-
-  while (I < RawArgs.size()) {
-    Value *ArgV = RawArgs[I++];
-    Type *ArgTy = ArgV->getType();
-    if (ArgTy->isFloatTy()) {
-      ArgV = Builder->CreateFPExt(ArgV, Type::getDoubleTy(*TheContext),
-                                  "vararg.fpext");
-    } else if (ArgTy->isIntegerTy() && ArgTy->getIntegerBitWidth() < 32) {
-      bool ArgUnsigned =
-          IsUnsignedLeafName(Args[I - 1]->getBuiltinLeafTypeHint());
-      ArgV = ArgUnsigned
-                 ? Builder->CreateZExt(ArgV, Type::getInt32Ty(*TheContext),
-                                       "vararg.zext")
-                 : Builder->CreateSExt(ArgV, Type::getInt32Ty(*TheContext),
-                                       "vararg.sext");
-    }
+    ArgV = CastValueTo(ArgV, Formal.getType());
+    if (!ArgV)
+      return nullptr;
     ArgsV.push_back(ArgV);
   }
 
@@ -3658,8 +3367,16 @@ Value *IfStmtAST::codegen() {
   // Emit merge block for any non-terminated path.
   TheFunction->insert(TheFunction->end(), MergeBB);
   Builder->SetInsertPoint(MergeBB);
-  // If as a statement does not need a merged value; return a neutral sentinel.
-  return ConstantFP::get(*TheContext, APFloat(0.0));
+  if (!ThenTerminated && !ElseTerminated) {
+    PHINode *PN =
+        Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
+    PN->addIncoming(ThenV, ThenBB);
+    PN->addIncoming(ElseV, ElseBB);
+    return PN;
+  }
+
+  // Exactly one side flows through to merge.
+  return ThenTerminated ? ElseV : ThenV;
 }
 
 Value *BreakStmtAST::codegen() {
@@ -3928,8 +3645,7 @@ Value *ReturnStmtAST::codegen() {
     return nullptr;
   if (ExpectedTy->isVoidTy())
     return LogError<Value *>("Void function cannot return a value");
-  bool RetUnsigned = IsUnsignedLeafName(Expr->getBuiltinLeafTypeHint());
-  RetVal = CastValueTo(RetVal, ExpectedTy, RetUnsigned);
+  RetVal = CastValueTo(RetVal, ExpectedTy);
   if (!RetVal)
     return nullptr;
   Builder->CreateRet(RetVal);

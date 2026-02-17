@@ -1,0 +1,10 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Evaluated to 1.000000" %t
+
+def lt2(x):
+  if x < 2:
+    return 1
+  else:
+    return 0
+
+lt2(1)

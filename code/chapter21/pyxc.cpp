@@ -170,11 +170,6 @@ enum Token {
   // var definition
   tok_var = -15,
   tok_print = -27,
-  tok_while = -28,
-  tok_do = -29,
-  tok_break = -30,
-  tok_continue = -31,
-  tok_struct = -32,
 
   // indentation
   tok_indent = -16,
@@ -205,9 +200,8 @@ static std::map<std::string, Token> Keywords = {
     {"if", tok_if},   {"elif", tok_elif},     {"else", tok_else},
     {"for", tok_for}, {"in", tok_in},         {"range", tok_range},
     {"var", tok_var}, {"type", tok_type},     {"not", tok_not},
-    {"and", tok_and}, {"print", tok_print},   {"while", tok_while},
-    {"do", tok_do},   {"break", tok_break},   {"continue", tok_continue},
-    {"or", tok_or},   {"struct", tok_struct}};
+    {"and", tok_and}, {"print", tok_print},
+    {"or", tok_or}};
 
 struct SourceLocation {
   int Line;
@@ -541,15 +535,7 @@ static int gettok() {
     return (it != Keywords.end()) ? it->second : tok_identifier;
   }
 
-  bool DotStartsNumber = false;
-  if (LastChar == '.') {
-    int NextCh = getc(InputFile);
-    if (NextCh != EOF)
-      ungetc(NextCh, InputFile);
-    DotStartsNumber = isdigit(NextCh);
-  }
-
-  if (isdigit(LastChar) || DotStartsNumber) { // Number: [0-9.]+
+  if (isdigit(LastChar) || LastChar == '.') { // Number: [0-9.]+
     std::string NumStr;
     bool SawDot = false;
     do {
@@ -674,16 +660,6 @@ static const char *TokenName(int Tok) {
     return "<var>";
   case tok_print:
     return "<print>";
-  case tok_while:
-    return "<while>";
-  case tok_do:
-    return "<do>";
-  case tok_break:
-    return "<break>";
-  case tok_continue:
-    return "<continue>";
-  case tok_struct:
-    return "<struct>";
   case tok_not:
     return "<not>";
   case tok_and:
@@ -920,26 +896,6 @@ public:
   std::string getBuiltinLeafTypeHint() const override;
 };
 
-class MemberExprAST : public ExprAST {
-  std::unique_ptr<ExprAST> Base;
-  std::string FieldName;
-
-public:
-  MemberExprAST(SourceLocation Loc, std::unique_ptr<ExprAST> Base,
-                std::string FieldName)
-      : ExprAST(Loc), Base(std::move(Base)), FieldName(std::move(FieldName)) {}
-
-  raw_ostream &dump(raw_ostream &out, int ind) override {
-    ExprAST::dump(out << "member ." << FieldName, ind);
-    Base->dump(indent(out, ind) << "Base:", ind + 1);
-    return out;
-  }
-  Value *codegen() override;
-  Value *codegenAddress() override;
-  Type *getValueTypeHint() const override;
-  std::string getBuiltinLeafTypeHint() const override;
-};
-
 /// UnaryExprAST - Expression class for a unary operator.
 class UnaryExprAST : public ExprAST {
   int Opcode;
@@ -1096,44 +1052,6 @@ public:
   Value *codegen() override;
 };
 
-class WhileStmtAST : public StmtAST {
-  std::unique_ptr<ExprAST> Cond;
-  std::unique_ptr<BlockSuiteAST> Body;
-
-public:
-  WhileStmtAST(SourceLocation Loc, std::unique_ptr<ExprAST> Cond,
-               std::unique_ptr<BlockSuiteAST> Body)
-      : StmtAST(Loc), Cond(std::move(Cond)), Body(std::move(Body)) {}
-
-  Value *codegen() override;
-};
-
-class DoWhileStmtAST : public StmtAST {
-  std::unique_ptr<BlockSuiteAST> Body;
-  std::unique_ptr<ExprAST> Cond;
-
-public:
-  DoWhileStmtAST(SourceLocation Loc, std::unique_ptr<BlockSuiteAST> Body,
-                 std::unique_ptr<ExprAST> Cond)
-      : StmtAST(Loc), Body(std::move(Body)), Cond(std::move(Cond)) {}
-
-  Value *codegen() override;
-};
-
-class BreakStmtAST : public StmtAST {
-public:
-  explicit BreakStmtAST(SourceLocation Loc) : StmtAST(Loc) {}
-  Value *codegen() override;
-  bool isTerminator() override { return true; }
-};
-
-class ContinueStmtAST : public StmtAST {
-public:
-  explicit ContinueStmtAST(SourceLocation Loc) : StmtAST(Loc) {}
-  Value *codegen() override;
-  bool isTerminator() override { return true; }
-};
-
 /// VarExprAST - Expression class for var/in
 class VarExprAST : public ExprAST {
   std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames;
@@ -1212,26 +1130,13 @@ static int getNextToken() { return CurTok = gettok(); }
 // Tracks all previously defined function prototypes
 static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 static std::map<std::string, TypeExprPtr> TypeAliases;
-struct StructFieldDecl {
-  std::string Name;
-  TypeExprPtr Ty;
-};
-struct StructDeclInfo {
-  std::string Name;
-  std::vector<StructFieldDecl> Fields;
-  std::map<std::string, unsigned> FieldIndex;
-  StructType *LLTy = nullptr;
-};
-static std::map<std::string, StructDeclInfo> StructDecls;
-static std::map<const StructType *, std::string> StructTypeNames;
 
 /// BinopPrecedence - This holds the precedence for each binary operator that is
 /// defined.
 static std::map<int, int> BinopPrecedence = {
     {tok_or, 5}, {tok_and, 6}, {tok_eq, 10}, {tok_ne, 10},
-    {'|', 7},    {'^', 8},     {'&', 9},     {'<', 12},
-    {'>', 12},   {tok_le, 12}, {tok_ge, 12},
-    {'+', 20},   {'-', 20},    {'*', 40},    {'/', 40}, {'%', 40}};
+    {'<', 12},   {'>', 12},    {tok_le, 12}, {tok_ge, 12},
+    {'+', 20},   {'-', 20},    {'*', 40},    {'/', 40}};
 
 /// Explanation-friendly precedence anchors used by parser control flow.
 static constexpr int NO_OP_PREC = -1;
@@ -1256,7 +1161,6 @@ static std::unique_ptr<BlockSuiteAST> ParseSuite();
 static std::unique_ptr<BlockSuiteAST> ParseBlockSuite();
 static std::unique_ptr<StmtAST> ParsePrintStmt();
 static TypeExprPtr ParseTypeExpr();
-static bool ParseStructDecl();
 
 static void SkipToNextLine() {
   while (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_error)
@@ -1353,18 +1257,6 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
       continue;
     }
 
-    if (CurTok == '.') {
-      SourceLocation MemberLoc = CurLoc;
-      getNextToken(); // eat '.'
-      if (CurTok != tok_identifier)
-        return LogError<ExprPtr>("Expected field name after '.'");
-      std::string FieldName = IdentifierStr;
-      getNextToken(); // eat field name
-      Expr = std::make_unique<MemberExprAST>(MemberLoc, std::move(Expr),
-                                             std::move(FieldName));
-      continue;
-    }
-
     return Expr;
   }
 }
@@ -1425,99 +1317,6 @@ static bool ParseTypeAliasDecl() {
   if (!AliasedTy)
     return false;
   TypeAliases[AliasName] = std::move(AliasedTy);
-  return true;
-}
-
-static bool ParseStructDecl() {
-  if (CurTok != tok_struct)
-    return false;
-
-  getNextToken(); // eat 'struct'
-  if (CurTok != tok_identifier) {
-    LogError("Expected struct name after 'struct'");
-    return false;
-  }
-
-  std::string StructName = IdentifierStr;
-  SourceLocation StructLoc = CurLoc;
-  getNextToken(); // eat name
-
-  if (StructDecls.count(StructName)) {
-    LogError(("Struct '" + StructName + "' is already defined").c_str());
-    return false;
-  }
-
-  if (CurTok != ':') {
-    LogError("Expected ':' after struct name");
-    return false;
-  }
-  getNextToken(); // eat ':'
-
-  if (CurTok != tok_eol) {
-    LogError("Expected newline after struct declaration header");
-    return false;
-  }
-
-  if (getNextToken() != tok_indent) {
-    LogError("Expected indent for struct field list");
-    return false;
-  }
-  getNextToken(); // eat indent
-
-  StructDeclInfo Decl;
-  Decl.Name = StructName;
-
-  while (CurTok != tok_dedent && CurTok != tok_eof) {
-    EatNewLines();
-    if (CurTok == tok_dedent || CurTok == tok_eof)
-      break;
-
-    if (CurTok != tok_identifier) {
-      LogError("Expected field name in struct declaration");
-      return false;
-    }
-    std::string FieldName = IdentifierStr;
-    getNextToken(); // eat field name
-
-    if (Decl.FieldIndex.count(FieldName)) {
-      LogError(("Duplicate field '" + FieldName + "' in struct '" + StructName +
-                "'")
-                   .c_str());
-      return false;
-    }
-
-    if (CurTok != ':') {
-      LogError("Expected ':' after struct field name");
-      return false;
-    }
-    getNextToken(); // eat ':'
-
-    auto FieldTy = ParseTypeExpr();
-    if (!FieldTy)
-      return false;
-
-    unsigned Idx = static_cast<unsigned>(Decl.Fields.size());
-    Decl.FieldIndex[FieldName] = Idx;
-    Decl.Fields.push_back({FieldName, std::move(FieldTy)});
-
-    if (CurTok == tok_eol)
-      getNextToken();
-  }
-
-  if (Decl.Fields.empty()) {
-    CurLoc = StructLoc;
-    LogError(("Struct '" + StructName + "' must declare at least one field")
-                 .c_str());
-    return false;
-  }
-
-  if (CurTok != tok_dedent) {
-    LogError("Expected dedent after struct field list");
-    return false;
-  }
-  getNextToken(); // eat dedent
-
-  StructDecls[StructName] = std::move(Decl);
   return true;
 }
 
@@ -1628,64 +1427,6 @@ static std::unique_ptr<StmtAST> ParseForStmt() {
 
   return std::make_unique<ForStmtAST>(ForLoc, IdName, std::move(Start), std::move(End),
                                       std::move(Step), std::move(Body));
-}
-
-// while_stmt     = "while" , expression , ":" , suite ;
-static std::unique_ptr<StmtAST> ParseWhileStmt() {
-  SourceLocation WhileLoc = CurLoc;
-  getNextToken(); // eat while
-
-  auto Cond = ParseExpression();
-  if (!Cond)
-    return nullptr;
-
-  if (CurTok != ':')
-    return LogError<StmtPtr>("expected `:` after while condition");
-  getNextToken(); // eat ':'
-
-  auto Body = ParseSuite();
-  if (!Body)
-    return nullptr;
-
-  return std::make_unique<WhileStmtAST>(WhileLoc, std::move(Cond),
-                                        std::move(Body));
-}
-
-// do_while_stmt  = "do" , ":" , suite , "while" , expression ;
-static std::unique_ptr<StmtAST> ParseDoWhileStmt() {
-  SourceLocation DoLoc = CurLoc;
-  getNextToken(); // eat do
-
-  if (CurTok != ':')
-    return LogError<StmtPtr>("expected `:` after do");
-  getNextToken(); // eat ':'
-
-  auto Body = ParseSuite();
-  if (!Body)
-    return nullptr;
-
-  if (CurTok != tok_while)
-    return LogError<StmtPtr>("expected `while` after do suite");
-  getNextToken(); // eat while
-
-  auto Cond = ParseExpression();
-  if (!Cond)
-    return nullptr;
-
-  return std::make_unique<DoWhileStmtAST>(DoLoc, std::move(Body),
-                                          std::move(Cond));
-}
-
-static std::unique_ptr<StmtAST> ParseBreakStmt() {
-  auto Loc = CurLoc;
-  getNextToken(); // eat break
-  return std::make_unique<BreakStmtAST>(Loc);
-}
-
-static std::unique_ptr<StmtAST> ParseContinueStmt() {
-  auto Loc = CurLoc;
-  getNextToken(); // eat continue
-  return std::make_unique<ContinueStmtAST>(Loc);
 }
 
 /// varexpr ::= 'var' identifier ('=' expression)?
@@ -1844,22 +1585,12 @@ static std::unique_ptr<StmtAST> ParseStmt() {
     return LogError<StmtPtr>("Unexpected `else` without matching `if`");
   case tok_for:
     return ParseForStmt();
-  case tok_while:
-    return ParseWhileStmt();
-  case tok_do:
-    return ParseDoWhileStmt();
-  case tok_break:
-    return ParseBreakStmt();
-  case tok_continue:
-    return ParseContinueStmt();
   case tok_return:
     return ParseReturnStmt();
   case tok_print:
     return ParsePrintStmt();
   case tok_type:
     return LogError<StmtPtr>("Type aliases are only allowed at top-level");
-  case tok_struct:
-    return LogError<StmtPtr>("Struct declarations are only allowed at top-level");
   case tok_identifier:
     return ParseIdentifierLeadingStmt();
   default:
@@ -2141,27 +1872,6 @@ struct VarBinding {
   std::string PointeeBuiltinLeafTy;
 };
 static std::map<std::string, VarBinding> NamedValues;
-struct LoopContext {
-  BasicBlock *BreakTarget = nullptr;
-  BasicBlock *ContinueTarget = nullptr;
-};
-static std::vector<LoopContext> LoopContextStack;
-
-class LoopContextGuard {
-  bool Active = false;
-
-public:
-  LoopContextGuard(BasicBlock *BreakTarget, BasicBlock *ContinueTarget)
-      : Active(true) {
-    LoopContextStack.push_back({BreakTarget, ContinueTarget});
-  }
-
-  ~LoopContextGuard() {
-    if (Active)
-      LoopContextStack.pop_back();
-  }
-};
-
 static std::unique_ptr<PyxcJIT> TheJIT;
 static std::unique_ptr<FunctionPassManager> TheFPM;
 static std::unique_ptr<LoopAnalysisManager> TheLAM;
@@ -2303,9 +2013,6 @@ static Type *BuiltinTypeToLLVM(const std::string &Name) {
   return nullptr;
 }
 
-static Type *ResolveTypeExpr(const TypeExprPtr &Ty,
-                             std::set<std::string> &Visited);
-
 static void EnsureDefaultTypeAliases() {
   auto ensure = [](const std::string &Alias, TypeExprPtr Ty) {
     if (TypeAliases.find(Alias) == TypeAliases.end())
@@ -2321,75 +2028,6 @@ static void EnsureDefaultTypeAliases() {
   unsigned PtrBits = DL.getPointerSizeInBits(0);
   ensure("long", TypeExpr::Builtin(PtrBits == 32 ? "i32" : "i64"));
   ensure("size_t", TypeExpr::Builtin(PtrBits == 32 ? "u32" : "u64"));
-}
-
-static StructType *ResolveStructTypeByName(const std::string &Name,
-                                           std::set<std::string> &Visited);
-
-static const StructDeclInfo *GetStructInfoForType(Type *Ty) {
-  auto *ST = dyn_cast_or_null<StructType>(Ty);
-  if (!ST)
-    return nullptr;
-  auto ItName = StructTypeNames.find(ST);
-  if (ItName == StructTypeNames.end())
-    return nullptr;
-  auto ItDecl = StructDecls.find(ItName->second);
-  if (ItDecl == StructDecls.end())
-    return nullptr;
-  return &ItDecl->second;
-}
-
-static const StructFieldDecl *
-GetStructFieldByName(const StructDeclInfo &Decl, const std::string &FieldName,
-                     unsigned *FieldIdx = nullptr) {
-  auto It = Decl.FieldIndex.find(FieldName);
-  if (It == Decl.FieldIndex.end())
-    return nullptr;
-  if (FieldIdx)
-    *FieldIdx = It->second;
-  return &Decl.Fields[It->second];
-}
-
-static StructType *ResolveStructTypeByName(const std::string &Name,
-                                           std::set<std::string> &Visited) {
-  auto It = StructDecls.find(Name);
-  if (It == StructDecls.end())
-    return nullptr;
-  StructDeclInfo &Decl = It->second;
-  if (Decl.LLTy)
-    return Decl.LLTy;
-
-  if (Visited.count(Name))
-    return nullptr;
-  Visited.insert(Name);
-
-  StructType *ST = StructType::create(*TheContext, "struct." + Name);
-  Decl.LLTy = ST;
-  StructTypeNames[ST] = Name;
-
-  std::vector<Type *> FieldTys;
-  FieldTys.reserve(Decl.Fields.size());
-  for (const auto &Field : Decl.Fields) {
-    Type *FTy = nullptr;
-    if (Field.Ty->Kind == TypeExprKind::AliasRef &&
-        StructDecls.count(Field.Ty->Name) != 0) {
-      StructType *Nested = ResolveStructTypeByName(Field.Ty->Name, Visited);
-      if (!Nested)
-        return LogError<StructType *>(
-            ("Unknown struct field type: " + Field.Ty->Name).c_str());
-      FTy = Nested;
-    } else {
-      FTy = ResolveTypeExpr(Field.Ty, Visited);
-    }
-    if (!FTy)
-      return LogError<StructType *>(
-          ("Failed to resolve field type in struct '" + Name + "'").c_str());
-    FieldTys.push_back(FTy);
-  }
-
-  ST->setBody(FieldTys, false);
-  Visited.erase(Name);
-  return ST;
 }
 
 static Type *ResolveTypeExpr(const TypeExprPtr &Ty,
@@ -2409,24 +2047,14 @@ static Type *ResolveTypeExpr(const TypeExprPtr &Ty,
   }
 
   auto It = TypeAliases.find(Ty->Name);
-  if (It != TypeAliases.end()) {
-    if (Visited.count(Ty->Name))
-      return LogError<Type *>(
-          ("Alias cycle detected at type: " + Ty->Name).c_str());
-    Visited.insert(Ty->Name);
-    Type *Resolved = ResolveTypeExpr(It->second, Visited);
-    Visited.erase(Ty->Name);
-    return Resolved;
-  }
-
-  if (StructDecls.count(Ty->Name)) {
-    StructType *ST = ResolveStructTypeByName(Ty->Name, Visited);
-    if (!ST)
-      return LogError<Type *>(("Unknown struct type: " + Ty->Name).c_str());
-    return ST;
-  }
-
-  return LogError<Type *>(("Unknown type alias: " + Ty->Name).c_str());
+  if (It == TypeAliases.end())
+    return LogError<Type *>(("Unknown type alias: " + Ty->Name).c_str());
+  if (Visited.count(Ty->Name))
+    return LogError<Type *>(("Alias cycle detected at type: " + Ty->Name).c_str());
+  Visited.insert(Ty->Name);
+  Type *Resolved = ResolveTypeExpr(It->second, Visited);
+  Visited.erase(Ty->Name);
+  return Resolved;
 }
 
 static Type *ResolveTypeExpr(const TypeExprPtr &Ty) {
@@ -2704,59 +2332,6 @@ std::string IndexExprAST::getBuiltinLeafTypeHint() const {
   return Base->getPointeeBuiltinLeafTypeHint();
 }
 
-Value *MemberExprAST::codegenAddress() {
-  emitLocation(this);
-  Value *BaseAddr = Base->codegenAddress();
-  if (!BaseAddr)
-    return LogError<Value *>("Member access requires an addressable base");
-  Type *BaseTy = Base->getValueTypeHint();
-  const StructDeclInfo *Decl = GetStructInfoForType(BaseTy);
-  if (!Decl)
-    return LogError<Value *>("Member access requires a struct-typed base");
-
-  unsigned FieldIdx = 0;
-  const StructFieldDecl *Field =
-      GetStructFieldByName(*Decl, FieldName, &FieldIdx);
-  if (!Field)
-    return LogError<Value *>(
-        ("Unknown field '" + FieldName + "' on struct '" + Decl->Name + "'")
-            .c_str());
-  auto *ST = dyn_cast<StructType>(BaseTy);
-  return Builder->CreateStructGEP(ST, BaseAddr, FieldIdx, "field.addr");
-}
-
-Value *MemberExprAST::codegen() {
-  Value *AddrV = codegenAddress();
-  if (!AddrV)
-    return nullptr;
-  Type *FieldTy = getValueTypeHint();
-  if (!FieldTy)
-    return LogError<Value *>("Cannot determine member field type");
-  return Builder->CreateLoad(FieldTy, AddrV, "field.load");
-}
-
-Type *MemberExprAST::getValueTypeHint() const {
-  Type *BaseTy = Base->getValueTypeHint();
-  const StructDeclInfo *Decl = GetStructInfoForType(BaseTy);
-  if (!Decl)
-    return nullptr;
-  const StructFieldDecl *Field = GetStructFieldByName(*Decl, FieldName);
-  if (!Field)
-    return nullptr;
-  return ResolveTypeExpr(Field->Ty);
-}
-
-std::string MemberExprAST::getBuiltinLeafTypeHint() const {
-  Type *BaseTy = Base->getValueTypeHint();
-  const StructDeclInfo *Decl = GetStructInfoForType(BaseTy);
-  if (!Decl)
-    return "";
-  const StructFieldDecl *Field = GetStructFieldByName(*Decl, FieldName);
-  if (!Field)
-    return "";
-  return ResolveBuiltinLeafName(Field->Ty);
-}
-
 Value *TypedAssignStmtAST::codegen() {
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
   Type *DeclTy = ResolveTypeExpr(DeclType);
@@ -2768,9 +2343,6 @@ Value *TypedAssignStmtAST::codegen() {
   AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, Name, DeclTy);
   Value *InitVal = nullptr;
   if (InitExpr) {
-    if (DeclTy->isStructTy())
-      return LogError<Value *>(
-          "Struct variables do not support direct initializer expressions");
     InitVal = InitExpr->codegen();
     if (!InitVal)
       return nullptr;
@@ -2828,9 +2400,7 @@ Value *UnaryExprAST::codegen() {
                                  "nottmp");
   }
   case '~':
-    if (!OperandV->getType()->isIntegerTy())
-      return LogError<Value *>("Unary '~' requires integer operand");
-    return Builder->CreateNot(OperandV, "bnottmp");
+    return LogError<Value *>("'~' is not supported in Chapter 16");
   default:
     return LogError<Value *>("Unknown unary operator");
   }
@@ -2888,22 +2458,8 @@ Value *BinaryExprAST::codegen() {
   if (!R)
     return nullptr;
 
-  bool RequiresIntOnly = (Op == '%' || Op == '&' || Op == '^' || Op == '|');
-  bool UseFP =
-      L->getType()->isFloatingPointTy() || R->getType()->isFloatingPointTy();
-  if (RequiresIntOnly) {
-    if (!(L->getType()->isIntegerTy() && R->getType()->isIntegerTy())) {
-      if (Op == '%')
-        return LogError<Value *>(
-            "Modulo operator '%' requires integer operands");
-      return LogError<Value *>("Bitwise operators require integer operands");
-    }
-    unsigned W = std::max(L->getType()->getIntegerBitWidth(),
-                          R->getType()->getIntegerBitWidth());
-    Type *IntTy = IntegerType::get(*TheContext, W);
-    L = CastValueTo(L, IntTy);
-    R = CastValueTo(R, IntTy);
-  } else if (UseFP) {
+  bool UseFP = L->getType()->isFloatingPointTy() || R->getType()->isFloatingPointTy();
+  if (UseFP) {
     Type *FPType = Type::getDoubleTy(*TheContext);
     L = CastValueTo(L, FPType);
     R = CastValueTo(R, FPType);
@@ -2932,14 +2488,6 @@ Value *BinaryExprAST::codegen() {
   case '/':
     return UseFP ? Builder->CreateFDiv(L, R, "divtmp")
                  : Builder->CreateSDiv(L, R, "divtmp");
-  case '%':
-    return Builder->CreateSRem(L, R, "modtmp");
-  case '&':
-    return Builder->CreateAnd(L, R, "andtmp");
-  case '^':
-    return Builder->CreateXor(L, R, "xortmp");
-  case '|':
-    return Builder->CreateOr(L, R, "ortmp");
   case '<':
     L = UseFP ? Builder->CreateFCmpULT(L, R, "cmptmp")
               : Builder->CreateICmpSLT(L, R, "cmptmp");
@@ -3168,84 +2716,6 @@ Value *IfStmtAST::codegen() {
   return ThenTerminated ? ElseV : ThenV;
 }
 
-Value *BreakStmtAST::codegen() {
-  if (LoopContextStack.empty())
-    return LogError<Value *>("`break` used outside of a loop");
-  emitLocation(this);
-  Builder->CreateBr(LoopContextStack.back().BreakTarget);
-  return Constant::getNullValue(Type::getDoubleTy(*TheContext));
-}
-
-Value *ContinueStmtAST::codegen() {
-  if (LoopContextStack.empty())
-    return LogError<Value *>("`continue` used outside of a loop");
-  emitLocation(this);
-  Builder->CreateBr(LoopContextStack.back().ContinueTarget);
-  return Constant::getNullValue(Type::getDoubleTy(*TheContext));
-}
-
-Value *WhileStmtAST::codegen() {
-  emitLocation(this);
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
-  BasicBlock *CondBB = BasicBlock::Create(*TheContext, "while.cond", TheFunction);
-  BasicBlock *BodyBB = BasicBlock::Create(*TheContext, "while.body");
-  BasicBlock *ExitBB = BasicBlock::Create(*TheContext, "while.exit");
-
-  Builder->CreateBr(CondBB);
-  Builder->SetInsertPoint(CondBB);
-  Value *CondV = Cond->codegen();
-  if (!CondV)
-    return nullptr;
-  CondV = ToBoolI1(CondV, "whilecond");
-  if (!CondV)
-    return nullptr;
-  Builder->CreateCondBr(CondV, BodyBB, ExitBB);
-
-  TheFunction->insert(TheFunction->end(), BodyBB);
-  Builder->SetInsertPoint(BodyBB);
-  LoopContextGuard Guard(ExitBB, CondBB);
-  if (!Body->codegen())
-    return nullptr;
-
-  if (!Builder->GetInsertBlock()->getTerminator())
-    Builder->CreateBr(CondBB);
-
-  TheFunction->insert(TheFunction->end(), ExitBB);
-  Builder->SetInsertPoint(ExitBB);
-  return Constant::getNullValue(Type::getDoubleTy(*TheContext));
-}
-
-Value *DoWhileStmtAST::codegen() {
-  emitLocation(this);
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
-  BasicBlock *BodyBB = BasicBlock::Create(*TheContext, "do.body", TheFunction);
-  BasicBlock *CondBB = BasicBlock::Create(*TheContext, "do.cond");
-  BasicBlock *ExitBB = BasicBlock::Create(*TheContext, "do.exit");
-
-  Builder->CreateBr(BodyBB);
-
-  Builder->SetInsertPoint(BodyBB);
-  LoopContextGuard Guard(ExitBB, CondBB);
-  if (!Body->codegen())
-    return nullptr;
-  if (!Builder->GetInsertBlock()->getTerminator())
-    Builder->CreateBr(CondBB);
-
-  TheFunction->insert(TheFunction->end(), CondBB);
-  Builder->SetInsertPoint(CondBB);
-  Value *CondV = Cond->codegen();
-  if (!CondV)
-    return nullptr;
-  CondV = ToBoolI1(CondV, "docond");
-  if (!CondV)
-    return nullptr;
-  Builder->CreateCondBr(CondV, BodyBB, ExitBB);
-
-  TheFunction->insert(TheFunction->end(), ExitBB);
-  Builder->SetInsertPoint(ExitBB);
-  return Constant::getNullValue(Type::getDoubleTy(*TheContext));
-}
-
 Value *ForStmtAST::codegen() {
   emitLocation(this);
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
@@ -3272,7 +2742,6 @@ Value *ForStmtAST::codegen() {
   BasicBlock *LoopConditionBB =
       BasicBlock::Create(*TheContext, "loopcond", TheFunction);
   BasicBlock *LoopBB = BasicBlock::Create(*TheContext, "loop");
-  BasicBlock *StepBB = BasicBlock::Create(*TheContext, "loopstep");
   BasicBlock *EndLoopBB = BasicBlock::Create(*TheContext, "endloop");
 
   // Insert an explicit fall through from current block to LoopConditionBB.
@@ -3316,18 +2785,11 @@ Value *ForStmtAST::codegen() {
   // the current BB. Note that we ignore the value computed by the body, but
   // don't allow an error.
   Builder->SetInsertPoint(LoopBB);
-  LoopContextGuard Guard(EndLoopBB, StepBB);
   if (!Body->codegen()) {
     return nullptr;
   }
 
-  // Fallthrough from body to step if body didn't already terminate.
-  if (!Builder->GetInsertBlock()->getTerminator())
-    Builder->CreateBr(StepBB);
-
-  // Emit the step value in a dedicated block so `continue` can branch here.
-  TheFunction->insert(TheFunction->end(), StepBB);
-  Builder->SetInsertPoint(StepBB);
+  // Emit the step value.
   Value *StepVal = nullptr;
   if (Step) {
     StepVal = Step->codegen();
@@ -3341,13 +2803,14 @@ Value *ForStmtAST::codegen() {
       StepVal = ConstantInt::get(LoopTy, 1);
   }
   StepVal = CastValueTo(StepVal, LoopTy);
-  Value *CurVarStep =
-      Builder->CreateLoad(Alloca->getAllocatedType(), Alloca, VarName);
-  CurVarStep = CastValueTo(CurVarStep, LoopTy);
+  CurVar = CastValueTo(CurVar, LoopTy);
   Value *NextVar = LoopTy->isFloatingPointTy()
-                       ? Builder->CreateFAdd(CurVarStep, StepVal, "nextvar")
-                       : Builder->CreateAdd(CurVarStep, StepVal, "nextvar");
+                       ? Builder->CreateFAdd(CurVar, StepVal, "nextvar")
+                       : Builder->CreateAdd(CurVar, StepVal, "nextvar");
   Builder->CreateStore(NextVar, Alloca);
+
+  // Create the unconditional branch that returns to LoopConditionBB to
+  // determine if we should continue looping.
   Builder->CreateBr(LoopConditionBB);
 
   // Append EndLoopBB after the loop body. We go to this basic block if the
@@ -3451,7 +2914,7 @@ Value *BlockSuiteAST::codegen() {
     if (Stmts[i]->isTerminator()) {
       if (i + 1 < Stmts.size()) {
         fprintf(stderr,
-                "Warning (Line %d): unreachable code after terminator statement\n",
+                "Warning (Line %d): unreachable code after return statement\n",
                 Stmts[i + 1]->getLine());
       }
       break;
@@ -3539,7 +3002,6 @@ Function *FunctionAST::codegen() {
 
   // Record the function arguments in the NamedValues map.
   NamedValues.clear();
-  LoopContextStack.clear();
   unsigned ArgIdx = 0;
   unsigned ArgTyIdx = 0;
 
@@ -3729,15 +3191,6 @@ static void HandleTypeAlias() {
   }
 }
 
-static void HandleStructDecl() {
-  if (ParseStructDecl()) {
-    if (CurTok == tok_eol)
-      getNextToken();
-  } else {
-    getNextToken();
-  }
-}
-
 static void HandleTopLevelExpression() {
   // Evaluate a top-level expression into an anonymous function.
   if (auto FnAST = ParseTopLevelExpr()) {
@@ -3809,9 +3262,6 @@ static void MainLoop() {
         break;
       case tok_type:
         HandleTypeAlias();
-        break;
-      case tok_struct:
-        HandleStructDecl();
         break;
       default:
         HandleTopLevelExpression();
@@ -4026,16 +3476,7 @@ static bool ParseTranslationUnit(ParsedTranslationUnit &TU) {
       } else {
         getNextToken(); // Skip for error recovery
       }
-      break;
-    case tok_struct:
-      if (ParseStructDecl()) {
-        if (CurTok == tok_eol)
-          getNextToken();
-      } else {
-        getNextToken(); // Skip for error recovery
-      }
-      break;
-    case tok_eol:
+      break;    case tok_eol:
       getNextToken(); // Skip newlines
       break;
     case '@':

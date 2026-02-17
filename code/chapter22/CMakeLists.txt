@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(pyxc_chapter20 LANGUAGES C CXX)
+project(pyxc_chapter18 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)

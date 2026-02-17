@@ -1,340 +1,350 @@
 ---
-description: "Expand runtime interop with file I/O primitives like fopen/fclose/fgets/fputs/fread/fwrite for persistent input and output workflows."
+description: "Bring in dynamic memory with malloc/free to support heap allocation patterns beyond fixed stack-based and static storage scenarios."
 ---
-# 24. Pyxc: File I/O with fopen, fclose, fgets, fputs, fread, fwrite
+# 23. Pyxc: Dynamic Memory with malloc and free
 
-Chapter 24 added string literals and console-style stdio (`putchar`, `getchar`, `puts`, minimal `printf`).
+Chapter 22 gave us fixed-size arrays and stronger aggregate modeling.
 
-That gave us interactive text output, but not persistent data.
+But everything was still fundamentally static in storage duration unless values lived in existing stack locals or passed pointers from outside.
 
-Chapter 25 extends libc interop to file APIs so Pyxc programs can read and write files directly.
+Chapter 23 adds the missing runtime allocation primitive:
 
-This chapter intentionally stays close to C semantics: explicit open/close, explicit buffer pointers, explicit byte counts.
+- allocate memory on heap with `malloc[T](count)`
+- release it with `free(ptr_expr)`
+
+This is the first chapter where memory lifetime becomes an explicit programming concern in Pyxc.
 
 
 !!!note
-    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter25](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter25).
-
-## Grammar (EBNF)
-
-Chapter 25 adds file I/O through normal function calls (`fopen`, `fclose`, `fgets`, `fputs`, `fread`, `fwrite`), so grammar is unchanged from Chapter 24.
-The implementation change is semantic/type-checking in call codegen.
-
-Reference: `code/chapter25/pyxc.ebnf`
-
-```ebnf
-statement    = ... | expr_stmt ;
-expr_stmt    = expression ;
-expression   = unary_expr , { binary_op , unary_expr } ;
-postfix_expr = primary , { call_suffix | index_suffix | member_suffix } ;
-call_suffix  = "(" , [ arg_list ] , ")" ;
-```
+    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter23](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter23).
 
 ## Why this chapter matters
 
-Without file I/O, many practical programs are blocked:
+With only fixed-size stack values, many common patterns are blocked:
 
-- writing logs or reports to disk
-- reading configuration files
-- binary serialization experiments
-- roundtrip tests that need persistent state
+- runtime-sized buffers
+- long-lived dynamically allocated structures
+- explicit memory ownership patterns
 
-With Chapter 25 we can do both text and block I/O:
-
-- text path: `fopen` + `fputs`/`fgets` + `fclose`
-- binary/block path: `fopen` + `fwrite`/`fread` + `fclose`
-
-This is a major interop milestone because these APIs are part of the standard C runtime most toolchains already provide.
+Chapter 23 does not try to solve lifetime ergonomics. It gives manual control, C-style, which is exactly what we need for systems-oriented interop and later language work.
 
 ## Scope and constraints
 
-### In scope
+Chapter 23 supports:
 
-- Auto-declared libc file symbols:
-  - `fopen(path, mode) -> ptr`
-  - `fclose(file) -> i32`
-  - `fgets(buf, n, file) -> ptr`
-  - `fputs(str, file) -> i32`
-  - `fread(buf, size, count, file) -> i64`
-  - `fwrite(buf, size, count, file) -> i64`
-- Opaque file-handle usage via pointer types (`ptr[void]` works naturally)
-- Call-site type checks for known file APIs
-- Regression-safe integration with existing call/codegen pipeline
+- typed allocation expression: `malloc[T](count)`
+- explicit deallocation statement: `free(ptr_expr)`
+- scalar/struct/array-element allocation targets
 
-### Out of scope
+Chapter 23 intentionally does not support:
 
-- high-level file abstractions/classes
-- exception-style cleanup semantics
-- extra stdio state APIs (`feof`, `ferror`, etc.)
-- path utility helpers
+- garbage collection
+- ownership checker/borrow model
+- `calloc`/`realloc`
+- leak diagnostics
 
-We keep the surface raw and explicit in this chapter.
+This is deliberate. The focus is “correct lowering + clear diagnostics”, not full memory management policy.
 
-## What changed from Chapter 24
+## What changed from Chapter 22
 
 Primary diff:
 
-- `code/chapter24/pyxc.cpp` -> `code/chapter25/pyxc.cpp`
-- `code/chapter24/test` -> `code/chapter25/test`
+- `code/chapter22/pyxc.cpp` -> `code/chapter23/pyxc.cpp`
+- `code/chapter22/pyxc.ebnf` -> `code/chapter23/pyxc.ebnf`
 
-No new parser grammar was required for file APIs because they are normal function calls.
+Implementation buckets:
 
-Main implementation buckets:
+1. new tokens/keywords (`malloc`, `free`)
+2. parser support for malloc expression and free statement
+3. AST nodes (`MallocExprAST`, `FreeStmtAST`)
+4. LLVM lowering helpers for external `malloc`/`free`
+5. semantic checks on element type, count, and free operand type
+6. dedicated tests
 
-1. extend libc auto-declaration table with file APIs
-2. add file-API-specific argument type checks in `CallExprAST::codegen()`
-3. add positive and negative lit coverage
+## Grammar and syntax additions
 
-## Retrospective Note (Boolean/Comparison Semantics Cleanup)
+In `code/chapter23/pyxc.ebnf`, Chapter 23 adds:
 
-Chapter 25 is also where we finally fixed a long-running semantic debt from early Kaleidoscope-style behavior.
+```ebnf
+statement       = ...
+                | free_stmt
+                | ... ;
 
-Historically (including Chapter 16 onward), logical/comparison-style operations produced floating values (`0.0` / `1.0`) in several paths, because the original tutorial flow leaned that way for simplicity.
+free_stmt       = "free" , "(" , expression , ")" ;
 
-In Chapter 25, we switched this to C-like integer-style truth values and related signed/unsigned correctness:
+primary         = number
+                | identifier
+                | malloc_expr
+                | addr_expr
+                | paren_expr
+                | var_expr ;
 
-- `not` / `!` now yields integer truth values (not floating)
-- `and` / `or` result values are integer truth values
-- comparisons yield integer truth values
-- unsigned division/modulo/comparisons use unsigned LLVM ops
-- unsigned vararg promotions use zero-extension
-
-Honestly, we should have done this around Chapter 16 when control flow and branching got serious. We noticed it late, fixed it here, and kept momentum instead of stopping to rewrite every earlier chapter immediately. Pragmatic? Yes. A tiny bit lazy? Also yes.
-
-## Design choice: no new syntax
-
-Chapter 25 deliberately introduces no new statement keywords.
-
-All file operations use existing call syntax:
-
-```py
-f: ptr[void] = fopen("out.txt", "w")
-fputs("hello\n", f)
-fclose(f)
+malloc_expr     = "malloc" , "[" , type_expr , "]" , "(" , expression , ")" ;
 ```
 
-This keeps language growth small and pushes capability through interop, which is exactly what we want at this stage.
+Design choice:
 
-## Extending libc symbol resolution
+- `malloc` is an expression (can appear in assignment/initialization)
+- `free` is a statement (effectful operation, no meaningful value)
 
-In Chapter 24, libc auto-declaration supported only console I/O symbols.
+That closely matches programmer intuition.
 
-In Chapter 25, `GetOrCreateLibcIOFunction(...)` is extended:
+## Lexer changes
+
+New tokens in `Token` enum:
 
 ```cpp
-static Function *GetOrCreateLibcIOFunction(const std::string &Name) {
-  if (Function *F = TheModule->getFunction(Name))
+tok_malloc = -33,
+tok_free = -34,
+```
+
+Keyword map entries:
+
+```cpp
+{"malloc", tok_malloc},
+{"free", tok_free}
+```
+
+Token debug names were also added:
+
+```cpp
+case tok_malloc: return "<malloc>";
+case tok_free: return "<free>";
+```
+
+## Parser changes
+
+### ParseMallocExpr()
+
+`malloc` parsing is strict on delimiters and shape:
+
+```cpp
+malloc[TypeExpr](CountExpr)
+```
+
+It validates:
+
+- `malloc`
+- `[` element type `]`
+- `(` count expression `)`
+
+and returns `MallocExprAST`.
+
+### ParseFreeStmt()
+
+`free` is parsed as statement syntax:
+
+```cpp
+free(expr)
+```
+
+and returns `FreeStmtAST`.
+
+### Dispatch integration
+
+- `ParsePrimary()` adds `tok_malloc`
+- `ParseStmt()` adds `tok_free`
+
+This keeps syntax orthogonal and avoids ambiguity.
+
+## AST additions
+
+Chapter 23 introduces two nodes:
+
+```cpp
+class MallocExprAST : public ExprAST {
+  TypeExprPtr ElemType;
+  std::unique_ptr<ExprAST> CountExpr;
+  ...
+};
+
+class FreeStmtAST : public StmtAST {
+  std::unique_ptr<ExprAST> PtrExpr;
+  ...
+};
+```
+
+`MallocExprAST` also implements type-hint methods so existing indexing/member machinery can use pointee information:
+
+- result type is pointer-like
+- pointee type resolves from `ElemType`
+
+That is why patterns like `p[0].x` continue to work when `p` comes from `malloc[Point](1)`.
+
+## LLVM lowering helpers for libc allocation APIs
+
+Chapter 23 introduces helper functions to declare or reuse external symbols:
+
+```cpp
+static Function *GetOrCreateMallocHelper() {
+  if (Function *F = TheModule->getFunction("malloc"))
     return F;
+  FunctionType *FT = FunctionType::get(
+      PointerType::get(*TheContext, 0), {Type::getInt64Ty(*TheContext)}, false);
+  return Function::Create(FT, Function::ExternalLinkage, "malloc",
+                          TheModule.get());
+}
 
-  Type *I32Ty = Type::getInt32Ty(*TheContext);
-  Type *I64Ty = Type::getInt64Ty(*TheContext);
-  Type *PtrTy = PointerType::get(*TheContext, 0);
-  FunctionType *FT = nullptr;
-
-  if (Name == "putchar")
-    FT = FunctionType::get(I32Ty, {I32Ty}, false);
-  else if (Name == "getchar")
-    FT = FunctionType::get(I32Ty, {}, false);
-  else if (Name == "puts")
-    FT = FunctionType::get(I32Ty, {PtrTy}, false);
-  else if (Name == "printf")
-    FT = FunctionType::get(I32Ty, {PtrTy}, true);
-  else if (Name == "fopen")
-    FT = FunctionType::get(PtrTy, {PtrTy, PtrTy}, false);
-  else if (Name == "fclose")
-    FT = FunctionType::get(I32Ty, {PtrTy}, false);
-  else if (Name == "fgets")
-    FT = FunctionType::get(PtrTy, {PtrTy, I32Ty, PtrTy}, false);
-  else if (Name == "fputs")
-    FT = FunctionType::get(I32Ty, {PtrTy, PtrTy}, false);
-  else if (Name == "fread")
-    FT = FunctionType::get(I64Ty, {PtrTy, I64Ty, I64Ty, PtrTy}, false);
-  else if (Name == "fwrite")
-    FT = FunctionType::get(I64Ty, {PtrTy, I64Ty, I64Ty, PtrTy}, false);
-  else
-    return nullptr;
-
-  return Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
+static Function *GetOrCreateFreeHelper() {
+  if (Function *F = TheModule->getFunction("free"))
+    return F;
+  FunctionType *FT = FunctionType::get(
+      Type::getVoidTy(*TheContext), {PointerType::get(*TheContext, 0)}, false);
+  return Function::Create(FT, Function::ExternalLinkage, "free", TheModule.get());
 }
 ```
 
-### Why this works cleanly
+This pattern mirrors how other external helpers are handled across chapters.
 
-`getFunction(...)` already had a fallback hook for libc-known functions. We simply broadened the allowlist.
+## malloc codegen details
 
-No parser changes were needed, and no runtime wrapper stubs were required.
+`MallocExprAST::codegen()` performs these steps:
 
-## Semantic checks in CallExprAST::codegen()
+1. Resolve element type `T`
+2. Reject `void` element type
+3. Codegen count expression
+4. Require integer count type
+5. Cast count to `i64`
+6. Compute byte size: `count * sizeof(T)`
+7. Emit call to external `malloc`
 
-Auto-declaration alone is not enough. We also need clear diagnostics when arguments are the wrong shape.
-
-Chapter 25 adds function-specific checks after argument codegen:
-
-```cpp
-auto CheckPointerArg = [&](size_t ArgIndex, const char *Err) -> bool { ... };
-auto CheckIntegerArg = [&](size_t ArgIndex, const char *Err) -> bool { ... };
-```
-
-Then per API:
+Representative code:
 
 ```cpp
-if (Callee == "fopen") {
-  if (!CheckPointerArg(0, "fopen expects pointer path argument") ||
-      !CheckPointerArg(1, "fopen expects pointer mode argument"))
-    return nullptr;
-} else if (Callee == "fclose") {
-  if (!CheckPointerArg(0, "fclose expects pointer file argument"))
-    return nullptr;
-} else if (Callee == "fgets") {
-  if (!CheckPointerArg(0, "fgets expects pointer buffer argument") ||
-      !CheckIntegerArg(1, "fgets expects integer length argument") ||
-      !CheckPointerArg(2, "fgets expects pointer file argument"))
-    return nullptr;
-} else if (Callee == "fputs") {
-  if (!CheckPointerArg(0, "fputs expects pointer string argument") ||
-      !CheckPointerArg(1, "fputs expects pointer file argument"))
-    return nullptr;
-} else if (Callee == "fread") {
-  if (!CheckPointerArg(0, "fread expects pointer buffer argument") ||
-      !CheckIntegerArg(1, "fread expects integer size argument") ||
-      !CheckIntegerArg(2, "fread expects integer count argument") ||
-      !CheckPointerArg(3, "fread expects pointer file argument"))
-    return nullptr;
-} else if (Callee == "fwrite") {
-  if (!CheckPointerArg(0, "fwrite expects pointer buffer argument") ||
-      !CheckIntegerArg(1, "fwrite expects integer size argument") ||
-      !CheckIntegerArg(2, "fwrite expects integer count argument") ||
-      !CheckPointerArg(3, "fwrite expects pointer file argument"))
-    return nullptr;
-}
+Type *ElemTy = ResolveTypeExpr(ElemType);
+if (!ElemTy)
+  return nullptr;
+if (ElemTy->isVoidTy())
+  return LogError<Value *>("malloc element type cannot be void");
+
+Value *CountV = CountExpr->codegen();
+if (!CountV)
+  return nullptr;
+if (!IsIntegerLike(CountV->getType()))
+  return LogError<Value *>("malloc count must be an integer type");
+CountV = CastValueTo(CountV, Type::getInt64Ty(*TheContext));
+
+uint64_t ElemSize = TheModule->getDataLayout().getTypeAllocSize(ElemTy);
+Value *ElemSizeV = ConstantInt::get(Type::getInt64Ty(*TheContext), ElemSize, false);
+Value *BytesV = Builder->CreateMul(CountV, ElemSizeV, "malloc.bytes");
+
+return Builder->CreateCall(GetOrCreateMallocHelper(), {BytesV}, "malloc.ptr");
 ```
 
-These checks are intentionally direct. They catch misuse at compile-time/lowering time and produce clear messages.
+### Why DataLayout-based size matters
 
-## Interaction with existing call lowering
+Using `TheModule->getDataLayout().getTypeAllocSize(ElemTy)` makes size computation target-aware. This is essential for correctness across platforms/ABIs.
 
-After checks, Chapter 25 still uses existing call machinery:
+## free codegen details
 
-- fixed-arity arity validation
-- per-formal cast via `CastValueTo`
-- normal LLVM `CreateCall`
+`FreeStmtAST::codegen()` is intentionally simple and strict:
 
-So this chapter extends behavior without forking the call path.
+```cpp
+Value *PtrV = PtrExpr->codegen();
+if (!PtrV)
+  return nullptr;
+if (!PtrV->getType()->isPointerTy())
+  return LogError<Value *>("free expects a pointer argument");
 
-This is important for maintainability: file APIs become “first-class interop calls” rather than special one-off nodes.
+Builder->CreateCall(GetOrCreateFreeHelper(), {PtrV});
+```
 
-## Example usage patterns
+The key semantic rule is clear: only pointer-typed expressions can be freed.
 
-### Text write/read roundtrip
+## Semantics and diagnostics in this chapter
+
+Chapter 23 introduces high-signal errors for common misuse:
+
+- `malloc element type cannot be void`
+- `malloc count must be an integer type`
+- `free expects a pointer argument`
+
+These diagnostics are intentionally direct so mistakes are easy to fix.
+
+## Language examples
+
+### Scalar allocation
 
 ```py
 def main() -> i32:
-    f: ptr[void] = fopen("chapter23_io_a.txt", "w")
-    fputs("alpha\n", f)
-    fclose(f)
-
-    f = fopen("chapter23_io_a.txt", "r")
-    buf: ptr[i8] = malloc[i8](64)
-    fgets(buf, 64, f)
-    fclose(f)
-
-    printf("%s", buf)
-    free(buf)
+    p: ptr[i32] = malloc[i32](4)
+    p[0] = 10
+    p[1] = 20
+    print(p[0], p[1])
+    free(p)
     return 0
 
 main()
 ```
 
-### Block I/O roundtrip with byte counts
+### Struct allocation
 
 ```py
+struct Point:
+    x: i32
+    y: i32
+
 def main() -> i32:
-    f: ptr[void] = fopen("chapter23_io_b.bin", "wb")
-    written: i64 = fwrite("HELLO", 1, 5, f)
-    fclose(f)
-
-    f = fopen("chapter23_io_b.bin", "rb")
-    buf: ptr[i8] = malloc[i8](6)
-    read: i64 = fread(buf, 1, 5, f)
-    buf[5] = 0
-    fclose(f)
-
-    printf("w=%d r=%d s=%s\n", written, read, buf)
-    free(buf)
+    p: ptr[Point] = malloc[Point](1)
+    p[0].x = 7
+    p[0].y = 11
+    print(p[0].x, p[0].y)
+    free(p)
     return 0
 
 main()
 ```
 
-This pattern demonstrates both the return counts and pointer-buffer usage.
+### Invalid free usage
 
-## Tests added in Chapter 25
+```py
+def main() -> i32:
+    x: i32 = 42
+    free(x)   # error: free expects a pointer argument
+    return 0
 
-New tests under `code/chapter25/test`:
-
-### Positive
-
-- `file_fputs_fgets_roundtrip.pyxc`
-- `file_fread_fwrite_roundtrip.pyxc`
-
-### Negative
-
-- `file_error_fopen_mode_not_pointer.pyxc`
-- `file_error_fgets_len_not_integer.pyxc`
-- `file_error_fread_buffer_not_pointer.pyxc`
-- `file_error_fclose_non_pointer.pyxc`
-
-These run in addition to inherited Chapter 24 coverage.
-
-## Validation result
-
-Build:
-
-```bash
-cd code/chapter25 && ./build.sh
+main()
 ```
 
-Tests:
+## Tests added in Chapter 23
+
+Chapter 23 inherits Chapter 22 tests and adds:
+
+- `code/chapter23/test/malloc_basic_i32.pyxc`
+- `code/chapter23/test/malloc_struct_roundtrip.pyxc`
+- `code/chapter23/test/malloc_array_element_type.pyxc`
+- `code/chapter23/test/malloc_error_float_count.pyxc`
+- `code/chapter23/test/free_error_non_pointer.pyxc`
+
+These tests validate both positive flows (allocation + access + deallocation) and semantic rejection paths.
+
+## Build and test for this chapter
+
+From repository root:
 
 ```bash
-lit -sv code/chapter25/test
+cd code/chapter23 && ./build.sh
+lit -sv test
 ```
 
-Result:
-
-- 46 tests discovered
-- 46 passed
-
-## Notes on typing and handles
-
-Chapter 25 keeps file handles opaque and pointer-shaped (`ptr[void]` works well).
-
-This is a good tradeoff now:
-
-- minimal type-system change
-- clear interoperability model
-- room to add a named alias (`type file_t = ptr[void]`) at user level
-
-You can add richer handle typing later if you want stricter API boundaries.
+Chapter 23 was also regression-checked against Chapter 22 behavior.
 
 ## Design takeaways
 
-Chapter 25 keeps language complexity under control by reusing existing machinery:
+Chapter 23 is intentionally small but strategic:
 
-- existing call syntax
-- existing expression/type system
-- existing cast and call lowering flow
+- It introduces explicit heap lifetime control.
+- It composes with existing struct/array/indexing features.
+- It builds the bridge to practical C interop patterns.
 
-But capability jumps significantly: Pyxc can now do persistent text and binary I/O with standard libc semantics.
-
-That is enough to support realistic tooling-style programs and sets up future chapters for modules, headers, and broader C interop.
+This chapter also sets up Chapter 24 naturally, where we add C-style I/O (`putchar`, `puts`, `printf`) and string literals, making it possible to build more complete small programs.
 
 ## Compiling
 
 From repository root:
 
 ```bash
-cd code/chapter25 && ./build.sh
+cd code/chapter23 && ./build.sh
 ```
 
 ## Testing
@@ -342,7 +352,7 @@ cd code/chapter25 && ./build.sh
 From repository root:
 
 ```bash
-lit -sv code/chapter25/test
+lit -sv code/chapter23/test
 ```
 
 ## Compile / Run / Test (Hands-on)
@@ -350,28 +360,28 @@ lit -sv code/chapter25/test
 Build this chapter:
 
 ```bash
-cd code/chapter25 && ./build.sh
+cd code/chapter23 && ./build.sh
 ```
 
 Run one sample program:
 
 ```bash
-code/chapter25/pyxc -i code/chapter25/test/addr_is_keyword.pyxc
+code/chapter23/pyxc -i code/chapter23/test/array_alias_type.pyxc
 ```
 
 Run the chapter tests (when a test suite exists):
 
 ```bash
-cd code/chapter25/test
+cd code/chapter23/test
 lit -sv .
 ```
 
-Try editing a test or two and see how quickly you can predict the outcome.
+Have some fun stress-testing the suite with small variations.
 
 When you're done, clean artifacts:
 
 ```bash
-cd code/chapter25 && ./build.sh
+cd code/chapter23 && ./build.sh
 ```
 
 

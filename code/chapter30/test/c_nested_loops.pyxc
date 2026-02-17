@@ -1,0 +1,14 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '0-0 0-1 1-0 1-1 2-0 2-1' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    for i in range(0, 3):
+        for j in range(0, 2):
+            if i > 0 or j > 0:
+                printf(" ")
+            printf("%d-%d", i, j)
+    printf("\n")
+    return 0
+
+main()

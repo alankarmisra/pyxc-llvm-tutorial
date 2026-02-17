@@ -169,11 +169,6 @@ enum Token {
 
   // var definition
   tok_var = -15,
-  tok_print = -27,
-  tok_while = -28,
-  tok_do = -29,
-  tok_break = -30,
-  tok_continue = -31,
 
   // indentation
   tok_indent = -16,
@@ -204,8 +199,7 @@ static std::map<std::string, Token> Keywords = {
     {"if", tok_if},   {"elif", tok_elif},     {"else", tok_else},
     {"for", tok_for}, {"in", tok_in},         {"range", tok_range},
     {"var", tok_var}, {"type", tok_type},     {"not", tok_not},
-    {"and", tok_and}, {"print", tok_print},   {"while", tok_while},
-    {"do", tok_do},   {"break", tok_break},   {"continue", tok_continue},
+    {"and", tok_and},
     {"or", tok_or}};
 
 struct SourceLocation {
@@ -214,40 +208,6 @@ struct SourceLocation {
 };
 static SourceLocation CurLoc;
 static SourceLocation LexLoc = {1, 0};
-
-class SourceManager {
-  std::vector<std::string> CompletedLines;
-  std::string CurrentLine;
-
-public:
-  void reset() {
-    CompletedLines.clear();
-    CurrentLine.clear();
-  }
-
-  void onChar(int C) {
-    if (C == '\n') {
-      CompletedLines.push_back(CurrentLine);
-      CurrentLine.clear();
-      return;
-    }
-    if (C != EOF)
-      CurrentLine.push_back(static_cast<char>(C));
-  }
-
-  const std::string *getLine(int OneBasedLine) const {
-    if (OneBasedLine <= 0)
-      return nullptr;
-    size_t Index = static_cast<size_t>(OneBasedLine - 1);
-    if (Index < CompletedLines.size())
-      return &CompletedLines[Index];
-    if (Index == CompletedLines.size())
-      return &CurrentLine;
-    return nullptr;
-  }
-};
-
-static SourceManager DiagSourceMgr;
 
 enum class TypeExprKind { Builtin, AliasRef, Pointer };
 
@@ -285,19 +245,15 @@ static int advance() {
     int NextChar = getc(InputFile);
     if (NextChar != '\n' && NextChar != EOF)
       ungetc(NextChar, InputFile);
-    DiagSourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
     return '\n';
   }
   if (LastChar == '\n') {
-    DiagSourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
-  } else {
-    DiagSourceMgr.onChar(LastChar);
+  } else
     LexLoc.Col++;
-  }
   return LastChar;
 }
 
@@ -307,53 +263,12 @@ class ExprAST;
 
 /// LogError* - These are little helper functions for error handling.
 static int CurTok;
-static const char *TokenName(int Tok);
-static std::string FormatTokenForError(int Tok) {
-  if (Tok == tok_identifier)
-    return "identifier '" + IdentifierStr + "'";
-  if (Tok == tok_number)
-    return "number";
-  if (Tok == tok_eol)
-    return "newline";
-  if (Tok == tok_eof)
-    return "end of file";
-
-  const char *Name = TokenName(Tok);
-  if (Name) {
-    std::string Raw(Name);
-    if (Raw.size() >= 2 && Raw.front() == '<' && Raw.back() == '>')
-      return Raw.substr(1, Raw.size() - 2);
-    return Raw;
-  }
-
-  if (isascii(Tok) && isprint(Tok))
-    return std::string("'") + static_cast<char>(Tok) + "'";
-  if (isascii(Tok))
-    return "ascii(" + std::to_string(Tok) + ")";
-  return "unknown token";
-}
-
-static void PrintErrorSourceContext(SourceLocation Loc) {
-  const std::string *LineText = DiagSourceMgr.getLine(Loc.Line);
-  if (!LineText)
-    return;
-
-  fprintf(stderr, "%s\n", LineText->c_str());
-
-  int Spaces = Loc.Col - 1;
-  if (Spaces < 0)
-    Spaces = 0;
-  for (int I = 0; I < Spaces; ++I)
-    fputc(' ', stderr);
-  fprintf(stderr, "%s^%s~~~\n", Bold, Reset);
-}
 static bool HadError = false;
 template <typename T = void> T LogError(const char *Str) {
   HadError = true;
-  const std::string TokDisplay = FormatTokenForError(CurTok);
-  fprintf(stderr, "%sError%s (Line: %d, Column: %d): %s near %s\n", Red, Reset,
-          CurLoc.Line, CurLoc.Col, Str, TokDisplay.c_str());
-  PrintErrorSourceContext(CurLoc);
+  // print CurTok with the error instead of two separate lines.
+  fprintf(stderr, "%sError (Line: %d, Column: %d): %s\nCurTok = %d\n%s", Red,
+          CurLoc.Line, CurLoc.Col, Str, CurTok, Reset);
 
   if constexpr (std::is_void_v<T>)
     return;
@@ -663,16 +578,6 @@ static const char *TokenName(int Tok) {
     return "<range>";
   case tok_var:
     return "<var>";
-  case tok_print:
-    return "<print>";
-  case tok_while:
-    return "<while>";
-  case tok_do:
-    return "<do>";
-  case tok_break:
-    return "<break>";
-  case tok_continue:
-    return "<continue>";
   case tok_not:
     return "<not>";
   case tok_and:
@@ -760,8 +665,6 @@ public:
   virtual const std::string *getVariableName() const { return nullptr; }
   virtual Type *getValueTypeHint() const { return nullptr; }
   virtual Type *getPointeeTypeHint() const { return nullptr; }
-  virtual std::string getBuiltinLeafTypeHint() const { return ""; }
-  virtual std::string getPointeeBuiltinLeafTypeHint() const { return ""; }
   int getLine() const { return Loc.Line; }
   int getCol() const { return Loc.Col; }
   virtual raw_ostream &dump(raw_ostream &out, int ind) {
@@ -866,8 +769,6 @@ public:
   Value *codegenAddress() override;
   Type *getValueTypeHint() const override;
   Type *getPointeeTypeHint() const override;
-  std::string getBuiltinLeafTypeHint() const override;
-  std::string getPointeeBuiltinLeafTypeHint() const override;
 };
 
 class AddrExprAST : public ExprAST {
@@ -885,7 +786,6 @@ public:
   Value *codegen() override;
   Type *getValueTypeHint() const override;
   Type *getPointeeTypeHint() const override;
-  std::string getPointeeBuiltinLeafTypeHint() const override;
 };
 
 class IndexExprAST : public ExprAST {
@@ -906,7 +806,6 @@ public:
   Value *codegen() override;
   Value *codegenAddress() override;
   Type *getValueTypeHint() const override;
-  std::string getBuiltinLeafTypeHint() const override;
 };
 
 /// UnaryExprAST - Expression class for a unary operator.
@@ -988,16 +887,6 @@ public:
   }
 };
 
-class PrintStmtAST : public StmtAST {
-  std::vector<std::unique_ptr<ExprAST>> Args;
-
-public:
-  PrintStmtAST(SourceLocation Loc, std::vector<std::unique_ptr<ExprAST>> Args)
-      : StmtAST(Loc), Args(std::move(Args)) {}
-
-  Value *codegen() override;
-};
-
 /// SuiteAST - a suite ie a single or multi statement block
 class BlockSuiteAST : public StmtAST {
   std::vector<std::unique_ptr<StmtAST>> Stmts;
@@ -1063,44 +952,6 @@ public:
   }
 
   Value *codegen() override;
-};
-
-class WhileStmtAST : public StmtAST {
-  std::unique_ptr<ExprAST> Cond;
-  std::unique_ptr<BlockSuiteAST> Body;
-
-public:
-  WhileStmtAST(SourceLocation Loc, std::unique_ptr<ExprAST> Cond,
-               std::unique_ptr<BlockSuiteAST> Body)
-      : StmtAST(Loc), Cond(std::move(Cond)), Body(std::move(Body)) {}
-
-  Value *codegen() override;
-};
-
-class DoWhileStmtAST : public StmtAST {
-  std::unique_ptr<BlockSuiteAST> Body;
-  std::unique_ptr<ExprAST> Cond;
-
-public:
-  DoWhileStmtAST(SourceLocation Loc, std::unique_ptr<BlockSuiteAST> Body,
-                 std::unique_ptr<ExprAST> Cond)
-      : StmtAST(Loc), Body(std::move(Body)), Cond(std::move(Cond)) {}
-
-  Value *codegen() override;
-};
-
-class BreakStmtAST : public StmtAST {
-public:
-  explicit BreakStmtAST(SourceLocation Loc) : StmtAST(Loc) {}
-  Value *codegen() override;
-  bool isTerminator() override { return true; }
-};
-
-class ContinueStmtAST : public StmtAST {
-public:
-  explicit ContinueStmtAST(SourceLocation Loc) : StmtAST(Loc) {}
-  Value *codegen() override;
-  bool isTerminator() override { return true; }
 };
 
 /// VarExprAST - Expression class for var/in
@@ -1186,9 +1037,8 @@ static std::map<std::string, TypeExprPtr> TypeAliases;
 /// defined.
 static std::map<int, int> BinopPrecedence = {
     {tok_or, 5}, {tok_and, 6}, {tok_eq, 10}, {tok_ne, 10},
-    {'|', 7},    {'^', 8},     {'&', 9},     {'<', 12},
-    {'>', 12},   {tok_le, 12}, {tok_ge, 12},
-    {'+', 20},   {'-', 20},    {'*', 40},    {'/', 40}, {'%', 40}};
+    {'<', 12},   {'>', 12},    {tok_le, 12}, {tok_ge, 12},
+    {'+', 20},   {'-', 20},    {'*', 40},    {'/', 40}};
 
 /// Explanation-friendly precedence anchors used by parser control flow.
 static constexpr int NO_OP_PREC = -1;
@@ -1211,7 +1061,6 @@ static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
                                               std::unique_ptr<ExprAST> LHS);
 static std::unique_ptr<BlockSuiteAST> ParseSuite();
 static std::unique_ptr<BlockSuiteAST> ParseBlockSuite();
-static std::unique_ptr<StmtAST> ParsePrintStmt();
 static TypeExprPtr ParseTypeExpr();
 
 static void SkipToNextLine() {
@@ -1481,64 +1330,6 @@ static std::unique_ptr<StmtAST> ParseForStmt() {
                                       std::move(Step), std::move(Body));
 }
 
-// while_stmt     = "while" , expression , ":" , suite ;
-static std::unique_ptr<StmtAST> ParseWhileStmt() {
-  SourceLocation WhileLoc = CurLoc;
-  getNextToken(); // eat while
-
-  auto Cond = ParseExpression();
-  if (!Cond)
-    return nullptr;
-
-  if (CurTok != ':')
-    return LogError<StmtPtr>("expected `:` after while condition");
-  getNextToken(); // eat ':'
-
-  auto Body = ParseSuite();
-  if (!Body)
-    return nullptr;
-
-  return std::make_unique<WhileStmtAST>(WhileLoc, std::move(Cond),
-                                        std::move(Body));
-}
-
-// do_while_stmt  = "do" , ":" , suite , "while" , expression ;
-static std::unique_ptr<StmtAST> ParseDoWhileStmt() {
-  SourceLocation DoLoc = CurLoc;
-  getNextToken(); // eat do
-
-  if (CurTok != ':')
-    return LogError<StmtPtr>("expected `:` after do");
-  getNextToken(); // eat ':'
-
-  auto Body = ParseSuite();
-  if (!Body)
-    return nullptr;
-
-  if (CurTok != tok_while)
-    return LogError<StmtPtr>("expected `while` after do suite");
-  getNextToken(); // eat while
-
-  auto Cond = ParseExpression();
-  if (!Cond)
-    return nullptr;
-
-  return std::make_unique<DoWhileStmtAST>(DoLoc, std::move(Body),
-                                          std::move(Cond));
-}
-
-static std::unique_ptr<StmtAST> ParseBreakStmt() {
-  auto Loc = CurLoc;
-  getNextToken(); // eat break
-  return std::make_unique<BreakStmtAST>(Loc);
-}
-
-static std::unique_ptr<StmtAST> ParseContinueStmt() {
-  auto Loc = CurLoc;
-  getNextToken(); // eat continue
-  return std::make_unique<ContinueStmtAST>(Loc);
-}
-
 /// varexpr ::= 'var' identifier ('=' expression)?
 //                    (',' identifier ('=' expression)?)* 'in' expression
 static std::unique_ptr<ExprAST> ParseVarExpr() {
@@ -1610,35 +1401,6 @@ static std::unique_ptr<ReturnStmtAST> ParseReturnStmt() {
   return std::make_unique<ReturnStmtAST>(ReturnLoc, std::move(Expr));
 }
 
-static std::unique_ptr<StmtAST> ParsePrintStmt() {
-  auto PrintLoc = CurLoc;
-  getNextToken(); // eat `print`
-  if (CurTok != '(')
-    return LogError<StmtPtr>("Expected '(' after print");
-  getNextToken(); // eat '('
-
-  std::vector<std::unique_ptr<ExprAST>> Args;
-  if (CurTok != ')') {
-    while (true) {
-      auto Arg = ParseExpression();
-      if (!Arg)
-        return nullptr;
-      Args.push_back(std::move(Arg));
-
-      if (CurTok == ')')
-        break;
-      if (CurTok != ',')
-        return LogError<StmtPtr>("Expected ')' or ',' in print argument list");
-      getNextToken(); // eat ','
-      if (CurTok == ')')
-        return LogError<StmtPtr>("Trailing comma is not allowed in print");
-    }
-  }
-
-  getNextToken(); // eat ')'
-  return std::make_unique<PrintStmtAST>(PrintLoc, std::move(Args));
-}
-
 static std::unique_ptr<StmtAST> ParseIdentifierLeadingStmt() {
   auto StmtLoc = CurLoc;
   auto LHS = ParseIdentifierExpr();
@@ -1695,18 +1457,8 @@ static std::unique_ptr<StmtAST> ParseStmt() {
     return LogError<StmtPtr>("Unexpected `else` without matching `if`");
   case tok_for:
     return ParseForStmt();
-  case tok_while:
-    return ParseWhileStmt();
-  case tok_do:
-    return ParseDoWhileStmt();
-  case tok_break:
-    return ParseBreakStmt();
-  case tok_continue:
-    return ParseContinueStmt();
   case tok_return:
     return ParseReturnStmt();
-  case tok_print:
-    return ParsePrintStmt();
   case tok_type:
     return LogError<StmtPtr>("Type aliases are only allowed at top-level");
   case tok_identifier:
@@ -1986,31 +1738,8 @@ struct VarBinding {
   AllocaInst *Alloca = nullptr;
   Type *Ty = nullptr;
   Type *PointeeTy = nullptr;
-  std::string BuiltinLeafTy;
-  std::string PointeeBuiltinLeafTy;
 };
 static std::map<std::string, VarBinding> NamedValues;
-struct LoopContext {
-  BasicBlock *BreakTarget = nullptr;
-  BasicBlock *ContinueTarget = nullptr;
-};
-static std::vector<LoopContext> LoopContextStack;
-
-class LoopContextGuard {
-  bool Active = false;
-
-public:
-  LoopContextGuard(BasicBlock *BreakTarget, BasicBlock *ContinueTarget)
-      : Active(true) {
-    LoopContextStack.push_back({BreakTarget, ContinueTarget});
-  }
-
-  ~LoopContextGuard() {
-    if (Active)
-      LoopContextStack.pop_back();
-  }
-};
-
 static std::unique_ptr<PyxcJIT> TheJIT;
 static std::unique_ptr<FunctionPassManager> TheFPM;
 static std::unique_ptr<LoopAnalysisManager> TheLAM;
@@ -2246,29 +1975,6 @@ static std::string ResolveBuiltinLeafName(const TypeExprPtr &Ty) {
   return ResolveBuiltinLeafName(Ty, Visited);
 }
 
-static std::string ResolvePointeeBuiltinLeafName(const TypeExprPtr &Ty,
-                                                 std::set<std::string> &Visited) {
-  if (!Ty)
-    return "";
-  if (Ty->Kind == TypeExprKind::Pointer)
-    return ResolveBuiltinLeafName(Ty->Elem);
-  if (Ty->Kind == TypeExprKind::AliasRef) {
-    auto It = TypeAliases.find(Ty->Name);
-    if (It == TypeAliases.end() || Visited.count(Ty->Name))
-      return "";
-    Visited.insert(Ty->Name);
-    std::string Resolved = ResolvePointeeBuiltinLeafName(It->second, Visited);
-    Visited.erase(Ty->Name);
-    return Resolved;
-  }
-  return "";
-}
-
-static std::string ResolvePointeeBuiltinLeafName(const TypeExprPtr &Ty) {
-  std::set<std::string> Visited;
-  return ResolvePointeeBuiltinLeafName(Ty, Visited);
-}
-
 static Attribute::AttrKind GetExtAttrForTypeExpr(const TypeExprPtr &Ty) {
   Type *LLTy = ResolveTypeExpr(Ty);
   if (!LLTy || !LLTy->isIntegerTy())
@@ -2395,20 +2101,6 @@ Type *VariableExprAST::getPointeeTypeHint() const {
   return It->second.PointeeTy;
 }
 
-std::string VariableExprAST::getBuiltinLeafTypeHint() const {
-  auto It = NamedValues.find(Name);
-  if (It == NamedValues.end())
-    return "";
-  return It->second.BuiltinLeafTy;
-}
-
-std::string VariableExprAST::getPointeeBuiltinLeafTypeHint() const {
-  auto It = NamedValues.find(Name);
-  if (It == NamedValues.end())
-    return "";
-  return It->second.PointeeBuiltinLeafTy;
-}
-
 Value *AddrExprAST::codegen() {
   emitLocation(this);
   Value *AddrV = Operand->codegenAddress();
@@ -2423,10 +2115,6 @@ Type *AddrExprAST::getValueTypeHint() const {
 
 Type *AddrExprAST::getPointeeTypeHint() const {
   return Operand->getValueTypeHint();
-}
-
-std::string AddrExprAST::getPointeeBuiltinLeafTypeHint() const {
-  return Operand->getBuiltinLeafTypeHint();
 }
 
 Value *IndexExprAST::codegenAddress() {
@@ -2467,10 +2155,6 @@ Value *IndexExprAST::codegen() {
 
 Type *IndexExprAST::getValueTypeHint() const { return Base->getPointeeTypeHint(); }
 
-std::string IndexExprAST::getBuiltinLeafTypeHint() const {
-  return Base->getPointeeBuiltinLeafTypeHint();
-}
-
 Value *TypedAssignStmtAST::codegen() {
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
   Type *DeclTy = ResolveTypeExpr(DeclType);
@@ -2492,9 +2176,7 @@ Value *TypedAssignStmtAST::codegen() {
     InitVal = Constant::getNullValue(DeclTy);
   }
   Builder->CreateStore(InitVal, Alloca);
-  NamedValues[Name] = {Alloca, DeclTy, ResolvePointeeTypeExpr(DeclType),
-                       ResolveBuiltinLeafName(DeclType),
-                       ResolvePointeeBuiltinLeafName(DeclType)};
+  NamedValues[Name] = {Alloca, DeclTy, ResolvePointeeTypeExpr(DeclType)};
   return InitVal;
 }
 
@@ -2539,9 +2221,7 @@ Value *UnaryExprAST::codegen() {
                                  "nottmp");
   }
   case '~':
-    if (!OperandV->getType()->isIntegerTy())
-      return LogError<Value *>("Unary '~' requires integer operand");
-    return Builder->CreateNot(OperandV, "bnottmp");
+    return LogError<Value *>("'~' is not supported in Chapter 16");
   default:
     return LogError<Value *>("Unknown unary operator");
   }
@@ -2599,22 +2279,8 @@ Value *BinaryExprAST::codegen() {
   if (!R)
     return nullptr;
 
-  bool RequiresIntOnly = (Op == '%' || Op == '&' || Op == '^' || Op == '|');
-  bool UseFP =
-      L->getType()->isFloatingPointTy() || R->getType()->isFloatingPointTy();
-  if (RequiresIntOnly) {
-    if (!(L->getType()->isIntegerTy() && R->getType()->isIntegerTy())) {
-      if (Op == '%')
-        return LogError<Value *>(
-            "Modulo operator '%' requires integer operands");
-      return LogError<Value *>("Bitwise operators require integer operands");
-    }
-    unsigned W = std::max(L->getType()->getIntegerBitWidth(),
-                          R->getType()->getIntegerBitWidth());
-    Type *IntTy = IntegerType::get(*TheContext, W);
-    L = CastValueTo(L, IntTy);
-    R = CastValueTo(R, IntTy);
-  } else if (UseFP) {
+  bool UseFP = L->getType()->isFloatingPointTy() || R->getType()->isFloatingPointTy();
+  if (UseFP) {
     Type *FPType = Type::getDoubleTy(*TheContext);
     L = CastValueTo(L, FPType);
     R = CastValueTo(R, FPType);
@@ -2643,14 +2309,6 @@ Value *BinaryExprAST::codegen() {
   case '/':
     return UseFP ? Builder->CreateFDiv(L, R, "divtmp")
                  : Builder->CreateSDiv(L, R, "divtmp");
-  case '%':
-    return Builder->CreateSRem(L, R, "modtmp");
-  case '&':
-    return Builder->CreateAnd(L, R, "andtmp");
-  case '^':
-    return Builder->CreateXor(L, R, "xortmp");
-  case '|':
-    return Builder->CreateOr(L, R, "ortmp");
   case '<':
     L = UseFP ? Builder->CreateFCmpULT(L, R, "cmptmp")
               : Builder->CreateICmpSLT(L, R, "cmptmp");
@@ -2710,94 +2368,6 @@ Value *CallExprAST::codegen() {
     return ConstantFP::get(*TheContext, APFloat(0.0));
   }
   return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
-}
-
-static Function *GetOrCreatePrintHelper(const std::string &Name, Type *Ty,
-                                        bool IsUnsignedInt) {
-  if (Function *F = TheModule->getFunction(Name))
-    return F;
-
-  FunctionType *FT = FunctionType::get(Ty, {Ty}, false);
-  Function *F =
-      Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
-
-  if (Ty->isIntegerTy() && Ty->getIntegerBitWidth() < 32) {
-    F->addRetAttr(IsUnsignedInt ? Attribute::ZExt : Attribute::SExt);
-    F->addParamAttr(0, IsUnsignedInt ? Attribute::ZExt : Attribute::SExt);
-  }
-  return F;
-}
-
-static Function *GetPrintCharHelper() {
-  return GetOrCreatePrintHelper("printchard", Type::getDoubleTy(*TheContext),
-                                false);
-}
-
-static Function *GetPrintHelperForArg(Type *ArgTy, const std::string &LeafHint) {
-  if (!ArgTy)
-    return nullptr;
-
-  if (ArgTy->isFloatTy())
-    return GetOrCreatePrintHelper("printfloat32", ArgTy, false);
-  if (ArgTy->isDoubleTy())
-    return GetOrCreatePrintHelper("printfloat64", ArgTy, false);
-  if (!ArgTy->isIntegerTy())
-    return nullptr;
-
-  bool IsUnsigned = !LeafHint.empty() && LeafHint[0] == 'u';
-  unsigned W = ArgTy->getIntegerBitWidth();
-  switch (W) {
-  case 8:
-    return GetOrCreatePrintHelper(IsUnsigned ? "printu8" : "printi8", ArgTy,
-                                  IsUnsigned);
-  case 16:
-    return GetOrCreatePrintHelper(IsUnsigned ? "printu16" : "printi16", ArgTy,
-                                  IsUnsigned);
-  case 32:
-    return GetOrCreatePrintHelper(IsUnsigned ? "printu32" : "printi32", ArgTy,
-                                  IsUnsigned);
-  case 64:
-    return GetOrCreatePrintHelper(IsUnsigned ? "printu64" : "printi64", ArgTy,
-                                  IsUnsigned);
-  default:
-    return nullptr;
-  }
-}
-
-Value *PrintStmtAST::codegen() {
-  emitLocation(this);
-
-  Function *PrintCharF = GetPrintCharHelper();
-  if (!PrintCharF)
-    return LogError<Value *>("Could not resolve print character helper");
-
-  for (size_t I = 0; I < Args.size(); ++I) {
-    Value *ArgV = Args[I]->codegen();
-    if (!ArgV)
-      return nullptr;
-
-    Type *ArgTy = ArgV->getType();
-    if (ArgTy->isPointerTy())
-      return LogError<Value *>("Unsupported print argument type: pointer");
-
-    Function *PrintF = GetPrintHelperForArg(ArgTy, Args[I]->getBuiltinLeafTypeHint());
-    if (!PrintF)
-      return LogError<Value *>("Unsupported print argument type");
-
-    Value *CastArg = CastValueTo(ArgV, PrintF->getFunctionType()->getParamType(0));
-    if (!CastArg)
-      return nullptr;
-    Builder->CreateCall(PrintF, {CastArg});
-
-    if (I + 1 < Args.size()) {
-      Value *Space = ConstantFP::get(*TheContext, APFloat(32.0));
-      Builder->CreateCall(PrintCharF, {Space});
-    }
-  }
-
-  Value *NewLine = ConstantFP::get(*TheContext, APFloat(10.0));
-  Builder->CreateCall(PrintCharF, {NewLine});
-  return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
 Value *IfStmtAST::codegen() {
@@ -2879,84 +2449,6 @@ Value *IfStmtAST::codegen() {
   return ThenTerminated ? ElseV : ThenV;
 }
 
-Value *BreakStmtAST::codegen() {
-  if (LoopContextStack.empty())
-    return LogError<Value *>("`break` used outside of a loop");
-  emitLocation(this);
-  Builder->CreateBr(LoopContextStack.back().BreakTarget);
-  return Constant::getNullValue(Type::getDoubleTy(*TheContext));
-}
-
-Value *ContinueStmtAST::codegen() {
-  if (LoopContextStack.empty())
-    return LogError<Value *>("`continue` used outside of a loop");
-  emitLocation(this);
-  Builder->CreateBr(LoopContextStack.back().ContinueTarget);
-  return Constant::getNullValue(Type::getDoubleTy(*TheContext));
-}
-
-Value *WhileStmtAST::codegen() {
-  emitLocation(this);
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
-  BasicBlock *CondBB = BasicBlock::Create(*TheContext, "while.cond", TheFunction);
-  BasicBlock *BodyBB = BasicBlock::Create(*TheContext, "while.body");
-  BasicBlock *ExitBB = BasicBlock::Create(*TheContext, "while.exit");
-
-  Builder->CreateBr(CondBB);
-  Builder->SetInsertPoint(CondBB);
-  Value *CondV = Cond->codegen();
-  if (!CondV)
-    return nullptr;
-  CondV = ToBoolI1(CondV, "whilecond");
-  if (!CondV)
-    return nullptr;
-  Builder->CreateCondBr(CondV, BodyBB, ExitBB);
-
-  TheFunction->insert(TheFunction->end(), BodyBB);
-  Builder->SetInsertPoint(BodyBB);
-  LoopContextGuard Guard(ExitBB, CondBB);
-  if (!Body->codegen())
-    return nullptr;
-
-  if (!Builder->GetInsertBlock()->getTerminator())
-    Builder->CreateBr(CondBB);
-
-  TheFunction->insert(TheFunction->end(), ExitBB);
-  Builder->SetInsertPoint(ExitBB);
-  return Constant::getNullValue(Type::getDoubleTy(*TheContext));
-}
-
-Value *DoWhileStmtAST::codegen() {
-  emitLocation(this);
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
-  BasicBlock *BodyBB = BasicBlock::Create(*TheContext, "do.body", TheFunction);
-  BasicBlock *CondBB = BasicBlock::Create(*TheContext, "do.cond");
-  BasicBlock *ExitBB = BasicBlock::Create(*TheContext, "do.exit");
-
-  Builder->CreateBr(BodyBB);
-
-  Builder->SetInsertPoint(BodyBB);
-  LoopContextGuard Guard(ExitBB, CondBB);
-  if (!Body->codegen())
-    return nullptr;
-  if (!Builder->GetInsertBlock()->getTerminator())
-    Builder->CreateBr(CondBB);
-
-  TheFunction->insert(TheFunction->end(), CondBB);
-  Builder->SetInsertPoint(CondBB);
-  Value *CondV = Cond->codegen();
-  if (!CondV)
-    return nullptr;
-  CondV = ToBoolI1(CondV, "docond");
-  if (!CondV)
-    return nullptr;
-  Builder->CreateCondBr(CondV, BodyBB, ExitBB);
-
-  TheFunction->insert(TheFunction->end(), ExitBB);
-  Builder->SetInsertPoint(ExitBB);
-  return Constant::getNullValue(Type::getDoubleTy(*TheContext));
-}
-
 Value *ForStmtAST::codegen() {
   emitLocation(this);
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
@@ -2983,7 +2475,6 @@ Value *ForStmtAST::codegen() {
   BasicBlock *LoopConditionBB =
       BasicBlock::Create(*TheContext, "loopcond", TheFunction);
   BasicBlock *LoopBB = BasicBlock::Create(*TheContext, "loop");
-  BasicBlock *StepBB = BasicBlock::Create(*TheContext, "loopstep");
   BasicBlock *EndLoopBB = BasicBlock::Create(*TheContext, "endloop");
 
   // Insert an explicit fall through from current block to LoopConditionBB.
@@ -3027,18 +2518,11 @@ Value *ForStmtAST::codegen() {
   // the current BB. Note that we ignore the value computed by the body, but
   // don't allow an error.
   Builder->SetInsertPoint(LoopBB);
-  LoopContextGuard Guard(EndLoopBB, StepBB);
   if (!Body->codegen()) {
     return nullptr;
   }
 
-  // Fallthrough from body to step if body didn't already terminate.
-  if (!Builder->GetInsertBlock()->getTerminator())
-    Builder->CreateBr(StepBB);
-
-  // Emit the step value in a dedicated block so `continue` can branch here.
-  TheFunction->insert(TheFunction->end(), StepBB);
-  Builder->SetInsertPoint(StepBB);
+  // Emit the step value.
   Value *StepVal = nullptr;
   if (Step) {
     StepVal = Step->codegen();
@@ -3052,13 +2536,14 @@ Value *ForStmtAST::codegen() {
       StepVal = ConstantInt::get(LoopTy, 1);
   }
   StepVal = CastValueTo(StepVal, LoopTy);
-  Value *CurVarStep =
-      Builder->CreateLoad(Alloca->getAllocatedType(), Alloca, VarName);
-  CurVarStep = CastValueTo(CurVarStep, LoopTy);
+  CurVar = CastValueTo(CurVar, LoopTy);
   Value *NextVar = LoopTy->isFloatingPointTy()
-                       ? Builder->CreateFAdd(CurVarStep, StepVal, "nextvar")
-                       : Builder->CreateAdd(CurVarStep, StepVal, "nextvar");
+                       ? Builder->CreateFAdd(CurVar, StepVal, "nextvar")
+                       : Builder->CreateAdd(CurVar, StepVal, "nextvar");
   Builder->CreateStore(NextVar, Alloca);
+
+  // Create the unconditional branch that returns to LoopConditionBB to
+  // determine if we should continue looping.
   Builder->CreateBr(LoopConditionBB);
 
   // Append EndLoopBB after the loop body. We go to this basic block if the
@@ -3162,7 +2647,7 @@ Value *BlockSuiteAST::codegen() {
     if (Stmts[i]->isTerminator()) {
       if (i + 1 < Stmts.size()) {
         fprintf(stderr,
-                "Warning (Line %d): unreachable code after terminator statement\n",
+                "Warning (Line %d): unreachable code after return statement\n",
                 Stmts[i + 1]->getLine());
       }
       break;
@@ -3250,7 +2735,6 @@ Function *FunctionAST::codegen() {
 
   // Record the function arguments in the NamedValues map.
   NamedValues.clear();
-  LoopContextStack.clear();
   unsigned ArgIdx = 0;
   unsigned ArgTyIdx = 0;
 
@@ -4004,7 +3488,6 @@ void REPL() {
 //===----------------------------------------------------------------------===//
 
 int main(int argc, char **argv) {
-  DiagSourceMgr.reset();
   cl::HideUnrelatedOptions(PyxcCategory);
   cl::ParseCommandLineOptions(argc, argv, "Pyxc - Compiler and Interpreter\n");
 

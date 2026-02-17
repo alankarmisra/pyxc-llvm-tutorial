@@ -1,0 +1,6 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error (" %t
+# RUN: grep -q "Unknown variable name" %t
+
+def foo():
+    return unknown_var

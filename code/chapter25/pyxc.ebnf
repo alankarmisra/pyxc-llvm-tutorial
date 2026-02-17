@@ -5,7 +5,6 @@
 letter         = "A".."Z" | "a".."z" | "_" ;
 digit          = "0".."9" ;
 identifier     = letter , { letter | digit } ;
-string_literal = "\"" , { ? any char except " or newline; escapes allowed ? } , "\"" ;
 number         = digit , { digit } , [ "." , { digit } ]
                | "." , digit , { digit } ;
 
@@ -53,12 +52,15 @@ builtin_type    = "void"
 
 (* ---------- Functions ---------- *)
 
-function_def    = "def" , prototype , ":" , suite ;
+function_def    = [ decorator ] , "def" , prototype , ":" , suite ;
 extern_decl     = "extern" , "def" , prototype ;
 
 prototype       = identifier , "(" , [ param_list ] , ")" , "->" , type_expr ;
 param_list      = param , { "," , param } ;
 param           = identifier , ":" , type_expr ;
+
+(* Current decorator model used for unary/binary operator definitions. *)
+decorator       = "@" , ( "unary" | "binary" ) , [ number ] ;
 
 (* ---------- Statements ---------- *)
 
@@ -125,7 +127,6 @@ index_expr      = postfix_expr , index_suffix ;
 member_expr     = postfix_expr , member_suffix ;
 
 primary         = number
-                | string_literal
                 | identifier
                 | malloc_expr
                 | addr_expr

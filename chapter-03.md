@@ -1,287 +1,378 @@
 ---
-description: "Set up a full LLVM toolchain from source (clang, lld, lldb, lit, clangd) so later compiler chapters build, test, and debug reliably across platforms."
+description: "Build LLVM from source with everything you need: clang, lld, lldb, and clangd."
 ---
 # 3. Pyxc: Building LLVM from Source
 
-## Introduction
+## Why Build from Source?
 
-This chapter focuses entirely on installing LLVM from source so you can build a real compiler that emits executables. Early chapters can use `brew install llvm`, but once we integrate `lld` (the LLVM linker), we need a source build with the right configuration. We will build LLVM with `clang`, `clang-tools-extra` (for `clangd`), `lld`, `lldb`, and `llvm-lit` enabled.
+Early chapters can use a pre-built LLVM (`brew install llvm` on macOS). But once we start building real executables and linking, we need:
 
-The commands below install into your home directory (e.g., `~/llvm-21-with-clang-lld-lldb` on Unix-like systems).
+- **lld** - LLVM's linker
+- **clangd** - Language server for IDE support
+- **lldb** - LLVM's debugger
+- **lit** - Testing framework
+
+Pre-built packages often don't include everything. Building from source gives us full control.
+
+## What You'll Install
+
+By the end of this chapter, you'll have:
+
+```text
+~/llvm-21-with-clang-lld-lldb/
+├── bin/
+│   ├── clang
+│   ├── clang++
+│   ├── clangd
+│   ├── lld
+│   ├── lldb
+│   ├── llvm-config
+│   └── lit
+├── lib/
+└── include/
+```
+
+All the tools we need in one place.
+
+## Time and Space Requirements
+
+**Build time:** 30-60 minutes (depends on your machine)
+**Disk space:** ~15 GB for the build, ~3 GB for the install
+
+If that's too much, stick with pre-built LLVM for now. You can always build from source later when you need it.
 
 ## Prerequisites
 
-You need a C/C++ compiler, [CMake](https://cmake.org/), and [Ninja](https://ninja-build.org/). These are not always installed by default.
+You need:
+1. A C++ compiler
+2. CMake
+3. Ninja (fast build system)
 
-- macOS (Apple Silicon / Intel):
-  - Install Xcode Command Line Tools:
-    - `xcode-select --install`
-  - Install CMake and Ninja:
-    - Homebrew: `brew install cmake ninja`
-    - MacPorts: `sudo port install cmake ninja`
-    - Manual install:
-      - CMake: download and install from the official CMake website, then ensure `cmake` is on your `PATH`.
-      - Ninja: download the Ninja binary, place it in a directory on your `PATH`, and make it executable.
-- Ubuntu/Debian:
-  - `sudo apt update`
-  - `sudo apt install build-essential cmake ninja-build`
-- Fedora:
-  - `sudo dnf install gcc-c++ cmake ninja-build`
-- Windows (x64):
-  - Install Visual Studio Build Tools (C++ workload).
-  - Install CMake and Ninja and ensure they are on `PATH`.
-
-## Common linker dependency: zstd
-
-Some LLVM builds (especially when `llvm-config --system-libs` includes `-lzstd`) require the zstd development library at link time. If it is missing, you may see an error like:
-
-```text
-ld: library 'zstd' not found
-```
-
-Install zstd development packages for your platform:
-
-- macOS (Homebrew): `brew install zstd`
-- Ubuntu/Debian: `sudo apt install libzstd-dev`
-- Fedora: `sudo dnf install libzstd-devel`
-
-The chapter Makefiles support both auto-detection and manual override:
+### macOS
 
 ```bash
-# If auto-detection fails, set it explicitly:
-make ZSTD_LIBDIR="$(brew --prefix zstd)/lib"
+# Install Xcode Command Line Tools
+xcode-select --install
 
-# Generic escape hatch for any extra library directory:
-make EXTRA_LIBDIR=/custom/lib/path
+# Install CMake and Ninja
+brew install cmake ninja
 ```
 
-## Build LLVM 21.1.6 (latest stable)
-
-### Linux 64 (x86_64)
+### Ubuntu/Debian
 
 ```bash
-# Clone LLVM 21.1.6 (latest stable)
+sudo apt update
+sudo apt install build-essential cmake ninja-build
+```
+
+### Fedora
+
+```bash
+sudo dnf install gcc-c++ cmake ninja-build
+```
+
+### Windows
+
+Install:
+1. Visual Studio Build Tools (C++ workload)
+2. CMake (from cmake.org)
+3. Ninja (from ninja-build.org)
+
+Add both to your `PATH`.
+
+## Optional: Install zstd
+
+Some LLVM builds need the `zstd` compression library. If you see `library 'zstd' not found` errors later, install it:
+
+**macOS:**
+```bash
+brew install zstd
+```
+
+**Ubuntu/Debian:**
+```bash
+sudo apt install libzstd-dev
+```
+
+**Fedora:**
+```bash
+sudo dnf install libzstd-devel
+```
+
+You can skip this for now and come back if you hit errors.
+
+## Step 1: Clone LLVM
+
+We'll build LLVM 21.1.6 (latest stable release as of writing):
+
+```bash
 git clone --depth 1 --branch llvmorg-21.1.6 https://github.com/llvm/llvm-project.git
 cd llvm-project
+```
 
-# Create build directory
+The `--depth 1` keeps the download small (we don't need full git history).
+
+## Step 2: Configure the Build
+
+Create a build directory:
+
+```bash
 mkdir build && cd build
+```
 
-# Configure the build
+Now configure. This tells CMake what to build and where to install it.
+
+### Linux / macOS
+
+```bash
 cmake -G Ninja ../llvm \
   -DCMAKE_BUILD_TYPE=Release \
   -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld;lldb" \
   -DCMAKE_INSTALL_PREFIX=$HOME/llvm-21-with-clang-lld-lldb \
-  -DLLVM_TARGETS_TO_BUILD="X86" \
+  -DLLVM_TARGETS_TO_BUILD="X86;AArch64" \
   -DLLVM_INCLUDE_EXAMPLES=OFF \
   -DLLVM_INCLUDE_TESTS=ON \
   -DLLVM_INCLUDE_BENCHMARKS=OFF \
   -DLLVM_ENABLE_ASSERTIONS=OFF
+```
 
-# Build (this will take 30-60 minutes on a typical machine)
+### Windows (PowerShell)
+
+```powershell
+cmake -G Ninja ..\llvm `
+  -DCMAKE_BUILD_TYPE=Release `
+  -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld;lldb" `
+  -DCMAKE_INSTALL_PREFIX=$HOME\llvm-21-with-clang-lld-lldb `
+  -DLLVM_TARGETS_TO_BUILD="X86" `
+  -DLLVM_INCLUDE_EXAMPLES=OFF `
+  -DLLVM_INCLUDE_TESTS=ON `
+  -DLLVM_INCLUDE_BENCHMARKS=OFF `
+  -DLLVM_ENABLE_ASSERTIONS=OFF
+```
+
+**What these flags mean:**
+
+- **`-G Ninja`** - Use Ninja (faster than Make)
+- **`CMAKE_BUILD_TYPE=Release`** - Optimized build (not debug)
+- **`LLVM_ENABLE_PROJECTS`** - Build clang, clangd, lld, and lldb
+- **`CMAKE_INSTALL_PREFIX`** - Where to install (your home directory)
+- **`LLVM_TARGETS_TO_BUILD`** - Only build for x86 and ARM (speeds up build)
+- **`LLVM_INCLUDE_TESTS=ON`** - Include `lit` for testing
+
+If CMake complains about missing dependencies, install them and re-run.
+
+## Step 3: Build
+
+```bash
 ninja
+```
 
-# Install
+This takes 30-60 minutes. Go grab coffee.
+
+**If it fails:** Check the error message. Common issues:
+- Out of memory → Close other programs, try again
+- Missing dependency → Install it (CMake will tell you what)
+- Corrupted download → Delete `llvm-project` and re-clone
+
+## Step 4: Install
+
+```bash
 ninja install
 ```
 
-After install, add the new LLVM tools to your `PATH`:
+This copies everything to `~/llvm-21-with-clang-lld-lldb/`.
+
+Verify it worked:
+
+```bash
+ls ~/llvm-21-with-clang-lld-lldb/bin
+```
+
+You should see: `clang`, `clang++`, `lld`, `lldb`, `llvm-config`, `lit`, and more.
+
+## Step 5: Update Your PATH
+
+Add LLVM to your `PATH` so the system finds it first:
+
+### macOS / Linux (Bash)
+
+Add to `~/.bashrc` or `~/.bash_profile`:
 
 ```bash
 export PATH="$HOME/llvm-21-with-clang-lld-lldb/bin:$PATH"
 ```
 
-To make this permanent, add the export line to your shell profile:
-- Bash: `~/.bashrc` or `~/.bash_profile`
-- Zsh: `~/.zshrc`
-
-If you are building other projects with CMake that need this LLVM, you can also set:
-
+Then reload:
 ```bash
-export LLVM_DIR="$HOME/llvm-21-with-clang-lld-lldb/lib/cmake/llvm"
+source ~/.bashrc
 ```
 
-### Mac Silicon (Apple M1/M2/M3)
+### macOS / Linux (Zsh)
 
-```bash
-# Clone LLVM 21.1.6 (latest stable)
-git clone --depth 1 --branch llvmorg-21.1.6 https://github.com/llvm/llvm-project.git
-cd llvm-project
+Add to `~/.zshrc`:
 
-# Create build directory
-mkdir build && cd build
-
-# Configure the build
-cmake -G Ninja ../llvm \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld;lldb" \
-  -DCMAKE_INSTALL_PREFIX=$HOME/llvm-21-with-clang-lld-lldb \
-  -DLLVM_TARGETS_TO_BUILD="AArch64" \
-  -DLLVM_INCLUDE_EXAMPLES=OFF \
-  -DLLVM_INCLUDE_TESTS=ON \
-  -DLLVM_INCLUDE_BENCHMARKS=OFF \
-  -DLLVM_ENABLE_ASSERTIONS=OFF
-
-# Build (this will take 30-60 minutes on M1/M2 Mac)
-ninja
-
-# Install
-ninja install
-```
-
-After install, add the new LLVM tools to your `PATH`:
-
-```bash
+```zsh
 export PATH="$HOME/llvm-21-with-clang-lld-lldb/bin:$PATH"
 ```
 
-If you are building other projects with CMake that need this LLVM, you can also set:
+Then reload:
+```zsh
+source ~/.zshrc
+```
+
+### Windows (PowerShell)
+
+Add to your PowerShell profile (`$PROFILE`):
+
+```powershell
+$env:PATH = "$HOME\llvm-21-with-clang-lld-lldb\bin;$env:PATH"
+```
+
+Or add it permanently via System Environment Variables.
+
+## Step 6: Verify
+
+Check that your shell finds the right LLVM:
+
+```bash
+which clang
+# Should show: /Users/yourname/llvm-21-with-clang-lld-lldb/bin/clang
+
+clang --version
+# Should show: clang version 21.1.6
+
+llvm-config --version
+# Should show: 21.1.6
+```
+
+If it shows a different version (like system clang), your `PATH` isn't set correctly. Fix that before continuing.
+
+## Step 7: Set LLVM_DIR (for CMake)
+
+When building the Pyxc compiler, CMake needs to find LLVM. Tell it where:
+
+### macOS / Linux
+
+Add to `~/.bashrc` or `~/.zshrc`:
 
 ```bash
 export LLVM_DIR="$HOME/llvm-21-with-clang-lld-lldb/lib/cmake/llvm"
 ```
 
-### Mac Intel (x86_64)
+Reload your shell.
 
-```bash
-# Clone LLVM 21.1.6 (latest stable)
-git clone --depth 1 --branch llvmorg-21.1.6 https://github.com/llvm/llvm-project.git
-cd llvm-project
+### Windows
 
-# Create build directory
-mkdir build && cd build
-
-# Configure the build
-cmake -G Ninja ../llvm \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld;lldb" \
-  -DCMAKE_INSTALL_PREFIX=$HOME/llvm-21-with-clang-lld-lldb \
-  -DLLVM_TARGETS_TO_BUILD="X86" \
-  -DLLVM_INCLUDE_EXAMPLES=OFF \
-  -DLLVM_INCLUDE_TESTS=ON \
-  -DLLVM_INCLUDE_BENCHMARKS=OFF \
-  -DLLVM_ENABLE_ASSERTIONS=OFF
-
-# Build (this will take 30-60 minutes on Intel Mac)
-ninja
-
-# Install
-ninja install
-```
-
-After install, add the new LLVM tools to your `PATH`:
-
-```bash
-export PATH="$HOME/llvm-21-with-clang-lld-lldb/bin:$PATH"
-```
-
-If you are building other projects with CMake that need this LLVM, you can also set:
-
-```bash
-export LLVM_DIR="$HOME/llvm-21-with-clang-lld-lldb/lib/cmake/llvm"
-```
-
-### Windows 64 (x86_64, PowerShell)
+Add to your PowerShell profile or Environment Variables:
 
 ```powershell
-# Clone LLVM 21.1.6 (latest stable)
-git clone --depth 1 --branch llvmorg-21.1.6 https://github.com/llvm/llvm-project.git
-cd llvm-project
-
-# Create build directory
-mkdir build
-cd build
-
-# Configure the build
-cmake -G Ninja ..\llvm -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld;lldb" -DCMAKE_INSTALL_PREFIX="$env:USERPROFILE\llvm-21-with-clang-lld-lldb" -DLLVM_TARGETS_TO_BUILD="X86" -DLLVM_INCLUDE_EXAMPLES=OFF -DLLVM_INCLUDE_TESTS=ON -DLLVM_INCLUDE_BENCHMARKS=OFF -DLLVM_ENABLE_ASSERTIONS=OFF
-
-# Build (this will take 30-60 minutes on a typical machine)
-ninja
-
-# Install
-ninja install
+$env:LLVM_DIR = "$HOME\llvm-21-with-clang-lld-lldb\lib\cmake\llvm"
 ```
 
-After install, add the new LLVM tools to your `PATH`:
+## Optional: Configure VS Code
 
-```powershell
-$env:Path = "$env:USERPROFILE\llvm-21-with-clang-lld-lldb\bin;$env:Path"
-```
+If you're using VS Code, point it to your new `clangd`:
 
-If you are building other projects with CMake that need this LLVM, you can also set:
+### Install the clangd Extension
 
-```powershell
-$env:LLVM_DIR = "$env:USERPROFILE\llvm-21-with-clang-lld-lldb\lib\cmake\llvm"
-```
+1. Open VS Code
+2. Install the "clangd" extension (disable C/C++ extension to avoid conflicts)
 
-## VS Code: clangd + compile_commands.json
+### Configure clangd Path
 
-This tutorial uses `clangd` for code navigation and diagnostics. The `clangd` language server needs `compile_commands.json` to understand how your code is built. CMake can generate this file automatically.
+Add to `.vscode/settings.json` in your project:
 
-### Generate compile_commands.json with CMake
-
-When building the tutorial chapters, CMake will create `compile_commands.json` automatically. If you're creating your own project, add this flag to your CMake configuration:
-
-```bash
-cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ...
-```
-
-This generates `compile_commands.json` in your build directory. You can then:
-
-**Option 1:** Copy or symlink it to your source root:
-```bash
-# From your build directory
-ln -s $(pwd)/compile_commands.json ../compile_commands.json
-```
-
-**Option 2:** Tell clangd where to find it via `.clangd` config file in your source root:
-```yaml
-CompileFlags:
-  CompilationDatabase: build/
-```
-
-### Configure VS Code
-
-For this tutorial, we assume you are using VS Code. If you use another editor or IDE, the steps to configure clangd will be slightly different.
-
-1. Install the VS Code extension: `clangd`
-2. Open the tutorial repository folder in VS Code
-3. The repository already includes `compile_commands.json` at the root
-4. Tell VS Code to use the `clangd` you just built by adding this to your settings (adjust the path for your platform):
-
-**macOS/Linux:**
 ```json
 {
   "clangd.path": "/Users/yourname/llvm-21-with-clang-lld-lldb/bin/clangd"
 }
 ```
 
-**Windows:**
-```json
-{
-  "clangd.path": "C:\\Users\\yourname\\llvm-21-with-clang-lld-lldb\\bin\\clangd.exe"
-}
+(Adjust the path for your username.)
+
+### Generate compile_commands.json
+
+When you build Pyxc, CMake will generate `compile_commands.json`. This tells clangd how to compile your code.
+
+In your project's CMakeLists.txt, add:
+
+```cmake
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 ```
 
-If IntelliSense conflicts with clangd, disable the built-in C/C++ extension or set `C_Cpp.intelliSenseEngine` to `Disabled` in VS Code settings.
+After building, you'll see `build/compile_commands.json`. clangd reads this automatically.
 
-## Conclusion
+## Troubleshooting
 
-In this chapter we focused on the environment, not language features, and set up a full LLVM toolchain from source with `clang`, `lld`, `llvm-lit`, and `clangd`, along with practical editor integration so the rest of the tutorial can be built and tested without guesswork.
+### Build fails with "out of memory"
 
-With this setup in place, you are ready to move quickly through the next chapters and focus on compiler implementation details instead of build-system friction.
+Ninja uses all CPU cores by default. Limit it:
+
+```bash
+ninja -j4  # Use 4 cores instead of all
+```
+
+### Can't find zstd library
+
+Install zstd (see "Optional: Install zstd" above), then rebuild.
+
+Or tell CMake to skip it:
+
+```bash
+cmake -G Ninja ../llvm \
+  -DLLVM_ENABLE_ZSTD=OFF \
+  # ... other flags
+```
+
+### Wrong clang version still showing
+
+Check:
+
+```bash
+echo $PATH
+```
+
+Make sure your LLVM `bin` directory comes BEFORE `/usr/bin` or other system paths.
+
+### Windows: Ninja not found
+
+Make sure Ninja is on your `PATH`:
+
+```powershell
+ninja --version
+```
+
+If that fails, download Ninja and add its directory to `PATH` in System Environment Variables.
+
+## What's Next
+
+You now have a full LLVM toolchain. In the next chapters, we'll use:
+- **clang** to compile C code
+- **lld** to link executables
+- **llvm-config** to find LLVM libraries
+- **lit** to run tests
+
+Back to building the language!
+
+## Summary
+
+You installed:
+- LLVM 21.1.6 with clang, clangd, lld, lldb
+- Updated `PATH` and `LLVM_DIR`
+- (Optional) Configured VS Code with clangd
+
+Total time: ~1 hour (mostly waiting for the build).
 
 ## Need Help?
 
-Building LLVM from source can be challenging, especially with different system configurations. If you hit a snag or have questions:
+Build issues? Questions?
 
-- **Open an issue:** [GitHub Issues](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues) - Report build problems, errors, or bugs
-- **Start a discussion:** [GitHub Discussions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions) - Ask questions, share tips, or discuss the tutorial
-- **Contribute:** Found a typo? Have a better explanation? [Pull requests](https://github.com/alankarmisra/pyxc-llvm-tutorial/pulls) are welcome!
+- **GitHub Issues:** [Report problems](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues)
+- **Discussions:** [Ask questions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
 
-**When reporting issues, please include:**
-- Your platform (e.g., macOS 14 M2, Ubuntu 24.04, Windows 11)
-- The complete error message
-- The command you ran
+Include:
+- Your OS and version
+- Full error message
+- Output of `cmake --version` and `ninja --version`
 
-The goal is to make this tutorial work smoothly for everyone. Your feedback helps improve it for the next person!
+We'll figure it out.

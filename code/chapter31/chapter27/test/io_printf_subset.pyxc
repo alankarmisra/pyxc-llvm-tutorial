@@ -1,0 +1,10 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x 'value=42 char=B ptr=0x[0-9a-fA-F][0-9a-fA-F]* text=ok percent=%' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    s: ptr[i8] = "ok"
+    printf("value=%d char=%c ptr=%p text=%s percent=%%\n", 42, 66, s, s)
+    return 0
+
+main()

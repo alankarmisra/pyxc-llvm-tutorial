@@ -1,0 +1,5 @@
+def factorial(n):
+  return n * factorial(n - 1.0)
+
+def main():
+  return factorial(5.0)

@@ -1,327 +1,182 @@
 ---
-description: "Implement Python-style indentation handling with indent/dedent tokens and parser updates so block structure no longer relies on braces or explicit terminators."
+description: "Fix forward references and mutual recursion by moving to a translation-unit style pipeline that decouples function use from source order."
 ---
-# 14. Pyxc: Python-Style Indentation
+# 13. Pyxc: Forward Function References and Mutual Recursion
 
-This chapter adds Python 3–style indentation to the language. We move from newline‑only structure to explicit `indent`/`dedent` tokens, and wire a token stream printer so you can see how the lexer is shaping the input. Each section names the functions that changed and why.
+This chapter addresses a foundational frontend issue: function calls should not depend on source order in file compilation mode.
 
+We fix this with a translation-unit pipeline:
 
-!!!note
-    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter15](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter15).
+- parse and collect declarations first
+- codegen function bodies second
+
+That gives reliable forward references and mutual recursion.
+
+## Source Code
+To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter14](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter14).
 
 ## Grammar (EBNF)
 
-Chapter 15 keeps the same language constructs as Chapter 14, but changes block structure from newline-only behavior to explicit `indent`/`dedent` tokens.
+This is a compiler pipeline chapter, not a syntax chapter. Grammar shape is unchanged.
+
+Reference: `code/chapter14/pyxc.ebnf`
 
 ```ebnf
 program      = { top_item } , eof ;
-top_item     = newline | function_def | extern_decl | statement ;
+top_item     = newline | type_alias_decl | struct_decl
+             | function_def | extern_decl | statement ;
 
-statement    = if_stmt | for_stmt | return_stmt | expr_stmt ;
-
-if_stmt      = "if" , expression , ":" , suite ,
-               "else" , ":" , suite ;
-for_stmt     = "for" , identifier , "in" , "range" , "(" ,
-               expression , "," , expression , [ "," , expression ] ,
-               ")" , ":" , suite ;
-
-suite        = inline_suite | block_suite ;
-inline_suite = statement ;
-block_suite  = newline , indent , statement_list , dedent ;
+function_def = "def" , prototype , ":" , suite ;
+extern_decl  = "extern" , "def" , prototype ;
 ```
 
-## Indentation rules (Python 3 style)
+## Problem to solve
 
-- A new block starts after `:` and is defined by **greater indentation** than its parent line.
-- A block ends when indentation **decreases** to a previous indentation level.
-- Indentation levels are **absolute** column widths; a dedent must match a previous level exactly.
-- Blank lines are ignored (they do not start or end blocks).
-- Tabs and spaces must **not be mixed** for indentation (we enforce one style for the module).
-- At end‑of‑file, any open indentation levels are **implicitly closed** with `dedent` tokens.
-
-## Tracking indentation with a stack + pending tokens
-
-We track indentation levels in a stack (`Indents`) and accumulate `dedent` tokens in a small deque (`PendingTokens`). Each line start computes its leading whitespace and compares it to the top of the stack.
-
-For example, consider this `fib.pyxc`:
+Forward call example:
 
 ```py
-extern def printd(x)
 
-def fib(x):
-    if(x < 3):
-        return 1
-    else:
-        return fib(x-1) + fib(x-2)
+def main() -> i32:
+    printf("%d\n", add(20, 22))
+    return 0
+
+def add(a: i32, b: i32) -> i32:
+    return a + b
+
+main()
 ```
 
-As we scan line by line, the indentation stack evolves like this (comments show the stack at each step):
+Mutual recursion example:
+
+```py
+
+def is_even(n: i32) -> i32:
+    if n == 0:
+        return 1
+    return is_odd(n - 1)
+
+def is_odd(n: i32) -> i32:
+    if n == 0:
+        return 0
+    return is_even(n - 1)
+```
+
+Both should compile and run without requiring manual reordering.
+
+## Design
+
+Two explicit phases per file:
+
+1. Parse and collect
+- parse defs/externs/top-level expressions
+- pre-register prototypes for lookup
+
+2. Codegen
+- emit extern declarations
+- emit function bodies
+- emit top-level expressions
+
+This removes declaration-order fragility.
+
+## Translation unit container
+
+```cpp
+struct ParsedTranslationUnit {
+  std::vector<std::unique_ptr<FunctionAST>> Definitions;
+  std::vector<std::unique_ptr<PrototypeAST>> Externs;
+  std::vector<std::unique_ptr<FunctionAST>> TopLevelExprs;
+};
+```
+
+## Prototype registration and compatibility
+
+We register prototypes as soon as parsed, with compatibility checks:
+
+- `TypeExprEqual(...)`
+- `PrototypeCompatible(...)`
+- `ClonePrototype(...)`
+- `RegisterPrototypeForLookup(...)`
+
+If a name is redeclared with a different signature, emit:
 
 ```text
-# start: [0]
-"def fib": indent=0   -> [0]
-"    if": indent=4    -> push 4      -> [0, 4]
-"        return": 8   -> push 8      -> [0, 4, 8]
-"    else": 4         -> pop 8       -> [0, 4]  (emit dedent)
-"        return": 8   -> push 8      -> [0, 4, 8]
-"<eof>":               -> pop to 0    -> [0]     (emit dedent, dedent)
+Function redeclared with incompatible signature
 ```
 
-This is why a **stack + queue** design works well: the stack records indentation levels, while the queue lets the lexer return `dedent` tokens one at a time.
+## Parse phase
 
-## New tokens for indentation
+`ParseTranslationUnit(...)` collects nodes and registers prototypes early.
 
-**Where:** `enum Token`
-
-We add three new tokens:
-
-- `tok_indent` for the start of a block
-- `tok_dedent` for the end of a block
-- `tok_error` for indentation errors
-
-These are used by the lexer and parser to preserve the block structure.
-
-## Counting leading whitespace
-
-**Where:** `countLeadingWhitespace()`
-
-We scan the leading spaces/tabs at the start of each logical line. Tabs are expanded to the next tab stop, and we enforce a single indentation style per module (spaces **or** tabs).
+Conceptually:
 
 ```cpp
-static int countLeadingWhitespace(int &LastChar) {
-  int indentCount = 0;
-  bool didSetIndent = false;
-
-  while (true) {
-    while (LastChar == ' ' || LastChar == '\t') {
-      if (ModuleIndentType == -1) {
-        didSetIndent = true;
-        ModuleIndentType = LastChar;
-      } else if (LastChar != ModuleIndentType) {
-        LogError("You cannot mix tabs and spaces.");
-        return -1;
-      }
-      indentCount += LastChar == '\t' ? 8 - (LexLoc.Col % 8) : 1;
-      LastChar = advance();
-    }
-
-    if (LastChar == '\r' || LastChar == '\n') {
-      if (didSetIndent) {
-        didSetIndent = false;
-        indentCount = 0;
-        ModuleIndentType = -1;
-      }
-      LastChar = advance();
-      continue;
-    }
-
-    break;
-  }
-
-  return indentCount;
+if (CurTok == tok_def) {
+  auto FnAST = ParseDefinition();
+  RegisterPrototypeForLookup(FnAST->getProto());
+  TU.Definitions.push_back(std::move(FnAST));
 }
 ```
 
-**Why:** We need a reliable indentation width at line start, and we need to ignore blank lines entirely.
+## Codegen phase
 
-## Indent / dedent detection and emission
+`CodegenTranslationUnit(...)` runs in this order:
 
-**Where:** `IsIndent()`, `IsDedent()`, `HandleIndent()`, `HandleDedent()`
+1. externs
+2. definitions
+3. top-level expressions
 
-We compare the computed `leadingWhitespace` against the top of the stack to decide whether to emit `indent`/`dedent` tokens.
+This is the key ordering guarantee.
+
+## Paths updated
+
+In `code/chapter14/pyxc.cpp`:
+
+- `InterpretFile(...)` now uses parse-then-codegen
+- `CompileToObjectFile(...)` now uses parse-then-codegen
+
+`FunctionAST` exposes:
 
 ```cpp
-static bool IsIndent(int leadingWhitespace) {
-  return leadingWhitespace > Indents.back();
-}
-
-static bool IsDedent(int leadingWhitespace) {
-  return leadingWhitespace < Indents.back();
-}
+const PrototypeAST &getProto() const { return *Proto; }
 ```
 
-On indent, we push the new level and emit `tok_indent`. On dedent, we pop until we reach a prior level and queue `tok_dedent` tokens. If the dedent doesn’t match any prior level, we emit `tok_error`.
+so registration can happen before body codegen.
 
-```cpp
-static int HandleIndent(int leadingWhitespace) {
-  Indents.push_back(leadingWhitespace);
-  return tok_indent;
-}
+## Tests
 
-static int HandleDedent(int leadingWhitespace) {
-  int dedents = 0;
-  while (leadingWhitespace < Indents.back()) {
-    Indents.pop_back();
-    dedents++;
-  }
+Added tests:
 
-  if (leadingWhitespace != Indents.back()) {
-    LogError("Expected indentation.");
-    Indents = {0};
-    PendingTokens.clear();
-    return tok_error;
-  }
+- `code/chapter14/test/c28_forward_call.pyxc`
+- `code/chapter14/test/c28_mutual_recursion.pyxc`
+- `code/chapter14/test/c28_signature_mismatch.pyxc`
 
-  while (dedents-- > 1) {
-    PendingTokens.push_back(tok_dedent);
-  }
-  return tok_dedent;
-}
-```
+## Compile / Run / Test
 
-**Why:** This mirrors Python’s block model. A dedent must land exactly on a prior indentation level.
-
-## EOF: draining open indents
-
-**Where:** `DrainIndents()` and `gettok()`
-
-At EOF we emit any remaining dedents (implicitly closing all open blocks).
-
-```cpp
-static int DrainIndents() {
-  int dedents = 0;
-  while (Indents.size() > 1) {
-    Indents.pop_back();
-    dedents++;
-  }
-
-  if (dedents > 0) {
-    while (dedents-- > 1)
-      PendingTokens.push_back(tok_dedent);
-    return tok_dedent;
-  }
-
-  return tok_eof;
-}
-```
-
-**Why:** Python implicitly closes open blocks at EOF. This ensures the parser sees the dedents.
-
-## The lexer control flow
-
-**Where:** `gettok()`
-
-We added:
-
-- A **line‑start** indentation phase (before regular token scanning)
-- A **pending token** phase (dedents queued from a previous line)
-- EOF handling via `DrainIndents()`
-
-The indentation phase calls `countLeadingWhitespace()` and then uses `IsIndent`/`IsDedent` to emit tokens.
-
-## Token printing for debugging
-
-**Where:** `TokenName()` and `PrintTokens()`
-
-A token stream printer makes it much easier to debug indentation. It prints one line of tokens per source line, including explicit `<indent=...>` and `<dedent>` tokens and a trailing `<eof>`.
-
-```cpp
-static const char *TokenName(int Tok) { /* ... */ }
-
-static void PrintTokens(const std::string &filename) {
-  int Tok = gettok();
-  bool FirstOnLine = true;
-
-  while (Tok != tok_eof) {
-    if (Tok == tok_eol) {
-      fprintf(stderr, "<eol>\n");
-      FirstOnLine = true;
-      Tok = gettok();
-      continue;
-    }
-
-    if (!FirstOnLine)
-      fprintf(stderr, " ");
-    FirstOnLine = false;
-
-    if (Tok == tok_indent) {
-      fprintf(stderr, "<indent=%d>", LastIndentWidth);
-    } else {
-      const char *Name = TokenName(Tok);
-      if (Name)
-        fprintf(stderr, "%s", Name);
-      else if (isascii(Tok))
-        fprintf(stderr, "<%c>", Tok);
-      else
-        fprintf(stderr, "<tok=%d>", Tok);
-    }
-
-    Tok = gettok();
-  }
-
-  if (!FirstOnLine)
-    fprintf(stderr, " ");
-  fprintf(stderr, "<eof>\n");
-}
-```
-
-**Why:** When debugging indentation, seeing explicit `indent`/`dedent` tokens is the fastest way to find mismatches between the lexer and the parser.
-
-## Command‑line mode: -t (tokens)
-
-**Where:** `ExecutionMode` enum + `main()`
-
-We add a `-t` mode to print the token stream for a file:
+Build:
 
 ```bash
-./pyxc fib.pyxc -t
+cd code/chapter14 && ./build.sh
 ```
 
+Run one sample:
+
 ```bash
-<extern> <def> <identifier> <(> <identifier> <)><eol>
-<def> <identifier> <(> <identifier> <)> <:><eol>
-<indent=4> <if> <(> <identifier> <<> <number> <)> <:><eol>
-<indent=8> <return> <number><eol>
-<dedent> <else> <:><eol>
-<indent=8> <return> <identifier> <(> <identifier> <-> <number> <)> <+> <identifier> <(> <identifier> <-> <number> <)><eol>
-<dedent> <dedent> <def> <identifier> <(> <)> <:><eol>
-<indent=4> <return> <identifier> <(> <identifier> <(> <number> <)> <)><eol>
-<dedent> <identifier> <(> <)><eol>
-<eof>
+code/chapter14/pyxc -i code/chapter14/test/c28_forward_call.pyxc
 ```
 
-This pairs naturally with `PrintTokens()` and gives a fast, deterministic view of how the lexer is classifying the input.
-
-## Compile and Run
-
-Use the same build setup style from Chapter 14.
-
-Run:
+Run tests:
 
 ```bash
-cd code/chapter15 && ./build.sh
-```
-
-## Conclusion
-Next, we'll handle multi‑expression blocks which will remove some of the weirdness of our rather limited single-expression syntax and allow us to write more expressive programs.
-
-## Compile / Run / Test (Hands-on)
-
-Build this chapter:
-
-```bash
-cd code/chapter15 && ./build.sh
-```
-
-Run one sample program:
-
-```bash
-code/chapter15/pyxc -i code/chapter15/fib.pyxc
-```
-
-Run the chapter tests (when a test suite exists):
-
-```bash
-cd code/chapter15/test
+cd code/chapter14/test
 lit -sv .
 ```
 
-Try editing a test or two and see how quickly you can predict the outcome.
+Explore by reordering functions or introducing a mismatched `extern` signature and checking diagnostics.
 
-When you're done, clean artifacts:
+Clean artifacts:
 
 ```bash
-cd code/chapter15 && ./build.sh
+cd code/chapter14 && ./build.sh
 ```
 
 

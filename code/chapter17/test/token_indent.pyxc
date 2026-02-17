@@ -1,0 +1,7 @@
+# RUN: %pyxc -t %s > %t 2>&1
+# RUN: grep -q "<indent=" %t
+# RUN: grep -q "<dedent>" %t
+# RUN: grep -q "<eof>" %t
+
+def main():
+    return 1

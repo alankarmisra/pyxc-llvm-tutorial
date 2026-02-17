@@ -25,8 +25,7 @@ static const char *Reset = UseColor ? "\x1b[0m" : "";
 //===----------------------------------------------------------------------===//
 // Command line
 //===----------------------------------------------------------------------===//
-static llvm::cl::SubCommand ReplCommand("repl",
-                                        "Start the interactive REPL");
+static llvm::cl::SubCommand ReplCommand("repl", "Start the interactive REPL");
 static llvm::cl::SubCommand RunCommand("run", "Run a .pyxc script");
 static llvm::cl::SubCommand BuildCommand("build", "Build a .pyxc script");
 
@@ -34,22 +33,32 @@ static llvm::cl::opt<bool>
     ReplEmitTokens("emit-tokens", llvm::cl::sub(ReplCommand),
                    llvm::cl::desc("Print lexer tokens instead of parsing"),
                    llvm::cl::init(false));
+static llvm::cl::alias ReplEmitTokensShort(
+    "t", llvm::cl::desc("Alias for --emit-tokens"),
+    llvm::cl::aliasopt(ReplEmitTokens));
 
 static llvm::cl::opt<bool>
     ReplEmitLLVM("emit-llvm", llvm::cl::sub(ReplCommand),
-                 llvm::cl::desc("Emit LLVM from REPL input"), llvm::cl::init(false));
+                 llvm::cl::desc("Emit LLVM from REPL input"),
+                 llvm::cl::init(false));
+static llvm::cl::alias ReplEmitLLVMShort(
+    "l", llvm::cl::desc("Alias for --emit-llvm"),
+    llvm::cl::aliasopt(ReplEmitLLVM));
 
-static llvm::cl::list<string>
-    RunInputFiles(llvm::cl::Positional, llvm::cl::sub(RunCommand),
-                  llvm::cl::desc("<script.pyxc>"), llvm::cl::ZeroOrMore);
+static llvm::cl::list<string> RunInputFiles(llvm::cl::Positional,
+                                            llvm::cl::sub(RunCommand),
+                                            llvm::cl::desc("<script.pyxc>"),
+                                            llvm::cl::ZeroOrMore);
 static llvm::cl::opt<bool>
     RunEmitLLVM("emit-llvm", llvm::cl::sub(RunCommand),
-                llvm::cl::desc("Emit LLVM for the script"), llvm::cl::init(false));
+                llvm::cl::desc("Emit LLVM for the script"),
+                llvm::cl::init(false));
 
 enum BuildOutputKind { BuildEmitLLVM, BuildEmitObj, BuildEmitExe };
-static llvm::cl::list<string>
-    BuildInputFiles(llvm::cl::Positional, llvm::cl::sub(BuildCommand),
-                    llvm::cl::desc("<script.pyxc>"), llvm::cl::ZeroOrMore);
+static llvm::cl::list<string> BuildInputFiles(llvm::cl::Positional,
+                                              llvm::cl::sub(BuildCommand),
+                                              llvm::cl::desc("<script.pyxc>"),
+                                              llvm::cl::ZeroOrMore);
 static llvm::cl::opt<BuildOutputKind> BuildEmit(
     "emit", llvm::cl::sub(BuildCommand),
     llvm::cl::desc("Output kind for build"),
@@ -60,10 +69,10 @@ static llvm::cl::opt<BuildOutputKind> BuildEmit(
 static llvm::cl::opt<bool> BuildDebug("g", llvm::cl::sub(BuildCommand),
                                       llvm::cl::desc("Emit debug info"),
                                       llvm::cl::init(false));
-static llvm::cl::opt<unsigned> BuildOptLevel(
-    "O", llvm::cl::sub(BuildCommand),
-    llvm::cl::desc("Optimization level (use -O0..-O3)"), llvm::cl::Prefix,
-    llvm::cl::init(0));
+static llvm::cl::opt<unsigned>
+    BuildOptLevel("O", llvm::cl::sub(BuildCommand),
+                  llvm::cl::desc("Optimization level (use -O0..-O3)"),
+                  llvm::cl::Prefix, llvm::cl::init(0));
 
 //===----------------------------------------------------------------------===//
 // Lexer
@@ -171,7 +180,7 @@ public:
   }
 };
 
-static SourceManager SourceMgr;
+static SourceManager DiagSourceMgr;
 
 static string FormatTokenForMessage(int Tok) {
   if (Tok == tok_identifier)
@@ -195,7 +204,7 @@ static const string &GetTokenName(int Tok) {
 }
 
 static void PrintErrorSourceContext(SourceLocation Loc) {
-  const string *LineText = SourceMgr.getLine(Loc.Line);
+  const string *LineText = DiagSourceMgr.getLine(Loc.Line);
   if (!LineText)
     return;
 
@@ -218,7 +227,7 @@ static SourceLocation GetNewlineTokenLoc(SourceLocation Loc) {
   if (PrevLine <= 0)
     return Loc;
 
-  const string *PrevLineText = SourceMgr.getLine(PrevLine);
+  const string *PrevLineText = DiagSourceMgr.getLine(PrevLine);
   if (!PrevLineText)
     return Loc;
 
@@ -243,17 +252,17 @@ static int advance() {
     int NextChar = getchar();
     if (NextChar != '\n' && NextChar != EOF)
       ungetc(NextChar, stdin);
-    SourceMgr.onChar('\n');
+    DiagSourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
     return '\n';
   }
   if (LastChar == '\n') {
-    SourceMgr.onChar('\n');
+    DiagSourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
   } else {
-    SourceMgr.onChar(LastChar);
+    DiagSourceMgr.onChar(LastChar);
     LexLoc.Col++;
   }
   return LastChar;
@@ -413,8 +422,8 @@ static int getNextToken() { return CurTok = gettok(); }
 
 /// BinopPrecedence - This holds the precedence for each binary operator that is
 /// defined.
-static map<char, int> BinopPrecedence = {
-    {'<', 10}, {'+', 20}, {'-', 20}, {'*', 40}, {'/', 40}, {'%', 40}};
+static map<char, int> BinopPrecedence = {{'<', 10}, {'+', 20}, {'-', 20},
+                                         {'*', 40}, {'/', 40}, {'%', 40}};
 
 /// Explanation-friendly precedence anchors used by parser control flow.
 static constexpr int NO_OP_PREC = -1;
@@ -711,11 +720,13 @@ static void MainLoop() {
     if (CurTok == tok_eof)
       return;
 
-    fprintf(stderr, "ready> ");
-    switch (CurTok) {
-    case tok_eol: // Skip newlines
+    if (CurTok == tok_eol) {
+      fprintf(stderr, "ready> ");
       getNextToken();
       continue;
+    }
+
+    switch (CurTok) {
     case tok_def:
       HandleDefinition();
       break;
@@ -736,11 +747,11 @@ static void EmitTokenStream() {
     if (Tok == tok_eof)
       return;
 
-    printf("%s", GetTokenName(Tok).c_str());
+    fprintf(stderr, "%s", GetTokenName(Tok).c_str());
     if (Tok == tok_eol)
-      printf("\nready> ");
+      fprintf(stderr, "\nready> ");
     else
-      printf(" ");
+      fprintf(stderr, " ");
   }
 }
 
@@ -791,7 +802,7 @@ int main(int argc, const char **argv) {
     return 1;
   }
 
-  SourceMgr.reset();
+  DiagSourceMgr.reset();
 
   if (ReplCommand && ReplEmitTokens) {
     EmitTokenStream();

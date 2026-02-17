@@ -1,0 +1,54 @@
+struct Vec2:
+    x: i32
+    y: i32
+
+struct Particle:
+    id: i32
+    pos: Vec2
+    vel: Vec2
+    bins: array[i32, 4]
+
+def main() -> i32:
+    n: i32 = 20000
+    steps: i32 = 400
+    modv: i32 = 1000000007
+
+    ps: ptr[Particle] = malloc[Particle](n)
+
+    i: i32 = 0
+    while i < n:
+        ps[i].id = i
+        ps[i].pos.x = i
+        ps[i].pos.y = i * 2
+        ps[i].vel.x = 1 + i
+        ps[i].vel.y = 2 - i
+
+        j: i32 = 0
+        while j < 4:
+            ps[i].bins[j] = i + j
+            j = j + 1
+
+        i = i + 1
+
+    step: i32 = 0
+    while step < steps:
+        i = 0
+        while i < n:
+            ps[i].pos.x = ps[i].pos.x + ps[i].vel.x
+            ps[i].pos.y = ps[i].pos.y + ps[i].vel.y
+            slot: i32 = step % 4
+            ps[i].bins[slot] = ps[i].bins[slot] + i + step
+            i = i + 1
+        step = step + 1
+
+    checksum: i32 = 0
+    i = 0
+    while i < n:
+        checksum = (checksum + ps[i].pos.x + ps[i].pos.y + ps[i].bins[0] + ps[i].bins[1] + ps[i].bins[2] + ps[i].bins[3]) % modv
+        i = i + 1
+
+    print(checksum)
+    free(ps)
+    return 0
+
+main()

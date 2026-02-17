@@ -1,283 +1,311 @@
 ---
-description: "Bring in dynamic memory with malloc/free to support heap allocation patterns beyond fixed stack-based and static storage scenarios."
+description: "Add structs and named field access so programs can model grouped data directly in the language instead of juggling parallel scalar values."
 ---
-# 22. Pyxc: Dynamic Memory with malloc and free
+# 21. Pyxc: Structs and Named Field Access
 
-Chapter 22 gave us fixed-size arrays and stronger aggregate modeling.
+Chapter 20 gave us mature control flow and a stronger operator set.
 
-But everything was still fundamentally static in storage duration unless values lived in existing stack locals or passed pointers from outside.
+But data modeling was still flat. We could pass scalars, pointers, and aliases, yet we had no way to express “a value with multiple named parts” in the language itself.
 
-Chapter 23 adds the missing runtime allocation primitive:
+Chapter 21 introduces that missing piece: `struct`.
 
-- allocate memory on heap with `malloc[T](count)`
-- release it with `free(ptr_expr)`
+The chapter is intentionally focused. We do **not** add methods, constructors, classes, or inheritance. We add only what we need for C-style aggregate data:
 
-This is the first chapter where memory lifetime becomes an explicit programming concern in Pyxc.
+- top-level struct declarations
+- struct-typed variables
+- field reads (`obj.x`)
+- field writes (`obj.x = ...`)
+- nested member chains (`outer.inner.x`)
+
+That limited scope keeps the parser and type resolver understandable while still unlocking a major jump in language expressiveness.
 
 
 !!!note
-    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter23](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter23).
+    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter21](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter21).
 
 ## Why this chapter matters
 
-With only fixed-size stack values, many common patterns are blocked:
+Once you have loops and conditionals, the next real bottleneck is data shape.
 
-- runtime-sized buffers
-- long-lived dynamically allocated structures
-- explicit memory ownership patterns
+Without structs, code quickly turns into parallel variables (`x`, `y`, `z`) that are hard to pass around safely. With structs, you can represent coherent records:
 
-Chapter 23 does not try to solve lifetime ergonomics. It gives manual control, C-style, which is exactly what we need for systems-oriented interop and later language work.
+```py
+struct Point:
+    x: i32
+    y: i32
+```
+
+That one construct creates a foundation for all later data features, including arrays-of-structs (Chapter 22), heap-allocated structs (Chapter 23), and pointer-oriented interop work.
 
 ## Scope and constraints
 
-Chapter 23 supports:
+Chapter 21 supports:
 
-- typed allocation expression: `malloc[T](count)`
-- explicit deallocation statement: `free(ptr_expr)`
-- scalar/struct/array-element allocation targets
+- `struct` declarations at top level only
+- named fields with explicit types
+- field selection with `.`
+- field assignment and nested field access
 
-Chapter 23 intentionally does not support:
+Chapter 21 intentionally does *not* support:
 
-- garbage collection
-- ownership checker/borrow model
-- `calloc`/`realloc`
-- leak diagnostics
+- struct literals
+- struct constructors
+- methods/member functions
+- inline struct declarations in local scope
 
-This is deliberate. The focus is “correct lowering + clear diagnostics”, not full memory management policy.
+Keeping struct declarations top-level avoids many symbol/ownership complexities in this step.
 
-## What changed from Chapter 22
+## What changed from Chapter 20
 
 Primary diff:
 
-- `code/chapter22/pyxc.cpp` -> `code/chapter23/pyxc.cpp`
-- `code/chapter22/pyxc.ebnf` -> `code/chapter23/pyxc.ebnf`
+- `code/chapter20/pyxc.cpp` -> `code/chapter21/pyxc.cpp`
+- `code/chapter20/pyxc.ebnf` -> `code/chapter21/pyxc.ebnf`
 
-Implementation buckets:
+Major implementation buckets:
 
-1. new tokens/keywords (`malloc`, `free`)
-2. parser support for malloc expression and free statement
-3. AST nodes (`MallocExprAST`, `FreeStmtAST`)
-4. LLVM lowering helpers for external `malloc`/`free`
-5. semantic checks on element type, count, and free operand type
-6. dedicated tests
+1. lexical keyword support for `struct`
+2. grammar/parser support for top-level struct declarations
+3. postfix parser support for `.` member access
+4. struct metadata tables in the compiler
+5. LLVM struct type resolution and caching
+6. member address/load codegen (`MemberExprAST`)
+7. struct diagnostics + test coverage
 
-## Grammar and syntax additions
+We walk through these in order.
 
-In `code/chapter23/pyxc.ebnf`, Chapter 23 adds:
+## 1. Grammar updates
+
+In `code/chapter21/pyxc.ebnf`, Chapter 21 introduces `struct_decl` and member-expression forms.
 
 ```ebnf
-statement       = ...
-                | free_stmt
-                | ... ;
+top_item        = newline
+                | type_alias_decl
+                | struct_decl
+                | function_def
+                | extern_decl
+                | statement ;
 
-free_stmt       = "free" , "(" , expression , ")" ;
+struct_decl     = "struct" , identifier , ":" , newline , indent ,
+                  struct_field , { newline , struct_field } , [ newline ] ,
+                  dedent ;
 
-primary         = number
-                | identifier
-                | malloc_expr
-                | addr_expr
-                | paren_expr
-                | var_expr ;
+postfix_expr    = primary , { call_suffix | index_suffix | member_suffix } ;
+member_suffix   = "." , identifier ;
+member_expr     = postfix_expr , member_suffix ;
 
-malloc_expr     = "malloc" , "[" , type_expr , "]" , "(" , expression , ")" ;
+lvalue          = identifier
+                | index_expr
+                | member_expr ;
 ```
 
-Design choice:
+The important design choice is: member access is a **postfix chain**. That means `a.b.c[0].x` can be parsed naturally by repeating postfix rules.
 
-- `malloc` is an expression (can appear in assignment/initialization)
-- `free` is a statement (effectful operation, no meaningful value)
+## 2. Lexer updates
 
-That closely matches programmer intuition.
-
-## Lexer changes
-
-New tokens in `Token` enum:
+Chapter 21 adds `struct` as a keyword token:
 
 ```cpp
-tok_malloc = -33,
-tok_free = -34,
+tok_struct = -32,
 ```
 
-Keyword map entries:
+and keyword-table entry:
 
 ```cpp
-{"malloc", tok_malloc},
-{"free", tok_free}
+{"struct", tok_struct}
 ```
 
-Token debug names were also added:
+### Dot/number disambiguation
+
+The lexer already supported numeric literals like `.5`. But adding member access means `.` must also work as a punctuation token for `obj.field`.
+
+So Chapter 21 tightens the check: `.` starts a number **only if the next char is a digit**.
 
 ```cpp
-case tok_malloc: return "<malloc>";
-case tok_free: return "<free>";
-```
-
-## Parser changes
-
-### ParseMallocExpr()
-
-`malloc` parsing is strict on delimiters and shape:
-
-```cpp
-malloc[TypeExpr](CountExpr)
-```
-
-It validates:
-
-- `malloc`
-- `[` element type `]`
-- `(` count expression `)`
-
-and returns `MallocExprAST`.
-
-### ParseFreeStmt()
-
-`free` is parsed as statement syntax:
-
-```cpp
-free(expr)
-```
-
-and returns `FreeStmtAST`.
-
-### Dispatch integration
-
-- `ParsePrimary()` adds `tok_malloc`
-- `ParseStmt()` adds `tok_free`
-
-This keeps syntax orthogonal and avoids ambiguity.
-
-## AST additions
-
-Chapter 23 introduces two nodes:
-
-```cpp
-class MallocExprAST : public ExprAST {
-  TypeExprPtr ElemType;
-  std::unique_ptr<ExprAST> CountExpr;
-  ...
-};
-
-class FreeStmtAST : public StmtAST {
-  std::unique_ptr<ExprAST> PtrExpr;
-  ...
-};
-```
-
-`MallocExprAST` also implements type-hint methods so existing indexing/member machinery can use pointee information:
-
-- result type is pointer-like
-- pointee type resolves from `ElemType`
-
-That is why patterns like `p[0].x` continue to work when `p` comes from `malloc[Point](1)`.
-
-## LLVM lowering helpers for libc allocation APIs
-
-Chapter 23 introduces helper functions to declare or reuse external symbols:
-
-```cpp
-static Function *GetOrCreateMallocHelper() {
-  if (Function *F = TheModule->getFunction("malloc"))
-    return F;
-  FunctionType *FT = FunctionType::get(
-      PointerType::get(*TheContext, 0), {Type::getInt64Ty(*TheContext)}, false);
-  return Function::Create(FT, Function::ExternalLinkage, "malloc",
-                          TheModule.get());
+bool DotStartsNumber = false;
+if (LastChar == '.') {
+  int NextCh = getc(InputFile);
+  if (NextCh != EOF)
+    ungetc(NextCh, InputFile);
+  DotStartsNumber = isdigit(NextCh);
 }
 
-static Function *GetOrCreateFreeHelper() {
-  if (Function *F = TheModule->getFunction("free"))
-    return F;
-  FunctionType *FT = FunctionType::get(
-      Type::getVoidTy(*TheContext), {PointerType::get(*TheContext, 0)}, false);
-  return Function::Create(FT, Function::ExternalLinkage, "free", TheModule.get());
+if (isdigit(LastChar) || DotStartsNumber) {
+  ...
 }
 ```
 
-This pattern mirrors how other external helpers are handled across chapters.
+That small lexer decision prevents member-access parsing bugs later.
 
-## malloc codegen details
+## 3. AST additions: MemberExprAST
 
-`MallocExprAST::codegen()` performs these steps:
-
-1. Resolve element type `T`
-2. Reject `void` element type
-3. Codegen count expression
-4. Require integer count type
-5. Cast count to `i64`
-6. Compute byte size: `count * sizeof(T)`
-7. Emit call to external `malloc`
-
-Representative code:
+Chapter 21 introduces:
 
 ```cpp
-Type *ElemTy = ResolveTypeExpr(ElemType);
-if (!ElemTy)
-  return nullptr;
-if (ElemTy->isVoidTy())
-  return LogError<Value *>("malloc element type cannot be void");
-
-Value *CountV = CountExpr->codegen();
-if (!CountV)
-  return nullptr;
-if (!IsIntegerLike(CountV->getType()))
-  return LogError<Value *>("malloc count must be an integer type");
-CountV = CastValueTo(CountV, Type::getInt64Ty(*TheContext));
-
-uint64_t ElemSize = TheModule->getDataLayout().getTypeAllocSize(ElemTy);
-Value *ElemSizeV = ConstantInt::get(Type::getInt64Ty(*TheContext), ElemSize, false);
-Value *BytesV = Builder->CreateMul(CountV, ElemSizeV, "malloc.bytes");
-
-return Builder->CreateCall(GetOrCreateMallocHelper(), {BytesV}, "malloc.ptr");
+class MemberExprAST : public ExprAST {
+  std::unique_ptr<ExprAST> Base;
+  std::string FieldName;
+  ...
+  Value *codegen() override;
+  Value *codegenAddress() override;
+  Type *getValueTypeHint() const override;
+  std::string getBuiltinLeafTypeHint() const override;
+};
 ```
 
-### Why DataLayout-based size matters
+Two methods are central:
 
-Using `TheModule->getDataLayout().getTypeAllocSize(ElemTy)` makes size computation target-aware. This is essential for correctness across platforms/ABIs.
+- `codegenAddress()` for lvalue use (`p.x = 10`)
+- `codegen()` for rvalue use (`print(p.x)`)
 
-## free codegen details
+This mirrors the same lvalue/rvalue split already used for variables and indexing.
 
-`FreeStmtAST::codegen()` is intentionally simple and strict:
+## 4. Parsing struct declarations
+
+Chapter 21 adds a dedicated top-level parser path:
 
 ```cpp
-Value *PtrV = PtrExpr->codegen();
-if (!PtrV)
-  return nullptr;
-if (!PtrV->getType()->isPointerTy())
-  return LogError<Value *>("free expects a pointer argument");
-
-Builder->CreateCall(GetOrCreateFreeHelper(), {PtrV});
+static bool ParseStructDecl();
 ```
 
-The key semantic rule is clear: only pointer-typed expressions can be freed.
+Core behavior:
 
-## Semantics and diagnostics in this chapter
+- parse header: `struct <Name>:`
+- require newline + indented field list
+- parse each field: `<name>: <type_expr>`
+- enforce constraints:
+  - no duplicate struct names
+  - no duplicate field names in one struct
+  - at least one field
 
-Chapter 23 introduces high-signal errors for common misuse:
+Struct declarations are accepted only in top-level loops and explicitly rejected in statement context:
 
-- `malloc element type cannot be void`
-- `malloc count must be an integer type`
-- `free expects a pointer argument`
-
-These diagnostics are intentionally direct so mistakes are easy to fix.
-
-## Language examples
-
-### Scalar allocation
-
-```py
-def main() -> i32:
-    p: ptr[i32] = malloc[i32](4)
-    p[0] = 10
-    p[1] = 20
-    print(p[0], p[1])
-    free(p)
-    return 0
-
-main()
+```cpp
+case tok_struct:
+  return LogError<StmtPtr>("Struct declarations are only allowed at top-level");
 ```
 
-### Struct allocation
+This keeps symbol lifetime and lookup simple for this phase.
+
+## 5. Parsing member access chains
+
+`ParseIdentifierExpr()` already had a postfix loop for calls and indexing.
+Chapter 21 extends that loop with member suffix handling:
+
+```cpp
+if (CurTok == '.') {
+  SourceLocation MemberLoc = CurLoc;
+  getNextToken(); // eat '.'
+  if (CurTok != tok_identifier)
+    return LogError<ExprPtr>("Expected field name after '.'");
+  std::string FieldName = IdentifierStr;
+  getNextToken(); // eat field name
+  Expr = std::make_unique<MemberExprAST>(MemberLoc, std::move(Expr),
+                                         std::move(FieldName));
+  continue;
+}
+```
+
+Because this is chained in the same postfix loop, nested forms like `o.i.x` require no special parser function.
+
+## 6. Struct metadata model inside the compiler
+
+Chapter 21 introduces internal metadata structures:
+
+```cpp
+struct StructFieldDecl {
+  std::string Name;
+  TypeExprPtr Ty;
+};
+
+struct StructDeclInfo {
+  std::string Name;
+  std::vector<StructFieldDecl> Fields;
+  std::map<std::string, unsigned> FieldIndex;
+  StructType *LLTy = nullptr;
+};
+
+static std::map<std::string, StructDeclInfo> StructDecls;
+static std::map<const StructType *, std::string> StructTypeNames;
+```
+
+Why both maps?
+
+- `StructDecls`: source-name -> declaration/type data
+- `StructTypeNames`: LLVM struct pointer -> source-name
+
+That reverse map is useful when resolving field info from LLVM type handles during codegen.
+
+## 7. LLVM type resolution for structs
+
+Chapter 21 extends type resolution so alias/base names can resolve to struct types.
+
+A key helper is:
+
+```cpp
+static StructType *ResolveStructTypeByName(const std::string &Name,
+                                           std::set<std::string> &Visited);
+```
+
+It:
+
+1. finds source declaration
+2. creates/gets LLVM `StructType`
+3. resolves each field LLVM type in declaration order
+4. sets the LLVM struct body
+5. caches results to avoid rebuilding
+
+This enables nested struct fields and struct aliases to work consistently.
+
+## 8. Member access codegen
+
+### Address path (codegenAddress)
+
+`MemberExprAST::codegenAddress()` does:
+
+1. obtain base address (`Base->codegenAddress()`)
+2. verify base value type is struct
+3. resolve field index by name
+4. emit `CreateStructGEP`
+
+```cpp
+return Builder->CreateStructGEP(ST, BaseAddr, FieldIdx, "field.addr");
+```
+
+### Value path (codegen)
+
+`MemberExprAST::codegen()` uses the computed address and loads:
+
+```cpp
+return Builder->CreateLoad(FieldTy, AddrV, "field.load");
+```
+
+This keeps field assignment integrated with existing `AssignStmtAST` behavior because assignment already expects lvalue expressions to provide addresses.
+
+## 9. Diagnostics added in Chapter 21
+
+Examples of new diagnostics:
+
+- `Struct '<name>' is already defined`
+- `Duplicate field '<field>' in struct '<name>'`
+- `Unknown field '<field>' on struct '<name>'`
+- `Member access requires a struct-typed base`
+
+These errors are important for tutorial pace because they make failure modes obvious during incremental development.
+
+## 10. Tests added in Chapter 21
+
+Chapter 21 preserves Chapter 20 tests and adds struct-focused tests:
+
+- `code/chapter21/test/struct_basic_fields.pyxc`
+- `code/chapter21/test/struct_nested_fields.pyxc`
+- `code/chapter21/test/struct_alias_type.pyxc`
+- `code/chapter21/test/struct_error_unknown_field.pyxc`
+- `code/chapter21/test/struct_error_nonstruct_member.pyxc`
+- `code/chapter21/test/struct_error_duplicate_field.pyxc`
+- `code/chapter21/test/struct_error_duplicate_struct.pyxc`
+
+Representative positive test:
 
 ```py
 struct Point:
@@ -285,66 +313,63 @@ struct Point:
     y: i32
 
 def main() -> i32:
-    p: ptr[Point] = malloc[Point](1)
-    p[0].x = 7
-    p[0].y = 11
-    print(p[0].x, p[0].y)
-    free(p)
+    p: Point
+    p.x = 10
+    p.y = 20
+    print(p.x, p.y)
     return 0
 
 main()
 ```
 
-### Invalid free usage
+Representative negative test:
 
 ```py
+struct Point:
+    x: i32
+
 def main() -> i32:
-    x: i32 = 42
-    free(x)   # error: free expects a pointer argument
+    p: Point
+    print(p.z)
     return 0
 
 main()
 ```
 
-## Tests added in Chapter 23
+This validates that declared fields work and undeclared fields fail cleanly.
 
-Chapter 23 inherits Chapter 22 tests and adds:
-
-- `code/chapter23/test/malloc_basic_i32.pyxc`
-- `code/chapter23/test/malloc_struct_roundtrip.pyxc`
-- `code/chapter23/test/malloc_array_element_type.pyxc`
-- `code/chapter23/test/malloc_error_float_count.pyxc`
-- `code/chapter23/test/free_error_non_pointer.pyxc`
-
-These tests validate both positive flows (allocation + access + deallocation) and semantic rejection paths.
-
-## Build and test for this chapter
+## 11. Build and test for this chapter
 
 From repository root:
 
 ```bash
-cd code/chapter23 && ./build.sh
+cd code/chapter21 && ./build.sh
 lit -sv test
 ```
 
-Chapter 23 was also regression-checked against Chapter 22 behavior.
+Chapter 21 was also checked against Chapter 20 behavior as a regression sanity step.
 
-## Design takeaways
+## 12. Design takeaways
 
-Chapter 23 is intentionally small but strategic:
+What Chapter 21 establishes:
 
-- It introduces explicit heap lifetime control.
-- It composes with existing struct/array/indexing features.
-- It builds the bridge to practical C interop patterns.
+- structured data is now a first-class part of the language
+- postfix expression machinery is now rich enough for chained data access
+- type resolution now handles named aggregate types
 
-This chapter also sets up Chapter 24 naturally, where we add C-style I/O (`putchar`, `puts`, `printf`) and string literals, making it possible to build more complete small programs.
+This chapter is a foundational dependency for the next two:
+
+- Chapter 22 uses structs + indexing together (`array[Point, N]`)
+- Chapter 23 allocates structs on heap (`ptr[Point] = malloc[Point](...)`)
+
+In short: Chapter 21 is where the language stops being scalar-centric.
 
 ## Compiling
 
 From repository root:
 
 ```bash
-cd code/chapter23 && ./build.sh
+cd code/chapter21 && ./build.sh
 ```
 
 ## Testing
@@ -352,7 +377,7 @@ cd code/chapter23 && ./build.sh
 From repository root:
 
 ```bash
-lit -sv code/chapter23/test
+lit -sv code/chapter21/test
 ```
 
 ## Compile / Run / Test (Hands-on)
@@ -360,28 +385,28 @@ lit -sv code/chapter23/test
 Build this chapter:
 
 ```bash
-cd code/chapter23 && ./build.sh
+cd code/chapter21 && ./build.sh
 ```
 
 Run one sample program:
 
 ```bash
-code/chapter23/pyxc -i code/chapter23/test/array_alias_type.pyxc
+code/chapter21/pyxc -i code/chapter21/test/break_outside_loop.pyxc
 ```
 
 Run the chapter tests (when a test suite exists):
 
 ```bash
-cd code/chapter23/test
+cd code/chapter21/test
 lit -sv .
 ```
 
-Have some fun stress-testing the suite with small variations.
+Explore the test folder a bit and add one tiny edge case of your own.
 
 When you're done, clean artifacts:
 
 ```bash
-cd code/chapter23 && ./build.sh
+cd code/chapter21 && ./build.sh
 ```
 
 

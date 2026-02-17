@@ -1,0 +1,12 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '42' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    printf("%d\n", add(20, 22))
+    return 0
+
+def add(a: i32, b: i32) -> i32:
+    return a + b
+
+main()

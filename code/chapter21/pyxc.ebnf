@@ -21,7 +21,6 @@ program         = { top_item } , eof ;
 
 top_item        = newline
                 | type_alias_decl
-                | struct_decl
                 | function_def
                 | extern_decl
                 | statement ;
@@ -29,10 +28,6 @@ top_item        = newline
 (* ---------- Types ---------- *)
 
 type_alias_decl = "type" , identifier , "=" , type_expr ;
-struct_decl     = "struct" , identifier , ":" , newline , indent ,
-                  struct_field , { newline , struct_field } , [ newline ] ,
-                  dedent ;
-struct_field    = identifier , ":" , type_expr ;
 
 type_expr       = pointer_type
                 | base_type ;
@@ -63,10 +58,6 @@ decorator       = "@" , ( "unary" | "binary" ) , [ number ] ;
 
 statement       = if_stmt
                 | for_stmt
-                | while_stmt
-                | do_while_stmt
-                | break_stmt
-                | continue_stmt
                 | print_stmt
                 | return_stmt
                 | typed_assign_stmt
@@ -76,8 +67,7 @@ statement       = if_stmt
 typed_assign_stmt = identifier , ":" , type_expr , [ "=" , expression ] ;
 assign_stmt     = lvalue , "=" , expression ;
 lvalue          = identifier
-                | index_expr
-                | member_expr ;
+                | index_expr ;
 
 expr_stmt       = expression ;
 
@@ -94,11 +84,6 @@ for_stmt        = "for" , identifier , "in" , "range" , "(" ,
                   [ "," , expression ] ,
                   ")" , ":" , suite ;
 
-while_stmt      = "while" , expression , ":" , suite ;
-do_while_stmt   = "do" , ":" , suite , "while" , expression ;
-break_stmt      = "break" ;
-continue_stmt   = "continue" ;
-
 (* Python-style suite: either one inline statement or an indented block. *)
 suite           = inline_suite
                 | block_suite ;
@@ -114,12 +99,10 @@ expression      = unary_expr , { binary_op , unary_expr } ;
 unary_expr      = [ unary_op ] , postfix_expr ;
 unary_op        = "+" | "-" | "!" | "~" ;
 
-postfix_expr    = primary , { call_suffix | index_suffix | member_suffix } ;
+postfix_expr    = primary , { call_suffix | index_suffix } ;
 call_suffix     = "(" , [ arg_list ] , ")" ;
 index_suffix    = "[" , expression , "]" ;
-member_suffix   = "." , identifier ;
 index_expr      = postfix_expr , index_suffix ;
-member_expr     = postfix_expr , member_suffix ;
 
 primary         = number
                 | identifier

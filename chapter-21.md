@@ -1,412 +1,412 @@
 ---
-description: "Add structs and named field access so programs can model grouped data directly in the language instead of juggling parallel scalar values."
+description: "Add a real print builtin without variadics, using the typed foundation to support useful output with safer and clearer semantics."
 ---
-# 20. Pyxc: Structs and Named Field Access
+# 19. Pyxc: A Real print(...) Builtin (Without Variadics)
 
-Chapter 20 gave us mature control flow and a stronger operator set.
+Chapter 18 gave us typed values, typed locals, pointer syntax, and ABI-correct extern signatures.
 
-But data modeling was still flat. We could pass scalars, pointers, and aliases, yet we had no way to express “a value with multiple named parts” in the language itself.
+In Chapter 19, we use that typed foundation to add something user-facing and practical: a language-level `print(...)` builtin.
 
-Chapter 21 introduces that missing piece: `struct`.
-
-The chapter is intentionally focused. We do **not** add methods, constructors, classes, or inheritance. We add only what we need for C-style aggregate data:
-
-- top-level struct declarations
-- struct-typed variables
-- field reads (`obj.x`)
-- field writes (`obj.x = ...`)
-- nested member chains (`outer.inner.x`)
-
-That limited scope keeps the parser and type resolver understandable while still unlocking a major jump in language expressiveness.
+The important constraint for this chapter is: **no general variadic functions yet**.
+`print(...)` is implemented as a compiler builtin statement, not as user-declared `extern def foo(...)` machinery.
 
 
 !!!note
-    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter21](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter21).
+    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter19](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter19).
 
-## Why this chapter matters
+## What Changed from Chapter 18
 
-Once you have loops and conditionals, the next real bottleneck is data shape.
+At a high level, Chapter 19 adds four things:
 
-Without structs, code quickly turns into parallel variables (`x`, `y`, `z`) that are hard to pass around safely. With structs, you can represent coherent records:
+- a new `print` keyword/token
+- parser support for `print(...)` as a statement
+- a dedicated `PrintStmtAST` lowering path
+- a new lit suite under `code/chapter19/test/`
+
+There is also one subtle type-system plumbing update: we carry extra signed/unsigned type hints so codegen can choose `printi32` vs `printu32` reliably.
+
+## Language Surface in This Chapter
+
+Supported forms:
 
 ```py
-struct Point:
-    x: i32
-    y: i32
+print()
+print(x)
+print(x, y, z)
 ```
 
-That one construct creates a foundation for all later data features, including arrays-of-structs (Chapter 22), heap-allocated structs (Chapter 23), and pointer-oriented interop work.
+Default formatting behavior:
 
-## Scope and constraints
+- separator between args: a single space (`" "`)
+- end of statement: newline (`"\n"`)
 
-Chapter 21 supports:
+Supported argument families in this implementation:
 
-- `struct` declarations at top level only
-- named fields with explicit types
-- field selection with `.`
-- field assignment and nested field access
+- signed ints: `i8/i16/i32/i64`
+- unsigned ints: `u8/u16/u32/u64`
+- floats: `f32/f64`
 
-Chapter 21 intentionally does *not* support:
+Current policy for pointers: rejected with a diagnostic.
 
-- struct literals
-- struct constructors
-- methods/member functions
-- inline struct declarations in local scope
+## Grammar (EBNF) Update
 
-Keeping struct declarations top-level avoids many symbol/ownership complexities in this step.
-
-## What changed from Chapter 20
-
-Primary diff:
-
-- `code/chapter20/pyxc.cpp` -> `code/chapter21/pyxc.cpp`
-- `code/chapter20/pyxc.ebnf` -> `code/chapter21/pyxc.ebnf`
-
-Major implementation buckets:
-
-1. lexical keyword support for `struct`
-2. grammar/parser support for top-level struct declarations
-3. postfix parser support for `.` member access
-4. struct metadata tables in the compiler
-5. LLVM struct type resolution and caching
-6. member address/load codegen (`MemberExprAST`)
-7. struct diagnostics + test coverage
-
-We walk through these in order.
-
-## 1. Grammar updates
-
-In `code/chapter21/pyxc.ebnf`, Chapter 21 introduces `struct_decl` and member-expression forms.
+Compared to Chapter 18, `statement` gained a `print_stmt` branch.
 
 ```ebnf
-top_item        = newline
-                | type_alias_decl
-                | struct_decl
-                | function_def
-                | extern_decl
-                | statement ;
+statement       = if_stmt
+                | for_stmt
+                | print_stmt
+                | return_stmt
+                | typed_assign_stmt
+                | assign_stmt
+                | expr_stmt ;
 
-struct_decl     = "struct" , identifier , ":" , newline , indent ,
-                  struct_field , { newline , struct_field } , [ newline ] ,
-                  dedent ;
-
-postfix_expr    = primary , { call_suffix | index_suffix | member_suffix } ;
-member_suffix   = "." , identifier ;
-member_expr     = postfix_expr , member_suffix ;
-
-lvalue          = identifier
-                | index_expr
-                | member_expr ;
+print_stmt      = "print" , "(" , [ arg_list ] , ")" ;
 ```
 
-The important design choice is: member access is a **postfix chain**. That means `a.b.c[0].x` can be parsed naturally by repeating postfix rules.
+This keeps `print` explicit in the grammar and avoids overloading generic call parsing for statement semantics.
 
-## 2. Lexer updates
+## Tests First: New Chapter 19 lit Suite
 
-Chapter 21 adds `struct` as a keyword token:
+Before implementation, we added a dedicated test harness and print-focused coverage.
 
-```cpp
-tok_struct = -32,
+- `code/chapter19/test/lit.cfg.py`
+- `code/chapter19/test/print_basic_empty.pyxc`
+- `code/chapter19/test/print_basic_scalars.pyxc`
+- `code/chapter19/test/print_mixed_types.pyxc`
+- `code/chapter19/test/print_narrow_signed.pyxc`
+- `code/chapter19/test/print_unsigned_widths.pyxc`
+- `code/chapter19/test/print_error_unsupported_pointer.pyxc`
+- `code/chapter19/test/print_error_keyword_args.pyxc`
+- `code/chapter19/test/print_error_trailing_comma.pyxc`
+
+Example positive test:
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x -- '-4 42 3.500000 7.250000' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    si: i32 = -4
+    ui: u64 = 42
+    f1: f32 = 3.5
+    f2: f64 = 7.25
+    print(si, ui, f1, f2)
+    return 0
+
+main()
 ```
 
-and keyword-table entry:
+Example negative test:
 
-```cpp
-{"struct", tok_struct}
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Error (Line:" %t
+
+def main() -> i32:
+    x: i32 = 7
+    p: ptr[i32] = addr(x)
+    print(p)
+    return 0
+
+main()
 ```
 
-### Dot/number disambiguation
+## Lexer Changes
 
-The lexer already supported numeric literals like `.5`. But adding member access means `.` must also work as a punctuation token for `obj.field`.
-
-So Chapter 21 tightens the check: `.` starts a number **only if the next char is a digit**.
+`print` becomes a real token in Chapter 19.
 
 ```cpp
-bool DotStartsNumber = false;
-if (LastChar == '.') {
-  int NextCh = getc(InputFile);
-  if (NextCh != EOF)
-    ungetc(NextCh, InputFile);
-  DotStartsNumber = isdigit(NextCh);
-}
-
-if (isdigit(LastChar) || DotStartsNumber) {
-  ...
-}
+enum Token {
+  // ...
+  tok_var = -15,
+  tok_print = -27,
+  // ...
+};
 ```
 
-That small lexer decision prevents member-access parsing bugs later.
-
-## 3. AST additions: MemberExprAST
-
-Chapter 21 introduces:
+Keyword table update:
 
 ```cpp
-class MemberExprAST : public ExprAST {
-  std::unique_ptr<ExprAST> Base;
-  std::string FieldName;
-  ...
+{"and", tok_and}, {"print", tok_print}, {"or", tok_or}
+```
+
+Token debug name support was also added:
+
+```cpp
+case tok_print:
+  return "<print>";
+```
+
+This is small, but it keeps the parser branch clean and diagnostics readable.
+
+## AST Changes: A Dedicated PrintStmtAST
+
+Instead of pretending `print` is a normal function call expression, Chapter 19 adds an explicit statement node:
+
+```cpp
+class PrintStmtAST : public StmtAST {
+  std::vector<std::unique_ptr<ExprAST>> Args;
+
+public:
+  PrintStmtAST(SourceLocation Loc, std::vector<std::unique_ptr<ExprAST>> Args)
+      : StmtAST(Loc), Args(std::move(Args)) {}
+
   Value *codegen() override;
-  Value *codegenAddress() override;
-  Type *getValueTypeHint() const override;
-  std::string getBuiltinLeafTypeHint() const override;
 };
 ```
 
-Two methods are central:
+This keeps the semantics straightforward:
 
-- `codegenAddress()` for lvalue use (`p.x = 10`)
-- `codegen()` for rvalue use (`print(p.x)`)
+- parse as statement
+- lower with statement behavior
+- return an ignored sentinel in IR plumbing (`0.0`), same style as other statement nodes
 
-This mirrors the same lvalue/rvalue split already used for variables and indexing.
+## Parser Changes
 
-## 4. Parsing struct declarations
+We added a `ParsePrintStmt()` function and wired it into `ParseStmt()`.
 
-Chapter 21 adds a dedicated top-level parser path:
-
-```cpp
-static bool ParseStructDecl();
-```
-
-Core behavior:
-
-- parse header: `struct <Name>:`
-- require newline + indented field list
-- parse each field: `<name>: <type_expr>`
-- enforce constraints:
-  - no duplicate struct names
-  - no duplicate field names in one struct
-  - at least one field
-
-Struct declarations are accepted only in top-level loops and explicitly rejected in statement context:
+Core parse shape:
 
 ```cpp
-case tok_struct:
-  return LogError<StmtPtr>("Struct declarations are only allowed at top-level");
-```
+static std::unique_ptr<StmtAST> ParsePrintStmt() {
+  auto PrintLoc = CurLoc;
+  getNextToken(); // eat `print`
+  if (CurTok != '(')
+    return LogError<StmtPtr>("Expected '(' after print");
+  getNextToken(); // eat '('
 
-This keeps symbol lifetime and lookup simple for this phase.
+  std::vector<std::unique_ptr<ExprAST>> Args;
+  if (CurTok != ')') {
+    while (true) {
+      auto Arg = ParseExpression();
+      if (!Arg)
+        return nullptr;
+      Args.push_back(std::move(Arg));
 
-## 5. Parsing member access chains
+      if (CurTok == ')')
+        break;
+      if (CurTok != ',')
+        return LogError<StmtPtr>("Expected ')' or ',' in print argument list");
+      getNextToken();
+      if (CurTok == ')')
+        return LogError<StmtPtr>("Trailing comma is not allowed in print");
+    }
+  }
 
-`ParseIdentifierExpr()` already had a postfix loop for calls and indexing.
-Chapter 21 extends that loop with member suffix handling:
-
-```cpp
-if (CurTok == '.') {
-  SourceLocation MemberLoc = CurLoc;
-  getNextToken(); // eat '.'
-  if (CurTok != tok_identifier)
-    return LogError<ExprPtr>("Expected field name after '.'");
-  std::string FieldName = IdentifierStr;
-  getNextToken(); // eat field name
-  Expr = std::make_unique<MemberExprAST>(MemberLoc, std::move(Expr),
-                                         std::move(FieldName));
-  continue;
+  getNextToken(); // eat ')'
+  return std::make_unique<PrintStmtAST>(PrintLoc, std::move(Args));
 }
 ```
 
-Because this is chained in the same postfix loop, nested forms like `o.i.x` require no special parser function.
-
-## 6. Struct metadata model inside the compiler
-
-Chapter 21 introduces internal metadata structures:
+And dispatch in statement parsing:
 
 ```cpp
-struct StructFieldDecl {
-  std::string Name;
-  TypeExprPtr Ty;
+case tok_print:
+  return ParsePrintStmt();
+```
+
+## Why Extra Type Hints Were Needed
+
+In LLVM IR, both `i32` and `u32` are just `i32` values. Width alone does not preserve signedness intent.
+
+For print helper selection, that matters:
+
+- signed 32-bit should call `printi32`
+- unsigned 32-bit should call `printu32`
+
+So Chapter 19 extends expression/type hint plumbing and variable bindings with leaf-type metadata.
+
+### New expression hooks
+
+```cpp
+virtual std::string getBuiltinLeafTypeHint() const { return ""; }
+virtual std::string getPointeeBuiltinLeafTypeHint() const { return ""; }
+```
+
+### Extended variable binding
+
+```cpp
+struct VarBinding {
+  AllocaInst *Alloca = nullptr;
+  Type *Ty = nullptr;
+  Type *PointeeTy = nullptr;
+  std::string BuiltinLeafTy;
+  std::string PointeeBuiltinLeafTy;
 };
-
-struct StructDeclInfo {
-  std::string Name;
-  std::vector<StructFieldDecl> Fields;
-  std::map<std::string, unsigned> FieldIndex;
-  StructType *LLTy = nullptr;
-};
-
-static std::map<std::string, StructDeclInfo> StructDecls;
-static std::map<const StructType *, std::string> StructTypeNames;
 ```
 
-Why both maps?
-
-- `StructDecls`: source-name -> declaration/type data
-- `StructTypeNames`: LLVM struct pointer -> source-name
-
-That reverse map is useful when resolving field info from LLVM type handles during codegen.
-
-## 7. LLVM type resolution for structs
-
-Chapter 21 extends type resolution so alias/base names can resolve to struct types.
-
-A key helper is:
+### Typed assignment now stores these hints
 
 ```cpp
-static StructType *ResolveStructTypeByName(const std::string &Name,
-                                           std::set<std::string> &Visited);
+NamedValues[Name] = {Alloca, DeclTy, ResolvePointeeTypeExpr(DeclType),
+                     ResolveBuiltinLeafName(DeclType),
+                     ResolvePointeeBuiltinLeafName(DeclType)};
 ```
 
-It:
+This is what lets print codegen preserve signed/unsigned helper choice for typed values and pointer-indexed values.
 
-1. finds source declaration
-2. creates/gets LLVM `StructType`
-3. resolves each field LLVM type in declaration order
-4. sets the LLVM struct body
-5. caches results to avoid rebuilding
+## Print Codegen: Helper Dispatch Strategy
 
-This enables nested struct fields and struct aliases to work consistently.
+The codegen path does not use user-level variadics. It does this instead:
 
-## 8. Member access codegen
+1. codegen each argument expression
+2. infer helper symbol by LLVM type + leaf hint
+3. emit `call print*` for the arg
+4. emit separator (`printchard(32)`) between args
+5. emit newline (`printchard(10)`) at end
 
-### Address path (codegenAddress)
-
-`MemberExprAST::codegenAddress()` does:
-
-1. obtain base address (`Base->codegenAddress()`)
-2. verify base value type is struct
-3. resolve field index by name
-4. emit `CreateStructGEP`
+### Helper resolution
 
 ```cpp
-return Builder->CreateStructGEP(ST, BaseAddr, FieldIdx, "field.addr");
+static Function *GetPrintHelperForArg(Type *ArgTy, const std::string &LeafHint) {
+  if (ArgTy->isFloatTy())
+    return GetOrCreatePrintHelper("printfloat32", ArgTy, false);
+  if (ArgTy->isDoubleTy())
+    return GetOrCreatePrintHelper("printfloat64", ArgTy, false);
+  if (!ArgTy->isIntegerTy())
+    return nullptr;
+
+  bool IsUnsigned = !LeafHint.empty() && LeafHint[0] == 'u';
+  unsigned W = ArgTy->getIntegerBitWidth();
+  switch (W) {
+  case 8:  return GetOrCreatePrintHelper(IsUnsigned ? "printu8"  : "printi8",  ArgTy, IsUnsigned);
+  case 16: return GetOrCreatePrintHelper(IsUnsigned ? "printu16" : "printi16", ArgTy, IsUnsigned);
+  case 32: return GetOrCreatePrintHelper(IsUnsigned ? "printu32" : "printi32", ArgTy, IsUnsigned);
+  case 64: return GetOrCreatePrintHelper(IsUnsigned ? "printu64" : "printi64", ArgTy, IsUnsigned);
+  default: return nullptr;
+  }
+}
 ```
 
-### Value path (codegen)
-
-`MemberExprAST::codegen()` uses the computed address and loads:
+### Statement lowering loop
 
 ```cpp
-return Builder->CreateLoad(FieldTy, AddrV, "field.load");
+for (size_t I = 0; I < Args.size(); ++I) {
+  Value *ArgV = Args[I]->codegen();
+  Type *ArgTy = ArgV->getType();
+
+  if (ArgTy->isPointerTy())
+    return LogError<Value *>("Unsupported print argument type: pointer");
+
+  Function *PrintF = GetPrintHelperForArg(ArgTy, Args[I]->getBuiltinLeafTypeHint());
+  if (!PrintF)
+    return LogError<Value *>("Unsupported print argument type");
+
+  Value *CastArg = CastValueTo(ArgV, PrintF->getFunctionType()->getParamType(0));
+  Builder->CreateCall(PrintF, {CastArg});
+
+  if (I + 1 < Args.size())
+    Builder->CreateCall(PrintCharF, {ConstantFP::get(*TheContext, APFloat(32.0))});
+}
+
+Builder->CreateCall(PrintCharF, {ConstantFP::get(*TheContext, APFloat(10.0))});
 ```
 
-This keeps field assignment integrated with existing `AssignStmtAST` behavior because assignment already expects lvalue expressions to provide addresses.
+## Diagnostics in This Chapter
 
-## 9. Diagnostics added in Chapter 21
+The print implementation now reports meaningful errors for:
 
-Examples of new diagnostics:
+- malformed syntax (for example, bad separator usage via unsupported keyword syntax)
+- trailing comma in this MVP parser path
+- unsupported argument kinds (notably pointers)
 
-- `Struct '<name>' is already defined`
-- `Duplicate field '<field>' in struct '<name>'`
-- `Unknown field '<field>' on struct '<name>'`
-- `Member access requires a struct-typed base`
+Representative messages include:
 
-These errors are important for tutorial pace because they make failure modes obvious during incremental development.
+- `Expected ')' or ',' in print argument list`
+- `Trailing comma is not allowed in print`
+- `Unsupported print argument type: pointer`
+- `Unsupported print argument type`
 
-## 10. Tests added in Chapter 21
+## Chapter 19 Test Outcomes
 
-Chapter 21 preserves Chapter 20 tests and adds struct-focused tests:
+The new chapter18 suite validates:
 
-- `code/chapter21/test/struct_basic_fields.pyxc`
-- `code/chapter21/test/struct_nested_fields.pyxc`
-- `code/chapter21/test/struct_alias_type.pyxc`
-- `code/chapter21/test/struct_error_unknown_field.pyxc`
-- `code/chapter21/test/struct_error_nonstruct_member.pyxc`
-- `code/chapter21/test/struct_error_duplicate_field.pyxc`
-- `code/chapter21/test/struct_error_duplicate_struct.pyxc`
+- `print()` newline-only behavior
+- basic scalar spacing/newline behavior
+- mixed signed/unsigned/float dispatch
+- narrow signed integer paths (`i8`, `i16`)
+- wide unsigned paths (`u32`, `u64`)
+- key negative behavior (pointer args, unsupported keyword usage, trailing comma)
 
-Representative positive test:
+Status after implementation: all Chapter 19 lit tests pass.
 
-```py
-struct Point:
-    x: i32
-    y: i32
+## Recap
 
-def main() -> i32:
-    p: Point
-    p.x = 10
-    p.y = 20
-    print(p.x, p.y)
-    return 0
+Chapter 19 intentionally avoids general variadics while still delivering ergonomic output.
 
-main()
-```
+The key design choices were:
 
-Representative negative test:
+- treat `print` as a language builtin statement
+- lower each argument with type-directed helper dispatch
+- preserve signedness intent with lightweight leaf-type hints
+- lock behavior with a dedicated lit suite before codegen work
 
-```py
-struct Point:
-    x: i32
+This keeps the compiler architecture clean and gives us a practical builtin today, while leaving room to add true user-defined variadics later.
 
-def main() -> i32:
-    p: Point
-    print(p.z)
-    return 0
+## Repository Link
 
-main()
-```
+You can browse the full project directly here:
 
-This validates that declared fields work and undeclared fields fail cleanly.
+- [pyxc-llvm-tutorial on GitHub](https://github.com/alankarmisra/pyxc-llvm-tutorial)
 
-## 11. Build and test for this chapter
+## Build and Test (Chapter 19)
 
-From repository root:
+From the repository root:
 
 ```bash
-cd code/chapter21 && ./build.sh
-lit -sv test
+cd code/chapter19 && ./build.sh
 ```
 
-Chapter 21 was also checked against Chapter 20 behavior as a regression sanity step.
-
-## 12. Design takeaways
-
-What Chapter 21 establishes:
-
-- structured data is now a first-class part of the language
-- postfix expression machinery is now rich enough for chained data access
-- type resolution now handles named aggregate types
-
-This chapter is a foundational dependency for the next two:
-
-- Chapter 22 uses structs + indexing together (`array[Point, N]`)
-- Chapter 23 allocates structs on heap (`ptr[Point] = malloc[Point](...)`)
-
-In short: Chapter 21 is where the language stops being scalar-centric.
-
-## Compiling
-
-From repository root:
+Run the chapter test suite:
 
 ```bash
-cd code/chapter21 && ./build.sh
+llvm-lit -sv test
 ```
 
-## Testing
-
-From repository root:
+If you want to sanity-check compatibility with the previous chapter as well:
 
 ```bash
-lit -sv code/chapter21/test
+cd ../chapter17 && ./build.sh
+llvm-lit -sv test
 ```
+
+Try writing a few of your own `print` tests in `code/chapter19/test/` too. A good way to check your understanding is to add both:
+
+- positive cases (mixed types, nested expressions, computed values)
+- negative cases (unsupported types, malformed argument lists)
+
+When your own tests pass and fail exactly where you expect, the implementation model usually clicks.
+
 
 ## Compile / Run / Test (Hands-on)
 
 Build this chapter:
 
 ```bash
-cd code/chapter21 && ./build.sh
+cd code/chapter19 && ./build.sh
 ```
 
 Run one sample program:
 
 ```bash
-code/chapter21/pyxc -i code/chapter21/test/break_outside_loop.pyxc
+code/chapter19/pyxc -i code/chapter19/test/print_basic_empty.pyxc
 ```
 
 Run the chapter tests (when a test suite exists):
 
 ```bash
-cd code/chapter21/test
+cd code/chapter19/test
 lit -sv .
 ```
 
-Explore the test folder a bit and add one tiny edge case of your own.
+Poke around the tests and tweak a few cases to see what breaks first.
 
 When you're done, clean artifacts:
 
 ```bash
-cd code/chapter21 && ./build.sh
+cd code/chapter19 && ./build.sh
 ```
 
 

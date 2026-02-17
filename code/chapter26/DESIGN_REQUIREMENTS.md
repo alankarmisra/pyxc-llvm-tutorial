@@ -1,63 +1,97 @@
-# Chapter 25 Design Requirements
+# Chapter 23 Design Requirements
 
 ## Theme
-Immutable value bindings via `const` declarations.
+C-style I/O baseline with string literals and minimal `printf`.
 
 ## Goal
-Add first-class constant declarations to Pyxc so values can be explicitly immutable after initialization.
+Enable practical text I/O for K&R-style programs by adding first-class string literals and direct calls to `putchar`, `getchar`, `puts`, and a constrained `printf`.
 
 ## Scope
 
 ### In Scope
-- `const` declaration statement syntax:
-  - `const name: type = expression`
-- Requires initializer expression
-- Binds immutable variable in current scope
-- Assignment to const variable is rejected
-- Works with scalar/pointer/aggregate-compatible declaration types
+- String literal token and expression support:
+  - `"hello\n"`
+- Calling libc-style symbols without explicit `extern` declarations:
+  - `putchar(i32) -> i32`
+  - `getchar() -> i32`
+  - `puts(ptr[i8]) -> i32`
+  - `printf(ptr[i8], ...) -> i32`
+- Vararg call lowering for `printf`
+- `printf` format validation for a minimal subset:
+  - `%d`, `%s`, `%c`, `%p`, and `%%`
+- String literal to pointer interop (`ptr[i8]`-compatible behavior)
 
 ### Out of Scope
-- Compile-time constant folding requirements for initializer
-- Global const linkage model
-- Deep immutability of pointee/aggregate contents
+- Full C `printf` compatibility (`%f`, width, precision, flags, length modifiers)
+- Variadic function declarations in source language syntax
+- File I/O (`fopen`, `fgets`, etc.)
 
 ## Syntax Requirements
+
+### String literal expression
 ```py
-const x: i32 = 42
-const p: ptr[i8] = "hello"
+s: ptr[i8] = "hello"
+```
+
+### C-style I/O calls
+```py
+putchar(65)
+puts("hi")
+printf("x=%d %c %p %s\n", 42, 65, p, s)
 ```
 
 ## Lexer Requirements
-- Add `const` keyword token.
+- Add string token:
+  - `tok_string`
+- Capture and unescape string payload.
+- Report diagnostics for unterminated or invalid escape sequences.
 
 ## Parser Requirements
-- Add parser for const declaration statement.
-- `const` declarations are statement-level (same scope model as local typed declarations).
+- Add string primary parser:
+  - `ParseStringExpr()`
+- Extend `ParsePrimary()` to accept string literals.
 
 ## AST Requirements
-- Add `ConstAssignStmtAST(Name, DeclType, InitExpr)`.
+- Add node:
+  - `StringExprAST(Value)`
 
 ## Semantic Requirements
-- `const` declarations must provide initializer.
-- Reassignment to const variable name is diagnostic error.
-- Existing typed variable behavior unchanged for non-const declarations.
+- String literals codegen as pointer values compatible with `ptr[i8]`.
+- Unresolved calls to `putchar`, `getchar`, `puts`, `printf` are auto-declared with libc-compatible signatures.
+- `printf` checks:
+  - first argument must be a string literal
+  - specifiers limited to `%d`, `%s`, `%c`, `%p`, `%%`
+  - argument count must match non-`%%` specifiers
+  - `%d`/`%c` require integer arguments
+  - `%s`/`%p` require pointer arguments
+
+## LLVM Lowering Requirements
+- String literals lower with global string storage and pointer result.
+- `printf` lowers as vararg call with default promotions:
+  - small integers to `i32`
+  - `f32` to `f64`
 
 ## Diagnostics Requirements
-- Missing const initializer.
-- Assignment to const variable.
+- Non-literal first argument to `printf`
+- Unsupported format specifier in `printf`
+- Format argument count mismatch in `printf`
+- Type mismatch for `%d`, `%s`, `%c`, `%p`
+- Unterminated string literal
+- Invalid string escape sequence
 
 ## Tests
 
 ### Positive
-- const scalar usage
-- const pointer usage
-- const in arithmetic/branch conditions
+- `putchar` and `puts` with string literals
+- `printf` using `%d/%s/%c/%p` and `%%`
+- String literal assignment to `ptr[i8]`
 
 ### Negative
-- const declaration without initializer
-- assignment to const variable
+- Unsupported `printf` format specifier
+- `printf` format count mismatch
+- `printf` type mismatch per format code
 
 ## Done Criteria
-- Chapter 25 lit suite includes const coverage and passes.
-- Chapter 24 behavior remains green.
-- Chapter 25 docs/chapter summary added.
+- Chapter 23 lit suite includes I/O baseline coverage and passes.
+- Chapter 22 behavior remains green under Chapter 23 compiler.
+- `chapter-23.md` documents chapter diff and implementation.

@@ -1,97 +1,90 @@
-# Chapter 23 Design Requirements
+# Chapter 21 Design Requirements
 
 ## Theme
-C-style I/O baseline with string literals and minimal `printf`.
+Fixed-size arrays as first-class typed aggregates.
 
 ## Goal
-Enable practical text I/O for K&R-style programs by adding first-class string literals and direct calls to `putchar`, `getchar`, `puts`, and a constrained `printf`.
+Add static arrays to Pyxc with explicit type-level sizes and element indexing while preserving Chapter 20 struct behavior.
 
 ## Scope
 
 ### In Scope
-- String literal token and expression support:
-  - `"hello\n"`
-- Calling libc-style symbols without explicit `extern` declarations:
-  - `putchar(i32) -> i32`
-  - `getchar() -> i32`
-  - `puts(ptr[i8]) -> i32`
-  - `printf(ptr[i8], ...) -> i32`
-- Vararg call lowering for `printf`
-- `printf` format validation for a minimal subset:
-  - `%d`, `%s`, `%c`, `%p`, and `%%`
-- String literal to pointer interop (`ptr[i8]`-compatible behavior)
+- Array type syntax in type positions:
+  - `array[ElemType, N]`
+- Typed locals and fields using array types
+- Array indexing for load/store:
+  - `a[i]`
+  - `s.arr[i]`
+- Nested composition:
+  - arrays of structs
+  - structs containing arrays
+- Existing pointer indexing remains supported
 
 ### Out of Scope
-- Full C `printf` compatibility (`%f`, width, precision, flags, length modifiers)
-- Variadic function declarations in source language syntax
-- File I/O (`fopen`, `fgets`, etc.)
+- Dynamic arrays
+- Array literals/initializer lists
+- Slices/views
+- Runtime bounds checking (this chapter)
 
 ## Syntax Requirements
 
-### String literal expression
+### Array type
 ```py
-s: ptr[i8] = "hello"
+a: array[i32, 4]
 ```
 
-### C-style I/O calls
+### Indexing
 ```py
-putchar(65)
-puts("hi")
-printf("x=%d %c %p %s\n", 42, 65, p, s)
+a[0] = 10
+print(a[0])
 ```
 
 ## Lexer Requirements
-- Add string token:
-  - `tok_string`
-- Capture and unescape string payload.
-- Report diagnostics for unterminated or invalid escape sequences.
+- No new keyword required.
+- `array` is recognized via type parser in type contexts.
 
 ## Parser Requirements
-- Add string primary parser:
-  - `ParseStringExpr()`
-- Extend `ParsePrimary()` to accept string literals.
+- Extend `type_expr` parser to recognize `array[ type_expr , <int-literal> ]`.
+- Enforce compile-time integer literal size.
+- Reuse existing indexing expression syntax.
 
 ## AST Requirements
-- Add node:
-  - `StringExprAST(Value)`
+- Extend `TypeExpr` to represent array type with:
+  - element type
+  - constant length
 
 ## Semantic Requirements
-- String literals codegen as pointer values compatible with `ptr[i8]`.
-- Unresolved calls to `putchar`, `getchar`, `puts`, `printf` are auto-declared with libc-compatible signatures.
-- `printf` checks:
-  - first argument must be a string literal
-  - specifiers limited to `%d`, `%s`, `%c`, `%p`, `%%`
-  - argument count must match non-`%%` specifiers
-  - `%d`/`%c` require integer arguments
-  - `%s`/`%p` require pointer arguments
+- Array size must be a positive integer literal.
+- Array indexing base must be either:
+  - pointer type (existing behavior), or
+  - array type (new behavior)
+- Index expression must be integer-like.
 
 ## LLVM Lowering Requirements
-- String literals lower with global string storage and pointer result.
-- `printf` lowers as vararg call with default promotions:
-  - small integers to `i32`
-  - `f32` to `f64`
+- Lower `array[T, N]` to `llvm::ArrayType::get(T, N)`.
+- For array indexing, lower address as GEP:
+  - `[0, idx]` on the array alloca/field address.
+- Pointer indexing continues to use pointer GEP behavior.
 
 ## Diagnostics Requirements
-- Non-literal first argument to `printf`
-- Unsupported format specifier in `printf`
-- Format argument count mismatch in `printf`
-- Type mismatch for `%d`, `%s`, `%c`, `%p`
-- Unterminated string literal
-- Invalid string escape sequence
+- Invalid array size (missing/non-integer/non-positive)
+- Indexing non-pointer/non-array base
+- Non-integer index expression
 
 ## Tests
 
 ### Positive
-- `putchar` and `puts` with string literals
-- `printf` using `%d/%s/%c/%p` and `%%`
-- String literal assignment to `ptr[i8]`
+- Basic local array load/store
+- Array alias type
+- Struct field array indexing
+- Array of structs with field access through indexed element
 
 ### Negative
-- Unsupported `printf` format specifier
-- `printf` format count mismatch
-- `printf` type mismatch per format code
+- Float/non-integer index
+- Invalid array size literal
+- Indexing non-array/non-pointer
 
 ## Done Criteria
-- Chapter 23 lit suite includes I/O baseline coverage and passes.
-- Chapter 22 behavior remains green under Chapter 23 compiler.
-- `chapter-23.md` documents chapter diff and implementation.
+- Chapter 21 lit suite includes array coverage and is green
+- Chapter 20 suite behavior remains intact under Chapter 21 compiler
+- `chapter-21.md` documents chapter diff and implementation

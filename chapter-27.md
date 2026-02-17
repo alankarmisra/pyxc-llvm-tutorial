@@ -1,289 +1,340 @@
 ---
-description: "Move from single-file compilation to separate compilation and multi-file linking, enabling larger projects and cleaner build composition."
+description: "Expand runtime interop with file I/O primitives like fopen/fclose/fgets/fputs/fread/fwrite for persistent input and output workflows."
 ---
-# 26. Pyxc: Separate Compilation and Multi-File Linking
+# 25. Pyxc: File I/O with fopen, fclose, fgets, fputs, fread, fwrite
 
-Chapter 27 upgrades pyxc from single-file flow to translation-unit flow.
+Chapter 24 added string literals and console-style stdio (`putchar`, `getchar`, `puts`, minimal `printf`).
 
-You can now compile multiple `.pyxc` files in one invocation and either:
+That gave us interactive text output, but not persistent data.
 
-- produce one object per source file (`-c file1 file2`), or
-- link all compiled objects into one executable (`pyxc file1 file2` or `pyxc -o app file1 file2`).
+Chapter 25 extends libc interop to file APIs so Pyxc programs can read and write files directly.
+
+This chapter intentionally stays close to C semantics: explicit open/close, explicit buffer pointers, explicit byte counts.
 
 
 !!!note
-    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter27](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter27).
+    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter25](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter25).
 
 ## Grammar (EBNF)
 
-Chapter 27 is primarily a driver/linker architecture chapter (multi-file compile/link).
-Language grammar is effectively unchanged from Chapter 26.
+Chapter 25 adds file I/O through normal function calls (`fopen`, `fclose`, `fgets`, `fputs`, `fread`, `fwrite`), so grammar is unchanged from Chapter 24.
+The implementation change is semantic/type-checking in call codegen.
 
-Reference: `code/chapter27/pyxc.ebnf`
+Reference: `code/chapter25/pyxc.ebnf`
 
 ```ebnf
-program      = { top_item } , eof ;
-top_item     = newline | type_alias_decl | struct_decl
-             | function_def | extern_decl | statement ;
-
-statement    = if_stmt | for_stmt | while_stmt | do_while_stmt
-             | break_stmt | continue_stmt | free_stmt | print_stmt
-             | return_stmt | const_decl_stmt
-             | typed_assign_stmt | assign_stmt | expr_stmt ;
+statement    = ... | expr_stmt ;
+expr_stmt    = expression ;
+expression   = unary_expr , { binary_op , unary_expr } ;
+postfix_expr = primary , { call_suffix | index_suffix | member_suffix } ;
+call_suffix  = "(" , [ arg_list ] , ")" ;
 ```
 
-## What we are building
+## Why this chapter matters
 
-We want this to work:
+Without file I/O, many practical programs are blocked:
 
-```bash
-pyxc -o app math.pyxc main.pyxc
-```
+- writing logs or reports to disk
+- reading configuration files
+- binary serialization experiments
+- roundtrip tests that need persistent state
 
-where `math.pyxc` defines a function and `main.pyxc` declares it `extern` and calls it.
+With Chapter 25 we can do both text and block I/O:
 
-That requires:
+- text path: `fopen` + `fputs`/`fgets` + `fclose`
+- binary/block path: `fopen` + `fwrite`/`fread` + `fclose`
 
-- CLI support for multiple positional inputs
-- per-file compilation loop
-- linker accepting multiple object files
-- state reset between file compiles so file N+1 is clean
+This is a major interop milestone because these APIs are part of the standard C runtime most toolchains already provide.
 
-## CLI: from single input to list input
+## Scope and constraints
 
-In `code/chapter27/pyxc.cpp`, positional input changed to a list:
+### In scope
 
-```cpp
-static cl::list<std::string> InputFilenames(cl::Positional,
-                                            cl::desc("<input files>"),
-                                            cl::ZeroOrMore,
-                                            cl::cat(PyxcCategory));
-```
+- Auto-declared libc file symbols:
+  - `fopen(path, mode) -> ptr`
+  - `fclose(file) -> i32`
+  - `fgets(buf, n, file) -> ptr`
+  - `fputs(str, file) -> i32`
+  - `fread(buf, size, count, file) -> i64`
+  - `fwrite(buf, size, count, file) -> i64`
+- Opaque file-handle usage via pointer types (`ptr[void]` works naturally)
+- Call-site type checks for known file APIs
+- Regression-safe integration with existing call/codegen pipeline
 
-Mode guards were tightened:
+### Out of scope
 
-```cpp
-if (Mode == Interpret && InputFilenames.size() != 1) ...
-if (Mode == Tokens && InputFilenames.size() != 1) ...
-if (Mode == Object && !OutputFilename.empty() && InputFilenames.size() != 1) ...
-```
+- high-level file abstractions/classes
+- exception-style cleanup semantics
+- extra stdio state APIs (`feof`, `ferror`, etc.)
+- path utility helpers
 
-So:
+We keep the surface raw and explicit in this chapter.
 
-- `-i` and `-t` remain intentionally single-file
-- `-c` supports many inputs
-- `-c -o out` only valid for one input
+## What changed from Chapter 24
 
-## Object naming for multi-file builds
+Primary diff:
 
-Chapter 27 adds a helper to derive per-input object names:
+- `code/chapter24/pyxc.cpp` -> `code/chapter25/pyxc.cpp`
+- `code/chapter24/test` -> `code/chapter25/test`
 
-```cpp
-static std::string getIntermediateObjectFilename(const std::string &input) {
-  ...
-  return base + ".o";
-}
-```
+No new parser grammar was required for file APIs because they are normal function calls.
 
-Executable mode loop uses it:
+Main implementation buckets:
 
-```cpp
-for (const auto &InFile : InputFilenames) {
-  std::string Obj = getIntermediateObjectFilename(InFile);
-  CompileToObjectFile(InFile, Obj);
-  ScriptObjs.push_back(Obj);
-}
-```
+1. extend libc auto-declaration table with file APIs
+2. add file-API-specific argument type checks in `CallExprAST::codegen()`
+3. add positive and negative lit coverage
 
-Object mode loop also compiles each file independently.
+## Retrospective Note (Boolean/Comparison Semantics Cleanup)
 
-## Linker API: one object to many objects
+Chapter 25 is also where we finally fixed a long-running semantic debt from early Kaleidoscope-style behavior.
 
-`code/include/PyxcLinker.h` now has multi-object entry:
+Historically (including Chapter 16 onward), logical/comparison-style operations produced floating values (`0.0` / `1.0`) in several paths, because the original tutorial flow leaned that way for simplicity.
 
-```cpp
-static bool Link(const std::vector<std::string> &objFiles,
-                 const std::string &runtimeObj,
-                 const std::string &outputExe)
-```
+In Chapter 25, we switched this to C-like integer-style truth values and related signed/unsigned correctness:
 
-and the old single-object signature delegates to it.
+- `not` / `!` now yields integer truth values (not floating)
+- `and` / `or` result values are integer truth values
+- comparisons yield integer truth values
+- unsigned division/modulo/comparisons use unsigned LLVM ops
+- unsigned vararg promotions use zero-extension
 
-This is what makes final executable linking possible when multiple source files are compiled in one command.
+Honestly, we should have done this around Chapter 16 when control flow and branching got serious. We noticed it late, fixed it here, and kept momentum instead of stopping to rewrite every earlier chapter immediately. Pragmatic? Yes. A tiny bit lazy? Also yes.
 
-## The critical stability fix: reset state per translation unit
+## Design choice: no new syntax
 
-The first implementation compiled file 1, then crashed on file 2 in some flows.
+Chapter 25 deliberately introduces no new statement keywords.
 
-Root cause: global frontend and LLVM manager state was leaking across translation units.
-
-Chapter 27 fixes this with explicit reset functions in `code/chapter27/pyxc.cpp`.
-
-Frontend reset:
-
-```cpp
-static void ResetFrontendState() {
-  ModuleIndentType = -1;
-  AtStartOfLine = true;
-  Indents = {0};
-  PendingTokens.clear();
-  ...
-  LastChar = '\0';
-}
-```
-
-Semantic-map reset:
-
-```cpp
-static void ResetCompilationState() {
-  FunctionProtos.clear();
-  TypeAliases.clear();
-  StructDecls.clear();
-  StructTypeNames.clear();
-}
-```
-
-LLVM/manager reset:
-
-```cpp
-static void ResetLLVMStateForNextCompile() {
-  TheSI.reset();
-  ThePIC.reset();
-  TheFPM.reset();
-  TheLAM.reset();
-  TheFAM.reset();
-  TheCGAM.reset();
-  TheMAM.reset();
-  Builder.reset();
-  TheModule.reset();
-  TheContext.reset();
-}
-```
-
-Debug reset:
-
-```cpp
-static void ResetDebugInfoStateForNextCompile() {
-  DBuilder.reset();
-  KSDbgInfo.reset();
-}
-```
-
-Then `CompileToObjectFile(...)` starts with:
-
-```cpp
-ResetFrontendState();
-ResetCompilationState();
-NamedValues.clear();
-LoopContextStack.clear();
-ResetDebugInfoStateForNextCompile();
-ResetLLVMStateForNextCompile();
-```
-
-This is the reason multi-file compile is now stable.
-
-## Default aliases and data layout during per-file compile
-
-Because type alias defaults use pointer-size assumptions, per-file compile ensures aliases are seeded after context/module creation.
-
-Chapter 27 also makes `EnsureDefaultTypeAliases()` safe when module layout is not yet fully populated.
-
-That avoids cross-file surprises in alias setup.
-
-## Runtime object resolution hardening
-
-Executable link step previously relied on `runtime.o` from current working directory.
-
-Chapter 27 resolves runtime object relative to the pyxc binary path:
-
-```cpp
-std::string runtimeObj = "runtime.o";
-if (const char *Slash = strrchr(argv[0], '/'))
-  runtimeObj = std::string(argv[0], Slash - argv[0] + 1) + "runtime.o";
-```
-
-This makes lit test sandboxes and out-of-tree invocations reliable.
-
-## New Chapter 27 tests
-
-Added in `code/chapter27/test`:
-
-Helper module:
+All file operations use existing call syntax:
 
 ```py
-# c25_mod_add.pyxc
-def add(a: i32, b: i32) -> i32:
-    return a + b
+f: ptr[void] = fopen("out.txt", "w")
+fputs("hello\n", f)
+fclose(f)
 ```
 
-Executable multi-file link:
+This keeps language growth small and pushes capability through interop, which is exactly what we want at this stage.
+
+## Extending libc symbol resolution
+
+In Chapter 24, libc auto-declaration supported only console I/O symbols.
+
+In Chapter 25, `GetOrCreateLibcIOFunction(...)` is extended:
+
+```cpp
+static Function *GetOrCreateLibcIOFunction(const std::string &Name) {
+  if (Function *F = TheModule->getFunction(Name))
+    return F;
+
+  Type *I32Ty = Type::getInt32Ty(*TheContext);
+  Type *I64Ty = Type::getInt64Ty(*TheContext);
+  Type *PtrTy = PointerType::get(*TheContext, 0);
+  FunctionType *FT = nullptr;
+
+  if (Name == "putchar")
+    FT = FunctionType::get(I32Ty, {I32Ty}, false);
+  else if (Name == "getchar")
+    FT = FunctionType::get(I32Ty, {}, false);
+  else if (Name == "puts")
+    FT = FunctionType::get(I32Ty, {PtrTy}, false);
+  else if (Name == "printf")
+    FT = FunctionType::get(I32Ty, {PtrTy}, true);
+  else if (Name == "fopen")
+    FT = FunctionType::get(PtrTy, {PtrTy, PtrTy}, false);
+  else if (Name == "fclose")
+    FT = FunctionType::get(I32Ty, {PtrTy}, false);
+  else if (Name == "fgets")
+    FT = FunctionType::get(PtrTy, {PtrTy, I32Ty, PtrTy}, false);
+  else if (Name == "fputs")
+    FT = FunctionType::get(I32Ty, {PtrTy, PtrTy}, false);
+  else if (Name == "fread")
+    FT = FunctionType::get(I64Ty, {PtrTy, I64Ty, I64Ty, PtrTy}, false);
+  else if (Name == "fwrite")
+    FT = FunctionType::get(I64Ty, {PtrTy, I64Ty, I64Ty, PtrTy}, false);
+  else
+    return nullptr;
+
+  return Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
+}
+```
+
+### Why this works cleanly
+
+`getFunction(...)` already had a fallback hook for libc-known functions. We simply broadened the allowlist.
+
+No parser changes were needed, and no runtime wrapper stubs were required.
+
+## Semantic checks in CallExprAST::codegen()
+
+Auto-declaration alone is not enough. We also need clear diagnostics when arguments are the wrong shape.
+
+Chapter 25 adds function-specific checks after argument codegen:
+
+```cpp
+auto CheckPointerArg = [&](size_t ArgIndex, const char *Err) -> bool { ... };
+auto CheckIntegerArg = [&](size_t ArgIndex, const char *Err) -> bool { ... };
+```
+
+Then per API:
+
+```cpp
+if (Callee == "fopen") {
+  if (!CheckPointerArg(0, "fopen expects pointer path argument") ||
+      !CheckPointerArg(1, "fopen expects pointer mode argument"))
+    return nullptr;
+} else if (Callee == "fclose") {
+  if (!CheckPointerArg(0, "fclose expects pointer file argument"))
+    return nullptr;
+} else if (Callee == "fgets") {
+  if (!CheckPointerArg(0, "fgets expects pointer buffer argument") ||
+      !CheckIntegerArg(1, "fgets expects integer length argument") ||
+      !CheckPointerArg(2, "fgets expects pointer file argument"))
+    return nullptr;
+} else if (Callee == "fputs") {
+  if (!CheckPointerArg(0, "fputs expects pointer string argument") ||
+      !CheckPointerArg(1, "fputs expects pointer file argument"))
+    return nullptr;
+} else if (Callee == "fread") {
+  if (!CheckPointerArg(0, "fread expects pointer buffer argument") ||
+      !CheckIntegerArg(1, "fread expects integer size argument") ||
+      !CheckIntegerArg(2, "fread expects integer count argument") ||
+      !CheckPointerArg(3, "fread expects pointer file argument"))
+    return nullptr;
+} else if (Callee == "fwrite") {
+  if (!CheckPointerArg(0, "fwrite expects pointer buffer argument") ||
+      !CheckIntegerArg(1, "fwrite expects integer size argument") ||
+      !CheckIntegerArg(2, "fwrite expects integer count argument") ||
+      !CheckPointerArg(3, "fwrite expects pointer file argument"))
+    return nullptr;
+}
+```
+
+These checks are intentionally direct. They catch misuse at compile-time/lowering time and produce clear messages.
+
+## Interaction with existing call lowering
+
+After checks, Chapter 25 still uses existing call machinery:
+
+- fixed-arity arity validation
+- per-formal cast via `CastValueTo`
+- normal LLVM `CreateCall`
+
+So this chapter extends behavior without forking the call path.
+
+This is important for maintainability: file APIs become “first-class interop calls” rather than special one-off nodes.
+
+## Example usage patterns
+
+### Text write/read roundtrip
 
 ```py
-# multifile_executable_link.pyxc
-extern def add(a: i32, b: i32) -> i32
-
 def main() -> i32:
-    print(add(4, 5))
+    f: ptr[void] = fopen("chapter23_io_a.txt", "w")
+    fputs("alpha\n", f)
+    fclose(f)
+
+    f = fopen("chapter23_io_a.txt", "r")
+    buf: ptr[i8] = malloc[i8](64)
+    fgets(buf, 64, f)
+    fclose(f)
+
+    printf("%s", buf)
+    free(buf)
     return 0
 
 main()
 ```
 
-Object multi-file mode:
+### Block I/O roundtrip with byte counts
 
 ```py
-# multifile_object_mode.pyxc
-def use() -> i32:
+def main() -> i32:
+    f: ptr[void] = fopen("chapter23_io_b.bin", "wb")
+    written: i64 = fwrite("HELLO", 1, 5, f)
+    fclose(f)
+
+    f = fopen("chapter23_io_b.bin", "rb")
+    buf: ptr[i8] = malloc[i8](6)
+    read: i64 = fread(buf, 1, 5, f)
+    buf[5] = 0
+    fclose(f)
+
+    printf("w=%d r=%d s=%s\n", written, read, buf)
+    free(buf)
     return 0
+
+main()
 ```
 
-Negative mode check:
+This pattern demonstrates both the return counts and pointer-buffer usage.
 
-```py
-# multifile_error_tokens_requires_single.pyxc
-# token mode with 2 files must fail
+## Tests added in Chapter 25
+
+New tests under `code/chapter25/test`:
+
+### Positive
+
+- `file_fputs_fgets_roundtrip.pyxc`
+- `file_fread_fwrite_roundtrip.pyxc`
+
+### Negative
+
+- `file_error_fopen_mode_not_pointer.pyxc`
+- `file_error_fgets_len_not_integer.pyxc`
+- `file_error_fread_buffer_not_pointer.pyxc`
+- `file_error_fclose_non_pointer.pyxc`
+
+These run in addition to inherited Chapter 24 coverage.
+
+## Validation result
+
+Build:
+
+```bash
+cd code/chapter25 && ./build.sh
 ```
 
-Expected message includes:
+Tests:
 
-```text
-token mode requires exactly one input file
+```bash
+lit -sv code/chapter25/test
 ```
 
-## Main driver flow after Chapter 27
+Result:
 
-In executable mode:
+- 46 tests discovered
+- 46 passed
 
-- compile each input file to temporary object
-- call `PyxcLinker::Link(ScriptObjs, runtimeObj, exeFile)`
-- cleanup intermediate objects
+## Notes on typing and handles
 
-In object mode:
+Chapter 25 keeps file handles opaque and pointer-shaped (`ptr[void]` works well).
 
-- compile each input file to its own object
-- print each produced object path
+This is a good tradeoff now:
 
-In token/interpret modes:
+- minimal type-system change
+- clear interoperability model
+- room to add a named alias (`type file_t = ptr[void]`) at user level
 
-- reject multi-file invocation
+You can add richer handle typing later if you want stricter API boundaries.
 
-## Outcome
+## Design takeaways
 
-After these changes:
+Chapter 25 keeps language complexity under control by reusing existing machinery:
 
-- multi-file object and executable workflows are first-class
-- translation-unit boundaries are cleanly isolated
-- linker path supports real modular programs
-- lit suite covers positive and negative multi-file behavior
+- existing call syntax
+- existing expression/type system
+- existing cast and call lowering flow
 
-Chapter 27 is the bridge from language features to practical project-scale compilation.
+But capability jumps significantly: Pyxc can now do persistent text and binary I/O with standard libc semantics.
+
+That is enough to support realistic tooling-style programs and sets up future chapters for modules, headers, and broader C interop.
 
 ## Compiling
 
 From repository root:
 
 ```bash
-cd code/chapter27 && ./build.sh
+cd code/chapter25 && ./build.sh
 ```
 
 ## Testing
@@ -291,7 +342,7 @@ cd code/chapter27 && ./build.sh
 From repository root:
 
 ```bash
-lit -sv code/chapter27/test
+lit -sv code/chapter25/test
 ```
 
 ## Compile / Run / Test (Hands-on)
@@ -299,28 +350,28 @@ lit -sv code/chapter27/test
 Build this chapter:
 
 ```bash
-cd code/chapter27 && ./build.sh
+cd code/chapter25 && ./build.sh
 ```
 
 Run one sample program:
 
 ```bash
-code/chapter27/pyxc -i code/chapter27/test/c25_mod_add.pyxc
+code/chapter25/pyxc -i code/chapter25/test/addr_is_keyword.pyxc
 ```
 
 Run the chapter tests (when a test suite exists):
 
 ```bash
-cd code/chapter27/test
+cd code/chapter25/test
 lit -sv .
 ```
 
-Pick a couple of tests, mutate the inputs, and watch how diagnostics respond.
+Try editing a test or two and see how quickly you can predict the outcome.
 
 When you're done, clean artifacts:
 
 ```bash
-cd code/chapter27 && ./build.sh
+cd code/chapter25 && ./build.sh
 ```
 
 

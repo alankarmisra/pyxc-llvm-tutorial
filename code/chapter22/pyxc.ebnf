@@ -21,7 +21,6 @@ program         = { top_item } , eof ;
 
 top_item        = newline
                 | type_alias_decl
-                | struct_decl
                 | function_def
                 | extern_decl
                 | statement ;
@@ -29,18 +28,11 @@ top_item        = newline
 (* ---------- Types ---------- *)
 
 type_alias_decl = "type" , identifier , "=" , type_expr ;
-struct_decl     = "struct" , identifier , ":" , newline , indent ,
-                  struct_field , { newline , struct_field } , [ newline ] ,
-                  dedent ;
-struct_field    = identifier , ":" , type_expr ;
 
 type_expr       = pointer_type
-                | array_type
                 | base_type ;
 
 pointer_type    = "ptr" , "[" , type_expr , "]" ;
-array_type      = "array" , "[" , type_expr , "," , array_size , "]" ;
-array_size      = number ;
 
 base_type       = builtin_type
                 | identifier ;
@@ -79,8 +71,7 @@ statement       = if_stmt
 typed_assign_stmt = identifier , ":" , type_expr , [ "=" , expression ] ;
 assign_stmt     = lvalue , "=" , expression ;
 lvalue          = identifier
-                | index_expr
-                | member_expr ;
+                | index_expr ;
 
 expr_stmt       = expression ;
 
@@ -117,12 +108,10 @@ expression      = unary_expr , { binary_op , unary_expr } ;
 unary_expr      = [ unary_op ] , postfix_expr ;
 unary_op        = "+" | "-" | "!" | "~" ;
 
-postfix_expr    = primary , { call_suffix | index_suffix | member_suffix } ;
+postfix_expr    = primary , { call_suffix | index_suffix } ;
 call_suffix     = "(" , [ arg_list ] , ")" ;
 index_suffix    = "[" , expression , "]" ;
-member_suffix   = "." , identifier ;
 index_expr      = postfix_expr , index_suffix ;
-member_expr     = postfix_expr , member_suffix ;
 
 primary         = number
                 | identifier

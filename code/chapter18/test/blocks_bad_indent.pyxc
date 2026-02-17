@@ -1,0 +1,12 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Error (Line:" %t
+
+extern def printd(x)
+
+def main():
+    if(1):
+        printd(1)
+      printd(2)
+    return 0
+
+main()

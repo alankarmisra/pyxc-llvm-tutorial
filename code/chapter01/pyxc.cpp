@@ -114,7 +114,7 @@ public:
   }
 };
 
-static SourceManager SourceMgr;
+static SourceManager DiagSourceMgr;
 
 static int advance() {
   int LastChar = getchar();
@@ -122,17 +122,17 @@ static int advance() {
     int NextChar = getchar();
     if (NextChar != '\n' && NextChar != EOF)
       ungetc(NextChar, stdin);
-    SourceMgr.onChar('\n');
+    DiagSourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
     return '\n';
   }
   if (LastChar == '\n') {
-    SourceMgr.onChar('\n');
+    DiagSourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
   } else {
-    SourceMgr.onChar(LastChar);
+    DiagSourceMgr.onChar(LastChar);
     LexLoc.Col++;
   }
   return LastChar;
@@ -217,17 +217,17 @@ void MainLoop() {
     if (Tok == tok_eof)
       break;
 
-    printf("%s", GetTokenName(Tok).c_str());
+    fprintf(stderr, "%s", GetTokenName(Tok).c_str());
 
     if (Tok == tok_eol)
-      printf("\nready> ");
+      fprintf(stderr, "\nready> ");
     else
-      printf(" ");
+      fprintf(stderr, " ");
   }
 }
 
 int main() {
-  SourceMgr.reset();
+  DiagSourceMgr.reset();
   MainLoop();
   return 0;
 }

@@ -1,516 +1,403 @@
 ---
-description: "Complete core loop control with while/do/break/continue and finish key integer-operator behavior for more realistic program flow."
+description: "Introduce a practical type system with C interop: typed values, pointers, ABI-correct signatures, and stronger compile-time checks."
 ---
-# 19. Pyxc: Real Loop Control (while, do, break, continue) and Finishing Core Integer Operators
+# 18. Pyxc: Typed Interop: Core Types, Pointers, and ABI Correctness
 
-Chapter 19 gave us a typed language with practical output (`print(...)`) and a solid test workflow.
+Chapter 17 cleaned up operators and short-circuit behavior.  
+In Chapter 18, we take the next major step: a practical type system that can interoperate with C APIs safely.
 
-Chapter 20 moves the language forward in two ways:
+The focus of this chapter is not “advanced type theory.” It is interop-first typing:
 
-- control-flow expressiveness (`while`, `do-while`, `break`, `continue`)
-- operator completeness for common integer work (`~`, `%`, `&`, `^`, `|`)
+- explicit scalar types
+- pointer types and pointer indexing
+- typed function signatures
+- typed local declarations
+- aliasing for C-like names (`int`, `size_t`, etc.)
+- ABI-correct extern behavior for narrow signed/unsigned integers
 
-The key theme is still the same as Chapter 19: make targeted compiler changes, lock behavior with `lit` tests, and keep each feature small and understandable.
+The implementation for this chapter lives in:
+
+- `code/chapter18/pyxc.cpp`
+- `code/chapter18/runtime.c`
 
 
 !!!note
-    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter20](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter20).
+    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter18](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter18).
 
 ## Grammar (EBNF)
 
-Chapter 20 extends statement grammar with `while`, `do ... while`, `break`, and `continue`.
-Operator additions (`~`, `%`, `&`, `^`, `|`) are expression-operator table changes, not new non-terminals.
+Chapter 18 introduces the typed grammar surface: `type` aliases, typed params/returns, typed local declarations, and `ptr[...]`.
 
-Reference: `code/chapter20/pyxc.ebnf`
+Reference: `code/chapter18/pyxc.ebnf`
 
 ```ebnf
-statement      = if_stmt
-               | for_stmt
-               | while_stmt
-               | do_while_stmt
-               | break_stmt
-               | continue_stmt
-               | print_stmt
-               | return_stmt
-               | typed_assign_stmt
-               | assign_stmt
-               | expr_stmt ;
+top_item        = newline | type_alias_decl | function_def | extern_decl | statement ;
+type_alias_decl = "type" , identifier , "=" , type_expr ;
 
-while_stmt     = "while" , expression , ":" , suite ;
-do_while_stmt  = "do" , ":" , suite , "while" , expression ;
-break_stmt     = "break" ;
-continue_stmt  = "continue" ;
+prototype       = identifier , "(" , [ param_list ] , ")" , "->" , type_expr ;
+param_list      = param , { "," , param } ;
+param           = identifier , ":" , type_expr ;
+
+typed_assign_stmt = identifier , ":" , type_expr , [ "=" , expression ] ;
+type_expr       = pointer_type | base_type ;
+pointer_type    = "ptr" , "[" , type_expr , "]" ;
 ```
 
-## What Changed from Chapter 19
+## Why This Chapter Exists
 
-If you compare:
+Until Chapter 17, Pyxc effectively treated most values like doubles. That keeps early chapters simple, but it is not enough if you want real C interop.
 
-- `code/chapter19/pyxc.cpp`
-- `code/chapter20/pyxc.cpp`
+For example, calling a C function that expects `i16`, `u8`, or `ptr[T]` requires:
 
-you will see Chapter 20 adds four layers:
+1. precise type information in the AST
+2. correct LLVM type lowering
+3. correct ABI attributes at call boundaries
 
-1. new lexer tokens/keywords for loop-control statements
-2. new AST statement nodes + parser paths for those statements
-3. loop-context plumbing in codegen so `break` and `continue` always know where to branch
-4. integer operator support in expression codegen for `%`, `&`, `^`, `|`, and unary `~`
+That is exactly what Chapter 18 introduces.
 
-We also expanded the Chapter 20 test suite in `code/chapter20/test/` to cover both positive and negative cases.
+## Language Additions
 
-## Language Surface in This Chapter
+### Core scalar types
 
-New statement forms:
+Builtins in this chapter:
+
+- signed: `i8`, `i16`, `i32`, `i64`
+- unsigned: `u8`, `u16`, `u32`, `u64`
+- floats: `f32`, `f64`
+- `void`
+
+### Pointer type constructor
 
 ```py
-while cond:
-    body
+ptr[i32]
+ptr[void]
+ptr[ptr[i8]]
 ```
 
+### Typed function prototypes
+
 ```py
-do:
-    body
-while cond
+extern def printd(x: f64) -> f64
+
+def add(x: i32, y: i32) -> i32:
+    return x + y
 ```
 
+### Typed local declarations
+
 ```py
-while cond:
-    if should_exit:
-        break
-    continue
+x: i32 = 10
+p: ptr[i32] = addr(x)
 ```
 
-Additional operators supported in this chapter:
+### Type aliases
 
 ```py
-~x
-x % y
-x & y
-x ^ y
-x | y
+type int = i32
+type char = i8
+type size = u64
 ```
 
-## Tests First: Chapter 20 lit Suite
+## Pointer Operations in This Syntax
 
-Before discussing implementation details, it helps to look at the behavior we pinned down in tests.
+Chapter 18 uses Python-flavored pointer forms:
 
-Representative loop/control tests:
+- `addr(x)` for address-of
+- `p[n]` for dereference/indexing
 
-- `code/chapter20/test/while_counting.pyxc`
-- `code/chapter20/test/do_while_runs_once.pyxc`
-- `code/chapter20/test/nested_break_outer_continue.pyxc`
-- `code/chapter20/test/continue_skips_body.pyxc`
-- `code/chapter20/test/break_outside_loop.pyxc`
-- `code/chapter20/test/continue_outside_loop.pyxc`
-- `code/chapter20/test/malformed_do_while.pyxc`
-
-Representative operator tests:
-
-- `code/chapter20/test/operator_modulo_signed.pyxc`
-- `code/chapter20/test/operator_bitwise_basic.pyxc`
-- `code/chapter20/test/operator_bitwise_precedence.pyxc`
-- `code/chapter20/test/operator_unary_bitnot.pyxc`
-- `code/chapter20/test/operator_error_modulo_float.pyxc`
-- `code/chapter20/test/operator_error_bitwise_float.pyxc`
-- `code/chapter20/test/operator_error_unary_bitnot_float.pyxc`
-
-Example positive loop test:
+Example:
 
 ```py
-# RUN: %pyxc -i %s > %t 2>&1
-# RUN: grep -x '0' %t
-# RUN: grep -x '1' %t
-# RUN: grep -x '2' %t
-# RUN: ! grep -q "Error (Line:" %t
-
 def main() -> i32:
-    i: i32 = 0
-    while i < 3:
-        print(i)
-        i = i + 1
-    return 0
-
-main()
+    x: i32 = 10
+    p: ptr[i32] = addr(x)
+    p[0] = p[0] + 1
+    return x
 ```
 
-Example negative loop-control test:
+Type rules enforced:
 
-```py
-# RUN: %pyxc -i %s > %t 2>&1
-# RUN: grep -q "break" %t
-# RUN: grep -q "outside of a loop" %t
-
-def main() -> i32:
-    break
-    return 0
-
-main()
-```
-
-Example positive operator test:
-
-```py
-# RUN: %pyxc -i %s > %t 2>&1
-# RUN: grep -x '2 7 5' %t
-# RUN: ! grep -q "Error (Line:" %t
-
-def main() -> i32:
-    a: i32 = 6
-    b: i32 = 3
-    print(a & b, a | b, a ^ b)
-    return 0
-
-main()
-```
+1. base of `p[n]` must be pointer
+2. index must be integer type
+3. `ptr[void]` cannot be indexed
 
 ## Lexer and Token Updates
 
-Chapter 20 adds dedicated loop-control tokens to the existing `Token` enum:
+Chapter 18 adds key tokens and keywords:
+
+- `type` -> `tok_type`
+- `->` -> `tok_arrow`
+
+Snippet:
 
 ```cpp
-tok_while = -28,
-tok_do = -29,
-tok_break = -30,
-tok_continue = -31,
-```
-
-Then it wires the corresponding keywords into the keyword map:
-
-```cpp
-{"and", tok_and}, {"print", tok_print},   {"while", tok_while},
-{"do", tok_do},   {"break", tok_break},   {"continue", tok_continue},
-{"or", tok_or}
-```
-
-The practical benefit is that parser dispatch stays explicit and straightforward: no special identifier heuristics are needed for these statements.
-
-## AST Additions for New Statements
-
-Chapter 19 already had dedicated statement nodes (`IfStmtAST`, `ForStmtAST`, `PrintStmtAST`, etc.).
-
-Chapter 20 continues that pattern with:
-
-```cpp
-class WhileStmtAST : public StmtAST { ... };
-class DoWhileStmtAST : public StmtAST { ... };
-class BreakStmtAST : public StmtAST { ... };
-class ContinueStmtAST : public StmtAST { ... };
-```
-
-Two subtle details are important:
-
-- `BreakStmtAST` and `ContinueStmtAST` return `true` from `isTerminator()`
-- they are statements, not expressions, so they slot naturally into suites/blocks
-
-That terminator flag keeps later codegen logic from accidentally adding extra fallthrough branches after a `break` or `continue`.
-
-## Parser Additions (Step by Step)
-
-`ParseStmt()` in Chapter 20 now dispatches loop-control forms directly:
-
-```cpp
-case tok_while:
-  return ParseWhileStmt();
-case tok_do:
-  return ParseDoWhileStmt();
-case tok_break:
-  return ParseBreakStmt();
-case tok_continue:
-  return ParseContinueStmt();
-```
-
-### Parsing while
-
-`while` follows the same design style as `if` and `for`:
-
-```cpp
-// while_stmt = "while" , expression , ":" , suite ;
-```
-
-The parser:
-
-1. consumes `while`
-2. parses the condition expression
-3. requires `:`
-4. parses a suite (inline or block)
-
-No surprises, and that consistency helps readability.
-
-### Parsing do-while
-
-The Chapter 20 grammar shape is:
-
-```cpp
-// do_while_stmt = "do" , ":" , suite , "while" , expression ;
-```
-
-The ordering matters here and is intentional:
-
-1. parse `do:`
-2. parse body suite first
-3. require trailing `while`
-4. parse condition expression
-
-That parse order directly matches post-test loop semantics.
-
-### Parsing break / continue
-
-Parse-time behavior is intentionally simple:
-
-```cpp
-getNextToken(); // eat break or continue
-return std::make_unique<BreakStmtAST>(Loc);
-```
-
-Syntactically this accepts the statement where it appears. Semantic validation (inside loop or not) is delayed to codegen, where loop nesting context is available.
-
-## Semantic Backbone: Loop Context Stack
-
-`break` and `continue` need target blocks, and those targets depend on which loop we are currently inside.
-
-Chapter 20 introduces:
-
-```cpp
-struct LoopContext {
-  BasicBlock *BreakTarget = nullptr;
-  BasicBlock *ContinueTarget = nullptr;
-};
-static std::vector<LoopContext> LoopContextStack;
-```
-
-Then it uses a small RAII helper:
-
-```cpp
-class LoopContextGuard {
-public:
-  LoopContextGuard(BasicBlock *BreakTarget, BasicBlock *ContinueTarget) {
-    LoopContextStack.push_back({BreakTarget, ContinueTarget});
-  }
-  ~LoopContextGuard() {
-    LoopContextStack.pop_back();
-  }
+enum Token {
+  tok_type = -25,
+  tok_arrow = -26,
+  // ...
 };
 ```
 
-This gives us clean behavior for nested loops:
+The keyword map also includes `type`, and identifier lexing was updated to allow `_`, so aliases like `size_t` parse correctly.
 
-- inner loop pushes its context
-- `break`/`continue` bind to the nearest loop (top of stack)
-- context is restored automatically when leaving the loop body
+## Type Representation in the Frontend
 
-## LLVM Lowering for Loop Control
-
-### break and continue
-
-Codegen first verifies loop context exists:
+A recursive type-expression model is introduced:
 
 ```cpp
-if (LoopContextStack.empty())
-  return LogError<Value *>("`break` used outside of a loop");
-Builder->CreateBr(LoopContextStack.back().BreakTarget);
+enum class TypeExprKind { Builtin, AliasRef, Pointer };
+
+struct TypeExpr {
+  TypeExprKind Kind;
+  std::string Name;
+  std::shared_ptr<TypeExpr> Elem;
+};
 ```
 
-`continue` is the same shape, branching to `ContinueTarget`.
+This is important because parser-level type syntax (`ptr[ptr[i32]]`, aliases, etc.) needs structured representation before LLVM lowering.
 
-This gives clear diagnostics for invalid usage and clean branches for valid usage.
+## Parser Changes
 
-### while lowering
+### Parsing typed prototypes
 
-The block layout is:
+`ParsePrototype()` now expects typed params and return types:
 
-- `while.cond`
-- `while.body`
-- `while.exit`
-
-Core structure:
-
-```cpp
-Builder->CreateBr(CondBB);
-Builder->SetInsertPoint(CondBB);
-CondV = ToBoolI1(Cond->codegen(), "whilecond");
-Builder->CreateCondBr(CondV, BodyBB, ExitBB);
-
-LoopContextGuard Guard(ExitBB, CondBB);
-Body->codegen();
-if (!Builder->GetInsertBlock()->getTerminator())
-  Builder->CreateBr(CondBB);
+```text
+name '(' param ':' type_expr {',' ...} ')' '->' type_expr
 ```
 
-A useful consequence is that `continue` inside `while` naturally returns to condition evaluation.
+### Parsing top-level aliases
 
-### do-while lowering
+`ParseTypeAliasDecl()` handles:
 
-The block layout is:
-
-- `do.body`
-- `do.cond`
-- `do.exit`
-
-Core structure:
-
-```cpp
-Builder->CreateBr(BodyBB); // enter body first
-
-LoopContextGuard Guard(ExitBB, CondBB);
-Body->codegen();
-if (!Builder->GetInsertBlock()->getTerminator())
-  Builder->CreateBr(CondBB);
-
-CondV = ToBoolI1(Cond->codegen(), "docond");
-Builder->CreateCondBr(CondV, BodyBB, ExitBB);
+```py
+type Name = TypeExpr
 ```
 
-The initial unconditional branch into `BodyBB` is the defining property: the loop body executes at least once.
+### Parsing typed declarations and assignments
 
-### Existing for behavior, now with continue correctness
+Identifier-leading statements are disambiguated into:
 
-`for range(...)` already existed, but Chapter 20 adapts its loop context so `continue` targets the step block:
+- typed declaration: `x: T` or `x: T = expr`
+- assignment: `lhs = rhs`
+- ordinary expression statement
+
+### Parsing pointer/address constructs
+
+- `addr(expr)` becomes `AddrExprAST`
+- `p[n]` becomes `IndexExprAST`
+
+## AST Additions
+
+Key AST nodes added in this chapter:
+
+- `TypedAssignStmtAST`
+- `AssignStmtAST` (explicit statement form)
+- `AddrExprAST`
+- `IndexExprAST`
+- typed `PrototypeAST` (arg types + return type)
+
+`ExprAST` also gains hooks for lvalue/address/type hints used by assignment and pointer lowering:
 
 ```cpp
-LoopContextGuard Guard(EndLoopBB, StepBB);
+virtual Value *codegenAddress() { return nullptr; }
+virtual Type *getValueTypeHint() const { return nullptr; }
+virtual Type *getPointeeTypeHint() const { return nullptr; }
 ```
 
-So `continue` in a `for` body does what users expect:
+## Type Resolution and Alias Policy
 
-1. jump to step
-2. update induction variable
-3. re-check loop condition
+Type lowering pipeline:
 
-## Operator Coverage: %, &, ^, |, ~
+1. parse into `TypeExpr`
+2. resolve alias chains
+3. reject alias cycles
+4. map to LLVM type
 
-This chapter line also closes a practical operator gap.
+Chapter 18 also introduces default C-like aliases initialized from target data layout:
 
-### Precedence table extension
+- `int`, `char`, `float`, `double`
+- `long`, `size_t` derived from pointer width
 
-`BinopPrecedence` now includes:
+This keeps interop target-aware instead of hardcoding one platform.
 
-```cpp
-{'|', 7}, {'^', 8}, {'&', 9}, ... {'%', 40}
-```
+## Typed Codegen: Main Ideas
 
-This preserves sensible C-style relative precedence among bitwise operators and keeps `%` at multiplicative precedence.
+### Typed variable bindings
 
-### Unary ~
+Chapter 17 tracked mostly allocas. Chapter 18 stores richer per-variable metadata (alloca + type hints) so pointer operations and print/type dispatch can work correctly.
 
-Unary bit-not is now implemented for integers:
+### Conversion helper
 
-```cpp
-case '~':
-  if (!OperandV->getType()->isIntegerTy())
-    return LogError<Value *>("Unary '~' requires integer operand");
-  return Builder->CreateNot(OperandV, "bnottmp");
-```
-
-If the operand is floating-point, the user gets a direct diagnostic.
-
-### Binary %, &, ^, |
-
-These are intentionally integer-only in this chapter.
-
-First, codegen detects operators that require integer operands:
+A central cast helper is used across assignment/calls/returns:
 
 ```cpp
-bool RequiresIntOnly = (Op == '%' || Op == '&' || Op == '^' || Op == '|');
-```
-
-Then it enforces type rules with explicit diagnostics:
-
-```cpp
-if (!(L->getType()->isIntegerTy() && R->getType()->isIntegerTy())) {
-  if (Op == '%')
-    return LogError<Value *>("Modulo operator '%' requires integer operands");
-  return LogError<Value *>("Bitwise operators require integer operands");
+static Value *CastValueTo(Value *V, Type *DstTy) {
+  // fp<->int, int<->int, ptr<->ptr, ptr<->int, etc.
 }
 ```
 
-After harmonizing integer widths, lowering is direct:
+### Boolean conversion helper
+
+Conditions and logical ops now route through a generic truthiness converter:
 
 ```cpp
-case '%': return Builder->CreateSRem(L, R, "modtmp");
-case '&': return Builder->CreateAnd(L, R, "andtmp");
-case '^': return Builder->CreateXor(L, R, "xortmp");
-case '|': return Builder->CreateOr(L, R, "ortmp");
+static Value *ToBoolI1(Value *V, const Twine &Name)
 ```
 
-## Validation Commands
+This supports int/float/pointer conditions consistently.
 
-Run the Chapter 20 suite:
+### Return correctness
+
+Chapter 18 enforces:
+
+- `return` with no expression only for `-> void`
+- returning a value from `void` function is an error
+- missing value in non-void return is an error
+
+## ABI Correctness for Narrow Integer Externs
+
+A key fix in this chapter is preserving signedness at ABI boundaries for narrow integers.
+
+Without this, extern calls involving `i8/i16` can behave like zero-extended values.
+
+Chapter 18 applies extension attributes in prototype codegen:
+
+- `i8/i16` -> `signext`
+- `u8/u16` -> `zeroext`
+
+Conceptual snippet:
+
+```cpp
+if (narrowSigned)
+  F->addParamAttr(i, Attribute::SExt);
+if (narrowUnsigned)
+  F->addParamAttr(i, Attribute::ZExt);
+```
+
+This applies to params and return types where appropriate.
+
+## Runtime Helper Surface
+
+`code/chapter18/runtime.c` now exports typed print/char helpers for scalar widths.
+
+Examples:
+
+```c
+DLLEXPORT int8_t printi8(int8_t X) { fprintf(stderr, "%d", (int)X); return 0; }
+DLLEXPORT uint64_t printu64(uint64_t X) { fprintf(stderr, "%llu", (unsigned long long)X); return 0; }
+DLLEXPORT double printfloat64(double X) { fprintf(stderr, "%f", X); return 0; }
+DLLEXPORT double printchard(double X) { fputc((unsigned char)X, stderr); return 0; }
+```
+
+This runtime surface is used by language features and tests in later chapters.
+
+## Diagnostics Behavior
+
+To reduce cascading noise in file mode, Chapter 18 adds a stop-after-first-semantic-error gate:
+
+- `HadError` is set in `LogError(...)`
+- file processing loops stop once it is set
+
+This keeps negative test output focused on primary failures.
+
+## Tests for This Chapter
+
+Chapter 18 test coverage lives under `code/chapter18/test/`.
+
+Core areas:
+
+- typed aliases and target aliasing (`size_t`)
+- address-of and pointer indexing
+- invalid pointer index type
+- `ptr[void]` indexing rejection
+- runtime print helper matrix (`runtime_print_all_types.pyxc`)
+- narrow signed extern behavior (`i8/i16` negative-value paths)
+
+Representative snippets from tests:
+
+```py
+# pointer invalid index type
+n: f64 = 2.5
+x = p[n]   # error
+```
+
+```py
+# narrow signed ABI path
+x: i8 = -5
+y: i16 = -300
+print(x, y)
+```
+
+## Summary
+
+Chapter 18 turns Pyxc from a mostly-untyped toy frontend into an interop-capable typed frontend:
+
+- explicit scalar/pointer typing
+- typed signatures and declarations
+- alias resolution with target awareness
+- pointer semantics with type checks
+- ABI-correct narrow integer extern behavior
+
+With this foundation in place, Chapter 19 can add language-level printing ergonomics (`print(...)`) without re-solving basic type and ABI correctness.
+
+## Build and Test
+
+Now compile Chapter 18 and run the test suite.
 
 ```bash
-lit -sv code/chapter20/test
+cd code/chapter18 && ./build.sh
+llvm-lit test -sv
 ```
 
-Optional: verify Chapter 19 behavior in the same environment:
+You can also run individual test programs directly:
 
 ```bash
-lit -sv -j 1 code/chapter19/test
+./pyxc -i test/type_alias_core.pyxc
+./pyxc -i test/pointer_addr_basic.pyxc
+./pyxc -i test/runtime_print_all_types.pyxc
 ```
 
-(`-j 1` can be useful if your local setup shows parallel-test flakiness.)
+### Please Write Your Own Tests
 
-## Closing Thoughts
+The best way to check your understanding is to add tests yourself.
 
-Chapter 20 is a good example of incremental compiler growth.
+Try creating a few new `.pyxc` files under `code/chapter18/test/` that cover:
 
-We did not redesign the compiler. We extended the existing architecture in place:
+- alias chains and alias-cycle errors
+- pointer indexing with integer and non-integer indices
+- `void` return correctness
+- extern calls with narrow signed/unsigned integer parameters
 
-- lexer: a few new tokens
-- parser: a few new statement branches
-- AST: a few new statement nodes
-- codegen: explicit loop context and branch targets
-- tests: concrete behavior first, including failure paths
-
-By the end of the chapter, control flow is much closer to what users expect in day-to-day code, and integer expression support is meaningfully more complete.
-
-## Build and Test (Chapter 20)
-
-From the repository root:
-
-```bash
-cd code/chapter20 && ./build.sh
-```
-
-Run the chapter test suite:
-
-```bash
-lit -sv test
-```
-
-If you also want to sanity-check the previous chapter in the same environment:
-
-```bash
-cd ../chapter18 && ./build.sh
-lit -sv -j 1 test
-```
-
+If your mental model matches the compiler behavior, your tests should pass on first try. If not, those mismatches are exactly what this chapter is meant to surface.
 
 ## Compile / Run / Test (Hands-on)
 
 Build this chapter:
 
 ```bash
-cd code/chapter20 && ./build.sh
+cd code/chapter18 && ./build.sh
 ```
 
 Run one sample program:
 
 ```bash
-code/chapter20/pyxc -i code/chapter20/test/break_outside_loop.pyxc
+code/chapter18/pyxc -i code/chapter18/test/c_alias_size_t_target.pyxc
 ```
 
 Run the chapter tests (when a test suite exists):
 
 ```bash
-cd code/chapter20/test
+cd code/chapter18/test
 lit -sv .
 ```
 
-Try editing a test or two and see how quickly you can predict the outcome.
+Have some fun stress-testing the suite with small variations.
 
 When you're done, clean artifacts:
 
 ```bash
-cd code/chapter20 && ./build.sh
+cd code/chapter18 && ./build.sh
 ```
 
 

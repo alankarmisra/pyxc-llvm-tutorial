@@ -1,85 +1,90 @@
-# Chapter 24 Design Requirements
+# Chapter 22 Design Requirements
 
 ## Theme
-C-style file I/O baseline using libc stdio file APIs.
+Dynamic heap allocation with explicit `malloc`/`free` language builtins.
 
 ## Goal
-Add practical file read/write support to Pyxc so programs can open files, write text/binary data, read text/binary data, and close handles explicitly.
+Add practical dynamic memory support to Pyxc using typed allocation and explicit deallocation, while preserving Chapter 21 structs/arrays behavior.
 
 ## Scope
 
 ### In Scope
-- Auto-declared libc file APIs:
-  - `fopen(path, mode) -> ptr[void]`
-  - `fclose(file) -> i32`
-  - `fgets(buf, n, file) -> ptr[void]`
-  - `fputs(str, file) -> i32`
-  - `fread(buf, size, count, file) -> i64`
-  - `fwrite(buf, size, count, file) -> i64`
-- Opaque file handle representation via pointer type (`ptr[void]`-compatible)
-- Type validation for known file APIs at call sites
-- Full support for text and block I/O patterns using existing pointers/strings
+- Typed allocation expression:
+  - `malloc[T](count)`
+- Deallocation statement:
+  - `free(ptr_expr)`
+- Works with scalar, struct, and array element types
+- Interacts with existing indexing/member access:
+  - `p[0].x = ...`
 
 ### Out of Scope
-- Structured exceptions or automatic resource cleanup
-- High-level file abstractions (streams/classes)
-- Buffered-state introspection APIs (`feof`, `ferror`, etc.)
-- Filesystem metadata APIs
+- Garbage collection
+- Smart pointers / ownership model
+- `realloc`/`calloc`
+- Lifetime analysis / leak diagnostics
 
 ## Syntax Requirements
-- No new statement syntax required.
-- File operations use normal function-call syntax.
 
-Example:
+### Malloc expression
 ```py
-f: ptr[void] = fopen("out.txt", "w")
-fputs("hello\n", f)
-fclose(f)
+p: ptr[i32] = malloc[i32](4)
+```
+
+### Free statement
+```py
+free(p)
 ```
 
 ## Lexer Requirements
-- No new tokens required for file I/O APIs.
+- Add keywords/tokens:
+  - `tok_malloc`
+  - `tok_free`
 
 ## Parser Requirements
-- Reuse existing call-expression parser.
-- No new grammar productions required beyond chapter23 baseline.
+- Add malloc parser:
+  - `ParseMallocExpr()`
+- Add free statement parser:
+  - `ParseFreeStmt()`
+- Extend `ParsePrimary()` to accept `malloc` expression form.
+- Extend `ParseStmt()` dispatch with `free` statement.
 
 ## AST Requirements
-- No new AST node types required.
+- Add nodes:
+  - `MallocExprAST(ElemType, CountExpr)`
+  - `FreeStmtAST(PtrExpr)`
 
 ## Semantic Requirements
-- Calls to known file APIs are auto-resolved even without user `extern` declarations.
-- Function-specific argument type checks:
-  - `fopen`: `(pointer, pointer)`
-  - `fclose`: `(pointer)`
-  - `fgets`: `(pointer, integer, pointer)`
-  - `fputs`: `(pointer, pointer)`
-  - `fread`/`fwrite`: `(pointer, integer, integer, pointer)`
-- Standard arity checks continue to apply.
+- `malloc[T](count)`:
+  - `T` must resolve to a non-void type.
+  - `count` must be integer-like.
+  - expression result is pointer-typed and carries pointee type hint `T`.
+- `free(ptr_expr)`:
+  - operand must be pointer-typed.
 
 ## LLVM Lowering Requirements
-- Declare file APIs as external functions with fixed signatures.
-- Lower calls through existing `CallExprAST` path after validation.
+- `malloc` lowers to runtime/extern `malloc` call with byte count:
+  - `bytes = count * sizeof(T)`
+- `free` lowers to runtime/extern `free` call.
+- Use module data layout for `sizeof(T)`.
 
 ## Diagnostics Requirements
-- Incorrect arity
-- Non-pointer argument passed where pointer required
-- Non-integer argument passed where integer required
+- Non-integer malloc count
+- Unknown/void malloc element type
+- `free` called with non-pointer expression
+- Syntax errors in `malloc[T](count)` and `free(expr)` forms
 
 ## Tests
 
 ### Positive
-- fopen + fputs + fclose text write
-- fopen + fgets + fclose text read
-- fwrite + fread roundtrip with explicit byte count
+- malloc/free for scalar pointer + indexed writes/reads
+- malloc/free for struct pointer + field writes/reads
+- malloc/free for array element types where indexing/member chains work
 
 ### Negative
-- `fopen` with non-pointer mode/path
-- `fgets` with non-integer length
-- `fread`/`fwrite` with wrong argument types
-- `fclose` with non-pointer argument
+- malloc with float count
+- free with non-pointer argument
 
 ## Done Criteria
-- Chapter 24 lit suite includes file I/O coverage and passes.
-- Chapter 23 behavior remains green under Chapter 24 compiler.
-- `chapter-24.md` documents chapter diff and implementation in tutorial style.
+- Chapter 22 lit suite includes malloc/free coverage and passes
+- Chapter 21 behavior remains green under Chapter 22 compiler
+- `chapter-22.md` documents chapter diff and implementation

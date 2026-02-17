@@ -1,90 +1,125 @@
-# Chapter 22 Design Requirements
+# Chapter 20 Design Requirements
 
 ## Theme
-Dynamic heap allocation with explicit `malloc`/`free` language builtins.
+Structured data with named fields.
 
 ## Goal
-Add practical dynamic memory support to Pyxc using typed allocation and explicit deallocation, while preserving Chapter 21 structs/arrays behavior.
+Add first-class `struct` support to Pyxc with typed field access and assignment while preserving all Chapter 19 behavior.
 
 ## Scope
 
 ### In Scope
-- Typed allocation expression:
-  - `malloc[T](count)`
-- Deallocation statement:
-  - `free(ptr_expr)`
-- Works with scalar, struct, and array element types
-- Interacts with existing indexing/member access:
-  - `p[0].x = ...`
+- Top-level struct declarations:
+  - `struct Name:` followed by indented typed field declarations
+- Struct types usable in typed locals and function signatures
+- Field read access: `obj.field`
+- Field assignment: `obj.field = expr`
+- Nested field access (e.g. `outer.inner.x`)
+- Struct type aliases via existing `type Alias = StructName`
 
 ### Out of Scope
-- Garbage collection
-- Smart pointers / ownership model
-- `realloc`/`calloc`
-- Lifetime analysis / leak diagnostics
+- Struct literals/constructors
+- Methods/member functions
+- Inheritance
+- Packed/bitfield layout controls
+- Generic structs
 
 ## Syntax Requirements
 
-### Malloc expression
+### Struct declaration
 ```py
-p: ptr[i32] = malloc[i32](4)
+struct Point:
+    x: i32
+    y: i32
 ```
 
-### Free statement
+### Local declaration and field assignment
 ```py
-free(p)
+p: Point
+p.x = 10
+p.y = 20
+```
+
+### Field read
+```py
+print(p.x, p.y)
 ```
 
 ## Lexer Requirements
-- Add keywords/tokens:
-  - `tok_malloc`
-  - `tok_free`
+- Add keyword token:
+  - `tok_struct`
+- Ensure `.` can be tokenized for member access (and not consumed as a malformed number).
 
 ## Parser Requirements
-- Add malloc parser:
-  - `ParseMallocExpr()`
-- Add free statement parser:
-  - `ParseFreeStmt()`
-- Extend `ParsePrimary()` to accept `malloc` expression form.
-- Extend `ParseStmt()` dispatch with `free` statement.
+- Add top-level parser:
+  - `ParseStructDecl()`
+- Extend top-level dispatch to accept `struct` declarations.
+- Extend postfix parsing to handle member access:
+  - `postfix_expr '.' identifier`
+- Preserve existing call/index postfix chaining behavior.
 
 ## AST Requirements
-- Add nodes:
-  - `MallocExprAST(ElemType, CountExpr)`
-  - `FreeStmtAST(PtrExpr)`
+- Add member access expression node:
+  - `MemberExprAST(BaseExpr, FieldName)`
+- Member expression must support:
+  - value codegen (field load)
+  - address codegen (for assignment lvalue path)
+  - type hints for downstream operations (`print`, casts, etc.)
 
 ## Semantic Requirements
-- `malloc[T](count)`:
-  - `T` must resolve to a non-void type.
-  - `count` must be integer-like.
-  - expression result is pointer-typed and carries pointee type hint `T`.
-- `free(ptr_expr)`:
-  - operand must be pointer-typed.
+- Maintain a struct declaration table with:
+  - declaration order
+  - field names
+  - field type expressions
+  - per-struct LLVM type cache
+- Reject duplicate struct names.
+- Reject duplicate field names inside a struct.
+- Reject unknown field names in member access.
+- Reject member access on non-struct types.
+- Keep current assignment/lvalue rules: field assignment requires addressable base.
 
 ## LLVM Lowering Requirements
-- `malloc` lowers to runtime/extern `malloc` call with byte count:
-  - `bytes = count * sizeof(T)`
-- `free` lowers to runtime/extern `free` call.
-- Use module data layout for `sizeof(T)`.
+- Lower each struct declaration to an LLVM `StructType`.
+- Resolve field types in declaration order.
+- Lower `obj.field` address as struct GEP to field index.
+- Lower field read as load from computed field address.
+- Lower field assignment through existing assignment codepath (`codegenAddress` + store).
+
+## Interaction Requirements
+- Existing Chapter 19 loop/control/operator behavior remains unchanged.
+- Existing type aliases continue to work and may alias structs.
+- Existing pointer/indexing behavior remains unchanged.
 
 ## Diagnostics Requirements
-- Non-integer malloc count
-- Unknown/void malloc element type
-- `free` called with non-pointer expression
-- Syntax errors in `malloc[T](count)` and `free(expr)` forms
+- Duplicate struct declaration
+- Duplicate field in struct
+- Unknown struct type in typed declaration/signature
+- Unknown field name on struct
+- Member access on non-struct value
+- Missing/invalid struct declaration syntax (`:`, indent, field type)
 
 ## Tests
 
 ### Positive
-- malloc/free for scalar pointer + indexed writes/reads
-- malloc/free for struct pointer + field writes/reads
-- malloc/free for array element types where indexing/member chains work
+- Basic struct with two scalar fields
+- Nested structs and chained field access
+- Struct alias usage (`type P = Point`)
+- Field assignment + readback in loops/conditionals
 
 ### Negative
-- malloc with float count
-- free with non-pointer argument
+- Unknown field access
+- Member access on non-struct value
+- Duplicate field in struct declaration
+- Duplicate struct declaration name
 
 ## Done Criteria
-- Chapter 22 lit suite includes malloc/free coverage and passes
-- Chapter 21 behavior remains green under Chapter 22 compiler
-- `chapter-22.md` documents chapter diff and implementation
+- Chapter 20 lit suite includes struct coverage and passes
+- Chapter 19 behavior remains green under Chapter 20 compiler
+- `chapter-20.md` documents the feature and code diffs from Chapter 19
+
+## Implementation Sequencing Notes
+1. Copy Chapter 19 baseline into `code/chapter20/`
+2. Add struct token + declaration parser
+3. Add member access AST + codegen
+4. Add struct type resolution/cache
+5. Add tests and harden diagnostics

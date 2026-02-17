@@ -1,325 +1,516 @@
 ---
-description: "Introduce fixed-size arrays with typed indexing and layout-aware behavior for predictable, compile-time-sized collections."
+description: "Complete core loop control with while/do/break/continue and finish key integer-operator behavior for more realistic program flow."
 ---
-# 21. Pyxc: Fixed-Size Arrays
+# 20. Pyxc: Real Loop Control (while, do, break, continue) and Finishing Core Integer Operators
 
-Chapter 21 gave us named aggregate data with structs.
+Chapter 19 gave us a typed language with practical output (`print(...)`) and a solid test workflow.
 
-That solved *shape*, but not *collections*. We still could not represent “N elements of T” as one typed value.
+Chapter 20 moves the language forward in two ways:
 
-Chapter 22 adds fixed-size arrays so Pyxc can model contiguous collections with compile-time length.
+- control-flow expressiveness (`while`, `do-while`, `break`, `continue`)
+- operator completeness for common integer work (`~`, `%`, `&`, `^`, `|`)
 
-This is a major usability milestone because many real programs need both:
-
-- records (`struct`)
-- collections (`array`)
-
-and the ability to combine them.
+The key theme is still the same as Chapter 19: make targeted compiler changes, lock behavior with `lit` tests, and keep each feature small and understandable.
 
 
 !!!note
-    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter22](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter22).
+    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter20](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter20).
 
-## Why this chapter matters
+## Grammar (EBNF)
 
-Before Chapter 22, we could index pointers, but we had no first-class array type.
+Chapter 20 extends statement grammar with `while`, `do ... while`, `break`, and `continue`.
+Operator additions (`~`, `%`, `&`, `^`, `|`) are expression-operator table changes, not new non-terminals.
 
-That made local contiguous storage awkward. With Chapter 22 we can write:
-
-```py
-a: array[i32, 4]
-a[0] = 10
-a[1] = 20
-print(a[0], a[1])
-```
-
-Now the language can model stack-allocated fixed buffers, array fields inside structs, and arrays of structs.
-
-## Scope and constraints
-
-Chapter 22 supports:
-
-- array type syntax: `array[T, N]`
-- compile-time positive integer size `N`
-- array indexing for load/store
-- arrays mixed with structs (both directions)
-
-Chapter 22 does not support yet:
-
-- dynamic arrays
-- array literals
-- direct initializer expressions for struct/array locals
-
-The static-only scope keeps codegen and diagnostics clean.
-
-## What changed from Chapter 21
-
-Primary diff:
-
-- `code/chapter21/pyxc.cpp` -> `code/chapter22/pyxc.cpp`
-- `code/chapter21/pyxc.ebnf` -> `code/chapter22/pyxc.ebnf`
-
-Implementation buckets:
-
-1. type-expression model extended with `Array`
-2. parser support for `array[ElemType, Size]`
-3. LLVM type resolution for arrays
-4. indexing codegen support for array bases
-5. type-hint propagation through arrays
-6. array-focused tests and diagnostics
-
-## Grammar updates
-
-`code/chapter22/pyxc.ebnf` extends `type_expr`:
+Reference: `code/chapter20/pyxc.ebnf`
 
 ```ebnf
-type_expr       = pointer_type
-                | array_type
-                | base_type ;
+statement      = if_stmt
+               | for_stmt
+               | while_stmt
+               | do_while_stmt
+               | break_stmt
+               | continue_stmt
+               | print_stmt
+               | return_stmt
+               | typed_assign_stmt
+               | assign_stmt
+               | expr_stmt ;
 
-array_type      = "array" , "[" , type_expr , "," , array_size , "]" ;
-array_size      = number ;
+while_stmt     = "while" , expression , ":" , suite ;
+do_while_stmt  = "do" , ":" , suite , "while" , expression ;
+break_stmt     = "break" ;
+continue_stmt  = "continue" ;
 ```
 
-No expression-level syntax was needed for indexing because `[...]` already existed in postfix grammar from earlier chapters.
+## What Changed from Chapter 19
 
-## Type model changes (TypeExpr)
+If you compare:
 
-Chapter 22 extends type kinds:
+- `code/chapter19/pyxc.cpp`
+- `code/chapter20/pyxc.cpp`
 
-```cpp
-enum class TypeExprKind { Builtin, AliasRef, Pointer, Array };
+you will see Chapter 20 adds four layers:
+
+1. new lexer tokens/keywords for loop-control statements
+2. new AST statement nodes + parser paths for those statements
+3. loop-context plumbing in codegen so `break` and `continue` always know where to branch
+4. integer operator support in expression codegen for `%`, `&`, `^`, `|`, and unary `~`
+
+We also expanded the Chapter 20 test suite in `code/chapter20/test/` to cover both positive and negative cases.
+
+## Language Surface in This Chapter
+
+New statement forms:
+
+```py
+while cond:
+    body
 ```
 
-and adds size storage on the node:
-
-```cpp
-uint64_t ArraySize = 0;
+```py
+do:
+    body
+while cond
 ```
 
-plus a constructor helper:
-
-```cpp
-static std::shared_ptr<TypeExpr> Array(std::shared_ptr<TypeExpr> Elem,
-                                       uint64_t Size)
+```py
+while cond:
+    if should_exit:
+        break
+    continue
 ```
 
-This keeps arrays in the same recursive type-expression system as pointers and aliases.
+Additional operators supported in this chapter:
 
-## Parsing array[...]
-
-`ParseTypeExpr()` gets an `array` branch that enforces exact shape and size constraints:
-
-- must see `array`
-- must see `[`
-- parse element type recursively
-- must see `,`
-- size must be positive integer literal
-- must see closing `]`
-
-Core size validation:
-
-```cpp
-if (CurTok != tok_number || !NumIsIntegerLiteral || NumIntVal <= 0)
-  return LogError<TypeExprPtr>(
-      "Expected positive integer literal array size");
+```py
+~x
+x % y
+x & y
+x ^ y
+x | y
 ```
 
-The “literal only” rule is deliberate. It keeps array layout known at compile time.
+## Tests First: Chapter 20 lit Suite
 
-## LLVM lowering for array types
+Before discussing implementation details, it helps to look at the behavior we pinned down in tests.
 
-`ResolveTypeExpr(...)` adds array lowering:
+Representative loop/control tests:
+
+- `code/chapter20/test/while_counting.pyxc`
+- `code/chapter20/test/do_while_runs_once.pyxc`
+- `code/chapter20/test/nested_break_outer_continue.pyxc`
+- `code/chapter20/test/continue_skips_body.pyxc`
+- `code/chapter20/test/break_outside_loop.pyxc`
+- `code/chapter20/test/continue_outside_loop.pyxc`
+- `code/chapter20/test/malformed_do_while.pyxc`
+
+Representative operator tests:
+
+- `code/chapter20/test/operator_modulo_signed.pyxc`
+- `code/chapter20/test/operator_bitwise_basic.pyxc`
+- `code/chapter20/test/operator_bitwise_precedence.pyxc`
+- `code/chapter20/test/operator_unary_bitnot.pyxc`
+- `code/chapter20/test/operator_error_modulo_float.pyxc`
+- `code/chapter20/test/operator_error_bitwise_float.pyxc`
+- `code/chapter20/test/operator_error_unary_bitnot_float.pyxc`
+
+Example positive loop test:
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '0' %t
+# RUN: grep -x '1' %t
+# RUN: grep -x '2' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    i: i32 = 0
+    while i < 3:
+        print(i)
+        i = i + 1
+    return 0
+
+main()
+```
+
+Example negative loop-control test:
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "break" %t
+# RUN: grep -q "outside of a loop" %t
+
+def main() -> i32:
+    break
+    return 0
+
+main()
+```
+
+Example positive operator test:
+
+```py
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '2 7 5' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    a: i32 = 6
+    b: i32 = 3
+    print(a & b, a | b, a ^ b)
+    return 0
+
+main()
+```
+
+## Lexer and Token Updates
+
+Chapter 20 adds dedicated loop-control tokens to the existing `Token` enum:
 
 ```cpp
-if (Ty->Kind == TypeExprKind::Array) {
-  Type *ElemTy = ResolveTypeExpr(Ty->Elem, Visited);
-  ...
-  return ArrayType::get(ElemTy, Ty->ArraySize);
+tok_while = -28,
+tok_do = -29,
+tok_break = -30,
+tok_continue = -31,
+```
+
+Then it wires the corresponding keywords into the keyword map:
+
+```cpp
+{"and", tok_and}, {"print", tok_print},   {"while", tok_while},
+{"do", tok_do},   {"break", tok_break},   {"continue", tok_continue},
+{"or", tok_or}
+```
+
+The practical benefit is that parser dispatch stays explicit and straightforward: no special identifier heuristics are needed for these statements.
+
+## AST Additions for New Statements
+
+Chapter 19 already had dedicated statement nodes (`IfStmtAST`, `ForStmtAST`, `PrintStmtAST`, etc.).
+
+Chapter 20 continues that pattern with:
+
+```cpp
+class WhileStmtAST : public StmtAST { ... };
+class DoWhileStmtAST : public StmtAST { ... };
+class BreakStmtAST : public StmtAST { ... };
+class ContinueStmtAST : public StmtAST { ... };
+```
+
+Two subtle details are important:
+
+- `BreakStmtAST` and `ContinueStmtAST` return `true` from `isTerminator()`
+- they are statements, not expressions, so they slot naturally into suites/blocks
+
+That terminator flag keeps later codegen logic from accidentally adding extra fallthrough branches after a `break` or `continue`.
+
+## Parser Additions (Step by Step)
+
+`ParseStmt()` in Chapter 20 now dispatches loop-control forms directly:
+
+```cpp
+case tok_while:
+  return ParseWhileStmt();
+case tok_do:
+  return ParseDoWhileStmt();
+case tok_break:
+  return ParseBreakStmt();
+case tok_continue:
+  return ParseContinueStmt();
+```
+
+### Parsing while
+
+`while` follows the same design style as `if` and `for`:
+
+```cpp
+// while_stmt = "while" , expression , ":" , suite ;
+```
+
+The parser:
+
+1. consumes `while`
+2. parses the condition expression
+3. requires `:`
+4. parses a suite (inline or block)
+
+No surprises, and that consistency helps readability.
+
+### Parsing do-while
+
+The Chapter 20 grammar shape is:
+
+```cpp
+// do_while_stmt = "do" , ":" , suite , "while" , expression ;
+```
+
+The ordering matters here and is intentional:
+
+1. parse `do:`
+2. parse body suite first
+3. require trailing `while`
+4. parse condition expression
+
+That parse order directly matches post-test loop semantics.
+
+### Parsing break / continue
+
+Parse-time behavior is intentionally simple:
+
+```cpp
+getNextToken(); // eat break or continue
+return std::make_unique<BreakStmtAST>(Loc);
+```
+
+Syntactically this accepts the statement where it appears. Semantic validation (inside loop or not) is delayed to codegen, where loop nesting context is available.
+
+## Semantic Backbone: Loop Context Stack
+
+`break` and `continue` need target blocks, and those targets depend on which loop we are currently inside.
+
+Chapter 20 introduces:
+
+```cpp
+struct LoopContext {
+  BasicBlock *BreakTarget = nullptr;
+  BasicBlock *ContinueTarget = nullptr;
+};
+static std::vector<LoopContext> LoopContextStack;
+```
+
+Then it uses a small RAII helper:
+
+```cpp
+class LoopContextGuard {
+public:
+  LoopContextGuard(BasicBlock *BreakTarget, BasicBlock *ContinueTarget) {
+    LoopContextStack.push_back({BreakTarget, ContinueTarget});
+  }
+  ~LoopContextGuard() {
+    LoopContextStack.pop_back();
+  }
+};
+```
+
+This gives us clean behavior for nested loops:
+
+- inner loop pushes its context
+- `break`/`continue` bind to the nearest loop (top of stack)
+- context is restored automatically when leaving the loop body
+
+## LLVM Lowering for Loop Control
+
+### break and continue
+
+Codegen first verifies loop context exists:
+
+```cpp
+if (LoopContextStack.empty())
+  return LogError<Value *>("`break` used outside of a loop");
+Builder->CreateBr(LoopContextStack.back().BreakTarget);
+```
+
+`continue` is the same shape, branching to `ContinueTarget`.
+
+This gives clear diagnostics for invalid usage and clean branches for valid usage.
+
+### while lowering
+
+The block layout is:
+
+- `while.cond`
+- `while.body`
+- `while.exit`
+
+Core structure:
+
+```cpp
+Builder->CreateBr(CondBB);
+Builder->SetInsertPoint(CondBB);
+CondV = ToBoolI1(Cond->codegen(), "whilecond");
+Builder->CreateCondBr(CondV, BodyBB, ExitBB);
+
+LoopContextGuard Guard(ExitBB, CondBB);
+Body->codegen();
+if (!Builder->GetInsertBlock()->getTerminator())
+  Builder->CreateBr(CondBB);
+```
+
+A useful consequence is that `continue` inside `while` naturally returns to condition evaluation.
+
+### do-while lowering
+
+The block layout is:
+
+- `do.body`
+- `do.cond`
+- `do.exit`
+
+Core structure:
+
+```cpp
+Builder->CreateBr(BodyBB); // enter body first
+
+LoopContextGuard Guard(ExitBB, CondBB);
+Body->codegen();
+if (!Builder->GetInsertBlock()->getTerminator())
+  Builder->CreateBr(CondBB);
+
+CondV = ToBoolI1(Cond->codegen(), "docond");
+Builder->CreateCondBr(CondV, BodyBB, ExitBB);
+```
+
+The initial unconditional branch into `BodyBB` is the defining property: the loop body executes at least once.
+
+### Existing for behavior, now with continue correctness
+
+`for range(...)` already existed, but Chapter 20 adapts its loop context so `continue` targets the step block:
+
+```cpp
+LoopContextGuard Guard(EndLoopBB, StepBB);
+```
+
+So `continue` in a `for` body does what users expect:
+
+1. jump to step
+2. update induction variable
+3. re-check loop condition
+
+## Operator Coverage: %, &, ^, |, ~
+
+This chapter line also closes a practical operator gap.
+
+### Precedence table extension
+
+`BinopPrecedence` now includes:
+
+```cpp
+{'|', 7}, {'^', 8}, {'&', 9}, ... {'%', 40}
+```
+
+This preserves sensible C-style relative precedence among bitwise operators and keeps `%` at multiplicative precedence.
+
+### Unary ~
+
+Unary bit-not is now implemented for integers:
+
+```cpp
+case '~':
+  if (!OperandV->getType()->isIntegerTy())
+    return LogError<Value *>("Unary '~' requires integer operand");
+  return Builder->CreateNot(OperandV, "bnottmp");
+```
+
+If the operand is floating-point, the user gets a direct diagnostic.
+
+### Binary %, &, ^, |
+
+These are intentionally integer-only in this chapter.
+
+First, codegen detects operators that require integer operands:
+
+```cpp
+bool RequiresIntOnly = (Op == '%' || Op == '&' || Op == '^' || Op == '|');
+```
+
+Then it enforces type rules with explicit diagnostics:
+
+```cpp
+if (!(L->getType()->isIntegerTy() && R->getType()->isIntegerTy())) {
+  if (Op == '%')
+    return LogError<Value *>("Modulo operator '%' requires integer operands");
+  return LogError<Value *>("Bitwise operators require integer operands");
 }
 ```
 
-That means arrays now work in every typed location that calls `ResolveTypeExpr`:
-
-- local declarations
-- struct fields
-- aliases
-- function signatures (where permitted by existing rules)
-
-## Indexing behavior: pointer base vs array base
-
-This is the most important runtime/codegen change in Chapter 22.
-
-`IndexExprAST::codegenAddress()` now supports two distinct base categories:
-
-1. pointer base (existing path)
-2. array base (new path)
-
-### Array-base path
-
-When base value type is an LLVM array, address computation uses a two-index GEP:
+After harmonizing integer widths, lowering is direct:
 
 ```cpp
-Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
-return Builder->CreateGEP(BaseValTy, BaseAddr, {Zero, IdxV}, "arr.idx.addr");
+case '%': return Builder->CreateSRem(L, R, "modtmp");
+case '&': return Builder->CreateAnd(L, R, "andtmp");
+case '^': return Builder->CreateXor(L, R, "xortmp");
+case '|': return Builder->CreateOr(L, R, "ortmp");
 ```
 
-Why `{0, idx}`?
+## Validation Commands
 
-- first index steps from the alloca pointer to the array object
-- second index steps to the element inside that array object
-
-This is standard LLVM aggregate indexing semantics.
-
-### Shared index diagnostics
-
-Both pointer and array index paths require integer index types:
-
-- `Array index must be an integer type`
-
-This prevents silent float-to-int indexing mistakes.
-
-## Hint propagation and type inference adjustments
-
-To keep downstream behavior consistent (printing, assignments, chained access), Chapter 22 updates helper logic so array element type info flows through:
-
-- `ResolvePointeeTypeExpr` recurses through arrays
-- builtin-leaf-name helpers recurse through arrays
-- `IndexExprAST::getValueTypeHint()` returns array element type when base is array
-
-Without these “small” changes, indexing would compile but later type-dependent features would degrade.
-
-## Initialization policy remains conservative
-
-Direct initializer expressions for struct/array locals are still blocked in Chapter 22:
-
-```cpp
-"Struct/array variables do not support direct initializer expressions"
-```
-
-This is an intentional tradeoff. It keeps aggregate initialization semantics out of this chapter so we can focus on layout and indexing correctness first.
-
-## Test coverage added in Chapter 22
-
-Chapter 22 inherits Chapter 21 tests and adds:
-
-- `code/chapter22/test/array_basic_local.pyxc`
-- `code/chapter22/test/array_alias_type.pyxc`
-- `code/chapter22/test/array_struct_field.pyxc`
-- `code/chapter22/test/array_of_structs.pyxc`
-- `code/chapter22/test/array_error_non_integer_index.pyxc`
-- `code/chapter22/test/array_error_invalid_size.pyxc`
-
-### Representative positive scenario
-
-```py
-def main() -> i32:
-    a: array[i32, 4]
-    a[0] = 10
-    a[1] = 20
-    a[2] = 30
-    a[3] = 40
-    print(a[0], a[1], a[2], a[3])
-    return 0
-
-main()
-```
-
-### Struct + array composition
-
-```py
-struct Bucket:
-    vals: array[i32, 3]
-
-b: Bucket
-b.vals[1] = 8
-print(b.vals[1])
-```
-
-### Negative scenario
-
-```py
-def main() -> i32:
-    a: array[i32, 2]
-    idx: f64 = 1.0
-    print(a[idx])
-    return 0
-
-main()
-```
-
-This ensures index typing rules are actually enforced.
-
-## Build and test for this chapter
-
-From repository root:
+Run the Chapter 20 suite:
 
 ```bash
-cd code/chapter22 && ./build.sh
+lit -sv code/chapter20/test
+```
+
+Optional: verify Chapter 19 behavior in the same environment:
+
+```bash
+lit -sv -j 1 code/chapter19/test
+```
+
+(`-j 1` can be useful if your local setup shows parallel-test flakiness.)
+
+## Closing Thoughts
+
+Chapter 20 is a good example of incremental compiler growth.
+
+We did not redesign the compiler. We extended the existing architecture in place:
+
+- lexer: a few new tokens
+- parser: a few new statement branches
+- AST: a few new statement nodes
+- codegen: explicit loop context and branch targets
+- tests: concrete behavior first, including failure paths
+
+By the end of the chapter, control flow is much closer to what users expect in day-to-day code, and integer expression support is meaningfully more complete.
+
+## Build and Test (Chapter 20)
+
+From the repository root:
+
+```bash
+cd code/chapter20 && ./build.sh
+```
+
+Run the chapter test suite:
+
+```bash
 lit -sv test
 ```
 
-Chapter 22 was also regression-checked against Chapter 21 test behavior.
-
-## Design takeaways
-
-Chapter 22 establishes a clean split:
-
-- `array[T, N]` for fixed compile-time contiguous storage
-- `ptr[T]` for pointer-based access and indirection
-
-Because both integrate with shared postfix/index infrastructure, the language now handles:
-
-- scalar operations
-- struct member access
-- array indexing
-- combinations like `arr[i].field`
-
-That sets up Chapter 23 naturally: once arrays and struct layout are stable, dynamic allocation (`malloc/free`) becomes much more valuable.
-
-## Compiling
-
-From repository root:
+If you also want to sanity-check the previous chapter in the same environment:
 
 ```bash
-cd code/chapter22 && ./build.sh
+cd ../chapter18 && ./build.sh
+lit -sv -j 1 test
 ```
 
-## Testing
-
-From repository root:
-
-```bash
-lit -sv code/chapter22/test
-```
 
 ## Compile / Run / Test (Hands-on)
 
 Build this chapter:
 
 ```bash
-cd code/chapter22 && ./build.sh
+cd code/chapter20 && ./build.sh
 ```
 
 Run one sample program:
 
 ```bash
-code/chapter22/pyxc -i code/chapter22/test/array_alias_type.pyxc
+code/chapter20/pyxc -i code/chapter20/test/break_outside_loop.pyxc
 ```
 
 Run the chapter tests (when a test suite exists):
 
 ```bash
-cd code/chapter22/test
+cd code/chapter20/test
 lit -sv .
 ```
 
-Pick a couple of tests, mutate the inputs, and watch how diagnostics respond.
+Try editing a test or two and see how quickly you can predict the outcome.
 
 When you're done, clean artifacts:
 
 ```bash
-cd code/chapter22 && ./build.sh
+cd code/chapter20 && ./build.sh
 ```
 
 

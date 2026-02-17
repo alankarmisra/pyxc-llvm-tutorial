@@ -1,0 +1,7 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "6.000000" %t
+
+extern def foo(x,y)
+def add(x,y):
+  return x + y
+add(1, 2+3)

@@ -1,90 +1,183 @@
-# Chapter 21 Design Requirements
+# Chapter 19 Design Requirements
 
 ## Theme
-Fixed-size arrays as first-class typed aggregates.
+Control-flow parity with C-style loops plus practical core integer operator completeness.
 
 ## Goal
-Add static arrays to Pyxc with explicit type-level sizes and element indexing while preserving Chapter 20 struct behavior.
+Extend Pyxc with:
+
+- `while`, `do-while`, `break`, `continue`
+- integer operators: unary `~`, binary `%`, `&`, `^`, `|`
+
+while preserving Chapter 17/17 behavior.
 
 ## Scope
 
 ### In Scope
-- Array type syntax in type positions:
-  - `array[ElemType, N]`
-- Typed locals and fields using array types
-- Array indexing for load/store:
-  - `a[i]`
-  - `s.arr[i]`
-- Nested composition:
-  - arrays of structs
-  - structs containing arrays
-- Existing pointer indexing remains supported
+- `while <expr>:` with inline and block suites
+- `do:` `<suite>` `while <expr>` (post-test loop)
+- `break` statement (nearest enclosing loop)
+- `continue` statement (nearest enclosing loop)
+- Correct nesting behavior with `if` inside loops and loops inside loops
+- Integer operator support:
+  - unary `~`
+  - binary `%`, `&`, `^`, `|`
+- Integer-only diagnostics for `%` and bitwise operators
 
 ### Out of Scope
-- Dynamic arrays
-- Array literals/initializer lists
-- Slices/views
-- Runtime bounds checking (this chapter)
+- Labels and `goto`
+- `switch`
+- `for (;;)` C-form rewrite (existing `for range` remains as-is)
+- Shift operators and compound assignment (deferred)
 
 ## Syntax Requirements
 
-### Array type
+### While
 ```py
-a: array[i32, 4]
+while cond:
+    body
 ```
 
-### Indexing
+### Do-while
 ```py
-a[0] = 10
-print(a[0])
+do:
+    body
+while cond
+```
+
+### Break/Continue
+```py
+while cond:
+    if x:
+        break
+    continue
+```
+
+### Operators
+```py
+~x
+x % y
+x & y
+x ^ y
+x | y
 ```
 
 ## Lexer Requirements
-- No new keyword required.
-- `array` is recognized via type parser in type contexts.
+- Add keywords/tokens:
+  - `tok_while`
+  - `tok_do`
+  - `tok_break`
+  - `tok_continue`
+- Existing single-character operator tokens are used for `%`, `&`, `^`, `|`, `~`.
 
 ## Parser Requirements
-- Extend `type_expr` parser to recognize `array[ type_expr , <int-literal> ]`.
-- Enforce compile-time integer literal size.
-- Reuse existing indexing expression syntax.
+- Add statement parsers:
+  - `ParseWhileStmt()`
+  - `ParseDoWhileStmt()`
+  - `ParseBreakStmt()`
+  - `ParseContinueStmt()`
+- Extend `ParseStmt()` dispatch accordingly.
+- `break`/`continue` must be parse-valid anywhere syntactically but become semantic errors outside loops.
+- Extend binary precedence table to include `%`, `&`, `^`, and `|` with stable precedence.
 
 ## AST Requirements
-- Extend `TypeExpr` to represent array type with:
-  - element type
-  - constant length
+- Add nodes:
+  - `WhileStmtAST`
+  - `DoWhileStmtAST`
+  - `BreakStmtAST`
+  - `ContinueStmtAST`
+- Keep existing `StmtAST` hierarchy style and location tracking.
 
 ## Semantic Requirements
-- Array size must be a positive integer literal.
-- Array indexing base must be either:
-  - pointer type (existing behavior), or
-  - array type (new behavior)
-- Index expression must be integer-like.
+- Maintain a loop-context stack in codegen containing:
+  - break target block
+  - continue target block
+- Emit diagnostic when `break`/`continue` are used outside loops.
+- Condition truthiness must use current Chapter 17 boolean conversion rules (`ToBoolI1`).
+- `%`, `&`, `^`, `|`, `~` are integer-only in this chapter.
 
 ## LLVM Lowering Requirements
-- Lower `array[T, N]` to `llvm::ArrayType::get(T, N)`.
-- For array indexing, lower address as GEP:
-  - `[0, idx]` on the array alloca/field address.
-- Pointer indexing continues to use pointer GEP behavior.
+
+### while
+Blocks:
+1. condition block
+2. body block
+3. exit block
+
+Flow:
+- branch to condition
+- condition true -> body
+- condition false -> exit
+- body tail -> condition
+
+### do-while
+Blocks:
+1. body block
+2. condition block
+3. exit block
+
+Flow:
+- enter body first
+- body tail -> condition
+- condition true -> body
+- condition false -> exit
+
+### break
+- branch to nearest loop exit block
+
+### continue
+- branch to nearest loop continue target:
+  - `while`: condition block
+  - `do-while`: condition block
+  - existing `for range`: step/condition path per current for lowering
+
+### Operators
+- `%` lowers to integer remainder (`srem` in current signed arithmetic path)
+- `&`, `^`, `|` lower to LLVM `and`, `xor`, `or`
+- unary `~` lowers to LLVM integer bitwise not
+
+## Interaction Requirements
+- Works with typed locals and pointer expressions from Chapter 17.
+- Existing `for range` behavior must continue to pass tests.
+- `return` inside loop still behaves as terminator.
 
 ## Diagnostics Requirements
-- Invalid array size (missing/non-integer/non-positive)
-- Indexing non-pointer/non-array base
-- Non-integer index expression
+- `break` outside loop: clear error
+- `continue` outside loop: clear error
+- malformed do-while syntax: clear parse error
+- `%` with non-integer operands: clear error
+- bitwise op with non-integer operands: clear error
+- unary `~` with non-integer operand: clear error
 
 ## Tests
 
 ### Positive
-- Basic local array load/store
-- Array alias type
-- Struct field array indexing
-- Array of structs with field access through indexed element
+- simple while counting
+- do-while runs at least once
+- nested loops with inner break and outer continue
+- continue skips remainder of body
+- `%` with signed integer values
+- `&`, `|`, `^` basic correctness and precedence
+- unary `~` on integer values
 
 ### Negative
-- Float/non-integer index
-- Invalid array size literal
-- Indexing non-array/non-pointer
+- break outside loop
+- continue outside loop
+- malformed do-while syntax
+- `%` with float operand
+- bitwise op with float operand
+- unary `~` with float operand
 
 ## Done Criteria
-- Chapter 21 lit suite includes array coverage and is green
-- Chapter 20 suite behavior remains intact under Chapter 21 compiler
-- `chapter-21.md` documents chapter diff and implementation
+- Chapter 19 lit suite added/updated and green
+- Previous chapter lit suite remains green
+- No regressions in function/type/pointer behavior
+
+## Implementation Sequencing Notes
+- After Chapter 18 completes, copy compiler/runtime baseline to `code/chapter19/`.
+- Implement feature in small increments:
+  1. while
+  2. break/continue with loop context
+  3. do-while
+  4. operator `%`, `&`, `^`, `|`, `~`
+  5. diagnostics + test hardening

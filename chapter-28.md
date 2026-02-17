@@ -1,314 +1,257 @@
 ---
-description: "Add program argument access and C runtime helpers (scanf, low-level FD I/O, ctype) for more system-facing and interactive programs."
+description: "Add const local bindings and compile-time reassignment checks to preserve immutability intent and reduce accidental state changes."
 ---
-# 27. Pyxc: Program Arguments, scanf Baseline, Low-Level FD I/O, and ctype Helpers
+# 26. Pyxc: Immutable Bindings with const
 
-Chapter 27 gave us separate compilation and multi-file linking.
+Chapter 26 introduces `const` local declarations with compile-time reassignment protection.
 
-Chapter 28 extends runtime interop in four practical directions:
-
-- executable entrypoint arguments (`main(argc, argv)`)
-- minimal `scanf` support for input parsing
-- low-level descriptor-style file APIs (`open/read/write/close` and helpers)
-- ctype helper interop (`isdigit`, `isalpha`, `isspace`, `tolower`, `toupper`)
-
-This chapter keeps python-style syntax and adds capability through explicit, typed function calls.
+This chapter is small in syntax but important in semantics: we are teaching the compiler to remember mutability intent for each binding.
 
 
 !!!note
-    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter28](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter28).
+    To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter26](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter26).
 
-## Grammar (EBNF)
+## What we are building
 
-Chapter 28 is mostly runtime interop and semantic validation (`scanf`, low-level fd I/O, ctype helpers, `main(argc, argv)` constraints).
-Core grammar remains the same shape as Chapter 27.
+A declaration like this:
 
-Reference: `code/chapter28/pyxc.ebnf`
+```py
+const max_count: i32 = 64
+```
+
+should:
+
+- parse as a declaration statement
+- require an initializer
+- create a symbol-table binding marked immutable
+- reject later assignment to `max_count`
+
+## Grammar changes
+
+In `code/chapter26/pyxc.ebnf`, we add a dedicated statement production:
 
 ```ebnf
-prototype       = identifier , "(" , [ param_list ] , ")" , "->" , type_expr ;
-param_list      = param , { "," , param } ;
-param           = identifier , ":" , type_expr ;
-
-(* executable main forms are enforced semantically in codegen:
-   def main() -> i32
-   def main(argc: i32, argv: ptr[ptr[i8]]) -> i32 *)
+const_decl_stmt = "const" , identifier , ":" , type_expr , "=" , expression ;
 ```
 
-## What this chapter adds
+and include it in `statement`:
 
-### `main(argc, argv)` support
+```ebnf
+statement =
+    print_stmt
+  | if_stmt
+  | for_stmt
+  | while_stmt
+  | do_while_stmt
+  | return_stmt
+  | var_assign_stmt
+  | const_decl_stmt
+  | free_stmt
+  | expr_stmt ;
+```
 
-When compiling executables/objects, `main` is now valid in either form:
+Why this matters:
 
-- `def main() -> i32`
-- `def main(argc: i32, argv: ptr[ptr[i8]]) -> i32`
+- `const` is not “just assignment with a flag.”
+- It is a declaration form with stricter rules (initializer required).
 
-Anything else is rejected with a clear compile error.
+## Lexer keyword support
 
-### Minimal `scanf` subset
+In `code/chapter26/pyxc.cpp`, add a token kind and keyword mapping.
 
-Added `scanf` support with strict validation.
-
-Supported conversions:
-
-- `%d`
-- `%f`
-- `%s`
-- `%c`
-- `%%`
-
-Enforced rules:
-
-- format string must be a literal
-- format placeholder count must match destination arg count
-- each destination must be pointer-typed
-- destination pointee type must match conversion category
-
-### Low-level descriptor APIs
-
-Added interop declarations and checks for:
-
-- `open(path, flags, mode) -> i32`
-- `creat(path, mode) -> i32`
-- `close(fd) -> i32`
-- `read(fd, buf, count) -> i64`
-- `write(fd, buf, count) -> i64`
-- `unlink(path) -> i32`
-
-### ctype helper interop
-
-Added:
-
-- `isdigit(ch) -> i32`
-- `isalpha(ch) -> i32`
-- `isspace(ch) -> i32`
-- `tolower(ch) -> i32`
-- `toupper(ch) -> i32`
-
-All are validated as integer-argument calls.
-
-## How it was implemented (slow walkthrough)
-
-### Step 1: Add libc symbol declarations
-
-In `code/chapter28/pyxc.cpp`, `GetOrCreateLibcIOFunction(...)` was extended.
-
-For ctype:
+Token enum gets:
 
 ```cpp
-else if (Name == "isdigit")
-  FT = FunctionType::get(I32Ty, {I32Ty}, false);
-else if (Name == "isalpha")
-  FT = FunctionType::get(I32Ty, {I32Ty}, false);
-else if (Name == "isspace")
-  FT = FunctionType::get(I32Ty, {I32Ty}, false);
-else if (Name == "tolower")
-  FT = FunctionType::get(I32Ty, {I32Ty}, false);
-else if (Name == "toupper")
-  FT = FunctionType::get(I32Ty, {I32Ty}, false);
+tok_const = -37,
 ```
 
-For descriptor I/O:
+Keyword map gets:
 
 ```cpp
-else if (Name == "open")
-  FT = FunctionType::get(I32Ty, {PtrTy, I32Ty, I32Ty}, false);
-else if (Name == "creat")
-  FT = FunctionType::get(I32Ty, {PtrTy, I32Ty}, false);
-else if (Name == "close")
-  FT = FunctionType::get(I32Ty, {I32Ty}, false);
-else if (Name == "read")
-  FT = FunctionType::get(I64Ty, {I32Ty, PtrTy, I64Ty}, false);
-else if (Name == "write")
-  FT = FunctionType::get(I64Ty, {I32Ty, PtrTy, I64Ty}, false);
-else if (Name == "unlink")
-  FT = FunctionType::get(I32Ty, {PtrTy}, false);
+{"const", tok_const}
 ```
 
-`scanf` was also added there as vararg declaration.
+Without this, parser logic would never see a distinct `const` token.
 
-Why this is nice:
+## Parser: dedicated const declaration function
 
-- parser stays simple
-- these APIs look like normal function calls in user programs
-- symbol creation stays centralized in one place
-
-### Step 2: Add call-site semantic validation
-
-In `CallExprAST::codegen()`, call arguments are validated before emitting LLVM call IR.
-
-For ctype:
+Parser entry in `ParseStmt()`:
 
 ```cpp
-} else if (Callee == "isdigit") {
-  if (!CheckIntegerArg(0, "isdigit expects integer argument"))
-    return nullptr;
-}
+case tok_const:
+  return ParseConstDeclStmt();
 ```
 
-For descriptor I/O:
+The new parser function (`ParseConstDeclStmt`) enforces the exact shape:
 
 ```cpp
-} else if (Callee == "read") {
-  if (!CheckIntegerArg(0, "read expects integer fd argument") ||
-      !CheckPointerArg(1, "read expects pointer buffer argument") ||
-      !CheckIntegerArg(2, "read expects integer count argument"))
-    return nullptr;
-}
+// const name: Type = expr
+if (CurTok != tok_const) ...
+if (CurTok != tok_identifier) ...
+if (CurTok != ':') ...
+auto DeclTy = ParseTypeExpr();
+if (CurTok != '=') ...
+auto Init = ParseExpression();
 ```
 
-For `scanf`, we added a format parser and destination checks:
+Key behavior: missing initializer errors immediately, instead of silently defaulting.
+
+## AST and symbol metadata
+
+Chapter 26 adds a separate AST node for const declaration and extends binding metadata.
+
+`VarBinding` in `code/chapter26/pyxc.cpp` now has:
 
 ```cpp
-if (Callee == "scanf") {
-  // format must be string literal
-  // subset: %d %f %s %c %%
-  // count must match args
-  // each destination must be pointer
-  // pointee type must match spec
-}
+struct VarBinding {
+  AllocaInst *Alloca = nullptr;
+  Type *Ty = nullptr;
+  Type *PointeeTy = nullptr;
+  std::string BuiltinLeafTy;
+  std::string PointeeBuiltinLeafTy;
+  bool IsConst = false;
+};
 ```
 
-This is intentionally strict so errors are early and obvious.
+This is the core decision: mutability is tracked in symbol-table state.
 
-### Step 3: Enforce `main` entrypoint signatures
+## Codegen for const declaration
 
-In `PrototypeAST::codegen()`, executable entrypoint ABI checks were added.
+Const declaration lowering mirrors regular typed declaration flow:
 
-Core check shape:
+- resolve declared type
+- allocate storage
+- codegen initializer
+- cast initializer to declared type
+- store value
+- insert `NamedValues[name]` binding with `IsConst = true`
+
+Representative insertion shape:
 
 ```cpp
-if (IsMainEntry) {
-  if (!(ParamTypes.empty() || ParamTypes.size() == 2))
-    return LogError<Function *>(
-        "main must have either 0 arguments or (i32, ptr[ptr[i8]])");
-  if (ParamTypes.size() == 2) {
-    // enforce exactly (i32, ptr[ptr[i8]])
-  }
-}
+NamedValues[Name] = {Alloca, DeclTy, ResolvePointeeTypeExpr(DeclType),
+                     BuiltinLeaf, PointeeBuiltinLeaf, true};
 ```
 
-This avoids accidental signatures that compile but fail runtime expectations.
+So the generated IR is normal; policy is enforced by semantic checks around stores.
 
-## What is possible now (language examples)
+## Reassignment protection
 
-### Example 1: Read command-line args
+The assignment path checks mutability before emitting a store.
+
+In assignment codegen, Chapter 26 adds:
+
+```cpp
+auto It = NamedValues.find(*Name);
+if (It != NamedValues.end() && It->second.IsConst)
+  return LogError<Value *>("Cannot assign to const variable");
+```
+
+That ensures:
+
+- reassignment to mutable locals still works
+- reassignment to const locals fails at compile/lowering time
+
+No runtime check needed.
+
+## Test coverage
+
+Chapter 26 adds four focused tests in `code/chapter26/test`.
+
+Positive:
 
 ```py
-
-def main(argc: i32, argv: ptr[ptr[i8]]) -> i32:
-    printf("argc=%d\n", argc)
-    if argc > 2:
-        printf("argv1=%s argv2=%s\n", argv[1], argv[2])
-    return 0
+# const_basic_scalar.pyxc
+const base: i32 = 40
+print(base + 5)
 ```
-
-### Example 2: Parse integer input with `scanf`
 
 ```py
-
-def main() -> i32:
-    x: i32 = 0
-    scanf("%d", addr(x))
-    printf("x=%d\n", x)
-    return 0
-
-main()
+# const_pointer_string.pyxc
+const msg: ptr[i8] = "hello const"
+puts(msg)
 ```
 
-### Example 3: Descriptor write/read
+Negative:
 
 ```py
-
-def main() -> i32:
-    fd: i32 = creat("demo.txt", 420)
-    write(fd, "HELLO\n", 6)
-    close(fd)
-    return 0
-
-main()
+# const_error_reassign.pyxc
+const x: i32 = 7
+x = 8
 ```
 
-### Example 4: ctype helpers
+Expected diagnostic includes:
+
+```text
+Cannot assign to const variable
+```
 
 ```py
-
-def main() -> i32:
-    printf("%d %d %d\n", isdigit(57), isalpha(65), isspace(32))
-    printf("%c %c\n", tolower(65), toupper(122))
-    return 0
-
-main()
+# const_error_missing_initializer.pyxc
+const y: i32
 ```
 
-## Compile / Run / Test
+Expected diagnostic includes:
 
-### Compile
+```text
+Const declaration requires initializer
+```
+
+## End-to-end behavior
+
+With Chapter 26 complete:
+
+- the language has explicit immutable local bindings
+- parser enforces strict declaration form
+- codegen carries immutability in symbol state
+- assignment path respects immutability
+- tests lock both happy paths and failures
+
+This gives us safer local semantics before we scale into multi-file workflows in Chapter 27.
+
+## Compiling
+
+From repository root:
 
 ```bash
-cd code/chapter28 && ./build.sh
+cd code/chapter26 && ./build.sh
 ```
 
-### Run sample programs
+## Testing
 
-`main(argc, argv)` sample:
+From repository root:
 
 ```bash
-code/chapter28/pyxc -o app code/chapter28/test/c26_main_argv_executable.pyxc
-./app alpha beta
+lit -sv code/chapter26/test
 ```
-
-`scanf` sample:
-
-```bash
-printf '42\n' | code/chapter28/pyxc -i code/chapter28/test/c26_scanf_int.pyxc
-```
-
-### Test
-
-```bash
-lit -sv code/chapter28/test
-```
-
-Validation result for this implementation pass:
-
-- 117 tests discovered
-- 117 passed
-
-## Notes
-
-This chapter intentionally avoids C-syntax sugar. We keep Pythonic syntax and explicit calls, even when code is a little longer.
-
-That tradeoff improves readability and keeps the language direction clear.
 
 ## Compile / Run / Test (Hands-on)
 
 Build this chapter:
 
 ```bash
-cd code/chapter28 && ./build.sh
+cd code/chapter26 && ./build.sh
 ```
 
 Run one sample program:
 
 ```bash
-code/chapter28/pyxc -i code/chapter28/test/c25_mod_add.pyxc
+code/chapter26/pyxc -i code/chapter26/test/addr_is_keyword.pyxc
 ```
 
 Run the chapter tests (when a test suite exists):
 
 ```bash
-cd code/chapter28/test
+cd code/chapter26/test
 lit -sv .
 ```
 
-Have some fun stress-testing the suite with small variations.
+Explore the test folder a bit and add one tiny edge case of your own.
 
 When you're done, clean artifacts:
 
 ```bash
-cd code/chapter28 && ./build.sh
+cd code/chapter26 && ./build.sh
 ```
 
 

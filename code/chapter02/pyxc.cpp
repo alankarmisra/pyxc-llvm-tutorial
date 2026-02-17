@@ -127,7 +127,7 @@ public:
   }
 };
 
-static SourceManager SourceMgr;
+static SourceManager DiagSourceMgr;
 
 static string FormatTokenForMessage(int Tok) {
   if (Tok == tok_identifier)
@@ -142,7 +142,7 @@ static string FormatTokenForMessage(int Tok) {
 }
 
 static void PrintErrorSourceContext(SourceLocation Loc) {
-  const string *LineText = SourceMgr.getLine(Loc.Line);
+  const string *LineText = DiagSourceMgr.getLine(Loc.Line);
   if (!LineText)
     return;
 
@@ -165,7 +165,7 @@ static SourceLocation GetNewlineTokenLoc(SourceLocation Loc) {
   if (PrevLine <= 0)
     return Loc;
 
-  const string *PrevLineText = SourceMgr.getLine(PrevLine);
+  const string *PrevLineText = DiagSourceMgr.getLine(PrevLine);
   if (!PrevLineText)
     return Loc;
 
@@ -190,17 +190,17 @@ static int advance() {
     int NextChar = getchar();
     if (NextChar != '\n' && NextChar != EOF)
       ungetc(NextChar, stdin);
-    SourceMgr.onChar('\n');
+    DiagSourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
     return '\n';
   }
   if (LastChar == '\n') {
-    SourceMgr.onChar('\n');
+    DiagSourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
   } else {
-    SourceMgr.onChar(LastChar);
+    DiagSourceMgr.onChar(LastChar);
     LexLoc.Col++;
   }
   return LastChar;
@@ -360,8 +360,8 @@ static int getNextToken() { return CurTok = gettok(); }
 
 /// BinopPrecedence - This holds the precedence for each binary operator that is
 /// defined.
-static map<char, int> BinopPrecedence = {
-    {'<', 10}, {'+', 20}, {'-', 20}, {'*', 40}, {'/', 40}, {'%', 40}};
+static map<char, int> BinopPrecedence = {{'<', 10}, {'+', 20}, {'-', 20},
+                                         {'*', 40}, {'/', 40}, {'%', 40}};
 
 /// Explanation-friendly precedence anchors used by parser control flow.
 static constexpr int NO_OP_PREC = -1;
@@ -658,11 +658,13 @@ static void MainLoop() {
     if (CurTok == tok_eof)
       return;
 
-    fprintf(stderr, "ready> ");
-    switch (CurTok) {
-    case tok_eol: // Skip newlines
+    if (CurTok == tok_eol) {
+      fprintf(stderr, "ready> ");
       getNextToken();
       continue;
+    }
+
+    switch (CurTok) {
     case tok_def:
       HandleDefinition();
       break;
@@ -681,7 +683,7 @@ static void MainLoop() {
 //===----------------------------------------------------------------------===//
 
 int main() {
-  SourceMgr.reset();
+  DiagSourceMgr.reset();
 
   // Prime the first token.
   fprintf(stderr, "ready> ");

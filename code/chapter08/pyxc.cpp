@@ -1,32 +1,45 @@
 #include "../include/PyxcJIT.h"
 #include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Verifier.h"
+#include "llvm/MC/TargetRegistry.h"
+#include "llvm/Passes/OptimizationLevel.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/StandardInstrumentations.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/TargetSelect.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/Target/TargetOptions.h"
+#include "llvm/TargetParser/Host.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Scalar/GVN.h"
 #include "llvm/Transforms/Scalar/Reassociate.h"
 #include "llvm/Transforms/Scalar/SimplifyCFG.h"
-#include <cassert>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <iomanip>
 #include <map>
 #include <memory>
+#include <sstream>
 #include <string>
+#include <system_error>
+#include <type_traits>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 using namespace llvm;
@@ -39,6 +52,53 @@ bool UseColor = isatty(fileno(stderr));
 const char *Red = UseColor ? "\x1b[31m" : "";
 const char *Bold = UseColor ? "\x1b[1m" : "";
 const char *Reset = UseColor ? "\x1b[0m" : "";
+
+//===----------------------------------------------------------------------===//
+// Command line
+//===----------------------------------------------------------------------===//
+static cl::SubCommand ReplCommand("repl", "Start the interactive REPL");
+static cl::SubCommand RunCommand("run", "Run a .pyxc script");
+static cl::SubCommand BuildCommand("build", "Build a .pyxc script");
+
+static cl::opt<bool>
+    ReplEmitTokens("emit-tokens", cl::sub(ReplCommand),
+                   cl::desc("Print lexer tokens instead of parsing"),
+                   cl::init(false));
+static cl::alias ReplEmitTokensShort(
+    "t", cl::desc("Alias for --emit-tokens"),
+    cl::aliasopt(ReplEmitTokens));
+
+static cl::opt<bool> ReplEmitLLVM("emit-llvm", cl::sub(ReplCommand),
+                                  cl::desc("Print LLVM IR for parsed input"),
+                                  cl::init(false));
+static cl::alias ReplEmitLLVMShort(
+    "l", cl::desc("Alias for --emit-llvm"),
+    cl::aliasopt(ReplEmitLLVM));
+
+static cl::list<std::string> RunInputFiles(cl::Positional, cl::sub(RunCommand),
+                                           cl::desc("<script.pyxc>"),
+                                           cl::ZeroOrMore);
+static cl::opt<bool> RunEmitLLVM("emit-llvm", cl::sub(RunCommand),
+                                 cl::desc("Emit LLVM for the script"),
+                                 cl::init(false));
+
+enum BuildOutputKind { BuildEmitLLVM, BuildEmitObj, BuildEmitExe };
+static cl::list<std::string> BuildInputFiles(cl::Positional,
+                                             cl::sub(BuildCommand),
+                                             cl::desc("<script.pyxc>"),
+                                             cl::ZeroOrMore);
+static cl::opt<BuildOutputKind>
+    BuildEmit("emit", cl::sub(BuildCommand), cl::desc("Output kind for build"),
+              cl::values(clEnumValN(BuildEmitLLVM, "llvm", "Emit LLVM IR"),
+                         clEnumValN(BuildEmitObj, "obj", "Emit object file"),
+                         clEnumValN(BuildEmitExe, "exe", "Emit executable")),
+              cl::init(BuildEmitExe));
+static cl::opt<bool> BuildDebug("g", cl::sub(BuildCommand),
+                                cl::desc("Emit debug info"), cl::init(false));
+static cl::opt<unsigned>
+    BuildOptLevel("O", cl::sub(BuildCommand),
+                  cl::desc("Optimization level (use -O0..-O3)"), cl::Prefix,
+                  cl::init(0));
 
 //===----------------------------------------------------------------------===//
 // Lexer
@@ -59,27 +119,55 @@ enum Token {
   tok_number = -6,
 
   // control
-  tok_if = -7,
-  tok_else = -8,
-  tok_return = -9,
-
-  // loop
-  tok_for = -10,
-  tok_in = -11,
-  tok_range = -12,
-
+  tok_return = -7
 };
 
 static std::string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;             // Filled in if tok_number
-static bool InForExpression;      // Track global parsing context
+static std::string NumLiteralStr; // Filled in if tok_number
+static bool HadError = false;
 
 // Keywords words like `def`, `extern` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
 static std::map<std::string, Token> Keywords = {
-    {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return},
-    {"if", tok_if},   {"else", tok_else},     {"for", tok_for},
-    {"in", tok_in},   {"range", tok_range}};
+    {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return}};
+
+// Debug-only token names. Kept separate from Keywords because this map is
+// purely for printing token stream output.
+static std::map<int, std::string> TokenNames = [] {
+  // Unprintable character tokens, and multi-character tokens.
+  std::map<int, std::string> Names = {
+      {tok_eof, "end of input"},
+      {tok_eol, "newline"},
+      {tok_def, "'def'"},
+      {tok_extern, "'extern'"},
+      {tok_identifier, "identifier"},
+      {tok_number, "number"},
+      {tok_return, "'return'"},
+  };
+
+  // Single character tokens.
+  for (int C = 0; C <= 255; ++C) {
+    if (isprint(static_cast<unsigned char>(C)))
+      Names[C] = "'" + std::string(1, static_cast<char>(C)) + "'";
+    else if (C == '\n')
+      Names[C] = "'\\n'";
+    else if (C == '\t')
+      Names[C] = "'\\t'";
+    else if (C == '\r')
+      Names[C] = "'\\r'";
+    else if (C == '\0')
+      Names[C] = "'\\0'";
+    else {
+      std::ostringstream OS;
+      OS << "0x" << std::uppercase << std::hex << std::setw(2)
+         << std::setfill('0') << C;
+      Names[C] = OS.str();
+    }
+  }
+
+  return Names;
+}();
 
 struct SourceLocation {
   int Line;
@@ -122,25 +210,25 @@ public:
 
 static SourceManager DiagSourceMgr;
 
-static std::string FormatTokenForError(int Tok) {
+static std::string FormatTokenForMessage(int Tok) {
   if (Tok == tok_identifier)
     return "identifier '" + IdentifierStr + "'";
   if (Tok == tok_number)
-    return "number";
-  if (Tok == tok_eol)
-    return "newline";
-  if (Tok == tok_eof)
-    return "end of input";
+    return "number '" + NumLiteralStr + "'";
 
-  for (const auto &Kw : Keywords)
-    if (Kw.second == Tok)
-      return "keyword '" + Kw.first + "'";
-
-  if (isascii(Tok) && isprint(Tok))
-    return std::string("'") + static_cast<char>(Tok) + "'";
-  if (isascii(Tok))
-    return "ascii(" + std::to_string(Tok) + ")";
+  const auto TokIt = TokenNames.find(Tok);
+  if (TokIt != TokenNames.end())
+    return TokIt->second;
   return "unknown token";
+}
+
+static const std::string &GetTokenName(int Tok) {
+  const auto TokIt = TokenNames.find(Tok);
+  if (TokIt != TokenNames.end())
+    return TokIt->second;
+
+  static const std::string Unknown = "tok_unknown";
+  return Unknown;
 }
 
 static void PrintErrorSourceContext(SourceLocation Loc) {
@@ -155,7 +243,28 @@ static void PrintErrorSourceContext(SourceLocation Loc) {
     Spaces = 0;
   for (int I = 0; I < Spaces; ++I)
     fputc(' ', stderr);
-  fprintf(stderr, "%s^%s~~~\n", Bold, Reset);
+  fprintf(stderr, "%s^%s", Bold, Reset);
+  fputc('~', stderr);
+  fputc('~', stderr);
+  fputc('~', stderr);
+  fputc('\n', stderr);
+}
+
+static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
+  if (Tok != tok_eol)
+    return Loc;
+
+  // Keep CurLoc token-semantic for tok_eol (next-line boundary), but render
+  // newline diagnostics at the end of the previous source line.
+  int PrevLine = Loc.Line - 1;
+  if (PrevLine <= 0)
+    return Loc;
+
+  const std::string *PrevLineText = DiagSourceMgr.getLine(PrevLine);
+  if (!PrevLineText)
+    return Loc;
+
+  return SourceLocation{PrevLine, static_cast<int>(PrevLineText->size()) + 1};
 }
 
 static int advance() {
@@ -189,13 +298,15 @@ static int gettok() {
 
   // Return end-of-line token.
   if (LastChar == '\n') {
+    CurLoc = LexLoc;
     LastChar = ' ';
     return tok_eol;
   }
 
   CurLoc = LexLoc;
 
-  if (isalpha(LastChar) || LastChar == '_') { // identifier: [a-zA-Z_][a-zA-Z0-9_]*
+  if (isalpha(LastChar) ||
+      LastChar == '_') { // identifier: [a-zA-Z_][a-zA-Z0-9_]*
     IdentifierStr = LastChar;
     while (isalnum((LastChar = advance())) || LastChar == '_')
       IdentifierStr += LastChar;
@@ -213,6 +324,7 @@ static int gettok() {
       LastChar = advance();
     } while (isdigit(LastChar) || LastChar == '.');
 
+    NumLiteralStr = NumStr;
     NumVal = strtod(NumStr.c_str(), 0);
     return tok_number;
   }
@@ -224,6 +336,7 @@ static int gettok() {
     while (LastChar != EOF && LastChar != '\n');
 
     if (LastChar != EOF) {
+      CurLoc = LexLoc;
       LastChar = ' ';
       return tok_eol;
     }
@@ -294,33 +407,6 @@ public:
   Value *codegen() override;
 };
 
-/// IfExprAST - Expression class for if/else.
-class IfExprAST : public ExprAST {
-  std::unique_ptr<ExprAST> Cond, Then, Else;
-
-public:
-  IfExprAST(std::unique_ptr<ExprAST> Cond, std::unique_ptr<ExprAST> Then,
-            std::unique_ptr<ExprAST> Else)
-      : Cond(std::move(Cond)), Then(std::move(Then)), Else(std::move(Else)) {}
-
-  Value *codegen() override;
-};
-
-/// ForExprAST - Expression class for for/in.
-class ForExprAST : public ExprAST {
-  std::string VarName;
-  std::unique_ptr<ExprAST> Start, End, Step, Body;
-
-public:
-  ForExprAST(std::string VarName, std::unique_ptr<ExprAST> Start,
-             std::unique_ptr<ExprAST> End, std::unique_ptr<ExprAST> Step,
-             std::unique_ptr<ExprAST> Body)
-      : VarName(std::move(VarName)), Start(std::move(Start)),
-        End(std::move(End)), Step(std::move(Step)), Body(std::move(Body)) {}
-
-  Value *codegen();
-};
-
 /// PrototypeAST - This class represents the "prototype" for a function,
 /// which captures its name, and its argument names (thus implicitly the number
 /// of arguments the function takes).
@@ -359,13 +445,13 @@ public:
 /// lexer and updates CurTok with its results.
 static int CurTok;
 static int getNextToken() { return CurTok = gettok(); }
-// Tracks all previously defined function prototypes
 static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 
 /// BinopPrecedence - This holds the precedence for each binary operator that is
 /// defined.
-static std::map<char, int> BinopPrecedence = {
-    {'<', 10}, {'+', 20}, {'-', 20}, {'*', 40}};
+static std::map<char, int> BinopPrecedence = {{'<', 10}, {'>', 10}, {'+', 20},
+                                              {'-', 20}, {'*', 40}, {'/', 40},
+                                              {'%', 40}};
 
 /// Explanation-friendly precedence anchors used by parser control flow.
 static constexpr int NO_OP_PREC = -1;
@@ -383,24 +469,23 @@ static int GetTokPrecedence() {
   return TokPrec;
 }
 
-/// LogError* - These are little helper functions for error handling.
-std::unique_ptr<ExprAST> LogError(const char *Str) {
-  InForExpression = false;
-  const std::string TokDisplay = FormatTokenForError(CurTok);
-  fprintf(stderr, "%sError%s (Line: %d, Column: %d): %s near %s\n", Red, Reset,
-          CurLoc.Line, CurLoc.Col, Str, TokDisplay.c_str());
-  PrintErrorSourceContext(CurLoc);
-  return nullptr;
-}
+using ExprPtr = std::unique_ptr<ExprAST>;
+using ProtoPtr = std::unique_ptr<PrototypeAST>;
+using FuncPtr = std::unique_ptr<FunctionAST>;
 
-std::unique_ptr<PrototypeAST> LogErrorP(const char *Str) {
-  LogError(Str);
-  return nullptr;
-}
-
-std::unique_ptr<FunctionAST> LogErrorF(const char *Str) {
-  LogError(Str);
-  return nullptr;
+/// LogError - Unified error reporting template.
+template <typename T = void> T LogError(const char *Str) {
+  HadError = true;
+  SourceLocation DiagLoc = GetDiagnosticAnchorLoc(CurLoc, CurTok);
+  fprintf(stderr, "%sError%s (Line: %d, Column: %d): %s\n", Red, Reset,
+          DiagLoc.Line, DiagLoc.Col, Str);
+  PrintErrorSourceContext(DiagLoc);
+  if constexpr (std::is_void_v<T>)
+    return;
+  else if constexpr (std::is_pointer_v<T>)
+    return nullptr;
+  else
+    return T{};
 }
 
 static std::unique_ptr<ExprAST> ParseExpression();
@@ -420,7 +505,7 @@ static std::unique_ptr<ExprAST> ParseParenExpr() {
     return nullptr;
 
   if (CurTok != ')')
-    return LogError("expected ')'");
+    return LogError<ExprPtr>("expected ')'");
   getNextToken(); // eat ).
   return V;
 }
@@ -450,7 +535,7 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
         break;
 
       if (CurTok != ',')
-        return LogError("Expected ')' or ',' in argument list");
+        return LogError<ExprPtr>("Expected ')' or ',' in argument list");
       getNextToken();
     }
   }
@@ -461,162 +546,23 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
   return std::make_unique<CallExprAST>(IdName, std::move(Args));
 }
 
-/*
- * In later chapters, we will need to check the indentation
- * whenever we eat new lines.
- */
-static void EatNewLines() {
-  while (CurTok == tok_eol)
-    getNextToken();
-}
-
-// ifexpr ::= 'if' expression ':' expression 'else' ':' expression
-static std::unique_ptr<ExprAST> ParseIfExpr() {
-  getNextToken(); // eat 'if'
-
-  // condition
-  auto Cond = ParseExpression();
-  if (!Cond)
-    return nullptr;
-
-  if (CurTok != ':')
-    return LogError("expected `:`");
-  getNextToken(); // eat ':'
-
-  EatNewLines();
-
-  // Handle nested `if` and `for` expressions:
-  // For `if` expressions, `return` statements are emitted inside the
-  // true and false branches, so we only require an explicit `return`
-  // when we are not parsing an `if`.
-  // For `for` expressions, control flow and the resulting value are
-  // handled entirely within the loop body, so an explicit `return`
-  // is not required at this level.
-  if (!InForExpression && CurTok != tok_if && CurTok != tok_for) {
-    if (CurTok != tok_return)
-      return LogError("Expected 'return'");
-
-    getNextToken(); // eat return
-  }
-
-  auto Then = ParseExpression();
-  if (!Then)
-    return nullptr;
-
-  EatNewLines();
-
-  if (CurTok != tok_else)
-    return LogError("expected `else`");
-
-  getNextToken(); // eat else
-
-  if (CurTok != ':')
-    return LogError("expected `:`");
-
-  getNextToken(); // eat ':'
-
-  EatNewLines();
-
-  if (!InForExpression && CurTok != tok_if && CurTok != tok_for) {
-    if (CurTok != tok_return)
-      return LogError("Expected 'return'");
-
-    getNextToken(); // eat return
-  }
-
-  auto Else = ParseExpression();
-  if (!Else)
-    return nullptr;
-
-  return std::make_unique<IfExprAST>(std::move(Cond), std::move(Then),
-                                     std::move(Else));
-}
-
-// `for` identifier `in` `range` `(`expression `,` expression
-//   (`,` expression)? # optional
-// `)`: expression
-static std::unique_ptr<ExprAST> ParseForExpr() {
-  InForExpression = true;
-  getNextToken(); // eat for
-
-  if (CurTok != tok_identifier)
-    return LogError("Expected identifier after for");
-
-  std::string IdName = IdentifierStr;
-  getNextToken(); // eat identifier
-
-  if (CurTok != tok_in)
-    return LogError("Expected `in` after identifier in for");
-  getNextToken(); // eat 'in'
-
-  if (CurTok != tok_range)
-    return LogError("Expected `range` after identifier in for");
-  getNextToken(); // eat range
-
-  if (CurTok != '(')
-    return LogError("Expected `(` after `range` in for");
-  getNextToken(); // eat '('
-
-  auto Start = ParseExpression();
-  if (!Start)
-    return nullptr;
-
-  if (CurTok != ',')
-    return LogError("expected `,` after range start");
-  getNextToken(); // eat ','
-
-  auto End = ParseExpression();
-  if (!End)
-    return nullptr;
-  std::unique_ptr<ExprAST> Step;
-  if (CurTok == ',') {
-    getNextToken(); // eat ,
-    Step = ParseExpression();
-    if (!Step)
-      return nullptr;
-  }
-
-  if (CurTok != ')')
-    return LogError("expected `)` after range operator");
-  getNextToken(); // eat `)`
-
-  if (CurTok != ':')
-    return LogError("expected `:` after range operator");
-  getNextToken(); // eat `:`
-
-  EatNewLines();
-
-  // `for` expressions don't have the return statement
-  // they return 0 by default.
-  auto Body = ParseExpression();
-  if (!Body)
-    return nullptr;
-
-  InForExpression = false;
-  return std::make_unique<ForExprAST>(IdName, std::move(Start), std::move(End),
-                                      std::move(Step), std::move(Body));
-}
-
 /// primary
 ///   ::= identifierexpr
 ///   ::= numberexpr
 ///   ::= parenexpr
-///   ::= ifexpr
-///   ::= forexpr
 static std::unique_ptr<ExprAST> ParsePrimary() {
   switch (CurTok) {
-  default:
-    return LogError("unknown token when expecting an expression");
   case tok_identifier:
     return ParseIdentifierExpr();
   case tok_number:
     return ParseNumberExpr();
   case '(':
     return ParseParenExpr();
-  case tok_if:
-    return ParseIfExpr();
-  case tok_for:
-    return ParseForExpr();
+  default: {
+    std::string Msg = "Unexpected " + FormatTokenForMessage(CurTok) +
+                      " when expecting an expression";
+    return LogError<ExprPtr>(Msg.c_str());
+  }
   }
 }
 
@@ -646,7 +592,8 @@ static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
     // the pending operator take RHS as its LHS.
     int NextPrec = GetTokPrecedence();
     if (TokPrec < NextPrec) {
-      RHS = ParseBinOpRHS(TokPrec + 1, std::move(RHS));
+      const int HigherPrecThanCurrent = TokPrec + 1;
+      RHS = ParseBinOpRHS(HigherPrecThanCurrent, std::move(RHS));
       if (!RHS)
         return nullptr;
     }
@@ -672,20 +619,13 @@ static std::unique_ptr<ExprAST> ParseExpression() {
 ///   ::= id '(' (id (',' id)*)? ')'
 static std::unique_ptr<PrototypeAST> ParsePrototype() {
   if (CurTok != tok_identifier)
-    return LogErrorP("Expected function name in prototype");
+    return LogError<ProtoPtr>("Expected function name in prototype");
 
   std::string FnName = IdentifierStr;
-  getNextToken(); // eat identifier
-
-  // Reject duplicate function definitions
-  auto FI = FunctionProtos.find(FnName);
-  if (FI != FunctionProtos.end())
-    // Ideally we should eat all remaining prototype symbols to prevent a
-    // cascade of unexpected symbol errors but we'll leave that for now.
-    return LogErrorP(("Duplicate definition for " + FnName).c_str());
+  getNextToken();
 
   if (CurTok != '(')
-    return LogErrorP("Expected '(' in prototype");
+    return LogError<ProtoPtr>("Expected '(' in prototype");
 
   std::vector<std::string> ArgNames;
   while (getNextToken() == tok_identifier) {
@@ -696,11 +636,11 @@ static std::unique_ptr<PrototypeAST> ParsePrototype() {
       break;
 
     if (CurTok != ',')
-      return LogErrorP("Expected ')' or ',' in parameter list");
+      return LogError<ProtoPtr>("Expected ')' or ',' in parameter list");
   }
 
   if (CurTok != ')')
-    return LogErrorP("Expected ')' in prototype");
+    return LogError<ProtoPtr>("Expected ')' in prototype");
 
   // success.
   getNextToken(); // eat ')'.
@@ -717,21 +657,19 @@ static std::unique_ptr<FunctionAST> ParseDefinition() {
     return nullptr;
 
   if (CurTok != ':')
-    return LogErrorF("Expected ':' in function definition");
+    return LogError<FuncPtr>("Expected ':' in function definition");
   getNextToken(); // eat ':'
 
-  // Consume newlines between a function header and its body.
-  // This allows definitions to be split across multiple lines, e.g.:
-  //
+  // This takes care of a situation where we decide to split the
+  // function and expression
   // ready> def foo(x):
-  // ready>   return x + 1
-  EatNewLines();
+  // ready>  return x + 1
+  while (CurTok == tok_eol)
+    getNextToken();
 
-  if (!InForExpression && CurTok != tok_if && CurTok != tok_for) {
-    if (CurTok != tok_return)
-      return LogErrorF("Expected 'return' before return expression");
-    getNextToken(); // eat return
-  }
+  if (CurTok != tok_return)
+    return LogError<FuncPtr>("Expected 'return' before return expression");
+  getNextToken(); // eat return
 
   if (auto E = ParseExpression())
     return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
@@ -753,7 +691,7 @@ static std::unique_ptr<FunctionAST> ParseTopLevelExpr() {
 static std::unique_ptr<PrototypeAST> ParseExtern() {
   getNextToken(); // eat extern.
   if (CurTok != tok_def)
-    return LogErrorP("Expected `def` after extern.");
+    return LogError<ProtoPtr>("Expected `def` after extern.");
   getNextToken(); // eat def
   return ParsePrototype();
 }
@@ -766,6 +704,7 @@ static std::unique_ptr<LLVMContext> TheContext;
 static std::unique_ptr<Module> TheModule;
 static std::unique_ptr<IRBuilder<>> Builder;
 static std::map<std::string, Value *> NamedValues;
+static bool ShouldEmitLLVM = false;
 static std::unique_ptr<PyxcJIT> TheJIT;
 static std::unique_ptr<FunctionPassManager> TheFPM;
 static std::unique_ptr<LoopAnalysisManager> TheLAM;
@@ -775,24 +714,18 @@ static std::unique_ptr<ModuleAnalysisManager> TheMAM;
 static std::unique_ptr<PassInstrumentationCallbacks> ThePIC;
 static std::unique_ptr<StandardInstrumentations> TheSI;
 static ExitOnError ExitOnErr;
+static bool InteractiveMode = true;
+static bool BuildObjectMode = false;
+static unsigned CurrentOptLevel = 0;
 
-Value *LogErrorV(const char *Str) {
-  LogError(Str);
-  return nullptr;
-}
-
-Function *getFunction(std::string Name) {
-  // First, see if the function has already been added to the current module.
+static Function *getFunction(const std::string &Name) {
   if (auto *F = TheModule->getFunction(Name))
     return F;
 
-  // If not, check whether we can codegen the declaration from some existing
-  // prototype.
   auto FI = FunctionProtos.find(Name);
   if (FI != FunctionProtos.end())
     return FI->second->codegen();
 
-  // If no existing prototype exists, return null.
   return nullptr;
 }
 
@@ -804,7 +737,7 @@ Value *VariableExprAST::codegen() {
   // Look this variable up in the function.
   Value *V = NamedValues[Name];
   if (!V)
-    return LogErrorV(("Unknown variable name " + Name).c_str());
+    return LogError<Value *>("Unknown variable name");
   return V;
 }
 
@@ -821,12 +754,20 @@ Value *BinaryExprAST::codegen() {
     return Builder->CreateFSub(L, R, "subtmp");
   case '*':
     return Builder->CreateFMul(L, R, "multmp");
+  case '/':
+    return Builder->CreateFDiv(L, R, "divtmp");
+  case '%':
+    return Builder->CreateFRem(L, R, "remtmp");
   case '<':
     L = Builder->CreateFCmpULT(L, R, "cmptmp");
     // Convert bool 0/1 to double 0.0 or 1.0
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+  case '>':
+    L = Builder->CreateFCmpUGT(L, R, "cmptmp");
+    // Convert bool 0/1 to double 0.0 or 1.0
+    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   default:
-    return LogErrorV("invalid binary operator");
+    return LogError<Value *>("invalid binary operator");
   }
 }
 
@@ -834,11 +775,11 @@ Value *CallExprAST::codegen() {
   // Look up the name in the global module table.
   Function *CalleeF = getFunction(Callee);
   if (!CalleeF)
-    return LogErrorV("Unknown function referenced");
+    return LogError<Value *>("Unknown function referenced");
 
   // If argument mismatch error.
   if (CalleeF->arg_size() != Args.size())
-    return LogErrorV("Incorrect # arguments passed");
+    return LogError<Value *>("Incorrect # arguments passed");
 
   std::vector<Value *> ArgsV;
   for (unsigned i = 0, e = Args.size(); i != e; ++i) {
@@ -848,153 +789,6 @@ Value *CallExprAST::codegen() {
   }
 
   return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
-}
-
-Value *IfExprAST::codegen() {
-  Value *CondV = Cond->codegen();
-  if (!CondV)
-    return nullptr;
-
-  // Convert condition to a bool by comparing non-equal to 0.0.
-  CondV = Builder->CreateFCmpONE(
-      CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "ifcond");
-
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
-
-  // Create blocks for the then and else cases.  Insert the 'then' block at
-  // the end of the function.
-  BasicBlock *ThenBB = BasicBlock::Create(*TheContext, "then", TheFunction);
-  BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else");
-  BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont");
-
-  Builder->CreateCondBr(CondV, ThenBB, ElseBB);
-
-  // Emit then value.
-  Builder->SetInsertPoint(ThenBB);
-
-  Value *ThenV = Then->codegen();
-  if (!ThenV)
-    return nullptr;
-
-  Builder->CreateBr(MergeBB);
-  // Codegen of 'Then' can change the current block, update ThenBB for the
-  // PHI.
-  ThenBB = Builder->GetInsertBlock();
-
-  // Emit else block.
-  TheFunction->insert(TheFunction->end(), ElseBB);
-  Builder->SetInsertPoint(ElseBB);
-
-  Value *ElseV = Else->codegen();
-  if (!ElseV)
-    return nullptr;
-
-  Builder->CreateBr(MergeBB);
-  // Codegen of 'Else' can change the current block, update ElseBB for the
-  // PHI.
-  ElseBB = Builder->GetInsertBlock();
-
-  // Emit merge block.
-  TheFunction->insert(TheFunction->end(), MergeBB);
-  Builder->SetInsertPoint(MergeBB);
-  PHINode *PN = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
-
-  PN->addIncoming(ThenV, ThenBB);
-  PN->addIncoming(ElseV, ElseBB);
-  return PN;
-}
-
-Value *ForExprAST::codegen() {
-  // Emit the start code first, without 'variable' in scope.
-  Value *StartVal = Start->codegen();
-  if (!StartVal)
-    return nullptr;
-
-  // Make new basic blocks for pre-loop, loop condition, loop body and
-  // end-loop code.
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
-  BasicBlock *PreLoopBB = Builder->GetInsertBlock();
-  BasicBlock *LoopConditionBB =
-      BasicBlock::Create(*TheContext, "loopcond", TheFunction);
-  BasicBlock *LoopBB = BasicBlock::Create(*TheContext, "loop");
-  BasicBlock *EndLoopBB = BasicBlock::Create(*TheContext, "endloop");
-
-  // Insert an explicit fall through from current block to LoopConditionBB.
-  Builder->CreateBr(LoopConditionBB);
-
-  // Start insertion in LoopConditionBB.
-  Builder->SetInsertPoint(LoopConditionBB);
-
-  // Start the PHI node with an entry for Start.
-  PHINode *Variable =
-      Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
-  Variable->addIncoming(StartVal, PreLoopBB);
-
-  // Within the loop, the variable is defined equal to the PHI node. If it
-  // shadows an existing variable, we have to restore it, so save it now.
-  Value *OldVal = NamedValues[VarName];
-  NamedValues[VarName] = Variable;
-
-  // Compute the end condition.
-  Value *EndCond = End->codegen();
-  if (!EndCond)
-    return nullptr;
-
-  // Check if Variable < End
-  EndCond = Builder->CreateFCmpULT(Variable, EndCond, "endcond");
-
-  // Insert the conditional branch that either continues the loop, or exits
-  // the loop.
-  Builder->CreateCondBr(EndCond, LoopBB, EndLoopBB);
-
-  // Attach the basic block that will soon hold the loop body to the end of
-  // the parent function.
-  TheFunction->insert(TheFunction->end(), LoopBB);
-
-  // Emit the loop body within the LoopBB. This, like any other expr, can
-  // change the current BB. Note that we ignore the value computed by the
-  // body, but don't allow an error.
-  Builder->SetInsertPoint(LoopBB);
-  if (!Body->codegen()) {
-    return nullptr;
-  }
-
-  // Emit the step value.
-  Value *StepVal = nullptr;
-  if (Step) {
-    StepVal = Step->codegen();
-    if (!StepVal)
-      return nullptr;
-  } else {
-    // If not specified, use 1.0.
-    StepVal = ConstantFP::get(*TheContext, APFloat(1.0));
-  }
-
-  Value *NextVar = Builder->CreateFAdd(Variable, StepVal, "nextvar");
-
-  // Add a new entry to the PHI node for the backedge.
-  LoopBB = Builder->GetInsertBlock();
-  Variable->addIncoming(NextVar, LoopBB);
-
-  // Create the unconditional branch that returns to LoopConditionBB to
-  // determine if we should continue looping.
-  Builder->CreateBr(LoopConditionBB);
-
-  // Append EndLoopBB after the loop body. We go to this basic block if the
-  // loop condition says we should not loop anymore.
-  TheFunction->insert(TheFunction->end(), EndLoopBB);
-
-  // Any new code will be inserted after the loop.
-  Builder->SetInsertPoint(EndLoopBB);
-
-  // Restore the unshadowed variable.
-  if (OldVal)
-    NamedValues[VarName] = OldVal;
-  else
-    NamedValues.erase(VarName);
-
-  // for expr always returns 0.0.
-  return Constant::getNullValue(Type::getDoubleTy(*TheContext));
 }
 
 Function *PrototypeAST::codegen() {
@@ -1015,11 +809,10 @@ Function *PrototypeAST::codegen() {
 }
 
 Function *FunctionAST::codegen() {
-  // Transfer ownership of the prototype to the FunctionProtos map, but keep a
-  // reference to it for use below.
   auto &P = *Proto;
   FunctionProtos[Proto->getName()] = std::move(Proto);
   Function *TheFunction = getFunction(P.getName());
+
   if (!TheFunction)
     return nullptr;
 
@@ -1039,8 +832,10 @@ Function *FunctionAST::codegen() {
     // Validate the generated code, checking for consistency.
     verifyFunction(*TheFunction);
 
-    // Run the optimizer on the function.
-    TheFPM->run(*TheFunction, *TheFAM);
+    // Run the optimizer on the function (only in REPL mode, not when building objects)
+    if (!BuildObjectMode) {
+      TheFPM->run(*TheFunction, *TheFAM);
+    }
 
     return TheFunction;
   }
@@ -1058,7 +853,8 @@ static void InitializeModuleAndManagers() {
   // Open a new context and module.
   TheContext = std::make_unique<LLVMContext>();
   TheModule = std::make_unique<Module>("PyxcJIT", *TheContext);
-  TheModule->setDataLayout(TheJIT->getDataLayout());
+  if (TheJIT)
+    TheModule->setDataLayout(TheJIT->getDataLayout());
 
   // Create a new builder for the module.
   Builder = std::make_unique<IRBuilder<>>(*TheContext);
@@ -1071,169 +867,381 @@ static void InitializeModuleAndManagers() {
   TheMAM = std::make_unique<ModuleAnalysisManager>();
   ThePIC = std::make_unique<PassInstrumentationCallbacks>();
   TheSI = std::make_unique<StandardInstrumentations>(*TheContext,
-                                                     /*DebugLogging*/ true);
+                                                     /*DebugLogging*/ false);
   TheSI->registerCallbacks(*ThePIC, TheMAM.get());
 
-  // Add transform passes.
-  // Do simple "peephole" optimizations and bit-twiddling optzns.
-  TheFPM->addPass(InstCombinePass());
-  // Reassociate expressions.
-  TheFPM->addPass(ReassociatePass());
-  // Eliminate Common SubExpressions.
-  TheFPM->addPass(GVNPass());
-  // Simplify the control flow graph (deleting unreachable blocks, etc).
-  TheFPM->addPass(SimplifyCFGPass());
+  // Add transform passes based on selected optimization level.
+  switch (CurrentOptLevel) {
+  case 0:
+    break;
+  case 1:
+    TheFPM->addPass(InstCombinePass());
+    TheFPM->addPass(ReassociatePass());
+    break;
+  case 2:
+    TheFPM->addPass(InstCombinePass());
+    TheFPM->addPass(ReassociatePass());
+    TheFPM->addPass(GVNPass());
+    break;
+  default: // O3 and above
+    TheFPM->addPass(InstCombinePass());
+    TheFPM->addPass(ReassociatePass());
+    TheFPM->addPass(GVNPass());
+    TheFPM->addPass(SimplifyCFGPass());
+    break;
+  }
 
-  // Register analysis passes used in these transform passes.
+  // Register analysis passes.
   PassBuilder PB;
   PB.registerModuleAnalyses(*TheMAM);
   PB.registerFunctionAnalyses(*TheFAM);
   PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
 }
 
+//===----------------------------------------------------------------------===//
+// Top-Level parsing
+//===----------------------------------------------------------------------===//
+
+static void SynchronizeToLineBoundary() {
+  while (CurTok != tok_eol && CurTok != tok_eof)
+    getNextToken();
+}
+
 static void HandleDefinition() {
   if (auto FnAST = ParseDefinition()) {
+    if (CurTok != tok_eol && CurTok != tok_eof) {
+      std::string Msg = "Unexpected " + FormatTokenForMessage(CurTok);
+      LogError<void>(Msg.c_str());
+      SynchronizeToLineBoundary();
+      return;
+    }
     if (auto *FnIR = FnAST->codegen()) {
-      fprintf(stderr, "Read function definition:\n");
-      FnIR->print(errs());
-      fprintf(stderr, "\n");
-      ExitOnErr(TheJIT->addModule(
-          ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
-      InitializeModuleAndManagers();
+      if (ShouldEmitLLVM) {
+        FnIR->print(errs());
+        fprintf(stderr, "\n");
+      }
+      if (!BuildObjectMode) {
+        ExitOnErr(TheJIT->addModule(
+            ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
+        InitializeModuleAndManagers();
+      }
     }
   } else {
-    // Error recovery: consume one token only when we are not already at
-    // a line/end boundary. This avoids blocking for input after errors
-    // like "2 + <eol>".
-    if (CurTok != tok_eol && CurTok != tok_eof)
-      getNextToken();
+    // Error recovery: skip the rest of the current line so leftover tokens
+    // from a malformed construct don't get parsed as a new top-level form.
+    SynchronizeToLineBoundary();
   }
 }
 
 static void HandleExtern() {
   if (auto ProtoAST = ParseExtern()) {
+    if (CurTok != tok_eol && CurTok != tok_eof) {
+      std::string Msg = "Unexpected " + FormatTokenForMessage(CurTok);
+      LogError<void>(Msg.c_str());
+      SynchronizeToLineBoundary();
+      return;
+    }
     if (auto *FnIR = ProtoAST->codegen()) {
-      fprintf(stderr, "Read extern:\n");
-      FnIR->print(errs());
-      fprintf(stderr, "\n");
+      if (ShouldEmitLLVM) {
+        FnIR->print(errs());
+        fprintf(stderr, "\n");
+      }
       FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
     }
   } else {
-    // Error recovery: consume one token only when we are not already at
-    // a line/end boundary. This avoids blocking for input after errors
-    // like "2 + <eol>".
-    if (CurTok != tok_eol && CurTok != tok_eof)
-      getNextToken();
+    SynchronizeToLineBoundary();
   }
 }
 
 static void HandleTopLevelExpression() {
   // Evaluate a top-level expression into an anonymous function.
   if (auto FnAST = ParseTopLevelExpr()) {
+    if (CurTok != tok_eol && CurTok != tok_eof) {
+      std::string Msg = "Unexpected " + FormatTokenForMessage(CurTok);
+      LogError<void>(Msg.c_str());
+      SynchronizeToLineBoundary();
+      return;
+    }
     if (auto *FnIR = FnAST->codegen()) {
-      // Create a ResourceTracker to track JIT'd memory allocated to our
-      // anonymous expression -- that way we can free it after executing.
       auto RT = TheJIT->getMainJITDylib().createResourceTracker();
-
       auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
       ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
       InitializeModuleAndManagers();
 
-      fprintf(stderr, "Read top-level expression:\n");
-      FnIR->print(errs());
-      fprintf(stderr, "\n");
+      if (ShouldEmitLLVM) {
+        FnIR->print(errs());
+        fprintf(stderr, "\n");
+      }
 
-      // Search the JIT for the __anon_expr symbol.
       auto ExprSymbol = ExitOnErr(TheJIT->lookup("__anon_expr"));
-
-      // Get the symbol's address and cast it to the right type (takes no
-      // arguments, returns a double) so we can call it as a native function.
       double (*FP)() = ExprSymbol.toPtr<double (*)()>();
-      fprintf(stderr, "\nEvaluated to %f\n", FP());
+      fprintf(stderr, "%f\n", FP());
 
-      // Delete the anonymous expression module from the JIT.
       ExitOnErr(RT->remove());
-
-      // Remove the anonymous expression.
-      //   FnIR->eraseFromParent();
     }
   } else {
-    // Error recovery: consume one token only when we are not already at
-    // a line/end boundary. This avoids blocking for input after errors
-    // like "2 + <eol>".
-    if (CurTok != tok_eol && CurTok != tok_eof)
-      getNextToken();
+    SynchronizeToLineBoundary();
   }
 }
 
 /// top ::= definition | external | expression | eol
 static void MainLoop() {
   while (true) {
-    fprintf(stderr, "ready> ");
-    switch (CurTok) {
-    case tok_eof:
+    if (CurTok == tok_eof)
       return;
+
+    if (CurTok == tok_eol) {
+      if (InteractiveMode)
+        fprintf(stderr, "ready> ");
+      getNextToken();
+      continue;
+    }
+
+    switch (CurTok) {
     case tok_def:
       HandleDefinition();
       break;
     case tok_extern:
       HandleExtern();
       break;
-    case tok_eol: // Skip newlines
-      getNextToken();
-      break;
     default:
-      HandleTopLevelExpression();
+      if (BuildObjectMode) {
+        LogError<void>("Top-level expressions are not supported in build mode yet");
+        SynchronizeToLineBoundary();
+      } else {
+        HandleTopLevelExpression();
+      }
       break;
     }
   }
 }
 
-//===----------------------------------------------------------------------===//
-// "Library" functions that can be "extern'd" from user code.
-//===----------------------------------------------------------------------===//
+static void EmitTokenStream() {
+  fprintf(stderr, "ready> ");
+  while (true) {
+    const int Tok = gettok();
+    if (Tok == tok_eof)
+      return;
 
-#ifdef _WIN32
-#define DLLEXPORT __declspec(dllexport)
-#else
-#define DLLEXPORT
-#endif
-
-/// putchard - putchar that takes a double and returns 0.
-extern "C" DLLEXPORT double putchard(double X) {
-  fputc((char)X, stderr);
-  return 0;
+    fprintf(stderr, "%s", GetTokenName(Tok).c_str());
+    if (Tok == tok_eol)
+      fprintf(stderr, "\nready> ");
+    else
+      fprintf(stderr, " ");
+  }
 }
 
-/// printd - printf that takes a double prints it as "%f\n", returning 0.
-extern "C" DLLEXPORT double printd(double X) {
-  fprintf(stderr, "%f\n", X);
-  return 0;
+static std::string DeriveObjectOutputPath(const std::string &InputFile) {
+  const size_t DotPos = InputFile.find_last_of('.');
+  if (DotPos == std::string::npos)
+    return InputFile + ".o";
+  return InputFile.substr(0, DotPos) + ".o";
+}
+
+static bool EmitObjectFile(const std::string &OutputPath) {
+  // Note: Optimization has already been run in main() before calling this function
+  InitializeAllAsmParsers();
+  InitializeAllAsmPrinters();
+
+  const std::string TargetTriple = sys::getDefaultTargetTriple();
+
+  std::string Error;
+  const Target *Target = TargetRegistry::lookupTarget(TargetTriple, Error);
+  if (!Target) {
+    errs() << Error << "\n";
+    return false;
+  }
+
+  TargetOptions Opts;
+  std::unique_ptr<TargetMachine> TheTargetMachine(Target->createTargetMachine(
+      TargetTriple, "generic", "", Opts, Reloc::PIC_));
+  if (!TheTargetMachine) {
+    errs() << "Could not create target machine.\n";
+    return false;
+  }
+
+  std::error_code EC;
+  raw_fd_ostream Dest(OutputPath, EC, sys::fs::OF_None);
+  if (EC) {
+    errs() << "Could not open file '" << OutputPath << "': " << EC.message()
+           << "\n";
+    return false;
+  }
+
+  // Use legacy PassManager for code generation (required by TargetMachine)
+  legacy::PassManager CodeGenPass;
+  if (TheTargetMachine->addPassesToEmitFile(CodeGenPass, Dest, nullptr,
+                                            CodeGenFileType::ObjectFile)) {
+    errs() << "TheTargetMachine can't emit an object file.\n";
+    return false;
+  }
+
+  CodeGenPass.run(*TheModule);
+  Dest.flush();
+  outs() << "Wrote " << OutputPath << "\n";
+  return true;
 }
 
 //===----------------------------------------------------------------------===//
 // Main driver code.
 //===----------------------------------------------------------------------===//
 
-int main() {
+int main(int argc, const char **argv) {
+  cl::ParseCommandLineOptions(argc, argv, "pyxc chapter08\n");
+
+  if (BuildOptLevel > 3) {
+    fprintf(stderr, "Error: invalid optimization level -O%u (expected 0..3)\n",
+            static_cast<unsigned>(BuildOptLevel));
+    return 1;
+  }
+
+  if (RunCommand) {
+    if (RunInputFiles.empty()) {
+      fprintf(stderr, "Error: run requires a file name.\n");
+      return 1;
+    }
+    if (RunInputFiles.size() > 1) {
+      fprintf(stderr, "Error: run accepts only one file name.\n");
+      return 1;
+    }
+    const std::string &RunInputFile = RunInputFiles.front();
+    (void)RunInputFile;
+    (void)RunEmitLLVM;
+    fprintf(stderr, "run: i havent learnt how to do that yet.\n");
+    return 1;
+  }
+
+  if (BuildCommand) {
+    if (BuildInputFiles.empty()) {
+      fprintf(stderr, "Error: build requires a file name.\n");
+      return 1;
+    }
+    if (BuildInputFiles.size() > 1) {
+      fprintf(stderr, "Error: build accepts only one file name.\n");
+      return 1;
+    }
+    const std::string &BuildInputFile = BuildInputFiles.front();
+    (void)BuildDebug;
+
+    if (BuildEmit == BuildEmitExe) {
+      fprintf(stderr, "build --emit=exe: i havent learnt how to do that yet.\n");
+      return 1;
+    }
+
+    if (!freopen(BuildInputFile.c_str(), "r", stdin)) {
+      fprintf(stderr, "Error: could not open file '%s'.\n",
+              BuildInputFile.c_str());
+      return 1;
+    }
+
+    DiagSourceMgr.reset();
+    LexLoc = {1, 0};
+    CurLoc = {1, 0};
+    FunctionProtos.clear();
+    HadError = false;
+    InteractiveMode = false;
+    BuildObjectMode = true;
+    CurrentOptLevel = BuildOptLevel;
+    ShouldEmitLLVM = false;
+
+    InitializeModuleAndManagers();
+    getNextToken();
+    MainLoop();
+
+    if (HadError)
+      return 1;
+
+    // Initialize all target info (needed for both optimization and code generation)
+    InitializeAllTargetInfos();
+    InitializeAllTargets();
+    InitializeAllTargetMCs();
+
+    // Run optimization passes on the module if requested
+    if (CurrentOptLevel > 0) {
+
+      const std::string TargetTriple = sys::getDefaultTargetTriple();
+      TheModule->setTargetTriple(Triple(TargetTriple));
+
+      std::string Error;
+      const Target *Target = TargetRegistry::lookupTarget(TargetTriple, Error);
+      if (!Target) {
+        errs() << Error << "\n";
+        return 1;
+      }
+
+      TargetOptions Opts;
+      std::unique_ptr<TargetMachine> TM(Target->createTargetMachine(
+          TargetTriple, "generic", "", Opts, Reloc::PIC_));
+      if (!TM) {
+        errs() << "Could not create target machine.\n";
+        return 1;
+      }
+
+      TheModule->setDataLayout(TM->createDataLayout());
+
+      // Create the analysis managers
+      LoopAnalysisManager LAM;
+      FunctionAnalysisManager FAM;
+      CGSCCAnalysisManager CGAM;
+      ModuleAnalysisManager MAM;
+
+      // Create the PassBuilder and register analyses
+      PassBuilder PB(TM.get());
+      PB.registerModuleAnalyses(MAM);
+      PB.registerCGSCCAnalyses(CGAM);
+      PB.registerFunctionAnalyses(FAM);
+      PB.registerLoopAnalyses(LAM);
+      PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+      // Build the appropriate optimization pipeline
+      ModulePassManager MPM;
+      if (CurrentOptLevel == 1) {
+        MPM = PB.buildPerModuleDefaultPipeline(OptimizationLevel::O1);
+      } else if (CurrentOptLevel == 2) {
+        MPM = PB.buildPerModuleDefaultPipeline(OptimizationLevel::O2);
+      } else {
+        MPM = PB.buildPerModuleDefaultPipeline(OptimizationLevel::O3);
+      }
+
+      // Run the optimization pipeline
+      MPM.run(*TheModule, MAM);
+    }
+
+    if (BuildEmit == BuildEmitLLVM) {
+      TheModule->print(outs(), nullptr);
+      return 0;
+    }
+
+    const std::string OutputPath = DeriveObjectOutputPath(BuildInputFile);
+    return EmitObjectFile(OutputPath) ? 0 : 1;
+  }
+
   DiagSourceMgr.reset();
+
+  if (ReplCommand && ReplEmitTokens) {
+    EmitTokenStream();
+    return 0;
+  }
+
+  HadError = false;
+  InteractiveMode = true;
+  BuildObjectMode = false;
+  CurrentOptLevel = 0;
+  if (InteractiveMode)
+    fprintf(stderr, "ready> ");
+  getNextToken();
 
   InitializeNativeTarget();
   InitializeNativeTargetAsmPrinter();
   InitializeNativeTargetAsmParser();
-
-  // Prime the first token.
-  fprintf(stderr, "ready> ");
-  getNextToken();
-
   TheJIT = ExitOnErr(PyxcJIT::Create());
+
+  // Make the module, which holds all the code and optimization managers.
   InitializeModuleAndManagers();
+  ShouldEmitLLVM = ReplEmitLLVM;
 
   // Run the main "interpreter loop" now.
   MainLoop();
-
-  // Run the main "interpreter loop" now.
-  TheModule->print(errs(), nullptr);
 
   return 0;
 }

@@ -1,0 +1,18 @@
+# Test malloc/free with struct pointer access.
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '42 99' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+struct Pair:
+    a: i32
+    b: i32
+
+def main() -> i32:
+    p: ptr[Pair] = malloc[Pair](1)
+    p[0].a = 42
+    p[0].b = 99
+    print(p[0].a, p[0].b)
+    free(p)
+    return 0
+
+main()

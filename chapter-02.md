@@ -1,151 +1,125 @@
 ---
-description: "Turn tokens into structure by implementing a recursive-descent parser and AST, including expression parsing, prototypes, definitions, and error handling."
+description: "Turn tokens into structure: build a recursive-descent parser and AST for expressions, operators, functions, and errors."
 ---
-# 2. Pyxc: Implementing a Parser and AST
+# 2. Pyxc: Parser and AST
 
-## Introduction
-Welcome to Chapter 2 of the [Pyxc: My First Language Frontend with LLVM](chapter-00.md) tutorial. This chapter shows you how to use the lexer, built in [Chapter 1](chapter-01.md), to build a full parser for our Pyxc language. Once we have a [parser](http://en.wikipedia.org/wiki/Parsing), we’ll define and build an [Abstract Syntax Tree](http://en.wikipedia.org/wiki/Abstract_syntax_tree) (AST). Don't worry if these terms seem alien to you at the moment. Everything will be explained in time. 
+## What We're Building
+
+In Chapter 1, we built a lexer that chops source code into tokens. Now we need to understand what those tokens *mean*.
+
+The lexer sees this:
+```python
+def add(x, y):
+    return x + y
+```
+
+And produces this:
+```
+'def' identifier '(' identifier ',' identifier ')' ':' newline
+'return' identifier '+' identifier newline
+```
+
+But that's just a stream of pieces. The parser's job is to understand the structure: "this is a function named `add` with two parameters, and its body adds them together."
+
+We'll build that understanding as a tree structure called an Abstract Syntax Tree (AST).
 
 ## Source Code
 
-To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter02](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter02).
+Grab the code: [code/chapter02](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter02)
 
-## It's Grammar Time
-
-Before we try and parse the language, we should have an idea of what we are trying to parse. We can start at the top (the `program`) and then, little by little, break it down into components parts.
-
-For text we want to match exactly (`keywords`), we put it in quotes. For text that follows a pattern, such as variable names, we describe it with a regular expression.
-
-For things built from other things, we write `productions` like this:
-
-```ebnf
-thing = "keyword" other_thing "keyword" other_other_thing
+Or clone the whole repo:
+```bash
+git clone https://github.com/alankarmisra/pyxc-llvm-tutorial
+cd pyxc-llvm-tutorial/code/chapter02
 ```
 
-We call it a `production` because it specifies how that grammar symbol is produced (derived).
+## Grammar: The Language Blueprint
 
-The `thing` before the equality sign is the `production` symbol. The `other_thing` would have its own production below, and `other_other_thing` would too. If we keep going, every production eventually reduces to either exact text (a `keyword`) or a unit of text that matches a regular expression pattern.
+Before we parse, we need to know what we're parsing. A grammar defines the valid patterns.
 
-When we build the parser, we can have a `ParseThing` for every `thing`. So we can have `ParseThing`, `ParseTheOtherThing`, `ParseTheOtherOtherThing`. Ok enough `things`. Let's get concrete. Here's what our grammar looks like right now. This style of writing down productions is called [EBNF](https://en.wikipedia.org/wiki/Extended_Backus%E2%80%93Naur_form).
-
-### A key to unlocking EBNF Grammar
-
-- `production`: the name on the left side of `=`. It defines what that piece of the language looks like.
-- `"keyword"`: text in quotes means `match this exact text`.
-- `regexp`: a pattern that matches text with a shape (for example, an identifier or a number).
-- `[ ... ]`: optional. This part may appear once, or not at all.
-- `( ... )`: grouping. Use this to bundle pieces together so they are treated as one unit.
-- `{ ... }`: repeat zero or more times.
-- `(* ... *)`: comment
+Here's our grammar in EBNF notation:
 
 ```ebnf
-program        = { mainloop } 
+program        = { mainloop }
 
-(* MainLoop() *)
-mainloop         = definition 
-                 | external 
-                 | expression 
-                 | newline
+mainloop       = definition
+               | external
+               | expression
+               | newline
 
-(* ParseDefinition() *)
-definition     = "def" prototype ":" expression 
-(* ParseExtern() *)
-external       = "extern" "def" prototype 
- (* ParseTopLevelExpression() *)
+definition     = "def" prototype ":" expression
+external       = "extern" "def" prototype
 toplevelexpr   = expression
-(* ParsePrototype() *)
-prototype      = identifier "(" [ identifier { "," identifier } ] ")" 
-(* ParseExpression() *)
-expression     = primary { binoprhs } 
-(* ParsePrimary() *)
+prototype      = identifier "(" [ identifier { "," identifier } ] ")"
+expression     = primary { binoprhs }
 primary        = identifierexpr
-                 | numberexpr
-                 | parenexpr
-(* ParseIdentifierExpr() *)
+               | numberexpr
+               | parenexpr
 identifierexpr = identifier
-                 | identifier "(" [ expression { "," expression } ] ")"
-(* ParseNumberExpr() *)
+               | identifier "(" [ expression { "," expression } ] ")"
 numberexpr     = number
-(* ParseParenExpr() *)
 parenexpr      = "(" expression ")"
-(* ParseBinOpRHS() *)
 binoprhs       = binaryop primary
 
-(* gettok() / Regex-style terminals *)
-newline        = "\n" (* `\r` and `\r\n` are normalized to `\n` *)
+newline        = "\n"
 binaryop       = "<" | ">" | "+" | "-" | "*" | "/" | "%"
 identifier     = /[A-Za-z_][A-Za-z0-9_]*/
 number         = /[0-9]+(\.[0-9]+)?/
 ```
 
-## Which mainloop option do we pick?
-In:
+### EBNF Quick Reference
+
+- `"keyword"` - exact text
+- `[ ... ]` - optional (zero or one)
+- `{ ... }` - repeat (zero or more)
+- `( ... )` - grouping
+- `|` - or (pick one)
+- `(* ... *)` - comment
+
+## How the Parser Chooses
+
+Look at this part of the grammar:
 
 ```ebnf
-mainloop         = definition
-                 | external
-                 | expression
+mainloop = definition
+         | external
+         | expression
 ```
 
-how do we choose which branch to parse?
+How does the parser know which one to parse?
 
-We look at the first token (with one-token lookahead):
+It looks at the first token:
 
-- `definition` starts with `def`.
-- `external` starts with `extern`.
-- `expression` starts with whatever a `primary` starts with (`identifier`, `number`, or `(`).
+- `def` → definition
+- `extern` → external
+- identifier, number, or `(` → expression
 
-Those starting tokens are distinct, so the parser can choose immediately with no backtracking. We designed the language this way on purpose to keep parsing simple.
+Each option starts with a different token, so the parser can decide immediately. This is called LL(1) parsing (one token lookahead).
 
-The formal name for this style is `LL(1)`. Around here, we can call it `One Punch (token)` parsing.
+## Avoiding Left Recursion
 
-## Left-Recursion Trap
-
-One thing to watch out for while writing grammar productions is definitions like:
+Don't write grammar rules like this:
 
 ```ebnf
 thing = thing "+" other_thing
 ```
 
-This creates an infinite `thing` loop. Our grammar does not have this issue right now, so we will not dwell on it here. It is just something to keep in mind when you get into formal grammar theory. We can however refer to `thing` more than once.
+This creates infinite recursion. The parser tries to parse `thing`, which requires parsing `thing`, which requires parsing `thing`...
+
+Our grammar avoids this. We use iteration instead:
 
 ```ebnf
-thing = "+" thing
-```
-The above is fine. It will keep reading until it lands up on something that's not a `+`.
-
-## Recursive Descent Parsing
-
-Since we start at the top symbol/production, descend into the productions that make it up, and eventually encounter recursion (`things` made up of more `things`), we call it [Recursive Descent Parsing](http://en.wikipedia.org/wiki/Recursive_descent_parser). That is about all there is to this highly technical term.
-
-## Operator Precedence Parsing
-
-[Operator-Precedence Parsing](http://en.wikipedia.org/wiki/Operator-precedence_parser) allows us to decide that
-
-```python
-a + b * c
+expression = primary { binoprhs }
 ```
 
-should be read as
+This means "parse one primary, then parse zero or more binoprhs."
 
-```python
-a + (b * c)
-```
+## Trees Everywhere
 
-`+` and `*` are operators. `*` has higher precedence (a higher ranking) than `+`, so we must evaluate `*` before `+`. Hence `Operator` `Precedence` Parsing.
-
-Don't let the formal names intimidate you—"Recursive Descent" just means we start at the top and work our way down, and "Operator Precedence" just means `*` binds tighter than `+`.
-
-## The Abstract Syntax Tree (AST)
-
-The AST for a program captures its behavior in such a way that it is easy for later stages of the compiler (e.g. code generation) to interpret. We basically want one object for each construct in the language, and the AST should closely model the language.
-
-### Trees are everywhere (you just haven't noticed)
-
-If the word "tree" sounds intimidating, don't worry—you've been using trees your entire computing life. Your file system? That's a tree. A folder contains files and other folders. Those folders contain more files and folders. Draw that structure sideways or upside-down, and you have exactly what computer scientists call a tree.
+An Abstract Syntax Tree (AST) is just a tree structure. If you've used a file system, you've seen trees:
 
 ```text
-Documents/              ← Root (like the top of our AST)
+Documents/              ← Root
 ├── Photos/             ← Branch
 │   ├── vacation.jpg    ← Leaf
 │   └── family.jpg      ← Leaf
@@ -155,19 +129,14 @@ Documents/              ← Root (like the top of our AST)
     └── README.md       ← Leaf
 ```
 
-An Abstract Syntax Tree is the same idea, just drawn differently. Instead of folders and files, we have expressions and operators. The "root" is your entire program, "branches" are things like function definitions or binary operations, and "leaves" are the concrete values like numbers or variable names.
-
-Once you see this, trees lose their mystique. They're just a useful abstraction for representing hierarchies—whether that's organizing files on disk or organizing the structure of your code. 
-
-For example, for:
+An AST is the same concept. For code like this:
 
 ```python
 def avg(a, b):
-    return (a + b)/2.0 
+    return (a + b)/2.0
 ```
 
-the AST shape in Chapter 2 looks like this:
-
+We get a tree like this:
 
 ```mermaid
 %%{init: {'theme': 'base', 'flowchart': { 'curve': 'basis', 'nodeSpacing': 25, 'rankSpacing': 50, 'diagramPadding': 3 }, 'themeVariables': { 'fontSize': '12px', 'primaryColor': '#FEF8EA', 'primaryTextColor': '#000000', 'primaryBorderColor': '#000000', 'lineColor': '#000000', 'lineWidth': '1px', 'secondaryColor': '#FEF8EA', 'tertiaryColor': '#FEF8EA', 'clusterBkg': '#FEF8EA', 'clusterBorder': '#000000' }}}%%
@@ -180,22 +149,28 @@ graph TD
   A --> V2["RHS: VariableExprAST(Name:'b')"]
 ```
 
-### What's so abstract about Abstract Syntax Trees?
+The "root" is the function, "branches" are operations, and "leaves" are values like numbers and variable names.
 
-`Abstract` in this context means we keep only the structure and meaning of the code, and drop syntax that was inserted only to guide parsing it. 
+## Why "Abstract"?
 
-For example, parentheses help with grouping while parsing, but once grouping is understood, we can throw the `(` and `)` tokens away and group the parenthesized expressions into a common parent as shown above where `BinaryExprAST` groups the operands.
+We drop syntax details that were only needed for parsing. Parentheses help group expressions while parsing, but once we've built the tree structure, we don't need the `(` and `)` tokens anymore. The tree structure *is* the grouping.
 
-Let's start transcribing this to code:
+## AST Node Classes
+
+Let's write the C++ classes for our AST nodes.
+
+Base class for expressions:
 
 ```cpp
-/// ExprAST - Base class for all expression nodes.
 class ExprAST {
 public:
   virtual ~ExprAST() = default;
 };
+```
 
-/// NumberExprAST - Expression class for numeric literals like "1.0".
+Numbers:
+
+```cpp
 class NumberExprAST : public ExprAST {
   double Val;
 
@@ -204,20 +179,20 @@ public:
 };
 ```
 
-The code above shows the definition of the base `ExprAST` class and one subclass which we use for numeric literals. The `NumberExprAST` class captures the numeric value of the literal as an instance variable. This allows later phases of the compiler to know what the stored numeric value is.
-
-Here are the other expression AST node definitions that we’ll use in the basic form of the Pyxc language:
+Variables:
 
 ```cpp
-/// VariableExprAST - Expression class for referencing a variable, like "a".
 class VariableExprAST : public ExprAST {
   string Name;
 
 public:
   VariableExprAST(const string &Name) : Name(Name) {}
 };
+```
 
-/// BinaryExprAST - Expression class for a binary operator.
+Binary operators:
+
+```cpp
 class BinaryExprAST : public ExprAST {
   char Op;
   unique_ptr<ExprAST> LHS, RHS;
@@ -227,8 +202,11 @@ public:
                 unique_ptr<ExprAST> RHS)
     : Op(Op), LHS(std::move(LHS)), RHS(std::move(RHS)) {}
 };
+```
 
-/// CallExprAST - Expression class for function calls.
+Function calls:
+
+```cpp
 class CallExprAST : public ExprAST {
   string Callee;
   vector<unique_ptr<ExprAST>> Args;
@@ -240,14 +218,9 @@ public:
 };
 ```
 
-This is all (intentionally) rather straight-forward: variables capture the variable name, binary operators capture their opcode (e.g. `+`), and calls capture a function name as well as a list of any argument expressions.
-
-For our basic language, these are all of the expression nodes we’ll define. The two things we need next are a way to talk about the interface to a function, and a way to talk about functions themselves:
+Function prototypes (signatures):
 
 ```cpp
-/// PrototypeAST - This class represents the "prototype" for a function,
-/// which captures its name, and its argument names (thus implicitly the number
-/// of arguments the function takes).
 class PrototypeAST {
   string Name;
   vector<string> Args;
@@ -258,8 +231,11 @@ public:
 
   const string &getName() const { return Name; }
 };
+```
 
-/// FunctionAST - This class represents a function definition itself.
+Function definitions:
+
+```cpp
 class FunctionAST {
   unique_ptr<PrototypeAST> Proto;
   unique_ptr<ExprAST> Body;
@@ -271,48 +247,32 @@ public:
 };
 ```
 
-In Pyxc, the function prototype only stores the name and the number of parameters without any parameter types. When we eventually introduce types, we will store them along with the parameters. It will allow us to distinguish between foo(int) and foo(string) i.e. we can have some good old-fashioned function overloading. 
+Each class captures one piece of the language. `NumberExprAST` holds a number, `BinaryExprAST` holds an operator and two sub-expressions, `FunctionAST` holds a prototype and a body expression.
 
-With these basics in place, we can now talk about parsing expressions and function bodies in Pyxc.
+## Parser Setup
 
-## Parser Basics
-Now that we have an AST to build, we need to define the parser code to build it. The idea here is that we want to parse something like `x+y` (which is returned as three tokens by the lexer) into an AST that could be generated with calls like this:
-
-```cpp
-auto LHS = make_unique<VariableExprAST>("x");
-auto RHS = make_unique<VariableExprAST>("y");
-auto Result = make_unique<BinaryExprAST>('+', std::move(LHS), std::move(RHS));
-```
-
-```mermaid
-%%{init: {'theme': 'base', 'flowchart': { 'curve': 'basis', 'nodeSpacing': 25, 'rankSpacing': 50, 'diagramPadding': 3 }, 'themeVariables': { 'fontSize': '12px', 'primaryColor': '#FEF8EA', 'primaryTextColor': '#000000', 'primaryBorderColor': '#000000', 'lineColor': '#000000', 'lineWidth': '1px', 'secondaryColor': '#FEF8EA', 'tertiaryColor': '#FEF8EA', 'clusterBkg': '#FEF8EA', 'clusterBorder': '#000000' }}}%%
-graph TD
-  B["Result: BinaryExprAST(Op:'+')"] --> L["LHS: VariableExprAST(Name:'x')"]
-  B --> R["RHS: VariableExprAST(Name:'y')"]
-```
-
-
-In order to do this, we’ll start by defining some basic helper routines:
+We need a way to look ahead at the next token:
 
 ```cpp
-/// CurTok/getNextToken - Provide a simple token buffer.  CurTok is the current
-/// token the parser is looking at.  getNextToken reads another token from the
-/// lexer and updates CurTok with its results.
 static int CurTok;
 static int getNextToken() {
   return CurTok = gettok();
 }
 ```
 
-This implements a simple token buffer around the lexer. This allows us to look one token ahead at what the lexer is returning. Every function in our parser will assume that CurTok is the current token that needs to be parsed.
+Every parsing function assumes `CurTok` is the current token to process.
+
+Type aliases for cleaner code:
 
 ```cpp
 using ExprPtr = unique_ptr<ExprAST>;
 using ProtoPtr = unique_ptr<PrototypeAST>;
 using FuncPtr = unique_ptr<FunctionAST>;
+```
 
-...
+Error reporting:
 
+```cpp
 template <typename T = void> T LogError(const char *Str) {
   const string TokStr = FormatTokenForError(CurTok);
   fprintf(stderr, "%sError%s: (Line: %d, Column: %d): %s near %s\n", Red, Reset,
@@ -325,11 +285,11 @@ template <typename T = void> T LogError(const char *Str) {
   else
     return T{};
 }
-
 ```
 
-This template helper gives us one error-reporting function for all parser return types. When we call it, we choose the return type (`LogError<ExprPtr>`(...), `LogError<ProtoPtr>`(...), etc.), and the helper returns an empty value of that type. It also supports void calls (`LogError`(...) with no template argument).
-In that case, it just reports the error and returns normally.
+This template handles errors for all return types. Call it with `LogError<ExprPtr>("message")` and it returns `nullptr`.
+
+Format tokens for error messages:
 
 ```cpp
 static string FormatTokenForError(int Tok) {
@@ -345,11 +305,11 @@ static string FormatTokenForError(int Tok) {
 }
 ```
 
-`FormatTokenForError` converts the current token into a user friendly string. For identifiers and numbers, it includes the captured string (`lexeme` in linguistics parlance) so errors can say exactly what was seen. For other tokens, it falls back to the shared TokenNames table, and if no mapping exists, it returns "unknown token".
+Print source context:
 
 ```cpp
 static void PrintErrorSourceContext(SourceLocation Loc) {
-  const string *LineText = SourceMgr.getLine(Loc.Line);
+  const string *LineText = DiagSourceMgr.getLine(Loc.Line);
   if (!LineText)
     return;
 
@@ -368,16 +328,13 @@ static void PrintErrorSourceContext(SourceLocation Loc) {
 }
 ```
 
-`PrintErrorSourceContext` prints source context for an error location: first the full source line, then a caret-and-underline marker aligned to the reported column. It uses SourceMgr to fetch the line text and gracefully does nothing if that line is unavailable. The `^~~~` marker gives a fast visual pointer to where parsing failed.
+This prints the source line and a caret pointing to the error.
 
-With these basic helper functions, we can implement the first piece of our grammar: numeric literals.
+## Parsing Expressions
 
-## Basic Expression Parsing
-
-We start with numeric literals, because they are the simplest to process. For each production in our grammar, we’ll define a function which parses that production. For numeric literals, we have:
+### Numbers
 
 ```cpp
-/// numberexpr = number
 static unique_ptr<ExprAST> ParseNumberExpr() {
   auto Result = make_unique<NumberExprAST>(NumVal);
   getNextToken(); // consume the number
@@ -385,49 +342,39 @@ static unique_ptr<ExprAST> ParseNumberExpr() {
 }
 ```
 
-The routine expects to be called when the current token is a `tok_number` token. It takes the current number value, creates a `NumberExprAST` node, advances the lexer to the next token, and finally returns.
+When we see a number token, create a `NumberExprAST` and advance to the next token.
 
-The routine eats all of the tokens that correspond to the production and returns with the lexer sitting on the NEXT token ready to go. This is a fairly standard way to go for recursive descent parsers. The parenthesis operator is defined like this:
+### Parentheses
 
 ```cpp
-/// parenexpr = '(' expression ')'
 static unique_ptr<ExprAST> ParseParenExpr() {
-  getNextToken(); // eat (.
+  getNextToken(); // eat (
   auto V = ParseExpression();
   if (!V)
     return nullptr;
 
   if (CurTok != ')')
     return LogError<ExprPtr>("expected ')'");
-  getNextToken(); // eat ).
+  getNextToken(); // eat )
 
-  // The lexer is now sitting on the token AFTER ')'
-  // ie the entire parenexpr production has been eaten.
   return V;
 }
 ```
 
-This function illustrates a number of notable things about the parser:
+Parse what's inside the parentheses, check for the closing `)`, then return the inner expression. We don't create a node for parentheses—they were just grouping syntax.
 
-1) Because errors can occur, the parser needs a way to indicate that they happened: in our parser, we print the error, and return an empty pointer. 
-
-2) Parentheses do not cause construction of AST nodes themselves. While we could do it this way, the most important role of parentheses are to guide the parser and provide grouping. Once the parser constructs the AST, parentheses are not needed and parentheses tokens are discarded.
-
-The next simple production is for handling variable references and function calls:
+### Variables and Calls
 
 ```cpp
-/// identifierexpr
-///   = identifier
-///   = identifier '(' [ expression { ',' expression } ] ')'
 static unique_ptr<ExprAST> ParseIdentifierExpr() {
   string IdName = IdentifierStr;
 
-  getNextToken();  // eat identifier.
+  getNextToken();  // eat identifier
 
-  if (CurTok != '(') // simple variable ref.
+  if (CurTok != '(') // simple variable ref
     return make_unique<VariableExprAST>(IdName);
 
-  // Call.
+  // Call
   getNextToken();  // eat (
   vector<unique_ptr<ExprAST>> Args;
   if (CurTok != ')') {
@@ -446,22 +393,17 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
     }
   }
 
-  // Eat the ')'.
-  getNextToken();
+  getNextToken(); // eat )
 
   return make_unique<CallExprAST>(IdName, std::move(Args));
 }
 ```
 
-This routine follows the same style as the other routines. (It expects to be called if the current token is a `tok_identifier` token). It also has recursion and error handling. It uses look-ahead to determine if the current identifier is a stand alone variable reference or if it is a function call expression. It handles this by checking to see if the token after the identifier is a `(` token, constructing either a `VariableExprAST` or `CallExprAST` node as appropriate.
+After seeing an identifier, check if `(` follows. If not, it's a variable. If yes, it's a function call—parse the arguments and create a `CallExprAST`.
 
-Now that we have all of our simple expression-parsing logic in place, we can define a helper function to wrap it together into one entry point. We call this class of expressions `primary` expressions. In order to parse an arbitrary primary expression, we need to determine what sort of expression it is:
+### Primary Expressions
 
 ```cpp
-/// primary
-///   = identifierexpr
-///   | numberexpr
-///   | parenexpr
 static unique_ptr<ExprAST> ParsePrimary() {
   switch (CurTok) {
   case tok_identifier:
@@ -475,43 +417,32 @@ static unique_ptr<ExprAST> ParsePrimary() {
   }
 }
 ```
-We use the unprocessed CurTok to determine which sort of expression is being inspected, and then parses it with a function call which consumes the entire expression and leaves CurTok pointing to the next unprocessed token and so on.
 
-Now that basic expressions are handled, we need to handle binary expressions. They are a bit more complex.
+Dispatch to the right parser based on the current token.
 
-## Binary Expression Parsing
-Binary expressions can be read in more than one way.  
-For example, `x+y*z` could be grouped as `(x+y)*z` or `x+(y*z)`.
+## Binary Operators and Precedence
 
-By PEMDAS/BODMAS rules, `*` is processed before `+`, so the expected grouping is `x+(y*z)`.
+Binary expressions can be ambiguous. Does `x+y*z` mean `(x+y)*z` or `x+(y*z)`?
 
-To encode this behavior, we use an operator precedence table, which tells the parser which operator should be processed first. Higher numbers mean earlier processing; lower numbers mean later processing.
+Math says `*` before `+`, so we need precedence:
 
 ```cpp
-/// BinopPrecedence - This holds the precedence for each binary operator.
 static map<char, int> BinopPrecedence = {
     {'<', 10}, {'>', 10}, {'+', 20}, {'-', 20}, {'*', 40}, {'/', 40}, {'%', 40}};
 ```
 
-Higher precedence means the operator binds tighter. So `*`, `/`, and `%` (precedence 40) are evaluated before `+` and `-` (precedence 20), which are evaluated before `<` and `>` (precedence 10).
+Higher numbers mean tighter binding. `*`, `/`, and `%` bind tighter than `+` and `-`, which bind tighter than `<` and `>`.
 
-We define a few convenience constants:
+Helper function:
 
 ```cpp
 static constexpr int NO_OP_PREC = -1;
-static constexpr int MIN_BINOP_PREC = 1; // one higher than NO_OP_PREC
-```
+static constexpr int MIN_BINOP_PREC = 1;
 
-Next we write a helper function to determine the precedence of a binary operator.
-
-```cpp
-/// GetTokPrecedence - Get the precedence of the pending binary operator token.
 static int GetTokPrecedence() {
-  // No Unicode complexities for now.
   if (!isascii(CurTok))
     return NO_OP_PREC;
 
-  // Make sure it's a declared binop.
   int TokPrec = BinopPrecedence[CurTok];
   if (TokPrec < MIN_BINOP_PREC)
     return NO_OP_PREC;
@@ -519,302 +450,79 @@ static int GetTokPrecedence() {
 }
 ```
 
-The `GetTokPrecedence` function returns the precedence for the current token, or NO_OP_PREC (*-1*) if the token is not a binary operator. 
+Returns the precedence of the current token, or `NO_OP_PREC` if it's not a binary operator.
 
-### Example 1. "a"
-Let's see how we would parse a simple single-item expression like: 
-`a`
+## Parsing Binary Expressions
+
+Top-level expression parser:
 
 ```cpp
-/// expression
-///   = primary binoprhs
-///
 static unique_ptr<ExprAST> ParseExpression() {
   auto LHS = ParsePrimary();
   if (!LHS)
     return nullptr;
-  // Only parse further if the next token is a BinOp
+
   return ParseBinOpRHS(MIN_BINOP_PREC, std::move(LHS));
 }
 ```
 
-For input `a`, `ParsePrimary()` parses it as a variable expression node (for example, `VariableExprAST("a")`). 
+Parse the first operand, then hand off to `ParseBinOpRHS` to handle operators.
 
-Now we have one node:
-
-<div style="width: 300px; margin: 0 auto;">
-
-```mermaid
-%%{init: {'theme': 'base', 'flowchart': { 'curve': 'basis', 'nodeSpacing': 10, 'rankSpacing': 50, 'diagramPadding': 20 }, 'themeVariables': { 'fontSize': '12px', 'primaryColor': '#FEF8EA', 'primaryTextColor': '#000000', 'primaryBorderColor': '#000000', 'lineColor': '#000000', 'lineWidth': '1px', 'secondaryColor': '#FEF8EA', 'tertiaryColor': '#FEF8EA', 'clusterBkg': '#FEF8EA', 'clusterBorder': '#000000' }}}%%
-graph TD
-  A["VariableExprAST(Name:'a')"]
-```
-
-</div>
-
-
-Then `ParseExpression()` calls:
+The core algorithm:
 
 ```cpp
-ParseBinOpRHS(ANY_OP_PREC, std::move(LHS))
-```
-
-Here's the `ParseBinOpRHS` function.
-
-```cpp
-/// binoprhs
-///   = ('+' primary)*
 static unique_ptr<ExprAST> ParseBinOpRHS(int MinimumPrec,
                                               unique_ptr<ExprAST> LHS) {
   while (true) {
     int TokPrec = GetTokPrecedence();
 
-    // In the first call 
-    // ParseBinOpRHS(MIN_BINOP_PREC, ...)
-    // this will be true only if the next token
-    // is a BinOp. Otherwise it will return.
     if (TokPrec < MinimumPrec)
       return LHS;
-```
 
-At that point, there is no binary operator after `a`, so `GetTokPrecedence()` returns `NO_OP_PREC`.  
-`ParseBinOpRHS` sees that this is below the required minimum precedence (MinimumPrec) and immediately returns `LHS` unchanged.
+    int BinOp = CurTok;
+    getNextToken(); // eat operator
 
-So the final result is just the AST node for `a`, with no binary-expression wrapping.
+    auto RHS = ParsePrimary();
+    if (!RHS)
+      return nullptr;
 
-### Example 2. "a + b * c + d"
+    int NextPrec = GetTokPrecedence();
+    if (TokPrec < NextPrec) {
+      // NextPrec binds tighter, so parse everything with precedence > TokPrec
+      // The +1 ensures we don't consume operators at TokPrec level (left-associative)
+      const int HigherPrecThanCurrent = TokPrec + 1;
+      RHS = ParseBinOpRHS(HigherPrecThanCurrent, std::move(RHS));
+      if (!RHS)
+        return nullptr;
+    }
 
-We know this should be interpreted as `a + (b * c) + d`.
-
-Let's run `a + b * c + d` through the code like before.
-
-`ParseExpression()` first consumes `a` with `ParsePrimary()`, so:
-- `LHS = VarExprAST("a")`
-- remaining input: `+ b * c + d`
-
-<div style="width: 300px; margin: 0 auto;">
-
-```mermaid
-%%{init: {'theme': 'base', 'flowchart': { 'curve': 'basis', 'nodeSpacing': 10, 'rankSpacing': 50, 'diagramPadding': 20 }, 'themeVariables': { 'fontSize': '12px', 'primaryColor': '#FEF8EA', 'primaryTextColor': '#000000', 'primaryBorderColor': '#000000', 'lineColor': '#000000', 'lineWidth': '1px', 'secondaryColor': '#FEF8EA', 'tertiaryColor': '#FEF8EA', 'clusterBkg': '#FEF8EA', 'clusterBorder': '#000000' }}}%%
-graph TD
-  A["VariableExprAST(Name:'a')"]
-```
-
-</div>
-
-Now we enter:
-```cpp
-ParseBinOpRHS(MIN_BINOP_PREC, std::move(LHS))
-```
-
-### Outer call: consume the first `+`
-
-```cpp
-// State on entry:
-//   input      = + b * c + d
-//   MinimumPrec = MIN_BINOP_PREC (1)
-//   LHS        = VarExprAST("a")
-int TokPrec = GetTokPrecedence();    // TokPrec = ADD_PREC
-if (TokPrec < MinimumPrec)           // ADD_PREC < MIN_BINOP_PREC ? false
-  return LHS;
-
-int BinOp = CurTok;                  // BinOp = '+'
-getNextToken();                      // eat '+', input -> b * c + d
-
-auto RHS = ParsePrimary();           // RHS = VarExprAST("b"), input -> * c + d
-if (!RHS)
-  return nullptr;
-```
-
-At this point, we have:
-- outer `BinOp = '+'`
-- `LHS = a`
-- tentative `RHS = b`
-- lookahead operator is `*`
-
-<div>
-
-```mermaid
-%%{init: {'theme': 'base', 'flowchart': { 'curve': 'basis', 'nodeSpacing': 10, 'rankSpacing': 25, 'diagramPadding': 20 }, 'themeVariables': { 'fontSize': '12px', 'primaryColor': '#FEF8EA', 'primaryTextColor': '#000000', 'primaryBorderColor': '#000000', 'lineColor': '#000000', 'lineWidth': '1px', 'secondaryColor': '#FEF8EA', 'tertiaryColor': '#FEF8EA', 'clusterBkg': '#FEF8EA', 'clusterBorder': '#000000' }}}%%
-graph TD
-  A["LHS: VariableExprAST(Name:'a')"]
-  B["RHS: VariableExprAST(Name:'b') ?"]
-```
-
-</div>
-
-### Why recursion happens
-
-```cpp
-// State:
-//   TokPrec  = ADD_PREC
-//   input    = * c + d
-int NextPrec = GetTokPrecedence();   // NextPrec = MUL_PREC
-
-if (TokPrec < NextPrec) {            // ADD_PREC < MUL_PREC -> true
-  const int HigherPrecThanCurrent = TokPrec + 1; // 21
-  RHS = ParseBinOpRHS(HigherPrecThanCurrent, std::move(RHS));
-  if (!RHS)
-    return nullptr;
+    LHS = make_unique<BinaryExprAST>(BinOp, std::move(LHS), std::move(RHS));
+  }
 }
 ```
 
-This recursive call starts with:
-- `MinimumPrec = 21`
-- `LHS = b`
-- input: `* c + d`
+This is a precedence-climbing algorithm. Here's how it works:
 
-### Recursive call: build `b * c`
+**For `a`:**
+- Parse `a` as primary
+- No operator follows
+- Return `a`
 
-```cpp
-// Recursive state on entry:
-//   input      = * c + d
-//   MinimumPrec = 21
-//   LHS        = VarExprAST("b")
-int TokPrec = GetTokPrecedence();    // TokPrec = MUL_PREC (40)
-if (TokPrec < MinimumPrec)           // 40 < 21 ? false
-  return LHS;
+**For `a + b * c + d`:**
 
-int BinOp = CurTok;                  // BinOp = '*'
-getNextToken();                      // eat '*', input -> c + d
+1. Parse `a`, operator is `+`
+2. Parse `b`, lookahead is `*`
+3. `*` has higher precedence than `+`, so recurse
+4. Build `b * c`
+5. Return to outer level, build `a + (b*c)`
+6. Continue loop, parse `+ d`
+7. Build `(a + (b*c)) + d`
 
-auto RHS = ParsePrimary();           // RHS = VarExprAST("c"), input -> + d
-if (!RHS)
-  return nullptr;
+The recursion happens when the next operator has higher precedence than the current one.
 
-int NextPrec = GetTokPrecedence();   // NextPrec = ADD_PREC (20)
-if (TokPrec < NextPrec) {            // 40 < 20 ? false
-  ...
-}
-
-LHS = make_unique<BinaryExprAST>(BinOp, std::move(LHS), std::move(RHS));
-// LHS is now BinOp('*', b, c)
-```
-
-<div>
-
-```mermaid
-%%{init: {'theme': 'base', 'flowchart': { 'curve': 'basis', 'nodeSpacing': 10, 'rankSpacing': 50, 'diagramPadding': 20 }, 'themeVariables': { 'fontSize': '12px', 'primaryColor': '#FEF8EA', 'primaryTextColor': '#000000', 'primaryBorderColor': '#000000', 'lineColor': '#000000', 'lineWidth': '1px', 'secondaryColor': '#FEF8EA', 'tertiaryColor': '#FEF8EA', 'clusterBkg': '#FEF8EA', 'clusterBorder': '#000000' }}}%%
-graph TD
-  T["BinaryExprAST(Op:'*')"]
-  B["LHS: VariableExprAST(Name:'b')"]
-  C["RHS: VariableExprAST(Name:'c')"]
-
-  T --> B
-  T --> C
-```
-
-</div>
-
-Loop once more in recursion:
+## Parsing Prototypes
 
 ```cpp
-int TokPrec = GetTokPrecedence();    // TokPrec = ADD_PREC (20)
-if (TokPrec < MinimumPrec)           // 20 < 21 ? true
-  return LHS;                        // returns BinOp('*', b, c)
-```
-
-So recursion returns `RHS = (b * c)` to the outer call.
-
-### Back in the outer call: merge `a + (b * c)`
-
-```cpp
-// Outer state after recursion:
-//   BinOp = '+'
-//   LHS   = VarExprAST("a")
-//   RHS   = BinOp('*', b, c)
-LHS = make_unique<BinaryExprAST>(BinOp, std::move(LHS), std::move(RHS));
-// LHS is now BinOp('+', a, (b*c))
-```
-
-<div>
-
-```mermaid
-%%{init: {'theme': 'base', 'flowchart': { 'curve': 'basis', 'nodeSpacing': 10, 'rankSpacing': 40, 'diagramPadding': 20 }, 'themeVariables': { 'fontSize': '12px', 'primaryColor': '#FEF8EA', 'primaryTextColor': '#000000', 'primaryBorderColor': '#000000', 'lineColor': '#000000', 'lineWidth': '1px', 'secondaryColor': '#FEF8EA', 'tertiaryColor': '#FEF8EA', 'clusterBkg': '#FEF8EA', 'clusterBorder': '#000000' }}}%%
-graph TD
-  P["BinaryExprAST(Op:'+')"]
-  A["LHS: VariableExprAST(Name:'a')"]
-  M["RHS: BinaryExprAST(Op:'*')"]
-  B["LHS: VariableExprAST(Name:'b')"]
-  C["RHS: VariableExprAST(Name:'c')"]
-
-  P --> A
-  P --> M
-  M --> B
-  M --> C
-```
-
-</div>
-
-Input is still: `+ d`
-
-### Outer loop continues: consume `+ d`
-
-```cpp
-int TokPrec = GetTokPrecedence();    // TokPrec = ADD_PREC
-if (TokPrec < MinimumPrec)           // ADD_PREC < MIN_BINOP_PREC ? false
-  return LHS;
-
-int BinOp = CurTok;                  // BinOp = '+'
-getNextToken();                      // eat '+', input -> d
-
-auto RHS = ParsePrimary();           // RHS = VarExprAST("d"), input -> <end>
-if (!RHS)
-  return nullptr;
-
-int NextPrec = GetTokPrecedence();   // NextPrec = NO_OP_PREC
-if (TokPrec < NextPrec) {            // ADD_PREC < NO_OP_PREC ? false
-  ...
-}
-
-LHS = make_unique<BinaryExprAST>(BinOp, std::move(LHS), std::move(RHS));
-// LHS is now BinOp('+', BinOp('+', a, (b*c)), d)
-```
-
-### Outer loop exits
-
-```cpp
-int TokPrec = GetTokPrecedence();    // TokPrec = NO_OP_PREC
-if (TokPrec < MinimumPrec)           // NO_OP_PREC < MIN_BINOP_PREC ? true
-  return LHS;
-```
-
-Final result:
-`BinOp('+', BinOp('+', a, BinOp('*', b, c)), d)`
-
-Equivalent grouping:
-`(a + (b * c)) + d`
-
-<div>
-
-```mermaid
-%%{init: {'theme': 'base', 'flowchart': { 'curve': 'basis', 'nodeSpacing': 10, 'rankSpacing': 50, 'diagramPadding': 20 }, 'themeVariables': { 'fontSize': '12px', 'primaryColor': '#FEF8EA', 'primaryTextColor': '#000000', 'primaryBorderColor': '#000000', 'lineColor': '#000000', 'lineWidth': '1px', 'secondaryColor': '#FEF8EA', 'tertiaryColor': '#FEF8EA', 'clusterBkg': '#FEF8EA', 'clusterBorder': '#000000' }}}%%
-graph TD
-  Q["BinaryExprAST(Op:'+')"]
-  P["LHS: BinaryExprAST(Op:'+')"]
-  D["RHS: VariableExprAST(Name:'d')"]
-  A["LHS: VariableExprAST(Name:'a')"]
-  M["RHS: BinaryExprAST(Op:'*')"]
-  B["LHS: VariableExprAST(Name:'b')"]
-  C["RHS: VariableExprAST(Name:'c')"]
-
-  Q --> P
-  Q --> D
-  P --> A
-  P --> M
-  M --> B
-  M --> C
-```
-
-</div>
-
-
-## Parsing the Rest
-The next thing missing is handling of function prototypes. In Pyxc, these are used both for `extern` function declarations as well as function body definitions. The code to do this is straight-forward:
-
-```cpp
-/// prototype
-///   = identifier '(' [ identifier { ',' identifier } ] ')'
 static unique_ptr<PrototypeAST> ParsePrototype() {
   if (CurTok != tok_identifier)
     return LogError<ProtoPtr>("Expected function name in prototype");
@@ -840,19 +548,19 @@ static unique_ptr<PrototypeAST> ParsePrototype() {
   if (CurTok != ')')
     return LogError<ProtoPtr>("Expected ')' in prototype");
 
-  // success.
-  getNextToken(); // eat ')'.
+  getNextToken(); // eat )
 
   return make_unique<PrototypeAST>(FnName, std::move(ArgNames));
 }
 ```
 
-Given this, a function definition is very simple, just a prototype plus an expression to implement the body:
+Parse the function name, then the parameter list.
+
+## Parsing Definitions
 
 ```cpp
-/// definition = 'def' prototype ':' expression
 static unique_ptr<FunctionAST> ParseDefinition() {
-  getNextToken(); // eat def.
+  getNextToken(); // eat def
 
   auto Proto = ParsePrototype();
   if (!Proto)
@@ -862,10 +570,6 @@ static unique_ptr<FunctionAST> ParseDefinition() {
     return LogError<FuncPtr>("Expected ':' in function definition");
   getNextToken(); // eat ':'
 
-  // This takes care of a situation where we decide to split the
-  // function and expression
-  // ready> def foo(x):
-  // ready>  return x + 1
   while (CurTok == tok_eol)
     getNextToken();
 
@@ -879,25 +583,27 @@ static unique_ptr<FunctionAST> ParseDefinition() {
 }
 ```
 
-In addition, we support `extern` to declare functions like `sin` and `cos` as well as to support forward declaration of user functions. These `extern`s are just prototypes with no body:
+Parse the prototype, expect `:`, skip newlines, expect `return`, then parse the expression.
+
+## Parsing Externs
 
 ```cpp
-/// external = 'extern' 'def' prototype
 static unique_ptr<PrototypeAST> ParseExtern() {
-  getNextToken(); // eat extern.
+  getNextToken(); // eat extern
   if (CurTok != tok_def)
     return LogError<ProtoPtr>("Expected `def` after extern.");
   getNextToken(); // eat def
   return ParsePrototype();
 }
 ```
-Finally, we’ll also let the user type in arbitrary top-level expressions and evaluate them on the fly. We will handle this by defining anonymous nullary (zero argument) functions for them:
+
+`extern` declarations are just prototypes with no body.
+
+## Top-Level Expressions
 
 ```cpp
-/// toplevelexpr = expression
 static unique_ptr<FunctionAST> ParseTopLevelExpr() {
   if (auto E = ParseExpression()) {
-    // Make an anonymous proto.
     auto Proto = make_unique<PrototypeAST>("__anon_expr", vector<string>());
     return make_unique<FunctionAST>(std::move(Proto), std::move(E));
   }
@@ -905,14 +611,11 @@ static unique_ptr<FunctionAST> ParseTopLevelExpr() {
 }
 ```
 
-## Error Handling at the top level
+Wrap standalone expressions in an anonymous function so we can evaluate them.
+
+## Error Recovery
 
 ```cpp
-static void SynchronizeToLineBoundary() {
-  while (CurTok != tok_eol && CurTok != tok_eof)
-    getNextToken();
-}
-
 static void SynchronizeToLineBoundary() {
   while (CurTok != tok_eol && CurTok != tok_eof)
     getNextToken();
@@ -928,60 +631,24 @@ static void HandleDefinition() {
     }
     fprintf(stderr, "Parsed a function definition\n");
   } else {
-    // Error recovery: skip the rest of the current line so leftover tokens
-    // from a malformed construct don't get parsed as a new top-level form.
-    SynchronizeToLineBoundary();
-  }
-}
-
-static void HandleExtern() {
-  if (ParseExtern()) {
-    if (CurTok != tok_eol && CurTok != tok_eof) {
-      string Msg = "Unexpected " + FormatTokenForMessage(CurTok);
-      LogError<void>(Msg.c_str());
-      SynchronizeToLineBoundary();
-      return;
-    }
-    fprintf(stderr, "Parsed an extern\n");
-  } else {
-    SynchronizeToLineBoundary();
-  }
-}
-
-static void HandleTopLevelExpression() {
-  // Evaluate a top-level expression into an anonymous function.
-  if (ParseTopLevelExpr()) {
-    if (CurTok != tok_eol && CurTok != tok_eof) {
-      string Msg = "Unexpected " + FormatTokenForMessage(CurTok);
-      LogError<void>(Msg.c_str());
-      SynchronizeToLineBoundary();
-      return;
-    }
-    fprintf(stderr, "Parsed a top-level expr\n");
-  } else {
     SynchronizeToLineBoundary();
   }
 }
 ```
 
-If a top-level form parses successfully, we only print "Parsed ..." when it also ends cleanly at a line boundary ie on a newline or end-of-file. If extra tokens remain on that same line, we report an "Unexpected <token>" error and recover. If parsing fails earlier, one of the `Parse*` functions reports the error. In both cases, the top-level handler calls `SynchronizeToLineBoundary()`, which skips the rest of the current line so leftover input cannot be misinterpreted as a new top-level construct, preventing cascading errors.
+When parsing fails, skip to the end of the line so leftover tokens don't cause cascading errors.
 
-Now that we have all the pieces, let’s build a little driver that will let us actually execute this code we’ve built!
-
-## The Driver
-The driver now invokes the parser through a top-level dispatch loop. We removed the Chapter 1 token-printing loop for now. We will bring token-stream mode back later, after LLVM setup, with command-line switches (for example, parse-only vs token-print).
+## The Main Loop
 
 ```cpp
-/// mainloop = definition | external | expression | eol
 static void MainLoop() {
   while (true) {
-    // Don't print a prompt when we already know we're at EOF.
     if (CurTok == tok_eof)
       return;
 
     fprintf(stderr, "ready> ");
     switch (CurTok) {
-    case tok_eol: // Skip newlines
+    case tok_eol:
       getNextToken();
       continue;
     case tok_def:
@@ -998,67 +665,63 @@ static void MainLoop() {
 }
 ```
 
-Note that, as with Python, this is not legal:
-```python
-4 + 5
-* 6
-```
-In Python you could put the entire expression in delimiters or use an explicit continuation character `\`. We don't implement that just yet. 
+Read input, dispatch to the right parser, print success or error, repeat.
 
-## Compiling
+## Compile and Run
 
 ```bash
-cd code/chapter02 && \
-    cmake -S . -B build && \
-    cmake --build build
+cd code/chapter02
+cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && cmake --build build
+./build/pyxc
 ```
 
-### macOS / Linux shortcut
-
+Or use the shortcut:
 ```bash
-cd code/chapter02 && ./build.sh
+cd code/chapter02
+./build.sh
 ```
 
-## Sample interaction
+## Sample Session
 
 ```python
 $ build/pyxc
 ready> def foo(x,y): return x+foo(y, 4.0)
-ready> Parsed a function definition.
+Parsed a function definition.
 ready> def foo(x,y): return x+y y
-ready> Error: (Line: 2, Column: 26): Unexpected identifier 'y'
+Error: (Line: 2, Column: 26): Unexpected identifier 'y'
 def foo(x,y): return x+y y
                          ^~~~
-ready> def foo(x,y): return x+y )
-ready> Error: (Line: 3, Column: 26): Unexpected ')'
-def foo(x,y): return x+y )
-                         ^~~~
 ready> 10 + 20
-ready> Parsed a top-level expr
+Parsed a top-level expr
 ready> extern def sin(a)
-ready> Parsed an extern
+Parsed an extern
 ready> ^D
-$
 ```
 
-## Conclusion
+## What We Built
 
-With just under 600 lines of commented code, we defined our minimal language, including a lexer, parser, and AST builder. With this done, the executable will validate Pyxc code and tell us if it is grammatically invalid. 
+- **Grammar** - Formal definition of valid Pyxc syntax
+- **AST classes** - Represent code structure as a tree
+- **Recursive descent parser** - Converts tokens to AST
+- **Precedence climbing** - Handles operator precedence correctly
+- **Error recovery** - Provides clear error messages and continues parsing
 
-There is a lot of room for extension here. You can define new AST nodes, extend the language in many ways, etc. In the next installment, we will describe how to generate LLVM Intermediate Representation (IR) from the AST.
+With under 600 lines of code, we have a working parser that validates Pyxc syntax and builds a structured representation of the code.
+
+## What's Next
+
+The parser understands code structure, but doesn't execute anything yet. In Chapter 5, we'll generate LLVM IR from the AST—the first step toward actually running Pyxc code.
 
 ## Need Help?
 
-Stuck on something? Have questions about this chapter? Found an error?
+Stuck? Questions? Errors?
 
-- **Open an issue:** [GitHub Issues](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues) - Report bugs, errors, or problems
-- **Start a discussion:** [GitHub Discussions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions) - Ask questions, share tips, or discuss the tutorial
-- **Contribute:** Found a typo? Have a better explanation? [Pull requests](https://github.com/alankarmisra/pyxc-llvm-tutorial/pulls) are welcome!
+- **Issues:** [GitHub Issues](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues)
+- **Discussions:** [GitHub Discussions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
+- **Contribute:** Pull requests welcome!
 
-**When reporting issues, please include:**
-- The chapter you're working on
-- Your platform (e.g., macOS 14 M2, Ubuntu 24.04, Windows 11)
-- The complete error message or unexpected behavior
-- What you've already tried
-
-The goal is to make this tutorial work smoothly for everyone. Your feedback helps improve it for the next person!
+Include:
+- Chapter number
+- Your OS/platform
+- Full error message
+- What you tried

@@ -1,50 +1,85 @@
-# Chapter 26 Design Requirements
+# Chapter 24 Design Requirements
 
 ## Theme
-Separate compilation and multi-file linking workflow.
+C-style file I/O baseline using libc stdio file APIs.
 
 ## Goal
-Allow Pyxc to compile and link multiple translation units in one command for executable and object workflows.
+Add practical file read/write support to Pyxc so programs can open files, write text/binary data, read text/binary data, and close handles explicitly.
 
 ## Scope
 
 ### In Scope
-- Accept multiple positional input files.
-- Executable mode links all input translation units (+ runtime object).
-- Object mode compiles each input to a separate object file.
-- Token and interpret modes remain single-file only with clear diagnostics.
+- Auto-declared libc file APIs:
+  - `fopen(path, mode) -> ptr[void]`
+  - `fclose(file) -> i32`
+  - `fgets(buf, n, file) -> ptr[void]`
+  - `fputs(str, file) -> i32`
+  - `fread(buf, size, count, file) -> i64`
+  - `fwrite(buf, size, count, file) -> i64`
+- Opaque file handle representation via pointer type (`ptr[void]`-compatible)
+- Type validation for known file APIs at call sites
+- Full support for text and block I/O patterns using existing pointers/strings
 
 ### Out of Scope
-- Full preprocessor/include implementation.
-- Dependency graph/build system integration.
-- Symbol visibility attributes.
+- Structured exceptions or automatic resource cleanup
+- High-level file abstractions (streams/classes)
+- Buffered-state introspection APIs (`feof`, `ferror`, etc.)
+- Filesystem metadata APIs
 
-## CLI Requirements
-- Executable mode:
-  - `pyxc file1.pyxc file2.pyxc`
-  - `pyxc -o app file1.pyxc file2.pyxc`
-- Object mode:
-  - `pyxc -c file1.pyxc file2.pyxc`
+## Syntax Requirements
+- No new statement syntax required.
+- File operations use normal function-call syntax.
 
-## Linker Requirements
-- Linker helper accepts multiple object files.
-- Runtime object remains linked as before.
+Example:
+```py
+f: ptr[void] = fopen("out.txt", "w")
+fputs("hello\n", f)
+fclose(f)
+```
+
+## Lexer Requirements
+- No new tokens required for file I/O APIs.
+
+## Parser Requirements
+- Reuse existing call-expression parser.
+- No new grammar productions required beyond chapter23 baseline.
+
+## AST Requirements
+- No new AST node types required.
+
+## Semantic Requirements
+- Calls to known file APIs are auto-resolved even without user `extern` declarations.
+- Function-specific argument type checks:
+  - `fopen`: `(pointer, pointer)`
+  - `fclose`: `(pointer)`
+  - `fgets`: `(pointer, integer, pointer)`
+  - `fputs`: `(pointer, pointer)`
+  - `fread`/`fwrite`: `(pointer, integer, integer, pointer)`
+- Standard arity checks continue to apply.
+
+## LLVM Lowering Requirements
+- Declare file APIs as external functions with fixed signatures.
+- Lower calls through existing `CallExprAST` path after validation.
 
 ## Diagnostics Requirements
-- interpret mode with multiple files -> error
-- token mode with multiple files -> error
-- object mode with `-o` and multiple files -> error
+- Incorrect arity
+- Non-pointer argument passed where pointer required
+- Non-integer argument passed where integer required
 
 ## Tests
 
 ### Positive
-- two-file executable link with `extern def` declaration
-- multi-file object compilation emits both object paths
+- fopen + fputs + fclose text write
+- fopen + fgets + fclose text read
+- fwrite + fread roundtrip with explicit byte count
 
 ### Negative
-- token mode with multiple files errors
+- `fopen` with non-pointer mode/path
+- `fgets` with non-integer length
+- `fread`/`fwrite` with wrong argument types
+- `fclose` with non-pointer argument
 
 ## Done Criteria
-- Chapter 26 tests pass with multi-file support.
-- Chapter 25 behavior remains green.
-- Chapter docs updated.
+- Chapter 24 lit suite includes file I/O coverage and passes.
+- Chapter 23 behavior remains green under Chapter 24 compiler.
+- `chapter-24.md` documents chapter diff and implementation in tutorial style.
