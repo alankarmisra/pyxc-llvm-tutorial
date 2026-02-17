@@ -1,463 +1,355 @@
-# 19. Real Loop Control (while, do, break, continue) and Finishing Core Integer Operators
+---
+description: "Add a real print builtin without variadics, using the typed foundation to support useful output with safer and clearer semantics."
+---
+# 18. Pyxc: A Real print(...) Builtin (Without Variadics)
 
-Chapter 18 gave us a typed language with practical output (`print(...)`) and a solid test workflow.
+Chapter 18 gave us typed values, typed locals, pointer syntax, and ABI-correct extern signatures.
 
-Chapter 19 moves the language forward in two ways:
+In Chapter 19, we use that typed foundation to add something user-facing and practical: a language-level `print(...)` builtin.
 
-- control-flow expressiveness (`while`, `do-while`, `break`, `continue`)
-- operator completeness for common integer work (`~`, `%`, `&`, `^`, `|`)
-
-The key theme is still the same as Chapter 18: make targeted compiler changes, lock behavior with `lit` tests, and keep each feature small and understandable.
+The important constraint for this chapter is: **no general variadic functions yet**.
+`print(...)` is implemented as a compiler builtin statement, not as user-declared `extern def foo(...)` machinery.
 
 
 !!!note
     To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter19](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter19).
 
-## Grammar (EBNF)
-
-Chapter 19 extends statement grammar with `while`, `do ... while`, `break`, and `continue`.
-Operator additions (`~`, `%`, `&`, `^`, `|`) are expression-operator table changes, not new non-terminals.
-
-Reference: `code/chapter19/pyxc.ebnf`
-
-```ebnf
-statement      = if_stmt
-               | for_stmt
-               | while_stmt
-               | do_while_stmt
-               | break_stmt
-               | continue_stmt
-               | print_stmt
-               | return_stmt
-               | typed_assign_stmt
-               | assign_stmt
-               | expr_stmt ;
-
-while_stmt     = "while" , expression , ":" , suite ;
-do_while_stmt  = "do" , ":" , suite , "while" , expression ;
-break_stmt     = "break" ;
-continue_stmt  = "continue" ;
-```
-
 ## What Changed from Chapter 18
 
-If you compare:
+At a high level, Chapter 19 adds four things:
 
-- `code/chapter18/pyxc.cpp`
-- `code/chapter19/pyxc.cpp`
+- a new `print` keyword/token
+- parser support for `print(...)` as a statement
+- a dedicated `PrintStmtAST` lowering path
+- a new lit suite under `code/chapter19/test/`
 
-you will see Chapter 19 adds four layers:
-
-1. new lexer tokens/keywords for loop-control statements
-2. new AST statement nodes + parser paths for those statements
-3. loop-context plumbing in codegen so `break` and `continue` always know where to branch
-4. integer operator support in expression codegen for `%`, `&`, `^`, `|`, and unary `~`
-
-We also expanded the Chapter 19 test suite in `code/chapter19/test/` to cover both positive and negative cases.
+There is also one subtle type-system plumbing update: we carry extra signed/unsigned type hints so codegen can choose `printi32` vs `printu32` reliably.
 
 ## Language Surface in This Chapter
 
-New statement forms:
+Supported forms:
 
 ```py
-while cond:
-    body
+print()
+print(x)
+print(x, y, z)
 ```
 
-```py
-do:
-    body
-while cond
+Default formatting behavior:
+
+- separator between args: a single space (`" "`)
+- end of statement: newline (`"\n"`)
+
+Supported argument families in this implementation:
+
+- signed ints: `i8/i16/i32/i64`
+- unsigned ints: `u8/u16/u32/u64`
+- floats: `f32/f64`
+
+Current policy for pointers: rejected with a diagnostic.
+
+## Grammar (EBNF) Update
+
+Compared to Chapter 18, `statement` gained a `print_stmt` branch.
+
+```ebnf
+statement       = if_stmt
+                | for_stmt
+                | print_stmt
+                | return_stmt
+                | typed_assign_stmt
+                | assign_stmt
+                | expr_stmt ;
+
+print_stmt      = "print" , "(" , [ arg_list ] , ")" ;
 ```
 
-```py
-while cond:
-    if should_exit:
-        break
-    continue
-```
+This keeps `print` explicit in the grammar and avoids overloading generic call parsing for statement semantics.
 
-Additional operators supported in this chapter:
+## Tests First: New Chapter 19 lit Suite
 
-```py
-~x
-x % y
-x & y
-x ^ y
-x | y
-```
+Before implementation, we added a dedicated test harness and print-focused coverage.
 
-## Tests First: Chapter 19 lit Suite
+- `code/chapter19/test/lit.cfg.py`
+- `code/chapter19/test/print_basic_empty.pyxc`
+- `code/chapter19/test/print_basic_scalars.pyxc`
+- `code/chapter19/test/print_mixed_types.pyxc`
+- `code/chapter19/test/print_narrow_signed.pyxc`
+- `code/chapter19/test/print_unsigned_widths.pyxc`
+- `code/chapter19/test/print_error_unsupported_pointer.pyxc`
+- `code/chapter19/test/print_error_keyword_args.pyxc`
+- `code/chapter19/test/print_error_trailing_comma.pyxc`
 
-Before discussing implementation details, it helps to look at the behavior we pinned down in tests.
-
-Representative loop/control tests:
-
-- `code/chapter19/test/while_counting.pyxc`
-- `code/chapter19/test/do_while_runs_once.pyxc`
-- `code/chapter19/test/nested_break_outer_continue.pyxc`
-- `code/chapter19/test/continue_skips_body.pyxc`
-- `code/chapter19/test/break_outside_loop.pyxc`
-- `code/chapter19/test/continue_outside_loop.pyxc`
-- `code/chapter19/test/malformed_do_while.pyxc`
-
-Representative operator tests:
-
-- `code/chapter19/test/operator_modulo_signed.pyxc`
-- `code/chapter19/test/operator_bitwise_basic.pyxc`
-- `code/chapter19/test/operator_bitwise_precedence.pyxc`
-- `code/chapter19/test/operator_unary_bitnot.pyxc`
-- `code/chapter19/test/operator_error_modulo_float.pyxc`
-- `code/chapter19/test/operator_error_bitwise_float.pyxc`
-- `code/chapter19/test/operator_error_unary_bitnot_float.pyxc`
-
-Example positive loop test:
+Example positive test:
 
 ```py
 # RUN: %pyxc -i %s > %t 2>&1
-# RUN: grep -x '0' %t
-# RUN: grep -x '1' %t
-# RUN: grep -x '2' %t
+# RUN: grep -x -- '-4 42 3.500000 7.250000' %t
 # RUN: ! grep -q "Error (Line:" %t
 
 def main() -> i32:
-    i: i32 = 0
-    while i < 3:
-        print(i)
-        i = i + 1
+    si: i32 = -4
+    ui: u64 = 42
+    f1: f32 = 3.5
+    f2: f64 = 7.25
+    print(si, ui, f1, f2)
     return 0
 
 main()
 ```
 
-Example negative loop-control test:
+Example negative test:
 
 ```py
 # RUN: %pyxc -i %s > %t 2>&1
-# RUN: grep -q "break" %t
-# RUN: grep -q "outside of a loop" %t
+# RUN: grep -q "Error (Line:" %t
 
 def main() -> i32:
-    break
+    x: i32 = 7
+    p: ptr[i32] = addr(x)
+    print(p)
     return 0
 
 main()
 ```
 
-Example positive operator test:
+## Lexer Changes
 
-```py
-# RUN: %pyxc -i %s > %t 2>&1
-# RUN: grep -x '2 7 5' %t
-# RUN: ! grep -q "Error (Line:" %t
-
-def main() -> i32:
-    a: i32 = 6
-    b: i32 = 3
-    print(a & b, a | b, a ^ b)
-    return 0
-
-main()
-```
-
-## Lexer and Token Updates
-
-Chapter 19 adds dedicated loop-control tokens to the existing `Token` enum:
+`print` becomes a real token in Chapter 19.
 
 ```cpp
-tok_while = -28,
-tok_do = -29,
-tok_break = -30,
-tok_continue = -31,
-```
-
-Then it wires the corresponding keywords into the keyword map:
-
-```cpp
-{"and", tok_and}, {"print", tok_print},   {"while", tok_while},
-{"do", tok_do},   {"break", tok_break},   {"continue", tok_continue},
-{"or", tok_or}
-```
-
-The practical benefit is that parser dispatch stays explicit and straightforward: no special identifier heuristics are needed for these statements.
-
-## AST Additions for New Statements
-
-Chapter 18 already had dedicated statement nodes (`IfStmtAST`, `ForStmtAST`, `PrintStmtAST`, etc.).
-
-Chapter 19 continues that pattern with:
-
-```cpp
-class WhileStmtAST : public StmtAST { ... };
-class DoWhileStmtAST : public StmtAST { ... };
-class BreakStmtAST : public StmtAST { ... };
-class ContinueStmtAST : public StmtAST { ... };
-```
-
-Two subtle details are important:
-
-- `BreakStmtAST` and `ContinueStmtAST` return `true` from `isTerminator()`
-- they are statements, not expressions, so they slot naturally into suites/blocks
-
-That terminator flag keeps later codegen logic from accidentally adding extra fallthrough branches after a `break` or `continue`.
-
-## Parser Additions (Step by Step)
-
-`ParseStmt()` in Chapter 19 now dispatches loop-control forms directly:
-
-```cpp
-case tok_while:
-  return ParseWhileStmt();
-case tok_do:
-  return ParseDoWhileStmt();
-case tok_break:
-  return ParseBreakStmt();
-case tok_continue:
-  return ParseContinueStmt();
-```
-
-### Parsing while
-
-`while` follows the same design style as `if` and `for`:
-
-```cpp
-// while_stmt = "while" , expression , ":" , suite ;
-```
-
-The parser:
-
-1. consumes `while`
-2. parses the condition expression
-3. requires `:`
-4. parses a suite (inline or block)
-
-No surprises, and that consistency helps readability.
-
-### Parsing do-while
-
-The Chapter 19 grammar shape is:
-
-```cpp
-// do_while_stmt = "do" , ":" , suite , "while" , expression ;
-```
-
-The ordering matters here and is intentional:
-
-1. parse `do:`
-2. parse body suite first
-3. require trailing `while`
-4. parse condition expression
-
-That parse order directly matches post-test loop semantics.
-
-### Parsing break / continue
-
-Parse-time behavior is intentionally simple:
-
-```cpp
-getNextToken(); // eat break or continue
-return std::make_unique<BreakStmtAST>(Loc);
-```
-
-Syntactically this accepts the statement where it appears. Semantic validation (inside loop or not) is delayed to codegen, where loop nesting context is available.
-
-## Semantic Backbone: Loop Context Stack
-
-`break` and `continue` need target blocks, and those targets depend on which loop we are currently inside.
-
-Chapter 19 introduces:
-
-```cpp
-struct LoopContext {
-  BasicBlock *BreakTarget = nullptr;
-  BasicBlock *ContinueTarget = nullptr;
+enum Token {
+  // ...
+  tok_var = -15,
+  tok_print = -27,
+  // ...
 };
-static std::vector<LoopContext> LoopContextStack;
 ```
 
-Then it uses a small RAII helper:
+Keyword table update:
 
 ```cpp
-class LoopContextGuard {
+{"and", tok_and}, {"print", tok_print}, {"or", tok_or}
+```
+
+Token debug name support was also added:
+
+```cpp
+case tok_print:
+  return "<print>";
+```
+
+This is small, but it keeps the parser branch clean and diagnostics readable.
+
+## AST Changes: A Dedicated PrintStmtAST
+
+Instead of pretending `print` is a normal function call expression, Chapter 19 adds an explicit statement node:
+
+```cpp
+class PrintStmtAST : public StmtAST {
+  std::vector<std::unique_ptr<ExprAST>> Args;
+
 public:
-  LoopContextGuard(BasicBlock *BreakTarget, BasicBlock *ContinueTarget) {
-    LoopContextStack.push_back({BreakTarget, ContinueTarget});
-  }
-  ~LoopContextGuard() {
-    LoopContextStack.pop_back();
-  }
+  PrintStmtAST(SourceLocation Loc, std::vector<std::unique_ptr<ExprAST>> Args)
+      : StmtAST(Loc), Args(std::move(Args)) {}
+
+  Value *codegen() override;
 };
 ```
 
-This gives us clean behavior for nested loops:
+This keeps the semantics straightforward:
 
-- inner loop pushes its context
-- `break`/`continue` bind to the nearest loop (top of stack)
-- context is restored automatically when leaving the loop body
+- parse as statement
+- lower with statement behavior
+- return an ignored sentinel in IR plumbing (`0.0`), same style as other statement nodes
 
-## LLVM Lowering for Loop Control
+## Parser Changes
 
-### break and continue
+We added a `ParsePrintStmt()` function and wired it into `ParseStmt()`.
 
-Codegen first verifies loop context exists:
-
-```cpp
-if (LoopContextStack.empty())
-  return LogError<Value *>("`break` used outside of a loop");
-Builder->CreateBr(LoopContextStack.back().BreakTarget);
-```
-
-`continue` is the same shape, branching to `ContinueTarget`.
-
-This gives clear diagnostics for invalid usage and clean branches for valid usage.
-
-### while lowering
-
-The block layout is:
-
-- `while.cond`
-- `while.body`
-- `while.exit`
-
-Core structure:
+Core parse shape:
 
 ```cpp
-Builder->CreateBr(CondBB);
-Builder->SetInsertPoint(CondBB);
-CondV = ToBoolI1(Cond->codegen(), "whilecond");
-Builder->CreateCondBr(CondV, BodyBB, ExitBB);
+static std::unique_ptr<StmtAST> ParsePrintStmt() {
+  auto PrintLoc = CurLoc;
+  getNextToken(); // eat `print`
+  if (CurTok != '(')
+    return LogError<StmtPtr>("Expected '(' after print");
+  getNextToken(); // eat '('
 
-LoopContextGuard Guard(ExitBB, CondBB);
-Body->codegen();
-if (!Builder->GetInsertBlock()->getTerminator())
-  Builder->CreateBr(CondBB);
-```
+  std::vector<std::unique_ptr<ExprAST>> Args;
+  if (CurTok != ')') {
+    while (true) {
+      auto Arg = ParseExpression();
+      if (!Arg)
+        return nullptr;
+      Args.push_back(std::move(Arg));
 
-A useful consequence is that `continue` inside `while` naturally returns to condition evaluation.
+      if (CurTok == ')')
+        break;
+      if (CurTok != ',')
+        return LogError<StmtPtr>("Expected ')' or ',' in print argument list");
+      getNextToken();
+      if (CurTok == ')')
+        return LogError<StmtPtr>("Trailing comma is not allowed in print");
+    }
+  }
 
-### do-while lowering
-
-The block layout is:
-
-- `do.body`
-- `do.cond`
-- `do.exit`
-
-Core structure:
-
-```cpp
-Builder->CreateBr(BodyBB); // enter body first
-
-LoopContextGuard Guard(ExitBB, CondBB);
-Body->codegen();
-if (!Builder->GetInsertBlock()->getTerminator())
-  Builder->CreateBr(CondBB);
-
-CondV = ToBoolI1(Cond->codegen(), "docond");
-Builder->CreateCondBr(CondV, BodyBB, ExitBB);
-```
-
-The initial unconditional branch into `BodyBB` is the defining property: the loop body executes at least once.
-
-### Existing for behavior, now with continue correctness
-
-`for range(...)` already existed, but Chapter 19 adapts its loop context so `continue` targets the step block:
-
-```cpp
-LoopContextGuard Guard(EndLoopBB, StepBB);
-```
-
-So `continue` in a `for` body does what users expect:
-
-1. jump to step
-2. update induction variable
-3. re-check loop condition
-
-## Operator Coverage: %, &, ^, |, ~
-
-This chapter line also closes a practical operator gap.
-
-### Precedence table extension
-
-`BinopPrecedence` now includes:
-
-```cpp
-{'|', 7}, {'^', 8}, {'&', 9}, ... {'%', 40}
-```
-
-This preserves sensible C-style relative precedence among bitwise operators and keeps `%` at multiplicative precedence.
-
-### Unary ~
-
-Unary bit-not is now implemented for integers:
-
-```cpp
-case '~':
-  if (!OperandV->getType()->isIntegerTy())
-    return LogError<Value *>("Unary '~' requires integer operand");
-  return Builder->CreateNot(OperandV, "bnottmp");
-```
-
-If the operand is floating-point, the user gets a direct diagnostic.
-
-### Binary %, &, ^, |
-
-These are intentionally integer-only in this chapter.
-
-First, codegen detects operators that require integer operands:
-
-```cpp
-bool RequiresIntOnly = (Op == '%' || Op == '&' || Op == '^' || Op == '|');
-```
-
-Then it enforces type rules with explicit diagnostics:
-
-```cpp
-if (!(L->getType()->isIntegerTy() && R->getType()->isIntegerTy())) {
-  if (Op == '%')
-    return LogError<Value *>("Modulo operator '%' requires integer operands");
-  return LogError<Value *>("Bitwise operators require integer operands");
+  getNextToken(); // eat ')'
+  return std::make_unique<PrintStmtAST>(PrintLoc, std::move(Args));
 }
 ```
 
-After harmonizing integer widths, lowering is direct:
+And dispatch in statement parsing:
 
 ```cpp
-case '%': return Builder->CreateSRem(L, R, "modtmp");
-case '&': return Builder->CreateAnd(L, R, "andtmp");
-case '^': return Builder->CreateXor(L, R, "xortmp");
-case '|': return Builder->CreateOr(L, R, "ortmp");
+case tok_print:
+  return ParsePrintStmt();
 ```
 
-## Validation Commands
+## Why Extra Type Hints Were Needed
 
-Run the Chapter 19 suite:
+In LLVM IR, both `i32` and `u32` are just `i32` values. Width alone does not preserve signedness intent.
 
-```bash
-lit -sv code/chapter19/test
+For print helper selection, that matters:
+
+- signed 32-bit should call `printi32`
+- unsigned 32-bit should call `printu32`
+
+So Chapter 19 extends expression/type hint plumbing and variable bindings with leaf-type metadata.
+
+### New expression hooks
+
+```cpp
+virtual std::string getBuiltinLeafTypeHint() const { return ""; }
+virtual std::string getPointeeBuiltinLeafTypeHint() const { return ""; }
 ```
 
-Optional: verify Chapter 18 behavior in the same environment:
+### Extended variable binding
 
-```bash
-lit -sv -j 1 code/chapter18/test
+```cpp
+struct VarBinding {
+  AllocaInst *Alloca = nullptr;
+  Type *Ty = nullptr;
+  Type *PointeeTy = nullptr;
+  std::string BuiltinLeafTy;
+  std::string PointeeBuiltinLeafTy;
+};
 ```
 
-(`-j 1` can be useful if your local setup shows parallel-test flakiness.)
+### Typed assignment now stores these hints
 
-## Closing Thoughts
+```cpp
+NamedValues[Name] = {Alloca, DeclTy, ResolvePointeeTypeExpr(DeclType),
+                     ResolveBuiltinLeafName(DeclType),
+                     ResolvePointeeBuiltinLeafName(DeclType)};
+```
 
-Chapter 19 is a good example of incremental compiler growth.
+This is what lets print codegen preserve signed/unsigned helper choice for typed values and pointer-indexed values.
 
-We did not redesign the compiler. We extended the existing architecture in place:
+## Print Codegen: Helper Dispatch Strategy
 
-- lexer: a few new tokens
-- parser: a few new statement branches
-- AST: a few new statement nodes
-- codegen: explicit loop context and branch targets
-- tests: concrete behavior first, including failure paths
+The codegen path does not use user-level variadics. It does this instead:
 
-By the end of the chapter, control flow is much closer to what users expect in day-to-day code, and integer expression support is meaningfully more complete.
+1. codegen each argument expression
+2. infer helper symbol by LLVM type + leaf hint
+3. emit `call print*` for the arg
+4. emit separator (`printchard(32)`) between args
+5. emit newline (`printchard(10)`) at end
+
+### Helper resolution
+
+```cpp
+static Function *GetPrintHelperForArg(Type *ArgTy, const std::string &LeafHint) {
+  if (ArgTy->isFloatTy())
+    return GetOrCreatePrintHelper("printfloat32", ArgTy, false);
+  if (ArgTy->isDoubleTy())
+    return GetOrCreatePrintHelper("printfloat64", ArgTy, false);
+  if (!ArgTy->isIntegerTy())
+    return nullptr;
+
+  bool IsUnsigned = !LeafHint.empty() && LeafHint[0] == 'u';
+  unsigned W = ArgTy->getIntegerBitWidth();
+  switch (W) {
+  case 8:  return GetOrCreatePrintHelper(IsUnsigned ? "printu8"  : "printi8",  ArgTy, IsUnsigned);
+  case 16: return GetOrCreatePrintHelper(IsUnsigned ? "printu16" : "printi16", ArgTy, IsUnsigned);
+  case 32: return GetOrCreatePrintHelper(IsUnsigned ? "printu32" : "printi32", ArgTy, IsUnsigned);
+  case 64: return GetOrCreatePrintHelper(IsUnsigned ? "printu64" : "printi64", ArgTy, IsUnsigned);
+  default: return nullptr;
+  }
+}
+```
+
+### Statement lowering loop
+
+```cpp
+for (size_t I = 0; I < Args.size(); ++I) {
+  Value *ArgV = Args[I]->codegen();
+  Type *ArgTy = ArgV->getType();
+
+  if (ArgTy->isPointerTy())
+    return LogError<Value *>("Unsupported print argument type: pointer");
+
+  Function *PrintF = GetPrintHelperForArg(ArgTy, Args[I]->getBuiltinLeafTypeHint());
+  if (!PrintF)
+    return LogError<Value *>("Unsupported print argument type");
+
+  Value *CastArg = CastValueTo(ArgV, PrintF->getFunctionType()->getParamType(0));
+  Builder->CreateCall(PrintF, {CastArg});
+
+  if (I + 1 < Args.size())
+    Builder->CreateCall(PrintCharF, {ConstantFP::get(*TheContext, APFloat(32.0))});
+}
+
+Builder->CreateCall(PrintCharF, {ConstantFP::get(*TheContext, APFloat(10.0))});
+```
+
+## Diagnostics in This Chapter
+
+The print implementation now reports meaningful errors for:
+
+- malformed syntax (for example, bad separator usage via unsupported keyword syntax)
+- trailing comma in this MVP parser path
+- unsupported argument kinds (notably pointers)
+
+Representative messages include:
+
+- `Expected ')' or ',' in print argument list`
+- `Trailing comma is not allowed in print`
+- `Unsupported print argument type: pointer`
+- `Unsupported print argument type`
+
+## Chapter 19 Test Outcomes
+
+The new chapter18 suite validates:
+
+- `print()` newline-only behavior
+- basic scalar spacing/newline behavior
+- mixed signed/unsigned/float dispatch
+- narrow signed integer paths (`i8`, `i16`)
+- wide unsigned paths (`u32`, `u64`)
+- key negative behavior (pointer args, unsupported keyword usage, trailing comma)
+
+Status after implementation: all Chapter 19 lit tests pass.
+
+## Recap
+
+Chapter 19 intentionally avoids general variadics while still delivering ergonomic output.
+
+The key design choices were:
+
+- treat `print` as a language builtin statement
+- lower each argument with type-directed helper dispatch
+- preserve signedness intent with lightweight leaf-type hints
+- lock behavior with a dedicated lit suite before codegen work
+
+This keeps the compiler architecture clean and gives us a practical builtin today, while leaving room to add true user-defined variadics later.
+
+## Repository Link
+
+You can browse the full project directly here:
+
+- [pyxc-llvm-tutorial on GitHub](https://github.com/alankarmisra/pyxc-llvm-tutorial)
 
 ## Build and Test (Chapter 19)
 
@@ -470,15 +362,22 @@ cd code/chapter19 && ./build.sh
 Run the chapter test suite:
 
 ```bash
-lit -sv test
+llvm-lit -sv test
 ```
 
-If you also want to sanity-check the previous chapter in the same environment:
+If you want to sanity-check compatibility with the previous chapter as well:
 
 ```bash
 cd ../chapter17 && ./build.sh
-lit -sv -j 1 test
+llvm-lit -sv test
 ```
+
+Try writing a few of your own `print` tests in `code/chapter19/test/` too. A good way to check your understanding is to add both:
+
+- positive cases (mixed types, nested expressions, computed values)
+- negative cases (unsupported types, malformed argument lists)
+
+When your own tests pass and fail exactly where you expect, the implementation model usually clicks.
 
 
 ## Compile / Run / Test (Hands-on)
@@ -492,7 +391,7 @@ cd code/chapter19 && ./build.sh
 Run one sample program:
 
 ```bash
-code/chapter19/pyxc -i code/chapter19/test/break_outside_loop.pyxc
+code/chapter19/pyxc -i code/chapter19/test/print_basic_empty.pyxc
 ```
 
 Run the chapter tests (when a test suite exists):
@@ -502,7 +401,7 @@ cd code/chapter19/test
 lit -sv .
 ```
 
-Try editing a test or two and see how quickly you can predict the outcome.
+Poke around the tests and tweak a few cases to see what breaks first.
 
 When you're done, clean artifacts:
 

@@ -35,12 +35,9 @@ struct_decl     = "struct" , identifier , ":" , newline , indent ,
 struct_field    = identifier , ":" , type_expr ;
 
 type_expr       = pointer_type
-                | array_type
                 | base_type ;
 
 pointer_type    = "ptr" , "[" , type_expr , "]" ;
-array_type      = "array" , "[" , type_expr , "," , array_size , "]" ;
-array_size      = number ;
 
 base_type       = builtin_type
                 | identifier ;

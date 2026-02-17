@@ -1,90 +1,90 @@
 # Chapter 21 Design Requirements
 
 ## Theme
-Dynamic heap allocation with explicit `malloc`/`free` language builtins.
+Fixed-size arrays as first-class typed aggregates.
 
 ## Goal
-Add practical dynamic memory support to Pyxc using typed allocation and explicit deallocation, while preserving Chapter 20 structs/arrays behavior.
+Add static arrays to Pyxc with explicit type-level sizes and element indexing while preserving Chapter 20 struct behavior.
 
 ## Scope
 
 ### In Scope
-- Typed allocation expression:
-  - `malloc[T](count)`
-- Deallocation statement:
-  - `free(ptr_expr)`
-- Works with scalar, struct, and array element types
-- Interacts with existing indexing/member access:
-  - `p[0].x = ...`
+- Array type syntax in type positions:
+  - `array[ElemType, N]`
+- Typed locals and fields using array types
+- Array indexing for load/store:
+  - `a[i]`
+  - `s.arr[i]`
+- Nested composition:
+  - arrays of structs
+  - structs containing arrays
+- Existing pointer indexing remains supported
 
 ### Out of Scope
-- Garbage collection
-- Smart pointers / ownership model
-- `realloc`/`calloc`
-- Lifetime analysis / leak diagnostics
+- Dynamic arrays
+- Array literals/initializer lists
+- Slices/views
+- Runtime bounds checking (this chapter)
 
 ## Syntax Requirements
 
-### Malloc expression
+### Array type
 ```py
-p: ptr[i32] = malloc[i32](4)
+a: array[i32, 4]
 ```
 
-### Free statement
+### Indexing
 ```py
-free(p)
+a[0] = 10
+print(a[0])
 ```
 
 ## Lexer Requirements
-- Add keywords/tokens:
-  - `tok_malloc`
-  - `tok_free`
+- No new keyword required.
+- `array` is recognized via type parser in type contexts.
 
 ## Parser Requirements
-- Add malloc parser:
-  - `ParseMallocExpr()`
-- Add free statement parser:
-  - `ParseFreeStmt()`
-- Extend `ParsePrimary()` to accept `malloc` expression form.
-- Extend `ParseStmt()` dispatch with `free` statement.
+- Extend `type_expr` parser to recognize `array[ type_expr , <int-literal> ]`.
+- Enforce compile-time integer literal size.
+- Reuse existing indexing expression syntax.
 
 ## AST Requirements
-- Add nodes:
-  - `MallocExprAST(ElemType, CountExpr)`
-  - `FreeStmtAST(PtrExpr)`
+- Extend `TypeExpr` to represent array type with:
+  - element type
+  - constant length
 
 ## Semantic Requirements
-- `malloc[T](count)`:
-  - `T` must resolve to a non-void type.
-  - `count` must be integer-like.
-  - expression result is pointer-typed and carries pointee type hint `T`.
-- `free(ptr_expr)`:
-  - operand must be pointer-typed.
+- Array size must be a positive integer literal.
+- Array indexing base must be either:
+  - pointer type (existing behavior), or
+  - array type (new behavior)
+- Index expression must be integer-like.
 
 ## LLVM Lowering Requirements
-- `malloc` lowers to runtime/extern `malloc` call with byte count:
-  - `bytes = count * sizeof(T)`
-- `free` lowers to runtime/extern `free` call.
-- Use module data layout for `sizeof(T)`.
+- Lower `array[T, N]` to `llvm::ArrayType::get(T, N)`.
+- For array indexing, lower address as GEP:
+  - `[0, idx]` on the array alloca/field address.
+- Pointer indexing continues to use pointer GEP behavior.
 
 ## Diagnostics Requirements
-- Non-integer malloc count
-- Unknown/void malloc element type
-- `free` called with non-pointer expression
-- Syntax errors in `malloc[T](count)` and `free(expr)` forms
+- Invalid array size (missing/non-integer/non-positive)
+- Indexing non-pointer/non-array base
+- Non-integer index expression
 
 ## Tests
 
 ### Positive
-- malloc/free for scalar pointer + indexed writes/reads
-- malloc/free for struct pointer + field writes/reads
-- malloc/free for array element types where indexing/member chains work
+- Basic local array load/store
+- Array alias type
+- Struct field array indexing
+- Array of structs with field access through indexed element
 
 ### Negative
-- malloc with float count
-- free with non-pointer argument
+- Float/non-integer index
+- Invalid array size literal
+- Indexing non-array/non-pointer
 
 ## Done Criteria
-- Chapter 21 lit suite includes malloc/free coverage and passes
-- Chapter 20 behavior remains green under Chapter 21 compiler
+- Chapter 21 lit suite includes array coverage and is green
+- Chapter 20 suite behavior remains intact under Chapter 21 compiler
 - `chapter-21.md` documents chapter diff and implementation

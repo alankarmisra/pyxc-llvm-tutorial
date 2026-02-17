@@ -12,7 +12,7 @@ It is designed to be readable like Python, but much closer to C in behavior and 
 
 ## What this repo is
 
-- A step-by-step compiler construction tutorial (`chapter-00.md` ... `chapter-27.md`).
+- A step-by-step compiler construction tutorial (`chapter-00.md` ... `chapter-28.md`).
 - Full source code per chapter (`code/chapterXX`), so you can compare progression.
 - A language tutorial (in progress) for writing non-trivial programs in `pyxc`.
 
@@ -109,7 +109,7 @@ This is the vibe of `pyxc`: Pythonic syntax, C-like control.
 Use any chapter directory you want to explore.
 
 ```bash
-cd code/chapter27
+cd code/chapter28
 make
 ./pyxc -i test/malloc_struct_roundtrip.pyxc
 ```
@@ -117,7 +117,7 @@ make
 To run chapter tests (where available):
 
 ```bash
-cd code/chapter27/test
+cd code/chapter28/test
 lit -sv .
 ```
 
@@ -125,11 +125,11 @@ lit -sv .
 
 ```text
 .
-├── chapter-00.md ... chapter-27.md   # tutorial text
+├── chapter-00.md ... chapter-28.md   # tutorial text
 ├── code/
-│   ├── chapter12/
 │   ├── chapter13/
-│   └── ... chapter27/
+│   ├── chapter14/
+│   └── ... chapter28/
 └── README.md
 ```
 

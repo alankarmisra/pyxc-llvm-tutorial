@@ -1,90 +1,125 @@
 # Chapter 20 Design Requirements
 
 ## Theme
-Fixed-size arrays as first-class typed aggregates.
+Structured data with named fields.
 
 ## Goal
-Add static arrays to Pyxc with explicit type-level sizes and element indexing while preserving Chapter 19 struct behavior.
+Add first-class `struct` support to Pyxc with typed field access and assignment while preserving all Chapter 19 behavior.
 
 ## Scope
 
 ### In Scope
-- Array type syntax in type positions:
-  - `array[ElemType, N]`
-- Typed locals and fields using array types
-- Array indexing for load/store:
-  - `a[i]`
-  - `s.arr[i]`
-- Nested composition:
-  - arrays of structs
-  - structs containing arrays
-- Existing pointer indexing remains supported
+- Top-level struct declarations:
+  - `struct Name:` followed by indented typed field declarations
+- Struct types usable in typed locals and function signatures
+- Field read access: `obj.field`
+- Field assignment: `obj.field = expr`
+- Nested field access (e.g. `outer.inner.x`)
+- Struct type aliases via existing `type Alias = StructName`
 
 ### Out of Scope
-- Dynamic arrays
-- Array literals/initializer lists
-- Slices/views
-- Runtime bounds checking (this chapter)
+- Struct literals/constructors
+- Methods/member functions
+- Inheritance
+- Packed/bitfield layout controls
+- Generic structs
 
 ## Syntax Requirements
 
-### Array type
+### Struct declaration
 ```py
-a: array[i32, 4]
+struct Point:
+    x: i32
+    y: i32
 ```
 
-### Indexing
+### Local declaration and field assignment
 ```py
-a[0] = 10
-print(a[0])
+p: Point
+p.x = 10
+p.y = 20
+```
+
+### Field read
+```py
+print(p.x, p.y)
 ```
 
 ## Lexer Requirements
-- No new keyword required.
-- `array` is recognized via type parser in type contexts.
+- Add keyword token:
+  - `tok_struct`
+- Ensure `.` can be tokenized for member access (and not consumed as a malformed number).
 
 ## Parser Requirements
-- Extend `type_expr` parser to recognize `array[ type_expr , <int-literal> ]`.
-- Enforce compile-time integer literal size.
-- Reuse existing indexing expression syntax.
+- Add top-level parser:
+  - `ParseStructDecl()`
+- Extend top-level dispatch to accept `struct` declarations.
+- Extend postfix parsing to handle member access:
+  - `postfix_expr '.' identifier`
+- Preserve existing call/index postfix chaining behavior.
 
 ## AST Requirements
-- Extend `TypeExpr` to represent array type with:
-  - element type
-  - constant length
+- Add member access expression node:
+  - `MemberExprAST(BaseExpr, FieldName)`
+- Member expression must support:
+  - value codegen (field load)
+  - address codegen (for assignment lvalue path)
+  - type hints for downstream operations (`print`, casts, etc.)
 
 ## Semantic Requirements
-- Array size must be a positive integer literal.
-- Array indexing base must be either:
-  - pointer type (existing behavior), or
-  - array type (new behavior)
-- Index expression must be integer-like.
+- Maintain a struct declaration table with:
+  - declaration order
+  - field names
+  - field type expressions
+  - per-struct LLVM type cache
+- Reject duplicate struct names.
+- Reject duplicate field names inside a struct.
+- Reject unknown field names in member access.
+- Reject member access on non-struct types.
+- Keep current assignment/lvalue rules: field assignment requires addressable base.
 
 ## LLVM Lowering Requirements
-- Lower `array[T, N]` to `llvm::ArrayType::get(T, N)`.
-- For array indexing, lower address as GEP:
-  - `[0, idx]` on the array alloca/field address.
-- Pointer indexing continues to use pointer GEP behavior.
+- Lower each struct declaration to an LLVM `StructType`.
+- Resolve field types in declaration order.
+- Lower `obj.field` address as struct GEP to field index.
+- Lower field read as load from computed field address.
+- Lower field assignment through existing assignment codepath (`codegenAddress` + store).
+
+## Interaction Requirements
+- Existing Chapter 19 loop/control/operator behavior remains unchanged.
+- Existing type aliases continue to work and may alias structs.
+- Existing pointer/indexing behavior remains unchanged.
 
 ## Diagnostics Requirements
-- Invalid array size (missing/non-integer/non-positive)
-- Indexing non-pointer/non-array base
-- Non-integer index expression
+- Duplicate struct declaration
+- Duplicate field in struct
+- Unknown struct type in typed declaration/signature
+- Unknown field name on struct
+- Member access on non-struct value
+- Missing/invalid struct declaration syntax (`:`, indent, field type)
 
 ## Tests
 
 ### Positive
-- Basic local array load/store
-- Array alias type
-- Struct field array indexing
-- Array of structs with field access through indexed element
+- Basic struct with two scalar fields
+- Nested structs and chained field access
+- Struct alias usage (`type P = Point`)
+- Field assignment + readback in loops/conditionals
 
 ### Negative
-- Float/non-integer index
-- Invalid array size literal
-- Indexing non-array/non-pointer
+- Unknown field access
+- Member access on non-struct value
+- Duplicate field in struct declaration
+- Duplicate struct declaration name
 
 ## Done Criteria
-- Chapter 20 lit suite includes array coverage and is green
-- Chapter 19 suite behavior remains intact under Chapter 20 compiler
-- `chapter-20.md` documents chapter diff and implementation
+- Chapter 20 lit suite includes struct coverage and passes
+- Chapter 19 behavior remains green under Chapter 20 compiler
+- `chapter-20.md` documents the feature and code diffs from Chapter 19
+
+## Implementation Sequencing Notes
+1. Copy Chapter 19 baseline into `code/chapter20/`
+2. Add struct token + declaration parser
+3. Add member access AST + codegen
+4. Add struct type resolution/cache
+5. Add tests and harden diagnostics

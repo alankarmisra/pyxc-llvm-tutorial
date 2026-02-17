@@ -1,63 +1,85 @@
 # Chapter 24 Design Requirements
 
 ## Theme
-Immutable value bindings via `const` declarations.
+C-style file I/O baseline using libc stdio file APIs.
 
 ## Goal
-Add first-class constant declarations to Pyxc so values can be explicitly immutable after initialization.
+Add practical file read/write support to Pyxc so programs can open files, write text/binary data, read text/binary data, and close handles explicitly.
 
 ## Scope
 
 ### In Scope
-- `const` declaration statement syntax:
-  - `const name: type = expression`
-- Requires initializer expression
-- Binds immutable variable in current scope
-- Assignment to const variable is rejected
-- Works with scalar/pointer/aggregate-compatible declaration types
+- Auto-declared libc file APIs:
+  - `fopen(path, mode) -> ptr[void]`
+  - `fclose(file) -> i32`
+  - `fgets(buf, n, file) -> ptr[void]`
+  - `fputs(str, file) -> i32`
+  - `fread(buf, size, count, file) -> i64`
+  - `fwrite(buf, size, count, file) -> i64`
+- Opaque file handle representation via pointer type (`ptr[void]`-compatible)
+- Type validation for known file APIs at call sites
+- Full support for text and block I/O patterns using existing pointers/strings
 
 ### Out of Scope
-- Compile-time constant folding requirements for initializer
-- Global const linkage model
-- Deep immutability of pointee/aggregate contents
+- Structured exceptions or automatic resource cleanup
+- High-level file abstractions (streams/classes)
+- Buffered-state introspection APIs (`feof`, `ferror`, etc.)
+- Filesystem metadata APIs
 
 ## Syntax Requirements
+- No new statement syntax required.
+- File operations use normal function-call syntax.
+
+Example:
 ```py
-const x: i32 = 42
-const p: ptr[i8] = "hello"
+f: ptr[void] = fopen("out.txt", "w")
+fputs("hello\n", f)
+fclose(f)
 ```
 
 ## Lexer Requirements
-- Add `const` keyword token.
+- No new tokens required for file I/O APIs.
 
 ## Parser Requirements
-- Add parser for const declaration statement.
-- `const` declarations are statement-level (same scope model as local typed declarations).
+- Reuse existing call-expression parser.
+- No new grammar productions required beyond chapter23 baseline.
 
 ## AST Requirements
-- Add `ConstAssignStmtAST(Name, DeclType, InitExpr)`.
+- No new AST node types required.
 
 ## Semantic Requirements
-- `const` declarations must provide initializer.
-- Reassignment to const variable name is diagnostic error.
-- Existing typed variable behavior unchanged for non-const declarations.
+- Calls to known file APIs are auto-resolved even without user `extern` declarations.
+- Function-specific argument type checks:
+  - `fopen`: `(pointer, pointer)`
+  - `fclose`: `(pointer)`
+  - `fgets`: `(pointer, integer, pointer)`
+  - `fputs`: `(pointer, pointer)`
+  - `fread`/`fwrite`: `(pointer, integer, integer, pointer)`
+- Standard arity checks continue to apply.
+
+## LLVM Lowering Requirements
+- Declare file APIs as external functions with fixed signatures.
+- Lower calls through existing `CallExprAST` path after validation.
 
 ## Diagnostics Requirements
-- Missing const initializer.
-- Assignment to const variable.
+- Incorrect arity
+- Non-pointer argument passed where pointer required
+- Non-integer argument passed where integer required
 
 ## Tests
 
 ### Positive
-- const scalar usage
-- const pointer usage
-- const in arithmetic/branch conditions
+- fopen + fputs + fclose text write
+- fopen + fgets + fclose text read
+- fwrite + fread roundtrip with explicit byte count
 
 ### Negative
-- const declaration without initializer
-- assignment to const variable
+- `fopen` with non-pointer mode/path
+- `fgets` with non-integer length
+- `fread`/`fwrite` with wrong argument types
+- `fclose` with non-pointer argument
 
 ## Done Criteria
-- Chapter 24 lit suite includes const coverage and passes.
-- Chapter 23 behavior remains green.
-- Chapter 24 docs/chapter summary added.
+- Chapter 24 lit suite includes file I/O coverage and passes.
+- Chapter 23 behavior remains green under Chapter 24 compiler.
+- `chapter-24.md` documents chapter diff and implementation in tutorial style.

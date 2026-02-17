@@ -1,12 +1,27 @@
+---
+description: "Generate LLVM IR from the AST: lower literals, variables, binary expressions, calls, prototypes, and functions into verified IR using IRBuilder."
+---
 # 5. Pyxc: Code generation to LLVM IR
 
 ## Introduction
 
-Welcome to Chapter 5 of the [Pyxc: My First Language Frontend with LLVM](chapter-00.md) tutorial. This chapter shows you how to transform the Abstract Syntax Tree built in [Chapter 2](chapter-02.md), into LLVM IR. This will teach you a little bit about how LLVM does things, as well as demonstrate how easy it is to use. It’s much more work to build a lexer and parser than it is to generate LLVM IR code. :)
+Welcome to Chapter 5 of the [Pyxc: My First Language Frontend with LLVM](chapter-00.md) tutorial. This chapter shows you how to transform the Abstract Syntax Tree built in [Chapter 2](chapter-02.md) into LLVM IR. You'll see how straightforward it is to generate IR—it's actually easier than building the lexer and parser.
 
 ## Source Code
 
 To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter05](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter05).
+
+## Why do we need IR at all?
+
+If we were building a compiler for exactly one machine, one OS, and one calling convention forever, we could go straight from AST to machine code and stop there.
+
+Real life is messier than that. We have macOS/Linux/Windows, x86/ARM, different linkers, different object formats, and different optimization needs. An intermediate representation gives us a stable middle layer:
+
+- Frontend: parse language constructs into a semantic graph (our AST).
+- Middle: lower AST into a target-independent form (LLVM IR).
+- Backend: turn that IR into object code for many supported targets.
+
+So IR is not “extra ceremony.” It is the layer that lets one frontend work across many platforms and optimization pipelines.
 
 ## What is Internal Representation (IR)?
 
@@ -25,40 +40,9 @@ entry:
 }
 ```
 
-Let's break this down piece by piece:
-
-### Understanding LLVM IR Syntax
-
-**Type annotations everywhere:**
-Since all our values are `double` and all our functions return `double`, you can see the IR explicitly annotates types. LLVM is strongly typed—every value must have a type.
-
-**`fadd` means "floating-point add":**
-LLVM has different instructions for different data types. `fadd` performs floating-point addition (for `float` and `double` types). If we were working with integers, we'd use `add` instead. Other floating-point operations include:
-- `fsub` - floating-point subtraction
-- `fmul` - floating-point multiplication
-- `fdiv` - floating-point division
-- `fcmp` - floating-point comparison
-
-**Variable naming in LLVM:**
-LLVM uses prefixes to distinguish different kinds of values:
-- **`%name`** - Local variables/values (SSA registers) within a function. Examples: `%a`, `%b`, `%addtmp`
-- **`@name`** - Global symbols like function names. Examples: `@add`, `@foo`, `@cos`
-
-The `%` prefix tells you this is a local SSA value that exists only within the current function. The `@` prefix indicates a global identifier visible across the entire module.
-
-**Why do we need `%addtmp`?**
-You might wonder: "Why create a temporary variable to hold the result of `a + b`? Why not just return the addition directly?"
-
-The answer is: **Static Single Assignment (SSA) form**. In SSA, every variable can only be assigned once. The `fadd` instruction computes a result and assigns it to `%addtmp`. That value is then used by the `ret` instruction. This intermediate value is required by SSA—we can't perform the addition "inline" in the return statement.
-
-Let's explore why this matters in a dedicated section at the end of this chapter.
-
-## Handwritten IR
-Now it's completely possible to take our AST and emit this IR directly. However, LLVM saves us from this by providing us with builders that allow us to abstract away the IR related semantics and focus on building our tree.
-
+Don't worry about the syntax details yet — we'll break down what all these pieces mean in a later chapter. For now, just notice how clean and readable it is.
 
 ## Code Generation Setup
-
 In order to generate LLVM IR, we want some simple setup to get started. First we define virtual code generation (codegen) methods in each AST class:
 
 ```cpp
@@ -80,7 +64,7 @@ public:
 ...
 ```
 
-The codegen() method says to emit IR for that AST node along with all the things it depends on, and they all return an LLVM Value object. “Value” is the class used to represent a [Static Single Assignment (SSA) register](http://en.wikipedia.org/wiki/Static_single_assignment_form) or “SSA value” in LLVM. The most distinct aspect of SSA values is that their value is computed as the related instruction executes, and it does not get a new value until (and if) the instruction re-executes. In other words, there is no way to “change” an SSA value. For more information, please read up on [Static Single Assignment](http://en.wikipedia.org/wiki/Static_single_assignment_form) - the concepts are really quite natural once you grok them.
+The `codegen()` method means: "emit LLVM IR for this AST node and return the resulting LLVM `Value*`." `Value*` is the handle for whatever value was produced by the node — whether that's a constant, a function argument, or the result of an instruction.
 
 ```cpp
 static std::unique_ptr<LLVMContext> TheContext;
@@ -89,18 +73,17 @@ static std::unique_ptr<Module> TheModule;
 static std::map<std::string, Value *> NamedValues;
 ```
 
-The static variables will be used during code generation. TheContext is an opaque object that owns a lot of core LLVM data structures, such as the type and constant value tables. We don’t need to understand it in detail, we just need a single instance to pass into APIs that require it.
+These globals handle code generation:
 
-The Builder object is a helper object that makes it easy to generate LLVM instructions. Instances of the [IRBuilder](https://llvm.org/doxygen/IRBuilder_8h_source.html) class template keep track of the current place to insert instructions and has methods to create new instructions.
+- **`TheContext`**: LLVM's environment object. Many LLVM APIs need it, so we create one and pass it around.
+- **`Builder`**: Creates LLVM instructions. Provides methods like `CreateFAdd()` and tracks where to insert them.
+- **`TheModule`**: Container for all our functions and their IR.
+- **`NamedValues`**: Maps variable names (like `"a"` or `"x"`) to their IR values (the `Value*` representing them). For now, only function parameters go in here.
 
-TheModule is an LLVM construct that contains functions and global variables. In many ways, it is the top-level structure that the LLVM IR uses to contain code. It will own the memory for all of the IR that we generate, which is why the codegen() method returns a raw Value*, rather than a unique_ptr<Value>.
-
-The NamedValues map keeps track of which values are defined in the current scope and what their LLVM representation is. (In other words, it is a symbol table for the code). In this form of Pyxc, the only things that can be referenced are function parameters. As such, function parameters will be in this map when generating code for their function body.
-
-With these basics in place, we can start talking about how to generate code for each expression. Note that this assumes that the Builder has been set up to generate code into something. For now, we’ll assume that this has already been done, and we’ll just use it to emit code.
+With this setup, we can generate code for each AST node.
 
 ## Expression Code Generation
-Generating LLVM code for expression nodes is very straightforward: less than 45 lines of commented code for all four of our expression nodes. First we’ll do numeric literals:
+Generating LLVM code for expression nodes is straightforward. First we’ll do numeric literals:
 
 ```cpp
 Value *NumberExprAST::codegen() {
@@ -108,19 +91,21 @@ Value *NumberExprAST::codegen() {
 }
 ```
 
-In the LLVM IR, numeric constants are represented with the ConstantFP class, which holds the numeric value in an APFloat internally (APFloat has the capability of holding floating point constants of Arbitrary Precision). This code basically just creates and returns a ConstantFP. Note that in the LLVM IR that constants are all uniqued together and shared. For this reason, the API uses the “foo::get(…)” idiom instead of “new foo(..)” or “foo::Create(..)”.
+This creates a floating-point constant in LLVM IR. We call `ConstantFP::get()` with our `double` value, and LLVM gives us back a `Value*` representing that constant.
+
+**Why `Value*` instead of `double`?** We're not computing values—we're building IR that *represents* a computation. A `Value*` is LLVM's way of saying "here's a reference to a value in the IR." It might be a constant like `3.14`, or a function parameter like `%a`, or the result of an instruction like `%addtmp`. The actual number isn't computed until the code runs; right now we're just building the structure that describes how to compute it.
 
 ```cpp
 Value *VariableExprAST::codegen() {
   // Look this variable up in the function.
   Value *V = NamedValues[Name];
   if (!V)
-    LogErrorV("Unknown variable name");
+    return LogError<Value *>("Unknown variable name");
   return V;
 }
 ```
 
-References to variables are also quite simple using LLVM. In the simple version of Pyxc, we assume that the variable has already been emitted somewhere and its value is available. In practice, the only values that can be in the NamedValues map are function arguments. This code simply checks to see that the specified name is in the map (if not, an unknown variable is being referenced) and returns the value for it. In future chapters, we’ll add support for loop induction variables in the symbol table, and for local variables.
+Variable references are straightforward: look up the name in `NamedValues` and return the IR value we stored there. Right now, only function parameters are in that map, so we're looking up things like `"a"` or `"b"` from `def foo(a, b)`.
 
 ```cpp
 Value *BinaryExprAST::codegen() {
@@ -136,37 +121,42 @@ Value *BinaryExprAST::codegen() {
     return Builder->CreateFSub(L, R, "subtmp");
   case '*':
     return Builder->CreateFMul(L, R, "multmp");
+  case '/':
+    return Builder->CreateFDiv(L, R, "divtmp");
+  case '%':
+    return Builder->CreateFRem(L, R, "remtmp");
   case '<':
     L = Builder->CreateFCmpULT(L, R, "cmptmp");
     // Convert bool 0/1 to double 0.0 or 1.0
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext),
-                                 "booltmp");
+    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+  case '>':
+    L = Builder->CreateFCmpUGT(L, R, "cmptmp");
+    // Convert bool 0/1 to double 0.0 or 1.0
+    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   default:
-    return LogErrorV("invalid binary operator");
+    return LogError<Value *>("invalid binary operator");
   }
 }
 ```
 
-Binary operators start to get more interesting. The basic idea here is that we recursively emit code for the left-hand side of the expression, then the right-hand side, then we compute the result of the binary expression. In this code, we do a simple switch on the opcode to create the right LLVM instruction.
+Binary operators are straightforward: recursively generate IR for the left side, then the right side, then create an instruction for the operation. The switch statement picks the right LLVM instruction based on the operator.
 
-In the example above, the LLVM builder class is starting to show its value. IRBuilder knows where to insert the newly created instruction, all you have to do is specify what instruction to create (e.g. with CreateFAdd), which operands to use (L and R here) and optionally provide a name for the generated instruction.
+The `Builder` makes this easy—just tell it which instruction to create (`CreateFAdd`), pass the operands (`L` and `R`), and optionally give it a name (`"addtmp"`). The name is just a hint for readability; if you create multiple values with the same name, LLVM automatically adds numeric suffixes (`addtmp`, `addtmp1`, `addtmp2`).
 
-One nice thing about LLVM is that the name is just a hint. For instance, if the code above emits multiple “addtmp” variables, LLVM will automatically provide each one with an increasing, unique numeric suffix. Local value names for instructions are purely optional, but it makes it much easier to read the IR dumps.
+Since all values in Pyxc are doubles, the arithmetic operators (`+`, `-`, `*`, `/`, `%`) are simple—both operands are doubles, the result is a double.
 
-[LLVM instructions](https://llvm.org/docs/LangRef.html#instruction-reference) are constrained by strict rules: for example, the Left and Right operands of an [add instruction](https://llvm.org/docs/LangRef.html#add-instruction) must have the same type, and the result type of the add must match the operand types. Because all values in Pyxc are doubles, this makes for very simple code for add, sub and mul.
-
-On the other hand, LLVM specifies that the [fcmp instruction](https://llvm.org/docs/LangRef.html#fcmp-instruction) always returns an ‘i1’ value (a one bit integer). The problem with this is that Pyxc wants the value to be a 0.0 or 1.0 value. In order to get these semantics, we combine the fcmp instruction with a [uitofp instruction](https://llvm.org/docs/LangRef.html#uitofp-to-instruction). This instruction converts its input integer into a floating point value by treating the input as an unsigned value. In contrast, if we used the [sitofp](https://llvm.org/docs/LangRef.html#sitofp-to-instruction) instruction, the Pyxc ‘<’ operator would return 0.0 and -1.0, depending on the input value.
+Comparison operators (`<`, `>`) need an extra step. LLVM's comparison instructions return a 1-bit integer (0 or 1), but Pyxc wants a double (0.0 or 1.0) because all expressions use double right now. So we use `CreateUIToFP` to convert the integer result to a floating-point value.
 
 ```cpp
 Value *CallExprAST::codegen() {
   // Look up the name in the global module table.
   Function *CalleeF = TheModule->getFunction(Callee);
   if (!CalleeF)
-    return LogErrorV("Unknown function referenced");
+    return LogError<Value *>("Unknown function referenced");
 
   // If argument mismatch error.
   if (CalleeF->arg_size() != Args.size())
-    return LogErrorV("Incorrect # arguments passed");
+    return LogError<Value *>("Incorrect # arguments passed");
 
   std::vector<Value *> ArgsV;
   for (unsigned i = 0, e = Args.size(); i != e; ++i) {
@@ -179,14 +169,13 @@ Value *CallExprAST::codegen() {
 }
 ```
 
-Code generation for function calls is quite straightforward with LLVM. The code above initially does a function name lookup in the LLVM Module’s symbol table. Recall that the LLVM Module is the container that holds the functions we are JIT’ing. By giving each function the same name as what the user specifies, we can use the LLVM symbol table to resolve function names for us.
+Function calls: look up the function by name in `TheModule`, check that the argument count matches, generate IR for each argument, then create a call instruction. We can call standard library functions like `sin` and `cos` just as easily as our own functions.
 
-Once we have the function to call, we recursively codegen each argument that is to be passed in, and create an LLVM [call instruction](https://llvm.org/docs/LangRef.html#call-instruction). Note that LLVM uses the native C calling conventions by default, allowing these calls to also call into standard library functions like “sin” and “cos”, with no additional effort.
-
-This wraps up our handling of the four basic expressions that we have so far in Pyxc. Feel free to go in and add some more. For example, by browsing the [LLVM language reference](https://llvm.org/docs/LangRef.html) you’ll find several other interesting instructions that are really easy to plug into our basic framework.
+That covers the four expression types: literals, variables, binary operators, and function calls.
 
 ## Function Code Generation
-Code generation for prototypes and functions must handle a number of details, which make their code less beautiful than expression code generation, but allows us to illustrate some important points. First, let’s talk about code generation for prototypes: they are used both for function bodies and external function declarations. The code starts with:
+
+Generating IR for functions is a bit more involved than expressions, but still straightforward. We need to handle both prototypes (function signatures) and function bodies.
 
 ```cpp
 Function *PrototypeAST::codegen() {
@@ -200,11 +189,7 @@ Function *PrototypeAST::codegen() {
     Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
 ```
 
-This code packs a lot of power into a few lines. Note first that this function returns a “Function*” instead of a “Value*”. Because a “prototype” really talks about the external interface for a function (not the value computed by an expression), it makes sense for it to return the LLVM Function it corresponds to when codegen’d.
-
-The call to FunctionType::get creates the FunctionType that should be used for a given Prototype. Since all function arguments in Pyxc are of type double, the first line creates a vector of “N” LLVM double types. It then uses the Functiontype::get method to create a function type that takes “N” doubles as arguments, returns one double as a result, and that is not vararg (the false parameter indicates this). Note that Types in LLVM are uniqued just like Constants are, so you don’t “new” a type, you “get” it.
-
-The final line above actually creates the IR Function corresponding to the Prototype. This indicates the type, linkage and name to use, as well as which module to insert into. “[external linkage](https://llvm.org/docs/LangRef.html#linkage)” means that the function may be defined outside the current module and/or that it is callable by functions outside the module. The Name passed in is the name the user specified: since “TheModule” is specified, this name is registered in “TheModule”s symbol table.
+This creates the function signature. First, we build a `FunctionType` describing what the function looks like: it takes N doubles as parameters and returns a double. Then we create the actual `Function` object with external linkage (meaning it can be called from outside this module) and add it to `TheModule`.
 
 ```cpp
 // Set names for all arguments.
@@ -215,9 +200,9 @@ for (auto &Arg : F->args())
 return F;
 ```
 
-Finally, we set the name of each of the function’s arguments according to the names given in the Prototype. This step isn’t strictly necessary, but keeping the names consistent makes the IR more readable, and allows subsequent code to refer directly to the arguments for their names, rather than having to look them up in the Prototype AST.
+We set the name of each argument to match the names in the prototype. This isn't required, but it makes the IR easier to read.
 
-At this point we have a function prototype with no body. This is how LLVM IR represents function declarations. For extern statements in Pyxc, this is as far as we need to go. For function definitions however, we need to codegen and attach a function body.
+At this point we have a function signature with no body—this is what `extern` declarations need. For actual function definitions, we need to generate the body.
 
 ```cpp
 Function *FunctionAST::codegen() {
@@ -231,10 +216,10 @@ Function *FunctionAST::codegen() {
     return nullptr;
 
   if (!TheFunction->empty())
-    return (Function*)LogErrorV("Function cannot be redefined.");
+    return (Function*)LogError<Value *>("Function cannot be redefined.");
 ```
 
-For function definitions, we start by searching TheModule’s symbol table for an existing version of this function, in case one has already been created using an ‘extern’ statement. If Module::getFunction returns null then no previous version exists, so we’ll codegen one from the Prototype. In either case, we want to assert that the function is empty (i.e. has no body yet) before we start.
+For function definitions, we first check if the function already exists (maybe from an earlier `extern` declaration). If not, we create it from the prototype. Either way, we verify that the function has no body yet before adding one.
 
 ```cpp
 // Create a new basic block to start insertion into.
@@ -247,9 +232,9 @@ for (auto &Arg : TheFunction->args())
   NamedValues[std::string(Arg.getName())] = &Arg;
 ```
 
-Now we get to the point where the Builder is set up. The first line creates a new [basic block](http://en.wikipedia.org/wiki/Basic_block) (named “entry”), which is inserted into TheFunction. The second line then tells the builder that new instructions should be inserted into the end of the new basic block. Basic blocks in LLVM are an important part of functions that define the [Control Flow Graph](http://en.wikipedia.org/wiki/Control_flow_graph). Since we don’t have any control flow, our functions will only contain one block at this point. We’ll fix this in Chapter 6 :).
+We create a basic block called "entry" and tell the `Builder` to insert instructions there. A basic block is a sequence of instructions with no branching—since we don't have `if` or loops yet, our functions only need one block.
 
-Next we add the function arguments to the NamedValues map (after first clearing it out) so that they’re accessible to VariableExprAST nodes.
+Then we populate `NamedValues` with the function's parameters so that `VariableExprAST` can look them up.
 
 ```cpp
 if (Value *RetVal = Body->codegen()) {
@@ -263,7 +248,7 @@ if (Value *RetVal = Body->codegen()) {
 }
 ```
 
-Once the insertion point has been set up and the NamedValues map populated, we call the codegen() method for the root expression of the function. If no error happens, this emits code to compute the expression into the entry block and returns the value that was computed. Assuming no error, we then create an LLVM [ret instruction](https://llvm.org/docs/LangRef.html#ret-instruction), which completes the function. Once the function is built, we call verifyFunction, which is provided by LLVM. This function does a variety of consistency checks on the generated code, to determine if our compiler is doing everything right. Using this is important: it can catch a lot of bugs. Once the function is finished and validated, we return it.
+Now we generate IR for the function body by calling `Body->codegen()`. If that succeeds, we create a `ret` instruction to return the computed value, then call `verifyFunction()` to check that the IR we generated is valid.
 
 ```cpp
   // Error reading body, remove function.
@@ -272,7 +257,7 @@ Once the insertion point has been set up and the NamedValues map populated, we c
 }
 ```
 
-The only piece left here is handling of the error case. For simplicity, we handle this by merely deleting the function we produced with the eraseFromParent method. This allows the user to redefine a function that they incorrectly typed in before: if we didn’t delete it, it would live in the symbol table, with a body, preventing future redefinition.
+If there's an error generating the body, we delete the function with `eraseFromParent()`. This lets users redefine functions after making a typo.
 
 This code does have a bug, though: If the FunctionAST::codegen() method finds an existing IR Function, it does not validate its signature against the definition’s own prototype. This means that an earlier ‘extern’ declaration will take precedence over the function definition’s signature, which can cause codegen to fail, for instance if the function arguments are named differently. There are a number of ways to fix this bug, see what you can come up with! Here is a testcase:
 
@@ -282,70 +267,30 @@ def foo(b): return b # Error: Unknown variable name. (decl using 'a' takes prece
 ```
 
 ## Driver Changes and Closing Thoughts
-For now, code generation to LLVM doesn’t really get us much, except that we can look at the pretty IR calls. The sample code inserts calls to codegen into the “HandleDefinition”, “HandleExtern” etc functions, and then dumps out the LLVM IR. This gives a nice way to look at the LLVM IR for simple functions. For example:
+At this point, Chapter 5 has two useful REPL modes:
 
-```cpp
-ready> 4+5;
-Read top-level expression:
-define double @__anon_expr() {
-entry:
-  ret double 9.000000e+00
-}
-```
+- default `repl`: parser-focused feedback (`Parsed a ...`)
+- `repl --emit-llvm`: print generated IR as you define things
 
-Note how the parser turns the top-level expression into anonymous functions for us. This will be handy when we add JIT support in the next chapter. Also note that the code is very literally transcribed, no optimizations are being performed except simple constant folding done by IRBuilder. We will add optimizations explicitly in the next chapter.
+That split is helpful while learning, because sometimes you just want parser confirmation, and sometimes you want to inspect the generated IR in detail.
 
-```cpp
+For example, default mode:
+
+```text
+$ ./build/pyxc repl
+ready> 4+5
+Parsed a top-level expr
 ready> def foo(a,b): return a*a + 2*a*b + b*b
-Read function definition:
-define double @foo(double %a, double %b) {
-entry:
-  %multmp = fmul double %a, %a
-  %multmp1 = fmul double 2.000000e+00, %a
-  %multmp2 = fmul double %multmp1, %b
-  %addtmp = fadd double %multmp, %multmp2
-  %multmp3 = fmul double %b, %b
-  %addtmp4 = fadd double %addtmp, %multmp3
-  ret double %addtmp4
-}
+Parsed a function definition
+ready> extern def cos(x)
+Parsed an extern
 ```
 
-This shows some simple arithmetic. Notice the striking similarity to the LLVM builder calls that we use to create the instructions.
-```cpp
-ready> def bar(a): return foo(a, 4.0) + bar(31337)
-Read function definition:
-define double @bar(double %a) {
-entry:
-  %calltmp = call double @foo(double %a, double 4.000000e+00)
-  %calltmp1 = call double @bar(double 3.133700e+04)
-  %addtmp = fadd double %calltmp, %calltmp1
-  ret double %addtmp
-}
-```
+And LLVM mode:
 
-This shows some function calls. Note that this function will take a long time to execute if you call it. In the future we’ll add conditional control flow to actually make recursion useful :).
-
-```cpp
-ready> extern def cos(x);
-Read extern:
-declare double @cos(double)
-
-ready> cos(1.234);
-Read top-level expression:
-define double @__anon_expr() {
-entry:
-  %calltmp = call double @cos(double 1.234000e+00)
-  ret double %calltmp
-}
-```
-
-This shows an extern for the libm “cos” function, and a call to it.
-
-```cpp
-ready> ^D
-; ModuleID = 'pyxc jit'
-source_filename = "pyxc jit"
-
+```text
+$ ./build/pyxc repl --emit-llvm
+ready> def foo(a,b): return a*a + 2*a*b + b*b
 define double @foo(double %a, double %b) {
 entry:
   %multmp = fmul double %a, %a
@@ -357,108 +302,27 @@ entry:
   ret double %addtmp4
 }
 
-define double @bar(double %a) {
-entry:
-  %calltmp = call double @foo(double %a, double 4.000000e+00)
-  %calltmp1 = call double @bar(double 3.133700e+04)
-  %addtmp = fadd double %calltmp, %calltmp1
-  ret double %addtmp
-}
-
+ready> extern def cos(x)
 declare double @cos(double)
 ```
 
-When you quit the current demo (by sending an EOF via CTRL+D on Linux or CTRL+Z and ENTER on Windows), it dumps out the IR for the entire module generated. Here you can see the big picture with all the functions referencing each other.
+In LLVM mode, pressing EOF (`Ctrl+D` on Linux/macOS, `Ctrl+Z` then Enter on Windows) prints the full module, which is useful when you want the complete picture of all definitions emitted in the session.
 
-This wraps up the third chapter of the Pyxc tutorial. Up next, we'll describe how to add JIT codegen and optimizer support to this so we can actually start running code!
-
-## Understanding Static Single Assignment (SSA)
-
-SSA is one of the most important concepts in modern compilers. It makes optimization much easier by ensuring that each variable is defined exactly once and never changes.
-
-### From Mutable Variables to SSA
-
-Consider this typical imperative code:
-
-```python
-i = 5
-i = 10
-fib(i)
-i = i + 1
-fib(i)
-j = i
-```
-
-In normal programming, the variable `i` changes value multiple times. But in SSA form, each assignment creates a *new* version of the variable:
-
-```llvm
-  %i.1 = 5
-  %i.2 = 10
-  %call1 = call fib(%i.2)
-  %i.3 = add %i.2, 1
-  %call2 = call fib(%i.3)
-  %j.1 = %i.3
-```
-
-Notice how:
-- Each assignment to `i` creates a new SSA value: `%i.1`, `%i.2`, `%i.3`
-- The value `%i.1 = 5` is never used (dead code)
-- `%i.2 = 10` is used once by `%call1` and once by the add instruction
-- `%i.3` is used by `%call2` and assigned to `%j.1`
-
-### Why SSA Makes Optimization Easy
-
-SSA form makes it trivial to answer questions like:
-- "Where is this value defined?" → Look at the unique assignment
-- "Where is this value used?" → Follow all uses of that SSA name
-- "Can I eliminate this computation?" → Check if anyone uses this SSA value
-
-**Dead Code Elimination:**
-Since `%i.1 = 5` is never used by any other instruction, a compiler can simply delete it.
-
-**Copy Propagation:**
-Since `%j.1 = %i.3` is just a copy, we can replace all uses of `%j.1` with `%i.3` directly and eliminate the copy:
-
-```llvm
-  %i.2 = 10
-  %call1 = call fib(%i.2)
-  %i.3 = add %i.2, 1
-  %call2 = call fib(%i.3)
-  ; %j.1 eliminated - all its uses replaced with %i.3
-```
-
-**Constant Propagation:**
-Since we know `%i.2` is always `10`, we can compute `%i.3 = add 10, 1` at compile time:
-
-```llvm
-  %call1 = call fib(10)
-  %call2 = call fib(11)
-```
-
-All this optimization happened automatically because SSA made the data flow explicit. Without SSA, the compiler would have to perform complex analysis to determine that `i` has different values at different program points.
-
-### SSA in Our Code
-
-This is why our simple `add` function needs `%addtmp`:
-
-```llvm
-define double @add(double %a, double %b) {
-entry:
-  %addtmp = fadd double %a, %b
-  ret double %addtmp
-}
-```
-
-The `fadd` instruction defines a new SSA value `%addtmp` that holds the result. The `ret` instruction uses that value. Each step is explicit, making the data flow crystal clear for optimization passes.
-
-Later, when we introduce control flow (if statements, loops), you'll see **phi nodes**—SSA's way of merging values from different control flow paths. But for now, our straight-line code gives you the core SSA concept: every value is defined exactly once.
+This also makes the chapter progression cleaner: Chapter 5 is where we can *see* IR clearly, and Chapter 7 is where we make that IR executable through JIT plus optimization passes.
 
 ## Compiling
 
 ```bash
-cd code/chapter05 && ./build.sh
+cd code/chapter05 && \
+    cmake -S . -B build && \
+    cmake --build build
 ```
 
+### macOS / Linux shortcut
+
+```bash
+cd code/chapter05 && ./build.sh
+```
 
 ## Need Help?
 

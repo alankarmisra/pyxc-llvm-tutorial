@@ -1,97 +1,90 @@
 # Chapter 22 Design Requirements
 
 ## Theme
-C-style I/O baseline with string literals and minimal `printf`.
+Dynamic heap allocation with explicit `malloc`/`free` language builtins.
 
 ## Goal
-Enable practical text I/O for K&R-style programs by adding first-class string literals and direct calls to `putchar`, `getchar`, `puts`, and a constrained `printf`.
+Add practical dynamic memory support to Pyxc using typed allocation and explicit deallocation, while preserving Chapter 21 structs/arrays behavior.
 
 ## Scope
 
 ### In Scope
-- String literal token and expression support:
-  - `"hello\n"`
-- Calling libc-style symbols without explicit `extern` declarations:
-  - `putchar(i32) -> i32`
-  - `getchar() -> i32`
-  - `puts(ptr[i8]) -> i32`
-  - `printf(ptr[i8], ...) -> i32`
-- Vararg call lowering for `printf`
-- `printf` format validation for a minimal subset:
-  - `%d`, `%s`, `%c`, `%p`, and `%%`
-- String literal to pointer interop (`ptr[i8]`-compatible behavior)
+- Typed allocation expression:
+  - `malloc[T](count)`
+- Deallocation statement:
+  - `free(ptr_expr)`
+- Works with scalar, struct, and array element types
+- Interacts with existing indexing/member access:
+  - `p[0].x = ...`
 
 ### Out of Scope
-- Full C `printf` compatibility (`%f`, width, precision, flags, length modifiers)
-- Variadic function declarations in source language syntax
-- File I/O (`fopen`, `fgets`, etc.)
+- Garbage collection
+- Smart pointers / ownership model
+- `realloc`/`calloc`
+- Lifetime analysis / leak diagnostics
 
 ## Syntax Requirements
 
-### String literal expression
+### Malloc expression
 ```py
-s: ptr[i8] = "hello"
+p: ptr[i32] = malloc[i32](4)
 ```
 
-### C-style I/O calls
+### Free statement
 ```py
-putchar(65)
-puts("hi")
-printf("x=%d %c %p %s\n", 42, 65, p, s)
+free(p)
 ```
 
 ## Lexer Requirements
-- Add string token:
-  - `tok_string`
-- Capture and unescape string payload.
-- Report diagnostics for unterminated or invalid escape sequences.
+- Add keywords/tokens:
+  - `tok_malloc`
+  - `tok_free`
 
 ## Parser Requirements
-- Add string primary parser:
-  - `ParseStringExpr()`
-- Extend `ParsePrimary()` to accept string literals.
+- Add malloc parser:
+  - `ParseMallocExpr()`
+- Add free statement parser:
+  - `ParseFreeStmt()`
+- Extend `ParsePrimary()` to accept `malloc` expression form.
+- Extend `ParseStmt()` dispatch with `free` statement.
 
 ## AST Requirements
-- Add node:
-  - `StringExprAST(Value)`
+- Add nodes:
+  - `MallocExprAST(ElemType, CountExpr)`
+  - `FreeStmtAST(PtrExpr)`
 
 ## Semantic Requirements
-- String literals codegen as pointer values compatible with `ptr[i8]`.
-- Unresolved calls to `putchar`, `getchar`, `puts`, `printf` are auto-declared with libc-compatible signatures.
-- `printf` checks:
-  - first argument must be a string literal
-  - specifiers limited to `%d`, `%s`, `%c`, `%p`, `%%`
-  - argument count must match non-`%%` specifiers
-  - `%d`/`%c` require integer arguments
-  - `%s`/`%p` require pointer arguments
+- `malloc[T](count)`:
+  - `T` must resolve to a non-void type.
+  - `count` must be integer-like.
+  - expression result is pointer-typed and carries pointee type hint `T`.
+- `free(ptr_expr)`:
+  - operand must be pointer-typed.
 
 ## LLVM Lowering Requirements
-- String literals lower with global string storage and pointer result.
-- `printf` lowers as vararg call with default promotions:
-  - small integers to `i32`
-  - `f32` to `f64`
+- `malloc` lowers to runtime/extern `malloc` call with byte count:
+  - `bytes = count * sizeof(T)`
+- `free` lowers to runtime/extern `free` call.
+- Use module data layout for `sizeof(T)`.
 
 ## Diagnostics Requirements
-- Non-literal first argument to `printf`
-- Unsupported format specifier in `printf`
-- Format argument count mismatch in `printf`
-- Type mismatch for `%d`, `%s`, `%c`, `%p`
-- Unterminated string literal
-- Invalid string escape sequence
+- Non-integer malloc count
+- Unknown/void malloc element type
+- `free` called with non-pointer expression
+- Syntax errors in `malloc[T](count)` and `free(expr)` forms
 
 ## Tests
 
 ### Positive
-- `putchar` and `puts` with string literals
-- `printf` using `%d/%s/%c/%p` and `%%`
-- String literal assignment to `ptr[i8]`
+- malloc/free for scalar pointer + indexed writes/reads
+- malloc/free for struct pointer + field writes/reads
+- malloc/free for array element types where indexing/member chains work
 
 ### Negative
-- Unsupported `printf` format specifier
-- `printf` format count mismatch
-- `printf` type mismatch per format code
+- malloc with float count
+- free with non-pointer argument
 
 ## Done Criteria
-- Chapter 22 lit suite includes I/O baseline coverage and passes.
-- Chapter 21 behavior remains green under Chapter 22 compiler.
-- `chapter-22.md` documents chapter diff and implementation.
+- Chapter 22 lit suite includes malloc/free coverage and passes
+- Chapter 21 behavior remains green under Chapter 22 compiler
+- `chapter-22.md` documents chapter diff and implementation

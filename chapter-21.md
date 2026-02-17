@@ -1,17 +1,23 @@
-# 21. Fixed-Size Arrays
+---
+description: "Add structs and named field access so programs can model grouped data directly in the language instead of juggling parallel scalar values."
+---
+# 20. Pyxc: Structs and Named Field Access
 
-Chapter 20 gave us named aggregate data with structs.
+Chapter 20 gave us mature control flow and a stronger operator set.
 
-That solved *shape*, but not *collections*. We still could not represent “N elements of T” as one typed value.
+But data modeling was still flat. We could pass scalars, pointers, and aliases, yet we had no way to express “a value with multiple named parts” in the language itself.
 
-Chapter 21 adds fixed-size arrays so Pyxc can model contiguous collections with compile-time length.
+Chapter 21 introduces that missing piece: `struct`.
 
-This is a major usability milestone because many real programs need both:
+The chapter is intentionally focused. We do **not** add methods, constructors, classes, or inheritance. We add only what we need for C-style aggregate data:
 
-- records (`struct`)
-- collections (`array`)
+- top-level struct declarations
+- struct-typed variables
+- field reads (`obj.x`)
+- field writes (`obj.x = ...`)
+- nested member chains (`outer.inner.x`)
 
-and the ability to combine them.
+That limited scope keeps the parser and type resolver understandable while still unlocking a major jump in language expressiveness.
 
 
 !!!note
@@ -19,35 +25,35 @@ and the ability to combine them.
 
 ## Why this chapter matters
 
-Before Chapter 21, we could index pointers, but we had no first-class array type.
+Once you have loops and conditionals, the next real bottleneck is data shape.
 
-That made local contiguous storage awkward. With Chapter 21 we can write:
+Without structs, code quickly turns into parallel variables (`x`, `y`, `z`) that are hard to pass around safely. With structs, you can represent coherent records:
 
 ```py
-a: array[i32, 4]
-a[0] = 10
-a[1] = 20
-print(a[0], a[1])
+struct Point:
+    x: i32
+    y: i32
 ```
 
-Now the language can model stack-allocated fixed buffers, array fields inside structs, and arrays of structs.
+That one construct creates a foundation for all later data features, including arrays-of-structs (Chapter 22), heap-allocated structs (Chapter 23), and pointer-oriented interop work.
 
 ## Scope and constraints
 
 Chapter 21 supports:
 
-- array type syntax: `array[T, N]`
-- compile-time positive integer size `N`
-- array indexing for load/store
-- arrays mixed with structs (both directions)
+- `struct` declarations at top level only
+- named fields with explicit types
+- field selection with `.`
+- field assignment and nested field access
 
-Chapter 21 does not support yet:
+Chapter 21 intentionally does *not* support:
 
-- dynamic arrays
-- array literals
-- direct initializer expressions for struct/array locals
+- struct literals
+- struct constructors
+- methods/member functions
+- inline struct declarations in local scope
 
-The static-only scope keeps codegen and diagnostics clean.
+Keeping struct declarations top-level avoids many symbol/ownership complexities in this step.
 
 ## What changed from Chapter 20
 
@@ -56,198 +62,283 @@ Primary diff:
 - `code/chapter20/pyxc.cpp` -> `code/chapter21/pyxc.cpp`
 - `code/chapter20/pyxc.ebnf` -> `code/chapter21/pyxc.ebnf`
 
-Implementation buckets:
+Major implementation buckets:
 
-1. type-expression model extended with `Array`
-2. parser support for `array[ElemType, Size]`
-3. LLVM type resolution for arrays
-4. indexing codegen support for array bases
-5. type-hint propagation through arrays
-6. array-focused tests and diagnostics
+1. lexical keyword support for `struct`
+2. grammar/parser support for top-level struct declarations
+3. postfix parser support for `.` member access
+4. struct metadata tables in the compiler
+5. LLVM struct type resolution and caching
+6. member address/load codegen (`MemberExprAST`)
+7. struct diagnostics + test coverage
 
-## Grammar updates
+We walk through these in order.
 
-`code/chapter21/pyxc.ebnf` extends `type_expr`:
+## 1. Grammar updates
+
+In `code/chapter21/pyxc.ebnf`, Chapter 21 introduces `struct_decl` and member-expression forms.
 
 ```ebnf
-type_expr       = pointer_type
-                | array_type
-                | base_type ;
+top_item        = newline
+                | type_alias_decl
+                | struct_decl
+                | function_def
+                | extern_decl
+                | statement ;
 
-array_type      = "array" , "[" , type_expr , "," , array_size , "]" ;
-array_size      = number ;
+struct_decl     = "struct" , identifier , ":" , newline , indent ,
+                  struct_field , { newline , struct_field } , [ newline ] ,
+                  dedent ;
+
+postfix_expr    = primary , { call_suffix | index_suffix | member_suffix } ;
+member_suffix   = "." , identifier ;
+member_expr     = postfix_expr , member_suffix ;
+
+lvalue          = identifier
+                | index_expr
+                | member_expr ;
 ```
 
-No expression-level syntax was needed for indexing because `[...]` already existed in postfix grammar from earlier chapters.
+The important design choice is: member access is a **postfix chain**. That means `a.b.c[0].x` can be parsed naturally by repeating postfix rules.
 
-## Type model changes (TypeExpr)
+## 2. Lexer updates
 
-Chapter 21 extends type kinds:
+Chapter 21 adds `struct` as a keyword token:
 
 ```cpp
-enum class TypeExprKind { Builtin, AliasRef, Pointer, Array };
+tok_struct = -32,
 ```
 
-and adds size storage on the node:
+and keyword-table entry:
 
 ```cpp
-uint64_t ArraySize = 0;
+{"struct", tok_struct}
 ```
 
-plus a constructor helper:
+### Dot/number disambiguation
+
+The lexer already supported numeric literals like `.5`. But adding member access means `.` must also work as a punctuation token for `obj.field`.
+
+So Chapter 21 tightens the check: `.` starts a number **only if the next char is a digit**.
 
 ```cpp
-static std::shared_ptr<TypeExpr> Array(std::shared_ptr<TypeExpr> Elem,
-                                       uint64_t Size)
-```
+bool DotStartsNumber = false;
+if (LastChar == '.') {
+  int NextCh = getc(InputFile);
+  if (NextCh != EOF)
+    ungetc(NextCh, InputFile);
+  DotStartsNumber = isdigit(NextCh);
+}
 
-This keeps arrays in the same recursive type-expression system as pointers and aliases.
-
-## Parsing array[...]
-
-`ParseTypeExpr()` gets an `array` branch that enforces exact shape and size constraints:
-
-- must see `array`
-- must see `[`
-- parse element type recursively
-- must see `,`
-- size must be positive integer literal
-- must see closing `]`
-
-Core size validation:
-
-```cpp
-if (CurTok != tok_number || !NumIsIntegerLiteral || NumIntVal <= 0)
-  return LogError<TypeExprPtr>(
-      "Expected positive integer literal array size");
-```
-
-The “literal only” rule is deliberate. It keeps array layout known at compile time.
-
-## LLVM lowering for array types
-
-`ResolveTypeExpr(...)` adds array lowering:
-
-```cpp
-if (Ty->Kind == TypeExprKind::Array) {
-  Type *ElemTy = ResolveTypeExpr(Ty->Elem, Visited);
+if (isdigit(LastChar) || DotStartsNumber) {
   ...
-  return ArrayType::get(ElemTy, Ty->ArraySize);
 }
 ```
 
-That means arrays now work in every typed location that calls `ResolveTypeExpr`:
+That small lexer decision prevents member-access parsing bugs later.
 
-- local declarations
-- struct fields
-- aliases
-- function signatures (where permitted by existing rules)
+## 3. AST additions: MemberExprAST
 
-## Indexing behavior: pointer base vs array base
-
-This is the most important runtime/codegen change in Chapter 21.
-
-`IndexExprAST::codegenAddress()` now supports two distinct base categories:
-
-1. pointer base (existing path)
-2. array base (new path)
-
-### Array-base path
-
-When base value type is an LLVM array, address computation uses a two-index GEP:
+Chapter 21 introduces:
 
 ```cpp
-Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
-return Builder->CreateGEP(BaseValTy, BaseAddr, {Zero, IdxV}, "arr.idx.addr");
+class MemberExprAST : public ExprAST {
+  std::unique_ptr<ExprAST> Base;
+  std::string FieldName;
+  ...
+  Value *codegen() override;
+  Value *codegenAddress() override;
+  Type *getValueTypeHint() const override;
+  std::string getBuiltinLeafTypeHint() const override;
+};
 ```
 
-Why `{0, idx}`?
+Two methods are central:
 
-- first index steps from the alloca pointer to the array object
-- second index steps to the element inside that array object
+- `codegenAddress()` for lvalue use (`p.x = 10`)
+- `codegen()` for rvalue use (`print(p.x)`)
 
-This is standard LLVM aggregate indexing semantics.
+This mirrors the same lvalue/rvalue split already used for variables and indexing.
 
-### Shared index diagnostics
+## 4. Parsing struct declarations
 
-Both pointer and array index paths require integer index types:
-
-- `Array index must be an integer type`
-
-This prevents silent float-to-int indexing mistakes.
-
-## Hint propagation and type inference adjustments
-
-To keep downstream behavior consistent (printing, assignments, chained access), Chapter 21 updates helper logic so array element type info flows through:
-
-- `ResolvePointeeTypeExpr` recurses through arrays
-- builtin-leaf-name helpers recurse through arrays
-- `IndexExprAST::getValueTypeHint()` returns array element type when base is array
-
-Without these “small” changes, indexing would compile but later type-dependent features would degrade.
-
-## Initialization policy remains conservative
-
-Direct initializer expressions for struct/array locals are still blocked in Chapter 21:
+Chapter 21 adds a dedicated top-level parser path:
 
 ```cpp
-"Struct/array variables do not support direct initializer expressions"
+static bool ParseStructDecl();
 ```
 
-This is an intentional tradeoff. It keeps aggregate initialization semantics out of this chapter so we can focus on layout and indexing correctness first.
+Core behavior:
 
-## Test coverage added in Chapter 21
+- parse header: `struct <Name>:`
+- require newline + indented field list
+- parse each field: `<name>: <type_expr>`
+- enforce constraints:
+  - no duplicate struct names
+  - no duplicate field names in one struct
+  - at least one field
 
-Chapter 21 inherits Chapter 20 tests and adds:
+Struct declarations are accepted only in top-level loops and explicitly rejected in statement context:
 
-- `code/chapter21/test/array_basic_local.pyxc`
-- `code/chapter21/test/array_alias_type.pyxc`
-- `code/chapter21/test/array_struct_field.pyxc`
-- `code/chapter21/test/array_of_structs.pyxc`
-- `code/chapter21/test/array_error_non_integer_index.pyxc`
-- `code/chapter21/test/array_error_invalid_size.pyxc`
+```cpp
+case tok_struct:
+  return LogError<StmtPtr>("Struct declarations are only allowed at top-level");
+```
 
-### Representative positive scenario
+This keeps symbol lifetime and lookup simple for this phase.
+
+## 5. Parsing member access chains
+
+`ParseIdentifierExpr()` already had a postfix loop for calls and indexing.
+Chapter 21 extends that loop with member suffix handling:
+
+```cpp
+if (CurTok == '.') {
+  SourceLocation MemberLoc = CurLoc;
+  getNextToken(); // eat '.'
+  if (CurTok != tok_identifier)
+    return LogError<ExprPtr>("Expected field name after '.'");
+  std::string FieldName = IdentifierStr;
+  getNextToken(); // eat field name
+  Expr = std::make_unique<MemberExprAST>(MemberLoc, std::move(Expr),
+                                         std::move(FieldName));
+  continue;
+}
+```
+
+Because this is chained in the same postfix loop, nested forms like `o.i.x` require no special parser function.
+
+## 6. Struct metadata model inside the compiler
+
+Chapter 21 introduces internal metadata structures:
+
+```cpp
+struct StructFieldDecl {
+  std::string Name;
+  TypeExprPtr Ty;
+};
+
+struct StructDeclInfo {
+  std::string Name;
+  std::vector<StructFieldDecl> Fields;
+  std::map<std::string, unsigned> FieldIndex;
+  StructType *LLTy = nullptr;
+};
+
+static std::map<std::string, StructDeclInfo> StructDecls;
+static std::map<const StructType *, std::string> StructTypeNames;
+```
+
+Why both maps?
+
+- `StructDecls`: source-name -> declaration/type data
+- `StructTypeNames`: LLVM struct pointer -> source-name
+
+That reverse map is useful when resolving field info from LLVM type handles during codegen.
+
+## 7. LLVM type resolution for structs
+
+Chapter 21 extends type resolution so alias/base names can resolve to struct types.
+
+A key helper is:
+
+```cpp
+static StructType *ResolveStructTypeByName(const std::string &Name,
+                                           std::set<std::string> &Visited);
+```
+
+It:
+
+1. finds source declaration
+2. creates/gets LLVM `StructType`
+3. resolves each field LLVM type in declaration order
+4. sets the LLVM struct body
+5. caches results to avoid rebuilding
+
+This enables nested struct fields and struct aliases to work consistently.
+
+## 8. Member access codegen
+
+### Address path (codegenAddress)
+
+`MemberExprAST::codegenAddress()` does:
+
+1. obtain base address (`Base->codegenAddress()`)
+2. verify base value type is struct
+3. resolve field index by name
+4. emit `CreateStructGEP`
+
+```cpp
+return Builder->CreateStructGEP(ST, BaseAddr, FieldIdx, "field.addr");
+```
+
+### Value path (codegen)
+
+`MemberExprAST::codegen()` uses the computed address and loads:
+
+```cpp
+return Builder->CreateLoad(FieldTy, AddrV, "field.load");
+```
+
+This keeps field assignment integrated with existing `AssignStmtAST` behavior because assignment already expects lvalue expressions to provide addresses.
+
+## 9. Diagnostics added in Chapter 21
+
+Examples of new diagnostics:
+
+- `Struct '<name>' is already defined`
+- `Duplicate field '<field>' in struct '<name>'`
+- `Unknown field '<field>' on struct '<name>'`
+- `Member access requires a struct-typed base`
+
+These errors are important for tutorial pace because they make failure modes obvious during incremental development.
+
+## 10. Tests added in Chapter 21
+
+Chapter 21 preserves Chapter 20 tests and adds struct-focused tests:
+
+- `code/chapter21/test/struct_basic_fields.pyxc`
+- `code/chapter21/test/struct_nested_fields.pyxc`
+- `code/chapter21/test/struct_alias_type.pyxc`
+- `code/chapter21/test/struct_error_unknown_field.pyxc`
+- `code/chapter21/test/struct_error_nonstruct_member.pyxc`
+- `code/chapter21/test/struct_error_duplicate_field.pyxc`
+- `code/chapter21/test/struct_error_duplicate_struct.pyxc`
+
+Representative positive test:
 
 ```py
+struct Point:
+    x: i32
+    y: i32
+
 def main() -> i32:
-    a: array[i32, 4]
-    a[0] = 10
-    a[1] = 20
-    a[2] = 30
-    a[3] = 40
-    print(a[0], a[1], a[2], a[3])
+    p: Point
+    p.x = 10
+    p.y = 20
+    print(p.x, p.y)
     return 0
 
 main()
 ```
 
-### Struct + array composition
+Representative negative test:
 
 ```py
-struct Bucket:
-    vals: array[i32, 3]
+struct Point:
+    x: i32
 
-b: Bucket
-b.vals[1] = 8
-print(b.vals[1])
-```
-
-### Negative scenario
-
-```py
 def main() -> i32:
-    a: array[i32, 2]
-    idx: f64 = 1.0
-    print(a[idx])
+    p: Point
+    print(p.z)
     return 0
 
 main()
 ```
 
-This ensures index typing rules are actually enforced.
+This validates that declared fields work and undeclared fields fail cleanly.
 
-## Build and test for this chapter
+## 11. Build and test for this chapter
 
 From repository root:
 
@@ -256,23 +347,22 @@ cd code/chapter21 && ./build.sh
 lit -sv test
 ```
 
-Chapter 21 was also regression-checked against Chapter 20 test behavior.
+Chapter 21 was also checked against Chapter 20 behavior as a regression sanity step.
 
-## Design takeaways
+## 12. Design takeaways
 
-Chapter 21 establishes a clean split:
+What Chapter 21 establishes:
 
-- `array[T, N]` for fixed compile-time contiguous storage
-- `ptr[T]` for pointer-based access and indirection
+- structured data is now a first-class part of the language
+- postfix expression machinery is now rich enough for chained data access
+- type resolution now handles named aggregate types
 
-Because both integrate with shared postfix/index infrastructure, the language now handles:
+This chapter is a foundational dependency for the next two:
 
-- scalar operations
-- struct member access
-- array indexing
-- combinations like `arr[i].field`
+- Chapter 22 uses structs + indexing together (`array[Point, N]`)
+- Chapter 23 allocates structs on heap (`ptr[Point] = malloc[Point](...)`)
 
-That sets up Chapter 22 naturally: once arrays and struct layout are stable, dynamic allocation (`malloc/free`) becomes much more valuable.
+In short: Chapter 21 is where the language stops being scalar-centric.
 
 ## Compiling
 
@@ -301,7 +391,7 @@ cd code/chapter21 && ./build.sh
 Run one sample program:
 
 ```bash
-code/chapter21/pyxc -i code/chapter21/test/array_alias_type.pyxc
+code/chapter21/pyxc -i code/chapter21/test/break_outside_loop.pyxc
 ```
 
 Run the chapter tests (when a test suite exists):
@@ -311,7 +401,7 @@ cd code/chapter21/test
 lit -sv .
 ```
 
-Pick a couple of tests, mutate the inputs, and watch how diagnostics respond.
+Explore the test folder a bit and add one tiny edge case of your own.
 
 When you're done, clean artifacts:
 

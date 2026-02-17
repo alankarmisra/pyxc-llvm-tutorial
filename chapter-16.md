@@ -1,232 +1,387 @@
-# 16. Clean Operator Rules and Short-Circuit Logic
+---
+description: "Use indentation tokens to parse real statement blocks, add elif and optional else behavior, and tighten branching codegen for clearer control flow."
+---
+# 15. Pyxc: Blocks, elif, Optional else, and Benchmarking
 
-In Chapter 15, we had custom operators and decorator syntax.
+If Chapter 15 gave us indentation tokens, Chapter 16 is where we finally cash that check.
 
-For Chapter 16, we simplify the language before adding types:
-- add Python-like logical/comparison operators
-- remove custom operator definitions for now
-- add real short-circuit behavior for `and` and `or`
+Until now, we could *lex* indentation. In this chapter, we use that structure to parse real statement blocks, support `elif`, make `else` optional, and tighten codegen so branch-heavy code doesn’t generate weird IR.
 
-This keeps the codebase easier to reason about before Chapter 17 (types).
+> Note from the future:
+> This chapter still carries one Kaleidoscope legacy semantic: boolean/comparison-style results in parts of codegen are represented via floating values (`0.0` / `1.0`) instead of integer truth values.
+> We *should* have cleaned that up around here, but we didn’t.
+> We finally fixed it in Chapter 25 when we revisited signed/unsigned and truth-value correctness.
+> We could pretend this was a grand long-term plan, but realistically we were lazy programmers optimizing for forward progress.
 
 
 !!!note
     To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter16](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter16).
 
-## What We Added
+## What We’re Building
 
-- logical keywords: `not`, `and`, `or`
-- comparison operators: `==`, `!=`, `<=`, `>=`
-- short-circuit codegen for `and` and `or`
+By the end of this chapter, `pyxc` supports:
 
-## What We Removed (for now)
+- statement suites (`suite`) as real block bodies
+- `if / elif / else` chains
+- optional `else`
+- safer control-flow codegen for early returns
+- interpreter vs executable handling for `main`
+- a benchmark harness against Python
 
-- `@unary` / `@binary` custom operator definitions
+Not bad for one chapter.
 
-## Why Disable Custom Operators Before Types?
+## Build Setup (same idea as Chapter 15)
 
-Simple reason: typed custom operators are ambiguous without more language features.
+If you built Chapter 15, this should look familiar. Chapter 16 keeps the same Makefile shape and toolchain assumptions.
 
-If we keep custom operators while introducing types, we must answer:
-- how many typed versions of the same operator are allowed?
-- how does the compiler pick the correct one?
+From `code/chapter16/Makefile`:
 
-That requires one of:
-- overloading (same operator name, many signatures)
-- generics (one generic operator that works for a type family)
+```make
+TARGET := pyxc
+SRC := pyxc.cpp
+RUNTIME_SRC := runtime.c
+RUNTIME_OBJ := runtime.o
 
-We do not have overloading or generics yet.
+all: $(TARGET) $(RUNTIME_TARGET)
 
-So Chapter 16 disables custom operators on purpose. We will bring them back later, after overloading/generics exist.
+$(TARGET): $(SRC)
+	$(CXX) $(CXXFLAGS) $< $(LLVM_FLAGS) $(LDFLAGS) $(LLD_FLAGS) -o $@
 
-## Grammar Target (Chapter 16)
-
-From [`code/chapter16/pyxc.ebnf`](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter16/pyxc.ebnf):
-
-```ebnf
-function_def   = "def" , prototype , ":" , suite ;
-
-unary_op       = "+" | "-" | "!" | "~" | "not" ;
-
-binary_op      = "<" | "<=" | ">" | ">="
-               | "==" | "!="
-               | "and" | "or"
-               | "+" | "-" | "*" | "/"
-               | "=" ;
+$(RUNTIME_OBJ): $(RUNTIME_SRC)
+	$(CC) $(CFLAGS) -c $< -o $@
 ```
 
-## Lexer Changes
-
-### New tokens
-
-```cpp
-tok_not = -18,
-tok_and = -19,
-tok_or = -20,
-tok_eq = -21, // ==
-tok_ne = -22, // !=
-tok_le = -23, // <=
-tok_ge = -24, // >=
-```
-
-Keyword table includes:
-
-```cpp
-{"not", tok_not}, {"and", tok_and}, {"or", tok_or}
-```
-
-### Multi-char operator lexing
-
-Lexer now recognizes:
-- `==`
-- `!=`
-- `<=`
-- `>=`
-
-instead of trying to parse them as two separate chars.
-
-## Parser Changes
-
-### Precedence table now uses token IDs
-
-Because `tok_and`, `tok_eq`, etc are token IDs (not plain chars), precedence lookup moved to `std::map<int, int>`:
-
-```cpp
-static std::map<int, int> BinopPrecedence = {
-    {'=', 2},       {tok_or, 5},   {tok_and, 6}, {tok_eq, 10}, {tok_ne, 10},
-    {'<', 12},      {'>', 12},     {tok_le, 12}, {tok_ge, 12},
-    {'+', 20},      {'-', 20},     {'*', 40},    {'/', 40}};
-```
-
-### Builtin-only unary parsing
-
-```cpp
-if (CurTok != '+' && CurTok != '-' && CurTok != '!' && CurTok != '~' &&
-    CurTok != tok_not)
-  return ParsePrimary();
-```
-
-### Decorator/custom-operator parse path removed
-
-`ParseDefinition()` and `ParsePrototype()` now parse only normal `def` functions.
-
-If the parser sees `@...`, it emits a direct Chapter 16 error:
-
-```cpp
-LogError("Decorators/custom operators are disabled in Chapter 16");
-```
-
-## Short-Circuit Logic: What It Means
-
-Without short-circuit:
-- `a and b` evaluates both `a` and `b`
-- `a or b` evaluates both `a` and `b`
-
-With short-circuit:
-- `a and b`: if `a` is false, skip `b`
-- `a or b`: if `a` is true, skip `b`
-
-This matters for side effects and performance.
-
-## LLVM IR Shape We Want
-
-For `a and b`, we want control flow like this:
-
-```llvm
-entry:
-  %a = ...
-  %a_bool = fcmp one double %a, 0.0
-  br i1 %a_bool, label %rhs, label %merge
-
-rhs:
-  %b = ...
-  %b_bool = fcmp one double %b, 0.0
-  br label %merge
-
-merge:
-  %res = phi i1 [ false, %entry ], [ %b_bool, %rhs ]
-  %res_f = uitofp i1 %res to double
-```
-
-For `a or b`, branch directions and first PHI value flip:
-
-```llvm
-entry:
-  %a = ...
-  %a_bool = fcmp one double %a, 0.0
-  br i1 %a_bool, label %merge, label %rhs
-
-rhs:
-  %b = ...
-  %b_bool = fcmp one double %b, 0.0
-  br label %merge
-
-merge:
-  %res = phi i1 [ true, %entry ], [ %b_bool, %rhs ]
-  %res_f = uitofp i1 %res to double
-```
-
-That is exactly what we implemented in Chapter 16 codegen.
-
-## Codegen Changes
-
-### Unary
-
-`not` and `!` now map to builtin boolean inversion (still returned as `0.0/1.0`):
-
-```cpp
-case '!':
-case tok_not: {
-  Value *AsBool = Builder->CreateFCmpONE(
-      OperandV, ConstantFP::get(*TheContext, APFloat(0.0)), "nottmp.bool");
-  Value *NegBool = Builder->CreateNot(AsBool, "nottmp.inv");
-  return Builder->CreateUIToFP(NegBool, Type::getDoubleTy(*TheContext),
-                               "nottmp");
-}
-```
-
-### Binary
-
-`and` / `or` now use branch-based short-circuit codegen with PHI merge.
-
-We still keep Chapter 16 result style:
-- boolean-like result as `double` (`0.0` or `1.0`)
-- not Python operand-return semantics yet
-
-## Tests in This Chapter
-
-Operator-focused tests:
-- [`code/chapter16/test/logic_ops.pyxc`](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter16/test/logic_ops.pyxc)
-- [`code/chapter16/test/logic_short_circuit.pyxc`](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter16/test/logic_short_circuit.pyxc)
-- [`code/chapter16/test/custom_ops_disabled.pyxc`](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter16/test/custom_ops_disabled.pyxc)
-
-Type/pointer tests moved to Chapter 17.
-
-## Compile and Run
+Build and smoke test:
 
 ```bash
 cd code/chapter16 && ./build.sh
+./pyxc -t test/if_elif_optional.pyxc
+./pyxc -i test/showcase_tools.pyxc
 ```
 
-Run sample programs:
+## Grammar Target (EBNF)
+
+This is the exact syntax shape we’re aiming for. Writing it as EBNF keeps parser decisions crisp and prevents “I think this should parse” drift.
+
+```ebnf
+program         = { top_level , newline } ;
+top_level       = definition | extern | expression ;
+
+definition      = { decorator } , "def" , prototype , ":" , suite ;
+extern          = "extern" , "def" , prototype ;
+
+suite           = inline_suite | block_suite ;
+inline_suite    = statement ;
+block_suite     = newline , indent , statement_list , dedent ;
+statement_list  = statement , { newline , statement } , [ newline ] ;
+
+statement       = if_stmt | for_stmt | return_stmt | expr_stmt ;
+if_stmt         = "if" , expression , ":" , suite ,
+                  { "elif" , expression , ":" , suite } ,
+                  [ "else" , ":" , suite ] ;
+for_stmt        = "for" , identifier , "in" , "range" , "(" ,
+                  expression , "," , expression , [ "," , expression ] , ")" ,
+                  ":" , suite ;
+return_stmt     = "return" , expression ;
+expr_stmt       = expression ;
+```
+
+## Lexer Update: Teach It elif
+
+Before parser work, the lexer must recognize `elif` as a keyword.
+
+```cpp
+enum Token {
+  tok_eof = -1,
+  tok_eol = -2,
+  tok_error = -3,
+
+  tok_def = -4,
+  tok_extern = -5,
+  tok_identifier = -6,
+  tok_number = -7,
+
+  tok_if = -8,
+  tok_elif = -9,
+  tok_else = -10,
+  tok_return = -11,
+
+  tok_for = -12,
+  tok_in = -13,
+  tok_range = -14,
+  tok_decorator = -15,
+  tok_var = -16,
+
+  tok_indent = -17,
+  tok_dedent = -18,
+};
+
+static std::map<std::string, Token> Keywords = {
+    {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return},
+    {"if", tok_if},   {"elif", tok_elif},     {"else", tok_else},
+    {"for", tok_for}, {"in", tok_in},         {"range", tok_range},
+    {"var", tok_var}};
+```
+
+Two subtle wins here:
+
+- We get `elif` support directly in the token stream.
+  Meaning: the lexer emits `tok_elif` (a dedicated token), instead of treating `elif` like a regular identifier.
+- Token IDs are grouped cleanly by category, which helps while debugging parser traces.
+  Meaning: when you print raw `CurTok` numbers while stepping through parser code, nearby values tend to belong to related syntax groups (`if/elif/else/return`, loop tokens, etc.). That makes parser state dumps easier to read.
+
+## From Indentation Tokens to Real Blocks
+
+Chapter 15 gave us `indent`/`dedent`. Chapter 16 turns those into a suite AST.
+
+`suite` is essentially a block of statements.  
+We use the name `suite` because Python grammar uses that term for:
+
+- a single inline statement after `:`
+- or a newline + indented statement list
+
+### ParseBlockSuite()
+
+```cpp
+static std::unique_ptr<BlockSuiteAST> ParseBlockSuite() {
+  auto BlockLoc = CurLoc;
+  if (CurTok != tok_eol)
+    return LogError<std::unique_ptr<BlockSuiteAST>>("Expected newline");
+
+  if (getNextToken() != tok_indent)
+    return LogError<std::unique_ptr<BlockSuiteAST>>("Expected indent");
+  getNextToken(); // eat indent
+
+  auto Stmts = ParseStatementList();
+  if (Stmts.empty())
+    return nullptr;
+
+  getNextToken(); // eat dedent
+  return std::make_unique<BlockSuiteAST>(BlockLoc, std::move(Stmts));
+}
+```
+
+### ParseSuite()
+
+```cpp
+static std::unique_ptr<BlockSuiteAST> ParseSuite() {
+  if (CurTok == tok_eol)
+    return ParseBlockSuite();
+  return ParseInlineSuite();
+}
+```
+
+This is one of those deceptively small changes that unlocks half the chapter.
+
+## if / elif / else, with Optional else
+
+Here’s the heart of the parser work.
+
+```cpp
+static std::unique_ptr<StmtAST> ParseIfStmt() {
+  SourceLocation IfLoc = CurLoc;
+  if (CurTok != tok_if && CurTok != tok_elif)
+    return LogError<StmtPtr>("expected `if`/`elif`");
+  getNextToken();
+
+  auto Cond = ParseExpression();
+  if (!Cond)
+    return nullptr;
+
+  if (CurTok != ':')
+    return LogError<std::unique_ptr<StmtAST>>("expected `:`");
+  getNextToken();
+
+  auto Then = ParseSuite();
+  if (!Then)
+    return nullptr;
+
+  std::unique_ptr<BlockSuiteAST> Else;
+  if (CurTok == tok_elif) {
+    auto ElseIfStmt = ParseIfStmt();
+    if (!ElseIfStmt)
+      return nullptr;
+    std::vector<StmtPtr> ElseStmts;
+    ElseStmts.push_back(std::move(ElseIfStmt));
+    Else = std::make_unique<BlockSuiteAST>(IfLoc, std::move(ElseStmts));
+  } else if (CurTok == tok_else) {
+    getNextToken();
+    if (CurTok != ':')
+      return LogError<std::unique_ptr<StmtAST>>("expected `:`");
+    getNextToken();
+    Else = ParseSuite();
+    if (!Else)
+      return nullptr;
+  }
+
+  return std::make_unique<IfStmtAST>(IfLoc, std::move(Cond), std::move(Then),
+                                     std::move(Else));
+}
+```
+
+Also important: guardrails for stray branches.
+
+```cpp
+case tok_elif:
+  return LogError<StmtPtr>("Unexpected `elif` without matching `if`");
+case tok_else:
+  return LogError<StmtPtr>("Unexpected `else` without matching `if`");
+```
+
+Why this shape works well:
+
+- `elif` is represented as “`else` containing another `if`”.
+- optional `else` means `Else` can be `nullptr`.
+- this keeps the AST simple and codegen predictable.
+
+## Codegen Fixes That Matter More Than They Look
+
+If parser support expands and codegen doesn’t evolve, the compiler *seems* fine until it really isn’t.
+
+### IfStmtAST::codegen() handles terminated branches
+
+```cpp
+bool ThenTerminated = Builder->GetInsertBlock()->getTerminator() != nullptr;
+if (!ThenTerminated)
+  Builder->CreateBr(MergeBB);
+
+Value *ElseV = nullptr;
+bool ElseTerminated = false;
+if (Else) {
+  ElseV = Else->codegen();
+  if (!ElseV)
+    return nullptr;
+  ElseTerminated = Builder->GetInsertBlock()->getTerminator() != nullptr;
+} else {
+  ElseV = ConstantFP::get(*TheContext, APFloat(0.0));
+}
+if (!ElseTerminated)
+  Builder->CreateBr(MergeBB);
+
+if (ThenTerminated && ElseTerminated) {
+  BasicBlock *DeadCont =
+      BasicBlock::Create(*TheContext, "ifcont.dead", TheFunction);
+  Builder->SetInsertPoint(DeadCont);
+  return ConstantFP::get(*TheContext, APFloat(0.0));
+}
+```
+
+Here, “terminated branch” means a branch that already ends with something final like `ret`.
+
+Bad shape (what we want to avoid):
+
+```llvm
+then:
+  ret double 1.0
+  br label %merge   ; invalid: jump after return
+```
+
+Good shape:
+
+```llvm
+then:
+  ret double 1.0
+
+else:
+  br label %merge
+```
+
+Why:
+
+- prevents generating jump instructions after a `return`
+- avoids malformed IR in branch-heavy functions
+
+### Return + function finalization
+
+```cpp
+Value *ReturnStmtAST::codegen() {
+  Value *RetVal = Expr->codegen();
+  ...
+  if (ExpectedTy->isIntegerTy(32) && RetVal->getType()->isDoubleTy())
+    RetVal = Builder->CreateFPToSI(RetVal, ExpectedTy, "ret_i32");
+  Builder->CreateRet(RetVal);
+  return RetVal;
+}
+```
+
+```cpp
+if (Value *RetVal = Body->codegen()) {
+  if (!Builder->GetInsertBlock()->getTerminator()) {
+    ...
+    Builder->CreateRet(RetVal);
+  }
+  verifyFunction(*TheFunction);
+  ...
+}
+```
+
+`getTerminator()` is an LLVM API on a basic block.  
+We use it to ask: “is this block already finished?”
+
+- If yes, do not emit another `ret`/`br`.
+- If no, emit the final return.
+
+That is how we avoid duplicate final `ret` instructions, and it also keeps return typing logic in one place.
+
+(And yes, this is one of those C++ compiler spots where one extra `CreateRet` can ruin your afternoon in under 30 seconds.)
+
+## Interpreter vs Executable main
+
+Chapter 16 introduces mode-aware `main` handling:
+
+```cpp
+static bool UseCMainSignature = false;
+```
+
+- `InterpretFile(...)` and `REPL()` keep it `false`.
+- `CompileToObjectFile(...)` sets it `true`.
+
+Why:
+
+- JIT/interpreter paths want language-level function signatures.
+- executable/object mode still needs native entrypoint behavior.
+
+## Benchmarking (Python vs pyxc)
+
+We added a benchmark suite under:
+
+- `code/chapter16/bench/run_suite.sh`
+- `code/chapter16/bench/cases/*.py`
+- `code/chapter16/bench/cases/*.pyxc`
+
+Run it:
 
 ```bash
-./pyxc -t test/logic_ops.pyxc
-./pyxc -i test/logic_ops.pyxc
-./pyxc -i test/logic_short_circuit.pyxc
-./pyxc -i test/custom_ops_disabled.pyxc
+cd code/chapter16
+bench/run_suite.sh 3
 ```
 
-Run Chapter 16 test suite:
+Current averages (seconds, 2 decimals):
 
-```bash
-llvm-lit test
-```
+- `fib(41)`: Python `11.66`, `pyxc -i` `0.46`, `pyxc exe` `0.44`
+- `loopsum(10000,10000)`: Python `3.39`, `pyxc -i` `0.15`, `pyxc exe` `0.10`
+- `primecount(1900) x 10`: Python `1.22`, `pyxc -i` `0.17`, `pyxc exe` `0.15`
+
+Overall case-average:
+
+- Python: `5.42s`
+- `pyxc -i`: `0.26s`
+- `pyxc executable`: `0.23s`
 
 Repo:
 
 - [https://github.com/alankarmisra/pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial)
 
+If something fails locally, open an issue with:
+
+- OS/toolchain details
+- exact command
+- full stderr output
+
+## Compiling
+```bash
+cd code/chapter16 && ./build.sh
+```
 
 ## Compile / Run / Test (Hands-on)
 
@@ -239,7 +394,7 @@ cd code/chapter16 && ./build.sh
 Run one sample program:
 
 ```bash
-code/chapter16/pyxc -i code/chapter16/test/custom_ops_disabled.pyxc
+code/chapter16/pyxc -i code/chapter16/test/blocks_bad_indent.pyxc
 ```
 
 Run the chapter tests (when a test suite exists):
@@ -249,7 +404,7 @@ cd code/chapter16/test
 lit -sv .
 ```
 
-Pick a couple of tests, mutate the inputs, and watch how diagnostics respond.
+Explore the test folder a bit and add one tiny edge case of your own.
 
 When you're done, clean artifacts:
 

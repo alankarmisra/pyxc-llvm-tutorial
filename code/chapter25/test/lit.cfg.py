@@ -2,7 +2,7 @@ import os
 
 import lit.formats
 
-config.name = "pyxc-chapter24"
+config.name = "pyxc-chapter23"
 config.test_format = lit.formats.ShTest(True)
 config.suffixes = [".pyxc"]
 config.test_source_root = os.path.dirname(__file__)

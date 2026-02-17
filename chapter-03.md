@@ -1,4 +1,7 @@
-# 3. Building LLVM from Source
+---
+description: "Set up a full LLVM toolchain from source (clang, lld, lldb, lit, clangd) so later compiler chapters build, test, and debug reliably across platforms."
+---
+# 3. Pyxc: Building LLVM from Source
 
 ## Introduction
 
@@ -261,6 +264,12 @@ For this tutorial, we assume you are using VS Code. If you use another editor or
 ```
 
 If IntelliSense conflicts with clangd, disable the built-in C/C++ extension or set `C_Cpp.intelliSenseEngine` to `Disabled` in VS Code settings.
+
+## Conclusion
+
+In this chapter we focused on the environment, not language features, and set up a full LLVM toolchain from source with `clang`, `lld`, `llvm-lit`, and `clangd`, along with practical editor integration so the rest of the tutorial can be built and tested without guesswork.
+
+With this setup in place, you are ready to move quickly through the next chapters and focus on compiler implementation details instead of build-system friction.
 
 ## Need Help?
 

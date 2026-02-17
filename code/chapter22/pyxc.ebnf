@@ -70,7 +70,6 @@ statement       = if_stmt
                 | do_while_stmt
                 | break_stmt
                 | continue_stmt
-                | free_stmt
                 | print_stmt
                 | return_stmt
                 | typed_assign_stmt
@@ -88,7 +87,6 @@ expr_stmt       = expression ;
 return_stmt     = "return" , [ expression ] ;
 
 print_stmt      = "print" , "(" , [ arg_list ] , ")" ;
-free_stmt       = "free" , "(" , expression , ")" ;
 
 if_stmt         = "if" , expression , ":" , suite ,
                   [ "elif" , expression , ":" , suite ] ,
@@ -128,12 +126,9 @@ member_expr     = postfix_expr , member_suffix ;
 
 primary         = number
                 | identifier
-                | malloc_expr
                 | addr_expr
                 | paren_expr
                 | var_expr ;
-
-malloc_expr     = "malloc" , "[" , type_expr , "]" , "(" , expression , ")" ;
 
 addr_expr       = "addr" , "(" , expression , ")" ;
 paren_expr      = "(" , expression , ")" ;

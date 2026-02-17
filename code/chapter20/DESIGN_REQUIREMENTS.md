@@ -1,125 +1,183 @@
 # Chapter 19 Design Requirements
 
 ## Theme
-Structured data with named fields.
+Control-flow parity with C-style loops plus practical core integer operator completeness.
 
 ## Goal
-Add first-class `struct` support to Pyxc with typed field access and assignment while preserving all Chapter 18 behavior.
+Extend Pyxc with:
+
+- `while`, `do-while`, `break`, `continue`
+- integer operators: unary `~`, binary `%`, `&`, `^`, `|`
+
+while preserving Chapter 17/17 behavior.
 
 ## Scope
 
 ### In Scope
-- Top-level struct declarations:
-  - `struct Name:` followed by indented typed field declarations
-- Struct types usable in typed locals and function signatures
-- Field read access: `obj.field`
-- Field assignment: `obj.field = expr`
-- Nested field access (e.g. `outer.inner.x`)
-- Struct type aliases via existing `type Alias = StructName`
+- `while <expr>:` with inline and block suites
+- `do:` `<suite>` `while <expr>` (post-test loop)
+- `break` statement (nearest enclosing loop)
+- `continue` statement (nearest enclosing loop)
+- Correct nesting behavior with `if` inside loops and loops inside loops
+- Integer operator support:
+  - unary `~`
+  - binary `%`, `&`, `^`, `|`
+- Integer-only diagnostics for `%` and bitwise operators
 
 ### Out of Scope
-- Struct literals/constructors
-- Methods/member functions
-- Inheritance
-- Packed/bitfield layout controls
-- Generic structs
+- Labels and `goto`
+- `switch`
+- `for (;;)` C-form rewrite (existing `for range` remains as-is)
+- Shift operators and compound assignment (deferred)
 
 ## Syntax Requirements
 
-### Struct declaration
+### While
 ```py
-struct Point:
-    x: i32
-    y: i32
+while cond:
+    body
 ```
 
-### Local declaration and field assignment
+### Do-while
 ```py
-p: Point
-p.x = 10
-p.y = 20
+do:
+    body
+while cond
 ```
 
-### Field read
+### Break/Continue
 ```py
-print(p.x, p.y)
+while cond:
+    if x:
+        break
+    continue
+```
+
+### Operators
+```py
+~x
+x % y
+x & y
+x ^ y
+x | y
 ```
 
 ## Lexer Requirements
-- Add keyword token:
-  - `tok_struct`
-- Ensure `.` can be tokenized for member access (and not consumed as a malformed number).
+- Add keywords/tokens:
+  - `tok_while`
+  - `tok_do`
+  - `tok_break`
+  - `tok_continue`
+- Existing single-character operator tokens are used for `%`, `&`, `^`, `|`, `~`.
 
 ## Parser Requirements
-- Add top-level parser:
-  - `ParseStructDecl()`
-- Extend top-level dispatch to accept `struct` declarations.
-- Extend postfix parsing to handle member access:
-  - `postfix_expr '.' identifier`
-- Preserve existing call/index postfix chaining behavior.
+- Add statement parsers:
+  - `ParseWhileStmt()`
+  - `ParseDoWhileStmt()`
+  - `ParseBreakStmt()`
+  - `ParseContinueStmt()`
+- Extend `ParseStmt()` dispatch accordingly.
+- `break`/`continue` must be parse-valid anywhere syntactically but become semantic errors outside loops.
+- Extend binary precedence table to include `%`, `&`, `^`, and `|` with stable precedence.
 
 ## AST Requirements
-- Add member access expression node:
-  - `MemberExprAST(BaseExpr, FieldName)`
-- Member expression must support:
-  - value codegen (field load)
-  - address codegen (for assignment lvalue path)
-  - type hints for downstream operations (`print`, casts, etc.)
+- Add nodes:
+  - `WhileStmtAST`
+  - `DoWhileStmtAST`
+  - `BreakStmtAST`
+  - `ContinueStmtAST`
+- Keep existing `StmtAST` hierarchy style and location tracking.
 
 ## Semantic Requirements
-- Maintain a struct declaration table with:
-  - declaration order
-  - field names
-  - field type expressions
-  - per-struct LLVM type cache
-- Reject duplicate struct names.
-- Reject duplicate field names inside a struct.
-- Reject unknown field names in member access.
-- Reject member access on non-struct types.
-- Keep current assignment/lvalue rules: field assignment requires addressable base.
+- Maintain a loop-context stack in codegen containing:
+  - break target block
+  - continue target block
+- Emit diagnostic when `break`/`continue` are used outside loops.
+- Condition truthiness must use current Chapter 17 boolean conversion rules (`ToBoolI1`).
+- `%`, `&`, `^`, `|`, `~` are integer-only in this chapter.
 
 ## LLVM Lowering Requirements
-- Lower each struct declaration to an LLVM `StructType`.
-- Resolve field types in declaration order.
-- Lower `obj.field` address as struct GEP to field index.
-- Lower field read as load from computed field address.
-- Lower field assignment through existing assignment codepath (`codegenAddress` + store).
+
+### while
+Blocks:
+1. condition block
+2. body block
+3. exit block
+
+Flow:
+- branch to condition
+- condition true -> body
+- condition false -> exit
+- body tail -> condition
+
+### do-while
+Blocks:
+1. body block
+2. condition block
+3. exit block
+
+Flow:
+- enter body first
+- body tail -> condition
+- condition true -> body
+- condition false -> exit
+
+### break
+- branch to nearest loop exit block
+
+### continue
+- branch to nearest loop continue target:
+  - `while`: condition block
+  - `do-while`: condition block
+  - existing `for range`: step/condition path per current for lowering
+
+### Operators
+- `%` lowers to integer remainder (`srem` in current signed arithmetic path)
+- `&`, `^`, `|` lower to LLVM `and`, `xor`, `or`
+- unary `~` lowers to LLVM integer bitwise not
 
 ## Interaction Requirements
-- Existing Chapter 18 loop/control/operator behavior remains unchanged.
-- Existing type aliases continue to work and may alias structs.
-- Existing pointer/indexing behavior remains unchanged.
+- Works with typed locals and pointer expressions from Chapter 17.
+- Existing `for range` behavior must continue to pass tests.
+- `return` inside loop still behaves as terminator.
 
 ## Diagnostics Requirements
-- Duplicate struct declaration
-- Duplicate field in struct
-- Unknown struct type in typed declaration/signature
-- Unknown field name on struct
-- Member access on non-struct value
-- Missing/invalid struct declaration syntax (`:`, indent, field type)
+- `break` outside loop: clear error
+- `continue` outside loop: clear error
+- malformed do-while syntax: clear parse error
+- `%` with non-integer operands: clear error
+- bitwise op with non-integer operands: clear error
+- unary `~` with non-integer operand: clear error
 
 ## Tests
 
 ### Positive
-- Basic struct with two scalar fields
-- Nested structs and chained field access
-- Struct alias usage (`type P = Point`)
-- Field assignment + readback in loops/conditionals
+- simple while counting
+- do-while runs at least once
+- nested loops with inner break and outer continue
+- continue skips remainder of body
+- `%` with signed integer values
+- `&`, `|`, `^` basic correctness and precedence
+- unary `~` on integer values
 
 ### Negative
-- Unknown field access
-- Member access on non-struct value
-- Duplicate field in struct declaration
-- Duplicate struct declaration name
+- break outside loop
+- continue outside loop
+- malformed do-while syntax
+- `%` with float operand
+- bitwise op with float operand
+- unary `~` with float operand
 
 ## Done Criteria
-- Chapter 19 lit suite includes struct coverage and passes
-- Chapter 18 behavior remains green under Chapter 19 compiler
-- `chapter-19.md` documents the feature and code diffs from Chapter 18
+- Chapter 19 lit suite added/updated and green
+- Previous chapter lit suite remains green
+- No regressions in function/type/pointer behavior
 
 ## Implementation Sequencing Notes
-1. Copy Chapter 18 baseline into `code/chapter19/`
-2. Add struct token + declaration parser
-3. Add member access AST + codegen
-4. Add struct type resolution/cache
-5. Add tests and harden diagnostics
+- After Chapter 18 completes, copy compiler/runtime baseline to `code/chapter19/`.
+- Implement feature in small increments:
+  1. while
+  2. break/continue with loop context
+  3. do-while
+  4. operator `%`, `&`, `^`, `|`, `~`
+  5. diagnostics + test hardening

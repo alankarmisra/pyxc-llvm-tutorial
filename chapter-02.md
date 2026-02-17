@@ -1,3 +1,6 @@
+---
+description: "Turn tokens into structure by implementing a recursive-descent parser and AST, including expression parsing, prototypes, definitions, and error handling."
+---
 # 2. Pyxc: Implementing a Parser and AST
 
 ## Introduction
@@ -70,7 +73,7 @@ binoprhs       = binaryop primary
 
 (* gettok() / Regex-style terminals *)
 newline        = "\n" (* `\r` and `\r\n` are normalized to `\n` *)
-binaryop       = "<" | "+" | "-" | "*"
+binaryop       = "<" | ">" | "+" | "-" | "*" | "/" | "%"
 identifier     = /[A-Za-z_][A-Za-z0-9_]*/
 number         = /[0-9]+(\.[0-9]+)?/
 ```
@@ -96,9 +99,9 @@ Those starting tokens are distinct, so the parser can choose immediately with no
 
 The formal name for this style is `LL(1)`. Around here, we can call it `One Punch (token)` parsing.
 
-## A simple gotcha
+## Left-Recursion Trap
 
-One `thing` to watch out for while writing grammar productions (no pun intended) is definitions like:
+One thing to watch out for while writing grammar productions is definitions like:
 
 ```ebnf
 thing = thing "+" other_thing
@@ -131,12 +134,30 @@ a + (b * c)
 
 `+` and `*` are operators. `*` has higher precedence (a higher ranking) than `+`, so we must evaluate `*` before `+`. Hence `Operator` `Precedence` Parsing.
 
-## Is it just me?
-Dense words tend to confuse me, so I look at the taxonomy of things to remember why something is called what it is. If you have done any level of math, you know this can [backfire](https://en.wikipedia.org/wiki/Grothendieck%E2%80%93Riemann%E2%80%93Roch_theorem). But we try.
+Don't let the formal names intimidate you—"Recursive Descent" just means we start at the top and work our way down, and "Operator Precedence" just means `*` binds tighter than `+`.
 
 ## The Abstract Syntax Tree (AST)
 
-The AST for a program captures its behavior in such a way that it is easy for later stages of the compiler (e.g. code generation) to interpret. We basically want one object for each construct in the language, and the AST should closely model the language. 
+The AST for a program captures its behavior in such a way that it is easy for later stages of the compiler (e.g. code generation) to interpret. We basically want one object for each construct in the language, and the AST should closely model the language.
+
+### Trees are everywhere (you just haven't noticed)
+
+If the word "tree" sounds intimidating, don't worry—you've been using trees your entire computing life. Your file system? That's a tree. A folder contains files and other folders. Those folders contain more files and folders. Draw that structure sideways or upside-down, and you have exactly what computer scientists call a tree.
+
+```text
+Documents/              ← Root (like the top of our AST)
+├── Photos/             ← Branch
+│   ├── vacation.jpg    ← Leaf
+│   └── family.jpg      ← Leaf
+└── Code/               ← Branch
+    ├── project/        ← Branch
+    │   └── main.cpp    ← Leaf
+    └── README.md       ← Leaf
+```
+
+An Abstract Syntax Tree is the same idea, just drawn differently. Instead of folders and files, we have expressions and operators. The "root" is your entire program, "branches" are things like function definitions or binary operations, and "leaves" are the concrete values like numbers or variable names.
+
+Once you see this, trees lose their mystique. They're just a useful abstraction for representing hierarchies—whether that's organizing files on disk or organizing the structure of your code. 
 
 For example, for:
 
@@ -467,28 +488,18 @@ By PEMDAS/BODMAS rules, `*` is processed before `+`, so the expected grouping is
 To encode this behavior, we use an operator precedence table, which tells the parser which operator should be processed first. Higher numbers mean earlier processing; lower numbers mean later processing.
 
 ```cpp
-/// BinopPrecedence - This holds the precedence for each 
-// binary operator that is defined. So left-to-right, 
-// all the *'s are processed first
-// then `+` and `-` 
-// and finally '<'
+/// BinopPrecedence - This holds the precedence for each binary operator.
 static map<char, int> BinopPrecedence = {
-    {'<', 10}, {'+', 20}, {'-', 20}, {'*', 40}};
+    {'<', 10}, {'>', 10}, {'+', 20}, {'-', 20}, {'*', 40}, {'/', 40}, {'%', 40}};
 ```
-We define a few convenience constants.
+
+Higher precedence means the operator binds tighter. So `*`, `/`, and `%` (precedence 40) are evaluated before `+` and `-` (precedence 20), which are evaluated before `<` and `>` (precedence 10).
+
+We define a few convenience constants:
 
 ```cpp
 static constexpr int NO_OP_PREC = -1;
 static constexpr int MIN_BINOP_PREC = 1; // one higher than NO_OP_PREC
-```
-
-And, for the sake of explanation, we we define additional constants. These constants are NOT in the actual code and are only included here for illustration purposes.
-
-```cpp
-constexpr int LT_PREC = 10;
-constexpr int ADD_PREC = 20;
-constexpr int SUB_PREC = 20;
-constexpr int MUL_PREC = 40;
 ```
 
 Next we write a helper function to determine the precedence of a binary operator.
@@ -508,7 +519,7 @@ static int GetTokPrecedence() {
 }
 ```
 
-For the basic form of Pyxc, we will only support 4 binary operators (this can obviously be extended by you, our brave and intrepid reader). The `GetTokPrecedence` function returns the precedence for the current token, or NO_OP_PREC (*-1*) if the token is not a binary operator. 
+The `GetTokPrecedence` function returns the precedence for the current token, or NO_OP_PREC (*-1*) if the token is not a binary operator. 
 
 ### Example 1. "a"
 Let's see how we would parse a simple single-item expression like: 
@@ -997,7 +1008,15 @@ In Python you could put the entire expression in delimiters or use an explicit c
 ## Compiling
 
 ```bash
-cd code/chapter05 && ./build.sh
+cd code/chapter02 && \
+    cmake -S . -B build && \
+    cmake --build build
+```
+
+### macOS / Linux shortcut
+
+```bash
+cd code/chapter02 && ./build.sh
 ```
 
 ## Sample interaction

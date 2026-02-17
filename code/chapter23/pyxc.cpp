@@ -155,7 +155,6 @@ enum Token {
   // primary
   tok_identifier = -6,
   tok_number = -7,
-  tok_string = -35,
 
   // control
   tok_if = -8,
@@ -200,7 +199,6 @@ static std::string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;             // Filled in if tok_number
 static bool NumIsIntegerLiteral;  // Filled in if tok_number
 static int64_t NumIntVal;         // Filled in if tok_number
-static std::string StringVal;     // Filled in if tok_string
 
 // Keywords words like `def`, `extern` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
@@ -580,49 +578,6 @@ static int gettok() {
     return tok_number;
   }
 
-  if (LastChar == '"') {
-    StringVal.clear();
-    while (true) {
-      LastChar = advance();
-      if (LastChar == EOF || LastChar == '\n' || LastChar == '\r') {
-        LogError("Unterminated string literal");
-        return tok_error;
-      }
-      if (LastChar == '"') {
-        LastChar = advance();
-        return tok_string;
-      }
-      if (LastChar == '\\') {
-        LastChar = advance();
-        switch (LastChar) {
-        case 'n':
-          StringVal.push_back('\n');
-          break;
-        case 't':
-          StringVal.push_back('\t');
-          break;
-        case 'r':
-          StringVal.push_back('\r');
-          break;
-        case '0':
-          StringVal.push_back('\0');
-          break;
-        case '\\':
-          StringVal.push_back('\\');
-          break;
-        case '"':
-          StringVal.push_back('"');
-          break;
-        default:
-          LogError("Invalid escape sequence in string literal");
-          return tok_error;
-        }
-      } else {
-        StringVal.push_back(static_cast<char>(LastChar));
-      }
-    }
-  }
-
   if (LastChar == '#') {
     // Comment until end of line.
     do
@@ -714,8 +669,6 @@ static const char *TokenName(int Tok) {
     return "<identifier>";
   case tok_number:
     return "<number>";
-  case tok_string:
-    return "<string>";
   case tok_if:
     return "<if>";
   case tok_elif:
@@ -837,7 +790,6 @@ public:
   virtual Type *getPointeeTypeHint() const { return nullptr; }
   virtual std::string getBuiltinLeafTypeHint() const { return ""; }
   virtual std::string getPointeeBuiltinLeafTypeHint() const { return ""; }
-  virtual bool getStringLiteralValue(std::string &Out) const { return false; }
   int getLine() const { return Loc.Line; }
   int getCol() const { return Loc.Col; }
   virtual raw_ostream &dump(raw_ostream &out, int ind) {
@@ -923,26 +875,6 @@ public:
     return ExprAST::dump(out << Val, ind);
   }
   Value *codegen() override;
-};
-
-class StringExprAST : public ExprAST {
-  std::string Val;
-
-public:
-  StringExprAST(SourceLocation Loc, std::string Val)
-      : ExprAST(Loc), Val(std::move(Val)) {}
-  raw_ostream &dump(raw_ostream &out, int ind) override {
-    return ExprAST::dump(out << "\"" << Val << "\"", ind);
-  }
-  const std::string &getValue() const { return Val; }
-  Value *codegen() override;
-  Type *getValueTypeHint() const override;
-  Type *getPointeeTypeHint() const override;
-  std::string getPointeeBuiltinLeafTypeHint() const override;
-  bool getStringLiteralValue(std::string &Out) const override {
-    Out = Val;
-    return true;
-  }
 };
 
 /// VariableExprAST - Expression class for referencing a variable, like "a".
@@ -1365,7 +1297,6 @@ static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
                                               std::unique_ptr<ExprAST> LHS);
 static std::unique_ptr<BlockSuiteAST> ParseSuite();
 static std::unique_ptr<BlockSuiteAST> ParseBlockSuite();
-static std::unique_ptr<ExprAST> ParseStringExpr();
 static std::unique_ptr<StmtAST> ParsePrintStmt();
 static std::unique_ptr<StmtAST> ParseFreeStmt();
 static std::unique_ptr<ExprAST> ParseMallocExpr();
@@ -1391,13 +1322,6 @@ static std::unique_ptr<ExprAST> ParseNumberExpr() {
   auto Result =
       std::make_unique<NumberExprAST>(NumVal, NumIsIntegerLiteral, NumIntVal);
   getNextToken(); // consume the number
-  return std::move(Result);
-}
-
-static std::unique_ptr<ExprAST> ParseStringExpr() {
-  auto StrLoc = CurLoc;
-  auto Result = std::make_unique<StringExprAST>(StrLoc, StringVal);
-  getNextToken(); // consume string literal
   return std::move(Result);
 }
 
@@ -2126,8 +2050,6 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
     return ParseIdentifierExpr(); // Also looks for call expressions
   case tok_number:
     return ParseNumberExpr();
-  case tok_string:
-    return ParseStringExpr();
   case '(':
     return ParseParenExpr();
   case tok_var:
@@ -2772,28 +2694,6 @@ static Value *ToBoolI1(Value *V, const Twine &Name) {
 // Code Generation
 //===----------------------------------------------------------------------===//
 
-static Function *GetOrCreateLibcIOFunction(const std::string &Name) {
-  if (Function *F = TheModule->getFunction(Name))
-    return F;
-
-  Type *I32Ty = Type::getInt32Ty(*TheContext);
-  Type *PtrTy = PointerType::getUnqual(*TheContext);
-  FunctionType *FT = nullptr;
-
-  if (Name == "putchar")
-    FT = FunctionType::get(I32Ty, {I32Ty}, false);
-  else if (Name == "getchar")
-    FT = FunctionType::get(I32Ty, {}, false);
-  else if (Name == "puts")
-    FT = FunctionType::get(I32Ty, {PtrTy}, false);
-  else if (Name == "printf")
-    FT = FunctionType::get(I32Ty, {PtrTy}, true);
-  else
-    return nullptr;
-
-  return Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
-}
-
 Function *getFunction(std::string Name) {
   // First, see if the function has already been added to the current module.
   if (auto *F = TheModule->getFunction(Name))
@@ -2804,9 +2704,6 @@ Function *getFunction(std::string Name) {
   auto FI = FunctionProtos.find(Name);
   if (FI != FunctionProtos.end())
     return FI->second->codegen();
-
-  if (Function *LibCF = GetOrCreateLibcIOFunction(Name))
-    return LibCF;
 
   // If no existing prototype exists, return null.
   return nullptr;
@@ -2826,23 +2723,6 @@ Value *NumberExprAST::codegen() {
   if (IsIntegerLiteral)
     return ConstantInt::get(Type::getInt64Ty(*TheContext), IntVal, true);
   return ConstantFP::get(*TheContext, APFloat(Val));
-}
-
-Value *StringExprAST::codegen() {
-  emitLocation(this);
-  return Builder->CreateGlobalString(Val, "strlit");
-}
-
-Type *StringExprAST::getValueTypeHint() const {
-  return PointerType::getUnqual(*TheContext);
-}
-
-Type *StringExprAST::getPointeeTypeHint() const {
-  return Type::getInt8Ty(*TheContext);
-}
-
-std::string StringExprAST::getPointeeBuiltinLeafTypeHint() const {
-  return "i8";
 }
 
 Value *VariableExprAST::codegen() {
@@ -3280,73 +3160,19 @@ Value *CallExprAST::codegen() {
   if (!CalleeF)
     return LogError<Value *>("Unknown function referenced");
 
-  size_t FixedArgCount = CalleeF->arg_size();
-  if ((!CalleeF->isVarArg() && FixedArgCount != Args.size()) ||
-      (CalleeF->isVarArg() && Args.size() < FixedArgCount))
+  // If argument mismatch error.
+  if (CalleeF->arg_size() != Args.size())
     return LogError<Value *>("Incorrect # arguments passed");
 
-  std::vector<Value *> RawArgs;
-  RawArgs.reserve(Args.size());
-  for (auto &Arg : Args) {
-    Value *ArgV = Arg->codegen();
+  std::vector<Value *> ArgsV;
+  unsigned I = 0;
+  for (auto &Formal : CalleeF->args()) {
+    Value *ArgV = Args[I++]->codegen();
     if (!ArgV)
       return nullptr;
-    RawArgs.push_back(ArgV);
-  }
-
-  if (Callee == "printf") {
-    if (Args.empty())
-      return LogError<Value *>("printf requires a format string");
-    std::string Fmt;
-    if (!Args[0]->getStringLiteralValue(Fmt))
-      return LogError<Value *>("printf format must be a string literal");
-    std::vector<char> Specs;
-    for (size_t I = 0; I < Fmt.size(); ++I) {
-      if (Fmt[I] != '%')
-        continue;
-      if (I + 1 >= Fmt.size())
-        return LogError<Value *>("Unsupported printf format specifier '%'");
-      char Spec = Fmt[++I];
-      if (Spec == '%')
-        continue;
-      if (Spec != 'd' && Spec != 's' && Spec != 'c' && Spec != 'p')
-        return LogError<Value *>("Unsupported printf format specifier");
-      Specs.push_back(Spec);
-    }
-
-    if (Specs.size() != Args.size() - 1)
-      return LogError<Value *>("printf format/argument count mismatch");
-
-    for (size_t I = 0; I < Specs.size(); ++I) {
-      Type *Ty = RawArgs[I + 1]->getType();
-      char Spec = Specs[I];
-      if ((Spec == 'd' || Spec == 'c') && !Ty->isIntegerTy())
-        return LogError<Value *>("printf type mismatch for integer format");
-      if ((Spec == 's' || Spec == 'p') && !Ty->isPointerTy())
-        return LogError<Value *>("printf type mismatch for pointer format");
-    }
-  }
-
-  std::vector<Value *> ArgsV;
-  size_t I = 0;
-  for (auto &Formal : CalleeF->args()) {
-    Value *ArgV = RawArgs[I++];
     ArgV = CastValueTo(ArgV, Formal.getType());
     if (!ArgV)
       return nullptr;
-    ArgsV.push_back(ArgV);
-  }
-
-  while (I < RawArgs.size()) {
-    Value *ArgV = RawArgs[I++];
-    Type *ArgTy = ArgV->getType();
-    if (ArgTy->isFloatTy()) {
-      ArgV = Builder->CreateFPExt(ArgV, Type::getDoubleTy(*TheContext),
-                                  "vararg.fpext");
-    } else if (ArgTy->isIntegerTy() && ArgTy->getIntegerBitWidth() < 32) {
-      ArgV = Builder->CreateSExt(ArgV, Type::getInt32Ty(*TheContext),
-                                 "vararg.sext");
-    }
     ArgsV.push_back(ArgV);
   }
 

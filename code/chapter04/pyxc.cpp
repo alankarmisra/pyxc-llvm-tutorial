@@ -414,7 +414,7 @@ static int getNextToken() { return CurTok = gettok(); }
 /// BinopPrecedence - This holds the precedence for each binary operator that is
 /// defined.
 static map<char, int> BinopPrecedence = {
-    {'<', 10}, {'+', 20}, {'-', 20}, {'*', 40}};
+    {'<', 10}, {'+', 20}, {'-', 20}, {'*', 40}, {'/', 40}, {'%', 40}};
 
 /// Explanation-friendly precedence anchors used by parser control flow.
 static constexpr int NO_OP_PREC = -1;

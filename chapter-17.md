@@ -1,372 +1,235 @@
-# 17. Typed Interop: Core Types, Pointers, and ABI Correctness
+---
+description: "Clean up operator semantics, precedence, and short-circuit logic to make expression behavior predictable before introducing richer type features."
+---
+# 16. Pyxc: Clean Operator Rules and Short-Circuit Logic
 
-Chapter 16 cleaned up operators and short-circuit behavior.  
-In Chapter 17, we take the next major step: a practical type system that can interoperate with C APIs safely.
+In Chapter 16, we had custom operators and decorator syntax.
 
-The focus of this chapter is not “advanced type theory.” It is interop-first typing:
+For Chapter 17, we simplify the language before adding types:
+- add Python-like logical/comparison operators
+- remove custom operator definitions for now
+- add real short-circuit behavior for `and` and `or`
 
-- explicit scalar types
-- pointer types and pointer indexing
-- typed function signatures
-- typed local declarations
-- aliasing for C-like names (`int`, `size_t`, etc.)
-- ABI-correct extern behavior for narrow signed/unsigned integers
-
-The implementation for this chapter lives in:
-
-- `code/chapter17/pyxc.cpp`
-- `code/chapter17/runtime.c`
+This keeps the codebase easier to reason about before Chapter 18 (types).
 
 
 !!!note
     To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter17](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter17).
 
-## Grammar (EBNF)
+## What We Added
 
-Chapter 17 introduces the typed grammar surface: `type` aliases, typed params/returns, typed local declarations, and `ptr[...]`.
+- logical keywords: `not`, `and`, `or`
+- comparison operators: `==`, `!=`, `<=`, `>=`
+- short-circuit codegen for `and` and `or`
 
-Reference: `code/chapter17/pyxc.ebnf`
+## What We Removed (for now)
+
+- `@unary` / `@binary` custom operator definitions
+
+## Why Disable Custom Operators Before Types?
+
+Simple reason: typed custom operators are ambiguous without more language features.
+
+If we keep custom operators while introducing types, we must answer:
+- how many typed versions of the same operator are allowed?
+- how does the compiler pick the correct one?
+
+That requires one of:
+- overloading (same operator name, many signatures)
+- generics (one generic operator that works for a type family)
+
+We do not have overloading or generics yet.
+
+So Chapter 17 disables custom operators on purpose. We will bring them back later, after overloading/generics exist.
+
+## Grammar Target (Chapter 17)
+
+From [`code/chapter17/pyxc.ebnf`](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter17/pyxc.ebnf):
 
 ```ebnf
-top_item        = newline | type_alias_decl | function_def | extern_decl | statement ;
-type_alias_decl = "type" , identifier , "=" , type_expr ;
+function_def   = "def" , prototype , ":" , suite ;
 
-prototype       = identifier , "(" , [ param_list ] , ")" , "->" , type_expr ;
-param_list      = param , { "," , param } ;
-param           = identifier , ":" , type_expr ;
+unary_op       = "+" | "-" | "!" | "~" | "not" ;
 
-typed_assign_stmt = identifier , ":" , type_expr , [ "=" , expression ] ;
-type_expr       = pointer_type | base_type ;
-pointer_type    = "ptr" , "[" , type_expr , "]" ;
+binary_op      = "<" | "<=" | ">" | ">="
+               | "==" | "!="
+               | "and" | "or"
+               | "+" | "-" | "*" | "/"
+               | "=" ;
 ```
 
-## Why This Chapter Exists
+## Lexer Changes
 
-Until Chapter 16, Pyxc effectively treated most values like doubles. That keeps early chapters simple, but it is not enough if you want real C interop.
-
-For example, calling a C function that expects `i16`, `u8`, or `ptr[T]` requires:
-
-1. precise type information in the AST
-2. correct LLVM type lowering
-3. correct ABI attributes at call boundaries
-
-That is exactly what Chapter 17 introduces.
-
-## Language Additions
-
-### Core scalar types
-
-Builtins in this chapter:
-
-- signed: `i8`, `i16`, `i32`, `i64`
-- unsigned: `u8`, `u16`, `u32`, `u64`
-- floats: `f32`, `f64`
-- `void`
-
-### Pointer type constructor
-
-```py
-ptr[i32]
-ptr[void]
-ptr[ptr[i8]]
-```
-
-### Typed function prototypes
-
-```py
-extern def printd(x: f64) -> f64
-
-def add(x: i32, y: i32) -> i32:
-    return x + y
-```
-
-### Typed local declarations
-
-```py
-x: i32 = 10
-p: ptr[i32] = addr(x)
-```
-
-### Type aliases
-
-```py
-type int = i32
-type char = i8
-type size = u64
-```
-
-## Pointer Operations in This Syntax
-
-Chapter 17 uses Python-flavored pointer forms:
-
-- `addr(x)` for address-of
-- `p[n]` for dereference/indexing
-
-Example:
-
-```py
-def main() -> i32:
-    x: i32 = 10
-    p: ptr[i32] = addr(x)
-    p[0] = p[0] + 1
-    return x
-```
-
-Type rules enforced:
-
-1. base of `p[n]` must be pointer
-2. index must be integer type
-3. `ptr[void]` cannot be indexed
-
-## Lexer and Token Updates
-
-Chapter 17 adds key tokens and keywords:
-
-- `type` -> `tok_type`
-- `->` -> `tok_arrow`
-
-Snippet:
+### New tokens
 
 ```cpp
-enum Token {
-  tok_type = -25,
-  tok_arrow = -26,
-  // ...
-};
+tok_not = -18,
+tok_and = -19,
+tok_or = -20,
+tok_eq = -21, // ==
+tok_ne = -22, // !=
+tok_le = -23, // <=
+tok_ge = -24, // >=
 ```
 
-The keyword map also includes `type`, and identifier lexing was updated to allow `_`, so aliases like `size_t` parse correctly.
-
-## Type Representation in the Frontend
-
-A recursive type-expression model is introduced:
+Keyword table includes:
 
 ```cpp
-enum class TypeExprKind { Builtin, AliasRef, Pointer };
-
-struct TypeExpr {
-  TypeExprKind Kind;
-  std::string Name;
-  std::shared_ptr<TypeExpr> Elem;
-};
+{"not", tok_not}, {"and", tok_and}, {"or", tok_or}
 ```
 
-This is important because parser-level type syntax (`ptr[ptr[i32]]`, aliases, etc.) needs structured representation before LLVM lowering.
+### Multi-char operator lexing
+
+Lexer now recognizes:
+- `==`
+- `!=`
+- `<=`
+- `>=`
+
+instead of trying to parse them as two separate chars.
 
 ## Parser Changes
 
-### Parsing typed prototypes
+### Precedence table now uses token IDs
 
-`ParsePrototype()` now expects typed params and return types:
-
-```text
-name '(' param ':' type_expr {',' ...} ')' '->' type_expr
-```
-
-### Parsing top-level aliases
-
-`ParseTypeAliasDecl()` handles:
-
-```py
-type Name = TypeExpr
-```
-
-### Parsing typed declarations and assignments
-
-Identifier-leading statements are disambiguated into:
-
-- typed declaration: `x: T` or `x: T = expr`
-- assignment: `lhs = rhs`
-- ordinary expression statement
-
-### Parsing pointer/address constructs
-
-- `addr(expr)` becomes `AddrExprAST`
-- `p[n]` becomes `IndexExprAST`
-
-## AST Additions
-
-Key AST nodes added in this chapter:
-
-- `TypedAssignStmtAST`
-- `AssignStmtAST` (explicit statement form)
-- `AddrExprAST`
-- `IndexExprAST`
-- typed `PrototypeAST` (arg types + return type)
-
-`ExprAST` also gains hooks for lvalue/address/type hints used by assignment and pointer lowering:
+Because `tok_and`, `tok_eq`, etc are token IDs (not plain chars), precedence lookup moved to `std::map<int, int>`:
 
 ```cpp
-virtual Value *codegenAddress() { return nullptr; }
-virtual Type *getValueTypeHint() const { return nullptr; }
-virtual Type *getPointeeTypeHint() const { return nullptr; }
+static std::map<int, int> BinopPrecedence = {
+    {'=', 2},       {tok_or, 5},   {tok_and, 6}, {tok_eq, 10}, {tok_ne, 10},
+    {'<', 12},      {'>', 12},     {tok_le, 12}, {tok_ge, 12},
+    {'+', 20},      {'-', 20},     {'*', 40},    {'/', 40}};
 ```
 
-## Type Resolution and Alias Policy
-
-Type lowering pipeline:
-
-1. parse into `TypeExpr`
-2. resolve alias chains
-3. reject alias cycles
-4. map to LLVM type
-
-Chapter 17 also introduces default C-like aliases initialized from target data layout:
-
-- `int`, `char`, `float`, `double`
-- `long`, `size_t` derived from pointer width
-
-This keeps interop target-aware instead of hardcoding one platform.
-
-## Typed Codegen: Main Ideas
-
-### Typed variable bindings
-
-Chapter 16 tracked mostly allocas. Chapter 17 stores richer per-variable metadata (alloca + type hints) so pointer operations and print/type dispatch can work correctly.
-
-### Conversion helper
-
-A central cast helper is used across assignment/calls/returns:
+### Builtin-only unary parsing
 
 ```cpp
-static Value *CastValueTo(Value *V, Type *DstTy) {
-  // fp<->int, int<->int, ptr<->ptr, ptr<->int, etc.
+if (CurTok != '+' && CurTok != '-' && CurTok != '!' && CurTok != '~' &&
+    CurTok != tok_not)
+  return ParsePrimary();
+```
+
+### Decorator/custom-operator parse path removed
+
+`ParseDefinition()` and `ParsePrototype()` now parse only normal `def` functions.
+
+If the parser sees `@...`, it emits a direct Chapter 17 error:
+
+```cpp
+LogError("Decorators/custom operators are disabled in Chapter 17");
+```
+
+## Short-Circuit Logic: What It Means
+
+Without short-circuit:
+- `a and b` evaluates both `a` and `b`
+- `a or b` evaluates both `a` and `b`
+
+With short-circuit:
+- `a and b`: if `a` is false, skip `b`
+- `a or b`: if `a` is true, skip `b`
+
+This matters for side effects and performance.
+
+## LLVM IR Shape We Want
+
+For `a and b`, we want control flow like this:
+
+```llvm
+entry:
+  %a = ...
+  %a_bool = fcmp one double %a, 0.0
+  br i1 %a_bool, label %rhs, label %merge
+
+rhs:
+  %b = ...
+  %b_bool = fcmp one double %b, 0.0
+  br label %merge
+
+merge:
+  %res = phi i1 [ false, %entry ], [ %b_bool, %rhs ]
+  %res_f = uitofp i1 %res to double
+```
+
+For `a or b`, branch directions and first PHI value flip:
+
+```llvm
+entry:
+  %a = ...
+  %a_bool = fcmp one double %a, 0.0
+  br i1 %a_bool, label %merge, label %rhs
+
+rhs:
+  %b = ...
+  %b_bool = fcmp one double %b, 0.0
+  br label %merge
+
+merge:
+  %res = phi i1 [ true, %entry ], [ %b_bool, %rhs ]
+  %res_f = uitofp i1 %res to double
+```
+
+That is exactly what we implemented in Chapter 17 codegen.
+
+## Codegen Changes
+
+### Unary
+
+`not` and `!` now map to builtin boolean inversion (still returned as `0.0/1.0`):
+
+```cpp
+case '!':
+case tok_not: {
+  Value *AsBool = Builder->CreateFCmpONE(
+      OperandV, ConstantFP::get(*TheContext, APFloat(0.0)), "nottmp.bool");
+  Value *NegBool = Builder->CreateNot(AsBool, "nottmp.inv");
+  return Builder->CreateUIToFP(NegBool, Type::getDoubleTy(*TheContext),
+                               "nottmp");
 }
 ```
 
-### Boolean conversion helper
+### Binary
 
-Conditions and logical ops now route through a generic truthiness converter:
+`and` / `or` now use branch-based short-circuit codegen with PHI merge.
 
-```cpp
-static Value *ToBoolI1(Value *V, const Twine &Name)
-```
+We still keep Chapter 17 result style:
+- boolean-like result as `double` (`0.0` or `1.0`)
+- not Python operand-return semantics yet
 
-This supports int/float/pointer conditions consistently.
+## Tests in This Chapter
 
-### Return correctness
+Operator-focused tests:
+- [`code/chapter17/test/logic_ops.pyxc`](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter17/test/logic_ops.pyxc)
+- [`code/chapter17/test/logic_short_circuit.pyxc`](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter17/test/logic_short_circuit.pyxc)
+- [`code/chapter17/test/custom_ops_disabled.pyxc`](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter17/test/custom_ops_disabled.pyxc)
 
-Chapter 17 enforces:
+Type/pointer tests moved to Chapter 18.
 
-- `return` with no expression only for `-> void`
-- returning a value from `void` function is an error
-- missing value in non-void return is an error
-
-## ABI Correctness for Narrow Integer Externs
-
-A key fix in this chapter is preserving signedness at ABI boundaries for narrow integers.
-
-Without this, extern calls involving `i8/i16` can behave like zero-extended values.
-
-Chapter 17 applies extension attributes in prototype codegen:
-
-- `i8/i16` -> `signext`
-- `u8/u16` -> `zeroext`
-
-Conceptual snippet:
-
-```cpp
-if (narrowSigned)
-  F->addParamAttr(i, Attribute::SExt);
-if (narrowUnsigned)
-  F->addParamAttr(i, Attribute::ZExt);
-```
-
-This applies to params and return types where appropriate.
-
-## Runtime Helper Surface
-
-`code/chapter17/runtime.c` now exports typed print/char helpers for scalar widths.
-
-Examples:
-
-```c
-DLLEXPORT int8_t printi8(int8_t X) { fprintf(stderr, "%d", (int)X); return 0; }
-DLLEXPORT uint64_t printu64(uint64_t X) { fprintf(stderr, "%llu", (unsigned long long)X); return 0; }
-DLLEXPORT double printfloat64(double X) { fprintf(stderr, "%f", X); return 0; }
-DLLEXPORT double printchard(double X) { fputc((unsigned char)X, stderr); return 0; }
-```
-
-This runtime surface is used by language features and tests in later chapters.
-
-## Diagnostics Behavior
-
-To reduce cascading noise in file mode, Chapter 17 adds a stop-after-first-semantic-error gate:
-
-- `HadError` is set in `LogError(...)`
-- file processing loops stop once it is set
-
-This keeps negative test output focused on primary failures.
-
-## Tests for This Chapter
-
-Chapter 17 test coverage lives under `code/chapter17/test/`.
-
-Core areas:
-
-- typed aliases and target aliasing (`size_t`)
-- address-of and pointer indexing
-- invalid pointer index type
-- `ptr[void]` indexing rejection
-- runtime print helper matrix (`runtime_print_all_types.pyxc`)
-- narrow signed extern behavior (`i8/i16` negative-value paths)
-
-Representative snippets from tests:
-
-```py
-# pointer invalid index type
-n: f64 = 2.5
-x = p[n]   # error
-```
-
-```py
-# narrow signed ABI path
-x: i8 = -5
-y: i16 = -300
-print(x, y)
-```
-
-## Summary
-
-Chapter 17 turns Pyxc from a mostly-untyped toy frontend into an interop-capable typed frontend:
-
-- explicit scalar/pointer typing
-- typed signatures and declarations
-- alias resolution with target awareness
-- pointer semantics with type checks
-- ABI-correct narrow integer extern behavior
-
-With this foundation in place, Chapter 18 can add language-level printing ergonomics (`print(...)`) without re-solving basic type and ABI correctness.
-
-## Build and Test
-
-Now compile Chapter 17 and run the test suite.
+## Compile and Run
 
 ```bash
 cd code/chapter17 && ./build.sh
-llvm-lit test -sv
 ```
 
-You can also run individual test programs directly:
+Run sample programs:
 
 ```bash
-./pyxc -i test/type_alias_core.pyxc
-./pyxc -i test/pointer_addr_basic.pyxc
-./pyxc -i test/runtime_print_all_types.pyxc
+./pyxc -t test/logic_ops.pyxc
+./pyxc -i test/logic_ops.pyxc
+./pyxc -i test/logic_short_circuit.pyxc
+./pyxc -i test/custom_ops_disabled.pyxc
 ```
 
-### Please Write Your Own Tests
+Run Chapter 17 test suite:
 
-The best way to check your understanding is to add tests yourself.
+```bash
+llvm-lit test
+```
 
-Try creating a few new `.pyxc` files under `code/chapter17/test/` that cover:
+Repo:
 
-- alias chains and alias-cycle errors
-- pointer indexing with integer and non-integer indices
-- `void` return correctness
-- extern calls with narrow signed/unsigned integer parameters
+- [https://github.com/alankarmisra/pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial)
 
-If your mental model matches the compiler behavior, your tests should pass on first try. If not, those mismatches are exactly what this chapter is meant to surface.
 
 ## Compile / Run / Test (Hands-on)
 
@@ -379,7 +242,7 @@ cd code/chapter17 && ./build.sh
 Run one sample program:
 
 ```bash
-code/chapter17/pyxc -i code/chapter17/test/c_alias_size_t_target.pyxc
+code/chapter17/pyxc -i code/chapter17/test/custom_ops_disabled.pyxc
 ```
 
 Run the chapter tests (when a test suite exists):
@@ -389,7 +252,7 @@ cd code/chapter17/test
 lit -sv .
 ```
 
-Have some fun stress-testing the suite with small variations.
+Pick a couple of tests, mutate the inputs, and watch how diagnostics respond.
 
 When you're done, clean artifacts:
 

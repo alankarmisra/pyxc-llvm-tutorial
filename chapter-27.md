@@ -1,15 +1,14 @@
-# 27. Program Arguments, scanf Baseline, Low-Level FD I/O, and ctype Helpers
+---
+description: "Move from single-file compilation to separate compilation and multi-file linking, enabling larger projects and cleaner build composition."
+---
+# 26. Pyxc: Separate Compilation and Multi-File Linking
 
-Chapter 26 gave us separate compilation and multi-file linking.
+Chapter 27 upgrades pyxc from single-file flow to translation-unit flow.
 
-Chapter 27 extends runtime interop in four practical directions:
+You can now compile multiple `.pyxc` files in one invocation and either:
 
-- executable entrypoint arguments (`main(argc, argv)`)
-- minimal `scanf` support for input parsing
-- low-level descriptor-style file APIs (`open/read/write/close` and helpers)
-- ctype helper interop (`isdigit`, `isalpha`, `isspace`, `tolower`, `toupper`)
-
-This chapter keeps python-style syntax and adds capability through explicit, typed function calls.
+- produce one object per source file (`-c file1 file2`), or
+- link all compiled objects into one executable (`pyxc file1 file2` or `pyxc -o app file1 file2`).
 
 
 !!!note
@@ -17,267 +16,283 @@ This chapter keeps python-style syntax and adds capability through explicit, typ
 
 ## Grammar (EBNF)
 
-Chapter 27 is mostly runtime interop and semantic validation (`scanf`, low-level fd I/O, ctype helpers, `main(argc, argv)` constraints).
-Core grammar remains the same shape as Chapter 26.
+Chapter 27 is primarily a driver/linker architecture chapter (multi-file compile/link).
+Language grammar is effectively unchanged from Chapter 26.
 
 Reference: `code/chapter27/pyxc.ebnf`
 
 ```ebnf
-prototype       = identifier , "(" , [ param_list ] , ")" , "->" , type_expr ;
-param_list      = param , { "," , param } ;
-param           = identifier , ":" , type_expr ;
+program      = { top_item } , eof ;
+top_item     = newline | type_alias_decl | struct_decl
+             | function_def | extern_decl | statement ;
 
-(* executable main forms are enforced semantically in codegen:
-   def main() -> i32
-   def main(argc: i32, argv: ptr[ptr[i8]]) -> i32 *)
+statement    = if_stmt | for_stmt | while_stmt | do_while_stmt
+             | break_stmt | continue_stmt | free_stmt | print_stmt
+             | return_stmt | const_decl_stmt
+             | typed_assign_stmt | assign_stmt | expr_stmt ;
 ```
 
-## What this chapter adds
+## What we are building
 
-### `main(argc, argv)` support
+We want this to work:
 
-When compiling executables/objects, `main` is now valid in either form:
-
-- `def main() -> i32`
-- `def main(argc: i32, argv: ptr[ptr[i8]]) -> i32`
-
-Anything else is rejected with a clear compile error.
-
-### Minimal `scanf` subset
-
-Added `scanf` support with strict validation.
-
-Supported conversions:
-
-- `%d`
-- `%f`
-- `%s`
-- `%c`
-- `%%`
-
-Enforced rules:
-
-- format string must be a literal
-- format placeholder count must match destination arg count
-- each destination must be pointer-typed
-- destination pointee type must match conversion category
-
-### Low-level descriptor APIs
-
-Added interop declarations and checks for:
-
-- `open(path, flags, mode) -> i32`
-- `creat(path, mode) -> i32`
-- `close(fd) -> i32`
-- `read(fd, buf, count) -> i64`
-- `write(fd, buf, count) -> i64`
-- `unlink(path) -> i32`
-
-### ctype helper interop
-
-Added:
-
-- `isdigit(ch) -> i32`
-- `isalpha(ch) -> i32`
-- `isspace(ch) -> i32`
-- `tolower(ch) -> i32`
-- `toupper(ch) -> i32`
-
-All are validated as integer-argument calls.
-
-## How it was implemented (slow walkthrough)
-
-### Step 1: Add libc symbol declarations
-
-In `code/chapter27/pyxc.cpp`, `GetOrCreateLibcIOFunction(...)` was extended.
-
-For ctype:
-
-```cpp
-else if (Name == "isdigit")
-  FT = FunctionType::get(I32Ty, {I32Ty}, false);
-else if (Name == "isalpha")
-  FT = FunctionType::get(I32Ty, {I32Ty}, false);
-else if (Name == "isspace")
-  FT = FunctionType::get(I32Ty, {I32Ty}, false);
-else if (Name == "tolower")
-  FT = FunctionType::get(I32Ty, {I32Ty}, false);
-else if (Name == "toupper")
-  FT = FunctionType::get(I32Ty, {I32Ty}, false);
+```bash
+pyxc -o app math.pyxc main.pyxc
 ```
 
-For descriptor I/O:
+where `math.pyxc` defines a function and `main.pyxc` declares it `extern` and calls it.
+
+That requires:
+
+- CLI support for multiple positional inputs
+- per-file compilation loop
+- linker accepting multiple object files
+- state reset between file compiles so file N+1 is clean
+
+## CLI: from single input to list input
+
+In `code/chapter27/pyxc.cpp`, positional input changed to a list:
 
 ```cpp
-else if (Name == "open")
-  FT = FunctionType::get(I32Ty, {PtrTy, I32Ty, I32Ty}, false);
-else if (Name == "creat")
-  FT = FunctionType::get(I32Ty, {PtrTy, I32Ty}, false);
-else if (Name == "close")
-  FT = FunctionType::get(I32Ty, {I32Ty}, false);
-else if (Name == "read")
-  FT = FunctionType::get(I64Ty, {I32Ty, PtrTy, I64Ty}, false);
-else if (Name == "write")
-  FT = FunctionType::get(I64Ty, {I32Ty, PtrTy, I64Ty}, false);
-else if (Name == "unlink")
-  FT = FunctionType::get(I32Ty, {PtrTy}, false);
+static cl::list<std::string> InputFilenames(cl::Positional,
+                                            cl::desc("<input files>"),
+                                            cl::ZeroOrMore,
+                                            cl::cat(PyxcCategory));
 ```
 
-`scanf` was also added there as vararg declaration.
-
-Why this is nice:
-
-- parser stays simple
-- these APIs look like normal function calls in user programs
-- symbol creation stays centralized in one place
-
-### Step 2: Add call-site semantic validation
-
-In `CallExprAST::codegen()`, call arguments are validated before emitting LLVM call IR.
-
-For ctype:
+Mode guards were tightened:
 
 ```cpp
-} else if (Callee == "isdigit") {
-  if (!CheckIntegerArg(0, "isdigit expects integer argument"))
-    return nullptr;
+if (Mode == Interpret && InputFilenames.size() != 1) ...
+if (Mode == Tokens && InputFilenames.size() != 1) ...
+if (Mode == Object && !OutputFilename.empty() && InputFilenames.size() != 1) ...
+```
+
+So:
+
+- `-i` and `-t` remain intentionally single-file
+- `-c` supports many inputs
+- `-c -o out` only valid for one input
+
+## Object naming for multi-file builds
+
+Chapter 27 adds a helper to derive per-input object names:
+
+```cpp
+static std::string getIntermediateObjectFilename(const std::string &input) {
+  ...
+  return base + ".o";
 }
 ```
 
-For descriptor I/O:
+Executable mode loop uses it:
 
 ```cpp
-} else if (Callee == "read") {
-  if (!CheckIntegerArg(0, "read expects integer fd argument") ||
-      !CheckPointerArg(1, "read expects pointer buffer argument") ||
-      !CheckIntegerArg(2, "read expects integer count argument"))
-    return nullptr;
+for (const auto &InFile : InputFilenames) {
+  std::string Obj = getIntermediateObjectFilename(InFile);
+  CompileToObjectFile(InFile, Obj);
+  ScriptObjs.push_back(Obj);
 }
 ```
 
-For `scanf`, we added a format parser and destination checks:
+Object mode loop also compiles each file independently.
+
+## Linker API: one object to many objects
+
+`code/include/PyxcLinker.h` now has multi-object entry:
 
 ```cpp
-if (Callee == "scanf") {
-  // format must be string literal
-  // subset: %d %f %s %c %%
-  // count must match args
-  // each destination must be pointer
-  // pointee type must match spec
+static bool Link(const std::vector<std::string> &objFiles,
+                 const std::string &runtimeObj,
+                 const std::string &outputExe)
+```
+
+and the old single-object signature delegates to it.
+
+This is what makes final executable linking possible when multiple source files are compiled in one command.
+
+## The critical stability fix: reset state per translation unit
+
+The first implementation compiled file 1, then crashed on file 2 in some flows.
+
+Root cause: global frontend and LLVM manager state was leaking across translation units.
+
+Chapter 27 fixes this with explicit reset functions in `code/chapter27/pyxc.cpp`.
+
+Frontend reset:
+
+```cpp
+static void ResetFrontendState() {
+  ModuleIndentType = -1;
+  AtStartOfLine = true;
+  Indents = {0};
+  PendingTokens.clear();
+  ...
+  LastChar = '\0';
 }
 ```
 
-This is intentionally strict so errors are early and obvious.
-
-### Step 3: Enforce `main` entrypoint signatures
-
-In `PrototypeAST::codegen()`, executable entrypoint ABI checks were added.
-
-Core check shape:
+Semantic-map reset:
 
 ```cpp
-if (IsMainEntry) {
-  if (!(ParamTypes.empty() || ParamTypes.size() == 2))
-    return LogError<Function *>(
-        "main must have either 0 arguments or (i32, ptr[ptr[i8]])");
-  if (ParamTypes.size() == 2) {
-    // enforce exactly (i32, ptr[ptr[i8]])
-  }
+static void ResetCompilationState() {
+  FunctionProtos.clear();
+  TypeAliases.clear();
+  StructDecls.clear();
+  StructTypeNames.clear();
 }
 ```
 
-This avoids accidental signatures that compile but fail runtime expectations.
+LLVM/manager reset:
 
-## What is possible now (language examples)
+```cpp
+static void ResetLLVMStateForNextCompile() {
+  TheSI.reset();
+  ThePIC.reset();
+  TheFPM.reset();
+  TheLAM.reset();
+  TheFAM.reset();
+  TheCGAM.reset();
+  TheMAM.reset();
+  Builder.reset();
+  TheModule.reset();
+  TheContext.reset();
+}
+```
 
-### Example 1: Read command-line args
+Debug reset:
+
+```cpp
+static void ResetDebugInfoStateForNextCompile() {
+  DBuilder.reset();
+  KSDbgInfo.reset();
+}
+```
+
+Then `CompileToObjectFile(...)` starts with:
+
+```cpp
+ResetFrontendState();
+ResetCompilationState();
+NamedValues.clear();
+LoopContextStack.clear();
+ResetDebugInfoStateForNextCompile();
+ResetLLVMStateForNextCompile();
+```
+
+This is the reason multi-file compile is now stable.
+
+## Default aliases and data layout during per-file compile
+
+Because type alias defaults use pointer-size assumptions, per-file compile ensures aliases are seeded after context/module creation.
+
+Chapter 27 also makes `EnsureDefaultTypeAliases()` safe when module layout is not yet fully populated.
+
+That avoids cross-file surprises in alias setup.
+
+## Runtime object resolution hardening
+
+Executable link step previously relied on `runtime.o` from current working directory.
+
+Chapter 27 resolves runtime object relative to the pyxc binary path:
+
+```cpp
+std::string runtimeObj = "runtime.o";
+if (const char *Slash = strrchr(argv[0], '/'))
+  runtimeObj = std::string(argv[0], Slash - argv[0] + 1) + "runtime.o";
+```
+
+This makes lit test sandboxes and out-of-tree invocations reliable.
+
+## New Chapter 27 tests
+
+Added in `code/chapter27/test`:
+
+Helper module:
 
 ```py
-
-def main(argc: i32, argv: ptr[ptr[i8]]) -> i32:
-    printf("argc=%d\n", argc)
-    if argc > 2:
-        printf("argv1=%s argv2=%s\n", argv[1], argv[2])
-    return 0
+# c25_mod_add.pyxc
+def add(a: i32, b: i32) -> i32:
+    return a + b
 ```
 
-### Example 2: Parse integer input with `scanf`
+Executable multi-file link:
 
 ```py
+# multifile_executable_link.pyxc
+extern def add(a: i32, b: i32) -> i32
 
 def main() -> i32:
-    x: i32 = 0
-    scanf("%d", addr(x))
-    printf("x=%d\n", x)
+    print(add(4, 5))
     return 0
 
 main()
 ```
 
-### Example 3: Descriptor write/read
+Object multi-file mode:
 
 ```py
-
-def main() -> i32:
-    fd: i32 = creat("demo.txt", 420)
-    write(fd, "HELLO\n", 6)
-    close(fd)
+# multifile_object_mode.pyxc
+def use() -> i32:
     return 0
-
-main()
 ```
 
-### Example 4: ctype helpers
+Negative mode check:
 
 ```py
-
-def main() -> i32:
-    printf("%d %d %d\n", isdigit(57), isalpha(65), isspace(32))
-    printf("%c %c\n", tolower(65), toupper(122))
-    return 0
-
-main()
+# multifile_error_tokens_requires_single.pyxc
+# token mode with 2 files must fail
 ```
 
-## Compile / Run / Test
+Expected message includes:
 
-### Compile
+```text
+token mode requires exactly one input file
+```
+
+## Main driver flow after Chapter 27
+
+In executable mode:
+
+- compile each input file to temporary object
+- call `PyxcLinker::Link(ScriptObjs, runtimeObj, exeFile)`
+- cleanup intermediate objects
+
+In object mode:
+
+- compile each input file to its own object
+- print each produced object path
+
+In token/interpret modes:
+
+- reject multi-file invocation
+
+## Outcome
+
+After these changes:
+
+- multi-file object and executable workflows are first-class
+- translation-unit boundaries are cleanly isolated
+- linker path supports real modular programs
+- lit suite covers positive and negative multi-file behavior
+
+Chapter 27 is the bridge from language features to practical project-scale compilation.
+
+## Compiling
+
+From repository root:
 
 ```bash
 cd code/chapter27 && ./build.sh
 ```
 
-### Run sample programs
+## Testing
 
-`main(argc, argv)` sample:
-
-```bash
-code/chapter27/pyxc -o app code/chapter27/test/c26_main_argv_executable.pyxc
-./app alpha beta
-```
-
-`scanf` sample:
-
-```bash
-printf '42\n' | code/chapter27/pyxc -i code/chapter27/test/c26_scanf_int.pyxc
-```
-
-### Test
+From repository root:
 
 ```bash
 lit -sv code/chapter27/test
 ```
-
-Validation result for this implementation pass:
-
-- 117 tests discovered
-- 117 passed
-
-## Notes
-
-This chapter intentionally avoids C-syntax sugar. We keep Pythonic syntax and explicit calls, even when code is a little longer.
-
-That tradeoff improves readability and keeps the language direction clear.
 
 ## Compile / Run / Test (Hands-on)
 
@@ -300,7 +315,7 @@ cd code/chapter27/test
 lit -sv .
 ```
 
-Have some fun stress-testing the suite with small variations.
+Pick a couple of tests, mutate the inputs, and watch how diagnostics respond.
 
 When you're done, clean artifacts:
 

@@ -1,15 +1,20 @@
-# 22. Dynamic Memory with malloc and free
+---
+description: "Introduce fixed-size arrays with typed indexing and layout-aware behavior for predictable, compile-time-sized collections."
+---
+# 21. Pyxc: Fixed-Size Arrays
 
-Chapter 21 gave us fixed-size arrays and stronger aggregate modeling.
+Chapter 21 gave us named aggregate data with structs.
 
-But everything was still fundamentally static in storage duration unless values lived in existing stack locals or passed pointers from outside.
+That solved *shape*, but not *collections*. We still could not represent “N elements of T” as one typed value.
 
-Chapter 22 adds the missing runtime allocation primitive:
+Chapter 22 adds fixed-size arrays so Pyxc can model contiguous collections with compile-time length.
 
-- allocate memory on heap with `malloc[T](count)`
-- release it with `free(ptr_expr)`
+This is a major usability milestone because many real programs need both:
 
-This is the first chapter where memory lifetime becomes an explicit programming concern in Pyxc.
+- records (`struct`)
+- collections (`array`)
+
+and the ability to combine them.
 
 
 !!!note
@@ -17,30 +22,35 @@ This is the first chapter where memory lifetime becomes an explicit programming 
 
 ## Why this chapter matters
 
-With only fixed-size stack values, many common patterns are blocked:
+Before Chapter 22, we could index pointers, but we had no first-class array type.
 
-- runtime-sized buffers
-- long-lived dynamically allocated structures
-- explicit memory ownership patterns
+That made local contiguous storage awkward. With Chapter 22 we can write:
 
-Chapter 22 does not try to solve lifetime ergonomics. It gives manual control, C-style, which is exactly what we need for systems-oriented interop and later language work.
+```py
+a: array[i32, 4]
+a[0] = 10
+a[1] = 20
+print(a[0], a[1])
+```
+
+Now the language can model stack-allocated fixed buffers, array fields inside structs, and arrays of structs.
 
 ## Scope and constraints
 
 Chapter 22 supports:
 
-- typed allocation expression: `malloc[T](count)`
-- explicit deallocation statement: `free(ptr_expr)`
-- scalar/struct/array-element allocation targets
+- array type syntax: `array[T, N]`
+- compile-time positive integer size `N`
+- array indexing for load/store
+- arrays mixed with structs (both directions)
 
-Chapter 22 intentionally does not support:
+Chapter 22 does not support yet:
 
-- garbage collection
-- ownership checker/borrow model
-- `calloc`/`realloc`
-- leak diagnostics
+- dynamic arrays
+- array literals
+- direct initializer expressions for struct/array locals
 
-This is deliberate. The focus is “correct lowering + clear diagnostics”, not full memory management policy.
+The static-only scope keeps codegen and diagnostics clean.
 
 ## What changed from Chapter 21
 
@@ -51,269 +61,194 @@ Primary diff:
 
 Implementation buckets:
 
-1. new tokens/keywords (`malloc`, `free`)
-2. parser support for malloc expression and free statement
-3. AST nodes (`MallocExprAST`, `FreeStmtAST`)
-4. LLVM lowering helpers for external `malloc`/`free`
-5. semantic checks on element type, count, and free operand type
-6. dedicated tests
+1. type-expression model extended with `Array`
+2. parser support for `array[ElemType, Size]`
+3. LLVM type resolution for arrays
+4. indexing codegen support for array bases
+5. type-hint propagation through arrays
+6. array-focused tests and diagnostics
 
-## Grammar and syntax additions
+## Grammar updates
 
-In `code/chapter22/pyxc.ebnf`, Chapter 22 adds:
+`code/chapter22/pyxc.ebnf` extends `type_expr`:
 
 ```ebnf
-statement       = ...
-                | free_stmt
-                | ... ;
+type_expr       = pointer_type
+                | array_type
+                | base_type ;
 
-free_stmt       = "free" , "(" , expression , ")" ;
-
-primary         = number
-                | identifier
-                | malloc_expr
-                | addr_expr
-                | paren_expr
-                | var_expr ;
-
-malloc_expr     = "malloc" , "[" , type_expr , "]" , "(" , expression , ")" ;
+array_type      = "array" , "[" , type_expr , "," , array_size , "]" ;
+array_size      = number ;
 ```
 
-Design choice:
+No expression-level syntax was needed for indexing because `[...]` already existed in postfix grammar from earlier chapters.
 
-- `malloc` is an expression (can appear in assignment/initialization)
-- `free` is a statement (effectful operation, no meaningful value)
+## Type model changes (TypeExpr)
 
-That closely matches programmer intuition.
-
-## Lexer changes
-
-New tokens in `Token` enum:
+Chapter 22 extends type kinds:
 
 ```cpp
-tok_malloc = -33,
-tok_free = -34,
+enum class TypeExprKind { Builtin, AliasRef, Pointer, Array };
 ```
 
-Keyword map entries:
+and adds size storage on the node:
 
 ```cpp
-{"malloc", tok_malloc},
-{"free", tok_free}
+uint64_t ArraySize = 0;
 ```
 
-Token debug names were also added:
+plus a constructor helper:
 
 ```cpp
-case tok_malloc: return "<malloc>";
-case tok_free: return "<free>";
+static std::shared_ptr<TypeExpr> Array(std::shared_ptr<TypeExpr> Elem,
+                                       uint64_t Size)
 ```
 
-## Parser changes
+This keeps arrays in the same recursive type-expression system as pointers and aliases.
 
-### ParseMallocExpr()
+## Parsing array[...]
 
-`malloc` parsing is strict on delimiters and shape:
+`ParseTypeExpr()` gets an `array` branch that enforces exact shape and size constraints:
+
+- must see `array`
+- must see `[`
+- parse element type recursively
+- must see `,`
+- size must be positive integer literal
+- must see closing `]`
+
+Core size validation:
 
 ```cpp
-malloc[TypeExpr](CountExpr)
+if (CurTok != tok_number || !NumIsIntegerLiteral || NumIntVal <= 0)
+  return LogError<TypeExprPtr>(
+      "Expected positive integer literal array size");
 ```
 
-It validates:
+The “literal only” rule is deliberate. It keeps array layout known at compile time.
 
-- `malloc`
-- `[` element type `]`
-- `(` count expression `)`
+## LLVM lowering for array types
 
-and returns `MallocExprAST`.
-
-### ParseFreeStmt()
-
-`free` is parsed as statement syntax:
+`ResolveTypeExpr(...)` adds array lowering:
 
 ```cpp
-free(expr)
-```
-
-and returns `FreeStmtAST`.
-
-### Dispatch integration
-
-- `ParsePrimary()` adds `tok_malloc`
-- `ParseStmt()` adds `tok_free`
-
-This keeps syntax orthogonal and avoids ambiguity.
-
-## AST additions
-
-Chapter 22 introduces two nodes:
-
-```cpp
-class MallocExprAST : public ExprAST {
-  TypeExprPtr ElemType;
-  std::unique_ptr<ExprAST> CountExpr;
+if (Ty->Kind == TypeExprKind::Array) {
+  Type *ElemTy = ResolveTypeExpr(Ty->Elem, Visited);
   ...
-};
-
-class FreeStmtAST : public StmtAST {
-  std::unique_ptr<ExprAST> PtrExpr;
-  ...
-};
-```
-
-`MallocExprAST` also implements type-hint methods so existing indexing/member machinery can use pointee information:
-
-- result type is pointer-like
-- pointee type resolves from `ElemType`
-
-That is why patterns like `p[0].x` continue to work when `p` comes from `malloc[Point](1)`.
-
-## LLVM lowering helpers for libc allocation APIs
-
-Chapter 22 introduces helper functions to declare or reuse external symbols:
-
-```cpp
-static Function *GetOrCreateMallocHelper() {
-  if (Function *F = TheModule->getFunction("malloc"))
-    return F;
-  FunctionType *FT = FunctionType::get(
-      PointerType::get(*TheContext, 0), {Type::getInt64Ty(*TheContext)}, false);
-  return Function::Create(FT, Function::ExternalLinkage, "malloc",
-                          TheModule.get());
-}
-
-static Function *GetOrCreateFreeHelper() {
-  if (Function *F = TheModule->getFunction("free"))
-    return F;
-  FunctionType *FT = FunctionType::get(
-      Type::getVoidTy(*TheContext), {PointerType::get(*TheContext, 0)}, false);
-  return Function::Create(FT, Function::ExternalLinkage, "free", TheModule.get());
+  return ArrayType::get(ElemTy, Ty->ArraySize);
 }
 ```
 
-This pattern mirrors how other external helpers are handled across chapters.
+That means arrays now work in every typed location that calls `ResolveTypeExpr`:
 
-## malloc codegen details
+- local declarations
+- struct fields
+- aliases
+- function signatures (where permitted by existing rules)
 
-`MallocExprAST::codegen()` performs these steps:
+## Indexing behavior: pointer base vs array base
 
-1. Resolve element type `T`
-2. Reject `void` element type
-3. Codegen count expression
-4. Require integer count type
-5. Cast count to `i64`
-6. Compute byte size: `count * sizeof(T)`
-7. Emit call to external `malloc`
+This is the most important runtime/codegen change in Chapter 22.
 
-Representative code:
+`IndexExprAST::codegenAddress()` now supports two distinct base categories:
 
-```cpp
-Type *ElemTy = ResolveTypeExpr(ElemType);
-if (!ElemTy)
-  return nullptr;
-if (ElemTy->isVoidTy())
-  return LogError<Value *>("malloc element type cannot be void");
+1. pointer base (existing path)
+2. array base (new path)
 
-Value *CountV = CountExpr->codegen();
-if (!CountV)
-  return nullptr;
-if (!IsIntegerLike(CountV->getType()))
-  return LogError<Value *>("malloc count must be an integer type");
-CountV = CastValueTo(CountV, Type::getInt64Ty(*TheContext));
+### Array-base path
 
-uint64_t ElemSize = TheModule->getDataLayout().getTypeAllocSize(ElemTy);
-Value *ElemSizeV = ConstantInt::get(Type::getInt64Ty(*TheContext), ElemSize, false);
-Value *BytesV = Builder->CreateMul(CountV, ElemSizeV, "malloc.bytes");
-
-return Builder->CreateCall(GetOrCreateMallocHelper(), {BytesV}, "malloc.ptr");
-```
-
-### Why DataLayout-based size matters
-
-Using `TheModule->getDataLayout().getTypeAllocSize(ElemTy)` makes size computation target-aware. This is essential for correctness across platforms/ABIs.
-
-## free codegen details
-
-`FreeStmtAST::codegen()` is intentionally simple and strict:
+When base value type is an LLVM array, address computation uses a two-index GEP:
 
 ```cpp
-Value *PtrV = PtrExpr->codegen();
-if (!PtrV)
-  return nullptr;
-if (!PtrV->getType()->isPointerTy())
-  return LogError<Value *>("free expects a pointer argument");
-
-Builder->CreateCall(GetOrCreateFreeHelper(), {PtrV});
+Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
+return Builder->CreateGEP(BaseValTy, BaseAddr, {Zero, IdxV}, "arr.idx.addr");
 ```
 
-The key semantic rule is clear: only pointer-typed expressions can be freed.
+Why `{0, idx}`?
 
-## Semantics and diagnostics in this chapter
+- first index steps from the alloca pointer to the array object
+- second index steps to the element inside that array object
 
-Chapter 22 introduces high-signal errors for common misuse:
+This is standard LLVM aggregate indexing semantics.
 
-- `malloc element type cannot be void`
-- `malloc count must be an integer type`
-- `free expects a pointer argument`
+### Shared index diagnostics
 
-These diagnostics are intentionally direct so mistakes are easy to fix.
+Both pointer and array index paths require integer index types:
 
-## Language examples
+- `Array index must be an integer type`
 
-### Scalar allocation
+This prevents silent float-to-int indexing mistakes.
 
-```py
-def main() -> i32:
-    p: ptr[i32] = malloc[i32](4)
-    p[0] = 10
-    p[1] = 20
-    print(p[0], p[1])
-    free(p)
-    return 0
+## Hint propagation and type inference adjustments
 
-main()
+To keep downstream behavior consistent (printing, assignments, chained access), Chapter 22 updates helper logic so array element type info flows through:
+
+- `ResolvePointeeTypeExpr` recurses through arrays
+- builtin-leaf-name helpers recurse through arrays
+- `IndexExprAST::getValueTypeHint()` returns array element type when base is array
+
+Without these “small” changes, indexing would compile but later type-dependent features would degrade.
+
+## Initialization policy remains conservative
+
+Direct initializer expressions for struct/array locals are still blocked in Chapter 22:
+
+```cpp
+"Struct/array variables do not support direct initializer expressions"
 ```
 
-### Struct allocation
+This is an intentional tradeoff. It keeps aggregate initialization semantics out of this chapter so we can focus on layout and indexing correctness first.
 
-```py
-struct Point:
-    x: i32
-    y: i32
-
-def main() -> i32:
-    p: ptr[Point] = malloc[Point](1)
-    p[0].x = 7
-    p[0].y = 11
-    print(p[0].x, p[0].y)
-    free(p)
-    return 0
-
-main()
-```
-
-### Invalid free usage
-
-```py
-def main() -> i32:
-    x: i32 = 42
-    free(x)   # error: free expects a pointer argument
-    return 0
-
-main()
-```
-
-## Tests added in Chapter 22
+## Test coverage added in Chapter 22
 
 Chapter 22 inherits Chapter 21 tests and adds:
 
-- `code/chapter22/test/malloc_basic_i32.pyxc`
-- `code/chapter22/test/malloc_struct_roundtrip.pyxc`
-- `code/chapter22/test/malloc_array_element_type.pyxc`
-- `code/chapter22/test/malloc_error_float_count.pyxc`
-- `code/chapter22/test/free_error_non_pointer.pyxc`
+- `code/chapter22/test/array_basic_local.pyxc`
+- `code/chapter22/test/array_alias_type.pyxc`
+- `code/chapter22/test/array_struct_field.pyxc`
+- `code/chapter22/test/array_of_structs.pyxc`
+- `code/chapter22/test/array_error_non_integer_index.pyxc`
+- `code/chapter22/test/array_error_invalid_size.pyxc`
 
-These tests validate both positive flows (allocation + access + deallocation) and semantic rejection paths.
+### Representative positive scenario
+
+```py
+def main() -> i32:
+    a: array[i32, 4]
+    a[0] = 10
+    a[1] = 20
+    a[2] = 30
+    a[3] = 40
+    print(a[0], a[1], a[2], a[3])
+    return 0
+
+main()
+```
+
+### Struct + array composition
+
+```py
+struct Bucket:
+    vals: array[i32, 3]
+
+b: Bucket
+b.vals[1] = 8
+print(b.vals[1])
+```
+
+### Negative scenario
+
+```py
+def main() -> i32:
+    a: array[i32, 2]
+    idx: f64 = 1.0
+    print(a[idx])
+    return 0
+
+main()
+```
+
+This ensures index typing rules are actually enforced.
 
 ## Build and test for this chapter
 
@@ -324,17 +259,23 @@ cd code/chapter22 && ./build.sh
 lit -sv test
 ```
 
-Chapter 22 was also regression-checked against Chapter 21 behavior.
+Chapter 22 was also regression-checked against Chapter 21 test behavior.
 
 ## Design takeaways
 
-Chapter 22 is intentionally small but strategic:
+Chapter 22 establishes a clean split:
 
-- It introduces explicit heap lifetime control.
-- It composes with existing struct/array/indexing features.
-- It builds the bridge to practical C interop patterns.
+- `array[T, N]` for fixed compile-time contiguous storage
+- `ptr[T]` for pointer-based access and indirection
 
-This chapter also sets up Chapter 23 naturally, where we add C-style I/O (`putchar`, `puts`, `printf`) and string literals, making it possible to build more complete small programs.
+Because both integrate with shared postfix/index infrastructure, the language now handles:
+
+- scalar operations
+- struct member access
+- array indexing
+- combinations like `arr[i].field`
+
+That sets up Chapter 23 naturally: once arrays and struct layout are stable, dynamic allocation (`malloc/free`) becomes much more valuable.
 
 ## Compiling
 
@@ -373,7 +314,7 @@ cd code/chapter22/test
 lit -sv .
 ```
 
-Have some fun stress-testing the suite with small variations.
+Pick a couple of tests, mutate the inputs, and watch how diagnostics respond.
 
 When you're done, clean artifacts:
 

@@ -1,12 +1,13 @@
+---
+description: "Build the first working lexer for Pyxc: tokenize identifiers, numbers, keywords, operators, comments, and line endings, then inspect output in a simple REPL loop."
+---
 # 1. Pyxc: Introduction and the Lexer
 
 ## The Pyxc Language
 
-This tutorial is illustrated with a language called "Pyxc" (pronounced "Pixie"). Pyxc is a procedural language that allows you to define functions, use conditionals, math, etc. Over the course of the tutorial, we’ll extend pyxc to support the if/then/else construct, a for loop, user defined operators, JIT compilation with a simple command line interface, debug info, etc.
+This tutorial builds a language called "Pyxc" (pronounced "Pixie"). Pyxc is a procedural language with Python-like syntax. We'll start simple and progressively add features: functions, conditionals, loops, user-defined operators, JIT compilation, optimization, control flow, types, structs, and eventually a full compiler toolchain with debug info.
 
-Beyond the core tutorial, pyxc is built with a real compiler architecture in mind: a proper front end, a typed IR pipeline, optimization passes, code generation, and tooling hooks you would expect in serious language projects. As we move forward, we will add structs, classes, and richer type semantics, then push into advanced infrastructure like MLIR to model multi-level lowering and reusable compiler components. The aim is to use a readable, Python-like syntax as the surface language while implementing the same foundations used by production compilers.
-
-We want to keep things simple at the start, so the only datatype in pyxc is a 64-bit floating point type (aka ‘double’ in C parlance). As such, all values are implicitly double precision and the language doesn’t require type declarations. This gives the language a very nice and simple syntax. For example, the following simple example computes [Fibonacci numbers](http://en.wikipedia.org/wiki/Fibonacci_number):
+To keep things manageable early on, we start with just one datatype: 64-bit floating point (C's `double`). All values are implicitly doubles, so no type declarations needed. This keeps the syntax clean. For example, here's how you compute [Fibonacci numbers](http://en.wikipedia.org/wiki/Fibonacci_number):
 
 ```python
 # Compute the x'th fibonacci number.
@@ -20,16 +21,17 @@ def fib(n):
 fib(10)
 ```
 
-To keep things REALLY simple, we don't enforce indentation rules at the onset. What this means is that you could also write the above as:
+You can also write everything on one line:
 
 ```python
 def fib(n): if n < 2: return n else: return fib(n-1) + fib(n-2)
 
 fib(10)
 ```
-For now, indentation is optional to keep the parser small and easy to understand; once the core pipeline is in place, later chapters will make indentation significant and progressively introduce richer language features.
 
-We also allow pyxc to call into standard library functions - the LLVM JIT makes this really easy. This means that you can use the ‘extern’ keyword to define a function before you use it (this is also useful for mutually recursive functions). For example:
+Indentation is optional for now—this keeps the parser simple. Later chapters will make indentation significant and add more language features.
+
+Pyxc can call standard library functions—the LLVM JIT makes this straightforward. Use `extern` to declare a function before using it (also useful for mutually recursive functions):
 
 ```python
 extern def sin(arg)
@@ -39,7 +41,7 @@ extern def atan2(arg1 arg2)
 atan2(sin(.4), cos(42))
 ```
 
-A more interesting example is included in [Chapter 8](chapter-08.md) where we write a little pyxc application that displays a Mandelbrot Set at various levels of magnification.
+A more interesting example is included in [Chapter 9](chapter-09.md) where we write a little pyxc application that displays a Mandelbrot Set at various levels of magnification.
 
 Let’s dive into the implementation of this language!
 
@@ -50,7 +52,7 @@ To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https
 
 ## The Lexer
 
-When it comes to implementing a language, the first thing needed is the ability to process a text file and recognize what it says. The traditional way to do this is to use a [lexer](https://en.wikipedia.org/wiki/Lexical_analysis) (aka *scanner*) to break the input up into *tokens*. Each token returned by the lexer includes a token code and potentially some metadata (e.g. the numeric value of a number). First, we define the possibilities:
+When implementing a language, the first step is processing a text file and recognizing its structure. A [lexer](https://en.wikipedia.org/wiki/Lexical_analysis) (aka *scanner*) breaks the input into *tokens*. Each token has a token code and optional metadata (e.g., the numeric value of a number). First, we define the token types:
 
 ```CPP
 // The lexer returns tokens [0-255] if it is an unknown character, otherwise one
@@ -75,7 +77,7 @@ static string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;             // Filled in if tok_number
 ```
 
-Each token returned by our lexer will either be one of the `Token` enum values or it will be an unknown character like `+`, which is returned as its character code. If the current token is an identifier, the `IdentifierStr` global variable holds the name of the identifier. If the current token is a numeric literal (like `1.0`), `NumVal` holds its value. We use global variables for simplicity, but this is not the best choice for a real language implementation :).
+Each token returned by our lexer is either one of the `Token` enum values or an unknown character like `+`, which is returned as its ASCII value. If the current token is an identifier, `IdentifierStr` holds its name. If it's a numeric literal (like `1.0`), `NumVal` holds the value. We use global variables for simplicity—real language implementations use better encapsulation.
 
 To make output easier to read (both in the REPL and in diagnostics in later chapters), we map tokens to user-friendly strings:
 
@@ -249,7 +251,7 @@ if (isdigit(LastChar) || LastChar == '.') {   // Number: [0-9.]+
   return tok_number;
 }
 ```
-This is all pretty straightforward code for processing input. When reading a numeric value from input, we use the C `strtod` function to convert it to a numeric value that we store in NumVal. Note that this isn’t doing sufficient error checking: it will incorrectly read “1.23.45.67” and handle it as if you typed in “1.23”. Feel free to extend it! Next we handle comments:
+This is all pretty straightforward code for processing input. When reading a numeric value from input, we use the C `strtod` function to convert it to a numeric value that we store in NumVal. Note that this isn't doing sufficient error checking: it will incorrectly read "1.23.45.67" as "1.23". Next we handle comments:
 
 ```cpp
 if (LastChar == '#') {
@@ -309,10 +311,17 @@ int main() {
 }
 ```
 
-This is not a full interpreter yet. It is only a quick feedback loop to verify that the lexer tokenizes input the way we expect.
+This is a quick feedback loop to verify that the lexer tokenizes input the way we expect.
 
-## Building
-From repository root:
+## Compiling
+
+```bash
+cd code/chapter01 && \
+    cmake -S . -B build && \
+    cmake --build build
+```
+
+### macOS / Linux shortcut
 
 ```bash
 cd code/chapter01 && ./build.sh
@@ -342,6 +351,11 @@ Notice above, that comments will not yield a token, but the newline token after 
 
 You can run tests with `llvm-lit` if you have an LLVM build available on your machine, or with `lit` if you installed it through Python. If you do not have either yet, that is okay: running tests is optional at this stage, and the interaction samples above are enough to continue. We will cover LLVM setup in [Chapter 3](chapter-03.md).
 
+## Conclusion
+
+In this chapter we built the first real piece of pyxc: a lexer that turns raw source text into meaningful tokens, tracks source locations, handles comments and mixed line endings, and gives us a simple REPL loop so we can see tokenization live as we type.
+
+That gives us a solid base for everything that comes next. In the next chapter, we will build a parser and an AST on top of this lexer so pyxc can understand full expressions and function forms.
 
 ## Need Help?
 

@@ -9,6 +9,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Verifier.h"
+#include "llvm/Support/CommandLine.h"
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -31,6 +32,45 @@ bool UseColor = isatty(fileno(stderr));
 const char *Red = UseColor ? "\x1b[31m" : "";
 const char *Bold = UseColor ? "\x1b[1m" : "";
 const char *Reset = UseColor ? "\x1b[0m" : "";
+
+//===----------------------------------------------------------------------===//
+// Command line
+//===----------------------------------------------------------------------===//
+static cl::SubCommand ReplCommand("repl", "Start the interactive REPL");
+static cl::SubCommand RunCommand("run", "Run a .pyxc script");
+static cl::SubCommand BuildCommand("build", "Build a .pyxc script");
+
+static cl::opt<bool>
+    ReplEmitTokens("emit-tokens", cl::sub(ReplCommand),
+                   cl::desc("Print lexer tokens instead of parsing"),
+                   cl::init(false));
+
+static cl::opt<bool> ReplEmitLLVM("emit-llvm", cl::sub(ReplCommand),
+                                  cl::desc("Print LLVM IR for parsed input"),
+                                  cl::init(false));
+
+static cl::list<std::string>
+    RunInputFiles(cl::Positional, cl::sub(RunCommand),
+                  cl::desc("<script.pyxc>"), cl::ZeroOrMore);
+static cl::opt<bool> RunEmitLLVM("emit-llvm", cl::sub(RunCommand),
+                                 cl::desc("Emit LLVM for the script"),
+                                 cl::init(false));
+
+enum BuildOutputKind { BuildEmitLLVM, BuildEmitObj, BuildEmitExe };
+static cl::list<std::string>
+    BuildInputFiles(cl::Positional, cl::sub(BuildCommand),
+                    cl::desc("<script.pyxc>"), cl::ZeroOrMore);
+static cl::opt<BuildOutputKind> BuildEmit(
+    "emit", cl::sub(BuildCommand), cl::desc("Output kind for build"),
+    cl::values(clEnumValN(BuildEmitLLVM, "llvm", "Emit LLVM IR"),
+               clEnumValN(BuildEmitObj, "obj", "Emit object file"),
+               clEnumValN(BuildEmitExe, "exe", "Emit executable")),
+    cl::init(BuildEmitExe));
+static cl::opt<bool> BuildDebug("g", cl::sub(BuildCommand),
+                                cl::desc("Emit debug info"), cl::init(false));
+static cl::opt<unsigned> BuildOptLevel(
+    "O", cl::sub(BuildCommand),
+    cl::desc("Optimization level (use -O0..-O3)"), cl::Prefix, cl::init(0));
 
 //===----------------------------------------------------------------------===//
 // Lexer
@@ -151,6 +191,15 @@ static std::string FormatTokenForMessage(int Tok) {
   if (TokIt != TokenNames.end())
     return TokIt->second;
   return "unknown token";
+}
+
+static const std::string &GetTokenName(int Tok) {
+  const auto TokIt = TokenNames.find(Tok);
+  if (TokIt != TokenNames.end())
+    return TokIt->second;
+
+  static const std::string Unknown = "tok_unknown";
+  return Unknown;
 }
 
 static void PrintErrorSourceContext(SourceLocation Loc) {
@@ -622,6 +671,7 @@ static std::unique_ptr<LLVMContext> TheContext;
 static std::unique_ptr<Module> TheModule;
 static std::unique_ptr<IRBuilder<>> Builder;
 static std::map<std::string, Value *> NamedValues;
+static bool ShouldEmitLLVM = false;
 
 Value *NumberExprAST::codegen() {
   return ConstantFP::get(*TheContext, APFloat(Val));
@@ -767,9 +817,12 @@ static void HandleDefinition() {
       return;
     }
     if (auto *FnIR = FnAST->codegen()) {
-      fprintf(stderr, "Parsed a function definition\n");
-      FnIR->print(errs());
-      fprintf(stderr, "\n");
+      if (ShouldEmitLLVM) {
+        FnIR->print(errs());
+        fprintf(stderr, "\n");
+      } else {
+        fprintf(stderr, "Parsed a function definition\n");
+      }
     }
   } else {
     // Error recovery: skip the rest of the current line so leftover tokens
@@ -787,9 +840,12 @@ static void HandleExtern() {
       return;
     }
     if (auto *FnIR = ProtoAST->codegen()) {
-      fprintf(stderr, "Parsed an extern\n");
-      FnIR->print(errs());
-      fprintf(stderr, "\n");
+      if (ShouldEmitLLVM) {
+        FnIR->print(errs());
+        fprintf(stderr, "\n");
+      } else {
+        fprintf(stderr, "Parsed an extern\n");
+      }
     }
   } else {
     SynchronizeToLineBoundary();
@@ -806,9 +862,12 @@ static void HandleTopLevelExpression() {
       return;
     }
     if (auto *FnIR = FnAST->codegen()) {
-      fprintf(stderr, "Parsed a top-level expr\n");
-      FnIR->print(errs());
-      fprintf(stderr, "\n");
+      if (ShouldEmitLLVM) {
+        FnIR->print(errs());
+        fprintf(stderr, "\n");
+      } else {
+        fprintf(stderr, "Parsed a top-level expr\n");
+      }
 
       // Remove the anonymous expression.
       FnIR->eraseFromParent();
@@ -841,12 +900,74 @@ static void MainLoop() {
   }
 }
 
+static void EmitTokenStream() {
+  fprintf(stderr, "ready> ");
+  while (true) {
+    const int Tok = gettok();
+    if (Tok == tok_eof)
+      return;
+
+    printf("%s", GetTokenName(Tok).c_str());
+    if (Tok == tok_eol)
+      printf("\nready> ");
+    else
+      printf(" ");
+  }
+}
+
 //===----------------------------------------------------------------------===//
 // Main driver code.
 //===----------------------------------------------------------------------===//
 
-int main() {
+int main(int argc, const char **argv) {
+  cl::ParseCommandLineOptions(argc, argv, "pyxc chapter05\n");
+
+  if (BuildOptLevel > 3) {
+    fprintf(stderr, "Error: invalid optimization level -O%u (expected 0..3)\n",
+            static_cast<unsigned>(BuildOptLevel));
+    return 1;
+  }
+
+  if (RunCommand) {
+    if (RunInputFiles.empty()) {
+      fprintf(stderr, "Error: run requires a file name.\n");
+      return 1;
+    }
+    if (RunInputFiles.size() > 1) {
+      fprintf(stderr, "Error: run accepts only one file name.\n");
+      return 1;
+    }
+    const std::string &RunInputFile = RunInputFiles.front();
+    (void)RunInputFile;
+    (void)RunEmitLLVM;
+    fprintf(stderr, "run: i havent learnt how to do that yet.\n");
+    return 1;
+  }
+
+  if (BuildCommand) {
+    if (BuildInputFiles.empty()) {
+      fprintf(stderr, "Error: build requires a file name.\n");
+      return 1;
+    }
+    if (BuildInputFiles.size() > 1) {
+      fprintf(stderr, "Error: build accepts only one file name.\n");
+      return 1;
+    }
+    const std::string &BuildInputFile = BuildInputFiles.front();
+    (void)BuildInputFile;
+    (void)BuildEmit;
+    (void)BuildDebug;
+    (void)BuildOptLevel;
+    fprintf(stderr, "build: i havent learnt how to do that yet.\n");
+    return 1;
+  }
+
   SourceMgr.reset();
+
+  if (ReplCommand && ReplEmitTokens) {
+    EmitTokenStream();
+    return 0;
+  }
 
   // Prime the first token.
   fprintf(stderr, "ready> ");
@@ -854,12 +975,13 @@ int main() {
 
   // Make the module, which holds all the code.
   InitializeModule();
+  ShouldEmitLLVM = ReplEmitLLVM;
 
   // Run the main "interpreter loop" now.
   MainLoop();
 
-  // Print out all of the generated code.
-  TheModule->print(errs(), nullptr);
+  if (ShouldEmitLLVM)
+    TheModule->print(errs(), nullptr);
 
   return 0;
 }

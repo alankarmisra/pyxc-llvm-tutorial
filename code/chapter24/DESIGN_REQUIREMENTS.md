@@ -1,85 +1,97 @@
 # Chapter 23 Design Requirements
 
 ## Theme
-C-style file I/O baseline using libc stdio file APIs.
+C-style I/O baseline with string literals and minimal `printf`.
 
 ## Goal
-Add practical file read/write support to Pyxc so programs can open files, write text/binary data, read text/binary data, and close handles explicitly.
+Enable practical text I/O for K&R-style programs by adding first-class string literals and direct calls to `putchar`, `getchar`, `puts`, and a constrained `printf`.
 
 ## Scope
 
 ### In Scope
-- Auto-declared libc file APIs:
-  - `fopen(path, mode) -> ptr[void]`
-  - `fclose(file) -> i32`
-  - `fgets(buf, n, file) -> ptr[void]`
-  - `fputs(str, file) -> i32`
-  - `fread(buf, size, count, file) -> i64`
-  - `fwrite(buf, size, count, file) -> i64`
-- Opaque file handle representation via pointer type (`ptr[void]`-compatible)
-- Type validation for known file APIs at call sites
-- Full support for text and block I/O patterns using existing pointers/strings
+- String literal token and expression support:
+  - `"hello\n"`
+- Calling libc-style symbols without explicit `extern` declarations:
+  - `putchar(i32) -> i32`
+  - `getchar() -> i32`
+  - `puts(ptr[i8]) -> i32`
+  - `printf(ptr[i8], ...) -> i32`
+- Vararg call lowering for `printf`
+- `printf` format validation for a minimal subset:
+  - `%d`, `%s`, `%c`, `%p`, and `%%`
+- String literal to pointer interop (`ptr[i8]`-compatible behavior)
 
 ### Out of Scope
-- Structured exceptions or automatic resource cleanup
-- High-level file abstractions (streams/classes)
-- Buffered-state introspection APIs (`feof`, `ferror`, etc.)
-- Filesystem metadata APIs
+- Full C `printf` compatibility (`%f`, width, precision, flags, length modifiers)
+- Variadic function declarations in source language syntax
+- File I/O (`fopen`, `fgets`, etc.)
 
 ## Syntax Requirements
-- No new statement syntax required.
-- File operations use normal function-call syntax.
 
-Example:
+### String literal expression
 ```py
-f: ptr[void] = fopen("out.txt", "w")
-fputs("hello\n", f)
-fclose(f)
+s: ptr[i8] = "hello"
+```
+
+### C-style I/O calls
+```py
+putchar(65)
+puts("hi")
+printf("x=%d %c %p %s\n", 42, 65, p, s)
 ```
 
 ## Lexer Requirements
-- No new tokens required for file I/O APIs.
+- Add string token:
+  - `tok_string`
+- Capture and unescape string payload.
+- Report diagnostics for unterminated or invalid escape sequences.
 
 ## Parser Requirements
-- Reuse existing call-expression parser.
-- No new grammar productions required beyond chapter22 baseline.
+- Add string primary parser:
+  - `ParseStringExpr()`
+- Extend `ParsePrimary()` to accept string literals.
 
 ## AST Requirements
-- No new AST node types required.
+- Add node:
+  - `StringExprAST(Value)`
 
 ## Semantic Requirements
-- Calls to known file APIs are auto-resolved even without user `extern` declarations.
-- Function-specific argument type checks:
-  - `fopen`: `(pointer, pointer)`
-  - `fclose`: `(pointer)`
-  - `fgets`: `(pointer, integer, pointer)`
-  - `fputs`: `(pointer, pointer)`
-  - `fread`/`fwrite`: `(pointer, integer, integer, pointer)`
-- Standard arity checks continue to apply.
+- String literals codegen as pointer values compatible with `ptr[i8]`.
+- Unresolved calls to `putchar`, `getchar`, `puts`, `printf` are auto-declared with libc-compatible signatures.
+- `printf` checks:
+  - first argument must be a string literal
+  - specifiers limited to `%d`, `%s`, `%c`, `%p`, `%%`
+  - argument count must match non-`%%` specifiers
+  - `%d`/`%c` require integer arguments
+  - `%s`/`%p` require pointer arguments
 
 ## LLVM Lowering Requirements
-- Declare file APIs as external functions with fixed signatures.
-- Lower calls through existing `CallExprAST` path after validation.
+- String literals lower with global string storage and pointer result.
+- `printf` lowers as vararg call with default promotions:
+  - small integers to `i32`
+  - `f32` to `f64`
 
 ## Diagnostics Requirements
-- Incorrect arity
-- Non-pointer argument passed where pointer required
-- Non-integer argument passed where integer required
+- Non-literal first argument to `printf`
+- Unsupported format specifier in `printf`
+- Format argument count mismatch in `printf`
+- Type mismatch for `%d`, `%s`, `%c`, `%p`
+- Unterminated string literal
+- Invalid string escape sequence
 
 ## Tests
 
 ### Positive
-- fopen + fputs + fclose text write
-- fopen + fgets + fclose text read
-- fwrite + fread roundtrip with explicit byte count
+- `putchar` and `puts` with string literals
+- `printf` using `%d/%s/%c/%p` and `%%`
+- String literal assignment to `ptr[i8]`
 
 ### Negative
-- `fopen` with non-pointer mode/path
-- `fgets` with non-integer length
-- `fread`/`fwrite` with wrong argument types
-- `fclose` with non-pointer argument
+- Unsupported `printf` format specifier
+- `printf` format count mismatch
+- `printf` type mismatch per format code
 
 ## Done Criteria
-- Chapter 23 lit suite includes file I/O coverage and passes.
+- Chapter 23 lit suite includes I/O baseline coverage and passes.
 - Chapter 22 behavior remains green under Chapter 23 compiler.
-- `chapter-23.md` documents chapter diff and implementation in tutorial style.
+- `chapter-23.md` documents chapter diff and implementation.

@@ -59,27 +59,16 @@ enum Token {
   tok_number = -6,
 
   // control
-  tok_if = -7,
-  tok_else = -8,
-  tok_return = -9,
-
-  // loop
-  tok_for = -10,
-  tok_in = -11,
-  tok_range = -12,
-
+  tok_return = -7
 };
 
 static std::string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;             // Filled in if tok_number
-static bool InForExpression;      // Track global parsing context
 
 // Keywords words like `def`, `extern` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
 static std::map<std::string, Token> Keywords = {
-    {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return},
-    {"if", tok_if},   {"else", tok_else},     {"for", tok_for},
-    {"in", tok_in},   {"range", tok_range}};
+    {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return}};
 
 struct SourceLocation {
   int Line;
@@ -294,33 +283,6 @@ public:
   Value *codegen() override;
 };
 
-/// IfExprAST - Expression class for if/else.
-class IfExprAST : public ExprAST {
-  std::unique_ptr<ExprAST> Cond, Then, Else;
-
-public:
-  IfExprAST(std::unique_ptr<ExprAST> Cond, std::unique_ptr<ExprAST> Then,
-            std::unique_ptr<ExprAST> Else)
-      : Cond(std::move(Cond)), Then(std::move(Then)), Else(std::move(Else)) {}
-
-  Value *codegen() override;
-};
-
-/// ForExprAST - Expression class for for/in.
-class ForExprAST : public ExprAST {
-  std::string VarName;
-  std::unique_ptr<ExprAST> Start, End, Step, Body;
-
-public:
-  ForExprAST(std::string VarName, std::unique_ptr<ExprAST> Start,
-             std::unique_ptr<ExprAST> End, std::unique_ptr<ExprAST> Step,
-             std::unique_ptr<ExprAST> Body)
-      : VarName(std::move(VarName)), Start(std::move(Start)),
-        End(std::move(End)), Step(std::move(Step)), Body(std::move(Body)) {}
-
-  Value *codegen();
-};
-
 /// PrototypeAST - This class represents the "prototype" for a function,
 /// which captures its name, and its argument names (thus implicitly the number
 /// of arguments the function takes).
@@ -385,7 +347,6 @@ static int GetTokPrecedence() {
 
 /// LogError* - These are little helper functions for error handling.
 std::unique_ptr<ExprAST> LogError(const char *Str) {
-  InForExpression = false;
   const std::string TokDisplay = FormatTokenForError(CurTok);
   fprintf(stderr, "%sError%s (Line: %d, Column: %d): %s near %s\n", Red, Reset,
           CurLoc.Line, CurLoc.Col, Str, TokDisplay.c_str());
@@ -461,148 +422,10 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
   return std::make_unique<CallExprAST>(IdName, std::move(Args));
 }
 
-/*
- * In later chapters, we will need to check the indentation
- * whenever we eat new lines.
- */
-static void EatNewLines() {
-  while (CurTok == tok_eol)
-    getNextToken();
-}
-
-// ifexpr ::= 'if' expression ':' expression 'else' ':' expression
-static std::unique_ptr<ExprAST> ParseIfExpr() {
-  getNextToken(); // eat 'if'
-
-  // condition
-  auto Cond = ParseExpression();
-  if (!Cond)
-    return nullptr;
-
-  if (CurTok != ':')
-    return LogError("expected `:`");
-  getNextToken(); // eat ':'
-
-  EatNewLines();
-
-  // Handle nested `if` and `for` expressions:
-  // For `if` expressions, `return` statements are emitted inside the
-  // true and false branches, so we only require an explicit `return`
-  // when we are not parsing an `if`.
-  // For `for` expressions, control flow and the resulting value are
-  // handled entirely within the loop body, so an explicit `return`
-  // is not required at this level.
-  if (!InForExpression && CurTok != tok_if && CurTok != tok_for) {
-    if (CurTok != tok_return)
-      return LogError("Expected 'return'");
-
-    getNextToken(); // eat return
-  }
-
-  auto Then = ParseExpression();
-  if (!Then)
-    return nullptr;
-
-  EatNewLines();
-
-  if (CurTok != tok_else)
-    return LogError("expected `else`");
-
-  getNextToken(); // eat else
-
-  if (CurTok != ':')
-    return LogError("expected `:`");
-
-  getNextToken(); // eat ':'
-
-  EatNewLines();
-
-  if (!InForExpression && CurTok != tok_if && CurTok != tok_for) {
-    if (CurTok != tok_return)
-      return LogError("Expected 'return'");
-
-    getNextToken(); // eat return
-  }
-
-  auto Else = ParseExpression();
-  if (!Else)
-    return nullptr;
-
-  return std::make_unique<IfExprAST>(std::move(Cond), std::move(Then),
-                                     std::move(Else));
-}
-
-// `for` identifier `in` `range` `(`expression `,` expression
-//   (`,` expression)? # optional
-// `)`: expression
-static std::unique_ptr<ExprAST> ParseForExpr() {
-  InForExpression = true;
-  getNextToken(); // eat for
-
-  if (CurTok != tok_identifier)
-    return LogError("Expected identifier after for");
-
-  std::string IdName = IdentifierStr;
-  getNextToken(); // eat identifier
-
-  if (CurTok != tok_in)
-    return LogError("Expected `in` after identifier in for");
-  getNextToken(); // eat 'in'
-
-  if (CurTok != tok_range)
-    return LogError("Expected `range` after identifier in for");
-  getNextToken(); // eat range
-
-  if (CurTok != '(')
-    return LogError("Expected `(` after `range` in for");
-  getNextToken(); // eat '('
-
-  auto Start = ParseExpression();
-  if (!Start)
-    return nullptr;
-
-  if (CurTok != ',')
-    return LogError("expected `,` after range start");
-  getNextToken(); // eat ','
-
-  auto End = ParseExpression();
-  if (!End)
-    return nullptr;
-  std::unique_ptr<ExprAST> Step;
-  if (CurTok == ',') {
-    getNextToken(); // eat ,
-    Step = ParseExpression();
-    if (!Step)
-      return nullptr;
-  }
-
-  if (CurTok != ')')
-    return LogError("expected `)` after range operator");
-  getNextToken(); // eat `)`
-
-  if (CurTok != ':')
-    return LogError("expected `:` after range operator");
-  getNextToken(); // eat `:`
-
-  EatNewLines();
-
-  // `for` expressions don't have the return statement
-  // they return 0 by default.
-  auto Body = ParseExpression();
-  if (!Body)
-    return nullptr;
-
-  InForExpression = false;
-  return std::make_unique<ForExprAST>(IdName, std::move(Start), std::move(End),
-                                      std::move(Step), std::move(Body));
-}
-
 /// primary
 ///   ::= identifierexpr
 ///   ::= numberexpr
 ///   ::= parenexpr
-///   ::= ifexpr
-///   ::= forexpr
 static std::unique_ptr<ExprAST> ParsePrimary() {
   switch (CurTok) {
   default:
@@ -613,10 +436,6 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
     return ParseNumberExpr();
   case '(':
     return ParseParenExpr();
-  case tok_if:
-    return ParseIfExpr();
-  case tok_for:
-    return ParseForExpr();
   }
 }
 
@@ -720,18 +539,16 @@ static std::unique_ptr<FunctionAST> ParseDefinition() {
     return LogErrorF("Expected ':' in function definition");
   getNextToken(); // eat ':'
 
-  // Consume newlines between a function header and its body.
-  // This allows definitions to be split across multiple lines, e.g.:
-  //
+  // This takes care of a situation where we decide to split the
+  // function and expression
   // ready> def foo(x):
-  // ready>   return x + 1
-  EatNewLines();
+  // ready>  return x + 1
+  while (CurTok == tok_eol)
+    getNextToken();
 
-  if (!InForExpression && CurTok != tok_if && CurTok != tok_for) {
-    if (CurTok != tok_return)
-      return LogErrorF("Expected 'return' before return expression");
-    getNextToken(); // eat return
-  }
+  if (CurTok != tok_return)
+    return LogErrorF("Expected 'return' before return expression");
+  getNextToken(); // eat return
 
   if (auto E = ParseExpression())
     return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
@@ -804,7 +621,7 @@ Value *VariableExprAST::codegen() {
   // Look this variable up in the function.
   Value *V = NamedValues[Name];
   if (!V)
-    return LogErrorV(("Unknown variable name " + Name).c_str());
+    return LogErrorV("Unknown variable name");
   return V;
 }
 
@@ -848,153 +665,6 @@ Value *CallExprAST::codegen() {
   }
 
   return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
-}
-
-Value *IfExprAST::codegen() {
-  Value *CondV = Cond->codegen();
-  if (!CondV)
-    return nullptr;
-
-  // Convert condition to a bool by comparing non-equal to 0.0.
-  CondV = Builder->CreateFCmpONE(
-      CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "ifcond");
-
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
-
-  // Create blocks for the then and else cases.  Insert the 'then' block at
-  // the end of the function.
-  BasicBlock *ThenBB = BasicBlock::Create(*TheContext, "then", TheFunction);
-  BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else");
-  BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont");
-
-  Builder->CreateCondBr(CondV, ThenBB, ElseBB);
-
-  // Emit then value.
-  Builder->SetInsertPoint(ThenBB);
-
-  Value *ThenV = Then->codegen();
-  if (!ThenV)
-    return nullptr;
-
-  Builder->CreateBr(MergeBB);
-  // Codegen of 'Then' can change the current block, update ThenBB for the
-  // PHI.
-  ThenBB = Builder->GetInsertBlock();
-
-  // Emit else block.
-  TheFunction->insert(TheFunction->end(), ElseBB);
-  Builder->SetInsertPoint(ElseBB);
-
-  Value *ElseV = Else->codegen();
-  if (!ElseV)
-    return nullptr;
-
-  Builder->CreateBr(MergeBB);
-  // Codegen of 'Else' can change the current block, update ElseBB for the
-  // PHI.
-  ElseBB = Builder->GetInsertBlock();
-
-  // Emit merge block.
-  TheFunction->insert(TheFunction->end(), MergeBB);
-  Builder->SetInsertPoint(MergeBB);
-  PHINode *PN = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
-
-  PN->addIncoming(ThenV, ThenBB);
-  PN->addIncoming(ElseV, ElseBB);
-  return PN;
-}
-
-Value *ForExprAST::codegen() {
-  // Emit the start code first, without 'variable' in scope.
-  Value *StartVal = Start->codegen();
-  if (!StartVal)
-    return nullptr;
-
-  // Make new basic blocks for pre-loop, loop condition, loop body and
-  // end-loop code.
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
-  BasicBlock *PreLoopBB = Builder->GetInsertBlock();
-  BasicBlock *LoopConditionBB =
-      BasicBlock::Create(*TheContext, "loopcond", TheFunction);
-  BasicBlock *LoopBB = BasicBlock::Create(*TheContext, "loop");
-  BasicBlock *EndLoopBB = BasicBlock::Create(*TheContext, "endloop");
-
-  // Insert an explicit fall through from current block to LoopConditionBB.
-  Builder->CreateBr(LoopConditionBB);
-
-  // Start insertion in LoopConditionBB.
-  Builder->SetInsertPoint(LoopConditionBB);
-
-  // Start the PHI node with an entry for Start.
-  PHINode *Variable =
-      Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
-  Variable->addIncoming(StartVal, PreLoopBB);
-
-  // Within the loop, the variable is defined equal to the PHI node. If it
-  // shadows an existing variable, we have to restore it, so save it now.
-  Value *OldVal = NamedValues[VarName];
-  NamedValues[VarName] = Variable;
-
-  // Compute the end condition.
-  Value *EndCond = End->codegen();
-  if (!EndCond)
-    return nullptr;
-
-  // Check if Variable < End
-  EndCond = Builder->CreateFCmpULT(Variable, EndCond, "endcond");
-
-  // Insert the conditional branch that either continues the loop, or exits
-  // the loop.
-  Builder->CreateCondBr(EndCond, LoopBB, EndLoopBB);
-
-  // Attach the basic block that will soon hold the loop body to the end of
-  // the parent function.
-  TheFunction->insert(TheFunction->end(), LoopBB);
-
-  // Emit the loop body within the LoopBB. This, like any other expr, can
-  // change the current BB. Note that we ignore the value computed by the
-  // body, but don't allow an error.
-  Builder->SetInsertPoint(LoopBB);
-  if (!Body->codegen()) {
-    return nullptr;
-  }
-
-  // Emit the step value.
-  Value *StepVal = nullptr;
-  if (Step) {
-    StepVal = Step->codegen();
-    if (!StepVal)
-      return nullptr;
-  } else {
-    // If not specified, use 1.0.
-    StepVal = ConstantFP::get(*TheContext, APFloat(1.0));
-  }
-
-  Value *NextVar = Builder->CreateFAdd(Variable, StepVal, "nextvar");
-
-  // Add a new entry to the PHI node for the backedge.
-  LoopBB = Builder->GetInsertBlock();
-  Variable->addIncoming(NextVar, LoopBB);
-
-  // Create the unconditional branch that returns to LoopConditionBB to
-  // determine if we should continue looping.
-  Builder->CreateBr(LoopConditionBB);
-
-  // Append EndLoopBB after the loop body. We go to this basic block if the
-  // loop condition says we should not loop anymore.
-  TheFunction->insert(TheFunction->end(), EndLoopBB);
-
-  // Any new code will be inserted after the loop.
-  Builder->SetInsertPoint(EndLoopBB);
-
-  // Restore the unshadowed variable.
-  if (OldVal)
-    NamedValues[VarName] = OldVal;
-  else
-    NamedValues.erase(VarName);
-
-  // for expr always returns 0.0.
-  return Constant::getNullValue(Type::getDoubleTy(*TheContext));
 }
 
 Function *PrototypeAST::codegen() {
@@ -1149,7 +819,7 @@ static void HandleTopLevelExpression() {
       // Get the symbol's address and cast it to the right type (takes no
       // arguments, returns a double) so we can call it as a native function.
       double (*FP)() = ExprSymbol.toPtr<double (*)()>();
-      fprintf(stderr, "\nEvaluated to %f\n", FP());
+      fprintf(stderr, "Evaluated to %f\n", FP());
 
       // Delete the anonymous expression module from the JIT.
       ExitOnErr(RT->remove());

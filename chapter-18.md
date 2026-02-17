@@ -1,381 +1,375 @@
-# 18. A Real print(...) Builtin (Without Variadics)
+---
+description: "Introduce a practical type system with C interop: typed values, pointers, ABI-correct signatures, and stronger compile-time checks."
+---
+# 17. Pyxc: Typed Interop: Core Types, Pointers, and ABI Correctness
 
-Chapter 17 gave us typed values, typed locals, pointer syntax, and ABI-correct extern signatures.
+Chapter 17 cleaned up operators and short-circuit behavior.  
+In Chapter 18, we take the next major step: a practical type system that can interoperate with C APIs safely.
 
-In Chapter 18, we use that typed foundation to add something user-facing and practical: a language-level `print(...)` builtin.
+The focus of this chapter is not “advanced type theory.” It is interop-first typing:
 
-The important constraint for this chapter is: **no general variadic functions yet**.
-`print(...)` is implemented as a compiler builtin statement, not as user-declared `extern def foo(...)` machinery.
+- explicit scalar types
+- pointer types and pointer indexing
+- typed function signatures
+- typed local declarations
+- aliasing for C-like names (`int`, `size_t`, etc.)
+- ABI-correct extern behavior for narrow signed/unsigned integers
+
+The implementation for this chapter lives in:
+
+- `code/chapter18/pyxc.cpp`
+- `code/chapter18/runtime.c`
 
 
 !!!note
     To follow along you can download the code from GitHub [pyxc-llvm-tutorial](https://github.com/alankarmisra/pyxc-llvm-tutorial) or you can see the full source code here [code/chapter18](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter18).
 
-## What Changed from Chapter 17
+## Grammar (EBNF)
 
-At a high level, Chapter 18 adds four things:
+Chapter 18 introduces the typed grammar surface: `type` aliases, typed params/returns, typed local declarations, and `ptr[...]`.
 
-- a new `print` keyword/token
-- parser support for `print(...)` as a statement
-- a dedicated `PrintStmtAST` lowering path
-- a new lit suite under `code/chapter18/test/`
-
-There is also one subtle type-system plumbing update: we carry extra signed/unsigned type hints so codegen can choose `printi32` vs `printu32` reliably.
-
-## Language Surface in This Chapter
-
-Supported forms:
-
-```py
-print()
-print(x)
-print(x, y, z)
-```
-
-Default formatting behavior:
-
-- separator between args: a single space (`" "`)
-- end of statement: newline (`"\n"`)
-
-Supported argument families in this implementation:
-
-- signed ints: `i8/i16/i32/i64`
-- unsigned ints: `u8/u16/u32/u64`
-- floats: `f32/f64`
-
-Current policy for pointers: rejected with a diagnostic.
-
-## Grammar (EBNF) Update
-
-Compared to Chapter 17, `statement` gained a `print_stmt` branch.
+Reference: `code/chapter18/pyxc.ebnf`
 
 ```ebnf
-statement       = if_stmt
-                | for_stmt
-                | print_stmt
-                | return_stmt
-                | typed_assign_stmt
-                | assign_stmt
-                | expr_stmt ;
+top_item        = newline | type_alias_decl | function_def | extern_decl | statement ;
+type_alias_decl = "type" , identifier , "=" , type_expr ;
 
-print_stmt      = "print" , "(" , [ arg_list ] , ")" ;
+prototype       = identifier , "(" , [ param_list ] , ")" , "->" , type_expr ;
+param_list      = param , { "," , param } ;
+param           = identifier , ":" , type_expr ;
+
+typed_assign_stmt = identifier , ":" , type_expr , [ "=" , expression ] ;
+type_expr       = pointer_type | base_type ;
+pointer_type    = "ptr" , "[" , type_expr , "]" ;
 ```
 
-This keeps `print` explicit in the grammar and avoids overloading generic call parsing for statement semantics.
+## Why This Chapter Exists
 
-## Tests First: New Chapter 18 lit Suite
+Until Chapter 17, Pyxc effectively treated most values like doubles. That keeps early chapters simple, but it is not enough if you want real C interop.
 
-Before implementation, we added a dedicated test harness and print-focused coverage.
+For example, calling a C function that expects `i16`, `u8`, or `ptr[T]` requires:
 
-- `code/chapter18/test/lit.cfg.py`
-- `code/chapter18/test/print_basic_empty.pyxc`
-- `code/chapter18/test/print_basic_scalars.pyxc`
-- `code/chapter18/test/print_mixed_types.pyxc`
-- `code/chapter18/test/print_narrow_signed.pyxc`
-- `code/chapter18/test/print_unsigned_widths.pyxc`
-- `code/chapter18/test/print_error_unsupported_pointer.pyxc`
-- `code/chapter18/test/print_error_keyword_args.pyxc`
-- `code/chapter18/test/print_error_trailing_comma.pyxc`
+1. precise type information in the AST
+2. correct LLVM type lowering
+3. correct ABI attributes at call boundaries
 
-Example positive test:
+That is exactly what Chapter 18 introduces.
+
+## Language Additions
+
+### Core scalar types
+
+Builtins in this chapter:
+
+- signed: `i8`, `i16`, `i32`, `i64`
+- unsigned: `u8`, `u16`, `u32`, `u64`
+- floats: `f32`, `f64`
+- `void`
+
+### Pointer type constructor
 
 ```py
-# RUN: %pyxc -i %s > %t 2>&1
-# RUN: grep -x -- '-4 42 3.500000 7.250000' %t
-# RUN: ! grep -q "Error (Line:" %t
-
-def main() -> i32:
-    si: i32 = -4
-    ui: u64 = 42
-    f1: f32 = 3.5
-    f2: f64 = 7.25
-    print(si, ui, f1, f2)
-    return 0
-
-main()
+ptr[i32]
+ptr[void]
+ptr[ptr[i8]]
 ```
 
-Example negative test:
+### Typed function prototypes
 
 ```py
-# RUN: %pyxc -i %s > %t 2>&1
-# RUN: grep -q "Error (Line:" %t
+extern def printd(x: f64) -> f64
 
+def add(x: i32, y: i32) -> i32:
+    return x + y
+```
+
+### Typed local declarations
+
+```py
+x: i32 = 10
+p: ptr[i32] = addr(x)
+```
+
+### Type aliases
+
+```py
+type int = i32
+type char = i8
+type size = u64
+```
+
+## Pointer Operations in This Syntax
+
+Chapter 18 uses Python-flavored pointer forms:
+
+- `addr(x)` for address-of
+- `p[n]` for dereference/indexing
+
+Example:
+
+```py
 def main() -> i32:
-    x: i32 = 7
+    x: i32 = 10
     p: ptr[i32] = addr(x)
-    print(p)
-    return 0
-
-main()
+    p[0] = p[0] + 1
+    return x
 ```
 
-## Lexer Changes
+Type rules enforced:
 
-`print` becomes a real token in Chapter 18.
+1. base of `p[n]` must be pointer
+2. index must be integer type
+3. `ptr[void]` cannot be indexed
+
+## Lexer and Token Updates
+
+Chapter 18 adds key tokens and keywords:
+
+- `type` -> `tok_type`
+- `->` -> `tok_arrow`
+
+Snippet:
 
 ```cpp
 enum Token {
-  // ...
-  tok_var = -15,
-  tok_print = -27,
+  tok_type = -25,
+  tok_arrow = -26,
   // ...
 };
 ```
 
-Keyword table update:
+The keyword map also includes `type`, and identifier lexing was updated to allow `_`, so aliases like `size_t` parse correctly.
+
+## Type Representation in the Frontend
+
+A recursive type-expression model is introduced:
 
 ```cpp
-{"and", tok_and}, {"print", tok_print}, {"or", tok_or}
-```
+enum class TypeExprKind { Builtin, AliasRef, Pointer };
 
-Token debug name support was also added:
-
-```cpp
-case tok_print:
-  return "<print>";
-```
-
-This is small, but it keeps the parser branch clean and diagnostics readable.
-
-## AST Changes: A Dedicated PrintStmtAST
-
-Instead of pretending `print` is a normal function call expression, Chapter 18 adds an explicit statement node:
-
-```cpp
-class PrintStmtAST : public StmtAST {
-  std::vector<std::unique_ptr<ExprAST>> Args;
-
-public:
-  PrintStmtAST(SourceLocation Loc, std::vector<std::unique_ptr<ExprAST>> Args)
-      : StmtAST(Loc), Args(std::move(Args)) {}
-
-  Value *codegen() override;
+struct TypeExpr {
+  TypeExprKind Kind;
+  std::string Name;
+  std::shared_ptr<TypeExpr> Elem;
 };
 ```
 
-This keeps the semantics straightforward:
-
-- parse as statement
-- lower with statement behavior
-- return an ignored sentinel in IR plumbing (`0.0`), same style as other statement nodes
+This is important because parser-level type syntax (`ptr[ptr[i32]]`, aliases, etc.) needs structured representation before LLVM lowering.
 
 ## Parser Changes
 
-We added a `ParsePrintStmt()` function and wired it into `ParseStmt()`.
+### Parsing typed prototypes
 
-Core parse shape:
+`ParsePrototype()` now expects typed params and return types:
+
+```text
+name '(' param ':' type_expr {',' ...} ')' '->' type_expr
+```
+
+### Parsing top-level aliases
+
+`ParseTypeAliasDecl()` handles:
+
+```py
+type Name = TypeExpr
+```
+
+### Parsing typed declarations and assignments
+
+Identifier-leading statements are disambiguated into:
+
+- typed declaration: `x: T` or `x: T = expr`
+- assignment: `lhs = rhs`
+- ordinary expression statement
+
+### Parsing pointer/address constructs
+
+- `addr(expr)` becomes `AddrExprAST`
+- `p[n]` becomes `IndexExprAST`
+
+## AST Additions
+
+Key AST nodes added in this chapter:
+
+- `TypedAssignStmtAST`
+- `AssignStmtAST` (explicit statement form)
+- `AddrExprAST`
+- `IndexExprAST`
+- typed `PrototypeAST` (arg types + return type)
+
+`ExprAST` also gains hooks for lvalue/address/type hints used by assignment and pointer lowering:
 
 ```cpp
-static std::unique_ptr<StmtAST> ParsePrintStmt() {
-  auto PrintLoc = CurLoc;
-  getNextToken(); // eat `print`
-  if (CurTok != '(')
-    return LogError<StmtPtr>("Expected '(' after print");
-  getNextToken(); // eat '('
+virtual Value *codegenAddress() { return nullptr; }
+virtual Type *getValueTypeHint() const { return nullptr; }
+virtual Type *getPointeeTypeHint() const { return nullptr; }
+```
 
-  std::vector<std::unique_ptr<ExprAST>> Args;
-  if (CurTok != ')') {
-    while (true) {
-      auto Arg = ParseExpression();
-      if (!Arg)
-        return nullptr;
-      Args.push_back(std::move(Arg));
+## Type Resolution and Alias Policy
 
-      if (CurTok == ')')
-        break;
-      if (CurTok != ',')
-        return LogError<StmtPtr>("Expected ')' or ',' in print argument list");
-      getNextToken();
-      if (CurTok == ')')
-        return LogError<StmtPtr>("Trailing comma is not allowed in print");
-    }
-  }
+Type lowering pipeline:
 
-  getNextToken(); // eat ')'
-  return std::make_unique<PrintStmtAST>(PrintLoc, std::move(Args));
+1. parse into `TypeExpr`
+2. resolve alias chains
+3. reject alias cycles
+4. map to LLVM type
+
+Chapter 18 also introduces default C-like aliases initialized from target data layout:
+
+- `int`, `char`, `float`, `double`
+- `long`, `size_t` derived from pointer width
+
+This keeps interop target-aware instead of hardcoding one platform.
+
+## Typed Codegen: Main Ideas
+
+### Typed variable bindings
+
+Chapter 17 tracked mostly allocas. Chapter 18 stores richer per-variable metadata (alloca + type hints) so pointer operations and print/type dispatch can work correctly.
+
+### Conversion helper
+
+A central cast helper is used across assignment/calls/returns:
+
+```cpp
+static Value *CastValueTo(Value *V, Type *DstTy) {
+  // fp<->int, int<->int, ptr<->ptr, ptr<->int, etc.
 }
 ```
 
-And dispatch in statement parsing:
+### Boolean conversion helper
+
+Conditions and logical ops now route through a generic truthiness converter:
 
 ```cpp
-case tok_print:
-  return ParsePrintStmt();
+static Value *ToBoolI1(Value *V, const Twine &Name)
 ```
 
-## Why Extra Type Hints Were Needed
+This supports int/float/pointer conditions consistently.
 
-In LLVM IR, both `i32` and `u32` are just `i32` values. Width alone does not preserve signedness intent.
+### Return correctness
 
-For print helper selection, that matters:
+Chapter 18 enforces:
 
-- signed 32-bit should call `printi32`
-- unsigned 32-bit should call `printu32`
+- `return` with no expression only for `-> void`
+- returning a value from `void` function is an error
+- missing value in non-void return is an error
 
-So Chapter 18 extends expression/type hint plumbing and variable bindings with leaf-type metadata.
+## ABI Correctness for Narrow Integer Externs
 
-### New expression hooks
+A key fix in this chapter is preserving signedness at ABI boundaries for narrow integers.
+
+Without this, extern calls involving `i8/i16` can behave like zero-extended values.
+
+Chapter 18 applies extension attributes in prototype codegen:
+
+- `i8/i16` -> `signext`
+- `u8/u16` -> `zeroext`
+
+Conceptual snippet:
 
 ```cpp
-virtual std::string getBuiltinLeafTypeHint() const { return ""; }
-virtual std::string getPointeeBuiltinLeafTypeHint() const { return ""; }
+if (narrowSigned)
+  F->addParamAttr(i, Attribute::SExt);
+if (narrowUnsigned)
+  F->addParamAttr(i, Attribute::ZExt);
 ```
 
-### Extended variable binding
+This applies to params and return types where appropriate.
 
-```cpp
-struct VarBinding {
-  AllocaInst *Alloca = nullptr;
-  Type *Ty = nullptr;
-  Type *PointeeTy = nullptr;
-  std::string BuiltinLeafTy;
-  std::string PointeeBuiltinLeafTy;
-};
+## Runtime Helper Surface
+
+`code/chapter18/runtime.c` now exports typed print/char helpers for scalar widths.
+
+Examples:
+
+```c
+DLLEXPORT int8_t printi8(int8_t X) { fprintf(stderr, "%d", (int)X); return 0; }
+DLLEXPORT uint64_t printu64(uint64_t X) { fprintf(stderr, "%llu", (unsigned long long)X); return 0; }
+DLLEXPORT double printfloat64(double X) { fprintf(stderr, "%f", X); return 0; }
+DLLEXPORT double printchard(double X) { fputc((unsigned char)X, stderr); return 0; }
 ```
 
-### Typed assignment now stores these hints
+This runtime surface is used by language features and tests in later chapters.
 
-```cpp
-NamedValues[Name] = {Alloca, DeclTy, ResolvePointeeTypeExpr(DeclType),
-                     ResolveBuiltinLeafName(DeclType),
-                     ResolvePointeeBuiltinLeafName(DeclType)};
+## Diagnostics Behavior
+
+To reduce cascading noise in file mode, Chapter 18 adds a stop-after-first-semantic-error gate:
+
+- `HadError` is set in `LogError(...)`
+- file processing loops stop once it is set
+
+This keeps negative test output focused on primary failures.
+
+## Tests for This Chapter
+
+Chapter 18 test coverage lives under `code/chapter18/test/`.
+
+Core areas:
+
+- typed aliases and target aliasing (`size_t`)
+- address-of and pointer indexing
+- invalid pointer index type
+- `ptr[void]` indexing rejection
+- runtime print helper matrix (`runtime_print_all_types.pyxc`)
+- narrow signed extern behavior (`i8/i16` negative-value paths)
+
+Representative snippets from tests:
+
+```py
+# pointer invalid index type
+n: f64 = 2.5
+x = p[n]   # error
 ```
 
-This is what lets print codegen preserve signed/unsigned helper choice for typed values and pointer-indexed values.
-
-## Print Codegen: Helper Dispatch Strategy
-
-The codegen path does not use user-level variadics. It does this instead:
-
-1. codegen each argument expression
-2. infer helper symbol by LLVM type + leaf hint
-3. emit `call print*` for the arg
-4. emit separator (`printchard(32)`) between args
-5. emit newline (`printchard(10)`) at end
-
-### Helper resolution
-
-```cpp
-static Function *GetPrintHelperForArg(Type *ArgTy, const std::string &LeafHint) {
-  if (ArgTy->isFloatTy())
-    return GetOrCreatePrintHelper("printfloat32", ArgTy, false);
-  if (ArgTy->isDoubleTy())
-    return GetOrCreatePrintHelper("printfloat64", ArgTy, false);
-  if (!ArgTy->isIntegerTy())
-    return nullptr;
-
-  bool IsUnsigned = !LeafHint.empty() && LeafHint[0] == 'u';
-  unsigned W = ArgTy->getIntegerBitWidth();
-  switch (W) {
-  case 8:  return GetOrCreatePrintHelper(IsUnsigned ? "printu8"  : "printi8",  ArgTy, IsUnsigned);
-  case 16: return GetOrCreatePrintHelper(IsUnsigned ? "printu16" : "printi16", ArgTy, IsUnsigned);
-  case 32: return GetOrCreatePrintHelper(IsUnsigned ? "printu32" : "printi32", ArgTy, IsUnsigned);
-  case 64: return GetOrCreatePrintHelper(IsUnsigned ? "printu64" : "printi64", ArgTy, IsUnsigned);
-  default: return nullptr;
-  }
-}
+```py
+# narrow signed ABI path
+x: i8 = -5
+y: i16 = -300
+print(x, y)
 ```
 
-### Statement lowering loop
+## Summary
 
-```cpp
-for (size_t I = 0; I < Args.size(); ++I) {
-  Value *ArgV = Args[I]->codegen();
-  Type *ArgTy = ArgV->getType();
+Chapter 18 turns Pyxc from a mostly-untyped toy frontend into an interop-capable typed frontend:
 
-  if (ArgTy->isPointerTy())
-    return LogError<Value *>("Unsupported print argument type: pointer");
+- explicit scalar/pointer typing
+- typed signatures and declarations
+- alias resolution with target awareness
+- pointer semantics with type checks
+- ABI-correct narrow integer extern behavior
 
-  Function *PrintF = GetPrintHelperForArg(ArgTy, Args[I]->getBuiltinLeafTypeHint());
-  if (!PrintF)
-    return LogError<Value *>("Unsupported print argument type");
+With this foundation in place, Chapter 19 can add language-level printing ergonomics (`print(...)`) without re-solving basic type and ABI correctness.
 
-  Value *CastArg = CastValueTo(ArgV, PrintF->getFunctionType()->getParamType(0));
-  Builder->CreateCall(PrintF, {CastArg});
+## Build and Test
 
-  if (I + 1 < Args.size())
-    Builder->CreateCall(PrintCharF, {ConstantFP::get(*TheContext, APFloat(32.0))});
-}
-
-Builder->CreateCall(PrintCharF, {ConstantFP::get(*TheContext, APFloat(10.0))});
-```
-
-## Diagnostics in This Chapter
-
-The print implementation now reports meaningful errors for:
-
-- malformed syntax (for example, bad separator usage via unsupported keyword syntax)
-- trailing comma in this MVP parser path
-- unsupported argument kinds (notably pointers)
-
-Representative messages include:
-
-- `Expected ')' or ',' in print argument list`
-- `Trailing comma is not allowed in print`
-- `Unsupported print argument type: pointer`
-- `Unsupported print argument type`
-
-## Chapter 18 Test Outcomes
-
-The new chapter17 suite validates:
-
-- `print()` newline-only behavior
-- basic scalar spacing/newline behavior
-- mixed signed/unsigned/float dispatch
-- narrow signed integer paths (`i8`, `i16`)
-- wide unsigned paths (`u32`, `u64`)
-- key negative behavior (pointer args, unsupported keyword usage, trailing comma)
-
-Status after implementation: all Chapter 18 lit tests pass.
-
-## Recap
-
-Chapter 18 intentionally avoids general variadics while still delivering ergonomic output.
-
-The key design choices were:
-
-- treat `print` as a language builtin statement
-- lower each argument with type-directed helper dispatch
-- preserve signedness intent with lightweight leaf-type hints
-- lock behavior with a dedicated lit suite before codegen work
-
-This keeps the compiler architecture clean and gives us a practical builtin today, while leaving room to add true user-defined variadics later.
-
-## Repository Link
-
-You can browse the full project directly here:
-
-- [pyxc-llvm-tutorial on GitHub](https://github.com/alankarmisra/pyxc-llvm-tutorial)
-
-## Build and Test (Chapter 18)
-
-From the repository root:
+Now compile Chapter 18 and run the test suite.
 
 ```bash
 cd code/chapter18 && ./build.sh
+llvm-lit test -sv
 ```
 
-Run the chapter test suite:
+You can also run individual test programs directly:
 
 ```bash
-llvm-lit -sv test
+./pyxc -i test/type_alias_core.pyxc
+./pyxc -i test/pointer_addr_basic.pyxc
+./pyxc -i test/runtime_print_all_types.pyxc
 ```
 
-If you want to sanity-check compatibility with the previous chapter as well:
+### Please Write Your Own Tests
 
-```bash
-cd ../chapter16 && ./build.sh
-llvm-lit -sv test
-```
+The best way to check your understanding is to add tests yourself.
 
-Try writing a few of your own `print` tests in `code/chapter18/test/` too. A good way to check your understanding is to add both:
+Try creating a few new `.pyxc` files under `code/chapter18/test/` that cover:
 
-- positive cases (mixed types, nested expressions, computed values)
-- negative cases (unsupported types, malformed argument lists)
+- alias chains and alias-cycle errors
+- pointer indexing with integer and non-integer indices
+- `void` return correctness
+- extern calls with narrow signed/unsigned integer parameters
 
-When your own tests pass and fail exactly where you expect, the implementation model usually clicks.
-
+If your mental model matches the compiler behavior, your tests should pass on first try. If not, those mismatches are exactly what this chapter is meant to surface.
 
 ## Compile / Run / Test (Hands-on)
 
@@ -388,7 +382,7 @@ cd code/chapter18 && ./build.sh
 Run one sample program:
 
 ```bash
-code/chapter18/pyxc -i code/chapter18/test/print_basic_empty.pyxc
+code/chapter18/pyxc -i code/chapter18/test/c_alias_size_t_target.pyxc
 ```
 
 Run the chapter tests (when a test suite exists):
@@ -398,7 +392,7 @@ cd code/chapter18/test
 lit -sv .
 ```
 
-Poke around the tests and tweak a few cases to see what breaks first.
+Have some fun stress-testing the suite with small variations.
 
 When you're done, clean artifacts:
 

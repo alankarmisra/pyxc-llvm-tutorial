@@ -194,6 +194,7 @@ static int gettok() {
     return tok_eof;
 
   // Otherwise, just return the character as its ascii value.
+  // This includes operator tokens like <, +, -, *, /, %.
   int ThisChar = LastChar;
   LastChar = advance();
   return ThisChar;

@@ -53,12 +53,15 @@ builtin_type    = "void"
 
 (* ---------- Functions ---------- *)
 
-function_def    = "def" , prototype , ":" , suite ;
+function_def    = [ decorator ] , "def" , prototype , ":" , suite ;
 extern_decl     = "extern" , "def" , prototype ;
 
 prototype       = identifier , "(" , [ param_list ] , ")" , "->" , type_expr ;
 param_list      = param , { "," , param } ;
 param           = identifier , ":" , type_expr ;
+
+(* Current decorator model used for unary/binary operator definitions. *)
+decorator       = "@" , ( "unary" | "binary" ) , [ number ] ;
 
 (* ---------- Statements ---------- *)
 

@@ -1,7 +1,0 @@
-# RUN: rm -f %t.o
-# RUN: %pyxc -c -o %t.o %s > %t.log 2>&1
-# RUN: test -f %t.o
-# RUN: ! grep -q "Error (Line:" %t.log
-
-def main():
-    return 0
