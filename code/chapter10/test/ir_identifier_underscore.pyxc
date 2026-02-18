@@ -1,0 +1,6 @@
+# RUN: %pyxc repl --emit-ir < %s > %t 2>&1
+# RUN: grep -q "define double @my_func(double %my_var)" %t
+# RUN: grep -q "ret double %my_var" %t
+
+def my_func(my_var):
+    return my_var

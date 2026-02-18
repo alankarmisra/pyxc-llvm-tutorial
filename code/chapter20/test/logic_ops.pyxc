@@ -1,0 +1,20 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "1.000000" %t
+# RUN: grep -q "0.000000" %t
+# RUN: ! grep -q "Error (Line:" %t
+
+extern def printd(x)
+
+def main():
+    printd(not 0)
+    printd(not 5)
+    printd(1 and 0)
+    printd(1 and 2)
+    printd(0 or 3)
+    printd(0 == 0)
+    printd(1 != 2)
+    printd(2 <= 2)
+    printd(3 >= 4)
+    return 0
+
+main()

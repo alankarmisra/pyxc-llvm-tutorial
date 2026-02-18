@@ -1,0 +1,12 @@
+# Test that building an executable from a file with no extension gives a clear
+# error and does NOT create any output files.
+#
+# RUN: cp %s %T/noext
+# RUN: not %pyxc build %T/noext --emit=exe > %t 2>&1
+# RUN: grep -q "cannot derive executable name" %t
+# RUN: grep -q "\.pyxc" %t
+# RUN: not test -f %T/noext.o
+
+# (This file is only used as a source to copy from - the actual test runs on
+# the extensionless copy at %T/noext)
+def main(): return 0.0

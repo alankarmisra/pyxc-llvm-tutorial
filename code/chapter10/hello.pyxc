@@ -1,0 +1,6 @@
+# hello.pyxc
+extern def putchard(c)
+
+def printHi(x): return putchard(72.0) + putchard(105.0) + putchard(10.0)
+
+def main(): return printHi(0.0)

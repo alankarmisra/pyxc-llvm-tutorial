@@ -1,0 +1,18 @@
+extern def putchard(x)
+
+@binary(precedence=1)
+def ;(x, y):
+    return y
+
+def fibi(x):
+    var a = 1, b = 1, c in 
+        (for i in range(3, x+1): c = a + b ; a = b ; b = c)  ; b
+
+def printstar(n):
+    for i in range(1, n+1):
+        putchard(42)
+
+fibi(10)
+printstar(0)
+printstar(1)
+printstar(2)

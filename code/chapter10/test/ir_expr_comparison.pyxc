@@ -1,0 +1,10 @@
+# RUN: %pyxc repl --emit-ir < %s > %t 2>&1
+# RUN: grep -q "fcmp ult double" %t
+# RUN: grep -q "fcmp ugt double" %t
+# RUN: grep -q "uitofp i1" %t
+
+def test_lt(x, y):
+    return x < y
+
+def test_gt(x, y):
+    return x > y

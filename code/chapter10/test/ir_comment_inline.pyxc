@@ -1,0 +1,6 @@
+# RUN: %pyxc repl --emit-ir < %s > %t 2>&1
+# RUN: grep -q "fadd double" %t
+# Comments should be ignored by the parser
+
+def test_comment(x, y):  # this is a comment
+    return x + y  # another comment

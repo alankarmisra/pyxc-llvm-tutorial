@@ -1,0 +1,16 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '12' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    i: i32 = 0
+    s: i32 = 0
+    while i < 5:
+        i = i + 1
+        if i == 3:
+            continue
+        s = s + i
+    print(s)
+    return 0
+
+main()

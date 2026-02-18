@@ -50,7 +50,7 @@ Think of it as a puzzle piece. It has a defined shape (the code it provides) and
 
 `nm` lists the symbols in an object file. A symbol is simply a name attached to an address.
 
-```bash
+```nasm
 $ nm hello.o
 0000000000000000 T _main
                  U _putchard
@@ -71,7 +71,7 @@ Notice that `_main` is at address `0x0`. That's not its real address in memory -
 
 Now look at the final executable:
 
-```bash
+```nasm
 $ nm hello
 00000001000004a0 T _main
 00000001000004bc T _putchard
@@ -89,7 +89,7 @@ This is **symbol resolution**: matching every `U` (undefined) to a `T` (defined)
 
 Inside `hello.o`, the call to `putchard` uses a placeholder:
 
-```bash
+```nasm
 $ objdump --disassemble hello.o
 
 Disassembly of section __TEXT,__text:
@@ -106,7 +106,7 @@ Disassembly of section __TEXT,__text:
 
 The `bl` instruction at offset `0xc` means "branch and link" (i.e., call). But it branches to `0xc` - itself! That's the placeholder. The object file also records a **relocation entry** alongside the code:
 
-```bash
+```nasm
 $ objdump --reloc hello.o
 
 RELOCATION RECORDS FOR [__text]:
@@ -118,7 +118,7 @@ This says: **at offset `0xc`, patch the instruction to branch to `_putchard`**.
 
 The linker reads this record, looks up where `_putchard` ended up (`0x1000004bc`), and patches the instruction. In the final executable, the call is correct:
 
-```bash
+```nasm
 $ objdump --disassemble hello
 
 00000001000004a0 <_main>:

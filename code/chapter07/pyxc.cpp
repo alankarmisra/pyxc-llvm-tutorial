@@ -100,22 +100,24 @@ static cl::opt<unsigned>
 enum Token {
   tok_eof = -1,
   tok_eol = -2,
+  tok_error = -3,
 
   // commands
-  tok_def = -3,
-  tok_extern = -4,
+  tok_def = -4,
+  tok_extern = -5,
 
   // primary
-  tok_identifier = -5,
-  tok_number = -6,
+  tok_identifier = -6,
+  tok_number = -7,
 
   // control
-  tok_return = -7
+  tok_return = -8
 };
 
 static std::string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;             // Filled in if tok_number
 static std::string NumLiteralStr; // Filled in if tok_number
+static bool HadError = false;
 
 // Keywords words like `def`, `extern` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
@@ -129,6 +131,7 @@ static std::map<int, std::string> TokenNames = [] {
   std::map<int, std::string> Names = {
       {tok_eof, "end of input"},
       {tok_eol, "newline"},
+      {tok_error, "error"},
       {tok_def, "'def'"},
       {tok_extern, "'extern'"},
       {tok_identifier, "identifier"},
@@ -314,8 +317,15 @@ static int gettok() {
       LastChar = advance();
     } while (isdigit(LastChar) || LastChar == '.');
 
+    char *End;
+    NumVal = strtod(NumStr.c_str(), &End);
+    if (*End != '\0') {
+      HadError = true;
+      fprintf(stderr, "Error (Line %d, Col %d): invalid number literal '%s'\n",
+              LexLoc.Line, LexLoc.Col, NumStr.c_str());
+      return tok_error;
+    }
     NumLiteralStr = NumStr;
-    NumVal = strtod(NumStr.c_str(), 0);
     return tok_number;
   }
 

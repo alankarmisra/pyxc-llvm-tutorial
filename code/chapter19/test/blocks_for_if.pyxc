@@ -1,0 +1,12 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: ! grep -q "Error (Line:" %t
+
+extern def printd(x)
+
+def drive():
+    for i in range(0, 2):
+        if(i < 1):
+            printd(11)
+        else:
+            printd(22)
+    return 0

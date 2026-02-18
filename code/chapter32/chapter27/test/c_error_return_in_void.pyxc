@@ -1,0 +1,12 @@
+# Test that returning a value from a void function is rejected.
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Void function cannot return a value" %t
+
+def foo() -> void:
+    return 42
+
+def main() -> i32:
+    foo()
+    return 0
+
+main()

@@ -1,0 +1,14 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "Error (Line:" %t
+# RUN: grep -q "Duplicate default case '_' in match" %t
+
+def main() -> i32:
+    x: i32 = 1
+    match x:
+        case _:
+            printf("a\n")
+        case _:
+            printf("b\n")
+    return 0
+
+main()

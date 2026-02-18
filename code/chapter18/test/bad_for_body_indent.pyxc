@@ -1,0 +1,14 @@
+# RUN: %pyxc -i %s > %t 2>&1 || true
+# RUN: grep -q "Error" %t
+
+extern def printd(x)
+
+def main():
+    for i in range(0, 2):
+        if(i < 1):
+            printd(i)
+       else:
+            printd(i + 10)
+    return printd(0)
+
+main()

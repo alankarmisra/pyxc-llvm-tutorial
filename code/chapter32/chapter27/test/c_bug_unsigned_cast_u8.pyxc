@@ -1,0 +1,15 @@
+# BUG: CastValueTo always sign-extends integers (CreateIntCast with true).
+# For unsigned types like u8, casting 200 to i32 should give 200,
+# but sign-extension gives -56 (since 200 as i8 is -56 in signed).
+#
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '200' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    x: u8 = 200
+    y: i32 = x
+    print(y)
+    return 0
+
+main()

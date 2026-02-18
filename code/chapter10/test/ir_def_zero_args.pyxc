@@ -1,0 +1,6 @@
+# RUN: %pyxc repl --emit-ir < %s > %t 2>&1
+# RUN: grep -q "define double @constant()" %t
+# RUN: grep -q "ret double 4.200000e+01" %t
+
+def constant():
+    return 42

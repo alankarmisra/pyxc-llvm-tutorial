@@ -1,0 +1,82 @@
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -q "ABCDEFGHIJKL" %t
+# RUN: grep -q -- "-5" %t
+# RUN: grep -q -- "-300" %t
+# RUN: grep -q -- "-40000" %t
+# RUN: grep -q -- "-500000" %t
+# RUN: grep -q "250" %t
+# RUN: grep -q "60000" %t
+# RUN: grep -q "4000000000" %t
+# RUN: grep -q "9000000000" %t
+# RUN: grep -q "3.500000" %t
+# RUN: grep -q "7.250000" %t
+# RUN: grep -q -- "-1234567" %t
+# RUN: ! grep -q "Error (Line:" %t
+
+extern def putchari8(x: i8) -> i8
+extern def putchari16(x: i16) -> i16
+extern def putchari32(x: i32) -> i32
+extern def putchari64(x: i64) -> i64
+extern def putcharu8(x: u8) -> u8
+extern def putcharu16(x: u16) -> u16
+extern def putcharu32(x: u32) -> u32
+extern def putcharu64(x: u64) -> u64
+extern def putcharf32(x: f32) -> f32
+extern def putcharf64(x: f64) -> f64
+extern def putchari(x: i64) -> i64
+extern def putchard(x: f64) -> f64
+
+extern def printi8(x: i8) -> i8
+extern def printi16(x: i16) -> i16
+extern def printi32(x: i32) -> i32
+extern def printi64(x: i64) -> i64
+extern def printu8(x: u8) -> u8
+extern def printu16(x: u16) -> u16
+extern def printu32(x: u32) -> u32
+extern def printu64(x: u64) -> u64
+extern def printfloat32(x: f32) -> f32
+extern def printfloat64(x: f64) -> f64
+extern def printi(x: i64) -> i64
+extern def printchard(x: f64) -> f64
+
+def main() -> i32:
+    putchari8(65)
+    putchari16(66)
+    putchari32(67)
+    putchari64(68)
+    putcharu8(69)
+    putcharu16(70)
+    putcharu32(71)
+    putcharu64(72)
+    putcharf32(73)
+    putcharf64(74)
+    putchari(75)
+    putchard(76)
+    printchard(10)
+
+    printi8(-5)
+    printchard(32)
+    printi16(-300)
+    printchard(32)
+    printi32(-40000)
+    printchard(32)
+    printi64(-500000)
+    printchard(32)
+
+    printu8(250)
+    printchard(32)
+    printu16(60000)
+    printchard(32)
+    printu32(4000000000)
+    printchard(32)
+    printu64(9000000000)
+    printchard(32)
+
+    printfloat32(3.5)
+    printchard(32)
+    printfloat64(7.25)
+    printchard(32)
+    printi(-1234567)
+    return 0
+
+main()

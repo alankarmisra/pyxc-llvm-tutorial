@@ -96,7 +96,7 @@ We also have two globals to hold extra info:
 
 ```cpp
 static string IdentifierStr;  // Holds the name (if it's an identifier)
-static double NumVal;          // Holds the value (if it's a number)
+static double NumVal;         // Holds the value (if it's a number)
 ```
 
 When the lexer sees `foo`, it returns `tok_identifier` and sets `IdentifierStr = "foo"`.
@@ -221,7 +221,9 @@ Here's where the magic happens. This function reads characters and returns token
 
 ```cpp
 static int gettok() {
-  static int LastChar = ' ';
+  // Note on initialization: ' ' is whitespace, so the skip loop below
+  // immediately calls advance() to read the first real character.
+  static int LastChar = ' '; 
 
   // Skip whitespace (but NOT newlines)
   while (isspace(LastChar) && LastChar != '\n')
@@ -241,7 +243,13 @@ We skip spaces and tabs, but we keep newlines because they matter in Python-like
   CurLoc = LexLoc;  // Mark where this token starts
 ```
 
-Newlines are significant—they end statements.
+Newlines are significant — they end statements.
+
+Notice we **don't** call `advance()` here. Every other token handler (identifiers, numbers, operators) ends by consuming one character past the token, leaving `LastChar` pointing at whatever comes next, ready for the next call to `gettok()`. The newline handler deliberately breaks that pattern.
+
+Why? Because in the REPL, `advance()` calls `getchar()`, which blocks waiting for the user to type. If we called `advance()` after seeing `\n`, the REPL would freeze — waiting for the *next* line of input before it could return `tok_eol`, print the result, and show `ready>` again. The user would have to type a blank line just to see their output.
+
+Instead we set `LastChar = ' '` (a safe whitespace initial value) and return immediately. The next call to `gettok()` will hit the whitespace-skip loop, which calls `advance()` only when it's actually time to read the next token.
 
 ### Recognizing Identifiers and Keywords
 
@@ -280,19 +288,26 @@ Examples:
       LastChar = advance();
     } while (isdigit(LastChar) || LastChar == '.');
 
-    NumVal = strtod(NumStr.c_str(), nullptr);
+    char *End;
+    NumVal = strtod(NumStr.c_str(), &End);
+    if (*End != '\0') {
+      fprintf(stderr, "Error (Line %d, Col %d): invalid number literal '%s'\n",
+              LexLoc.Line, LexLoc.Col, NumStr.c_str());
+      return tok_error;
+    }
     return tok_number;
   }
 ```
 
-We grab all digits and decimal points, then convert to a `double`.
+We grab all digits and decimal points into `NumStr`, then convert with `strtod`.
 
-**Note:** This is sloppy—it accepts `1.2.3.4` as valid. We'll fix that later if needed.
+`strtod` takes a second argument — a pointer it sets to the first character it *couldn't* parse. If `*End != '\0'`, there's leftover junk in the string, meaning the literal was malformed. For example, `1.2.3` puts `"1.2.3"` into `NumStr`; `strtod` parses `1.2` and sets `End` pointing at `.3`. We catch that and emit an error rather than silently returning the wrong value.
 
 Examples:
 - `42` → `tok_number` (and `NumVal = 42.0`)
 - `3.14` → `tok_number` (and `NumVal = 3.14`)
 - `.5` → `tok_number` (and `NumVal = 0.5`)
+- `1.2.3` → `tok_error` with message `invalid number literal '1.2.3'`
 
 ### Recognizing Comments
 

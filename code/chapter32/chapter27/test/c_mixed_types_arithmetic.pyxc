@@ -1,0 +1,13 @@
+# Test mixed integer widths in arithmetic (implicit widening).
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '300' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    a: i8 = 100
+    b: i32 = 200
+    c: i32 = a + b
+    print(c)
+    return 0
+
+main()

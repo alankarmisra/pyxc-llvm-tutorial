@@ -1,0 +1,26 @@
+# BUG: Comparisons return f64, so integer arithmetic on comparison
+# results goes through float math.
+# (a < b) + (c < d) should be 2 (integer), but each comparison
+# produces f64 1.0, so the + becomes FAdd, result is 2.0 (f64).
+# Storing into i32 will cast, so the final print may look correct,
+# but the intermediate math is wrong (float instead of int).
+#
+# This test checks that comparison results work in integer arithmetic
+# without going through float. The print(x) for i32 should show 2.
+#
+# RUN: %pyxc -i %s > %t 2>&1
+# RUN: grep -x '2' %t
+# RUN: ! grep -q "Error (Line:" %t
+
+def main() -> i32:
+    a: i32 = 1
+    b: i32 = 2
+    c: i32 = 3
+    d: i32 = 4
+    # Each comparison gives f64, so + is FAdd, result is f64 2.0
+    # cast to i32 = 2. This will likely PASS but with wrong intermediate types.
+    x: i32 = (a < b) + (c < d)
+    print(x)
+    return 0
+
+main()
