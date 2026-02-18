@@ -1,0 +1,9 @@
+# RUN: %pyxc repl --emit=llvm-ir < %s > %t 2>&1
+# RUN: grep -q "alloca double" %t
+# RUN: grep -q "store double" %t
+# RUN: grep -q "load double" %t
+
+def update(x):
+  let y = x
+  y = y + 2
+  return y

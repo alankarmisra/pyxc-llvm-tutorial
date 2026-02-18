@@ -25,9 +25,9 @@ By the end, you'll have a working language that:
 
 ## Where We're Headed
 
-**Chapters 1-11** build a complete compiler toolchain from lexer to native executables. You'll write Pyxc functions, compile them to object files, link them into binaries, and understand exactly what the linker does under the hood.
+**Chapters 1-11** now build language features first: expressions, blocks, comparisons, control flow (`if`/`while`), and mutable variables.
 
-**Chapters 12+** (coming soon) add the features that make Pyxc a full programming language: comparison operators, control flow, types, structs, and more.
+**Toolchain chapters (16+)** then focus on optimization/JIT, object files, debug info, executables, and linker internals.
 
 Here's a preview of what Pyxc will look like with those features:
 
@@ -54,7 +54,7 @@ def mandel_escape(c: Complex, max_iter: int) -> int:
     return max_iter
 ```
 
-Notice the comparison operators (`<`, `>`), equality check (`==`), control flow (`while`, `if`), and types (`int`, `double`, `Complex`)? Those features come in later chapters. But first, let's build the foundation...
+Notice the comparison operators (`<`, `>`), equality check (`==`), and control flow (`while`, `if`)? Those are now introduced early. Richer types (`int`, `Complex`, structs) come later.
 
 ## Credits
 
@@ -89,23 +89,34 @@ Each chapter builds on the previous one. You can:
 
 **[Chapter 6: Understanding LLVM IR](chapter-06.md)** - Learn to read and understand the intermediate representation LLVM uses.
 
-**[Chapter 7: Optimization and JIT](chapter-07.md)** - Run code instantly with JIT compilation. Add LLVM's optimizer passes.
+**[Chapter 7: Comparison Operators](chapter-07.md)** - Add `==`, `!=`, `<=`, `>=` with proper precedence and LLVM codegen.
 
-**[Chapter 8: Object Files and Optimizations](chapter-08.md)** - Generate `.o` files with proper optimization levels. Call Pyxc code from C++.
+**[Chapter 8: Blocks with `;`](chapter-08.md)** - Add multi-statement function bodies with explicit separators.
 
-**[Chapter 9: Debug Information](chapter-09.md)** - Add DWARF debug info so debuggers like `lldb` can show your source code.
+**[Chapter 9: Indentation Blocks](chapter-09.md)** - Replace `;` blocks with indentation (`INDENT`/`DEDENT`) syntax.
 
-**[Chapter 10: Generating Executables](chapter-10.md)** - Emit native executables directly using LLVM's built-in linker (LLD). No clang wrapper needed. Includes a small runtime library for I/O.
+**[Chapter 10: `if` and `while`](chapter-10.md)** - Add control flow expressions and unlock real examples like factorial.
 
-**[Chapter 11: Linking Under the Hood](chapter-11.md)** - No new code. Use `nm` and `objdump` on your chapter 10 output to understand exactly what the linker does: symbol resolution, relocation, and what ends up in the final binary.
+**[Chapter 11: Mutable Variables](chapter-11.md)** - Add `let` declarations and assignment so loop-based algorithms are possible.
+
+### Toolchain and Optimization (Later)
+
+**[Chapter 16: Optimization and JIT](chapter-16.md)** - Run code instantly with JIT compilation. Add LLVM optimizer passes.
+
+**[Chapter 17: Object Files and Optimizations](chapter-17.md)** - Generate `.o` files with proper optimization levels.
+
+**[Chapter 18: Debug Information](chapter-18.md)** - Add DWARF debug info for source-level debugging.
+
+**[Chapter 19: Generating Executables](chapter-19.md)** - Link object files into native executables with LLVM's linker.
+
+**[Chapter 20: Linking Under the Hood](chapter-20.md)** - Use `nm` and `objdump` to inspect symbol resolution and relocation.
 
 ### Coming Soon
 
 More chapters are being prepared and will be added:
-- Comparison operators (`==`, `!=`, `<=`, `>=`) and logical operators
+- Logical operators and richer conditionals
 - Fibonacci and Mandelbrot as showcase examples
-- Blocks and control flow
-- Types, structs, and more...
+- Types, structs, and modules
 
 ## What You'll Learn
 

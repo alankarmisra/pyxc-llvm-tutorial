@@ -1,0 +1,7 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error (" %t
+# RUN: grep -q "Unexpected number" %t
+# RUN: ! grep -q "declare double @sin" %t
+# Test that extra tokens after an extern don't generate IR
+
+extern def sin(x) 42

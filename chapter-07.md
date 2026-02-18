@@ -1,747 +1,272 @@
 ---
-description: "Add LLVM optimization passes and JIT compilation to execute Pyxc code immediately in the REPL."
+description: "Add comparison operators (`==`, `!=`, `<=`, `>=`) to the lexer, parser, and LLVM IR codegen."
 ---
-# 7. Pyxc: Optimization and JIT Execution
+# 7. Pyxc: Comparison Operators
 
-## Introduction
+## What We're Building
 
-In previous chapters, we built a parser and code generator for Pyxc. We can parse code and generate LLVM IR, but we can't actually *run* anything yet. This chapter adds two crucial capabilities:
+In Chapter 6, Pyxc supported arithmetic operators and basic comparisons (`<`, `>`).  
+In this chapter, we add the missing comparison set:
 
-1. **Optimization** - Making the generated code faster using LLVM's optimization passes
-2. **JIT Compilation** - Executing code immediately in the REPL
+- `==`
+- `!=`
+- `<=`
+- `>=`
 
-By the end of this chapter, you'll be able to type expressions and function definitions into the REPL and see them execute instantly.
+These operators are essential for real control flow in upcoming chapters (`if`, `while`, and block-based logic).
 
-## Constant Folding - The Free Lunch
+At the end of this chapter:
 
-Let's start the REPL in `chapter 5`, and try a simple example:
+- The lexer recognizes multi-character comparison tokens.
+- The parser handles them with the same precedence tier as `<` and `>`.
+- Codegen emits the correct LLVM floating-point comparisons.
+- Existing behavior stays intact (`+ - * / % < >`).
+
+## Grammar Change (EBNF)
+
+Before touching code, it helps to define the language shape clearly.  
+For Chapter 7, the expression grammar becomes:
+
+```ebnf
+expression     = comparison ;
+comparison     = additive { compareop additive } ;
+additive       = multiplicative { ("+" | "-") multiplicative } ;
+multiplicative = primary { ("*" | "/" | "%") primary } ;
+compareop      = "<" | ">" | "<=" | ">=" | "==" | "!=" ;
+```
+
+This matches the parser flow we already use:
+
+- `ParseExpression()` starts expression parsing
+- `ParseBinOpRHS()` handles operator-precedence chaining
+- `ParsePrimary()` handles leaf forms (identifier/number/paren)
+
+So we are extending existing parser structure, not introducing a brand-new parse model.
+
+## Source Code
+
+Grab the code: [code/chapter07](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter07)
+
+Or clone the whole repo:
 
 ```bash
-$ cd code/chapter05
-$ ./build.sh
-$ ./build/pyxc repl --emit=llvm-ir
-ready> def test(x): return 1+2+x
+git clone https://github.com/alankarmisra/pyxc-llvm-tutorial
+cd pyxc-llvm-tutorial/code/chapter07
 ```
 
-With `--emit=llvm-ir`, we can see the generated IR:
+## Why This Chapter Matters
 
-```llvm
-define double @test(double %x) {
-entry:
-  %addtmp = fadd double 3.000000e+00, %x
-  ret double %addtmp
-}
-```
+Arithmetic answers "what number is this?"  
+Comparisons answer "is this condition true?"
 
-Wait a minute! We wrote `1+2+x` but the IR shows `3.0+x`. Where did the calculation of `1+2` go?
+Pyxc currently models booleans as `double` values (`0.0` false, `1.0` true), so comparisons become a bridge between numeric expressions and condition-style logic.
 
-This is **constant folding** - a basic optimization that LLVM's `IRBuilder` does automatically. When you call `Builder->CreateFAdd(...)` with two constants, it doesn't create an instruction. Instead, it computes the result at compile time and returns a constant.
+## Implementation
 
-Without constant folding, we'd see:
+### 1. Add New Tokens
 
-```llvm
-define double @test(double %x) {
-entry:
-  %addtmp = fadd double 2.000000e+00, 1.000000e+00
-  %addtmp1 = fadd double %addtmp, %x
-  ret double %addtmp1
-}
-```
-
-The IRBuilder's constant folding is "free" - we didn't have to do anything special to get it. This is one reason to always use `IRBuilder` instead of manually creating LLVM instructions.
-
-## The Limits of Constant Folding
-
-Now try a slightly more complex example:
-
-```bash
-ready> def test(x): return (1+2+x)*(x+(1+2))
-```
-
-The generated IR:
-
-```llvm
-define double @test(double %x) {
-entry:
-  %addtmp = fadd double 3.000000e+00, %x
-  %addtmp1 = fadd double %x, 3.000000e+00
-  %multmp = fmul double %addtmp, %addtmp1
-  ret double %multmp
-}
-```
-
-The constants folded (`1+2` became `3`), but we're computing `x+3` **twice**! The code should be:
-
-```
-tmp = x + 3
-result = tmp * tmp
-```
-
-Why doesn't IRBuilder fix this? Because IRBuilder only does **local** optimizations - it looks at one instruction at a time as you build IR. It can't see that `%addtmp` and `%addtmp1` compute the same value.
-
-To fix this, we need **global** optimizations that analyze the whole function:
-- **Reassociation**: Reorder expressions to make common subexpressions obvious
-- **Common Subexpression Elimination (CSE)**: Remove redundant calculations
-
-This is where LLVM's optimization passes come in.
-
-## LLVM Optimization Passes
-
-LLVM provides hundreds of optimization passes. Each pass does a specific transformation:
-
-- `InstCombinePass`: Combines instructions using algebraic simplification
-- `ReassociatePass`: Reorders associative expressions (a+b+c+d)
-- `GVNPass`: Global Value Numbering - eliminates redundant computations
-- `SimplifyCFGPass`: Simplifies control flow (removes dead blocks, merges blocks, etc.)
-
-> **Coming Soon:** Once we add control flow (if/else, while) and types in later chapters, the optimizer will be able to do even more interesting things—like eliminating entire branches of if statements when conditions are constant, unrolling loops with known bounds, and optimizing type-specific operations!
-
-Passes are organized into two categories:
-
-**Function Passes**: Operate on one function at a time (what we'll use in the REPL)
-**Module Passes**: Operate on the entire module (for whole-program optimization)
-
-For the REPL, we want function passes - optimize each function as it's typed in.
-
-## Setting Up the Function Pass Manager
-
-We need infrastructure to run optimization passes. Add these globals after the other code generation globals:
+Extend the token enum with multi-character operators:
 
 ```cpp
-static std::unique_ptr<LLVMContext> TheContext;
-static std::unique_ptr<Module> TheModule;
-static std::unique_ptr<IRBuilder<>> Builder;
-static std::map<std::string, Value *> NamedValues;
-static bool ShouldEmitIR = false;
-static std::unique_ptr<PyxcJIT> TheJIT;
-
-// Optimization infrastructure
-static std::unique_ptr<FunctionPassManager> TheFPM;
-static std::unique_ptr<LoopAnalysisManager> TheLAM;
-static std::unique_ptr<FunctionAnalysisManager> TheFAM;
-static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
-static std::unique_ptr<ModuleAnalysisManager> TheMAM;
-static std::unique_ptr<PassInstrumentationCallbacks> ThePIC;
-static std::unique_ptr<StandardInstrumentations> TheSI;
-static ExitOnError ExitOnErr;
+// multi-char comparison operators
+tok_eq = -9,  // ==
+tok_ne = -10, // !=
+tok_le = -11, // <=
+tok_ge = -12  // >=
 ```
 
-**What are these?**
-
-- `TheFPM`: The **FunctionPassManager** - runs optimization passes on functions
-- `TheLAM/TheFAM/TheCGAM/TheMAM`: **Analysis managers** for different IR levels (loops, functions, call graphs, modules)
-- `ThePIC/TheSI`: Instrumentation for pass debugging and profiling
-- `ExitOnErr`: Helper for error handling with the JIT
-
-## Initializing Optimization Passes
-
-Create (or update) the `InitializeModuleAndManagers()` function:
+Also add debug names so diagnostics and token dumps stay readable:
 
 ```cpp
-static void InitializeModuleAndManagers() {
-  // Open a new context and module.
-  TheContext = std::make_unique<LLVMContext>();
-  TheModule = std::make_unique<Module>("PyxcJIT", *TheContext);
-  if (TheJIT)
-    TheModule->setDataLayout(TheJIT->getDataLayout());
-
-  // Create a new builder for the module.
-  Builder = std::make_unique<IRBuilder<>>(*TheContext);
-
-  // Create new pass and analysis managers.
-  TheFPM = std::make_unique<FunctionPassManager>();
-  TheLAM = std::make_unique<LoopAnalysisManager>();
-  TheFAM = std::make_unique<FunctionAnalysisManager>();
-  TheCGAM = std::make_unique<CGSCCAnalysisManager>();
-  TheMAM = std::make_unique<ModuleAnalysisManager>();
-  ThePIC = std::make_unique<PassInstrumentationCallbacks>();
-  TheSI = std::make_unique<StandardInstrumentations>(*TheContext,
-                                                     /*DebugLogging*/ false);
-  TheSI->registerCallbacks(*ThePIC, TheMAM.get());
-
-  // Add transform passes.
-  TheFPM->addPass(InstCombinePass());
-  TheFPM->addPass(ReassociatePass());
-  TheFPM->addPass(GVNPass());
-  TheFPM->addPass(SimplifyCFGPass());
-
-  // Register analysis passes.
-  PassBuilder PB;
-  PB.registerModuleAnalyses(*TheMAM);
-  PB.registerFunctionAnalyses(*TheFAM);
-  PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
-}
+{tok_eq, "'=='"},
+{tok_ne, "'!='"},
+{tok_le, "'<='"},
+{tok_ge, "'>='"},
 ```
 
-**The four optimization passes:**
+### 2. Teach the Lexer Multi-Character Operators
 
-1. **InstCombinePass**: "Instruction combining" - uses algebraic identities to simplify instructions
-   - Example: `x * 1` → `x`, `x + 0` → `x`
+Single-character tokens (`<`, `>`, etc.) were already supported.  
+Now we need lookahead so we can distinguish:
 
-2. **ReassociatePass**: Reorders associative expressions to expose common subexpressions
-   - Example: `(a+b) + (c+b)` → `(a+c) + (b+b)` → `(a+c) + 2*b`
+- `<` vs `<=`
+- `>` vs `>=`
+- `=` vs `==`
+- `!` vs `!=`
 
-3. **GVNPass**: "Global Value Numbering" - eliminates redundant computations
-   - Example: If `x+3` is computed twice, compute once and reuse
-
-4. **SimplifyCFGPass**: Simplifies control flow graph
-   - Removes unreachable blocks, merges blocks, etc.
-
-This is a standard "cleanup" optimization pipeline that works well for most code.
-
-## Running the Optimizer
-
-Now we need to actually *run* these passes after generating a function. Update `FunctionAST::codegen()`:
+Implementation pattern:
 
 ```cpp
-Function *FunctionAST::codegen() {
-  auto &P = *Proto;
-  FunctionProtos[Proto->getName()] = std::move(Proto);
-  Function *TheFunction = getFunction(P.getName());
-
-  if (!TheFunction)
-    return nullptr;
-
-  BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
-  Builder->SetInsertPoint(BB);
-
-  NamedValues.clear();
-  for (auto &Arg : TheFunction->args())
-    NamedValues[std::string(Arg.getName())] = &Arg;
-
-  if (Value *RetVal = Body->codegen()) {
-    Builder->CreateRet(RetVal);
-
-    // Validate the generated code
-    verifyFunction(*TheFunction);
-
-    // Run the optimizer on the function.
-    TheFPM->run(*TheFunction, *TheFAM);
-
-    return TheFunction;
+if (LastChar == '=') {
+  int NextChar = advance();
+  if (NextChar == '=') {
+    LastChar = advance();
+    return tok_eq;
   }
-
-  TheFunction->eraseFromParent();
-  return nullptr;
+  LastChar = NextChar;
+  return '=';
 }
 ```
 
-The only change is adding `TheFPM->run(*TheFunction, *TheFAM)` after `verifyFunction()`.
+We do the same for `!`, `<`, and `>`.
 
-## Testing the Optimizer
+Why return `'='` or `'!'` when the second character isn't present?  
+Because parser-level syntax checks should still produce "Unexpected '='" / "Unexpected '!'" diagnostics, which is clearer than silently swallowing input.
 
-Now let's try that earlier example again, this time with the REPL in chapter 7:
+### 3. Update Binary Operator Representation
 
-```bash
-$ cd code/chapter07
-$ ./build.sh
-$ ./build/pyxc repl --emit=llvm-ir
-ready> def test(x): return (1+2+x)*(x+(1+2))
-```
-
-Generated IR:
-
-```llvm
-define double @test(double %x) {
-entry:
-  %addtmp = fadd double %x, 3.000000e+00
-  %multmp = fmul double %addtmp, %addtmp
-  ret double %multmp
-}
-```
-
-Perfect! The optimizer:
-1. Folded `1+2` to `3` (constant folding)
-2. Recognized that `3+x` and `x+3` are the same (reassociation)
-3. Eliminated the duplicate computation (GVN)
-4. Produced `tmp = x+3; result = tmp*tmp`
-
-## Adding JIT Compilation
-
-Generating optimized IR is nice, but we still can't *run* anything. Let's add JIT (Just-In-Time) compilation so we can execute code immediately.
-
-### What is JIT Compilation?
-
-JIT compilation converts LLVM IR to native machine code **at runtime** and executes it immediately. This is how languages like JavaScript, Java, and C# run fast despite being "interpreted."
-
-For Pyxc, this means:
-- Type a function definition → Compile to machine code → Store in memory
-- Type an expression → Compile to machine code → Execute → Print result
-
-### Initialize the JIT
-
-Add a global for the JIT (already shown above):
+`BinaryExprAST` used `char Op`, which only works for single-byte operators.  
+Multi-character operators use enum tokens (negative integers), so change to:
 
 ```cpp
-static std::unique_ptr<PyxcJIT> TheJIT;
+int Op;
 ```
 
-In `main()`, initialize it before creating the first module:
+and update the constructor accordingly.
+
+### 4. Update Precedence Table
+
+The old precedence map was keyed by `char`.  
+Change it to `int` and include new comparison tokens at the same precedence as `<` and `>`:
 
 ```cpp
-int main(int argc, const char **argv) {
-  cl::ParseCommandLineOptions(argc, argv, "pyxc chapter07\n");
-
-  DiagSourceMgr.reset();
-
-  if (ReplCommand && ReplEmitTokens) {
-    EmitTokenStream();
-    return 0;
-  }
-
-  // REPL setup
-  HadError = false;
-  InteractiveMode = true;
-  if (InteractiveMode)
-    fprintf(stderr, "ready> ");
-  getNextToken();
-
-  // Initialize JIT
-  InitializeNativeTarget();
-  InitializeNativeTargetAsmPrinter();
-  InitializeNativeTargetAsmParser();
-  TheJIT = ExitOnErr(PyxcJIT::Create());
-
-  // Make the module, which holds all the code and optimization managers.
-  InitializeModuleAndManagers();
-  ShouldEmitIR = ReplEmitIR;
-
-  // Run the main "interpreter loop" now.
-  MainLoop();
-
-  return 0;
-}
+static std::map<int, int> BinopPrecedence = {
+    {'<', 10}, {'>', 10}, {tok_le, 10}, {tok_ge, 10}, {tok_eq, 10},
+    {tok_ne, 10}, {'+', 20}, {'-', 20}, {'*', 40}, {'/', 40},
+    {'%', 40}};
 ```
 
-The `PyxcJIT` class is a simple JIT implementation in `include/PyxcJIT.h`. We'll explore its internals in later chapters.
+### 5. Fix `GetTokPrecedence()` for Non-ASCII Tokens
 
-### Update InitializeModuleAndManagers
-
-The JIT needs to know the **data layout** of the target machine - this tells LLVM how types are sized and aligned in memory (e.g., is `int` 32 or 64 bits? What's the alignment of `double`?). Update the initialization:
+The old code gated on `isascii(CurTok)`, which rejects enum tokens like `tok_eq`.  
+Use direct map lookup instead:
 
 ```cpp
-static void InitializeModuleAndManagers() {
-  TheContext = std::make_unique<LLVMContext>();
-  TheModule = std::make_unique<Module>("PyxcJIT", *TheContext);
-
-  if (TheJIT)
-    TheModule->setDataLayout(TheJIT->getDataLayout());  // <-- Add this
-
-  Builder = std::make_unique<IRBuilder<>>(*TheContext);
-  // ... rest of initialization ...
+static int GetTokPrecedence() {
+  auto It = BinopPrecedence.find(CurTok);
+  if (It == BinopPrecedence.end())
+    return NO_OP_PREC;
+  int TokPrec = It->second;
+  if (TokPrec < MIN_BINOP_PREC)
+    return NO_OP_PREC;
+  return TokPrec;
 }
 ```
 
-The data layout is a string like `"e-m:o-i64:64-i128:128-n32:64-S128"` that encodes things like endianness, pointer size, and type alignments. The JIT provides the correct layout for the current machine.
+This is the key parser fix that makes `==`, `!=`, `<=`, `>=` parse as binary operators.
 
-## Executing Functions
+### 6. Add LLVM IR Codegen Cases
 
-### Function Definitions
-
-When a function is defined, we need to add it to the JIT. Update `HandleDefinition()`:
+Add new branches in `BinaryExprAST::codegen()`:
 
 ```cpp
-static void HandleDefinition() {
-  if (auto FnAST = ParseDefinition()) {
-    if (auto *FnIR = FnAST->codegen()) {
-      if (ShouldEmitIR) {
-        fprintf(stderr, "Read function definition:\n");
-        FnIR->print(errs());
-        fprintf(stderr, "\n");
-      }
-
-      // Add the module to the JIT
-      ExitOnErr(TheJIT->addModule(
-          ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
-      InitializeModuleAndManagers();
-    }
-  } else {
-    SynchronizeToLineBoundary();
-  }
-}
+case tok_le:
+  L = Builder->CreateFCmpULE(L, R, "cmptmp");
+  return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+case tok_ge:
+  L = Builder->CreateFCmpUGE(L, R, "cmptmp");
+  return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+case tok_eq:
+  L = Builder->CreateFCmpUEQ(L, R, "cmptmp");
+  return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+case tok_ne:
+  L = Builder->CreateFCmpUNE(L, R, "cmptmp");
+  return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
 ```
 
-**What's happening:**
+Like existing `<` / `>` code, each comparison:
 
-1. Generate the function IR
-2. Add the entire module to the JIT (compiles all functions in it to machine code)
-3. Create a fresh module for new code
-
-Each function gets its own module. This allows us to manage memory efficiently.
-
-### Top-Level Expressions
-
-For top-level expressions (like `4+5`), we want to:
-1. Wrap the expression in an anonymous function
-2. Compile it
-3. Execute it
-4. Print the result
-5. Delete it
-
-Update `HandleTopLevelExpression()`:
-
-```cpp
-static void HandleTopLevelExpression() {
-  if (auto FnAST = ParseTopLevelExpr()) {
-    if (auto *FnIR = FnAST->codegen()) {
-      // Create a ResourceTracker to manage memory for this expression
-      auto RT = TheJIT->getMainJITDylib().createResourceTracker();
-
-      // Add the module to the JIT
-      auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
-      ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
-      InitializeModuleAndManagers();
-
-      if (ShouldEmitIR) {
-        FnIR->print(errs());
-        fprintf(stderr, "\n");
-      }
-
-      // Look up the JIT-compiled function
-      auto ExprSymbol = ExitOnErr(TheJIT->lookup("__anon_expr"));
-
-      // Get a function pointer to the compiled code
-      double (*FP)() = ExprSymbol.toPtr<double (*)()>();
-
-      // Call it!
-      fprintf(stderr, "Evaluated to %f\n", FP());
-
-      // Delete the anonymous expression module from the JIT
-      ExitOnErr(RT->remove());
-    }
-  } else {
-    SynchronizeToLineBoundary();
-  }
-}
-```
-
-**Key steps:**
-
-1. **ResourceTracker**: Tracks memory for this specific module so we can free it later
-2. **addModule**: Compiles the IR to machine code
-3. **lookup**: Finds the function by name (`__anon_expr`)
-4. **toPtr**: Gets a C function pointer to the compiled code
-5. **Call it**: Just call the function pointer like any C function!
-6. **remove**: Free the memory for this expression
-
-## Cross-Module Function Calls
-
-There's a problem. Try this:
-
-```bash
-ready> def add(x, y): return x + y
-
-ready> add(3.0, 4.0)
-Evaluated to 7.000000
-
-ready> add(5.0, 6.0)
-Error: Unknown function referenced
-```
-
-What happened? Each module goes into the JIT separately. When we executed `add(3.0, 4.0)`, it was in an anonymous expression module. After we removed that module, `add` disappeared!
-
-**Solution**: Keep a map of function prototypes and regenerate declarations in each new module.
-
-### Add a Prototype Map
-
-Add a global map (we've already done this in the parser):
-
-```cpp
-static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
-```
-
-### Create a getFunction Helper
-
-Add this helper to find or regenerate function declarations:
-
-```cpp
-static Function *getFunction(const std::string &Name) {
-  // First, see if the function has already been added to the current module.
-  if (auto *F = TheModule->getFunction(Name))
-    return F;
-
-  // If not, check whether we can codegen the declaration from some existing
-  // prototype.
-  auto FI = FunctionProtos.find(Name);
-  if (FI != FunctionProtos.end())
-    return FI->second->codegen();
-
-  // If no existing prototype exists, return null.
-  return nullptr;
-}
-```
-
-This function:
-1. Checks if the function exists in the current module
-2. If not, looks for a prototype and generates a declaration
-3. Returns null if the function doesn't exist anywhere
-
-### Update FunctionAST::codegen()
-
-Store the prototype before generating the function:
-
-```cpp
-Function *FunctionAST::codegen() {
-  // Transfer ownership of the prototype to FunctionProtos, but keep a reference
-  auto &P = *Proto;
-  FunctionProtos[Proto->getName()] = std::move(Proto);
-  Function *TheFunction = getFunction(P.getName());  // <-- Use getFunction
-
-  if (!TheFunction)
-    return nullptr;
-
-  // ... rest of codegen ...
-}
-```
-
-### Update CallExprAST::codegen()
-
-Use `getFunction` instead of `TheModule->getFunction`:
-
-```cpp
-Value *CallExprAST::codegen() {
-  Function *CalleeF = getFunction(Callee);  // <-- Use getFunction
-  if (!CalleeF)
-    return LogError<Value *>("Unknown function referenced");
-
-  // ... rest of codegen ...
-}
-```
-
-### Update HandleExtern
-
-Store extern declarations in the prototype map:
-
-```cpp
-static void HandleExtern() {
-  if (auto ProtoAST = ParseExtern()) {
-    if (auto *FnIR = ProtoAST->codegen()) {
-      if (ShouldEmitIR) {
-        fprintf(stderr, "Read extern:\n");
-        FnIR->print(errs());
-        fprintf(stderr, "\n");
-      }
-      FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
-    }
-  } else {
-    getNextToken();
-  }
-}
-```
-
-### Preventing Duplicate Definitions
-
-Since we keep prototypes around, we need to prevent redefining functions. Update `ParsePrototype()`:
-
-```cpp
-static std::unique_ptr<PrototypeAST> ParsePrototype() {
-  if (CurTok != tok_identifier)
-    return LogError<ProtoPtr>("Expected function name in prototype");
-
-  std::string FnName = IdentifierStr;
-  getNextToken();
-
-  // Reject duplicate function definitions
-  auto FI = FunctionProtos.find(FnName);
-  if (FI != FunctionProtos.end())
-    return LogError<ProtoPtr>(("Duplicate definition for " + FnName).c_str());
-
-  // ... rest of parsing ...
-}
-```
-
-## Testing It All
-
-Now everything should work:
-
-```bash
-ready> def add(x, y): return x + y
-Read function definition:
-define double @add(double %x, double %y) {
-entry:
-  %addtmp = fadd double %x, %y
-  ret double %addtmp
-}
-
-ready> add(3.0, 4.0)
-Evaluated to 7.000000
-
-ready> add(5.0, 6.0)
-Evaluated to 11.000000
-```
-
-Perfect! The function persists across calls.
-
-## Calling External Functions
-
-The JIT has a neat feature: it can call functions from the host process. Try this:
-
-```bash
-ready> extern def sin(x)
-Read extern:
-declare double @sin(double)
-
-ready> sin(1.0)
-Evaluated to 0.841471
-
-ready> extern def cos(x)
-Read extern:
-declare double @cos(double)
-
-ready> def ident(x): return sin(x)*sin(x) + cos(x)*cos(x)
-Read function definition:
-define double @ident(double %x) {
-entry:
-  %calltmp = call double @sin(double %x)
-  %calltmp1 = call double @sin(double %x)
-  %multmp = fmul double %calltmp, %calltmp1
-  %calltmp2 = call double @cos(double %x)
-  %calltmp3 = call double @cos(double %x)
-  %multmp4 = fmul double %calltmp2, %calltmp3
-  %addtmp = fadd double %multmp, %multmp4
-  ret double %addtmp
-}
-
-ready> ident(4.0)
-Evaluated to 1.000000
-```
-
-How does this work? The JIT's symbol resolution:
-
-1. First, search modules in the JIT (newest to oldest)
-2. If not found, call `dlsym()` on the process itself
-3. Since `sin` and `cos` are in `libm` (loaded by the process), the JIT finds them
-
-This means we can extend Pyxc by writing C++ functions!
-
-## Adding Custom Runtime Functions
-
-We can add our own functions to the runtime. Add this to `pyxc.cpp`:
-
-```cpp
-#ifdef _WIN32
-#define DLLEXPORT __declspec(dllexport)
-#else
-#define DLLEXPORT
-#endif
-
-/// putchard - putchar that takes a double and returns 0.
-extern "C" DLLEXPORT double putchard(double X) {
-  fputc((char)X, stderr);
-  return 0;
-}
-```
-
-**Why `extern "C"`?** Tells the C++ compiler to use C linkage (simple function names like `putchard` instead of decorated names with type information).
-
-**Why `DLLEXPORT`?** On Windows, we need to explicitly export symbols so they're visible to the JIT.
-
-Now we can use it:
-
-```bash
-ready> extern def putchard(x)
-ready> putchard(72)    # ASCII for 'H'
-H
-Evaluated to 0.000000
-
-ready> putchard(101)   # 'e'
-e
-Evaluated to 0.000000
-```
-
-You can use this to add I/O, file operations, or any other functionality to Pyxc.
+1. Produces `i1` with `fcmp`
+2. Converts to `double` (`0.0` or `1.0`) using `uitofp`
 
 ## Compile and Test
-
-Build the chapter:
 
 ```bash
 cd code/chapter07
 ./build.sh
+llvm-lit test/
 ```
 
-Or manually:
+## Sample Session
 
 ```bash
-cmake -S . -B build
-cmake --build build
+$ ./build/pyxc repl --emit=llvm-ir
+ready> def test_eq(x, y): return x == y
+define double @test_eq(double %x, double %y) {
+entry:
+  %cmptmp = fcmp ueq double %x, %y
+  %booltmp = uitofp i1 %cmptmp to double
+  ret double %booltmp
+}
+
+ready> def test_ge(x, y): return x >= y
+define double @test_ge(double %x, double %y) {
+entry:
+  %cmptmp = fcmp uge double %x, %y
+  %booltmp = uitofp i1 %cmptmp to double
+  ret double %booltmp
+}
 ```
 
-Run the REPL:
+Parse error examples remain clear:
 
 ```bash
-$ ./build/pyxc repl
-ready> def add(x, y): return x + y
-ready> add(3.0, 4.0)
-Evaluated to 7.000000
+ready> def bad(x,y): return x = y
+Error (Line: 3, Column: 24): Unexpected '='
+def bad(x,y): return x = 
+                       ^~~~
+                       
+ready> def bad2(x,y): return x ! y
+Error (Line: 4, Column: 25): Unexpected '!'
+def bad2(x,y): return x ! 
+                        ^~~~
 ```
-
-Run tests:
-
-```bash
-$ lit test/
-Testing Time: 0.52s
-  Total Discovered Tests: 45
-  Passed: 45 (100.00%)
-```
-
-## What We Accomplished
-
-This chapter added major functionality:
-
-1. **Optimization passes** that make generated code faster
-   - Instruction combining, reassociation, CSE, CFG simplification
-   - Runs automatically on every function
-
-2. **JIT compilation** so code executes immediately
-   - Functions are compiled to native machine code
-   - Top-level expressions evaluate and print results
-   - Cross-module calls work via prototype tracking
-
-3. **External function calls** via symbol resolution
-   - Can call standard library functions (sin, cos, etc.)
-   - Can add custom runtime functions
 
 ## Testing Your Implementation
 
-This chapter includes **45 automated tests**. Run them with:
+This chapter includes **58 automated tests**. Run them with:
 
 ```bash
-cd code/chapter07/test
-lit -v .
-# or: llvm-lit -v .
+cd code/chapter07
+llvm-lit -v test/
+# or: lit -v test/
 ```
 
-**Pro tip:** The test directory shows exactly what works! Key tests include:
-- `jit_*.pyxc` - Tests for JIT execution
-- `opt_*.pyxc` - Tests showing optimization results
-- `cli_repl_*.pyxc` - Tests for REPL modes
+**Pro tip:** Key tests include:
 
-Browse the tests to see what the language can do at this stage!
+- `ir_operator_eq.pyxc` - Verifies `==` lowers to `fcmp ueq`
+- `ir_operator_ne.pyxc` - Verifies `!=` lowers to `fcmp une`
+- `ir_operator_le.pyxc` - Verifies `<=` lowers to `fcmp ule`
+- `ir_operator_ge.pyxc` - Verifies `>=` lowers to `fcmp uge`
+- `ir_comparison_precedence.pyxc` - Verifies comparison precedence integration with arithmetic
+- `error_bare_equal.pyxc` - Verifies clear error for bare `=`
+- `error_bare_bang.pyxc` - Verifies clear error for bare `!`
+
+Browse the tests to see exactly what behavior is supported.
+
+## What We Built
+
+- Multi-character comparison tokens in the lexer
+- Parser support for `== != <= >=`
+- Correct precedence integration with existing arithmetic
+- LLVM IR generation for all comparisons
+- Comprehensive lit coverage for success and error cases
 
 ## What's Next
 
-We can now:
-- Parse Pyxc code
-- Generate LLVM IR
-- Optimize it
-- JIT compile it
-- Execute it
-
-But our language is still very limited - just arithmetic and function calls.
-
-**Chapter 8** will add object file generation with optimization levels, so we can compile Pyxc code and call it from C++.
+Now we have richer boolean-producing expressions.  
+Next chapter can focus on block structure (explicit statement boundaries first), then indentation-based blocks as a lexical transformation.
 
 ## Need Help?
 
-Stuck? Questions? Errors?
+Stuck? Questions? Found a bug?
 
-- **Issues:** [GitHub Issues](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
-- **Contribute:** Pull requests welcome!
+- Issues: [GitHub Issues](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues)
+- Discussions: [GitHub Discussions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
 
 Include:
-- Chapter number
-- Your OS/platform
-- Full error message
-- What you tried
+
+- Chapter number (`12`)
+- Your platform
+- Command you ran
+- Full error output

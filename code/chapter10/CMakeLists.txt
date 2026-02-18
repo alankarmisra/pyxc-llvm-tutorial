@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(pyxc_chapter05 LANGUAGES C CXX)
+project(pyxc_chapter10 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -108,4 +108,8 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/runtime.c")
     COMMENT "Creating runtime.o"
   )
   add_custom_target(runtime_target ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/runtime.o")
+
+  # Make runtime symbols available in the pyxc process so JIT'd code can
+  # resolve externs like putchard/printd via current-process lookup.
+  target_sources(pyxc PRIVATE $<TARGET_OBJECTS:pyxc_runtime>)
 endif()

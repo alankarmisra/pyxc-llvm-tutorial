@@ -1,5 +1,5 @@
-(* pyx.ebnf
-   Baseline grammar for chapter 2. *)
+(* pyxc.ebnf
+   Chapter 8 grammar: semicolon-terminated blocks. *)
 
 program        = { top } ;
 
@@ -7,13 +7,19 @@ top            = definition
                  | external
                  | expression ;
 
-definition     = "def" prototype ":" expression ;
+definition     = "def" prototype ":" block ;
 external       = "extern" "def" prototype ;
 toplevelexpr   = expression ;
+block          = statement { ";" statement } [ ";" ] ;
+statement      = "return" expression
+               | expression ;
 
 prototype      = identifier "(" [ identifier { "," identifier } ] ")" ;
 
-expression     = primary { binaryop primary } ;
+expression     = comparison ;
+comparison     = additive { compareop additive } ;
+additive       = multiplicative { ("+" | "-") multiplicative } ;
+multiplicative = primary { ("*" | "/" | "%") primary } ;
 
 primary        = identifierexpr
                  | numberexpr
@@ -25,7 +31,7 @@ identifierexpr = identifier
 numberexpr     = number ;
 parenexpr      = "(" expression ")" ;
 
-binaryop       = "<" | ">" | "+" | "-" | "*" | "/" | "%" ;
+compareop      = "<" | ">" | "<=" | ">=" | "==" | "!=" ;
 
 identifier     = letter { letter | digit | "_" } ;
 number         = digit { digit } [ "." { digit } ]

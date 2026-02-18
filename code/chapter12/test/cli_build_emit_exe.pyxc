@@ -1,8 +1,0 @@
-# RUN: %pyxc build %s --emit=link > %t 2>&1
-# RUN: grep -q "Wrote.*\.o" %t
-# RUN: grep -q "Linked executable" %t
-
-# Test: building an executable
-def square(x): return x * x
-
-def main(): return square(3.0)

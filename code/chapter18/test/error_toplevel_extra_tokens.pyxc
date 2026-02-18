@@ -1,0 +1,8 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error (" %t
+# RUN: grep -q "Unexpected '='" %t
+# RUN: ! grep -q "define double @__anon_expr" %t
+# Test that 3 = 10 doesn't parse into 3, and then 10
+# It should skip the entire line and not generate any IR
+
+3 = 10

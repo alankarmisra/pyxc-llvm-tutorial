@@ -1,0 +1,6 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error (" %t
+# RUN: grep -q "Expected at least one return statement in function body" %t
+
+def bad2(x):
+  x + 1; x + 2

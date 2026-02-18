@@ -1,0 +1,8 @@
+# RUN: %pyxc repl < %s > %t 2>&1
+# RUN: grep -q "10.000000" %t
+
+def ten(x):
+  x + 100;
+  return x + 3;
+
+ten(7)

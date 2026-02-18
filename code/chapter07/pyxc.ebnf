@@ -1,5 +1,5 @@
-(* pyx.ebnf
-   Baseline grammar for chapter 2. *)
+(* pyxc.ebnf
+   Chapter 7 grammar: arithmetic + comparison operators. *)
 
 program        = { top } ;
 
@@ -13,7 +13,10 @@ toplevelexpr   = expression ;
 
 prototype      = identifier "(" [ identifier { "," identifier } ] ")" ;
 
-expression     = primary { binaryop primary } ;
+expression     = comparison ;
+comparison     = additive { compareop additive } ;
+additive       = multiplicative { ("+" | "-") multiplicative } ;
+multiplicative = primary { ("*" | "/" | "%") primary } ;
 
 primary        = identifierexpr
                  | numberexpr
@@ -25,7 +28,7 @@ identifierexpr = identifier
 numberexpr     = number ;
 parenexpr      = "(" expression ")" ;
 
-binaryop       = "<" | ">" | "+" | "-" | "*" | "/" | "%" ;
+compareop      = "<" | ">" | "<=" | ">=" | "==" | "!=" ;
 
 identifier     = letter { letter | digit | "_" } ;
 number         = digit { digit } [ "." { digit } ]
