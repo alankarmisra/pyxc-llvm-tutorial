@@ -45,14 +45,10 @@ static map<string, Token> Keywords = {
 static map<int, string> TokenNames = [] {
   // Unprintable character tokens, and multi-character tokens.
   map<int, string> Names = {
-      {tok_eof, "end of input"},
-      {tok_eol, "newline"},
-      {tok_error, "error"},
-      {tok_def, "'def'"},
-      {tok_extern, "'extern'"},
-      {tok_identifier, "identifier"},
-      {tok_number, "number"},
-      {tok_return, "'return'"},
+      {tok_eof, "end of input"}, {tok_eol, "newline"},
+      {tok_error, "error"},      {tok_def, "'def'"},
+      {tok_extern, "'extern'"},  {tok_identifier, "identifier"},
+      {tok_number, "number"},    {tok_return, "'return'"},
   };
 
   // Single character tokens.
