@@ -688,9 +688,9 @@ cd code/chapter02
 ```python
 $ build/pyxc
 ready> def foo(x,y): return x+foo(y, 4.0)
-Parsed a function definition.
+Parsed a function definition
 ready> def foo(x,y): return x+y y
-Error: (Line: 2, Column: 26): Unexpected identifier 'y'
+Error (Line: 2, Column: 26): Unexpected identifier 'y'
 def foo(x,y): return x+y y
                          ^~~~
 ready> 10 + 20

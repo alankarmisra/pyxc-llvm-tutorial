@@ -28,51 +28,50 @@ static const char *Reset = UseColor ? "\x1b[0m" : "";
 static llvm::cl::SubCommand ReplCommand("repl", "Start the interactive REPL");
 static llvm::cl::SubCommand RunCommand("run", "Run a .pyxc script");
 static llvm::cl::SubCommand BuildCommand("build", "Build a .pyxc script");
+static llvm::cl::OptionCategory PyxcCategory("Pyxc options");
+enum EmitMode { EmitDefault, EmitTokens, EmitLLVMIR, EmitObj, EmitLink };
 
-static llvm::cl::opt<bool>
-    ReplEmitTokens("emit-tokens", llvm::cl::sub(ReplCommand),
-                   llvm::cl::desc("Print lexer tokens instead of parsing"),
-                   llvm::cl::init(false));
-static llvm::cl::alias ReplEmitTokensShort(
-    "t", llvm::cl::desc("Alias for --emit-tokens"),
-    llvm::cl::aliasopt(ReplEmitTokens));
-
-static llvm::cl::opt<bool>
-    ReplEmitIR("emit-ir", llvm::cl::sub(ReplCommand),
-                 llvm::cl::desc("Emit LLVM IR from REPL input"),
-                 llvm::cl::init(false));
-static llvm::cl::alias ReplEmitIRShort(
-    "l", llvm::cl::desc("Alias for --emit-ir"),
-    llvm::cl::aliasopt(ReplEmitIR));
+static llvm::cl::opt<EmitMode>
+    ReplEmit("emit", llvm::cl::sub(ReplCommand),
+             llvm::cl::desc("Output kind for repl"),
+             llvm::cl::values(
+                 clEnumValN(EmitTokens, "tokens", "Print lexer tokens"),
+                 clEnumValN(EmitLLVMIR, "llvm-ir", "Emit LLVM IR from REPL input")),
+             llvm::cl::init(EmitDefault), llvm::cl::cat(PyxcCategory));
 
 static llvm::cl::list<string> RunInputFiles(llvm::cl::Positional,
                                             llvm::cl::sub(RunCommand),
                                             llvm::cl::desc("<script.pyxc>"),
-                                            llvm::cl::ZeroOrMore);
-static llvm::cl::opt<bool>
-    RunEmitIR("emit-ir", llvm::cl::sub(RunCommand),
-                llvm::cl::desc("Emit LLVM IR for the script"),
-                llvm::cl::init(false));
+                                            llvm::cl::ZeroOrMore,
+                                            llvm::cl::cat(PyxcCategory));
+static llvm::cl::opt<EmitMode>
+    RunEmit("emit", llvm::cl::sub(RunCommand),
+              llvm::cl::desc("Output kind for run"),
+              llvm::cl::values(
+                  clEnumValN(EmitLLVMIR, "llvm-ir", "Emit LLVM IR for the script")),
+              llvm::cl::init(EmitDefault), llvm::cl::cat(PyxcCategory));
 
-enum BuildOutputKind { BuildEmitIR, BuildEmitObj, BuildEmitExe };
 static llvm::cl::list<string> BuildInputFiles(llvm::cl::Positional,
                                               llvm::cl::sub(BuildCommand),
                                               llvm::cl::desc("<script.pyxc>"),
-                                              llvm::cl::ZeroOrMore);
-static llvm::cl::opt<BuildOutputKind> BuildEmit(
+                                              llvm::cl::ZeroOrMore,
+                                              llvm::cl::cat(PyxcCategory));
+static llvm::cl::opt<EmitMode> BuildEmit(
     "emit", llvm::cl::sub(BuildCommand),
     llvm::cl::desc("Output kind for build"),
-    llvm::cl::values(clEnumValN(BuildEmitIR, "ir", "Emit LLVM IR"),
-                     clEnumValN(BuildEmitObj, "obj", "Emit object file"),
-                     clEnumValN(BuildEmitExe, "exe", "Emit executable")),
-    llvm::cl::init(BuildEmitExe));
+    llvm::cl::values(clEnumValN(EmitLLVMIR, "llvm-ir", "Emit LLVM IR"),
+                     clEnumValN(EmitObj, "obj", "Emit object file"),
+                     clEnumValN(EmitLink, "link", "Link and emit executable")),
+    llvm::cl::init(EmitLink), llvm::cl::cat(PyxcCategory));
 static llvm::cl::opt<bool> BuildDebug("g", llvm::cl::sub(BuildCommand),
                                       llvm::cl::desc("Emit debug info"),
-                                      llvm::cl::init(false));
+                                      llvm::cl::init(false),
+                                      llvm::cl::cat(PyxcCategory));
 static llvm::cl::opt<unsigned>
     BuildOptLevel("O", llvm::cl::sub(BuildCommand),
                   llvm::cl::desc("Optimization level (use -O0..-O3)"),
-                  llvm::cl::Prefix, llvm::cl::init(0));
+                  llvm::cl::Prefix, llvm::cl::init(0),
+                  llvm::cl::cat(PyxcCategory));
 
 //===----------------------------------------------------------------------===//
 // Lexer
@@ -760,6 +759,10 @@ static void EmitTokenStream() {
 //===----------------------------------------------------------------------===//
 
 int main(int argc, const char **argv) {
+  llvm::cl::HideUnrelatedOptions(PyxcCategory);
+  llvm::cl::HideUnrelatedOptions(PyxcCategory, ReplCommand);
+  llvm::cl::HideUnrelatedOptions(PyxcCategory, RunCommand);
+  llvm::cl::HideUnrelatedOptions(PyxcCategory, BuildCommand);
   llvm::cl::ParseCommandLineOptions(argc, argv, "pyxc chapter04\n");
 
   if (BuildOptLevel > 3) {
@@ -779,7 +782,7 @@ int main(int argc, const char **argv) {
     }
     const string &RunInputFile = RunInputFiles.front();
     (void)RunInputFile;
-    (void)RunEmitIR;
+    (void)RunEmit;
     fprintf(stderr, "run: i havent learnt how to do that yet.\n");
     return 1;
   }
@@ -804,13 +807,13 @@ int main(int argc, const char **argv) {
 
   DiagSourceMgr.reset();
 
-  if (ReplCommand && ReplEmitTokens) {
+  if (ReplCommand && ReplEmit == EmitTokens) {
     EmitTokenStream();
     return 0;
   }
 
-  if (ReplCommand && ReplEmitIR) {
-    fprintf(stderr, "repl --emit-ir: i havent learnt how to do that yet.\n");
+  if (ReplCommand && ReplEmit == EmitLLVMIR) {
+    fprintf(stderr, "repl --emit=llvm-ir: i havent learnt how to do that yet.\n");
   }
 
   // Prime the first token.

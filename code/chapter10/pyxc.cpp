@@ -61,46 +61,42 @@ const char *Reset = UseColor ? "\x1b[0m" : "";
 static cl::SubCommand ReplCommand("repl", "Start the interactive REPL");
 static cl::SubCommand RunCommand("run", "Run a .pyxc script");
 static cl::SubCommand BuildCommand("build", "Build a .pyxc script");
+static cl::OptionCategory PyxcCategory("Pyxc options");
+enum EmitMode { EmitDefault, EmitTokens, EmitLLVMIR, EmitObj, EmitLink };
 
-static cl::opt<bool>
-    ReplEmitTokens("emit-tokens", cl::sub(ReplCommand),
-                   cl::desc("Print lexer tokens instead of parsing"),
-                   cl::init(false));
-static cl::alias ReplEmitTokensShort(
-    "t", cl::desc("Alias for --emit-tokens"),
-    cl::aliasopt(ReplEmitTokens));
-
-static cl::opt<bool> ReplEmitIR("emit-ir", cl::sub(ReplCommand),
-                                  cl::desc("Print LLVM IR for parsed input"),
-                                  cl::init(false));
-static cl::alias ReplEmitIRShort(
-    "l", cl::desc("Alias for --emit-ir"),
-    cl::aliasopt(ReplEmitIR));
+static cl::opt<EmitMode> ReplEmit(
+    "emit", cl::sub(ReplCommand), cl::desc("Output kind for repl"),
+    cl::values(clEnumValN(EmitTokens, "tokens", "Print lexer tokens"),
+               clEnumValN(EmitLLVMIR, "llvm-ir", "Print LLVM IR for parsed input")),
+    cl::init(EmitDefault), cl::cat(PyxcCategory));
 
 static cl::list<std::string> RunInputFiles(cl::Positional, cl::sub(RunCommand),
                                            cl::desc("<script.pyxc>"),
-                                           cl::ZeroOrMore);
-static cl::opt<bool> RunEmitIR("emit-ir", cl::sub(RunCommand),
-                                 cl::desc("Emit LLVM IR for the script"),
-                                 cl::init(false));
+                                           cl::ZeroOrMore,
+                                           cl::cat(PyxcCategory));
+static cl::opt<EmitMode> RunEmit(
+    "emit", cl::sub(RunCommand), cl::desc("Output kind for run"),
+    cl::values(clEnumValN(EmitLLVMIR, "llvm-ir", "Emit LLVM IR for the script")),
+    cl::init(EmitDefault), cl::cat(PyxcCategory));
 
-enum BuildOutputKind { BuildEmitIR, BuildEmitObj, BuildEmitExe };
 static cl::list<std::string> BuildInputFiles(cl::Positional,
                                              cl::sub(BuildCommand),
                                              cl::desc("<script.pyxc>"),
-                                             cl::ZeroOrMore);
-static cl::opt<BuildOutputKind>
+                                             cl::ZeroOrMore,
+                                             cl::cat(PyxcCategory));
+static cl::opt<EmitMode>
     BuildEmit("emit", cl::sub(BuildCommand), cl::desc("Output kind for build"),
-              cl::values(clEnumValN(BuildEmitIR, "ir", "Emit LLVM IR"),
-                         clEnumValN(BuildEmitObj, "obj", "Emit object file"),
-                         clEnumValN(BuildEmitExe, "exe", "Emit executable")),
-              cl::init(BuildEmitExe));
+              cl::values(clEnumValN(EmitLLVMIR, "llvm-ir", "Emit LLVM IR"),
+                         clEnumValN(EmitObj, "obj", "Emit object file"),
+                         clEnumValN(EmitLink, "link", "Link and emit executable")),
+              cl::init(EmitLink), cl::cat(PyxcCategory));
 static cl::opt<bool> BuildDebug("g", cl::sub(BuildCommand),
-                                cl::desc("Emit debug info"), cl::init(false));
+                                cl::desc("Emit debug info"), cl::init(false),
+                                cl::cat(PyxcCategory));
 static cl::opt<unsigned>
     BuildOptLevel("O", cl::sub(BuildCommand),
                   cl::desc("Optimization level (use -O0..-O3)"), cl::Prefix,
-                  cl::init(0));
+                  cl::init(0), cl::cat(PyxcCategory));
 
 //===----------------------------------------------------------------------===//
 // Lexer
@@ -332,8 +328,9 @@ static int gettok() {
     NumVal = strtod(NumStr.c_str(), &End);
     if (*End != '\0') {
       HadError = true;
-      fprintf(stderr, "Error (Line %d, Col %d): invalid number literal '%s'\n",
-              LexLoc.Line, LexLoc.Col, NumStr.c_str());
+      fprintf(stderr,
+              "%sError%s (Line %d, Column %d): invalid number literal '%s'\n",
+              Red, Reset, CurLoc.Line, CurLoc.Col, NumStr.c_str());
       return tok_error;
     }
     NumLiteralStr = NumStr;
@@ -774,7 +771,6 @@ static DISubroutineType *CreateFunctionType(unsigned NumArgs) {
   SmallVector<Metadata *, 8> EltTys;
   DIType *DblTy = KSDbgInfo->getDoubleTy();
 
-  // Add the result type.
   EltTys.push_back(DblTy);
 
   for (unsigned i = 0, e = NumArgs; i != e; ++i)
@@ -986,7 +982,6 @@ static void InitializeModuleAndManagers() {
                                                      /*DebugLogging*/ false);
   TheSI->registerCallbacks(*ThePIC, TheMAM.get());
 
-  // Add transform passes based on selected optimization level.
   switch (CurrentOptLevel) {
   case 0:
     break;
@@ -1230,6 +1225,10 @@ static bool LinkExecutable(const std::string &ObjectPath, const std::string &Run
 //===----------------------------------------------------------------------===//
 
 int main(int argc, const char **argv) {
+  cl::HideUnrelatedOptions(PyxcCategory);
+  cl::HideUnrelatedOptions(PyxcCategory, ReplCommand);
+  cl::HideUnrelatedOptions(PyxcCategory, RunCommand);
+  cl::HideUnrelatedOptions(PyxcCategory, BuildCommand);
   cl::ParseCommandLineOptions(argc, argv, "pyxc chapter10\n");
 
   if (BuildOptLevel > 3) {
@@ -1249,7 +1248,7 @@ int main(int argc, const char **argv) {
     }
     const std::string &RunInputFile = RunInputFiles.front();
     (void)RunInputFile;
-    (void)RunEmitIR;
+    (void)RunEmit;
     fprintf(stderr, "run: i havent learnt how to do that yet.\n");
     return 1;
   }
@@ -1361,7 +1360,7 @@ int main(int argc, const char **argv) {
       MPM.run(*TheModule, MAM);
     }
 
-    if (BuildEmit == BuildEmitIR) {
+    if (BuildEmit == EmitLLVMIR) {
       TheModule->print(outs(), nullptr);
       // Clean up debug info
       if (BuildDebug) {
@@ -1373,7 +1372,7 @@ int main(int argc, const char **argv) {
     }
 
     // For executable output, we need to emit an object file first, then link
-    if (BuildEmit == BuildEmitExe) {
+    if (BuildEmit == EmitLink) {
       // Validate output path before doing any work
       const std::string ExePath = DeriveExecutableOutputPath(BuildInputFile);
       if (ExePath.empty()) {
@@ -1431,7 +1430,7 @@ int main(int argc, const char **argv) {
 
   DiagSourceMgr.reset();
 
-  if (ReplCommand && ReplEmitTokens) {
+  if (ReplCommand && ReplEmit == EmitTokens) {
     EmitTokenStream();
     return 0;
   }
@@ -1451,7 +1450,7 @@ int main(int argc, const char **argv) {
 
   // Make the module, which holds all the code and optimization managers.
   InitializeModuleAndManagers();
-  ShouldEmitIR = ReplEmitIR;
+  ShouldEmitIR = (ReplEmit == EmitLLVMIR);
 
   // Run the main "interpreter loop" now.
   MainLoop();

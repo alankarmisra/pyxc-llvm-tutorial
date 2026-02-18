@@ -10,14 +10,12 @@ In Chapter 2, we built a parser. To test it, we ran a hardcoded main loop. Every
 That's fine for learning, but awkward for actual use. This chapter adds a proper command-line interface:
 
 ```bash
-./pyxc repl [-t|--emit-tokens] [-l|--emit-ir]
-./pyxc run script.pyxc [--emit-ir]
-./pyxc build script.pyxc [--emit=ir|obj|exe] [-g] [-O0|-O1|-O2|-O3]
+./pyxc repl [--emit=tokens|llvm-ir]
+./pyxc run script.pyxc [--emit=llvm-ir]
+./pyxc build script.pyxc [--emit=llvm-ir|obj|exe] [-g] [-O0|-O1|-O2|-O3]
 ```
 
-> **Why `--emit-ir` and not `--emit-llvm`?** The format we're emitting is called **LLVM IR** — the intermediate representation that sits between your source code and machine code. `clang` historically uses `--emit-llvm` as a shorthand, but that name is confusing: you're not emitting "LLVM" (the whole project), you're emitting its IR. We use the more precise `--emit-ir`.
-
-We'll implement the parts we can do right now (`repl --emit-tokens`) and set up the structure for features we'll add later (`run` and `build`).
+We'll implement the parts we can do right now (`repl --emit=tokens`) and set up the structure for features we'll add later (`run` and `build`).
 
 ## Source Code
 
@@ -49,7 +47,10 @@ static llvm::cl::SubCommand ReplCommand("repl",
                                         "Start the interactive REPL");
 static llvm::cl::SubCommand RunCommand("run", "Run a .pyxc script");
 static llvm::cl::SubCommand BuildCommand("build", "Build a .pyxc script");
+static llvm::cl::OptionCategory PyxcCategory("Pyxc options");
 ```
+
+`PyxcCategory` groups our flags so we can hide unrelated LLVM/internal options from `--help` output. Without this, users see a large list of LLVM flags that aren't relevant to Pyxc.
 
 ## REPL Options
 
@@ -59,20 +60,20 @@ The REPL needs two flags:
 static llvm::cl::opt<bool>
     ReplEmitTokens("emit-tokens", llvm::cl::sub(ReplCommand),
                    llvm::cl::desc("Print lexer tokens instead of parsing"),
-                   llvm::cl::init(false));
+                   llvm::cl::init(false), llvm::cl::cat(PyxcCategory));
 static llvm::cl::alias ReplEmitTokensShort(
-    "t", llvm::cl::sub(ReplCommand),
-    llvm::cl::desc("Alias for --emit-tokens"),
-    llvm::cl::aliasopt(ReplEmitTokens));
+    "t",
+    llvm::cl::desc("Alias for --emit=tokens"),
+    llvm::cl::aliasopt(ReplEmitTokens), llvm::cl::cat(PyxcCategory));
 
 static llvm::cl::opt<bool>
     ReplEmitIR("emit-ir", llvm::cl::sub(ReplCommand),
                  llvm::cl::desc("Emit LLVM IR from REPL input"),
-                 llvm::cl::init(false));
+                 llvm::cl::init(false), llvm::cl::cat(PyxcCategory));
 static llvm::cl::alias ReplEmitIRShort(
-    "l", llvm::cl::sub(ReplCommand),
-    llvm::cl::desc("Alias for --emit-ir"),
-    llvm::cl::aliasopt(ReplEmitIR));
+    "l",
+    llvm::cl::desc("Alias for --emit=llvm-ir"),
+    llvm::cl::aliasopt(ReplEmitIR), llvm::cl::cat(PyxcCategory));
 ```
 
 `llvm::cl::sub(ReplCommand)` attaches these options to the `repl` subcommand. They won't appear in `run` or `build`.
@@ -82,11 +83,13 @@ static llvm::cl::alias ReplEmitIRShort(
 ```cpp
 static llvm::cl::list<string>
     RunInputFiles(llvm::cl::Positional, llvm::cl::sub(RunCommand),
-                  llvm::cl::desc("<script.pyxc>"), llvm::cl::ZeroOrMore);
+                  llvm::cl::desc("<script.pyxc>"), llvm::cl::ZeroOrMore,
+                  llvm::cl::cat(PyxcCategory));
 
 static llvm::cl::opt<bool>
     RunEmitIR("emit-ir", llvm::cl::sub(RunCommand),
-                llvm::cl::desc("Emit LLVM for the script"), llvm::cl::init(false));
+                llvm::cl::desc("Emit LLVM for the script"), llvm::cl::init(false),
+                llvm::cl::cat(PyxcCategory));
 ```
 
 We use `cl::list` instead of `cl::opt` for the filename. Why? Because if we use `opt` and the user forgets the filename, LLVM exits with a generic "not enough arguments" error. With `list` and `ZeroOrMore`, we can check if the list is empty and print our own clearer error message.
@@ -98,24 +101,26 @@ enum BuildOutputKind { BuildEmitIR, BuildEmitObj, BuildEmitExe };
 
 static llvm::cl::list<string>
     BuildInputFiles(llvm::cl::Positional, llvm::cl::sub(BuildCommand),
-                    llvm::cl::desc("<script.pyxc>"), llvm::cl::ZeroOrMore);
+                    llvm::cl::desc("<script.pyxc>"), llvm::cl::ZeroOrMore,
+                    llvm::cl::cat(PyxcCategory));
 
 static llvm::cl::opt<BuildOutputKind> BuildEmit(
     "emit", llvm::cl::sub(BuildCommand),
     llvm::cl::desc("Output kind for build"),
-    llvm::cl::values(clEnumValN(BuildEmitIR, "llvm", "Emit LLVM IR"),
+    llvm::cl::values(clEnumValN(BuildEmitIR, "ir", "Emit LLVM IR"),
                      clEnumValN(BuildEmitObj, "obj", "Emit object file"),
                      clEnumValN(BuildEmitExe, "exe", "Emit executable")),
-    llvm::cl::init(BuildEmitExe));
+    llvm::cl::init(BuildEmitExe), llvm::cl::cat(PyxcCategory));
 
 static llvm::cl::opt<bool> BuildDebug("g", llvm::cl::sub(BuildCommand),
                                       llvm::cl::desc("Emit debug info"),
-                                      llvm::cl::init(false));
+                                      llvm::cl::init(false),
+                                      llvm::cl::cat(PyxcCategory));
 
 static llvm::cl::opt<unsigned> BuildOptLevel(
     "O", llvm::cl::sub(BuildCommand),
     llvm::cl::desc("Optimization level (use -O0..-O3)"), llvm::cl::Prefix,
-    llvm::cl::init(0));
+    llvm::cl::init(0), llvm::cl::cat(PyxcCategory));
 ```
 
 `cl::Prefix` lets `-O2` parse as option `O` with value `2`.
@@ -127,10 +132,14 @@ The `BuildEmit` option uses `cl::values` to define valid choices. LLVM will reje
 At the start of `main`:
 
 ```cpp
+llvm::cl::HideUnrelatedOptions(PyxcCategory);
+llvm::cl::HideUnrelatedOptions(PyxcCategory, ReplCommand);
+llvm::cl::HideUnrelatedOptions(PyxcCategory, RunCommand);
+llvm::cl::HideUnrelatedOptions(PyxcCategory, BuildCommand);
 llvm::cl::ParseCommandLineOptions(argc, argv, "pyxc chapter04\n");
 ```
 
-This parses the command line and populates all our option variables.
+This hides unrelated LLVM-internal flags from normal help output, then parses the command line and populates all our option variables.
 
 ## Validating Early
 
@@ -222,13 +231,13 @@ if (ReplCommand && ReplEmitTokens) {
 }
 ```
 
-Now `./pyxc repl --emit-tokens` prints tokens again.
+Now `./pyxc repl --emit=tokens` prints tokens again.
 
 ## LLVM Mode for REPL (Stub)
 
 ```cpp
 if (ReplCommand && ReplEmitIR) {
-  fprintf(stderr, "repl --emit-ir: i havent learnt how to do that yet.\n");
+  fprintf(stderr, "repl --emit=llvm-ir: i havent learnt how to do that yet.\n");
 }
 ```
 
@@ -265,7 +274,7 @@ cd code/chapter04
 
 Print tokens:
 ```bash
-$ ./build/pyxc repl -t
+$ ./build/pyxc repl --emit=tokens
 ready> def fib(a): return a + 10
 'def' identifier '(' identifier ')' ':' 'return' identifier '+' number newline
 ready> ^D
@@ -273,8 +282,8 @@ ready> ^D
 
 Try unsupported LLVM mode:
 ```bash
-$ ./build/pyxc repl -l
-repl --emit-ir: i havent learnt how to do that yet.
+$ ./build/pyxc repl --emit=llvm-ir
+repl --emit=llvm-ir: i havent learnt how to do that yet.
 ready> ^D
 ```
 
@@ -286,7 +295,7 @@ Error: run requires a file name.
 
 Try build without filename:
 ```bash
-$ ./build/pyxc build --emit=ir
+$ ./build/pyxc build --emit=llvm-ir
 Error: build requires a file name.
 ```
 
@@ -360,7 +369,7 @@ Testing Time: 0.45s
   Passed: 30
 ```
 
-All 30 tests should pass!
+All tests should pass!
 
 **Note:** Use `lit` if you installed via pip, or `llvm-lit` if you built LLVM from source. Both commands work identically.
 
@@ -516,7 +525,7 @@ lit -v error_*.pyxc
 
 - **Subcommands** - `repl`, `run`, `build` with independent options
 - **Validation** - Clear error messages for missing files and bad values
-- **Token mode** - `repl --emit-tokens` for debugging the lexer
+- **Token mode** - `repl --emit=tokens` for debugging the lexer
 - **Honest stubs** - Unsupported features print clear messages
 - **Test suite** - 30 automated tests covering parsing, expressions, and errors
 - **lit integration** - Industry-standard testing infrastructure
@@ -525,7 +534,7 @@ The command-line interface is complete. Future chapters just need to replace the
 
 ## What's Next
 
-In Chapter 5, we'll replace `repl --emit-ir: i havent learnt how to do that yet.` with actual LLVM IR generation from the AST.
+In Chapter 5, we'll replace `repl --emit=llvm-ir: i havent learnt how to do that yet.` with actual LLVM IR generation from the AST.
 
 ## Need Help?
 

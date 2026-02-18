@@ -74,21 +74,22 @@ First, we define what kinds of tokens exist:
 enum Token {
   tok_eof = -1,        // End of file
   tok_eol = -2,        // End of line (newline)
+  tok_error = -3,      // Lexing error (gettok() can return this)
 
-  tok_def = -3,        // 'def' keyword
-  tok_extern = -4,     // 'extern' keyword
+  tok_def = -4,        // 'def' keyword
+  tok_extern = -5,     // 'extern' keyword
 
-  tok_identifier = -5, // Variable/function names
-  tok_number = -6,     // Numbers like 3.14
+  tok_identifier = -6, // Variable/function names
+  tok_number = -7,     // Numbers like 3.14
 
-  tok_return = -7      // 'return' keyword
+  tok_return = -8      // 'return' keyword
 };
 ```
 
 Why negative numbers? Because we also return single-character tokens (like `+`, `(`, `)`) as their ASCII values (which are positive). This way, we don't collide.
 
 Example:
-- `tok_def` → -3
+- `tok_def` → -4
 - `+` → 43 (its ASCII code)
 - `(` → 40
 
@@ -111,6 +112,7 @@ static map<int, string> TokenNames = [] {
   map<int, string> Names = {
       {tok_eof, "end of input"},
       {tok_eol, "newline"},
+      {tok_error, "error"},
       {tok_def, "'def'"},
       {tok_extern, "'extern'"},
       {tok_identifier, "identifier"},
@@ -130,7 +132,7 @@ static map<int, string> TokenNames = [] {
 }();
 ```
 
-Now we can print `'def'` instead of `-3`. Much easier to read.
+Now we can print `'def'` instead of `-4`. Much easier to read.
 
 ## Tracking Source Locations
 
@@ -142,8 +144,9 @@ struct SourceLocation {
   int Col;
 };
 
-static SourceLocation CurLoc;    // Start of current token
-static SourceLocation LexLoc = {1, 0};  // Current read position
+static SourceLocation CurLoc; // Start of current token
+static SourceLocation LexLoc 
+    = {/* line */ 1, /* column */ 0};  // Current read position
 ```
 
 Why track this? So error messages can say "Error on line 5, column 12" instead of just "Error."
@@ -156,18 +159,30 @@ class SourceManager {
   string CurrentLine;
 
 public:
+  void reset() {
+    CompletedLines.clear();
+    CurrentLine.clear();
+  }
+
   void onChar(int C) {
     if (C == '\n') {
       CompletedLines.push_back(CurrentLine);
       CurrentLine.clear();
-    } else if (C != EOF) {
-      CurrentLine.push_back((char)C);
+      return;
     }
+    if (C != EOF)
+      CurrentLine.push_back((char)C);
   }
 
   const string *getLine(int LineNumber) const {
-    // Returns the Nth line of source code
-    // ...
+    if (LineNumber <= 0)
+      return nullptr;
+    size_t Index = static_cast<size_t>(LineNumber - 1);
+    if (Index < CompletedLines.size())
+      return &CompletedLines[Index];
+    if (Index == CompletedLines.size())
+      return &CurrentLine; // Last line even without trailing newline.
+    return nullptr;
   }
 };
 
@@ -175,6 +190,8 @@ static SourceManager DiagSourceMgr;
 ```
 
 Every character we read gets logged here. Later, we can show the exact line where an error occurred.
+
+At EOF, `onChar()` does not push a final line into `CompletedLines` unless a newline was seen. That's okay: `getLine()` returns `CurrentLine` for the last line index, so diagnostics still see the final unterminated line. 
 
 ## Reading Characters
 
@@ -184,7 +201,7 @@ Instead of calling `getchar()` directly, we wrap it:
 static int advance() {
   int LastChar = getchar();
 
-  // Normalize Windows line endings (\r\n → \n)
+  // // Normalize `\r\n` (Windows) and bare `\r` (Old Macs) line endings to '\n'.
   if (LastChar == '\r') {
     int NextChar = getchar();
     if (NextChar != '\n' && NextChar != EOF)
@@ -211,13 +228,13 @@ static int advance() {
 This does three things:
 1. Reads a character
 2. Updates line/column tracking
-3. Normalizes line endings (so `\r\n` becomes `\n`)
+3. Normalizes line endings (so `\r\n` and `\r` (no `\n` as is the case on some old Macs) becomes `\n`)
 
 Now `gettok()` can just call `advance()` and everything is tracked automatically.
 
 ## The Main Lexer: `gettok()`
 
-Here's where the magic happens. This function reads characters and returns tokens:
+This function reads characters and returns tokens:
 
 ```cpp
 static int gettok() {
@@ -259,7 +276,7 @@ Instead we set `LastChar = ' '` (a safe whitespace initial value) and return imm
     while (isalnum((LastChar = advance())) || LastChar == '_')
       IdentifierStr += LastChar;
 
-    // Check if it's a keyword
+    // This is defined towards the top of the line in the code file.
     static map<string, Token> Keywords = {
         {"def", tok_def},
         {"extern", tok_extern},
@@ -301,7 +318,9 @@ Examples:
 
 We grab all digits and decimal points into `NumStr`, then convert with `strtod`.
 
-`strtod` takes a second argument — a pointer it sets to the first character it *couldn't* parse. If `*End != '\0'`, there's leftover junk in the string, meaning the literal was malformed. For example, `1.2.3` puts `"1.2.3"` into `NumStr`; `strtod` parses `1.2` and sets `End` pointing at `.3`. We catch that and emit an error rather than silently returning the wrong value.
+`strtod` takes a second argument — a pointer it sets to the first character it *couldn't* parse. If `*End != '\0'`, there's leftover junk in the string, meaning the number was malformed. For example, `1.2.3` puts `"1.2.3"` into `NumStr`; `strtod` parses `1.2` and sets `End` pointing at `.3`. We catch that and emit an error rather than silently returning the wrong value.
+
+When this happens, `gettok()` returns `tok_error` so the caller can recover and keep lexing the next token.
 
 Examples:
 - `42` → `tok_number` (and `NumVal = 42.0`)
@@ -313,18 +332,21 @@ Examples:
 
 ```cpp
   if (LastChar == '#') {
+    // Discard until end of line.
     do
       LastChar = advance();
     while (LastChar != EOF && LastChar != '\n');
 
     if (LastChar != EOF) {
-      LastChar = ' ';  // Don't emit a second newline token
+      LastChar = ' ';  // Don't wait for a new character, otherwise REPL() will freeze.
       return tok_eol;
     }
   }
 ```
 
 Comments run from `#` to the end of the line. We skip them and return a single `tok_eol`.
+
+If a comment reaches EOF without a trailing newline, `gettok()` returns `tok_eof` (not `tok_eol`) because `LastChar` is `EOF` and falls through to the EOF case.
 
 ### Everything Else
 
@@ -353,6 +375,9 @@ void MainLoop() {
     if (Tok == tok_eof)
       break;
 
+    if (Tok == tok_error)
+      continue;
+
     fprintf(stderr, "%s", GetTokenName(Tok).c_str());
     if (Tok == tok_eol)
       fprintf(stderr, "\nready> ");
@@ -368,38 +393,7 @@ int main() {
 }
 ```
 
-Try it:
-
-```bash
-cd code/chapter01
-cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && cmake --build build
-./build/pyxc
-```
-
-Type some code:
-
-```
-ready> def foo(x):
-'def' identifier '(' identifier ')' ':' newline
-ready> return x + 1
-'return' identifier '+' number newline
-ready> # This is a comment
-newline
-ready> ^D
-```
-
-The lexer breaks everything into tokens. Success!
-
-## What We Built
-
-- **Token types** - Enum for keywords, identifiers, numbers, etc.
-- **`gettok()`** - Main lexer function
-- **Source tracking** - Line/column info for error messages
-- **Simple REPL** - See tokens in real-time
-
-## What's Next
-
-The lexer doesn't *understand* code—it just chops it into pieces. In Chapter 2, we'll build a parser that takes these tokens and builds a structure (an Abstract Syntax Tree) that represents what the code actually *means*.
+`MainLoop()` intentionally skips `tok_error` tokens via `continue`, so one malformed token doesn't kill the REPL session.
 
 ## Compile and Run
 
@@ -424,6 +418,9 @@ ready> return a + b
 'return' identifier '+' identifier newline
 ready> extern def sin(x)
 'extern' 'def' identifier '(' identifier ')' newline
+ready> 1 + 3.1.4
+number '+' Error (Line 4, Col 5): invalid number literal '3.1.4'
+newline
 ready> ^D
 ```
 
@@ -434,6 +431,17 @@ Notice:
 - Newlines show up as `newline`
 
 The lexer is working!
+
+## What We Built
+
+- **Token types** - Enum for keywords, identifiers, numbers, etc.
+- **`gettok()`** - Main lexer function
+- **Source tracking** - Line/column info for error messages
+- **Simple REPL** - See tokens in real-time
+
+## What's Next
+
+The lexer doesn't *understand* code—it just chops it into pieces. In Chapter 2, we'll build a parser that takes these tokens and builds a structure (an Abstract Syntax Tree) that represents what the code actually *means*.
 
 ## Need Help?
 

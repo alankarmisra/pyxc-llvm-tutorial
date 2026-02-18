@@ -6,7 +6,7 @@ description: "What the linker actually does: symbol resolution, relocation, and 
 In Chapter 10 we ran:
 
 ```bash
-$ ./pyxc build hello.pyxc --emit=exe
+$ ./pyxc build hello.pyxc --emit=link
 Wrote hello.o
 Linked executable: hello
 ```
@@ -32,7 +32,7 @@ Build the object file and executable:
 $ ./build/pyxc build hello.pyxc --emit=obj
 Wrote hello.o
 
-$ ./build/pyxc build hello.pyxc --emit=exe
+$ ./build/pyxc build hello.pyxc --emit=link
 Wrote hello.o
 Linked executable: hello
 ```

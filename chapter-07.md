@@ -14,14 +14,16 @@ By the end of this chapter, you'll be able to type expressions and function defi
 
 ## Constant Folding - The Free Lunch
 
-Let's start the REPL and try a simple example:
+Let's start the REPL in `chapter 5`, and try a simple example:
 
 ```bash
-$ ./build/pyxc repl -l
+$ cd code/chapter05
+$ ./build.sh
+$ ./build/pyxc repl --emit=llvm-ir
 ready> def test(x): return 1+2+x
 ```
 
-With the `-l` flag, we can see the generated IR:
+With `--emit=llvm-ir`, we can see the generated IR:
 
 ```llvm
 define double @test(double %x) {
@@ -228,9 +230,12 @@ The only change is adding `TheFPM->run(*TheFunction, *TheFAM)` after `verifyFunc
 
 ## Testing the Optimizer
 
-Now let's try that earlier example again:
+Now let's try that earlier example again, this time with the REPL in chapter 7:
 
 ```bash
+$ cd code/chapter07
+$ ./build.sh
+$ ./build/pyxc repl --emit=llvm-ir
 ready> def test(x): return (1+2+x)*(x+(1+2))
 ```
 

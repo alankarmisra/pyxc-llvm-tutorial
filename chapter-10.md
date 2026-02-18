@@ -35,7 +35,7 @@ zsh: exec format error: ./hello.o
 
 **After (Chapter 10):**
 ```bash
-$ ./pyxc build hello.pyxc --emit=exe
+$ ./pyxc build hello.pyxc --emit=link
 Wrote hello.o
 Linked executable: hello
 
@@ -179,7 +179,7 @@ When pyxc is compiled on different platforms, it will have the target triple for
 
 ### 5. Update Build Command Handler
 
-In `main()`, handle `--emit=exe`:
+In `main()`, handle `--emit=link`:
 
 ```cpp
 if (BuildEmit == BuildEmitExe) {
@@ -285,7 +285,7 @@ def main(): return printHi(0.0)
 Build and run:
 
 ```bash
-$ ./build/pyxc build hello.pyxc --emit=exe
+$ ./build/pyxc build hello.pyxc --emit=link
 Wrote hello.o
 Linked executable: hello
 
@@ -299,14 +299,14 @@ The executable is standalone—you can move it to another machine and it will ru
 - The `runtime.c` file provides `putchard(double)` which prints a character to stderr
 - ASCII codes: 72='H', 105='i', 10=newline
 - `putchard` returns 0.0, so adding them gives 0.0, which converts to exit code 0
-- The runtime is automatically linked when you build with `--emit=exe` 
+- The runtime is automatically linked when you build with `--emit=link` 
 
 ## With Optimization
 
 Executables benefit from optimization:
 
 ```bash
-$ ./build/pyxc build hello.pyxc --emit=exe -O3
+$ ./build/pyxc build hello.pyxc --emit=link -O3
 Wrote hello.o
 Linked executable: hello
 ```
@@ -318,7 +318,7 @@ The `-O3` flag runs LLVM's full optimization pipeline before generating the obje
 Add `-g` for debugging support:
 
 ```bash
-$ ./build/pyxc build hello.pyxc --emit=exe -g
+$ ./build/pyxc build hello.pyxc --emit=link -g
 Wrote hello.o
 Linked executable: hello
 
@@ -399,7 +399,7 @@ Browse the tests to see what works!
 
 ## What We Built
 
-- **Executable generation** - `--emit=exe` creates standalone programs
+- **Executable generation** - `--emit=link` creates standalone programs
 - **LLD integration** - Uses LLVM's built-in linker for all platforms
 - **Platform-aware linking** - Handles macOS (Mach-O), Linux (ELF), Windows (PE) differences
 - **Runtime library** - Provides `putchard` and `printd` for I/O (works with double-only types)

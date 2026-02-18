@@ -8,7 +8,7 @@ description: "Implement object file emission and wire optimization levels into t
 In Chapter 7, we built a JIT that could execute functions interactively. But we still had a stub for the `build` subcommand. This chapter makes `build` real:
 
 ```bash
-./pyxc build fib.pyxc --emit=ir        # Emit LLVM IR to stdout
+./pyxc build fib.pyxc --emit=llvm-ir        # Emit LLVM IR to stdout
 ./pyxc build fib.pyxc --emit=obj         # Emit fib.o object file
 ./pyxc build fib.pyxc --emit=obj -O3     # Emit optimized object file
 ```
@@ -460,7 +460,7 @@ if (BuildCommand) {
   (void)BuildDebug;
 
   if (BuildEmit == BuildEmitExe) {
-    fprintf(stderr, "build --emit=exe: i havent learnt how to do that yet.\n");
+    fprintf(stderr, "build --emit=link: i havent learnt how to do that yet.\n");
     return 1;
   }
 
@@ -554,7 +554,7 @@ if (BuildCommand) {
 
 Key steps:
 
-1. Reject `--emit=exe` (we'll implement that in a later chapter)
+1. Reject `--emit=link` (we'll implement that in a later chapter)
 2. Use `freopen()` to redirect stdin to the input file
 3. Reset all state (lexer, parser, error flag)
 4. Set mode flags: not interactive, building objects
@@ -563,7 +563,7 @@ Key steps:
 7. If errors occurred, exit with status 1
 8. Initialize target info for optimization and code generation
 9. If optimization is requested (`-O1`/`-O2`/`-O3`), run the module-level optimization pipeline using LLVM's New PassManager
-10. If `--emit=ir`, print the (potentially optimized) module to stdout
+10. If `--emit=llvm-ir`, print the (potentially optimized) module to stdout
 11. If `--emit=obj`, call `EmitObjectFile()` to generate object code
 
 ## REPL Setup
@@ -661,7 +661,7 @@ def fib(n): return n
 
 Emit LLVM IR:
 ```bash
-$ ./build/pyxc build fib.pyxc --emit=ir
+$ ./build/pyxc build fib.pyxc --emit=llvm-ir
 define double @fib(double %n) {
 entry:
   ret double %n
@@ -692,7 +692,7 @@ def add(x, y): return x + y + y
 
 Build without optimization:
 ```bash
-$ ./build/pyxc build add.pyxc --emit=ir -O0
+$ ./build/pyxc build add.pyxc --emit=llvm-ir -O0
 define double @add(double %x, double %y) {
 entry:
   %addtmp = fadd double %x, %y
@@ -703,7 +703,7 @@ entry:
 
 Build with `-O3`:
 ```bash
-$ ./build/pyxc build add.pyxc --emit=ir -O3
+$ ./build/pyxc build add.pyxc --emit=llvm-ir -O3
 define double @add(double %x, double %y) {
 entry:
   %0 = fadd double %y, %y
@@ -831,7 +831,7 @@ It works! The C++ code seamlessly calls functions compiled from Pyxc.
 Let's look at the optimized IR to see what `-O2` did:
 
 ```bash
-$ ./build/pyxc build math.pyxc --emit=ir -O3
+$ ./build/pyxc build math.pyxc --emit=llvm-ir -O3
 ```
 
 The `distance` function after optimization:

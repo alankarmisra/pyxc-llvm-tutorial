@@ -5,9 +5,17 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 using namespace std;
+
+//===----------------------------------------------------------------------===//
+// Color
+//===----------------------------------------------------------------------===//
+static bool UseColor = isatty(fileno(stderr));
+static const char *Red = UseColor ? "\x1b[31m" : "";
+static const char *Reset = UseColor ? "\x1b[0m" : "";
 
 //===----------------------------------------------------------------------===//
 // Lexer
@@ -174,15 +182,16 @@ static int gettok() {
     char *End;
     NumVal = strtod(NumStr.c_str(), &End);
     if (*End != '\0') {
-      fprintf(stderr, "Error (Line %d, Col %d): invalid number literal '%s'\n",
-              LexLoc.Line, LexLoc.Col, NumStr.c_str());
+      fprintf(stderr,
+              "%sError%s (Line %d, Column %d): invalid number literal '%s'\n",
+              Red, Reset, CurLoc.Line, CurLoc.Col, NumStr.c_str());
       return tok_error;
     }
     return tok_number;
   }
 
   if (LastChar == '#') {
-    // Comment until end of line.
+    // Discard until end of line.
     do
       LastChar = advance();
     while (LastChar != EOF && LastChar != '\n');

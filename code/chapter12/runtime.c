@@ -1,0 +1,19 @@
+#include <stdio.h>
+
+#ifdef _WIN32
+#define DLLEXPORT __declspec(dllexport)
+#else
+#define DLLEXPORT
+#endif
+
+/// putchard - putchar that takes a double and returns 0.
+DLLEXPORT double putchard(double X) {
+  fputc((char)X, stderr);
+  return 0;
+}
+
+/// printd - printf that takes a double prints it as "%f\n", returning 0.
+DLLEXPORT double printd(double X) {
+  fprintf(stderr, "%f", X);
+  return 0;
+}

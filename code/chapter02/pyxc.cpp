@@ -248,8 +248,9 @@ static int gettok() {
     char *End;
     NumVal = strtod(NumStr.c_str(), &End);
     if (*End != '\0') {
-      fprintf(stderr, "Error (Line %d, Col %d): invalid number literal '%s'\n",
-              LexLoc.Line, LexLoc.Col, NumStr.c_str());
+      fprintf(stderr,
+              "%sError%s (Line %d, Column %d): invalid number literal '%s'\n",
+              Red, Reset, CurLoc.Line, CurLoc.Col, NumStr.c_str());
       return tok_error;
     }
     return tok_number;
@@ -470,6 +471,9 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
     return ParseNumberExpr();
   case '(':
     return ParseParenExpr();
+  case tok_error:
+    // Lexer has already emitted a specific diagnostic for this token.
+    return nullptr;
   default: {
     string Msg = "Unexpected " + FormatTokenForMessage(CurTok) +
                  " when expecting an expression";

@@ -57,23 +57,47 @@ You'll see output like:
 
 ```nasm
 .debug_info contents:
+0x00000000: Compile Unit: length = 0x00000060, format = DWARF32, version = 0x0004, abbr_offset = 0x0000, addr_size = 0x08 (next unit at 0x00000064)
+
 0x0000000b: DW_TAG_compile_unit
-              DW_AT_producer	("Pyxc Compiler")
-              DW_AT_language	(DW_LANG_C)
-              DW_AT_name	("factorial.pyxc")
-              DW_AT_comp_dir	(".")
+              DW_AT_producer    ("Pyxc Compiler")
+              DW_AT_language    (DW_LANG_C)
+              DW_AT_name        ("factorial.pyxc")
+              DW_AT_stmt_list   (0x00000000)
+              DW_AT_comp_dir    (".")
+              DW_AT_low_pc      (0x0000000000000000)
+              DW_AT_high_pc     (0x000000000000003c)
 
 0x0000002a:   DW_TAG_subprogram
-                DW_AT_name	("factorial")
-                DW_AT_decl_file	("./factorial.pyxc")
-                DW_AT_decl_line	(1)
-                DW_AT_type	(0x0000005c "double")
+                DW_AT_low_pc    (0x0000000000000000)
+                DW_AT_high_pc   (0x0000000000000028)
+                DW_AT_APPLE_omit_frame_ptr      (true)
+                DW_AT_frame_base        (DW_OP_reg31 WSP)
+                DW_AT_name      ("factorial")
+                DW_AT_decl_file ("./factorial.pyxc")
+                DW_AT_decl_line (1)
+                DW_AT_prototyped        (true)
+                DW_AT_type      (0x0000005c "double")
+                DW_AT_external  (true)
 
 0x00000043:   DW_TAG_subprogram
-                DW_AT_name	("main")
-                DW_AT_decl_file	("./factorial.pyxc")
-                DW_AT_decl_line	(4)
-                DW_AT_type	(0x0000005c "double")
+                DW_AT_low_pc    (0x0000000000000028)
+                DW_AT_high_pc   (0x000000000000003c)
+                DW_AT_APPLE_omit_frame_ptr      (true)
+                DW_AT_frame_base        (DW_OP_reg31 WSP)
+                DW_AT_name      ("main")
+                DW_AT_decl_file ("./factorial.pyxc")
+                DW_AT_decl_line (4)
+                DW_AT_prototyped        (true)
+                DW_AT_type      (0x0000005c "double")
+                DW_AT_external  (true)
+
+0x0000005c:   DW_TAG_base_type
+                DW_AT_name      ("double")
+                DW_AT_encoding  (DW_ATE_float)
+                DW_AT_byte_size (0x08)
+
+0x00000063:   NULL
 ```
 
 The debug info includes:
@@ -95,8 +119,11 @@ Address            Line   Column File   ISA Discriminator OpIndex Flags
 ------------------ ------ ------ ------ --- ------------- ------- -------------
 0x0000000000000000      1      0      1   0             0       0  is_stmt
 0x0000000000000010      2     28      1   0             0       0  is_stmt prologue_end
+0x0000000000000018      2     28      1   0             0       0  epilogue_begin
 0x0000000000000028      4      0      1   0             0       0  is_stmt
 0x000000000000002c      5     20      1   0             0       0  is_stmt prologue_end
+0x0000000000000034      5     20      1   0             0       0  epilogue_begin
+0x000000000000003c      5     20      1   0             0       0  end_sequence
 ```
 
 This table tells the debugger: "Address 0x0 is line 1, address 0x28 is line 4, address 0x2c is line 5, column 20."

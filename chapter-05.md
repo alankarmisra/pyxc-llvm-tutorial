@@ -305,9 +305,9 @@ Try to fix this yourself—it's good practice!
 
 ## Using the Code Generator
 
-In Chapter 4, we added `--emit-ir` to the REPL. Now we can implement it.
+In Chapter 4, we added `--emit=llvm-ir` to the REPL. Now we can implement it.
 
-When `--emit-ir` is set, we call `codegen()` on each parsed construct and print the resulting IR:
+When `--emit=llvm-ir` is set, we call `codegen()` on each parsed construct and print the resulting IR:
 
 ```cpp
 static void HandleDefinition() {
@@ -330,14 +330,14 @@ Similar changes for `HandleExtern()` and `HandleTopLevelExpression()`.
 ```bash
 cd code/chapter05
 cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && cmake --build build
-./build/pyxc repl --emit-ir
+./build/pyxc repl --emit=llvm-ir
 ```
 
 Or use the shortcut:
 ```bash
 cd code/chapter05
 ./build.sh
-./build/pyxc repl --emit-ir
+./build/pyxc repl --emit=llvm-ir
 ```
 
 ## Sample Session
@@ -356,7 +356,7 @@ ready> ^D
 
 LLVM mode:
 ```
-$ ./build/pyxc repl --emit-ir
+$ ./build/pyxc repl --emit=llvm-ir
 ready> def foo(a,b): return a*a + 2*a*b + b*b
 define double @foo(double %a, double %b) {
 entry:
@@ -382,7 +382,7 @@ Look at that generated IR! Each operation becomes an instruction, temporary valu
 - **Code generation** - Convert AST to LLVM IR
 - **Expression IR** - Numbers, variables, operators, calls
 - **Function IR** - Prototypes and definitions
-- **REPL modes** - Default (parser feedback) and `--emit-ir` (show IR)
+- **REPL modes** - Default (parser feedback) and `--emit=llvm-ir` (show IR)
 
 With about 100 lines of code, we can now generate valid LLVM IR from Pyxc source code.
 
