@@ -79,3 +79,4 @@ memory/
 chapter-*-todo.md
 
 code/oldcode
+code/chapter*/build/
