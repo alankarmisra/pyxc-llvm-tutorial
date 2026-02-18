@@ -1,9 +1,0 @@
-# RUN: rm -f output.o
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Wrote output.o" %t
-# RUN: test -f output.o
-
-def add(x, y):
-  return x + y
-
-add(2,3)

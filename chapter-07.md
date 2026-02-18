@@ -92,6 +92,8 @@ LLVM provides hundreds of optimization passes. Each pass does a specific transfo
 - `GVNPass`: Global Value Numbering - eliminates redundant computations
 - `SimplifyCFGPass`: Simplifies control flow (removes dead blocks, merges blocks, etc.)
 
+> **Coming Soon:** Once we add control flow (if/else, while) and types in later chapters, the optimizer will be able to do even more interesting things—like eliminating entire branches of if statements when conditions are constant, unrolling loops with known bounds, and optimizing type-specific operations!
+
 Passes are organized into two categories:
 
 **Function Passes**: Operate on one function at a time (what we'll use in the REPL)
@@ -108,7 +110,7 @@ static std::unique_ptr<LLVMContext> TheContext;
 static std::unique_ptr<Module> TheModule;
 static std::unique_ptr<IRBuilder<>> Builder;
 static std::map<std::string, Value *> NamedValues;
-static bool ShouldEmitLLVM = false;
+static bool ShouldEmitIR = false;
 static std::unique_ptr<PyxcJIT> TheJIT;
 
 // Optimization infrastructure
@@ -297,7 +299,7 @@ int main(int argc, const char **argv) {
 
   // Make the module, which holds all the code and optimization managers.
   InitializeModuleAndManagers();
-  ShouldEmitLLVM = ReplEmitLLVM;
+  ShouldEmitIR = ReplEmitIR;
 
   // Run the main "interpreter loop" now.
   MainLoop();
@@ -310,7 +312,7 @@ The `PyxcJIT` class is a simple JIT implementation in `include/PyxcJIT.h`. We'll
 
 ### Update InitializeModuleAndManagers
 
-The JIT needs to know the data layout of the target machine. Update the initialization:
+The JIT needs to know the **data layout** of the target machine - this tells LLVM how types are sized and aligned in memory (e.g., is `int` 32 or 64 bits? What's the alignment of `double`?). Update the initialization:
 
 ```cpp
 static void InitializeModuleAndManagers() {
@@ -325,6 +327,8 @@ static void InitializeModuleAndManagers() {
 }
 ```
 
+The data layout is a string like `"e-m:o-i64:64-i128:128-n32:64-S128"` that encodes things like endianness, pointer size, and type alignments. The JIT provides the correct layout for the current machine.
+
 ## Executing Functions
 
 ### Function Definitions
@@ -335,7 +339,7 @@ When a function is defined, we need to add it to the JIT. Update `HandleDefiniti
 static void HandleDefinition() {
   if (auto FnAST = ParseDefinition()) {
     if (auto *FnIR = FnAST->codegen()) {
-      if (ShouldEmitLLVM) {
+      if (ShouldEmitIR) {
         fprintf(stderr, "Read function definition:\n");
         FnIR->print(errs());
         fprintf(stderr, "\n");
@@ -383,7 +387,7 @@ static void HandleTopLevelExpression() {
       ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
       InitializeModuleAndManagers();
 
-      if (ShouldEmitLLVM) {
+      if (ShouldEmitIR) {
         FnIR->print(errs());
         fprintf(stderr, "\n");
       }
@@ -507,7 +511,7 @@ Store extern declarations in the prototype map:
 static void HandleExtern() {
   if (auto ProtoAST = ParseExtern()) {
     if (auto *FnIR = ProtoAST->codegen()) {
-      if (ShouldEmitLLVM) {
+      if (ShouldEmitIR) {
         fprintf(stderr, "Read extern:\n");
         FnIR->print(errs());
         fprintf(stderr, "\n");
@@ -623,9 +627,9 @@ extern "C" DLLEXPORT double putchard(double X) {
 }
 ```
 
-**Why `extern "C"`?** Prevents C++ name mangling so the JIT can find it.
+**Why `extern "C"`?** Tells the C++ compiler to use C linkage (simple function names like `putchard` instead of decorated names with type information).
 
-**Why `DLLEXPORT`?** On Windows, we need to explicitly export symbols.
+**Why `DLLEXPORT`?** On Windows, we need to explicitly export symbols so they're visible to the JIT.
 
 Now we can use it:
 
@@ -693,6 +697,23 @@ This chapter added major functionality:
    - Can call standard library functions (sin, cos, etc.)
    - Can add custom runtime functions
 
+## Testing Your Implementation
+
+This chapter includes **45 automated tests**. Run them with:
+
+```bash
+cd code/chapter07/test
+lit -v .
+# or: llvm-lit -v .
+```
+
+**Pro tip:** The test directory shows exactly what works! Key tests include:
+- `jit_*.pyxc` - Tests for JIT execution
+- `opt_*.pyxc` - Tests showing optimization results
+- `cli_repl_*.pyxc` - Tests for REPL modes
+
+Browse the tests to see what the language can do at this stage!
+
 ## What's Next
 
 We can now:
@@ -704,7 +725,7 @@ We can now:
 
 But our language is still very limited - just arithmetic and function calls.
 
-**Chapter 8** will add control flow (`if/else`), allowing us to write real programs with conditional logic.
+**Chapter 8** will add object file generation with optimization levels, so we can compile Pyxc code and call it from C++.
 
 ## Need Help?
 

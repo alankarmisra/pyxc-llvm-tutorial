@@ -1,4 +1,4 @@
-# RUN: %pyxc < %s > %t 2>/dev/null
+# RUN: %pyxc < %s > %t 2>&1
 # RUN: grep -F "'def' identifier '(' identifier ',' identifier ')' ':' newline" %t
 
 def foo(x, y):

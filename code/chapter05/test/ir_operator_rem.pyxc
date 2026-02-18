@@ -1,4 +1,4 @@
-# RUN: %pyxc repl --emit-llvm < %s > %t 2>&1
+# RUN: %pyxc repl --emit-ir < %s > %t 2>&1
 # RUN: grep -q "frem double" %t
 # RUN: grep -q "define double @test_rem" %t
 

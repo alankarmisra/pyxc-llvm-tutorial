@@ -214,9 +214,37 @@ Function *PrototypeAST::codegen() {
 }
 ```
 
-Create a function signature: N doubles as parameters, one double as return type. Then create the `Function` object with external linkage (can be called from outside this module) and add it to `TheModule`.
+**What's happening:**
 
-Setting argument names isn't required, but it makes the IR easier to read.
+1. **Create function signature**: N doubles as parameters, one double as return type
+2. **Create the Function**: Uses `Function::ExternalLinkage` - this is important!
+3. **Set argument names**: Not required, but makes IR readable
+
+**What is linkage?**
+
+First, what's a **linker**? The linker's job is to combine multiple code modules into one program:
+
+```text
+module1.o (contains: foo, bar)
+module2.o (contains: baz, calls foo)
+    ↓
+[Linker]
+    ↓
+program (foo + bar + baz all connected)
+```
+
+The linker resolves symbols - when `module2` calls `foo()`, the linker finds `foo` in `module1` and connects them.
+
+**Linkage** determines whether a symbol is visible to the linker:
+
+- **ExternalLinkage** - Visible to other modules, can be called from anywhere (like C's default)
+- **InternalLinkage** - Only visible within this module (like C's `static`)
+- **PrivateLinkage** - Like internal, but the linker can't see it at all
+
+We use `ExternalLinkage` because:
+- Pyxc functions should be callable from other modules
+- `extern def` declarations need to reference functions from other modules
+- The linker (or JIT in our case) needs to see our symbols to connect everything
 
 This gives us a function declaration with no body—exactly what `extern` needs.
 
@@ -277,9 +305,9 @@ Try to fix this yourself—it's good practice!
 
 ## Using the Code Generator
 
-In Chapter 4, we added `--emit-llvm` to the REPL. Now we can implement it.
+In Chapter 4, we added `--emit-ir` to the REPL. Now we can implement it.
 
-When `--emit-llvm` is set, we call `codegen()` on each parsed construct and print the resulting IR:
+When `--emit-ir` is set, we call `codegen()` on each parsed construct and print the resulting IR:
 
 ```cpp
 static void HandleDefinition() {
@@ -302,14 +330,14 @@ Similar changes for `HandleExtern()` and `HandleTopLevelExpression()`.
 ```bash
 cd code/chapter05
 cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && cmake --build build
-./build/pyxc repl --emit-llvm
+./build/pyxc repl --emit-ir
 ```
 
 Or use the shortcut:
 ```bash
 cd code/chapter05
 ./build.sh
-./build/pyxc repl --emit-llvm
+./build/pyxc repl --emit-ir
 ```
 
 ## Sample Session
@@ -328,7 +356,7 @@ ready> ^D
 
 LLVM mode:
 ```
-$ ./build/pyxc repl --emit-llvm
+$ ./build/pyxc repl --emit-ir
 ready> def foo(a,b): return a*a + 2*a*b + b*b
 define double @foo(double %a, double %b) {
 entry:
@@ -354,9 +382,26 @@ Look at that generated IR! Each operation becomes an instruction, temporary valu
 - **Code generation** - Convert AST to LLVM IR
 - **Expression IR** - Numbers, variables, operators, calls
 - **Function IR** - Prototypes and definitions
-- **REPL modes** - Default (parser feedback) and `--emit-llvm` (show IR)
+- **REPL modes** - Default (parser feedback) and `--emit-ir` (show IR)
 
 With about 100 lines of code, we can now generate valid LLVM IR from Pyxc source code.
+
+## Testing Your Implementation
+
+This chapter includes **41 automated tests** that verify code generation works correctly. Run them with:
+
+```bash
+cd code/chapter05/test
+lit -v .
+# or: llvm-lit -v .
+```
+
+**Pro tip:** The test directory shows exactly what the language can do! Browse `test/*.pyxc` to see:
+- What IR gets generated for different expressions
+- How functions compile to LLVM IR
+- What error messages look like
+
+For example, `test/codegen_binary_ops.pyxc` shows all binary operators, and `test/codegen_extern_call.pyxc` shows calling external functions.
 
 ## What's Next
 

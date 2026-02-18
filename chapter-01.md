@@ -5,27 +5,27 @@ description: "Build your first lexer: break source code into tokens and see them
 
 ## What We're Building
 
-We're building a programming language called Pyxc (pronounced "Pixie"). Think Python syntax, but simpler—at least to start.
+Welcome to Pyxc! By the end of this tutorial, you'll have built a compiler for a statically-typed, Python-like language.
 
-Here's a taste of what Pyxc code looks like:
+**This chapter** focuses on the lexer—breaking source code into tokens. We'll keep the language simple for now (just functions, numbers, and basic math), but here's a glimpse of where we're going:
+
+```python
+def fibonacci(n: int) -> int:
+    if n <= 1:
+        return n
+    return fibonacci(n - 1) + fibonacci(n - 2)
+```
+
+Notice the type annotations (`: int`, `-> int`), comparison operator (`<=`), and `if` statement? We'll add those in later chapters. For now, let's start with the foundation: teaching the compiler to recognize words, numbers, and symbols.
+
+Here's what Pyxc code looks like in **this chapter**:
 
 ```python
 def fib(n):
-    if n < 2:
-        return n
-    else:
-        return fib(n-1) + fib(n-2)
-
-fib(10)
+    return fib(n-1) + fib(n-2)
 ```
 
-You can also smash it onto one line (we're flexible about formatting early on):
-
-```python
-def fib(n): if n < 2: return n else: return fib(n-1) + fib(n-2)
-```
-
-We start simple: only one type (`double`), no type declarations, no complicated syntax. Just functions, math, and calling other functions.
+We start simple: only one type (`double`), no type declarations, no control flow yet. Just functions, math, and recursion.
 
 You can even call C library functions:
 

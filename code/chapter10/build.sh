@@ -5,4 +5,4 @@ cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
 # Build step:
 # --build build -> compile using the generated build system in ./build
-cmake --build build
+cmake --build build 

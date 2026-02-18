@@ -1,6 +1,0 @@
-# RUN: %pyxc -c %s > %t 2>&1
-# RUN: grep -q "Error (Line:" %t
-# RUN: grep -q "main arguments must be exactly (i32, ptr\[ptr\[i8\]\])" %t
-
-def main(argc: i64, argv: ptr[ptr[i8]]) -> i32:
-    return 0

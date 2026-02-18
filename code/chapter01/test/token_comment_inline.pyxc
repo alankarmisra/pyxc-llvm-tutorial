@@ -1,4 +1,4 @@
-# RUN: %pyxc < %s > %t 2>/dev/null
+# RUN: %pyxc < %s > %t 2>&1
 # RUN: grep -F "identifier '+' identifier newline" %t
 # Comments should be ignored and not appear in output
 

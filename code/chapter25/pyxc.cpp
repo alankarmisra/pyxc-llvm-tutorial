@@ -175,8 +175,6 @@ enum Token {
   tok_break = -30,
   tok_continue = -31,
   tok_struct = -32,
-  tok_malloc = -33,
-  tok_free = -34,
 
   // indentation
   tok_indent = -16,
@@ -209,8 +207,7 @@ static std::map<std::string, Token> Keywords = {
     {"var", tok_var}, {"type", tok_type},     {"not", tok_not},
     {"and", tok_and}, {"print", tok_print},   {"while", tok_while},
     {"do", tok_do},   {"break", tok_break},   {"continue", tok_continue},
-    {"or", tok_or},   {"struct", tok_struct}, {"malloc", tok_malloc},
-    {"free", tok_free}};
+    {"or", tok_or},   {"struct", tok_struct}};
 
 struct SourceLocation {
   int Line;
@@ -697,10 +694,6 @@ static const char *TokenName(int Tok) {
     return "<continue>";
   case tok_struct:
     return "<struct>";
-  case tok_malloc:
-    return "<malloc>";
-  case tok_free:
-    return "<free>";
   case tok_not:
     return "<not>";
   case tok_and:
@@ -1015,22 +1008,6 @@ public:
   Value *codegen() override;
 };
 
-class MallocExprAST : public ExprAST {
-  TypeExprPtr ElemType;
-  std::unique_ptr<ExprAST> CountExpr;
-
-public:
-  MallocExprAST(SourceLocation Loc, TypeExprPtr ElemType,
-                std::unique_ptr<ExprAST> CountExpr)
-      : ExprAST(Loc), ElemType(std::move(ElemType)),
-        CountExpr(std::move(CountExpr)) {}
-
-  Value *codegen() override;
-  Type *getValueTypeHint() const override;
-  Type *getPointeeTypeHint() const override;
-  std::string getPointeeBuiltinLeafTypeHint() const override;
-};
-
 /// ReturnStmtAST - Return statements
 class ReturnStmtAST : public StmtAST {
   std::unique_ptr<ExprAST> Expr;
@@ -1058,16 +1035,6 @@ class PrintStmtAST : public StmtAST {
 public:
   PrintStmtAST(SourceLocation Loc, std::vector<std::unique_ptr<ExprAST>> Args)
       : StmtAST(Loc), Args(std::move(Args)) {}
-
-  Value *codegen() override;
-};
-
-class FreeStmtAST : public StmtAST {
-  std::unique_ptr<ExprAST> PtrExpr;
-
-public:
-  FreeStmtAST(SourceLocation Loc, std::unique_ptr<ExprAST> PtrExpr)
-      : StmtAST(Loc), PtrExpr(std::move(PtrExpr)) {}
 
   Value *codegen() override;
 };
@@ -1298,8 +1265,6 @@ static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
 static std::unique_ptr<BlockSuiteAST> ParseSuite();
 static std::unique_ptr<BlockSuiteAST> ParseBlockSuite();
 static std::unique_ptr<StmtAST> ParsePrintStmt();
-static std::unique_ptr<StmtAST> ParseFreeStmt();
-static std::unique_ptr<ExprAST> ParseMallocExpr();
 static TypeExprPtr ParseTypeExpr();
 static bool ParseStructDecl();
 
@@ -1859,46 +1824,6 @@ static std::unique_ptr<StmtAST> ParsePrintStmt() {
   return std::make_unique<PrintStmtAST>(PrintLoc, std::move(Args));
 }
 
-static std::unique_ptr<StmtAST> ParseFreeStmt() {
-  auto FreeLoc = CurLoc;
-  getNextToken(); // eat `free`
-  if (CurTok != '(')
-    return LogError<StmtPtr>("Expected '(' after free");
-  getNextToken(); // eat '('
-  auto PtrExpr = ParseExpression();
-  if (!PtrExpr)
-    return nullptr;
-  if (CurTok != ')')
-    return LogError<StmtPtr>("Expected ')' after free argument");
-  getNextToken(); // eat ')'
-  return std::make_unique<FreeStmtAST>(FreeLoc, std::move(PtrExpr));
-}
-
-static std::unique_ptr<ExprAST> ParseMallocExpr() {
-  auto MallocLoc = CurLoc;
-  getNextToken(); // eat `malloc`
-  if (CurTok != '[')
-    return LogError<ExprPtr>("Expected '[' after malloc");
-  getNextToken(); // eat '['
-  auto ElemTy = ParseTypeExpr();
-  if (!ElemTy)
-    return nullptr;
-  if (CurTok != ']')
-    return LogError<ExprPtr>("Expected ']' after malloc element type");
-  getNextToken(); // eat ']'
-  if (CurTok != '(')
-    return LogError<ExprPtr>("Expected '(' after malloc[type]");
-  getNextToken(); // eat '('
-  auto CountExpr = ParseExpression();
-  if (!CountExpr)
-    return nullptr;
-  if (CurTok != ')')
-    return LogError<ExprPtr>("Expected ')' after malloc count");
-  getNextToken(); // eat ')'
-  return std::make_unique<MallocExprAST>(MallocLoc, std::move(ElemTy),
-                                         std::move(CountExpr));
-}
-
 static std::unique_ptr<StmtAST> ParseIdentifierLeadingStmt() {
   auto StmtLoc = CurLoc;
   auto LHS = ParseIdentifierExpr();
@@ -1967,8 +1892,6 @@ static std::unique_ptr<StmtAST> ParseStmt() {
     return ParseReturnStmt();
   case tok_print:
     return ParsePrintStmt();
-  case tok_free:
-    return ParseFreeStmt();
   case tok_type:
     return LogError<StmtPtr>("Type aliases are only allowed at top-level");
   case tok_struct:
@@ -2054,8 +1977,6 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
     return ParseParenExpr();
   case tok_var:
     return ParseVarExpr();
-  case tok_malloc:
-    return ParseMallocExpr();
   }
 }
 
@@ -2899,46 +2820,6 @@ std::string MemberExprAST::getBuiltinLeafTypeHint() const {
   return ResolveBuiltinLeafName(Field->Ty);
 }
 
-static Function *GetOrCreateMallocHelper();
-static Function *GetOrCreateFreeHelper();
-
-Type *MallocExprAST::getValueTypeHint() const {
-  return PointerType::getUnqual(*TheContext);
-}
-
-Type *MallocExprAST::getPointeeTypeHint() const {
-  return ResolveTypeExpr(ElemType);
-}
-
-std::string MallocExprAST::getPointeeBuiltinLeafTypeHint() const {
-  return ResolveBuiltinLeafName(ElemType);
-}
-
-Value *MallocExprAST::codegen() {
-  emitLocation(this);
-  Type *ElemTy = ResolveTypeExpr(ElemType);
-  if (!ElemTy)
-    return nullptr;
-  if (ElemTy->isVoidTy())
-    return LogError<Value *>("malloc element type cannot be void");
-
-  Value *CountV = CountExpr->codegen();
-  if (!CountV)
-    return nullptr;
-  if (!IsIntegerLike(CountV->getType()))
-    return LogError<Value *>("malloc count must be an integer type");
-  CountV = CastValueTo(CountV, Type::getInt64Ty(*TheContext));
-  if (!CountV)
-    return nullptr;
-
-  uint64_t ElemSize = TheModule->getDataLayout().getTypeAllocSize(ElemTy);
-  Value *ElemSizeV =
-      ConstantInt::get(Type::getInt64Ty(*TheContext), ElemSize, false);
-  Value *BytesV = Builder->CreateMul(CountV, ElemSizeV, "malloc.bytes");
-
-  return Builder->CreateCall(GetOrCreateMallocHelper(), {BytesV}, "malloc.ptr");
-}
-
 Value *TypedAssignStmtAST::codegen() {
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
   Type *DeclTy = ResolveTypeExpr(DeclType);
@@ -3183,23 +3064,6 @@ Value *CallExprAST::codegen() {
   return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
-static Function *GetOrCreateMallocHelper() {
-  if (Function *F = TheModule->getFunction("malloc"))
-    return F;
-  FunctionType *FT = FunctionType::get(
-      PointerType::getUnqual(*TheContext), {Type::getInt64Ty(*TheContext)}, false);
-  return Function::Create(FT, Function::ExternalLinkage, "malloc",
-                          TheModule.get());
-}
-
-static Function *GetOrCreateFreeHelper() {
-  if (Function *F = TheModule->getFunction("free"))
-    return F;
-  FunctionType *FT = FunctionType::get(
-      Type::getVoidTy(*TheContext), {PointerType::getUnqual(*TheContext)}, false);
-  return Function::Create(FT, Function::ExternalLinkage, "free", TheModule.get());
-}
-
 static Function *GetOrCreatePrintHelper(const std::string &Name, Type *Ty,
                                         bool IsUnsignedInt) {
   if (Function *F = TheModule->getFunction(Name))
@@ -3285,18 +3149,6 @@ Value *PrintStmtAST::codegen() {
 
   Value *NewLine = ConstantFP::get(*TheContext, APFloat(10.0));
   Builder->CreateCall(PrintCharF, {NewLine});
-  return ConstantFP::get(*TheContext, APFloat(0.0));
-}
-
-Value *FreeStmtAST::codegen() {
-  emitLocation(this);
-  Value *PtrV = PtrExpr->codegen();
-  if (!PtrV)
-    return nullptr;
-  if (!PtrV->getType()->isPointerTy())
-    return LogError<Value *>("free expects a pointer argument");
-
-  Builder->CreateCall(GetOrCreateFreeHelper(), {PtrV});
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 

@@ -14,7 +14,7 @@ def add(x, y):
 ```
 
 And produces this:
-```
+```bash
 'def' identifier '(' identifier ',' identifier ')' ':' newline
 'return' identifier '+' identifier newline
 ```
@@ -432,6 +432,8 @@ static map<char, int> BinopPrecedence = {
 ```
 
 Higher numbers mean tighter binding. `*`, `/`, and `%` bind tighter than `+` and `-`, which bind tighter than `<` and `>`.
+
+> **Note:** You might notice we're missing common operators like `==`, `<=`, `and`, and `or`. We'll add these in later chapters along with control flow (if/else, while), since comparison operators are most useful when you can actually act on the results! For now, we're focused on building the foundational parser infrastructure.
 
 Helper function:
 

@@ -1,4 +1,4 @@
-(* Pyxc Grammar (Chapter 15: logical/comparison cleanup) *)
+(* Pyxc Grammar (Chapter 14 reference) *)
 
 (* ---------- Lexical ---------- *)
 
@@ -26,11 +26,14 @@ top_item       = newline
 
 (* ---------- Functions ---------- *)
 
-function_def   = "def" , prototype , ":" , suite ;
+function_def   = [ decorator ] , "def" , prototype , ":" , suite ;
 extern_decl    = "extern" , "def" , prototype ;
 
 prototype      = identifier , "(" , [ param_list ] , ")" ;
 param_list     = identifier , { "," , identifier } ;
+
+(* Current decorator model used for unary/binary operator definitions. *)
+decorator      = "@" , ( "unary" | "binary" ) , [ number ] ;
 
 (* ---------- Statements ---------- *)
 
@@ -44,8 +47,7 @@ expr_stmt      = expression ;
 return_stmt    = "return" , expression ;
 
 if_stmt        = "if" , expression , ":" , suite ,
-                 { "elif" , expression , ":" , suite } ,
-                 [ "else" , ":" , suite ] ;
+                 "else" , ":" , suite ;
 
 for_stmt       = "for" , identifier , "in" , "range" , "(" ,
                  expression , "," , expression ,
@@ -65,7 +67,7 @@ statement_list = statement , { newline , statement } , [ newline ] ;
 expression     = unary_expr , { binary_op , unary_expr } ;
 
 unary_expr     = [ unary_op ] , primary ;
-unary_op       = "+" | "-" | "!" | "~" | "not" ;
+unary_op       = "+" | "-" | "!" | "~" ;
 
 primary        = number
                | identifier
@@ -81,10 +83,11 @@ arg_list       = expression , { "," , expression } ;
 var_expr       = "var" , var_binding , { "," , var_binding } , "in" , expression ;
 var_binding    = identifier , [ "=" , expression ] ;
 
-binary_op      = "<" | "<=" | ">" | ">="
-               | "==" | "!="
-               | "and" | "or"
+binary_op      = "<"
                | "+" | "-" | "*" | "/"
-               | "=" ;
+               | "="
+               | custom_op ;
+
+custom_op      = "?" | "$" | "%" | "^" | "&" | "|" | "@" | ":" ;
 
 (* Actual precedence/associativity comes from parser tables, not EBNF. *)

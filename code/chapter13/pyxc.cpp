@@ -1,3 +1,4 @@
+#include "../include/PyxcJIT.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
@@ -6,17 +7,20 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
-#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/PassManager.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Verifier.h"
-#include "llvm/MC/TargetRegistry.h"
-#include "llvm/Support/FileSystem.h"
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Passes/StandardInstrumentations.h"
 #include "llvm/Support/TargetSelect.h"
-#include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
-#include "llvm/Target/TargetOptions.h"
-#include "llvm/TargetParser/Host.h"
+#include "llvm/Transforms/InstCombine/InstCombine.h"
+#include "llvm/Transforms/Scalar.h"
+#include "llvm/Transforms/Scalar/GVN.h"
+#include "llvm/Transforms/Scalar/Reassociate.h"
+#include "llvm/Transforms/Scalar/SimplifyCFG.h"
+#include "llvm/Transforms/Utils/Mem2Reg.h"
 #include <cassert>
 #include <cctype>
 #include <cstdio>
@@ -24,13 +28,12 @@
 #include <map>
 #include <memory>
 #include <string>
-#include <system_error>
 #include <unistd.h>
 #include <utility>
 #include <vector>
 
 using namespace llvm;
-using namespace llvm::sys;
+using namespace llvm::orc;
 
 //===----------------------------------------------------------------------===//
 // Color
@@ -962,6 +965,14 @@ static std::unique_ptr<LLVMContext> TheContext;
 static std::unique_ptr<Module> TheModule;
 static std::unique_ptr<IRBuilder<>> Builder;
 static std::map<std::string, AllocaInst *> NamedValues;
+static std::unique_ptr<PyxcJIT> TheJIT;
+static std::unique_ptr<FunctionPassManager> TheFPM;
+static std::unique_ptr<LoopAnalysisManager> TheLAM;
+static std::unique_ptr<FunctionAnalysisManager> TheFAM;
+static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
+static std::unique_ptr<ModuleAnalysisManager> TheMAM;
+static std::unique_ptr<PassInstrumentationCallbacks> ThePIC;
+static std::unique_ptr<StandardInstrumentations> TheSI;
 static ExitOnError ExitOnErr;
 
 Function *getFunction(std::string Name) {
@@ -1337,6 +1348,9 @@ Function *FunctionAST::codegen() {
     // Validate the generated code, checking for consistency.
     verifyFunction(*TheFunction);
 
+    // Run the optimizer on the function.
+    TheFPM->run(*TheFunction, *TheFAM);
+
     return TheFunction;
   }
 
@@ -1345,6 +1359,7 @@ Function *FunctionAST::codegen() {
 
   if (P.isBinaryOp())
     BinopPrecedence.erase(P.getOperatorName());
+
   return nullptr;
 }
 
@@ -1352,13 +1367,43 @@ Function *FunctionAST::codegen() {
 // Top-Level parsing and JIT Driver
 //===----------------------------------------------------------------------===//
 
-static void InitializeModuleAndBuilder() {
+static void InitializeModuleAndManagers() {
   // Open a new context and module.
   TheContext = std::make_unique<LLVMContext>();
   TheModule = std::make_unique<Module>("PyxcJIT", *TheContext);
+  TheModule->setDataLayout(TheJIT->getDataLayout());
 
   // Create a new builder for the module.
   Builder = std::make_unique<IRBuilder<>>(*TheContext);
+
+  // Create new pass and analysis managers.
+  TheFPM = std::make_unique<FunctionPassManager>();
+  TheLAM = std::make_unique<LoopAnalysisManager>();
+  TheFAM = std::make_unique<FunctionAnalysisManager>();
+  TheCGAM = std::make_unique<CGSCCAnalysisManager>();
+  TheMAM = std::make_unique<ModuleAnalysisManager>();
+  ThePIC = std::make_unique<PassInstrumentationCallbacks>();
+  TheSI = std::make_unique<StandardInstrumentations>(*TheContext,
+                                                     /*DebugLogging*/ true);
+  TheSI->registerCallbacks(*ThePIC, TheMAM.get());
+
+  // Add transform passes.
+  // Promote allocas to registers.
+  TheFPM->addPass(PromotePass());
+  // Do simple "peephole" optimizations and bit-twiddling optzns.
+  TheFPM->addPass(InstCombinePass());
+  // Reassociate expressions.
+  TheFPM->addPass(ReassociatePass());
+  // Eliminate Common SubExpressions.
+  TheFPM->addPass(GVNPass());
+  // Simplify the control flow graph (deleting unreachable blocks, etc).
+  TheFPM->addPass(SimplifyCFGPass());
+
+  // Register analysis passes used in these transform passes.
+  PassBuilder PB;
+  PB.registerModuleAnalyses(*TheMAM);
+  PB.registerFunctionAnalyses(*TheFAM);
+  PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
 }
 
 static void HandleDefinition() {
@@ -1367,6 +1412,9 @@ static void HandleDefinition() {
       fprintf(stderr, "Read function definition:\n");
       FnIR->print(errs());
       fprintf(stderr, "\n");
+      ExitOnErr(TheJIT->addModule(
+          ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
+      InitializeModuleAndManagers();
     }
   } else {
     // Error recovery: consume one token only when we are not already at
@@ -1398,9 +1446,32 @@ static void HandleTopLevelExpression() {
   // Evaluate a top-level expression into an anonymous function.
   if (auto FnAST = ParseTopLevelExpr()) {
     if (auto *FnIR = FnAST->codegen()) {
+      // Create a ResourceTracker to track JIT'd memory allocated to our
+      // anonymous expression -- that way we can free it after executing.
+      auto RT = TheJIT->getMainJITDylib().createResourceTracker();
+
+      auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
+      ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
+      InitializeModuleAndManagers();
+
       fprintf(stderr, "Read top-level expression:\n");
       FnIR->print(errs());
       fprintf(stderr, "\n");
+
+      // Search the JIT for the __anon_expr symbol.
+      auto ExprSymbol = ExitOnErr(TheJIT->lookup("__anon_expr"));
+
+      // Get the symbol's address and cast it to the right type (takes no
+      // arguments, returns a double) so we can call it as a native
+      // function.
+      double (*FP)() = ExprSymbol.toPtr<double (*)()>();
+      fprintf(stderr, "\nEvaluated to %f\n", FP());
+
+      // Delete the anonymous expression module from the JIT.
+      ExitOnErr(RT->remove());
+
+      // Remove the anonymous expression.
+      //   FnIR->eraseFromParent();
     }
   } else {
     // Error recovery: consume one token only when we are not already at
@@ -1464,67 +1535,22 @@ extern "C" DLLEXPORT double printd(double X) {
 int main() {
   DiagSourceMgr.reset();
 
+  InitializeNativeTarget();
+  InitializeNativeTargetAsmPrinter();
+  InitializeNativeTargetAsmParser();
+
   // Prime the first token.
   fprintf(stderr, "ready> ");
   getNextToken();
 
-  InitializeModuleAndBuilder();
+  TheJIT = ExitOnErr(PyxcJIT::Create());
+  InitializeModuleAndManagers();
 
   // Run the main "interpreter loop" now.
   MainLoop();
 
-  // Initialize the target registry etc.
-  InitializeAllTargetInfos();
-  InitializeAllTargets();
-  InitializeAllTargetMCs();
-  InitializeAllAsmParsers();
-  InitializeAllAsmPrinters();
-
-  auto TargetTriple = sys::getDefaultTargetTriple();
-  TheModule->setTargetTriple(Triple(TargetTriple));
-
-  std::string Error;
-  auto Target =
-      TargetRegistry::lookupTarget(TheModule->getTargetTriple(), Error);
-
-  // Print an error and exit if we couldn't find the requested target.
-  // This generally occurs if we've forgotten to initialise the
-  // TargetRegistry or we have a bogus target triple.
-  if (!Target) {
-    errs() << Error;
-    return 1;
-  }
-
-  auto CPU = "generic";
-  auto Features = "";
-
-  TargetOptions opt;
-  auto TheTargetMachine = Target->createTargetMachine(
-      Triple(TargetTriple), CPU, Features, opt, Reloc::PIC_);
-
-  TheModule->setDataLayout(TheTargetMachine->createDataLayout());
-
-  auto Filename = "output.o";
-  std::error_code EC;
-  raw_fd_ostream dest(Filename, EC, sys::fs::OF_None);
-
-  if (EC) {
-    errs() << "Could not open file: " << EC.message();
-    return 1;
-  }
-
-  legacy::PassManager pass;
-  auto FileType = CodeGenFileType::ObjectFile;
-
-  if (TheTargetMachine->addPassesToEmitFile(pass, dest, nullptr, FileType)) {
-    errs() << "TheTargetMachine can't emit a file of this type";
-    return 1;
-  }
-
-  pass.run(*TheModule);
-  dest.flush();
-
-  outs() << "Wrote " << Filename << "\n";
+  // Run the main "interpreter loop" now.
+  TheModule->print(errs(), nullptr);
 
   return 0;
 }

@@ -1,10 +1,10 @@
-# RUN: %pyxc -i %s > %t 2>&1
-# RUN: ! grep -q "Error (Line:" %t
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: ! grep -q "^Error:" %t
+# RUN: grep -q "call double @add(double 2.000000e+01, double 2.200000e+01)" %t
 
-def main():
-    return add(20, 22)
+extern def printd(x)
 
-def add(a, b):
-    return a + b
+def main() : return add(20,22)
+def add(a,b) : return a+b
 
-main()
+printd(main())

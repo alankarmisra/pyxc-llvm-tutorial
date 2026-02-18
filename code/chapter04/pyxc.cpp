@@ -38,23 +38,23 @@ static llvm::cl::alias ReplEmitTokensShort(
     llvm::cl::aliasopt(ReplEmitTokens));
 
 static llvm::cl::opt<bool>
-    ReplEmitLLVM("emit-llvm", llvm::cl::sub(ReplCommand),
-                 llvm::cl::desc("Emit LLVM from REPL input"),
+    ReplEmitIR("emit-ir", llvm::cl::sub(ReplCommand),
+                 llvm::cl::desc("Emit LLVM IR from REPL input"),
                  llvm::cl::init(false));
-static llvm::cl::alias ReplEmitLLVMShort(
-    "l", llvm::cl::desc("Alias for --emit-llvm"),
-    llvm::cl::aliasopt(ReplEmitLLVM));
+static llvm::cl::alias ReplEmitIRShort(
+    "l", llvm::cl::desc("Alias for --emit-ir"),
+    llvm::cl::aliasopt(ReplEmitIR));
 
 static llvm::cl::list<string> RunInputFiles(llvm::cl::Positional,
                                             llvm::cl::sub(RunCommand),
                                             llvm::cl::desc("<script.pyxc>"),
                                             llvm::cl::ZeroOrMore);
 static llvm::cl::opt<bool>
-    RunEmitLLVM("emit-llvm", llvm::cl::sub(RunCommand),
-                llvm::cl::desc("Emit LLVM for the script"),
+    RunEmitIR("emit-ir", llvm::cl::sub(RunCommand),
+                llvm::cl::desc("Emit LLVM IR for the script"),
                 llvm::cl::init(false));
 
-enum BuildOutputKind { BuildEmitLLVM, BuildEmitObj, BuildEmitExe };
+enum BuildOutputKind { BuildEmitIR, BuildEmitObj, BuildEmitExe };
 static llvm::cl::list<string> BuildInputFiles(llvm::cl::Positional,
                                               llvm::cl::sub(BuildCommand),
                                               llvm::cl::desc("<script.pyxc>"),
@@ -62,7 +62,7 @@ static llvm::cl::list<string> BuildInputFiles(llvm::cl::Positional,
 static llvm::cl::opt<BuildOutputKind> BuildEmit(
     "emit", llvm::cl::sub(BuildCommand),
     llvm::cl::desc("Output kind for build"),
-    llvm::cl::values(clEnumValN(BuildEmitLLVM, "llvm", "Emit LLVM IR"),
+    llvm::cl::values(clEnumValN(BuildEmitIR, "ir", "Emit LLVM IR"),
                      clEnumValN(BuildEmitObj, "obj", "Emit object file"),
                      clEnumValN(BuildEmitExe, "exe", "Emit executable")),
     llvm::cl::init(BuildEmitExe));
@@ -779,7 +779,7 @@ int main(int argc, const char **argv) {
     }
     const string &RunInputFile = RunInputFiles.front();
     (void)RunInputFile;
-    (void)RunEmitLLVM;
+    (void)RunEmitIR;
     fprintf(stderr, "run: i havent learnt how to do that yet.\n");
     return 1;
   }
@@ -809,8 +809,8 @@ int main(int argc, const char **argv) {
     return 0;
   }
 
-  if (ReplCommand && ReplEmitLLVM) {
-    fprintf(stderr, "repl --emit-llvm: i havent learnt how to do that yet.\n");
+  if (ReplCommand && ReplEmitIR) {
+    fprintf(stderr, "repl --emit-ir: i havent learnt how to do that yet.\n");
   }
 
   // Prime the first token.

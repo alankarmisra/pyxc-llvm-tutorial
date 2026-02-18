@@ -18,7 +18,7 @@ It is designed to be readable like Python, but much closer to C in behavior and 
 
 This warning will be removed once the core tutorial has been stabilized. Thank you for your patience!
 
-**Current Status:** Chapters 1-9 are being actively revised and tested.
+**Current Status:** Chapters 1-9 are complete and stable. Chapters 10+ are being reviewed and revised.
 
 ## What this repo is
 
@@ -33,10 +33,9 @@ This warning will be removed once the core tutorial has been stabilized. Thank y
 - Expose low-level behavior directly (types, pointers, allocation, file I/O, syscalls-ish APIs).
 - Make it easy to inspect IR, assembly, and memory effects.
 
-## Current language snapshot
+## What You'll Build
 
-Larger example from current chapters: typed values, loops, `scanf`, `printf`,
-file I/O, structs, pointers, and manual memory management.
+By the end of this tutorial, you'll implement a compiler for Pyxc, a statically-typed Python-like language. Here's what Pyxc code looks like—a Mandelbrot set renderer with structs, types, control flow, pointers, and file I/O:
 
 ```py
 struct Complex:
@@ -113,6 +112,31 @@ main()
 ```
 
 This is the vibe of `pyxc`: Pythonic syntax, C-like control.
+
+**Note:** Chapters 1-9 cover the foundational compiler pipeline (lexer through debug info). The features shown above (structs, control flow, types, pointers) are covered in later chapters currently under review. But by Chapter 9, you'll have a complete toolchain that compiles simple mathematical functions to native code!
+
+### What Works in Chapters 1-9
+
+Here's what you can build with the current stable chapters:
+
+```python
+# Simple mathematical functions (all values are doubles for now)
+def square(x):
+    return x * x
+
+def distance(x1, y1, x2, y2):
+    return sqrt(square(x1 - x2) + square(y1 - y2))
+
+# Call external C library functions
+extern def sqrt(x)
+extern def sin(x)
+extern def cos(x)
+
+# Compile to object files and call from C++
+distance(3.0, 4.0, 0.0, 0.0)  # returns 5.0
+```
+
+Simple, but it compiles to optimized native code, includes debug information, and demonstrates the complete compiler pipeline!
 
 ## Build and run
 

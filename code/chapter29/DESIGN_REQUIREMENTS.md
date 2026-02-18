@@ -1,50 +1,63 @@
-# Chapter 26 Design Requirements
+# Chapter 25 Design Requirements
 
 ## Theme
-Separate compilation and multi-file linking workflow.
+Immutable value bindings via `const` declarations.
 
 ## Goal
-Allow Pyxc to compile and link multiple translation units in one command for executable and object workflows.
+Add first-class constant declarations to Pyxc so values can be explicitly immutable after initialization.
 
 ## Scope
 
 ### In Scope
-- Accept multiple positional input files.
-- Executable mode links all input translation units (+ runtime object).
-- Object mode compiles each input to a separate object file.
-- Token and interpret modes remain single-file only with clear diagnostics.
+- `const` declaration statement syntax:
+  - `const name: type = expression`
+- Requires initializer expression
+- Binds immutable variable in current scope
+- Assignment to const variable is rejected
+- Works with scalar/pointer/aggregate-compatible declaration types
 
 ### Out of Scope
-- Full preprocessor/include implementation.
-- Dependency graph/build system integration.
-- Symbol visibility attributes.
+- Compile-time constant folding requirements for initializer
+- Global const linkage model
+- Deep immutability of pointee/aggregate contents
 
-## CLI Requirements
-- Executable mode:
-  - `pyxc file1.pyxc file2.pyxc`
-  - `pyxc -o app file1.pyxc file2.pyxc`
-- Object mode:
-  - `pyxc -c file1.pyxc file2.pyxc`
+## Syntax Requirements
+```py
+const x: i32 = 42
+const p: ptr[i8] = "hello"
+```
 
-## Linker Requirements
-- Linker helper accepts multiple object files.
-- Runtime object remains linked as before.
+## Lexer Requirements
+- Add `const` keyword token.
+
+## Parser Requirements
+- Add parser for const declaration statement.
+- `const` declarations are statement-level (same scope model as local typed declarations).
+
+## AST Requirements
+- Add `ConstAssignStmtAST(Name, DeclType, InitExpr)`.
+
+## Semantic Requirements
+- `const` declarations must provide initializer.
+- Reassignment to const variable name is diagnostic error.
+- Existing typed variable behavior unchanged for non-const declarations.
 
 ## Diagnostics Requirements
-- interpret mode with multiple files -> error
-- token mode with multiple files -> error
-- object mode with `-o` and multiple files -> error
+- Missing const initializer.
+- Assignment to const variable.
 
 ## Tests
 
 ### Positive
-- two-file executable link with `extern def` declaration
-- multi-file object compilation emits both object paths
+- const scalar usage
+- const pointer usage
+- const in arithmetic/branch conditions
 
 ### Negative
-- token mode with multiple files errors
+- const declaration without initializer
+- assignment to const variable
 
 ## Done Criteria
-- Chapter 26 tests pass with multi-file support.
-- Chapter 25 behavior remains green.
-- Chapter docs updated.
+- Chapter 25 lit suite includes const coverage and passes.
+- Chapter 24 behavior remains green.
+- Chapter 25 docs/chapter summary added.

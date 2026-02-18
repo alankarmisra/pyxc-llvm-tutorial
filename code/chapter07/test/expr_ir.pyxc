@@ -1,4 +1,4 @@
-# RUN: %pyxc repl --emit-llvm < %s > %t 2>&1
+# RUN: %pyxc repl --emit-ir < %s > %t 2>&1
 # RUN: grep -q "ret double 7.000000e+00" %t
 
 1+2*3

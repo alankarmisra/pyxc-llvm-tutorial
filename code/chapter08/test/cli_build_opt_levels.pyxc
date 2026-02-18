@@ -1,8 +1,8 @@
 # Test that -O0 and -O3 produce different output
 # RUN: cp %s %t.pyxc
-# RUN: %pyxc build %t.pyxc --emit=llvm -O0 > %t.O0.ll 2>&1
+# RUN: %pyxc build %t.pyxc --emit=ir -O0 > %t.O0.ll 2>&1
 # RUN: grep -q "call double @helper" %t.O0.ll
-# RUN: %pyxc build %t.pyxc --emit=llvm -O3 > %t.O3.ll 2>&1
+# RUN: %pyxc build %t.pyxc --emit=ir -O3 > %t.O3.ll 2>&1
 # RUN: not grep -q "call double @helper" %t.O3.ll
 
 def helper(a):

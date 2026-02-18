@@ -58,10 +58,6 @@ decorator       = "@" , ( "unary" | "binary" ) , [ number ] ;
 
 statement       = if_stmt
                 | for_stmt
-                | while_stmt
-                | do_while_stmt
-                | break_stmt
-                | continue_stmt
                 | print_stmt
                 | return_stmt
                 | typed_assign_stmt
@@ -87,11 +83,6 @@ for_stmt        = "for" , identifier , "in" , "range" , "(" ,
                   expression , "," , expression ,
                   [ "," , expression ] ,
                   ")" , ":" , suite ;
-
-while_stmt      = "while" , expression , ":" , suite ;
-do_while_stmt   = "do" , ":" , suite , "while" , expression ;
-break_stmt      = "break" ;
-continue_stmt   = "continue" ;
 
 (* Python-style suite: either one inline statement or an indented block. *)
 suite           = inline_suite

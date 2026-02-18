@@ -19,8 +19,42 @@ You'll learn:
 By the end, you'll have a working language that:
 - Compiles functions and expressions
 - Calls C libraries
-- Generates optimized executables
+- Generates optimized native executables
 - Includes debug information
+- Links using LLVM's built-in linker
+
+## Where We're Headed
+
+**Chapters 1-11** build a complete compiler toolchain from lexer to native executables. You'll write Pyxc functions, compile them to object files, link them into binaries, and understand exactly what the linker does under the hood.
+
+**Chapters 12+** (coming soon) add the features that make Pyxc a full programming language: comparison operators, control flow, types, structs, and more.
+
+Here's a preview of what Pyxc will look like with those features:
+
+```python
+struct Complex:
+    re: double
+    im: double
+
+def mandel_escape(c: Complex, max_iter: int) -> int:
+    z_re: double = 0.0
+    z_im: double = 0.0
+    i: int = 0
+
+    while i < max_iter:
+        next_re: double = z_re * z_re - z_im * z_im + c.re
+        next_im: double = 2.0 * z_re * z_im + c.im
+        z_re = next_re
+        z_im = next_im
+
+        if z_re * z_re + z_im * z_im > 4.0:
+            return i
+        i = i + 1
+
+    return max_iter
+```
+
+Notice the comparison operators (`<`, `>`), equality check (`==`), control flow (`while`, `if`), and types (`int`, `double`, `Complex`)? Those features come in later chapters. But first, let's build the foundation...
 
 ## Credits
 
@@ -61,14 +95,17 @@ Each chapter builds on the previous one. You can:
 
 **[Chapter 9: Debug Information](chapter-09.md)** - Add DWARF debug info so debuggers like `lldb` can show your source code.
 
+**[Chapter 10: Generating Executables](chapter-10.md)** - Emit native executables directly using LLVM's built-in linker (LLD). No clang wrapper needed. Includes a small runtime library for I/O.
+
+**[Chapter 11: Linking Under the Hood](chapter-11.md)** - No new code. Use `nm` and `objdump` on your chapter 10 output to understand exactly what the linker does: symbol resolution, relocation, and what ends up in the final binary.
+
 ### Coming Soon
 
-More chapters are being prepared and will be added after review:
-- Control flow (if/else, loops)
-- Mutable variables
-- Types and pointers
-- Structs and arrays
-- And much more...
+More chapters are being prepared and will be added:
+- Comparison operators (`==`, `!=`, `<=`, `>=`) and logical operators
+- Fibonacci and Mandelbrot as showcase examples
+- Blocks and control flow
+- Types, structs, and more...
 
 ## What You'll Learn
 
@@ -81,6 +118,8 @@ By the end of the current chapters:
 - **JIT compilation** - Execute code immediately
 - **Object files** - Generate relocatable object code
 - **Debugging** - DWARF debug info
+- **Native executables** - Link object files into real binaries with LLD
+- **Linking internals** - Symbol resolution, relocation, object file formats
 - **Toolchain** - CLI, build modes, error messages
 
 And you'll have built a real compiler from scratch.

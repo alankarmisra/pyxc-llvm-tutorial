@@ -71,12 +71,10 @@ statement       = if_stmt
                 | free_stmt
                 | print_stmt
                 | return_stmt
-                | const_decl_stmt
                 | typed_assign_stmt
                 | assign_stmt
                 | expr_stmt ;
 
-const_decl_stmt = "const" , identifier , ":" , type_expr , "=" , expression ;
 typed_assign_stmt = identifier , ":" , type_expr , [ "=" , expression ] ;
 assign_stmt     = lvalue , "=" , expression ;
 lvalue          = identifier

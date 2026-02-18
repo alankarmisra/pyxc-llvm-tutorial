@@ -1,9 +1,0 @@
-# RUN: %pyxc -i %s > %t 2>&1
-# RUN: grep -q "Error (Line:" %t
-# RUN: grep -q "Expected positive integer literal array size" %t
-
-def main() -> i32:
-    a: array[i32, 0]
-    return 0
-
-main()

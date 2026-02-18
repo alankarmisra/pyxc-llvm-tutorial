@@ -1,4 +1,4 @@
-# RUN: %pyxc repl --emit-llvm < %s > %t 2>&1
+# RUN: %pyxc repl --emit-ir < %s > %t 2>&1
 # RUN: grep -q "define double @__anon_expr" %t
 # RUN: grep -q "ret double 4.200000e+01" %t
 # Full line comments should be ignored

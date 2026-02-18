@@ -451,7 +451,7 @@ if (BuildDebug) {
 After emitting the module or object file, clean up the debug info:
 
 ```cpp
-if (BuildEmit == BuildEmitLLVM) {
+if (BuildEmit == BuildEmitIR) {
   TheModule->print(outs(), nullptr);
   // Clean up debug info
   if (BuildDebug) {
@@ -536,14 +536,37 @@ $ dwarfdump --debug-info factorial.o | grep -A5 DW_TAG_subprogram
 
 Perfect! The object file now has complete debug information.
 
+## Testing Your Implementation
+
+This chapter includes **48 automated tests**. Run them with:
+
+```bash
+cd code/chapter09/test
+lit -v .
+# or: llvm-lit -v .
+```
+
+**Pro tip:** The test directory shows exactly what the language can do! Key tests include:
+- `debug_info_*.pyxc` - Verifies debug metadata generation
+- `debug_line_*.pyxc` - Tests source location tracking
+- `cli_build_debug.pyxc` - Tests the `-g` flag
+
+Browse the tests to see what debug features work!
+
 ## What's Next?
 
-In later chapters, when we implement:
-- **Variables**: We'll add `DILocalVariable` for debugging local variables
-- **Executables**: We'll be able to run programs under `lldb` and step through Pyxc source code
-- **Optimizations**: We'll need to handle how aggressive optimizations can make debug info inaccurate
+**Congratulations!** You've completed the foundational compiler pipeline (Chapters 1-9). You can now:
+- Lex and parse Pyxc code
+- Generate optimized LLVM IR
+- JIT compile and execute code
+- Generate object files with debug information
+- Call Pyxc functions from C++
 
-For now, we have the foundation: source locations, function metadata, and line number mapping. This is enough for basic source-level debugging once we can create executables.
+**Chapters 10+** (under review) will add:
+- **Variables**: Local variables and `DILocalVariable` for debugging them
+- **Control flow**: `if/else`, `while` loops
+- **Types**: `int`, `bool`, structs, pointers
+- **Executables**: Link to standalone programs
 
 ## Summary
 

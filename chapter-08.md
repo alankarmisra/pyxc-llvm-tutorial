@@ -8,7 +8,7 @@ description: "Implement object file emission and wire optimization levels into t
 In Chapter 7, we built a JIT that could execute functions interactively. But we still had a stub for the `build` subcommand. This chapter makes `build` real:
 
 ```bash
-./pyxc build fib.pyxc --emit=llvm        # Emit LLVM IR to stdout
+./pyxc build fib.pyxc --emit=ir        # Emit LLVM IR to stdout
 ./pyxc build fib.pyxc --emit=obj         # Emit fib.o object file
 ./pyxc build fib.pyxc --emit=obj -O3     # Emit optimized object file
 ```
@@ -48,7 +48,7 @@ static std::unique_ptr<LLVMContext> TheContext;
 static std::unique_ptr<Module> TheModule;
 static std::unique_ptr<IRBuilder<>> Builder;
 static std::map<std::string, Value *> NamedValues;
-static bool ShouldEmitLLVM = false;
+static bool ShouldEmitIR = false;
 static std::unique_ptr<PyxcJIT> TheJIT;
 static std::unique_ptr<FunctionPassManager> TheFPM;
 static std::unique_ptr<LoopAnalysisManager> TheLAM;
@@ -203,7 +203,7 @@ static void HandleDefinition() {
       return;
     }
     if (auto *FnIR = FnAST->codegen()) {
-      if (ShouldEmitLLVM) {
+      if (ShouldEmitIR) {
         FnIR->print(errs());
         fprintf(stderr, "\n");
       }
@@ -302,6 +302,8 @@ static bool EmitObjectFile(const std::string &OutputPath) {
   InitializeAllAsmParsers();
   InitializeAllAsmPrinters();
 
+  // Get the target triple: a string describing the target architecture
+  // Format: <arch>-<vendor>-<os> (e.g., "arm64-apple-darwin23.0.0", "x86_64-unknown-linux-gnu")
   const std::string TargetTriple = sys::getDefaultTargetTriple();
 
   std::string Error;
@@ -341,6 +343,27 @@ static bool EmitObjectFile(const std::string &OutputPath) {
   return true;
 }
 ```
+
+**Understanding the Target Triple:**
+
+The target triple is a string that identifies the platform we're compiling for. It has the format:
+
+```
+<architecture>-<vendor>-<operating-system>
+```
+
+Examples:
+- `arm64-apple-darwin23.0.0` - Apple Silicon Mac running macOS
+- `x86_64-unknown-linux-gnu` - 64-bit Intel/AMD Linux
+- `x86_64-pc-windows-msvc` - 64-bit Windows with MSVC
+
+LLVM uses this to determine:
+- **Instruction set** - ARM, x86, etc.
+- **Calling conventions** - How functions pass arguments
+- **Symbol naming** - Whether symbols need prefixes (like `_` on macOS)
+- **Object file format** - ELF (Linux), Mach-O (macOS), PE (Windows)
+
+By calling `sys::getDefaultTargetTriple()`, we compile for the current machine. You could also specify a different triple for cross-compilation (e.g., compile on Mac for Linux).
 
 This function only handles code generation. The optimization happens earlier in `main()` (see next section).
 
@@ -455,7 +478,7 @@ if (BuildCommand) {
   InteractiveMode = false;
   BuildObjectMode = true;
   CurrentOptLevel = BuildOptLevel;
-  ShouldEmitLLVM = false;
+  ShouldEmitIR = false;
 
   InitializeModuleAndManagers();
   getNextToken();
@@ -519,7 +542,7 @@ if (BuildCommand) {
     MPM.run(*TheModule, MAM);
   }
 
-  if (BuildEmit == BuildEmitLLVM) {
+  if (BuildEmit == BuildEmitIR) {
     TheModule->print(outs(), nullptr);
     return 0;
   }
@@ -540,7 +563,7 @@ Key steps:
 7. If errors occurred, exit with status 1
 8. Initialize target info for optimization and code generation
 9. If optimization is requested (`-O1`/`-O2`/`-O3`), run the module-level optimization pipeline using LLVM's New PassManager
-10. If `--emit=llvm`, print the (potentially optimized) module to stdout
+10. If `--emit=ir`, print the (potentially optimized) module to stdout
 11. If `--emit=obj`, call `EmitObjectFile()` to generate object code
 
 ## REPL Setup
@@ -588,7 +611,7 @@ int main(int argc, const char **argv) {
 
   // Make the module, which holds all the code and optimization managers.
   InitializeModuleAndManagers();
-  ShouldEmitLLVM = ReplEmitLLVM;
+  ShouldEmitIR = ReplEmitIR;
 
   // Run the main "interpreter loop" now.
   MainLoop();
@@ -638,7 +661,7 @@ def fib(n): return n
 
 Emit LLVM IR:
 ```bash
-$ ./build/pyxc build fib.pyxc --emit=llvm
+$ ./build/pyxc build fib.pyxc --emit=ir
 define double @fib(double %n) {
 entry:
   ret double %n
@@ -669,7 +692,7 @@ def add(x, y): return x + y + y
 
 Build without optimization:
 ```bash
-$ ./build/pyxc build add.pyxc --emit=llvm -O0
+$ ./build/pyxc build add.pyxc --emit=ir -O0
 define double @add(double %x, double %y) {
 entry:
   %addtmp = fadd double %x, %y
@@ -680,7 +703,7 @@ entry:
 
 Build with `-O3`:
 ```bash
-$ ./build/pyxc build add.pyxc --emit=llvm -O3
+$ ./build/pyxc build add.pyxc --emit=ir -O3
 define double @add(double %x, double %y) {
 entry:
   %0 = fadd double %y, %y
@@ -783,7 +806,7 @@ int main() {
 
 **Key points:**
 
-- `extern "C"` tells C++ not to mangle the function names (LLVM emits them as plain `@square`, not `@_Z6squared`)
+- `extern "C"` tells C++ to use C linkage (simple names like `square` instead of decorated names with type information)
 - Our Pyxc functions return `double` and take `double` parameters
 - We declare the prototypes but don't define them - they come from `math.o`
 
@@ -808,7 +831,7 @@ It works! The C++ code seamlessly calls functions compiled from Pyxc.
 Let's look at the optimized IR to see what `-O2` did:
 
 ```bash
-$ ./build/pyxc build math.pyxc --emit=llvm -O3
+$ ./build/pyxc build math.pyxc --emit=ir -O3
 ```
 
 The `distance` function after optimization:
@@ -840,7 +863,7 @@ $ objdump -d math.o
 
 The optimized machine code for `distance`:
 
-```asm
+```nasm
 fsub d1, d3, d1    ; y2 - y1
 fsub d0, d2, d0    ; x2 - x1
 fmul d1, d1, d1    ; (y2-y1)²
@@ -851,22 +874,27 @@ ret
 
 Six instructions total (4 arithmetic + return). The inlining eliminated all function call overhead!
 
-## What's Next
+## Testing Your Implementation
 
-- **Chapter 9:** Add debug information (`-g` flag) so we can debug Pyxc code with `lldb`
-- **Chapter 10:** Link to executables (`--emit=exe`) so Pyxc programs can run standalone
-
-## Run Tests
+This chapter includes **47 automated tests**. Run them with:
 
 ```bash
-cd code/chapter08
-llvm-lit -sv test
+cd code/chapter08/test
+lit -v .
+# or: llvm-lit -v .
 ```
 
-Two key tests:
-
+**Pro tip:** The test directory shows exactly what the language can do! Key tests include:
 - `cli_build_emit_obj.pyxc` - Verifies object file creation
 - `cli_build_opt_levels.pyxc` - Verifies `-O0` vs `-O3` produces different IR
+- `opt_inline_*.pyxc` - Shows function inlining optimizations
+- `cpp_interop_*.pyxc` - Tests for C++ interoperability
+
+Browse the tests to understand what's possible at this stage!
+
+## What's Next
+
+**Chapter 9** adds debug information (`-g` flag) so we can debug Pyxc code with `lldb` and see source code in the debugger.
 
 ## Need Help?
 

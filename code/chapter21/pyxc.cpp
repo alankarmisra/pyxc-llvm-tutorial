@@ -169,7 +169,6 @@ enum Token {
 
   // var definition
   tok_var = -15,
-  tok_print = -27,
 
   // indentation
   tok_indent = -16,
@@ -200,7 +199,7 @@ static std::map<std::string, Token> Keywords = {
     {"if", tok_if},   {"elif", tok_elif},     {"else", tok_else},
     {"for", tok_for}, {"in", tok_in},         {"range", tok_range},
     {"var", tok_var}, {"type", tok_type},     {"not", tok_not},
-    {"and", tok_and}, {"print", tok_print},
+    {"and", tok_and},
     {"or", tok_or}};
 
 struct SourceLocation {
@@ -209,40 +208,6 @@ struct SourceLocation {
 };
 static SourceLocation CurLoc;
 static SourceLocation LexLoc = {1, 0};
-
-class SourceManager {
-  std::vector<std::string> CompletedLines;
-  std::string CurrentLine;
-
-public:
-  void reset() {
-    CompletedLines.clear();
-    CurrentLine.clear();
-  }
-
-  void onChar(int C) {
-    if (C == '\n') {
-      CompletedLines.push_back(CurrentLine);
-      CurrentLine.clear();
-      return;
-    }
-    if (C != EOF)
-      CurrentLine.push_back(static_cast<char>(C));
-  }
-
-  const std::string *getLine(int OneBasedLine) const {
-    if (OneBasedLine <= 0)
-      return nullptr;
-    size_t Index = static_cast<size_t>(OneBasedLine - 1);
-    if (Index < CompletedLines.size())
-      return &CompletedLines[Index];
-    if (Index == CompletedLines.size())
-      return &CurrentLine;
-    return nullptr;
-  }
-};
-
-static SourceManager DiagSourceMgr;
 
 enum class TypeExprKind { Builtin, AliasRef, Pointer };
 
@@ -280,19 +245,15 @@ static int advance() {
     int NextChar = getc(InputFile);
     if (NextChar != '\n' && NextChar != EOF)
       ungetc(NextChar, InputFile);
-    DiagSourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
     return '\n';
   }
   if (LastChar == '\n') {
-    DiagSourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
-  } else {
-    DiagSourceMgr.onChar(LastChar);
+  } else
     LexLoc.Col++;
-  }
   return LastChar;
 }
 
@@ -302,53 +263,12 @@ class ExprAST;
 
 /// LogError* - These are little helper functions for error handling.
 static int CurTok;
-static const char *TokenName(int Tok);
-static std::string FormatTokenForError(int Tok) {
-  if (Tok == tok_identifier)
-    return "identifier '" + IdentifierStr + "'";
-  if (Tok == tok_number)
-    return "number";
-  if (Tok == tok_eol)
-    return "newline";
-  if (Tok == tok_eof)
-    return "end of file";
-
-  const char *Name = TokenName(Tok);
-  if (Name) {
-    std::string Raw(Name);
-    if (Raw.size() >= 2 && Raw.front() == '<' && Raw.back() == '>')
-      return Raw.substr(1, Raw.size() - 2);
-    return Raw;
-  }
-
-  if (isascii(Tok) && isprint(Tok))
-    return std::string("'") + static_cast<char>(Tok) + "'";
-  if (isascii(Tok))
-    return "ascii(" + std::to_string(Tok) + ")";
-  return "unknown token";
-}
-
-static void PrintErrorSourceContext(SourceLocation Loc) {
-  const std::string *LineText = DiagSourceMgr.getLine(Loc.Line);
-  if (!LineText)
-    return;
-
-  fprintf(stderr, "%s\n", LineText->c_str());
-
-  int Spaces = Loc.Col - 1;
-  if (Spaces < 0)
-    Spaces = 0;
-  for (int I = 0; I < Spaces; ++I)
-    fputc(' ', stderr);
-  fprintf(stderr, "%s^%s~~~\n", Bold, Reset);
-}
 static bool HadError = false;
 template <typename T = void> T LogError(const char *Str) {
   HadError = true;
-  const std::string TokDisplay = FormatTokenForError(CurTok);
-  fprintf(stderr, "%sError%s (Line: %d, Column: %d): %s near %s\n", Red, Reset,
-          CurLoc.Line, CurLoc.Col, Str, TokDisplay.c_str());
-  PrintErrorSourceContext(CurLoc);
+  // print CurTok with the error instead of two separate lines.
+  fprintf(stderr, "%sError (Line: %d, Column: %d): %s\nCurTok = %d\n%s", Red,
+          CurLoc.Line, CurLoc.Col, Str, CurTok, Reset);
 
   if constexpr (std::is_void_v<T>)
     return;
@@ -658,8 +578,6 @@ static const char *TokenName(int Tok) {
     return "<range>";
   case tok_var:
     return "<var>";
-  case tok_print:
-    return "<print>";
   case tok_not:
     return "<not>";
   case tok_and:
@@ -747,8 +665,6 @@ public:
   virtual const std::string *getVariableName() const { return nullptr; }
   virtual Type *getValueTypeHint() const { return nullptr; }
   virtual Type *getPointeeTypeHint() const { return nullptr; }
-  virtual std::string getBuiltinLeafTypeHint() const { return ""; }
-  virtual std::string getPointeeBuiltinLeafTypeHint() const { return ""; }
   int getLine() const { return Loc.Line; }
   int getCol() const { return Loc.Col; }
   virtual raw_ostream &dump(raw_ostream &out, int ind) {
@@ -853,8 +769,6 @@ public:
   Value *codegenAddress() override;
   Type *getValueTypeHint() const override;
   Type *getPointeeTypeHint() const override;
-  std::string getBuiltinLeafTypeHint() const override;
-  std::string getPointeeBuiltinLeafTypeHint() const override;
 };
 
 class AddrExprAST : public ExprAST {
@@ -872,7 +786,6 @@ public:
   Value *codegen() override;
   Type *getValueTypeHint() const override;
   Type *getPointeeTypeHint() const override;
-  std::string getPointeeBuiltinLeafTypeHint() const override;
 };
 
 class IndexExprAST : public ExprAST {
@@ -893,7 +806,6 @@ public:
   Value *codegen() override;
   Value *codegenAddress() override;
   Type *getValueTypeHint() const override;
-  std::string getBuiltinLeafTypeHint() const override;
 };
 
 /// UnaryExprAST - Expression class for a unary operator.
@@ -973,16 +885,6 @@ public:
       Expr->dump(out, ind + 2);
     return out;
   }
-};
-
-class PrintStmtAST : public StmtAST {
-  std::vector<std::unique_ptr<ExprAST>> Args;
-
-public:
-  PrintStmtAST(SourceLocation Loc, std::vector<std::unique_ptr<ExprAST>> Args)
-      : StmtAST(Loc), Args(std::move(Args)) {}
-
-  Value *codegen() override;
 };
 
 /// SuiteAST - a suite ie a single or multi statement block
@@ -1159,7 +1061,6 @@ static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
                                               std::unique_ptr<ExprAST> LHS);
 static std::unique_ptr<BlockSuiteAST> ParseSuite();
 static std::unique_ptr<BlockSuiteAST> ParseBlockSuite();
-static std::unique_ptr<StmtAST> ParsePrintStmt();
 static TypeExprPtr ParseTypeExpr();
 
 static void SkipToNextLine() {
@@ -1500,35 +1401,6 @@ static std::unique_ptr<ReturnStmtAST> ParseReturnStmt() {
   return std::make_unique<ReturnStmtAST>(ReturnLoc, std::move(Expr));
 }
 
-static std::unique_ptr<StmtAST> ParsePrintStmt() {
-  auto PrintLoc = CurLoc;
-  getNextToken(); // eat `print`
-  if (CurTok != '(')
-    return LogError<StmtPtr>("Expected '(' after print");
-  getNextToken(); // eat '('
-
-  std::vector<std::unique_ptr<ExprAST>> Args;
-  if (CurTok != ')') {
-    while (true) {
-      auto Arg = ParseExpression();
-      if (!Arg)
-        return nullptr;
-      Args.push_back(std::move(Arg));
-
-      if (CurTok == ')')
-        break;
-      if (CurTok != ',')
-        return LogError<StmtPtr>("Expected ')' or ',' in print argument list");
-      getNextToken(); // eat ','
-      if (CurTok == ')')
-        return LogError<StmtPtr>("Trailing comma is not allowed in print");
-    }
-  }
-
-  getNextToken(); // eat ')'
-  return std::make_unique<PrintStmtAST>(PrintLoc, std::move(Args));
-}
-
 static std::unique_ptr<StmtAST> ParseIdentifierLeadingStmt() {
   auto StmtLoc = CurLoc;
   auto LHS = ParseIdentifierExpr();
@@ -1587,8 +1459,6 @@ static std::unique_ptr<StmtAST> ParseStmt() {
     return ParseForStmt();
   case tok_return:
     return ParseReturnStmt();
-  case tok_print:
-    return ParsePrintStmt();
   case tok_type:
     return LogError<StmtPtr>("Type aliases are only allowed at top-level");
   case tok_identifier:
@@ -1868,8 +1738,6 @@ struct VarBinding {
   AllocaInst *Alloca = nullptr;
   Type *Ty = nullptr;
   Type *PointeeTy = nullptr;
-  std::string BuiltinLeafTy;
-  std::string PointeeBuiltinLeafTy;
 };
 static std::map<std::string, VarBinding> NamedValues;
 static std::unique_ptr<PyxcJIT> TheJIT;
@@ -2107,29 +1975,6 @@ static std::string ResolveBuiltinLeafName(const TypeExprPtr &Ty) {
   return ResolveBuiltinLeafName(Ty, Visited);
 }
 
-static std::string ResolvePointeeBuiltinLeafName(const TypeExprPtr &Ty,
-                                                 std::set<std::string> &Visited) {
-  if (!Ty)
-    return "";
-  if (Ty->Kind == TypeExprKind::Pointer)
-    return ResolveBuiltinLeafName(Ty->Elem);
-  if (Ty->Kind == TypeExprKind::AliasRef) {
-    auto It = TypeAliases.find(Ty->Name);
-    if (It == TypeAliases.end() || Visited.count(Ty->Name))
-      return "";
-    Visited.insert(Ty->Name);
-    std::string Resolved = ResolvePointeeBuiltinLeafName(It->second, Visited);
-    Visited.erase(Ty->Name);
-    return Resolved;
-  }
-  return "";
-}
-
-static std::string ResolvePointeeBuiltinLeafName(const TypeExprPtr &Ty) {
-  std::set<std::string> Visited;
-  return ResolvePointeeBuiltinLeafName(Ty, Visited);
-}
-
 static Attribute::AttrKind GetExtAttrForTypeExpr(const TypeExprPtr &Ty) {
   Type *LLTy = ResolveTypeExpr(Ty);
   if (!LLTy || !LLTy->isIntegerTy())
@@ -2256,20 +2101,6 @@ Type *VariableExprAST::getPointeeTypeHint() const {
   return It->second.PointeeTy;
 }
 
-std::string VariableExprAST::getBuiltinLeafTypeHint() const {
-  auto It = NamedValues.find(Name);
-  if (It == NamedValues.end())
-    return "";
-  return It->second.BuiltinLeafTy;
-}
-
-std::string VariableExprAST::getPointeeBuiltinLeafTypeHint() const {
-  auto It = NamedValues.find(Name);
-  if (It == NamedValues.end())
-    return "";
-  return It->second.PointeeBuiltinLeafTy;
-}
-
 Value *AddrExprAST::codegen() {
   emitLocation(this);
   Value *AddrV = Operand->codegenAddress();
@@ -2284,10 +2115,6 @@ Type *AddrExprAST::getValueTypeHint() const {
 
 Type *AddrExprAST::getPointeeTypeHint() const {
   return Operand->getValueTypeHint();
-}
-
-std::string AddrExprAST::getPointeeBuiltinLeafTypeHint() const {
-  return Operand->getBuiltinLeafTypeHint();
 }
 
 Value *IndexExprAST::codegenAddress() {
@@ -2328,10 +2155,6 @@ Value *IndexExprAST::codegen() {
 
 Type *IndexExprAST::getValueTypeHint() const { return Base->getPointeeTypeHint(); }
 
-std::string IndexExprAST::getBuiltinLeafTypeHint() const {
-  return Base->getPointeeBuiltinLeafTypeHint();
-}
-
 Value *TypedAssignStmtAST::codegen() {
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
   Type *DeclTy = ResolveTypeExpr(DeclType);
@@ -2353,9 +2176,7 @@ Value *TypedAssignStmtAST::codegen() {
     InitVal = Constant::getNullValue(DeclTy);
   }
   Builder->CreateStore(InitVal, Alloca);
-  NamedValues[Name] = {Alloca, DeclTy, ResolvePointeeTypeExpr(DeclType),
-                       ResolveBuiltinLeafName(DeclType),
-                       ResolvePointeeBuiltinLeafName(DeclType)};
+  NamedValues[Name] = {Alloca, DeclTy, ResolvePointeeTypeExpr(DeclType)};
   return InitVal;
 }
 
@@ -2547,94 +2368,6 @@ Value *CallExprAST::codegen() {
     return ConstantFP::get(*TheContext, APFloat(0.0));
   }
   return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
-}
-
-static Function *GetOrCreatePrintHelper(const std::string &Name, Type *Ty,
-                                        bool IsUnsignedInt) {
-  if (Function *F = TheModule->getFunction(Name))
-    return F;
-
-  FunctionType *FT = FunctionType::get(Ty, {Ty}, false);
-  Function *F =
-      Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
-
-  if (Ty->isIntegerTy() && Ty->getIntegerBitWidth() < 32) {
-    F->addRetAttr(IsUnsignedInt ? Attribute::ZExt : Attribute::SExt);
-    F->addParamAttr(0, IsUnsignedInt ? Attribute::ZExt : Attribute::SExt);
-  }
-  return F;
-}
-
-static Function *GetPrintCharHelper() {
-  return GetOrCreatePrintHelper("printchard", Type::getDoubleTy(*TheContext),
-                                false);
-}
-
-static Function *GetPrintHelperForArg(Type *ArgTy, const std::string &LeafHint) {
-  if (!ArgTy)
-    return nullptr;
-
-  if (ArgTy->isFloatTy())
-    return GetOrCreatePrintHelper("printfloat32", ArgTy, false);
-  if (ArgTy->isDoubleTy())
-    return GetOrCreatePrintHelper("printfloat64", ArgTy, false);
-  if (!ArgTy->isIntegerTy())
-    return nullptr;
-
-  bool IsUnsigned = !LeafHint.empty() && LeafHint[0] == 'u';
-  unsigned W = ArgTy->getIntegerBitWidth();
-  switch (W) {
-  case 8:
-    return GetOrCreatePrintHelper(IsUnsigned ? "printu8" : "printi8", ArgTy,
-                                  IsUnsigned);
-  case 16:
-    return GetOrCreatePrintHelper(IsUnsigned ? "printu16" : "printi16", ArgTy,
-                                  IsUnsigned);
-  case 32:
-    return GetOrCreatePrintHelper(IsUnsigned ? "printu32" : "printi32", ArgTy,
-                                  IsUnsigned);
-  case 64:
-    return GetOrCreatePrintHelper(IsUnsigned ? "printu64" : "printi64", ArgTy,
-                                  IsUnsigned);
-  default:
-    return nullptr;
-  }
-}
-
-Value *PrintStmtAST::codegen() {
-  emitLocation(this);
-
-  Function *PrintCharF = GetPrintCharHelper();
-  if (!PrintCharF)
-    return LogError<Value *>("Could not resolve print character helper");
-
-  for (size_t I = 0; I < Args.size(); ++I) {
-    Value *ArgV = Args[I]->codegen();
-    if (!ArgV)
-      return nullptr;
-
-    Type *ArgTy = ArgV->getType();
-    if (ArgTy->isPointerTy())
-      return LogError<Value *>("Unsupported print argument type: pointer");
-
-    Function *PrintF = GetPrintHelperForArg(ArgTy, Args[I]->getBuiltinLeafTypeHint());
-    if (!PrintF)
-      return LogError<Value *>("Unsupported print argument type");
-
-    Value *CastArg = CastValueTo(ArgV, PrintF->getFunctionType()->getParamType(0));
-    if (!CastArg)
-      return nullptr;
-    Builder->CreateCall(PrintF, {CastArg});
-
-    if (I + 1 < Args.size()) {
-      Value *Space = ConstantFP::get(*TheContext, APFloat(32.0));
-      Builder->CreateCall(PrintCharF, {Space});
-    }
-  }
-
-  Value *NewLine = ConstantFP::get(*TheContext, APFloat(10.0));
-  Builder->CreateCall(PrintCharF, {NewLine});
-  return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
 Value *IfStmtAST::codegen() {
@@ -3755,7 +3488,6 @@ void REPL() {
 //===----------------------------------------------------------------------===//
 
 int main(int argc, char **argv) {
-  DiagSourceMgr.reset();
   cl::HideUnrelatedOptions(PyxcCategory);
   cl::ParseCommandLineOptions(argc, argv, "Pyxc - Compiler and Interpreter\n");
 

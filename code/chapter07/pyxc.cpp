@@ -59,28 +59,28 @@ static cl::alias ReplEmitTokensShort(
     "t", cl::desc("Alias for --emit-tokens"),
     cl::aliasopt(ReplEmitTokens));
 
-static cl::opt<bool> ReplEmitLLVM("emit-llvm", cl::sub(ReplCommand),
+static cl::opt<bool> ReplEmitIR("emit-ir", cl::sub(ReplCommand),
                                   cl::desc("Print LLVM IR for parsed input"),
                                   cl::init(false));
-static cl::alias ReplEmitLLVMShort(
-    "l", cl::desc("Alias for --emit-llvm"),
-    cl::aliasopt(ReplEmitLLVM));
+static cl::alias ReplEmitIRShort(
+    "l", cl::desc("Alias for --emit-ir"),
+    cl::aliasopt(ReplEmitIR));
 
 static cl::list<std::string> RunInputFiles(cl::Positional, cl::sub(RunCommand),
                                            cl::desc("<script.pyxc>"),
                                            cl::ZeroOrMore);
-static cl::opt<bool> RunEmitLLVM("emit-llvm", cl::sub(RunCommand),
-                                 cl::desc("Emit LLVM for the script"),
+static cl::opt<bool> RunEmitIR("emit-ir", cl::sub(RunCommand),
+                                 cl::desc("Emit LLVM IR for the script"),
                                  cl::init(false));
 
-enum BuildOutputKind { BuildEmitLLVM, BuildEmitObj, BuildEmitExe };
+enum BuildOutputKind { BuildEmitIR, BuildEmitObj, BuildEmitExe };
 static cl::list<std::string> BuildInputFiles(cl::Positional,
                                              cl::sub(BuildCommand),
                                              cl::desc("<script.pyxc>"),
                                              cl::ZeroOrMore);
 static cl::opt<BuildOutputKind>
     BuildEmit("emit", cl::sub(BuildCommand), cl::desc("Output kind for build"),
-              cl::values(clEnumValN(BuildEmitLLVM, "llvm", "Emit LLVM IR"),
+              cl::values(clEnumValN(BuildEmitIR, "ir", "Emit LLVM IR"),
                          clEnumValN(BuildEmitObj, "obj", "Emit object file"),
                          clEnumValN(BuildEmitExe, "exe", "Emit executable")),
               cl::init(BuildEmitExe));
@@ -693,7 +693,7 @@ static std::unique_ptr<LLVMContext> TheContext;
 static std::unique_ptr<Module> TheModule;
 static std::unique_ptr<IRBuilder<>> Builder;
 static std::map<std::string, Value *> NamedValues;
-static bool ShouldEmitLLVM = false;
+static bool ShouldEmitIR = false;
 static std::unique_ptr<PyxcJIT> TheJIT;
 static std::unique_ptr<FunctionPassManager> TheFPM;
 static std::unique_ptr<LoopAnalysisManager> TheLAM;
@@ -885,7 +885,7 @@ static void HandleDefinition() {
       return;
     }
     if (auto *FnIR = FnAST->codegen()) {
-      if (ShouldEmitLLVM) {
+      if (ShouldEmitIR) {
         FnIR->print(errs());
         fprintf(stderr, "\n");
       }
@@ -909,7 +909,7 @@ static void HandleExtern() {
       return;
     }
     if (auto *FnIR = ProtoAST->codegen()) {
-      if (ShouldEmitLLVM) {
+      if (ShouldEmitIR) {
         FnIR->print(errs());
         fprintf(stderr, "\n");
       }
@@ -935,7 +935,7 @@ static void HandleTopLevelExpression() {
       ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
       InitializeModuleAndManagers();
 
-      if (ShouldEmitLLVM) {
+      if (ShouldEmitIR) {
         FnIR->print(errs());
         fprintf(stderr, "\n");
       }
@@ -1017,7 +1017,7 @@ int main(int argc, const char **argv) {
     }
     const std::string &RunInputFile = RunInputFiles.front();
     (void)RunInputFile;
-    (void)RunEmitLLVM;
+    (void)RunEmitIR;
     fprintf(stderr, "run: i havent learnt how to do that yet.\n");
     return 1;
   }
@@ -1058,7 +1058,7 @@ int main(int argc, const char **argv) {
 
   // Make the module, which holds all the code and optimization managers.
   InitializeModuleAndManagers();
-  ShouldEmitLLVM = ReplEmitLLVM;
+  ShouldEmitIR = ReplEmitIR;
 
   // Run the main "interpreter loop" now.
   MainLoop();
