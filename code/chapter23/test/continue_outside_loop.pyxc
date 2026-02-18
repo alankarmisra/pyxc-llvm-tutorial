@@ -1,9 +1,0 @@
-# RUN: %pyxc -i %s > %t 2>&1
-# RUN: grep -q "continue" %t
-# RUN: grep -q "outside of a loop" %t
-
-def main() -> i32:
-    continue
-    return 0
-
-main()

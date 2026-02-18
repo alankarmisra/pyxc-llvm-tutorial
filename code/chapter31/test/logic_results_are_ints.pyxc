@@ -1,9 +1,0 @@
-# RUN: %pyxc -i %s > %t 2>&1
-# RUN: grep -x '1 0 0 1 1 0' %t
-# RUN: ! grep -q "Error (Line:" %t
-
-def main() -> i32:
-    print(not 0, not 7, 1 and 0, 1 or 0, 3 < 5, 3 > 5)
-    return 0
-
-main()

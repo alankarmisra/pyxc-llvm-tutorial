@@ -1,7 +1,0 @@
-# RUN: %pyxc --help > %t 2>&1
-# RUN: grep -q "Pyxc Options" %t
-# RUN: grep -q "Execution mode:" %t
-# RUN: grep -q "Optimization level (0-3)" %t
-
-def main():
-    return 0

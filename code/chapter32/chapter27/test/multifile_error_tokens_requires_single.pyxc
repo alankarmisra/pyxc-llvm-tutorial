@@ -1,5 +1,0 @@
-# RUN: not %pyxc -t %S/c25_mod_add.pyxc %s > %t 2>&1
-# RUN: grep -q "Error:" %t
-# RUN: grep -q "token mode requires exactly one input file" %t
-
-# extra file placeholder

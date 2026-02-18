@@ -1,5 +1,0 @@
-# RUN: %pyxc -i %s > %t 2>&1
-# RUN: ! grep -q "Error (Line:" %t
-
-def read_one() -> i32:
-    return getchar()

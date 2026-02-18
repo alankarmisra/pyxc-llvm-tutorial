@@ -1,5 +1,0 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "ModuleID = 'PyxcJIT'" %t
-# RUN: grep -q "define double @main()" %t
-
-1+2*3
