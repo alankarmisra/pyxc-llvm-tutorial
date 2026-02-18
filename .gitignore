@@ -74,3 +74,5 @@ pyxc
 runtime.o
 
 .claude/
+memory/
+chapter-*-todo.md
