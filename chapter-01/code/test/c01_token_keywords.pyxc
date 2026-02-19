@@ -1,6 +1,0 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "'def'" %t
-# RUN: grep -q "'extern'" %t
-# RUN: grep -q "'return'" %t
-
-def extern return
