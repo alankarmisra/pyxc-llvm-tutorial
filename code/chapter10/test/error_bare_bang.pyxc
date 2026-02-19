@@ -3,4 +3,4 @@
 # RUN: grep -q "Unexpected '!'" %t
 
 def bad_bang(x, y):
-  return x ! y
+    return x ! y

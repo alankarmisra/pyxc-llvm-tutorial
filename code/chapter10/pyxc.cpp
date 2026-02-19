@@ -37,7 +37,6 @@
 #include <iomanip>
 #include <map>
 #include <memory>
-#include <deque>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -121,17 +120,12 @@ enum Token {
 
   // control
   tok_return = -8,
-  tok_if = -15,
-  tok_else = -16,
-  tok_while = -17,
 
   // multi-char comparison operators
   tok_eq = -9, // ==
   tok_ne = -10, // !=
   tok_le = -11, // <=
-  tok_ge = -12, // >=
-  tok_indent = -13,
-  tok_dedent = -14
+  tok_ge = -12  // >=
 };
 
 static std::string IdentifierStr; // Filled in if tok_identifier
@@ -142,12 +136,7 @@ static bool HadError = false;
 // Keywords words like `def`, `extern` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
 static std::map<std::string, Token> Keywords = {
-    {"def", tok_def},
-    {"extern", tok_extern},
-    {"return", tok_return},
-    {"if", tok_if},
-    {"else", tok_else},
-    {"while", tok_while}};
+    {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return}};
 
 // Debug-only token names. Kept separate from Keywords because this map is
 // purely for printing token stream output.
@@ -162,15 +151,10 @@ static std::map<int, std::string> TokenNames = [] {
       {tok_identifier, "identifier"},
       {tok_number, "number"},
       {tok_return, "'return'"},
-      {tok_if, "'if'"},
-      {tok_else, "'else'"},
-      {tok_while, "'while'"},
       {tok_eq, "'=='"},
       {tok_ne, "'!='"},
       {tok_le, "'<='"},
       {tok_ge, "'>='"},
-      {tok_indent, "indent"},
-      {tok_dedent, "dedent"},
   };
 
   // Single character tokens.
@@ -236,9 +220,6 @@ public:
 };
 
 static SourceManager DiagSourceMgr;
-static std::deque<std::pair<int, SourceLocation>> PendingTokens;
-static std::vector<int> IndentStack = {0};
-static bool AtLineStart = true;
 
 static std::string FormatTokenForMessage(int Tok) {
   if (Tok == tok_identifier)
@@ -322,203 +303,113 @@ static int advance() {
 /// gettok - Return the next token from standard input.
 static int gettok() {
   static int LastChar = ' ';
-  static bool NeedPrime = true;
-  while (true) {
-    if (NeedPrime) {
+  // Skip whitespace EXCEPT newlines
+  while (isspace(LastChar) && LastChar != '\n')
+    LastChar = advance();
+
+  // Return end-of-line token.
+  if (LastChar == '\n') {
+    CurLoc = LexLoc;
+    LastChar = ' ';
+    return tok_eol;
+  }
+
+  CurLoc = LexLoc;
+
+  if (isalpha(LastChar) ||
+      LastChar == '_') { // identifier: [a-zA-Z_][a-zA-Z0-9_]*
+    IdentifierStr = LastChar;
+    while (isalnum((LastChar = advance())) || LastChar == '_')
+      IdentifierStr += LastChar;
+
+    // Is this a known keyword? If yes, return that.
+    // Else it is an ordinary identifier.
+    const auto it = Keywords.find(IdentifierStr);
+    return (it != Keywords.end()) ? it->second : tok_identifier;
+  }
+
+  if (isdigit(LastChar) || LastChar == '.') { // Number: [0-9.]+
+    std::string NumStr;
+    do {
+      NumStr += LastChar;
       LastChar = advance();
-      NeedPrime = false;
+    } while (isdigit(LastChar) || LastChar == '.');
+
+    char *End;
+    NumVal = strtod(NumStr.c_str(), &End);
+    if (*End != '\0') {
+      HadError = true;
+      fprintf(stderr,
+              "%sError%s (Line %d, Column %d): invalid number literal '%s'\n",
+              Red, Reset, CurLoc.Line, CurLoc.Col, NumStr.c_str());
+      return tok_error;
     }
+    NumLiteralStr = NumStr;
+    return tok_number;
+  }
 
-    if (!PendingTokens.empty()) {
-      auto Next = PendingTokens.front();
-      PendingTokens.pop_front();
-      CurLoc = Next.second;
-      return Next.first;
-    }
-
-    if (AtLineStart) {
-      int IndentWidth = 0;
-      while (LastChar == ' ' || LastChar == '\t') {
-        if (LastChar == '\t') {
-          HadError = true;
-          CurLoc = LexLoc;
-          fprintf(stderr,
-                  "%sError%s (Line %d, Column %d): tabs are not allowed for "
-                  "indentation\n",
-                  Red, Reset, CurLoc.Line, CurLoc.Col);
-          LastChar = advance();
-          return tok_error;
-        }
-        ++IndentWidth;
-        LastChar = advance();
-      }
-
-      if (LastChar == '#') {
-        do
-          LastChar = advance();
-        while (LastChar != EOF && LastChar != '\n');
-      }
-
-      if (LastChar == '\n') {
-        CurLoc = LexLoc;
-        LastChar = advance();
-        AtLineStart = true;
-        return tok_eol;
-      }
-
-      if (LastChar == EOF) {
-        if (IndentStack.size() > 1) {
-          IndentStack.pop_back();
-          CurLoc = LexLoc;
-          return tok_dedent;
-        }
-        return tok_eof;
-      }
-
-      const int CurrentIndent = IndentStack.back();
-      if (IndentWidth > CurrentIndent) {
-        IndentStack.push_back(IndentWidth);
-        PendingTokens.push_back(
-            {tok_indent, SourceLocation{LexLoc.Line, IndentWidth + 1}});
-        AtLineStart = false;
-        continue;
-      }
-
-      if (IndentWidth < CurrentIndent) {
-        while (IndentStack.size() > 1 && IndentWidth < IndentStack.back()) {
-          IndentStack.pop_back();
-          PendingTokens.push_back(
-              {tok_dedent, SourceLocation{LexLoc.Line, IndentWidth + 1}});
-        }
-
-        if (IndentStack.back() != IndentWidth) {
-          HadError = true;
-          CurLoc = SourceLocation{LexLoc.Line, IndentWidth + 1};
-          fprintf(stderr,
-                  "%sError%s (Line %d, Column %d): inconsistent indentation\n",
-                  Red, Reset, CurLoc.Line, CurLoc.Col);
-          return tok_error;
-        }
-
-        AtLineStart = false;
-        continue;
-      }
-
-      AtLineStart = false;
-    }
-
-    // Skip whitespace EXCEPT newlines.
-    while (isspace(LastChar) && LastChar != '\n')
+  // Multi-character comparison operators.
+  if (LastChar == '=') {
+    int NextChar = advance();
+    if (NextChar == '=') {
       LastChar = advance();
+      return tok_eq;
+    }
+    LastChar = NextChar;
+    return '=';
+  }
 
-    // Return end-of-line token.
-    if (LastChar == '\n') {
+  if (LastChar == '!') {
+    int NextChar = advance();
+    if (NextChar == '=') {
+      LastChar = advance();
+      return tok_ne;
+    }
+    LastChar = NextChar;
+    return '!';
+  }
+
+  if (LastChar == '<') {
+    int NextChar = advance();
+    if (NextChar == '=') {
+      LastChar = advance();
+      return tok_le;
+    }
+    LastChar = NextChar;
+    return '<';
+  }
+
+  if (LastChar == '>') {
+    int NextChar = advance();
+    if (NextChar == '=') {
+      LastChar = advance();
+      return tok_ge;
+    }
+    LastChar = NextChar;
+    return '>';
+  }
+
+  if (LastChar == '#') {
+    // Comment until end of line.
+    do
+      LastChar = advance();
+    while (LastChar != EOF && LastChar != '\n');
+
+    if (LastChar != EOF) {
       CurLoc = LexLoc;
-      LastChar = advance();
-      AtLineStart = true;
+      LastChar = ' ';
       return tok_eol;
     }
-
-    CurLoc = LexLoc;
-
-    if (isalpha(LastChar) ||
-        LastChar == '_') { // identifier: [a-zA-Z_][a-zA-Z0-9_]*
-      IdentifierStr = LastChar;
-      while (isalnum((LastChar = advance())) || LastChar == '_')
-        IdentifierStr += LastChar;
-
-      const auto it = Keywords.find(IdentifierStr);
-      return (it != Keywords.end()) ? it->second : tok_identifier;
-    }
-
-    if (isdigit(LastChar) || LastChar == '.') { // Number: [0-9.]+
-      std::string NumStr;
-      do {
-        NumStr += LastChar;
-        LastChar = advance();
-      } while (isdigit(LastChar) || LastChar == '.');
-
-      char *End;
-      NumVal = strtod(NumStr.c_str(), &End);
-      if (*End != '\0') {
-        HadError = true;
-        fprintf(stderr,
-                "%sError%s (Line %d, Column %d): invalid number literal '%s'\n",
-                Red, Reset, CurLoc.Line, CurLoc.Col, NumStr.c_str());
-        return tok_error;
-      }
-      NumLiteralStr = NumStr;
-      return tok_number;
-    }
-
-    // Multi-character comparison operators.
-    if (LastChar == '=') {
-      int NextChar = advance();
-      if (NextChar == '=') {
-        LastChar = advance();
-        return tok_eq;
-      }
-      LastChar = NextChar;
-      return '=';
-    }
-
-    if (LastChar == '!') {
-      int NextChar = advance();
-      if (NextChar == '=') {
-        LastChar = advance();
-        return tok_ne;
-      }
-      LastChar = NextChar;
-      return '!';
-    }
-
-    if (LastChar == '<') {
-      int NextChar = advance();
-      if (NextChar == '=') {
-        LastChar = advance();
-        return tok_le;
-      }
-      LastChar = NextChar;
-      return '<';
-    }
-
-    if (LastChar == '>') {
-      int NextChar = advance();
-      if (NextChar == '=') {
-        LastChar = advance();
-        return tok_ge;
-      }
-      LastChar = NextChar;
-      return '>';
-    }
-
-    if (LastChar == '#') {
-      // Comment until end of line.
-      do
-        LastChar = advance();
-      while (LastChar != EOF && LastChar != '\n');
-
-      if (LastChar != EOF) {
-        CurLoc = LexLoc;
-        LastChar = advance();
-        AtLineStart = true;
-        return tok_eol;
-      }
-    }
-
-    if (LastChar == EOF) {
-      if (IndentStack.size() > 1) {
-        IndentStack.pop_back();
-        CurLoc = LexLoc;
-        return tok_dedent;
-      }
-      return tok_eof;
-    }
-
-    int ThisChar = LastChar;
-    LastChar = advance();
-    return ThisChar;
   }
+
+  // Check for end of file.  Don't eat the EOF.
+  if (LastChar == EOF)
+    return tok_eof;
+
+  // Otherwise, just return the character as its ascii value.
+  int ThisChar = LastChar;
+  LastChar = advance();
+  return ThisChar;
 }
 
 //===----------------------------------------------------------------------===//
@@ -581,7 +472,7 @@ public:
   Value *codegen() override;
 };
 
-/// BlockExprAST - Expression class for indentation-delimited statement blocks.
+/// BlockExprAST - Expression class for semicolon-separated statement blocks.
 /// Prefix expressions are evaluated for side effects; return expression provides
 /// the block value.
 class BlockExprAST : public ExprAST {
@@ -593,42 +484,6 @@ public:
                std::unique_ptr<ExprAST> ReturnExpr)
       : PrefixExprs(std::move(PrefixExprs)), ReturnExpr(std::move(ReturnExpr)) {
   }
-  Value *codegen() override;
-};
-
-/// SuiteExprAST - Expression class for indentation-delimited expression suites.
-/// The suite value is the value of its final expression.
-class SuiteExprAST : public ExprAST {
-  std::vector<std::unique_ptr<ExprAST>> Exprs;
-
-public:
-  SuiteExprAST(std::vector<std::unique_ptr<ExprAST>> Exprs)
-      : Exprs(std::move(Exprs)) {}
-  Value *codegen() override;
-};
-
-/// IfExprAST - if/else expression.
-class IfExprAST : public ExprAST {
-  std::unique_ptr<ExprAST> CondExpr;
-  std::unique_ptr<ExprAST> ThenExpr;
-  std::unique_ptr<ExprAST> ElseExpr;
-
-public:
-  IfExprAST(std::unique_ptr<ExprAST> CondExpr, std::unique_ptr<ExprAST> ThenExpr,
-            std::unique_ptr<ExprAST> ElseExpr)
-      : CondExpr(std::move(CondExpr)), ThenExpr(std::move(ThenExpr)),
-        ElseExpr(std::move(ElseExpr)) {}
-  Value *codegen() override;
-};
-
-/// WhileExprAST - while expression. Returns 0.0 after loop completion.
-class WhileExprAST : public ExprAST {
-  std::unique_ptr<ExprAST> CondExpr;
-  std::unique_ptr<ExprAST> BodyExpr;
-
-public:
-  WhileExprAST(std::unique_ptr<ExprAST> CondExpr, std::unique_ptr<ExprAST> BodyExpr)
-      : CondExpr(std::move(CondExpr)), BodyExpr(std::move(BodyExpr)) {}
   Value *codegen() override;
 };
 
@@ -718,10 +573,6 @@ template <typename T = void> T LogError(const char *Str) {
 
 static std::unique_ptr<ExprAST> ParseExpression();
 static std::unique_ptr<ExprAST> ParseBlockExpr();
-static std::unique_ptr<ExprAST> ParseIndentedExprSuite(
-    const char *HeaderContext);
-static std::unique_ptr<ExprAST> ParseIfExpr();
-static std::unique_ptr<ExprAST> ParseWhileExpr();
 
 /// numberexpr ::= number
 static std::unique_ptr<ExprAST> ParseNumberExpr() {
@@ -783,8 +634,6 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
 ///   ::= identifierexpr
 ///   ::= numberexpr
 ///   ::= parenexpr
-///   ::= ifexpr
-///   ::= whileexpr
 static std::unique_ptr<ExprAST> ParsePrimary() {
   switch (CurTok) {
   case tok_identifier:
@@ -793,10 +642,6 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
     return ParseNumberExpr();
   case '(':
     return ParseParenExpr();
-  case tok_if:
-    return ParseIfExpr();
-  case tok_while:
-    return ParseWhileExpr();
   default: {
     std::string Msg = "Unexpected " + FormatTokenForMessage(CurTok) +
                       " when expecting an expression";
@@ -888,178 +733,62 @@ static std::unique_ptr<PrototypeAST> ParsePrototype() {
   return std::make_unique<PrototypeAST>(FnLoc, FnName, std::move(ArgNames));
 }
 
-/// block ::= INDENT statement { eol statement } DEDENT
+/// block ::= statement { ";" statement } [ ";" ]
 /// statement ::= "return" expression | expression
 static std::unique_ptr<ExprAST> ParseBlockExpr() {
   std::vector<std::unique_ptr<ExprAST>> PrefixExprs;
-  std::unique_ptr<ExprAST> ReturnExpr;
-  bool SawReturn = false;
 
-  if (CurTok != tok_indent)
-    return LogError<ExprPtr>("Expected indented block after ':'");
-  getNextToken(); // consume indent
-
-  while (CurTok != tok_dedent && CurTok != tok_eof) {
-    if (CurTok == tok_eol) {
-      getNextToken();
-      continue;
-    }
-
-    if (CurTok == tok_return) {
-      if (SawReturn)
-        return LogError<ExprPtr>("Return must be the final statement in a block");
-      getNextToken(); // consume 'return'
-      ReturnExpr = ParseExpression();
-      if (!ReturnExpr)
-        return nullptr;
-      SawReturn = true;
-    } else {
-      if (SawReturn)
-        return LogError<ExprPtr>("Return must be the final statement in a block");
-      auto E = ParseExpression();
-      if (!E)
-        return nullptr;
-      PrefixExprs.push_back(std::move(E));
-    }
-
-    if (CurTok == tok_eol) {
-      while (CurTok == tok_eol)
-        getNextToken();
-      continue;
-    }
-
-    if (CurTok == tok_dedent || CurTok == tok_eof)
-      continue;
-
-    if (CurTok == '=' || CurTok == '!') {
-      std::string Msg = "Unexpected " + FormatTokenForMessage(CurTok) +
-                        " when expecting an expression";
-      return LogError<ExprPtr>(Msg.c_str());
-    }
-
-    return LogError<ExprPtr>("Expected newline after statement");
-  }
-
-  if (!SawReturn)
-    return LogError<ExprPtr>(
-        "Expected at least one return statement in function body");
-
-  if (CurTok == tok_dedent)
-    getNextToken(); // consume dedent
-
-  return std::make_unique<BlockExprAST>(std::move(PrefixExprs),
-                                        std::move(ReturnExpr));
-}
-
-/// suite ::= INDENT expression { eol expression } DEDENT
-static std::unique_ptr<ExprAST> ParseIndentedExprSuite(
-    const char *HeaderContext) {
-  if (CurTok != tok_eol) {
-    std::string Msg = "Expected newline after ':' in ";
-    Msg += HeaderContext;
-    Msg += " expression";
-    return LogError<ExprPtr>(Msg.c_str());
-  }
-
+  // Allow visual newlines within a block before the first statement.
   while (CurTok == tok_eol)
     getNextToken();
 
-  if (CurTok != tok_indent)
-    return LogError<ExprPtr>("Expected indented block after ':'");
-  getNextToken(); // consume indent
-
-  std::vector<std::unique_ptr<ExprAST>> Exprs;
-  while (CurTok != tok_dedent && CurTok != tok_eof) {
-    if (CurTok == tok_eol) {
-      getNextToken();
-      continue;
-    }
-
-    if (CurTok == tok_return)
-      return LogError<ExprPtr>("'return' is only valid in function bodies");
+  while (CurTok != tok_return) {
+    if (CurTok == tok_eof)
+      return LogError<ExprPtr>(
+          "Expected at least one return statement in function body");
 
     auto E = ParseExpression();
     if (!E)
       return nullptr;
-    Exprs.push_back(std::move(E));
+    PrefixExprs.push_back(std::move(E));
 
-    if (CurTok == tok_eol) {
+    if (CurTok == ';') {
+      getNextToken(); // consume ';'
+      // Allow newlines after statement separators.
       while (CurTok == tok_eol)
         getNextToken();
       continue;
     }
 
-    if (CurTok == tok_dedent || CurTok == tok_eof)
-      continue;
+    if (CurTok == tok_return)
+      return LogError<ExprPtr>("Expected ';' after statement");
 
-    if (CurTok == '=' || CurTok == '!') {
-      std::string Msg = "Unexpected " + FormatTokenForMessage(CurTok) +
-                        " when expecting an expression";
-      return LogError<ExprPtr>(Msg.c_str());
+    if (CurTok == tok_eol) {
+      while (CurTok == tok_eol)
+        getNextToken();
+      if (CurTok == tok_eof)
+        return LogError<ExprPtr>(
+            "Expected at least one return statement in function body");
+      return LogError<ExprPtr>("Expected ';' after statement");
     }
 
-    return LogError<ExprPtr>("Expected newline after statement");
+    if (CurTok == tok_eof)
+      return LogError<ExprPtr>(
+          "Expected at least one return statement in function body");
+
+    return LogError<ExprPtr>("Expected ';' after statement");
   }
 
-  if (Exprs.empty())
-    return LogError<ExprPtr>("Expected at least one expression in block");
-
-  if (CurTok == tok_dedent)
-    getNextToken(); // consume dedent
-
-  return std::make_unique<SuiteExprAST>(std::move(Exprs));
-}
-
-/// ifexpr ::= 'if' expression ':' suite 'else' ':' suite
-static std::unique_ptr<ExprAST> ParseIfExpr() {
-  getNextToken(); // consume 'if'
-
-  auto CondExpr = ParseExpression();
-  if (!CondExpr)
+  getNextToken(); // consume 'return'
+  auto ReturnExpr = ParseExpression();
+  if (!ReturnExpr)
     return nullptr;
 
-  if (CurTok != ':')
-    return LogError<ExprPtr>("Expected ':' after if condition");
-  getNextToken(); // consume ':'
+  if (CurTok == ';')
+    getNextToken(); // optional trailing semicolon
 
-  auto ThenExpr = ParseIndentedExprSuite("if");
-  if (!ThenExpr)
-    return nullptr;
-
-  if (CurTok != tok_else)
-    return LogError<ExprPtr>("Expected 'else' in if expression");
-  getNextToken(); // consume 'else'
-
-  if (CurTok != ':')
-    return LogError<ExprPtr>("Expected ':' after else");
-  getNextToken(); // consume ':'
-
-  auto ElseExpr = ParseIndentedExprSuite("else");
-  if (!ElseExpr)
-    return nullptr;
-
-  return std::make_unique<IfExprAST>(std::move(CondExpr), std::move(ThenExpr),
-                                     std::move(ElseExpr));
-}
-
-/// whileexpr ::= 'while' expression ':' suite
-static std::unique_ptr<ExprAST> ParseWhileExpr() {
-  getNextToken(); // consume 'while'
-
-  auto CondExpr = ParseExpression();
-  if (!CondExpr)
-    return nullptr;
-
-  if (CurTok != ':')
-    return LogError<ExprPtr>("Expected ':' after while condition");
-  getNextToken(); // consume ':'
-
-  auto BodyExpr = ParseIndentedExprSuite("while");
-  if (!BodyExpr)
-    return nullptr;
-
-  return std::make_unique<WhileExprAST>(std::move(CondExpr),
-                                        std::move(BodyExpr));
+  return std::make_unique<BlockExprAST>(std::move(PrefixExprs),
+                                        std::move(ReturnExpr));
 }
 
 /// definition ::= 'def' prototype ':' block
@@ -1074,9 +803,10 @@ static std::unique_ptr<FunctionAST> ParseDefinition() {
     return LogError<FuncPtr>("Expected ':' in function definition");
   getNextToken(); // eat ':'
 
-  if (CurTok != tok_eol)
-    return LogError<FuncPtr>(
-        "Expected newline after ':' in function definition");
+  // This takes care of a situation where we decide to split the
+  // function and expression
+  // ready> def foo(x):
+  // ready>  return x + 1
   while (CurTok == tok_eol)
     getNextToken();
 
@@ -1274,86 +1004,6 @@ Value *BlockExprAST::codegen() {
   return ReturnExpr->codegen();
 }
 
-Value *SuiteExprAST::codegen() {
-  Value *Last = nullptr;
-  for (auto &E : Exprs) {
-    Last = E->codegen();
-    if (!Last)
-      return nullptr;
-  }
-  if (!Last)
-    return ConstantFP::get(*TheContext, APFloat(0.0));
-  return Last;
-}
-
-Value *IfExprAST::codegen() {
-  Value *CondV = CondExpr->codegen();
-  if (!CondV)
-    return nullptr;
-
-  CondV = Builder->CreateFCmpONE(
-      CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "ifcond");
-
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
-  BasicBlock *ThenBB = BasicBlock::Create(*TheContext, "then", TheFunction);
-  BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else");
-  BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont");
-
-  Builder->CreateCondBr(CondV, ThenBB, ElseBB);
-
-  Builder->SetInsertPoint(ThenBB);
-  Value *ThenV = ThenExpr->codegen();
-  if (!ThenV)
-    return nullptr;
-  Builder->CreateBr(MergeBB);
-  ThenBB = Builder->GetInsertBlock();
-
-  TheFunction->insert(TheFunction->end(), ElseBB);
-  Builder->SetInsertPoint(ElseBB);
-  Value *ElseV = ElseExpr->codegen();
-  if (!ElseV)
-    return nullptr;
-  Builder->CreateBr(MergeBB);
-  ElseBB = Builder->GetInsertBlock();
-
-  TheFunction->insert(TheFunction->end(), MergeBB);
-  Builder->SetInsertPoint(MergeBB);
-  PHINode *PN = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
-  PN->addIncoming(ThenV, ThenBB);
-  PN->addIncoming(ElseV, ElseBB);
-  return PN;
-}
-
-Value *WhileExprAST::codegen() {
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
-
-  BasicBlock *CondBB = BasicBlock::Create(*TheContext, "while.cond", TheFunction);
-  BasicBlock *BodyBB = BasicBlock::Create(*TheContext, "while.body");
-  BasicBlock *AfterBB = BasicBlock::Create(*TheContext, "while.end");
-
-  Builder->CreateBr(CondBB);
-
-  Builder->SetInsertPoint(CondBB);
-  Value *CondV = CondExpr->codegen();
-  if (!CondV)
-    return nullptr;
-  CondV = Builder->CreateFCmpONE(
-      CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "whilecond");
-  Builder->CreateCondBr(CondV, BodyBB, AfterBB);
-
-  TheFunction->insert(TheFunction->end(), BodyBB);
-  Builder->SetInsertPoint(BodyBB);
-  Value *BodyV = BodyExpr->codegen();
-  if (!BodyV)
-    return nullptr;
-  (void)BodyV;
-  Builder->CreateBr(CondBB);
-
-  TheFunction->insert(TheFunction->end(), AfterBB);
-  Builder->SetInsertPoint(AfterBB);
-  return ConstantFP::get(*TheContext, APFloat(0.0));
-}
-
 Function *PrototypeAST::codegen() {
   // Special case: main function returns int, everything else returns double
   Type *RetType;
@@ -1512,9 +1162,7 @@ static void SynchronizeToLineBoundary() {
 
 static void HandleDefinition() {
   if (auto FnAST = ParseDefinition()) {
-    if (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_def &&
-        CurTok != tok_extern && CurTok != tok_identifier &&
-        CurTok != tok_number && CurTok != '(') {
+    if (CurTok != tok_eol && CurTok != tok_eof) {
       std::string Msg = "Unexpected " + FormatTokenForMessage(CurTok);
       LogError<void>(Msg.c_str());
       SynchronizeToLineBoundary();
@@ -1540,8 +1188,7 @@ static void HandleDefinition() {
 
 static void HandleExtern() {
   if (auto ProtoAST = ParseExtern()) {
-    if (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_def &&
-        CurTok != tok_extern) {
+    if (CurTok != tok_eol && CurTok != tok_eof) {
       std::string Msg = "Unexpected " + FormatTokenForMessage(CurTok);
       LogError<void>(Msg.c_str());
       SynchronizeToLineBoundary();
@@ -1562,8 +1209,7 @@ static void HandleExtern() {
 static void HandleTopLevelExpression() {
   // Evaluate a top-level expression into an anonymous function.
   if (auto FnAST = ParseTopLevelExpr()) {
-    if (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_def &&
-        CurTok != tok_extern) {
+    if (CurTok != tok_eol && CurTok != tok_eof) {
       std::string Msg = "Unexpected " + FormatTokenForMessage(CurTok);
       LogError<void>(Msg.c_str());
       SynchronizeToLineBoundary();
@@ -1725,7 +1371,7 @@ int main(int argc, const char **argv) {
   cl::HideUnrelatedOptions(PyxcCategory, ReplCommand);
   cl::HideUnrelatedOptions(PyxcCategory, RunCommand);
   cl::HideUnrelatedOptions(PyxcCategory, BuildCommand);
-  cl::ParseCommandLineOptions(argc, argv, "pyxc chapter10\n");
+  cl::ParseCommandLineOptions(argc, argv, "pyxc chapter08\n");
 
   if (BuildOptLevel > 3) {
     fprintf(stderr, "Error: invalid optimization level -O%u (expected 0..3)\n",
@@ -1742,11 +1388,35 @@ int main(int argc, const char **argv) {
       fprintf(stderr, "Error: run accepts only one file name.\n");
       return 1;
     }
+
     const std::string &RunInputFile = RunInputFiles.front();
-    (void)RunInputFile;
-    (void)RunEmit;
-    fprintf(stderr, "run: i havent learnt how to do that yet.\n");
-    return 1;
+    if (!freopen(RunInputFile.c_str(), "r", stdin)) {
+      fprintf(stderr, "Error: could not open file '%s'.\n",
+              RunInputFile.c_str());
+      return 1;
+    }
+
+    DiagSourceMgr.reset();
+    LexLoc = {1, 0};
+    CurLoc = {1, 0};
+    FunctionProtos.clear();
+    HadError = false;
+    InteractiveMode = false;
+    BuildObjectMode = false;
+    CurrentOptLevel = 0;
+
+    InitializeNativeTarget();
+    InitializeNativeTargetAsmPrinter();
+    InitializeNativeTargetAsmParser();
+    TheJIT = ExitOnErr(PyxcJIT::Create());
+
+    InitializeModuleAndManagers();
+    ShouldEmitIR = (RunEmit == EmitLLVMIR);
+
+    getNextToken();
+    MainLoop();
+
+    return HadError ? 1 : 0;
   }
 
   if (BuildCommand) {

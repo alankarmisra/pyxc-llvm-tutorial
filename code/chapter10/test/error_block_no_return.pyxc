@@ -3,5 +3,4 @@
 # RUN: grep -q "Expected at least one return statement in function body" %t
 
 def bad2(x):
-  x + 1
-  x + 2
+  x + 1; x + 2

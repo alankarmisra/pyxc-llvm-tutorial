@@ -1,117 +1,188 @@
 ---
-description: "Replace semicolon-separated blocks with indentation-based blocks using INDENT/DEDENT tokenization."
+description: "Add comparison operators (`==`, `!=`, `<=`, `>=`) to the lexer, parser, and LLVM IR codegen."
 ---
-# 9. Pyxc: Indentation-Based Blocks
+# 9. Pyxc: Comparison Operators
 
 ## What We're Building
 
-In Chapter 8, blocks were explicit and semicolon-separated:
+In Chapter 6, Pyxc supported arithmetic operators and basic comparisons (`<`, `>`).  
+In this chapter, we add the missing comparison set:
 
-```python
-def add2(x):
-  x + 1;
-  return x + 2
+- `==`
+- `!=`
+- `<=`
+- `>=`
+
+These operators are essential for real control flow in upcoming chapters (`if`, `while`, and block-based logic).
+
+At the end of this chapter:
+
+- The lexer recognizes multi-character comparison tokens.
+- The parser handles them with the same precedence tier as `<` and `>`.
+- Codegen emits the correct LLVM floating-point comparisons.
+- Existing behavior stays intact (`+ - * / % < >`).
+
+## Grammar Change (EBNF)
+
+Before touching code, it helps to define the language shape clearly.  
+For Chapter 9, the expression grammar becomes:
+
+```ebnf
+expression     = comparison ;
+comparison     = additive { compareop additive } ;
+additive       = multiplicative { ("+" | "-") multiplicative } ;
+multiplicative = primary { ("*" | "/" | "%") primary } ;
+compareop      = "<" | ">" | "<=" | ">=" | "==" | "!=" ;
 ```
 
-In this chapter, we keep the same **block semantics** (prefix statements + final `return`) but switch to **indentation syntax**:
+This matches the parser flow we already use:
 
-```python
-def add2(x):
-  x + 1
-  return x + 2
-```
+- `ParseExpression()` starts expression parsing
+- `ParseBinOpRHS()` handles operator-precedence chaining
+- `ParsePrimary()` handles leaf forms (identifier/number/paren)
 
-So the parser no longer depends on `;` for statement boundaries inside function bodies.
+So we are extending existing parser structure, not introducing a brand-new parse model.
 
 ## Source Code
 
-Grab the code: [code/chapter09](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter09)
+Grab the code: [code/chapter07](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter07)
 
 Or clone the whole repo:
 
 ```bash
 git clone https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter09
+cd pyxc-llvm-tutorial/code/chapter07
 ```
 
-## Grammar Change (EBNF)
+## Why This Chapter Matters
 
-```ebnf
-definition     = "def" prototype ":" newline block ;
-block          = indent statement { newline statement } dedent ;
-statement      = "return" expression
-               | expression ;
-```
+Arithmetic answers "what number is this?"  
+Comparisons answer "is this condition true?"
 
-This means:
-
-- `:` must be followed by a newline.
-- A function body starts with `INDENT` and ends with `DEDENT`.
-- Statements are newline-separated.
-- A block still requires at least one `return`.
+Pyxc currently models booleans as `double` values (`0.0` false, `1.0` true), so comparisons become a bridge between numeric expressions and condition-style logic.
 
 ## Implementation
 
-### 1. Add Indentation Tokens
+### 1. Add New Tokens
 
-The lexer now emits:
+Extend the token enum with multi-character operators:
 
-- `tok_indent`
-- `tok_dedent`
+```cpp
+// multi-char comparison operators
+tok_eq = -9,  // ==
+tok_ne = -10, // !=
+tok_le = -11, // <=
+tok_ge = -12  // >=
+```
 
-These are synthetic tokens produced from leading spaces at line start.
+Also add debug names so diagnostics and token dumps stay readable:
 
-### 2. Lexer: Indentation Stack + Pending Tokens
+```cpp
+{tok_eq, "'=='"},
+{tok_ne, "'!='"},
+{tok_le, "'<='"},
+{tok_ge, "'>='"},
+```
 
-At line start, the lexer measures indentation width and compares it to a stack:
+### 2. Teach the Lexer Multi-Character Operators
 
-- Greater indent -> emit `INDENT` and push
-- Smaller indent -> emit one or more `DEDENT` and pop
-- Same indent -> emit nothing
+Single-character tokens (`<`, `>`, etc.) were already supported.  
+Now we need lookahead so we can distinguish:
 
-To support multiple dedents before a real token, we queue synthetic tokens in `PendingTokens`.
+- `<` vs `<=`
+- `>` vs `>=`
+- `=` vs `==`
+- `!` vs `!=`
 
-We also added a strict indentation error:
+Implementation pattern:
 
-- `inconsistent indentation`
+```cpp
+if (LastChar == '=') {
+  int NextChar = advance();
+  if (NextChar == '=') {
+    LastChar = advance();
+    return tok_eq;
+  }
+  LastChar = NextChar;
+  return '=';
+}
+```
 
-### 3. Parser: Definition Requires Newline After `:`
+We do the same for `!`, `<`, and `>`.
 
-`ParseDefinition()` now enforces:
+Why return `'='` or `'!'` when the second character isn't present?  
+Because parser-level syntax checks should still produce "Unexpected '='" / "Unexpected '!'" diagnostics, which is clearer than silently swallowing input.
 
-- `def ... :` then newline
-- then an indented block
+### 3. Update Binary Operator Representation
 
-So one-line definitions like `def f(x): return x` are rejected in Chapter 9.
+`BinaryExprAST` used `char Op`, which only works for single-byte operators.  
+Multi-character operators use enum tokens (negative integers), so change to:
 
-### 4. Parser: ParseBlockExpr Consumes INDENT/DEDENT
+```cpp
+int Op;
+```
 
-`ParseBlockExpr()` now:
+and update the constructor accordingly.
 
-1. Requires `tok_indent`
-2. Parses newline-delimited statements
-3. Requires at least one `return` statement
-4. Requires `return` to be final
-5. Ends on `tok_dedent`
+### 4. Update Precedence Table
 
-We also emit clearer syntax errors for bare `=` / `!` in block statements:
+The old precedence map was keyed by `char`.  
+Change it to `int` and include new comparison tokens at the same precedence as `<` and `>`:
 
-- `Unexpected '=' when expecting an expression`
-- `Unexpected '!' when expecting an expression`
+```cpp
+static std::map<int, int> BinopPrecedence = {
+    {'<', 10}, {'>', 10}, {tok_le, 10}, {tok_ge, 10}, {tok_eq, 10},
+    {tok_ne, 10}, {'+', 20}, {'-', 20}, {'*', 40}, {'/', 40},
+    {'%', 40}};
+```
 
-### 5. Semantics Stay the Same
+### 5. Fix `GetTokPrecedence()` for Non-ASCII Tokens
 
-`BlockExprAST::codegen()` is unchanged conceptually:
+The old code gated on `isascii(CurTok)`, which rejects enum tokens like `tok_eq`.  
+Use direct map lookup instead:
 
-- evaluate prefix expressions in order
-- return the value of final `return` expression
+```cpp
+static int GetTokPrecedence() {
+  auto It = BinopPrecedence.find(CurTok);
+  if (It == BinopPrecedence.end())
+    return NO_OP_PREC;
+  int TokPrec = It->second;
+  if (TokPrec < MIN_BINOP_PREC)
+    return NO_OP_PREC;
+  return TokPrec;
+}
+```
 
-So Chapter 9 is mostly a **syntax/lexing** upgrade, not a semantic one.
+This is the key parser fix that makes `==`, `!=`, `<=`, `>=` parse as binary operators.
+
+### 6. Add LLVM IR Codegen Cases
+
+Add new branches in `BinaryExprAST::codegen()`:
+
+```cpp
+case tok_le:
+  L = Builder->CreateFCmpULE(L, R, "cmptmp");
+  return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+case tok_ge:
+  L = Builder->CreateFCmpUGE(L, R, "cmptmp");
+  return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+case tok_eq:
+  L = Builder->CreateFCmpUEQ(L, R, "cmptmp");
+  return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+case tok_ne:
+  L = Builder->CreateFCmpUNE(L, R, "cmptmp");
+  return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+```
+
+Like existing `<` / `>` code, each comparison:
+
+1. Produces `i1` with `fcmp`
+2. Converts to `double` (`0.0` or `1.0`) using `uitofp`
 
 ## Compile and Test
 
 ```bash
-cd code/chapter09
+cd code/chapter07
 ./build.sh
 llvm-lit test/
 ```
@@ -119,93 +190,72 @@ llvm-lit test/
 ## Sample Session
 
 ```bash
-$ ./build/pyxc repl
-ready> def print_sequence(x):
-ready>   x + 100
-ready>   return x + 2
-ready> print_sequence(3)
-5.000000
+$ ./build/pyxc repl --emit=llvm-ir
+ready> def test_eq(x, y): return x == y
+define double @test_eq(double %x, double %y) {
+entry:
+  %cmptmp = fcmp ueq double %x, %y
+  %booltmp = uitofp i1 %cmptmp to double
+  ret double %booltmp
+}
+
+ready> def test_ge(x, y): return x >= y
+define double @test_ge(double %x, double %y) {
+entry:
+  %cmptmp = fcmp uge double %x, %y
+  %booltmp = uitofp i1 %cmptmp to double
+  ret double %booltmp
+}
 ```
 
-And with blank lines/comments in a block:
+Parse error examples remain clear:
 
-```py
-def plus5(x):
-  # prefix statement
-  x + 100
-
-  return x + 5
+```bash
+ready> def bad(x,y): return x = y
+Error (Line: 3, Column: 24): Unexpected '='
+def bad(x,y): return x = 
+                       ^~~~
+                       
+ready> def bad2(x,y): return x ! y
+Error (Line: 4, Column: 25): Unexpected '!'
+def bad2(x,y): return x ! 
+                        ^~~~
 ```
-
-## Error Cases
-
-Missing indented block:
-
-```py
-def bad(x):
-return x + 1
-```
-
-Produces:
-
-- `Expected indented block after ':'`
-
-Inconsistent indentation:
-
-```py
-def bad(x):
-   x + 1
-  return x + 2
-```
-
-Produces:
-
-- `inconsistent indentation`
-
-No return in function body:
-
-```py
-def bad2(x):
-  x + 1
-  x + 2
-```
-
-Produces:
-
-- `Expected at least one return statement in function body`
 
 ## Testing Your Implementation
 
-This chapter includes **72 automated tests**. Run them with:
+This chapter includes **58 automated tests**. Run them with:
 
 ```bash
-cd code/chapter09
+cd code/chapter07
 llvm-lit -v test/
 # or: lit -v test/
 ```
 
 **Pro tip:** Key tests include:
 
-- `block_semicolon_return.pyxc` - Basic indentation block with prefix + return
-- `block_multiple_expr_statements.pyxc` - Multiple prefix statements before return
-- `block_indent_comments_blanklines.pyxc` - Comments/blank lines inside blocks
-- `error_missing_indented_block.pyxc` - Missing required indentation after `:`
-- `error_inconsistent_indentation.pyxc` - Non-matching dedent levels
-- `error_block_no_return.pyxc` - Block must contain a return
+- `ir_operator_eq.pyxc` - Verifies `==` lowers to `fcmp ueq`
+- `ir_operator_ne.pyxc` - Verifies `!=` lowers to `fcmp une`
+- `ir_operator_le.pyxc` - Verifies `<=` lowers to `fcmp ule`
+- `ir_operator_ge.pyxc` - Verifies `>=` lowers to `fcmp uge`
+- `ir_comparison_precedence.pyxc` - Verifies comparison precedence integration with arithmetic
+- `error_bare_equal.pyxc` - Verifies clear error for bare `=`
+- `error_bare_bang.pyxc` - Verifies clear error for bare `!`
 
 Browse the tests to see exactly what behavior is supported.
 
 ## What We Built
 
-- Lexer-level indentation transformation (`INDENT`/`DEDENT`)
-- Newline-delimited statement parsing for function blocks
-- Strict indentation diagnostics
-- Same block semantics as Chapter 8, now with cleaner syntax
-- Fully passing chapter 9 test suite
+- Multi-character comparison tokens in the lexer
+- Parser support for `== != <= >=`
+- Correct precedence integration with existing arithmetic
+- LLVM IR generation for all comparisons
+- Comprehensive lit coverage for success and error cases
 
 ## What's Next
 
-With block syntax now Python-like, the next natural step is **mutable variables** (`let` + assignment), then control flow (conditionals/loops).
+Now we have richer boolean-producing expressions.  
+Next chapter can focus on block structure (explicit statement boundaries first), then indentation-based blocks as a lexical transformation.
 
 ## Need Help?
 
@@ -216,7 +266,7 @@ Stuck? Questions? Found a bug?
 
 Include:
 
-- Chapter number (`14`)
+- Chapter number (`12`)
 - Your platform
 - Command you ran
 - Full error output

@@ -1,0 +1,22 @@
+# RUN: %pyxc repl < %s > %t 2>&1
+# RUN: grep -q "9.000000" %t
+# RUN: grep -q "27.000000" %t
+# RUN: grep -q "36.000000" %t
+
+extern def printd(x)
+extern def printlf()
+
+def sq(x):
+  return x * x
+
+def cube(x):
+  return x * x * x
+
+def show_power(x):
+  printd(sq(x));
+  printlf();
+  printd(cube(x));
+  printlf();
+  return sq(x) + cube(x)
+
+show_power(3)

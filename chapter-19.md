@@ -172,7 +172,7 @@ When pyxc is compiled on different platforms, it will have the target triple for
 
 **Why this matters:**
 - The **target triple** (covered in [Chapter 17](chapter-17.md)) identifies the platform: architecture, OS, etc.
-- The **data layout** (covered in [Chapter 16](chapter-16.md)) specifies sizes and alignments for types
+- The **data layout** (covered in [Chapter 7](chapter-07.md)) specifies sizes and alignments for types
 - Together, these ensure LLVM generates correct code for the target platform
 - This includes symbol naming conventions (e.g., `_main` on macOS, `main` on Linux)
 - Without this, linking will fail because the linker expects platform-specific symbol names

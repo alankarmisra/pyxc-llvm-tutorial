@@ -1,0 +1,8 @@
+# RUN: %pyxc repl --emit=llvm-ir < %s > %t 2>&1
+# RUN: grep -q "call double @sin(double" %t
+# RUN: grep -q "call double @cos(double" %t
+# RUN: test "$(grep -c 'call double' %t | tr -d '[:space:]')" = "2"
+
+extern def sin(x)
+extern def cos(x)
+sin(cos(1.5))

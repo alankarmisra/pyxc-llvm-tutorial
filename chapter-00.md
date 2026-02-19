@@ -89,19 +89,21 @@ Each chapter builds on the previous one. You can:
 
 **[Chapter 6: Understanding LLVM IR](chapter-06.md)** - Learn to read and understand the intermediate representation LLVM uses.
 
-**[Chapter 7: Comparison Operators](chapter-07.md)** - Add `==`, `!=`, `<=`, `>=` with proper precedence and LLVM codegen.
+**[Chapter 7: Optimization and JIT](chapter-07.md)** - Add LLVM optimization passes and ORC JIT so code runs immediately in the REPL.
 
-**[Chapter 8: Blocks with `;`](chapter-08.md)** - Add multi-statement function bodies with explicit separators.
+**[Chapter 8: File Input Mode](chapter-08.md)** - Add file-based execution mode so Pyxc can run source from files.
 
-**[Chapter 9: Indentation Blocks](chapter-09.md)** - Replace `;` blocks with indentation (`INDENT`/`DEDENT`) syntax.
+**[Chapter 9: Comparison Operators](chapter-09.md)** - Add `==`, `!=`, `<=`, `>=` with proper precedence and LLVM codegen.
 
-**[Chapter 10: `if` and `while`](chapter-10.md)** - Add control flow expressions and unlock real examples like factorial.
+**[Chapter 10: Blocks with `;`](chapter-10.md)** - Add multi-statement function bodies with explicit separators.
 
-**[Chapter 11: Mutable Variables](chapter-11.md)** - Add `let` declarations and assignment so loop-based algorithms are possible.
+**[Chapter 11: Indentation Blocks](chapter-11.md)** - Replace `;` blocks with indentation (`INDENT`/`DEDENT`) syntax.
+
+**[Chapter 12: `if` and `while`](chapter-12.md)** - Add control flow expressions and unlock real examples like factorial.
+
+**[Chapter 13: Mutable Variables](chapter-13.md)** - Add `let` declarations and assignment so loop-based algorithms are possible.
 
 ### Toolchain and Optimization (Later)
-
-**[Chapter 16: Optimization and JIT](chapter-16.md)** - Run code instantly with JIT compilation. Add LLVM optimizer passes.
 
 **[Chapter 17: Object Files and Optimizations](chapter-17.md)** - Generate `.o` files with proper optimization levels.
 

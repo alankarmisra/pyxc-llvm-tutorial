@@ -121,10 +121,6 @@ enum Token {
 
   // control
   tok_return = -8,
-  tok_let = -18,
-  tok_if = -15,
-  tok_else = -16,
-  tok_while = -17,
 
   // multi-char comparison operators
   tok_eq = -9, // ==
@@ -143,13 +139,7 @@ static bool HadError = false;
 // Keywords words like `def`, `extern` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
 static std::map<std::string, Token> Keywords = {
-    {"def", tok_def},
-    {"extern", tok_extern},
-    {"return", tok_return},
-    {"let", tok_let},
-    {"if", tok_if},
-    {"else", tok_else},
-    {"while", tok_while}};
+    {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return}};
 
 // Debug-only token names. Kept separate from Keywords because this map is
 // purely for printing token stream output.
@@ -164,10 +154,6 @@ static std::map<int, std::string> TokenNames = [] {
       {tok_identifier, "identifier"},
       {tok_number, "number"},
       {tok_return, "'return'"},
-      {tok_let, "'let'"},
-      {tok_if, "'if'"},
-      {tok_else, "'else'"},
-      {tok_while, "'while'"},
       {tok_eq, "'=='"},
       {tok_ne, "'!='"},
       {tok_le, "'<='"},
@@ -584,28 +570,6 @@ public:
   Value *codegen() override;
 };
 
-/// LetExprAST - Expression class for mutable variable declaration.
-class LetExprAST : public ExprAST {
-  std::string Name;
-  std::unique_ptr<ExprAST> InitExpr;
-
-public:
-  LetExprAST(const std::string &Name, std::unique_ptr<ExprAST> InitExpr)
-      : Name(Name), InitExpr(std::move(InitExpr)) {}
-  Value *codegen() override;
-};
-
-/// AssignExprAST - Expression class for mutable variable assignment.
-class AssignExprAST : public ExprAST {
-  std::string Name;
-  std::unique_ptr<ExprAST> ValueExpr;
-
-public:
-  AssignExprAST(const std::string &Name, std::unique_ptr<ExprAST> ValueExpr)
-      : Name(Name), ValueExpr(std::move(ValueExpr)) {}
-  Value *codegen() override;
-};
-
 /// BlockExprAST - Expression class for indentation-delimited statement blocks.
 /// Prefix expressions are evaluated for side effects; return expression provides
 /// the block value.
@@ -618,42 +582,6 @@ public:
                std::unique_ptr<ExprAST> ReturnExpr)
       : PrefixExprs(std::move(PrefixExprs)), ReturnExpr(std::move(ReturnExpr)) {
   }
-  Value *codegen() override;
-};
-
-/// SuiteExprAST - Expression class for indentation-delimited expression suites.
-/// The suite value is the value of its final expression.
-class SuiteExprAST : public ExprAST {
-  std::vector<std::unique_ptr<ExprAST>> Exprs;
-
-public:
-  SuiteExprAST(std::vector<std::unique_ptr<ExprAST>> Exprs)
-      : Exprs(std::move(Exprs)) {}
-  Value *codegen() override;
-};
-
-/// IfExprAST - if/else expression.
-class IfExprAST : public ExprAST {
-  std::unique_ptr<ExprAST> CondExpr;
-  std::unique_ptr<ExprAST> ThenExpr;
-  std::unique_ptr<ExprAST> ElseExpr;
-
-public:
-  IfExprAST(std::unique_ptr<ExprAST> CondExpr, std::unique_ptr<ExprAST> ThenExpr,
-            std::unique_ptr<ExprAST> ElseExpr)
-      : CondExpr(std::move(CondExpr)), ThenExpr(std::move(ThenExpr)),
-        ElseExpr(std::move(ElseExpr)) {}
-  Value *codegen() override;
-};
-
-/// WhileExprAST - while expression. Returns 0.0 after loop completion.
-class WhileExprAST : public ExprAST {
-  std::unique_ptr<ExprAST> CondExpr;
-  std::unique_ptr<ExprAST> BodyExpr;
-
-public:
-  WhileExprAST(std::unique_ptr<ExprAST> CondExpr, std::unique_ptr<ExprAST> BodyExpr)
-      : CondExpr(std::move(CondExpr)), BodyExpr(std::move(BodyExpr)) {}
   Value *codegen() override;
 };
 
@@ -699,10 +627,6 @@ public:
 static int CurTok;
 static int getNextToken() { return CurTok = gettok(); }
 static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
-// Set when a nested suite consumed a dedent and advanced to the next token.
-// The parent statement parser should treat that transition as a valid newline
-// separator between statements.
-static bool SuiteBoundarySeparatorPending = false;
 
 /// BinopPrecedence - This holds the precedence for each binary operator that is
 /// defined.
@@ -747,11 +671,6 @@ template <typename T = void> T LogError(const char *Str) {
 
 static std::unique_ptr<ExprAST> ParseExpression();
 static std::unique_ptr<ExprAST> ParseBlockExpr();
-static std::unique_ptr<ExprAST> ParseIndentedExprSuite(
-    const char *HeaderContext);
-static std::unique_ptr<ExprAST> ParseLetExpr();
-static std::unique_ptr<ExprAST> ParseIfExpr();
-static std::unique_ptr<ExprAST> ParseWhileExpr();
 
 /// numberexpr ::= number
 static std::unique_ptr<ExprAST> ParseNumberExpr() {
@@ -781,14 +700,6 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
 
   getNextToken(); // eat identifier.
 
-  if (CurTok == '=') {
-    getNextToken(); // eat '='
-    auto RHS = ParseExpression();
-    if (!RHS)
-      return nullptr;
-    return std::make_unique<AssignExprAST>(IdName, std::move(RHS));
-  }
-
   if (CurTok != '(') // Simple variable ref.
     return std::make_unique<VariableExprAST>(IdName);
 
@@ -817,32 +728,10 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
   return std::make_unique<CallExprAST>(IdName, std::move(Args));
 }
 
-/// letexpr ::= 'let' identifier '=' expression
-static std::unique_ptr<ExprAST> ParseLetExpr() {
-  getNextToken(); // consume 'let'
-
-  if (CurTok != tok_identifier)
-    return LogError<ExprPtr>("Expected identifier after 'let'");
-  std::string Name = IdentifierStr;
-  getNextToken(); // consume identifier
-
-  if (CurTok != '=')
-    return LogError<ExprPtr>("Expected '=' after variable name in let expression");
-  getNextToken(); // consume '='
-
-  auto Init = ParseExpression();
-  if (!Init)
-    return nullptr;
-  return std::make_unique<LetExprAST>(Name, std::move(Init));
-}
-
 /// primary
 ///   ::= identifierexpr
 ///   ::= numberexpr
 ///   ::= parenexpr
-///   ::= letexpr
-///   ::= ifexpr
-///   ::= whileexpr
 static std::unique_ptr<ExprAST> ParsePrimary() {
   switch (CurTok) {
   case tok_identifier:
@@ -851,12 +740,6 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
     return ParseNumberExpr();
   case '(':
     return ParseParenExpr();
-  case tok_let:
-    return ParseLetExpr();
-  case tok_if:
-    return ParseIfExpr();
-  case tok_while:
-    return ParseWhileExpr();
   default: {
     std::string Msg = "Unexpected " + FormatTokenForMessage(CurTok) +
                       " when expecting an expression";
@@ -991,11 +874,6 @@ static std::unique_ptr<ExprAST> ParseBlockExpr() {
     if (CurTok == tok_dedent || CurTok == tok_eof)
       continue;
 
-    if (SuiteBoundarySeparatorPending) {
-      SuiteBoundarySeparatorPending = false;
-      continue;
-    }
-
     if (CurTok == '=' || CurTok == '!') {
       std::string Msg = "Unexpected " + FormatTokenForMessage(CurTok) +
                         " when expecting an expression";
@@ -1014,119 +892,6 @@ static std::unique_ptr<ExprAST> ParseBlockExpr() {
 
   return std::make_unique<BlockExprAST>(std::move(PrefixExprs),
                                         std::move(ReturnExpr));
-}
-
-/// suite ::= INDENT expression { eol expression } DEDENT
-static std::unique_ptr<ExprAST> ParseIndentedExprSuite(
-    const char *HeaderContext) {
-  if (CurTok != tok_eol) {
-    std::string Msg = "Expected newline after ':' in ";
-    Msg += HeaderContext;
-    Msg += " expression";
-    return LogError<ExprPtr>(Msg.c_str());
-  }
-
-  while (CurTok == tok_eol)
-    getNextToken();
-
-  if (CurTok != tok_indent)
-    return LogError<ExprPtr>("Expected indented block after ':'");
-  getNextToken(); // consume indent
-
-  std::vector<std::unique_ptr<ExprAST>> Exprs;
-  while (CurTok != tok_dedent && CurTok != tok_eof) {
-    if (CurTok == tok_eol) {
-      getNextToken();
-      continue;
-    }
-
-    if (CurTok == tok_return)
-      return LogError<ExprPtr>("'return' is only valid in function bodies");
-
-    auto E = ParseExpression();
-    if (!E)
-      return nullptr;
-    Exprs.push_back(std::move(E));
-
-    if (CurTok == tok_eol) {
-      while (CurTok == tok_eol)
-        getNextToken();
-      continue;
-    }
-
-    if (CurTok == tok_dedent || CurTok == tok_eof)
-      continue;
-
-    if (CurTok == '=' || CurTok == '!') {
-      std::string Msg = "Unexpected " + FormatTokenForMessage(CurTok) +
-                        " when expecting an expression";
-      return LogError<ExprPtr>(Msg.c_str());
-    }
-
-    return LogError<ExprPtr>("Expected newline after statement");
-  }
-
-  if (Exprs.empty())
-    return LogError<ExprPtr>("Expected at least one expression in block");
-
-  if (CurTok == tok_dedent) {
-    getNextToken(); // consume dedent
-    SuiteBoundarySeparatorPending = true;
-  }
-
-  return std::make_unique<SuiteExprAST>(std::move(Exprs));
-}
-
-/// ifexpr ::= 'if' expression ':' suite 'else' ':' suite
-static std::unique_ptr<ExprAST> ParseIfExpr() {
-  getNextToken(); // consume 'if'
-
-  auto CondExpr = ParseExpression();
-  if (!CondExpr)
-    return nullptr;
-
-  if (CurTok != ':')
-    return LogError<ExprPtr>("Expected ':' after if condition");
-  getNextToken(); // consume ':'
-
-  auto ThenExpr = ParseIndentedExprSuite("if");
-  if (!ThenExpr)
-    return nullptr;
-
-  if (CurTok != tok_else)
-    return LogError<ExprPtr>("Expected 'else' in if expression");
-  getNextToken(); // consume 'else'
-
-  if (CurTok != ':')
-    return LogError<ExprPtr>("Expected ':' after else");
-  getNextToken(); // consume ':'
-
-  auto ElseExpr = ParseIndentedExprSuite("else");
-  if (!ElseExpr)
-    return nullptr;
-
-  return std::make_unique<IfExprAST>(std::move(CondExpr), std::move(ThenExpr),
-                                     std::move(ElseExpr));
-}
-
-/// whileexpr ::= 'while' expression ':' suite
-static std::unique_ptr<ExprAST> ParseWhileExpr() {
-  getNextToken(); // consume 'while'
-
-  auto CondExpr = ParseExpression();
-  if (!CondExpr)
-    return nullptr;
-
-  if (CurTok != ':')
-    return LogError<ExprPtr>("Expected ':' after while condition");
-  getNextToken(); // consume ':'
-
-  auto BodyExpr = ParseIndentedExprSuite("while");
-  if (!BodyExpr)
-    return nullptr;
-
-  return std::make_unique<WhileExprAST>(std::move(CondExpr),
-                                        std::move(BodyExpr));
 }
 
 /// definition ::= 'def' prototype ':' block
@@ -1180,7 +945,7 @@ static std::unique_ptr<PrototypeAST> ParseExtern() {
 static std::unique_ptr<LLVMContext> TheContext;
 static std::unique_ptr<Module> TheModule;
 static std::unique_ptr<IRBuilder<>> Builder;
-static std::map<std::string, AllocaInst *> NamedValues;
+static std::map<std::string, Value *> NamedValues;
 static bool ShouldEmitIR = false;
 static std::unique_ptr<PyxcJIT> TheJIT;
 static std::unique_ptr<FunctionPassManager> TheFPM;
@@ -1206,11 +971,6 @@ struct DebugInfo {
 } *KSDbgInfo = nullptr;
 
 static std::unique_ptr<DIBuilder> DBuilder;
-
-static AllocaInst *CreateEntryBlockAlloca(Function *F, const std::string &Name) {
-  IRBuilder<> TmpB(&F->getEntryBlock(), F->getEntryBlock().begin());
-  return TmpB.CreateAlloca(Type::getDoubleTy(*TheContext), nullptr, Name);
-}
 
 DIType *DebugInfo::getDoubleTy() {
   if (DblTy)
@@ -1261,12 +1021,13 @@ Value *NumberExprAST::codegen() {
 }
 
 Value *VariableExprAST::codegen() {
-  AllocaInst *A = NamedValues[Name];
-  if (!A)
+  // Look this variable up in the function.
+  Value *V = NamedValues[Name];
+  if (!V)
     return LogError<Value *>("Unknown variable name");
   if (KSDbgInfo)
     KSDbgInfo->emitLocation(this);
-  return Builder->CreateLoad(Type::getDoubleTy(*TheContext), A, Name.c_str());
+  return V;
 }
 
 Value *BinaryExprAST::codegen() {
@@ -1337,119 +1098,12 @@ Value *CallExprAST::codegen() {
   return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
-Value *LetExprAST::codegen() {
-  if (NamedValues.count(Name))
-    return LogError<Value *>("Duplicate variable declaration");
-
-  Value *InitV = InitExpr->codegen();
-  if (!InitV)
-    return nullptr;
-
-  Function *F = Builder->GetInsertBlock()->getParent();
-  AllocaInst *A = CreateEntryBlockAlloca(F, Name);
-  Builder->CreateStore(InitV, A);
-  NamedValues[Name] = A;
-  return InitV;
-}
-
-Value *AssignExprAST::codegen() {
-  AllocaInst *A = NamedValues[Name];
-  if (!A)
-    return LogError<Value *>("Unknown variable name in assignment");
-
-  Value *V = ValueExpr->codegen();
-  if (!V)
-    return nullptr;
-  Builder->CreateStore(V, A);
-  return V;
-}
-
 Value *BlockExprAST::codegen() {
   for (auto &E : PrefixExprs) {
     if (!E->codegen())
       return nullptr;
   }
   return ReturnExpr->codegen();
-}
-
-Value *SuiteExprAST::codegen() {
-  Value *Last = nullptr;
-  for (auto &E : Exprs) {
-    Last = E->codegen();
-    if (!Last)
-      return nullptr;
-  }
-  if (!Last)
-    return ConstantFP::get(*TheContext, APFloat(0.0));
-  return Last;
-}
-
-Value *IfExprAST::codegen() {
-  Value *CondV = CondExpr->codegen();
-  if (!CondV)
-    return nullptr;
-
-  CondV = Builder->CreateFCmpONE(
-      CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "ifcond");
-
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
-  BasicBlock *ThenBB = BasicBlock::Create(*TheContext, "then", TheFunction);
-  BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else");
-  BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont");
-
-  Builder->CreateCondBr(CondV, ThenBB, ElseBB);
-
-  Builder->SetInsertPoint(ThenBB);
-  Value *ThenV = ThenExpr->codegen();
-  if (!ThenV)
-    return nullptr;
-  Builder->CreateBr(MergeBB);
-  ThenBB = Builder->GetInsertBlock();
-
-  TheFunction->insert(TheFunction->end(), ElseBB);
-  Builder->SetInsertPoint(ElseBB);
-  Value *ElseV = ElseExpr->codegen();
-  if (!ElseV)
-    return nullptr;
-  Builder->CreateBr(MergeBB);
-  ElseBB = Builder->GetInsertBlock();
-
-  TheFunction->insert(TheFunction->end(), MergeBB);
-  Builder->SetInsertPoint(MergeBB);
-  PHINode *PN = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
-  PN->addIncoming(ThenV, ThenBB);
-  PN->addIncoming(ElseV, ElseBB);
-  return PN;
-}
-
-Value *WhileExprAST::codegen() {
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
-
-  BasicBlock *CondBB = BasicBlock::Create(*TheContext, "while.cond", TheFunction);
-  BasicBlock *BodyBB = BasicBlock::Create(*TheContext, "while.body");
-  BasicBlock *AfterBB = BasicBlock::Create(*TheContext, "while.end");
-
-  Builder->CreateBr(CondBB);
-
-  Builder->SetInsertPoint(CondBB);
-  Value *CondV = CondExpr->codegen();
-  if (!CondV)
-    return nullptr;
-  CondV = Builder->CreateFCmpONE(
-      CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "whilecond");
-  Builder->CreateCondBr(CondV, BodyBB, AfterBB);
-
-  TheFunction->insert(TheFunction->end(), BodyBB);
-  Builder->SetInsertPoint(BodyBB);
-  Value *BodyV = BodyExpr->codegen();
-  if (!BodyV)
-    return nullptr;
-  (void)BodyV;
-  Builder->CreateBr(CondBB);
-
-  TheFunction->insert(TheFunction->end(), AfterBB);
-  Builder->SetInsertPoint(AfterBB);
-  return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
 Function *PrototypeAST::codegen() {
@@ -1509,14 +1163,10 @@ Function *FunctionAST::codegen() {
     KSDbgInfo->emitLocation(nullptr);
   }
 
-  // Record function arguments as mutable locals (alloca + store incoming arg).
+  // Record the function arguments in the NamedValues map.
   NamedValues.clear();
-  for (auto &Arg : TheFunction->args()) {
-    std::string ArgName = std::string(Arg.getName());
-    AllocaInst *A = CreateEntryBlockAlloca(TheFunction, ArgName);
-    Builder->CreateStore(&Arg, A);
-    NamedValues[ArgName] = A;
-  }
+  for (auto &Arg : TheFunction->args())
+    NamedValues[std::string(Arg.getName())] = &Arg;
 
   if (Value *RetVal = Body->codegen()) {
     // Special handling for main: convert double to i32
@@ -1827,7 +1477,7 @@ int main(int argc, const char **argv) {
   cl::HideUnrelatedOptions(PyxcCategory, ReplCommand);
   cl::HideUnrelatedOptions(PyxcCategory, RunCommand);
   cl::HideUnrelatedOptions(PyxcCategory, BuildCommand);
-  cl::ParseCommandLineOptions(argc, argv, "pyxc chapter11\n");
+  cl::ParseCommandLineOptions(argc, argv, "pyxc chapter09\n");
 
   if (BuildOptLevel > 3) {
     fprintf(stderr, "Error: invalid optimization level -O%u (expected 0..3)\n",
@@ -1844,11 +1494,35 @@ int main(int argc, const char **argv) {
       fprintf(stderr, "Error: run accepts only one file name.\n");
       return 1;
     }
+
     const std::string &RunInputFile = RunInputFiles.front();
-    (void)RunInputFile;
-    (void)RunEmit;
-    fprintf(stderr, "run: i havent learnt how to do that yet.\n");
-    return 1;
+    if (!freopen(RunInputFile.c_str(), "r", stdin)) {
+      fprintf(stderr, "Error: could not open file '%s'.\n",
+              RunInputFile.c_str());
+      return 1;
+    }
+
+    DiagSourceMgr.reset();
+    LexLoc = {1, 0};
+    CurLoc = {1, 0};
+    FunctionProtos.clear();
+    HadError = false;
+    InteractiveMode = false;
+    BuildObjectMode = false;
+    CurrentOptLevel = 0;
+
+    InitializeNativeTarget();
+    InitializeNativeTargetAsmPrinter();
+    InitializeNativeTargetAsmParser();
+    TheJIT = ExitOnErr(PyxcJIT::Create());
+
+    InitializeModuleAndManagers();
+    ShouldEmitIR = (RunEmit == EmitLLVMIR);
+
+    getNextToken();
+    MainLoop();
+
+    return HadError ? 1 : 0;
   }
 
   if (BuildCommand) {

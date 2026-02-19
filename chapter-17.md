@@ -5,7 +5,7 @@ description: "Implement object file emission and wire optimization levels into t
 
 ## What We're Building
 
-In Chapter 16, we built a JIT that could execute functions interactively. But we still had a stub for the `build` subcommand. This chapter makes `build` real:
+In Chapter 7, we built a JIT that could execute functions interactively. But we still had a stub for the `build` subcommand. This chapter makes `build` real:
 
 ```bash
 ./pyxc build fib.pyxc --emit=llvm-ir        # Emit LLVM IR to stdout
@@ -27,7 +27,7 @@ cd pyxc-llvm-tutorial/code/chapter17
 
 ## The Problem
 
-Chapter 16 let you run code interactively, but you couldn't:
+Chapter 7 let you run code interactively, but you couldn't:
 
 1. Read a `.pyxc` file from disk and compile it
 2. Emit a standalone object file you could link with other code

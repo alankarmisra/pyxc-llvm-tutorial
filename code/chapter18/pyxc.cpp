@@ -1206,11 +1206,35 @@ int main(int argc, const char **argv) {
       fprintf(stderr, "Error: run accepts only one file name.\n");
       return 1;
     }
+
     const std::string &RunInputFile = RunInputFiles.front();
-    (void)RunInputFile;
-    (void)RunEmit;
-    fprintf(stderr, "run: i havent learnt how to do that yet.\n");
-    return 1;
+    if (!freopen(RunInputFile.c_str(), "r", stdin)) {
+      fprintf(stderr, "Error: could not open file '%s'.\n",
+              RunInputFile.c_str());
+      return 1;
+    }
+
+    DiagSourceMgr.reset();
+    LexLoc = {1, 0};
+    CurLoc = {1, 0};
+    FunctionProtos.clear();
+    HadError = false;
+    InteractiveMode = false;
+    BuildObjectMode = false;
+    CurrentOptLevel = 0;
+
+    InitializeNativeTarget();
+    InitializeNativeTargetAsmPrinter();
+    InitializeNativeTargetAsmParser();
+    TheJIT = ExitOnErr(PyxcJIT::Create());
+
+    InitializeModuleAndManagers();
+    ShouldEmitIR = (RunEmit == EmitLLVMIR);
+
+    getNextToken();
+    MainLoop();
+
+    return HadError ? 1 : 0;
   }
 
   if (BuildCommand) {

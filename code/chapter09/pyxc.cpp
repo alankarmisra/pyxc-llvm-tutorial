@@ -1,6 +1,5 @@
 #include "../include/PyxcJIT.h"
 #include "../include/PyxcLinker.h"
-#include "../include/runtime.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/BasicBlock.h"
@@ -37,7 +36,6 @@
 #include <iomanip>
 #include <map>
 #include <memory>
-#include <deque>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -126,9 +124,7 @@ enum Token {
   tok_eq = -9, // ==
   tok_ne = -10, // !=
   tok_le = -11, // <=
-  tok_ge = -12, // >=
-  tok_indent = -13,
-  tok_dedent = -14
+  tok_ge = -12  // >=
 };
 
 static std::string IdentifierStr; // Filled in if tok_identifier
@@ -158,8 +154,6 @@ static std::map<int, std::string> TokenNames = [] {
       {tok_ne, "'!='"},
       {tok_le, "'<='"},
       {tok_ge, "'>='"},
-      {tok_indent, "indent"},
-      {tok_dedent, "dedent"},
   };
 
   // Single character tokens.
@@ -225,9 +219,6 @@ public:
 };
 
 static SourceManager DiagSourceMgr;
-static std::deque<std::pair<int, SourceLocation>> PendingTokens;
-static std::vector<int> IndentStack = {0};
-static bool AtLineStart = true;
 
 static std::string FormatTokenForMessage(int Tok) {
   if (Tok == tok_identifier)
@@ -311,203 +302,113 @@ static int advance() {
 /// gettok - Return the next token from standard input.
 static int gettok() {
   static int LastChar = ' ';
-  static bool NeedPrime = true;
-  while (true) {
-    if (NeedPrime) {
+  // Skip whitespace EXCEPT newlines
+  while (isspace(LastChar) && LastChar != '\n')
+    LastChar = advance();
+
+  // Return end-of-line token.
+  if (LastChar == '\n') {
+    CurLoc = LexLoc;
+    LastChar = ' ';
+    return tok_eol;
+  }
+
+  CurLoc = LexLoc;
+
+  if (isalpha(LastChar) ||
+      LastChar == '_') { // identifier: [a-zA-Z_][a-zA-Z0-9_]*
+    IdentifierStr = LastChar;
+    while (isalnum((LastChar = advance())) || LastChar == '_')
+      IdentifierStr += LastChar;
+
+    // Is this a known keyword? If yes, return that.
+    // Else it is an ordinary identifier.
+    const auto it = Keywords.find(IdentifierStr);
+    return (it != Keywords.end()) ? it->second : tok_identifier;
+  }
+
+  if (isdigit(LastChar) || LastChar == '.') { // Number: [0-9.]+
+    std::string NumStr;
+    do {
+      NumStr += LastChar;
       LastChar = advance();
-      NeedPrime = false;
+    } while (isdigit(LastChar) || LastChar == '.');
+
+    char *End;
+    NumVal = strtod(NumStr.c_str(), &End);
+    if (*End != '\0') {
+      HadError = true;
+      fprintf(stderr,
+              "%sError%s (Line %d, Column %d): invalid number literal '%s'\n",
+              Red, Reset, CurLoc.Line, CurLoc.Col, NumStr.c_str());
+      return tok_error;
     }
+    NumLiteralStr = NumStr;
+    return tok_number;
+  }
 
-    if (!PendingTokens.empty()) {
-      auto Next = PendingTokens.front();
-      PendingTokens.pop_front();
-      CurLoc = Next.second;
-      return Next.first;
-    }
-
-    if (AtLineStart) {
-      int IndentWidth = 0;
-      while (LastChar == ' ' || LastChar == '\t') {
-        if (LastChar == '\t') {
-          HadError = true;
-          CurLoc = LexLoc;
-          fprintf(stderr,
-                  "%sError%s (Line %d, Column %d): tabs are not allowed for "
-                  "indentation\n",
-                  Red, Reset, CurLoc.Line, CurLoc.Col);
-          LastChar = advance();
-          return tok_error;
-        }
-        ++IndentWidth;
-        LastChar = advance();
-      }
-
-      if (LastChar == '#') {
-        do
-          LastChar = advance();
-        while (LastChar != EOF && LastChar != '\n');
-      }
-
-      if (LastChar == '\n') {
-        CurLoc = LexLoc;
-        LastChar = advance();
-        AtLineStart = true;
-        return tok_eol;
-      }
-
-      if (LastChar == EOF) {
-        if (IndentStack.size() > 1) {
-          IndentStack.pop_back();
-          CurLoc = LexLoc;
-          return tok_dedent;
-        }
-        return tok_eof;
-      }
-
-      const int CurrentIndent = IndentStack.back();
-      if (IndentWidth > CurrentIndent) {
-        IndentStack.push_back(IndentWidth);
-        PendingTokens.push_back(
-            {tok_indent, SourceLocation{LexLoc.Line, IndentWidth + 1}});
-        AtLineStart = false;
-        continue;
-      }
-
-      if (IndentWidth < CurrentIndent) {
-        while (IndentStack.size() > 1 && IndentWidth < IndentStack.back()) {
-          IndentStack.pop_back();
-          PendingTokens.push_back(
-              {tok_dedent, SourceLocation{LexLoc.Line, IndentWidth + 1}});
-        }
-
-        if (IndentStack.back() != IndentWidth) {
-          HadError = true;
-          CurLoc = SourceLocation{LexLoc.Line, IndentWidth + 1};
-          fprintf(stderr,
-                  "%sError%s (Line %d, Column %d): inconsistent indentation\n",
-                  Red, Reset, CurLoc.Line, CurLoc.Col);
-          return tok_error;
-        }
-
-        AtLineStart = false;
-        continue;
-      }
-
-      AtLineStart = false;
-    }
-
-    // Skip whitespace EXCEPT newlines.
-    while (isspace(LastChar) && LastChar != '\n')
+  // Multi-character comparison operators.
+  if (LastChar == '=') {
+    int NextChar = advance();
+    if (NextChar == '=') {
       LastChar = advance();
+      return tok_eq;
+    }
+    LastChar = NextChar;
+    return '=';
+  }
 
-    // Return end-of-line token.
-    if (LastChar == '\n') {
+  if (LastChar == '!') {
+    int NextChar = advance();
+    if (NextChar == '=') {
+      LastChar = advance();
+      return tok_ne;
+    }
+    LastChar = NextChar;
+    return '!';
+  }
+
+  if (LastChar == '<') {
+    int NextChar = advance();
+    if (NextChar == '=') {
+      LastChar = advance();
+      return tok_le;
+    }
+    LastChar = NextChar;
+    return '<';
+  }
+
+  if (LastChar == '>') {
+    int NextChar = advance();
+    if (NextChar == '=') {
+      LastChar = advance();
+      return tok_ge;
+    }
+    LastChar = NextChar;
+    return '>';
+  }
+
+  if (LastChar == '#') {
+    // Comment until end of line.
+    do
+      LastChar = advance();
+    while (LastChar != EOF && LastChar != '\n');
+
+    if (LastChar != EOF) {
       CurLoc = LexLoc;
-      LastChar = advance();
-      AtLineStart = true;
+      LastChar = ' ';
       return tok_eol;
     }
-
-    CurLoc = LexLoc;
-
-    if (isalpha(LastChar) ||
-        LastChar == '_') { // identifier: [a-zA-Z_][a-zA-Z0-9_]*
-      IdentifierStr = LastChar;
-      while (isalnum((LastChar = advance())) || LastChar == '_')
-        IdentifierStr += LastChar;
-
-      const auto it = Keywords.find(IdentifierStr);
-      return (it != Keywords.end()) ? it->second : tok_identifier;
-    }
-
-    if (isdigit(LastChar) || LastChar == '.') { // Number: [0-9.]+
-      std::string NumStr;
-      do {
-        NumStr += LastChar;
-        LastChar = advance();
-      } while (isdigit(LastChar) || LastChar == '.');
-
-      char *End;
-      NumVal = strtod(NumStr.c_str(), &End);
-      if (*End != '\0') {
-        HadError = true;
-        fprintf(stderr,
-                "%sError%s (Line %d, Column %d): invalid number literal '%s'\n",
-                Red, Reset, CurLoc.Line, CurLoc.Col, NumStr.c_str());
-        return tok_error;
-      }
-      NumLiteralStr = NumStr;
-      return tok_number;
-    }
-
-    // Multi-character comparison operators.
-    if (LastChar == '=') {
-      int NextChar = advance();
-      if (NextChar == '=') {
-        LastChar = advance();
-        return tok_eq;
-      }
-      LastChar = NextChar;
-      return '=';
-    }
-
-    if (LastChar == '!') {
-      int NextChar = advance();
-      if (NextChar == '=') {
-        LastChar = advance();
-        return tok_ne;
-      }
-      LastChar = NextChar;
-      return '!';
-    }
-
-    if (LastChar == '<') {
-      int NextChar = advance();
-      if (NextChar == '=') {
-        LastChar = advance();
-        return tok_le;
-      }
-      LastChar = NextChar;
-      return '<';
-    }
-
-    if (LastChar == '>') {
-      int NextChar = advance();
-      if (NextChar == '=') {
-        LastChar = advance();
-        return tok_ge;
-      }
-      LastChar = NextChar;
-      return '>';
-    }
-
-    if (LastChar == '#') {
-      // Comment until end of line.
-      do
-        LastChar = advance();
-      while (LastChar != EOF && LastChar != '\n');
-
-      if (LastChar != EOF) {
-        CurLoc = LexLoc;
-        LastChar = advance();
-        AtLineStart = true;
-        return tok_eol;
-      }
-    }
-
-    if (LastChar == EOF) {
-      if (IndentStack.size() > 1) {
-        IndentStack.pop_back();
-        CurLoc = LexLoc;
-        return tok_dedent;
-      }
-      return tok_eof;
-    }
-
-    int ThisChar = LastChar;
-    LastChar = advance();
-    return ThisChar;
   }
+
+  // Check for end of file.  Don't eat the EOF.
+  if (LastChar == EOF)
+    return tok_eof;
+
+  // Otherwise, just return the character as its ascii value.
+  int ThisChar = LastChar;
+  LastChar = advance();
+  return ThisChar;
 }
 
 //===----------------------------------------------------------------------===//
@@ -567,21 +468,6 @@ public:
   CallExprAST(const std::string &Callee,
               std::vector<std::unique_ptr<ExprAST>> Args)
       : Callee(Callee), Args(std::move(Args)) {}
-  Value *codegen() override;
-};
-
-/// BlockExprAST - Expression class for indentation-delimited statement blocks.
-/// Prefix expressions are evaluated for side effects; return expression provides
-/// the block value.
-class BlockExprAST : public ExprAST {
-  std::vector<std::unique_ptr<ExprAST>> PrefixExprs;
-  std::unique_ptr<ExprAST> ReturnExpr;
-
-public:
-  BlockExprAST(std::vector<std::unique_ptr<ExprAST>> PrefixExprs,
-               std::unique_ptr<ExprAST> ReturnExpr)
-      : PrefixExprs(std::move(PrefixExprs)), ReturnExpr(std::move(ReturnExpr)) {
-  }
   Value *codegen() override;
 };
 
@@ -670,7 +556,6 @@ template <typename T = void> T LogError(const char *Str) {
 }
 
 static std::unique_ptr<ExprAST> ParseExpression();
-static std::unique_ptr<ExprAST> ParseBlockExpr();
 
 /// numberexpr ::= number
 static std::unique_ptr<ExprAST> ParseNumberExpr() {
@@ -831,70 +716,7 @@ static std::unique_ptr<PrototypeAST> ParsePrototype() {
   return std::make_unique<PrototypeAST>(FnLoc, FnName, std::move(ArgNames));
 }
 
-/// block ::= INDENT statement { eol statement } DEDENT
-/// statement ::= "return" expression | expression
-static std::unique_ptr<ExprAST> ParseBlockExpr() {
-  std::vector<std::unique_ptr<ExprAST>> PrefixExprs;
-  std::unique_ptr<ExprAST> ReturnExpr;
-  bool SawReturn = false;
-
-  if (CurTok != tok_indent)
-    return LogError<ExprPtr>("Expected indented block after ':'");
-  getNextToken(); // consume indent
-
-  while (CurTok != tok_dedent && CurTok != tok_eof) {
-    if (CurTok == tok_eol) {
-      getNextToken();
-      continue;
-    }
-
-    if (CurTok == tok_return) {
-      if (SawReturn)
-        return LogError<ExprPtr>("Return must be the final statement in a block");
-      getNextToken(); // consume 'return'
-      ReturnExpr = ParseExpression();
-      if (!ReturnExpr)
-        return nullptr;
-      SawReturn = true;
-    } else {
-      if (SawReturn)
-        return LogError<ExprPtr>("Return must be the final statement in a block");
-      auto E = ParseExpression();
-      if (!E)
-        return nullptr;
-      PrefixExprs.push_back(std::move(E));
-    }
-
-    if (CurTok == tok_eol) {
-      while (CurTok == tok_eol)
-        getNextToken();
-      continue;
-    }
-
-    if (CurTok == tok_dedent || CurTok == tok_eof)
-      continue;
-
-    if (CurTok == '=' || CurTok == '!') {
-      std::string Msg = "Unexpected " + FormatTokenForMessage(CurTok) +
-                        " when expecting an expression";
-      return LogError<ExprPtr>(Msg.c_str());
-    }
-
-    return LogError<ExprPtr>("Expected newline after statement");
-  }
-
-  if (!SawReturn)
-    return LogError<ExprPtr>(
-        "Expected at least one return statement in function body");
-
-  if (CurTok == tok_dedent)
-    getNextToken(); // consume dedent
-
-  return std::make_unique<BlockExprAST>(std::move(PrefixExprs),
-                                        std::move(ReturnExpr));
-}
-
-/// definition ::= 'def' prototype ':' block
+/// definition ::= 'def' prototype ':' expression
 static std::unique_ptr<FunctionAST> ParseDefinition() {
   getNextToken(); // eat def.
 
@@ -906,13 +728,18 @@ static std::unique_ptr<FunctionAST> ParseDefinition() {
     return LogError<FuncPtr>("Expected ':' in function definition");
   getNextToken(); // eat ':'
 
-  if (CurTok != tok_eol)
-    return LogError<FuncPtr>(
-        "Expected newline after ':' in function definition");
+  // This takes care of a situation where we decide to split the
+  // function and expression
+  // ready> def foo(x):
+  // ready>  return x + 1
   while (CurTok == tok_eol)
     getNextToken();
 
-  if (auto E = ParseBlockExpr())
+  if (CurTok != tok_return)
+    return LogError<FuncPtr>("Expected 'return' before return expression");
+  getNextToken(); // eat return
+
+  if (auto E = ParseExpression())
     return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
   return nullptr;
 }
@@ -1098,14 +925,6 @@ Value *CallExprAST::codegen() {
   return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
-Value *BlockExprAST::codegen() {
-  for (auto &E : PrefixExprs) {
-    if (!E->codegen())
-      return nullptr;
-  }
-  return ReturnExpr->codegen();
-}
-
 Function *PrototypeAST::codegen() {
   // Special case: main function returns int, everything else returns double
   Type *RetType;
@@ -1264,9 +1083,7 @@ static void SynchronizeToLineBoundary() {
 
 static void HandleDefinition() {
   if (auto FnAST = ParseDefinition()) {
-    if (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_def &&
-        CurTok != tok_extern && CurTok != tok_identifier &&
-        CurTok != tok_number && CurTok != '(') {
+    if (CurTok != tok_eol && CurTok != tok_eof) {
       std::string Msg = "Unexpected " + FormatTokenForMessage(CurTok);
       LogError<void>(Msg.c_str());
       SynchronizeToLineBoundary();
@@ -1292,8 +1109,7 @@ static void HandleDefinition() {
 
 static void HandleExtern() {
   if (auto ProtoAST = ParseExtern()) {
-    if (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_def &&
-        CurTok != tok_extern) {
+    if (CurTok != tok_eol && CurTok != tok_eof) {
       std::string Msg = "Unexpected " + FormatTokenForMessage(CurTok);
       LogError<void>(Msg.c_str());
       SynchronizeToLineBoundary();
@@ -1314,8 +1130,7 @@ static void HandleExtern() {
 static void HandleTopLevelExpression() {
   // Evaluate a top-level expression into an anonymous function.
   if (auto FnAST = ParseTopLevelExpr()) {
-    if (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_def &&
-        CurTok != tok_extern) {
+    if (CurTok != tok_eol && CurTok != tok_eof) {
       std::string Msg = "Unexpected " + FormatTokenForMessage(CurTok);
       LogError<void>(Msg.c_str());
       SynchronizeToLineBoundary();
@@ -1477,7 +1292,7 @@ int main(int argc, const char **argv) {
   cl::HideUnrelatedOptions(PyxcCategory, ReplCommand);
   cl::HideUnrelatedOptions(PyxcCategory, RunCommand);
   cl::HideUnrelatedOptions(PyxcCategory, BuildCommand);
-  cl::ParseCommandLineOptions(argc, argv, "pyxc chapter09\n");
+  cl::ParseCommandLineOptions(argc, argv, "pyxc chapter07\n");
 
   if (BuildOptLevel > 3) {
     fprintf(stderr, "Error: invalid optimization level -O%u (expected 0..3)\n",
@@ -1494,11 +1309,35 @@ int main(int argc, const char **argv) {
       fprintf(stderr, "Error: run accepts only one file name.\n");
       return 1;
     }
+
     const std::string &RunInputFile = RunInputFiles.front();
-    (void)RunInputFile;
-    (void)RunEmit;
-    fprintf(stderr, "run: i havent learnt how to do that yet.\n");
-    return 1;
+    if (!freopen(RunInputFile.c_str(), "r", stdin)) {
+      fprintf(stderr, "Error: could not open file '%s'.\n",
+              RunInputFile.c_str());
+      return 1;
+    }
+
+    DiagSourceMgr.reset();
+    LexLoc = {1, 0};
+    CurLoc = {1, 0};
+    FunctionProtos.clear();
+    HadError = false;
+    InteractiveMode = false;
+    BuildObjectMode = false;
+    CurrentOptLevel = 0;
+
+    InitializeNativeTarget();
+    InitializeNativeTargetAsmPrinter();
+    InitializeNativeTargetAsmParser();
+    TheJIT = ExitOnErr(PyxcJIT::Create());
+
+    InitializeModuleAndManagers();
+    ShouldEmitIR = (RunEmit == EmitLLVMIR);
+
+    getNextToken();
+    MainLoop();
+
+    return HadError ? 1 : 0;
   }
 
   if (BuildCommand) {

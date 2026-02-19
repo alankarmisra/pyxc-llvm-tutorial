@@ -1,0 +1,18 @@
+# RUN: %pyxc repl < %s > %t 2>&1
+# RUN: grep -q -- "-1.000000" %t
+# RUN: grep -q "0.000000" %t
+# RUN: grep -q "1.000000" %t
+
+def extern printd
+
+def classify(x):
+  return if x < 0:
+    0 - 1
+  elif x == 0:
+    0
+  else:
+    1
+
+classify(0 - 2)
+classify(0)
+classify(9)

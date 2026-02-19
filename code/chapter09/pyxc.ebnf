@@ -1,5 +1,5 @@
 (* pyxc.ebnf
-   Chapter 9 grammar: indentation-based blocks. *)
+   Chapter 9 grammar: arithmetic + comparison operators. *)
 
 program        = { top } ;
 
@@ -7,12 +7,9 @@ top            = definition
                  | external
                  | expression ;
 
-definition     = "def" prototype ":" newline block ;
+definition     = "def" prototype ":" expression ;
 external       = "extern" "def" prototype ;
 toplevelexpr   = expression ;
-block          = indent statement { newline statement } dedent ;
-statement      = "return" expression
-               | expression ;
 
 prototype      = identifier "(" [ identifier { "," identifier } ] ")" ;
 
@@ -39,7 +36,3 @@ number         = digit { digit } [ "." { digit } ]
 
 letter         = "A".."Z" | "a".."z" ;
 digit          = "0".."9" ;
-
-newline        = "NEWLINE" ;
-indent         = "INDENT" ;
-dedent         = "DEDENT" ;

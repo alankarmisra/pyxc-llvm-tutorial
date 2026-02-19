@@ -2,8 +2,7 @@
 # RUN: grep -q "10.000000" %t
 
 def ten(x):
-  x + 100
-  x + 200
-  return x + 3
+  x + 100;
+  return x + 3;
 
 ten(7)

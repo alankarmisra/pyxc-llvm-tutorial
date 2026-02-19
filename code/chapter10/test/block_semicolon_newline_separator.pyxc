@@ -2,8 +2,7 @@
 # RUN: grep -q "8.000000" %t
 
 def plus3(x):
-  x + 100
-
+  x + 100;
   return x + 3
 
 plus3(5)

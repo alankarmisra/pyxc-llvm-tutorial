@@ -1,0 +1,11 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error (" %t
+# RUN: grep -q "Expected ':' after elif condition" %t
+
+def bad(x):
+  return if x > 0:
+    x
+  elif x < 0
+    0 - x
+  else:
+    0

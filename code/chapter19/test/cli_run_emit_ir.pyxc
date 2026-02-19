@@ -1,0 +1,7 @@
+# RUN: %pyxc run --emit=llvm-ir %s > %t 2>&1
+# RUN: grep -q "define double @id" %t
+
+def id(x):
+  return x
+
+id(3)

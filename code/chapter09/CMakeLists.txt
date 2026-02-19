@@ -108,8 +108,4 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/runtime.c")
     COMMENT "Creating runtime.o"
   )
   add_custom_target(runtime_target ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/runtime.o")
-
-  # Make runtime symbols available in the pyxc process so JIT'd code can
-  # resolve externs like putchard/printd via current-process lookup.
-  target_sources(pyxc PRIVATE $<TARGET_OBJECTS:pyxc_runtime>)
 endif()

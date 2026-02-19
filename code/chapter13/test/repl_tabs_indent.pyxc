@@ -1,0 +1,7 @@
+# RUN: %pyxc repl < %s > %t 2>&1
+# RUN: grep -q "3.000000" %t
+
+def tabok(x):
+	return x + 1
+
+tabok(2)

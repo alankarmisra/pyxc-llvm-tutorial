@@ -1,101 +1,117 @@
 ---
-description: "Add mutable variables with `let` declarations and assignment expressions."
+description: "Replace semicolon-separated blocks with indentation-based blocks using INDENT/DEDENT tokenization."
 ---
-# 11. Pyxc: Mutable Variables
+# 11. Pyxc: Indentation-Based Blocks
 
 ## What We're Building
 
-By chapter 10, we can write control flow (`if` / `while`), but we still can’t update local state.
+In Chapter 10, blocks were explicit and semicolon-separated:
 
-In this chapter, we add:
-
-- variable declaration: `let x = expr`
-- assignment: `x = expr`
-
-That unlocks loop-style algorithms like iterative factorial.
-
-```py
-def fact_iter(n):
-  let acc = 1
-  let i = 2
-  while i <= n:
-    acc = acc * i
-    i = i + 1
-  return acc
+```python
+def add2(x):
+  x + 1;
+  return x + 2
 ```
+
+In this chapter, we keep the same **block semantics** (prefix statements + final `return`) but switch to **indentation syntax**:
+
+```python
+def add2(x):
+  x + 1
+  return x + 2
+```
+
+So the parser no longer depends on `;` for statement boundaries inside function bodies.
 
 ## Source Code
 
-Grab the code: [code/chapter11](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter11)
+Grab the code: [code/chapter09](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter09)
 
 Or clone the whole repo:
 
 ```bash
 git clone https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter11
+cd pyxc-llvm-tutorial/code/chapter09
 ```
 
 ## Grammar Change (EBNF)
 
 ```ebnf
-primary        = identifierexpr
-               | numberexpr
-               | parenexpr
-               | letexpr
-               | ifexpr
-               | whileexpr ;
-
-letexpr        = "let" identifier "=" expression ;
-identifierexpr = identifier
-               | identifier "=" expression
-               | identifier "(" [ expression { "," expression } ] ")" ;
+definition     = "def" prototype ":" newline block ;
+block          = indent statement { newline statement } dedent ;
+statement      = "return" expression
+               | expression ;
 ```
 
-Notes:
+This means:
 
-- Assignment is expression-form (`x = expr`) and returns the assigned value.
-- `let` introduces a mutable local.
+- `:` must be followed by a newline.
+- A function body starts with `INDENT` and ends with `DEDENT`.
+- Statements are newline-separated.
+- A block still requires at least one `return`.
 
 ## Implementation
 
-### 1. Lexer and Keywords
+### 1. Add Indentation Tokens
 
-Add `let` keyword token (`tok_let`) and include it in keyword/token-name tables.
+The lexer now emits:
 
-### 2. New AST Nodes
+- `tok_indent`
+- `tok_dedent`
 
-Add:
+These are synthetic tokens produced from leading spaces at line start.
 
-- `LetExprAST(Name, InitExpr)`
-- `AssignExprAST(Name, ValueExpr)`
+### 2. Lexer: Indentation Stack + Pending Tokens
 
-### 3. Parser Changes
+At line start, the lexer measures indentation width and compares it to a stack:
 
-- `ParsePrimary()` handles `tok_let` via `ParseLetExpr()`.
-- `ParseIdentifierExpr()` detects assignment form:
-  - `identifier '=' expression` -> `AssignExprAST`
-  - otherwise existing variable-ref/call behavior.
+- Greater indent -> emit `INDENT` and push
+- Smaller indent -> emit one or more `DEDENT` and pop
+- Same indent -> emit nothing
 
-### 4. Codegen Changes
+To support multiple dedents before a real token, we queue synthetic tokens in `PendingTokens`.
 
-To make variables mutable, we store locals in stack slots (`alloca`) and load/store them.
+We also added a strict indentation error:
 
-- `NamedValues` now maps to `AllocaInst*` instead of raw SSA value.
-- Function arguments are copied into allocas at function entry.
-- `VariableExprAST` emits `load`.
-- `LetExprAST` emits entry-block `alloca` + `store`.
-- `AssignExprAST` emits `store` to existing variable and returns stored value.
+- `inconsistent indentation`
 
-### 5. Validation Rules
+### 3. Parser: Definition Requires Newline After `:`
 
-- Unknown assignment target -> `Unknown variable name in assignment`
-- Missing `=` after `let name` -> clear parse error
-- Duplicate declaration in same function scope -> `Duplicate variable declaration`
+`ParseDefinition()` now enforces:
+
+- `def ... :` then newline
+- then an indented block
+
+So one-line definitions like `def f(x): return x` are rejected in Chapter 11.
+
+### 4. Parser: ParseBlockExpr Consumes INDENT/DEDENT
+
+`ParseBlockExpr()` now:
+
+1. Requires `tok_indent`
+2. Parses newline-delimited statements
+3. Requires at least one `return` statement
+4. Requires `return` to be final
+5. Ends on `tok_dedent`
+
+We also emit clearer syntax errors for bare `=` / `!` in block statements:
+
+- `Unexpected '=' when expecting an expression`
+- `Unexpected '!' when expecting an expression`
+
+### 5. Semantics Stay the Same
+
+`BlockExprAST::codegen()` is unchanged conceptually:
+
+- evaluate prefix expressions in order
+- return the value of final `return` expression
+
+So Chapter 11 is mostly a **syntax/lexing** upgrade, not a semantic one.
 
 ## Compile and Test
 
 ```bash
-cd code/chapter11
+cd code/chapter09
 ./build.sh
 llvm-lit test/
 ```
@@ -104,66 +120,103 @@ llvm-lit test/
 
 ```bash
 $ ./build/pyxc repl
-ready> def fact_iter(n):
-ready>   let acc = 1
-ready>   let i = 2
-ready>   while i <= n:
-ready>     acc = acc * i
-ready>     i = i + 1
-ready>   return acc
-ready> fact_iter(5)
-120.000000
+ready> def print_sequence(x):
+ready>   x + 100
+ready>   return x + 2
+ready> print_sequence(3)
+5.000000
+```
+
+And with blank lines/comments in a block:
+
+```py
+def plus5(x):
+  # prefix statement
+  x + 100
+
+  return x + 5
 ```
 
 ## Error Cases
 
-Missing `=` in let:
+Missing indented block:
 
 ```py
 def bad(x):
-  let y
-  return x
+return x + 1
 ```
 
 Produces:
 
-- `Expected '=' after variable name in let expression`
+- `Expected indented block after ':'`
 
-Assign to unknown variable:
+Inconsistent indentation:
 
 ```py
 def bad(x):
-  y = x + 1
-  return x
+   x + 1
+  return x + 2
 ```
 
 Produces:
 
-- `Unknown variable name in assignment`
+- `inconsistent indentation`
+
+No return in function body:
+
+```py
+def bad2(x):
+  x + 1
+  x + 2
+```
+
+Produces:
+
+- `Expected at least one return statement in function body`
 
 ## Testing Your Implementation
 
-This chapter includes **79 automated tests**. New mutable-focused tests include:
-
-- `repl_mutable_factorial_iter.pyxc`
-- `ir_mutable_let_assign.pyxc`
-- `error_let_missing_equal.pyxc`
-- `error_assign_unknown_variable.pyxc`
-
-Run:
+This chapter includes **72 automated tests**. Run them with:
 
 ```bash
-cd code/chapter11
+cd code/chapter09
 llvm-lit -v test/
+# or: lit -v test/
 ```
+
+**Pro tip:** Key tests include:
+
+- `block_semicolon_return.pyxc` - Basic indentation block with prefix + return
+- `block_multiple_expr_statements.pyxc` - Multiple prefix statements before return
+- `block_indent_comments_blanklines.pyxc` - Comments/blank lines inside blocks
+- `error_missing_indented_block.pyxc` - Missing required indentation after `:`
+- `error_inconsistent_indentation.pyxc` - Non-matching dedent levels
+- `error_block_no_return.pyxc` - Block must contain a return
+
+Browse the tests to see exactly what behavior is supported.
 
 ## What We Built
 
-- Mutable local variables (`let`)
-- Assignment expressions
-- Load/store-based variable codegen
-- Iterative algorithms using `while` + mutable state
+- Lexer-level indentation transformation (`INDENT`/`DEDENT`)
+- Newline-delimited statement parsing for function blocks
+- Strict indentation diagnostics
+- Same block semantics as Chapter 10, now with cleaner syntax
+- Fully passing chapter 9 test suite
 
 ## What's Next
 
-Next language steps can add richer types and logical operators, while toolchain chapters (16+) continue optimization and native build pipeline work.
+With block syntax now Python-like, the next natural step is **mutable variables** (`let` + assignment), then control flow (conditionals/loops).
+
+## Need Help?
+
+Stuck? Questions? Found a bug?
+
+- Issues: [GitHub Issues](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues)
+- Discussions: [GitHub Discussions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
+
+Include:
+
+- Chapter number (`14`)
+- Your platform
+- Command you ran
+- Full error output

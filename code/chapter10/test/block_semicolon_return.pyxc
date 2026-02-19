@@ -2,7 +2,7 @@
 # RUN: grep -q "5.000000" %t
 
 def add2(x):
-  x + 1
+  x + 1;
   return x + 2
 
 add2(3)

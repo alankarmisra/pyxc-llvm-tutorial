@@ -1,30 +1,20 @@
 #include "../include/PyxcJIT.h"
-#include "../include/PyxcLinker.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
-#include "llvm/IR/DIBuilder.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
-#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Verifier.h"
-#include "llvm/MC/TargetRegistry.h"
-#include "llvm/Passes/OptimizationLevel.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/StandardInstrumentations.h"
 #include "llvm/Support/CommandLine.h"
-#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/TargetSelect.h"
-#include "llvm/Support/raw_ostream.h"
-#include "llvm/Target/TargetMachine.h"
-#include "llvm/Target/TargetOptions.h"
-#include "llvm/TargetParser/Host.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Scalar/GVN.h"
@@ -38,7 +28,6 @@
 #include <memory>
 #include <sstream>
 #include <string>
-#include <system_error>
 #include <type_traits>
 #include <unistd.h>
 #include <utility>
@@ -118,13 +107,7 @@ enum Token {
   tok_number = -7,
 
   // control
-  tok_return = -8,
-
-  // multi-char comparison operators
-  tok_eq = -9, // ==
-  tok_ne = -10, // !=
-  tok_le = -11, // <=
-  tok_ge = -12  // >=
+  tok_return = -8
 };
 
 static std::string IdentifierStr; // Filled in if tok_identifier
@@ -150,10 +133,6 @@ static std::map<int, std::string> TokenNames = [] {
       {tok_identifier, "identifier"},
       {tok_number, "number"},
       {tok_return, "'return'"},
-      {tok_eq, "'=='"},
-      {tok_ne, "'!='"},
-      {tok_le, "'<='"},
-      {tok_ge, "'>='"},
   };
 
   // Single character tokens.
@@ -347,47 +326,6 @@ static int gettok() {
     return tok_number;
   }
 
-  // Multi-character comparison operators.
-  if (LastChar == '=') {
-    int NextChar = advance();
-    if (NextChar == '=') {
-      LastChar = advance();
-      return tok_eq;
-    }
-    LastChar = NextChar;
-    return '=';
-  }
-
-  if (LastChar == '!') {
-    int NextChar = advance();
-    if (NextChar == '=') {
-      LastChar = advance();
-      return tok_ne;
-    }
-    LastChar = NextChar;
-    return '!';
-  }
-
-  if (LastChar == '<') {
-    int NextChar = advance();
-    if (NextChar == '=') {
-      LastChar = advance();
-      return tok_le;
-    }
-    LastChar = NextChar;
-    return '<';
-  }
-
-  if (LastChar == '>') {
-    int NextChar = advance();
-    if (NextChar == '=') {
-      LastChar = advance();
-      return tok_ge;
-    }
-    LastChar = NextChar;
-    return '>';
-  }
-
   if (LastChar == '#') {
     // Comment until end of line.
     do
@@ -419,14 +357,9 @@ namespace {
 
 /// ExprAST - Base class for all expression nodes.
 class ExprAST {
-  SourceLocation Loc;
-
 public:
-  ExprAST(SourceLocation Loc = CurLoc) : Loc(Loc) {}
   virtual ~ExprAST() = default;
   virtual Value *codegen() = 0;
-  int getLine() const { return Loc.Line; }
-  int getCol() const { return Loc.Col; }
 };
 
 /// NumberExprAST - Expression class for numeric literals like "1.0".
@@ -449,11 +382,11 @@ public:
 
 /// BinaryExprAST - Expression class for a binary operator.
 class BinaryExprAST : public ExprAST {
-  int Op;
+  char Op;
   std::unique_ptr<ExprAST> LHS, RHS;
 
 public:
-  BinaryExprAST(int Op, std::unique_ptr<ExprAST> LHS,
+  BinaryExprAST(char Op, std::unique_ptr<ExprAST> LHS,
                 std::unique_ptr<ExprAST> RHS)
       : Op(Op), LHS(std::move(LHS)), RHS(std::move(RHS)) {}
   Value *codegen() override;
@@ -477,16 +410,13 @@ public:
 class PrototypeAST {
   std::string Name;
   std::vector<std::string> Args;
-  SourceLocation Loc;
 
 public:
-  PrototypeAST(SourceLocation Loc, const std::string &Name,
-               std::vector<std::string> Args)
-      : Name(Name), Args(std::move(Args)), Loc(Loc) {}
+  PrototypeAST(const std::string &Name, std::vector<std::string> Args)
+      : Name(Name), Args(std::move(Args)) {}
 
   Function *codegen();
   const std::string &getName() const { return Name; }
-  int getLine() const { return Loc.Line; }
 };
 
 /// FunctionAST - This class represents a function definition itself.
@@ -516,10 +446,9 @@ static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 
 /// BinopPrecedence - This holds the precedence for each binary operator that is
 /// defined.
-static std::map<int, int> BinopPrecedence = {
-    {'<', 10}, {'>', 10}, {tok_le, 10}, {tok_ge, 10}, {tok_eq, 10},
-    {tok_ne, 10}, {'+', 20}, {'-', 20}, {'*', 40},   {'/', 40},
-    {'%', 40}};
+static std::map<char, int> BinopPrecedence = {{'<', 10}, {'>', 10}, {'+', 20},
+                                              {'-', 20}, {'*', 40}, {'/', 40},
+                                              {'%', 40}};
 
 /// Explanation-friendly precedence anchors used by parser control flow.
 static constexpr int NO_OP_PREC = -1;
@@ -527,10 +456,11 @@ static constexpr int MIN_BINOP_PREC = 1;
 
 /// GetTokPrecedence - Get the precedence of the pending binary operator token.
 static int GetTokPrecedence() {
-  auto It = BinopPrecedence.find(CurTok);
-  if (It == BinopPrecedence.end())
+  if (!isascii(CurTok))
     return NO_OP_PREC;
-  int TokPrec = It->second;
+
+  // Make sure it's a declared binop.
+  int TokPrec = BinopPrecedence[CurTok];
   if (TokPrec < MIN_BINOP_PREC)
     return NO_OP_PREC;
   return TokPrec;
@@ -542,7 +472,6 @@ using FuncPtr = std::unique_ptr<FunctionAST>;
 
 /// LogError - Unified error reporting template.
 template <typename T = void> T LogError(const char *Str) {
-  HadError = true;
   SourceLocation DiagLoc = GetDiagnosticAnchorLoc(CurLoc, CurTok);
   fprintf(stderr, "%sError%s (Line: %d, Column: %d): %s\n", Red, Reset,
           DiagLoc.Line, DiagLoc.Col, Str);
@@ -688,7 +617,6 @@ static std::unique_ptr<PrototypeAST> ParsePrototype() {
   if (CurTok != tok_identifier)
     return LogError<ProtoPtr>("Expected function name in prototype");
 
-  SourceLocation FnLoc = CurLoc;
   std::string FnName = IdentifierStr;
   getNextToken();
 
@@ -713,7 +641,7 @@ static std::unique_ptr<PrototypeAST> ParsePrototype() {
   // success.
   getNextToken(); // eat ')'.
 
-  return std::make_unique<PrototypeAST>(FnLoc, FnName, std::move(ArgNames));
+  return std::make_unique<PrototypeAST>(FnName, std::move(ArgNames));
 }
 
 /// definition ::= 'def' prototype ':' expression
@@ -746,10 +674,9 @@ static std::unique_ptr<FunctionAST> ParseDefinition() {
 
 /// toplevelexpr ::= expression
 static std::unique_ptr<FunctionAST> ParseTopLevelExpr() {
-  SourceLocation FnLoc = CurLoc;
   if (auto E = ParseExpression()) {
     // Make an anonymous proto.
-    auto Proto = std::make_unique<PrototypeAST>(FnLoc, "__anon_expr",
+    auto Proto = std::make_unique<PrototypeAST>("__anon_expr",
                                                 std::vector<std::string>());
     return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
   }
@@ -783,52 +710,6 @@ static std::unique_ptr<ModuleAnalysisManager> TheMAM;
 static std::unique_ptr<PassInstrumentationCallbacks> ThePIC;
 static std::unique_ptr<StandardInstrumentations> TheSI;
 static ExitOnError ExitOnErr;
-static bool InteractiveMode = true;
-static bool BuildObjectMode = false;
-static unsigned CurrentOptLevel = 0;
-
-// Debug info support
-struct DebugInfo {
-  DICompileUnit *TheCU;
-  DIType *DblTy;
-  std::vector<DIScope *> LexicalBlocks;
-
-  void emitLocation(ExprAST *AST);
-  DIType *getDoubleTy();
-} *KSDbgInfo = nullptr;
-
-static std::unique_ptr<DIBuilder> DBuilder;
-
-DIType *DebugInfo::getDoubleTy() {
-  if (DblTy)
-    return DblTy;
-  DblTy = DBuilder->createBasicType("double", 64, dwarf::DW_ATE_float);
-  return DblTy;
-}
-
-void DebugInfo::emitLocation(ExprAST *AST) {
-  if (!AST)
-    return Builder->SetCurrentDebugLocation(DebugLoc());
-  DIScope *Scope;
-  if (LexicalBlocks.empty())
-    Scope = TheCU;
-  else
-    Scope = LexicalBlocks.back();
-  Builder->SetCurrentDebugLocation(
-      DILocation::get(Scope->getContext(), AST->getLine(), AST->getCol(), Scope));
-}
-
-static DISubroutineType *CreateFunctionType(unsigned NumArgs) {
-  SmallVector<Metadata *, 8> EltTys;
-  DIType *DblTy = KSDbgInfo->getDoubleTy();
-
-  EltTys.push_back(DblTy);
-
-  for (unsigned i = 0, e = NumArgs; i != e; ++i)
-    EltTys.push_back(DblTy);
-
-  return DBuilder->createSubroutineType(DBuilder->getOrCreateTypeArray(EltTys));
-}
 
 static Function *getFunction(const std::string &Name) {
   if (auto *F = TheModule->getFunction(Name))
@@ -842,8 +723,6 @@ static Function *getFunction(const std::string &Name) {
 }
 
 Value *NumberExprAST::codegen() {
-  if (KSDbgInfo)
-    KSDbgInfo->emitLocation(this);
   return ConstantFP::get(*TheContext, APFloat(Val));
 }
 
@@ -852,15 +731,10 @@ Value *VariableExprAST::codegen() {
   Value *V = NamedValues[Name];
   if (!V)
     return LogError<Value *>("Unknown variable name");
-  if (KSDbgInfo)
-    KSDbgInfo->emitLocation(this);
   return V;
 }
 
 Value *BinaryExprAST::codegen() {
-  if (KSDbgInfo)
-    KSDbgInfo->emitLocation(this);
-
   Value *L = LHS->codegen();
   Value *R = RHS->codegen();
   if (!L || !R)
@@ -885,27 +759,12 @@ Value *BinaryExprAST::codegen() {
     L = Builder->CreateFCmpUGT(L, R, "cmptmp");
     // Convert bool 0/1 to double 0.0 or 1.0
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
-  case tok_le:
-    L = Builder->CreateFCmpULE(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
-  case tok_ge:
-    L = Builder->CreateFCmpUGE(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
-  case tok_eq:
-    L = Builder->CreateFCmpUEQ(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
-  case tok_ne:
-    L = Builder->CreateFCmpUNE(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   default:
     return LogError<Value *>("invalid binary operator");
   }
 }
 
 Value *CallExprAST::codegen() {
-  if (KSDbgInfo)
-    KSDbgInfo->emitLocation(this);
-
   // Look up the name in the global module table.
   Function *CalleeF = getFunction(Callee);
   if (!CalleeF)
@@ -926,17 +785,10 @@ Value *CallExprAST::codegen() {
 }
 
 Function *PrototypeAST::codegen() {
-  // Special case: main function returns int, everything else returns double
-  Type *RetType;
-  if (Name == "main") {
-    RetType = Type::getInt32Ty(*TheContext);
-  } else {
-    RetType = Type::getDoubleTy(*TheContext);
-  }
-
-  // Make the function type:  double(double,double) etc. or int32() for main
+  // Make the function type:  double(double,double) etc.
   std::vector<Type *> Doubles(Args.size(), Type::getDoubleTy(*TheContext));
-  FunctionType *FT = FunctionType::get(RetType, Doubles, false);
+  FunctionType *FT =
+      FunctionType::get(Type::getDoubleTy(*TheContext), Doubles, false);
 
   Function *F =
       Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
@@ -961,62 +813,26 @@ Function *FunctionAST::codegen() {
   BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
   Builder->SetInsertPoint(BB);
 
-  // Create a subprogram DIE for this function if debug info is enabled
-  DISubprogram *SP = nullptr;
-  if (KSDbgInfo) {
-    DIFile *Unit = DBuilder->createFile(KSDbgInfo->TheCU->getFilename(),
-                                        KSDbgInfo->TheCU->getDirectory());
-    DIScope *FContext = Unit;
-    unsigned LineNo = P.getLine();
-    unsigned ScopeLine = LineNo;
-    SP = DBuilder->createFunction(
-        FContext, P.getName(), StringRef(), Unit, LineNo,
-        CreateFunctionType(TheFunction->arg_size()), ScopeLine,
-        DINode::FlagPrototyped, DISubprogram::SPFlagDefinition);
-    TheFunction->setSubprogram(SP);
-
-    // Push the current scope
-    KSDbgInfo->LexicalBlocks.push_back(SP);
-
-    // Unset the location for the prologue emission
-    KSDbgInfo->emitLocation(nullptr);
-  }
-
   // Record the function arguments in the NamedValues map.
   NamedValues.clear();
   for (auto &Arg : TheFunction->args())
     NamedValues[std::string(Arg.getName())] = &Arg;
 
   if (Value *RetVal = Body->codegen()) {
-    // Special handling for main: convert double to i32
-    if (P.getName() == "main") {
-      RetVal = Builder->CreateFPToSI(RetVal, Type::getInt32Ty(*TheContext), "mainret");
-    }
-
     // Finish off the function.
     Builder->CreateRet(RetVal);
-
-    // Pop off the lexical block for the function
-    if (KSDbgInfo)
-      KSDbgInfo->LexicalBlocks.pop_back();
 
     // Validate the generated code, checking for consistency.
     verifyFunction(*TheFunction);
 
-    // Run the optimizer on the function (only in REPL mode, not when building objects)
-    if (!BuildObjectMode) {
-      TheFPM->run(*TheFunction, *TheFAM);
-    }
+    // Run the optimizer on the function.
+    TheFPM->run(*TheFunction, *TheFAM);
 
     return TheFunction;
   }
 
   // Error reading body, remove function.
   TheFunction->eraseFromParent();
-
-  if (KSDbgInfo)
-    KSDbgInfo->LexicalBlocks.pop_back();
-
   return nullptr;
 }
 
@@ -1045,25 +861,10 @@ static void InitializeModuleAndManagers() {
                                                      /*DebugLogging*/ false);
   TheSI->registerCallbacks(*ThePIC, TheMAM.get());
 
-  switch (CurrentOptLevel) {
-  case 0:
-    break;
-  case 1:
-    TheFPM->addPass(InstCombinePass());
-    TheFPM->addPass(ReassociatePass());
-    break;
-  case 2:
-    TheFPM->addPass(InstCombinePass());
-    TheFPM->addPass(ReassociatePass());
-    TheFPM->addPass(GVNPass());
-    break;
-  default: // O3 and above
-    TheFPM->addPass(InstCombinePass());
-    TheFPM->addPass(ReassociatePass());
-    TheFPM->addPass(GVNPass());
-    TheFPM->addPass(SimplifyCFGPass());
-    break;
-  }
+  TheFPM->addPass(InstCombinePass());
+  TheFPM->addPass(ReassociatePass());
+  TheFPM->addPass(GVNPass());
+  TheFPM->addPass(SimplifyCFGPass());
 
   // Register analysis passes.
   PassBuilder PB;
@@ -1094,11 +895,9 @@ static void HandleDefinition() {
         FnIR->print(errs());
         fprintf(stderr, "\n");
       }
-      if (!BuildObjectMode) {
-        ExitOnErr(TheJIT->addModule(
-            ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
-        InitializeModuleAndManagers();
-      }
+      ExitOnErr(TheJIT->addModule(
+          ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
+      InitializeModuleAndManagers();
     }
   } else {
     // Error recovery: skip the rest of the current line so leftover tokens
@@ -1161,12 +960,12 @@ static void HandleTopLevelExpression() {
 /// top ::= definition | external | expression | eol
 static void MainLoop() {
   while (true) {
+    // Don't print a prompt when we already know we're at EOF.
     if (CurTok == tok_eof)
       return;
 
     if (CurTok == tok_eol) {
-      if (InteractiveMode)
-        fprintf(stderr, "ready> ");
+      fprintf(stderr, "ready> ");
       getNextToken();
       continue;
     }
@@ -1179,12 +978,7 @@ static void MainLoop() {
       HandleExtern();
       break;
     default:
-      if (BuildObjectMode) {
-        LogError<void>("Top-level expressions are not supported in build mode yet");
-        SynchronizeToLineBoundary();
-      } else {
-        HandleTopLevelExpression();
-      }
+      HandleTopLevelExpression();
       break;
     }
   }
@@ -1205,84 +999,6 @@ static void EmitTokenStream() {
   }
 }
 
-static std::string DeriveObjectOutputPath(const std::string &InputFile) {
-  const size_t DotPos = InputFile.find_last_of('.');
-  if (DotPos == std::string::npos)
-    return InputFile + ".o";
-  return InputFile.substr(0, DotPos) + ".o";
-}
-
-// Returns empty string if the input file has no extension, to avoid
-// silently overwriting the input file with the executable output.
-static std::string DeriveExecutableOutputPath(const std::string &InputFile) {
-  const size_t DotPos = InputFile.find_last_of('.');
-  if (DotPos == std::string::npos)
-    return "";
-  return InputFile.substr(0, DotPos);
-}
-
-static bool EmitObjectFile(const std::string &OutputPath) {
-  // Note: Optimization has already been run in main() before calling this function
-  InitializeAllAsmParsers();
-  InitializeAllAsmPrinters();
-
-  const std::string TargetTriple = sys::getDefaultTargetTriple();
-
-  std::string Error;
-  const Target *Target = TargetRegistry::lookupTarget(TargetTriple, Error);
-  if (!Target) {
-    errs() << Error << "\n";
-    return false;
-  }
-
-  TargetOptions Opts;
-  std::unique_ptr<TargetMachine> TheTargetMachine(Target->createTargetMachine(
-      Triple(TargetTriple), "generic", "", Opts, Reloc::PIC_));
-  if (!TheTargetMachine) {
-    errs() << "Could not create target machine.\n";
-    return false;
-  }
-
-  // Set the module's target triple and data layout
-  TheModule->setTargetTriple(Triple(TargetTriple));
-  TheModule->setDataLayout(TheTargetMachine->createDataLayout());
-
-  std::error_code EC;
-  raw_fd_ostream Dest(OutputPath, EC, sys::fs::OF_None);
-  if (EC) {
-    errs() << "Could not open file '" << OutputPath << "': " << EC.message()
-           << "\n";
-    return false;
-  }
-
-  // Use legacy PassManager for code generation (required by TargetMachine)
-  legacy::PassManager CodeGenPass;
-  if (TheTargetMachine->addPassesToEmitFile(CodeGenPass, Dest, nullptr,
-                                            CodeGenFileType::ObjectFile)) {
-    errs() << "TheTargetMachine can't emit an object file.\n";
-    return false;
-  }
-
-  CodeGenPass.run(*TheModule);
-  Dest.flush();
-  outs() << "Wrote " << OutputPath << "\n";
-  return true;
-}
-
-static bool LinkExecutable(const std::string &ObjectPath, const std::string &RuntimeObj, const std::string &ExePath) {
-  // Use LLD (LLVM's linker) to link the object file into an executable.
-  // PyxcLinker handles platform-specific linking (ELF, Mach-O, PE/COFF).
-
-  bool success = PyxcLinker::Link(ObjectPath, RuntimeObj, ExePath);
-  if (!success) {
-    errs() << "Error: failed to link executable.\n";
-    return false;
-  }
-
-  outs() << "Linked executable: " << ExePath << "\n";
-  return true;
-}
-
 //===----------------------------------------------------------------------===//
 // Main driver code.
 //===----------------------------------------------------------------------===//
@@ -1292,7 +1008,7 @@ int main(int argc, const char **argv) {
   cl::HideUnrelatedOptions(PyxcCategory, ReplCommand);
   cl::HideUnrelatedOptions(PyxcCategory, RunCommand);
   cl::HideUnrelatedOptions(PyxcCategory, BuildCommand);
-  cl::ParseCommandLineOptions(argc, argv, "pyxc chapter07\n");
+  cl::ParseCommandLineOptions(argc, argv, "pyxc chapter16\n");
 
   if (BuildOptLevel > 3) {
     fprintf(stderr, "Error: invalid optimization level -O%u (expected 0..3)\n",
@@ -1317,9 +1033,6 @@ int main(int argc, const char **argv) {
   }
 
   if (BuildCommand) {
-    fprintf(stderr, "build: introduced in chapter16.\n");
-    return 1;
-
     if (BuildInputFiles.empty()) {
       fprintf(stderr, "Error: build requires a file name.\n");
       return 1;
@@ -1329,169 +1042,12 @@ int main(int argc, const char **argv) {
       return 1;
     }
     const std::string &BuildInputFile = BuildInputFiles.front();
+    (void)BuildInputFile;
+    (void)BuildEmit;
     (void)BuildDebug;
-
-    if (!freopen(BuildInputFile.c_str(), "r", stdin)) {
-      fprintf(stderr, "Error: could not open file '%s'.\n",
-              BuildInputFile.c_str());
-      return 1;
-    }
-
-    DiagSourceMgr.reset();
-    LexLoc = {1, 0};
-    CurLoc = {1, 0};
-    FunctionProtos.clear();
-    HadError = false;
-    InteractiveMode = false;
-    BuildObjectMode = true;
-    CurrentOptLevel = BuildOptLevel;
-    ShouldEmitIR = false;
-
-    InitializeModuleAndManagers();
-
-    // Initialize debug info if requested
-    if (BuildDebug) {
-      DBuilder = std::make_unique<DIBuilder>(*TheModule);
-
-      KSDbgInfo = new DebugInfo();
-      KSDbgInfo->TheCU = DBuilder->createCompileUnit(
-          dwarf::DW_LANG_C, DBuilder->createFile(BuildInputFile, "."),
-          "Pyxc Compiler", CurrentOptLevel > 0, "", 0);
-    }
-
-    getNextToken();
-    MainLoop();
-
-    if (HadError)
-      return 1;
-
-    // Finalize debug info
-    if (BuildDebug) {
-      DBuilder->finalize();
-    }
-
-    // Initialize all target info (needed for both optimization and code generation)
-    InitializeAllTargetInfos();
-    InitializeAllTargets();
-    InitializeAllTargetMCs();
-
-    // Run optimization passes on the module if requested
-    if (CurrentOptLevel > 0) {
-
-      const std::string TargetTriple = sys::getDefaultTargetTriple();
-      TheModule->setTargetTriple(Triple(TargetTriple));
-
-      std::string Error;
-      const Target *Target = TargetRegistry::lookupTarget(TargetTriple, Error);
-      if (!Target) {
-        errs() << Error << "\n";
-        return 1;
-      }
-
-      TargetOptions Opts;
-      std::unique_ptr<TargetMachine> TM(Target->createTargetMachine(
-          Triple(TargetTriple), "generic", "", Opts, Reloc::PIC_));
-      if (!TM) {
-        errs() << "Could not create target machine.\n";
-        return 1;
-      }
-
-      TheModule->setDataLayout(TM->createDataLayout());
-
-      // Create the analysis managers
-      LoopAnalysisManager LAM;
-      FunctionAnalysisManager FAM;
-      CGSCCAnalysisManager CGAM;
-      ModuleAnalysisManager MAM;
-
-      // Create the PassBuilder and register analyses
-      PassBuilder PB(TM.get());
-      PB.registerModuleAnalyses(MAM);
-      PB.registerCGSCCAnalyses(CGAM);
-      PB.registerFunctionAnalyses(FAM);
-      PB.registerLoopAnalyses(LAM);
-      PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
-
-      // Build the appropriate optimization pipeline
-      ModulePassManager MPM;
-      if (CurrentOptLevel == 1) {
-        MPM = PB.buildPerModuleDefaultPipeline(OptimizationLevel::O1);
-      } else if (CurrentOptLevel == 2) {
-        MPM = PB.buildPerModuleDefaultPipeline(OptimizationLevel::O2);
-      } else {
-        MPM = PB.buildPerModuleDefaultPipeline(OptimizationLevel::O3);
-      }
-
-      // Run the optimization pipeline
-      MPM.run(*TheModule, MAM);
-    }
-
-    if (BuildEmit == EmitLLVMIR) {
-      TheModule->print(outs(), nullptr);
-      // Clean up debug info
-      if (BuildDebug) {
-        delete KSDbgInfo;
-        KSDbgInfo = nullptr;
-        DBuilder.reset();
-      }
-      return 0;
-    }
-
-    // For executable output, we need to emit an object file first, then link
-    if (BuildEmit == EmitLink) {
-      // Validate output path before doing any work
-      const std::string ExePath = DeriveExecutableOutputPath(BuildInputFile);
-      if (ExePath.empty()) {
-        errs() << "Error: cannot derive executable name from '" << BuildInputFile
-               << "': input file has no extension. Rename it with a .pyxc extension.\n";
-        return 1;
-      }
-
-      const std::string ObjectPath = DeriveObjectOutputPath(BuildInputFile);
-      bool success = EmitObjectFile(ObjectPath);
-      if (!success) {
-        if (BuildDebug) {
-          delete KSDbgInfo;
-          KSDbgInfo = nullptr;
-          DBuilder.reset();
-        }
-        return 1;
-      }
-
-      // Look for runtime.o in the current directory
-      std::string RuntimeObj = "runtime.o";
-      std::error_code EC;
-      if (!sys::fs::exists(RuntimeObj)) {
-        // If not in current directory, check build directory
-        RuntimeObj = "build/runtime.o";
-        if (!sys::fs::exists(RuntimeObj)) {
-          RuntimeObj = ""; // No runtime found, link without it
-        }
-      }
-      success = LinkExecutable(ObjectPath, RuntimeObj, ExePath);
-
-      // Clean up debug info
-      if (BuildDebug) {
-        delete KSDbgInfo;
-        KSDbgInfo = nullptr;
-        DBuilder.reset();
-      }
-
-      return success ? 0 : 1;
-    }
-
-    // Object file output
-    const std::string OutputPath = DeriveObjectOutputPath(BuildInputFile);
-    bool success = EmitObjectFile(OutputPath);
-
-    // Clean up debug info
-    if (BuildDebug) {
-      delete KSDbgInfo;
-      KSDbgInfo = nullptr;
-      DBuilder.reset();
-    }
-
-    return success ? 0 : 1;
+    (void)BuildOptLevel;
+    fprintf(stderr, "build: i havent learnt how to do that yet.\n");
+    return 1;
   }
 
   DiagSourceMgr.reset();
@@ -1501,12 +1057,8 @@ int main(int argc, const char **argv) {
     return 0;
   }
 
-  HadError = false;
-  InteractiveMode = true;
-  BuildObjectMode = false;
-  CurrentOptLevel = 0;
-  if (InteractiveMode)
-    fprintf(stderr, "ready> ");
+  // Prime the first token.
+  fprintf(stderr, "ready> ");
   getNextToken();
 
   InitializeNativeTarget();

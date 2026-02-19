@@ -1,5 +1,5 @@
 (* pyxc.ebnf
-   Chapter 11 grammar: mutable variables with let/assignment. *)
+   Chapter 11 grammar: indentation-based blocks. *)
 
 program        = { top } ;
 
@@ -23,21 +23,13 @@ multiplicative = primary { ("*" | "/" | "%") primary } ;
 
 primary        = identifierexpr
                  | numberexpr
-                 | parenexpr
-                 | letexpr
-                 | ifexpr
-                 | whileexpr ;
+                 | parenexpr ;
 
 identifierexpr = identifier
-                 | identifier "=" expression
                  | identifier "(" [ expression { "," expression } ] ")" ;
 
 numberexpr     = number ;
 parenexpr      = "(" expression ")" ;
-letexpr        = "let" identifier "=" expression ;
-ifexpr         = "if" expression ":" newline suite "else" ":" newline suite ;
-whileexpr      = "while" expression ":" newline suite ;
-suite          = indent expression { newline expression } dedent ;
 
 compareop      = "<" | ">" | "<=" | ">=" | "==" | "!=" ;
 

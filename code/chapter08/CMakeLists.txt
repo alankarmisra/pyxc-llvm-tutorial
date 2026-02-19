@@ -92,24 +92,6 @@ set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${LLD_FLAGS}")
 
 add_executable(pyxc pyxc.cpp)
 
-# If runtime.c exists, compile it to runtime.o in the build directory
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/runtime.c")
-  add_library(pyxc_runtime OBJECT runtime.c)
-  set_target_properties(pyxc_runtime PROPERTIES
-    C_STANDARD 11
-    POSITION_INDEPENDENT_CODE ON
-  )
-
-  # Create a custom command to copy the object file to runtime.o
-  add_custom_command(
-    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/runtime.o"
-    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_OBJECTS:pyxc_runtime>" "${CMAKE_CURRENT_BINARY_DIR}/runtime.o"
-    DEPENDS pyxc_runtime
-    COMMENT "Creating runtime.o"
-  )
-  add_custom_target(runtime_target ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/runtime.o")
-
-  # Make runtime symbols available in the pyxc process so JIT'd code can
-  # resolve externs like putchard/printd via current-process lookup.
-  target_sources(pyxc PRIVATE $<TARGET_OBJECTS:pyxc_runtime>)
+  add_library(runtime_obj OBJECT runtime.c)
 endif()
