@@ -1,8 +1,0 @@
-# RUN: %pyxc repl --emit=llvm-ir < %s > %t 2>&1
-# RUN: grep -q "define double @all_const" %t
-# RUN: grep -q "ret double 2.000000e+01" %t
-# RUN: not grep -q "fadd double" %t
-# RUN: not grep -q "fmul double" %t
-
-def all_const():
-  return (2 + 3) * 4

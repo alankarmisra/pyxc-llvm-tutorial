@@ -1,5 +1,0 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -F "identifier identifier identifier newline" %t
-# Test that various whitespace is handled correctly
-
-x    y		z

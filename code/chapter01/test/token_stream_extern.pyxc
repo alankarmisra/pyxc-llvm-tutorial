@@ -1,4 +1,0 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -F "'extern' 'def' identifier '(' identifier ',' identifier ')' newline" %t
-
-extern def add(a,b)

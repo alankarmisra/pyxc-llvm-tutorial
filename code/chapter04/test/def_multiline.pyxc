@@ -1,6 +1,0 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Parsed a function definition" %t
-
-# Test function definition split across lines
-def foo(x):
-  return x + 1

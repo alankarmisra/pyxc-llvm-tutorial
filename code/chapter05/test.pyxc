@@ -1,9 +1,0 @@
-# ./pyxc < test.pyxc
-4+5
-def foo(a,b): return a*a + 2*a*b + b*b
-def bar(a): return foo(a, 4.0) + bar(31337)
-extern def cos(x)
-cos(1.234)
-
-# To compile pyxc use
-# clang++ -g -O3 pyxc.cpp `llvm-config --cxxflags --ldflags --system-libs --libs core` -o pyxc

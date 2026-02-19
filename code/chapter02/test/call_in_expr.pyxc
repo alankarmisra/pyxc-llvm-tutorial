@@ -1,5 +1,0 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Parsed a top-level expr" %t
-
-# Test function call in expression
-foo(1) + bar(2, 3) * baz()

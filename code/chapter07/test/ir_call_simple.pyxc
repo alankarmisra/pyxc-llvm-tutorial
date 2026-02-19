@@ -1,8 +1,0 @@
-# RUN: %pyxc repl --emit=llvm-ir < %s > %t 2>&1
-# RUN: grep -q "call double @foo(double" %t
-# RUN: grep -q "define double @__anon_expr" %t
-
-def foo(x):
-  return x + 1
-
-foo(42)

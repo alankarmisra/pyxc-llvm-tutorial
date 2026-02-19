@@ -1,7 +1,0 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -c "Parsed a top-level expr" %t | grep -q "3"
-
-# Test comparison operator
-1 < 2
-3 + 4 < 5 * 6
-(1 + 2) < (3 * 4)

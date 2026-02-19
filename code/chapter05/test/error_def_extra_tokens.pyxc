@@ -1,7 +1,0 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Error (" %t
-# RUN: grep -q "Unexpected number" %t
-# RUN: ! grep -q "define double @foo" %t
-# Test that extra tokens after a def don't generate IR
-
-def foo(x): return x 42

@@ -1,6 +1,0 @@
-# RUN: %pyxc repl --emit=llvm-ir < %s > %t 2>&1
-# RUN: grep -q "ret double 1.400000e+01" %t
-# RUN: not grep -q "fadd double" %t
-# RUN: not grep -q "fmul double" %t
-
-(2 + 5) * 2

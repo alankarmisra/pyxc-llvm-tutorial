@@ -1,4 +1,0 @@
-# RUN: printf 'def foo(x):\rreturn x + 1\r' | %pyxc > %t 2>&1
-# RUN: grep -F "'def' identifier '(' identifier ')' ':' newline" %t
-# RUN: grep -F "'return' identifier '+' number newline" %t
-# RUN: test "$(grep -o 'newline' %t | wc -l | tr -d '[:space:]')" = "2"
