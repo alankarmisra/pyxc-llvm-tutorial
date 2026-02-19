@@ -1,0 +1,4 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -F "'!' newline" %t
+
+! # comment after a character token

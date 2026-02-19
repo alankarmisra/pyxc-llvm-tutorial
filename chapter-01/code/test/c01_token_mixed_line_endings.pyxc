@@ -1,0 +1,5 @@
+# RUN: printf 'def a(x):\r\nreturn x\nextern def b(y)\r' | %pyxc > %t 2>&1
+# RUN: grep -F "'def' identifier '(' identifier ')' ':' newline" %t
+# RUN: grep -F "'return' identifier newline" %t
+# RUN: grep -F "'extern' 'def' identifier '(' identifier ')' newline" %t
+# RUN: test "$(grep -o 'newline' %t | wc -l | tr -d '[:space:]')" = "3"
