@@ -19,7 +19,6 @@ using namespace std;
 //===----------------------------------------------------------------------===//
 static bool UseColor = isatty(fileno(stderr));
 static const char *Red = UseColor ? "\x1b[31m" : "";
-static const char *Bold = UseColor ? "\x1b[1m" : "";
 static const char *Reset = UseColor ? "\x1b[0m" : "";
 
 //===----------------------------------------------------------------------===//
@@ -172,6 +171,7 @@ public:
 };
 
 static SourceManager DiagSourceMgr;
+static void PrintErrorSourceContext(SourceLocation Loc);
 
 static int advance() {
   int LastChar = getchar();
@@ -234,6 +234,7 @@ static int gettok() {
       fprintf(stderr,
               "%sError%s (Line %d, Column %d): invalid number literal '%s'\n",
               Red, Reset, CurLoc.Line, CurLoc.Col, NumStr.c_str());
+      PrintErrorSourceContext(CurLoc);
       return tok_error;
     }
     return tok_number;
@@ -302,7 +303,7 @@ static void PrintErrorSourceContext(SourceLocation Loc) {
     Spaces = 0;
   for (int I = 0; I < Spaces; ++I)
     fputc(' ', stderr);
-  fprintf(stderr, "%s^%s~~~\n", Bold, Reset);
+  fprintf(stderr, "%s^%s~~~\n", Red, Reset);
 }
 
 template <typename T> static T LogError(const char *Str) {
