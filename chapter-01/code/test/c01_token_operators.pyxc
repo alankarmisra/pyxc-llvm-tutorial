@@ -1,0 +1,9 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "'+'" %t
+# RUN: grep -q "'-'" %t
+# RUN: grep -q "'\\*'" %t
+# RUN: grep -q "'<'" %t
+# RUN: grep -q "'('" %t
+# RUN: grep -q "')'" %t
+
++ - * < ( )
