@@ -2,9 +2,9 @@
 
 ## Source of truth
 - Reference implementation inspected from:
-  - `code/pyxc_ref_code/chapter02/pyxc.cpp`
-  - `code/pyxc_ref_code/chapter02/pyxc.ebnf`
-  - `code/pyxc_ref_code/chapter02/test/`
+  - `code/pyxc_ref_code/chapter-02/pyxc.cpp`
+  - `code/pyxc_ref_code/chapter-02/pyxc.ebnf`
+  - `code/pyxc_ref_code/chapter-02/test/`
 
 ## Chapter goal
 Implement a parser + AST pipeline on top of chapter 1 lexer so Pyxc can parse and validate top-level language forms with robust diagnostics.
@@ -41,7 +41,7 @@ Implement a parser + AST pipeline on top of chapter 1 lexer so Pyxc can parse an
 - Continue after parse errors by syncing at line boundary
 
 ## EBNF target (chapter 2)
-- Maintain grammar equivalent to `code/pyxc_ref_code/chapter02/pyxc.ebnf`.
+- Maintain grammar equivalent to `code/pyxc_ref_code/chapter-02/pyxc.ebnf`.
 - Keep chapter 2 syntax surface only; no IR/JIT/runtime semantics in this chapter scope.
 
 ## Out of scope
@@ -51,17 +51,17 @@ Implement a parser + AST pipeline on top of chapter 1 lexer so Pyxc can parse an
 - Mutable variables, control flow statements (`if`, `for`, `while`), blocks, types, structs, memory features
 
 ## Deliverables
-1. `code/chapter02/pyxc.cpp`
+1. `code/chapter-02/pyxc.cpp`
 - Parser + AST integrated with chapter-1 lexer behavior.
 
-2. `code/chapter02/pyxc.ebnf`
+2. `code/chapter-02/pyxc.ebnf`
 - Chapter-2 grammar snapshot.
 
-3. `code/chapter02/test/`
+3. `code/chapter-02/test/`
 - Cumulative runnable test set for chapter 2 conventions.
 - Prefixing aligned with chapter policy (`cNN_...`).
 
-4. `code/chapter02/WhatChanged.md`
+4. `code/chapter-02/WhatChanged.md`
 - Reader-facing delta from chapter 1.
 
 ## Test scope requirements

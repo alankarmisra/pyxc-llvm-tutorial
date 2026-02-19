@@ -19,12 +19,12 @@ We'll implement the parts we can do right now (`repl --emit=tokens`) and set up 
 
 ## Source Code
 
-Grab the code: [chapter-04/code](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/chapter-04/code)
+Grab the code: [code/chapter-04](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter-04)
 
 Or clone the whole repo:
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/chapter-04/code
+cd pyxc-llvm-tutorial/code/chapter-04
 ```
 
 ## Why LLVM's Command Line Library?
@@ -259,14 +259,14 @@ This is the Chapter 2 parser loop.
 ## Compile and Run
 
 ```bash
-cd chapter-04/code
+cd code/chapter-04
 cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && cmake --build build
 ./build/pyxc
 ```
 
 Or use the shortcut:
 ```bash
-cd chapter-04/code
+cd code/chapter-04
 ./build.sh
 ```
 
@@ -350,7 +350,7 @@ Both work identically. In this tutorial, we'll use `lit` for brevity, but `llvm-
 From the chapter04 directory:
 
 ```bash
-cd chapter-04/code
+cd code/chapter-04
 cmake -S . -B build && cmake --build build
 cd test
 lit -v .

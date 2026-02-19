@@ -2,9 +2,9 @@
 
 ## Source of truth
 - Reference implementation inspected from:
-  - `code/pyxc_ref_code/chapter01/pyxc.cpp`
-  - `code/pyxc_ref_code/chapter01/pyxc.ebnf`
-  - `code/pyxc_ref_code/chapter01/test/`
+  - `code/pyxc_ref_code/chapter-01/pyxc.cpp`
+  - `code/pyxc_ref_code/chapter-01/pyxc.ebnf`
+  - `code/pyxc_ref_code/chapter-01/test/`
 
 ## Chapter goal
 Implement the lexer and token-stream driver for Pyxc so source text is tokenized reliably with clear diagnostics and line-aware behavior.
@@ -32,7 +32,7 @@ Implement the lexer and token-stream driver for Pyxc so source text is tokenized
 - Stable token naming for tests
 
 ## EBNF target (chapter 1)
-- Maintain grammar equivalent to `code/pyxc_ref_code/chapter01/pyxc.ebnf`.
+- Maintain grammar equivalent to `code/pyxc_ref_code/chapter-01/pyxc.ebnf`.
 - Chapter 1 is lexer-first; parser/codegen features are out of scope.
 
 ## Out of scope
@@ -43,16 +43,16 @@ Implement the lexer and token-stream driver for Pyxc so source text is tokenized
 - Build/run compilation modes beyond lexer-focused flow
 
 ## Deliverables
-1. `code/chapter01/pyxc.cpp`
+1. `code/chapter-01/pyxc.cpp`
 - Lexer implementation + token stream driver.
 
-2. `code/chapter01/pyxc.ebnf`
+2. `code/chapter-01/pyxc.ebnf`
 - Chapter-1 grammar baseline.
 
-3. `code/chapter01/test/`
+3. `code/chapter-01/test/`
 - Lexer-focused tests using chapter prefix convention (`c01_*`).
 
-4. `code/chapter01/WhatChanged.md`
+4. `code/chapter-01/WhatChanged.md`
 - Reader-facing chapter-1 implementation summary.
 
 ## Test scope requirements

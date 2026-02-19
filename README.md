@@ -22,8 +22,8 @@ This warning will be removed once the core tutorial has been stabilized. Thank y
 
 ## What this repo is
 
-- A step-by-step compiler construction tutorial (`chapter-00.md` ... `chapter-28.md`).
-- Full source code per chapter (`code/chapterXX`), so you can compare progression.
+- A step-by-step compiler construction tutorial (`docs/chapter-00.md` ... `docs/chapter-28.md`).
+- Full source code per chapter (`code/chapter-XX`), so you can compare progression.
 - A language tutorial (in progress) for writing non-trivial programs in `pyxc`.
 
 ## Why pyxc exists
@@ -143,7 +143,7 @@ Simple, but it compiles to optimized native code, includes debug information, an
 Use any chapter directory you want to explore.
 
 ```bash
-cd code/chapter28
+cd code/chapter-28
 make
 ./pyxc -i test/malloc_struct_roundtrip.pyxc
 ```
@@ -151,7 +151,7 @@ make
 To run chapter tests (where available):
 
 ```bash
-cd code/chapter28/test
+cd code/chapter-28/test
 lit -sv .
 ```
 
@@ -159,11 +159,12 @@ lit -sv .
 
 ```text
 .
-├── chapter-00.md ... chapter-28.md   # tutorial text
+├── docs/
+│   ├── chapter-00.md ... chapter-28.md   # tutorial text
 ├── code/
-│   ├── chapter13/
-│   ├── chapter14/
-│   └── ... chapter28/
+│   ├── chapter-01/
+│   ├── chapter-02/
+│   └── ... chapter-28/
 └── README.md
 ```
 
