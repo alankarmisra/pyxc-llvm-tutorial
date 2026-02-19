@@ -1,0 +1,2 @@
+# RUN: not %pyxc build input.pyxc -O9 > %t 2>&1
+# RUN: grep -q "Error: invalid optimization level -O9 (expected 0..3)" %t
