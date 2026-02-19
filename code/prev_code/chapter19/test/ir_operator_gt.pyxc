@@ -1,0 +1,7 @@
+# RUN: %pyxc repl --emit=llvm-ir < %s > %t 2>&1
+# RUN: grep -q "fcmp ugt double" %t
+# RUN: grep -q "uitofp i1" %t
+# RUN: grep -q "define double @test_gt" %t
+
+def test_gt(x, y):
+    return x > y

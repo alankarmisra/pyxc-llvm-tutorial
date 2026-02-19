@@ -1,0 +1,4 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "invalid number literal" %t
+# RUN: grep -q "1\.2\.3" %t
+def main(): return 1.2.3

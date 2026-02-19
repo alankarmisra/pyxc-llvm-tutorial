@@ -1,0 +1,6 @@
+# RUN: %pyxc repl --emit=llvm-ir < %s > %t 2>&1
+# RUN: grep -q "define double @keep_mul" %t
+# RUN: not grep -q "fmul double %x, 1.000000e+00" %t
+
+def keep_mul(x):
+  return x * 1

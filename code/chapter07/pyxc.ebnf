@@ -1,35 +1,44 @@
-(* pyx.ebnf
-   Baseline grammar for chapter 2. *)
+(* pyxc.ebnf
+   Chapter 7: optimization + JIT execution.
+   Language syntax is still the chapter 5 core grammar,
+   now used in a line-oriented REPL that can JIT-evaluate
+   top-level expressions. *)
 
-program        = { top } ;
+repl-session    = { repl-line } ;
+repl-line       = [ top ] newline ;
 
-top            = definition
-                 | external
-                 | expression ;
+program         = { top } ;
 
-definition     = "def" prototype ":" expression ;
-external       = "extern" "def" prototype ;
-toplevelexpr   = expression ;
+top             = definition
+                | external
+                | toplevel-expression ;
 
-prototype      = identifier "(" [ identifier { "," identifier } ] ")" ;
+definition      = "def" prototype ":" return-statement ;
+external        = "extern" "def" prototype ;
+toplevel-expression = expression ;
 
-expression     = primary { binaryop primary } ;
+prototype       = identifier "(" [ identifier { "," identifier } ] ")" ;
 
-primary        = identifierexpr
-                 | numberexpr
-                 | parenexpr ;
+return-statement = "return" expression ;
 
-identifierexpr = identifier
-                 | identifier "(" [ expression { "," expression } ] ")" ;
+expression      = primary { binaryop primary } ;
 
-numberexpr     = number ;
-parenexpr      = "(" expression ")" ;
+primary         = identifierexpr
+                | numberexpr
+                | parenexpr ;
 
-binaryop       = "<" | ">" | "+" | "-" | "*" | "/" | "%" ;
+identifierexpr  = identifier
+                | identifier "(" [ expression { "," expression } ] ")" ;
 
-identifier     = letter { letter | digit | "_" } ;
-number         = digit { digit } [ "." { digit } ]
-                 | "." digit { digit } ;
+numberexpr      = number ;
+parenexpr       = "(" expression ")" ;
 
-letter         = "A".."Z" | "a".."z" ;
-digit          = "0".."9" ;
+binaryop        = "<" | ">" | "+" | "-" | "*" | "/" | "%" ;
+
+identifier      = letter { letter | digit | "_" } ;
+number          = digit { digit } [ "." { digit } ]
+                | "." digit { digit } ;
+
+letter          = "A".."Z" | "a".."z" ;
+digit           = "0".."9" ;
+newline         = "\n" ;

@@ -1,0 +1,9 @@
+# RUN: %pyxc repl < %s > %t 2>&1
+# RUN: grep -q "7.000000" %t
+# RUN: grep -q "11.000000" %t
+
+def inc(x):
+  return x + 1
+
+inc(6)
+inc(10)

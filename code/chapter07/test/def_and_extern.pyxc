@@ -1,7 +1,7 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "6.000000" %t
+# RUN: %pyxc repl --emit=llvm-ir < %s > %t 2>&1
+# RUN: grep -q "declare double @foo(double, double)" %t
+# RUN: grep -q "define double @bar" %t
 
 extern def foo(x,y)
-def add(x,y):
-  return x + y
-add(1, 2+3)
+def bar(a, b):
+  return a + b

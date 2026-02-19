@@ -3,7 +3,7 @@
 # RUN: grep -q "fadd double" %t
 # RUN: grep -q "define double @__anon_expr" %t
 
-extern def foo(x)
 def foo(x):
-  return x
+  return x * 2
+
 foo(10) + 20

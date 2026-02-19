@@ -1,0 +1,6 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error (" %t
+# RUN: grep -q "Incorrect # arguments passed" %t
+
+extern def foo(x)
+foo(1, 2)
