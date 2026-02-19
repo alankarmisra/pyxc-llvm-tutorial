@@ -25,12 +25,12 @@ We'll build that understanding as a tree structure called an Abstract Syntax Tre
 
 ## Source Code
 
-Grab the code: [code/chapter02](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter02)
+Grab the code: [chapter-02/code](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/chapter-02/code)
 
 Or clone the whole repo:
 ```bash
 git clone https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter02
+cd pyxc-llvm-tutorial/chapter-02/code
 ```
 
 ## Grammar: The Language Blueprint
@@ -672,14 +672,14 @@ Read input, dispatch to the right parser, print success or error, repeat.
 ## Compile and Run
 
 ```bash
-cd code/chapter02
+cd chapter-02/code
 cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && cmake --build build
 ./build/pyxc
 ```
 
 Or use the shortcut:
 ```bash
-cd code/chapter02
+cd chapter-02/code
 ./build.sh
 ```
 
