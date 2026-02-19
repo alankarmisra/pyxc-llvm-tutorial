@@ -1,0 +1,6 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -c "Parsed a top-level expr" %t | grep -q "3"
+
+_foo
+foo_bar
+_123
