@@ -44,7 +44,7 @@ Grab the code: [chapter-01/code](https://github.com/alankarmisra/pyxc-llvm-tutor
 
 Or clone the whole repo:
 ```bash
-git clone https://github.com/alankarmisra/pyxc-llvm-tutorial
+git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/chapter-01/code
 ```
 
