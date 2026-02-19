@@ -40,12 +40,12 @@ That `extern` tells Pyxc "this function exists somewhere else, just trust me." L
 
 ## Source Code
 
-Grab the code: [code/chapter01](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/code/chapter01)
+Grab the code: [chapter-01/code](https://github.com/alankarmisra/pyxc-llvm-tutorial/tree/main/chapter-01/code)
 
 Or clone the whole repo:
 ```bash
 git clone https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter01
+cd pyxc-llvm-tutorial/chapter-01/code
 ```
 
 ## What's a Lexer?
@@ -398,7 +398,7 @@ int main() {
 ## Compile and Run
 
 ```bash
-cd code/chapter01
+cd chapter-01/code
 ./build.sh  # macOS/Linux
 ```
 
