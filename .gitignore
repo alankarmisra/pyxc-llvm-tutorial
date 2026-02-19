@@ -76,10 +76,6 @@ runtime.o
 .claude/
 /.hidden/
 memory/
-chapter-*-todo.md
 
-code/oldcode
-code/chapter*/build/
-
-code/pyxc_ref_code
+code
 old_chapters/
