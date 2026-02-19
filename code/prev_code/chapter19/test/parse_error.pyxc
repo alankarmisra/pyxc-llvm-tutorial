@@ -1,7 +1,0 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Error (" %t
-# RUN: grep -q "Expected ')' or ',' in parameter list" %t
-# RUN: grep -q "extern def broken(x" %t
-# RUN: grep -q "\\^~~~" %t
-
-extern def broken(x

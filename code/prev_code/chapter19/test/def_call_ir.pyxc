@@ -1,7 +1,0 @@
-# RUN: %pyxc repl --emit=llvm-ir < %s > %t 2>&1
-# RUN: grep -q "call double @add" %t
-
-def add(x, y):
-  return x + y
-
-add(2,3)

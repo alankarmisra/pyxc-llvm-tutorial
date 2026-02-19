@@ -1,7 +1,0 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Error (" %t
-# RUN: grep -q "inconsistent indentation" %t
-
-def bad(x):
-	x + 1
-    return x + 2

@@ -1,2 +1,0 @@
-# RUN: not %pyxc run does_not_exist.pyxc > %t 2>&1
-# RUN: grep -q "Error: could not open file 'does_not_exist.pyxc'." %t

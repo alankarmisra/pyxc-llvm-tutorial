@@ -1,8 +1,0 @@
-# RUN: %pyxc repl < %s > %t 2>&1
-# RUN: grep -q "5.000000" %t
-# RUN: not grep -q "Parsed a function definition" %t
-
-def add(x, y):
-  return x + y
-
-add(2,3)

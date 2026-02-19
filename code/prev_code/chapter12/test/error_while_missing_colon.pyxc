@@ -1,7 +1,0 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Error (" %t
-# RUN: grep -q "Expected ':' after while condition" %t
-
-def bad(x):
-  return while x < 1
-    x + 1

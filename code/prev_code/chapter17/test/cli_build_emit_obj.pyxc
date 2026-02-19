@@ -1,7 +1,0 @@
-# RUN: cp %s %t.pyxc
-# RUN: %pyxc build %t.pyxc --emit=obj > %t.out 2>&1
-# RUN: grep -q "Wrote " %t.out
-# RUN: test -f %t.o
-
-def add(x, y):
-  return x + y

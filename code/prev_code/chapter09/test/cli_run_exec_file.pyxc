@@ -1,7 +1,0 @@
-# RUN: %pyxc run %s > %t 2>&1
-# RUN: grep -q "42.000000" %t
-
-def forty_two():
-  return 42
-
-forty_two()

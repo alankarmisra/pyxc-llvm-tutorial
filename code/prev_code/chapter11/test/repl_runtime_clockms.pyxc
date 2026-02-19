@@ -1,8 +1,0 @@
-# RUN: %pyxc repl < %s > %t 2>&1
-# RUN: grep -Eq "[0-9]{10,}\\.[0-9]+" %t
-# RUN: not grep -q "Unknown function referenced" %t
-
-extern def clockms()
-extern def printd(x)
-
-printd(clockms())

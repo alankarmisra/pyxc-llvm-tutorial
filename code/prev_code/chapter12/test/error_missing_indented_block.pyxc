@@ -1,6 +1,0 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Error (" %t
-# RUN: grep -q "Expected indented block after ':'" %t
-
-def bad(x):
-return x + 1

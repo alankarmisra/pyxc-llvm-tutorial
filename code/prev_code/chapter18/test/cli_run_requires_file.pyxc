@@ -1,2 +1,0 @@
-# RUN: not %pyxc run > %t 2>&1
-# RUN: grep -q "Error: run requires a file name." %t

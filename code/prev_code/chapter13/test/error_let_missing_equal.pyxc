@@ -1,7 +1,0 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Error (" %t
-# RUN: grep -q "Expected '=' after variable name in let expression" %t
-
-def bad(x):
-  let y
-  return x
