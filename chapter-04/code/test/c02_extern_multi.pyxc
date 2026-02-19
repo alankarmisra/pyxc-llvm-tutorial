@@ -1,0 +1,6 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -c "Parsed an extern" %t | grep -q "3"
+
+extern def sin(x)
+extern def cos(x)
+extern def atan2(y, x)

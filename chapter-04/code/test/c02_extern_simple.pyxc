@@ -1,0 +1,4 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed an extern" %t
+
+extern def sin(x)
