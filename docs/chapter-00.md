@@ -79,6 +79,7 @@ Each chapter builds on the previous one. You can:
 
 **[Chapter 1: Lexer](chapter-01.md)** - Break source code into tokens. First step of any compiler.
 
+<!-- 
 **[Chapter 2: Parser and AST](chapter-02.md)** - Turn tokens into a tree structure representing your code. Build recursive descent and operator precedence parsers.
 
 **[Chapter 3: Building LLVM](chapter-03.md)** - Install LLVM from source with all the tools you need (clang, lld, lldb, clangd).
@@ -118,7 +119,7 @@ Each chapter builds on the previous one. You can:
 More chapters are being prepared and will be added:
 - Logical operators and richer conditionals
 - Fibonacci and Mandelbrot as showcase examples
-- Types, structs, and modules
+- Types, structs, and modules -->
 
 ## What You'll Learn
 
@@ -155,8 +156,8 @@ We're here to help. Let's build this thing.
 
 ## Start Building
 
-Ready? [Start with Chapter 1: The Lexer](chapter-01.md)
+<!-- Ready? [Start with Chapter 1: The Lexer](chapter-01.md)
 
-Or browse the chapters above and jump to what interests you.
+Or browse the chapters above and jump to what interests you. -->
 
 Welcome to compiler development. It's not magic—it's just code. Let's build.
