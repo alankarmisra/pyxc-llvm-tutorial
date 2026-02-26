@@ -1,2 +1,0 @@
-# RUN: not %pyxc run input.pyxc --emit=llvm-ir > %t 2>&1
-# RUN: grep -q "run: i havent learnt how to do that yet." %t

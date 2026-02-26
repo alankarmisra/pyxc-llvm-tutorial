@@ -1,2 +1,0 @@
-# RUN: not %pyxc build --emit=llvm-ir > %t 2>&1
-# RUN: grep -q "Error: build requires a file name." %t

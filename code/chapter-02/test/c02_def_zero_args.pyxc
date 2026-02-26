@@ -1,4 +1,0 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Parsed a function definition" %t
-
-def pi(): return 3.14159

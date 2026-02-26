@@ -81,14 +81,61 @@ Each chapter builds on the previous one. You can:
 
 **[Chapter 2: Parser and AST](chapter-02.md)** - Turn tokens into a tree structure representing your code. Build recursive descent and operator precedence parsers.
 
+**[Chapter 3: Building LLVM](chapter-03.md)** - Install LLVM from source with all the tools you need (clang, lld, lldb, clangd).
+
+**[Chapter 4: Command Line Interface](chapter-04.md)** - Add CLI options so your compiler can build files, not just run a REPL.
+
+**[Chapter 5: Code Generation](chapter-05.md)** - Transform your AST into LLVM IR. This is where you actually generate code.
+
+**[Chapter 6: Understanding LLVM IR](chapter-06.md)** - Learn to read and understand the intermediate representation LLVM uses.
+
+**[Chapter 7: Optimization and JIT](chapter-07.md)** - Add LLVM optimization passes and ORC JIT so code runs immediately in the REPL.
+
+**[Chapter 8: File Input Mode](chapter-08.md)** - Add file-based execution mode so Pyxc can run source from files.
+
+**[Chapter 9: Comparison Operators](chapter-09.md)** - Add `==`, `!=`, `<=`, `>=` with proper precedence and LLVM codegen.
+
+**[Chapter 10: Blocks with `;`](chapter-10.md)** - Add multi-statement function bodies with explicit separators.
+
+**[Chapter 11: Indentation Blocks](chapter-11.md)** - Replace `;` blocks with indentation (`INDENT`/`DEDENT`) syntax.
+
+**[Chapter 12: `if` and `while`](chapter-12.md)** - Add control flow expressions and unlock real examples like factorial.
+
+**[Chapter 13: Mutable Variables](chapter-13.md)** - Add `let` declarations and assignment so loop-based algorithms are possible.
+
+### Toolchain and Optimization (Later)
+
+**[Chapter 17: Object Files and Optimizations](chapter-17.md)** - Generate `.o` files with proper optimization levels.
+
+**[Chapter 18: Debug Information](chapter-18.md)** - Add DWARF debug info for source-level debugging.
+
+**[Chapter 19: Generating Executables](chapter-19.md)** - Link object files into native executables with LLVM's linker.
+
+**[Chapter 20: Linking Under the Hood](chapter-20.md)** - Use `nm` and `objdump` to inspect symbol resolution and relocation.
+
+### Coming Soon
+
+More chapters are being prepared and will be added:
+- Logical operators and richer conditionals
+- Fibonacci and Mandelbrot as showcase examples
+- Types, structs, and modules
+
 ## What You'll Learn
 
 By the end of the current chapters:
 - **Lexing** - Tokenizing source code
 - **Parsing** - Recursive descent, operator precedence
 - **AST** - Tree representations of code
+- **Code generation** - AST → LLVM IR
+- **Optimization** - LLVM's pass system
+- **JIT compilation** - Execute code immediately
+- **Object files** - Generate relocatable object code
+- **Debugging** - DWARF debug info
+- **Native executables** - Link object files into real binaries with LLD
+- **Linking internals** - Symbol resolution, relocation, object file formats
+- **Toolchain** - CLI, build modes, error messages
 
-And you'll have the full front-end foundation ready for code generation and execution chapters.
+And you'll have built a real compiler from scratch.
 
 ## Need Help?
 

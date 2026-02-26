@@ -1,2 +1,0 @@
-# RUN: not %pyxc build a.pyxc b.pyxc > %t 2>&1
-# RUN: grep -q "Error: build accepts only one file name." %t

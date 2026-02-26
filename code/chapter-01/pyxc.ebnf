@@ -1,15 +1,23 @@
-(* pyx.ebnf
-   Baseline grammar for chapter 2. *)
+(* 
+   pyx.ebnf
+   Baseline grammar for chapter 2. 
+*)
 
-program        = { top } ;
+(* 
+   { } = zero or more (any number of...)
+   [ ] = zero or one (optional)
+*)
+
+program        = [ top { eols top } ] [ eols ] ;
+eols           = eol { eol } ;
 
 top            = definition
                  | external
-                 | expression ;
+                 | expression;
 
-definition     = "def" prototype ":" expression ;
-external       = "extern" "def" prototype ;
-toplevelexpr   = expression ;
+definition     = "def" prototype ":" "return" expression;
+external       = "extern" "def" prototype;
+toplevelexpr   = expression;
 
 prototype      = identifier "(" [ identifier { "," identifier } ] ")" ;
 
@@ -27,9 +35,18 @@ parenexpr      = "(" expression ")" ;
 
 binaryop       = "<" | ">" | "+" | "-" | "*" | "/" | "%" ;
 
-identifier     = letter { letter | digit | "_" } ;
+identifier     = (letter | "_") { letter | digit | "_" } ;
 number         = digit { digit } [ "." { digit } ]
                  | "." digit { digit } ;
 
 letter         = "A".."Z" | "a".."z" ;
 digit          = "0".."9" ;
+eol            = "\r\n"
+                 | "\r" 
+                 | "\n";
+
+(*  
+    `ws` may appear between any two tokens 
+     and is ignored by the lexer.  
+*)
+ws             = " " | "\t" ;

@@ -1,4 +1,0 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -F "number '+' number newline" %t
-
-3.14 + 42

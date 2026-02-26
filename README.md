@@ -18,11 +18,9 @@ It is designed to be readable like Python, but much closer to C in behavior and 
 
 This warning will be removed once the core tutorial has been stabilized. Thank you for your patience!
 
-**Current Status:** Chapters 1-9 are complete and stable. Chapters 10+ are being reviewed and revised.
-
 ## What this repo is
 
-- A step-by-step compiler construction tutorial (`docs/chapter-00.md` ... `docs/chapter-04.md`).
+- A step-by-step compiler construction tutorial (`docs/chapter-XX.md`).
 - Full source code per chapter (`code/chapter-XX`), so you can compare progression.
 - A language tutorial (in progress) for writing non-trivial programs in `pyxc`.
 
@@ -113,9 +111,7 @@ main()
 
 This is the vibe of `pyxc`: Pythonic syntax, C-like control.
 
-**Note:** Chapters 1-9 cover the foundational compiler pipeline (lexer through debug info). The features shown above (structs, control flow, types, pointers) are covered in later chapters currently under review. But by Chapter 9, you'll have a complete toolchain that compiles simple mathematical functions to native code!
-
-### What Works in Chapters 1-9
+<!-- ### What Works in Chapters 1-9
 
 Here's what you can build with the current stable chapters:
 
@@ -172,7 +168,7 @@ lit -sv .
 
 - Continue expanding the language tutorial.
 - Continue hardening the compiler tutorial chapters.
-- Self-hosting is a long-term direction: compile `pyxc` with `pyxc`, then document how.
+- Self-hosting is a long-term direction: compile `pyxc` with `pyxc`, then document how. -->
 
 ## Credits
 
