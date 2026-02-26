@@ -139,6 +139,25 @@ int gettok() {
 
 We skip spaces and tabs, but keep newlines. In a Python-like language, newlines end statements — they're meaningful to the parser. So we preserve them.
 
+### Newlines
+
+```cpp
+  // Check for newline.
+  if (LastChar == '\n') {
+    // Don't try and read the next character. This will stall the REPL.
+    // Just reset LastChar to a space which will force a new character
+    // advance in the next call.
+    LastChar = ' ';
+    return tok_eol;
+  }
+```
+
+### End Of File
+```cpp
+  if (LastChar == EOF)
+    return tok_eof;
+```
+
 ### Identifiers and Keywords
 
 ```cpp
@@ -219,12 +238,9 @@ One subtle point: we set `LastChar = ' '` instead of calling `advance()`. If we 
 
 If the comment runs all the way to `EOF` with no newline, `LastChar` is `EOF` and we fall through to the EOF case below.
 
-### End of File and Everything Else
+### Everything Else
 
 ```cpp
-  if (LastChar == EOF)
-    return tok_eof;
-
   int ThisChar = LastChar;
   LastChar = advance();
   return ThisChar;

@@ -5,6 +5,10 @@
 
 using namespace std;
 
+//===----------------------------------------===//
+// Lexer
+//===----------------------------------------===//
+
 // The lexer returns tokens [0-255] if it is an unknown character, otherwise one
 // of these for known things.
 enum Token {
@@ -48,6 +52,20 @@ int gettok() {
   while (isspace(LastChar) && LastChar != '\n')
     LastChar = advance();
 
+  // Skip whitespace EXCEPT newlines
+  while (isspace(LastChar) && LastChar != '\n')
+    LastChar = advance();
+
+  // Check for newline.
+  if (LastChar == '\n') {
+    LastChar = ' ';
+    return tok_eol;
+  }
+
+  // Check for end of file.  Don't eat the EOF.
+  if (LastChar == EOF)
+    return tok_eof;
+
   if (isalpha(LastChar) || LastChar == '_') {
     IdentifierStr = LastChar;
     while (isalnum(LastChar = advance()) || LastChar == '_') {
@@ -61,6 +79,8 @@ int gettok() {
       return tok_extern;
     if (IdentifierStr == "return")
       return tok_return;
+
+    return tok_identifier;
   }
 
   // TODO: This incorrectly lexes 1.23.45.67 as 1.23
@@ -88,10 +108,6 @@ int gettok() {
       return tok_eol;
     }
   }
-
-  // Check for end of file.  Don't eat the EOF.
-  if (LastChar == EOF)
-    return tok_eof;
 
   // Otherwise, just return the character as its ascii value
   int ThisChar = LastChar;

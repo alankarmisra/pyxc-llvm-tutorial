@@ -13,11 +13,11 @@ eols           = eol { eol } ;
 
 top            = definition
                  | external
-                 | expression;
+                 | expression ;
 
-definition     = "def" prototype ":" "return" expression;
-external       = "extern" "def" prototype;
-toplevelexpr   = expression;
+definition     = "def" prototype ":" "return" expression ;
+external       = "extern" "def" prototype ;
+toplevelexpr   = expression ;
 
 prototype      = identifier "(" [ identifier { "," identifier } ] ")" ;
 
@@ -45,7 +45,7 @@ letter         = "A".."Z" | "a".."z" ;
 digit          = "0".."9" ;
 eol            = "\r\n"
                  | "\r" 
-                 | "\n";
+                 | "\n" ;
 
 (*  
     `ws` may appear between any two tokens 
