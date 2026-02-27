@@ -3,23 +3,33 @@ description: "Build a recursive-descent parser and AST: turn tokens into structu
 ---
 # 2. Pyxc: The Parser and AST
 
-## What We're Building
+## Where We Are
 
-In Chapter 1 we built a lexer that turns raw text into tokens. Tokens are still just a flat stream — `'def' identifier '(' identifier ')' ':' 'return' identifier '+' identifier`. The parser's job is to understand what those tokens *mean* and build a tree structure that captures it.
+In [Chapter 1](chapter-01.md) we built a lexer that turns raw source text into a stream of tokens. Given this:
 
-By the end of this chapter, typing a function definition into the REPL gives you:
+```python
+def add(x, y):
+    return x + y
+```
+
+The lexer produces:
 
 ```
+'def'  'add'  '('  'x'  ','  'y'  ')'  ':'  newline
+'return'  'x'  '+'  'y'  newline
+```
+
+That's progress — the noise (whitespace, comments) is gone. But we still just have a flat list. We don't know that `add` is a function name, that `x` and `y` are its parameters, or that `x + y` is its return value.
+
+By the end of this chapter, typing that same function into the REPL gives you:
+
+```python
 ready> def add(x, y):
 ready>   return x + y
 Parsed a function definition.
-ready> extern def sin(x)
-Parsed an extern.
-ready> 1 + 2 * 3
-Parsed a top-level expression.
 ```
 
-No code runs yet. But the structure has been understood and validated. That's the foundation everything else builds on.
+The structure has been understood and validated. That's what we're building.
 
 ## Source Code
 
@@ -28,77 +38,195 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-02
 ```
 
-## The Grammar
+## Writing Down the Rules
 
-Before writing a parser, we need to define what we're parsing. Here's the grammar for Pyxc at this stage, in EBNF:
+Before we can write a parser, we need to write down the rules of the language. What's a valid program? What's a valid function? What's a valid expression?
+
+Let's start informally. A function definition looks like:
+
+```text
+the word "def", then a function name, then a parameter list in parentheses,
+then a colon, then "return", then an expression
+```
+
+A function call looks like:
+
+```text
+a name, then "(" then zero or more expressions separated by commas, then ")"
+```
+
+An expression is one of:
+- a number
+- a variable name
+- a parenthesized expression
+- two of the above joined by an operator like `+`, `-`, `*`, `<`
+
+That's the informal version. Now let's tighten it up.
+
+### A Compact Notation for Grammar Rules
+
+It gets tedious to write grammar rules in plain English. Let's invent a shorthand. We'll use:
+
+- Quoted text like `"def"` for exact keywords and punctuation
+- Unquoted words like `identifier` or `expression` for "fill in a valid thing of this kind here"
+- `|` to mean "or" — either this or that
+- `[ ... ]` to mean "optionally — zero or one of these"
+- `{ ... }` to mean "zero or more of these, repeated"
+
+With that shorthand, a function definition becomes:
+
+```ebnf
+definition = "def" prototype ":" "return" expression
+```
+
+And a prototype (just the signature — name and parameters):
+
+```ebnf
+prototype = identifier "(" [ identifier { "," identifier } ] ")"
+```
+
+And an expression:
+
+```ebnf
+expression = primary { binaryop primary }
+```
+
+Where `primary` is the building block — a number, a variable, or a parenthesized expression:
+
+```ebnf
+primary = identifier [ "(" [ expression { "," expression } ] ")" ]
+        | number
+        | "(" expression ")"
+```
+
+This notation — named rules, `|`, `[ ]`, `{ }` — has a formal name: **EBNF**, short for Extended Backus-Naur Form. It's the standard way grammars are written in programming language textbooks. Now you've seen why it looks the way it does: it's just a compact version of the English description we started with.
+
+### The Full Grammar
+
+Here's the complete grammar for Pyxc at this stage:
 
 ```ebnf
 program        = [ top { eols top } ] [ eols ] ;
 eols           = eol { eol } ;
 
 top            = definition
-                 | external
-                 | expression;
+               | external
+               | expression ;
 
-definition     = "def" prototype ":" "return" expression;
-external       = "extern" "def" prototype;
-toplevelexpr   = expression;
+definition     = "def" prototype ":" "return" expression ;
+external       = "extern" "def" prototype ;
 
 prototype      = identifier "(" [ identifier { "," identifier } ] ")" ;
 
 expression     = primary binoprhs ;
-
 binoprhs       = { binaryop primary } ;
 
 primary        = identifierexpr
-                 | numberexpr
-                 | parenexpr ;
+               | numberexpr
+               | parenexpr ;
 
 identifierexpr = identifier
-                 | identifier "(" [ expression { "," expression } ] ")" ;
+               | identifier "(" [ expression { "," expression } ] ")" ;
 
 numberexpr     = number ;
 parenexpr      = "(" expression ")" ;
 
-binaryop       = "<" | ">" | "+" | "-" | "*" | "/" | "%" ;
+binaryop       = "<" | "+" | "-" | "*" ;
 
 identifier     = (letter | "_") { letter | digit | "_" } ;
 number         = digit { digit } [ "." { digit } ]
-                 | "." digit { digit } ;
+               | "." digit { digit } ;
 
 letter         = "A".."Z" | "a".."z" ;
 digit          = "0".."9" ;
-eol            = "\r\n"
-                 | "\r" 
-                 | "\n";
+eol            = "\r\n" | "\r" | "\n" ;
 
-(*  
-    `ws` may appear between any two tokens 
-     and is ignored by the lexer.  
-*)
+(* ws may appear between any two tokens and is ignored by the lexer *)
 ws             = " " | "\t" ;
-
 ```
 
 A few things to notice:
 
-- **`program`** allows blank lines between top-level items. `eols` is one or more `eol` tokens — the grammar explicitly accounts for them because our lexer emits `tok_eol` and the REPL loop handles them.
-- A **`definition`** requires `return` in the body. Multi-statement bodies and indentation come later.
-- An **`external`** is just a prototype with no body — a declaration of something that lives in a C library.
-- **`binoprhs`** is named explicitly because it maps directly to `ParseBinOpRHS()`. It means "zero or more (operator, primary) pairs following the first primary."
-- **`identifierexpr`** handles both plain variable references (`x`) and function calls (`foo(a, b)`) — the presence of `(` is the disambiguation.
-- **`binaryop`** lists `>`, `/`, and `%` in the grammar even though they're not in `BinopPrecedence` yet. They're valid tokens that the lexer will return as ASCII values; adding them to the precedence table in a later chapter is all that's needed to activate them.
-- The grammar spells out `identifier`, `number`, `letter`, `digit`, `eol`, and `ws` at the bottom — this is the part of the grammar owned by the *lexer*, not the parser. The parser never sees whitespace or raw characters; it only sees the tokens the lexer produces from them.
+- The grammar has two layers. The bottom rules — `identifier`, `number`, `letter`, `digit`, `eol`, `ws` — describe what the *lexer* understands: raw characters. The top rules — `expression`, `definition`, `prototype`, etc. — describe what the *parser* understands: tokens. The parser never sees individual characters; it only sees the tokens the lexer already produced.
 
-## The Abstract Syntax Tree
+- `definition` requires `return`. Multi-statement bodies and indentation come in later chapters.
 
-A parser could just validate syntax and discard everything. But we need to *do* something with the code later — generate IR, optimize it, run it. So we build an **Abstract Syntax Tree (AST)**: a tree of objects that represents the structure of the program.
+- `external` is just a prototype with no body — a declaration for something that lives in a C library (like `sin` or `cos`). No body means we're just telling the compiler the name and parameter count.
 
-"Abstract" means we drop syntax-only details. Parentheses in `(x + y)` are needed to parse correctly, but once we've built the tree the grouping is captured by structure — we don't need the `(` and `)` nodes anymore.
+- `binoprhs` is named explicitly because it maps directly to a function called `ParseBinOpRHS`. It means "zero or more (operator, primary) pairs following the first primary." The name will make sense when we see the code.
+
+- `identifierexpr` handles both plain variable references (`x`) and function calls (`foo(a, b)`). The presence of `(` is the only difference — and the parser can tell them apart by looking at the very next token.
+
+### How the Parser Chooses
+
+Look at the rule for `top`:
+
+```ebnf
+top = definition | external | expression
+```
+
+How does the parser know which branch to take? It looks at the current token:
+
+- `def` → must be a `definition`
+- `extern` → must be an `external`
+- anything else → try `expression`
+
+Each option starts with a different token, so the parser can decide immediately, with just one token of lookahead. This style — where you can always pick the right branch by looking at the next token — is called **top-down, one-token-lookahead** parsing (or LL(1) if you want the textbook name).
+
+### Avoiding a Pitfall: Left Recursion
+
+There's a rule you can't write for a top-down parser: a rule that starts with itself.
+
+```ebnf
+(* DON'T DO THIS *)
+expression = expression binaryop primary
+```
+
+The parser would try to parse `expression`, which requires parsing `expression`, which requires parsing `expression`... infinite recursion, immediate crash.
+
+The fix is to use `{ ... }` (iteration) instead of recursion:
+
+```ebnf
+expression = primary { binaryop primary }
+```
+
+"Parse one primary, then loop and grab (operator, primary) pairs until there are no more." Same language, no recursion. Our grammar above always does this.
+
+## Representing Structure
+
+A parser could just *validate* syntax — accept or reject the input — and throw everything away. But we need to *do* something with the code: generate machine instructions, optimize it, run it. So instead of discarding what we parse, we build up a structured representation we can work with later.
+
+Think about a file system. A directory can contain files and other directories. You can navigate it, count items in it, search it, copy subtrees of it. It's a *tree* — a root node with children, each child potentially having more children, with leaves (files) at the bottom.
+
+Code has the same shape. The expression `(x + y) * 2` breaks down like this:
+
+```
+multiply (*)
+├── add (+)
+│   ├── variable "x"
+│   └── variable "y"
+└── number 2.0
+```
+
+The multiply node has two children: an add node (which itself has two children) and a number node. The leaves are variables and numbers. The structure — which operation is nested inside which — captures the meaning of the expression without needing the parentheses anymore.
+
+For a full function definition `def add(x, y): return (x + y) * 2`, the structure is:
+
+```
+FunctionAST
+├── PrototypeAST  name="add"  args=["x", "y"]
+└── BinaryExprAST  op='*'
+    ├── BinaryExprAST  op='+'
+    │   ├── VariableExprAST  name="x"
+    │   └── VariableExprAST  name="y"
+    └── NumberExprAST  val=2.0
+```
+
+We call this an **Abstract Syntax Tree** — "abstract" because we've stripped away the syntax details that were only needed for parsing (like the parentheses and the colon). What remains captures the *meaning* without the noise.
 
 ### The Node Classes
 
-Every expression node inherits from `ExprAST`:
+We represent each kind of node as a C++ class. All expression nodes inherit from a common base:
 
 ```cpp
 class ExprAST {
@@ -107,7 +235,9 @@ public:
 };
 ```
 
-A number literal:
+The virtual destructor is all we need for now. Later chapters will add virtual methods for code generation.
+
+A number literal stores its value:
 
 ```cpp
 class NumberExprAST : public ExprAST {
@@ -117,7 +247,7 @@ public:
 };
 ```
 
-A variable reference:
+A variable reference stores its name:
 
 ```cpp
 class VariableExprAST : public ExprAST {
@@ -127,7 +257,7 @@ public:
 };
 ```
 
-A binary operation — stores the operator and its two operands:
+A binary operation stores the operator character and its two operands. The operands are owned by the node — when the node is destroyed, the operands are too:
 
 ```cpp
 class BinaryExprAST : public ExprAST {
@@ -139,7 +269,7 @@ public:
 };
 ```
 
-A function call — stores the callee name and argument list:
+A function call stores the callee name and a list of argument expressions:
 
 ```cpp
 class CallExprAST : public ExprAST {
@@ -151,7 +281,7 @@ public:
 };
 ```
 
-Functions are represented by two classes. `PrototypeAST` captures the signature — name and parameter names:
+Functions are split into two classes. The prototype captures just the signature — name and parameter names. We need it separately because `extern` declarations have a prototype but no body:
 
 ```cpp
 class PrototypeAST {
@@ -164,7 +294,9 @@ public:
 };
 ```
 
-`FunctionAST` pairs a prototype with a body expression:
+Notice `PrototypeAST` doesn't inherit from `ExprAST` — a function signature is not an expression.
+
+The full function definition pairs a prototype with a body expression:
 
 ```cpp
 class FunctionAST {
@@ -176,51 +308,49 @@ public:
 };
 ```
 
-Note that `PrototypeAST` is not an `ExprAST` — a function signature isn't an expression. It stands alone, and `FunctionAST` owns it.
+## The Parser
 
-For `def add(x, y): return (x + y) * 2`, the tree looks like this:
+### The Lookahead Invariant
 
-```
-FunctionAST
-├── PrototypeAST  name="add"  args=["x", "y"]
-└── BinaryExprAST  op='*'
-    ├── BinaryExprAST  op='+'
-    │   ├── VariableExprAST  name="x"
-    │   └── VariableExprAST  name="y"
-    └── NumberExprAST  val=2.0
-```
-
-## Parser Setup
-
-The parser needs one token of lookahead — it always has the *current* token loaded and ready to inspect:
+The parser needs to look at the current token to decide what to do. We keep one token of lookahead in a global:
 
 ```cpp
 static int CurTok;
 static int getNextToken() { return CurTok = gettok(); }
 ```
 
-Every parse function assumes `CurTok` is already loaded when it is called, and leaves `CurTok` pointing at the first token it did not consume. This is the invariant that makes the whole parser work — once you know it, the code reads naturally.
+Every parse function operates by this invariant: **`CurTok` is already loaded when the function is called, and when the function returns, `CurTok` is pointing at the first token it did not consume.**
+
+In other words: the function that calls you is responsible for loading `CurTok` before the call. You eat what you need, and leave the next thing for whoever called you.
+
+Once you internalize this rule, all the `getNextToken()` calls in the parser make immediate sense.
+
+### Error Reporting
+
+When parsing fails, we return `nullptr` and print a message. We need three overloads — one per return type — because C++ can't overload on return type:
+
+```cpp
+unique_ptr<ExprAST> LogError(const char *Str) {
+  fprintf(stderr, "Error: %s (token: %d)\nready> ", Str, CurTok);
+  return nullptr;
+}
+unique_ptr<PrototypeAST> LogErrorP(const char *Str) { LogError(Str); return nullptr; }
+unique_ptr<FunctionAST>  LogErrorF(const char *Str) { LogError(Str); return nullptr; }
+```
+
+The `ready>` at the end keeps the REPL prompt in sync. If a parse error occurs on a non-printing token (like a bare newline), the main loop won't print a new prompt — so we print it here. Chapter 3 replaces the raw token number with a readable token name and source location.
 
 ### Operator Precedence
 
-Binary expressions need precedence to parse correctly. Does `x + y * z` mean `(x+y)*z` or `x+(y*z)`? We want the second, so `*` must bind more tightly than `+`.
+Binary expressions can be ambiguous. Does `x + y * z` mean `(x+y)*z` or `x+(y*z)`? We want the second — `*` should bind more tightly than `+`.
 
-We store precedences in a map and look them up as we parse:
+We store precedences in a map. Higher number means tighter binding:
 
 ```cpp
 static map<char, int> BinopPrecedence;
-
-static int GetTokPrecedence() {
-  if (!isascii(CurTok))
-    return -1;
-  int TokPrec = BinopPrecedence[CurTok];
-  if (TokPrec <= 0)
-    return -1;
-  return TokPrec;
-}
 ```
 
-`-1` means "not a binary operator — stop here." The map is populated in `main()`:
+Populated in `main()`:
 
 ```cpp
 BinopPrecedence['<'] = 10;
@@ -229,28 +359,31 @@ BinopPrecedence['-'] = 20;
 BinopPrecedence['*'] = 40;  // highest
 ```
 
-The `isascii` guard rejects our named token enums (which are negative integers) so they can never be mistaken for operators.
-
-### Error Reporting
-
-When parsing fails we return `nullptr` and print a message. Three overloads, one per return type:
+A helper returns the precedence of whatever is in `CurTok`, or `-1` if it's not a known binary operator:
 
 ```cpp
-unique_ptr<ExprAST> LogError(const char *Str) {
-  fprintf(stderr, "ready> Error: %s (token: %d)\nready> ", Str, CurTok);
-  return nullptr;
+static int GetTokPrecedence() {
+  if (!isascii(CurTok))
+    return -1;
+
+  int TokPrec = BinopPrecedence[CurTok];
+  if (TokPrec <= 0)
+    return -1;
+  return TokPrec;
 }
-unique_ptr<PrototypeAST> LogErrorP(const char *Str) { LogError(Str); return nullptr; }
-unique_ptr<FunctionAST>  LogErrorF(const char *Str) { LogError(Str); return nullptr; }
 ```
 
-The `ready>` prefix and suffix keep the REPL prompt in sync. Without them, an error on a non-printing token (like `tok_eol`) would leave the cursor waiting with no prompt. We print the raw token number for now — Chapter 3 replaces this with readable names and source locations.
+The `isascii` guard rejects our named token enums (which are negative integers) so they can never be mistaken for operators.
 
 ## Parsing Expressions
 
 ### Numbers
 
+When the lexer returns `tok_number`, it has already set the global `NumVal`. We snapshot it into a node and advance:
+
 ```cpp
+/// numberexpr
+///   = number ;
 static unique_ptr<ExprAST> ParseNumberExpr() {
   auto Result = make_unique<NumberExprAST>(NumVal);
   getNextToken(); // consume the number
@@ -258,16 +391,19 @@ static unique_ptr<ExprAST> ParseNumberExpr() {
 }
 ```
 
-`NumVal` was set by the lexer when it returned `tok_number`. We snapshot it into a node, advance past the number, and return.
-
 ### Parentheses
 
+Parse whatever is inside, verify the closing `)`, and return the inner expression directly. We don't create a parentheses node — the tree structure already captures the grouping:
+
 ```cpp
+/// parenexpr
+///   = "(" expression ")" ;
 static unique_ptr<ExprAST> ParseParenExpr() {
   getNextToken(); // eat '('
   auto V = ParseExpression();
   if (!V)
     return nullptr;
+
   if (CurTok != ')')
     return LogError("expected ')'");
   getNextToken(); // eat ')'
@@ -275,11 +411,14 @@ static unique_ptr<ExprAST> ParseParenExpr() {
 }
 ```
 
-We parse whatever is inside, check for the closing `)`, and return the inner expression directly — no `ParenExprAST` node because the tree structure already captures the grouping.
-
 ### Identifiers and Calls
 
+After reading an identifier, we peek at the next token. No `(` means it's a plain variable. A `(` means it's a function call:
+
 ```cpp
+/// identifierexpr
+///   = identifier
+///   | identifier "("[expression{"," expression}]")" ;
 static unique_ptr<ExprAST> ParseIdentifierExpr() {
   string IdName = IdentifierStr;
   getNextToken(); // eat identifier
@@ -309,13 +448,15 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
 }
 ```
 
-After reading the identifier, we peek at the next token. No `(` means plain variable. A `(` means function call — we parse a comma-separated list of expressions until `)`.
+### Dispatching to the Right Parser
 
-### Primary
-
-`ParsePrimary` dispatches to the right parser based on what token we're looking at:
+`ParsePrimary` looks at `CurTok` and delegates:
 
 ```cpp
+/// primary
+///   = identifierexpr
+///   | numberexpr
+///   | parenexpr ;
 static unique_ptr<ExprAST> ParsePrimary() {
   switch (CurTok) {
   case tok_identifier: return ParseIdentifierExpr();
@@ -327,18 +468,23 @@ static unique_ptr<ExprAST> ParsePrimary() {
 }
 ```
 
-## Parsing Binary Expressions
+### Binary Expressions: Precedence Climbing
 
-### The Precedence Climbing Algorithm
+The most subtle function in the parser is `ParseBinOpRHS`. It handles chains of binary operators with correct precedence.
 
-`ParseBinOpRHS` is the most subtle function in the parser. It handles chains of binary operators with correct precedence.
+The key idea: when we're parsing `a + b * c + d`, we need to figure out which operators go together. The `*` between `b` and `c` binds more tightly than the `+` around it, so `b * c` should be grouped first.
+
+We solve this with a **threshold**: `ParseBinOpRHS` takes a minimum precedence level and only consumes operators at or above that level. When it sees a higher-precedence operator to its right, it recurses to let that operator grab its operands first.
 
 ```cpp
+/// binoprhs
+///   = { binaryop primary } ;
 static unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec, unique_ptr<ExprAST> LHS) {
   while (true) {
     int TokPrec = GetTokPrecedence();
 
-    // Current operator doesn't bind tightly enough — return what we have.
+    // If CurTok is not an operator, or binds less tightly than our threshold,
+    // we're done — return what we have.
     if (TokPrec < ExprPrec)
       return LHS;
 
@@ -349,8 +495,8 @@ static unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec, unique_ptr<ExprAST> LHS) 
     if (!RHS)
       return nullptr;
 
-    // If the next operator binds more tightly than this one, let it take
-    // our RHS first (right-recursive call).
+    // If the next operator binds more tightly than the current one, recurse
+    // to let it take our RHS as its LHS first.
     int NextPrec = GetTokPrecedence();
     if (TokPrec < NextPrec) {
       RHS = ParseBinOpRHS(TokPrec + 1, std::move(RHS));
@@ -358,25 +504,28 @@ static unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec, unique_ptr<ExprAST> LHS) 
         return nullptr;
     }
 
+    // Merge LHS and RHS under the current operator.
     LHS = make_unique<BinaryExprAST>(BinOp, std::move(LHS), std::move(RHS));
   }
 }
 ```
 
-Walk through `a + b * c + d`:
+Let's trace `a + b * c + d` step by step:
 
-1. `LHS = a`, operator is `+` (prec 20)
-2. Parse `b` as `RHS`. Next operator is `*` (prec 40)
-3. `*` binds tighter than `+` → recurse: `ParseBinOpRHS(21, b)`
-4. Inside recursion: `LHS = b`, operator is `*`, parse `c`. Next is `+` (prec 20), which is < 21 → return `b*c`
-5. Back in outer call: `RHS = b*c`, build `a + (b*c)`
-6. Loop continues: next operator is `+` (prec 20 >= 0) → parse `d`, build `(a+(b*c)) + d`
+1. Called with threshold 0, `LHS = a`. Current operator is `+` (prec 20).
+2. 20 ≥ 0 — consume `+`. Parse `b` as `RHS`. Next operator is `*` (prec 40).
+3. 40 > 20 — recurse: `ParseBinOpRHS(21, b)`.
+4. Inside recursion: current operator is `*` (prec 40). 40 ≥ 21 — consume `*`. Parse `c`. Next is `+` (prec 20). 20 < 21 — stop. Return `b*c`.
+5. Back in outer call: `RHS = b*c`. Build `a + (b*c)`.
+6. Loop continues. Next operator is `+` (prec 20). 20 ≥ 0 — consume `+`. Parse `d`. Next token is not an operator — return. Build `(a+(b*c)) + d`.
 
-The key insight: the `ExprPrec` parameter is a threshold. We only consume operators that bind at least that tightly. When a higher-precedence operator appears to our right, we recurse to let it grab its operands first.
+The `TokPrec + 1` in the recursive call enforces left-associativity. For operators at the same level — like `a - b - c` — we want `(a-b)-c`, not `a-(b-c)`. The `+1` threshold means the recursive call will stop when it sees an operator at the same level, leaving it for the outer loop to consume.
 
-`ParseExpression` kicks it off with threshold 0 (accept any operator):
+`ParseExpression` kicks everything off with threshold 0 (accept any operator):
 
 ```cpp
+/// expression
+///   = primary binoprhs ;
 static unique_ptr<ExprAST> ParseExpression() {
   auto LHS = ParsePrimary();
   if (!LHS)
@@ -389,7 +538,11 @@ static unique_ptr<ExprAST> ParseExpression() {
 
 ### Prototype
 
+A prototype is the function's signature: name and parameter names (no types yet — everything is `double` for now).
+
 ```cpp
+/// prototype
+///   = identifier "(" [identifier {"," identifier}] ")" ;
 static unique_ptr<PrototypeAST> ParsePrototype() {
   if (CurTok != tok_identifier)
     return LogErrorP("Expected function name in prototype");
@@ -420,11 +573,13 @@ static unique_ptr<PrototypeAST> ParsePrototype() {
 }
 ```
 
-The argument loop calls `getNextToken()` at the top (eating `(` on the first pass, `,` on subsequent ones) and again inside the body (eating the identifier). The two advances per iteration let us check what comes after each parameter cleanly.
+The argument loop uses two `getNextToken()` calls per iteration. The one at the top of the `while` eats `(` on the first iteration and `,` on later ones. The one inside the body eats the identifier and lands on what follows — either `)` to break or `,` to loop again.
 
 ### Definition
 
 ```cpp
+/// definition
+///   = "def" prototype ":" ["newline"] "return" expression ;
 static unique_ptr<FunctionAST> ParseDefinition() {
   getNextToken(); // eat 'def'
   auto Proto = ParsePrototype();
@@ -435,7 +590,7 @@ static unique_ptr<FunctionAST> ParseDefinition() {
     return LogErrorF("Expected ':' in function definition");
   getNextToken(); // eat ':'
 
-  // Skip newlines so the body can be on the next line:
+  // Skip newlines between ':' and 'return'. This lets you write:
   //   def foo(x):
   //     return x + 1
   while (CurTok == tok_eol)
@@ -451,23 +606,31 @@ static unique_ptr<FunctionAST> ParseDefinition() {
 }
 ```
 
-The newline skip after `:` is important — it's what lets you split the definition across lines. Without it, `def foo(x):` on one line followed by `return x` on the next would fail because `CurTok` would be `tok_eol` where we expect `tok_return`.
+The newline skip after `:` is what makes multi-line definitions work. Without it, the REPL would print `ready>` for the second line, the user types `return x + 1`, but `CurTok` would be `tok_eol` — not `tok_return` — and the parse would fail.
 
-### Extern and Top-Level Expressions
+### Extern Declarations
 
 ```cpp
+/// external
+///   = "extern" "def" prototype
 static unique_ptr<PrototypeAST> ParseExtern() {
   getNextToken(); // eat 'extern'
   if (CurTok != tok_def)
-    return LogErrorP("Expected 'def' after extern");
+    return LogErrorP("Expected 'def' after extern.");
   getNextToken(); // eat 'def'
   return ParsePrototype();
 }
 ```
 
-An `extern` is just a prototype with no body. We require `def` after `extern` to keep the syntax consistent with function definitions.
+An `extern` is just a prototype — we're declaring a name and its parameter count so the compiler knows how to call it. The actual implementation lives elsewhere (a C library, another object file).
+
+### Top-Level Expressions
+
+A bare expression typed at the REPL — like `1 + 2 * 3` — gets wrapped in an anonymous function:
 
 ```cpp
+/// toplevelexpr
+///   = expression
 static unique_ptr<FunctionAST> ParseTopLevelExpr() {
   if (auto E = ParseExpression()) {
     auto Proto = make_unique<PrototypeAST>("__anon_expr", vector<string>());
@@ -477,9 +640,34 @@ static unique_ptr<FunctionAST> ParseTopLevelExpr() {
 }
 ```
 
-A top-level expression like `1 + 2` gets wrapped in an anonymous function named `__anon_expr`. This isn't just a convenience — when we add JIT execution in a later chapter, we'll compile and call this function by name to get the result. The uniform `FunctionAST` representation means the rest of the pipeline doesn't need a special case for top-level expressions.
+The name `__anon_expr` is a placeholder. In a later chapter when we add JIT execution, we'll look up this function by name and call it to evaluate the expression immediately. Wrapping it in `FunctionAST` now means the rest of the pipeline — code generation, optimization, JIT — doesn't need any special cases for top-level expressions.
 
 ## The Driver
+
+Three handler functions, one for each top-level construct. Each calls the appropriate parser, prints a success message, or skips one bad token to keep the REPL alive:
+
+```cpp
+static void HandleDefinition() {
+  if (ParseDefinition())
+    fprintf(stderr, "Parsed a function definition.\n");
+  else
+    getNextToken(); // skip bad token
+}
+
+static void HandleExtern() {
+  if (ParseExtern())
+    fprintf(stderr, "Parsed an extern.\n");
+  else
+    getNextToken(); // skip bad token
+}
+
+static void HandleTopLevelExpression() {
+  if (ParseTopLevelExpr())
+    fprintf(stderr, "Parsed a top-level expression.\n");
+  else
+    getNextToken(); // skip bad token
+}
+```
 
 `MainLoop` dispatches on the leading token:
 
@@ -489,6 +677,7 @@ static void MainLoop() {
     if (CurTok == tok_eof)
       return;
 
+    // A bare newline: print a fresh prompt and advance.
     if (CurTok == tok_eol) {
       fprintf(stderr, "ready> ");
       getNextToken();
@@ -504,19 +693,20 @@ static void MainLoop() {
 }
 ```
 
-On success each handler prints a confirmation. On failure it skips one token — crude, but enough to keep the REPL alive after bad input without getting stuck on the same bad token forever.
-
-`main()` sets up operator precedences, prints the first prompt, loads the first token, then hands off:
+`main()` sets up operator precedences, prints the first prompt, loads the first token, then hands off to the loop:
 
 ```cpp
 int main() {
+  // Register binary operators. Higher number = tighter binding.
   BinopPrecedence['<'] = 10;
   BinopPrecedence['+'] = 20;
   BinopPrecedence['-'] = 20;
   BinopPrecedence['*'] = 40;
 
+  // Print the first prompt and load the first token before entering the loop.
+  // Every parse function expects CurTok to already be loaded when it is called.
   fprintf(stderr, "ready> ");
-  getNextToken(); // prime CurTok before MainLoop
+  getNextToken();
 
   MainLoop();
   return 0;
@@ -533,7 +723,7 @@ cmake -S . -B build && cmake --build build
 
 ## Try It
 
-```
+```python
 ready> def add(x, y):
 ready>   return x + y
 Parsed a function definition.
@@ -551,15 +741,16 @@ Error: Expected ':' in function definition (token: -7)
 ready>
 ```
 
-The parser understands structure. It accepts valid definitions and rejects malformed ones.
+The parser accepts valid syntax and rejects invalid syntax with an error message. The REPL keeps running after errors.
 
 ## What We Built
 
 | Piece | What it does |
 |---|---|
-| AST node classes | Represent each kind of expression and declaration as an object |
-| `CurTok` / `getNextToken()` | One-token lookahead buffer between lexer and parser |
-| `BinopPrecedence` / `GetTokPrecedence()` | Drive operator precedence during expression parsing |
+| Grammar (EBNF) | Defines exactly what valid Pyxc looks like |
+| AST node classes | Represent each kind of expression as a C++ object |
+| `CurTok` / `getNextToken()` | One-token lookahead between lexer and parser |
+| `BinopPrecedence` / `GetTokPrecedence()` | Control how operators bind |
 | `ParseBinOpRHS()` | Precedence-climbing algorithm for binary expressions |
 | `ParsePrototype()` / `ParseDefinition()` | Parse function signatures and bodies |
 | `ParseTopLevelExpr()` | Wrap bare expressions in `__anon_expr` for uniform handling |
@@ -567,13 +758,13 @@ The parser understands structure. It accepts valid definitions and rejects malfo
 
 ## Known Limitations
 
-Two TODOs carried forward from chapter 1 are still present:
+The TODOs from Chapter 1 are still present:
 
-- `1.2.3` still lexes silently as `1.2` — the `.3` becomes a surprise for the parser
-- Error messages show raw token numbers instead of names and source locations
+- `1.2.3` still lexes as `1.2` — the lexer silently drops `.3`, which will confuse the parser
+- Error messages show raw token numbers (`token: -7`) instead of readable names and source locations
 
-Both get fixed in Chapter 3 when we polish the lexer and add proper diagnostics. Now that you've seen what parse errors look like, the motivation for `Error (line 3, col 7): Expected ')' near '+'` over `Error: Expected ')' (token: 20)` should be obvious.
+Both get fixed in Chapter 3, when we polish the lexer and add proper diagnostics. Now that you've written a few function definitions and hit a few errors, you'll understand exactly *why* `Error (line 3, col 15): Expected ':' near 'return'` is worth the effort.
 
 ## What's Next
 
-The parser understands the structure of Pyxc code. But before we connect it to LLVM and generate actual IR, Chapter 3 revisits the lexer: better error messages, source locations, and the keyword map. The foundation we have works — Chapter 3 makes it pleasant to work with.
+The parser understands the structure of Pyxc code and builds a tree of objects representing it. But before we hook this up to LLVM and generate real machine code, Chapter 3 revisits the lexer: readable error messages, source locations, and the keyword map. The parser you have works — Chapter 3 makes it pleasant to use.

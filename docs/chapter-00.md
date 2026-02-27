@@ -25,9 +25,11 @@ By the end, you'll have a working language that:
 
 ## Where We're Headed
 
-**Chapters 1-11** now build language features first: expressions, blocks, comparisons, control flow (`if`/`while`), and mutable variables.
+**Chapters 1-3** build the front end: lexer, parser, and a polished error-reporting layer.
 
-**Toolchain chapters (16+)** then focus on optimization/JIT, object files, debug info, executables, and linker internals.
+**Chapters 4-5** set up LLVM and connect the AST to real code generation.
+
+**Chapters 6+** add language features: expressions, blocks, comparisons, control flow (`if`/`while`), mutable variables, and eventually optimization, debug info, and native executables.
 
 Here's a preview of what Pyxc will look like with those features:
 
@@ -75,51 +77,49 @@ Each chapter builds on the previous one. You can:
 
 ## Chapter Guide
 
-### Core Foundation (Start Here)
+### The Front End (Start Here)
 
-**[Chapter 1: Lexer](chapter-01.md)** - Break source code into tokens. First step of any compiler.
+**[Chapter 1: The Lexer](chapter-01.md)** — Break source code into tokens. The first step of any compiler.
 
-<!-- 
-**[Chapter 2: Parser and AST](chapter-02.md)** - Turn tokens into a tree structure representing your code. Build recursive descent and operator precedence parsers.
+**[Chapter 2: The Parser and AST](chapter-02.md)** — Turn tokens into a tree. Build a recursive descent parser and see "Parsed a function definition." for the first time.
 
-**[Chapter 3: Building LLVM](chapter-03.md)** - Install LLVM from source with all the tools you need (clang, lld, lldb, clangd).
+<!--
+**[Chapter 3: Polishing the Lexer](chapter-03.md)** — Fix malformed number handling, promote keywords to a map, and add source locations and token names so error messages are actually useful.
 
-**[Chapter 4: Command Line Interface](chapter-04.md)** - Add CLI options so your compiler can build files, not just run a REPL.
+### Setting Up LLVM
 
-**[Chapter 5: Code Generation](chapter-05.md)** - Transform your AST into LLVM IR. This is where you actually generate code.
+**[Chapter 4: Installing LLVM](chapter-04.md)** — Install LLVM from source with everything you need: clang, lld, lldb, clangd, and lit.
 
-**[Chapter 6: Understanding LLVM IR](chapter-06.md)** - Learn to read and understand the intermediate representation LLVM uses.
+### Code Generation
 
-**[Chapter 7: Optimization and JIT](chapter-07.md)** - Add LLVM optimization passes and ORC JIT so code runs immediately in the REPL.
+**[Chapter 5: Code Generation](chapter-05.md)** — Connect the AST to LLVM IR. This is where the compiler starts producing real output.
 
-**[Chapter 8: File Input Mode](chapter-08.md)** - Add file-based execution mode so Pyxc can run source from files.
+### Language Features
 
-**[Chapter 9: Comparison Operators](chapter-09.md)** - Add `==`, `!=`, `<=`, `>=` with proper precedence and LLVM codegen.
+**[Chapter 6: Optimization and JIT](chapter-06.md)** — Add LLVM optimization passes and ORC JIT so expressions evaluate immediately in the REPL.
 
-**[Chapter 10: Blocks with `;`](chapter-10.md)** - Add multi-statement function bodies with explicit separators.
+**[Chapter 7: File Input Mode](chapter-07.md)** — Add `pyxc run script.pyxc` so the compiler can execute source files, not just the REPL.
 
-**[Chapter 11: Indentation Blocks](chapter-11.md)** - Replace `;` blocks with indentation (`INDENT`/`DEDENT`) syntax.
+**[Chapter 8: Comparison Operators](chapter-08.md)** — Add `==`, `!=`, `<=`, `>=` with correct precedence and LLVM IR codegen.
 
-**[Chapter 12: `if` and `while`](chapter-12.md)** - Add control flow expressions and unlock real examples like factorial.
+**[Chapter 9: Blocks with `;`](chapter-09.md)** — Add multi-statement function bodies with explicit `;` separators.
 
-**[Chapter 13: Mutable Variables](chapter-13.md)** - Add `let` declarations and assignment so loop-based algorithms are possible.
+**[Chapter 10: Indentation Blocks](chapter-10.md)** — Replace `;` with Python-style indentation using `INDENT`/`DEDENT` tokens.
 
-### Toolchain and Optimization (Later)
+**[Chapter 11: `if` and `while`](chapter-11.md)** — Add control flow expressions. Write recursive factorial.
 
-**[Chapter 17: Object Files and Optimizations](chapter-17.md)** - Generate `.o` files with proper optimization levels.
+**[Chapter 12: Mutable Variables](chapter-12.md)** — Add `let` declarations and assignment. Write iterative factorial with `while`.
 
-**[Chapter 18: Debug Information](chapter-18.md)** - Add DWARF debug info for source-level debugging.
+### Toolchain
 
-**[Chapter 19: Generating Executables](chapter-19.md)** - Link object files into native executables with LLVM's linker.
+**[Chapter 13: Object Files](chapter-13.md)** — Generate `.o` files with proper optimization levels.
 
-**[Chapter 20: Linking Under the Hood](chapter-20.md)** - Use `nm` and `objdump` to inspect symbol resolution and relocation.
+**[Chapter 14: Debug Information](chapter-14.md)** — Add DWARF debug info for source-level debugging with lldb.
 
-### Coming Soon
+**[Chapter 15: Native Executables](chapter-15.md)** — Link object files into native executables using LLVM's linker.
 
-More chapters are being prepared and will be added:
-- Logical operators and richer conditionals
-- Fibonacci and Mandelbrot as showcase examples
-- Types, structs, and modules -->
+**[Chapter 16: Linking Under the Hood](chapter-16.md)** — Use `nm` and `objdump` to inspect symbol resolution and relocation.
+-->
 
 ## What You'll Learn
 

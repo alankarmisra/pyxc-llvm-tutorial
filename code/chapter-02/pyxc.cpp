@@ -226,7 +226,7 @@ static int GetTokPrecedence() {
 /// We print the raw CurTok number for now. Chapter 3 will replace this with
 /// readable token names and source location (line/column).
 unique_ptr<ExprAST> LogError(const char *Str) {
-  fprintf(stderr, "ready> Error: %s (token: %d)\nready> ", Str, CurTok);
+  fprintf(stderr, "Error: %s (token: %d)\nready> ", Str, CurTok);
   return nullptr;
 }
 unique_ptr<PrototypeAST> LogErrorP(const char *Str) {
