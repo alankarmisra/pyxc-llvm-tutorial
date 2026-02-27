@@ -200,7 +200,7 @@ But notice the code has a comment:
 // TODO: This incorrectly lexes 1.23.45.67 as 1.23
 ```
 
-`strtod` parses as far as it can and stops at the second `.`. The rest of `1.23.45.67` — the `.45.67` part — then becomes a surprise for the parser on the next call. We'll fix this in a later chapter by checking where `strtod` stopped and erroring on leftover junk. For now, we leave it as-is — it's not a problem for valid input.
+`strtod` parses as far as it can and stops at the second `.`. The rest of `1.23.45.67` — the `.45.67` part — is effectively ignored. We'll fix this in a later chapter by checking where `strtod` stopped and erroring on leftover junk. For now, we leave it as-is — it's not a problem for valid input.
 
 ### Comments
 
@@ -253,7 +253,7 @@ This file has no `main()` and no `MainLoop()`. It's purely the lexer — just th
 | `advance()` | Reads one character, normalizes line endings |
 | `gettok()` | Reads characters and returns the next token — the lexer |
 
-Two deliberate TODOs carried forward to the next chapter:
+Two deliberate TODOs carried forward to the [chapter 3](chapter-03.md):
 - The keyword if-chain becomes a map when we add more keywords
 - Malformed numbers like `1.2.3` get proper error handling once the parser is in place
 
