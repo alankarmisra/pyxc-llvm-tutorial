@@ -1,0 +1,5 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed an extern." %t
+
+# Test extern declaration with zero arguments
+extern def pi()

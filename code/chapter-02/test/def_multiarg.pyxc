@@ -1,0 +1,7 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -c "Parsed a function definition" %t | grep -q "3"
+
+# Test function definitions with multiple arguments
+def add(x, y): return x + y
+def sub(a, b, c): return a - b - c
+def many(a, b, c, d, e): return a + b + c + d + e

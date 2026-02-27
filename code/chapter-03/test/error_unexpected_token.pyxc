@@ -1,0 +1,6 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error (Line" %t
+# RUN: grep -q "unknown token when expecting an expression" %t
+
+# Test unexpected token in expression
+1 + + 2

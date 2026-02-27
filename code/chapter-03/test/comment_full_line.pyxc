@@ -1,0 +1,6 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed a top-level expression." %t
+
+# Test that a full-line comment is skipped and parsing continues normally
+# This is a comment
+1 + 2

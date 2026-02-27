@@ -1,0 +1,11 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error: " %t
+# RUN: grep -q "unknown token when expecting an expression" %t
+# RUN: grep -q "Parsed a top-level expression." %t
+
+# Test that the REPL recovers after a parse error and continues parsing.
+# '3 = 10' fails because '=' (ASCII 61) is not a valid primary expression.
+# HandleTopLevelExpression skips one token, leaving '10' for the next
+# iteration. The second line '1 + 2 * 3' then parses successfully.
+3 = 10
+1 + 2 * 3

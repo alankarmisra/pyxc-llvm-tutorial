@@ -74,7 +74,7 @@ enum Token {
   tok_identifier = -5, // Variable/function names: foo, my_var
   tok_number     = -6, // Numbers: 42, 3.14
 
-  tok_return  // -7, follows tok_number
+  tok_return = -7 // 'return' keyword
 };
 ```
 
@@ -119,7 +119,7 @@ int advance() {
 
 This normalizes line endings across platforms: Windows sends `\r\n`, old Macs send bare `\r`. We collapse both to `\n` once here so the rest of the lexer never has to think about it again.
 
-## The Lexer: `gettok()`
+## The Lexer: gettok()
 
 This is the heart of the chapter. `gettok()` reads characters and returns the next token.
 
@@ -271,3 +271,17 @@ Two deliberate TODOs carried forward to the next chapter:
 ## What's Next
 
 The lexer breaks source code into tokens but doesn't understand what they mean. In Chapter 2, we'll build a **parser** that reads these tokens and constructs an **Abstract Syntax Tree (AST)** — a tree that captures the actual structure and meaning of the code. We'll also add `main()` and a driver loop so we can finally run something.
+
+## Need Help?
+
+Build issues? Questions?
+
+- **GitHub Issues:** [Report problems](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues)
+- **Discussions:** [Ask questions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
+
+Include:
+- Your OS and version
+- Full error message
+- Output of `cmake --version` and `ninja --version`
+
+We'll figure it out.

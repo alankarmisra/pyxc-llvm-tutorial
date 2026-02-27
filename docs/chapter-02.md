@@ -768,3 +768,17 @@ Both get fixed in Chapter 3, when we polish the lexer and add proper diagnostics
 ## What's Next
 
 The parser understands the structure of Pyxc code and builds a tree of objects representing it. But before we hook this up to LLVM and generate real machine code, Chapter 3 revisits the lexer: readable error messages, source locations, and the keyword map. The parser you have works — Chapter 3 makes it pleasant to use.
+
+## Need Help?
+
+Build issues? Questions?
+
+- **GitHub Issues:** [Report problems](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues)
+- **Discussions:** [Ask questions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
+
+Include:
+- Your OS and version
+- Full error message
+- Output of `cmake --version` and `ninja --version`
+
+We'll figure it out.

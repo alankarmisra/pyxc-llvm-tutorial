@@ -1,0 +1,6 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error (Line" %t
+# RUN: grep -q "Expected ')' or ',' in argument list" %t
+
+# Test malformed function call arguments
+foo(1 2)

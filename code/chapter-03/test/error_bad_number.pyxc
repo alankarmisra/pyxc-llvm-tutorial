@@ -1,0 +1,7 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error (Line" %t
+# RUN: grep -q "invalid number literal" %t
+
+# Test that a malformed number literal (multiple dots) produces a tok_error.
+# gettok() calls strtod and checks *End != '\0'; '1.2.3' fails that check.
+1.2.3

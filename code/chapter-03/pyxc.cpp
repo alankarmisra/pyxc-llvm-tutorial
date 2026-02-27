@@ -1,9 +1,12 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <iomanip>
 #include <map>
 #include <memory>
+#include <sstream>
 #include <string>
+#include <unistd.h>
 #include <utility>
 #include <vector>
 
@@ -18,74 +21,153 @@ using namespace std;
 enum Token {
   tok_eof = -1,
   tok_eol = -2,
+  tok_error = -3,
 
   // commands
-  tok_def = -3,
-  tok_extern = -4,
+  tok_def = -4,
+  tok_extern = -5,
 
   // primary
-  tok_identifier = -5,
-  tok_number = -6,
+  tok_identifier = -6,
+  tok_number = -7,
 
   // control
-  tok_return = -7
+  tok_return = -8
 };
 
 static string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;        // Filled in if tok_number
+static string NumLiteralStr; // Filled in if tok_number, used in error messages
+
+// Keywords words like `def`, `extern` and `return`. The lexer will return the
+// associated Token. Additional language keywords can easily be added here.
+static map<string, Token> Keywords = {
+    {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return}};
+
+// Debug-only token names. Kept separate from Keywords because this map is
+// purely for printing token stream output.
+static map<int, string> TokenNames = [] {
+  // Unprintable character tokens, and multi-character tokens.
+  map<int, string> Names = {
+      {tok_eof, "end of input"}, {tok_eol, "newline"},
+      {tok_error, "error"},      {tok_def, "'def'"},
+      {tok_extern, "'extern'"},  {tok_identifier, "identifier"},
+      {tok_number, "number"},    {tok_return, "'return'"},
+  };
+
+  // Single character tokens.
+  for (int C = 0; C <= 255; ++C) {
+    if (isprint(static_cast<unsigned char>(C)))
+      Names[C] = "'" + string(1, static_cast<char>(C)) + "'";
+    else if (C == '\n')
+      Names[C] = "'\\n'";
+    else if (C == '\t')
+      Names[C] = "'\\t'";
+    else if (C == '\r')
+      Names[C] = "'\\r'";
+    else if (C == '\0')
+      Names[C] = "'\\0'";
+    else {
+      ostringstream OS;
+      OS << "0x" << uppercase << hex << setw(2) << setfill('0') << C;
+      Names[C] = OS.str();
+    }
+  }
+
+  return Names;
+}();
+
+struct SourceLocation {
+  int Line;
+  int Col;
+};
+static SourceLocation CurLoc;
+static SourceLocation LexLoc = {1, 0};
+
+class SourceManager {
+  vector<string> CompletedLines;
+  string CurrentLine;
+
+public:
+  void reset() {
+    CompletedLines.clear();
+    CurrentLine.clear();
+  }
+
+  void onChar(int C) {
+    if (C == '\n') {
+      CompletedLines.push_back(CurrentLine);
+      CurrentLine.clear();
+      return;
+    }
+    if (C != EOF)
+      CurrentLine.push_back(static_cast<char>(C));
+  }
+
+  const string *getLine(int OneBasedLine) const {
+    if (OneBasedLine <= 0)
+      return nullptr;
+    size_t Index = static_cast<size_t>(OneBasedLine - 1);
+    if (Index < CompletedLines.size())
+      return &CompletedLines[Index];
+    if (Index == CompletedLines.size())
+      return &CurrentLine;
+    return nullptr;
+  }
+};
+
+static SourceManager PyxcSourceMgr;
+static void PrintErrorSourceContext(SourceLocation Loc);
 
 /// advance - returns the next character, coalescing `\r\n` (Windows) into `\n`
-/// and converting bare `\r` (Old Macs) into `\n`.
-int advance() {
+static int advance() {
   int LastChar = getchar();
   if (LastChar == '\r') {
     int NextChar = getchar();
-    if (NextChar != '\n' && NextChar != EOF) {
+    if (NextChar != '\n' && NextChar != EOF)
       ungetc(NextChar, stdin);
-    }
+    PyxcSourceMgr.onChar('\n');
+    LexLoc.Line++;
+    LexLoc.Col = 0;
     return '\n';
   }
+
+  if (LastChar == '\n') {
+    PyxcSourceMgr.onChar('\n');
+    LexLoc.Line++;
+    LexLoc.Col = 0;
+  } else {
+    PyxcSourceMgr.onChar(LastChar);
+    LexLoc.Col++;
+  }
+
   return LastChar;
 }
 
 /// gettok - Return the next token from standard input.
-int gettok() {
+static int gettok() {
   static int LastChar = ' ';
 
-  // Skip whitespace EXCEPT newlines
   while (isspace(LastChar) && LastChar != '\n')
     LastChar = advance();
 
-  // Check for newline.
   if (LastChar == '\n') {
-    // Don't try and read the next character. This will stall the REPL.
-    // Just reset LastChar to a space which will force a new character
-    // advance in the next call.
+    CurLoc = {LexLoc.Line - 1, LexLoc.Col};
     LastChar = ' ';
     return tok_eol;
   }
-  // Check for end of file.  Don't eat the EOF.
-  if (LastChar == EOF)
-    return tok_eof;
+
+  CurLoc = LexLoc;
 
   if (isalpha(LastChar) || LastChar == '_') {
     IdentifierStr = LastChar;
-    while (isalnum(LastChar = advance()) || LastChar == '_') {
+    while (isalnum((LastChar = advance())) || LastChar == '_')
       IdentifierStr += LastChar;
-    }
 
-    // TODO: Push this into a map
-    if (IdentifierStr == "def")
-      return tok_def;
-    if (IdentifierStr == "extern")
-      return tok_extern;
-    if (IdentifierStr == "return")
-      return tok_return;
-
-    return tok_identifier;
+    auto It = Keywords.find(IdentifierStr);
+    return (It == Keywords.end()) ? tok_identifier : It->second;
   }
 
-  // TODO: This incorrectly lexes 1.23.45.67 as 1.23
   if (isdigit(LastChar) || LastChar == '.') {
     string NumStr;
     do {
@@ -93,28 +175,80 @@ int gettok() {
       LastChar = advance();
     } while (isdigit(LastChar) || LastChar == '.');
 
-    NumVal = strtod(NumStr.c_str(), 0);
+    NumLiteralStr = NumStr;
+    char *End = nullptr;
+    NumVal = strtod(NumStr.c_str(), &End);
+    if (!End || *End != '\0') {
+      fprintf(stderr,
+              "Error (Line %d, Column %d): invalid number literal '%s'\n",
+              CurLoc.Line, CurLoc.Col, NumStr.c_str());
+      PrintErrorSourceContext(CurLoc);
+      return tok_error;
+    }
     return tok_number;
   }
 
   if (LastChar == '#') {
-    // Comment until the end of the line
-    do {
+    do
       LastChar = advance();
-    } while (LastChar != '\n' && LastChar != EOF);
+    while (LastChar != EOF && LastChar != '\n');
 
     if (LastChar != EOF) {
-      // Don't attempt to read another character at the end of the line,
-      // otherwise the REPL will stall waiting for another character.
       LastChar = ' ';
       return tok_eol;
     }
   }
 
-  // Otherwise, just return the character as its ascii value
+  if (LastChar == EOF)
+    return tok_eof;
+
   int ThisChar = LastChar;
   LastChar = advance();
   return ThisChar;
+}
+
+//===----------------------------------------===//
+// Diagnostics helpers
+//===----------------------------------------===//
+static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
+  if (Tok != tok_eol)
+    return Loc;
+
+  int PrevLine = Loc.Line - 1;
+  if (PrevLine <= 0)
+    return Loc;
+
+  const string *PrevLineText = PyxcSourceMgr.getLine(PrevLine);
+  if (!PrevLineText)
+    return Loc;
+
+  return {PrevLine, static_cast<int>(PrevLineText->size()) + 1};
+}
+
+static string FormatTokenForMessage(int Tok) {
+  if (Tok == tok_identifier)
+    return "identifier '" + IdentifierStr + "'";
+  if (Tok == tok_number)
+    return "number '" + NumLiteralStr + "'";
+
+  auto It = TokenNames.find(Tok);
+  if (It != TokenNames.end())
+    return It->second;
+  return "unknown token";
+}
+
+static void PrintErrorSourceContext(SourceLocation Loc) {
+  const string *LineText = PyxcSourceMgr.getLine(Loc.Line);
+  if (!LineText)
+    return;
+
+  fprintf(stderr, "%s\n", LineText->c_str());
+  int spaces = Loc.Col - 1;
+  if (spaces < 0)
+    spaces = 0;
+  for (int i = 0; i < spaces; ++i)
+    fputc(' ', stderr);
+  fprintf(stderr, "^~~~\n");
 }
 
 //===----------------------------------------===//
@@ -223,16 +357,19 @@ static int GetTokPrecedence() {
 
 /// LogError* - Error reporting helpers. Each returns nullptr for its respective
 /// type so parse functions can write: return LogError("message");
-/// We print the raw CurTok number for now. Chapter 3 will replace this with
-/// readable token names and source location (line/column).
 unique_ptr<ExprAST> LogError(const char *Str) {
-  fprintf(stderr, "Error: %s (token: %d)\nready> ", Str, CurTok);
+  SourceLocation Anchor = GetDiagnosticAnchorLoc(CurLoc, CurTok);
+  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
+          Str);
+  PrintErrorSourceContext(Anchor);
   return nullptr;
 }
+
 unique_ptr<PrototypeAST> LogErrorP(const char *Str) {
   LogError(Str);
   return nullptr;
 }
+
 unique_ptr<FunctionAST> LogErrorF(const char *Str) {
   LogError(Str);
   return nullptr;
@@ -452,30 +589,54 @@ static unique_ptr<PrototypeAST> ParseExtern() {
 // Top-Level parsing
 //===----------------------------------------===//
 
-/// HandleDefinition/Extern/TopLevelExpression - Called by MainLoop when it sees
-/// the appropriate leading token. On success, print a confirmation. On failure,
-/// skip one token and continue — crude error recovery that keeps the REPL alive
-/// after a bad input without getting stuck on the same bad token forever.
+/// SynchronizeToLineBoundary/HandleDefinition/Extern/TopLevelExpression -
+/// Called by MainLoop when it sees the appropriate leading token. On success,
+/// print a confirmation. On failure, skip one token and continue — crude error
+/// recovery that keeps the REPL alive after a bad input without getting stuck
+/// on the same bad token forever.
+
+static void SynchronizeToLineBoundary() {
+  while (CurTok != tok_eol && CurTok != tok_eof)
+    getNextToken();
+}
 
 static void HandleDefinition() {
-  if (ParseDefinition())
+  if (ParseDefinition()) {
+    if (CurTok != tok_eol && CurTok != tok_eof) {
+      LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+      SynchronizeToLineBoundary();
+      return;
+    }
     fprintf(stderr, "Parsed a function definition.\n");
-  else
-    getNextToken(); // skip bad token
+  } else {
+    SynchronizeToLineBoundary();
+  }
 }
 
 static void HandleExtern() {
-  if (ParseExtern())
+  if (ParseExtern()) {
+    if (CurTok != tok_eol && CurTok != tok_eof) {
+      LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+      SynchronizeToLineBoundary();
+      return;
+    }
     fprintf(stderr, "Parsed an extern.\n");
-  else
-    getNextToken(); // skip bad token
+  } else {
+    SynchronizeToLineBoundary();
+  }
 }
 
 static void HandleTopLevelExpression() {
-  if (ParseTopLevelExpr())
+  if (ParseTopLevelExpr()) {
+    if (CurTok != tok_eol && CurTok != tok_eof) {
+      LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+      SynchronizeToLineBoundary();
+      return;
+    }
     fprintf(stderr, "Parsed a top-level expression.\n");
-  else
-    getNextToken(); // skip bad token
+  } else {
+    SynchronizeToLineBoundary();
+  }
 }
 
 /// MainLoop - Dispatch loop for the REPL.
@@ -494,6 +655,11 @@ static void MainLoop() {
     if (CurTok == tok_eol) {
       fprintf(stderr, "ready> ");
       getNextToken();
+      continue;
+    }
+
+    if (CurTok == tok_error) {
+      SynchronizeToLineBoundary();
       continue;
     }
 

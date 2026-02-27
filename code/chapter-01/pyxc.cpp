@@ -24,7 +24,7 @@ enum Token {
   tok_number = -6,
 
   // control
-  tok_return
+  tok_return = -7
 };
 
 static string IdentifierStr; // Filled in if tok_identifier

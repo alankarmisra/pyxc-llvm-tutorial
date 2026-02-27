@@ -83,13 +83,13 @@ Each chapter builds on the previous one. You can:
 
 **[Chapter 2: The Parser and AST](chapter-02.md)** — Turn tokens into a tree. Build a recursive descent parser and see "Parsed a function definition." for the first time.
 
-<!--
-**[Chapter 3: Polishing the Lexer](chapter-03.md)** — Fix malformed number handling, promote keywords to a map, and add source locations and token names so error messages are actually useful.
+**[Chapter 3: Better Errors](chapter-03.md)** — Fix malformed number detection, replace the keyword if-chain with a table, track source locations, and print caret-style diagnostics.
 
 ### Setting Up LLVM
 
 **[Chapter 4: Installing LLVM](chapter-04.md)** — Install LLVM from source with everything you need: clang, lld, lldb, clangd, and lit.
 
+<!--
 ### Code Generation
 
 **[Chapter 5: Code Generation](chapter-05.md)** — Connect the AST to LLVM IR. This is where the compiler starts producing real output.
