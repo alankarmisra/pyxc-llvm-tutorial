@@ -1,5 +1,5 @@
 # RUN: %pyxc < %s > %t 2>&1
 # RUN: grep -q "Parsed a top-level expression." %t
 
-# Test nested function calls
+# identifierexpr: nested call — call result as argument
 foo(bar(baz(1, 2), 3))

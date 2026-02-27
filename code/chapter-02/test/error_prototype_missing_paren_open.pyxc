@@ -1,0 +1,6 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error: " %t
+# RUN: grep -q "Expected '(' in prototype" %t
+
+# prototype: no '(' after function name
+def foo x: return x

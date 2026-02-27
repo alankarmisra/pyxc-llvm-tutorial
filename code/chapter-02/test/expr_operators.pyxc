@@ -1,0 +1,8 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -c "Parsed a top-level expression." %t | grep -q "4"
+
+# binoprhs: each supported binary operator
+1 + 2
+3 - 4
+5 * 6
+1 < 2

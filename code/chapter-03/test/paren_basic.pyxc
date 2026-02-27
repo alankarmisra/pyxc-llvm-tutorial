@@ -1,0 +1,7 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -c "Parsed a top-level expression." %t | grep -q "3"
+
+# parenexpr: grouping overrides precedence, nested parens, double-wrapped
+(1 + 2) * 3
+(1 + (2 * 3))
+((5))

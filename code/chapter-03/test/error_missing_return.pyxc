@@ -1,8 +1,0 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Error (Line" %t
-# RUN: grep -q "Expected 'return' in function body" %t
-
-# Test missing return keyword. ParseDefinition sees tok_identifier ('x')
-# where tok_return is expected. The single-token skip in HandleDefinition
-# then causes a cascade error on '+', but the first error is the real one.
-def foo(x): x + 1

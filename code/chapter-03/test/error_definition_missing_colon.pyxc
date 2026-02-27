@@ -1,0 +1,9 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error (Line" %t
+# RUN: grep -q "Expected ':' in function definition" %t
+# RUN: grep -q "def foo(x) return" %t
+
+# definition: ':' is absent; 'return' seen where ':' is expected.
+# The error fires on tok_return (not tok_eol), so source context shows the
+# line as it stands when 'return' is consumed — up to but not including 'x'.
+def foo(x) return x

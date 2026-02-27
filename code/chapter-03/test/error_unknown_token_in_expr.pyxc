@@ -1,0 +1,10 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error (Line" %t
+# RUN: grep -q "unknown token when expecting an expression" %t
+# RUN: grep -q "1 + +" %t
+
+# primary: default branch — token that is not identifier, number, or '('
+# The second '+' is the bad token; source context must show the input line.
+# We match "1 + +" rather than "1 + + 2" because the error fires on the second
+# '+' before '2' has been consumed into CurrentLine.
+1 + + 2

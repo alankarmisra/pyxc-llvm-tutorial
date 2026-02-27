@@ -1,0 +1,6 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -c "Parsed a function definition." %t | grep -q "2"
+
+# prototype: multiple arguments (the { } repeating)
+def add(x, y): return x + y
+def many(a, b, c, d, e): return a + b + c + d + e

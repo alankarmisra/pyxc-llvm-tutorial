@@ -1,0 +1,8 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error (Line" %t
+# RUN: grep -q "Expected ':' in function definition" %t
+# RUN: grep -q "def foo(x)" %t
+
+# definition: line ends after prototype with no ':' at all (tok_eol case).
+# GetDiagnosticAnchorLoc steps back one line and points past the last character.
+def foo(x)

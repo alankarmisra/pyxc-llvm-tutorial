@@ -1,0 +1,6 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error: " %t
+# RUN: grep -q "Expected ')' or ',' in parameter list" %t
+
+# prototype: missing closing ')' in parameter list
+extern def broken(x

@@ -2,5 +2,5 @@
 # RUN: grep -q "Error: " %t
 # RUN: grep -q "Expected \`def\` after extern" %t
 
-# Test extern without def keyword
+# external: 'def' keyword is absent after 'extern'
 extern foo(x)

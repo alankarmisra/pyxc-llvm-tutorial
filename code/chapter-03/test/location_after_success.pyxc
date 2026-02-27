@@ -1,0 +1,11 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -c "Error (Line" %t | grep -q "1"
+# RUN: grep -q "Expected ':' in function definition" %t
+# RUN: grep -q "def foo(x) return" %t
+
+# Diagnostics: exactly one error fires; a preceding successful parse does not
+# contribute an error line. Source context shows the failing line, not the
+# successful one. This guards against GetDiagnosticAnchorLoc pointing at the
+# wrong line when line numbers have advanced past 1.
+def good(x): return x
+def foo(x) return x

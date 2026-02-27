@@ -1,5 +1,5 @@
 # RUN: %pyxc < %s > %t 2>&1
 # RUN: grep -q "Parsed a top-level expression." %t
 
-# Test integer literals
+# numberexpr: integer literal
 42

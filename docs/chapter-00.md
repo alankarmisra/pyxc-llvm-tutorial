@@ -89,11 +89,11 @@ Each chapter builds on the previous one. You can:
 
 **[Chapter 4: Installing LLVM](chapter-04.md)** — Install LLVM from source with everything you need: clang, lld, lldb, clangd, and lit.
 
-<!--
 ### Code Generation
 
 **[Chapter 5: Code Generation](chapter-05.md)** — Connect the AST to LLVM IR. This is where the compiler starts producing real output.
 
+<!--
 ### Language Features
 
 **[Chapter 6: Optimization and JIT](chapter-06.md)** — Add LLVM optimization passes and ORC JIT so expressions evaluate immediately in the REPL.

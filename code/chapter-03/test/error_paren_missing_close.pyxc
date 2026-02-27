@@ -1,0 +1,8 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error (Line" %t
+# RUN: grep -q "expected ')'" %t
+# RUN: grep -q "(1 + 2" %t
+
+# parenexpr: missing closing parenthesis
+# tok_eol is seen where ')' is expected; source context shows the input line.
+(1 + 2

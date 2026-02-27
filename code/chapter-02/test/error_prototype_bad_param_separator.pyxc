@@ -1,0 +1,6 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error: " %t
+# RUN: grep -q "Expected ')' or ',' in parameter list" %t
+
+# prototype: parameters separated by space instead of comma
+def foo(x y): return x

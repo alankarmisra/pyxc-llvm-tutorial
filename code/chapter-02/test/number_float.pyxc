@@ -1,7 +1,7 @@
 # RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -c "Parsed a top-level expr" %t | grep -q "3"
+# RUN: grep -c "Parsed a top-level expression." %t | grep -q "3"
 
-# Test float literals
+# numberexpr: float literals (decimal, leading-zero, leading-dot)
 3.14159
 0.5
-123.456
+.25

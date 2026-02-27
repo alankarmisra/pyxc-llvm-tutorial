@@ -1,0 +1,10 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error (Line" %t
+# RUN: grep -q "Expected function name in prototype" %t
+# RUN: grep -q "def 1" %t
+
+# Diagnostics: error after a comment line shows the correct source context.
+# The '#' branch in gettok re-snapshots CurLoc after consuming the '\n', so
+# the error on the line after the comment must show "def 1" — not the comment.
+# this is a comment
+def 1

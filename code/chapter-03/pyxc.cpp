@@ -77,6 +77,15 @@ static map<int, string> TokenNames = [] {
   return Names;
 }();
 
+// SourceLocation - A {Line, Col} pair. Line and Col are 1-based.
+//
+// Two globals track position as characters are consumed:
+//   LexLoc  - where the character-read head (advance()) currently is.
+//             Updated on every advance() call. After a '\n', Line increments
+//             and Col resets to 0 so the next character will be Col 1.
+//   CurLoc  - snapshotted at the start of each token in gettok(), before
+//             consuming any of the token's characters. This is the position
+//             the parser and diagnostics infrastructure see.
 struct SourceLocation {
   int Line;
   int Col;
@@ -84,6 +93,19 @@ struct SourceLocation {
 static SourceLocation CurLoc;
 static SourceLocation LexLoc = {1, 0};
 
+// SourceManager - Buffers every source line as it is read so that error
+// messages can reprint the offending line with a caret underneath it.
+//
+// advance() calls onChar() for every character it consumes. When a '\n'
+// arrives, the just-completed line is moved into CompletedLines and
+// CurrentLine starts fresh. getLine(N) returns a pointer to the Nth line
+// (1-based): completed lines are stable in the vector; the line currently
+// being assembled is in CurrentLine.
+//
+// Because the REPL accumulates all input in one session, line numbers
+// increase monotonically across inputs and getLine() can retrieve any
+// previously seen line — useful for multi-line function bodies and for
+// pointing the caret at a line that was parsed several inputs ago.
 class SourceManager {
   vector<string> CompletedLines;
   string CurrentLine;
@@ -94,6 +116,7 @@ public:
     CurrentLine.clear();
   }
 
+  // Called by advance() for every character consumed from the input.
   void onChar(int C) {
     if (C == '\n') {
       CompletedLines.push_back(CurrentLine);
@@ -104,6 +127,9 @@ public:
       CurrentLine.push_back(static_cast<char>(C));
   }
 
+  // Returns a pointer to the text of line OneBasedLine, or nullptr if out of
+  // range. The pointer is stable for completed lines; CurrentLine may move if
+  // more characters arrive, so callers should not hold it across advance().
   const string *getLine(int OneBasedLine) const {
     if (OneBasedLine <= 0)
       return nullptr;
@@ -119,7 +145,14 @@ public:
 static SourceManager PyxcSourceMgr;
 static void PrintErrorSourceContext(SourceLocation Loc);
 
-/// advance - returns the next character, coalescing `\r\n` (Windows) into `\n`
+/// advance - Read one character from stdin, update LexLoc and SourceManager.
+///
+/// This is the single point through which all character consumption flows.
+/// Every token branch in gettok() calls advance() rather than getchar()
+/// directly, so LexLoc and the source buffer are always in sync.
+///
+/// Windows line endings (\r\n) are coalesced to a single \n so the rest of
+/// the lexer never needs to handle \r.
 static int advance() {
   int LastChar = getchar();
   if (LastChar == '\r') {
@@ -145,12 +178,30 @@ static int advance() {
 }
 
 /// gettok - Return the next token from standard input.
+///
+/// LastChar holds the last character read by advance() but not yet consumed
+/// by a token. It is initialised to ' ' so the first call skips straight to
+/// the whitespace loop without reading a character, and the loop's first
+/// advance() call picks up the real first character.
+///
+/// CurLoc is snapshotted from LexLoc after the whitespace-skip loop and
+/// before any token branch. For most tokens this points at the first
+/// character of the token. For tok_eol the '\n' was already consumed by
+/// advance() on a previous call, so LexLoc is already on the next line;
+/// GetDiagnosticAnchorLoc compensates by subtracting one when building error
+/// locations for tok_eol.
+///
+/// The comment path ('#' branch) re-snapshots CurLoc just before returning
+/// tok_eol because it consumes many characters (the whole comment) after the
+/// initial snapshot, leaving LexLoc well past the '#' position.
 static int gettok() {
   static int LastChar = ' ';
 
+  // Skip horizontal whitespace. Stop at '\n' — that becomes tok_eol.
   while (isspace(LastChar) && LastChar != '\n')
     LastChar = advance();
 
+  // Snapshot position for the upcoming token. See note above about tok_eol.
   CurLoc = LexLoc;
 
   if (LastChar == '\n') {
@@ -188,11 +239,16 @@ static int gettok() {
   }
 
   if (LastChar == '#') {
+    // Consume the rest of the line (comment). Stop at '\n' or EOF.
     do
       LastChar = advance();
     while (LastChar != EOF && LastChar != '\n');
 
     if (LastChar != EOF) {
+      // Re-snapshot CurLoc now that the '\n' has been consumed and LexLoc
+      // has advanced to the next line. Without this, CurLoc would point at
+      // the '#' column, and GetDiagnosticAnchorLoc would look up the wrong
+      // line when the next token triggers an error.
       CurLoc = LexLoc;
       LastChar = ' ';
       return tok_eol;
@@ -210,6 +266,16 @@ static int gettok() {
 //===----------------------------------------===//
 // Diagnostics helpers
 //===----------------------------------------===//
+
+/// GetDiagnosticAnchorLoc - Resolve the source location to attach to an error.
+///
+/// For most tokens, CurLoc already points at the right place and is returned
+/// unchanged. The special case is tok_eol: CurLoc for a newline token is
+/// snapshotted after advance() has consumed the '\n' and incremented
+/// LexLoc.Line, so CurLoc.Line is already the *next* line. Subtracting one
+/// gives the line that just ended, and we report a column one past its last
+/// character — pointing just after the final token on the line, which is
+/// where the missing token (e.g. ':') should have appeared.
 static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
   if (Tok != tok_eol)
     return Loc;
@@ -225,6 +291,11 @@ static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
   return {PrevLine, static_cast<int>(PrevLineText->size()) + 1};
 }
 
+/// FormatTokenForMessage - Return a human-readable description of Tok for use
+/// in error messages. Identifier and number tokens include their actual text
+/// (e.g. "identifier 'foo'", "number '3.14'") since the name alone is not
+/// enough to diagnose the problem. Everything else uses the static TokenNames
+/// entry.
 static string FormatTokenForMessage(int Tok) {
   if (Tok == tok_identifier)
     return "identifier '" + IdentifierStr + "'";
@@ -237,6 +308,9 @@ static string FormatTokenForMessage(int Tok) {
   return "unknown token";
 }
 
+/// PrintErrorSourceContext - Reprint the source line at Loc and place a
+/// '^~~~' caret under column Loc.Col. Col is 1-based, so we print Col-1
+/// spaces before the caret.
 static void PrintErrorSourceContext(SourceLocation Loc) {
   const string *LineText = PyxcSourceMgr.getLine(Loc.Line);
   if (!LineText)
@@ -589,11 +663,16 @@ static unique_ptr<PrototypeAST> ParseExtern() {
 // Top-Level parsing
 //===----------------------------------------===//
 
-/// SynchronizeToLineBoundary/HandleDefinition/Extern/TopLevelExpression -
-/// Called by MainLoop when it sees the appropriate leading token. On success,
-/// print a confirmation. On failure, skip one token and continue — crude error
-/// recovery that keeps the REPL alive after a bad input without getting stuck
-/// on the same bad token forever.
+/// SynchronizeToLineBoundary - Panic-mode error recovery. Advance past all
+/// remaining tokens on the current line so that the next thing MainLoop sees
+/// is tok_eol or tok_eof. Called after any parse failure and after any
+/// unexpected trailing token, ensuring the REPL always returns to a known
+/// state before printing the next prompt.
+///
+/// HandleDefinition/HandleExtern/HandleTopLevelExpression - Called by MainLoop
+/// when it sees the appropriate leading token. On success, print a
+/// confirmation. On failure or unexpected trailing tokens, call
+/// SynchronizeToLineBoundary() to discard the rest of the input line.
 
 static void SynchronizeToLineBoundary() {
   while (CurTok != tok_eol && CurTok != tok_eof)

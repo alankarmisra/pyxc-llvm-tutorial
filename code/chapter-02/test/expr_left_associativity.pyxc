@@ -1,8 +1,7 @@
 # RUN: %pyxc < %s > %t 2>&1
 # RUN: grep -c "Parsed a top-level expression." %t | grep -q "2"
 
-# Test that same-precedence operators are left-associative.
-# ParseBinOpRHS uses TokPrec+1 as the threshold for the recursive call,
-# so a - b - c groups as (a-b)-c, not a-(b-c).
+# binoprhs: same-precedence operators are left-associative (TokPrec+1 threshold)
+# a - b - c groups as (a-b)-c, not a-(b-c)
 1 - 2 - 3
 4 + 5 + 6

@@ -1,0 +1,7 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -c "Parsed a top-level expression." %t | grep -q "3"
+
+# identifierexpr: plain variable references
+x
+foo_bar
+_123

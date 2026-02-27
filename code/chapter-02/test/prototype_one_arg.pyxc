@@ -1,0 +1,5 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed a function definition." %t
+
+# prototype: one argument
+def square(x): return x * x

@@ -1,0 +1,5 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed a top-level expression." %t
+
+# identifierexpr: argument is a compound expression
+foo(1, 2 + 3)

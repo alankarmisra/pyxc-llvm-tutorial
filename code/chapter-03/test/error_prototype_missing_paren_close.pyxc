@@ -1,0 +1,8 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error (Line" %t
+# RUN: grep -q "Expected ')' or ',' in parameter list" %t
+# RUN: grep -q "extern def broken(x" %t
+
+# prototype: missing closing ')' — tok_eol seen in parameter list
+# GetDiagnosticAnchorLoc redirects to end of the line that was just read.
+extern def broken(x

@@ -1,6 +1,7 @@
 # RUN: %pyxc < %s > %t 2>&1
 # RUN: grep -q "Error (Line" %t
 # RUN: grep -q "Expected \`def\` after extern" %t
+# RUN: grep -q "extern foo" %t
 
-# Test extern without def keyword
+# external: 'def' keyword is absent after 'extern'
 extern foo(x)
