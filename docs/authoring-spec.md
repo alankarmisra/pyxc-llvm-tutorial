@@ -70,7 +70,17 @@ def bad(x) return
            ^~~~                                            ← after
 ```
 
-**Build from the concept, label later.** Introduce the idea before naming it. Show the code, explain what each line does, *then* give the LLVM/CS term if one exists. Never open with jargon.
+**Clarity before terminology.** Introduce the idea before naming it. Show what the code does in plain language, then give the CS or LLVM term — if it needs to be named at all. Never open a section with jargon.
+
+The principle: new terminology is only intimidating when it arrives before the reader has the intuition. Once they understand the thing, the name is just a label. Introduce the label after the understanding, not before.
+
+Bad:
+> "This chapter builds the lexer. Its job is to read raw source text and break it into tokens."
+
+Good:
+> "The compiler needs to split source text into words and symbols before it can do anything else. This step is called lexing, and the pieces it produces are called tokens."
+
+This applies throughout: `lexer`, `parser`, `AST`, `codegen`, `IR`, `JIT` — every term should follow its explanation, not precede it. Chapter titles and section headings should describe what the thing *does*, not what it's *called*.
 
 **Code blocks are always complete and correct.** Never truncate a code block with `// ...` unless the omission is clearly marked and the surrounding context makes it unambiguous what was left out.
 

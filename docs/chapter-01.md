@@ -1,11 +1,11 @@
 ---
-description: "Build your first lexer: break source code into tokens and see them print in real-time."
+description: "Teach the compiler to read: break source text into tokens the parser can work with."
 ---
-# 1. Pyxc: The Lexer
+# 1. Pyxc: Reading Source Code
 
 ## What We're Building
 
-By the end of this tutorial, you'll have built a compiler for a statically-typed, Python-like language. Here's what we're eventually aiming for:
+By the end of this tutorial, you'll have built a compiler for a Python-like language. Here's what we're eventually aiming for:
 
 ```python
 def fibonacci(n: int) -> int:
@@ -14,25 +14,14 @@ def fibonacci(n: int) -> int:
     return fibonacci(n - 1) + fibonacci(n - 2)
 ```
 
-This chapter builds the very first piece: the **lexer**. Its job is to read raw source text and break it into tokens — the smallest meaningful units of the language.
+The very first thing a compiler needs to do is read source text and classify each piece — is this a number? A function name? A `+` sign? A keyword like `def`? Right now the compiler can't even do that. This chapter adds it.
 
-We start deliberately simple. No types, no control flow yet. Just functions, math, and recursion:
-
-```python
-def fib(n):
-    return fib(n-1) + fib(n-2)
-```
-
-You can also call C library functions by declaring them with `extern`:
+For now we keep the language small — no `if` conditionals or `for` loops yet. Functions can call each other and do arithmetic:
 
 ```python
-extern def sin(x)
-extern def cos(x)
-
-sin(1.0) + cos(2.0)
+def add(a, b):
+    return a + b
 ```
-
-The `extern` tells Pyxc: "this function lives in a C library, trust me." LLVM handles the wiring.
 
 ## Source Code
 
@@ -41,9 +30,11 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-01
 ```
 
-## What's a Lexer?
+## Breaking Source Text Into Tokens
 
-A lexer reads raw text and turns it into **tokens** — labeled pieces the parser can work with.
+Source code is just a string of characters. The compiler needs to classify each meaningful chunk before it can do anything useful — is `def` a keyword? Is `add` a function name? Is `+` an operator? Is `3.14` a number?
+
+The first step is to scan the string and group characters into classified chunks:
 
 **Input:**
 ```python
@@ -53,11 +44,13 @@ def add(x, y):
 
 **Output:**
 ```
-'def' identifier '(' identifier ',' identifier ')' ':' newline
-'return' identifier '+' identifier newline
+keyword:'def'  name:'add'  '('  name:'x'  ','  name:'y'  ')'  ':'  newline
+keyword:'return'  name:'x'  '+'  name:'y'  newline
 ```
 
-Each word or symbol becomes a token. The lexer doesn't understand what `def` *means* — it just recognizes "this is the keyword `def`." Understanding comes later, in the parser.
+Each chunk is one **token** — a classified piece of source text. The code doing this doesn't understand what `def` *means* yet — it just recognises *"this is the keyword `def`."* Figuring out what it means is the next chapter's job.
+
+The scanning step is called **lexing** (from Latin *lexis*, meaning word). If you've ever split a string to pull out numbers and punctuation, you've done it manually. Here we write it properly, handling keywords, operators, names, and numbers in one pass.
 
 ## Token Types
 
@@ -85,8 +78,6 @@ For example:
 - `+` → 43 (ASCII)
 - `(` → 40 (ASCII)
 
-Notice `tok_return` has no explicit value assigned. Since it follows `tok_number = -6`, the compiler assigns it `-7` automatically. This is fine — we just need it to be distinct from everything else.
-
 We also need two global variables to carry extra data alongside a token return value:
 
 ```cpp
@@ -94,7 +85,7 @@ static string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;        // Filled in if tok_number
 ```
 
-When the lexer sees `foo`, it returns `tok_identifier` and sets `IdentifierStr = "foo"`.
+When the lexer sees the name `foo`, it returns `tok_identifier` and sets `IdentifierStr = "foo"`.
 When it sees `3.14`, it returns `tok_number` and sets `NumVal = 3.14`.
 
 ## Reading Characters
@@ -119,9 +110,9 @@ int advance() {
 
 This normalizes line endings across platforms: Windows sends `\r\n`, old Macs send bare `\r`. We collapse both to `\n` once here so the rest of the lexer never has to think about it again.
 
-## The Lexer: gettok()
+## gettok(): Reading One Token at a Time
 
-This is the heart of the chapter. `gettok()` reads characters and returns the next token.
+This is the heart of the chapter. Every time the compiler needs the next piece of source text, it calls `gettok()`. It reads characters and returns a token.
 
 ```cpp
 int gettok() {
@@ -150,12 +141,6 @@ We skip spaces and tabs, but keep newlines. In a Python-like language, newlines 
     LastChar = ' ';
     return tok_eol;
   }
-```
-
-### End Of File
-```cpp
-  if (LastChar == EOF)
-    return tok_eof;
 ```
 
 ### Identifiers and Keywords
@@ -238,6 +223,12 @@ One subtle point: we set `LastChar = ' '` instead of calling `advance()`. If we 
 
 If the comment runs all the way to `EOF` with no newline, `LastChar` is `EOF` and we fall through to the EOF case below.
 
+### End Of File
+```cpp
+  if (LastChar == EOF)
+    return tok_eof;
+```
+
 ### Everything Else
 
 ```cpp
@@ -251,18 +242,16 @@ If we haven't matched anything else, it's a single character — `+`, `(`, `:`, 
 
 ## What's Missing (On Purpose)
 
-You may notice this file has no `main()` and no `MainLoop()`. It's purely the lexer — just the `Token` enum, two globals, `advance()`, and `gettok()`. In the next chapter we'll add the parser alongside a simple driver that calls `gettok()` and prints what it sees. Keeping this file focused means you can read the entire lexer in one sitting.
-
-There's also no newline handling between the whitespace-skip and the identifier check. If `gettok()` sees a `\n` after skipping whitespace, it falls through past all the `if` blocks and returns `'\n'` as an ASCII value (10). The parser will need to handle that. Again, we'll address it properly in Chapter 2 when the parser has opinions about newlines.
+This file has no `main()` and no `MainLoop()`. It's purely the lexer — just the `Token` enum, two globals, `advance()`, and `gettok()`. In the next chapter we'll add the parser alongside a simple driver that calls `gettok()` and prints what it sees. Keeping this file focused means you can read the entire lexer in one sitting.
 
 ## What We Built
 
 | Piece | What it does |
 |---|---|
-| `enum Token` | Names for each kind of token |
-| `IdentifierStr`, `NumVal` | Side-channel data that accompanies a token |
+| `enum Token` | Names for each kind of piece (keyword, number, identifier, symbol) |
+| `IdentifierStr`, `NumVal` | The actual text or value that came with a token |
 | `advance()` | Reads one character, normalizes line endings |
-| `gettok()` | The lexer — reads characters, returns the next token |
+| `gettok()` | Reads characters and returns the next token — the lexer |
 
 Two deliberate TODOs carried forward to the next chapter:
 - The keyword if-chain becomes a map when we add more keywords
@@ -270,7 +259,7 @@ Two deliberate TODOs carried forward to the next chapter:
 
 ## What's Next
 
-The lexer breaks source code into tokens but doesn't understand what they mean. In Chapter 2, we'll build a **parser** that reads these tokens and constructs an **Abstract Syntax Tree (AST)** — a tree that captures the actual structure and meaning of the code. We'll also add `main()` and a driver loop so we can finally run something.
+We can now split source text into pieces, but we don't understand what those pieces mean yet. In [Chapter 2](chapter-02.md) we'll build something that reads the token stream and works out the structure — that `def add(x, y)` is a function taking two arguments, that `x + y` is an addition. We'll also add `main()` so we can actually run something for the first time.
 
 ## Need Help?
 

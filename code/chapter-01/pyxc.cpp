@@ -48,11 +48,7 @@ int advance() {
 int gettok() {
   static int LastChar = ' ';
 
-  // Skip whitespace EXCEPT newlines
-  while (isspace(LastChar) && LastChar != '\n')
-    LastChar = advance();
-
-  // Skip whitespace EXCEPT newlines
+  // Skip horizontal whitespace. Stop at '\n' — that becomes tok_eol.
   while (isspace(LastChar) && LastChar != '\n')
     LastChar = advance();
 

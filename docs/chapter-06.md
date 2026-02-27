@@ -142,7 +142,7 @@ codegen produces IR
         ▼
   FunctionPassManager    ← runs each pass in order
         │
-   ┌────┴─────────────────────────────────┐
+   ┌────┴──────────────────────────────────┐
    │  for each pass:                       │
    │                                       │
    │   pass asks AnalysisManager           │
