@@ -16,7 +16,7 @@ def fibonacci(n: int) -> int:
 
 The very first thing a compiler needs to do is read source text and classify each piece — is this a number? A function name? A `+` sign? A keyword like `def`? Right now the compiler can't even do that. This chapter adds it.
 
-For now we keep the language small — no `if` conditionals or `for` loops yet. Functions can call each other and do arithmetic:
+For now we keep the language small — no `if` conditionals or `for` loops yet.
 
 ```python
 def add(a, b):
