@@ -5,30 +5,38 @@ description: "Polish the lexer and add proper diagnostics: a keyword map, malfor
 
 ## Where We Are
 
-The parser from Chapter 2 works, but its error messages are rough. Hit a mistake and you get:
+The parser from [Chapter 2](chapter-02.md) works, but its error messages are rough. 
+
+```python
+ready> def bad(x) return x
+Error: Expected ':' in function definition (token: -7)
+```
+
+By the end of this chapter the same mistake gives you:
 
 ```
-Error: Expected ':' in function definition (token: -4)
+Error (Line 1, Column 12): Expected ':' in function definition
+def bad(x) return 
+           ^~~~
 ```
 
-The `(token: -4)` is a raw enum value. It means nothing to someone who didn't write the lexer. And if you mistype a number —
+Line number. Column number. The source line. A caret pointing at the problem. That's a real error message. The `(token: -4)` is a raw enum value. It means nothing to someone who didn't write the lexer. 
+
+And if you mistype a number —
 
 ```python
 ready> 1.2.3
 Parsed a top-level expression.
 ```
 
-That's a bug: `1.2.3` isn't a valid number, but the lexer silently accepted `1.2` and left `.3` sitting in the stream.
-
-By the end of this chapter the same mistake gives you:
+That's a bug: `1.2.3` isn't a valid number, but the lexer silently accepted `1.2` and left `.3` sitting in the stream. By the end of this chapter the same mistake gives you:
 
 ```
-Error (Line 3, Column 8): Expected ':' in function definition
-  def bad(x) return x
-         ^~~~
+Error (Line 2, Column 1): invalid number literal '1.2.3'
+1.2.3
+^~~~
 ```
 
-Line number. Column number. The source line. A caret pointing at the problem. That's a real error message.
 
 ## Source Code
 
@@ -123,19 +131,25 @@ static map<int, string> TokenNames = [] {
       {tok_return,     "'return'"},
   };
 
-  for (int C = 0; C <= 255; ++C) {
-    if (isprint(static_cast<unsigned char>(C)))
-      Names[C] = "'" + string(1, static_cast<char>(C)) + "'";
-    else if (C == '\n')  Names[C] = "'\\n'";
-    else if (C == '\t')  Names[C] = "'\\t'";
-    else if (C == '\r')  Names[C] = "'\\r'";
-    else if (C == '\0')  Names[C] = "'\\0'";
+  // Single character tokens.
+  for (int ch = 0; ch <= 255; ++ch) {
+    if (isprint(static_cast<unsigned char>(ch)))
+      Names[ch] = "'" + string(1, static_cast<char>(ch)) + "'";
+    else if (ch == '\n')
+      Names[ch] = "'\\n'";
+    else if (ch == '\t')
+      Names[ch] = "'\\t'";
+    else if (ch == '\r')
+      Names[ch] = "'\\r'";
+    else if (ch == '\0')
+      Names[ch] = "'\\0'";
     else {
       ostringstream OS;
-      OS << "0x" << uppercase << hex << setw(2) << setfill('0') << C;
-      Names[C] = OS.str();
+      OS << "0x" << uppercase << hex << setw(2) << setfill('0') << ch;
+      Names[ch] = OS.str();
     }
   }
+
   return Names;
 }();
 ```
@@ -209,21 +223,39 @@ static int advance() {
 
 Two things happen here. First, `\r\n` (Windows line endings) is coalesced into a single `\n` — the rest of the lexer never needs to handle `\r`. Second, `LexLoc` is updated: a newline increments the line counter and resets the column to zero; any other character increments the column.
 
-`gettok()` snapshots `LexLoc` into `CurLoc` at the start of each token:
+`gettok()` snapshots `LexLoc` into `CurLoc` once, after the whitespace-skip loop but before any token branch:
 
 ```cpp
+while (isspace(LastChar) && LastChar != '\n')
+  LastChar = advance();
+
 CurLoc = LexLoc;
 ```
 
-This is the position the diagnostics infrastructure uses. Because we snapshot *before* consuming the token's characters, `CurLoc` always points to the first character of the current token — which is exactly where a caret should appear.
+This is the position the diagnostics infrastructure uses. Snapshotting here — after skipping whitespace, before consuming the token's characters — means `CurLoc` always points to the first character of the current token.
 
-There's one special case. A newline token (`tok_eol`) is produced after the `\n` character has already been consumed — at that point `LexLoc` has already advanced to the next line. So `gettok` snapshots `CurLoc` *after* consuming the newline but uses `LexLoc.Line - 1` to point back to the line that just ended:
+For `tok_eol`, `LastChar` is `'\n'` which was already consumed by `advance()` in a previous call. At that point `LexLoc` has already advanced to the next line (line counter incremented, column reset to 0). We snapshot `CurLoc = LexLoc` *before* the `'\n'` check, so `CurLoc.Line` is the new (next) line number. `GetDiagnosticAnchorLoc` steps back by one to arrive at the line that just ended:
 
 ```cpp
 if (LastChar == '\n') {
-  CurLoc = {LexLoc.Line - 1, LexLoc.Col};
   LastChar = ' ';
   return tok_eol;
+}
+```
+
+There is one edge case: when `gettok` returns `tok_eol` from the comment path (`#` branch), the snapshot at the top of the function pointed at `#`, not at the newline. We re-snapshot just before returning to get the correct post-newline position:
+
+```cpp
+if (LastChar == '#') {
+  do
+    LastChar = advance();
+  while (LastChar != EOF && LastChar != '\n');
+
+  if (LastChar != EOF) {
+    CurLoc = LexLoc;  // re-snapshot after consuming the whole comment + '\n'
+    LastChar = ' ';
+    return tok_eol;
+  }
 }
 ```
 
@@ -232,11 +264,11 @@ if (LastChar == '\n') {
 Knowing the position isn't enough on its own. To print:
 
 ```
-  def bad(x) return x
-         ^~~~
+def bad(x) return 
+           ^~~~
 ```
 
-we need the actual text of line 3. But by the time an error is reported, we may be partway through line 4 — the `getchar()` calls are long past line 3.
+we need the actual text of the line. But by the time an error is reported, we may be partway through a different line — the `getchar()` calls are long past the error line.
 
 We solve this by buffering lines as we read. `SourceManager` accumulates characters through `onChar()`, which gets called by `advance()` on every character consumed:
 
@@ -304,7 +336,7 @@ Print the line, then print `(Col - 1)` spaces, then `^~~~`. The `-1` converts fr
 
 When the parser fails on a newline token — for example, when the user types `def foo(x)` and hits Enter without a `:` — the error is logically at the end of the previous line, not at the start of the next one.
 
-`GetDiagnosticAnchorLoc` handles this case. If the current token is `tok_eol`, it looks up the previous line and reports a column one past its end (pointing just after the last character):
+Because `CurLoc` for `tok_eol` is snapshotted *after* `advance()` has consumed the `\n` and incremented `LexLoc.Line`, `CurLoc.Line` is already the *next* line number. `GetDiagnosticAnchorLoc` steps back by one (`Loc.Line - 1`) to arrive at the line that just ended, then reports a column one past its last character so the caret appears just after the final token:
 
 ```cpp
 static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
@@ -411,28 +443,28 @@ cmake -S . -B build && cmake --build build
 
 ```python
 ready> def add(x, y):
-ready>   return x + y
+   return x + y
 Parsed a function definition.
 ready> 1.2.3
-Error (Line 2, Column 1): invalid number literal '1.2.3'
+Error (Line 3, Column 1): invalid number literal '1.2.3'
 1.2.3
 ^~~~
 ready> def bad(x) return x
-Error (Line 3, Column 11): Expected ':' in function definition
-def bad(x) return x
-          ^~~~
+Error (Line 4, Column 12): Expected ':' in function definition
+def bad(x) return 
+           ^~~~
 ready> def missing_colon(x)
-Error (Line 4, Column 20): Expected ':' in function definition
+Error (Line 5, Column 21): Expected ':' in function definition
 def missing_colon(x)
-                   ^~~~
-ready>
+                    ^~~~
+ready>^D
 ```
 
 A few things to notice:
 
 - `1.2.3` is caught in the lexer now. The error fires before the parser ever sees the token.
-- `def bad(x) return x` — the caret points at `return`, the first token where `:` was expected.
-- `def missing_colon(x)` — the caret points just past the end of the line, where `:` should have appeared. That's `GetDiagnosticAnchorLoc` at work: `tok_eol` redirects to the end of the previous line.
+- `def bad(x) return x` — the caret points at the space before `return`, the position where `:` was expected.
+- `def missing_colon(x)` — the caret points just past the closing `)`, where `:` should have appeared. That's `GetDiagnosticAnchorLoc` at work: `CurLoc` for `tok_eol` is on the next line, so the function steps back by one and points to the end of the line that just ended.
 
 ## What We Built
 

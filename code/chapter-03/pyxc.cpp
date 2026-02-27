@@ -56,21 +56,21 @@ static map<int, string> TokenNames = [] {
   };
 
   // Single character tokens.
-  for (int C = 0; C <= 255; ++C) {
-    if (isprint(static_cast<unsigned char>(C)))
-      Names[C] = "'" + string(1, static_cast<char>(C)) + "'";
-    else if (C == '\n')
-      Names[C] = "'\\n'";
-    else if (C == '\t')
-      Names[C] = "'\\t'";
-    else if (C == '\r')
-      Names[C] = "'\\r'";
-    else if (C == '\0')
-      Names[C] = "'\\0'";
+  for (int ch = 0; ch <= 255; ++ch) {
+    if (isprint(static_cast<unsigned char>(ch)))
+      Names[ch] = "'" + string(1, static_cast<char>(ch)) + "'";
+    else if (ch == '\n')
+      Names[ch] = "'\\n'";
+    else if (ch == '\t')
+      Names[ch] = "'\\t'";
+    else if (ch == '\r')
+      Names[ch] = "'\\r'";
+    else if (ch == '\0')
+      Names[ch] = "'\\0'";
     else {
       ostringstream OS;
-      OS << "0x" << uppercase << hex << setw(2) << setfill('0') << C;
-      Names[C] = OS.str();
+      OS << "0x" << uppercase << hex << setw(2) << setfill('0') << ch;
+      Names[ch] = OS.str();
     }
   }
 
@@ -151,13 +151,12 @@ static int gettok() {
   while (isspace(LastChar) && LastChar != '\n')
     LastChar = advance();
 
+  CurLoc = LexLoc;
+
   if (LastChar == '\n') {
-    CurLoc = {LexLoc.Line - 1, LexLoc.Col};
     LastChar = ' ';
     return tok_eol;
   }
-
-  CurLoc = LexLoc;
 
   if (isalpha(LastChar) || LastChar == '_') {
     IdentifierStr = LastChar;
@@ -194,6 +193,7 @@ static int gettok() {
     while (LastChar != EOF && LastChar != '\n');
 
     if (LastChar != EOF) {
+      CurLoc = LexLoc;
       LastChar = ' ';
       return tok_eol;
     }

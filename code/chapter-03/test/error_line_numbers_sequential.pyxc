@@ -1,0 +1,12 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error (Line 1," %t
+# RUN: grep -q "Error (Line 2," %t
+# RUN: grep -q "Error (Line 3," %t
+
+# Test that line numbers increment correctly across successive REPL inputs.
+# Each bad def is a separate input line; errors must report Line 1, 2, 3
+# respectively -- not all Line 1. This exercises the LexLoc accumulation across
+# tok_eol boundaries.
+def 1
+def 2
+def 3
