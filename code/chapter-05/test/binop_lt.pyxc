@@ -1,0 +1,9 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed a function definition" %t
+# RUN: grep -q "fcmp" %t
+# RUN: grep -q "uitofp" %t
+
+# BinaryExprAST::codegen '<': two-step codegen — CreateFCmpULT produces an i1,
+# then CreateUIToFP widens it to double (false->0.0, true->1.0).
+# Both instructions must appear in the IR.
+def lt(a, b): return a < b

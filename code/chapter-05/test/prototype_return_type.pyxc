@@ -1,0 +1,7 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed a function definition" %t
+# RUN: grep -q "define double @f" %t
+
+# PrototypeAST::codegen: return type is always double regardless of arity.
+# The 'define double' prefix must appear for every function definition.
+def f(x): return x

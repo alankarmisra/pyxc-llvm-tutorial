@@ -1,0 +1,8 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed a function definition" %t
+# RUN: grep -q "entry:" %t
+# RUN: grep -q "ret double" %t
+
+# FunctionAST::codegen: every function body begins with a basic block named
+# 'entry' and ends with a ret instruction. Both must appear in the IR.
+def f(x): return x

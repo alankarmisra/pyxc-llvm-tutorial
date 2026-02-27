@@ -1,0 +1,9 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed a top-level expression" %t
+# RUN: grep -c "define double @__anon_expr" %t | grep -q "^1$"
+
+# HandleTopLevelExpression: after printing the IR for a top-level expression,
+# eraseFromParent() removes the __anon_expr function. The IR is printed once
+# inline (before eraseFromParent) but must not appear in the final module dump.
+# Total count across all output must be exactly 1 — not 2.
+1 + 2

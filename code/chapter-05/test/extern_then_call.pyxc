@@ -1,0 +1,11 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed an extern" %t
+# RUN: grep -q "Parsed a top-level expression" %t
+# RUN: grep -q "declare double @sin" %t
+# RUN: grep -q "call double @sin" %t
+
+# CallExprAST::codegen: after an extern declaration, a call to that function
+# must emit a 'call' instruction against the declared symbol.
+# This tests the getFunction() lookup path finding an existing declaration.
+extern def sin(x)
+sin(1.0)

@@ -1,0 +1,12 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed a function definition" %t
+# RUN: grep -c "fmul double" %t | grep -q "^8$"
+# RUN: grep -c "fadd double" %t | grep -q "^4$"
+
+# FunctionAST::codegen: each subexpression produces a separate SSA value.
+# For (a+b)^2 = a*a + 2*a*b + b*b there are exactly 4 fmul and 2 fadd
+# instructions (a*a, 2*a, (2*a)*b, b*b = 4 fmul; two additions = 2 fadd).
+# The IR is printed twice (inline + module dump), so the totals are 4*2=8
+# and 2*2=4.
+def foo(a, b):
+return a * a + 2 * a * b + b * b

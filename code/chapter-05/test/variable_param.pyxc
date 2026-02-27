@@ -1,0 +1,9 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed a function definition" %t
+# RUN: grep -q "double %x" %t
+# RUN: grep -q "ret double %x" %t
+
+# VariableExprAST::codegen: a parameter reference looks up NamedValues and
+# returns the Value* for the argument. The IR must name the argument 'x' and
+# return it directly — no instruction needed.
+def identity(x): return x

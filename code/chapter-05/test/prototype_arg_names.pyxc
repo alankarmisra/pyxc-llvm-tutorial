@@ -1,0 +1,8 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed a function definition" %t
+# RUN: grep -q "double %a" %t
+# RUN: grep -q "double %b" %t
+
+# PrototypeAST::codegen: Arg.setName() makes argument names appear in the IR.
+# Without setName the IR would show %0 and %1 instead of %a and %b.
+def f(a, b): return a + b

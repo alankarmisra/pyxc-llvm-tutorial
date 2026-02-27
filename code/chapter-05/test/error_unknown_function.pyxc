@@ -1,0 +1,7 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error" %t
+# RUN: grep -q "Unknown function referenced" %t
+
+# CallExprAST::codegen error path: TheModule->getFunction returns nullptr when
+# the callee has never been declared or defined.
+def bad(x): return notdeclared(x)

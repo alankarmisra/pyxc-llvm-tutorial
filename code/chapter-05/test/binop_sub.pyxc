@@ -1,0 +1,6 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed a function definition" %t
+# RUN: grep -q "fsub double" %t
+
+# BinaryExprAST::codegen '-': CreateFSub emits an fsub instruction.
+def sub(a, b): return a - b

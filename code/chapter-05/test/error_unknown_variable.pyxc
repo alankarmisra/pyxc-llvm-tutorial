@@ -1,0 +1,8 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error" %t
+# RUN: grep -q "Unknown variable name" %t
+
+# VariableExprAST::codegen error path: a name not in NamedValues triggers
+# LogErrorV. NamedValues only holds the current function's parameters, so
+# 'z' is unknown even though 'x' and 'y' are valid.
+def bad(x, y): return z

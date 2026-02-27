@@ -1,0 +1,9 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error" %t
+# RUN: grep -q "Unknown variable name" %t
+# RUN: (grep -c "define double @bad" %t || true) | grep -q "^0$"
+
+# FunctionAST::codegen: when Body->codegen() fails, eraseFromParent() removes
+# the partially-built function. The final module dump must not contain a
+# 'define double @bad' — no broken declaration is left behind.
+def bad(x): return z

@@ -1,0 +1,10 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed a function definition" %t
+# RUN: grep -c "Parsed a function definition" %t | grep -q "2"
+
+# FunctionAST::codegen: NamedValues is cleared on each function entry.
+# 'g' must not see 'a' from 'f'. If NamedValues were not cleared,
+# 'g' returning 'a' would silently succeed; instead it must succeed
+# only because 'g' has its own parameter also named 'a'.
+def f(a): return a
+def g(a): return a

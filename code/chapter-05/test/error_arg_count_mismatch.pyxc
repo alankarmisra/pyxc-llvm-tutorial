@@ -1,0 +1,8 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error" %t
+# RUN: grep -q "Incorrect # arguments passed" %t
+
+# CallExprAST::codegen error path: arg_size() != Args.size() triggers LogErrorV.
+# 'pair' takes 2 arguments; calling it with 1 must fail at codegen time.
+def pair(a, b): return a + b
+def bad(x): return pair(x)

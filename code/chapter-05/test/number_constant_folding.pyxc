@@ -1,0 +1,9 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed a top-level expression" %t
+# RUN: grep -q "ret double 9" %t
+# RUN: grep -v "fadd" %t
+
+# NumberExprAST::codegen: two constants folded at IR construction time.
+# IRBuilder recognises both operands are ConstantFP and returns a single
+# constant for 9.0 — no fadd instruction is emitted.
+4 + 5

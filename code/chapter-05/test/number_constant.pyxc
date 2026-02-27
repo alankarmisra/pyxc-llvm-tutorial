@@ -1,0 +1,7 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed a top-level expression" %t
+# RUN: grep -q "ret double" %t
+
+# NumberExprAST::codegen: a literal becomes a ConstantFP.
+# The anon function must contain a ret double instruction.
+42.0

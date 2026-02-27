@@ -677,75 +677,32 @@ static unique_ptr<PrototypeAST> ParseExtern() {
   return ParsePrototype();
 }
 
-//===----------------------------------------===//
+//===----------------------------------------------------------------------===//
 // Code Generation
-//===----------------------------------------===//
+//===----------------------------------------------------------------------===//
 
-// TheContext - Owns all LLVM data structures: types, constants, and the
-// interning tables that ensure two uses of 'double' resolve to the same
-// object. One context per compilation unit (one per thread in threaded builds).
-//
-// TheModule - The unit of compilation. Every function definition and extern
-// declaration lands here. At session end we print the whole module so the
-// reader can see all accumulated IR in one place.
-//
-// Builder - A cursor into the IR being built. Point it at a BasicBlock with
-// SetInsertPoint(), then call methods like CreateFAdd or CreateFMul to append
-// instructions. Each method returns the Value* representing the result.
-//
-// NamedValues - Symbol table mapping parameter names to their Value*.
-// Populated fresh at the start of each function body and cleared between
-// functions — it only ever holds the current function's arguments. Mutable
-// local variables come in a later chapter.
 static unique_ptr<LLVMContext> TheContext;
 static unique_ptr<Module> TheModule;
 static unique_ptr<IRBuilder<>> Builder;
 static map<std::string, Value *> NamedValues;
 
-// LogErrorV - Codegen-level error helper. Delegates to LogError for printing,
-// then returns nullptr so codegen callers can write: return LogErrorV("msg");
 Value *LogErrorV(const char *Str) {
   LogError(Str);
   return nullptr;
 }
 
-/// NumberExprAST::codegen - A numeric literal becomes a floating-point
-/// constant value.
-///
-/// ConstantFP::get wraps an APFloat (LLVM's arbitrary-precision float) into a
-/// constant node that can be used directly as an operand. No instruction is
-/// emitted — constants are folded into whatever instruction uses them.
-/// IRBuilder also recognises when both operands of a binary op are constants
-/// and short-circuits to a single constant rather than emitting an instruction
-/// at all (constant folding).
 Value *NumberExprAST::codegen() {
   return ConstantFP::get(*TheContext, APFloat(Val));
 }
 
-/// VariableExprAST::codegen - A variable reference looks up the name in
-/// NamedValues and returns the Value* for the corresponding function argument.
-///
-/// For now NamedValues only contains the current function's parameters; any
-/// other name is an error. Mutable local variables (alloca/store/load) come
-/// in a later chapter.
 Value *VariableExprAST::codegen() {
+  // Look this variable up in the function.
   Value *V = NamedValues[Name];
   if (!V)
     return LogErrorV("Unknown variable name");
   return V;
 }
 
-/// BinaryExprAST::codegen - Recursively codegen both operands, then emit the
-/// operator-specific instruction.
-///
-/// The string arguments to each Create* call ("addtmp", "multmp", etc.) are
-/// hint names for the SSA value. LLVM uses them when printing IR, appending a
-/// numeric suffix when the same hint would otherwise repeat. They have no
-/// effect on correctness.
-///
-/// '<' requires two steps: CreateFCmpULT produces a 1-bit integer (i1) —
-/// LLVM's boolean type. Since Pyxc treats everything as double, CreateUIToFP
-/// widens it: false -> 0.0, true -> 1.0.
 Value *BinaryExprAST::codegen() {
   Value *L = LHS->codegen();
   Value *R = RHS->codegen();
@@ -761,25 +718,20 @@ Value *BinaryExprAST::codegen() {
     return Builder->CreateFMul(L, R, "multmp");
   case '<':
     L = Builder->CreateFCmpULT(L, R, "cmptmp");
-    // Widen the i1 boolean to double: false -> 0.0, true -> 1.0.
+    // Convert bool 0/1 to double 0.0 or 1.0
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   default:
     return LogErrorV("invalid binary operator");
   }
 }
 
-/// CallExprAST::codegen - Look up the callee by name in TheModule, verify the
-/// argument count, codegen each argument, then emit a call instruction.
-///
-/// getFunction searches the module for a declaration or definition with the
-/// given name. This covers both previous 'extern' declarations and previously
-/// defined functions. The argument count check catches mismatches that a typed
-/// language would catch statically.
 Value *CallExprAST::codegen() {
+  // Look up the name in the global module table.
   Function *CalleeF = TheModule->getFunction(Callee);
   if (!CalleeF)
     return LogErrorV("Unknown function referenced");
 
+  // If argument mismatch error.
   if (CalleeF->arg_size() != Args.size())
     return LogErrorV("Incorrect # arguments passed");
 
@@ -793,26 +745,16 @@ Value *CallExprAST::codegen() {
   return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
-/// PrototypeAST::codegen - Create a function declaration in TheModule: name,
-/// return type (always double), and parameter types (all double).
-///
-/// ExternalLinkage makes the function visible outside this module. That is
-/// what allows 'extern def sin(x)' to link against the C library's sin at
-/// runtime, and what lets 'def foo(...)' be called from later expressions in
-/// the same session.
-///
-/// Arg.setName() is optional — it only affects the printed IR, making output
-/// read as 'double %a, double %b' rather than 'double %0, double %1'.
 Function *PrototypeAST::codegen() {
-  // All parameters and the return value are double.
+  // Make the function type:  double(double,double) etc.
   std::vector<Type *> Doubles(Args.size(), Type::getDoubleTy(*TheContext));
   FunctionType *FT =
-      FunctionType::get(Type::getDoubleTy(*TheContext), Doubles, false /* not variadic */);
+      FunctionType::get(Type::getDoubleTy(*TheContext), Doubles, false);
 
   Function *F =
       Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
 
-  // Name arguments so the printed IR is readable.
+  // Set names for all arguments.
   unsigned Idx = 0;
   for (auto &Arg : F->args())
     Arg.setName(Args[Idx++]);
@@ -820,29 +762,8 @@ Function *PrototypeAST::codegen() {
   return F;
 }
 
-/// FunctionAST::codegen - Generate IR for a complete function definition.
-///
-/// Four steps:
-///
-/// 1. Get or create the function declaration. If 'extern def foo(x)' was seen
-///    earlier, getFunction finds it. Otherwise Proto->codegen() creates a fresh
-///    declaration. Either way TheFunction is a valid Function* with no body yet.
-///
-/// 2. Create the entry BasicBlock and point the Builder at it. A basic block
-///    is a straight-line sequence of instructions with one entry and one exit.
-///    Every function starts with exactly one entry block.
-///
-/// 3. Populate NamedValues. Clear the table (the previous function's arguments
-///    are irrelevant) and insert each argument. VariableExprAST nodes in the
-///    body look names up here.
-///
-/// 4. Codegen the body expression. On success, emit 'ret' and run
-///    verifyFunction — LLVM's internal consistency checker that catches codegen
-///    bugs such as using a value defined in a different function or leaving a
-///    block without a terminator. On failure, eraseFromParent() removes the
-///    partially-built function so no broken declaration is left in the module.
 Function *FunctionAST::codegen() {
-  // Step 1: get an existing declaration or create a new one.
+  // First, check for an existing function from a previous 'extern' declaration.
   Function *TheFunction = TheModule->getFunction(Proto->getName());
 
   if (!TheFunction)
@@ -851,24 +772,26 @@ Function *FunctionAST::codegen() {
   if (!TheFunction)
     return nullptr;
 
-  // Step 2: create the entry block and point the builder at it.
+  // Create a new basic block to start insertion into.
   BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
   Builder->SetInsertPoint(BB);
 
-  // Step 3: populate NamedValues with this function's arguments.
+  // Record the function arguments in the NamedValues map.
   NamedValues.clear();
   for (auto &Arg : TheFunction->args())
     NamedValues[std::string(Arg.getName())] = &Arg;
 
-  // Step 4: codegen the body, emit ret, verify, or erase on failure.
   if (Value *RetVal = Body->codegen()) {
+    // Finish off the function.
     Builder->CreateRet(RetVal);
+
+    // Validate the generated code, checking for consistency.
     verifyFunction(*TheFunction);
+
     return TheFunction;
   }
 
-  // Body codegen failed — remove the incomplete function from the module so
-  // it cannot be called and does not pollute the final IR dump.
+  // Error reading body, remove function.
   TheFunction->eraseFromParent();
   return nullptr;
 }
@@ -877,34 +800,31 @@ Function *FunctionAST::codegen() {
 // Top-Level parsing and JIT Driver
 //===----------------------------------------===//
 
-/// InitializeModule - Create the three LLVM globals that all codegen depends
-/// on. Called once before MainLoop(). In a later chapter that adds JIT
-/// execution this will be called fresh for each top-level expression, because
-/// the JIT takes ownership of the module after compiling it.
 static void InitializeModule() {
+  // Open a new context and module.
   TheContext = std::make_unique<LLVMContext>();
   TheModule = std::make_unique<Module>("my cool jit", *TheContext);
+
+  // Create a new builder for the module.
   Builder = std::make_unique<IRBuilder<>>(*TheContext);
 }
 
-/// SynchronizeToLineBoundary - Panic-mode error recovery.
+/// SynchronizeToLineBoundary - Panic-mode error recovery. Advance past all
+/// remaining tokens on the current line so that the next thing MainLoop sees
+/// is tok_eol or tok_eof. Called after any parse failure and after any
+/// unexpected trailing token, ensuring the REPL always returns to a known
+/// state before printing the next prompt.
 ///
-/// Advance past all remaining tokens on the current line so that MainLoop
-/// sees tok_eol or tok_eof next. Called after any parse or codegen failure
-/// and after any unexpected trailing token, ensuring the REPL always returns
-/// to a clean state before printing the next prompt.
+/// HandleDefinition/HandleExtern/HandleTopLevelExpression - Called by MainLoop
+/// when it sees the appropriate leading token. On success, print a
+/// confirmation. On failure or unexpected trailing tokens, call
+/// SynchronizeToLineBoundary() to discard the rest of the input line.
+
 static void SynchronizeToLineBoundary() {
   while (CurTok != tok_eol && CurTok != tok_eof)
     getNextToken();
 }
 
-/// HandleDefinition - Parse and codegen a 'def' function definition.
-///
-/// On success: codegen the function, print the confirmation message and the
-/// resulting IR. The function remains in TheModule for the rest of the session
-/// so later calls to it can be resolved.
-/// On parse failure or unexpected trailing tokens: discard the rest of the
-/// line and return.
 static void HandleDefinition() {
   auto FnAST = ParseDefinition();
   if (!FnAST || (CurTok != tok_eol && CurTok != tok_eof)) {
@@ -920,14 +840,6 @@ static void HandleDefinition() {
   }
 }
 
-/// HandleExtern - Parse and codegen an 'extern def' declaration.
-///
-/// On success: codegen the prototype (which emits a 'declare' with
-/// ExternalLinkage), print the confirmation message and the IR. The
-/// declaration stays in TheModule so subsequent call expressions can find it
-/// via getFunction().
-/// On parse failure or unexpected trailing tokens: discard the rest of the
-/// line and return.
 static void HandleExtern() {
   auto ProtoAST = ParseExtern();
   if (!ProtoAST || (CurTok != tok_eol && CurTok != tok_eof)) {
@@ -945,14 +857,6 @@ static void HandleExtern() {
   }
 }
 
-/// HandleTopLevelExpression - Parse and codegen a bare expression.
-///
-/// The expression is wrapped in an anonymous function '__anon_expr' so it
-/// fits the same FunctionAST shape as everything else. After printing the IR
-/// we call eraseFromParent() to remove it from the module — anonymous
-/// expressions are for display only and should not appear in the final dump.
-/// In a later chapter the JIT will execute the function before erasing it,
-/// printing the numeric result.
 static void HandleTopLevelExpression() {
   auto FnAST = ParseTopLevelExpr();
   if (!FnAST || (CurTok != tok_eol && CurTok != tok_eof)) {
@@ -966,8 +870,7 @@ static void HandleTopLevelExpression() {
     FnIR->print(errs());
     fprintf(stderr, "\n");
 
-    // Erase after printing — anonymous expressions don't belong in the final
-    // module dump.
+    // Remove the anonymous expression.
     FnIR->eraseFromParent();
   }
 }
