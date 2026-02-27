@@ -1,0 +1,9 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error" %t
+# RUN: grep -q "Evaluated to 1.000000" %t
+
+# Error recovery + JIT: a parse error on one line must not prevent subsequent
+# inputs from compiling and executing. The REPL must recover and evaluate the
+# next expression correctly.
+def bad(x) return x
+1

@@ -1,0 +1,14 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed a function definition" %t
+# RUN: grep -q "3.000000e+00" %t
+# RUN: grep -q "fadd double %x, 3.000000e+00" %t
+# RUN: grep -q "fmul double %addtmp, %addtmp" %t
+# RUN: grep -c "fadd" %t | grep -q "^1$"
+
+# Optimisation — ReassociatePass + constant folding: (1+2+x)*(x+(1+2)).
+# After optimisation:
+#   - Both '1+2' sub-expressions fold to 3.0 at IR construction time.
+#   - ReassociatePass and GVN recognise both factors are (x+3), collapsing
+#     the expression to a single fadd and a single fmul of %addtmp with itself.
+# No double-print here: the module is handed to the JIT, not dumped at exit.
+def test(x): return (1+2+x)*(x+(1+2))

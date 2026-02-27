@@ -1,4 +1,6 @@
+#include "../include/PyxcJIT.h"
 #include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -6,8 +8,18 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/PassManager.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Verifier.h"
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Passes/StandardInstrumentations.h"
+#include "llvm/Support/TargetSelect.h"
+#include "llvm/Target/TargetMachine.h"
+#include "llvm/Transforms/InstCombine/InstCombine.h"
+#include "llvm/Transforms/Scalar.h"
+#include "llvm/Transforms/Scalar/GVN.h"
+#include "llvm/Transforms/Scalar/Reassociate.h"
+#include "llvm/Transforms/Scalar/SimplifyCFG.h"
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -22,6 +34,7 @@
 
 using namespace std;
 using namespace llvm;
+using namespace llvm::orc;
 
 //===----------------------------------------===//
 // Lexer
@@ -339,7 +352,6 @@ static void PrintErrorSourceContext(SourceLocation Loc) {
 //===----------------------------------------===//
 // Abstract Syntax Tree (aka Parse Tree)
 //===----------------------------------------===//
-
 namespace {
 
 /// ExprAST - Base class for all expression nodes.
@@ -657,8 +669,9 @@ static unique_ptr<FunctionAST> ParseDefinition() {
 /// toplevelexpr
 ///   = expression
 /// A top-level expression (e.g. "1 + 2") is wrapped in an anonymous function
-/// so it fits the same FunctionAST shape as everything else. When we add JIT
-/// execution later, we'll look up "__anon_expr" and call it to get the result.
+/// so it fits the same FunctionAST shape as everything else.
+/// HandleTopLevelExpression compiles it into the JIT, calls it to get the
+/// numeric result, then removes it from the JIT via a ResourceTracker.
 static unique_ptr<FunctionAST> ParseTopLevelExpr() {
   if (auto E = ParseExpression()) {
     auto Proto = make_unique<PrototypeAST>("__anon_expr", vector<string>());
@@ -677,32 +690,130 @@ static unique_ptr<PrototypeAST> ParseExtern() {
   return ParsePrototype();
 }
 
-//===----------------------------------------------------------------------===//
+//===----------------------------------------===//
 // Code Generation
-//===----------------------------------------------------------------------===//
+//===----------------------------------------===//
 
-static unique_ptr<LLVMContext> TheContext;
-static unique_ptr<Module> TheModule;
-static unique_ptr<IRBuilder<>> Builder;
-static map<std::string, Value *> NamedValues;
+// TheContext/TheModule/Builder/NamedValues - Core IR construction globals.
+// Recreated fresh for each new module (see InitializeModuleAndManagers).
+//
+// TheContext - Owns all LLVM data structures: types, constants, and the
+// interning tables that ensure two uses of 'double' resolve to the same
+// object.
+//
+// TheModule - The unit of compilation handed to the JIT. Because the JIT
+// takes ownership of the module when a function is compiled, we create a
+// new module for every top-level input. Functions defined in earlier modules
+// remain callable via the JIT's symbol table.
+//
+// Builder - A cursor into the IR being built. Point it at a BasicBlock with
+// SetInsertPoint(), then call Create* methods to append instructions.
+//
+// NamedValues - Symbol table for the current function's parameters. Cleared
+// and repopulated at the start of each function body. Mutable local
+// variables come in a later chapter.
+//
+// TheJIT - The ORC JIT instance. Created once in main() and lives for the
+// whole session. Compiled modules are added to it; symbols from C libraries
+// (e.g. sin, cos) are resolved through the process's dynamic symbol table.
+//
+// TheFPM / TheLAM / TheFAM / TheCGAM / TheMAM - The new-PM pass and
+// analysis managers. TheFPM holds the optimisation pipeline; the analysis
+// managers cache analysis results and are cross-registered so passes that
+// need loop or CGSCC analyses can find them.
+//
+// ThePIC / TheSI - Pass instrumentation plumbing required by the new PM.
+// StandardInstrumentations registers the built-in timing and printing hooks.
+//
+// FunctionProtos - Persistent prototype registry. Because each function
+// lands in its own module, a later module that calls 'foo' cannot find 'foo'
+// in TheModule->getFunction(). FunctionProtos stores the PrototypeAST for
+// every declared or defined function so getFunction() can re-emit a
+// declaration into the current module on demand.
+//
+// ExitOnErr - Convenience wrapper that terminates the process on a
+// recoverable LLVM error. Used for JIT operations that should never fail
+// in a correct implementation.
+static std::unique_ptr<LLVMContext> TheContext;
+static std::unique_ptr<Module> TheModule;
+static std::unique_ptr<IRBuilder<>> Builder;
+static std::map<std::string, Value *> NamedValues;
+static std::unique_ptr<PyxcJIT> TheJIT;
+static std::unique_ptr<FunctionPassManager> TheFPM;
+static std::unique_ptr<LoopAnalysisManager> TheLAM;
+static std::unique_ptr<FunctionAnalysisManager> TheFAM;
+static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
+static std::unique_ptr<ModuleAnalysisManager> TheMAM;
+static std::unique_ptr<PassInstrumentationCallbacks> ThePIC;
+static std::unique_ptr<StandardInstrumentations> TheSI;
+static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
+static ExitOnError ExitOnErr;
 
+// LogErrorV - Codegen-level error helper. Delegates to LogError for printing,
+// then returns nullptr so codegen callers can write: return LogErrorV("msg");
 Value *LogErrorV(const char *Str) {
   LogError(Str);
   return nullptr;
 }
 
+/// getFunction - Resolve a function name to an LLVM Function* in the current
+/// module, re-emitting a declaration from FunctionProtos if necessary.
+///
+/// Because each top-level input gets its own Module, a function defined in an
+/// earlier module is no longer in TheModule->getFunction(). When that happens
+/// we look up its PrototypeAST in FunctionProtos and call codegen() on it,
+/// which emits a fresh 'declare' with ExternalLinkage in the current module.
+/// The JIT resolves that extern to the already-compiled body at link time.
+Function *getFunction(std::string Name) {
+  // Fast path: declaration or definition already in the current module.
+  if (auto *F = TheModule->getFunction(Name))
+    return F;
+
+  // Slow path: re-emit a declaration from the saved prototype.
+  auto FI = FunctionProtos.find(Name);
+  if (FI != FunctionProtos.end())
+    return FI->second->codegen();
+
+  return nullptr;
+}
+
+/// NumberExprAST::codegen - A numeric literal becomes a floating-point
+/// constant value.
+///
+/// ConstantFP::get wraps an APFloat (LLVM's arbitrary-precision float) into a
+/// constant node that can be used directly as an operand. No instruction is
+/// emitted — constants are folded into whatever instruction uses them.
+/// IRBuilder also recognises when both operands of a binary op are constants
+/// and short-circuits to a single constant rather than emitting an instruction
+/// at all (constant folding).
 Value *NumberExprAST::codegen() {
   return ConstantFP::get(*TheContext, APFloat(Val));
 }
 
+/// VariableExprAST::codegen - A variable reference looks up the name in
+/// NamedValues and returns the Value* for the corresponding function argument.
+///
+/// For now NamedValues only contains the current function's parameters; any
+/// other name is an error. Mutable local variables (alloca/store/load) come
+/// in a later chapter.
 Value *VariableExprAST::codegen() {
-  // Look this variable up in the function.
   Value *V = NamedValues[Name];
   if (!V)
     return LogErrorV("Unknown variable name");
   return V;
 }
 
+/// BinaryExprAST::codegen - Recursively codegen both operands, then emit the
+/// operator-specific instruction.
+///
+/// The string arguments to each Create* call ("addtmp", "multmp", etc.) are
+/// hint names for the SSA value. LLVM uses them when printing IR, appending a
+/// numeric suffix when the same hint would otherwise repeat. They have no
+/// effect on correctness.
+///
+/// '<' requires two steps: CreateFCmpULT produces a 1-bit integer (i1) —
+/// LLVM's boolean type. Since Pyxc treats everything as double, CreateUIToFP
+/// widens it: false -> 0.0, true -> 1.0.
 Value *BinaryExprAST::codegen() {
   Value *L = LHS->codegen();
   Value *R = RHS->codegen();
@@ -718,20 +829,25 @@ Value *BinaryExprAST::codegen() {
     return Builder->CreateFMul(L, R, "multmp");
   case '<':
     L = Builder->CreateFCmpULT(L, R, "cmptmp");
-    // Convert bool 0/1 to double 0.0 or 1.0
+    // Widen the i1 boolean to double: false -> 0.0, true -> 1.0.
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   default:
     return LogErrorV("invalid binary operator");
   }
 }
 
+/// CallExprAST::codegen - Look up the callee by name in TheModule, verify the
+/// argument count, codegen each argument, then emit a call instruction.
+///
+/// getFunction searches the module for a declaration or definition with the
+/// given name. This covers both previous 'extern' declarations and previously
+/// defined functions. The argument count check catches mismatches that a typed
+/// language would catch statically.
 Value *CallExprAST::codegen() {
-  // Look up the name in the global module table.
-  Function *CalleeF = TheModule->getFunction(Callee);
+  Function *CalleeF = getFunction(Callee);
   if (!CalleeF)
     return LogErrorV("Unknown function referenced");
 
-  // If argument mismatch error.
   if (CalleeF->arg_size() != Args.size())
     return LogErrorV("Incorrect # arguments passed");
 
@@ -745,16 +861,26 @@ Value *CallExprAST::codegen() {
   return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
+/// PrototypeAST::codegen - Create a function declaration in TheModule: name,
+/// return type (always double), and parameter types (all double).
+///
+/// ExternalLinkage makes the function visible outside this module. That is
+/// what allows 'extern def sin(x)' to link against the C library's sin at
+/// runtime, and what lets 'def foo(...)' be called from later expressions in
+/// the same session.
+///
+/// Arg.setName() is optional — it only affects the printed IR, making output
+/// read as 'double %a, double %b' rather than 'double %0, double %1'.
 Function *PrototypeAST::codegen() {
-  // Make the function type:  double(double,double) etc.
+  // All parameters and the return value are double.
   std::vector<Type *> Doubles(Args.size(), Type::getDoubleTy(*TheContext));
-  FunctionType *FT =
-      FunctionType::get(Type::getDoubleTy(*TheContext), Doubles, false);
+  FunctionType *FT = FunctionType::get(Type::getDoubleTy(*TheContext), Doubles,
+                                       false /* not variadic */);
 
   Function *F =
       Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
 
-  // Set names for all arguments.
+  // Name arguments so the printed IR is readable.
   unsigned Idx = 0;
   for (auto &Arg : F->args())
     Arg.setName(Args[Idx++]);
@@ -762,36 +888,58 @@ Function *PrototypeAST::codegen() {
   return F;
 }
 
+/// FunctionAST::codegen - Generate IR for a complete function definition.
+///
+/// Four steps:
+///
+/// 1. Register the prototype. The PrototypeAST is moved into FunctionProtos
+///    so that future modules can re-emit a declaration for this function via
+///    getFunction(). A reference is kept for the getFunction() call below.
+///    getFunction() either finds an existing declaration in the current module
+///    (e.g. from a prior 'extern def') or calls Proto->codegen() to create one.
+///
+/// 2. Create the entry BasicBlock and point the Builder at it. A basic block
+///    is a straight-line sequence of instructions with one entry and one exit.
+///    Every function starts with exactly one entry block.
+///
+/// 3. Populate NamedValues. Clear the table (the previous function's arguments
+///    are irrelevant) and insert each argument. VariableExprAST nodes in the
+///    body look names up here.
+///
+/// 4. Codegen the body expression. On success, emit 'ret', run verifyFunction
+///    (LLVM's internal consistency checker), then run TheFPM to apply the
+///    optimisation pipeline. On failure, eraseFromParent() removes the
+///    partially-built function so no broken declaration is left in the module.
 Function *FunctionAST::codegen() {
-  // First, check for an existing function from a previous 'extern' declaration.
-  Function *TheFunction = TheModule->getFunction(Proto->getName());
+  // Step 1: register the prototype and resolve the Function*.
+  auto &P = *Proto;
+  FunctionProtos[Proto->getName()] = std::move(Proto);
 
-  if (!TheFunction)
-    TheFunction = Proto->codegen();
-
+  Function *TheFunction = getFunction(P.getName());
   if (!TheFunction)
     return nullptr;
 
-  // Create a new basic block to start insertion into.
+  // Step 2: create the entry block and point the builder at it.
   BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
   Builder->SetInsertPoint(BB);
 
-  // Record the function arguments in the NamedValues map.
+  // Step 3: populate NamedValues with this function's arguments.
   NamedValues.clear();
   for (auto &Arg : TheFunction->args())
     NamedValues[std::string(Arg.getName())] = &Arg;
 
+  // Step 4: codegen the body, optimise, verify, or erase on failure.
   if (Value *RetVal = Body->codegen()) {
-    // Finish off the function.
     Builder->CreateRet(RetVal);
-
-    // Validate the generated code, checking for consistency.
     verifyFunction(*TheFunction);
 
+    // Run the optimisation pipeline: InstCombine, Reassociate, GVN, SimplifyCFG.
+    TheFPM->run(*TheFunction, *TheFAM);
     return TheFunction;
   }
 
-  // Error reading body, remove function.
+  // Body codegen failed — remove the incomplete function so it cannot be
+  // called and does not pollute the module handed to the JIT.
   TheFunction->eraseFromParent();
   return nullptr;
 }
@@ -800,31 +948,81 @@ Function *FunctionAST::codegen() {
 // Top-Level parsing and JIT Driver
 //===----------------------------------------===//
 
-static void InitializeModule() {
-  // Open a new context and module.
+/// InitializeModuleAndManagers - Create a fresh module, IR builder, and
+/// optimisation pipeline.
+///
+/// Called once at startup and again after every top-level input that hands
+/// its module to the JIT. Because the JIT takes ownership of TheModule via
+/// ThreadSafeModule, we cannot keep emitting into the old module — a new one
+/// must be created for every subsequent definition or expression.
+///
+/// The optimisation pipeline is also recreated each time because FunctionPassManager
+/// is tied to a specific LLVMContext (via StandardInstrumentations).
+///
+/// Pipeline:
+///   InstCombinePass  - Peephole rewrites: a+0->a, x*2->x<<1, etc.
+///   ReassociatePass  - Reorder commutative ops to expose more folding:
+///                      (x+2)+3 -> x+(2+3) -> x+5.
+///   GVNPass          - Global Value Numbering: eliminate redundant loads and
+///                      common sub-expressions across basic blocks.
+///   SimplifyCFGPass  - Remove unreachable blocks, merge redundant branches.
+///
+/// The analysis managers are cross-registered so that a function pass that
+/// needs loop information can reach TheLAM, and so on.
+static void InitializeModuleAndManagers() {
+  // Fresh context and module for this compilation unit.
   TheContext = std::make_unique<LLVMContext>();
-  TheModule = std::make_unique<Module>("my cool jit", *TheContext);
+  TheModule = std::make_unique<Module>("PyxcJIT", *TheContext);
+  // Inform the module of the JIT's target data layout so codegen emits
+  // correctly-sized types for the host machine.
+  TheModule->setDataLayout(TheJIT->getDataLayout());
 
-  // Create a new builder for the module.
   Builder = std::make_unique<IRBuilder<>>(*TheContext);
+
+  // Pass and analysis managers.
+  TheFPM = std::make_unique<FunctionPassManager>();
+  TheLAM = std::make_unique<LoopAnalysisManager>();
+  TheFAM = std::make_unique<FunctionAnalysisManager>();
+  TheCGAM = std::make_unique<CGSCCAnalysisManager>();
+  TheMAM = std::make_unique<ModuleAnalysisManager>();
+  ThePIC = std::make_unique<PassInstrumentationCallbacks>();
+  TheSI = std::make_unique<StandardInstrumentations>(*TheContext,
+                                                     /*DebugLogging*/ false);
+  TheSI->registerCallbacks(*ThePIC, TheMAM.get());
+
+  // Optimisation pipeline (applied per function after codegen).
+  TheFPM->addPass(InstCombinePass());  // peephole rewrites
+  TheFPM->addPass(ReassociatePass());  // canonicalise commutative ops
+  TheFPM->addPass(GVNPass());          // eliminate common sub-expressions
+  TheFPM->addPass(SimplifyCFGPass());  // remove dead blocks and branches
+
+  // Cross-register so passes can access any analysis tier they need.
+  PassBuilder PB;
+  PB.registerModuleAnalyses(*TheMAM);
+  PB.registerFunctionAnalyses(*TheFAM);
+  PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
 }
 
-/// SynchronizeToLineBoundary - Panic-mode error recovery. Advance past all
-/// remaining tokens on the current line so that the next thing MainLoop sees
-/// is tok_eol or tok_eof. Called after any parse failure and after any
-/// unexpected trailing token, ensuring the REPL always returns to a known
-/// state before printing the next prompt.
+/// SynchronizeToLineBoundary - Panic-mode error recovery.
 ///
-/// HandleDefinition/HandleExtern/HandleTopLevelExpression - Called by MainLoop
-/// when it sees the appropriate leading token. On success, print a
-/// confirmation. On failure or unexpected trailing tokens, call
-/// SynchronizeToLineBoundary() to discard the rest of the input line.
-
+/// Advance past all remaining tokens on the current line so that MainLoop
+/// sees tok_eol or tok_eof next. Called after any parse or codegen failure
+/// and after any unexpected trailing token, ensuring the REPL always returns
+/// to a clean state before printing the next prompt.
 static void SynchronizeToLineBoundary() {
   while (CurTok != tok_eol && CurTok != tok_eof)
     getNextToken();
 }
 
+/// HandleDefinition - Parse, optimise, and JIT-compile a 'def' definition.
+///
+/// On success: codegen + optimise the function (TheFPM runs inside
+/// FunctionAST::codegen), print the optimised IR, then hand the entire
+/// module to the JIT via addModule. The JIT takes ownership of TheModule and
+/// TheContext, so InitializeModuleAndManagers() is called immediately after
+/// to create a fresh module for the next input. The compiled function remains
+/// accessible in the JIT's symbol table for the rest of the session.
+/// On parse failure or unexpected trailing tokens: discard the line.
 static void HandleDefinition() {
   auto FnAST = ParseDefinition();
   if (!FnAST || (CurTok != tok_eol && CurTok != tok_eof)) {
@@ -837,9 +1035,21 @@ static void HandleDefinition() {
     fprintf(stderr, "Parsed a function definition.\n");
     FnIR->print(errs());
     fprintf(stderr, "\n");
+    // Transfer the module to the JIT. TheModule is now invalid; reinitialise.
+    ExitOnErr(TheJIT->addModule(
+        ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
+    InitializeModuleAndManagers();
   }
 }
 
+/// HandleExtern - Parse and register an 'extern def' declaration.
+///
+/// On success: codegen the prototype (emits a 'declare' in the current module),
+/// print it, then save the PrototypeAST into FunctionProtos. Saving into
+/// FunctionProtos is the critical step — when this module is handed to the JIT
+/// and a new one is created, getFunction() uses FunctionProtos to re-emit the
+/// 'declare' in whichever module needs to call the extern.
+/// On parse failure or unexpected trailing tokens: discard the line.
 static void HandleExtern() {
   auto ProtoAST = ParseExtern();
   if (!ProtoAST || (CurTok != tok_eol && CurTok != tok_eof)) {
@@ -854,9 +1064,28 @@ static void HandleExtern() {
     fprintf(stderr, "Parsed an extern.\n");
     FnIR->print(errs());
     fprintf(stderr, "\n");
+    // Save the prototype so getFunction() can re-emit it in future modules.
+    FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
   }
 }
 
+/// HandleTopLevelExpression - Compile, execute, and discard a bare expression.
+///
+/// The expression is wrapped in '__anon_expr' (a zero-argument function that
+/// returns double) so it goes through the same codegen path as everything else.
+///
+/// Execution steps:
+///   1. Codegen + optimise the anonymous function.
+///   2. Print the optimised IR so the reader can inspect it.
+///   3. Create a ResourceTracker scoped to this expression. The RT lets us
+///      release the JIT-compiled code and its associated memory immediately
+///      after execution, without disturbing other compiled functions.
+///   4. Hand the module to the JIT (TheModule is now owned by the JIT).
+///      Reinitialise for the next input.
+///   5. Look up '__anon_expr' in the JIT, cast its address to a function
+///      pointer, call it, and print the result.
+///   6. Call RT->remove() to free the compiled code. The module was already
+///      transferred to the JIT in step 4, so eraseFromParent() is not needed.
 static void HandleTopLevelExpression() {
   auto FnAST = ParseTopLevelExpr();
   if (!FnAST || (CurTok != tok_eol && CurTok != tok_eof)) {
@@ -870,9 +1099,55 @@ static void HandleTopLevelExpression() {
     FnIR->print(errs());
     fprintf(stderr, "\n");
 
-    // Remove the anonymous expression.
-    FnIR->eraseFromParent();
+    // ResourceTracker scopes the JIT memory for this expression so we can
+    // free it precisely after the call, without affecting other symbols.
+    auto RT = TheJIT->getMainJITDylib().createResourceTracker();
+
+    // Transfer ownership of the module to the JIT; reinitialise for next input.
+    auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
+    ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
+    InitializeModuleAndManagers();
+
+    // Locate the compiled function in the JIT's symbol table.
+    auto ExprSymbol = ExitOnErr(TheJIT->lookup("__anon_expr"));
+
+    // Cast the symbol address to a callable function pointer and invoke it.
+    double (*FP)() = ExprSymbol.toPtr<double (*)()>();
+    fprintf(stderr, "Evaluated to %f\n", FP());
+
+    // Release the compiled code and JIT memory for this expression.
+    ExitOnErr(RT->remove());
   }
+}
+
+//===----------------------------------------===//
+// Runtime library — callable via 'extern def'
+//===----------------------------------------===//
+
+// These functions are compiled into the pyxc binary itself and exported with
+// C linkage so the JIT can resolve 'extern def putchard(x)' and
+// 'extern def printd(x)' against them at runtime.
+//
+// DLLEXPORT is required on Windows where symbols are not exported by default.
+// On macOS/Linux it is a no-op — all extern "C" symbols are visible.
+
+#ifdef _WIN32
+#define DLLEXPORT __declspec(dllexport)
+#else
+#define DLLEXPORT
+#endif
+
+/// putchard - Write a single ASCII character to stderr. The double argument
+/// is truncated to char. Returns 0.0 so it can be used as an expression.
+extern "C" DLLEXPORT double putchard(double X) {
+  fputc((char)X, stderr);
+  return 0;
+}
+
+/// printd - Print a double to stderr as "%f\n". Returns 0.0.
+extern "C" DLLEXPORT double printd(double X) {
+  fprintf(stderr, "%f\n", X);
+  return 0;
 }
 
 /// MainLoop - Dispatch loop for the REPL.
@@ -918,24 +1193,30 @@ static void MainLoop() {
 //===----------------------------------------===//
 
 int main() {
+  // Initialise LLVM's backend for the host machine. These three calls
+  // together register the native target's instruction set, assembler, and
+  // disassembler so the JIT can compile and link for the current CPU.
+  InitializeNativeTarget();
+  InitializeNativeTargetAsmPrinter();
+  InitializeNativeTargetAsmParser();
+
   // Register binary operators and their precedence (higher = tighter binding).
   BinopPrecedence['<'] = 10;
   BinopPrecedence['+'] = 20;
   BinopPrecedence['-'] = 20;
   BinopPrecedence['*'] = 40;
 
-  // Print the first prompt and load the first token before entering the loop.
-  // Every parse function expects CurTok to already be loaded when it is called.
+  // Prime the REPL: print the first prompt and load the first token.
+  // Every parse function expects CurTok to be loaded before it is called.
   fprintf(stderr, "ready> ");
   getNextToken();
 
-  // Make the module, which holds all the code.
-  InitializeModule();
+  // Create the JIT first — InitializeModuleAndManagers() needs TheJIT in
+  // order to set the data layout on the new module.
+  TheJIT = ExitOnErr(PyxcJIT::Create());
+  InitializeModuleAndManagers();
 
   MainLoop();
-
-  // Print out all of the generated code.
-  TheModule->print(errs(), nullptr);
 
   return 0;
 }

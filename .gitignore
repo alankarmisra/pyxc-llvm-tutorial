@@ -78,3 +78,6 @@ runtime.o
 memory/
 
 old_chapters/
+
+**/.cache/
+**/build/

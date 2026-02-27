@@ -806,8 +806,8 @@ Value *CallExprAST::codegen() {
 Function *PrototypeAST::codegen() {
   // All parameters and the return value are double.
   std::vector<Type *> Doubles(Args.size(), Type::getDoubleTy(*TheContext));
-  FunctionType *FT =
-      FunctionType::get(Type::getDoubleTy(*TheContext), Doubles, false /* not variadic */);
+  FunctionType *FT = FunctionType::get(Type::getDoubleTy(*TheContext), Doubles,
+                                       false /* not variadic */);
 
   Function *F =
       Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
@@ -826,7 +826,8 @@ Function *PrototypeAST::codegen() {
 ///
 /// 1. Get or create the function declaration. If 'extern def foo(x)' was seen
 ///    earlier, getFunction finds it. Otherwise Proto->codegen() creates a fresh
-///    declaration. Either way TheFunction is a valid Function* with no body yet.
+///    declaration. Either way TheFunction is a valid Function* with no body
+///    yet.
 ///
 /// 2. Create the entry BasicBlock and point the Builder at it. A basic block
 ///    is a straight-line sequence of instructions with one entry and one exit.
@@ -863,6 +864,7 @@ Function *FunctionAST::codegen() {
   // Step 4: codegen the body, emit ret, verify, or erase on failure.
   if (Value *RetVal = Body->codegen()) {
     Builder->CreateRet(RetVal);
+    // Validate the generated code, checking for consistency.
     verifyFunction(*TheFunction);
     return TheFunction;
   }
@@ -881,7 +883,7 @@ Function *FunctionAST::codegen() {
 /// on. Called once before MainLoop(). In a later chapter that adds JIT
 /// execution this will be called fresh for each top-level expression, because
 /// the JIT takes ownership of the module after compiling it.
-static void InitializeModule() {
+static void InitializeModuleAndManagers() {
   TheContext = std::make_unique<LLVMContext>();
   TheModule = std::make_unique<Module>("my cool jit", *TheContext);
   Builder = std::make_unique<IRBuilder<>>(*TheContext);
@@ -1027,7 +1029,7 @@ int main() {
   getNextToken();
 
   // Make the module, which holds all the code.
-  InitializeModule();
+  InitializeModuleAndManagers();
 
   MainLoop();
 

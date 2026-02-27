@@ -301,6 +301,8 @@ Chapter 3 also requires tests for the diagnostic infrastructure itself:
 
 **Chapter 5+** tests: TBD. Will include IR shape tests using `grep` on `define double`, `ret double`, etc.
 
+**Chapter 6** tests: verify JIT execution (`grep -q "Evaluated to"`), numeric correctness (grep for exact value), cross-module function calls, optimisation IR shape (grep for specific instruction patterns like `fmul double %addtmp, %addtmp`), and runtime library callability. No double-print: each module is handed to the JIT so the IR appears only once per function.
+
 ---
 
 ## 5. Chapter Checklist
@@ -333,6 +335,6 @@ Before marking a chapter ready to publish:
 | 3 | Better Errors | Keyword table, number validation, source locations, caret diagnostics |
 | 4 | Installation | LLVM install guide (macOS, Linux, Docker) |
 | 5 | Code Generation | LLVM IR, `LLVMContext`/`Module`/`IRBuilder`, `codegen()` on AST nodes |
-| 6 | *(planned)* | ORC JIT + optimization pass manager |
+| 6 | JIT and Optimisation | ORC JIT execution of top-level expressions, FunctionPassManager pipeline (InstCombine, Reassociate, GVN, SimplifyCFG), per-module lifetime, FunctionProtos cross-module registry |
 | 7 | *(planned)* | Control flow: `if`/`then`/`else`, `for` loop |
 | 8 | *(planned)* | Mutable variables: `alloca`, mem2reg |

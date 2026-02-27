@@ -93,10 +93,11 @@ Each chapter builds on the previous one. You can:
 
 **[Chapter 5: Code Generation](chapter-05.md)** — Connect the AST to LLVM IR. This is where the compiler starts producing real output.
 
-<!--
 ### Language Features
 
-**[Chapter 6: Optimization and JIT](chapter-06.md)** — Add LLVM optimization passes and ORC JIT so expressions evaluate immediately in the REPL.
+**[Chapter 6: JIT and Optimisation](chapter-06.md)** — Add LLVM optimisation passes and ORC JIT so expressions evaluate immediately in the REPL.
+
+<!--
 
 **[Chapter 7: File Input Mode](chapter-07.md)** — Add `pyxc run script.pyxc` so the compiler can execute source files, not just the REPL.
 

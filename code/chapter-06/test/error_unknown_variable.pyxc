@@ -1,0 +1,7 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error" %t
+# RUN: grep -q "Unknown variable name" %t
+
+# Error paths still work with JIT: a reference to an undeclared variable
+# must produce an error, not a crash or silent wrong result.
+def bad(x): return z

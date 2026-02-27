@@ -1,0 +1,10 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed an extern" %t
+# RUN: grep -q "Evaluated to 0.000000" %t
+# RUN: grep -q "^7.000000" %t
+
+# Runtime library: printd prints its argument to stderr as "%f\n" and returns
+# 0.0. The '7.000000' line comes from printd's own fprintf; the 'Evaluated to
+# 0.000000' line comes from the JIT calling the __anon_expr wrapper.
+extern def printd(x)
+printd(7)

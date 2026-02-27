@@ -1,0 +1,7 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Evaluated to" %t
+# RUN: grep -q "Evaluated to 42" %t
+
+# JIT execution: a literal top-level expression must be evaluated and the
+# result printed. Confirms the JIT is running and returning the right value.
+42.0
