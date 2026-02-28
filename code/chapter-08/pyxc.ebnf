@@ -1,0 +1,33 @@
+(* 
+   pyx.ebnf
+   Baseline grammar for chapter 2. 
+*)
+
+(* 
+   { } = zero or more (any number of...)
+   [ ] = zero or one (optional)
+*)
+
+program         = [ top { eols top } ] [ eols ] ;
+eols            = eol { eol } ;
+top             = definition | external | toplevelexpr ;
+definition      = "def" prototype ":" [ eols ] "return" expression ;
+external        = "extern" "def" prototype ;
+toplevelexpr    = expression ;
+conditionalexpr = "if" expression ":" [eols] expression [eols] "else" ":" [eols] expression ;
+prototype       = identifier "(" [ identifier { "," identifier } ] ")" ;
+expression     = primary binoprhs ;
+binoprhs        = { binaryop primary } ;
+primary        = identifierexpr | numberexpr | parenexpr | conditionalexpr ;
+identifierexpr  = identifier
+                | identifier "(" [ expression { "," expression } ] ")" ;
+numberexpr      = number ;
+parenexpr       = "(" expression ")" ;
+binaryop        = "==" | "!=" | "<=" | ">=" | "<" | ">" | "+" | "-" | "*" ;
+identifier      = (letter | "_") { letter | digit | "_" } ;
+number          = digit { digit } [ "." { digit } ]
+                | "." digit { digit } ;
+letter          = "A".."Z" | "a".."z" ;
+digit           = "0".."9" ;
+eol             = "\r\n" | "\r" | "\n" ;
+ws              = " " | "\t" ;

@@ -13,9 +13,9 @@ eols           = eol { eol } ;
 
 top            = definition
                  | external
-                 | expression ;
+                 | toplevelexpr ;
 
-definition     = "def" prototype ":" "return" expression ;
+definition     = "def" prototype ":" [eols] "return" expression ;
 external       = "extern" "def" prototype ;
 toplevelexpr   = expression ;
 

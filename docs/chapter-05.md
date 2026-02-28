@@ -289,6 +289,37 @@ ret double %addtmp4
 
 Each `%name` is defined once and can be used any number of times. The suffixed numbers (`%multmp1`, `%multmp2`) are added automatically when the same hint name would repeat.
 
+## Printing IR as You Type
+
+Each `Handle*` function prints the IR for that input immediately after codegen succeeds:
+
+```cpp
+// HandleDefinition
+if (auto *FnIR = FnAST->codegen()) {
+  fprintf(stderr, "Parsed a function definition.\n");
+  FnIR->print(errs());
+}
+
+// HandleExtern
+if (auto *FnIR = ProtoAST->codegen()) {
+  fprintf(stderr, "Parsed an extern.\n");
+  FnIR->print(errs());
+}
+
+// HandleTopLevelExpression
+if (auto *FnIR = FnAST->codegen()) {
+  fprintf(stderr, "Parsed a top-level expression.\n");
+  FnIR->print(errs());
+  FnIR->eraseFromParent();
+}
+```
+
+`errs()` is LLVM's wrapper around `stderr`. `FnIR->print(errs())` dumps the function's IR in human-readable form — the same text you'd get from `llvm-dis`.
+
+Anonymous top-level expressions call `eraseFromParent()` after printing. The expression was only needed to show the IR; it shouldn't accumulate in the module and shouldn't appear in the end-of-session dump.
+
+This unconditional IR printing is intentional for chapter 5 — IR inspection is the whole point of the chapter. Chapter 7 moves it behind a `-v` flag so running a source file doesn't flood the terminal.
+
 ## The Module at Session End
 
 At the end of the session, `main()` prints the full module:
@@ -297,7 +328,7 @@ At the end of the session, `main()` prints the full module:
 TheModule->print(errs(), nullptr);
 ```
 
-This dumps every function that was defined or declared, in one block. It's how you see the accumulated result of the whole session.
+This dumps every function that was defined or declared, in one block. It's how you see the accumulated result of the whole session. Anonymous expressions don't appear here because `eraseFromParent()` already removed them.
 
 ## Build and Run
 
@@ -356,8 +387,8 @@ entry:
 At the end of the session:
 
 ```llvm
-; ModuleID = 'my cool jit'
-source_filename = "my cool jit"
+; ModuleID = 'PyxcJit'
+source_filename = "PyxcJit"
 
 define double @foo(double %a, double %b) {
 entry:
@@ -379,7 +410,8 @@ Every `def` and `extern` from the session appears here. The `__anon_expr` functi
 | Piece | What it does |
 |---|---|
 | `LLVMContext` | Owns all LLVM types and constants; one per compilation unit |
-| `Module` | Container for all functions and globals; printed at session end |
+| `Module` | Container for all functions and globals; printed in full at session end |
+| `FnIR->print(errs())` | Dumps each function's IR to stderr immediately after codegen; `errs()` is LLVM's stderr wrapper |
 | `IRBuilder<>` | Cursor that inserts instructions into a basic block |
 | `NamedValues` | Symbol table mapping parameter names to their `Value*` |
 | `InitializeModule()` | Creates the three globals before the REPL starts |

@@ -36,6 +36,24 @@ using namespace std;
 using namespace llvm;
 using namespace llvm::orc;
 
+//===----------------------------------------------------------------------===//
+// Command line
+//===----------------------------------------------------------------------===//
+static cl::OptionCategory PyxcCategory("Pyxc options");
+
+// Optional positional input: 0 args => REPL, 1 arg => file mode.
+static cl::list<std::string> InputFiles(cl::Positional,
+                                        cl::desc("[script.pyxc]"),
+                                        cl::ZeroOrMore, cl::cat(PyxcCategory));
+
+// Verbose IR dump in both REPL and file mode.
+static cl::opt<bool> VerboseIR("v",
+                               cl::desc("Print generated LLVM IR to stderr"),
+                               cl::init(false), cl::cat(PyxcCategory));
+
+static FILE *Input = stdin;
+static bool IsRepl = true;
+
 //===----------------------------------------===//
 // Lexer
 //===----------------------------------------===//
@@ -172,17 +190,17 @@ static void PrintErrorSourceContext(SourceLocation Loc);
 /// advance - Read one character from stdin, update LexLoc and SourceManager.
 ///
 /// This is the single point through which all character consumption flows.
-/// Every token branch in gettok() calls advance() rather than getchar()
+/// Every token branch in gettok() calls advance() rather than fgetc()
 /// directly, so LexLoc and the source buffer are always in sync.
 ///
 /// Windows line endings (\r\n) are coalesced to a single \n so the rest of
 /// the lexer never needs to handle \r.
 static int advance() {
-  int LastChar = getchar();
+  int LastChar = fgetc(Input);
   if (LastChar == '\r') {
-    int NextChar = getchar();
+    int NextChar = fgetc(Input);
     if (NextChar != '\n' && NextChar != EOF)
-      ungetc(NextChar, stdin);
+      ungetc(NextChar, Input);
     PyxcSourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
@@ -459,6 +477,16 @@ static int GetTokPrecedence() {
   return TokPrec;
 }
 
+void PrintConsoleReady() {
+  if (IsRepl)
+    fprintf(stderr, "ready> ");
+}
+
+void Log(const string &message) {
+  if (IsRepl)
+    fprintf(stderr, "%s", message.c_str());
+}
+
 /// LogError* - Error reporting helpers. Each returns nullptr for its respective
 /// type so parse functions can write: return LogError("message");
 unique_ptr<ExprAST> LogError(const char *Str) {
@@ -466,6 +494,7 @@ unique_ptr<ExprAST> LogError(const char *Str) {
   fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
           Str);
   PrintErrorSourceContext(Anchor);
+  PrintConsoleReady();
   return nullptr;
 }
 
@@ -933,7 +962,8 @@ Function *FunctionAST::codegen() {
     Builder->CreateRet(RetVal);
     verifyFunction(*TheFunction);
 
-    // Run the optimisation pipeline: InstCombine, Reassociate, GVN, SimplifyCFG.
+    // Run the optimisation pipeline: InstCombine, Reassociate, GVN,
+    // SimplifyCFG.
     TheFPM->run(*TheFunction, *TheFAM);
     return TheFunction;
   }
@@ -956,8 +986,9 @@ Function *FunctionAST::codegen() {
 /// ThreadSafeModule, we cannot keep emitting into the old module — a new one
 /// must be created for every subsequent definition or expression.
 ///
-/// The optimisation pipeline is also recreated each time because FunctionPassManager
-/// is tied to a specific LLVMContext (via StandardInstrumentations).
+/// The optimisation pipeline is also recreated each time because
+/// FunctionPassManager is tied to a specific LLVMContext (via
+/// StandardInstrumentations).
 ///
 /// Pipeline:
 ///   InstCombinePass  - Peephole rewrites: a+0->a, x*2->x<<1, etc.
@@ -991,10 +1022,10 @@ static void InitializeModuleAndManagers() {
   TheSI->registerCallbacks(*ThePIC, TheMAM.get());
 
   // Optimisation pipeline (applied per function after codegen).
-  TheFPM->addPass(InstCombinePass());  // peephole rewrites
-  TheFPM->addPass(ReassociatePass());  // canonicalise commutative ops
-  TheFPM->addPass(GVNPass());          // eliminate common sub-expressions
-  TheFPM->addPass(SimplifyCFGPass());  // remove dead blocks and branches
+  TheFPM->addPass(InstCombinePass()); // peephole rewrites
+  TheFPM->addPass(ReassociatePass()); // canonicalise commutative ops
+  TheFPM->addPass(GVNPass());         // eliminate common sub-expressions
+  TheFPM->addPass(SimplifyCFGPass()); // remove dead blocks and branches
 
   // Cross-register so passes can access any analysis tier they need.
   PassBuilder PB;
@@ -1032,9 +1063,9 @@ static void HandleDefinition() {
     return;
   }
   if (auto *FnIR = FnAST->codegen()) {
-    fprintf(stderr, "Parsed a function definition.\n");
-    FnIR->print(errs());
-    fprintf(stderr, "\n");
+    Log("Parsed a function definition.\n");
+    if (VerboseIR)
+      FnIR->print(errs());
     // Transfer the module to the JIT. TheModule is now invalid; reinitialise.
     ExitOnErr(TheJIT->addModule(
         ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
@@ -1052,18 +1083,21 @@ static void HandleDefinition() {
 /// On parse failure or unexpected trailing tokens: discard the line.
 static void HandleExtern() {
   auto ProtoAST = ParseExtern();
-  if (!ProtoAST || (CurTok != tok_eol && CurTok != tok_eof)) {
-    if (CurTok != tok_eol && CurTok != tok_eof) {
-      if (CurTok)
-        LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
-      SynchronizeToLineBoundary();
-      return;
-    }
+
+  if (!ProtoAST)
+    return;
+
+  if (CurTok != tok_eol && CurTok != tok_eof) {
+    if (CurTok)
+      LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+    SynchronizeToLineBoundary();
+    return;
   }
+
   if (auto *FnIR = ProtoAST->codegen()) {
-    fprintf(stderr, "Parsed an extern.\n");
-    FnIR->print(errs());
-    fprintf(stderr, "\n");
+    Log("Parsed an extern.\n");
+    if (VerboseIR)
+      FnIR->print(errs());
     // Save the prototype so getFunction() can re-emit it in future modules.
     FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
   }
@@ -1095,9 +1129,9 @@ static void HandleTopLevelExpression() {
     return;
   }
   if (auto *FnIR = FnAST->codegen()) {
-    fprintf(stderr, "Parsed a top-level expression.\n");
-    FnIR->print(errs());
-    fprintf(stderr, "\n");
+    Log("Parsed a top-level expression.\n");
+    if (VerboseIR)
+      FnIR->print(errs());
 
     // ResourceTracker scopes the JIT memory for this expression so we can
     // free it precisely after the call, without affecting other symbols.
@@ -1113,7 +1147,9 @@ static void HandleTopLevelExpression() {
 
     // Cast the symbol address to a callable function pointer and invoke it.
     double (*FP)() = ExprSymbol.toPtr<double (*)()>();
-    fprintf(stderr, "Evaluated to %f\n", FP());
+    double result = FP();
+    if (IsRepl)
+      fprintf(stderr, "Evaluated to %f\n", result);
 
     // Release the compiled code and JIT memory for this expression.
     ExitOnErr(RT->remove());
@@ -1164,7 +1200,7 @@ static void MainLoop() {
 
     // A bare newline: just print a fresh prompt and read the next token.
     if (CurTok == tok_eol) {
-      fprintf(stderr, "ready> ");
+      PrintConsoleReady();
       getNextToken();
       continue;
     }
@@ -1188,11 +1224,40 @@ static void MainLoop() {
   }
 }
 
+int ProcessCommandLine(int argc, const char **argv) {
+  cl::HideUnrelatedOptions(PyxcCategory);
+  cl::ParseCommandLineOptions(argc, argv, "pyxc\n");
+
+  if (InputFiles.size() > 1) {
+    fprintf(stderr, "Error: expected at most one input file.\n");
+    return -1;
+  }
+
+  if (InputFiles.size() == 1) {
+    Input = fopen(InputFiles[0].c_str(), "r");
+    if (!Input) {
+      perror(InputFiles[0].c_str());
+      return -1;
+    }
+    IsRepl = false;
+  } else {
+    IsRepl = true;
+  }
+
+  return 0;
+}
+
 //===----------------------------------------===//
 // Main driver code.
 //===----------------------------------------===//
 
-int main() {
+int main(int argc, const char **argv) {
+
+  int commandLineResult = ProcessCommandLine(argc, argv);
+  if (commandLineResult != 0) {
+    return commandLineResult;
+  }
+
   // Initialise LLVM's backend for the host machine. These three calls
   // together register the native target's instruction set, assembler, and
   // disassembler so the JIT can compile and link for the current CPU.
@@ -1208,7 +1273,7 @@ int main() {
 
   // Prime the REPL: print the first prompt and load the first token.
   // Every parse function expects CurTok to be loaded before it is called.
-  fprintf(stderr, "ready> ");
+  PrintConsoleReady();
   getNextToken();
 
   // Create the JIT first — InitializeModuleAndManagers() needs TheJIT in
@@ -1217,6 +1282,11 @@ int main() {
   InitializeModuleAndManagers();
 
   MainLoop();
+
+  if (Input && Input != stdin) {
+    fclose(Input);
+    Input = stdin;
+  }
 
   return 0;
 }

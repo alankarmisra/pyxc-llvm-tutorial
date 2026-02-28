@@ -5,8 +5,9 @@ description: "Add ORC JIT and an optimisation pass pipeline: top-level expressio
 
 ## Where We Are
 
-Chapter 5 produces correct IR, but you have to read it — nothing runs. Define `test` and call it with `2`, and you get IR back with no result:
+[Chapter 5](chapter-05.md) produces correct IR, but you have to read it — nothing runs. Define `test` and call it with `2`, and you get IR back with no result:
 
+<!-- code-merge:start -->
 ```python
 ready> def test(x): return (1+2+x)*(x+(1+2))
 Parsed a function definition.
@@ -34,11 +35,13 @@ entry:
   ret double %calltmp
 }
 ```
+<!-- code-merge:end -->
 
 Two problems. First, `test(2)` doesn't evaluate — you see the IR for the call but no result. Second, the IR for `test` isn't as clean as it could be: `(1+2+x)*(x+(1+2))` produces two separate `fadd` instructions even though both sides of the multiply are the same expression `x+3`.
 
 By the end of this chapter, calling `test(2)` prints the answer:
 
+<!-- code-merge:start -->
 ```python
 ready> test(2)
 Parsed a top-level expression.
@@ -55,9 +58,11 @@ entry:
 ```bash
 Evaluated to 25.000000
 ```
+<!-- code-merge:end -->
 
 And `test` itself comes out of the optimiser with the redundant computation eliminated:
 
+<!-- code-merge:start -->
 ```python
 ready> def test(x): return (1+2+x)*(x+(1+2))
 Parsed a function definition.
@@ -71,6 +76,7 @@ entry:
   ret double %addtmp
 }
 ```
+<!-- code-merge:end -->
 
 Two instructions instead of three. One `fadd` instead of two — the optimiser recognised that both factors are `x+3` and computed it once.
 
@@ -285,20 +291,38 @@ cmake -S . -B build && cmake --build build
 
 ## Try It
 
-```llvm
+<!-- code-merge:start -->
+```python
 ready> extern def sin(x)
-Parsed an extern.
-declare double @sin(double)
+```
 
+```bash
+Parsed an extern.
+```
+
+```llvm
+declare double @sin(double)
+```
+```python
 ready> sin(1)
+```
+
+```basg
 Parsed a top-level expression.
+```
+
+```llvm
 define double @__anon_expr() {
 entry:
   %calltmp = call double @sin(double 1.000000e+00)
   ret double 0x3FEAED548F090CEE
 }
+```
+
+```bash
 Evaluated to 0.841471
 ```
+<!-- code-merge:end -->
 
 Notice what just happened. We declared `sin` as an extern and immediately called it — and it worked. We didn't link against anything. We didn't pass any flags. We didn't register `sin` anywhere.
 
@@ -308,13 +332,23 @@ When the JIT looks up `sin`, it searches that same symbol table and finds the ad
 
 This is true of any function in any shared library that is already loaded into the process. On macOS and Linux, the C standard library and the system math library are always loaded. Every C library function — `cos`, `tan`, `sqrt`, `printf`, `malloc`, all of them — is available to Pyxc programs this way, for free. The hex value `0x3FEAED548F090CEE` is the IEEE 754 encoding of `sin(1) ≈ 0.841471`.
 
-```llvm
+<!-- code-merge:start -->
+```python
 ready> extern def cos(x)
+```
+```bash
 Parsed an extern.
+```
+```llvm
 declare double @cos(double)
-
+```
+```python
 ready> def foo(x): return sin(x)*sin(x)+cos(x)*cos(x)
+```
+```bash
 Parsed a function definition.
+```
+```llvm
 define double @foo(double %x) {
 entry:
   %calltmp  = call double @sin(double %x)
@@ -326,10 +360,14 @@ entry:
   %addtmp   = fadd double %multmp, %multmp4
   ret double %addtmp
 }
-
+```
+```python
 ready> foo(4)
+```
+```bash
 Evaluated to 1.000000
 ```
+<!-- code-merge:end -->
 
 `sin²(x) + cos²(x) = 1` for any x — the Pythagorean identity. The JIT compiled `foo`, looked up the native `sin` and `cos`, and executed the whole thing. The call duplication (two calls to `sin`, two to `cos`) is a known limitation covered below.
 
@@ -398,7 +436,7 @@ Evaluated to 0.000000
 
 ## What's Next
 
-Chapter 7 adds a command-line interface — `pyxc run script.pyxc` and `pyxc emit-ir script.pyxc` — so the compiler can read source files instead of just the REPL. That's the foundation control flow and real programs need.
+Chapter 7 adds file input mode and a `-v` flag for IR inspection — `pyxc script.pyxc` runs a source file through the same JIT pipeline as the REPL, and `pyxc script.pyxc -v` prints the generated IR. That's the foundation real programs need.
 
 ## Need Help?
 

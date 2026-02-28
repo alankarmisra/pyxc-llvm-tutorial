@@ -97,9 +97,9 @@ Each chapter builds on the previous one. You can:
 
 **[Chapter 6: JIT and Optimisation](chapter-06.md)** — Add LLVM optimisation passes and ORC JIT so expressions evaluate immediately in the REPL.
 
-<!--
+**[Chapter 7: File Input Mode](chapter-07.md)** — Add file input mode and a `-v` IR flag so pyxc can execute source files through the same JIT pipeline as the REPL.
 
-**[Chapter 7: File Input Mode](chapter-07.md)** — Add `pyxc run script.pyxc` so the compiler can execute source files, not just the REPL.
+<!--
 
 **[Chapter 8: Comparison Operators](chapter-08.md)** — Add `==`, `!=`, `<=`, `>=` with correct precedence and LLVM IR codegen.
 

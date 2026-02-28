@@ -1,0 +1,13 @@
+extern def printd(x)
+
+def higher(x, y):
+    return if x > y: x 
+           else: y
+
+def print_higher(x, y):
+    return if x > y: printd(x) else: printd(y)
+
+# printd(higher(2, 1))
+# printd(higher(1, 2))
+# printd(higher(3, 3))
+print_higher(10, 20)

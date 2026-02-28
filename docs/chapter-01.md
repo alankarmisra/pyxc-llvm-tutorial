@@ -5,23 +5,31 @@ description: "Teach the compiler to read: break source text into tokens the pars
 
 ## What We're Building
 
-By the end of this tutorial, you'll have built a compiler for a Python-like language. Here's what we're eventually aiming for:
+By the end of this tutorial, you'll have built a compiler for a Python-like language which compiles to binary and runs extremely fast. 16x faster than Python in some preliminary benchmarks. 
+
+In the initial chapters, we keep the language small and simple — no `if` conditionals or `for` loops, and only 64-bit floating point types. We will introduce more sophisticated patterns little by little. Here's what we are going to build over the next few chapters:
+
 
 ```python
-def fibonacci(n: int) -> int:
-    if n <= 1:
-        return n
-    return fibonacci(n - 1) + fibonacci(n - 2)
+# test.pyxc
+extern def sin(x)    # pull in a C-standard library function (yes THAT C)
+extern def cos(x)    # and another
+extern def printd(x) # a custom pyxc library function
+
+# define your own function
+def identity(x): # returns double by default
+   return sin(x) * sin(x) + cos(x) * cos(x)
+
+printd(identity(4)) # function calls
 ```
 
-The very first thing a compiler needs to do is read source text and classify each piece — is this a number? A function name? A `+` sign? A keyword like `def`? Right now the compiler can't even do that. This chapter adds it.
+The above will output
 
-For now we keep the language small — no `if` conditionals or `for` loops yet.
-
-```python
-def add(a, b):
-    return a + b
+```bash
+1.000000
 ```
+
+The very first thing a compiler needs to do is read source text and classify each piece — is this a number? A function name? A `+` sign? A keyword like `def`? Let's add this first. 
 
 ## Source Code
 

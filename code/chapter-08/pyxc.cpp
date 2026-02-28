@@ -36,6 +36,24 @@ using namespace std;
 using namespace llvm;
 using namespace llvm::orc;
 
+//===----------------------------------------------------------------------===//
+// Command line
+//===----------------------------------------------------------------------===//
+static cl::OptionCategory PyxcCategory("Pyxc options");
+
+// Optional positional input: 0 args => REPL, 1 arg => file mode.
+static cl::list<std::string> InputFiles(cl::Positional,
+                                        cl::desc("[script.pyxc]"),
+                                        cl::ZeroOrMore, cl::cat(PyxcCategory));
+
+// Verbose IR dump in both REPL and file mode.
+static cl::opt<bool> VerboseIR("v",
+                               cl::desc("Print generated LLVM IR to stderr"),
+                               cl::init(false), cl::cat(PyxcCategory));
+
+static FILE *Input = stdin;
+static bool IsRepl = true;
+
 //===----------------------------------------===//
 // Lexer
 //===----------------------------------------===//
@@ -55,8 +73,16 @@ enum Token {
   tok_identifier = -6,
   tok_number = -7,
 
+  // comparison operators
+  tok_eq = -8,   // ==
+  tok_neq = -9,  // !=
+  tok_leq = -10, // <=
+  tok_geq = -11, // >=
+
   // control
-  tok_return = -8
+  tok_if = -12,
+  tok_else = -13,
+  tok_return = -14
 };
 
 static string IdentifierStr; // Filled in if tok_identifier
@@ -65,19 +91,30 @@ static string NumLiteralStr; // Filled in if tok_number, used in error messages
 
 // Keywords words like `def`, `extern` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
-static map<string, Token> Keywords = {
-    {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return}};
+static map<string, Token> Keywords = {{"def", tok_def},
+                                      {"extern", tok_extern},
+                                      {"return", tok_return},
+                                      {"if", tok_if},
+                                      {"else", tok_else}};
 
 // Debug-only token names. Kept separate from Keywords because this map is
 // purely for printing token stream output.
 static map<int, string> TokenNames = [] {
   // Unprintable character tokens, and multi-character tokens.
-  map<int, string> Names = {
-      {tok_eof, "end of input"}, {tok_eol, "newline"},
-      {tok_error, "error"},      {tok_def, "'def'"},
-      {tok_extern, "'extern'"},  {tok_identifier, "identifier"},
-      {tok_number, "number"},    {tok_return, "'return'"},
-  };
+  static map<int, string> Names = {{tok_eof, "end of input"},
+                                   {tok_eol, "newline"},
+                                   {tok_error, "error"},
+                                   {tok_def, "'def'"},
+                                   {tok_extern, "'extern'"},
+                                   {tok_identifier, "identifier"},
+                                   {tok_number, "number"},
+                                   {tok_return, "'return'"},
+                                   {tok_eq, "'=='"},
+                                   {tok_neq, "'!='"},
+                                   {tok_leq, "'<='"},
+                                   {tok_geq, "'>='"},
+                                   {tok_if, "if"},
+                                   {tok_else, "else"}};
 
   // Single character tokens.
   for (int ch = 0; ch <= 255; ++ch) {
@@ -172,17 +209,17 @@ static void PrintErrorSourceContext(SourceLocation Loc);
 /// advance - Read one character from stdin, update LexLoc and SourceManager.
 ///
 /// This is the single point through which all character consumption flows.
-/// Every token branch in gettok() calls advance() rather than getchar()
+/// Every token branch in gettok() calls advance() rather than fgetc()
 /// directly, so LexLoc and the source buffer are always in sync.
 ///
 /// Windows line endings (\r\n) are coalesced to a single \n so the rest of
 /// the lexer never needs to handle \r.
 static int advance() {
-  int LastChar = getchar();
+  int LastChar = fgetc(Input);
   if (LastChar == '\r') {
-    int NextChar = getchar();
+    int NextChar = fgetc(Input);
     if (NextChar != '\n' && NextChar != EOF)
-      ungetc(NextChar, stdin);
+      ungetc(NextChar, Input);
     PyxcSourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
@@ -199,6 +236,12 @@ static int advance() {
   }
 
   return LastChar;
+}
+
+static int peek() {
+  int C = fgetc(Input);
+  ungetc(C, Input);
+  return C;
 }
 
 /// gettok - Return the next token from standard input.
@@ -277,6 +320,30 @@ static int gettok() {
       LastChar = ' ';
       return tok_eol;
     }
+  }
+
+  if (LastChar == '=') {
+    int Tok = (peek() == '=') ? (advance(), tok_eq) : '=';
+    LastChar = advance();
+    return Tok;
+  }
+
+  if (LastChar == '!') {
+    int Tok = (peek() == '=') ? (advance(), tok_neq) : '!';
+    LastChar = advance();
+    return Tok;
+  }
+
+  if (LastChar == '<') {
+    int Tok = (peek() == '=') ? (advance(), tok_leq) : '<';
+    LastChar = advance();
+    return Tok;
+  }
+
+  if (LastChar == '>') {
+    int Tok = (peek() == '=') ? (advance(), tok_geq) : '>';
+    LastChar = advance();
+    return Tok;
   }
 
   if (LastChar == EOF)
@@ -401,6 +468,17 @@ public:
   Value *codegen() override;
 };
 
+/// IfExprAST - Expression class for if/else.
+class IfExprAST : public ExprAST {
+  unique_ptr<ExprAST> Cond, Then, Else;
+
+public:
+  IfExprAST(unique_ptr<ExprAST> Cond, unique_ptr<ExprAST> Then,
+            unique_ptr<ExprAST> Else)
+      : Cond(std::move(Cond)), Then(std::move(Then)), Else(std::move(Else)) {}
+  Value *codegen() override;
+};
+
 /// PrototypeAST - This class represents the "prototype" for a function,
 /// which captures its name, and its argument names (thus implicitly the number
 /// of arguments the function takes).
@@ -444,7 +522,17 @@ static int getNextToken() { return CurTok = gettok(); }
 /// Higher numbers bind more tightly: '*' (40) > '+'/'-' (20) > '<' (10).
 /// Operators not in this map return -1 from GetTokPrecedence(), which tells
 /// ParseBinOpRHS to stop consuming operators and return what it has so far.
-static map<char, int> BinopPrecedence;
+static map<int, int> BinopPrecedence = {
+    {tok_eq, 10},  // ==
+    {tok_neq, 10}, // !=
+    {tok_leq, 10}, // <=
+    {tok_geq, 10}, // >=
+    {'<', 10},     // <
+    {'>', 10},     // >
+    {'+', 20},     // +
+    {'-', 20},     // -
+    {'*', 40},     // *
+};
 
 /// GetTokPrecedence - Returns the precedence of CurTok if it is a known binary
 /// operator, or -1 if it is not. Non-ASCII tokens (our named token enums) are
@@ -459,6 +547,16 @@ static int GetTokPrecedence() {
   return TokPrec;
 }
 
+void PrintConsoleReady() {
+  if (IsRepl)
+    fprintf(stderr, "ready> ");
+}
+
+void Log(const string &message) {
+  if (IsRepl)
+    fprintf(stderr, "%s", message.c_str());
+}
+
 /// LogError* - Error reporting helpers. Each returns nullptr for its respective
 /// type so parse functions can write: return LogError("message");
 unique_ptr<ExprAST> LogError(const char *Str) {
@@ -466,6 +564,7 @@ unique_ptr<ExprAST> LogError(const char *Str) {
   fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
           Str);
   PrintErrorSourceContext(Anchor);
+  PrintConsoleReady();
   return nullptr;
 }
 
@@ -539,6 +638,51 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
   return make_unique<CallExprAST>(IdName, std::move(Args));
 }
 
+/// ifexpr
+///   = "if" expression ":" expression "else" ":" expression ;
+static unique_ptr<ExprAST> ParseIfExpr() {
+  getNextToken(); // eat 'if'
+
+  auto Cond = ParseExpression();
+  if (!Cond)
+    return nullptr;
+
+  if (CurTok != ':')
+    return LogError("Expected ':' after if condition");
+  getNextToken(); // eat ':'
+
+  // Allow body on next line
+  while (CurTok == tok_eol)
+    getNextToken();
+
+  auto Then = ParseExpression();
+  if (!Then)
+    return nullptr;
+
+  // Allow 'else' on next line
+  while (CurTok == tok_eol)
+    getNextToken();
+
+  if (CurTok != tok_else)
+    return LogError("Expected 'else' in if expression");
+  getNextToken(); // eat 'else'
+
+  if (CurTok != ':')
+    return LogError("Expected ':' after else");
+  getNextToken(); // eat ':'
+
+  // Allow body on next line
+  while (CurTok == tok_eol)
+    getNextToken();
+
+  auto Else = ParseExpression();
+  if (!Else)
+    return nullptr;
+
+  return make_unique<IfExprAST>(std::move(Cond), std::move(Then),
+                                std::move(Else));
+}
+
 /// primary
 ///   = identifierexpr
 ///   | numberexpr
@@ -553,6 +697,8 @@ static unique_ptr<ExprAST> ParsePrimary() {
     return ParseNumberExpr();
   case '(':
     return ParseParenExpr();
+  case tok_if:
+    return ParseIfExpr();
   }
 }
 
@@ -831,6 +977,21 @@ Value *BinaryExprAST::codegen() {
     L = Builder->CreateFCmpULT(L, R, "cmptmp");
     // Widen the i1 boolean to double: false -> 0.0, true -> 1.0.
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+  case '>':
+    L = Builder->CreateFCmpUGT(L, R, "cmptmp");
+    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+  case tok_eq:
+    L = Builder->CreateFCmpUEQ(L, R, "cmptmp");
+    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+  case tok_neq:
+    L = Builder->CreateFCmpUNE(L, R, "cmptmp");
+    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+  case tok_leq:
+    L = Builder->CreateFCmpULE(L, R, "cmptmp");
+    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+  case tok_geq:
+    L = Builder->CreateFCmpUGE(L, R, "cmptmp");
+    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   default:
     return LogErrorV("invalid binary operator");
   }
@@ -859,6 +1020,53 @@ Value *CallExprAST::codegen() {
   }
 
   return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
+}
+
+Value *IfExprAST::codegen() {
+  Value *CondV = Cond->codegen();
+  if (!CondV)
+    return nullptr;
+
+  // Convert condition to bool by comparing != 0.0
+  CondV = Builder->CreateFCmpONE(
+      CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "ifcond");
+
+  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+
+  // Create blocks for then, else, and merge.
+  BasicBlock *ThenBB = BasicBlock::Create(*TheContext, "then", TheFunction);
+  BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else");
+  BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont");
+
+  Builder->CreateCondBr(CondV, ThenBB, ElseBB);
+
+  // Emit then block.
+  Builder->SetInsertPoint(ThenBB);
+  Value *ThenV = Then->codegen();
+  if (!ThenV)
+    return nullptr;
+  Builder->CreateBr(MergeBB);
+
+  // Codegen can change the current block — capture where then ended.
+  ThenBB = Builder->GetInsertBlock();
+
+  // Emit else block.
+  TheFunction->insert(TheFunction->end(), ElseBB);
+  Builder->SetInsertPoint(ElseBB);
+  Value *ElseV = Else->codegen();
+  if (!ElseV)
+    return nullptr;
+  Builder->CreateBr(MergeBB);
+  ElseBB = Builder->GetInsertBlock();
+
+  // Emit merge block with phi node.
+  TheFunction->insert(TheFunction->end(), MergeBB);
+  Builder->SetInsertPoint(MergeBB);
+  PHINode *PN = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
+  PN->addIncoming(ThenV, ThenBB);
+  PN->addIncoming(ElseV, ElseBB);
+
+  return PN;
 }
 
 /// PrototypeAST::codegen - Create a function declaration in TheModule: name,
@@ -1034,9 +1242,9 @@ static void HandleDefinition() {
     return;
   }
   if (auto *FnIR = FnAST->codegen()) {
-    fprintf(stderr, "Parsed a function definition.\n");
-    FnIR->print(errs());
-    fprintf(stderr, "\n");
+    Log("Parsed a function definition.\n");
+    if (VerboseIR)
+      FnIR->print(errs());
     // Transfer the module to the JIT. TheModule is now invalid; reinitialise.
     ExitOnErr(TheJIT->addModule(
         ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
@@ -1054,6 +1262,7 @@ static void HandleDefinition() {
 /// On parse failure or unexpected trailing tokens: discard the line.
 static void HandleExtern() {
   auto ProtoAST = ParseExtern();
+
   if (!ProtoAST)
     return;
 
@@ -1065,9 +1274,9 @@ static void HandleExtern() {
   }
 
   if (auto *FnIR = ProtoAST->codegen()) {
-    fprintf(stderr, "Parsed an extern.\n");
-    FnIR->print(errs());
-    fprintf(stderr, "\n");
+    Log("Parsed an extern.\n");
+    if (VerboseIR)
+      FnIR->print(errs());
     // Save the prototype so getFunction() can re-emit it in future modules.
     FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
   }
@@ -1099,9 +1308,9 @@ static void HandleTopLevelExpression() {
     return;
   }
   if (auto *FnIR = FnAST->codegen()) {
-    fprintf(stderr, "Parsed a top-level expression.\n");
-    FnIR->print(errs());
-    fprintf(stderr, "\n");
+    Log("Parsed a top-level expression.\n");
+    if (VerboseIR)
+      FnIR->print(errs());
 
     // ResourceTracker scopes the JIT memory for this expression so we can
     // free it precisely after the call, without affecting other symbols.
@@ -1117,7 +1326,9 @@ static void HandleTopLevelExpression() {
 
     // Cast the symbol address to a callable function pointer and invoke it.
     double (*FP)() = ExprSymbol.toPtr<double (*)()>();
-    fprintf(stderr, "Evaluated to %f\n", FP());
+    double result = FP();
+    if (IsRepl)
+      fprintf(stderr, "Evaluated to %f\n", result);
 
     // Release the compiled code and JIT memory for this expression.
     ExitOnErr(RT->remove());
@@ -1168,7 +1379,7 @@ static void MainLoop() {
 
     // A bare newline: just print a fresh prompt and read the next token.
     if (CurTok == tok_eol) {
-      fprintf(stderr, "ready> ");
+      PrintConsoleReady();
       getNextToken();
       continue;
     }
@@ -1192,11 +1403,40 @@ static void MainLoop() {
   }
 }
 
+int ProcessCommandLine(int argc, const char **argv) {
+  cl::HideUnrelatedOptions(PyxcCategory);
+  cl::ParseCommandLineOptions(argc, argv, "pyxc\n");
+
+  if (InputFiles.size() > 1) {
+    fprintf(stderr, "Error: expected at most one input file.\n");
+    return -1;
+  }
+
+  if (InputFiles.size() == 1) {
+    Input = fopen(InputFiles[0].c_str(), "r");
+    if (!Input) {
+      perror(InputFiles[0].c_str());
+      return -1;
+    }
+    IsRepl = false;
+  } else {
+    IsRepl = true;
+  }
+
+  return 0;
+}
+
 //===----------------------------------------===//
 // Main driver code.
 //===----------------------------------------===//
 
-int main() {
+int main(int argc, const char **argv) {
+
+  int commandLineResult = ProcessCommandLine(argc, argv);
+  if (commandLineResult != 0) {
+    return commandLineResult;
+  }
+
   // Initialise LLVM's backend for the host machine. These three calls
   // together register the native target's instruction set, assembler, and
   // disassembler so the JIT can compile and link for the current CPU.
@@ -1212,7 +1452,7 @@ int main() {
 
   // Prime the REPL: print the first prompt and load the first token.
   // Every parse function expects CurTok to be loaded before it is called.
-  fprintf(stderr, "ready> ");
+  PrintConsoleReady();
   getNextToken();
 
   // Create the JIT first — InitializeModuleAndManagers() needs TheJIT in
@@ -1221,6 +1461,11 @@ int main() {
   InitializeModuleAndManagers();
 
   MainLoop();
+
+  if (Input && Input != stdin) {
+    fclose(Input);
+    Input = stdin;
+  }
 
   return 0;
 }

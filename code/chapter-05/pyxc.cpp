@@ -932,14 +932,16 @@ static void HandleDefinition() {
 /// line and return.
 static void HandleExtern() {
   auto ProtoAST = ParseExtern();
-  if (!ProtoAST || (CurTok != tok_eol && CurTok != tok_eof)) {
-    if (CurTok != tok_eol && CurTok != tok_eof) {
-      if (CurTok)
-        LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
-      SynchronizeToLineBoundary();
-      return;
-    }
+  if (!ProtoAST)
+    return;
+
+  if (CurTok != tok_eol && CurTok != tok_eof) {
+    if (CurTok)
+      LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+    SynchronizeToLineBoundary();
+    return;
   }
+
   if (auto *FnIR = ProtoAST->codegen()) {
     fprintf(stderr, "Parsed an extern.\n");
     FnIR->print(errs());
