@@ -86,6 +86,10 @@ enum Token {
 
   // loops
   tok_for = -15,
+
+  // user-defined operators
+  tok_binary = -16,
+  tok_unary  = -17,
 };
 
 static string IdentifierStr; // Filled in if tok_identifier
@@ -99,7 +103,9 @@ static map<string, Token> Keywords = {{"def", tok_def},
                                       {"return", tok_return},
                                       {"if", tok_if},
                                       {"else", tok_else},
-                                      {"for", tok_for}};
+                                      {"for", tok_for},
+                                      {"binary", tok_binary},
+                                      {"unary", tok_unary}};
 
 // Debug-only token names. Kept separate from Keywords because this map is
 // purely for printing token stream output.
@@ -119,7 +125,9 @@ static map<int, string> TokenNames = [] {
                                    {tok_geq, "'>='"},
                                    {tok_if, "'if'"},
                                    {tok_else, "'else'"},
-                                   {tok_for, "'for'"}};
+                                   {tok_for, "'for'"},
+                                   {tok_binary, "'binary'"},
+                                   {tok_unary, "'unary'"}};
 
   // Single character tokens.
   for (int ch = 0; ch <= 255; ++ch) {
@@ -492,6 +500,20 @@ public:
   Value *codegen() override;
 };
 
+/// UnaryExprAST - Expression class for a user-defined unary operator.
+/// The operator is identified by its ASCII character (e.g. '!' for logical not).
+/// Codegen looks up the function "unary<op>" (e.g. "unary!") and calls it with
+/// the operand — so unary operators are just regular functions in disguise.
+class UnaryExprAST : public ExprAST {
+  char Opcode;
+  unique_ptr<ExprAST> Operand;
+
+public:
+  UnaryExprAST(char Opcode, unique_ptr<ExprAST> Operand)
+      : Opcode(Opcode), Operand(std::move(Operand)) {}
+  Value *codegen() override;
+};
+
 /// IfExprAST - Expression class for if/else.
 class IfExprAST : public ExprAST {
   unique_ptr<ExprAST> Cond, Then, Else;
@@ -506,15 +528,38 @@ public:
 /// PrototypeAST - This class represents the "prototype" for a function,
 /// which captures its name, and its argument names (thus implicitly the number
 /// of arguments the function takes).
+///
+/// For user-defined operators, IsOperator is true and the function name encodes
+/// the operator character: "binary+" for a binary '+' operator, "unary!" for a
+/// unary '!' operator. Precedence is only meaningful for binary operators — it
+/// is installed into BinopPrecedence at codegen time, making the new operator
+/// immediately available to the parser for subsequent expressions.
 class PrototypeAST {
   string Name;
   vector<string> Args;
+  bool IsOperator;
+  unsigned Precedence; // binary operators only
 
 public:
-  PrototypeAST(const string &Name, vector<string> Args)
-      : Name(Name), Args(std::move(Args)) {}
+  PrototypeAST(const string &Name, vector<string> Args,
+               bool IsOperator = false, unsigned Prec = 0)
+      : Name(Name), Args(std::move(Args)), IsOperator(IsOperator),
+        Precedence(Prec) {}
 
   const string &getName() const { return Name; }
+
+  bool isUnaryOp()  const { return IsOperator && Args.size() == 1; }
+  bool isBinaryOp() const { return IsOperator && Args.size() == 2; }
+
+  // The operator character is the last character of the encoded name.
+  // e.g. "binary+" -> '+', "unary!" -> '!'
+  char getOperatorName() const {
+    assert((isUnaryOp() || isBinaryOp()) && "Not an operator prototype");
+    return Name.back();
+  }
+
+  unsigned getBinaryPrecedence() const { return Precedence; }
+
   Function *codegen();
 };
 
@@ -812,8 +857,37 @@ static unique_ptr<ExprAST> ParsePrimary() {
   }
 }
 
+/// unaryexpr
+///   = primary
+///   | opchar unaryexpr
+///
+/// If the current token is an ASCII character that could be a user-defined
+/// unary operator (i.e., not a digit, not '(' which starts a paren expr, and
+/// not a character that begins a primary like a letter or quote), we treat it
+/// as a unary operator application and build a UnaryExprAST.  Otherwise we
+/// fall through to ParsePrimary.
+///
+/// This is called from both ParseExpression (as the LHS seed) and from
+/// ParseBinOpRHS (as the RHS of a binary operator), so user-defined unary ops
+/// work in both positions: `!x + 1` and `f(x) + !y`.
+static unique_ptr<ExprAST> ParseUnary() {
+  // If the current token is not an ASCII character, or it begins a primary
+  // expression (letter, digit, '(', '-' which is ParseUnaryMinus), defer to
+  // ParsePrimary.
+  if (!isascii(CurTok) || CurTok == '(' || CurTok == '-' ||
+      isalpha(CurTok) || isdigit(CurTok))
+    return ParsePrimary();
+
+  // It's an ASCII punctuation character — treat it as a user-defined unary op.
+  int Opc = CurTok;
+  getNextToken(); // eat the operator character
+  if (auto Operand = ParseUnary())
+    return make_unique<UnaryExprAST>(Opc, std::move(Operand));
+  return nullptr;
+}
+
 /// binoprhs
-///   = { binaryop primary } ;
+///   = { binaryop unaryexpr } ;
 static unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
                                          unique_ptr<ExprAST> LHS) {
   // If this is a binop, find its precedence.
@@ -829,8 +903,10 @@ static unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
     int BinOp = CurTok;
     getNextToken(); // eat binop
 
-    // Parse the primary expression after the binary operator.
-    auto RHS = ParsePrimary();
+    // Parse the unary expression after the binary operator.  Using ParseUnary
+    // here (rather than ParsePrimary directly) means unary operators bind
+    // tighter than any binary operator, matching normal convention.
+    auto RHS = ParseUnary();
     if (!RHS)
       return nullptr;
 
@@ -849,9 +925,9 @@ static unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
 }
 
 /// expression
-///   = primary binoprhs ;
+///   = unaryexpr binoprhs ;
 static unique_ptr<ExprAST> ParseExpression() {
-  auto LHS = ParsePrimary();
+  auto LHS = ParseUnary();
   if (!LHS)
     return nullptr;
 
@@ -860,30 +936,62 @@ static unique_ptr<ExprAST> ParseExpression() {
 
 /// prototype
 ///   = identifier "(" [identifier {"," identifier}] ")" ;
-static unique_ptr<PrototypeAST> ParsePrototype() {
-  if (CurTok != tok_identifier)
-    return LogErrorP("Expected function name in prototype");
+/// ParsePrototype - Parse a function prototype.
+///
+/// Three forms are supported:
+///
+///   Normal function:
+///     identifier "(" [identifier {"," identifier}] ")"
+///
+///   User-defined binary operator (called after eating '@binary(prec)\ndef'):
+///     "binary" opchar "(" identifier "," identifier ")"
+///     The function is stored as "binary<opchar>" with the given precedence.
+///
+///   User-defined unary operator (called after eating '@unary\ndef'):
+///     "unary" opchar "(" identifier ")"
+///     The function is stored as "unary<opchar>" with precedence 0.
+///
+/// IsOperator and Precedence are passed in from ParseDefinition after it reads
+/// the decorator line; they default to false/false/0 for ordinary functions.
+///
+/// IsBinary distinguishes @binary from @unary when IsOperator is true.
+static unique_ptr<PrototypeAST> ParsePrototype(bool IsOperator = false,
+                                               bool IsBinary = false,
+                                               unsigned Precedence = 0) {
+  string FnName;
 
-  string FnName = IdentifierStr;
-  getNextToken(); // eat function name
+  if (IsOperator) {
+    // The decorator line (@binary(N) / @unary) has already been consumed by
+    // HandleDecorator.  ParseDefinition has eaten 'def'.  CurTok is now on
+    // the operator character itself.
+    //
+    // The operator character can be any printable non-alphanumeric ASCII char
+    // other than '@' (which is the decorator marker).
+    if (!isascii(CurTok) || isalnum(CurTok) || CurTok == '@')
+      return LogErrorP("Expected operator character after 'def' in operator prototype");
+    char OpChar = (char)CurTok;
+    FnName = string(IsBinary ? "binary" : "unary") + OpChar;
+    getNextToken(); // eat operator char
+  } else {
+    if (CurTok != tok_identifier)
+      return LogErrorP("Expected function name in prototype");
+    FnName = IdentifierStr;
+    getNextToken(); // eat function name
+  }
 
   if (CurTok != '(')
     return LogErrorP("Expected '(' in prototype");
 
-  // Parse argument names. The loop calls getNextToken() at the top to advance
-  // past '(' on the first iteration, and past ',' on subsequent ones.
-  // Inside the body we call getNextToken() again to move past the identifier
-  // we just stored, then check whether ')' or ',' follows.
+  // Parse argument names.
   vector<string> ArgNames;
   while (getNextToken() == tok_identifier) {
     ArgNames.push_back(IdentifierStr);
 
-    if (getNextToken() == ')') // eat identifier, check what follows
+    if (getNextToken() == ')')
       break;
 
     if (CurTok != ',')
       return LogErrorP("Expected ')' or ',' in parameter list");
-    // loop continues: getNextToken() at the top eats the ','
   }
 
   if (CurTok != ')')
@@ -891,14 +999,30 @@ static unique_ptr<PrototypeAST> ParsePrototype() {
 
   getNextToken(); // eat ')'
 
-  return make_unique<PrototypeAST>(FnName, std::move(ArgNames));
+  // Validate arity for operator prototypes.
+  if (IsOperator) {
+    if (!IsBinary && ArgNames.size() != 1)
+      return LogErrorP("Unary operator must have exactly one argument");
+    if (IsBinary && ArgNames.size() != 2)
+      return LogErrorP("Binary operator must have exactly two arguments");
+  }
+
+  return make_unique<PrototypeAST>(FnName, std::move(ArgNames),
+                                   IsOperator, Precedence);
 }
 
 /// definition
-///   = "def" prototype ":" ["newline"] "return" expression ;
-static unique_ptr<FunctionAST> ParseDefinition() {
+///   = ["@" ("binary" "(" number ")" | "unary") eol]
+///     "def" prototype ":" ["newline"] "return" expression ;
+///
+/// The optional decorator line sets IsOperator and Precedence before
+/// ParsePrototype is called. The decorator is consumed by HandleDefinition
+/// and passed here; ParseDefinition itself only handles the 'def' form.
+static unique_ptr<FunctionAST> ParseDefinition(bool IsOperator = false,
+                                               bool IsBinary = false,
+                                               unsigned Precedence = 0) {
   getNextToken(); // eat 'def'
-  auto Proto = ParsePrototype();
+  auto Proto = ParsePrototype(IsOperator, IsBinary, Precedence);
   if (!Proto)
     return nullptr;
 
@@ -1106,8 +1230,37 @@ Value *BinaryExprAST::codegen() {
     L = Builder->CreateFCmpUGE(L, R, "cmptmp");
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   default:
-    return LogErrorV("invalid binary operator");
+    break;
   }
+
+  // If we get here it's not a built-in operator — look for a user-defined one.
+  // User-defined binary operators are stored as regular functions named
+  // "binary" + opchar.  We call that function with L and R as arguments.
+  Function *F = getFunction(std::string("binary") + (char)Op);
+  if (!F)
+    return LogErrorV("invalid binary operator");
+
+  Value *Ops[] = {L, R};
+  return Builder->CreateCall(F, Ops, "binop");
+}
+
+/// UnaryExprAST::codegen - Look up the user-defined unary operator function
+/// (named "unary" + opchar), verify it exists, and emit a call to it.
+///
+/// User-defined unary operators are compiled to regular functions that take a
+/// single double and return a double.  The only difference from a normal call
+/// is that the function name is synthesised here rather than written by the
+/// programmer.
+Value *UnaryExprAST::codegen() {
+  Function *F = getFunction(std::string("unary") + Opcode);
+  if (!F)
+    return LogErrorV("Unknown unary operator");
+
+  Value *Op = Operand->codegen();
+  if (!Op)
+    return nullptr;
+
+  return Builder->CreateCall(F, Op, "unop");
 }
 
 /// CallExprAST::codegen - Look up the callee by name in TheModule, verify the
@@ -1303,6 +1456,13 @@ Function *PrototypeAST::codegen() {
   for (auto &Arg : F->args())
     Arg.setName(Args[Idx++]);
 
+  // For user-defined binary operators, register the precedence in the global
+  // table so the parser knows how tightly the new operator binds.  This happens
+  // at JIT time (inside codegen), meaning the operator is immediately usable in
+  // subsequent REPL lines or file definitions — exactly what we want.
+  if (isBinaryOp())
+    BinopPrecedence[getOperatorName()] = Precedence;
+
   return F;
 }
 
@@ -1443,6 +1603,84 @@ static void SynchronizeToLineBoundary() {
 /// to create a fresh module for the next input. The compiled function remains
 /// accessible in the JIT's symbol table for the rest of the session.
 /// On parse failure or unexpected trailing tokens: discard the line.
+/// HandleDecorator - Parse a decorator line and the 'def' that follows it.
+///
+/// Decorator syntax:
+///   @binary(precedence) def opchar(lhs, rhs): ...
+///   @unary              def opchar(x):        ...
+///
+/// The '@' has already been consumed by MainLoop before calling here.
+/// We read the decorator keyword, optional precedence, the mandatory eol,
+/// then hand off to ParseDefinition with IsOperator=true and the precedence.
+static void HandleDecorator() {
+  // CurTok is on 'binary' or 'unary'.
+  bool IsBinary = (CurTok == tok_binary);
+  if (CurTok != tok_binary && CurTok != tok_unary) {
+    LogError("Expected 'binary' or 'unary' after '@'");
+    SynchronizeToLineBoundary();
+    return;
+  }
+  getNextToken(); // eat 'binary'/'unary'
+
+  unsigned Precedence = 30; // sensible default
+  if (IsBinary) {
+    // Expect '(' number ')'.
+    if (CurTok != '(') {
+      LogError("Expected '(' after '@binary'");
+      SynchronizeToLineBoundary();
+      return;
+    }
+    getNextToken(); // eat '('
+
+    if (CurTok != tok_number) {
+      LogError("Expected precedence number in '@binary(...)'");
+      SynchronizeToLineBoundary();
+      return;
+    }
+    Precedence = static_cast<unsigned>(NumVal);
+    getNextToken(); // eat number
+
+    if (CurTok != ')') {
+      LogError("Expected ')' after precedence in '@binary(...)'");
+      SynchronizeToLineBoundary();
+      return;
+    }
+    getNextToken(); // eat ')'
+  }
+
+  // Eat the newline that ends the decorator line.
+  if (CurTok != tok_eol && CurTok != tok_eof) {
+    LogError("Expected newline after decorator");
+    SynchronizeToLineBoundary();
+    return;
+  }
+  while (CurTok == tok_eol)
+    getNextToken();
+
+  // Now expect 'def'.
+  if (CurTok != tok_def) {
+    LogError("Expected 'def' after decorator");
+    SynchronizeToLineBoundary();
+    return;
+  }
+
+  auto FnAST = ParseDefinition(/*IsOperator=*/true, IsBinary, Precedence);
+  if (!FnAST || (CurTok != tok_eol && CurTok != tok_eof)) {
+    if (FnAST)
+      LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+    SynchronizeToLineBoundary();
+    return;
+  }
+  if (auto *FnIR = FnAST->codegen()) {
+    Log("Parsed a user-defined operator.\n");
+    if (VerboseIR)
+      FnIR->print(errs());
+    ExitOnErr(TheJIT->addModule(
+        ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
+    InitializeModuleAndManagers();
+  }
+}
+
 static void HandleDefinition() {
   auto FnAST = ParseDefinition();
   if (!FnAST || (CurTok != tok_eol && CurTok != tok_eof)) {
@@ -1605,6 +1843,11 @@ static void MainLoop() {
       break;
     case tok_extern:
       HandleExtern();
+      break;
+    case '@':
+      // Decorator: '@binary(N)' or '@unary' — consume the '@' then dispatch.
+      getNextToken(); // eat '@', now on 'binary' or 'unary'
+      HandleDecorator();
       break;
     default:
       HandleTopLevelExpression();

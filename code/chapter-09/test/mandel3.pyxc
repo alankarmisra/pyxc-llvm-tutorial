@@ -1,0 +1,58 @@
+extern def putchard(x)
+
+# Sequencing operator: evaluate lhs (for side effects), then return rhs.
+# Precedence 1 means it binds looser than everything else, so the entire
+# chain `a ; b ; c` groups as `(a ; b) ; c` and the whole expression
+# evaluates to c.
+@binary(1)
+def ;(lhs, rhs):
+    return rhs
+
+# Logical not: 0 -> 1, anything else -> 0.
+@unary
+def !(x):
+    return if x == 0: 1 else: 0
+
+# printdensity - map an iteration count to an ASCII character.
+#
+# mandelconverge returns the remaining iteration count when |z|^2 > 4, or 0
+# if the point never escaped (i.e., it is inside the Mandelbrot set).
+# With 32 max iterations, d ranges from 0 to 31.
+#
+# Low d = escaped late (near boundary); high d = escaped early (open space).
+#
+#   d == 0          -> inside the set                        -> '@'
+#   d in [1..2]     -> boundary region                       -> '#'
+#   d in [3..6]     -> inner halo                            -> '*'
+#   d in [7..16]    -> outer halo                            -> '.'
+#   d > 16          -> open space                            -> ' '
+def printdensity(d):
+    return if d > 8: putchard(32) else: if d > 4: putchard(46) else: if d > 2: putchard(43) else: putchard(42)
+
+# mandelconverge - count how many iterations before z escapes |z|^2 > 4,
+# or return 0 if it never does (up to the recursion limit).
+def mandelconverge(real, imag, iters, creal, cimag):
+    return if iters == 0: 0 else: if (real * real + imag * imag) > 4: iters else: mandelconverge(real * real - imag * imag + creal, 2 * real * imag + cimag, iters - 1, creal, cimag)
+
+# mandelrow - render one row of the plot.
+# For each x in [xmin, xmax) we print one density character.
+# We use 32 max iterations so the escape-time gradient is spread over a
+# wider range of ASCII characters, giving a richer density picture.
+def mandelrow(xmin, xmax, xstep, y):
+    return for x = xmin, x < xmax, xstep:
+               printdensity(mandelconverge(x, y, 32, x, y))
+
+# mandelhelp - render the full plot.
+# For each y in [ymin, ymax) render a row then print a newline (ASCII 10).
+# The ; operator sequences the row call with the newline call.
+def mandelhelp(xmin, xmax, xstep, ymin, ymax, ystep):
+    return for y = ymin, y < ymax, ystep:
+               mandelrow(xmin, xmax, xstep, y) ; putchard(10)
+
+# mandel2 - top-level entry point.
+# Adjusts aspect ratio: x steps are half the y steps because terminal
+# characters are ~2x taller than wide.
+def mandel2(realstart, imagstart, realmag, imagmag):
+    return mandelhelp(realstart, realstart + realmag * 78, realmag, imagstart, imagstart + imagmag * 40, imagmag)
+
+mandel2(-2.3, -1.3, 0.05, 0.07)
