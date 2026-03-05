@@ -1,0 +1,15 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed a user-defined operator." %t
+# RUN: grep -q "Parsed a function definition." %t
+# RUN: grep -q "Evaluated to -1.000000" %t
+
+# unaryminus applied to a user-defined unary op: -!x
+# ! is logical not: returns 1 for zero, 0 for non-zero.
+
+@unary
+def !(x): return if x == 0: 1 else: 0
+
+def test(x): return -!x
+
+# -!0 == -(1) == -1
+test(0)

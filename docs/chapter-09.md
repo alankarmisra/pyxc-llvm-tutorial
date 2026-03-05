@@ -39,6 +39,62 @@ This means:
 - The parser needs to know about new operators *at parse time* so it can handle precedence. Binary operators register their precedence in `BinopPrecedence` when codegen runs.
 - Unary operators bind tighter than any binary operator — they're applied before any binary expression is evaluated.
 
+## Grammar
+
+Chapter 9 extends the grammar in three places: a new `decorateddef` production for `@binary`/`@unary` definitions, a new `unaryexpr` level between `expression` and `primary`, and `unaryminus` as a built-in primary.
+
+```ebnf
+(*
+   pyxc.ebnf
+   Grammar for chapter 9 — user-defined operators.
+*)
+
+(*
+   { } = zero or more (any number of...)
+   [ ] = zero or one (optional)
+*)
+
+program         = [ top { eols top } ] [ eols ] ;
+eols            = eol { eol } ;
+top             = definition | decorateddef | external | toplevelexpr ;
+definition      = "def" prototype ":" [ eols ] "return" expression ;
+decorateddef      = binarydecorator eols "def" binaryopprototype ":" [ eols ] "return" expression
+                  | unarydecorator  eols "def" unaryopprototype  ":" [ eols ] "return" expression ;
+binarydecorator   = "@" "binary" "(" number ")" ;
+unarydecorator    = "@" "unary" ;
+binaryopprototype = customopchar "(" identifier "," identifier ")" ;
+unaryopprototype  = customopchar "(" identifier ")" ;
+external        = "extern" "def" prototype ;
+toplevelexpr    = expression ;
+prototype       = identifier "(" [ identifier { "," identifier } ] ")" ;
+conditionalexpr = "if" expression ":" [ eols ] expression [ eols ] "else" ":" [ eols ] expression ;
+forexpr         = "for" identifier "=" expression "," expression "," expression ":" [ eols ] expression ;
+expression      = unaryexpr binoprhs ;
+binoprhs        = { binaryop unaryexpr } ;
+unaryexpr       = unaryop unaryexpr | primary ;
+unaryop         = "-" | userdefunaryop ;
+primary         = identifierexpr | numberexpr | parenexpr
+                | conditionalexpr | forexpr ;
+identifierexpr  = identifier | callexpr ;
+callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
+numberexpr      = number ;
+parenexpr       = "(" expression ")" ;
+binaryop        = builtinbinaryop | userdefbinaryop ;
+builtinbinaryop = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
+userdefbinaryop = ? any opchar defined as a custom binary operator ? ;
+userdefunaryop  = ? any opchar defined as a custom unary operator ? ;
+customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
+                    and not already defined as a custom operator of the same arity ? ;
+opchar          = ? any single ASCII punctuation character ? ;
+identifier      = (letter | "_") { letter | digit | "_" } ;
+number          = digit { digit } [ "." { digit } ]
+                | "." digit { digit } ;
+letter          = "A".."Z" | "a".."z" ;
+digit           = "0".."9" ;
+eol             = "\r\n" | "\r" | "\n" ;
+ws              = " " | "\t" ;
+```
+
 ## New Tokens
 
 Two new keywords: `binary` and `unary`. They appear in decorator lines, not in expressions.
@@ -144,7 +200,7 @@ static void HandleDecorator() {
   }
   getNextToken(); // eat 'binary'/'unary'
 
-  unsigned Precedence = 30; // default
+  unsigned Precedence = 30; // sensible default
   if (IsBinary) {
     // Expect '(' number ')'.
     // ...parse '(' NumVal ')' and store in Precedence...
@@ -167,7 +223,7 @@ static void HandleDecorator() {
 ```cpp
 if (IsOperator) {
   if (!isascii(CurTok) || isalnum(CurTok) || CurTok == '@')
-    return LogErrorP("Expected operator character after 'def'");
+    return LogErrorP("Expected operator character after 'def' in operator prototype");
   char OpChar = (char)CurTok;
   FnName = string(IsBinary ? "binary" : "unary") + OpChar;
   getNextToken(); // eat operator char
@@ -180,10 +236,10 @@ After parsing arguments, the arity is validated: unary must have exactly one arg
 
 The grammar now has a new level between `primary` and `binoprhs`:
 
-```
-expression = unary binoprhs
-unary      = opchar unary
-           | primary
+```ebnf
+expression = unaryexpr binoprhs ;
+binoprhs   = { binaryop unaryexpr } ;
+unaryexpr  = primary | opchar unaryexpr ;
 ```
 
 `ParseUnary` checks whether the current token looks like a user-defined unary operator character. If it does, it eats the character, recursively parses the operand with another `ParseUnary` call, and builds a `UnaryExprAST`. Otherwise it falls through to `ParsePrimary`:
