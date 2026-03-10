@@ -524,9 +524,7 @@ extern def putchard(x)
 def mandelconverge(real, imag, iters, creal, cimag):
     return if iters == 0: iters
            else: if (real * real + imag * imag) > 4: iters
-                 else: mandelconverge(real * real - imag * imag + creal,
-                                      2 * real * imag + cimag,
-                                      iters - 1, creal, cimag)
+                 else: mandelconverge(real * real - imag * imag + creal, 2 * real * imag + cimag, iters - 1, creal, cimag)
 
 def mandelrow(xmin, xmax, xstep, y):
     return for x = xmin, x < xmax, xstep:
@@ -537,13 +535,14 @@ def mandelhelp(xmin, xmax, xstep, ymin, ymax, ystep):
                mandelrow(xmin, xmax, xstep, y) + putchard(10)
 
 def mandel(realstart, imagstart, realmag, imagmag):
-    return mandelhelp(realstart, realstart + realmag * 78, realmag,
-                      imagstart, imagstart + imagmag * 40, imagmag)
+    return mandelhelp(realstart, realstart + realmag * 78, realmag, imagstart, imagstart + imagmag * 40, imagmag)
 
 mandel(0 - 2.3, 0 - 1.3, 0.05, 0.07)
 ```
 
-Pyxc has no unary minus yet — `-2.3` would be parsed as the binary operator `-` applied to nothing, which is an error. The workaround is `0 - 2.3`: a fully-formed binary subtraction that the optimizer collapses to the literal `-2.3` with no extra instructions emitted. Chapter 9 adds unary-expression parsing and built-in unary minus support.
+**Line breaks.** The parser only allows newlines in specific positions — after `:` in `def`, `if`, and `for` bodies. A newline anywhere else (inside a function argument list, mid-expression) is a parse error. This is why `mandelconverge`'s nested `if`/`else` chain can span lines (each `else:` starts a new allowed position) but `mandel`'s long argument list must stay on a single line.
+
+**Unary minus.** Pyxc has no unary minus yet — `-2.3` would be parsed as the binary operator `-` applied to nothing, which is an error. The workaround is `0 - 2.3`: a fully-formed binary subtraction that the optimizer collapses to the literal `-2.3` with no extra instructions emitted. Chapter 9 adds unary-expression parsing and built-in unary minus support.
 
 **`mandelconverge`** recurses until either `iters` hits zero (point likely inside the set) or `real² + imag²` exceeds `4` (magnitude exceeded 2, point is diverging). It returns the remaining iteration count.
 
@@ -636,4 +635,14 @@ Chapter 9 adds user-defined operators via Python-style decorators — `@binary(p
 
 ## Need Help?
 
-Open an issue at [github.com/alankarmisra/pyxc-llvm-tutorial/issues](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues). Include the chapter number, your OS and LLVM version (`llvm-config --version`), the exact command you ran, and the full output.
+Build issues? Questions?
+
+- **GitHub Issues:** [Report problems](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues)
+- **Discussions:** [Ask questions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
+
+Include:
+- Your OS and version
+- Full error message
+- Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
+
+We'll figure it out.

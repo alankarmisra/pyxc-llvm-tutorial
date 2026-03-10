@@ -960,4 +960,14 @@ Chapter 10 replaces the single-expression function body with a statement block, 
 
 ## Need Help?
 
-Open an issue at [github.com/alankarmisra/pyxc-llvm-tutorial/issues](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues). Include the chapter number, your OS and LLVM version (`llvm-config --version`), the exact command you ran, and the full output.
+Build issues? Questions?
+
+- **GitHub Issues:** [Report problems](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues)
+- **Discussions:** [Ask questions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
+
+Include:
+- Your OS and version
+- Full error message
+- Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
+
+We'll figure it out.
