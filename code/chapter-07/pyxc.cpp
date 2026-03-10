@@ -42,9 +42,9 @@ using namespace llvm::orc;
 static cl::OptionCategory PyxcCategory("Pyxc options");
 
 // Optional positional input: 0 args => REPL, 1 arg => file mode.
-static cl::list<std::string> InputFiles(cl::Positional,
-                                        cl::desc("[script.pyxc]"),
-                                        cl::ZeroOrMore, cl::cat(PyxcCategory));
+static cl::list<std::string> InputFile(cl::Positional,
+                                       cl::desc("[script.pyxc]"),
+                                       cl::ZeroOrMore, cl::cat(PyxcCategory));
 
 // Verbose IR dump in both REPL and file mode.
 static cl::opt<bool> VerboseIR("v",
@@ -477,7 +477,7 @@ static int GetTokPrecedence() {
   return TokPrec;
 }
 
-void PrintConsoleReady() {
+void PrintReplPrompt() {
   if (IsRepl)
     fprintf(stderr, "ready> ");
 }
@@ -494,7 +494,7 @@ unique_ptr<ExprAST> LogError(const char *Str) {
   fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
           Str);
   PrintErrorSourceContext(Anchor);
-  PrintConsoleReady();
+  PrintReplPrompt();
   return nullptr;
 }
 
@@ -1200,7 +1200,7 @@ static void MainLoop() {
 
     // A bare newline: just print a fresh prompt and read the next token.
     if (CurTok == tok_eol) {
-      PrintConsoleReady();
+      PrintReplPrompt();
       getNextToken();
       continue;
     }
@@ -1228,15 +1228,15 @@ int ProcessCommandLine(int argc, const char **argv) {
   cl::HideUnrelatedOptions(PyxcCategory);
   cl::ParseCommandLineOptions(argc, argv, "pyxc\n");
 
-  if (InputFiles.size() > 1) {
+  if (InputFile.size() > 1) {
     fprintf(stderr, "Error: expected at most one input file.\n");
     return -1;
   }
 
-  if (InputFiles.size() == 1) {
-    Input = fopen(InputFiles[0].c_str(), "r");
+  if (InputFile.size() == 1) {
+    Input = fopen(InputFile[0].c_str(), "r");
     if (!Input) {
-      perror(InputFiles[0].c_str());
+      perror(InputFile[0].c_str());
       return -1;
     }
     IsRepl = false;
@@ -1273,7 +1273,7 @@ int main(int argc, const char **argv) {
 
   // Prime the REPL: print the first prompt and load the first token.
   // Every parse function expects CurTok to be loaded before it is called.
-  PrintConsoleReady();
+  PrintReplPrompt();
   getNextToken();
 
   // Create the JIT first — InitializeModuleAndManagers() needs TheJIT in

@@ -1,7 +1,8 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Parsed a user-defined operator." %t
-# RUN: grep -q "Parsed a function definition." %t
-# RUN: grep -q "Evaluated to -1.000000" %t
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Parsed a user-defined operator.
+# CHECK: Parsed a function definition.
+# CHECK: Evaluated to -1.000000
+
 
 # unaryminus applied to a user-defined unary op: -!x
 # ! is logical not: returns 1 for zero, 0 for non-zero.

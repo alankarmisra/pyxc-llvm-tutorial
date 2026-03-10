@@ -1,0 +1,17 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Parsed an extern.
+# CHECK: Parsed a function definition.
+# CHECK: 1.000000
+# CHECK: 2.000000
+
+
+# Tests: for loop body on the next line after ':'.
+# forexpr = "for" identifier "=" expression "," expression "," expression ":" [ eols ] expression
+
+extern def printd(x)
+
+def run():
+return for i = 1, i < 3, 1:
+printd(i)
+
+run()

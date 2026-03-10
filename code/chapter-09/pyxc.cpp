@@ -25,6 +25,7 @@
 #include <iomanip>
 #include <map>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <string>
 #include <unistd.h>
@@ -41,9 +42,8 @@ using namespace llvm::orc;
 static cl::OptionCategory PyxcCategory("Pyxc options");
 
 // Optional positional input: 0 args => REPL, 1 arg => file mode.
-static cl::list<std::string> InputFiles(cl::Positional,
-                                        cl::desc("[script.pyxc]"),
-                                        cl::ZeroOrMore, cl::cat(PyxcCategory));
+static cl::opt<std::string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
+                                      cl::init(""), cl::cat(PyxcCategory));
 
 // Verbose IR dump in both REPL and file mode.
 static cl::opt<bool> VerboseIR("v",
@@ -93,7 +93,7 @@ enum Token {
 
 static string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;        // Filled in if tok_number
-static string NumLiteralStr; // Filled in if tok_number, used in error messages
+static string NumLiteralStr; // Filled in if tok_number
 
 // Keywords like `def`, `extern` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
@@ -147,7 +147,7 @@ static map<int, string> TokenNames = [] {
 ///             and Col resets to 0 so the next character will be Col 1.
 ///   CurLoc  - snapshotted at the start of each token in gettok(), before
 ///             consuming any of the token's characters. This is the position
-///             the parser and diagnostics infrastructure see.
+///             the parser and diagnostics see.
 struct SourceLocation {
   int Line;
   int Col;
@@ -257,9 +257,10 @@ static int advance() {
 /// '=' should become '==' (tok_eq), '!' should become '!=' (tok_neq), etc.,
 /// without advancing LexLoc or notifying SourceManager.
 static int peek() {
-  int C = fgetc(Input);
-  ungetc(C, Input);
-  return C;
+  int c = fgetc(Input);
+  if (c != EOF)
+    ungetc(c, Input);
+  return c;
 }
 
 /// gettok - Return the next token from standard input.
@@ -290,6 +291,10 @@ static int gettok() {
   CurLoc = LexLoc;
 
   if (LastChar == '\n') {
+    // Do not call advance() here.
+    // We should return the newline token immediately. If we read one more
+    // character first, REPL mode may wait for extra input before processing
+    // the line the user just submitted.
     LastChar = ' ';
     return tok_eol;
   }
@@ -313,7 +318,8 @@ static int gettok() {
     NumLiteralStr = NumStr;
     char *End = nullptr;
     NumVal = strtod(NumStr.c_str(), &End);
-    if (!End || *End != '\0') {
+    if (End == NumStr.c_str() /* no conversion */
+        || *End != '\0' /* trailing unparsed characters */) {
       fprintf(stderr,
               "Error (Line %d, Column %d): invalid number literal '%s'\n",
               CurLoc.Line, CurLoc.Col, NumStr.c_str());
@@ -333,7 +339,7 @@ static int gettok() {
       // Re-snapshot CurLoc now that the '\n' has been consumed and LexLoc
       // has advanced to the next line. Without this, CurLoc would point at
       // the '#' column, and GetDiagnosticAnchorLoc would look up the wrong
-      // line when the next token triggers an error.
+      // line (because it subtracts 1) when the next token triggers an error.
       CurLoc = LexLoc;
       LastChar = ' ';
       return tok_eol;
@@ -369,8 +375,13 @@ static int gettok() {
   if (LastChar == EOF)
     return tok_eof;
 
+  // Single character token
   int ThisChar = LastChar;
+
+  // Position the lexer at the next character so the next gettok() starts there.
   LastChar = advance();
+
+  // Return ThisChar.
   return ThisChar;
 }
 
@@ -429,11 +440,8 @@ static void PrintErrorSourceContext(SourceLocation Loc) {
     return;
 
   fprintf(stderr, "%s\n", LineText->c_str());
-  int spaces = Loc.Col - 1;
-  if (spaces < 0)
-    spaces = 0;
-  for (int i = 0; i < spaces; ++i)
-    fputc(' ', stderr);
+  int spaces = max(0, Loc.Col - 1);
+  fprintf(stderr, "%*s", spaces, " ");
   fprintf(stderr, "^~~~\n");
 }
 
@@ -493,8 +501,9 @@ public:
 
 /// ForExprAST - Expression class for for loops.
 ///   for <var> = <start>, <cond>, <step>: <body>
-/// The loop variable is in scope for <cond>, <step>, and <body>.
-/// The expression always produces 0.0 — the loop is used for side effects.
+/// The loop variable is in scope for <cond>, <step>, and <body> (through
+/// NamedValues). The expression always produces 0.0 — the loop is used for side
+/// effects.
 class ForExprAST : public ExprAST {
   string VarName;
   unique_ptr<ExprAST> Start, Cond, Step, Body;
@@ -614,11 +623,6 @@ static void consumeNewlines() {
 /// are left-associative. Operators not in this map return -1 from
 /// GetTokPrecedence(), which tells ParseBinOpRHS to stop consuming operators
 /// and return what it has so far.
-// FunctionProtos - Persistent prototype registry used by the parser to detect
-// redefinition of operators. Also used by codegen to re-emit declarations into
-// fresh modules. Declared here so parser functions can access it.
-static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
-
 static map<int, int> BinopPrecedence = {
     {tok_eq, 10},  // ==
     {tok_neq, 10}, // !=
@@ -631,6 +635,18 @@ static map<int, int> BinopPrecedence = {
     {'*', 40},     // *
 };
 
+// KnownUnaryOperators - Tracks unary operator tokens that are already reserved
+// or defined.
+//
+// Seed with '-' because unary minus is a built-in form handled by
+// ParseUnaryMinus(), so users cannot define a custom unary '-'.
+static std::set<int> KnownUnaryOperators = {'-'};
+
+// FunctionProtos - Persistent prototype registry used by the parser to detect
+// redefinition of operators. Also used by codegen to re-emit declarations into
+// fresh modules. Declared here so parser functions can access it.
+static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
+
 /// GetTokPrecedence - Returns the precedence of CurTok if it is a known binary
 /// operator, or -1 if it is not. Both single-character ASCII operators ('+',
 /// '-', '*', '<', '>') and named multi-character token enums (tok_eq, tok_neq,
@@ -642,9 +658,9 @@ static int GetTokPrecedence() {
   return It->second;
 }
 
-/// PrintConsoleReady - Print the interactive prompt to stderr.
+/// PrintReplPrompt - Print the interactive prompt to stderr.
 /// Only emits output in REPL mode; silent when running a script file.
-void PrintConsoleReady() {
+void PrintReplPrompt() {
   if (IsRepl)
     fprintf(stderr, "ready> ");
 }
@@ -665,7 +681,7 @@ unique_ptr<ExprAST> LogError(const char *Str) {
   fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
           Str);
   PrintErrorSourceContext(Anchor);
-  PrintConsoleReady();
+  PrintReplPrompt();
   return nullptr;
 }
 
@@ -840,25 +856,21 @@ ParseUnary(); // forward declaration for ParseUnaryMinus
 
 /// unaryminus
 ///   = "-" unaryexpr ;
-/// Unary minus: syntactic sugar for 0 - x. Handled here rather than as a
-/// binary operator so that -2.3 and -(x+1) both work without a left operand.
-/// The operand is a full unaryexpr so that user-defined unary ops can be
-/// nested under '-' (e.g. -!x).
+/// Parse built-in unary minus into a UnaryExprAST with opcode '-'.
+/// The operand is a full unaryexpr so unary chains work naturally
+/// (e.g. -!x, --x, -(x+1)).
 static unique_ptr<ExprAST> ParseUnaryMinus() {
   getNextToken(); // eat '-'
   auto Operand = ParseUnary();
   if (!Operand)
     return nullptr;
-  // Emit as (0.0 - operand).
-  auto Zero = make_unique<NumberExprAST>(0.0);
-  return make_unique<BinaryExprAST>('-', std::move(Zero), std::move(Operand));
+  return make_unique<UnaryExprAST>('-', std::move(Operand));
 }
 
 /// primary
 ///   = identifierexpr
 ///   | numberexpr
 ///   | parenexpr
-///   | unaryminus
 ///   | conditionalexpr
 ///   | forexpr ;
 static unique_ptr<ExprAST> ParsePrimary() {
@@ -871,8 +883,6 @@ static unique_ptr<ExprAST> ParsePrimary() {
     return ParseNumberExpr();
   case '(':
     return ParseParenExpr();
-  case '-':
-    return ParseUnaryMinus();
   case tok_if:
     return ParseIfExpr();
   case tok_for:
@@ -881,25 +891,30 @@ static unique_ptr<ExprAST> ParsePrimary() {
 }
 
 /// unaryexpr
-///   = primary
-///   | opchar unaryexpr
+///   = unaryop unaryexpr
+///   | primary ;
 ///
-/// If the current token is an ASCII character that could be a user-defined
-/// unary operator (i.e., not a digit, not '(' which starts a paren expr, and
-/// not a character that begins a primary like a letter or quote), we treat it
-/// as a unary operator application and build a UnaryExprAST.  Otherwise we
-/// fall through to ParsePrimary.
+/// unaryop
+///   = "-"
+///   | userdefunaryop ;
+///
+/// Parsing strategy:
+/// 1) If we see '-', parse built-in unary minus.
+/// 2) Else if the token starts a primary, parse primary.
+/// 3) Else treat the token as a user-defined unary operator and recurse for
+///    its operand.
 ///
 /// This is called from both ParseExpression (as the LHS seed) and from
 /// ParseBinOpRHS (as the RHS of a binary operator), so user-defined unary ops
-/// work in both positions: `!x + 1` and `f(x) + !y`.
+/// work in both positions: !x + 1 and f(x) + !y.
 static unique_ptr<ExprAST> ParseUnary() {
-  // If the current token is not an ASCII character, or it begins a primary
-  // expression (letter, digit, '(', '-' which is ParseUnaryMinus), defer to
-  // ParsePrimary.
-  if (!isascii(CurTok) || CurTok == '(' || CurTok == '-' || isalpha(CurTok) ||
-      isdigit(CurTok))
+  // Primary starters will be handled with ParsePrimary.
+  if (!isascii(CurTok) || CurTok == '(' || isalpha(CurTok) || isdigit(CurTok))
     return ParsePrimary();
+
+  // Built-in unary minus.
+  if (CurTok == '-')
+    return ParseUnaryMinus();
 
   // It's an ASCII punctuation character — treat it as a user-defined unary op.
   int Opc = CurTok;
@@ -922,7 +937,8 @@ static unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
     if (TokPrec < ExprPrec)
       return LHS;
 
-    // Okay, we know this is a binop.
+    // Okay, we know this is a binop and that binds at least as tightly as the
+    // current binop.
     int BinOp = CurTok;
     getNextToken(); // eat binop
 
@@ -1060,6 +1076,35 @@ static void ParseUnaryDecorator() {
   getNextToken(); // eat 'unary'
 }
 
+// IsCustomOpChar - Return true if Tok can be used as a user-defined operator
+// character in Pyxc operator prototypes.
+//
+// We restrict to ASCII punctuation so operator definitions stay single-char and
+// predictable across platforms/locales. '@' is reserved for decorator syntax
+// (@binary / @unary), so it is explicitly excluded.
+static bool IsCustomOpChar(int Tok) {
+  return isascii(Tok) && ispunct(static_cast<unsigned char>(Tok)) && Tok != '@';
+}
+
+// IsKnownBinaryOperatorToken - Return true if Tok is already present in the
+// parser's binary-operator table.
+//
+// BinopPrecedence contains built-in binary operators at startup and gains
+// custom binary operators as their prototypes are codegen'd. This makes it a
+// single source of truth for "is this binary operator already known?".
+static bool IsKnownBinaryOperatorToken(int Tok) {
+  return BinopPrecedence.find(Tok) != BinopPrecedence.end();
+}
+
+// IsKnownUnaryOperatorToken - Return true if Tok is already present in the
+// parser's unary-operator registry.
+//
+// KnownUnaryOperators contains reserved built-in unary operators at startup
+// and gains custom unary operators as their prototypes are codegen'd.
+static bool IsKnownUnaryOperatorToken(int Tok) {
+  return KnownUnaryOperators.find(Tok) != KnownUnaryOperators.end();
+}
+
 /// binaryopprototype
 ///   = customopchar "(" identifier "," identifier ")"
 ///
@@ -1067,25 +1112,34 @@ static void ParseUnaryDecorator() {
 /// The function is stored internally as "binary<opchar>" (e.g. "binary%"),
 /// which is how BinaryExprAST::codegen() looks it up at call sites.
 static unique_ptr<PrototypeAST> ParseBinaryOpPrototype(unsigned Precedence) {
-  if (!isascii(CurTok) || isalnum(CurTok) || CurTok == '@')
+  if (!IsCustomOpChar(CurTok))
     return LogErrorP(
         "Expected operator character in binary operator prototype");
 
   char OpChar = (char)CurTok;
-  // Encode arity in the name so binary% and unary% can coexist.
   string FnName = string("binary") + OpChar;
 
-  // Built-in binary operators (+, -, *, <, >) are handled directly by
-  // BinaryExprAST::codegen() and never reach a user-defined lookup, so a
-  // redefinition would compile but never be called.
-  static const string BuiltinBinary = "+-*<>";
-  if (BuiltinBinary.find(OpChar) != string::npos)
-    return LogErrorP((string("'") + OpChar +
-                      "' is a built-in binary operator and cannot be redefined")
+  // Reject redefining any binary operator that is already known to the parser.
+  // This covers both language built-ins and previously defined custom
+  // operators, since both live in BinopPrecedence.
+  if (IsKnownBinaryOperatorToken(CurTok))
+    return LogErrorP(
+        (string("Binary operator '") + OpChar + "' is already defined")
+            .c_str());
+
+  // Reject cross-arity reuse: if a token is already known as a unary operator,
+  // we do not allow defining it as binary.
+  if (IsKnownUnaryOperatorToken(CurTok))
+    return LogErrorP((string("Binary operator '") + OpChar +
+                      "' conflicts with an existing unary operator")
                          .c_str());
 
-  // Prevent silent JIT shadowing: each new module adds a new symbol; without
-  // this check the old definition would silently become unreachable.
+  // Separate guard: reject any existing function/prototype named "binary<op>".
+  // This catches symbol collisions even if the operator was not registered in
+  // BinopPrecedence (e.g. an earlier extern/def with the same encoded name).
+  // Without this, a new definition could silently shadow the old symbol in the
+  // JIT. For operators, we don't want this. For other functions, shadowing is
+  // permissable.
   if (FunctionProtos.count(FnName))
     return LogErrorP(
         (string("Binary operator '") + OpChar + "' is already defined")
@@ -1123,24 +1177,24 @@ static unique_ptr<PrototypeAST> ParseBinaryOpPrototype(unsigned Precedence) {
 /// The function is stored internally as "unary<opchar>" (e.g. "unary&"),
 /// which is how ParseUnary() looks it up at call sites.
 static unique_ptr<PrototypeAST> ParseUnaryOpPrototype() {
-  if (!isascii(CurTok) || isalnum(CurTok) || CurTok == '@')
+  if (!IsCustomOpChar(CurTok))
     return LogErrorP("Expected operator character in unary operator prototype");
 
   char OpChar = (char)CurTok;
-  // Encode arity in the name so binary% and unary% can coexist.
   string FnName = string("unary") + OpChar;
 
-  // Block all single-character built-in operators:
-  // '-' is routed by ParseUnary() through ParsePrimary() to unaryminus, so a
-  // 'unary-' function would never be called — it is unreachable.
-  // '+', '*', '<', '>' WOULD be parsed as unary prefix by ParseUnary() if
-  // defined, but allowing them would create confusing ambiguity: the same
-  // character would mean different things as a prefix vs. an infix operator.
-  static const string BuiltinOps = "+-*<>";
-  if (BuiltinOps.find(OpChar) != string::npos)
-    return LogErrorP((string("'") + OpChar +
-                      "' is a built-in operator and cannot be used as a custom "
-                      "unary operator")
+  // Reject redefining any unary operator that is already known to the parser.
+  // This covers reserved unary operators and previously defined custom unary
+  // operators tracked in KnownUnaryOperators.
+  if (IsKnownUnaryOperatorToken(CurTok))
+    return LogErrorP(
+        (string("Unary operator '") + OpChar + "' is already defined").c_str());
+
+  // Reject cross-arity reuse: if a token is already known as a binary operator,
+  // we do not allow defining it as unary.
+  if (IsKnownBinaryOperatorToken(CurTok))
+    return LogErrorP((string("Unary operator '") + OpChar +
+                      "' conflicts with an existing binary operator")
                          .c_str());
 
   // Prevent silent JIT shadowing (same reason as in ParseBinaryOpPrototype).
@@ -1194,7 +1248,7 @@ static unique_ptr<FunctionAST> ParseDecoratedDef() {
     if (!Prec)
       return nullptr;
     // The decorator must end at a newline before 'def'.
-    if (CurTok != tok_eol && CurTok != tok_eof)
+    if (CurTok != tok_eol)
       return LogErrorF("Expected newline after '@binary(...)' decorator");
     consumeNewlines();
     if (CurTok != tok_def)
@@ -1203,7 +1257,7 @@ static unique_ptr<FunctionAST> ParseDecoratedDef() {
     Proto = ParseBinaryOpPrototype(Prec);
   } else {
     ParseUnaryDecorator(); // consumes "unary"
-    if (CurTok != tok_eol && CurTok != tok_eof)
+    if (CurTok != tok_eol)
       return LogErrorF("Expected newline after '@unary' decorator");
     consumeNewlines();
     if (CurTok != tok_def)
@@ -1376,6 +1430,9 @@ Value *VariableExprAST::codegen() {
 /// it: false -> 0.0, true -> 1.0. This double boolean is then used as the
 /// condition value in if/for expressions, where fcmp one != 0.0 converts it
 /// back to i1.
+/// We use ordered floating-point comparisons (O*) so comparisons with NaN
+/// evaluate false (except '!=' which is true when values are ordered and not
+/// equal).
 Value *BinaryExprAST::codegen() {
   Value *L = LHS->codegen();
   Value *R = RHS->codegen();
@@ -1390,23 +1447,23 @@ Value *BinaryExprAST::codegen() {
   case '*':
     return Builder->CreateFMul(L, R, "multmp");
   case '<':
-    L = Builder->CreateFCmpULT(L, R, "cmptmp");
+    L = Builder->CreateFCmpOLT(L, R, "cmptmp");
     // Widen the i1 boolean to double: false -> 0.0, true -> 1.0.
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case '>':
-    L = Builder->CreateFCmpUGT(L, R, "cmptmp");
+    L = Builder->CreateFCmpOGT(L, R, "cmptmp");
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case tok_eq:
-    L = Builder->CreateFCmpUEQ(L, R, "cmptmp");
+    L = Builder->CreateFCmpOEQ(L, R, "cmptmp");
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case tok_neq:
-    L = Builder->CreateFCmpUNE(L, R, "cmptmp");
+    L = Builder->CreateFCmpONE(L, R, "cmptmp");
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case tok_leq:
-    L = Builder->CreateFCmpULE(L, R, "cmptmp");
+    L = Builder->CreateFCmpOLE(L, R, "cmptmp");
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case tok_geq:
-    L = Builder->CreateFCmpUGE(L, R, "cmptmp");
+    L = Builder->CreateFCmpOGE(L, R, "cmptmp");
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   default:
     break;
@@ -1423,21 +1480,21 @@ Value *BinaryExprAST::codegen() {
   return Builder->CreateCall(F, Ops, "binop");
 }
 
-/// UnaryExprAST::codegen - Look up the user-defined unary operator function
-/// (named "unary" + opchar), verify it exists, and emit a call to it.
-///
-/// User-defined unary operators are compiled to regular functions that take a
-/// single double and return a double.  The only difference from a normal call
-/// is that the function name is synthesised here rather than written by the
-/// programmer.
+/// UnaryExprAST::codegen - Emit built-in unary minus directly, or call a
+/// user-defined unary operator function ("unary" + opchar).
 Value *UnaryExprAST::codegen() {
-  Function *F = getFunction(std::string("unary") + Opcode);
-  if (!F)
-    return LogErrorV("Unknown unary operator");
-
   Value *Op = Operand->codegen();
   if (!Op)
     return nullptr;
+
+  // Built-in unary minus.
+  if (Opcode == '-')
+    return Builder->CreateFNeg(Op, "negtmp");
+
+  // User-defined unary operator.
+  Function *F = getFunction(std::string("unary") + Opcode);
+  if (!F)
+    return LogErrorV("Unknown unary operator");
 
   return Builder->CreateCall(F, Op, "unop");
 }
@@ -1467,32 +1524,31 @@ Value *CallExprAST::codegen() {
   return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
-/// IfExprAST::codegen - Emit SSA IR for an if/else expression.
+/// IfExprAST::codegen - Emit LLVM IR for an if/else expression.
 ///
-/// Because LLVM IR is in SSA form, a value that depends on which branch
-/// executed must be merged through a PHI node in a join block. The emitted
-/// structure is:
+/// Emitted control flow:
 ///
-///   preheader (current block):
-///     cond_val = <Cond codegen>; fcmp one 0.0 -> i1
-///     br i1 cond_val, then, else
+///   <current>:
+///     ; Cond codegen emits a double value %condv
+///     %ifcond = fcmp one double %condv, 0.0 ; convert the double to i1
+///     br i1 %ifcond, label %then, label %else
 ///
 ///   then:
-///     then_val = <Then codegen>
-///     br ifcont
+///     ; Then codegen emits %thenv
+///     br label %ifcont
 ///
 ///   else:
-///     else_val = <Else codegen>
-///     br ifcont
+///     ; Else codegen emits %elsev
+///     br label %ifcont
 ///
-///   ifcont (merge):
-///     result = phi [ then_val, then_end ], [ else_val, else_end ]
-///     ; 'result' is the value of the entire if expression
+///   ifcont:
+///     %iftmp = phi double [ %thenv, %then_end ], [ %elsev, %else_end ]
 ///
-/// ThenBB and ElseBB are re-captured after codegen because nested control
-/// flow inside either branch may add new basic blocks and change the active
-/// insert block. The PHI incoming values must reference the *last* block of
-/// each branch, not the first.
+/// `%iftmp` is the value of the whole if-expression.
+///
+/// We recapture `ThenBB` and `ElseBB` after branch codegen because nested
+/// control flow can move the Builder insertion point to a different block.
+/// PHI incoming edges must use the actual terminating blocks of each arm.
 Value *IfExprAST::codegen() {
   Value *CondV = Cond->codegen();
   if (!CondV)
@@ -1506,8 +1562,8 @@ Value *IfExprAST::codegen() {
 
   // Create blocks for then, else, and merge.
   BasicBlock *ThenBB = BasicBlock::Create(*TheContext, "then", TheFunction);
-  BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else");
-  BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont");
+  BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else", TheFunction);
+  BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont", TheFunction);
 
   Builder->CreateCondBr(CondV, ThenBB, ElseBB);
 
@@ -1522,7 +1578,6 @@ Value *IfExprAST::codegen() {
   ThenBB = Builder->GetInsertBlock();
 
   // Emit else block.
-  TheFunction->insert(TheFunction->end(), ElseBB);
   Builder->SetInsertPoint(ElseBB);
   Value *ElseV = Else->codegen();
   if (!ElseV)
@@ -1531,7 +1586,6 @@ Value *IfExprAST::codegen() {
   ElseBB = Builder->GetInsertBlock();
 
   // Emit merge block with phi node.
-  TheFunction->insert(TheFunction->end(), MergeBB);
   Builder->SetInsertPoint(MergeBB);
   PHINode *PN = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
   PN->addIncoming(ThenV, ThenBB);
@@ -1540,29 +1594,33 @@ Value *IfExprAST::codegen() {
   return PN;
 }
 
-/// ForExprAST::codegen
+/// ForExprAST::codegen - Emit LLVM IR for a for-expression.
 ///
-/// Emits a check-at-the-top loop with three blocks:
+/// CFG shape:
 ///
-///   preheader (falls through from caller):
-///     start_val = <Start codegen>
-///     br loop_cond
+///   <preheader>:
+///     %start = <Start codegen>
+///     br label %loop_cond
 ///
 ///   loop_cond:
-///     i = phi [ start_val, preheader ], [ next_i, loop_body_end ]
-///     cond = <Cond codegen> fcmp one 0.0
-///     br cond loop_body, afterloop
+///     %i = phi double [ %start, %preheader ], [ %nextvar, %body_end ]
+///     %condv = <Cond codegen>
+///     %loopcond = fcmp one double %condv, 0.0
+///     br i1 %loopcond, label %loop_body, label %after_loop
 ///
 ///   loop_body:
-///     <Body codegen>          ; side effects only, value discarded
-///     next_i = i + <Step>
-///     br loop_cond            ; back-edge (from wherever body left us)
+///     ; <Body codegen> (value ignored)
+///     %step = <Step codegen>
+///     %nextvar = fadd double %i, %step
+///     br label %loop_cond
 ///
-///   afterloop:
-///     return 0.0              ; for expression always yields 0.0
+///   after_loop:
+///     ; restore shadowed outer binding of loop variable (if any)
+///     ; for-expression result:
+///     ret-like value = 0.0
 ///
-/// The loop variable shadows any outer variable of the same name for the
-/// duration of the loop. The outer binding is restored in afterloop.
+/// The loop variable name is rebound to `%i` while generating Cond/Step/Body,
+/// then restored after the loop.
 Value *ForExprAST::codegen() {
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
 
@@ -1579,7 +1637,7 @@ Value *ForExprAST::codegen() {
   BasicBlock *BodyBB =
       BasicBlock::Create(*TheContext, "loop_body", TheFunction);
   BasicBlock *AfterBB =
-      BasicBlock::Create(*TheContext, "afterloop", TheFunction);
+      BasicBlock::Create(*TheContext, "after_loop", TheFunction);
 
   // Unconditional jump from preheader into the condition check.
   Builder->CreateBr(CondBB);
@@ -1624,7 +1682,7 @@ Value *ForExprAST::codegen() {
   Variable->addIncoming(NextVar, BodyEndBB);
   Builder->CreateBr(CondBB);
 
-  // ---- afterloop ----
+  // ---- after_loop ----
   Builder->SetInsertPoint(AfterBB);
 
   // Restore the shadowed variable (if any) now that the loop is done.
@@ -1667,6 +1725,11 @@ Function *PrototypeAST::codegen() {
   // subsequent REPL lines or file definitions — exactly what we want.
   if (isBinaryOp())
     BinopPrecedence[getOperatorName()] = Precedence;
+
+  // For user-defined unary operators, register the operator token in the
+  // unary registry so later definitions can detect duplicates.
+  if (isUnaryOp())
+    KnownUnaryOperators.insert(getOperatorName());
 
   return F;
 }
@@ -1990,7 +2053,7 @@ static void MainLoop() {
 
     // A bare newline: just print a fresh prompt and read the next token.
     if (CurTok == tok_eol) {
-      PrintConsoleReady();
+      PrintReplPrompt();
       getNextToken();
       continue;
     }
@@ -2021,22 +2084,16 @@ static void MainLoop() {
 
 /// ProcessCommandLine - Parse argv and configure the global Input/IsRepl state.
 ///
-/// Returns 0 on success, -1 on error (e.g. more than one input file supplied
-/// or the file could not be opened). When no file is given, Input stays as
-/// stdin and IsRepl is set to true.
+/// Returns 0 on success, -1 on error (e.g. the file could not be opened). When
+/// no file is given, Input stays as stdin and IsRepl is set to true.
 int ProcessCommandLine(int argc, const char **argv) {
   cl::HideUnrelatedOptions(PyxcCategory);
   cl::ParseCommandLineOptions(argc, argv, "pyxc\n");
 
-  if (InputFiles.size() > 1) {
-    fprintf(stderr, "Error: expected at most one input file.\n");
-    return -1;
-  }
-
-  if (InputFiles.size() == 1) {
-    Input = fopen(InputFiles[0].c_str(), "r");
+  if (!InputFile.empty()) {
+    Input = fopen(InputFile.c_str(), "r");
     if (!Input) {
-      perror(InputFiles[0].c_str());
+      perror(InputFile.c_str());
       return -1;
     }
     IsRepl = false;
@@ -2070,15 +2127,9 @@ int main(int argc, const char **argv) {
   InitializeNativeTargetAsmPrinter();
   InitializeNativeTargetAsmParser();
 
-  // Register binary operators and their precedence (higher = tighter binding).
-  BinopPrecedence['<'] = 10;
-  BinopPrecedence['+'] = 20;
-  BinopPrecedence['-'] = 20;
-  BinopPrecedence['*'] = 40;
-
   // Prime the REPL: print the first prompt and load the first token.
   // Every parse function expects CurTok to be loaded before it is called.
-  PrintConsoleReady();
+  PrintReplPrompt();
   getNextToken();
 
   // Create the JIT first — InitializeModuleAndManagers() needs TheJIT in

@@ -38,7 +38,7 @@ builtinbinaryop = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
 userdefbinaryop = ? any opchar defined as a custom binary operator ? ;
 userdefunaryop  = ? any opchar defined as a custom unary operator ? ;
 customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
-                    and not already defined as a custom operator of the same arity ? ;
+                    and not already defined as a custom operator ? ;
 opchar          = ? any single ASCII punctuation character ? ;
 identifier      = (letter | "_") { letter | digit | "_" } ;
 integer         = digit { digit } ;

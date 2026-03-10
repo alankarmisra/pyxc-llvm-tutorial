@@ -42,9 +42,9 @@ using namespace llvm::orc;
 static cl::OptionCategory PyxcCategory("Pyxc options");
 
 // Optional positional input: 0 args => REPL, 1 arg => file mode.
-static cl::list<std::string> InputFiles(cl::Positional,
-                                        cl::desc("[script.pyxc]"),
-                                        cl::ZeroOrMore, cl::cat(PyxcCategory));
+static cl::list<std::string> InputFile(cl::Positional,
+                                       cl::desc("[script.pyxc]"),
+                                       cl::ZeroOrMore, cl::cat(PyxcCategory));
 
 // Verbose IR dump in both REPL and file mode.
 static cl::opt<bool> VerboseIR("v",
@@ -94,32 +94,23 @@ static string NumLiteralStr; // Filled in if tok_number, used in error messages
 
 // Keywords words like `def`, `extern` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
-static map<string, Token> Keywords = {{"def", tok_def},
-                                      {"extern", tok_extern},
-                                      {"return", tok_return},
-                                      {"if", tok_if},
-                                      {"else", tok_else},
-                                      {"for", tok_for}};
+static map<string, Token> Keywords = {
+    {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return},
+    {"if", tok_if},   {"else", tok_else},     {"for", tok_for}};
 
 // Debug-only token names. Kept separate from Keywords because this map is
 // purely for printing token stream output.
 static map<int, string> TokenNames = [] {
   // Unprintable character tokens, and multi-character tokens.
-  static map<int, string> Names = {{tok_eof, "end of input"},
-                                   {tok_eol, "newline"},
-                                   {tok_error, "error"},
-                                   {tok_def, "'def'"},
-                                   {tok_extern, "'extern'"},
-                                   {tok_identifier, "identifier"},
-                                   {tok_number, "number"},
-                                   {tok_return, "'return'"},
-                                   {tok_eq, "'=='"},
-                                   {tok_neq, "'!='"},
-                                   {tok_leq, "'<='"},
-                                   {tok_geq, "'>='"},
-                                   {tok_if, "'if'"},
-                                   {tok_else, "'else'"},
-                                   {tok_for, "'for'"}};
+  static map<int, string> Names = {
+      {tok_eof, "end of input"}, {tok_eol, "newline"},
+      {tok_error, "error"},      {tok_def, "'def'"},
+      {tok_extern, "'extern'"},  {tok_identifier, "identifier"},
+      {tok_number, "number"},    {tok_return, "'return'"},
+      {tok_eq, "'=='"},          {tok_neq, "'!='"},
+      {tok_leq, "'<='"},         {tok_geq, "'>='"},
+      {tok_if, "'if'"},          {tok_else, "'else'"},
+      {tok_for, "'for'"}};
 
   // Single character tokens.
   for (int ch = 0; ch <= 255; ++ch) {
@@ -543,13 +534,14 @@ static int CurTok;
 static int getNextToken() { return CurTok = gettok(); }
 
 /// BinopPrecedence - Maps each binary operator token to its precedence.
-/// Higher numbers bind more tightly: '*' (40) > '+'/'-' (20) > comparisons (10).
-/// The key is an int rather than char so it can hold both single-character
-/// ASCII operators ('+', '-', '*', '<', '>') and multi-character named token
-/// enums (tok_eq, tok_neq, tok_leq, tok_geq). All comparison operators share
-/// precedence 10 so they bind equally tightly and are left-associative.
-/// Operators not in this map return -1 from GetTokPrecedence(), which tells
-/// ParseBinOpRHS to stop consuming operators and return what it has so far.
+/// Higher numbers bind more tightly: '*' (40) > '+'/'-' (20) > comparisons
+/// (10). The key is an int rather than char so it can hold both
+/// single-character ASCII operators ('+', '-', '*', '<', '>') and
+/// multi-character named token enums (tok_eq, tok_neq, tok_leq, tok_geq). All
+/// comparison operators share precedence 10 so they bind equally tightly and
+/// are left-associative. Operators not in this map return -1 from
+/// GetTokPrecedence(), which tells ParseBinOpRHS to stop consuming operators
+/// and return what it has so far.
 static map<int, int> BinopPrecedence = {
     {tok_eq, 10},  // ==
     {tok_neq, 10}, // !=
@@ -573,7 +565,7 @@ static int GetTokPrecedence() {
   return It->second;
 }
 
-void PrintConsoleReady() {
+void PrintReplPrompt() {
   if (IsRepl)
     fprintf(stderr, "ready> ");
 }
@@ -590,7 +582,7 @@ unique_ptr<ExprAST> LogError(const char *Str) {
   fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
           Str);
   PrintErrorSourceContext(Anchor);
-  PrintConsoleReady();
+  PrintReplPrompt();
   return nullptr;
 }
 
@@ -1589,7 +1581,7 @@ static void MainLoop() {
 
     // A bare newline: just print a fresh prompt and read the next token.
     if (CurTok == tok_eol) {
-      PrintConsoleReady();
+      PrintReplPrompt();
       getNextToken();
       continue;
     }
@@ -1617,15 +1609,15 @@ int ProcessCommandLine(int argc, const char **argv) {
   cl::HideUnrelatedOptions(PyxcCategory);
   cl::ParseCommandLineOptions(argc, argv, "pyxc\n");
 
-  if (InputFiles.size() > 1) {
+  if (InputFile.size() > 1) {
     fprintf(stderr, "Error: expected at most one input file.\n");
     return -1;
   }
 
-  if (InputFiles.size() == 1) {
-    Input = fopen(InputFiles[0].c_str(), "r");
+  if (InputFile.size() == 1) {
+    Input = fopen(InputFile[0].c_str(), "r");
     if (!Input) {
-      perror(InputFiles[0].c_str());
+      perror(InputFile[0].c_str());
       return -1;
     }
     IsRepl = false;
@@ -1662,7 +1654,7 @@ int main(int argc, const char **argv) {
 
   // Prime the REPL: print the first prompt and load the first token.
   // Every parse function expects CurTok to be loaded before it is called.
-  PrintConsoleReady();
+  PrintReplPrompt();
   getNextToken();
 
   // Create the JIT first — InitializeModuleAndManagers() needs TheJIT in
