@@ -5,7 +5,7 @@ description: "Add user-defined operators via Python-style decorators — @binary
 
 ## Where We Are
 
-Chapter 8 added comparison operators, `if`/`else` and `for` loops. Every operator Pyxc understands is still wired into the compiler: `+`, `-`, `*`, the six comparisons. This chapter of the tutorial takes a wild digression into adding user-defined operators to the simple and beautiful pyxc language. We won't debate whether this is a good idea. One of the great things about creating your own language is that you get to decide what is good or bad. In this tutorial we'll use it as a vehicle for some interesting parsing techniques.
+[Chapter 8](chapter-08.md) added comparison operators, `if`/`else` and `for` loops. Every operator Pyxc understands is still wired into the compiler: `+`, `-`, `*`, the six comparisons. This chapter of the tutorial takes a wild digression into adding user-defined operators to the simple and beautiful pyxc language. We won't debate whether this is a good idea. One of the great things about creating your own language is that you get to decide what is good or bad. In this tutorial we'll use it as a vehicle for some interesting parsing techniques.
 
 Pyxc programs can now declare new operators using Python-style decorators. The decorator line gives the operator its type and precedence; the `def` line that follows gives it its body:
 
@@ -25,8 +25,6 @@ Parsed a top-level expression.
 Evaluated to 1.000000
 ```
 <!-- code-merge:end -->
-
-At the end of this tutorial, we’ll run through an example pyxc application that renders the Mandelbrot set. This gives an example of what you can build with pyxc and its feature set.
 
 ## Source Code
 
@@ -117,7 +115,7 @@ Three global variables change in this chapter.
 
 **`BinopPrecedence` gains new entries at runtime.** It is initialised at startup with the nine built-in operators. When `PrototypeAST::codegen` runs for a user-defined binary operator, it installs the operator's token and precedence into this map. From that point on, `GetTokPrecedence()` returns the correct value for the new operator and `ParseBinOpRHS` handles it correctly.
 
-**`KnownUnaryOperators` is a new `std::set<int>`.** It tracks every unary operator token that is reserved or defined. It is seeded with `'-'` at startup because unary minus is handled directly by `ParseUnaryMinus` — a user-defined `unary-` would never be called. When `PrototypeAST::codegen` runs for a user-defined unary operator, it inserts the operator's token into this set. `ParseUnaryOpPrototype` checks the set to reject redefinitions.
+**`KnownUnaryOperators` is a new `std::set<int>`.** It tracks every unary operator token that is reserved or defined. It is seeded with `'-'` at startup to block users from defining `@unary def -(v)` — unary minus is a built-in handled by `ParseUnaryMinus`, and a user-defined `unary-` prototype would shadow it silently. When `PrototypeAST::codegen` runs for a user-defined unary operator, it inserts the operator's token into this set. `ParseUnaryOpPrototype` checks the set to reject redefinitions.
 
 ```cpp
 static std::set<int> KnownUnaryOperators = {'-'};
@@ -173,7 +171,7 @@ Regular function prototypes keep the defaults `IsOperator=false, Prec=0` and are
 
 ## A New AST Node: UnaryExprAST
 
-Binary operators already have `BinaryExprAST`. A new node handles user-defined unary operator applications:
+Binary operators already have `BinaryExprAST`. A new node handles unary operator applications:
 
 ```cpp
 class UnaryExprAST : public ExprAST {
@@ -323,6 +321,8 @@ static unique_ptr<PrototypeAST> ParseUnaryOpPrototype() {
                                    /*IsOperator=*/true, /*Precedence=*/0);
 }
 ```
+
+There is no separate hard-coded "built-in unary operator list" in this parser. Built-in unary `-` is blocked because `KnownUnaryOperators` is seeded with `'-'`, and built-in binary operators are blocked from unary reuse by `IsKnownBinaryOperatorToken`.
 
 ### ParseDecoratedDef: Tying It Together
 
@@ -517,6 +517,8 @@ Value *BinaryExprAST::codegen() {
 }
 ```
 
+Because user-defined operators lower to regular function calls, operands are evaluated eagerly before the call is emitted. There is no short-circuit behavior unless you encode it explicitly in control flow.
+
 ### UnaryExprAST::codegen
 
 ```cpp
@@ -570,7 +572,7 @@ def |(x, y): return if x != 0: 1 else: if y != 0: 1 else: 0
 
 4. **ParseBinaryDecorator**: eats `binary` → eats `(` → sees `tok_number`: `NumLiteralStr = "5"`, `NumVal = 5.0`. No `.` in literal. `NumVal ≥ 1`. `Prec = 5`. Eats `5` → eats `)`. Returns `5`.
 
-5. **ParseDecoratedDef**: `Prec = 5`. Checks `CurTok == tok_eol` (end of decorator line) — yes. Calls `consumeNewlines()`, which reads stdin until `tok_def` is returned. CurTok is now `tok_def`. Eats `def` → CurTok is `|`. Calls `ParseBinaryOpPrototype(5)`.
+5. **ParseDecoratedDef**: `Prec = 5`. Checks `CurTok == tok_eol` (end of decorator line) — yes. Calls `consumeNewlines()`, which eats one or more consecutive `tok_eol` tokens. CurTok is now `tok_def`. Eats `def` → CurTok is `|`. Calls `ParseBinaryOpPrototype(5)`.
 
 6. **ParseBinaryOpPrototype**: `IsCustomOpChar('|')` → true. `OpChar = '|'`, `FnName = "binary|"`. `IsKnownBinaryOperatorToken('|')` → false. `FunctionProtos.count("binary|")` → 0. Eats `|` → eats `(` → reads `x`, `,`, `y` → eats `)`. `ArgNames = {"x", "y"}`, size = 2 → ok. Returns `PrototypeAST("binary|", {"x","y"}, true, 5)`.
 
@@ -690,7 +692,10 @@ ready>
 ```
 <!-- code-merge:end -->
 
-If you run the above with `build/pyxc -v` you'd get 
+`-!5` evaluates to `-0.000000` because `!5` is `0.0` and `fneg 0.0` is IEEE 754 negative zero. Negative zero compares equal to `0.0` in any subsequent expression, so this is harmless.
+
+Running `./build/pyxc -v` shows the generated IR for `-!5`:
+
 ```llvm
 define double @__anon_expr() {
 entry:
@@ -789,7 +794,25 @@ ready>
 
 ## The Payoff: Density-Shaded Mandelbrot
 
-With `@binary` and `@unary` working, `test/mandel.pyxc` renders the Mandelbrot set with density shading. It defines four custom operators:
+Chapter 8 already rendered the Mandelbrot set — but every point was either `*` (outside the set) or space (inside). The fractal boundary was a hard edge:
+
+```
+******************************************************************************
+******************************************************************************
+******************************************   *********************************
+******************************************    ********************************
+*******************************************  *********************************
+************************************ **          *****************************
+```
+
+Now that we have user-defined operators, we can rewrite the renderer to shade by density — mapping how quickly each point escapes to a different character. The boundary dissolves into gradients of `*`, `+`, `.`, and space.
+
+Four things change from the chapter 8 version:
+
+- **Unary minus.** Built-in unary minus is now parsed directly (`ParseUnaryMinus`) and lowered by `UnaryExprAST::codegen` to LLVM `fneg`, so `-2.3` works without the `0 - 2.3` workaround from chapter 8.
+- **`;` for sequencing.** Chapter 8 wrote `mandelrow(...) + putchard(10)` to chain two side-effect calls — adding two `0.0` return values happens to work, but is misleading. The new `@binary(1) def ;(x, y)` makes intent explicit: evaluate left for its side effect, return right.
+- **`|` to combine exit conditions.** Chapter 8's `mandelconverge` checked the iteration limit and the escape radius with nested `if`. Chapter 9 tests `iters > 255 | (real² + imag² > 4)` in one expression using `@binary(5) def |`.
+- **`printdensity` for shading.** Instead of mapping each point to just inside/outside, the iteration count at escape determines the shade character.
 
 ```python
 # test/mandel.pyxc
@@ -842,10 +865,14 @@ def mandel(realstart, imagstart, realmag, imagmag):
     return mandelhelp(realstart, realstart + realmag * 78, realmag, imagstart, imagstart + imagmag * 40, imagmag)
 
 mandel(-2.3, -1.3, 0.05, 0.07)
+mandel(-2, -1, 0.02, 0.04)
+mandel(-0.9, -1.4, 0.02, 0.03)
 ```
 
+The four custom operators:
+
 - `@unary def !(v)` — logical NOT: returns `1` if `v == 0`, else `0`.
-- `@binary(1) def ;(x, y)` — sequencing: evaluates `x` for side effects, returns `y`. Used as `mandelrow(...) ; putchard(10)` to print a newline after each row without a wrapper function.
+- `@binary(1) def ;(x, y)` — sequencing: evaluates `x` for side effects, returns `y`. Used as `mandelrow(...) ; putchard(10)` to print a newline after each row.
 - `@binary(5) def |(lhs, rhs)` — logical OR (no short-circuit): `if lhs: 1 else: if rhs: 1 else: 0`.
 - `@binary(6) def &(lhs, rhs)` — logical AND (no short-circuit): `if !lhs: 0 else: !!rhs`. Its body uses the already-defined `!` — operators become available immediately after their prototype is JIT-compiled.
 
@@ -858,7 +885,7 @@ mandel(-2.3, -1.3, 0.05, 0.07)
 | > 2   | `+`  | near boundary — survived 3–4 iterations |
 | ≤ 2   | `*`  | fast escape — outside the set |
 
-`*` fills open space (points that diverge quickly); the interior of the set is blank. `mandelconverger` combines the iteration-limit and escape-radius tests with `|`:
+`mandelconverger` combines the two exit conditions with `|`:
 
 ```python
 if iters > 255 | (real * real + imag * imag > 4): iters else: ...
@@ -870,7 +897,7 @@ Run it directly:
 ./build/pyxc test/mandel.pyxc
 ```
 
-The first of three renders (`mandel(-2.3, -1.3, 0.05, 0.07)`) produces:
+The same view as chapter 8 (`mandel(-2.3, -1.3, 0.05, 0.07)`) now produces:
 
 ```
 ******************************************************************************
@@ -915,7 +942,7 @@ The first of three renders (`mandel(-2.3, -1.3, 0.05, 0.07)`) produces:
 ******************************************************************************
 ```
 
-The file calls `mandel(...)` three times with different zoom levels and centres.
+The file then calls `mandel(...)` two more times, zooming into different regions of the complex plane, with the density shading revealing finer boundary detail at each zoom level.
 
 ## What We Built
 
@@ -925,7 +952,7 @@ The file calls `mandel(...)` three times with different zoom levels and centres.
 | `KnownUnaryOperators` | New `std::set<int>` tracking reserved and defined unary operators; seeded with `'-'` |
 | `FunctionProtos` | Moved earlier (before the parser section) so prototype lookup is available during parse-time validation |
 | `PrototypeAST::IsOperator`, `Precedence` | New fields; `isUnaryOp()`, `isBinaryOp()`, `getOperatorName()`, `getBinaryPrecedence()` added |
-| `UnaryExprAST` | New AST node for user-defined unary operator applications |
+| `UnaryExprAST` | New AST node for unary operator applications (built-in `-` and user-defined unary ops) |
 | `ParseBinaryDecorator()` | Parses `binary(N)`; validates integer precedence ≥ 1; returns `unsigned` (0 = error) |
 | `ParseUnaryDecorator()` | Eats `unary`; trivial |
 | `IsCustomOpChar()` | Helper: ASCII punctuation, excluding `@` |
@@ -935,13 +962,13 @@ The file calls `mandel(...)` three times with different zoom levels and centres.
 | `ParseUnaryOpPrototype()` | Parses unary operator prototype; blocks built-in ops, rejects redefinitions and cross-arity conflicts, checks arity |
 | `ParseDecoratedDef()` | Orchestrates the two `decorateddef` branches; enforces mandatory newline between decorator and `def` |
 | `HandleDecorator()` | Simplified to delegate to `ParseDecoratedDef()` + error recovery |
-| `ParseUnaryMinus()` | Dedicated handler for '-' ; emits `UnaryExprAST('-', operand)` (built-in unary minus), which codegen lowers to llvm `fneg` |
+| `ParseUnaryMinus()` | Dedicated handler for '-' ; emits `UnaryExprAST('-', operand)` (built-in unary minus), which codegen lowers to LLVM `fneg` |
 | `ParseUnary()` | New dispatch point: routes `-` to `ParseUnaryMinus`, primary starters to `ParsePrimary`, everything else to user-defined unary |
 | `ParseBinOpRHS()` | Updated to call `ParseUnary()` instead of `ParsePrimary()` for the RHS |
 | `ParseExpression()` | Updated to seed with `ParseUnary()` instead of `ParsePrimary()` |
 | `PrototypeAST::codegen()` | Registers `BinopPrecedence` for binary ops; inserts into `KnownUnaryOperators` for unary ops |
 | `BinaryExprAST::codegen()` | Default case now looks up `binary<op>` via `getFunction` and emits a call |
-| `UnaryExprAST::codegen()` | Looks up `unary<op>` via `getFunction` and emits a call |
+| `UnaryExprAST::codegen()` | Emits `fneg` for built-in `-`; otherwise looks up `unary<op>` and emits a call |
 | `test/mandel.pyxc` | Density-shaded Mandelbrot using four custom operators: `@unary def !`, `@binary(1) def ;`, `@binary(5) def \|`, `@binary(6) def &` |
 
 ## Known Limitations

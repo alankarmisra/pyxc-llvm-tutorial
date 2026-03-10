@@ -1,11 +1,16 @@
 extern def putchard(x)
 
-def mandelconverge(real, imag, iters, creal, cimag):
-    return if iters == 0: iters else: if (real * real + imag * imag) > 4: iters else: mandelconverge(real * real - imag * imag + creal, 2 * real * imag + cimag, iters - 1, creal, cimag)
+def mandelconverger(real, imag, iters, creal, cimag):
+    return if iters > 255: iters
+           else: if (real * real + imag * imag) > 4: iters
+                 else: mandelconverger(real * real - imag * imag + creal, 2 * real * imag + cimag, iters + 1, creal, cimag)
+
+def mandelconverge(real, imag):
+    return mandelconverger(real, imag, 0, real, imag)
 
 def mandelrow(xmin, xmax, xstep, y):
     return for x = xmin, x < xmax, xstep:
-               putchard(if mandelconverge(x, y, 255, x, y) == 0: 32 else: 42)
+               putchard(if mandelconverge(x, y) > 255: 32 else: 42)
 
 def mandelhelp(xmin, xmax, xstep, ymin, ymax, ystep):
     return for y = ymin, y < ymax, ystep:

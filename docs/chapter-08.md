@@ -5,7 +5,7 @@ description: "Add comparison operators, if/else expressions, and for loops — t
 
 ## Where We Are
 
-Chapter 7 added file input mode. The language itself still has only arithmetic and function calls — no way to branch, no way to loop, no way to compare two values. This chapter adds all three.
+[Chapter 7](chapter-07.md) added file input mode. The language itself still has only arithmetic and function calls — no way to branch, no way to loop, no way to compare two values. This chapter adds all three.
 
 Comparison operators produce `1.0` for true and `0.0` for false:
 
@@ -521,14 +521,17 @@ With comparisons, `if`/`else`, and `for`, Pyxc is expressive enough to render th
 # test/mandel.pyxc
 extern def putchard(x)
 
-def mandelconverge(real, imag, iters, creal, cimag):
-    return if iters == 0: iters
+def mandelconverger(real, imag, iters, creal, cimag):
+    return if iters > 255: iters
            else: if (real * real + imag * imag) > 4: iters
-                 else: mandelconverge(real * real - imag * imag + creal, 2 * real * imag + cimag, iters - 1, creal, cimag)
+                 else: mandelconverger(real * real - imag * imag + creal, 2 * real * imag + cimag, iters + 1, creal, cimag)
+
+def mandelconverge(real, imag):
+    return mandelconverger(real, imag, 0, real, imag)
 
 def mandelrow(xmin, xmax, xstep, y):
     return for x = xmin, x < xmax, xstep:
-               putchard(if mandelconverge(x, y, 255, x, y) == 0: 32 else: 42)
+               putchard(if mandelconverge(x, y) > 255: 32 else: 42)
 
 def mandelhelp(xmin, xmax, xstep, ymin, ymax, ystep):
     return for y = ymin, y < ymax, ystep:
