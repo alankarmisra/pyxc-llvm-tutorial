@@ -381,7 +381,6 @@ ifcont:  ; (empty)
 Builder->SetInsertPoint(ThenBB);
 Value *ThenV = Then->codegen();
 Builder->CreateBr(MergeBB);
-ThenBB = Builder->GetInsertBlock(); // re-capture: nested ifs shift the cursor
 ```
 
 `SetInsertPoint` is the important move here: it tells LLVM, "append the next
@@ -390,14 +389,21 @@ instructions into the `then` block."
 After `Then->codegen()` finishes, we emit an unconditional branch to `ifcont`
 so the `then` path rejoins the `else` path.
 
-The re-capture on the last line matters because nested control flow can create
-more blocks and move the builder. We want the block where the `then` path
-actually ended, not just the block where it started.
-
 ```llvm
 then:                           ; preds = %entry
   br label %ifcont              ; then-value is %a (a parameter — no instruction needed)
 ```
+
+And finally, we recapture the location of ThenBB to pass it to the merge block.
+
+```cpp
+// Update ThenBB to the block where the then-path actually ended.
+// This matters for nested control flow; explained just below.
+ThenBB = Builder->GetInsertBlock(); 
+```
+
+The recapturing is necessary, because nested control flow can create more blocks and move the builder. We want the block where the `then` path actually ended, not just the block where it started. This subtlety only matters 
+for nested if expressions; we’ll look at that case just below.
 
 **Step 4 — Do the same for `else`.**
 
