@@ -1,24 +1,26 @@
-(* 
-   pyx.ebnf
-   Baseline grammar for chapter 2. 
+(*
+   pyxc.ebnf
+   Grammar for chapter 8.
 *)
 
-(* 
+(*
    { } = zero or more (any number of...)
    [ ] = zero or one (optional)
 *)
 
-program         = [ top { eols top } ] [ eols ] ;
+program         = [ eols ] [ top { eols top } ] [ eols ] ;
 eols            = eol { eol } ;
 top             = definition | external | toplevelexpr ;
 definition      = "def" prototype ":" [ eols ] "return" expression ;
 external        = "extern" "def" prototype ;
 toplevelexpr    = expression ;
-conditionalexpr = "if" expression ":" [eols] expression [eols] "else" ":" [eols] expression ;
+conditionalexpr = "if" expression ":" [ eols ] expression [ eols ] "else" ":" [ eols ] expression ;
+forexpr         = "for" identifier "=" expression "," expression "," expression ":" [ eols ] expression ;
 prototype       = identifier "(" [ identifier { "," identifier } ] ")" ;
-expression     = primary binoprhs ;
+expression      = primary binoprhs ;
 binoprhs        = { binaryop primary } ;
-primary        = identifierexpr | numberexpr | parenexpr | conditionalexpr ;
+primary         = identifierexpr | numberexpr | parenexpr
+                | conditionalexpr | forexpr ;
 identifierexpr  = identifier
                 | identifier "(" [ expression { "," expression } ] ")" ;
 numberexpr      = number ;

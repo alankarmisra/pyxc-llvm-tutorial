@@ -1,6 +1,5 @@
 #include "../include/PyxcJIT.h"
 #include "llvm/ADT/APFloat.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -36,15 +35,14 @@ using namespace std;
 using namespace llvm;
 using namespace llvm::orc;
 
-//===----------------------------------------------------------------------===//
+//===----------------------------------------===//
 // Command line
-//===----------------------------------------------------------------------===//
+//===----------------------------------------===//
 static cl::OptionCategory PyxcCategory("Pyxc options");
 
 // Optional positional input: 0 args => REPL, 1 arg => file mode.
-static cl::list<std::string> InputFile(cl::Positional,
-                                       cl::desc("[script.pyxc]"),
-                                       cl::ZeroOrMore, cl::cat(PyxcCategory));
+static cl::opt<std::string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
+                                      cl::init(""), cl::cat(PyxcCategory));
 
 // Verbose IR dump in both REPL and file mode.
 static cl::opt<bool> VerboseIR("v",
@@ -134,15 +132,15 @@ static map<int, string> TokenNames = [] {
   return Names;
 }();
 
-// SourceLocation - A {Line, Col} pair. Line and Col are 1-based.
-//
-// Two globals track position as characters are consumed:
-//   LexLoc  - where the character-read head (advance()) currently is.
-//             Updated on every advance() call. After a '\n', Line increments
-//             and Col resets to 0 so the next character will be Col 1.
-//   CurLoc  - snapshotted at the start of each token in gettok(), before
-//             consuming any of the token's characters. This is the position
-//             the parser and diagnostics infrastructure see.
+/// SourceLocation - A {Line, Col} pair. Line and Col are 1-based.
+///
+/// Two globals track position as characters are consumed:
+///   LexLoc  - where the character-read head (advance()) currently is.
+///             Updated on every advance() call. After a '\n', Line increments
+///             and Col resets to 0 so the next character will be Col 1.
+///   CurLoc  - snapshotted at the start of each token in gettok(), before
+///             consuming any of the token's characters. This is the position
+///             the parser and diagnostics see.
 struct SourceLocation {
   int Line;
   int Col;
@@ -150,30 +148,33 @@ struct SourceLocation {
 static SourceLocation CurLoc;
 static SourceLocation LexLoc = {1, 0};
 
-// SourceManager - Buffers every source line as it is read so that error
-// messages can reprint the offending line with a caret underneath it.
-//
-// advance() calls onChar() for every character it consumes. When a '\n'
-// arrives, the just-completed line is moved into CompletedLines and
-// CurrentLine starts fresh. getLine(N) returns a pointer to the Nth line
-// (1-based): completed lines are stable in the vector; the line currently
-// being assembled is in CurrentLine.
-//
-// Because the REPL accumulates all input in one session, line numbers
-// increase monotonically across inputs and getLine() can retrieve any
-// previously seen line — useful for multi-line function bodies and for
-// pointing the caret at a line that was parsed several inputs ago.
+/// SourceManager - Buffers every source line as it is read so that error
+/// messages can reprint the offending line with a caret underneath it.
+///
+/// advance() calls onChar() for every character it consumes. When a '\n'
+/// arrives, the just-completed line is moved into CompletedLines and
+/// CurrentLine starts fresh. getLine(N) returns a pointer to the Nth line
+/// (1-based): completed lines are stored in the vector; the line currently
+/// being assembled is in CurrentLine.
 class SourceManager {
   vector<string> CompletedLines;
   string CurrentLine;
 
 public:
+  /// reset - Clear all buffered source lines.
+  ///
+  /// Used when starting a new input stream so diagnostics only reference the
+  /// current script/session content.
   void reset() {
     CompletedLines.clear();
     CurrentLine.clear();
   }
 
-  // Called by advance() for every character consumed from the input.
+  /// onChar - Feed one consumed character into the source buffer.
+  ///
+  /// Preconditions:
+  /// - Must be called for every character consumed by advance().
+  /// - '\n' terminates the current line; EOF is ignored.
   void onChar(int C) {
     if (C == '\n') {
       CompletedLines.push_back(CurrentLine);
@@ -184,9 +185,17 @@ public:
       CurrentLine.push_back(static_cast<char>(C));
   }
 
-  // Returns a pointer to the text of line OneBasedLine, or nullptr if out of
-  // range. The pointer is stable for completed lines; CurrentLine may move if
-  // more characters arrive, so callers should not hold it across advance().
+  /// getLine - Return a pointer to a buffered source line by 1-based index.
+  ///
+  /// Completed lines come from CompletedLines; the in-progress line is
+  /// CurrentLine when OneBasedLine == CompletedLines.size() + 1.
+  ///
+  /// Preconditions:
+  /// - OneBasedLine is 1-based. Non-positive indices return nullptr.
+  ///
+  /// Note:
+  /// - Do not retain the returned pointer across advance()/onChar() calls;
+  ///   buffers may reallocate.
   const string *getLine(int OneBasedLine) const {
     if (OneBasedLine <= 0)
       return nullptr;
@@ -208,8 +217,9 @@ static void PrintErrorSourceContext(SourceLocation Loc);
 /// Every token branch in gettok() calls advance() rather than fgetc()
 /// directly, so LexLoc and the source buffer are always in sync.
 ///
-/// Windows line endings (\r\n) are coalesced to a single \n so the rest of
-/// the lexer never needs to handle \r.
+/// Windows line endings (\r\n) are coalesced to a single \n
+/// as are bare (old) Mac \r's (without a trailing \n)
+/// so the rest of the lexer never needs to handle \r.
 static int advance() {
   int LastChar = fgetc(Input);
   if (LastChar == '\r') {
@@ -234,10 +244,16 @@ static int advance() {
   return LastChar;
 }
 
+/// peek - Return the next character from the input stream without consuming it.
+///
+/// Used by the two-character operator branches in gettok() to decide whether
+/// '=' should become '==' (tok_eq), '!' should become '!=' (tok_neq), etc.,
+/// without advancing LexLoc or notifying SourceManager.
 static int peek() {
-  int C = fgetc(Input);
-  ungetc(C, Input);
-  return C;
+  int c = fgetc(Input);
+  if (c != EOF)
+    ungetc(c, Input);
+  return c;
 }
 
 /// gettok - Return the next token from standard input.
@@ -268,6 +284,10 @@ static int gettok() {
   CurLoc = LexLoc;
 
   if (LastChar == '\n') {
+    // Do not call advance() here.
+    // We should return the newline token immediately. If we read one more
+    // character first, REPL mode may wait for extra input before processing
+    // the line the user just submitted.
     LastChar = ' ';
     return tok_eol;
   }
@@ -291,7 +311,8 @@ static int gettok() {
     NumLiteralStr = NumStr;
     char *End = nullptr;
     NumVal = strtod(NumStr.c_str(), &End);
-    if (!End || *End != '\0') {
+    if (End == NumStr.c_str() /* no conversion */
+        || *End != '\0' /* trailing unparsed characters */) {
       fprintf(stderr,
               "Error (Line %d, Column %d): invalid number literal '%s'\n",
               CurLoc.Line, CurLoc.Col, NumStr.c_str());
@@ -318,6 +339,8 @@ static int gettok() {
     }
   }
 
+  // peek(), if the next one completes a recognized token, eat it, and return
+  // token else return the single character token.
   if (LastChar == '=') {
     int Tok = (peek() == '=') ? (advance(), tok_eq) : '=';
     LastChar = advance();
@@ -345,8 +368,13 @@ static int gettok() {
   if (LastChar == EOF)
     return tok_eof;
 
+  // Single character token
   int ThisChar = LastChar;
+
+  // Position the lexer at the next character so the next gettok() starts there.
   LastChar = advance();
+
+  // Return ThisChar.
   return ThisChar;
 }
 
@@ -364,17 +392,18 @@ static int gettok() {
 /// character — pointing just after the final token on the line, which is
 /// where the missing token (e.g. ':') should have appeared.
 static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
-  if (Tok != tok_eol)
+  if (Tok != tok_eol || Loc.Line <= 1)
     return Loc;
 
+  // Tok == tok_eol && Loc.Line > 1
   int PrevLine = Loc.Line - 1;
-  if (PrevLine <= 0)
-    return Loc;
-
   const string *PrevLineText = PyxcSourceMgr.getLine(PrevLine);
+
+  // guard
   if (!PrevLineText)
     return Loc;
 
+  // return a pointer just past the end of the previous line.
   return {PrevLine, static_cast<int>(PrevLineText->size()) + 1};
 }
 
@@ -404,11 +433,8 @@ static void PrintErrorSourceContext(SourceLocation Loc) {
     return;
 
   fprintf(stderr, "%s\n", LineText->c_str());
-  int spaces = Loc.Col - 1;
-  if (spaces < 0)
-    spaces = 0;
-  for (int i = 0; i < spaces; ++i)
-    fputc(' ', stderr);
+  int spaces = max(0, Loc.Col - 1);
+  fprintf(stderr, "%*s", spaces, " ");
   fprintf(stderr, "^~~~\n");
 }
 
@@ -468,8 +494,9 @@ public:
 
 /// ForExprAST - Expression class for for loops.
 ///   for <var> = <start>, <cond>, <step>: <body>
-/// The loop variable is in scope for <cond>, <step>, and <body>.
-/// The expression always produces 0.0 — the loop is used for side effects.
+/// The loop variable is in scope for <cond>, <step>, and <body> (through
+/// NamedValues). The expression always produces 0.0 — the loop is used for side
+/// effects.
 class ForExprAST : public ExprAST {
   string VarName;
   unique_ptr<ExprAST> Start, Cond, Step, Body;
@@ -533,6 +560,15 @@ public:
 static int CurTok;
 static int getNextToken() { return CurTok = gettok(); }
 
+/// consumeNewlines - Consume all consecutive tok_eol tokens.
+///
+/// Called after eating a structural token (e.g. ':') to allow the body or
+/// next clause to appear on the following line.
+static void consumeNewlines() {
+  while (CurTok == tok_eol)
+    getNextToken();
+}
+
 /// BinopPrecedence - Maps each binary operator token to its precedence.
 /// Higher numbers bind more tightly: '*' (40) > '+'/'-' (20) > comparisons
 /// (10). The key is an int rather than char so it can hold both
@@ -565,11 +601,17 @@ static int GetTokPrecedence() {
   return It->second;
 }
 
+/// PrintReplPrompt - Print the interactive prompt to stderr.
+/// Only emits output in REPL mode; silent when running a script file.
 void PrintReplPrompt() {
   if (IsRepl)
     fprintf(stderr, "ready> ");
 }
 
+/// Log - Write a diagnostic message to stderr in REPL mode only.
+/// Used by the Handle* functions to confirm what was parsed ("Parsed a
+/// function definition.", etc.). Silent when processing a script file so
+/// that stdout/stderr output from the program itself is not cluttered.
 void Log(const string &message) {
   if (IsRepl)
     fprintf(stderr, "%s", message.c_str());
@@ -700,8 +742,7 @@ static unique_ptr<ExprAST> ParseForExpr() {
   getNextToken(); // eat ':'
 
   // Allow body on next line.
-  while (CurTok == tok_eol)
-    getNextToken();
+  consumeNewlines();
 
   auto Body = ParseExpression();
   if (!Body)
@@ -720,29 +761,19 @@ static unique_ptr<ExprAST> ParseIfExpr() {
   if (!Cond)
     return nullptr;
 
-  // Allow condition to end on the previous line:
-  //   if iters == 0:       <- same line
-  // or
-  //   if iters ==          <- condition split across lines
-  //       0:
-  while (CurTok == tok_eol)
-    getNextToken();
-
   if (CurTok != ':')
     return LogError("Expected ':' after if condition");
   getNextToken(); // eat ':'
 
   // Allow body on next line
-  while (CurTok == tok_eol)
-    getNextToken();
+  consumeNewlines();
 
   auto Then = ParseExpression();
   if (!Then)
     return nullptr;
 
   // Allow 'else' on next line
-  while (CurTok == tok_eol)
-    getNextToken();
+  consumeNewlines();
 
   if (CurTok != tok_else)
     return LogError("Expected 'else' in if expression");
@@ -753,8 +784,7 @@ static unique_ptr<ExprAST> ParseIfExpr() {
   getNextToken(); // eat ':'
 
   // Allow body on next line
-  while (CurTok == tok_eol)
-    getNextToken();
+  consumeNewlines();
 
   auto Else = ParseExpression();
   if (!Else)
@@ -764,26 +794,11 @@ static unique_ptr<ExprAST> ParseIfExpr() {
                                 std::move(Else));
 }
 
-/// unaryexpr
-///   = "-" primary ;
-/// Unary minus: syntactic sugar for 0 - x. Handled here rather than as a
-/// binary operator so that -2.3 and -(x+1) both work without a left operand.
-static unique_ptr<ExprAST> ParseUnaryMinus() {
-  getNextToken(); // eat '-'
-  auto Operand = ParsePrimary();
-  if (!Operand)
-    return nullptr;
-  // Emit as (0.0 - operand).
-  auto Zero = make_unique<NumberExprAST>(0.0);
-  return make_unique<BinaryExprAST>('-', std::move(Zero), std::move(Operand));
-}
-
 /// primary
 ///   = identifierexpr
 ///   | numberexpr
 ///   | parenexpr
-///   | unaryexpr
-///   | ifexpr
+///   | conditionalexpr
 ///   | forexpr ;
 static unique_ptr<ExprAST> ParsePrimary() {
   switch (CurTok) {
@@ -795,8 +810,6 @@ static unique_ptr<ExprAST> ParsePrimary() {
     return ParseNumberExpr();
   case '(':
     return ParseParenExpr();
-  case '-':
-    return ParseUnaryMinus();
   case tok_if:
     return ParseIfExpr();
   case tok_for:
@@ -902,8 +915,7 @@ static unique_ptr<FunctionAST> ParseDefinition() {
   // written on the next line:
   //   def foo(x):
   //     return x + 1
-  while (CurTok == tok_eol)
-    getNextToken();
+  consumeNewlines();
 
   if (CurTok != tok_return)
     return LogErrorF("Expected 'return' in function body");
@@ -997,8 +1009,8 @@ static std::unique_ptr<StandardInstrumentations> TheSI;
 static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 static ExitOnError ExitOnErr;
 
-// LogErrorV - Codegen-level error helper. Delegates to LogError for printing,
-// then returns nullptr so codegen callers can write: return LogErrorV("msg");
+/// LogErrorV - Codegen-level error helper. Delegates to LogError for printing,
+/// then returns nullptr so codegen callers can write: return LogErrorV("msg");
 Value *LogErrorV(const char *Str) {
   LogError(Str);
   return nullptr;
@@ -1065,6 +1077,9 @@ Value *VariableExprAST::codegen() {
 /// it: false -> 0.0, true -> 1.0. This double boolean is then used as the
 /// condition value in if/for expressions, where fcmp one != 0.0 converts it
 /// back to i1.
+/// We use ordered floating-point comparisons (O*) so comparisons with NaN
+/// evaluate false (except '!=' which is true when values are ordered and not
+/// equal).
 Value *BinaryExprAST::codegen() {
   Value *L = LHS->codegen();
   Value *R = RHS->codegen();
@@ -1079,23 +1094,23 @@ Value *BinaryExprAST::codegen() {
   case '*':
     return Builder->CreateFMul(L, R, "multmp");
   case '<':
-    L = Builder->CreateFCmpULT(L, R, "cmptmp");
+    L = Builder->CreateFCmpOLT(L, R, "cmptmp");
     // Widen the i1 boolean to double: false -> 0.0, true -> 1.0.
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case '>':
-    L = Builder->CreateFCmpUGT(L, R, "cmptmp");
+    L = Builder->CreateFCmpOGT(L, R, "cmptmp");
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case tok_eq:
-    L = Builder->CreateFCmpUEQ(L, R, "cmptmp");
+    L = Builder->CreateFCmpOEQ(L, R, "cmptmp");
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case tok_neq:
-    L = Builder->CreateFCmpUNE(L, R, "cmptmp");
+    L = Builder->CreateFCmpONE(L, R, "cmptmp");
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case tok_leq:
-    L = Builder->CreateFCmpULE(L, R, "cmptmp");
+    L = Builder->CreateFCmpOLE(L, R, "cmptmp");
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case tok_geq:
-    L = Builder->CreateFCmpUGE(L, R, "cmptmp");
+    L = Builder->CreateFCmpOGE(L, R, "cmptmp");
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   default:
     return LogErrorV("invalid binary operator");
@@ -1127,6 +1142,31 @@ Value *CallExprAST::codegen() {
   return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
+/// IfExprAST::codegen - Emit LLVM IR for an if/else expression.
+///
+/// Emitted control flow:
+///
+///   <current>:
+///     ; Cond codegen emits a double value %condv
+///     %ifcond = fcmp one double %condv, 0.0 ; convert the double to i1
+///     br i1 %ifcond, label %then, label %else
+///
+///   then:
+///     ; Then codegen emits %thenv
+///     br label %ifcont
+///
+///   else:
+///     ; Else codegen emits %elsev
+///     br label %ifcont
+///
+///   ifcont:
+///     %iftmp = phi double [ %thenv, %then_end ], [ %elsev, %else_end ]
+///
+/// `%iftmp` is the value of the whole if-expression.
+///
+/// We recapture `ThenBB` and `ElseBB` after branch codegen because nested
+/// control flow can move the Builder insertion point to a different block.
+/// PHI incoming edges must use the actual terminating blocks of each arm.
 Value *IfExprAST::codegen() {
   Value *CondV = Cond->codegen();
   if (!CondV)
@@ -1140,8 +1180,8 @@ Value *IfExprAST::codegen() {
 
   // Create blocks for then, else, and merge.
   BasicBlock *ThenBB = BasicBlock::Create(*TheContext, "then", TheFunction);
-  BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else");
-  BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont");
+  BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else", TheFunction);
+  BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont", TheFunction);
 
   Builder->CreateCondBr(CondV, ThenBB, ElseBB);
 
@@ -1156,7 +1196,6 @@ Value *IfExprAST::codegen() {
   ThenBB = Builder->GetInsertBlock();
 
   // Emit else block.
-  TheFunction->insert(TheFunction->end(), ElseBB);
   Builder->SetInsertPoint(ElseBB);
   Value *ElseV = Else->codegen();
   if (!ElseV)
@@ -1165,7 +1204,6 @@ Value *IfExprAST::codegen() {
   ElseBB = Builder->GetInsertBlock();
 
   // Emit merge block with phi node.
-  TheFunction->insert(TheFunction->end(), MergeBB);
   Builder->SetInsertPoint(MergeBB);
   PHINode *PN = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
   PN->addIncoming(ThenV, ThenBB);
@@ -1174,29 +1212,33 @@ Value *IfExprAST::codegen() {
   return PN;
 }
 
-/// ForExprAST::codegen
+/// ForExprAST::codegen - Emit LLVM IR for a for-expression.
 ///
-/// Emits a check-at-the-top loop with three blocks:
+/// CFG shape:
 ///
-///   preheader (falls through from caller):
-///     start_val = <Start codegen>
-///     br loop_cond
+///   <preheader>:
+///     %start = <Start codegen>
+///     br label %loop_cond
 ///
 ///   loop_cond:
-///     i = phi [ start_val, preheader ], [ next_i, loop_body_end ]
-///     cond = <Cond codegen> fcmp one 0.0
-///     br cond loop_body, afterloop
+///     %i = phi double [ %start, %preheader ], [ %nextvar, %body_end ]
+///     %condv = <Cond codegen>
+///     %loopcond = fcmp one double %condv, 0.0
+///     br i1 %loopcond, label %loop_body, label %after_loop
 ///
 ///   loop_body:
-///     <Body codegen>          ; side effects only, value discarded
-///     next_i = i + <Step>
-///     br loop_cond            ; back-edge (from wherever body left us)
+///     ; <Body codegen> (value ignored)
+///     %step = <Step codegen>
+///     %nextvar = fadd double %i, %step
+///     br label %loop_cond
 ///
-///   afterloop:
-///     return 0.0              ; for expression always yields 0.0
+///   after_loop:
+///     ; restore shadowed outer binding of loop variable (if any)
+///     ; for-expression result:
+///     ret-like value = 0.0
 ///
-/// The loop variable shadows any outer variable of the same name for the
-/// duration of the loop. The outer binding is restored in afterloop.
+/// The loop variable name is rebound to `%i` while generating Cond/Step/Body,
+/// then restored after the loop.
 Value *ForExprAST::codegen() {
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
 
@@ -1213,7 +1255,7 @@ Value *ForExprAST::codegen() {
   BasicBlock *BodyBB =
       BasicBlock::Create(*TheContext, "loop_body", TheFunction);
   BasicBlock *AfterBB =
-      BasicBlock::Create(*TheContext, "afterloop", TheFunction);
+      BasicBlock::Create(*TheContext, "after_loop", TheFunction);
 
   // Unconditional jump from preheader into the condition check.
   Builder->CreateBr(CondBB);
@@ -1258,7 +1300,7 @@ Value *ForExprAST::codegen() {
   Variable->addIncoming(NextVar, BodyEndBB);
   Builder->CreateBr(CondBB);
 
-  // ---- afterloop ----
+  // ---- after_loop ----
   Builder->SetInsertPoint(AfterBB);
 
   // Restore the shadowed variable (if any) now that the loop is done.
@@ -1605,19 +1647,18 @@ static void MainLoop() {
   }
 }
 
+/// ProcessCommandLine - Parse argv and configure the global Input/IsRepl state.
+///
+/// Returns 0 on success, -1 on error (e.g. the file could not be opened). When
+/// no file is given, Input stays as stdin and IsRepl is set to true.
 int ProcessCommandLine(int argc, const char **argv) {
   cl::HideUnrelatedOptions(PyxcCategory);
   cl::ParseCommandLineOptions(argc, argv, "pyxc\n");
 
-  if (InputFile.size() > 1) {
-    fprintf(stderr, "Error: expected at most one input file.\n");
-    return -1;
-  }
-
-  if (InputFile.size() == 1) {
-    Input = fopen(InputFile[0].c_str(), "r");
+  if (!InputFile.empty()) {
+    Input = fopen(InputFile.c_str(), "r");
     if (!Input) {
-      perror(InputFile[0].c_str());
+      perror(InputFile.c_str());
       return -1;
     }
     IsRepl = false;
@@ -1632,6 +1673,11 @@ int ProcessCommandLine(int argc, const char **argv) {
 // Main driver code.
 //===----------------------------------------===//
 
+/// main - Entry point for the Pyxc compiler/REPL.
+///
+/// Initialises the LLVM native backend, creates the ORC JIT and an initial
+/// module, then hands control to MainLoop(). On exit, any open script file is
+/// closed.
 int main(int argc, const char **argv) {
 
   int commandLineResult = ProcessCommandLine(argc, argv);
@@ -1645,12 +1691,6 @@ int main(int argc, const char **argv) {
   InitializeNativeTarget();
   InitializeNativeTargetAsmPrinter();
   InitializeNativeTargetAsmParser();
-
-  // Register binary operators and their precedence (higher = tighter binding).
-  BinopPrecedence['<'] = 10;
-  BinopPrecedence['+'] = 20;
-  BinopPrecedence['-'] = 20;
-  BinopPrecedence['*'] = 40;
 
   // Prime the REPL: print the first prompt and load the first token.
   // Every parse function expects CurTok to be loaded before it is called.

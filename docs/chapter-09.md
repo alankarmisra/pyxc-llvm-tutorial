@@ -1,27 +1,13 @@
 ---
 description: "Add user-defined operators via Python-style decorators — @binary(N) and @unary — backed by dedicated parser functions with compile-time validation."
 ---
-# 9. User-Defined Operators
+# 9. Pyxc: User-Defined Operators
 
 ## Where We Are
 
-Chapter 8 added comparison operators, `if`/`else` and `for` loops. Every operator Pyxc understands is still wired into the compiler: `+`, `-`, `*`, the six comparisons. This chapter of the tutorial takes a wild digression into adding user-defined operators to the simple and beautiful pyxc language. We don't delve into the discussion on whether or not this is a good idea. One of the great things about creating your own language is that you get to decide what is good or bad. In this tutorial we’ll assume that it is okay to use this as a way to show some interesting parsing techniques. 
+Chapter 8 added comparison operators, `if`/`else` and `for` loops. Every operator Pyxc understands is still wired into the compiler: `+`, `-`, `*`, the six comparisons. This chapter of the tutorial takes a wild digression into adding user-defined operators to the simple and beautiful pyxc language. We won't debate whether this is a good idea. One of the great things about creating your own language is that you get to decide what is good or bad. In this tutorial we'll use it as a vehicle for some interesting parsing techniques.
 
-For example, if we tried this with a pyxc build from the previous chapter...
-
-```python
-ready> 1|0
-```
-
-We would get an error like:
-
-```bash
-Error (Line 1, Column 3): Unexpected '|'
-1 |
-  ^~~~
-```
-
-This chapter changes that. After it, Pyxc programs can declare new operators using Python-style decorators. The decorator line gives the operator its type and precedence; the `def` line that follows gives it its body:
+Pyxc programs can now declare new operators using Python-style decorators. The decorator line gives the operator its type and precedence; the `def` line that follows gives it its body:
 
 <!-- code-merge:start -->
 ```python
@@ -281,6 +267,12 @@ static unique_ptr<PrototypeAST> ParseBinaryOpPrototype(unsigned Precedence) {
   if (IsKnownBinaryOperatorToken(CurTok))
     return LogErrorP(
         (string("Binary operator '") + OpChar + "' is already defined").c_str());
+
+  // Reject cross-arity reuse: if the token is already a unary operator,
+  // it cannot also become binary.
+  if (IsKnownUnaryOperatorToken(CurTok))
+    return LogErrorP((string("Binary operator '") + OpChar +
+                      "' conflicts with an existing unary operator").c_str());
 
   // Reject silent JIT shadowing via a same-named prototype entry.
   if (FunctionProtos.count(FnName))
@@ -632,7 +624,7 @@ ready> 0 | 0
 ```
 ```bash
 Parsed a top-level expression.
-Evaluated to -0.000000
+Evaluated to 0.000000
 ```
 ```python
 ready>
