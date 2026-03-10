@@ -90,7 +90,7 @@ static string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;        // Filled in if tok_number
 static string NumLiteralStr; // Filled in if tok_number, used in error messages
 
-// Keywords words like `def`, `extern` and `return`. The lexer will return the
+// Keywords like `def`, `extern` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
 static map<string, Token> Keywords = {
     {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return},
@@ -332,7 +332,7 @@ static int gettok() {
       // Re-snapshot CurLoc now that the '\n' has been consumed and LexLoc
       // has advanced to the next line. Without this, CurLoc would point at
       // the '#' column, and GetDiagnosticAnchorLoc would look up the wrong
-      // line when the next token triggers an error.
+      // line (because it subtracts 1) when the next token triggers an error.
       CurLoc = LexLoc;
       LastChar = ' ';
       return tok_eol;
@@ -830,7 +830,8 @@ static unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
     if (TokPrec < ExprPrec)
       return LHS;
 
-    // Okay, we know this is a binop.
+    // Okay, we know this is a binop and that binds at least as tightly as the
+    // current binop.
     int BinOp = CurTok;
     getNextToken(); // eat binop
 
@@ -864,7 +865,7 @@ static unique_ptr<ExprAST> ParseExpression() {
 }
 
 /// prototype
-///   = identifier "(" [identifier {"," identifier}] ")" ;
+///   = identifier "(" [ identifier { "," identifier } ] ")" ;
 static unique_ptr<PrototypeAST> ParsePrototype() {
   if (CurTok != tok_identifier)
     return LogErrorP("Expected function name in prototype");
@@ -900,7 +901,7 @@ static unique_ptr<PrototypeAST> ParsePrototype() {
 }
 
 /// definition
-///   = "def" prototype ":" ["newline"] "return" expression ;
+///   = "def" prototype ":" [ eols ] "return" expression ;
 static unique_ptr<FunctionAST> ParseDefinition() {
   getNextToken(); // eat 'def'
   auto Proto = ParsePrototype();
@@ -1611,11 +1612,20 @@ extern "C" DLLEXPORT double printd(double X) {
 
 /// MainLoop - Dispatch loop for the REPL.
 ///
-/// grammar: top = { definition | external | expression | newline }
+/// top             = definition | external | toplevelexpr ;
+///
+/// Dispatches on the leading token of each top-level form:
+///   tok_def    → HandleDefinition   (definition)
+///   tok_extern → HandleExtern       (external)
+///   '@'        → HandleDecorator    (decorateddef: @binary / @unary)
+///   tok_eol    → skip blank line
+///   anything else → HandleTopLevelExpression (toplevelexpr)
 ///
 /// CurTok is primed before MainLoop() is called (see main()). After each
-/// successful parse the handler prints a confirmation; after a failed parse it
-/// skips one token. Either way we come back here and look at the new CurTok.
+/// successful parse the handler prints a confirmation; after a failed parse
+/// the handler calls SynchronizeToLineBoundary() to discard all remaining
+/// tokens on the current line. Either way we return here to look at the
+/// next CurTok.
 static void MainLoop() {
   while (true) {
     if (CurTok == tok_eof)

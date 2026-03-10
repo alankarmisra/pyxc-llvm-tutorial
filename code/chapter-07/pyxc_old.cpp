@@ -1,5 +1,6 @@
 #include "../include/PyxcJIT.h"
 #include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -35,14 +36,15 @@ using namespace std;
 using namespace llvm;
 using namespace llvm::orc;
 
-//===----------------------------------------===//
+//===----------------------------------------------------------------------===//
 // Command line
-//===----------------------------------------===//
+//===----------------------------------------------------------------------===//
 static cl::OptionCategory PyxcCategory("Pyxc options");
 
 // Optional positional input: 0 args => REPL, 1 arg => file mode.
-static cl::opt<std::string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
-                                      cl::init(""), cl::cat(PyxcCategory));
+static cl::list<std::string> InputFile(cl::Positional,
+                                       cl::desc("[script.pyxc]"),
+                                       cl::ZeroOrMore, cl::cat(PyxcCategory));
 
 // Verbose IR dump in both REPL and file mode.
 static cl::opt<bool> VerboseIR("v",
@@ -72,14 +74,14 @@ enum Token {
   tok_number = -7,
 
   // control
-  tok_return = -8,
+  tok_return = -8
 };
 
 static string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;        // Filled in if tok_number
-static string NumLiteralStr; // Filled in if tok_number
+static string NumLiteralStr; // Filled in if tok_number, used in error messages
 
-// Keywords like `def`, `extern` and `return`. The lexer will return the
+// Keywords words like `def`, `extern` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
 static map<string, Token> Keywords = {
     {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return}};
@@ -88,11 +90,12 @@ static map<string, Token> Keywords = {
 // purely for printing token stream output.
 static map<int, string> TokenNames = [] {
   // Unprintable character tokens, and multi-character tokens.
-  static map<int, string> Names = {
+  map<int, string> Names = {
       {tok_eof, "end of input"}, {tok_eol, "newline"},
       {tok_error, "error"},      {tok_def, "'def'"},
       {tok_extern, "'extern'"},  {tok_identifier, "identifier"},
-      {tok_number, "number"},    {tok_return, "'return'"}};
+      {tok_number, "number"},    {tok_return, "'return'"},
+  };
 
   // Single character tokens.
   for (int ch = 0; ch <= 255; ++ch) {
@@ -116,15 +119,15 @@ static map<int, string> TokenNames = [] {
   return Names;
 }();
 
-/// SourceLocation - A {Line, Col} pair. Line and Col are 1-based.
-///
-/// Two globals track position as characters are consumed:
-///   LexLoc  - where the character-read head (advance()) currently is.
-///             Updated on every advance() call. After a '\n', Line increments
-///             and Col resets to 0 so the next character will be Col 1.
-///   CurLoc  - snapshotted at the start of each token in gettok(), before
-///             consuming any of the token's characters. This is the position
-///             the parser and diagnostics see.
+// SourceLocation - A {Line, Col} pair. Line and Col are 1-based.
+//
+// Two globals track position as characters are consumed:
+//   LexLoc  - where the character-read head (advance()) currently is.
+//             Updated on every advance() call. After a '\n', Line increments
+//             and Col resets to 0 so the next character will be Col 1.
+//   CurLoc  - snapshotted at the start of each token in gettok(), before
+//             consuming any of the token's characters. This is the position
+//             the parser and diagnostics infrastructure see.
 struct SourceLocation {
   int Line;
   int Col;
@@ -132,33 +135,30 @@ struct SourceLocation {
 static SourceLocation CurLoc;
 static SourceLocation LexLoc = {1, 0};
 
-/// SourceManager - Buffers every source line as it is read so that error
-/// messages can reprint the offending line with a caret underneath it.
-///
-/// advance() calls onChar() for every character it consumes. When a '\n'
-/// arrives, the just-completed line is moved into CompletedLines and
-/// CurrentLine starts fresh. getLine(N) returns a pointer to the Nth line
-/// (1-based): completed lines are stored in the vector; the line currently
-/// being assembled is in CurrentLine.
+// SourceManager - Buffers every source line as it is read so that error
+// messages can reprint the offending line with a caret underneath it.
+//
+// advance() calls onChar() for every character it consumes. When a '\n'
+// arrives, the just-completed line is moved into CompletedLines and
+// CurrentLine starts fresh. getLine(N) returns a pointer to the Nth line
+// (1-based): completed lines are stable in the vector; the line currently
+// being assembled is in CurrentLine.
+//
+// Because the REPL accumulates all input in one session, line numbers
+// increase monotonically across inputs and getLine() can retrieve any
+// previously seen line — useful for multi-line function bodies and for
+// pointing the caret at a line that was parsed several inputs ago.
 class SourceManager {
   vector<string> CompletedLines;
   string CurrentLine;
 
 public:
-  /// reset - Clear all buffered source lines.
-  ///
-  /// Used when starting a new input stream so diagnostics only reference the
-  /// current script/session content.
   void reset() {
     CompletedLines.clear();
     CurrentLine.clear();
   }
 
-  /// onChar - Feed one consumed character into the source buffer.
-  ///
-  /// Preconditions:
-  /// - Must be called for every character consumed by advance().
-  /// - '\n' terminates the current line; EOF is ignored.
+  // Called by advance() for every character consumed from the input.
   void onChar(int C) {
     if (C == '\n') {
       CompletedLines.push_back(CurrentLine);
@@ -169,17 +169,9 @@ public:
       CurrentLine.push_back(static_cast<char>(C));
   }
 
-  /// getLine - Return a pointer to a buffered source line by 1-based index.
-  ///
-  /// Completed lines come from CompletedLines; the in-progress line is
-  /// CurrentLine when OneBasedLine == CompletedLines.size() + 1.
-  ///
-  /// Preconditions:
-  /// - OneBasedLine is 1-based. Non-positive indices return nullptr.
-  ///
-  /// Note:
-  /// - Do not retain the returned pointer across advance()/onChar() calls;
-  ///   buffers may reallocate.
+  // Returns a pointer to the text of line OneBasedLine, or nullptr if out of
+  // range. The pointer is stable for completed lines; CurrentLine may move if
+  // more characters arrive, so callers should not hold it across advance().
   const string *getLine(int OneBasedLine) const {
     if (OneBasedLine <= 0)
       return nullptr;
@@ -201,9 +193,8 @@ static void PrintErrorSourceContext(SourceLocation Loc);
 /// Every token branch in gettok() calls advance() rather than fgetc()
 /// directly, so LexLoc and the source buffer are always in sync.
 ///
-/// Windows line endings (\r\n) are coalesced to a single \n
-/// as are bare (old) Mac \r's (without a trailing \n)
-/// so the rest of the lexer never needs to handle \r.
+/// Windows line endings (\r\n) are coalesced to a single \n so the rest of
+/// the lexer never needs to handle \r.
 static int advance() {
   int LastChar = fgetc(Input);
   if (LastChar == '\r') {
@@ -256,10 +247,6 @@ static int gettok() {
   CurLoc = LexLoc;
 
   if (LastChar == '\n') {
-    // Do not call advance() here.
-    // We should return the newline token immediately. If we read one more
-    // character first, REPL mode may wait for extra input before processing
-    // the line the user just submitted.
     LastChar = ' ';
     return tok_eol;
   }
@@ -283,8 +270,7 @@ static int gettok() {
     NumLiteralStr = NumStr;
     char *End = nullptr;
     NumVal = strtod(NumStr.c_str(), &End);
-    if (End == NumStr.c_str() /* no conversion */
-        || *End != '\0' /* trailing unparsed characters */) {
+    if (!End || *End != '\0') {
       fprintf(stderr,
               "Error (Line %d, Column %d): invalid number literal '%s'\n",
               CurLoc.Line, CurLoc.Col, NumStr.c_str());
@@ -304,7 +290,7 @@ static int gettok() {
       // Re-snapshot CurLoc now that the '\n' has been consumed and LexLoc
       // has advanced to the next line. Without this, CurLoc would point at
       // the '#' column, and GetDiagnosticAnchorLoc would look up the wrong
-      // line (because it subtracts 1) when the next token triggers an error.
+      // line when the next token triggers an error.
       CurLoc = LexLoc;
       LastChar = ' ';
       return tok_eol;
@@ -314,13 +300,8 @@ static int gettok() {
   if (LastChar == EOF)
     return tok_eof;
 
-  // Single character token
   int ThisChar = LastChar;
-
-  // Position the lexer at the next character so the next gettok() starts there.
   LastChar = advance();
-
-  // Return ThisChar.
   return ThisChar;
 }
 
@@ -338,18 +319,17 @@ static int gettok() {
 /// character — pointing just after the final token on the line, which is
 /// where the missing token (e.g. ':') should have appeared.
 static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
-  if (Tok != tok_eol || Loc.Line <= 1)
+  if (Tok != tok_eol)
     return Loc;
 
-  // Tok == tok_eol && Loc.Line > 1
   int PrevLine = Loc.Line - 1;
-  const string *PrevLineText = PyxcSourceMgr.getLine(PrevLine);
+  if (PrevLine <= 0)
+    return Loc;
 
-  // guard
+  const string *PrevLineText = PyxcSourceMgr.getLine(PrevLine);
   if (!PrevLineText)
     return Loc;
 
-  // return a pointer just past the end of the previous line.
   return {PrevLine, static_cast<int>(PrevLineText->size()) + 1};
 }
 
@@ -379,8 +359,11 @@ static void PrintErrorSourceContext(SourceLocation Loc) {
     return;
 
   fprintf(stderr, "%s\n", LineText->c_str());
-  int spaces = max(0, Loc.Col - 1);
-  fprintf(stderr, "%*s", spaces, " ");
+  int spaces = Loc.Col - 1;
+  if (spaces < 0)
+    spaces = 0;
+  for (int i = 0; i < spaces; ++i)
+    fputc(' ', stderr);
   fprintf(stderr, "^~~~\n");
 }
 
@@ -415,14 +398,12 @@ public:
 };
 
 /// BinaryExprAST - Expression class for a binary operator.
-/// Op is stored as an int token code. In chapter 7 all binary operators are
-/// single-character ASCII tokens ('+', '-', '*').
 class BinaryExprAST : public ExprAST {
-  int Op;
+  char Op;
   unique_ptr<ExprAST> LHS, RHS;
 
 public:
-  BinaryExprAST(int Op, unique_ptr<ExprAST> LHS, unique_ptr<ExprAST> RHS)
+  BinaryExprAST(char Op, unique_ptr<ExprAST> LHS, unique_ptr<ExprAST> RHS)
       : Op(Op), LHS(std::move(LHS)), RHS(std::move(RHS)) {}
   Value *codegen() override;
 };
@@ -477,45 +458,30 @@ public:
 static int CurTok;
 static int getNextToken() { return CurTok = gettok(); }
 
-/// consumeNewlines - Consume all consecutive tok_eol tokens.
-///
-/// Called after eating a structural token (e.g. ':') to allow the body or
-/// next clause to appear on the following line.
-static void consumeNewlines() {
-  while (CurTok == tok_eol)
-    getNextToken();
-}
-
-/// BinopPrecedence - Maps each binary operator token to its precedence.
-/// Higher numbers bind more tightly: '*' (40) > '+'/'-' (20). Operators not in
-/// this map return -1 from GetTokPrecedence(), which tells ParseBinOpRHS to
-/// stop consuming operators and return what it has so far.
-static map<int, int> BinopPrecedence = {
-    {'+', 20}, // +
-    {'-', 20}, // -
-    {'*', 40}, // *
-};
+/// BinopPrecedence - Maps each binary operator character to its precedence.
+/// Higher numbers bind more tightly: '*' (40) > '+'/'-' (20) > '<' (10).
+/// Operators not in this map return -1 from GetTokPrecedence(), which tells
+/// ParseBinOpRHS to stop consuming operators and return what it has so far.
+static map<char, int> BinopPrecedence;
 
 /// GetTokPrecedence - Returns the precedence of CurTok if it is a known binary
-/// operator, or -1 if it is not.
+/// operator, or -1 if it is not. Non-ASCII tokens (our named token enums) are
+/// rejected immediately since they can never be binary operators here.
 static int GetTokPrecedence() {
-  auto It = BinopPrecedence.find(CurTok);
-  if (It == BinopPrecedence.end() || It->second <= 0)
+  if (!isascii(CurTok))
     return -1;
-  return It->second;
+
+  int TokPrec = BinopPrecedence[CurTok];
+  if (TokPrec <= 0)
+    return -1;
+  return TokPrec;
 }
 
-/// PrintReplPrompt - Print the interactive prompt to stderr.
-/// Only emits output in REPL mode; silent when running a script file.
 void PrintReplPrompt() {
   if (IsRepl)
     fprintf(stderr, "ready> ");
 }
 
-/// Log - Write a diagnostic message to stderr in REPL mode only.
-/// Used by the Handle* functions to confirm what was parsed ("Parsed a
-/// function definition.", etc.). Silent when processing a script file so
-/// that stdout/stderr output from the program itself is not cluttered.
 void Log(const string &message) {
   if (IsRepl)
     fprintf(stderr, "%s", message.c_str());
@@ -543,7 +509,6 @@ unique_ptr<FunctionAST> LogErrorF(const char *Str) {
 }
 
 static unique_ptr<ExprAST> ParseExpression();
-static unique_ptr<ExprAST> ParsePrimary();
 
 /// numberexpr
 ///   = number ;
@@ -633,8 +598,7 @@ static unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
     if (TokPrec < ExprPrec)
       return LHS;
 
-    // Okay, we know this is a binop and that binds at least as tightly as the
-    // current binop.
+    // Okay, we know this is a binop.
     int BinOp = CurTok;
     getNextToken(); // eat binop
 
@@ -668,7 +632,7 @@ static unique_ptr<ExprAST> ParseExpression() {
 }
 
 /// prototype
-///   = identifier "(" [ identifier { "," identifier } ] ")" ;
+///   = identifier "(" [identifier {"," identifier}] ")" ;
 static unique_ptr<PrototypeAST> ParsePrototype() {
   if (CurTok != tok_identifier)
     return LogErrorP("Expected function name in prototype");
@@ -704,7 +668,7 @@ static unique_ptr<PrototypeAST> ParsePrototype() {
 }
 
 /// definition
-///   = "def" prototype ":" [ eols ] "return" expression ;
+///   = "def" prototype ":" ["newline"] "return" expression ;
 static unique_ptr<FunctionAST> ParseDefinition() {
   getNextToken(); // eat 'def'
   auto Proto = ParsePrototype();
@@ -719,7 +683,8 @@ static unique_ptr<FunctionAST> ParseDefinition() {
   // written on the next line:
   //   def foo(x):
   //     return x + 1
-  consumeNewlines();
+  while (CurTok == tok_eol)
+    getNextToken();
 
   if (CurTok != tok_return)
     return LogErrorF("Expected 'return' in function body");
@@ -813,8 +778,8 @@ static std::unique_ptr<StandardInstrumentations> TheSI;
 static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 static ExitOnError ExitOnErr;
 
-/// LogErrorV - Codegen-level error helper. Delegates to LogError for printing,
-/// then returns nullptr so codegen callers can write: return LogErrorV("msg");
+// LogErrorV - Codegen-level error helper. Delegates to LogError for printing,
+// then returns nullptr so codegen callers can write: return LogErrorV("msg");
 Value *LogErrorV(const char *Str) {
   LogError(Str);
   return nullptr;
@@ -875,6 +840,9 @@ Value *VariableExprAST::codegen() {
 /// numeric suffix when the same hint would otherwise repeat. They have no
 /// effect on correctness.
 ///
+/// '<' requires two steps: CreateFCmpULT produces a 1-bit integer (i1) —
+/// LLVM's boolean type. Since Pyxc treats everything as double, CreateUIToFP
+/// widens it: false -> 0.0, true -> 1.0.
 Value *BinaryExprAST::codegen() {
   Value *L = LHS->codegen();
   Value *R = RHS->codegen();
@@ -888,6 +856,10 @@ Value *BinaryExprAST::codegen() {
     return Builder->CreateFSub(L, R, "subtmp");
   case '*':
     return Builder->CreateFMul(L, R, "multmp");
+  case '<':
+    L = Builder->CreateFCmpULT(L, R, "cmptmp");
+    // Widen the i1 boolean to double: false -> 0.0, true -> 1.0.
+    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   default:
     return LogErrorV("invalid binary operator");
   }
@@ -1216,19 +1188,11 @@ extern "C" DLLEXPORT double printd(double X) {
 
 /// MainLoop - Dispatch loop for the REPL.
 ///
-/// top             = definition | external | toplevelexpr ;
-///
-/// Dispatches on the leading token of each top-level form:
-///   tok_def    → HandleDefinition   (definition)
-///   tok_extern → HandleExtern       (external)
-///   tok_eol    → skip blank line
-///   anything else → HandleTopLevelExpression (toplevelexpr)
+/// grammar: top = { definition | external | expression | newline }
 ///
 /// CurTok is primed before MainLoop() is called (see main()). After each
-/// successful parse the handler prints a confirmation; after a failed parse
-/// the handler calls SynchronizeToLineBoundary() to discard all remaining
-/// tokens on the current line. Either way we return here to look at the
-/// next CurTok.
+/// successful parse the handler prints a confirmation; after a failed parse it
+/// skips one token. Either way we come back here and look at the new CurTok.
 static void MainLoop() {
   while (true) {
     if (CurTok == tok_eof)
@@ -1260,18 +1224,19 @@ static void MainLoop() {
   }
 }
 
-/// ProcessCommandLine - Parse argv and configure the global Input/IsRepl state.
-///
-/// Returns 0 on success, -1 on error (e.g. the file could not be opened). When
-/// no file is given, Input stays as stdin and IsRepl is set to true.
 int ProcessCommandLine(int argc, const char **argv) {
   cl::HideUnrelatedOptions(PyxcCategory);
   cl::ParseCommandLineOptions(argc, argv, "pyxc\n");
 
-  if (!InputFile.empty()) {
-    Input = fopen(InputFile.c_str(), "r");
+  if (InputFile.size() > 1) {
+    fprintf(stderr, "Error: expected at most one input file.\n");
+    return -1;
+  }
+
+  if (InputFile.size() == 1) {
+    Input = fopen(InputFile[0].c_str(), "r");
     if (!Input) {
-      perror(InputFile.c_str());
+      perror(InputFile[0].c_str());
       return -1;
     }
     IsRepl = false;
@@ -1286,11 +1251,6 @@ int ProcessCommandLine(int argc, const char **argv) {
 // Main driver code.
 //===----------------------------------------===//
 
-/// main - Entry point for the Pyxc compiler/REPL.
-///
-/// Initialises the LLVM native backend, creates the ORC JIT and an initial
-/// module, then hands control to MainLoop(). On exit, any open script file is
-/// closed.
 int main(int argc, const char **argv) {
 
   int commandLineResult = ProcessCommandLine(argc, argv);
@@ -1304,6 +1264,12 @@ int main(int argc, const char **argv) {
   InitializeNativeTarget();
   InitializeNativeTargetAsmPrinter();
   InitializeNativeTargetAsmParser();
+
+  // Register binary operators and their precedence (higher = tighter binding).
+  BinopPrecedence['<'] = 10;
+  BinopPrecedence['+'] = 20;
+  BinopPrecedence['-'] = 20;
+  BinopPrecedence['*'] = 40;
 
   // Prime the REPL: print the first prompt and load the first token.
   // Every parse function expects CurTok to be loaded before it is called.

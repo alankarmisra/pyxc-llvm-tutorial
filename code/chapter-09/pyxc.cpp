@@ -985,13 +985,19 @@ static unique_ptr<PrototypeAST> ParsePrototype() {
   if (CurTok != '(')
     return LogErrorP("Expected '(' in prototype");
 
+  // Parse argument names. The loop calls getNextToken() at the top to advance
+  // past '(' on the first iteration, and past ',' on subsequent ones.
+  // Inside the body we call getNextToken() again to move past the identifier
+  // we just stored, then check whether ')' or ',' follows.
+
   vector<string> ArgNames;
   while (getNextToken() == tok_identifier) {
     ArgNames.push_back(IdentifierStr);
-    if (getNextToken() == ')')
+    if (getNextToken() == ')') // eat identifier, check what follows
       break;
     if (CurTok != ',')
       return LogErrorP("Expected ')' or ',' in parameter list");
+    // loop continues: getNextToken() at the top eats the ','
   }
 
   if (CurTok != ')')
@@ -2035,6 +2041,8 @@ extern "C" DLLEXPORT double printd(double X) {
 
 /// MainLoop - Dispatch loop for the REPL.
 ///
+/// top             = definition | external | toplevelexpr ;
+///
 /// Dispatches on the leading token of each top-level form:
 ///   tok_def    → HandleDefinition   (definition)
 ///   tok_extern → HandleExtern       (external)
@@ -2111,9 +2119,9 @@ int ProcessCommandLine(int argc, const char **argv) {
 
 /// main - Entry point for the Pyxc compiler/REPL.
 ///
-/// Initialises the LLVM native backend, seeds BinopPrecedence with the
-/// built-in operators, creates the ORC JIT and an initial module, then
-/// hands control to MainLoop(). On exit, any open script file is closed.
+/// Initialises the LLVM native backend, creates the ORC JIT and an initial
+/// module, then hands control to MainLoop(). On exit, any open script file is
+/// closed.
 int main(int argc, const char **argv) {
 
   int commandLineResult = ProcessCommandLine(argc, argv);

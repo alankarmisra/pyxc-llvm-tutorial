@@ -1,6 +1,6 @@
 (*
    pyxc.ebnf
-   Grammar for chapter 8.
+   Grammar for chapter 8 - Control Flow: if, else, and for.
 *)
 
 (*
@@ -14,15 +14,15 @@ top             = definition | external | toplevelexpr ;
 definition      = "def" prototype ":" [ eols ] "return" expression ;
 external        = "extern" "def" prototype ;
 toplevelexpr    = expression ;
+prototype       = identifier "(" [ identifier { "," identifier } ] ")" ;
 conditionalexpr = "if" expression ":" [ eols ] expression [ eols ] "else" ":" [ eols ] expression ;
 forexpr         = "for" identifier "=" expression "," expression "," expression ":" [ eols ] expression ;
-prototype       = identifier "(" [ identifier { "," identifier } ] ")" ;
 expression      = primary binoprhs ;
 binoprhs        = { binaryop primary } ;
 primary         = identifierexpr | numberexpr | parenexpr
                 | conditionalexpr | forexpr ;
-identifierexpr  = identifier
-                | identifier "(" [ expression { "," expression } ] ")" ;
+identifierexpr  = identifier | callexpr ;
+callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
 numberexpr      = number ;
 parenexpr       = "(" expression ")" ;
 binaryop        = "==" | "!=" | "<=" | ">=" | "<" | ">" | "+" | "-" | "*" ;

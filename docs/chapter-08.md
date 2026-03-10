@@ -44,7 +44,7 @@ Evaluated to 10.000000
 ```
 <!-- code-merge:end -->
 
-`for` is an expression that loops for side effects:
+`for` is an expression that repeats a body expression, always producing `0.0`:
 
 <!-- code-merge:start -->
 ```python
@@ -76,7 +76,7 @@ cd pyxc-llvm-tutorial/code/chapter-08
 
 ## Grammar
 
-Chapter 8 extends the grammar with six comparison operators and two new primary expression forms (`conditionalexpr` and `forexpr`), and allows optional leading/trailing newlines in a program.
+Chapter 8 adds two new primary expression forms (`conditionalexpr` and `forexpr`) and six binary comparison operators to the grammar.
 
 ```ebnf
 program         = [ eols ] [ top { eols top } ] [ eols ] ;
@@ -211,6 +211,8 @@ Because `if` is a primary, it can appear anywhere an expression can — as a fun
 
 Both branches are mandatory. Without an `else`, what value would the expression produce when the condition is false?
 
+One syntactic note: every function definition currently requires the `return` keyword — it is part of the grammar (`def name(args): return expression`), not a statement. A later chapter replaces the single-expression body with a block of statements where `return` can appear anywhere.
+
 ### Parsing
 
 `ParseIfExpr` eats `if`, parses the condition, expects `:`, allows newlines, then parses the then-branch. It then allows newlines before `else`, expects `else:`, allows more newlines, and parses the else-branch:
@@ -265,43 +267,261 @@ else:
     b
 ```
 
-### Codegen: Three Basic Blocks and a PHI Node
+### Codegen: Building the then / else / join Blocks
 
-`IfExprAST::codegen` emits three LLVM basic blocks:
+Codegen for an `if` expression has three jobs:
+
+1. Evaluate the condition.
+2. Run exactly one of the two branches.
+3. Continue afterward with the value produced by the branch that ran.
+
+LLVM builds this out of **basic blocks**: straight-line chunks of instructions
+that end in a jump. For an `if`, we need one block for the `then` path, one for
+the `else` path, and one final block where both paths meet again.
+
+For:
+
+```python
+if a > b: a else: b
+```
+
+the generated block layout looks like this:
+
+```text
+         entry
+           │
+      if (a > b)?
+      ┌────┴────┐
+ true ▼         ▼ false
+     then      else
+       └────┬────┘
+            ▼
+          ifcont
+```
+
+`ifcont` is the block where execution continues after either branch.
+
+There is one extra problem: both branches produce a value, and after they
+rejoin we need one name for "the value from the branch that actually ran." LLVM
+writes that choice with a **PHI node**:
 
 ```llvm
-<current>:
-  %ifcond = fcmp one double %cond, 0.0
-  br i1 %ifcond, label %then, label %else
-
-then:
-  <then_expr codegen>
-  br label %ifcont
-
-else:
-  <else_expr codegen>
-  br label %ifcont
-
 ifcont:
-  %iftmp = phi double [ %thenv, %then_end ], [ %elsev, %else_end ]
+  %iftmp = phi double [ %a, %then ], [ %b, %else ]
 ```
 
-The condition is converted to `i1` with `fcmp one` — ordered not-equal to `0.0`. "Ordered" means a NaN condition silently takes the else branch.
+Read that as: "if we arrived here from `then`, use `%a`; if we arrived here
+from `else`, use `%b`."
 
-The PHI node in `ifcont` is SSA's way of saying "this value came from one of two paths." After the branches merge, `%iftmp` holds whichever value was computed.
+`IfExprAST::codegen` builds this shape in five steps. We'll trace through
+`if a > b: a else: b` (`maxval`).
 
-One subtlety: after codegenning the then-block, the current insert block may have changed — nested ifs add their own blocks. The actual predecessor of the merge block is wherever the builder ended up, not the original `ThenBB`. We re-capture it after codegen:
+**Step 1 — Generate the condition in the current block.**
+
+First we generate code for the condition expression:
 
 ```cpp
-Builder->CreateBr(MergeBB);
-ThenBB = Builder->GetInsertBlock(); // may differ from original ThenBB
+Value *CondV = Cond->codegen();
 ```
 
-The same applies to `ElseBB`.
+In Pyxc, condition expressions produce a `double`, not an LLVM boolean.
+Before we can branch, we must turn that `double` into an `i1` value that LLVM
+can use for `br i1 ...`.
 
-### The Optimizer Collapses Trivial ifs to select
+We do that by comparing the condition value against `0.0`:
 
-When both branches are side-effect-free, the optimizer replaces the entire three-block structure with a single `select` instruction:
+```cpp
+CondV = Builder->CreateFCmpONE(
+    CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "ifcond");
+```
+
+This means: treat the condition as true if it is not equal to `0.0`.
+
+At this point the builder is still inserting instructions into the current
+block, which is the block that was already active before the `if`.
+
+**Step 2 — Create the `then`, `else`, and join blocks.**
+
+```cpp
+BasicBlock *ThenBB = BasicBlock::Create(*TheContext, "then", TheFunction);
+BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else", TheFunction);
+BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont", TheFunction);
+Builder->CreateCondBr(CondV, ThenBB, ElseBB);
+```
+
+All three blocks are attached to the function immediately. `CreateCondBr` does
+not fill either branch block; it only finishes the current block with a
+conditional jump to `then` or `else`.
+
+So after this line:
+
+- the current block (`entry`) now ends with `br i1 ...`
+- `then`, `else`, and `ifcont` exist
+- those three blocks still contain no instructions
+
+IR so far — `entry` is complete, new blocks are placeholders:
+
+```llvm
+define double @maxval(double %a, double %b) {
+entry:
+  %cmptmp  = fcmp ogt double %a, %b         ; a > b → i1
+  %booltmp = uitofp i1 %cmptmp to double    ; widen to double (0.0 or 1.0)
+  %ifcond  = fcmp one double %booltmp, 0.0  ; back to i1: non-zero?
+  br i1 %ifcond, label %then, label %else
+
+then:    ; (empty)
+else:    ; (empty)
+ifcont:  ; (empty)
+}
+```
+
+**Step 3 — Move the builder into `then` and generate that branch.**
+
+```cpp
+Builder->SetInsertPoint(ThenBB);
+Value *ThenV = Then->codegen();
+Builder->CreateBr(MergeBB);
+ThenBB = Builder->GetInsertBlock(); // re-capture: nested ifs shift the cursor
+```
+
+`SetInsertPoint` is the important move here: it tells LLVM, "append the next
+instructions into the `then` block."
+
+After `Then->codegen()` finishes, we emit an unconditional branch to `ifcont`
+so the `then` path rejoins the `else` path.
+
+The re-capture on the last line matters because nested control flow can create
+more blocks and move the builder. We want the block where the `then` path
+actually ended, not just the block where it started.
+
+```llvm
+then:                           ; preds = %entry
+  br label %ifcont              ; then-value is %a (a parameter — no instruction needed)
+```
+
+**Step 4 — Do the same for `else`.**
+
+The pattern is the same:
+
+- move the builder there
+- generate the `else` expression
+- branch to `ifcont`
+- re-capture the block where the `else` path actually ended
+
+```llvm
+else:                           ; preds = %entry
+  br label %ifcont              ; else-value is %b
+```
+
+**Step 5 — Fill the join block and choose the final value.**
+
+```cpp
+Builder->SetInsertPoint(MergeBB);
+PHINode *PN = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
+PN->addIncoming(ThenV, ThenBB);
+PN->addIncoming(ElseV, ElseBB);
+```
+
+Now we are in the block where both branches meet again. The PHI node gives the
+whole `if` expression one result value:
+
+- if control arrived from the `then` side, use `ThenV`
+- if control arrived from the `else` side, use `ElseV`
+
+That is why the re-captures in steps 3 and 4 matter: the PHI node needs the
+actual block each branch jumped from.
+
+#### Why Re-Capture `ThenBB` and `ElseBB`?
+
+This only matters when one branch contains nested control flow.
+
+Suppose the outer `then` branch is itself another `if`:
+
+```python
+if outer_cond:
+    if inner_cond:
+        a
+    else:
+        b
+else:
+    c
+```
+
+The inner `if` produces its own result first, and then the outer `if` uses
+that result as the value of its `then` branch.
+
+A simplified IR shape looks like this:
+
+```llvm
+entry:
+  br i1 %outer_cond, label %outer_then, label %outer_else
+
+outer_then:
+  br i1 %inner_cond, label %inner_then, label %inner_else
+
+inner_then:
+  br label %inner_join
+
+inner_else:
+  br label %inner_join
+
+inner_join:
+  %inner = phi double [ %a, %inner_then ], [ %b, %inner_else ]
+  br label %outer_join
+
+outer_else:
+  br label %outer_join
+
+outer_join:
+  %outer = phi double [ %inner, %inner_join ], [ %c, %outer_else ]
+```
+
+Notice what happened:
+
+- the outer `then` branch started in `outer_then`
+- but after generating the nested `if`, it actually ends in `inner_join`
+
+So the outer PHI must use `inner_join`, not `outer_then`:
+
+```llvm
+%outer = phi double [ %inner, %inner_join ], [ %c, %outer_else ]
+```
+
+That is why we re-capture with:
+
+```cpp
+ThenBB = Builder->GetInsertBlock();
+```
+
+After nested codegen, `ThenBB` must mean "the block where the outer `then`
+path actually finished," because that is the predecessor block the outer PHI
+needs.
+
+**Full unoptimized IR for `maxval`:**
+
+```llvm
+define double @maxval(double %a, double %b) {
+entry:
+  %cmptmp  = fcmp ogt double %a, %b
+  %booltmp = uitofp i1 %cmptmp to double
+  %ifcond  = fcmp one double %booltmp, 0.0
+  br i1 %ifcond, label %then, label %else
+
+then:                                         ; preds = %entry
+  br label %ifcont
+
+else:                                         ; preds = %entry
+  br label %ifcont
+
+ifcont:                                       ; preds = %then, %else
+  %iftmp = phi double [ %a, %then ], [ %b, %else ]
+  ret double %iftmp
+}
+```
+
+### The Optimizer Collapses Simple ifs to select
+
+When both branches are side-effect-free, the optimizer sees that no code actually runs in `then` or `else` — they are just routing. It replaces the whole three-block structure with a single `select` instruction:
 
 ```llvm
 define double @maxval(double %a, double %b) {
@@ -312,17 +532,19 @@ entry:
 }
 ```
 
-`select i1 cond, T true_val, T false_val` is LLVM's ternary — no branches needed. Functions with real side effects (calls to `printd`, `putchard`) keep the full block structure.
+`select i1 cond, T true_val, T false_val` is LLVM's ternary — no branches, no blocks. The optimizer also removes the redundant `uitofp` / `fcmp one` round-trip (comparison → double → back to `i1`) and uses `%cmptmp` directly.
+
+Functions where the branches make calls (`printd`, `putchard`) keep the full three-block structure because those calls must actually run in one branch and not the other.
 
 ## for Loop Expressions
 
-The `for` loop drives iteration for side effects:
+The `for` expression repeats a body expression while a condition holds:
 
 ```python
 for var = start, condition, step: body
 ```
 
-The loop runs while `condition` is non-zero. `var` is introduced by the `for` and is in scope for `condition`, `step`, and `body`. The expression always produces `0.0`.
+The loop runs while `condition` is non-zero. `var` is introduced by the `for` and is in scope for `condition`, `step`, and `body`. The body's return value is discarded each iteration. The expression as a whole always produces `0.0` — useful when you want to call a function repeatedly and don't care what it returns.
 
 ### Parsing
 
@@ -371,38 +593,103 @@ static unique_ptr<ExprAST> ParseForExpr() {
 
 ### Codegen: Check-at-Top Loop
 
-The loop compiles to three blocks:
+The loop compiles to four blocks. We'll trace through `for i = 1, i <= 3, 1: printd(i)`.
 
-```llvm
-<preheader>:
-  %start = <Start codegen>
-  br label %loop_cond
+**Step 1 — Evaluate start in the preheader and jump to the condition block.**
 
-loop_cond:
-  %i = phi double [ %start, %preheader ], [ %nextvar, %body_end ]
-  %condv = <Cond codegen>
-  %loopcond = fcmp one double %condv, 0.0
-  br i1 %loopcond, label %loop_body, label %after_loop
-
-loop_body:
-  <Body codegen>       ; value discarded
-  %step = <Step codegen>
-  %nextvar = fadd double %i, %step
-  br label %loop_cond
-
-after_loop:
-  ret 0.0
+```cpp
+Value *StartVal = Start->codegen();           // 1.0
+BasicBlock *PreheaderBB = Builder->GetInsertBlock();
+BasicBlock *CondBB  = BasicBlock::Create(*TheContext, "loop_cond", TheFunction);
+BasicBlock *BodyBB  = BasicBlock::Create(*TheContext, "loop_body");
+BasicBlock *AfterBB = BasicBlock::Create(*TheContext, "after_loop");
+Builder->CreateBr(CondBB);
 ```
 
-The condition is checked **before** the first iteration. If false on entry, the body never runs.
+**Step 2 — Build the condition block: PHI node + branch.**
 
-The PHI node at the top of `loop_cond` merges the initial value (from the preheader) with the updated value (from the end of `loop_body`). The back-edge incoming block is captured after body codegen — nested ifs inside the body can add blocks, so the builder's insert block may have moved:
+```cpp
+Builder->SetInsertPoint(CondBB);
+PHINode *Variable = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
+Variable->addIncoming(StartVal, PreheaderBB);   // first-iteration value
+```
+
+The PHI node is created with only one incoming for now — the preheader. The back-edge (from the loop body) is added after body codegen. Then evaluate the condition and branch:
+
+```cpp
+Value *CondV = Cond->codegen();
+Value *LoopCond = Builder->CreateFCmpONE(
+    CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "loopcond");
+Builder->CreateCondBr(LoopCond, BodyBB, AfterBB);
+```
+
+**Step 3 — Fill the body block.**
+
+```cpp
+TheFunction->insert(TheFunction->end(), BodyBB);
+Builder->SetInsertPoint(BodyBB);
+Body->codegen();                                // return value discarded
+Value *StepVal = Step->codegen();               // 1.0
+Value *NextVar  = Builder->CreateFAdd(Variable, StepVal, "nextvar");
+```
+
+Then re-capture the insert block (nested ifs inside the body can shift the cursor) and close the back-edge:
 
 ```cpp
 BasicBlock *BodyEndBB = Builder->GetInsertBlock();
-Variable->addIncoming(NextVar, BodyEndBB);
+Variable->addIncoming(NextVar, BodyEndBB);      // complete the PHI
 Builder->CreateBr(CondBB);
 ```
+
+**Step 4 — After-loop block returns `0.0`.**
+
+```cpp
+TheFunction->insert(TheFunction->end(), AfterBB);
+Builder->SetInsertPoint(AfterBB);
+return ConstantFP::get(*TheContext, APFloat(0.0));
+```
+
+**Full IR for `for i = 1, i <= 3, 1: printd(i)` as a top-level expression:**
+
+```llvm
+define double @__anon_expr() {
+entry:
+  br label %loop_cond
+
+loop_cond:                                    ; preds = %entry, %loop_body
+  %i = phi double [ 1.000000e+00, %entry ], [ %nextvar, %loop_body ]
+  %cmptmp  = fcmp ole double %i, 3.000000e+00
+  %booltmp = uitofp i1 %cmptmp to double
+  %loopcond = fcmp one double %booltmp, 0.000000e+00
+  br i1 %loopcond, label %loop_body, label %after_loop
+
+loop_body:                                    ; preds = %loop_cond
+  %calltmp = call double @printd(double %i)
+  %nextvar = fadd double %i, 1.000000e+00
+  br label %loop_cond
+
+after_loop:                                   ; preds = %loop_cond
+  ret double 0.000000e+00
+}
+```
+
+CFG:
+
+```
+      entry
+        │
+        ▼
+    loop_cond ◄──────────┐
+        │                │
+   ┌────┴────┐           │
+   ▼         ▼           │
+loop_body  after_loop    │
+   │        ret 0.0      │
+   └─────────────────────┘
+   (i = i + step)
+```
+
+The condition is checked **before** the first iteration. If false on entry, the body never runs. The `loop_cond` block has two predecessors — `entry` (on the first pass) and `loop_body` (on subsequent passes) — which is exactly what the PHI node encodes.
 
 ### Variable Shadowing
 
@@ -489,7 +776,7 @@ ready>
 
 ### for loop
 
-The loop itself returns `0.0`. The body's value is discarded; side effects (`printd`) are what matter.
+The loop always produces `0.0`. The body runs once per iteration and its return value is thrown away — here the body is a `printd` call, so the observable result is the printing.
 
 <!-- code-merge:start -->
 ```python
@@ -547,9 +834,9 @@ mandel(0 - 2.3, 0 - 1.3, 0.05, 0.07)
 
 **Unary minus.** Pyxc has no unary minus yet — `-2.3` would be parsed as the binary operator `-` applied to nothing, which is an error. The workaround is `0 - 2.3`: a fully-formed binary subtraction that the optimizer collapses to the literal `-2.3` with no extra instructions emitted. Chapter 9 adds unary-expression parsing and built-in unary minus support.
 
-**`mandelconverge`** recurses until either `iters` hits zero (point likely inside the set) or `real² + imag²` exceeds `4` (magnitude exceeded 2, point is diverging). It returns the remaining iteration count.
+**`mandelconverger`** counts iterations upward from `iters = 0`. It stops when `iters` exceeds 255 (the iteration limit — point is likely inside the set) or when `real² + imag²` exceeds 4 (magnitude exceeded 2 — point is diverging). It returns the iteration count at which it stopped. **`mandelconverge`** is a thin wrapper that starts the recursion at `iters = 0`.
 
-**`mandelrow`** drives the x-axis for a single row. For each point it calls `mandelconverge`; a return value of `0` means the limit was reached without diverging, so the point is inside the set — print space (ASCII 32). Any other value means it diverged — print `*` (ASCII 42).
+**`mandelrow`** drives the x-axis for a single row. For each point it calls `mandelconverge`; a return value `> 255` means the iteration limit was reached without diverging — point is inside the set, print space (ASCII 32). Any smaller value means it escaped — print `*` (ASCII 42).
 
 **`mandelhelp`** drives the y-axis. The outer `for y` body is `mandelrow(...) + putchard(10)` — the `+` sequences both calls, printing the row then a newline (ASCII 10). The return value `0.0 + 0.0` is discarded.
 
