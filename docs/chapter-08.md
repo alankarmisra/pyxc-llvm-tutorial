@@ -394,25 +394,30 @@ then:                           ; preds = %entry
   br label %ifcont              ; then-value is %a (a parameter — no instruction needed)
 ```
 
-And finally, we recapture the location of ThenBB to pass it to the merge block.
+Finally, we update `ThenBB` so it points to the block where the `then` path
+actually finished.
 
 ```cpp
 // Update ThenBB to the block where the then-path actually ended.
 // This matters for nested control flow; explained just below.
-ThenBB = Builder->GetInsertBlock(); 
+ThenBB = Builder->GetInsertBlock();
 ```
 
-The recapturing is necessary, because nested control flow can create more blocks and move the builder. We want the block where the `then` path actually ended, not just the block where it started. This subtlety only matters 
-for nested if expressions; we’ll look at that case just below.
+This matters because nested control flow can create more blocks and move the
+builder. We want the block where the `then` path ended, not the block where it
+started. This only matters for nested `if` expressions; we’ll look at that
+case just below.
 
 **Step 4 — Do the same for `else`.**
 
-The pattern is the same:
+```cpp
+Builder->SetInsertPoint(ElseBB);
+Value *ElseV = Else->codegen();
+Builder->CreateBr(MergeBB);
+ElseBB = Builder->GetInsertBlock();
+```
 
-- move the builder there
-- generate the `else` expression
-- branch to `ifcont`
-- re-capture the block where the `else` path actually ended
+The pattern mirrors Step 3: move the builder into `else`, generate the expression, branch to `ifcont`, and re-capture the block where the `else` path actually ended.
 
 ```llvm
 else:                           ; preds = %entry
@@ -426,6 +431,7 @@ Builder->SetInsertPoint(MergeBB);
 PHINode *PN = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
 PN->addIncoming(ThenV, ThenBB);
 PN->addIncoming(ElseV, ElseBB);
+return PN;
 ```
 
 Now we are in the block where both branches meet again. The PHI node gives the
@@ -434,10 +440,11 @@ whole `if` expression one result value:
 - if control arrived from the `then` side, use `ThenV`
 - if control arrived from the `else` side, use `ElseV`
 
-That is why the re-captures in steps 3 and 4 matter: the PHI node needs the
-actual block each branch jumped from.
+That is why the updates in steps 3 and 4 matter: the PHI node needs the actual
+blocks that flow into `ifcont`, together with the values produced by those
+blocks.
 
-#### Why Re-Capture `ThenBB` and `ElseBB`?
+#### Why Update `ThenBB` and `ElseBB`?
 
 This only matters when one branch contains nested control flow.
 
@@ -487,21 +494,30 @@ Notice what happened:
 - the outer `then` branch started in `outer_then`
 - but after generating the nested `if`, it actually ends in `inner_join`
 
+The outer PHI does not just need "the value of the then branch." It needs a
+pair:
+
+- the value produced by that branch
+- the block that produced it and actually branches into the outer join block
+
 So the outer PHI must use `inner_join`, not `outer_then`:
 
 ```llvm
 %outer = phi double [ %inner, %inner_join ], [ %c, %outer_else ]
 ```
 
-That is why we re-capture with:
+If we used `outer_then`, we would be naming the block where the outer `then`
+path started, not the block where it ended. But `outer_join` is reached from
+`inner_join`, so `inner_join` is the block the PHI must reference.
+
+That is why we update `ThenBB` with:
 
 ```cpp
 ThenBB = Builder->GetInsertBlock();
 ```
 
 After nested codegen, `ThenBB` must mean "the block where the outer `then`
-path actually finished," because that is the predecessor block the outer PHI
-needs.
+path actually finished." The same reasoning applies to `ElseBB`.
 
 **Full unoptimized IR for `maxval`:**
 
@@ -927,7 +943,7 @@ The entire renderer — iteration, branching, output — is Pyxc code. The only 
 
 ## What's Next
 
-Chapter 9 adds user-defined operators via Python-style decorators — `@binary(precedence)` and `@unary` — and also introduces unary-expression parsing with built-in unary minus, so `-x` finally works. The chapter payoff is a richer Mandelbrot renderer with density shading and a clean sequencing operator.
+[Chapter 9](chapter-09.md) adds user-defined operators via Python-style decorators — `@binary(precedence)` and `@unary` — and also introduces unary-expression parsing with built-in unary minus, so `-x` finally works. The chapter payoff is a richer Mandelbrot renderer with density shading and a clean sequencing operator.
 
 ## Need Help?
 
