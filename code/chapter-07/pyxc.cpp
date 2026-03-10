@@ -450,6 +450,7 @@ public:
       : Name(Name), Args(std::move(Args)) {}
 
   const string &getName() const { return Name; }
+  size_t getNumArgs() const { return Args.size(); }
   Function *codegen();
 };
 
@@ -528,7 +529,6 @@ unique_ptr<ExprAST> LogError(const char *Str) {
   fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
           Str);
   PrintErrorSourceContext(Anchor);
-  PrintReplPrompt();
   return nullptr;
 }
 
@@ -1114,6 +1114,18 @@ static void HandleExtern() {
 
   if (!ProtoAST)
     return;
+
+  // Reject conflicting redeclarations: in Pyxc, function identity is just
+  // name + arity, since all parameter and return types are double.
+  auto Existing = FunctionProtos.find(ProtoAST->getName());
+  if (Existing != FunctionProtos.end() &&
+      Existing->second->getNumArgs() != ProtoAST->getNumArgs()) {
+    LogError((string("Conflicting extern declaration for '") +
+              ProtoAST->getName() + "'")
+                 .c_str());
+    SynchronizeToLineBoundary();
+    return;
+  }
 
   if (CurTok != tok_eol && CurTok != tok_eof) {
     if (CurTok)

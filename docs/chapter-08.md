@@ -279,13 +279,19 @@ LLVM builds this out of **basic blocks**: straight-line chunks of instructions
 that end in a jump. For an `if`, we need one block for the `then` path, one for
 the `else` path, and one final block where both paths meet again.
 
-For:
+We will keep using the same example function from above:
+
+```python
+def maxval(a, b): return if a > b: a else: b
+```
+
+Inside that function, the `if` expression is:
 
 ```python
 if a > b: a else: b
 ```
 
-the generated block layout looks like this:
+The generated block layout looks like this:
 
 ```text
          entry
@@ -313,8 +319,8 @@ ifcont:
 Read that as: "if we arrived here from `then`, use `%a`; if we arrived here
 from `else`, use `%b`."
 
-`IfExprAST::codegen` builds this shape in five steps. We'll trace through
-`if a > b: a else: b` (`maxval`).
+`IfExprAST::codegen` builds this shape in five steps. We will trace the body of
+`maxval`.
 
 **Step 1 — Generate the condition in the current block.**
 
@@ -390,7 +396,7 @@ After `Then->codegen()` finishes, we emit an unconditional branch to `ifcont`
 so the `then` path rejoins the `else` path.
 
 ```llvm
-then:                           ; preds = %entry
+then:                           ; reached when the condition is true
   br label %ifcont              ; then-value is %a (a parameter — no instruction needed)
 ```
 
@@ -420,7 +426,7 @@ ElseBB = Builder->GetInsertBlock();
 The pattern mirrors Step 3: move the builder into `else`, generate the expression, branch to `ifcont`, and re-capture the block where the `else` path actually ended.
 
 ```llvm
-else:                           ; preds = %entry
+else:                           ; reached when the condition is false
   br label %ifcont              ; else-value is %b
 ```
 
@@ -529,21 +535,27 @@ entry:
   %ifcond  = fcmp one double %booltmp, 0.0
   br i1 %ifcond, label %then, label %else
 
-then:                                         ; preds = %entry
+then:                                         ; reached when the condition is true
   br label %ifcont
 
-else:                                         ; preds = %entry
+else:                                         ; reached when the condition is false
   br label %ifcont
 
-ifcont:                                       ; preds = %then, %else
+ifcont:                                       ; both branches rejoin here
   %iftmp = phi double [ %a, %then ], [ %b, %else ]
   ret double %iftmp
 }
 ```
 
-### The Optimizer Collapses Simple ifs to select
+### What `-v` Shows After Optimization
 
-When both branches are side-effect-free, the optimizer sees that no code actually runs in `then` or `else` — they are just routing. It replaces the whole three-block structure with a single `select` instruction:
+The IR above is the straightforward shape that `IfExprAST::codegen()` builds.
+But if you run `pyxc -v`, the IR you see may be simpler than that, because the
+function is optimized before it is printed.
+
+In this example, both branches are side-effect-free. They only choose between
+two values. The optimizer notices that and replaces the three-block `if` shape
+with a single `select` instruction:
 
 ```llvm
 define double @maxval(double %a, double %b) {
@@ -554,7 +566,12 @@ entry:
 }
 ```
 
-`select i1 cond, T true_val, T false_val` is LLVM's ternary — no branches, no blocks. The optimizer also removes the redundant `uitofp` / `fcmp one` round-trip (comparison → double → back to `i1`) and uses `%cmptmp` directly.
+`select i1 cond, T true_val, T false_val` is LLVM's ternary operator: choose
+one value if the condition is true, otherwise choose the other. No extra branch
+blocks are needed.
+
+The optimizer also removes the redundant `uitofp` / `fcmp one` round-trip
+(comparison → double → back to `i1`) and uses `%cmptmp` directly.
 
 Functions where the branches make calls (`printd`, `putchard`) keep the full three-block structure because those calls must actually run in one branch and not the other.
 
@@ -623,9 +640,26 @@ The loop compiles to four blocks. We'll trace through `for i = 1, i <= 3, 1: pri
 Value *StartVal = Start->codegen();           // 1.0
 BasicBlock *PreheaderBB = Builder->GetInsertBlock();
 BasicBlock *CondBB  = BasicBlock::Create(*TheContext, "loop_cond", TheFunction);
-BasicBlock *BodyBB  = BasicBlock::Create(*TheContext, "loop_body");
-BasicBlock *AfterBB = BasicBlock::Create(*TheContext, "after_loop");
+BasicBlock *BodyBB  = BasicBlock::Create(*TheContext, "loop_body", TheFunction);
+BasicBlock *AfterBB = BasicBlock::Create(*TheContext, "after_loop", TheFunction);
 Builder->CreateBr(CondBB);
+```
+
+All three loop blocks are attached to the function immediately. `CreateBr`
+finishes the preheader by jumping into the loop condition block.
+
+IR so far — the preheader is finished, and the other loop blocks exist but are
+still empty:
+
+```llvm
+define double @__anon_expr() {
+entry:
+  br label %loop_cond
+
+loop_cond:   ; (empty)
+loop_body:   ; (empty)
+after_loop:  ; (empty)
+}
 ```
 
 **Step 2 — Build the condition block: PHI node + branch.**
@@ -645,10 +679,29 @@ Value *LoopCond = Builder->CreateFCmpONE(
 Builder->CreateCondBr(LoopCond, BodyBB, AfterBB);
 ```
 
+IR so far — the condition block now decides whether to enter the body or leave
+the loop:
+
+```llvm
+define double @__anon_expr() {
+entry:
+  br label %loop_cond
+
+loop_cond:
+  %i = phi double [ 1.000000e+00, %entry ]
+  %cmptmp  = fcmp ole double %i, 3.000000e+00
+  %booltmp = uitofp i1 %cmptmp to double
+  %loopcond = fcmp one double %booltmp, 0.000000e+00
+  br i1 %loopcond, label %loop_body, label %after_loop
+
+loop_body:   ; (empty)
+after_loop:  ; (empty)
+}
+```
+
 **Step 3 — Fill the body block.**
 
 ```cpp
-TheFunction->insert(TheFunction->end(), BodyBB);
 Builder->SetInsertPoint(BodyBB);
 Body->codegen();                                // return value discarded
 Value *StepVal = Step->codegen();               // 1.0
@@ -663,13 +716,38 @@ Variable->addIncoming(NextVar, BodyEndBB);      // complete the PHI
 Builder->CreateBr(CondBB);
 ```
 
+IR so far — the loop body is now filled in, and the PHI has both of its
+incoming values:
+
+```llvm
+define double @__anon_expr() {
+entry:
+  br label %loop_cond
+
+loop_cond:
+  %i = phi double [ 1.000000e+00, %entry ], [ %nextvar, %loop_body ]
+  %cmptmp  = fcmp ole double %i, 3.000000e+00
+  %booltmp = uitofp i1 %cmptmp to double
+  %loopcond = fcmp one double %booltmp, 0.000000e+00
+  br i1 %loopcond, label %loop_body, label %after_loop
+
+loop_body:
+  %calltmp = call double @printd(double %i)
+  %nextvar = fadd double %i, 1.000000e+00
+  br label %loop_cond
+
+after_loop:  ; (empty)
+}
+```
+
 **Step 4 — After-loop block returns `0.0`.**
 
 ```cpp
-TheFunction->insert(TheFunction->end(), AfterBB);
 Builder->SetInsertPoint(AfterBB);
 return ConstantFP::get(*TheContext, APFloat(0.0));
 ```
+
+Now the last block is filled in too, so the loop is complete.
 
 **Full IR for `for i = 1, i <= 3, 1: printd(i)` as a top-level expression:**
 
@@ -678,19 +756,19 @@ define double @__anon_expr() {
 entry:
   br label %loop_cond
 
-loop_cond:                                    ; preds = %entry, %loop_body
+loop_cond:                                    ; entered first from entry, later from loop_body
   %i = phi double [ 1.000000e+00, %entry ], [ %nextvar, %loop_body ]
   %cmptmp  = fcmp ole double %i, 3.000000e+00
   %booltmp = uitofp i1 %cmptmp to double
   %loopcond = fcmp one double %booltmp, 0.000000e+00
   br i1 %loopcond, label %loop_body, label %after_loop
 
-loop_body:                                    ; preds = %loop_cond
+loop_body:                                    ; runs while the loop condition is true
   %calltmp = call double @printd(double %i)
   %nextvar = fadd double %i, 1.000000e+00
   br label %loop_cond
 
-after_loop:                                   ; preds = %loop_cond
+after_loop:                                   ; reached when the loop condition becomes false
   ret double 0.000000e+00
 }
 ```
