@@ -517,11 +517,11 @@ public:
   Value *codegen() override;
 };
 
-/// UnaryExprAST - Expression class for a user-defined unary operator.
-/// The operator is identified by its ASCII character (e.g. '!' for logical
-/// not). Codegen looks up the function "unary<op>" (e.g. "unary!") and calls it
-/// with the operand — so unary operators are just regular functions in
-/// disguise.
+/// UnaryExprAST - Expression class for a unary operator application.
+/// The operator is identified by its ASCII character (e.g. '-' or '!').
+/// Built-in unary minus is represented here with opcode '-' and lowered
+/// directly to LLVM `fneg`. All other unary operators are resolved as regular
+/// functions named "unary<op>" (e.g. "unary!") and called with the operand.
 class UnaryExprAST : public ExprAST {
   char Opcode;
   unique_ptr<ExprAST> Operand;

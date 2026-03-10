@@ -430,7 +430,7 @@ During codegen, `UnaryExprAST` treats `-` as a built-in and emits the LLVM IR in
 
 ### User-Defined Unary Operators
 
-`ParseUnary` is the parser step that decides whether the next thing is a unary operator (like -x or !x) or a normal primary expression before binary operators are processed.
+`ParseUnary` is the parser step that decides whether the next thing is a unary operator (like `-x` or `!x`) or a normal primary expression before binary operators are processed.
 
 ```cpp
 /// unaryexpr
@@ -696,6 +696,7 @@ ready>
 
 Running `./build/pyxc -v` shows the generated IR for `-!5`:
 
+<!-- code-merge:start -->
 ```llvm
 define double @__anon_expr() {
 entry:
@@ -703,8 +704,11 @@ entry:
   %negtmp = fneg double %unop
   ret double %negtmp
 }
+```
+```bash
 Evaluated to -0.000000
 ```
+<!-- code-merge:end -->
 
 ### A low-precedence sequencing operator
 
@@ -811,7 +815,7 @@ Four things change from the chapter 8 version:
 
 - **Unary minus.** Built-in unary minus is now parsed directly (`ParseUnaryMinus`) and lowered by `UnaryExprAST::codegen` to LLVM `fneg`, so `-2.3` works without the `0 - 2.3` workaround from chapter 8.
 - **`;` for sequencing.** Chapter 8 wrote `mandelrow(...) + putchard(10)` to chain two side-effect calls — adding two `0.0` return values happens to work, but is misleading. The new `@binary(1) def ;(x, y)` makes intent explicit: evaluate left for its side effect, return right.
-- **`|` to combine exit conditions.** Chapter 8's `mandelconverge` checked the iteration limit and the escape radius with nested `if`. Chapter 9 tests `iters > 255 | (real² + imag² > 4)` in one expression using `@binary(5) def |`.
+- **`|` to combine exit conditions.** Chapter 8's `mandelconverge` checked the iteration limit and the escape radius with nested `if`. Chapter 9 tests `iters > 255 | (real * real + imag * imag > 4)` in one expression using `@binary(5) def |`.
 - **`printdensity` for shading.** Instead of mapping each point to just inside/outside, the iteration count at escape determines the shade character.
 
 ```python
