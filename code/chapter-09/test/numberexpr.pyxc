@@ -6,7 +6,7 @@
 
 # Tests: all three number literal forms.
 # number = digit { digit } [ "." { digit } ]  <- integer form: 42
-#        | "." digit { digit }                 <- leading-dot form: .5
+#        | "." digit { digit }                <- leading-dot form: .5
 # (decimal form: digit { digit } "." { digit } is covered by 3.14)
 
 42

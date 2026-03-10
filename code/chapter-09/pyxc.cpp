@@ -899,8 +899,8 @@ static unique_ptr<ExprAST> ParsePrimary() {
 ///   | userdefunaryop ;
 ///
 /// Parsing strategy:
-/// 1) If we see '-', parse built-in unary minus.
-/// 2) Else if the token starts a primary, parse primary.
+/// 1) If the token starts a primary, parse primary.
+/// 2) If we see '-', parse built-in unary minus.
 /// 3) Else treat the token as a user-defined unary operator and recurse for
 ///    its operand.
 ///
@@ -909,7 +909,8 @@ static unique_ptr<ExprAST> ParsePrimary() {
 /// work in both positions: !x + 1 and f(x) + !y.
 static unique_ptr<ExprAST> ParseUnary() {
   // Primary starters will be handled with ParsePrimary.
-  if (!isascii(CurTok) || CurTok == '(' || isalpha(CurTok) || isdigit(CurTok))
+  if (!isascii(CurTok) /* multi-character tokens */ || CurTok == '(' ||
+      isalpha(CurTok) || isdigit(CurTok))
     return ParsePrimary();
 
   // Built-in unary minus.

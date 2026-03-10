@@ -437,12 +437,12 @@ During codegen, `UnaryExprAST` treats `-` as a built-in and emits the LLVM IR in
 ///   = unaryop unaryexpr | primary
 ///
 /// Parsing strategy:
-/// 1) Primary starters ('(', letter, digit) -> ParsePrimary
+/// 1) Primary starters ('(', letter, digit, multi-character tokens) -> ParsePrimary
 /// 2) '-' -> ParseUnaryMinus (built-in)
 /// 3) Everything else -> treat as a user-defined unary prefix operator
 static unique_ptr<ExprAST> ParseUnary() {
   // Primary starters: fall through to ParsePrimary.
-  if (!isascii(CurTok) || CurTok == '(' || isalpha(CurTok) || isdigit(CurTok))
+  if (!isascii(CurTok) /* multi-character tokens */ || CurTok == '(' || isalpha(CurTok) || isdigit(CurTok))
     return ParsePrimary();
 
   // Built-in unary minus.
