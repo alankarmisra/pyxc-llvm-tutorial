@@ -189,11 +189,9 @@ class BinaryExprAST : public ExprAST {
   ...
 ```
 
-### Codegen: Comparisons Produce 0.0 or 1.0
+### Comparison Codegen
 
-#### Comparison Instructions
-
-Pyxc comparison operators like `==`, `!=`, `<`, and `>` lower to LLVM's `fcmp`
+Pyxc comparison operators like `==`, `!=`, `<`, and `>` lower to LLVM's [fcmp](https://llvm.org/docs/LangRef.html#fcmp-instruction)
 instruction.
 
 For example, the `==` case in `BinaryExprAST::codegen` is:
@@ -209,76 +207,14 @@ The `CreateFCmpOEQ` call produces IR like this:
 %cmptmp = fcmp oeq double %L, %R
 ```
 
-LLVM spells floating-point comparison instructions like this:
-
-```llvm
-fcmp <predicate> <type> <lhs>, <rhs>
-```
-
-So in:
-
-```llvm
-fcmp oeq double %L, %R
-```
-
-- `fcmp` means floating-point comparison
-- `oeq` is the comparison kind (more on this below)
-- `double` is the operand type
-- `%L` and `%R` are the two values being compared
-
-LLVM provides two families of floating-point comparison predicates, **ordered** and **unordered**. The names come from mathematics: ordinary real numbers can be compared in the usual numeric order (picture them sitting left to right on the number line), 
-but `NaN` cannot be placed meaningfully in that order. 
-
-#### Ordered predicates
-
-Ordered predicates return `false` if either operand is `NaN`. In ordered comparisons, NaN means failure and automatic rejection, ie a false value. 
-
-| Predicate | Meaning | Example with `NaN` |
-|---|---|---|
-| `oeq` | ordered equal | x == NaN -> false |
-| `one` | ordered not equal | x != NaN -> false |
-| `olt` | ordered less than | x < NaN -> false |
-| `ole` | ordered less than or equal | x <= NaN -> false |
-| `ogt` | ordered greater than | x > NaN -> false |
-| `oge` | ordered greater than or equal | x >= NaN -> false |
-
-Notice how `one` gives an unintuitive result.
-
-#### Unordered predicates
-
-Unordered predicates return `true` if either operand is `NaN`.
-
-| Predicate | Meaning | Example with `NaN` |
-|---|---|---|
-| `ueq` | unordered equal | x == NaN -> true, NaN == NaN -> true |
-| `une` | unordered not equal | x != NaN -> true |
-| `ult` | unordered less than | x < NaN -> true |
-| `ule` | unordered less than or equal | x <= NaN -> true |
-| `ugt` | unordered greater than | x > NaN -> true |
-| `uge` | unordered greater than or equal | x >= NaN -> true |
-
-Notice how most results above are unintutive, except for `une` (`!=`)
-
-For Pyxc, we use this policy:
-
-- `==`, `<`, `<=`, `>`, and `>=` use ordered comparisons
-- `!=` uses unordered comparison
-
-This gives the behavior most readers expect:
-
-- `x == NaN` evaluates to `false`
-- `x != NaN` evaluates to `true`
-- ordering comparisons like `<` and `>` still evaluate to `false` when `NaN` is involved
-
-So the `!=` case uses LLVM's unordered not-equal comparison:
+LLVM's [fcmp](https://llvm.org/docs/LangRef.html#fcmp-instruction) predicates come in two families. Ordered predicates (`o*`) return `false` if either operand is `NaN`; unordered predicates (`u*`) return `true` for the same case. The ordered family is the safe default for most comparisons. The one exception is `!=`: the ordered not-equal predicate (`one`) would return `false` for `x != NaN`, which would surprise most programmers. So `!=` uses the unordered not-equal predicate (`une`) instead, giving `true` as expected.
 
 ```cpp
 case tok_neq:
   L = Builder->CreateFCmpUNE(L, R, "cmptmp");
-  return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
 ```
 
-which produces:
+where `CreateFCmpUNE` produces:
 
 ```llvm
 %cmptmp = fcmp une double %L, %R
@@ -286,13 +222,7 @@ which produces:
 
 #### Converting `i1` Back to `double`
 
-`fcmp` produces an `i1` — LLVM's one-bit boolean:
-
-- `false`
-- `true`
-
-But Pyxc does not have a separate boolean type. Comparison results are ordinary
-numbers in the language, so we widen that `i1` back to `double`:
+`fcmp` produces an `i1` — LLVM's one-bit boolean (`false` or `true`). But Pyxc does not have a separate boolean type. Comparison results are ordinary numbers in the language, so we widen that `i1` back to `double`:
 
 ```cpp
 return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
@@ -304,13 +234,7 @@ which produces:
 %booltmp = uitofp i1 %cmptmp to double
 ```
 
-This gives Pyxc its usual comparison result convention:
-
-- `false -> 0.0`
-- `true -> 1.0`
-
-That `0.0` / `1.0` value is what later flows into `if` conditions and
-arithmetic expressions.
+This gives Pyxc its usual comparison result convention: `false → 0.0`, `true → 1.0`. That value is what later flows into `if` conditions and arithmetic expressions.
 
 ## if/else Expressions
 
@@ -477,7 +401,7 @@ ifcont:
 Read that as: "if we arrived here from `then`, use `%subtmp`; if we arrived
 here from `else`, use `%subtmp1`."
 
-Why `PHI`? The name comes from the `φ-function` notation used in the academic papers that introduced SSA form in the late 1980s. Those papers borrowed the φ symbol from the mathematical convention for writing piecewise functions — "this value if condition A, that value if condition B" — which is exactly what a PHI node does. LLVM kept the terminology, so the name has stuck ever since.
+**Why `PHI`**? The name comes from the `φ-function` notation used in the academic papers that introduced SSA form in the late 1980s. Those papers borrowed the φ symbol from the mathematical convention for writing piecewise functions — "this value if condition A, that value if condition B" — which is exactly what a PHI node does. LLVM kept the terminology, so the name has stuck ever since.
 
 `IfExprAST::codegen` builds this shape in five steps. We will trace the body of
 `absdiff`.
@@ -649,6 +573,11 @@ whole `if` expression one result value:
 
 - if control arrived from the `then` side, use `ThenV`
 - if control arrived from the `else` side, use `ElseV`
+
+```llvm
+ifcont:                                       ; both branches rejoin here
+  %iftmp = phi double [ %subtmp, %then ], [ %subtmp1, %else ]
+```
 
 That is why the updates in steps 3 and 4 matter: the PHI node needs the actual
 blocks that flow into `ifcont`, together with the values produced by those
@@ -882,17 +811,51 @@ PHINode *Variable = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarNam
 Variable->addIncoming(StartVal, PreheaderBB);   // first-iteration value
 ```
 
-The PHI node is created with only one incoming for now — the preheader. The back-edge (from the loop body) is added after body codegen. Then evaluate the condition and branch:
+The PHI node is created with only one incoming for now — the preheader. The
+back-edge from the loop body is added later, once we know where the body ends.
+
+So after these lines, the condition block starts like this:
+
+```llvm
+loop_cond:
+  %i = phi double [ 1.000000e+00, %entry ]
+```
+
+Next we generate the loop condition expression:
 
 ```cpp
 Value *CondV = Cond->codegen();
+```
+
+For `i <= 3`, that adds:
+
+```llvm
+loop_cond:
+  %i = phi double [ 1.000000e+00, %entry ]
+  %cmptmp  = fcmp ole double %i, 3.000000e+00
+  %booltmp = uitofp i1 %cmptmp to double
+```
+
+Then convert that `double` condition into an `i1` for branching:
+
+```cpp
 Value *LoopCond = Builder->CreateFCmpONE(
     CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "loopcond");
+```
+
+which adds:
+
+```llvm
+  %loopcond = fcmp one double %booltmp, 0.000000e+00
+```
+
+Finally, branch to the loop body or the after-loop block:
+
+```cpp
 Builder->CreateCondBr(LoopCond, BodyBB, AfterBB);
 ```
 
-IR so far — the condition block now decides whether to enter the body or leave
-the loop:
+which completes the block:
 
 ```llvm
 define double @__anon_expr() {
@@ -916,11 +879,30 @@ after_loop:  ; (empty)
 ```cpp
 Builder->SetInsertPoint(BodyBB);
 Body->codegen();                                // return value discarded
+```
+
+For `printd(i)`, that adds:
+
+```llvm
+loop_body:
+  %calltmp = call double @printd(double %i)
+```
+
+Next generate the step value and the next loop variable:
+
+```cpp
 Value *StepVal = Step->codegen();               // 1.0
 Value *NextVar  = Builder->CreateFAdd(Variable, StepVal, "nextvar");
 ```
 
-Then re-capture the insert block (nested ifs inside the body can shift the cursor) and close the back-edge:
+which adds:
+
+```llvm
+  %nextvar = fadd double %i, 1.000000e+00
+```
+
+Finally, update the PHI with the back-edge value and branch back to
+`loop_cond`:
 
 ```cpp
 BasicBlock *BodyEndBB = Builder->GetInsertBlock();
@@ -928,8 +910,7 @@ Variable->addIncoming(NextVar, BodyEndBB);      // complete the PHI
 Builder->CreateBr(CondBB);
 ```
 
-IR so far — the loop body is now filled in, and the PHI has both of its
-incoming values:
+That completes the loop body and gives the PHI its second incoming value:
 
 ```llvm
 define double @__anon_expr() {
