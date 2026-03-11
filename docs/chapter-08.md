@@ -30,17 +30,17 @@ Evaluated to 0.000000
 
 <!-- code-merge:start -->
 ```python
-ready> def maxval(a, b): return if a > b: a else: b
+ready> def absdiff(a, b): return if a > b: a - b else: b - a
 ```
 ```bash
 Parsed a function definition.
 ```
 ```python
-ready> maxval(10, 5)
+ready> absdiff(10, 5)
 ```
 ```bash
 Parsed a top-level expression.
-Evaluated to 10.000000
+Evaluated to 5.000000
 ```
 <!-- code-merge:end -->
 
@@ -57,15 +57,13 @@ Parsed an extern.
 ready> for i = 1, i <= 3, 1: printd(i)
 ```
 ```bash
+Parsed a top-level expression.
 1.000000
 2.000000
 3.000000
-Parsed a top-level expression.
 Evaluated to 0.000000
 ```
 <!-- code-merge:end -->
-
-As a payoff, the Mandelbrot set rendered in ASCII — written entirely in Pyxc.
 
 ## Source Code
 
@@ -159,7 +157,7 @@ If the next character is also `=`, consume it with `advance()` and return `tok_e
 In earlier chapters `BinopPrecedence` used `char` keys. Named token enums are negative integers, which don't fit in a `char`. The key type is now `int`:
 
 ```cpp
-static map<int, int> BinopPrecedence = {
+static map<int /* changed from char to int */, int> BinopPrecedence = {
     {tok_eq, 10},  // ==
     {tok_neq, 10}, // !=
     {tok_leq, 10}, // <=
@@ -172,7 +170,7 @@ static map<int, int> BinopPrecedence = {
 };
 ```
 
-All six comparison operators share precedence 10 — they bind equally tightly and are left-associative. `GetTokPrecedence` is a simple map lookup:
+All six comparison operators share precedence `10` — they bind equally tightly and are left-associative. `GetTokPrecedence` is a simple map lookup:
 
 ```cpp
 static int GetTokPrecedence() {
@@ -185,33 +183,159 @@ static int GetTokPrecedence() {
 
 `BinaryExprAST::Op` also changes from `char` to `int` so it can store negative token values without truncation.
 
-### Codegen: FCmpO* + UIToFP
+```cpp
+class BinaryExprAST : public ExprAST {
+  int /* used to be char */ Op; 
+  ...
+```
 
-All six comparison operators follow the same two-step pattern in `BinaryExprAST::codegen`:
+### Codegen: Comparisons Produce 0.0 or 1.0
+
+#### Comparison Instructions
+
+Pyxc comparison operators like `==`, `!=`, `<`, and `>` lower to LLVM's `fcmp`
+instruction.
+
+For example, the `==` case in `BinaryExprAST::codegen` is:
 
 ```cpp
 case tok_eq:
-  L = Builder->CreateFCmpOEQ(L, R, "cmptmp");
+  L = Builder->CreateFCmpOEQ(L, R, "cmptmp");  
+```
+
+The `CreateFCmpOEQ` call produces IR like this:
+
+```llvm
+%cmptmp = fcmp oeq double %L, %R
+```
+
+LLVM spells floating-point comparison instructions like this:
+
+```llvm
+fcmp <predicate> <type> <lhs>, <rhs>
+```
+
+So in:
+
+```llvm
+fcmp oeq double %L, %R
+```
+
+- `fcmp` means floating-point comparison
+- `oeq` is the comparison kind (more on this below)
+- `double` is the operand type
+- `%L` and `%R` are the two values being compared
+
+LLVM provides two families of floating-point comparison predicates, **ordered** and **unordered**. The names come from mathematics: ordinary real numbers can be compared in the usual numeric order (picture them sitting left to right on the number line), 
+but `NaN` cannot be placed meaningfully in that order. 
+
+#### Ordered predicates
+
+Ordered predicates return `false` if either operand is `NaN`. In ordered comparisons, NaN means failure and automatic rejection, ie a false value. 
+
+| Predicate | Meaning | Example with `NaN` |
+|---|---|---|
+| `oeq` | ordered equal | x == NaN -> false |
+| `one` | ordered not equal | x != NaN -> false |
+| `olt` | ordered less than | x < NaN -> false |
+| `ole` | ordered less than or equal | x <= NaN -> false |
+| `ogt` | ordered greater than | x > NaN -> false |
+| `oge` | ordered greater than or equal | x >= NaN -> false |
+
+Notice how `one` gives an unintuitive result.
+
+#### Unordered predicates
+
+Unordered predicates return `true` if either operand is `NaN`.
+
+| Predicate | Meaning | Example with `NaN` |
+|---|---|---|
+| `ueq` | unordered equal | x == NaN -> true, NaN == NaN -> true |
+| `une` | unordered not equal | x != NaN -> true |
+| `ult` | unordered less than | x < NaN -> true |
+| `ule` | unordered less than or equal | x <= NaN -> true |
+| `ugt` | unordered greater than | x > NaN -> true |
+| `uge` | unordered greater than or equal | x >= NaN -> true |
+
+Notice how most results above are unintutive, except for `une` (`!=`)
+
+For Pyxc, we use this policy:
+
+- `==`, `<`, `<=`, `>`, and `>=` use ordered comparisons
+- `!=` uses unordered comparison
+
+This gives the behavior most readers expect:
+
+- `x == NaN` evaluates to `false`
+- `x != NaN` evaluates to `true`
+- ordering comparisons like `<` and `>` still evaluate to `false` when `NaN` is involved
+
+So the `!=` case uses LLVM's unordered not-equal comparison:
+
+```cpp
+case tok_neq:
+  L = Builder->CreateFCmpUNE(L, R, "cmptmp");
   return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
 ```
 
-`CreateFCmpOEQ` produces an `i1` — LLVM's one-bit boolean. Since Pyxc represents everything as `double`, `CreateUIToFP` widens it: `false → 0.0`, `true → 1.0`. This double boolean is what flows into `if` conditions and arithmetic expressions.
+which produces:
 
-The `O` prefix selects **ordered** floating-point comparison: if either operand is NaN, the comparison returns false (including `!=`). Unordered variants (`U*`) would return true for many NaN comparisons, which is rarely what you want.
+```llvm
+%cmptmp = fcmp une double %L, %R
+```
+
+#### Converting `i1` Back to `double`
+
+`fcmp` produces an `i1` — LLVM's one-bit boolean:
+
+- `false`
+- `true`
+
+But Pyxc does not have a separate boolean type. Comparison results are ordinary
+numbers in the language, so we widen that `i1` back to `double`:
+
+```cpp
+return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+```
+
+which produces:
+
+```llvm
+%booltmp = uitofp i1 %cmptmp to double
+```
+
+This gives Pyxc its usual comparison result convention:
+
+- `false -> 0.0`
+- `true -> 1.0`
+
+That `0.0` / `1.0` value is what later flows into `if` conditions and
+arithmetic expressions.
 
 ## if/else Expressions
 
-`if` in Pyxc is an **expression** — it produces a value, not just a side effect:
+In Pyxc, `if` is an expression: it evaluates to a value.
 
 ```python
 if condition: then_expr else: else_expr
 ```
 
-Because `if` is a primary, it can appear anywhere an expression can — as a function return value, a loop body, a function argument, or nested inside another `if`.
+That means you can use an `if` anywhere an expression is allowed: as part of a
+larger expression, as a function argument, as a loop body, or nested inside
+another `if`.
 
-Both branches are mandatory. Without an `else`, what value would the expression produce when the condition is false?
+An `if` expression must always have both branches, because it needs to produce
+a value whether the condition is true or false.
 
-One syntactic note: every function definition currently requires the `return` keyword — it is part of the grammar (`def name(args): return expression`), not a statement. A later chapter replaces the single-expression body with a block of statements where `return` can appear anywhere.
+This can look a little unusual in function bodies. Since functions still
+consist of a single expression in this chapter, you write things like:
+
+```python
+def absdiff(a, b): return if a > b: a - b else: b - a
+```
+
+Later chapters introduce statement blocks, which gives `if` a more familiar
+statement-like role inside function bodies.
 
 ### Parsing
 
@@ -259,12 +383,21 @@ static unique_ptr<ExprAST> ParseIfExpr() {
 `consumeNewlines()` eats one or more consecutive `tok_eol` tokens, so both inline and multi-line forms are accepted:
 
 ```python
-if a > b: a else: b                    # all on one line
+if a > b: a - b else: b - a            # all on one line
 
 if a > b:                              # multi-line
-    a
+    a - b
 else:
-    b
+    b - a
+```
+
+The code is trivial. 
+
+```cpp
+static void consumeNewlines() {
+  while (CurTok == tok_eol)
+    getNextToken();
+}
 ```
 
 ### Codegen: Building the then / else / join Blocks
@@ -275,52 +408,88 @@ Codegen for an `if` expression has three jobs:
 2. Run exactly one of the two branches.
 3. Continue afterward with the value produced by the branch that ran.
 
-LLVM builds this out of **basic blocks**: straight-line chunks of instructions
-that end in a jump. For an `if`, we need one block for the `then` path, one for
+For an `if`, we need one block for the `then` path, one for
 the `else` path, and one final block where both paths meet again.
 
 We will keep using the same example function from above:
 
 ```python
-def maxval(a, b): return if a > b: a else: b
+def absdiff(a, b): return if a > b: a - b else: b - a
 ```
 
 Inside that function, the `if` expression is:
 
 ```python
-if a > b: a else: b
+if a > b: a - b else: b - a
 ```
 
 The generated block layout looks like this:
 
 ```text
-         entry
-           │
-      if (a > b)?
-      ┌────┴────┐
- true ▼         ▼ false
-     then      else
-       └────┬────┘
-            ▼
-          ifcont
+                entry
+                  │
+             if (a > b)?
+          ┌───────┴────────┐
+     true ▼                ▼ false
+ then: %subtmp = a-b   else: %subtmp1 = b-a
+          └───────┬────────┘
+                  ▼
+                ifcont
 ```
 
-`ifcont` is the block where execution continues after either branch.
+Here `entry` is the current block, `then` and `else` are two branch blocks, and `ifcont` is the block where execution continues after either branch.
 
-There is one extra problem: both branches produce a value, and after they
-rejoin we need one name for "the value from the branch that actually ran." LLVM
-writes that choice with a **PHI node**:
+LLVM writes a conditional branch like this:
+
+```llvm
+br i1 <condition>, label <true-destination>, label <false-destination>
+```
+
+In our case, that becomes:
+
+```llvm
+br i1 %ifcond, label %then, label %else
+```
+
+Read this as: check `%ifcond`. If it is true, execution continues at `%then`;
+if not, it continues at `%else`.
+
+Both branch blocks produce a value, and after they rejoin we need one name for
+"the value from the branch that actually ran." LLVM writes that with a **PHI
+node**:
+
+```llvm
+%result = phi double [ <value-from-first-block>, %first-block ],
+                     [ <value-from-second-block>, %second-block ]
+```
+
+Each bracket pairs a value with the block it came from. In other words: if
+control arrived from this block, use this value.
+
+In our case:
+
 
 ```llvm
 ifcont:
-  %iftmp = phi double [ %a, %then ], [ %b, %else ]
+  %iftmp = phi double [ %subtmp, %then ], [ %subtmp1, %else ]
 ```
 
-Read that as: "if we arrived here from `then`, use `%a`; if we arrived here
-from `else`, use `%b`."
+Read that as: "if we arrived here from `then`, use `%subtmp`; if we arrived
+here from `else`, use `%subtmp1`."
+
+Why `PHI`? The name comes from the `φ-function` notation used in the academic papers that introduced SSA form in the late 1980s. Those papers borrowed the φ symbol from the mathematical convention for writing piecewise functions — "this value if condition A, that value if condition B" — which is exactly what a PHI node does. LLVM kept the terminology, so the name has stuck ever since.
 
 `IfExprAST::codegen` builds this shape in five steps. We will trace the body of
-`maxval`.
+`absdiff`.
+
+At the LLVM level, we are filling in this function body:
+
+```llvm
+define double @absdiff(double %a, double %b) {
+entry:
+  ...
+}
+```
 
 **Step 1 — Generate the condition in the current block.**
 
@@ -330,9 +499,29 @@ First we generate code for the condition expression:
 Value *CondV = Cond->codegen();
 ```
 
-In Pyxc, condition expressions produce a `double`, not an LLVM boolean.
-Before we can branch, we must turn that `double` into an `i1` value that LLVM
-can use for `br i1 ...`.
+For `absdiff`, `Cond->codegen()` generates code for `a > b`. In Pyxc, that
+comparison still produces a `double`, so `BinaryExprAST::codegen()` first goes
+through the `>` case:
+
+```cpp
+case '>':
+  L = Builder->CreateFCmpOGT(L, R, "cmptmp");
+  return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+```
+
+That produces:
+
+```llvm
+define double @absdiff(double %a, double %b) {
+entry:
+  %cmptmp  = fcmp ogt double %a, %b
+  %booltmp = uitofp i1 %cmptmp to double
+}
+```
+
+`Cond->codegen()` gives us a `double`, because Pyxc represents booleans as
+`0.0` or `1.0`. LLVM branches need an `i1`, so before we can branch we must
+turn that `double` into an `i1`.
 
 We do that by comparing the condition value against `0.0`:
 
@@ -342,6 +531,17 @@ CondV = Builder->CreateFCmpONE(
 ```
 
 This means: treat the condition as true if it is not equal to `0.0`.
+
+So after this line, the current block looks like this:
+
+```llvm
+define double @absdiff(double %a, double %b) {
+entry:
+  %cmptmp  = fcmp ogt double %a, %b
+  %booltmp = uitofp i1 %cmptmp to double
+  %ifcond  = fcmp one double %booltmp, 0.0
+}
+```
 
 At this point the builder is still inserting instructions into the current
 block, which is the block that was already active before the `if`.
@@ -365,14 +565,14 @@ So after this line:
 - `then`, `else`, and `ifcont` exist
 - those three blocks still contain no instructions
 
-IR so far — `entry` is complete, new blocks are placeholders:
+IR so far — `entry` is now complete, and the three new blocks are placeholders:
 
 ```llvm
-define double @maxval(double %a, double %b) {
+define double @absdiff(double %a, double %b) {
 entry:
-  %cmptmp  = fcmp ogt double %a, %b         ; a > b → i1
-  %booltmp = uitofp i1 %cmptmp to double    ; widen to double (0.0 or 1.0)
-  %ifcond  = fcmp one double %booltmp, 0.0  ; back to i1: non-zero?
+  %cmptmp  = fcmp ogt double %a, %b
+  %booltmp = uitofp i1 %cmptmp to double
+  %ifcond  = fcmp one double %booltmp, 0.0
   br i1 %ifcond, label %then, label %else
 
 then:    ; (empty)
@@ -397,7 +597,8 @@ so the `then` path rejoins the `else` path.
 
 ```llvm
 then:                           ; reached when the condition is true
-  br label %ifcont              ; then-value is %a (a parameter — no instruction needed)
+  %subtmp = fsub double %a, %b
+  br label %ifcont
 ```
 
 Finally, we update `ThenBB` so it points to the block where the `then` path
@@ -423,11 +624,14 @@ Builder->CreateBr(MergeBB);
 ElseBB = Builder->GetInsertBlock();
 ```
 
-The pattern mirrors Step 3: move the builder into `else`, generate the expression, branch to `ifcont`, and re-capture the block where the `else` path actually ended.
+Step 4 is the same idea for `else`: move the builder into `else`, generate the
+expression, branch to `ifcont`, and update `ElseBB` to the block where that
+path ended.
 
 ```llvm
 else:                           ; reached when the condition is false
-  br label %ifcont              ; else-value is %b
+  %subtmp1 = fsub double %b, %a
+  br label %ifcont
 ```
 
 **Step 5 — Fill the join block and choose the final value.**
@@ -450,7 +654,65 @@ That is why the updates in steps 3 and 4 matter: the PHI node needs the actual
 blocks that flow into `ifcont`, together with the values produced by those
 blocks.
 
-#### Why Update `ThenBB` and `ElseBB`?
+**Full unoptimized IR for `absdiff`:**
+
+```llvm
+define double @absdiff(double %a, double %b) {
+entry:
+  %cmptmp  = fcmp ogt double %a, %b
+  %booltmp = uitofp i1 %cmptmp to double
+  %ifcond  = fcmp one double %booltmp, 0.0
+  br i1 %ifcond, label %then, label %else
+
+then:                                         ; reached when the condition is true
+  %subtmp = fsub double %a, %b
+  br label %ifcont
+
+else:                                         ; reached when the condition is false
+  %subtmp1 = fsub double %b, %a
+  br label %ifcont
+
+ifcont:                                       ; both branches rejoin here
+  %iftmp = phi double [ %subtmp, %then ], [ %subtmp1, %else ]
+  ret double %iftmp
+}
+```
+
+### What `-v` Shows After Optimization
+
+The IR above is the straightforward shape that `IfExprAST::codegen()` builds.
+But if you run `pyxc -v`, the IR you see may be simpler than that, because the
+function is optimized before it is printed.
+
+In this example, the branches only compute values; they do not perform side
+effects. The optimizer notices that and replaces the three-block `if` shape
+with a single `select` instruction:
+
+```llvm
+define double @absdiff(double %a, double %b) {
+entry:
+  %cmptmp = fcmp ogt double %a, %b
+  %subtmp = fsub double %a, %b
+  %subtmp1 = fsub double %b, %a
+  %iftmp = select i1 %cmptmp, double %subtmp, double %subtmp1
+  ret double %iftmp
+}
+```
+
+LLVM writes `select` like this:
+
+```llvm
+%result = select i1 <condition>, <type> <true-value>, <type> <false-value>
+```
+
+`select` is LLVM's ternary operator: choose one value if the condition is true, otherwise choose the other. No extra branch
+blocks are needed.
+
+The optimizer also removes the redundant comparison-result round-trip: `i1` -> `double` -> `i1`, and uses `%cmptmp` directly.
+
+Functions where the branches make calls (`printd`, `putchard`) keep the full three-block structure because those calls must actually run in one branch and not the other.
+
+### Why Nested ifs Change the End Block
 
 This only matters when one branch contains nested control flow.
 
@@ -466,8 +728,8 @@ else:
     c
 ```
 
-The inner `if` produces its own result first, and then the outer `if` uses
-that result as the value of its `then` branch.
+The inner `if` produces a value, and the outer `if` uses that value as its
+`then` result.
 
 A simplified IR shape looks like this:
 
@@ -524,56 +786,6 @@ ThenBB = Builder->GetInsertBlock();
 
 After nested codegen, `ThenBB` must mean "the block where the outer `then`
 path actually finished." The same reasoning applies to `ElseBB`.
-
-**Full unoptimized IR for `maxval`:**
-
-```llvm
-define double @maxval(double %a, double %b) {
-entry:
-  %cmptmp  = fcmp ogt double %a, %b
-  %booltmp = uitofp i1 %cmptmp to double
-  %ifcond  = fcmp one double %booltmp, 0.0
-  br i1 %ifcond, label %then, label %else
-
-then:                                         ; reached when the condition is true
-  br label %ifcont
-
-else:                                         ; reached when the condition is false
-  br label %ifcont
-
-ifcont:                                       ; both branches rejoin here
-  %iftmp = phi double [ %a, %then ], [ %b, %else ]
-  ret double %iftmp
-}
-```
-
-### What `-v` Shows After Optimization
-
-The IR above is the straightforward shape that `IfExprAST::codegen()` builds.
-But if you run `pyxc -v`, the IR you see may be simpler than that, because the
-function is optimized before it is printed.
-
-In this example, both branches are side-effect-free. They only choose between
-two values. The optimizer notices that and replaces the three-block `if` shape
-with a single `select` instruction:
-
-```llvm
-define double @maxval(double %a, double %b) {
-entry:
-  %cmptmp = fcmp ogt double %a, %b
-  %a.b = select i1 %cmptmp, double %a, double %b
-  ret double %a.b
-}
-```
-
-`select i1 cond, T true_val, T false_val` is LLVM's ternary operator: choose
-one value if the condition is true, otherwise choose the other. No extra branch
-blocks are needed.
-
-The optimizer also removes the redundant `uitofp` / `fcmp one` round-trip
-(comparison → double → back to `i1`) and uses `%cmptmp` directly.
-
-Functions where the branches make calls (`printd`, `putchard`) keep the full three-block structure because those calls must actually run in one branch and not the other.
 
 ## for Loop Expressions
 
@@ -850,24 +1062,24 @@ ready>
 
 <!-- code-merge:start -->
 ```python
-ready> def maxval(a, b): return if a > b: a else: b
+ready> def absdiff(a, b): return if a > b: a - b else: b - a
 ```
 ```bash
 Parsed a function definition.
 ```
 ```python
-ready> maxval(10, 5)
+ready> absdiff(10, 5)
 ```
 ```bash
 Parsed a top-level expression.
-Evaluated to 10.000000
+Evaluated to 5.000000
 ```
 ```python
-ready> maxval(3, 8)
+ready> absdiff(3, 8)
 ```
 ```bash
 Parsed a top-level expression.
-Evaluated to 8.000000
+Evaluated to 5.000000
 ```
 ```python
 ready>
@@ -889,10 +1101,10 @@ Parsed an extern.
 ready> for i = 1, i <= 3, 1: printd(i)
 ```
 ```bash
+Parsed a top-level expression.
 1.000000
 2.000000
 3.000000
-Parsed a top-level expression.
 Evaluated to 0.000000
 ```
 ```python

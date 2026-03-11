@@ -1078,9 +1078,9 @@ Value *VariableExprAST::codegen() {
 /// it: false -> 0.0, true -> 1.0. This double boolean is then used as the
 /// condition value in if/for expressions, where fcmp one != 0.0 converts it
 /// back to i1.
-/// We use ordered floating-point comparisons (O*) so comparisons with NaN
-/// evaluate false (except '!=' which is true when values are ordered and not
-/// equal).
+/// We use ordered floating-point comparisons for ==, <, <=, >, and >=, so
+/// comparisons involving NaN evaluate false. For != we use unordered
+/// comparison, so x != NaN evaluates true.
 Value *BinaryExprAST::codegen() {
   Value *L = LHS->codegen();
   Value *R = RHS->codegen();
@@ -1105,7 +1105,8 @@ Value *BinaryExprAST::codegen() {
     L = Builder->CreateFCmpOEQ(L, R, "cmptmp");
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case tok_neq:
-    L = Builder->CreateFCmpONE(L, R, "cmptmp");
+    // Use unordered comparsion so that 1 != NaN  returns true.
+    L = Builder->CreateFCmpUNE(L, R, "cmptmp");
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case tok_leq:
     L = Builder->CreateFCmpOLE(L, R, "cmptmp");

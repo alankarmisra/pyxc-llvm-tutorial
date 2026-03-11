@@ -418,7 +418,7 @@ public:
 /// Op is stored as an int token code. In chapter 7 all binary operators are
 /// single-character ASCII tokens ('+', '-', '*').
 class BinaryExprAST : public ExprAST {
-  int Op;
+  char Op;
   unique_ptr<ExprAST> LHS, RHS;
 
 public:
@@ -491,7 +491,7 @@ static void consumeNewlines() {
 /// Higher numbers bind more tightly: '*' (40) > '+'/'-' (20). Operators not in
 /// this map return -1 from GetTokPrecedence(), which tells ParseBinOpRHS to
 /// stop consuming operators and return what it has so far.
-static map<int, int> BinopPrecedence = {
+static map<char, int> BinopPrecedence = {
     {'+', 20}, // +
     {'-', 20}, // -
     {'*', 40}, // *

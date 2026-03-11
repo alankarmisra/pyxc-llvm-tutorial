@@ -99,7 +99,7 @@ Each chapter builds on the previous one. You can:
 
 **[Chapter 7: File Input Mode](chapter-07.md)** — Add file input mode and a `-v` IR flag so pyxc can execute source files through the same JIT pipeline as the REPL.
 
-**[Chapter 8: Control Flow](chapter-08.md)** — Add comparison operators, `if`/`else` expressions, `for` loops, and unary minus. Render the Mandelbrot set in ASCII.
+**[Chapter 8: Control Flow](chapter-08.md)** — Define comparison operators and add `if`/`else` expressions and `for` loops. Render the Mandelbrot set in ASCII.
 
 **[Chapter 9: User-Defined Operators](chapter-09.md)** — Add `@binary(N)` and `@unary` decorators so Pyxc programs can define new operators. Re-render the Mandelbrot with density shading.
 
