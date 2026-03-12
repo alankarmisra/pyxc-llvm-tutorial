@@ -119,6 +119,8 @@ tok_geq = -11,  // >=
 tok_if   = -12,
 tok_else = -13,
 
+...
+
 // loops
 tok_for = -15,
 ```
@@ -207,7 +209,7 @@ The `CreateFCmpOEQ` call produces IR like this:
 %cmptmp = fcmp oeq double %L, %R
 ```
 
-LLVM's [fcmp](https://llvm.org/docs/LangRef.html#fcmp-instruction) predicates come in two families. Ordered predicates (`o*`) return `false` if either operand is `NaN`; unordered predicates (`u*`) return `true` for the same case. The ordered family is the safe default for most comparisons. The one exception is `!=`: the ordered not-equal predicate (`one`) would return `false` for `x != NaN`, which would surprise most programmers. So `!=` uses the unordered not-equal predicate (`une`) instead, giving `true` as expected.
+LLVM's [fcmp](https://llvm.org/docs/LangRef.html#fcmp-instruction) predicates come in two families. Ordered predicates (`o*`) return `false` if either operand is `NaN`; unordered predicates (`u*`) return `true` instead. The ordered family is the safe default for most comparisons. The one exception is `!=`: the ordered not-equal predicate (`one`) would return `false` for `x != NaN`, which would surprise most programmers — IEEE 754 defines `NaN != NaN` as `true`, and `une` preserves that expectation. So `!=` uses the unordered not-equal predicate (`une`) instead, giving `true` as expected.
 
 ```cpp
 case tok_neq:
@@ -315,15 +317,6 @@ else:
     b - a
 ```
 
-The code is trivial. 
-
-```cpp
-static void consumeNewlines() {
-  while (CurTok == tok_eol)
-    getNextToken();
-}
-```
-
 ### Codegen: Building the then / else / join Blocks
 
 Codegen for an `if` expression has three jobs:
@@ -423,9 +416,7 @@ First we generate code for the condition expression:
 Value *CondV = Cond->codegen();
 ```
 
-For `absdiff`, `Cond->codegen()` generates code for `a > b`. In Pyxc, that
-comparison still produces a `double`, so `BinaryExprAST::codegen()` first goes
-through the `>` case:
+For `absdiff`, `Cond->codegen()` generates code for `a > b`. 
 
 ```cpp
 case '>':
@@ -445,7 +436,7 @@ entry:
 
 `Cond->codegen()` gives us a `double`, because Pyxc represents booleans as
 `0.0` or `1.0`. LLVM branches need an `i1`, so before we can branch we must
-turn that `double` into an `i1`.
+turn that `double` back into an `i1`.
 
 We do that by comparing the condition value against `0.0`:
 
@@ -456,7 +447,7 @@ CondV = Builder->CreateFCmpONE(
 
 This means: treat the condition as true if it is not equal to `0.0`.
 
-So after this line, the current block looks like this:
+The current block now looks like this:
 
 ```llvm
 define double @absdiff(double %a, double %b) {
@@ -480,16 +471,10 @@ Builder->CreateCondBr(CondV, ThenBB, ElseBB);
 ```
 
 All three blocks are attached to the function immediately. `CreateCondBr` does
-not fill either branch block; it only finishes the current block with a
-conditional jump to `then` or `else`.
+not fill any of the branch blocks; it only finishes the current block with a
+conditional jump to `then` or `else` (in LLVM terms, it is a *terminator instruction* — every basic block must end with one, and LLVM will reject IR where a block has no terminator or has instructions after one).
 
-So after this line:
-
-- the current block (`entry`) now ends with `br i1 ...`
-- `then`, `else`, and `ifcont` exist
-- those three blocks still contain no instructions
-
-IR so far — `entry` is now complete, and the three new blocks are placeholders:
+We now have:
 
 ```llvm
 define double @absdiff(double %a, double %b) {
@@ -517,13 +502,15 @@ Builder->CreateBr(MergeBB);
 instructions into the `then` block."
 
 After `Then->codegen()` finishes, we emit an unconditional branch to `ifcont`
-so the `then` path rejoins the `else` path.
+so the `then` path rejoins the `else` path. 
 
 ```llvm
 then:                           ; reached when the condition is true
   %subtmp = fsub double %a, %b
   br label %ifcont
 ```
+
+*By now it should be clear that to move from one block to another, you need a conditional or unconditional branch/jump.*
 
 Finally, we update `ThenBB` so it points to the block where the `then` path
 actually finished.
@@ -535,7 +522,7 @@ ThenBB = Builder->GetInsertBlock();
 ```
 
 This matters because nested control flow can create more blocks and move the
-builder. We want the block where the `then` path ended, not the block where it
+builder cursor. We want the block where the `then` path ended, not the block where it
 started. This only matters for nested `if` expressions; we’ll look at that
 case just below.
 
@@ -582,6 +569,8 @@ ifcont:                                       ; both branches rejoin here
 That is why the updates in steps 3 and 4 matter: the PHI node needs the actual
 blocks that flow into `ifcont`, together with the values produced by those
 blocks.
+
+> **Note:** LLVM requires PHI nodes to appear before any non-PHI instructions in a basic block. `CreatePHI` inserts into `MergeBB` immediately after `SetInsertPoint`, so this is satisfied here — but if you ever generate other instructions into a merge block before creating the PHI, LLVM will reject the IR with a verifier error.
 
 **Full unoptimized IR for `absdiff`:**
 
@@ -643,78 +632,94 @@ Functions where the branches make calls (`printd`, `putchard`) keep the full thr
 
 ### Why Nested ifs Change the End Block
 
-This only matters when one branch contains nested control flow.
-
-Suppose the outer `then` branch is itself another `if`:
+Consider this Pyxc code:
 
 ```python
-if outer_cond:
-    if inner_cond:
-        a
-    else:
-        b
-else:
-    c
-```
+def xor(a, b):
+    return if a == 1:         # %a1
+        if b == 1: 0          # %a1_b1
+        else: 1               # %a1_b0
+        # these join at %a1_merge
+    else:                     # %a0
+        if b == 1: 1          # %a0_b1
+        else: 0               # %a0_b0
+        # these join at %a0_merge
+    
+    # the final result is chosen at %merge
+```    
 
-The inner `if` produces a value, and the outer `if` uses that value as its
-`then` result.
-
-A simplified IR shape looks like this:
-
-```llvm
-entry:
-  br i1 %outer_cond, label %outer_then, label %outer_else
-
-outer_then:
-  br i1 %inner_cond, label %inner_then, label %inner_else
-
-inner_then:
-  br label %inner_join
-
-inner_else:
-  br label %inner_join
-
-inner_join:
-  %inner = phi double [ %a, %inner_then ], [ %b, %inner_else ]
-  br label %outer_join
-
-outer_else:
-  br label %outer_join
-
-outer_join:
-  %outer = phi double [ %inner, %inner_join ], [ %c, %outer_else ]
-```
-
-Notice what happened:
-
-- the outer `then` branch started in `outer_then`
-- but after generating the nested `if`, it actually ends in `inner_join`
-
-The outer PHI does not just need "the value of the then branch." It needs a
-pair:
-
-- the value produced by that branch
-- the block that produced it and actually branches into the outer join block
-
-So the outer PHI must use `inner_join`, not `outer_then`:
+The IR for the `a == 1` branch:
 
 ```llvm
-%outer = phi double [ %inner, %inner_join ], [ %c, %outer_else ]
+a1:                                      ; a == 1
+  ...
+
+a1_b1:                                   ; a == 1, b == 1 → 0
+  ...
+
+a1_b0:                                   ; a == 1, b == 0 → 1
+  ...
+
+a1_merge:
+  %a1_result = phi double [ 0.0, %a1_b1 ],
+                          [ 1.0, %a1_b0 ]
+  ...
 ```
 
-If we used `outer_then`, we would be naming the block where the outer `then`
-path started, not the block where it ended. But `outer_join` is reached from
-`inner_join`, so `inner_join` is the block the PHI must reference.
+Once execution enters `a1`, the nested `if` sends it through either `a1_b1` or
+`a1_b0`, and both of those rejoin at `a1_merge`.
 
-That is why we update `ThenBB` with:
+So if control later reaches the final PHI from the `a == 1` side, it is
+arriving from `a1_merge`, not from `a1`.
+
+The `a == 0` side works the same way:
+
+```llvm
+a0:                                      ; a == 0
+  ...
+
+a0_b1:                                   ; a == 0, b == 1 → 1
+  ...
+
+a0_b0:                                   ; a == 0, b == 0 → 0
+  ...
+
+a0_merge:
+  %a0_result = phi double [ 1.0, %a0_b1 ],
+                          [ 0.0, %a0_b0 ]
+  ...
+```
+
+Again, execution does not go straight from `a0` to the final PHI. Once it
+enters `a0`, the nested `if` sends it through `a0_b1` or `a0_b0`, and both of
+those rejoin at `a0_merge`.
+
+So if control reaches the final PHI from the `a == 0` side, it is arriving
+from `a0_merge`, not from `a0`.
+
+Now the final PHI makes sense:
+
+```llvm
+merge:
+  %xor_result = phi double [ %a1_result, %a1_merge ],
+                           [ %a0_result, %a0_merge ]
+  ret double %xor_result
+```
+
+The final PHI uses the exit points, not the entry points:
+
+- if execution arrives from `a1_merge`, use `%a1_result`
+- if execution arrives from `a0_merge`, use `%a0_result`
+
+That is why these updates matter in the code generator:
 
 ```cpp
 ThenBB = Builder->GetInsertBlock();
+...
+ElseBB = Builder->GetInsertBlock();
 ```
 
-After nested codegen, `ThenBB` must mean "the block where the outer `then`
-path actually finished." The same reasoning applies to `ElseBB`.
+In the actual emitted IR, LLVM names these blocks `then`, `else`, and `ifcont`. The XOR example uses descriptive names like `a1`, `a1_merge`, and `merge` for clarity of exposition.
 
 ## for Loop Expressions
 
@@ -724,7 +729,7 @@ The `for` expression repeats a body expression while a condition holds:
 for var = start, condition, step: body
 ```
 
-The loop runs while `condition` is non-zero. `var` is introduced by the `for` and is in scope for `condition`, `step`, and `body`. The body's return value is discarded each iteration. The expression as a whole always produces `0.0` — useful when you want to call a function repeatedly and don't care what it returns.
+The loop runs while `condition` is non-zero. `var` is introduced by the `for` and is in scope for `condition`, `step`, and `body`. The body's return value is discarded each iteration. 
 
 ### Parsing
 
@@ -771,9 +776,23 @@ static unique_ptr<ExprAST> ParseForExpr() {
 }
 ```
 
-### Codegen: Check-at-Top Loop
+### Codegen
 
-The loop compiles to four blocks. We'll trace through `for i = 1, i <= 3, 1: printd(i)`.
+
+```
+      entry
+        │
+        ▼
+    loop_cond ◄─────────────────┐
+        │                       │
+   ┌────┴────┐                  │
+   ▼         ▼                  │
+loop_body  after_loop           │
+   │        ret 0.0             │
+   └── (i = i + step) ──────────┘
+```
+
+We check the condition before the first iteration. If `false` on entry, the body never runs. We'll trace through `for i = 1, i <= 3, 1: printd(i)` to see how each block is built.
 
 **Step 1 — Evaluate start in the preheader and jump to the condition block.**
 
@@ -814,7 +833,7 @@ Variable->addIncoming(StartVal, PreheaderBB);   // first-iteration value
 The PHI node is created with only one incoming for now — the preheader. The
 back-edge from the loop body is added later, once we know where the body ends.
 
-So after these lines, the condition block starts like this:
+The condition block starts to look like this:
 
 ```llvm
 loop_cond:
@@ -942,7 +961,7 @@ return ConstantFP::get(*TheContext, APFloat(0.0));
 
 Now the last block is filled in too, so the loop is complete.
 
-**Full IR for `for i = 1, i <= 3, 1: printd(i)` as a top-level expression:**
+**Full unoptimized IR for `for i = 1, i <= 3, 1: printd(i)` as a top-level expression:**
 
 ```llvm
 define double @__anon_expr() {
@@ -966,23 +985,44 @@ after_loop:                                   ; reached when the loop condition 
 }
 ```
 
-CFG:
+### What `-v` Shows After Optimization
 
-```
-      entry
-        │
-        ▼
-    loop_cond ◄──────────┐
-        │                │
-   ┌────┴────┐           │
-   ▼         ▼           │
-loop_body  after_loop    │
-   │        ret 0.0      │
-   └─────────────────────┘
-   (i = i + step)
+The optimizer recognises that widening the `i1` result to `double` just to compare it against `0.0` again to convert it back to `i1` is unnecessary — the `i1` from the first `fcmp` is all that's needed to drive the branch. It removes the roundtrip entirely:
+
+```llvm
+; unoptimized
+%cmptmp  = fcmp ole double %i, 3.000000e+00
+%booltmp = uitofp i1 %cmptmp to double
+%loopcond = fcmp one double %booltmp, 0.000000e+00
+br i1 %loopcond, label %loop_body, label %after_loop
 ```
 
-The condition is checked **before** the first iteration. If false on entry, the body never runs. The `loop_cond` block has two predecessors — `entry` (on the first pass) and `loop_body` (on subsequent passes) — which is exactly what the PHI node encodes.
+```llvm
+; optimized
+%cmptmp = fcmp ugt double %i, 3.000000e+00
+br i1 %cmptmp, label %loop_body, label %after_loop
+```
+
+Even though Pyxc has no special boolean type — comparisons produce `double` like everything else — the optimizer recovers the efficient `i1` branch condition automatically. The simplicity costs nothing at runtime.
+
+The full optimized function:
+
+```llvm
+define double @__anon_expr() {
+entry:
+  br label %loop_cond
+loop_cond:
+  %i = phi double [ 1.000000e+00, %entry ], [ %nextvar, %loop_body ]
+  %cmptmp = fcmp ugt double %i, 3.000000e+00
+  br i1 %cmptmp, label %after_loop, label %loop_body
+loop_body:
+  %calltmp = call double @printd(double %i)
+  %nextvar = fadd double %i, 1.000000e+00
+  br label %loop_cond
+after_loop:
+  ret double 0.000000e+00
+}
+```
 
 ### Variable Shadowing
 
@@ -997,6 +1037,95 @@ if (OldVal)
 else
   NamedValues.erase(VarName);
 ```
+
+## The Mandelbrot Set
+
+With comparisons, `if`/`else`, and `for`, Pyxc is expressive enough to render the Mandelbrot set. The Mandelbrot set is the set of complex numbers `c` for which the iteration `z = z² + c` (starting from `z = 0`) does not diverge to infinity.
+
+```python
+# test/mandel.pyxc
+extern def putchard(x)
+
+def mandelconverger(real, imag, iters, creal, cimag):
+    return if iters > 255: iters
+           else: if (real * real + imag * imag) > 4: iters
+                 else: mandelconverger(real * real - imag * imag + creal, 2 * real * imag + cimag, iters + 1, creal, cimag)
+
+def mandelconverge(real, imag):
+    return mandelconverger(real, imag, 0, real, imag)
+
+def mandelrow(xmin, xmax, xstep, y):
+    return for x = xmin, x < xmax, xstep:
+               putchard(if mandelconverge(x, y) > 255: 32 else: 42)
+
+def mandelhelp(xmin, xmax, xstep, ymin, ymax, ystep):
+    return for y = ymin, y < ymax, ystep:
+               mandelrow(xmin, xmax, xstep, y) + putchard(10)
+
+def mandel(realstart, imagstart, realmag, imagmag):
+    return mandelhelp(realstart, realstart + realmag * 78, realmag, imagstart, imagstart + imagmag * 40, imagmag)
+
+mandel(0 - 2.3, 0 - 1.3, 0.05, 0.07)
+
+# Try these too
+# mandel(0 - 2, 0 - 1, 0.02, 0.04)
+# mandel(0 - 0.9, 0 - 1.4, 0.02, 0.03)
+```
+
+**Line breaks.** The parser only allows newlines in specific positions — after `:` in `def`, `if`, and `for` bodies. A newline anywhere else (inside a function argument list, mid-expression) is a parse error. This is why `mandelconverge`'s nested `if`/`else` chain can span lines (each `else:` starts a new allowed position) but `mandel`'s long argument list must stay on a single line.
+
+**Unary minus.** Pyxc has no unary minus yet — `-2.3` would be parsed as the binary operator `-` applied to nothing, which is an error. The workaround is `0 - 2.3`: a fully-formed binary subtraction that the optimizer collapses to the literal `-2.3` with no extra instructions emitted. Chapter 9 adds unary-expression parsing and built-in unary minus support.
+
+Run it:
+
+```bash
+./build/pyxc test/mandel.pyxc
+```
+
+```
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************   *********************************
+******************************************    ********************************
+*******************************************  *********************************
+************************************ **          *****************************
+************************************                 *************************
+***********************************                 **************************
+**********************************                   *************************
+*********************************                     ************************
+*********************** *  *****                      ************************
+***********************       **                      ************************
+**********************         *                      ************************
+*******************  *         *                     *************************
+*******************  *         *                     *************************
+**********************         *                      ************************
+***********************       **                      ************************
+*********************** *   ****                      ************************
+*********************************                     ************************
+**********************************                   *************************
+***********************************                 **************************
+*************************************                *************************
+************************************ *           *****************************
+*******************************************  *********************************
+******************************************    ********************************
+******************************************    ********************************
+******************************************** *********************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+```
+
+The entire renderer — iteration, branching, output — is Pyxc code. The only runtime function provided by the host is `putchard`, which writes one ASCII character to `stderr`.
 
 ## Build and Run
 
@@ -1093,99 +1222,6 @@ ready>
 ```
 <!-- code-merge:end -->
 
-## The Mandelbrot Set
-
-With comparisons, `if`/`else`, and `for`, Pyxc is expressive enough to render the Mandelbrot set. The Mandelbrot set is the set of complex numbers `c` for which the iteration `z = z² + c` (starting from `z = 0`) does not diverge to infinity.
-
-```python
-# test/mandel.pyxc
-extern def putchard(x)
-
-def mandelconverger(real, imag, iters, creal, cimag):
-    return if iters > 255: iters
-           else: if (real * real + imag * imag) > 4: iters
-                 else: mandelconverger(real * real - imag * imag + creal, 2 * real * imag + cimag, iters + 1, creal, cimag)
-
-def mandelconverge(real, imag):
-    return mandelconverger(real, imag, 0, real, imag)
-
-def mandelrow(xmin, xmax, xstep, y):
-    return for x = xmin, x < xmax, xstep:
-               putchard(if mandelconverge(x, y) > 255: 32 else: 42)
-
-def mandelhelp(xmin, xmax, xstep, ymin, ymax, ystep):
-    return for y = ymin, y < ymax, ystep:
-               mandelrow(xmin, xmax, xstep, y) + putchard(10)
-
-def mandel(realstart, imagstart, realmag, imagmag):
-    return mandelhelp(realstart, realstart + realmag * 78, realmag, imagstart, imagstart + imagmag * 40, imagmag)
-
-mandel(0 - 2.3, 0 - 1.3, 0.05, 0.07)
-```
-
-**Line breaks.** The parser only allows newlines in specific positions — after `:` in `def`, `if`, and `for` bodies. A newline anywhere else (inside a function argument list, mid-expression) is a parse error. This is why `mandelconverge`'s nested `if`/`else` chain can span lines (each `else:` starts a new allowed position) but `mandel`'s long argument list must stay on a single line.
-
-**Unary minus.** Pyxc has no unary minus yet — `-2.3` would be parsed as the binary operator `-` applied to nothing, which is an error. The workaround is `0 - 2.3`: a fully-formed binary subtraction that the optimizer collapses to the literal `-2.3` with no extra instructions emitted. Chapter 9 adds unary-expression parsing and built-in unary minus support.
-
-**`mandelconverger`** counts iterations upward from `iters = 0`. It stops when `iters` exceeds 255 (the iteration limit — point is likely inside the set) or when `real² + imag²` exceeds 4 (magnitude exceeded 2 — point is diverging). It returns the iteration count at which it stopped. **`mandelconverge`** is a thin wrapper that starts the recursion at `iters = 0`.
-
-**`mandelrow`** drives the x-axis for a single row. For each point it calls `mandelconverge`; a return value `> 255` means the iteration limit was reached without diverging — point is inside the set, print space (ASCII 32). Any smaller value means it escaped — print `*` (ASCII 42).
-
-**`mandelhelp`** drives the y-axis. The outer `for y` body is `mandelrow(...) + putchard(10)` — the `+` sequences both calls, printing the row then a newline (ASCII 10). The return value `0.0 + 0.0` is discarded.
-
-**`mandel`** maps row and column counts to complex-plane coordinates.
-
-Run it:
-
-```bash
-./build/pyxc test/mandel.pyxc
-```
-
-```
-******************************************************************************
-******************************************************************************
-******************************************************************************
-******************************************************************************
-******************************************************************************
-******************************************************************************
-******************************************************************************
-******************************************   *********************************
-******************************************    ********************************
-*******************************************  *********************************
-************************************ **          *****************************
-************************************                 *************************
-***********************************                 **************************
-**********************************                   *************************
-*********************************                     ************************
-*********************** *  *****                      ************************
-***********************       **                      ************************
-**********************         *                      ************************
-*******************  *         *                     *************************
-*******************  *         *                     *************************
-**********************         *                      ************************
-***********************       **                      ************************
-*********************** *   ****                      ************************
-*********************************                     ************************
-**********************************                   *************************
-***********************************                 **************************
-*************************************                *************************
-************************************ *           *****************************
-*******************************************  *********************************
-******************************************    ********************************
-******************************************    ********************************
-******************************************** *********************************
-******************************************************************************
-******************************************************************************
-******************************************************************************
-******************************************************************************
-******************************************************************************
-******************************************************************************
-******************************************************************************
-******************************************************************************
-```
-
-The entire renderer — iteration, branching, output — is Pyxc code. The only runtime function provided by the host is `putchard`, which writes one ASCII character to `stderr`.
-
 ## What We Built
 
 | What | Change |
@@ -1196,21 +1232,20 @@ The entire renderer — iteration, branching, output — is Pyxc code. The only 
 | `BinopPrecedence` key type `int` | Accommodates both ASCII char operators and named token enums |
 | `GetTokPrecedence` map lookup | Replaces old `!isascii` guard so named tokens participate in binary expressions |
 | `BinaryExprAST::Op` type `int` | Stores negative token values without truncation |
-| `FCmpO*` + `UIToFP` | Ordered float comparison → `i1`, widened to `double`; NaN always evaluates false |
+| Comparison codegen | All six operators map to `fcmp`; `!=` uses the unordered predicate; `i1` result widened to `double` |
 | `IfExprAST` / `ParseIfExpr` | `if condition: then else: else` expression with mandatory else |
 | Three blocks + PHI | `then`, `else`, `ifcont`; PHI merges the two branch values |
 | `ForExprAST` / `ParseForExpr` | `for var = start, cond, step: body` expression producing `0.0` |
 | `loop_cond` / `loop_body` / `after_loop` | Check-at-top loop; PHI merges start and back-edge values |
 | Variable shadowing + restore | Loop variable overrides outer binding; outer is restored in `after_loop` |
-| `consumeNewlines()` | Eats consecutive `tok_eol` tokens; used after `:` to allow bodies on the next line |
 
 ## Known Limitations
 
-- **No block bodies.** Function bodies and loop bodies are single expressions. Multi-statement sequencing currently uses an arithmetic workaround (`a + b`) only when both subexpressions are side-effect calls that return `0.0`; otherwise `+` changes the value. Chapter 9 adds a dedicated sequencing operator.
-- **No mutable local variables.** `NamedValues` holds only function parameters. `alloca`/`store`/`load` and `mem2reg` come in a later chapter.
-- **No unary minus.** `-x` is not valid syntax; write `0 - x` instead. Chapter 9 adds unary-expression parsing and built-in unary minus support.
+- **No block bodies.** Function bodies and loop bodies are single expressions. Multi-statement sequencing currently uses an arithmetic workaround (`a + b`). [Chapter 9](chapter-09.md) adds a dedicated sequencing operator.
+- **No mutable local variables.** `NamedValues` holds only function parameters. We can't create or mutate local variables yet.
+- **No unary minus.** `-x` is not valid syntax; write `0 - x` instead. [Chapter 9](chapter-09.md) adds unary-expression parsing and built-in unary minus support.
 - **No short-circuit operators.** There are no built-in `&&`/`||` operators in this chapter. Any boolean composition must be expressed with nested `if` expressions.
-- **No `break` or `continue`.** Early exit from loops requires a different codegen strategy not yet implemented.
+- **No `break` or `continue`.** Early exit from loops is not yet implemented.
 
 ## What's Next
 
