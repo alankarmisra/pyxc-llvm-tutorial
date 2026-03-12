@@ -103,13 +103,13 @@ Each chapter builds on the previous one. You can:
 
 **[Chapter 9: User-Defined Operators](chapter-09.md)** — Add `@binary(N)` and `@unary` decorators so Pyxc programs can define new operators. Re-render the Mandelbrot with density shading.
 
+**[Chapter 10: Mutable Variables](chapter-10.md)** — Add mutable local variables and assignment using a temporary `var ... :` expression form backed by allocas, loads, and stores.
+
 <!--
 
-**[Chapter 10: Indentation Blocks](chapter-10.md)** — Replace `;` with Python-style indentation using `INDENT`/`DEDENT` tokens.
+**[Chapter 11: Statement Blocks](chapter-11.md)** — Replace single-expression function bodies with real block bodies and standalone `return`/assignment lines.
 
-**[Chapter 11: `if` and `while`](chapter-11.md)** — Add control flow expressions. Write recursive factorial.
-
-**[Chapter 12: Mutable Variables](chapter-12.md)** — Add `let` declarations and assignment. Write iterative factorial with `while`.
+**[Chapter 12: Indentation Blocks](chapter-12.md)** — Replace temporary block guardrails with Python-style indentation using `INDENT`/`DEDENT` tokens.
 
 ### Toolchain
 

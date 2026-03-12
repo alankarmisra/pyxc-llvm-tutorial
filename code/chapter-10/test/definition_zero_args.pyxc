@@ -1,0 +1,11 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Parsed a function definition.
+# CHECK: Evaluated to 42.000000
+
+
+# Tests: definition with a zero-argument prototype.
+# prototype = identifier "(" ")"
+
+def answer(): return 42.0
+
+answer()

@@ -1,0 +1,52 @@
+(*
+   pyxc.ebnf
+   Grammar for chapter 10 — Mutable variables.
+*)
+
+(*
+   { } = zero or more (any number of...)
+   [ ] = zero or one (optional)
+*)
+
+program         = [ eols ] [ top { eols top } ] [ eols ] ;
+eols            = eol { eol } ;
+top             = definition | decorateddef | external | toplevelexpr ;
+definition      = "def" prototype ":" [ eols ] "return" expression ;
+decorateddef    = binarydecorator eols "def" binaryopprototype ":" [ eols ] "return" expression
+                | unarydecorator  eols "def" unaryopprototype  ":" [ eols ] "return" expression ;
+binarydecorator = "@" "binary" "(" integer ")" ;
+unarydecorator  = "@" "unary" ;
+binaryopprototype = customopchar "(" identifier "," identifier ")" ;
+unaryopprototype  = customopchar "(" identifier ")" ;
+external        = "extern" "def" prototype ;
+toplevelexpr    = expression ;
+prototype       = identifier "(" [ identifier { "," identifier } ] ")" ;
+conditionalexpr = "if" expression ":" [ eols ] expression [ eols ] "else" ":" [ eols ] expression ;
+forexpr         = "for" identifier "=" expression "," expression "," expression ":" [ eols ] expression ;
+expression      = varexpr | unaryexpr binoprhs [ "=" expression ] ;
+binoprhs        = { binaryop unaryexpr } ;
+varexpr         = "var" varbinding { "," varbinding } ":" [ eols ] expression ;
+varbinding      = identifier [ "=" expression ] ;
+unaryexpr       = unaryop unaryexpr | primary ;
+unaryop         = "-" | userdefunaryop ;
+primary         = identifierexpr | numberexpr | parenexpr
+                | conditionalexpr | forexpr ;
+identifierexpr  = identifier | callexpr ;
+callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
+numberexpr      = number ;
+parenexpr       = "(" expression ")" ;
+binaryop        = builtinbinaryop | userdefbinaryop ;
+builtinbinaryop = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
+userdefbinaryop = ? any opchar defined as a custom binary operator ? ;
+userdefunaryop  = ? any opchar defined as a custom unary operator ? ;
+customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
+                    and not already defined as a custom operator ? ;
+opchar          = ? any single ASCII punctuation character ? ;
+identifier      = (letter | "_") { letter | digit | "_" } ;
+integer         = digit { digit } ;
+number          = digit { digit } [ "." { digit } ]
+                | "." digit { digit } ;
+letter          = "A".."Z" | "a".."z" ;
+digit           = "0".."9" ;
+eol             = "\r\n" | "\r" | "\n" ;
+ws              = " " | "\t" ;

@@ -209,7 +209,7 @@ The `CreateFCmpOEQ` call produces IR like this:
 %cmptmp = fcmp oeq double %L, %R
 ```
 
-LLVM's [fcmp](https://llvm.org/docs/LangRef.html#fcmp-instruction) predicates come in two families. Ordered predicates (`o*`) return `false` if either operand is `NaN`; unordered predicates (`u*`) return `true` instead. The ordered family is the safe default for most comparisons. The one exception is `!=`: the ordered not-equal predicate (`one`) would return `false` for `x != NaN`, which would surprise most programmers — IEEE 754 defines `NaN != NaN` as `true`, and `une` preserves that expectation. So `!=` uses the unordered not-equal predicate (`une`) instead, giving `true` as expected.
+LLVM's [fcmp](https://llvm.org/docs/LangRef.html#fcmp-instruction) predicates come in two families. Ordered predicates (`o*`) return `false` if either operand is `NaN`; unordered predicates (`u*`) return `true` instead. The ordered family is the safe default for most comparisons. The one exception is `!=`: the ordered not-equal predicate (`one`) would return `false` for `x != NaN`, which would surprise most programmers — IEEE 754 defines `NaN != NaN` as `true`. So `!=` uses the unordered not-equal predicate (`une`) instead, preserving that expectation.
 
 ```cpp
 case tok_neq:
@@ -227,6 +227,7 @@ where `CreateFCmpUNE` produces:
 `fcmp` produces an `i1` — LLVM's one-bit boolean (`false` or `true`). But Pyxc does not have a separate boolean type. Comparison results are ordinary numbers in the language, so we widen that `i1` back to `double`:
 
 ```cpp
+// CreateUIToFP (Unsigned Int -> Floating Point)
 return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
 ```
 
@@ -236,7 +237,7 @@ which produces:
 %booltmp = uitofp i1 %cmptmp to double
 ```
 
-This gives Pyxc its usual comparison result convention: `false → 0.0`, `true → 1.0`. That value is what later flows into `if` conditions and arithmetic expressions.
+This gives Pyxc its usual comparison result convention: `false → 0.0`, `true → 1.0`. That value is what later flows into `if` conditions and arithmetic expressions. 
 
 ## if/else Expressions
 
@@ -355,6 +356,8 @@ The generated block layout looks like this:
 ```
 
 Here `entry` is the current block, `then` and `else` are two branch blocks, and `ifcont` is the block where execution continues after either branch.
+
+In LLVM, control never falls through from one block to the next the way it does in C. Every block must end with an explicit branch — conditional or unconditional — to name where execution goes next. That is why you will see `CreateBr` and `CreateCondBr` calls throughout the codegen steps below.
 
 LLVM writes a conditional branch like this:
 
@@ -510,8 +513,6 @@ then:                           ; reached when the condition is true
   br label %ifcont
 ```
 
-*By now it should be clear that to move from one block to another, you need a conditional or unconditional branch/jump.*
-
 Finally, we update `ThenBB` so it points to the block where the `then` path
 actually finished.
 
@@ -524,7 +525,7 @@ ThenBB = Builder->GetInsertBlock();
 This matters because nested control flow can create more blocks and move the
 builder cursor. We want the block where the `then` path ended, not the block where it
 started. This only matters for nested `if` expressions; we’ll look at that
-case just below.
+case a little later in this chapter.
 
 **Step 4 — Do the same for `else`.**
 
@@ -729,7 +730,7 @@ The `for` expression repeats a body expression while a condition holds:
 for var = start, condition, step: body
 ```
 
-The loop runs while `condition` is non-zero. `var` is introduced by the `for` and is in scope for `condition`, `step`, and `body`. The body's return value is discarded each iteration. 
+The loop runs while `condition` is non-zero. `var` is introduced by the `for` and is in scope for `condition`, `step`, and `body`. The body's return value is discarded each iteration.
 
 ### Parsing
 
@@ -1000,10 +1001,12 @@ br i1 %loopcond, label %loop_body, label %after_loop
 ```llvm
 ; optimized
 %cmptmp = fcmp ugt double %i, 3.000000e+00
-br i1 %cmptmp, label %loop_body, label %after_loop
+br i1 %cmptmp, label %after_loop, label %loop_body
 ```
 
-Even though Pyxc has no special boolean type — comparisons produce `double` like everything else — the optimizer recovers the efficient `i1` branch condition automatically. The simplicity costs nothing at runtime.
+Even though Pyxc has no special boolean type — comparisons produce `double` like everything else — the optimizer recovers the efficient `i1` branch condition automatically. The simplicity costs nothing at runtime. 
+
+Notice also that LLVM rewrote `ole` (ordered less-than-or-equal) as `ugt` (unordered greater than), and flipped the branch destinations to match. This doesn't change the behaviour of your code and is more of an LLVM implementation detail that we need not concern ourselves with. 
 
 The full optimized function:
 
@@ -1233,7 +1236,7 @@ ready>
 | `GetTokPrecedence` map lookup | Replaces old `!isascii` guard so named tokens participate in binary expressions |
 | `BinaryExprAST::Op` type `int` | Stores negative token values without truncation |
 | Comparison codegen | All six operators map to `fcmp`; `!=` uses the unordered predicate; `i1` result widened to `double` |
-| `IfExprAST` / `ParseIfExpr` | `if condition: then else: else` expression with mandatory else |
+| `IfExprAST` / `ParseIfExpr` | `if condition: then_body else: else_body` expression with mandatory else |
 | Three blocks + PHI | `then`, `else`, `ifcont`; PHI merges the two branch values |
 | `ForExprAST` / `ParseForExpr` | `for var = start, cond, step: body` expression producing `0.0` |
 | `loop_cond` / `loop_body` / `after_loop` | Check-at-top loop; PHI merges start and back-edge values |

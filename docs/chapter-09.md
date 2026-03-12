@@ -121,7 +121,7 @@ Three global variables change in this chapter.
 static std::set<int> KnownUnaryOperators = {'-'};
 ```
 
-**`FunctionProtos` is moved earlier.** In earlier chapters `FunctionProtos` lived near the codegen functions. This chapter's new parser functions (`ParseBinaryOpPrototype`, `ParseUnaryOpPrototype`) need to check it for name collisions, so it is declared before the parser section:
+**`FunctionProtos` is moved earlier.** The new parser functions `ParseBinaryOpPrototype` and `ParseUnaryOpPrototype` need to detect name collisions at parse time — before codegen runs — so they can reject a redefinition with a source-level error. That requires them to query `FunctionProtos`. In earlier chapters `FunctionProtos` lived near the codegen functions, but parser functions are defined before codegen functions, so the declaration is moved up:
 
 ```cpp
 // FunctionProtos - Persistent prototype registry used by the parser to detect
@@ -872,6 +872,7 @@ def |(lhs, rhs):
     return if lhs: 1 else: if rhs: 1 else: 0
 
 # Logical AND (no short-circuit).
+# !!rhs normalises rhs to 0.0 or 1.0 — rhs might be any double, not just a boolean.
 @binary(6)
 def &(lhs, rhs):
     return if !lhs: 0 else: !!rhs
@@ -913,6 +914,8 @@ The four custom operators:
 - `@binary(1) def ;(x, y)` — sequencing: evaluates `x` for side effects, returns `y`. Used as `mandelrow(...) ; putchard(10)` to print a newline after each row.
 - `@binary(5) def |(lhs, rhs)` — logical OR (no short-circuit): `if lhs: 1 else: if rhs: 1 else: 0`.
 - `@binary(6) def &(lhs, rhs)` — logical AND (no short-circuit): `if !lhs: 0 else: !!rhs`. Its body uses the already-defined `!` — operators become available immediately after their prototype is JIT-compiled.
+
+The precedences are chosen carefully: `|` (5) and `&` (6) are both lower than comparisons (10), so `iters > 255 | (real * real + imag * imag > 4)` parses as `(iters > 255) | (...)` as intended. If `|` had higher precedence than `>`, the condition would parse wrong.
 
 `printdensity(d)` maps an iteration count to an ASCII shade character:
 
@@ -1009,19 +1012,17 @@ The file then calls `mandel(...)` two more times, zooming into different regions
 | `UnaryExprAST::codegen()` | Emits `fneg` for built-in `-`; otherwise looks up `unary<op>` and emits a call |
 | `test/mandel.pyxc` | Density-shaded Mandelbrot using four custom operators: `@unary def !`, `@binary(1) def ;`, `@binary(5) def \|`, `@binary(6) def &` |
 
-## Known Limitations
+## Things Worth Knowing
 
-- **Unary/Binary distinction is enforced.** A punctuation character can be used for only one custom operator definition: either unary or binary, not both. `ParseUnaryOpPrototype` rejects symbols already known as binary operators, and `ParseBinaryOpPrototype` rejects symbols already known as unary operators.
+- **A character is either unary or binary, not both.** Once `|` is defined as binary, it cannot also be defined as unary (and vice-versa). This is enforced at parse time.
 
-- **No operator removal or redefinition.** Once a custom operator is registered in `BinopPrecedence` or `KnownUnaryOperators`, there is no mechanism to remove or reassign it within a session.
+- **No operator removal or redefinition within a session.** Once a custom operator is registered, there is no mechanism to remove or reassign it. Restart the REPL to get a clean slate.
 
-- **Precedence is fixed at definition time.** `BinopPrecedence` maps the operator character to a single precedence value. There is no way to define two operators sharing the same character with different precedences in different contexts.
-
-- **All values are `double`.** No integer or boolean types. Comparisons return `1.0` for true and `0.0` for false. User-defined operators work within this constraint.
+- **All values are `double`.** No integer or boolean types. Comparisons return `1.0` for true and `0.0` for false — which is why `!!rhs` is needed to normalise an arbitrary double to a boolean-like value.
 
 ## What's Next
 
-Chapter 10 replaces the single-expression function body with a statement block, allowing multi-line function bodies without the sequencing operator workaround.
+Chapter 10 adds mutable local variables and assignment using a temporary `var ... :` expression form. This keeps Pyxc expression-oriented for one more chapter before real statement blocks arrive.
 
 ## Need Help?
 

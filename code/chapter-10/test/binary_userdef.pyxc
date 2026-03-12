@@ -1,0 +1,18 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Parsed a user-defined operator.
+# CHECK: Evaluated to 0.000000
+# CHECK: Evaluated to 1.000000
+
+
+# Tests: user-defined binary operator definition and use in an expression.
+# decorateddef    = binarydecorator eols "def" binaryopprototype ":" ...
+# binarydecorator = "@" "binary" "(" integer ")"
+# userdefbinaryop = ? any opchar defined as a custom binary operator ?
+
+@binary(5)
+def |(x, y): return if x != 0: 1 else: if y != 0: 1 else: 0
+
+# Logical OR: false | false = 0, true | false = 1.
+0 | 0
+
+1 | 0
