@@ -169,11 +169,12 @@ This is the same `consumeNewlines()` that chapter 8 reuses after `if:`, `else:`,
 
 ## Command-Line Parsing with LLVM's cl::
 
-LLVM ships a command-line parsing library, `llvm/Support/CommandLine.h`. For `pyxc` it replaces manual `argv` iteration with two declarations:
+Chapter 6 added a `-O` switch to control the optimisation level. This chapter adds two more: a positional filename argument that makes `pyxc` run a source file instead of starting the REPL, and a `-v` flag that prints the generated IR to stderr.
 
 ```cpp
 static cl::OptionCategory PyxcCategory("Pyxc options");
-
+...
+// new options
 static cl::opt<std::string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
                                       cl::init(""), cl::cat(PyxcCategory));
 
@@ -184,12 +185,9 @@ static cl::opt<bool> VerboseIR("v",
 
 `cl::Positional` means the argument has no flag — it's just a bare filename on the command line. `cl::opt<std::string>` with `cl::init("")` defaults to an empty string when no file is given, so the check in `ProcessCommandLine` is simply `!InputFile.empty()`. `cl::opt<bool>` with the name `"v"` registers the `-v` flag.
 
-`cl::HideUnrelatedOptions` and `cl::ParseCommandLineOptions` do the actual parsing. LLVM handles `--help` automatically using the `cl::desc` strings.
-
 ```cpp
 int ProcessCommandLine(int argc, const char **argv) {
-  cl::HideUnrelatedOptions(PyxcCategory);
-  cl::ParseCommandLineOptions(argc, argv, "pyxc\n");
+  ...
 
   if (!InputFile.empty()) {
     Input = fopen(InputFile.c_str(), "r");
@@ -202,7 +200,7 @@ int ProcessCommandLine(int argc, const char **argv) {
     IsRepl = true;
   }
 
-  return 0;
+  ...
 }
 ```
 

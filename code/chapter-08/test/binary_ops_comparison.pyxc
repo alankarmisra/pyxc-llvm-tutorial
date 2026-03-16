@@ -6,6 +6,11 @@
 # CHECK: Evaluated to 1.000000
 # CHECK: Evaluated to 1.000000
 # CHECK: Evaluated to 0.000000
+# CHECK: Evaluated to 0.000000
+# CHECK: Evaluated to 0.000000
+# CHECK: Evaluated to 0.000000
+# CHECK: Evaluated to 0.000000
+# CHECK: Evaluated to 0.000000
 
 
 # Tests: all six builtin binary comparison operators.
@@ -26,3 +31,13 @@
 
 # False case: exercises the 0.0 path.
 2 < 1
+
+4 <= 3
+
+3 > 4
+
+4 >= 5
+
+1 == 2
+
+3 != 3

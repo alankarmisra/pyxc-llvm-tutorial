@@ -5,7 +5,7 @@ description: "Add comparison operators, if/else expressions, and for loops — t
 
 ## Where We Are
 
-[Chapter 7](chapter-07.md) added file input mode. The language itself still has only arithmetic and function calls — no way to branch, no way to loop, no way to compare two values. This chapter adds all three.
+[Chapter 7](chapter-07.md) added file input mode. The language itself still has only basic arithmetic, and function calls — no way to branch, no way to loop, no way to compare two values. This chapter adds all three.
 
 Comparison operators produce `1.0` for true and `0.0` for false:
 
@@ -74,7 +74,7 @@ cd pyxc-llvm-tutorial/code/chapter-08
 
 ## Grammar
 
-Chapter 8 adds two new primary expression forms (`conditionalexpr` and `forexpr`) and six binary comparison operators to the grammar.
+Chapter 8 adds two new primary expression forms (`ifexpr` and `forexpr`) and six binary comparison operators to the grammar.
 
 ```ebnf
 program         = [ eols ] [ top { eols top } ] [ eols ] ;
@@ -84,12 +84,12 @@ definition      = "def" prototype ":" [ eols ] "return" expression ;
 external        = "extern" "def" prototype ;
 toplevelexpr    = expression ;
 prototype       = identifier "(" [ identifier { "," identifier } ] ")" ;
-conditionalexpr = "if" expression ":" [ eols ] expression [ eols ] "else" ":" [ eols ] expression ;
+ifexpr          = "if" expression ":" [ eols ] expression [ eols ] "else" ":" [ eols ] expression ;
 forexpr         = "for" identifier "=" expression "," expression "," expression ":" [ eols ] expression ;
 expression      = primary binoprhs ;
 binoprhs        = { binaryop primary } ;
 primary         = identifierexpr | numberexpr | parenexpr
-                | conditionalexpr | forexpr ;
+                | ifexpr | forexpr ;
 identifierexpr  = identifier | callexpr ;
 callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
 numberexpr      = number ;
@@ -109,6 +109,8 @@ ws              = " " | "\t" ;
 Six new token enums:
 
 ```cpp
+enum Token {
+...
 // comparison operators
 tok_eq  = -8,   // ==
 tok_neq = -9,   // !=
@@ -125,13 +127,13 @@ tok_else = -13,
 tok_for = -15,
 ```
 
-`tok_if`, `tok_else`, and `tok_for` are keywords added to the keyword table. The comparison tokens are returned by the lexer when it sees two-character sequences.
+`tok_if`, `tok_else`, and `tok_for` are keywords added to the `Keywords` map. The comparison tokens are returned by the lexer when it sees two-character sequences.
 
 ## Comparison Operators
 
 ### Lexer: Two-Character Tokens
 
-The lexer reads one character at a time. Recognizing `==` means seeing `=` first, then deciding whether the next character is also `=`. A `peek()` helper reads one character and immediately unreads it — it looks ahead without consuming:
+The lexer reads one character at a time. Recognizing `==` means seeing `=` first, then deciding whether the next character is also `=` and needs to be consumed. A `peek()` helper reads one character and immediately unreads it — reading ahead without consuming:
 
 ```cpp
 static int peek() {
@@ -152,36 +154,21 @@ if (LastChar == '=') {
 }
 ```
 
-If the next character is also `=`, consume it with `advance()` and return `tok_eq`. Otherwise return the bare `=`. Either way, call `advance()` at the end to load the next `LastChar`. The same pattern handles `!`, `<`, and `>`.
+If the next character is also `=`, consume it with `advance()` and return `tok_eq`. Otherwise return the bare `=`. Either way, call `advance()` at the end to preload `LastChar` for the next `gettok()` call. The same pattern handles `!`, `<`, and `>`.
 
 ### Parser: BinopPrecedence Keyed on int
 
-In earlier chapters `BinopPrecedence` used `char` keys. Named token enums are negative integers, which don't fit in a `char`. The key type is now `int`:
+In earlier chapters `BinopPrecedence` used `char` keys. Named token enums are negative integers (`tok_eq` = -10 for example), which don't fit in a `char`. We extend the keytype to `int`:
 
 ```cpp
 static map<int /* changed from char to int */, int> BinopPrecedence = {
-    {tok_eq, 10},  // ==
-    {tok_neq, 10}, // !=
-    {tok_leq, 10}, // <=
-    {tok_geq, 10}, // >=
-    {'<', 10},     // <
-    {'>', 10},     // >
-    {'+', 20},     // +
-    {'-', 20},     // -
-    {'*', 40},     // *
+    {tok_eq, 10}, {tok_neq, 10}, {tok_leq, 10}, {tok_geq, 10},  // new
+    {'<', 10}, {'>', 10},
+    // ... plus '+', '-', '*' from before ...
 };
 ```
 
-All six comparison operators share precedence `10` — they bind equally tightly and are left-associative. `GetTokPrecedence` is a simple map lookup:
-
-```cpp
-static int GetTokPrecedence() {
-  auto It = BinopPrecedence.find(CurTok);
-  if (It == BinopPrecedence.end() || It->second <= 0)
-    return -1;
-  return It->second;
-}
-```
+All six comparison operators share precedence `10` — they bind equally tightly. 
 
 `BinaryExprAST::Op` also changes from `char` to `int` so it can store negative token values without truncation.
 
@@ -209,7 +196,7 @@ The `CreateFCmpOEQ` call produces IR like this:
 %cmptmp = fcmp oeq double %L, %R
 ```
 
-LLVM's [fcmp](https://llvm.org/docs/LangRef.html#fcmp-instruction) predicates come in two families. Ordered predicates (`o*`) return `false` if either operand is `NaN`; unordered predicates (`u*`) return `true` instead. The ordered family is the safe default for most comparisons. The one exception is `!=`: the ordered not-equal predicate (`one`) would return `false` for `x != NaN`, which would surprise most programmers — IEEE 754 defines `NaN != NaN` as `true`. So `!=` uses the unordered not-equal predicate (`une`) instead, preserving that expectation.
+The terms come from numeric order. Real numbers can be compared on a number line — they are *ordered*. NaN has no position on that line, so any comparison involving NaN is *unordered*. LLVM exposes this as two predicate families: ordered (`o*`) predicates return `false` when NaN is involved; unordered (`u*`) predicates return `true`. The ordered family is the safe default for most comparisons. The one exception is `!=`: ordered not-equal (`one`) would return `false` for `x != NaN`, but IEEE 754 defines `NaN != NaN` as `true`. So `!=` uses unordered not-equal (`une`) instead. This matches C's behaviour: all comparisons with NaN return `false` except `!=`, which returns `true`.
 
 ```cpp
 case tok_neq:
@@ -597,15 +584,9 @@ ifcont:                                       ; both branches rejoin here
 }
 ```
 
-### What `-v` Shows After Optimization
+### What `-v` Shows
 
-The IR above is the straightforward shape that `IfExprAST::codegen()` builds.
-But if you run `pyxc -v`, the IR you see may be simpler than that, because the
-function is optimized before it is printed.
-
-In this example, the branches only compute values; they do not perform side
-effects. The optimizer notices that and replaces the three-block `if` shape
-with a single `select` instruction:
+`build/pyxc -v` uses the default optimization level (`-O2`), so the IR you see is already optimized. For `absdiff`, the optimizer notices that the branches only compute values with no side effects, and replaces the entire three-block `if` shape with a single `select` instruction:
 
 ```llvm
 define double @absdiff(double %a, double %b) {
@@ -624,12 +605,13 @@ LLVM writes `select` like this:
 %result = select i1 <condition>, <type> <true-value>, <type> <false-value>
 ```
 
-`select` is LLVM's ternary operator: choose one value if the condition is true, otherwise choose the other. No extra branch
-blocks are needed.
+`select` is LLVM's ternary operator: choose one value if the condition is true, otherwise the other. No extra branch blocks are needed.
 
-The optimizer also removes the redundant comparison-result round-trip: `i1` -> `double` -> `i1`, and uses `%cmptmp` directly.
+The optimizer also removes the `i1` → `double` → `i1` round-trip and uses `%cmptmp` directly as the branch condition.
 
 Functions where the branches make calls (`printd`, `putchard`) keep the full three-block structure because those calls must actually run in one branch and not the other.
+
+To see the unoptimized IR shown above, run `build/pyxc -v -O0`.
 
 ### Why Nested ifs Change the End Block
 
@@ -734,44 +716,22 @@ The loop runs while `condition` is non-zero. `var` is introduced by the `for` an
 
 ### Parsing
 
-`ParseForExpr` reads the variable name, `=`, start, `,`, condition, `,`, step, `:`, then the body. Newlines between `:` and the body are consumed by `consumeNewlines()`, allowing the body on the next line:
+`ParseForExpr` reads the variable name, `=`, start, `,`, condition, `,`, step, `:`, then the body — the same eat/parse/eat pattern as `ParseIfExpr`. `consumeNewlines()` before the body allows it on the next line:
 
 ```cpp
 static unique_ptr<ExprAST> ParseForExpr() {
   getNextToken(); // eat 'for'
 
-  if (CurTok != tok_identifier)
-    return LogError("Expected identifier after 'for'");
   string VarName = IdentifierStr;
   getNextToken(); // eat identifier
 
-  if (CurTok != '=')
-    return LogError("Expected '=' after for variable");
   getNextToken(); // eat '='
 
   auto Start = ParseExpression();
-  if (!Start) return nullptr;
-
-  if (CurTok != ',') return LogError("Expected ',' after for start value");
-  getNextToken(); // eat ','
-
-  auto Cond = ParseExpression();
-  if (!Cond) return nullptr;
-
-  if (CurTok != ',') return LogError("Expected ',' after for condition");
-  getNextToken(); // eat ','
-
-  auto Step = ParseExpression();
-  if (!Step) return nullptr;
-
-  if (CurTok != ':') return LogError("Expected ':' after for step");
-  getNextToken(); // eat ':'
-
-  consumeNewlines(); // allow body on next line
+  // ... eat ',', parse Cond, eat ',', parse Step, eat ':' ...
+  consumeNewlines();
 
   auto Body = ParseExpression();
-  if (!Body) return nullptr;
-
   return make_unique<ForExprAST>(VarName, std::move(Start), std::move(Cond),
                                  std::move(Step), std::move(Body));
 }
@@ -1224,31 +1184,6 @@ Evaluated to 0.000000
 ready>
 ```
 <!-- code-merge:end -->
-
-## What We Built
-
-| What | Change |
-|---|---|
-| `tok_eq`, `tok_neq`, `tok_leq`, `tok_geq` | New token enums for `==`, `!=`, `<=`, `>=` |
-| `tok_if`, `tok_else`, `tok_for` | Keyword tokens; added to the keyword table |
-| `peek()` | Reads one character and unreads it; used by two-character operator branches in `gettok()` |
-| `BinopPrecedence` key type `int` | Accommodates both ASCII char operators and named token enums |
-| `GetTokPrecedence` map lookup | Replaces old `!isascii` guard so named tokens participate in binary expressions |
-| `BinaryExprAST::Op` type `int` | Stores negative token values without truncation |
-| Comparison codegen | All six operators map to `fcmp`; `!=` uses the unordered predicate; `i1` result widened to `double` |
-| `IfExprAST` / `ParseIfExpr` | `if condition: then_body else: else_body` expression with mandatory else |
-| Three blocks + PHI | `then`, `else`, `ifcont`; PHI merges the two branch values |
-| `ForExprAST` / `ParseForExpr` | `for var = start, cond, step: body` expression producing `0.0` |
-| `loop_cond` / `loop_body` / `after_loop` | Check-at-top loop; PHI merges start and back-edge values |
-| Variable shadowing + restore | Loop variable overrides outer binding; outer is restored in `after_loop` |
-
-## Known Limitations
-
-- **No block bodies.** Function bodies and loop bodies are single expressions. Multi-statement sequencing currently uses an arithmetic workaround (`a + b`). [Chapter 9](chapter-09.md) adds a dedicated sequencing operator.
-- **No mutable local variables.** `NamedValues` holds only function parameters. We can't create or mutate local variables yet.
-- **No unary minus.** `-x` is not valid syntax; write `0 - x` instead. [Chapter 9](chapter-09.md) adds unary-expression parsing and built-in unary minus support.
-- **No short-circuit operators.** There are no built-in `&&`/`||` operators in this chapter. Any boolean composition must be expressed with nested `if` expressions.
-- **No `break` or `continue`.** Early exit from loops is not yet implemented.
 
 ## What's Next
 

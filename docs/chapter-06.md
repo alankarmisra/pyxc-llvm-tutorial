@@ -281,6 +281,37 @@ They are compiled into the `pyxc` binary with C linkage. Because ORC's dynamic l
 
 `DLLEXPORT` is a no-op on macOS and Linux. On Windows, symbols are not exported from executables by default, so the macro expands to `__declspec(dllexport)` to make them visible to the JIT's linker.
 
+## Command-Line Parsing with LLVM's cl::
+
+LLVM ships a command-line parsing library, `llvm/Support/CommandLine.h`. For `pyxc` it replaces manual `argv` iteration with two declarations:
+
+```cpp
+static cl::OptionCategory PyxcCategory("Pyxc options");
+
+static cl::opt<unsigned> OptLevel("O", cl::desc("Optimization level"),
+                                  cl::value_desc("0|1|2|3"), cl::Prefix,
+                                  cl::init(2), cl::cat(PyxcCategory));
+```
+
+`cl::opt<unsigned>` with the name `"O"` registers the `-O` flag. `cl::Prefix` lets users write `-O2` rather than `-O=2`.
+`cl::HideUnrelatedOptions` and `cl::ParseCommandLineOptions` do the actual parsing. LLVM handles `--help` automatically using the `cl::desc` strings.
+
+```cpp
+int ProcessCommandLine(int argc, const char **argv) {
+  cl::HideUnrelatedOptions(PyxcCategory);
+  cl::ParseCommandLineOptions(argc, argv, "pyxc\n");
+
+  if (OptLevel > 3) {
+    fprintf(stderr, "Error: -O level must be 0, 1, 2, or 3\n");
+    return -1;
+  }
+
+  return 0;
+}
+```
+
+With that little bit of code, we've allowed optimizations to be switched off. This will allow us to see raw IR in future chapters, where it will be instructive to see how our code translates directly into IR before the optimizer converts it into something more compact.
+
 ## Build and Run
 
 ```bash

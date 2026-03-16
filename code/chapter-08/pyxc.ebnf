@@ -15,12 +15,12 @@ definition      = "def" prototype ":" [ eols ] "return" expression ;
 external        = "extern" "def" prototype ;
 toplevelexpr    = expression ;
 prototype       = identifier "(" [ identifier { "," identifier } ] ")" ;
-conditionalexpr = "if" expression ":" [ eols ] expression [ eols ] "else" ":" [ eols ] expression ;
+ifexpr          = "if" expression ":" [ eols ] expression [ eols ] "else" ":" [ eols ] expression ;
 forexpr         = "for" identifier "=" expression "," expression "," expression ":" [ eols ] expression ;
 expression      = primary binoprhs ;
 binoprhs        = { binaryop primary } ;
 primary         = identifierexpr | numberexpr | parenexpr
-                | conditionalexpr | forexpr ;
+                | ifexpr | forexpr ;
 identifierexpr  = identifier | callexpr ;
 callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
 numberexpr      = number ;

@@ -36,6 +36,15 @@ using namespace llvm;
 using namespace llvm::orc;
 
 //===----------------------------------------===//
+// Command line
+//===----------------------------------------===//
+static cl::OptionCategory PyxcCategory("Pyxc options");
+
+static cl::opt<unsigned> OptLevel("O", cl::desc("Optimization level"),
+                                  cl::value_desc("0|1|2|3"), cl::Prefix,
+                                  cl::init(2), cl::cat(PyxcCategory));
+
+//===----------------------------------------===//
 // Lexer
 //===----------------------------------------===//
 
@@ -481,15 +490,11 @@ static int GetTokPrecedence() {
 }
 
 /// PrintReplPrompt - Print the interactive prompt to stderr.
-void PrintReplPrompt() {
-  fprintf(stderr, "ready> ");
-}
+void PrintReplPrompt() { fprintf(stderr, "ready> "); }
 
 /// Log - Write a diagnostic message to stderr.
 /// Used by the Handle* functions to confirm what was parsed.
-void Log(const string &message) {
-  fprintf(stderr, "%s", message.c_str());
-}
+void Log(const string &message) { fprintf(stderr, "%s", message.c_str()); }
 
 /// LogError* - Error reporting helpers. Each returns nullptr for its respective
 /// type so parse functions can write: return LogError("message");
@@ -1012,10 +1017,12 @@ static void InitializeModuleAndManagers() {
   TheSI->registerCallbacks(*ThePIC, TheMAM.get());
 
   // Optimisation pipeline (applied per function after codegen).
-  TheFPM->addPass(InstCombinePass()); // peephole rewrites
-  TheFPM->addPass(ReassociatePass()); // canonicalise commutative ops
-  TheFPM->addPass(GVNPass());         // eliminate common sub-expressions
-  TheFPM->addPass(SimplifyCFGPass()); // remove dead blocks and branches
+  if (OptLevel != 0) {
+    TheFPM->addPass(InstCombinePass()); // peephole rewrites
+    TheFPM->addPass(ReassociatePass()); // canonicalise commutative ops
+    TheFPM->addPass(GVNPass());         // eliminate common sub-expressions
+    TheFPM->addPass(SimplifyCFGPass()); // remove dead blocks and branches
+  }
 
   // Cross-register so passes can access any analysis tier they need.
   PassBuilder PB;
@@ -1230,6 +1237,21 @@ static void MainLoop() {
   }
 }
 
+/// ProcessCommandLine - Parse argv and configure the global Input/IsRepl state.
+///
+/// Returns 0 on success, -1 on error if any.
+int ProcessCommandLine(int argc, const char **argv) {
+  cl::HideUnrelatedOptions(PyxcCategory);
+  cl::ParseCommandLineOptions(argc, argv, "pyxc\n");
+
+  if (OptLevel > 3) {
+    fprintf(stderr, "Error: -O level must be 0, 1, 2, or 3\n");
+    return -1;
+  }
+
+  return 0;
+}
+
 //===----------------------------------------===//
 // Main driver code.
 //===----------------------------------------===//
@@ -1238,7 +1260,11 @@ static void MainLoop() {
 ///
 /// Initialises the LLVM native backend, creates the ORC JIT and an initial
 /// module, then hands control to MainLoop().
-int main() {
+int main(int argc, const char **argv) {
+  int commandLineResult = ProcessCommandLine(argc, argv);
+  if (commandLineResult != 0) {
+    return commandLineResult;
+  }
 
   // Initialise LLVM's backend for the host machine. These three calls
   // together register the native target's instruction set, assembler, and

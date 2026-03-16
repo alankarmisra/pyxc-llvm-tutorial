@@ -65,7 +65,7 @@ unaryopprototype  = customopchar "(" identifier ")" ;
 external        = "extern" "def" prototype ;
 toplevelexpr    = expression ;
 prototype       = identifier "(" [ identifier { "," identifier } ] ")" ;
-conditionalexpr = "if" expression ":" [ eols ] expression [ eols ] "else" ":" [ eols ] expression ;
+ifexpr          = "if" expression ":" [ eols ] expression [ eols ] "else" ":" [ eols ] expression ;
 forexpr         = "for" identifier "=" expression "," expression "," expression ":" [ eols ] expression ;
 expression      = varexpr | unaryexpr binoprhs [ "=" expression ] ;
 binoprhs        = { binaryop unaryexpr } ;
@@ -74,7 +74,7 @@ varbinding      = identifier [ "=" expression ] ;
 unaryexpr       = unaryop unaryexpr | primary ;
 unaryop         = "-" | userdefunaryop ;
 primary         = identifierexpr | numberexpr | parenexpr
-                | conditionalexpr | forexpr ;
+                | ifexpr | forexpr ;
 identifierexpr  = identifier | callexpr ;
 callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
 numberexpr      = number ;
@@ -184,25 +184,16 @@ public:
 };
 ```
 
-## Parsing `var`
+## Parsing var
 
 `ParseVarExpr` reads the `var` keyword, one or more bindings, the mandatory `:`, then the body expression:
 
 ```cpp
-/// varexpr
-///   = "var" varbinding { "," varbinding } ":" [ eols ] expression ;
-///
-/// varbinding
-///   = identifier [ "=" expression ] ;
 static unique_ptr<ExprAST> ParseVarExpr() {
   getNextToken(); // eat 'var'
-
   vector<pair<string, unique_ptr<ExprAST>>> VarNames;
 
   while (true) {
-    if (CurTok != tok_identifier)
-      return LogError("Expected identifier after 'var'");
-
     string Name = IdentifierStr;
     getNextToken(); // eat identifier
 
@@ -210,29 +201,16 @@ static unique_ptr<ExprAST> ParseVarExpr() {
     if (CurTok == '=') {
       getNextToken(); // eat '='
       Init = ParseExpression();
-      if (!Init)
-        return nullptr;
     } else {
-      Init = make_unique<NumberExprAST>(0.0);
+      Init = make_unique<NumberExprAST>(0.0); // default to 0.0
     }
-
     VarNames.push_back({Name, std::move(Init)});
 
-    if (CurTok != ',')
-      break;
+    if (CurTok != ',') break;
     getNextToken(); // eat ','
   }
 
-  if (CurTok != ':')
-    return LogError("Expected ':' after var bindings");
-  getNextToken(); // eat ':'
-
-  consumeNewlines();
-
-  auto Body = ParseExpression();
-  if (!Body)
-    return nullptr;
-
+  // ... eat ':', consumeNewlines(), parse body ...
   return make_unique<VarExprAST>(std::move(VarNames), std::move(Body));
 }
 ```
@@ -390,11 +368,7 @@ Value *VarExprAST::codegen() {
 
   for (auto &Var : VarNames) {
     const string &VarName = Var.first;
-    ExprAST *Init = Var.second.get();
-
-    Value *InitVal = Init->codegen();
-    if (!InitVal)
-      return nullptr;
+    Value *InitVal = Var.second->codegen();
 
     AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
     Builder->CreateStore(InitVal, Alloca);
@@ -404,14 +378,10 @@ Value *VarExprAST::codegen() {
   }
 
   Value *BodyVal = Body->codegen();
-  if (!BodyVal)
-    return nullptr;
 
   for (auto I = OldBindings.rbegin(), E = OldBindings.rend(); I != E; ++I) {
-    if (I->second)
-      NamedValues[I->first] = I->second;
-    else
-      NamedValues.erase(I->first);
+    if (I->second) NamedValues[I->first] = I->second;
+    else           NamedValues.erase(I->first);
   }
 
   return BodyVal;
@@ -443,7 +413,7 @@ This unifies the whole language:
 
 One model everywhere.
 
-## `for` Loops Switch to the Same Model
+## for Loops Switch to the Same Model
 
 The old `for` implementation rebound the loop variable name directly to an SSA value produced by a PHI node. That no longer fits a mutable-variable language.
 
@@ -520,6 +490,8 @@ Three things to notice:
 - stores write those values back into the stack slots so ordinary variable lookups can load them later
 
 So the chapter 10 model is not "SSA or mutable variables". It is both: stack storage at the source-language level, SSA values inside the optimized IR.
+
+One thing you will notice: the IR still contains explicit `alloca`, `load`, and `store` instructions. LLVM's `mem2reg` pass would promote most of these to pure SSA form, eliminating the stack traffic entirely. Chapter 10 does not run that pass — the raw IR is left visible so the storage model is easy to follow.
 
 ## Build and Run
 
@@ -611,32 +583,6 @@ Error (Line 1, Column 9): Destination of '=' must be a variable
         ^~~~
 ```
 <!-- code-merge:end -->
-
-## What We Built
-
-| What | Change |
-|---|---|
-| `tok_var` | New lexer token for the `var` keyword |
-| `var` in `Keywords` / `TokenNames` | Lexer recognizes and prints `var` as a reserved word |
-| `ExprAST::getVariableName()` | New helper hook used by assignment parsing to verify that the left-hand side is a plain variable |
-| `AssignmentExprAST` | New AST node representing `x = expr` |
-| `VarExprAST` | New AST node representing `var a = ..., b = ... : body` |
-| `ParseVarExpr()` | Parses `varbinding` lists, the mandatory `:`, optional newlines, and the body expression |
-| `expression ::= ... [ "=" expression ]` | Assignment becomes the loosest expression form |
-| `NamedValues` | Changes from `name -> Value*` to `name -> AllocaInst*` |
-| `CreateEntryBlockAlloca()` | New helper that creates stack slots in the function entry block |
-| `VariableExprAST::codegen()` | Now loads from a stack slot instead of returning a fixed SSA value |
-| `AssignmentExprAST::codegen()` | Stores into a stack slot and returns the stored value |
-| `VarExprAST::codegen()` | Allocates locals, stores initializers, shadows outer bindings, restores them after the body |
-| `FunctionAST::codegen()` | Parameters are copied into entry-block allocas so they use the same storage model as mutable locals |
-| `ForExprAST::codegen()` | Loop variables now use stack slots instead of direct PHI-based name binding |
-
-## Known Limitations
-
-- **`var ... : expression` is temporary syntax.** It works, but it is not especially Pythonic. [Chapter 11](chapter-11.md) adds real statement blocks, and [Chapter 12](chapter-12.md) replaces the temporary block guardrails with indentation-sensitive syntax.
-- **There are still no statement blocks.** A `var` body is still one expression. That is why examples like accumulation still need awkward expression-level sequencing. [Chapter 11](chapter-11.md) fixes this.
-- **Assignment is expression-only.** There is still no standalone assignment statement. That comes naturally once block bodies exist. [Chapter 11](chapter-11.md) starts that transition.
-- **No dedicated mem2reg pass yet.** The generated IR still contains explicit allocas, loads, and stores. LLVM can simplify some cases, but chapter 10 does not yet teach a full promotion pass.
 
 ## What's Next
 

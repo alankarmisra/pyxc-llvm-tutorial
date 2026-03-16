@@ -49,6 +49,13 @@ static cl::opt<bool> VerboseIR("v",
                                cl::desc("Print generated LLVM IR to stderr"),
                                cl::init(false), cl::cat(PyxcCategory));
 
+// Optimization level. For now Pyxc only distinguishes -O0 (no passes) from
+// any non-zero level (run the current fixed function pass pipeline).
+static cl::opt<unsigned> OptLevel("O",
+                                  cl::desc("Optimization level"),
+                                  cl::value_desc("0|1|2|3"), cl::Prefix,
+                                  cl::init(2), cl::cat(PyxcCategory));
+
 static FILE *Input = stdin;
 static bool IsRepl = true;
 
@@ -1049,11 +1056,15 @@ static void InitializeModuleAndManagers() {
                                                      /*DebugLogging*/ false);
   TheSI->registerCallbacks(*ThePIC, TheMAM.get());
 
-  // Optimisation pipeline (applied per function after codegen).
-  TheFPM->addPass(InstCombinePass()); // peephole rewrites
-  TheFPM->addPass(ReassociatePass()); // canonicalise commutative ops
-  TheFPM->addPass(GVNPass());         // eliminate common sub-expressions
-  TheFPM->addPass(SimplifyCFGPass()); // remove dead blocks and branches
+  // Optimisation pipeline (applied per function after codegen). With -O0 the
+  // pass manager is left empty so the emitted IR stays close to the direct
+  // lowering performed by the code generator.
+  if (OptLevel != 0) {
+    TheFPM->addPass(InstCombinePass()); // peephole rewrites
+    TheFPM->addPass(ReassociatePass()); // canonicalise commutative ops
+    TheFPM->addPass(GVNPass());         // eliminate common sub-expressions
+    TheFPM->addPass(SimplifyCFGPass()); // remove dead blocks and branches
+  }
 
   // Cross-register so passes can access any analysis tier they need.
   PassBuilder PB;
@@ -1279,6 +1290,11 @@ static void MainLoop() {
 int ProcessCommandLine(int argc, const char **argv) {
   cl::HideUnrelatedOptions(PyxcCategory);
   cl::ParseCommandLineOptions(argc, argv, "pyxc\n");
+
+  if (OptLevel > 3) {
+    fprintf(stderr, "Error: -O level must be 0, 1, 2, or 3\n");
+    return -1;
+  }
 
   if (!InputFile.empty()) {
     Input = fopen(InputFile.c_str(), "r");
