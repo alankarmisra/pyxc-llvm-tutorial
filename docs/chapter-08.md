@@ -196,7 +196,7 @@ which produces:
 %cmptmp = fcmp oeq double %L, %R
 ```
 
-The predicate — `oeq` here — encodes the comparison (`eq`, `lt`, `le`, …) and one more thing: how to handle `NaN`. That is the only difference between the `o*` and `u*` families. You could write it by hand (pseudocode — `and` arrives in [chapter 9 : User-Defined operators](chapter-09.md) as `&`)::
+The predicate — `oeq` here — encodes the comparison (`eq`, `lt`, `le`, …) and one more thing: how to handle `NaN`. That is the only difference between the `o*` and `u*` families. You could write it by hand (pseudocode — `and` arrives in [chapter 9 : User-Defined operators](chapter-09.md) as `&`):
 
 ```python
 extern def is_nan(x)
@@ -368,48 +368,6 @@ The generated block layout looks like this:
 
 Here `entry` is the current block, `then` and `else` are two branch blocks, and `ifcont` is the block where execution continues after either branch.
 
-In LLVM, control never falls through from one block to the next the way it does in C. Every block must end with an explicit branch — conditional or unconditional — to name where execution goes next. That is why you will see `CreateBr` and `CreateCondBr` calls throughout the codegen steps below.
-
-LLVM writes a conditional branch like this:
-
-```llvm
-br i1 <condition>, label <true-destination>, label <false-destination>
-```
-
-In our case, that becomes:
-
-```llvm
-br i1 %ifcond, label %then, label %else
-```
-
-Read this as: check `%ifcond`. If it is true, execution continues at `%then`;
-if not, it continues at `%else`.
-
-Both branch blocks produce a value, and after they rejoin we need one name for
-"the value from the branch that actually ran." LLVM writes that with a **PHI
-node**:
-
-```llvm
-%result = phi double [ <value-from-first-block>, %first-block ],
-                     [ <value-from-second-block>, %second-block ]
-```
-
-Each bracket pairs a value with the block it came from. In other words: if
-control arrived from this block, use this value.
-
-In our case:
-
-
-```llvm
-ifcont:
-  %iftmp = phi double [ %subtmp, %then ], [ %subtmp1, %else ]
-```
-
-Read that as: "if we arrived here from `then`, use `%subtmp`; if we arrived
-here from `else`, use `%subtmp1`."
-
-**Why `PHI`**? The name comes from the `φ-function` notation used in the academic papers that introduced SSA form in the late 1980s. Those papers borrowed the φ symbol from the mathematical convention for writing piecewise functions — "this value if condition A, that value if condition B" — which is exactly what a PHI node does. LLVM kept the terminology, so the name has stuck ever since.
-
 `IfExprAST::codegen` builds this shape in five steps. We will trace the body of
 `absdiff`.
 
@@ -484,9 +442,13 @@ BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont", TheFunction);
 Builder->CreateCondBr(CondV, ThenBB, ElseBB);
 ```
 
-All three blocks are attached to the function immediately. `CreateCondBr` does
-not fill any of the branch blocks; it only finishes the current block with a
-conditional jump to `then` or `else` (in LLVM terms, it is a *terminator instruction* — every basic block must end with one, and LLVM will reject IR where a block has no terminator or has instructions after one).
+All three blocks are attached to the function immediately. `CreateCondBr` finishes the current block with a conditional jump — in LLVM, every basic block must end with a *terminator instruction* (LLVM will reject IR where a block has no terminator or has instructions after one). In IR that looks like:
+
+```llvm
+br i1 %ifcond, label %then, label %else
+```
+
+Check `%ifcond`; jump to `%then` if true, `%else` if false.
 
 We now have:
 
@@ -559,6 +521,14 @@ else:                           ; reached when the condition is false
 
 **Step 5 — Fill the join block and choose the final value.**
 
+Both branches have produced a value, but the join block needs one name for "the value from whichever branch actually ran." LLVM solves this with a **PHI node** — each bracket pairs a value with the block it came from:
+
+```llvm
+%iftmp = phi double [ %subtmp, %then ], [ %subtmp1, %else ]
+```
+
+Read it as: "if we arrived here from `then`, use `%subtmp`; if from `else`, use `%subtmp1`." The name comes from the φ-function notation in the SSA papers of the late 1980s — exactly the piecewise-function idea of "this value if condition A, that value if condition B."
+
 ```cpp
 Builder->SetInsertPoint(MergeBB);
 PHINode *PN = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
@@ -567,20 +537,7 @@ PN->addIncoming(ElseV, ElseBB);
 return PN;
 ```
 
-Now we are in the block where both branches meet again. The PHI node gives the
-whole `if` expression one result value:
-
-- if control arrived from the `then` side, use `ThenV`
-- if control arrived from the `else` side, use `ElseV`
-
-```llvm
-ifcont:                                       ; both branches rejoin here
-  %iftmp = phi double [ %subtmp, %then ], [ %subtmp1, %else ]
-```
-
-That is why the updates in steps 3 and 4 matter: the PHI node needs the actual
-blocks that flow into `ifcont`, together with the values produced by those
-blocks.
+That is why the `ThenBB` and `ElseBB` updates in steps 3 and 4 matter: the PHI node needs the actual blocks that flow into `ifcont`, not the blocks where those paths started.
 
 > **Note:** LLVM requires PHI nodes to appear before any non-PHI instructions in a basic block. `CreatePHI` inserts into `MergeBB` immediately after `SetInsertPoint`, so this is satisfied here — but if you ever generate other instructions into a merge block before creating the PHI, LLVM will reject the IR with a verifier error.
 
