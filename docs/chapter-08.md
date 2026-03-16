@@ -190,23 +190,47 @@ case tok_eq:
   L = Builder->CreateFCmpOEQ(L, R, "cmptmp");  
 ```
 
-The `CreateFCmpOEQ` call produces IR like this:
+which produces:
 
 ```llvm
 %cmptmp = fcmp oeq double %L, %R
 ```
 
-The terms come from numeric order. Real numbers can be compared on a number line — they are *ordered*. NaN has no position on that line, so any comparison involving NaN is *unordered*. LLVM exposes this as two predicate families: ordered (`o*`) predicates return `false` when NaN is involved; unordered (`u*`) predicates return `true`. The ordered family is the safe default for most comparisons. The one exception is `!=`: ordered not-equal (`one`) would return `false` for `x != NaN`, but IEEE 754 defines `NaN != NaN` as `true`. So `!=` uses unordered not-equal (`une`) instead. This matches C's behaviour: all comparisons with NaN return `false` except `!=`, which returns `true`.
+The predicate — `oeq` here — encodes the comparison (`eq`, `lt`, `le`, …) and one more thing: how to handle `NaN`. That is the only difference between the `o*` and `u*` families. You could write it by hand (pseudocode — `and` arrives in [chapter 9 : User-Defined operators](chapter-09.md) as `&`)::
+
+```python
+extern def is_nan(x)
+def cmp_lt(a, b, ordered):
+    if !is_nan(a) and !is_nan(b):
+        return a < b
+    else:
+        return !ordered   # ordered -> false, unordered -> true
+```
+
+LLVM bakes that choice into the predicate, so you get a single instruction that already knows how to treat NaN.
+
+The names come from numeric order. Real numbers can be placed on a number line — they are *ordered*. NaN cannot, so any comparison involving NaN is *unordered*. An ordered predicate (`o*`) returns `false` in that case; an unordered predicate (`u*`) returns `true`.
+
+Pyxc follows C's behaviour:
+
+- `==`, `<`, `<=`, `>`, and `>=` use ordered predicates — NaN comparisons return `false`
+- `!=` uses unordered not-equal (`une`) — so `x != NaN` is `true`, matching IEEE 754
 
 ```cpp
 case tok_neq:
   L = Builder->CreateFCmpUNE(L, R, "cmptmp");
 ```
 
-where `CreateFCmpUNE` produces:
+which produces:
 
 ```llvm
 %cmptmp = fcmp une double %L, %R
+```
+
+If you want an explicit NaN test in IR, you can use `fcmp uno`. It returns true if either operand is NaN:
+
+```llvm
+%has_nan = fcmp uno double %L, %R
 ```
 
 #### Converting `i1` Back to `double`
