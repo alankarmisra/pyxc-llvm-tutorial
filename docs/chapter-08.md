@@ -26,7 +26,7 @@ Evaluated to 0.000000
 ```
 <!-- code-merge:end -->
 
-`if` is an expression that produces a value:
+`if` is an expression that produces a value. Both branches are always required — `if` needs to return something whether the condition is `true` or `false`. This is why function bodies read `return if ...: ... else: ...` rather than the statement form you might expect. Statement-style `if` arrives with blocks in a later chapter.
 
 <!-- code-merge:start -->
 ```python
@@ -44,7 +44,7 @@ Evaluated to 5.000000
 ```
 <!-- code-merge:end -->
 
-`for` is an expression that repeats a body expression, always producing `0.0`:
+`for` is an expression that repeats a body expression, always producing `0.0`. Since everything in Pyxc is an expression, the loop needs to return *something* — but unlike `if`, it has no natural value to produce. `0.0` is a placeholder until void types arrive in a later chapter.
 
 <!-- code-merge:start -->
 ```python
@@ -158,17 +158,17 @@ If the next character is also `=`, consume it with `advance()` and return `tok_e
 
 ### Parser: BinopPrecedence Keyed on int
 
-In earlier chapters `BinopPrecedence` used `char` keys. Named token enums are negative integers (`tok_eq` = -10 for example), which don't fit in a `char`. We extend the keytype to `int`:
+In earlier chapters `BinopPrecedence` used `char` keys. Named token enums are negative integers (`tok_eq` == -8 for example), which don't fit in a `char`. We extend the keytype to `int`:
 
 ```cpp
 static map<int /* changed from char to int */, int> BinopPrecedence = {
-    {tok_eq, 10}, {tok_neq, 10}, {tok_leq, 10}, {tok_geq, 10},  // new
+    {tok_eq /* -8, needs an int size */, 10}, {tok_neq, 10}, {tok_leq, 10}, {tok_geq, 10},  // new
     {'<', 10}, {'>', 10},
     // ... plus '+', '-', '*' from before ...
 };
 ```
 
-All six comparison operators share precedence `10` — they bind equally tightly. 
+All six comparison operators share precedence `10` — they bind equally tightly. Like all binary operators in Pyxc, they are left-associative, so `a < b == c` parses as `(a < b) == c`, not `a < (b == c)`. In particular, chained comparisons like `1 < x < 10` do not work as they do in Python — they parse as `(1 < x) < 10`, which is always true. A later chapter will make this work exactly as Python does.
 
 `BinaryExprAST::Op` also changes from `char` to `int` so it can store negative token values without truncation.
 
@@ -196,20 +196,9 @@ which produces:
 %cmptmp = fcmp oeq double %L, %R
 ```
 
-The predicate — `oeq` here — encodes the comparison (`eq`, `lt`, `le`, …) and one more thing: how to handle `NaN`. That is the only difference between the `o*` and `u*` families. You could write it by hand (pseudocode — `and` arrives in [chapter 9 : User-Defined operators](chapter-09.md) as `&`):
+The predicate `oeq` has a cousin, `ueq`. The only difference between them is how they handle `NaN`: `oeq` returns `false` when either operand is `NaN`; `ueq` returns `true`. Every comparison predicate follows this pattern — each has an ordered (`o*`) version and an unordered (`u*`) version with exactly that treatment of `NaN`. So alongside `oeq`/`ueq` there are `olt`/`ult`, `one`/`une`, and so on.
 
-```python
-extern def is_nan(x)
-def cmp_lt(a, b, ordered):
-    if !is_nan(a) and !is_nan(b):
-        return a < b
-    else:
-        return !ordered   # ordered -> false, unordered -> true
-```
-
-LLVM bakes that choice into the predicate, so you get a single instruction that already knows how to treat NaN.
-
-The names come from numeric order. Real numbers can be placed on a number line — they are *ordered*. NaN cannot, so any comparison involving NaN is *unordered*. An ordered predicate (`o*`) returns `false` in that case; an unordered predicate (`u*`) returns `true`.
+The names come from numeric order. Real numbers can be placed on a number line — they are *ordered*. NaN cannot, so any comparison involving NaN is *unordered*. An ordered predicate returns `false` in that case; an unordered predicate returns `true`.
 
 Pyxc follows C's behaviour:
 
@@ -229,6 +218,9 @@ which produces:
 
 If you want an explicit NaN test in IR, you can use `fcmp uno`. It returns true if either operand is NaN:
 
+```cpp
+Builder->CreateFCmpUNO(L, R, "has_nan");
+```
 ```llvm
 %has_nan = fcmp uno double %L, %R
 ```
@@ -252,32 +244,17 @@ This gives Pyxc its usual comparison result convention: `false → 0.0`, `true �
 
 ## if/else Expressions
 
-In Pyxc, `if` is an expression: it evaluates to a value.
+In Pyxc, `if` is an expression: it evaluates to a value and can appear anywhere an expression is allowed — as part of a larger expression, as a function argument, as a loop body, or nested inside another `if`.
 
 ```python
 if condition: then_expr else: else_expr
 ```
 
-That means you can use an `if` anywhere an expression is allowed: as part of a
-larger expression, as a function argument, as a loop body, or nested inside
-another `if`.
-
-An `if` expression must always have both branches, because it needs to produce
-a value whether the condition is true or false.
-
-This can look a little unusual in function bodies. Since functions still
-consist of a single expression in this chapter, you write things like:
-
-```python
-def absdiff(a, b): return if a > b: a - b else: b - a
-```
-
-Later chapters introduce statement blocks, which gives `if` a more familiar
-statement-like role inside function bodies.
+Any non-zero value is treated as true. `if 0.5:` and `if 2:` both take the then-branch; only `if 0:` takes the else-branch. The condition can be any expression — it does not have to be a comparison.
 
 ### Parsing
 
-`ParseIfExpr` eats `if`, parses the condition, expects `:`, allows newlines, then parses the then-branch. It then allows newlines before `else`, expects `else:`, allows more newlines, and parses the else-branch:
+`ParseIfExpr` eats `if`, parses the condition, expects `:`, allows newlines, then parses the then-branch. It then allows newlines before `else`, expects `else:`, allows more newlines, and parses the else-branch. Indentation is cosmetic — the parser only skips newlines. There are no statement blocks yet, so the then- and else-branches are each a single expression:
 
 ```cpp
 static unique_ptr<ExprAST> ParseIfExpr() {
@@ -366,7 +343,7 @@ The generated block layout looks like this:
                 ifcont
 ```
 
-Here `entry` is the current block, `then` and `else` are two branch blocks, and `ifcont` is the block where execution continues after either branch.
+Here `entry` is the current block, `then` and `else` are two branch blocks, and `ifcont` is the block where execution continues after either branch. Note that in LLVM, control never falls through from one block to the next the way it does in C. Every block must end with an explicit branch — conditional or unconditional — to name where execution goes next. This is why you'll see explicit branching `br` instructions with conditions `br i1 %cond` or without `br label %label` in the IR that follows. 
 
 `IfExprAST::codegen` builds this shape in five steps. We will trace the body of
 `absdiff`.
@@ -386,7 +363,7 @@ First we generate code for the condition expression:
 
 ```cpp
 Value *CondV = Cond->codegen();
-```
+```t
 
 For `absdiff`, `Cond->codegen()` generates code for `a > b`. 
 
@@ -408,7 +385,7 @@ entry:
 
 `Cond->codegen()` gives us a `double`, because Pyxc represents booleans as
 `0.0` or `1.0`. LLVM branches need an `i1`, so before we can branch we must
-turn that `double` back into an `i1`.
+turn that `double` back into an `i1`. 
 
 We do that by comparing the condition value against `0.0`:
 
@@ -418,6 +395,8 @@ CondV = Builder->CreateFCmpONE(
 ```
 
 This means: treat the condition as true if it is not equal to `0.0`.
+
+A reader might notice that a comparison like `a > b` takes an unnecessary roundtrip: `fcmp` produces an `i1`, `uitofp` widens it to `double`, and then `fcmp one ... 0.0` narrows it back to `i1`. The roundtrip exists because the condition is just a `double` by the time we get here — it could equally be a bare number like `if 2:`. Codegen has no way to distinguish the two cases, so the `double → i1` step is always required. The optimizer collapses the roundtrip when it can.
 
 The current block now looks like this:
 
@@ -442,7 +421,7 @@ BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont", TheFunction);
 Builder->CreateCondBr(CondV, ThenBB, ElseBB);
 ```
 
-All three blocks are attached to the function immediately. `CreateCondBr` finishes the current block with a conditional jump — in LLVM, every basic block must end with a *terminator instruction* (LLVM will reject IR where a block has no terminator or has instructions after one). In IR that looks like:
+All three blocks are attached to the function immediately. `CreateCondBr` finishes the current block with a conditional jump — in LLVM, every basic block must end with a *terminator instruction* (LLVM will reject IR where a block has no terminator or has instructions after one). A `br` is one kind of terminator; `ret` is another — you'll see both. In IR that looks like:
 
 ```llvm
 br i1 %ifcond, label %then, label %else
@@ -466,7 +445,7 @@ ifcont:  ; (empty)
 }
 ```
 
-**Step 3 — Move the builder into `then` and generate that branch.**
+**Step 3 — Move the builder cursor into `then` and generate that branch.**
 
 ```cpp
 Builder->SetInsertPoint(ThenBB);
@@ -477,8 +456,7 @@ Builder->CreateBr(MergeBB);
 `SetInsertPoint` is the important move here: it tells LLVM, "append the next
 instructions into the `then` block."
 
-After `Then->codegen()` finishes, we emit an unconditional branch to `ifcont`
-so the `then` path rejoins the `else` path. 
+After `Then->codegen()` finishes, we emit an unconditional branch to `ifcont` so execution continues in the join block after the then-branch completes.
 
 ```llvm
 then:                           ; reached when the condition is true
@@ -509,7 +487,7 @@ Builder->CreateBr(MergeBB);
 ElseBB = Builder->GetInsertBlock();
 ```
 
-Step 4 is the same idea for `else`: move the builder into `else`, generate the
+Step 4 is the same idea for `else`: move the builder cursor into `else`, generate the
 expression, branch to `ifcont`, and update `ElseBB` to the block where that
 path ended.
 
@@ -527,7 +505,7 @@ Both branches have produced a value, but the join block needs one name for "the 
 %iftmp = phi double [ %subtmp, %then ], [ %subtmp1, %else ]
 ```
 
-Read it as: "if we arrived here from `then`, use `%subtmp`; if from `else`, use `%subtmp1`." The name comes from the φ-function notation in the SSA papers of the late 1980s — exactly the piecewise-function idea of "this value if condition A, that value if condition B."
+Read it as: "if we arrived here from `then`, use `%subtmp`; if from `else`, use `%subtmp1`." The name **phi** comes from the φ-function notation in the SSA papers of the late 1980s — exactly the piecewise-function idea of "this value if condition A, that value if condition B."
 
 ```cpp
 Builder->SetInsertPoint(MergeBB);
@@ -537,9 +515,7 @@ PN->addIncoming(ElseV, ElseBB);
 return PN;
 ```
 
-That is why the `ThenBB` and `ElseBB` updates in steps 3 and 4 matter: the PHI node needs the actual blocks that flow into `ifcont`, not the blocks where those paths started.
-
-> **Note:** LLVM requires PHI nodes to appear before any non-PHI instructions in a basic block. `CreatePHI` inserts into `MergeBB` immediately after `SetInsertPoint`, so this is satisfied here — but if you ever generate other instructions into a merge block before creating the PHI, LLVM will reject the IR with a verifier error.
+> **Note:** LLVM requires PHI nodes to appear before any non-PHI instructions in a basic block, so that any instruction using the PHI value is guaranteed to find it already resolved. `CreatePHI` inserts into `MergeBB` immediately after `SetInsertPoint`, so this is satisfied here — but if you ever generate other instructions into a merge block before creating the PHI, LLVM will reject the IR with a verifier error.
 
 **Full unoptimized IR for `absdiff`:**
 
@@ -565,6 +541,8 @@ ifcont:                                       ; both branches rejoin here
 }
 ```
 
+Because execution jumps directly to either `then` or `else` and never enters the other block, `if`/`else` short-circuits — the branch not taken is never evaluated.
+
 ### What `-v` Shows
 
 `build/pyxc -v` uses the default optimization level (`-O2`), so the IR you see is already optimized. For `absdiff`, the optimizer notices that the branches only compute values with no side effects, and replaces the entire three-block `if` shape with a single `select` instruction:
@@ -586,9 +564,9 @@ LLVM writes `select` like this:
 %result = select i1 <condition>, <type> <true-value>, <type> <false-value>
 ```
 
-`select` is LLVM's ternary operator: choose one value if the condition is true, otherwise the other. No extra branch blocks are needed.
+`select` is LLVM's ternary operator: choose one value if the condition is true, otherwise the other. No extra branch blocks are needed. Note that `select` evaluates both sides — the short-circuit property of the source `if` is gone. LLVM only applies this transformation when both branches are cheap and pure: no side effects and low instruction cost. When either condition fails, the three-block branch structure is preserved.
 
-The optimizer also removes the `i1` → `double` → `i1` round-trip and uses `%cmptmp` directly as the branch condition.
+The optimizer also removes the `i1` → `double` → `i1` round-trip and uses `%cmptmp` directly as the branch condition. This is the general pattern: unifying everything as `double` at the language level costs nothing at runtime — the optimizer recovers the efficient `i1` branch condition automatically.
 
 Functions where the branches make calls (`printd`, `putchard`) keep the full three-block structure because those calls must actually run in one branch and not the other.
 
@@ -693,7 +671,7 @@ The `for` expression repeats a body expression while a condition holds:
 for var = start, condition, step: body
 ```
 
-The loop runs while `condition` is non-zero. `var` is introduced by the `for` and is in scope for `condition`, `step`, and `body`. The body's return value is discarded each iteration.
+The loop runs while `condition` is non-zero. `var` is introduced by the `for` and is in scope for `condition`, `step`, and `body`. The body's return value is discarded each iteration. Unlike Python's `range`, the step is always required — omitting it is a parse error.
 
 ### Parsing
 
@@ -734,7 +712,7 @@ loop_body  after_loop           │
    └── (i = i + step) ──────────┘
 ```
 
-We check the condition before the first iteration. If `false` on entry, the body never runs. We'll trace through `for i = 1, i <= 3, 1: printd(i)` to see how each block is built.
+Evaluation order is `start → condition → body → step → condition → …` — a pre-check loop. If the condition is false on entry, the body never runs. We'll trace through `for i = 1, i <= 3, 1: printd(i)` to see how each block is built.
 
 **Step 1 — Evaluate start in the preheader and jump to the condition block.**
 
@@ -901,7 +879,7 @@ Builder->SetInsertPoint(AfterBB);
 return ConstantFP::get(*TheContext, APFloat(0.0));
 ```
 
-Now the last block is filled in too, so the loop is complete.
+The loop has no natural return value, so the after-loop block returns `0.0`.
 
 **Full unoptimized IR for `for i = 1, i <= 3, 1: printd(i)` as a top-level expression:**
 
@@ -929,7 +907,7 @@ after_loop:                                   ; reached when the loop condition 
 
 ### What `-v` Shows After Optimization
 
-The optimizer recognises that widening the `i1` result to `double` just to compare it against `0.0` again to convert it back to `i1` is unnecessary — the `i1` from the first `fcmp` is all that's needed to drive the branch. It removes the roundtrip entirely:
+As with `if/else`, the optimizer removes the `i1` → `double` → `i1` roundtrip:
 
 ```llvm
 ; unoptimized
@@ -945,9 +923,8 @@ br i1 %loopcond, label %loop_body, label %after_loop
 br i1 %cmptmp, label %after_loop, label %loop_body
 ```
 
-Even though Pyxc has no special boolean type — comparisons produce `double` like everything else — the optimizer recovers the efficient `i1` branch condition automatically. The simplicity costs nothing at runtime. 
 
-Notice also that LLVM rewrote `ole` (ordered less-than-or-equal) as `ugt` (unordered greater than), and flipped the branch destinations to match. This doesn't change the behaviour of your code and is more of an LLVM implementation detail that we need not concern ourselves with. 
+Notice also that LLVM rewrote `ole` (ordered less-than-or-equal) as `ugt` (unordered greater-than) and flipped the branch destinations. Can you verify these are equivalent? Hint: `ole` and `ugt` are complements — swapping the predicate and flipping the branch destinations leaves the control flow unchanged. You could use truth tables.
 
 The full optimized function:
 
@@ -1018,13 +995,10 @@ mandel(0 - 2.3, 0 - 1.3, 0.05, 0.07)
 
 **Line breaks.** The parser only allows newlines in specific positions — after `:` in `def`, `if`, and `for` bodies. A newline anywhere else (inside a function argument list, mid-expression) is a parse error. This is why `mandelconverge`'s nested `if`/`else` chain can span lines (each `else:` starts a new allowed position) but `mandel`'s long argument list must stay on a single line.
 
-**Unary minus.** Pyxc has no unary minus yet — `-2.3` would be parsed as the binary operator `-` applied to nothing, which is an error. The workaround is `0 - 2.3`: a fully-formed binary subtraction that the optimizer collapses to the literal `-2.3` with no extra instructions emitted. Chapter 9 adds unary-expression parsing and built-in unary minus support.
+**Sequencing with `+`.** `mandelhelp` writes `mandelrow(...) + putchard(10)` to print a newline after each row. Both calls return `0.0`, so adding them is a no-op — it is just a way to chain two side-effect calls into a single expression. Pyxc has no sequencing operator yet. [Chapter 9](chapter-09.md) introduces `@binary(1) def ;(x, y): return y` to make this intent explicit.
 
-Run it:
+**Unary minus.** Pyxc has no unary minus yet — `-2.3` would be parsed as the binary operator `-` applied to nothing, which is an error. The workaround is `0 - 2.3`: a fully-formed binary subtraction that the optimizer collapses to the literal `-2.3` with no extra instructions emitted. [Chapter 9](chapter-09.md) adds unary-expression parsing and built-in unary minus support.
 
-```bash
-./build/pyxc test/mandel.pyxc
-```
 
 ```
 ******************************************************************************
@@ -1081,90 +1055,11 @@ cmake --build build
 
 The binary runs as an interactive REPL when given no file argument. Press `Ctrl-D` to exit.
 
-## Try It
+To run the Mandelbrot renderer directly:
 
-### Comparison operators
-
-<!-- code-merge:start -->
-```python
-ready> 1 < 2
-```
 ```bash
-Parsed a top-level expression.
-Evaluated to 1.000000
+./build/pyxc test/mandel.pyxc
 ```
-```python
-ready> 3 != 3
-```
-```bash
-Parsed a top-level expression.
-Evaluated to 0.000000
-```
-```python
-ready> 2 <= 2
-```
-```bash
-Parsed a top-level expression.
-Evaluated to 1.000000
-```
-```python
-ready>
-```
-<!-- code-merge:end -->
-
-### if/else expression
-
-<!-- code-merge:start -->
-```python
-ready> def absdiff(a, b): return if a > b: a - b else: b - a
-```
-```bash
-Parsed a function definition.
-```
-```python
-ready> absdiff(10, 5)
-```
-```bash
-Parsed a top-level expression.
-Evaluated to 5.000000
-```
-```python
-ready> absdiff(3, 8)
-```
-```bash
-Parsed a top-level expression.
-Evaluated to 5.000000
-```
-```python
-ready>
-```
-<!-- code-merge:end -->
-
-### for loop
-
-The loop always produces `0.0`. The body runs once per iteration and its return value is thrown away — here the body is a `printd` call, so the observable result is the printing.
-
-<!-- code-merge:start -->
-```python
-ready> extern def printd(x)
-```
-```bash
-Parsed an extern.
-```
-```python
-ready> for i = 1, i <= 3, 1: printd(i)
-```
-```bash
-Parsed a top-level expression.
-1.000000
-2.000000
-3.000000
-Evaluated to 0.000000
-```
-```python
-ready>
-```
-<!-- code-merge:end -->
 
 ## What's Next
 
