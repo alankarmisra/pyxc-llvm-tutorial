@@ -408,7 +408,7 @@ The generated IR for `!x` is a regular function call:
 ```
 
 And if you mix the two:
-Example `-!x`:
+For `-!x`:
 
 ```llvm
 %unop = call double @unary!(double %x)
