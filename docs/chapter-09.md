@@ -39,7 +39,15 @@ In Pyxc, user-defined operators are just functions with funny names. A user-defi
 
 This means:
 - The JIT treats user-defined operators exactly like regular functions.
-- The parser needs to know about new operators *at parse time* so it can apply precedence rules. Binary operators register their precedence in `BinopPrecedence` when codegen runs. This works because each definition is parsed and codegenned before the next one is processed — in both REPL and file mode. An operator is available to the parser from the line after it is defined. For example, if `|` has precedence `5` and `+` has precedence `20`, then `a + b | 1` parses as `(a + b) | 1`.
+- The parser needs to know about new operators *at parse time* so it can apply precedence rules. Binary operators register their precedence in `BinopPrecedence` when codegen runs. This works because each definition is parsed and codegenned before the next one is processed — in both REPL and file mode. An operator is available to the parser from the line after it is defined. For example, if `|` has precedence `5` and `+` has precedence `20`, then `a + b | 1` parses as `(a + b) | 1`. The built-in precedences are:
+
+| Operators | Precedence |
+|-----------|-----------|
+| `==` `!=` `<` `>` `<=` `>=` | 10 |
+| `+` `-` | 20 |
+| `*` | 40 |
+
+Pick a value relative to this table. Precedence `1` binds looser than everything; precedence `50` binds tighter than `*`.
 
 Unary operators are a different case: they bind tighter than any binary operator by design, so `-x + 1` always means `(-x) + 1`. They are parsed in a dedicated step before any binary expression is evaluated.
 
@@ -105,7 +113,7 @@ binoprhs   = { binaryop unaryexpr } ;
 unaryexpr  = unaryop unaryexpr | primary ;
 ```
 
-`integer` appears only in `binarydecorator`. It is a subset of `number` with no decimal point — `@binary(5)` is valid, `@binary(1.5)` is not.
+`integer` appears only in `binarydecorator`. It is a subset of `number` with no decimal point — `@binary(5)` is valid, `@binary(1.5)` is not. The lexer has no separate `tok_integer` token; it always emits `tok_number`. The parser enforces the integer constraint by inspecting the raw source string for a decimal point.
 
 ```ebnf
 ...
@@ -115,7 +123,7 @@ integer         = digit { digit } ;
 ```
 
 
-`customopchar`  is any ASCII punctuation character except `@`, except built-in operator characters (including reserved unary `-`), and except any character already defined as a custom operator (unary or binary).
+`customopchar` is any ASCII punctuation character except `@`, except built-in operator characters (including reserved unary `-`), and except any character already defined as a custom operator (unary or binary). The "not already defined" part is enforced by parser checks, not the grammar itself.
 
 ```ebnf
 customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
@@ -205,11 +213,11 @@ static unique_ptr<FunctionAST> ParseDecoratedDef() {
     consumeNewlines(); 
     if (CurTok != tok_def) ... // check for errors (snipped)
     getNextToken(); // eat 'def' and parse the rest of the prototype
-    Proto = ParseBinaryOpPrototype(Prec); // will install op's precedence in BinaryOpPrecedence
+    Proto = ParseBinaryOpPrototype(Prec); // returns prototype; precedence registered in PrototypeAST::codegen
   } else if (CurTok == tok_unary) {
-    ParseUnaryDecorator(); // delegate: processes "unary"
+    ParseUnaryDecorator();
     // ... same newline enforcement, eat 'def' ...
-    Proto = ParseUnaryOpPrototype(); // will install the operator as unary<op> 
+    Proto = ParseUnaryOpPrototype(); // returns prototype; operator registered in PrototypeAST::codegen
   } else {
     return LogErrorF("Expected 'binary' or 'unary' after '@'");
   }
@@ -237,7 +245,7 @@ static unsigned ParseBinaryDecorator() {
   // Lexer will happily send decimal numbers back.
   if (NumLiteralStr.find('.') != string::npos)
     return LogErrorF("Operator precedence must be an integer");
-  unsigned Prec = (unsigned)NumVal;
+  unsigned Prec = (unsigned)NumVal;  // NumVal is double but we've confirmed no decimal point
   if (Prec == 0)
     return LogErrorF("Operator precedence must be >= 1");
   getNextToken(); // eat number
@@ -265,7 +273,7 @@ static unique_ptr<PrototypeAST> ParseBinaryOpPrototype(unsigned Precedence) {
 
     if (IsKnownBinaryOperatorToken(CurTok)) ...  // already a binary op?
     if (IsKnownUnaryOperatorToken(CurTok))  ...  // already a unary op?
-    if (FunctionProtos.count(FnName))       ...  // encoded name collision?
+    if (FunctionProtos.count(FnName))       ...  // encoded name collision? (FunctionProtos is the map of parsed prototypes from chapter 6)
 
     getNextToken(); // eat operator char
     // ... read (x, y) — same as ParsePrototype, expect exactly 2 args ...
@@ -273,7 +281,7 @@ static unique_ptr<PrototypeAST> ParseBinaryOpPrototype(unsigned Precedence) {
 }
 ```
 
-`IsCustomOpChar` checks `isascii(Tok) && ispunct(Tok) && Tok != '@'`. The third check is defensive — `binary|` is not a legal Pyxc identifier — but guards against future parser changes.
+`IsCustomOpChar` checks `isascii(Tok) && ispunct(Tok) && Tok != '@'`. `@` is excluded because it is the decorator introducer — allowing it as an operator character would make `@@binary(5)` ambiguous. The defensive `FunctionProtos` check guards against future parser changes.
 
 ### Parsing `@unary def !(v): ...`
 
@@ -311,6 +319,8 @@ static unique_ptr<ExprAST> ParseUnary() {
   return nullptr;
 }
 ```
+
+Any punctuation token that isn't `-` parses as a unary prefix — undefined operators are accepted here and only fail at codegen with "Unknown unary operator".
 
 `ParseUnaryMinus` eats `-`, recurses into `ParseUnary` for the operand, and builds a `UnaryExprAST` with opcode `'-'`:
 
@@ -849,6 +859,8 @@ The file then calls `mandel(...)` two more times, zooming into different regions
 - **An operator is either unary or binary, not both.** Once `|` is defined as binary, it cannot also be defined as unary (and vice-versa). This is enforced at parse time.
 
 - **Operators cannot be removed or redefined within a session.** Once a custom operator is registered, there is no mechanism to remove or reassign it. Restart the REPL to get a clean slate.
+
+- **User-defined operators do not short-circuit.** They are ordinary function calls — both operands are evaluated before the function runs. Python's `or` and `and` skip the right operand when the left is conclusive; `|` and `&` defined in Pyxc do not. Use nested `if` expressions when short-circuit evaluation matters.
 
 ## What's Next
 
