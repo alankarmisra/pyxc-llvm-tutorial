@@ -26,7 +26,7 @@ Evaluated to 0.000000
 ```
 <!-- code-merge:end -->
 
-`if` is an expression that produces a value. Both branches are always required — `if` needs to return something whether the condition is `true` or `false`. This is why function bodies read `return if ...: ... else: ...` rather than the statement form you might expect. Statement-style `if` arrives with blocks in a later chapter.
+`if` is an expression that produces a value. Both branches are always required — `if` needs to return something whether the condition is `true` or `false`. This is why function bodies read `return if ...: ... else: ...` rather than the statement form you might expect. Statement-style `if` arrives with blocks (multi-statement bodies) in a later chapter.
 
 <!-- code-merge:start -->
 ```python
@@ -168,13 +168,13 @@ static map<int /* changed from char to int */, int> BinopPrecedence = {
 };
 ```
 
-All six comparison operators share precedence `10` — they bind equally tightly. Like all binary operators in Pyxc, they are left-associative, so `a < b == c` parses as `(a < b) == c`, not `a < (b == c)`. In particular, chained comparisons like `1 < x < 10` do not work as they do in Python — they parse as `(1 < x) < 10`, which is always true. A later chapter will make this work exactly as Python does.
+All six comparison operators share precedence `10` — they bind equally tightly. Like all binary operators in Pyxc, they are left-associative, so `a < b == c` parses as `(a < b) == c`, not `a < (b == c)`. In particular, chained comparisons like `1 < x < 10` do not work as they do in Python — they parse as `(1 < x) < 10`, which is always true — `1 < x` produces `1.0` or `0.0`, and both are less than `10`. A later chapter will make this work exactly as Python does.
 
 `BinaryExprAST::Op` also changes from `char` to `int` so it can store negative token values without truncation.
 
 ```cpp
 class BinaryExprAST : public ExprAST {
-  int /* used to be char */ Op; 
+  int Op;   // was char; negative token values don't fit in char
   ...
 ```
 
@@ -198,7 +198,7 @@ which produces:
 
 The predicate `oeq` has a cousin, `ueq`. The only difference between them is how they handle `NaN`: `oeq` returns `false` when either operand is `NaN`; `ueq` returns `true`. Every comparison predicate follows this pattern — each has an ordered (`o*`) version and an unordered (`u*`) version with exactly that treatment of `NaN`. So alongside `oeq`/`ueq` there are `olt`/`ult`, `one`/`une`, and so on.
 
-The names come from numeric order. Real numbers can be placed on a number line — they are *ordered*. NaN cannot, so any comparison involving NaN is *unordered*. An ordered predicate returns `false` in that case; an unordered predicate returns `true`.
+The names come from numeric order. Real numbers can be placed on a number line — they are *ordered*. NaN cannot, so any comparison involving NaN is *unordered*. An ordered predicate returns `false` in that case; an unordered predicate returns `true`. NaN arises from undefined floating-point operations — Pyxc cannot produce it yet, but `extern` functions written in C can.
 
 Pyxc follows C's behaviour:
 
@@ -363,7 +363,7 @@ First we generate code for the condition expression:
 
 ```cpp
 Value *CondV = Cond->codegen();
-```t
+```
 
 For `absdiff`, `Cond->codegen()` generates code for `a > b`. 
 
@@ -566,7 +566,7 @@ LLVM writes `select` like this:
 
 `select` is LLVM's ternary operator: choose one value if the condition is true, otherwise the other. No extra branch blocks are needed. Note that `select` evaluates both sides — the short-circuit property of the source `if` is gone. LLVM only applies this transformation when both branches are cheap and pure: no side effects and low instruction cost. When either condition fails, the three-block branch structure is preserved.
 
-The optimizer also removes the `i1` → `double` → `i1` round-trip and uses `%cmptmp` directly as the branch condition. This is the general pattern: unifying everything as `double` at the language level costs nothing at runtime — the optimizer recovers the efficient `i1` branch condition automatically.
+The optimizer also removes the `i1` → `double` → `i1` roundtrip and uses `%cmptmp` directly as the branch condition. This is the general pattern: unifying everything as `double` at the language level costs nothing at runtime — the optimizer recovers the efficient `i1` branch condition automatically.
 
 Functions where the branches make calls (`printd`, `putchard`) keep the full three-block structure because those calls must actually run in one branch and not the other.
 
