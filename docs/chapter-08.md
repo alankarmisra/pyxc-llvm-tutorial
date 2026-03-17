@@ -74,7 +74,7 @@ cd pyxc-llvm-tutorial/code/chapter-08
 
 ## Grammar
 
-Chapter 8 adds two new primary expression forms (`ifexpr` and `forexpr`) and six binary comparison operators to the grammar.
+`code/chapter-08/pyxc.ebnf`
 
 ```ebnf
 program         = [ eols ] [ top { eols top } ] [ eols ] ;
@@ -89,12 +89,12 @@ forexpr         = "for" identifier "=" expression "," expression "," expression 
 expression      = primary binoprhs ;
 binoprhs        = { binaryop primary } ;
 primary         = identifierexpr | numberexpr | parenexpr
-                | ifexpr | forexpr ;
+                | ifexpr | forexpr ;                          -- new: ifexpr, forexpr
 identifierexpr  = identifier | callexpr ;
 callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
 numberexpr      = number ;
 parenexpr       = "(" expression ")" ;
-binaryop        = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
+binaryop        = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;  -- new: comparison ops
 identifier      = (letter | "_") { letter | digit | "_" } ;
 number          = digit { digit } [ "." { digit } ]
                 | "." digit { digit } ;
@@ -102,6 +102,20 @@ letter          = "A".."Z" | "a".."z" ;
 digit           = "0".."9" ;
 eol             = "\r\n" | "\r" | "\n" ;
 ws              = " " | "\t" ;
+```
+
+### What Changed
+
+Chapter 8 adds two new `primary` expression forms (`ifexpr` and `forexpr`) and six binary comparison operators. The rest of the grammar is unchanged.
+
+```ebnf
+-- Chapter 7
+primary  = identifierexpr | numberexpr | parenexpr ;
+binaryop = "+" | "-" | "*" ;
+
+-- Chapter 8
+primary  = identifierexpr | numberexpr | parenexpr | ifexpr | forexpr ;
+binaryop = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
 ```
 
 ## New Tokens
@@ -961,7 +975,7 @@ else
 
 ## The Mandelbrot Set
 
-With comparisons, `if`/`else`, and `for`, Pyxc is expressive enough to render the Mandelbrot set. The Mandelbrot set is the set of complex numbers `c` for which the iteration `z = z² + c` (starting from `z = 0`) does not diverge to infinity.
+With comparisons, `if`/`else`, and `for`, Pyxc is expressive enough to render the Mandelbrot set. The Mandelbrot set is the set of complex numbers `c` for which the iteration `z = z² + c` (starting from `z = 0`) does not diverge to infinity. `mandelconverger` uses recursion rather than a loop because `iters` needs to increment each iteration — without mutable variables, passing it as a parameter is the only option.
 
 ```python
 # test/mandel.pyxc

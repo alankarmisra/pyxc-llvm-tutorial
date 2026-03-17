@@ -35,17 +35,17 @@ cd pyxc-llvm-tutorial/code/chapter-09
 
 ## The Design
 
-Operators are just functions with funny names. A user-defined binary operator `|` is stored in LLVM as a function called `binary|`. A unary operator `!` is stored as `unary!`. When the parser encounters `a | b`, it looks up `binary|` and generates a call.
+In Pyxc, user-defined operators are just functions with funny names. A user-defined binary operator `|` is stored as an ordinary function named `binary|` — LLVM knows nothing special about the name. A unary operator `!` is stored as `unary!`. When the parser encounters `a | b`, it looks up `binary|` and generates a call. Built-in operators like `+` and `*` are handled directly in `BinaryExprAST::codegen` with `CreateFAdd` and `CreateFMul` — no function call involved.
 
 This means:
 - The JIT treats user-defined operators exactly like regular functions.
-- The parser needs to know about new operators *at parse time* so it can apply precedence rules. Binary operators register their precedence in `BinopPrecedence` when codegen runs. For example, if `|` has precedence `5` and `+` has precedence `20`, then `a + b | 1` parses as `(a + b) | 1`.
+- The parser needs to know about new operators *at parse time* so it can apply precedence rules. Binary operators register their precedence in `BinopPrecedence` when codegen runs. This works because each definition is parsed and codegenned before the next one is processed — in both REPL and file mode. An operator is available to the parser from the line after it is defined. For example, if `|` has precedence `5` and `+` has precedence `20`, then `a + b | 1` parses as `(a + b) | 1`.
 
 Unary operators are a different case: they bind tighter than any binary operator by design, so `-x + 1` always means `(-x) + 1`. They are parsed in a dedicated step before any binary expression is evaluated.
 
 ## Grammar
 
-Chapter 9 extends the grammar in three places: a new `decorateddef` production for `@binary`/`@unary` definitions, a new `unaryexpr` level between `expression` and `primary`, and an `integer` terminal to restrict decorator precedences to whole numbers.
+`code/chapter-09/pyxc.ebnf`
 
 ```ebnf
 program         = [ eols ] [ top { eols top } ] [ eols ] ;
@@ -90,9 +90,37 @@ eol             = "\r\n" | "\r" | "\n" ;
 ws              = " " | "\t" ;
 ```
 
+### What Changed
+
+Chapter 9 adds three things: `decorateddef` for `@binary`/`@unary` definitions; `unaryexpr` inserted between `expression` and `primary` (every operand slot that previously called `primary` now calls `unaryexpr`, which either applies a unary op and recurses, or delegates to `primary`); and `integer` as a distinct terminal to reject fractional precedence values.
+
+```ebnf
+-- Chapter 8
+expression = primary binoprhs ;
+binoprhs   = { binaryop primary } ;
+
+-- Chapter 9
+expression = unaryexpr binoprhs ;
+binoprhs   = { binaryop unaryexpr } ;
+unaryexpr  = unaryop unaryexpr | primary ;
+```
+
 `integer` appears only in `binarydecorator`. It is a subset of `number` with no decimal point — `@binary(5)` is valid, `@binary(1.5)` is not.
 
+```ebnf
+...
+binarydecorator   = "@" "binary" "(" integer ")" ;
+....
+integer         = digit { digit } ;
+```
+
+
 `customopchar`  is any ASCII punctuation character except `@`, except built-in operator characters (including reserved unary `-`), and except any character already defined as a custom operator (unary or binary).
+
+```ebnf
+customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
+                    and not already defined as a custom operator ? ;
+```
 
 ## New Tokens
 
@@ -108,16 +136,13 @@ enum Token {
 };
 ```
 
-They are added to the keyword table alongside the other keywords, so the lexer returns `tok_binary` or `tok_unary` when it reads the corresponding word.
+They are added to the `Keywords` map alongside the other keywords:
 
-## New Global State
+```cpp
+{"binary", tok_binary}, {"unary", tok_unary}
+```
 
-Two global variables change in this chapter.
-
-**`BinopPrecedence` gains new entries at runtime.** It is initialised at startup with the nine built-in operators. When `PrototypeAST::codegen` runs for a user-defined binary operator, it installs the operator's token and precedence into this map. From that point on, `GetTokPrecedence()` returns the correct value for the new operator and `ParseBinOpRHS` handles it correctly.
-
-**`KnownUnaryOperators` is a new `std::set<int>`.** It is seeded with `'-'` (the built-in unary minus) and grows as user-defined unary operators are compiled. `ParseUnaryOpPrototype` checks the set to reject redefinitions — whether of a built-in or a previously defined user operator.
-
+The lexer returns `tok_binary` or `tok_unary` when it reads the corresponding word.
 
 ## Extending PrototypeAST
 
@@ -160,84 +185,136 @@ public:
 
 ### Parsing `@binary(5) def |(x, y): ...`
 
-When `MainLoop` sees `@`, it calls `ParseDecoratedDef`. The first token after `@` is `binary`, so the binary branch runs.
-
-**Step 1 — read the decorator.** `ParseBinaryDecorator` consumes `binary(5)` and returns `5` as the precedence. Two details: the lexer has no `tok_integer` — it emits `tok_number` for both `5` and `1.5` — so the decimal check uses `NumLiteralStr`, the raw source text, to detect a `.`. Zero is rejected because it is the sentinel used to signal failure.
+`ParseDecoratedDef` manages both binary and unary parsing:
 
 ```cpp
+/// decorateddef
+///   = binarydecorator eols "def" binaryopprototype ":" [ eols ] "return" expression
+///   | unarydecorator  eols "def" unaryopprototype  ":" [ eols ] "return" expression
+///
+/// binarydecorator   = "@" "binary" "(" integer ")" ;
+/// unarydecorator    = "@" "unary" ;
+static unique_ptr<FunctionAST> ParseDecoratedDef() {
+  getNextToken(); // eat '@'
+
+  unique_ptr<PrototypeAST> Proto;
+  if (CurTok == tok_binary) { // "binary"
+    unsigned Prec = ParseBinaryDecorator(); // delegate: processes "binary" "(" integer ")" 
+    if (CurTok != tok_eol) // ensure we get a newline after the decorator
+      return LogErrorF("Expected newline after '@binary(...)' decorator");
+    consumeNewlines(); 
+    if (CurTok != tok_def) ... // check for errors (snipped)
+    getNextToken(); // eat 'def' and parse the rest of the prototype
+    Proto = ParseBinaryOpPrototype(Prec); // will install op's precedence in BinaryOpPrecedence
+  } else if (CurTok == tok_unary) {
+    ParseUnaryDecorator(); // delegate: processes "unary"
+    // ... same newline enforcement, eat 'def' ...
+    Proto = ParseUnaryOpPrototype(); // will install the operator as unary<op> 
+  } else {
+    return LogErrorF("Expected 'binary' or 'unary' after '@'");
+  }
+
+  // Shared body tail — same as ParseDefinition, where `return` and expression are parsed.
+  ...
+}
+```
+
+**`ParseBinaryDecorator`** consumes `binary(5)` and returns `5`. The lexer has no `tok_integer` — it emits `tok_number` for both `5` and `1.5` — so the decimal check inspects `NumLiteralStr`, the raw source text:
+
+```cpp
+/// binarydecorator
+///   = "binary" "(" integer ")"
+///
+/// Called after '@' has been consumed. CurTok is on 'binary'.
+/// Returns the parsed precedence (>= 1), or 0 on error.
+/// 0 is a safe sentinel because valid precedences must be >= 1.
 static unsigned ParseBinaryDecorator() {
   getNextToken(); // eat 'binary'
-  // ... reads '(' number ')' ...
+  // ...eat '('...
+  if (CurTok != tok_number)
+    return LogErrorF("Expected precedence after '@binary('");
+  // Check for a decimal. We don't have an integer type. 
+  // Lexer will happily send decimal numbers back.
+  if (NumLiteralStr.find('.') != string::npos)
+    return LogErrorF("Operator precedence must be an integer");
+  unsigned Prec = (unsigned)NumVal;
+  if (Prec == 0)
+    return LogErrorF("Operator precedence must be >= 1");
+  getNextToken(); // eat number
+  // ...eat ')'...
   return Prec;
 }
 ```
 
-**Step 2 — enforce the newline, eat `def`.** The decorator and `def` must be on separate lines:
+Zero is rejected because it is the sentinel/marker value `GetTokPrecedence` returns for unknown operators.
+
+**`ParseBinaryOpPrototype`** reads `|`, encodes it as `"binary|"`, runs three redefinition checks, then reads `x` and `y`:
 
 ```cpp
-if (CurTok != tok_eol)
-  return LogErrorF("Expected newline after '@binary(...)' decorator");
-consumeNewlines();
-if (CurTok != tok_def) ...
-getNextToken(); // eat 'def'
+/// binaryopprototype
+///   = customopchar "(" identifier "," identifier ")"
+///
+/// CurTok is on the operator character.
+/// The function is stored internally as "binary<opchar>" (e.g. "binary%"),
+/// which is how BinaryExprAST::codegen() looks it up at call sites.
+static unique_ptr<PrototypeAST> ParseBinaryOpPrototype(unsigned Precedence) {
+    if (!IsCustomOpChar(CurTok))
+        return LogErrorP("Expected operator character in binary operator prototype");
+    char OpChar = (char)CurTok;
+    string FnName = string("binary") + OpChar;  // → "binary|"
+
+    if (IsKnownBinaryOperatorToken(CurTok)) ...  // already a binary op?
+    if (IsKnownUnaryOperatorToken(CurTok))  ...  // already a unary op?
+    if (FunctionProtos.count(FnName))       ...  // encoded name collision?
+
+    getNextToken(); // eat operator char
+    // ... read (x, y) — same as ParsePrototype, expect exactly 2 args ...
+    return make_unique<PrototypeAST>(FnName, ArgNames, true, Precedence);
+}
 ```
 
-**Step 3 — parse the prototype.** `ParseBinaryOpPrototype` reads `|`, encodes it as `"binary|"`, runs three redefinition checks, then reads the two parameter names `x` and `y`:
-
-```cpp
-char OpChar = (char)CurTok;
-string FnName = string("binary") + OpChar;  // → "binary|"
-
-if (IsKnownBinaryOperatorToken(CurTok)) ...  // already a binary op?
-if (IsKnownUnaryOperatorToken(CurTok))  ...  // already a unary op?
-if (FunctionProtos.count(FnName))       ...  // encoded name collision?
-```
-
-`IsCustomOpChar` checks `isascii(Tok) && ispunct(Tok) && Tok != '@'` — ASCII punctuation excluding the decorator marker. The third check is defensive — `binary|` is not a legal Pyxc identifier so it cannot be declared through normal syntax — but it guards against future parser changes.
-
-**Step 4 — parse the body.** Back in `ParseDecoratedDef`, the shared tail reads `:`, `return`, and the body expression — identical to `ParseDefinition`:
-
-```cpp
-if (CurTok != ':') ...
-getNextToken(); // eat ':'
-consumeNewlines();
-if (CurTok != tok_return) ...
-getNextToken(); // eat 'return'
-auto E = ParseExpression();
-return make_unique<FunctionAST>(std::move(Proto), std::move(E));
-```
+`IsCustomOpChar` checks `isascii(Tok) && ispunct(Tok) && Tok != '@'`. The third check is defensive — `binary|` is not a legal Pyxc identifier — but guards against future parser changes.
 
 ### Parsing `@unary def !(v): ...`
 
-When `@` is followed by `unary`, the unary branch runs.
-
-**Step 1 — read the decorator.** `ParseUnaryDecorator` simply eats the `unary` token. There is no precedence argument — unary operators always bind tighter than any binary operator by design.
-
-**Step 2 — enforce the newline, eat `def`.** Same as the binary path.
-
-**Step 3 — parse the prototype.** `ParseUnaryOpPrototype` encodes the name as `"unary!"` and runs the same two redefinition checks, swapped:
+The unary path follows a similar scheme. `ParseUnaryDecorator` simply eats `unary` — no precedence argument, since unary operators always bind tighter than any binary operator by design. Among unary operators themselves, there is no precedence either — `-!x` parses as `-(! x)` because `ParseUnary` recurses into itself, applying operators from the outside in and resolving them inside out. `ParseUnaryOpPrototype` encodes the name as `"unary!"` and runs the same two redefinition checks:
 
 ```cpp
-char OpChar = (char)CurTok;
+if (!IsCustomOpChar(CurTok))
+    return LogErrorP("Expected operator character in unary operator prototype");
+
 string FnName = string("unary") + OpChar;  // → "unary!"
 
 if (IsKnownUnaryOperatorToken(CurTok))  ...  // already a unary op?
 if (IsKnownBinaryOperatorToken(CurTok)) ...  // already a binary op?
 ```
 
-Since unary operators have no precedence, the `PrototypeAST` is created with `Precedence = 0`.
+Since unary operators have no precedence, `PrototypeAST` is created with `Precedence = 0`. Body parsing is identical to the binary path.
 
-**Step 4 — parse the body.** Identical to the binary path.
+## Parsing Unary Expressions
 
-## Using Unary Operators in Expressions
-
-### Unary Minus: A Built-In Special Case
-
-Before dispatching to user-defined unary operators, the parser handles `-` as a dedicated built-in unary operator. `ParseUnaryMinus` eats `-`, parses a full `unaryexpr` operand (so `-!x` works), and builds a `UnaryExprAST` with opcode '-':
+`ParseUnary` is called wherever the grammar expects a `unaryexpr` — as the operand on either side of a binary operator, so `!x + 1` and `f(x) + !y` both work. 
 
 ```cpp
-/// unaryminus
-///   = "-" unaryexpr ;
+static unique_ptr<ExprAST> ParseUnary() {
+  // Primary starters — hand off to ParsePrimary.
+  if (!isascii(CurTok) || CurTok == '(' || isalpha(CurTok) || isdigit(CurTok))
+    return ParsePrimary();
+  // Built-in unary minus.
+  if (CurTok == '-')
+    return ParseUnaryMinus();
+  // ASCII punctuation — treat as a user-defined unary prefix.
+  int Opc = CurTok;
+  getNextToken(); // eat the operator character
+  if (auto Operand = ParseUnary())
+    return make_unique<UnaryExprAST>(Opc, std::move(Operand));
+  return nullptr;
+}
+```
+
+`ParseUnaryMinus` eats `-`, recurses into `ParseUnary` for the operand, and builds a `UnaryExprAST` with opcode `'-'`:
+
+```cpp
 static unique_ptr<ExprAST> ParseUnaryMinus() {
   getNextToken(); // eat '-'
   auto Operand = ParseUnary();
@@ -247,19 +324,7 @@ static unique_ptr<ExprAST> ParseUnaryMinus() {
 }
 ```
 
-During codegen, `UnaryExprAST` treats `-` as a built-in and emits the LLVM IR instruction `fneg`; all other unary opcodes are resolved as user-defined unary<opchar> functions.
-
-### User-Defined Unary Operators
-
-`ParseUnary` sits between `ParseExpression` and `ParsePrimary`. It dispatches on three cases:
-
-1. **Primary starters** (`(`, letter, digit, multi-character tokens) → `ParsePrimary`.
-2. **`-`** → `ParseUnaryMinus` (built-in).
-3. **Any other ASCII punctuation** → treat as a user-defined unary prefix, eat the token, recurse into `ParseUnary` for the operand.
-
-The recursion in case 3 makes unary operators nestable: `!!x` parses as `!(!(x))`, and `-!x` parses as unary-minus applied to `!x`.
-
-`ParseBinOpRHS` calls `ParseUnary` rather than `ParsePrimary` for the right-hand side of every binary operator, so unary operators work in all positions: `!a + 1`, `f(!x)`, and `a * !b` all parse correctly.
+During codegen, `UnaryExprAST` treats `-` as a built-in and emits `fneg`; all other opcodes are resolved as `unary<opchar>` function calls.
 
 ## Code Generation
 
@@ -308,7 +373,7 @@ Value *BinaryExprAST::codegen() {
 }
 ```
 
-Because user-defined operators lower to regular function calls, operands are evaluated eagerly before the call is emitted. There is no short-circuit behavior unless you encode it explicitly in control flow.
+Because user-defined operators lower to regular function calls, operands are evaluated before the call is emitted. As a consequence, user-defined operators cannot have short-circuit functionality.
 
 ### UnaryExprAST::codegen
 
@@ -331,15 +396,18 @@ Value *UnaryExprAST::codegen() {
 }
 ```
 
+The generated IR for `-x` results in a call to LLVM's fneg:
+```llvm
+%negtmp = fneg double %x
+```
+
 The generated IR for `!x` is a regular function call:
 
 ```llvm
 %unop = call double @unary!(double %x)
 ```
 
-No special instruction. The JIT compiles the user-supplied body of `unary!` and calls it here.
-
-For built-in unary minus, codegen emits LLVM’s native negate instruction.
+And if you mix the two:
 Example `-!x`:
 
 ```llvm
@@ -778,9 +846,9 @@ The file then calls `mandel(...)` two more times, zooming into different regions
 
 ## Things Worth Knowing
 
-- **A character is either unary or binary, not both.** Once `|` is defined as binary, it cannot also be defined as unary (and vice-versa). This is enforced at parse time.
+- **An operator is either unary or binary, not both.** Once `|` is defined as binary, it cannot also be defined as unary (and vice-versa). This is enforced at parse time.
 
-- **No operator removal or redefinition within a session.** Once a custom operator is registered, there is no mechanism to remove or reassign it. Restart the REPL to get a clean slate.
+- **Operators cannot be removed or redefined within a session.** Once a custom operator is registered, there is no mechanism to remove or reassign it. Restart the REPL to get a clean slate.
 
 ## What's Next
 
