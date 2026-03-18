@@ -3,12 +3,11 @@ description: "Teach the compiler to read: break source text into tokens the pars
 ---
 # 1. Pyxc: The First Pass
 
-## What We're Building
+## Where We're Headed
 
-By the end of this tutorial, you'll have built a compiler for a Python-like language that compiles to native code and runs directly on your CPU — no interpreter overhead. 
+By the end of this tutorial, you'll have built a compiler for a Python-like language that compiles to native code and runs directly on your CPU — no interpreter overhead.
 
 In the initial chapters, we keep the language small and simple — no `if` conditionals or `for` loops, and only 64-bit floating point types. We will introduce more sophisticated patterns little by little. Here's what we are going to build over the next few chapters:
-
 
 ```python
 # test.pyxc
@@ -28,6 +27,10 @@ By chapter 6, running this file will output:
 ```bash
 1.000000
 ```
+
+## Where We Are
+
+There is no compiler yet — just a blank C++ file. By the end of this chapter, the lexer can read source text and classify every piece of it into tokens. That's what we're building.
 
 ## Source Code
 

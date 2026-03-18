@@ -133,8 +133,8 @@ static map<int, string> TokenNames = [] {
 
   // Single character tokens.
   for (int ch = 0; ch <= 255; ++ch) {
-    if (isprint(static_cast<unsigned char>(ch)))
-      Names[ch] = "'" + string(1, static_cast<char>(ch)) + "'";
+    if (isprint(static_cast<unsigned char>(ch))) // isprint expects unsigned char; int ch can be negative on some platforms
+      Names[ch] = "'" + string(1, static_cast<char>(ch)) + "'"; // string(n, char): needs char, not int
     else if (ch == '\n')
       Names[ch] = "'\\n'";
     else if (ch == '\t')
@@ -180,7 +180,7 @@ To report `(Line 3, Column 8)`, we need to know the line and column as we read c
 
 ### Tracking Position Through advance()
 
-In Chapter 1, the lexer called `getchar()` directly. We introduce `advance()` as a wrapper that keeps a running position:
+In Chapter 1, `advance()` already wrapped `getchar()` to normalize line endings. Here we expand it to also keep a running position:
 
 ```cpp
 struct SourceLocation {
@@ -202,18 +202,15 @@ static int advance() {
     int NextChar = getchar();
     if (NextChar != '\n' && NextChar != EOF)
       ungetc(NextChar, stdin);
-    PyxcSourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
     return '\n';
   }
 
   if (LastChar == '\n') {
-    PyxcSourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
   } else {
-    PyxcSourceMgr.onChar(LastChar);
     LexLoc.Col++;
   }
 
@@ -221,9 +218,9 @@ static int advance() {
 }
 ```
 
-Two things happen here. First, `\r\n` (Windows line endings) is coalesced into a single `\n` — the rest of the lexer never needs to handle `\r`. Second, `LexLoc` is updated: a newline increments the line counter and resets the column to zero; any other character increments the column.
+`LexLoc` is updated on every character: a newline increments the line counter and resets the column to zero; any other character increments the column.
 
-`gettok()` snapshots `LexLoc` into `CurLoc` once, after the whitespace-skip loop but before any token branch:
+`gettok()` snapshots `LexLoc` into `CurLoc` once, after the whitespace-skip loop:
 
 ```cpp
 while (isspace(LastChar) && LastChar != '\n')
@@ -233,15 +230,6 @@ CurLoc = LexLoc;
 ```
 
 This is the position the diagnostics infrastructure uses. Snapshotting here — after skipping whitespace, before consuming the token's characters — means `CurLoc` always points to the first character of the current token.
-
-For `tok_eol`, `LastChar` is `'\n'` which was already consumed by `advance()` in a previous call. At that point `LexLoc` has already advanced to the next line (line counter incremented, column reset to 0). We snapshot `CurLoc = LexLoc` *before* the `'\n'` check, so `CurLoc.Line` is the new (next) line number. `GetDiagnosticAnchorLoc` steps back by one to arrive at the line that just ended:
-
-```cpp
-if (LastChar == '\n') {
-  LastChar = ' ';
-  return tok_eol;
-}
-```
 
 There is one edge case: when `gettok` returns `tok_eol` from the comment path (`#` branch), the snapshot at the top of the function pointed at `#`, not at the newline. We re-snapshot just before returning to get the correct post-newline position:
 
@@ -268,9 +256,7 @@ def bad(x) return
            ^~~~
 ```
 
-we need the actual text of the line. But by the time an error is reported, we may be partway through a different line — the `getchar()` calls are long past the error line.
-
-We solve this by buffering lines as we read. `SourceManager` accumulates characters through `onChar()`, which gets called by `advance()` on every character consumed:
+we need the actual text of the line. We solve this by buffering lines as we read. `SourceManager` accumulates characters through `onChar()`, which gets called by `advance()` on every character consumed:
 
 ```cpp
 class SourceManager {
@@ -308,7 +294,29 @@ public:
 static SourceManager PyxcSourceMgr;
 ```
 
-When a newline arrives, the completed line is appended to `CompletedLines` and `CurrentLine` is reset. `getLine(N)` returns the Nth line (1-based): completed lines come from `CompletedLines`; the line currently being assembled comes from `CurrentLine`.
+Characters accumulate in `CurrentLine` as they are read. When a newline arrives, `CurrentLine` is moved into `CompletedLines` and the `CurrentLine` buffer is reset. `getLine(N)` takes a 1-based line number and returns from `CompletedLines` for finished lines, or from `CurrentLine` for the line still being read.
+
+We integrate `SourceManager` into `advance()`:
+
+```cpp
+  if (LastChar == '\r') {
+    ...
+    PyxcSourceMgr.onChar('\n'); // add this
+    LexLoc.Line++;
+    ...
+  }
+
+  if (LastChar == '\n') {
+    PyxcSourceMgr.onChar('\n'); // add this
+    LexLoc.Line++;
+    LexLoc.Col = 0;
+  } else {
+    PyxcSourceMgr.onChar(LastChar); // add this
+    LexLoc.Col++;
+  }
+```
+
+Every character consumed by the lexer passes through `onChar` before being returned. `SourceManager` sees the whole character stream and builds its line buffer passively — no other part of the lexer needs to know about it.
 
 ### Printing the Caret
 
@@ -357,9 +365,19 @@ static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
 
 For any other token, `CurLoc` is returned as-is.
 
+For `def foo(x)` followed by Enter, this produces:
+
+```
+Error (Line 1, Column 11): Expected ':' in function definition
+def foo(x)
+          ^~~~
+```
+
+The caret lands just past the `)` — exactly where the `:` was missing.
+
 ## Putting It Together: LogError
 
-The three `LogError` overloads now use the location infrastructure:
+`LogError` overloads now use the location infrastructure:
 
 ```cpp
 unique_ptr<ExprAST> LogError(const char *Str) {
@@ -369,24 +387,14 @@ unique_ptr<ExprAST> LogError(const char *Str) {
   PrintErrorSourceContext(Anchor);
   return nullptr;
 }
-
-unique_ptr<PrototypeAST> LogErrorP(const char *Str) {
-  LogError(Str);
-  return nullptr;
-}
-
-unique_ptr<FunctionAST> LogErrorF(const char *Str) {
-  LogError(Str);
-  return nullptr;
-}
 ```
+
+Since the other LogError* functions delegate the error printing to `LogError`, they will get this feature for free.
 
 Every parser error now shows:
 - The location of the bad token (or end of line, for `tok_eol`)
 - The source line
 - A `^~~~` caret
-
-The three overloads exist for the same reason as before: `LogError` returns `nullptr` as `unique_ptr<ExprAST>`, `LogErrorP` as `unique_ptr<PrototypeAST>`, `LogErrorF` as `unique_ptr<FunctionAST>`. C++ can't overload on return type.
 
 ## Error Recovery: tok_error and SynchronizeToLineBoundary
 

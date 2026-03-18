@@ -25,7 +25,7 @@ By the end of this chapter, typing that same function into the REPL gives you:
 
 ```python
 ready> def add(x, y):
-ready>   return x + y
+return x + y
 Parsed a function definition.
 ```
 
@@ -64,16 +64,20 @@ It gets tedious to write grammar rules in plain English. Let's invent a shorthan
 With that shorthand, a function definition becomes:
 
 ```ebnf
-definition = "def" prototype ":" [eols] "return" expression
+definition = "def" prototype ":" [ eols ] "return" expression
 ```
 
-And a prototype (just the signature — name and parameters):
+In plain English: the keyword `def`, then a prototype, then `:`, then optionally one or more newlines, then `return`, then an expression — exactly what we wrote above, just more compact. Notice that `prototype` and `expression` are without quotes — they are themselves rules, not literal text. The grammar is written top-down: we expand on `prototype` and `expression` below, and the full grammar appears at the end of this section.
+
+Here's `prototype` (just the signature — name and parameters):
 
 ```ebnf
 prototype = identifier "(" [ identifier { "," identifier } ] ")"
 ```
 
-And an expression:
+In plain English: a function name (an identifier), then `(`, then optionally one or more comma-separated parameter names (also identifiers), then `)`.
+
+And `expression`:
 
 ```ebnf
 expression = primary { binaryop primary }
@@ -92,6 +96,7 @@ This notation — named rules, `|`, `[ ]`, `{ }` — has a formal name: **EBNF**
 Here's the complete grammar for Pyxc at this stage:
 
 ```ebnf
+(* parser territory *)
 program        = [ eols ] [ top { eols top } ] [ eols ] ;
 eols           = eol { eol } ;
 top            = definition | external | toplevelexpr ;
@@ -106,6 +111,8 @@ identifierexpr = identifier
                  | identifier "(" [ expression { "," expression } ] ")" ;
 numberexpr     = number ;
 parenexpr      = "(" expression ")" ;
+
+(* lexer territory *)
 binaryop       = "+" | "-" | "*" | "<" ;
 identifier     = (letter | "_") { letter | digit | "_" } ;
 number         = digit { digit } [ "." { digit } ]
@@ -128,23 +135,23 @@ A few things to notice:
 
 - `external` is just a prototype with no body — a declaration for something that lives in a C library (like `sin` or `cos`). No body means we're just telling the compiler the name and parameter count.
 
-- `identifierexpr` handles both plain variable references `x`, and function calls `foo(a, b)`. The presence of `(` in the function call is the only difference — and the parser can tell them apart by looking at the very next token.
+- `identifierexpr` handles both plain variable references `x`, and function calls `foo(a, b)`. The parser can tell them apart by the presence of `(` after the identifier. Let's discuss this lookahead concept a little more. 
 
 ### How the Parser Chooses
 
 Look at the rule for `top`:
 
 ```ebnf
-top = definition | external | expression
+top = definition | external | toplevelexpr
 ```
 
 How does the parser know which branch to take? It looks at the current token:
 
 - `def` → must be a `definition`
 - `extern` → must be an `external`
-- anything else → try `expression`
+- anything else → try `expression` 
 
-Each option starts with a different token, so the parser can decide immediately, with just one token of lookahead. This style — where you can always pick the right branch by looking at the next token — is called **top-down, one-token-lookahead** parsing (or LL(1) if you want the textbook name).
+Each option starts with a different token, so the parser can decide immediately, with just one token of lookahead. This style — where you can always pick the right branch by looking at the next token — is called **top-down, one-token-lookahead** parsing (or LL(1) if you want the textbook name). 
 
 ### Avoiding a Pitfall: Left Recursion
 
@@ -163,11 +170,11 @@ The fix is to use iteration instead of recursion:
 expression = primary { binaryop primary }
 ```
 
-"Parse one primary, then loop and grab (operator, primary) pairs until there are no more." Same language, no recursion. Our grammar above always does this.
+"Parse one primary, then loop and grab (operator, primary) pairs until there are no more." Same language, no recursion. Pyxc grammar always does this.
 
 ## Representing Structure
 
-A parser could just *validate* syntax — accept or reject the input — and throw everything away. But we need to *do* something with the code: generate machine instructions, optimize it, run it. So instead of discarding what we parse, we build up a structured representation we can work with later.
+A parser could just *validate* syntax — accept or reject the input — and throw everything away. But we need to *do* something with the code: generate machine instructions, optimize it, run it. So we build up a structured representation we can work with later.
 
 Think about a file system. A directory can contain files and other directories. You can navigate it, count items in it, search it, copy subtrees of it. It's a *tree* — a root node with children, each child potentially having more children, with leaves (files) at the bottom.
 
@@ -181,19 +188,7 @@ multiply (*)
 └── number 2.0
 ```
 
-The multiply node has two children: an add node (which itself has two children) and a number node. The leaves are variables and numbers. The structure — which operation is nested inside which — captures the meaning of the expression without needing the parentheses anymore.
-
-For a full function definition `def add(x, y): return (x + y) * 2`, the structure is:
-
-```
-FunctionAST
-├── PrototypeAST  name="add"  args=["x", "y"]
-└── BinaryExprAST  op='*'
-    ├── BinaryExprAST  op='+'
-    │   ├── VariableExprAST  name="x"
-    │   └── VariableExprAST  name="y"
-    └── NumberExprAST  val=2.0
-```
+The multiply node has two children: an add node (which itself has two children) and a number node. The leaves are variables and numbers. Multiply is the outermost node because it runs last — children are evaluated before their parent, so `a + b` is computed first and its result is passed up to `*`. The structure — which operation is nested inside which — captures the meaning of the expression without needing the parentheses anymore.
 
 We call this an **Abstract Syntax Tree** — "abstract" because we've stripped away the syntax details that were only needed for parsing (like the parentheses and the colon). What remains captures the *meaning* without the noise.
 
@@ -279,6 +274,18 @@ public:
   FunctionAST(unique_ptr<PrototypeAST> Proto, unique_ptr<ExprAST> Body)
       : Proto(std::move(Proto)), Body(std::move(Body)) {}
 };
+```
+
+In terms of AST, for a function definition like `def add(x, y): return (x + y) * 2`, the structure is:
+
+```
+FunctionAST
+├── PrototypeAST  name="add"  args=["x", "y"]
+└── BinaryExprAST  op='*'
+    ├── BinaryExprAST  op='+'
+    │   ├── VariableExprAST  name="x"
+    │   └── VariableExprAST  name="y"
+    └── NumberExprAST  val=2.0
 ```
 
 ## The Parser
@@ -546,13 +553,13 @@ static unique_ptr<PrototypeAST> ParsePrototype() {
 }
 ```
 
-The argument loop uses two `getNextToken()` calls per iteration. The one at the top of the `while` eats `(` on the first iteration and `,` on later ones. The one inside the body eats the identifier and lands on what follows — either `)` to break or `,` to loop again.
+Each `getNextToken()` call consumes the current token and advances to the next. There are three in `ParsePrototype`: the first eats the function name and lands on `(`; the loop condition eats `(` on the first iteration and `,` on later ones, landing on the next identifier or `)`; the one inside the body eats the identifier and lands on what follows — either `)` to break or `,` to continue.
 
 ### Definition
 
 ```cpp
 /// definition
-///   = "def" prototype ":" ["newline"] "return" expression ;
+///   = "def" prototype ":" [ eols ] "return" expression ;
 static unique_ptr<FunctionAST> ParseDefinition() {
   getNextToken(); // eat 'def'
   auto Proto = ParsePrototype();
@@ -579,9 +586,9 @@ static unique_ptr<FunctionAST> ParseDefinition() {
 }
 ```
 
-The newline skip after `:` using `consumeNewLines()` is what makes multi-line definitions work. Without it, the REPL would print `ready>` for the second line, the user types `return x + 1`, but `CurTok` would be `tok_eol` — not `tok_return` — and the parse would fail.
+The newline skip after `:` using `consumeNewlines()` is what makes multi-line definitions work. Without it, the REPL would print `ready>` for the second line, the user types `return x + 1`, but `CurTok` would be `tok_eol` — not `tok_return` — and the parse would fail. Notice there's no `ready>` prompt on the continuation line — the REPL waits silently while `consumeNewlines()` blocks inside the parser, before control returns to `MainLoop`.
 
-`consumeNewLines()` is trivial to implement.
+`consumeNewlines()` is trivial to implement.
 ```cpp
 static void consumeNewlines() {
   while (CurTok == tok_eol)
@@ -603,7 +610,7 @@ static unique_ptr<PrototypeAST> ParseExtern() {
 }
 ```
 
-An `extern` is just a prototype — we're declaring a name and its parameter count so the compiler knows how to call it. The actual implementation lives elsewhere (a C library, or another object file in future chapters).
+An `extern` is just a prototype — we're declaring a name and its parameter count so the compiler knows how to call it. The actual implementation lives elsewhere (a C library, or, when we implement multi-file support, in a different object file). The `def` after `extern` is required to keep the syntax consistent — `extern def` reads as "this is an external definition," parallel to `def` for local ones.
 
 ### Top-Level Expressions
 
@@ -621,7 +628,7 @@ static unique_ptr<FunctionAST> ParseTopLevelExpr() {
 }
 ```
 
-The name `__anon_expr` is a placeholder. In a later chapter when we add JIT execution, we'll look up this function by name and call it to evaluate the expression immediately. Wrapping it in `FunctionAST` now means the rest of the pipeline — code generation, optimization, JIT — doesn't need any special cases for top-level expressions. They can be treated as ordinary functions.
+The name `__anon_expr` is a placeholder we invented - it could be any valid identifier. In a later chapter when we add JIT execution, we'll look up this function by name and call it to evaluate the expression immediately. Wrapping it in `FunctionAST` now means the rest of the pipeline — code generation, optimization, JIT — doesn't need any special cases for top-level expressions. They can be treated as ordinary functions.
 
 ## The Driver
 
@@ -702,14 +709,20 @@ cmake -S . -B build && cmake --build build
 ./build/pyxc
 ```
 
+The `test/` directory has lit tests covering each grammar rule — one file per rule. Browse them for more input examples, or run the suite:
+
+```bash
+llvm-lit code/chapter-02/test/
+```
+
 ## Try It
 
 ```python
 ready> def add(x, y):
-ready>   return x + y
+return x + y
 Parsed a function definition.
 ready> def fib(n):
-ready>   return fib(n-1) + fib(n-2)
+return fib(n-1) + fib(n-2)
 Parsed a function definition.
 ready> extern def sin(x)
 Parsed an extern.
@@ -724,14 +737,10 @@ ready>
 
 The parser accepts valid syntax and rejects invalid syntax with an error message. The REPL keeps running after errors.
 
-## Known Limitations
+## Things Worth Knowing
 
-The TODOs from Chapter 1 are still present:
-
-- `1.2.3` still lexes as `1.2` — the lexer silently drops `.3`, which will confuse the parser
-- Error messages show raw token numbers (`token: -7`) instead of readable names and source locations
-
-Both get fixed in [Chapter 3](chapter-03.md), when we polish the lexer and add proper diagnostics. Now that you've written a few function definitions and hit a few errors, you'll understand exactly *why* `Error (line 3, col 15): Expected ':' near 'return'` is worth the effort.
+- **`1.2.3` silently lexes as `1.2`.** The lexer drops `.3` without complaint. If you type a malformed number, the parser sees a valid number followed by unexpected tokens — the error message won't mention the double decimal point. Fixed in [Chapter 3](chapter-03.md).
+- **Error messages show raw token numbers.** `token: -7` means `tok_return`. [Chapter 3](chapter-03.md) replaces this with readable names and source locations.
 
 ## What's Next
 
