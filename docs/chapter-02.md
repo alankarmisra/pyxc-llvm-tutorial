@@ -42,26 +42,14 @@ cd pyxc-llvm-tutorial/code/chapter-02
 
 Before we can write a parser, we need to write down the rules of the language. What's a valid program? What's a valid function? What's a valid expression?
 
-Let's start informally. A function definition looks like:
+Let's start with one rule in plain English. A function definition looks like:
 
 ```text
 the word "def", then a function name, then a parameter list in parentheses,
 then a colon, then "return", then an expression
 ```
 
-A function call looks like:
-
-```text
-a name, then "(" then zero or more expressions separated by commas, then ")"
-```
-
-An expression is one of:
-- a number
-- a variable name
-- a parenthesized expression
-- two of the above joined by an operator like `+`, `-`, `*`, `<`
-
-That's the informal version. Now let's tighten it up.
+Already verbose for one rule. Now let's tighten it up.
 
 ### A Compact Notation for Grammar Rules
 
@@ -76,7 +64,7 @@ It gets tedious to write grammar rules in plain English. Let's invent a shorthan
 With that shorthand, a function definition becomes:
 
 ```ebnf
-definition = "def" prototype ":" "return" expression
+definition = "def" prototype ":" [eols] "return" expression
 ```
 
 And a prototype (just the signature — name and parameters):
@@ -91,12 +79,10 @@ And an expression:
 expression = primary { binaryop primary }
 ```
 
-Where `primary` is the building block — a number, a variable, or a parenthesized expression:
+Where `primary` is the building block — a variable, a number, or a parenthesized expression:
 
 ```ebnf
-primary = identifier [ "(" [ expression { "," expression } ] ")" ]
-        | number
-        | "(" expression ")"
+primary = identifierexpr | numberexpr | parenexpr ;
 ```
 
 This notation — named rules, `|`, `[ ]`, `{ }` — has a formal name: **EBNF**, short for Extended Backus-Naur Form. It's the standard way grammars are written in programming language textbooks. Now you've seen why it looks the way it does: it's just a compact version of the English description we started with.
@@ -106,42 +92,31 @@ This notation — named rules, `|`, `[ ]`, `{ }` — has a formal name: **EBNF**
 Here's the complete grammar for Pyxc at this stage:
 
 ```ebnf
-program        = [ top { eols top } ] [ eols ] ;
+program        = [ eols ] [ top { eols top } ] [ eols ] ;
 eols           = eol { eol } ;
-
-top            = definition
-               | external
-               | expression ;
-
-definition     = "def" prototype ":" "return" expression ;
+top            = definition | external | toplevelexpr ;
+definition     = "def" prototype ":" [ eols ] "return" expression ;
 external       = "extern" "def" prototype ;
-
+toplevelexpr   = expression ;
 prototype      = identifier "(" [ identifier { "," identifier } ] ")" ;
-
 expression     = primary binoprhs ;
 binoprhs       = { binaryop primary } ;
-
-primary        = identifierexpr
-               | numberexpr
-               | parenexpr ;
-
+primary        = identifierexpr | numberexpr | parenexpr ;
 identifierexpr = identifier
-               | identifier "(" [ expression { "," expression } ] ")" ;
-
+                 | identifier "(" [ expression { "," expression } ] ")" ;
 numberexpr     = number ;
 parenexpr      = "(" expression ")" ;
-
-binaryop       = "<" | "+" | "-" | "*" ;
-
+binaryop       = "+" | "-" | "*" | "<" ;
 identifier     = (letter | "_") { letter | digit | "_" } ;
 number         = digit { digit } [ "." { digit } ]
-               | "." digit { digit } ;
-
+                 | "." digit { digit } ;
 letter         = "A".."Z" | "a".."z" ;
 digit          = "0".."9" ;
 eol            = "\r\n" | "\r" | "\n" ;
-
-(* ws may appear between any two tokens and is ignored by the lexer *)
+(*  
+    `ws` may appear between any two tokens 
+     and is ignored by the lexer.  
+*)
 ws             = " " | "\t" ;
 ```
 
@@ -153,9 +128,7 @@ A few things to notice:
 
 - `external` is just a prototype with no body — a declaration for something that lives in a C library (like `sin` or `cos`). No body means we're just telling the compiler the name and parameter count.
 
-- `binoprhs` is named explicitly because it maps directly to a function called `ParseBinOpRHS`. It means "zero or more (operator, primary) pairs following the first primary." The name will make sense when we see the code.
-
-- `identifierexpr` handles both plain variable references (`x`) and function calls (`foo(a, b)`). The presence of `(` is the only difference — and the parser can tell them apart by looking at the very next token.
+- `identifierexpr` handles both plain variable references `x`, and function calls `foo(a, b)`. The presence of `(` in the function call is the only difference — and the parser can tell them apart by looking at the very next token.
 
 ### How the Parser Chooses
 
@@ -179,12 +152,12 @@ There's a rule you can't write for a top-down parser: a rule that starts with it
 
 ```ebnf
 (* DON'T DO THIS *)
-expression = expression binaryop primary
+expression = expression binaryop primary | primary
 ```
 
 The parser would try to parse `expression`, which requires parsing `expression`, which requires parsing `expression`... infinite recursion, immediate crash.
 
-The fix is to use `{ ... }` (iteration) instead of recursion:
+The fix is to use iteration instead of recursion:
 
 ```ebnf
 expression = primary { binaryop primary }
@@ -338,7 +311,7 @@ unique_ptr<PrototypeAST> LogErrorP(const char *Str) { LogError(Str); return null
 unique_ptr<FunctionAST>  LogErrorF(const char *Str) { LogError(Str); return nullptr; }
 ```
 
-The `ready>` at the end keeps the REPL prompt in sync. If a parse error occurs on a non-printing token (like a bare newline), the main loop won't print a new prompt — so we print it here. Chapter 3 replaces the raw token number with a readable token name and source location.
+The `ready>` at the end keeps the REPL prompt in sync. If a parse error occurs on a non-printing token (like a bare newline), the main loop won't print a new prompt — so we print it here. [Chapter 3](chapter-03.md) replaces the raw token number with a readable token name and source location.
 
 ### Operator Precedence
 
@@ -590,11 +563,11 @@ static unique_ptr<FunctionAST> ParseDefinition() {
     return LogErrorF("Expected ':' in function definition");
   getNextToken(); // eat ':'
 
-  // Skip newlines between ':' and 'return'. This lets you write:
+  // Skip any newlines between ':' and 'return'. This allows the body to be
+  // written on the next line:
   //   def foo(x):
   //     return x + 1
-  while (CurTok == tok_eol)
-    getNextToken();
+  consumeNewlines();
 
   if (CurTok != tok_return)
     return LogErrorF("Expected 'return' in function body");
@@ -606,7 +579,15 @@ static unique_ptr<FunctionAST> ParseDefinition() {
 }
 ```
 
-The newline skip after `:` is what makes multi-line definitions work. Without it, the REPL would print `ready>` for the second line, the user types `return x + 1`, but `CurTok` would be `tok_eol` — not `tok_return` — and the parse would fail.
+The newline skip after `:` using `consumeNewLines()` is what makes multi-line definitions work. Without it, the REPL would print `ready>` for the second line, the user types `return x + 1`, but `CurTok` would be `tok_eol` — not `tok_return` — and the parse would fail.
+
+`consumeNewLines()` is trivial to implement.
+```cpp
+static void consumeNewlines() {
+  while (CurTok == tok_eol)
+    getNextToken();
+}
+```
 
 ### Extern Declarations
 
@@ -622,7 +603,7 @@ static unique_ptr<PrototypeAST> ParseExtern() {
 }
 ```
 
-An `extern` is just a prototype — we're declaring a name and its parameter count so the compiler knows how to call it. The actual implementation lives elsewhere (a C library, another object file).
+An `extern` is just a prototype — we're declaring a name and its parameter count so the compiler knows how to call it. The actual implementation lives elsewhere (a C library, or another object file in future chapters).
 
 ### Top-Level Expressions
 
@@ -640,7 +621,7 @@ static unique_ptr<FunctionAST> ParseTopLevelExpr() {
 }
 ```
 
-The name `__anon_expr` is a placeholder. In a later chapter when we add JIT execution, we'll look up this function by name and call it to evaluate the expression immediately. Wrapping it in `FunctionAST` now means the rest of the pipeline — code generation, optimization, JIT — doesn't need any special cases for top-level expressions.
+The name `__anon_expr` is a placeholder. In a later chapter when we add JIT execution, we'll look up this function by name and call it to evaluate the expression immediately. Wrapping it in `FunctionAST` now means the rest of the pipeline — code generation, optimization, JIT — doesn't need any special cases for top-level expressions. They can be treated as ordinary functions.
 
 ## The Driver
 
@@ -750,11 +731,11 @@ The TODOs from Chapter 1 are still present:
 - `1.2.3` still lexes as `1.2` — the lexer silently drops `.3`, which will confuse the parser
 - Error messages show raw token numbers (`token: -7`) instead of readable names and source locations
 
-Both get fixed in Chapter 3, when we polish the lexer and add proper diagnostics. Now that you've written a few function definitions and hit a few errors, you'll understand exactly *why* `Error (line 3, col 15): Expected ':' near 'return'` is worth the effort.
+Both get fixed in [Chapter 3](chapter-03.md), when we polish the lexer and add proper diagnostics. Now that you've written a few function definitions and hit a few errors, you'll understand exactly *why* `Error (line 3, col 15): Expected ':' near 'return'` is worth the effort.
 
 ## What's Next
 
-The parser understands the structure of Pyxc code and builds a tree of objects representing it. But before we hook this up to LLVM and generate real machine code, Chapter 3 revisits the lexer: readable error messages, source locations, and the keyword map. The parser you have works — Chapter 3 makes it pleasant to use.
+The parser understands the structure of Pyxc code and builds a tree of objects representing it. But before we hook this up to LLVM and generate real machine code, [Chapter 3](chapter-03.md) revisits the lexer: readable error messages, source locations, and the keyword map. The parser you have works — [Chapter 3](chapter-03.md) makes it pleasant to use.
 
 ## Need Help?
 

@@ -1,7 +1,7 @@
 ---
 description: "Teach the compiler to read: break source text into tokens the parser can work with."
 ---
-# 1. Pyxc: Reading Source Code
+# 1. Pyxc: The First Pass
 
 ## What We're Building
 
@@ -232,9 +232,81 @@ If the comment runs all the way to `EOF` with no newline, `LastChar` is `EOF` an
 
 If we haven't matched anything else, it's a single character — `+`, `(`, `:`, etc. We return its ASCII value directly. The parser will compare against character literals like `'+'` or `'('`.
 
+## The Driver
+
+To run the lexer we need two things: a way to print what each token is, and a `main()` that drives the loop.
+
+`TokenNames` maps each named token to a readable string:
+
+```cpp
+static map<int, string> TokenNames = {
+    {tok_eof,        "tok_eof"},
+    {tok_eol,        "tok_eol"},
+    {tok_def,        "tok_def"},
+    {tok_extern,     "tok_extern"},
+    {tok_identifier, "tok_identifier"},
+    {tok_number,     "tok_number"},
+    {tok_return,     "tok_return"},
+};
+```
+
+In Chapter 3, `TokenNames` grows to cover every possible token — including single-character ones like `+` and `(` — with friendlier names for error messages.
+
+`main()` calls `gettok()` in a loop and prints each token:
+
+```cpp
+int main() {
+  int tok;
+  while ((tok = gettok()) != tok_eof) {
+    if (tok == tok_identifier)
+      fprintf(stdout, "tok_identifier: %s\n", IdentifierStr.c_str());
+    else if (tok == tok_number)
+      fprintf(stdout, "tok_number: %g\n", NumVal);
+    else if (tok < 0)
+      fprintf(stdout, "%s\n", TokenNames[tok].c_str());
+    else
+      fprintf(stdout, "'%c'\n", (char)tok);
+  }
+  return 0;
+}
+```
+
+`tok_identifier` and `tok_number` are handled separately because the token integer alone isn't enough — the associated payload (`IdentifierStr` and `NumVal`) needs to be printed too. All other named tokens go through `TokenNames`. Single-character tokens (positive ASCII values) print as `'c'`.
+
+## Build and Run
+
+```bash
+cd code/chapter-01
+cmake -S . -B build && cmake --build build
+printf "def add(x, y):\n    return x + y\n" | ./build/pyxc
+```
+
+```
+tok_def
+tok_identifier: add
+'('
+tok_identifier: x
+','
+tok_identifier: y
+')'
+':'
+tok_eol
+tok_return
+tok_identifier: x
+'+'
+tok_identifier: y
+tok_eol
+```
+
+The `test/` directory has lit tests covering each token type — one file per rule. Browse them for more input examples, or run the suite:
+
+```bash
+llvm-lit code/chapter-01/test/
+```
+
 ## What's Next
 
-This file has no `main()` — it's purely the lexer: the `Token` enum, two globals, `advance()`, and `gettok()`. In [Chapter 2](chapter-02.md) we'll add the parser alongside a simple driver so we can actually run something for the first time. The parser will read the token stream and work out the structure — that `def add(x, y)` is a function taking two arguments, that `x + y` is an addition.
+In [Chapter 2](chapter-02.md) we build the parser on top of the lexer. The parser reads the token stream and works out the structure — that `def add(x, y)` is a function taking two arguments, that `x + y` is an addition.
 
 ## Need Help?
 

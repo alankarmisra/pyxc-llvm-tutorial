@@ -1,6 +1,6 @@
-
 #include <cctype>
 #include <cstdio>
+#include <map>
 #include <string>
 
 using namespace std;
@@ -30,6 +30,19 @@ enum Token {
 static string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;        // Filled in if tok_number
 
+// TokenNames maps each named token to a readable string for debug output. In
+// Chapter 3, this map is expanded to cover single-character tokens too, with
+// friendlier names for error messages.
+static map<int, string> TokenNames = {
+    {tok_eof, "tok_eof"},
+    {tok_eol, "tok_eol"},
+    {tok_def, "tok_def"},
+    {tok_extern, "tok_extern"},
+    {tok_identifier, "tok_identifier"},
+    {tok_number, "tok_number"},
+    {tok_return, "tok_return"},
+};
+
 /// advance - returns the next character, coalescing `\r\n` (Windows) into `\n`
 /// and converting bare `\r` (Old Macs) into `\n`.
 int advance() {
@@ -48,12 +61,15 @@ int advance() {
 int gettok() {
   static int LastChar = ' ';
 
-  // Skip horizontal whitespace. Stop at '\n' — that becomes tok_eol.
+  // Skip whitespace EXCEPT newlines
   while (isspace(LastChar) && LastChar != '\n')
     LastChar = advance();
 
   // Check for newline.
   if (LastChar == '\n') {
+    // Don't try and read the next character. This will stall the REPL.
+    // Just reset LastChar to a space which will force a new character
+    // advance in the next call.
     LastChar = ' ';
     return tok_eol;
   }
@@ -109,4 +125,23 @@ int gettok() {
   int ThisChar = LastChar;
   LastChar = advance();
   return ThisChar;
+}
+
+//===----------------------------------------===//
+// Driver
+//===----------------------------------------===//
+
+int main() {
+  int tok;
+  while ((tok = gettok()) != tok_eof) {
+    if (tok == tok_identifier)
+      fprintf(stdout, "tok_identifier: %s\n", IdentifierStr.c_str());
+    else if (tok == tok_number)
+      fprintf(stdout, "tok_number: %g\n", NumVal);
+    else if (tok < 0)
+      fprintf(stdout, "%s\n", TokenNames[tok].c_str());
+    else
+      fprintf(stdout, "'%c'\n", (char)tok);
+  }
+  return 0;
 }
