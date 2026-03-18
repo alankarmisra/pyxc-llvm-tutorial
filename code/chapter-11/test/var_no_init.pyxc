@@ -1,0 +1,12 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Parsed a function definition.
+# CHECK: Evaluated to 0.000000
+
+# Tests: var without an initializer defaults to 0.0.
+# varbinding = identifier [ "=" expression ] ;
+
+def f():
+    var x
+    return x
+
+f()

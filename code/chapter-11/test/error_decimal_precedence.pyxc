@@ -1,0 +1,11 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Precedence must be an integer, not a decimal literal
+
+
+# Tests: a decimal precedence value in @binary(...) is rejected.
+# binarydecorator = "@" "binary" "(" integer ")"
+# integer = digit { digit }   (no "." allowed)
+# ParseBinaryDecorator detects the decimal point in NumLiteralStr.
+
+@binary(1.5)
+def %(x, y): return x - y

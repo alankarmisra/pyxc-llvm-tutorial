@@ -29,34 +29,46 @@ By the end, you'll have a working language that:
 
 **Chapters 4-5** set up LLVM and connect the AST to real code generation.
 
-**Chapters 6+** add language features: expressions, blocks, comparisons, control flow (`if`/`while`), mutable variables, and eventually optimization, debug info, and native executables.
+**Chapters 6–11** add language features: JIT evaluation, file input, control flow (`if`/`for`), user-defined operators, mutable variables, and real statement blocks with Python-style indentation.
 
-Here's a preview of what Pyxc will look like with those features:
+**Chapters 12–15** turn Pyxc into a real toolchain: a proper CLI with subcommands and emit modes, object file output, native executable linking, and DWARF debug info for source-level debugging.
+
+**Chapters 16–20** add a type system, structs, pointers, C interop, and `while` loops — culminating in the full Mandelbrot renderer from this page's preview.
+
+Here's what Pyxc looks like after chapter 11 — everything below runs today:
 
 ```python
-struct Complex:
-    re: double
-    im: double
+extern def printd(x)
 
-def mandel_escape(c: Complex, max_iter: int) -> int:
-    z_re: double = 0.0
-    z_im: double = 0.0
-    i: int = 0
+@binary(6)
+def ^(base, exp):
+    var result = 1
+    for i = 1, i <= exp, 1:
+        result = result * base
+    return result
 
-    while i < max_iter:
-        next_re: double = z_re * z_re - z_im * z_im + c.re
-        next_im: double = 2.0 * z_re * z_im + c.im
-        z_re = next_re
-        z_im = next_im
+def fib(n):
+    if n <= 1: return n
+    return fib(n - 1) + fib(n - 2)
 
-        if z_re * z_re + z_im * z_im > 4.0:
-            return i
-        i = i + 1
+def collatz(n):
+    var steps = 0
+    var x = n
+    for i = 1, x != 1, 1:
+        var half = x * 0.5
+        if half * 2 == x:
+            x = half
+        else:
+            x = x * 3 + 1
+        steps = steps + 1
+    return steps
 
-    return max_iter
+printd(fib(10))        # 55
+printd(2 ^ 10)         # 1024
+printd(collatz(27))    # 111
 ```
 
-Notice the comparison operators (`<`, `>`), equality check (`==`), and control flow (`while`, `if`)? Those are now introduced early. Richer types (`int`, `Complex`, structs) come later.
+Further ahead: richer types, structs, a type system, and a complete native toolchain.
 
 ## Credits
 
@@ -105,21 +117,31 @@ Each chapter builds on the previous one. You can:
 
 **[Chapter 10: Mutable Variables](chapter-10.md)** — Add mutable local variables and assignment using a temporary `var ... :` expression form backed by allocas, loads, and stores.
 
+**[Chapter 11: Statement Blocks](chapter-11.md)** — Replace single-expression bodies with real statement blocks. `if`, `for`, `var`, and `return` become statements. The lexer emits `INDENT`/`DEDENT` tokens and the language becomes indentation-sensitive.
+
 <!--
-
-**[Chapter 11: Statement Blocks](chapter-11.md)** — Replace single-expression function bodies with real block bodies and standalone `return`/assignment lines.
-
-**[Chapter 12: Indentation Blocks](chapter-12.md)** — Replace temporary block guardrails with Python-style indentation using `INDENT`/`DEDENT` tokens.
 
 ### Toolchain
 
-**[Chapter 13: Object Files](chapter-13.md)** — Generate `.o` files with proper optimization levels.
+**[Chapter 12: Driver and Modes](chapter-12.md)** — Add `repl`, `run`, and `build` subcommands. Add `--emit tokens|llvm-ir` flags. Keep REPL behavior intact.
 
-**[Chapter 14: Debug Information](chapter-14.md)** — Add DWARF debug info for source-level debugging with lldb.
+**[Chapter 13: Object Files](chapter-13.md)** — Set up a `TargetMachine`, add `--emit obj` to `build`, honor `-O0`..`-O3`. Output `.o` files.
 
-**[Chapter 15: Native Executables](chapter-15.md)** — Link object files into native executables using LLVM's linker.
+**[Chapter 14: Native Executables](chapter-14.md)** — Add `--emit link` (default for `build`), link `.o` + runtime into a native executable, add `-o` for output path.
 
-**[Chapter 16: Linking Under the Hood](chapter-16.md)** — Use `nm` and `objdump` to inspect symbol resolution and relocation.
+**[Chapter 15: Debug Information](chapter-15.md)** — Add `-g` with `DIBuilder`, emit DWARF into `.o` and executables. Use `nm` and `objdump` to inspect symbols and relocations.
+
+### Types, Structs, and Full C Interop
+
+**[Chapter 16: Types and Typed Variables](chapter-16.md)** — Introduce a type system (`int`, `double`, `void`). Add typed parameters and return types (`def f(x: int) -> int`), typed locals (`x: int = 0`), and basic type checking and casts.
+
+**[Chapter 17: Structs and Field Access](chapter-17.md)** — Add `struct` definitions, field layout and offsets, and `.` access for both lvalue and rvalue.
+
+**[Chapter 18: Pointers and Address-Of](chapter-18.md)** — Add `ptr[T]`, `addr(x)` / `&x`, and pointer indexing `p[i]`.
+
+**[Chapter 19: Strings and C Interop](chapter-19.md)** — Add string literals and extern declarations for libc (`printf`, `fopen`, `fputs`, `scanf`). Add `malloc[T]` and `free`.
+
+**[Chapter 20: While Loops and the Full Mandelbrot](chapter-20.md)** — Add `while`. Build the full Mandelbrot renderer using structs, pointers, and I/O — the complete program shown in this tutorial's preview.
 -->
 
 ## What You'll Learn

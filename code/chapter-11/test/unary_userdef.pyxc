@@ -1,0 +1,22 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Parsed a user-defined operator.
+# CHECK: Evaluated to 1.000000
+# CHECK: Evaluated to 0.000000
+
+
+# Tests: user-defined unary operator definition and use in an expression.
+# decorateddef   = unarydecorator eols "def" unaryopprototype ":" ...
+# unarydecorator = "@" "unary"
+# userdefunaryop = ? any opchar defined as a custom unary operator ?
+
+@unary
+def !(x):
+    if x == 0:
+        return 1
+    else:
+        return 0
+
+# Logical NOT: !0 = 1 (zero is false), !5 = 0 (non-zero is true).
+!0
+
+!5
