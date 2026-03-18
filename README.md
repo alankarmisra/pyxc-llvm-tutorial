@@ -79,6 +79,54 @@ def mandel_escape(c: Complex, max_iter: int) -> int:
             return i
         i = i + 1
     return max_iter
+
+def main() -> i32:
+    width: int = 120
+    height: int = 48
+    max_iter: int = 64
+
+    printf("max_iter (e.g. 64): ")
+    scanf("%d", addr(max_iter))
+    if max_iter < 1:
+        max_iter = 64
+
+    out: ptr[void] = fopen("mandel.pbm", "w")
+
+    # PBM header
+    fputs("P1\n", out)
+    fputs("120 48\n", out)
+
+    # reusable 3-byte pixel buffer: "1 \0" or "0 \0"
+    pix: ptr[i8] = malloc[i8](3)
+    pix[1] = 32   # ' '
+    pix[2] = 0
+
+    y: int = 0
+    while y < height:
+        x: int = 0
+        while x < width:
+            c: Complex
+            c.re = -2.2 + 3.2 * x / width
+            c.im = -1.2 + 2.4 * y / height
+            it: int = mandel_escape(c, max_iter)
+            if it == max_iter:
+                pix[0] = 49  # '1'
+            else:
+                pix[0] = 48  # '0'
+            fputs(pix, out)
+            x = x + 1
+        pix[0] = 10  # '\n'
+        pix[1] = 0
+        fputs(pix, out)
+        pix[1] = 32
+        y = y + 1
+
+    free(pix)
+    fclose(out)
+    printf("wrote mandel.pbm\n")
+    return 0
+
+main()
 ```
 
 ## Build and Run
