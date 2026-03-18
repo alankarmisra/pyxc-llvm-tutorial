@@ -1,0 +1,18 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Parsed a function definition.
+# CHECK: Evaluated to 15.000000
+# CHECK: Evaluated to 10.000000
+
+
+# Tests: if/else used as a subexpression — its result is consumed as an
+# operand to a binary operator in a larger expression.
+# conditionalexpr is a primary, so it can appear anywhere a primary can.
+#
+# bonus(10, 1): 10 + 5 = 15  (flag is true)
+# bonus(10, 0): 10 + 0 = 10  (flag is false)
+
+def bonus(x, flag): return x + if flag: 5 else: 0
+
+bonus(10, 1)
+
+bonus(10, 0)

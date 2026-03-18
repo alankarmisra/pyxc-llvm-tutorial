@@ -1,0 +1,23 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Parsed an extern.
+# CHECK: Parsed a function definition.
+# CHECK: 11.000000
+# CHECK: 12.000000
+# CHECK: 21.000000
+# CHECK: 22.000000
+
+
+# Tests: nested for loops — the body of the outer for is itself a for expression.
+# forexpr = "for" identifier "=" expression "," expression "," expression ":" [ eols ] expression
+#
+# grid(2, 2): outer i=1,2; inner j=1,2 each pass.
+# printd(i * 10 + j) produces 11, 12, 21, 22.
+
+extern def printd(x)
+
+def grid(m, n):
+    return for i = 1, i <= m, 1:
+               for j = 1, j <= n, 1:
+                   printd(i * 10 + j)
+
+grid(2, 2)

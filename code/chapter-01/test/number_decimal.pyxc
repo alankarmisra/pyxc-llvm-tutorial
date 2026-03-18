@@ -1,0 +1,4 @@
+# RUN: %pyxc < %s | grep -q "tok_number: 3.14"
+
+# number: decimal input round-trips correctly through strtod/%g
+3.14

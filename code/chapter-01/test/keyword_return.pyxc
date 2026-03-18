@@ -1,0 +1,4 @@
+# RUN: %pyxc < %s | grep -q "tok_return"
+
+# keyword: 'return' must be recognised as tok_return, not tok_identifier
+return

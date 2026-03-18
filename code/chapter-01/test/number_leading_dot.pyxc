@@ -1,0 +1,4 @@
+# RUN: %pyxc < %s | grep -q "tok_number: 0.5"
+
+# number: leading-dot form (.5) is accepted and normalised to 0.5
+.5

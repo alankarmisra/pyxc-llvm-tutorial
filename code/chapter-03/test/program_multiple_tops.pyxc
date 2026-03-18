@@ -1,0 +1,17 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -c "Parsed a function definition." %t | grep -q "2"
+# RUN: grep -q "Parsed an extern." %t
+# RUN: grep -q "Parsed a top-level expression." %t
+
+# program: multiple top-level items separated by single and multiple blank lines
+# also exercises eols = eol { eol }
+def foo(x):
+  return x + 1
+
+
+def bar(x, y):
+  return x + y
+
+extern def sin(x)
+
+1 + 2

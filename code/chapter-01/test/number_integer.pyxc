@@ -1,0 +1,4 @@
+# RUN: %pyxc < %s | grep -q "tok_number: 42"
+
+# number: integer input is stored as double, printed without trailing zeros
+42

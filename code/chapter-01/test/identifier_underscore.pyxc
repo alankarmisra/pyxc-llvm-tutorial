@@ -1,0 +1,6 @@
+# RUN: %pyxc < %s | grep -q "tok_identifier: _foo"
+# RUN: %pyxc < %s | grep -q "tok_identifier: foo_bar"
+
+# identifier: leading underscore and embedded underscore are both valid
+_foo
+foo_bar

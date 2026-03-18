@@ -1,0 +1,4 @@
+# RUN: %pyxc < %s | grep -q "tok_def"
+
+# keyword: 'def' must be recognised as tok_def, not tok_identifier
+def

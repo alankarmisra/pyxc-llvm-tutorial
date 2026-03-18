@@ -1,0 +1,21 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Parsed an extern.
+# CHECK: Parsed a function definition.
+# CHECK: 1.000000
+# CHECK: 2.000000
+# CHECK: Evaluated to 0.000000
+
+
+# Tests: the for loop variable shadows a same-named function parameter inside
+# the loop body. If shadowing is broken, the loop condition would see the
+# parameter value (99) on the first check and never enter the body.
+# The for expression always returns 0.0.
+# forexpr = "for" identifier "=" expression "," expression "," expression ":" [ eols ] expression
+
+extern def printd(x)
+
+def shadow_test(i):
+    return for i = 1, i <= 2, 1:
+               printd(i)
+
+shadow_test(99)

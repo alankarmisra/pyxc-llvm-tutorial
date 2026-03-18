@@ -1,0 +1,3 @@
+# RUN: %pyxc < %s
+
+# comment: file ending with a comment and no trailing newline must not hang or crash

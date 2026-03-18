@@ -1,0 +1,18 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Parsed an extern.
+# CHECK: Parsed a function definition.
+# CHECK: 1.000000
+# CHECK: 3.000000
+# CHECK: 5.000000
+
+
+# Tests: for loop with a step value greater than 1.
+# forexpr = "for" identifier "=" expression "," expression "," expression ":" [ eols ] expression
+#
+# odds(5): i=1 (print), i=3 (print), i=5 (print), i=7 (7<=5 false, stop).
+
+extern def printd(x)
+
+def odds(n): return for i = 1, i <= n, 2: printd(i)
+
+odds(5)

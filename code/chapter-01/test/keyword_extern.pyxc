@@ -1,0 +1,4 @@
+# RUN: %pyxc < %s | grep -q "tok_extern"
+
+# keyword: 'extern' must be recognised as tok_extern, not tok_identifier
+extern
