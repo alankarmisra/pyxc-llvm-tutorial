@@ -389,7 +389,7 @@ unique_ptr<ExprAST> LogError(const char *Str) {
 }
 ```
 
-Since the other LogError* functions delegate the error printing to `LogError`, they will get this feature for free.
+Since `LogErrorP` and `LogErrorF` delegate to `LogError`, they get this for free.
 
 Every parser error now shows:
 - The location of the bad token (or end of line, for `tok_eol`)
@@ -446,6 +446,14 @@ cd code/chapter-03
 cmake -S . -B build && cmake --build build
 ./build/pyxc
 ```
+
+## Tests
+
+```bash
+llvm-lit code/chapter-03/test/
+```
+
+The test suite covers the error cases introduced in this chapter — malformed numbers, missing colons, bad separators — as well as location accuracy across sequential lines, comments, and recovery after an error. Peek into `code/chapter-03/test/` for examples.
 
 ## Try It
 
