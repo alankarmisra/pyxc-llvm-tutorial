@@ -20,7 +20,7 @@ def bad(x) return
            ^~~~
 ```
 
-Line number. Column number. The source line. A caret pointing at the problem. That's a real error message. The `(token: -4)` is a raw enum value. It means nothing to someone who didn't write the lexer. 
+Line number. Column number. The source line. A caret pointing at the problem. That's a real error message. The `(token: -7)` is a raw enum value. It means nothing to someone who didn't write the lexer. 
 
 And if you mistype a number —
 
@@ -481,6 +481,10 @@ A few things to notice:
 - `1.2.3` is caught in the lexer now. The error fires before the parser ever sees the token.
 - `def bad(x) return x` — the caret points at the space before `return`, the position where `:` was expected.
 - `def missing_colon(x)` — the caret points just past the closing `)`, where `:` should have appeared. That's `GetDiagnosticAnchorLoc` at work: `CurLoc` for `tok_eol` is on the next line, so the function steps back by one and points to the end of the line that just ended.
+
+## Things Worth Knowing
+
+- **`tok_error` is handled in `MainLoop`, not in the parse functions.** When the lexer returns `tok_error`, `MainLoop` intercepts it and calls `SynchronizeToLineBoundary()` without forwarding to any `Handle*` function — by that point the lexer has already printed the error, so the parser has nothing to add.
 
 ## What's Next
 

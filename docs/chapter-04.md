@@ -3,9 +3,11 @@ description: "Build LLVM from source with everything you need: clang, lld, lldb,
 ---
 # 4. Pyxc: Building LLVM from Source
 
-## Why Build from Source?
+## Where We Are
 
-Early chapters can use a pre-built LLVM (`brew install llvm` on macOS). But once we start building real executables and linking, we need:
+The compiler from Chapter 3 can parse Pyxc and report errors with source locations. To turn the AST into machine code, we need LLVM — and we need the right build of it.
+
+We could use a [pre-built LLVM package](https://releases.llvm.org/download.html) for now. But once we start building real executables and linking, we need:
 
 - **lld** - LLVM's linker
 - **clangd** - Language server for IDE support
@@ -39,14 +41,15 @@ All the tools we need in one place.
 **Build time:** 30-60 minutes (depends on your machine)
 **Disk space:** ~15 GB for the build, ~3 GB for the install
 
-If that's too much, stick with pre-built LLVM for now. You can always build from source later when you need it.
+If that's too much, stick with [pre-built LLVM package](https://releases.llvm.org/download.html) for now. You can always build from source later when you need it.
 
 ## Prerequisites
 
 You need:
 1. A C++ compiler
-2. CMake
-3. Ninja (fast build system)
+2. [CMake](https://cmake.org/)
+3. [Ninja](https://ninja-build.org/)
+4. Python 3 (`llvm-lit` is a Python script)
 
 ### macOS
 
@@ -75,8 +78,8 @@ sudo dnf install gcc-c++ cmake ninja-build
 
 Install:
 1. Visual Studio Build Tools (C++ workload)
-2. CMake (from cmake.org)
-3. Ninja (from ninja-build.org)
+2. [CMake](https://cmake.org/)
+3. [Ninja](https://ninja-build.org/)
 
 Add both to your `PATH`.
 
@@ -103,7 +106,7 @@ You can skip this for now and come back if you hit errors.
 
 ## Step 1: Clone LLVM
 
-We'll build LLVM 21.1.6 (latest stable release as of writing):
+We'll build LLVM 21.1.6 (stable release at time of writing — check the [LLVM releases page](https://github.com/llvm/llvm-project/releases) for newer tags):
 
 ```bash
 git clone --depth 1 --branch llvmorg-21.1.6 https://github.com/llvm/llvm-project.git
@@ -190,6 +193,12 @@ ls ~/llvm-21-with-clang-lld-lldb/bin
 
 You should see: `clang`, `clang++`, `lld`, `lldb`, `llvm-config`, `lit`, and more.
 
+Once the install is done, you can delete the `build/` directory to reclaim the ~15 GB of build artifacts:
+
+```bash
+cd .. && rm -rf build
+```
+
 ## Step 5: Update Your PATH
 
 Add LLVM to your `PATH` so the system finds it first:
@@ -243,6 +252,9 @@ clang --version
 
 llvm-config --version
 # Should show: 21.1.6
+
+lit --version
+# Should show: lit 21.1.6
 ```
 
 If it shows a different version (like system clang), your `PATH` isn't set correctly. Fix that before continuing.
@@ -276,15 +288,23 @@ If you're using VS Code, point it to your new `clangd`:
 ### Install the clangd Extension
 
 1. Open VS Code
-2. Install the "clangd" extension (disable C/C++ extension to avoid conflicts)
+2. Install the "clangd" extension (disable the C/C++ extension if you see conflicts)
 
 ### Configure clangd Path
 
 Add to `.vscode/settings.json` in your project:
 
+**macOS / Linux:**
 ```json
 {
   "clangd.path": "/Users/yourname/llvm-21-with-clang-lld-lldb/bin/clangd"
+}
+```
+
+**Windows:**
+```json
+{
+  "clangd.path": "C:\\Users\\yourname\\llvm-21-with-clang-lld-lldb\\bin\\clangd.exe"
 }
 ```
 
@@ -346,22 +366,7 @@ If that fails, download Ninja and add its directory to `PATH` in System Environm
 
 ## What's Next
 
-You now have a full LLVM toolchain. In the next chapters, we'll use:
-- **clang** to compile C code
-- **lld** to link executables
-- **llvm-config** to find LLVM libraries
-- **lit** to run tests
-
-Back to building the language!
-
-## Summary
-
-You installed:
-- LLVM 21.1.6 with clang, clangd, lld, lldb
-- Updated `PATH` and `LLVM_DIR`
-- (Optional) Configured VS Code with clangd
-
-Total time: ~1 hour (mostly waiting for the build).
+LLVM is installed. In Chapter 5, we connect it to the parser: walk the AST and emit LLVM IR for the first time. A function definition becomes a real machine-code function.
 
 ## Need Help?
 
