@@ -43,7 +43,7 @@ entry:
 The same flag works in the REPL:
 <!-- code-merge:start -->
 ```bash
-$ build/pyxc-v
+$ build/pyxc -v
 ```
 ```python
 ready> def add(x, y): return x + y
@@ -68,7 +68,7 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-07
 ```
 
-## One FILE* for Both Modes
+## One `FILE*` for Both Modes
 
 The key insight is that `fgetc` doesn't care whether it reads from a terminal or a file — it just reads the next character from a `FILE*`. If we make the lexer's character source a `FILE*` variable instead of always using `stdin`, file mode is essentially free.
 
@@ -90,7 +90,7 @@ That's the whole mechanism. One variable swap, and the existing lexer handles bo
 
 ## Command-Line Parsing with LLVM's cl::
 
-Chapter 6 added a `-O` switch to control the optimisation level. This chapter adds two more: a positional filename argument `InputFile` that makes `pyxc` run a source file instead of starting the REPL, and a `-v` flag, internally represented as `VerboseIR` that prints the generated IR to stderr.
+Chapter 6 added a `-O` switch to control the optimisation level. This chapter adds two more: a positional filename argument `InputFile` that makes `pyxc` run a source file instead of starting the REPL, and a `-v` flag internally represented as `VerboseIR` that prints the generated IR to stderr.
 
 **InputFile** and **IsRepl**
 
@@ -102,7 +102,7 @@ static cl::opt<std::string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
                                       cl::init(""), cl::cat(PyxcCategory));
 ```
 
-`cl::Positional` means the argument has no flag — it's just a bare filename on the command line. `cl::opt<std::string>` with `cl::init("")` defaults to an empty string when no file is given, so the check in `ProcessCommandLine` is simply `!InputFile.empty()`. However, to have a more descriptive variable, we introduce a global boolean variable `IsRepl` that stores the value of this test. 
+`cl::Positional` means the argument has no flag — it's just a bare filename on the command line. `cl::opt<std::string>` with `cl::init("")` defaults to an empty string when no file is given, so the check in `ProcessCommandLine` is simply `!InputFile.empty()`. For clarity, `IsRepl` stores the result of that check. 
 
 ```cpp
 int ProcessCommandLine(int argc, const char **argv) {
@@ -143,8 +143,7 @@ static cl::opt<bool> VerboseIR("v",
                                cl::init(false), cl::cat(PyxcCategory));
 ```
 
-`cl::opt<bool> VerboseIR` with the name parameter set to `"v"` registers the `-v` flag. We use this parameter as is to determine if we want to emit the IR to stderr or not. 
-
+`cl::opt<bool> VerboseIR` with the name parameter set to `"v"` registers the `-v` flag. 
 
 ## Suppressing REPL Noise in File Mode
 
@@ -196,13 +195,7 @@ if (VerboseIR)
   FnIR->print(errs());
 ```
 
-`errs()` is LLVM's wrapper around `stderr`. `FnIR->print(errs())` is the same IR dump the earlier chapters always printed — now it's just conditional.
-
-The flag works in both modes. In file mode it lets you inspect what the compiler generated without modifying the source. In the REPL it lets you see IR as you type, which is useful when learning what each expression compiles to.
-
-## Cleanup
-
-When running a file, `Input` is a handle that needs to be closed. `main` does this after `MainLoop` returns:
+When running a file, `Input` is a handle that needs to be closed after `MainLoop` returns:
 
 ```cpp
 if (Input && Input != stdin) {
@@ -229,10 +222,6 @@ or
 ```bash
 ./build/pyxc <filename> -v
 ```
-
-## Known Limitations
-
-- **Single file only.** The driver accepts at most one input file. Multiple-file compilation and a linker step come later.
 
 ## What's Next
 

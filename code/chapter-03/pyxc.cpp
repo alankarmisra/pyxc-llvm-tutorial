@@ -410,6 +410,15 @@ public:
 static int CurTok;
 static int getNextToken() { return CurTok = gettok(); }
 
+/// consumeNewlines - Consume all consecutive tok_eol tokens.
+///
+/// Called after eating a structural token (e.g. ':') to allow the body or
+/// next clause to appear on the following line.
+static void consumeNewlines() {
+  while (CurTok == tok_eol)
+    getNextToken();
+}
+
 /// BinopPrecedence - Maps each binary operator character to its precedence.
 /// Higher numbers bind more tightly: '*' (40) > '+'/'-' (20) > '<' (10).
 /// Operators not in this map return -1 from GetTokPrecedence(), which tells
@@ -624,8 +633,7 @@ static unique_ptr<FunctionAST> ParseDefinition() {
   // written on the next line:
   //   def foo(x):
   //     return x + 1
-  while (CurTok == tok_eol)
-    getNextToken();
+  consumeNewlines();
 
   if (CurTok != tok_return)
     return LogErrorF("Expected 'return' in function body");

@@ -8,9 +8,10 @@
    [ ] = zero or one (optional)
 *)
 
-program         = [ top { top } ] ;
+program         = [ eols ] [ top { eols top } ] [ eols ] ;
+eols            = eol { eol } ;
 top             = definition | external | toplevelexpr ;
-definition      = "def" prototype ":" "return" expression ;
+definition      = "def" prototype ":" [ eols ] "return" expression ;
 external        = "extern" "def" prototype ;
 toplevelexpr    = expression ;
 prototype       = identifier "(" [ identifier { "," identifier } ] ")" ;
@@ -27,4 +28,5 @@ number          = digit { digit } [ "." { digit } ]
                 | "." digit { digit } ;
 letter          = "A".."Z" | "a".."z" ;
 digit           = "0".."9" ;
-ws              = " " | "\t" | "\r" | "\n" ;
+eol             = "\r\n" | "\r" | "\n" ;
+ws              = " " | "\t" ;

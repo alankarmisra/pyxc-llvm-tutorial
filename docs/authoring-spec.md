@@ -48,12 +48,13 @@ Every chapter follows this order, without deviation:
 | `## Where We Are` | Shows what's broken or missing *right now*. Includes a before/after code block so the reader can see exactly what changes. |
 | `## Source Code` | A single `git clone + cd` code block. Nothing else. |
 | *(concept sections)* | One `##` per concept introduced in the chapter. |
-| `## Build and Run` | The exact three commands to build and run the chapter binary. |
-| `## Try It` | Annotated REPL session. Real output only — never invented. |
-| `## What We Built` | A table: one row per significant piece added. Left column: name or symbol. Right column: one-sentence description. |
-| `## Known Limitations` | Bulleted list of things that are deliberately deferred. Links to the chapter that addresses each one. |
+| `## Build and Run` | The exact commands to build and run the chapter binary. |
 | `## What's Next` | One short paragraph pointing at the next chapter. |
 | `## Need Help?` | Boilerplate: GitHub Issues and Discussions links, what to include in a bug report. |
+
+**`## Try It`** is omitted when the chapter has a substantial payoff example (e.g. Mandelbrot) that already exercises all introduced features. Include it only when the reader needs an explicit guided walkthrough that the concept sections don't already provide.
+
+**`## Things Worth Knowing`** (optional) — a short bulleted list of behaviour that a reader experimenting with the chapter's features is likely to hit and be confused by, and where the error message alone doesn't explain why. Do not accumulate general language limitations here. Each bullet must pass the test: *would a reader trying this right now be surprised?*
 
 ### 2.3 Writing Style
 
@@ -82,13 +83,9 @@ Good:
 
 This applies throughout: `lexer`, `parser`, `AST`, `codegen`, `IR`, `JIT` — every term should follow its explanation, not precede it. Chapter titles and section headings should describe what the thing *does*, not what it's *called*.
 
-**Code blocks are always complete and correct.** Never truncate a code block with `// ...` unless the omission is clearly marked and the surrounding context makes it unambiguous what was left out.
+**Code snippets show only what the reader needs.** Full functions are shown when the structure itself is the point. When a function is long and the interesting part is a few lines, use `// ...` to elide the boilerplate — but only when the surrounding context makes it unambiguous what was omitted. Never elide in a way that changes what the snippet appears to do.
 
-**Real output only in "Try It".** Every line in the REPL session sections must be actual output from the binary, not invented. If the output would be too long, use `...` on a line by itself inside the code block and note that it was truncated.
-
-**"What We Built" table is exhaustive.** Every function, class, or global variable introduced in the chapter gets a row. If a concept is important enough to explain in prose, it belongs in the table.
-
-**"Known Limitations" is honest.** List every deliberate shortcut taken. Do not omit limitations to make the chapter look more complete. Each bullet should end with "Chapter N adds ..." where N is the chapter that addresses it.
+**Real output only in REPL sessions.** Every line in a REPL session must be actual output from the binary, not invented. If the output would be too long, use `...` on a line by itself inside the code block and note that it was truncated.
 
 ### 2.4 chapter-00.md
 
@@ -190,6 +187,42 @@ Follow the LLVM naming conventions used in the original Kaleidoscope tutorial be
 - Globals: `PascalCase` prefixed with `The` for LLVM singletons (`TheContext`, `TheModule`, `TheBuilder`)
 
 The LLVM tutorial itself uses capital `C` and `I` as loop variables in the lexer. We do not; we use `ch` and `idx` (lowercase) for loop variables in our own code, but we do not "fix" LLVM-provided code we copy verbatim.
+
+---
+
+## 3.6 EBNF File
+
+Every chapter directory contains a `pyxc.ebnf` that is the **single source of truth** for the grammar. It uses ISO EBNF notation with two conventions documented at the top:
+
+```
+{ } = zero or more
+[ ] = zero or one (optional)
+```
+
+The `.ebnf` file, the `///` grammar banners in `.cpp`, and the `## Grammar` section in the chapter `.md` must all agree — same production names, same structure. When any one changes, update the other two in the same edit session.
+
+### Grammar Section in the Chapter Doc
+
+Every chapter doc that introduces grammar changes has a `## Grammar` section placed immediately after `## The Design` (or `## Source Code` if there is no Design section).
+
+**Structure:**
+1. One paragraph naming what changed, with a before/after EBNF diff showing exactly what this chapter adds.
+2. A `### Full Grammar` subsection with the complete grammar as a fenced `ebnf` code block, copied verbatim from `pyxc.ebnf`, with `-- new` on changed or added lines.
+3. Brief prose below the full grammar explaining any non-obvious terminal symbols (e.g. `integer`, `customopchar`).
+
+The path to the `.ebnf` file (`code/chapter-N/pyxc.ebnf`) appears as a line above the code block.
+
+### Production Name Consistency
+
+The name of a grammar production must be identical everywhere it appears: in `pyxc.ebnf`, in the `///` EBNF banner above the corresponding Parse* function in `.cpp`, in the `## Grammar` section of the `.md`, and in prose references within the `.md`.
+
+### Forward Declarations
+
+When a Parse* function A calls another Parse* function B that is defined later in the file, add a forward declaration immediately above A's doc comment. Do not reorder functions — the file's top-to-bottom order reflects the grammar (lexer → parser → codegen → driver) and must be preserved.
+
+### lit.cfg.py
+
+`config.name` must be `"pyxc-chapterNN"` (zero-padded to two digits, e.g. `"pyxc-chapter09"`). If the test directory contains `.pyxc` files that are not lit tests (e.g. exploratory scripts with no `# RUN:` lines), list them explicitly in `config.excludes`.
 
 ---
 
@@ -320,11 +353,10 @@ Chapter 3 also requires tests for the diagnostic infrastructure itself:
 Before marking a chapter ready to publish:
 
 - [ ] `chapter-N.md` exists in `docs/` with correct frontmatter
-- [ ] All sections present in the required order (§2.2)
+- [ ] All required sections present in the required order (§2.2)
 - [ ] "Where We Are" has a before/after example using real output
-- [ ] "Try It" output matches actual binary output
-- [ ] "What We Built" table has one row per introduced piece
-- [ ] "Known Limitations" lists all deliberate gaps with forward references
+- [ ] Any REPL session output matches actual binary output
+- [ ] Counter-intuitive behaviour is flagged inline at first encounter, not deferred to a catch-all section
 - [ ] `code/chapter-N/pyxc.cpp` builds cleanly with CMake
 - [ ] All functions with non-trivial logic have `///` doc comments
 - [ ] All Parser functions have EBNF banners
@@ -332,6 +364,11 @@ Before marking a chapter ready to publish:
 - [ ] All tests pass: `llvm-lit code/chapter-N/test/`
 - [ ] `chapter-00.md` lists chapter N with the frontmatter description
 - [ ] `chapter-00.md` chapter N line is **uncommented**
+- [ ] `code/chapter-N/pyxc.ebnf` exists and matches the grammar implemented in `.cpp`
+- [ ] `## Grammar` section in the `.md` matches `pyxc.ebnf` verbatim (with `-- new` annotations)
+- [ ] All `///` EBNF banners in `.cpp` use the same production names as `pyxc.ebnf`
+- [ ] All code snippets in the `.md` match the actual source (spot-check with grep)
+- [ ] `lit.cfg.py` excludes any non-lit `.pyxc` files in the test directory
 
 ---
 
@@ -345,6 +382,8 @@ Before marking a chapter ready to publish:
 | 3 | Better Errors | Keyword table, number validation, source locations, caret diagnostics |
 | 4 | Installation | LLVM install guide (macOS, Linux, Docker) |
 | 5 | Code Generation | LLVM IR, `LLVMContext`/`Module`/`IRBuilder`, `codegen()` on AST nodes |
-| 6 | JIT and Optimisation | ORC JIT execution of top-level expressions, FunctionPassManager pipeline (InstCombine, Reassociate, GVN, SimplifyCFG), per-module lifetime, FunctionProtos cross-module registry |
-| 7 | *(planned)* | Control flow: `if`/`then`/`else`, `for` loop |
-| 8 | *(planned)* | Mutable variables: `alloca`, mem2reg |
+| 6 | JIT and Optimisation | ORC JIT execution of top-level expressions, FunctionPassManager pipeline, per-module lifetime, FunctionProtos cross-module registry |
+| 7 | File Input Mode | `FILE*` abstraction, positional filename argument, `-v` IR flag, REPL noise suppression |
+| 8 | Control Flow | Comparison operators, `if`/`else` expressions, `for` loops, PHI nodes, Mandelbrot payoff |
+| 9 | User-Defined Operators | `@binary(N)`/`@unary` decorators, `UnaryExprAST`, `ParseUnary`, operator-as-function encoding |
+| 10 | Mutable Variables | `var`/assignment, `alloca`/load/store, SSA with stack storage |

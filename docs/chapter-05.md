@@ -405,33 +405,6 @@ declare double @cos(double)
 
 Every `def` and `extern` from the session appears here. The `__anon_expr` functions are absent because `HandleTopLevelExpression` calls `eraseFromParent()` after printing them — they were only useful for display and don't belong in the final module.
 
-## What We Built
-
-| Piece | What it does |
-|---|---|
-| `LLVMContext` | Owns all LLVM types and constants; one per compilation unit |
-| `Module` | Container for all functions and globals; printed in full at session end |
-| `FnIR->print(errs())` | Dumps each function's IR to stderr immediately after codegen; `errs()` is LLVM's stderr wrapper |
-| `IRBuilder<>` | Cursor that inserts instructions into a basic block |
-| `NamedValues` | Symbol table mapping parameter names to their `Value*` |
-| `InitializeModule()` | Creates the three globals before the REPL starts |
-| `codegen()` on `ExprAST` | Pure virtual; every expression node must implement it |
-| `NumberExprAST::codegen` | Returns a `ConstantFP`; no instruction emitted |
-| `VariableExprAST::codegen` | Looks up parameter in `NamedValues` |
-| `BinaryExprAST::codegen` | Emits `fadd`/`fsub`/`fmul`/`fcmp`+`uitofp` |
-| `CallExprAST::codegen` | Looks up callee in module, emits `call` |
-| `PrototypeAST::codegen` | Creates a `Function` declaration with typed signature |
-| `FunctionAST::codegen` | Creates the entry block, populates `NamedValues`, codegens body, emits `ret`, verifies |
-| `LogErrorV` | Returns `Value*` nullptr after printing a diagnostic |
-| `verifyFunction` | LLVM's internal consistency check; catches codegen bugs early |
-| `eraseFromParent` | Removes a broken or used-up function from the module |
-
-## Known Limitations
-
-- **No optimization.** The IR is correct but unoptimized. `2 * a * b` emits two multiplications even though associativity might allow combining them. Chapter 6 adds LLVM's pass manager.
-- **No JIT execution.** Expressions are compiled to IR and printed, but not run. The result of `4 + 5` appears as `ret double 9.0` — you have to read it, you can't evaluate it. Chapter 6 adds ORC JIT so top-level expressions run immediately.
-- **Only function parameters as variables.** `NamedValues` only holds the current function's arguments. There are no local variables yet.
-
 ## What's Next
 
 The IR is correct. Chapter 6 adds two things on top of it: an optimization pass manager that cleans up the IR, and an ORC JIT layer that executes top-level expressions immediately so you can use the REPL interactively.

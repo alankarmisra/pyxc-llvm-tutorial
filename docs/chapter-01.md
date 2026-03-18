@@ -5,7 +5,7 @@ description: "Teach the compiler to read: break source text into tokens the pars
 
 ## What We're Building
 
-By the end of this tutorial, you'll have built a compiler for a Python-like language which compiles to binary and runs extremely fast. 16x faster than Python in some preliminary benchmarks. 
+By the end of this tutorial, you'll have built a compiler for a Python-like language that compiles to native code and runs directly on your CPU — no interpreter overhead. 
 
 In the initial chapters, we keep the language small and simple — no `if` conditionals or `for` loops, and only 64-bit floating point types. We will introduce more sophisticated patterns little by little. Here's what we are going to build over the next few chapters:
 
@@ -18,18 +18,16 @@ extern def printd(x) # a custom pyxc library function
 
 # define your own function
 def identity(x): # returns double by default
-   return sin(x) * sin(x) + cos(x) * cos(x)
+    return sin(x) * sin(x) + cos(x) * cos(x)
 
 printd(identity(4)) # function calls
 ```
 
-The above will output
+By chapter 6, running this file will output:
 
 ```bash
 1.000000
 ```
-
-The very first thing a compiler needs to do is read source text and classify each piece — is this a number? A function name? A `+` sign? A keyword like `def`? Let's add this first. 
 
 ## Source Code
 
@@ -40,9 +38,7 @@ cd pyxc-llvm-tutorial/code/chapter-01
 
 ## Breaking Source Text Into Tokens
 
-Source code is just a string of characters. The compiler needs to classify each meaningful chunk before it can do anything useful — is `def` a keyword? Is `add` a function name? Is `+` an operator? Is `3.14` a number?
-
-The first step is to scan the string and group characters into classified chunks:
+The very first thing a compiler needs to do is read source text and classify each piece — is this a number? A function name? A `+` sign? A keyword like `def`? Let's add this first.  We begin by scanning the source text and grouping characters into classified chunks:
 
 **Input:**
 ```python
@@ -58,7 +54,7 @@ keyword:'return'  name:'x'  '+'  name:'y'  newline
 
 Each chunk is one **token** — a classified piece of source text. The code doing this doesn't understand what `def` *means* yet — it just recognises *"this is the keyword `def`."* Figuring out what it means is the next chapter's job.
 
-The scanning step is called **lexing** (from Latin *lexis*, meaning word). If you've ever split a string to pull out numbers and punctuation, you've done it manually. Here we write it properly, handling keywords, operators, names, and numbers in one pass.
+The scanning step is called **lexing** (from Latin *lexis*, meaning word). 
 
 ## Token Types
 
@@ -141,15 +137,13 @@ We skip spaces and tabs, but keep newlines. In a Python-like language, newlines 
 ### Newlines
 
 ```cpp
-  // Check for newline.
   if (LastChar == '\n') {
-    // Don't try and read the next character. This will stall the REPL.
-    // Just reset LastChar to a space which will force a new character
-    // advance in the next call.
     LastChar = ' ';
     return tok_eol;
   }
 ```
+
+We don't call `advance()` here. If we did, the REPL would stall — `getchar()` waits for the next line of input before returning, so the prompt would freeze after every newline. Setting `LastChar = ' '` lets us return `tok_eol` immediately; the whitespace-skip loop at the top of the next `gettok()` call will read the next character when it's actually needed.
 
 ### Identifiers and Keywords
 
@@ -174,11 +168,7 @@ Examples:
 - `foo` → `tok_identifier`, `IdentifierStr = "foo"`
 - `my_var` → `tok_identifier`, `IdentifierStr = "my_var"`
 
-The if-chain is simple and clear for three keywords. In a later chapter, when we add more keywords (like `if`, `else`, `while`, `let`), we'll move this into a map. The code even has a note reminding us:
-
-```cpp
-// TODO: Push this into a map
-```
+The if-chain is simple and clear for three keywords. In a later chapter, when we add more keywords (like `if`, `else`, `while`, `let`), we'll move this into a map. For now, we leave a TODO in the code so we remember to do it later.
 
 ### Numbers
 
@@ -202,13 +192,7 @@ This works correctly for normal inputs:
 - `3.14` → `tok_number`, `NumVal = 3.14`
 - `.5` → `tok_number`, `NumVal = 0.5`
 
-But notice the code has a comment:
-
-```cpp
-// TODO: This incorrectly lexes 1.23.45.67 as 1.23
-```
-
-`strtod` parses as far as it can and stops at the second `.`. The rest of `1.23.45.67` — the `.45.67` part — is effectively ignored. We'll fix this in a later chapter by checking where `strtod` stopped and erroring on leftover junk. For now, we leave it as-is — it's not a problem for valid input.
+There is a subtle bug though. `strtod` parses as far as it can and stops at the second `.`. The rest of `1.23.45.67` — the `.45.67` part — is effectively ignored. We'll fix this in a later chapter by checking where `strtod` stopped and erroring on leftover junk. For now, we leave a TODO in the code and move on — it's not a problem for valid input.
 
 ### Comments
 
@@ -225,9 +209,9 @@ But notice the code has a comment:
   }
 ```
 
-Comments run from `#` to the end of the line. We discard all of it and return `tok_eol` as if the comment were a blank line.
+Comments run from `#` to the end of the line. We discard all of it and return `tok_eol` as if the comment were a blank line. The parser will never know the comment existed.
 
-One subtle point: we set `LastChar = ' '` instead of calling `advance()`. If we called `advance()` here, the REPL would block — `getchar()` waits for the next line of input before it can return `tok_eol` and show a fresh prompt. Setting `LastChar = ' '` lets us return immediately, and the whitespace-skip loop at the top of the next call will trigger `advance()` only when it's actually time to read again.
+The `LastChar = ' '` trick is the same as in the Newlines case — return immediately rather than blocking the REPL.
 
 If the comment runs all the way to `EOF` with no newline, `LastChar` is `EOF` and we fall through to the EOF case below.
 
@@ -248,26 +232,9 @@ If the comment runs all the way to `EOF` with no newline, `LastChar` is `EOF` an
 
 If we haven't matched anything else, it's a single character — `+`, `(`, `:`, etc. We return its ASCII value directly. The parser will compare against character literals like `'+'` or `'('`.
 
-## What's Missing (On Purpose)
-
-This file has no `main()` and no `MainLoop()`. It's purely the lexer — just the `Token` enum, two globals, `advance()`, and `gettok()`. In the next chapter we'll add the parser alongside a simple driver that calls `gettok()` and prints what it sees. Keeping this file focused means you can read the entire lexer in one sitting.
-
-## What We Built
-
-| Piece | What it does |
-|---|---|
-| `enum Token` | Names for each kind of piece (keyword, number, identifier, symbol) |
-| `IdentifierStr`, `NumVal` | The actual text or value that came with a token |
-| `advance()` | Reads one character, normalizes line endings |
-| `gettok()` | Reads characters and returns the next token — the lexer |
-
-Two deliberate TODOs carried forward to the [chapter 3](chapter-03.md):
-- The keyword if-chain becomes a map when we add more keywords
-- Malformed numbers like `1.2.3` get proper error handling once the parser is in place
-
 ## What's Next
 
-We can now split source text into pieces, but we don't understand what those pieces mean yet. In [Chapter 2](chapter-02.md) we'll build something that reads the token stream and works out the structure — that `def add(x, y)` is a function taking two arguments, that `x + y` is an addition. We'll also add `main()` so we can actually run something for the first time.
+This file has no `main()` — it's purely the lexer: the `Token` enum, two globals, `advance()`, and `gettok()`. In [Chapter 2](chapter-02.md) we'll add the parser alongside a simple driver so we can actually run something for the first time. The parser will read the token stream and work out the structure — that `def add(x, y)` is a function taking two arguments, that `x + y` is an addition.
 
 ## Need Help?
 

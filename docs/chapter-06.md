@@ -439,35 +439,14 @@ Evaluated to 0.000000
 
 `42.000000` is printed by `printd`'s own `fprintf`. `Evaluated to 0.000000` is the JIT printing `printd`'s return value (always `0.0`) after executing the `__anon_expr` wrapper.
 
-## What We Built
-
-| Piece | What it does |
-|---|---|
-| `PyxcJIT` | Thin ORC `LLJIT` wrapper; native target init, IR layer, object layer, dynamic linker |
-| `FunctionPassManager` | Runs the optimisation pipeline over each function after codegen |
-| `InstCombinePass` | Peephole rewrites and algebraic simplification |
-| `ReassociatePass` | Reorders commutative ops to expose constant folding |
-| `GVNPass` | Eliminates redundant computations across basic blocks |
-| `SimplifyCFGPass` | Removes dead blocks and merges trivial branches |
-| Analysis managers | Cache analysis results; cross-registered so passes share information |
-| `FunctionProtos` | Persistent prototype registry; enables cross-module function calls |
-| `getFunction()` | Resolves a name: current module first, then re-emit from `FunctionProtos` |
-| `InitializeModuleAndManagers()` | Creates a fresh module + pipeline after each JIT transfer |
-| `ThreadSafeModule` | Wraps module + context for safe transfer to the JIT |
-| `ResourceTracker` | Scopes JIT memory for anonymous expressions; freed after execution |
-| `ExitOnErr` | Terminates cleanly on unrecoverable JIT errors |
-| `putchard` / `printd` | Built-in runtime functions callable via `extern def` |
 
 ## Known Limitations
 
 - **Duplicate extern calls not eliminated.** `sin(x)*sin(x)` calls `sin` twice. GVN cannot merge calls to extern functions without alias information marking them as pure (no side effects). LLVM function attributes can express this; a later chapter can add them.
-- **No local variables.** `NamedValues` still only holds function parameters. Mutable locals require `alloca`/`store`/`load` and `mem2reg`. A later chapter adds these.
-- **No control flow.** `if`/`else` and loops are not yet supported. A later chapter adds them.
-- **Single-expression function bodies only.** The `def foo(x): return expr` syntax allows exactly one expression after `return`. Multiple statements and sequencing come later.
 
 ## What's Next
 
-Chapter 7 adds file input mode and a `-v` flag for IR inspection — `pyxc script.pyxc` runs a source file through the same JIT pipeline as the REPL, and `pyxc script.pyxc -v` prints the generated IR. That's the foundation real programs need.
+[Chapter 7](chapter-07.md) adds file input mode and a `-v` flag for IR inspection — `pyxc script.pyxc` runs a source file through the same JIT pipeline as the REPL, and `pyxc script.pyxc -v` prints the generated IR. That's the foundation real programs need.
 
 ## Need Help?
 

@@ -466,25 +466,6 @@ A few things to notice:
 - `def bad(x) return x` — the caret points at the space before `return`, the position where `:` was expected.
 - `def missing_colon(x)` — the caret points just past the closing `)`, where `:` should have appeared. That's `GetDiagnosticAnchorLoc` at work: `CurLoc` for `tok_eol` is on the next line, so the function steps back by one and points to the end of the line that just ended.
 
-## What We Built
-
-| Piece | What it does |
-|---|---|
-| `Keywords` map | Replaces the keyword `if`-chain; adding a keyword is a one-liner |
-| `NumLiteralStr` | Saves the original number text for error messages |
-| `strtod` + `*End` check | Catches malformed literals like `1.2.3`; returns `tok_error` |
-| `tok_error` | Signals "lexer already diagnosed this" so the parser doesn't double-report |
-| `TokenNames` map | Human-readable name for every token value |
-| `FormatTokenForMessage` | Adds the actual text for identifier and number tokens |
-| `SourceLocation` | A `{Line, Col}` pair attached to each token |
-| `LexLoc` / `CurLoc` | Two locations: where the character reader is, and where the current token started |
-| `advance()` | Single character-read point; updates `LexLoc` and feeds `SourceManager` |
-| `SourceManager` | Buffers source lines as they are read so they can be reprinted in errors |
-| `PrintErrorSourceContext` | Prints the source line and a `^~~~` caret |
-| `GetDiagnosticAnchorLoc` | Remaps `tok_eol` errors to the end of the previous line |
-| `LogError` / `LogErrorP` / `LogErrorF` | Now print `(Line N, Column N):` and source context |
-| `SynchronizeToLineBoundary` | Panic-mode recovery: skip to `tok_eol`/`tok_eof` after any error |
-
 ## What's Next
 
 The lexer and parser are solid. Error messages are readable. The next step is to connect this to LLVM: walk the AST and emit LLVM IR — real machine-code instructions — for the first time.

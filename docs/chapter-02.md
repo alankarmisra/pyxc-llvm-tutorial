@@ -743,19 +743,6 @@ ready>
 
 The parser accepts valid syntax and rejects invalid syntax with an error message. The REPL keeps running after errors.
 
-## What We Built
-
-| Piece | What it does |
-|---|---|
-| Grammar (EBNF) | Defines exactly what valid Pyxc looks like |
-| AST node classes | Represent each kind of expression as a C++ object |
-| `CurTok` / `getNextToken()` | One-token lookahead between lexer and parser |
-| `BinopPrecedence` / `GetTokPrecedence()` | Control how operators bind |
-| `ParseBinOpRHS()` | Precedence-climbing algorithm for binary expressions |
-| `ParsePrototype()` / `ParseDefinition()` | Parse function signatures and bodies |
-| `ParseTopLevelExpr()` | Wrap bare expressions in `__anon_expr` for uniform handling |
-| `MainLoop()` | REPL dispatch loop |
-
 ## Known Limitations
 
 The TODOs from Chapter 1 are still present:
