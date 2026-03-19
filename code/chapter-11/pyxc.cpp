@@ -1700,11 +1700,28 @@ static unique_ptr<FunctionAST> ParseDecoratedDef() {
 /// numeric result, then removes it from the JIT via a ResourceTracker.
 static unique_ptr<FunctionAST> ParseTopLevelExpr() {
   LastTopLevelEndedWithBlock = false;
-  if (auto E = ParseExpression()) {
-    auto Proto = make_unique<PrototypeAST>("__anon_expr", vector<string>());
-    return make_unique<FunctionAST>(std::move(Proto), std::move(E));
+  auto E = ParseExpression();
+  if (!E)
+    return nullptr;
+
+  if (CurTok == '=') {
+    const string *AssignedName = E->getVariableName();
+    if (!AssignedName)
+      return LogErrorF("Destination of '=' must be a variable");
+
+    string Name = *AssignedName;
+    if (!IsDeclaredVar(Name))
+      return LogErrorF("Assignment to undeclared variable");
+
+    getNextToken(); // eat '='
+    auto RHS = ParseExpression();
+    if (!RHS)
+      return nullptr;
+    E = make_unique<AssignmentExprAST>(Name, std::move(RHS));
   }
-  return nullptr;
+
+  auto Proto = make_unique<PrototypeAST>("__anon_expr", vector<string>());
+  return make_unique<FunctionAST>(std::move(Proto), std::move(E));
 }
 
 /// external

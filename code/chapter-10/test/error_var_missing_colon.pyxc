@@ -1,0 +1,8 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Expected ':' after var bindings
+
+# Tests: "var" without the mandatory ":" before the body is a parse error.
+# ParseVarExpr requires CurTok == ':' after all bindings are consumed.
+# varexpr = "var" varbinding { "," varbinding } ":" [ eols ] expression ;
+
+var x = 1 x

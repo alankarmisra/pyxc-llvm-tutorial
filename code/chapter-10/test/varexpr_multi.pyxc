@@ -1,0 +1,11 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Evaluated to 3.000000
+
+# Tests: multiple comma-separated bindings; later initializers can reference earlier ones.
+# varexpr = "var" varbinding { "," varbinding } ":" [ eols ] expression ;
+#
+# "var x = 1, y = x + 2" evaluates the initializers left-to-right, each before
+# its binding is installed. So x = 1 first, then y = x + 2 = 3. The body "y"
+# loads y (3.0) and returns it.
+
+var x = 1, y = x + 2: y

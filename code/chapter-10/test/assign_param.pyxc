@@ -1,0 +1,11 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Parsed a function definition.
+# CHECK: Evaluated to 6.000000
+
+# Tests: function parameters are mutable — they use alloca like var locals.
+# FunctionAST::codegen creates an alloca + store for each incoming argument,
+# so "n = n + 1" is a valid assignment into n's stack slot.
+
+def bump(n): return n = n + 1
+
+bump(5)

@@ -578,13 +578,15 @@ static unique_ptr<FunctionAST> ParseDefinition() {
 
   if (CurTok != tok_return)
     return LogErrorF("Expected 'return' in function body");
-  getNextToken(); // eat 'return'
+  getNextToken(); // eat 'return' — not stored in the AST
 
   if (auto E = ParseExpression())
     return make_unique<FunctionAST>(std::move(Proto), std::move(E));
   return nullptr;
 }
 ```
+
+One detail worth noting: `getNextToken()` eats the `return` keyword but nothing stores it in the AST. For now every function body is a single expression, so `return` is just syntax that says "this expression is the result." In a later chapter, when functions can have multiple statements and multiple return points, `return` becomes a first-class AST node.
 
 The newline skip after `:` using `consumeNewlines()` is what makes multi-line definitions work. Without it, the REPL would print `ready>` for the second line, the user types `return x + 1`, but `CurTok` would be `tok_eol` — not `tok_return` — and the parse would fail. Notice there's no `ready>` prompt on the continuation line — the REPL waits silently while `consumeNewlines()` blocks inside the parser, before control returns to `MainLoop`.
 

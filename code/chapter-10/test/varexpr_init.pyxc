@@ -1,0 +1,11 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Evaluated to 3.000000
+
+# Tests: var with an initializer introduces a mutable local.
+# varexpr = "var" varbinding { "," varbinding } ":" [ eols ] expression ;
+# varbinding = identifier [ "=" expression ] ;
+#
+# "var x = 1" allocates a stack slot and stores 1.0 into it.
+# The body "x + 2" loads x (1.0) and adds 2.0; the whole expression evaluates to 3.0.
+
+var x = 1: x + 2

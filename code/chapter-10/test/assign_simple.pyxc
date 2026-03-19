@@ -1,0 +1,10 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Evaluated to 3.000000
+
+# Tests: assignment to a var-bound local inside the var body.
+# expression = varexpr | unaryexpr binoprhs [ "=" expression ] ;
+#
+# "x = x + 2" stores 3.0 back into x's slot and returns 3.0 as the assigned
+# value. The var body evaluates to that return value.
+
+var x = 1: x = x + 2

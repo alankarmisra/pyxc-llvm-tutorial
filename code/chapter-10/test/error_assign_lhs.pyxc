@@ -1,0 +1,9 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Destination of '=' must be a variable
+
+# Tests: the left-hand side of "=" must be a plain variable name.
+# ParseExpression calls Expr->getVariableName() after seeing "="; a
+# parenthesised expression like "(1 + 2)" returns nullptr and is rejected.
+# expression = varexpr | unaryexpr binoprhs [ "=" expression ] ;
+
+(1 + 2) = 3

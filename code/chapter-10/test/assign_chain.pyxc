@@ -1,0 +1,11 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Evaluated to 2.000000
+
+# Tests: assignment is right-associative; "a = b = 1" parses as "a = (b = 1)".
+# expression = varexpr | unaryexpr binoprhs [ "=" expression ] ;
+#
+# ParseExpression recurses right when it sees "=", so "b = 1" is parsed first:
+# b gets 1.0 (returned), then a gets that return value (1.0).
+# The body "(a = b = 1) + b" = 1.0 + 1.0 = 2.0, proving b was set.
+
+var a = 0, b = 0: (a = b = 1) + b

@@ -893,7 +893,7 @@ Function *FunctionAST::codegen() {
 /// the JIT takes ownership of the module after compiling it.
 static void InitializeModuleAndManagers() {
   TheContext = std::make_unique<LLVMContext>();
-  TheModule = std::make_unique<Module>("my cool jit", *TheContext);
+  TheModule = std::make_unique<Module>("PyxcJIT", *TheContext);
   Builder = std::make_unique<IRBuilder<>>(*TheContext);
 }
 
