@@ -92,16 +92,22 @@ cd pyxc-llvm-tutorial/code/chapter-06
 [Chapter 5](chapter-05.md) had three globals: `TheContext`, `TheModule`, and `Builder`. Chapter 6 adds several more:
 
 ```cpp
-static unique_ptr<PyxcJIT>              TheJIT;       // the ORC JIT instance
-static unique_ptr<FunctionPassManager>  TheFPM;       // runs optimizations per function
-static unique_ptr<LoopAnalysisManager>     TheLAM;    // stores results of loop analyses
-static unique_ptr<FunctionAnalysisManager> TheFAM;    // stores results of function analyses
-static unique_ptr<CGSCCAnalysisManager>    TheCGAM;   // stores results of call-graph analyses
-static unique_ptr<ModuleAnalysisManager>   TheMAM;    // stores results of module analyses
-static unique_ptr<PassInstrumentationCallbacks> ThePIC; // pass debug hook registry
-static unique_ptr<StandardInstrumentations>     TheSI;  // built-in timing/print hooks
-static map<string, unique_ptr<PrototypeAST>> FunctionProtos; // persistent prototype registry
-static ExitOnError ExitOnErr;                         // terminates on unrecoverable JIT error
+// the ORC JIT instance
+static unique_ptr<PyxcJIT>                 TheJIT;       
+// runs optimizations per function
+static unique_ptr<FunctionPassManager>     TheFPM;       
+// stores results of loop analyses
+static unique_ptr<LoopAnalysisManager>     TheLAM;    
+// stores results of function analyses
+static unique_ptr<FunctionAnalysisManager> TheFAM;    
+// stores results of call-graph analyses
+static unique_ptr<CGSCCAnalysisManager>    TheCGAM;   
+// stores results of module analyses
+static unique_ptr<ModuleAnalysisManager>   TheMAM;    
+// persistent prototype registry
+static map<string, unique_ptr<PrototypeAST>> FunctionProtos; 
+// terminates on unrecoverable JIT error
+static ExitOnError ExitOnErr;                         
 ```
 
 ## What Is ORC JIT?
@@ -120,56 +126,81 @@ TheJIT = ExitOnErr(PyxcJIT::Create());
 InitializeModuleAndManagers();
 ```
 
-`InitializeNativeTarget*` registers the host machine's backend with LLVM — without it, LLVM doesn't know how to generate code for your CPU.
+`InitializeNativeTarget()` registers the code generator for your CPU — this is what lets LLVM lower IR to actual machine instructions for your architecture. Without it, LLVM can't generate any code at all.
+
+`InitializeNativeTargetAsmPrinter()` registers the component that serializes generated machine code into bytes the JIT can execute in memory.
+
+`InitializeNativeTargetAsmParser()` registers the component that parses assembly text back into machine instructions — needed for inline assembly support. Pyxc doesn't use inline assembly, so this one is optional for us, but included by convention.
+
+All three operate on the *native* target — the machine `pyxc` is running on. Cross-compilation would require calling the equivalent functions for a different target instead.
 
 `PyxcJIT::Create()` initializes the **native target** (the CPU and OS the compiler is running on) and sets up the **dynamic linker** (so `extern` functions like `sin` resolve to the real C library at call time).
 
 The dynamic linker part is worth pausing on. `pyxc` is a C++ program linked against the C standard library, so `sin`, `cos`, `printf`, and every other standard function are already loaded into the `pyxc` process when it starts. When the JIT can't resolve a name internally, ORC searches the functions already loaded into the `pyxc` process — and finds them there. No `#include`, no link flags, no explicit registration. We'll see this in "Try It" below.
 
+## The Optimization Pipeline
+
+LLVM passes fall into two categories: **per-module passes** that see the whole program at once, and **per-function passes** that operate on one function at a time. We use per-function passes, applied immediately as each function is compiled — so the user gets optimized code for every definition they type without waiting for a full program to accumulate.
+
+[`FunctionPassManager`](https://llvm.org/docs/NewPassManager.html) sequences these passes in order, running each one on the function and updating it in place. LLVM ships [dozens of passes](https://llvm.org/docs/Passes.html) and `PassBuilder` has predefined pipeline presets (`O1`, `O2`, `O3`) that enable many of them at once. We're not using those presets — we manually add four specific passes instead, so it's easy to see exactly what's running. A natural next step would be to wire Pyxc's `-O` flag directly into one of those presets rather than maintaining a hand-picked list.
+
+The four passes are quick wins — they catch easy improvements without the cost of a full optimization pipeline:
+
+| Pass | What it does |
+|---|---|
+| `InstCombinePass` | Simplifies individual instructions: `x * 1 → x`, `x + 0 → x`, and similar peephole rewrites |
+| `ReassociatePass` | Reorders additions and multiplications so constants end up together: `(x+2)+3` becomes `x+(2+3)`, which then collapses to `x+5` |
+| `GVNPass` | Finds places where the same value is computed twice and removes the duplicate. This is what eliminates the second `fadd` in `foo` |
+| `SimplifyCFGPass` | Removes dead branches and unreachable blocks — not relevant yet, but essential once we add `if`/`while` |
+
+Note that `1+2` collapsing to `3` isn't done by any of these passes — `IRBuilder` does it automatically as it constructs the IR. That's why `(1+2+x)` already shows `3.000000e+00` in the output before any pass runs.
+
 ## InitializeModuleAndManagers
 
-`InitializeModuleAndManagers()` replaces `InitializeModule()` from [chapter 5](chapter-05.md). It is called at startup and after every module is handed to the JIT. It does four things.
+`InitializeModuleAndManagers()` replaces `InitializeModule()` from [chapter 5](chapter-05.md). It is called once at startup and again after each module is handed to the JIT. It has two distinct jobs.
 
-**1. Create a fresh module**
+**1. Reset the module**
+
+Same as chapter 5's `InitializeModule()`, with one new line:
 
 ```cpp
 TheContext = make_unique<LLVMContext>();
 TheModule  = make_unique<Module>("PyxcJIT", *TheContext);
-TheModule->setDataLayout(TheJIT->getDataLayout());
-Builder = make_unique<IRBuilder<>>(*TheContext);
+TheModule->setDataLayout(TheJIT->getDataLayout()); // new: ties the module to the host machine
+Builder    = make_unique<IRBuilder<>>(*TheContext);
 ```
 
-Same as chapter 5's `InitializeModule()`, with one addition: `setDataLayout` tells the module how the JIT lays out data for the host machine. This is an implementation detail you don't need to think about for now — it would only matter if you were targeting a different platform than the one you're compiling on.
+`setDataLayout` tells the module how the JIT lays out data for the host machine — pointer widths, type sizes, and so on. You don't need to think about this unless you're targeting a different platform than the one you're compiling on.
 
-**2. Create the pass and analysis managers**
+**2. Wire up the pass manager infrastructure**
+
+This is the new boilerplate — required to run optimization passes, but doesn't optimize anything itself:
 
 ```cpp
+// sequences optimization passes over a function
 TheFPM  = make_unique<FunctionPassManager>();
+// stores analysis results scoped to a loop
 TheLAM  = make_unique<LoopAnalysisManager>();
-TheFAM  = make_unique<FunctionAnalysisManager>();
-TheCGAM = make_unique<CGSCCAnalysisManager>();
-TheMAM  = make_unique<ModuleAnalysisManager>();
-ThePIC  = make_unique<PassInstrumentationCallbacks>();
-TheSI   = make_unique<StandardInstrumentations>(*TheContext, /*DebugLogging*/ false);
-TheSI->registerCallbacks(*ThePIC, TheMAM.get());
+// stores analysis results scoped to a function
+TheFAM  = make_unique<FunctionAnalysisManager>(); 
+// stores analysis results scoped to a group of mutually recursive functions
+TheCGAM = make_unique<CGSCCAnalysisManager>();    
+// stores analysis results scoped to the whole module
+TheMAM  = make_unique<ModuleAnalysisManager>();   
+
+PassBuilder PB;
+PB.registerModuleAnalyses(*TheMAM);
+PB.registerCGSCCAnalyses(*TheCGAM);
+PB.registerFunctionAnalyses(*TheFAM);
+PB.registerLoopAnalyses(*TheLAM);
+PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
 ```
 
-`TheFPM` is the pass manager — it runs optimization passes on each function in sequence.
+The four analysis managers are required by the pass framework even though only `TheFAM` does real work for our four passes. `crossRegisterProxies` makes them visible to each other — a function-level pass can ask for module-level results if it needs them. Skipping this crashes the pass manager.
 
-The last two lines wire up LLVM's built-in pass observer. `ThePIC` is a registry of callbacks — functions to call before and after each pass runs. `TheSI` is LLVM's built-in collection of those callbacks (IR printing, timing, statistics), connected to `TheMAM` because printing IR can require module-level analysis. One useful thing this enables: change `/*DebugLogging*/ false` to `true` and for every function you define you'll see which passes ran and which analyses they triggered — for example:
+**2. Optimization: the per-function pipeline**
 
-```
-Running pass: InstCombinePass on sum (2 instructions)
-Running analysis: TargetIRAnalysis on sum
-Running analysis: DominatorTreeAnalysis on sum
-...
-Running pass: GVNPass on sum (2 instructions)
-Running analysis: MemoryDependenceAnalysis on sum
-```
-
-This shows that analyses are computed lazily — each pass requests only what it needs, and results are reused if a later pass needs the same analysis.
-
-**3. Register optimization passes**
+This is the only part that actually changes IR:
 
 ```cpp
 if (OptLevel != 0) {
@@ -180,38 +211,18 @@ if (OptLevel != 0) {
 }
 ```
 
-`OptLevel` is a command-line flag covered in [Command-Line Parsing](#command-line-parsing) below — for now just read this as "skip optimizations if the user asked for none." The passes themselves are explained in [The Optimization Pipeline](#the-optimization-pipeline).
+`OptLevel` is a command-line flag covered in [Command-Line Parsing](#command-line-parsing) — for now read this as "skip optimizations if the user asked for none."
 
-**4. Wire the managers together**
+**When it runs**
 
-```cpp
-PassBuilder PB;
-PB.registerModuleAnalyses(*TheMAM);
-PB.registerFunctionAnalyses(*TheFAM);
-PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
-```
-
-`crossRegisterProxies` links all four analysis managers together so that a pass running at one level (say, function) can request results from another level (say, module) if it needs them. All four must be present or the pass manager will crash.
-
-The pipeline runs immediately after each function is codegenned and verified:
+Right after each function is codegenned and verified:
 
 ```cpp
 // In FunctionAST::codegen, after verifyFunction:
 TheFPM->run(*TheFunction, *TheFAM);
 ```
 
-## The Optimization Pipeline
-
-LLVM ships dozens of optimization passes and `PassBuilder` has predefined pipeline presets (`O1`, `O2`, `O3`) that enable many of them at once. We're not using those presets — we manually add four specific passes instead, so it's easy to see exactly what's running. A natural next step would be to wire Pyxc's `-O` flag directly into one of those presets rather than maintaining a hand-picked list. For now the four passes are:
-
-| Pass | What it does |
-|---|---|
-| `InstCombinePass` | Simplifies individual instructions: `x * 1 → x`, `x + 0 → x`, and similar peephole rewrites |
-| `ReassociatePass` | Reorders additions and multiplications so constants end up together: `(x+2)+3` becomes `x+(2+3)`, which then collapses to `x+5` |
-| `GVNPass` | Finds places where the same value is computed twice and removes the duplicate. This is what eliminates the second `fadd` in `foo` |
-| `SimplifyCFGPass` | Removes dead branches and unreachable blocks — not relevant yet, but essential once we add `if`/`while` |
-
-Note that `1+2` collapsing to `3` isn't done by any of these passes — `IRBuilder` does it automatically as it constructs the IR. That's why `(1+2+x)` already shows `3.000000e+00` in the output before any pass runs.
+Every function definition typed into the REPL is optimized immediately, without waiting for a whole file.
 
 ## Executing Top-Level Expressions
 

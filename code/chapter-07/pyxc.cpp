@@ -11,7 +11,6 @@
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Passes/PassBuilder.h"
-#include "llvm/Passes/StandardInstrumentations.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
@@ -793,8 +792,6 @@ static unique_ptr<PrototypeAST> ParseExtern() {
 // managers cache analysis results and are cross-registered so passes that
 // need loop or CGSCC analyses can find them.
 //
-// ThePIC / TheSI - Pass instrumentation plumbing required by the new PM.
-// StandardInstrumentations registers the built-in timing and printing hooks.
 //
 // FunctionProtos - Persistent prototype registry. Because each function
 // lands in its own module, a later module that calls 'foo' cannot find 'foo'
@@ -815,8 +812,6 @@ static std::unique_ptr<LoopAnalysisManager> TheLAM;
 static std::unique_ptr<FunctionAnalysisManager> TheFAM;
 static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
 static std::unique_ptr<ModuleAnalysisManager> TheMAM;
-static std::unique_ptr<PassInstrumentationCallbacks> ThePIC;
-static std::unique_ptr<StandardInstrumentations> TheSI;
 static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 static ExitOnError ExitOnErr;
 
@@ -1022,8 +1017,7 @@ Function *FunctionAST::codegen() {
 /// must be created for every subsequent definition or expression.
 ///
 /// The optimisation pipeline is also recreated each time because
-/// FunctionPassManager is tied to a specific LLVMContext (via
-/// StandardInstrumentations).
+/// FunctionPassManager is tied to a specific LLVMContext.
 ///
 /// Pipeline:
 ///   InstCombinePass  - Peephole rewrites: a+0->a, x*2->x<<1, etc.
@@ -1051,10 +1045,6 @@ static void InitializeModuleAndManagers() {
   TheFAM = std::make_unique<FunctionAnalysisManager>();
   TheCGAM = std::make_unique<CGSCCAnalysisManager>();
   TheMAM = std::make_unique<ModuleAnalysisManager>();
-  ThePIC = std::make_unique<PassInstrumentationCallbacks>();
-  TheSI = std::make_unique<StandardInstrumentations>(*TheContext,
-                                                     /*DebugLogging*/ false);
-  TheSI->registerCallbacks(*ThePIC, TheMAM.get());
 
   // Optimisation pipeline (applied per function after codegen). With -O0 the
   // pass manager is left empty so the emitted IR stays close to the direct
@@ -1069,7 +1059,9 @@ static void InitializeModuleAndManagers() {
   // Cross-register so passes can access any analysis tier they need.
   PassBuilder PB;
   PB.registerModuleAnalyses(*TheMAM);
+  PB.registerCGSCCAnalyses(*TheCGAM);
   PB.registerFunctionAnalyses(*TheFAM);
+  PB.registerLoopAnalyses(*TheLAM);
   PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
 }
 

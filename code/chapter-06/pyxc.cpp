@@ -768,9 +768,6 @@ static unique_ptr<PrototypeAST> ParseExtern() {
 // managers cache analysis results and are cross-registered so passes that
 // need loop or CGSCC analyses can find them.
 //
-// ThePIC / TheSI - Pass instrumentation plumbing required by the new PM.
-// StandardInstrumentations registers the built-in timing and printing hooks.
-//
 // FunctionProtos - Persistent prototype registry. Because each function
 // lands in its own module, a later module that calls 'foo' cannot find 'foo'
 // in TheModule->getFunction(). FunctionProtos stores the PrototypeAST for
@@ -790,8 +787,6 @@ static std::unique_ptr<LoopAnalysisManager> TheLAM;
 static std::unique_ptr<FunctionAnalysisManager> TheFAM;
 static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
 static std::unique_ptr<ModuleAnalysisManager> TheMAM;
-static std::unique_ptr<PassInstrumentationCallbacks> ThePIC;
-static std::unique_ptr<StandardInstrumentations> TheSI;
 static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 static ExitOnError ExitOnErr;
 
@@ -1026,11 +1021,6 @@ static void InitializeModuleAndManagers() {
   TheFAM = std::make_unique<FunctionAnalysisManager>();
   TheCGAM = std::make_unique<CGSCCAnalysisManager>();
   TheMAM = std::make_unique<ModuleAnalysisManager>();
-  ThePIC = std::make_unique<PassInstrumentationCallbacks>();
-  TheSI = std::make_unique<StandardInstrumentations>(*TheContext,
-                                                     /*DebugLogging*/
-                                                     false);
-  TheSI->registerCallbacks(*ThePIC, TheMAM.get());
 
   // Optimisation pipeline (applied per function after codegen).
   if (OptLevel != 0) {
@@ -1040,9 +1030,11 @@ static void InitializeModuleAndManagers() {
     TheFPM->addPass(SimplifyCFGPass()); // remove dead blocks and branches
   }
 
-  PassBuilder PB(nullptr, PipelineTuningOptions(), std::nullopt, ThePIC.get());
+  PassBuilder PB;
   PB.registerModuleAnalyses(*TheMAM);
+  PB.registerCGSCCAnalyses(*TheCGAM);
   PB.registerFunctionAnalyses(*TheFAM);
+  PB.registerLoopAnalyses(*TheLAM);
   // Cross-register so passes can access any analysis tier they need.
   PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
 }
