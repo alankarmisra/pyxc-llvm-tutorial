@@ -156,7 +156,18 @@ TheSI->registerCallbacks(*ThePIC, TheMAM.get());
 
 `TheFPM` is the pass manager — it runs optimization passes on each function in sequence.
 
-The last two lines wire up LLVM's built-in pass observer. `ThePIC` is a registry of callbacks — functions to call before and after each pass runs. `TheSI` is LLVM's built-in collection of those callbacks (IR printing, timing, statistics), connected to `TheMAM` because printing IR can require module-level analysis. One useful thing this enables: change `/*DebugLogging*/ false` to `true` and every pass will dump the IR before and after it runs — helpful when you want to see exactly which pass changed the IR and how.
+The last two lines wire up LLVM's built-in pass observer. `ThePIC` is a registry of callbacks — functions to call before and after each pass runs. `TheSI` is LLVM's built-in collection of those callbacks (IR printing, timing, statistics), connected to `TheMAM` because printing IR can require module-level analysis. One useful thing this enables: change `/*DebugLogging*/ false` to `true` and for every function you define you'll see which passes ran and which analyses they triggered — for example:
+
+```
+Running pass: InstCombinePass on sum (2 instructions)
+Running analysis: TargetIRAnalysis on sum
+Running analysis: DominatorTreeAnalysis on sum
+...
+Running pass: GVNPass on sum (2 instructions)
+Running analysis: MemoryDependenceAnalysis on sum
+```
+
+This shows that analyses are computed lazily — each pass requests only what it needs, and results are reused if a later pass needs the same analysis.
 
 **3. Register optimization passes**
 

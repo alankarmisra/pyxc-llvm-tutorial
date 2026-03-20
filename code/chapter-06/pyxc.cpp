@@ -25,6 +25,7 @@
 #include <iomanip>
 #include <map>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <unistd.h>
@@ -1025,11 +1026,11 @@ static void InitializeModuleAndManagers() {
   TheFAM = std::make_unique<FunctionAnalysisManager>();
   TheCGAM = std::make_unique<CGSCCAnalysisManager>();
   TheMAM = std::make_unique<ModuleAnalysisManager>();
-  //   ThePIC = std::make_unique<PassInstrumentationCallbacks>();
-  //   TheSI = std::make_unique<StandardInstrumentations>(*TheContext,
-  //                                                      /*DebugLogging*/
-  //                                                      false);
-  //   TheSI->registerCallbacks(*ThePIC, TheMAM.get());
+  ThePIC = std::make_unique<PassInstrumentationCallbacks>();
+  TheSI = std::make_unique<StandardInstrumentations>(*TheContext,
+                                                     /*DebugLogging*/
+                                                     false);
+  TheSI->registerCallbacks(*ThePIC, TheMAM.get());
 
   // Optimisation pipeline (applied per function after codegen).
   if (OptLevel != 0) {
@@ -1039,10 +1040,10 @@ static void InitializeModuleAndManagers() {
     TheFPM->addPass(SimplifyCFGPass()); // remove dead blocks and branches
   }
 
-  // Cross-register so passes can access any analysis tier they need.
-  PassBuilder PB;
+  PassBuilder PB(nullptr, PipelineTuningOptions(), std::nullopt, ThePIC.get());
   PB.registerModuleAnalyses(*TheMAM);
   PB.registerFunctionAnalyses(*TheFAM);
+  // Cross-register so passes can access any analysis tier they need.
   PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
 }
 
