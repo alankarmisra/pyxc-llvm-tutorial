@@ -1025,10 +1025,11 @@ static void InitializeModuleAndManagers() {
   TheFAM = std::make_unique<FunctionAnalysisManager>();
   TheCGAM = std::make_unique<CGSCCAnalysisManager>();
   TheMAM = std::make_unique<ModuleAnalysisManager>();
-  ThePIC = std::make_unique<PassInstrumentationCallbacks>();
-  TheSI = std::make_unique<StandardInstrumentations>(*TheContext,
-                                                     /*DebugLogging*/ false);
-  TheSI->registerCallbacks(*ThePIC, TheMAM.get());
+  //   ThePIC = std::make_unique<PassInstrumentationCallbacks>();
+  //   TheSI = std::make_unique<StandardInstrumentations>(*TheContext,
+  //                                                      /*DebugLogging*/
+  //                                                      false);
+  //   TheSI->registerCallbacks(*ThePIC, TheMAM.get());
 
   // Optimisation pipeline (applied per function after codegen).
   if (OptLevel != 0) {

@@ -5,7 +5,7 @@ description: "Add ORC JIT and an optimization pass pipeline: top-level expressio
 
 ## Where We Are
 
-[Chapter 5](chapter-05.md) produces correct IR, but you have to read it — nothing runs. Define `foo` and call it with `2`, and you get IR back with no result:
+[Chapter 5](chapter-05.md) produces correct IR, but you have to read it — nothing runs. For example:
 
 <!-- code-merge:start -->
 ```python
@@ -87,32 +87,30 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-06
 ```
 
-## New Globals
+## Optimizer and Analysis Managers
 
-Chapter 5 had three globals: `TheContext`, `TheModule`, and `Builder`. Chapter 6 adds several more:
+[Chapter 5](chapter-05.md) had three globals: `TheContext`, `TheModule`, and `Builder`. Chapter 6 adds several more:
 
 ```cpp
 static unique_ptr<PyxcJIT>              TheJIT;       // the ORC JIT instance
 static unique_ptr<FunctionPassManager>  TheFPM;       // runs optimizations per function
-static unique_ptr<LoopAnalysisManager>  TheLAM;       // analysis cache: per loop
-static unique_ptr<FunctionAnalysisManager> TheFAM;   // analysis cache: per function
-static unique_ptr<CGSCCAnalysisManager> TheCGAM;      // analysis cache: per call graph
-static unique_ptr<ModuleAnalysisManager> TheMAM;      // analysis cache: per module
+static unique_ptr<LoopAnalysisManager>     TheLAM;    // stores results of loop analyses
+static unique_ptr<FunctionAnalysisManager> TheFAM;    // stores results of function analyses
+static unique_ptr<CGSCCAnalysisManager>    TheCGAM;   // stores results of call-graph analyses
+static unique_ptr<ModuleAnalysisManager>   TheMAM;    // stores results of module analyses
 static unique_ptr<PassInstrumentationCallbacks> ThePIC; // pass debug hook registry
 static unique_ptr<StandardInstrumentations>     TheSI;  // built-in timing/print hooks
 static map<string, unique_ptr<PrototypeAST>> FunctionProtos; // persistent prototype registry
 static ExitOnError ExitOnErr;                         // terminates on unrecoverable JIT error
 ```
 
-`TheJIT` is created once in `main()` and lives for the whole session. Everything else is recreated each time `InitializeModuleAndManagers()` is called — which happens at startup and after each module is handed to the JIT.
-
 ## What Is ORC JIT?
 
 ORC stands for **On-Request Compilation**. It is LLVM's current JIT framework — a library for building JIT compilers, not a single fixed JIT.
 
-The key idea is lazy compilation: ORC doesn't compile everything upfront. It compiles a function when something first asks for its address. You add a module to the JIT and get back a handle; the native code is produced on demand when a symbol is first looked up.
+ORC uses lazy compilation: it doesn't compile everything upfront. It compiles a function when something first asks for its address. You add a module to the JIT and get back a handle; actual compilation happens later, on demand.
 
-For our purposes we use `PyxcJIT` (see `include/PyxcJIT.h`), a thin wrapper around ORC's `LLJIT`. It is created once in `main()`:
+For our purposes we use `PyxcJIT` (see [include/PyxcJIT.h](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/include/PyxcJIT.h)), a thin wrapper around ORC's `LLJIT`. It is created once in `main()`:
 
 ```cpp
 InitializeNativeTarget();
@@ -126,72 +124,63 @@ InitializeModuleAndManagers();
 
 `PyxcJIT::Create()` initializes the **native target** (the CPU and OS the compiler is running on) and sets up the **dynamic linker** (so `extern` functions like `sin` resolve to the real C library at call time).
 
-The dynamic linker part is worth pausing on. `pyxc` is a C++ program linked against the C standard library, so `sin`, `cos`, `printf`, and every other standard function are already loaded into the `pyxc` process when it starts. When the JIT can't resolve a symbol internally, ORC searches `pyxc`'s own symbol table — and finds them there. No `#include`, no link flags, no explicit registration. We'll see this in "Try It" below.
-
-## One Module Per Compilation Unit
-
-In chapter 5, one module accumulated everything typed in the session. Chapter 6 gives each top-level input its own module. Here's why.
-
-When you type `foo(2)`, Pyxc wraps it in a zero-argument function called `__anon_expr`, compiles it, runs it, and then wants to delete the compiled native code — you don't want `__anon_expr` accumulating in the JIT forever.
-
-The JIT frees native code via `ResourceTracker::remove()`. A `ResourceTracker` scopes everything compiled from a single `addModule` call. `RT->remove()` frees all of that at once — but it operates at module granularity, not function granularity.
-
-That's the constraint. If `__anon_expr` and `foo` were compiled from the same module, `RT->remove()` would free `foo`'s native code too. Calling `foo` afterwards would be a crash.
-
-The solution: give each top-level input its own module. `def foo` gets compiled into module A, handed to the JIT, and stays there permanently. `foo(2)` gets compiled into module B, attached to a `ResourceTracker`, and freed immediately after execution. Module A is untouched.
-
-This is why `InitializeModuleAndManagers()` is called both at startup and after every module transfer:
-
-```cpp
-// Hand the module to the JIT.
-ExitOnErr(TheJIT->addModule(ThreadSafeModule(move(TheModule), move(TheContext))));
-
-// Start fresh for the next input.
-InitializeModuleAndManagers();
-```
-
-`ThreadSafeModule` packages the module and its context together for safe handoff to the JIT's internal threads.
+The dynamic linker part is worth pausing on. `pyxc` is a C++ program linked against the C standard library, so `sin`, `cos`, `printf`, and every other standard function are already loaded into the `pyxc` process when it starts. When the JIT can't resolve a name internally, ORC searches the functions already loaded into the `pyxc` process — and finds them there. No `#include`, no link flags, no explicit registration. We'll see this in "Try It" below.
 
 ## InitializeModuleAndManagers
 
-`InitializeModuleAndManagers()` replaces `InitializeModule()` from chapter 5. It creates a fresh module and wires up the optimization pipeline:
+`InitializeModuleAndManagers()` replaces `InitializeModule()` from [chapter 5](chapter-05.md). It is called at startup and after every module is handed to the JIT. It does four things.
+
+**1. Create a fresh module**
 
 ```cpp
-static void InitializeModuleAndManagers() {
-  // Fresh context and module for this compilation unit.
-  TheContext = make_unique<LLVMContext>();
-  TheModule  = make_unique<Module>("PyxcJIT", *TheContext);
-  // Tell the module how the JIT lays out data for the host machine,
-  // so codegen emits correctly-sized types and pointer widths.
-  TheModule->setDataLayout(TheJIT->getDataLayout());
-  Builder = make_unique<IRBuilder<>>(*TheContext);
+TheContext = make_unique<LLVMContext>();
+TheModule  = make_unique<Module>("PyxcJIT", *TheContext);
+TheModule->setDataLayout(TheJIT->getDataLayout());
+Builder = make_unique<IRBuilder<>>(*TheContext);
+```
 
-  // Create the pass and analysis managers.
-  TheFPM  = make_unique<FunctionPassManager>();
-  TheLAM  = make_unique<LoopAnalysisManager>();
-  TheFAM  = make_unique<FunctionAnalysisManager>();
-  TheCGAM = make_unique<CGSCCAnalysisManager>();
-  TheMAM  = make_unique<ModuleAnalysisManager>();
-  ThePIC  = make_unique<PassInstrumentationCallbacks>();
-  TheSI   = make_unique<StandardInstrumentations>(*TheContext,
-                                                  /*DebugLogging*/ false);
-  TheSI->registerCallbacks(*ThePIC, TheMAM.get());
+Same as chapter 5's `InitializeModule()`, with one addition: `setDataLayout` tells the module how the JIT lays out data for the host machine. This is an implementation detail you don't need to think about for now — it would only matter if you were targeting a different platform than the one you're compiling on.
 
-  // Add optimization passes (skipped entirely at -O0).
-  if (OptLevel != 0) {
-    TheFPM->addPass(InstCombinePass()); // peephole rewrites: x+0→x, x*1→x
-    TheFPM->addPass(ReassociatePass()); // reorder ops: (x+2)+3 → x+(2+3) → x+5
-    TheFPM->addPass(GVNPass());         // eliminate redundant computations
-    TheFPM->addPass(SimplifyCFGPass()); // remove dead branches and blocks
-  }
+**2. Create the pass and analysis managers**
 
-  // Cross-register so passes can request any analysis tier they need.
-  PassBuilder PB;
-  PB.registerModuleAnalyses(*TheMAM);
-  PB.registerFunctionAnalyses(*TheFAM);
-  PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
+```cpp
+TheFPM  = make_unique<FunctionPassManager>();
+TheLAM  = make_unique<LoopAnalysisManager>();
+TheFAM  = make_unique<FunctionAnalysisManager>();
+TheCGAM = make_unique<CGSCCAnalysisManager>();
+TheMAM  = make_unique<ModuleAnalysisManager>();
+ThePIC  = make_unique<PassInstrumentationCallbacks>();
+TheSI   = make_unique<StandardInstrumentations>(*TheContext, /*DebugLogging*/ false);
+TheSI->registerCallbacks(*ThePIC, TheMAM.get());
+```
+
+`TheFPM` is the pass manager — it runs optimization passes on each function in sequence.
+
+The last two lines wire up LLVM's built-in pass observer. `ThePIC` is a registry of callbacks — functions to call before and after each pass runs. `TheSI` is LLVM's built-in collection of those callbacks (IR printing, timing, statistics), connected to `TheMAM` because printing IR can require module-level analysis. One useful thing this enables: change `/*DebugLogging*/ false` to `true` and every pass will dump the IR before and after it runs — helpful when you want to see exactly which pass changed the IR and how.
+
+**3. Register optimization passes**
+
+```cpp
+if (OptLevel != 0) {
+  TheFPM->addPass(InstCombinePass());
+  TheFPM->addPass(ReassociatePass());
+  TheFPM->addPass(GVNPass());
+  TheFPM->addPass(SimplifyCFGPass());
 }
 ```
+
+`OptLevel` is a command-line flag covered in [Command-Line Parsing](#command-line-parsing) below — for now just read this as "skip optimizations if the user asked for none." The passes themselves are explained in [The Optimization Pipeline](#the-optimization-pipeline).
+
+**4. Wire the managers together**
+
+```cpp
+PassBuilder PB;
+PB.registerModuleAnalyses(*TheMAM);
+PB.registerFunctionAnalyses(*TheFAM);
+PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
+```
+
+`crossRegisterProxies` links all four analysis managers together so that a pass running at one level (say, function) can request results from another level (say, module) if it needs them. All four must be present or the pass manager will crash.
 
 The pipeline runs immediately after each function is codegenned and verified:
 
@@ -202,7 +191,7 @@ TheFPM->run(*TheFunction, *TheFAM);
 
 ## The Optimization Pipeline
 
-LLVM ships dozens of optimization passes. They are not enabled by default — there is no "turn on all optimizations" switch. You pick the passes that make sense for your language. Four run on each function, in this order:
+LLVM ships dozens of optimization passes and `PassBuilder` has predefined pipeline presets (`O1`, `O2`, `O3`) that enable many of them at once. We're not using those presets — we manually add four specific passes instead, so it's easy to see exactly what's running. A natural next step would be to wire Pyxc's `-O` flag directly into one of those presets rather than maintaining a hand-picked list. For now the four passes are:
 
 | Pass | What it does |
 |---|---|
@@ -212,51 +201,6 @@ LLVM ships dozens of optimization passes. They are not enabled by default — th
 | `SimplifyCFGPass` | Removes dead branches and unreachable blocks — not relevant yet, but essential once we add `if`/`while` |
 
 Note that `1+2` collapsing to `3` isn't done by any of these passes — `IRBuilder` does it automatically as it constructs the IR. That's why `(1+2+x)` already shows `3.000000e+00` in the output before any pass runs.
-
-### Analysis Managers
-
-The four analysis managers (`TheFAM`, `TheLAM`, `TheCGAM`, `TheMAM`) are a shared cache that passes read from rather than recomputing things themselves. For our four passes, `TheFAM` (per-function) does the real work — the other three are registered because the pass manager requires all four tiers to be present. If a pass requests an analysis and the manager isn't there, LLVM asserts and crashes.
-
-`ThePIC` and `TheSI` are how you ask LLVM to print the IR before and after each pass. Change `/*DebugLogging*/ false` to `true` in `InitializeModuleAndManagers` and every pass will dump the IR as it runs — useful when you want to see exactly which pass is responsible for a transformation.
-
-## getFunction and the Cross-Module Problem
-
-In chapter 5, `CallExprAST::codegen` called `TheModule->getFunction(Callee)` directly. That breaks with per-module lifetime: if `foo` was compiled and its module handed to the JIT, the current module has no record of `foo`. A call to `foo(2)` would fail with "Unknown function referenced."
-
-The solution is a persistent prototype registry, `FunctionProtos`, and a helper that uses it:
-
-```cpp
-Function *getFunction(string Name) {
-  // Fast path: already declared or defined in the current module.
-  if (auto *F = TheModule->getFunction(Name))
-    return F;
-
-  // Slow path: re-emit a declaration from the saved prototype.
-  auto FI = FunctionProtos.find(Name);
-  if (FI != FunctionProtos.end())
-    return FI->second->codegen(); // emits a fresh 'declare' in the current module
-
-  return nullptr;
-}
-```
-
-When `foo` is compiled, its `PrototypeAST` is saved into `FunctionProtos`. When a new module is created and `foo(2)` is codegenned, `getFunction` doesn't find `foo` in the fresh module — so it calls `codegen()` on the saved prototype, emitting a `declare double @foo(double)` in the current module. The JIT then resolves that `declare` to the already-compiled body.
-
-`extern def` declarations follow the same pattern. After codegen, the prototype is saved:
-
-```cpp
-// In HandleExtern — save the prototype so getFunction() can re-emit it later.
-FunctionProtos[ProtoAST->getName()] = move(ProtoAST);
-```
-
-And every function definition registers itself before codegenning the body:
-
-```cpp
-// In FunctionAST::codegen — register prototype before resolving the Function*.
-auto &P = *Proto;
-FunctionProtos[Proto->getName()] = move(Proto);
-Function *TheFunction = getFunction(P.getName());
-```
 
 ## Executing Top-Level Expressions
 
@@ -292,9 +236,68 @@ if (auto *FnIR = FnAST->codegen()) {
 
 **`ExprSymbol.toPtr<double(*)()>()`** gets the native machine-code address of the compiled `__anon_expr` function and casts it to a C function pointer. `FP()` runs the compiled code directly on the CPU — no interpreter, no virtual machine.
 
-**`RT->remove()`** frees the object file, symbol table entries, and executable memory for `__anon_expr`. This replaces the `eraseFromParent()` call from chapter 5 — instead of removing the IR before JIT, we compile it first and then free the resulting native code.
+**`RT->remove()`** frees the object file, symbol table entries, and executable memory for `__anon_expr`. This replaces the `eraseFromParent()` call from [chapter 5](chapter-05.md) — instead of removing the IR before JIT, we compile it first and then free the resulting native code.
 
 Named functions (`def foo`) are added to the JIT's main dylib without a tracker — they stay compiled permanently.
+
+## One Module Per Compilation Unit
+
+When you type `foo(2)`, Pyxc wraps it in a zero-argument function called `__anon_expr`, compiles it, runs it, and then frees it — anonymous expressions shouldn't accumulate in the JIT forever. The JIT frees native code at module granularity via `ResourceTracker::remove()`, so `__anon_expr` needs its own module or removing it would take `foo` with it.
+
+Chapter 6 uses a simple strategy: every top-level input gets its own fresh module. A smarter approach would give anonymous expressions their own modules and batch named functions together — but the simple version is easier to follow, and we'll revisit it later.
+
+One side effect worth noting: since each `def` lands in its own module, you might expect to be able to redefine a function by typing `def foo` a second time. LLVM won't allow it — redefining a function is an error.
+
+This is why `InitializeModuleAndManagers()` is called both at startup and after every module transfer:
+
+```cpp
+// Hand the module to the JIT.
+ExitOnErr(TheJIT->addModule(ThreadSafeModule(move(TheModule), move(TheContext))));
+
+// Start fresh for the next input.
+InitializeModuleAndManagers();
+```
+
+`ThreadSafeModule` packages the module and its context together for safe handoff to the JIT's internal threads.
+
+## getFunction and the Cross-Module Problem
+
+In [chapter 5](chapter-05.md), `CallExprAST::codegen` called `TheModule->getFunction(Callee)` directly. That breaks with per-module lifetime: if `foo` was compiled and its module handed to the JIT, the current module has no record of `foo`. A call to `foo(2)` would fail with "Unknown function referenced."
+
+The solution is a persistent prototype registry, `FunctionProtos`, and a helper that uses it:
+
+```cpp
+Function *getFunction(string Name) {
+  // Fast path: already declared or defined in the current module.
+  if (auto *F = TheModule->getFunction(Name))
+    return F;
+
+  // Slow path: re-emit a declaration from the saved prototype.
+  auto FI = FunctionProtos.find(Name);
+  if (FI != FunctionProtos.end())
+    return FI->second->codegen(); // emits a fresh 'declare' in the current module
+
+  return nullptr;
+}
+```
+
+When `foo` is compiled, its `PrototypeAST` is saved into `FunctionProtos`. When a new module is created and `foo(2)` is codegenned, `getFunction` doesn't find `foo` in the fresh module — so it calls `codegen()` on the saved prototype, emitting a `declare double @foo(double)` in the current module. The JIT then resolves that `declare` to the already-compiled body.
+
+`extern def` declarations follow the same pattern. After codegen, the prototype is saved:
+
+```cpp
+// In HandleExtern — save the prototype so getFunction() can re-emit it later.
+FunctionProtos[ProtoAST->getName()] = move(ProtoAST);
+```
+
+And every function definition registers itself before codegenning the body:
+
+```cpp
+// In FunctionAST::codegen — register prototype before resolving the Function*.
+auto &P = *Proto;
+FunctionProtos[Proto->getName()] = move(Proto);
+Function *TheFunction = getFunction(P.getName());
+```
 
 ## The Runtime Library
 
