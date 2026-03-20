@@ -18,6 +18,7 @@
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Scalar/GVN.h"
 #include "llvm/Transforms/Scalar/Reassociate.h"
+#include "llvm/Transforms/Utils/Mem2Reg.h"
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -739,6 +740,7 @@ unique_ptr<FunctionAST> LogErrorF(const char *Str) {
 static unique_ptr<ExprAST> ParseExpression();
 static unique_ptr<ExprAST> ParsePrimary();
 static unique_ptr<ExprAST> ParseVarExpr();
+static unique_ptr<ExprAST> ParseLValue();
 
 /// numberexpr
 ///   = number ;
@@ -765,11 +767,7 @@ static unique_ptr<ExprAST> ParseParenExpr() {
 /// identifierexpr
 ///   = identifier
 ///   | identifier "("[expression{"," expression}]")" ;
-static unique_ptr<ExprAST> ParseIdentifierExpr() {
-  string IdName = IdentifierStr;
-
-  getNextToken(); // eat identifier.
-
+static unique_ptr<ExprAST> ParseIdentifierExprWithName(const string &IdName) {
   if (CurTok != '(') // Simple variable ref.
     return make_unique<VariableExprAST>(IdName);
 
@@ -796,6 +794,26 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
   getNextToken();
 
   return make_unique<CallExprAST>(IdName, std::move(Args));
+}
+
+static unique_ptr<ExprAST> ParseIdentifierExpr() {
+  string IdName = IdentifierStr;
+  getNextToken(); // eat identifier.
+  return ParseIdentifierExprWithName(IdName);
+}
+
+/// lvalue
+///   = identifier ;
+static unique_ptr<ExprAST> ParseLValueFromName(const string &Name) {
+  return make_unique<VariableExprAST>(Name);
+}
+
+static unique_ptr<ExprAST> ParseLValue() {
+  if (CurTok != tok_identifier)
+    return LogError("Expected identifier");
+  string Name = IdentifierStr;
+  getNextToken(); // eat identifier.
+  return ParseLValueFromName(Name);
 }
 
 /// forexpr
@@ -1059,7 +1077,25 @@ static unique_ptr<ExprAST> ParseExpression() {
   if (CurTok == tok_var)
     return ParseVarExpr();
 
-  auto LHS = ParseUnary();
+  unique_ptr<ExprAST> LHS;
+  if (CurTok == tok_identifier) {
+    string Name = IdentifierStr;
+    getNextToken(); // eat identifier.
+
+    if (CurTok == '=') {
+      getNextToken(); // eat '='
+      auto RHS = ParseExpression();
+      if (!RHS)
+        return nullptr;
+      auto LHS = ParseLValueFromName(Name);
+      return make_unique<AssignmentExprAST>(*LHS->getVariableName(),
+                                            std::move(RHS));
+    }
+
+    LHS = ParseIdentifierExprWithName(Name);
+  } else {
+    LHS = ParseUnary();
+  }
   if (!LHS)
     return nullptr;
 
@@ -1938,6 +1974,7 @@ Function *FunctionAST::codegen() {
 /// FunctionPassManager is tied to a specific LLVMContext.
 ///
 /// Pipeline:
+///   PromotePass     - Mem2Reg: promote stack slots to SSA registers.
 ///   InstCombinePass  - Peephole rewrites: a+0->a, x*2->x<<1, etc.
 ///   ReassociatePass  - Reorder commutative ops to expose more folding:
 ///                      (x+2)+3 -> x+(2+3) -> x+5.
@@ -1967,6 +2004,7 @@ static void InitializeModuleAndManagers() {
   // pass manager is left empty so the emitted IR stays close to the direct
   // lowering performed by the code generator.
   if (OptLevel != 0) {
+    TheFPM->addPass(PromotePass());     // mem2reg: stack slots -> SSA regs
     TheFPM->addPass(InstCombinePass()); // peephole rewrites
     TheFPM->addPass(ReassociatePass()); // canonicalise commutative ops
     TheFPM->addPass(GVNPass());         // eliminate common sub-expressions

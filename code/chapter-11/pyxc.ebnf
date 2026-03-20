@@ -25,7 +25,7 @@ ifstmt          = "if" expression ":" suite
                 [ eols "else" ":" suite ] ;
 forstmt         = "for" identifier "=" expression "," expression "," expression ":" suite ;
 varstmt         = "var" varbinding { "," varbinding } ;
-assignstmt      = identifier "=" expression ;
+assignstmt      = lvalue "=" expression ;
 simplestmt      = returnstmt | varstmt | assignstmt | expression ;
 compoundstmt    = ifstmt | forstmt ;
 statement       = simplestmt | compoundstmt ;
@@ -34,6 +34,7 @@ returnstmt      = "return" expression ;
 block           = indent statement { eols statement } dedent ;
 expression      = unaryexpr binoprhs ;
 binoprhs        = { binaryop unaryexpr } ;
+lvalue          = identifier ;
 varbinding      = identifier [ "=" expression ] ;
 unaryexpr       = unaryop unaryexpr | primary ;
 unaryop         = "-" | userdefunaryop ;

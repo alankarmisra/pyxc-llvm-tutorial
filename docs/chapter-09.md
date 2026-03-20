@@ -52,8 +52,7 @@ Pick a value relative to this table. Precedence `1` binds looser than everything
 Unary operators are a different case: they bind tighter than any binary operator by design, so `-x + 1` always means `(-x) + 1`. They are parsed in a dedicated step before any binary expression is evaluated.
 
 ## Grammar
-
-`code/chapter-09/pyxc.ebnf`
+[pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-09/pyxc.ebnf)
 
 ```ebnf
 program         = [ eols ] [ top { eols top } ] [ eols ] ;
@@ -121,7 +120,6 @@ binarydecorator   = "@" "binary" "(" integer ")" ;
 ....
 integer         = digit { digit } ;
 ```
-
 
 `customopchar` is any ASCII punctuation character except `@`, except built-in operator characters (including reserved unary `-`), and except any character already defined as a custom operator (unary or binary). The "not already defined" part is enforced by parser checks, not the grammar itself.
 

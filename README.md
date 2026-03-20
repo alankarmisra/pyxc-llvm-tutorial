@@ -166,15 +166,28 @@ llvm-lit code/chapter-11/test/
 
 ## Roadmap
 
+See [ROADMAP.md](ROADMAP.md) for the full plan. Summary:
+
+**Phase 2 — Native Toolchain (Ch 12–15)**
 - **Ch 12** — Driver and modes (`repl`, `run`, `build`, `--emit`)
 - **Ch 13** — Object file output (`TargetMachine`, `-O0..-O3`)
-- **Ch 14** — Native executable linking (`--emit link`, `-o`)
+- **Ch 14** — Native executable linking (`-o`)
 - **Ch 15** — Debug info and inspection (DWARF, `nm`, `objdump`)
-- **Ch 16** — Type system (`int`, `double`, typed params and returns)
+
+**Phase 3 — Types and Memory (Ch 16–21)**
+- **Ch 16** — Type system (`int`, `double`, typed params and returns, casts)
 - **Ch 17** — Structs and field access
 - **Ch 18** — Pointers and address-of
-- **Ch 19** — Strings and C interop (`printf`, `fopen`, `malloc`)
-- **Ch 20** — `while` loops and the full Mandelbrot renderer
+- **Ch 19** — Arrays
+- **Ch 20** — Strings and C interop (`printf`, `fopen`, `malloc`)
+- **Ch 21** — `while` loops and the full Mandelbrot renderer
+
+**Phase 4 — Control Flow Extensions (Ch 22–24)**
+- **Ch 22–23** — `match`/`case` with guards and defaults
+- **Ch 24** — `for`/`in` with `range`
+
+**Phase 5–7 — Modules, Classes, Concurrency (Ch 25–44)**
+See [ROADMAP.md](ROADMAP.md) for details.
 
 ## Credits
 

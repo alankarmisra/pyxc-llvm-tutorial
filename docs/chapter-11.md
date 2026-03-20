@@ -42,7 +42,7 @@ cd pyxc-llvm-tutorial/code/chapter-11
 
 The central shift: `if`, `for`, `var`, and `return` move out of the expression grammar and become statements. Expressions are now purely value-producing.
 
-`code/chapter-11/pyxc.ebnf`
+[pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-11/pyxc.ebnf)
 
 ```ebnf
 program         = [ eols ] [ top { eols top } ] [ eols ] ;

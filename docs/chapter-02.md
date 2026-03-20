@@ -95,6 +95,8 @@ This notation — named rules, `|`, `[ ]`, `{ }` — has a formal name: **EBNF**
 
 Here's the complete grammar for Pyxc at this stage:
 
+[pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-02/pyxc.ebnf)
+
 ```ebnf
 (* parser territory *)
 program        = [ eols ] [ top { eols top } ] [ eols ] ;

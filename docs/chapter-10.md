@@ -5,22 +5,7 @@ description: "Add mutable local variables and assignment using a temporary var .
 
 ## Where We Are
 
-[Chapter 9](chapter-09.md) added user-defined operators, but every variable in Pyxc is still immutable. Function parameters can be read, loop variables can be introduced by `for`, but there is no way to create a local variable and update it.
-
-Before this chapter, even a tiny local update fails at parse time:
-
-<!-- code-merge:start -->
-```python
-ready> def bump(n): return var x = n: x = x + 1
-```
-```bash
-Error (Line 1, Column 25): Unexpected identifier 'x'
-def bump(n): return var x = n
-                        ^~~~
-```
-<!-- code-merge:end -->
-
-After this chapter, the same function works:
+[Chapter 9](chapter-09.md) added user-defined operators, but every variable in Pyxc is still immutable. Function parameters can be read, loop variables can be introduced by `for`, but there is no way to create a local variable and update it. This chapter adds `var` — a scoped mutable binding — and `=` assignment:
 
 <!-- code-merge:start -->
 ```python
@@ -38,7 +23,7 @@ Evaluated to 6.000000
 ```
 <!-- code-merge:end -->
 
-One caveat up front: the new syntax is intentionally transitional. `var x = ... : expression` is not especially Pythonic. It exists because Pyxc still has expression bodies only. The next two chapters replace this temporary shape with real statement blocks and indentation-sensitive syntax.
+One caveat up front: the new syntax is intentionally transitional. `var x = ... : expression` is not especially Pythonic. It exists because Pyxc still has expression bodies only. The next two chapters replace this temporary syntax with real statement blocks and indentation-sensitive syntax.
 
 ## Source Code
 
@@ -48,25 +33,23 @@ cd pyxc-llvm-tutorial/code/chapter-10
 ```
 
 ## Grammar
-
-Chapter 10 extends the grammar in two places: a new `varexpr` production for local bindings, and assignment as the loosest expression form.
+This chapter extends the grammar in two places: a new `varexpr` production for local bindings, and assignment as the loosest expression form.
 
 ```ebnf
-expression      = varexpr | unaryexpr binoprhs [ "=" expression ] ;  -- new
-varexpr         = "var" varbinding { "," varbinding } ":" [ eols ] expression ; -- new
-varbinding      = identifier [ "=" expression ] ;                     -- new
+expression      = varexpr | unaryexpr binoprhs [ "=" expression ] ;  
+varexpr         = "var" varbinding { "," varbinding } ":" [ eols ] expression ; 
+varbinding      = identifier [ "=" expression ] ;                     
 ```
 
 Two forms are new:
 
-- `var x = 1, y = 2: expression` — introduces one or more mutable locals, then evaluates the body under those bindings
-- `x = x + 1` — assigns to an existing mutable local (or a function parameter)
+- `var x = 1, y = 2: expression` — introduces one or more mutable locals, evaluates the body under those bindings, and returns the body's value. Later initializers can reference earlier ones: `var x = 1, y = x + 1: y` evaluates to `2`.
+- `x = x + 1` — assigns to an existing mutable local (or a function parameter); evaluates to the new value.
 
 `var` must come first in the expression, and the `:` is mandatory. The body after `:` can stay on the same line or move to the next line because `consumeNewlines()` is already part of the expression forms.
 
 ### Full Grammar
-
-`code/chapter-10/pyxc.ebnf`
+[pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-10/pyxc.ebnf)
 
 ```ebnf
 program         = [ eols ] [ top { eols top } ] [ eols ] ;
@@ -84,10 +67,10 @@ toplevelexpr    = expression ;
 prototype       = identifier "(" [ identifier { "," identifier } ] ")" ;
 ifexpr          = "if" expression ":" [ eols ] expression [ eols ] "else" ":" [ eols ] expression ;
 forexpr         = "for" identifier "=" expression "," expression "," expression ":" [ eols ] expression ;
-expression      = varexpr | unaryexpr binoprhs [ "=" expression ] ;  -- new
+expression      = varexpr | unaryexpr binoprhs [ "=" expression ] ;  
 binoprhs        = { binaryop unaryexpr } ;
-varexpr         = "var" varbinding { "," varbinding } ":" [ eols ] expression ; -- new
-varbinding      = identifier [ "=" expression ] ;                     -- new
+varexpr         = "var" varbinding { "," varbinding } ":" [ eols ] expression ; 
+varbinding      = identifier [ "=" expression ] ;                     
 unaryexpr       = unaryop unaryexpr | primary ;
 unaryop         = "-" | userdefunaryop ;
 primary         = identifierexpr | numberexpr | parenexpr
@@ -113,26 +96,6 @@ eol             = "\r\n" | "\r" | "\n" ;
 ws              = " " | "\t" ;
 ```
 
-## Mutable Variables Are Still Expressions
-
-Pyxc still has no statement blocks. So chapter 10 adds mutable variables in expression form:
-
-```python
-var x = 1: x = x + 2
-```
-
-This means:
-
-- `var` introduces one or more local variables
-- each variable gets its own mutable storage
-- the body expression runs with those bindings in scope
-- the whole `var` expression evaluates to the value of the body
-
-Multiple bindings are allowed, and later initializers can reference earlier ones:
-
-```python
-var x = 1, y = x + 2: y
-```
 
 ## New Token and AST Nodes
 
@@ -227,7 +190,7 @@ static unique_ptr<ExprAST> ParseVarExpr() {
 }
 ```
 
-`ParseExpression` simply gives `var` first refusal before the usual binary-expression path:
+If the current token is `var`, `ParseExpression` routes to `ParseVarExpr` before attempting the usual binary-expression path:
 
 ```cpp
 static unique_ptr<ExprAST> ParseExpression() {
@@ -333,9 +296,13 @@ Value *VariableExprAST::codegen() {
   AllocaInst *A = NamedValues[Name];
   if (!A)
     return LogErrorV("Unknown variable name");
-  // Load the current value from the stack slot.
   return Builder->CreateLoad(Type::getDoubleTy(*TheContext), A, Name.c_str());
+  //   → %x2 = load double, ptr %x, align 8
 }
+```
+
+```llvm
+%x2 = load double, ptr %x, align 8
 ```
 
 An assignment evaluates the right-hand side, stores it into the stack slot, and returns the assigned value:
@@ -349,48 +316,76 @@ Value *AssignmentExprAST::codegen() {
   if (!A)
     return LogErrorV("Unknown variable name");
 
-  Builder->CreateStore(Val, A); // write the new value into the stack slot
+  Builder->CreateStore(Val, A); // → store double %val, ptr %x, align 8
   return Val;                   // return the assigned value (makes a = b = 1 work)
 }
+```
+
+```llvm
+store double %addtmp, ptr %x, align 8
 ```
 
 Returning the assigned value is what makes assignment fit naturally into an expression language.
 
 ## VarExprAST::codegen
 
-`VarExprAST::codegen` does four things:
+**Step 1: Evaluate initializers and allocate stack slots.**
 
-1. Evaluate each initializer and allocate a stack slot for it
-2. Install the new bindings in `NamedValues`, saving any previously shadowed bindings
-3. Codegen the body under the new bindings
-4. Restore the old bindings (or remove the names) after the body finishes
+The initializer is evaluated *before* the new name is installed, so `var x = x: ...` looks up the outer `x`, not the one being declared:
 
 ```cpp
 Value *VarExprAST::codegen() {
-  vector<pair<string, AllocaInst *>> OldBindings; // saved outer bindings to restore later
+  vector<pair<string, AllocaInst *>> OldBindings;
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
 
   for (auto &Var : VarNames) {
     const string &VarName = Var.first;
     ExprAST *Init = Var.second.get();
 
-    // Evaluate the initializer before installing the new binding,
-    // so "var x = x: ..." looks up the outer x, not the new one.
-    Value *InitVal = Init->codegen();
+    Value *InitVal = Init->codegen(); // evaluate before installing the binding
     if (!InitVal) return nullptr;
 
     AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
+    // → %x = alloca double, align 8
     Builder->CreateStore(InitVal, Alloca);
+    // → store double %initval, ptr %x, align 8
+```
 
-    // Save the old binding (may be nullptr if name was not in scope).
+**Step 2: Install the new binding, saving any shadowed outer binding.**
+
+If a variable with the same name already exists, its alloca is saved so it can be restored later:
+
+```cpp
     OldBindings.push_back({VarName, NamedValues[VarName]});
     NamedValues[VarName] = Alloca; // shadow any outer binding
   }
+```
 
+After steps 1 and 2, `var x = 1: x = x + 1` has emitted:
+
+```llvm
+%x    = alloca double, align 8
+store double 1.000000e+00, ptr %x, align 8
+```
+
+**Step 3: Codegen the body under the new bindings.**
+
+The body `x = x + 1` loads `x`, adds 1, stores back, and returns the result:
+
+```llvm
+%x1     = load double, ptr %x, align 8
+%addtmp = fadd double %x1, 1.000000e+00
+store double %addtmp, ptr %x, align 8
+```
+
+```cpp
   Value *BodyVal = Body->codegen();
   if (!BodyVal) return nullptr;
+```
 
-  // Restore outer bindings in reverse order.
+**Step 4: Restore outer bindings after the body.**
+
+```cpp
   for (auto I = OldBindings.rbegin(), E = OldBindings.rend(); I != E; ++I) {
     if (I->second)
       NamedValues[I->first] = I->second; // restore saved binding
@@ -402,7 +397,7 @@ Value *VarExprAST::codegen() {
 }
 ```
 
-This gives `var` normal lexical shadowing behavior. If an outer variable already has the same name, the inner `var` temporarily replaces it, then the old binding is restored after the body.
+If an outer variable had the same name, it's visible again after the `var` body exits. This gives `var` normal lexical shadowing behavior.
 
 ## Parameters Become Mutable Too
 
@@ -424,7 +419,7 @@ This unifies the whole language: parameters, `var` locals, and loop variables al
 
 ## for Loops Switch to the Same Model
 
-The old `for` implementation bound the loop variable directly to an SSA `Value*`. That no longer fits now that all mutable locals use allocas. So chapter 10 changes `ForExprAST::codegen` to use a stack slot for the loop variable too:
+The old `for` implementation bound the loop variable directly to an SSA `Value*`. That no longer fits now that all mutable locals use allocas. So we change `ForExprAST::codegen` to use a stack slot for the loop variable too:
 
 ```cpp
 // Allocate a stack slot for the loop variable and store the start value.
@@ -442,53 +437,75 @@ Builder->CreateStore(NextVar, Alloca);
 
 The loop variable name is installed in `NamedValues` as an alloca for the duration of the loop, then restored (or removed) afterward — the same pattern as `VarExprAST::codegen`.
 
-## What the IR Looks Like
-
-A tiny update like `var x = 1: x = x + 2` often optimizes all the way down to a single constant result. To see the mutable-variable machinery clearly, it helps to use a slightly larger example. Here is a sum written with an accumulator:
-
-```python
-@binary(1)
-def ;(x, y): return y
-
-def sum_to(n): return var acc = 0:
-    (for i = 1, i < n + 1, 1: acc = acc + i) ; acc
-```
-
-With `-O0 -v`, Pyxc prints the unoptimized IR:
+Here is `def count(n): return for i = 1, i < n, 1: i` with `-O0 -v`:
 
 ```llvm
-define double @sum_to(double %n) {
+define double @count(double %n) {
 entry:
-  %i   = alloca double, align 8
-  %acc = alloca double, align 8
-  %n1  = alloca double, align 8
-  store double %n, ptr %n1, align 8
-  store double 0.000000e+00, ptr %acc, align 8
+  %i  = alloca double, align 8
+  %n1 = alloca double, align 8
+  store double %n,           ptr %n1, align 8
+  store double 1.000000e+00, ptr %i,  align 8
   br label %loop_cond
 
 loop_cond:
-  store double ..., ptr %i, align 8
-  %addtmp = fadd double %n, 1.000000e+00
-  %cmptmp = fcmp olt double ..., %addtmp
-  br i1 %cmptmp, label %loop_body, label %after_loop
+  %i2       = load double, ptr %i,  align 8
+  %n3       = load double, ptr %n1, align 8
+  %cmptmp   = fcmp olt double %i2, %n3
+  %booltmp  = uitofp i1 %cmptmp to double
+  %loopcond = fcmp one double %booltmp, 0.000000e+00
+  br i1 %loopcond, label %loop_body, label %after_loop
 
 loop_body:
-  %addtmp6 = fadd double ..., ...
-  store double %addtmp6, ptr %acc, align 8
-  ...
+  %i4      = load double, ptr %i, align 8
+  %i5      = load double, ptr %i, align 8
+  %nextvar = fadd double %i5, 1.000000e+00
+  store double %nextvar, ptr %i, align 8
   br label %loop_cond
 
 after_loop:
-  %binop = call double @"binary;"(double 0.000000e+00, double ...)
-  ret double %binop
+  ret double 0.000000e+00
 }
 ```
 
-Three things to notice:
+The loop variable `i` gets its own alloca, loaded and stored on every iteration. The `uitofp`/`fcmp one` pair is LLVM's way of converting the boolean comparison result back to a double for the branch — we'll see `mem2reg` clean all of this up in [mem2reg: Cleaning Up the Stack Slots](#mem2reg-cleaning-up-the-stack-slots).
 
-- `%n1`, `%acc`, and `%i` are stack slots created by `alloca`
-- `store` writes new values into those slots; `load` (elided in the summary above) reads them out
-- the IR still contains explicit `alloca`/`load`/`store` — LLVM's `mem2reg` pass would promote most of these to pure SSA form, but chapter 10 does not run that pass so the storage model stays visible
+## What the IR Looks Like
+
+The alloca-based approach is deliberate — the frontend puts every parameter and mutable variable into a stack slot to avoid having to compute SSA form itself. Every read is a `load`, every write is a `store`. Even a function as simple as `def bump(n): return n + 1` shows this with `-O0 -v`:
+
+```llvm
+define double @bump(double %n) {
+entry:
+  %n1     = alloca double, align 8
+  store double %n, ptr %n1, align 8
+  %n2     = load double, ptr %n1, align 8
+  %addtmp = fadd double %n2, 1.000000e+00
+  ret double %addtmp
+}
+```
+
+A stack slot for `n`, a store, a load — just to add 1.
+
+## mem2reg: Cleaning Up the Stack Slots
+
+This chapter adds `PromotePass` (commonly called `mem2reg`) to the optimization pipeline:
+
+```cpp
+TheFPM->addPass(PromotePass()); // mem2reg: stack slots → SSA registers
+```
+
+`mem2reg` looks at each `alloca` and traces every value stored into and loaded from it. If the slot never escapes (no pointer to it is passed anywhere), it replaces the whole `alloca`/`load`/`store` pattern with plain values. The same `bump` with optimizations on:
+
+```llvm
+define double @bump(double %n) {
+entry:
+  %addtmp = fadd double %n, 1.000000e+00
+  ret double %addtmp
+}
+```
+
+Five instructions down to two. This is what LLVM's other passes — `GVNPass`, `InstCombinePass` — expect to see. They are designed to work on values, not memory operations, and `mem2reg` gives them exactly that.
 
 ## Build and Run
 
@@ -504,7 +521,7 @@ Simple local update:
 
 <!-- code-merge:start -->
 ```python
-ready> var x = 1: x = x + 2
+ready> var x = 1: x = x + 1
 ```
 ```bash
 Parsed a top-level expression.
@@ -516,7 +533,7 @@ Multiple bindings — later initializers see earlier ones:
 
 <!-- code-merge:start -->
 ```python
-ready> var x = 1, y = x + 2: y
+ready> var x = 1, y = x + 1: y
 ```
 ```bash
 Parsed a top-level expression.

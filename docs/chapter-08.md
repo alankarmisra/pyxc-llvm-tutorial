@@ -73,8 +73,7 @@ cd pyxc-llvm-tutorial/code/chapter-08
 ```
 
 ## Grammar
-
-`code/chapter-08/pyxc.ebnf`
+[pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-08/pyxc.ebnf)
 
 ```ebnf
 program         = [ eols ] [ top { eols top } ] [ eols ] ;
@@ -712,7 +711,6 @@ static unique_ptr<ExprAST> ParseForExpr() {
 
 ### Codegen
 
-
 ```
       entry
         │
@@ -937,7 +935,6 @@ br i1 %loopcond, label %loop_body, label %after_loop
 br i1 %cmptmp, label %after_loop, label %loop_body
 ```
 
-
 Notice also that LLVM rewrote `ole` (ordered less-than-or-equal) as `ugt` (unordered greater-than) and flipped the branch destinations. Can you verify these are equivalent? Hint: `ole` and `ugt` are complements — swapping the predicate and flipping the branch destinations leaves the control flow unchanged. You could use truth tables.
 
 The full optimized function:
@@ -1012,7 +1009,6 @@ mandel(0 - 2.3, 0 - 1.3, 0.05, 0.07)
 **Sequencing with `+`.** `mandelhelp` writes `mandelrow(...) + putchard(10)` to print a newline after each row. Both calls return `0.0`, so adding them is a no-op — it is just a way to chain two side-effect calls into a single expression. Pyxc has no sequencing operator yet. [Chapter 9](chapter-09.md) introduces `@binary(1) def ;(x, y): return y` to make this intent explicit.
 
 **Unary minus.** Pyxc has no unary minus yet — `-2.3` would be parsed as the binary operator `-` applied to nothing, which is an error. The workaround is `0 - 2.3`: a fully-formed binary subtraction that the optimizer collapses to the literal `-2.3` with no extra instructions emitted. [Chapter 9](chapter-09.md) adds unary-expression parsing and built-in unary minus support.
-
 
 ```
 ******************************************************************************

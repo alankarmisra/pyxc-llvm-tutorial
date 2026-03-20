@@ -18,6 +18,7 @@
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Scalar/GVN.h"
 #include "llvm/Transforms/Scalar/Reassociate.h"
+#include "llvm/Transforms/Utils/Mem2Reg.h"
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -915,6 +916,7 @@ static unique_ptr<ExprAST> ParseVarStmt();
 static unique_ptr<ExprAST> ParseStatement();
 static unique_ptr<ExprAST> ParseSimpleStmt();
 static unique_ptr<ExprAST> ParseBlock();
+static unique_ptr<ExprAST> ParseLValue();
 // Track whether the last parsed statement ended with a block. This allows the
 // enclosing block to accept the next statement without an explicit tok_eol
 // because the inner block consumes the trailing newline before its DEDENT.
@@ -994,6 +996,20 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
   getNextToken(); // eat identifier.
 
   return ParseIdentifierExprWithName(std::move(IdName));
+}
+
+/// lvalue
+///   = identifier ;
+static unique_ptr<ExprAST> ParseLValueFromName(const string &Name) {
+  return make_unique<VariableExprAST>(Name);
+}
+
+static unique_ptr<ExprAST> ParseLValue() {
+  if (CurTok != tok_identifier)
+    return LogError("Expected identifier");
+  string Name = IdentifierStr;
+  getNextToken(); // eat identifier.
+  return ParseLValueFromName(Name);
 }
 
 /// forstmt
@@ -1260,7 +1276,31 @@ static unique_ptr<ExprAST> ParseSimpleStmt() {
   if (CurTok == tok_var)
     return ParseVarStmt();
 
-  auto Expr = ParseExpression();
+  unique_ptr<ExprAST> Expr;
+  if (CurTok == tok_identifier) {
+    string Name = IdentifierStr;
+    getNextToken(); // eat identifier.
+
+    if (CurTok == '=') {
+      if (!IsDeclaredVar(Name))
+        return LogError("Assignment to undeclared variable");
+      getNextToken(); // eat '='
+
+      auto RHS = ParseExpression();
+      if (!RHS)
+        return nullptr;
+      auto LHS = ParseLValueFromName(Name);
+      return make_unique<AssignmentExprAST>(*LHS->getVariableName(),
+                                            std::move(RHS));
+    }
+
+    Expr = ParseIdentifierExprWithName(std::move(Name));
+    if (!Expr)
+      return nullptr;
+    Expr = ParseBinOpRHS(0, std::move(Expr));
+  } else {
+    Expr = ParseExpression();
+  }
   if (!Expr)
     return nullptr;
 
@@ -2298,6 +2338,7 @@ Function *FunctionAST::codegen() {
 /// FunctionPassManager is tied to a specific LLVMContext.
 ///
 /// Pipeline:
+///   PromotePass     - Mem2Reg: promote stack slots to SSA registers.
 ///   InstCombinePass  - Peephole rewrites: a+0->a, x*2->x<<1, etc.
 ///   ReassociatePass  - Reorder commutative ops to expose more folding:
 ///                      (x+2)+3 -> x+(2+3) -> x+5.
@@ -2327,6 +2368,7 @@ static void InitializeModuleAndManagers() {
   // pass manager is left empty so the emitted IR stays close to the direct
   // lowering performed by the code generator.
   if (OptLevel != 0) {
+    TheFPM->addPass(PromotePass());     // mem2reg: stack slots -> SSA regs
     TheFPM->addPass(InstCombinePass()); // peephole rewrites
     TheFPM->addPass(ReassociatePass()); // canonicalise commutative ops
     TheFPM->addPass(GVNPass());         // eliminate common sub-expressions
