@@ -311,7 +311,23 @@ Function *FunctionAST::codegen() {
 
 Four steps:
 
-1. **Get or create the function declaration.** If `extern def foo(x)` was seen earlier, `getFunction` finds it. Otherwise `Proto->codegen()` creates a fresh declaration.
+1. **Get or create the function declaration.** If `extern def foo(x)` was seen earlier, `getFunction` finds it. Otherwise `Proto->codegen()` creates a `Function*` object in the module — which at this point is just a signature with no body, equivalent to a `declare`:
+
+   ```llvm
+   declare double @foo(double %x, double %y)
+   ```
+
+   The remaining steps then add basic blocks to that same object, promoting it to a full definition:
+
+   ```llvm
+   define double @foo(double %x, double %y) {
+   entry:
+     %addtmp = fadd double %x, %y
+     ret double %addtmp
+   }
+   ```
+
+   It's the same `Function*` being completed in place — not two separate objects.
 
 2. **Create the entry basic block.** A basic block is a straight-line sequence of instructions that ends with a branch or return. Every function starts with one. `SetInsertPoint` tells the builder to append new instructions here.
 

@@ -58,17 +58,17 @@ unaryopprototype  = customopchar "(" identifier ")" ;
 external        = "extern" "def" prototype ;
 toplevelexpr    = expression ;
 prototype       = identifier "(" [ identifier { "," identifier } ] ")" ;
-ifstmt          = "if" expression ":" suite                           -- new
+ifstmt          = "if" expression ":" suite                           
                 [ eols "else" ":" suite ] ;
-forstmt         = "for" identifier "=" expression "," expression "," expression ":" suite ; -- new
-varstmt         = "var" varbinding { "," varbinding } ;              -- new (no body)
-assignstmt      = identifier "=" expression ;                         -- new
-simplestmt      = returnstmt | varstmt | assignstmt | expression ;   -- new
-compoundstmt    = ifstmt | forstmt ;                                  -- new
-statement       = simplestmt | compoundstmt ;                        -- new
-suite           = simplestmt | compoundstmt | eols block ;           -- new
-returnstmt      = "return" expression ;                               -- new
-block           = indent statement { eols statement } dedent ;        -- new
+forstmt         = "for" identifier "=" expression "," expression "," expression ":" suite ; 
+varstmt         = "var" varbinding { "," varbinding } ;               (no body)
+assignstmt      = identifier "=" expression ;                         
+simplestmt      = returnstmt | varstmt | assignstmt | expression ;   
+compoundstmt    = ifstmt | forstmt ;                                  
+statement       = simplestmt | compoundstmt ;                        
+suite           = simplestmt | compoundstmt | eols block ;           
+returnstmt      = "return" expression ;                               
+block           = indent statement { eols statement } dedent ;        
 expression      = unaryexpr binoprhs ;                               -- simplified (no var/=)
 binoprhs        = { binaryop unaryexpr } ;
 varbinding      = identifier [ "=" expression ] ;
@@ -80,8 +80,8 @@ callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
 numberexpr      = number ;
 parenexpr       = "(" expression ")" ;
 binaryop        = builtinbinaryop | userdefbinaryop ;
-indent          = INDENT ;                                            -- new
-dedent          = DEDENT ;                                            -- new
+indent          = INDENT ;                                            
+dedent          = DEDENT ;                                            
 builtinbinaryop = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
 userdefbinaryop = ? any opchar defined as a custom binary operator ? ;
 userdefunaryop  = ? any opchar defined as a custom unary operator ? ;
@@ -96,8 +96,8 @@ letter          = "A".."Z" | "a".."z" ;
 digit           = "0".."9" ;
 eol             = "\r\n" | "\r" | "\n" ;
 ws              = " " | "\t" ;
-INDENT          = ? synthetic token emitted by lexer ? ;              -- new
-DEDENT          = ? synthetic token emitted by lexer ? ;              -- new
+INDENT          = ? synthetic token emitted by lexer ? ;              
+DEDENT          = ? synthetic token emitted by lexer ? ;              
 ```
 
 Key new rules:

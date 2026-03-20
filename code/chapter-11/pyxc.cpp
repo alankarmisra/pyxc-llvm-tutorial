@@ -18,7 +18,6 @@
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Scalar/GVN.h"
 #include "llvm/Transforms/Scalar/Reassociate.h"
-#include "llvm/Transforms/Scalar/SimplifyCFG.h"
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -2304,7 +2303,6 @@ Function *FunctionAST::codegen() {
 ///                      (x+2)+3 -> x+(2+3) -> x+5.
 ///   GVNPass          - Global Value Numbering: eliminate redundant loads and
 ///                      common sub-expressions across basic blocks.
-///   SimplifyCFGPass  - Remove unreachable blocks, merge redundant branches.
 ///
 /// The analysis managers are cross-registered so that a function pass that
 /// needs loop information can reach TheLAM, and so on.
@@ -2332,7 +2330,6 @@ static void InitializeModuleAndManagers() {
     TheFPM->addPass(InstCombinePass()); // peephole rewrites
     TheFPM->addPass(ReassociatePass()); // canonicalise commutative ops
     TheFPM->addPass(GVNPass());         // eliminate common sub-expressions
-    TheFPM->addPass(SimplifyCFGPass()); // remove dead blocks and branches
   }
 
   // Cross-register so passes can access any analysis tier they need.

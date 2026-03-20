@@ -199,6 +199,37 @@ Every chapter directory contains a `pyxc.ebnf` that is the **single source of tr
 [ ] = zero or one (optional)
 ```
 
+---
+
+## 4. Thread Memory (for new sessions)
+
+Use this as a quick orientation checklist when starting a new thread.
+
+Repository structure
+- Chapters live in `docs/chapter-XX.md`.
+- Code lives in `code/chapter-XX/` with `pyxc.cpp`, `CMakeLists.txt`, `pyxc.ebnf`, and `test/`.
+- `chapter-00.md` is the index; each chapter entry is a single bullet with title + frontmatter description.
+
+Naming conventions
+- Chapter files use `chapter-XX.md` (two-digit, zero-padded).
+- Code directories use `code/chapter-XX/`.
+- Grammar lives in `code/chapter-XX/pyxc.ebnf`.
+- Tests are `code/chapter-XX/test/*.pyxc`.
+
+Testing and build
+- Tests are LLVM lit tests.
+- Tests live in `code/chapter-XX/test/`.
+- Run tests with `llvm-lit -v test` from the chapter directory.
+- Build with `./build.sh` (preferred) or `cmake -S . -B build && cmake --build build`.
+
+REPL and transcripts
+- REPL prompt is `ready>`.
+- Only include real output in REPL transcripts; use `...` for truncation.
+
+General workflow reminder
+- Each chapter is a self-contained snapshot; do not reference code from other chapters.
+- Update grammar first when adding new syntax, then parser/code.
+
 The `.ebnf` file, the `///` grammar banners in `.cpp`, and the `## Grammar` section in the chapter `.md` must all agree — same production names, same structure. When any one changes, update the other two in the same edit session.
 
 ### Grammar Section in the Chapter Doc
