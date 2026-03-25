@@ -1,0 +1,5 @@
+extern def printd(x)
+
+def test(a, b): return var x, a = b = 1, x = a : x
+
+printd(test(20, 30))

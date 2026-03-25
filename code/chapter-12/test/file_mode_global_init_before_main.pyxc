@@ -1,0 +1,15 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: 20.000000
+# CHECK: 21.000000
+# CHECK-NOT: ready>
+
+# Tests: top-level statements run before user-defined main in file mode.
+
+extern def printd(x)
+
+var x = 20
+
+def main():
+    printd(x)
+    x = x + 1
+    printd(x)

@@ -1,0 +1,9 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Destination of '=' must be a variable
+
+# Tests: assignment to a parenthesized variable should be rejected.
+# Previously, (x) = 2 was accepted because getLValueName() returned a name.
+
+def f():
+    var x = 1
+    (x) = 2

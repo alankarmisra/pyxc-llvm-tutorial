@@ -1,0 +1,12 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Parsed a function definition.
+# CHECK: Evaluated to 9.000000
+
+
+# Tests: callexpr where an argument is itself a non-trivial expression.
+# callexpr = identifier "(" expression { "," expression } ")"
+
+def square(x): return x * x
+
+# Argument is (1 + 2) = 3; square(3) = 9.
+square(1 + 2)

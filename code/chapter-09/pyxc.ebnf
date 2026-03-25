@@ -12,10 +12,10 @@ program         = [ eols ] [ top { eols top } ] [ eols ] ;
 eols            = eol { eol } ;
 top             = definition | decorateddef | external | toplevelexpr ;
 definition      = "def" prototype ":" [ eols ] "return" expression ;
-decorateddef      = binarydecorator eols "def" binaryopprototype ":" [ eols ] "return" expression
+decorateddef    = binarydecorator eols "def" binaryopprototype ":" [ eols ] "return" expression
                   | unarydecorator  eols "def" unaryopprototype  ":" [ eols ] "return" expression ;
-binarydecorator   = "@" "binary" "(" integer ")" ;
-unarydecorator    = "@" "unary" ;
+binarydecorator = "@" "binary" "(" integer ")" ;
+unarydecorator  = "@" "unary" ;
 binaryopprototype = customopchar "(" identifier "," identifier ")" ;
 unaryopprototype  = customopchar "(" identifier ")" ;
 external        = "extern" "def" prototype ;

@@ -1,0 +1,19 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: 1.000000
+# CHECK-NOT: ready>
+
+# Tests: variables declared in nested blocks do not leak to outer scopes.
+# Each block gets its own x; after all blocks exit, the function-scope x=1
+# is restored.
+
+extern def printd(x)
+
+def f():
+    var x = 1
+    if x > 0:
+        var x = 2
+        if x > 0:
+            var x = 5
+    return x
+
+printd(f())

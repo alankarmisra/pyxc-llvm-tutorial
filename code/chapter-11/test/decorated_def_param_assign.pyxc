@@ -1,0 +1,15 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Parsed a user-defined operator.
+# CHECK: Evaluated to 7.000000
+
+# Tests: parameters in decorated defs are in scope for assignment.
+# Without a FunctionScopeGuard in ParseDecoratedDef, this used to fail with
+# "Assignment to undeclared variable".
+
+@binary(5)
+def %(lhs, rhs):
+    lhs = lhs * 2
+    return lhs + rhs
+
+# (2*2)+3 = 7
+2 % 3

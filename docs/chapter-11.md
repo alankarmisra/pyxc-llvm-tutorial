@@ -5,18 +5,7 @@ description: "Switch from expression-only bodies to statement blocks with indent
 
 ## Where We Are
 
-[Chapter 10](chapter-10.md) added mutable variables, but the function body was still a single expression. The `var` form needed a `:` and a body expression, and `for` loops were expressions that produced `0.0`:
-
-<!-- code-merge:start -->
-```python
-ready> def sum_to(n): return var acc = 0: for i = 1, i <= n, 1: acc = acc + i
-```
-```bash
-Parsed a function definition.
-```
-<!-- code-merge:end -->
-
-That works, but it is not how Python reads. This chapter introduces real statement blocks and indentation-sensitive syntax. After this chapter:
+[Chapter 10](chapter-10.md) added mutable variables, but the function body was still a single expression. The `var` form needed a `:` and a body expression, and `for` loops were expressions that produced `0.0`. This chapter introduces real statement blocks and indentation-sensitive syntax. After this chapter you'll be able to write code more naturally:
 
 <!-- code-merge:start -->
 ```python
@@ -42,13 +31,56 @@ cd pyxc-llvm-tutorial/code/chapter-11
 
 The central shift: `if`, `for`, `var`, and `return` move out of the expression grammar and become statements. Expressions are now purely value-producing.
 
-[pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-11/pyxc.ebnf)
+**What changed or is new:**
+
+```ebnf
+(* changed: body is now a statement or indented block, not an expression *)
+definition   = "def" prototype ":" ( simplestmt | eols block ) ;
+decorateddef = binarydecorator eols "def" binaryopprototype ":" ( simplestmt | eols block )
+             | unarydecorator  eols "def" unaryopprototype  ":" ( simplestmt | eols block ) ;
+
+(* new: statement forms *)
+ifstmt       = "if" expression ":" suite [ eols "else" ":" suite ] ;
+forstmt      = "for" identifier "=" expression "," expression "," expression ":" suite ;
+varstmt      = "var" varbinding { "," varbinding } ;  (* no body — var is now a statement *)
+assignstmt   = identifier "=" expression ;
+returnstmt   = "return" expression ;
+simplestmt   = returnstmt | varstmt | assignstmt | expression ;
+compoundstmt = ifstmt | forstmt ;
+statement    = simplestmt | compoundstmt ;
+suite        = simplestmt | compoundstmt | eols block ;
+block        = indent statement { eols statement } dedent ;
+indent       = INDENT ;
+dedent       = DEDENT ;
+INDENT       = ? synthetic token emitted by the lexer when indentation increases ? ;
+DEDENT       = ? synthetic token emitted by the lexer when indentation decreases ? ;
+
+(* simplified: var and assignment removed; if/for removed from primary *)
+expression   = unaryexpr binoprhs ;
+primary      = identifierexpr | numberexpr | parenexpr ;
+```
+
+- **`suite`** — what follows a `:`. Either a single statement on the same line, or a newline followed by an indented block.
+- **`simplestmt`** — statements that fit on one line: `return`, `var`, assignment, or a bare expression.
+- **`compoundstmt`** — statements that introduce a new suite: `if` and `for`.
+- **`block`** — an `INDENT` token, one or more statements separated by newlines, a `DEDENT` token.
+- **`INDENT` / `DEDENT`** — tokens emitted by the lexer when indentation increases or decreases. One `INDENT` is emitted when a block opens, one `DEDENT` when it closes — not one per line. The parser sees them like matched parentheses:
+
+```python
+def f():
+    var x = 5      # ← INDENT emitted here (indentation increased)
+    x = x + 1      # ← nothing (same level)
+    return x       # ← nothing (same level)
+                   # ← DEDENT emitted here (indentation decreased)
+```
+
+**Full grammar** — [pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-11/pyxc.ebnf):
 
 ```ebnf
 program         = [ eols ] [ top { eols top } ] [ eols ] ;
 eols            = eol { eol } ;
 top             = definition | decorateddef | external | toplevelexpr ;
-definition      = "def" prototype ":" ( simplestmt | eols block ) ;  -- changed
+definition      = "def" prototype ":" ( simplestmt | eols block ) ;
 decorateddef    = binarydecorator eols "def" binaryopprototype ":" ( simplestmt | eols block )
                 | unarydecorator  eols "def" unaryopprototype  ":" ( simplestmt | eols block ) ;
 binarydecorator = "@" "binary" "(" integer ")" ;
@@ -58,30 +90,29 @@ unaryopprototype  = customopchar "(" identifier ")" ;
 external        = "extern" "def" prototype ;
 toplevelexpr    = expression ;
 prototype       = identifier "(" [ identifier { "," identifier } ] ")" ;
-ifstmt          = "if" expression ":" suite                           
-                [ eols "else" ":" suite ] ;
-forstmt         = "for" identifier "=" expression "," expression "," expression ":" suite ; 
-varstmt         = "var" varbinding { "," varbinding } ;               (no body)
-assignstmt      = identifier "=" expression ;                         
-simplestmt      = returnstmt | varstmt | assignstmt | expression ;   
-compoundstmt    = ifstmt | forstmt ;                                  
-statement       = simplestmt | compoundstmt ;                        
-suite           = simplestmt | compoundstmt | eols block ;           
-returnstmt      = "return" expression ;                               
-block           = indent statement { eols statement } dedent ;        
-expression      = unaryexpr binoprhs ;                               -- simplified (no var/=)
+ifstmt          = "if" expression ":" suite [ eols "else" ":" suite ] ;
+forstmt         = "for" identifier "=" expression "," expression "," expression ":" suite ;
+varstmt         = "var" varbinding { "," varbinding } ;
+assignstmt      = identifier "=" expression ;
+simplestmt      = returnstmt | varstmt | assignstmt | expression ;
+compoundstmt    = ifstmt | forstmt ;
+statement       = simplestmt | compoundstmt ;
+suite           = simplestmt | compoundstmt | eols block ;
+returnstmt      = "return" expression ;
+block           = indent statement { eols statement } dedent ;
+expression      = unaryexpr binoprhs ;
 binoprhs        = { binaryop unaryexpr } ;
 varbinding      = identifier [ "=" expression ] ;
 unaryexpr       = unaryop unaryexpr | primary ;
 unaryop         = "-" | userdefunaryop ;
-primary         = identifierexpr | numberexpr | parenexpr ;          -- simplified (no if/for)
+primary         = identifierexpr | numberexpr | parenexpr ;
 identifierexpr  = identifier | callexpr ;
 callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
 numberexpr      = number ;
 parenexpr       = "(" expression ")" ;
 binaryop        = builtinbinaryop | userdefbinaryop ;
-indent          = INDENT ;                                            
-dedent          = DEDENT ;                                            
+indent          = INDENT ;
+dedent          = DEDENT ;
 builtinbinaryop = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
 userdefbinaryop = ? any opchar defined as a custom binary operator ? ;
 userdefunaryop  = ? any opchar defined as a custom unary operator ? ;
@@ -96,17 +127,13 @@ letter          = "A".."Z" | "a".."z" ;
 digit           = "0".."9" ;
 eol             = "\r\n" | "\r" | "\n" ;
 ws              = " " | "\t" ;
-INDENT          = ? synthetic token emitted by lexer ? ;              
-DEDENT          = ? synthetic token emitted by lexer ? ;              
+INDENT          = ? synthetic token emitted by lexer ? ;
+DEDENT          = ? synthetic token emitted by lexer ? ;
 ```
 
-Key new rules:
+**A side effect of this grammar change.** In [chapter 10](chapter-10.md), `var` was an expression with a body — `var x = 5 in x + 1`. The variable and the code that used it were a single syntactic unit, so the variable's lifetime was self-contained. Now that `var` is a free-standing statement, a variable declared in one statement could in principle be referenced in any later statement — including one compiled in a completely separate module.
 
-- **`suite`** — what follows a `:`. Either a single statement on the same line, or a newline followed by an indented block.
-- **`simplestmt`** — statements that fit on one line: `return`, `var`, assignment, or a bare expression.
-- **`compoundstmt`** — statements that introduce a new suite: `if` and `for`.
-- **`block`** — an `INDENT` token, one or more statements separated by newlines, a `DEDENT` token.
-- **`INDENT` / `DEDENT`** — synthetic tokens emitted by the lexer; the parser never sees raw whitespace.
+That last part is the problem. In the REPL, each top-level input is compiled into its own throw-away module and immediately freed after evaluation. A `var` at the top level would need its storage to survive across module boundaries, which the current JIT design doesn't support. Chapter 12 fixes this properly — both for the REPL and for compiled executables.
 
 ## Statements vs Expressions
 
@@ -138,7 +165,7 @@ tok_dedent = -20,  // synthetic: end of an indented block
 
 And three new AST node classes:
 
-**`ReturnExprAST`** — a `return` statement. Emits a real LLVM terminator:
+**`ReturnExprAST`** — a `return` statement:
 
 ```cpp
 class ReturnExprAST : public ExprAST {
@@ -149,7 +176,7 @@ public:
 };
 ```
 
-**`BlockExprAST`** — a sequence of statements evaluated in order. The block's value is the value of its last statement:
+**`BlockExprAST`** — a sequence of statements evaluated in order. If execution reaches the end without a `return`, the function implicitly returns `0.0`. Use an explicit `return` if you need a specific value:
 
 ```cpp
 class BlockExprAST : public ExprAST {
@@ -161,7 +188,7 @@ public:
 };
 ```
 
-**`VarStmtAST`** — the statement form of `var`. Unlike `VarExprAST` from chapter 10, it has no body. Variables declared here persist for the rest of the function:
+**`VarStmtAST`** — the statement form of `var`. Unlike `VarExprAST` from [chapter 10](chapter-10.md), it has no body. Variables declared here persist for the rest of the function:
 
 ```cpp
 class VarStmtAST : public ExprAST {
@@ -177,7 +204,28 @@ public:
 
 ## INDENT and DEDENT
 
-The lexer keeps an indentation stack and a pending-token queue. At the start of each line it measures the column, compares it to the top of the stack, and pushes `INDENT` or `DEDENT` tokens into the queue for the parser to drain one at a time:
+A single counter isn't enough to track indentation — nested blocks need to remember every level that was opened. When indentation drops, the lexer needs to know which level it's returning to, and how many blocks it's closing at once. That's why the lexer keeps an `IndentStack` and a pending-token queue.
+
+At the start of each line it finds the indentation level, compares it to the top of the stack, and pushes `INDENT` or `DEDENT` tokens into the queue. When indentation drops by multiple levels in one step, one `DEDENT` is queued per level closed and the parser drains them one at a time:
+
+```python
+def f(x):            # stack: [0]
+    if x > 0:        # stack: [0, 4]        → INDENT
+        if x > 10:   # stack: [0, 4, 8]     → INDENT
+            return x # stack: [0, 4, 8, 12] → INDENT
+    return 0         # col 4: three levels closed → DEDENT, DEDENT, DEDENT queued
+                     # stack drains back to [0, 4]; parser sees them one at a time
+```
+
+Blocks are also automatically closed at end of file — no trailing blank line needed:
+
+```python
+def f():
+    var x = 5        # stack: [0, 4] → INDENT
+    return x         # stack: [0, 4]   nothing
+# EOF                # col 0: stack has [0, 4] → DEDENT pushed into PendingTokens
+                     # parser drains it on the next getNextToken() call
+```
 
 ```cpp
 static vector<int> IndentStack = {0}; // starts at column 0
@@ -185,24 +233,28 @@ static deque<int>  PendingTokens;     // buffered tokens the parser hasn't seen 
 static bool AtLineStart = true;       // true right after a newline
 ```
 
-Inside `gettok()`, before any normal token logic, the indentation is processed:
+Inside `gettok()`, before any normal token logic, the indentation is processed in three steps.
+
+**Step 1: Find the indentation level of the current line.**
 
 ```cpp
 if (AtLineStart) {
-  // Measure the indent level of this line.
   int IndentCol = 0;
   while (LastChar == ' ' || LastChar == '\t') {
-    IndentCol += (LastChar == ' ') ? 1 : (8 - IndentCol % 8); // tabs to cols
+    IndentCol += (LastChar == ' ') ? 1 : (8 - IndentCol % 8); // tabs → columns
     LastChar = advance();
   }
+```
 
-  // More indented than current level → emit one INDENT.
+**Step 2: Compare to the top of the stack and queue INDENT or DEDENT tokens.**
+
+```cpp
   if (IndentCol > IndentStack.back()) {
+    // More indented → push one INDENT.
     IndentStack.push_back(IndentCol);
     PendingTokens.push_back(tok_indent);
-  }
-  // Less indented → emit one DEDENT per level closed.
-  else if (IndentCol < IndentStack.back()) {
+  } else if (IndentCol < IndentStack.back()) {
+    // Less indented → push one DEDENT per level closed.
     while (IndentStack.size() > 1 && IndentCol < IndentStack.back()) {
       IndentStack.pop_back();
       PendingTokens.push_back(tok_dedent);
@@ -213,9 +265,14 @@ if (AtLineStart) {
       return tok_error;
     }
   }
+```
 
+A single dedent can push multiple `DEDENT` tokens — one for each level that closed. Each time the parser calls `gettok()`, `PendingTokens` is drained first; only when it is empty does the lexer go looking for the next real token.
+
+**Step 3: Drain the queue — return the first pending token if any.**
+
+```cpp
   AtLineStart = false;
-  // Return the first pending token if any were just pushed.
   if (!PendingTokens.empty()) {
     int Tok = PendingTokens.front();
     PendingTokens.pop_front();
@@ -224,7 +281,7 @@ if (AtLineStart) {
 }
 ```
 
-A single dedent can produce multiple `DEDENT` tokens — one for each level that closed. The queue holds them until the parser asks. `PendingTokens` is a `deque` so `pop_front()` is O(1).
+`gettok()` is called again for each subsequent token, draining the queue one entry at a time before returning to normal lexing.
 
 At EOF, the lexer flushes one `DEDENT` per still-open block:
 
@@ -240,17 +297,19 @@ if (LastChar == EOF) {
 
 In REPL mode, a blank line ends the current indented block immediately — the same behavior as the Python REPL.
 
-## Indentation Rules
+## Pyxc Indentation Rules
 
-- Indentation is measured in columns.
-- Tabs advance to the next multiple of 8 columns.
-- Do not mix tabs and spaces — it is an error regardless of whether they appear to line up.
-- Blank lines and comment-only lines do not affect indentation.
-- A block opens after `:` followed by a newline and a deeper indent level.
+These are similar to Python's indentation rules, with one difference: Pyxc allows mixing tabs and spaces (Python 3 disallows it).
+
+- Each space advances one column; each tab advances to the next multiple of 8.
+- Mixing tabs and spaces is allowed — the column count is what matters.
+- Dedenting to a column that was never opened is an error.
+- Blank lines and comment-only lines do not affect indentation in file mode. In REPL mode, a blank line closes the current block immediately.
+- A block opens after `:` followed by a newline and a deeper indentation level.
 
 ## Parse-Time Variable Tracking
 
-Assignment to an undeclared variable is a parse-time error in chapter 11:
+Assignment to an undeclared variable is a parse-time error:
 
 ```python
 ready> x = 1
@@ -273,7 +332,17 @@ static void EndFunctionScope() { VarScopes.clear(); }
 
 static void DeclareVar(const string &Name) {
   if (!VarScopes.empty())
-    VarScopes.front().insert(Name); // declare in the current function scope
+    VarScopes.back().insert(Name); // declare in the innermost (current) scope
+}
+
+static bool IsDeclaredInCurrentScope(const string &Name) {
+  if (VarScopes.empty()) return false;
+  return VarScopes.back().count(Name) > 0;
+}
+
+static void BeginBlockScope() { VarScopes.emplace_back(); }
+static void EndBlockScope() {
+  if (VarScopes.size() > 1) VarScopes.pop_back();
 }
 
 static bool IsDeclaredVar(const string &Name) {
@@ -283,7 +352,7 @@ static bool IsDeclaredVar(const string &Name) {
 }
 ```
 
-RAII guards manage scope lifetime automatically:
+Each scope guard is a small C++ struct. The constructor opens the scope; the destructor closes it. When the guard variable goes out of scope — at the end of a block, or when an early return is hit — the scope closes automatically without any explicit cleanup calls:
 
 ```cpp
 struct FunctionScopeGuard {
@@ -294,6 +363,11 @@ struct FunctionScopeGuard {
 struct LoopScopeGuard {
   LoopScopeGuard(const string &Name) { EnterLoopScope(Name); }
   ~LoopScopeGuard() { ExitLoopScope(); }
+};
+
+struct BlockScopeGuard {
+  BlockScopeGuard()  { BeginBlockScope(); }
+  ~BlockScopeGuard() { EndBlockScope(); }
 };
 ```
 
@@ -354,6 +428,9 @@ static unique_ptr<ExprAST> ParseBlock() {
   if (CurTok != tok_indent)
     return LogError("Expected an indented block");
   getNextToken(); // eat INDENT
+
+  BlockScopeGuard Scope; // each block gets its own var scope
+
   consumeNewlines();
 
   if (CurTok == tok_dedent)
@@ -405,15 +482,36 @@ static unique_ptr<ExprAST> ParseSimpleStmt() {
   if (CurTok == tok_return) return ParseReturnStmt();
   if (CurTok == tok_var)    return ParseVarStmt();
 
-  // Parse an expression. If it is immediately followed by '=', it's an
-  // assignment. The left-hand side must be a plain variable name.
+  // Fast path: if the current token is an identifier, peek at what follows
+  // before committing to a full expression parse. This lets us detect
+  // "x = expr" (assignment) without going through ParseExpression first.
+  if (CurTok == tok_identifier) {
+    string Name = IdentifierStr;
+    getNextToken(); // eat identifier
+
+    if (CurTok == '=') {
+      if (!IsDeclaredVar(Name))
+        return LogError("Assignment to undeclared variable");
+      getNextToken(); // eat '='
+      auto RHS = ParseExpression();
+      if (!RHS) return nullptr;
+      return make_unique<AssignmentExprAST>(Name, std::move(RHS));
+    }
+
+    // Not an assignment — parse the rest as an expression.
+    auto Expr = ParseIdentifierExprWithName(std::move(Name));
+    if (!Expr) return nullptr;
+    return ParseBinOpRHS(0, std::move(Expr));
+  }
+
+  // Non-identifier start: parse a full expression, then check for '='.
   auto Expr = ParseExpression();
   if (!Expr) return nullptr;
 
   if (CurTok != '=')
     return Expr; // bare expression statement
 
-  const string *AssignedName = Expr->getVariableName();
+  const string *AssignedName = Expr->getLValueName();
   if (!AssignedName)
     return LogError("Destination of '=' must be a variable");
 
@@ -428,7 +526,7 @@ static unique_ptr<ExprAST> ParseSimpleStmt() {
 }
 ```
 
-Note the addition of `IsDeclaredVar(Name)` — chapter 11 rejects assignments to undeclared names at parse time rather than deferring the check to codegen.
+Assignment to an undeclared variable is rejected at parse time via `IsDeclaredVar` — no codegen is needed to catch it.
 
 ## Parsing Var as a Statement
 
@@ -456,7 +554,7 @@ static unique_ptr<ExprAST> ParseVarStmt() {
       Init = make_unique<NumberExprAST>(0.0); // default to 0.0
     }
 
-    DeclareVar(Name); // register name in the current function scope
+    DeclareVar(Name); // register name in the current block scope
     VarNames.push_back({Name, std::move(Init)});
 
     if (CurTok != ',') break;
@@ -467,7 +565,7 @@ static unique_ptr<ExprAST> ParseVarStmt() {
 }
 ```
 
-The critical difference from chapter 10: no `:` and no body. `DeclareVar(Name)` tells the parser that `Name` is now in scope for the rest of the function — so later assignments to it will pass the `IsDeclaredVar` check.
+The critical difference from [chapter 10](chapter-10.md): no `:` and no body. `DeclareVar(Name)` registers `Name` in the current block scope — so later assignments to it will pass the `IsDeclaredVar` check. If the `var` is inside an `if` or `for` block, that name is only visible inside that block.
 
 ## Return
 
@@ -496,28 +594,32 @@ Value *ReturnExprAST::codegen() {
 
 ## Block Codegen
 
-`BlockExprAST::codegen` evaluates statements in order and returns the last value. It stops early if a `return` has already terminated the current block — statements after a `return` are unreachable:
+`BlockExprAST::codegen` evaluates statements in order. It stops early if a `return` has already terminated the current block — statements after a `return` are unreachable. It also saves and restores `NamedValues` around the block body so that variables declared inside the block with `var` don't leak to the outer scope:
 
 ```cpp
 Value *BlockExprAST::codegen() {
+  auto SavedBindings = NamedValues; // snapshot outer bindings
   Value *Last = nullptr;
   for (auto &Stmt : Stmts) {
     // If a previous statement already emitted a terminator (e.g. 'return'),
     // skip the rest — we'd be emitting into a block with no successor.
-    if (Builder->GetInsertBlock()->getTerminator())
-      break;
+    if (Builder->GetInsertBlock()->getTerminator()) break;
     Last = Stmt->codegen();
-    if (!Last) return nullptr;
+    if (!Last) {
+      NamedValues = SavedBindings;
+      return nullptr;
+    }
   }
+  NamedValues = SavedBindings; // restore outer bindings when block exits
   if (!Last)
     return LogErrorV("Empty block");
-  return Last;
+  return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 ```
 
 ## Var and Assignment Codegen
 
-`VarStmtAST::codegen` allocates stack slots and initializes them, but does not restore any shadowed bindings. Variables declared with `var` live for the whole function:
+`VarStmtAST::codegen` allocates stack slots and initializes them. Duplicate declarations in the same scope are caught at parse time, so codegen just sets up the alloca and records the binding:
 
 ```cpp
 Value *VarStmtAST::codegen() {
@@ -527,56 +629,35 @@ Value *VarStmtAST::codegen() {
     const string &VarName = Var.first;
     ExprAST *Init = Var.second.get();
 
-    // Reject duplicate declarations (caught at parse time too, but double-check).
-    if (NamedValues.count(VarName))
-      return LogErrorV(("Variable '" + VarName + "' already defined").c_str());
-
     Value *InitVal = Init->codegen();
     if (!InitVal) return nullptr;
 
     AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
     Builder->CreateStore(InitVal, Alloca);
-    NamedValues[VarName] = Alloca; // binding persists for the rest of the function
+    NamedValues[VarName] = Alloca;
   }
 
   return ConstantFP::get(*TheContext, APFloat(0.0)); // var statement produces 0.0
 }
 ```
 
-`AssignmentExprAST::codegen` is unchanged from chapter 10 — it loads the alloca from `NamedValues`, stores the new value, and returns it.
+`AssignmentExprAST::codegen` is unchanged from [chapter 10](chapter-10.md) — it loads the alloca from `NamedValues`, stores the new value, and returns it.
 
 ## if as a Statement
 
-Chapter 10 had `IfExprAST`, which always produced a value via a PHI node and required both `then` and `else` branches. Chapter 11 adds `IfStmtAST` — the statement form. It has two key differences:
+[Chapter 10](chapter-10.md) had `IfExprAST`, which always produced a value via a PHI node and required both `then` and `else` branches. Chapter 11 adds `IfStmtAST` — the statement form. The condition check, basic block creation, and branch structure are identical to [chapter 10](chapter-10.md). Two things change:
 
-1. **`else` is optional.** If there is no `else`, control falls through to the merge block.
-2. **No PHI node.** The statement doesn't produce a value — it just controls which branch runs.
+1. **`else` is optional.** If there is no `else`, the else block just falls through to merge.
+2. **No PHI node.** The statement doesn't produce a value.
 
 ```cpp
-Value *IfStmtAST::codegen() {
-  Value *CondV = Cond->codegen();
-  if (!CondV) return nullptr;
-
-  // Convert condition double to i1: true if != 0.0.
-  CondV = Builder->CreateFCmpONE(
-      CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "ifcond");
-
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
-
-  BasicBlock *ThenBB  = BasicBlock::Create(*TheContext, "then",    TheFunction);
-  BasicBlock *ElseBB  = BasicBlock::Create(*TheContext, "else",    TheFunction);
-  BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont",  TheFunction);
-
-  Builder->CreateCondBr(CondV, ThenBB, ElseBB);
-
   // Emit the then branch.
   Builder->SetInsertPoint(ThenBB);
   if (!Then->codegen()) return nullptr;
-  // If the then branch didn't already terminate (e.g. via 'return'), fall through.
   if (!Builder->GetInsertBlock()->getTerminator())
     Builder->CreateBr(MergeBB);
 
-  // Emit the else branch (or just fall through if there is none).
+  // Emit the else branch — skipped entirely if there is no else.
   Builder->SetInsertPoint(ElseBB);
   if (Else) {
     if (!Else->codegen()) return nullptr;
@@ -585,15 +666,15 @@ Value *IfStmtAST::codegen() {
     Builder->CreateBr(MergeBB);
 
   Builder->SetInsertPoint(MergeBB);
-  return ConstantFP::get(*TheContext, APFloat(0.0)); // statement produces 0.0
-}
+  return ConstantFP::get(*TheContext, APFloat(0.0));
+  // No PHI node — statements don't produce values.
 ```
 
 The `getTerminator()` check before each `CreateBr` is what makes `return` inside an `if` work correctly. If the `then` block already has a `ret`, we don't emit a second branch — that would be ill-formed IR.
 
 ## Implicit Return
 
-In chapter 10, `FunctionAST::codegen` always emitted `CreateRet(RetVal)` unconditionally after `Body->codegen()` returned. That breaks now that `return` statements emit their own `ret` instructions.
+In [chapter 10](chapter-10.md), `FunctionAST::codegen` always emitted `CreateRet(RetVal)` unconditionally after `Body->codegen()` returned. That breaks now that `return` statements emit their own `ret` instructions.
 
 Chapter 11 checks whether the current block already has a terminator before deciding whether to add one:
 
@@ -641,10 +722,37 @@ This is what lets a file contain two top-level definitions back to back without 
 ## Things Worth Knowing
 
 - `var` without an initializer defaults to `0.0`.
-- Declaring the same variable twice in the same function is a codegen error.
+- `var` is block-scoped. A variable declared inside an `if` or `for` block is not visible after that block exits. An outer variable with the same name is shadowed inside the block and restored when the block exits.
+- Declaring the same variable twice in the same block is a parse-time error.
 - Assignment only works on variables that were declared with `var` or are function parameters. Undeclared assignments are rejected at parse time.
-- `for` introduces a loop variable scoped to the loop body only. `var` bindings persist for the rest of the function.
+- `for` introduces a loop variable scoped to the loop body only.
 - The inline body of a `def` accepts only a `simplestmt`. Compound statements (`if`, `for`) require an indented block.
+
+## Known Limitations
+
+**No global variables.** `var` is only valid inside a function body. `ParseTopLevelExpr` calls `ParseExpression`, so `var x = 10` at the top level is a parse error. Each top-level expression also gets its own fresh function scope, so there is no way to declare a variable on one REPL line and reference it on the next.
+
+This is the main practical limitation of the current chapter. In the REPL it means you cannot build up state across lines:
+
+```python
+# Does not work in the REPL:
+var x = 10      # parse error — var is not an expression
+x = x + 10     # x is undeclared in this expression's scope
+printd(x)
+```
+
+For now, keep mutable state inside a function:
+
+```python
+def f():
+    var x = 10
+    x = x + 10
+    return x
+
+printd(f())   # prints 20.000000
+```
+
+Chapter 12 addresses this properly. When compiling to an executable, all top-level statements are collected into a synthesized `main()`, so `var` declarations and assignments at the top level work naturally. Full REPL support for global state requires additional runtime infrastructure and is also covered in chapter 12.
 
 ## Try It
 
@@ -675,7 +783,7 @@ Evaluated to 20.000000
 ```
 <!-- code-merge:end -->
 
-Accumulator loop — the chapter 10 workaround, now written naturally:
+Accumulator loop — the [chapter 10](chapter-10.md) workaround, now written naturally:
 
 <!-- code-merge:start -->
 ```python
@@ -707,7 +815,7 @@ cmake -S . -B build && cmake --build build
 
 ## What's Next
 
-Statement blocks unlock more control flow. In the next chapter we can add `while`, `break`, and `continue`, and build idiomatic examples without expression-level workarounds.
+Chapter 12 resolves the global variable limitation described in Known Limitations. For compiled programs, all top-level statements are collected into a synthesized `main()` so `var` declarations and assignments work naturally. For the REPL, a persistent variable store backed by a runtime helper lets state survive across JIT module boundaries. Once globals work in both modes, chapter 13 emits object files and chapter 14 links them into native executables — turning Pyxc from a JIT toy into a real compiler.
 
 ## Need Help?
 

@@ -282,6 +282,87 @@ static int peek() {
   return c;
 }
 
+static bool ProcessLineStart(int &LastChar, int *OutTok) {
+  if (!AtLineStart)
+    return false;
+
+  int IndentCol = 0;
+  while (LastChar == ' ' || LastChar == '\t') {
+    if (LastChar == ' ')
+      IndentCol += 1;
+    else
+      IndentCol += 8 - (IndentCol % 8);
+    LastChar = advance();
+  }
+
+  // Blank line: in file mode we ignore indentation and return a newline.
+  // In REPL mode, a blank line ends the current block by emitting DEDENTs
+  // until we return to column 0 (matching Python's interactive behavior).
+  if (LastChar == '\n') {
+    if (IsRepl && IndentStack.size() > 1) {
+      IndentStack.pop_back();
+      *OutTok = tok_dedent;
+      return true;
+    }
+    CurLoc = LexLoc;
+    LastChar = ' ';
+    *OutTok = tok_eol;
+    return true;
+  }
+
+  // Comment-only line: ignore indentation, return newline.
+  if (LastChar == '#') {
+    do
+      LastChar = advance();
+    while (LastChar != EOF && LastChar != '\n');
+
+    if (LastChar != EOF) {
+      CurLoc = LexLoc;
+      LastChar = ' ';
+      *OutTok = tok_eol;
+      return true;
+    }
+  }
+
+  if (LastChar == EOF) {
+    if (IndentStack.size() > 1) {
+      IndentStack.pop_back();
+      *OutTok = tok_dedent;
+      return true;
+    }
+    *OutTok = tok_eof;
+    return true;
+  }
+
+  CurLoc = LexLoc;
+  int CurrentIndent = IndentStack.back();
+  if (IndentCol > CurrentIndent) {
+    IndentStack.push_back(IndentCol);
+    PendingTokens.push_back(tok_indent);
+  } else if (IndentCol < CurrentIndent) {
+    while (IndentStack.size() > 1 && IndentCol < IndentStack.back()) {
+      IndentStack.pop_back();
+      PendingTokens.push_back(tok_dedent);
+    }
+    if (IndentCol != IndentStack.back()) {
+      fprintf(stderr, "Error (Line %d, Column %d): inconsistent indentation\n",
+              CurLoc.Line, CurLoc.Col);
+      PrintErrorSourceContext(CurLoc);
+      *OutTok = tok_error;
+      return true;
+    }
+  }
+
+  AtLineStart = false;
+  if (!PendingTokens.empty()) {
+    *OutTok = PendingTokens.front();
+    PendingTokens.pop_front();
+    return true;
+  }
+
+  return false;
+}
+
 /// gettok - Return the next token from standard input.
 ///
 /// LastChar holds the last character read by advance() but not yet consumed
@@ -322,76 +403,9 @@ static int gettok() {
     return tok_eof;
   }
 
-  if (AtLineStart) {
-    int IndentCol = 0;
-    while (LastChar == ' ' || LastChar == '\t') {
-      if (LastChar == ' ')
-        IndentCol += 1;
-      else
-        IndentCol += 8 - (IndentCol % 8);
-      LastChar = advance();
-    }
-
-    // Blank line: in file mode we ignore indentation and return a newline.
-    // In REPL mode, a blank line ends the current block by emitting DEDENTs
-    // until we return to column 0 (matching Python's interactive behavior).
-    if (LastChar == '\n') {
-      if (IsRepl && IndentStack.size() > 1) {
-        IndentStack.pop_back();
-        return tok_dedent;
-      }
-      CurLoc = LexLoc;
-      LastChar = ' ';
-      return tok_eol;
-    }
-
-    // Comment-only line: ignore indentation, return newline.
-    if (LastChar == '#') {
-      do
-        LastChar = advance();
-      while (LastChar != EOF && LastChar != '\n');
-
-      if (LastChar != EOF) {
-        CurLoc = LexLoc;
-        LastChar = ' ';
-        return tok_eol;
-      }
-    }
-
-    if (LastChar == EOF) {
-      if (IndentStack.size() > 1) {
-        IndentStack.pop_back();
-        return tok_dedent;
-      }
-      return tok_eof;
-    }
-
-    CurLoc = LexLoc;
-    int CurrentIndent = IndentStack.back();
-    if (IndentCol > CurrentIndent) {
-      IndentStack.push_back(IndentCol);
-      PendingTokens.push_back(tok_indent);
-    } else if (IndentCol < CurrentIndent) {
-      while (IndentStack.size() > 1 && IndentCol < IndentStack.back()) {
-        IndentStack.pop_back();
-        PendingTokens.push_back(tok_dedent);
-      }
-      if (IndentCol != IndentStack.back()) {
-        fprintf(stderr,
-                "Error (Line %d, Column %d): inconsistent indentation\n",
-                CurLoc.Line, CurLoc.Col);
-        PrintErrorSourceContext(CurLoc);
-        return tok_error;
-      }
-    }
-
-    AtLineStart = false;
-    if (!PendingTokens.empty()) {
-      int Tok = PendingTokens.front();
-      PendingTokens.pop_front();
-      return Tok;
-    }
-  }
+  int LineStartTok;
+  if (ProcessLineStart(LastChar, &LineStartTok))
+    return LineStartTok;
 
   // Skip horizontal whitespace. Stop at '\n' — that becomes tok_eol.
   while (isspace(LastChar) && LastChar != '\n')
@@ -566,7 +580,9 @@ namespace {
 class ExprAST {
 public:
   virtual ~ExprAST() = default;
-  virtual const string *getVariableName() const { return nullptr; }
+  // getLValueName - Return the lvalue name if this node is a plain assignable
+  // variable, or nullptr otherwise. This avoids RTTI checks in the parser.
+  virtual const string *getLValueName() const { return nullptr; }
   virtual Value *codegen() = 0;
 };
 
@@ -585,8 +601,9 @@ class VariableExprAST : public ExprAST {
 
 public:
   VariableExprAST(const string &Name) : Name(Name) {}
+  // convenience function
   const string &getName() const { return Name; }
-  const string *getVariableName() const override { return &Name; }
+  const string *getLValueName() const override { return &Name; }
   Value *codegen() override;
 };
 
@@ -840,7 +857,19 @@ static void EndFunctionScope() { VarScopes.clear(); }
 static void DeclareVar(const string &Name) {
   if (VarScopes.empty())
     return;
-  VarScopes.front().insert(Name);
+  VarScopes.back().insert(Name);
+}
+
+static void BeginBlockScope() { VarScopes.emplace_back(); }
+static void EndBlockScope() {
+  if (VarScopes.size() > 1)
+    VarScopes.pop_back();
+}
+
+static bool IsDeclaredInCurrentScope(const string &Name) {
+  if (VarScopes.empty())
+    return false;
+  return VarScopes.back().count(Name) > 0;
 }
 
 static void EnterLoopScope(const string &Name) {
@@ -916,7 +945,7 @@ static unique_ptr<ExprAST> ParseVarStmt();
 static unique_ptr<ExprAST> ParseStatement();
 static unique_ptr<ExprAST> ParseSimpleStmt();
 static unique_ptr<ExprAST> ParseBlock();
-static unique_ptr<ExprAST> ParseLValue();
+static unique_ptr<ExprAST> ParseFunctionBody(bool *BodyIsBlock);
 // Track whether the last parsed statement ended with a block. This allows the
 // enclosing block to accept the next statement without an explicit tok_eol
 // because the inner block consumes the trailing newline before its DEDENT.
@@ -934,6 +963,11 @@ struct FunctionScopeGuard {
 struct LoopScopeGuard {
   LoopScopeGuard(const string &Name) { EnterLoopScope(Name); }
   ~LoopScopeGuard() { ExitLoopScope(); }
+};
+
+struct BlockScopeGuard {
+  BlockScopeGuard() { BeginBlockScope(); }
+  ~BlockScopeGuard() { EndBlockScope(); }
 };
 
 /// numberexpr
@@ -996,20 +1030,6 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
   getNextToken(); // eat identifier.
 
   return ParseIdentifierExprWithName(std::move(IdName));
-}
-
-/// lvalue
-///   = identifier ;
-static unique_ptr<ExprAST> ParseLValueFromName(const string &Name) {
-  return make_unique<VariableExprAST>(Name);
-}
-
-static unique_ptr<ExprAST> ParseLValue() {
-  if (CurTok != tok_identifier)
-    return LogError("Expected identifier");
-  string Name = IdentifierStr;
-  getNextToken(); // eat identifier.
-  return ParseLValueFromName(Name);
 }
 
 /// forstmt
@@ -1081,6 +1101,9 @@ static unique_ptr<ExprAST> ParseVarStmt() {
 
     string Name = IdentifierStr;
     getNextToken(); // eat identifier
+
+    if (IsDeclaredInCurrentScope(Name))
+      return LogError(("Variable '" + Name + "' already declared in this scope").c_str());
 
     unique_ptr<ExprAST> Init;
     if (CurTok == '=') {
@@ -1268,6 +1291,17 @@ static unique_ptr<ExprAST> ParseReturnStmt() {
   return make_unique<ReturnExprAST>(std::move(Expr));
 }
 
+static unique_ptr<ExprAST> ParseAssignmentRHS(const string &Name) {
+  if (!IsDeclaredVar(Name))
+    return LogError("Assignment to undeclared variable");
+  getNextToken(); // eat '='
+
+  auto RHS = ParseExpression();
+  if (!RHS)
+    return nullptr;
+  return make_unique<AssignmentExprAST>(Name, std::move(RHS));
+}
+
 /// simplestmt
 ///   = returnstmt | varstmt | assignstmt | expression ;
 static unique_ptr<ExprAST> ParseSimpleStmt() {
@@ -1282,45 +1316,34 @@ static unique_ptr<ExprAST> ParseSimpleStmt() {
     getNextToken(); // eat identifier.
 
     if (CurTok == '=') {
-      if (!IsDeclaredVar(Name))
-        return LogError("Assignment to undeclared variable");
-      getNextToken(); // eat '='
-
-      auto RHS = ParseExpression();
-      if (!RHS)
-        return nullptr;
-      auto LHS = ParseLValueFromName(Name);
-      return make_unique<AssignmentExprAST>(*LHS->getVariableName(),
-                                            std::move(RHS));
+      return ParseAssignmentRHS(Name);
     }
 
     Expr = ParseIdentifierExprWithName(std::move(Name));
     if (!Expr)
       return nullptr;
     Expr = ParseBinOpRHS(0, std::move(Expr));
-  } else {
-    Expr = ParseExpression();
+    if (!Expr)
+      return nullptr;
+
+    if (CurTok != '=')
+      return Expr;
+
+    const string *AssignedName = Expr->getLValueName();
+    if (!AssignedName)
+      return LogError("Destination of '=' must be a variable");
+
+    return ParseAssignmentRHS(*AssignedName);
   }
+
+  Expr = ParseExpression();
   if (!Expr)
     return nullptr;
 
   if (CurTok != '=')
     return Expr;
 
-  const string *AssignedName = Expr->getVariableName();
-  if (!AssignedName)
-    return LogError("Destination of '=' must be a variable");
-
-  string Name = *AssignedName;
-  if (!IsDeclaredVar(Name))
-    return LogError("Assignment to undeclared variable");
-  getNextToken(); // eat '='
-
-  auto RHS = ParseExpression();
-  if (!RHS)
-    return nullptr;
-
-  return make_unique<AssignmentExprAST>(Name, std::move(RHS));
+  return LogError("Destination of '=' must be a variable");
 }
 
 /// statement
@@ -1363,6 +1386,8 @@ static unique_ptr<ExprAST> ParseBlock() {
   if (CurTok != tok_indent)
     return LogError("Expected an indented block");
   getNextToken(); // eat INDENT
+
+  BlockScopeGuard Scope;
 
   consumeNewlines();
 
@@ -1433,6 +1458,21 @@ static unique_ptr<PrototypeAST> ParsePrototype() {
   return make_unique<PrototypeAST>(FnName, std::move(ArgNames));
 }
 
+/// functionbody
+///   = simplestmt | eols block ;
+static unique_ptr<ExprAST> ParseFunctionBody(bool *BodyIsBlock) {
+  if (CurTok == tok_eol) {
+    consumeNewlines();
+    if (CurTok != tok_indent)
+      return LogError("Expected an indented block");
+    *BodyIsBlock = true;
+    return ParseBlock();
+  }
+
+  *BodyIsBlock = false;
+  return ParseSimpleStmt();
+}
+
 /// definition
 ///   = "def" prototype ":" ( simplestmt | eols block ) ;
 static unique_ptr<FunctionAST> ParseDefinition() {
@@ -1447,16 +1487,7 @@ static unique_ptr<FunctionAST> ParseDefinition() {
   getNextToken(); // eat ':'
 
   bool BodyIsBlock = false;
-  unique_ptr<ExprAST> Body;
-  if (CurTok == tok_eol) {
-    consumeNewlines();
-    if (CurTok != tok_indent)
-      return LogErrorF("Expected an indented block");
-    BodyIsBlock = true;
-    Body = ParseBlock();
-  } else {
-    Body = ParseSimpleStmt();
-  }
+  unique_ptr<ExprAST> Body = ParseFunctionBody(&BodyIsBlock);
 
   if (Body) {
     LastTopLevelEndedWithBlock = BodyIsBlock;
@@ -1705,6 +1736,7 @@ static unique_ptr<FunctionAST> ParseDecoratedDef() {
 
   if (!Proto)
     return nullptr;
+  FunctionScopeGuard Scope(Proto->getArgs());
 
   // Shared body: ":" ( simplestmt | eols block ) — identical to ParseDefinition.
   if (CurTok != ':')
@@ -1712,16 +1744,7 @@ static unique_ptr<FunctionAST> ParseDecoratedDef() {
   getNextToken(); // eat ':'
 
   bool BodyIsBlock = false;
-  unique_ptr<ExprAST> Body;
-  if (CurTok == tok_eol) {
-    consumeNewlines();
-    if (CurTok != tok_indent)
-      return LogErrorF("Expected an indented block");
-    BodyIsBlock = true;
-    Body = ParseBlock();
-  } else {
-    Body = ParseSimpleStmt();
-  }
+  unique_ptr<ExprAST> Body = ParseFunctionBody(&BodyIsBlock);
 
   if (Body) {
     LastTopLevelEndedWithBlock = BodyIsBlock;
@@ -1738,12 +1761,13 @@ static unique_ptr<FunctionAST> ParseDecoratedDef() {
 /// numeric result, then removes it from the JIT via a ResourceTracker.
 static unique_ptr<FunctionAST> ParseTopLevelExpr() {
   LastTopLevelEndedWithBlock = false;
+  FunctionScopeGuard Scope({});
   auto E = ParseExpression();
   if (!E)
     return nullptr;
 
   if (CurTok == '=') {
-    const string *AssignedName = E->getVariableName();
+    const string *AssignedName = E->getLValueName();
     if (!AssignedName)
       return LogErrorF("Destination of '=' must be a variable");
 
@@ -1759,7 +1783,8 @@ static unique_ptr<FunctionAST> ParseTopLevelExpr() {
   }
 
   auto Proto = make_unique<PrototypeAST>("__anon_expr", vector<string>());
-  return make_unique<FunctionAST>(std::move(Proto), std::move(E));
+  auto Body = make_unique<ReturnExprAST>(std::move(E));
+  return make_unique<FunctionAST>(std::move(Proto), std::move(Body));
 }
 
 /// external
@@ -1875,10 +1900,11 @@ Value *NumberExprAST::codegen() {
 /// VariableExprAST::codegen - A variable reference loads the current value
 /// from the variable's stack slot.
 Value *VariableExprAST::codegen() {
-  AllocaInst *A = NamedValues[Name];
-  if (!A)
+  auto It = NamedValues.find(Name);
+  if (It == NamedValues.end() || !It->second)
     return LogErrorV("Unknown variable name");
-  return Builder->CreateLoad(Type::getDoubleTy(*TheContext), A, Name.c_str());
+  return Builder->CreateLoad(Type::getDoubleTy(*TheContext), It->second,
+                             Name.c_str());
 }
 
 /// AssignmentExprAST::codegen - Evaluate the RHS, store it into the variable's
@@ -1907,19 +1933,30 @@ Value *ReturnExprAST::codegen() {
 }
 
 /// BlockExprAST::codegen - Evaluate statements in order.
+/// Saves and restores NamedValues to implement block scoping: variables
+/// declared inside the block are not visible after it exits.
 Value *BlockExprAST::codegen() {
+  auto SavedBindings = NamedValues;
+
   Value *Last = nullptr;
   for (auto &Stmt : Stmts) {
     if (Builder->GetInsertBlock()->getTerminator())
       break;
     Last = Stmt->codegen();
-    if (!Last)
+    if (!Last) {
+      NamedValues = SavedBindings;
       return nullptr;
+    }
   }
+
+  NamedValues = SavedBindings;
 
   if (!Last)
     return LogErrorV("Empty block");
-  return Last;
+
+  // Blocks are statement sequences. If control reaches the end without an
+  // explicit return, the block's implicit value is always 0.0.
+  return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
 /// BinaryExprAST::codegen - Recursively codegen both operands, then emit the
@@ -2175,6 +2212,8 @@ Value *ForExprAST::codegen() {
 
   if (!Body->codegen())
     return nullptr;
+  // BlockExprAST restores NamedValues when the body finishes, but the loop
+  // variable's alloca remains valid. We use the alloca directly for the step.
 
   Value *CurVar =
       Builder->CreateLoad(Type::getDoubleTy(*TheContext), Alloca, VarName);
@@ -2202,9 +2241,6 @@ Value *VarStmtAST::codegen() {
   for (auto &Var : VarNames) {
     const string &VarName = Var.first;
     ExprAST *Init = Var.second.get();
-
-    if (NamedValues.count(VarName))
-      return LogErrorV(("Variable '" + VarName + "' already defined").c_str());
 
     Value *InitVal = Init->codegen();
     if (!InitVal)
@@ -2303,11 +2339,11 @@ Function *FunctionAST::codegen() {
   }
 
   // Step 4: codegen the body, optimise, verify, or erase on failure.
-  if (Value *RetVal = Body->codegen()) {
+  if (Value *BodyVal = Body->codegen()) {
     // If the body didn't already terminate the current block (e.g. via
-    // return), return the value of the final statement/expression.
+    // return), return 0.0. Implicit returns never use the last expression.
     if (!Builder->GetInsertBlock()->getTerminator())
-      Builder->CreateRet(RetVal);
+      Builder->CreateRet(ConstantFP::get(*TheContext, APFloat(0.0)));
     verifyFunction(*TheFunction);
 
     // Run the optimisation pipeline: InstCombine, Reassociate, GVN,

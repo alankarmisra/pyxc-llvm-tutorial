@@ -1,0 +1,24 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: 5.000000
+# CHECK: 3.000000
+# CHECK-NOT: ready>
+
+# Tests: if statement without an else branch; control falls through to the
+# merge block when the condition is false.
+# ifstmt = "if" expression ":" suite [ eols "else" ":" suite ] ;
+#
+# abs(-3): condition (x < 0) is true → result = 0 - x = 3.0
+# abs(5):  condition (x < 0) is false → result stays x = 5.0
+# IfStmtAST::codegen must not require an else branch; when Else is nullptr it
+# simply emits a branch to the merge block from the else slot.
+
+extern def printd(x)
+
+def abs(x):
+    var result = x
+    if x < 0:
+        result = 0 - x
+    return result
+
+printd(abs(5))
+printd(abs(-3))

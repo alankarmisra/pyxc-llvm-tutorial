@@ -1,0 +1,17 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: 3.000000
+# CHECK-NOT: ready>
+# CHECK-NOT: Parsed
+
+
+# Tests: blank lines inside an indented block are ignored in file mode.
+
+extern def printd(x)
+
+def f():
+    var x = 1
+
+    x = x + 2
+    return x
+
+printd(f())

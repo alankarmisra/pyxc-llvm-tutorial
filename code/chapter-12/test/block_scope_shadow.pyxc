@@ -1,0 +1,18 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: 99.000000
+# CHECK: 1.000000
+# CHECK-NOT: ready>
+
+# Tests: the shadowed variable is visible inside the block and the outer
+# variable is restored after the block exits.
+
+extern def printd(x)
+
+def f():
+    var x = 1
+    if x > 0:
+        var x = 99
+        printd(x)
+    return x
+
+printd(f())
