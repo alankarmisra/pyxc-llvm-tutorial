@@ -12,6 +12,7 @@ program         = [ eols ] [ top { eols top } ] [ eols ] ;
 eols            = eol { eol } ;
 top             = definition | decorateddef | external | toplevelexpr ;
 definition      = "def" prototype [ "->" type ] ":" ( simplestmt | eols block ) ;
+(* If the return type is omitted, it defaults to None. *)
 decorateddef    = binarydecorator eols "def" binaryopprototype [ "->" type ] ":" ( simplestmt | eols block )
                 | unarydecorator  eols "def" unaryopprototype  [ "->" type ] ":" ( simplestmt | eols block ) ;
 binarydecorator = "@" "binary" "(" integer ")" ;
