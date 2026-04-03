@@ -170,6 +170,7 @@ enum class ValueType {
   Int, /* depends on system default for int */
   Int8,
   Int16,
+  Int32,
   Int64,
   Float32,
   Float64,
@@ -1190,9 +1191,11 @@ static unique_ptr<ExprAST> ParseNumberExpr() {
 static ValueType ParseTypeToken() {
   switch (CurTok) {
   case tok_int:
-  case tok_int32:
     getNextToken();
     return ValueType::Int;
+  case tok_int32:
+    getNextToken();
+    return ValueType::Int32;
   case tok_float64:
     getNextToken();
     return ValueType::Float64;
@@ -1504,6 +1507,36 @@ static bool IsIntType(ValueType Ty);
 static bool IsFloatType(ValueType Ty);
 static bool IsNumericType(ValueType Ty);
 
+static bool IsFixedIntType(ValueType Ty) {
+  return Ty == ValueType::Int8 || Ty == ValueType::Int16 ||
+         Ty == ValueType::Int32 || Ty == ValueType::Int64;
+}
+
+static int FixedIntRank(ValueType Ty) {
+  switch (Ty) {
+  case ValueType::Int8:
+    return 1;
+  case ValueType::Int16:
+    return 2;
+  case ValueType::Int32:
+    return 3;
+  case ValueType::Int64:
+    return 4;
+  default:
+    return 0;
+  }
+}
+
+static bool CanWidenInt(ValueType From, ValueType To) {
+  if (From == To)
+    return true;
+  if (IsFixedIntType(From) && IsFixedIntType(To))
+    return FixedIntRank(From) <= FixedIntRank(To);
+  if (From == ValueType::Int && To == ValueType::Int64)
+    return true;
+  return false;
+}
+
 static bool IsComparisonOp(int Op) {
   return Op == '<' || Op == '>' || Op == tok_eq || Op == tok_neq ||
          Op == tok_leq || Op == tok_geq;
@@ -1517,24 +1550,19 @@ static ValueType GetBinaryResultType(int Op, ValueType L, ValueType R) {
   if (IsArithmeticOp(Op)) {
     if (!IsNumericType(L) || !IsNumericType(R))
       return ValueType::Error;
-    if (L == R)
+    if (IsAssignable(L, R))
       return L;
-    // int32 → float64 widening (only this combination is implicitly allowed).
-    if (L == ValueType::Float64 && IsIntType(R))
-      return ValueType::Float64;
-    if (R == ValueType::Float64 && IsIntType(L))
-      return ValueType::Float64;
+    if (IsAssignable(R, L))
+      return R;
     return ValueType::Error;
   }
   if (IsComparisonOp(Op)) {
     if (!IsNumericType(L) || !IsNumericType(R))
       return ValueType::Error;
-    if (L == R)
+    if (IsAssignable(L, R))
       return L;
-    if (L == ValueType::Float64 && IsIntType(R))
-      return ValueType::Float64;
-    if (R == ValueType::Float64 && IsIntType(L))
-      return ValueType::Float64;
+    if (IsAssignable(R, L))
+      return R;
     return ValueType::Error;
   }
   // User-defined operators are float64-only.
@@ -1612,11 +1640,18 @@ static unique_ptr<ExprAST> ParseUnary() {
   int Opc = CurTok;
   getNextToken(); // eat the operator character
   if (auto Operand = ParseUnary()) {
-    if (Operand->getType() != ValueType::Float64)
-      return LogError(
-          "User-defined unary operators require float64 operands");
+    auto Proto = GetFunctionProto(string("unary") + (char)Opc);
+    if (!Proto)
+      return LogError("Unknown unary operator");
+    if (Proto->getNumArgs() != 1)
+      return LogError("Unary operator must have exactly one argument");
+    ValueType ParamTy = Proto->getArgType(0);
+    if (!IsAssignable(ParamTy, Operand->getType())) {
+      return LogError(("unary operator expects " + string(TypeName(ParamTy)))
+                          .c_str());
+    }
     return make_unique<UnaryExprAST>(Opc, std::move(Operand),
-                                     ValueType::Float64);
+                                     Proto->getReturnType());
   }
   return nullptr;
 }
@@ -1655,13 +1690,28 @@ static unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
         return nullptr;
     }
 
-    ValueType ResultTy =
-        GetBinaryResultType(BinOp, LHS->getType(), RHS->getType());
-    if (ResultTy == ValueType::Error) {
-      if (IsComparisonOp(BinOp) || IsArithmeticOp(BinOp))
+    ValueType ResultTy = ValueType::Error;
+    if (IsComparisonOp(BinOp) || IsArithmeticOp(BinOp)) {
+      ResultTy = GetBinaryResultType(BinOp, LHS->getType(), RHS->getType());
+      if (ResultTy == ValueType::Error)
         return LogError("Type mismatch in binary operator");
-      return LogError(
-          "User-defined binary operators require float64 operands");
+    } else {
+      auto Proto = GetFunctionProto(string("binary") + (char)BinOp);
+      if (!Proto)
+        return LogError("Unknown binary operator");
+      if (Proto->getNumArgs() != 2)
+        return LogError("Binary operator must have exactly two arguments");
+      ValueType LTy = Proto->getArgType(0);
+      ValueType RTy = Proto->getArgType(1);
+      if (!IsAssignable(LTy, LHS->getType()))
+        return LogError(("binary operator expects " + string(TypeName(LTy)) +
+                         " for left operand")
+                            .c_str());
+      if (!IsAssignable(RTy, RHS->getType()))
+        return LogError(("binary operator expects " + string(TypeName(RTy)) +
+                         " for right operand")
+                            .c_str());
+      ResultTy = Proto->getReturnType();
     }
 
     // Merge LHS/RHS.
@@ -2354,6 +2404,7 @@ static DIType *Float64DIType = nullptr;
 static DIType *VoidDIType = nullptr;
 static DIType *Int8DIType = nullptr;
 static DIType *Int16DIType = nullptr;
+static DIType *Int32DIType = nullptr;
 static DIType *Int64DIType = nullptr;
 static DIType *Float32DIType = nullptr;
 static DIType *BoolDIType = nullptr;
@@ -2378,6 +2429,8 @@ static const char *TypeName(ValueType Ty) {
     return "int8";
   case ValueType::Int16:
     return "int16";
+  case ValueType::Int32:
+    return "int32";
   case ValueType::Int64:
     return "int64";
   case ValueType::Float32:
@@ -2393,7 +2446,8 @@ static const char *TypeName(ValueType Ty) {
 
 static bool IsIntType(ValueType Ty) {
   return Ty == ValueType::Int8 || Ty == ValueType::Int16 ||
-         Ty == ValueType::Int || Ty == ValueType::Int64;
+         Ty == ValueType::Int32 || Ty == ValueType::Int ||
+         Ty == ValueType::Int64;
 }
 
 static bool IsFloatType(ValueType Ty) {
@@ -2414,6 +2468,8 @@ static Type *LLVMTypeFor(ValueType Ty) {
     return Type::getInt8Ty(*TheContext);
   case ValueType::Int16:
     return Type::getInt16Ty(*TheContext);
+  case ValueType::Int32:
+    return Type::getInt32Ty(*TheContext);
   case ValueType::Int64:
     return Type::getInt64Ty(*TheContext);
   case ValueType::Float32:
@@ -2441,6 +2497,8 @@ static DIType *DITypeFor(ValueType Ty) {
     return Int8DIType;
   case ValueType::Int16:
     return Int16DIType;
+  case ValueType::Int32:
+    return Int32DIType;
   case ValueType::Int64:
     return Int64DIType;
   case ValueType::Float32:
@@ -2455,7 +2513,9 @@ static DIType *DITypeFor(ValueType Ty) {
 static bool IsAssignable(ValueType Dest, ValueType Src) {
   if (Dest == Src)
     return true;
-  if (Dest == ValueType::Float64 && Src == ValueType::Int)
+  if (IsIntType(Dest) && IsIntType(Src) && CanWidenInt(Src, Dest))
+    return true;
+  if (Dest == ValueType::Float64 && IsIntType(Src))
     return true;
   return false;
 }
@@ -2482,6 +2542,8 @@ static Constant *ZeroConstant(ValueType Ty) {
     return ConstantInt::get(Type::getInt8Ty(*TheContext), 0);
   case ValueType::Int16:
     return ConstantInt::get(Type::getInt16Ty(*TheContext), 0);
+  case ValueType::Int32:
+    return ConstantInt::get(Type::getInt32Ty(*TheContext), 0);
   case ValueType::Int:
     return ConstantInt::get(LLVMTypeFor(Ty), 0);
   case ValueType::Int64:
@@ -2536,7 +2598,14 @@ static Value *EmitCast(Value *V, ValueType From, ValueType To) {
 static Value *EmitImplicitCast(Value *V, ValueType From, ValueType To) {
   if (From == To)
     return V;
-  if (From == ValueType::Int && To == ValueType::Float64)
+  if (IsIntType(From) && IsIntType(To) && CanWidenInt(From, To)) {
+    unsigned FromBits = LLVMTypeFor(From)->getIntegerBitWidth();
+    unsigned ToBits = LLVMTypeFor(To)->getIntegerBitWidth();
+    if (FromBits == ToBits)
+      return V;
+    return Builder->CreateSExt(V, LLVMTypeFor(To), "sext");
+  }
+  if (IsIntType(From) && To == ValueType::Float64)
     return Builder->CreateSIToFP(V, LLVMTypeFor(To), "sitofp");
   return nullptr;
 }
@@ -2576,6 +2645,7 @@ static void InitializeDebugInfo() {
     VoidDIType = nullptr;
     Int8DIType = nullptr;
     Int16DIType = nullptr;
+    Int32DIType = nullptr;
     Int64DIType = nullptr;
     Float32DIType = nullptr;
     BoolDIType = nullptr;
@@ -2600,6 +2670,7 @@ static void InitializeDebugInfo() {
   VoidDIType = DIB->createUnspecifiedType("None");
   Int8DIType = DIB->createBasicType("int8", 8, dwarf::DW_ATE_signed);
   Int16DIType = DIB->createBasicType("int16", 16, dwarf::DW_ATE_signed);
+  Int32DIType = DIB->createBasicType("int32", 32, dwarf::DW_ATE_signed);
   Int64DIType = DIB->createBasicType("int64", 64, dwarf::DW_ATE_signed);
   Float32DIType = DIB->createBasicType("float32", 32, dwarf::DW_ATE_float);
   BoolDIType = DIB->createBasicType("bool", 1, dwarf::DW_ATE_boolean);
@@ -2831,11 +2902,11 @@ Value *BinaryExprAST::codegen() {
   case '+':
   case '-':
   case '*': {
+    L = EmitImplicitCast(L, LTy, getType());
+    R = EmitImplicitCast(R, RTy, getType());
+    if (!L || !R)
+      return LogErrorV("Type mismatch in arithmetic");
     if (IsFloatType(getType())) {
-      L = EmitImplicitCast(L, LTy, getType());
-      R = EmitImplicitCast(R, RTy, getType());
-      if (!L || !R)
-        return LogErrorV("Type mismatch in arithmetic");
       if (Op == '+')
         return Builder->CreateFAdd(L, R, "addtmp");
       if (Op == '-')
@@ -2849,66 +2920,66 @@ Value *BinaryExprAST::codegen() {
     return Builder->CreateMul(L, R, "multmp");
   }
   case '<':
+    L = EmitImplicitCast(L, LTy, getType());
+    R = EmitImplicitCast(R, RTy, getType());
+    if (!L || !R)
+      return LogErrorV("Type mismatch in comparison");
     if (IsFloatType(getType())) {
-      L = EmitImplicitCast(L, LTy, getType());
-      R = EmitImplicitCast(R, RTy, getType());
-      if (!L || !R)
-        return LogErrorV("Type mismatch in comparison");
       L = Builder->CreateFCmpOLT(L, R, "cmptmp");
       return Builder->CreateUIToFP(L, LLVMTypeFor(getType()), "booltmp");
     }
     L = Builder->CreateICmpSLT(L, R, "cmptmp");
     return Builder->CreateZExt(L, LLVMTypeFor(getType()), "booltmp");
   case '>':
+    L = EmitImplicitCast(L, LTy, getType());
+    R = EmitImplicitCast(R, RTy, getType());
+    if (!L || !R)
+      return LogErrorV("Type mismatch in comparison");
     if (IsFloatType(getType())) {
-      L = EmitImplicitCast(L, LTy, getType());
-      R = EmitImplicitCast(R, RTy, getType());
-      if (!L || !R)
-        return LogErrorV("Type mismatch in comparison");
       L = Builder->CreateFCmpOGT(L, R, "cmptmp");
       return Builder->CreateUIToFP(L, LLVMTypeFor(getType()), "booltmp");
     }
     L = Builder->CreateICmpSGT(L, R, "cmptmp");
     return Builder->CreateZExt(L, LLVMTypeFor(getType()), "booltmp");
   case tok_eq:
+    L = EmitImplicitCast(L, LTy, getType());
+    R = EmitImplicitCast(R, RTy, getType());
+    if (!L || !R)
+      return LogErrorV("Type mismatch in comparison");
     if (IsFloatType(getType())) {
-      L = EmitImplicitCast(L, LTy, getType());
-      R = EmitImplicitCast(R, RTy, getType());
-      if (!L || !R)
-        return LogErrorV("Type mismatch in comparison");
       L = Builder->CreateFCmpOEQ(L, R, "cmptmp");
       return Builder->CreateUIToFP(L, LLVMTypeFor(getType()), "booltmp");
     }
     L = Builder->CreateICmpEQ(L, R, "cmptmp");
     return Builder->CreateZExt(L, LLVMTypeFor(getType()), "booltmp");
   case tok_neq:
+    L = EmitImplicitCast(L, LTy, getType());
+    R = EmitImplicitCast(R, RTy, getType());
+    if (!L || !R)
+      return LogErrorV("Type mismatch in comparison");
     if (IsFloatType(getType())) {
-      L = EmitImplicitCast(L, LTy, getType());
-      R = EmitImplicitCast(R, RTy, getType());
-      if (!L || !R)
-        return LogErrorV("Type mismatch in comparison");
       L = Builder->CreateFCmpUNE(L, R, "cmptmp");
       return Builder->CreateUIToFP(L, LLVMTypeFor(getType()), "booltmp");
     }
     L = Builder->CreateICmpNE(L, R, "cmptmp");
     return Builder->CreateZExt(L, LLVMTypeFor(getType()), "booltmp");
   case tok_leq:
+    L = EmitImplicitCast(L, LTy, getType());
+    R = EmitImplicitCast(R, RTy, getType());
+    if (!L || !R)
+      return LogErrorV("Type mismatch in comparison");
     if (IsFloatType(getType())) {
-      L = EmitImplicitCast(L, LTy, getType());
-      R = EmitImplicitCast(R, RTy, getType());
-      if (!L || !R)
-        return LogErrorV("Type mismatch in comparison");
       L = Builder->CreateFCmpOLE(L, R, "cmptmp");
       return Builder->CreateUIToFP(L, LLVMTypeFor(getType()), "booltmp");
     }
     L = Builder->CreateICmpSLE(L, R, "cmptmp");
     return Builder->CreateZExt(L, LLVMTypeFor(getType()), "booltmp");
   case tok_geq:
+    L = EmitImplicitCast(L, LTy, getType());
+    R = EmitImplicitCast(R, RTy, getType());
+    if (!L || !R)
+      return LogErrorV("Type mismatch in comparison");
     if (IsFloatType(getType())) {
-      L = EmitImplicitCast(L, LTy, getType());
-      R = EmitImplicitCast(R, RTy, getType());
-      if (!L || !R)
-        return LogErrorV("Type mismatch in comparison");
       L = Builder->CreateFCmpOGE(L, R, "cmptmp");
       return Builder->CreateUIToFP(L, LLVMTypeFor(getType()), "booltmp");
     }

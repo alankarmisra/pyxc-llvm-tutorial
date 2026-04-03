@@ -7,4 +7,4 @@
 # Both forms are equivalent: there is no observable IR difference.
 
 def fn() -> None:
-    var x: int32 = 10
+    var x: int32 = int32(10)

@@ -31,9 +31,11 @@ By the end, you'll have a working language that:
 
 **Chapters 6–11** add language features: JIT evaluation, file input, control flow (`if`/`for`), user-defined operators, mutable variables, and real statement blocks with Python-style indentation.
 
-**Chapters 12–15** turn Pyxc into a real toolchain: a proper CLI with subcommands and emit modes, object file output, native executable linking, and DWARF debug info for source-level debugging.
+**Chapters 12–15** turn Pyxc into a real toolchain: a proper CLI with emit modes, object file output, native executable linking, and DWARF debug info for source-level debugging.
 
-**Chapters 16–20** add a type system, structs, pointers, C interop, and `while` loops — culminating in the full Mandelbrot renderer from this page's preview.
+**Chapter 16** adds a static type system: `int`, `int8`, `int16`, `int64`, `float32`, `float64`, `bool`, and `None` (void). Parameters, variables, and return types are all explicitly annotated.
+
+**Chapters 17–20** add structs, pointers, C interop, and `while` loops — culminating in the full Mandelbrot renderer from this page's preview.
 
 Here's what Pyxc looks like after chapter 11 — everything below runs today:
 
@@ -119,21 +121,23 @@ Each chapter builds on the previous one. You can:
 
 **[Chapter 11: Statement Blocks](chapter-11.md)** — Replace single-expression bodies with real statement blocks. `if`, `for`, `var`, and `return` become statements. The lexer emits `INDENT`/`DEDENT` tokens and the language becomes indentation-sensitive.
 
-<!--
-
 ### Toolchain
 
-**[Chapter 12: Driver and Modes](chapter-12.md)** — Add `repl`, `run`, and `build` subcommands. Add `--emit tokens|llvm-ir` flags. Keep REPL behavior intact.
+**[Chapter 12: Global Variables](chapter-12.md)** — Add module-level `var` declarations. Globals are initialized before `main()` runs via a synthetic `__pyxc.global_init` constructor registered with `llvm.global_ctors`.
 
-**[Chapter 13: Object Files](chapter-13.md)** — Set up a `TargetMachine`, add `--emit obj` to `build`, honor `-O0`..`-O3`. Output `.o` files.
+**[Chapter 13: Object Files and Optimization](chapter-13.md)** — Set up a `TargetMachine`, add `--emit obj`, and honor `-O0`..`-O3` with LLVM's `PassBuilder` pipelines.
 
-**[Chapter 14: Native Executables](chapter-14.md)** — Add `--emit link` (default for `build`), link `.o` + runtime into a native executable, add `-o` for output path.
+**[Chapter 14: Native Executables](chapter-14.md)** — Add `--emit exe` and link `.o` files directly into a native binary using LLD. Add `-o` for the output path and a built-in C runtime for `printd` and `putchard`.
 
-**[Chapter 15: Debug Information](chapter-15.md)** — Add `-g` with `DIBuilder`, emit DWARF into `.o` and executables. Use `nm` and `objdump` to inspect symbols and relocations.
+**[Chapter 15: Debug Info and the Optimisation Pipeline](chapter-15.md)** — Add `-g` with `DIBuilder`. Emit DWARF compile units, subprograms, local variables, and source locations. Replace the fixed pass list with `PassBuilder`'s standard O0–O3 pipelines. Add `IRBuilder<NoFolder>` to preserve instruction-level debug locations.
 
-### Types, Structs, and Full C Interop
+### Types
 
-**[Chapter 16: Types and Typed Variables](chapter-16.md)** — Introduce a type system (`int`, `double`, `void`). Add typed parameters and return types (`def f(x: int) -> int`), typed locals (`x: int = 0`), and basic type checking and casts.
+**[Chapter 16: A Static Type System](chapter-16.md)** — Add eight scalar types: `int`, `int8`, `int16`, `int64`, `float32`, `float64`, `bool`, and `None` (void). Parameters, `var` declarations, `for` loop variables, and return types are all explicitly annotated. Explicit casts (`int32(x)`), type-aware arithmetic, and a strict assignment checker round out the type system.
+
+<!--
+
+### Structs, Pointers, and Full C Interop
 
 **[Chapter 17: Structs and Field Access](chapter-17.md)** — Add `struct` definitions, field layout and offsets, and `.` access for both lvalue and rvalue.
 
@@ -158,6 +162,7 @@ By the end of the current chapters:
 - **Native executables** - Link object files into real binaries with LLD
 - **Linking internals** - Symbol resolution, relocation, object file formats
 - **Toolchain** - CLI, build modes, error messages
+- **Type systems** - Static types, type checking, explicit casts, void semantics
 
 And you'll have built a real compiler from scratch.
 

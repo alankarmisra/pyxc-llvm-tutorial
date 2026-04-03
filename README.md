@@ -57,9 +57,11 @@ printd(2 ^ 10)         # 1024
 printd(collatz(27))    # 111
 ```
 
-**Chapters 12–15** add a real toolchain: subcommands (`repl`, `run`, `build`), object file output, native executable linking, and DWARF debug info.
+**Chapters 12–15** add a real toolchain: `--emit` modes for IR, assembly, object files, and native executables; LLD-based linking; and DWARF debug info with `-g`.
 
-**Chapters 16–20** add a type system, structs, pointers, C interop, and `while` — culminating in this:
+**Chapter 16** adds a static type system: `int`, `int8`, `int16`, `int64`, `float32`, `float64`, `bool`, and `None` (void). Every parameter, variable, and return type is explicitly annotated. Explicit casts and a strict type checker are included.
+
+**Chapters 17–20** add structs, pointers, C interop, and `while` — culminating in this:
 
 ```python
 struct Complex:
@@ -153,11 +155,11 @@ llvm-lit code/chapter-11/test/
 ├── docs/
 │   ├── chapter-00.md   # overview and chapter guide
 │   ├── chapter-01.md
-│   └── ... chapter-11.md
+│   └── ... chapter-16.md
 ├── code/
 │   ├── chapter-01/
 │   ├── chapter-02/
-│   └── ... chapter-11/
+│   └── ... chapter-16/
 │       ├── pyxc.cpp
 │       ├── CMakeLists.txt
 │       └── test/
@@ -168,14 +170,14 @@ llvm-lit code/chapter-11/test/
 
 See [ROADMAP.md](ROADMAP.md) for the full plan. Summary:
 
-**Phase 2 — Native Toolchain (Ch 12–15)**
-- **Ch 12** — Driver and modes (`repl`, `run`, `build`, `--emit`)
-- **Ch 13** — Object file output (`TargetMachine`, `-O0..-O3`)
-- **Ch 14** — Native executable linking (`-o`)
-- **Ch 15** — Debug info and inspection (DWARF, `nm`, `objdump`)
+**Phase 2 — Native Toolchain (Ch 12–15)** ✓
+- **Ch 12** — Global variables (`var` at module scope, `llvm.global_ctors`)
+- **Ch 13** — Object file output (`TargetMachine`, `PassBuilder`, `-O0..-O3`)
+- **Ch 14** — Native executable linking (`--emit exe`, LLD, built-in runtime)
+- **Ch 15** — Debug info (`-g`, `DIBuilder`, DWARF) and optimisation pipelines
 
 **Phase 3 — Types and Memory (Ch 16–21)**
-- **Ch 16** — Type system (`int`, `double`, typed params and returns, casts)
+- **Ch 16** — Static type system (`int`, `float64`, `bool`, `None`, typed params, casts) ✓
 - **Ch 17** — Structs and field access
 - **Ch 18** — Pointers and address-of
 - **Ch 19** — Arrays

@@ -6,9 +6,9 @@
 # and produces 'ret void'. This works for both the implied and explicit forms.
 
 def early_exit(x: int32) -> None:
-    if x == 0:
+    if x == int32(0):
         return
-    var y: int32 = x + 1
+    var y: int32 = x + int32(1)
 
 def fn() -> None:
     return

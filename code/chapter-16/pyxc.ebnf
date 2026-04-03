@@ -21,7 +21,7 @@ unaryopprototype  = customopchar "(" identifier ")" ;
 external        = "extern" "def" prototype [ "->" type ] ;
 toplevelexpr    = expression ;
 prototype       = identifier "(" [ typedparam { "," typedparam } ] ")" ;
-typedparam      = identifier [ ":" type ] ;
+typedparam      = identifier ":" type ;
 ifstmt          = "if" expression ":" suite
                 [ eols "else" ":" suite ] ;
 forstmt         = "for" identifier "=" expression "," expression "," expression ":" suite ;
@@ -36,7 +36,7 @@ block           = indent statement { eols statement } dedent ;
 expression      = unaryexpr binoprhs ;
 binoprhs        = { binaryop unaryexpr } ;
 lvalue          = identifier ;
-varbinding      = identifier [ ":" type ] [ "=" expression ] ;
+varbinding      = identifier ":" type [ "=" expression ] ;
 unaryexpr       = unaryop unaryexpr | primary ;
 unaryop         = "-" | userdefunaryop ;
 primary         = castexpr | identifierexpr | numberexpr | parenexpr ;
