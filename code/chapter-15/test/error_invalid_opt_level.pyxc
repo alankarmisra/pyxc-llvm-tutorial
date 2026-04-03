@@ -1,0 +1,9 @@
+# RUN: not %pyxc -O4 %s 2>&1 | FileCheck %s
+# CHECK: {{[Ee]rror}}
+# CHECK: {{O level|opt.*level|optimization|O4|-O}}
+
+# Tests: -O4 (out of range) is rejected with a clear error message. The valid
+# range is -O0 through -O3.
+
+def main():
+    return 0

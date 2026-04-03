@@ -1,0 +1,14 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 0.000000
+
+
+# Tests: for loop whose initial condition is false — the body never executes.
+# The implicit function return is 0.0 when nothing returns explicitly.
+# forexpr = "for" identifier "=" expression "," expression "," expression ":" [ eols ] ( block | statement )
+
+def no_iters(x):
+    for i = 1, i < 1, 1:
+        x
+
+# The body 'x' is never evaluated; the function yields 0.0.
+no_iters(42)

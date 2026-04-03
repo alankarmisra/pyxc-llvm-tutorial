@@ -1,0 +1,17 @@
+# REQUIRES: llvm-dwarfdump
+# RUN: %pyxc -g --emit obj -o %t.o %s
+# RUN: %dwarfdump --debug-line %t.o | FileCheck %s
+# CHECK: Line table
+# CHECK: {{0x[0-9a-f]+}}
+
+# Tests: the DWARF line table contains at least one address-to-line mapping.
+# The hex address pattern confirms that actual code addresses are present,
+# not just an empty or stub line table.
+
+extern def printd(x)
+
+def f(x):
+    return x + 1
+
+def main():
+    printd(f(10))

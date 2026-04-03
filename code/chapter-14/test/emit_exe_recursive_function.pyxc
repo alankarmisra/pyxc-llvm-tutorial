@@ -1,0 +1,16 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 120.000000
+
+# Tests: a recursive function works in the emitted executable.
+# factorial(5) = 120.
+
+extern def printd(x)
+
+def factorial(n):
+    if n < 2:
+        return 1
+    return n * factorial(n - 1)
+
+def main():
+    printd(factorial(5))

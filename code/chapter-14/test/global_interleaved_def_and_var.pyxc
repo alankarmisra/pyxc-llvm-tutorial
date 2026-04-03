@@ -1,0 +1,17 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: 3.000000
+# CHECK-NOT: ready>
+
+# Tests: function definitions and top-level var/assignment can be freely
+# interleaved. f() is defined before y is declared; y is declared and
+# then assigned via f(). __pyxc.global_init runs all top-level statements
+# in source order, so f() is available when y = f(x) executes.
+
+extern def printd(x)
+
+var x = 1
+
+def f(n): return n + 2
+
+var y = f(x)
+printd(y)

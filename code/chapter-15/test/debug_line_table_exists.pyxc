@@ -1,0 +1,9 @@
+# REQUIRES: llvm-dwarfdump
+# RUN: %pyxc -g --emit obj -o %t.o %s
+# RUN: %dwarfdump --debug-line %t.o | FileCheck %s
+# CHECK: Line table
+
+# Tests: -g emits a DWARF line table for source locations.
+
+def main():
+    return 0

@@ -1,0 +1,14 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 42.000000
+
+# Tests: a top-level assignment (without var) executes inside __pyxc.global_init.
+# The assigned value is visible in main().
+
+extern def printd(x)
+
+var x = 0
+x = 42
+
+def main():
+    printd(x)

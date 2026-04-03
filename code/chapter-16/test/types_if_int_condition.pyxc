@@ -1,0 +1,15 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: icmp ne i{{32|64}}
+# CHECK: br i1
+
+# Tests: an int-typed condition in an 'if' statement is accepted. The compiler
+# converts it to i1 via an integer 'icmp ne', not 'fcmp une float64'.
+
+extern def printd(x: float64) -> float64
+
+def main() -> None:
+    var flag: int = 1
+    if flag:
+        printd(1.0)
+    return

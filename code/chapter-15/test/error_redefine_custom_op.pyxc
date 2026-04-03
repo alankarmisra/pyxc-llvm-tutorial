@@ -1,0 +1,13 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Binary operator '%' is already defined
+
+
+# Tests: redefining an already-defined custom binary operator is rejected.
+# The first @binary(5) definition succeeds and registers '%' in BinopPrecedence.
+# The second @binary(5) definition is rejected by ParseBinaryOpPrototype.
+
+@binary(5)
+def %(x, y): return x - y
+
+@binary(5)
+def %(x, y): return x + y

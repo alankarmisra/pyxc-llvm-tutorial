@@ -1,0 +1,16 @@
+# RUN: %pyxc -g --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: !DIGlobalVariableExpression
+# CHECK: !DIGlobalVariable(name: "counter"
+
+# Tests: a top-level 'var' declaration produces DIGlobalVariableExpression
+# metadata attached to the LLVM GlobalVariable. The variable name is
+# preserved as a DIGlobalVariable node.
+
+extern def printd(x)
+
+var counter = 0
+
+def main():
+    counter = counter + 1
+    printd(counter)

@@ -1,0 +1,18 @@
+# RUN: %pyxc -O2 %s 2>&1 | FileCheck %s
+# CHECK: 55.000000
+
+# Tests: -O2 in JIT file-run mode produces the same correct output as -O0.
+# Uses a non-trivial program (sum 1..10) that can't be constant-folded away,
+# ensuring the optimized code path actually runs.
+
+extern def printd(x: float64) -> float64
+
+var sum: float64 = 0.0
+
+def accumulate(n: float64) -> None:
+    sum = sum + n
+
+def main() -> None:
+    for i: float64 = 1, i < 11, 1:
+        accumulate(i)
+    printd(sum)

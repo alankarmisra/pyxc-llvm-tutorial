@@ -1,0 +1,9 @@
+# RUN: not %pyxc --emit llvm-ir -o - %s 2>&1 | FileCheck %s
+# CHECK: cannot return a value from a None function
+
+# Tests: returning an expression from an implied-void function is an error.
+# The absence of '->' means the function is void; a value-bearing 'return'
+# must be rejected.
+
+def fn():
+    return 1.0

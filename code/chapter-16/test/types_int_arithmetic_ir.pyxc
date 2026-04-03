@@ -1,0 +1,13 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK-DAG: add i{{32|64}}
+# CHECK-DAG: mul i{{32|64}}
+
+# Tests: arithmetic on int operands produces integer IR instructions
+# (add i32, mul i32), not floating-point ones (fadd float64).
+
+def main() -> None:
+    var a: int = 3
+    var b: int = 4
+    var c: int = a + b * 2
+    return

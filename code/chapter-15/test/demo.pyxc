@@ -1,0 +1,82 @@
+extern def printd(x)
+
+# ── Custom operator: integer power ─────────────────────────────────────────
+# base ^ exp  (left-associative, precedence 6 — tighter than * )
+@binary(6)
+def ^(base, exp):
+    var result = 1
+    for i = 1, i <= exp, 1:
+        result = result * base
+    return result
+
+# ── Fibonacci (recursive) ───────────────────────────────────────────────────
+def fib(n):
+    if n <= 1: return n
+    return fib(n - 1) + fib(n - 2)
+
+# ── Sum of squares: 1² + 2² + … + n² ──────────────────────────────────────
+def sum_of_squares(n):
+    var total = 0
+    for i = 1, i <= n, 1:
+        total = total + i ^ 2
+    return total
+
+# ── Clamp a value to [lo, hi] ───────────────────────────────────────────────
+def clamp(x, lo, hi):
+    if x < lo: return lo
+    if x > hi: return hi
+    return x
+
+# ── Newton's method: square root ────────────────────────────────────────────
+def sqrt_newton(n):
+    var guess = n * 0.5
+    for i = 1, i <= 20, 1:
+        guess = (guess + n / guess) * 0.5
+    return guess
+
+# ── Collatz: count steps to reach 1 ────────────────────────────────────────
+def collatz(n):
+    var steps = 0
+    var x = n
+    for i = 1, x != 1, 1:
+        var half = x * 0.5
+        if half * 2 == x:
+            x = half
+        else:
+            x = x * 3 + 1
+        steps = steps + 1
+    return steps
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fibonacci sequence: fib(0) … fib(9)
+# ═══════════════════════════════════════════════════════════════════════════
+for i = 0, i < 10, 1:
+    printd(fib(i))
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Sum of squares: 1² + 2² + … + 10²  =  385
+# ═══════════════════════════════════════════════════════════════════════════
+printd(sum_of_squares(10))
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Powers: 2^0 … 2^9
+# ═══════════════════════════════════════════════════════════════════════════
+for i = 0, i < 10, 1:
+    printd(2 ^ i)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Clamp: below, inside, above
+# ═══════════════════════════════════════════════════════════════════════════
+printd(clamp(-5, 0, 100))
+printd(clamp(42, 0, 100))
+printd(clamp(200, 0, 100))
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Square root of 2 (Newton's method, 20 iterations)
+# ═══════════════════════════════════════════════════════════════════════════
+printd(sqrt_newton(2))
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Collatz steps: 27 takes 111 steps — famously slow
+# ═══════════════════════════════════════════════════════════════════════════
+printd(collatz(27))

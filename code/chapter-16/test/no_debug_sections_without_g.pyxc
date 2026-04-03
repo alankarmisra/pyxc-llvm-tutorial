@@ -1,0 +1,11 @@
+# REQUIRES: llvm-readelf
+# RUN: %pyxc --emit obj -o %t.o %s
+# RUN: %readelf --sections %t.o | FileCheck %s
+# CHECK-NOT: .debug_info
+# CHECK-NOT: .debug_line
+
+# Tests: without -g, no DWARF sections are emitted. The object file contains
+# only code and data sections.
+
+def main() -> None:
+    return

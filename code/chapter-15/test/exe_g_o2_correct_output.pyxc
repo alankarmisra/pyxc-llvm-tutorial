@@ -1,0 +1,15 @@
+# RUN: %pyxc -g -O2 --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 15.000000
+
+# Tests: -g -O2 --emit exe produces a correct, executable binary. Debug info
+# and optimization are both active; the program output must be unchanged.
+
+extern def printd(x)
+
+var total = 0
+
+def main():
+    for i = 1, i < 6, 1:
+        total = total + i
+    printd(total)

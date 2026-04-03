@@ -1,0 +1,10 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: main() must take no arguments
+
+# Tests: main() is the file-mode entry point and must be zero-argument.
+# Defining main with parameters is a runtime error when RunFileMode tries to call it.
+
+extern def printd(x)
+
+def main(x):
+    printd(x)

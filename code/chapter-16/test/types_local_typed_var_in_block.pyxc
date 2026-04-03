@@ -1,0 +1,16 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK-DAG: alloca i{{32|64}}
+# CHECK-DAG: alloca double
+
+# Tests: typed vars declared inside an indented block (nested scope) produce
+# correctly-typed allocas, not the outer function's type or the default float64.
+
+extern def printd(x: float64) -> float64
+
+def main() -> None:
+    if 1:
+        var n: int = 10
+        var d: float64 = 2.5
+        printd(float64(n) + d)
+    return

@@ -1,0 +1,12 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: @x = global double
+# CHECK: store double 3.500000e+00, ptr @x
+
+# Tests: a decimal literal (contains '.') produces a float64 constant in the IR.
+# 3.5 is a float64 literal; its storage and the IR constant must be 'float64'.
+
+var x: float64 = 3.5
+
+def main() -> None:
+    return

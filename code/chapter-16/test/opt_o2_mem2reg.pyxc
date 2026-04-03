@@ -1,0 +1,14 @@
+# RUN: %pyxc -O2 --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK-NOT: alloca double
+# CHECK: ret double
+
+# Tests: at -O2, mem2reg promotes local allocas to SSA values, eliminating
+# the alloca/store/load sequence. The function returns directly.
+
+def f(x: float64) -> float64:
+    var y: float64 = x + 1
+    return y
+
+def main() -> None:
+    return

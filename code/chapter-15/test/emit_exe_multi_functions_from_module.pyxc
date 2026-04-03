@@ -1,0 +1,15 @@
+# RUN: %pyxc --emit exe -o %t %s %S/Inputs/helper_math.pyxc
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 8.000000
+# CHECK: 6.000000
+
+# Tests: a helper module providing multiple functions; the main file calls two
+# of them. Verifies that all symbols from the linked module are accessible.
+
+extern def printd(x)
+extern def cube(x)
+extern def double_it(x)
+
+def main():
+    printd(cube(2))
+    printd(double_it(3))

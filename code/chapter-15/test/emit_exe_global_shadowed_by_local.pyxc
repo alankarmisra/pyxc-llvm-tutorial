@@ -1,0 +1,20 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 50.000000
+# CHECK: 10.000000
+
+# Tests: a local variable inside a function shadows a global of the same name.
+# The global is unaffected by the local; after the function returns, the global
+# still holds its initialized value.
+
+extern def printd(x)
+
+var x = 10
+
+def shadow():
+    var x = 50
+    printd(x)
+
+def main():
+    shadow()
+    printd(x)

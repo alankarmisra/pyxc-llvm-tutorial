@@ -1,0 +1,12 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: -3.000000
+
+# Tests: int(-3.7) truncates toward zero for negative values, giving -3.
+# Verifies that fptosi semantics (truncate-to-zero) match the spec.
+
+extern def printd(x: float64) -> float64
+
+def main() -> None:
+    printd(float64(int(-3.7)))
+    return

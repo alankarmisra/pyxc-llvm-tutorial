@@ -1,0 +1,13 @@
+# RUN: cp %s %T/myprogram.pyxc
+# RUN: cd %T && %pyxc --emit exe myprogram.pyxc
+# RUN: test -x %T/myprogram
+# RUN: %T/myprogram 2>&1 | FileCheck %s
+# CHECK: 7.000000
+
+# Tests: when -o is omitted and there is exactly one .pyxc input, the output
+# filename is the stem of the input (myprogram.pyxc → myprogram).
+
+extern def printd(x)
+
+def main():
+    printd(3 + 4)

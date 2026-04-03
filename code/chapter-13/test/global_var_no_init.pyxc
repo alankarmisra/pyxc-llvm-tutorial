@@ -1,0 +1,12 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: 0.000000
+# CHECK-NOT: ready>
+
+# Tests: top-level var with no initializer defaults to 0.0.
+# The GlobalVariable uses a constant zero initializer; __pyxc.global_init
+# stores nothing for it (no non-constant init to run).
+
+extern def printd(x)
+
+var x
+printd(x)

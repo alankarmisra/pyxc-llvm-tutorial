@@ -1,0 +1,9 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: already declared in this scope
+
+# Tests: declaring the same variable twice in the same block is a parse error.
+
+def f():
+    var x = 1
+    var x = 2
+    return x

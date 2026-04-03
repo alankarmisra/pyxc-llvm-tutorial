@@ -1,0 +1,13 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: fptosi double
+# CHECK: ret i32
+
+# Tests: a cast expression used as the operand of 'return' is accepted.
+# The conversion happens inside the function before the ret instruction.
+
+def truncate(x: float64) -> int:
+    return int(x)
+
+def main() -> None:
+    return

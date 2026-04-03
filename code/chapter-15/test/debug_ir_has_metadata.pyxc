@@ -1,0 +1,16 @@
+# RUN: %pyxc -g --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK-DAG: !DICompileUnit
+# CHECK-DAG: !DISubprogram
+# CHECK-DAG: !DIFile
+
+# Tests: -g --emit llvm-ir produces LLVM IR containing the core DIBuilder
+# metadata nodes. No external tools required — the metadata is visible as
+# textual IR comments.
+
+extern def printd(x)
+
+def sq(x): return x * x
+
+def main():
+    printd(sq(3))

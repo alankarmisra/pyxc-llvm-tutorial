@@ -1,0 +1,9 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: conflicts with an existing binary operator
+
+
+# Tests: using a built-in operator character as a custom unary operator is rejected.
+# ParseUnaryOpPrototype rejects opchars already known as binary operators.
+
+@unary
+def +(x: float64) -> float64: return x + 1

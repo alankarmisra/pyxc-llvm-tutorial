@@ -1,0 +1,16 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 99.000000
+
+# Tests: a top-level if statement executes inside __pyxc.global_init before main().
+
+extern def printd(x)
+
+var result = 0
+var flag = 1
+
+if flag:
+    result = 99
+
+def main():
+    printd(result)

@@ -1,0 +1,17 @@
+# First compile a complete program to a .o, then link it using --emit exe with
+# a .o input and no -o flag. The output name should be the stem of the .o.
+#
+# RUN: %pyxc --emit obj -o %T/fullprog.o %s
+# RUN: rm -f %T/fullprog
+# RUN: cd %T && %pyxc --emit exe fullprog.o
+# RUN: test -x %T/fullprog
+# RUN: %T/fullprog 2>&1 | FileCheck %s
+# CHECK: 5.000000
+
+# Tests: when a single .o file is passed as the sole input with no -o, the
+# output filename is the stem of that .o (fullprog.o → fullprog).
+
+extern def printd(x: float64) -> float64
+
+def main() -> None:
+    printd(5.0)

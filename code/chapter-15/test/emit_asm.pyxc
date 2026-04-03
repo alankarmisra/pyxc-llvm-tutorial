@@ -1,0 +1,11 @@
+# RUN: %pyxc --emit asm -o %t.s %s
+# RUN: FileCheck --input-file=%t.s %s
+# CHECK: .globl
+# CHECK: {{_?}}sq
+
+# Tests: --emit asm writes native assembly to the specified output file.
+# The emitted assembly must export the sq function symbol.
+
+extern def printd(x)
+
+def sq(x): return x * x

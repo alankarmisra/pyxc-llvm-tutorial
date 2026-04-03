@@ -1,0 +1,11 @@
+# RUN: not %pyxc --emit obj -o %t.o %s 2>&1 | FileCheck %s
+# CHECK: main() must take no arguments
+
+# Tests: the zero-argument constraint on main() is enforced in emit mode too.
+# Even when not JIT-executing, pyxc rejects a main() that takes parameters
+# because the synthesised call in file-mode would be invalid.
+
+extern def printd(x: float64) -> float64
+
+def main(x: float64) -> None:
+    printd(x)

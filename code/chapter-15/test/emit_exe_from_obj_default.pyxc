@@ -1,0 +1,8 @@
+# RUN: %pyxc --emit obj -o %t.o %s
+# RUN: rm -f %t
+# RUN: %pyxc --emit exe %t.o
+# RUN: test -x %t
+# RUN: %t
+
+def main():
+    return 0

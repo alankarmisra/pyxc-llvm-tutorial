@@ -1,0 +1,13 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: 3.000000
+# CHECK: 7.000000
+# CHECK-NOT: ready>
+
+# Tests: a single top-level var statement can declare multiple globals.
+# var a = 1, b = 2 declares both in one statement; both are accessible.
+
+extern def printd(x)
+
+var a = 1, b = 2
+printd(a + b)
+printd(a + b + a + b + 1)

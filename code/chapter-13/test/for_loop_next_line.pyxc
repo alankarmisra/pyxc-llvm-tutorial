@@ -1,0 +1,15 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 1.000000
+# CHECK: 2.000000
+
+
+# Tests: for loop body on the next line after ':'.
+# forstmt = "for" identifier "=" expression "," expression "," expression ":" suite ;
+
+extern def printd(x)
+
+def run():
+    for i = 1, i < 3, 1:
+        printd(i)
+
+run()

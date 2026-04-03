@@ -1,0 +1,14 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: 10.000000
+# CHECK-NOT: ready>
+
+# Tests: top-level var declarations are initialized in order.: float64
+# When b's initializer runs, a already holds 5 (not the default 0),
+# so b = a * 2 = 10. This verifies __pyxc.global_init runs initializers
+# sequentially in source order.
+
+extern def printd(x: float64) -> float64
+
+var a: float64 = 5.0
+var b: float64 = a * 2
+printd(b)

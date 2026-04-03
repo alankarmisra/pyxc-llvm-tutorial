@@ -1,0 +1,17 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK-DAG: @x = {{.*}}global double
+# CHECK-DAG: define double @__pyxc.global_init
+# CHECK-DAG: define double @__pyxc.user_main
+# CHECK-DAG: define i32 @main
+# CHECK-DAG: store double
+
+# Tests: --emit llvm-ir captures both the GlobalVariable declaration for x
+# and the __pyxc.global_init function that initializes it, plus main().
+
+extern def printd(x)
+
+var x = 10
+
+def main():
+    printd(x)

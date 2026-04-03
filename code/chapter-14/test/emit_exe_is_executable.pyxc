@@ -1,0 +1,8 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: test -x %t
+
+# Tests: the output file produced by --emit exe has the executable bit set.
+# This is a property of the linker output, not just a renamed object file.
+
+def main():
+    return 0

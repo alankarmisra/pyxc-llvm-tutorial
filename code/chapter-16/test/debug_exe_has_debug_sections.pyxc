@@ -1,0 +1,17 @@
+# REQUIRES: llvm-dwarfdump
+# UNSUPPORTED: system-darwin
+# RUN: %pyxc -g --emit exe -o %t %s
+# RUN: %dwarfdump %t | FileCheck %s
+# CHECK: DW_TAG_compile_unit
+# CHECK: DW_TAG_subprogram
+
+# Tests: --emit exe with -g produces an executable with valid DWARF. The
+# compile unit and at least one subprogram entry are present in the linked
+# binary. Verifies that debug info survives the LLD link step.
+
+extern def printd(x: float64) -> float64
+
+def sq(x: float64) -> float64: return x * x
+
+def main() -> None:
+    printd(sq(5))

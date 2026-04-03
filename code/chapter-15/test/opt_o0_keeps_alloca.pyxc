@@ -1,0 +1,16 @@
+# RUN: %pyxc -O0 --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: alloca double
+# CHECK: store double
+# CHECK: load double
+
+# Tests: at -O0, local variables are kept as alloca+store+load sequences.
+# mem2reg has not promoted them to SSA values. This is the baseline unoptimized
+# IR that debuggers can map cleanly to source lines.
+
+def f(x):
+    var y = x + 1
+    return y
+
+def main():
+    return f(5)

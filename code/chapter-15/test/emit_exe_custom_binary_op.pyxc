@@ -1,0 +1,19 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 1.000000
+# CHECK: 0.000000
+
+# Tests: user-defined binary operators work correctly in an emitted executable.
+# The custom operator | (pipe, lowest precedence) is compiled and linked.
+
+extern def printd(x)
+
+@binary(1)
+def |(lhs, rhs):
+    if lhs < rhs:
+        return 1
+    return 0
+
+def main():
+    printd(3 | 5)
+    printd(5 | 3)

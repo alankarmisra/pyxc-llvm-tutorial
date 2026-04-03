@@ -1,0 +1,14 @@
+# RUN: cd %T && %pyxc --emit obj %s
+# RUN: %clang %T/out.o %runtime_c -o %T/out.exe
+# RUN: %T/out.exe 2>&1 | FileCheck %s
+# CHECK: 9.000000
+
+# Tests: when -o is omitted with --emit obj the output is written to out.o
+# in the current working directory.  The object file must be linkable and runnable.
+
+extern def printd(x)
+
+def sq(x): return x * x
+
+def main():
+    printd(sq(3))

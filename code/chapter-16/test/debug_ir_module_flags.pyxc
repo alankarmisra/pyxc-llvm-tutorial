@@ -1,0 +1,11 @@
+# RUN: %pyxc -g --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK-DAG: Dwarf Version
+# CHECK-DAG: Debug Info Version
+
+# Tests: -g adds the required llvm.module.flags entries that tell the DWARF
+# consumer which version of the protocol to expect. These are mandatory for any
+# compliant DWARF consumer to interpret the debug sections correctly.
+
+def main() -> None:
+    return

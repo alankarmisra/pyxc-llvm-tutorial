@@ -1,0 +1,12 @@
+# RUN: %pyxc -g --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: !DICompileUnit(language: DW_LANG_C
+# CHECK: !DIFile(filename:
+# CHECK: debug_ir_compile_unit_file.pyxc
+
+# Tests: the DICompileUnit references a DIFile whose filename matches the
+# source file being compiled. Debuggers use this to map addresses back to
+# source files.
+
+def main():
+    return 0

@@ -1,0 +1,17 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 99.000000
+# CHECK-NOT: 1.000000
+
+# Tests: int 0 is false in an if condition; int non-zero is true.
+# Only the else branch (printing 99) must execute.
+
+extern def printd(x: float64) -> float64
+
+def main() -> None:
+    var flag: int = 0
+    if flag:
+        printd(1.0)
+    else:
+        printd(99.0)
+    return

@@ -1,0 +1,18 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: -1.000000
+
+
+# unaryminus applied to a user-defined unary op: -!x
+# ! is logical not: returns 1 for zero, 0 for non-zero.
+
+@unary
+def !(x):
+    if x == 0:
+        return 1
+    else:
+        return 0
+
+def test(x): return -!x
+
+# -!0 == -(1) == -1
+test(0)

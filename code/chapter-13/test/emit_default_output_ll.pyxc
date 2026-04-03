@@ -1,0 +1,10 @@
+# RUN: cd %T && %pyxc --emit llvm-ir %s
+# RUN: FileCheck --input-file=%T/out.ll %s
+# CHECK: define double @sq
+
+# Tests: when -o is omitted with --emit llvm-ir the output is written to out.ll
+# in the current working directory.
+
+extern def printd(x)
+
+def sq(x): return x * x

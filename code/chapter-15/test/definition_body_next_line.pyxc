@@ -1,0 +1,11 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 3.000000
+
+
+# Tests: definition body on the line after ':' using an indented block.
+# definition = "def" prototype ":" ( simplestmt | eols block ) ;
+
+def inc(x):
+    return x + 1
+
+inc(2)

@@ -1,0 +1,15 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 7.000000
+
+# Tests: integer addition computes the correct result at runtime.
+# 3 + 4 = 7; the float64() cast converts for printd.
+
+extern def printd(x: float64) -> float64
+
+def add(a: int, b: int) -> int:
+    return a + b
+
+def main() -> None:
+    printd(float64(add(3, 4)))
+    return

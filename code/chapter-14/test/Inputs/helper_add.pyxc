@@ -1,0 +1,4 @@
+# Helper module: provides add(a, b) for linking tests.
+# This file is not a standalone test — it is compiled as an input by other tests.
+
+def add(a, b): return a + b

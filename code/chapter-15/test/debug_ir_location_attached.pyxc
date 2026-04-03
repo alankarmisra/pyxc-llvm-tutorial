@@ -1,0 +1,16 @@
+# RUN: %pyxc -g --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: !DILocation
+# CHECK: line:
+
+# Tests: each instruction has a !DILocation attached when -g is active.
+# The presence of line: fields confirms that source locations are tracked
+# and emitted per-instruction, not just at the function level.
+
+extern def printd(x)
+
+def double_it(x):
+    return x * 2
+
+def main():
+    printd(double_it(7))

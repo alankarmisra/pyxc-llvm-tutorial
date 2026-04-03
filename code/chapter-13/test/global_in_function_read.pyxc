@@ -1,0 +1,15 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: 7.000000
+# CHECK-NOT: ready>
+
+# Tests: a function can read a top-level global variable.
+# The global x = 7 lives in the globals module; get_x() compiles in its
+# own module but resolves x through the JIT's symbol table.
+
+extern def printd(x)
+
+var x = 7
+
+def get_x(): return x
+
+printd(get_x())

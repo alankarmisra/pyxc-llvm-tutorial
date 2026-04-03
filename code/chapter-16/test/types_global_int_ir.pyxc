@@ -1,0 +1,13 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: @counter = global i{{32|64}}
+# CHECK-NOT: @counter = global double
+
+# Tests: a top-level 'var counter: int' emits a global int, not a global float64.
+# GlobalVariable type must reflect the declared type annotation.
+
+var counter: int = 0
+
+def main() -> None:
+    counter = counter + 1
+    return

@@ -1,0 +1,17 @@
+# REQUIRES: llvm-dwarfdump
+# RUN: %pyxc -g --emit obj -o %t.o %s
+# RUN: %dwarfdump %t.o | FileCheck %s
+# CHECK: DW_TAG_formal_parameter
+# CHECK: DW_AT_name{{.*}}"lhs"
+# CHECK: DW_AT_name{{.*}}"rhs"
+
+# Tests: function parameters appear in DWARF as DW_TAG_formal_parameter entries
+# with the correct DW_AT_name. The order (lhs, then rhs) matches declaration order.
+
+extern def printd(x)
+
+def add(lhs, rhs):
+    return lhs + rhs
+
+def main():
+    printd(add(3, 4))

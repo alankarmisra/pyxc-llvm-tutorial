@@ -1,0 +1,11 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: {{[Ee]rror}}
+# CHECK: {{void|return|value}}
+
+# Tests: 'return expr' in a void function is an error. A '-> None' function
+# must use bare 'return' (or fall off the end).
+
+extern def printd(x: float64) -> float64
+
+def sink(x: float64) -> None:
+    return x

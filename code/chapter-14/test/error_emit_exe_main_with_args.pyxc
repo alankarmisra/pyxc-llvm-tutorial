@@ -1,0 +1,8 @@
+# RUN: not %pyxc --emit exe -o %t %s 2>&1 | FileCheck %s
+# CHECK: main() must take no arguments
+
+# Tests: --emit exe enforces the zero-argument constraint on main().
+# A main() with parameters is rejected before linking.
+
+def main(x):
+    return x

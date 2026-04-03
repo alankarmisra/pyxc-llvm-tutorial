@@ -1,0 +1,9 @@
+# RUN: not %pyxc --emit wat %s 2>&1 | FileCheck %s
+# CHECK: invalid --emit value
+
+# Tests: passing an unrecognized kind to --emit produces a clear error.
+# Valid kinds are: llvm-ir, asm, obj.
+
+extern def printd(x)
+
+def sq(x): return x * x

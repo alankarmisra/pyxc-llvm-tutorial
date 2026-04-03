@@ -1,0 +1,13 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: 1.000000
+# CHECK-NOT: ready>
+
+# Tests: a top-level bare expression can read a global.
+# x = 1 is already set; the expression x == 1 evaluates to 1.0 (true).
+# This verifies that top-level expressions (compiled into __anon_expr)
+# correctly load from the globals module via the JIT symbol table.
+
+extern def printd(x: float64) -> float64
+
+var x: float64 = 1.0
+printd(x == 1)

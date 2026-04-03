@@ -1,0 +1,17 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: define double @f(double %x)
+# CHECK: ret double
+
+# Tests: an explicit '-> float64' annotation produces a float64-returning
+# function in LLVM IR. A function without '->' is implicitly void; to
+# return a value the annotation is required.
+
+extern def printd(x: float64) -> float64
+
+def f(x: float64) -> float64:
+    return x * 2
+
+def main() -> None:
+    printd(f(3))
+    return

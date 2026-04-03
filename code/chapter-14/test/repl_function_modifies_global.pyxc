@@ -1,0 +1,14 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 5.000000
+# CHECK: 8.000000
+
+# Tests: REPL mode — a function modifies a global; subsequent REPL expressions
+# see the updated value. add_to(n) adds n to the global total.
+
+extern def printd(x)
+var total = 0
+def add_to(n): total = total + n
+add_to(5)
+printd(total)
+add_to(3)
+printd(total)

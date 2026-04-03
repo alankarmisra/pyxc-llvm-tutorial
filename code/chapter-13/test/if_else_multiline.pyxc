@@ -1,0 +1,14 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 5.000000
+
+
+# Tests: if/else with then and else blocks on separate lines.
+# ifstmt = "if" expression ":" suite [ eols "else" ":" suite ] ;
+
+def minval(a, b):
+    if a < b:
+        return a
+    else:
+        return b
+
+minval(5, 10)

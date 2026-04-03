@@ -1,0 +1,17 @@
+# RUN: %pyxc -g --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: dbg_declare
+# CHECK: !DILocalVariable(name: "result"
+
+# Tests: a 'var' declaration inside a function body produces a DILocalVariable
+# metadata node and an llvm.dbg.declare intrinsic call that binds the alloca
+# to the debug variable.
+
+extern def printd(x)
+
+def f(x):
+    var result = x + 1
+    return result
+
+def main():
+    printd(f(10))

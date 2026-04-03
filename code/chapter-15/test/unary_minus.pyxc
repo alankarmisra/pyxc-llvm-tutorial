@@ -1,0 +1,12 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: -5.000000
+# CHECK: -3.000000
+
+
+# Tests: builtin unary minus applied to a number literal and to an expression.
+# unaryop  = "-" | userdefunaryop
+# unaryexpr = unaryop unaryexpr | primary
+
+-5
+
+-(1 + 2)

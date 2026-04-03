@@ -1,0 +1,10 @@
+# REQUIRES: llvm-readelf
+# RUN: %pyxc -g --emit obj -o %t.o %s
+# RUN: %readelf --sections %t.o | FileCheck %s
+# CHECK: {{(\.debug_info|__debug_info)}}
+# CHECK: {{(\.debug_line|__debug_line)}}
+
+# Tests: -g embeds DWARF sections in emitted object files.
+
+def main() -> None:
+    return

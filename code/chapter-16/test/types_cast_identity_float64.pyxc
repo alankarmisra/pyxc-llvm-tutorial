@@ -1,0 +1,14 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: define double @f(double %x)
+# CHECK-NOT: sitofp
+# CHECK-NOT: fptosi
+
+# Tests: float64(double_expr) is an identity cast. No conversion instruction
+# should be emitted.
+
+def f(x: float64) -> float64:
+    return float64(x)
+
+def main() -> None:
+    return

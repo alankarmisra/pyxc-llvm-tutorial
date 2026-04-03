@@ -1,0 +1,12 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: define double @lerp(double %a, double %b, i{{32|64}} %steps)
+
+# Tests: a function with mixed int and float64 parameters produces a signature
+# with mixed integer and float64 arguments, in declaration order.
+
+def lerp(a: float64, b: float64, steps: int) -> float64:
+    return a + (b - a) * float64(steps)
+
+def main() -> None:
+    return

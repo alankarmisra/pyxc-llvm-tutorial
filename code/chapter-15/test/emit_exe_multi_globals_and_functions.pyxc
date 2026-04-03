@@ -1,0 +1,18 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 55.000000
+
+# Tests: a realistic program — global accumulator, helper function, main calls
+# it in a loop and prints the sum 1+2+...+10 = 55.
+
+extern def printd(x)
+
+var sum = 0
+
+def accumulate(n):
+    sum = sum + n
+
+def main():
+    for i = 1, i < 11, 1:
+        accumulate(i)
+    printd(sum)

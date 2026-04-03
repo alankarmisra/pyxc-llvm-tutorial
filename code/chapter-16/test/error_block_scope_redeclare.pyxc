@@ -1,0 +1,9 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: already declared in this scope
+
+# Tests: declaring the same variable twice in the same block is a parse error.
+
+def f() -> float64:
+    var x: float64 = 1.0
+    var x: float64 = 2.0
+    return x

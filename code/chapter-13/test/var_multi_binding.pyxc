@@ -1,0 +1,11 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 3.000000
+
+# Tests: var with multiple comma-separated bindings in one statement.
+# varstmt = "var" varbinding { "," varbinding } ;
+
+def f():
+    var x = 1, y = 2
+    return x + y
+
+f()

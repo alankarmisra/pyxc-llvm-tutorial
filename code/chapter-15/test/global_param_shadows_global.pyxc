@@ -1,0 +1,16 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: 10.000000
+# CHECK: 1.000000
+# CHECK-NOT: ready>
+
+# Tests: a function parameter with the same name as a global shadows the
+# global inside the function body. The global is unchanged after the call.
+
+extern def printd(x)
+
+var x = 1
+
+def double_it(x): return x * 2
+
+printd(double_it(x + 4))
+printd(x)

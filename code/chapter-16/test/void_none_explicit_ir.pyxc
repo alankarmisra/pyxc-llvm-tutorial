@@ -1,0 +1,10 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: define void @fn()
+# CHECK: ret void
+
+# Tests: '-> None' produces the same void IR as the implied (no annotation) case.
+# Both forms are equivalent: there is no observable IR difference.
+
+def fn() -> None:
+    var x: int32 = 10

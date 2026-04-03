@@ -1,0 +1,10 @@
+# RUN: not %pyxc --emit exe -o %t %s 2>&1 | FileCheck %s
+# CHECK: {{[Ee]rror}}
+
+# Tests: --emit exe with no main() defined fails at link time (no entry point).
+# The error can come from the linker or from a pre-link check in pyxc.
+
+extern def printd(x)
+
+var x = 5
+printd(x)

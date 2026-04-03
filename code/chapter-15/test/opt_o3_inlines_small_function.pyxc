@@ -1,0 +1,12 @@
+# RUN: %pyxc -O3 --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: ret double 1.000000e+01
+# CHECK-NOT: call double @double_it
+
+# Tests: at -O3, a small single-expression function is inlined at its call site
+# and the result constant-folded. The call to double_it disappears entirely.
+
+def double_it(x): return x * 2
+
+def main():
+    return double_it(5)

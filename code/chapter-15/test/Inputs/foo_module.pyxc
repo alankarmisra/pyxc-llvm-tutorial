@@ -1,0 +1,4 @@
+# Module with a function used by another file.
+
+def foo():
+    return 42

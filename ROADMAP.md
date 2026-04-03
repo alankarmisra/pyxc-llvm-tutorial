@@ -5,6 +5,14 @@
 - Each chapter starts from the previous chapter's codebase and adds only its delta
 - Every chapter documents: grammar changes, AST changes, semantic rules, IR/codegen changes
 
+## Python-Friendly Syntax Goals (Guiding Style)
+- Prefer Pythonic surface syntax when it doesn't block clarity or IR goals
+- `x: T = ...` (and optionally `x = ...`) instead of mandatory `var` for initialized bindings
+- `def f(x: T) -> U:` type annotation style
+- `for x in range(a, b, step):` instead of `for x = a, b, step:`
+- Array literals like `[1,2,3]` for `T[N]`
+- `and` / `or` / `not` keywords for boolean logic
+
 ---
 
 ## Phase 1: Foundations — Complete (Chapters 1–11)
@@ -43,7 +51,7 @@
 | 16 | Types and Typed Variables | `int`, `double`, `void`; typed parameters, return types, type checking, casts |
 | 17 | Structs and Field Access | `struct` declarations, layout, field offsets, `.` lvalue/rvalue |
 | 18 | Pointers and Address-Of | `ptr[T]` type, `addr(x)` / `&x`, pointer indexing `p[i]` |
-| 19 | Arrays | Fixed-size `T[N]`, stack allocation, indexing, array-to-pointer decay |
+| 19 | Arrays | Fixed-size `T[N]`, stack allocation, indexing, array-to-pointer decay, Python-style array literals (`[1,2,3]`) |
 | 20 | Strings and C Interop | String literals, `extern` for libc (`printf`, `fopen`, `scanf`), `malloc`/`free` |
 | 21 | `while` Loops + Mandelbrot | `while` loops; full Mandelbrot demo using structs, pointers, arrays, and I/O |
 

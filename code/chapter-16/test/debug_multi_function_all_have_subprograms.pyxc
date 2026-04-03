@@ -1,0 +1,29 @@
+# REQUIRES: llvm-dwarfdump
+# RUN: %pyxc -g --emit obj -o %t.o %s
+# RUN: %dwarfdump %t.o | FileCheck %s
+# CHECK: DW_TAG_subprogram
+# CHECK: DW_AT_name{{.*}}"fib"
+# CHECK: DW_TAG_subprogram
+# CHECK: DW_AT_name{{.*}}"fac"
+# CHECK: DW_TAG_subprogram
+# CHECK: DW_AT_name{{.*}}"main"
+
+# Tests: three functions all produce DW_TAG_subprogram entries. Verifies that
+# the debug info generation loop handles multiple functions correctly, not just
+# the first or last one.
+
+extern def printd(x: float64) -> float64
+
+def fib(n: float64) -> float64:
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+def fac(n: float64) -> float64:
+    if n < 2:
+        return 1.0
+    return n * fac(n - 1)
+
+def main() -> None:
+    printd(fib(7))
+    printd(fac(5))

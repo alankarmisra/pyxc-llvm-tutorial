@@ -1,0 +1,9 @@
+# RUN: not %pyxc --emit exe -o %t %s foo.txt 2>&1 | FileCheck %s
+# CHECK: {{[Ee]rror}}
+# CHECK: {{unknown|unsupported|unrecognized|invalid}}
+
+# Tests: an input file with an unrecognized extension is rejected.
+# Valid extensions are .pyxc (compile) and .o (link as-is).
+
+def main():
+    return 0

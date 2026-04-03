@@ -1,0 +1,13 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: 11.000000
+# CHECK-NOT: ready>
+
+# Tests: a top-level if statement can read and modify a global variable.
+# x starts at 10; the if branch increments it to 11.
+
+extern def printd(x)
+
+var x = 10
+if x > 5:
+    x = x + 1
+printd(x)

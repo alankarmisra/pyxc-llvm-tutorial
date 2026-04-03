@@ -1,0 +1,18 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: 20.000000
+# CHECK: 0.000000
+# CHECK-NOT: ready>
+
+# Tests: a function with no explicit return on all paths gets an implicit return 0.0.
+# When the block ends without a terminator, codegen inserts:
+#   Builder->CreateRet(ConstantFP::get(*TheContext, APFloat(0.0)))
+# definition = "def" prototype ":" ( simplestmt | eols block ) ;
+# ifstmt = "if" expression ":" suite [ eols "else" ":" suite ] ;  (no else here)
+
+extern def printd(x)
+
+def threshold(x):
+    if x > 10: return x
+
+printd(threshold(20))
+printd(threshold(5))

@@ -1,0 +1,10 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Unary operator must have exactly one argument
+
+
+# Tests: a unary operator prototype with two arguments is rejected.
+# unaryopprototype = customopchar "(" identifier ")"
+# ParseUnaryOpPrototype checks ArgNames.size() != 1.
+
+@unary
+def %(x: float64, y: float64) -> float64: return x

@@ -1,0 +1,5 @@
+# Helper module: provides cube(x) and double_it(x) for linking tests.
+
+def cube(x): return x * x * x
+
+def double_it(x): return x * 2

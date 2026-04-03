@@ -1,0 +1,14 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 14.000000
+# CHECK: 7.000000
+
+
+# Tests: operator precedence (* > +) and left-associativity of -.
+# binoprhs = { binaryop unaryexpr }
+#
+# 2 + 3 * 4 = 2 + 12 = 14  (not (2+3)*4 = 20)
+# 10 - 2 - 1 = (10-2) - 1 = 7  (not 10 - (2-1) = 9, confirming left-assoc)
+
+2 + 3 * 4
+
+10 - 2 - 1

@@ -1,0 +1,11 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: conflicts with an existing unary operator
+
+
+# Tests: cross-arity reuse is rejected.
+# After defining unary '%', defining binary '%' must fail.
+
+@unary
+def %(x: float64) -> float64: return x
+@binary(5)
+def %(x: float64, y: float64) -> float64: return x + y

@@ -1,0 +1,10 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: define void @fn()
+# CHECK: ret void
+
+# Tests: a function with no '->' annotation is implicitly void.
+# The generated IR must declare it as 'void @fn()' with 'ret void'.
+
+def fn() -> None:
+    var x: int32 = 10

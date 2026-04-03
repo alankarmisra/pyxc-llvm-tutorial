@@ -1,0 +1,15 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK-NOT: !DICompileUnit
+# CHECK-NOT: !DISubprogram
+# CHECK-NOT: Dwarf Version
+
+# Tests: without -g, --emit llvm-ir produces clean IR with no debug metadata.
+# Metadata nodes like !DICompileUnit and Dwarf Version must be absent.
+
+extern def printd(x: float64) -> float64
+
+def sq(x: float64) -> float64: return x * x
+
+def main() -> None:
+    printd(sq(3))

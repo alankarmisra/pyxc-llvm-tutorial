@@ -1,0 +1,13 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: sitofp i{{32|64}}
+# CHECK: fadd double
+
+# Tests: binary arithmetic on mixed int+float64 operands implicitly widens
+# the int operand to float64 before fadd.
+
+def main() -> None:
+    var a: int = 3
+    var b: float64 = 1.5
+    var c: float64 = a + b
+    return

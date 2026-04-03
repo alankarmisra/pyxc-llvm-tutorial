@@ -1,0 +1,12 @@
+# RUN: %pyxc -O1 --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: ret double 9.000000e+00
+# CHECK-NOT: fadd double
+# CHECK-NOT: fmul double
+
+# Tests: -O1 applies at minimum constant folding for simple arithmetic.
+# (1 + 2) * 3 = 9 is a trivially constant expression that any non-zero
+# optimization level should fold.
+
+def main():
+    return (1 + 2) * 3

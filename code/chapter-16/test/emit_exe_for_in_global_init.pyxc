@@ -1,0 +1,15 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 10.000000
+
+# Tests: a top-level for loop executes inside __pyxc.global_init before main().
+# main() sees the accumulated result of the loop.
+
+extern def printd(x: float64) -> float64
+
+var total: float64 = 0.0
+for i: float64 = 1, i < 5, 1:
+    total = total + i
+
+def main() -> None:
+    printd(total)

@@ -1,0 +1,7 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: Assignment to undeclared variable
+
+# Tests: assigning to an undeclared name at the top level is a parse error.
+# x has not been declared with var, so x = 5 must be rejected.
+
+x = 5

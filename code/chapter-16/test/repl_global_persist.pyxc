@@ -1,0 +1,13 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 10.000000
+# CHECK: 17.000000
+
+# Tests: top-level var and assignment persist across REPL inputs.: float64
+
+extern def printd(x: float64) -> float64
+
+var x: float64 = 10.0
+printd(x)
+
+x = x + 7
+printd(x)

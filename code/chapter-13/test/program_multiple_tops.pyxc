@@ -1,0 +1,13 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 2.000000
+
+
+# Tests: a program with multiple top-level forms separated by blank lines.
+# program = [ eols ] [ top { eols top } ] [ eols ]
+# top     = definition | external | toplevelexpr
+
+extern def printd(x)
+
+def double(x): return x + x
+
+double(1)

@@ -1,0 +1,10 @@
+# RUN: %pyxc -g -O2 --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: ret double 9.000000e+00
+# CHECK-NOT: fadd double
+# CHECK-NOT: fmul double
+
+# Tests: -g with explicit -O2 keeps optimization (constant folding present).
+
+def main():
+    return (1 + 2) * 3

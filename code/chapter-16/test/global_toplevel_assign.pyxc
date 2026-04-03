@@ -1,0 +1,12 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: 15.000000
+# CHECK-NOT: ready>
+
+# Tests: a top-level assignment statement updates a global in place.
+# x starts at 10; x = x + 5 stores 15 back into the global.
+
+extern def printd(x: float64) -> float64
+
+var x: float64 = 10.0
+x = x + 5
+printd(x)

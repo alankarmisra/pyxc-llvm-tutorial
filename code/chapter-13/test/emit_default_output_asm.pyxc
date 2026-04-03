@@ -1,0 +1,11 @@
+# RUN: cd %T && %pyxc --emit asm %s
+# RUN: FileCheck --input-file=%T/out.s %s
+# CHECK: .globl
+# CHECK: {{_?}}sq
+
+# Tests: when -o is omitted with --emit asm the output is written to out.s
+# in the current working directory.
+
+extern def printd(x)
+
+def sq(x): return x * x

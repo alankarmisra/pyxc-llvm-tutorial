@@ -1,0 +1,15 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 1.000000
+# CHECK: 2.000000
+# CHECK: 3.000000
+
+# Tests: printd is provided as a built-in by the compiler — no runtime.c or
+# --emit obj + clang link step needed. Multiple printd calls all work.
+
+extern def printd(x)
+
+def main():
+    printd(1)
+    printd(2)
+    printd(3)

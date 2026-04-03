@@ -1,0 +1,14 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: ret void
+
+# Tests: a bare 'return' (no expression) inside a void function compiles
+# and produces 'ret void'. This works for both the implied and explicit forms.
+
+def early_exit(x: int32) -> None:
+    if x == 0:
+        return
+    var y: int32 = x + 1
+
+def fn() -> None:
+    return

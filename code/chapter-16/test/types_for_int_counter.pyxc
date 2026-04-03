@@ -1,0 +1,15 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: alloca i{{32|64}}
+# CHECK: icmp
+
+# Tests: a 'for' loop with an int induction variable uses integer storage and
+# comparisons. The loop variable is declared as int and must produce
+# integer alloca and icmp branch logic, not float64/fcmp.
+
+extern def printd(x: float64) -> float64
+
+def main() -> None:
+    for i: int = 0, i < 3, 1:
+        printd(float64(i))
+    return

@@ -1,0 +1,11 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: A
+
+# Tests: putchard is provided as a built-in by the compiler (no external runtime
+# object needed). putchard(65) prints ASCII 'A' to stderr.
+
+extern def putchard(x)
+
+def main():
+    putchard(65)

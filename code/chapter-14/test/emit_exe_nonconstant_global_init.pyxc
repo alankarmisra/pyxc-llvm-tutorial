@@ -1,0 +1,16 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 16.000000
+
+# Tests: a global variable whose initializer is a function call (non-constant).
+# LLVM requires a constant IR initializer; the actual value is stored at runtime
+# inside __pyxc.global_init.
+
+extern def printd(x)
+
+def square(x): return x * x
+
+var n = square(4)
+
+def main():
+    printd(n)

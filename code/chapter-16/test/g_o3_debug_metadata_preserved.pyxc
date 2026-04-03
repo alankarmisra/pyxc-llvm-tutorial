@@ -1,0 +1,16 @@
+# RUN: %pyxc -g -O3 --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: !DICompileUnit
+# CHECK: !DISubprogram
+# CHECK: !DILocation
+
+# Tests: -g with -O3 still produces debug metadata even at the highest
+# optimization level. Optimization may degrade debuggability (instructions
+# reordered, variables optimized out) but the metadata nodes are present.
+
+extern def printd(x: float64) -> float64
+
+def sq(x: float64) -> float64: return x * x
+
+def main() -> None:
+    printd(sq(3))

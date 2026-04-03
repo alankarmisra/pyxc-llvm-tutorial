@@ -1,0 +1,18 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 99.000000
+# CHECK: 1.000000
+
+# Tests: a function parameter with the same name as a global shadows the global
+# inside the function body. The global is unchanged after the call.
+
+extern def printd(x: float64) -> float64
+
+var x: float64 = 1.0
+
+def use_param(x: float64) -> None:
+    printd(x)
+
+def main() -> None:
+    use_param(99)
+    printd(x)

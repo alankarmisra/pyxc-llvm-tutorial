@@ -1,0 +1,14 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 10.000000
+# CHECK: 8.000000
+
+
+# Tests: parenexpr overrides the default * > + precedence.
+# parenexpr = "(" expression ")"
+#
+# Without parens: 2 + 3 * 2 = 2 + 6 = 8
+# With parens:    (2 + 3) * 2 = 5 * 2 = 10
+
+(2 + 3) * 2
+
+2 + 3 * 2

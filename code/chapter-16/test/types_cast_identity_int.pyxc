@@ -1,0 +1,14 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: define i{{32|64}} @f(i{{32|64}} %x)
+# CHECK-NOT: sitofp
+# CHECK-NOT: fptosi
+
+# Tests: int(int_expr) is an identity cast. No conversion instruction
+# (sitofp or fptosi) should be emitted — the value passes through unchanged.
+
+def f(x: int) -> int:
+    return int(x)
+
+def main() -> int:
+    return f(7)

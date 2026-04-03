@@ -1,0 +1,14 @@
+# RUN: %pyxc -g --emit asm -o %t.s %s
+# RUN: FileCheck --input-file=%t.s %s
+# CHECK: {{\.file|\.section.*debug|\.loc}}
+
+# Tests: -g --emit asm produces assembly that contains either a .file directive
+# (ELF) or debug sections (Mach-O). The exact directive differs by platform
+# but the presence of debug information in the assembly is platform-independent.
+
+extern def printd(x)
+
+def triple(x): return x * 3
+
+def main():
+    printd(triple(4))

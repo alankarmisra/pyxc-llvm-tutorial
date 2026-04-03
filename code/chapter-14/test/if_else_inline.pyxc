@@ -1,0 +1,11 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 10.000000
+
+
+# Tests: inline if/else statement with both branches on one line.
+# ifstmt = "if" expression ":" suite [ eols "else" ":" suite ]
+
+def maxval(a, b):
+    if a > b: return a else: return b
+
+maxval(10, 5)

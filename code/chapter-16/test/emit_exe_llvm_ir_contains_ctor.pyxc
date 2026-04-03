@@ -1,0 +1,19 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+
+# CHECK-DAG: @x = global double
+# CHECK-DAG: @llvm.global_ctors
+# CHECK-DAG: __pyxc.global_init
+# CHECK: define void @__pyxc.user_main
+
+# Tests: when --emit llvm-ir is used on a program with globals, the IR contains
+# a llvm.global_ctors entry wiring __pyxc.global_init, the global variable
+# definition, and the renamed user main. Verifies the static-compilation IR
+# structure before any linking.
+
+extern def printd(x: float64) -> float64
+
+var x: float64 = 5.0
+
+def main() -> None:
+    printd(x)

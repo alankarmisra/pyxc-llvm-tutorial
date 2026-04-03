@@ -1,0 +1,13 @@
+# RUN: %pyxc --emit obj -o %t.helper.o %S/Inputs/helper_add.pyxc
+# RUN: %pyxc --emit exe -o %t %s %t.helper.o
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 7.000000
+
+# Tests: mixed input — one .pyxc file compiled on-the-fly and one pre-compiled
+# .o file passed as a direct input. The linker combines both objects.
+
+extern def printd(x)
+extern def add(a, b)
+
+def main():
+    printd(add(3, 4))

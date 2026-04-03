@@ -1,0 +1,17 @@
+# RUN: %pyxc -v %s 2>&1 | FileCheck %s
+# CHECK: define double @sq
+# CHECK: fmul double
+# CHECK: ret double
+# CHECK: 9.000000
+
+
+# Tests: the -v flag prints generated IR to stderr before program output.
+# Without -v, the evaluator produces no output in file mode. With -v, the IR
+# for each compiled function is printed. Program output still requires explicit
+# print calls.
+
+extern def printd(x: float64) -> float64
+
+def sq(x: float64) -> float64: return x * x
+
+printd(sq(3))

@@ -1,0 +1,21 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: 1.000000
+# CHECK: 2.000000
+# CHECK: 3.000000
+# CHECK-NOT: ready>
+
+# Tests: a function can modify a top-level global, and subsequent calls
+# see the updated value. counter starts at 0; each call to increment()
+# adds 1 and returns the new value.
+
+extern def printd(x)
+
+var counter = 0
+
+def increment():
+    counter = counter + 1
+    return counter
+
+printd(increment())
+printd(increment())
+printd(increment())

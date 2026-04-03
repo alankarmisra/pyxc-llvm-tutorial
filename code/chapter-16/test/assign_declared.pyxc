@@ -1,0 +1,19 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: 3.000000
+# CHECK-NOT: ready>
+
+# Tests: assignment to a var-declared local inside a statement block.
+# assignstmt = identifier "=" expression ;
+# varstmt = "var" varbinding { "," varbinding } ;
+#
+# "var x: float64 = 1" declares x; "x = x + 2" assigns to it (IsDeclaredVar check passes).
+# "return x" returns the updated value 3.0.
+
+extern def printd(x: float64) -> float64
+
+def f() -> float64:
+    var x: float64 = 1.0
+    x = x + 2
+    return x
+
+printd(f())

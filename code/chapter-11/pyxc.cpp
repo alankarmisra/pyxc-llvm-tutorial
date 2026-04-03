@@ -53,8 +53,7 @@ static cl::opt<bool> VerboseIR("v",
 
 // Optimization level. For now Pyxc only distinguishes -O0 (no passes) from
 // any non-zero level (run the current fixed function pass pipeline).
-static cl::opt<unsigned> OptLevel("O",
-                                  cl::desc("Optimization level"),
+static cl::opt<unsigned> OptLevel("O", cl::desc("Optimization level"),
                                   cl::value_desc("0|1|2|3"), cl::Prefix,
                                   cl::init(2), cl::cat(PyxcCategory));
 
@@ -282,87 +281,6 @@ static int peek() {
   return c;
 }
 
-static bool ProcessLineStart(int &LastChar, int *OutTok) {
-  if (!AtLineStart)
-    return false;
-
-  int IndentCol = 0;
-  while (LastChar == ' ' || LastChar == '\t') {
-    if (LastChar == ' ')
-      IndentCol += 1;
-    else
-      IndentCol += 8 - (IndentCol % 8);
-    LastChar = advance();
-  }
-
-  // Blank line: in file mode we ignore indentation and return a newline.
-  // In REPL mode, a blank line ends the current block by emitting DEDENTs
-  // until we return to column 0 (matching Python's interactive behavior).
-  if (LastChar == '\n') {
-    if (IsRepl && IndentStack.size() > 1) {
-      IndentStack.pop_back();
-      *OutTok = tok_dedent;
-      return true;
-    }
-    CurLoc = LexLoc;
-    LastChar = ' ';
-    *OutTok = tok_eol;
-    return true;
-  }
-
-  // Comment-only line: ignore indentation, return newline.
-  if (LastChar == '#') {
-    do
-      LastChar = advance();
-    while (LastChar != EOF && LastChar != '\n');
-
-    if (LastChar != EOF) {
-      CurLoc = LexLoc;
-      LastChar = ' ';
-      *OutTok = tok_eol;
-      return true;
-    }
-  }
-
-  if (LastChar == EOF) {
-    if (IndentStack.size() > 1) {
-      IndentStack.pop_back();
-      *OutTok = tok_dedent;
-      return true;
-    }
-    *OutTok = tok_eof;
-    return true;
-  }
-
-  CurLoc = LexLoc;
-  int CurrentIndent = IndentStack.back();
-  if (IndentCol > CurrentIndent) {
-    IndentStack.push_back(IndentCol);
-    PendingTokens.push_back(tok_indent);
-  } else if (IndentCol < CurrentIndent) {
-    while (IndentStack.size() > 1 && IndentCol < IndentStack.back()) {
-      IndentStack.pop_back();
-      PendingTokens.push_back(tok_dedent);
-    }
-    if (IndentCol != IndentStack.back()) {
-      fprintf(stderr, "Error (Line %d, Column %d): inconsistent indentation\n",
-              CurLoc.Line, CurLoc.Col);
-      PrintErrorSourceContext(CurLoc);
-      *OutTok = tok_error;
-      return true;
-    }
-  }
-
-  AtLineStart = false;
-  if (!PendingTokens.empty()) {
-    *OutTok = PendingTokens.front();
-    PendingTokens.pop_front();
-    return true;
-  }
-
-  return false;
-}
-
 /// gettok - Return the next token from standard input.
 ///
 /// LastChar holds the last character read by advance() but not yet consumed
@@ -383,29 +301,88 @@ static bool ProcessLineStart(int &LastChar, int *OutTok) {
 static int gettok() {
   static int LastChar = ' ';
 
+  // Drain tokens queued by a multi-level dedent on the previous line.
   if (!PendingTokens.empty()) {
     int Tok = PendingTokens.front();
     PendingTokens.pop_front();
     return Tok;
   }
 
-  // If we're at the start of a line and LastChar is still the sentinel
-  // space (i.e., not a real character from the input), advance once so
-  // indentation logic sees the actual first character.
+  // At line start with the sentinel space, advance to the first real char
+  // so the indentation counting below sees actual input.
   if (AtLineStart && LastChar == ' ')
     LastChar = advance();
 
-  if (LastChar == EOF) {
-    if (IndentStack.size() > 1) {
-      IndentStack.pop_back();
-      return tok_dedent;
+  // ── Line-start: count indentation, emit INDENT / DEDENT ──────────────
+  if (AtLineStart) {
+    int IndentCol = 0;
+    while (LastChar == ' ' || LastChar == '\t') {
+      IndentCol += (LastChar == ' ') ? 1 : (8 - IndentCol % 8);
+      LastChar = advance();
     }
-    return tok_eof;
-  }
 
-  int LineStartTok;
-  if (ProcessLineStart(LastChar, &LineStartTok))
-    return LineStartTok;
+    // Blank line: ignore in file mode; close the block immediately in REPL.
+    if (LastChar == '\n') {
+      if (IsRepl && IndentStack.size() > 1) {
+        IndentStack.pop_back();
+        return tok_dedent;
+      }
+      CurLoc = LexLoc;
+      LastChar = ' ';
+      return tok_eol;
+    }
+
+    // Comment-only line: consume and return a newline.
+    if (LastChar == '#') {
+      do
+        LastChar = advance();
+      while (LastChar != EOF && LastChar != '\n');
+      if (LastChar != EOF) {
+        CurLoc = LexLoc;
+        LastChar = ' ';
+        return tok_eol;
+      }
+      // else fall through to EOF handling below
+    }
+
+    // EOF (with or without trailing newline): flush open blocks one at a time.
+    if (LastChar == EOF) {
+      if (IndentStack.size() > 1) {
+        IndentStack.pop_back();
+        return tok_dedent;
+      }
+      return tok_eof;
+    }
+
+    // Real content: compare column to the indent stack.
+    CurLoc = LexLoc;
+    int CurrentIndent = IndentStack.back();
+    if (IndentCol > CurrentIndent) {
+      IndentStack.push_back(IndentCol);
+      AtLineStart = false;
+      return tok_indent;
+    }
+    if (IndentCol < CurrentIndent) {
+      while (IndentStack.size() > 1 && IndentCol < IndentStack.back()) {
+        IndentStack.pop_back();
+        PendingTokens.push_back(tok_dedent);
+      }
+      if (IndentCol != IndentStack.back()) {
+        fprintf(stderr,
+                "Error (Line %d, Column %d): inconsistent indentation\n",
+                CurLoc.Line, CurLoc.Col);
+        PrintErrorSourceContext(CurLoc);
+        return tok_error;
+      }
+      AtLineStart = false;
+      int Tok = PendingTokens.front();
+      PendingTokens.pop_front();
+      return Tok;
+    }
+    // Same indentation level — no indent/dedent token needed.
+    AtLineStart = false;
+  }
+  // ── End of line-start processing ─────────────────────────────────────
 
   // Skip horizontal whitespace. Stop at '\n' — that becomes tok_eol.
   while (isspace(LastChar) && LastChar != '\n')
@@ -498,8 +475,14 @@ static int gettok() {
     return Tok;
   }
 
-  if (LastChar == EOF)
+  // EOF with no trailing newline: flush any remaining open blocks.
+  if (LastChar == EOF) {
+    if (IndentStack.size() > 1) {
+      IndentStack.pop_back();
+      return tok_dedent;
+    }
     return tok_eof;
+  }
 
   // Single character token
   int ThisChar = LastChar;
@@ -636,8 +619,7 @@ class BlockExprAST : public ExprAST {
   vector<unique_ptr<ExprAST>> Stmts;
 
 public:
-  BlockExprAST(vector<unique_ptr<ExprAST>> Stmts)
-      : Stmts(std::move(Stmts)) {}
+  BlockExprAST(vector<unique_ptr<ExprAST>> Stmts) : Stmts(std::move(Stmts)) {}
   Value *codegen() override;
 };
 
@@ -1033,7 +1015,8 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
 }
 
 /// forstmt
-///   = "for" identifier "=" expression "," expression "," expression ":" suite ;
+///   = "for" identifier "=" expression "," expression "," expression ":" suite
+///   ;
 ///
 /// The loop variable is introduced by the "for" and is in scope for the
 /// condition, step, and body. It shadows any outer variable of the same name.
@@ -1103,7 +1086,8 @@ static unique_ptr<ExprAST> ParseVarStmt() {
     getNextToken(); // eat identifier
 
     if (IsDeclaredInCurrentScope(Name))
-      return LogError(("Variable '" + Name + "' already declared in this scope").c_str());
+      return LogError(
+          ("Variable '" + Name + "' already declared in this scope").c_str());
 
     unique_ptr<ExprAST> Init;
     if (CurTok == '=') {
@@ -1699,8 +1683,9 @@ static unique_ptr<PrototypeAST> ParseUnaryOpPrototype() {
 }
 
 /// decorateddef
-///   = binarydecorator eols "def" binaryopprototype ":" ( simplestmt | eols block )
-///   | unarydecorator  eols "def" unaryopprototype  ":" ( simplestmt | eols block )
+///   = binarydecorator eols "def" binaryopprototype ":" ( simplestmt | eols
+///   block ) | unarydecorator  eols "def" unaryopprototype  ":" ( simplestmt |
+///   eols block )
 ///
 /// Called after '@' has been consumed. CurTok is on 'binary' or 'unary'.
 /// The two branches share the same body structure (':' / block).
@@ -1738,7 +1723,8 @@ static unique_ptr<FunctionAST> ParseDecoratedDef() {
     return nullptr;
   FunctionScopeGuard Scope(Proto->getArgs());
 
-  // Shared body: ":" ( simplestmt | eols block ) — identical to ParseDefinition.
+  // Shared body: ":" ( simplestmt | eols block ) — identical to
+  // ParseDefinition.
   if (CurTok != ':')
     return LogErrorF("Expected ':' in operator definition");
   getNextToken(); // eat ':'

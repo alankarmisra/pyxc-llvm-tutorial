@@ -1,0 +1,5 @@
+# RUN: not %pyxc --emit obj 2>&1 | FileCheck %s
+# CHECK: --emit requires a file input
+
+# Tests: --emit requires a source file argument.
+# Invoking --emit without an input file must print an error and exit non-zero.

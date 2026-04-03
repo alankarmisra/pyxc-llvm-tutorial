@@ -1,0 +1,12 @@
+# REQUIRES: llvm-dwarfdump
+# RUN: %pyxc -g --emit obj -o %t.o %s
+# RUN: %dwarfdump %t.o | FileCheck %s
+# CHECK: DW_TAG_compile_unit
+# CHECK: DW_AT_name{{.*}}debug_cu_has_source_filename.pyxc
+
+# Tests: the DWARF compile unit's DW_AT_name attribute contains the name of
+# the source file. Debuggers use this to display the correct filename in
+# backtraces and source views.
+
+def main():
+    return 0

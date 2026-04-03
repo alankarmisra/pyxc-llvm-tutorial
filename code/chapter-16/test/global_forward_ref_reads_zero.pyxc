@@ -1,0 +1,14 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: 0.000000
+# CHECK-NOT: ready>
+
+# Tests: a global initializer that references a global declared later reads 0.0
+# (the constant default), not the later global's initialized value.
+# Initializers run in source order; b is initialized before a, so a is still 0.0
+# when b's initializer runs.
+
+extern def printd(x: float64) -> float64
+
+var b: float64 = a * 2   # a is not yet initialized — reads 0.0, so: float64 b = 0.0
+var a: float64 = 5.0
+printd(b)

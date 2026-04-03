@@ -1,0 +1,17 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 0.000000
+# CHECK: 10.000000
+
+# Tests: a global variable whose initializer references another global that
+# appears later in the file reads 0.0 (the constant-zero default), not the
+# later global's final value. Initialization is strictly in source order.
+
+extern def printd(x)
+
+var early = late   # late has not been initialized yet — reads 0.0
+var late = 10
+
+def main():
+    printd(early)
+    printd(late)

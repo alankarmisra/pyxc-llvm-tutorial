@@ -1,0 +1,10 @@
+# RUN: %pyxc --emit exe %s %S/Inputs/foo_module.pyxc -o %t
+# RUN: %t | FileCheck %s --check-prefix=OUT
+
+# OUT: 42.000000
+
+extern def foo()
+extern def printd(x)
+
+def main():
+    return printd(foo())

@@ -1,0 +1,17 @@
+# RUN: %pyxc -g --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: !DIBasicType(name: "float64"
+# CHECK: encoding: DW_ATE_float
+
+# Tests: Pyxc's single type (float64) is represented in debug info as a
+# DIBasicType with DW_ATE_float encoding. All variables and parameters
+# share this one type descriptor.
+
+extern def printd(x: float64) -> float64
+
+def f(x: float64) -> float64:
+    var y: float64 = x
+    return y
+
+def main() -> None:
+    printd(f(1))

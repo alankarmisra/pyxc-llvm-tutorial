@@ -1,0 +1,19 @@
+# REQUIRES: llvm-dwarfdump
+# RUN: %pyxc -g --emit obj -o %t.o %s
+# RUN: %dwarfdump %t.o | FileCheck %s
+# CHECK: DW_TAG_subprogram
+# CHECK: DW_AT_name{{.*}}"multiply"
+# CHECK: DW_TAG_subprogram
+# CHECK: DW_AT_name{{.*}}"main"
+
+# Tests: each function definition produces a DW_TAG_subprogram entry with the
+# correct DW_AT_name. Verifies that function names are preserved end-to-end
+# through codegen and into the final object file.
+
+extern def printd(x: float64) -> float64
+
+def multiply(a: float64, b: float64) -> float64:
+    return a * b
+
+def main() -> None:
+    printd(multiply(6, 7))

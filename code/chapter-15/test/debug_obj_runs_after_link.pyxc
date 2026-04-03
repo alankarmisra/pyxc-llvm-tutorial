@@ -1,0 +1,15 @@
+# RUN: %pyxc -g --emit obj -o %t.o %s
+# RUN: %clang %t.o %runtime_c -o %t.exe
+# RUN: %t.exe 2>&1 | FileCheck %s
+# CHECK: 7.000000
+
+# Tests: -g --emit obj produces a valid object file that links and runs
+# correctly with clang. Debug info does not corrupt the object file's code
+# or relocation sections.
+
+extern def printd(x)
+
+def add(a, b): return a + b
+
+def main():
+    printd(add(3, 4))

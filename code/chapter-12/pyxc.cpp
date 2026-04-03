@@ -53,8 +53,7 @@ static cl::opt<bool> VerboseIR("v",
 
 // Optimization level. For now Pyxc only distinguishes -O0 (no passes) from
 // any non-zero level (run the current fixed function pass pipeline).
-static cl::opt<unsigned> OptLevel("O",
-                                  cl::desc("Optimization level"),
+static cl::opt<unsigned> OptLevel("O", cl::desc("Optimization level"),
                                   cl::value_desc("0|1|2|3"), cl::Prefix,
                                   cl::init(2), cl::cat(PyxcCategory));
 
@@ -286,55 +285,36 @@ static int peek() {
 ///
 /// LastChar holds the last character read by advance() but not yet consumed
 /// by a token. It is initialised to ' ' so the first call skips straight to
-/// the whitespace loop without reading a character, and the loop's first
-/// advance() call picks up the real first character.
+/// the indentation logic without blocking on a second character.
 ///
-/// CurLoc is snapshotted from LexLoc after the whitespace-skip loop and
-/// before any token branch. For most tokens this points at the first
-/// character of the token. For tok_eol the '\n' was already consumed by
-/// advance() on a previous call, so LexLoc is already on the next line;
-/// GetDiagnosticAnchorLoc compensates by subtracting one when building error
-/// locations for tok_eol.
-///
-/// The comment path ('#' branch) re-snapshots CurLoc just before returning
-/// tok_eol because it consumes many characters (the whole comment) after the
-/// initial snapshot, leaving LexLoc well past the '#' position.
+/// CurLoc is snapshotted at the start of each real token. For tok_eol the
+/// '\n' was already consumed so LexLoc is on the next line;
+/// GetDiagnosticAnchorLoc compensates by subtracting one. The comment path
+/// re-snapshots CurLoc after consuming the whole comment line.
 static int gettok() {
   static int LastChar = ' ';
 
+  // Drain tokens queued by a multi-level dedent on the previous line.
   if (!PendingTokens.empty()) {
     int Tok = PendingTokens.front();
     PendingTokens.pop_front();
     return Tok;
   }
 
-  // If we're at the start of a line and LastChar is still the sentinel
-  // space (i.e., not a real character from the input), advance once so
-  // indentation logic sees the actual first character.
+  // At line start with the sentinel space, advance to the first real char
+  // so the indentation counting below sees actual input.
   if (AtLineStart && LastChar == ' ')
     LastChar = advance();
 
-  if (LastChar == EOF) {
-    if (IndentStack.size() > 1) {
-      IndentStack.pop_back();
-      return tok_dedent;
-    }
-    return tok_eof;
-  }
-
+  // ── Line-start: count indentation, emit INDENT / DEDENT ──────────────
   if (AtLineStart) {
     int IndentCol = 0;
     while (LastChar == ' ' || LastChar == '\t') {
-      if (LastChar == ' ')
-        IndentCol += 1;
-      else
-        IndentCol += 8 - (IndentCol % 8);
+      IndentCol += (LastChar == ' ') ? 1 : (8 - IndentCol % 8);
       LastChar = advance();
     }
 
-    // Blank line: in file mode we ignore indentation and return a newline.
-    // In REPL mode, a blank line ends the current block by emitting DEDENTs
-    // until we return to column 0 (matching Python's interactive behavior).
+    // Blank line: ignore in file mode; close the block immediately in REPL.
     if (LastChar == '\n') {
       if (IsRepl && IndentStack.size() > 1) {
         IndentStack.pop_back();
@@ -345,19 +325,20 @@ static int gettok() {
       return tok_eol;
     }
 
-    // Comment-only line: ignore indentation, return newline.
+    // Comment-only line: consume and return a newline.
     if (LastChar == '#') {
       do
         LastChar = advance();
       while (LastChar != EOF && LastChar != '\n');
-
       if (LastChar != EOF) {
         CurLoc = LexLoc;
         LastChar = ' ';
         return tok_eol;
       }
+      // else fall through to EOF handling below
     }
 
+    // EOF (with or without trailing newline): flush open blocks one at a time.
     if (LastChar == EOF) {
       if (IndentStack.size() > 1) {
         IndentStack.pop_back();
@@ -366,32 +347,34 @@ static int gettok() {
       return tok_eof;
     }
 
+    // Real content: compare column to the indent stack.
     CurLoc = LexLoc;
     int CurrentIndent = IndentStack.back();
     if (IndentCol > CurrentIndent) {
       IndentStack.push_back(IndentCol);
-      PendingTokens.push_back(tok_indent);
-    } else if (IndentCol < CurrentIndent) {
+      AtLineStart = false;
+      return tok_indent;
+    }
+    if (IndentCol < CurrentIndent) {
       while (IndentStack.size() > 1 && IndentCol < IndentStack.back()) {
         IndentStack.pop_back();
         PendingTokens.push_back(tok_dedent);
       }
       if (IndentCol != IndentStack.back()) {
-        fprintf(stderr,
-                "Error (Line %d, Column %d): inconsistent indentation\n",
+        fprintf(stderr, "Error (Line %d, Column %d): inconsistent indentation\n",
                 CurLoc.Line, CurLoc.Col);
         PrintErrorSourceContext(CurLoc);
         return tok_error;
       }
-    }
-
-    AtLineStart = false;
-    if (!PendingTokens.empty()) {
+      AtLineStart = false;
       int Tok = PendingTokens.front();
       PendingTokens.pop_front();
       return Tok;
     }
+    // Same indentation level — no indent/dedent token needed.
+    AtLineStart = false;
   }
+  // ── End of line-start processing ─────────────────────────────────────
 
   // Skip horizontal whitespace. Stop at '\n' — that becomes tok_eol.
   while (isspace(LastChar) && LastChar != '\n')
@@ -484,8 +467,14 @@ static int gettok() {
     return Tok;
   }
 
-  if (LastChar == EOF)
+  // EOF with no trailing newline: flush any remaining open blocks.
+  if (LastChar == EOF) {
+    if (IndentStack.size() > 1) {
+      IndentStack.pop_back();
+      return tok_dedent;
+    }
     return tok_eof;
+  }
 
   // Single character token
   int ThisChar = LastChar;
@@ -569,6 +558,11 @@ public:
   // getLValueName - Return the lvalue name if this node is a plain assignable
   // variable, or nullptr otherwise. This avoids RTTI checks in the parser.
   virtual const string *getLValueName() const { return nullptr; }
+  // isReturnExpr - True iff this node is a return statement.
+  virtual bool isReturnExpr() const { return false; }
+  // shouldPrintValue - Whether the REPL should print the value of this node
+  // when it appears as a top-level form.
+  virtual bool shouldPrintValue() const { return true; }
   virtual Value *codegen() = 0;
 };
 
@@ -603,6 +597,7 @@ class AssignmentExprAST : public ExprAST {
 public:
   AssignmentExprAST(const string &Name, unique_ptr<ExprAST> Expr)
       : Name(Name), Expr(std::move(Expr)) {}
+  bool shouldPrintValue() const override { return false; }
   Value *codegen() override;
 };
 
@@ -613,6 +608,8 @@ class ReturnExprAST : public ExprAST {
 
 public:
   ReturnExprAST(unique_ptr<ExprAST> Expr) : Expr(std::move(Expr)) {}
+  bool isReturnExpr() const override { return true; }
+  bool shouldPrintValue() const override { return false; }
   Value *codegen() override;
 };
 
@@ -622,8 +619,7 @@ class BlockExprAST : public ExprAST {
   vector<unique_ptr<ExprAST>> Stmts;
 
 public:
-  BlockExprAST(vector<unique_ptr<ExprAST>> Stmts)
-      : Stmts(std::move(Stmts)) {}
+  BlockExprAST(vector<unique_ptr<ExprAST>> Stmts) : Stmts(std::move(Stmts)) {}
   Value *codegen() override;
 };
 
@@ -666,6 +662,7 @@ public:
              unique_ptr<ExprAST> Body)
       : VarName(VarName), Start(std::move(Start)), Cond(std::move(Cond)),
         Step(std::move(Step)), Body(std::move(Body)) {}
+  bool shouldPrintValue() const override { return false; }
   Value *codegen() override;
 };
 
@@ -704,6 +701,7 @@ public:
   IfStmtAST(unique_ptr<ExprAST> Cond, unique_ptr<ExprAST> Then,
             unique_ptr<ExprAST> Else)
       : Cond(std::move(Cond)), Then(std::move(Then)), Else(std::move(Else)) {}
+  bool shouldPrintValue() const override { return false; }
   Value *codegen() override;
 };
 
@@ -717,6 +715,7 @@ class VarStmtAST : public ExprAST {
 public:
   VarStmtAST(vector<pair<string, unique_ptr<ExprAST>>> VarNames)
       : VarNames(std::move(VarNames)) {}
+  bool shouldPrintValue() const override { return false; }
   Value *codegen() override;
 };
 
@@ -768,6 +767,7 @@ class FunctionAST {
 public:
   FunctionAST(unique_ptr<PrototypeAST> Proto, unique_ptr<ExprAST> Body)
       : Proto(std::move(Proto)), Body(std::move(Body)) {}
+  const string &getName() const { return Proto->getName(); }
   Function *codegen();
 };
 
@@ -830,6 +830,15 @@ static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 // var bindings live for the rest of the function (no block scope).
 // for-loop variables are scoped to the loop body only.
 static vector<set<string>> VarScopes;
+// Global variables declared at top level (persist across modules).
+static set<string> GlobalVarNames;
+// True while parsing a top-level statement (var binds globals, not locals).
+static bool ParsingTopLevel = false;
+
+struct TopLevelParseGuard {
+  TopLevelParseGuard() { ParsingTopLevel = true; }
+  ~TopLevelParseGuard() { ParsingTopLevel = false; }
+};
 
 static void BeginFunctionScope(const vector<string> &Args) {
   VarScopes.clear();
@@ -850,6 +859,8 @@ static void BeginBlockScope() { VarScopes.emplace_back(); }
 static void EndBlockScope() {
   if (VarScopes.size() > 1)
     VarScopes.pop_back();
+  else if (ParsingTopLevel && VarScopes.size() == 1)
+    VarScopes.pop_back();
 }
 
 static bool IsDeclaredInCurrentScope(const string &Name) {
@@ -868,6 +879,8 @@ static void EnterLoopScope(const string &Name) {
 static void ExitLoopScope() {
   if (VarScopes.size() > 1)
     VarScopes.pop_back();
+  if (ParsingTopLevel && VarScopes.size() == 1)
+    VarScopes.pop_back();
 }
 
 static bool IsDeclaredVar(const string &Name) {
@@ -875,7 +888,7 @@ static bool IsDeclaredVar(const string &Name) {
     if (It->count(Name))
       return true;
   }
-  return false;
+  return GlobalVarNames.count(Name) > 0;
 }
 
 /// GetTokPrecedence - Returns the precedence of CurTok if it is a known binary
@@ -931,7 +944,7 @@ static unique_ptr<ExprAST> ParseVarStmt();
 static unique_ptr<ExprAST> ParseStatement();
 static unique_ptr<ExprAST> ParseSimpleStmt();
 static unique_ptr<ExprAST> ParseBlock();
-static unique_ptr<ExprAST> ParseLValue();
+static unique_ptr<ExprAST> ParseFunctionBody(bool *BodyIsBlock);
 // Track whether the last parsed statement ended with a block. This allows the
 // enclosing block to accept the next statement without an explicit tok_eol
 // because the inner block consumes the trailing newline before its DEDENT.
@@ -939,6 +952,8 @@ static bool LastStatementWasBlock = false;
 // Track whether the last parsed top-level definition ended with a block.
 // If it did, the next top-level form may start immediately without a tok_eol.
 static bool LastTopLevelEndedWithBlock = false;
+static unsigned TopLevelExprCounter = 0;
+static bool LastTopLevelShouldPrint = true;
 static unique_ptr<ExprAST> ParseSuite(bool *EndedWithBlock);
 
 struct FunctionScopeGuard {
@@ -1018,22 +1033,9 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
   return ParseIdentifierExprWithName(std::move(IdName));
 }
 
-/// lvalue
-///   = identifier ;
-static unique_ptr<ExprAST> ParseLValueFromName(const string &Name) {
-  return make_unique<VariableExprAST>(Name);
-}
-
-static unique_ptr<ExprAST> ParseLValue() {
-  if (CurTok != tok_identifier)
-    return LogError("Expected identifier");
-  string Name = IdentifierStr;
-  getNextToken(); // eat identifier.
-  return ParseLValueFromName(Name);
-}
-
 /// forstmt
-///   = "for" identifier "=" expression "," expression "," expression ":" suite ;
+///   = "for" identifier "=" expression "," expression "," expression ":" suite
+///   ;
 ///
 /// The loop variable is introduced by the "for" and is in scope for the
 /// condition, step, and body. It shadows any outer variable of the same name.
@@ -1094,6 +1096,7 @@ static unique_ptr<ExprAST> ParseVarStmt() {
   getNextToken(); // eat 'var'
 
   vector<pair<string, unique_ptr<ExprAST>>> VarNames;
+  bool IsGlobalDecl = ParsingTopLevel;
 
   while (true) {
     if (CurTok != tok_identifier)
@@ -1102,8 +1105,15 @@ static unique_ptr<ExprAST> ParseVarStmt() {
     string Name = IdentifierStr;
     getNextToken(); // eat identifier
 
-    if (IsDeclaredInCurrentScope(Name))
-      return LogError(("Variable '" + Name + "' already declared in this scope").c_str());
+    if (IsGlobalDecl) {
+      if (GlobalVarNames.count(Name))
+        return LogError(
+            ("Variable '" + Name + "' already declared in this scope").c_str());
+    } else {
+      if (IsDeclaredInCurrentScope(Name))
+        return LogError(
+            ("Variable '" + Name + "' already declared in this scope").c_str());
+    }
 
     unique_ptr<ExprAST> Init;
     if (CurTok == '=') {
@@ -1116,7 +1126,10 @@ static unique_ptr<ExprAST> ParseVarStmt() {
     }
 
     VarNames.push_back({Name, std::move(Init)});
-    DeclareVar(Name);
+    if (IsGlobalDecl)
+      GlobalVarNames.insert(Name);
+    else
+      DeclareVar(Name);
 
     if (CurTok != ',')
       break;
@@ -1291,6 +1304,17 @@ static unique_ptr<ExprAST> ParseReturnStmt() {
   return make_unique<ReturnExprAST>(std::move(Expr));
 }
 
+static unique_ptr<ExprAST> ParseAssignmentRHS(const string &Name) {
+  if (!IsDeclaredVar(Name))
+    return LogError("Assignment to undeclared variable");
+  getNextToken(); // eat '='
+
+  auto RHS = ParseExpression();
+  if (!RHS)
+    return nullptr;
+  return make_unique<AssignmentExprAST>(Name, std::move(RHS));
+}
+
 /// simplestmt
 ///   = returnstmt | varstmt | assignstmt | expression ;
 static unique_ptr<ExprAST> ParseSimpleStmt() {
@@ -1305,45 +1329,34 @@ static unique_ptr<ExprAST> ParseSimpleStmt() {
     getNextToken(); // eat identifier.
 
     if (CurTok == '=') {
-      if (!IsDeclaredVar(Name))
-        return LogError("Assignment to undeclared variable");
-      getNextToken(); // eat '='
-
-      auto RHS = ParseExpression();
-      if (!RHS)
-        return nullptr;
-      auto LHS = ParseLValueFromName(Name);
-      return make_unique<AssignmentExprAST>(*LHS->getLValueName(),
-                                            std::move(RHS));
+      return ParseAssignmentRHS(Name);
     }
 
     Expr = ParseIdentifierExprWithName(std::move(Name));
     if (!Expr)
       return nullptr;
     Expr = ParseBinOpRHS(0, std::move(Expr));
-  } else {
-    Expr = ParseExpression();
+    if (!Expr)
+      return nullptr;
+
+    if (CurTok != '=')
+      return Expr;
+
+    const string *AssignedName = Expr->getLValueName();
+    if (!AssignedName)
+      return LogError("Destination of '=' must be a variable");
+
+    return ParseAssignmentRHS(*AssignedName);
   }
+
+  Expr = ParseExpression();
   if (!Expr)
     return nullptr;
 
   if (CurTok != '=')
     return Expr;
 
-  const string *AssignedName = Expr->getLValueName();
-  if (!AssignedName)
-    return LogError("Destination of '=' must be a variable");
-
-  string Name = *AssignedName;
-  if (!IsDeclaredVar(Name))
-    return LogError("Assignment to undeclared variable");
-  getNextToken(); // eat '='
-
-  auto RHS = ParseExpression();
-  if (!RHS)
-    return nullptr;
-
-  return make_unique<AssignmentExprAST>(Name, std::move(RHS));
+  return LogError("Destination of '=' must be a variable");
 }
 
 /// statement
@@ -1458,6 +1471,21 @@ static unique_ptr<PrototypeAST> ParsePrototype() {
   return make_unique<PrototypeAST>(FnName, std::move(ArgNames));
 }
 
+/// functionbody
+///   = simplestmt | eols block ;
+static unique_ptr<ExprAST> ParseFunctionBody(bool *BodyIsBlock) {
+  if (CurTok == tok_eol) {
+    consumeNewlines();
+    if (CurTok != tok_indent)
+      return LogError("Expected an indented block");
+    *BodyIsBlock = true;
+    return ParseBlock();
+  }
+
+  *BodyIsBlock = false;
+  return ParseSimpleStmt();
+}
+
 /// definition
 ///   = "def" prototype ":" ( simplestmt | eols block ) ;
 static unique_ptr<FunctionAST> ParseDefinition() {
@@ -1472,16 +1500,7 @@ static unique_ptr<FunctionAST> ParseDefinition() {
   getNextToken(); // eat ':'
 
   bool BodyIsBlock = false;
-  unique_ptr<ExprAST> Body;
-  if (CurTok == tok_eol) {
-    consumeNewlines();
-    if (CurTok != tok_indent)
-      return LogErrorF("Expected an indented block");
-    BodyIsBlock = true;
-    Body = ParseBlock();
-  } else {
-    Body = ParseSimpleStmt();
-  }
+  unique_ptr<ExprAST> Body = ParseFunctionBody(&BodyIsBlock);
 
   if (Body) {
     LastTopLevelEndedWithBlock = BodyIsBlock;
@@ -1693,8 +1712,9 @@ static unique_ptr<PrototypeAST> ParseUnaryOpPrototype() {
 }
 
 /// decorateddef
-///   = binarydecorator eols "def" binaryopprototype ":" ( simplestmt | eols block )
-///   | unarydecorator  eols "def" unaryopprototype  ":" ( simplestmt | eols block )
+///   = binarydecorator eols "def" binaryopprototype ":" ( simplestmt | eols
+///   block ) | unarydecorator  eols "def" unaryopprototype  ":" ( simplestmt |
+///   eols block )
 ///
 /// Called after '@' has been consumed. CurTok is on 'binary' or 'unary'.
 /// The two branches share the same body structure (':' / block).
@@ -1730,23 +1750,16 @@ static unique_ptr<FunctionAST> ParseDecoratedDef() {
 
   if (!Proto)
     return nullptr;
+  FunctionScopeGuard Scope(Proto->getArgs());
 
-  // Shared body: ":" ( simplestmt | eols block ) — identical to ParseDefinition.
+  // Shared body: ":" ( simplestmt | eols block ) — identical to
+  // ParseDefinition.
   if (CurTok != ':')
     return LogErrorF("Expected ':' in operator definition");
   getNextToken(); // eat ':'
 
   bool BodyIsBlock = false;
-  unique_ptr<ExprAST> Body;
-  if (CurTok == tok_eol) {
-    consumeNewlines();
-    if (CurTok != tok_indent)
-      return LogErrorF("Expected an indented block");
-    BodyIsBlock = true;
-    Body = ParseBlock();
-  } else {
-    Body = ParseSimpleStmt();
-  }
+  unique_ptr<ExprAST> Body = ParseFunctionBody(&BodyIsBlock);
 
   if (Body) {
     LastTopLevelEndedWithBlock = BodyIsBlock;
@@ -1755,37 +1768,36 @@ static unique_ptr<FunctionAST> ParseDecoratedDef() {
   return nullptr;
 }
 
-/// toplevelexpr
-///   = expression
-/// A top-level expression (e.g. "1 + 2") is wrapped in an anonymous function
-/// so it fits the same FunctionAST shape as everything else.
-/// HandleTopLevelExpression compiles it into the JIT, calls it to get the
-/// numeric result, then removes it from the JIT via a ResourceTracker.
-static unique_ptr<FunctionAST> ParseTopLevelExpr() {
+/// toplevelstmt
+///   = statement ;
+static unique_ptr<ExprAST> ParseTopLevelStatement() {
   LastTopLevelEndedWithBlock = false;
-  FunctionScopeGuard Scope({});
-  auto E = ParseExpression();
-  if (!E)
+  TopLevelParseGuard Guard;
+  auto Stmt = ParseStatement();
+  if (!Stmt)
+    return nullptr;
+  LastTopLevelShouldPrint = Stmt->shouldPrintValue();
+  LastTopLevelEndedWithBlock = LastStatementWasBlock;
+  return Stmt;
+}
+
+/// toplevelexpr
+///   = statement
+/// A top-level statement (e.g. "1 + 2", "var x = 1", "if ...") is wrapped in
+/// an anonymous function so it fits the same FunctionAST shape as everything
+/// else. HandleTopLevelExpression compiles it into the JIT, calls it to get
+/// the numeric result, then removes it from the JIT via a ResourceTracker.
+static unique_ptr<FunctionAST> ParseTopLevelExpr() {
+  auto Stmt = ParseTopLevelStatement();
+  if (!Stmt)
     return nullptr;
 
-  if (CurTok == '=') {
-    const string *AssignedName = E->getLValueName();
-    if (!AssignedName)
-      return LogErrorF("Destination of '=' must be a variable");
+  if (!Stmt->isReturnExpr())
+    Stmt = make_unique<ReturnExprAST>(std::move(Stmt));
 
-    string Name = *AssignedName;
-    if (!IsDeclaredVar(Name))
-      return LogErrorF("Assignment to undeclared variable");
-
-    getNextToken(); // eat '='
-    auto RHS = ParseExpression();
-    if (!RHS)
-      return nullptr;
-    E = make_unique<AssignmentExprAST>(Name, std::move(RHS));
-  }
-
-  auto Proto = make_unique<PrototypeAST>("__anon_expr", vector<string>());
-  return make_unique<FunctionAST>(std::move(Proto), std::move(E));
+  string FnName = "__pyxc.toplevel." + to_string(TopLevelExprCounter++);
+  auto Proto = make_unique<PrototypeAST>(FnName, vector<string>());
+  return make_unique<FunctionAST>(std::move(Proto), std::move(Stmt));
 }
 
 /// external
@@ -1840,6 +1852,8 @@ static std::unique_ptr<LLVMContext> TheContext;
 static std::unique_ptr<Module> TheModule;
 static std::unique_ptr<IRBuilder<>> Builder;
 static std::map<std::string, AllocaInst *> NamedValues;
+static bool InGlobalInit = false;
+static bool ModuleHasGlobals = false;
 static std::unique_ptr<PyxcJIT> TheJIT;
 static std::unique_ptr<FunctionPassManager> TheFPM;
 static std::unique_ptr<LoopAnalysisManager> TheLAM;
@@ -1862,6 +1876,23 @@ static AllocaInst *CreateEntryBlockAlloca(Function *TheFunction,
   IRBuilder<> TmpB(&TheFunction->getEntryBlock(),
                    TheFunction->getEntryBlock().begin());
   return TmpB.CreateAlloca(Type::getDoubleTy(*TheContext), nullptr, VarName);
+}
+
+/// GetGlobalVariable - Return a module-local GlobalVariable* for Name.
+///
+/// If the global is defined in this module, returns it. If the global exists
+/// in another module (tracked by GlobalVarNames), emit a declaration in the
+/// current module and return that. Returns nullptr if the name is unknown.
+static GlobalVariable *GetGlobalVariable(const string &Name) {
+  if (auto *GV = TheModule->getNamedGlobal(Name))
+    return GV;
+
+  if (!GlobalVarNames.count(Name))
+    return nullptr;
+
+  auto *Ty = Type::getDoubleTy(*TheContext);
+  return new GlobalVariable(*TheModule, Ty, false, GlobalValue::ExternalLinkage,
+                            nullptr, Name);
 }
 
 /// getFunction - Resolve a function name to an LLVM Function* in the current
@@ -1901,10 +1932,16 @@ Value *NumberExprAST::codegen() {
 /// VariableExprAST::codegen - A variable reference loads the current value
 /// from the variable's stack slot.
 Value *VariableExprAST::codegen() {
-  AllocaInst *A = NamedValues[Name];
-  if (!A)
-    return LogErrorV("Unknown variable name");
-  return Builder->CreateLoad(Type::getDoubleTy(*TheContext), A, Name.c_str());
+  auto It = NamedValues.find(Name);
+  if (It != NamedValues.end() && It->second)
+    return Builder->CreateLoad(Type::getDoubleTy(*TheContext), It->second,
+                               Name.c_str());
+
+  if (auto *GV = GetGlobalVariable(Name))
+    return Builder->CreateLoad(Type::getDoubleTy(*TheContext), GV,
+                               Name.c_str());
+
+  return LogErrorV("Unknown variable name");
 }
 
 /// AssignmentExprAST::codegen - Evaluate the RHS, store it into the variable's
@@ -1914,12 +1951,18 @@ Value *AssignmentExprAST::codegen() {
   if (!Val)
     return nullptr;
 
-  AllocaInst *A = NamedValues[Name];
-  if (!A)
-    return LogErrorV("Unknown variable name");
+  auto It = NamedValues.find(Name);
+  if (It != NamedValues.end() && It->second) {
+    Builder->CreateStore(Val, It->second);
+    return Val;
+  }
 
-  Builder->CreateStore(Val, A);
-  return Val;
+  if (auto *GV = GetGlobalVariable(Name)) {
+    Builder->CreateStore(Val, GV);
+    return Val;
+  }
+
+  return LogErrorV("Unknown variable name");
 }
 
 /// ReturnExprAST::codegen - Emit a return from the current function.
@@ -2234,6 +2277,37 @@ Value *ForExprAST::codegen() {
 
 /// VarStmtAST::codegen - Allocate mutable local variables and initialize them.
 Value *VarStmtAST::codegen() {
+  if (InGlobalInit) {
+    for (auto &Var : VarNames) {
+      const string &VarName = Var.first;
+      ExprAST *Init = Var.second.get();
+
+      auto *GV = TheModule->getNamedGlobal(VarName);
+      if (GV && !GV->isDeclaration())
+        return LogErrorV("Global variable already defined");
+
+      if (!GV) {
+        auto *Ty = Type::getDoubleTy(*TheContext);
+        GV = new GlobalVariable(
+            *TheModule, Ty, false, GlobalValue::ExternalLinkage,
+            ConstantFP::get(*TheContext, APFloat(0.0)), VarName);
+      } else if (GV->isDeclaration()) {
+        GV->setInitializer(ConstantFP::get(*TheContext, APFloat(0.0)));
+        GV->setLinkage(GlobalValue::ExternalLinkage);
+      }
+
+      ModuleHasGlobals = true;
+
+      Value *InitVal = Init->codegen();
+      if (!InitVal)
+        return nullptr;
+
+      Builder->CreateStore(InitVal, GV);
+    }
+
+    return ConstantFP::get(*TheContext, APFloat(0.0));
+  }
+
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
 
   for (auto &Var : VarNames) {
@@ -2337,7 +2411,7 @@ Function *FunctionAST::codegen() {
   }
 
   // Step 4: codegen the body, optimise, verify, or erase on failure.
-  if (Value *RetVal = Body->codegen()) {
+  if (Value *BodyVal = Body->codegen()) {
     // If the body didn't already terminate the current block (e.g. via
     // return), return 0.0. Implicit returns never use the last expression.
     if (!Builder->GetInsertBlock()->getTerminator())
@@ -2359,6 +2433,8 @@ Function *FunctionAST::codegen() {
 //===----------------------------------------===//
 // Top-Level parsing and JIT Driver
 //===----------------------------------------===//
+
+static vector<unique_ptr<ExprAST>> FileTopLevelStmts;
 
 /// InitializeModuleAndManagers - Create a fresh module, IR builder, and
 /// optimisation pipeline.
@@ -2390,6 +2466,7 @@ static void InitializeModuleAndManagers() {
   TheModule->setDataLayout(TheJIT->getDataLayout());
 
   Builder = std::make_unique<IRBuilder<>>(*TheContext);
+  ModuleHasGlobals = false;
 
   // Pass and analysis managers.
   TheFPM = std::make_unique<FunctionPassManager>();
@@ -2548,38 +2625,79 @@ static void HandleExtern() {
 ///      transferred to the JIT in step 4, so eraseFromParent() is not needed.
 static void HandleTopLevelExpression() {
   auto FnAST = ParseTopLevelExpr();
-  if (!FnAST || (CurTok != tok_eol && CurTok != tok_eof)) {
+  bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof);
+  if (!FnAST || (HasTrailing && !LastTopLevelEndedWithBlock)) {
     if (FnAST)
       LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
     SynchronizeToLineBoundary();
     return;
   }
+  string FnName = FnAST->getName();
+  bool SavedInGlobalInit = InGlobalInit;
+  InGlobalInit = true;
   if (auto *FnIR = FnAST->codegen()) {
+    InGlobalInit = SavedInGlobalInit;
     Log("Parsed a top-level expression.\n");
     if (VerboseIR)
       FnIR->print(errs());
 
-    // ResourceTracker scopes the JIT memory for this expression so we can
-    // free it precisely after the call, without affecting other symbols.
-    auto RT = TheJIT->getMainJITDylib().createResourceTracker();
+    bool KeepModule = ModuleHasGlobals;
 
-    // Transfer ownership of the module to the JIT; reinitialise for next input.
-    auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
-    ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
-    InitializeModuleAndManagers();
+    if (KeepModule) {
+      auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
+      ExitOnErr(TheJIT->addModule(std::move(TSM)));
+      InitializeModuleAndManagers();
+    } else {
+      // ResourceTracker scopes the JIT memory for this expression so we can
+      // free it precisely after the call, without affecting other symbols.
+      auto RT = TheJIT->getMainJITDylib().createResourceTracker();
 
-    // Locate the compiled function in the JIT's symbol table.
-    auto ExprSymbol = ExitOnErr(TheJIT->lookup("__anon_expr"));
+      // Transfer ownership of the module to the JIT; reinitialise for next
+      // input.
+      auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
+      ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
+      InitializeModuleAndManagers();
 
-    // Cast the symbol address to a callable function pointer and invoke it.
+      // Locate the compiled function in the JIT's symbol table.
+      auto ExprSymbol = ExitOnErr(TheJIT->lookup(FnName));
+
+      // Cast the symbol address to a callable function pointer and invoke it.
+      double (*FP)() = ExprSymbol.toPtr<double (*)()>();
+      double result = FP();
+      if (IsRepl && LastTopLevelShouldPrint)
+        fprintf(stderr, "Evaluated to %f\n", result);
+
+      // Release the compiled code and JIT memory for this expression.
+      ExitOnErr(RT->remove());
+      return;
+    }
+
+    // Keep-module path: call the compiled function after adding the module.
+    auto ExprSymbol = ExitOnErr(TheJIT->lookup(FnName));
     double (*FP)() = ExprSymbol.toPtr<double (*)()>();
     double result = FP();
-    if (IsRepl)
-      fprintf(stderr, "Evaluated to %f\n", result);
-
-    // Release the compiled code and JIT memory for this expression.
-    ExitOnErr(RT->remove());
+    if (IsRepl && LastTopLevelShouldPrint)
+      fprintf(stderr, "%f\n", result);
+  } else {
+    InGlobalInit = SavedInGlobalInit;
   }
+}
+
+/// HandleTopLevelStatementFileMode - Parse and queue a top-level statement.
+///
+/// In file mode, top-level statements are collected and emitted into a single
+/// __pyxc.global_init function after the entire file is parsed.
+static void HandleTopLevelStatementFileMode() {
+  auto Stmt = ParseTopLevelStatement();
+  bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof);
+  if (!Stmt || (HasTrailing && !LastTopLevelEndedWithBlock)) {
+    if (Stmt)
+      LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+    SynchronizeToLineBoundary();
+    return;
+  }
+
+  FileTopLevelStmts.push_back(std::move(Stmt));
 }
 
 //===----------------------------------------===//
@@ -2614,14 +2732,14 @@ extern "C" DLLEXPORT double printd(double X) {
 
 /// MainLoop - Dispatch loop for the REPL.
 ///
-/// top             = definition | external | toplevelexpr ;
+/// top             = definition | external | toplevelstmt ;
 ///
 /// Dispatches on the leading token of each top-level form:
 ///   tok_def    → HandleDefinition   (definition)
 ///   tok_extern → HandleExtern       (external)
 ///   '@'        → HandleDecorator    (decorateddef: @binary / @unary)
 ///   tok_eol    → skip blank line
-///   anything else → HandleTopLevelExpression (toplevelexpr)
+///   anything else → HandleTopLevelExpression (toplevelstmt)
 ///
 /// CurTok is primed before MainLoop() is called (see main()). After each
 /// successful parse the handler prints a confirmation; after a failed parse
@@ -2676,6 +2794,96 @@ static void MainLoop() {
   }
 }
 
+/// FileModeLoop - Parse a script file into top-level statements + definitions.
+///
+/// In file mode we do not execute top-level statements immediately. They are
+/// collected into FileTopLevelStmts and later emitted into __pyxc.global_init.
+static void FileModeLoop() {
+  while (true) {
+    if (CurTok == tok_eof)
+      return;
+
+    if (CurTok == tok_eol) {
+      getNextToken();
+      continue;
+    }
+
+    if (CurTok == tok_indent) {
+      LogError("Unexpected indentation");
+      SynchronizeToLineBoundary();
+      continue;
+    }
+
+    if (CurTok == tok_dedent) {
+      getNextToken();
+      continue;
+    }
+
+    if (CurTok == tok_error) {
+      SynchronizeToLineBoundary();
+      continue;
+    }
+
+    switch (CurTok) {
+    case tok_def:
+      HandleDefinition();
+      break;
+    case tok_extern:
+      HandleExtern();
+      break;
+    case '@':
+      getNextToken(); // eat '@'
+      HandleDecorator();
+      break;
+    default:
+      HandleTopLevelStatementFileMode();
+      break;
+    }
+  }
+}
+
+/// RunFileMode - Emit and execute __pyxc.global_init, then call main() if any.
+static void RunFileMode() {
+  if (!FileTopLevelStmts.empty()) {
+    auto Block = make_unique<BlockExprAST>(std::move(FileTopLevelStmts));
+    auto Proto =
+        make_unique<PrototypeAST>("__pyxc.global_init", vector<string>());
+    auto FnAST = make_unique<FunctionAST>(std::move(Proto), std::move(Block));
+
+    bool SavedInGlobalInit = InGlobalInit;
+    InGlobalInit = true;
+    if (auto *FnIR = FnAST->codegen()) {
+      InGlobalInit = SavedInGlobalInit;
+      if (VerboseIR)
+        FnIR->print(errs());
+
+      auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
+      ExitOnErr(TheJIT->addModule(std::move(TSM)));
+      InitializeModuleAndManagers();
+
+      auto InitSymbol = ExitOnErr(TheJIT->lookup("__pyxc.global_init"));
+      double (*InitFn)() = InitSymbol.toPtr<double (*)()>();
+      InitFn();
+    } else {
+      InGlobalInit = SavedInGlobalInit;
+      return;
+    }
+  }
+
+  auto MainIt = FunctionProtos.find("main");
+  if (MainIt == FunctionProtos.end())
+    return;
+
+  if (MainIt->second->getNumArgs() != 0) {
+    fprintf(stderr, "Error: main() must take no arguments\n");
+    return;
+  }
+
+  auto MainSymbol = ExitOnErr(TheJIT->lookup("main"));
+  double (*MainFn)() = MainSymbol.toPtr<double (*)()>();
+  MainFn();
+}
+
 /// ProcessCommandLine - Parse argv and configure the global Input/IsRepl state.
 ///
 /// Returns 0 on success, -1 on error (e.g. the file could not be opened). When
@@ -2726,7 +2934,7 @@ int main(int argc, const char **argv) {
   InitializeNativeTargetAsmPrinter();
   InitializeNativeTargetAsmParser();
 
-  // Prime the REPL: print the first prompt and load the first token.
+  // Prime the input: print prompt (REPL only) and load the first token.
   // Every parse function expects CurTok to be loaded before it is called.
   PrintReplPrompt();
   getNextToken();
@@ -2736,7 +2944,12 @@ int main(int argc, const char **argv) {
   TheJIT = ExitOnErr(PyxcJIT::Create());
   InitializeModuleAndManagers();
 
-  MainLoop();
+  if (IsRepl) {
+    MainLoop();
+  } else {
+    FileModeLoop();
+    RunFileMode();
+  }
 
   if (Input && Input != stdin) {
     fclose(Input);

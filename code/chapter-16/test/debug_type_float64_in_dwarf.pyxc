@@ -1,0 +1,18 @@
+# REQUIRES: llvm-dwarfdump
+# RUN: %pyxc -g --emit obj -o %t.o %s
+# RUN: %dwarfdump %t.o | FileCheck %s
+# CHECK: DW_TAG_base_type
+# CHECK: DW_AT_name{{.*}}"float64"
+# CHECK: DW_AT_encoding{{.*}}DW_ATE_float
+# CHECK: DW_AT_byte_size{{.*}}8
+
+# Tests: Pyxc's sole type is represented in DWARF as DW_TAG_base_type with
+# DW_ATE_float encoding and 8-byte size. Every variable and parameter
+# should reference this type descriptor.
+
+def f(x: float64) -> float64:
+    var y: float64 = x
+    return y
+
+def main() -> None:
+    return

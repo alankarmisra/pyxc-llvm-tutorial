@@ -1,0 +1,12 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: define double @scale(double
+# CHECK: double 3.14
+
+# Tests: 'float' is an alias for float64. A variable declared with ': float'
+# and a function with float parameter/return types must produce LLVM float64 IR.
+
+var x: float = 3.14
+
+def scale(v: float) -> float:
+    return v * 2.0

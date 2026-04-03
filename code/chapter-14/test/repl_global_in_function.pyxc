@@ -1,0 +1,11 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 10.000000
+
+# Tests: REPL mode — a function defined after a global declaration can read
+# the global. Each REPL input compiles into a fresh module; the function
+# re-declares the global as extern and the JIT resolves it to the globals module.
+
+extern def printd(x)
+var x = 10
+def get_x(): return x
+printd(get_x())

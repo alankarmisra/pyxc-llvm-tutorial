@@ -1,0 +1,14 @@
+# RUN: %pyxc -g --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 25.000000
+
+# Tests: -g --emit exe produces a working executable. Debug info must not
+# corrupt code generation — the program must run and produce the correct result.
+
+extern def printd(x)
+
+def sq(x): return x * x
+
+def main() -> int:
+    printd(sq(5))
+    return 0

@@ -1,0 +1,12 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 20.000000
+# CHECK-NOT: 0.000000
+# CHECK-NOT: Parsed
+
+# Tests: top-level statements do not print values in the REPL.
+
+var i = 10
+
+i = 20
+
+i

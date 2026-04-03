@@ -1,0 +1,15 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: sitofp i{{32|64}}
+# CHECK: call double @f(double
+
+# Tests: passing an int where a float64 parameter is expected widens the
+# argument. The int is converted to float64 via sitofp.
+
+def f(x: float64) -> float64:
+    return x
+
+def main() -> None:
+    var n: int = 5
+    f(n)
+    return

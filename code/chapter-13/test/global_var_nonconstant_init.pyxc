@@ -1,0 +1,14 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: 1.000000
+# CHECK-NOT: ready>
+
+# Tests: top-level var with a non-constant initializer (a function call).
+# The GlobalVariable itself is zero-initialized; __pyxc.global_init calls
+# sin(1.0) at runtime and stores the result into the global.
+# sin(1.0) > 0, so the printed comparison result is 1.0.
+
+extern def sin(x)
+extern def printd(x)
+
+var result = sin(1.0)
+printd(result > 0)

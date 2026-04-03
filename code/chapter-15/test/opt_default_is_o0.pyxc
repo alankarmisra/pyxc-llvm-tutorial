@@ -1,0 +1,11 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: fadd double
+# CHECK: fmul double
+# CHECK-NOT: ret double 9.000000e+00
+
+# Tests: without any -O flag, the default optimization level is 0.
+# Constant arithmetic is not folded; fadd and fmul instructions remain.
+
+def main():
+    return (1 + 2) * 3

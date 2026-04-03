@@ -1,0 +1,14 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 9.000000
+# CHECK: 4.000000
+# CHECK: 15.000000
+
+
+# Tests: builtin binary arithmetic operators +, -, *.
+# builtinbinaryop = "+" | "-" | "*" | ...
+
+4 + 5
+
+9 - 5
+
+3 * 5

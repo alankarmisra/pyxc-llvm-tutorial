@@ -1,0 +1,16 @@
+# RUN: %pyxc -g --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: dbg_declare
+# CHECK-DAG: !DILocalVariable(name: "width", arg: 1
+# CHECK-DAG: !DILocalVariable(name: "height", arg: 2
+
+# Tests: function parameters produce DILocalVariable nodes with explicit
+# arg numbers and preserved names in the debug metadata.
+
+extern def printd(x)
+
+def area(width, height):
+    return width * height
+
+def main():
+    printd(area(4, 5))

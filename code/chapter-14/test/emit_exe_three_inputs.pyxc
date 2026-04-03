@@ -1,0 +1,14 @@
+# RUN: %pyxc --emit exe -o %t %s %S/Inputs/helper_add.pyxc %S/Inputs/helper_math.pyxc
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 11.000000
+# CHECK: 27.000000
+
+# Tests: three inputs (one main + two helpers) linked into a single executable.
+
+extern def printd(x)
+extern def add(a, b)
+extern def cube(x)
+
+def main():
+    printd(add(4, 7))
+    printd(cube(3))

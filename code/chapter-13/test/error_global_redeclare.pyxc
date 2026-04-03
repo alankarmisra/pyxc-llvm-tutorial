@@ -1,0 +1,8 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: already declared
+
+# Tests: declaring the same name twice with var at the top level is a parse error.
+# The second var x should be rejected in the same scope as the first.
+
+var x = 1
+var x = 2

@@ -1,0 +1,16 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: define void @log(double %x)
+# CHECK: ret void
+
+# Tests: void return type emits ret void.
+
+extern def printd(x: float64) -> float64
+
+def log(x: float64) -> None:
+    printd(x)
+    return
+
+def main() -> None:
+    log(3.5)
+    return

@@ -1,0 +1,17 @@
+# RUN: %pyxc --dump-ir --emit exe -o %t %s 2>&1 | FileCheck %s --check-prefix=IR
+# RUN: test -x %t
+
+# IR: define double @sq
+# IR: fmul double
+# IR: define void @{{__pyxc.user_main|main}}
+
+# Tests: --dump-ir works together with --emit exe. The IR is printed to stderr
+# during compilation and the executable is still produced at the output path.
+
+extern def printd(x: float64) -> float64
+
+def sq(x: float64) -> float64:
+    return x * x
+
+def main() -> None:
+    printd(sq(4))

@@ -1,0 +1,16 @@
+# RUN: %pyxc -g --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: add i{{32|64}}
+# CHECK: mul i{{32|64}}
+# CHECK: sitofp
+# CHECK-NOT: ret double 9.000000e+00
+
+# Tests: -g without -O forces O0 (no constant folding).
+
+extern def printd(x: float64) -> float64
+
+def main() -> None:
+    var a: int = 2 + 1
+    var b: int = a * 3
+    printd(float64(b))
+    return
