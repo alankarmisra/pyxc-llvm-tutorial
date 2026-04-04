@@ -1,11 +1,7 @@
-# RUN: %pyxc --emit exe -o %t %s
-# RUN: %t 2>&1 | FileCheck %s
-# CHECK: 0.000000
-# CHECK: 10.000000
+# RUN: not %pyxc --emit exe -o %t %s 2>&1 | FileCheck %s
+# CHECK: Unknown variable name
 
-# Tests: a global variable whose initializer references another global that
-# appears later in the file reads 0.0 (the constant-zero default), not the
-# later global's final value. Initialization is strictly in source order.
+# Tests: globals must be declared before use in initializers.
 
 extern def printd(x: float64) -> float64
 

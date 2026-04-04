@@ -1,6 +1,6 @@
 # RUN: %pyxc < %s 2>&1 | FileCheck %s
-# CHECK: 10.000000
-# CHECK: 8.000000
+# CHECK: 10
+# CHECK: 8
 
 
 # Tests: parenexpr overrides the default * > + precedence.

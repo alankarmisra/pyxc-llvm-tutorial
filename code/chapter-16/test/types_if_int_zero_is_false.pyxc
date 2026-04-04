@@ -3,13 +3,13 @@
 # CHECK: 99.000000
 # CHECK-NOT: 1.000000
 
-# Tests: int 0 is false in an if condition; int non-zero is true.
+# Tests: False is false in an if condition; True is true.
 # Only the else branch (printing 99) must execute.
 
 extern def printd(x: float64) -> float64
 
 def main() -> None:
-    var flag: int = 0
+    var flag: bool = False
     if flag:
         printd(1.0)
     else:

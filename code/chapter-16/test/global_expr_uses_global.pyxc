@@ -3,11 +3,14 @@
 # CHECK-NOT: ready>
 
 # Tests: a top-level bare expression can read a global.
-# x = 1 is already set; the expression x == 1 evaluates to 1.0 (true).
+# x = 1 is already set; the expression x == 1 evaluates to True.
 # This verifies that top-level expressions (compiled into __anon_expr)
 # correctly load from the globals module via the JIT symbol table.
 
 extern def printd(x: float64) -> float64
 
 var x: float64 = 1.0
-printd(x == 1)
+if x == 1:
+    printd(1.0)
+else:
+    printd(0.0)

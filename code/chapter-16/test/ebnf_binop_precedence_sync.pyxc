@@ -1,0 +1,3 @@
+# RUN: python3 %S/Inputs/check_binop_precedence.py %S/../pyxc.ebnf %S/../pyxc.cpp
+
+# Tests: builtinbinaryop operators in the EBNF must exist in DefaultBinopPrecedence.

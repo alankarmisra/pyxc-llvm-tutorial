@@ -125,6 +125,9 @@ Six new token enums:
 enum Token {
 ...
 // comparison operators
+// Only multi-character operators use explicit tokens;
+// single-character operators continue to be returned as
+// their character value.
 tok_eq  = -8,   // ==
 tok_neq = -9,   // !=
 tok_leq = -10,  // <=

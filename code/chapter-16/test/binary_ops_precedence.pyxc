@@ -1,6 +1,6 @@
 # RUN: %pyxc < %s 2>&1 | FileCheck %s
-# CHECK: 14.000000
-# CHECK: 7.000000
+# CHECK: 14
+# CHECK: 7
 
 
 # Tests: operator precedence (* > +) and left-associativity of -.

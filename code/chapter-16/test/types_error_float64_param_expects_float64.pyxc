@@ -1,0 +1,13 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: expects float64
+
+# Tests: diagnostics preserve the 'float64' spelling when a float64 parameter
+# is expected.
+
+def takes_float64(x: float64) -> None:
+    return
+
+def main() -> None:
+    var y: float32 = float32(1.0)
+    takes_float64(y)
+    return

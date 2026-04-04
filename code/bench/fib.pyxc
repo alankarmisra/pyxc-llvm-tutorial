@@ -1,0 +1,11 @@
+extern def printd(x: float64) -> float64
+
+def fib(n: int64) -> int64:
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+def main() -> None:
+    var n: int64 = 20
+    printd(float64(fib(n)))
+    return

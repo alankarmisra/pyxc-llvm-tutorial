@@ -227,7 +227,7 @@ public:
 static SourceManager PyxcSourceMgr;
 static void PrintErrorSourceContext(SourceLocation Loc);
 
-/// advance - Read one character from stdin, update LexLoc and SourceManager.
+/// advance - Read one character from Input, update LexLoc and SourceManager.
 ///
 /// This is the single point through which all character consumption flows.
 /// Every token branch in gettok() calls advance() rather than fgetc()
@@ -463,8 +463,8 @@ namespace {
 class ExprAST {
 public:
   virtual ~ExprAST() = default;
-  // getLValueName - Return the lvalue name if this node is a plain assignable
-  // variable, or nullptr otherwise. This avoids RTTI checks in the parser.
+  // getLValueName - If this node is a plain assignable variable, return its
+  // name; otherwise return nullptr.
   virtual const string *getLValueName() const { return nullptr; }
   virtual Value *codegen() = 0;
 };

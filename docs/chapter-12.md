@@ -126,6 +126,8 @@ static unique_ptr<ExprAST> ParseTopLevelStatement() {
 
 `shouldPrintValue()` is a virtual method on `ExprAST`. Statements like `var`, `if`, and `for` return `false` — their result (always `0.0`) is noise, not a value the user asked to see. Plain expressions return `true`. This is how the REPL suppresses the unwanted `0.000000` that would otherwise appear after every `var` declaration.
 
+This flag exists because the AST has a single `ExprAST` hierarchy for both statements and expressions. If the two were split into separate base classes — `StmtAST` producing no value, `ExprAST` producing one — the distinction would be structural and `shouldPrintValue()` wouldn't be needed at all. For now, adding a virtual boolean is the least-invasive fix without a full AST refactor.
+
 `ParseTopLevelExpr` wraps the parsed statement in a uniquely-named function so it goes through the same `FunctionAST` codegen path as everything else:
 
 ```cpp

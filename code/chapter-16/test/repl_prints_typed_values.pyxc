@@ -1,0 +1,12 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 10
+# CHECK: 2.500000
+# CHECK: True
+
+# Tests: REPL prints values using the correct return type.
+
+var a: int32 = 10
+a
+var b: float64 = 2.5
+b
+True

@@ -1,4 +1,5 @@
 #include "../include/PyxcJIT.h"
+#include "lld/Common/Driver.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
@@ -7,20 +8,21 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Verifier.h"
+#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/Support/CodeGen.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
-#include "llvm/Support/VersionTuple.h"
-#include "llvm/Support/CodeGen.h"
 #include "llvm/Support/TargetSelect.h"
+#include "llvm/Support/VersionTuple.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
-#include "llvm/MC/TargetRegistry.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
@@ -28,8 +30,6 @@
 #include "llvm/Transforms/Scalar/GVN.h"
 #include "llvm/Transforms/Scalar/Reassociate.h"
 #include "llvm/Transforms/Utils/Mem2Reg.h"
-#include "llvm/IR/LegacyPassManager.h"
-#include "lld/Common/Driver.h"
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -59,32 +59,28 @@ LLD_HAS_DRIVER(macho)
 static cl::OptionCategory PyxcCategory("Pyxc options");
 
 // Optional positional inputs: 0 args => REPL, 1+ args => file mode.
-static cl::list<std::string>
-    InputFiles(cl::Positional, cl::desc("[inputs]"), cl::ZeroOrMore,
-               cl::cat(PyxcCategory));
+static cl::list<std::string> InputFiles(cl::Positional, cl::desc("[inputs]"),
+                                        cl::ZeroOrMore, cl::cat(PyxcCategory));
 
 // Dump IR to stderr in JIT modes.
-static cl::opt<bool>
-    DumpIR("dump-ir", cl::desc("Print generated LLVM IR to stderr"),
-           cl::init(false), cl::cat(PyxcCategory));
+static cl::opt<bool> DumpIR("dump-ir",
+                            cl::desc("Print generated LLVM IR to stderr"),
+                            cl::init(false), cl::cat(PyxcCategory));
 // Alias for --dump-ir (kept for backwards compatibility).
-static cl::opt<bool>
-    VerboseIR("v", cl::desc("Alias for --dump-ir"), cl::init(false),
-              cl::cat(PyxcCategory));
+static cl::opt<bool> VerboseIR("v", cl::desc("Alias for --dump-ir"),
+                               cl::init(false), cl::cat(PyxcCategory));
 
 // Emit output file in file mode.
 static cl::opt<std::string>
-    EmitKindOpt("emit",
-                cl::desc("Emit output: llvm-ir | asm | obj | exe"),
+    EmitKindOpt("emit", cl::desc("Emit output: llvm-ir | asm | obj | exe"),
                 cl::init(""), cl::cat(PyxcCategory));
 static cl::opt<std::string> OutputFile("o", cl::desc("Output filename"),
-                                       cl::value_desc("filename"),
-                                       cl::init(""), cl::cat(PyxcCategory));
+                                       cl::value_desc("filename"), cl::init(""),
+                                       cl::cat(PyxcCategory));
 
 // Optimization level. For now Pyxc only distinguishes -O0 (no passes) from
 // any non-zero level (run the current fixed function pass pipeline).
-static cl::opt<unsigned> OptLevel("O",
-                                  cl::desc("Optimization level"),
+static cl::opt<unsigned> OptLevel("O", cl::desc("Optimization level"),
                                   cl::value_desc("0|1|2|3"), cl::Prefix,
                                   cl::init(2), cl::cat(PyxcCategory));
 
@@ -275,7 +271,7 @@ public:
 static SourceManager PyxcSourceMgr;
 static void PrintErrorSourceContext(SourceLocation Loc);
 
-/// advance - Read one character from stdin, update LexLoc and SourceManager.
+/// advance - Read one character from Input, update LexLoc and SourceManager.
 ///
 /// This is the single point through which all character consumption flows.
 /// Every token branch in gettok() calls advance() rather than fgetc()
@@ -322,14 +318,27 @@ static int peek() {
 
 /// gettok - Return the next token from standard input.
 ///
-/// LexerLastChar holds the last character read by advance() but not yet
-/// consumed by a token. It is initialised to ' ' so the first call skips
-/// straight to the indentation logic without blocking on a second character.
+/// LastChar holds the last character read by advance() but not yet consumed
+/// by a token. It is initialised to ' ' so the first call skips straight to
+/// the whitespace loop without reading a character, and the loop's first
+/// advance() call picks up the real first character.
 ///
-/// CurLoc is snapshotted at the start of each real token. For tok_eol the
-/// '\n' was already consumed so LexLoc is on the next line;
-/// GetDiagnosticAnchorLoc compensates by subtracting one. The comment path
-/// re-snapshots CurLoc after consuming the whole comment line.
+/// CurLoc is snapshotted from LexLoc after the whitespace-skip loop and
+/// before any token branch. For most tokens this points at the first
+/// character of the token. For tok_eol the '\n' was already consumed by
+/// advance() on a previous call, so LexLoc is already on the next line;
+/// GetDiagnosticAnchorLoc compensates by subtracting one when building error
+/// locations for tok_eol.
+///
+/// The comment path ('#' branch) re-snapshots CurLoc just before returning
+/// tok_eol because it consumes many characters (the whole comment) after the
+/// initial snapshot, leaving LexLoc well past the '#' position.
+///
+/// AtLineStart is true (1) at startup, (2) right after consuming '\n', and
+/// (3) right after emitting tok_eol. It stays true while we are still resolving
+/// indentation for the new line (including full-line comments, which produce
+/// no tokens). It flips false as soon as indentation is settled and the line
+/// is known to contain a real token, even before that token is emitted.
 static int gettok() {
   // Drain tokens queued by a multi-level dedent on the previous line.
   if (!PendingTokens.empty()) {
@@ -398,7 +407,8 @@ static int gettok() {
         PendingTokens.push_back(tok_dedent);
       }
       if (IndentCol != IndentStack.back()) {
-        fprintf(stderr, "Error (Line %d, Column %d): inconsistent indentation\n",
+        fprintf(stderr,
+                "Error (Line %d, Column %d): inconsistent indentation\n",
                 CurLoc.Line, CurLoc.Col);
         PrintErrorSourceContext(CurLoc);
         return tok_error;
@@ -413,7 +423,8 @@ static int gettok() {
   }
   // ── End of line-start processing ─────────────────────────────────────
 
-  // Skip horizontal whitespace. Stop at '\n' — that becomes tok_eol.
+  // Not at line start anymore. Skip horizontal whitespace between tokens.
+  // Stop at '\n' — it becomes tok_eol.
   while (isspace(LexerLastChar) && LexerLastChar != '\n')
     LexerLastChar = advance();
 
@@ -600,8 +611,8 @@ namespace {
 class ExprAST {
 public:
   virtual ~ExprAST() = default;
-  // getLValueName - Return the lvalue name if this node is a plain assignable
-  // variable, or nullptr otherwise. This avoids RTTI checks in the parser.
+  // getLValueName - If this node is a plain assignable variable, return its
+  // name; otherwise return nullptr.
   virtual const string *getLValueName() const { return nullptr; }
   // isReturnExpr - True iff this node is a return statement.
   virtual bool isReturnExpr() const { return false; }
@@ -664,8 +675,7 @@ class BlockExprAST : public ExprAST {
   vector<unique_ptr<ExprAST>> Stmts;
 
 public:
-  BlockExprAST(vector<unique_ptr<ExprAST>> Stmts)
-      : Stmts(std::move(Stmts)) {}
+  BlockExprAST(vector<unique_ptr<ExprAST>> Stmts) : Stmts(std::move(Stmts)) {}
   Value *codegen() override;
 };
 
@@ -861,9 +871,7 @@ static const map<int, int> DefaultBinopPrecedence = {
 };
 static map<int, int> BinopPrecedence = DefaultBinopPrecedence;
 
-static void ResetBinopPrecedence() {
-  BinopPrecedence = DefaultBinopPrecedence;
-}
+static void ResetBinopPrecedence() { BinopPrecedence = DefaultBinopPrecedence; }
 
 // KnownUnaryOperators - Tracks unary operator tokens that are already reserved
 // or defined.
@@ -883,7 +891,7 @@ static void ResetKnownUnaryOperators() {
 static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 
 // Parse-time variable tracking for assignments.
-// var bindings live for the rest of the function (no block scope).
+// Scopes are stacked: function scope plus nested block scopes.
 // for-loop variables are scoped to the loop body only.
 static vector<set<string>> VarScopes;
 // Global variables declared at top level (persist across modules).
@@ -912,6 +920,10 @@ static void DeclareVar(const string &Name) {
 }
 
 static void BeginBlockScope() { VarScopes.emplace_back(); }
+// Pop a block scope if one is active.
+// Size > 1 means a nested block inside a function; never pop the function scope
+// here. Size == 1 is only popped for top-level blocks (function scope is popped
+// in EndFunctionScope).
 static void EndBlockScope() {
   if (VarScopes.size() > 1)
     VarScopes.pop_back();
@@ -919,12 +931,14 @@ static void EndBlockScope() {
     VarScopes.pop_back();
 }
 
+// Check only the innermost scope (used for redeclaration checks).
 static bool IsDeclaredInCurrentScope(const string &Name) {
   if (VarScopes.empty())
     return false;
   return VarScopes.back().count(Name) > 0;
 }
 
+// Ensure a function scope exists, then add a new scope for the loop variable.
 static void EnterLoopScope(const string &Name) {
   if (VarScopes.empty())
     VarScopes.emplace_back();
@@ -932,6 +946,8 @@ static void EnterLoopScope(const string &Name) {
   VarScopes.back().insert(Name);
 }
 
+// Size == 1 is only popped for top-level blocks (function scope is popped in
+// EndFunctionScope).
 static void ExitLoopScope() {
   if (VarScopes.size() > 1)
     VarScopes.pop_back();
@@ -939,6 +955,23 @@ static void ExitLoopScope() {
     VarScopes.pop_back();
 }
 
+struct FunctionScopeGuard {
+  FunctionScopeGuard(const vector<string> &Args) { BeginFunctionScope(Args); }
+  ~FunctionScopeGuard() { EndFunctionScope(); }
+};
+
+struct LoopScopeGuard {
+  LoopScopeGuard(const string &Name) { EnterLoopScope(Name); }
+  ~LoopScopeGuard() { ExitLoopScope(); }
+};
+
+struct BlockScopeGuard {
+  BlockScopeGuard() { BeginBlockScope(); }
+  ~BlockScopeGuard() { EndBlockScope(); }
+};
+
+// IsDeclaredVar - Check all local scopes from innermost to outermost, then
+// fall back to globals. Used to validate assignments and references.
 static bool IsDeclaredVar(const string &Name) {
   for (auto It = VarScopes.rbegin(); It != VarScopes.rend(); ++It) {
     if (It->count(Name))
@@ -1001,31 +1034,18 @@ static unique_ptr<ExprAST> ParseStatement();
 static unique_ptr<ExprAST> ParseSimpleStmt();
 static unique_ptr<ExprAST> ParseBlock();
 static unique_ptr<ExprAST> ParseFunctionBody(bool *BodyIsBlock);
-// Track whether the last parsed statement ended with a block. This allows the
-// enclosing block to accept the next statement without an explicit tok_eol
-// because the inner block consumes the trailing newline before its DEDENT.
+
+// Inside a block: true if the last statement was a compound block (if/for),
+// so the next statement can start without a tok_eol.
 static bool LastStatementWasBlock = false;
-// Track whether the last parsed top-level definition ended with a block.
-// If it did, the next top-level form may start immediately without a tok_eol.
+
+// At top level: true if the last top‑level form ended with a block,
+// so the next top‑level form can start without a tok_eol.
 static bool LastTopLevelEndedWithBlock = false;
+
 static unsigned TopLevelExprCounter = 0;
 static bool LastTopLevelShouldPrint = true;
 static unique_ptr<ExprAST> ParseSuite(bool *EndedWithBlock);
-
-struct FunctionScopeGuard {
-  FunctionScopeGuard(const vector<string> &Args) { BeginFunctionScope(Args); }
-  ~FunctionScopeGuard() { EndFunctionScope(); }
-};
-
-struct LoopScopeGuard {
-  LoopScopeGuard(const string &Name) { EnterLoopScope(Name); }
-  ~LoopScopeGuard() { ExitLoopScope(); }
-};
-
-struct BlockScopeGuard {
-  BlockScopeGuard() { BeginBlockScope(); }
-  ~BlockScopeGuard() { EndBlockScope(); }
-};
 
 /// numberexpr
 ///   = number ;
@@ -1090,7 +1110,8 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
 }
 
 /// forstmt
-///   = "for" identifier "=" expression "," expression "," expression ":" suite ;
+///   = "for" identifier "=" expression "," expression "," expression ":" suite
+///   ;
 ///
 /// The loop variable is introduced by the "for" and is in scope for the
 /// condition, step, and body. It shadows any outer variable of the same name.
@@ -1483,6 +1504,8 @@ static unique_ptr<ExprAST> ParseBlock() {
     if (LastStatementWasBlock)
       continue;
 
+    // if (CurTok != tok_eol && CurTok != dedent && !LastStatementWasBlock)
+    // error()
     return LogError("Expected newline or end of block");
   }
 
@@ -1767,8 +1790,9 @@ static unique_ptr<PrototypeAST> ParseUnaryOpPrototype() {
 }
 
 /// decorateddef
-///   = binarydecorator eols "def" binaryopprototype ":" ( simplestmt | eols block )
-///   | unarydecorator  eols "def" unaryopprototype  ":" ( simplestmt | eols block )
+///   = binarydecorator eols "def" binaryopprototype ":" ( simplestmt | eols
+///   block ) | unarydecorator  eols "def" unaryopprototype  ":" ( simplestmt |
+///   eols block )
 ///
 /// Called after '@' has been consumed. CurTok is on 'binary' or 'unary'.
 /// The two branches share the same body structure (':' / block).
@@ -1806,7 +1830,8 @@ static unique_ptr<FunctionAST> ParseDecoratedDef() {
     return nullptr;
   FunctionScopeGuard Scope(Proto->getArgs());
 
-  // Shared body: ":" ( simplestmt | eols block ) — identical to ParseDefinition.
+  // Shared body: ":" ( simplestmt | eols block ) — identical to
+  // ParseDefinition.
   if (CurTok != ':')
     return LogErrorF("Expected ':' in operator definition");
   getNextToken(); // eat ':'
@@ -1944,8 +1969,8 @@ static GlobalVariable *GetGlobalVariable(const string &Name) {
     return nullptr;
 
   auto *Ty = Type::getDoubleTy(*TheContext);
-  return new GlobalVariable(*TheModule, Ty, false,
-                            GlobalValue::ExternalLinkage, nullptr, Name);
+  return new GlobalVariable(*TheModule, Ty, false, GlobalValue::ExternalLinkage,
+                            nullptr, Name);
 }
 
 /// getFunction - Resolve a function name to an LLVM Function* in the current
@@ -2341,13 +2366,11 @@ Value *VarStmtAST::codegen() {
 
       if (!GV) {
         auto *Ty = Type::getDoubleTy(*TheContext);
-        GV = new GlobalVariable(*TheModule, Ty, false,
-                                GlobalValue::ExternalLinkage,
-                                ConstantFP::get(*TheContext, APFloat(0.0)),
-                                VarName);
+        GV = new GlobalVariable(
+            *TheModule, Ty, false, GlobalValue::ExternalLinkage,
+            ConstantFP::get(*TheContext, APFloat(0.0)), VarName);
       } else if (GV->isDeclaration()) {
-        GV->setInitializer(
-            ConstantFP::get(*TheContext, APFloat(0.0)));
+        GV->setInitializer(ConstantFP::get(*TheContext, APFloat(0.0)));
         GV->setLinkage(GlobalValue::ExternalLinkage);
       }
 
@@ -2729,7 +2752,8 @@ static void HandleTopLevelExpression() {
       // free it precisely after the call, without affecting other symbols.
       auto RT = TheJIT->getMainJITDylib().createResourceTracker();
 
-      // Transfer ownership of the module to the JIT; reinitialise for next input.
+      // Transfer ownership of the module to the JIT; reinitialise for next
+      // input.
       auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
       ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
       InitializeModuleAndManagers();
@@ -2977,8 +3001,8 @@ static void AddGlobalCtor(Function *Fn, int Priority = 65535) {
 
   ArrayType *AT = ArrayType::get(StructTy, 1);
   auto *Init = ConstantArray::get(AT, {CtorEntry});
-  new GlobalVariable(*TheModule, AT, false, GlobalValue::AppendingLinkage,
-                     Init, "llvm.global_ctors");
+  new GlobalVariable(*TheModule, AT, false, GlobalValue::AppendingLinkage, Init,
+                     "llvm.global_ctors");
 }
 
 /// CreateTargetMachine - Build a TargetMachine for the host triple.
@@ -3103,9 +3127,8 @@ static bool EmitRuntimeObject(const string &ObjPath) {
     IRBuilder<> B(BB);
     auto *FmtGV = B.CreateGlobalString("%f\n", "fmt");
     Value *Zero = ConstantInt::get(Int32Ty, 0);
-    Value *Fmt =
-        B.CreateInBoundsGEP(FmtGV->getValueType(), FmtGV, {Zero, Zero},
-                            "fmt_ptr");
+    Value *Fmt = B.CreateInBoundsGEP(FmtGV->getValueType(), FmtGV, {Zero, Zero},
+                                     "fmt_ptr");
     Value *Arg = Printd->getArg(0);
     B.CreateCall(Printf, {Fmt, Arg});
     B.CreateRet(ConstantFP::get(Ctx, APFloat(0.0)));
@@ -3155,14 +3178,12 @@ static string FindMacOSSDKRoot() {
   if (const char *EnvSDK = getenv("SDKROOT"))
     return string(EnvSDK);
 
-  const char *XcodeSDK =
-      "/Applications/Xcode.app/Contents/Developer/Platforms/"
-      "MacOSX.platform/Developer/SDKs/MacOSX.sdk";
+  const char *XcodeSDK = "/Applications/Xcode.app/Contents/Developer/Platforms/"
+                         "MacOSX.platform/Developer/SDKs/MacOSX.sdk";
   if (sys::fs::exists(XcodeSDK))
     return string(XcodeSDK);
 
-  const char *CLTSDK =
-      "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk";
+  const char *CLTSDK = "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk";
   if (sys::fs::exists(CLTSDK))
     return string(CLTSDK);
 
@@ -3299,8 +3320,8 @@ static bool PrepareFileModeModule() {
       UserMain->setName("__pyxc.user_main");
       FunctionType *FT =
           FunctionType::get(Type::getInt32Ty(*TheContext), false);
-      Function *Wrapper =
-          Function::Create(FT, Function::ExternalLinkage, "main", TheModule.get());
+      Function *Wrapper = Function::Create(FT, Function::ExternalLinkage,
+                                           "main", TheModule.get());
       BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", Wrapper);
       IRBuilder<> TmpB(BB);
       TmpB.CreateCall(UserMain);

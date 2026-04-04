@@ -1,11 +1,8 @@
-# RUN: %pyxc %s 2>&1 | FileCheck %s
-# CHECK: 0.000000
+# RUN: not %pyxc %s 2>&1 | FileCheck %s
+# CHECK: Unknown variable name
 # CHECK-NOT: ready>
 
-# Tests: a global initializer that references a global declared later reads 0.0
-# (the constant default), not the later global's initialized value.
-# Initializers run in source order; b is initialized before a, so a is still 0.0
-# when b's initializer runs.
+# Tests: globals must be declared before use in initializers.
 
 extern def printd(x: float64) -> float64
 

@@ -1,0 +1,15 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: sext i8
+# CHECK: add i16
+
+# Tests: int8 widens to int16 in arithmetic; the result type is int16.
+
+extern def printd(x: float64) -> float64
+
+def main() -> None:
+    var a: int8 = int8(1)
+    var b: int16 = int16(2)
+    var c: int16 = a + b
+    printd(float64(c))
+    return

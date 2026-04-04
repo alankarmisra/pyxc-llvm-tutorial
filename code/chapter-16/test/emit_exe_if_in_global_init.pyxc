@@ -7,7 +7,7 @@
 extern def printd(x: float64) -> float64
 
 var result: float64 = 0.0
-var flag: float64 = 1.0
+var flag: bool = True
 
 if flag:
     result = 99

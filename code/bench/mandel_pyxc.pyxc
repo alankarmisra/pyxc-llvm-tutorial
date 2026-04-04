@@ -1,0 +1,49 @@
+extern def printd(x: float64) -> float64
+
+# Mandelbrot checksum (no image), using chapter-16 features only.
+# Avoids '/' since operator precedence for division may not be set in this chapter.
+
+def mandel_checksum(width: int, height: int, max_iter: int) -> int:
+    var sum: int = 0
+    var y: int = 0
+    var inv_w: float64 = 0.001
+    var inv_h: float64 = 0.001
+
+    for y: int = 0, y < height, 1:
+        var x: int = 0
+        for x: int = 0, x < width, 1:
+            var fx: float64 = float64(x) * inv_w
+            var fy: float64 = float64(y) * inv_h
+            var cr: float64 = fx * 3.5 - 2.5
+            var ci: float64 = fy * 2.0 - 1.0
+            var zr: float64 = 0.0
+            var zi: float64 = 0.0
+            var escaped: bool = False
+            var iter: int = 0
+
+            for i: int = 0, i < max_iter, 1:
+                if escaped:
+                    0
+                else:
+                    var zr2: float64 = zr * zr - zi * zi + cr
+                    var zi2: float64 = 2.0 * zr * zi + ci
+                    zr = zr2
+                    zi = zi2
+                    if (zr * zr + zi * zi) > 4.0:
+                        escaped = True
+                        iter = i
+
+            if escaped == False:
+                iter = max_iter
+
+            sum = sum + iter
+
+    return sum
+
+
+def main() -> None:
+    var w: int = 1000
+    var h: int = 1000
+    var max_iter: int = 500
+    printd(float64(mandel_checksum(w, h, max_iter)))
+    return

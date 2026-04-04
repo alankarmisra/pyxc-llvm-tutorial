@@ -246,6 +246,18 @@ if (AtLineStart) {
   }
 ```
 
+Spaces contribute 1 column each. Tabs advance to the next multiple of 8 — the delta is `8 - (IndentCol % 8)`:
+
+| IndentCol before tab | IndentCol % 8 | delta | IndentCol after tab |
+|---|---|---|---|
+| 0 | 0 | 8 | 8 |
+| 1 | 1 | 7 | 8 |
+| 7 | 7 | 1 | 8 |
+| 8 | 0 | 8 | 16 |
+| 11 | 3 | 5 | 16 |
+
+A tab always snaps forward to the next 8-column boundary, never backward and never past it.
+
 **Step 2: Compare to the top of the stack and queue INDENT or DEDENT tokens.**
 
 ```cpp

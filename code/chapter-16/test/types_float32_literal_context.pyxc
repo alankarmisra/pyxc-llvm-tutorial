@@ -1,0 +1,9 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: store float 6.400000e+01
+
+# Tests: float literals honor the expected type when initializing float32.
+
+def main() -> None:
+    var a: float32 = 64.0
+    return

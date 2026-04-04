@@ -1,6 +1,7 @@
 #include "../include/PyxcJIT.h"
 #include "lld/Common/Driver.h"
 #include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/BinaryFormat/Dwarf.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/CFG.h"
@@ -32,11 +33,11 @@
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
-#include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Scalar/GVN.h"
 #include "llvm/Transforms/Scalar/Reassociate.h"
 #include "llvm/Transforms/Utils/Mem2Reg.h"
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -159,10 +160,13 @@ enum Token {
   tok_int16 = -24,
   tok_int32 = -25,
   tok_int64 = -26,
-  tok_float32 = -27,
-  tok_float64 = -28,
-  tok_bool = -29,
-  tok_none = -30,
+  tok_float = -27,
+  tok_float32 = -28,
+  tok_float64 = -29,
+  tok_bool = -30,
+  tok_none = -31,
+  tok_true = -32,
+  tok_false = -33,
 };
 
 enum class ValueType {
@@ -172,6 +176,7 @@ enum class ValueType {
   Int16,
   Int32,
   Int64,
+  Float,
   Float32,
   Float64,
   Bool,
@@ -181,22 +186,28 @@ enum class ValueType {
 static string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;        // Filled in if tok_number
 static string NumLiteralStr; // Filled in if tok_number
-static bool NumIsFloat = false;
-static int LexerLastChar = ' ';
-static vector<int> IndentStack = {0};
-static deque<int> PendingTokens;
-static bool AtLineStart = true;
+static bool NumIsFloat =
+    false; // True if the current numeric literal had a decimal point.
+static int LexerLastChar =
+    ' '; // Last character read by the lexer (used for lookahead and whitespace
+// handling).
+static vector<int> IndentStack = {
+    0}; // Stack of indentation levels (0 is the base indent).
+static deque<int> PendingTokens; // Queue of synthetic tokens
+                                 // (INDENT/DEDENT/EOL) produced by the lexer.
+static bool AtLineStart =
+    true; // True when the lexer is positioned at the start of a new line.
 
 // Keywords like `def`, `extern` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
 static map<string, Token> Keywords = {
-    {"def", tok_def},       {"extern", tok_extern},   {"return", tok_return},
-    {"if", tok_if},         {"else", tok_else},       {"for", tok_for},
-    {"binary", tok_binary}, {"unary", tok_unary},     {"var", tok_var},
-    {"int", tok_int},       {"int8", tok_int8},     {"int16", tok_int16},
-    {"int32", tok_int32},   {"int64", tok_int64},   {"float32", tok_float32},
-    {"float64", tok_float64}, {"float", tok_float64}, {"bool", tok_bool},
-    {"None", tok_none}};
+    {"def", tok_def},         {"extern", tok_extern},   {"return", tok_return},
+    {"if", tok_if},           {"else", tok_else},       {"for", tok_for},
+    {"binary", tok_binary},   {"unary", tok_unary},     {"var", tok_var},
+    {"int", tok_int},         {"int8", tok_int8},       {"int16", tok_int16},
+    {"int32", tok_int32},     {"int64", tok_int64},     {"float", tok_float},
+    {"float32", tok_float32}, {"float64", tok_float64}, {"bool", tok_bool},
+    {"None", tok_none},       {"True", tok_true},       {"False", tok_false}};
 
 // Debug-only token names. Kept separate from Keywords because this map is
 // purely for printing token stream output.
@@ -215,9 +226,11 @@ static map<int, string> TokenNames = [] {
       {tok_var, "'var'"},         {tok_int, "'int'"},
       {tok_int8, "'int8'"},       {tok_int16, "'int16'"},
       {tok_int32, "'int32'"},     {tok_int64, "'int64'"},
-      {tok_float32, "'float32'"}, {tok_float64, "'float64'"},
-      {tok_bool, "'bool'"},       {tok_none, "'None'"},
-      {tok_indent, "indent"},     {tok_dedent, "dedent"}};
+      {tok_float, "'float'"},     {tok_float32, "'float32'"},
+      {tok_float64, "'float64'"}, {tok_bool, "'bool'"},
+      {tok_none, "'None'"},       {tok_true, "'True'"},
+      {tok_false, "'False'"},     {tok_indent, "indent"},
+      {tok_dedent, "dedent"}};
 
   // Single character tokens.
   for (int ch = 0; ch <= 255; ++ch) {
@@ -320,7 +333,7 @@ public:
 static SourceManager PyxcSourceMgr;
 static void PrintErrorSourceContext(SourceLocation Loc);
 
-/// advance - Read one character from stdin, update LexLoc and SourceManager.
+/// advance - Read one character from Input, update LexLoc and SourceManager.
 ///
 /// This is the single point through which all character consumption flows.
 /// Every token branch in gettok() calls advance() rather than fgetc()
@@ -367,14 +380,27 @@ static int peek() {
 
 /// gettok - Return the next token from standard input.
 ///
-/// LexerLastChar holds the last character read by advance() but not yet
-/// consumed by a token. It is initialised to ' ' so the first call skips
-/// straight to the indentation logic without blocking on a second character.
+/// LastChar holds the last character read by advance() but not yet consumed
+/// by a token. It is initialised to ' ' so the first call skips straight to
+/// the whitespace loop without reading a character, and the loop's first
+/// advance() call picks up the real first character.
 ///
-/// CurLoc is snapshotted at the start of each real token. For tok_eol the
-/// '\n' was already consumed so LexLoc is on the next line;
-/// GetDiagnosticAnchorLoc compensates by subtracting one. The comment path
-/// re-snapshots CurLoc after consuming the whole comment line.
+/// CurLoc is snapshotted from LexLoc after the whitespace-skip loop and
+/// before any token branch. For most tokens this points at the first
+/// character of the token. For tok_eol the '\n' was already consumed by
+/// advance() on a previous call, so LexLoc is already on the next line;
+/// GetDiagnosticAnchorLoc compensates by subtracting one when building error
+/// locations for tok_eol.
+///
+/// The comment path ('#' branch) re-snapshots CurLoc just before returning
+/// tok_eol because it consumes many characters (the whole comment) after the
+/// initial snapshot, leaving LexLoc well past the '#' position.
+///
+/// AtLineStart is true (1) at startup, (2) right after consuming '\n', and
+/// (3) right after emitting tok_eol. It stays true while we are still resolving
+/// indentation for the new line (including full-line comments, which produce
+/// no tokens). It flips false as soon as indentation is settled and the line
+/// is known to contain a real token, even before that token is emitted.
 static int gettok() {
   // Drain tokens queued by a multi-level dedent on the previous line.
   if (!PendingTokens.empty()) {
@@ -403,7 +429,8 @@ static int gettok() {
         return tok_dedent;
       }
       CurLoc = LexLoc;
-      LexerLastChar = ' ';
+      LexerLastChar = ' '; // AtLineStart is still true so the lexer reads past
+                           // the sentinel in the next call
       return tok_eol;
     }
 
@@ -414,7 +441,8 @@ static int gettok() {
       while (LexerLastChar != EOF && LexerLastChar != '\n');
       if (LexerLastChar != EOF) {
         CurLoc = LexLoc;
-        LexerLastChar = ' ';
+        LexerLastChar = ' '; // AtLineStart is still true so the lexer reads
+                             // past the sentinel in the next call
         return tok_eol;
       }
       // else fall through to EOF handling below
@@ -438,7 +466,8 @@ static int gettok() {
       return tok_indent;
     }
     if (IndentCol < CurrentIndent) {
-      while (IndentStack.size() > 1 && IndentCol < IndentStack.back()) {
+      while (IndentStack.size() > 1 /* protect the 0-indent */ &&
+             IndentCol < IndentStack.back()) {
         IndentStack.pop_back();
         PendingTokens.push_back(tok_dedent);
       }
@@ -449,6 +478,8 @@ static int gettok() {
         PrintErrorSourceContext(CurLoc);
         return tok_error;
       }
+      // We have at least one pending dedent token. Instead of looping, we just
+      // pop it and send it back from here.
       AtLineStart = false;
       int Tok = PendingTokens.front();
       PendingTokens.pop_front();
@@ -459,7 +490,8 @@ static int gettok() {
   }
   // ── End of line-start processing ─────────────────────────────────────
 
-  // Skip horizontal whitespace. Stop at '\n' — that becomes tok_eol.
+  // Not at line start anymore. Skip horizontal whitespace between tokens.
+  // Stop at '\n' — it becomes tok_eol.
   while (isspace(LexerLastChar) && LexerLastChar != '\n')
     LexerLastChar = advance();
 
@@ -651,13 +683,13 @@ namespace {
 
 /// ExprAST - Base class for all expression nodes.
 class ExprAST {
-  ValueType Ty = ValueType::Error;
+  ValueType Type = ValueType::Error;
 
 public:
   virtual ~ExprAST() = default;
-  ValueType getType() const { return Ty; }
-  // getLValueName - Return the lvalue name if this node is a plain assignable
-  // variable, or nullptr otherwise. This avoids RTTI checks in the parser.
+  ValueType getType() const { return Type; }
+  // getLValueName - If this node is a plain assignable variable, return its
+  // name; otherwise return nullptr.
   virtual const string *getLValueName() const { return nullptr; }
   // isReturnExpr - True iff this node is a return statement.
   virtual bool isReturnExpr() const { return false; }
@@ -667,15 +699,33 @@ public:
   virtual Value *codegen() = 0;
 
 protected:
-  void setType(ValueType NewTy) { Ty = NewTy; }
+  void setType(ValueType NewType) { Type = NewType; }
 };
 
-/// NumberExprAST - Expression class for numeric literals like "1.0".
+/// NumberExprAST - Expression class for numeric literals.
 class NumberExprAST : public ExprAST {
-  double Val;
+  bool IsIntLiteral;
+  APInt IntVal;
+  APFloat FloatVal;
 
 public:
-  NumberExprAST(double Val, ValueType Ty) : Val(Val) { setType(Ty); }
+  NumberExprAST(APInt Val, ValueType Type)
+      : IsIntLiteral(true), IntVal(std::move(Val)), FloatVal(0.0) {
+    setType(Type);
+  }
+  NumberExprAST(APFloat Val, ValueType Type)
+      : IsIntLiteral(false), IntVal(1, 0), FloatVal(std::move(Val)) {
+    setType(Type);
+  }
+  Value *codegen() override;
+};
+
+/// BoolExprAST - Expression class for boolean literals: True/False.
+class BoolExprAST : public ExprAST {
+  bool Val;
+
+public:
+  BoolExprAST(bool Val) : Val(Val) { setType(ValueType::Bool); }
   Value *codegen() override;
 };
 
@@ -684,8 +734,8 @@ class VariableExprAST : public ExprAST {
   string Name;
 
 public:
-  VariableExprAST(const string &Name, ValueType Ty) : Name(Name) {
-    setType(Ty);
+  VariableExprAST(const string &Name, ValueType Type) : Name(Name) {
+    setType(Type);
   }
   // convenience function
   const string &getName() const { return Name; }
@@ -701,9 +751,10 @@ class AssignmentExprAST : public ExprAST {
   unique_ptr<ExprAST> Expr;
 
 public:
-  AssignmentExprAST(const string &Name, unique_ptr<ExprAST> Expr, ValueType Ty)
+  AssignmentExprAST(const string &Name, unique_ptr<ExprAST> Expr,
+                    ValueType Type)
       : Name(Name), Expr(std::move(Expr)) {
-    setType(Ty);
+    setType(Type);
   }
   bool shouldPrintValue() const override { return false; }
   Value *codegen() override;
@@ -744,9 +795,9 @@ class BinaryExprAST : public ExprAST {
 
 public:
   BinaryExprAST(int Op, unique_ptr<ExprAST> LHS, unique_ptr<ExprAST> RHS,
-                ValueType Ty)
+                ValueType Type)
       : Op(Op), LHS(std::move(LHS)), RHS(std::move(RHS)) {
-    setType(Ty);
+    setType(Type);
   }
   Value *codegen() override;
 };
@@ -758,9 +809,9 @@ class CallExprAST : public ExprAST {
 
 public:
   CallExprAST(const string &Callee, vector<unique_ptr<ExprAST>> Args,
-              ValueType Ty)
+              ValueType Type)
       : Callee(Callee), Args(std::move(Args)) {
-    setType(Ty);
+    setType(Type);
   }
   bool shouldPrintValue() const override {
     return getType() != ValueType::None;
@@ -801,9 +852,9 @@ class UnaryExprAST : public ExprAST {
   unique_ptr<ExprAST> Operand;
 
 public:
-  UnaryExprAST(char Opcode, unique_ptr<ExprAST> Operand, ValueType Ty)
+  UnaryExprAST(char Opcode, unique_ptr<ExprAST> Operand, ValueType Type)
       : Opcode(Opcode), Operand(std::move(Operand)) {
-    setType(Ty);
+    setType(Type);
   }
   Value *codegen() override;
 };
@@ -814,9 +865,9 @@ class CastExprAST : public ExprAST {
   unique_ptr<ExprAST> Expr;
 
 public:
-  CastExprAST(ValueType TargetTy, unique_ptr<ExprAST> Expr)
-      : TargetTy(TargetTy), Expr(std::move(Expr)) {
-    setType(TargetTy);
+  CastExprAST(ValueType TargetType, unique_ptr<ExprAST> Expr)
+      : TargetTy(TargetType), Expr(std::move(Expr)) {
+    setType(TargetType);
   }
   Value *codegen() override;
 };
@@ -849,9 +900,10 @@ public:
   Value *codegen() override;
 };
 
+// VarBinding - One declared variable and its optional initializer.
 struct VarBinding {
   string Name;
-  ValueType Ty;
+  ValueType Type;
   unique_ptr<ExprAST> Init;
 };
 
@@ -899,7 +951,7 @@ public:
   size_t getNumArgs() const { return Args.size(); }
   SourceLocation getLocation() const { return Loc; }
   ValueType getReturnType() const { return ReturnType; }
-  void setReturnType(ValueType Ty) { ReturnType = Ty; }
+  void setReturnType(ValueType Type) { ReturnType = Type; }
 
   ValueType getArgType(size_t Index) const {
     if (Index >= Args.size())
@@ -1004,16 +1056,20 @@ static void ResetKnownUnaryOperators() {
 static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 
 // Parse-time variable tracking for assignments and types.
-// var bindings live for the rest of the function (no block scope).
+// Scopes are stacked: function scope plus nested block scopes.
 // for-loop variables are scoped to the loop body only.
 static vector<std::map<string, ValueType>> VarScopes;
 // Global variables declared at top level (persist across modules).
 static std::map<string, ValueType> GlobalVarTypes;
+// Track which globals were declared in this translation unit (for redeclare
+// checks).
 static std::set<string> GlobalVarDecls;
 // True while parsing a top-level statement (var binds globals, not locals).
 static bool ParsingTopLevel = false;
+// Set when we hit a parse/codegen error; used to abort further processing.
 static bool HadError = false;
-static ValueType CurrentFunctionReturnType = ValueType::Float64;
+// Current function's declared return type during parsing/codegen.
+static ValueType CurrentFunctionReturnType = ValueType::None;
 
 struct TopLevelParseGuard {
   TopLevelParseGuard() { ParsingTopLevel = true; }
@@ -1029,13 +1085,19 @@ static void BeginFunctionScope(const vector<pair<string, ValueType>> &Args) {
 
 static void EndFunctionScope() { VarScopes.clear(); }
 
-static void DeclareVar(const string &Name, ValueType Ty) {
+static void DeclareVar(const string &Name, ValueType Type) {
+  // Only declare into an active local scope; at top level VarScopes is empty.
   if (VarScopes.empty())
     return;
-  VarScopes.back()[Name] = Ty;
+  VarScopes.back()[Name] = Type;
 }
 
 static void BeginBlockScope() { VarScopes.emplace_back(); }
+
+// Pop a block scope if one is active.
+// Size > 1 means a nested block inside a function; never pop the function scope
+// here. Size == 1 is only popped for top-level blocks (function scope is popped
+// in EndFunctionScope).
 static void EndBlockScope() {
   if (VarScopes.size() > 1)
     VarScopes.pop_back();
@@ -1043,19 +1105,23 @@ static void EndBlockScope() {
     VarScopes.pop_back();
 }
 
+// Check only the innermost scope (used for redeclaration checks).
 static bool IsDeclaredInCurrentScope(const string &Name) {
   if (VarScopes.empty())
     return false;
   return VarScopes.back().count(Name) > 0;
 }
 
-static void EnterLoopScope(const string &Name, ValueType Ty) {
+// Ensure a function scope exists, then add a new scope for the loop variable.
+static void EnterLoopScope(const string &Name, ValueType Type) {
   if (VarScopes.empty())
     VarScopes.emplace_back();
   VarScopes.emplace_back();
-  VarScopes.back()[Name] = Ty;
+  VarScopes.back()[Name] = Type;
 }
 
+// Size == 1 is only popped for top-level blocks (function scope is popped in
+// EndFunctionScope).
 static void ExitLoopScope() {
   if (VarScopes.size() > 1)
     VarScopes.pop_back();
@@ -1063,6 +1129,35 @@ static void ExitLoopScope() {
     VarScopes.pop_back();
 }
 
+struct FunctionScopeGuard {
+  FunctionScopeGuard(const vector<pair<string, ValueType>> &Args) {
+    BeginFunctionScope(Args);
+  }
+  ~FunctionScopeGuard() { EndFunctionScope(); }
+};
+
+struct LoopScopeGuard {
+  LoopScopeGuard(const string &Name, ValueType Type) {
+    EnterLoopScope(Name, Type);
+  }
+  ~LoopScopeGuard() { ExitLoopScope(); }
+};
+
+struct BlockScopeGuard {
+  BlockScopeGuard() { BeginBlockScope(); }
+  ~BlockScopeGuard() { EndBlockScope(); }
+};
+
+struct ReturnTypeGuard {
+  ValueType Saved;
+  ReturnTypeGuard(ValueType Type) : Saved(CurrentFunctionReturnType) {
+    CurrentFunctionReturnType = Type;
+  }
+  ~ReturnTypeGuard() { CurrentFunctionReturnType = Saved; }
+};
+
+// IsDeclaredVar - Check all local scopes from innermost to outermost, then
+// fall back to globals. Used to validate assignments and references.
 static bool IsDeclaredVar(const string &Name) {
   for (auto It = VarScopes.rbegin(); It != VarScopes.rend(); ++It) {
     if (It->count(Name))
@@ -1071,6 +1166,8 @@ static bool IsDeclaredVar(const string &Name) {
   return GlobalVarTypes.count(Name) > 0;
 }
 
+// LookupVarType - Return the type from the nearest enclosing local scope,
+// or from globals if not found; otherwise ValueType::Error.
 static ValueType LookupVarType(const string &Name) {
   for (auto It = VarScopes.rbegin(); It != VarScopes.rend(); ++It) {
     auto Found = It->find(Name);
@@ -1138,54 +1235,86 @@ static unique_ptr<ExprAST> ParseStatement();
 static unique_ptr<ExprAST> ParseSimpleStmt();
 static unique_ptr<ExprAST> ParseBlock();
 static unique_ptr<ExprAST> ParseFunctionBody(bool *BodyIsBlock);
-// Track whether the last parsed statement ended with a block. This allows the
-// enclosing block to accept the next statement without an explicit tok_eol
-// because the inner block consumes the trailing newline before its DEDENT.
+
+// Inside a block: true if the last statement was a compound block (if/for),
+// so the next statement can start without a tok_eol.
 static bool LastStatementWasBlock = false;
-// Track whether the last parsed top-level definition ended with a block.
-// If it did, the next top-level form may start immediately without a tok_eol.
+
+// At top level: true if the last top‑level form ended with a block,
+// so the next top‑level form can start without a tok_eol.
 static bool LastTopLevelEndedWithBlock = false;
+
+// Counter to give each anonymous top-level expression a unique name.
 static unsigned TopLevelExprCounter = 0;
+// Whether the last top-level form should be printed in the REPL.
 static bool LastTopLevelShouldPrint = true;
+
 static unique_ptr<ExprAST> ParseSuite(bool *EndedWithBlock);
 static ValueType ParseTypeToken();
-static const char *TypeName(ValueType Ty);
-static bool IsNumericType(ValueType Ty);
+static const char *TypeName(ValueType Type);
+static bool IsNumericType(ValueType Type);
+static bool IsIntType(ValueType Type);
+static bool IsFloatType(ValueType Type);
 static bool IsAssignable(ValueType Dest, ValueType Src);
+static Type *LLVMTypeFor(ValueType Type);
 static PrototypeAST *GetFunctionProto(const string &Name);
+// Optional expected type for numeric literals (used for float/float32).
+static ValueType ExpectedLiteralType = ValueType::Error;
 
-struct FunctionScopeGuard {
-  FunctionScopeGuard(const vector<pair<string, ValueType>> &Args) {
-    BeginFunctionScope(Args);
-  }
-  ~FunctionScopeGuard() { EndFunctionScope(); }
-};
-
-struct LoopScopeGuard {
-  LoopScopeGuard(const string &Name, ValueType Ty) { EnterLoopScope(Name, Ty); }
-  ~LoopScopeGuard() { ExitLoopScope(); }
-};
-
-struct BlockScopeGuard {
-  BlockScopeGuard() { BeginBlockScope(); }
-  ~BlockScopeGuard() { EndBlockScope(); }
-};
-
-struct ReturnTypeGuard {
+struct ExpectedLiteralTypeGuard {
   ValueType Saved;
-  ReturnTypeGuard(ValueType Ty) : Saved(CurrentFunctionReturnType) {
-    CurrentFunctionReturnType = Ty;
+  ExpectedLiteralTypeGuard(ValueType Type) : Saved(ExpectedLiteralType) {
+    ExpectedLiteralType = Type;
   }
-  ~ReturnTypeGuard() { CurrentFunctionReturnType = Saved; }
+  ~ExpectedLiteralTypeGuard() { ExpectedLiteralType = Saved; }
 };
+
+static unique_ptr<ExprAST> MakeZeroLiteral(ValueType Type) {
+  if (IsIntType(Type)) {
+    unsigned Bits = LLVMTypeFor(Type)->getIntegerBitWidth();
+    return make_unique<NumberExprAST>(APInt(Bits, 0), Type);
+  }
+  if (IsFloatType(Type)) {
+    const fltSemantics &Semantics =
+        (Type == ValueType::Float32) ? APFloat::IEEEsingle()
+                                     : APFloat::IEEEdouble();
+    return make_unique<NumberExprAST>(APFloat(Semantics, "0"), Type);
+  }
+  if (Type == ValueType::Bool)
+    return make_unique<BoolExprAST>(false);
+  return LogError("Cannot default-initialize this type");
+}
 
 /// numberexpr
 ///   = number ;
 static unique_ptr<ExprAST> ParseNumberExpr() {
-  ValueType Ty = NumIsFloat ? ValueType::Float64 : ValueType::Int;
-  auto Result = make_unique<NumberExprAST>(NumVal, Ty);
-  getNextToken(); // consume the number
-  return std::move(Result);
+  ValueType Type = NumIsFloat ? ValueType::Float64 : ValueType::Int;
+  if (NumIsFloat) {
+    if (IsFloatType(ExpectedLiteralType))
+      Type = ExpectedLiteralType;
+    const fltSemantics &Semantics =
+        (Type == ValueType::Float32) ? APFloat::IEEEsingle()
+                                     : APFloat::IEEEdouble();
+    APFloat Val(Semantics, NumLiteralStr);
+    auto Result = make_unique<NumberExprAST>(Val, Type);
+    getNextToken(); // consume the number
+    return std::move(Result);
+  } else {
+    if (IsIntType(ExpectedLiteralType))
+      Type = ExpectedLiteralType;
+    unsigned Bits = LLVMTypeFor(Type)->getIntegerBitWidth();
+    unsigned NeededBits = APInt::getBitsNeeded(NumLiteralStr, 10);
+    unsigned ParseBits = std::max(Bits, NeededBits);
+    APInt Val(ParseBits, NumLiteralStr, 10);
+    APInt Max = APInt::getSignedMaxValue(Bits);
+    if (Val.ugt(Max))
+      return LogError("Integer literal out of range for type");
+    if (ParseBits != Bits)
+      Val = Val.trunc(Bits);
+    auto Result = make_unique<NumberExprAST>(Val, Type);
+    getNextToken(); // consume the number
+    return std::move(Result);
+  }
 }
 
 static ValueType ParseTypeToken() {
@@ -1193,33 +1322,35 @@ static ValueType ParseTypeToken() {
   case tok_int:
     getNextToken();
     return ValueType::Int;
-  case tok_int32:
-    getNextToken();
-    return ValueType::Int32;
-  case tok_float64:
-    getNextToken();
-    return ValueType::Float64;
-  case tok_none:
-    getNextToken();
-    return ValueType::None;
   case tok_int8:
     getNextToken();
     return ValueType::Int8;
   case tok_int16:
     getNextToken();
     return ValueType::Int16;
+  case tok_int32:
+    getNextToken();
+    return ValueType::Int32;
   case tok_int64:
     getNextToken();
     return ValueType::Int64;
+  case tok_float:
+    getNextToken();
+    return ValueType::Float;
   case tok_float32:
     getNextToken();
     return ValueType::Float32;
+  case tok_float64:
+    getNextToken();
+    return ValueType::Float64;
   case tok_bool:
     getNextToken();
     return ValueType::Bool;
+  case tok_none:
+    getNextToken();
+    return ValueType::None;
   default:
-    LogError("Expected a type (int, int8, int16, int32, int64, float, float32, "
-             "float64, bool, or None)");
+    LogError("Expected a type");
     return ValueType::Error;
   }
 }
@@ -1227,10 +1358,10 @@ static ValueType ParseTypeToken() {
 /// castexpr
 ///   = type "(" expression ")" ;
 static unique_ptr<ExprAST> ParseCastExpr() {
-  ValueType Ty = ParseTypeToken();
-  if (Ty == ValueType::Error)
+  ValueType Type = ParseTypeToken();
+  if (Type == ValueType::Error)
     return nullptr;
-  if (Ty == ValueType::None)
+  if (Type == ValueType::None)
     return LogError("Cannot cast to None");
   if (CurTok != '(')
     return LogError("Expected '(' after cast type");
@@ -1241,7 +1372,7 @@ static unique_ptr<ExprAST> ParseCastExpr() {
   if (CurTok != ')')
     return LogError("Expected ')' after cast expression");
   getNextToken(); // eat ')'
-  return make_unique<CastExprAST>(Ty, std::move(Expr));
+  return make_unique<CastExprAST>(Type, std::move(Expr));
 }
 
 /// parenexpr
@@ -1263,27 +1394,30 @@ static unique_ptr<ExprAST> ParseParenExpr() {
 ///   | identifier "("[expression{"," expression}]")" ;
 static unique_ptr<ExprAST> ParseIdentifierExprWithName(string IdName) {
   if (CurTok != '(') { // Simple variable ref.
-    ValueType Ty = LookupVarType(IdName);
-    if (Ty == ValueType::Error) {
-      if (ParsingTopLevel) {
-        GlobalVarTypes[IdName] = ValueType::Float64;
-        Ty = ValueType::Float64;
-      } else {
-        return LogError("Unknown variable name");
-      }
+    ValueType Type = LookupVarType(IdName);
+    if (Type == ValueType::Error) {
+      return LogError("Unknown variable name");
     }
-    return make_unique<VariableExprAST>(IdName, Ty);
+    return make_unique<VariableExprAST>(IdName, Type);
   }
 
   // Call.
   getNextToken(); // eat (
+  PrototypeAST *Proto = GetFunctionProto(IdName);
   vector<unique_ptr<ExprAST>> Args;
   if (CurTok != ')') {
+    size_t ArgIndex = 0;
     while (true) {
-      if (auto Arg = ParseExpression())
-        Args.push_back(std::move(Arg));
-      else
-        return nullptr;
+      ValueType Expected = ValueType::Error;
+      if (Proto && ArgIndex < Proto->getNumArgs())
+        Expected = Proto->getArgType(ArgIndex);
+      {
+        ExpectedLiteralTypeGuard Guard(Expected);
+        if (auto Arg = ParseExpression())
+          Args.push_back(std::move(Arg));
+        else
+          return nullptr;
+      }
 
       if (CurTok == ')')
         break;
@@ -1291,13 +1425,13 @@ static unique_ptr<ExprAST> ParseIdentifierExprWithName(string IdName) {
       if (CurTok != ',')
         return LogError("Expected ')' or ',' in argument list");
       getNextToken();
+      ++ArgIndex;
     }
   }
 
   // Eat the ')'.
   getNextToken();
 
-  PrototypeAST *Proto = GetFunctionProto(IdName);
   if (!Proto)
     return LogError("Unknown function referenced");
   if (Proto->getNumArgs() != Args.size())
@@ -1369,8 +1503,12 @@ static unique_ptr<ExprAST> ParseForStmt() {
   auto Cond = ParseExpression();
   if (!Cond)
     return nullptr;
-  if (!IsNumericType(Cond->getType()))
-    return LogError("For loop condition must be numeric");
+  if (Cond->getType() != ValueType::Bool)
+    return LogError("If condition must be bool");
+  if (Cond->getType() != ValueType::Bool)
+    return LogError("If condition must be bool");
+  if (Cond->getType() != ValueType::Bool)
+    return LogError("For loop condition must be bool");
 
   if (CurTok != ',')
     return LogError("Expected ',' after for condition");
@@ -1420,10 +1558,10 @@ static unique_ptr<ExprAST> ParseVarStmt() {
       return LogError(
           "Variable declaration requires a type annotation (e.g., ': int32')");
     getNextToken(); // eat ':'
-    ValueType DeclTy = ParseTypeToken();
-    if (DeclTy == ValueType::Error)
+    ValueType DeclType = ParseTypeToken();
+    if (DeclType == ValueType::Error)
       return nullptr;
-    if (DeclTy == ValueType::None)
+    if (DeclType == ValueType::None)
       return LogError("Variables cannot have None type");
 
     if (IsGlobalDecl) {
@@ -1439,20 +1577,23 @@ static unique_ptr<ExprAST> ParseVarStmt() {
     unique_ptr<ExprAST> Init;
     if (CurTok == '=') {
       getNextToken(); // eat '='
+      ExpectedLiteralTypeGuard Guard(DeclType);
       Init = ParseExpression();
       if (!Init)
         return nullptr;
-      if (!IsAssignable(DeclTy, Init->getType()))
+      if (!IsAssignable(DeclType, Init->getType()))
         return LogError("Type mismatch in variable initialization");
     } else {
-      Init = make_unique<NumberExprAST>(0.0, DeclTy);
+      Init = MakeZeroLiteral(DeclType);
+      if (!Init)
+        return nullptr;
     }
 
-    VarNames.push_back({Name, DeclTy, std::move(Init)});
+    VarNames.push_back({Name, DeclType, std::move(Init)});
     if (IsGlobalDecl)
-      GlobalVarTypes[Name] = DeclTy, GlobalVarDecls.insert(Name);
+      GlobalVarTypes[Name] = DeclType, GlobalVarDecls.insert(Name);
     else
-      DeclareVar(Name, DeclTy);
+      DeclareVar(Name, DeclType);
 
     if (CurTok != ',')
       break;
@@ -1470,6 +1611,8 @@ static unique_ptr<ExprAST> ParseIfStmt() {
   auto Cond = ParseExpression();
   if (!Cond)
     return nullptr;
+  if (Cond->getType() != ValueType::Bool)
+    return LogError("If condition must be bool");
 
   if (CurTok != ':')
     return LogError("Expected ':' after if condition");
@@ -1503,17 +1646,17 @@ static unique_ptr<ExprAST> ParseIfStmt() {
 static unique_ptr<ExprAST>
 ParseUnary(); // forward declaration for ParseUnaryMinus
 
-static bool IsIntType(ValueType Ty);
-static bool IsFloatType(ValueType Ty);
-static bool IsNumericType(ValueType Ty);
+static bool IsIntType(ValueType Type);
+static bool IsFloatType(ValueType Type);
+static bool IsNumericType(ValueType Type);
 
-static bool IsFixedIntType(ValueType Ty) {
-  return Ty == ValueType::Int8 || Ty == ValueType::Int16 ||
-         Ty == ValueType::Int32 || Ty == ValueType::Int64;
+static bool IsFixedIntType(ValueType Type) {
+  return Type == ValueType::Int8 || Type == ValueType::Int16 ||
+         Type == ValueType::Int32 || Type == ValueType::Int64;
 }
 
-static int FixedIntRank(ValueType Ty) {
-  switch (Ty) {
+static int FixedIntRank(ValueType Type) {
+  switch (Type) {
   case ValueType::Int8:
     return 1;
   case ValueType::Int16:
@@ -1550,6 +1693,14 @@ static ValueType GetBinaryResultType(int Op, ValueType L, ValueType R) {
   if (IsArithmeticOp(Op)) {
     if (!IsNumericType(L) || !IsNumericType(R))
       return ValueType::Error;
+    if (IsFloatType(L) && IsFloatType(R)) {
+      if (L == R)
+        return L;
+      if ((L == ValueType::Float && R == ValueType::Float64) ||
+          (L == ValueType::Float64 && R == ValueType::Float))
+        return ValueType::Float64;
+      return ValueType::Error;
+    }
     if (IsAssignable(L, R))
       return L;
     if (IsAssignable(R, L))
@@ -1557,12 +1708,23 @@ static ValueType GetBinaryResultType(int Op, ValueType L, ValueType R) {
     return ValueType::Error;
   }
   if (IsComparisonOp(Op)) {
+    if (L == ValueType::Bool && R == ValueType::Bool) {
+      if (Op == tok_eq || Op == tok_neq)
+        return ValueType::Bool;
+      return ValueType::Error;
+    }
     if (!IsNumericType(L) || !IsNumericType(R))
       return ValueType::Error;
-    if (IsAssignable(L, R))
-      return L;
-    if (IsAssignable(R, L))
-      return R;
+    if (IsFloatType(L) && IsFloatType(R)) {
+      if (L == R)
+        return ValueType::Bool;
+      if ((L == ValueType::Float && R == ValueType::Float64) ||
+          (L == ValueType::Float64 && R == ValueType::Float))
+        return ValueType::Bool;
+      return ValueType::Error;
+    }
+    if (IsAssignable(L, R) || IsAssignable(R, L))
+      return ValueType::Bool;
     return ValueType::Error;
   }
   // User-defined operators are float64-only.
@@ -1598,10 +1760,20 @@ static unique_ptr<ExprAST> ParsePrimary() {
     return ParseIdentifierExpr();
   case tok_number:
     return ParseNumberExpr();
-  case tok_int:    case tok_int8:
-  case tok_int16:  case tok_int32:
+  case tok_true:
+    getNextToken();
+    return make_unique<BoolExprAST>(true);
+  case tok_false:
+    getNextToken();
+    return make_unique<BoolExprAST>(false);
+  case tok_int:
+  case tok_int8:
+  case tok_int16:
+  case tok_int32:
   case tok_int64:
-  case tok_float32: case tok_float64:
+  case tok_float:
+  case tok_float32:
+  case tok_float64:
   case tok_bool:
     return ParseCastExpr();
   case '(':
@@ -1647,8 +1819,8 @@ static unique_ptr<ExprAST> ParseUnary() {
       return LogError("Unary operator must have exactly one argument");
     ValueType ParamTy = Proto->getArgType(0);
     if (!IsAssignable(ParamTy, Operand->getType())) {
-      return LogError(("unary operator expects " + string(TypeName(ParamTy)))
-                          .c_str());
+      return LogError(
+          ("unary operator expects " + string(TypeName(ParamTy))).c_str());
     }
     return make_unique<UnaryExprAST>(Opc, std::move(Operand),
                                      Proto->getReturnType());
@@ -1740,6 +1912,7 @@ static unique_ptr<ExprAST> ParseReturnStmt() {
     return make_unique<ReturnExprAST>(nullptr);
   }
 
+  ExpectedLiteralTypeGuard Guard(CurrentFunctionReturnType);
   auto Expr = ParseExpression();
   if (!Expr)
     return nullptr;
@@ -1760,6 +1933,7 @@ static unique_ptr<ExprAST> ParseAssignmentRHS(const string &Name) {
   ValueType VarTy = LookupVarType(Name);
   getNextToken(); // eat '='
 
+  ExpectedLiteralTypeGuard Guard(VarTy);
   auto RHS = ParseExpression();
   if (!RHS)
     return nullptr;
@@ -1881,6 +2055,8 @@ static unique_ptr<ExprAST> ParseBlock() {
     if (LastStatementWasBlock)
       continue;
 
+    // if (CurTok != tok_eol && CurTok != dedent && !LastStatementWasBlock)
+    // error()
     return LogError("Expected newline or end of block");
   }
 
@@ -1939,12 +2115,13 @@ static unique_ptr<PrototypeAST> ParsePrototype() {
 
 // DefaultType controls what return type is assumed when no '->' is present.
 // In chapter 16, missing return types default to None.
-static ValueType ParseOptionalReturnType(ValueType DefaultType = ValueType::None) {
+static ValueType
+ParseOptionalReturnType(ValueType DefaultType = ValueType::None) {
   if (CurTok != tok_arrow)
     return DefaultType;
   getNextToken(); // eat '->'
-  ValueType Ty = ParseTypeToken();
-  return Ty;
+  ValueType Type = ParseTypeToken();
+  return Type;
 }
 
 /// functionbody
@@ -2125,8 +2302,8 @@ static unique_ptr<PrototypeAST> ParseBinaryOpPrototype(unsigned Precedence) {
       string ArgName = IdentifierStr;
       getNextToken(); // eat identifier
       if (CurTok != ':')
-        return LogErrorP(
-            "Operator parameters require a type annotation (e.g., ': float64')");
+        return LogErrorP("Operator parameters require a type annotation (e.g., "
+                         "': float64')");
       getNextToken(); // eat ':'
       ValueType ArgTy = ParseTypeToken();
       if (ArgTy == ValueType::Error)
@@ -2151,7 +2328,7 @@ static unique_ptr<PrototypeAST> ParseBinaryOpPrototype(unsigned Precedence) {
     return LogErrorP("Binary operator must have exactly two arguments");
 
   return make_unique<PrototypeAST>(FnName, std::move(ArgNames), ProtoLoc,
-                                   ValueType::Float64, /*IsOperator=*/true,
+                                   ValueType::None, /*IsOperator=*/true,
                                    Precedence);
 }
 
@@ -2202,8 +2379,8 @@ static unique_ptr<PrototypeAST> ParseUnaryOpPrototype() {
       string ArgName = IdentifierStr;
       getNextToken(); // eat identifier
       if (CurTok != ':')
-        return LogErrorP(
-            "Operator parameters require a type annotation (e.g., ': float64')");
+        return LogErrorP("Operator parameters require a type annotation (e.g., "
+                         "': float64')");
       getNextToken(); // eat ':'
       ValueType ArgTy = ParseTypeToken();
       if (ArgTy == ValueType::Error)
@@ -2230,7 +2407,7 @@ static unique_ptr<PrototypeAST> ParseUnaryOpPrototype() {
   // Unary operators have no precedence — they bind tighter than any binary op
   // by virtue of being parsed before ParseBinOpRHS is entered.
   return make_unique<PrototypeAST>(FnName, std::move(ArgNames), ProtoLoc,
-                                   ValueType::Float64, /*IsOperator=*/true,
+                                   ValueType::None, /*IsOperator=*/true,
                                    /*Precedence=*/0);
 }
 
@@ -2419,8 +2596,8 @@ static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
 static std::unique_ptr<ModuleAnalysisManager> TheMAM;
 static ExitOnError ExitOnErr;
 
-static const char *TypeName(ValueType Ty) {
-  switch (Ty) {
+static const char *TypeName(ValueType Type) {
+  switch (Type) {
   case ValueType::None:
     return "None";
   case ValueType::Int:
@@ -2433,6 +2610,8 @@ static const char *TypeName(ValueType Ty) {
     return "int32";
   case ValueType::Int64:
     return "int64";
+  case ValueType::Float:
+    return "float";
   case ValueType::Float32:
     return "float32";
   case ValueType::Float64:
@@ -2444,22 +2623,23 @@ static const char *TypeName(ValueType Ty) {
   }
 }
 
-static bool IsIntType(ValueType Ty) {
-  return Ty == ValueType::Int8 || Ty == ValueType::Int16 ||
-         Ty == ValueType::Int32 || Ty == ValueType::Int ||
-         Ty == ValueType::Int64;
+static bool IsIntType(ValueType Type) {
+  return Type == ValueType::Int8 || Type == ValueType::Int16 ||
+         Type == ValueType::Int32 || Type == ValueType::Int ||
+         Type == ValueType::Int64;
 }
 
-static bool IsFloatType(ValueType Ty) {
-  return Ty == ValueType::Float32 || Ty == ValueType::Float64;
+static bool IsFloatType(ValueType Type) {
+  return Type == ValueType::Float || Type == ValueType::Float32 ||
+         Type == ValueType::Float64;
 }
 
-static bool IsNumericType(ValueType Ty) {
-  return IsIntType(Ty) || IsFloatType(Ty) || Ty == ValueType::Bool;
+static bool IsNumericType(ValueType Type) {
+  return IsIntType(Type) || IsFloatType(Type);
 }
 
-static Type *LLVMTypeFor(ValueType Ty) {
-  switch (Ty) {
+static Type *LLVMTypeFor(ValueType Type) {
+  switch (Type) {
   case ValueType::Int: {
     unsigned bits = TheModule->getDataLayout().getPointerSizeInBits();
     return llvm::IntegerType::get(*TheContext, bits);
@@ -2472,6 +2652,8 @@ static Type *LLVMTypeFor(ValueType Ty) {
     return Type::getInt32Ty(*TheContext);
   case ValueType::Int64:
     return Type::getInt64Ty(*TheContext);
+  case ValueType::Float:
+    return Type::getDoubleTy(*TheContext);
   case ValueType::Float32:
     return Type::getFloatTy(*TheContext);
   case ValueType::Float64:
@@ -2485,10 +2667,12 @@ static Type *LLVMTypeFor(ValueType Ty) {
   }
 }
 
-static DIType *DITypeFor(ValueType Ty) {
-  switch (Ty) {
+static DIType *DITypeFor(ValueType Type) {
+  switch (Type) {
   case ValueType::Int:
     return IntDIType;
+  case ValueType::Float:
+    return Float64DIType;
   case ValueType::Float64:
     return Float64DIType;
   case ValueType::None:
@@ -2513,9 +2697,12 @@ static DIType *DITypeFor(ValueType Ty) {
 static bool IsAssignable(ValueType Dest, ValueType Src) {
   if (Dest == Src)
     return true;
+  if ((Dest == ValueType::Float && Src == ValueType::Float64) ||
+      (Dest == ValueType::Float64 && Src == ValueType::Float))
+    return true;
   if (IsIntType(Dest) && IsIntType(Src) && CanWidenInt(Src, Dest))
     return true;
-  if (Dest == ValueType::Float64 && IsIntType(Src))
+  if (IsFloatType(Dest) && IsIntType(Src))
     return true;
   return false;
 }
@@ -2530,14 +2717,15 @@ Value *LogErrorV(const char *Str) {
 /// CreateEntryBlockAlloca - Create a stack slot in the current function's
 /// entry block for a mutable variable.
 static AllocaInst *CreateEntryBlockAlloca(Function *TheFunction,
-                                          const string &VarName, ValueType Ty) {
+                                          const string &VarName,
+                                          ValueType Type) {
   IRBuilder<> TmpB(&TheFunction->getEntryBlock(),
                    TheFunction->getEntryBlock().begin());
-  return TmpB.CreateAlloca(LLVMTypeFor(Ty), nullptr, VarName);
+  return TmpB.CreateAlloca(LLVMTypeFor(Type), nullptr, VarName);
 }
 
-static Constant *ZeroConstant(ValueType Ty) {
-  switch (Ty) {
+static Constant *ZeroConstant(ValueType Type) {
+  switch (Type) {
   case ValueType::Int8:
     return ConstantInt::get(Type::getInt8Ty(*TheContext), 0);
   case ValueType::Int16:
@@ -2545,9 +2733,11 @@ static Constant *ZeroConstant(ValueType Ty) {
   case ValueType::Int32:
     return ConstantInt::get(Type::getInt32Ty(*TheContext), 0);
   case ValueType::Int:
-    return ConstantInt::get(LLVMTypeFor(Ty), 0);
+    return ConstantInt::get(LLVMTypeFor(Type), 0);
   case ValueType::Int64:
     return ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
+  case ValueType::Float:
+    return ConstantFP::get(*TheContext, APFloat(0.0));
   case ValueType::Float32:
     return ConstantFP::get(Type::getFloatTy(*TheContext), 0.0);
   case ValueType::Float64:
@@ -2598,6 +2788,12 @@ static Value *EmitCast(Value *V, ValueType From, ValueType To) {
 static Value *EmitImplicitCast(Value *V, ValueType From, ValueType To) {
   if (From == To)
     return V;
+  if (IsFloatType(From) && IsFloatType(To)) {
+    unsigned FromBits = LLVMTypeFor(From)->getScalarSizeInBits();
+    unsigned ToBits = LLVMTypeFor(To)->getScalarSizeInBits();
+    if (FromBits == ToBits)
+      return V;
+  }
   if (IsIntType(From) && IsIntType(To) && CanWidenInt(From, To)) {
     unsigned FromBits = LLVMTypeFor(From)->getIntegerBitWidth();
     unsigned ToBits = LLVMTypeFor(To)->getIntegerBitWidth();
@@ -2610,15 +2806,11 @@ static Value *EmitImplicitCast(Value *V, ValueType From, ValueType To) {
   return nullptr;
 }
 
-static Value *ToBool(Value *V, ValueType Ty) {
+static Value *ToBool(Value *V, ValueType Type) {
   if (!V)
     return nullptr;
-  if (IsIntType(Ty) || Ty == ValueType::Bool)
-    return Builder->CreateICmpNE(V, ConstantInt::get(LLVMTypeFor(Ty), 0),
-                                 "ifcond");
-  if (IsFloatType(Ty))
-    return Builder->CreateFCmpONE(V, ConstantFP::get(LLVMTypeFor(Ty), 0.0),
-                                  "ifcond");
+  if (Type == ValueType::Bool)
+    return V;
   return nullptr;
 }
 
@@ -2695,11 +2887,11 @@ static void SetCurrentDebugLocation(unsigned Line) {
 
 static void EmitDebugDeclare(AllocaInst *Alloca, StringRef Name, unsigned Line,
                              bool IsParam, unsigned ArgNo = 0,
-                             ValueType Ty = ValueType::Float64) {
+                             ValueType Type = ValueType::Float64) {
   if (!DIB || !CurDIScope || !Alloca)
     return;
 
-  DIType *DITy = DITypeFor(Ty);
+  DIType *DITy = DITypeFor(Type);
   if (!DITy)
     DITy = Float64DIType
                ? Float64DIType
@@ -2719,10 +2911,10 @@ static void EmitDebugDeclare(AllocaInst *Alloca, StringRef Name, unsigned Line,
 }
 
 static void EmitDebugGlobal(GlobalVariable *GV, StringRef Name, unsigned Line,
-                            ValueType Ty) {
+                            ValueType Type) {
   if (!DIB || !TheCU || !GV)
     return;
-  DIType *DITy = DITypeFor(Ty);
+  DIType *DITy = DITypeFor(Type);
   if (!DITy)
     DITy = Float64DIType
                ? Float64DIType
@@ -2743,9 +2935,9 @@ static GlobalVariable *GetGlobalVariable(const string &Name) {
 
   if (!GlobalVarTypes.count(Name))
     return nullptr;
-  auto *Ty = LLVMTypeFor(GlobalVarTypes[Name]);
-  return new GlobalVariable(*TheModule, Ty, false, GlobalValue::ExternalLinkage,
-                            nullptr, Name);
+  auto *Type = LLVMTypeFor(GlobalVarTypes[Name]);
+  return new GlobalVariable(*TheModule, Type, false,
+                            GlobalValue::ExternalLinkage, nullptr, Name);
 }
 
 static PrototypeAST *GetFunctionProto(const string &Name) {
@@ -2776,19 +2968,18 @@ Function *getFunction(std::string Name) {
   return nullptr;
 }
 
-/// NumberExprAST::codegen - A numeric literal becomes a floating-point
-/// constant value.
+/// NumberExprAST::codegen - A numeric literal becomes a constant value.
 ///
-/// ConstantFP::get wraps an APFloat (LLVM's arbitrary-precision float) into a
-/// constant node that can be used directly as an operand. No instruction is
-/// emitted — constants are folded into whatever instruction uses them. In
-/// this chapter we disable IRBuilder's constant folder so that -O0 preserves
-/// the original IR and constant folding only happens in optimisation passes.
 Value *NumberExprAST::codegen() {
-  if (getType() == ValueType::Int)
-    return ConstantInt::get(LLVMTypeFor(getType()),
-                            static_cast<int64_t>(Val));
-  return ConstantFP::get(*TheContext, APFloat(Val));
+  if (IsIntLiteral)
+    return ConstantInt::get(*TheContext, IntVal);
+  if (IsFloatType(getType()))
+    return ConstantFP::get(*TheContext, FloatVal);
+  return LogErrorV("Unknown numeric literal type");
+}
+
+Value *BoolExprAST::codegen() {
+  return ConstantInt::get(Type::getInt1Ty(*TheContext), Val ? 1 : 0);
 }
 
 /// VariableExprAST::codegen - A variable reference loads the current value
@@ -2920,71 +3111,86 @@ Value *BinaryExprAST::codegen() {
     return Builder->CreateMul(L, R, "multmp");
   }
   case '<':
-    L = EmitImplicitCast(L, LTy, getType());
-    R = EmitImplicitCast(R, RTy, getType());
-    if (!L || !R)
-      return LogErrorV("Type mismatch in comparison");
-    if (IsFloatType(getType())) {
-      L = Builder->CreateFCmpOLT(L, R, "cmptmp");
-      return Builder->CreateUIToFP(L, LLVMTypeFor(getType()), "booltmp");
-    }
-    L = Builder->CreateICmpSLT(L, R, "cmptmp");
-    return Builder->CreateZExt(L, LLVMTypeFor(getType()), "booltmp");
   case '>':
-    L = EmitImplicitCast(L, LTy, getType());
-    R = EmitImplicitCast(R, RTy, getType());
-    if (!L || !R)
-      return LogErrorV("Type mismatch in comparison");
-    if (IsFloatType(getType())) {
-      L = Builder->CreateFCmpOGT(L, R, "cmptmp");
-      return Builder->CreateUIToFP(L, LLVMTypeFor(getType()), "booltmp");
-    }
-    L = Builder->CreateICmpSGT(L, R, "cmptmp");
-    return Builder->CreateZExt(L, LLVMTypeFor(getType()), "booltmp");
   case tok_eq:
-    L = EmitImplicitCast(L, LTy, getType());
-    R = EmitImplicitCast(R, RTy, getType());
-    if (!L || !R)
-      return LogErrorV("Type mismatch in comparison");
-    if (IsFloatType(getType())) {
-      L = Builder->CreateFCmpOEQ(L, R, "cmptmp");
-      return Builder->CreateUIToFP(L, LLVMTypeFor(getType()), "booltmp");
-    }
-    L = Builder->CreateICmpEQ(L, R, "cmptmp");
-    return Builder->CreateZExt(L, LLVMTypeFor(getType()), "booltmp");
   case tok_neq:
-    L = EmitImplicitCast(L, LTy, getType());
-    R = EmitImplicitCast(R, RTy, getType());
-    if (!L || !R)
-      return LogErrorV("Type mismatch in comparison");
-    if (IsFloatType(getType())) {
-      L = Builder->CreateFCmpUNE(L, R, "cmptmp");
-      return Builder->CreateUIToFP(L, LLVMTypeFor(getType()), "booltmp");
-    }
-    L = Builder->CreateICmpNE(L, R, "cmptmp");
-    return Builder->CreateZExt(L, LLVMTypeFor(getType()), "booltmp");
   case tok_leq:
-    L = EmitImplicitCast(L, LTy, getType());
-    R = EmitImplicitCast(R, RTy, getType());
+  case tok_geq: {
+    ValueType CompareType = ValueType::Error;
+    if (LTy == ValueType::Bool && RTy == ValueType::Bool) {
+      if (Op != tok_eq && Op != tok_neq)
+        return LogErrorV("Type mismatch in comparison");
+      CompareType = ValueType::Bool;
+    } else if (IsFloatType(LTy) && IsFloatType(RTy)) {
+      if (LTy == RTy)
+        CompareType = LTy;
+      else if ((LTy == ValueType::Float && RTy == ValueType::Float64) ||
+               (LTy == ValueType::Float64 && RTy == ValueType::Float))
+        CompareType = ValueType::Float64;
+    } else if (IsFloatType(LTy) && IsIntType(RTy)) {
+      if (IsAssignable(LTy, RTy))
+        CompareType = LTy;
+    } else if (IsFloatType(RTy) && IsIntType(LTy)) {
+      if (IsAssignable(RTy, LTy))
+        CompareType = RTy;
+    } else if (IsIntType(LTy) && IsIntType(RTy)) {
+      if (IsAssignable(LTy, RTy))
+        CompareType = LTy;
+      else if (IsAssignable(RTy, LTy))
+        CompareType = RTy;
+    }
+
+    if (CompareType == ValueType::Error)
+      return LogErrorV("Type mismatch in comparison");
+
+    if (CompareType == ValueType::Bool) {
+      if (Op == tok_eq)
+        return Builder->CreateICmpEQ(L, R, "cmptmp");
+      return Builder->CreateICmpNE(L, R, "cmptmp");
+    }
+
+    L = EmitImplicitCast(L, LTy, CompareType);
+    R = EmitImplicitCast(R, RTy, CompareType);
     if (!L || !R)
       return LogErrorV("Type mismatch in comparison");
-    if (IsFloatType(getType())) {
-      L = Builder->CreateFCmpOLE(L, R, "cmptmp");
-      return Builder->CreateUIToFP(L, LLVMTypeFor(getType()), "booltmp");
+
+    if (IsFloatType(CompareType)) {
+      switch (Op) {
+      case '<':
+        return Builder->CreateFCmpOLT(L, R, "cmptmp");
+      case '>':
+        return Builder->CreateFCmpOGT(L, R, "cmptmp");
+      case tok_eq:
+        return Builder->CreateFCmpOEQ(L, R, "cmptmp");
+      case tok_neq:
+        return Builder->CreateFCmpUNE(L, R, "cmptmp");
+      case tok_leq:
+        return Builder->CreateFCmpOLE(L, R, "cmptmp");
+      case tok_geq:
+        return Builder->CreateFCmpOGE(L, R, "cmptmp");
+      default:
+        break;
+      }
+    } else {
+      switch (Op) {
+      case '<':
+        return Builder->CreateICmpSLT(L, R, "cmptmp");
+      case '>':
+        return Builder->CreateICmpSGT(L, R, "cmptmp");
+      case tok_eq:
+        return Builder->CreateICmpEQ(L, R, "cmptmp");
+      case tok_neq:
+        return Builder->CreateICmpNE(L, R, "cmptmp");
+      case tok_leq:
+        return Builder->CreateICmpSLE(L, R, "cmptmp");
+      case tok_geq:
+        return Builder->CreateICmpSGE(L, R, "cmptmp");
+      default:
+        break;
+      }
     }
-    L = Builder->CreateICmpSLE(L, R, "cmptmp");
-    return Builder->CreateZExt(L, LLVMTypeFor(getType()), "booltmp");
-  case tok_geq:
-    L = EmitImplicitCast(L, LTy, getType());
-    R = EmitImplicitCast(R, RTy, getType());
-    if (!L || !R)
-      return LogErrorV("Type mismatch in comparison");
-    if (IsFloatType(getType())) {
-      L = Builder->CreateFCmpOGE(L, R, "cmptmp");
-      return Builder->CreateUIToFP(L, LLVMTypeFor(getType()), "booltmp");
-    }
-    L = Builder->CreateICmpSGE(L, R, "cmptmp");
-    return Builder->CreateZExt(L, LLVMTypeFor(getType()), "booltmp");
+    return LogErrorV("Type mismatch in comparison");
+  }
   default:
     break;
   }
@@ -3266,7 +3472,7 @@ Value *VarStmtAST::codegen() {
   if (InGlobalInit) {
     for (auto &Var : VarNames) {
       const string &VarName = Var.Name;
-      ValueType VarTy = Var.Ty;
+      ValueType VarTy = Var.Type;
       ExprAST *Init = Var.Init.get();
 
       auto *GV = TheModule->getNamedGlobal(VarName);
@@ -3276,8 +3482,8 @@ Value *VarStmtAST::codegen() {
         return LogErrorV("Global variable type mismatch");
 
       if (!GV) {
-        auto *Ty = LLVMTypeFor(VarTy);
-        GV = new GlobalVariable(*TheModule, Ty, false,
+        auto *Type = LLVMTypeFor(VarTy);
+        GV = new GlobalVariable(*TheModule, Type, false,
                                 GlobalValue::ExternalLinkage,
                                 ZeroConstant(VarTy), VarName);
         EmitDebugGlobal(GV, VarName, CurFunctionLine, VarTy);
@@ -3306,7 +3512,7 @@ Value *VarStmtAST::codegen() {
 
   for (auto &Var : VarNames) {
     const string &VarName = Var.Name;
-    ValueType VarTy = Var.Ty;
+    ValueType VarTy = Var.Type;
     ExprAST *Init = Var.Init.get();
 
     Value *InitVal = Init->codegen();
@@ -3695,7 +3901,8 @@ static void HandleExtern() {
 /// HandleTopLevelExpression - Compile, execute, and discard a bare expression.
 ///
 /// The expression is wrapped in '__anon_expr' (a zero-argument function that
-/// returns float64) so it goes through the same codegen path as everything else.
+/// returns float64) so it goes through the same codegen path as everything
+/// else.
 ///
 /// Execution steps:
 ///   1. Codegen + optimise the anonymous function.
@@ -3752,48 +3959,66 @@ static void HandleTopLevelExpression() {
         void (*FP)() = ExprSymbol.toPtr<void (*)()>();
         FP();
       } else {
-        double result = 0.0;
         switch (RetTy) {
         case ValueType::Float64: {
           double (*FP)() = ExprSymbol.toPtr<double (*)()>();
-          result = FP();
+          double result = FP();
+          if (IsRepl && LastTopLevelShouldPrint)
+            fprintf(stderr, "%f\n", result);
           break;
         }
         case ValueType::Float32: {
           float (*FP)() = ExprSymbol.toPtr<float (*)()>();
-          result = static_cast<double>(FP());
+          double result = static_cast<double>(FP());
+          if (IsRepl && LastTopLevelShouldPrint)
+            fprintf(stderr, "%f\n", result);
           break;
         }
         case ValueType::Int: {
           intptr_t (*FP)() = ExprSymbol.toPtr<intptr_t (*)()>();
-          result = static_cast<double>(FP());
+          long long result = static_cast<long long>(FP());
+          if (IsRepl && LastTopLevelShouldPrint)
+            fprintf(stderr, "%lld\n", result);
           break;
         }
         case ValueType::Int8: {
           int8_t (*FP)() = ExprSymbol.toPtr<int8_t (*)()>();
-          result = static_cast<double>(FP());
+          long long result = static_cast<long long>(FP());
+          if (IsRepl && LastTopLevelShouldPrint)
+            fprintf(stderr, "%lld\n", result);
           break;
         }
         case ValueType::Int16: {
           int16_t (*FP)() = ExprSymbol.toPtr<int16_t (*)()>();
-          result = static_cast<double>(FP());
+          long long result = static_cast<long long>(FP());
+          if (IsRepl && LastTopLevelShouldPrint)
+            fprintf(stderr, "%lld\n", result);
+          break;
+        }
+        case ValueType::Int32: {
+          int32_t (*FP)() = ExprSymbol.toPtr<int32_t (*)()>();
+          long long result = static_cast<long long>(FP());
+          if (IsRepl && LastTopLevelShouldPrint)
+            fprintf(stderr, "%lld\n", result);
           break;
         }
         case ValueType::Int64: {
           int64_t (*FP)() = ExprSymbol.toPtr<int64_t (*)()>();
-          result = static_cast<double>(FP());
+          long long result = static_cast<long long>(FP());
+          if (IsRepl && LastTopLevelShouldPrint)
+            fprintf(stderr, "%lld\n", result);
           break;
         }
         case ValueType::Bool: {
           bool (*FP)() = ExprSymbol.toPtr<bool (*)()>();
-          result = static_cast<double>(FP());
+          bool result = FP();
+          if (IsRepl && LastTopLevelShouldPrint)
+            fprintf(stderr, "%s\n", result ? "True" : "False");
           break;
         }
         default:
           break;
         }
-        if (IsRepl && LastTopLevelShouldPrint)
-          fprintf(stderr, "%f\n", result);
       }
 
       // Release the compiled code and JIT memory for this expression.
@@ -3807,10 +4032,66 @@ static void HandleTopLevelExpression() {
       void (*FP)() = ExprSymbol.toPtr<void (*)()>();
       FP();
     } else {
-      double (*FP)() = ExprSymbol.toPtr<double (*)()>();
-      double result = FP();
-      if (IsRepl && LastTopLevelShouldPrint)
-        fprintf(stderr, "%f\n", result);
+      switch (RetTy) {
+      case ValueType::Float64: {
+        double (*FP)() = ExprSymbol.toPtr<double (*)()>();
+        double result = FP();
+        if (IsRepl && LastTopLevelShouldPrint)
+          fprintf(stderr, "%f\n", result);
+        break;
+      }
+      case ValueType::Float32: {
+        float (*FP)() = ExprSymbol.toPtr<float (*)()>();
+        double result = static_cast<double>(FP());
+        if (IsRepl && LastTopLevelShouldPrint)
+          fprintf(stderr, "%f\n", result);
+        break;
+      }
+      case ValueType::Int: {
+        intptr_t (*FP)() = ExprSymbol.toPtr<intptr_t (*)()>();
+        long long result = static_cast<long long>(FP());
+        if (IsRepl && LastTopLevelShouldPrint)
+          fprintf(stderr, "%lld\n", result);
+        break;
+      }
+      case ValueType::Int8: {
+        int8_t (*FP)() = ExprSymbol.toPtr<int8_t (*)()>();
+        long long result = static_cast<long long>(FP());
+        if (IsRepl && LastTopLevelShouldPrint)
+          fprintf(stderr, "%lld\n", result);
+        break;
+      }
+      case ValueType::Int16: {
+        int16_t (*FP)() = ExprSymbol.toPtr<int16_t (*)()>();
+        long long result = static_cast<long long>(FP());
+        if (IsRepl && LastTopLevelShouldPrint)
+          fprintf(stderr, "%lld\n", result);
+        break;
+      }
+      case ValueType::Int32: {
+        int32_t (*FP)() = ExprSymbol.toPtr<int32_t (*)()>();
+        long long result = static_cast<long long>(FP());
+        if (IsRepl && LastTopLevelShouldPrint)
+          fprintf(stderr, "%lld\n", result);
+        break;
+      }
+      case ValueType::Int64: {
+        int64_t (*FP)() = ExprSymbol.toPtr<int64_t (*)()>();
+        long long result = static_cast<long long>(FP());
+        if (IsRepl && LastTopLevelShouldPrint)
+          fprintf(stderr, "%lld\n", result);
+        break;
+      }
+      case ValueType::Bool: {
+        bool (*FP)() = ExprSymbol.toPtr<bool (*)()>();
+        bool result = FP();
+        if (IsRepl && LastTopLevelShouldPrint)
+          fprintf(stderr, "%s\n", result ? "True" : "False");
+        break;
+      }
+      default:
+        break;
+      }
     }
   } else {
     InGlobalInit = SavedInGlobalInit;
@@ -4406,10 +4687,9 @@ static bool PrepareFileModeModule() {
     // Always wrap user's main() in an int32 main() so the OS entry point has
     // the correct C ABI. The user-defined main() must return int or None.
     UserMain->setName("__pyxc.user_main");
-    FunctionType *FT =
-        FunctionType::get(Type::getInt32Ty(*TheContext), false);
-    Function *Wrapper = Function::Create(FT, Function::ExternalLinkage,
-                                         "main", TheModule.get());
+    FunctionType *FT = FunctionType::get(Type::getInt32Ty(*TheContext), false);
+    Function *Wrapper = Function::Create(FT, Function::ExternalLinkage, "main",
+                                         TheModule.get());
     BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", Wrapper);
     IRBuilder<> TmpB(BB);
     if (UserMain->getReturnType()->isIntegerTy(32)) {

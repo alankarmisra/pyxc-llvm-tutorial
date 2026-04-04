@@ -1,0 +1,13 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 5.000000
+
+# Tests: int can widen to int64 in assignments.
+
+extern def printd(x: float64) -> float64
+
+def main() -> None:
+    var n: int = 5
+    var m: int64 = n
+    printd(float64(m))
+    return

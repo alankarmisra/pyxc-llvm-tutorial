@@ -236,7 +236,7 @@ public:
 static SourceManager PyxcSourceMgr;
 static void PrintErrorSourceContext(SourceLocation Loc);
 
-/// advance - Read one character from stdin, update LexLoc and SourceManager.
+/// advance - Read one character from Input, update LexLoc and SourceManager.
 ///
 /// This is the single point through which all character consumption flows.
 /// Every token branch in gettok() calls advance() rather than fgetc()
@@ -285,12 +285,25 @@ static int peek() {
 ///
 /// LastChar holds the last character read by advance() but not yet consumed
 /// by a token. It is initialised to ' ' so the first call skips straight to
-/// the indentation logic without blocking on a second character.
+/// the whitespace loop without reading a character, and the loop's first
+/// advance() call picks up the real first character.
 ///
-/// CurLoc is snapshotted at the start of each real token. For tok_eol the
-/// '\n' was already consumed so LexLoc is on the next line;
-/// GetDiagnosticAnchorLoc compensates by subtracting one. The comment path
-/// re-snapshots CurLoc after consuming the whole comment line.
+/// CurLoc is snapshotted from LexLoc after the whitespace-skip loop and
+/// before any token branch. For most tokens this points at the first
+/// character of the token. For tok_eol the '\n' was already consumed by
+/// advance() on a previous call, so LexLoc is already on the next line;
+/// GetDiagnosticAnchorLoc compensates by subtracting one when building error
+/// locations for tok_eol.
+///
+/// The comment path ('#' branch) re-snapshots CurLoc just before returning
+/// tok_eol because it consumes many characters (the whole comment) after the
+/// initial snapshot, leaving LexLoc well past the '#' position.
+///
+/// AtLineStart is true (1) at startup, (2) right after consuming '\n', and
+/// (3) right after emitting tok_eol. It stays true while we are still resolving
+/// indentation for the new line (including full-line comments, which produce
+/// no tokens). It flips false as soon as indentation is settled and the line
+/// is known to contain a real token, even before that token is emitted.
 static int gettok() {
   static int LastChar = ' ';
 
@@ -361,7 +374,8 @@ static int gettok() {
         PendingTokens.push_back(tok_dedent);
       }
       if (IndentCol != IndentStack.back()) {
-        fprintf(stderr, "Error (Line %d, Column %d): inconsistent indentation\n",
+        fprintf(stderr,
+                "Error (Line %d, Column %d): inconsistent indentation\n",
                 CurLoc.Line, CurLoc.Col);
         PrintErrorSourceContext(CurLoc);
         return tok_error;
@@ -376,7 +390,8 @@ static int gettok() {
   }
   // ── End of line-start processing ─────────────────────────────────────
 
-  // Skip horizontal whitespace. Stop at '\n' — that becomes tok_eol.
+  // Not at line start anymore. Skip horizontal whitespace between tokens.
+  // Stop at '\n' — it becomes tok_eol.
   while (isspace(LastChar) && LastChar != '\n')
     LastChar = advance();
 
@@ -555,8 +570,8 @@ namespace {
 class ExprAST {
 public:
   virtual ~ExprAST() = default;
-  // getLValueName - Return the lvalue name if this node is a plain assignable
-  // variable, or nullptr otherwise. This avoids RTTI checks in the parser.
+  // getLValueName - If this node is a plain assignable variable, return its
+  // name; otherwise return nullptr.
   virtual const string *getLValueName() const { return nullptr; }
   // isReturnExpr - True iff this node is a return statement.
   virtual bool isReturnExpr() const { return false; }
@@ -827,7 +842,7 @@ static std::set<int> KnownUnaryOperators = {'-'};
 static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 
 // Parse-time variable tracking for assignments.
-// var bindings live for the rest of the function (no block scope).
+// Scopes are stacked: function scope plus nested block scopes.
 // for-loop variables are scoped to the loop body only.
 static vector<set<string>> VarScopes;
 // Global variables declared at top level (persist across modules).
@@ -856,6 +871,10 @@ static void DeclareVar(const string &Name) {
 }
 
 static void BeginBlockScope() { VarScopes.emplace_back(); }
+// Pop a block scope if one is active.
+// Size > 1 means a nested block inside a function; never pop the function scope
+// here. Size == 1 is only popped for top-level blocks (function scope is popped
+// in EndFunctionScope).
 static void EndBlockScope() {
   if (VarScopes.size() > 1)
     VarScopes.pop_back();
@@ -863,12 +882,14 @@ static void EndBlockScope() {
     VarScopes.pop_back();
 }
 
+// Check only the innermost scope (used for redeclaration checks).
 static bool IsDeclaredInCurrentScope(const string &Name) {
   if (VarScopes.empty())
     return false;
   return VarScopes.back().count(Name) > 0;
 }
 
+// Ensure a function scope exists, then add a new scope for the loop variable.
 static void EnterLoopScope(const string &Name) {
   if (VarScopes.empty())
     VarScopes.emplace_back();
@@ -876,6 +897,8 @@ static void EnterLoopScope(const string &Name) {
   VarScopes.back().insert(Name);
 }
 
+// Size == 1 is only popped for top-level blocks (function scope is popped in
+// EndFunctionScope).
 static void ExitLoopScope() {
   if (VarScopes.size() > 1)
     VarScopes.pop_back();
@@ -883,6 +906,8 @@ static void ExitLoopScope() {
     VarScopes.pop_back();
 }
 
+// IsDeclaredVar - Check all local scopes from innermost to outermost, then
+// fall back to globals. Used to validate assignments and references.
 static bool IsDeclaredVar(const string &Name) {
   for (auto It = VarScopes.rbegin(); It != VarScopes.rend(); ++It) {
     if (It->count(Name))
@@ -1428,6 +1453,8 @@ static unique_ptr<ExprAST> ParseBlock() {
     if (LastStatementWasBlock)
       continue;
 
+    // if (CurTok != tok_eol && CurTok != dedent && !LastStatementWasBlock)
+    // error()
     return LogError("Expected newline or end of block");
   }
 

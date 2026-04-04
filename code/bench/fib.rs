@@ -1,0 +1,10 @@
+fn fib(n: i64) -> i64 {
+    if n < 2 { return n; }
+    fib(n - 1) + fib(n - 2)
+}
+
+fn main() {
+    let n: i64 = 41;
+    let result = fib(n);
+    println!("{}", result);
+}

@@ -49,8 +49,7 @@ static cl::opt<bool> VerboseIR("v",
 
 // Optimization level. For now Pyxc only distinguishes -O0 (no passes) from
 // any non-zero level (run the current fixed function pass pipeline).
-static cl::opt<unsigned> OptLevel("O",
-                                  cl::desc("Optimization level"),
+static cl::opt<unsigned> OptLevel("O", cl::desc("Optimization level"),
                                   cl::value_desc("0|1|2|3"), cl::Prefix,
                                   cl::init(2), cl::cat(PyxcCategory));
 
@@ -77,6 +76,9 @@ enum Token {
   tok_number = -7,
 
   // comparison operators
+  // Only multi-character operators use explicit tokens;
+  // single-character operators continue to be returned as
+  // their character value.
   tok_eq = -8,   // ==
   tok_neq = -9,  // !=
   tok_leq = -10, // <=
@@ -216,7 +218,7 @@ public:
 static SourceManager PyxcSourceMgr;
 static void PrintErrorSourceContext(SourceLocation Loc);
 
-/// advance - Read one character from stdin, update LexLoc and SourceManager.
+/// advance - Read one character from Input, update LexLoc and SourceManager.
 ///
 /// This is the single point through which all character consumption flows.
 /// Every token branch in gettok() calls advance() rather than fgetc()
