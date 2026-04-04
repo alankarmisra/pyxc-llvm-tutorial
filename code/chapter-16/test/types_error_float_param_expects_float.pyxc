@@ -2,12 +2,12 @@
 # CHECK: expects float
 
 # Tests: diagnostics preserve the 'float' spelling when a float parameter is
-# expected.
+# expected and a non-numeric type is passed.
 
 def takes_float(x: float) -> None:
     return
 
 def main() -> None:
-    var y: float32 = float32(1.0)
+    var y: bool = True
     takes_float(y)
     return

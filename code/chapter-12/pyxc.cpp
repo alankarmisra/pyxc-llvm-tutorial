@@ -696,17 +696,6 @@ public:
   Value *codegen() override;
 };
 
-/// IfExprAST - Expression class for if/else.
-class IfExprAST : public ExprAST {
-  unique_ptr<ExprAST> Cond, Then, Else;
-
-public:
-  IfExprAST(unique_ptr<ExprAST> Cond, unique_ptr<ExprAST> Then,
-            unique_ptr<ExprAST> Else)
-      : Cond(std::move(Cond)), Then(std::move(Then)), Else(std::move(Else)) {}
-  Value *codegen() override;
-};
-
 /// IfStmtAST - Statement form of if/else.
 /// Produces 0.0 and does not return a value.
 class IfStmtAST : public ExprAST {
@@ -2135,76 +2124,6 @@ Value *CallExprAST::codegen() {
   }
 
   return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
-}
-
-/// IfExprAST::codegen - Emit LLVM IR for an if/else expression.
-///
-/// Emitted control flow:
-///
-///   <current>:
-///     ; Cond codegen emits a double value %condv
-///     %ifcond = fcmp one double %condv, 0.0 ; convert the double to i1
-///     br i1 %ifcond, label %then, label %else
-///
-///   then:
-///     ; Then codegen emits %thenv
-///     br label %ifcont
-///
-///   else:
-///     ; Else codegen emits %elsev
-///     br label %ifcont
-///
-///   ifcont:
-///     %iftmp = phi double [ %thenv, %then_end ], [ %elsev, %else_end ]
-///
-/// `%iftmp` is the value of the whole if-expression.
-///
-/// We recapture `ThenBB` and `ElseBB` after branch codegen because nested
-/// control flow can move the Builder insertion point to a different block.
-/// PHI incoming edges must use the actual terminating blocks of each arm.
-Value *IfExprAST::codegen() {
-  Value *CondV = Cond->codegen();
-  if (!CondV)
-    return nullptr;
-
-  // Convert condition to bool by comparing != 0.0
-  CondV = Builder->CreateFCmpONE(
-      CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "ifcond");
-
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
-
-  // Create blocks for then, else, and merge.
-  BasicBlock *ThenBB = BasicBlock::Create(*TheContext, "then", TheFunction);
-  BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else", TheFunction);
-  BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont", TheFunction);
-
-  Builder->CreateCondBr(CondV, ThenBB, ElseBB);
-
-  // Emit then block.
-  Builder->SetInsertPoint(ThenBB);
-  Value *ThenV = Then->codegen();
-  if (!ThenV)
-    return nullptr;
-  Builder->CreateBr(MergeBB);
-
-  // Codegen can change the current block — capture where then ended.
-  ThenBB = Builder->GetInsertBlock();
-
-  // Emit else block.
-  Builder->SetInsertPoint(ElseBB);
-  Value *ElseV = Else->codegen();
-  if (!ElseV)
-    return nullptr;
-  Builder->CreateBr(MergeBB);
-  ElseBB = Builder->GetInsertBlock();
-
-  // Emit merge block with phi node.
-  Builder->SetInsertPoint(MergeBB);
-  PHINode *PN = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
-  PN->addIncoming(ThenV, ThenBB);
-  PN->addIncoming(ElseV, ElseBB);
-
-  return PN;
 }
 
 /// IfStmtAST::codegen - Emit LLVM IR for a statement-style if.

@@ -2,12 +2,12 @@
 # CHECK: expects float64
 
 # Tests: diagnostics preserve the 'float64' spelling when a float64 parameter
-# is expected.
+# is expected and a non-numeric type is passed.
 
 def takes_float64(x: float64) -> None:
     return
 
 def main() -> None:
-    var y: float32 = float32(1.0)
+    var y: bool = True
     takes_float64(y)
     return

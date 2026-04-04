@@ -41,7 +41,7 @@ varbinding      = identifier ":" type [ "=" expression ] ;
 unaryexpr       = unaryop unaryexpr | primary ;
 unaryop         = "-" | userdefunaryop ;
 primary         = castexpr | identifierexpr | numberexpr | parenexpr ;
-castexpr        = type "(" expression ")" ;
+castexpr        = casttype "(" expression ")" ;
 identifierexpr  = identifier | callexpr ;
 callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
 numberexpr      = number ;
@@ -60,6 +60,9 @@ identifier      = (letter | "_") { letter | digit | "_" } ;
 type            = "int" | "int8" | "int16" | "int32" | "int64"
                 | "float" | "float32" | "float64"
                 | "bool" | "None" ;
+casttype        = "int" | "int8" | "int16" | "int32" | "int64"
+                | "float" | "float32" | "float64"
+                | "bool" ;
 integer         = digit { digit } ;
 number          = digit { digit } [ "." { digit } ]
                 | "." digit { digit } ;

@@ -183,11 +183,9 @@ enum class ValueType {
   Error
 };
 
-static string IdentifierStr; // Filled in if tok_identifier
-static double NumVal;        // Filled in if tok_number
-static string NumLiteralStr; // Filled in if tok_number
-static bool NumIsFloat =
-    false; // True if the current numeric literal had a decimal point.
+static string IdentifierStr;    // Filled in if tok_identifier
+static string NumLiteralStr;    // Raw number literal text (no sign)
+static bool NumIsFloat = false; // True if the literal contains '.' or e/E.
 static int LexerLastChar =
     ' '; // Last character read by the lexer (used for lookahead and whitespace
 // handling).
@@ -519,23 +517,59 @@ static int gettok() {
 
   if (isdigit(LexerLastChar) || LexerLastChar == '.') {
     string NumStr;
-    do {
+    bool SawDot = false;
+    bool SawExp = false;
+
+    auto ConsumeDigits = [&]() {
+      while (isdigit(LexerLastChar)) {
+        NumStr += LexerLastChar;
+        LexerLastChar = advance();
+      }
+    };
+
+    if (LexerLastChar == '.') {
+      SawDot = true;
       NumStr += LexerLastChar;
       LexerLastChar = advance();
-    } while (isdigit(LexerLastChar) || LexerLastChar == '.');
+      ConsumeDigits();
+    } else {
+      ConsumeDigits();
+      if (LexerLastChar == '.') {
+        SawDot = true;
+        NumStr += LexerLastChar;
+        LexerLastChar = advance();
+        ConsumeDigits();
+      }
+    }
 
-    NumLiteralStr = NumStr;
-    NumIsFloat = NumStr.find('.') != string::npos;
-    char *End = nullptr;
-    NumVal = strtod(NumStr.c_str(), &End);
-    if (End == NumStr.c_str() /* no conversion */
-        || *End != '\0' /* trailing unparsed characters */) {
+    if (LexerLastChar == 'e' || LexerLastChar == 'E') {
+      SawExp = true;
+      NumStr += LexerLastChar;
+      LexerLastChar = advance();
+      if (LexerLastChar == '+' || LexerLastChar == '-') {
+        NumStr += LexerLastChar;
+        LexerLastChar = advance();
+      }
+      if (!isdigit(LexerLastChar)) {
+        fprintf(stderr,
+                "Error (Line %d, Column %d): invalid number literal '%s'\n",
+                CurLoc.Line, CurLoc.Col, NumStr.c_str());
+        PrintErrorSourceContext(CurLoc);
+        return tok_error;
+      }
+      ConsumeDigits();
+    }
+
+    if (NumStr == ".") {
       fprintf(stderr,
               "Error (Line %d, Column %d): invalid number literal '%s'\n",
               CurLoc.Line, CurLoc.Col, NumStr.c_str());
       PrintErrorSourceContext(CurLoc);
       return tok_error;
     }
+
+    NumLiteralStr = NumStr;
+    NumIsFloat = SawDot || SawExp;
     return tok_number;
   }
 
@@ -868,19 +902,6 @@ public:
   CastExprAST(ValueType TargetType, unique_ptr<ExprAST> Expr)
       : TargetTy(TargetType), Expr(std::move(Expr)) {
     setType(TargetType);
-  }
-  Value *codegen() override;
-};
-
-/// IfExprAST - Expression class for if/else.
-class IfExprAST : public ExprAST {
-  unique_ptr<ExprAST> Cond, Then, Else;
-
-public:
-  IfExprAST(unique_ptr<ExprAST> Cond, unique_ptr<ExprAST> Then,
-            unique_ptr<ExprAST> Else)
-      : Cond(std::move(Cond)), Then(std::move(Then)), Else(std::move(Else)) {
-    setType(ValueType::Float64);
   }
   Value *codegen() override;
 };
@@ -1275,9 +1296,9 @@ static unique_ptr<ExprAST> MakeZeroLiteral(ValueType Type) {
     return make_unique<NumberExprAST>(APInt(Bits, 0), Type);
   }
   if (IsFloatType(Type)) {
-    const fltSemantics &Semantics =
-        (Type == ValueType::Float32) ? APFloat::IEEEsingle()
-                                     : APFloat::IEEEdouble();
+    const fltSemantics &Semantics = (Type == ValueType::Float32)
+                                        ? APFloat::IEEEsingle()
+                                        : APFloat::IEEEdouble();
     return make_unique<NumberExprAST>(APFloat(Semantics, "0"), Type);
   }
   if (Type == ValueType::Bool)
@@ -1292,25 +1313,51 @@ static unique_ptr<ExprAST> ParseNumberExpr() {
   if (NumIsFloat) {
     if (IsFloatType(ExpectedLiteralType))
       Type = ExpectedLiteralType;
-    const fltSemantics &Semantics =
-        (Type == ValueType::Float32) ? APFloat::IEEEsingle()
-                                     : APFloat::IEEEdouble();
-    APFloat Val(Semantics, NumLiteralStr);
+    const fltSemantics &Semantics = (Type == ValueType::Float32)
+                                        ? APFloat::IEEEsingle()
+                                        : APFloat::IEEEdouble();
+    APFloat Val(Semantics);
+    auto StatusOrErr =
+        Val.convertFromString(NumLiteralStr, APFloat::rmNearestTiesToEven);
+
+    // convertFromString returns Expected<opStatus>. If it's in error, the
+    // literal is malformed (e.g., bad syntax).
+    if (!StatusOrErr)
+      return LogError("Invalid floating-point literal");
+
+    // opStatus may still report conversion issues like invalid op or overflow.
+    APFloat::opStatus Status = *StatusOrErr;
+    if (Status & APFloat::opInvalidOp)
+      return LogError("Invalid floating-point literal");
+    if (Status & APFloat::opOverflow)
+      return LogError("Floating-point literal out of range for type");
+
     auto Result = make_unique<NumberExprAST>(Val, Type);
     getNextToken(); // consume the number
     return std::move(Result);
   } else {
+    // If the surrounding context expects an int type, honor it.
     if (IsIntType(ExpectedLiteralType))
       Type = ExpectedLiteralType;
+
+    // Parse with enough bits to hold the literal’s full magnitude, then
+    // range-check against the target *signed* width. This avoids cases like
+    // 128: it needs 8 bits unsigned, but doesn’t fit in signed int8 (max 127).
     unsigned Bits = LLVMTypeFor(Type)->getIntegerBitWidth();
     unsigned NeededBits = APInt::getBitsNeeded(NumLiteralStr, 10);
     unsigned ParseBits = std::max(Bits, NeededBits);
     APInt Val(ParseBits, NumLiteralStr, 10);
+
+    // Reject if the literal doesn't fit in the target signed width.
     APInt Max = APInt::getSignedMaxValue(Bits);
     if (Val.ugt(Max))
       return LogError("Integer literal out of range for type");
+
+    // Truncate down to the target width once it's known to fit.
+    // This will actually never happen. It's a paranoia move.
     if (ParseBits != Bits)
       Val = Val.trunc(Bits);
+
     auto Result = make_unique<NumberExprAST>(Val, Type);
     getNextToken(); // consume the number
     return std::move(Result);
@@ -1403,6 +1450,10 @@ static unique_ptr<ExprAST> ParseIdentifierExprWithName(string IdName) {
 
   // Call.
   getNextToken(); // eat (
+
+  // Proto may be null for forward references. We still parse the call to keep
+  // the token stream aligned; the “unknown function” error is raised later
+  // during semantic/codegen.
   PrototypeAST *Proto = GetFunctionProto(IdName);
   vector<unique_ptr<ExprAST>> Args;
   if (CurTok != ')') {
@@ -1438,11 +1489,11 @@ static unique_ptr<ExprAST> ParseIdentifierExprWithName(string IdName) {
     return LogError("Incorrect # arguments passed");
 
   for (size_t i = 0; i < Args.size(); ++i) {
-    ValueType ArgTy = Args[i]->getType();
-    ValueType ParamTy = Proto->getArgType(i);
-    if (!IsAssignable(ParamTy, ArgTy)) {
+    ValueType ArgType = Args[i]->getType();
+    ValueType ParamType = Proto->getArgType(i);
+    if (!IsAssignable(ParamType, ArgType)) {
       return LogError(("argument " + std::to_string(i + 1) + " expects " +
-                       TypeName(ParamTy))
+                       TypeName(ParamType))
                           .c_str());
     }
   }
@@ -2189,16 +2240,25 @@ static unsigned ParseBinaryDecorator() {
     return 0;
   }
   // The lexer has no separate tok_integer — it emits tok_number for both
-  // integer and decimal literals. Reject decimals by checking the raw source.
-  if (NumLiteralStr.find('.') != string::npos) {
+  // integer and decimal literals. Reject decimals/exponents by checking the
+  // raw source.
+  if (NumLiteralStr.find('.') != string::npos ||
+      NumLiteralStr.find('e') != string::npos ||
+      NumLiteralStr.find('E') != string::npos) {
     LogError("Precedence must be an integer, not a decimal literal");
     return 0;
   }
-  if (NumVal < 1) {
+  unsigned NeededBits = APInt::getBitsNeeded(NumLiteralStr, 10);
+  if (NeededBits > 32) {
+    LogError("Precedence is too large");
+    return 0;
+  }
+  APInt Val(NeededBits == 0 ? 1 : NeededBits, NumLiteralStr, 10);
+  if (Val.isZero()) {
     LogError("Precedence must be a positive integer");
     return 0;
   }
-  unsigned Prec = static_cast<unsigned>(NumVal);
+  unsigned Prec = static_cast<unsigned>(Val.getZExtValue());
   getNextToken(); // eat number
 
   if (CurTok != ')') {
@@ -2700,6 +2760,12 @@ static bool IsAssignable(ValueType Dest, ValueType Src) {
   if ((Dest == ValueType::Float && Src == ValueType::Float64) ||
       (Dest == ValueType::Float64 && Src == ValueType::Float))
     return true;
+  if (IsFloatType(Dest) && IsFloatType(Src)) {
+    unsigned DestBits = LLVMTypeFor(Dest)->getScalarSizeInBits();
+    unsigned SrcBits = LLVMTypeFor(Src)->getScalarSizeInBits();
+    if (DestBits >= SrcBits)
+      return true;
+  }
   if (IsIntType(Dest) && IsIntType(Src) && CanWidenInt(Src, Dest))
     return true;
   if (IsFloatType(Dest) && IsIntType(Src))
@@ -2793,6 +2859,9 @@ static Value *EmitImplicitCast(Value *V, ValueType From, ValueType To) {
     unsigned ToBits = LLVMTypeFor(To)->getScalarSizeInBits();
     if (FromBits == ToBits)
       return V;
+    if (FromBits < ToBits)
+      return Builder->CreateFPExt(V, LLVMTypeFor(To), "fpext");
+    return nullptr;
   }
   if (IsIntType(From) && IsIntType(To) && CanWidenInt(From, To)) {
     unsigned FromBits = LLVMTypeFor(From)->getIntegerBitWidth();
@@ -3274,82 +3343,6 @@ Value *CallExprAST::codegen() {
   if (getType() == ValueType::None)
     return Builder->CreateCall(CalleeF, ArgsV);
   return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
-}
-
-/// IfExprAST::codegen - Emit LLVM IR for an if/else expression.
-///
-/// Emitted control flow:
-///
-///   <current>:
-///     ; Cond codegen emits a double value %condv
-///     %ifcond = fcmp one double %condv, 0.0 ; convert the double to i1
-///     br i1 %ifcond, label %then, label %else
-///
-///   then:
-///     ; Then codegen emits %thenv
-///     br label %ifcont
-///
-///   else:
-///     ; Else codegen emits %elsev
-///     br label %ifcont
-///
-///   ifcont:
-///     %iftmp = phi double [ %thenv, %then_end ], [ %elsev, %else_end ]
-///
-/// `%iftmp` is the value of the whole if-expression.
-///
-/// We recapture `ThenBB` and `ElseBB` after branch codegen because nested
-/// control flow can move the Builder insertion point to a different block.
-/// PHI incoming edges must use the actual terminating blocks of each arm.
-Value *IfExprAST::codegen() {
-  Value *CondV = Cond->codegen();
-  if (!CondV)
-    return nullptr;
-
-  CondV = ToBool(CondV, Cond->getType());
-  if (!CondV)
-    return LogErrorV("Invalid condition type");
-
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
-
-  // Create blocks for then, else, and merge.
-  BasicBlock *ThenBB = BasicBlock::Create(*TheContext, "then", TheFunction);
-  BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else", TheFunction);
-  BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont", TheFunction);
-
-  Builder->CreateCondBr(CondV, ThenBB, ElseBB);
-
-  // Emit then block.
-  Builder->SetInsertPoint(ThenBB);
-  Value *ThenV = Then->codegen();
-  if (!ThenV)
-    return nullptr;
-  ThenV = EmitImplicitCast(ThenV, Then->getType(), ValueType::Float64);
-  if (!ThenV)
-    return LogErrorV("Type mismatch in if expression");
-  Builder->CreateBr(MergeBB);
-
-  // Codegen can change the current block — capture where then ended.
-  ThenBB = Builder->GetInsertBlock();
-
-  // Emit else block.
-  Builder->SetInsertPoint(ElseBB);
-  Value *ElseV = Else->codegen();
-  if (!ElseV)
-    return nullptr;
-  ElseV = EmitImplicitCast(ElseV, Else->getType(), ValueType::Float64);
-  if (!ElseV)
-    return LogErrorV("Type mismatch in if expression");
-  Builder->CreateBr(MergeBB);
-  ElseBB = Builder->GetInsertBlock();
-
-  // Emit merge block with phi node.
-  Builder->SetInsertPoint(MergeBB);
-  PHINode *PN = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
-  PN->addIncoming(ThenV, ThenBB);
-  PN->addIncoming(ElseV, ElseBB);
-
-  return PN;
 }
 
 /// IfStmtAST::codegen - Emit LLVM IR for a statement-style if.
@@ -4295,7 +4288,7 @@ static void RunFileMode() {
     HadError = true;
     return;
   }
-  if (MainIt->second->getReturnType() != ValueType::Int &&
+  if (!IsIntType(MainIt->second->getReturnType()) &&
       MainIt->second->getReturnType() != ValueType::None) {
     fprintf(stderr, "Error: main() must return int or None\n");
     HadError = true;
@@ -4303,7 +4296,7 @@ static void RunFileMode() {
   }
 
   auto MainSymbol = ExitOnErr(TheJIT->lookup("main"));
-  if (MainIt->second->getReturnType() == ValueType::Int) {
+  if (IsIntType(MainIt->second->getReturnType())) {
     int (*MainFn)() = MainSymbol.toPtr<int (*)()>();
     MainFn();
   } else {
