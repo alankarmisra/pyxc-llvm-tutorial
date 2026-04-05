@@ -23,7 +23,7 @@ toplevelexpr    = expression ;
 prototype       = identifier "(" [ identifier { "," identifier } ] ")" ;
 ifstmt          = "if" expression ":" suite
                 [ eols "else" ":" suite ] ;
-forstmt         = "for" identifier "=" expression "," expression "," expression ":" suite ;
+forstmt         = "for" [ "var" ] identifier "=" expression "," expression "," expression ":" suite ;
 varstmt         = "var" varbinding { "," varbinding } ;
 assignstmt      = lvalue "=" expression ; (* assignment is a statement here *)
 simplestmt      = returnstmt | varstmt | assignstmt | expression ;

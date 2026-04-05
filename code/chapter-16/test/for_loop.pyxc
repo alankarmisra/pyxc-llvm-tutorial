@@ -13,7 +13,7 @@
 extern def printd(x: float64) -> float64
 
 def count(n: float64) -> None:
-    for i: float64 = 1, i <= n, 1:
+    for var i: float64 = 1, i <= n, 1:
         printd(i)
 
 count(3)

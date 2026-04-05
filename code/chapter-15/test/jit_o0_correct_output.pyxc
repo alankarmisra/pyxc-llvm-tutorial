@@ -12,6 +12,6 @@ def accumulate(n):
     sum = sum + n
 
 def main():
-    for i = 1, i < 11, 1:
+    for var i = 1, i < 11, 1:
         accumulate(i)
     printd(sum)

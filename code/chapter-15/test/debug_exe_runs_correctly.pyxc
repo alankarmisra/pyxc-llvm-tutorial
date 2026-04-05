@@ -9,6 +9,6 @@ extern def printd(x)
 
 def sq(x): return x * x
 
-def main() -> int:
+def main():
     printd(sq(5))
     return 0

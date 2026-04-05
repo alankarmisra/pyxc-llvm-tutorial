@@ -22,7 +22,7 @@ external        = "extern" "def" prototype ;
 toplevelexpr    = expression ;
 prototype       = identifier "(" [ identifier { "," identifier } ] ")" ;
 ifexpr          = "if" expression ":" [ eols ] expression [ eols ] "else" ":" [ eols ] expression ;
-forexpr         = "for" identifier "=" expression "," expression "," expression ":" [ eols ] expression ;
+forexpr         = "for" [ "var" ] identifier "=" expression "," expression "," expression ":" [ eols ] expression ;
 expression      = varexpr | unaryexpr binoprhs [ "=" expression ] ;
 binoprhs        = { binaryop unaryexpr } ;
 varexpr         = "var" varbinding { "," varbinding } ":" [ eols ] expression ;

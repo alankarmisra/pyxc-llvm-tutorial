@@ -5,7 +5,7 @@ extern def printd(x)
 @binary(6)
 def ^(base, exp):
     var result = 1
-    for i = 1, i <= exp, 1:
+    for var i = 1, i <= exp, 1:
         result = result * base
     return result
 
@@ -17,7 +17,7 @@ def fib(n):
 # ── Sum of squares: 1² + 2² + … + n² ──────────────────────────────────────
 def sum_of_squares(n):
     var total = 0
-    for i = 1, i <= n, 1:
+    for var i = 1, i <= n, 1:
         total = total + i ^ 2
     return total
 
@@ -30,7 +30,7 @@ def clamp(x, lo, hi):
 # ── Newton's method: square root ────────────────────────────────────────────
 def sqrt_newton(n):
     var guess = n * 0.5
-    for i = 1, i <= 20, 1:
+    for var i = 1, i <= 20, 1:
         guess = (guess + n / guess) * 0.5
     return guess
 
@@ -38,7 +38,7 @@ def sqrt_newton(n):
 def collatz(n):
     var steps = 0
     var x = n
-    for i = 1, x != 1, 1:
+    for var i = 1, x != 1, 1:
         var half = x * 0.5
         if half * 2 == x:
             x = half
@@ -50,7 +50,7 @@ def collatz(n):
 # ═══════════════════════════════════════════════════════════════════════════
 # Fibonacci sequence: fib(0) … fib(9)
 # ═══════════════════════════════════════════════════════════════════════════
-for i = 0, i < 10, 1:
+for var i = 0, i < 10, 1:
     printd(fib(i))
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -61,7 +61,7 @@ printd(sum_of_squares(10))
 # ═══════════════════════════════════════════════════════════════════════════
 # Powers: 2^0 … 2^9
 # ═══════════════════════════════════════════════════════════════════════════
-for i = 0, i < 10, 1:
+for var i = 0, i < 10, 1:
     printd(2 ^ i)
 
 # ═══════════════════════════════════════════════════════════════════════════

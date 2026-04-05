@@ -8,7 +8,7 @@
 
 def no_iters(x: float64) -> float64:
     var y: float64 = 0
-    for i: float64 = 1, i < 1, 1:
+    for var i: float64 = 1, i < 1, 1:
         y = y + x
     return y
 

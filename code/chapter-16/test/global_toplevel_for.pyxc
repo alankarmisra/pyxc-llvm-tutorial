@@ -8,6 +8,6 @@
 extern def printd(x: float64) -> float64
 
 var sum: float64 = 0.0
-for i: float64 = 1, i < 6, 1:
+for var i: float64 = 1, i < 6, 1:
     sum = sum + i
 printd(sum)

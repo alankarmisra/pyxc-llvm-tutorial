@@ -9,7 +9,7 @@
 extern def printd(x: float64) -> float64
 
 def run() -> None:
-    for i: float64 = 1, i < 3, 1:
+    for var i: float64 = 1, i < 3, 1:
         printd(i)
 
 run()

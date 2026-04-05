@@ -51,8 +51,8 @@ extern-def  ::= 'extern' 'def' prototype return-ann
 var-stmt    ::= 'var' identifier ':' type ('=' expression)?
               | 'var' identifier ':' type (',' identifier ':' type)*
 
-for-stmt    ::= 'for' identifier ':' type '=' expression ','
-                expression ',' expression ':' suite
+for-stmt    ::= 'for' ('var' identifier ':' type | identifier) '='
+                expression ',' expression ',' expression ':' suite
 
 castexpr    ::= type '(' expression ')'
 
@@ -63,7 +63,8 @@ Key changes from chapter 15:
 
 - Every parameter requires `: type`.
 - `var` declarations require `: type`, optionally followed by `= expression`.
-- `for` loop variables require `: type` between the name and `=`.
+- `for var` loop variables require `: type` between the name and `=`.
+  A plain `for i = ...` reuses an existing variable and does not accept a type.
 - A function carries `-> type` between `)` and `:`. If absent, `def` defaults to `None` (void); `extern def` and operator defs default to `float64`.
 - `None` is the void return type annotation; it cannot be used as a variable or parameter type.
 - `True` and `False` are new boolean literal keywords.
@@ -282,11 +283,12 @@ struct ExpectedLiteralTypeGuard {
 };
 ```
 
-Three sites install a guard:
+Four sites install a guard:
 
 - **`var` initializers.** `ParseVarStmt` installs the declared type so `var x: int32 = 5` parses `5` as `int32` directly.
-- **`return` expressions.** `ParseReturn` installs the enclosing function's return type.
+- **Assignment RHS.** `ParseAssignmentRHS` looks up the type of the already-declared variable and installs it before parsing the right-hand side, so `x = 10` (where `x: int32`) parses `10` as `int32`.
 - **Function call arguments.** `ParseIdentifierExpr` (the call parser) installs each parameter's declared type before parsing the corresponding argument expression.
+- **`return` expressions.** `ParseReturn` installs the enclosing function's return type so `return 10` inside a `-> int32` function parses `10` as `int32`.
 
 The effect on the IR is that no redundant cast instruction appears:
 
@@ -558,15 +560,16 @@ store double 3.140000e+00, ptr %ratio
 
 ```python
 # Chapter 15
-for i = 1, i <= n, 1:
+for var i = 1, i <= n, 1:
     body
 
 # Chapter 16
-for i: int = 1, i <= n, 1:
+for var i: int = 1, i <= n, 1:
     body
 ```
 
-The `: type` annotation follows the loop variable name directly. The type is validated:
+The `: type` annotation follows the loop variable name directly, but only when
+the loop declares a fresh variable with `var`. The type is validated:
 
 - Must be numeric (`IsNumericType`).
 - The start expression must be assignable to it.
@@ -584,7 +587,7 @@ else
 For an integer loop variable the alloca and step use the declared integer type:
 
 ```llvm
-; for i: int = 1, i <= 10, 1:
+; for var i: int = 1, i <= 10, 1:
 %i = alloca i64
 store i64 1, ptr %i
 

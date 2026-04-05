@@ -487,7 +487,7 @@ pyxc --emit exe hello.pyxc   # produces ./hello
 ```python
 extern def printd(x)
 var total = 0
-for i = 1, i < 6, 1:
+for var i = 1, i < 6, 1:
     total = total + i
 def main():
     printd(total)   # 15.000000

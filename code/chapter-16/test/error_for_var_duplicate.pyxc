@@ -1,0 +1,11 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: Expected identifier after 'for'
+
+# Tests: 'for var var i = ...' is rejected.
+
+extern def printd(x: float64) -> float64
+
+def main() -> None:
+    for var var i: int = 1, i <= 3, 1:
+        printd(float64(i))
+    return

@@ -860,15 +860,17 @@ public:
 /// effects.
 class ForExprAST : public ExprAST {
   string VarName;
+  bool IsVarDecl;
   ValueType VarType;
   unique_ptr<ExprAST> Start, Cond, Step, Body;
 
 public:
-  ForExprAST(const string &VarName, ValueType VarType,
+  ForExprAST(const string &VarName, bool IsVarDecl, ValueType VarType,
              unique_ptr<ExprAST> Start, unique_ptr<ExprAST> Cond,
              unique_ptr<ExprAST> Step, unique_ptr<ExprAST> Body)
-      : VarName(VarName), VarType(VarType), Start(std::move(Start)),
-        Cond(std::move(Cond)), Step(std::move(Step)), Body(std::move(Body)) {
+      : VarName(VarName), IsVarDecl(IsVarDecl), VarType(VarType),
+        Start(std::move(Start)), Cond(std::move(Cond)), Step(std::move(Step)),
+        Body(std::move(Body)) {
     setType(ValueType::None);
   }
   ValueType getVarType() const { return VarType; }
@@ -1364,6 +1366,15 @@ static unique_ptr<ExprAST> ParseNumberExpr() {
   }
 }
 
+/// type
+///   = "int" | "int8" | "int16" | "int32" | "int64"
+///   | "float" | "float32" | "float64"
+///   | "bool" | "None" ;
+///
+/// casttype
+///   = "int" | "int8" | "int16" | "int32" | "int64"
+///   | "float" | "float32" | "float64"
+///   | "bool" ;
 static ValueType ParseTypeToken() {
   switch (CurTok) {
   case tok_int:
@@ -1403,7 +1414,7 @@ static ValueType ParseTypeToken() {
 }
 
 /// castexpr
-///   = type "(" expression ")" ;
+///   = casttype "(" expression ")" ;
 static unique_ptr<ExprAST> ParseCastExpr() {
   ValueType Type = ParseTypeToken();
   if (Type == ValueType::Error)
@@ -1438,7 +1449,10 @@ static unique_ptr<ExprAST> ParseParenExpr() {
 
 /// identifierexpr
 ///   = identifier
-///   | identifier "("[expression{"," expression}]")" ;
+///   | callexpr ;
+///
+/// callexpr
+///   = identifier "(" [ expression { "," expression } ] ")" ;
 static unique_ptr<ExprAST> ParseIdentifierExprWithName(string IdName) {
   if (CurTok != '(') { // Simple variable ref.
     ValueType Type = LookupVarType(IdName);
@@ -1510,79 +1524,113 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
   return ParseIdentifierExprWithName(std::move(IdName));
 }
 
-/// forstmt
-///   = "for" identifier "=" expression "," expression "," expression ":" suite
-///   ;
+// ParseForParts - Parse the "= start, cond, step : suite" tail of a for-loop.
+// Also validates the parts against VarType (start/step assignable, cond bool).
+// Returns true on success and fills Start/Cond/Step/Body plus BodyIsBlock.
+static bool ParseForParts(ValueType VarType, unique_ptr<ExprAST> &Start,
+                          unique_ptr<ExprAST> &Cond, unique_ptr<ExprAST> &Step,
+                          unique_ptr<ExprAST> &Body, bool &BodyIsBlock) {
+  if (CurTok != '=')
+    return LogError("Expected '=' after for variable"), false;
+  getNextToken(); // eat '='
+
+  Start = ParseExpression();
+  if (!Start)
+    return false;
+  if (!IsAssignable(VarType, Start->getType()))
+    return LogError("For loop start must match loop variable type"), false;
+  if (!IsNumericType(VarType))
+    return LogError("For loop variable must be numeric"), false;
+
+  if (CurTok != ',')
+    return LogError("Expected ',' after for start value"), false;
+  getNextToken(); // eat ','
+
+  Cond = ParseExpression();
+  if (!Cond)
+    return false;
+  if (Cond->getType() != ValueType::Bool)
+    return LogError("For loop condition must be bool"), false;
+
+  if (CurTok != ',')
+    return LogError("Expected ',' after for condition"), false;
+  getNextToken(); // eat ','
+
+  Step = ParseExpression();
+  if (!Step)
+    return false;
+  if (!IsAssignable(VarType, Step->getType()))
+    return LogError("For loop step must match loop variable type"), false;
+
+  if (CurTok != ':')
+    return LogError("Expected ':' after for step"), false;
+  getNextToken(); // eat ':'
+
+  // Parse the suite after ':' (inline statement or indented block).
+  Body = ParseSuite(&BodyIsBlock);
+  if (!Body)
+    return false;
+
+  return true;
+}
+
+/// forstmt  = "for"
+///            ("var" identifier ":" type | identifier)
+///            "=" expression "," expression "," expression ":" suite;
 ///
-/// The loop variable is introduced by the "for" and is in scope for the
-/// condition, step, and body. It shadows any outer variable of the same name.
+/// "for var" introduces a new loop variable scoped to the loop statement.
+/// A plain "for i = ..." reuses an existing variable (error if undeclared).
 static unique_ptr<ExprAST> ParseForStmt() {
   getNextToken(); // eat 'for'
+
+  bool IsVarDecl = false;
+  if (CurTok == tok_var) {
+    IsVarDecl = true;
+    getNextToken(); // optional 'var'
+  }
 
   if (CurTok != tok_identifier)
     return LogError("Expected identifier after 'for'");
   string VarName = IdentifierStr;
   getNextToken(); // eat identifier
 
-  if (CurTok != ':')
-    return LogError(
-        "For loop variable requires a type annotation (e.g., ': int')");
-  getNextToken(); // eat ':'
-  ValueType VarType = ParseTypeToken();
-  if (VarType == ValueType::Error)
-    return nullptr;
-  if (VarType == ValueType::None)
-    return LogError("For loop variable cannot have None type");
+  ValueType VarType = ValueType::Error;
+  if (IsVarDecl) {
+    if (CurTok != ':')
+      return LogError(
+          "For loop variable requires a type annotation (e.g., ': int')");
+    getNextToken(); // eat ':'
+    VarType = ParseTypeToken();
+    if (VarType == ValueType::Error)
+      return nullptr;
+    if (VarType == ValueType::None)
+      return LogError("For loop variable cannot have None type");
+    if (IsDeclaredInCurrentScope(VarName))
+      return LogError(
+          ("Variable '" + VarName + "' already declared in this scope")
+              .c_str());
+  } else {
+    if (CurTok == ':')
+      return LogError("For loop variable requires 'var' to declare a type");
+    VarType = LookupVarType(VarName);
+    if (VarType == ValueType::Error)
+      return LogError("Assignment to undeclared variable");
+  }
 
-  if (CurTok != '=')
-    return LogError("Expected '=' after for variable");
-  getNextToken(); // eat '='
-
-  auto Start = ParseExpression();
-  if (!Start)
-    return nullptr;
-  if (!IsAssignable(VarType, Start->getType()))
-    return LogError("For loop start must match loop variable type");
-  if (!IsNumericType(VarType))
-    return LogError("For loop variable must be numeric");
-  LoopScopeGuard LoopScope(VarName, VarType);
-
-  if (CurTok != ',')
-    return LogError("Expected ',' after for start value");
-  getNextToken(); // eat ','
-
-  auto Cond = ParseExpression();
-  if (!Cond)
-    return nullptr;
-  if (Cond->getType() != ValueType::Bool)
-    return LogError("If condition must be bool");
-  if (Cond->getType() != ValueType::Bool)
-    return LogError("If condition must be bool");
-  if (Cond->getType() != ValueType::Bool)
-    return LogError("For loop condition must be bool");
-
-  if (CurTok != ',')
-    return LogError("Expected ',' after for condition");
-  getNextToken(); // eat ','
-
-  auto Step = ParseExpression();
-  if (!Step)
-    return nullptr;
-  if (!IsAssignable(VarType, Step->getType()))
-    return LogError("For loop step must match loop variable type");
-
-  if (CurTok != ':')
-    return LogError("Expected ':' after for step");
-  getNextToken(); // eat ':'
-
-  // Parse the suite after ':' (inline statement or indented block).
+  unique_ptr<ExprAST> Start, Cond, Step, Body;
   bool BodyIsBlock = false;
-  unique_ptr<ExprAST> Body = ParseSuite(&BodyIsBlock);
-  if (!Body)
-    return nullptr;
+
+  if (IsVarDecl) {
+    LoopScopeGuard LoopScope(VarName, VarType);
+    if (!ParseForParts(VarType, Start, Cond, Step, Body, BodyIsBlock))
+      return nullptr;
+  } else {
+    if (!ParseForParts(VarType, Start, Cond, Step, Body, BodyIsBlock))
+      return nullptr;
+  }
 
   LastStatementWasBlock = BodyIsBlock;
-  return make_unique<ForExprAST>(VarName, VarType, std::move(Start),
+  return make_unique<ForExprAST>(VarName, IsVarDecl, VarType, std::move(Start),
                                  std::move(Cond), std::move(Step),
                                  std::move(Body));
 }
@@ -1591,7 +1639,7 @@ static unique_ptr<ExprAST> ParseForStmt() {
 ///   = "var" varbinding { "," varbinding } ;
 ///
 /// varbinding
-///   = identifier [ "=" expression ] ;
+///   = identifier ":" type [ "=" expression ] ;
 static unique_ptr<ExprAST> ParseVarStmt() {
   getNextToken(); // eat 'var'
 
@@ -1599,6 +1647,7 @@ static unique_ptr<ExprAST> ParseVarStmt() {
   bool IsGlobalDecl = ParsingTopLevel;
 
   while (true) {
+    // identifier ":" type
     if (CurTok != tok_identifier)
       return LogError("Expected identifier after 'var'");
 
@@ -1626,6 +1675,7 @@ static unique_ptr<ExprAST> ParseVarStmt() {
     }
 
     unique_ptr<ExprAST> Init;
+    // [ "=" expression ]
     if (CurTok == '=') {
       getNextToken(); // eat '='
       ExpectedLiteralTypeGuard Guard(DeclType);
@@ -1800,8 +1850,10 @@ static unique_ptr<ExprAST> ParseUnaryMinus() {
 }
 
 /// primary
-///   = identifierexpr
+///   = castexpr
+///   | identifierexpr
 ///   | numberexpr
+///   | bool-literal
 ///   | parenexpr ;
 static unique_ptr<ExprAST> ParsePrimary() {
   switch (CurTok) {
@@ -1954,7 +2006,7 @@ static unique_ptr<ExprAST> ParseExpression() {
 }
 
 /// returnstmt
-///   = "return" expression ;
+///   = "return" [ expression ] ;
 static unique_ptr<ExprAST> ParseReturnStmt() {
   getNextToken(); // eat 'return'
   if (CurTok == tok_eol || CurTok == tok_dedent || CurTok == tok_eof) {
@@ -1981,16 +2033,16 @@ static unique_ptr<ExprAST> ParseReturnStmt() {
 static unique_ptr<ExprAST> ParseAssignmentRHS(const string &Name) {
   if (!IsDeclaredVar(Name))
     return LogError("Assignment to undeclared variable");
-  ValueType VarTy = LookupVarType(Name);
+  ValueType VarType = LookupVarType(Name);
   getNextToken(); // eat '='
 
-  ExpectedLiteralTypeGuard Guard(VarTy);
+  ExpectedLiteralTypeGuard Guard(VarType);
   auto RHS = ParseExpression();
   if (!RHS)
     return nullptr;
-  if (!IsAssignable(VarTy, RHS->getType()))
+  if (!IsAssignable(VarType, RHS->getType()))
     return LogError("Type mismatch in assignment");
-  return make_unique<AssignmentExprAST>(Name, std::move(RHS), VarTy);
+  return make_unique<AssignmentExprAST>(Name, std::move(RHS), VarType);
 }
 
 /// simplestmt
@@ -2119,7 +2171,10 @@ static unique_ptr<ExprAST> ParseBlock() {
 }
 
 /// prototype
-///   = identifier "(" [ identifier { "," identifier } ] ")" ;
+///   = identifier "(" [ typedparam { "," typedparam } ] ")" ;
+///
+/// typedparam
+///   = identifier ":" type ;
 static unique_ptr<PrototypeAST> ParsePrototype() {
   SourceLocation ProtoLoc = CurLoc;
 
@@ -2191,7 +2246,7 @@ static unique_ptr<ExprAST> ParseFunctionBody(bool *BodyIsBlock) {
 }
 
 /// definition
-///   = "def" prototype ":" ( simplestmt | eols block ) ;
+///   = "def" prototype [ "->" type ] ":" ( simplestmt | eols block ) ;
 static unique_ptr<FunctionAST> ParseDefinition() {
   getNextToken(); // eat 'def'
   auto Proto = ParsePrototype();
@@ -2221,7 +2276,7 @@ static unique_ptr<FunctionAST> ParseDefinition() {
 }
 
 /// binarydecorator
-///   = "binary" "(" integer ")"
+///   = "@" "binary" "(" integer ")"
 ///
 /// Called after '@' has been consumed. CurTok is on 'binary'.
 /// Returns the parsed precedence (>= 1), or 0 on error.
@@ -2271,7 +2326,7 @@ static unsigned ParseBinaryDecorator() {
 }
 
 /// unarydecorator
-///   = "unary"
+///   = "@" "unary"
 /// Called after '@' has been consumed. CurTok is on 'unary'.
 /// Consumes the 'unary' token.
 static void ParseUnaryDecorator() {
@@ -2308,7 +2363,7 @@ static bool IsKnownUnaryOperatorToken(int Tok) {
 }
 
 /// binaryopprototype
-///   = customopchar "(" identifier "," identifier ")"
+///   = customopchar "(" typedparam "," typedparam ")"
 ///
 /// CurTok is on the operator character.
 /// The function is stored internally as "binary<opchar>" (e.g. "binary%"),
@@ -2393,7 +2448,7 @@ static unique_ptr<PrototypeAST> ParseBinaryOpPrototype(unsigned Precedence) {
 }
 
 /// unaryopprototype
-///   = customopchar "(" identifier ")"
+///   = customopchar "(" typedparam ")"
 ///
 /// CurTok is on the operator character.
 /// The function is stored internally as "unary<opchar>" (e.g. "unary&"),
@@ -2571,7 +2626,7 @@ static unique_ptr<FunctionAST> ParseTopLevelExpr() {
 }
 
 /// external
-///   = "extern" "def" prototype
+///   = "extern" "def" prototype [ "->" type ] ;
 static unique_ptr<PrototypeAST> ParseExtern() {
   LastTopLevelEndedWithBlock = false;
   getNextToken(); // eat extern.
@@ -2592,68 +2647,66 @@ static unique_ptr<PrototypeAST> ParseExtern() {
 // Code Generation
 //===----------------------------------------===//
 
-// TheContext/TheModule/Builder/NamedValues - Core IR construction globals.
-// Recreated fresh for each new module (see InitializeModuleAndManagers).
+// Core IR construction globals. Recreated for each new module.
+// (See InitializeModuleAndManagers.)
 //
-// TheContext - Owns all LLVM data structures: types, constants, and the
-// interning tables that ensure two uses of 'double' resolve to the same
-// object.
-//
-// TheModule - The unit of compilation handed to the JIT. Because the JIT
-// takes ownership of the module when a function is compiled, we create a
-// new module for every top-level input. Functions defined in earlier modules
-// remain callable via the JIT's symbol table.
-//
-// Builder - A cursor into the IR being built. Point it at a BasicBlock with
-// SetInsertPoint(), then call Create* methods to append instructions.
-//
-// NamedValues - Symbol table mapping variable names to stack slots (allocas)
-// in the current function. Function parameters are first copied into entry
-// block allocas so parameters, loop variables, and mutable locals all share
-// the same load/store path.
-//
-// TheJIT - The ORC JIT instance. Created once in main() and lives for the
-// whole session. Compiled modules are added to it; symbols from C libraries
-// (e.g. sin, cos) are resolved through the process's dynamic symbol table.
-//
-// TheFPM / TheMPM / TheLAM / TheFAM / TheCGAM / TheMAM - The new-PM pass and
-// analysis managers. TheFPM holds the function pipeline used by the JIT;
-// TheMPM holds the module pipeline used for file-mode compilation. The
-// analysis managers cache analysis results and are cross-registered so passes
-// that need loop or CGSCC analyses can find them.
-//
-//
-// ExitOnErr - Convenience wrapper that terminates the process on a
-// recoverable LLVM error. Used for JIT operations that should never fail
-// in a correct implementation.
+// TheContext - Owns LLVM types/constants and uniquing tables.
 static std::unique_ptr<LLVMContext> TheContext;
+// TheModule - Current compilation unit handed to the JIT/emit path.
 static std::unique_ptr<Module> TheModule;
+// Builder - Cursor used to append instructions into the current block.
 static std::unique_ptr<IRBuilder<NoFolder>> Builder;
+// NamedValues - Maps variable names to allocas in the current function.
 static std::map<std::string, AllocaInst *> NamedValues;
+// InGlobalInit - True while emitting the synthetic global init function.
 static bool InGlobalInit = false;
+// ModuleHasGlobals - Tracks whether this module defines any globals.
 static bool ModuleHasGlobals = false;
+// CurrentSourcePath - Path used in debug info and diagnostics.
 static std::string CurrentSourcePath = "<stdin>";
+// DIB - DIBuilder used to emit DWARF metadata into the module.
 static std::unique_ptr<DIBuilder> DIB;
+// TheCU - Compile unit metadata node (one per module).
 static DICompileUnit *TheCU = nullptr;
+// TheDIFile - Current source file metadata node.
 static DIFile *TheDIFile = nullptr;
+// IntDIType - Debug info type for platform int.
 static DIType *IntDIType = nullptr;
+// Float64DIType - Debug info type for float64.
 static DIType *Float64DIType = nullptr;
+// VoidDIType - Debug info type for None/void.
 static DIType *VoidDIType = nullptr;
+// Int8DIType - Debug info type for int8.
 static DIType *Int8DIType = nullptr;
+// Int16DIType - Debug info type for int16.
 static DIType *Int16DIType = nullptr;
+// Int32DIType - Debug info type for int32.
 static DIType *Int32DIType = nullptr;
+// Int64DIType - Debug info type for int64.
 static DIType *Int64DIType = nullptr;
+// Float32DIType - Debug info type for float32.
 static DIType *Float32DIType = nullptr;
+// BoolDIType - Debug info type for bool.
 static DIType *BoolDIType = nullptr;
+// CurDIScope - Current debug scope (function or block).
 static DIScope *CurDIScope = nullptr;
+// CurFunctionLine - Line number for current function definition.
 static unsigned CurFunctionLine = 1;
+// TheJIT - ORC JIT instance for REPL execution.
 static std::unique_ptr<PyxcJIT> TheJIT;
+// TheFPM - Per-function optimization pipeline (JIT).
 static std::unique_ptr<FunctionPassManager> TheFPM;
+// TheMPM - Per-module optimization pipeline (emit mode).
 static std::unique_ptr<ModulePassManager> TheMPM;
+// TheLAM - Loop analysis manager (new PM).
 static std::unique_ptr<LoopAnalysisManager> TheLAM;
+// TheFAM - Function analysis manager (new PM).
 static std::unique_ptr<FunctionAnalysisManager> TheFAM;
+// TheCGAM - CGSCC analysis manager (new PM).
 static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
+// TheMAM - Module analysis manager (new PM).
 static std::unique_ptr<ModuleAnalysisManager> TheMAM;
+// ExitOnErr - Crash-on-error wrapper for LLVM Error results.
 static ExitOnError ExitOnErr;
 
 static const char *TypeName(ValueType Type) {
@@ -3397,6 +3450,23 @@ Value *IfStmtAST::codegen() {
 Value *ForExprAST::codegen() {
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
 
+  Value *VarPtr = nullptr;
+  AllocaInst *Alloca = nullptr;
+  AllocaInst *OldVal = nullptr;
+  if (IsVarDecl) {
+    Alloca = CreateEntryBlockAlloca(TheFunction, VarName, VarType);
+    EmitDebugDeclare(Alloca, VarName, CurFunctionLine, false, 0, VarType);
+    VarPtr = Alloca;
+  } else {
+    auto It = NamedValues.find(VarName);
+    if (It != NamedValues.end() && It->second)
+      VarPtr = It->second;
+    else if (auto *GV = GetGlobalVariable(VarName))
+      VarPtr = GV;
+    else
+      return LogErrorV("Unknown variable name");
+  }
+
   Value *StartVal = Start->codegen();
   if (!StartVal)
     return nullptr;
@@ -3404,9 +3474,7 @@ Value *ForExprAST::codegen() {
   if (!StartVal)
     return LogErrorV("Type mismatch in for loop start");
 
-  AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName, VarType);
-  EmitDebugDeclare(Alloca, VarName, CurFunctionLine, false, 0, VarType);
-  Builder->CreateStore(StartVal, Alloca);
+  Builder->CreateStore(StartVal, VarPtr);
 
   BasicBlock *CondBB =
       BasicBlock::Create(*TheContext, "loop_cond", TheFunction);
@@ -3419,8 +3487,10 @@ Value *ForExprAST::codegen() {
 
   Builder->SetInsertPoint(CondBB);
 
-  AllocaInst *OldVal = NamedValues[VarName];
-  NamedValues[VarName] = Alloca;
+  if (IsVarDecl) {
+    OldVal = NamedValues[VarName];
+    NamedValues[VarName] = Alloca;
+  }
 
   Value *CondVal = Cond->codegen();
   if (!CondVal)
@@ -3435,7 +3505,7 @@ Value *ForExprAST::codegen() {
   if (!Body->codegen())
     return nullptr;
 
-  Value *CurVar = Builder->CreateLoad(LLVMTypeFor(VarType), Alloca, VarName);
+  Value *CurVar = Builder->CreateLoad(LLVMTypeFor(VarType), VarPtr, VarName);
   Value *StepVal = Step->codegen();
   if (!StepVal)
     return nullptr;
@@ -3447,15 +3517,17 @@ Value *ForExprAST::codegen() {
     NextVar = Builder->CreateFAdd(CurVar, StepVal, "nextvar");
   else
     NextVar = Builder->CreateAdd(CurVar, StepVal, "nextvar");
-  Builder->CreateStore(NextVar, Alloca);
+  Builder->CreateStore(NextVar, VarPtr);
   Builder->CreateBr(CondBB);
 
   Builder->SetInsertPoint(AfterBB);
 
-  if (OldVal)
-    NamedValues[VarName] = OldVal;
-  else
-    NamedValues.erase(VarName);
+  if (IsVarDecl) {
+    if (OldVal)
+      NamedValues[VarName] = OldVal;
+    else
+      NamedValues.erase(VarName);
+  }
 
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }

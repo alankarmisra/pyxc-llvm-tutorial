@@ -12,7 +12,7 @@ extern def printd(x: float64) -> float64
 
 def run(n: float64) -> None:
     if n > 0:
-        for i: float64 = 1, i <= n, 1:
+        for var i: float64 = 1, i <= n, 1:
             printd(i)
 
 run(2)

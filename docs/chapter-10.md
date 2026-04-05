@@ -77,7 +77,7 @@ external        = "extern" "def" prototype ;
 toplevelexpr    = expression ;
 prototype       = identifier "(" [ identifier { "," identifier } ] ")" ;
 ifexpr          = "if" expression ":" [ eols ] expression [ eols ] "else" ":" [ eols ] expression ;
-forexpr         = "for" identifier "=" expression "," expression "," expression ":" [ eols ] expression ;
+forexpr         = "for" [ "var" ] identifier "=" expression "," expression "," expression ":" [ eols ] expression ;
 expression      = varexpr | unaryexpr binoprhs [ "=" expression ] ;
 binoprhs        = { binaryop unaryexpr } ;
 varexpr         = "var" varbinding { "," varbinding } ":" [ eols ] expression ;
@@ -456,10 +456,10 @@ Builder->CreateStore(NextVar, Alloca);
 
 The loop variable name is installed in `NamedValues` as an alloca for the duration of the loop, then restored (or removed) afterward — the same pattern as `VarExprAST::codegen`.
 
-Here is `def count(n): return for i = 1, i < n, 1: i` with `-O0 -v`:
+Here is `def count(n): return for var i = 1, i < n, 1: i` with `-O0 -v`:
 
 ```llvm
-; def count(n): return for i = 1, i < n, 1: i
+; def count(n): return for var i = 1, i < n, 1: i
 
 define double @count(double %n) {
 entry:
@@ -490,6 +490,41 @@ after_loop:
 ```
 
 `%i4` and `%i5` are two separate loads of `i` — `%i4` evaluates the body expression (`: i`) whose result is unused, and `%i5` loads `i` again for the step computation. The `uitofp`/`fcmp one` pair converts the boolean comparison to a double and back — with optimizations on, `InstCombinePass` folds this away and `mem2reg` removes the slots entirely.
+
+### The Optional `var` in `for`
+
+The grammar for `for` in this chapter is:
+
+```
+for [var] identifier = start, condition, step: body
+```
+
+The `var` keyword is optional and follows C++ semantics:
+
+- **`for var i = ...`** — declares a new alloca slot named `i` in the current scope. If `i` already exists in the enclosing scope, this is an error.
+- **`for i = ...`** — reuses an existing variable `i` that must already be in scope. If it does not exist, this is an error.
+
+When `for var i` is used, the parser allocates a fresh alloca slot for `i`, stores the start value into it, and tears it down when the loop exits. When `for i` is used, the parser looks up the existing alloca for `i` and stores the start value into that — no new slot is created. The difference is not just scope rules: `for i = ...` will fail if `i` has not already been declared.
+
+The distinction is mostly academic at this stage because a function body is still a single expression, not a sequence of statements. The one case where it surfaces is a nested loop reusing the outer loop variable:
+
+```python
+for var i = 0, i < 10, 1:
+   for i = 5, i < 11, 1:
+    printd(i)
+```
+
+Here the outer `for var i` introduces `i` into scope. The inner `for i` finds that same slot and reuses it — the inner loop overwrites `i` on every outer iteration, then the outer condition re-evaluates with whatever `i` was left at after the inner loop finished. That is almost never useful deliberately; it is shown here to make the semantics concrete.
+
+The more natural use of `for i = ...` (without `var`) becomes clear in the next chapter once `var` statements exist independently:
+
+```python
+var x = 0.0
+for x = 1, x < 10, 1:   # reuses x declared above
+    printd(x)
+```
+
+Until then, `var` in `for` is the safe default.
 
 ## mem2reg: Cleaning Up the Memory Slots
 
@@ -538,7 +573,7 @@ When control flow is involved, `mem2reg` has more work to do. Define `;` as a se
 @binary(1)
 def ;(x, y): return y
 
-def acc_loop(n): return var acc = 0: (for i = 1, i < n, 1: acc = acc + i) ; acc
+def acc_loop(n): return var acc = 0: (for var i = 1, i < n, 1: acc = acc + i) ; acc
 ```
 
 Without optimizations (`-O0 -v`), three slots and repeated loads/stores on every iteration:
@@ -674,7 +709,7 @@ Parsed a user-defined operator.
 ```
 ```python
 ready> def sum_to(n): return var acc = 0:
-    (for i = 1, i < n + 1, 1: acc = acc + i) ; acc
+    (for var i = 1, i < n + 1, 1: acc = acc + i) ; acc
 ```
 ```bash
 Parsed a function definition.

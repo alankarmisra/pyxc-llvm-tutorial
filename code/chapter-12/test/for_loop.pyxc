@@ -15,7 +15,7 @@
 extern def printd(x)
 
 def count(n):
-    for i = 1, i <= n, 1:
+    for var i = 1, i <= n, 1:
         printd(i)
 
 count(3)

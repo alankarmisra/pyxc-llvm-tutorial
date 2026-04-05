@@ -17,15 +17,17 @@ decorateddef    = binarydecorator eols "def" binaryopprototype [ "->" type ] ":"
                 | unarydecorator  eols "def" unaryopprototype  [ "->" type ] ":" ( simplestmt | eols block ) ;
 binarydecorator = "@" "binary" "(" integer ")" ;
 unarydecorator  = "@" "unary" ;
-binaryopprototype = customopchar "(" identifier "," identifier ")" ;
-unaryopprototype  = customopchar "(" identifier ")" ;
+binaryopprototype = customopchar "(" typedparam "," typedparam ")" ;
+unaryopprototype  = customopchar "(" typedparam ")" ;
 external        = "extern" "def" prototype [ "->" type ] ;
 toplevelexpr    = expression ;
 prototype       = identifier "(" [ typedparam { "," typedparam } ] ")" ;
 typedparam      = identifier ":" type ;
 ifstmt          = "if" expression ":" suite
                 [ eols "else" ":" suite ] ;
-forstmt         = "for" identifier "=" expression "," expression "," expression ":" suite ;
+forstmt         = "for"
+                  ( "var" identifier ":" type | identifier )
+                  "=" expression "," expression "," expression ":" suite ;
 varstmt         = "var" varbinding { "," varbinding } ;
 assignstmt      = lvalue "=" expression ; (* assignment is a statement here *)
 simplestmt      = returnstmt | varstmt | assignstmt | expression ;
@@ -40,7 +42,7 @@ lvalue          = identifier ;
 varbinding      = identifier ":" type [ "=" expression ] ;
 unaryexpr       = unaryop unaryexpr | primary ;
 unaryop         = "-" | userdefunaryop ;
-primary         = castexpr | identifierexpr | numberexpr | parenexpr ;
+primary         = castexpr | identifierexpr | numberexpr | bool-literal | parenexpr ;
 castexpr        = casttype "(" expression ")" ;
 identifierexpr  = identifier | callexpr ;
 callexpr        = identifier "(" [ expression { "," expression } ] ")" ;

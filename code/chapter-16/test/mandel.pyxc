@@ -30,12 +30,12 @@ def mandelconverge(real: float64, imag: float64) -> float64:
 
 # Render one row.
 def mandelrow(xmin: float64, xmax: float64, xstep: float64, y: float64) -> float64:
-    return for x: float64 = xmin, x < xmax, xstep:
+    return for var x: float64 = xmin, x < xmax, xstep:
                printdensity(mandelconverge(x, y))
 
 # Render full 2D region.
 def mandelhelp(xmin: float64, xmax: float64, xstep: float64, ymin: float64, ymax: float64, ystep: float64) -> float64:
-    return for y: float64 = ymin, y < ymax, ystep:
+    return for var y: float64 = ymin, y < ymax, ystep:
                mandelrow(xmin, xmax, xstep, y) ; putchard(10.0)
 
 # Top-level helper.

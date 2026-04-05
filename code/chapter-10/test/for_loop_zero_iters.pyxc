@@ -7,7 +7,7 @@
 # The for expression returns 0.0 when it makes zero iterations.
 # forexpr = "for" identifier "=" expression "," expression "," expression ":" [ eols ] expression
 
-def no_iters(x): return for i = 1, i < 1, 1: x
+def no_iters(x): return for var i = 1, i < 1, 1: x
 
 # The body 'x' is never evaluated; the for expression yields 0.0.
 no_iters(42)

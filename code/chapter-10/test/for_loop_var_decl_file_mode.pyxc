@@ -1,0 +1,14 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Parsed an extern.
+# CHECK: Parsed a function definition.
+# CHECK: 1.000000
+# CHECK: 2.000000
+# CHECK: 3.000000
+
+# Tests: for loop with optional 'var' in file mode (same syntax as REPL).
+
+extern def printd(x)
+
+def count(n): return for var i = 1, i <= n, 1: printd(i)
+
+count(3)

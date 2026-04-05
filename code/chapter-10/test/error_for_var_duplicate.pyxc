@@ -1,0 +1,8 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Expected identifier after 'for'
+
+# Tests: 'for var var i = ...' is rejected.
+
+extern def printd(x)
+
+def count(n): return for var var i = 1, i <= n, 1: printd(i)

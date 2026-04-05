@@ -534,13 +534,15 @@ public:
 /// effects.
 class ForExprAST : public ExprAST {
   string VarName;
+  bool IsVarDecl;
   unique_ptr<ExprAST> Start, Cond, Step, Body;
 
 public:
-  ForExprAST(const string &VarName, unique_ptr<ExprAST> Start,
+  ForExprAST(const string &VarName, bool IsVarDecl, unique_ptr<ExprAST> Start,
              unique_ptr<ExprAST> Cond, unique_ptr<ExprAST> Step,
              unique_ptr<ExprAST> Body)
-      : VarName(VarName), Start(std::move(Start)), Cond(std::move(Cond)),
+      : VarName(VarName), IsVarDecl(IsVarDecl), Start(std::move(Start)),
+        Cond(std::move(Cond)),
         Step(std::move(Step)), Body(std::move(Body)) {}
   Value *codegen() override;
 };
@@ -804,13 +806,17 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
 }
 
 /// forexpr
-///   = "for" identifier "=" expression "," expression "," expression
+///   = "for" [ "var" ] identifier "=" expression "," expression "," expression
 ///     ":" [eols] expression ;
 ///
 /// The loop variable is introduced by the "for" and is in scope for the
 /// condition, step, and body. It shadows any outer variable of the same name.
 static unique_ptr<ExprAST> ParseForExpr() {
   getNextToken(); // eat 'for'
+
+  bool IsVarDecl = false;
+  if (CurTok == tok_var)
+    IsVarDecl = true, getNextToken(); // optional 'var'
 
   if (CurTok != tok_identifier)
     return LogError("Expected identifier after 'for'");
@@ -852,8 +858,9 @@ static unique_ptr<ExprAST> ParseForExpr() {
   if (!Body)
     return nullptr;
 
-  return make_unique<ForExprAST>(VarName, std::move(Start), std::move(Cond),
-                                 std::move(Step), std::move(Body));
+  return make_unique<ForExprAST>(VarName, IsVarDecl, std::move(Start),
+                                 std::move(Cond), std::move(Step),
+                                 std::move(Body));
 }
 
 /// varexpr
@@ -1771,8 +1778,18 @@ Value *ForExprAST::codegen() {
   if (!StartVal)
     return nullptr;
 
-  AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
-  Builder->CreateStore(StartVal, Alloca);
+  AllocaInst *Alloca = nullptr;
+  AllocaInst *OldVal = nullptr;
+  if (IsVarDecl) {
+    Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
+    Builder->CreateStore(StartVal, Alloca);
+  } else {
+    auto It = NamedValues.find(VarName);
+    if (It == NamedValues.end() || !It->second)
+      return LogErrorV("Unknown variable name");
+    Alloca = It->second;
+    Builder->CreateStore(StartVal, Alloca);
+  }
 
   BasicBlock *CondBB =
       BasicBlock::Create(*TheContext, "loop_cond", TheFunction);
@@ -1785,8 +1802,10 @@ Value *ForExprAST::codegen() {
 
   Builder->SetInsertPoint(CondBB);
 
-  AllocaInst *OldVal = NamedValues[VarName];
-  NamedValues[VarName] = Alloca;
+  if (IsVarDecl) {
+    OldVal = NamedValues[VarName];
+    NamedValues[VarName] = Alloca;
+  }
 
   Value *CondVal = Cond->codegen();
   if (!CondVal)
@@ -1811,10 +1830,12 @@ Value *ForExprAST::codegen() {
 
   Builder->SetInsertPoint(AfterBB);
 
-  if (OldVal)
-    NamedValues[VarName] = OldVal;
-  else
-    NamedValues.erase(VarName);
+  if (IsVarDecl) {
+    if (OldVal)
+      NamedValues[VarName] = OldVal;
+    else
+      NamedValues.erase(VarName);
+  }
 
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }

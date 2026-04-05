@@ -4,7 +4,7 @@ extern def printd(x: float64) -> float64
 # base ^ exp  (left-associative, precedence 6 — tighter than * )
 @binary(6)
 def ^(base: float64, exp: float64) -> float64:    var result: float64 = 1.0
-    for i: float64 = 1, i <= exp, 1:
+    for var i: float64 = 1, i <= exp, 1:
         result = result * base
     return result
 
@@ -16,7 +16,7 @@ def fib(n: float64) -> float64:
 # ── Sum of squares: 1² + 2² + … + n² ──────────────────────────────────────
 def sum_of_squares(n: float64) -> float64:
     var total: float64 = 0.0
-    for i: float64 = 1, i <= n, 1:
+    for var i: float64 = 1, i <= n, 1:
         total = total + i ^ 2
     return total
 
@@ -29,7 +29,7 @@ def clamp(x: float64, lo: float64, hi: float64) -> float64:
 # ── Newton's method: square root ────────────────────────────────────────────
 def sqrt_newton(n: float64) -> float64:
     var guess: float64 = n * 0.5
-    for i: float64 = 1, i <= 20, 1:
+    for var i: float64 = 1, i <= 20, 1:
         guess = (guess + n / guess) * 0.5
     return guess
 
@@ -37,7 +37,7 @@ def sqrt_newton(n: float64) -> float64:
 def collatz(n: float64) -> float64:
     var steps: float64 = 0.0
     var x: float64 = n
-    for i: float64 = 1, x != 1, 1:
+    for var i: float64 = 1, x != 1, 1:
         var half: float64 = x * 0.5
         if half * 2 == x:
             x = half
@@ -49,7 +49,7 @@ def collatz(n: float64) -> float64:
 # ═══════════════════════════════════════════════════════════════════════════
 # Fibonacci sequence: fib(0) … fib(9)
 # ═══════════════════════════════════════════════════════════════════════════
-for i: float64 = 0, i < 10, 1:
+for var i: float64 = 0, i < 10, 1:
     printd(fib(i))
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -60,7 +60,7 @@ printd(sum_of_squares(10))
 # ═══════════════════════════════════════════════════════════════════════════
 # Powers: 2^0 … 2^9
 # ═══════════════════════════════════════════════════════════════════════════
-for i: float64 = 0, i < 10, 1:
+for var i: float64 = 0, i < 10, 1:
     printd(2 ^ i)
 
 # ═══════════════════════════════════════════════════════════════════════════

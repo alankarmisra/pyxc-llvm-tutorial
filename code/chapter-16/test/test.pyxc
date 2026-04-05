@@ -2,7 +2,7 @@ extern def printd(d: float64) -> float64
 
 def sum_to(n: float64) -> None:
 var acc: float64 = 0.0
-    for i: float64 = 1, i <= n, 1:
+    for var i: float64 = 1, i <= n, 1:
         acc = acc + i
     return acc
 

@@ -661,13 +661,16 @@ public:
 /// effects.
 class ForExprAST : public ExprAST {
   string VarName;
+  bool IsVarDecl;
   unique_ptr<ExprAST> Start, Cond, Step, Body;
 
 public:
-  ForExprAST(const string &VarName, unique_ptr<ExprAST> Start,
+  ForExprAST(const string &VarName, bool IsVarDecl,
+             unique_ptr<ExprAST> Start,
              unique_ptr<ExprAST> Cond, unique_ptr<ExprAST> Step,
              unique_ptr<ExprAST> Body)
-      : VarName(VarName), Start(std::move(Start)), Cond(std::move(Cond)),
+      : VarName(VarName), IsVarDecl(IsVarDecl), Start(std::move(Start)),
+        Cond(std::move(Cond)),
         Step(std::move(Step)), Body(std::move(Body)) {}
   Value *codegen() override;
 };
@@ -1014,58 +1017,88 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
   return ParseIdentifierExprWithName(std::move(IdName));
 }
 
+static bool ParseForParts(unique_ptr<ExprAST> &Start, unique_ptr<ExprAST> &Cond,
+                          unique_ptr<ExprAST> &Step,
+                          unique_ptr<ExprAST> &Body, bool &BodyIsBlock) {
+  if (CurTok != '=')
+    return LogError("Expected '=' after for variable"), false;
+  getNextToken(); // eat '='
+
+  Start = ParseExpression();
+  if (!Start)
+    return false;
+
+  if (CurTok != ',')
+    return LogError("Expected ',' after for start value"), false;
+  getNextToken(); // eat ','
+
+  Cond = ParseExpression();
+  if (!Cond)
+    return false;
+
+  if (CurTok != ',')
+    return LogError("Expected ',' after for condition"), false;
+  getNextToken(); // eat ','
+
+  Step = ParseExpression();
+  if (!Step)
+    return false;
+
+  if (CurTok != ':')
+    return LogError("Expected ':' after for step"), false;
+  getNextToken(); // eat ':'
+
+  // Parse the suite after ':' (inline statement or indented block).
+  Body = ParseSuite(&BodyIsBlock);
+  if (!Body)
+    return false;
+
+  return true;
+}
+
 /// forstmt
-///   = "for" identifier "=" expression "," expression "," expression ":" suite
-///   ;
+///   = "for" [ "var" ] identifier "=" expression "," expression "," expression
+///     ":" suite ;
 ///
 /// The loop variable is introduced by the "for" and is in scope for the
 /// condition, step, and body. It shadows any outer variable of the same name.
 static unique_ptr<ExprAST> ParseForStmt() {
   getNextToken(); // eat 'for'
 
+  bool IsVarDecl = false;
+  if (CurTok == tok_var)
+    IsVarDecl = true, getNextToken(); // optional 'var'
+
   if (CurTok != tok_identifier)
     return LogError("Expected identifier after 'for'");
   string VarName = IdentifierStr;
   getNextToken(); // eat identifier
-  LoopScopeGuard LoopScope(VarName);
 
-  if (CurTok != '=')
-    return LogError("Expected '=' after for variable");
-  getNextToken(); // eat '='
+  if (IsVarDecl) {
+    if (IsDeclaredInCurrentScope(VarName))
+      return LogError(("Variable '" + VarName +
+                       "' already declared in this scope")
+                          .c_str());
+  } else if (!IsDeclaredVar(VarName)) {
+    return LogError("Assignment to undeclared variable");
+  }
 
-  auto Start = ParseExpression();
-  if (!Start)
-    return nullptr;
-
-  if (CurTok != ',')
-    return LogError("Expected ',' after for start value");
-  getNextToken(); // eat ','
-
-  auto Cond = ParseExpression();
-  if (!Cond)
-    return nullptr;
-
-  if (CurTok != ',')
-    return LogError("Expected ',' after for condition");
-  getNextToken(); // eat ','
-
-  auto Step = ParseExpression();
-  if (!Step)
-    return nullptr;
-
-  if (CurTok != ':')
-    return LogError("Expected ':' after for step");
-  getNextToken(); // eat ':'
-
-  // Parse the suite after ':' (inline statement or indented block).
+  unique_ptr<ExprAST> Start, Cond, Step, Body;
   bool BodyIsBlock = false;
-  unique_ptr<ExprAST> Body = ParseSuite(&BodyIsBlock);
-  if (!Body)
-    return nullptr;
+
+  if (IsVarDecl) {
+    LoopScopeGuard LoopScope(VarName);
+    if (!ParseForParts(Start, Cond, Step, Body, BodyIsBlock))
+      return nullptr;
+  } else {
+    if (!ParseForParts(Start, Cond, Step, Body, BodyIsBlock))
+      return nullptr;
+  }
 
   LastStatementWasBlock = BodyIsBlock;
-  return make_unique<ForExprAST>(VarName, std::move(Start), std::move(Cond),
-                                 std::move(Step), std::move(Body));
+  return make_unique<ForExprAST>(VarName, IsVarDecl, std::move(Start),
+                                 std::move(Cond), std::move(Step),
+                                 std::move(Body));
 }
 
 /// varstmt
@@ -2098,11 +2131,21 @@ Value *IfStmtAST::codegen() {
 Value *ForExprAST::codegen() {
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
 
+  AllocaInst *Alloca = nullptr;
+  AllocaInst *OldVal = nullptr;
+  if (IsVarDecl) {
+    Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
+  } else {
+    auto It = NamedValues.find(VarName);
+    if (It == NamedValues.end() || !It->second)
+      return LogErrorV("Unknown variable name");
+    Alloca = It->second;
+  }
+
   Value *StartVal = Start->codegen();
   if (!StartVal)
     return nullptr;
 
-  AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
   Builder->CreateStore(StartVal, Alloca);
 
   BasicBlock *CondBB =
@@ -2116,8 +2159,10 @@ Value *ForExprAST::codegen() {
 
   Builder->SetInsertPoint(CondBB);
 
-  AllocaInst *OldVal = NamedValues[VarName];
-  NamedValues[VarName] = Alloca;
+  if (IsVarDecl) {
+    OldVal = NamedValues[VarName];
+    NamedValues[VarName] = Alloca;
+  }
 
   Value *CondVal = Cond->codegen();
   if (!CondVal)
@@ -2144,10 +2189,12 @@ Value *ForExprAST::codegen() {
 
   Builder->SetInsertPoint(AfterBB);
 
-  if (OldVal)
-    NamedValues[VarName] = OldVal;
-  else
-    NamedValues.erase(VarName);
+  if (IsVarDecl) {
+    if (OldVal)
+      NamedValues[VarName] = OldVal;
+    else
+      NamedValues.erase(VarName);
+  }
 
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }

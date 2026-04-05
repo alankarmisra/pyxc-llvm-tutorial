@@ -1,0 +1,16 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 1.000000
+# CHECK: 2.000000
+# CHECK: 3.000000
+
+# Tests: for loop allows optional 'var' before the loop variable.
+# forstmt = "for" [ "var" ] identifier "=" expression "," expression "," expression ":" suite
+
+extern def printd(x)
+
+def count(n):
+    for var i = 1, i <= n, 1:
+        printd(i)
+    return 0
+
+count(3)

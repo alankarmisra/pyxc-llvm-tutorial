@@ -11,7 +11,7 @@ description: "Switch from expression-only bodies to statement blocks with indent
 ```python
 ready> def sum_to(n):
     var acc = 0
-    for i = 1, i <= n, 1:
+    for var i = 1, i <= n, 1:
         acc = acc + i
     return acc
 ```
@@ -41,7 +41,7 @@ decorateddef = binarydecorator eols "def" binaryopprototype ":" ( simplestmt | e
 
 (* new: statement forms *)
 ifstmt       = "if" expression ":" suite [ eols "else" ":" suite ] ;
-forstmt      = "for" identifier "=" expression "," expression "," expression ":" suite ;
+forstmt      = "for" [ "var" ] identifier "=" expression "," expression "," expression ":" suite ;
 varstmt      = "var" varbinding { "," varbinding } ;  (* no body — var is now a statement *)
 assignstmt   = identifier "=" expression ;
 returnstmt   = "return" expression ;
@@ -91,7 +91,7 @@ external        = "extern" "def" prototype ;
 toplevelexpr    = expression ;
 prototype       = identifier "(" [ identifier { "," identifier } ] ")" ;
 ifstmt          = "if" expression ":" suite [ eols "else" ":" suite ] ;
-forstmt         = "for" identifier "=" expression "," expression "," expression ":" suite ;
+forstmt         = "for" [ "var" ] identifier "=" expression "," expression "," expression ":" suite ;
 varstmt         = "var" varbinding { "," varbinding } ;
 assignstmt      = identifier "=" expression ;
 simplestmt      = returnstmt | varstmt | assignstmt | expression ;
@@ -140,14 +140,14 @@ That last part is the problem. In the REPL, each top-level input is compiled int
 Before this chapter, `if`, `for`, and `var` were expressions — they produced a value and could be nested:
 
 ```python
-var acc = 0: for i = 1, ...: acc = acc + i
+var acc = 0: for var i = 1, ...: acc = acc + i
 ```
 
 Statements don't produce values — they *do* things. Once `if`, `for`, `var`, and `return` are statements, a function body becomes a flat list of them:
 
 ```python
 var acc = 0
-for i = 1, ...:
+for var i = 1, ...:
     acc = acc + i
 return acc
 ```
@@ -328,7 +328,7 @@ ready> x = 1
 Error: Assignment to undeclared variable
 ```
 
-To detect this, the parser maintains a scope stack of declared variable names. `var` declarations register names; `for` loops introduce a loop variable into a temporary inner scope:
+To detect this, the parser maintains a scope stack of declared variable names. `var` declarations register names; `for var` loops introduce a loop variable into a temporary inner scope:
 
 ```cpp
 static vector<set<string>> VarScopes;
@@ -397,12 +397,14 @@ static unique_ptr<FunctionAST> ParseDefinition() {
 }
 ```
 
-`ParseForStmt` creates a `LoopScopeGuard` for the loop variable:
+`ParseForStmt` creates a `LoopScopeGuard` only when the loop introduces a new
+variable with `var`. Without `var`, the loop reuses an existing variable and
+errors if it is undeclared.
 
 ```cpp
 string VarName = IdentifierStr;
 getNextToken(); // eat identifier
-LoopScopeGuard LoopScope(VarName); // loop var in scope for cond, step, body
+LoopScopeGuard LoopScope(VarName); // only when "var" is present
 ```
 
 ## Parsing a Suite
@@ -737,7 +739,7 @@ This is what lets a file contain two top-level definitions back to back without 
 - `var` is block-scoped. A variable declared inside an `if` or `for` block is not visible after that block exits. An outer variable with the same name is shadowed inside the block and restored when the block exits.
 - Declaring the same variable twice in the same block is a parse-time error.
 - Assignment only works on variables that were declared with `var` or are function parameters. Undeclared assignments are rejected at parse time.
-- `for` introduces a loop variable scoped to the loop body only.
+- `for var` introduces a loop variable scoped to the loop body only.
 - The inline body of a `def` accepts only a `simplestmt`. Compound statements (`if`, `for`) require an indented block.
 
 ## Known Limitations
@@ -801,7 +803,7 @@ Accumulator loop — the [chapter 10](chapter-10.md) workaround, now written nat
 ```python
 ready> def sum_to(n):
     var acc = 0
-    for i = 1, i <= n, 1:
+    for var i = 1, i <= n, 1:
         acc = acc + i
     return acc
 ```
