@@ -81,3 +81,4 @@ old_chapters/
 
 **/.cache/
 **/build/
+.cache/
