@@ -42,7 +42,7 @@ lvalue          = identifier ;
 varbinding      = identifier ":" type [ "=" expression ] ;
 unaryexpr       = unaryop unaryexpr | primary ;
 unaryop         = "-" | userdefunaryop ;
-primary         = castexpr | identifierexpr | numberexpr | bool-literal | parenexpr ;
+primary         = castexpr | identifierexpr | numberexpr | bool_literal | parenexpr ;
 castexpr        = casttype "(" expression ")" ;
 identifierexpr  = identifier | callexpr ;
 callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
@@ -68,6 +68,7 @@ casttype        = "int" | "int8" | "int16" | "int32" | "int64"
 integer         = digit { digit } ;
 number          = digit { digit } [ "." { digit } ]
                 | "." digit { digit } ;
+bool_literal    = "True" | "False" ;
 letter          = "A".."Z" | "a".."z" ;
 digit           = "0".."9" ;
 eol             = "\r\n" | "\r" | "\n" ;

@@ -3486,8 +3486,8 @@ int main(int argc, const char **argv) {
   }
 
   // Initialise LLVM's backend for the host machine. These three calls
-  // together register the native target's instruction set, assembler, and
-  // disassembler so the JIT can compile and link for the current CPU.
+  // register the native target's instruction set, assembler, and disassembler
+  // so both the JIT and the file-emission paths can generate code.
   InitializeNativeTarget();
   InitializeNativeTargetAsmPrinter();
   InitializeNativeTargetAsmParser();

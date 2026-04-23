@@ -1,36 +1,34 @@
 ---
-description: "Teach the compiler to read: break source text into tokens the parser can work with."
+description: "Let's start at the very beginning. A very good place to start."
 ---
-# 1. Pyxc: The First Pass
+# 1. Pyxc: Let's start at the very beginning. 
 
-## Where We're Headed
+## A very good place to start.
 
-By the end of this tutorial, you'll have built a compiler for a Python-like language that compiles to native code and runs directly on your CPU — no interpreter overhead.
+Writing compilers isn't hard. It's just a lot of moving parts. So we, the programmer, do what we always do. We start small and build from there. If something doesn't make sense to us, we [discuss it](#need-help) with people.  
 
-In the initial chapters, we keep the language small and simple — no `if` conditionals or `for` loops, and only 64-bit floating point types. We will introduce more sophisticated patterns little by little. Here's what we are going to build over the next few chapters:
+Let me show you what we're working towards as a first pass. 
 
 ```python
 # test.pyxc
-extern def sin(x)    # pull in a C-standard library function (yes THAT C)
-extern def cos(x)    # and another
-extern def printd(x) # a custom pyxc library function
+extern def sin(x)    # pull in a C-standard library function with extern(al) - free lunch
+extern def cos(x)    # and another - more free lunch
+extern def printd(x) # write a custom pyxc library function
 
-# define your own function
-def identity(x): # returns double by default
+# define your own function (wowza)
+def identity(x): # returns float64 by default
     return sin(x) * sin(x) + cos(x) * cos(x)
 
-printd(identity(4)) # function calls
+printd(identity(4)) # call the function. 
 ```
 
-By chapter 6, running this file will output:
+By [chapter 6](chapter-06.md), running this file will output:
 
 ```bash
 1.000000
 ```
 
-## Where We Are
-
-There is no compiler yet — just a blank C++ file. By the end of this chapter, the lexer can read source text and classify every piece of it into tokens. That's what we're building.
+6 chapters!? Yes. But don't be disheartened. We will define and accomplish many milestones along the way to keep the momentum going. You've already accomplished something by getting to this tutorial. But don't call it a day yet. 
 
 ## Source Code
 
@@ -39,29 +37,33 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-01
 ```
 
-## Breaking Source Text Into Tokens
+## What does it all mean?
 
-The very first thing a compiler needs to do is read source text and classify each piece — is this a number? A function name? A `+` sign? A keyword like `def`? Let's add this first.  We begin by scanning the source text and grouping characters into classified chunks:
+Say we write this code:
 
 **Input:**
 ```python
-def add(x, y):
-    return x + y
+def add(x,y):
+    return x + y    
 ```
 
-**Output:**
+You, the  programmer, already know that `def` is a *keyword*, `add` is a *function name*, `x` and `y` are *parameters*, and so on. We also have a *comment* on the first line. Now let's help the compiler understand the same. In more concrete terms, the compiler should be able to read the above source text and produce something like:
+
 ```
-keyword:'def'  name:'add'  '('  name:'x'  ','  name:'y'  ')'  ':'  newline
-keyword:'return'  name:'x'  '+'  name:'y'  newline
+keyword:'def'  identifier:'add'  '('  identifier:'x'  ','  identifier:'y'  ')'  ':'  newline
+keyword:'return'  identifier:'x'  '+'  identifier:'y'  newline
 ```
 
-Each chunk is one **token** — a classified piece of source text. The code doing this doesn't understand what `def` *means* yet — it just recognises *"this is the keyword `def`."* Figuring out what it means is the next chapter's job.
+Each individual element like keyword: 'def', identifier:'add' is called a token. Notice that we've used a *identifier* token for both *function names* and *parameter names*. Turns out, this is enough for understanding the intention of the source program in later phases. This step of breaking up the source into tokens is called **lexing** (from Latin *lexis*, meaning word). 
 
-The scanning step is called **lexing** (from Latin *lexis*, meaning word). 
+## Tokens
 
-## Token Types
+*Tokens* swap out the string for a single number. For example, *def* could be represented by -3 (I don't know why I picked -3, it's just some number). This makes equality comparisons quicker. An equality check like `"def" == "def"` takes 3 character comparisons. An equality check of -3 == -3 takes only one. Spread over many keywords across many source files, it can save us a fair bit of string comparison time. But this isn’t really about speed only. It’s about structure. Instead of dealing with raw text everywhere, we convert it into a small set of known building blocks. That makes the rest of the compiler much simpler to think about.
 
-We define an enum for the kinds of tokens we need:
+Enough talk. Let's get building.
+
+### Defining tokens
+We define an enum for *a few* of the kinds of tokens we need. Our first few lines of actual code.
 
 ```cpp
 enum Token {
@@ -78,14 +80,13 @@ enum Token {
 };
 ```
 
-Why negative numbers? Because single-character tokens like `+`, `(`, and `)` are returned directly as their ASCII values, which are all positive. Negative values for named tokens means the two ranges never collide.
+What's with the negative numbers? In addition to the tokens above, we also have single character tokens like  `+`, `(`, and `)`. For these, we simply return their ASCII value. Saves us the headache of having a tok_* enum for every possible token. So single character tokens are positive ASCII values and multi-character and special-character tokens are negative enum values. No accidental collisions between single-character and multi-character tokens. We could also just use high positive numbers for the enum - beyond the ascii range. Both approaches are valid. All tokens are integers in the end. 
 
-For example:
 - `tok_def` → -3
 - `+` → 43 (ASCII)
 - `(` → 40 (ASCII)
 
-We also need two global variables to carry extra data alongside a token return value:
+We also use two global variables to carry extra data alongside a token return value:
 
 ```cpp
 static string IdentifierStr; // Filled in if tok_identifier
@@ -97,7 +98,7 @@ When it sees `3.14`, it returns `tok_number` and sets `NumVal = 3.14`.
 
 ## Reading Characters
 
-Instead of calling `getchar()` directly throughout the lexer, we wrap it in a helper:
+Old Mac OS versions chose '\r' to represent a newline, the new Macs chose '\n', while Windows chose '\r\n'. Regardless of our personal beliefs, we can't be choosing sides if we want our programming language to be world-class. So we *normalize* the newlines which is to say we make them all the same - and we choose what this *same* is. Note that we don't modify the source in any way. We only change the internal representation so our compiler can have a more predictable newline token. We run with '\n'. The following is our helper function that reads one character at a time while *normalizing* newlines. 
 
 ```cpp
 int advance() {
@@ -115,38 +116,44 @@ int advance() {
 }
 ```
 
-This normalizes line endings across platforms: Windows sends `\r\n`, old Macs send bare `\r`. We collapse both to `\n` once here so the rest of the lexer never has to think about it again.
 
 ## gettok(): Reading One Token at a Time
 
-This is the heart of the chapter. Every time the compiler needs the next piece of source text, it calls `gettok()`. It reads characters and returns a token.
+This is what we came here for. This is the function that reads the characters and converts them to tokens. It returns one token for every call.
 
 ```cpp
 int gettok() {
   static int LastChar = ' ';
 ```
 
-`LastChar` is `static`, so it persists between calls. It holds the last character read that hasn't been consumed yet — the one-character lookahead every lexer needs. We initialize it to `' '` (a space) so the whitespace-skipping loop below runs immediately on the first call, which reads the actual first character of input.
-
-### Skip Whitespace (But Not Newlines)
+We initialize the static `LastChar` to a *space*. Then in the following loop we start reading over spaces until we reach some actual characters.
 
 ```cpp
   while (isspace(LastChar) && LastChar != '\n')
     LastChar = advance();
 ```
 
-We skip spaces and tabs, but keep newlines. In a Python-like language, newlines end statements — they're meaningful to the parser. So we preserve them.
+ Note that `gettok()` doesn't just skip spaces on the top of the file or the beginning of a line. It also skips spaces *between* tokens. Here's a concrete example:
+ 
+ ```python
+# main.pyxc
 
-### Newlines
-
+#  ^------- gettok() will skip all this space
+def add(x,y):    
+#  ^------- gettok() will skip this space too     
+    return x + y
+# ^------- gettok() will skip these spaces too
+ ```
+ 
+We could have initialized `LastChar` to something different like maybe an additional token **init_token** = *-1000000*  but then we'd have to write:
 ```cpp
-  if (LastChar == '\n') {
-    LastChar = ' ';
-    return tok_eol;
-  }
+  while ((isspace(LastChar) || LastChar == init_token) && LastChar != '\n')
+    LastChar = advance();
 ```
 
-We don't call `advance()` here. If we did, the REPL would stall — `getchar()` waits for the next line of input before returning, so the prompt would freeze after every newline. Setting `LastChar = ' '` lets us return `tok_eol` immediately; the whitespace-skip loop at the top of the next `gettok()` call will read the next character when it's actually needed.
+By initializing it to a *space*, we avoid one additional test. If you think this is nitpicking, you're not wrong and it wouldn't be terrible to just use an init_token. This is not a hill we die on. 
+
+Now let's look at how we read in different kinds of tokens. As a general rule, `LastChar` holds the last character read that *hasn't been consumed yet* by the end of gettok(). This lets the lexer figure out what kind of token it is looking at (number, identifier, etc). 
 
 ### Identifiers and Keywords
 
@@ -155,12 +162,14 @@ We don't call `advance()` here. If we did, the REPL would stall — `getchar()` 
     IdentifierStr = LastChar;
     while (isalnum(LastChar = advance()) || LastChar == '_')
       IdentifierStr += LastChar;
-
+    
     if (IdentifierStr == "def")    return tok_def;
     if (IdentifierStr == "extern") return tok_extern;
     if (IdentifierStr == "return") return tok_return;
-
+    
     return tok_identifier;
+    
+    // LastChar is a character that is neither an alphabet nor a number, i.e the last unprocessed character. 
   }
 ```
 
@@ -171,7 +180,7 @@ Examples:
 - `foo` → `tok_identifier`, `IdentifierStr = "foo"`
 - `my_var` → `tok_identifier`, `IdentifierStr = "my_var"`
 
-The if-chain is simple and clear for three keywords. In a later chapter, when we add more keywords (like `if`, `else`, `while`, `let`), we'll move this into a map. For now, we leave a TODO in the code so we remember to do it later.
+The if-chain is simple and clear for three keywords. In a later chapter, when we add more keywords (like `if`, `else`, `while`, `var`), we'll move this into a map. For now, we leave a TODO in the code so we remember to do it later.
 
 ### Numbers
 
@@ -195,7 +204,20 @@ This works correctly for normal inputs:
 - `3.14` → `tok_number`, `NumVal = 3.14`
 - `.5` → `tok_number`, `NumVal = 0.5`
 
-There is a subtle bug though. `strtod` parses as far as it can and stops at the second `.`. The rest of `1.23.45.67` — the `.45.67` part — is effectively ignored. We'll fix this in a later chapter by checking where `strtod` stopped and erroring on leftover junk. For now, we leave a TODO in the code and move on — it's not a problem for valid input.
+There is a subtle issue though. `strtod` parses as far as it can and stops at the second `.`. The rest of `1.23.45.67` — the `.45.67` part — is effectively ignored. We'll fix this in a later chapter by checking where `strtod` stopped and erroring on leftover junk. For now, we leave a TODO in the code and move on — it's not a problem for valid input.
+
+Next, we deal with newlines. We keep them instead of reading over them. In a Python-like language, newlines mark the end of statements — they're meaningful to the parser. So we preserve them. In C++, we could throw them away. 
+
+### Newlines
+
+```cpp
+  if (LastChar == '\n') {
+    LastChar = ' ';
+    return tok_eol;
+  }
+```
+
+We break the 'LastChar is the next unprocessed character' rule here. We don't call `advance()`. If we did call advance() here, the compiler would immediately go looking for the next character. If you're typing live into the terminal (the REPL), the program would just sit there staring at you, waiting for more input before it even finished processing the line you just hit Enter on. It’s the programming equivalent of an awkward silence. By setting LastChar = ' ' manually, we give the program a little nudge to keep moving. The next time gettok() is called, it will skip over it and read the actual next token.
 
 ### Comments
 
@@ -212,7 +234,7 @@ There is a subtle bug though. `strtod` parses as far as it can and stops at the 
   }
 ```
 
-Comments run from `#` to the end of the line. We discard all of it and return `tok_eol` as if the comment were a blank line. The parser will never know the comment existed.
+Comments run from `#` to the end of the line. We discard all of it and return `tok_eol` as if the comment were a blank line. 
 
 The `LastChar = ' '` trick is the same as in the Newlines case — return immediately rather than blocking the REPL.
 
@@ -253,7 +275,7 @@ static map<int, string> TokenNames = {
 };
 ```
 
-In Chapter 3, `TokenNames` grows to cover every possible token — including single-character ones like `+` and `(` — with friendlier names for error messages.
+In [Chapter 3](chapter-03.md), `TokenNames` grows to cover every possible token — including single-character ones like `+` and `(` — with friendlier names for error messages.
 
 `main()` calls `gettok()` in a loop and prints each token:
 
@@ -274,7 +296,7 @@ int main() {
 }
 ```
 
-`tok_identifier` and `tok_number` are handled separately because the token integer alone isn't enough — the associated payload (`IdentifierStr` and `NumVal`) needs to be printed too. All other named tokens go through `TokenNames`. Single-character tokens (positive ASCII values) print as `'c'`.
+`tok_identifier` and `tok_number` are handled separately because the token value alone isn't enough — we need the associated data (`IdentifierStr` and `NumVal`) to be printed too. All other named tokens go through `TokenNames`. Single-character tokens (positive ASCII values) print as `'c'`.
 
 ## Build and Run
 

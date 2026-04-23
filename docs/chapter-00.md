@@ -1,43 +1,49 @@
 ---
-title: "Build Your First Language with LLVM"
+title: "Build Your First Programming Language with LLVM"
 description: "Learn compilers by building a real programming language from scratch—no experience required."
 ---
-# Pyxc: Build Your First Language with LLVM
+# pyxc: Build Your First Programming Language with LLVM
 
-**Requirements:** You know C++. That's it. No compiler background needed.
+## Requirements
 
-## What You'll Build
+You should know some C++. You really don't need to be a master craftsman though. We'll use basic C++ and if we do venture into something complex-y (no, that's not a word), I'll *ELI5* it for you. You don't need to know any compiler theory. We will learn by doing. A lot of the compiler theory you learn elsewhere will automagically make sense once you build a compiler on your own. The theory can then help you structure and expand your thinking to problems we have not considered here, or more excitingly, not considered anywhere else in the world. 
 
-A programming language called **Pyxc** (pronounced "Pixie"). It looks like Python, compiles to native code, and runs fast.
+You definitely do not need to know what `LLVM` is, except that it will help you write compilers faster. LLVM has been used to write Rust, Swift, Kotlin/Native, C/C++ compilers (Clang), among others. Using the `IIGEFTIGEFU` principle (*if it's good enough for them, it's good enough for us*), we will use LLVM. You might describe the acronym as gloriously over-engineered. I might ignore you. 
 
-You'll learn:
-- How lexers and parsers work
-- How compilers generate code
-- How LLVM optimizes your code
-- How to build a real toolchain (compiler, linker, debugger)
+You should know that there are alternatives to LLVM. Regardless of what tool you use, the fundamentals won't change. LLVM works, and works well for our purposes. 
 
-By the end, you'll have a working language that:
-- Compiles functions and expressions
-- Calls C libraries
-- Generates optimized native executables
-- Includes debug information
-- Links using LLVM's built-in linker
+## What We'll Build
+
+We'll invent a programming language called **pyxc** (pronounced "Pixie") that resembles Python syntax. *Pythonic*, if you will. It will run interactively through a REPL using just-in-time compilation (fast), or compile down to a native executable (very fast). I'm not going to expend a paragraph, or two, or three, trying to convince you that doing this is a good idea, and that doing this with *this* tutorial is an even better idea. I'm going to assume, rather naively, that if you are here, building a compiler is something you want to do with me. As you progress through the tutorial, you will be the ultimate arbiter of whether this tutorial is a good fit for your preferred pace and style. It's hard, if not impossible to cater to everyone, but I've tried to keep things simple enough to cater to the hobbyist language designer while not dumbing it down to feel like a toy. 
+
+## Why "pyxc"? 
+pyxc is small, nimble, fast, executable, and magical. I made all that up. I only thought of "Py" and "x-cutable" and munged the two. 
+
+## Skip, start building, or keep reading.
+
+The rest of this page is a roadmap and I honestly won't judge you if you just dive into [Chapter 1](chapter-01.md) and get building.  But if you're the sort who needs some structure, read ahead. 
 
 ## Where We're Headed
 
-**Chapters 1-3** build the front end: lexer, parser, and a polished error-reporting layer.
+In **Chapters 1-3**, we build the analysis part of the pyxc programming language. The compiler will understand our program's structure and intention, and inform us when it finds something unexpected and/or funky. 
 
-**Chapters 4-5** set up LLVM and connect the AST to real code generation.
+In **Chapter 4** we set up LLVM. It could be smooth. It could be bumpy. If it's the latter, allow yourself a break. But do come back, because the compiler isn't going to build itself.
 
-**Chapters 6–11** add language features: JIT evaluation, file input, control flow (`if`/`for`), user-defined operators, mutable variables, and real statement blocks with Python-style indentation.
+In **Chapter 5** we will extend our compiler to convert our program's intentions into LLVM's internal representation (IR). The IR looks a lot like assembly, but is specific to LLVM. It is what LLVM converts to machine code. You won't have to write the IR by hand though. LLVM has an easy interface that does all the heavy lifting.
 
-**Chapters 12–15** turn Pyxc into a real toolchain: a proper CLI with emit modes, object file output, native executable linking, and DWARF debug info for source-level debugging.
+By **Chapter 6 and 7** we will be able to generate and run this IR code in either a python-like interactive REPL interface, or from a source file. At this point, we will be able to write short programs that will outperform similar Python code (do people still say "no cap"?). 
 
-**Chapter 16** adds a static type system: `int`, `int8`, `int16`, `int64`, `float32`, `float64`, `bool`, and `None` (void). Parameters, variables, and return types are all explicitly annotated.
+We will text our loved ones who don't quite understand what we actually do and tell them we've invented our own programming language, and that it just printed `1.000000` on the terminal - and that it did it really really fast. They will say something encouraging and hang up on us. We will continue marveling at our first ever output from our first ever programming language. Butterflies and goosebumps galore. 
 
-**Chapters 17–20** add structs, pointers, C interop, and `while` loops — culminating in the full Mandelbrot renderer from this page's preview.
+In **Chapters 8–11** we will add language features such as control flow (`if`/`for`), user-defined operators, mutable variables, and *real statement blocks* with Python-style indentation. People will confuse our code with real python. Facts. 
 
-Here's what Pyxc looks like after chapter 11 — everything below runs today:
+In **Chapters 12–15** we will add the missing bells and whistles to make the pyxc compiler feel like a production compiler: a proper command line interface with emit modes, object file output, native executable linking, and debug info for source-level debugging. If some of these terms make no sense to you, don't worry about it. You will soon. 
+
+In **Chapter 16** we will add a static type system: `int`, `int8`, `int16`, `int64`, `float32`, `float64`, `bool`, and `None` (void) which will allow us to write programs that rival C/C++/Rust speeds and outperform Python. Again, *no cap*. 
+
+In **Chapters 17–20** we will implement structs and pointers, `while` loops, and some memory management and file I/O interfaces that will bring the language ever closer to being used in your real-world programming projects. 
+
+Here's what pyxc looks like after [chapter 11](chapter-11.md) — everything below runs today:
 
 ```python
 extern def printd(x)
@@ -70,30 +76,15 @@ printd(2 ^ 10)         # 1024
 printd(collatz(27))    # 111
 ```
 
-Further ahead: richer types, structs, a type system, and a complete native toolchain.
-
 ## Credits
 
-The early chapters are inspired by the excellent [LLVM Kaleidoscope Tutorial](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html). We start there, then go further with Python-style syntax and a complete toolchain.
-
-If you finish this tutorial, you'll understand how real compilers work.
-
-## How to Use This Tutorial
-
-Each chapter builds on the previous one. You can:
-- Follow in order (recommended for beginners)
-- Skip ahead if you know lexing/parsing
-- Jump to specific topics (optimization, debug info, etc.)
-
-**Code style note:** Early chapters use globals and simple code to focus on concepts. This is intentional—learn the ideas first, polish later.
-
-**Experiment!** Clone the code, break things, add features. That's how you learn.
+The early chapters are inspired by the excellent [LLVM Kaleidoscope Tutorial](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html). It is brilliant in its pacing and leaves a reader more curious and wanting. I reworked that tutorial to suit a syntax, tone and depth that made more sense to me and hopefully it will make more sense to someone else too. Everything the Kaleidoscope tutorial covers, this one does too. In later chapters, we'll have fun pushing the compiler further in order to support more advanced features. And I hope, that as torch bearers, at least one of you decides to push it further than I have. We have a lot of privilege to be able to learn what we do, and to do what we do. It is only fair that we share and spread this privilege to the far corners of the earth. But, as my mother would often say, "No pressure. Have fun."
 
 ## Chapter Guide
 
 ### The Front End (Start Here)
 
-**[Chapter 1: The Lexer](chapter-01.md)** — Break source code into tokens. The first step of any compiler.
+**[Chapter 1: The Lexer](chapter-01.md)** — Let's start at the very beginning. A very good place to start.
 
 **[Chapter 2: The Parser and AST](chapter-02.md)** — Turn tokens into a tree. Build a recursive descent parser and see "Parsed a function definition." for the first time.
 
@@ -115,7 +106,7 @@ Each chapter builds on the previous one. You can:
 
 **[Chapter 8: Control Flow](chapter-08.md)** — Define comparison operators and add `if`/`else` expressions and `for` loops. Render the Mandelbrot set in ASCII.
 
-**[Chapter 9: User-Defined Operators](chapter-09.md)** — Add `@binary(N)` and `@unary` decorators so Pyxc programs can define new operators. Re-render the Mandelbrot with density shading.
+**[Chapter 9: User-Defined Operators](chapter-09.md)** — Add `@binary(N)` and `@unary` decorators so pyxc programs can define new operators. Re-render the Mandelbrot with density shading.
 
 **[Chapter 10: Mutable Variables](chapter-10.md)** — Add mutable local variables and assignment using a temporary `var ... :` expression form backed by allocas, loads, and stores.
 
@@ -148,24 +139,6 @@ Each chapter builds on the previous one. You can:
 **[Chapter 20: While Loops and the Full Mandelbrot](chapter-20.md)** — Add `while`. Build the full Mandelbrot renderer using structs, pointers, and I/O — the complete program shown in this tutorial's preview.
 -->
 
-## What You'll Learn
-
-By the end of the current chapters:
-- **Lexing** - Tokenizing source code
-- **Parsing** - Recursive descent, operator precedence
-- **AST** - Tree representations of code
-- **Code generation** - AST → LLVM IR
-- **Optimization** - LLVM's pass system
-- **JIT compilation** - Execute code immediately
-- **Object files** - Generate relocatable object code
-- **Debugging** - DWARF debug info
-- **Native executables** - Link object files into real binaries with LLD
-- **Linking internals** - Symbol resolution, relocation, object file formats
-- **Toolchain** - CLI, build modes, error messages
-- **Type systems** - Static types, type checking, explicit casts, void semantics
-
-And you'll have built a real compiler from scratch.
-
 ## Need Help?
 
 Stuck? Confused? Found a bug?
@@ -179,13 +152,5 @@ When asking for help, include:
 - Your OS and platform
 - Full error message
 - What you tried
-
-We're here to help. Let's build this thing.
-
-## Start Building
-
-<!-- Ready? [Start with Chapter 1: The Lexer](chapter-01.md)
-
-Or browse the chapters above and jump to what interests you. -->
 
 Welcome to compiler development. It's not magic—it's just code. Let's build.

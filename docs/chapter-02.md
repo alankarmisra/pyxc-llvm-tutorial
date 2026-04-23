@@ -8,15 +8,16 @@ description: "Build a recursive-descent parser and AST: turn tokens into structu
 In [Chapter 1](chapter-01.md) we built a lexer that turns raw source text into a stream of tokens. Given this:
 
 ```python
-def add(x, y):
+# adds two numbers
+def add(x, y):    
     return x + y
 ```
 
 The lexer produces:
 
 ```
-'def'  'add'  '('  'x'  ','  'y'  ')'  ':'  newline
-'return'  'x'  '+'  'y'  newline
+keyword:'def'  identifier:'add'  '('  identifier:'x'  ','  identifier:'y'  ')'  ':'  newline
+keyword:'return'  identifier:'x'  '+'  identifier:'y'  newline
 ```
 
 That's progress — the noise (whitespace, comments) is gone. But we still just have a flat list. We don't know that `add` is a function name, that `x` and `y` are its parameters, or that `x + y` is its return value.
@@ -29,7 +30,7 @@ return x + y
 Parsed a function definition.
 ```
 
-The structure has been understood and validated. That's what we're building.
+The structure has been understood and validated. That's what we're building. 
 
 ## Source Code
 
@@ -40,20 +41,20 @@ cd pyxc-llvm-tutorial/code/chapter-02
 
 ## Writing Down the Rules
 
-Before we can write a parser, we need to write down the rules of the language. What's a valid program? What's a valid function? What's a valid expression?
+Before we can write a parser - that bit of the compiler that verifies the syntax of your program - we need to write down the rules of the language. These rules are called the *grammar* of the language just like they are with human languages. What's a valid program? What's a valid function? What's a valid expression? Grammars are meant to give more structure to implementation efforts, but if you've never written a parser, it will just feel like a lot of cognitive load. As a consequence, my recommendation is to skim through the grammar section, have a vague language structure in your head, write the parser to fortify your understanding of the mechanics, and then come back to the grammar section to polish off your theoretical concepts. You might find yourself referencing the grammar more than once as you proceed through the parser implementation. I've put grammar snippets everywhere to reduce scroll fatigue. Once you've had enough experience, it will become second nature to write the grammar first before moving on to the implementation.
 
 Let's start with one rule in plain English. A function definition looks like:
 
 ```text
-the word "def", then a function name, then a parameter list in parentheses,
-then a colon, then "return", then an expression
+the word "def", followed by a function name, a parameter list in parentheses,  
+a colon, optional newlines, "return", and finally, an expression.
 ```
 
-Already verbose for one rule. Now let's tighten it up.
+Already verbose for one rule. Now let's tighten it up and invent a shorthand.
 
 ### A Compact Notation for Grammar Rules
 
-It gets tedious to write grammar rules in plain English. Let's invent a shorthand. We'll use:
+I've invented the following notation for myself. The notation isn't set in stone. Nothing is, except maybe the physical laws. And don't let them fool you into believing that taxes are inevitable either. Now, you could invent your own notation and that's totally fine. But I'll use my notation for the rest of the tutorial, so maybe just familiarize yourself with this one. You can discard it from your human memory once you're done with the tutorial and replace it with something you prefer.
 
 - Quoted text like `"def"` for exact keywords and punctuation
 - Unquoted words like `identifier` or `expression` for "fill in a valid thing of this kind here"
@@ -67,15 +68,15 @@ With that shorthand, a function definition becomes:
 definition = "def" prototype ":" [ eols ] "return" expression
 ```
 
-In plain English: the keyword `def`, then a prototype, then `:`, then optionally one or more newlines, then `return`, then an expression — exactly what we wrote above, just more compact. Notice that `prototype` and `expression` are without quotes — they are themselves rules, not literal text. The grammar is written top-down: we expand on `prototype` and `expression` below, and the full grammar appears at the end of this section.
+In plain English: *the keyword `def`, then a prototype, then `:`, then optionally one or more newlines, then `return`, then an expression* — exactly what we wrote above, just more compact. Notice that `prototype` and `expression` are without quotes — they are themselves rules, not literal text. The grammar is written top-down: we expand on `prototype` and `expression` below, and the full grammar appears at the end of this section.
 
-Here's `prototype` (just the signature — name and parameters):
+Here's `prototype` which is just the function signature.
 
 ```ebnf
 prototype = identifier "(" [ identifier { "," identifier } ] ")"
 ```
 
-In plain English: a function name (an identifier), then `(`, then optionally one or more comma-separated parameter names (also identifiers), then `)`.
+In plain English: *a function name (an identifier), then `(`, then optionally one or more comma-separated parameter names (also identifiers), then `)`*.
 
 And `expression`:
 
@@ -89,11 +90,11 @@ Where `primary` is the building block — a variable, a number, or a parenthesiz
 primary = identifierexpr | numberexpr | parenexpr ;
 ```
 
-This notation — named rules, `|`, `[ ]`, `{ }` — has a formal name: **EBNF**, short for Extended Backus-Naur Form. It's the standard way grammars are written in programming language textbooks. Now you've seen why it looks the way it does: it's just a compact version of the English description we started with.
+I totally lied about inventing this notation. It is used ubiquitously and has a formal name: **EBNF**, short for *Extended Backus-Naur Form*. But if I said that in the beginning, you'd think it's complicated. So we went the re-invention route. It's the standard way grammars are written in programming language textbooks with a few customizations based on author preferences. You can do this too. There is nothing magical about any of this. I've always had issues with theoretical foundations being written like they were invented by aliens with massive brains. Sure, the inventions were incredibly forward looking at the time, and all credit to the inventors. But placing things on a pedestal makes them opaque to scrutiny and recognizing that they aren't as complicated as one was made to believe. Meet your Gods. Recognize they are human. Respect them anyway.
 
 ### The Full Grammar
 
-Here's the complete grammar for Pyxc at this stage:
+Here's the complete grammar for Pyxc at this stage.  
 
 [pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-02/pyxc.ebnf)
 
@@ -129,58 +130,19 @@ eol            = "\r\n" | "\r" | "\n" ;
 ws             = " " | "\t" ;
 ```
 
-A few things to notice:
-
-- The grammar has two layers. The bottom rules — `identifier`, `number`, `letter`, `digit`, `eol`, `ws` — describe what the *lexer* understands: raw characters. The top rules — `expression`, `definition`, `prototype`, etc. — describe what the *parser* understands: tokens. The parser never sees individual characters; it only sees the tokens the lexer already produced.
-
-- `definition` requires `return`. Multi-statement bodies and indentation come in later chapters.
-
-- `external` is just a prototype with no body — a declaration for something that lives in a C library (like `sin` or `cos`). No body means we're just telling the compiler the name and parameter count.
-
-- `identifierexpr` handles both plain variable references `x`, and function calls `foo(a, b)`. The parser can tell them apart by the presence of `(` after the identifier. Let's discuss this lookahead concept a little more. 
-
-### How the Parser Chooses
-
-Look at the rule for `top`:
-
-```ebnf
-top = definition | external | toplevelexpr
-```
-
-How does the parser know which branch to take? It looks at the current token:
-
-- `def` → must be a `definition`
-- `extern` → must be an `external`
-- anything else → try `expression` 
-
-Each option starts with a different token, so the parser can decide immediately, with just one token of lookahead. This style — where you can always pick the right branch by looking at the next token — is called **top-down, one-token-lookahead** parsing (or LL(1) if you want the textbook name). 
-
-### Avoiding a Pitfall: Left Recursion
-
-There's a rule you can't write for a top-down parser: a rule that starts with itself.
-
-```ebnf
-(* DON'T DO THIS *)
-expression = expression binaryop primary | primary
-```
-
-The parser would try to parse `expression`, which requires parsing `expression`, which requires parsing `expression`... infinite recursion, immediate crash.
-
-The fix is to use iteration instead of recursion:
-
-```ebnf
-expression = primary { binaryop primary }
-```
-
-"Parse one primary, then loop and grab (operator, primary) pairs until there are no more." Same language, no recursion. Pyxc grammar always does this.
+The grammar has two layers. The bottom rules — `identifier`, `number`, `letter`, `digit`, `eol`, `ws` — describe what the *lexer* understands: raw characters and how they combine to form our tokens. The top rules — `expression`, `definition`, `prototype`, etc. — describe what the *parser* understands: the syntax of things. What token follows what other token and so on.
 
 ## Representing Structure
 
-A parser could just *validate* syntax — accept or reject the input — and throw everything away. But we need to *do* something with the code: generate machine instructions, optimize it, run it. So we build up a structured representation we can work with later.
+Look at the expression `(x + y) * 2`. You and I both know that the correct thing to do is to first add, then multiply. So we put all the items we want to add in one *bucket* or *folder* with an instruction to add the contents. 
 
-Think about a file system. A directory can contain files and other directories. You can navigate it, count items in it, search it, copy subtrees of it. It's a *tree* — a root node with children, each child potentially having more children, with leaves (files) at the bottom.
+```
+├── add (+)
+│   ├── variable "x"
+│   └── variable "y"
+```
 
-Code has the same shape. The expression `(x + y) * 2` breaks down like this:
+And then we put the result of that into a multiply bucket with the parameters that need to be multiplied with the result.
 
 ```
 multiply (*)
@@ -190,13 +152,21 @@ multiply (*)
 └── number 2.0
 ```
 
-The multiply node has two children: an add node (which itself has two children) and a number node. The leaves are variables and numbers. Multiply is the outermost node because it runs last — children are evaluated before their parent, so `a + b` is computed first and its result is passed up to `*`. The structure — which operation is nested inside which — captures the meaning of the expression without needing the parentheses anymore.
+Historically, such constructions have been represented as:
 
-We call this an **Abstract Syntax Tree** — "abstract" because we've stripped away the syntax details that were only needed for parsing (like the parentheses and the colon). What remains captures the *meaning* without the noise.
+```
+        (*)
+       /   \
+     (+)   2.0
+    /   \
+  "x"   "y"
+```  
+
+Looks like an upside-down tree no? With the root at the (\*), tiny branches, and the parameters can be the leaves. I'm not being creative. Computational literature uses exactly this analogy. This whole construction is called an **Abstract Syntax Tree** — "abstract" because we've stripped away the syntax details that were only needed for parsing (like the parentheses and the colon). What remains captures the *meaning* without the noise.
 
 ### The Node Classes
 
-We represent each kind of node as a C++ class. All expression nodes inherit from a common base:
+We represent each kind of node as a *expression* class:
 
 ```cpp
 class ExprAST {
@@ -205,9 +175,9 @@ public:
 };
 ```
 
-The virtual destructor is all we need for now. Later chapters will add virtual methods for code generation.
+The virtual destructor is all we need in the base class for now. 
 
-A number literal stores its value:
+A number literal stores its value as a double:
 
 ```cpp
 class NumberExprAST : public ExprAST {
@@ -251,7 +221,7 @@ public:
 };
 ```
 
-Functions are split into two classes. The prototype captures just the signature — name and parameter names. We need it separately because `extern` declarations have a prototype but no body:
+Functions are split into two classes. The prototype captures just the signature — name and parameter names. We need it separately because `extern` declarations have a prototype but no function body:
 
 ```cpp
 class PrototypeAST {
@@ -294,14 +264,17 @@ FunctionAST
 
 ### The Lookahead Invariant
 
-The parser needs to look at the current token to decide what to do. We keep one token of lookahead in a global:
+The parser needs to look at the current token to decide what to do. We keep one token of lookahead in a global. There are parsing strategies that use more than one token to determine future action. But we've designed the grammar in a way that one token is sufficient:
 
 ```cpp
 static int CurTok;
 static int getNextToken() { return CurTok = gettok(); }
 ```
 
-Every parse function operates by this invariant: **`CurTok` is already loaded when the function is called, and when the function returns, `CurTok` is pointing at the first token it did not consume.**
+If a value doesn’t change, we call it a constant (or immutable, depending on the language). 
+If a *fact about the program* doesn’t change, we call it an **invariant**.
+
+Every parse function operates by this invariant: *`CurTok` is already loaded when the function is called, and when the function returns, `CurTok` is pointing at the first token it did not consume.* This is always true in a compiler. 
 
 In other words: the function that calls you is responsible for loading `CurTok` before the call. You eat what you need, and leave the next thing for whoever called you.
 
@@ -320,13 +293,15 @@ unique_ptr<PrototypeAST> LogErrorP(const char *Str) { LogError(Str); return null
 unique_ptr<FunctionAST>  LogErrorF(const char *Str) { LogError(Str); return nullptr; }
 ```
 
-The `ready>` at the end keeps the REPL prompt in sync. If a parse error occurs on a non-printing token (like a bare newline), the main loop won't print a new prompt — so we print it here. [Chapter 3](chapter-03.md) replaces the raw token number with a readable token name and source location.
+You haven't seen the main loop yet, but if a parse error occurs at the end of a newline, the main loop won't print a new prompt — so we print it in LogError. This is one of those 'Trust me bro' moments.
+
+[Chapter 3](chapter-03.md) replaces the raw token number with a readable token name and source location.
 
 ### Operator Precedence
 
-Binary expressions can be ambiguous. Does `x + y * z` mean `(x+y)*z` or `x+(y*z)`? We want the second — `*` should bind more tightly than `+`.
+Since binary expressions can be ambiguous (does `x+y*z` mean `(x+y)*z` or `x+(y*z)` ?) we have to tell the compiler that `*` should *bind* more tightly than `+`. *Bind more tightly* is a fancy way of saying *compute before others*. I only use *binding* because compiler literature uses it. We use numbers to decide the binding order, and the number is called **precedence**. If you know C++, you know about operator precedence tables, so accuse me of *obvious-splaining* or *o-splaining* if you will, another term I just invented. It's easy to invent things. 
 
-We store precedences in a map. Higher number means tighter binding:
+We store precedences in a map. Higher precedence means tighter binding:
 
 ```cpp
 static map<char, int> BinopPrecedence;
@@ -355,7 +330,7 @@ static int GetTokPrecedence() {
 }
 ```
 
-The `isascii` guard rejects our named token enums (which are negative integers) so they can never be mistaken for operators.
+The `isascii` guard rejects our named `Token` enums (which are negative integers) so they can never be mistaken for operators.
 
 ## Parsing Expressions
 
@@ -395,7 +370,12 @@ static unique_ptr<ExprAST> ParseParenExpr() {
 
 ### Identifiers and Calls
 
-After reading an identifier, we peek at the next token. No `(` means it's a plain variable. A `(` means it's a function call:
+After reading an identifier, we peek at the next token. No `(` means it's a plain variable. A `(` means it's a function call.
+
+```python
+x     # variable
+foo() # function call
+```
 
 ```cpp
 /// identifierexpr
@@ -743,8 +723,45 @@ The parser accepts valid syntax and rejects invalid syntax with an error message
 
 ## Things Worth Knowing
 
+### Floating point numbers
+
 - **`1.2.3` silently lexes as `1.2`.** The lexer drops `.3` without complaint. If you type a malformed number, the parser sees a valid number followed by unexpected tokens — the error message won't mention the double decimal point. Fixed in [Chapter 3](chapter-03.md).
 - **Error messages show raw token numbers.** `token: -7` means `tok_return`. [Chapter 3](chapter-03.md) replaces this with readable names and source locations.
+
+### How the Parser Chooses
+
+Look at the rule for `top`:
+
+```ebnf
+top = definition | external | toplevelexpr
+```
+
+How does the parser know which branch to take? It looks at the current token:
+
+- `def` → must be a `definition`
+- `extern` → must be an `external`
+- anything else → try `expression` 
+
+Each option starts with a different token, so the parser can decide immediately, with just one token of lookahead. This style — where you can always pick the right branch by looking at the next token — is called **top-down, one-token-lookahead** parsing (or LL(1) if you want the textbook name). 
+
+### Avoiding a Pitfall: Left Recursion
+
+There's a rule you can't write for a top-down parser: a rule that starts with itself.
+
+```ebnf
+(* DON'T DO THIS *)
+expression = expression binaryop primary | primary
+```
+
+The parser would try to parse `expression`, which requires parsing `expression`, which requires parsing `expression`... infinite recursion, immediate crash.
+
+The fix is to use iteration instead of recursion:
+
+```ebnf
+expression = primary { binaryop primary }
+```
+
+"Parse one primary, then loop and grab (operator, primary) pairs until there are no more." Same language, no recursion. Pyxc grammar always does this.
 
 ## What's Next
 

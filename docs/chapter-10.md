@@ -5,7 +5,12 @@ description: "Add mutable local variables and assignment using a temporary var .
 
 ## Where We Are
 
-[Chapter 9](chapter-09.md) added user-defined operators, but every variable in Pyxc is still immutable. Function parameters can be read, loop variables can be introduced by `for`, but there is no way to create a local variable and update it. This chapter adds `var` — a scoped mutable binding — and `=` assignment:
+[Chapter 9](chapter-09.md) treated every variable as read-only. Function parameters were read-only. `for` loops introduced variables, and could  update them internally. However, you, the mighty programmer, couldn't create your own local variables and update them. That changes now. This chapter adds two things:
+
+- `var` — creates a new variable we can modify
+- `=` — updates existing variables
+
+Nothing you aren't already familiar with. But the way LLVM handles this internally is super interesting. 
 
 <!-- code-merge:start -->
 ```python
@@ -23,9 +28,15 @@ Evaluated to 6.000000
 ```
 <!-- code-merge:end -->
 
-One caveat up front: the examples in this chapter look a little awkward, and that's intentional. `var x = 1: x = x + 1` — declare a variable, mutate it once, return it — doesn't resemble code anyone would actually write. That's because Pyxc still only has expression bodies: everything after `:` has to be a single expression, which makes multi-step mutation feel forced.
+**A note on style:** The examples look clunky. `var x = n: x = x + 1` isn't code we would write if we have any self-respect. That's intentional. Pyxc still only supports single expression bodies: everything after `:` must be a single expression. Multi-step mutation feels forced because it *is* forced.
 
-We're keeping it that way deliberately, because this chapter isn't really about syntax — it's about what happens underneath: how mutable variables are implemented using memory slots, how LLVM loads and stores them, and how `mem2reg` cleans it all up. The next chapter replaces the expression body with real statement blocks and indentation-sensitive syntax, at which point the same machinery looks natural.
+We're keeping it this way because this chapter isn't about syntax. It's about what happens underneath. The next chapter replaces expression bodies with real statement blocks. There, the same machinery will look natural.
+
+```python
+var x = n
+...
+x = x + 1
+```
 
 ## Source Code
 
@@ -35,7 +46,7 @@ cd pyxc-llvm-tutorial/code/chapter-10
 ```
 
 ## Grammar
-This chapter extends the grammar in two places: a new `varexpr` production for local bindings, and an optional assignment suffix on expressions. The `[ "=" expression ]` at the end reflects how the parser actually works: all binary operators bind first, then `=` is checked — making assignment lower precedence than everything else. When `=` is present, the left side must be a plain variable name; that constraint is enforced in the parser, not the grammar.
+Two new productions:
 
 ```ebnf
 expression      = varexpr | unaryexpr binoprhs [ "=" expression ] ;
@@ -43,21 +54,22 @@ varexpr         = "var" varbinding { "," varbinding } ":" [ eols ] expression ;
 varbinding      = identifier [ "=" expression ] ;
 ```
 
-Assignment requires a destination — somewhere in memory to write a value to. The terms come from the two sides of `=`: an **lvalue** (left-value) names a location and can appear on the left; an **rvalue** (right-value) produces a value and can only appear on the right. `1 + 2`, `foo(x)`, and `x * y` are rvalues — the result they produce has no name you can assign to. Right now the only valid lvalue in Pyxc is a plain identifier. The grammar makes this explicit so that an assignment like `10 = a` is rejected at parse time rather than silently doing the wrong thing.
+Assignment requires a destination — somewhere in memory to write a value to. Using the two sides of `=`, we make up a couple of terms:
+```
+lvalue = rvalue
+```
+**lvalue** — a memory location (like a variable)
+**rvalue** — a value (like 5, x, x + y, or a function result)
 
-A `varexpr` introduces one or more mutable locals and evaluates to the body's value. Later initializers can reference earlier ones:
+If you're thinking, `x` could be an `lvalue` or an `rvalue`, you're right. The parser will treat the left as a memory destination to put the value into, and the right is be where you read the value from. 
+
+`=` has the lowest precedence of any operator. `a + b = c` parses as `(a + b) = c`, which fails because `a + b` isn't a valid *lvalue*. The parser enforces that the left side of = must be a plain variable name.
+
+`var` introduces one or more mutable locals and evaluates to the body's value. Later bindings can reference earlier ones:
 
 ```python
 var x = 1, y = x + 1: y   # evaluates to 2
 ```
-
-Assignment evaluates to the new value:
-
-```python
-var x = 1: x = x + 1      # evaluates to 2
-```
-
-`var` must come first in the expression, and the `:` is mandatory. The body after `:` can stay on the same line or move to the next line because `consumeNewlines()` is already part of the expression forms.
 
 ### Full Grammar
 [pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-10/pyxc.ebnf)
