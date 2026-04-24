@@ -34,22 +34,6 @@ enum Token {
 static string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;        // Filled in if tok_number
 
-// Commenting out TokenNames because it won't be used in this chapter. We will
-// reintroduce it in an extended form in chapter 3.
-//
-// TokenNames maps each named token to a readable string for debug output.
-// In Chapter 3, this map is expanded to cover single-character tokens too,
-// with friendlier names for error messages.
-// static map<int, string> TokenNames = {
-//     {tok_eof, "tok_eof"},
-//     {tok_eol, "tok_eol"},
-//     {tok_def, "tok_def"},
-//     {tok_extern, "tok_extern"},
-//     {tok_identifier, "tok_identifier"},
-//     {tok_number, "tok_number"},
-//     {tok_return, "tok_return"},
-// };
-
 /// advance - returns the next character, coalescing `\r\n` (Windows) into `\n`
 /// and converting bare `\r` (Old Macs) into `\n`.
 int advance() {
