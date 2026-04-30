@@ -1,21 +1,69 @@
 cmake_minimum_required(VERSION 3.16)
-project(pyxc_chapter07 LANGUAGES C CXX)
-
+project(pyxc LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(LLVM_PREFIX "$ENV{HOME}/llvm-21-with-clang-lld-lldb-mlir" CACHE PATH "Path to LLVM install prefix")
-set(LLVM_CONFIG "${LLVM_PREFIX}/bin/llvm-config" CACHE FILEPATH "Path to llvm-config")
+# ---------------------------------------------------------------------------
+# Find llvm-config
+#
+# Priority order:
+#   1. LLVM_CONFIG set explicitly on the cmake command line
+#   2. LLVM_PREFIX set explicitly (custom build) — looks in <prefix>/bin/
+#   3. PATH — covers Homebrew, the official Windows installer, and system installs
+#
+# For Homebrew:   ensure $LLVM_ROOT/bin is on PATH (see chapter-04)
+# For Windows:    ensure C:\Program Files\LLVM\bin is on PATH (installer option)
+# For custom build: pass -DLLVM_PREFIX=$HOME/llvm-21-with-clang-lld-lldb
+# ---------------------------------------------------------------------------
 
-if(NOT EXISTS "${LLVM_CONFIG}")
-  find_program(LLVM_CONFIG NAMES llvm-config HINTS "${LLVM_PREFIX}/bin")
+set(LLVM_PREFIX "" CACHE PATH "Optional: path to LLVM install prefix (custom build)")
+set(LLVM_CONFIG "" CACHE FILEPATH "Optional: explicit path to llvm-config")
+
+if(NOT LLVM_CONFIG)
+  if(LLVM_PREFIX)
+    # Custom build: look only inside the given prefix
+    find_program(LLVM_CONFIG NAMES llvm-config
+                 HINTS "${LLVM_PREFIX}/bin"
+                 NO_DEFAULT_PATH)
+  endif()
 endif()
 
 if(NOT LLVM_CONFIG)
-  message(FATAL_ERROR "llvm-config not found. Set LLVM_CONFIG or LLVM_PREFIX.")
+  # Check PATH first (works if the user set it up per chapter-04)
+  find_program(LLVM_CONFIG NAMES llvm-config)
 endif()
+
+if(NOT LLVM_CONFIG)
+  # Auto-detect Homebrew LLVM even when PATH isn't set up yet
+  find_program(BREW_EXECUTABLE brew)
+  if(BREW_EXECUTABLE)
+    execute_process(
+      COMMAND "${BREW_EXECUTABLE}" --prefix llvm
+      OUTPUT_VARIABLE BREW_LLVM_PREFIX
+      RESULT_VARIABLE BREW_LLVM_RESULT
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    if(BREW_LLVM_RESULT EQUAL 0 AND EXISTS "${BREW_LLVM_PREFIX}/bin/llvm-config")
+      set(LLVM_CONFIG "${BREW_LLVM_PREFIX}/bin/llvm-config" CACHE FILEPATH "Path to llvm-config" FORCE)
+    endif()
+  endif()
+endif()
+
+if(NOT LLVM_CONFIG)
+  message(FATAL_ERROR
+    "llvm-config not found.\n"
+    "  Homebrew:     brew install llvm  (see chapter-04)\n"
+    "  Windows:      ensure C:\\Program Files\\LLVM\\bin is on your PATH\n"
+    "  Custom build: pass -DLLVM_PREFIX=<path> to cmake")
+endif()
+
+message(STATUS "Using llvm-config: ${LLVM_CONFIG}")
+
+# ---------------------------------------------------------------------------
+# Query LLVM flags
+# ---------------------------------------------------------------------------
 
 set(LLVM_COMPONENTS all)
 
@@ -30,12 +78,11 @@ execute_process(
   OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 
-# llvm-config may emit newline-separated flags; normalize to spaces so the
-# linker/compiler command lines remain a single invocation.
+# Normalize newline-separated flags to spaces
 string(REGEX REPLACE "[\r\n]+" " " LLVM_CXXFLAGS "${LLVM_CXXFLAGS}")
-string(REGEX REPLACE "[\r\n]+" " " LLVM_LDFLAGS "${LLVM_LDFLAGS}")
+string(REGEX REPLACE "[\r\n]+" " " LLVM_LDFLAGS  "${LLVM_LDFLAGS}")
 
-# Deduplicate linker flags emitted by llvm-config, preserving first-seen order.
+# Deduplicate linker flags, preserving first-seen order
 separate_arguments(_PYXC_LLVM_LDFLAGS NATIVE_COMMAND "${LLVM_LDFLAGS}")
 set(_PYXC_LLVM_LDFLAGS_DEDUP)
 foreach(_flag IN LISTS _PYXC_LLVM_LDFLAGS)
@@ -45,26 +92,29 @@ foreach(_flag IN LISTS _PYXC_LLVM_LDFLAGS)
 endforeach()
 list(JOIN _PYXC_LLVM_LDFLAGS_DEDUP " " LLVM_LDFLAGS)
 
-# Set deterministic flag baselines so repeated configure runs do not keep
-# appending duplicate LLVM flags.
+# ---------------------------------------------------------------------------
+# Compiler and linker flags
+# ---------------------------------------------------------------------------
+
 set(_PYXC_CXX_FLAGS "-g -O3 ${LLVM_CXXFLAGS}")
 string(REGEX REPLACE "[\r\n]+" " " _PYXC_CXX_FLAGS "${_PYXC_CXX_FLAGS}")
 set(CMAKE_CXX_FLAGS "${_PYXC_CXX_FLAGS}" CACHE STRING "C++ flags" FORCE)
 
 set(_PYXC_EXE_LINKER_FLAGS "${LLVM_LDFLAGS}")
-string(REGEX REPLACE "[\r\n]+" " " _PYXC_EXE_LINKER_FLAGS
-                     "${_PYXC_EXE_LINKER_FLAGS}")
-set(CMAKE_EXE_LINKER_FLAGS "${_PYXC_EXE_LINKER_FLAGS}" CACHE STRING
-    "Executable linker flags" FORCE)
+string(REGEX REPLACE "[\r\n]+" " " _PYXC_EXE_LINKER_FLAGS "${_PYXC_EXE_LINKER_FLAGS}")
+set(CMAKE_EXE_LINKER_FLAGS "${_PYXC_EXE_LINKER_FLAGS}" CACHE STRING "Executable linker flags" FORCE)
+
+# ---------------------------------------------------------------------------
+# Optional extra library paths
+# ---------------------------------------------------------------------------
 
 set(EXTRA_LIBDIR "" CACHE PATH "Optional extra linker search path")
-set(ZSTD_LIBDIR "" CACHE PATH "Optional zstd library directory")
-
 if(EXTRA_LIBDIR)
   set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -L${EXTRA_LIBDIR} -Wl,-rpath,${EXTRA_LIBDIR}")
 endif()
 
-# If ZSTD_LIBDIR is not set explicitly, try Homebrew's zstd prefix.
+# zstd — try Homebrew prefix if not set explicitly
+set(ZSTD_LIBDIR "" CACHE PATH "Optional zstd library directory")
 if(NOT ZSTD_LIBDIR)
   find_program(BREW_EXECUTABLE brew)
   if(BREW_EXECUTABLE)
@@ -79,13 +129,37 @@ if(NOT ZSTD_LIBDIR)
     endif()
   endif()
 endif()
-
 if(ZSTD_LIBDIR)
   set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -L${ZSTD_LIBDIR} -Wl,-rpath,${ZSTD_LIBDIR}")
 endif()
 
+# lld — try Homebrew prefix if not already covered by llvm-config
+# (Homebrew splits lld into a separate keg since LLVM 22)
+set(LLD_LIBDIR "" CACHE PATH "Optional lld library directory")
+if(NOT LLD_LIBDIR)
+  find_program(BREW_EXECUTABLE brew)
+  if(BREW_EXECUTABLE)
+    execute_process(
+      COMMAND "${BREW_EXECUTABLE}" --prefix lld
+      OUTPUT_VARIABLE BREW_LLD_PREFIX
+      RESULT_VARIABLE BREW_LLD_RESULT
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    if(BREW_LLD_RESULT EQUAL 0 AND EXISTS "${BREW_LLD_PREFIX}/lib")
+      set(LLD_LIBDIR "${BREW_LLD_PREFIX}/lib")
+    endif()
+  endif()
+endif()
+if(LLD_LIBDIR)
+  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -L${LLD_LIBDIR} -Wl,-rpath,${LLD_LIBDIR}")
+endif()
+
 set(LLD_FLAGS "-llldCommon -llldELF -llldMachO -llldCOFF")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${LLD_FLAGS}")
+
+# ---------------------------------------------------------------------------
+# Targets
+# ---------------------------------------------------------------------------
 
 add_executable(pyxc pyxc.cpp)
 
