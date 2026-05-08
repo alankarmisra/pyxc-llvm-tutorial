@@ -5,7 +5,11 @@ description: "Install LLVM with everything you need: clang, lld, lldb, clangd, a
 
 ## Where We Are
 
-The compiler from [Chapter 3](chapter-03.md) can parse Pyxc and report errors with source locations. To turn the AST into machine code, we need LLVM — specifically with the following tools - lld, clangd, lldb, and llvm-lit. On macOS and Linux, Homebrew gets you there in two commands. On Windows, the official LLVM installer does the same. Building compilers is hard enough. We don't need to torture ourselves needlessly. Unless we want to. Consequently, if you're feeling adventurous, you could build from source instead — I did that too just to make sure the instructions are legit. All paths end up in the same place. 
+The compiler from [Chapter 3](chapter-03.md) can parse Pyxc and report errors with source locations. To turn the AST into machine code, we need LLVM — specifically with the following tools - `lld`, `clangd`, `lldb`, and `llvm-lit`. We'll get to using them in the following chapters. On macOS and Linux, Homebrew gets you there in two commands (as of today May 1, 2026). On Windows, the official LLVM installer does the same. Building compilers is hard enough. We don't need to torture ourselves needlessly. Unless we want to. Consequently, if you're feeling adventurous, you could build from source instead — I did that too just to make sure the instructions are legit. All paths end up in the same place. 
+
+
+!!!note
+    I'm a bit concerned about the longevity of this chapter. Installation dynamics change quite frequently and things break occassionally, if not often. These forces are outside my control. Which is why if something breaks, PLEASE let me know so I can fix this chapter so it continues to work for others that follow you. I've been very close to giving up on tutorials because I couldn't get the base infrastructure to install and I'd hate for that to happen to you or to others. 
 
 ## macOS / Linux — Homebrew
 

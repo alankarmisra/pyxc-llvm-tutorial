@@ -851,12 +851,20 @@ Function *PrototypeAST::codegen() {
 ///    block without a terminator. On failure, eraseFromParent() removes the
 ///    partially-built function so no broken declaration is left in the module.
 Function *FunctionAST::codegen() {
-  // Step 1: get an existing declaration or create a new one.
+  // Step 1: reuse an existing `extern` declaration if one exists.
   Function *TheFunction = TheModule->getFunction(Proto->getName());
 
+  // Bail if the function is already fully defined — redefinition is an error.
+  if (TheFunction && !TheFunction->empty()) {
+    LogError("Function cannot be redefined.");
+    return nullptr;
+  }
+
+  // The function was neither declared nor defined — create a fresh declaration.
   if (!TheFunction)
     TheFunction = Proto->codegen();
 
+  // Proto codegen failed.
   if (!TheFunction)
     return nullptr;
 

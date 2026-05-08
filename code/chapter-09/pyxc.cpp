@@ -1768,7 +1768,15 @@ Function *FunctionAST::codegen() {
   auto &P = *Proto;
   FunctionProtos[Proto->getName()] = std::move(Proto);
 
+  // Step 1: reuse an existing `extern` declaration if one exists.
   Function *TheFunction = getFunction(P.getName());
+
+  // Bail if the function is already fully defined — redefinition is an error.
+  if (TheFunction && !TheFunction->empty()) {
+    LogError("Function cannot be redefined.");
+    return nullptr;
+  }
+
   if (!TheFunction)
     return nullptr;
 
