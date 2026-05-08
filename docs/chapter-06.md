@@ -5,7 +5,7 @@ description: "Add ORC JIT and an optimization pass pipeline: top-level expressio
 
 ## Where We Are
 
-[Chapter 5](chapter-05.md) produces correct IR, but nothing runs. For example:
+We got the compiler to produce IR in [Chapter 5](chapter-05.md), but it doesn't run anything yet. For example:
 
 <!-- code-merge:start -->
 ```python
@@ -37,7 +37,7 @@ entry:
 ```
 <!-- code-merge:end -->
 
-`foo(2)` doesn't evaluate — you see the IR for the call but no result. Furthermore, the IR for `foo` isn't as clean as it could be: `(1+2+x)*(x+(1+2))` produces two separate `fadd` instructions even though both sides of the multiply are the same expression `x+3`.
+`foo(2)` doesn't evaluate — you see the IR for the call but no result. No bueno. Furthermore, the IR for `foo` isn't as clean as it could be: `(1+2+x)*(x+(1+2))` produces two separate `fadd` instructions even though both sides of the multiply are the same expression `x+3`.
 
 By the end of this chapter, calling `foo(2)` prints the answer:
 
@@ -78,7 +78,7 @@ entry:
 ```
 <!-- code-merge:end -->
 
-Two instructions instead of three. One `fadd` instead of two — the optimizer recognized that both factors are `x+3` and computed it once.
+Clean. Two instructions instead of three. One `fadd` instead of two — the optimizer recognized that both factors are `x+3` and computed it once.
 
 ## Source Code
 
@@ -87,56 +87,35 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-06
 ```
 
-## Optimizer and Analysis Managers
+## Let's ORC JIT.
 
-[Chapter 5](chapter-05.md) had three globals: `TheContext`, `TheModule`, and `Builder`. This chapter adds several more:
+ORC stands for **On-Request Compilation**. It's LLVM's JIT framework — a library for building JIT compilers, not a single fixed JIT. ([ORCv2 docs](https://llvm.org/docs/ORCv2.html))
+
+ORC materializes code on demand. Adding a module makes its symbols available to the JIT, and machine code is generally generated when a symbol is looked up (for example, `lookup("__anon_expr")`). We use `LLJIT` via `PyxcJIT`, while the framework also provides a lazier variant (`LLLazyJIT`) that can defer work even more aggressively until first use. *LL* stands for low-level.
+
+`PyxcJIT` ([include/PyxcJIT.h](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/include/PyxcJIT.h)) is a thin wrapper around ORC's [LLJIT](https://llvm.org/docs/ORCv2.html#lljit-and-lllazyjit). It is created once in `main()`. Let's look at the additions to `main()`:
 
 ```cpp
 // the ORC JIT instance
-static unique_ptr<PyxcJIT>                 TheJIT;       
-// runs optimizations per function
-static unique_ptr<FunctionPassManager>     TheFPM;       
-// stores results of loop analyses
-static unique_ptr<LoopAnalysisManager>     TheLAM;    
-// stores results of function analyses
-static unique_ptr<FunctionAnalysisManager> TheFAM;    
-// stores results of call-graph analyses
-static unique_ptr<CGSCCAnalysisManager>    TheCGAM;   
-// stores results of module analyses
-static unique_ptr<ModuleAnalysisManager>   TheMAM;    
-// persistent prototype registry
-static map<string, unique_ptr<PrototypeAST>> FunctionProtos; 
+static unique_ptr<PyxcJIT> TheJIT;       
 // terminates on unrecoverable JIT error
-static ExitOnError ExitOnErr;                         
-```
-
-## What Is ORC JIT?
-
-ORC stands for **On-Request Compilation**. It is LLVM's current JIT framework — a library for building JIT compilers, not a single fixed JIT. ([ORCv2 docs](https://llvm.org/docs/ORCv2.html))
-
-ORC compiles a module when it is added to the JIT. The framework also has a lazy variant (`LLLazyJIT`) that defers compilation until a function's address is first looked up — useful for large programs where you don't want to compile everything upfront. We use `LLJIT` via `PyxcJIT`, which compiles eagerly.
-
-For our purposes we use `PyxcJIT` (see [include/PyxcJIT.h](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/include/PyxcJIT.h)), a thin wrapper around ORC's [LLJIT](https://llvm.org/docs/ORCv2.html#lljit-and-lllazyjit). It is created once in `main()`:
-
-```cpp
+static ExitOnError ExitOnErr;          
+...
+// This readies LLVM to convert the IR into an internal representation of the instructions for the target machine.
 InitializeNativeTarget();
-InitializeNativeTargetAsmPrinter();
+// This readies LLVM to convert text assembly into an internal representation of the instructions for the target machine.
 InitializeNativeTargetAsmParser();
+// This readies LLVM to convert the internal representation of the instructions into actual machine code.
+InitializeNativeTargetAsmPrinter();
 TheJIT = ExitOnErr(PyxcJIT::Create());
 InitializeModuleAndManagers();
 ```
 
-All three register components for the *native* target — the machine `pyxc` is running on: the code generator (IR → machine instructions), the asm printer (machine code → bytes the JIT executes), and the asm parser (text assembly → machine instructions, needed for inline asm). Pyxc doesn't use inline asm so the third is optional, but included by convention.
-
-The dynamic linker part of `PyxcJIT::Create()` is worth pausing on. `pyxc` is a C++ program linked against the C standard library, so `sin`, `cos`, `printf`, and every other standard function are already loaded into the `pyxc` process when it starts. When the JIT can't resolve a name internally — such as an `extern def` whose body isn't in any of our modules — ORC searches the functions already loaded into the `pyxc` process — and finds them there. We'll see this in [Try It](#try-it) below.
-
 ## The Optimization Pipeline
 
-LLVM passes fall into two categories: **per-module passes** that see everything in a module at once, and **per-function passes** that operate on one function at a time. We use per-function passes, applied immediately as each function is compiled — so the user gets optimized code for every definition they type without waiting for a full program to accumulate.
+Remember how LLVM couldn't figure out that `(1+2+x)` and `(x+(1+2))` are the same thing i.e. (x+3)? We're going to fix that. LLVM passes fall into two categories: **per-module passes** that see everything in a module at once, and **per-function passes** that operate on one function at a time. We use per-function passes, applied immediately as each function is compiled — so the user gets optimized code for every definition they type without waiting for a full program to accumulate.
 
-[`FunctionPassManager`](https://llvm.org/docs/NewPassManager.html) (TheFPM) sequences these passes in order, running each one on the function and updating it in place. LLVM ships [dozens of passes](https://llvm.org/docs/Passes.html) and `PassBuilder` has predefined pipeline presets (`O1`, `O2`, `O3`) that enable many of them at once. We're not using those presets — we manually add three specific passes instead, so it's easy to see exactly what's running. A natural next step would be to wire Pyxc's `-O` flag directly into one of those presets rather than maintaining a hand-picked list. We will do this in a later chapter. 
-
-The three passes are quick wins — they catch easy improvements without the cost of a full optimization pipeline:
+[`FunctionPassManager`](https://llvm.org/docs/NewPassManager.html) (TheFPM) sequences these passes in order, running each one on the function and updating it in place. LLVM ships [dozens of passes](https://llvm.org/docs/Passes.html). We will add three specific passes which are quick wins — they catch easy improvements without the cost of a full optimization pipeline:
 
 | Pass | What it does |
 |---|---|
@@ -146,7 +125,7 @@ The three passes are quick wins — they catch easy improvements without the cos
 
 Note that `1+2` collapsing to `3` isn't done by any of these passes — `IRBuilder` does it automatically as it constructs the IR. That's why `(1+2+x)` already shows `3.000000e+00` in the output before any pass runs.
 
-## InitializeModuleAndManagers
+## Initialize Module And Managers
 
 `InitializeModuleAndManagers()` replaces `InitializeModule()` from [chapter 5](chapter-05.md). It is called once at startup and again after each module is handed to the JIT. It has two distinct jobs.
 
@@ -164,36 +143,54 @@ Builder    = make_unique<IRBuilder<>>(*TheContext);
 `setDataLayout` tells the module how the JIT lays out data for the host machine — pointer widths, type sizes, and so on. You don't need to think about this unless you're targeting a different platform than the one you're compiling on.
 
 **2. Wire up the pass manager infrastructure**
-
-
 This is required plumbing for the pass framework — it doesn't optimize anything itself:
 
 ```cpp
-TheFPM  = make_unique<FunctionPassManager>();     // sequences passes over a function
-TheLAM  = make_unique<LoopAnalysisManager>();     // analysis results scoped to a loop
-TheFAM  = make_unique<FunctionAnalysisManager>(); // analysis results scoped to a function
-TheCGAM = make_unique<CGSCCAnalysisManager>();    // analysis results scoped to a call-graph cluster
-TheMAM  = make_unique<ModuleAnalysisManager>();   // analysis results scoped to the whole module
+// stores results of loop analyses
+static unique_ptr<LoopAnalysisManager>     TheLAM;    
+// stores results of function analyses
+static unique_ptr<FunctionAnalysisManager> TheFAM;    
+// stores results of call-graph analyses
+static unique_ptr<CGSCCAnalysisManager>    TheCGAM;   
+// stores results of module analyses
+static unique_ptr<ModuleAnalysisManager>   TheMAM;    
+...              
+// analysis results scoped to a loop
+TheLAM  = make_unique<LoopAnalysisManager>();     
+// analysis results scoped to a function
+TheFAM  = make_unique<FunctionAnalysisManager>(); 
+// analysis results scoped to a call-graph cluster ie graphs representing 
+// functions calling each other to find interdependencies
+TheCGAM = make_unique<CGSCCAnalysisManager>();    
+// analysis results scoped to the whole module
+TheMAM  = make_unique<ModuleAnalysisManager>();   
 
 PassBuilder PB;
 PB.registerModuleAnalyses(*TheMAM);
 PB.registerCGSCCAnalyses(*TheCGAM);
 PB.registerFunctionAnalyses(*TheFAM);
 PB.registerLoopAnalyses(*TheLAM);
+// Wires all the analysis layers/tiers together so a pass at any tier 
+// can request analysis results from any other
 PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
 ```
-
-The four tiers form a hierarchy — a module contains call-graph clusters (CGSCC), which contain functions, which contain loops. All four are required by the framework; `crossRegisterProxies` wires them together so a pass at any tier can request analysis results from any other.
 
 **3. Optimization: the per-function pipeline**
 
 This is the only part that actually changes IR:
 
 ```cpp
+// runs optimizations per function
+static unique_ptr<FunctionPassManager>     TheFPM;       
+...
+// in InitializeModuleAndManagers()
+// sequences passes over a function
+TheFPM  = make_unique<FunctionPassManager>();
+...
 if (OptLevel != 0) {
-  TheFPM->addPass(InstCombinePass());
-  TheFPM->addPass(ReassociatePass());
-  TheFPM->addPass(GVNPass());
+TheFPM->addPass(InstCombinePass());
+TheFPM->addPass(ReassociatePass());
+TheFPM->addPass(GVNPass());
 }
 ```
 
@@ -201,7 +198,7 @@ if (OptLevel != 0) {
 
 **When it runs**
 
-Right after each function is codegenned and verified:
+Right after each function is generated and verified:
 
 ```cpp
 // In FunctionAST::codegen, after verifyFunction:
@@ -253,11 +250,15 @@ Named functions (`def foo`) are added to the JIT's internal registry without a t
 
 When you type `foo(2)`, Pyxc wraps it in a zero-argument function called `__anon_expr`, compiles it, runs it, and then frees it — anonymous expressions shouldn't accumulate in the JIT forever. The JIT frees native code at the module level via `ResourceTracker::remove()`, so `__anon_expr` needs its own module or removing it would take `foo` with it.
 
-This chapter uses a simple strategy: every top-level input gets its own fresh module. A smarter approach would give anonymous expressions their own modules and batch named functions together — but the simple version is easier to follow, and we'll revisit it later.
+But this means that we should put anonymous functions in their own module instead of pooling them with regular functions, so that `ResourceTracker::remove()` doesn't land up nuking ALL functions. This chapter uses a more naive strategy: every extern, every function definition and every top-level expression gets its own fresh module. This way, nuking a module containing an anonymous function only nukes that function and no other.
 
-One side effect: LLVM forbids redefining a function name even across modules, so typing `def foo` twice is an error. Supporting it would require name mangling (`__m1_foo`, `__m2_foo`, ...) and a lookup table — infrastructure we'll add in a later chapter. 
+A smarter approach would give anonymous expressions their own modules and batch named functions together — but the simple version is easier to follow, and we'll revisit it later.
 
-This is why `InitializeModuleAndManagers()` is called both at startup and after every module transfer:
+One side effect: LLVM forbids redefining a function name even across modules, so typing `def foo` twice is an error. We could support it for the sake of the REPL by nuking older versions if we encounter a redefinition, but then we'd need to fork the redefinition handling for REPL and non-REPL instances. In the latter case, a redefinition is a potential error. We'll deal with this in a later chapter. 
+
+It must be dawning on you by now that each time we do a "What if?" exercise to something more *intuitive*, the feature-set grows just a tad bit. This can be a slippery slope and holy wars are fought over what one considers *intuitive*. We will be fighting no wars. I will decide what I want the language will look like, and should you disagree, you will fork your own.
+
+`InitializeModuleAndManagers()` is consequently called both at startup and after every module transfer i.e. each time we hand over a module to the JIT:
 
 ```cpp
 // Hand the module to the JIT.
@@ -269,13 +270,16 @@ InitializeModuleAndManagers();
 
 `ThreadSafeModule` packages the module and its context together for safe handoff to the JIT's internal threads.
 
-## getFunction and the Cross-Module Problem
+## `getFunction` and the Cross-Module Problem
 
-In [chapter 5](chapter-05.md), `CallExprAST::codegen` called `TheModule->getFunction(Callee)` directly. That breaks with per-module lifetime: if `foo` was compiled and its module handed to the JIT, the current module has no record of `foo`. A call to `foo(2)` would fail with "Unknown function referenced."
+In [chapter 5](chapter-05.md), in order to find a function, we called `TheModule->getFunction(Callee)`. That breaks with per-module lifetime: if `foo` was compiled and its module handed to the JIT, the current module has no record of `foo`. A call to `foo(2)` would fail with "Unknown function referenced."
 
-The solution is a persistent prototype registry, `FunctionProtos`, and a helper that uses it:
+The solution is a persistent prototype registry which we call `FunctionProtos`, and a helper `getFunction()` that uses it:
 
 ```cpp
+// persistent prototype registry
+static map<string, unique_ptr<PrototypeAST>> FunctionProtos; 
+...
 Function *getFunction(string Name) {
   // Fast path: already declared or defined in the current module.
   if (auto *F = TheModule->getFunction(Name))
@@ -292,7 +296,7 @@ Function *getFunction(string Name) {
 
 1. `def foo` is compiled into module `m1`. Its `PrototypeAST` is saved into `FunctionProtos`.
 2. `m1` is handed to the JIT. A fresh module `m2` is created for the next input.
-3. `foo(2)` is codegenned in `m2`. `getFunction("foo")` doesn't find `foo` in `m2`.
+3. `foo(2)` is generated in `m2`. `getFunction("foo")` doesn't find `foo` in `m2`.
 4. It finds the saved prototype in `FunctionProtos` and calls `codegen()` on it, emitting a `declare` in `m2`.
 5. The JIT resolves that `declare` to the already-compiled body in `m1`.
 
@@ -350,11 +354,18 @@ extern "C" DLLEXPORT double printd(double X) {
 }
 ```
 
-They are compiled directly into the `pyxc` binary, so the JIT finds them the same way it finds `sin` or `printf` — by searching the functions already loaded in `pyxc`'s own executable. No registration required.
+The `DLLEXPORT` attribute places these symbols in pyxc's symbol table, making them visible to the LLVM JIT's function resolver which can then execute them. So you can just say:
+
+```python
+extern def putchard(x)
+
+# It is now ready to use. The JIT will find the function definition in the pyxc executable process.
+putchard(65) # prints an 'A' on the screen
+```
 
 This also means you could move the runtime library into a separate `lib.cpp`, compile it into the `pyxc` binary, and have one clean place for all built-in functions. We'll do that in a later chapter.
 
-`DLLEXPORT` is a no-op on macOS and Linux. On Windows, symbols are not exported from executables by default, so the macro expands to `__declspec(dllexport)` to make them visible to the JIT's linker.
+`DLLEXPORT` doesn't do anything on macOS and Linux since in these cases symbols are exported by default. On Windows, symbols are not exported from executables by default, so the macro expands to `__declspec(dllexport)` to make them visible to the JIT.
 
 ## Command-Line Parsing
 
@@ -388,7 +399,7 @@ cmake -S . -B build && cmake --build build
 
 ## Try It
 
-### extern resolves from the process
+### `extern` resolves from the process
 
 <!-- code-merge:start -->
 ```python
@@ -424,9 +435,9 @@ Evaluated to 0.841471
 ```
 <!-- code-merge:end -->
 
-Since `sin` is declared `extern`, the JIT looks it up in the functions already loaded into the `pyxc` process — where the C standard library's `sin` is already present. No linking, no flags, no registration needed.
+Since `sin` is declared `extern`, the JIT looks it up in the functions already loaded into the `pyxc` process — where the C standard library's `sin` is already present. 
 
-Notice that the IR returns `sin(1)` as a constant (`0x3FEAED548F090CEE` — the hex encoding of `≈ 0.841471`) rather than computing it at runtime. `InstCombinePass` recognized `sin` as a standard math function and folded the result at compile time. The `call` instruction is still present though — `InstCombinePass` folded the return value but couldn't remove the call itself because our `declare` doesn't tell LLVM that `sin` has no side effects. This is the same limitation noted in [Known Limitations](#known-limitations).
+Notice that the IR returns `sin(1)` as a constant (`0x3FEAED548F090CEE` — the hex encoding of `≈ 0.841471`) rather than using the call result. `InstCombinePass` folded the value, but the `call` itself is still kept because our `declare` does not mark `sin` as side-effect-free (`readnone`/`readonly`). So this IR is conservative: it preserves the call, but the returned value is constant-folded. This is the same limitation noted in [Known Limitations](#known-limitations).
 
 ### The Pythagorean identity
 
