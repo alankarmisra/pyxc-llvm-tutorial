@@ -1,7 +1,7 @@
 ---
 description: "Let's start at the very beginning. A very good place to start."
 ---
-# 1. Pyxc: Let's start at the very beginning. 
+# 1. pyxc: Let's start at the very beginning. 
 
 ## A very good place to start.
 

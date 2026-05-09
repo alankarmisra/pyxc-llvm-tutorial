@@ -1,0 +1,8 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: alloca [4 x i64]
+
+def f() -> int:
+  var a: int[4]
+  a[0] = 1
+  return a[0]

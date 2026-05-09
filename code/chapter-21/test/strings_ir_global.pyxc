@@ -1,0 +1,6 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: private unnamed_addr constant [4 x i8] c"abc\00"
+
+def f() -> ptr[int8]:
+  return "abc"

@@ -1,7 +1,7 @@
 ---
 description: "Add file input mode and a -v IR flag so pyxc can execute source files through the same JIT pipeline as the REPL."
 ---
-# 7. Pyxc: File Input Mode
+# 7. pyxc: File Input Mode
 
 ## Where We Are
 
@@ -129,7 +129,7 @@ When a file is given, `fopen` opens it and `Input` is set to the resulting handl
 
 ```bash
 $ build/pyxc nosuchfile.pyxc
-nosuchfile.pyxc: No such file or directory
+nosuchfile.pyxc:  No such file or directory
 ```
 
 The string passed to `perror` is the label printed before the colon. The actual error description comes from `errno`.

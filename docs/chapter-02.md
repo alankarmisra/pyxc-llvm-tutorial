@@ -1,7 +1,7 @@
 ---
 description: "Build a recursive-descent parser and AST: turn tokens into structure and see 'Parsed a function definition' for the first time."
 ---
-# 2. Pyxc: The Parser and AST
+# 2. pyxc: The Parser and AST
 
 ## Where We Are
 

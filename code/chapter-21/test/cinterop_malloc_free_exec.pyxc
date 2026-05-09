@@ -1,0 +1,14 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: Z
+
+extern def malloc(n: int64) -> ptr[int8]
+extern def free(p: ptr[int8])
+extern def putchard(x: float64) -> float64
+
+def main() -> int:
+  var p: ptr[int8] = malloc(1)
+  p[0] = int8(90)
+  putchard(float64(p[0]))
+  free(p)
+  return 0

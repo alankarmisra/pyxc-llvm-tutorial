@@ -1,7 +1,7 @@
 ---
 description: "Add object-file emission so Pyxc can compile programs to standalone native binaries without the JIT."
 ---
-# 13. Pyxc: Emitting Native Code
+# 13. pyxc: Emitting Native Code
 
 ## Where We Are
 

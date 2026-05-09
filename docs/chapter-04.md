@@ -1,7 +1,7 @@
 ---
 description: "Install LLVM with everything you need: clang, lld, lldb, clangd, and lit — via Homebrew (macOS/Linux), the official installer (Windows), or from source."
 ---
-# 4. Pyxc: Installing LLVM
+# 4. pyxc: Installing LLVM
 
 ## Where We Are
 

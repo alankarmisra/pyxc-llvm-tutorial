@@ -1,0 +1,13 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: define double @sq
+# CHECK: fmul double
+# CHECK: ret double
+
+# Tests: --emit llvm-ir writes LLVM IR to the specified output file.
+# No JIT execution happens; no program output is produced.
+# The emitted IR must contain the function definition with its body.
+
+extern def printd(x: float64) -> float64
+
+def sq(x: float64) -> float64: return x * x

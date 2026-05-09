@@ -1,7 +1,7 @@
 ---
 description: "Add comparison operators, if/else expressions, and for loops — then use them to render the Mandelbrot set in ASCII."
 ---
-# 8. pyxc: Control Flow: if, else, and for
+# 8. pyxc:  Control Flow: if, else, and for
 
 ## What we're building
 

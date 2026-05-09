@@ -1,7 +1,7 @@
 ---
 description: "Add DWARF debug info via DIBuilder and replace the fixed optimisation pass list with LLVM's standard O0–O3 pipelines."
 ---
-# 15. Pyxc: Debug Info and the Optimisation Pipeline
+# 15. pyxc: Debug Info and the Optimisation Pipeline
 
 ## Where We Are
 

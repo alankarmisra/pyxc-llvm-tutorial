@@ -1,0 +1,10 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: line1
+# CHECK-NEXT: line2
+
+extern def puts(s: ptr[int8]) -> int
+
+def main() -> int:
+  puts("line1\nline2")
+  return 0

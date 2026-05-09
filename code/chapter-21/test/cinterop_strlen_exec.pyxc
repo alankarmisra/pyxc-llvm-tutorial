@@ -1,0 +1,10 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 5.000000
+
+extern def strlen(s: ptr[int8]) -> int64
+extern def printd(x: float64)
+
+def main() -> int:
+  printd(float64(strlen("hello")))
+  return 0

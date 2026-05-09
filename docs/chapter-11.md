@@ -1,7 +1,7 @@
 ---
 description: "Switch from expression-only bodies to statement blocks with indentation, and make if/for/var/return statements."
 ---
-# 11. Pyxc: Statement Blocks
+# 11. pyxc: Statement Blocks
 
 ## Where We Are
 

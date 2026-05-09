@@ -1,0 +1,86 @@
+(*
+   pyxc.ebnf
+   Grammar for chapter 18 — Pointers and address-of.
+*)
+
+(*
+   { } = zero or more (any number of...)
+   [ ] = zero or one (optional)
+*)
+
+program         = [ eols ] [ top { eols top } ] [ eols ] ;
+eols            = eol { eol } ;
+top             = structdef | definition | decorateddef | external | toplevelexpr ;
+structdef       = "struct" identifier ":" eols structblock ;
+structblock     = indent fielddecl { eols fielddecl } dedent ;
+fielddecl       = identifier ":" type ;
+definition      = "def" prototype [ "->" type ] ":" ( simplestmt | eols block ) ;
+(* If the return type is omitted, it defaults to None. *)
+decorateddef    = binarydecorator eols "def" binaryopprototype [ "->" type ] ":" ( simplestmt | eols block )
+                | unarydecorator  eols "def" unaryopprototype  [ "->" type ] ":" ( simplestmt | eols block ) ;
+binarydecorator = "@" "binary" "(" integer ")" ;
+unarydecorator  = "@" "unary" ;
+binaryopprototype = customopchar "(" typedparam "," typedparam ")" ;
+unaryopprototype  = customopchar "(" typedparam ")" ;
+external        = "extern" "def" prototype [ "->" type ] ;
+toplevelexpr    = expression ;
+prototype       = identifier "(" [ typedparam { "," typedparam } ] ")" ;
+typedparam      = identifier ":" type ;
+ifstmt          = "if" expression ":" suite
+                [ eols "else" ":" suite ] ;
+forstmt         = "for"
+                  ( "var" identifier ":" type | identifier )
+                  "=" expression "," expression "," expression ":" suite ;
+varstmt         = "var" varbinding { "," varbinding } ;
+assignstmt      = lvalue "=" expression ; (* assignment is a statement here *)
+simplestmt      = returnstmt | varstmt | assignstmt | expression ;
+compoundstmt    = ifstmt | forstmt ;
+statement       = simplestmt | compoundstmt ;
+suite           = simplestmt | compoundstmt | eols block ;
+returnstmt      = "return" [ expression ] ;
+block           = indent statement { eols statement } dedent ;
+expression      = unaryexpr binoprhs ;
+binoprhs        = { binaryop unaryexpr } ;
+lvalue          = identifier | fieldaccess | indexexpr ;
+varbinding      = identifier ":" type [ "=" expression ] ;
+unaryexpr       = unaryop unaryexpr | primary ;
+unaryop         = "-" | userdefunaryop ;
+primary         = castexpr | addrexpr | identifierexpr | fieldaccess | indexexpr | numberexpr | bool_literal | parenexpr ;
+castexpr        = casttype "(" expression ")" ;
+addrexpr        = "addr" "(" lvalue ")" ;
+identifierexpr  = identifier | callexpr ;
+callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
+fieldaccess     = identifier "." identifier { "." identifier } ;
+indexexpr       = identifier "[" expression "]" ;
+numberexpr      = number ;
+parenexpr       = "(" expression ")" ;
+binaryop        = builtinbinaryop | userdefbinaryop ;
+indent          = INDENT ;
+dedent          = DEDENT ;
+
+builtinbinaryop = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
+userdefbinaryop = ? any opchar defined as a custom binary operator ? ;
+userdefunaryop  = ? any opchar defined as a custom unary operator ? ;
+customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
+                    and not already defined as a custom operator ? ;
+opchar          = ? any single ASCII punctuation character ? ;
+identifier      = (letter | "_") { letter | digit | "_" } ;
+builtintype     = "int" | "int8" | "int16" | "int32" | "int64"
+                | "float" | "float32" | "float64"
+                | "bool" | "None" ;
+structtype      = identifier ;
+pointertype     = "ptr" "[" type "]" ;
+type            = builtintype | structtype | pointertype ;
+casttype        = "int" | "int8" | "int16" | "int32" | "int64"
+                | "float" | "float32" | "float64"
+                | "bool" ;
+integer         = digit { digit } ;
+number          = digit { digit } [ "." { digit } ]
+                | "." digit { digit } ;
+bool_literal    = "True" | "False" ;
+letter          = "A".."Z" | "a".."z" ;
+digit           = "0".."9" ;
+eol             = "\r\n" | "\r" | "\n" ;
+ws              = " " | "\t" ;
+INDENT          = ? synthetic token emitted by lexer ? ;
+DEDENT          = ? synthetic token emitted by lexer ? ;

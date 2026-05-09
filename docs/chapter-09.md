@@ -1,7 +1,7 @@
 ---
 description: "Add user-defined operators via Python-style decorators — @binary(N) and @unary — backed by dedicated parser functions with compile-time validation."
 ---
-# 9. Pyxc: User-Defined Operators
+# 9. pyxc: User-Defined Operators
 
 ## Where We Are
 

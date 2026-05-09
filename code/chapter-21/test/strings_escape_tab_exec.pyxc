@@ -1,0 +1,9 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: a{{	}}b
+
+extern def puts(s: ptr[int8]) -> int
+
+def main() -> int:
+  puts("a\tb")
+  return 0

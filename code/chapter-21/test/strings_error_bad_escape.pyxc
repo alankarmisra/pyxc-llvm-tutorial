@@ -1,0 +1,7 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: {{[Ee]rror}}
+# CHECK: {{escape|invalid}}
+
+def bad() -> int:
+  var s: ptr[int8] = "\q"
+  return 0

@@ -2,7 +2,7 @@
 title: "Build Your First Programming Language with LLVM"
 description: "Learn compilers by building a real programming language from scratch—no experience required."
 ---
-# pyxc: Build Your First Programming Language with LLVM
+# pyxc:  Build Your First Programming Language with LLVM
 
 ## Requirements
 

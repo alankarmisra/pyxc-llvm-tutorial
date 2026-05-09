@@ -1,0 +1,12 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK-DAG: alloca i{{32|64}}
+# CHECK-DAG: alloca double
+
+# Tests: a single var statement with mixed-type bindings ('var a: int, b: float64')
+# produces correctly-typed allocas for each binding. The types are independent
+# per binding, not shared.
+
+def main() -> None:
+    var a: int = 3, b: float64 = 1.5
+    return

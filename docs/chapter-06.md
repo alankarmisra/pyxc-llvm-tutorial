@@ -1,7 +1,7 @@
 ---
 description: "Add ORC JIT and an optimization pass pipeline: top-level expressions now execute immediately and functions come out smaller."
 ---
-# 6. Pyxc: JIT and Optimization
+# 6. pyxc: JIT and Optimization
 
 ## Where We Are
 

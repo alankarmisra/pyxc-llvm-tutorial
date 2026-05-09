@@ -1,7 +1,7 @@
 ---
 description: "Connect the AST to LLVM IR: add codegen() to every node and see real machine-level instructions for the first time."
 ---
-# 5. Pyxc: Code Generation
+# 5. pyxc: Code Generation
 
 ## Where We Are
 

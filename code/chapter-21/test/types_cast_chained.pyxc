@@ -1,0 +1,14 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: fptosi double
+# CHECK: sitofp i{{32|64}}
+
+# Tests: a cast can be applied to another cast expression: float64(int(x)).
+# The inner cast (fptosi) produces an integer; the outer cast (sitofp) converts
+# back to float64. Both instructions must appear.
+
+def roundtrip(x: float64) -> float64:
+    return float64(int(x))
+
+def main() -> None:
+    return

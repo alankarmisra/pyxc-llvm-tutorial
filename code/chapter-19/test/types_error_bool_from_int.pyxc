@@ -1,0 +1,6 @@
+# RUN: not %pyxc %s 2>&1 | FileCheck %s
+# CHECK: Type mismatch in variable initialization
+
+# Tests: numeric to bool is not an implicit conversion.
+
+var b: bool = 1

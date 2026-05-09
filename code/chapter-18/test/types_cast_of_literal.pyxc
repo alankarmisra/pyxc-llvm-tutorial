@@ -1,0 +1,14 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: fptosi double
+# CHECK: ret i{{32|64}}
+
+# Tests: int(literal_double) is a valid cast. The literal 3.7 is a float64;
+# int(3.7) truncates it to 3. The cast must be applied, not optimised away
+# at parse time.
+
+def f() -> int:
+    return int(3.7)
+
+def main() -> None:
+    return

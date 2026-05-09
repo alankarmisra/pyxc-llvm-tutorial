@@ -1,7 +1,7 @@
 ---
 description: "Polish the lexer and add proper diagnostics: a keyword map, malformed-number detection, source locations, and caret-style error messages."
 ---
-# 3. Pyxc: Better Errors
+# 3. pyxc: Better Errors
 
 ## Where We Are
 

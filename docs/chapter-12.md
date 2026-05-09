@@ -1,7 +1,7 @@
 ---
 description: "Add global variables so top-level var declarations and assignments persist across REPL inputs and work naturally in compiled files."
 ---
-# 12. Pyxc: Global Variables
+# 12. pyxc: Global Variables
 
 ## Where We Are
 

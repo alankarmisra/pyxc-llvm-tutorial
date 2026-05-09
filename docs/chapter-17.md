@@ -1,7 +1,7 @@
 ---
 description: "Add struct types with field declarations, field read/write, and nested field access."
 ---
-# 17. Pyxc: Structs
+# 17. pyxc: Structs
 
 ## Where We Are
 

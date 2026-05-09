@@ -1,0 +1,7 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: {{[Ee]rror}}
+# CHECK: {{integer literal|literal}}
+
+def bad(n: int) -> int:
+  var a: int[n]
+  return 0

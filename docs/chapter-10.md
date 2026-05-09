@@ -1,7 +1,7 @@
 ---
 description: "Add mutable local variables and assignment using a temporary var ... : expression form, backed by memory slots, loads, and stores."
 ---
-# 10. Pyxc: Mutable Variables
+# 10. pyxc: Mutable Variables
 
 ## Where We Are
 
