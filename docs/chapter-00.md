@@ -41,7 +41,9 @@ In **Chapters 12–15** we will add the missing bells and whistles to make the p
 
 In **Chapter 16** we will add a static type system: `int`, `int8`, `int16`, `int64`, `float32`, `float64`, `bool`, and `None` (void) which will allow us to write programs that rival C/C++/Rust speeds and outperform Python. Again, *no cap*. 
 
-In **Chapters 17–20** we will implement structs and pointers, `while` loops, and some memory management and file I/O interfaces that will bring the language ever closer to being used in your real-world programming projects. 
+In **Chapters 17–22** we implement the full C-style memory model: structs and field access, pointer types and address-of, pointer arithmetic, heap allocation with `malloc`/`free`/`sizeof`, string literals and C interop, and type aliases. By the end of this phase, pyxc is a serious systems programming language — you can write K&R-style algorithms, call any C library function, and manually manage memory just as you would in C or C++.
+
+In **Chapters 24–30** we add an object model: `class` declarations, methods with `self`, constructors, visibility rules, traits, and the beginnings of generics.
 
 Here's what pyxc looks like after [chapter 11](chapter-11.md) — everything below runs today:
 
@@ -126,18 +128,27 @@ The early chapters are inspired by the excellent [LLVM Kaleidoscope Tutorial](ht
 
 **[Chapter 16: A Static Type System](chapter-16.md)** — Add eight scalar types: `int`, `int8`, `int16`, `int64`, `float32`, `float64`, `bool`, and `None` (void). Parameters, `var` declarations, `for` loop variables, and return types are all explicitly annotated. Explicit casts (`int32(x)`), type-aware arithmetic, and a strict assignment checker round out the type system.
 
-<!--
+### Structs, Pointers, and the C Memory Model
 
-### Structs, Pointers, and Full C Interop
+**[Chapter 17: Structs and Field Access](chapter-17.md)** — Add `struct` definitions, field layout and offsets, and `.` field access for both reads and writes. Structs are passed by value.
 
-**[Chapter 17: Structs and Field Access](chapter-17.md)** — Add `struct` definitions, field layout and offsets, and `.` access for both lvalue and rvalue.
+**[Chapter 18: Pointers and Address-Of](chapter-18.md)** — Add `ptr[T]`, `addr(x)`, and pointer indexing `p[i]` and `p[i].field`. Functions can now modify the caller's data through a pointer.
 
-**[Chapter 18: Pointers and Address-Of](chapter-18.md)** — Add `ptr[T]`, `addr(x)` / `&x`, and pointer indexing `p[i]`.
+**[Chapter 19: Pointer Arithmetic](chapter-19.md)** — Add `p + n`, `p - n`, `p - q` (element-count difference), and pointer comparisons. The building block for K&R-style buffer traversal.
 
-**[Chapter 19: Strings and C Interop](chapter-19.md)** — Add string literals and extern declarations for libc (`printf`, `fopen`, `fputs`, `scanf`). Add `malloc[T]` and `free`.
+**[Chapter 20: Heap Allocation](chapter-20.md)** — Add `sizeof(T)` as a compile-time constant, `ptr[T](expr)` pointer casts, and the `malloc`/`free` pattern via `extern`. Heap-allocate structs and arrays.
 
-**[Chapter 20: While Loops and the Full Mandelbrot](chapter-20.md)** — Add `while`. Build the full Mandelbrot renderer using structs, pointers, and I/O — the complete program shown in this tutorial's preview.
--->
+**[Chapter 21: String Literals and C Interop](chapter-21.md)** — Add `"hello"` string literals as `ptr[int8]`, null-terminated global constants, and escape sequences (`\n`, `\t`, `\0`, `\"`, `\\`). Call any C library function with `extern`.
+
+**[Chapter 22: Type Aliases](chapter-22.md)** — Add `type name = type` aliases. Alias chains resolve at definition time. Aliases are transparent in the IR — `type string = ptr[int8]` costs nothing.
+
+**Chapter 23: Arrays and Array Literals** *(in progress)* — Fixed-size `T[N]` stack arrays, indexing, array-to-pointer decay, and `[1, 2, 3]` initializer syntax.
+
+### OOP Core
+
+**Chapter 24: Class Syntax and Field Layout** *(in progress)* — Add `class` declarations as the foundation for the object model. Field layout identical to structs; methods and `self` come next.
+
+**Chapters 25–30** — Methods, constructors, visibility, traits, and generics. *(planned)*
 
 ## Need Help?
 

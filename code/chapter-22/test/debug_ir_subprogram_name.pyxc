@@ -1,0 +1,16 @@
+# RUN: %pyxc -g --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: !DISubprogram(name: "compute"
+# CHECK: !DISubprogram(name: "main"
+
+# Tests: each function definition produces a DISubprogram node whose 'name'
+# field matches the Pyxc source name. Verifies that the subprogram-to-function
+# mapping is correct for multiple functions.
+
+extern def printd(x: float64) -> float64
+
+def compute(a: float64, b: float64) -> float64:
+    return a * b + 1
+
+def main() -> None:
+    printd(compute(3, 4))

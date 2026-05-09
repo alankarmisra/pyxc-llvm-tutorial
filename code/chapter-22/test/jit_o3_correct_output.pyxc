@@ -1,0 +1,16 @@
+# RUN: %pyxc -O3 %s 2>&1 | FileCheck %s
+# CHECK: 120.000000
+
+# Tests: -O3 in JIT file-run mode produces correct output for a recursive
+# function. At O3 tail-call or inlining optimizations may apply, but the
+# observable result must be unchanged.
+
+extern def printd(x: float64) -> float64
+
+def factorial(n: float64) -> float64:
+    if n < 2:
+        return 1.0
+    return n * factorial(n - 1)
+
+def main() -> None:
+    printd(factorial(5))

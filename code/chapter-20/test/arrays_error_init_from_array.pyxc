@@ -1,8 +1,0 @@
-# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
-# CHECK: {{[Ee]rror}}
-
-# Arrays are not copyable — var b: int[4] = a must be rejected.
-def bad() -> int:
-  var a: int[4]
-  var b: int[4] = a
-  return b[0]

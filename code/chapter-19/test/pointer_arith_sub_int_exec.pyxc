@@ -1,0 +1,21 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 10.000000
+
+extern def printd(x: float64)
+
+struct Triple:
+  a: int
+  b: int
+  c: int
+
+def main() -> int:
+  var t: Triple
+  t.a = 10
+  t.b = 20
+  t.c = 30
+  var p: ptr[int] = addr(t.a)
+  var q: ptr[int] = p + 2
+  var r: ptr[int] = q - 2
+  printd(float64(r[0]))
+  return 0

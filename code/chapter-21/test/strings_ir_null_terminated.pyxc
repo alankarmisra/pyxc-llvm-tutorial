@@ -1,6 +1,0 @@
-# RUN: %pyxc --emit llvm-ir -o %t.ll %s
-# RUN: FileCheck --input-file=%t.ll %s
-# CHECK: [6 x i8] c"hello\00"
-
-def f() -> ptr[int8]:
-  return "hello"

@@ -46,7 +46,6 @@
 #include <iomanip>
 #include <map>
 #include <memory>
-#include <limits>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -185,7 +184,6 @@ enum class ValueType {
   Float64,
   Bool,
   Struct,
-  Array,
   Pointer,
   Error
 };
@@ -956,9 +954,9 @@ class BinaryExprAST : public ExprAST {
 
 public:
   BinaryExprAST(int Op, unique_ptr<ExprAST> LHS, unique_ptr<ExprAST> RHS,
-                ValueType Type)
+                ValueType Type, const string &StructName = "")
       : Op(Op), LHS(std::move(LHS)), RHS(std::move(RHS)) {
-    setType(Type);
+    setType(Type, StructName);
   }
   Value *codegen() override;
 };
@@ -1271,8 +1269,7 @@ static void BeginFunctionScope(const vector<PrototypeAST::ArgInfo> &Args) {
   VarStructScopes.emplace_back();
   for (const auto &Arg : Args) {
     VarScopes.front()[Arg.Name] = Arg.Type;
-    if (Arg.Type == ValueType::Struct || Arg.Type == ValueType::Pointer ||
-        Arg.Type == ValueType::Array)
+    if (Arg.Type == ValueType::Struct || Arg.Type == ValueType::Pointer)
       VarStructScopes.front()[Arg.Name] = Arg.StructName;
   }
 }
@@ -1288,8 +1285,7 @@ static void DeclareVar(const string &Name, ValueType Type,
   if (VarScopes.empty())
     return;
   VarScopes.back()[Name] = Type;
-  if (Type == ValueType::Struct || Type == ValueType::Pointer ||
-      Type == ValueType::Array)
+  if (Type == ValueType::Struct || Type == ValueType::Pointer)
     VarStructScopes.back()[Name] = StructName;
 }
 
@@ -1329,8 +1325,7 @@ static void EnterLoopScope(const string &Name, ValueType Type,
   VarScopes.emplace_back();
   VarStructScopes.emplace_back();
   VarScopes.back()[Name] = Type;
-  if (Type == ValueType::Struct || Type == ValueType::Pointer ||
-      Type == ValueType::Array)
+  if (Type == ValueType::Struct || Type == ValueType::Pointer)
     VarStructScopes.back()[Name] = StructName;
 }
 
@@ -1488,13 +1483,6 @@ static string EncodePointerType(ValueType PointeeType,
                                 const string &PointeeStructName = "");
 static bool DecodePointerType(const string &Encoded, ValueType &PointeeType,
                               string &PointeeStructName);
-static string EncodeArrayType(ValueType ElemType, const string &ElemStructName,
-                              uint64_t Count);
-static bool DecodeArrayType(const string &Encoded, ValueType &ElemType,
-                            string &ElemStructName, uint64_t &Count);
-static bool ArrayDecaysToPointerType(const string &ArrayInfo,
-                                     const string &PointerInfo);
-static bool ParseUnsignedDecimal(const string &Text, uint64_t &Out);
 static bool ParseStructDefinition();
 static const char *TypeName(ValueType Type);
 static bool IsNumericType(ValueType Type);
@@ -1600,49 +1588,37 @@ static unique_ptr<ExprAST> ParseNumberExpr() {
 static ValueType ParseTypeToken(string *StructName) {
   if (StructName)
     StructName->clear();
-  ValueType BaseType = ValueType::Error;
-  string BaseStructName;
   switch (CurTok) {
   case tok_int:
     getNextToken();
-    BaseType = ValueType::Int;
-    break;
+    return ValueType::Int;
   case tok_int8:
     getNextToken();
-    BaseType = ValueType::Int8;
-    break;
+    return ValueType::Int8;
   case tok_int16:
     getNextToken();
-    BaseType = ValueType::Int16;
-    break;
+    return ValueType::Int16;
   case tok_int32:
     getNextToken();
-    BaseType = ValueType::Int32;
-    break;
+    return ValueType::Int32;
   case tok_int64:
     getNextToken();
-    BaseType = ValueType::Int64;
-    break;
+    return ValueType::Int64;
   case tok_float:
     getNextToken();
-    BaseType = ValueType::Float;
-    break;
+    return ValueType::Float;
   case tok_float32:
     getNextToken();
-    BaseType = ValueType::Float32;
-    break;
+    return ValueType::Float32;
   case tok_float64:
     getNextToken();
-    BaseType = ValueType::Float64;
-    break;
+    return ValueType::Float64;
   case tok_bool:
     getNextToken();
-    BaseType = ValueType::Bool;
-    break;
+    return ValueType::Bool;
   case tok_none:
     getNextToken();
-    BaseType = ValueType::None;
-    break;
+    return ValueType::None;
   case tok_ptr: {
     getNextToken(); // eat 'ptr'
     if (CurTok != '[') {
@@ -1662,18 +1638,14 @@ static ValueType ParseTypeToken(string *StructName) {
       LogError("Nested pointer types are not supported");
       return ValueType::Error;
     }
-    if (PointeeType == ValueType::Array) {
-      LogError("Pointers to array types are not supported");
-      return ValueType::Error;
-    }
     if (CurTok != ']') {
       LogError("Expected ']' after pointer pointee type");
       return ValueType::Error;
     }
     getNextToken(); // eat ']'
-    BaseType = ValueType::Pointer;
-    BaseStructName = EncodePointerType(PointeeType, PointeeStructName);
-    break;
+    if (StructName)
+      *StructName = EncodePointerType(PointeeType, PointeeStructName);
+    return ValueType::Pointer;
   }
   case tok_identifier: {
     string TyName = IdentifierStr;
@@ -1682,40 +1654,14 @@ static ValueType ParseTypeToken(string *StructName) {
       return ValueType::Error;
     }
     getNextToken();
-    BaseType = ValueType::Struct;
-    BaseStructName = TyName;
-    break;
+    if (StructName)
+      *StructName = TyName;
+    return ValueType::Struct;
   }
   default:
     LogError("Expected a type");
     return ValueType::Error;
   }
-
-  if (CurTok == '[') {
-    if (BaseType == ValueType::None)
-      return LogError("Arrays of None are not allowed"), ValueType::Error;
-    if (BaseType == ValueType::Array)
-      return LogError("Nested array types are not supported"), ValueType::Error;
-    getNextToken(); // eat '['
-    if (CurTok != tok_number || NumIsFloat)
-      return LogError("Array size must be an integer literal"), ValueType::Error;
-    uint64_t Count = 0;
-    if (!ParseUnsignedDecimal(NumLiteralStr, Count))
-      return LogError("Invalid array size"), ValueType::Error;
-    if (Count == 0)
-      return LogError("Array size must be > 0"), ValueType::Error;
-    getNextToken(); // eat number
-    if (CurTok != ']')
-      return LogError("Expected ']' after array size"), ValueType::Error;
-    getNextToken(); // eat ']'
-    if (StructName)
-      *StructName = EncodeArrayType(BaseType, BaseStructName, Count);
-    return ValueType::Array;
-  }
-
-  if (StructName)
-    *StructName = BaseStructName;
-  return BaseType;
 }
 
 /// castexpr
@@ -1728,8 +1674,6 @@ static unique_ptr<ExprAST> ParseCastExpr() {
     return LogError("Cannot cast to None");
   if (Type == ValueType::Struct)
     return LogError("Cannot cast to struct type");
-  if (Type == ValueType::Pointer || Type == ValueType::Array)
-    return LogError("Cannot cast to pointer or array type");
   if (CurTok != '(')
     return LogError("Expected '(' after cast type");
   getNextToken(); // eat '('
@@ -1854,15 +1798,6 @@ static unique_ptr<ExprAST> ParseIdentifierExprWithName(string IdName) {
   for (size_t i = 0; i < Args.size(); ++i) {
     ValueType ArgType = Args[i]->getType();
     ValueType ParamType = Proto->getArgType(i);
-    if (ParamType == ValueType::Pointer && ArgType == ValueType::Array) {
-      if (!ArrayDecaysToPointerType(Args[i]->getStructName(),
-                                    Proto->getArgStructName(i))) {
-        return LogError(("argument " + std::to_string(i + 1) + " expects " +
-                         TypeName(ParamType))
-                            .c_str());
-      }
-      continue;
-    }
     if (!IsAssignable(ParamType, ArgType)) {
       return LogError(("argument " + std::to_string(i + 1) + " expects " +
                        TypeName(ParamType))
@@ -1921,27 +1856,21 @@ static unique_ptr<FieldExprAST> ParseFieldAccessExpr(string BaseName,
 static unique_ptr<ExprAST> ParseIndexExpr(string BaseName, vector<string> FieldPath,
                                           ValueType BaseType,
                                           const string &BaseStructName) {
-  if (BaseType != ValueType::Pointer && BaseType != ValueType::Array)
-    return LogError("Indexing requires a pointer or array value");
+  if (BaseType != ValueType::Pointer)
+    return LogError("Indexing requires a pointer value");
   getNextToken(); // eat '['
   auto Index = ParseExpression();
   if (!Index)
     return nullptr;
   if (!IsIntType(Index->getType()))
-    return LogError("Index must be an integer");
+    return LogError("Pointer index must be an integer");
   if (CurTok != ']')
     return LogError("Expected ']' after index expression");
   getNextToken(); // eat ']'
   ValueType ElemType = ValueType::Error;
   string ElemStruct;
-  if (BaseType == ValueType::Pointer) {
-    if (!DecodePointerType(BaseStructName, ElemType, ElemStruct))
-      return LogError("Invalid pointer type metadata");
-  } else {
-    uint64_t Count = 0;
-    if (!DecodeArrayType(BaseStructName, ElemType, ElemStruct, Count))
-      return LogError("Invalid array type metadata");
-  }
+  if (!DecodePointerType(BaseStructName, ElemType, ElemStruct))
+    return LogError("Invalid pointer type metadata");
   return make_unique<IndexExprAST>(std::move(BaseName), std::move(FieldPath),
                                    std::move(Index), ElemType, ElemStruct);
 }
@@ -2184,8 +2113,7 @@ static unique_ptr<ExprAST> ParseVarStmt() {
           DeclStructName != Init->getStructName())
         return LogError("Type mismatch in variable initialization");
     } else {
-      if (DeclType != ValueType::Struct && DeclType != ValueType::Pointer &&
-          DeclType != ValueType::Array) {
+      if (DeclType != ValueType::Struct) {
         Init = MakeZeroLiteral(DeclType);
         if (!Init)
           return nullptr;
@@ -2196,8 +2124,7 @@ static unique_ptr<ExprAST> ParseVarStmt() {
     if (IsGlobalDecl) {
       GlobalVarTypes[Name] = DeclType;
       GlobalVarDecls.insert(Name);
-      if (DeclType == ValueType::Struct || DeclType == ValueType::Pointer ||
-          DeclType == ValueType::Array)
+      if (DeclType == ValueType::Struct || DeclType == ValueType::Pointer)
         GlobalVarStructTypes[Name] = DeclStructName;
     } else {
       DeclareVar(Name, DeclType, DeclStructName);
@@ -2320,8 +2247,22 @@ static bool IsArithmeticOp(int Op) {
 // User-defined binary ops:
 // - float64 op float64                         -> float64
 // - otherwise                                  -> Error
-static ValueType GetBinaryResultType(int Op, ValueType L, ValueType R) {
+static ValueType GetBinaryResultType(int Op, ValueType L, const string &LStruct,
+                                     ValueType R, const string &RStruct,
+                                     string *ResultStructName = nullptr) {
+  if (ResultStructName)
+    ResultStructName->clear();
   if (IsArithmeticOp(Op)) {
+    if (Op != '*' &&
+        ((L == ValueType::Pointer && IsIntType(R)) ||
+         (R == ValueType::Pointer && IsIntType(L)))) {
+      if (ResultStructName)
+        *ResultStructName = (L == ValueType::Pointer) ? LStruct : RStruct;
+      return ValueType::Pointer;
+    }
+    if (Op == '-' && L == ValueType::Pointer && R == ValueType::Pointer &&
+        LStruct == RStruct)
+      return ValueType::Int64;
     if (!IsNumericType(L) || !IsNumericType(R))
       return ValueType::Error;
     // float + float (float32/float64): widen to float64 if mixed.
@@ -2342,6 +2283,9 @@ static ValueType GetBinaryResultType(int Op, ValueType L, ValueType R) {
     return ValueType::Error;
   }
   if (IsComparisonOp(Op)) {
+    if (L == ValueType::Pointer && R == ValueType::Pointer &&
+        LStruct == RStruct)
+      return ValueType::Bool;
     // bool ==/!= bool: allowed; other comparisons on bool are rejected.
     if (L == ValueType::Bool && R == ValueType::Bool) {
       if (Op == tok_eq || Op == tok_neq)
@@ -2504,9 +2448,16 @@ static unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
 
     ValueType ResultType = ValueType::Error;
     if (IsComparisonOp(BinOp) || IsArithmeticOp(BinOp)) {
-      ResultType = GetBinaryResultType(BinOp, LHS->getType(), RHS->getType());
+      string ResultStructName;
+      ResultType =
+          GetBinaryResultType(BinOp, LHS->getType(), LHS->getStructName(),
+                              RHS->getType(), RHS->getStructName(),
+                              &ResultStructName);
       if (ResultType == ValueType::Error)
         return LogError("Type mismatch in binary operator");
+      LHS = make_unique<BinaryExprAST>(BinOp, std::move(LHS), std::move(RHS),
+                                       ResultType, ResultStructName);
+      continue;
     } else {
       auto Proto = GetFunctionProto(string("binary") + (char)BinOp);
       if (!Proto)
@@ -3451,8 +3402,6 @@ static const char *TypeName(ValueType Type) {
     return "bool";
   case ValueType::Struct:
     return "struct";
-  case ValueType::Array:
-    return "array";
   case ValueType::Pointer:
     return "ptr";
   default:
@@ -3476,59 +3425,6 @@ static bool DecodePointerType(const string &Encoded, ValueType &PointeeType,
     return false;
   PointeeType = static_cast<ValueType>(Raw);
   PointeeStructName = Encoded.substr(Pos + 1);
-  return true;
-}
-
-static string EncodeArrayType(ValueType ElemType, const string &ElemStructName,
-                              uint64_t Count) {
-  return std::to_string(static_cast<int>(ElemType)) + ":" + ElemStructName +
-         ":" + std::to_string(Count);
-}
-
-static bool DecodeArrayType(const string &Encoded, ValueType &ElemType,
-                            string &ElemStructName, uint64_t &Count) {
-  auto First = Encoded.find(':');
-  auto Last = Encoded.rfind(':');
-  if (First == string::npos || Last == string::npos || First == Last)
-    return false;
-  int Raw = std::atoi(Encoded.substr(0, First).c_str());
-  if (Raw < static_cast<int>(ValueType::None) ||
-      Raw > static_cast<int>(ValueType::Pointer))
-    return false;
-  ElemType = static_cast<ValueType>(Raw);
-  ElemStructName = Encoded.substr(First + 1, Last - First - 1);
-  if (!ParseUnsignedDecimal(Encoded.substr(Last + 1), Count))
-    return false;
-  return Count > 0;
-}
-
-static bool ArrayDecaysToPointerType(const string &ArrayInfo,
-                                     const string &PointerInfo) {
-  ValueType ArrElemType = ValueType::Error;
-  string ArrElemStruct;
-  uint64_t Count = 0;
-  if (!DecodeArrayType(ArrayInfo, ArrElemType, ArrElemStruct, Count))
-    return false;
-  ValueType PtrElemType = ValueType::Error;
-  string PtrElemStruct;
-  if (!DecodePointerType(PointerInfo, PtrElemType, PtrElemStruct))
-    return false;
-  return ArrElemType == PtrElemType && ArrElemStruct == PtrElemStruct;
-}
-
-static bool ParseUnsignedDecimal(const string &Text, uint64_t &Out) {
-  if (Text.empty())
-    return false;
-  uint64_t V = 0;
-  for (char C : Text) {
-    if (!std::isdigit(static_cast<unsigned char>(C)))
-      return false;
-    uint64_t Digit = static_cast<uint64_t>(C - '0');
-    if (V > (std::numeric_limits<uint64_t>::max() - Digit) / 10)
-      return false;
-    V = V * 10 + Digit;
-  }
-  Out = V;
   return true;
 }
 
@@ -3592,17 +3488,6 @@ static Type *LLVMTypeFor(ValueType Type, const string &StructName) {
     return Type::getInt1Ty(*TheContext);
   case ValueType::Struct:
     return GetOrCreateLLVMStructType(StructName);
-  case ValueType::Array: {
-    ValueType ElemType = ValueType::Error;
-    string ElemStructName;
-    uint64_t Count = 0;
-    if (!DecodeArrayType(StructName, ElemType, ElemStructName, Count))
-      return nullptr;
-    llvm::Type *ElemLLVM = LLVMTypeFor(ElemType, ElemStructName);
-    if (!ElemLLVM)
-      return nullptr;
-    return ArrayType::get(ElemLLVM, Count);
-  }
   case ValueType::Pointer:
     return PointerType::getUnqual(*TheContext);
   case ValueType::None:
@@ -3634,8 +3519,6 @@ static DIType *DITypeFor(ValueType Type) {
     return Float32DIType;
   case ValueType::Bool:
     return BoolDIType;
-  case ValueType::Array:
-    return IntDIType;
   case ValueType::Pointer:
     return PtrDIType;
   default:
@@ -3644,8 +3527,6 @@ static DIType *DITypeFor(ValueType Type) {
 }
 
 static bool IsAssignable(ValueType Dest, ValueType Src) {
-  if (Dest == ValueType::Array || Src == ValueType::Array)
-    return false;
   if (Dest == Src)
     return true;
   if ((Dest == ValueType::Float && Src == ValueType::Float64) ||
@@ -3704,8 +3585,6 @@ static Constant *ZeroConstant(ValueType Type, const string &StructName = "") {
     return ConstantInt::get(Type::getInt1Ty(*TheContext), 0);
   case ValueType::Struct:
     return Constant::getNullValue(LLVMTypeFor(Type, StructName));
-  case ValueType::Array:
-    return ConstantAggregateZero::get(LLVMTypeFor(Type, StructName));
   case ValueType::Pointer:
     return ConstantPointerNull::get(
         cast<PointerType>(LLVMTypeFor(ValueType::Pointer)));
@@ -3955,33 +3834,13 @@ Value *BoolExprAST::codegen() {
 /// VariableExprAST::codegen - A variable reference loads the current value
 /// from the variable's stack slot.
 Value *VariableExprAST::codegen() {
-  auto DecayArray = [&](Value *Ptr) -> Value * {
-    ValueType ElemType = ValueType::Error;
-    string ElemStructName;
-    uint64_t Count = 0;
-    if (!DecodeArrayType(getStructName(), ElemType, ElemStructName, Count))
-      return LogErrorV("Invalid array type metadata");
-    llvm::Type *ArrTy = LLVMTypeFor(ValueType::Array, getStructName());
-    return Builder->CreateInBoundsGEP(
-        ArrTy, Ptr,
-        {ConstantInt::get(Type::getInt64Ty(*TheContext), 0),
-         ConstantInt::get(Type::getInt64Ty(*TheContext), 0)},
-        "arraydecay");
-  };
-
   auto It = NamedValues.find(Name);
-  if (It != NamedValues.end() && It->second) {
-    if (getType() == ValueType::Array)
-      return DecayArray(It->second);
+  if (It != NamedValues.end() && It->second)
     return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), It->second,
                                Name.c_str());
-  }
 
-  if (auto *GV = GetGlobalVariable(Name)) {
-    if (getType() == ValueType::Array)
-      return DecayArray(GV);
+  if (auto *GV = GetGlobalVariable(Name))
     return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), GV, Name.c_str());
-  }
 
   return LogErrorV("Unknown variable name");
 }
@@ -4063,52 +3922,51 @@ Value *AddrExprAST::codegen() {
   return Ptr;
 }
 
-static Value *BuildIndexElementPtr(IndexExprAST *IdxExpr) {
-  ValueType BaseType = ValueType::Error;
-  string BaseStructName;
-  Value *BasePtr = nullptr;
-  Value *BaseAddr = nullptr;
-  if (IdxExpr->getFieldPath().empty()) {
-    auto It = NamedValues.find(IdxExpr->getBaseName());
+static Value *LoadPointerValue(const string &BaseName,
+                               const vector<string> &FieldPath,
+                               ValueType &PtrType, string &PtrStructName) {
+  if (FieldPath.empty()) {
+    auto It = NamedValues.find(BaseName);
     if (It != NamedValues.end() && It->second) {
-      BaseAddr = It->second;
-      BaseType = NamedValueTypes[IdxExpr->getBaseName()];
-      BaseStructName = NamedValueStructNames[IdxExpr->getBaseName()];
-    } else if (auto *GV = GetGlobalVariable(IdxExpr->getBaseName())) {
-      BaseAddr = GV;
-      BaseType = GlobalVarTypes[IdxExpr->getBaseName()];
-      BaseStructName = GlobalVarStructTypes[IdxExpr->getBaseName()];
+      PtrType = NamedValueTypes[BaseName];
+      PtrStructName = NamedValueStructNames[BaseName];
+      if (PtrType != ValueType::Pointer)
+        return nullptr;
+      return Builder->CreateLoad(LLVMTypeFor(ValueType::Pointer), It->second,
+                                 "ptrload");
     }
-  } else {
-    BaseAddr = GetFieldAddress(IdxExpr->getBaseName(), IdxExpr->getFieldPath(),
-                               &BaseType, &BaseStructName);
+    if (auto *GV = GetGlobalVariable(BaseName)) {
+      PtrType = GlobalVarTypes[BaseName];
+      PtrStructName = GlobalVarStructTypes[BaseName];
+      if (PtrType != ValueType::Pointer)
+        return nullptr;
+      return Builder->CreateLoad(LLVMTypeFor(ValueType::Pointer), GV, "ptrload");
+    }
+    return nullptr;
   }
-  if (!BaseAddr)
-    return LogErrorV("Unknown variable name");
+  Value *PtrAddr = GetFieldAddress(BaseName, FieldPath, &PtrType, &PtrStructName);
+  if (!PtrAddr || PtrType != ValueType::Pointer)
+    return nullptr;
+  return Builder->CreateLoad(LLVMTypeFor(ValueType::Pointer), PtrAddr, "ptrload");
+}
 
-  if (BaseType == ValueType::Pointer) {
-    BasePtr = Builder->CreateLoad(LLVMTypeFor(ValueType::Pointer), BaseAddr, "ptrload");
-  } else if (BaseType == ValueType::Array) {
-    Type *ArrayTy = LLVMTypeFor(ValueType::Array, BaseStructName);
-    BasePtr = Builder->CreateInBoundsGEP(
-        ArrayTy, BaseAddr,
-        {ConstantInt::get(Type::getInt64Ty(*TheContext), 0),
-         ConstantInt::get(Type::getInt64Ty(*TheContext), 0)},
-        "arraybase");
-  } else {
-    return LogErrorV("Indexing requires a pointer or array value");
-  }
-
+static Value *BuildIndexElementPtr(IndexExprAST *IdxExpr) {
+  ValueType PtrType = ValueType::Error;
+  string PtrStructName;
+  Value *BasePtr = LoadPointerValue(IdxExpr->getBaseName(), IdxExpr->getFieldPath(),
+                                    PtrType, PtrStructName);
+  if (!BasePtr)
+    return LogErrorV("Indexing requires a pointer value");
   Value *IdxVal = IdxExpr->getIndex()->codegen();
   if (!IdxVal)
     return nullptr;
   if (!IsIntType(IdxExpr->getIndex()->getType()))
-    return LogErrorV("Index must be an integer");
+    return LogErrorV("Pointer index must be an integer");
   if (IdxExpr->getIndex()->getType() != ValueType::Int64) {
     IdxVal =
         EmitImplicitCast(IdxVal, IdxExpr->getIndex()->getType(), ValueType::Int64);
     if (!IdxVal)
-      return LogErrorV("Index must be an integer");
+      return LogErrorV("Pointer index must be an integer");
   }
   return Builder->CreateInBoundsGEP(
       LLVMTypeFor(IdxExpr->getType(), IdxExpr->getStructName()), BasePtr, IdxVal,
@@ -4315,6 +4173,44 @@ Value *BinaryExprAST::codegen() {
   case '+':
   case '-':
   case '*': {
+    if (getType() == ValueType::Pointer) {
+      Value *Ptr = nullptr;
+      Value *Idx = nullptr;
+      if (LType == ValueType::Pointer && IsIntType(RType) && Op == '+') {
+        Ptr = L;
+        Idx = EmitImplicitCast(R, RType, ValueType::Int64);
+      } else if (RType == ValueType::Pointer && IsIntType(LType) && Op == '+') {
+        Ptr = R;
+        Idx = EmitImplicitCast(L, LType, ValueType::Int64);
+      } else if (LType == ValueType::Pointer && IsIntType(RType) && Op == '-') {
+        Ptr = L;
+        Idx = EmitImplicitCast(R, RType, ValueType::Int64);
+        if (Idx)
+          Idx = Builder->CreateNeg(Idx, "negidx");
+      }
+      if (!Ptr || !Idx)
+        return LogErrorV("Type mismatch in arithmetic");
+      ValueType ElemType = ValueType::Error;
+      string ElemStruct;
+      if (!DecodePointerType(getStructName(), ElemType, ElemStruct))
+        return LogErrorV("Invalid pointer type metadata");
+      llvm::Type *ElemLLVM = LLVMTypeFor(ElemType, ElemStruct);
+      if (!ElemLLVM)
+        return LogErrorV("Invalid pointer element type");
+      return Builder->CreateInBoundsGEP(ElemLLVM, Ptr, Idx, "ptrarith");
+    }
+    if (Op == '-' && getType() == ValueType::Int64 &&
+        LType == ValueType::Pointer && RType == ValueType::Pointer &&
+        LHS->getStructName() == RHS->getStructName()) {
+      ValueType ElemType = ValueType::Error;
+      string ElemStruct;
+      if (!DecodePointerType(LHS->getStructName(), ElemType, ElemStruct))
+        return LogErrorV("Invalid pointer type metadata");
+      llvm::Type *ElemLLVM = LLVMTypeFor(ElemType, ElemStruct);
+      if (!ElemLLVM)
+        return LogErrorV("Invalid pointer element type");
+      return Builder->CreatePtrDiff(ElemLLVM, L, R, "ptrdiff");
+    }
     L = EmitImplicitCast(L, LType, getType());
     R = EmitImplicitCast(R, RType, getType());
     if (!L || !R)
@@ -4338,6 +4234,25 @@ Value *BinaryExprAST::codegen() {
   case tok_neq:
   case tok_leq:
   case tok_geq: {
+    if (LType == ValueType::Pointer && RType == ValueType::Pointer &&
+        LHS->getStructName() == RHS->getStructName()) {
+      switch (Op) {
+      case tok_eq:
+        return Builder->CreateICmpEQ(L, R, "cmptmp");
+      case tok_neq:
+        return Builder->CreateICmpNE(L, R, "cmptmp");
+      case '<':
+        return Builder->CreateICmpULT(L, R, "cmptmp");
+      case '>':
+        return Builder->CreateICmpUGT(L, R, "cmptmp");
+      case tok_leq:
+        return Builder->CreateICmpULE(L, R, "cmptmp");
+      case tok_geq:
+        return Builder->CreateICmpUGE(L, R, "cmptmp");
+      default:
+        break;
+      }
+    }
     ValueType CompareType = ValueType::Error;
     if (LType == ValueType::Bool && RType == ValueType::Bool) {
       if (Op != tok_eq && Op != tok_neq)
@@ -4485,17 +4400,10 @@ Value *CallExprAST::codegen() {
     if (!ArgVal)
       return nullptr;
     if (Proto) {
-      ValueType ArgType = Args[i]->getType();
-      ValueType ParamType = Proto->getArgType(i);
-      if (ParamType == ValueType::Pointer && ArgType == ValueType::Array) {
-        if (!ArrayDecaysToPointerType(Args[i]->getStructName(),
-                                      Proto->getArgStructName(i)))
-          return LogErrorV("Argument type mismatch");
-      } else {
-        ArgVal = EmitImplicitCast(ArgVal, ArgType, ParamType);
-        if (!ArgVal)
-          return LogErrorV("Argument type mismatch");
-      }
+      ArgVal =
+          EmitImplicitCast(ArgVal, Args[i]->getType(), Proto->getArgType(i));
+      if (!ArgVal)
+        return LogErrorV("Argument type mismatch");
     }
     ArgsV.push_back(ArgVal);
   }

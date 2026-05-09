@@ -1,7 +1,0 @@
-# RUN: %pyxc --emit llvm-ir -o %t.ll %s
-# RUN: FileCheck --input-file=%t.ll %s
-# CHECK: insertvalue [3 x i64]
-
-def f() -> int:
-  var a: int[3] = [1, 2, 3]
-  return a[0]

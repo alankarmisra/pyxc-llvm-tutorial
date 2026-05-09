@@ -1,0 +1,8 @@
+# RUN: cd %S
+# RUN: rm -f emit_exe_single_default
+# RUN: %pyxc --emit exe emit_exe_single_default.pyxc
+# RUN: test -x emit_exe_single_default
+# RUN: ./emit_exe_single_default
+
+def main() -> None:
+    return

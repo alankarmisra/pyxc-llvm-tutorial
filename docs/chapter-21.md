@@ -1,25 +1,32 @@
 ---
-description: "Add string literals: \"hello\" produces a ptr[int8] backed by a null-terminated global constant, enabling calls to puts, printf, and other C string functions."
+description: "Add string literals and C interop — so pyxc programs can call puts, printf, and other C standard library functions directly."
 ---
-# 21. pyxc: String Literals
+# 21. pyxc: String Literals and C Interop
 
 ## Where We Are
 
-[Chapter 20](chapter-20.md) added array literals — `[1, 2, 3]` as a shorthand for initializing arrays. This chapter adds the same convenience for strings. After this chapter:
+[Chapter 20](chapter-20.md) added array literals, giving us a clean syntax for constructing fixed-size arrays inline. But there is one conspicuously missing piece: text. Every useful program eventually needs to produce output that is more than a raw number, and the C standard library is full of functions — `puts`, `printf`, `strlen` — that are ready to help. What we are missing is a way to write string data in pyxc source code.
+
+After this chapter:
 
 ```python
 extern def puts(s: ptr[int8]) -> int
 
+def greeting() -> ptr[int8]:
+  return "hello, pyxc"
+
 def main() -> int:
-  puts("hello, pyxc")
+  puts(greeting())
   return 0
 ```
+
+Output:
 
 ```
 hello, pyxc
 ```
 
-That's the whole pitch. A string literal in double quotes produces a `ptr[int8]` you can pass directly to any C function that takes `char *`.
+String literals are `ptr[int8]` — a pointer to the first byte of a null-terminated buffer. That is exactly what C's `char *` is. `puts`, `printf`, `strlen`, and every other C string function accept `ptr[int8]` directly, with no adapter needed.
 
 ## Source Code
 
@@ -31,23 +38,31 @@ cd pyxc-llvm-tutorial/code/chapter-21
 ## Grammar
 
 ```ebnf
-stringliteral ::= '"' { char | escape } '"'
-escape        ::= '\' ( '\' | '"' | 'n' | 't' | '0' )
-
-primary ::= ... | stringliteral | ...
+string-expr ::= '"' { char | escape-seq } '"'
+escape-seq  ::= '\\' | '\"' | '\n' | '\t' | '\0'
 ```
 
-Supported escape sequences: `\\` (backslash), `\"` (double quote), `\n` (newline), `\t` (tab), `\0` (null byte). Any other character after `\` is a lexer error. A string that reaches end-of-line without a closing `"` is also an error.
+A string literal is a sequence of characters and escape sequences enclosed in double quotes. It has type `ptr[int8]` regardless of context. The closing quote must appear on the same line as the opening quote — unterminated strings are a lexer error.
 
-## The Type of a String
+Supported escape sequences: `\\` (backslash), `\"` (double quote), `\n` (newline), `\t` (tab), `\0` (null byte). Any other `\x` is a lexer error.
 
-A string literal has type `ptr[int8]`. It is a pointer to the first byte of a null-terminated byte array. This is exactly what C calls `char *`, so it works directly with `puts`, `printf`, `fputs`, and any other C function that takes a string.
+## A New Token: `tok_string`
 
-The pointer encoding is `EncodePointerType(Int8, "")` — same encoding as `ptr[int8]` declared anywhere else in Pyxc. String literals fit into the existing pointer type system without any special casing downstream.
+```cpp
+tok_string = -38,
+```
 
-## Lexing
+Unlike keywords, `tok_string` is not registered in the keyword map. The lexer produces it directly when it encounters a `"` character. The string's content — with escapes already resolved — is stored in a global:
 
-`tok_string` is a new token kind. The lexer fills `StringLiteralStr` as it reads characters between the quotes, processing escape sequences on the way:
+```cpp
+static string StringLiteralStr;
+```
+
+This mirrors the existing pattern for `IdentifierStr` and `NumVal`: the lexer fills a global, and the parser consumes it before calling `getNextToken` again.
+
+## Lexer String Handling
+
+In `getTok`, the `LexerLastChar == '"'` branch handles the full scan:
 
 ```cpp
 if (LexerLastChar == '"') {
@@ -56,45 +71,35 @@ if (LexerLastChar == '"') {
   while (LexerLastChar != '"' && LexerLastChar != EOF && LexerLastChar != '\n') {
     if (LexerLastChar == '\\') {
       LexerLastChar = advance();
-      if (LexerLastChar == 'n')       StringLiteralStr.push_back('\n');
-      else if (LexerLastChar == 't')  StringLiteralStr.push_back('\t');
-      else if (LexerLastChar == '0')  StringLiteralStr.push_back('\0');
-      else if (LexerLastChar == '"' || LexerLastChar == '\\')
-                                      StringLiteralStr.push_back(LexerLastChar);
-      else {
-        // invalid escape — emit error immediately and return tok_error
+      switch (LexerLastChar) {
+      case '\\': StringLiteralStr.push_back('\\'); break;
+      case '"':  StringLiteralStr.push_back('"');  break;
+      case 'n':  StringLiteralStr.push_back('\n'); break;
+      case 't':  StringLiteralStr.push_back('\t'); break;
+      case '0':  StringLiteralStr.push_back('\0'); break;
+      default:
+        fprintf(stderr, "Error: invalid string escape\n");
+        return tok_error;
       }
     } else {
-      StringLiteralStr.push_back(LexerLastChar);
+      StringLiteralStr.push_back(static_cast<char>(LexerLastChar));
     }
     LexerLastChar = advance();
   }
   if (LexerLastChar != '"') {
-    // unterminated string — emit error and return tok_error
+    fprintf(stderr, "Error: unterminated string literal\n");
+    return tok_error;
   }
   LexerLastChar = advance(); // eat closing quote
   return tok_string;
 }
 ```
 
-By the time `tok_string` is returned, `StringLiteralStr` already holds the decoded content — `"\n"` in source becomes a single newline byte in the string. The parser does not see raw escape sequences.
+The loop advances character by character. When it sees `\`, it immediately advances again to read the escape character. Each recognized escape is pushed as its actual byte value. Anything not in the switch returns `tok_error` immediately, which aborts compilation.
 
-Errors (invalid escape, unterminated string) are reported with file coordinates and a source context snippet, then the lexer returns `tok_error`, which causes the parser to bail out.
+The while condition checks for both EOF and `\n` in addition to the closing `"`. This means hitting end-of-file or end-of-line before the closing quote is caught as an unterminated string rather than looping forever.
 
-## Parsing
-
-`ParseStringExpr` is the simplest parser function in the codebase:
-
-```cpp
-static unique_ptr<ExprAST> ParseStringExpr() {
-  string Val = StringLiteralStr;
-  getNextToken(); // eat string literal
-  return make_unique<StringExprAST>(
-      std::move(Val), EncodePointerType(ValueType::Int8, ""));
-}
-```
-
-It grabs the already-decoded string, advances the token, and wraps it in a `StringExprAST` whose type is `ptr[int8]`. That's it. No expected-type context needed — a string literal is always `ptr[int8]` regardless of where it appears.
+## `StringExprAST`
 
 ```cpp
 class StringExprAST : public ExprAST {
@@ -104,106 +109,105 @@ public:
       : Text(std::move(Text)) {
     setType(ValueType::Pointer, PtrTypeInfo);
   }
-  const string &getText() const { return Text; }
   Value *codegen() override;
 };
 ```
 
-## Codegen: A Global Constant
+The type is always `ptr[int8]`. `PtrTypeInfo` is `EncodePointerType(ValueType::Int8, "")` — the same encoding used for any other `ptr[int8]` in the system. From the type checker's perspective, a string literal is indistinguishable from any other `ptr[int8]` value.
 
-String literals are immutable data. They don't belong on the stack and they outlive any function call. The right home is a private constant global:
+`Text` holds the processed string content: the characters between the quotes, with all escape sequences already resolved to their byte values. No further processing happens at codegen time.
+
+## Parsing `tok_string`
+
+The `ParsePrimary` switch gains a `tok_string` case:
 
 ```cpp
-static unsigned StringLiteralCounter = 0;
-
-Value *StringExprAST::codegen() {
-  std::string Name = "__str." + std::to_string(StringLiteralCounter++);
-  auto *Arr = ConstantDataArray::getString(*TheContext, getText(), true);
-  auto *GV = new GlobalVariable(*TheModule, Arr->getType(), true,
-                                GlobalValue::PrivateLinkage, Arr, Name);
-  GV->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
-  GV->setAlignment(Align(1));
-  Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
-  return Builder->CreateInBoundsGEP(Arr->getType(), GV, {Zero, Zero}, "strptr");
+case tok_string: {
+  string S = StringLiteralStr;
+  getNextToken();
+  return make_unique<StringExprAST>(
+      std::move(S), EncodePointerType(ValueType::Int8, ""));
 }
 ```
 
-`ConstantDataArray::getString(ctx, text, true)` creates a `[N x i8]` constant with a null terminator appended (`true` = add null). For `"hello"`, that's `[6 x i8] c"hello\00"`.
+The global `StringLiteralStr` is copied into a local before `getNextToken` is called — the same pattern used for `IdentifierStr` in the `tok_identifier` case. There is no context-sensitivity: string literals are always `ptr[int8]`, regardless of where they appear.
 
-`PrivateLinkage` means the symbol is internal to the module — no cross-module collisions even when multiple JIT modules each start `StringLiteralCounter` at zero.
+## `StringExprAST::codegen`
 
-`UnnamedAddr::Global` tells the linker (and the optimizer) that the address of this global is not meaningful — only its content is. This allows the optimizer to merge identical string constants rather than keeping duplicates.
+```cpp
+Value *StringExprAST::codegen() {
+  auto *I8Ty = Type::getInt8Ty(*TheContext);
+  auto *ArrTy = ArrayType::get(I8Ty, Text.size() + 1);
+  auto *Init = ConstantDataArray::getString(*TheContext, Text, true);
+  string Name = ".str." + to_string(StringLiteralCounter++);
+  auto *GV = new GlobalVariable(*TheModule, ArrTy, true,
+                                GlobalValue::PrivateLinkage, Init, Name);
+  GV->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
+  GV->setAlignment(Align(1));
+  ModuleHasGlobals = true;
+  Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
+  return Builder->CreateInBoundsGEP(ArrTy, GV, {Zero, Zero}, "strptr");
+}
+```
 
-The two-element GEP `{Zero, Zero}` is the standard LLVM idiom for getting a pointer to the first byte of a global array:
+Each string literal becomes a private global constant in the LLVM module. The details:
 
-- The first index steps past the "enclosing object" (the global itself), always zero.
-- The second index steps to byte offset zero within the `[N x i8]` array.
+**Array type.** The string `"hello"` (5 bytes) becomes `[6 x i8]`. The `+ 1` accounts for the null terminator. The `true` argument to `ConstantDataArray::getString` appends the `\0` automatically.
 
-The result is an opaque `ptr`, the same type returned by all pointer-typed expressions in Pyxc.
+**`PrivateLinkage`.** The global is not visible outside the translation unit. Two different `.c`/`.pyxc` files can each have a `.str.0` without name collision.
+
+**`UnnamedAddr::Global`.** The address of the constant does not matter to the program — it is only ever used through the pointer, not compared for identity. This attribute lets LLVM merge identical string constants at link time when optimizing.
+
+**`Align(1)`.** Byte-aligned, correct for a `char` array. No stricter alignment is required or useful.
+
+**`StringLiteralCounter`.** A `static unsigned` declared at module scope, reset to 0 at the start of each new module compilation. It generates unique names: `.str.0`, `.str.1`, and so on. Two identical string literals in the same file produce two separate globals at `-O0`; LLVM may merge them at higher optimization levels.
+
+**The GEP.** The global `GV` has type `[N x i8]` — it is a pointer to an array, not a pointer to a byte. `CreateInBoundsGEP` with indices `{i64 0, i64 0}` steps through the global (first index, advancing zero array elements) and then to byte 0 (second index, advancing zero bytes within the array). The result has type `ptr` pointing to the first byte. This is the standard C idiom for converting an array to a pointer.
+
+**`ModuleHasGlobals = true`.** String literal globals require the module-level `__init_globals` function to be emitted even if the user has declared no global variables. Setting this flag ensures that function is generated.
+
+### Generated IR
 
 For `"hello"`:
 
 ```llvm
-@__str.0 = private unnamed_addr constant [6 x i8] c"hello\00", align 1
+@.str.0 = private unnamed_addr constant [6 x i8] c"hello\00"
 
-; in the function body:
-%strptr = getelementptr inbounds [6 x i8], ptr @__str.0, i64 0, i64 0
+define i32 @main() {
+entry:
+  %strptr = getelementptr inbounds [6 x i8], ptr @.str.0, i64 0, i64 0
+  call i32 @puts(ptr %strptr)
+  ret i32 0
+}
 ```
 
-`%strptr` is a `ptr` pointing at byte `'h'`.
+The global is a read-only constant — `true` in the `GlobalVariable` constructor sets the `isConstant` flag. LLVM is free to place it in the `.rodata` section (or equivalent on the target platform).
 
-## String Type Checking
+## The String Type in pyxc
 
-Because strings are `ptr[int8]`, they participate in the same pointer type checking as everything else.
-
-**Correct usage** — `ptr[int8]` expected:
+Strings in pyxc are `ptr[int8]`. There is no separate `string` type — a string literal is simply a pointer to the first byte of a null-terminated buffer, exactly matching C's `char *`. Every C string function accepts `ptr[int8]` directly:
 
 ```python
 extern def puts(s: ptr[int8]) -> int
-puts("hello")             # ok — string is ptr[int8]
-
-var s: ptr[int8] = "world"  # ok
+extern def printf(fmt: ptr[int8]) -> int
+extern def strlen(s: ptr[int8]) -> int
 ```
 
-**Type mismatch** — `ptr[int]` expected:
-
-```python
-var p: ptr[int] = "oops"   # error — ptr[int8] != ptr[int]
-```
-
-The pointer struct name `"2:"` (for `ptr[int8]`) does not match `"1:"` (for `ptr[int]`), so the type check in `ParseVarStmt` rejects it.
-
-**In an array of string pointers:**
-
-```python
-var msgs: ptr[int8][2] = ["one", "two"]
-```
-
-The array literal parser already received the element type `ptr[int8]` from the array's type encoding. It validates that each element's struct name matches — so `["one", "two"]` in a `ptr[int][2]` context is a type error.
-
-## Returning a String
-
-Functions can return string literals:
+Returning a string from a function works because the return type check compares `ptr[int8]` against `ptr[int8]`:
 
 ```python
 def greeting() -> ptr[int8]:
   return "hello"
 ```
 
-This requires `CurrentFunctionReturnStructName` to be set correctly when parsing the function body — a fix applied in this chapter to the `ReturnTypeGuard` call site in `FunctionAST::codegen`. With that in place, the return context carries the full pointer type information, and the type-check on the `return` expression succeeds.
+Storing a string literal in a variable works the same way:
 
-## One String, One Global
-
-There is no deduplication. Two occurrences of `"hello"` in the same function produce two separate globals:
-
-```llvm
-@__str.0 = private unnamed_addr constant [6 x i8] c"hello\00", align 1
-@__str.1 = private unnamed_addr constant [6 x i8] c"hello\00", align 1
+```python
+var msg: ptr[int8] = "hello, pyxc"
+puts(msg)
 ```
 
-At `-O0`, both globals survive. At `-O1` and above, the `unnamed_addr` attribute signals to the optimizer that addresses are interchangeable, and the two globals get merged into one. For most programs, this is not worth worrying about.
-
-`StringLiteralCounter` resets to zero at the start of each new module so that JIT sessions that compile multiple modules don't accumulate unbounded counter values. Since the globals have `PrivateLinkage`, names never conflict across modules.
+The pointer stored in `msg` points directly into the global constant. The storage for the string is static — it lives for the lifetime of the program.
 
 ## Build and Run
 
@@ -214,7 +218,7 @@ cmake -S . -B build && cmake --build build
 
 ## Try It
 
-### Basic string output
+### Basic string literal
 
 ```python
 extern def puts(s: ptr[int8]) -> int
@@ -224,40 +228,8 @@ def main() -> int:
   return 0
 ```
 
-```
+```bash
 hello, pyxc
-```
-
-### Store in a variable, pass around
-
-```python
-extern def puts(s: ptr[int8]) -> int
-
-def main() -> int:
-  var s: ptr[int8] = "stored"
-  puts(s)
-  return 0
-```
-
-```
-stored
-```
-
-### Return from a function
-
-```python
-extern def puts(s: ptr[int8]) -> int
-
-def label() -> ptr[int8]:
-  return "from function"
-
-def main() -> int:
-  puts(label())
-  return 0
-```
-
-```
-from function
 ```
 
 ### Escape sequences
@@ -266,72 +238,79 @@ from function
 extern def puts(s: ptr[int8]) -> int
 
 def main() -> int:
-  puts("line1\nline2")
+  puts("line one\nline two")
   return 0
 ```
 
-```
-line1
-line2
+```bash
+line one
+line two
 ```
 
-### Array of strings
+The `\n` inside the string literal is resolved by the lexer to a real newline byte. `puts` adds a trailing newline of its own, so the output ends with a blank line.
+
+### Return a string from a function
+
+```python
+extern def puts(s: ptr[int8]) -> int
+
+def greeting() -> ptr[int8]:
+  return "hello from a function"
+
+def main() -> int:
+  puts(greeting())
+  return 0
+```
+
+```bash
+hello from a function
+```
+
+### Store in a variable, then pass
 
 ```python
 extern def puts(s: ptr[int8]) -> int
 
 def main() -> int:
-  var msgs: ptr[int8][3] = ["one", "two", "three"]
-  puts(msgs[0])
-  puts(msgs[1])
-  puts(msgs[2])
+  var msg: ptr[int8] = "stored string"
+  puts(msg)
   return 0
 ```
-
-```
-one
-two
-three
-```
-
-### Calling printf
-
-`printf` is variadic — Pyxc does not support variadic functions natively, but you can declare a single-argument wrapper:
-
-```python
-extern def printf(fmt: ptr[int8]) -> int
-
-def main() -> int:
-  printf("value: 42\n")
-  return 0
-```
-
-For formatted output with arguments, wrap `printf` in a C helper compiled separately and linked in.
-
-### Inspect the IR
 
 ```bash
-./build/pyxc --emit llvm-ir -o out.ll program.pyxc
-grep '__str\|constant' out.ll
+stored string
 ```
 
-You'll see one `private unnamed_addr constant [N x i8]` per string literal.
+### Inspect the IR for a string global
+
+```bash
+pyxc --emit llvm-ir -o out.ll program.pyxc
+grep '\.str\.' out.ll
+```
+
+You will see lines like:
+
+```llvm
+@.str.0 = private unnamed_addr constant [14 x i8] c"stored string\00"
+```
+
+Each string literal in the source file produces one entry. The counter suffix increments for each additional literal.
 
 ## Known Limitations
 
-**`ptr[int8]` only.** There is no `string` type — strings are pointers. You get no length, no bounds checking, no UTF-8 awareness. This is the C model.
+**No length tracking.** Strings are raw `ptr[int8]` — there is no stored length. Operations like bounds checking or safe slicing require the caller to track the length separately or call `strlen`.
 
-**No variadic functions.** You cannot declare `printf(fmt: ptr[int8], ...)`. For formatted output you need a C wrapper.
+**No built-in string operations.** Concatenation, comparison, and copying are not in the language. Use the C standard library (`strcat`, `strcmp`, `strcpy`) via `extern` declarations, or allocate a buffer with `malloc` (chapter 20) and write to it manually.
 
-**No string concatenation.** `"hello" + " world"` is a type error — pointer arithmetic is not supported, and there is no string concat operator.
+**No deduplication at `-O0`.** Two identical string literals in the same file produce two separate globals. LLVM may merge them at higher optimization levels thanks to `UnnamedAddr::Global`, but not at `-O0`.
 
-**No deduplication at `-O0`.** Each string literal is its own global. The optimizer merges them at higher optimization levels.
+**No `string` type alias yet.** Writing `ptr[int8]` everywhere is verbose. Chapter 22 adds `type string = ptr[int8]`, which makes string-typed function signatures read naturally without any new runtime machinery.
 
-**`\0` in the middle of a string.** The lexer processes `\0` and inserts a null byte. Functions like `puts` will stop at the first null, ignoring the rest of the string. This is standard C behavior and not a bug, but it can be surprising.
+**Mutable string buffers require malloc.** String literal globals are read-only constants. To build or modify a string at runtime you need a heap-allocated buffer, which requires `malloc` (chapter 20).
 
 ## What's Next
 
-The next chapter adds `while` loops and uses everything built so far — structs, pointers, arrays, array literals, and strings — to write a Mandelbrot set renderer that outputs to the terminal.
+[Chapter 22](chapter-22.md) adds type aliases — `type string = ptr[int8]` — so you can write `string` wherever you currently write `ptr[int8]`. The underlying representation does not change at all; the alias is purely syntactic, resolved at parse time.
 
 ## Need Help?
 

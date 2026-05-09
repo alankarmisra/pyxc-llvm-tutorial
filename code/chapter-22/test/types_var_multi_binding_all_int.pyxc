@@ -1,0 +1,10 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: alloca i{{32|64}}
+# CHECK: alloca i{{32|64}}
+
+# Tests: 'var a: int = 1, b: int = 2' allocates two integer slots.
+
+def main() -> None:
+    var a: int = 1, b: int = 2
+    return

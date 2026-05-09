@@ -1,0 +1,4 @@
+# Module with a function used by another file.
+
+def foo() -> float64:
+    return 42.0

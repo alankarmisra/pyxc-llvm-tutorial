@@ -5,6 +5,9 @@
 - Each chapter starts from the previous chapter's codebase and adds only its delta
 - Every chapter documents: grammar changes, AST changes, semantic rules, IR/codegen changes
 
+## Memory Model
+Pyxc is explicitly **no-GC**. Memory is managed like C++/Rust: stack allocation by default, explicit `malloc`/`free` for the heap, and ownership conventions enforced by the programmer (not the runtime). A future ownership/borrow-checker phase may enforce these statically, but there will be no garbage collector.
+
 ## Python-Friendly Syntax Goals (Guiding Style)
 - Prefer Pythonic surface syntax when it doesn't block clarity or IR goals
 - `x: T = ...` (and optionally `x = ...`) instead of mandatory `var` for initialized bindings
@@ -37,74 +40,77 @@
 
 | # | Title | Notes |
 |---|-------|-------|
-| 12 | Driver and Modes | `repl`, `run`, `build` subcommands; `--emit tokens\|llvm-ir` |
-| 13 | Object Files | `TargetMachine` setup, host triple, emit `.o`; honour `-O0`..`-O3` |
-| 14 | Native Executables | Link `.o` + runtime into an executable; `-o` output path |
-| 15 | Debug Info | `-g` with `DIBuilder`; emit DWARF; `nm`/`objdump` basics |
+| 12 | Driver and Modes | ✅ `repl`, `run`, `build` subcommands; `--emit tokens\|llvm-ir` |
+| 13 | Object Files | ✅ `TargetMachine` setup, host triple, emit `.o`; honour `-O0`..`-O3` |
+| 14 | Native Executables | ✅ Link `.o` + runtime into an executable; `-o` output path |
+| 15 | Debug Info | ✅ `-g` with `DIBuilder`; emit DWARF; `nm`/`objdump` basics |
 
 ---
 
-## Phase 3: Types and Memory (Chapters 16–21)
+## Phase 3: Types and Memory (Chapters 16–23)
+
+Pointer-first track for C/C++ learners:
+- Prioritise pointer arithmetic + heap before arrays/string sugar.
+- Keep `p[i]` on `ptr[T]` as the primary memory-access model early.
 
 | # | Title | Notes |
 |---|-------|-------|
-| 16 | Types and Typed Variables | `int`, `double`, `void`; typed parameters, return types, type checking, casts |
-| 17 | Structs and Field Access | `struct` declarations, layout, field offsets, `.` lvalue/rvalue |
-| 18 | Pointers and Address-Of | `ptr[T]` type, `addr(x)` / `&x`, pointer indexing `p[i]` |
-| 19 | Arrays | Fixed-size `T[N]`, stack allocation, indexing, array-to-pointer decay, Python-style array literals (`[1,2,3]`) |
-| 20 | Strings and C Interop | String literals, `extern` for libc (`printf`, `fopen`, `scanf`), `malloc`/`free` |
-| 21 | `while` Loops + Mandelbrot | `while` loops; full Mandelbrot demo using structs, pointers, arrays, and I/O |
+| 16 | Types and Typed Variables | ✅ `int`, `float64`, `bool`, `void`; typed parameters, return types, type checking, casts |
+| 17 | Structs and Field Access | ✅ `struct` declarations, layout, field offsets, `.` lvalue/rvalue |
+| 18 | Pointers and Address-Of | ✅ `ptr[T]` type, `addr(x)`, pointer indexing `p[i]`, `p[i].field` |
+| 19 | Pointer Arithmetic | ✅ `ptr ± int`, `ptr - ptr`, pointer comparisons, element-size aware offsets |
+| 20 | Heap Allocation | ✅ `malloc`/`free` via `extern`, `sizeof(type)` compile-time sizing, pointer casts from raw buffers (`ptr[T](raw)`), and K&R-style `malloc(n * sizeof(T))` patterns |
+| 21 | String Literals and C Interop | ✅ `"hello"` as `ptr[int8]`, null-terminated global constants, escape sequences, `extern` C runtime calls |
+| 22 | Type Aliasing | ✅ `type name = type`, alias chains, alias/struct name conflict checks |
+| 23 | Arrays and Array Literals | ✅ Fixed-size `T[N]`, stack allocation, indexing, decay, `[1,2,3]` initializers |
+---
+
+## Phase 4: OOP Core (Chapters 24–30)
+
+| # | Title | Notes |
+|---|-------|-------|
+| 24 | Class Syntax and Field Layout | Class declarations, field offsets |
+| 25 | Methods and `self` | Method dispatch, `self` as implicit first arg |
+| 26 | Constructors and Initialization | Construction rules, field init order |
+| 27 | Visibility and Encapsulation | Public/private members |
+| 28 | Traits and Interfaces | Trait declarations and contracts |
+| 29 | Trait Implementations and Dispatch | Impl blocks, static vs dynamic dispatch |
+| 30 | Generic Traits and Constraints | Intro to constrained generics |
 
 ---
 
-## Phase 4: Control Flow Extensions (Chapters 22–24)
+## Phase 5: Program Structure (Chapters 31–34)
 
 | # | Title | Notes |
 |---|-------|-------|
-| 22 | `match`/`case` Basics | Pattern matching on scalar values |
-| 23 | `match`/`case` Guards and Defaults | Guard expressions, wildcard patterns, exhaustiveness |
-| 24 | `for`/`in` with `range` | Pythonic range-based loops, lower to existing `for` IR |
+| 31 | Module Declarations and Imports | `module`, `import`, `export`; public/private symbol visibility; single-file happy path |
+| 32 | Multi-File Builds | Cross-module lookup, name resolution, diagnostics |
+| 33 | Cyclic Imports and Caching | Detection, resolution strategy, incremental rebuild basics |
+| 34 | Closures | Lambda syntax, captured variables, closure struct + function pointer in LLVM IR. **Note:** need to decide capture semantics before implementation — capture by value is safe with no-GC; capture by reference requires closed-over variables to outlive the closure (Rust-style lifetime problem). |
 
 ---
 
-## Phase 5: Modules and Code Organization (Chapters 25–30)
+## Phase 6: Control Flow Pass 2 (Chapters 35–38)
 
 | # | Title | Notes |
 |---|-------|-------|
-| 25 | Module Declarations and Namespaces | Module syntax, symbol visibility |
-| 26 | `import` Basics | Single-file imports, name resolution |
-| 27 | `export` and Public API | Public/private surfaces |
-| 28 | Multi-File Name Resolution | Cross-module lookup and diagnostics |
-| 29 | Cyclic Imports | Detection and resolution strategy |
-| 30 | Incremental Rebuilds | Module caching, dependency tracking |
-
+| 35 | `while` Loops + Mandelbrot | `while` keyword; full Mandelbrot demo using structs, pointers, arrays, and strings |
+| 36 | `match`/`case` Basics | Pattern matching on scalar values |
+| 37 | `match`/`case` Guards and Defaults | Guard expressions, wildcard patterns, exhaustiveness |
+| 38 | `for`/`in` with `range` | Pythonic range-based loops, lower to existing `for` IR |
 ---
 
-## Phase 6: Classes and Traits (Chapters 31–37)
+## Phase 7: Concurrency (Chapters 39–45)
 
 | # | Title | Notes |
 |---|-------|-------|
-| 31 | Class Syntax and Field Layout | Class declarations, field offsets |
-| 32 | Methods and `self` | Method dispatch, `self` as implicit first arg |
-| 33 | Constructors and Initialization | Construction rules, field init order |
-| 34 | Visibility and Encapsulation | Public/private members |
-| 35 | Traits and Interfaces | Trait declarations and contracts |
-| 36 | Trait Implementations and Dispatch | Impl blocks, static vs dynamic dispatch |
-| 37 | Generic Traits and Constraints | Intro to constrained generics |
-
----
-
-## Phase 7: Concurrency (Chapters 38–44)
-
-| # | Title | Notes |
-|---|-------|-------|
-| 38 | Concurrency Model and Safety Rules | Overview, ownership rules for shared state |
-| 39 | Spawning Tasks and Threads | Task/thread primitives |
-| 40 | Shared State and Synchronization | Mutexes, atomics |
-| 41 | Message Passing | Channels and queues |
-| 42 | Parallel Loops and Work Partitioning | Data-parallel patterns |
-| 43 | Determinism, Races, and Debugging | Race detection, deterministic replay |
-| 44 | Parallel Compilation Pipeline | Parallelise the Pyxc compiler itself |
+| 39 | Concurrency Model and Safety Rules | Overview, ownership rules for shared state |
+| 40 | Spawning Tasks and Threads | Task/thread primitives |
+| 41 | Shared State and Synchronization | Mutexes, atomics |
+| 42 | Message Passing | Channels and queues |
+| 43 | Parallel Loops and Work Partitioning | Data-parallel patterns |
+| 44 | Determinism, Races, and Debugging | Race detection, deterministic replay |
+| 45 | Parallel Compilation Pipeline | Parallelise the Pyxc compiler itself |
 
 ---
 
@@ -117,4 +123,3 @@ These can be inserted where they fit best:
 - Pattern-matching exhaustiveness checks
 - Escape analysis and stack-allocation wins
 - Packaging and installable CLI workflow
-- Multi-file compilation units and separate compilation

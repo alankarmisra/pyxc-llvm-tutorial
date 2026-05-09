@@ -1,0 +1,10 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: {{[Tt]ype mismatch in binary operator}}
+
+def main() -> int:
+  var i: int = 1
+  var f: float64 = 2.0
+  var pi: ptr[int] = addr(i)
+  var pf: ptr[float64] = addr(f)
+  var d: int64 = pf - pi
+  return 0

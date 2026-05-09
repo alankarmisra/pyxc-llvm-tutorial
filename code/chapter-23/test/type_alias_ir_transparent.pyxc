@@ -1,0 +1,9 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck %s < %t.ll
+# CHECK: define i64 @id(i64 %x)
+# CHECK: ret i64 %x
+
+type Score = int64
+
+def id(x: Score) -> Score:
+  return x

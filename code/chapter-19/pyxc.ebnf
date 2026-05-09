@@ -1,6 +1,6 @@
 (*
    pyxc.ebnf
-   Grammar for chapter 19 — Core fixed-size arrays.
+   Grammar for chapter 19 — Pointer arithmetic.
 *)
 
 (*
@@ -70,8 +70,7 @@ builtintype     = "int" | "int8" | "int16" | "int32" | "int64"
                 | "bool" | "None" ;
 structtype      = identifier ;
 pointertype     = "ptr" "[" type "]" ;
-arraytype       = (builtintype | structtype | pointertype) "[" integer "]" ;
-type            = builtintype | structtype | pointertype | arraytype ;
+type            = builtintype | structtype | pointertype ;
 casttype        = "int" | "int8" | "int16" | "int32" | "int64"
                 | "float" | "float32" | "float64"
                 | "bool" ;

@@ -1,7 +1,0 @@
-# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
-# CHECK: {{[Ee]rror}}
-# CHECK: {{Type mismatch|argument|expects}}
-
-def bad() -> int:
-  var p: ptr[int] = "oops"
-  return 0

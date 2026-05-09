@@ -1,0 +1,5 @@
+# RUN: not %pyxc --emit exe 2>&1 | FileCheck %s
+# CHECK: --emit requires a file input
+
+# Tests: --emit exe without any file argument is an error. The REPL does not
+# support static output; a source file must be provided.
