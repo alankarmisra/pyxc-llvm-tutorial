@@ -1,13 +1,13 @@
 ---
 description: "Add comparison operators, if/else expressions, and for loops — then use them to render the Mandelbrot set in ASCII."
 ---
-# 8. Pyxc: Control Flow: if, else, and for
+# 8. pyxc: Control Flow: if, else, and for
 
-## Where We Are
+## What we're building
 
-[Chapter 7](chapter-07.md) added file input mode. The language itself still has only basic arithmetic, and function calls — no way to branch, no way to loop, no way to compare two values. This chapter adds all three.
+[Chapter 7](chapter-07.md) added file input mode. The language itself still has only basic arithmetic, and function calls — no way to branch, no way to loop, no way to compare two values. This chapter adds all three. You have more experience with LLVM and compilers now, so we can move at a slightly faster pace. 
 
-Comparison operators produce `1.0` for true and `0.0` for false:
+Our implementation of comparison operators will produce double values; `1.0` for true and `0.0` for false. This way if the operator is part of a greater expression, the expression will produce a double value as is expected across pyxc expressions. 
 
 <!-- code-merge:start -->
 ```python
@@ -26,7 +26,7 @@ Evaluated to 0.000000
 ```
 <!-- code-merge:end -->
 
-`if` is an expression that produces a value. Both branches are always required — `if` needs to return something whether the condition is `true` or `false`. This is why function bodies read `return if ...: ... else: ...` rather than the statement form you might expect. Statement-style `if` arrives with blocks (multi-statement bodies) in a later chapter.
+We will implement an *expression* form of `if` for now. What this means is that both branches are always required and each of them has to return a value so the entire `if/else` expression has a value. Once we get to the statement form of `if`, you'll see a more familiar syntax where the `else` becomes optional and it doesn't matter whether or not the subexpressions produce a value or not. Statement-style `if` arrives with blocks (multi-statement bodies) in a later chapter. Let's see some examples.
 
 <!-- code-merge:start -->
 ```python
@@ -44,7 +44,7 @@ Evaluated to 5.000000
 ```
 <!-- code-merge:end -->
 
-`for` is an expression that repeats a body expression, always producing `0.0`. Since everything in Pyxc is an expression, the loop needs to return *something* — but unlike `if`, it has no natural value to produce. `0.0` is a placeholder until void types arrive in a later chapter.
+Similarly we implement an expression from of `for`. It repeats its body expression and always produces `0.0`. Unlike `if`, `for` has no natural value to produce. `0.0` is a placeholder. Again, our implementation of blocks will fix this in a later chapter where `for` will return nothing as we've grown to expect in most programming languages. However, this is not a rule set in stone. You are the inventor here. You can choose whatever appeals to your semantic senses. 
 
 <!-- code-merge:start -->
 ```python
@@ -105,7 +105,7 @@ ws              = " " | "\t" ;
 
 ### What Changed
 
-Chapter 8 adds two new `primary` expression forms (`ifexpr` and `forexpr`) and six binary comparison operators. The rest of the grammar is unchanged.
+This chapter adds two new `primary` expression forms (`ifexpr` and `forexpr`) and six binary comparison operators. The rest of the grammar is unchanged.
 
 ```ebnf
 -- Chapter 7
@@ -119,7 +119,7 @@ binaryop = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
 
 ## New Tokens
 
-Six new token enums:
+We add more token enums:
 
 ```cpp
 enum Token {
@@ -143,7 +143,7 @@ tok_else = -13,
 tok_for = -15,
 ```
 
-`tok_if`, `tok_else`, and `tok_for` are keywords added to the `Keywords` map. The comparison tokens are returned by the lexer when it sees two-character sequences.
+`tok_if`, `tok_else`, and `tok_for` are keywords added to the `Keywords` map. The comparison tokens are returned by the lexer when it sees two-character sequences. If you look at the `gettok()` code, you'll see that keywords go through the identifier string route and the operators go through their own recognition code towards the bottom of the function basically extending our existing code. There are more optimized and standardized ways to do this through lexer generators, but such optimization purity comes at the cost of a more complex pipeline. We will explore these optimizations later. 
 
 ## Comparison Operators
 
@@ -172,9 +172,9 @@ if (LastChar == '=') {
 
 If the next character is also `=`, consume it with `advance()` and return `tok_eq`. Otherwise return the bare `=`. Either way, call `advance()` at the end to preload `LastChar` for the next `gettok()` call. The same pattern handles `!`, `<`, and `>`.
 
-### Parser: BinopPrecedence Keyed on int
+### Parser: `BinopPrecedence` keyed on int
 
-In earlier chapters `BinopPrecedence` used `char` keys. Named token enums are negative integers (`tok_eq` == -8 for example), which don't fit in a `char`. We extend the keytype to `int`:
+In earlier chapters `BinopPrecedence` used `char` keys. However, we have extended our operator set that will be returned as tokens i.e. negative integers. `tok_eq` == -8 for example. Since integers won't fit in a `char`, we extend the keytype to `int`:
 
 ```cpp
 static map<int /* changed from char to int */, int> BinopPrecedence = {
@@ -184,7 +184,7 @@ static map<int /* changed from char to int */, int> BinopPrecedence = {
 };
 ```
 
-All six comparison operators share precedence `10` — they bind equally tightly. Like all binary operators in Pyxc, they are left-associative, so `a < b == c` parses as `(a < b) == c`, not `a < (b == c)`. In particular, chained comparisons like `1 < x < 10` do not work as they do in Python — they parse as `(1 < x) < 10`, which is always true — `1 < x` produces `1.0` or `0.0`, and both are less than `10`. A later chapter will make this work exactly as Python does.
+All six comparison operators share precedence `10` — they bind equally tightly. Like all binary operators in pyxc, they are left-associative, so `a < b == c` parses as `(a < b) == c`, not `a < (b == c)`. In particular, chained comparisons like `1 < x < 10` do not work as they do in Python — they parse as `(1 < x) < 10`, which is always true — `1 < x` produces `1.0` or `0.0`, and both are less than `10`. A later chapter will make this work exactly as Python does.
 
 `BinaryExprAST::Op` also changes from `char` to `int` so it can store negative token values without truncation.
 
@@ -196,7 +196,7 @@ class BinaryExprAST : public ExprAST {
 
 ### Comparison Codegen
 
-Pyxc comparison operators like `==`, `!=`, `<`, and `>` lower to LLVM's [fcmp](https://llvm.org/docs/LangRef.html#fcmp-instruction)
+pyxc comparison operators like `==`, `!=`, `<`, and `>` are converted to LLVM's [fcmp](https://llvm.org/docs/LangRef.html#fcmp-instruction)
 instruction.
 
 For example, the `==` case in `BinaryExprAST::codegen` is:
@@ -214,9 +214,9 @@ which produces:
 
 The predicate `oeq` has a cousin, `ueq`. The only difference between them is how they handle `NaN`: `oeq` returns `false` when either operand is `NaN`; `ueq` returns `true`. Every comparison predicate follows this pattern — each has an ordered (`o*`) version and an unordered (`u*`) version with exactly that treatment of `NaN`. So alongside `oeq`/`ueq` there are `olt`/`ult`, `one`/`une`, and so on.
 
-The names come from numeric order. Real numbers can be placed on a number line — they are *ordered*. NaN cannot, so any comparison involving NaN is *unordered*. An ordered predicate returns `false` in that case; an unordered predicate returns `true`. NaN arises from undefined floating-point operations — Pyxc cannot produce it yet, but `extern` functions written in C can.
+The names come from numeric order. Real numbers can be placed on a number line — they are *ordered*. NaN cannot, so any comparison involving NaN is *unordered*. An ordered predicate returns `false` in that case; an unordered predicate returns `true`. NaN arises from undefined floating-point operations — pyxc cannot produce it yet, but `extern` functions written in C can.
 
-Pyxc follows C's behaviour:
+pyxc follows C's behaviour:
 
 - `==`, `<`, `<=`, `>`, and `>=` use ordered predicates — NaN comparisons return `false`
 - `!=` uses unordered not-equal (`une`) — so `x != NaN` is `true`, matching IEEE 754
@@ -243,7 +243,7 @@ Builder->CreateFCmpUNO(L, R, "has_nan");
 
 #### Converting `i1` Back to `double`
 
-`fcmp` produces an `i1` — LLVM's one-bit boolean (`false` or `true`). But Pyxc does not have a separate boolean type. Comparison results are ordinary numbers in the language, so we widen that `i1` back to `double`:
+`fcmp` produces an `i1` — LLVM's one-bit boolean (`false` or `true`). But pyxc does not have a separate boolean type. Comparison results are ordinary numbers in the language, so we widen that `i1` back to `double`:
 
 ```cpp
 // CreateUIToFP (Unsigned Int -> Floating Point)
@@ -256,11 +256,11 @@ which produces:
 %booltmp = uitofp i1 %cmptmp to double
 ```
 
-This gives Pyxc its usual comparison result convention: `false → 0.0`, `true → 1.0`. That value is what later flows into `if` conditions and arithmetic expressions. 
+This gives pyxc its usual comparison result convention: `false → 0.0`, `true → 1.0`. That value is what later flows into `if` conditions and arithmetic expressions. 
 
 ## if/else Expressions
 
-In Pyxc, `if` is an expression: it evaluates to a value and can appear anywhere an expression is allowed — as part of a larger expression, as a function argument, as a loop body, or nested inside another `if`.
+As discussed earlier, in pyxc, `if` is an expression: it evaluates to a value and can appear anywhere an expression is allowed — as part of a larger expression, as a function argument, as a loop body, or nested inside another `if`.
 
 ```python
 if condition: then_expr else: else_expr
@@ -347,7 +347,7 @@ if a > b: a - b else: b - a
 
 The generated block layout looks like this:
 
-```text
+```diagram
                 entry
                   │
              if (a > b)?
@@ -399,7 +399,7 @@ entry:
 }
 ```
 
-`Cond->codegen()` gives us a `double`, because Pyxc represents booleans as
+`Cond->codegen()` gives us a `double`, because pyxc represents booleans as
 `0.0` or `1.0`. LLVM branches need an `i1`, so before we can branch we must
 turn that `double` back into an `i1`. 
 
@@ -590,7 +590,7 @@ To see the unoptimized IR shown above, run `build/pyxc -v -O0`.
 
 ### Why Nested ifs Change the End Block
 
-Consider this Pyxc code:
+Consider this pyxc code:
 
 ```python
 def xor(a, b):
@@ -714,7 +714,7 @@ static unique_ptr<ExprAST> ParseForExpr() {
 
 ### Codegen
 
-```
+```diagram
       entry
         │
         ▼
@@ -975,7 +975,7 @@ else
 
 ## The Mandelbrot Set
 
-With comparisons, `if`/`else`, and `for`, Pyxc is expressive enough to render the Mandelbrot set. The Mandelbrot set is the set of complex numbers `c` for which the iteration `z = z² + c` (starting from `z = 0`) does not diverge to infinity. `mandelconverger` uses recursion rather than a loop because `iters` needs to increment each iteration — without mutable variables, passing it as a parameter is the only option.
+With comparisons, `if`/`else`, and `for`, pyxc is expressive enough to render the Mandelbrot set. The Mandelbrot set is the set of complex numbers `c` for which the iteration `z = z² + c` (starting from `z = 0`) does not diverge to infinity. `mandelconverger` uses recursion rather than a loop because `iters` needs to increment each iteration — without mutable variables, passing it as a parameter is the only option.
 
 ```python
 # test/mandel.pyxc
@@ -1009,9 +1009,9 @@ mandel(0 - 2.3, 0 - 1.3, 0.05, 0.07)
 
 **Line breaks.** The parser only allows newlines in specific positions — after `:` in `def`, `if`, and `for` bodies. A newline anywhere else (inside a function argument list, mid-expression) is a parse error. This is why `mandelconverge`'s nested `if`/`else` chain can span lines (each `else:` starts a new allowed position) but `mandel`'s long argument list must stay on a single line.
 
-**Sequencing with `+`.** `mandelhelp` writes `mandelrow(...) + putchard(10)` to print a newline after each row. Both calls return `0.0`, so adding them is a no-op — it is just a way to chain two side-effect calls into a single expression. Pyxc has no sequencing operator yet. [Chapter 9](chapter-09.md) introduces `@binary(1) def ;(x, y): return y` to make this intent explicit.
+**Sequencing with `+`.** `mandelhelp` writes `mandelrow(...) + putchard(10)` to print a newline after each row. Both calls return `0.0`, so adding them is a no-op — it is just a way to chain two side-effect calls into a single expression. pyxc has no sequencing operator yet. [Chapter 9](chapter-09.md) introduces `@binary(1) def ;(x, y): return y` to make this intent explicit.
 
-**Unary minus.** Pyxc has no unary minus yet — `-2.3` would be parsed as the binary operator `-` applied to nothing, which is an error. The workaround is `0 - 2.3`: a fully-formed binary subtraction that the optimizer collapses to the literal `-2.3` with no extra instructions emitted. [Chapter 9](chapter-09.md) adds unary-expression parsing and built-in unary minus support.
+**Unary minus.** pyxc has no unary minus yet — `-2.3` would be parsed as the binary operator `-` applied to nothing, which is an error. The workaround is `0 - 2.3`: a fully-formed binary subtraction that the optimizer collapses to the literal `-2.3` with no extra instructions emitted. [Chapter 9](chapter-09.md) adds unary-expression parsing and built-in unary minus support.
 
 ```
 ******************************************************************************
@@ -1056,7 +1056,7 @@ mandel(0 - 2.3, 0 - 1.3, 0.05, 0.07)
 ******************************************************************************
 ```
 
-The entire renderer — iteration, branching, output — is Pyxc code. The only runtime function provided by the host is `putchard`, which writes one ASCII character to `stderr`.
+The entire renderer — iteration, branching, output — is pyxc code. The only runtime function provided by the host is `putchard`, which writes one ASCII character to `stderr`.
 
 ## Build and Run
 

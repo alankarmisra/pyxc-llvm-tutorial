@@ -5,7 +5,7 @@ description: "Add file input mode and a -v IR flag so pyxc can execute source fi
 
 ## Where We Are
 
-[Chapter 6](chapter-06.md) added a JIT that evaluates expressions immediately. But there's no way to run a source file — you have to type everything into the REPL. There's also no way to inspect the generated IR.
+[Chapter 6](chapter-06.md) added a JIT that evaluates expressions immediately. But there's no way to run a source file — you have to type everything into the REPL. 
 
 At the end of this chapter we'll be able to pass a filename argument to pyxc like so:
 
@@ -14,7 +14,7 @@ $ build/pyxc test/file_mode.pyxc
 7.000000
 ```
 
-In addition, we will introduce a new switch, `-v` which will output the IR:
+In addition, we'll remove the default IR printing, and we will introduce a new switch, `-v` which will output the IR instead:
 
 <!-- code-merge:start -->
 ```bash
@@ -46,7 +46,7 @@ The same flag works in the REPL:
 $ build/pyxc -v
 ```
 ```python
-ready> def add(x, y): return x + y
+ready> def add(a, b): return a + b
 ```
 ```bash
 Parsed a function definition.
@@ -90,7 +90,7 @@ That's the whole mechanism. One variable swap, and the existing lexer handles bo
 
 ## Command-Line Parsing with LLVM's cl::
 
-Chapter 6 added a `-O` switch to control the optimisation level. This chapter adds two more: a positional filename argument `InputFile` that makes `pyxc` run a source file instead of starting the REPL, and a `-v` flag internally represented as `VerboseIR` that prints the generated IR to stderr.
+Chapter 6 added a `-O` switch to control the optimization level. This chapter adds two more: a positional filename argument `InputFile` that makes `pyxc` run a source file instead of starting the REPL, and a `-v` flag internally represented as `VerboseIR` that prints the generated IR to stderr.
 
 **InputFile** and **IsRepl**
 
@@ -153,7 +153,7 @@ The REPL prints several things that make no sense when running a file:
 - `Parsed a function definition.` / `Parsed an extern.` / `Parsed a top-level expression.` confirmations
 - `Evaluated to ...` after each expression
 
-All of these are gated on `IsRepl`. Two helpers centralise the check:
+All of these are gated on `IsRepl`. Two helpers centralize the check:
 
 ```cpp
 void PrintReplPrompt() {
@@ -220,7 +220,7 @@ cmake --build build
 or
 
 ```bash
-./build/pyxc <filename> -v
+./build/pyxc filename.pyxc -v
 ```
 
 ## What's Next

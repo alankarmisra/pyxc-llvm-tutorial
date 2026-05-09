@@ -547,7 +547,6 @@ unique_ptr<FunctionAST> LogErrorF(const char *Str) {
 }
 
 static unique_ptr<ExprAST> ParseExpression();
-static unique_ptr<ExprAST> ParsePrimary();
 
 /// numberexpr
 ///   = number ;
