@@ -1,0 +1,15 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck %s < %t.ll
+# CHECK: getelementptr
+# CHECK: ptrdiff
+
+struct Pair:
+  a: int
+  b: int
+
+def main() -> int:
+  var t: Pair
+  var p: ptr[int] = addr(t.a)
+  var q: ptr[int] = p + 1
+  var d: int64 = q - p
+  return int(d)

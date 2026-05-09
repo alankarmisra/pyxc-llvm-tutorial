@@ -1,0 +1,7 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: {{already defined as a type alias|already defined as a struct}}
+
+type Point = int
+
+struct Point:
+  x: int

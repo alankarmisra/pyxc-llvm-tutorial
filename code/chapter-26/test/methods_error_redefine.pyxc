@@ -1,0 +1,12 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: {{[Ee]rror}}
+# CHECK: Method 'get' is already defined on 'Counter'
+
+class Counter:
+  value: int
+
+  def get() -> int:
+    return self.value
+
+  def get() -> int:
+    return self.value

@@ -59,7 +59,7 @@ printd(collatz(27))    # 111
 
 **Chapters 12–15** add a real toolchain: `--emit` modes for IR, assembly, object files, and native executables; LLD-based linking; and DWARF debug info with `-g`.
 
-**Chapters 16–22** add a static type system and a C-style memory model — types, structs, pointers, pointer arithmetic, heap allocation, strings, and type aliases. By the end, pyxc can do K&R-style systems programming:
+**Chapters 16–23** add a static type system and a C-style memory model — types, structs, pointers, pointer arithmetic, heap allocation, strings, type aliases, and fixed-size arrays. By the end, pyxc can do K&R-style systems programming:
 
 ```python
 extern def malloc(n: int64) -> ptr[int8]
@@ -91,7 +91,29 @@ def main() -> int:
   return 0
 ```
 
-**Chapters 24–30** add an object model: `class` declarations, methods with `self`, constructors, visibility, traits, and generics.
+**Chapters 24–30** add an object model: `class` declarations, methods with `self`, constructors, visibility, traits, `impl` blocks, and generic traits. By the end, this runs:
+
+```python
+extern def printd(x: float64)
+
+trait Addable[T]:
+  def add(x: T, y: T) -> T
+
+class Calc:
+  public bias: int
+
+  def __init__(b: int):
+    self.bias = b
+
+impl Addable[int] for Calc:
+  def add(x: int, y: int) -> int:
+    return x + y + self.bias
+
+def main() -> int:
+  var c: Calc = Calc(2)
+  printd(float64(c.add(4, 5)))  # 11.000000
+  return 0
+```
 
 ## Build and Run
 
@@ -117,11 +139,11 @@ llvm-lit code/chapter-11/test/
 ├── docs/
 │   ├── chapter-00.md   # overview and chapter guide
 │   ├── chapter-01.md
-│   └── ... chapter-22.md
+│   └── ... chapter-30.md
 ├── code/
 │   ├── chapter-01/
 │   ├── chapter-02/
-│   └── ... chapter-24/
+│   └── ... chapter-30/
 │       ├── pyxc.cpp
 │       ├── CMakeLists.txt
 │       └── test/
@@ -145,7 +167,7 @@ See [ROADMAP.md](ROADMAP.md) for the full plan. Summary:
 - **Ch 14** — Native executable linking (`--emit exe`, LLD, built-in runtime)
 - **Ch 15** — Debug info (`-g`, `DIBuilder`, DWARF) and optimisation pipelines
 
-**Phase 3 — Types and Memory (Ch 16–23)** ✓ through Ch 22
+**Phase 3 — Types and Memory (Ch 16–23)** ✓
 - **Ch 16** — Static type system (`int`, `float64`, `bool`, `None`, typed params, casts) ✓
 - **Ch 17** — Structs and field access ✓
 - **Ch 18** — Pointers and address-of (`ptr[T]`, `addr`, `p[i]`, `p[i].field`) ✓
@@ -153,11 +175,16 @@ See [ROADMAP.md](ROADMAP.md) for the full plan. Summary:
 - **Ch 20** — Heap allocation (`malloc`/`free`, `sizeof`, pointer casts) ✓
 - **Ch 21** — String literals and C interop (`"hello"` as `ptr[int8]`, escape sequences) ✓
 - **Ch 22** — Type aliases (`type string = ptr[int8]`, alias chains) ✓
-- **Ch 23** — Arrays and array literals (in progress)
+- **Ch 23** — Fixed-size stack arrays (`T[N]`, `[1,2,3]` literals, indexing, decay) ✓
 
-**Phase 4 — OOP Core (Ch 24–30)**
-- **Ch 24** — Class syntax and field layout (in progress)
-- **Ch 25–30** — Methods, constructors, visibility, traits, generics
+**Phase 4 — OOP Core (Ch 24–30)** ✓
+- **Ch 24** — Class keyword and `IsClass` flag ✓
+- **Ch 25** — Methods and implicit `self` pointer ✓
+- **Ch 26** — Constructors (`__init__`, `ClassName(args)`, zero-init guarantee) ✓
+- **Ch 27** — Visibility (`public`/`private`, `CanAccessClassMember`, `ClassScopeGuard`) ✓
+- **Ch 28** — Traits (structural conformance, compile-time check, no vtable) ✓
+- **Ch 29** — `impl` blocks (retroactive trait implementation) ✓
+- **Ch 30** — Generic traits (`trait Addable[T]`, type substitution at conformance time) ✓
 
 **Phase 5–7 — Modules, Control Flow Pass 2, Concurrency (Ch 31–45)**
 See [ROADMAP.md](ROADMAP.md) for details.

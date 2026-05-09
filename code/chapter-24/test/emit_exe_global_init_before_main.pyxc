@@ -1,0 +1,16 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 20.000000
+# CHECK: 21.000000
+
+# Tests: __pyxc.global_init runs before main() in the emitted executable.
+# The llvm.global_ctors entry ensures globals are initialized before main sees them.
+
+extern def printd(x: float64) -> float64
+
+var x: float64 = 20.0
+
+def main() -> None:
+    printd(x)
+    x = x + 1
+    printd(x)

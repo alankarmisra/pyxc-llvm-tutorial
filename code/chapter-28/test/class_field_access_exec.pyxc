@@ -1,0 +1,16 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 42.000000
+
+extern def printd(x: float64)
+
+class Point:
+  x: int
+  y: int
+
+def main() -> int:
+  var p: Point
+  p.x = 40
+  p.y = 2
+  printd(float64(p.x + p.y))
+  return 0

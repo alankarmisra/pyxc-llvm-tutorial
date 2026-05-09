@@ -1,0 +1,6 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: {{unterminated string literal}}
+
+def main() -> int:
+  var s: ptr[int8] = "no closing quote
+  return 0

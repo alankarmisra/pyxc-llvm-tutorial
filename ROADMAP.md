@@ -69,12 +69,12 @@ Pointer-first track for C/C++ learners:
 
 | # | Title | Notes |
 |---|-------|-------|
-| 24 | Class Syntax and Field Layout | Class declarations, field offsets |
-| 25 | Methods and `self` | Method dispatch, `self` as implicit first arg |
-| 26 | Constructors and Initialization | Construction rules, field init order |
-| 27 | Visibility and Encapsulation | Public/private members |
-| 28 | Traits and Interfaces | Trait declarations and contracts |
-| 29 | Trait Implementations and Dispatch | Impl blocks, static vs dynamic dispatch |
+| 24 | Class Syntax and Field Layout | ✅ Class declarations, field offsets |
+| 25 | Methods and `self` | ✅ Method dispatch, `self` as implicit first arg |
+| 26 | Constructors and Initialization | ✅ Construction rules, field init order |
+| 27 | Visibility and Encapsulation | ✅ Public/private members |
+| 28 | Traits and Interfaces | ✅ Trait declarations and contracts |
+| 29 | Trait Implementations and Dispatch | ✅ Impl blocks, static vs dynamic dispatch |
 | 30 | Generic Traits and Constraints | Intro to constrained generics |
 
 ---

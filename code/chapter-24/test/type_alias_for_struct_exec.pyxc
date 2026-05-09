@@ -1,0 +1,16 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 11.000000
+
+extern def printd(x: float64)
+
+struct Point:
+  x: int
+
+type Vec2 = Point
+
+def main() -> int:
+  var p: Vec2
+  p.x = 11
+  printd(float64(p.x))
+  return 0

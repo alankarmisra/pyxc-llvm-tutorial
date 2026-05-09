@@ -142,13 +142,23 @@ The early chapters are inspired by the excellent [LLVM Kaleidoscope Tutorial](ht
 
 **[Chapter 22: Type Aliases](chapter-22.md)** — Add `type name = type` aliases. Alias chains resolve at definition time. Aliases are transparent in the IR — `type string = ptr[int8]` costs nothing.
 
-**Chapter 23: Arrays and Array Literals** *(in progress)* — Fixed-size `T[N]` stack arrays, indexing, array-to-pointer decay, and `[1, 2, 3]` initializer syntax.
+**[Chapter 23: Arrays and Array Literals](chapter-23.md)** — Add fixed-size `T[N]` stack arrays, `[1, 2, 3]` initializer literals, index expressions, and array-to-pointer decay when passing to functions.
 
 ### OOP Core
 
-**Chapter 24: Class Syntax and Field Layout** *(in progress)* — Add `class` declarations as the foundation for the object model. Field layout identical to structs; methods and `self` come next.
+**[Chapter 24: Classes](chapter-24.md)** — Add the `class` keyword as a distinct aggregate type. Classes share struct IR layout but carry an `IsClass` flag that unlocks methods, constructors, and visibility in subsequent chapters.
 
-**Chapters 25–30** — Methods, constructors, visibility, traits, and generics. *(planned)*
+**[Chapter 25: Methods and `self`](chapter-25.md)** — Add methods to classes: define functions inside the class body, call them with `obj.method(args)`, and mutate receiver state through an implicit `self` pointer.
+
+**[Chapter 26: Constructors](chapter-26.md)** — Add `__init__` initializer methods and `ClassName(args)` constructor call syntax. Instances are always zero-initialised before `__init__` runs.
+
+**[Chapter 27: Visibility](chapter-27.md)** — Add `public` and `private` modifiers on class fields and methods. Private members are only accessible from within the class's own method bodies.
+
+**[Chapter 28: Traits](chapter-28.md)** — Add traits: named method-signature contracts that a class declares it satisfies. Conformance is verified at compile time with no runtime overhead.
+
+**[Chapter 29: impl Blocks](chapter-29.md)** — Add `impl TraitName for ClassName:` blocks to implement a trait for an existing class outside the class definition.
+
+**[Chapter 30: Generic Traits](chapter-30.md)** — Add type parameters to traits: `trait Addable[T]` declares a contract over an abstract type, instantiated with a concrete type at each `impl` or `class` site.
 
 ## Need Help?
 

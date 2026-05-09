@@ -2958,7 +2958,7 @@ static bool EmitModuleToFile() {
   TheModule->setTargetTriple(TT);
 
   string Error;
-  const Target *Target = TargetRegistry::lookupTarget(TargetTriple, Error);
+  const Target *Target = TargetRegistry::lookupTarget(TT, Error);
   if (!Target) {
     fprintf(stderr, "Error: %s\n", Error.c_str());
     return false;

@@ -87,7 +87,16 @@ static bool DecodePointerType(const string &Encoded, ValueType &PointeeType,
 }
 ```
 
-`ptr[int]` encodes as `"1:"` (ValueType::Int is 1, no struct name). `ptr[Point]` encodes as `"11:Point"` (ValueType::Struct is 11, struct name is "Point"). The caller that created the pointer type is responsible for encoding; any site that needs the pointee type decodes it.
+Every type in the compiler is described by two fields: a `ValueType` enum and a `StructName` string. For most types `StructName` is empty. For structs it holds the struct name. For pointers it holds a serialized description of the pointee, because `ValueType::Pointer` alone does not say what the pointer points to:
+
+| Type | `ValueType` | `StructName` |
+|---|---|---|
+| `int`, `float64`, … | `Int`, `Float64`, … | `""` |
+| `Point` (struct) | `Struct` | `"Point"` |
+| `ptr[int]` | `Pointer` | `"1:"` |
+| `ptr[Point]` | `Pointer` | `"10:Point"` |
+
+The format is `"<ValueType int>:<struct name>"`. `ptr[int]` encodes as `"1:"` (`ValueType::Int` = 1, no struct name). `ptr[Point]` encodes as `"10:Point"` (`ValueType::Struct` = 10, struct name `"Point"`). The caller that created the pointer type is responsible for encoding; any site that needs the pointee type decodes it.
 
 This reuses the existing type-tracking infrastructure without adding a new field to the base class. It is a tradeoff: the encoding is not beautiful, but it works and the surface is small.
 
@@ -505,7 +514,7 @@ grep 'getelementptr\|load\|store' out.ll
 
 **Null pointer is silent.** `var p: ptr[int]` with no initializer is a null pointer. Dereferencing it crashes at runtime with no helpful error. Bounds checking and null safety are not implemented.
 
-**Pointee type is encoded in a string.** The `StructName` field on `ExprAST` nodes doubles as pointer type metadata, stored as `"typeint:structname"`. It works but is not the cleanest representation — a dedicated field would be cleaner. This is a consequence of the single-AST-hierarchy design established in chapter 12.
+**Pointee type is encoded in a string.** The `StructName` field on `ExprAST` nodes doubles as pointer type metadata, stored as `"<ValueType int>:<struct name>"` (e.g. `"1:"` for `ptr[int]`, `"10:Point"` for `ptr[Point]`). It works but is not the cleanest representation — a dedicated field would be cleaner. This is a consequence of the single-AST-hierarchy design established in chapter 12.
 
 ## What's Next
 

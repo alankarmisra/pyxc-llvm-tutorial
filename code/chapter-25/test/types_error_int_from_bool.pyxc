@@ -1,0 +1,6 @@
+# RUN: not %pyxc %s 2>&1 | FileCheck %s
+# CHECK: Type mismatch in variable initialization
+
+# Tests: bool to int is not an implicit conversion.
+
+var x: int32 = True

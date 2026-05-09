@@ -1,0 +1,14 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: declare i{{32|64}} @atoi(double
+# CHECK: declare void @log_None(double
+
+# Tests: extern definitions with typed returns ('-> int', '-> None') emit the
+# correct LLVM declaration signatures. The C-side linkage must use the
+# annotated return type, not always float64.
+
+extern def atoi(s: float64) -> int
+extern def log_None(x: float64) -> None
+
+def main() -> None:
+    return

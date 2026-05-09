@@ -3144,7 +3144,7 @@ static std::unique_ptr<TargetMachine> CreateTargetMachine() {
   Triple TT(TargetTriple);
 
   string Error;
-  const Target *Target = TargetRegistry::lookupTarget(TargetTriple, Error);
+  const Target *Target = TargetRegistry::lookupTarget(TT, Error);
   if (!Target) {
     fprintf(stderr, "Error: %s\n", Error.c_str());
     return nullptr;
@@ -3310,10 +3310,34 @@ static bool CompileFileToObject(const string &Path, const string &ObjPath,
   return EmitModuleToFile(TheModule.get(), EmitKind::OBJ, ObjPath);
 }
 
+/// RunXcrun - Shell out to xcrun and return trimmed stdout, or "" on failure.
+static string RunXcrun(const char *Args) {
+  string Cmd = string("xcrun ") + Args + " 2>/dev/null";
+  FILE *Pipe = popen(Cmd.c_str(), "r");
+  if (!Pipe)
+    return "";
+  char Buf[512];
+  string Result;
+  while (fgets(Buf, sizeof(Buf), Pipe))
+    Result += Buf;
+  pclose(Pipe);
+  while (!Result.empty() &&
+         (Result.back() == '\n' || Result.back() == '\r' || Result.back() == ' '))
+    Result.pop_back();
+  return Result;
+}
+
 static string FindMacOSSDKRoot() {
   if (const char *EnvSDK = getenv("SDKROOT"))
     return string(EnvSDK);
 
+  // Ask xcrun — it resolves the active SDK for the current Xcode/CLT selection
+  // and returns the right path regardless of where Xcode is installed.
+  string XcrunPath = RunXcrun("--sdk macosx --show-sdk-path");
+  if (!XcrunPath.empty() && sys::fs::exists(XcrunPath))
+    return XcrunPath;
+
+  // Fallback: probe well-known paths.
   const char *XcodeSDK = "/Applications/Xcode.app/Contents/Developer/Platforms/"
                          "MacOSX.platform/Developer/SDKs/MacOSX.sdk";
   if (sys::fs::exists(XcodeSDK))
@@ -3326,13 +3350,20 @@ static string FindMacOSSDKRoot() {
   return "";
 }
 
-static string DefaultMacOSVersion(const Triple &TT) {
-  VersionTuple Ver = TT.getOSVersion();
-  if (Ver.getMajor()) {
+/// FindMacOSSDKVersion - Return the macOS SDK version string (e.g. "26.0").
+/// This matches the version LLVM encodes into object files at compile time,
+/// avoiding a version mismatch warning from ld64.lld.
+static string FindMacOSSDKVersion() {
+  string Ver = RunXcrun("--sdk macosx --show-sdk-version");
+  if (!Ver.empty())
+    return Ver;
+  // Fallback: extract from the triple (may be Darwin kernel version on older
+  // LLVM builds, so prefer xcrun when available).
+  Triple TT(sys::getDefaultTargetTriple());
+  VersionTuple V = TT.getOSVersion();
+  if (V.getMajor()) {
     std::ostringstream OS;
-    OS << Ver.getMajor() << "." << Ver.getMinor().value_or(0);
-    if (Ver.getSubminor().value_or(0) != 0)
-      OS << "." << Ver.getSubminor().value();
+    OS << V.getMajor() << "." << V.getMinor().value_or(0);
     return OS.str();
   }
   return "11.0";
@@ -3381,32 +3412,18 @@ static bool LinkExecutable(const vector<string> &Inputs,
       PushArg(SDKRoot);
       PushArg("-L" + SDKRoot + "/usr/lib");
       PushArg("-L" + SDKRoot + "/usr/lib/system");
-      string OSVer = DefaultMacOSVersion(TT);
+      string OSVer = FindMacOSSDKVersion();
       PushArg("-platform_version");
       PushArg("macos");
       PushArg(OSVer);
       PushArg(OSVer);
-
-      string Crt1 = SDKRoot + "/usr/lib/crt1.o";
-      string Crti = SDKRoot + "/usr/lib/crti.o";
-      string Crtn = SDKRoot + "/usr/lib/crtn.o";
-      if (sys::fs::exists(Crt1))
-        PushArg(Crt1);
-      if (sys::fs::exists(Crti))
-        PushArg(Crti);
-      for (const auto &Input : Inputs)
-        PushArg(Input);
-      if (sys::fs::exists(Crtn)) {
-        PushArg("-lSystem");
-        PushArg(Crtn);
-      } else {
-        PushArg("-lSystem");
-      }
-    } else {
-      for (const auto &Input : Inputs)
-        PushArg(Input);
-      PushArg("-lSystem");
     }
+    // macOS startup is handled by dyld + libSystem; crt1/crti/crtn are
+    // GNU ELF files that do not belong in a MachO link and cause warnings
+    // on arm64 (the SDK copy is x86_64-only legacy).
+    for (const auto &Input : Inputs)
+      PushArg(Input);
+    PushArg("-lSystem");
 
     vector<const char *> Args;
     Args.reserve(ArgStorage.size());

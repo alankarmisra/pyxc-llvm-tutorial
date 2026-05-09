@@ -5,25 +5,12 @@ description: "Add type aliases so any type — scalar, pointer, or struct — ca
 
 ## Where We Are
 
-[Chapter 21](chapter-21.md) added string literals. We can write `"hello"` and pass it to `puts`. But the parameter type is still spelled `ptr[int8]` everywhere — in the prototype, in every call site, in every variable declaration:
+[Chapter 21](chapter-21.md) added string literals. We can write `"hello"` and pass it to `puts`. But the parameter type is a C-style `ptr[int8]` which is a bit annoying to write all the time. After this chapter we can write:
 
 ```python
-extern def puts(s: ptr[int8]) -> int
-
-def greet(name: ptr[int8]) -> int:
-  return puts(name)
-
-def main() -> int:
-  greet("world")
-  return 0
-```
-
-`ptr[int8]` is the right type, but it is not how anyone thinks about strings. After this chapter we can write:
-
-```python
-extern def puts(s: ptr[int8]) -> int
-
 type string = ptr[int8]
+
+extern def puts(s: string) -> int
 
 def greet(name: string) -> int:
   return puts(name)
@@ -32,8 +19,6 @@ def main() -> int:
   greet("world")
   return 0
 ```
-
-The generated IR is identical — `string` resolves to `ptr[int8]` at definition time and never appears in the output. The alias is purely syntactic, and it works for any type: scalars, pointers, and structs.
 
 ## Source Code
 
@@ -44,7 +29,7 @@ cd pyxc-llvm-tutorial/code/chapter-22
 
 ## Grammar
 
-This chapter adds one new production. Everything else is unchanged.
+This chapter adds two new productions (`typealias`, `aliastype`) and extends two existing ones (`top` gains a `typealias` alternative; `type` gains an `aliastype` alternative).
 
 `code/chapter-22/pyxc.ebnf`
 
@@ -57,7 +42,7 @@ type       = builtintype | aliastype | structtype | pointertype ;               
 aliastype  = identifier ;                                                                  -- new
 ```
 
-`typealias` is a top-level form only — it cannot appear inside a function body. The right-hand side is any valid `type`, including another alias, a pointer type, or a struct name. The alias name becomes a valid `aliastype` immediately after the definition; there are no forward references.
+`aliastype` and `structtype` are both written as `identifier`. The parser tries `TypeAliases` first, then `StructTypes`, and rejects the identifier if neither lookup succeeds.
 
 ### Full Grammar
 
@@ -145,9 +130,6 @@ ws              = " " | "\t" ;
 INDENT          = ? synthetic token emitted by lexer ? ;
 DEDENT          = ? synthetic token emitted by lexer ? ;
 ```
-
-In the grammar, `aliastype` and `structtype` are both written as `identifier`. The parser tries `TypeAliases` first, then `StructTypes`, and rejects the identifier if neither lookup succeeds.
-
 ## New Keyword: `type`
 
 ```cpp
@@ -160,19 +142,15 @@ Registered in the keyword table:
 {"type", tok_type}
 ```
 
-`type` is a top-level keyword that begins a type alias definition. It is not a reserved word inside expressions — you can still have a variable named `type` in older programs, though that would be unusual.
-
 ## The `TypeAliases` Map
 
 ```cpp
 static std::map<string, std::pair<ValueType, string>> TypeAliases;
 ```
 
-This maps an alias name to the fully-resolved type it stands for. The pair is `(ValueType, StructName)` — the same two-field representation used everywhere else in the compiler to describe a type. For scalar aliases the `StructName` is empty. For struct aliases it holds the struct name. For pointer aliases it holds the encoded pointee string introduced in chapter 18.
+This maps an alias name to the fully-resolved type it stands for. The pair is `(ValueType, StructName)`, you will notice, is the same two-field representation used in [chapter 18](chapter-18.md). 
 
-`TypeAliases.clear()` is called at the start of each new module (inside `ResetParserStateForFile`), alongside `StructTypes.clear()`. Aliases do not persist across compilation units.
-
-Resolution happens at definition time, not at use time. When `type Score = MyInt` is processed, `ParseTypeToken("MyInt")` runs immediately and looks up `MyInt` in `TypeAliases`. If `MyInt` is already defined as `(Int, "")`, then `Score` is stored as `(Int, "")`. There is no indirection at use time — `Score` and `int64` are identical to the compiler from the moment the alias is defined.
+`TypeAliases.clear()` is called at the start of each new module (inside `ResetParserStateForFile`), alongside `StructTypes.clear()`. For now, aliases do not persist across compilation units. This will change once we get into multi-file and `import` territory.
 
 ## Extending `ParseTypeToken`
 
@@ -230,6 +208,9 @@ static bool ParseTypeAliasDefinition() {
 The parser eats `type`, validates the alias name against both `TypeAliases` and `StructTypes`, eats the `=`, then calls `ParseTypeToken` to resolve the right-hand side. Whatever `ParseTypeToken` returns — after fully resolving any chain of aliases — is stored directly. There is no stored pointer to the original name.
 
 `HandleTypeAliasDef` wraps this in the standard top-level handler and is wired into both the file-mode and REPL-mode dispatch loops under `tok_type`.
+
+Resolution happens at definition time, not at use time. When `type Score = MyInt` is processed, `ParseTypeToken("MyInt")` runs immediately and looks up `MyInt` in `TypeAliases`. If `MyInt` is already defined as `(Int, "")`, then `Score` is stored as `(Int, "")`. There is no indirection at use time — `Score` and `int64` are identical to the compiler from the moment the alias is defined.
+
 
 ## Conflict Rules
 

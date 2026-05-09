@@ -1,0 +1,10 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: {{[Ee]rror}}
+# CHECK: {{type|int|double|mismatch|convert}}
+
+# Tests: assigning a float64 literal to an int var without a cast is an error.: float64
+# 'var x: int = 1.5' must be rejected; the user must write 'int(1.5)'.
+
+def main() -> None:
+    var x: int = 1.5
+    return

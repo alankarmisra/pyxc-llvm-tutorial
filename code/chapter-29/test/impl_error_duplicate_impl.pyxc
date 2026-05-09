@@ -1,0 +1,17 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: {{[Ee]rror}}
+# CHECK: Trait 'Adder' is already implemented for class 'Calc'
+
+trait Adder:
+  def add(x: int, y: int) -> int
+
+class Calc:
+  public value: int
+
+impl Adder for Calc:
+  def add(x: int, y: int) -> int:
+    return x + y
+
+impl Adder for Calc:
+  def add(x: int, y: int) -> int:
+    return x + y

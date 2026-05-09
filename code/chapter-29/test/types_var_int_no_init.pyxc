@@ -1,0 +1,11 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: alloca i{{32|64}}
+# CHECK: store i{{32|64}} 0
+
+# Tests: 'var x: int' with no initializer zero-initializes using integer 0,
+# not 0.0. The zero value must match the declared type.
+
+def main() -> None:
+    var x: int
+    return

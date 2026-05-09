@@ -1,0 +1,9 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: store float 1.500000e+00
+
+# Tests: float32 literals are parsed and stored as float, not double.
+
+def main() -> None:
+    var x: float32 = 1.5
+    return

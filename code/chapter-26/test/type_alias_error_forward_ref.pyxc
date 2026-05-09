@@ -1,0 +1,9 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: {{Unknown type 'string'}}
+
+extern def puts(s: ptr[int8]) -> int
+
+def say(msg: string) -> int:
+  return puts(msg)
+
+type string = ptr[int8]

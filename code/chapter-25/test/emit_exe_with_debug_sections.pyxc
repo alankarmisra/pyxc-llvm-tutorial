@@ -1,0 +1,11 @@
+# REQUIRES: llvm-readelf
+# UNSUPPORTED: system-darwin
+# RUN: %pyxc -g --emit exe -o %t %s
+# RUN: %readelf --sections %t | FileCheck %s
+# CHECK: {{(\.debug_info|__debug_info)}}
+# CHECK: {{(\.debug_line|__debug_line)}}
+
+# Tests: -g embeds DWARF sections in emitted executables.
+
+def main() -> None:
+    return

@@ -1,0 +1,18 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 6.000000
+
+extern def printd(x: float64)
+
+class Box:
+  public value: int
+
+  public def get() -> int:
+    return self.value
+
+
+def main() -> int:
+  var b: Box = Box()
+  b.value = 6
+  printd(float64(b.get()))
+  return 0

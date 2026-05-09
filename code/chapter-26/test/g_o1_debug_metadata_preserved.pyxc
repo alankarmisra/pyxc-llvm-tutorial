@@ -1,0 +1,16 @@
+# RUN: %pyxc -g -O1 --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: ret double 9.000000e+00
+# CHECK-DAG: !DICompileUnit
+# CHECK-DAG: !DISubprogram
+
+# Tests: -g with an explicit -O1 respects the user's optimization choice AND
+# preserves debug metadata. The constant expression is folded (O1 applied)
+# and !DICompileUnit / !DISubprogram are both present.
+
+def f() -> float64:
+    return (1.0 + 2.0) * 3.0
+
+def main() -> None:
+    f()
+    return
