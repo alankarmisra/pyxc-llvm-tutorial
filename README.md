@@ -95,23 +95,57 @@ def main() -> int:
 
 ```python
 extern def printd(x: float64)
+extern def puts(s: ptr[int8]) -> int
 
+# A trait is a named contract — any class that declares it must satisfy it.
+trait Measurable:
+  def area() -> int
+  def perimeter() -> int
+
+# A class is like a struct with methods, a constructor, and visibility control.
+class Rect:
+  private w: int
+  private h: int
+
+  def __init__(width: int, height: int):
+    self.w = width
+    self.h = height
+
+  public def scale(factor: int):
+    self.w = self.w * factor
+    self.h = self.h * factor
+
+# impl adds trait conformance after the class is defined.
+# The compiler verifies that Rect actually has area() and perimeter()
+# with the right signatures before accepting this.
+impl Measurable for Rect:
+  def area() -> int:
+    return self.w * self.h
+  def perimeter() -> int:
+    return 2 * (self.w + self.h)
+
+# Generic traits let the same contract apply to different types.
 trait Addable[T]:
   def add(x: T, y: T) -> T
 
-class Calc:
-  public bias: int
+class IntAcc:
+  public total: int
 
-  def __init__(b: int):
-    self.bias = b
-
-impl Addable[int] for Calc:
+impl Addable[int] for IntAcc:
   def add(x: int, y: int) -> int:
-    return x + y + self.bias
+    self.total = self.total + x + y
+    return self.total
 
 def main() -> int:
-  var c: Calc = Calc(2)
-  printd(float64(c.add(4, 5)))  # 11.000000
+  var r: Rect = Rect(3, 4)
+  printd(float64(r.area()))        # 12.000000
+  r.scale(2)
+  printd(float64(r.area()))        # 48.000000
+  printd(float64(r.perimeter()))   # 28.000000
+
+  var acc: IntAcc = IntAcc()
+  printd(float64(acc.add(10, 5)))  # 15.000000
+  printd(float64(acc.add(3, 2)))   # 20.000000
   return 0
 ```
 
