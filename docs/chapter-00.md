@@ -45,6 +45,8 @@ In **Chapters 17–22** we implement the full C-style memory model: structs and 
 
 In **Chapters 24–30** we add an object model: `class` declarations, methods with `self`, constructors, visibility rules, traits, and the beginnings of generics.
 
+In **Chapters 31–35** we close the K&R compatibility gap: division and remainder, compound assignment, `++`/`--`, logical operators with short-circuit evaluation, `while` and `do/while` loops, `break` and `continue`, bitwise operators, and `switch`. By the end of Chapter 35, pyxc can express everything in the first four chapters of *The C Programming Language* without reaching for a single C library function.
+
 Here's what pyxc looks like after [chapter 11](chapter-11.md) — everything below runs today:
 
 ```pyxc
@@ -159,6 +161,18 @@ The early chapters are inspired by the excellent [LLVM Kaleidoscope Tutorial](ht
 **[Chapter 29: impl Blocks](chapter-29.md)** — Add `impl TraitName for ClassName:` blocks to implement a trait for an existing class outside the class definition.
 
 **[Chapter 30: Generic Traits](chapter-30.md)** — Add type parameters to traits: `trait Addable[T]` declares a contract over an abstract type, instantiated with a concrete type at each `impl` or `class` site.
+
+### K&R Compatibility (Phase 5)
+
+**[Chapter 31: Arithmetic Completeness](chapter-31.md)** — Add `/` and `%`, five compound assignment operators (`+=`, `-=`, `*=`, `/=`, `%=`), and prefix/postfix `++`/`--` for variables, fields, and array elements. A shared `EmitBuiltInArithmetic` helper unifies all arithmetic paths.
+
+**[Chapter 32: Logical Operators](chapter-32.md)** — Add `&&` and `||` with genuine short-circuit evaluation and `!` (logical not) for `bool`. Both sides must be `bool`; no implicit integer coercion.
+
+**[Chapter 33: Loop Completeness](chapter-33.md)** — Add `while`, `do/while`, `break`, and `continue`. `break` and `continue` correctly target the innermost enclosing loop across arbitrary nesting. `continue` in a `for` loop runs the step expression before re-checking the condition.
+
+**[Chapter 34: Bitwise Operators](chapter-34.md)** — Add `&`, `|`, `^`, `<<`, `>>`, and unary `~` with C-standard precedence. All bitwise operators are integer-only; applying them to floats is a type error.
+
+**[Chapter 35: Switch](chapter-35.md)** — Add `switch` statements with integer case matching, an optional `default`, and `break` support. Cases do not fall through by default — each case exits implicitly.
 
 ## Need Help?
 

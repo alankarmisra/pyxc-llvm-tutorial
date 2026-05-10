@@ -1,0 +1,15 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 42.000000
+
+extern def printd(x: float64)
+
+struct Counter:
+  value: int
+
+var g: Counter
+
+def main() -> int:
+  g.value = 42
+  printd(float64(g.value))
+  return 0

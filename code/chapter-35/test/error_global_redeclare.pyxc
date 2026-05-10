@@ -1,0 +1,8 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: already declared
+
+# Tests: declaring the same name twice with var at the top level is a parse error.: float64
+# The second var x should be rejected in the same scope as the first.: float64
+
+var x: float64 = 1.0
+var x: float64 = 2.0

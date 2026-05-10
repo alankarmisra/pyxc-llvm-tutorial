@@ -1,0 +1,14 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 10.000000
+
+extern def printd(x: float64)
+
+def main() -> int:
+  var i: int = 0
+  var sum: int = 0
+  while i < 5:
+    sum += i
+    i += 1
+  printd(float64(sum))
+  return 0

@@ -1,0 +1,7 @@
+type string = ptr[int8]
+
+extern def printf(fmt: string, ...) -> int
+
+def main() -> int:
+    printf("hello, world\n")
+    return 0

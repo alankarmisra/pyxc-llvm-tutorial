@@ -191,6 +191,8 @@ enum Token {
   tok_modeq = -49,
   tok_and = -50, // &&
   tok_or = -51,  // ||
+  tok_plusplus = -56,
+  tok_minusminus = -57,
 };
 
 enum class ValueType {
@@ -277,6 +279,8 @@ static map<int, string> TokenNames = [] {
       {tok_modeq, "'%='"},
       {tok_and, "'&&'"},
       {tok_or, "'||'"},
+      {tok_plusplus, "'++'"},
+      {tok_minusminus, "'--'"},
       {tok_ptr, "'ptr'"},         {tok_addr, "'addr'"},
       {tok_sizeof, "'sizeof'"},
       {tok_string, "string literal"},
@@ -692,7 +696,12 @@ static int gettok() {
   }
 
   if (LexerLastChar == '+') {
-    int Tok = (peek() == '=') ? (advance(), tok_pluseq) : '+';
+    int Next = peek();
+    int Tok = '+';
+    if (Next == '=')
+      Tok = (advance(), tok_pluseq);
+    else if (Next == '+')
+      Tok = (advance(), tok_plusplus);
     LexerLastChar = advance();
     return Tok;
   }
@@ -706,6 +715,8 @@ static int gettok() {
       Tok = (advance(), tok_arrow);
     else if (Next == '=')
       Tok = (advance(), tok_minuseq);
+    else if (Next == '-')
+      Tok = (advance(), tok_minusminus);
     LexerLastChar = advance();
     return Tok;
   }
@@ -1288,6 +1299,21 @@ public:
   UnaryExprAST(char Opcode, unique_ptr<ExprAST> Operand, ValueType Type)
       : Opcode(Opcode), Operand(std::move(Operand)) {
     setType(Type);
+  }
+  Value *codegen() override;
+};
+
+class IncDecExprAST : public ExprAST {
+  unique_ptr<ExprAST> Operand;
+  bool IsIncrement;
+  bool IsPrefix;
+
+public:
+  IncDecExprAST(unique_ptr<ExprAST> Operand, bool IsIncrement, bool IsPrefix,
+                ValueType Type, const string &StructName = "")
+      : Operand(std::move(Operand)), IsIncrement(IsIncrement),
+        IsPrefix(IsPrefix) {
+    setType(Type, StructName);
   }
   Value *codegen() override;
 };
@@ -3152,6 +3178,29 @@ static unique_ptr<ExprAST> ParseUnaryMinus() {
   return make_unique<UnaryExprAST>('-', std::move(Operand), Operand->getType());
 }
 
+static bool IsIncDecAssignableExpr(const ExprAST *E) {
+  return dynamic_cast<const VariableExprAST *>(E) ||
+         dynamic_cast<const FieldExprAST *>(E) ||
+         dynamic_cast<const IndexExprAST *>(E) ||
+         dynamic_cast<const IndexedFieldExprAST *>(E);
+}
+
+static unique_ptr<ExprAST> ParsePostfixIncDec(unique_ptr<ExprAST> Base) {
+  while (CurTok == tok_plusplus || CurTok == tok_minusminus) {
+    bool IsIncrement = (CurTok == tok_plusplus);
+    if (!IsIncDecAssignableExpr(Base.get()))
+      return LogError("Increment/decrement target must be assignable");
+    if (!IsNumericType(Base->getType()) && Base->getType() != ValueType::Pointer)
+      return LogError("Increment/decrement requires numeric or pointer type");
+    ValueType T = Base->getType();
+    string S = Base->getStructName();
+    getNextToken(); // eat ++/--
+    Base = make_unique<IncDecExprAST>(std::move(Base), IsIncrement,
+                                      /*IsPrefix=*/false, T, S);
+  }
+  return Base;
+}
+
 /// primary
 ///   = castexpr
 ///   | identifierexpr
@@ -3218,11 +3267,27 @@ static unique_ptr<ExprAST> ParsePrimary() {
 /// ParseBinOpRHS (as the RHS of a binary operator), so user-defined unary ops
 /// work in both positions: !x + 1 and f(x) + !y.
 static unique_ptr<ExprAST> ParseUnary() {
+  if (CurTok == tok_plusplus || CurTok == tok_minusminus) {
+    bool IsIncrement = (CurTok == tok_plusplus);
+    getNextToken(); // eat ++/--
+    auto Operand = ParseUnary();
+    if (!Operand)
+      return nullptr;
+    if (!IsIncDecAssignableExpr(Operand.get()))
+      return LogError("Increment/decrement target must be assignable");
+    if (!IsNumericType(Operand->getType()) &&
+        Operand->getType() != ValueType::Pointer)
+      return LogError("Increment/decrement requires numeric or pointer type");
+    return make_unique<IncDecExprAST>(std::move(Operand), IsIncrement,
+                                      /*IsPrefix=*/true, Operand->getType(),
+                                      Operand->getStructName());
+  }
+
   // Primary starters will be handled with ParsePrimary.
   if (!isascii(CurTok) /* multi-character tokens */ || CurTok == '(' ||
       CurTok == '[' ||
       isalpha(CurTok) || isdigit(CurTok))
-    return ParsePrimary();
+    return ParsePostfixIncDec(ParsePrimary());
 
   // Built-in unary minus.
   if (CurTok == '-')
@@ -3574,6 +3639,9 @@ static unique_ptr<ExprAST> ParseSimpleStmt() {
       if (!Expr)
         return nullptr;
     }
+    Expr = ParsePostfixIncDec(std::move(Expr));
+    if (!Expr)
+      return nullptr;
     Expr = ParseBinOpRHS(0, std::move(Expr));
     if (!Expr)
       return nullptr;
@@ -5764,6 +5832,72 @@ static Value *BuildIndexElementPtr(IndexExprAST *IdxExpr) {
       "elemptr");
 }
 
+static Value *BuildIndexedFieldPtr(IndexedFieldExprAST *Expr, ValueType *LeafType,
+                                   string *LeafStructName) {
+  Value *BaseElemPtr = BuildIndexElementPtr(Expr->getBaseIndex());
+  if (!BaseElemPtr)
+    return nullptr;
+  Value *Ptr = BaseElemPtr;
+  ValueType CurType = Expr->getBaseIndex()->getType();
+  string CurStruct = Expr->getBaseIndex()->getStructName();
+  for (const auto &FieldName : Expr->getFieldPath()) {
+    if (CurType != ValueType::Struct || CurStruct.empty())
+      return nullptr;
+    auto SI = StructTypes.find(CurStruct);
+    if (SI == StructTypes.end())
+      return nullptr;
+    auto FI = SI->second.FieldIndex.find(FieldName);
+    if (FI == SI->second.FieldIndex.end())
+      return nullptr;
+    const auto &FD = SI->second.Fields[FI->second];
+    llvm::Type *BaseLLVM = LLVMTypeFor(CurType, CurStruct);
+    Ptr = Builder->CreateStructGEP(BaseLLVM, Ptr, FI->second, "fieldptr");
+    CurType = FD.Type;
+    CurStruct = FD.StructName;
+  }
+  if (LeafType)
+    *LeafType = CurType;
+  if (LeafStructName)
+    *LeafStructName = CurStruct;
+  return Ptr;
+}
+
+static Value *ResolveIncDecLValuePtr(ExprAST *Operand, ValueType *Ty,
+                                     string *StructName) {
+  if (auto *Var = dynamic_cast<VariableExprAST *>(Operand)) {
+    const string &Name = Var->getName();
+    auto It = NamedValues.find(Name);
+    if (It != NamedValues.end() && It->second) {
+      if (Ty)
+        *Ty = Var->getType();
+      if (StructName)
+        *StructName = Var->getStructName();
+      return It->second;
+    }
+    if (auto *GV = GetGlobalVariable(Name)) {
+      if (Ty)
+        *Ty = Var->getType();
+      if (StructName)
+        *StructName = Var->getStructName();
+      return GV;
+    }
+    return nullptr;
+  }
+  if (auto *Field = dynamic_cast<FieldExprAST *>(Operand))
+    return GetFieldAddress(*Field->getLValueName(), Field->getFieldPath(), Ty,
+                           StructName);
+  if (auto *Idx = dynamic_cast<IndexExprAST *>(Operand)) {
+    if (Ty)
+      *Ty = Idx->getType();
+    if (StructName)
+      *StructName = Idx->getStructName();
+    return BuildIndexElementPtr(Idx);
+  }
+  if (auto *IdxField = dynamic_cast<IndexedFieldExprAST *>(Operand))
+    return BuildIndexedFieldPtr(IdxField, Ty, StructName);
+  return nullptr;
+}
+
 static Value *EmitBuiltInArithmetic(int Op, Value *L, ValueType LType,
                                     const string &LStruct, Value *R,
                                     ValueType RType, const string &RStruct,
@@ -6325,6 +6459,37 @@ Value *UnaryExprAST::codegen() {
     return LogErrorV("Unknown unary operator");
 
   return Builder->CreateCall(F, Op, "unop");
+}
+
+Value *IncDecExprAST::codegen() {
+  ValueType TargetType = getType();
+  string TargetStruct = getStructName();
+  Value *Ptr = ResolveIncDecLValuePtr(Operand.get(), &TargetType, &TargetStruct);
+  if (!Ptr)
+    return LogErrorV("Increment/decrement target must be assignable");
+
+  Value *OldVal = Builder->CreateLoad(LLVMTypeFor(TargetType, TargetStruct), Ptr,
+                                      "incdec.old");
+  Value *One = nullptr;
+  if (TargetType == ValueType::Pointer) {
+    One = ConstantInt::get(Type::getInt64Ty(*TheContext), 1);
+  } else if (IsIntType(TargetType)) {
+    One = ConstantInt::get(LLVMTypeFor(TargetType), 1, true);
+  } else if (IsFloatType(TargetType)) {
+    One = ConstantFP::get(LLVMTypeFor(TargetType), 1.0);
+  } else {
+    return LogErrorV("Increment/decrement requires numeric or pointer type");
+  }
+
+  int Op = IsIncrement ? '+' : '-';
+  Value *NewVal = EmitBuiltInArithmetic(
+      Op, OldVal, TargetType, TargetStruct, One,
+      TargetType == ValueType::Pointer ? ValueType::Int64 : TargetType, "",
+      TargetType, TargetStruct);
+  if (!NewVal)
+    return nullptr;
+  Builder->CreateStore(NewVal, Ptr);
+  return IsPrefix ? NewVal : OldVal;
 }
 
 Value *LogicalNotExprAST::codegen() {

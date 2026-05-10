@@ -1,0 +1,19 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 100.000000
+# CHECK: 110.000000
+
+# Tests: a user-defined function that reads and writes a global works correctly
+# in the emitted executable. The function sees the initialized global value.
+
+extern def printd(x: float64) -> float64
+
+var counter: float64 = 100.0
+
+def add10() -> None:
+    counter = counter + 10
+
+def main() -> None:
+    printd(counter)
+    add10()
+    printd(counter)

@@ -1,0 +1,12 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: 42.000000
+# CHECK-NOT: ready>
+
+# Tests: simplest top-level var in file mode — no main(): float64,just global_init.: float64
+# __pyxc.global_init allocates x as a GlobalVariable, stores 42.0, then
+# printd(x) loads and prints it.
+
+extern def printd(x: float64) -> float64
+
+var x: float64 = 42.0
+printd(x)

@@ -1,0 +1,17 @@
+type string = ptr[int8]
+
+extern def printf(fmt: string, ...) -> int
+
+
+def main() -> int:
+    var fahr:float, celsius:float
+    var lower:int = 0, upper:int = 300, step:int = 20
+
+    printf("C\t\tF\n")
+    celsius = lower
+    while celsius <= upper:
+        fahr = (9.0/5.0) * celsius + 32.0
+        printf("%3.0f\t\t%6.1f\n", celsius, fahr)
+        celsius = celsius + step
+    return 0
+    

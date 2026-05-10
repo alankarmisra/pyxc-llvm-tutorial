@@ -79,41 +79,47 @@ Pointer-first track for C/C++ learners:
 
 ---
 
-## Phase 5: Control Flow and Ergonomics (Chapters 31–37)
+## Phase 5: Control Flow and Ergonomics (Chapters 31–36)
 
 | # | Title | Notes |
 |---|-------|-------|
-| 31 | Arithmetic Completeness | ✅ `/`, `%`, and compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`); read-modify-write on lvalues |
+| 31 | Arithmetic Completeness | ✅ `/`, `%`, compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`), and pre/post `++`/`--`; read-modify-write on lvalues |
 | 32 | Logical Operators | ✅ `&&`, `||`, `!`; short-circuit codegen with control flow + PHI nodes |
-| 33 | Loop Completeness | `while`, `do/while`, `break`, `continue`; loop header/exit stacks for control transfer |
-| 34 | Bitwise Operators | `&`, `|`, `^`, `~`, `<<`, `>>`; integer-only operator semantics and precedence |
-| 35 | `switch` | Native LLVM `switch` lowering; case/default dispatch and optimization potential |
-| 36 | Increment and Decrement | Pre/post `++` and `--`; old-value preservation for post forms |
-| 37 | K&R Payoff | `runtime.c` + `extern def` bridge (`printf`, `scanf`, `getchar`, `putchar`, `strlen`, `strcpy`, `strncpy`) and ported K&R-style programs |
+| 33 | Loop Completeness | ✅ `while`, `do/while`, `break`, `continue`; loop header/exit stacks for control transfer |
+| 34 | Bitwise Operators | ✅ `&`, `|`, `^`, `~`, `<<`, `>>`; integer-only operator semantics and precedence |
+| 35 | `switch` | ✅ Native LLVM `switch` lowering; case/default dispatch and optimization potential |
+| 36 | K&R Payoff | `runtime.c` + `extern def` bridge (`printf`, `scanf`, `getchar`, `putchar`, `strlen`, `strcpy`, `strncpy`) and ported K&R-style programs |
 
 ---
 
-## Phase 6: Program Structure (Chapters 38–41)
+## Phase 6: Program Structure (Chapters 37–40)
 
 | # | Title | Notes |
 |---|-------|-------|
-| 38 | Module Declarations and Imports | `module`, `import`, `export`; public/private symbol visibility; single-file happy path |
-| 39 | Multi-File Builds | Cross-module lookup, name resolution, diagnostics |
-| 40 | Cyclic Imports and Caching | Detection, resolution strategy, incremental rebuild basics |
-| 41 | Closures | Lambda syntax, captured variables, closure struct + function pointer in LLVM IR. **Note:** need to decide capture semantics before implementation — capture by value is safe with no-GC; capture by reference requires closed-over variables to outlive the closure (Rust-style lifetime problem). |
+| 37 | Module Declarations and Imports | `module`, `import`, `export`; public/private symbol visibility; single-file happy path |
+| 38 | Multi-File Builds | Cross-module lookup, name resolution, diagnostics |
+| 39 | Cyclic Imports and Caching | Detection, resolution strategy, incremental rebuild basics |
+| 40 | Closures | Lambda syntax, captured variables, closure struct + function pointer in LLVM IR. **Note:** need to decide capture semantics before implementation — capture by value is safe with no-GC; capture by reference requires closed-over variables to outlive the closure (Rust-style lifetime problem). |
 ---
 
-## Phase 7: Concurrency (Chapters 42–48)
+## Phase 7: Concurrency (Chapters 41–47)
 
 | # | Title | Notes |
 |---|-------|-------|
-| 42 | Concurrency Model and Safety Rules | Overview, ownership rules for shared state |
-| 43 | Spawning Tasks and Threads | Task/thread primitives |
-| 44 | Shared State and Synchronization | Mutexes, atomics |
-| 45 | Message Passing | Channels and queues |
-| 46 | Parallel Loops and Work Partitioning | Data-parallel patterns |
-| 47 | Determinism, Races, and Debugging | Race detection, deterministic replay |
-| 48 | Parallel Compilation Pipeline | Parallelise the Pyxc compiler itself |
+| 41 | Concurrency Model and Safety Rules | Overview, ownership rules for shared state |
+| 42 | Spawning Tasks and Threads | Task/thread primitives |
+| 43 | Shared State and Synchronization | Mutexes, atomics |
+| 44 | Message Passing | Channels and queues |
+| 45 | Parallel Loops and Work Partitioning | Data-parallel patterns |
+| 46 | Determinism, Races, and Debugging | Race detection, deterministic replay |
+| 47 | Parallel Compilation Pipeline | Parallelise the Pyxc compiler itself |
+
+---
+
+## Known Bugs
+
+- Codegen diagnostics can point to stale parser locations (`CurLoc`) instead of the actual AST node location (example: unknown function in a call reported at function header line).
+- `extern def` ABI signatures are trusted without verification; mismatched declared return/argument types vs actual C symbol types are not detected and can cause runtime/ABI bugs.
 
 ---
 
@@ -123,6 +129,37 @@ These can be inserted where they fit best:
 - Error reporting with source spans and caret diagnostics
 - Function attributes (`readnone`, `nounwind`) for better optimization
 - Standard library bootstrap
+- Unsigned integer types (`uint8/16/32/64`, optional `uint`) and `size_t`-equivalent ABI guidance for C interop
+- `elif` / `else if` syntax sugar for conditional chains
 - Pattern-matching exhaustiveness checks
 - Escape analysis and stack-allocation wins
 - Packaging and installable CLI workflow
+
+---
+
+## Design Decision: `comptime` (Zig-style compile-time execution)
+
+Rather than a separate macro language (Rust's `macro_rules!` / procedural macros), pyxc should pursue **Zig-style `comptime`**: arbitrary pyxc code that runs at compile time and produces pyxc values or types.
+
+**Why not Rust-style macros:**
+- `macro_rules!` is a separate pattern language bolted onto the compiler — ugly syntax, cryptic errors, doesn't feel like the rest of the language
+- Procedural macros compile as separate dynamic libraries, hurt build times, and produce poor error spans
+- Both systems require learning a second language inside the language
+
+**Why `comptime`:**
+- No special macro syntax — `comptime` is just a keyword that says "evaluate this now, at compile time"
+- The full pyxc language is available at compile-time: loops, functions, conditionals, data structures
+- Errors point at real pyxc code, not opaque token streams
+- pyxc already has a JIT; running pyxc code at compile time is conceptually very close to what the JIT already does — the infrastructure is mostly there
+- Enables: compile-time constants, type-level computation, code generation, generic specialisation, and zero-cost abstractions without a separate template or macro system
+
+**What this looks like (sketch):**
+```pyxc
+comptime def array_sum_type(n: int) -> type:
+  if n <= 32: return int
+  return int64
+
+var x: comptime array_sum_type(16) = 0   # x: int at compile time
+```
+
+**When to implement:** After modules (Phase 6) and after the type system is stable. `comptime` interacts with generics, modules, and the import graph — it should not be retrofitted into an unstable foundation. Likely Phase 8 or later.

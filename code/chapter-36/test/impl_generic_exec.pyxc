@@ -1,0 +1,22 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 11.000000
+
+extern def printd(x: float64)
+
+trait Addable[T]:
+  def add(x: T, y: T) -> T
+
+class Calc:
+  public bias: int
+
+impl Addable[int] for Calc:
+  def add(x: int, y: int) -> int:
+    return x + y + self.bias
+
+
+def main() -> int:
+  var c: Calc = Calc()
+  c.bias = 2
+  printd(float64(c.add(4, 5)))
+  return 0

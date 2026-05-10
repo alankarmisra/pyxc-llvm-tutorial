@@ -1,0 +1,22 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 12.000000
+
+extern def printd(x: float64)
+
+trait Adder:
+  def add(x: int, y: int) -> int
+
+class Calc:
+  public value: int
+
+impl Adder for Calc:
+  def add(x: int, y: int) -> int:
+    return x + y + self.value
+
+
+def main() -> int:
+  var c: Calc = Calc()
+  c.value = 5
+  printd(float64(c.add(3, 4)))
+  return 0

@@ -1,0 +1,10 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck %s < %t.ll
+# CHECK: declare i64 @printf(ptr, ...)
+# CHECK: call i64 (ptr, ...) @printf
+
+extern def printf(fmt: ptr[int8], ...) -> int64
+
+def main() -> int:
+  printf("%d\n", 42)
+  return 0

@@ -1,0 +1,18 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: 99.000000
+# CHECK: 1.000000
+# CHECK-NOT: ready>
+
+# Tests: a local var inside a function shadows a global of the same name: float64
+# without affecting the global. After f() returns, the global x is still 1.
+
+extern def printd(x: float64) -> float64
+
+var x: float64 = 1.0
+
+def f() -> float64:
+    var x: float64 = 99.0
+    return x
+
+printd(f())
+printd(x)

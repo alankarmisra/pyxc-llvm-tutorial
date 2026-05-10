@@ -1,0 +1,17 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 14.000000
+
+extern def printd(x: float64)
+
+struct Box:
+  value: int
+
+def main() -> int:
+  var b: Box
+  b.value = 10
+  b.value++
+  var arr: int[2] = [1, 2]
+  ++arr[1]
+  printd(float64(b.value + arr[1]))
+  return 0

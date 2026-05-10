@@ -1,0 +1,7 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Destination of '=' must be a variable
+
+# Tests: assignment to a parenthesized variable is rejected at top level too.
+
+var x: float64 = 1.0
+(x) = 2

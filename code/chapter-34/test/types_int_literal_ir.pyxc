@@ -1,0 +1,12 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: i{{32|64}} 7
+# CHECK-NOT: double 7
+
+# Tests: an undecorated integer literal used as a var initializer produces
+# an integer constant in the IR, not a float64. 7 is an int; 7.0 would be a float64.
+
+var x: int = 7
+
+def main() -> None:
+    return

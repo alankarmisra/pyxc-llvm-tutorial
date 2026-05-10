@@ -1,0 +1,8 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: {{[Ee]rror}}
+# CHECK: Array size must be an integer literal
+
+def bad() -> int:
+  var n: int = 4
+  var a: int[n]
+  return 0

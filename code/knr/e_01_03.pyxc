@@ -1,0 +1,19 @@
+type string = ptr[int8]
+
+extern def printf(fmt: string, ...) -> int
+
+# print Farenheit-Celsius table
+# for fahr = 0, 20, ..., 300
+def main() -> int:
+    var fahr:float, celsius:float
+    var lower:int = 0,  upper:int = 300,  step:int = 20
+
+    printf("Fahr Celsius\n")
+    fahr = lower
+    
+    while fahr <= upper:
+        celsius = (5.0 / 9.0) * (fahr - 32.0)
+        printf("%3.0f\t%6.1f\n", fahr, celsius)
+        fahr = fahr + step
+    
+    return 0

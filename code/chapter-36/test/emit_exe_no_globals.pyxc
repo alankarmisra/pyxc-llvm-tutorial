@@ -1,0 +1,14 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 25.000000
+
+# Tests: a program with no global variables and no top-level statements.
+# No __pyxc.global_init is synthesized; the executable contains only
+# user-defined functions and the int main() wrapper.
+
+extern def printd(x: float64) -> float64
+
+def sq(x: float64) -> float64: return x * x
+
+def main() -> None:
+    printd(sq(5))

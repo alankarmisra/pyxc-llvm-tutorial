@@ -1,0 +1,12 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: Error
+# CHECK: argument 1 expects int
+
+# Tests: argument type mismatch is rejected.
+
+def f(x: int) -> int:
+    return x
+
+def main() -> None:
+    f(1.0)
+    return

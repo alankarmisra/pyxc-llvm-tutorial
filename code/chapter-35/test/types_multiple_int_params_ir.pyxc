@@ -1,0 +1,17 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: define i{{32|64}} @clamp(i{{32|64}} %lo, i{{32|64}} %val, i{{32|64}} %hi)
+
+# Tests: a function with three int parameters produces a signature with three
+# integer arguments. Verifies that the type annotation applies per-parameter
+# independently and is not shared or truncated.
+
+def clamp(lo: int, val: int, hi: int) -> int:
+    if val < lo:
+        return lo
+    if val > hi:
+        return hi
+    return val
+
+def main() -> None:
+    return

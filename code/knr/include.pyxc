@@ -1,0 +1,11 @@
+
+type string = ptr[int8]
+
+extern def printf(fmt: string, ...) -> int32
+extern def puts(s: ptr[int8]) -> int32
+extern def getchar() -> int32
+extern def putchar(c: int32) -> int32
+extern def scanf(fmt: ptr[int8], ...) -> int32
+extern def strlen(s: ptr[int8]) -> int64
+extern def malloc(size: int64) -> ptr[int8]
+extern def free(p: ptr[int8])

@@ -1,0 +1,10 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: Assignment to undeclared variable
+
+# Tests: assigning to an undeclared variable is an error.
+# assignstmt requires the target to already exist as a mutable local (via var).
+# assignstmt = identifier "=" expression ;
+
+def f() -> float64:
+    x = 1
+    return x
