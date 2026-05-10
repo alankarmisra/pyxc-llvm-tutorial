@@ -1,0 +1,9 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: {{[Ee]rror}}
+# CHECK: does not implement trait 'Adder' method 'add'
+
+trait Adder:
+  def add(x: int, y: int) -> int
+
+class Bad(Adder):
+  public value: int

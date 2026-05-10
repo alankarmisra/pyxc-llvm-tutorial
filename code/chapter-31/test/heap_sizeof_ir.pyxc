@@ -1,0 +1,6 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck %s < %t.ll
+# CHECK: ret i64 8
+
+def size_i64() -> int64:
+  return sizeof(int64)

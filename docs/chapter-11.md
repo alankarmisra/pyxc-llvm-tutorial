@@ -8,7 +8,7 @@ description: "Switch from expression-only bodies to statement blocks with indent
 [Chapter 10](chapter-10.md) added mutable variables, but the function body was still a single expression. The `var` form needed a `:` and a body expression, and `for` loops were expressions that produced `0.0`. This chapter introduces real statement blocks and indentation-sensitive syntax. After this chapter you'll be able to write code more naturally:
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> def sum_to(n):
     var acc = 0
     for var i = 1, i <= n, 1:
@@ -66,7 +66,7 @@ primary      = identifierexpr | numberexpr | parenexpr ;
 - **`block`** — an `INDENT` token, one or more statements separated by newlines, a `DEDENT` token.
 - **`INDENT` / `DEDENT`** — tokens emitted by the lexer when indentation increases or decreases. One `INDENT` is emitted when a block opens, one `DEDENT` when it closes — not one per line. The parser sees them like matched parentheses:
 
-```python
+```pyxc
 def f():
     var x = 5      # ← INDENT emitted here (indentation increased)
     x = x + 1      # ← nothing (same level)
@@ -139,13 +139,13 @@ That last part is the problem. In the REPL, each top-level input is compiled int
 
 Before this chapter, `if`, `for`, and `var` were expressions — they produced a value and could be nested:
 
-```python
+```pyxc
 var acc = 0: for var i = 1, ...: acc = acc + i
 ```
 
 Statements don't produce values — they *do* things. Once `if`, `for`, `var`, and `return` are statements, a function body becomes a flat list of them:
 
-```python
+```pyxc
 var acc = 0
 for var i = 1, ...:
     acc = acc + i
@@ -208,7 +208,7 @@ A single counter isn't enough to track indentation — nested blocks need to rem
 
 At the start of each line it finds the indentation level, compares it to the top of the stack, and pushes `INDENT` or `DEDENT` tokens into the queue. When indentation drops by multiple levels in one step, one `DEDENT` is queued per level closed and the parser drains them one at a time:
 
-```python
+```pyxc
 def f(x):            # stack: [0]
     if x > 0:        # stack: [0, 4]        → INDENT
         if x > 10:   # stack: [0, 4, 8]     → INDENT
@@ -219,7 +219,7 @@ def f(x):            # stack: [0]
 
 Blocks are also automatically closed at end of file — no trailing blank line needed:
 
-```python
+```pyxc
 def f():
     var x = 5        # stack: [0, 4] → INDENT
     return x         # stack: [0, 4]   nothing
@@ -323,7 +323,7 @@ These are similar to Python's indentation rules, with one difference: Pyxc allow
 
 Assignment to an undeclared variable is a parse-time error:
 
-```python
+```pyxc
 ready> x = 1
 Error: Assignment to undeclared variable
 ```
@@ -708,7 +708,7 @@ if (Value *RetVal = Body->codegen()) {
 
 This is what makes the following valid — the `if` path returns explicitly; the fall-through path gets an implicit `return 0.0`:
 
-```python
+```pyxc
 def threshold(x):
     if x > 10: return x
     # no explicit return — implicit return 0.0 inserted by codegen
@@ -748,7 +748,7 @@ This is what lets a file contain two top-level definitions back to back without 
 
 This is the main practical limitation of the current chapter. In the REPL it means you cannot build up state across lines:
 
-```python
+```pyxc
 # Does not work in the REPL:
 var x = 10      # parse error — var is not an expression
 x = x + 10     # x is undeclared in this expression's scope
@@ -757,7 +757,7 @@ printd(x)
 
 For now, keep mutable state inside a function:
 
-```python
+```pyxc
 def f():
     var x = 10
     x = x + 10
@@ -773,7 +773,7 @@ Chapter 12 addresses this properly. When compiling to an executable, all top-lev
 Simple function with multiple statements:
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> def f(x):
     if x > 10: return 20
     return 10
@@ -781,14 +781,14 @@ ready> def f(x):
 ```bash
 Parsed a function definition.
 ```
-```python
+```pyxc
 ready> f(5)
 ```
 ```bash
 Parsed a top-level expression.
 Evaluated to 10.000000
 ```
-```python
+```pyxc
 ready> f(20)
 ```
 ```bash
@@ -800,7 +800,7 @@ Evaluated to 20.000000
 Accumulator loop — the [chapter 10](chapter-10.md) workaround, now written naturally:
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> def sum_to(n):
     var acc = 0
     for var i = 1, i <= n, 1:
@@ -810,7 +810,7 @@ ready> def sum_to(n):
 ```bash
 Parsed a function definition.
 ```
-```python
+```pyxc
 ready> sum_to(5)
 ```
 ```bash

@@ -10,14 +10,14 @@ description: "Add comparison operators, if/else expressions, and for loops — t
 Our implementation of comparison operators will produce double values; `1.0` for true and `0.0` for false. This way if the operator is part of a greater expression, the expression will produce a double value as is expected across pyxc expressions. 
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> 1 < 2
 ```
 ```bash
 Parsed a top-level expression.
 Evaluated to 1.000000
 ```
-```python
+```pyxc
 ready> 3 != 3
 ```
 ```bash
@@ -29,13 +29,13 @@ Evaluated to 0.000000
 We will implement an *expression* form of `if` for now. What this means is that both branches are always required and each of them has to return a value so the entire `if/else` expression has a value. Once we get to the statement form of `if`, you'll see a more familiar syntax where the `else` becomes optional and it doesn't matter whether or not the subexpressions produce a value or not. Statement-style `if` arrives with blocks (multi-statement bodies) in a later chapter. Let's see some examples.
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> def absdiff(a, b): return if a > b: a - b else: b - a
 ```
 ```bash
 Parsed a function definition.
 ```
-```python
+```pyxc
 ready> absdiff(10, 5)
 ```
 ```bash
@@ -47,13 +47,13 @@ Evaluated to 5.000000
 Similarly we implement an expression from of `for`. It repeats its body expression and always produces `0.0`. Unlike `if`, `for` has no natural value to produce. `0.0` is a placeholder. Again, our implementation of blocks will fix this in a later chapter where `for` will return nothing as we've grown to expect in most programming languages. However, this is not a rule set in stone. You are the inventor here. You can choose whatever appeals to your semantic senses. 
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> extern def printd(x)
 ```
 ```bash
 Parsed an extern.
 ```
-```python
+```pyxc
 ready> for i = 1, i <= 3, 1: printd(i)
 ```
 ```bash
@@ -262,7 +262,7 @@ This gives pyxc its usual comparison result convention: `false → 0.0`, `true �
 
 As discussed earlier, in pyxc, `if` is an expression: it evaluates to a value and can appear anywhere an expression is allowed — as part of a larger expression, as a function argument, as a loop body, or nested inside another `if`.
 
-```python
+```pyxc
 if condition: then_expr else: else_expr
 ```
 
@@ -313,7 +313,7 @@ static unique_ptr<ExprAST> ParseIfExpr() {
 
 `consumeNewlines()` eats one or more consecutive `tok_eol` tokens, so both inline and multi-line forms are accepted:
 
-```python
+```pyxc
 if a > b: a - b else: b - a            # all on one line
 
 if a > b:                              # multi-line
@@ -335,13 +335,13 @@ the `else` path, and one final block where both paths meet again.
 
 We will keep using the same example function from above:
 
-```python
+```pyxc
 def absdiff(a, b): return if a > b: a - b else: b - a
 ```
 
 Inside that function, the `if` expression is:
 
-```python
+```pyxc
 if a > b: a - b else: b - a
 ```
 
@@ -592,7 +592,7 @@ To see the unoptimized IR shown above, run `build/pyxc -v -O0`.
 
 Consider this pyxc code:
 
-```python
+```pyxc
 def xor(a, b):
     return if a == 1:         # %a1
         if b == 1: 0          # %a1_b1
@@ -683,7 +683,7 @@ In the actual emitted IR, LLVM names these blocks `then`, `else`, and `ifcont`. 
 
 The `for` expression repeats a body expression while a condition holds:
 
-```python
+```pyxc
 for var = start, condition, step: body
 ```
 
@@ -977,7 +977,7 @@ else
 
 With comparisons, `if`/`else`, and `for`, pyxc is expressive enough to render the Mandelbrot set. The Mandelbrot set is the set of complex numbers `c` for which the iteration `z = z² + c` (starting from `z = 0`) does not diverge to infinity. `mandelconverger` uses recursion rather than a loop because `iters` needs to increment each iteration — without mutable variables, passing it as a parameter is the only option.
 
-```python
+```pyxc
 # test/mandel.pyxc
 extern def putchard(x)
 

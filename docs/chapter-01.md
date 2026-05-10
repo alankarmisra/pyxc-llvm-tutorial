@@ -9,7 +9,7 @@ Writing compilers isn't hard. It's just a lot of moving parts. So we, the progra
 
 Let me show you what we're working towards as a first pass. 
 
-```python
+```pyxc
 # test.pyxc
 extern def sin(x)    # pull in a C-standard library function with extern(al) - free lunch
 extern def cos(x)    # and another - more free lunch
@@ -42,7 +42,7 @@ cd pyxc-llvm-tutorial/code/chapter-01
 Say we write this code:
 
 **Input:**
-```python
+```pyxc
 def add(x,y):
     return x + y    
 ```
@@ -135,7 +135,7 @@ We initialize the static `LastChar` to a *space*. Then in the following loop we 
 
  Note that `gettok()` doesn't just skip spaces on the top of the file or the beginning of a line. It also skips spaces *between* tokens. Here's a concrete example:
  
- ```python
+ ```pyxc
 # main.pyxc
 
 #  ^------- gettok() will skip all this space

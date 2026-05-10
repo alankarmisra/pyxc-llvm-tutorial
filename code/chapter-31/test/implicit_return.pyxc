@@ -1,0 +1,11 @@
+# RUN: not %pyxc %s 2>&1 | FileCheck %s
+# CHECK: Non-None function must return a value
+
+# Tests: a non-None function with a missing return on some path is an error.
+# definition = "def" prototype ":" ( simplestmt | eols block ) ;
+# ifstmt = "if" expression ":" suite [ eols "else" ":" suite ] ;  (no else here)
+
+extern def printd(x: float64) -> float64
+
+def threshold(x: float64) -> float64:
+    if x > 10: return x

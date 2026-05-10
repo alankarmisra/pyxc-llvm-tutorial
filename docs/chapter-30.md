@@ -7,7 +7,7 @@ description: "Add type parameters to traits: trait Addable[T] declares a contrac
 
 [Chapter 29](chapter-29.md) added `impl` blocks. A trait is still limited to concrete types — `trait Adder` specifies `int` parameters explicitly. After this chapter, a trait can name an abstract type parameter and leave the concrete type to be supplied by each implementor:
 
-```python
+```pyxc
 extern def printd(x: float64)
 
 trait Addable[T]:
@@ -162,7 +162,7 @@ DEDENT          = ? synthetic token emitted by lexer ? ;
 
 A trait with a type parameter uses `[T]` after the trait name:
 
-```python
+```pyxc
 trait Addable[T]:
   def add(x: T, y: T) -> T
 ```
@@ -177,7 +177,7 @@ The active set is cleared when the trait body closes, so `T` has no meaning outs
 
 At the `impl` site, the concrete type argument fills in the placeholder:
 
-```python
+```pyxc
 impl Addable[int] for Calc:
   def add(x: int, y: int) -> int:
     return x + y
@@ -212,7 +212,7 @@ For each method in the trait, every parameter type and the return type pass thro
 
 The `class Foo(Addable[int]):` form also works. The type argument is parsed and stored in the `ImplTraitRef` immediately at the class header:
 
-```python
+```pyxc
 class IntCalc(Addable[int]):
   public def add(x: int, y: int) -> int:
     return x + y
@@ -223,17 +223,17 @@ Conformance is checked at the end of the class body, exactly as in chapter 28, b
 ## Error Cases
 
 **Missing type argument on a generic trait:**
-```
+```pyxc
 class Bad(Addable):   # Error: Trait 'Addable' requires a type argument
 ```
 
 **Spurious type argument on a non-generic trait:**
-```
+```pyxc
 impl Adder[int] for Calc:  # Error: Trait 'Adder' does not take type arguments
 ```
 
 **Wrong concrete type in the method:**
-```
+```pyxc
 impl Addable[int] for Bad:
   def add(x: int, y: float64) -> int:  # Error: does not match trait signature
     return x

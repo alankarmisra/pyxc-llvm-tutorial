@@ -1,0 +1,9 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: store i32 10
+
+# Tests: integer literals honor the expected type when initializing int32.
+
+def main() -> None:
+    var x: int32 = 10
+    return

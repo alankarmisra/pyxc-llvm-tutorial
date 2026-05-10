@@ -7,7 +7,7 @@ description: "Add fixed-size stack arrays: declare int[4], initialise with [1,2,
 
 [Chapter 22](chapter-22.md) added type aliases. The type system covers scalars, structs, and pointers, but there is no way to allocate a fixed-size sequence of values on the stack. After this chapter:
 
-```python
+```pyxc
 extern def printd(x: float64)
 
 def main() -> int:
@@ -133,7 +133,7 @@ DEDENT          = ? synthetic token emitted by lexer ? ;
 
 An array type is a base type followed by a size in brackets: `int[4]`, `float64[8]`, `Point[3]`. The size must be a compile-time integer literal greater than zero — expressions are not allowed.
 
-```python
+```pyxc
 var buf: int[4]        # four 64-bit integers on the stack
 var v:   float64[3]    # three doubles
 ```
@@ -162,7 +162,7 @@ Examples:
 
 An array literal is a comma-separated list of expressions inside `[` `]`:
 
-```python
+```pyxc
 var scores: int[4] = [10, 20, 30, 40]
 ```
 
@@ -172,7 +172,7 @@ The element count in the literal must exactly match the declared count. Too few 
 
 ## Index Expressions
 
-```python
+```pyxc
 scores[2]       # read
 scores[i] = 99  # write
 ```
@@ -194,7 +194,7 @@ The index expression must be an integer type. Floating-point indices are an erro
 
 An array variable can be passed to a function that expects `ptr[T]` for the matching element type. The array decays to a pointer to its first element — the same behaviour as C.
 
-```python
+```pyxc
 extern def puts(s: ptr[int8]) -> int
 
 def main() -> int:
@@ -207,7 +207,7 @@ The decay check is in `ArrayDecaysToPointerType`: it decodes both the array enco
 
 ## What Lands in the IR
 
-```python
+```pyxc
 def sum4(a: int[4]) -> int:
   return a[0] + a[1] + a[2] + a[3]
 ```

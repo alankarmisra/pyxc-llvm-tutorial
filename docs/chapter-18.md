@@ -9,7 +9,7 @@ description: "Add pointer types, addr() for taking addresses, and p[i] indexing 
 
 That's what pointers are for. After this chapter:
 
-```python
+```pyxc
 struct Point:
   x: int
   y: int
@@ -368,7 +368,7 @@ Two GEPs: one to reach element 0 of the array, one to reach field `x` of that el
 
 This is the payoff. A function that takes `ptr[T]` can modify the caller's data:
 
-```python
+```pyxc
 def set_value(p: ptr[int], v: int) -> None:
   p[0] = v
 
@@ -419,7 +419,7 @@ cmake -S . -B build && cmake --build build
 
 ### Take an address, read through it
 
-```python
+```pyxc
 extern def printd(x: float64)
 
 def main() -> int:
@@ -435,7 +435,7 @@ def main() -> int:
 
 ### Write through a pointer, see it in the caller
 
-```python
+```pyxc
 extern def printd(x: float64)
 
 def main() -> int:
@@ -452,7 +452,7 @@ def main() -> int:
 
 ### Pass a struct by pointer
 
-```python
+```pyxc
 extern def printd(x: float64)
 
 struct Point:
@@ -476,7 +476,7 @@ def main() -> int:
 
 ### Address of a struct field
 
-```python
+```pyxc
 extern def printd(x: float64)
 
 struct Point:

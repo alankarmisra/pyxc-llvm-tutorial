@@ -7,7 +7,7 @@ description: "Build a recursive-descent parser and AST: turn tokens into structu
 
 In [Chapter 1](chapter-01.md) we built a lexer that turns raw source text into a stream of tokens. Given this:
 
-```python
+```pyxc
 # adds two numbers
 def add(x, y):    
     return x + y
@@ -24,7 +24,7 @@ We've made progress. The whitespace and comments are gone, and we can focus on t
 
 By the end of this chapter, typing that same function into the REPL gives you:
 
-```python
+```pyxc
 ready> def add(x, y):
 return x + y
 Parsed a function definition.
@@ -372,7 +372,7 @@ static unique_ptr<ExprAST> ParseParenExpr() {
 
 After reading an identifier, we peek at the next token. No `(` means it's a plain variable. A `(` means it's a function call.
 
-```python
+```pyxc
 x     # variable
 foo() # function call
 ```
@@ -573,7 +573,7 @@ After we've read the signature and the following `:`, we call `consumeNewlines()
 
 In the REPL this will look like:
 
-```python
+```pyxc
 ready> def add(x, y): 
   return x + y
 Parsed a function definition.
@@ -691,7 +691,7 @@ static void MainLoop() {
 
 Now that you've seen the main loop, you'll see why we printed `ready>` inside LogError. It's because if the error happens at the end of a line, we don’t go back to the main loop right away. Let's use this example:
 
-```python
+```pyxc
 ready> def add   
 Error: Expected '(' in prototype (token: -2)
 ready>   
@@ -749,7 +749,7 @@ llvm-lit code/chapter-02/test/
 
 ## Try It
 
-```python
+```pyxc
 ready> def add(x, y):
 return x + y
 Parsed a function definition.

@@ -8,7 +8,7 @@ description: "Polish the lexer and add proper diagnostics: a keyword map, malfor
 We have a nice little parser after [Chapter 2](chapter-02.md). But the error messages are kinda rough. As we grow the language, and type code in our invented syntax, better error messaging will really help us narrow down if something is a code syntax problem, or a compiler problem. We take compiler correctness for granted when we use production level languages. But in inventing our own, we have to be wary of the fact that our compiler might be doing things wrong. Better error messages go a long way in tracing the problem. So we tackle this first, before moving on to generating machine code from our source in the following chapters. 
 
 We are going to attempt to make this:
-```python
+```pyxc
 ready> def bad(x) return x
 Error: Expected ':' in function definition (token: -7)
 ```
@@ -25,7 +25,7 @@ Line number. Column number. The source line. A caret pointing at the problem. Th
 
 And then there's this bug which we revealed in the previous chapter:
 
-```python
+```pyxc
 ready> 1.2.3
 Parsed a top-level expression.
 ```
@@ -446,7 +446,7 @@ The test suite covers the error cases introduced in this chapter — malformed n
 
 ## Try It
 
-```python
+```pyxc
 ready> def add(x, y):
    return x + y
 Parsed a function definition.

@@ -9,7 +9,7 @@ description: "Add a static type system: int, int8, int16, int32, int64, float, f
 
 This chapter adds a real type system. After this chapter:
 
-```python
+```pyxc
 def add(a: int32, b: int32) -> int32:
     return a + b
 
@@ -488,14 +488,14 @@ Every `VariableExprAST` carries its resolved type at parse time. When codegen ru
 
 Before:
 
-```python
+```pyxc
 var x = 1.0
 var y
 ```
 
 After:
 
-```python
+```pyxc
 var x: float64 = 1.0
 var y: int32
 var a: int8, b: int16   # multiple bindings in one statement
@@ -558,7 +558,7 @@ store double 3.140000e+00, ptr %ratio
 
 ## for Loops: Typed Loop Variable
 
-```python
+```pyxc
 # Chapter 15
 for var i = 1, i <= n, 1:
     body
@@ -609,7 +609,7 @@ Compare with chapter 15 where `i` would have been `alloca double` and used `fadd
 
 Any type name used as a function call performs a cast:
 
-```python
+```pyxc
 int32(3.14)     # float64 → int32 (truncates to 3)
 float64(42)     # int → float64
 int8(x)         # any integer → 8-bit (truncates if needed)
@@ -906,14 +906,14 @@ Comparisons return `i1` directly — there is no `UIToFP` widening to `double` a
 
 A `def` without `->` produces a void function:
 
-```python
+```pyxc
 def greet():        # return type = None (void)
     printd(42.0)
 ```
 
 Explicit `-> None` is identical at the IR level — it is documentary only:
 
-```python
+```pyxc
 def greet() -> None:
     printd(42.0)
 ```
@@ -1206,7 +1206,7 @@ The REPL keeps running after a type error; file mode aborts with exit code 1.
 
 Here is a small program that exercises the type system, and the IR it produces:
 
-```python
+```pyxc
 extern def printd(x: float64) -> float64
 
 def add(a: int32, b: int32) -> int32:
@@ -1268,7 +1268,7 @@ Before chapter 16 every value in this program would have been `double`. Now `add
 
 **Boolean literals**
 
-```python
+```pyxc
 ready> True
 True
 ready> False
@@ -1279,7 +1279,7 @@ False
 
 **REPL prints by type**
 
-```python
+```pyxc
 ready> var n: int32 = 42
 ready> n
 42
@@ -1292,7 +1292,7 @@ True
 
 **Trigger a type error**
 
-```python
+```pyxc
 # mismatch.pyxc
 def add(a: int32, b: int32) -> int32:
     return a + b
@@ -1305,7 +1305,7 @@ pyxc mismatch.pyxc  # exits with status 1
 
 **Mixed int sizes — widening is automatic**
 
-```python
+```pyxc
 var a: int8 = 10
 var b: int16 = 200
 var c: int32 = a + b   # int8 widens to int16, result int16 widens to int32
@@ -1313,7 +1313,7 @@ var c: int32 = a + b   # int8 widens to int16, result int16 widens to int32
 
 **Explicit cast round-trip**
 
-```python
+```pyxc
 var x: float64 = 3.99
 var y: int32 = int32(x)      # fptosi → 3
 var z: float64 = float64(y)  # sitofp → 3.0

@@ -75,42 +75,45 @@ Pointer-first track for C/C++ learners:
 | 27 | Visibility and Encapsulation | ✅ Public/private members |
 | 28 | Traits and Interfaces | ✅ Trait declarations and contracts |
 | 29 | Trait Implementations and Dispatch | ✅ Impl blocks, static vs dynamic dispatch |
-| 30 | Generic Traits and Constraints | Intro to constrained generics |
+| 30 | Generic Traits and Constraints | ✅ Intro to constrained generics |
 
 ---
 
-## Phase 5: Program Structure (Chapters 31–34)
+## Phase 5: Control Flow and Ergonomics (Chapters 31–37)
 
 | # | Title | Notes |
 |---|-------|-------|
-| 31 | Module Declarations and Imports | `module`, `import`, `export`; public/private symbol visibility; single-file happy path |
-| 32 | Multi-File Builds | Cross-module lookup, name resolution, diagnostics |
-| 33 | Cyclic Imports and Caching | Detection, resolution strategy, incremental rebuild basics |
-| 34 | Closures | Lambda syntax, captured variables, closure struct + function pointer in LLVM IR. **Note:** need to decide capture semantics before implementation — capture by value is safe with no-GC; capture by reference requires closed-over variables to outlive the closure (Rust-style lifetime problem). |
+| 31 | Arithmetic Completeness | ✅ `/`, `%`, and compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`); read-modify-write on lvalues |
+| 32 | Logical Operators | ✅ `&&`, `||`, `!`; short-circuit codegen with control flow + PHI nodes |
+| 33 | Loop Completeness | `while`, `do/while`, `break`, `continue`; loop header/exit stacks for control transfer |
+| 34 | Bitwise Operators | `&`, `|`, `^`, `~`, `<<`, `>>`; integer-only operator semantics and precedence |
+| 35 | `switch` | Native LLVM `switch` lowering; case/default dispatch and optimization potential |
+| 36 | Increment and Decrement | Pre/post `++` and `--`; old-value preservation for post forms |
+| 37 | K&R Payoff | `runtime.c` + `extern def` bridge (`printf`, `scanf`, `getchar`, `putchar`, `strlen`, `strcpy`, `strncpy`) and ported K&R-style programs |
 
 ---
 
-## Phase 6: Control Flow Pass 2 (Chapters 35–38)
+## Phase 6: Program Structure (Chapters 38–41)
 
 | # | Title | Notes |
 |---|-------|-------|
-| 35 | `while` Loops + Mandelbrot | `while` keyword; full Mandelbrot demo using structs, pointers, arrays, and strings |
-| 36 | `match`/`case` Basics | Pattern matching on scalar values |
-| 37 | `match`/`case` Guards and Defaults | Guard expressions, wildcard patterns, exhaustiveness |
-| 38 | `for`/`in` with `range` | Pythonic range-based loops, lower to existing `for` IR |
+| 38 | Module Declarations and Imports | `module`, `import`, `export`; public/private symbol visibility; single-file happy path |
+| 39 | Multi-File Builds | Cross-module lookup, name resolution, diagnostics |
+| 40 | Cyclic Imports and Caching | Detection, resolution strategy, incremental rebuild basics |
+| 41 | Closures | Lambda syntax, captured variables, closure struct + function pointer in LLVM IR. **Note:** need to decide capture semantics before implementation — capture by value is safe with no-GC; capture by reference requires closed-over variables to outlive the closure (Rust-style lifetime problem). |
 ---
 
-## Phase 7: Concurrency (Chapters 39–45)
+## Phase 7: Concurrency (Chapters 42–48)
 
 | # | Title | Notes |
 |---|-------|-------|
-| 39 | Concurrency Model and Safety Rules | Overview, ownership rules for shared state |
-| 40 | Spawning Tasks and Threads | Task/thread primitives |
-| 41 | Shared State and Synchronization | Mutexes, atomics |
-| 42 | Message Passing | Channels and queues |
-| 43 | Parallel Loops and Work Partitioning | Data-parallel patterns |
-| 44 | Determinism, Races, and Debugging | Race detection, deterministic replay |
-| 45 | Parallel Compilation Pipeline | Parallelise the Pyxc compiler itself |
+| 42 | Concurrency Model and Safety Rules | Overview, ownership rules for shared state |
+| 43 | Spawning Tasks and Threads | Task/thread primitives |
+| 44 | Shared State and Synchronization | Mutexes, atomics |
+| 45 | Message Passing | Channels and queues |
+| 46 | Parallel Loops and Work Partitioning | Data-parallel patterns |
+| 47 | Determinism, Races, and Debugging | Race detection, deterministic replay |
+| 48 | Parallel Compilation Pipeline | Parallelise the Pyxc compiler itself |
 
 ---
 

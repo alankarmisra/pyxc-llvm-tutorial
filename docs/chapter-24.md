@@ -7,7 +7,7 @@ description: "Add the class keyword as a distinct aggregate type. Classes share 
 
 [Chapter 23](chapter-23.md) added arrays. We now have a decent type system, but the only aggregate type is `struct`. After this chapter, the `class` keyword is available:
 
-```python
+```pyxc
 class Point:
   x: int
   y: int
@@ -178,7 +178,7 @@ This flag is checked wherever a feature is class-specific — methods in chapter
 
 A class has exactly the same IR layout as a struct with the same fields. There is nothing in the generated LLVM IR that distinguishes a `class Point` from a `struct Point`. The distinction is purely a parser-level concept.
 
-```python
+```pyxc
 class Vec2:
   x: float64
   y: float64
@@ -192,7 +192,7 @@ class Vec2:
 
 Class names and struct names share the same namespace (`StructTypes`). You cannot define a class and a struct with the same name, in either order:
 
-```python
+```pyxc
 struct Foo:
   x: int
 

@@ -9,7 +9,7 @@ description: "Add impl blocks: implement a trait for an existing class after the
 
 After this chapter, trait conformance can be declared outside the class body entirely:
 
-```python
+```pyxc
 extern def printd(x: float64)
 
 trait Adder:

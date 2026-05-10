@@ -47,7 +47,7 @@ In **Chapters 24–30** we add an object model: `class` declarations, methods wi
 
 Here's what pyxc looks like after [chapter 11](chapter-11.md) — everything below runs today:
 
-```python
+```pyxc
 extern def printd(x)
 
 @binary(6)

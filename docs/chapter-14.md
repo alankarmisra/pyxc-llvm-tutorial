@@ -462,7 +462,7 @@ set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${LLD_FLAGS}")
 ```bash
 cat hello.pyxc
 ```
-```python
+```pyxc
 extern def printd(x)
 def main():
     printd(42)
@@ -484,7 +484,7 @@ pyxc --emit exe hello.pyxc   # produces ./hello
 
 **Global init runs before main**
 
-```python
+```pyxc
 extern def printd(x)
 var total = 0
 for var i = 1, i < 6, 1:

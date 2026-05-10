@@ -9,7 +9,7 @@ description: "Add sizeof and pointer casts so pyxc can call malloc and free — 
 
 After this chapter:
 
-```python
+```pyxc
 extern def malloc(n: int64) -> ptr[int8]
 extern def free(p: ptr[int8])
 extern def printd(x: float64)
@@ -217,7 +217,7 @@ case tok_sizeof:
 
 `malloc` and `free` are declared with `extern`, exactly like any other external C function:
 
-```python
+```pyxc
 extern def malloc(n: int64) -> ptr[int8]
 extern def free(p: ptr[int8])
 ```
@@ -226,7 +226,7 @@ pyxc emits a standard LLVM `call` instruction, and the linker resolves it agains
 
 The pattern for heap-allocating a single struct:
 
-```python
+```pyxc
 struct Point:
   x: int
   y: int
@@ -253,7 +253,7 @@ cmake -S . -B build && cmake --build build
 
 ### sizeof of scalar types and a struct
 
-```python
+```pyxc
 extern def printd(x: float64)
 
 struct Point:
@@ -279,7 +279,7 @@ def main() -> int:
 
 ### malloc, pointer cast, and field access
 
-```python
+```pyxc
 extern def malloc(n: int64) -> ptr[int8]
 extern def free(p: ptr[int8])
 extern def printd(x: float64)
@@ -306,7 +306,7 @@ def main() -> int:
 
 ### malloc and pointer arithmetic — a heap array
 
-```python
+```pyxc
 extern def malloc(n: int64) -> ptr[int8]
 extern def free(p: ptr[int8])
 extern def printd(x: float64)

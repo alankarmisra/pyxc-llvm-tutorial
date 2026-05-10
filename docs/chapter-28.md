@@ -9,7 +9,7 @@ description: "Add traits: named method-signature contracts that a class declares
 
 After this chapter:
 
-```python
+```pyxc
 extern def printd(x: float64)
 
 trait Measurable:
@@ -172,7 +172,7 @@ Registered in the keyword table. `trait` definitions appear at the top level, be
 
 A trait is a named list of method signatures. No bodies, no fields, no `self` â€” just names, parameter types, and return types:
 
-```python
+```pyxc
 trait Adder:
   def add(x: int, y: int) -> int
 
@@ -197,7 +197,7 @@ The `self` parameter is not listed in a trait signature. It is always implied â€
 
 A class declares which traits it implements in the class header:
 
-```python
+```pyxc
 class Calc(Adder):
   public def add(x: int, y: int) -> int:
     return x + y
@@ -205,7 +205,7 @@ class Calc(Adder):
 
 Multiple traits:
 
-```python
+```pyxc
 class Calc(Adder, Scaler):
   public def add(x: int, y: int) -> int: ...
   public def scale(x: int, factor: int) -> int: ...

@@ -509,8 +509,16 @@ static int gettok() {
     return Tok;
   }
 
-  if (LastChar == EOF)
+  if (LastChar == EOF) {
+    // If the final line has no trailing newline, synthesize one so the parser
+    // still sees a normal statement terminator before EOF.
+    if (!AtLineStart) {
+      LastChar = ' ';
+      AtLineStart = true;
+      return tok_eol;
+    }
     return tok_eof;
+  }
 
   // Single character token
   int ThisChar = LastChar;

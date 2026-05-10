@@ -9,7 +9,7 @@ description: "Add pointer arithmetic — ptr + int, ptr - int, ptr - ptr, and po
 
 After this chapter, that pattern works:
 
-```python
+```pyxc
 extern def printd(x: float64)
 
 struct Triple:
@@ -229,7 +229,7 @@ cmake -S . -B build && cmake --build build
 
 ### Advance a pointer and read the next element
 
-```python
+```pyxc
 extern def printd(x: float64)
 
 def main() -> int:
@@ -249,7 +249,7 @@ def main() -> int:
 
 ### Walk backward with `p - 1`
 
-```python
+```pyxc
 extern def printd(x: float64)
 
 struct Pair:
@@ -274,7 +274,7 @@ def main() -> int:
 
 ### Compute pointer difference between two fields
 
-```python
+```pyxc
 extern def printd(x: float64)
 
 struct Triple:
@@ -296,7 +296,7 @@ def main() -> int:
 
 ### The K&R loop with `!= end`
 
-```python
+```pyxc
 extern def printd(x: float64)
 
 struct Triple:

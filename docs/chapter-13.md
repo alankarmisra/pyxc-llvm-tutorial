@@ -379,7 +379,7 @@ InitializeNativeTargetAsmParser();
 ```bash
 cat sq.pyxc
 ```
-```python
+```pyxc
 extern def printd(x)
 def sq(x): return x * x
 def main():

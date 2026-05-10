@@ -7,7 +7,7 @@ description: "Add methods to classes: define functions inside the class body, ca
 
 [Chapter 24](chapter-24.md) added the `class` keyword. Classes can have fields and you can read and write them, but all behaviour lives in global functions. After this chapter, behaviour lives with the data:
 
-```python
+```pyxc
 extern def printd(x: float64)
 
 class Counter:
@@ -177,7 +177,7 @@ This means method names can collide with global function names freely — `Calc.
 
 ## Calling a Method
 
-```python
+```pyxc
 c.increment()
 result = c.get()
 ```
@@ -201,7 +201,7 @@ The receiver must be an lvalue (a named local or a field path). Calling a method
 
 Inside a method body, `self` is in scope as a local variable of type `ptr[ClassName]`. Field accesses through `self.x` are field accesses on a pointer:
 
-```python
+```pyxc
 def increment():
   self.value = self.value + 1
 ```
@@ -210,7 +210,7 @@ The compiler sees `self.value` as a GEP into the pointer that `self` holds, foll
 
 ## What the IR Looks Like
 
-```python
+```pyxc
 class Calc:
   value: int
 

@@ -7,7 +7,7 @@ description: "Add constructors: define __init__ to initialise a class instance, 
 
 [Chapter 25](chapter-25.md) added methods. You can define behaviour on a class and call it through `obj.method(args)`. But creating a class instance requires writing field assignments by hand:
 
-```python
+```pyxc
 var c: Calc
 c.x = 3
 c.y = 4
@@ -15,7 +15,7 @@ c.y = 4
 
 After this chapter, a class can define `__init__` to package that work up, and callers use `ClassName(args)` to create a ready-to-use instance in one expression:
 
-```python
+```pyxc
 extern def printd(x: float64)
 
 class Point:
@@ -156,7 +156,7 @@ DEDENT          = ? synthetic token emitted by lexer ? ;
 
 `__init__` is a method named literally `__init__`. It is defined the same way as any other method — inside the class body, with `def __init__(params):`. The compiler enforces one constraint: `__init__` must return `None`. Returning a value from a constructor is an error.
 
-```python
+```pyxc
 class Rect:
   w: int
   h: int
@@ -172,13 +172,13 @@ class Rect:
 
 `ClassName(args)` at the call site looks identical to a regular function call. The expression parser checks whether the identifier names a known class. If it does, it builds a `ConstructorCallExprAST` instead of a `CallExprAST`.
 
-```python
+```pyxc
 var r: Rect = Rect(10, 20)
 ```
 
 This is a zero-argument constructor call for a class without `__init__`:
 
-```python
+```pyxc
 var p: Point = Point()
 ```
 
@@ -204,7 +204,7 @@ If there is no `__init__`, steps 1 and 2 still happen — you get a zero-initial
 
 A class without `__init__` still produces a fully zeroed instance on construction:
 
-```python
+```pyxc
 class Config:
   debug: bool
   level: int
@@ -217,7 +217,7 @@ This is a guarantee, not an accident. The zero store always runs before any `__i
 
 ## IR
 
-```python
+```pyxc
 class Point:
   x: int
   y: int

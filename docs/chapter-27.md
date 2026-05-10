@@ -7,7 +7,7 @@ description: "Add public and private visibility modifiers to class fields and me
 
 [Chapter 26](chapter-26.md) added constructors. Classes can now be initialised, but every field and method is accessible from anywhere. After this chapter, a class can hide its internals:
 
-```python
+```pyxc
 extern def printd(x: float64)
 
 class BoundedCounter:
@@ -228,7 +228,7 @@ Every point where the compiler accesses a member goes through `CanAccessClassMem
 
 `public` and `private` are only meaningful on classes. Putting one in a `struct` body is a parse error:
 
-```python
+```pyxc
 struct Pair:
   public x: int   # Error: visibility modifiers not allowed in struct
   y: int

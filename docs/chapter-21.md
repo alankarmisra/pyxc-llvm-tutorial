@@ -9,7 +9,7 @@ description: "Add string literals and C interop — so pyxc programs can call pu
 
 After this chapter:
 
-```python
+```pyxc
 extern def puts(s: ptr[int8]) -> int
 
 def greeting() -> ptr[int8]:
@@ -187,7 +187,7 @@ The global is a read-only constant — `true` in the `GlobalVariable` constructo
 
 Strings in pyxc are `ptr[int8]`. There is no separate `string` type — a string literal is simply a pointer to the first byte of a null-terminated buffer, exactly matching C's `char *`. Every C string function accepts `ptr[int8]` directly:
 
-```python
+```pyxc
 extern def puts(s: ptr[int8]) -> int
 extern def printf(fmt: ptr[int8]) -> int
 extern def strlen(s: ptr[int8]) -> int
@@ -195,14 +195,14 @@ extern def strlen(s: ptr[int8]) -> int
 
 Returning a string from a function works because the return type check compares `ptr[int8]` against `ptr[int8]`:
 
-```python
+```pyxc
 def greeting() -> ptr[int8]:
   return "hello"
 ```
 
 Storing a string literal in a variable works the same way:
 
-```python
+```pyxc
 var msg: ptr[int8] = "hello, pyxc"
 puts(msg)
 ```
@@ -220,7 +220,7 @@ cmake -S . -B build && cmake --build build
 
 ### Basic string literal
 
-```python
+```pyxc
 extern def puts(s: ptr[int8]) -> int
 
 def main() -> int:
@@ -234,7 +234,7 @@ hello, pyxc
 
 ### Escape sequences
 
-```python
+```pyxc
 extern def puts(s: ptr[int8]) -> int
 
 def main() -> int:
@@ -251,7 +251,7 @@ The `\n` inside the string literal is resolved by the lexer to a real newline by
 
 ### Return a string from a function
 
-```python
+```pyxc
 extern def puts(s: ptr[int8]) -> int
 
 def greeting() -> ptr[int8]:
@@ -268,7 +268,7 @@ hello from a function
 
 ### Store in a variable, then pass
 
-```python
+```pyxc
 extern def puts(s: ptr[int8]) -> int
 
 def main() -> int:

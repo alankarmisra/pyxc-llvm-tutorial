@@ -1,0 +1,11 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: {{[Ee]rror}}
+# CHECK: {{None|cast}}
+
+# Tests: None(expr) is not a valid cast expression. The spec explicitly
+# forbids it. The compiler must reject it with an error.
+
+def main() -> None:
+    var x: float64 = 1.5
+    None(x)
+    return

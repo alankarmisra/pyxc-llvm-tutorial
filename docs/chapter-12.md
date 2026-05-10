@@ -7,7 +7,7 @@ description: "Add global variables so top-level var declarations and assignments
 
 [Chapter 11](chapter-11.md) introduced statement blocks, indentation, and `var` as a proper statement. But `var` only worked inside function bodies. At the top level — both in the REPL and in file mode — there was no way to declare a variable that outlived a single expression:
 
-```python
+```pyxc
 # Chapter 11 — neither of these works at top level:
 var x = 10     # parse error: var is not an expression
 x = x + 1     # parse error: x is undeclared
@@ -15,7 +15,7 @@ x = x + 1     # parse error: x is undeclared
 
 This chapter fixes that. After it, the REPL works the way you'd expect, and file mode has a proper entry point:
 
-```python
+```pyxc
 ready> var x = 10
 ready> x = x + 7
 ready> extern def printd(n)
@@ -368,7 +368,7 @@ Lookup always goes inner-to-outer: block → function → global. A `var x` insi
 
 **REPL: persistent counter**
 
-```python
+```pyxc
 ready> extern def printd(x)
 ready> var count = 0
 ready> def tick(): count = count + 1
@@ -381,7 +381,7 @@ ready> printd(count)
 
 **File mode: globals + main**
 
-```python
+```pyxc
 extern def printd(x)
 
 var total = 0
@@ -401,7 +401,7 @@ def main():
 
 **Initialization order**
 
-```python
+```pyxc
 extern def printd(x)
 
 var a = 3

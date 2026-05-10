@@ -13,13 +13,13 @@ description: "Add mutable local variables and assignment using a temporary var .
 Nothing you aren't already familiar with. But the way LLVM handles this internally is super interesting. 
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> def bump(n): return var x = n: x = x + 1
 ```
 ```bash
 Parsed a function definition.
 ```
-```python
+```pyxc
 ready> bump(5)
 ```
 ```bash
@@ -32,7 +32,7 @@ Evaluated to 6.000000
 
 We're keeping it this way because this chapter isn't about syntax. It's about what happens underneath. The next chapter replaces expression bodies with real statement blocks. There, the same machinery will look natural.
 
-```python
+```pyxc
 var x = n
 ...
 x = x + 1
@@ -67,7 +67,7 @@ If you're thinking, `x` could be an `lvalue` or an `rvalue`, you're right. The p
 
 `var` introduces one or more mutable locals and evaluates to the body's value. Later bindings can reference earlier ones:
 
-```python
+```pyxc
 var x = 1, y = x + 1: y   # evaluates to 2
 ```
 
@@ -520,7 +520,7 @@ When `for var i` is used, the parser allocates a fresh alloca slot for `i`, stor
 
 The distinction is mostly academic at this stage because a function body is still a single expression, not a sequence of statements. The one case where it surfaces is a nested loop reusing the outer loop variable:
 
-```python
+```pyxc
 for var i = 0, i < 10, 1:
    for i = 5, i < 11, 1:
     printd(i)
@@ -530,7 +530,7 @@ Here the outer `for var i` introduces `i` into scope. The inner `for i` finds th
 
 The more natural use of `for i = ...` (without `var`) becomes clear in the next chapter once `var` statements exist independently:
 
-```python
+```pyxc
 var x = 0.0
 for x = 1, x < 10, 1:   # reuses x declared above
     printd(x)
@@ -581,7 +581,7 @@ Nine instructions down to two.
 
 When control flow is involved, `mem2reg` has more work to do. Define `;` as a sequencing operator and an accumulator loop that returns its result:
 
-```python
+```pyxc
 @binary(1)
 def ;(x, y): return y
 
@@ -670,7 +670,7 @@ cmake -S . -B build && cmake --build build
 Simple local update:
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> var x = 1: x = x + 1
 ```
 ```bash
@@ -682,7 +682,7 @@ Evaluated to 2.000000
 Multiple bindings — later initializers see earlier ones:
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> var x = 1, y = x + 1: y
 ```
 ```bash
@@ -694,13 +694,13 @@ Evaluated to 2.000000
 Local variable inside a function:
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> def bump(n): return var x = n: x = x + 1  # returns n+1
 ```
 ```bash
 Parsed a function definition.
 ```
-```python
+```pyxc
 ready> bump(5)
 ```
 ```bash
@@ -712,21 +712,21 @@ Evaluated to 6.000000
 Accumulator with a loop:
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> @binary(1)
 def ;(x, y): return y
 ```
 ```bash
 Parsed a user-defined operator.
 ```
-```python
+```pyxc
 ready> def sum_to(n): return var acc = 0:
     (for var i = 1, i < n + 1, 1: acc = acc + i) ; acc
 ```
 ```bash
 Parsed a function definition.
 ```
-```python
+```pyxc
 ready> sum_to(5)
 ```
 ```bash
@@ -738,7 +738,7 @@ Evaluated to 15.000000
 Invalid assignment target:
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> (1 + 2) = 3
 ```
 ```bash

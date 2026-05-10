@@ -8,7 +8,7 @@ description: "Add ORC JIT and an optimization pass pipeline: top-level expressio
 We got the compiler to produce IR in [Chapter 5](chapter-05.md), but it doesn't run anything yet. For example:
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> def foo(x): return (1+2+x)*(x+(1+2))
 Parsed a function definition.
 ```
@@ -23,7 +23,7 @@ entry:
 }
 ```
 
-```python
+```pyxc
 ready> foo(2)
 Parsed a top-level expression.
 ```
@@ -42,7 +42,7 @@ entry:
 By the end of this chapter, calling `foo(2)` prints the answer:
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> foo(2)
 Parsed a top-level expression.
 ```
@@ -63,7 +63,7 @@ Evaluated to 25.000000
 And `foo` itself comes out of the optimizer with the redundant computation eliminated:
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> def foo(x): return (1+2+x)*(x+(1+2))
 Parsed a function definition.
 ```
@@ -356,7 +356,7 @@ extern "C" DLLEXPORT double printd(double X) {
 
 The `DLLEXPORT` attribute places these symbols in pyxc's symbol table, making them visible to the LLVM JIT's function resolver which can then execute them. So you can just say:
 
-```python
+```pyxc
 extern def putchard(x)
 
 # It is now ready to use. The JIT will find the function definition in the pyxc executable process.
@@ -402,7 +402,7 @@ cmake -S . -B build && cmake --build build
 ### `extern` resolves from the process
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> extern def sin(x)
 ```
 
@@ -414,7 +414,7 @@ Parsed an extern.
 declare double @sin(double)
 ```
 
-```python
+```pyxc
 ready> sin(1)
 ```
 
@@ -442,7 +442,7 @@ Notice that the IR returns `sin(1)` as a constant (`0x3FEAED548F090CEE` — the 
 ### The Pythagorean identity
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> extern def cos(x)
 ```
 
@@ -454,7 +454,7 @@ Parsed an extern.
 declare double @cos(double)
 ```
 
-```python
+```pyxc
 ready> def foo(x): return sin(x)*sin(x)+cos(x)*cos(x)
 ```
 
@@ -476,7 +476,7 @@ entry:
 }
 ```
 
-```python
+```pyxc
 ready> foo(4)
 ```
 
@@ -490,7 +490,7 @@ Evaluated to 1.000000
 ### The optimizer at work
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> def foo(x): return (1+2+x)*(x+(1+2))
 ```
 
@@ -507,7 +507,7 @@ entry:
 }
 ```
 
-```python
+```pyxc
 ready> foo(2)
 ```
 
@@ -521,7 +521,7 @@ Six source operations, two IR instructions. `IRBuilder` folded `1+2` to `3.0` at
 ### The runtime library
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> extern def printd(x)
 ```
 
@@ -533,7 +533,7 @@ Parsed an extern.
 declare double @printd(double)
 ```
 
-```python
+```pyxc
 ready> printd(42)
 ```
 
@@ -548,7 +548,7 @@ Evaluated to 0.000000
 `putchard` works the same way — it prints a single ASCII character by code point:
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> extern def putchard(x)
 ```
 
@@ -560,7 +560,7 @@ Parsed an extern.
 declare double @putchard(double)
 ```
 
-```python
+```pyxc
 ready> putchard(65)
 ```
 

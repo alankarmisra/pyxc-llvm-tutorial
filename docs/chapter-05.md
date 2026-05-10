@@ -7,7 +7,7 @@ description: "Connect the AST to LLVM IR: add codegen() to every node and see re
 
 In [Chapter 3](chapter-03.md) we wrote a parser that builds a syntax tree and reports error messages, if any. The next step is to generate intermediate code (IR) and pass that on to the LLVM tooling, either to compile and run immediately, or to compile to machine code to be run later. This chapter focuses on generating the IR. If you type something like:
 
-```python
+```pyxc
 ready> def sum(a, b): return a + b
 ```
 
@@ -515,7 +515,7 @@ cmake -S . -B build && cmake --build build
 A **bare expression**:
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> 4 + 5
 ```
 ```llvm
@@ -531,7 +531,7 @@ Note how `4 + 5` folds to `9.0` at IR construction time — `IRBuilder` recogniz
 
 **Defining and calling a function:**
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> def sum(a, b): return a + b
 ```
 ```text
@@ -544,7 +544,7 @@ entry:
   ret double %addtmp
 }
 ```
-```python
+```pyxc
 ready> sum(10, 20)
 ```
 ```text
@@ -562,7 +562,7 @@ entry:
 **Declaring and calling an external function:**
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> extern def cos(x)
 ```
 ```text
@@ -576,7 +576,7 @@ declare double @cos(double)
 `extern def cos(x)` emits a `declare` — a signature with no body. At link time this resolves to the C library's `cos`.
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> cos(1.234)
 ```
 ```llvm

@@ -7,7 +7,7 @@ description: "Add type aliases so any type — scalar, pointer, or struct — ca
 
 [Chapter 21](chapter-21.md) added string literals. We can write `"hello"` and pass it to `puts`. But the parameter type is a C-style `ptr[int8]` which is a bit annoying to write all the time. After this chapter we can write:
 
-```python
+```pyxc
 type string = ptr[int8]
 
 extern def puts(s: string) -> int
@@ -245,7 +245,7 @@ Forward references are not supported. Using an alias before defining it gives "U
 
 Aliases produce no IR. They are resolved entirely during parsing and leave no trace in the generated output.
 
-```python
+```pyxc
 type Score = int64
 
 def id(x: Score) -> Score:
@@ -264,7 +264,7 @@ entry:
 
 `Score` does not appear. LLVM sees `i64` exactly as if `int64` had been written directly. The same holds for pointer aliases:
 
-```python
+```pyxc
 type string = ptr[int8]
 
 def say(msg: string) -> int:
@@ -287,7 +287,7 @@ cmake -S . -B build && cmake --build build
 
 ### `string` as a type
 
-```python
+```pyxc
 extern def puts(s: ptr[int8]) -> int
 
 type string = ptr[int8]
@@ -308,7 +308,7 @@ world
 
 ### IR transparency
 
-```python
+```pyxc
 type Score = int64
 
 def id(x: Score) -> Score:
@@ -328,7 +328,7 @@ define i64 @id(i64 %x)
 
 ### Alias chain
 
-```python
+```pyxc
 type MyInt = int
 type Score = MyInt
 ```
@@ -337,7 +337,7 @@ type Score = MyInt
 
 ### Alias for a struct type
 
-```python
+```pyxc
 struct Point:
   x: int
   y: int
@@ -349,7 +349,7 @@ After this, `Vec2` can be used as a parameter type, return type, or `var` type, 
 
 ### Forward reference error
 
-```python
+```pyxc
 def use_it(x: Meters) -> Meters:
   return x
 

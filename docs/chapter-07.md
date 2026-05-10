@@ -45,7 +45,7 @@ The same flag works in the REPL:
 ```bash
 $ build/pyxc -v
 ```
-```python
+```pyxc
 ready> def add(a, b): return a + b
 ```
 ```bash

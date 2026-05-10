@@ -9,7 +9,7 @@ description: "Add struct types with field declarations, field read/write, and ne
 
 This chapter adds structs. After this chapter:
 
-```python
+```pyxc
 struct Point:
   x: int
   y: int
@@ -294,7 +294,7 @@ case ValueType::Struct:
 
 For:
 
-```python
+```pyxc
 struct Point:
   x: int
   y: int
@@ -308,7 +308,7 @@ The LLVM type, named with the `"struct."` prefix:
 
 `int` is pointer-width (`i64` on a 64-bit host). A struct with a `float64` field:
 
-```python
+```pyxc
 struct Circle:
   radius: float64
 ```
@@ -415,7 +415,7 @@ There is no struct initializer syntax yet — `var p: Point = Point{x: 1, y: 2}`
 
 When a function takes a struct parameter, the caller passes a copy:
 
-```python
+```pyxc
 struct Box:
   value: int
 
@@ -449,7 +449,7 @@ entry:
 
 Struct variables at global scope work the same as scalar globals:
 
-```python
+```pyxc
 struct Counter:
   value: int
 
@@ -475,7 +475,7 @@ cmake -S . -B build && cmake --build build
 
 ### Basic field access
 
-```python
+```pyxc
 struct Point:
   x: int
   y: int
@@ -496,7 +496,7 @@ def main() -> int:
 
 ### Passing a struct to a function
 
-```python
+```pyxc
 struct Point:
   x: int
   y: int
@@ -520,7 +520,7 @@ def main() -> int:
 
 ### Nested field access
 
-```python
+```pyxc
 struct Inner:
   value: int
 

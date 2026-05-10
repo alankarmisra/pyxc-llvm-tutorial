@@ -1,0 +1,16 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck %s < %t.ll
+# CHECK: br i1
+# CHECK: logic.rhs
+# CHECK: logic.end
+# CHECK: phi i1
+
+def side() -> bool:
+  return False
+
+def main() -> int:
+  var a: bool = True
+  var b: bool = a && side()
+  if b:
+    return 1
+  return 0

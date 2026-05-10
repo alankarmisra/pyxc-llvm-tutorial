@@ -1,0 +1,10 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: {{[Ee]rror}}
+# CHECK: Unknown class 'Ghost'
+
+trait Adder:
+  def add(x: int, y: int) -> int
+
+impl Adder for Ghost:
+  def add(x: int, y: int) -> int:
+    return x + y

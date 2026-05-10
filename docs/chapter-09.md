@@ -10,14 +10,14 @@ description: "Add user-defined operators via Python-style decorators — @binary
 By the end, you'll be able to define new operators directly in Pyxc using Python-style decorators. The decorator line sets the type and precedence; the `def` line gives it a body:
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> @binary(5) # an operator precedence of 5
 def |(x, y): return if x != 0: 1 else: if y != 0: 1 else: 0
 ```
 ```bash
 Parsed a user-defined operator.
 ```
-```python
+```pyxc
 ready> 1 | 0
 ```
 ```bash
@@ -426,7 +426,7 @@ For `-!x`:
 ## How It All Fits Together
 
 Here is the complete path for:
-```python
+```pyxc
 @binary(5)
 def |(x, y): return if x != 0: 1 else: if y != 0: 1 else: 0
 ```
@@ -474,56 +474,56 @@ The binary runs as an interactive REPL when given no file argument. Press `Ctrl-
 The decorator line ends at the newline. The REPL waits silently for the `def` line — no second `ready>` prompt appears between the two lines.
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> @binary(5)
 def |(x, y): return if x != 0: 1 else: if y != 0: 1 else: 0
 ```
 ```bash
 Parsed a user-defined operator.
 ```
-```python
+```pyxc
 ready> 1 | 0
 ```
 ```bash
 Parsed a top-level expression.
 Evaluated to 1.000000
 ```
-```python
+```pyxc
 ready> 0 | 0
 ```
 ```bash
 Parsed a top-level expression.
 Evaluated to 0.000000
 ```
-```python
+```pyxc
 ready>
 ```
 <!-- code-merge:end -->
 
 ### Defining a unary operator
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> @unary
 def !(x): return if x == 0: 1 else: 0
 ```
 ```bash
 Parsed a user-defined operator.
 ```
-```python
+```pyxc
 ready> !0
 ```
 ```bash
 Parsed a top-level expression.
 Evaluated to 1.000000
 ```
-```python
+```pyxc
 ready> !5
 ```
 ```bash
 Parsed a top-level expression.
 Evaluated to 0.000000
 ```
-```python
+```pyxc
 ready>
 ```
 <!-- code-merge:end -->
@@ -533,28 +533,28 @@ ready>
 `ParseUnaryMinus` recurses into `ParseUnary` for its operand, so `-!x` parses as unary-minus applied to `!x`:
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> @unary
 def !(x): return if x == 0: 1 else: 0
 ```
 ```bash
 Parsed a user-defined operator.
 ```
-```python
+```pyxc
 ready> -!0
 ```
 ```bash
 Parsed a top-level expression.
 Evaluated to -1.000000
 ```
-```python
+```pyxc
 ready> -!5
 ```
 ```bash
 Parsed a top-level expression.
 Evaluated to -0.000000
 ```
-```python
+```pyxc
 ready>
 ```
 <!-- code-merge:end -->
@@ -582,20 +582,20 @@ Evaluated to -0.000000
 Setting precedence to 1 — lower than all built-ins — lets `;` act as a sequencer: `a ; b` evaluates `a` for its side effects and returns `b`:
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> extern def printd(x)
 ```
 ```bash
 Parsed an extern.
 ```
-```python
+```pyxc
 ready> @binary(1)
 def ;(lhs, rhs): return rhs
 ```
 ```bash
 Parsed a user-defined operator.
 ```
-```python
+```pyxc
 ready> printd(1) ; printd(2) ; 99
 ```
 ```bash
@@ -604,7 +604,7 @@ Parsed a top-level expression.
 2.000000
 Evaluated to 99.000000
 ```
-```python
+```pyxc
 ready>
 ```
 <!-- code-merge:end -->
@@ -614,7 +614,7 @@ ready>
 Attempting to redefine a built-in binary operator:
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> @binary(5)
 def +(x, y): return x + y
 ```
@@ -629,7 +629,7 @@ ready>
 Decimal precedence:
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> @binary(1.5)
 def %(x, y): return x - y
 ```
@@ -644,14 +644,14 @@ ready>
 Unary/Binary conflict — once `|` is binary, it cannot also become unary (and vice-versa):
 
 <!-- code-merge:start -->
-```python
+```pyxc
 ready> @binary(5)
 def |(x, y): return if x != 0: 1 else: if y != 0: 1 else: 0
 ```
 ```bash
 Parsed a user-defined operator.
 ```
-```python
+```pyxc
 ready> @unary
 def |(x): return if x != 0: 0 else: 1
 ```
@@ -719,7 +719,7 @@ Four things change from the chapter 8 version:
 - **`|` to combine exit conditions.** Chapter 8's `mandelconverge` checked the iteration limit and the escape radius with nested `if`. Chapter 9 tests `iters > 255 | (real * real + imag * imag > 4)` in one expression using `@binary(5) def |`.
 - **`printdensity` for shading.** Instead of mapping each point to just inside/outside, the iteration count at escape determines the shade character.
 
-```python
+```pyxc
 # test/mandel.pyxc
 extern def putchard(x)
 
@@ -795,7 +795,7 @@ The precedences are chosen carefully: `|` (5) and `&` (6) are both lower than co
 
 `mandelconverger` combines the two exit conditions with `|`:
 
-```python
+```pyxc
 if iters > 255 | (real * real + imag * imag > 4): iters else: ...
 ```
 
