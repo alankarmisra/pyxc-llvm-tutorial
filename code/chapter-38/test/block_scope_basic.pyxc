@@ -1,0 +1,16 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: 1.000000
+# CHECK-NOT: ready>
+
+# Tests: a variable declared inside an if block is not visible after the block.
+# The outer var x: float64 = 1 is unchanged after the inner block exits.
+
+extern def printd(x: float64) -> float64
+
+def f() -> float64:
+    var x: float64 = 1.0
+    if x > 0:
+        var x: float64 = 99.0
+    return x
+
+printd(f())

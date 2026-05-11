@@ -1,0 +1,6 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: getelementptr inbounds{{.*}} i64, ptr %{{.*}}, i64 1
+
+def at1(p: ptr[int]) -> int:
+  return p[1]

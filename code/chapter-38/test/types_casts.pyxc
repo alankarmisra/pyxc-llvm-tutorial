@@ -1,0 +1,15 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: sitofp i{{32|64}}
+# CHECK: fptosi double
+
+# Tests: explicit casts lower to sitofp/fptosi.
+
+extern def printd(x: float64) -> float64
+
+def main() -> None:
+    var a: int = 7
+    var b: float64 = 3.5
+    printd(float64(a))
+    var c: int = int(b)
+    return

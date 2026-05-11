@@ -1,0 +1,16 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 30.000000
+
+# Tests: def and var declarations freely interleaved at the top level.: float64
+# The function is defined before the global it operates on, but since
+# __pyxc.global_init runs before main(), the global is initialized by then.
+
+extern def printd(x: float64) -> float64
+
+def triple(x: float64) -> float64: return x * 3
+
+var base: float64 = 10.0
+
+def main() -> None:
+    printd(triple(base))

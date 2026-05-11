@@ -139,6 +139,7 @@ enum Token {
   tok_if = -13,
   tok_else = -14,
   tok_return = -15,
+  tok_elif = -63,
 
   // loops
   tok_for = -16,
@@ -236,7 +237,8 @@ static bool AtLineStart =
 // associated Token. Additional language keywords can easily be added here.
 static map<string, Token> Keywords = {
     {"def", tok_def},         {"extern", tok_extern},   {"return", tok_return},
-    {"if", tok_if},           {"else", tok_else},       {"for", tok_for},
+    {"if", tok_if},           {"elif", tok_elif},       {"else", tok_else},
+    {"for", tok_for},
     {"while", tok_while},     {"do", tok_do},           {"break", tok_break},
     {"continue", tok_continue},
     {"switch", tok_switch},   {"case", tok_case},       {"default", tok_default},
@@ -262,6 +264,7 @@ static map<int, string> TokenNames = [] {
       {tok_eq, "'=='"},           {tok_neq, "'!='"},
       {tok_leq, "'<='"},          {tok_geq, "'>='"},
       {tok_arrow, "'->'"},        {tok_if, "'if'"},
+      {tok_elif, "'elif'"},
       {tok_else, "'else'"},       {tok_for, "'for'"},
       {tok_while, "'while'"},     {tok_do, "'do'"},
       {tok_break, "'break'"},     {tok_continue, "'continue'"},
@@ -1224,19 +1227,16 @@ public:
 class CallExprAST : public ExprAST {
   string Callee;
   vector<unique_ptr<ExprAST>> Args;
-  SourceLocation CallLoc;
 
 public:
   CallExprAST(const string &Callee, vector<unique_ptr<ExprAST>> Args,
-              SourceLocation CallLoc, ValueType Type,
-              const string &StructName = "")
-      : Callee(Callee), Args(std::move(Args)), CallLoc(CallLoc) {
+              ValueType Type, const string &StructName = "")
+      : Callee(Callee), Args(std::move(Args)) {
     setType(Type, StructName);
   }
   bool shouldPrintValue() const override {
     return getType() != ValueType::None;
   }
-  SourceLocation getCallLoc() const { return CallLoc; }
   Value *codegen() override;
 };
 
@@ -1458,18 +1458,16 @@ private:
   ValueType ReturnType;
   string ReturnStructName;
   bool IsOperator;
-  bool IsVarArg;
   unsigned Precedence; // binary operators only
   SourceLocation Loc;
 
 public:
   PrototypeAST(const string &Name, vector<ArgInfo> Args,
                SourceLocation Loc, ValueType ReturnType = ValueType::Float64,
-               bool IsOperator = false, bool IsVarArg = false, unsigned Prec = 0,
+               bool IsOperator = false, unsigned Prec = 0,
                string ReturnStructName = "")
       : Name(Name), Args(std::move(Args)), ReturnType(ReturnType),
         ReturnStructName(std::move(ReturnStructName)), IsOperator(IsOperator),
-        IsVarArg(IsVarArg),
         Precedence(Prec), Loc(Loc) {}
 
   const string &getName() const { return Name; }
@@ -1495,7 +1493,6 @@ public:
 
   bool isUnaryOp() const { return IsOperator && Args.size() == 1; }
   bool isBinaryOp() const { return IsOperator && Args.size() == 2; }
-  bool isVarArg() const { return IsVarArg; }
 
   // The operator character is the last character of the encoded name.
   // e.g. "binary+" -> '+', "unary!" -> '!'
@@ -1508,7 +1505,7 @@ public:
 
   std::unique_ptr<PrototypeAST> clone() const {
     return std::make_unique<PrototypeAST>(Name, Args, Loc, ReturnType,
-                                          IsOperator, IsVarArg, Precedence,
+                                          IsOperator, Precedence,
                                           ReturnStructName);
   }
 
@@ -1881,13 +1878,6 @@ unique_ptr<ExprAST> LogError(const char *Str) {
   fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
           Str);
   PrintErrorSourceContext(Anchor);
-  return nullptr;
-}
-
-static unique_ptr<ExprAST> LogErrorAt(SourceLocation Loc, const char *Str) {
-  HadError = true;
-  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Loc.Line, Loc.Col, Str);
-  PrintErrorSourceContext(Loc);
   return nullptr;
 }
 
@@ -2333,8 +2323,7 @@ static unique_ptr<ExprAST> ParseParenExpr() {
 ///
 /// callexpr
 ///   = identifier "(" [ expression { "," expression } ] ")" ;
-static unique_ptr<ExprAST> ParseIdentifierExprWithName(string IdName,
-                                                       SourceLocation IdLoc) {
+static unique_ptr<ExprAST> ParseIdentifierExprWithName(string IdName) {
   if (CurTok != '(') { // Simple variable ref.
     ValueType Type = LookupVarType(IdName);
     if (Type == ValueType::Error) {
@@ -2447,17 +2436,12 @@ static unique_ptr<ExprAST> ParseIdentifierExprWithName(string IdName,
   // Eat the ')'.
   getNextToken();
 
-  if (!Proto) {
-    // Allow forward references at parse time; report unknowns during codegen
-    // using the captured call-site location.
-    return make_unique<CallExprAST>(IdName, std::move(Args), IdLoc,
-                                    ValueType::None);
-  }
-  if ((!Proto->isVarArg() && Proto->getNumArgs() != Args.size()) ||
-      (Proto->isVarArg() && Args.size() < Proto->getNumArgs()))
+  if (!Proto)
+    return LogError("Unknown function referenced");
+  if (Proto->getNumArgs() != Args.size())
     return LogError("Incorrect # arguments passed");
 
-  for (size_t i = 0; i < Args.size() && i < Proto->getNumArgs(); ++i) {
+  for (size_t i = 0; i < Args.size(); ++i) {
     ValueType ArgType = Args[i]->getType();
     ValueType ParamType = Proto->getArgType(i);
     if (ParamType == ValueType::Pointer && ArgType == ValueType::Array) {
@@ -2482,14 +2466,13 @@ static unique_ptr<ExprAST> ParseIdentifierExprWithName(string IdName,
     }
   }
 
-  return make_unique<CallExprAST>(IdName, std::move(Args), IdLoc,
+  return make_unique<CallExprAST>(IdName, std::move(Args),
                                   Proto->getReturnType(),
                                   Proto->getReturnStructName());
 }
 
-static unique_ptr<ExprAST>
-ParseMethodCallExpr(unique_ptr<ExprAST> Receiver, const string &MethodName,
-                    SourceLocation CallLoc) {
+static unique_ptr<ExprAST> ParseMethodCallExpr(unique_ptr<ExprAST> Receiver,
+                                               const string &MethodName) {
   if (!Receiver || Receiver->getType() != ValueType::Struct)
     return LogError("Method call base must be a class/struct value");
   string ClassName = Receiver->getStructName();
@@ -2572,7 +2555,7 @@ ParseMethodCallExpr(unique_ptr<ExprAST> Receiver, const string &MethodName,
       return LogError("Argument type mismatch");
   }
 
-  return make_unique<CallExprAST>(CalleeName, std::move(Args), CallLoc,
+  return make_unique<CallExprAST>(CalleeName, std::move(Args),
                                   Proto->getReturnType(),
                                   Proto->getReturnStructName());
 }
@@ -2750,11 +2733,10 @@ ParseIndexedFieldAccessExpr(unique_ptr<IndexExprAST> BaseIndex) {
 
 static unique_ptr<ExprAST> ParseIdentifierExpr() {
   string IdName = IdentifierStr;
-  SourceLocation IdLoc = CurLoc;
 
   getNextToken(); // eat identifier.
 
-  auto Base = ParseIdentifierExprWithName(IdName, IdLoc);
+  auto Base = ParseIdentifierExprWithName(IdName);
   if (!Base)
     return nullptr;
 
@@ -2763,10 +2745,9 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
     if (CurTok != tok_identifier)
       return LogError("Expected field or method name after '.'");
     string MemberName = IdentifierStr;
-    SourceLocation MemberLoc = CurLoc;
     getNextToken(); // eat member name
     if (CurTok == '(') {
-      Base = ParseMethodCallExpr(std::move(Base), MemberName, MemberLoc);
+      Base = ParseMethodCallExpr(std::move(Base), MemberName);
       if (!Base)
         return nullptr;
     } else {
@@ -3137,27 +3118,37 @@ static unique_ptr<ExprAST> ParseVarStmt() {
 }
 
 /// ifstmt
-///   = "if" expression ":" suite [ eols "else" ":" suite ] ;
+///   = "if" expression ":" suite
+///     { eols "elif" expression ":" suite }
+///     [ eols "else" ":" suite ] ;
 static unique_ptr<ExprAST> ParseIfStmt() {
   getNextToken(); // eat 'if'
+  vector<pair<unique_ptr<ExprAST>, unique_ptr<ExprAST>>> Branches;
+  bool AnyBlock = false;
 
-  auto Cond = ParseExpression();
-  if (!Cond)
-    return nullptr;
-  if (Cond->getType() != ValueType::Bool)
-    return LogError("If condition must be bool");
+  while (true) {
+    auto Cond = ParseExpression();
+    if (!Cond)
+      return nullptr;
+    if (Cond->getType() != ValueType::Bool)
+      return LogError("If condition must be bool");
 
-  if (CurTok != ':')
-    return LogError("Expected ':' after if condition");
-  getNextToken(); // eat ':'
+    if (CurTok != ':')
+      return LogError("Expected ':' after if/elif condition");
+    getNextToken(); // eat ':'
 
-  bool ThenIsBlock = false;
-  unique_ptr<ExprAST> Then = ParseSuite(&ThenIsBlock);
-  if (!Then)
-    return nullptr;
+    bool BranchIsBlock = false;
+    auto Body = ParseSuite(&BranchIsBlock);
+    if (!Body)
+      return nullptr;
+    AnyBlock = AnyBlock || BranchIsBlock;
+    Branches.push_back({std::move(Cond), std::move(Body)});
 
-  // Allow 'else' on next line
-  consumeNewlines();
+    consumeNewlines();
+    if (CurTok != tok_elif)
+      break;
+    getNextToken(); // eat 'elif'
+  }
 
   unique_ptr<ExprAST> Else;
   bool ElseIsBlock = false;
@@ -3169,11 +3160,17 @@ static unique_ptr<ExprAST> ParseIfStmt() {
     Else = ParseSuite(&ElseIsBlock);
     if (!Else)
       return nullptr;
+    AnyBlock = AnyBlock || ElseIsBlock;
   }
 
-  LastStatementWasBlock = ThenIsBlock || ElseIsBlock;
-  return make_unique<IfStmtAST>(std::move(Cond), std::move(Then),
-                                std::move(Else));
+  // Lower if/elif chain to nested IfStmtAST in else branch.
+  unique_ptr<ExprAST> Tree = std::move(Else);
+  for (auto It = Branches.rbegin(); It != Branches.rend(); ++It) {
+    Tree = make_unique<IfStmtAST>(std::move(It->first), std::move(It->second),
+                                  std::move(Tree));
+  }
+  LastStatementWasBlock = AnyBlock;
+  return Tree;
 }
 
 static unique_ptr<ExprAST>
@@ -3768,7 +3765,6 @@ static unique_ptr<ExprAST> ParseSimpleStmt() {
   unique_ptr<ExprAST> Expr;
   if (CurTok == tok_identifier) {
     string Name = IdentifierStr;
-    SourceLocation NameLoc = CurLoc;
     getNextToken(); // eat identifier.
 
     if (CurTok == '=') {
@@ -3778,7 +3774,7 @@ static unique_ptr<ExprAST> ParseSimpleStmt() {
       return ParseCompoundAssignmentRHS(Name, CurTok);
     }
 
-    Expr = ParseIdentifierExprWithName(std::move(Name), NameLoc);
+    Expr = ParseIdentifierExprWithName(std::move(Name));
     if (!Expr)
       return nullptr;
     if (CurTok == '.') {
@@ -3786,10 +3782,9 @@ static unique_ptr<ExprAST> ParseSimpleStmt() {
       if (CurTok != tok_identifier)
         return LogError("Expected field or method name after '.'");
       string MemberName = IdentifierStr;
-      SourceLocation MemberLoc = CurLoc;
       getNextToken(); // eat member name
       if (CurTok == '(') {
-        Expr = ParseMethodCallExpr(std::move(Expr), MemberName, MemberLoc);
+        Expr = ParseMethodCallExpr(std::move(Expr), MemberName);
         if (!Expr)
           return nullptr;
       } else {
@@ -4026,7 +4021,7 @@ static unique_ptr<ExprAST> ParseBlock() {
 ///
 /// typedparam
 ///   = identifier ":" type ;
-static unique_ptr<PrototypeAST> ParsePrototype(bool AllowVarArgs = false) {
+static unique_ptr<PrototypeAST> ParsePrototype() {
   SourceLocation ProtoLoc = CurLoc;
 
   if (CurTok != tok_identifier)
@@ -4038,24 +4033,10 @@ static unique_ptr<PrototypeAST> ParsePrototype(bool AllowVarArgs = false) {
     return LogErrorP("Expected '(' in prototype");
 
   vector<PrototypeAST::ArgInfo> ArgNames;
-  bool IsVarArg = false;
   getNextToken(); // eat '('
 
   if (CurTok != ')') {
     while (true) {
-      if (AllowVarArgs && CurTok == '.') {
-        getNextToken();
-        if (CurTok != '.')
-          return LogErrorP("Expected '...' in variadic prototype");
-        getNextToken();
-        if (CurTok != '.')
-          return LogErrorP("Expected '...' in variadic prototype");
-        getNextToken();
-        IsVarArg = true;
-        if (CurTok != ')')
-          return LogErrorP("Variadic marker must be last in parameter list");
-        break;
-      }
       if (CurTok != tok_identifier)
         return LogErrorP("Expected parameter name in prototype");
       string ArgName = IdentifierStr;
@@ -4082,8 +4063,7 @@ static unique_ptr<PrototypeAST> ParsePrototype(bool AllowVarArgs = false) {
   }
 
   getNextToken(); // eat ')'
-  return make_unique<PrototypeAST>(FnName, std::move(ArgNames), ProtoLoc,
-                                   ValueType::Float64, false, IsVarArg);
+  return make_unique<PrototypeAST>(FnName, std::move(ArgNames), ProtoLoc);
 }
 
 // DefaultType controls what return type is assumed when no '->' is present.
@@ -4413,7 +4393,7 @@ static unique_ptr<PrototypeAST> ParseBinaryOpPrototype(unsigned Precedence) {
 
   return make_unique<PrototypeAST>(FnName, std::move(ArgNames), ProtoLoc,
                                    ValueType::None, /*IsOperator=*/true,
-                                   /*IsVarArg=*/false, Precedence);
+                                   Precedence);
 }
 
 /// unaryopprototype
@@ -4493,7 +4473,6 @@ static unique_ptr<PrototypeAST> ParseUnaryOpPrototype() {
   // by virtue of being parsed before ParseBinOpRHS is entered.
   return make_unique<PrototypeAST>(FnName, std::move(ArgNames), ProtoLoc,
                                    ValueType::None, /*IsOperator=*/true,
-                                   /*IsVarArg=*/false,
                                    /*Precedence=*/0);
 }
 
@@ -4606,7 +4585,7 @@ static unique_ptr<PrototypeAST> ParseExtern() {
   if (CurTok != tok_def)
     return LogErrorP("Expected `def` after extern.");
   getNextToken(); // eat def
-  auto Proto = ParsePrototype(true);
+  auto Proto = ParsePrototype();
   if (!Proto)
     return nullptr;
   string RetStructName;
@@ -5512,11 +5491,6 @@ Value *LogErrorV(const char *Str) {
   return nullptr;
 }
 
-static Value *LogErrorVAt(SourceLocation Loc, const char *Str) {
-  LogErrorAt(Loc, Str);
-  return nullptr;
-}
-
 /// CreateEntryBlockAlloca - Create a stack slot in the current function's
 /// entry block for a mutable variable.
 static AllocaInst *CreateEntryBlockAlloca(Function *TheFunction,
@@ -5617,7 +5591,7 @@ static Value *EmitImplicitCast(Value *V, ValueType From, ValueType To) {
       return V;
     return Builder->CreateSExt(V, LLVMTypeFor(To), "sext");
   }
-  if (IsIntType(From) && IsFloatType(To))
+  if (IsIntType(From) && To == ValueType::Float64)
     return Builder->CreateSIToFP(V, LLVMTypeFor(To), "sitofp");
   return nullptr;
 }
@@ -6772,11 +6746,10 @@ Value *SizeofExprAST::codegen() {
 Value *CallExprAST::codegen() {
   Function *CalleeF = getFunction(Callee);
   if (!CalleeF)
-    return LogErrorVAt(getCallLoc(), "Unknown function referenced");
+    return LogErrorV("Unknown function referenced");
 
-  if ((!CalleeF->isVarArg() && CalleeF->arg_size() != Args.size()) ||
-      (CalleeF->isVarArg() && Args.size() < CalleeF->arg_size()))
-    return LogErrorVAt(getCallLoc(), "Incorrect # arguments passed");
+  if (CalleeF->arg_size() != Args.size())
+    return LogErrorV("Incorrect # arguments passed");
 
   PrototypeAST *Proto = GetFunctionProto(Callee);
   std::vector<Value *> ArgsV;
@@ -6784,7 +6757,7 @@ Value *CallExprAST::codegen() {
     Value *ArgVal = Args[i]->codegen();
     if (!ArgVal)
       return nullptr;
-    if (Proto && i < Proto->getNumArgs()) {
+    if (Proto) {
       ValueType ArgType = Args[i]->getType();
       ValueType ParamType = Proto->getArgType(i);
       if (ParamType == ValueType::Pointer && ArgType == ValueType::Array) {
@@ -7228,7 +7201,7 @@ Function *PrototypeAST::codegen() {
     ArgTys.push_back(LLVMTypeFor(Arg.Type, Arg.StructName));
   FunctionType *FT = FunctionType::get(
       LLVMTypeFor(ReturnType, ReturnStructName), ArgTys,
-      IsVarArg);
+                                       false /* not variadic */);
 
   Function *F =
       Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());

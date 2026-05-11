@@ -1,0 +1,14 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: sitofp i{{32|64}}
+# CHECK: call double @printd
+
+# Tests: a cast expression used directly as a function argument is accepted.
+# The cast (float64) is applied inline and the result passed to the callee.
+
+extern def printd(x: float64) -> float64
+
+def main() -> None:
+    var n: int = 42
+    printd(float64(n))
+    return

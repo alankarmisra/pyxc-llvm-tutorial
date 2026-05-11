@@ -1,0 +1,7 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: module declaration must appear before other top-level forms
+
+def a() -> int:
+  return 0
+
+module late.name

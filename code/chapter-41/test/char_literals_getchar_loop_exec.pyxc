@@ -1,0 +1,19 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: printf "a b\n" | %t 2>&1 | FileCheck %s
+# CHECK: 1.000000
+
+extern def getchar() -> int32
+extern def printd(x: float64)
+
+var EOF: int32 = -1
+
+def main() -> int:
+  var c: int32
+  var blanks: int
+  c = getchar()
+  while c != EOF:
+    if c == ' ':
+      blanks += 1
+    c = getchar()
+  printd(float64(blanks))
+  return 0

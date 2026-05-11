@@ -1,0 +1,15 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: icmp
+# CHECK-NOT: fcmp
+
+# Tests: comparison operators applied to int operands produce integer compare
+# instructions (icmp), not floating-point ones (fcmp).
+
+def f(a: int, b: int) -> int:
+    if a < b:
+        return 1
+    return 0
+
+def main() -> None:
+    return

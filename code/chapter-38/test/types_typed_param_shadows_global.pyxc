@@ -1,0 +1,20 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 198.000000
+# CHECK: 7.000000
+
+# Tests: a typed parameter with the same name as a global shadows the global
+# within the function. After the call, the global is unchanged.
+# (Exercises the name lookup order: local/param wins over global.)
+
+extern def printd(x: float64) -> float64
+
+var x: int = 7
+
+def f(x: int) -> int:
+    return x * 2 - 99 + 99
+
+def main() -> None:
+    printd(float64(f(99)))
+    printd(float64(x))
+    return

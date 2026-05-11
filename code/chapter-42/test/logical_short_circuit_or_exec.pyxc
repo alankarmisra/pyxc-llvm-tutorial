@@ -1,0 +1,17 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 0.000000
+
+extern def printd(x: float64)
+
+var hits: int = 0
+
+def touch() -> bool:
+  hits += 1
+  return False
+
+def main() -> int:
+  var flag: bool = True
+  if flag || touch():
+    printd(float64(hits))
+  return 0

@@ -1,0 +1,20 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 6.000000
+# CHECK: 9.000000
+
+# Tests: the value produced by an assignment expression is the assigned value.
+# (c = 5) yields 5, so (c = 5) + 1 == 6.
+# (c += 3) yields the new value 8, so (c += 3) + 1 == 9.
+
+extern def printd(x: float64)
+
+def main() -> int:
+  var c: int
+  var result: int
+  result = (c = 5) + 1
+  printd(float64(result))       # 6
+
+  printd(float64((c += 3) + 1)) # c was 5, += 3 → 8, + 1 → 9
+
+  return 0

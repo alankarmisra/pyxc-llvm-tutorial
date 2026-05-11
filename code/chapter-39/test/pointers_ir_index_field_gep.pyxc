@@ -1,0 +1,19 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK-LABEL: define i64 @getx
+# CHECK: %elemptr = getelementptr inbounds %struct.Point, ptr %{{.*}}, i64 0
+# CHECK: %fieldptr = getelementptr inbounds{{.*}} %struct.Point, ptr %elemptr, i32 0, i32 0
+# CHECK-LABEL: define void @setx
+# CHECK: %elemptr = getelementptr inbounds %struct.Point, ptr %{{.*}}, i64 0
+# CHECK: %fieldptr = getelementptr inbounds{{.*}} %struct.Point, ptr %elemptr, i32 0, i32 0
+# CHECK: store i64 %{{.*}}, ptr %fieldptr
+
+struct Point:
+  x: int
+  y: int
+
+def getx(p: ptr[Point]) -> int:
+  return p[0].x
+
+def setx(p: ptr[Point], v: int) -> None:
+  p[0].x = v

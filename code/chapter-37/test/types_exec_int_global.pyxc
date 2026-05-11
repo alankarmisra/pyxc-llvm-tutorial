@@ -1,0 +1,15 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 5.000000
+
+# Tests: a global 'var x: int' is correctly initialized at runtime and
+# readable from a function. The int global stores i32; float64() converts it
+# for output.
+
+extern def printd(x: float64) -> float64
+
+var count: int = 5
+
+def main() -> None:
+    printd(float64(count))
+    return

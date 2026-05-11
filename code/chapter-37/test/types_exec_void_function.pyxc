@@ -1,0 +1,17 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 42.000000
+
+# Tests: a void function can be called, produces its side effect (printd),
+# and the program continues normally after the call. The void return
+# type does not prevent execution from reaching subsequent statements.
+
+extern def printd(x: float64) -> float64
+
+def emit(x: float64) -> None:
+    printd(x)
+    return
+
+def main() -> None:
+    emit(42)
+    return

@@ -1,0 +1,8 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: argument 1 expects int
+
+module app.bad
+import app.math
+
+def main() -> int:
+  return add(1.0, 2.0)

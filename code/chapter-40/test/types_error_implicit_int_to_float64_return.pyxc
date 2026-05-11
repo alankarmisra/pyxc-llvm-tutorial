@@ -1,0 +1,11 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: sitofp i{{32|64}}
+# CHECK: ret double
+
+# Tests: returning an int from a function declared '-> float64' widens the
+# value to float64 via sitofp.
+
+def f() -> float64:
+    var n: int = 3
+    return n

@@ -1,0 +1,24 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 17.000000
+
+extern def printd(x: float64)
+
+trait Adder:
+  def add(x: int, y: int) -> int
+
+trait Scaler:
+  def scale(x: int, factor: int) -> int
+
+class Calc(Adder, Scaler):
+  public def add(x: int, y: int) -> int:
+    return x + y
+
+  public def scale(x: int, factor: int) -> int:
+    return x * factor
+
+
+def main() -> int:
+  var c: Calc = Calc()
+  printd(float64(c.add(3, 4) + c.scale(5, 2)))
+  return 0

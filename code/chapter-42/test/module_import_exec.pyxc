@@ -1,0 +1,12 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 5.000000
+
+module app.main
+import app.math
+
+extern def printd(x: float64) -> float64
+
+def main() -> int:
+  printd(float64(add(2, 3)))
+  return 0

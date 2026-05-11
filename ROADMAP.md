@@ -79,7 +79,7 @@ Pointer-first track for C/C++ learners:
 
 ---
 
-## Phase 5: Control Flow and Ergonomics (Chapters 31–36)
+## Phase 5: Control Flow and Ergonomics (Chapters 31–40)
 
 | # | Title | Notes |
 |---|-------|-------|
@@ -88,37 +88,42 @@ Pointer-first track for C/C++ learners:
 | 33 | Loop Completeness | ✅ `while`, `do/while`, `break`, `continue`; loop header/exit stacks for control transfer |
 | 34 | Bitwise Operators | ✅ `&`, `|`, `^`, `~`, `<<`, `>>`; integer-only operator semantics and precedence |
 | 35 | `switch` | ✅ Native LLVM `switch` lowering; case/default dispatch and optimization potential |
-| 36 | K&R Payoff | `runtime.c` + `extern def` bridge (`printf`, `scanf`, `getchar`, `putchar`, `strlen`, `strcpy`, `strncpy`) and ported K&R-style programs |
+| 36 | `if` / `elif` Chains | ✅ Python-style `elif` syntax sugar for conditional chains (`elif` == `else if`) |
+| 37 | Character Literals | ✅ `'a'`, escaped chars (`'\n'`, `'\t'`, `'\0'`), and integer interoperability for C-style text processing |
+| 38 | Unsigned Integer Types | ✅ `uint8/16/32/64`; signed/unsigned cast+promotion rules; unsigned comparisons and shifts (`lshr` vs `ashr`); `size_t` mapping to `uint64` |
+| 39 | Assignment as Expression | ✅ `x = expr` in expression context; `(c = getchar()) != EOF` works; right-associative; lvalue-checked at parse time via `BuildAssignmentExpr` |
+| 40 | Variadic Extern Functions | ✅ `extern def f(a: T, ...)` support; variadic call arity checks for fixed parameters; LLVM variadic function types |
+
 
 ---
 
-## Phase 6: Program Structure (Chapters 37–40)
+## Phase 6: Program Structure (Chapters 41–44)
 
 | # | Title | Notes |
 |---|-------|-------|
-| 37 | Module Declarations and Imports | `module`, `import`, `export`; public/private symbol visibility; single-file happy path |
-| 38 | Multi-File Builds | Cross-module lookup, name resolution, diagnostics |
-| 39 | Cyclic Imports and Caching | Detection, resolution strategy, incremental rebuild basics |
-| 40 | Closures | Lambda syntax, captured variables, closure struct + function pointer in LLVM IR. **Note:** need to decide capture semantics before implementation — capture by value is safe with no-GC; capture by reference requires closed-over variables to outlive the closure (Rust-style lifetime problem). |
+| 41 | Module Declarations and Export | ✅ `module` names the compilation unit; `export` marks public API; multi-file compilation via `extern def` + `--emit exe`; cliffhanger for ch42 |
+| 42 | Imports | ✅ `import app.math` resolves file, scans `export` signatures, injects prototypes; only exported symbols importable; struct/class/trait/type transfer; `--emit exe` auto-closure |
+| 43 | Cyclic Imports and Caching | ✅ Two-phase scan (own exports first, then recurse); `InProgress`/`Done` state machine; import path cache; A→B→A cycle handled correctly |
+| 44 | Closures | Lambda syntax, captured variables, closure struct + function pointer in LLVM IR. **Note:** need to decide capture semantics before implementation — capture by value is safe with no-GC; capture by reference requires closed-over variables to outlive the closure (Rust-style lifetime problem). |
 ---
 
-## Phase 7: Concurrency (Chapters 41–47)
+## Phase 7: Concurrency (Chapters 45–51)
 
 | # | Title | Notes |
 |---|-------|-------|
-| 41 | Concurrency Model and Safety Rules | Overview, ownership rules for shared state |
-| 42 | Spawning Tasks and Threads | Task/thread primitives |
-| 43 | Shared State and Synchronization | Mutexes, atomics |
-| 44 | Message Passing | Channels and queues |
-| 45 | Parallel Loops and Work Partitioning | Data-parallel patterns |
-| 46 | Determinism, Races, and Debugging | Race detection, deterministic replay |
-| 47 | Parallel Compilation Pipeline | Parallelise the Pyxc compiler itself |
+| 45 | Concurrency Model and Safety Rules | Overview, ownership rules for shared state |
+| 46 | Spawning Tasks and Threads | Task/thread primitives |
+| 47 | Shared State and Synchronization | Mutexes, atomics |
+| 48 | Message Passing | Channels and queues |
+| 49 | Parallel Loops and Work Partitioning | Data-parallel patterns |
+| 50 | Determinism, Races, and Debugging | Race detection, deterministic replay |
+| 51 | Parallel Compilation Pipeline | Parallelise the Pyxc compiler itself |
 
 ---
 
 ## Known Bugs
 
-- Codegen diagnostics can point to stale parser locations (`CurLoc`) instead of the actual AST node location (example: unknown function in a call reported at function header line).
+- **Stale `CurLoc` in codegen diagnostics (partially fixed):** `CallExprAST` now captures the call-site location at parse time and uses `LogErrorVAt` for "unknown function" and "incorrect argument count" errors — those two now report the right line/column. All other AST node types (binary ops, field access, index expressions, etc.) still use the global `CurLoc`, which has advanced past the node by the time codegen runs. Full fix requires adding a `SourceLoc` field to `ExprAST` base and propagating it through every node constructor.
 - `extern def` ABI signatures are trusted without verification; mismatched declared return/argument types vs actual C symbol types are not detected and can cause runtime/ABI bugs.
 
 ---
@@ -129,11 +134,12 @@ These can be inserted where they fit best:
 - Error reporting with source spans and caret diagnostics
 - Function attributes (`readnone`, `nounwind`) for better optimization
 - Standard library bootstrap
-- Unsigned integer types (`uint8/16/32/64`, optional `uint`) and `size_t`-equivalent ABI guidance for C interop
-- `elif` / `else if` syntax sugar for conditional chains
+- Generic collections roadmap: `List[T]`, `Dict[K,V]`, `Set[T]`, iteration protocols, and ownership-aware container semantics
+- Generators/iterators (`yield`) and lazy sequence APIs; defer `range` builtin until generator model is in place
 - Pattern-matching exhaustiveness checks
 - Escape analysis and stack-allocation wins
 - Packaging and installable CLI workflow
+- Warn/error on assignment in conditions (`if x = 10`) unless explicitly parenthesized (lint/strict mode)
 
 ---
 

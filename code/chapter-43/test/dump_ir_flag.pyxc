@@ -1,0 +1,14 @@
+# RUN: %pyxc --dump-ir %s 2>&1 | FileCheck %s
+# CHECK: define double @sq
+# CHECK: fmul double
+# CHECK: ret double
+# CHECK: 9.000000
+
+# Tests: --dump-ir is the canonical name for the IR-printing flag (replacing -v).
+# It prints generated IR to stderr before executing the program.
+
+extern def printd(x: float64) -> float64
+
+def sq(x: float64) -> float64: return x * x
+
+printd(sq(3))

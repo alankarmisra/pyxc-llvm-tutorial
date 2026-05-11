@@ -1,0 +1,12 @@
+# RUN: %pyxc --emit exe -o %t %s %S/Inputs/helper_add.pyxc
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 15.000000
+
+# Tests: two .pyxc files compiled and linked together with an explicit -o.
+# The main file calls a function defined in the second file.
+
+extern def printd(x: float64) -> float64
+extern def add(a: float64, b: float64) -> float64
+
+def main() -> None:
+    printd(add(7, 8))

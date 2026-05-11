@@ -1,0 +1,10 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: {{[Ee]rror}}
+# CHECK: Switch condition must be an integer type
+
+def main() -> int:
+  var x: float64 = 1.0
+  switch x:
+    case 1:
+      return 1
+  return 0

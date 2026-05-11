@@ -1,0 +1,133 @@
+(*
+   pyxc.ebnf
+   Grammar for chapter 41 — module declarations and imports.
+*)
+
+(*
+   { } = zero or more (any number of...)
+   [ ] = zero or one (optional)
+*)
+
+program         = [ eols ] [ top { eols top } ] [ eols ] ;
+eols            = eol { eol } ;
+top             = moduledecl | importdecl | exportdecl | typealias | traitdef | structdef | classdef | impldef | definition | decorateddef | external | toplevelexpr ;
+moduledecl      = "module" modulepath ;
+importdecl      = "import" modulepath ;
+exportdecl      = "export" ( definition | external | structdef | classdef | typealias | traitdef | impldef ) ;
+modulepath      = identifier { "." identifier } ;
+typealias       = "type" identifier "=" type ;
+traitdef        = "trait" identifier [ "[" identifier "]" ] ":" eols traitblock ;
+traitblock      = indent traitmethodsig { eols traitmethodsig } dedent ;
+traitmethodsig  = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ;
+structdef       = "struct" identifier ":" eols structblock ;
+classdef        = "class" identifier [ "(" traitref { "," traitref } ")" ] ":" eols structblock ;
+traitref        = identifier [ "[" type "]" ] ;
+impldef         = "impl" traitref "for" identifier ":" eols implblock ;
+implblock       = indent implmethod { eols implmethod } dedent ;
+implmethod      = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ":" ( simplestmt | eols block ) ;
+structblock     = indent classmember { eols classmember } dedent ;
+classmember     = [ visibility ] ( fielddecl | methoddef ) ;
+visibility      = "public" | "private" ;
+methoddef       = "def" identifier "(" [ typedparam { "," typedparam } ] ")"
+                  [ "->" type ] ":" ( simplestmt | eols block ) ;
+fielddecl       = identifier ":" type ;
+definition      = "def" prototype [ "->" type ] ":" ( simplestmt | eols block ) ;
+(* If the return type is omitted, it defaults to None. *)
+decorateddef    = binarydecorator eols "def" binaryopprototype [ "->" type ] ":" ( simplestmt | eols block )
+                | unarydecorator  eols "def" unaryopprototype  [ "->" type ] ":" ( simplestmt | eols block ) ;
+binarydecorator = "@" "binary" "(" integer ")" ;
+unarydecorator  = "@" "unary" ;
+binaryopprototype = customopchar "(" typedparam "," typedparam ")" ;
+unaryopprototype  = customopchar "(" typedparam ")" ;
+external        = "extern" "def" externprototype [ "->" type ] ;
+toplevelexpr    = expression ;
+prototype       = identifier "(" [ typedparam { "," typedparam } ] ")" ;
+externprototype = identifier "(" [ typedparam { "," typedparam } [ "," "..." ] | "..." ] ")" ;
+typedparam      = identifier ":" type ;
+ifstmt          = "if" expression ":" suite
+                { eols "elif" expression ":" suite }
+                [ eols "else" ":" suite ] ;
+whilestmt       = "while" expression ":" suite ;
+dowhilestmt     = "do" ":" suite eols "while" expression ;
+switchstmt      = "switch" expression ":" eols indent switchbody dedent ;
+switchbody      = switchcase { eols switchcase } [ eols defaultcase ] ;
+switchcase      = "case" switchint ":" suite ;
+defaultcase     = "default" ":" suite ;
+forstmt         = "for"
+                  ( "var" identifier ":" type | identifier )
+                  "=" expression "," expression "," expression ":" suite ;
+varstmt         = "var" varbinding { "," varbinding } ;
+assignstmt      = lvalue assignop expression ; (* assignment is a statement here *)
+simplestmt      = returnstmt | breakstmt | continuestmt | varstmt | assignstmt | expression ;
+compoundstmt    = ifstmt | forstmt | whilestmt | dowhilestmt | switchstmt ;
+statement       = simplestmt | compoundstmt ;
+suite           = simplestmt | compoundstmt | eols block ;
+returnstmt      = "return" [ expression ] ;
+breakstmt       = "break" ;
+continuestmt    = "continue" ;
+block           = indent statement { eols statement } dedent ;
+expression      = unaryexpr binoprhs [ assignop expression ] ;
+binoprhs        = { binaryop unaryexpr } ;
+lvalue          = identifier | fieldaccess | indexexpr ;
+varbinding      = identifier ":" type [ "=" expression ] ;
+unaryexpr       = unaryop unaryexpr | postfixexpr ;
+unaryop         = "-" | "!" | "~" | "++" | "--" | userdefunaryop ;
+postfixexpr     = primary [ postfixop ] ;
+postfixop       = "++" | "--" ;
+primary         = castexpr | sizeofexpr | addrexpr | arrayliteral | stringliteral | charliteral | identifierexpr | fieldaccess | indexexpr | numberexpr | bool_literal | parenexpr ;
+castexpr        = casttype "(" expression ")" ;
+sizeofexpr      = "sizeof" "(" type ")" ;
+addrexpr        = "addr" "(" lvalue ")" ;
+identifierexpr  = identifier | callexpr | methodcallexpr | ctorcallexpr ;
+callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
+methodcallexpr  = identifier "." identifier "(" [ expression { "," expression } ] ")" ;
+ctorcallexpr    = identifier "(" [ expression { "," expression } ] ")" ;
+fieldaccess     = identifier "." identifier { "." identifier } ;
+indexexpr       = identifier "[" expression "]" ;
+numberexpr      = number ;
+arrayliteral    = "[" [ expression { "," expression } ] "]" ;
+stringliteral   = "\"" { ? any char except " and newline ? | escape } "\"" ;
+charliteral     = "'" ( ? any char except ' and newline ? | charescape ) "'" ;
+escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
+charescape      = "\\" ( "\\" | "'" | "n" | "t" | "0" ) ;
+parenexpr       = "(" expression ")" ;
+binaryop        = builtinbinaryop | userdefbinaryop ;
+indent          = INDENT ;
+dedent          = DEDENT ;
+
+assignop        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
+builtinbinaryop = "+" | "-" | "*" | "/" | "%"
+                | "<" | "<=" | ">" | ">=" | "==" | "!="
+                | "&&" | "||"
+                | "&" | "|" | "^" | "<<" | ">>" ;
+userdefbinaryop = ? any opchar defined as a custom binary operator ? ;
+userdefunaryop  = ? any opchar defined as a custom unary operator ? ;
+customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
+                    and not already defined as a custom operator ? ;
+opchar          = ? any single ASCII punctuation character ? ;
+identifier      = (letter | "_") { letter | digit | "_" } ;
+builtintype     = "int" | "int8" | "int16" | "int32" | "int64"
+                | "uint8" | "uint16" | "uint32" | "uint64"
+                | "float" | "float32" | "float64"
+                | "bool" | "None" ;
+aliastype       = identifier ;
+structtype      = identifier ;
+pointertype     = "ptr" "[" type "]" ;
+type            = basetype [ arraysuffix ] ;
+basetype        = builtintype | aliastype | structtype | pointertype ;
+arraysuffix     = "[" integer "]" ;
+casttype        = "int" | "int8" | "int16" | "int32" | "int64"
+                | "uint8" | "uint16" | "uint32" | "uint64"
+                | "float" | "float32" | "float64"
+                | "bool" | pointertype ;
+integer         = digit { digit } ;
+switchint       = [ "-" ] integer ;
+number          = digit { digit } [ "." { digit } ]
+                | "." digit { digit } ;
+bool_literal    = "True" | "False" ;
+letter          = "A".."Z" | "a".."z" ;
+digit           = "0".."9" ;
+eol             = "\r\n" | "\r" | "\n" ;
+ws              = " " | "\t" ;
+INDENT          = ? synthetic token emitted by lexer ? ;
+DEDENT          = ? synthetic token emitted by lexer ? ;

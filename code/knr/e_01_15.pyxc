@@ -1,0 +1,21 @@
+# Rewrite the fahrenheit to celsius conversion program
+# using a function
+
+type string = ptr[int8]
+extern def getchar() -> int32
+extern def putchar(c: int32) -> int32
+extern def printf(fmt: string, ...) -> int
+
+var EOF: int32 = -1
+
+def celsius(fahr:float) -> float:
+    return (5.0/9.0) * (fahr-32.0)
+
+def main() -> None:
+    var fahr:float
+    var lower:int, upper:int = 300, step:int = 20
+
+    fahr = float(lower)
+    while fahr <= float(upper):
+        printf("%3.0f %6.1f\n", fahr, celsius(fahr))
+        fahr += float(step)

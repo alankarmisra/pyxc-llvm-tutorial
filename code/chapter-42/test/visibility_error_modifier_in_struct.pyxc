@@ -1,0 +1,6 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: {{[Ee]rror}}
+# CHECK: Visibility modifiers are only allowed inside class bodies
+
+struct S:
+  private x: int

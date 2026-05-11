@@ -1,0 +1,25 @@
+# Print the input one word per line
+
+type string = ptr[int8]
+extern def getchar() -> int32
+extern def putchar(c: int32) -> int32
+
+var EOF: int32 = -1
+
+def main() -> None:
+    var in_word:bool = False
+    var c:int32
+
+    while (c = getchar()) != EOF:
+        if c == ' ' || c == '\n' || c == '\t':
+            if in_word == True:
+                putchar('\n') # finish the word
+                in_word = False
+        elif in_word == False:
+            in_word = True # beginning of the word
+            putchar(c)
+        else: # inside the word
+            putchar(c)
+
+    if in_word == True:
+        putchar('\n')

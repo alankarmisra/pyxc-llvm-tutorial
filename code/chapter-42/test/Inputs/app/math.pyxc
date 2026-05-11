@@ -1,0 +1,7 @@
+module app.math
+
+def private_helper() -> int:
+  return 99
+
+export def add(x: int, y: int) -> int:
+  return x + y

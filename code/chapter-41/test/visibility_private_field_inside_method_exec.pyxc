@@ -1,0 +1,20 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 9.000000
+
+extern def printd(x: float64)
+
+class Box:
+  private secret: int
+
+  def __init__(x: int) -> None:
+    self.secret = x
+
+  def reveal() -> int:
+    return self.secret
+
+
+def main() -> int:
+  var b: Box = Box(9)
+  printd(float64(b.reveal()))
+  return 0

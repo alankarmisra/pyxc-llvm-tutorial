@@ -1,0 +1,19 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 77.000000
+
+extern def malloc(n: int64) -> ptr[int8]
+extern def free(p: ptr[int8])
+extern def printd(x: float64)
+
+struct Point:
+  x: int
+  y: int
+
+def main() -> int:
+  var raw: ptr[int8] = ptr[int8](malloc(sizeof(Point)))
+  var p: ptr[Point] = ptr[Point](raw)
+  p[0].x = 77
+  printd(float64(p[0].x))
+  free(raw)
+  return 0

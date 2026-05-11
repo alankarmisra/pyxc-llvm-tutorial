@@ -1,0 +1,8 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: Unknown function referenced
+
+module app.main
+import app.math
+
+def main() -> int:
+  return private_helper()

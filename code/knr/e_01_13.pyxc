@@ -1,0 +1,58 @@
+# Print a histogram of the lengths of words in its input
+
+type string = ptr[int8]
+extern def getchar() -> int32
+extern def putchar(c: int32) -> int32
+extern def printf(fmt: string, ...) -> int
+
+var EOF: int32 = -1
+
+def main() -> None:
+    var MAX_WORD:int = 10   # max length of a word - keeps the histogram small
+    var MAX_HIST:int = 15 # max length of a histogram - in case there are many words with length 10 for example
+    var wl: int[80]
+
+    for var i:int = 0, i < MAX_WORD, 1:
+        wl[i] = 0
+
+    var c:int32, nc:int, overflow:int
+    var in_word:bool
+
+    while (c = getchar()) != EOF:
+        if c == ' ' || c == '\n' || c == '\t':
+            in_word = False
+            if nc > 0:
+                if nc < MAX_WORD:
+                    ++wl[nc]
+                else:
+                    ++overflow
+            nc = 0
+        elif in_word == False:
+            in_word = True
+            nc = 1
+        else:
+            ++nc
+
+    var max_value:int = 0
+    for var i:int = 0, i < MAX_WORD, 1:
+        if wl[i] > max_value:
+            max_value = wl[i]
+
+    
+    for var i:int = 0, i < MAX_WORD, 1:
+        var len:int
+        printf("%5d - %5d : ", i, wl[i])
+        if wl[i] > 0:
+            if (len = wl[i] * MAX_HIST / max_value) <= 0:
+                len = 1
+        else:
+            len = 0
+
+        while len > 0:
+            putchar('*')
+            --len
+
+        putchar('\n')
+
+    if overflow > 0:
+        printf("There are %d words >= %d\n", overflow, MAX_WORD)

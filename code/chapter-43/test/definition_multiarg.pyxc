@@ -1,0 +1,11 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 7.000000
+
+
+# Tests: definition with a multi-argument prototype and a matching callexpr.
+# prototype  = identifier "(" identifier { "," identifier } ")"
+# callexpr   = identifier "(" expression { "," expression } ")"
+
+def add3(a: float64, b: float64, c: float64) -> float64: return a + b + c
+
+add3(1, 2, 4)

@@ -1,0 +1,18 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 1.000000
+
+extern def printd(x: float64)
+
+class A:
+  private def secret() -> int:
+    return 1
+
+  def leak(other: A) -> int:
+    return other.secret()
+
+
+def main() -> int:
+  var a: A = A()
+  printd(float64(a.leak(a)))
+  return 0

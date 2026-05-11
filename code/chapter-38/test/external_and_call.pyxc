@@ -1,0 +1,15 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 1.000000
+# CHECK: 0.000000
+
+
+# Tests: external declaration and callexpr with an argument.
+# external = "extern" "def" prototype
+# callexpr  = identifier "(" expression ")"
+#
+# printd(1.0) writes "1.000000\n" to stderr and returns 0.0,
+# so the top-level expression evaluates to 0.000000.
+
+extern def printd(x: float64) -> float64
+
+printd(1.0)

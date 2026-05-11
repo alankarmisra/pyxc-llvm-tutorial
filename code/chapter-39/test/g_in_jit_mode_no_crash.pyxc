@@ -1,0 +1,13 @@
+# RUN: %pyxc -g %s 2>&1 | FileCheck %s
+# CHECK: 9.000000
+
+# Tests: -g in file-run (JIT) mode does not crash or error. The flag is
+# mostly a no-op in JIT mode (no object output to attach DWARF to) but the
+# program must execute correctly and produce the expected output.
+
+extern def printd(x: float64) -> float64
+
+def sq(x: float64) -> float64: return x * x
+
+def main() -> None:
+    printd(sq(3))

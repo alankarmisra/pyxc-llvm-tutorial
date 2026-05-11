@@ -5,9 +5,8 @@ extern def printf(fmt: string, ...) -> int
 var EOF: int32 = -1
 
 def main() -> int:
-  var c: int32
-  c = getchar()
-  while c != EOF:
+  var c: int32  
+  while (c = getchar()) != EOF:
     printf("%c", c)
     c = getchar()
   

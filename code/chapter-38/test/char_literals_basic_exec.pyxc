@@ -1,0 +1,26 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 1.000000
+# CHECK: 1.000000
+# CHECK: 1.000000
+
+extern def printd(x: float64)
+
+def main() -> int:
+  var c: int32 = 32
+  if c == ' ':
+    printd(1.0)
+  else:
+    printd(0.0)
+
+  if '\n' == 10:
+    printd(1.0)
+  else:
+    printd(0.0)
+
+  if '\t' == 9:
+    printd(1.0)
+  else:
+    printd(0.0)
+
+  return 0

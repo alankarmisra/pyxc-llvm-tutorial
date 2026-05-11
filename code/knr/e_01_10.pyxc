@@ -4,20 +4,15 @@ extern def printf(fmt: string, ...) -> int
 extern def putchar(c: int32) -> int32
 
 var EOF: int32 = -1
-var SPACE: int32 = 32
-var NEWLINE: int32 = 10
-var TAB: int32 = 9
 
 def main() -> int:
-    var c:int32
-    c = getchar()
-    while c != EOF:
-        if c == TAB:
+    var c:int32   
+    while (c = getchar()) != EOF:
+        if c == '\t':
             printf("\\t")
-        if c == SPACE:
-            printf("\\s")
-        if c != TAB && c != SPACE:
+        elif c == ' ':
+            printf("\n")
+        else: 
             putchar(c)
-        c = getchar()
 
     return 0

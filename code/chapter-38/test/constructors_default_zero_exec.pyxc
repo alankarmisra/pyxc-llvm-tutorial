@@ -1,0 +1,13 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 0.000000
+
+extern def printd(x: float64)
+
+class Counter:
+  value: int
+
+def main() -> int:
+  var c: Counter = Counter()
+  printd(float64(c.value))
+  return 0

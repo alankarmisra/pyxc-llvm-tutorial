@@ -1,0 +1,19 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 3.000000
+# CHECK: 6.000000
+# CHECK: 12.000000
+
+# Tests: multiple globals are initialized in source order before main().
+# Each initializer can read the already-initialized value of an earlier global.
+
+extern def printd(x: float64) -> float64
+
+var a: float64 = 3.0
+var b: float64 = a * 2
+var c: float64 = b * 2
+
+def main() -> None:
+    printd(a)
+    printd(b)
+    printd(c)

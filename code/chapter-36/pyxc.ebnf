@@ -1,6 +1,6 @@
 (*
    pyxc.ebnf
-   Grammar for chapter 36 — K&R payoff.
+   Grammar for chapter 35 — switch.
 *)
 
 (*
@@ -35,12 +35,12 @@ binarydecorator = "@" "binary" "(" integer ")" ;
 unarydecorator  = "@" "unary" ;
 binaryopprototype = customopchar "(" typedparam "," typedparam ")" ;
 unaryopprototype  = customopchar "(" typedparam ")" ;
-external        = "extern" "def" externprototype [ "->" type ] ;
+external        = "extern" "def" prototype [ "->" type ] ;
 toplevelexpr    = expression ;
 prototype       = identifier "(" [ typedparam { "," typedparam } ] ")" ;
-externprototype = identifier "(" [ typedparam { "," typedparam } [ "," "..." ] | "..." ] ")" ;
 typedparam      = identifier ":" type ;
 ifstmt          = "if" expression ":" suite
+                { eols "elif" expression ":" suite }
                 [ eols "else" ":" suite ] ;
 whilestmt       = "while" expression ":" suite ;
 dowhilestmt     = "do" ":" suite eols "while" expression ;

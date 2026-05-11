@@ -1,0 +1,22 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 0.000000
+# CHECK: 2.000000
+# CHECK: 10.000000
+
+
+# Tests: nested if/else — the else branch is itself an if/else statement.
+
+def clamp(x: float64) -> float64:
+    if x < 0:
+        return 0.0
+    else:
+        if x > 10:
+            return 10.0
+        else:
+            return x
+
+clamp(-5)
+
+clamp(2)
+
+clamp(15)

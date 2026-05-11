@@ -1,0 +1,6 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: {{[Ee]rror}}
+# CHECK: {{pointer|index}}
+
+def bad(x: int) -> int:
+  return x[0]

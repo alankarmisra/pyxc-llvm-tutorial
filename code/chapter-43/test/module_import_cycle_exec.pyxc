@@ -1,0 +1,12 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 42.000000
+
+module app.main
+import cycle.a
+
+extern def printd(x: float64) -> float64
+
+def main() -> int:
+  printd(float64(fa()))
+  return 0

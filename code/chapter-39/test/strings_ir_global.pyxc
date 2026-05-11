@@ -1,0 +1,9 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck %s < %t.ll
+# CHECK: @.str.0 = private unnamed_addr constant [6 x i8] c"hello\00"
+
+extern def puts(s: ptr[int8]) -> int
+
+def main() -> int:
+  puts("hello")
+  return 0

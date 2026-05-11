@@ -1,0 +1,15 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: 1.000000
+# CHECK: 2.000000
+# CHECK: 3.000000
+# CHECK-NOT: ready>
+# CHECK-NOT: Parsed
+
+# Tests: for loop with optional 'var' in file mode.
+
+extern def printd(x: float64) -> float64
+
+def main() -> None:
+    for var i: int = 1, i <= 3, 1:
+        printd(float64(i))
+    return

@@ -1,0 +1,4 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 'module' is only supported in file mode
+
+module repl.not_allowed

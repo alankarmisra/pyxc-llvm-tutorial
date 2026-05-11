@@ -174,6 +174,24 @@ The early chapters are inspired by the excellent [LLVM Kaleidoscope Tutorial](ht
 
 **[Chapter 35: Switch](chapter-35.md)** — Add `switch` statements with integer case matching, an optional `default`, and `break` support. Cases do not fall through by default — each case exits implicitly.
 
+**[Chapter 36: `elif` Chains](chapter-36.md)** — Add Python-style `elif` so multi-way conditionals don't nest into a pyramid of `else` blocks. Lowered to nested `IfStmtAST` during parsing — no new AST node.
+
+**[Chapter 37: Character Literals](chapter-37.md)** — Add `'a'`, `'\n'`, `'\t'`, `'\\'`, `'\''`, and `'\0'`. A character literal is an integer constant; it reuses `NumberExprAST` and defaults to `int32` to match `getchar()`.
+
+**[Chapter 38: Unsigned Integer Types](chapter-38.md)** — Add `uint8`, `uint16`, `uint32`, and `uint64`. LLVM has no unsigned IR types — signedness lives in instruction selection: `udiv`, `urem`, `lshr`, `icmp u*`, `uitofp`, `fptoui`, and `zext`. Implicit signed/unsigned mixing is rejected.
+
+**[Chapter 39: Assignment as Expression](chapter-39.md)** — Allow `=` and compound-assign operators inside an expression context, right-associative and lowest precedence. Enables `while (c = getchar()) != EOF` and `a = b = 0`. The assigned value flows out of the expression.
+
+**[Chapter 40: Variadic Extern Functions](chapter-40.md)** — Add `extern def f(a: T, ...)` so pyxc can call C functions like `printf` and `scanf`. `...` is only valid in `extern def`; variadic arguments past the fixed params are passed through untyped. Use `%ld` not `%d` for pyxc's 64-bit `int`.
+
+### Program Structure
+
+**[Chapter 41: Module Declarations and Export](chapter-41.md)** — Introduce `module` (names the compilation unit) and `export` (marks public API). Multi-file compilation already works via `pyxc --emit exe a.pyxc b.pyxc` with `extern def` as the glue. `export` draws the public/private line that chapter 42 enforces.
+
+**[Chapter 42: Imports](chapter-42.md)** — `import app.math` finds `app/math.pyxc`, scans its `export` declarations, and injects the prototypes — no `extern def` needed for pyxc-to-pyxc calls. Only exported symbols are importable. Struct, class, trait, and type alias definitions transfer across modules. `--emit exe` auto-includes the full import closure.
+
+**[Chapter 43: Cyclic Imports](chapter-43.md)** — Handle the A→B→A case without infinite recursion. A two-phase scan collects a file's own exports before recursing into its imports. An `InProgress`/`Done` state machine breaks the cycle and doubles as a deduplication cache for large import graphs.
+
 ## Need Help?
 
 Stuck? Confused? Found a bug?

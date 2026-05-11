@@ -1,0 +1,17 @@
+# RUN: %pyxc -O2 --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 120.000000
+
+# Tests: -O2 with --emit exe produces a correct native binary. Optimization
+# is applied during compilation, not just JIT; the resulting executable must
+# produce the same output as unoptimized.
+
+extern def printd(x: float64) -> float64
+
+def factorial(n: float64) -> float64:
+    if n < 2:
+        return 1.0
+    return n * factorial(n - 1)
+
+def main() -> None:
+    printd(factorial(5))

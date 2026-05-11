@@ -1,0 +1,13 @@
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: 42.000000
+# CHECK-NOT: ready>
+
+# Tests: compiled file mode with no user-defined main().
+# __pyxc.global_init is the sole entry point; it initializes x and
+# calls printd. No main() is defined so the runtime calls global_init directly.
+
+extern def printd(x: float64) -> float64
+
+var x: float64 = 6.0
+x = x * 7
+printd(x)
