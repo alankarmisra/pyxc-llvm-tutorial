@@ -82,3 +82,5 @@ old_chapters/
 **/.cache/
 **/build/
 .cache/
+
+code/practice
