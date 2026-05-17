@@ -231,8 +231,7 @@ static map<int, string> TokenNames = [] {
       {tok_float64, "'float64'"}, {tok_bool, "'bool'"},
       {tok_none, "'None'"},       {tok_true, "'True'"},
       {tok_false, "'False'"},     {tok_struct, "'struct'"},
-      {tok_indent, "indent"},
-      {tok_dedent, "dedent"}};
+      {tok_indent, "indent"},     {tok_dedent, "dedent"}};
 
   // Single character tokens.
   for (int ch = 0; ch <= 255; ++ch) {
@@ -519,8 +518,7 @@ static int gettok() {
     return (It == Keywords.end()) ? tok_identifier : It->second;
   }
 
-  if (isdigit(LexerLastChar) ||
-      (LexerLastChar == '.' && isdigit(peek()))) {
+  if (isdigit(LexerLastChar) || (LexerLastChar == '.' && isdigit(peek()))) {
     string NumStr;
     bool SawDot = false;
     bool SawExp = false;
@@ -1024,8 +1022,8 @@ private:
   SourceLocation Loc;
 
 public:
-  PrototypeAST(const string &Name, vector<ArgInfo> Args,
-               SourceLocation Loc, ValueType ReturnType = ValueType::Float64,
+  PrototypeAST(const string &Name, vector<ArgInfo> Args, SourceLocation Loc,
+               ValueType ReturnType = ValueType::Float64,
                bool IsOperator = false, unsigned Prec = 0,
                string ReturnStructName = "")
       : Name(Name), Args(std::move(Args)), ReturnType(ReturnType),
@@ -1066,9 +1064,8 @@ public:
   unsigned getBinaryPrecedence() const { return Precedence; }
 
   std::unique_ptr<PrototypeAST> clone() const {
-    return std::make_unique<PrototypeAST>(Name, Args, Loc, ReturnType,
-                                          IsOperator, Precedence,
-                                          ReturnStructName);
+    return std::make_unique<PrototypeAST>(
+        Name, Args, Loc, ReturnType, IsOperator, Precedence, ReturnStructName);
   }
 
   Function *codegen();
@@ -1602,7 +1599,8 @@ static unique_ptr<ExprAST> ParseIdentifierExprWithName(string IdName) {
     if (Type == ValueType::Error) {
       return LogError("Unknown variable name");
     }
-    return make_unique<VariableExprAST>(IdName, Type, LookupVarStructName(IdName));
+    return make_unique<VariableExprAST>(IdName, Type,
+                                        LookupVarStructName(IdName));
   }
 
   // Call.
@@ -1693,8 +1691,8 @@ static unique_ptr<FieldExprAST> ParseFieldAccessExpr(string BaseName,
     CurStruct = FD.StructName;
     Path.push_back(Field);
   }
-  return make_unique<FieldExprAST>(std::move(BaseName), std::move(Path), CurType,
-                                   CurStruct);
+  return make_unique<FieldExprAST>(std::move(BaseName), std::move(Path),
+                                   CurType, CurStruct);
 }
 
 static unique_ptr<ExprAST> ParseIdentifierExpr() {
@@ -1712,7 +1710,8 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
   auto *Var = dynamic_cast<VariableExprAST *>(Base.get());
   if (!Var)
     return LogError("Field access base must be a variable");
-  auto Field = ParseFieldAccessExpr(IdName, Var->getType(), Var->getStructName());
+  auto Field =
+      ParseFieldAccessExpr(IdName, Var->getType(), Var->getStructName());
   if (!Field)
     return LogError("Invalid field access");
   return Field;
@@ -2274,7 +2273,8 @@ static unique_ptr<ExprAST> ParseAssignmentRHS(const string &Name) {
   return make_unique<AssignmentExprAST>(Name, std::move(RHS), VarType);
 }
 
-static unique_ptr<ExprAST> ParseFieldAssignmentRHS(unique_ptr<FieldExprAST> LHS) {
+static unique_ptr<ExprAST>
+ParseFieldAssignmentRHS(unique_ptr<FieldExprAST> LHS) {
   ValueType DestType = LHS->getType();
   getNextToken(); // eat '='
   ExpectedLiteralTypeGuard Guard(DestType);
@@ -2437,6 +2437,17 @@ static unique_ptr<PrototypeAST> ParsePrototype() {
   if (CurTok != tok_identifier)
     return LogErrorP("Expected function name in prototype");
   string FnName = IdentifierStr;
+  if ((FnName.size() == 7 && FnName.rfind("binary", 0) == 0 &&
+       isascii(static_cast<unsigned char>(FnName[6])) &&
+       ispunct(static_cast<unsigned char>(FnName[6]))) ||
+      (FnName.size() == 6 && FnName.rfind("unary", 0) == 0 &&
+       isascii(static_cast<unsigned char>(FnName[5])) &&
+       ispunct(static_cast<unsigned char>(FnName[5])))) {
+    fprintf(stderr,
+            "Warning: Function name '%s' may conflict with "
+            "operator-reserved naming\n",
+            FnName.c_str());
+  }
   getNextToken(); // eat function name
 
   if (CurTok != '(')
@@ -2487,9 +2498,9 @@ ParseOptionalReturnType(ValueType DefaultType = ValueType::None) {
   return Type;
 }
 
-static ValueType ParseOptionalReturnTypeWithStruct(string &StructName,
-                                                   ValueType DefaultType =
-                                                       ValueType::None) {
+static ValueType
+ParseOptionalReturnTypeWithStruct(string &StructName,
+                                  ValueType DefaultType = ValueType::None) {
   StructName.clear();
   if (CurTok != tok_arrow)
     return DefaultType;
@@ -2669,9 +2680,9 @@ static unique_ptr<PrototypeAST> ParseBinaryOpPrototype(unsigned Precedence) {
   // JIT. For operators, we don't want this. For other functions, shadowing is
   // permissable.
   if (FunctionProtos.count(FnName))
-    return LogErrorP(
-        (string("Binary operator '") + OpChar + "' is already defined")
-            .c_str());
+    return LogErrorP((string("Function name 'binary") + OpChar +
+                      "' conflicts with operator-reserved naming")
+                         .c_str());
 
   getNextToken(); // eat operator char
 
@@ -2748,8 +2759,9 @@ static unique_ptr<PrototypeAST> ParseUnaryOpPrototype() {
 
   // Prevent silent JIT shadowing (same reason as in ParseBinaryOpPrototype).
   if (FunctionProtos.count(FnName))
-    return LogErrorP(
-        (string("Unary operator '") + OpChar + "' is already defined").c_str());
+    return LogErrorP((string("Function name 'unary") + OpChar +
+                      "' conflicts with operator-reserved naming")
+                         .c_str());
 
   getNextToken(); // eat operator char
 
@@ -3209,8 +3221,7 @@ Value *LogErrorV(const char *Str) {
 /// CreateEntryBlockAlloca - Create a stack slot in the current function's
 /// entry block for a mutable variable.
 static AllocaInst *CreateEntryBlockAlloca(Function *TheFunction,
-                                          const string &VarName,
-                                          ValueType Type,
+                                          const string &VarName, ValueType Type,
                                           const string &StructName = "") {
   IRBuilder<> TmpB(&TheFunction->getEntryBlock(),
                    TheFunction->getEntryBlock().begin());
@@ -3453,7 +3464,7 @@ static PrototypeAST *GetFunctionProto(const string &Name) {
 /// we look up its PrototypeAST in FunctionProtos and call codegen() on it,
 /// which emits a fresh 'declare' with ExternalLinkage in the current module.
 /// The JIT resolves that extern to the already-compiled body at link time.
-Function *getFunction(std::string Name) {
+Function *getFunction(const std::string &Name) {
   // Fast path: declaration or definition already in the current module.
   if (auto *F = TheModule->getFunction(Name))
     return F;
@@ -3485,11 +3496,12 @@ Value *BoolExprAST::codegen() {
 Value *VariableExprAST::codegen() {
   auto It = NamedValues.find(Name);
   if (It != NamedValues.end() && It->second)
-    return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), It->second,
-                               Name.c_str());
+    return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()),
+                               It->second, Name.c_str());
 
   if (auto *GV = GetGlobalVariable(Name))
-    return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), GV, Name.c_str());
+    return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), GV,
+                               Name.c_str());
 
   return LogErrorV("Unknown variable name");
 }
@@ -3550,10 +3562,12 @@ static Value *GetFieldAddress(const string &BaseName,
 Value *FieldExprAST::codegen() {
   ValueType LeafType = ValueType::Error;
   string LeafStruct;
-  Value *Ptr = GetFieldAddress(*getLValueName(), FieldPath, &LeafType, &LeafStruct);
+  Value *Ptr =
+      GetFieldAddress(*getLValueName(), FieldPath, &LeafType, &LeafStruct);
   if (!Ptr)
     return LogErrorV("Unknown field access");
-  return Builder->CreateLoad(LLVMTypeFor(LeafType, LeafStruct), Ptr, "fieldload");
+  return Builder->CreateLoad(LLVMTypeFor(LeafType, LeafStruct), Ptr,
+                             "fieldload");
 }
 
 /// AssignmentExprAST::codegen - Evaluate the RHS, store it into the variable's
@@ -3583,8 +3597,8 @@ Value *AssignmentExprAST::codegen() {
 Value *FieldAssignmentExprAST::codegen() {
   ValueType DestType = ValueType::Error;
   string DestStruct;
-  Value *Ptr =
-      GetFieldAddress(*LHS->getLValueName(), LHS->getFieldPath(), &DestType, &DestStruct);
+  Value *Ptr = GetFieldAddress(*LHS->getLValueName(), LHS->getFieldPath(),
+                               &DestType, &DestStruct);
   if (!Ptr)
     return LogErrorV("Unknown field access");
   Value *Val = RHS->codegen();
@@ -3666,8 +3680,11 @@ Value *BlockExprAST::codegen() {
 /// comparison, so x != NaN evaluates true.
 Value *BinaryExprAST::codegen() {
   Value *L = LHS->codegen();
+  if (!L)
+    return nullptr;
+
   Value *R = RHS->codegen();
-  if (!L || !R)
+  if (!R)
     return nullptr;
   ValueType LType = LHS->getType();
   ValueType RType = RHS->getType();
@@ -4094,9 +4111,9 @@ Function *PrototypeAST::codegen() {
   ArgTys.reserve(Args.size());
   for (const auto &Arg : Args)
     ArgTys.push_back(LLVMTypeFor(Arg.Type, Arg.StructName));
-  FunctionType *FT = FunctionType::get(
-      LLVMTypeFor(ReturnType, ReturnStructName), ArgTys,
-                                       false /* not variadic */);
+  FunctionType *FT =
+      FunctionType::get(LLVMTypeFor(ReturnType, ReturnStructName), ArgTys,
+                        false /* not variadic */);
 
   Function *F =
       Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
@@ -4435,8 +4452,12 @@ static void HandleDefinition() {
 static void HandleExtern() {
   auto ProtoAST = ParseExtern();
 
-  if (!ProtoAST)
+  if (!ProtoAST || (CurTok != tok_eol && CurTok != tok_eof)) {
+    if (ProtoAST)
+      LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+    SynchronizeToLineBoundary();
     return;
+  }
 
   // Reject conflicting redeclarations: in Pyxc, function identity is just
   // name + arity. We validate types separately in the parser.
@@ -4446,13 +4467,6 @@ static void HandleExtern() {
     LogError((string("Conflicting extern declaration for '") +
               ProtoAST->getName() + "'")
                  .c_str());
-    SynchronizeToLineBoundary();
-    return;
-  }
-
-  if (CurTok != tok_eol && CurTok != tok_eof) {
-    if (CurTok)
-      LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
     SynchronizeToLineBoundary();
     return;
   }
@@ -5108,8 +5122,8 @@ static string RunXcrun(const char *Args) {
   while (fgets(Buf, sizeof(Buf), Pipe))
     Result += Buf;
   pclose(Pipe);
-  while (!Result.empty() &&
-         (Result.back() == '\n' || Result.back() == '\r' || Result.back() == ' '))
+  while (!Result.empty() && (Result.back() == '\n' || Result.back() == '\r' ||
+                             Result.back() == ' '))
     Result.pop_back();
   return Result;
 }

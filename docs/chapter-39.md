@@ -47,7 +47,7 @@ cd pyxc-llvm-tutorial/code/chapter-39
 `expression` gains an optional assignment tail. The tail is right-recursive, which makes chained assignment right-associative.
 
 ```ebnf
-expression = unaryexpr binoprhs [ assignop expression ] ; -- changed
+expression = lvalue assignop expression | unaryexpr binoprhs ; -- changed
 ```
 
 The `assignstmt` rule is unchanged — assignment-as-statement still works exactly as before.

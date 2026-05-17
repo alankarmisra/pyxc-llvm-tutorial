@@ -1,0 +1,9 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Binary operator '+' is already defined
+
+
+# Tests: attempting to redefine a built-in binary operator is rejected.
+# ParseBinaryOpPrototype rejects any opchar already in BinopPrecedence.
+
+@binary(5)
+def +(x, y): return x + y

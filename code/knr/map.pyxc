@@ -1,0 +1,58 @@
+import include 
+
+var CAP: int32 = 32
+
+export trait IntStringMap:
+  def put(k: int32, v: string) -> None
+  def get(k: int32) -> string
+  def contains(k: int32) -> bool
+
+export class TokenMap(IntStringMap):
+  keys: int32[32]
+  vals: ptr[int8][32]
+  used: int8[32]   # 0 empty, 1 occupied
+
+  def hash(k: int32) -> int32:
+    var h: int32 = k * 1103515245 + 12345
+    if h < 0:
+      h = -h
+    return h % CAP
+
+  public def put(k: int32, v: string) -> None:
+    var i: int32 = hash(k)
+    var steps: int32 = 0
+    while steps < CAP:
+      if used[i] == int8(0):
+        used[i] = int8(1)
+        keys[i] = k
+        vals[i] = v
+        return
+      if keys[i] == k:
+        vals[i] = v
+        return
+      i = (i + 1) % CAP
+      steps += 1
+
+  public def contains(k: int32) -> bool:
+    var i: int32 = hash(k)
+    var steps: int32 = 0
+    while steps < CAP:
+      if used[i] == int8(0):
+        return False
+      if keys[i] == k:
+        return True
+      i = (i + 1) % CAP
+      steps += 1
+    return False
+
+  public def get(k: int32) -> string:
+    var i: int32 = hash(k)
+    var steps: int32 = 0
+    while steps < CAP:
+      if used[i] == int8(0):
+        return "unknown"
+      if keys[i] == k:
+        return vals[i]
+      i = (i + 1) % CAP
+      steps += 1
+    return "unknown"

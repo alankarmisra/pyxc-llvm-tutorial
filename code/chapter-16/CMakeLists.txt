@@ -77,6 +77,11 @@ execute_process(
   OUTPUT_VARIABLE LLVM_LDFLAGS
   OUTPUT_STRIP_TRAILING_WHITESPACE
 )
+execute_process(
+  COMMAND "${LLVM_CONFIG}" --includedir
+  OUTPUT_VARIABLE LLVM_INCLUDEDIR
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
 
 # Normalize newline-separated flags to spaces
 string(REGEX REPLACE "[\r\n]+" " " LLVM_CXXFLAGS "${LLVM_CXXFLAGS}")
@@ -99,6 +104,9 @@ list(JOIN _PYXC_LLVM_LDFLAGS_DEDUP " " LLVM_LDFLAGS)
 set(_PYXC_CXX_FLAGS "-g -O3 ${LLVM_CXXFLAGS}")
 string(REGEX REPLACE "[\r\n]+" " " _PYXC_CXX_FLAGS "${_PYXC_CXX_FLAGS}")
 set(CMAKE_CXX_FLAGS "${_PYXC_CXX_FLAGS}" CACHE STRING "C++ flags" FORCE)
+if(LLVM_INCLUDEDIR)
+  include_directories("${LLVM_INCLUDEDIR}")
+endif()
 
 set(_PYXC_EXE_LINKER_FLAGS "${LLVM_LDFLAGS}")
 string(REGEX REPLACE "[\r\n]+" " " _PYXC_EXE_LINKER_FLAGS "${_PYXC_EXE_LINKER_FLAGS}")
@@ -152,6 +160,17 @@ if(NOT LLD_LIBDIR)
 endif()
 if(LLD_LIBDIR)
   set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -L${LLD_LIBDIR} -Wl,-rpath,${LLD_LIBDIR}")
+endif()
+
+# lld headers (needed for lld/Common/Driver.h)
+set(LLD_INCLUDEDIR "" CACHE PATH "Optional lld include directory")
+if(NOT LLD_INCLUDEDIR)
+  if(BREW_LLD_PREFIX AND EXISTS "${BREW_LLD_PREFIX}/include")
+    set(LLD_INCLUDEDIR "${BREW_LLD_PREFIX}/include")
+  endif()
+endif()
+if(LLD_INCLUDEDIR)
+  include_directories("${LLD_INCLUDEDIR}")
 endif()
 
 set(LLD_FLAGS "-llldCommon -llldELF -llldMachO -llldCOFF")

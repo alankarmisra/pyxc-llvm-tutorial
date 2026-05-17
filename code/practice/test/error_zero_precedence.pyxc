@@ -1,0 +1,10 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Precedence must be a positive integer
+
+
+# Tests: a precedence of zero in @binary(...) is rejected.
+# Valid precedences are >= 1; 0 is the sentinel returned on parse failure.
+# ParseBinaryDecorator checks NumVal < 1.
+
+@binary(0)
+def %(x, y): return x - y

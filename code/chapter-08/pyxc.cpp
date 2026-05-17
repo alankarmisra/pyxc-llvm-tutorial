@@ -878,6 +878,17 @@ static unique_ptr<PrototypeAST> ParsePrototype() {
     return LogErrorP("Expected function name in prototype");
 
   string FnName = IdentifierStr;
+  if ((FnName.size() == 7 && FnName.rfind("binary", 0) == 0 &&
+       isascii(static_cast<unsigned char>(FnName[6])) &&
+       ispunct(static_cast<unsigned char>(FnName[6]))) ||
+      (FnName.size() == 6 && FnName.rfind("unary", 0) == 0 &&
+       isascii(static_cast<unsigned char>(FnName[5])) &&
+       ispunct(static_cast<unsigned char>(FnName[5])))) {
+    fprintf(stderr,
+            "Warning: Function name '%s' may conflict with "
+            "operator-reserved naming\n",
+            FnName.c_str());
+  }
   getNextToken(); // eat function name
 
   if (CurTok != '(')
@@ -1028,7 +1039,7 @@ Value *LogErrorV(const char *Str) {
 /// we look up its PrototypeAST in FunctionProtos and call codegen() on it,
 /// which emits a fresh 'declare' with ExternalLinkage in the current module.
 /// The JIT resolves that extern to the already-compiled body at link time.
-Function *getFunction(std::string Name) {
+Function *getFunction(const std::string &Name) {
   // Fast path: declaration or definition already in the current module.
   if (auto *F = TheModule->getFunction(Name))
     return F;
@@ -1061,10 +1072,10 @@ Value *NumberExprAST::codegen() {
 /// other name is an error. Mutable local variables (alloca/store/load) come
 /// in a later chapter.
 Value *VariableExprAST::codegen() {
-  Value *V = NamedValues[Name];
-  if (!V)
+  auto It = NamedValues.find(Name);
+  if (It == NamedValues.end() || !It->second)
     return LogErrorV("Unknown variable name");
-  return V;
+  return It->second;
 }
 
 /// BinaryExprAST::codegen - Recursively codegen both operands, then emit the
@@ -1086,8 +1097,11 @@ Value *VariableExprAST::codegen() {
 /// comparison, so x != NaN evaluates true.
 Value *BinaryExprAST::codegen() {
   Value *L = LHS->codegen();
+  if (!L)
+    return nullptr;
+
   Value *R = RHS->codegen();
-  if (!L || !R)
+  if (!R)
     return nullptr;
 
   switch (Op) {
@@ -1519,8 +1533,12 @@ static void HandleDefinition() {
 static void HandleExtern() {
   auto ProtoAST = ParseExtern();
 
-  if (!ProtoAST)
+  if (!ProtoAST || (CurTok != tok_eol && CurTok != tok_eof)) {
+    if (ProtoAST)
+      LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+    SynchronizeToLineBoundary();
     return;
+  }
 
   // Reject conflicting redeclarations: in Pyxc, function identity is just
   // name + arity, since all parameter and return types are double.
@@ -1530,13 +1548,6 @@ static void HandleExtern() {
     LogError((string("Conflicting extern declaration for '") +
               ProtoAST->getName() + "'")
                  .c_str());
-    SynchronizeToLineBoundary();
-    return;
-  }
-
-  if (CurTok != tok_eol && CurTok != tok_eof) {
-    if (CurTok)
-      LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
     SynchronizeToLineBoundary();
     return;
   }

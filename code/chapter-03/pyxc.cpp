@@ -48,7 +48,7 @@ static map<string, Token> Keywords = {
 // purely for printing token stream output.
 static map<int, string> TokenNames = [] {
   // Unprintable character tokens, and multi-character tokens.
-  map<int, string> Names = {
+  static map<int, string> Names = {
       {tok_eof, "end of input"}, {tok_eol, "newline"},
       {tok_error, "error"},      {tok_def, "'def'"},
       {tok_extern, "'extern'"},  {tok_identifier, "identifier"},
@@ -432,10 +432,10 @@ static int GetTokPrecedence() {
   if (!isascii(CurTok))
     return -1;
 
-  int TokPrec = BinopPrecedence[CurTok];
-  if (TokPrec <= 0)
+  auto It = BinopPrecedence.find(CurTok);
+  if (It == BinopPrecedence.end() || It->second <= 0)
     return -1;
-  return TokPrec;
+  return It->second;
 }
 
 /// LogError* - Error reporting helpers. Each returns nullptr for its respective

@@ -1,0 +1,931 @@
+# language_tour.pyxc
+#
+# A self-contained tour of the pyxc language.
+# Run with:  pyxc --emit exe -o tour language_tour.pyxc && ./tour
+#
+# Each section exercises one group of language features.
+# PLANNED features are shown as comments — they do not compile today.
+#
+# Chapter coverage: 1-43 (all features through the module system).
+# Module / import / export features require multiple files and are shown
+# as commented examples at the very bottom of this file.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §1  EXTERN DECLARATIONS
+# ══════════════════════════════════════════════════════════════════════════════
+
+extern def printd(x: float64) -> float64          # print a double, return it
+extern def putchard(x: float64) -> float64        # print a char as double
+
+# variadic extern (ch40)
+extern def printf(fmt: ptr[int8], ...) -> int32
+
+# C stdlib — used in heap-allocation section
+extern def malloc(size: int64) -> ptr[int8]
+extern def free(p: ptr[int8])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §2  TYPE ALIASES  (ch22)
+# ══════════════════════════════════════════════════════════════════════════════
+
+type Byte   = int8
+type CStr   = ptr[int8]
+type Score  = float64
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §3  GLOBAL VARIABLES  (ch12)
+# ══════════════════════════════════════════════════════════════════════════════
+
+var g_call_count: int = 0     # incremented by every demo function
+var g_pi: float64 = 3.14159265358979
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §4  USER-DEFINED OPERATORS  (ch9)
+#     @binary(N)  defines a custom infix operator with precedence N.
+#     @unary      defines a custom prefix operator.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# integer exponentiation:  base ^ exp
+@binary(6)
+def ^(base: int, exp: int) -> int:
+    var result: int = 1
+    for i = 1, i <= exp, 1:
+        result *= base
+    return result
+
+# logical NAND:  a !& b
+@binary(2)
+def !&(a: bool, b: bool) -> bool:
+    return !(a && b)
+
+# unary absolute value:  |x|   (single-char custom op)
+@unary
+def |(x: float64) -> float64:
+    if x < 0.0:
+        return x * -1.0
+    return x
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §5  STRUCTS  (ch17) + POINTERS  (ch18) + POINTER ARITHMETIC  (ch19)
+# ══════════════════════════════════════════════════════════════════════════════
+
+struct Point:
+    x: int
+    y: int
+
+struct Rect:
+    top_left:     Point
+    bottom_right: Point
+
+
+def demo_structs() -> int:
+    g_call_count += 1
+    printf("── structs ──────────────────────\n")
+
+    var p: Point
+    p.x = 3
+    p.y = 4
+
+    # field read / write
+    printf("  point (%d, %d)\n", p.x, p.y)
+
+    # pass struct by value
+    var q: Point = p      # copy
+    q.x = 10
+
+    printf("  original x=%d  copy x=%d\n", p.x, q.x)
+
+    # pointer to struct (ch18)
+    var pp: ptr[Point] = addr(p)
+    pp[0].x = 99
+    printf("  via pointer: x=%d\n", p.x)   # 99
+
+    # pointer arithmetic (ch19)
+    var arr: Point[2]
+    arr[0].x = 1
+    arr[0].y = 2
+    arr[1].x = 3
+    arr[1].y = 4
+    var base: ptr[Point] = addr(arr[0])
+    var second: ptr[Point] = base + 1
+    printf("  arr[1].x via ptr arithmetic: %d\n", second[0].x)   # 3
+
+    return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §6  ARRAYS  (ch23)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def demo_arrays() -> int:
+    g_call_count += 1
+    printf("── arrays ───────────────────────\n")
+
+    # fixed-size stack array + initializer literal
+    var primes: int[6] = [2, 3, 5, 7, 11, 13]
+    for i = 0, i < 6, 1:
+        printf("  primes[%d] = %d\n", i, primes[i])
+
+    # array-to-pointer decay when passing to a function
+    var ap: ptr[int] = addr(primes[0])
+    printf("  sum via pointer: %d\n", ap[0] + ap[1] + ap[2])   # 10
+
+    # array of float
+    var temps: float64[3] = [36.6, 37.1, 38.0]
+    printf("  avg temp: %f\n", (temps[0] + temps[1] + temps[2]) / 3.0)
+
+    return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §7  HEAP ALLOCATION  (ch20) — malloc / free / sizeof
+# ══════════════════════════════════════════════════════════════════════════════
+
+def demo_heap() -> int:
+    g_call_count += 1
+    printf("── heap allocation ──────────────\n")
+
+    # allocate a Point on the heap
+    var raw: ptr[int8] = malloc(sizeof(Point))
+    var hp: ptr[Point] = ptr[Point](raw)
+    hp[0].x = 42
+    hp[0].y = 7
+    printf("  heap Point (%d, %d)\n", hp[0].x, hp[0].y)
+    free(raw)
+
+    # allocate an array of 4 ints
+    var ibuf: ptr[int8] = malloc(sizeof(int) * 4)
+    var ia: ptr[int] = ptr[int](ibuf)
+    for i = 0, i < 4, 1:
+        ia[i] = (i + 1) * (i + 1)    # 1, 4, 9, 16
+    printf("  heap int[4]: %d %d %d %d\n", ia[0], ia[1], ia[2], ia[3])
+    free(ibuf)
+
+    return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §8  STRING LITERALS & C INTEROP  (ch21)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def demo_strings() -> int:
+    g_call_count += 1
+    printf("── strings ──────────────────────\n")
+
+    var greeting: ptr[int8] = "Hello, pyxc!"
+    printf("  %s\n", greeting)
+
+    # escape sequences
+    var escapes: ptr[int8] = "tab:\there\nnewline above"
+    printf("  %s\n", escapes)
+
+    # null byte check
+    var s: ptr[int8] = "abc"
+    var len: int = 0
+    var cp: ptr[int8] = s
+    while cp[0] != int8(0):
+        len += 1
+        cp = cp + 1
+    printf("  strlen(\"abc\") = %d\n", len)   # 3
+
+    return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §9  CHARACTER LITERALS  (ch37)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def demo_char_literals() -> int:
+    g_call_count += 1
+    printf("── character literals ───────────\n")
+
+    var ch: int32 = 'A'
+    printf("  'A' = %d\n", ch)           # 65
+
+    var nl: int32 = '\n'
+    printf("  '\\n' = %d\n", nl)         # 10
+
+    var nul: int32 = '\0'
+    printf("  '\\0' = %d\n", nul)        # 0
+
+    # use char in arithmetic
+    var lower: int32 = ch + 32           # 'a'
+    printf("  'A' + 32 = %d (= 'a')\n", lower)
+
+    return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §10  TYPE SYSTEM  (ch16) — all scalar types
+# ══════════════════════════════════════════════════════════════════════════════
+
+def demo_types() -> int:
+    g_call_count += 1
+    printf("── scalar types ─────────────────\n")
+
+    var a: int    = 1000000
+    var b: int8   = int8(127)
+    var c: int16  = int16(32767)
+    var d: int64  = int64(9223372036854775807)
+    var e: float32 = float32(3.14)
+    var f: float64 = 2.718281828
+    var g: bool   = true
+
+    printf("  int      %d\n", a)
+    printf("  int8     %d\n", int32(b))
+    printf("  int16    %d\n", int32(c))
+    printf("  float32  %f\n", float64(e))
+    printf("  float64  %f\n", f)
+    printf("  bool     %d\n", int32(g))
+
+    # explicit casts
+    var h: float64 = float64(a)
+    var i: int     = int(f)
+    printf("  int→float64: %f   float64→int: %d\n", h, i)
+
+    return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §11  UNSIGNED INTEGER TYPES  (ch38)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def demo_unsigned() -> int:
+    g_call_count += 1
+    printf("── unsigned types ───────────────\n")
+
+    var u8:  uint8  = uint8(255)
+    var u16: uint16 = uint16(65535)
+    var u32: uint32 = uint32(4294967295)
+    var u64: uint64 = uint64(18446744073709551615)
+
+    printf("  uint8   %u\n", uint32(u8))
+    printf("  uint16  %u\n", uint32(u16))
+    printf("  uint32  %u\n", u32)
+
+    # unsigned division (udiv)
+    printf("  250u / 3u = %u\n", uint32(250) / uint32(3))   # 83
+
+    # logical right shift (lshr)
+    var x: uint32 = uint32(0xFF000000)
+    printf("  0xFF000000 >> 24 = %u\n", x >> uint32(24))    # 255
+
+    return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §12  ARITHMETIC & COMPOUND ASSIGNMENT  (ch31)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def demo_arithmetic() -> int:
+    g_call_count += 1
+    printf("── arithmetic ───────────────────\n")
+
+    var n: int = 10
+
+    # all five operators
+    printf("  10 + 3 = %d\n", n + 3)
+    printf("  10 - 3 = %d\n", n - 3)
+    printf("  10 * 3 = %d\n", n * 3)
+    printf("  10 / 3 = %d\n", n / 3)    # integer division → 3
+    printf("  10 %% 3 = %d\n", n % 3)   # remainder → 1
+
+    # compound assignment
+    n += 5    # 15
+    n -= 2    # 13
+    n *= 2    # 26
+    n /= 4    # 6
+    n %= 4    # 2
+    printf("  after +=5 -=2 *=2 /=4 %%=4: %d\n", n)   # 2
+
+    # prefix / postfix ++ --
+    n++
+    printf("  n++ → %d\n", n)   # 3
+    ++n
+    printf("  ++n → %d\n", n)   # 4
+    n--
+    printf("  n-- → %d\n", n)   # 3
+    --n
+    printf("  --n → %d\n", n)   # 2
+
+    # user-defined ^ (exponentiation, §4 above)
+    printf("  2 ^ 10 = %d\n", 2 ^ 10)   # 1024
+
+    # float arithmetic
+    var r: float64 = g_pi * 5.0 * 5.0
+    printf("  π × r² (r=5): %f\n", r)
+
+    # unary absolute value (§4 above)
+    printf("  |-3.7| = %f\n", |-3.7|)   # 3.7
+
+    return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §13  BITWISE OPERATORS  (ch34)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def demo_bitwise() -> int:
+    g_call_count += 1
+    printf("── bitwise ──────────────────────\n")
+
+    var a: int = 0b1010   # 10
+    var b: int = 0b1100   # 12
+
+    printf("  a & b  = %d\n", a & b)   # 8  (0b1000)
+    printf("  a | b  = %d\n", a | b)   # 14 (0b1110)
+    printf("  a ^ b  = %d\n", a ^ b)   # 6  (0b0110)
+    printf("  ~a     = %d\n", ~a)      # -11 (two's complement)
+    printf("  a << 2 = %d\n", a << 2)  # 40
+    printf("  b >> 1 = %d\n", b >> 1)  # 6
+
+    # mask and extract
+    var flags: int = 0b10110101
+    var bit3: int  = (flags >> 3) & 1
+    printf("  bit3 of 0b10110101 = %d\n", bit3)   # 0
+
+    return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §14  LOGICAL OPERATORS  (ch32)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def is_even(n: int) -> bool:
+    return n % 2 == 0
+
+def demo_logical() -> int:
+    g_call_count += 1
+    printf("── logical ──────────────────────\n")
+
+    printf("  true && false = %d\n", int32(true && false))   # 0
+    printf("  true || false = %d\n", int32(true || false))   # 1
+    printf("  !true         = %d\n", int32(!true))           # 0
+
+    # short-circuit: right side not evaluated when left is decisive
+    var x: int = 0
+    var dummy: bool = false || is_even(4)
+    printf("  false || is_even(4) = %d\n", int32(dummy))     # 1
+
+    # user-defined NAND (§4)
+    printf("  true !& true  = %d\n", int32(true !& true))    # 0
+    printf("  true !& false = %d\n", int32(true !& false))   # 1
+
+    return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §15  CONTROL FLOW  (ch8, ch11, ch33, ch35, ch36)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def demo_if_elif_else(n: int) -> ptr[int8]:
+    if n < 0:
+        return "negative"
+    elif n == 0:
+        return "zero"
+    elif n < 10:
+        return "small"
+    elif n < 100:
+        return "medium"
+    else:
+        return "large"
+
+def demo_control_flow() -> int:
+    g_call_count += 1
+    printf("── control flow ─────────────────\n")
+
+    # if / elif / else (ch8, ch36)
+    printf("  classify(-5):  %s\n", demo_if_elif_else(-5))
+    printf("  classify(0):   %s\n", demo_if_elif_else(0))
+    printf("  classify(7):   %s\n", demo_if_elif_else(7))
+    printf("  classify(42):  %s\n", demo_if_elif_else(42))
+    printf("  classify(999): %s\n", demo_if_elif_else(999))
+
+    # while loop (ch33)
+    var i: int = 1
+    var sum: int = 0
+    while i <= 10:
+        sum += i
+        i++
+    printf("  sum 1..10 (while) = %d\n", sum)   # 55
+
+    # do/while (ch33)
+    var j: int = 0
+    var prod: int = 1
+    do:
+        j++
+        prod *= j
+    while j < 5
+    printf("  5! (do/while) = %d\n", prod)   # 120
+
+    # C-style for loop (ch8)
+    var fib_sum: int = 0
+    var fa: int = 0
+    var fb: int = 1
+    for k = 0, k < 10, 1:
+        fib_sum += fa
+        var tmp: int = fa + fb
+        fa = fb
+        fb = tmp
+    printf("  sum of first 10 Fibonacci = %d\n", fib_sum)   # 88
+
+    # break and continue (ch33)
+    var found: int = -1
+    for n = 0, n < 100, 1:
+        if n % 7 == 0 && n > 20:
+            found = n
+            break
+    printf("  first multiple of 7 > 20: %d\n", found)   # 21
+
+    var odd_sum: int = 0
+    for m = 0, m < 20, 1:
+        if is_even(m):
+            continue
+        odd_sum += m
+    printf("  sum of odd numbers < 20: %d\n", odd_sum)   # 100
+
+    # switch (ch35)
+    for day = 1, day <= 7, 1:
+        var name: ptr[int8] = "?"
+        switch day:
+            case 1: name = "Mon"
+            case 2: name = "Tue"
+            case 3: name = "Wed"
+            case 4: name = "Thu"
+            case 5: name = "Fri"
+            case 6: name = "Sat"
+            case 7: name = "Sun"
+            default: name = "???"
+        printf("  day %d = %s\n", day, name)
+
+    return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §16  ASSIGNMENT AS EXPRESSION  (ch39)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Count characters until NUL using assignment-as-expression in the while test.
+def strlen_tour(s: ptr[int8]) -> int:
+    var n: int = 0
+    var p: ptr[int8] = s
+    var c: int8 = int8(0)
+    while (c = p[0]) != int8(0):
+        n++
+        p = p + 1
+    return n
+
+def demo_assign_expr() -> int:
+    g_call_count += 1
+    printf("── assignment as expression ─────\n")
+
+    # chain assignment
+    var x: int = 0
+    var y: int = 0
+    var z: int = 0
+    x = y = z = 42
+    printf("  chain assign: x=%d y=%d z=%d\n", x, y, z)
+
+    # assignment-in-while (strlen via pointer)
+    printf("  strlen(\"pyxc\") = %d\n", strlen_tour("pyxc"))   # 4
+
+    return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §17  RECURSIVE FUNCTIONS  (classic demos)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def fib(n: int) -> int:
+    if n <= 1: return n
+    return fib(n - 1) + fib(n - 2)
+
+def factorial(n: int) -> int:
+    if n <= 1: return 1
+    return n * factorial(n - 1)
+
+def collatz_steps(n: int) -> int:
+    var steps: int = 0
+    var x: int = n
+    while x != 1:
+        if is_even(x):
+            x /= 2
+        else:
+            x = x * 3 + 1
+        steps++
+    return steps
+
+def demo_recursion() -> int:
+    g_call_count += 1
+    printf("── recursive functions ──────────\n")
+
+    for i = 0, i <= 10, 1:
+        printf("  fib(%d) = %d\n", i, fib(i))
+
+    for i = 1, i <= 10, 1:
+        printf("  %d! = %d\n", i, factorial(i))
+
+    printf("  collatz(27) takes %d steps\n", collatz_steps(27))   # 111
+
+    return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §18  CLASSES  (ch24-30)
+#     — fields, methods, constructors, visibility, traits, impl blocks
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Trait definitions ────────────────────────────────────────────────────────
+
+trait Printable:
+    def describe() -> ptr[int8]
+
+trait Comparable[T]:
+    def less_than(other: T) -> bool
+    def equals(other: T) -> bool
+
+# ── Counter class  (simple, no trait) ────────────────────────────────────────
+
+class Counter:
+    private value: int
+
+    def __init__(start: int):
+        self.value = start
+
+    def increment():
+        self.value += 1
+
+    def decrement():
+        self.value -= 1
+
+    def reset():
+        self.value = 0
+
+    public def get() -> int:
+        return self.value
+
+    def add(n: int):
+        self.value += n
+
+# ── Vector2 class  (implements Printable + Comparable) ───────────────────────
+
+class Vector2(Printable, Comparable[float64]):
+    public x: float64
+    public y: float64
+
+    def __init__(ax: float64, ay: float64):
+        self.x = ax
+        self.y = ay
+
+    def length() -> float64:
+        return (self.x * self.x + self.y * self.y)   # squared — sqrt not in stdlib yet
+
+    def scale(factor: float64):
+        self.x *= factor
+        self.y *= factor
+
+impl Printable for Vector2:
+    def describe() -> ptr[int8]:
+        # Can't build a dynamic string without sprintf yet;
+        # return a static tag to satisfy the trait.
+        return "Vector2"
+
+impl Comparable[float64] for Vector2:
+    def less_than(other: float64) -> bool:
+        return self.length() < other * other
+
+    def equals(other: float64) -> bool:
+        return self.length() == other * other
+
+
+def demo_classes() -> int:
+    g_call_count += 1
+    printf("── classes ──────────────────────\n")
+
+    # Counter
+    var c: Counter
+    Counter.__init__(addr(c), 0)   # explicit constructor call (ch26)
+    c.increment()
+    c.increment()
+    c.increment()
+    c.add(7)
+    printf("  counter after 3 increments + add(7): %d\n", c.get())   # 10
+
+    c.decrement()
+    printf("  after decrement: %d\n", c.get())   # 9
+
+    c.reset()
+    printf("  after reset: %d\n", c.get())   # 0
+
+    # Vector2
+    var v: Vector2
+    Vector2.__init__(addr(v), 3.0, 4.0)
+    printf("  v.length² = %f  (3²+4² = 25)\n", v.length())
+    printf("  v.describe() = %s\n", v.describe())
+
+    v.scale(2.0)
+    printf("  after scale(2): x=%f y=%f\n", v.x, v.y)   # 6, 8
+
+    var smaller: bool = v.less_than(7.0)
+    printf("  v.length < 7²? %d  (49 < 49? no)\n", int32(smaller))   # 0
+
+    return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §19  VARIADIC PRINTF — demonstrating ... in extern  (ch40)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def demo_variadic() -> int:
+    g_call_count += 1
+    printf("── variadic extern ──────────────\n")
+
+    printf("  %s is %ld years old and %.2f meters tall\n",
+           "Alice", int64(30), 1.68)
+
+    var total: float64 = 0.0
+    var vals: float64[5] = [1.1, 2.2, 3.3, 4.4, 5.5]
+    for i = 0, i < 5, 1:
+        total += vals[i]
+    printf("  sum of [1.1,2.2,3.3,4.4,5.5] = %.1f\n", total)   # 16.5
+
+    return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §20  MANDELBROT IN ASCII  (classic pyxc demo — ch8/9)
+#      Uses the user-defined ^ operator and floating-point control flow.
+# ══════════════════════════════════════════════════════════════════════════════
+
+extern def putchar(c: int32) -> int32
+
+def mandelbrot_char(cx: float64, cy: float64) -> int32:
+    var x: float64 = 0.0
+    var y: float64 = 0.0
+    var iter: int  = 0
+    while x * x + y * y <= 4.0 && iter < 32:
+        var xtemp: float64 = x * x - y * y + cx
+        y = 2.0 * x * y + cy
+        x = xtemp
+        iter++
+    if iter == 32: return 42    # '*'
+    if iter > 20:  return 43    # '+'
+    if iter > 10:  return 46    # '.'
+    return 32                   # ' '
+
+def demo_mandelbrot() -> int:
+    g_call_count += 1
+    printf("── mandelbrot ───────────────────\n")
+
+    for row = 0, row < 20, 1:
+        var cy: float64 = float64(row - 10) * 0.1
+        for col = 0, col < 60, 1:
+            var cx: float64 = float64(col - 30) * 0.08 - 0.5
+            putchar(mandelbrot_char(cx, cy))
+        putchar(10)   # '\n'
+
+    return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §21  GLOBAL VARIABLE DEMO  (ch12)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def demo_globals() -> int:
+    g_call_count += 1
+    printf("── global variables ─────────────\n")
+
+    printf("  g_pi = %f\n", g_pi)
+    printf("  demo functions called so far: %d\n", g_call_count)
+
+    # write through pointer to global
+    var gp: ptr[float64] = addr(g_pi)
+    gp[0] = 3.0        # truncate for fun
+    printf("  g_pi after truncation: %f\n", g_pi)
+    gp[0] = 3.14159265358979   # restore
+
+    return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §22  K&R EXERCISES — showcasing C-parity  (ch31-40)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# word count (counts space-separated words in a NUL-terminated string)
+def word_count(s: ptr[int8]) -> int:
+    var count: int  = 0
+    var in_word: bool = false
+    var p: ptr[int8] = s
+    var c: int8 = int8(0)
+    while (c = p[0]) != int8(0):
+        if c == int8(32) || c == int8(9) || c == int8(10):
+            in_word = false
+        else:
+            if !in_word:
+                count++
+                in_word = true
+        p = p + 1
+    return count
+
+# reverse a NUL-terminated string in-place
+def str_reverse(s: ptr[int8]):
+    var left:  ptr[int8] = s
+    var right: ptr[int8] = s
+    while right[0] != int8(0):
+        right = right + 1
+    right = right - 1
+    while left < right:
+        var tmp: int8 = left[0]
+        left[0]  = right[0]
+        right[0] = tmp
+        left  = left  + 1
+        right = right - 1
+
+# binary search
+def bsearch(arr: ptr[int], n: int, target: int) -> int:
+    var lo: int = 0
+    var hi: int = n - 1
+    while lo <= hi:
+        var mid: int = (lo + hi) / 2
+        if arr[mid] == target:
+            return mid
+        elif arr[mid] < target:
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return -1
+
+def demo_kr() -> int:
+    g_call_count += 1
+    printf("── K&R exercises ────────────────\n")
+
+    printf("  word_count(\"hello world  foo\") = %d\n",
+           word_count("hello world  foo"))   # 3
+
+    # str_reverse on a heap buffer (string literals are read-only)
+    var buf: int8[8] = [int8(112), int8(121), int8(120), int8(99),
+                         int8(0), int8(0), int8(0), int8(0)]
+    # buf = "pyxc\0..."
+    var sp: ptr[int8] = addr(buf[0])
+    str_reverse(sp)
+    printf("  reverse(\"pyxc\") = %s\n", sp)   # cxyp
+
+    # binary search
+    var sorted: int[8] = [2, 5, 9, 12, 17, 23, 41, 88]
+    printf("  bsearch(17) = index %d\n",
+           bsearch(addr(sorted[0]), 8, 17))    # 4
+    printf("  bsearch(99) = index %d\n",
+           bsearch(addr(sorted[0]), 8, 99))    # -1
+
+    return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §23  PLANNED FEATURES  (commented — do not compile yet)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Enums (PLANNED — ch44 or extension) ──────────────────────────────────────
+# enum Color:
+#     Red = 0
+#     Green = 1
+#     Blue = 2
+#
+# def paint(c: Color):
+#     switch c:
+#         case Color.Red:   printf("red\n")
+#         case Color.Green: printf("green\n")
+#         case Color.Blue:  printf("blue\n")
+
+# ── Closures / lambdas (PLANNED — ch44) ──────────────────────────────────────
+# def make_adder(n: int) -> fn(int) -> int:
+#     return fn(x: int) -> int: x + n
+#
+# var add5 = make_adder(5)
+# printf("%d\n", add5(3))   # 8
+
+# ── Ternary expression (PLANNED) ─────────────────────────────────────────────
+# var max = a if a > b else b
+
+# ── foreach / iterator (PLANNED) ─────────────────────────────────────────────
+# for x in sorted:
+#     printf("%d\n", x)
+
+# ── import with alias (PLANNED) ──────────────────────────────────────────────
+# import app.math as math
+# var result: int = math.add(2, 3)
+
+# ── from-import (PLANNED) ────────────────────────────────────────────────────
+# from app.math import add, sub
+
+# ── async / await (PLANNED — Phase 7) ────────────────────────────────────────
+# async def fetch(url: ptr[int8]) -> ptr[int8]:
+#     var data: ptr[int8] = await http_get(url)
+#     return data
+
+# ── Pattern matching (PLANNED) ───────────────────────────────────────────────
+# match shape:
+#     case Circle(r):        printf("circle r=%d\n", r)
+#     case Rect(w, h):       printf("rect %dx%d\n", w, h)
+#     case _:                printf("unknown\n")
+
+# ── Generic classes (PLANNED) ────────────────────────────────────────────────
+# class Stack[T]:
+#     data: ptr[T]
+#     len:  int
+#     cap:  int
+#     def push(val: T): ...
+#     def pop() -> T: ...
+
+# ── Const declarations (PLANNED) ─────────────────────────────────────────────
+# const MAX_SIZE: int = 1024
+# const GREETING: ptr[int8] = "Hello"
+
+# ── Module system (multi-file — works today, shown for reference) ─────────────
+# # geo/point.pyxc
+# module geo.point
+# export struct Point:
+#     x: int
+#     y: int
+#
+# # main.pyxc
+# module app.main
+# import geo.point
+# def main() -> int:
+#     var p: Point
+#     p.x = 3
+#     return 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §24  ENTRY POINT
+# ══════════════════════════════════════════════════════════════════════════════
+
+def main() -> int:
+    printf("pyxc language tour\n")
+    printf("==========================================\n\n")
+
+    demo_types()
+    printf("\n")
+
+    demo_unsigned()
+    printf("\n")
+
+    demo_arithmetic()
+    printf("\n")
+
+    demo_bitwise()
+    printf("\n")
+
+    demo_logical()
+    printf("\n")
+
+    demo_control_flow()
+    printf("\n")
+
+    demo_assign_expr()
+    printf("\n")
+
+    demo_recursion()
+    printf("\n")
+
+    demo_structs()
+    printf("\n")
+
+    demo_arrays()
+    printf("\n")
+
+    demo_heap()
+    printf("\n")
+
+    demo_strings()
+    printf("\n")
+
+    demo_char_literals()
+    printf("\n")
+
+    demo_classes()
+    printf("\n")
+
+    demo_variadic()
+    printf("\n")
+
+    demo_kr()
+    printf("\n")
+
+    demo_globals()
+    printf("\n")
+
+    demo_mandelbrot()
+    printf("\n")
+
+    printf("==========================================\n")
+    printf("tour complete — %d sections run\n", g_call_count)
+
+    return 0

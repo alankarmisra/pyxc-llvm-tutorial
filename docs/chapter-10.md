@@ -49,7 +49,7 @@ cd pyxc-llvm-tutorial/code/chapter-10
 Two new productions:
 
 ```ebnf
-expression      = varexpr | unaryexpr binoprhs [ "=" expression ] ;
+expression      = varexpr | identifier "=" expression | unaryexpr binoprhs ;
 varexpr         = "var" varbinding { "," varbinding } ":" [ eols ] expression ;
 varbinding      = identifier [ "=" expression ] ;
 ```
@@ -90,7 +90,7 @@ toplevelexpr    = expression ;
 prototype       = identifier "(" [ identifier { "," identifier } ] ")" ;
 ifexpr          = "if" expression ":" [ eols ] expression [ eols ] "else" ":" [ eols ] expression ;
 forexpr         = "for" [ "var" ] identifier "=" expression "," expression "," expression ":" [ eols ] expression ;
-expression      = varexpr | unaryexpr binoprhs [ "=" expression ] ;
+expression      = varexpr | identifier "=" expression | unaryexpr binoprhs ;
 binoprhs        = { binaryop unaryexpr } ;
 varexpr         = "var" varbinding { "," varbinding } ":" [ eols ] expression ;
 varbinding      = identifier [ "=" expression ] ;
@@ -466,7 +466,32 @@ Value *NextVar = Builder->CreateFAdd(CurVar, StepVal, "nextvar");
 Builder->CreateStore(NextVar, Alloca);
 ```
 
-The loop variable name is installed in `NamedValues` as an alloca for the duration of the loop, then restored (or removed) afterward — the same pattern as `VarExprAST::codegen`.
+The parser records whether `var` was present by setting an `IsVarDecl` flag on `ForExprAST`:
+
+```cpp
+bool IsVarDecl = false;
+if (CurTok == tok_var)
+  IsVarDecl = true, getNextToken(); // optional 'var'
+```
+
+Codegen uses that flag to decide whether to create a fresh slot or reuse an existing one:
+
+```cpp
+if (IsVarDecl) {
+  // 'for var i': allocate a new slot and store the start value.
+  Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
+  Builder->CreateStore(StartVal, Alloca);
+} else {
+  // 'for i': look up the existing alloca — error if i is not in scope.
+  auto It = NamedValues.find(VarName);
+  if (It == NamedValues.end() || !It->second)
+    return LogErrorV("Unknown variable name");
+  Alloca = It->second;
+  Builder->CreateStore(StartVal, Alloca);
+}
+```
+
+`IsVarDecl` also controls teardown: when `var` was used, the loop variable is removed from `NamedValues` (or the shadowed outer binding is restored) after the loop exits; when it was not, the existing slot is left untouched.
 
 Here is `def count(n): return for var i = 1, i < n, 1: i` with `-O0 -v`:
 

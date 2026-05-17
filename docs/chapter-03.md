@@ -53,7 +53,7 @@ To print sensible error strings, we want to convert `Token` values to strings li
 
 ```cpp
 static map<int, string> TokenNames = [] {
-  map<int, string> Names = {
+  static map<int, string> Names = {
       {tok_eof,        "end of input"},
       {tok_eol,        "newline"},
       {tok_error,      "error"},

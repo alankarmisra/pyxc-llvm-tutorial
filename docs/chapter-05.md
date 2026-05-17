@@ -142,10 +142,10 @@ static map<std::string, Value *> NamedValues;
 ...
 
 Value *VariableExprAST::codegen() {
-  Value *V = NamedValues[Name];
-  if (!V)
+  auto It = NamedValues.find(Name);
+  if (It == NamedValues.end() || !It->second)
     return LogErrorV("Unknown variable name");
-  return V;
+  return It->second;
 }
 ```
 
@@ -176,11 +176,13 @@ if(some_error_condition) return LogErrorV("Error specifics");
 
 ```cpp
 Value *BinaryExprAST::codegen() {
-  Value *L = LHS->codegen(); // Generate the Value* from the LHS expression
-  Value *R = RHS->codegen(); // Generate the Value* from the RHS expression
-  if (!L || !R) // If either of them failed, bail out. 
-  // Related errors are printed within LHS->codegen() and RHS-codegen()
-  // so we just return nullptr and stop processing.
+  // Generate the Value* from the LHS expression
+  Value *L = LHS->codegen();
+  if (!L)
+    return nullptr;
+  // Generate the Value* from the RHS expression
+  Value *R = RHS->codegen();
+  if (!R)
     return nullptr;
 
   switch (Op) { // Based on the operator, emit the appropriate LLVM instruction

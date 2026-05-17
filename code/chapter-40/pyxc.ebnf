@@ -62,7 +62,7 @@ returnstmt      = "return" [ expression ] ;
 breakstmt       = "break" ;
 continuestmt    = "continue" ;
 block           = indent statement { eols statement } dedent ;
-expression      = unaryexpr binoprhs [ assignop expression ] ;
+expression      = lvalue assignop expression | unaryexpr binoprhs ;
 binoprhs        = { binaryop unaryexpr } ;
 lvalue          = identifier | fieldaccess | indexexpr ;
 varbinding      = identifier ":" type [ "=" expression ] ;

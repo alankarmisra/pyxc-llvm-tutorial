@@ -59,7 +59,7 @@ static map<string, Token> Keywords = {
 // purely for printing token stream output.
 static map<int, string> TokenNames = [] {
   // Unprintable character tokens, and multi-character tokens.
-  map<int, string> Names = {
+  static map<int, string> Names = {
       {tok_eof, "end of input"}, {tok_eol, "newline"},
       {tok_error, "error"},      {tok_def, "'def'"},
       {tok_extern, "'extern'"},  {tok_identifier, "identifier"},
@@ -450,10 +450,10 @@ static int GetTokPrecedence() {
   if (!isascii(CurTok))
     return -1;
 
-  int TokPrec = BinopPrecedence[CurTok];
-  if (TokPrec <= 0)
+  auto It = BinopPrecedence.find(CurTok);
+  if (It == BinopPrecedence.end() || It->second <= 0)
     return -1;
-  return TokPrec;
+  return It->second;
 }
 
 /// LogError* - Error reporting helpers. Each returns nullptr for its respective
@@ -737,10 +737,10 @@ Value *NumberExprAST::codegen() {
 /// other name is an error. Mutable local variables (alloca/store/load) come
 /// in a later chapter.
 Value *VariableExprAST::codegen() {
-  Value *V = NamedValues[Name];
-  if (!V)
+  auto It = NamedValues.find(Name);
+  if (It == NamedValues.end() || !It->second)
     return LogErrorV("Unknown variable name");
-  return V;
+  return It->second;
 }
 
 /// BinaryExprAST::codegen - Recursively codegen both operands, then emit the
@@ -756,8 +756,11 @@ Value *VariableExprAST::codegen() {
 /// widens it: false -> 0.0, true -> 1.0.
 Value *BinaryExprAST::codegen() {
   Value *L = LHS->codegen();
+  if (!L)
+    return nullptr;
+
   Value *R = RHS->codegen();
-  if (!L || !R)
+  if (!R)
     return nullptr;
 
   switch (Op) {
@@ -948,8 +951,10 @@ static void HandleDefinition() {
 /// line and return.
 static void HandleExtern() {
   auto ProtoAST = ParseExtern();
-  if (!ProtoAST)
+  if (!ProtoAST) {
+    SynchronizeToLineBoundary();
     return;
+  }
 
   if (CurTok != tok_eol && CurTok != tok_eof) {
     if (CurTok)

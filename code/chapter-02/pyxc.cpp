@@ -225,10 +225,10 @@ static int GetTokPrecedence() {
   if (!isascii(CurTok))
     return -1;
 
-  int TokPrec = BinopPrecedence[CurTok];
-  if (TokPrec <= 0)
+  auto It = BinopPrecedence.find(CurTok);
+  if (It == BinopPrecedence.end() || It->second <= 0)
     return -1;
-  return TokPrec;
+  return It->second;
 }
 
 /// LogError* - Error reporting helpers. Each returns nullptr for its respective
@@ -387,6 +387,7 @@ static unique_ptr<PrototypeAST> ParsePrototype() {
   // past '(' on the first iteration, and past ',' on subsequent ones.
   // Inside the body we call getNextToken() again to move past the identifier
   // we just stored, then check whether ')' or ',' follows.
+
   vector<string> ArgNames;
   while (getNextToken() == tok_identifier) {
     ArgNames.push_back(IdentifierStr);
@@ -451,8 +452,10 @@ static unique_ptr<FunctionAST> ParseTopLevelExpr() {
 ///   = "extern" "def" prototype
 static unique_ptr<PrototypeAST> ParseExtern() {
   getNextToken(); // eat extern.
+
   if (CurTok != tok_def)
     return LogErrorP("Expected `def` after extern.");
+
   getNextToken(); // eat def
   return ParsePrototype();
 }

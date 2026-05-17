@@ -1,0 +1,24 @@
+import include
+import map
+
+# var tok_eof:int = -1
+# var tok_eol:int = -2
+
+# # commands
+# var tok_def:int = -3
+# var tok_extern:int = -4
+
+# # primary
+# var tok_identifier = -5
+# var tok_number = -6
+
+# # control
+# var tok_return = -7
+
+# var IdentifierStr:string
+# var NumVal:double
+
+def main() -> None:
+    var m: TokenMap
+    m.put(1, "tok_eof")
+    printf("%s\n", m.get(1))

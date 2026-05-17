@@ -1,0 +1,10 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Binary operator must have exactly two arguments
+
+
+# Tests: a binary operator prototype with only one argument is rejected.
+# binaryopprototype = customopchar "(" identifier "," identifier ")"
+# ParseBinaryOpPrototype checks ArgNames.size() != 2.
+
+@binary(5)
+def %(x): return x

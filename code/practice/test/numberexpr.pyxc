@@ -1,0 +1,16 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Evaluated to 42.000000
+# CHECK: Evaluated to 3.140000
+# CHECK: Evaluated to 0.500000
+
+
+# Tests: all three number literal forms.
+# number = digit { digit } [ "." { digit } ]  <- integer form: 42
+#        | "." digit { digit }                <- leading-dot form: .5
+# (decimal form: digit { digit } "." { digit } is covered by 3.14)
+
+42
+
+3.14
+
+.5

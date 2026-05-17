@@ -320,13 +320,13 @@ A helper returns the precedence of whatever is in `CurTok`, or `-1` if it's not 
 
 ```cpp
 static int GetTokPrecedence() {
-  if (!isascii(CurTok))
-    return -1;
+    if (!isascii(CurTok))
+        return -1;
 
-  int TokPrec = BinopPrecedence[CurTok];
-  if (TokPrec <= 0)
-    return -1;
-  return TokPrec;
+    auto It = BinopPrecedence.find(CurTok);
+    if (It == BinopPrecedence.end() || It->second <= 0)
+        return -1;
+    return It->second;
 }
 ```
 

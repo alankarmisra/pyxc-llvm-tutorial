@@ -1,0 +1,223 @@
+(*
+  pyxc_complete_grammar.ebnf
+
+  Purpose:
+  - Consolidated "target" grammar for pyxc as a systems language.
+  - Based on current chapter-43 grammar plus near-term language gaps.
+
+  Status notes:
+  - Rules tagged [CURRENT] are implemented in chapter-43.
+  - Rules tagged [PROPOSED] are planned/missing features.
+*)
+
+(* ===== Program structure ===== *)
+program            = [ eols ] [ top { eols top } ] [ eols ] ;
+eols               = eol { eol } ;
+
+top                = moduledecl
+                   | importdecl
+                   | exportdecl
+                   | typealias
+                   | enumdef               (* [PROPOSED] *)
+                   | traitdef
+                   | structdef
+                   | classdef
+                   | impldef
+                   | definition
+                   | decorateddef
+                   | external
+                   | toplevelexpr ;
+
+moduledecl         = "module" modulepath ;                                 (* [CURRENT] *)
+importdecl         = "import" modulepath [ "as" identifier ] ;            (* alias [PROPOSED] *)
+exportdecl         = "export" exportable ;                                 (* [CURRENT] *)
+exportable         = definition | external | structdef | classdef | typealias | traitdef | impldef | enumdef ;
+
+modulepath         = identifier { "." identifier } ;
+qualified_name     = identifier { "." identifier } ;                       (* [PROPOSED] namespaces *)
+
+typealias          = "type" identifier "=" type ;                          (* [CURRENT] *)
+
+(* ===== Algebraic / nominal types ===== *)
+enumdef            = "enum" identifier [ ":" inttype ] ":" eols indent enumbody dedent ;   (* [PROPOSED] *)
+enumbody           = enumitem { eols enumitem } ;
+enumitem           = identifier [ "=" constant_expr ] ;
+
+traitdef           = "trait" identifier [ "[" identifier "]" ] ":" eols traitblock ;    (* [CURRENT] generic trait arity=1 *)
+traitblock         = indent traitmethodsig { eols traitmethodsig } dedent ;
+traitmethodsig     = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ;
+
+structdef          = "struct" identifier ":" eols structblock ;           (* [CURRENT] *)
+
+classdef           = "class" identifier [ "(" traitref { "," traitref } ")" ] ":" eols structblock ;
+traitref           = identifier [ "[" type "]" ] ;
+
+impldef            = "impl" traitref "for" identifier ":" eols implblock ;
+implblock          = indent implmethod { eols implmethod } dedent ;
+implmethod         = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ":" ( simplestmt | eols block ) ;
+
+structblock        = indent classmember { eols classmember } dedent ;
+classmember        = [ visibility ] [ "static" ] ( fielddecl | methoddef ) ; (* static [PROPOSED] *)
+visibility         = "public" | "private" ;
+methoddef          = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ":" ( simplestmt | eols block ) ;
+fielddecl          = identifier ":" type [ "=" expression ] ;              (* default init [PROPOSED] *)
+
+(* ===== Functions ===== *)
+definition         = "def" prototype [ "->" type ] ":" ( simplestmt | eols block ) ;
+
+decorateddef       = binarydecorator eols "def" binaryopprototype [ "->" type ] ":" ( simplestmt | eols block )
+                   | unarydecorator  eols "def" unaryopprototype  [ "->" type ] ":" ( simplestmt | eols block ) ;
+
+binarydecorator    = "@" "binary" "(" integer ")" ;
+unarydecorator     = "@" "unary" ;
+binaryopprototype  = customopchar "(" typedparam "," typedparam ")" ;
+unaryopprototype   = customopchar "(" typedparam ")" ;
+
+external           = "extern" "def" externprototype [ "->" type ] ;
+
+prototype          = identifier "(" [ typedparam { "," typedparam } ] ")" ;
+externprototype    = identifier "(" [ typedparam { "," typedparam } [ "," "..." ] | "..." ] ")" ;
+typedparam         = identifier ":" type ;
+
+toplevelexpr       = expression ;
+
+(* ===== Statements ===== *)
+statement          = simplestmt | compoundstmt ;
+
+simplestmt         = returnstmt
+                   | breakstmt
+                   | continuestmt
+                   | varstmt
+                   | assignstmt
+                   | expression ;
+
+compoundstmt       = ifstmt | forstmt | forinstmt | whilestmt | dowhilestmt | switchstmt ;
+
+suite              = simplestmt | compoundstmt | eols block ;
+block              = indent statement { eols statement } dedent ;
+
+ifstmt             = "if" expression ":" suite { eols "elif" expression ":" suite } [ eols "else" ":" suite ] ;
+whilestmt          = "while" expression ":" suite ;
+dowhilestmt        = "do" ":" suite eols "while" expression ;
+
+forstmt            = "for" ( "var" identifier ":" type | identifier ) "=" expression "," expression "," expression ":" suite ;
+forinstmt          = "for" identifier "in" rangeexpr ":" suite ;            (* [PROPOSED] pythonic loop *)
+rangeexpr          = "range" "(" expression [ "," expression [ "," expression ] ] ")" ;
+
+switchstmt         = "switch" expression ":" eols indent switchbody dedent ;
+switchbody         = switchcase { eols switchcase } [ eols defaultcase ] ;
+switchcase         = "case" switchint ":" suite ;
+defaultcase        = "default" ":" suite ;
+
+returnstmt         = "return" [ expression ] ;
+breakstmt          = "break" ;
+continuestmt       = "continue" ;
+
+varstmt            = "var" varbinding { "," varbinding } ;
+varbinding         = identifier ":" type [ "=" expression ] ;
+assignstmt         = lvalue assignop expression ;
+
+(* ===== Expressions ===== *)
+expression         = unaryexpr binoprhs [ assignop expression ] ;
+binoprhs           = { binaryop unaryexpr } ;
+
+lvalue             = identifier | qualified_lvalue | fieldaccess | indexexpr ;
+qualified_lvalue   = qualified_name ;                                          (* [PROPOSED] namespaced assignment *)
+
+unaryexpr          = unaryop unaryexpr | postfixexpr ;
+unaryop            = "-" | "!" | "~" | "++" | "--" | userdefunaryop ;
+
+postfixexpr        = primary [ postfixop ] ;
+postfixop          = "++" | "--" ;
+
+primary            = castexpr
+                   | sizeofexpr
+                   | addrexpr
+                   | arrayliteral
+                   | mapliteral                (* [PROPOSED] *)
+                   | stringliteral
+                   | charliteral
+                   | identifierexpr
+                   | qualifiedexpr             (* [PROPOSED] *)
+                   | fieldaccess
+                   | indexexpr
+                   | numberexpr
+                   | bool_literal
+                   | null_literal
+                   | parenexpr ;
+
+qualifiedexpr      = qualified_name ;
+
+castexpr           = casttype "(" expression ")" ;
+sizeofexpr         = "sizeof" "(" type ")" ;
+addrexpr           = "addr" "(" lvalue ")" ;
+
+identifierexpr     = identifier | callexpr | methodcallexpr | ctorcallexpr ;
+callexpr           = callee "(" [ expression { "," expression } ] ")" ;
+callee             = identifier | qualified_name ;                              (* [PROPOSED] namespaced call *)
+methodcallexpr     = receiver "." identifier "(" [ expression { "," expression } ] ")" ;
+ctorcallexpr       = identifier "(" [ expression { "," expression } ] ")" ;
+receiver           = identifier | indexexpr | fieldaccess ;
+
+fieldaccess        = identifier "." identifier { "." identifier } ;
+indexexpr          = identifier "[" expression "]" ;
+
+numberexpr         = number ;
+arrayliteral       = "[" [ expression { "," expression } ] "]" ;
+mapliteral         = "{" [ mapitem { "," mapitem } ] "}" ;                  (* [PROPOSED] *)
+mapitem            = expression ":" expression ;
+
+stringliteral      = '"' { ? any char except " and newline ? | escape } '"' ;
+charliteral        = "'" ( ? any char except ' and newline ? | charescape ) "'" ;
+escape             = "\\" ( "\\" | '"' | "n" | "t" | "0" ) ;
+charescape         = "\\" ( "\\" | "'" | "n" | "t" | "0" ) ;
+parenexpr          = "(" expression ")" ;
+
+binaryop           = builtinbinaryop | userdefbinaryop ;
+assignop           = "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" ;
+
+builtinbinaryop    = "+" | "-" | "*" | "/" | "%"
+                   | "<" | "<=" | ">" | ">=" | "==" | "!="
+                   | "&&" | "||"
+                   | "&" | "|" | "^" | "<<" | ">>" ;
+
+userdefbinaryop    = ? any opchar defined as a custom binary operator ? ;
+userdefunaryop     = ? any opchar defined as a custom unary operator ? ;
+customopchar       = ? any opchar not reserved by builtin operators ? ;
+opchar             = ? any single ASCII punctuation character ? ;
+
+(* ===== Types ===== *)
+type               = basetype [ arraysuffix ] ;
+basetype           = builtintype | aliastype | enumtype | structtype | pointertype | genericinstance ;
+builtintype        = "int" | "int8" | "int16" | "int32" | "int64"
+                   | "uint8" | "uint16" | "uint32" | "uint64"
+                   | "float" | "float32" | "float64"
+                   | "bool" | "None" ;
+inttype            = "int8" | "int16" | "int32" | "int64" | "uint8" | "uint16" | "uint32" | "uint64" ;
+aliastype          = identifier ;
+enumtype           = identifier ;
+structtype         = identifier ;
+pointertype        = "ptr" "[" type "]" ;
+genericinstance    = identifier "[" type { "," type } "]" ;                 (* [PROPOSED] general generics *)
+arraysuffix        = "[" integer "]" ;
+casttype           = builtintype | pointertype | enumtype ;
+
+(* ===== Lexical ===== *)
+constant_expr      = expression ;
+integer            = digit { digit } ;
+switchint          = [ "-" ] integer ;
+number             = digit { digit } [ "." { digit } ] | "." digit { digit } ;
+
+bool_literal       = "True" | "False" ;
+null_literal       = "None" ;
+identifier         = (letter | "_") { letter | digit | "_" } ;
+
+letter             = "A".."Z" | "a".."z" ;
+digit              = "0".."9" ;
+
+eol                = "\r\n" | "\r" | "\n" ;
+ws                 = " " | "\t" ;
+indent             = INDENT ;
+dedent             = DEDENT ;
+INDENT             = ? synthetic token emitted by lexer ? ;
+DEDENT             = ? synthetic token emitted by lexer ? ;

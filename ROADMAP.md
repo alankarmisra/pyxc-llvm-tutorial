@@ -107,6 +107,15 @@ Pointer-first track for C/C++ learners:
 | 44 | Closures | Lambda syntax, captured variables, closure struct + function pointer in LLVM IR. **Note:** need to decide capture semantics before implementation — capture by value is safe with no-GC; capture by reference requires closed-over variables to outlive the closure (Rust-style lifetime problem). |
 ---
 
+## Chapter 44-0 (Pre-Closures Follow-up)
+
+- **Cross-module custom operators in module/import mode**
+  - Current import/signature scan wires exported function/type signatures, but does not import operator parser metadata (`@binary`/`@unary`, precedence, arity).
+  - Result: custom operators defined in another module are not reliably available as operators in importing modules, even if exported.
+  - Needed: import-time operator metadata registration so dependent modules can parse expressions using exported custom operators.
+
+---
+
 ## Phase 7: Concurrency (Chapters 45–51)
 
 | # | Title | Notes |
@@ -124,22 +133,76 @@ Pointer-first track for C/C++ learners:
 ## Known Bugs
 
 - **Stale `CurLoc` in codegen diagnostics (partially fixed):** `CallExprAST` now captures the call-site location at parse time and uses `LogErrorVAt` for "unknown function" and "incorrect argument count" errors — those two now report the right line/column. All other AST node types (binary ops, field access, index expressions, etc.) still use the global `CurLoc`, which has advanced past the node by the time codegen runs. Full fix requires adding a `SourceLoc` field to `ExprAST` base and propagating it through every node constructor.
-- `extern def` ABI signatures are trusted without verification; mismatched declared return/argument types vs actual C symbol types are not detected and can cause runtime/ABI bugs.
+- **`self.method()` calls from within a method do not work.** Inside a method body, `self` is typed as `ptr[ClassName]`. Field access (`self.field`) auto-derefs via GEP. Method dispatch (`self.method()`) does not — it sees `ptr[ClassName]` and rejects it with "Method call base must be a class/struct value". Workaround: extract the helper as a free function outside the class. Fix requires auto-deref of `self` in the method call dispatcher when the receiver type is `ptr[ClassName]`.
+- **JIT file mode does not compile imported module bodies.** `pyxc file.pyxc` (without `--emit`) signature-scans imports but never compiles their method/function bodies. Calling an imported function produces a JIT link error: "Symbols not found". Workaround: use `--emit exe` for any multi-file program. Fix requires expanding the import closure and JIT-compiling each imported file's bodies before executing the entry file.
+- **`extern def` ABI signatures are trusted without verification;** mismatched declared return/argument types vs actual C symbol types are not detected and can cause runtime/ABI bugs.
 
 ---
 
 ## Extension Track (No Fixed Chapter)
-These can be inserted where they fit best:
+These can be inserted where they fit best, ordered roughly by implementation difficulty within each group.
 
-- Error reporting with source spans and caret diagnostics
-- Function attributes (`readnone`, `nounwind`) for better optimization
-- Standard library bootstrap
-- Generic collections roadmap: `List[T]`, `Dict[K,V]`, `Set[T]`, iteration protocols, and ownership-aware container semantics
-- Generators/iterators (`yield`) and lazy sequence APIs; defer `range` builtin until generator model is in place
-- Pattern-matching exhaustiveness checks
-- Escape analysis and stack-allocation wins
-- Packaging and installable CLI workflow
-- Warn/error on assignment in conditions (`if x = 10`) unless explicitly parenthesized (lint/strict mode)
+### Language Ergonomics
+- **Ternary / conditional expression** — `x if cond else y` (Pythonic) or `cond ? x : y`; one new AST node, precedence just below assignment. Very common in idiomatic code.
+- **`assert` statement** — `assert cond` and `assert cond, "message"`; lowers to a conditional `abort()` call. Trivial to implement.
+- **`const` bindings** — `const PI: float64 = 3.14159`; immutable at compile time, stored as an LLVM constant rather than an alloca. Prevents accidental mutation.
+- **Default parameter values** — `def f(x: int, y: int = 0) -> int`; caller omits trailing args, compiler fills in constants. No overloading needed.
+- **Named arguments at call site** — `f(y=5, x=3)`; reorder or omit args by name. Requires matching names at the call site, not a new type system concept.
+- **`defer` statement** — `defer free(p)`; executes at function exit regardless of return path. Essential for clean resource management in no-GC code. Lowers to cleanup blocks at every `return` and fall-through exit.
+- **Multiple return values** — `def divmod(a: int, b: int) -> (int, int): return a/b, a%b`; anonymous tuple type, unpacked at call site: `q, r = divmod(10, 3)`. Requires tuple type and lvalue unpacking.
+- **Warn on assignment in condition** — `if x = 10` should warn (or error in strict mode) unless explicitly parenthesized: `if (x = 10)`. Low-hanging lint win.
+- **String interpolation** — `f"result: {x}"` producing a `ptr[int8]`; lowers to `sprintf` into a stack buffer. Decide on buffer-size strategy before implementing.
+- **`static` local variables** — `static counter: int = 0` inside a function; persists between calls. Lowers to a module-level global with a mangled name. Common K&R pattern.
+- **`goto` and labels** — `goto cleanup` and `cleanup:` label; useful for K&R-style error unwind and for generated code. Low priority but needed for full C compatibility.
+- **`NULL` / null pointer literal** — `null` or `nil` as a typed null pointer constant; currently requires `ptr[T](0)`. Interacts with optional types.
+- **Command-line arguments to `main`** — `def main(argc: int32, argv: ptr[ptr[int8]]) -> int`; currently `main` takes no arguments. Required for any CLI tool written in pyxc.
+- **`len()` built-in** — `len(arr)` returns the element count of a fixed-size array as a compile-time constant; avoids manual tracking of `N` in `T[N]`.
+- **`in` operator** — `x in arr` membership test; lowers to a linear scan for arrays, hook for trait-based custom containers later.
+
+### Types
+- **Enums** — `enum Color: Red, Green, Blue` or `enum Status: Ok = 0, Err = 1`; named integral constants with optional explicit values; `switch`-friendly; no implicit int conversion.
+- **Function pointers** — `ptr[def(int, int) -> int]`; enables callbacks, `qsort`, dispatch tables, and is a prerequisite for the self-hosting bootstrap plan. Medium complexity: needs a new type encoding and call-site codegen path.
+- **Generic functions and structs** — `def max[T](a: T, b: T) -> T` and `struct Stack[T]`; monomorphised at instantiation like C++ templates, not erased like Java generics. Prerequisite for `List[T]`, `Dict[K,V]`, etc.
+- **Optional / nullable types** — `T?` or `Option[T]`; `None` as a value, not just a return type. Forces callers to check before use. Interacts with pointer nullability.
+- **Union types** — C-style `union`; same memory, multiple interpretations. Needed for systems/protocol programming and certain K&R patterns.
+- **Bit-fields** — `struct Flags: bits: uint8[3]` style or `@bitfield` annotation; required for hardware register maps and packed binary formats.
+- **`const` pointers** — `ptr[const int8]` for read-only data; catches accidental writes through string literals and read-only memory regions.
+- **Multidimensional arrays** — `int[3][3]` as `array(array(int, 3), 3)`; currently blocked with "Nested arrays are not supported". Requires recursive type encoding and multi-level GEP.
+- **Pointer to array** — `ptr[int[4]]`; currently blocked with "Pointers to array types are not supported". C's `int (*p)[4]` pattern; useful for passing fixed-size rows to functions.
+- **`void` pointer / untyped pointer** — `ptr` without a type argument as a generic handle; equivalent to C's `void *`. Currently requires `ptr[int8]` as a workaround, which loses intent.
+
+### OOP / Classes
+- **`self.method()` calls from within a method** — currently broken (see Known Bugs); calling a method on `self` from another method of the same class fails because `self` is typed as `ptr[ClassName]` internally. Fix: auto-deref in the method call dispatcher.
+- **Static class properties and methods** — `class Foo: static count: int = 0` and `static def create() -> Foo`; callable as `Foo.count` / `Foo.create()` with no instance. Stored as a module-level global with a mangled name.
+- **Operator overloading on class instances** — `impl Add for Vec2` style, or `def __add__(other: Vec2) -> Vec2` inside the class. Currently only global `@binary`/`@unary` operators exist; class-specific dispatch is missing.
+- **`__str__` method** — `def __str__() -> ptr[int8]`; called by a built-in `str(x)` or `print(x)` to get a human-readable representation.
+- **Abstract methods** — mark a trait method as requiring implementation; compiler errors if `impl` block omits it. (Traits already check conformance, so this may just be a documentation/annotation gap.)
+- **Inheritance** — deliberate design decision needed: pyxc currently uses traits for interface polymorphism and composition for code reuse. Single-inheritance with `class B(A)` is possible but conflicts with the no-vtable trait model. Recommend deciding explicitly rather than leaving open.
+
+### Imports / Modules
+- **Selective imports** — `from stdlib.io import printf, getchar`; imports named symbols without polluting the top-level namespace. Requires tracking which module a symbol came from.
+- **Import alias** — `import stdlib.io as io` and `io.printf(...)`; qualified access prevents name collisions across large import graphs.
+- **Directory modules** — `__init__.pyxc` as the entry point for `import mylib`; enables distributing a library as a directory rather than a single file.
+- **JIT multi-file execution** — `pyxc file.pyxc` currently only JIT-compiles the entry file; imported module bodies are not compiled (see Known Bugs). Fix: expand import closure and JIT-compile each imported file before executing entry.
+
+### Standard Library
+- **`stdlib/stdio.pyxc`** — `export extern def printf`, `scanf`, `getchar`, `putchar`, `fopen`, `fclose`, `fread`, `fwrite`, `fprintf`, `fgets`, `EOF` constant. Eliminates boilerplate `extern def` in every program.
+- **`stdlib/stdlib.pyxc`** — `malloc`, `free`, `realloc`, `qsort`, `bsearch`, `exit`, `atoi`, `atof`, `strtol`.
+- **`stdlib/string.pyxc`** — `strlen`, `strcmp`, `strncmp`, `strcpy`, `strncpy`, `strcat`, `memcpy`, `memset`, `memcmp`.
+- **`stdlib/math.pyxc`** — `sin`, `cos`, `sqrt`, `pow`, `fabs`, `floor`, `ceil`, `log`, `exp`.
+- **Built-in `print`** — `print("hello", x)` as a variadic built-in that calls `printf` internally; no `extern def` needed.
+
+### Tooling
+- **Error reporting with source spans** — fix the stale `CurLoc` bug (see Known Bugs); add `SourceLoc` field to `ExprAST` base; propagate through every node constructor.
+- **Function attributes** — `@noinline`, `@alwaysinline`, `@nounwind`, `@readnone` as decorators; maps directly to LLVM function attribute enums.
+- **Incremental compilation** — cache compiled `.o` files by content hash; skip recompilation when source and imports are unchanged.
+- **Packaging and installable CLI** — `pyxc build`, `pyxc run`, `pyxc init`; project manifest file; installable binary distribution.
+- **Language server (LSP)** — hover types, go-to-definition, error squiggles in editors.
+- **REPL improvements** — multi-line input (continue on trailing `:`), command history, tab completion for defined names.
+- **Pattern-matching exhaustiveness checks** — verify `switch` over an `enum` covers all cases; warn on unhandled variants.
+- **Escape analysis and stack-allocation wins** — detect heap-allocated objects that don't escape the function; replace `malloc`/`free` with stack allocas automatically.
+- **Generic collections** — `List[T]`, `Dict[K,V]`, `Set[T]`; requires generic structs first. Iteration protocols and ownership-aware container semantics.
+- **Generators / iterators** — `yield` and lazy sequence APIs; `range` builtin; defer until generator model is decided.
 
 ---
 
