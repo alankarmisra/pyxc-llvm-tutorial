@@ -827,13 +827,35 @@ static unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
   }
 }
 
-/// expression
-///   = varexpr | identifier "=" expression | unaryexpr binoprhs ;
+// expression = varexpr | identifier "=" expression | unaryexpr binoprhs;
 static unique_ptr<ExprAST> ParseExpression() {
+  if (CurTok == tok_var) {
+    return ParseVarExpr();
+  }
+
   auto primary = ParseUnary();
+
   if (!primary)
     return nullptr;
-  return ParseBinOpRHS(0, std::move(primary));
+  auto Expr = ParseBinOpRHS(0, std::move(primary));
+  if (!Expr)
+    return nullptr;
+
+  if (CurTok != '=')
+    return Expr;
+
+  const string *AssignedName = Expr->getLValueName();
+  if (!AssignedName)
+    return LogError("Destination of '=' must be a variable");
+
+  string Name = *AssignedName; // make a copy
+  getNextToken();              // eat the '='
+
+  auto RHS = ParseExpression();
+  if (!RHS)
+    return nullptr;
+
+  return make_unique<AssignmentExprAST>(Name, std::move(RHS));
 }
 
 /// prototype
@@ -1115,7 +1137,7 @@ static unique_ptr<PrototypeAST> ParseExtern() {
 static unique_ptr<LLVMContext> TheContext;
 static unique_ptr<Module> TheModule;
 static unique_ptr<IRBuilder<>> TheBuilder;
-static map<string, Value *> NamedValues;
+static map<string, AllocaInst *> NamedValues;
 static unique_ptr<PyxcJIT> TheJIT;
 static unique_ptr<FunctionPassManager> TheFPM;
 static unique_ptr<LoopAnalysisManager> TheLAM;
@@ -1125,6 +1147,11 @@ static unique_ptr<ModuleAnalysisManager> TheMAM;
 static ExitOnError ExitOnErr;
 
 // Code gen
+
+static AllocaInst *CreateEntryBlockAlloca(Function *F, const string &VarName) {
+  IRBuilder<> TmpB(&F->getEntryBlock(), F->getEntryBlock().begin());
+  return TmpB.CreateAlloca(Type::getDoubleTy(*TheContext), nullptr, VarName);
+}
 
 Function *getFunction(const std::string &Name) {
   // The function was defined in this module
@@ -1149,10 +1176,26 @@ Value *VariableExprAST::codegen() {
   auto It = NamedValues.find(Name);
 
   if (It != NamedValues.end() && It->second) {
-    return It->second;
+    return TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), It->second,
+                                  Name.c_str());
   }
 
   return LogErrorV("Unknown variable name");
+}
+
+// Evaluate RHS, store it in the variable, and produce the assigned value
+// (x = 10) > 5 --> 10 > 5 --> true
+Value *AssignmentExprAST::codegen() {
+  Value *Val = Expr->codegen();
+  if (!Val)
+    return nullptr;
+
+  AllocaInst *A = NamedValues[Name];
+  if (!A)
+    return LogErrorV("Unknown variable name");
+
+  TheBuilder->CreateStore(A, Val);
+  return Val;
 }
 
 Value *BinaryExprAST::codegen() {

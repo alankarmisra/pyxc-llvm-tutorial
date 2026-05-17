@@ -93,6 +93,7 @@ def main() -> int:
 
 **Chapters 24–30** add an object model: `class` declarations, methods with `self`, constructors, visibility, traits, `impl` blocks, and generic traits. By the end, this runs:
 
+
 ```python
 extern def printd(x: float64)
 extern def puts(s: ptr[int8]) -> int
@@ -149,6 +150,10 @@ def main() -> int:
   return 0
 ```
 
+**Chapters 31–40** close the K&R compatibility gap: division and remainder, compound assignment, `++`/`--`, logical operators with short-circuit evaluation, `while`/`do-while`/`break`/`continue`, bitwise operators, `switch`, `elif`, character literals, unsigned integer types, and assignment-as-expression. By the end, pyxc can express everything in the first four chapters of *The C Programming Language*.
+
+**Chapters 41–43** add a module system: `module` declarations, `export` to mark public API, `import` for pyxc-to-pyxc dependencies without `extern def`, and a two-phase scan to handle cyclic imports.
+
 ## Build and Run
 
 Pick any chapter and build it:
@@ -173,11 +178,11 @@ llvm-lit code/chapter-11/test/
 ├── docs/
 │   ├── chapter-00.md   # overview and chapter guide
 │   ├── chapter-01.md
-│   └── ... chapter-30.md
+│   └── ... chapter-43.md
 ├── code/
 │   ├── chapter-01/
 │   ├── chapter-02/
-│   └── ... chapter-30/
+│   └── ... chapter-43/
 │       ├── pyxc.cpp
 │       ├── CMakeLists.txt
 │       └── test/
@@ -220,8 +225,22 @@ See [ROADMAP.md](ROADMAP.md) for the full plan. Summary:
 - **Ch 29** — `impl` blocks (retroactive trait implementation) ✓
 - **Ch 30** — Generic traits (`trait Addable[T]`, type substitution at conformance time) ✓
 
-**Phase 5–7 — Modules, Control Flow Pass 2, Concurrency (Ch 31–45)**
-See [ROADMAP.md](ROADMAP.md) for details.
+**Phase 5 — K&R Compatibility (Ch 31–40)** ✓
+- **Ch 31** — `/`, `%`, compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`), `++`/`--`
+- **Ch 32** — `&&`, `||`, `!` with short-circuit evaluation
+- **Ch 33** — `while`, `do/while`, `break`, `continue`
+- **Ch 34** — `&`, `|`, `^`, `<<`, `>>`, `~` (integer-only)
+- **Ch 35** — `switch` with integer case matching, `default`, no fall-through
+- **Ch 36** — `elif` chains (lowered to nested `if` during parsing)
+- **Ch 37** — Character literals (`'a'`, `'\n'`, `'\0'`, typed as `int32`)
+- **Ch 38** — Unsigned integer types (`uint8`, `uint16`, `uint32`, `uint64`)
+- **Ch 39** — Assignment as expression (`=` and compound-assign inside expressions)
+- **Ch 40** — Variadic `extern def` for calling `printf`, `scanf`, etc.
+
+**Phase 6 — Program Structure (Ch 41–43)** ✓
+- **Ch 41** — `module` declarations and `export` for multi-file compilation
+- **Ch 42** — `import` for pyxc-to-pyxc dependencies; struct/class/trait/alias transfer across modules
+- **Ch 43** — Cyclic import handling via two-phase scan and `InProgress`/`Done` state machine
 
 ## Credits
 

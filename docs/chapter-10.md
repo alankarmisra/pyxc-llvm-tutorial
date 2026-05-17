@@ -319,6 +319,20 @@ static AllocaInst *CreateEntryBlockAlloca(Function *TheFunction,
 
 A temporary `IRBuilder` (`TmpB`) is used instead of the main `Builder` because we may be codegenning deep inside a branch or loop body, but allocas for local variables belong in the function entry block — not wherever the main builder happens to be pointing. Placing all allocas at the start of the entry block is a requirement for `mem2reg` to work correctly.
 
+Because `TmpB` is always reset to `begin()` of the entry block, each new alloca lands before all the previous ones. Declaring `var x, y` produces allocas in reverse order:
+
+```pyxc
+def foo(): return var x, y: 0
+```
+
+```llvm
+entry:
+  %y = alloca double, align 8   ; inserted second, lands first
+  %x = alloca double, align 8   ; inserted first, lands last
+```
+
+The reversal is harmless — allocas are just slot reservations with no ordering dependency. The stores that write the initial values happen afterward in declaration order, and `mem2reg` doesn't care about alloca order.
+
 ## Loading and Storing Variables
 
 Once names map to memory slots, reading and writing a variable becomes explicit load and store instructions.
