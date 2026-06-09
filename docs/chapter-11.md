@@ -49,11 +49,13 @@ simplestmt   = returnstmt | varstmt | assignstmt | expression ;
 compoundstmt = ifstmt | forstmt ;
 statement    = simplestmt | compoundstmt ;
 suite        = simplestmt | compoundstmt | eols block ;
-block        = indent statement { eols statement } dedent ;
+stmtsep      = eols | BLOCK_END ;           (* new: what separates statements inside a block *)
+block        = indent statement { stmtsep statement } dedent ;
 indent       = INDENT ;
 dedent       = DEDENT ;
 INDENT       = ? synthetic token emitted by the lexer when indentation increases ? ;
 DEDENT       = ? synthetic token emitted by the lexer when indentation decreases ? ;
+BLOCK_END    = ? synthetic token injected by ParseBlock after it consumes DEDENT ? ;
 
 (* simplified: var and assignment removed; if/for removed from primary *)
 expression   = unaryexpr binoprhs ;
@@ -63,8 +65,10 @@ primary      = identifierexpr | numberexpr | parenexpr ;
 - **`suite`** — what follows a `:`. Either a single statement on the same line, or a newline followed by an indented block.
 - **`simplestmt`** — statements that fit on one line: `return`, `var`, assignment, or a bare expression.
 - **`compoundstmt`** — statements that introduce a new suite: `if` and `for`.
-- **`block`** — an `INDENT` token, one or more statements separated by newlines, a `DEDENT` token.
+- **`stmtsep`** — what separates two statements inside a block. Normally that's one or more newlines (`eols`). But when the first statement was itself a block (an `if` or `for` with an indented body), no newline follows — the `DEDENT` already consumed the line break. `BLOCK_END` covers that case; see below.
+- **`block`** — an `INDENT` token, one or more statements separated by `stmtsep`, a `DEDENT` token.
 - **`INDENT` / `DEDENT`** — tokens emitted by the lexer when indentation increases or decreases. One `INDENT` is emitted when a block opens, one `DEDENT` when it closes — not one per line. The parser sees them like matched parentheses:
+- **`BLOCK_END`** — a synthetic token injected by `ParseBlock` into the token stream just before it returns. It signals "a nested block just closed here". The enclosing `ParseBlock` loop consumes it instead of expecting a newline, and any outer caller (like `HandleDefinition`) can check for it too. See the Parsing a Block section for details.
 
 ```pyxc
 def f():
@@ -99,7 +103,8 @@ compoundstmt    = ifstmt | forstmt ;
 statement       = simplestmt | compoundstmt ;
 suite           = simplestmt | compoundstmt | eols block ;
 returnstmt      = "return" expression ;
-block           = indent statement { eols statement } dedent ;
+stmtsep         = eols | BLOCK_END ;
+block           = indent statement { stmtsep statement } dedent ;
 expression      = unaryexpr binoprhs ;
 binoprhs        = { binaryop unaryexpr } ;
 varbinding      = identifier [ "=" expression ] ;
@@ -113,6 +118,10 @@ parenexpr       = "(" expression ")" ;
 binaryop        = builtinbinaryop | userdefbinaryop ;
 indent          = INDENT ;
 dedent          = DEDENT ;
+INDENT          = ? synthetic token emitted by lexer when indentation increases ? ;
+DEDENT          = ? synthetic token emitted by lexer when indentation decreases ? ;
+BLOCK_END       = ? synthetic token injected into the stream by ParseBlock
+                    immediately after it consumes DEDENT ? ;
 builtinbinaryop = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
 userdefbinaryop = ? any opchar defined as a custom binary operator ? ;
 userdefunaryop  = ? any opchar defined as a custom unary operator ? ;
@@ -127,8 +136,6 @@ letter          = "A".."Z" | "a".."z" ;
 digit           = "0".."9" ;
 eol             = "\r\n" | "\r" | "\n" ;
 ws              = " " | "\t" ;
-INDENT          = ? synthetic token emitted by lexer ? ;
-DEDENT          = ? synthetic token emitted by lexer ? ;
 ```
 
 **A side effect of this grammar change.** In [chapter 10](chapter-10.md), `var` was an expression with a body — `var x = 5 in x + 1`. The variable and the code that used it were a single syntactic unit, so the variable's lifetime was self-contained. Now that `var` is a free-standing statement, a variable declared in one statement could in principle be referenced in any later statement — including one compiled in a completely separate module.
@@ -156,12 +163,15 @@ return acc
 
 ## New Tokens and AST Nodes
 
-Two new token values are added to the lexer's enum:
+Three new token values are added to the lexer's enum:
 
 ```cpp
-tok_indent = -19,  // synthetic: start of an indented block
-tok_dedent = -20,  // synthetic: end of an indented block
+tok_indent    = -19, // synthetic: emitted by lexer when indentation increases
+tok_dedent    = -20, // synthetic: emitted by lexer when indentation decreases
+tok_block_end = -21, // synthetic: injected by ParseBlock after eating DEDENT
 ```
+
+`tok_indent` and `tok_dedent` come from the lexer — they are pushed into `PendingTokens` when the lexer detects a change in indentation. `tok_block_end` never comes from the lexer. It is injected by `ParseBlock` into `PendingTokens` just before it returns, so the calling parser sees it as `CurTok`. It is a signal in the token stream, not a character in the source.
 
 And three new AST node classes:
 
@@ -413,31 +423,31 @@ After every `:`, the parser calls `ParseSuite`. A suite is either an inline stat
 
 ```cpp
 /// suite = simplestmt | compoundstmt | eols block ;
-static unique_ptr<ExprAST> ParseSuite(bool *EndedWithBlock) {
+static unique_ptr<ExprAST> ParseSuite() {
   if (CurTok == tok_eol) {
     // Newline after ':' → expect an indented block.
     consumeNewlines();
     if (CurTok != tok_indent)
       return LogError("Expected an indented block");
-    *EndedWithBlock = true;
-    return ParseBlock();
+    return ParseBlock(); // CurTok = tok_block_end on return
   }
+  if (CurTok == tok_indent)
+    return ParseBlock(); // CurTok = tok_block_end on return
   // Same line after ':' → parse an inline statement.
-  auto Stmt = ParseStatement();
-  if (!Stmt) return nullptr;
-  *EndedWithBlock = LastStatementWasBlock;
-  return Stmt;
+  return ParseStatement();
 }
 ```
+
+When `ParseSuite` delegates to `ParseBlock`, it returns exactly what `ParseBlock` returns, with `CurTok = tok_block_end`. The caller can inspect `CurTok` to know whether the suite ended with a block.
 
 `ParseIfStmt` and `ParseForStmt` both call `ParseSuite` after eating `:`. A `def` body works slightly differently — the inline form only accepts a `simplestmt`, not a compound statement. You cannot write `def f(x): if x > 0: return 1` on one line.
 
 ## Parsing a Block
 
-`ParseBlock` consumes `INDENT`, reads statements separated by newlines until `DEDENT`, then consumes `DEDENT`:
+`ParseBlock` consumes `INDENT`, reads statements separated by `stmtsep` until `DEDENT`, injects `tok_block_end`, and returns:
 
 ```cpp
-/// block = INDENT statement { eols statement } DEDENT ;
+/// block = INDENT statement { stmtsep statement } DEDENT ;
 static unique_ptr<ExprAST> ParseBlock() {
   if (CurTok != tok_indent)
     return LogError("Expected an indented block");
@@ -445,34 +455,80 @@ static unique_ptr<ExprAST> ParseBlock() {
 
   BlockScopeGuard Scope; // each block gets its own var scope
 
-  consumeNewlines();
-
-  if (CurTok == tok_dedent)
-    return LogError("Expected at least one statement in block");
-
+  // Parse the first statement (required — empty blocks are not allowed).
+  auto First = ParseStatement();
+  if (!First) return nullptr;
   vector<unique_ptr<ExprAST>> Stmts;
+  Stmts.push_back(std::move(First));
+
   while (true) {
-    if (CurTok == tok_dedent) break;
+    if (CurTok == tok_eol) {
+      consumeNewlines();        // stmtsep = eols
+      if (CurTok == tok_dedent) break;
+    } else if (CurTok == tok_block_end) {
+      // stmtsep = BLOCK_END: a nested block just closed.
+      // No tok_eol follows — consume the marker and continue.
+      getNextToken();
+      if (CurTok == tok_dedent) break;
+    } else if (CurTok == tok_dedent) {
+      break;
+    } else {
+      return LogError("Expected newline or end of block");
+    }
 
     auto Stmt = ParseStatement();
     if (!Stmt) return nullptr;
     Stmts.push_back(std::move(Stmt));
-
-    if (CurTok == tok_eol) { consumeNewlines(); continue; }
-    if (CurTok == tok_dedent) break;
-    // A nested compound statement (if/for) leaves the parser just after
-    // its suite — no newline is required before the next statement.
-    if (LastStatementWasBlock) continue;
-
-    return LogError("Expected newline or end of block");
   }
 
-  getNextToken(); // eat DEDENT
+  // Inject tok_block_end before advancing past DEDENT so callers see it
+  // as CurTok on return, removing the need for any boolean flag.
+  PendingTokens.push_front(tok_block_end);
+  getNextToken(); // → CurTok = tok_block_end (DEDENT is overwritten and consumed)
   return make_unique<BlockExprAST>(std::move(Stmts));
 }
 ```
 
-`LastStatementWasBlock` is a global flag set by `ParseIfStmt` / `ParseForStmt` when their suite ended with an indented block. It lets the enclosing block keep parsing without requiring a newline first.
+The last three lines are the key. When the loop breaks on `tok_dedent`, `CurTok` holds the DEDENT token. We push `tok_block_end` to the front of `PendingTokens` and call `getNextToken()`. That call pops `tok_block_end` from `PendingTokens` and overwrites `CurTok` — the DEDENT is quietly consumed in the process, and `ParseBlock` returns with `CurTok = tok_block_end`.
+
+Every caller that previously needed a boolean "did this suite end with a block?" can now just check `CurTok == tok_block_end`.
+
+## BLOCK_END and the else Problem
+
+`tok_block_end` flows cleanly through most of the parser — `ParseBlock`'s loop consumes it and keeps going, `HandleDefinition` checks for it instead of checking for `tok_eol`. One case is trickier: `if` with an optional `else`.
+
+After `ParseSuite` returns the then-branch, `CurTok` might be `tok_block_end` (if the then was a block). But `else` lives on the very next line at the same indentation level — right where `tok_block_end` is sitting. `ParseIfStmt` needs to look past it.
+
+The approach: consume `tok_block_end` temporarily to peek at what follows. If it's `else`, great — parse the else branch normally. If it's not, re-inject `tok_block_end` so the enclosing `ParseBlock` loop still sees it as a separator.
+
+```cpp
+unique_ptr<ExprAST> Then = ParseSuite();
+if (!Then) return nullptr;
+
+bool ThenWasBlock = (CurTok == tok_block_end);
+if (ThenWasBlock)
+  getNextToken(); // consume tok_block_end → CurTok = next real token
+
+consumeNewlines(); // skip any blank lines before 'else'
+
+unique_ptr<ExprAST> Else;
+if (CurTok == tok_else) {
+  getNextToken(); // eat 'else'
+  if (CurTok != ':') return LogError("Expected ':' after else");
+  getNextToken(); // eat ':'
+  Else = ParseSuite();
+  if (!Else) return nullptr;
+} else if (ThenWasBlock) {
+  // No else. Re-inject tok_block_end so the enclosing block sees it.
+  // Save the token we already advanced to — it must not be lost.
+  PendingTokens.push_front(CurTok); // push current lookahead back
+  CurTok = tok_block_end;           // restore the signal directly
+}
+```
+
+The critical detail is the last three lines. After `getNextToken()` consumed `tok_block_end`, a real token (say, `tok_return`, or the next `tok_dedent`) landed in `CurTok`. If we naively pushed `tok_block_end` to `PendingTokens` and called `getNextToken()` again, that new call would pop `tok_block_end` right back out — and the token already in `CurTok` would be **overwritten and lost**. The function after the `if` would parse incorrectly, or the outer block would close at the wrong point.
+
+Instead: push the current `CurTok` to `PendingTokens`, then set `CurTok = tok_block_end` directly without calling `getNextToken()`. The saved token is now first in `PendingTokens`; the next `getNextToken()` call anywhere upstream will retrieve it correctly.
 
 ## Parsing Statements
 
@@ -481,7 +537,6 @@ static unique_ptr<ExprAST> ParseBlock() {
 ```cpp
 /// statement = simplestmt | compoundstmt ;
 static unique_ptr<ExprAST> ParseStatement() {
-  LastStatementWasBlock = false;
   if (CurTok == tok_if)  return ParseIfStmt();
   if (CurTok == tok_for) return ParseForStmt();
   return ParseSimpleStmt();
@@ -716,22 +771,26 @@ def threshold(x):
 
 ## After a Top-Level Block
 
-When a `def` body ends with an indented block, the parser lands on the next top-level token — not a newline. Without special handling, `HandleDefinition` would treat that as a parse error. A flag tracks this:
+When a `def` body ends with an indented block, `ParseDefinition` returns with `CurTok = tok_block_end`. The `MainLoop` and `HandleDefinition` check for it explicitly:
 
 ```cpp
-static bool LastTopLevelEndedWithBlock = false;
-
-static void HandleDefinition() {
-  auto FnAST = ParseDefinition();
-  bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof);
-  if (!FnAST || (HasTrailing && !LastTopLevelEndedWithBlock)) {
-    // error recovery
-  }
-  // ...
+// In MainLoop:
+if (CurTok == tok_block_end) {
+  getNextToken(); // consume the marker; next token starts the next definition
+  continue;
 }
 ```
 
-This is what lets a file contain two top-level definitions back to back without a blank line between them.
+```cpp
+// In HandleDefinition:
+bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof &&
+                    CurTok != tok_block_end);
+if (!FnAST || HasTrailing) {
+  // error recovery
+}
+```
+
+No boolean flag needed. `tok_block_end` in `CurTok` is the signal — it's the same mechanism that `ParseBlock`'s own loop uses. Two definitions back to back with no blank line between them work correctly because `MainLoop` eats the `tok_block_end` before dispatching the next top-level form.
 
 ## Things Worth Knowing
 

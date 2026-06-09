@@ -154,6 +154,7 @@ enum Token {
   // indentation
   tok_indent = -21,
   tok_dedent = -22,
+  tok_block_end = -100, // synthetic: injected by ParseBlock after eating DEDENT
 
   // new type keywords
   tok_int8 = -23,
@@ -206,6 +207,7 @@ static map<string, Token> Keywords = {
     {"int32", tok_int32},     {"int64", tok_int64},     {"float", tok_float},
     {"float32", tok_float32}, {"float64", tok_float64}, {"bool", tok_bool},
     {"None", tok_none},       {"True", tok_true},       {"False", tok_false}};
+static constexpr int IndentTabWidth = 8;
 
 // Debug-only token names. Kept separate from Keywords because this map is
 // purely for printing token stream output.
@@ -228,7 +230,8 @@ static map<int, string> TokenNames = [] {
       {tok_float64, "'float64'"}, {tok_bool, "'bool'"},
       {tok_none, "'None'"},       {tok_true, "'True'"},
       {tok_false, "'False'"},     {tok_indent, "indent"},
-      {tok_dedent, "dedent"}};
+      {tok_dedent, "dedent"},
+                                   {tok_block_end, "block-end"}};
 
   // Single character tokens.
   for (int ch = 0; ch <= 255; ++ch) {
@@ -267,6 +270,8 @@ struct SourceLocation {
 };
 static SourceLocation CurLoc;
 static SourceLocation LexLoc = {1, 0};
+static void LogErrorAtLoc(const char *Str, SourceLocation Loc);
+static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation Loc);
 
 /// SourceManager - Buffers every source line as it is read so that error
 /// messages can reprint the offending line with a caret underneath it.
@@ -406,17 +411,14 @@ static int gettok() {
     PendingTokens.pop_front();
     return Tok;
   }
-
-  // At line start with the sentinel space, advance to the first real char
-  // so the indentation counting below sees actual input.
-  if (AtLineStart && LexerLastChar == ' ')
-    LexerLastChar = advance();
-
   // ── Line-start: count indentation, emit INDENT / DEDENT ──────────────
   if (AtLineStart) {
-    int IndentCol = 0;
+    // Prime sentinel space once so indentation scans real input.
+    if (LexerLastChar == ' ')
+      LexerLastChar = advance();
+    int CurrentIndentRead = 0;
     while (LexerLastChar == ' ' || LexerLastChar == '\t') {
-      IndentCol += (LexerLastChar == ' ') ? 1 : (8 - IndentCol % 8);
+      CurrentIndentRead += (LexerLastChar == ' ') ? 1 : (IndentTabWidth - CurrentIndentRead % IndentTabWidth);
       LexerLastChar = advance();
     }
 
@@ -457,22 +459,20 @@ static int gettok() {
 
     // Real content: compare column to the indent stack.
     CurLoc = LexLoc;
-    int CurrentIndent = IndentStack.back();
-    if (IndentCol > CurrentIndent) {
-      IndentStack.push_back(IndentCol);
+    int CurrentIndentOnStack = IndentStack.back();
+    if (CurrentIndentRead > CurrentIndentOnStack) {
+      IndentStack.push_back(CurrentIndentRead);
       AtLineStart = false;
       return tok_indent;
     }
-    if (IndentCol < CurrentIndent) {
+    if (CurrentIndentRead < CurrentIndentOnStack) {
       while (IndentStack.size() > 1 /* protect the 0-indent */ &&
-             IndentCol < IndentStack.back()) {
+             CurrentIndentRead < IndentStack.back()) {
         IndentStack.pop_back();
         PendingTokens.push_back(tok_dedent);
       }
-      if (IndentCol != IndentStack.back()) {
-        fprintf(stderr,
-                "Error (Line %d, Column %d): inconsistent indentation\n",
-                CurLoc.Line, CurLoc.Col);
+      if (CurrentIndentRead != IndentStack.back()) {
+        LogErrorAtLoc("inconsistent indentation", CurLoc);
         PrintErrorSourceContext(CurLoc);
         return tok_error;
       }
@@ -551,20 +551,14 @@ static int gettok() {
         LexerLastChar = advance();
       }
       if (!isdigit(LexerLastChar)) {
-        fprintf(stderr,
-                "Error (Line %d, Column %d): invalid number literal '%s'\n",
-                CurLoc.Line, CurLoc.Col, NumStr.c_str());
-        PrintErrorSourceContext(CurLoc);
-        return tok_error;
+      LogInvalidNumberLiteralAtLoc(NumStr, CurLoc);
+      return tok_error;
       }
       ConsumeDigits();
     }
 
     if (NumStr == ".") {
-      fprintf(stderr,
-              "Error (Line %d, Column %d): invalid number literal '%s'\n",
-              CurLoc.Line, CurLoc.Col, NumStr.c_str());
-      PrintErrorSourceContext(CurLoc);
+      LogInvalidNumberLiteralAtLoc(NumStr, CurLoc);
       return tok_error;
     }
 
@@ -716,6 +710,16 @@ static void PrintErrorSourceContext(SourceLocation Loc) {
   int spaces = max(0, Loc.Col - 1);
   fprintf(stderr, "%*s", spaces, " ");
   fprintf(stderr, "^~~~\n");
+}
+
+
+static void LogErrorAtLoc(const char *Str, SourceLocation Loc) {
+  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Loc.Line, Loc.Col, Str);
+  PrintErrorSourceContext(Loc);
+}
+
+static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation Loc) {
+  LogErrorAtLoc(("invalid number literal '" + Literal + "'").c_str(), Loc);
 }
 
 //===----------------------------------------===//
@@ -1137,23 +1141,16 @@ static void EndBlockScope() {
 }
 
 // Check only the innermost scope (used for redeclaration checks).
-static bool IsDeclaredInCurrentScope(const string &Name) {
-  if (VarScopes.empty())
-    return false;
-  return VarScopes.back().count(Name) > 0;
-}
 
 // Ensure a function scope exists, then add a new scope for the loop variable.
-static void EnterLoopScope(const string &Name, ValueType Type) {
-  if (VarScopes.empty())
-    VarScopes.emplace_back();
+static void BeginLoopScope(const string &Name, ValueType Type) {
   VarScopes.emplace_back();
   VarScopes.back()[Name] = Type;
 }
 
 // Size == 1 is only popped for top-level blocks (function scope is popped in
 // EndFunctionScope).
-static void ExitLoopScope() {
+static void EndLoopScope() {
   if (VarScopes.size() > 1)
     VarScopes.pop_back();
   if (ParsingTopLevel && VarScopes.size() == 1)
@@ -1167,17 +1164,19 @@ struct FunctionScopeGuard {
   ~FunctionScopeGuard() { EndFunctionScope(); }
 };
 
-struct LoopScopeGuard {
-  LoopScopeGuard(const string &Name, ValueType Type) {
-    EnterLoopScope(Name, Type);
-  }
-  ~LoopScopeGuard() { ExitLoopScope(); }
-};
-
 struct BlockScopeGuard {
   BlockScopeGuard() { BeginBlockScope(); }
   ~BlockScopeGuard() { EndBlockScope(); }
 };
+
+struct LoopScopeGuard {
+  LoopScopeGuard(const string &Name, ValueType Type) {
+    BeginLoopScope(Name, Type);
+  }
+  ~LoopScopeGuard() { EndLoopScope(); }
+};
+
+
 
 struct ReturnTypeGuard {
   ValueType Saved;
@@ -1186,6 +1185,13 @@ struct ReturnTypeGuard {
   }
   ~ReturnTypeGuard() { CurrentFunctionReturnType = Saved; }
 };
+
+// Check only the innermost scope (used for redeclaration checks).
+static bool IsDeclaredInCurrentScope(const string &Name) {
+  if (VarScopes.empty())
+    return false;
+  return VarScopes.back().count(Name) > 0;
+}
 
 // IsDeclaredVar - Check all local scopes from innermost to outermost, then
 // fall back to globals. Used to validate assignments and references.
@@ -1243,9 +1249,7 @@ void Log(const string &message) {
 unique_ptr<ExprAST> LogError(const char *Str) {
   HadError = true;
   SourceLocation Anchor = GetDiagnosticAnchorLoc(CurLoc, CurTok);
-  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
-          Str);
-  PrintErrorSourceContext(Anchor);
+  LogErrorAtLoc(Str, Anchor);
   return nullptr;
 }
 
@@ -1265,22 +1269,15 @@ static unique_ptr<ExprAST> ParseVarStmt();
 static unique_ptr<ExprAST> ParseStatement();
 static unique_ptr<ExprAST> ParseSimpleStmt();
 static unique_ptr<ExprAST> ParseBlock();
-static unique_ptr<ExprAST> ParseFunctionBody(bool *BodyIsBlock);
+static unique_ptr<ExprAST> ParseFunctionBody();
 
-// Inside a block: true if the last statement was a compound block (if/for),
-// so the next statement can start without a tok_eol.
-static bool LastStatementWasBlock = false;
-
-// At top level: true if the last top‑level form ended with a block,
-// so the next top‑level form can start without a tok_eol.
-static bool LastTopLevelEndedWithBlock = false;
 
 // Counter to give each anonymous top-level expression a unique name.
 static unsigned TopLevelExprCounter = 0;
 // Whether the last top-level form should be printed in the REPL.
 static bool LastTopLevelShouldPrint = true;
 
-static unique_ptr<ExprAST> ParseSuite(bool *EndedWithBlock);
+static unique_ptr<ExprAST> ParseSuite();
 static ValueType ParseTypeToken();
 static const char *TypeName(ValueType Type);
 static bool IsNumericType(ValueType Type);
@@ -1461,7 +1458,7 @@ static unique_ptr<ExprAST> ParseParenExpr() {
 ///
 /// callexpr
 ///   = identifier "(" [ expression { "," expression } ] ")" ;
-static unique_ptr<ExprAST> ParseIdentifierExprWithName(string IdName) {
+static unique_ptr<ExprAST> ParseIdentifierExprWithName(const string &IdName) {
   if (CurTok != '(') { // Simple variable ref.
     ValueType Type = LookupVarType(IdName);
     if (Type == ValueType::Error) {
@@ -1529,15 +1526,15 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
 
   getNextToken(); // eat identifier.
 
-  return ParseIdentifierExprWithName(std::move(IdName));
+  return ParseIdentifierExprWithName(IdName);
 }
 
 // ParseForParts - Parse the "= start, cond, step : suite" tail of a for-loop.
 // Also validates the parts against VarType (start/step assignable, cond bool).
-// Returns true on success and fills Start/Cond/Step/Body plus BodyIsBlock.
+// Returns true on success and fills Start/Cond/Step/Body.
 static bool ParseForParts(ValueType VarType, unique_ptr<ExprAST> &Start,
                           unique_ptr<ExprAST> &Cond, unique_ptr<ExprAST> &Step,
-                          unique_ptr<ExprAST> &Body, bool &BodyIsBlock) {
+                          unique_ptr<ExprAST> &Body) {
   if (CurTok != '=')
     return LogError("Expected '=' after for variable"), false;
   getNextToken(); // eat '='
@@ -1575,7 +1572,7 @@ static bool ParseForParts(ValueType VarType, unique_ptr<ExprAST> &Start,
   getNextToken(); // eat ':'
 
   // Parse the suite after ':' (inline statement or indented block).
-  Body = ParseSuite(&BodyIsBlock);
+  Body = ParseSuite();
   if (!Body)
     return false;
 
@@ -1626,18 +1623,15 @@ static unique_ptr<ExprAST> ParseForStmt() {
   }
 
   unique_ptr<ExprAST> Start, Cond, Step, Body;
-  bool BodyIsBlock = false;
 
   if (IsVarDecl) {
     LoopScopeGuard LoopScope(VarName, VarType);
-    if (!ParseForParts(VarType, Start, Cond, Step, Body, BodyIsBlock))
+    if (!ParseForParts(VarType, Start, Cond, Step, Body))
       return nullptr;
   } else {
-    if (!ParseForParts(VarType, Start, Cond, Step, Body, BodyIsBlock))
+    if (!ParseForParts(VarType, Start, Cond, Step, Body))
       return nullptr;
   }
-
-  LastStatementWasBlock = BodyIsBlock;
   return make_unique<ForExprAST>(VarName, IsVarDecl, VarType, std::move(Start),
                                  std::move(Cond), std::move(Step),
                                  std::move(Body));
@@ -1716,7 +1710,6 @@ static unique_ptr<ExprAST> ParseVarStmt() {
 ///   = "if" expression ":" suite [ eols "else" ":" suite ] ;
 static unique_ptr<ExprAST> ParseIfStmt() {
   getNextToken(); // eat 'if'
-
   auto Cond = ParseExpression();
   if (!Cond)
     return nullptr;
@@ -1727,27 +1720,32 @@ static unique_ptr<ExprAST> ParseIfStmt() {
     return LogError("Expected ':' after if condition");
   getNextToken(); // eat ':'
 
-  bool ThenIsBlock = false;
-  unique_ptr<ExprAST> Then = ParseSuite(&ThenIsBlock);
+  unique_ptr<ExprAST> Then = ParseSuite();
   if (!Then)
     return nullptr;
 
-  // Allow 'else' on next line
+  bool ThenWasBlock = (CurTok == tok_block_end);
+  if (ThenWasBlock)
+    getNextToken();
+
+  // Allow 'else' on next line.
   consumeNewlines();
 
   unique_ptr<ExprAST> Else;
-  bool ElseIsBlock = false;
   if (CurTok == tok_else) {
     getNextToken(); // eat 'else'
     if (CurTok != ':')
       return LogError("Expected ':' after else");
     getNextToken(); // eat ':'
-    Else = ParseSuite(&ElseIsBlock);
+    Else = ParseSuite();
     if (!Else)
       return nullptr;
+  } else if (ThenWasBlock) {
+    // No else: restore the synthetic separator for the enclosing block/top level.
+    PendingTokens.push_front(CurTok);
+    CurTok = tok_block_end;
   }
 
-  LastStatementWasBlock = ThenIsBlock || ElseIsBlock;
   return make_unique<IfStmtAST>(std::move(Cond), std::move(Then),
                                 std::move(Else));
 }
@@ -2081,41 +2079,42 @@ static unique_ptr<ExprAST> ParseAssignmentRHS(const string &Name) {
   return make_unique<AssignmentExprAST>(Name, std::move(RHS), VarType);
 }
 
-/// simplestmt
-///   = returnstmt | varstmt | assignstmt | expression ;
-static unique_ptr<ExprAST> ParseSimpleStmt() {
-  if (CurTok == tok_return)
-    return ParseReturnStmt();
-  if (CurTok == tok_var)
-    return ParseVarStmt();
 
-  unique_ptr<ExprAST> Expr;
-  if (CurTok == tok_identifier) {
-    string Name = IdentifierStr;
-    getNextToken(); // eat identifier.
+// Parse identifier-led forms in simplestmt:
+//   assignstmt   : identifier "=" expression
+//   expression   : identifier ...
+// and reject trailing '=' when the parsed LHS is not assignable.
+static unique_ptr<ExprAST> ParseLeadingIdentifierSimpleStmt() {
+  string Name = IdentifierStr;
+  getNextToken(); // eat identifier
 
-    if (CurTok == '=') {
-      return ParseAssignmentRHS(Name);
-    }
+  // Fast path for assignstmt: x = ...
+  if (CurTok == '=')
+    return ParseAssignmentRHS(Name);
 
-    Expr = ParseIdentifierExprWithName(std::move(Name));
-    if (!Expr)
-      return nullptr;
-    Expr = ParseBinOpRHS(0, std::move(Expr));
-    if (!Expr)
-      return nullptr;
+  // Otherwise parse as expression starting from identifier.
+  auto Expr = ParseIdentifierExprWithName(std::move(Name));
+  if (!Expr)
+    return nullptr;
+  Expr = ParseBinOpRHS(0, std::move(Expr));
+  if (!Expr)
+    return nullptr;
 
-    if (CurTok != '=')
-      return Expr;
+  // Optional assignment tail: (<expr>) = ...
+  if (CurTok != '=')
+    return Expr;
 
-    const string *AssignedName = Expr->getLValueName();
-    if (!AssignedName)
-      return LogError("Destination of '=' must be a variable");
+  const string *AssignedName = Expr->getLValueName();
+  if (!AssignedName)
+    return LogError("Destination of '=' must be a variable");
 
-    return ParseAssignmentRHS(*AssignedName);
-  }
+  return ParseAssignmentRHS(*AssignedName);
+}
 
-  Expr = ParseExpression();
+// Parse non-identifier-leading expression forms for simplestmt and reject a
+// trailing '=' so assignment diagnostics stay local and specific.
+static unique_ptr<ExprAST> ParseNonLeadingIdentifierSimpleStmt() {
+  auto Expr = ParseExpression();
   if (!Expr)
     return nullptr;
 
@@ -2125,10 +2124,23 @@ static unique_ptr<ExprAST> ParseSimpleStmt() {
   return LogError("Destination of '=' must be a variable");
 }
 
+
+/// simplestmt
+///   = returnstmt | varstmt | assignstmt | expression ;
+static unique_ptr<ExprAST> ParseSimpleStmt() {
+  // simplestmt = returnstmt | varstmt | assignstmt | expression
+  if (CurTok == tok_return)
+    return ParseReturnStmt();
+  if (CurTok == tok_var)
+    return ParseVarStmt();
+  if (CurTok == tok_identifier)
+    return ParseLeadingIdentifierSimpleStmt();
+  return ParseNonLeadingIdentifierSimpleStmt();
+}
+
 /// statement
 ///   = simplestmt | compoundstmt ;
 static unique_ptr<ExprAST> ParseStatement() {
-  LastStatementWasBlock = false;
   if (CurTok == tok_if)
     return ParseIfStmt();
   if (CurTok == tok_for)
@@ -2138,29 +2150,22 @@ static unique_ptr<ExprAST> ParseStatement() {
 
 /// suite
 ///   = simplestmt | compoundstmt | eols block ;
-static unique_ptr<ExprAST> ParseSuite(bool *EndedWithBlock) {
+static unique_ptr<ExprAST> ParseSuite() {
   if (CurTok == tok_eol) {
     consumeNewlines();
     if (CurTok != tok_indent)
       return LogError("Expected an indented block");
-    *EndedWithBlock = true;
     return ParseBlock();
   }
 
-  if (CurTok == tok_indent) {
-    *EndedWithBlock = true;
+  if (CurTok == tok_indent)
     return ParseBlock();
-  }
 
-  auto Stmt = ParseStatement();
-  if (!Stmt)
-    return nullptr;
-  *EndedWithBlock = LastStatementWasBlock;
-  return Stmt;
+  return ParseStatement();
 }
 
 /// block
-///   = INDENT statement { eols statement } DEDENT ;
+///   = INDENT statement { stmtsep statement } DEDENT ;
 static unique_ptr<ExprAST> ParseBlock() {
   if (CurTok != tok_indent)
     return LogError("Expected an indented block");
@@ -2168,11 +2173,10 @@ static unique_ptr<ExprAST> ParseBlock() {
 
   BlockScopeGuard Scope;
 
-  consumeNewlines();
-
-  vector<unique_ptr<ExprAST>> Stmts;
   if (CurTok == tok_dedent)
     return LogError("Expected at least one statement in block");
+
+  vector<unique_ptr<ExprAST>> Stmts;
 
   while (true) {
     if (CurTok == tok_dedent)
@@ -2188,20 +2192,25 @@ static unique_ptr<ExprAST> ParseBlock() {
       continue;
     }
 
+    if (CurTok == tok_block_end) {
+      getNextToken();
+      continue;
+    }
+
     if (CurTok == tok_dedent)
       break;
 
-    if (LastStatementWasBlock)
-      continue;
-
-    // if (CurTok != tok_eol && CurTok != dedent && !LastStatementWasBlock)
-    // error()
     return LogError("Expected newline or end of block");
   }
 
   if (CurTok != tok_dedent)
     return LogError("Expected end of block");
-  getNextToken(); // eat DEDENT
+
+  // Consume DEDENT, but leave a synthetic separator visible to the enclosing
+  // parser so it can distinguish "a nested block just ended" from arbitrary
+  // trailing tokens without threading boolean state through every parser call.
+  PendingTokens.push_front(tok_block_end);
+  getNextToken(); // eat DEDENT, then surface tok_block_end
 
   return make_unique<BlockExprAST>(std::move(Stmts));
 }
@@ -2279,21 +2288,18 @@ ParseOptionalReturnType(ValueType DefaultType = ValueType::None) {
 
 /// functionbody
 ///   = simplestmt | eols block ;
-static unique_ptr<ExprAST> ParseFunctionBody(bool *BodyIsBlock) {
+static unique_ptr<ExprAST> ParseFunctionBody() {
   if (CurTok == tok_eol) {
     consumeNewlines();
     if (CurTok != tok_indent)
       return LogError("Expected an indented block");
-    *BodyIsBlock = true;
     return ParseBlock();
   }
 
-  *BodyIsBlock = false;
   return ParseSimpleStmt();
 }
 
 /// definition
-///   = "def" prototype [ "->" type ] ":" ( simplestmt | eols block ) ;
 static unique_ptr<FunctionAST> ParseDefinition() {
   getNextToken(); // eat 'def'
   auto Proto = ParsePrototype();
@@ -2310,12 +2316,9 @@ static unique_ptr<FunctionAST> ParseDefinition() {
   if (CurTok != ':')
     return LogErrorF("Expected ':' in function definition");
   getNextToken(); // eat ':'
-
-  bool BodyIsBlock = false;
-  unique_ptr<ExprAST> Body = ParseFunctionBody(&BodyIsBlock);
+  unique_ptr<ExprAST> Body = ParseFunctionBody();
 
   if (Body) {
-    LastTopLevelEndedWithBlock = BodyIsBlock;
     return make_unique<FunctionAST>(std::move(Proto), std::move(Body));
   }
   FunctionProtos.erase(Proto->getName());
@@ -2626,12 +2629,9 @@ static unique_ptr<FunctionAST> ParseDecoratedDef() {
   if (CurTok != ':')
     return LogErrorF("Expected ':' in operator definition");
   getNextToken(); // eat ':'
-
-  bool BodyIsBlock = false;
-  unique_ptr<ExprAST> Body = ParseFunctionBody(&BodyIsBlock);
+  unique_ptr<ExprAST> Body = ParseFunctionBody();
 
   if (Body) {
-    LastTopLevelEndedWithBlock = BodyIsBlock;
     return make_unique<FunctionAST>(std::move(Proto), std::move(Body));
   }
   FunctionProtos.erase(Proto->getName());
@@ -2641,14 +2641,12 @@ static unique_ptr<FunctionAST> ParseDecoratedDef() {
 /// toplevelstmt
 ///   = statement ;
 static unique_ptr<ExprAST> ParseTopLevelStatement() {
-  LastTopLevelEndedWithBlock = false;
   TopLevelParseGuard Guard;
   ReturnTypeGuard RetGuard(ValueType::None);
   auto Stmt = ParseStatement();
   if (!Stmt)
     return nullptr;
   LastTopLevelShouldPrint = Stmt->shouldPrintValue();
-  LastTopLevelEndedWithBlock = LastStatementWasBlock;
   return Stmt;
 }
 
@@ -2676,7 +2674,6 @@ static unique_ptr<FunctionAST> ParseTopLevelExpr() {
 /// external
 ///   = "extern" "def" prototype [ "->" type ] ;
 static unique_ptr<PrototypeAST> ParseExtern() {
-  LastTopLevelEndedWithBlock = false;
   getNextToken(); // eat extern.
   if (CurTok != tok_def)
     return LogErrorP("Expected `def` after extern.");
@@ -3505,9 +3502,12 @@ Value *ForExprAST::codegen() {
   AllocaInst *Alloca = nullptr;
   AllocaInst *OldVal = nullptr;
   if (IsVarDecl) {
+    auto OldIt = NamedValues.find(VarName);
+    OldVal = (OldIt != NamedValues.end()) ? OldIt->second : nullptr;
     Alloca = CreateEntryBlockAlloca(TheFunction, VarName, VarType);
     EmitDebugDeclare(Alloca, VarName, CurFunctionLine, false, 0, VarType);
     VarPtr = Alloca;
+    NamedValues[VarName] = Alloca;
   } else {
     auto It = NamedValues.find(VarName);
     if (It != NamedValues.end() && It->second)
@@ -3538,10 +3538,6 @@ Value *ForExprAST::codegen() {
 
   Builder->SetInsertPoint(CondBB);
 
-  if (IsVarDecl) {
-    OldVal = NamedValues[VarName];
-    NamedValues[VarName] = Alloca;
-  }
 
   Value *CondVal = Cond->codegen();
   if (!CondVal)
@@ -3826,7 +3822,6 @@ static void ResetParserStateForFile() {
   GlobalVarDecls.clear();
   VarScopes.clear();
   FileTopLevelStmts.clear();
-  LastTopLevelEndedWithBlock = false;
   LastTopLevelShouldPrint = true;
   InGlobalInit = false;
   ModuleHasGlobals = false;
@@ -3930,8 +3925,8 @@ static void SynchronizeToLineBoundary() {
 /// CurTok is on 'binary' or 'unary'. Delegates to ParseDecoratedDef.
 static void HandleDecorator() {
   auto FnAST = ParseDecoratedDef();
-  bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof);
-  if (!FnAST || (HasTrailing && !LastTopLevelEndedWithBlock)) {
+  bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
+  if (!FnAST || HasTrailing) {
     if (FnAST)
       LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
     SynchronizeToLineBoundary();
@@ -3960,8 +3955,8 @@ static void HandleDecorator() {
 /// On parse failure or unexpected trailing tokens: discard the line.
 static void HandleDefinition() {
   auto FnAST = ParseDefinition();
-  bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof);
-  if (!FnAST || (HasTrailing && !LastTopLevelEndedWithBlock)) {
+  bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
+  if (!FnAST || HasTrailing) {
     if (FnAST)
       LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
     SynchronizeToLineBoundary();
@@ -4039,8 +4034,8 @@ static void HandleExtern() {
 ///      transferred to the JIT in step 4, so eraseFromParent() is not needed.
 static void HandleTopLevelExpression() {
   auto FnAST = ParseTopLevelExpr();
-  bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof);
-  if (!FnAST || (HasTrailing && !LastTopLevelEndedWithBlock)) {
+  bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
+  if (!FnAST || HasTrailing) {
     if (FnAST)
       LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
     SynchronizeToLineBoundary();
@@ -4225,8 +4220,8 @@ static void HandleTopLevelExpression() {
 /// __pyxc.global_init function after the entire file is parsed.
 static void HandleTopLevelStatementFileMode() {
   auto Stmt = ParseTopLevelStatement();
-  bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof);
-  if (!Stmt || (HasTrailing && !LastTopLevelEndedWithBlock)) {
+  bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
+  if (!Stmt || HasTrailing) {
     if (Stmt)
       LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
     SynchronizeToLineBoundary();
@@ -4301,7 +4296,7 @@ static void MainLoop() {
     }
 
     // Stray dedent at top level (can occur in REPL mode): skip it.
-    if (CurTok == tok_dedent) {
+    if (CurTok == tok_dedent || CurTok == tok_block_end) {
       getNextToken();
       continue;
     }
@@ -4350,7 +4345,7 @@ static void FileModeLoop() {
       continue;
     }
 
-    if (CurTok == tok_dedent) {
+    if (CurTok == tok_dedent || CurTok == tok_block_end) {
       getNextToken();
       continue;
     }

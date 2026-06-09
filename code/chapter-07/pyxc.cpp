@@ -198,6 +198,7 @@ public:
 
 static SourceManager PyxcSourceMgr;
 static void PrintErrorSourceContext(SourceLocation Loc);
+static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation Loc);
 
 /// advance - Read one character from Input, update LexLoc and SourceManager.
 ///
@@ -289,10 +290,7 @@ static int gettok() {
     NumVal = strtod(NumStr.c_str(), &End);
     if (End == NumStr.c_str() /* no conversion */
         || *End != '\0' /* trailing unparsed characters */) {
-      fprintf(stderr,
-              "Error (Line %d, Column %d): invalid number literal '%s'\n",
-              CurLoc.Line, CurLoc.Col, NumStr.c_str());
-      PrintErrorSourceContext(CurLoc);
+      LogInvalidNumberLiteralAtLoc(NumStr, CurLoc);
       return tok_error;
     }
     return tok_number;
@@ -386,6 +384,12 @@ static void PrintErrorSourceContext(SourceLocation Loc) {
   int spaces = max(0, Loc.Col - 1);
   fprintf(stderr, "%*s", spaces, " ");
   fprintf(stderr, "^~~~\n");
+}
+
+static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation Loc) {
+  fprintf(stderr, "Error (Line %d, Column %d): invalid number literal '%s'\n",
+          Loc.Line, Loc.Col, Literal.c_str());
+  PrintErrorSourceContext(Loc);
 }
 
 //===----------------------------------------===//

@@ -43,11 +43,97 @@ In **Chapter 16** we will add a static type system: `int`, `int8`, `int16`, `int
 
 In **Chapters 17–22** we implement the full C-style memory model: structs and field access, pointer types and address-of, pointer arithmetic, heap allocation with `malloc`/`free`/`sizeof`, string literals and C interop, and type aliases. By the end of this phase, pyxc is a serious systems programming language — you can write K&R-style algorithms, call any C library function, and manually manage memory just as you would in C or C++.
 
+```pyxc
+extern def malloc(n: int64) -> ptr[int8]
+extern def free(p: ptr[int8])
+extern def puts(s: ptr[int8]) -> int
+extern def printd(x: float64)
+
+type string = ptr[int8]
+
+struct Point:
+  x: int
+  y: int
+
+def dot(p: ptr[Point], q: ptr[Point]) -> int:
+  return p[0].x * q[0].x + p[0].y * q[0].y
+
+def main() -> int:
+  var raw: ptr[int8] = malloc(2 * sizeof(Point))
+  var pts: ptr[Point] = ptr[Point](raw)
+  pts[0].x = 3
+  pts[0].y = 4
+  pts[1].x = 1
+  pts[1].y = 2
+  var next: ptr[Point] = pts + 1
+  printd(float64(dot(pts, next)))  # 11.000000
+  var msg: string = "done"
+  puts(msg)
+  free(raw)
+  return 0
+```
+
 In **Chapters 24–30** we add an object model: `class` declarations, methods with `self`, constructors, visibility rules, traits, and the beginnings of generics.
+
+```pyxc
+extern def printd(x: float64)
+extern def puts(s: ptr[int8]) -> int
+
+# A trait is a named contract — any class that declares it must satisfy it.
+trait Measurable:
+  def area() -> int
+  def perimeter() -> int
+
+# A class is like a struct with methods, a constructor, and visibility control.
+class Rect:
+  private w: int
+  private h: int
+
+  def __init__(width: int, height: int):
+    self.w = width
+    self.h = height
+
+  public def scale(factor: int):
+    self.w = self.w * factor
+    self.h = self.h * factor
+
+# impl adds trait conformance after the class is defined.
+# The compiler verifies that Rect actually has area() and perimeter()
+# with the right signatures before accepting this.
+impl Measurable for Rect:
+  def area() -> int:
+    return self.w * self.h
+  def perimeter() -> int:
+    return 2 * (self.w + self.h)
+
+# Generic traits let the same contract apply to different types.
+trait Addable[T]:
+  def add(x: T, y: T) -> T
+
+class IntAcc:
+  public total: int
+
+impl Addable[int] for IntAcc:
+  def add(x: int, y: int) -> int:
+    self.total = self.total + x + y
+    return self.total
+
+def main() -> int:
+  var r: Rect = Rect(3, 4)
+  printd(float64(r.area()))        # 12.000000
+  r.scale(2)
+  printd(float64(r.area()))        # 48.000000
+  printd(float64(r.perimeter()))   # 28.000000
+
+  var acc: IntAcc = IntAcc()
+  printd(float64(acc.add(10, 5)))  # 15.000000
+  printd(float64(acc.add(3, 2)))   # 20.000000
+  return 0
+```
 
 In **Chapters 31–35** we close the K&R compatibility gap: division and remainder, compound assignment, `++`/`--`, logical operators with short-circuit evaluation, `while` and `do/while` loops, `break` and `continue`, bitwise operators, and `switch`. By the end of Chapter 35, pyxc can express everything in the first four chapters of *The C Programming Language* without reaching for a single C library function.
 
-Here's what pyxc looks like after [chapter 11](chapter-11.md) — everything below runs today:
+Here's what pyxc looks like at the end of the first arc — a working JIT REPL with user-defined operators, control flow, and mutable variables:
 
 ```pyxc
 extern def printd(x)

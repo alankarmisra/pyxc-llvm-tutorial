@@ -203,6 +203,8 @@ These can be inserted where they fit best, ordered roughly by implementation dif
 - **Escape analysis and stack-allocation wins** — detect heap-allocated objects that don't escape the function; replace `malloc`/`free` with stack allocas automatically.
 - **Generic collections** — `List[T]`, `Dict[K,V]`, `Set[T]`; requires generic structs first. Iteration protocols and ownership-aware container semantics.
 - **Generators / iterators** — `yield` and lazy sequence APIs; `range` builtin; defer until generator model is decided.
+- **Verifier Phase 1 (sequential, SMT-backed)** — after enums and before concurrency: add `requires` / `ensures` / `assert` / loop `invariant`; generate verification conditions for single-threaded code; `pyxc --verify` mode; start with `int`/`bool`/control-flow subset and explicit unsupported diagnostics for heap-alias-heavy proofs.
+- **Verifier Phase 2 (concurrency-aware)** — after concurrency lands: extend verification model to thread interleavings, synchronization primitives, and memory-order rules; likely state-machine/temporal reasoning track (TLA+-style specs or model-checker integration) plus race-freedom checks.
 
 ---
 

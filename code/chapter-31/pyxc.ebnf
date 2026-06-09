@@ -51,7 +51,8 @@ compoundstmt    = ifstmt | forstmt ;
 statement       = simplestmt | compoundstmt ;
 suite           = simplestmt | compoundstmt | eols block ;
 returnstmt      = "return" [ expression ] ;
-block           = indent statement { eols statement } dedent ;
+stmtsep = eols | BLOCK_END ;
+block = indent statement { stmtsep statement } dedent ;
 expression      = unaryexpr binoprhs ;
 binoprhs        = { binaryop unaryexpr } ;
 lvalue          = identifier | fieldaccess | indexexpr ;
@@ -110,3 +111,5 @@ eol             = "\r\n" | "\r" | "\n" ;
 ws              = " " | "\t" ;
 INDENT          = ? synthetic token emitted by lexer ? ;
 DEDENT          = ? synthetic token emitted by lexer ? ;
+
+BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;

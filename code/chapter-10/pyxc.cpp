@@ -226,6 +226,8 @@ public:
 
 static SourceManager PyxcSourceMgr;
 static void PrintErrorSourceContext(SourceLocation Loc);
+static void LogInvalidNumberLiteralAtLoc(const string &Literal,
+                                         SourceLocation Loc);
 
 /// advance - Read one character from Input, update LexLoc and SourceManager.
 ///
@@ -329,10 +331,7 @@ static int gettok() {
     NumVal = strtod(NumStr.c_str(), &End);
     if (End == NumStr.c_str() /* no conversion */
         || *End != '\0' /* trailing unparsed characters */) {
-      fprintf(stderr,
-              "Error (Line %d, Column %d): invalid number literal '%s'\n",
-              CurLoc.Line, CurLoc.Col, NumStr.c_str());
-      PrintErrorSourceContext(CurLoc);
+      LogInvalidNumberLiteralAtLoc(NumStr, CurLoc);
       return tok_error;
     }
     return tok_number;
@@ -454,6 +453,13 @@ static void PrintErrorSourceContext(SourceLocation Loc) {
   fprintf(stderr, "^~~~\n");
 }
 
+static void LogInvalidNumberLiteralAtLoc(const string &Literal,
+                                         SourceLocation Loc) {
+  fprintf(stderr, "Error (Line %d, Column %d): invalid number literal '%s'\n",
+          Loc.Line, Loc.Col, Literal.c_str());
+  PrintErrorSourceContext(Loc);
+}
+
 //===----------------------------------------===//
 // Abstract Syntax Tree (aka Parse Tree)
 //===----------------------------------------===//
@@ -562,11 +568,11 @@ public:
 };
 
 /// IfExprAST - Expression class for if/else.
-class IfExprAST : public ExprAST {
+class IfStmtAST : public ExprAST {
   unique_ptr<ExprAST> Cond, Then, Else;
 
 public:
-  IfExprAST(unique_ptr<ExprAST> Cond, unique_ptr<ExprAST> Then,
+  IfStmtAST(unique_ptr<ExprAST> Cond, unique_ptr<ExprAST> Then,
             unique_ptr<ExprAST> Else)
       : Cond(std::move(Cond)), Then(std::move(Then)), Else(std::move(Else)) {}
   Value *codegen() override;
@@ -577,12 +583,12 @@ public:
 /// Each binding allocates stack storage in the current function's entry block,
 /// stores its initializer, shadows any outer binding of the same name for the
 /// duration of the body, then restores the old binding afterward.
-class VarExprAST : public ExprAST {
+class VarStmtAST : public ExprAST {
   vector<pair<string, unique_ptr<ExprAST>>> VarNames;
   unique_ptr<ExprAST> Body;
 
 public:
-  VarExprAST(vector<pair<string, unique_ptr<ExprAST>>> VarNames,
+  VarStmtAST(vector<pair<string, unique_ptr<ExprAST>>> VarNames,
              unique_ptr<ExprAST> Body)
       : VarNames(std::move(VarNames)), Body(std::move(Body)) {}
   Value *codegen() override;
@@ -742,7 +748,7 @@ unique_ptr<FunctionAST> LogErrorF(const char *Str) {
 
 static unique_ptr<ExprAST> ParseExpression();
 static unique_ptr<ExprAST> ParsePrimary();
-static unique_ptr<ExprAST> ParseVarExpr();
+static unique_ptr<ExprAST> ParseVarStmt();
 
 /// numberexpr
 ///   = number ;
@@ -810,7 +816,7 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
 ///
 /// The loop variable is introduced by the "for" and is in scope for the
 /// condition, step, and body. It shadows any outer variable of the same name.
-static unique_ptr<ExprAST> ParseForExpr() {
+static unique_ptr<ExprAST> ParseForStmt() {
   getNextToken(); // eat 'for'
 
   bool IsVarDecl = false;
@@ -867,7 +873,7 @@ static unique_ptr<ExprAST> ParseForExpr() {
 ///
 /// varbinding
 ///   = identifier [ "=" expression ] ;
-static unique_ptr<ExprAST> ParseVarExpr() {
+static unique_ptr<ExprAST> ParseVarStmt() {
   getNextToken(); // eat 'var'
 
   vector<pair<string, unique_ptr<ExprAST>>> VarNames;
@@ -906,12 +912,12 @@ static unique_ptr<ExprAST> ParseVarExpr() {
   if (!Body)
     return nullptr;
 
-  return make_unique<VarExprAST>(std::move(VarNames), std::move(Body));
+  return make_unique<VarStmtAST>(std::move(VarNames), std::move(Body));
 }
 
 /// ifexpr
 ///   = "if" expression ":" expression "else" ":" expression ;
-static unique_ptr<ExprAST> ParseIfExpr() {
+static unique_ptr<ExprAST> ParseIfStmt() {
   getNextToken(); // eat 'if'
 
   auto Cond = ParseExpression();
@@ -947,7 +953,7 @@ static unique_ptr<ExprAST> ParseIfExpr() {
   if (!Else)
     return nullptr;
 
-  return make_unique<IfExprAST>(std::move(Cond), std::move(Then),
+  return make_unique<IfStmtAST>(std::move(Cond), std::move(Then),
                                 std::move(Else));
 }
 
@@ -984,9 +990,9 @@ static unique_ptr<ExprAST> ParsePrimary() {
   case '(':
     return ParseParenExpr();
   case tok_if:
-    return ParseIfExpr();
+    return ParseIfStmt();
   case tok_for:
-    return ParseForExpr();
+    return ParseForStmt();
   }
 }
 
@@ -1068,7 +1074,7 @@ static unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
 ///   = varexpr | identifier "=" expression | unaryexpr binoprhs ;
 static unique_ptr<ExprAST> ParseExpression() {
   if (CurTok == tok_var)
-    return ParseVarExpr();
+    return ParseVarStmt();
 
   auto LHS = ParseUnary();
   if (!LHS)
@@ -1489,7 +1495,7 @@ static unique_ptr<PrototypeAST> ParseExtern() {
 // in a correct implementation.
 static std::unique_ptr<LLVMContext> TheContext;
 static std::unique_ptr<Module> TheModule;
-static std::unique_ptr<IRBuilder<>> Builder;
+static std::unique_ptr<IRBuilder<>> TheBuilder;
 static std::map<std::string, AllocaInst *> NamedValues;
 static std::unique_ptr<PyxcJIT> TheJIT;
 static std::unique_ptr<FunctionPassManager> TheFPM;
@@ -1555,8 +1561,8 @@ Value *VariableExprAST::codegen() {
   auto It = NamedValues.find(Name);
   if (It == NamedValues.end() || !It->second)
     return LogErrorV("Unknown variable name");
-  return Builder->CreateLoad(Type::getDoubleTy(*TheContext), It->second,
-                             Name.c_str());
+  return TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), It->second,
+                                Name.c_str());
 }
 
 /// AssignmentExprAST::codegen - Evaluate the RHS, store it into the variable's
@@ -1566,11 +1572,11 @@ Value *AssignmentExprAST::codegen() {
   if (!Val)
     return nullptr;
 
-  AllocaInst *A = NamedValues[Name];
-  if (!A)
+  auto It = NamedValues.find(Name);
+  if (It == NamedValues.end() || !It->second)
     return LogErrorV("Unknown variable name");
 
-  Builder->CreateStore(Val, A);
+  TheBuilder->CreateStore(Val, It->second);
   return Val;
 }
 
@@ -1602,30 +1608,36 @@ Value *BinaryExprAST::codegen() {
 
   switch (Op) {
   case '+':
-    return Builder->CreateFAdd(L, R, "addtmp");
+    return TheBuilder->CreateFAdd(L, R, "addtmp");
   case '-':
-    return Builder->CreateFSub(L, R, "subtmp");
+    return TheBuilder->CreateFSub(L, R, "subtmp");
   case '*':
-    return Builder->CreateFMul(L, R, "multmp");
+    return TheBuilder->CreateFMul(L, R, "multmp");
   case '<':
-    L = Builder->CreateFCmpOLT(L, R, "cmptmp");
+    L = TheBuilder->CreateFCmpOLT(L, R, "cmptmp");
     // Widen the i1 boolean to double: false -> 0.0, true -> 1.0.
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext),
+                                    "booltmp");
   case '>':
-    L = Builder->CreateFCmpOGT(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+    L = TheBuilder->CreateFCmpOGT(L, R, "cmptmp");
+    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext),
+                                    "booltmp");
   case tok_eq:
-    L = Builder->CreateFCmpOEQ(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+    L = TheBuilder->CreateFCmpOEQ(L, R, "cmptmp");
+    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext),
+                                    "booltmp");
   case tok_neq:
-    L = Builder->CreateFCmpUNE(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+    L = TheBuilder->CreateFCmpUNE(L, R, "cmptmp");
+    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext),
+                                    "booltmp");
   case tok_leq:
-    L = Builder->CreateFCmpOLE(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+    L = TheBuilder->CreateFCmpOLE(L, R, "cmptmp");
+    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext),
+                                    "booltmp");
   case tok_geq:
-    L = Builder->CreateFCmpOGE(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+    L = TheBuilder->CreateFCmpOGE(L, R, "cmptmp");
+    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext),
+                                    "booltmp");
   default:
     break;
   }
@@ -1638,7 +1650,7 @@ Value *BinaryExprAST::codegen() {
     return LogErrorV("invalid binary operator");
 
   Value *Ops[] = {L, R};
-  return Builder->CreateCall(F, Ops, "binop");
+  return TheBuilder->CreateCall(F, Ops, "binop");
 }
 
 /// UnaryExprAST::codegen - Emit built-in unary minus directly, or call a
@@ -1650,14 +1662,14 @@ Value *UnaryExprAST::codegen() {
 
   // Built-in unary minus.
   if (Opcode == '-')
-    return Builder->CreateFNeg(Op, "negtmp");
+    return TheBuilder->CreateFNeg(Op, "negtmp");
 
   // User-defined unary operator.
   Function *F = getFunction(std::string("unary") + Opcode);
   if (!F)
     return LogErrorV("Unknown unary operator");
 
-  return Builder->CreateCall(F, Op, "unop");
+  return TheBuilder->CreateCall(F, Op, "unop");
 }
 
 /// CallExprAST::codegen - Look up the callee by name in TheModule, verify the
@@ -1682,7 +1694,7 @@ Value *CallExprAST::codegen() {
       return nullptr;
   }
 
-  return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
+  return TheBuilder->CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
 /// IfExprAST::codegen - Emit LLVM IR for an if/else expression.
@@ -1710,45 +1722,46 @@ Value *CallExprAST::codegen() {
 /// We recapture `ThenBB` and `ElseBB` after branch codegen because nested
 /// control flow can move the Builder insertion point to a different block.
 /// PHI incoming edges must use the actual terminating blocks of each arm.
-Value *IfExprAST::codegen() {
+Value *IfStmtAST::codegen() {
   Value *CondV = Cond->codegen();
   if (!CondV)
     return nullptr;
 
   // Convert condition to bool by comparing != 0.0
-  CondV = Builder->CreateFCmpONE(
+  CondV = TheBuilder->CreateFCmpONE(
       CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "ifcond");
 
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
 
   // Create blocks for then, else, and merge.
   BasicBlock *ThenBB = BasicBlock::Create(*TheContext, "then", TheFunction);
   BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else", TheFunction);
   BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont", TheFunction);
 
-  Builder->CreateCondBr(CondV, ThenBB, ElseBB);
+  TheBuilder->CreateCondBr(CondV, ThenBB, ElseBB);
 
   // Emit then block.
-  Builder->SetInsertPoint(ThenBB);
+  TheBuilder->SetInsertPoint(ThenBB);
   Value *ThenV = Then->codegen();
   if (!ThenV)
     return nullptr;
-  Builder->CreateBr(MergeBB);
+  TheBuilder->CreateBr(MergeBB);
 
   // Codegen can change the current block — capture where then ended.
-  ThenBB = Builder->GetInsertBlock();
+  ThenBB = TheBuilder->GetInsertBlock();
 
   // Emit else block.
-  Builder->SetInsertPoint(ElseBB);
+  TheBuilder->SetInsertPoint(ElseBB);
   Value *ElseV = Else->codegen();
   if (!ElseV)
     return nullptr;
-  Builder->CreateBr(MergeBB);
-  ElseBB = Builder->GetInsertBlock();
+  TheBuilder->CreateBr(MergeBB);
+  ElseBB = TheBuilder->GetInsertBlock();
 
   // Emit merge block with phi node.
-  Builder->SetInsertPoint(MergeBB);
-  PHINode *PN = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
+  TheBuilder->SetInsertPoint(MergeBB);
+  PHINode *PN =
+      TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
   PN->addIncoming(ThenV, ThenBB);
   PN->addIncoming(ElseV, ElseBB);
 
@@ -1786,7 +1799,7 @@ Value *IfExprAST::codegen() {
 /// The loop variable name is rebound to the alloca for Cond/Step/Body, then
 /// restored after the loop.
 Value *ForExprAST::codegen() {
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
 
   Value *StartVal = Start->codegen();
   if (!StartVal)
@@ -1795,14 +1808,17 @@ Value *ForExprAST::codegen() {
   AllocaInst *Alloca = nullptr;
   AllocaInst *OldVal = nullptr;
   if (IsVarDecl) {
+    auto OldIt = NamedValues.find(VarName);
+    OldVal = (OldIt != NamedValues.end()) ? OldIt->second : nullptr;
     Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
-    Builder->CreateStore(StartVal, Alloca);
+    TheBuilder->CreateStore(StartVal, Alloca);
+    NamedValues[VarName] = Alloca;
   } else {
     auto It = NamedValues.find(VarName);
     if (It == NamedValues.end() || !It->second)
       return LogErrorV("Unknown variable name");
     Alloca = It->second;
-    Builder->CreateStore(StartVal, Alloca);
+    TheBuilder->CreateStore(StartVal, Alloca);
   }
 
   BasicBlock *CondBB =
@@ -1812,37 +1828,32 @@ Value *ForExprAST::codegen() {
   BasicBlock *AfterBB =
       BasicBlock::Create(*TheContext, "after_loop", TheFunction);
 
-  Builder->CreateBr(CondBB);
+  TheBuilder->CreateBr(CondBB);
 
-  Builder->SetInsertPoint(CondBB);
-
-  if (IsVarDecl) {
-    OldVal = NamedValues[VarName];
-    NamedValues[VarName] = Alloca;
-  }
+  TheBuilder->SetInsertPoint(CondBB);
 
   Value *CondVal = Cond->codegen();
   if (!CondVal)
     return nullptr;
-  CondVal = Builder->CreateFCmpONE(
+  CondVal = TheBuilder->CreateFCmpONE(
       CondVal, ConstantFP::get(*TheContext, APFloat(0.0)), "loopcond");
-  Builder->CreateCondBr(CondVal, BodyBB, AfterBB);
+  TheBuilder->CreateCondBr(CondVal, BodyBB, AfterBB);
 
-  Builder->SetInsertPoint(BodyBB);
+  TheBuilder->SetInsertPoint(BodyBB);
 
   if (!Body->codegen())
     return nullptr;
 
   Value *CurVar =
-      Builder->CreateLoad(Type::getDoubleTy(*TheContext), Alloca, VarName);
+      TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), Alloca, VarName);
   Value *StepVal = Step->codegen();
   if (!StepVal)
     return nullptr;
-  Value *NextVar = Builder->CreateFAdd(CurVar, StepVal, "nextvar");
-  Builder->CreateStore(NextVar, Alloca);
-  Builder->CreateBr(CondBB);
+  Value *NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
+  TheBuilder->CreateStore(NextVar, Alloca);
+  TheBuilder->CreateBr(CondBB);
 
-  Builder->SetInsertPoint(AfterBB);
+  TheBuilder->SetInsertPoint(AfterBB);
 
   if (IsVarDecl) {
     if (OldVal)
@@ -1857,9 +1868,9 @@ Value *ForExprAST::codegen() {
 /// VarExprAST::codegen - Allocate mutable local variables, initialize them,
 /// codegen the body under the new bindings, then restore any shadowed outer
 /// bindings.
-Value *VarExprAST::codegen() {
+Value *VarStmtAST::codegen() {
   vector<pair<string, AllocaInst *>> OldBindings;
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
 
   for (auto &Var : VarNames) {
     const string &VarName = Var.first;
@@ -1870,7 +1881,7 @@ Value *VarExprAST::codegen() {
       return nullptr;
 
     AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
-    Builder->CreateStore(InitVal, Alloca);
+    TheBuilder->CreateStore(InitVal, Alloca);
 
     OldBindings.push_back({VarName, NamedValues[VarName]});
     NamedValues[VarName] = Alloca;
@@ -1971,20 +1982,20 @@ Function *FunctionAST::codegen() {
 
   // Step 2: create the entry block and point the builder at it.
   BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
-  Builder->SetInsertPoint(BB);
+  TheBuilder->SetInsertPoint(BB);
 
   // Step 3: populate NamedValues with entry-block allocas for each argument.
   NamedValues.clear();
   for (auto &Arg : TheFunction->args()) {
     AllocaInst *Alloca =
         CreateEntryBlockAlloca(TheFunction, std::string(Arg.getName()));
-    Builder->CreateStore(&Arg, Alloca);
+    TheBuilder->CreateStore(&Arg, Alloca);
     NamedValues[std::string(Arg.getName())] = Alloca;
   }
 
   // Step 4: codegen the body, optimise, verify, or erase on failure.
   if (Value *RetVal = Body->codegen()) {
-    Builder->CreateRet(RetVal);
+    TheBuilder->CreateRet(RetVal);
     verifyFunction(*TheFunction);
 
     // Run the optimisation pipeline: InstCombine, Reassociate, GVN,
@@ -2032,7 +2043,7 @@ static void InitializeModuleAndManagers() {
   // correctly-sized types for the host machine.
   TheModule->setDataLayout(TheJIT->getDataLayout());
 
-  Builder = std::make_unique<IRBuilder<>>(*TheContext);
+  TheBuilder = std::make_unique<IRBuilder<>>(*TheContext);
 
   // Pass and analysis managers.
   TheFPM = std::make_unique<FunctionPassManager>();
