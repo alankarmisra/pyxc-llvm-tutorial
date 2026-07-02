@@ -160,90 +160,200 @@ INDENT          = ? synthetic token emitted by lexer ? ;
 DEDENT          = ? synthetic token emitted by lexer ? ;
 ```
 
-## New Keyword: `trait`
+## New Token and Data Structures
 
 ```cpp
 tok_trait = -43,
 ```
 
-Registered in the keyword table. `trait` definitions appear at the top level, before any class that implements them.
+Registered in the keyword table:
 
-## Defining a Trait
-
-A trait is a named list of method signatures. No bodies, no fields, no `self` — just names, parameter types, and return types:
-
-```pyxc
-trait Adder:
-  def add(x: int, y: int) -> int
-
-trait Printable:
-  def label() -> ptr[int8]
+```cpp
+{"trait", tok_trait}
 ```
 
-`ParseTraitDefinition` reads the trait name, validates it does not clash with existing traits, struct types, or type aliases, then parses the body. Each signature in the body is stored as a `TraitMethodSig`:
+Trait data is stored in two new structs and one new global map:
 
 ```cpp
 struct TraitMethodSig {
   string Name;
-  vector<PrototypeAST::ArgInfo> Args;
-  ValueType ReturnType;
+  vector<PrototypeAST::ArgInfo> Args;  // explicit params only — no self
+  ValueType ReturnType = ValueType::None;
   string ReturnStructName;
+};
+
+struct TraitInfo {
+  string Name;
+  vector<TraitMethodSig> Methods;
+};
+
+static std::map<string, TraitInfo> Traits;
+```
+
+`TraitMethodSig` stores explicit parameters only — `self` is not included. When conformance is checked, the compiler accounts for `self` being at index 0 of the implementing method's prototype by comparing `Req.Args[I]` against `P->getArgType(I + 1)`.
+
+`StructTypeInfo` gains a list of trait names the class declares:
+
+```cpp
+struct StructTypeInfo {
+  // ...
+  vector<string> ImplementedTraits;  // new
 };
 ```
 
-The `self` parameter is not listed in a trait signature. It is always implied — every implementing method will have `self` injected at position 0.
+`Traits` is cleared on each compiler reset (alongside `FunctionProtos`, `StructTypes`, etc.) so REPL sessions don't accumulate stale trait definitions.
 
-## Declaring Conformance
+## `ParseTraitDefinition` — Parsing Trait Bodies
 
-A class declares which traits it implements in the class header:
+`ParseTraitDefinition` is structured like `ParseAggregateDefinition` but simpler — no fields, no methods, just signatures:
 
-```pyxc
-class Calc(Adder):
-  public def add(x: int, y: int) -> int:
-    return x + y
+```cpp
+static bool ParseTraitDefinition() {
+  getNextToken(); // eat 'trait'
+  string TraitName = IdentifierStr;
+  // Reject clashes with existing traits, struct types, and type aliases
+  if (Traits.count(TraitName) || StructTypes.count(TraitName) ||
+      TypeAliases.count(TraitName)) {
+    LogError(("Name '" + TraitName + "' is already defined").c_str());
+    return false;
+  }
+  getNextToken(); // eat trait name
+  // ... eat ':', eat EOL, expect INDENT ...
+
+  TraitInfo TI;
+  TI.Name = TraitName;
+  while (CurTok != tok_dedent && ...) {
+    // expect 'def'
+    getNextToken(); // eat 'def'
+    string MethodName = IdentifierStr;
+    getNextToken(); // eat method name
+    // parse '(' params ')' with type annotations (same as prototype parsing)
+    vector<PrototypeAST::ArgInfo> Args;
+    // ... parse each param ...
+
+    // parse optional -> ReturnType
+    ValueType RetType = ParseOptionalReturnTypeWithStruct(RetStructName, ValueType::None);
+
+    // A body (colon) here is an error
+    if (CurTok == ':') {
+      LogError("Trait methods cannot have a body");
+      return false;
+    }
+    // Reject duplicate method names
+    TI.Methods.push_back({MethodName, std::move(Args), RetType, RetStructName});
+  }
+  // eat DEDENT, inject tok_block_end
+  PendingTokens.push_front(tok_block_end);
+  getNextToken();
+  Traits[TraitName] = std::move(TI);
+  return true;
+}
 ```
 
-Multiple traits:
+Key points:
+- `self` is not parsed — it appears in no trait signature.
+- Method bodies are explicitly rejected with an error: "Trait methods cannot have a body".
+- Duplicate method names within one trait are rejected.
+- The name clash check covers `Traits`, `StructTypes`, and `TypeAliases` — a trait name cannot shadow any of these.
 
-```pyxc
-class Calc(Adder, Scaler):
-  public def add(x: int, y: int) -> int: ...
-  public def scale(x: int, factor: int) -> int: ...
+`HandleTraitDef` calls `ParseTraitDefinition` and handles error recovery, then dispatches from both `MainLoop` and `FileModeLoop` on `tok_trait`.
+
+## Declaring Trait Conformance in the Class Header
+
+`ParseAggregateDefinition` is extended to parse an optional trait list between the class name and the `:`  colon. This only applies to classes (`IsClass == true`):
+
+```cpp
+vector<string> ImplementedTraits;
+bool IsClass = (strcmp(KindName, "class") == 0);
+if (IsClass && CurTok == '(') {
+  std::set<string> SeenTraits;
+  getNextToken(); // eat '('
+  while (CurTok != ')') {
+    string TraitName = IdentifierStr;
+    if (!Traits.count(TraitName)) {
+      LogError(("Unknown trait '" + TraitName + "'").c_str());
+      return false;
+    }
+    if (SeenTraits.count(TraitName)) {
+      LogError(("Duplicate trait '" + TraitName + "' in class implements list").c_str());
+      return false;
+    }
+    SeenTraits.insert(TraitName);
+    ImplementedTraits.push_back(TraitName);
+    getNextToken(); // eat trait name
+    if (CurTok == ')') break;
+    getNextToken(); // eat ','
+  }
+  getNextToken(); // eat ')'
+}
+// ...
+Info.IsClass = IsClass;
+Info.ImplementedTraits = ImplementedTraits;
 ```
 
-The trait names in the parentheses must refer to already-defined traits. Forward references are not allowed.
+Each trait name must already be in `Traits` — forward declarations are not supported. Listing the same trait twice is caught by `SeenTraits`.
 
-## Conformance Verification
+## `VerifyTraitConformance` — Checking the Class at Close
 
-When the class body ends (at the closing DEDENT), the compiler walks each declared trait and verifies that the class satisfies it. For each method signature in the trait:
+After parsing the entire class body (at the closing `tok_dedent`), the compiler walks each declared trait and checks conformance. All three of the following must hold for every method in every declared trait:
 
-1. **The method must exist.** `ClassName.MethodName` must be in `FunctionProtos`.
-2. **The method must be public.** Private trait methods are rejected — a trait contract is a public interface.
-3. **The signature must match.** Parameter types and return type must agree exactly, accounting for the implicit `self` at position 0.
+1. **The method exists.** `ClassName.MethodName` must be in `FunctionProtos`.
+2. **The method is public.** Trait conformance requires the method to be accessible to callers.
+3. **The signature matches exactly.** Return type, return struct name, parameter count, and each parameter type must agree.
 
+```cpp
+for (const auto &TraitName : Info.ImplementedTraits) {
+  const auto &TI = Traits.at(TraitName);
+  for (const auto &Req : TI.Methods) {
+    // 1. Method must exist
+    auto PI = FunctionProtos.find(StructName + "." + Req.Name);
+    if (PI == FunctionProtos.end()) {
+      LogError(("Class '" + StructName + "' does not implement trait '" +
+                TraitName + "' method '" + Req.Name + "'").c_str());
+      return false;
+    }
+    // 2. Method must be public
+    auto MI = Info.MethodIsPublic.find(Req.Name);
+    if (MI == Info.MethodIsPublic.end() || !MI->second) {
+      LogError(("Trait method '" + Req.Name + "' on class '" + StructName +
+                "' must be public").c_str());
+      return false;
+    }
+    // 3. Signature must match (Req.Args.size() + 1 because self is at index 0)
+    PrototypeAST *P = PI->second.get();
+    if (P->getNumArgs() != Req.Args.size() + 1 ||
+        P->getReturnType() != Req.ReturnType ||
+        P->getReturnStructName() != Req.ReturnStructName) {
+      LogError(("Method '" + Req.Name + "' on class '" + StructName +
+                "' does not match trait signature").c_str());
+      return false;
+    }
+    for (size_t I = 0; I < Req.Args.size(); ++I) {
+      if (P->getArgType(I + 1) != Req.Args[I].Type ||
+          P->getArgStructName(I + 1) != Req.Args[I].StructName) {
+        LogError(...);
+        return false;
+      }
+    }
+  }
+}
 ```
-class Bad(Adder):
-  public def add(x: int, y: float64) -> int:  # wrong: y should be int
-    return x
 
-# Error: Method 'add' on class 'Bad' does not match trait signature
-```
-
-If any check fails, the compiler reports an error. No code is generated for that class.
+The `+ 1` offset in `P->getArgType(I + 1)` is because `self` occupies index 0 of the implementing method but does not appear in `TraitMethodSig::Args` at all.
 
 ## What Traits Are Not
 
 There is no dynamic dispatch. There is no vtable. The trait check is purely structural: it verifies that the method exists with the right signature and is public. The generated IR is identical to what you would get without the trait — trait methods are just regular LLVM functions.
 
-There is no way in this chapter to pass a `Measurable` to a function without knowing the concrete type. Traits are a documentation and enforcement mechanism, not a polymorphism mechanism. Dynamic dispatch comes later.
+There is no way in this chapter to pass a `Measurable` to a function without knowing the concrete type. Traits are a documentation and enforcement mechanism, not a polymorphism mechanism. Dynamic dispatch comes in a later chapter.
 
 ## Things Worth Knowing
 
-**Traits must be defined before the classes that implement them.** The trait name lookup happens at parse time when the class header is read; if the trait does not exist yet, it is an error.
+**Traits must be defined before the classes that implement them.** The trait name lookup happens at class parse time; if the trait does not exist yet, it is an error.
 
-**A class can implement multiple traits.** The list in the class header is comma-separated. Each trait is checked independently. Listing the same trait twice is an error.
+**A class can implement multiple traits.** List them comma-separated in the class header. Listing the same trait twice is an error.
 
-**Trait methods cannot have bodies.** Writing `:` after the signature to begin a body gives a parse error: "Trait methods cannot have a body".
+**Trait methods cannot have bodies.** Writing `:` after a trait method signature is a parse error: "Trait methods cannot have a body".
 
 **Structs cannot implement traits.** The `(Trait)` syntax is only valid on `class` definitions.
 

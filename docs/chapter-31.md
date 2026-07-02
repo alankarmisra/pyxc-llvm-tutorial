@@ -167,73 +167,188 @@ INDENT          = ? synthetic token emitted by lexer ? ;
 DEDENT          = ? synthetic token emitted by lexer ? ;
 ```
 
+## New Tokens and Lexer Peek-Ahead
+
+Seven new tokens cover the compound assignment operators and the increment/decrement operators:
+
+```cpp
+tok_pluseq     = -45,   // +=
+tok_minuseq    = -46,   // -=
+tok_muleq      = -47,   // *=
+tok_diveq      = -48,   // /=
+tok_modeq      = -49,   // %=
+tok_plusplus   = -56,   // ++
+tok_minusminus = -57,   // --
+```
+
+Each is produced by a one-character peek in the lexer. The `+` path illustrates the pattern — on seeing `+`, it peeks at the next character to decide between `+=`, `++`, and bare `+`:
+
+```cpp
+if (LexerLastChar == '+') {
+  int Next = peek();
+  int Tok = '+';
+  if (Next == '=')      Tok = (advance(), tok_pluseq);
+  else if (Next == '+') Tok = (advance(), tok_plusplus);
+  LexerLastChar = advance();
+  return Tok;
+}
+```
+
+The same pattern applies to `-` (which must also handle `->` for the arrow token), `*`, `/`, and `%`. The `/` path is new — previously `/` was an unknown character. Now it returns `'/'` bare or `tok_diveq` if followed by `=`.
+
 ## Division and Remainder
 
-`/` and `%` share precedence 40 with `*` — they bind as tightly as multiplication. The LLVM instructions differ by type:
+`/` and `%` are added to the precedence table at level 40 — the same level as `*`:
 
-| Op | Int | Float |
-|---|---|---|
+```cpp
+{'/', 40},
+{'%', 40},
+```
+
+The LLVM instructions emitted by `EmitBuiltInArithmetic` differ by type:
+
+| Op | Integer | Float |
+|----|---------|-------|
 | `/` | `sdiv` | `fdiv` |
 | `%` | `srem` | error |
 
-`%` on float operands is a type error. There is no floating-point remainder operator in pyxc.
+`%` on float operands is a type error — `GetBinaryResultType` returns `ValueType::Error` for `%` when either operand is not an integer:
 
-All five arithmetic operators route through a shared helper, `EmitBuiltInArithmetic`, which is called from both `BinaryExprAST::codegen` and every compound assignment node. The helper handles integer widening, float promotion, and pointer arithmetic in one place.
+```cpp
+if (Op == '%' && (!IsIntType(L) || !IsIntType(R)))
+  return ValueType::Error;
+```
 
-## Compound Assignment
+The pointer arithmetic guard is also tightened: only `+` and `−` allow a pointer on one side. `/` and `%` with a pointer operand are now explicitly rejected:
 
-Five new tokens (`+=`, `-=`, `*=`, `/=`, `%=`) are recognised by a lexer peek-ahead on `+`, `-`, `*`, `/`, and `%`. Each compound assignment desugars at codegen time into a load, an `EmitBuiltInArithmetic` call, and a store — sharing the same arithmetic path as the binary expression form.
+```cpp
+if ((Op == '+' || Op == '-') &&
+    ((L == ValueType::Pointer && IsIntType(R)) || ...)) {
+  // pointer arithmetic
+}
+```
 
-There are four AST node types, one for each lvalue shape:
+## Compound Assignment AST Nodes
 
-| Node | Lvalue shape |
-|---|---|
-| `CompoundAssignmentExprAST` | plain variable |
-| `FieldCompoundAssignmentExprAST` | struct field (`p.x += 2`) |
-| `IndexCompoundAssignmentExprAST` | array index (`arr[i] *= 3`) |
-| `IndexedFieldCompoundAssignmentExprAST` | indexed struct field |
+There are four AST node classes, one for each lvalue shape, all sharing the same structure: an lvalue, an operator token, and an RHS expression:
 
-The four nodes share the same codegen pattern: resolve the lvalue to a pointer, load, compute, store.
+```cpp
+class CompoundAssignmentExprAST : public ExprAST {       // plain variable
+  string Name; int Op; unique_ptr<ExprAST> RHS; ...
+};
+class FieldCompoundAssignmentExprAST : public ExprAST {  // p.x += 1
+  unique_ptr<FieldExprAST> LHS; int Op; unique_ptr<ExprAST> RHS; ...
+};
+class IndexCompoundAssignmentExprAST : public ExprAST {  // arr[i] *= 2
+  unique_ptr<IndexExprAST> LHS; int Op; unique_ptr<ExprAST> RHS; ...
+};
+class IndexedFieldCompoundAssignmentExprAST : public ExprAST { // arr[i].x += 3
+  unique_ptr<IndexedFieldExprAST> LHS; int Op; unique_ptr<ExprAST> RHS; ...
+};
+```
 
-## Increment and Decrement
+All four override `shouldPrintValue()` to return `false` — compound assignment is a statement, not a value expression, so the REPL does not auto-print its result.
 
-`++` and `--` work on any assignable lvalue: variables, struct fields, array elements, and indexed struct fields. The operand type must be numeric or a pointer.
+Two helpers drive the parse dispatch. `IsCompoundAssignTok` checks whether the current token is one of the five compound assignment tokens. `CompoundAssignToBinaryOp` converts it to the corresponding arithmetic operator character so codegen can call `EmitBuiltInArithmetic`:
 
-A single `IncDecExprAST` handles all four variants (prefix/postfix × increment/decrement) via two flags:
+```cpp
+static bool IsCompoundAssignTok(int Tok) {
+  return Tok == tok_pluseq || Tok == tok_minuseq || Tok == tok_muleq ||
+         Tok == tok_diveq  || Tok == tok_modeq;
+}
+static int CompoundAssignToBinaryOp(int Tok) {
+  switch (Tok) {
+  case tok_pluseq:  return '+';
+  case tok_minuseq: return '-';
+  case tok_muleq:   return '*';
+  case tok_diveq:   return '/';
+  case tok_modeq:   return '%';
+  default:          return 0;
+  }
+}
+```
+
+`ParseCompoundAssignmentRHS` handles the plain-variable case. It looks up the destination type, converts the token to a binary op, calls `ParseExpression` for the RHS, type-checks the result, and returns a `CompoundAssignmentExprAST`. The field and index variants follow the same pattern in their respective parse helpers (`ParseFieldCompoundAssignmentRHS`, etc.).
+
+Codegen for all four nodes is identical in structure: resolve the lvalue to a pointer, load the current value, call `EmitBuiltInArithmetic(Op, old, rhs)`, store the result back.
+
+## `IncDecExprAST` — Prefix and Postfix `++`/`--`
+
+A single AST node handles all four combinations of prefix/postfix × increment/decrement:
 
 ```cpp
 class IncDecExprAST : public ExprAST {
   unique_ptr<ExprAST> Operand;
-  bool IsIncrement;
-  bool IsPrefix;
-  ...
+  bool IsIncrement;  // true for ++, false for --
+  bool IsPrefix;     // true for prefix, false for postfix
+public:
+  IncDecExprAST(unique_ptr<ExprAST> Operand, bool IsIncrement, bool IsPrefix,
+                ValueType Type, const string &StructName = "")
+      : Operand(std::move(Operand)), IsIncrement(IsIncrement),
+        IsPrefix(IsPrefix) {
+    setType(Type, StructName);
+  }
+  Value *codegen() override;
 };
 ```
 
-Codegen: load the old value, compute `old ± 1` via `EmitBuiltInArithmetic`, store the new value, then return `IsPrefix ? new : old`. The postfix form returns the value that existed *before* the mutation — the same semantics as C.
+The operand must pass `IsIncDecAssignableExpr` — it must be a variable, field, index, or indexed-field expression:
 
-`ResolveIncDecLValuePtr` resolves the operand to an LLVM pointer for all four lvalue shapes, exactly like compound assignment.
-
-## Error Cases
-
-**`%` on float:**
-```pyxc
-var x: float64 = 5.5
-x %= 2.0  # Error: Type mismatch in assignment
+```cpp
+static bool IsIncDecAssignableExpr(const ExprAST *E) {
+  return dynamic_cast<const VariableExprAST *>(E) ||
+         dynamic_cast<const FieldExprAST *>(E) ||
+         dynamic_cast<const IndexExprAST *>(E) ||
+         dynamic_cast<const IndexedFieldExprAST *>(E);
+}
 ```
 
-**`++` on a non-lvalue:**
-```pyxc
-++(1 + 2)  # Error: Increment/decrement target must be assignable
+Codegen: load the old value → compute `old ± 1` via `EmitBuiltInArithmetic` → store the new value → return `IsPrefix ? new : old`. The postfix form returns the value that existed *before* the mutation, matching C semantics.
+
+## Parsing `++`/`--`
+
+**Postfix** is handled by `ParsePostfixIncDec`, which wraps the primary expression in an `IncDecExprAST` if followed by `++` or `--`. `ParseUnary` now calls this instead of `ParsePrimary` directly:
+
+```cpp
+static unique_ptr<ExprAST> ParsePostfixIncDec(unique_ptr<ExprAST> Base) {
+  while (CurTok == tok_plusplus || CurTok == tok_minusminus) {
+    bool IsIncrement = (CurTok == tok_plusplus);
+    if (!IsIncDecAssignableExpr(Base.get()))
+      return LogError("Increment/decrement target must be assignable");
+    getNextToken(); // eat ++/--
+    Base = make_unique<IncDecExprAST>(std::move(Base), IsIncrement,
+                                     /*IsPrefix=*/false, ...);
+  }
+  return Base;
+}
+// In ParseUnary:
+return ParsePostfixIncDec(ParsePrimary());
 ```
+
+**Prefix** is handled at the top of `ParseUnary`, before the primary:
+
+```cpp
+if (CurTok == tok_plusplus || CurTok == tok_minusminus) {
+  bool IsIncrement = (CurTok == tok_plusplus);
+  getNextToken(); // eat ++/--
+  auto Operand = ParseUnary();
+  // validate assignable and numeric/pointer
+  return make_unique<IncDecExprAST>(std::move(Operand), IsIncrement,
+                                   /*IsPrefix=*/true, ...);
+}
+```
+
+Recursive descent through `ParseUnary` means `++++x` is syntactically valid (prefix applied twice) but only meaningful if `x` is assignable at each level.
 
 ## Things Worth Knowing
 
-**`EmitBuiltInArithmetic` is the single implementation path.** Both `BinaryExprAST` and every compound assignment node call it. Adding a new arithmetic operator in the future means touching one function.
+**`EmitBuiltInArithmetic` is the single implementation path.** Both `BinaryExprAST` and every compound assignment and `IncDecExprAST` node call it. Adding a new arithmetic operator means touching one function.
 
-**Postfix `++` returns the old value.** `var y: int = x++` captures the value before the increment. This is identical to C.
+**Postfix `++` returns the old value.** `var y: int = x++` captures the value before the increment — identical to C.
 
-**`++`/`--` work on pointers.** `p++` advances by one element, the same as `p += 1`. Pointer arithmetic rules apply.
+**`++`/`--` work on pointers.** `p++` advances by one element. Pointer arithmetic rules apply.
+
+**`%` on floats is an error.** There is no floating-point remainder operator in pyxc.
 
 ## What's Next
 

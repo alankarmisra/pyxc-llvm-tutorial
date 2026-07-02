@@ -39,9 +39,265 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-35
 ```
 
-## Grammar
+## New Tokens and Keywords
 
-`switchstmt` is a new compound statement. The case value is a signed integer literal.
+Three new token values:
+
+```cpp
+tok_switch  = -60,
+tok_case    = -61,
+tok_default = -62,
+```
+
+Added to the keyword table:
+
+```cpp
+{"switch", tok_switch}, {"case", tok_case}, {"default", tok_default},
+```
+
+## `SwitchExprAST`
+
+The AST node stores the condition, a vector of (integer value, body) pairs, and an optional default body:
+
+```cpp
+class SwitchExprAST : public ExprAST {
+  unique_ptr<ExprAST> Cond;
+  vector<pair<int64_t, unique_ptr<ExprAST>>> Cases;
+  unique_ptr<ExprAST> DefaultCase;
+public:
+  SwitchExprAST(unique_ptr<ExprAST> Cond,
+                vector<pair<int64_t, unique_ptr<ExprAST>>> Cases,
+                unique_ptr<ExprAST> DefaultCase)
+      : Cond(std::move(Cond)), Cases(std::move(Cases)),
+        DefaultCase(std::move(DefaultCase)) {
+    setType(ValueType::None);
+  }
+  bool shouldPrintValue() const override { return false; }
+  Value *codegen() override;
+};
+```
+
+Case values are `int64_t` — signed integer literals parsed at compile time.
+
+## Parse-Time Switch Depth
+
+Like loop depth for `break`/`continue`, a counter and RAII guard track whether the parser is inside a switch:
+
+```cpp
+static int ParseSwitchDepth = 0;
+
+struct ParseSwitchGuard {
+  ParseSwitchGuard()  { ++ParseSwitchDepth; }
+  ~ParseSwitchGuard() { --ParseSwitchDepth; }
+};
+```
+
+`ParseBreakStmt` is updated to accept `break` inside a switch as well as a loop:
+
+```cpp
+static unique_ptr<ExprAST> ParseBreakStmt() {
+  if (ParseLoopDepth <= 0 && ParseSwitchDepth <= 0)
+    return LogError("'break' used outside of a loop or switch");
+  getNextToken(); // eat 'break'
+  return make_unique<BreakExprAST>();
+}
+```
+
+## `ParseSwitchCaseValue` — Parsing Case Literals
+
+Case values are signed integer literals. An optional leading `-` is handled explicitly before the number:
+
+```cpp
+static bool ParseSwitchCaseValue(int64_t &Out) {
+  bool Neg = false;
+  if (CurTok == '-') {
+    Neg = true;
+    getNextToken();
+  }
+  if (CurTok != tok_number || NumIsFloat)
+    return LogError("Switch case value must be an integer literal"), false;
+  uint64_t Raw = 0;
+  if (!ParseUnsignedDecimal(NumLiteralStr, Raw))
+    return LogError("Invalid switch case value"), false;
+  getNextToken(); // eat number
+  if (Neg) {
+    if (Raw > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1ULL)
+      return LogError("Switch case value out of range"), false;
+    Out = static_cast<int64_t>(0) - static_cast<int64_t>(Raw);
+  } else {
+    if (Raw > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+      return LogError("Switch case value out of range"), false;
+    Out = static_cast<int64_t>(Raw);
+  }
+  return true;
+}
+```
+
+Overflow is checked explicitly for both positive and negative cases. `case -9223372036854775808:` (the minimum `int64_t`) is handled correctly by the `Raw > max + 1` path.
+
+## `ParseSwitchStmt`
+
+The parser eats `switch`, verifies the condition is an integer type, then reads an indented block of `case` and `default` clauses:
+
+```cpp
+static unique_ptr<ExprAST> ParseSwitchStmt() {
+  getNextToken(); // eat 'switch'
+  auto Cond = ParseExpression();
+  if (!Cond)
+    return nullptr;
+  if (!IsIntType(Cond->getType()))
+    return LogError("Switch condition must be an integer type");
+  if (CurTok != ':')
+    return LogError("Expected ':' after switch expression");
+  getNextToken(); // eat ':'
+  if (CurTok == tok_eol)
+    consumeNewlines();
+  if (CurTok != tok_indent)
+    return LogError("Expected an indented switch body");
+  getNextToken(); // eat INDENT
+
+  ParseSwitchGuard SwitchGuard;
+  vector<pair<int64_t, unique_ptr<ExprAST>>> Cases;
+  std::set<int64_t> SeenCaseValues;
+  unique_ptr<ExprAST> DefaultCase;
+
+  while (CurTok != tok_dedent && CurTok != tok_eof) {
+    if (CurTok == tok_case) {
+      getNextToken(); // eat 'case'
+      int64_t CaseVal = 0;
+      if (!ParseSwitchCaseValue(CaseVal))
+        return nullptr;
+      if (!SeenCaseValues.insert(CaseVal).second)
+        return LogError("Duplicate switch case value");
+      if (CurTok != ':')
+        return LogError("Expected ':' after case value");
+      getNextToken(); // eat ':'
+      auto Body = ParseSuite();
+      if (!Body)
+        return nullptr;
+      Cases.emplace_back(CaseVal, std::move(Body));
+    } else if (CurTok == tok_default) {
+      if (DefaultCase)
+        return LogError("Duplicate default case");
+      getNextToken(); // eat 'default'
+      if (CurTok != ':')
+        return LogError("Expected ':' after default");
+      getNextToken(); // eat ':'
+      DefaultCase = ParseSuite();
+      if (!DefaultCase)
+        return nullptr;
+    } else {
+      return LogError("Expected 'case' or 'default' in switch body");
+    }
+    if (CurTok == tok_block_end)
+      getNextToken();
+    if (CurTok == tok_eol)
+      consumeNewlines();
+  }
+  if (CurTok != tok_dedent)
+    return LogError("Expected dedent after switch body");
+  PendingTokens.push_front(tok_block_end);
+  getNextToken(); // eat DEDENT
+  return make_unique<SwitchExprAST>(std::move(Cond), std::move(Cases),
+                                    std::move(DefaultCase));
+}
+```
+
+Duplicate case values are rejected at parse time using a `std::set<int64_t>`. Multiple `default` clauses are also rejected at parse time. The `ParseSwitchGuard` is installed around the body loop so `break` inside any case is legal.
+
+## `BreakTargetStack` — Refactoring Break Targets
+
+Chapter 33's `LoopControlStack` carried both `BreakTarget` and `ContinueTarget` together. Switches need to push a break target without disturbing `continue` targets (which still refer to the enclosing loop). So this chapter introduces a separate stack for break:
+
+```cpp
+static std::vector<BasicBlock *> BreakTargetStack;
+```
+
+Both the `for` and `while` loop codegens are updated to push and pop `BreakTargetStack` in addition to `LoopControlStack`:
+
+```cpp
+// for loop:
+BreakTargetStack.push_back(AfterBB);
+if (!Body->codegen()) {
+  BreakTargetStack.pop_back();
+  return nullptr;
+}
+BreakTargetStack.pop_back();
+
+// while loop:
+BreakTargetStack.push_back(AfterBB);
+// ...
+BreakTargetStack.pop_back();
+```
+
+`BreakExprAST::codegen` is updated to use `BreakTargetStack` instead of `LoopControlStack.back().BreakTarget`:
+
+```cpp
+Value *BreakExprAST::codegen() {
+  if (BreakTargetStack.empty())
+    return LogErrorV("'break' used outside of a loop or switch");
+  Builder->CreateBr(BreakTargetStack.back());
+}
+```
+
+`continue` is unaffected — it still reads from `LoopControlStack.back().ContinueTarget`, which the switch never touches.
+
+## `SwitchExprAST::codegen`
+
+Codegen uses LLVM's `switch` instruction, which maps directly to a machine-level multi-way branch. Each case gets its own basic block:
+
+```cpp
+Value *SwitchExprAST::codegen() {
+  Value *CondVal = Cond->codegen();
+  // ...type checks...
+  Function *F = Builder->GetInsertBlock()->getParent();
+  BasicBlock *AfterBB  = BasicBlock::Create(*TheContext, "switch.after", F);
+  BasicBlock *DefaultBB =
+      DefaultCase ? BasicBlock::Create(*TheContext, "switch.default", F)
+                  : AfterBB;
+  auto *SwitchI = Builder->CreateSwitch(CondVal, DefaultBB, Cases.size());
+
+  vector<BasicBlock *> CaseBBs;
+  CaseBBs.reserve(Cases.size());
+  for (const auto &C : Cases) {
+    BasicBlock *CaseBB = BasicBlock::Create(*TheContext, "switch.case", F);
+    CaseBBs.push_back(CaseBB);
+    auto *CaseConst = ConstantInt::get(cast<IntegerType>(CondLLVMType),
+                                       static_cast<uint64_t>(C.first),
+                                       /*isSigned=*/true);
+    SwitchI->addCase(CaseConst, CaseBB);
+  }
+
+  BreakTargetStack.push_back(AfterBB);
+  for (size_t I = 0; I < Cases.size(); ++I) {
+    Builder->SetInsertPoint(CaseBBs[I]);
+    if (!Cases[I].second->codegen()) {
+      BreakTargetStack.pop_back();
+      return nullptr;
+    }
+    if (!Builder->GetInsertBlock()->getTerminator())
+      Builder->CreateBr(AfterBB);    // implicit no-fallthrough
+  }
+
+  if (DefaultCase) {
+    Builder->SetInsertPoint(DefaultBB);
+    if (!DefaultCase->codegen()) {
+      BreakTargetStack.pop_back();
+      return nullptr;
+    }
+    if (!Builder->GetInsertBlock()->getTerminator())
+      Builder->CreateBr(AfterBB);
+  }
+  BreakTargetStack.pop_back();
+
+  Builder->SetInsertPoint(AfterBB);
+  return ConstantFP::get(*TheContext, APFloat(0.0));
+}
+```
+
+`Builder->CreateSwitch(CondVal, DefaultBB, Cases.size())` emits the IR `switch` instruction with the default destination and a hint for how many cases to expect. `SwitchI->addCase(CaseConst, CaseBB)` registers each case. If no case body ends with a terminator, the implicit `br switch.after` provides the no-fallthrough semantics.
+
+## Grammar
 
 ```ebnf
 switchstmt   = "switch" expression ":" eols indent switchbody dedent ;  -- new
@@ -51,178 +307,6 @@ defaultcase  = "default" ":" suite ;                                     -- new
 switchint    = [ "-" ] integer ;                                          -- new
 compoundstmt = ifstmt | forstmt | whilestmt | dowhilestmt | switchstmt ; -- changed
 ```
-
-`switchint` accepts an optional leading `-`, so negative case values are valid literals.
-
-### Full Grammar
-
-`code/chapter-35/pyxc.ebnf`
-
-```ebnf
-program         = [ eols ] [ top { eols top } ] [ eols ] ;
-eols            = eol { eol } ;
-top             = typealias | traitdef | structdef | classdef | impldef | definition | decorateddef | external | toplevelexpr ;
-typealias       = "type" identifier "=" type ;
-traitdef        = "trait" identifier [ "[" identifier "]" ] ":" eols traitblock ;
-traitblock      = indent traitmethodsig { eols traitmethodsig } dedent ;
-traitmethodsig  = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ;
-structdef       = "struct" identifier ":" eols structblock ;
-classdef        = "class" identifier [ "(" traitref { "," traitref } ")" ] ":" eols structblock ;
-traitref        = identifier [ "[" type "]" ] ;
-impldef         = "impl" traitref "for" identifier ":" eols implblock ;
-implblock       = indent implmethod { eols implmethod } dedent ;
-implmethod      = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ":" ( simplestmt | eols block ) ;
-structblock     = indent classmember { eols classmember } dedent ;
-classmember     = [ visibility ] ( fielddecl | methoddef ) ;
-visibility      = "public" | "private" ;
-methoddef       = "def" identifier "(" [ typedparam { "," typedparam } ] ")"
-                  [ "->" type ] ":" ( simplestmt | eols block ) ;
-fielddecl       = identifier ":" type ;
-definition      = "def" prototype [ "->" type ] ":" ( simplestmt | eols block ) ;
-decorateddef    = binarydecorator eols "def" binaryopprototype [ "->" type ] ":" ( simplestmt | eols block )
-                | unarydecorator  eols "def" unaryopprototype  [ "->" type ] ":" ( simplestmt | eols block ) ;
-binarydecorator = "@" "binary" "(" integer ")" ;
-unarydecorator  = "@" "unary" ;
-binaryopprototype = customopchar "(" typedparam "," typedparam ")" ;
-unaryopprototype  = customopchar "(" typedparam ")" ;
-external        = "extern" "def" prototype [ "->" type ] ;
-toplevelexpr    = expression ;
-prototype       = identifier "(" [ typedparam { "," typedparam } ] ")" ;
-typedparam      = identifier ":" type ;
-ifstmt          = "if" expression ":" suite
-                [ eols "else" ":" suite ] ;
-whilestmt       = "while" expression ":" suite ;
-dowhilestmt     = "do" ":" suite eols "while" expression ;
-switchstmt      = "switch" expression ":" eols indent switchbody dedent ;
-switchbody      = switchcase { eols switchcase } [ eols defaultcase ] ;
-switchcase      = "case" switchint ":" suite ;
-defaultcase     = "default" ":" suite ;
-forstmt         = "for"
-                  ( "var" identifier ":" type | identifier )
-                  "=" expression "," expression "," expression ":" suite ;
-varstmt         = "var" varbinding { "," varbinding } ;
-assignstmt      = lvalue assignop expression ;
-simplestmt      = returnstmt | breakstmt | continuestmt | varstmt | assignstmt | expression ;
-compoundstmt    = ifstmt | forstmt | whilestmt | dowhilestmt | switchstmt ;
-statement       = simplestmt | compoundstmt ;
-suite           = simplestmt | compoundstmt | eols block ;
-returnstmt      = "return" [ expression ] ;
-breakstmt       = "break" ;
-continuestmt    = "continue" ;
-block           = indent statement { eols statement } dedent ;
-expression      = unaryexpr binoprhs ;
-binoprhs        = { binaryop unaryexpr } ;
-lvalue          = identifier | fieldaccess | indexexpr ;
-varbinding      = identifier ":" type [ "=" expression ] ;
-unaryexpr       = unaryop unaryexpr | postfixexpr ;
-unaryop         = "-" | "!" | "~" | "++" | "--" | userdefunaryop ;
-postfixexpr     = primary [ postfixop ] ;
-postfixop       = "++" | "--" ;
-primary         = castexpr | sizeofexpr | addrexpr | arrayliteral | stringliteral | identifierexpr | fieldaccess | indexexpr | numberexpr | bool_literal | parenexpr ;
-castexpr        = casttype "(" expression ")" ;
-sizeofexpr      = "sizeof" "(" type ")" ;
-addrexpr        = "addr" "(" lvalue ")" ;
-identifierexpr  = identifier | callexpr | methodcallexpr | ctorcallexpr ;
-callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
-methodcallexpr  = identifier "." identifier "(" [ expression { "," expression } ] ")" ;
-ctorcallexpr    = identifier "(" [ expression { "," expression } ] ")" ;
-fieldaccess     = identifier "." identifier { "." identifier } ;
-indexexpr       = identifier "[" expression "]" ;
-numberexpr      = number ;
-arrayliteral    = "[" [ expression { "," expression } ] "]" ;
-stringliteral   = "\"" { ? any char except " and newline ? | escape } "\"" ;
-escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
-parenexpr       = "(" expression ")" ;
-binaryop        = builtinbinaryop | userdefbinaryop ;
-indent          = INDENT ;
-dedent          = DEDENT ;
-
-assignop        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
-builtinbinaryop = "+" | "-" | "*" | "/" | "%"
-                | "<" | "<=" | ">" | ">=" | "==" | "!="
-                | "&&" | "||"
-                | "&" | "|" | "^" | "<<" | ">>" ;
-userdefbinaryop = ? any opchar defined as a custom binary operator ? ;
-userdefunaryop  = ? any opchar defined as a custom unary operator ? ;
-customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
-                    and not already defined as a custom operator ? ;
-opchar          = ? any single ASCII punctuation character ? ;
-identifier      = (letter | "_") { letter | digit | "_" } ;
-builtintype     = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | "None" ;
-aliastype       = identifier ;
-structtype      = identifier ;
-pointertype     = "ptr" "[" type "]" ;
-type            = basetype [ arraysuffix ] ;
-basetype        = builtintype | aliastype | structtype | pointertype ;
-arraysuffix     = "[" integer "]" ;
-casttype        = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | pointertype ;
-integer         = digit { digit } ;
-switchint       = [ "-" ] integer ;
-number          = digit { digit } [ "." { digit } ]
-                | "." digit { digit } ;
-bool_literal    = "True" | "False" ;
-letter          = "A".."Z" | "a".."z" ;
-digit           = "0".."9" ;
-eol             = "\r\n" | "\r" | "\n" ;
-ws              = " " | "\t" ;
-INDENT          = ? synthetic token emitted by lexer ? ;
-DEDENT          = ? synthetic token emitted by lexer ? ;
-```
-
-## Parsing
-
-Three new keywords: `switch`, `case`, `default`.
-
-`ParseSwitchStmt` reads the switch expression, verifies it is an integer type, then enters an `INDENT`/`DEDENT` block. Inside, it loops consuming `case` and `default` branches until the closing `DEDENT`.
-
-Duplicate case values are rejected at parse time using a `std::set<int64_t>` of seen values. Multiple `default` clauses are also rejected at parse time.
-
-Case values are parsed by `ParseSwitchCaseValue`, which accepts an optional leading `-` and checks that the literal fits in `int64_t`.
-
-## Codegen
-
-`SwitchExprAST` stores the condition, a vector of `(int64_t, body)` pairs, and an optional default body.
-
-Codegen uses LLVM's `CreateSwitch` instruction, which maps directly to the machine's multi-way branch. Each case gets a dedicated basic block (`switch.case`). The default block, if present, is `switch.default`; if absent, the switch falls through to `switch.after`.
-
-```
-switch.case.0:  body for case 0 → branch to switch.after
-switch.case.1:  body for case 1 → branch to switch.after
-switch.default: default body    → branch to switch.after
-switch.after:   execution continues here
-```
-
-Each case body is codegen'd into its own block. If the body does not end with a terminator (`return`, `break`), an implicit branch to `switch.after` is appended.
-
-## No Fallthrough
-
-In C, switch cases fall through to the next case unless `break` is written. In pyxc, each case implicitly breaks. There is no way to fall through to the next case.
-
-This removes a well-known class of C bugs and makes `switch` safer by default. The trade-off is that you cannot use the C idiom of stacking empty cases to share a body:
-
-```c
-/* C only — not valid in pyxc */
-switch (x) {
-  case 1:
-  case 2:
-    handle_both();
-    break;
-}
-```
-
-In pyxc, write two cases with the same body, or extract the shared logic into a function.
-
-## `break` in a Switch
-
-`break` inside a `switch` exits the switch, exactly as in C. The `BreakTargetStack` introduced in [Chapter 33](chapter-33.md) handles this: the switch pushes its `switch.after` block as the break target. `break` inside a case branches there.
-
-`break` outside any loop or switch is a parse-time error.
-
-`continue` has no meaning inside a switch. If the switch is nested inside a loop, `continue` still refers to the enclosing loop — the `LoopControlStack` is not touched by the switch.
 
 ## Error Cases
 
@@ -243,15 +327,21 @@ switch x:
     return 2
 ```
 
+Both are caught at parse time.
+
 ## Things Worth Knowing
 
-**Case values are compile-time integer literals only.** You cannot use a variable or expression as a case value. This matches C's `switch` restriction and allows LLVM to emit an efficient branch table.
+**Case values are compile-time integer literals only.** You cannot use a variable or expression as a case value. This restriction allows LLVM to emit an efficient branch table or binary search.
 
-**Negative case values are supported.** `case -1:` is valid. `switchint` accepts a leading minus sign.
+**Negative case values are supported.** `case -1:` is valid. `switchint` accepts a leading `-`.
 
-**LLVM emits a real `switch` instruction.** The IR contains `switch i64`, not a chain of comparisons. The backend is free to lower it to a jump table, a binary search, or a comparison chain depending on the density and count of cases.
+**LLVM emits a real `switch` instruction.** The IR contains `switch i64`, not a chain of comparisons. The backend lowers it to a jump table, binary search, or comparison chain depending on case density and count.
 
-**`default` is optional.** If no case matches and there is no `default`, execution continues after the switch with no action taken.
+**`default` is optional.** If no case matches and there is no `default`, execution continues after the switch with no action.
+
+**`continue` inside a switch refers to the enclosing loop.** The `LoopControlStack` is not touched by the switch. `break` inside a switch exits only the switch, not any enclosing loop.
+
+**No fallthrough — by design.** Each case implicitly branches to `switch.after`. The C idiom of stacking empty cases to share a body does not work; extract the shared logic into a function instead.
 
 ## What's Next
 

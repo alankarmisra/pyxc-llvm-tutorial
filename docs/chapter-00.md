@@ -8,7 +8,7 @@ description: "Learn compilers by building a real programming language from scrat
 
 You should know some C++. You really don't need to be a master craftsman though. We'll use basic C++ and if we do venture into something complex-y (no, that's not a word), I'll *ELI5* it for you. You don't need to know any compiler theory. We will learn by doing. A lot of the compiler theory you learn elsewhere will automagically make sense once you build a compiler on your own. The theory can then help you structure and expand your thinking to problems we have not considered here, or more excitingly, not considered anywhere else in the world. 
 
-You definitely do not need to know what `LLVM` is, except that it will help you write compilers faster. LLVM has been used to write Rust, Swift, Kotlin/Native, C/C++ compilers (Clang), among others. Using the `IIGEFTIGEFU` principle (*if it's good enough for them, it's good enough for us*), we will use LLVM. You might describe the acronym as gloriously over-engineered. I might ignore you. 
+You definitely do not need to know what `LLVM` is, except that it will help you write compilers faster. LLVM has been used to write Rust, Swift, Kotlin/Native, C/C++ compilers (Clang), among others. Using the `IIGEFTIGEFU` principle (*if it's good enough for them, it's good enough for us*), we will use LLVM. 
 
 You should know that there are alternatives to LLVM. Regardless of what tool you use, the fundamentals won't change. LLVM works, and works well for our purposes. 
 
@@ -17,11 +17,10 @@ You should know that there are alternatives to LLVM. Regardless of what tool you
 We'll invent a programming language called **pyxc** (pronounced "Pixie") that resembles Python syntax. *Pythonic*, if you will. It will run interactively through a REPL using just-in-time compilation (fast), or compile down to a native executable (very fast). I'm not going to expend a paragraph, or two, or three, trying to convince you that doing this is a good idea, and that doing this with *this* tutorial is an even better idea. I'm going to assume, rather naively, that if you are here, building a compiler is something you want to do with me. As you progress through the tutorial, you will be the ultimate arbiter of whether this tutorial is a good fit for your preferred pace and style. It's hard, if not impossible to cater to everyone, but I've tried to keep things simple enough to cater to the hobbyist language designer while not dumbing it down to feel like a toy. 
 
 ## Why "pyxc"? 
-pyxc is small, nimble, fast, executable, and magical. I made all that up. I only thought of "Py" and "x-cutable" and munged the two. 
+pyxc is a small, nimble, fast, executable, and magical language. Or just something that looks like py-thon and creates xc-utables.
 
 ## Skip, start building, or keep reading.
-
-The rest of this page is a roadmap and I honestly won't judge you if you just dive into [Chapter 1](chapter-01.md) and get building.  But if you're the sort who needs some structure, read ahead. 
+The rest of this page is a roadmap for our tutorial. I honestly won't judge you if you just dive into [Chapter 1](chapter-01.md) and get building.  But if you're the sort who needs some structure, read ahead. 
 
 ## Where We're Headed
 
@@ -31,9 +30,9 @@ In **Chapter 4** we set up LLVM. It could be smooth. It could be bumpy. If it's 
 
 In **Chapter 5** we will extend our compiler to convert our program's intentions into LLVM's internal representation (IR). The IR looks a lot like assembly, but is specific to LLVM. It is what LLVM converts to machine code. You won't have to write the IR by hand though. LLVM has an easy interface that does all the heavy lifting.
 
-By **Chapter 6 and 7** we will be able to generate and run this IR code in either a python-like interactive REPL interface, or from a source file. At this point, we will be able to write short programs that will outperform similar Python code (do people still say "no cap"?). 
+By **Chapter 6 and 7** we will be able to generate and run this IR code in either a python-like interactive REPL interface, or from a source file. At this point, we will be able to write short programs that will outperform similar Python code (do people still say *no cap*?). 
 
-We will text our loved ones who don't quite understand what we actually do and tell them we've invented our own programming language, and that it just printed `1.000000` on the terminal - and that it did it really really fast. They will say something encouraging and hang up on us. We will continue marveling at our first ever output from our first ever programming language. Butterflies and goosebumps galore. 
+It is now that we will text our loved ones who don't quite understand what we actually do for a living, and tell them we've invented our own programming language, and that it just printed `1.000000` on the terminal - and that it did it really really fast. They will say something encouraging and hang up on us. We will continue marveling at our first ever output from our first ever programming language. Butterflies and goosebumps galore. 
 
 In **Chapters 8–11** we will add language features such as control flow (`if`/`for`), user-defined operators, mutable variables, and *real statement blocks* with Python-style indentation. People will confuse our code with real python. Facts. 
 
@@ -133,46 +132,13 @@ def main() -> int:
 
 In **Chapters 31–35** we close the K&R compatibility gap: division and remainder, compound assignment, `++`/`--`, logical operators with short-circuit evaluation, `while` and `do/while` loops, `break` and `continue`, bitwise operators, and `switch`. By the end of Chapter 35, pyxc can express everything in the first four chapters of *The C Programming Language* without reaching for a single C library function.
 
-Here's what pyxc looks like at the end of the first arc — a working JIT REPL with user-defined operators, control flow, and mutable variables:
-
-```pyxc
-extern def printd(x)
-
-@binary(6)
-def ^(base, exp):
-    var result = 1
-    for i = 1, i <= exp, 1:
-        result = result * base
-    return result
-
-def fib(n):
-    if n <= 1: return n
-    return fib(n - 1) + fib(n - 2)
-
-def collatz(n):
-    var steps = 0
-    var x = n
-    for i = 1, x != 1, 1:
-        var half = x * 0.5
-        if half * 2 == x:
-            x = half
-        else:
-            x = x * 3 + 1
-        steps = steps + 1
-    return steps
-
-printd(fib(10))        # 55
-printd(2 ^ 10)         # 1024
-printd(collatz(27))    # 111
-```
-
 ## Credits
 
-The early chapters are inspired by the excellent [LLVM Kaleidoscope Tutorial](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html). It is brilliant in its pacing and leaves a reader more curious and wanting. I reworked that tutorial to suit a syntax, tone and depth that made more sense to me and hopefully it will make more sense to someone else too. Everything the Kaleidoscope tutorial covers, this one does too. In later chapters, we'll have fun pushing the compiler further in order to support more advanced features. And I hope, that as torch bearers, at least one of you decides to push it further than I have. We have a lot of privilege to be able to learn what we do, and to do what we do. It is only fair that we share and spread this privilege to the far corners of the earth. But, as my mother would often say, "No pressure. Have fun."
+The early chapters are inspired by the excellent [LLVM Kaleidoscope Tutorial](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html). It is brilliant in its pacing and leaves a reader more curious and wanting. I reworked that tutorial to suit a syntax, tone and depth that made more sense to me and hopefully it will make more sense to you too. Everything the Kaleidoscope tutorial covers, this one does too. In later chapters, we'll have fun pushing the compiler further in order to support more advanced features. And I hope, that as torch bearers, at least one of you decides to push it further than I have. We have a lot of privilege to be able to learn what we do, and to do what we do. It is only fair that we share and spread this privilege to the far corners of the earth. But, as my mother would often say, "No pressure. Have fun."
 
 ## Chapter Guide
 
-### The Front End (Start Here)
+### The Front End 
 
 **[Chapter 1: The Lexer](chapter-01.md)** — Let's start at the very beginning. A very good place to start.
 

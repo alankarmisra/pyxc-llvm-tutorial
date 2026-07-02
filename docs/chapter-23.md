@@ -32,11 +32,11 @@ cd pyxc-llvm-tutorial/code/chapter-23
 This chapter extends `type` with an optional `arraysuffix` and adds the `arrayliteral` production to `primary`.
 
 ```ebnf
-type       = basetype [ arraysuffix ] ;   -- changed
-basetype   = builtintype | aliastype | structtype | pointertype ;  -- new
-arraysuffix = "[" integer "]" ;           -- new
+type        = basetype [ arraysuffix ] ;   -- changed
+basetype    = builtintype | aliastype | structtype | pointertype ;  -- new
+arraysuffix = "[" integer "]" ;            -- new
 arrayliteral = "[" [ expression { "," expression } ] "]" ;  -- new
-primary    = castexpr | sizeofexpr | addrexpr | arrayliteral | ...  -- changed
+primary     = castexpr | sizeofexpr | addrexpr | arrayliteral | ...  -- changed
 ```
 
 ### Full Grammar
@@ -129,81 +129,247 @@ INDENT          = ? synthetic token emitted by lexer ? ;
 DEDENT          = ? synthetic token emitted by lexer ? ;
 ```
 
-## Array Types
+## New Enum Value and AST Node
 
-An array type is a base type followed by a size in brackets: `int[4]`, `float64[8]`, `Point[3]`. The size must be a compile-time integer literal greater than zero — expressions are not allowed.
+A single new `ValueType` entry covers all array types regardless of element type:
 
-```pyxc
-var buf: int[4]        # four 64-bit integers on the stack
-var v:   float64[3]    # three doubles
+```cpp
+enum class ValueType {
+  // ...existing values...
+  Array,
+  // ...
+};
 ```
 
-In `ParseTypeToken`, after parsing the base type, the function checks whether the next token is `[`. If it is, it reads the integer size, validates it is nonzero, and returns `ValueType::Array` with the type information encoded in the struct name string.
+The corresponding AST node stores the element list and carries the full array type info through the `ExprAST` base class:
 
-## How Array Types Are Represented Internally
+```cpp
+class ArrayLiteralExprAST : public ExprAST {
+  vector<unique_ptr<ExprAST>> Elements;
+public:
+  ArrayLiteralExprAST(vector<unique_ptr<ExprAST>> Elements,
+                      const string &ArrayTypeInfo)
+      : Elements(std::move(Elements)) {
+    setType(ValueType::Array, ArrayTypeInfo);
+  }
+  const vector<unique_ptr<ExprAST>> &getElements() const { return Elements; }
+  Value *codegen() override;
+};
+```
 
-The same two-field representation used for pointers (`ValueType` + struct name string) is extended to arrays with a third field: the element count. The encoding is a colon-separated string:
+`ArrayTypeInfo` is an encoded string (see Group 2) that packs the element type, optional element struct name, and element count into the single `structName` slot that `ExprAST` already provides.
+
+## Type Encoding Helpers
+
+The existing `(ValueType, structName)` pair that represents types throughout the compiler is extended for arrays with a third field — the element count. All three are serialised into one colon-separated string stored in the struct name slot:
 
 ```
 "<ElemTypeInt>:<ElemStructName>:<Count>"
 ```
 
-Examples:
+| Type         | Encoding       |
+|--------------|----------------|
+| `int[4]`     | `"1::4"`       |
+| `float64[3]` | `"8::3"`       |
+| `Point[2]`   | `"10:Point:2"` |
 
-| Type       | Encoding        |
-|------------|-----------------|
-| `int[4]`   | `"1::4"`        |
-| `float64[3]` | `"8::3"`      |
-| `Point[2]` | `"10:Point:2"`  |
+Three helpers manage this encoding:
 
-`EncodeArrayType` produces this string. `DecodeArrayType` splits it back out. All code that works with arrays — alloca sizing, GEP emission, literal initialisation, decay checks — calls `DecodeArrayType` to recover the element type, struct name, and count.
+**`EncodeArrayType`** builds the string:
 
-## Array Literals
-
-An array literal is a comma-separated list of expressions inside `[` `]`:
-
-```pyxc
-var scores: int[4] = [10, 20, 30, 40]
+```cpp
+static string EncodeArrayType(ValueType ElemType, const string &ElemStructName,
+                              uint64_t Count) {
+  return std::to_string(static_cast<int>(ElemType)) + ":" + ElemStructName +
+         ":" + std::to_string(Count);
+}
 ```
 
-The literal has no type on its own — it takes its type from the declaration context. `ParseArrayLiteralExpr` reads the expected element type from `ExpectedLiteralType` (set by the `var` parser before calling into the expression parser). If the context does not provide an array type, the literal is an error.
+**`DecodeArrayType`** splits it back out — first `:` separates the type integer, last `:` separates the count, and the middle portion is the struct name:
 
-The element count in the literal must exactly match the declared count. Too few or too many elements is rejected at parse time.
-
-## Index Expressions
-
-```pyxc
-scores[2]       # read
-scores[i] = 99  # write
+```cpp
+static bool DecodeArrayType(const string &Encoded, ValueType &ElemType,
+                            string &ElemStructName, uint64_t &Count);
 ```
 
-`indexexpr` is already part of `lvalue` and `primary`. What changes in this chapter is that the codegen for `IndexExprAST` now handles `ValueType::Array` by emitting a two-index GEP:
+**`ArrayDecaysToPointerType`** answers the question "can this array be passed where a `ptr[T]` is expected?" by decoding both the array encoding and the pointer encoding and comparing element types:
+
+```cpp
+static bool ArrayDecaysToPointerType(const string &ArrayInfo,
+                                     const string &PointerInfo);
+```
+
+**`ParseUnsignedDecimal`** parses a digit string with overflow protection. It is used by both `DecodeArrayType` (to read the count field) and `ParseTypeToken` (to validate the size literal at parse time):
+
+```cpp
+static bool ParseUnsignedDecimal(const string &Text, uint64_t &Out) {
+  if (Text.empty()) return false;
+  uint64_t V = 0;
+  for (char C : Text) {
+    if (C < '0' || C > '9') return false;
+    uint64_t D = static_cast<uint64_t>(C - '0');
+    if (V > (std::numeric_limits<uint64_t>::max() - D) / 10) return false;
+    V = V * 10 + D;
+  }
+  Out = V;
+  return true;
+}
+```
+
+## Parsing Array Types — `ParseTypeToken` Refactor
+
+Previously, `ParseTypeToken` returned immediately after identifying the base type:
+
+```cpp
+case tok_int:
+  return ValueType::Int;
+```
+
+That `return` makes suffix parsing impossible — once the function returns there is nowhere to check for `[`. This chapter refactors `ParseTypeToken` to collect the base type into local variables and then fall through to a suffix check:
+
+```cpp
+ValueType BaseType = ValueType::Error;
+string BaseStructName;
+switch (CurTok) {
+  case tok_int:   BaseType = ValueType::Int;   break;
+  case tok_float: BaseType = ValueType::Float; break;
+  // ... all other scalar cases ...
+  case tok_ptr:
+    // parse ptr[T] as before, but store into BaseType/BaseStructName instead of returning
+    BaseType = ValueType::Pointer;
+    BaseStructName = EncodePointerType(PointeeType, PointeeStructName);
+    break;
+  case tok_identifier:
+    BaseType = ValueType::Struct;
+    BaseStructName = TyName;
+    break;
+}
+
+// Now check for array suffix
+if (CurTok == '[') {
+  // error on None[] or nested arrays
+  getNextToken(); // eat '['
+  // parse integer size via ParseUnsignedDecimal
+  // eat number, eat ']'
+  if (StructName) *StructName = EncodeArrayType(BaseType, BaseStructName, Count);
+  return ValueType::Array;
+}
+
+// No suffix — return the base type
+if (StructName) *StructName = BaseStructName;
+return BaseType;
+```
+
+`None[N]` and pointer-to-array (`ptr[int[4]]`) are rejected with explicit errors at parse time.
+
+## Context-Driven Parsing — `ExpectedLiteralTypeGuard` and `ParseArrayLiteralExpr`
+
+An array literal `[10, 20, 30, 40]` has no type of its own. The compiler must know what array type is expected to validate element types and count. This context is carried through a global pair:
+
+```cpp
+static ValueType ExpectedLiteralType;
+static string    ExpectedLiteralStructName;  // new this chapter
+```
+
+**`ExpectedLiteralTypeGuard`** is extended to save and restore both fields. All callers that set a type context are updated to also pass the struct name:
+
+```cpp
+struct ExpectedLiteralTypeGuard {
+  ValueType Saved;
+  string    SavedStruct;
+  ExpectedLiteralTypeGuard(ValueType Type, const string &StructName = "")
+      : Saved(ExpectedLiteralType), SavedStruct(ExpectedLiteralStructName) {
+    ExpectedLiteralType      = Type;
+    ExpectedLiteralStructName = StructName;
+  }
+  ~ExpectedLiteralTypeGuard() {
+    ExpectedLiteralType      = Saved;
+    ExpectedLiteralStructName = SavedStruct;
+  }
+};
+```
+
+`ReturnTypeGuard` gains the same struct name field for the same reason — functions that return an array type need the full context propagated into the body.
+
+**`ParseArrayLiteralExpr`** reads both globals at entry and errors immediately if the context is not an array type:
+
+```cpp
+static unique_ptr<ExprAST> ParseArrayLiteralExpr() {
+  if (ExpectedLiteralType != ValueType::Array)
+    return LogError("Array literal requires an expected array type");
+  ValueType ElemType; string ElemStructName; uint64_t Count;
+  DecodeArrayType(ExpectedLiteralStructName, ElemType, ElemStructName, Count);
+
+  getNextToken(); // eat '['
+  vector<unique_ptr<ExprAST>> Elements;
+  while (CurTok != ']') {
+    ExpectedLiteralTypeGuard Guard(ElemType, ElemStructName); // propagate into element expr
+    auto E = ParseExpression();
+    // type-check E against ElemType / ElemStructName
+    Elements.push_back(std::move(E));
+    if (CurTok == ',') getNextToken();
+  }
+  getNextToken(); // eat ']'
+  if (Elements.size() != Count)
+    return LogError("Array literal element count mismatch");
+  return make_unique<ArrayLiteralExprAST>(std::move(Elements), ExpectedLiteralStructName);
+}
+```
+
+The primary dispatch in `ParsePrimary` routes to this function when `CurTok == '['`. When the `var` statement parser reaches an initialiser, it sets `ExpectedLiteralTypeGuard(DeclType, DeclStructName)` before calling `ParseExpression`, so the type context is available by the time `ParseArrayLiteralExpr` runs.
+
+## Codegen — `ArrayLiteralExprAST::codegen`
+
+The literal is built in LLVM IR as a value of aggregate type, element-by-element, using `insertvalue`. There is no alloca here — this is pure register-level aggregate construction:
+
+```cpp
+Value *ArrayLiteralExprAST::codegen() {
+  ValueType ElemType; string ElemStructName; uint64_t Count;
+  DecodeArrayType(getStructName(), ElemType, ElemStructName, Count);
+
+  auto *ArrTy = dyn_cast<ArrayType>(LLVMTypeFor(getType(), getStructName()));
+  Value *Agg = UndefValue::get(ArrTy);  // start as undefined
+
+  for (size_t I = 0; I < Elements.size(); ++I) {
+    Value *Elem = Elements[I]->codegen();
+    Elem = EmitImplicitCast(Elem, Elements[I]->getType(), ElemType);
+    Agg = Builder->CreateInsertValue(Agg, Elem, {static_cast<unsigned>(I)},
+                                     "arr.ins");
+  }
+  return Agg;  // SSA value of type [N x ElemTy]
+}
+```
+
+`insertvalue` fills one slot of the aggregate per iteration. The returned SSA value has type `[4 x i64]` for `int[4]`. This is then stored into the alloca when assigned in a `var` statement:
 
 ```llvm
 %scores = alloca [4 x i64]
-; scores[2]
+store [4 x i64] %arr.ins.3, ptr %scores
+```
+
+## Codegen — Array Indexing and Variable Decay
+
+**Indexing** (`scores[2]`) in `IndexExprAST::codegen` now handles `ValueType::Array` alongside `ValueType::Pointer`. For arrays, the element type and count are decoded from the array encoding, and a two-index GEP is emitted:
+
+```llvm
 %ptr = getelementptr inbounds [4 x i64], ptr %scores, i64 0, i64 2
 %val = load i64, ptr %ptr
 ```
 
-The first GEP index (`i64 0`) steps past the alloca header to reach the array itself. The second index selects the element. This is the standard LLVM pattern for stack arrays.
+The first index (`i64 0`) steps through the alloca header to reach the array. The second index selects the element.
 
-The index expression must be an integer type. Floating-point indices are an error.
+**Array decay** in `VariableExprAST::codegen` handles the case where an array variable is used in an expression context rather than indexed. Loading an array variable would produce the entire aggregate — which is only valid for `store`. To pass an array to a `ptr[T]` parameter, the compiler needs a pointer to its first element. A `DecayArray` lambda emits this GEP:
 
-## Decay to Pointer
-
-An array variable can be passed to a function that expects `ptr[T]` for the matching element type. The array decays to a pointer to its first element — the same behaviour as C.
-
-```pyxc
-extern def puts(s: ptr[int8]) -> int
-
-def main() -> int:
-  var msg: int8[6] = [72, 101, 108, 108, 111, 0]
-  puts(addr(msg[0]))
-  return 0
+```cpp
+auto DecayArray = [&](Value *BasePtr) -> Value * {
+  if (getType() != ValueType::Array) return BasePtr;
+  auto *ArrTy = LLVMTypeFor(getType(), getStructName());
+  Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
+  return Builder->CreateInBoundsGEP(ArrTy, BasePtr, {Zero, Zero}, "arraydecay");
+};
 ```
 
-The decay check is in `ArrayDecaysToPointerType`: it decodes both the array encoding and the pointer encoding and confirms the element types match.
+This is applied for both local and global array variables. In function call codegen, the argument check path explicitly allows `ValueType::Array` where `ValueType::Pointer` is expected, delegating to `ArrayDecaysToPointerType` to confirm element-type compatibility.
 
 ## What Lands in the IR
 
@@ -236,13 +402,13 @@ cmake -S . -B build && cmake --build build
 
 **Size must be a literal.** `var buf: int[n]` is rejected — variable sizes are not supported. The element count must be a constant integer known at parse time.
 
-**No nested arrays.** `int[4][2]` is not valid syntax. An array of arrays is not supported. Use a struct with multiple array fields if you need a 2-D layout.
+**No nested arrays.** `int[4][2]` is not valid syntax. An array of arrays is not supported. Use a struct with multiple array fields for a 2-D layout.
 
 **No heap arrays.** Arrays in this chapter live on the stack only. Heap allocation is done through `malloc` and `ptr[T]` from [chapter 20](chapter-20.md).
 
-**Struct fields cannot be arrays.** Array fields in struct definitions are not yet supported. Struct fields use the scalar or pointer types from earlier chapters.
+**Struct fields cannot be arrays.** Array fields in struct definitions are not yet supported. Struct fields use scalar or pointer types from earlier chapters.
 
-**No pointer arithmetic on arrays.** Indexing works. Direct pointer arithmetic (`arr + 1`) on an array variable does not — use `addr(arr[i])` to get a pointer to an element and arithmetic from there.
+**No pointer arithmetic on arrays.** Indexing works. Direct pointer arithmetic on an array variable does not — use `addr(arr[i])` to get a pointer to an element.
 
 ## What's Next
 

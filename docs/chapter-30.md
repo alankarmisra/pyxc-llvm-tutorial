@@ -32,7 +32,7 @@ def main() -> int:
 11.000000
 ```
 
-`Addable[int]` and `Addable[float64]` are separate contracts. A class can implement both — with separate `impl` blocks for each instantiation.
+`Addable[int]` and `Addable[float64]` are separate contracts. A class can implement both with separate `impl` blocks.
 
 ## Source Code
 
@@ -43,7 +43,7 @@ cd pyxc-llvm-tutorial/code/chapter-30
 
 ## Grammar
 
-`traitdef` gains an optional type parameter. `classdef` and `impldef` use `traitref` (a trait name plus an optional type argument) wherever they previously used a bare identifier.
+`traitdef` gains an optional type parameter. `classdef` and `impldef` use `traitref` wherever they previously used a bare identifier.
 
 ```ebnf
 traitdef  = "trait" identifier [ "[" identifier "]" ] ":" eols traitblock ;  -- changed
@@ -51,8 +51,6 @@ classdef  = "class" identifier [ "(" traitref { "," traitref } ")" ] ":" eols st
 traitref  = identifier [ "[" type "]" ] ;  -- new
 impldef   = "impl" traitref "for" identifier ":" eols implblock ;  -- changed
 ```
-
-`traitref` is the common notation used everywhere a trait is referenced with a possible type argument: in the class header, in the `impl` header.
 
 ### Full Grammar
 
@@ -158,32 +156,77 @@ INDENT          = ? synthetic token emitted by lexer ? ;
 DEDENT          = ? synthetic token emitted by lexer ? ;
 ```
 
-## Defining a Generic Trait
+## `ValueType::TypeVar` and `ActiveTypeParams`
 
-A trait with a type parameter uses `[T]` after the trait name:
+A new enum value represents an unresolved type parameter inside a trait body:
 
-```pyxc
-trait Addable[T]:
-  def add(x: T, y: T) -> T
+```cpp
+enum class ValueType {
+  // ...existing values...
+  TypeVar,
+};
 ```
 
-`T` is a placeholder. Inside the trait body, every occurrence of `T` as a type name is recorded as `ValueType::TypeVar` rather than being resolved to a concrete type. The name `T` does not need to be anything specific — it is just a local label inside the trait body.
+The set of currently active type parameter names is tracked in a global:
 
-During `ParseTraitDefinition`, the parameter name is stored in `TraitInfo::TypeParamName`. While the trait body is being parsed, the name is active in a global set (`ActiveTypeParams`). `ParseTypeToken` checks this set before treating an identifier as an unknown type — if the name is an active type parameter, it returns `ValueType::TypeVar` and records the parameter name as the struct name.
-
-The active set is cleared when the trait body closes, so `T` has no meaning outside the trait definition.
-
-## Implementing a Generic Trait
-
-At the `impl` site, the concrete type argument fills in the placeholder:
-
-```pyxc
-impl Addable[int] for Calc:
-  def add(x: int, y: int) -> int:
-    return x + y
+```cpp
+static std::set<string> ActiveTypeParams;
 ```
 
-The concrete type (`int` here) is stored alongside the trait name in an `ImplTraitRef`:
+`ParseTraitDefinition` populates this set before parsing the trait body and clears it after:
+
+```cpp
+TI.TypeParamName = TypeParamName;
+ActiveTypeParams.clear();
+if (!TypeParamName.empty())
+  ActiveTypeParams.insert(TypeParamName);
+// ... parse body ...
+ActiveTypeParams.clear();  // reset after body closes
+```
+
+`ParseTypeToken` checks `ActiveTypeParams` before treating an unknown identifier as an error. If the name is active, it returns `ValueType::TypeVar` and stores the parameter name as the struct name:
+
+```cpp
+if (ActiveTypeParams.count(TyName)) {
+  getNextToken();
+  if (StructName) *StructName = TyName;
+  return ValueType::TypeVar;
+}
+```
+
+This means `T` in `def add(x: T, y: T) -> T` resolves to `(ValueType::TypeVar, "T")` rather than failing as an unknown type. Outside a trait body, `T` has no meaning and would fall through to the normal identifier handling.
+
+## Parsing the Type Parameter in `ParseTraitDefinition`
+
+`ParseTraitDefinition` checks for an optional `[Param]` after the trait name:
+
+```cpp
+string TypeParamName;
+if (CurTok == '[') {
+  getNextToken(); // eat '['
+  if (CurTok != tok_identifier) {
+    LogError("Expected type parameter name in trait definition");
+    return false;
+  }
+  TypeParamName = IdentifierStr;
+  getNextToken(); // eat type parameter name
+  if (CurTok != ']') {
+    LogError("Expected ']' after trait type parameter");
+    return false;
+  }
+  getNextToken(); // eat ']'
+}
+TI.TypeParamName = TypeParamName;
+ActiveTypeParams.clear();
+if (!TypeParamName.empty())
+  ActiveTypeParams.insert(TypeParamName);
+```
+
+`TypeParamName` is stored on `TraitInfo`. An empty `TypeParamName` means the trait is non-generic.
+
+## `ImplTraitRef` — Carrying the Type Argument
+
+In chapter 29, `ImplementedTraits` was a `vector<string>`. This chapter replaces the element type with `ImplTraitRef`, which carries both the trait name and the concrete type argument supplied at the impl or class header:
 
 ```cpp
 struct ImplTraitRef {
@@ -194,31 +237,78 @@ struct ImplTraitRef {
 };
 ```
 
-## Conformance with Type Substitution
-
-When `VerifyTraitConformance` runs, it has both the trait's abstract signatures (with `TypeVar` placeholders) and the concrete type from the `ImplTraitRef`. A `ResolveReq` lambda substitutes the placeholder:
+Both `ParseAggregateDefinition` (class header) and `ParseImplDefinition` (impl header) parse the optional `[type]` and fill this struct:
 
 ```cpp
-auto ResolveReq = [&](ValueType T, const string &S) -> std::pair<ValueType, string> {
-  if (T == ValueType::TypeVar && S == TI.TypeParamName)
-    return {ImplRef.TypeArg, ImplRef.TypeArgStructName};
-  return {T, S};
-};
+StructTypeInfo::ImplTraitRef Ref;
+Ref.TraitName = TraitName;
+if (!TraitDef.TypeParamName.empty()) {
+  // trait requires a type argument
+  if (CurTok != '[') {
+    LogError(("Trait '" + TraitName + "' requires a type argument").c_str());
+    return false;
+  }
+  getNextToken(); // eat '['
+  ValueType TypeArg = ParseTypeToken(&TypeArgStruct);
+  // validate — must be a concrete type (not TypeVar, not Error, not None)
+  getNextToken(); // eat ']'
+  Ref.HasTypeArg = true;
+  Ref.TypeArg = TypeArg;
+  Ref.TypeArgStructName = TypeArgStruct;
+} else if (CurTok == '[') {
+  LogError(("Trait '" + TraitName + "' does not take type arguments").c_str());
+  return false;
+}
 ```
 
-For each method in the trait, every parameter type and the return type pass through `ResolveReq` before being compared against the class's actual method signature. If the trait says `T` and the impl says `int`, and `T` resolves to `int`, they match. If they do not match, the error is the same as for a concrete trait mismatch.
+The duplicate impl check is updated to compare full `ImplTraitRef` values using a `SameImpl` lambda, so `impl Addable[int] for Calc` and `impl Addable[float64] for Calc` are treated as distinct and both allowed.
 
-## Class Header with Type Argument
+## `VerifyTraitConformance` with Type Substitution
 
-The `class Foo(Addable[int]):` form also works. The type argument is parsed and stored in the `ImplTraitRef` immediately at the class header:
+`VerifyTraitConformance` now takes an `ImplTraitRef` instead of a bare `string`, and substitutes the concrete type for every `TypeVar` occurrence in the trait signature before comparing:
 
-```pyxc
-class IntCalc(Addable[int]):
-  public def add(x: int, y: int) -> int:
-    return x + y
+```cpp
+static bool VerifyTraitConformance(const string &ClassName,
+                                   const StructTypeInfo::ImplTraitRef &ImplRef) {
+  const string &TraitName = ImplRef.TraitName;
+  const auto &TI = Traits.at(TraitName);
+
+  // Verify type-arg consistency
+  if (!TI.TypeParamName.empty() && !ImplRef.HasTypeArg) {
+    LogError(("Trait '" + TraitName + "' requires a type argument").c_str());
+    return false;
+  }
+
+  // Lambda: resolve TypeVar → concrete type, leave everything else unchanged
+  auto ResolveReq = [&](ValueType T, const string &S)
+      -> std::pair<ValueType, string> {
+    if (T == ValueType::TypeVar && S == TI.TypeParamName)
+      return {ImplRef.TypeArg, ImplRef.TypeArgStructName};
+    return {T, S};
+  };
+
+  for (const auto &Req : TI.Methods) {
+    // check method exists, is public ...
+    auto ReqRet = ResolveReq(Req.ReturnType, Req.ReturnStructName);
+    if (P->getReturnType() != ReqRet.first ||
+        P->getReturnStructName() != ReqRet.second) {
+      LogError("does not match trait signature");
+      return false;
+    }
+    for (size_t I = 0; I < Req.Args.size(); ++I) {
+      auto ReqArg = ResolveReq(Req.Args[I].Type, Req.Args[I].StructName);
+      if (P->getArgType(I + 1) != ReqArg.first ||
+          P->getArgStructName(I + 1) != ReqArg.second) {
+        LogError("does not match trait signature");
+        return false;
+      }
+    }
+  }
+  return true;
+}
 ```
 
-Conformance is checked at the end of the class body, exactly as in chapter 28, but now with the type argument available for substitution.
+For a non-generic trait, `ResolveReq` always returns its arguments unchanged — conformance works identically to chapter 29.
 
 ## Error Cases
 
@@ -241,15 +331,15 @@ impl Addable[int] for Bad:
 
 ## What This Is Not
 
-Type parameters exist only on trait signatures. There are no generic functions, no generic structs, and no generic classes in this chapter. `T` cannot appear in a field declaration, a variable type, or a function return type outside a trait body. The feature is deliberately narrow: it solves the specific problem of writing a single trait that applies to multiple element types, without adding a general generics system.
+Type parameters exist only on trait signatures. There are no generic functions, no generic structs, and no generic classes. `T` cannot appear in a field declaration, a variable type, or a function return type outside a trait body. The feature is deliberately narrow: it solves the specific problem of writing a single trait that applies to multiple element types without adding a general generics system.
 
 ## Things Worth Knowing
 
-**The type parameter name is just a label.** `trait Addable[T]` and `trait Addable[Element]` are equivalent. The name is a convention, not a keyword.
+**The type parameter name is just a label.** `trait Addable[T]` and `trait Addable[Element]` are equivalent.
 
-**A class can implement the same generic trait with different type arguments.** `class Calc(Addable[int], Addable[float64]):` declares both instantiations. Each is verified separately against the corresponding concrete method.
+**A class can implement the same generic trait with different type arguments.** `class Calc(Addable[int], Addable[float64]):` is valid. Each instantiation is verified separately.
 
-**The `TypeVar` value type does not appear in the IR.** Conformance resolves all `TypeVar` occurrences to concrete types at compile time. The generated methods use `i64`, `double`, or whatever concrete LLVM type corresponds to the argument. Nothing generic survives into the IR.
+**`TypeVar` does not appear in the IR.** Conformance resolves all `TypeVar` occurrences to concrete types at compile time. The generated methods use `i64`, `double`, or whatever LLVM type corresponds to the argument.
 
 ## Build and Run
 

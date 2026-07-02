@@ -5,9 +5,7 @@ description: "Add import declarations: pyxc finds the source file, scans its exp
 
 ## Where We Are
 
-[Chapter 41](chapter-41.md) introduced `module` and `export`. A module now has a name and a declared public API, but callers still have to write `extern def` to use it. Every file that calls `add` carries a copy of its signature. Change the signature, fix twenty files.
-
-After this chapter, that's gone:
+[Chapter 41](chapter-41.md) introduced `module` and `export`. A module now has a name and a public API, but callers still have to write `extern def` by hand. After this chapter:
 
 ```pyxc
 # app/math.pyxc
@@ -33,7 +31,7 @@ def main() -> int:
 pyxc --emit exe -o out main.pyxc
 ```
 
-No `extern def add`. The compiler finds `app/math.pyxc`, reads its `export` declarations, and injects the prototype. And in `--emit exe` mode, it finds and compiles `app/math.pyxc` automatically — you don't pass it on the command line.
+No `extern def add`. The compiler finds `app/math.pyxc`, reads its `export` declarations, and injects the prototype. In `--emit exe` mode, it compiles `app/math.pyxc` automatically too.
 
 ## Source Code
 
@@ -42,171 +40,344 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-42
 ```
 
+## `SignatureScanMode` — Parsing Without Codegen
+
+A new global flag suppresses codegen during the import scan:
+
+```cpp
+static bool SignatureScanMode = false;
+static std::set<string> SignatureVisitedFiles; // deduplication
+```
+
+When `SignatureScanMode` is true, `ParseAggregateDefinition` skips method body codegen and calls a leaner helper instead:
+
+```cpp
+if (SignatureScanMode) {
+  if (!ParseMethodSignatureOnlyInClass(StructName, MemberIsPublic))
+    return false;
+} else {
+  auto FnAST = ParseMethodDefinitionInClass(StructName, MemberIsPublic);
+  // ... codegen ...
+}
+```
+
+## `SkipSignatureBody` — Discarding Function Bodies
+
+While scanning signatures, function bodies need to be consumed and thrown away:
+
+```cpp
+static void SkipSignatureBody() {
+  if (CurTok == tok_eol) {
+    consumeNewlines();
+    if (CurTok == tok_indent) {
+      int Depth = 1;
+      getNextToken(); // eat first indent
+      while (CurTok != tok_eof && Depth > 0) {
+        if (CurTok == tok_indent)  ++Depth;
+        else if (CurTok == tok_dedent) --Depth;
+        getNextToken();
+      }
+      return;
+    }
+    return;
+  }
+  // single-line body
+  while (CurTok != tok_eof && CurTok != tok_eol)
+    getNextToken();
+  if (CurTok == tok_eol)
+    getNextToken();
+}
+```
+
+This counts INDENT/DEDENT pairs to skip multi-line bodies correctly.
+
+## `ParseDefinitionSignatureOnly`
+
+Parses a `def` signature, registers the prototype in `FunctionProtos`, then discards the body:
+
+```cpp
+static bool ParseDefinitionSignatureOnly() {
+  getNextToken(); // eat 'def'
+  auto Proto = ParsePrototype();
+  if (!Proto)
+    return false;
+  string RetStructName;
+  ValueType RetType =
+      ParseOptionalReturnTypeWithStruct(RetStructName, ValueType::None);
+  if (RetType == ValueType::Error)
+    return false;
+  Proto->setReturnType(RetType);
+  Proto->setReturnStructName(RetStructName);
+  FunctionProtos[Proto->getName()] = Proto->clone();
+  if (CurTok != ':')
+    return LogError("Expected ':' in definition"), false;
+  getNextToken(); // eat ':'
+  SkipSignatureBody();
+  return true;
+}
+```
+
+## `ParseMethodSignatureOnlyInClass`
+
+Registers a method prototype — including the implicit `self` injection — without generating any IR:
+
+```cpp
+static bool ParseMethodSignatureOnlyInClass(const string &ClassName,
+                                            bool IsPublic) {
+  getNextToken(); // eat 'def'
+  // ... parse method name and parameter list (same as ParseMethodDefinitionInClass) ...
+  // inject implicit self:
+  ArgNames.push_back({"self", ValueType::Pointer,
+                      EncodePointerType(ValueType::Struct, ClassName)});
+  // ... parse remaining params and return type ...
+  string MangledName = ClassName + "." + MethodName;
+  auto Proto = make_unique<PrototypeAST>(MangledName, std::move(ArgNames), ProtoLoc, RetType);
+  FunctionProtos[Proto->getName()] = Proto->clone();
+  // update visibility map:
+  StructTypes[ClassName].MethodIsPublic[MethodName] = IsPublic;
+  getNextToken(); // eat ':'
+  SkipSignatureBody();
+  return true;
+}
+```
+
+## `ParseExportSignatureOnly`
+
+Dispatches on the token after `export` to run the right signature-only parser:
+
+```cpp
+static bool ParseExportSignatureOnly() {
+  getNextToken(); // eat 'export'
+  if (CurTok == tok_def)    return ParseDefinitionSignatureOnly();
+  if (CurTok == tok_extern) {
+    auto Proto = ParseExtern();
+    if (!Proto) return false;
+    FunctionProtos[Proto->getName()] = std::move(Proto);
+    return true;
+  }
+  if (CurTok == tok_struct) return ParseAggregateDefinition("struct");
+  if (CurTok == tok_class)  return ParseAggregateDefinition("class");
+  if (CurTok == tok_trait)  return ParseTraitDefinition();
+  if (CurTok == tok_type)   return ParseTypeAliasDefinition();
+  return LogError("Invalid export target"), false;
+}
+```
+
+Struct, class, trait, and type alias parsers already register into `StructTypes`, `Traits`, and `TypeAliases`. They work unchanged in `SignatureScanMode` because their "bodies" are field/trait-method declarations, not IR-generating code.
+
+## `ResolveImportToPath`
+
+Converts `app.math` to an absolute file path by replacing dots with slashes and probing relative to the importer's location:
+
+```cpp
+static bool ResolveImportToPath(const string &ImporterPath,
+                                const string &Import, string &OutPath) {
+  string Rel = Import;
+  std::replace(Rel.begin(), Rel.end(), '.', '/');
+  SmallString<256> Candidate(ImporterPath);
+  path::remove_filename(Candidate);
+  path::append(Candidate, Rel + ".pyxc");
+  if (fs::exists(Candidate)) {
+    OutPath = std::string(Candidate.str());
+    return true;
+  }
+  // Test-friendly fallback: Inputs/ subdirectory
+  SmallString<256> InputsCandidate(ImporterPath);
+  path::remove_filename(InputsCandidate);
+  path::append(InputsCandidate, "Inputs");
+  path::append(InputsCandidate, Rel + ".pyxc");
+  if (fs::exists(InputsCandidate)) {
+    OutPath = std::string(InputsCandidate.str());
+    return true;
+  }
+  return false;
+}
+```
+
+If neither probe succeeds, the import is unresolved and the compiler errors.
+
+## `CanonicalizePath`
+
+Converts a path to its canonical form for deduplication:
+
+```cpp
+static string CanonicalizePath(const string &Path) {
+  SmallString<256> Canon(Path);
+  if (!llvm::sys::fs::real_path(Path, Canon))
+    return std::string(Canon.str());
+  // fallback: make absolute and remove dots
+  SmallString<256> Abs(Path);
+  llvm::sys::fs::make_absolute(Abs);
+  llvm::sys::path::remove_dots(Abs, true);
+  return std::string(Abs.str());
+}
+```
+
+## `CollectSignaturesFromFile`
+
+The core of the import system. Opens the file, switches to `SignatureScanMode`, scans for `export` declarations, and saves/restores all global parser state:
+
+```cpp
+static bool CollectSignaturesFromFile(const string &Path) {
+  const string CanonPath = CanonicalizePath(Path);
+  if (!SignatureVisitedFiles.insert(CanonPath).second)
+    return true; // already visited
+
+  FILE *SavedInput = Input;
+  bool SavedIsRepl = IsRepl;
+  string SavedSourcePath = CurrentSourcePath;
+  int SavedCurTok = CurTok;
+  bool SavedHadError = HadError;
+  bool OK = true;
+
+  if (!OpenInputFile(Path))
+    return false;
+  ResetLexerState();
+  IsRepl = false;
+  SignatureScanMode = true;
+  HadError = false;
+  getNextToken();
+
+  while (CurTok != tok_eof) {
+    if (CurTok == tok_eol || CurTok == tok_indent || CurTok == tok_dedent) {
+      getNextToken(); continue;
+    }
+    if (CurTok == tok_import) {
+      // Recurse eagerly into nested imports
+      getNextToken(); // eat 'import'
+      string ImportName;
+      if (!ParseDottedModuleName(ImportName)) { OK = false; break; }
+      string ImportPath;
+      if (!ResolveImportToPath(CanonPath, ImportName, ImportPath)) {
+        LogError(("Could not resolve import '" + ImportName + "'...").c_str());
+        OK = false; break;
+      }
+      if (!CollectSignaturesFromFile(ImportPath)) { OK = false; break; }
+      continue;
+    }
+    if (CurTok == tok_export) {
+      if (!ParseExportSignatureOnly()) { OK = false; break; }
+      continue;
+    }
+    SkipSignatureBody(); // skip non-exported forms
+  }
+
+  if (HadError) OK = false;
+
+  CloseInputFile();
+  Input = SavedInput;
+  IsRepl = SavedIsRepl;
+  CurrentSourcePath = SavedSourcePath;
+  CurTok = SavedCurTok;
+  SignatureScanMode = false;
+  HadError = SavedHadError;
+  ResetLexerState();
+  return OK;
+}
+```
+
+State save/restore lets the scanner work recursively — scanning B while in the middle of scanning A — without corrupting the outer parse.
+
+## `ExtractTopLevelImports` — Text-Based Import Discovery
+
+Before the lexer runs on the main file, a fast line-based scanner extracts its `import` names using `std::ifstream`. This avoids invoking the full lexer on the entry file twice:
+
+```cpp
+static vector<string> ExtractTopLevelImports(const string &Path) {
+  vector<string> Result;
+  std::ifstream In(Path);
+  string Line;
+  while (std::getline(In, Line)) {
+    // skip blank lines and comments
+    auto first = Line.find_first_not_of(" \t");
+    if (first == string::npos || Line[first] == '#') continue;
+    string Trim = Line.substr(first);
+    if (Trim.rfind("module ", 0) == 0) continue;
+    if (Trim.rfind("import ", 0) == 0) {
+      string Name = Trim.substr(7);
+      // strip inline comments
+      auto hash = Name.find('#');
+      if (hash != string::npos) Name = Name.substr(0, hash);
+      while (!Name.empty() && isspace((unsigned char)Name.back())) Name.pop_back();
+      if (!Name.empty()) Result.push_back(Name);
+      continue;
+    }
+    if (Trim.rfind("export ", 0) == 0) continue;
+    break; // first non-import top-level form — stop
+  }
+  return Result;
+}
+```
+
+It stops at the first line that is neither `module`, `import`, nor `export` — so function bodies are never read.
+
+## `PreloadImportedSignatures`
+
+Called before the main parse loop of any file. Clears the visited set, then runs `CollectSignaturesFromFile` for each import:
+
+```cpp
+static bool PreloadImportedSignatures(const string &Path) {
+  SignatureVisitedFiles.clear();
+  for (const auto &ImportName : ExtractTopLevelImports(Path)) {
+    string ImportPath;
+    if (!ResolveImportToPath(Path, ImportName, ImportPath)) {
+      LogError(...);
+      return false;
+    }
+    if (!CollectSignaturesFromFile(ImportPath))
+      return false;
+  }
+  return true;
+}
+```
+
+## `CollectImportClosure` — Auto-Expanding `--emit exe`
+
+For `--emit exe`, every transitively imported `.pyxc` file must be compiled and linked. `CollectImportClosure` does a DFS of the import graph and returns the full file list:
+
+```cpp
+static bool CollectImportClosure(const string &Path, std::set<string> &Visited,
+                                 vector<string> &OutFiles) {
+  const string CanonPath = CanonicalizePath(Path);
+  if (!Visited.insert(CanonPath).second)
+    return true; // already in closure
+  OutFiles.push_back(CanonPath);
+  for (const auto &ImportName : ExtractTopLevelImports(CanonPath)) {
+    string ImportPath;
+    if (!ResolveImportToPath(CanonPath, ImportName, ImportPath)) {
+      LogError(...);
+      return false;
+    }
+    if (!CollectImportClosure(ImportPath, Visited, OutFiles))
+      return false;
+  }
+  return true;
+}
+```
+
+The `--emit exe` driver replaces its explicit input list with the `ExpandedInputs` produced by this function:
+
+```cpp
+// Before: compile each file listed on the command line
+// After: expand the import closure, then compile each file in the closure
+vector<string> ExpandedInputs;
+std::set<string> SeenPyxcInputs;
+for each InputPath:
+  if IsPyxcInput(InputPath):
+    CollectImportClosure(InputPath, SeenPyxcInputs, ExpandedInputs);
+  else:
+    ExpandedInputs.push_back(InputPath);
+// then compile everything in ExpandedInputs
+```
+
 ## Grammar
 
 ```ebnf
-importdecl = "import" modulepath ;
+importdecl = "import" modulepath ;   -- new
 modulepath = identifier { "." identifier } ;
 ```
 
-`import` is file-mode only. It can appear anywhere after the `module` declaration and before the first function definition, though putting all imports at the top is the convention.
-
-## How Resolution Works
-
-`import app.math` resolves to a file by converting dots to path separators and appending `.pyxc`:
-
-```
-app.math  →  app/math.pyxc
-```
-
-The search starts in the same directory as the importing file and walks up toward the filesystem root:
-
-```
-/project/src/main.pyxc imports app.math
-  → tries /project/src/app/math.pyxc       ✓ found
-```
-
-```
-/project/src/ui/view.pyxc imports app.math
-  → tries /project/src/ui/app/math.pyxc    ✗ not found
-  → tries /project/src/app/math.pyxc       ✓ found
-```
-
-If the file is not found after walking to the root, the compiler errors:
-
-```
-Error: Could not resolve import 'app.math' from '/project/src/main.pyxc'
-```
-
-## Signature Scanning
-
-When `import app.math` is seen, the compiler opens `app/math.pyxc` and runs a signature scan — a fast pass that reads only `export` declarations and skips everything else. Function bodies, non-exported definitions, and initializers are ignored. The scan result is a set of prototypes injected into the current compilation's symbol table.
-
-What transfers:
-
-| Export form | What the importer gets |
-|---|---|
-| `export def f(x: T) -> U` | Function prototype (name, param types, return type) |
-| `export extern def f(...)` | Extern prototype |
-| `export struct Foo` | Struct layout (field names, types, offsets) |
-| `export class Bar` | Class layout + method prototypes |
-| `export trait Named` | Trait method signatures |
-| `export type string = ptr[int8]` | Type alias |
-
-What does not transfer:
-
-- Non-exported `def` functions — private, not importable
-- Global variables (`var` at top level) — not yet part of the export system
-- Function bodies — never transferred; the importer only needs the signature
-
-## Only Exported Symbols Are Importable
-
-```pyxc
-# app/math.pyxc
-module app.math
-
-def validate(x: int) -> bool:   # private
-  return x >= 0
-
-export def add(x: int, y: int) -> int:
-  return x + y
-```
-
-```pyxc
-# main.pyxc
-import app.math
-
-def main() -> int:
-  validate(5)   # Error: Unknown function referenced
-  return add(2, 3)   # ok
-```
-
-`validate` is not exported. It does not appear in the import. Calling it is the same as calling a function that was never declared.
-
-## Type Checking Across Modules
-
-Imported signatures carry full type information. The usual type checker applies:
-
-```pyxc
-import app.math
-
-def main() -> int:
-  return add(1.0, 2.0)   # Error: argument 1 expects int
-```
-
-The error message names the expected type, just as it would for a locally declared function.
-
-## Struct Types Across Modules
-
-Importing a module that exports a struct makes that type available for `var` declarations, function parameters, return types, and field access:
-
-```pyxc
-# geo/shapes.pyxc
-module geo.shapes
-
-export struct Point:
-  x: int
-  y: int
-```
-
-```pyxc
-import geo.shapes
-
-def main() -> int:
-  var p: Point
-  p.x = 7
-  return p.x
-```
-
-The struct layout — field order, types, and GEP offsets — transfers exactly. A value of type `Point` in the importer has the same memory layout as in the exporter. No marshalling, no copying.
-
-## `--emit exe` Finds Dependencies Automatically
-
-In earlier chapters, every source file had to be listed on the command line:
-
-```bash
-pyxc --emit exe -o out math.pyxc main.pyxc   # old way
-```
-
-After this chapter, `--emit exe` walks the import graph of the entry file and compiles everything it finds:
-
-```bash
-pyxc --emit exe -o out main.pyxc   # new way — math.pyxc found and compiled automatically
-```
-
-The closure expansion is depth-first. Each file's imports are resolved, compiled, and linked. A file that is imported by multiple modules is compiled once (deduplication via canonicalized paths).
-
-## Nested Imports
-
-Imports are transitive. If `main.pyxc` imports `app.ui` and `app.ui` imports `app.math`, `main.pyxc` gets `app.math`'s symbols without an explicit import:
-
-```
-main  →  app.ui  →  app.math
-```
-
-`add` from `app.math` is available in `main` because the signature scan follows the chain. Whether this is good style is a different question — explicit imports are clearer — but the compiler handles the transitive case correctly.
-
-## Note on `self` in Method Signatures
-
-pyxc methods do not write `self` in the parameter list. This catches readers coming from Python:
-
-```pyxc
-# Python style — wrong in pyxc
-export class Counter:
-  value: int
-  def increment(self):       # Error: Method parameters cannot be named 'self'
-    self.value += 1
-```
-
-```pyxc
-# pyxc style — correct
-export class Counter:
-  value: int
-  def increment():
-    self.value += 1           # self is implicit
-```
-
-`self` is the implicit receiver of every method. It is injected by the compiler as a pointer to the class instance and is always in scope inside the method body, but it is not written in the signature.
+`import` is file-mode only. Use it after `module` and before the first function definition.
 
 ## Error Cases
 
@@ -215,10 +386,10 @@ export class Counter:
 import does.not.exist   # Error: Could not resolve import 'does.not.exist' from '...'
 ```
 
-**Calling a private function:**
+**Calling a non-exported function:**
 ```pyxc
 import app.math
-validate(5)   # Error: Unknown function referenced
+validate(5)   # Error: Unknown function referenced (not exported)
 ```
 
 **Wrong argument type from imported function:**
@@ -229,17 +400,15 @@ add(1.0, 2)   # Error: argument 1 expects int
 
 ## Things Worth Knowing
 
-**`import` in the REPL is not supported.** The import system is file-mode only. The REPL compiles expressions in a single-module context with no file to resolve against.
+**`--emit llvm-ir` does not auto-include dependencies.** The closure expansion is specific to `--emit exe`. IR output is one-file-in, one-file-out.
 
-**Module names and file paths must agree.** `import app.math` looks for `app/math.pyxc`. If that file declares `module geo.shapes` at the top, the compiler does not complain — module names are not verified against file paths in this chapter. Keeping them consistent is your responsibility and a strong convention.
+**`import` in the REPL is not supported.** The import system is file-mode only.
 
-**Circular imports work.** If `a.pyxc` imports `b.pyxc` and `b.pyxc` imports `a.pyxc`, the compiler does not loop forever. It resolves the cycle by scanning each file's own exports before recursing into its imports. See [Chapter 43](chapter-43.md) for details.
-
-**`--emit llvm-ir` does not auto-include dependencies.** The auto-closure expansion is specific to `--emit exe`. When emitting IR for a single file you still pass all input files explicitly. This is intentional — IR output is one-file-in, one-file-out by design.
+**Circular imports work.** If A imports B and B imports A, the `SignatureVisitedFiles` set stops the recursion. Chapter 43 makes this more robust with a two-phase algorithm that handles the case where B's exports are needed by A before B finishes scanning.
 
 ## What's Next
 
-[Chapter 43](chapter-43.md) looks at what happens when two modules import each other and explains how the compiler resolves the cycle without infinite recursion.
+[Chapter 43](chapter-43.md) explains how the compiler handles cyclic imports without infinite recursion.
 
 ## Need Help?
 

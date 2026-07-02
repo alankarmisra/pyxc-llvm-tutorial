@@ -5,7 +5,7 @@ description: "Add &&, ||, and ! — logical operators with short-circuit evaluat
 
 ## Where We Are
 
-[Chapter 31](chapter-31.md) completed arithmetic. Conditions in `if` and `while` can now involve complex expressions, but there is still no way to combine two boolean checks or negate one. After this chapter:
+[Chapter 31](chapter-31.md) completed arithmetic — division, remainder, compound assignment, and `++`/`--`. Conditions in `if` and `while` can now involve complex expressions, but there is still no way to combine two boolean checks or negate one. After this chapter:
 
 ```pyxc
 extern def printd(x: float64)
@@ -34,6 +34,182 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-32
 ```
 
+## New Tokens and Lexer Peek-Ahead
+
+Two new token values:
+
+```cpp
+tok_and = -50, // &&
+tok_or  = -51, // ||
+```
+
+Single `&` and `|` remain as their ASCII character values — they are distinct tokens (bitwise operators, added in a later chapter). The lexer peeks one character ahead to decide which to emit:
+
+```cpp
+if (LexerLastChar == '&') {
+  int Tok = (peek() == '&') ? (advance(), tok_and) : '&';
+  LexerLastChar = advance();
+  return Tok;
+}
+
+if (LexerLastChar == '|') {
+  int Tok = (peek() == '|') ? (advance(), tok_or) : '|';
+  LexerLastChar = advance();
+  return Tok;
+}
+```
+
+If the next character is another `&` or `|`, `advance()` consumes it and the two-character token is returned. Otherwise the single-character token falls through unchanged.
+
+## Precedence
+
+`||` and `&&` get their own entries in the precedence table, sitting below all arithmetic and comparison operators:
+
+```cpp
+{tok_or,  5},  // ||
+{tok_and, 7},  // &&
+```
+
+The full ordering from lowest to highest: `||` (5) → `&&` (7) → comparisons (10) → arithmetic (20–40). `&&` binds more tightly than `||`, so `a || b && c` parses as `a || (b && c)`.
+
+## Type Checking — `IsLogicalOp` and `GetBinaryResultType`
+
+A new predicate identifies the logical operators:
+
+```cpp
+static bool IsLogicalOp(int Op) { return Op == tok_and || Op == tok_or; }
+```
+
+`GetBinaryResultType` gains a branch for them. Both operands must be `bool`; anything else is a type error:
+
+```cpp
+if (IsLogicalOp(Op)) {
+  if (L == ValueType::Bool && R == ValueType::Bool)
+    return ValueType::Bool;
+  return ValueType::Error;
+}
+```
+
+The result type is always `bool`. In `ParseBinOpRHS`, the check for built-in operators is extended:
+
+```cpp
+if (IsComparisonOp(BinOp) || IsArithmeticOp(BinOp) || IsLogicalOp(BinOp)) {
+  ResultType = GetBinaryResultType(BinOp, LHS->getType(), ...);
+  if (ResultType == ValueType::Error)
+    return LogError("Type mismatch in binary operator");
+  ...
+}
+```
+
+## `LogicalNotExprAST` — Built-In `!` for Bool
+
+`!` gets a dedicated AST node separate from user-defined unary operators:
+
+```cpp
+class LogicalNotExprAST : public ExprAST {
+  unique_ptr<ExprAST> Operand;
+public:
+  explicit LogicalNotExprAST(unique_ptr<ExprAST> Operand)
+      : Operand(std::move(Operand)) {
+    setType(ValueType::Bool);
+  }
+  Value *codegen() override;
+};
+```
+
+The constructor immediately sets the result type to `Bool` — no type inference needed.
+
+Parsing `!` in `ParseUnary` checks whether the operand is `bool`. If so, it creates `LogicalNotExprAST`. If not, it falls through to the user-defined `unary!` lookup for backward compatibility:
+
+```cpp
+if (CurTok == '!') {
+  getNextToken(); // eat '!'
+  auto Operand = ParseUnary();
+  if (!Operand)
+    return nullptr;
+  if (Operand->getType() == ValueType::Bool)
+    return make_unique<LogicalNotExprAST>(std::move(Operand));
+  auto Proto = GetFunctionProto("unary!");
+  if (!Proto)
+    return LogError("Unknown unary operator");
+  if (Proto->getNumArgs() != 1)
+    return LogError("Unary operator must have exactly one argument");
+  ValueType ParamType = Proto->getArgType(0);
+  if (!IsAssignable(ParamType, Operand->getType())) {
+    return LogError(
+        ("unary operator expects " + string(TypeName(ParamType))).c_str());
+  }
+  return make_unique<UnaryExprAST>('!', std::move(Operand),
+                                   Proto->getReturnType());
+}
+```
+
+Codegen for `LogicalNotExprAST` emits a single `CreateNot` on the `i1` value:
+
+```cpp
+Value *LogicalNotExprAST::codegen() {
+  Value *V = Operand->codegen();
+  if (!V)
+    return nullptr;
+  if (Operand->getType() != ValueType::Bool)
+    return LogErrorV("Type mismatch in unary operator");
+  return Builder->CreateNot(V, "nottmp");
+}
+```
+
+## Short-Circuit Codegen for `&&` and `||`
+
+`&&` and `||` do not use the standard binary expression path. In `BinaryExprAST::codegen`, they are intercepted before the operand is evaluated on the right:
+
+```cpp
+if (Op == tok_and || Op == tok_or) {
+  Value *L = LHS->codegen();
+  if (!L)
+    return nullptr;
+  if (LHS->getType() != ValueType::Bool || RHS->getType() != ValueType::Bool)
+    return LogErrorV("Type mismatch in binary operator");
+
+  Function *F = Builder->GetInsertBlock()->getParent();
+  BasicBlock *LHSBB  = Builder->GetInsertBlock();
+  BasicBlock *RHSBB  = BasicBlock::Create(*TheContext, "logic.rhs", F);
+  BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "logic.end");
+
+  if (Op == tok_and)
+    Builder->CreateCondBr(L, RHSBB, MergeBB);
+  else
+    Builder->CreateCondBr(L, MergeBB, RHSBB);
+
+  Builder->SetInsertPoint(RHSBB);
+  Value *RHSVal = RHS->codegen();
+  if (!RHSVal)
+    return nullptr;
+  Builder->CreateBr(MergeBB);
+  RHSBB = Builder->GetInsertBlock();
+
+  F->insert(F->end(), MergeBB);
+  Builder->SetInsertPoint(MergeBB);
+  PHINode *PN =
+      Builder->CreatePHI(Type::getInt1Ty(*TheContext), 2, "logictmp");
+  if (Op == tok_and) {
+    PN->addIncoming(ConstantInt::getFalse(*TheContext), LHSBB);
+    PN->addIncoming(RHSVal, RHSBB);
+  } else {
+    PN->addIncoming(ConstantInt::getTrue(*TheContext), LHSBB);
+    PN->addIncoming(RHSVal, RHSBB);
+  }
+  return PN;
+}
+```
+
+For `a && b`:
+- Evaluate `a`.  If false, jump to `logic.end` with a `false` constant.
+- If true, fall into `logic.rhs`, evaluate `b`, jump to `logic.end`.
+- The `phi` node in `logic.end` selects between `false` (the short-circuit path) and the result of `b`.
+
+For `a || b` the condition is inverted: if `a` is true, jump to `logic.end` with `true` immediately. The PHI node produces `true` on that path and the result of `b` on the other.
+
+The LLVM `phi` uses `i1` — the native boolean type — throughout. If `b` is a function call with side effects, it genuinely does not execute when the short-circuit fires.
+
 ## Grammar
 
 `!` is added to `unaryop`. `&&` and `||` join `builtinbinaryop`.
@@ -44,171 +220,6 @@ builtinbinaryop = "+" | "-" | "*" | "/" | "%"
                 | "<" | "<=" | ">" | ">=" | "==" | "!="
                 | "&&" | "||" ;                               -- changed
 ```
-
-### Full Grammar
-
-`code/chapter-32/pyxc.ebnf`
-
-```ebnf
-program         = [ eols ] [ top { eols top } ] [ eols ] ;
-eols            = eol { eol } ;
-top             = typealias | traitdef | structdef | classdef | impldef | definition | decorateddef | external | toplevelexpr ;
-typealias       = "type" identifier "=" type ;
-traitdef        = "trait" identifier [ "[" identifier "]" ] ":" eols traitblock ;
-traitblock      = indent traitmethodsig { eols traitmethodsig } dedent ;
-traitmethodsig  = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ;
-structdef       = "struct" identifier ":" eols structblock ;
-classdef        = "class" identifier [ "(" traitref { "," traitref } ")" ] ":" eols structblock ;
-traitref        = identifier [ "[" type "]" ] ;
-impldef         = "impl" traitref "for" identifier ":" eols implblock ;
-implblock       = indent implmethod { eols implmethod } dedent ;
-implmethod      = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ":" ( simplestmt | eols block ) ;
-structblock     = indent classmember { eols classmember } dedent ;
-classmember     = [ visibility ] ( fielddecl | methoddef ) ;
-visibility      = "public" | "private" ;
-methoddef       = "def" identifier "(" [ typedparam { "," typedparam } ] ")"
-                  [ "->" type ] ":" ( simplestmt | eols block ) ;
-fielddecl       = identifier ":" type ;
-definition      = "def" prototype [ "->" type ] ":" ( simplestmt | eols block ) ;
-decorateddef    = binarydecorator eols "def" binaryopprototype [ "->" type ] ":" ( simplestmt | eols block )
-                | unarydecorator  eols "def" unaryopprototype  [ "->" type ] ":" ( simplestmt | eols block ) ;
-binarydecorator = "@" "binary" "(" integer ")" ;
-unarydecorator  = "@" "unary" ;
-binaryopprototype = customopchar "(" typedparam "," typedparam ")" ;
-unaryopprototype  = customopchar "(" typedparam ")" ;
-external        = "extern" "def" prototype [ "->" type ] ;
-toplevelexpr    = expression ;
-prototype       = identifier "(" [ typedparam { "," typedparam } ] ")" ;
-typedparam      = identifier ":" type ;
-ifstmt          = "if" expression ":" suite
-                [ eols "else" ":" suite ] ;
-forstmt         = "for"
-                  ( "var" identifier ":" type | identifier )
-                  "=" expression "," expression "," expression ":" suite ;
-varstmt         = "var" varbinding { "," varbinding } ;
-assignstmt      = lvalue assignop expression ;
-simplestmt      = returnstmt | varstmt | assignstmt | expression ;
-compoundstmt    = ifstmt | forstmt ;
-statement       = simplestmt | compoundstmt ;
-suite           = simplestmt | compoundstmt | eols block ;
-returnstmt      = "return" [ expression ] ;
-block           = indent statement { eols statement } dedent ;
-expression      = unaryexpr binoprhs ;
-binoprhs        = { binaryop unaryexpr } ;
-lvalue          = identifier | fieldaccess | indexexpr ;
-varbinding      = identifier ":" type [ "=" expression ] ;
-unaryexpr       = unaryop unaryexpr | postfixexpr ;
-unaryop         = "-" | "!" | "++" | "--" | userdefunaryop ;
-postfixexpr     = primary [ postfixop ] ;
-postfixop       = "++" | "--" ;
-primary         = castexpr | sizeofexpr | addrexpr | arrayliteral | stringliteral | identifierexpr | fieldaccess | indexexpr | numberexpr | bool_literal | parenexpr ;
-castexpr        = casttype "(" expression ")" ;
-sizeofexpr      = "sizeof" "(" type ")" ;
-addrexpr        = "addr" "(" lvalue ")" ;
-identifierexpr  = identifier | callexpr | methodcallexpr | ctorcallexpr ;
-callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
-methodcallexpr  = identifier "." identifier "(" [ expression { "," expression } ] ")" ;
-ctorcallexpr    = identifier "(" [ expression { "," expression } ] ")" ;
-fieldaccess     = identifier "." identifier { "." identifier } ;
-indexexpr       = identifier "[" expression "]" ;
-numberexpr      = number ;
-arrayliteral    = "[" [ expression { "," expression } ] "]" ;
-stringliteral   = "\"" { ? any char except " and newline ? | escape } "\"" ;
-escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
-parenexpr       = "(" expression ")" ;
-binaryop        = builtinbinaryop | userdefbinaryop ;
-indent          = INDENT ;
-dedent          = DEDENT ;
-
-assignop        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
-builtinbinaryop = "+" | "-" | "*" | "/" | "%"
-                | "<" | "<=" | ">" | ">=" | "==" | "!="
-                | "&&" | "||" ;
-userdefbinaryop = ? any opchar defined as a custom binary operator ? ;
-userdefunaryop  = ? any opchar defined as a custom unary operator ? ;
-customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
-                    and not already defined as a custom operator ? ;
-opchar          = ? any single ASCII punctuation character ? ;
-identifier      = (letter | "_") { letter | digit | "_" } ;
-builtintype     = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | "None" ;
-aliastype       = identifier ;
-structtype      = identifier ;
-pointertype     = "ptr" "[" type "]" ;
-type            = basetype [ arraysuffix ] ;
-basetype        = builtintype | aliastype | structtype | pointertype ;
-arraysuffix     = "[" integer "]" ;
-casttype        = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | pointertype ;
-integer         = digit { digit } ;
-number          = digit { digit } [ "." { digit } ]
-                | "." digit { digit } ;
-bool_literal    = "True" | "False" ;
-letter          = "A".."Z" | "a".."z" ;
-digit           = "0".."9" ;
-eol             = "\r\n" | "\r" | "\n" ;
-ws              = " " | "\t" ;
-INDENT          = ? synthetic token emitted by lexer ? ;
-DEDENT          = ? synthetic token emitted by lexer ? ;
-```
-
-## Logical Not: `!`
-
-`!` on a `bool` operand is handled by a dedicated AST node:
-
-```cpp
-class LogicalNotExprAST : public ExprAST {
-  unique_ptr<ExprAST> Operand;
-  ...
-};
-```
-
-Codegen emits a single `CreateNot` on an `i1` value. The result type is always `bool`.
-
-If the operand is not `bool`, the parser falls through to the user-defined `unary!` lookup — so existing programs that define a custom `unary!` for other types still work.
-
-## Short-Circuit Evaluation
-
-`&&` and `||` do not use the standard binary expression path. Instead, they get early codegen that emits a conditional branch before evaluating the right-hand side:
-
-**`a && b`:**
-
-```
-  evaluate a
-  if a == false: jump to merge (result = false)
-  evaluate b
-merge:
-  phi [ false from lhs_block, b from rhs_block ]
-```
-
-**`a || b`:**
-
-```
-  evaluate a
-  if a == true: jump to merge (result = true)
-  evaluate b
-merge:
-  phi [ true from lhs_block, b from rhs_block ]
-```
-
-The basic blocks are named `logic.rhs` and `logic.end` in the IR. The PHI node resolves to the correct boolean result regardless of which path was taken. If `b` is a function call with side effects, it will not be called if the short-circuit fires.
-
-Both operands must be `bool`. Mixing `int` or any other type is a type error caught at parse time.
-
-## Precedence
-
-`||` and `&&` sit below all comparison and arithmetic operators:
-
-| Operator | Precedence |
-|---|---|
-| `\|\|` | 5 |
-| `&&` | 7 |
-| comparisons (`==`, `<`, etc.) | 10–14 |
-| arithmetic (`+`, `*`, etc.) | 20–40 |
-
-`&&` binds more tightly than `||`, so `a || b && c` parses as `a || (b && c)`.
 
 ## Error Cases
 

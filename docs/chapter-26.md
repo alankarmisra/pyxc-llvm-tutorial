@@ -152,82 +152,134 @@ INDENT          = ? synthetic token emitted by lexer ? ;
 DEDENT          = ? synthetic token emitted by lexer ? ;
 ```
 
-## Defining `__init__`
+## New AST Node — `ConstructorCallExprAST`
 
-`__init__` is a method named literally `__init__`. It is defined the same way as any other method — inside the class body, with `def __init__(params):`. The compiler enforces one constraint: `__init__` must return `None`. Returning a value from a constructor is an error.
+A constructor call `Point(3, 4)` is not the same as a function call `foo(3, 4)` — it allocates memory, zeroes it, may call `__init__`, and returns a struct value. A dedicated AST node captures this:
 
-```pyxc
-class Rect:
-  w: int
-  h: int
-
-  def __init__(width: int, height: int):
-    self.w = width
-    self.h = height
+```cpp
+class ConstructorCallExprAST : public ExprAST {
+  string ClassName;
+  vector<unique_ptr<ExprAST>> Args;
+public:
+  ConstructorCallExprAST(const string &ClassName,
+                         vector<unique_ptr<ExprAST>> Args)
+      : ClassName(ClassName), Args(std::move(Args)) {
+    setType(ValueType::Struct, ClassName);  // result type is the class itself
+  }
+  Value *codegen() override;
+};
 ```
 
-`__init__` is optional. A class without it still works — instances are zero-initialised by default.
+The result type is `ValueType::Struct` with `ClassName` as the struct name — the same type you get from `var p: Point`.
 
-## Constructor Call Syntax
+## Disambiguating Constructor Calls at Parse Time
 
-`ClassName(args)` at the call site looks identical to a regular function call. The expression parser checks whether the identifier names a known class. If it does, it builds a `ConstructorCallExprAST` instead of a `CallExprAST`.
+In `ParseIdentifierExpr`, when the parser sees `identifier(`, it now checks whether the identifier is a known class before deciding what to build. The check runs before the existing function-call path:
 
-```pyxc
-var r: Rect = Rect(10, 20)
+```cpp
+// Constructor call: ClassName(...)
+auto SI = StructTypes.find(IdName);
+if (SI != StructTypes.end() && SI->second.IsClass) {
+  getNextToken(); // eat '('
+  string InitName = IdName + ".__init__";
+  PrototypeAST *InitProto = GetFunctionProto(InitName);
+
+  vector<unique_ptr<ExprAST>> Args;
+  if (CurTok != ')') {
+    size_t ArgIndex = 0;
+    while (true) {
+      // Set expected type from __init__ prototype (skipping self at index 0)
+      ValueType Expected = ValueType::Error;
+      string ExpectedStructName;
+      if (InitProto && ArgIndex + 1 < InitProto->getNumArgs()) {
+        Expected = InitProto->getArgType(ArgIndex + 1);
+        ExpectedStructName = InitProto->getArgStructName(ArgIndex + 1);
+      }
+      ExpectedLiteralTypeGuard Guard(Expected, ExpectedStructName);
+      auto Arg = ParseExpression();
+      Args.push_back(std::move(Arg));
+      if (CurTok == ')') break;
+      getNextToken(); // eat ','
+      ++ArgIndex;
+    }
+  }
+  getNextToken(); // eat ')'
+
+  // Validate arg count and types against __init__ (minus self)
+  if (InitProto) {
+    size_t ExpectedArgs = InitProto->getNumArgs() > 0
+                            ? InitProto->getNumArgs() - 1 : 0;
+    if (Args.size() != ExpectedArgs)
+      return LogError("Incorrect # arguments passed");
+    // ...type check each arg...
+  } else if (!Args.empty()) {
+    return LogError("Class has no constructor; expected zero arguments");
+  }
+  return make_unique<ConstructorCallExprAST>(IdName, std::move(Args));
+}
+
+// Function call (falls through here if not a class)
 ```
 
-This is a zero-argument constructor call for a class without `__init__`:
+If the class has `__init__`, argument count and types are checked against the prototype (minus the implicit `self` at index 0). If there is no `__init__`, any non-empty argument list is an error.
 
-```pyxc
-var p: Point = Point()
+## `__init__` Must Return None
+
+`ParseMethodDefinitionInClass` validates that `__init__` does not declare a return type:
+
+```cpp
+if (MethodName == "__init__" && RetType != ValueType::None)
+  return LogErrorF("Constructor '__init__' must return None");
 ```
 
-Both produce a stack-allocated instance of the class.
+This check runs after parsing the optional `-> type` return annotation and before parsing the body. `__init__` always returns `None` — it cannot return a value.
 
-## What the Constructor Call Does at Runtime
+## `ConstructorCallExprAST::codegen` — Allocate, Zero, Call, Load
 
-`ConstructorCallExprAST::codegen` does three things in order:
+The codegen for a constructor call does three things in a fixed order:
 
-1. **Allocate in the function's entry block.** A temporary named `ctor.tmp` is allocated with `CreateEntryBlockAlloca`. Allocating in the entry block (not at the call site) is critical: LLVM's `mem2reg` pass can only promote allocas that are in the entry block. An alloca elsewhere would defeat optimisation and grow the stack in loops.
+```cpp
+Value *ConstructorCallExprAST::codegen() {
+  // 1. Allocate in the function's entry block
+  Function *CurFn = Builder->GetInsertBlock()->getParent();
+  AllocaInst *Tmp = CreateEntryBlockAlloca(CurFn, "ctor.tmp",
+                                           ValueType::Struct, ClassName);
 
-2. **Zero-initialise.** The entire struct is zeroed before `__init__` runs:
-   ```cpp
-   Builder->CreateStore(ZeroConstant(ValueType::Struct, ClassName), Tmp);
-   ```
-   This guarantees that any field not touched by `__init__` starts at a defined value, not garbage.
+  // 2. Zero-initialise the entire struct
+  Builder->CreateStore(ZeroConstant(ValueType::Struct, ClassName), Tmp);
 
-3. **Call `__init__` if it exists.** The alloca pointer (`ctor.tmp`) is passed as `self`. The user-supplied arguments follow. After the call returns, the value of `ctor.tmp` is loaded and becomes the result of the constructor expression.
+  // 3. Call __init__ if it exists, passing Tmp as self
+  string InitName = ClassName + ".__init__";
+  if (PrototypeAST *InitProto = GetFunctionProto(InitName)) {
+    Function *InitF = getFunction(InitName);
+    vector<Value *> ArgsV;
+    ArgsV.push_back(Tmp);  // implicit self
+    for (unsigned I = 0; I < Args.size(); ++I) {
+      Value *ArgVal = Args[I]->codegen();
+      // apply implicit casts, handle array decay...
+      ArgsV.push_back(ArgVal);
+    }
+    Builder->CreateCall(InitF, ArgsV);
+  } else if (!Args.empty()) {
+    return LogErrorV("Constructor argument mismatch");
+  }
 
-If there is no `__init__`, steps 1 and 2 still happen — you get a zero-initialised instance.
-
-## Default Zero Initialisation
-
-A class without `__init__` still produces a fully zeroed instance on construction:
-
-```pyxc
-class Config:
-  debug: bool
-  level: int
-
-var cfg: Config = Config()
-# cfg.debug is False, cfg.level is 0
+  // 4. Load the finished struct as a value
+  return Builder->CreateLoad(ClassTy, Tmp, "ctor.obj");
+}
 ```
 
-This is a guarantee, not an accident. The zero store always runs before any `__init__` call, and runs even when there is no `__init__`.
+**Why `CreateEntryBlockAlloca`?** LLVM's `mem2reg` pass — which turns stack slots into SSA values — only works on allocas in the function's entry block. If the constructor call is inside a loop, allocating there would push the alloca deeper and prevent promotion. Placing the alloca in the entry block keeps the loop's stack frame constant regardless of iteration count.
 
-## IR
+**Why zero first?** Zero-initialising before calling `__init__` guarantees that fields not touched by `__init__` hold a defined value, not garbage.
+
+**The result is a value, not a pointer.** The `CreateLoad` at the end copies the struct out of `Tmp`. What `Point(3, 4)` returns is a `%Point` aggregate, not a `ptr`. When assigned to `var p: Point`, this value is stored into `p`'s own alloca.
+
+## What Lands in the IR
 
 ```pyxc
-class Point:
-  x: int
-  y: int
-
-  def __init__(px: int, py: int):
-    self.x = px
-    self.y = py
+var p: Point = Point(3, 4)
 ```
-
-A call `Point(3, 4)` generates roughly:
 
 ```llvm
 ; In the entry block of the calling function:
@@ -236,10 +288,9 @@ A call `Point(3, 4)` generates roughly:
 ; At the call site:
 store %Point zeroinitializer, ptr %ctor.tmp
 call void @Point.__init__(ptr %ctor.tmp, i64 3, i64 4)
-%result = load %Point, ptr %ctor.tmp
+%ctor.obj = load %Point, ptr %ctor.tmp
+store %Point %ctor.obj, ptr %p
 ```
-
-The result is a value (not a pointer) — the loaded struct is copied into the destination variable's alloca.
 
 ## Things Worth Knowing
 
@@ -247,9 +298,9 @@ The result is a value (not a pointer) — the loaded struct is copied into the d
 
 **`__init__` is a regular method.** It can call other methods via `self`, access all fields, and use any other class feature. It is not special beyond its name and the "must return None" rule.
 
-**No overloading.** Only one `__init__` per class. If you define it twice, the second definition is a redefinition error.
+**No overloading.** Only one `__init__` per class. A second definition is a redefinition error.
 
-**`ClassName()` with no `__init__` is always valid.** It produces a zero-initialised instance. `ClassName(args)` with arguments but no `__init__` is an error — there is nobody to receive the arguments.
+**`ClassName()` with no `__init__` is always valid.** It produces a zero-initialised instance. `ClassName(args)` with arguments but no `__init__` is an error.
 
 ## What's Next
 

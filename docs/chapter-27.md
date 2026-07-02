@@ -155,38 +155,85 @@ INDENT          = ? synthetic token emitted by lexer ? ;
 DEDENT          = ? synthetic token emitted by lexer ? ;
 ```
 
-## New Keywords: `public` and `private`
+## New Tokens
 
 ```cpp
 tok_public  = -41,
 tok_private = -42,
 ```
 
-Both are registered in the keyword table. They are only meaningful inside a class body; using them in any other context is a parse error.
+Both are registered in the keyword table:
 
-## Storing Visibility
+```cpp
+{"public",  tok_public},
+{"private", tok_private},
+```
 
-`StructTypeInfo` gains a boolean `IsPublic` on each `FieldInfo`, and a map from method name to boolean for methods:
+They are also added to the token name map so error messages print `'public'` and `'private'`.
+
+## Storing Visibility in `StructTypeInfo`
+
+Visibility is stored on two places in `StructTypeInfo`:
+
+**Fields** gain an `IsPublic` flag:
 
 ```cpp
 struct FieldInfo {
   string Name;
   ValueType Type;
   string StructName;
-  bool IsPublic = true;    // new
+  bool IsPublic = true;    // new — default public
 };
+```
 
+**Methods** are tracked in a map from method name to boolean:
+
+```cpp
 struct StructTypeInfo {
   // ...
   std::map<string, bool> MethodIsPublic;  // new
 };
 ```
 
-The parser reads the optional `public`/`private` token before each member. If none is present, the member defaults to public.
+Methods use a map rather than a flag on the prototype because the prototype lives in `FunctionProtos` and visibility is class metadata, not function metadata.
 
-## The Access Rule
+## Parsing Visibility Modifiers
 
-The question at every field read, field write, and method call is: is the caller allowed to see this member?
+In `ParseAggregateDefinition`, the body loop now reads an optional visibility token before each member:
+
+```cpp
+bool MemberIsPublic = true;
+bool HasVisibilityModifier = false;
+if (CurTok == tok_public || CurTok == tok_private) {
+  HasVisibilityModifier = true;
+  MemberIsPublic = (CurTok == tok_public);
+  getNextToken(); // eat visibility modifier
+}
+if (HasVisibilityModifier && !Info.IsClass) {
+  LogError("Visibility modifiers are only allowed inside class bodies");
+  return false;
+}
+```
+
+If no modifier is present, `MemberIsPublic` stays `true` — the default is public. If the modifier appears inside a `struct` body, it is rejected immediately.
+
+After parsing a field, the visibility is stored in `FieldInfo`:
+
+```cpp
+Info.Fields.push_back({FieldName, FieldType, FieldStructName, MemberIsPublic});
+```
+
+After parsing a method, the method's visibility is registered in `MethodIsPublic` by `ParseMethodDefinitionInClass` (which now takes `bool IsPublic` as a parameter):
+
+```cpp
+StructTypes[ClassName].MethodIsPublic[MethodName] = IsPublic;
+```
+
+The `StructTypes[StructName]` entry is written back after each member — `Info.MethodIsPublic = StructTypes[StructName].MethodIsPublic` — so the running map is always current as parsing proceeds.
+
+## `CanAccessClassMember` and `ClassScopeGuard`
+
+Access is decided by a single function:
 
 ```cpp
 static string CurrentClassScopeName;
@@ -197,11 +244,9 @@ static bool CanAccessClassMember(const string &OwnerClass, bool IsPublic) {
 }
 ```
 
-A member is accessible if it is `public`, or if the code currently being compiled belongs to the same class. "Currently being compiled" is tracked by `CurrentClassScopeName`.
+A member is accessible if it is `public`, **or** if the code currently being compiled belongs to the same class. "Currently being compiled" is tracked by `CurrentClassScopeName`.
 
-## Tracking the Current Class with `ClassScopeGuard`
-
-When the compiler starts generating code for a method body, it needs to remember which class that method belongs to, so that `CanAccessClassMember` can grant access to private members. A RAII guard handles this:
+`ClassScopeGuard` sets and restores `CurrentClassScopeName` around method codegen:
 
 ```cpp
 struct ClassScopeGuard {
@@ -213,38 +258,50 @@ struct ClassScopeGuard {
 };
 ```
 
-`ParseMethodDefinitionInClass` creates a `ClassScopeGuard` before calling into the method body parser and codegen. When the method is done, the guard's destructor restores the previous class scope. Scopes nest correctly because each guard saves and restores independently.
+`ParseMethodDefinitionInClass` creates a `ClassScopeGuard` before entering the body. When the method is done, the destructor restores the previous class scope (which is `""` at the top level, or the enclosing class if methods are somehow nested — though pyxc does not currently support nested classes).
 
-## Where Checks Fire
+## Access Checks at Every Use Site
 
-Every point where the compiler accesses a member goes through `CanAccessClassMember`:
+`CanAccessClassMember` is inserted at every point where the compiler touches a class member:
 
-- **Field read** (`fieldaccess` in an expression): checks the field's `IsPublic` flag.
-- **Field write** (`assignstmt` with a field lvalue): same check.
-- **Method call** (`methodcallexpr`): checks `MethodIsPublic[MethodName]`.
-- **Constructor call** (`ctorcallexpr`): if the class defines `__init__`, checks whether `__init__` is public before calling it.
+**Field access** — in the `ConsumeField` lambda inside `ParseFieldAccessFromFirstMember`:
 
-## Structs Reject Visibility Modifiers
-
-`public` and `private` are only meaningful on classes. Putting one in a `struct` body is a parse error:
-
-```pyxc
-struct Pair:
-  public x: int   # Error: visibility modifiers not allowed in struct
-  y: int
+```cpp
+if (!CanAccessClassMember(CurStruct, FD.IsPublic))
+  return LogError(("Field '" + Field + "' is private on '" + CurStruct + "'").c_str());
 ```
 
-Structs have no encapsulation concept — all their fields are always accessible. The parser detects the modifier-inside-struct case and rejects it immediately.
+This fires for both read (`obj.x`) and write (`obj.x = v`) paths, because both go through `ParseFieldAccessFromFirstMember`.
+
+**Method call** — in `ParseMethodCallExpr`, after looking up `ClassName.MethodName`:
+
+```cpp
+auto MI = CI->second.MethodIsPublic.find(MethodName);
+if (MI != CI->second.MethodIsPublic.end() &&
+    !CanAccessClassMember(ClassName, MI->second)) {
+  return LogError(("Method '" + MethodName + "' is private on '" + ClassName + "'").c_str());
+}
+```
+
+**Constructor call** — in `ParseIdentifierExpr`, if `__init__` exists:
+
+```cpp
+auto MI = SI->second.MethodIsPublic.find("__init__");
+if (MI != SI->second.MethodIsPublic.end() &&
+    !CanAccessClassMember(IdName, MI->second)) {
+  return LogError(("Method '__init__' is private on '" + IdName + "'").c_str());
+}
+```
 
 ## IR Is Unchanged
 
-Visibility is enforced entirely by the compiler's parser and semantic checks. Nothing changes in the generated IR — `public` and `private` leave no trace in the output. A `private int` and a `public int` generate identical `i64` fields.
+Visibility is enforced entirely at parse and semantic check time. Nothing changes in the generated IR — `public` and `private` leave no trace in the output. A `private int` and a `public int` generate identical `i64` fields.
 
 ## Things Worth Knowing
 
 **Default is public.** A member without a modifier is public. Existing code from chapters 25 and 26, which has no modifiers, continues to work exactly as before.
 
-**`private __init__` prevents construction from outside the class.** If `__init__` is private, `ClassName(args)` from an external call site is rejected.
+**`private __init__` prevents external construction.** If `__init__` is private, `ClassName(args)` from outside the class body is rejected.
 
 **There is no `protected`.** Access is either class-private or world-public. No inheritance hierarchy, no friend declarations.
 

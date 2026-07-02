@@ -5,9 +5,7 @@ description: "Introduce module declarations and export: name your compilation un
 
 ## Where We Are
 
-[Chapter 40](chapter-40.md) completed Phase 5. pyxc is now a complete systems language — you can write K&R-style programs, call any C library function, and express everything in the first four chapters of *The C Programming Language*.
-
-What we haven't addressed is scale. Every non-trivial program lives in more than one file. pyxc can already compile multiple files into a single executable — it has since [Chapter 14](chapter-14.md) — but there's no way to say which functions are public and which are internal. This chapter introduces `module` and `export` to fix that.
+[Chapter 40](chapter-40.md) completed Phase 5. pyxc can call any C library function and express everything in the first four chapters of *The C Programming Language*. What we haven't addressed is scale. Every non-trivial program lives in more than one file. pyxc can already compile multiple files — but there's no way to say which functions are public and which are internal. This chapter introduces `module` and `export` to fix that.
 
 ## Source Code
 
@@ -16,95 +14,201 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-41
 ```
 
-## Multi-File Compilation Already Works
+## New Tokens and Keywords
 
-Before adding anything new, it's worth showing what already works. Two pyxc files, compiled together:
+Three new tokens:
 
-```pyxc
-# math.pyxc
-def add(x: int, y: int) -> int:
-  return x + y
+```cpp
+tok_module = -69,
+tok_import = -70,
+tok_export = -71,
 ```
 
-```pyxc
-# main.pyxc
-extern def add(x: int, y: int) -> int
+Added to the keyword table and token name map:
 
-def main() -> int:
-  return add(3, 4)
+```cpp
+{"module", tok_module}, {"import", tok_import}, {"export", tok_export}
 ```
 
-```bash
-pyxc --emit exe -o out math.pyxc main.pyxc
+## File-Level State Globals
+
+Four new globals track module metadata while parsing a file:
+
+```cpp
+static bool SeenNonModuleTopLevel = false;  // true once any def/struct/etc. seen
+static bool ModuleDeclaredInFile  = false;  // true once 'module' has been seen
+static string CurrentModuleName;            // e.g. "app.math"
+static vector<string> ImportedModules;      // import names seen in this file
 ```
 
-The linker connects them. No new features needed. The `extern def` in `main.pyxc` tells the compiler "this function exists somewhere — I'll deal with the details at link time."
+These are reset at the start of each file compilation:
 
-This works, but it has a problem: every file that calls `add` must repeat its `extern def`. In a project with twenty files that all call `add`, you repeat the signature twenty times. If the signature changes, twenty files break.
-
-## `module` and `export`
-
-This chapter adds two keywords to address that:
-
-**`module`** names the compilation unit. It must be the first non-comment line in the file.
-
-```pyxc
-module app.math
+```cpp
+SeenNonModuleTopLevel = false;
+ModuleDeclaredInFile  = false;
+CurrentModuleName.clear();
+ImportedModules.clear();
 ```
 
-The name is a dotted path — `app.math`, `geo.point`, `stdlib.io`. It doesn't affect the compiled output in this chapter; it's documentation about what this file contains and a prerequisite for the import system in [Chapter 42](chapter-42.md).
+## `ParseDottedModuleName` — Dotted Path Parser
 
-**`export`** marks a top-level declaration as part of the module's public API. Anything without `export` is private to that file.
+Both `module` and `import` share a parser for the dotted module path:
 
-```pyxc
-module app.math
-
-def validate(x: int) -> bool:   # private — not exported
-  return x >= 0
-
-export def add(x: int, y: int) -> int:   # public
-  return x + y
+```cpp
+static bool ParseDottedModuleName(string &OutName) {
+  OutName.clear();
+  if (CurTok != tok_identifier) {
+    LogError("Expected module path");
+    return false;
+  }
+  OutName = IdentifierStr;
+  getNextToken(); // eat first identifier
+  while (CurTok == '.') {
+    getNextToken(); // eat '.'
+    if (CurTok != tok_identifier) {
+      LogError("Expected identifier after '.' in module path");
+      return false;
+    }
+    OutName += ".";
+    OutName += IdentifierStr;
+    getNextToken(); // eat identifier
+  }
+  return true;
+}
 ```
 
-`export` is a prefix, not a separate declaration. You can export functions, structs, classes, traits, type aliases, and extern declarations:
+This produces strings like `"app.math"` or `"geo.shapes"`.
 
-```pyxc
-export struct Point:
-  x: int
-  y: int
+## `ParseModuleDefinition` — The `module` Declaration
 
-export type string = ptr[int8]
+```cpp
+static bool ParseModuleDefinition() {
+  getNextToken(); // eat 'module'
+  if (!ParseDottedModuleName(CurrentModuleName))
+    return false;
+  if (ModuleDeclaredInFile) {
+    LogError("Only one module declaration is allowed per file");
+    return false;
+  }
+  if (SeenNonModuleTopLevel) {
+    LogError("module declaration must appear before other top-level forms");
+    return false;
+  }
+  ModuleDeclaredInFile = true;
+  return true;
+}
+```
 
-export def distance(a: Point, b: Point) -> float64:
-  ...
+Two validations: only one `module` per file, and it must precede all other top-level forms.
+
+## `ParseImportDefinition`
+
+```cpp
+static bool ParseImportDefinition() {
+  getNextToken(); // eat 'import'
+  string ImportName;
+  if (!ParseDottedModuleName(ImportName))
+    return false;
+  ImportedModules.push_back(ImportName);
+  return true;
+}
+```
+
+In this chapter, import names are collected but not yet resolved to files. That is Chapter 42's job.
+
+## `SeenNonModuleTopLevel` Tracking
+
+Every top-level handler sets the flag when it runs:
+
+```cpp
+static void HandleDefinition()    { SeenNonModuleTopLevel = true; ... }
+static void HandleExtern()        { SeenNonModuleTopLevel = true; ... }
+static void HandleStructDef()     { SeenNonModuleTopLevel = true; ... }
+static void HandleClassDef()      { SeenNonModuleTopLevel = true; ... }
+static void HandleTypeAliasDef()  { SeenNonModuleTopLevel = true; ... }
+static void HandleTraitDef()      { SeenNonModuleTopLevel = true; ... }
+static void HandleImplDef()       { SeenNonModuleTopLevel = true; ... }
+// ... and HandleTopLevelExpression
+```
+
+This is how `ParseModuleDefinition` can detect that `module` appeared too late.
+
+## `HandleModuleDef`, `HandleImportDef`, `HandleExportDef`
+
+`HandleModuleDef` and `HandleImportDef` reject REPL input and then delegate to their parse functions:
+
+```cpp
+static void HandleModuleDef() {
+  if (IsRepl) {
+    LogError("'module' is only supported in file mode");
+    SynchronizeToLineBoundary();
+    return;
+  }
+  if (!ParseModuleDefinition())
+    SynchronizeToLineBoundary();
+}
+
+static void HandleImportDef() {
+  if (IsRepl) {
+    LogError("'import' is only supported in file mode");
+    SynchronizeToLineBoundary();
+    return;
+  }
+  if (!ParseImportDefinition())
+    SynchronizeToLineBoundary();
+}
+```
+
+`HandleExportDef` eats `export` and then dispatches to the appropriate existing handler based on the following token:
+
+```cpp
+static void HandleExportDef() {
+  if (IsRepl) {
+    LogError("'export' is only supported in file mode");
+    SynchronizeToLineBoundary();
+    return;
+  }
+  getNextToken(); // eat 'export'
+  switch (CurTok) {
+  case tok_def:    HandleDefinition(); return;
+  case tok_extern: HandleExtern();     return;
+  case tok_struct: HandleStructDef();  return;
+  case tok_class:  HandleClassDef();   return;
+  case tok_type:   HandleTypeAliasDef(); return;
+  case tok_trait:  HandleTraitDef();   return;
+  case tok_impl:   HandleImplDef();    return;
+  default:
+    LogError("'export' must be followed by a top-level declaration");
+    SynchronizeToLineBoundary();
+    return;
+  }
+}
+```
+
+In this chapter `export` is a visibility marker but does not yet restrict which symbols cross file boundaries — enforcement comes in Chapter 42.
+
+## Main Loop Dispatch
+
+Both `MainLoop` and `FileModeLoop` gain three new cases:
+
+```cpp
+case tok_module: HandleModuleDef(); break;
+case tok_import: HandleImportDef(); break;
+case tok_export: HandleExportDef(); break;
 ```
 
 ## Grammar
 
 ```ebnf
-moduledecl  = "module" modulepath ;
-exportdecl  = "export" ( definition | external | structdef | classdef
-                        | typealias | traitdef | impldef ) ;
-modulepath  = identifier { "." identifier } ;
+moduledecl  = "module" modulepath ;                                -- new
+importdecl  = "import" modulepath ;                                -- new
+exportdecl  = "export" ( definition | external | structdef
+                        | classdef | typealias | traitdef
+                        | impldef ) ;                              -- new
+modulepath  = identifier { "." identifier } ;                      -- new
 ```
 
-`module` must appear before any other top-level form. A file can have at most one `module` declaration. Both are file-mode only — `module` and `export` in the REPL are errors.
-
-## What `export` Does Not Do Yet
-
-In this chapter, `export` is parsed and checked syntactically, but it does not restrict what other files can see. That enforcement comes in [Chapter 42](chapter-42.md), when the import system scans a file's exported declarations to build the set of available symbols.
-
-Think of this chapter as drawing the line. Chapter 42 is what enforces it.
-
-## Cliffhanger
-
-The `extern def` repetition problem is still unsolved. In the program above, `main.pyxc` still needs:
-
-```pyxc
-extern def add(x: int, y: int) -> int
-```
-
-Chapter 42 fixes this: `import app.math` finds `app/math.pyxc`, scans its `export` declarations, and injects them as prototypes — no `extern def` required.
+`module` must be the first non-comment line. A file can have at most one `module` declaration. Both `module` and `export` are file-mode only.
 
 ## Error Cases
 
@@ -112,7 +216,6 @@ Chapter 42 fixes this: `import app.math` finds `app/math.pyxc`, scans its `expor
 ```pyxc
 def a() -> int:
   return 0
-
 module late.name   # Error: module declaration must appear before other top-level forms
 ```
 
@@ -134,17 +237,9 @@ export 1 + 2   # Error: 'export' must be followed by a top-level declaration
 Error: 'module' is only supported in file mode
 ```
 
-## Things Worth Knowing
-
-**The module name is not the file path.** `module app.math` does not tell the compiler to look for `app/math.pyxc`. That mapping is the import resolver's job (Chapter 42). In this chapter, the name is purely informational.
-
-**`export` on a struct exports the layout.** Importing a module that exports a struct gives you the field names, field types, and field offsets — everything needed to construct and use values of that type across files.
-
-**`module` paths use dots, not slashes.** `module app.math` corresponds to a file at `app/math.pyxc` relative to the project root, but you write dots in the source and the toolchain handles the conversion. This is the same convention Python, Go, and Java use.
-
 ## What's Next
 
-[Chapter 42](chapter-42.md) implements `import`: the compiler finds the source file, scans its `export` declarations, and makes them available — no `extern def` needed for pyxc-to-pyxc calls.
+[Chapter 42](chapter-42.md) implements the import resolver: the compiler finds the source file, scans its `export` declarations, and makes them available — no `extern def` needed for pyxc-to-pyxc calls.
 
 ## Need Help?
 

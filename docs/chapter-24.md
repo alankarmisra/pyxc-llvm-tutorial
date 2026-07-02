@@ -130,38 +130,79 @@ INDENT          = ? synthetic token emitted by lexer ? ;
 DEDENT          = ? synthetic token emitted by lexer ? ;
 ```
 
-## New Keyword: `class`
+## New Token
 
 ```cpp
 tok_class = -40,
 ```
 
-Registered in the keyword table:
+Registered in the keyword table alongside `tok_struct`:
 
 ```cpp
-{"class", tok_class}
+{"struct", tok_struct},
+{"class",  tok_class},
 ```
 
-## One Parser, Two Keywords
+`tok_class` is also added to the token name map so error messages print `'class'` rather than a raw integer.
 
-Both `struct` and `class` share the same parser function: `ParseAggregateDefinition`. The caller passes `"struct"` or `"class"` as a string; the parser uses it only for error messages and to set the `IsClass` flag:
+## One Parser, Two Keywords — `ParseAggregateDefinition`
+
+Previously the struct parser was `ParseStructDefinition()`. This chapter replaces it with a single function that handles both keywords. The caller passes `"struct"` or `"class"` as a string, and the parser uses it only to:
+
+1. Produce readable error messages (`"Expected struct name"` vs `"Expected class name"`)
+2. Set the `IsClass` flag (see Group 3)
 
 ```cpp
 static bool ParseAggregateDefinition(const char *KindName) {
   // CurTok is tok_struct or tok_class
   getNextToken(); // eat keyword
-  // ... parse name, ':', INDENT, fields, DEDENT ...
+  if (CurTok != tok_identifier)
+    return LogError((string("Expected ") + KindName + " name").c_str());
+  string StructName = IdentifierStr;
+
+  // Check for redefinition
+  if (StructTypes.count(StructName))
+    return LogError(("Aggregate '" + StructName + "' is already defined").c_str());
+
+  getNextToken(); // eat aggregate name
+  // ... parse ':', INDENT, fields, DEDENT ...
+
   Info.IsClass = (strcmp(KindName, "class") == 0);
   StructTypes[StructName] = std::move(Info);
   return true;
 }
 ```
 
-`HandleStructDef` calls it with `"struct"`, `HandleClassDef` with `"class"`. The dispatch loop calls the right handler based on the token.
+All error strings are parameterised on `KindName`, so a mis-formed class body reports `"Expected dedent after class body"` instead of the generic struct message.
+
+`HandleStructDef` and `HandleClassDef` each call this with `"struct"` or `"class"`:
+
+```cpp
+static void HandleStructDef() {
+  bool Ok = ParseAggregateDefinition("struct");
+  if (!Ok) { SynchronizeToLineBoundary(); return; }
+  // check for trailing tokens on the same line
+}
+
+static void HandleClassDef() {
+  bool Ok = ParseAggregateDefinition("class");
+  // same error recovery
+}
+```
+
+`HandleStructDef` now also includes improved error recovery — if parsing succeeds but there are unexpected tokens on the same line, it logs an error and synchronises to the line boundary.
+
+The dispatch loops in `MainLoop` and `FileModeLoop` add a `tok_class` case:
+
+```cpp
+case tok_class:
+  HandleClassDef();
+  break;
+```
 
 ## The `IsClass` Flag
 
-`StructTypeInfo` gains a boolean field:
+`StructTypeInfo` gains one boolean field:
 
 ```cpp
 struct StructTypeInfo {
@@ -172,11 +213,17 @@ struct StructTypeInfo {
 };
 ```
 
-This flag is checked wherever a feature is class-specific — methods in chapter 25, constructors in chapter 26, visibility in chapter 27, trait conformance in chapter 28. A `struct` hitting those paths produces an error.
+`ParseAggregateDefinition` sets `IsClass = true` when `KindName == "class"`, false otherwise. This flag is the sole distinction between structs and classes in `StructTypes`. It does nothing yet in chapter 24 — but chapter 25 checks it before parsing methods, chapter 26 checks it for constructors, and so on.
 
 ## IR Layout
 
-A class has exactly the same IR layout as a struct with the same fields. There is nothing in the generated LLVM IR that distinguishes a `class Point` from a `struct Point`. The distinction is purely a parser-level concept.
+A class has exactly the same IR layout as a struct with the same fields. The LLVM type system uses a `"struct."` prefix for the named aggregate type for both source-level `struct` and `class` — a comment in the code makes this explicit:
+
+```cpp
+// LLVM named aggregate types use a conventional "struct." prefix here for
+// both source-level 'struct' and 'class' in chapter 24. They are layout-
+// equivalent at this stage; chapter 25 can layer semantic distinctions.
+```
 
 ```pyxc
 class Vec2:
@@ -188,9 +235,11 @@ class Vec2:
 %Vec2 = type { double, double }
 ```
 
+There is nothing in the generated LLVM IR that distinguishes a `class Vec2` from a `struct Vec2`. The distinction is a compile-time concept only.
+
 ## Conflict Rules
 
-Class names and struct names share the same namespace (`StructTypes`). You cannot define a class and a struct with the same name, in either order:
+Class names and struct names share the same namespace (`StructTypes`). Defining a class and a struct with the same name, in either order, is rejected:
 
 ```pyxc
 struct Foo:
@@ -200,7 +249,7 @@ class Foo:   # Error: Aggregate 'Foo' is already defined
   y: int
 ```
 
-Type alias names also conflict: a class name that collides with an existing type alias, or vice versa, is rejected.
+Type alias names also conflict: a class name that collides with an existing type alias, or vice versa, is rejected with `"Name '...' is already defined as an aggregate type"`.
 
 ## Build and Run
 

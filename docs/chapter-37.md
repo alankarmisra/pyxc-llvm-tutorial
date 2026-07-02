@@ -26,145 +26,61 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-37
 ```
 
-## Grammar
+## New Token and Storage Global
 
-`charliteral` joins `primary`. A new `charescape` production lists the five recognised escape sequences.
+One new token:
 
-```ebnf
-primary     = castexpr | sizeofexpr | addrexpr | arrayliteral | stringliteral
-            | charliteral | identifierexpr | fieldaccess | indexexpr
-            | numberexpr | bool_literal | parenexpr ;             -- changed
-charliteral = "'" ( ? any char except ' and newline ? | charescape ) "'" ; -- new
-charescape  = "\\" ( "\\" | "'" | "n" | "t" | "0" ) ;             -- new
+```cpp
+tok_char = -64,
 ```
 
-### Full Grammar
+The lexer stores the character's integer value in a new global before returning the token:
 
-`code/chapter-37/pyxc.ebnf`
-
-```ebnf
-program         = [ eols ] [ top { eols top } ] [ eols ] ;
-eols            = eol { eol } ;
-top             = typealias | traitdef | structdef | classdef | impldef | definition | decorateddef | external | toplevelexpr ;
-typealias       = "type" identifier "=" type ;
-traitdef        = "trait" identifier [ "[" identifier "]" ] ":" eols traitblock ;
-traitblock      = indent traitmethodsig { eols traitmethodsig } dedent ;
-traitmethodsig  = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ;
-structdef       = "struct" identifier ":" eols structblock ;
-classdef        = "class" identifier [ "(" traitref { "," traitref } ")" ] ":" eols structblock ;
-traitref        = identifier [ "[" type "]" ] ;
-impldef         = "impl" traitref "for" identifier ":" eols implblock ;
-implblock       = indent implmethod { eols implmethod } dedent ;
-implmethod      = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ":" ( simplestmt | eols block ) ;
-structblock     = indent classmember { eols classmember } dedent ;
-classmember     = [ visibility ] ( fielddecl | methoddef ) ;
-visibility      = "public" | "private" ;
-methoddef       = "def" identifier "(" [ typedparam { "," typedparam } ] ")"
-                  [ "->" type ] ":" ( simplestmt | eols block ) ;
-fielddecl       = identifier ":" type ;
-definition      = "def" prototype [ "->" type ] ":" ( simplestmt | eols block ) ;
-decorateddef    = binarydecorator eols "def" binaryopprototype [ "->" type ] ":" ( simplestmt | eols block )
-                | unarydecorator  eols "def" unaryopprototype  [ "->" type ] ":" ( simplestmt | eols block ) ;
-binarydecorator = "@" "binary" "(" integer ")" ;
-unarydecorator  = "@" "unary" ;
-binaryopprototype = customopchar "(" typedparam "," typedparam ")" ;
-unaryopprototype  = customopchar "(" typedparam ")" ;
-external        = "extern" "def" prototype [ "->" type ] ;
-toplevelexpr    = expression ;
-prototype       = identifier "(" [ typedparam { "," typedparam } ] ")" ;
-typedparam      = identifier ":" type ;
-ifstmt          = "if" expression ":" suite
-                { eols "elif" expression ":" suite }
-                [ eols "else" ":" suite ] ;
-whilestmt       = "while" expression ":" suite ;
-dowhilestmt     = "do" ":" suite eols "while" expression ;
-switchstmt      = "switch" expression ":" eols indent switchbody dedent ;
-switchbody      = switchcase { eols switchcase } [ eols defaultcase ] ;
-switchcase      = "case" switchint ":" suite ;
-defaultcase     = "default" ":" suite ;
-forstmt         = "for"
-                  ( "var" identifier ":" type | identifier )
-                  "=" expression "," expression "," expression ":" suite ;
-varstmt         = "var" varbinding { "," varbinding } ;
-assignstmt      = lvalue assignop expression ;
-simplestmt      = returnstmt | breakstmt | continuestmt | varstmt | assignstmt | expression ;
-compoundstmt    = ifstmt | forstmt | whilestmt | dowhilestmt | switchstmt ;
-statement       = simplestmt | compoundstmt ;
-suite           = simplestmt | compoundstmt | eols block ;
-returnstmt      = "return" [ expression ] ;
-breakstmt       = "break" ;
-continuestmt    = "continue" ;
-block           = indent statement { eols statement } dedent ;
-expression      = unaryexpr binoprhs ;
-binoprhs        = { binaryop unaryexpr } ;
-lvalue          = identifier | fieldaccess | indexexpr ;
-varbinding      = identifier ":" type [ "=" expression ] ;
-unaryexpr       = unaryop unaryexpr | postfixexpr ;
-unaryop         = "-" | "!" | "~" | "++" | "--" | userdefunaryop ;
-postfixexpr     = primary [ postfixop ] ;
-postfixop       = "++" | "--" ;
-primary         = castexpr | sizeofexpr | addrexpr | arrayliteral | stringliteral | charliteral | identifierexpr | fieldaccess | indexexpr | numberexpr | bool_literal | parenexpr ;
-castexpr        = casttype "(" expression ")" ;
-sizeofexpr      = "sizeof" "(" type ")" ;
-addrexpr        = "addr" "(" lvalue ")" ;
-identifierexpr  = identifier | callexpr | methodcallexpr | ctorcallexpr ;
-callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
-methodcallexpr  = identifier "." identifier "(" [ expression { "," expression } ] ")" ;
-ctorcallexpr    = identifier "(" [ expression { "," expression } ] ")" ;
-fieldaccess     = identifier "." identifier { "." identifier } ;
-indexexpr       = identifier "[" expression "]" ;
-numberexpr      = number ;
-arrayliteral    = "[" [ expression { "," expression } ] "]" ;
-stringliteral   = "\"" { ? any char except " and newline ? | escape } "\"" ;
-charliteral     = "'" ( ? any char except ' and newline ? | charescape ) "'" ;
-escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
-charescape      = "\\" ( "\\" | "'" | "n" | "t" | "0" ) ;
-parenexpr       = "(" expression ")" ;
-binaryop        = builtinbinaryop | userdefbinaryop ;
-indent          = INDENT ;
-dedent          = DEDENT ;
-
-assignop        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
-builtinbinaryop = "+" | "-" | "*" | "/" | "%"
-                | "<" | "<=" | ">" | ">=" | "==" | "!="
-                | "&&" | "||"
-                | "&" | "|" | "^" | "<<" | ">>" ;
-userdefbinaryop = ? any opchar defined as a custom binary operator ? ;
-userdefunaryop  = ? any opchar defined as a custom unary operator ? ;
-customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
-                    and not already defined as a custom operator ? ;
-opchar          = ? any single ASCII punctuation character ? ;
-identifier      = (letter | "_") { letter | digit | "_" } ;
-builtintype     = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | "None" ;
-aliastype       = identifier ;
-structtype      = identifier ;
-pointertype     = "ptr" "[" type "]" ;
-type            = basetype [ arraysuffix ] ;
-basetype        = builtintype | aliastype | structtype | pointertype ;
-arraysuffix     = "[" integer "]" ;
-casttype        = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | pointertype ;
-integer         = digit { digit } ;
-switchint       = [ "-" ] integer ;
-number          = digit { digit } [ "." { digit } ]
-                | "." digit { digit } ;
-bool_literal    = "True" | "False" ;
-letter          = "A".."Z" | "a".."z" ;
-digit           = "0".."9" ;
-eol             = "\r\n" | "\r" | "\n" ;
-ws              = " " | "\t" ;
-INDENT          = ? synthetic token emitted by lexer ? ;
-DEDENT          = ? synthetic token emitted by lexer ? ;
+```cpp
+static uint32_t CharLiteralValue = 0; // Filled in if tok_char
 ```
 
-## Lexer
+## Lexer: Scanning the Character Literal
 
-The lexer recognises `'` as the start of a character literal. It reads the next character (or escape sequence), verifies the closing `'`, stores the integer value in `CharLiteralValue`, and returns `tok_char`.
+When the lexer sees `'`, it reads the character content, checks for the closing `'`, and sets `CharLiteralValue`:
 
-The five supported escape sequences:
+```cpp
+if (LexerLastChar == '\'') {
+  LexerLastChar = advance(); // eat opening quote
+  if (LexerLastChar == '\'' || LexerLastChar == '\n' || LexerLastChar == EOF) {
+    // error: empty or unterminated
+    return tok_error;
+  }
+
+  uint32_t Value = 0;
+  if (LexerLastChar == '\\') {
+    LexerLastChar = advance();
+    switch (LexerLastChar) {
+    case '\\': Value = '\\'; break;
+    case '\'': Value = '\''; break;
+    case 'n':  Value = '\n'; break;
+    case 't':  Value = '\t'; break;
+    case '0':  Value = '\0'; break;
+    default:
+      // error: invalid character escape
+      return tok_error;
+    }
+  } else {
+    Value = static_cast<unsigned char>(LexerLastChar);
+  }
+
+  LexerLastChar = advance();
+  if (LexerLastChar != '\'') {
+    // error: unterminated character literal
+    return tok_error;
+  }
+  LexerLastChar = advance(); // eat closing quote
+  CharLiteralValue = Value;
+  return tok_char;
+}
+```
+
+The five escape sequences:
 
 | Written | Value | Meaning |
 |---|---|---|
@@ -174,35 +90,73 @@ The five supported escape sequences:
 | `'\t'` | 9 | horizontal tab |
 | `'\0'` | 0 | null byte |
 
-Anything else after `\` is an error. An empty literal `''` is also an error.
+A bare character (no backslash) stores its unsigned byte value via `static_cast<unsigned char>`. Any backslash sequence other than the five listed is a `tok_error`.
 
-## Type
+## `ParseCharExpr` — Building the AST Node
 
-A character literal is an integer constant, not a distinct type. It reuses `NumberExprAST` and defaults to `int32`, matching `getchar()`'s return type and C's `int`. If the surrounding context expects a narrower integer — `var c: int8 = 'A'` — the literal adopts that type, with a range check at parse time.
+`ParseCharExpr` is called from the primary expression dispatcher when `CurTok == tok_char`. It reuses `NumberExprAST` — a character literal is just an integer constant:
 
-This means `'a'` and `97` are exactly the same thing to the compiler once parsed. Character literals are pure convenience — there is nothing to do in codegen that wasn't already there for integer literals.
-
-## K&R Payoff
-
-The classic "count blanks" loop from *The C Programming Language* now writes naturally in pyxc:
-
-```pyxc
-extern def getchar() -> int32
-extern def printd(x: float64)
-
-var EOF: int32 = -1
-
-def main() -> int:
-  var c: int32
-  var blanks: int
-  while (c = getchar()) != EOF:
-    if c == ' ':
-      blanks += 1
-  printd(float64(blanks))
-  return 0
+```cpp
+static unique_ptr<ExprAST> ParseCharExpr() {
+  ValueType Type = ValueType::Int32;
+  if (IsIntType(ExpectedLiteralType))
+    Type = ExpectedLiteralType;
+  unsigned Bits = LLVMTypeFor(Type)->getIntegerBitWidth();
+  APInt Max = IsUnsignedIntType(Type) ? APInt::getAllOnes(Bits)
+                                      : APInt::getSignedMaxValue(Bits);
+  APInt Val(std::max(1u, Bits), CharLiteralValue, false);
+  if (Val.ugt(Max))
+    return LogError("Character literal out of range for type");
+  if (Val.getBitWidth() != Bits)
+    Val = Val.trunc(Bits);
+  auto Result = make_unique<NumberExprAST>(Val, Type);
+  getNextToken(); // consume tok_char
+  return Result;
+}
 ```
 
-The `c == ' '` comparison uses the character literal added in this chapter. The `(c = getchar()) != EOF` pattern uses assignment-as-expression from [Chapter 39](chapter-39.md).
+The default type is `Int32`, matching `getchar()`'s return type and C's `int`. If the surrounding context (from `ExpectedLiteralTypeGuard`) expects a different integer type — say `var c: int8 = 'A'` — the literal adopts that type, with a range check against the target's maximum. A character value that doesn't fit in the target width is a parse error.
+
+## `IsAssignable` Widening Fix
+
+This chapter also removes the old `IsFixedIntType` / `FixedIntRank` helper pair and replaces the integer widening check with a direct bit-width comparison that works for all integer types, including the unsigned types added next chapter:
+
+```cpp
+// Before (ch36 and earlier):
+static bool IsFixedIntType(ValueType Type) {
+  return Type == ValueType::Int8 || Type == ValueType::Int16 ||
+         Type == ValueType::Int32 || Type == ValueType::Int64;
+}
+static int FixedIntRank(ValueType Type) { /* 1–4 */ }
+
+// Now (ch37 onward):
+if (IsIntType(From) && IsIntType(To)) {
+  unsigned FromBits = LLVMTypeFor(From)->getIntegerBitWidth();
+  unsigned ToBits   = LLVMTypeFor(To)->getIntegerBitWidth();
+  return FromBits <= ToBits;
+}
+```
+
+Using the LLVM type's bit width means the same code works for signed and unsigned integers without a separate rank table.
+
+## Primary Expression Dispatch
+
+`tok_char` is wired into `ParsePrimary`:
+
+```cpp
+case tok_char:
+  return ParseCharExpr();
+```
+
+## Grammar
+
+```ebnf
+primary     = castexpr | sizeofexpr | addrexpr | arrayliteral | stringliteral
+            | charliteral | identifierexpr | fieldaccess | indexexpr  -- changed
+            | numberexpr | bool_literal | parenexpr ;
+charliteral = "'" ( ? any char except ' and newline ? | charescape ) "'" ; -- new
+charescape  = "\\" ( "\\" | "'" | "n" | "t" | "0" ) ;                      -- new
+```
 
 ## Error Cases
 
@@ -221,11 +175,16 @@ var x: int32 = ''    # Error: empty character literal
 var x: int32 = 'a    # Error: unterminated character literal
 ```
 
+**Value out of range for type:**
+```pyxc
+var c: int8 = '\xFF'  # Error: Character literal out of range for type
+```
+
 ## Things Worth Knowing
 
 **A character literal is just an integer.** `'a' + 1` is `98`. `'z' - 'a'` is `25`. Arithmetic on character values works exactly as it does in C.
 
-**The default type is `int32`, not `int8`.** This matches `getchar()`, which returns `int32` to distinguish `EOF` (−1) from a valid byte (0–255). If you store the result of `getchar()` in an `int8`, values above 127 will be negative, which may not be what you want.
+**The default type is `int32`, not `int8`.** This matches `getchar()`, which returns `int32` to distinguish `EOF` (−1) from a valid byte (0–255). If you store into an `int8`, values above 127 will be negative.
 
 **No multi-character literals.** `'ab'` is not valid. Use string literals for strings.
 
