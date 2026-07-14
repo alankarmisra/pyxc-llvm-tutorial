@@ -13,10 +13,8 @@ extern def printd(x: float64)
 def day_type(d: int) -> int:
   var result: int = 0
   switch d:
-    case 0:
-      result = 2   # Sunday
-    case 6:
-      result = 2   # Saturday
+    case 0, 6:
+      result = 2   # Sunday or Saturday
     default:
       result = 1   # weekday
   return result
@@ -30,7 +28,7 @@ def main() -> int:
 5.000000
 ```
 
-`switch` dispatches to the matching `case` and stops there. There is no fallthrough.
+`switch` dispatches to the matching `case` and stops there. There is no fallthrough — but a single `case` can list more than one value, so `0` and `6` sharing a body doesn't need two separate `case` lines.
 
 ## Source Code
 
@@ -57,16 +55,16 @@ Added to the keyword table:
 
 ## `SwitchExprAST`
 
-The AST node stores the condition, a vector of (integer value, body) pairs, and an optional default body:
+The AST node stores the condition, a vector of (value list, body) pairs, and an optional default body. Each case can list more than one value — `case 'a', 'e', 'i', 'o', 'u':` — so all of them share the same body:
 
 ```cpp
 class SwitchExprAST : public ExprAST {
   unique_ptr<ExprAST> Cond;
-  vector<pair<int64_t, unique_ptr<ExprAST>>> Cases;
+  vector<pair<vector<int64_t>, unique_ptr<ExprAST>>> Cases;
   unique_ptr<ExprAST> DefaultCase;
 public:
   SwitchExprAST(unique_ptr<ExprAST> Cond,
-                vector<pair<int64_t, unique_ptr<ExprAST>>> Cases,
+                vector<pair<vector<int64_t>, unique_ptr<ExprAST>>> Cases,
                 unique_ptr<ExprAST> DefaultCase)
       : Cond(std::move(Cond)), Cases(std::move(Cases)),
         DefaultCase(std::move(DefaultCase)) {
@@ -137,7 +135,7 @@ Overflow is checked explicitly for both positive and negative cases. `case -9223
 
 ## `ParseSwitchStmt`
 
-The parser eats `switch`, verifies the condition is an integer type, then reads an indented block of `case` and `default` clauses:
+The parser eats `switch`, verifies the condition is an integer type, then reads an indented block of `case` and `default` clauses. A `case` reads one value, then keeps reading more as long as a `,` follows — that's what lets `case 'a', 'e', 'i', 'o', 'u':` share one body across five values:
 
 ```cpp
 static unique_ptr<ExprAST> ParseSwitchStmt() {
@@ -157,25 +155,32 @@ static unique_ptr<ExprAST> ParseSwitchStmt() {
   getNextToken(); // eat INDENT
 
   ParseSwitchGuard SwitchGuard;
-  vector<pair<int64_t, unique_ptr<ExprAST>>> Cases;
+  vector<pair<vector<int64_t>, unique_ptr<ExprAST>>> Cases;
   std::set<int64_t> SeenCaseValues;
   unique_ptr<ExprAST> DefaultCase;
 
   while (CurTok != tok_dedent && CurTok != tok_eof) {
     if (CurTok == tok_case) {
       getNextToken(); // eat 'case'
-      int64_t CaseVal = 0;
-      if (!ParseSwitchCaseValue(CaseVal))
-        return nullptr;
-      if (!SeenCaseValues.insert(CaseVal).second)
-        return LogError("Duplicate switch case value");
+      vector<int64_t> CaseVals;
+      while (true) {
+        int64_t CaseVal = 0;
+        if (!ParseSwitchCaseValue(CaseVal))
+          return nullptr;
+        if (!SeenCaseValues.insert(CaseVal).second)
+          return LogError("Duplicate switch case value");
+        CaseVals.push_back(CaseVal);
+        if (CurTok != ',')
+          break;
+        getNextToken(); // eat ',' and parse the next case value
+      }
       if (CurTok != ':')
         return LogError("Expected ':' after case value");
       getNextToken(); // eat ':'
       auto Body = ParseSuite();
       if (!Body)
         return nullptr;
-      Cases.emplace_back(CaseVal, std::move(Body));
+      Cases.emplace_back(std::move(CaseVals), std::move(Body));
     } else if (CurTok == tok_default) {
       if (DefaultCase)
         return LogError("Duplicate default case");
@@ -203,7 +208,7 @@ static unique_ptr<ExprAST> ParseSwitchStmt() {
 }
 ```
 
-Duplicate case values are rejected at parse time using a `std::set<int64_t>`. Multiple `default` clauses are also rejected at parse time. The `ParseSwitchGuard` is installed around the body loop so `break` inside any case is legal.
+Duplicate case values are rejected at parse time using a `std::set<int64_t>` — checked as each value is read, so a repeat within one comma-separated list (`case 1, 2, 1:`) is caught exactly the same way as a repeat across two separate `case` lines. Multiple `default` clauses are also rejected at parse time. The `ParseSwitchGuard` is installed around the body loop so `break` inside any case is legal.
 
 ## `BreakTargetStack` — Refactoring Break Targets
 
@@ -244,7 +249,7 @@ Value *BreakExprAST::codegen() {
 
 ## `SwitchExprAST::codegen`
 
-Codegen uses LLVM's `switch` instruction, which maps directly to a machine-level multi-way branch. Each case gets its own basic block:
+Codegen uses LLVM's `switch` instruction, which maps directly to a machine-level multi-way branch. Each case gets its own basic block — and since LLVM's `switch` instruction natively supports many values pointing at the same destination block, giving a case several values is just a loop over `C.first` calling `addCase` once per value, all targeting the one `CaseBB` created for that case:
 
 ```cpp
 Value *SwitchExprAST::codegen() {
@@ -262,10 +267,12 @@ Value *SwitchExprAST::codegen() {
   for (const auto &C : Cases) {
     BasicBlock *CaseBB = BasicBlock::Create(*TheContext, "switch.case", F);
     CaseBBs.push_back(CaseBB);
-    auto *CaseConst = ConstantInt::get(cast<IntegerType>(CondLLVMType),
-                                       static_cast<uint64_t>(C.first),
-                                       /*isSigned=*/true);
-    SwitchI->addCase(CaseConst, CaseBB);
+    for (int64_t Val : C.first) {
+      auto *CaseConst = ConstantInt::get(cast<IntegerType>(CondLLVMType),
+                                         static_cast<uint64_t>(Val),
+                                         /*isSigned=*/true);
+      SwitchI->addCase(CaseConst, CaseBB);
+    }
   }
 
   BreakTargetStack.push_back(AfterBB);
@@ -302,7 +309,7 @@ Value *SwitchExprAST::codegen() {
 ```ebnf
 switchstmt   = "switch" expression ":" eols indent switchbody dedent ;  -- new
 switchbody   = switchcase { eols switchcase } [ eols defaultcase ] ;     -- new
-switchcase   = "case" switchint ":" suite ;                              -- new
+switchcase   = "case" switchint { "," switchint } ":" suite ;            -- new
 defaultcase  = "default" ":" suite ;                                     -- new
 switchint    = [ "-" ] integer ;                                          -- new
 compoundstmt = ifstmt | forstmt | whilestmt | dowhilestmt | switchstmt ; -- changed
@@ -332,6 +339,8 @@ Both are caught at parse time.
 ## Things Worth Knowing
 
 **Case values are compile-time integer literals only.** You cannot use a variable or expression as a case value. This restriction allows LLVM to emit an efficient branch table or binary search.
+
+**A case can list more than one value.** `case 0, 6:` matches either `0` or `6` and runs the one shared body — no need to repeat the body under two separate `case` lines, and no C-style fallthrough involved in getting there.
 
 **Negative case values are supported.** `case -1:` is valid. `switchint` accepts a leading `-`.
 

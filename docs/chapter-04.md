@@ -5,7 +5,7 @@ description: "Install LLVM with everything you need: clang, lld, lldb, clangd, a
 
 ## Where We Are
 
-The compiler from [Chapter 3](chapter-03.md) can parse Pyxc and report errors with source locations. To turn the AST into machine code, we need LLVM — specifically with the following tools - `lld`, `clangd`, `lldb`, and `llvm-lit`. We'll get to using them in the following chapters. On macOS and Linux, Homebrew gets you there in two commands (as of today May 1, 2026). On Windows, the official LLVM installer does the same. Building compilers is hard enough. We don't need to torture ourselves needlessly. Unless we want to. Consequently, if you're feeling adventurous, you could build from source instead — I did that too just to make sure the instructions are legit. All paths end up in the same place. 
+The compiler from [Chapter 3](chapter-03.md) can parse Pyxc and report errors with source locations. To turn the AST into machine code, I need LLVM — specifically with the following tools: `lld`, `clangd`, `lldb`, and `llvm-lit`. I'll get to using them in the following chapters. On macOS and Linux, Homebrew gets you there in two commands (as of today May 1, 2026). On Windows, the official LLVM installer does the same. Building compilers is hard enough. I don't need to torture myself needlessly. Unless I want to. Consequently, if you're feeling adventurous, you could build from source instead — I did that too just to make sure the instructions are legit. All paths end up in the same place. 
 
 
 !!!note
@@ -129,7 +129,7 @@ By the end of this chapter, you'll have:
 └── include/
 ```
 
-All the tools we need in one place.
+All the tools I need in one place.
 
 ### Time and Space Requirements
 
@@ -201,14 +201,14 @@ You can skip this for now and come back if you hit errors.
 
 ### Step 1: Clone LLVM
 
-We'll build LLVM 21.1.6 (stable release at time of writing — check the [LLVM releases page](https://github.com/llvm/llvm-project/releases) for newer tags):
+I'll build LLVM 21.1.6 (stable release at time of writing — check the [LLVM releases page](https://github.com/llvm/llvm-project/releases) for newer tags):
 
 ```bash
 git clone --depth 1 --branch llvmorg-21.1.6 https://github.com/llvm/llvm-project.git
 cd llvm-project
 ```
 
-The `--depth 1` keeps the download small (we don't need full git history).
+The `--depth 1` keeps the download small (I don't need full git history).
 
 ### Step 2: Configure the Build
 
@@ -471,7 +471,7 @@ If that fails, download Ninja and add its directory to `PATH` in System Environm
 
 ## What's Next
 
-LLVM is installed. In Chapter 5, we connect it to the parser: walk the AST and emit LLVM IR for the first time. A function definition becomes a real machine-code function.
+LLVM is installed. In Chapter 5, I connect it to the parser: walk the AST and emit LLVM IR for the first time. A function definition becomes a real machine-code function.
 
 ## Need Help?
 

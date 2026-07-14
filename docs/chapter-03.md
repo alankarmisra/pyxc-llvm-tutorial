@@ -5,9 +5,9 @@ description: "Polish the lexer and add proper diagnostics: a keyword map, malfor
 
 ## Where We Are
 
-We have a nice little parser after [Chapter 2](chapter-02.md). But the error messages are kinda rough. As we grow the language, and type code in our invented syntax, better error messaging will really help us narrow down if something is a code syntax problem, or a compiler problem. We take compiler correctness for granted when we use production level languages. But in inventing our own, we have to be wary of the fact that our compiler might be doing things wrong. Better error messages go a long way in tracing the problem. So we tackle this first, before moving on to generating machine code from our source in the following chapters. 
+I have a nice little parser after [Chapter 2](chapter-02.md). But the error messages are kinda rough. As I grow the language, and type code in my invented syntax, better error messaging will really help me narrow down whether something is a code syntax problem or a compiler problem. I take compiler correctness for granted when I use production-level languages. But in inventing my own, I have to be wary of the fact that my compiler might be doing things wrong. Better error messages go a long way in tracing the problem. So I tackle this first, before moving on to generating machine code from source in the following chapters. 
 
-We are going to attempt to make this:
+I'm going to attempt to make this:
 ```pyxc
 ready> def bad(x) return x
 Error: Expected ':' in function definition (token: -7)
@@ -23,14 +23,14 @@ def bad(x) return
 
 Line number. Column number. The source line. A caret pointing at the problem. That's a real error message. 
 
-And then there's this bug which we revealed in the previous chapter:
+And then there's this bug I found in the previous chapter:
 
 ```pyxc
 ready> 1.2.3
 Parsed a top-level expression.
 ```
 
-Internally this is accepted as `1.2` and the *.3* is carelessly ignored. We will fix this too so we get the following:
+Internally this is accepted as `1.2` and the *.3* is carelessly ignored. I'll fix this too so I get the following:
 
 ```
 Error (Line 2, Column 1): invalid number literal '1.2.3'
@@ -38,7 +38,7 @@ Error (Line 2, Column 1): invalid number literal '1.2.3'
 ^~~~
 ```
 
-That's it. Just two fixes and we'll be well on our way to making our code execute in the next few chapters. We're getting there. Don't give up on me now.  
+That's it. Just two fixes and I'll be well on my way to making this code execute in the next few chapters. Getting there. Don't give up on me now.  
 
 ## Source Code
 
@@ -49,7 +49,7 @@ cd pyxc-llvm-tutorial/code/chapter-03
 
 ## A Name for Every Token
 
-To print sensible error strings, we want to convert `Token` values to strings like `def`, `identifier`, or `newline`. A `map` serves our purpose well. But we also want to generate some strings through a code loop, so we wrap the whole thing in a lambda and execute it immediately.
+To print sensible error strings, I want to convert `Token` values to strings like `def`, `identifier`, or `newline`. A `map` serves my purpose well. But I also want to generate some strings through a code loop, so I wrap the whole thing in a lambda and execute it immediately.
 
 ```cpp
 static map<int, string> TokenNames = [] {
@@ -105,11 +105,11 @@ static string FormatTokenForMessage(int Tok) {
 }
 ```
 
-When the bad token is an identifier or a number, we include the actual text (`identifier 'foo'`, `number '3.14'`). Everything else uses the static name from the map.
+When the bad token is an identifier or a number, I include the actual text (`identifier 'foo'`, `number '3.14'`). Everything else uses the static name from the map.
 
-## Tracking Where We Are
+## Tracking Where I Am
 
-To report `(Line 3, Column 8)`, we need to know the line and column as we read characters. We introduce two small pieces of data.
+To report `(Line 3, Column 8)`, I need to know the line and column as I read characters. I introduce two small pieces of data.
 
 ```cpp
 struct SourceLocation {
@@ -123,7 +123,7 @@ static SourceLocation LexLoc = {1, 0};
 Two location globals: `LexLoc` is where the lexer's character-read head currently sits. `CurLoc` is snapshotted at the start of each token — the position the *parser* sees. 
 
 
-In Chapter 1, `advance()` already wrapped `getchar()` to normalize line endings. Here we expand it to also keep a running position:
+In Chapter 1, `advance()` already wrapped `getchar()` to normalize line endings. Here I expand it to also keep a running position:
 ```cpp
 static int advance() {
   int LastChar = getchar();
@@ -160,7 +160,7 @@ CurLoc = LexLoc;
 
 This is the position that will be printed, should an error occur. Snapshotting here — after skipping whitespace, before consuming the token's characters — means `CurLoc` always points to the first character of the current token.
 
-There is one edge case: when `gettok` returns `tok_eol` from the comment path (`#` branch), the snapshot at the top of the function pointed at `#`, not at the newline. In this case, we re-snapshot just before returning from the function. That way, we get the correct post-newline position:
+There is one edge case: when `gettok` returns `tok_eol` from the comment path (`#` branch), the snapshot at the top of the function pointed at `#`, not at the newline. So I re-snapshot just before returning from the function, to get the correct post-newline position:
 
 ```cpp
 if (LastChar == '#') {
@@ -185,7 +185,7 @@ def bad(x) return
            ^~~~
 ```
 
-we need the actual text of the line. We solve this by buffering lines as we read. `SourceManager` accumulates characters through `onChar()`, which gets called by `advance()` on every character consumed:
+I need the actual text of the line. I solve this by buffering lines as I read. `SourceManager` accumulates characters through `onChar()`, which gets called by `advance()` on every character consumed:
 
 ```cpp
 class SourceManager {
@@ -225,7 +225,7 @@ static SourceManager PyxcSourceMgr;
 
 Characters accumulate in `CurrentLine` as they are read. When a newline arrives, `CurrentLine` is moved into `CompletedLines` and the `CurrentLine` buffer is reset. `getLine(N)` takes a 1-based line number and returns from `CompletedLines` for finished lines, or from `CurrentLine` for the line still being read.
 
-We integrate `SourceManager` into `advance()`:
+I integrate `SourceManager` into `advance()`:
 
 ```cpp
   if (LastChar == '\r') {
@@ -327,7 +327,7 @@ Every parser error now shows:
 
 ## Error Recovery: tok_error and SynchronizeToLineBoundary
 
-The lexer now returns `tok_error` for funky input (like `1.2.3`). The rest of the lexer has no idea how to handle that token — it's not a number, not an operator, not a keyword. If we let it fall through to `ParsePrimary`, it hits the `default:` branch and emits a second, confusing error: `"unknown token when expecting an expression"` — on top of the error the lexer already printed.
+The lexer now returns `tok_error` for funky input (like `1.2.3`). The rest of the lexer has no idea how to handle that token — it's not a number, not an operator, not a keyword. If I let it fall through to `ParsePrimary`, it hits the `default:` branch and emits a second, confusing error: `"unknown token when expecting an expression"` — on top of the error the lexer already printed.
 
 The fix is to intercept `tok_error` early and skip to the next line before trying to parse anything:
 
@@ -338,7 +338,7 @@ static void SynchronizeToLineBoundary() {
 }
 ```
 
-This is **panic-mode error recovery**: when something goes wrong and we can't reason about the current state, advance unconditionally to the next line boundary and restart parsing there. It's a blunt instrument — we discard the rest of the line — but it's reliable: after `SynchronizeToLineBoundary()`, `CurTok` is always `tok_eol` or `tok_eof`, and the REPL's main loop knows exactly how to handle those.
+This is **panic-mode error recovery**: when something goes wrong and I can't reason about the current state, advance unconditionally to the next line boundary and restart parsing there. It's a blunt instrument — I discard the rest of the line — but it's reliable: after `SynchronizeToLineBoundary()`, `CurTok` is always `tok_eol` or `tok_eof`, and the REPL's main loop knows exactly how to handle those.
 
 `MainLoop` calls it for `tok_error`:
 
@@ -366,7 +366,7 @@ static void HandleDefinition() {
 }
 ```
 
-The same pattern applies to `HandleExtern` and `HandleTopLevelExpression`. After any failure — whether the parser returned `nullptr` or left unexpected tokens in `CurTok` — we synchronize to the line boundary and let the main loop print a fresh prompt.
+The same pattern applies to `HandleExtern` and `HandleTopLevelExpression`. After any failure — whether the parser returned `nullptr` or left unexpected tokens in `CurTok` — I synchronize to the line boundary and let the main loop print a fresh prompt.
 
 ## Catching Malformed Numbers
 
@@ -377,21 +377,30 @@ char *End = nullptr;
 NumVal = strtod(NumStr.c_str(), &End);
 ```
 
-After the call, `End` points to the first character `strtod` didn't consume. If `End` points to the null terminator (`*End == '\0'`), the entire string was valid. If it points anywhere else, there's unconsumed text — which means the input was a valid number. Here's the code.
+After the call, `End` points to the first character `strtod` didn't consume. If `End` points to the null terminator (`*End == '\0'`), the entire string was valid. If it points anywhere else, there's unconsumed text left over — which means the input was *not* a valid number.
+
+I already have `PrintErrorSourceContext` from the caret work above, so reporting this is just a small helper wrapping it:
 
 ```cpp
-if (!End || *End != '\0') {
-    fprintf(stderr,
-            "Error (Line %d, Column %d): invalid number literal '%s'\n",
-            CurLoc.Line, CurLoc.Col, NumStr.c_str());
-    PrintErrorSourceContext(CurLoc);
-    return tok_error;
+static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation Loc) {
+  fprintf(stderr, "Error (Line %d, Column %d): invalid number literal '%s'\n",
+          Loc.Line, Loc.Col, Literal.c_str());
+  PrintErrorSourceContext(Loc);
 }
 ```
 
-`1.2.3` produces `NumStr = "1.2.3"`. `strtod` stops at the second `.`, leaving `End` pointing at `.3`. Since `*End != '\0'`, we emit an error and return `tok_error` — a new token value that signals "the lexer already diagnosed this, skip it."
+`gettok()` is defined earlier in the file than this helper, so I need a forward declaration next to `SourceManager` — the same thing I already had to do for `PrintErrorSourceContext`. With that in place, the number-parsing branch becomes:
 
-We also save the literal string before calling `strtod`:
+```cpp
+if (!End || *End != '\0') {
+  LogInvalidNumberLiteralAtLoc(NumStr, CurLoc);
+  return tok_error;
+}
+```
+
+`1.2.3` produces `NumStr = "1.2.3"`. `strtod` stops at the second `.`, leaving `End` pointing at `.3`. Since `*End != '\0'`, I call the helper and return `tok_error` — a new token value that signals "the lexer already diagnosed this, skip it."
+
+I also save the literal string before calling `strtod`:
 
 ```cpp
 NumLiteralStr = NumStr;
@@ -399,11 +408,11 @@ NumLiteralStr = NumStr;
 
 `NumLiteralStr` is used by `FormatTokenForMessage` later when a parse error involves a number token. The lexer sets it; nobody else needs to care about it.
 
-Notice that we are in the lexer section of the code in `gettok()`, which returns an `int`. So we can't return `LogError(...)` here as we do with parser level errors which returns `nullptr`. For now, we just print the error within `gettok()` and move on. If we find that we are printing more and more Lexer errors inline, we will refactor it. 
+Notice I'm in the lexer section of the code in `gettok()`, which returns an `int`. So I can't return `LogError(...)` here like I do with parser-level errors, which returns `nullptr`. For now, I just call the helper directly from inside `gettok()` and move on. If I find myself printing more and more lexer errors inline, I'll refactor it. 
 
 ## Cleanup: a Table for Keywords
 
-First let's simplify our keyword lookup code. 
+First, let's simplify the keyword lookup code. 
 
 ```cpp
 if (IdentifierStr == "def")    return tok_def;
@@ -426,7 +435,7 @@ auto It = Keywords.find(IdentifierStr);
 return (It == Keywords.end()) ? tok_identifier : It->second;
 ```
 
-If an identifier-like string is not a keyword, it's an identifier. As with most languages, we won't allow keywords like `def` to be used as variables. If we did, it would make the language a little goofy. 
+If an identifier-like string is not a keyword, it's an identifier. As with most languages, I won't allow keywords like `def` to be used as variables. If I did, it would make the language a little goofy. 
 
 ## Build and Run
 

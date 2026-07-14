@@ -1165,6 +1165,11 @@ static unique_ptr<ExprAST> ParseIfStmt() {
   if (ThenWasBlock)
     getNextToken();
 
+  // If Then was inline, CurTok is tok_eol right now (unless there was no
+  // trailing newline at all, e.g. end of file). Remember that so a lost
+  // separator can be restored below if no 'else' follows.
+  bool ThenHadTrailingEol = (CurTok == tok_eol);
+
   // Allow 'else' on next line
   consumeNewlines();
 
@@ -1185,6 +1190,13 @@ static unique_ptr<ExprAST> ParseIfStmt() {
     // Save the token we already advanced to so it is not lost.
     PendingTokens.push_front(CurTok); // push back current lookahead
     CurTok = tok_block_end;           // restore the block-end signal directly
+  } else if (ThenHadTrailingEol) {
+    // No else, and Then was an inline statement that ended at a newline.
+    // consumeNewlines() above swallowed that newline while probing for
+    // 'else' — restore one tok_eol so the enclosing ParseBlock loop still
+    // sees a valid separator before the next statement.
+    PendingTokens.push_front(CurTok); // push back current lookahead
+    CurTok = tok_eol;                 // restore the separator directly
   }
 
   return make_unique<IfStmtAST>(std::move(Cond), std::move(Then),

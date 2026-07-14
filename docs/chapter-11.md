@@ -489,7 +489,7 @@ static unique_ptr<ExprAST> ParseBlock() {
 }
 ```
 
-The last three lines are the key. When the loop breaks on `tok_dedent`, `CurTok` holds the DEDENT token. We push `tok_block_end` to the front of `PendingTokens` and call `getNextToken()`. That call pops `tok_block_end` from `PendingTokens` and overwrites `CurTok` — the DEDENT is quietly consumed in the process, and `ParseBlock` returns with `CurTok = tok_block_end`.
+The last three lines are the key. When the loop breaks on `tok_dedent`, `CurTok` holds the DEDENT token. I push `tok_block_end` to the front of `PendingTokens` and call `getNextToken()`. That call pops `tok_block_end` from `PendingTokens` and overwrites `CurTok` — the DEDENT is quietly consumed in the process, and `ParseBlock` returns with `CurTok = tok_block_end`.
 
 Every caller that previously needed a boolean "did this suite end with a block?" can now just check `CurTok == tok_block_end`.
 
@@ -497,9 +497,9 @@ Every caller that previously needed a boolean "did this suite end with a block?"
 
 `tok_block_end` flows cleanly through most of the parser — `ParseBlock`'s loop consumes it and keeps going, `HandleDefinition` checks for it instead of checking for `tok_eol`. One case is trickier: `if` with an optional `else`.
 
-After `ParseSuite` returns the then-branch, `CurTok` might be `tok_block_end` (if the then was a block). But `else` lives on the very next line at the same indentation level — right where `tok_block_end` is sitting. `ParseIfStmt` needs to look past it.
+After `ParseSuite` returns the then-branch, `CurTok` might be `tok_block_end` (if the then was a block) or `tok_eol` (if the then was inline, e.g. `if cond: return 1`). Either way, `else` — if present — lives on the very next line at the same indentation level, right where that separator token is sitting. `ParseIfStmt` needs to look past it to check.
 
-The approach: consume `tok_block_end` temporarily to peek at what follows. If it's `else`, great — parse the else branch normally. If it's not, re-inject `tok_block_end` so the enclosing `ParseBlock` loop still sees it as a separator.
+The approach: consume the separator temporarily to peek at what follows. If it's `else`, great — parse the else branch normally. If it's not, re-inject the separator so the enclosing `ParseBlock` loop still sees it.
 
 ```cpp
 unique_ptr<ExprAST> Then = ParseSuite();
@@ -508,6 +508,10 @@ if (!Then) return nullptr;
 bool ThenWasBlock = (CurTok == tok_block_end);
 if (ThenWasBlock)
   getNextToken(); // consume tok_block_end → CurTok = next real token
+
+// If Then was inline, CurTok is tok_eol right now (unless there was no
+// trailing newline at all). Remember that so it can be restored below.
+bool ThenHadTrailingEol = (CurTok == tok_eol);
 
 consumeNewlines(); // skip any blank lines before 'else'
 
@@ -523,12 +527,19 @@ if (CurTok == tok_else) {
   // Save the token we already advanced to — it must not be lost.
   PendingTokens.push_front(CurTok); // push current lookahead back
   CurTok = tok_block_end;           // restore the signal directly
+} else if (ThenHadTrailingEol) {
+  // No else, and Then was inline. consumeNewlines() above swallowed the
+  // newline that separates this statement from the next one — restore it.
+  PendingTokens.push_front(CurTok); // push current lookahead back
+  CurTok = tok_eol;                 // restore the separator directly
 }
 ```
 
-The critical detail is the last three lines. After `getNextToken()` consumed `tok_block_end`, a real token (say, `tok_return`, or the next `tok_dedent`) landed in `CurTok`. If we naively pushed `tok_block_end` to `PendingTokens` and called `getNextToken()` again, that new call would pop `tok_block_end` right back out — and the token already in `CurTok` would be **overwritten and lost**. The function after the `if` would parse incorrectly, or the outer block would close at the wrong point.
+The critical detail is the last three lines of each `else if` branch. After `getNextToken()` consumed `tok_block_end` (or after `consumeNewlines()` consumed a real `tok_eol`), a real token — say, `tok_return`, or the next `tok_dedent` — landed in `CurTok`. If I naively pushed the separator to `PendingTokens` and called `getNextToken()` again, that new call would pop the separator right back out — and the token already sitting in `CurTok` would be **overwritten and lost**. The statement after the `if` would parse incorrectly, or the outer block would close at the wrong point.
 
-Instead: push the current `CurTok` to `PendingTokens`, then set `CurTok = tok_block_end` directly without calling `getNextToken()`. The saved token is now first in `PendingTokens`; the next `getNextToken()` call anywhere upstream will retrieve it correctly.
+Instead: push the current `CurTok` to `PendingTokens`, then set `CurTok` to the separator directly without calling `getNextToken()`. The saved token is now first in `PendingTokens`; the next `getNextToken()` call anywhere upstream will retrieve it correctly.
+
+I found this the hard way: my first pass only handled the `ThenWasBlock` case, on the assumption that an inline `then` always ends cleanly at a `tok_eol` that nothing downstream would touch. That's true in isolation — but `consumeNewlines()` a few lines later doesn't know or care whether it's looking at a "real" separator or one it's about to strand a statement without. It consumes any `tok_eol` in front of it while probing for `else`, block or no block. Miss the inline case and `if x > 10: return 20` parses fine as the *last* statement in a block, but breaks the moment another statement follows it at the same indentation — the newline that `ParseBlock`'s loop needed as a separator is gone, and it sees the next statement's leading token where it expected `tok_eol`, `tok_dedent`, or `tok_block_end`. `ThenHadTrailingEol` closes that gap the same way `ThenWasBlock` already did for the block case.
 
 ## Parsing Statements
 
@@ -552,7 +563,7 @@ static unique_ptr<ExprAST> ParseSimpleStmt() {
   if (CurTok == tok_var)    return ParseVarStmt();
 
   // Fast path: if the current token is an identifier, peek at what follows
-  // before committing to a full expression parse. This lets us detect
+  // before committing to a full expression parse. This lets me detect
   // "x = expr" (assignment) without going through ParseExpression first.
   if (CurTok == tok_identifier) {
     string Name = IdentifierStr;
@@ -671,7 +682,7 @@ Value *BlockExprAST::codegen() {
   Value *Last = nullptr;
   for (auto &Stmt : Stmts) {
     // If a previous statement already emitted a terminator (e.g. 'return'),
-    // skip the rest — we'd be emitting into a block with no successor.
+    // skip the rest — I'd be emitting into a block with no successor.
     if (Builder->GetInsertBlock()->getTerminator()) break;
     Last = Stmt->codegen();
     if (!Last) {
@@ -739,7 +750,7 @@ Value *VarStmtAST::codegen() {
   // No PHI node — statements don't produce values.
 ```
 
-The `getTerminator()` check before each `CreateBr` is what makes `return` inside an `if` work correctly. If the `then` block already has a `ret`, we don't emit a second branch — that would be ill-formed IR.
+The `getTerminator()` check before each `CreateBr` is what makes `return` inside an `if` work correctly. If the `then` block already has a `ret`, I don't emit a second branch — that would be ill-formed IR.
 
 ## Implicit Return
 
@@ -751,7 +762,7 @@ Chapter 11 checks whether the current block already has a terminator before deci
 // Step 4: codegen the body, verify, optimize — or erase on failure.
 if (Value *RetVal = Body->codegen()) {
   // Only emit a return if the body didn't already terminate the block.
-  // A 'return' statement in the body emits its own 'ret', so we don't
+  // A 'return' statement in the body emits its own 'ret', so I don't
   // want to emit a second one.
   if (!Builder->GetInsertBlock()->getTerminator())
     Builder->CreateRet(RetVal);

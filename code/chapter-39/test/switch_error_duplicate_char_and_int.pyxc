@@ -1,0 +1,16 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: {{[Ee]rror}}
+# CHECK: Duplicate switch case value
+
+# Tests: a character literal case and an integer literal case that reduce to
+# the same underlying value ('a' == 97) are detected as duplicates, since
+# ParseSwitchCaseValue normalises both to the same int64_t before the
+# duplicate check.
+
+def f(c: int8) -> int:
+  switch c:
+    case 97:
+      return 1
+    case 'a':
+      return 2
+  return 0

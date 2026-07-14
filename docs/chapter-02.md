@@ -5,7 +5,7 @@ description: "Build a recursive-descent parser and AST: turn tokens into structu
 
 ## Where We Are
 
-In [Chapter 1](chapter-01.md) we built a lexer that turns raw source text into a stream of tokens. Given this:
+In [Chapter 1](chapter-01.md) I built a lexer that turns raw source text into a stream of tokens. Given this:
 
 ```pyxc
 # adds two numbers
@@ -20,9 +20,9 @@ keyword:'def'  identifier:'add'  '('  identifier:'x'  ','  identifier:'y'  ')'  
 keyword:'return'  identifier:'x'  '+'  identifier:'y'  newline
 ```
 
-We've made progress. The whitespace and comments are gone, and we can focus on the essentials. But we still just have a flat list of tokens. We don't know that `add` is a function name, that `x` and `y` are its parameters, or that `x + y` is the return value.
+That's progress — the whitespace and comments are gone, and I can focus on the essentials. But it's still just a flat list of tokens. I don't know that `add` is a function name, that `x` and `y` are its parameters, or that `x + y` is the return value.
 
-By the end of this chapter, typing that same function into the REPL gives you:
+By the end of this chapter, typing that same function into the REPL gives me:
 
 ```pyxc
 ready> def add(x, y):
@@ -30,7 +30,7 @@ return x + y
 Parsed a function definition.
 ```
 
-This is our compiler saying, "The structure has been understood and validated". That's what we're building. 
+That's my compiler saying, "The structure has been understood and validated." That's what I'm building this chapter.
 
 ## Source Code
 
@@ -41,7 +41,7 @@ cd pyxc-llvm-tutorial/code/chapter-02
 
 ## Writing Down the Rules
 
-Before we can write a parser — that bit of the compiler that verifies the syntax of your program — we need to write down the rules of the language. These rules are called the *grammar* of the language just like they are with human languages. What's a valid program? What's a valid function? What's a valid expression? Grammars are meant to give more structure to implementation efforts, but if you've never written a parser, it will just feel like a lot of cognitive load. As a consequence, my recommendation is to skim through the grammar section, have a vague language structure in your head, write the parser to fortify your understanding of the mechanics, and then come back to the grammar section to polish off your theoretical concepts. You might find yourself referencing the grammar more than once as you proceed through the parser implementation. I've put grammar snippets everywhere to reduce scroll fatigue. Once you've had enough experience, it will become second nature to write the grammar first before moving on to the implementation.
+Before I can write a parser — that bit of the compiler that verifies the syntax of a program — I need to write down the rules of the language. These rules are called the *grammar* of the language just like they are with human languages. What's a valid program? What's a valid function? What's a valid expression? Grammars are meant to give more structure to implementation efforts, but if you've never written a parser, it will just feel like a lot of cognitive load. As a consequence, my recommendation is to skim through the grammar section, have a vague language structure in your head, write the parser to fortify your understanding of the mechanics, and then come back to the grammar section to polish off your theoretical concepts. You might find yourself referencing the grammar more than once as you proceed through the parser implementation. I've put grammar snippets everywhere to reduce scroll fatigue. Once you've had enough experience, it will become second nature to write the grammar first before moving on to the implementation.
 
 Let's start with one rule in plain English. A function definition looks like:
 
@@ -68,7 +68,7 @@ With that shorthand, a function definition becomes:
 definition = "def" prototype ":" [ eols ] "return" expression
 ```
 
-In plain English: *the keyword `def`, then a prototype, then `:`, then optionally one or more newlines, then `return`, then an expression* — exactly what we wrote above, just more compact. Notice that `prototype` and `expression` are without quotes — they are themselves rules, not literal text. The grammar is written top-down: we expand on `prototype` and `expression` below, and the full grammar appears at the end of this section.
+In plain English: *the keyword `def`, then a prototype, then `:`, then optionally one or more newlines, then `return`, then an expression* — exactly what I wrote above, just more compact. Notice that `prototype` and `expression` are without quotes — they are themselves rules, not literal text. The grammar is written top-down: I expand on `prototype` and `expression` below, and the full grammar appears at the end of this section.
 
 Here's `prototype` which is just the function signature.
 
@@ -90,7 +90,7 @@ Where `primary` is the building block — a variable, a number, or a parenthesiz
 primary = identifierexpr | numberexpr | parenexpr ;
 ```
 
-I totally lied about inventing this notation. It is used ubiquitously and has a formal name: **EBNF**, short for *Extended Backus-Naur Form*. But if I said that in the beginning, you'd think it's complicated. So we went the re-invention route. It's the standard way grammars are written in programming language textbooks with a few customizations based on author preferences. You can do this too. There is nothing magical about any of this. I've always had issues with theoretical foundations being written like they were invented by aliens with massive brains. Sure, the inventions were incredibly forward looking at the time, and all credit to the inventors. But placing things on a pedestal makes them opaque to scrutiny and recognizing that they aren't as complicated as one was made to believe. Meet your Gods. Recognize they are human. Respect them anyway.
+I totally lied about inventing this notation. It is used ubiquitously and has a formal name: **EBNF**, short for *Extended Backus-Naur Form*. But if I said that in the beginning, you'd think it's complicated. So I went the re-invention route. It's the standard way grammars are written in programming language textbooks with a few customizations based on author preferences. You can do this too. There is nothing magical about any of this. I've always had issues with theoretical foundations being written like they were invented by aliens with massive brains. Sure, the inventions were incredibly forward looking at the time, and all credit to the inventors. But placing things on a pedestal makes them opaque to scrutiny and recognizing that they aren't as complicated as one was made to believe. Meet your Gods. Recognize they are human. Respect them anyway.
 
 ### The Full Grammar
 
@@ -130,11 +130,11 @@ eol            = "\r\n" | "\r" | "\n" ;
 ws             = " " | "\t" ;
 ```
 
-The grammar has two layers. The bottom rules — `identifier`, `number`, `letter`, `digit`, `eol`, `ws` — describe what the *lexer* understands: raw characters and how they combine to form our tokens. The top rules — `expression`, `definition`, `prototype`, etc. — describe what the *parser* understands: the syntax of things. What token follows what other token and so on.
+The grammar has two layers. The bottom rules — `identifier`, `number`, `letter`, `digit`, `eol`, `ws` — describe what the *lexer* understands: raw characters and how they combine to form tokens. The top rules — `expression`, `definition`, `prototype`, etc. — describe what the *parser* understands: the syntax of things. What token follows what other token and so on.
 
 ## Representing Structure
 
-Look at the expression `(x + y) * 2`. You and I both know that the correct thing to do is to first add, then multiply. So we put all the items we want to add in one *bucket* or *folder* with an instruction to add the contents. 
+Look at the expression `(x + y) * 2`. You and I both know that the correct thing to do is to first add, then multiply. So I put all the items I want to add in one *bucket* or *folder* with an instruction to add the contents. 
 
 ```
 ├── add (+)
@@ -142,7 +142,7 @@ Look at the expression `(x + y) * 2`. You and I both know that the correct thing
 │   └── variable "y"
 ```
 
-And then we put the result of that into a multiply bucket with the parameters that need to be multiplied with the result.
+And then I put the result of that into a multiply bucket with the parameters that need to be multiplied with the result.
 
 ```
 multiply (*)
@@ -162,11 +162,11 @@ Historically, such constructions have been represented as:
   "x"   "y"
 ```  
 
-Looks like an upside-down tree no? With the root at the (\*), tiny branches, and the parameters/function arguments/constants at the leaves. I'm not being creative. Computational literature uses exactly this analogy. This whole construction is called an **Abstract Syntax Tree** — "abstract" because we've stripped away the syntax details that were only needed for parsing (like the parentheses and the colon). What remains captures the *meaning* without the noise.
+Looks like an upside-down tree no? With the root at the (\*), tiny branches, and the parameters/function arguments/constants at the leaves. I'm not being creative. Computational literature uses exactly this analogy. This whole construction is called an **Abstract Syntax Tree** — "abstract" because I've stripped away the syntax details that were only needed for parsing (like the parentheses and the colon). What remains captures the *meaning* without the noise.
 
 ### The Node Classes
 
-We represent each kind of node as an *expression* class:
+I represent each kind of node as an *expression* class:
 
 ```cpp
 class ExprAST {
@@ -175,9 +175,9 @@ public:
 };
 ```
 
-The virtual destructor is all we need in the base class for now. 
+The virtual destructor is all I need in the base class for now. 
 
-A number literal stores its value as a double, because we only support doubles for now:
+A number literal stores its value as a double, because I only support doubles for now:
 
 ```cpp
 class NumberExprAST : public ExprAST {
@@ -221,7 +221,7 @@ public:
 };
 ```
 
-Functions are split into two classes. The prototype captures just the signature — name and parameter names. We need it separately because `extern` declarations have a prototype but no function body:
+Functions are split into two classes. The prototype captures just the signature — name and parameter names. I need it separately because `extern` declarations have a prototype but no function body:
 
 ```cpp
 class PrototypeAST {
@@ -264,17 +264,17 @@ FunctionAST
 
 ### The Lookahead Invariant
 
-The parser needs to look at the current token to decide what to do. We keep one token of lookahead in a global. There are parsing strategies that use more than one token to determine future action. But we've designed the grammar in a way that one token is sufficient:
+The parser needs to look at the current token to decide what to do. I keep one token of lookahead in a global. There are parsing strategies that use more than one token to determine future action, but I've designed the grammar in a way that one token is sufficient:
 
 ```cpp
 static int CurTok;
 static int getNextToken() { return CurTok = gettok(); }
 ```
 
-If a value doesn’t change, we call it a constant (or immutable, depending on the language). 
-If a *fact about the program* doesn’t change, we call it an **invariant**.
+A value that doesn't change is called a constant (or immutable, depending on the language).
+A *fact about the program* that doesn't change is called an **invariant**.
 
-Every parse function operates by this invariant: *`CurTok` is already loaded when the function is called, and when the function returns, `CurTok` is pointing at the first token it did not consume.* This is always true in our parser. 
+Every parse function operates by this invariant: *`CurTok` is already loaded when the function is called, and when the function returns, `CurTok` is pointing at the first token it did not consume.* This is always true in my parser. 
 
 In other words: the function that calls you is responsible for loading `CurTok` before the call. You eat what you need, and leave the next thing for whoever called you.
 
@@ -282,7 +282,7 @@ Once you internalize this rule, all the `getNextToken()` calls in the parser mak
 
 ### Error Reporting
 
-When parsing fails, we return `nullptr` and print a message. We need three overloads — one per return type — because C++ can't overload on return type:
+When parsing fails, I return `nullptr` and print a message. I need three overloads — one per return type — because C++ can't overload on return type:
 
 ```cpp
 unique_ptr<ExprAST> LogError(const char *Str) {
@@ -293,15 +293,15 @@ unique_ptr<PrototypeAST> LogErrorP(const char *Str) { LogError(Str); return null
 unique_ptr<FunctionAST>  LogErrorF(const char *Str) { LogError(Str); return nullptr; }
 ```
 
-You haven't seen the main loop yet, but if a parse error occurs at the end of a line, the main loop won't print a new prompt — so we print it in LogError. This is one of those 'Trust me bro' moments. But I will explain it later, I promise.
+You haven't seen the main loop yet, but if a parse error occurs at the end of a line, the main loop won't print a new prompt — so I print it in LogError. This is one of those 'Trust me bro' moments. But I will explain it later, I promise.
 
 [Chapter 3](chapter-03.md) replaces the raw token number with a readable token name and source location.
 
 ### Operator Precedence
 
-Since binary expressions can be ambiguous (does `x+y*z` mean `(x+y)*z` or `x+(y*z)` ?) we have to tell the compiler that `*` should *bind* more tightly than `+`. *Bind more tightly* is a fancy way of saying *compute before others*. I only use *binding* because compiler literature uses it. We use numbers to decide the binding order, and the number is called **precedence**. If you know C++, you know about operator precedence tables, so accuse me of *obvious-splaining* or *o-splaining* if you will, another term I just invented. It's easy to invent things. 
+Since binary expressions can be ambiguous (does `x+y*z` mean `(x+y)*z` or `x+(y*z)` ?) I have to tell the compiler that `*` should *bind* more tightly than `+`. *Bind more tightly* is a fancy way of saying *compute before others*. I only use *binding* because compiler literature uses it. I use numbers to decide the binding order, and the number is called **precedence**. If you know C++, you know about operator precedence tables, so accuse me of *obvious-splaining* or *o-splaining* if you will, another term I just invented. It's easy to invent things. 
 
-We store precedences in a map. Higher precedence means tighter binding:
+I store precedences in a map. Higher precedence means tighter binding:
 
 ```cpp
 static map<char, int> BinopPrecedence;
@@ -330,13 +330,13 @@ static int GetTokPrecedence() {
 }
 ```
 
-The `isascii` guard rejects our named `Token` enums (which are negative integers) so they can never be mistaken for operators.
+The `isascii` guard rejects my named `Token` enums (which are negative integers) so they can never be mistaken for operators.
 
 ## Parsing Expressions
 
 ### Numbers
 
-When the lexer returns `tok_number`, it has already set the global `NumVal`. We copy its current value into a node and advance:
+When the lexer returns `tok_number`, it has already set the global `NumVal`. I copy its current value into a node and advance:
 
 ```cpp
 /// numberexpr
@@ -350,7 +350,7 @@ static unique_ptr<ExprAST> ParseNumberExpr() {
 
 ### Parentheses
 
-Parse whatever is inside, verify the closing `)`, and return the inner expression directly. We don't create a parentheses node — the tree structure already captures the grouping:
+Parse whatever is inside, verify the closing `)`, and return the inner expression directly. I don't create a parentheses node — the tree structure already captures the grouping:
 
 ```cpp
 /// parenexpr
@@ -370,7 +370,7 @@ static unique_ptr<ExprAST> ParseParenExpr() {
 
 ### Identifiers and Calls
 
-After reading an identifier, we peek at the next token. No `(` means it's a plain variable. A `(` means it's a function call.
+After reading an identifier, I peek at the next token. No `(` means it's a plain variable. A `(` means it's a function call.
 
 ```pyxc
 x     # variable
@@ -385,13 +385,14 @@ Here's the parsing code.
 ///   | identifier "("[expression{"," expression}]")" ;
 static unique_ptr<ExprAST> ParseIdentifierExpr() {
   string IdName = IdentifierStr;
-  getNextToken(); // eat identifier
 
-  if (CurTok != '(')
-    return make_unique<VariableExprAST>(IdName); // plain variable
+  getNextToken(); // eat identifier.
 
-  // Function call
-  getNextToken(); // eat '('
+  if (CurTok != '(') // Simple variable ref.
+    return make_unique<VariableExprAST>(IdName);
+
+  // Call.
+  getNextToken(); // eat (
   vector<unique_ptr<ExprAST>> Args;
   if (CurTok != ')') {
     while (true) {
@@ -400,21 +401,25 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
       else
         return nullptr;
 
-      if (CurTok == ')') break;
+      if (CurTok == ')')
+        break;
 
       if (CurTok != ',')
         return LogError("Expected ')' or ',' in argument list");
-      getNextToken(); // eat ','
+      getNextToken();
     }
   }
-  getNextToken(); // eat ')'
+
+  // Eat the ')'.
+  getNextToken();
+
   return make_unique<CallExprAST>(IdName, std::move(Args));
 }
 ```
 
 ### Calling the Right (mini) Parser
 
-We have all our mini-parsers ready for different token types. We write `ParsePrimary` which looks at `CurTok` and based on what it sees, invokes the relevant mini-parser:
+I have all my mini-parsers ready for different token types. `ParsePrimary` looks at `CurTok` and, based on what it sees, invokes the relevant mini-parser:
 
 ```cpp
 /// primary
@@ -436,31 +441,35 @@ static unique_ptr<ExprAST> ParsePrimary() {
 
 The most subtle function in the parser is `ParseBinOpRHS`. It handles a sequence of binary operators with correct precedence.
 
-The key idea: when we're parsing `a + b * c + d`, we need to figure out which operators go together. The `*` between `b` and `c` binds more tightly than the `+` around it, so `b * c` should be grouped first.
+The key idea: when I'm parsing `a + b * c + d`, I need to figure out which operators go together. The `*` between `b` and `c` binds more tightly than the `+` around it, so `b * c` should be grouped first.
 
-We solve this by setting a minimum precedence. `ParseBinOpRHS` is told: only deal with operators at this precedence level or higher. If it sees a higher-precedence operator on the right, it steps aside (recurses) and lets that operator take its operands first.
+I solve this by setting a minimum precedence. `ParseBinOpRHS` is told: only deal with operators at this precedence level or higher. If it sees a higher-precedence operator on the right, it steps aside (recurses) and lets that operator take its operands first.
 
 ```cpp
 /// binoprhs
 ///   = { binaryop primary } ;
-static unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec, unique_ptr<ExprAST> LHS) {
+static unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
+                                         unique_ptr<ExprAST> LHS) {
+  // If this is a binop, find its precedence.
   while (true) {
     int TokPrec = GetTokPrecedence();
 
-    // If CurTok is not an operator, or binds less tightly than our expected precedence level,
-    // we're done — return what we have.
+    // If this is a binop that binds at least as tightly as the current binop,
+    // consume it, otherwise we are done.
     if (TokPrec < ExprPrec)
       return LHS;
 
+    // Okay, we know this is a binop.
     int BinOp = CurTok;
-    getNextToken(); // eat operator
+    getNextToken(); // eat binop
 
+    // Parse the primary expression after the binary operator.
     auto RHS = ParsePrimary();
     if (!RHS)
       return nullptr;
 
-    // If the next operator binds more tightly than the current one, recurse
-    // to let it take our RHS as its LHS first.
+    // If BinOp binds less tightly with RHS than the operator after RHS, let
+    // the pending operator take RHS as its LHS.
     int NextPrec = GetTokPrecedence();
     if (TokPrec < NextPrec) {
       RHS = ParseBinOpRHS(TokPrec + 1, std::move(RHS));
@@ -468,7 +477,7 @@ static unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec, unique_ptr<ExprAST> LHS) 
         return nullptr;
     }
 
-    // Merge LHS and RHS under the current operator.
+    // Merge LHS/RHS.
     LHS = make_unique<BinaryExprAST>(BinOp, std::move(LHS), std::move(RHS));
   }
 }
@@ -483,9 +492,9 @@ Let's trace `a + b * c + d` step by step:
 5. Back in outer call: `RHS = b*c`. Build `a + (b*c)`.
 6. Loop continues. Next operator is `+` (prec 20). 20 ≥ 0 — consume `+`. Parse `d`. Next token is not an operator — return. Build `(a+(b*c)) + d`.
 
-The `TokPrec + 1` makes sure we group from left to right.
+The `TokPrec + 1` makes sure operators group from left to right.
 
-For operators at the same level — like `a - b - c` — we want `(a - b) - c`, not `a - (b - c)`.
+For operators at the same level — like `a - b - c` — I want `(a - b) - c`, not `a - (b - c)`.
 
 The `+1` means the recursive call stops when it sees another operator at the same level, leaving it for the outer loop to handle.
 
@@ -541,7 +550,7 @@ static unique_ptr<PrototypeAST> ParsePrototype() {
 }
 ```
 
-Do you see how straightforward this is? We just look at the grammar and sequence out the commands to parse those bits. Could writing this parser be automated? Absolutely, and several such tools exist. In fact, in a few more chapters, you will know enough to write such a tool yourself but I'll leave that for the more free-spirited to pursue and we won't discuss such tools anymore in this tutorial. Writing parsers by hand is an extremely good exercise to really drive home core concepts and we won't be cheating ourselves out of that experience. We don't strap our Garmins onto our pets and make them run around the block do we? Do we?? Don't trust my Strava.
+Do you see how straightforward this is? I just look at the grammar and sequence out the commands to parse those bits. Could writing this parser be automated? Absolutely, and several such tools exist. In fact, in a few more chapters, you'll know enough to write such a tool yourself, but I'll leave that for the more free-spirited to pursue — I won't discuss such tools any further in this tutorial. Writing parsers by hand is an extremely good exercise for really driving home core concepts, and I'm not going to cheat myself out of that experience. I don't strap my Garmin onto my pets and make them run around the block, do I? Do I?? Don't trust my Strava.
 
 ### Definition
 
@@ -561,7 +570,7 @@ static unique_ptr<FunctionAST> ParseDefinition() {
   getNextToken(); // eat ':'
 ```
 
-After we've read the signature and the following `:`, we call `consumeNewlines()` which allows you to put the body in the next line. 
+After I've read the signature and the following `:`, I call `consumeNewlines()` which lets the body go on the next line. 
 
 ```cpp
   // Skip any newlines between ':' and 'return'. This allows the body to be
@@ -579,7 +588,7 @@ ready> def add(x, y):
 Parsed a function definition.
 ```
 
-Next we deal with `return`.
+Next: `return`.
 
 ```cpp
   if (CurTok != tok_return)
@@ -608,19 +617,21 @@ static void consumeNewlines() {
 /// external
 ///   = "extern" "def" prototype
 static unique_ptr<PrototypeAST> ParseExtern() {
-  getNextToken(); // eat 'extern'
+  getNextToken(); // eat extern.
+
   if (CurTok != tok_def)
-    return LogErrorP("Expected 'def' after extern.");
-  getNextToken(); // eat 'def'
+    return LogErrorP("Expected `def` after extern.");
+
+  getNextToken(); // eat def
   return ParsePrototype();
 }
 ```
 
-An `extern` is just a prototype — we're declaring a name and its parameter count so the compiler knows how to call it. The actual implementation lives elsewhere (a C library, or, when we implement multi-file support, in a different object file). We use `def` after `extern` to keep the syntax consistent — `extern def` reads as "this is an external definition," parallel to `def` for local ones. This is just a personal preference. There's no universal law. It's your language, design it as you please. I know I say this a lot, but I cannot iterate this enough. YOU are in the drivers seat. Feel free to experiment, break things, or accept defaults and move along — there's no right way. What is shown here is one way.
+An `extern` is just a prototype — I'm declaring a name and its parameter count so the compiler knows how to call it. The actual implementation lives elsewhere (a C library, or, once I add multi-file support, a different object file). I use `def` after `extern` to keep the syntax consistent — `extern def` reads as "this is an external definition," parallel to `def` for local ones. This is just a personal preference. There's no universal law. It's your language, design it as you please. I know I say this a lot, but I cannot iterate this enough. YOU are in the drivers seat. Feel free to experiment, break things, or accept defaults and move along — there's no right way. What is shown here is one way.
 
 ### Top-Level Expressions
 
-So far we have the infrastructure to read function definitions and call them. But what happens to bare expressions like `1 + 2 * 3`? We just wrap them in a function with an internal name and then use existing infrastructure to read and run it:
+So far I have the infrastructure to read function definitions and call them. But what happens to bare expressions like `1 + 2 * 3`? I just wrap them in a function with an internal name and reuse the existing infrastructure to read and run it:
 
 ```cpp
 /// toplevelexpr
@@ -634,7 +645,7 @@ static unique_ptr<FunctionAST> ParseTopLevelExpr() {
 }
 ```
 
-The name `__anon_expr` is a placeholder we invented —  it could be any valid identifier. In a later chapter when we add JIT execution, we'll look up this function by name and call it to evaluate the expression immediately. Wrapping it in `FunctionAST` now means the rest of the pipeline — code generation, optimization, JIT — doesn't need any special cases for top-level expressions. They can be treated as ordinary functions.
+The name `__anon_expr` is a placeholder I invented — it could be any valid identifier. In a later chapter when I add JIT execution, I'll look up this function by name and call it to evaluate the expression immediately. Wrapping it in `FunctionAST` now means the rest of the pipeline — code generation, optimization, JIT — doesn't need any special cases for top-level expressions. They can be treated as ordinary functions.
 
 ## The Driver
 
@@ -689,7 +700,7 @@ static void MainLoop() {
 
 ## Don’t trust me no more bro
 
-Now that you've seen the main loop, you'll see why we printed `ready>` inside LogError. It's because if the error happens at the end of a line, we don’t go back to the main loop right away. Let's use this example:
+Now that you've seen the main loop, you'll see why I printed `ready>` inside LogError. It's because if the error happens at the end of a line, I don't go back to the main loop right away. Here's an example:
 
 ```pyxc
 ready> def add   
@@ -697,7 +708,7 @@ Error: Expected '(' in prototype (token: -2)
 ready>   
 ```        
 
-When we hit the error at the end of `add`, `HandleDefinition` tries to skip the bad token:
+When I hit the error at the end of `add`, `HandleDefinition` tries to skip the bad token:
 
 ```cpp
 getNextToken();
@@ -709,7 +720,7 @@ Which means:
 - MainLoop doesn’t run
 - `ready>` doesn’t get printed
 
-So if we don’t print the prompt inside `LogError`, the program would just sit there silently and appear frozen.
+So if I don't print the prompt inside `LogError`, the program would just sit there silently and appear frozen.
 
 ## The final touches
 
@@ -771,7 +782,7 @@ The parser accepts valid syntax and rejects invalid syntax with an error message
 
 ## Things Worth Knowing
 
-- **`1.2.3` silently lexes as `1.2`.** The lexer reads the `1.2.3` as a number but `strtod` quietly drops `.3` without explicitly saying so. We fix this in [Chapter 3](chapter-03.md).
+- **`1.2.3` silently lexes as `1.2`.** The lexer reads the `1.2.3` as a number but `strtod` quietly drops `.3` without explicitly saying so. I fix this in [Chapter 3](chapter-03.md).
 
 - **Error messages show raw token numbers.** `token: -7` means `tok_return`. [Chapter 3](chapter-03.md) replaces this with readable names and source locations.
 
@@ -796,7 +807,7 @@ expression = primary { binaryop primary }
 
 ## What's Next
 
-We now have a parser that understands the structure of pyxc code and builds a tree of objects representing it. But before we hook this up to LLVM and generate real machine code, [Chapter 3](chapter-03.md) revisits the lexer: readable error messages, source locations, and the keyword map. The parser you have works but [Chapter 3](chapter-03.md) makes it pleasant to use.
+I now have a parser that understands the structure of pyxc code and builds a tree of objects representing it. But before I hook this up to LLVM and generate real machine code, [Chapter 3](chapter-03.md) revisits the lexer: readable error messages, source locations, and the keyword map. The parser works but [Chapter 3](chapter-03.md) makes it pleasant to use.
 
 ## Need Help?
 

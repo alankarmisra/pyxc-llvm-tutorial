@@ -191,33 +191,36 @@ public:
 
 ### Parsing `@binary(5) def |(x, y): ...`
 
-`ParseDecoratedDef` manages both binary and unary parsing:
+`MainLoop` eats the `@` itself before dispatching to `HandleDecorator`, so by the time `ParseDecoratedDef` runs, `CurTok` is already sitting on `binary` or `unary`. `ParseDecoratedDef` manages both branches:
 
 ```cpp
 /// decorateddef
 ///   = binarydecorator eols "def" binaryopprototype ":" [ eols ] "return" expression
 ///   | unarydecorator  eols "def" unaryopprototype  ":" [ eols ] "return" expression
 ///
-/// binarydecorator   = "@" "binary" "(" integer ")" ;
-/// unarydecorator    = "@" "unary" ;
+/// Called after '@' has been consumed. CurTok is on 'binary' or 'unary'.
 static unique_ptr<FunctionAST> ParseDecoratedDef() {
-  getNextToken(); // eat '@'
-
-  unique_ptr<PrototypeAST> Proto;
-  if (CurTok == tok_binary) { // "binary"
-    unsigned Prec = ParseBinaryDecorator(); // delegate: processes "binary" "(" integer ")" 
-    if (CurTok != tok_eol) // ensure we get a newline after the decorator
-      return LogErrorF("Expected newline after '@binary(...)' decorator");
-    consumeNewlines(); 
-    if (CurTok != tok_def) ... // check for errors (snipped)
-    getNextToken(); // eat 'def' and parse the rest of the prototype
-    Proto = ParseBinaryOpPrototype(Prec); // returns prototype; precedence registered in PrototypeAST::codegen
-  } else if (CurTok == tok_unary) {
-    ParseUnaryDecorator();
-    // ... same newline enforcement, eat 'def' ...
-    Proto = ParseUnaryOpPrototype(); // returns prototype; operator registered in PrototypeAST::codegen
-  } else {
+  if (CurTok != tok_binary && CurTok != tok_unary)
     return LogErrorF("Expected 'binary' or 'unary' after '@'");
+
+  bool IsBinary = (CurTok == tok_binary);
+  unique_ptr<PrototypeAST> Proto;
+
+  if (IsBinary) {
+    unsigned Prec = ParseBinaryDecorator(); // consumes "binary(N)"
+    if (!Prec)
+      return nullptr;
+    if (CurTok != tok_eol) // the decorator must end at a newline before 'def'
+      return LogErrorF("Expected newline after '@binary(...)' decorator");
+    consumeNewlines();
+    if (CurTok != tok_def)
+      return LogErrorF("Expected 'def' after decorator");
+    getNextToken(); // eat 'def'
+    Proto = ParseBinaryOpPrototype(Prec);
+  } else {
+    ParseUnaryDecorator(); // consumes "unary"
+    // ... same newline enforcement, eat 'def' ...
+    Proto = ParseUnaryOpPrototype();
   }
 
   // Shared body tail — same as ParseDefinition, where `return` and expression are parsed.
@@ -225,7 +228,7 @@ static unique_ptr<FunctionAST> ParseDecoratedDef() {
 }
 ```
 
-**`ParseBinaryDecorator`** consumes `binary(5)` and returns `5`. The lexer has no `tok_integer` — it emits `tok_number` for both `5` and `1.5` — so the decimal check inspects `NumLiteralStr`, the raw source text:
+**`ParseBinaryDecorator`** consumes `binary(5)` and returns `5`. The lexer has no `tok_integer` — it emits `tok_number` for both `5` and `1.5` — so the decimal check inspects `NumLiteralStr`, the raw source text. It returns `unsigned`, not a `unique_ptr`, so on failure it calls the plain `LogError` (which prints the message and returns a discarded `nullptr`) and then explicitly returns `0`:
 
 ```cpp
 /// binarydecorator
@@ -236,18 +239,36 @@ static unique_ptr<FunctionAST> ParseDecoratedDef() {
 /// 0 is a safe sentinel because valid precedences must be >= 1.
 static unsigned ParseBinaryDecorator() {
   getNextToken(); // eat 'binary'
-  // ...eat '('...
-  if (CurTok != tok_number)
-    return LogErrorF("Expected precedence after '@binary('");
-  // Check for a decimal. We don't have an integer type. 
-  // Lexer will happily send decimal numbers back.
-  if (NumLiteralStr.find('.') != string::npos)
-    return LogErrorF("Operator precedence must be an integer");
-  unsigned Prec = (unsigned)NumVal;  // NumVal is double but we've confirmed no decimal point
-  if (Prec == 0)
-    return LogErrorF("Operator precedence must be >= 1");
+
+  if (CurTok != '(') {
+    LogError("Expected '(' after '@binary'");
+    return 0;
+  }
+  getNextToken(); // eat '('
+
+  if (CurTok != tok_number) {
+    LogError("Expected precedence number in '@binary(...)'");
+    return 0;
+  }
+  // The lexer has no separate tok_integer — it emits tok_number for both
+  // integer and decimal literals. Reject decimals by checking the raw source.
+  if (NumLiteralStr.find('.') != string::npos) {
+    LogError("Precedence must be an integer, not a decimal literal");
+    return 0;
+  }
+  if (NumVal < 1) {
+    LogError("Precedence must be a positive integer");
+    return 0;
+  }
+  unsigned Prec = static_cast<unsigned>(NumVal);
   getNextToken(); // eat number
-  // ...eat ')'...
+
+  if (CurTok != ')') {
+    LogError("Expected ')' after precedence in '@binary(...)'");
+    return 0;
+  }
+  getNextToken(); // eat ')'
+
   return Prec;
 }
 ```
@@ -377,7 +398,7 @@ Value *BinaryExprAST::codegen() {
   if (!F)
     return LogErrorV("invalid binary operator");
   Value *Ops[] = {L, R};
-  return Builder->CreateCall(F, Ops, "binop");
+  return TheBuilder->CreateCall(F, Ops, "binop");
 }
 ```
 
@@ -393,14 +414,14 @@ Value *UnaryExprAST::codegen() {
 
   // Built-in unary minus.
   if (Opcode == '-')
-    return Builder->CreateFNeg(Op, "negtmp");
+    return TheBuilder->CreateFNeg(Op, "negtmp");
 
   // User-defined unary operator.
   Function *F = getFunction(std::string("unary") + Opcode);
   if (!F)
     return LogErrorV("Unknown unary operator");
 
-  return Builder->CreateCall(F, Op, "unop");
+  return TheBuilder->CreateCall(F, Op, "unop");
 }
 ```
 
@@ -710,7 +731,7 @@ ready>
 ******************************************************************************
 ```
 
-Now that we have user-defined operators, we can rewrite the renderer to shade by density — mapping how quickly each point escapes to a different character. The boundary dissolves into gradients of `*`, `+`, `.`, and space.
+Now that I have user-defined operators, I can rewrite the renderer to shade by density — mapping how quickly each point escapes to a different character. The boundary dissolves into gradients of `*`, `+`, `.`, and space.
 
 Four things change from the chapter 8 version:
 

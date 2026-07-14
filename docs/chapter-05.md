@@ -5,7 +5,7 @@ description: "Connect the AST to LLVM IR: add codegen() to every node and see re
 
 ## Where We Are
 
-In [Chapter 3](chapter-03.md) we wrote a parser that builds a syntax tree and reports error messages, if any. The next step is to generate intermediate code (IR) and pass that on to the LLVM tooling, either to compile and run immediately, or to compile to machine code to be run later. This chapter focuses on generating the IR. If you type something like:
+In [Chapter 3](chapter-03.md) I wrote a parser that builds a syntax tree and reports error messages, if any. The next step is to generate intermediate code (IR) and pass that on to the LLVM tooling, either to compile and run immediately, or to compile to machine code to be run later. This chapter focuses on generating the IR. If you type something like:
 
 ```pyxc
 ready> def sum(a, b): return a + b
@@ -26,7 +26,7 @@ entry:
 ```
 <!-- code-merge:end -->
 
-That's the internal representation LLVM needs to be able to run code. It can take that IR and compile it to x86, ARM, or any other target it supports. If you're wondering, and even if you're not, yes it's possible to just write the IR out by hand in a text file and run it through LLVM. We won't be doing that here. Instead we will use the LLVM utility functions to help us translate the pyxc programming language code into something LLVM can run.
+That's the internal representation LLVM needs to be able to run code. It can take that IR and compile it to x86, ARM, or any other target it supports. If you're wondering, and even if you're not, yes it's possible to just write the IR out by hand in a text file and run it through LLVM. I won't be doing that here. Instead I'll use the LLVM utility functions to translate pyxc code into something LLVM can run.
 
 ## Source Code
 
@@ -37,7 +37,7 @@ cd pyxc-llvm-tutorial/code/chapter-05
 
 ## The Three LLVM Objects
 
-Code generation in LLVM revolves around three objects. We keep them as globals:
+Code generation in LLVM revolves around three objects. I keep them as globals:
 
 ```cpp
 static unique_ptr<LLVMContext> TheContext;
@@ -45,11 +45,11 @@ static unique_ptr<Module>      TheModule;
 static unique_ptr<IRBuilder<>> Builder;
 ```
 
-**`LLVMContext`** is at the root of our compiled code. Items shared across modules like global constants land up here. You pass the context to almost every LLVM API call.
+**`LLVMContext`** is at the root of my compiled code. Items shared across modules like global constants land up here. You pass the context to almost every LLVM API call.
 
 **`Module`** belongs to the context and represents one source file's worth of compiled output — the functions and global variables defined in it. A single LLVMContext can contain multiple modules.
 
-**`IRBuilder`** is what we use to emit LLVM instructions as you'll see soon.
+**`IRBuilder`** is what I use to emit LLVM instructions, as you'll see soon.
 
 ```diagram
                  ┌───────────────────────┐
@@ -84,18 +84,18 @@ static unique_ptr<IRBuilder<>> Builder;
 Initialization bundles the three objects:
 
 ```cpp
-static void InitializeModule() {
-  TheContext = make_unique<LLVMContext>();
-  // `PyxcJIT` is the module identifier — it can be anything you want. 
-  // In later chapters when we add file mode, we use the source filename as the module id to keep things sensible.
-  TheModule  = make_unique<Module>("PyxcJIT", *TheContext);
-  Builder    = make_unique<IRBuilder<>>(*TheContext);
+static void InitializeModuleAndManagers() {
+  TheContext = std::make_unique<LLVMContext>();
+  TheModule = std::make_unique<Module>("PyxcJIT", *TheContext);
+  Builder = std::make_unique<IRBuilder<>>(*TheContext);
 }
 ```
 
+`"PyxcJIT"` is the module identifier — it can be anything I want. In a later chapter when I add file mode, I use the source filename as the module id instead, to keep things sensible. The name `InitializeModuleAndManagers` looks ahead too: in [Chapter 6](chapter-06.md) this function grows to also set up the optimization pass managers, so I'm naming it for what it becomes, not just what it does today.
+
 ## Adding codegen() to the AST
 
-In chapters [2](chapter-02.md) and [3](chapter-03.md), the AST nodes had no methods beyond their constructors. Now we add a pure virtual `codegen()` to the base class and then every derived class can decide on what it wants to emit:
+In chapters [2](chapter-02.md) and [3](chapter-03.md), the AST nodes had no methods beyond their constructors. Now I add a pure virtual `codegen()` to the base class and every derived class can decide what it wants to emit:
 
 ```cpp
 class ExprAST {
@@ -131,7 +131,7 @@ Value *NumberExprAST::codegen() {
 }
 ```
 
-`APFloat` is LLVM's floating-point value type. `ConstantFP::get` creates a constant and stores it in the context — which is why we pass `TheContext`. No instruction is emitted; constants are values that get copied into whichever instruction uses them. 
+`APFloat` is LLVM's floating-point value type. `ConstantFP::get` creates a constant and stores it in the context — which is why I pass `TheContext`. No instruction is emitted; constants are values that get copied into whichever instruction uses them. 
 
 ### Variable References
 
@@ -149,7 +149,7 @@ Value *VariableExprAST::codegen() {
 }
 ```
 
-For now `NamedValues` only contains function parameters which are `Value*` objects unlike the functions themselves which are `Function*`. When we introduce local variables in a later chapter, we will stuff them into this map as well.
+For now `NamedValues` only contains function parameters, which are `Value*` objects, unlike the functions themselves which are `Function*`. When I introduce local variables in a later chapter, I'll stuff them into this map as well.
 
 `LogErrorV` is a new error helper that returns nullptr cast as a `Value*`:
 
@@ -160,19 +160,19 @@ Value *LogErrorV(const char *Str) {
 }
 ```
 
-so we can now do:
+so I can now do:
 
 ```cpp
 if(some_error_condition) return LogErrorV("Error specifics");
 
-// No error if we are here, continue processing.
+// No error if I'm here, continue processing.
 ...
 
 ```
 
 ### Binary Expressions
 
-`BinaryExprAST::codegen()` will recurse into the left and right sides allowing them to generate their `Value*`s, and will then emit a single instruction for the operator combining the two:
+`BinaryExprAST::codegen()` recurses into the left and right sides so they can generate their `Value*`s, then emits a single instruction for the operator combining the two:
 
 ```cpp
 Value *BinaryExprAST::codegen() {
@@ -195,7 +195,7 @@ This generates the following LLVM instruction:
 %addtmp = fadd double %x, %y
 ```
 
-`fadd` is the actual LLVM instruction. `double` specifies the operand types (LLVM is strongly typed). The result of `fadd double %x, %y`  is then called `%addtmp` - which is the variable name *prefix* we supplied. If we didn't supply a *prefix*, LLVM would just invent one. In this tutorial we supply our variable name prefix so the output is sensible to our human eyes. Why do I keep saying *prefix*? Because we could do something like this
+`fadd` is the actual LLVM instruction. `double` specifies the operand types (LLVM is strongly typed). The result of `fadd double %x, %y` is then called `%addtmp` — which is the variable name *prefix* I supplied. If I didn't supply a *prefix*, LLVM would just invent one. In this tutorial I supply my own variable name prefixes so the output is sensible to human eyes. Why do I keep saying *prefix*? Because I could do something like this
 
 ```cpp
 Builder->CreateFAdd(L, R, "addtmp"); 
@@ -204,7 +204,7 @@ Builder->CreateFAdd(L, R, "addtmp");
 Builder->CreateFAdd(L, R, "addtmp"); 
 ```
 
-LLVM suffixes the second hinted variable name with a number to make it unique and so *prefix* makes sense. Notice how only the second one has a suffix. In most programs we will have multiple add statements, so we just call them prefix. Some literature calls these *hints* which is fine too. 
+LLVM suffixes the second hinted variable name with a number to make it unique, and that's why *prefix* makes sense as a name. Notice how only the second one has a suffix. Most programs will have multiple add statements, so I just call these prefixes. Some literature calls these *hints* which is fine too. 
 
 ```llvm
 %addtmp = fadd double %x, %y
@@ -244,13 +244,13 @@ case '<':
 %booltmp = uitofp i1 %cmptmp to double
 ```
 
-`<` needs two steps — `fcmp ult` does an unsigned less than (u-l-t) comparison and produces a 1-bit integer (`i1`). Since Pyxc treats everything as `double`, we widen it with unsigned-integer-to-floating-point (u-i-to-f-p) `uitofp`: `false` → `0.0`, `true` → `1.0`. This way expressions up the chain that are expecting a double get a double.
+`<` needs two steps — `fcmp ult` does an unsigned less than (u-l-t) comparison and produces a 1-bit integer (`i1`). Since Pyxc treats everything as `double`, I widen it with unsigned-integer-to-floating-point (u-i-to-f-p) `uitofp`: `false` → `0.0`, `true` → `1.0`. This way expressions up the chain that are expecting a double get a double.
 
-If either side fails codegen, we return `nullptr` immediately. The parent node does the same — a failure anywhere in the tree bubbles up and aborts the whole codegen.
+If either side fails codegen, I return `nullptr` immediately. The parent node does the same — a failure anywhere in the tree bubbles up and aborts the whole codegen.
 
 ### Function Calls
 
-Here's what we want to do for a function call:
+Here's what I want to do for a function call:
 1. Find the function being called
 2. Check the argument count
 3. Codegen each argument
@@ -268,7 +268,7 @@ Let's *codegen* it.
 
 ```cpp
 Value *CallExprAST::codegen() {
-  // Let's see if we can find the function first. This would be a function 
+  // Let's see if I can find the function first. This would be a function 
   // that was previously declared with `extern` or defined with `def`.
   Function *CalleeF = TheModule->getFunction(Callee /* the function name is in the Callee property*/); 
 
@@ -316,7 +316,7 @@ A prototype creates the function signature in the module:
 - parameter types and 
 - parameters names.
 
-We just need to repackage our existing node information into something LLVM can consume. 
+I just need to repackage the existing node information into something LLVM can consume. 
 
 ```cpp
 Function *PrototypeAST::codegen() {    
@@ -348,7 +348,7 @@ Function *PrototypeAST::codegen() {
 
 Everything in Pyxc is a `double` for now — parameters and return value alike. 
 
-`ExternalLinkage` means the function is visible outside this module. We do this for all functions, even functions we don't intend to call outside the module. The specifics of why regular functions need this will make more sense in [Chapter 6](chapter-06.md) when we set up the JIT. Right now, let's run with "*Just trust me bro*". And yes, there exists `InternalLinkage` just as you suspected. 
+`ExternalLinkage` means the function is visible outside this module. I do this for all functions, even functions I don't intend to call outside the module. The specifics of why regular functions need this will make more sense in [Chapter 6](chapter-06.md) when I set up the JIT. Right now, let's run with "*Just trust me bro*". And yes, there exists `InternalLinkage` just as you suspected. 
 
 Setting argument names via `setName` is optional — it only affects the printed IR. But it makes the output readable:
 
@@ -366,7 +366,7 @@ define double @foo(double %0, double %1) {
 
 ### Function Definitions
 
-A function definition first checks whether the module already has a declaration for this name, then creates the body. First let's recap what `PrototypeAST` and `FunctionAST` nodes looks like:
+A function definition first checks whether the module already has a declaration for this name, then creates the body. First, let's recap what `PrototypeAST` and `FunctionAST` nodes look like:
 
 ```cpp
 class PrototypeAST {
@@ -439,7 +439,7 @@ Five steps:
    ```llvm
    declare double @foo(double %x, double %y)
    ```
-2. **Reject redefinitions.** If the function already has a body — someone defined `def foo` twice — we error out here before touching anything. We check this before calling `Proto->codegen()` to avoid unnecessary work.
+2. **Reject redefinitions.** If the function already has a body — someone defined `def foo` twice — I error out here before touching anything. I check this before calling `Proto->codegen()` to avoid unnecessary work.
 
 3. **Create the entry basic block.** A basic block is a straight-line sequence of instructions that ends with a branch or return. Every function starts with one. `SetInsertPoint` tells the builder to append new instructions here.
 
@@ -492,7 +492,7 @@ if (auto *FnIR = FnAST->codegen()) {
 
 `errs()` is LLVM's wrapper around `stderr`. `FnIR->print(errs())` dumps the function's IR in human-readable form.
 
-`HandleTopLevelExpression` does a bit extra. Recall from [Chapter 3](chapter-03.md) that top-level expressions like `1 + 2` are wrapped in a synthetic anonymous function (`__anon_expr`) so the parser always has a `FunctionAST` to work with. That anonymous function is what gets codegenned here. It calls `eraseFromParent()` after printing because it was only needed to show the IR — it shouldn't accumulate in the module and shouldn't appear in the end-of-session dump. This doesn't mean we are ignoring it. In the next chapter, our JIT will run the top-level expression as you would expect it to, and then discard it before defining another anonymous function for the next top-level expression and so on.
+`HandleTopLevelExpression` does a bit extra. Recall from [Chapter 3](chapter-03.md) that top-level expressions like `1 + 2` are wrapped in a synthetic anonymous function (`__anon_expr`) so the parser always has a `FunctionAST` to work with. That anonymous function is what gets codegenned here. It calls `eraseFromParent()` after printing because it was only needed to show the IR — it shouldn't accumulate in the module and shouldn't appear in the end-of-session dump. This doesn't mean I'm ignoring it. In the next chapter, my JIT will run the top-level expression as you'd expect, then discard it before defining another anonymous function for the next top-level expression, and so on.
 
 ## The Module at Session End
 
@@ -613,7 +613,7 @@ The end-of-session dump shows only `sum` and the `cos` declaration. The `__anon_
 
 ## What's Next
 
-The IR is correct — but it just prints and does nothing. In [Chapter 6](chapter-06.md) we plug in an **On Request Compilation (ORC)** JIT layer so that top-level expressions actually execute and print their results. We also add an optimization pass manager so the IR that runs is clean and fast. This is the chapter where the compiler comes alive. 
+The IR is correct — but it just prints and does nothing. In [Chapter 6](chapter-06.md) I plug in an **On Request Compilation (ORC)** JIT layer so that top-level expressions actually execute and print their results. I also add an optimization pass manager so the IR that runs is clean and fast. This is the chapter where the compiler comes alive. 
 
 ## Need Help?
 

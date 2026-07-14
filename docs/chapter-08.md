@@ -3,11 +3,11 @@ description: "Add comparison operators, if/else expressions, and for loops — t
 ---
 # 8. pyxc:  Control Flow: if, else, and for
 
-## What we're building
+## What I'm building
 
-[Chapter 7](chapter-07.md) added file input mode. The language itself still has only basic arithmetic, and function calls — no way to branch, no way to loop, no way to compare two values. This chapter adds all three. You have more experience with LLVM and compilers now, so we can move at a slightly faster pace. 
+[Chapter 7](chapter-07.md) added file input mode. The language itself still has only basic arithmetic, and function calls — no way to branch, no way to loop, no way to compare two values. This chapter adds all three. You have more experience with LLVM and compilers now, so I can move at a slightly faster pace. 
 
-Our implementation of comparison operators will produce double values; `1.0` for true and `0.0` for false. This way if the operator is part of a greater expression, the expression will produce a double value as is expected across pyxc expressions. 
+My implementation of comparison operators will produce double values: `1.0` for true and `0.0` for false. This way, if the operator is part of a greater expression, the expression will produce a double value as is expected across pyxc expressions. 
 
 <!-- code-merge:start -->
 ```pyxc
@@ -26,7 +26,7 @@ Evaluated to 0.000000
 ```
 <!-- code-merge:end -->
 
-We will implement an *expression* form of `if` for now. What this means is that both branches are always required and each of them has to return a value so the entire `if/else` expression has a value. Once we get to the statement form of `if`, you'll see a more familiar syntax where the `else` becomes optional and it doesn't matter whether or not the subexpressions produce a value or not. Statement-style `if` arrives with blocks (multi-statement bodies) in a later chapter. Let's see some examples.
+I'll implement an *expression* form of `if` for now. What this means is that both branches are always required and each of them has to return a value so the entire `if/else` expression has a value. Once I get to the statement form of `if`, you'll see a more familiar syntax where the `else` becomes optional and it doesn't matter whether or not the subexpressions produce a value or not. Statement-style `if` arrives with blocks (multi-statement bodies) in a later chapter. Let's see some examples.
 
 <!-- code-merge:start -->
 ```pyxc
@@ -44,7 +44,7 @@ Evaluated to 5.000000
 ```
 <!-- code-merge:end -->
 
-Similarly we implement an expression from of `for`. It repeats its body expression and always produces `0.0`. Unlike `if`, `for` has no natural value to produce. `0.0` is a placeholder. Again, our implementation of blocks will fix this in a later chapter where `for` will return nothing as we've grown to expect in most programming languages. However, this is not a rule set in stone. You are the inventor here. You can choose whatever appeals to your semantic senses. 
+Similarly I implement an expression form of `for`. It repeats its body expression and always produces `0.0`. Unlike `if`, `for` has no natural value to produce. `0.0` is a placeholder. Again, my implementation of blocks will fix this in a later chapter, where `for` will return nothing as you've probably grown to expect in most programming languages. However, this is not a rule set in stone. You are the inventor here. You can choose whatever appeals to your semantic senses. 
 
 <!-- code-merge:start -->
 ```pyxc
@@ -119,7 +119,7 @@ binaryop = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
 
 ## New Tokens
 
-We add more token enums:
+I add more token enums:
 
 ```cpp
 enum Token {
@@ -143,7 +143,7 @@ tok_else = -13,
 tok_for = -15,
 ```
 
-`tok_if`, `tok_else`, and `tok_for` are keywords added to the `Keywords` map. The comparison tokens are returned by the lexer when it sees two-character sequences. If you look at the `gettok()` code, you'll see that keywords go through the identifier string route and the operators go through their own recognition code towards the bottom of the function basically extending our existing code. There are more optimized and standardized ways to do this through lexer generators, but such optimization purity comes at the cost of a more complex pipeline. We will explore these optimizations later. 
+`tok_if`, `tok_else`, and `tok_for` are keywords added to the `Keywords` map. The comparison tokens are returned by the lexer when it sees two-character sequences. If you look at the `gettok()` code, you'll see that keywords go through the identifier string route and the operators go through their own recognition code towards the bottom of the function, basically extending my existing code. There are more optimized and standardized ways to do this through lexer generators, but such optimization purity comes at the cost of a more complex pipeline. I'll explore these optimizations later. 
 
 ## Comparison Operators
 
@@ -174,7 +174,7 @@ If the next character is also `=`, consume it with `advance()` and return `tok_e
 
 ### Parser: `BinopPrecedence` keyed on int
 
-In earlier chapters `BinopPrecedence` used `char` keys. However, we have extended our operator set that will be returned as tokens i.e. negative integers. `tok_eq` == -8 for example. Since integers won't fit in a `char`, we extend the keytype to `int`:
+In earlier chapters `BinopPrecedence` used `char` keys. However, I've extended my operator set with new tokens that are negative integers — `tok_eq` == -8, for example. Since those won't fit in a `char`, I extend the key type to `int`:
 
 ```cpp
 static map<int /* changed from char to int */, int> BinopPrecedence = {
@@ -243,7 +243,7 @@ Builder->CreateFCmpUNO(L, R, "has_nan");
 
 #### Converting `i1` Back to `double`
 
-`fcmp` produces an `i1` — LLVM's one-bit boolean (`false` or `true`). But pyxc does not have a separate boolean type. Comparison results are ordinary numbers in the language, so we widen that `i1` back to `double`:
+`fcmp` produces an `i1` — LLVM's one-bit boolean (`false` or `true`). But pyxc does not have a separate boolean type. Comparison results are ordinary numbers in the language, so I widen that `i1` back to `double`:
 
 ```cpp
 // CreateUIToFP (Unsigned Int -> Floating Point)
@@ -330,10 +330,10 @@ Codegen for an `if` expression has three jobs:
 2. Run exactly one of the two branches.
 3. Continue afterward with the value produced by the branch that ran.
 
-For an `if`, we need one block for the `then` path, one for
+For an `if`, I need one block for the `then` path, one for
 the `else` path, and one final block where both paths meet again.
 
-We will keep using the same example function from above:
+I'll keep using the same example function from above:
 
 ```pyxc
 def absdiff(a, b): return if a > b: a - b else: b - a
@@ -361,10 +361,10 @@ The generated block layout looks like this:
 
 Here `entry` is the current block, `then` and `else` are two branch blocks, and `ifcont` is the block where execution continues after either branch. Note that in LLVM, control never falls through from one block to the next the way it does in C. Every block must end with an explicit branch — conditional or unconditional — to name where execution goes next. This is why you'll see explicit branching `br` instructions with conditions `br i1 %cond` or without `br label %label` in the IR that follows. 
 
-`IfExprAST::codegen` builds this shape in five steps. We will trace the body of
+`IfExprAST::codegen` builds this shape in five steps. I'll trace the body of
 `absdiff`.
 
-At the LLVM level, we are filling in this function body:
+At the LLVM level, I'm filling in this function body:
 
 ```llvm
 define double @absdiff(double %a, double %b) {
@@ -375,7 +375,7 @@ entry:
 
 **Step 1 — Generate the condition in the current block.**
 
-First we generate code for the condition expression:
+First I generate code for the condition expression:
 
 ```cpp
 Value *CondV = Cond->codegen();
@@ -399,11 +399,11 @@ entry:
 }
 ```
 
-`Cond->codegen()` gives us a `double`, because pyxc represents booleans as
-`0.0` or `1.0`. LLVM branches need an `i1`, so before we can branch we must
+`Cond->codegen()` gives me a `double`, because pyxc represents booleans as
+`0.0` or `1.0`. LLVM branches need an `i1`, so before I can branch I must
 turn that `double` back into an `i1`. 
 
-We do that by comparing the condition value against `0.0`:
+I do that by comparing the condition value against `0.0`:
 
 ```cpp
 CondV = Builder->CreateFCmpONE(
@@ -412,7 +412,7 @@ CondV = Builder->CreateFCmpONE(
 
 This means: treat the condition as true if it is not equal to `0.0`.
 
-A reader might notice that a comparison like `a > b` takes an unnecessary roundtrip: `fcmp` produces an `i1`, `uitofp` widens it to `double`, and then `fcmp one ... 0.0` narrows it back to `i1`. The roundtrip exists because the condition is just a `double` by the time we get here — it could equally be a bare number like `if 2:`. Codegen has no way to distinguish the two cases, so the `double → i1` step is always required. The optimizer collapses the roundtrip when it can.
+A reader might notice that a comparison like `a > b` takes an unnecessary roundtrip: `fcmp` produces an `i1`, `uitofp` widens it to `double`, and then `fcmp one ... 0.0` narrows it back to `i1`. The roundtrip exists because the condition is just a `double` by the time I get here — it could equally be a bare number like `if 2:`. Codegen has no way to distinguish the two cases, so the `double → i1` step is always required. The optimizer collapses the roundtrip when it can.
 
 The current block now looks like this:
 
@@ -445,7 +445,7 @@ br i1 %ifcond, label %then, label %else
 
 Check `%ifcond`; jump to `%then` if true, `%else` if false.
 
-We now have:
+Now I have:
 
 ```llvm
 define double @absdiff(double %a, double %b) {
@@ -472,7 +472,7 @@ Builder->CreateBr(MergeBB);
 `SetInsertPoint` is the important move here: it tells LLVM, "append the next
 instructions into the `then` block."
 
-After `Then->codegen()` finishes, we emit an unconditional branch to `ifcont` so execution continues in the join block after the then-branch completes.
+After `Then->codegen()` finishes, I emit an unconditional branch to `ifcont` so execution continues in the join block after the then-branch completes.
 
 ```llvm
 then:                           ; reached when the condition is true
@@ -480,7 +480,7 @@ then:                           ; reached when the condition is true
   br label %ifcont
 ```
 
-Finally, we update `ThenBB` so it points to the block where the `then` path
+Finally, I update `ThenBB` so it points to the block where the `then` path
 actually finished.
 
 ```cpp
@@ -490,8 +490,8 @@ ThenBB = Builder->GetInsertBlock();
 ```
 
 This matters because nested control flow can create more blocks and move the
-builder cursor. We want the block where the `then` path ended, not the block where it
-started. This only matters for nested `if` expressions; we’ll look at that
+builder cursor. I want the block where the `then` path ended, not the block where it
+started. This only matters for nested `if` expressions; I'll look at that
 case a little later in this chapter.
 
 **Step 4 — Do the same for `else`.**
@@ -521,7 +521,7 @@ Both branches have produced a value, but the join block needs one name for "the 
 %iftmp = phi double [ %subtmp, %then ], [ %subtmp1, %else ]
 ```
 
-Read it as: "if we arrived here from `then`, use `%subtmp`; if from `else`, use `%subtmp1`." The name **phi** comes from the φ-function notation in the SSA papers of the late 1980s — exactly the piecewise-function idea of "this value if condition A, that value if condition B."
+Read it as: "if execution arrived here from `then`, use `%subtmp`; if from `else`, use `%subtmp1`." The name **phi** comes from the φ-function notation in the SSA papers of the late 1980s — exactly the piecewise-function idea of "this value if condition A, that value if condition B."
 
 ```cpp
 Builder->SetInsertPoint(MergeBB);
@@ -727,7 +727,7 @@ loop_body  after_loop           │
    └── (i = i + step) ──────────┘
 ```
 
-Evaluation order is `start → condition → body → step → condition → …` — a pre-check loop. If the condition is false on entry, the body never runs. We'll trace through `for i = 1, i <= 3, 1: printd(i)` to see how each block is built.
+Evaluation order is `start → condition → body → step → condition → …` — a pre-check loop. If the condition is false on entry, the body never runs. I'll trace through `for i = 1, i <= 3, 1: printd(i)` to see how each block is built.
 
 **Step 1 — Evaluate start in the preheader and jump to the condition block.**
 
@@ -766,7 +766,7 @@ Variable->addIncoming(StartVal, PreheaderBB);   // first-iteration value
 ```
 
 The PHI node is created with only one incoming for now — the preheader. The
-back-edge from the loop body is added later, once we know where the body ends.
+back-edge from the loop body is added later, once I know where the body ends.
 
 The condition block starts to look like this:
 
@@ -775,7 +775,7 @@ loop_cond:
   %i = phi double [ 1.000000e+00, %entry ]
 ```
 
-Next we generate the loop condition expression:
+Next I generate the loop condition expression:
 
 ```cpp
 Value *CondV = Cond->codegen();

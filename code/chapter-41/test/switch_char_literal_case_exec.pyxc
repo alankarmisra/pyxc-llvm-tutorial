@@ -1,0 +1,30 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 1.000000
+# CHECK: 1.000000
+# CHECK: 2.000000
+# CHECK: 0.000000
+
+extern def printd(x: float64)
+
+# Tests: character literals are valid switch case values (chapter 37 adds
+# char literals; ParseSwitchCaseValue now accepts tok_char alongside
+# tok_number, since both reduce to the same int64_t case constant).
+
+def classify(c: int8) -> int:
+  switch c:
+    case 'a':
+      return 1
+    case 'e':
+      return 1
+    case '0':
+      return 2
+    default:
+      return 0
+
+def main() -> int:
+  printd(float64(classify('a')))
+  printd(float64(classify('e')))
+  printd(float64(classify('0')))
+  printd(float64(classify('z')))
+  return 0

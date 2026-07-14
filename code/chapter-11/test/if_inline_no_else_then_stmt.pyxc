@@ -1,0 +1,19 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Parsed a function definition.
+# CHECK: Evaluated to 10.000000
+# CHECK: Evaluated to 20.000000
+
+
+# Tests: an inline if statement with no else (if cond: stmt) that is *not*
+# the last statement in its block. ParseIfStmt must not swallow the
+# newline that follows the inline then-branch while probing for 'else' —
+# that newline is the stmtsep the enclosing ParseBlock loop needs to see
+# before the next statement.
+# ifstmt = "if" expression ":" suite [ eols "else" ":" suite ]
+
+def f(x):
+    if x > 10: return 20
+    return 10
+
+f(5)
+f(20)

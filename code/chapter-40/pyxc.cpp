@@ -1432,12 +1432,14 @@ public:
 
 class SwitchExprAST : public ExprAST {
   unique_ptr<ExprAST> Cond;
-  vector<pair<int64_t, unique_ptr<ExprAST>>> Cases;
+  // Each case may list more than one value (e.g. "case 'a', 'e':"); all
+  // values in the list share the same body.
+  vector<pair<vector<int64_t>, unique_ptr<ExprAST>>> Cases;
   unique_ptr<ExprAST> DefaultCase;
 
 public:
   SwitchExprAST(unique_ptr<ExprAST> Cond,
-                vector<pair<int64_t, unique_ptr<ExprAST>>> Cases,
+                vector<pair<vector<int64_t>, unique_ptr<ExprAST>>> Cases,
                 unique_ptr<ExprAST> DefaultCase)
       : Cond(std::move(Cond)), Cases(std::move(Cases)),
         DefaultCase(std::move(DefaultCase)) {
@@ -3110,12 +3112,21 @@ static bool ParseSwitchCaseValue(int64_t &Out) {
     Neg = true;
     getNextToken();
   }
-  if (CurTok != tok_number || NumIsFloat)
-    return LogError("Switch case value must be an integer literal"), false;
   uint64_t Raw = 0;
-  if (!ParseUnsignedDecimal(NumLiteralStr, Raw))
-    return LogError("Invalid switch case value"), false;
-  getNextToken(); // eat number
+  if (CurTok == tok_char) {
+    // Character literals ('a', '\n', ...) are valid case values too — they
+    // are just integer constants under the hood (see CharLiteralValue).
+    Raw = static_cast<uint64_t>(CharLiteralValue);
+    getNextToken(); // eat character literal
+  } else if (CurTok == tok_number && !NumIsFloat) {
+    if (!ParseUnsignedDecimal(NumLiteralStr, Raw))
+      return LogError("Invalid switch case value"), false;
+    getNextToken(); // eat number
+  } else {
+    return LogError(
+               "Switch case value must be an integer or character literal"),
+           false;
+  }
   if (Neg) {
     if (Raw > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1ULL)
       return LogError("Switch case value out of range"), false;
@@ -3145,25 +3156,34 @@ static unique_ptr<ExprAST> ParseSwitchStmt() {
   getNextToken(); // eat INDENT
 
   ParseSwitchGuard SwitchGuard;
-  vector<pair<int64_t, unique_ptr<ExprAST>>> Cases;
+  vector<pair<vector<int64_t>, unique_ptr<ExprAST>>> Cases;
   std::set<int64_t> SeenCaseValues;
   unique_ptr<ExprAST> DefaultCase;
 
   while (CurTok != tok_dedent && CurTok != tok_eof) {
     if (CurTok == tok_case) {
       getNextToken(); // eat 'case'
-      int64_t CaseVal = 0;
-      if (!ParseSwitchCaseValue(CaseVal))
-        return nullptr;
-      if (!SeenCaseValues.insert(CaseVal).second)
-        return LogError("Duplicate switch case value");
+      // A case may list several comma-separated values that all share the
+      // body that follows, e.g. "case 'a', 'e', 'i', 'o', 'u':".
+      vector<int64_t> CaseVals;
+      while (true) {
+        int64_t CaseVal = 0;
+        if (!ParseSwitchCaseValue(CaseVal))
+          return nullptr;
+        if (!SeenCaseValues.insert(CaseVal).second)
+          return LogError("Duplicate switch case value");
+        CaseVals.push_back(CaseVal);
+        if (CurTok != ',')
+          break;
+        getNextToken(); // eat ',' and parse the next case value
+      }
       if (CurTok != ':')
         return LogError("Expected ':' after case value");
       getNextToken(); // eat ':'
       auto Body = ParseSuite();
       if (!Body)
         return nullptr;
-      Cases.emplace_back(CaseVal, std::move(Body));
+      Cases.emplace_back(std::move(CaseVals), std::move(Body));
     } else if (CurTok == tok_default) {
       if (DefaultCase)
         return LogError("Duplicate default case");
@@ -5055,6 +5075,13 @@ static bool ParseAggregateDefinition(const char *KindName) {
       }
       if (CurTok == tok_eol)
         consumeNewlines();
+      else if (CurTok == tok_block_end)
+        // The method body was itself an indented block; ParseFunctionBody
+        // (via ParseBlock) left its own block-end marker in CurTok. Consume
+        // it here so the loop condition below sees the real next token
+        // (another class member, or the class's own DEDENT) instead of
+        // mistaking the method's block-end for the class body's.
+        getNextToken();
       continue;
     }
     if (CurTok != tok_identifier) {
@@ -5471,6 +5498,13 @@ static bool ParseImplDefinition() {
     }
     if (CurTok == tok_eol)
       consumeNewlines();
+    else if (CurTok == tok_block_end)
+      // The method body was itself an indented block; ParseFunctionBody
+      // (via ParseBlock) left its own block-end marker in CurTok. Consume it
+      // here so the loop condition above sees the real next token (another
+      // method, or the impl body's own DEDENT) instead of mistaking the
+      // method's block-end for the impl body's.
+      getNextToken();
   }
   if (CurTok != tok_dedent) {
     LogError("Expected dedent after impl body");
@@ -7458,10 +7492,15 @@ Value *SwitchExprAST::codegen() {
   for (const auto &C : Cases) {
     BasicBlock *CaseBB = BasicBlock::Create(*TheContext, "switch.case", F);
     CaseBBs.push_back(CaseBB);
-    auto *CaseConst = ConstantInt::get(cast<IntegerType>(CondLLVMType),
-                                       static_cast<uint64_t>(C.first),
-                                       /*isSigned=*/true);
-    SwitchI->addCase(CaseConst, CaseBB);
+    // Every value in this case's list branches to the same block — LLVM's
+    // switch instruction natively supports many values mapping to one
+    // destination, so this is just one addCase() call per value.
+    for (int64_t Val : C.first) {
+      auto *CaseConst = ConstantInt::get(cast<IntegerType>(CondLLVMType),
+                                         static_cast<uint64_t>(Val),
+                                         /*isSigned=*/true);
+      SwitchI->addCase(CaseConst, CaseBB);
+    }
   }
 
   BreakTargetStack.push_back(AfterBB);

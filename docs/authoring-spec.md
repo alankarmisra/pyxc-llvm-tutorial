@@ -37,7 +37,7 @@ description: "One sentence. Imperative mood. States what the reader builds and w
 ---
 ```
 
-The description is used in `chapter-00.md` as the subtitle below the chapter link.
+The description is used as the chapter's subtitle in the site's HTML navigation (generated outside this repo).
 
 ### 2.2 Chapter Structure
 
@@ -89,13 +89,9 @@ This applies throughout: `lexer`, `parser`, `AST`, `codegen`, `IR`, `JIT` — ev
 
 ### 2.4 chapter-00.md
 
-`chapter-00.md` is the index. Each chapter appears as:
+`chapter-00.md` is the tutorial's front page — tone, motivation, and a narrative "Where We're Headed" tour grouped by phase (e.g. "Chapters 1–3," "Chapters 17–22"). It is not a per-chapter index: there is no exhaustive list of all chapters with individual links. Per-chapter navigation is handled by the site's HTML sidebar (generated outside this repo) once the site is built; a reader working from the raw Markdown only has an explicit link to Chapter 1.
 
-```markdown
-- [Chapter N: Title](chapter-N.md) — *description from frontmatter*
-```
-
-New chapters are uncommitted from the list only once the chapter is ready to publish. The line is in the file, commented with `<!-- -->`, until the chapter doc is written.
+When a new chapter is ready to publish, add or extend its phase's paragraph in "Where We're Headed" if it isn't covered yet. Do not add a new per-chapter bullet or link.
 
 ---
 
@@ -208,7 +204,7 @@ Use this as a quick orientation checklist when starting a new thread.
 Repository structure
 - Chapters live in `docs/chapter-XX.md`.
 - Code lives in `code/chapter-XX/` with `pyxc.cpp`, `CMakeLists.txt`, `pyxc.ebnf`, and `test/`.
-- `chapter-00.md` is the index; each chapter entry is a single bullet with title + frontmatter description.
+- `chapter-00.md` is the front page (tone, motivation, "Where We're Headed" phase tour) — not a per-chapter index. Per-chapter navigation lives in the site's HTML sidebar, generated outside this repo.
 
 Naming conventions
 - Chapter files use `chapter-XX.md` (two-digit, zero-padded).
@@ -393,8 +389,6 @@ Before marking a chapter ready to publish:
 - [ ] All Parser functions have EBNF banners
 - [ ] `code/chapter-N/test/` has tests derived from the grammar (§4.3)
 - [ ] All tests pass: `llvm-lit code/chapter-N/test/`
-- [ ] `chapter-00.md` lists chapter N with the frontmatter description
-- [ ] `chapter-00.md` chapter N line is **uncommented**
 - [ ] `code/chapter-N/pyxc.ebnf` exists and matches the grammar implemented in `.cpp`
 - [ ] `## Grammar` section in the `.md` matches `pyxc.ebnf` verbatim (with `-- new` annotations)
 - [ ] All `///` EBNF banners in `.cpp` use the same production names as `pyxc.ebnf`

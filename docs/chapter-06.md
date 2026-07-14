@@ -5,7 +5,7 @@ description: "Add ORC JIT and an optimization pass pipeline: top-level expressio
 
 ## Where We Are
 
-We got the compiler to produce IR in [Chapter 5](chapter-05.md), but it doesn't run anything yet. For example:
+I got the compiler to produce IR in [Chapter 5](chapter-05.md), but it doesn't run anything yet. For example:
 
 <!-- code-merge:start -->
 ```pyxc
@@ -91,7 +91,7 @@ cd pyxc-llvm-tutorial/code/chapter-06
 
 ORC stands for **On-Request Compilation**. It's LLVM's JIT framework — a library for building JIT compilers, not a single fixed JIT. ([ORCv2 docs](https://llvm.org/docs/ORCv2.html))
 
-ORC materializes code on demand. Adding a module makes its symbols available to the JIT, and machine code is generally generated when a symbol is looked up (for example, `lookup("__anon_expr")`). We use `LLJIT` via `PyxcJIT`, while the framework also provides a lazier variant (`LLLazyJIT`) that can defer work even more aggressively until first use. *LL* stands for low-level.
+ORC materializes code on demand. Adding a module makes its symbols available to the JIT, and machine code is generally generated when a symbol is looked up (for example, `lookup("__anon_expr")`). I use `LLJIT` via `PyxcJIT`, while the framework also provides a lazier variant (`LLLazyJIT`) that can defer work even more aggressively until first use. *LL* stands for low-level.
 
 `PyxcJIT` ([include/PyxcJIT.h](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/include/PyxcJIT.h)) is a thin wrapper around ORC's [LLJIT](https://llvm.org/docs/ORCv2.html#lljit-and-lllazyjit). It is created once in `main()`. Let's look at the additions to `main()`:
 
@@ -113,9 +113,9 @@ InitializeModuleAndManagers();
 
 ## The Optimization Pipeline
 
-Remember how LLVM couldn't figure out that `(1+2+x)` and `(x+(1+2))` are the same thing i.e. (x+3)? We're going to fix that. LLVM passes fall into two categories: **per-module passes** that see everything in a module at once, and **per-function passes** that operate on one function at a time. We use per-function passes, applied immediately as each function is compiled — so the user gets optimized code for every definition they type without waiting for a full program to accumulate.
+Remember how LLVM couldn't figure out that `(1+2+x)` and `(x+(1+2))` are the same thing, i.e. `(x+3)`? I'm going to fix that. LLVM passes fall into two categories: **per-module passes** that see everything in a module at once, and **per-function passes** that operate on one function at a time. I use per-function passes, applied immediately as each function is compiled — so the user gets optimized code for every definition they type without waiting for a full program to accumulate.
 
-[`FunctionPassManager`](https://llvm.org/docs/NewPassManager.html) (TheFPM) sequences these passes in order, running each one on the function and updating it in place. LLVM ships [dozens of passes](https://llvm.org/docs/Passes.html). We will add three specific passes which are quick wins — they catch easy improvements without the cost of a full optimization pipeline:
+[`FunctionPassManager`](https://llvm.org/docs/NewPassManager.html) (TheFPM) sequences these passes in order, running each one on the function and updating it in place. LLVM ships [dozens of passes](https://llvm.org/docs/Passes.html). I'll add three specific passes which are quick wins — they catch easy improvements without the cost of a full optimization pipeline:
 
 | Pass | What it does |
 |---|---|
@@ -127,11 +127,11 @@ Note that `1+2` collapsing to `3` isn't done by any of these passes — `IRBuild
 
 ## Initialize Module And Managers
 
-`InitializeModuleAndManagers()` replaces `InitializeModule()` from [chapter 5](chapter-05.md). It is called once at startup and again after each module is handed to the JIT. It has two distinct jobs.
+`InitializeModuleAndManagers()` grows out of the same function from [chapter 5](chapter-05.md). It is called once at startup and again after each module is handed to the JIT. It has two distinct jobs.
 
 **1. Reset the module**
 
-Same as chapter 5's `InitializeModule()`, with one new line:
+Same as chapter 5's version, with one new line:
 
 ```cpp
 TheContext = make_unique<LLVMContext>();
@@ -194,7 +194,7 @@ TheFPM->addPass(GVNPass());
 }
 ```
 
-`OptLevel` is a command-line flag covered in [Command-Line Parsing](#command-line-parsing) — for now read this as "skip optimizations if the user asked for none."
+`OptLevel` is a command-line flag covered in [Command-Line Parsing](#command-line-parsing) — for now, read this as "skip optimizations if the user asked for none."
 
 **When it runs**
 
@@ -215,7 +215,7 @@ Every function definition typed into the REPL is optimized immediately, without 
 if (auto *FnIR = FnAST->codegen()) {
   FnIR->print(errs());
 
-  // Track this module so we can free it immediately after execution.
+  // Track this module so I can free it immediately after execution.
   auto RT = TheJIT->getMainJITDylib().createResourceTracker();
 
   // Transfer the module to the JIT. TheModule is now owned by the JIT.
@@ -240,7 +240,7 @@ if (auto *FnIR = FnAST->codegen()) {
 
 **`ExprSymbol.toPtr<double(*)()>()`** gets the native machine-code address of the compiled `__anon_expr` function and casts it to a C function pointer. `FP()` runs the compiled code directly on the CPU — no interpreter, no virtual machine.
 
-**`RT->remove()`** frees the object file and executable memory for `__anon_expr`. This replaces the `eraseFromParent()` call from [chapter 5](chapter-05.md) — instead of removing the IR before JIT, we compile it first and then free the resulting native code.
+**`RT->remove()`** frees the object file and executable memory for `__anon_expr`. This replaces the `eraseFromParent()` call from [chapter 5](chapter-05.md) — instead of removing the IR before JIT, I compile it first and then free the resulting native code.
 
 > `Expected<T>` is LLVM's error-returning wrapper — `ExitOnErr` unwraps it or terminates the process on failure. JIT calls that can fail (`addModule`, `lookup`, `RT->remove()`) return it; calls that can't (`createResourceTracker()`) return plain values.
 
@@ -250,15 +250,15 @@ Named functions (`def foo`) are added to the JIT's internal registry without a t
 
 When you type `foo(2)`, Pyxc wraps it in a zero-argument function called `__anon_expr`, compiles it, runs it, and then frees it — anonymous expressions shouldn't accumulate in the JIT forever. The JIT frees native code at the module level via `ResourceTracker::remove()`, so `__anon_expr` needs its own module or removing it would take `foo` with it.
 
-But this means that we should put anonymous functions in their own module instead of pooling them with regular functions, so that `ResourceTracker::remove()` doesn't land up nuking ALL functions. This chapter uses a more naive strategy: every extern, every function definition and every top-level expression gets its own fresh module. This way, nuking a module containing an anonymous function only nukes that function and no other.
+But this means I should put anonymous functions in their own module instead of pooling them with regular functions, so that `ResourceTracker::remove()` doesn't land up nuking ALL functions. This chapter uses a more naive strategy: every extern, every function definition and every top-level expression gets its own fresh module. This way, nuking a module containing an anonymous function only nukes that function and no other.
 
-A smarter approach would give anonymous expressions their own modules and batch named functions together — but the simple version is easier to follow, and we'll revisit it later.
+A smarter approach would give anonymous expressions their own modules and batch named functions together — but the simple version is easier to follow, and I'll revisit it later.
 
-One side effect: LLVM forbids redefining a function name even across modules, so typing `def foo` twice is an error. We could support it for the sake of the REPL by nuking older versions if we encounter a redefinition, but then we'd need to fork the redefinition handling for REPL and non-REPL instances. In the latter case, a redefinition is a potential error. We'll deal with this in a later chapter. 
+One side effect: LLVM forbids redefining a function name even across modules, so typing `def foo` twice is an error. I could support it for the sake of the REPL by nuking older versions if I encounter a redefinition, but then I'd need to fork the redefinition handling for REPL and non-REPL instances. In the latter case, a redefinition is a potential error. I'll deal with this in a later chapter. 
 
-It must be dawning on you by now that each time we do a "What if?" exercise to something more *intuitive*, the feature-set grows just a tad bit. This can be a slippery slope and holy wars are fought over what one considers *intuitive*. We will be fighting no wars. I will decide what I want the language will look like, and should you disagree, you will fork your own.
+It must be dawning on you by now that each time I do a "What if?" exercise to something more *intuitive*, the feature-set grows just a tad bit. This can be a slippery slope and holy wars are fought over what one considers *intuitive*. I will be fighting no wars. I will decide what I want the language to look like, and should you disagree, you will fork your own.
 
-`InitializeModuleAndManagers()` is consequently called both at startup and after every module transfer i.e. each time we hand over a module to the JIT:
+`InitializeModuleAndManagers()` is consequently called both at startup and after every module transfer, i.e. each time I hand over a module to the JIT:
 
 ```cpp
 // Hand the module to the JIT.
@@ -272,9 +272,9 @@ InitializeModuleAndManagers();
 
 ## `getFunction` and the Cross-Module Problem
 
-In [chapter 5](chapter-05.md), in order to find a function, we called `TheModule->getFunction(Callee)`. That breaks with per-module lifetime: if `foo` was compiled and its module handed to the JIT, the current module has no record of `foo`. A call to `foo(2)` would fail with "Unknown function referenced."
+In [chapter 5](chapter-05.md), in order to find a function, I called `TheModule->getFunction(Callee)`. That breaks with per-module lifetime: if `foo` was compiled and its module handed to the JIT, the current module has no record of `foo`. A call to `foo(2)` would fail with "Unknown function referenced."
 
-The solution is a persistent prototype registry which we call `FunctionProtos`, and a helper `getFunction()` that uses it:
+The solution is a persistent prototype registry which I call `FunctionProtos`, and a helper `getFunction()` that uses it:
 
 ```cpp
 // persistent prototype registry
@@ -363,13 +363,13 @@ extern def putchard(x)
 putchard(65) # prints an 'A' on the screen
 ```
 
-This also means you could move the runtime library into a separate `lib.cpp`, compile it into the `pyxc` binary, and have one clean place for all built-in functions. We'll do that in a later chapter.
+This also means you could move the runtime library into a separate `lib.cpp`, compile it into the `pyxc` binary, and have one clean place for all built-in functions. I'll do that in a later chapter.
 
 `DLLEXPORT` doesn't do anything on macOS and Linux since in these cases symbols are exported by default. On Windows, symbols are not exported from executables by default, so the macro expands to `__declspec(dllexport)` to make them visible to the JIT.
 
 ## Command-Line Parsing
 
-We also add a `-O` flag to control the optimization level. Rather than parsing `argv` by hand, we use LLVM's `CommandLine` library:
+I also add a `-O` flag to control the optimization level. Rather than parsing `argv` by hand, I use LLVM's `CommandLine` library:
 
 ```cpp
 static cl::OptionCategory PyxcCategory("Pyxc options");
@@ -387,7 +387,7 @@ static cl::opt<unsigned> OptLevel(
 
 With `-O0`, `InitializeModuleAndManagers` skips `addPass` entirely and the pipeline is empty — functions come out exactly as the IR builder constructed them, with no transformations. This is useful when you want to see the unoptimized IR while debugging a new language feature.
 
-`-O1`, `-O2`, and `-O3` all do the same thing for now — they enable the same three passes. The infrastructure is in place, but the passes aren't yet wired to LLVM's predefined optimization presets. We'll connect them in a later chapter, once we're done using our simplified pipeline for learning.
+`-O1`, `-O2`, and `-O3` all do the same thing for now — they enable the same three passes. The infrastructure is in place, but the passes aren't yet wired to LLVM's predefined optimization presets. I'll connect them in a later chapter, once I'm done using this simplified pipeline for learning.
 
 ## Build and Run
 
@@ -437,7 +437,7 @@ Evaluated to 0.841471
 
 Since `sin` is declared `extern`, the JIT looks it up in the functions already loaded into the `pyxc` process — where the C standard library's `sin` is already present. 
 
-Notice that the IR returns `sin(1)` as a constant (`0x3FEAED548F090CEE` — the hex encoding of `≈ 0.841471`) rather than using the call result. `InstCombinePass` folded the value, but the `call` itself is still kept because our `declare` does not mark `sin` as side-effect-free (`readnone`/`readonly`). So this IR is conservative: it preserves the call, but the returned value is constant-folded. This is the same limitation noted in [Known Limitations](#known-limitations).
+Notice that the IR returns `sin(1)` as a constant (`0x3FEAED548F090CEE` — the hex encoding of `≈ 0.841471`) rather than using the call result. `InstCombinePass` folded the value, but the `call` itself is still kept because my `declare` does not mark `sin` as side-effect-free (`readnone`/`readonly`). So this IR is conservative: it preserves the call, but the returned value is constant-folded. This is the same limitation noted in [Known Limitations](#known-limitations).
 
 ### The Pythagorean identity
 
@@ -581,7 +581,7 @@ AEvaluated to 0.000000
 ```
 <!-- code-merge:end -->
 
-ASCII 65 is `'A'`. It prints directly to stderr with no newline, so `A` and `Evaluated to 0.000000` run together on the same line. Not the cleanest output — we'll learn how to do more with this in later chapters.
+ASCII 65 is `'A'`. It prints directly to stderr with no newline, so `A` and `Evaluated to 0.000000` run together on the same line. Not the cleanest output — I'll learn how to do more with this in later chapters.
 
 ## Known Limitations
 

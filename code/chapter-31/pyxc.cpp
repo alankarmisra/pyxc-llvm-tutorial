@@ -4379,6 +4379,13 @@ static bool ParseAggregateDefinition(const char *KindName) {
       }
       if (CurTok == tok_eol)
         consumeNewlines();
+      else if (CurTok == tok_block_end)
+        // The method body was itself an indented block; ParseFunctionBody
+        // (via ParseBlock) left its own block-end marker in CurTok. Consume
+        // it here so the loop condition below sees the real next token
+        // (another class member, or the class's own DEDENT) instead of
+        // mistaking the method's block-end for the class body's.
+        getNextToken();
       continue;
     }
     if (CurTok != tok_identifier) {
@@ -4787,6 +4794,13 @@ static bool ParseImplDefinition() {
     }
     if (CurTok == tok_eol)
       consumeNewlines();
+    else if (CurTok == tok_block_end)
+      // The method body was itself an indented block; ParseFunctionBody
+      // (via ParseBlock) left its own block-end marker in CurTok. Consume it
+      // here so the loop condition above sees the real next token (another
+      // method, or the impl body's own DEDENT) instead of mistaking the
+      // method's block-end for the impl body's.
+      getNextToken();
   }
   if (CurTok != tok_dedent) {
     LogError("Expected dedent after impl body");

@@ -13,7 +13,7 @@ var x = 10     # parse error: var is not an expression
 x = x + 1     # parse error: x is undeclared
 ```
 
-This chapter fixes that. After it, the REPL works the way you'd expect, and file mode has a proper entry point:
+I want to fix that this chapter. Once I do, the REPL works the way you'd expect, and file mode has a proper entry point:
 
 ```pyxc
 ready> var x = 10
@@ -32,19 +32,19 @@ cd pyxc-llvm-tutorial/code/chapter-12
 
 ## The Problem in Detail
 
-In chapter 11, `ParseTopLevelExpr` called `ParseExpression`, which only accepted expressions — not statements. And even if `var x = 10` had somehow parsed, it would have been compiled into a fresh `__anon_expr` function that was immediately freed after execution. The variable and its storage would both be gone before the next REPL line was read.
+In chapter 11, `ParseTopLevelExpr` called `ParseExpression`, which only accepted expressions — not statements. And even if `var x = 10` had somehow parsed, I'd have compiled it into a fresh `__anon_expr` function that gets freed immediately after execution. The variable and its storage would both be gone before the next REPL line was read.
 
-The root cause is architectural: the REPL compiles each top-level input into a new module, then hands that module to the JIT and (for expressions) frees it. A local `alloca` inside a freed module is unreachable. Global mutable state needs storage that survives across module boundaries.
+The root cause is architectural: the REPL compiles each top-level input into a new module, then hands that module to the JIT and (for expressions) frees it. A local `alloca` inside a freed module is unreachable. I need storage for global mutable state that survives across module boundaries.
 
-The solution has two parts:
+I'm going to solve this in two parts:
 
 1. **`GlobalVariable` instead of `alloca`** — LLVM global variables live at a fixed address in the JIT's address space. Any module can declare one as `extern` and the JIT resolves all references to the same storage.
 
-2. **`__pyxc.global_init`** — top-level statements need to run in order. Both the REPL and file mode collect top-level statements into an internal function called `__pyxc.global_init` and call it as an entry point.
+2. **`__pyxc.global_init`** — top-level statements need to run in order. I'll have both the REPL and file mode collect top-level statements into an internal function called `__pyxc.global_init` and call it as an entry point.
 
 ## Grammar
 
-The grammar itself is unchanged from chapter 11. What changes is what the top-level dispatch accepts. Previously `top` only dispatched statements as expressions; now it handles the full statement set:
+The grammar itself is unchanged from chapter 11. What changes is what the top-level dispatch accepts. Previously `top` only dispatched statements as expressions; now it needs to handle the full statement set:
 
 ```ebnf
 (* unchanged from chapter 11 — the grammar already supported this *)
@@ -52,15 +52,15 @@ top        = definition | decorateddef | external | toplevelstmt ;
 toplevelstmt = statement ;  (* was: toplevelexpr = expression *)
 ```
 
-`toplevelstmt` covers everything `statement` covers: `var`, assignment, `if`, `for`, `return`, and plain expressions. The grammar rule is a one-word change; the work is in the parser and codegen.
+`toplevelstmt` covers everything `statement` covers: `var`, assignment, `if`, `for`, `return`, and plain expressions. The grammar rule is a one-word change; the real work is in the parser and codegen.
 
 ## A Side Effect Worth Noting
 
-In chapter 11, `var` was a statement but its scope was always a function body — the variable and the code using it were always in the same compilation unit. A top-level `var` breaks that: the declaration is one REPL input (one module), and the code that reads the variable is a different input (a different module). Sharing state across modules requires a different storage mechanism than `alloca`, which is what this chapter introduces.
+In chapter 11, `var` was a statement but its scope was always a function body — the variable and the code using it were always in the same compilation unit. A top-level `var` breaks that: the declaration is one REPL input (one module), and the code that reads the variable is a different input (a different module). Sharing state across modules needs a different storage mechanism than `alloca`, which is what I introduce this chapter.
 
 ## Parse-Time Tracking
 
-Chapter 11 tracked declared variables in `VarScopes` — a stack of sets, one per active scope. Chapter 12 adds a parallel set for globals:
+Chapter 11 tracked declared variables in `VarScopes` — a stack of sets, one per active scope. I add a parallel set for globals:
 
 ```cpp
 static vector<set<string>> VarScopes;    // locals and block scopes
@@ -68,7 +68,7 @@ static set<string> GlobalVarNames;       // top-level globals (persist forever)
 static bool ParsingTopLevel = false;     // true while parsing a top-level statement
 ```
 
-`ParsingTopLevel` is set by a scope guard whenever the top-level dispatch is active:
+I set `ParsingTopLevel` with a scope guard whenever the top-level dispatch is active:
 
 ```cpp
 struct TopLevelParseGuard {
@@ -98,7 +98,7 @@ static unique_ptr<ExprAST> ParseVarStmt() {
 }
 ```
 
-`IsDeclaredVar` now checks both sets — so inside a function body, a name resolves as declared if it was declared locally or globally:
+`IsDeclaredVar` checks both sets now — so inside a function body, a name resolves as declared if it was declared locally or globally:
 
 ```cpp
 static bool IsDeclaredVar(const string &Name) {
@@ -110,7 +110,7 @@ static bool IsDeclaredVar(const string &Name) {
 
 ## Top-Level Parsing
 
-`ParseTopLevelStatement` wraps the existing `ParseStatement` with the top-level guard:
+`ParseTopLevelStatement` wraps my existing `ParseStatement` with the top-level guard:
 
 ```cpp
 static unique_ptr<ExprAST> ParseTopLevelStatement() {
@@ -124,9 +124,9 @@ static unique_ptr<ExprAST> ParseTopLevelStatement() {
 }
 ```
 
-`shouldPrintValue()` is a virtual method on `ExprAST`. Statements like `var`, `if`, and `for` return `false` — their result (always `0.0`) is noise, not a value the user asked to see. Plain expressions return `true`. This is how the REPL suppresses the unwanted `0.000000` that would otherwise appear after every `var` declaration.
+`shouldPrintValue()` is a virtual method on `ExprAST`. Statements like `var`, `if`, and `for` return `false` — their result (always `0.0`) is noise, not a value the user asked to see. Plain expressions return `true`. This is how I get the REPL to suppress the unwanted `0.000000` that would otherwise appear after every `var` declaration.
 
-This flag exists because the AST has a single `ExprAST` hierarchy for both statements and expressions. If the two were split into separate base classes — `StmtAST` producing no value, `ExprAST` producing one — the distinction would be structural and `shouldPrintValue()` wouldn't be needed at all. For now, adding a virtual boolean is the least-invasive fix without a full AST refactor.
+I need this flag because the AST has a single `ExprAST` hierarchy for both statements and expressions. If I'd split the two into separate base classes — `StmtAST` producing no value, `ExprAST` producing one — the distinction would be structural and `shouldPrintValue()` wouldn't be needed at all. For now, adding a virtual boolean is the least-invasive fix without a full AST refactor.
 
 `ParseTopLevelExpr` wraps the parsed statement in a uniquely-named function so it goes through the same `FunctionAST` codegen path as everything else:
 
@@ -148,25 +148,37 @@ Each top-level input gets a unique name (`__pyxc.toplevel.0`, `__pyxc.toplevel.1
 
 ## Codegen: GlobalVariable
 
-When `VarStmtAST::codegen` runs inside a `__pyxc.global_init` context, it emits a `GlobalVariable` instead of an `alloca`:
+I want `VarStmtAST::codegen` to emit a `GlobalVariable` instead of an `alloca` when it's running inside a `__pyxc.global_init` context. There's one wrinkle: by the time a `var` statement codegens, `GetGlobalVariable` (below) may have already emitted a bare *declaration* for this name in the current module — some earlier statement in the same file might have referenced it before its `var` line was reached. So I can't just unconditionally create a new global; I have to check whether one already exists in this module and, if it's only a declaration, promote it to a real definition instead of creating a second, colliding global:
 
 ```cpp
 Value *VarStmtAST::codegen() {
   if (InGlobalInit) {
     for (auto &Var : VarNames) {
       const string &VarName = Var.first;
+      ExprAST *Init = Var.second.get();
 
-      // Create the global with a constant zero initializer.
-      auto *Ty = Type::getDoubleTy(*TheContext);
-      auto *GV = new GlobalVariable(*TheModule, Ty,
-                                    /*isConstant=*/false,
-                                    GlobalValue::ExternalLinkage,
-                                    ConstantFP::get(*TheContext, APFloat(0.0)),
-                                    VarName);
+      auto *GV = TheModule->getNamedGlobal(VarName);
+      if (GV && !GV->isDeclaration())
+        return LogErrorV("Global variable already defined");
+
+      if (!GV) {
+        // No global by this name yet in this module — create one with a
+        // constant zero initializer.
+        auto *Ty = Type::getDoubleTy(*TheContext);
+        GV = new GlobalVariable(
+            *TheModule, Ty, false, GlobalValue::ExternalLinkage,
+            ConstantFP::get(*TheContext, APFloat(0.0)), VarName);
+      } else if (GV->isDeclaration()) {
+        // A bare 'extern'-style declaration already exists for this name —
+        // turn it into a real definition instead of creating a duplicate.
+        GV->setInitializer(ConstantFP::get(*TheContext, APFloat(0.0)));
+        GV->setLinkage(GlobalValue::ExternalLinkage);
+      }
+
       ModuleHasGlobals = true;
 
       // Run the initializer at runtime and store the result.
-      Value *InitVal = Var.second->codegen();
+      Value *InitVal = Init->codegen();
       if (!InitVal) return nullptr;
       Builder->CreateStore(InitVal, GV);
     }
@@ -178,13 +190,15 @@ Value *VarStmtAST::codegen() {
 }
 ```
 
-Two things to note:
+A few things worth noting:
 
-- **Constant zero initializer, then runtime store.** LLVM global variables require a *constant* initializer in the IR — you can't write `@x = global double sin(1.0)`. So every global starts as `0.0`. The actual initializer expression is evaluated at runtime inside `__pyxc.global_init` and stored into the global. This means initializers run in source order, and each one can read the already-initialized value of any earlier global.
+- **Constant zero initializer, then runtime store.** LLVM global variables require a *constant* initializer in the IR — I can't write `@x = global double sin(1.0)`. So every global starts as `0.0`. The actual initializer expression is evaluated at runtime inside `__pyxc.global_init` and stored into the global. This means initializers run in source order, and each one can read the already-initialized value of any earlier global.
 
 - **`ExternalLinkage`.** This makes the symbol visible across module boundaries. Any later module that declares `@x` as `extern` will have its reference resolved by the JIT to the same storage.
 
-`GetGlobalVariable` handles the cross-module visibility. When a later module references a global that was defined in an earlier one, it emits a declaration in the current module and lets the JIT resolve it:
+- **Reusing an existing declaration.** Without the `GV->isDeclaration()` branch, defining a global whose name was already declared elsewhere in this same module would leave two distinct `GlobalVariable` objects fighting over one name — LLVM would just silently rename the second one rather than error, and the two objects would no longer refer to the same storage. Checking first and promoting the existing declaration in place avoids that entirely.
+
+`GetGlobalVariable` is what creates those bare declarations, and it's what handles cross-module visibility generally. When a later module references a global that was defined in an earlier one, it emits a declaration in the current module and lets the JIT resolve it:
 
 ```cpp
 static GlobalVariable *GetGlobalVariable(const string &Name) {
@@ -207,7 +221,7 @@ static GlobalVariable *GetGlobalVariable(const string &Name) {
 
 A `GlobalVariable` with a null initializer is a *declaration* — it says "this symbol exists somewhere, find it at link time." The JIT resolves declarations to their definitions when the module is added.
 
-`VariableExprAST::codegen` and `AssignmentExprAST::codegen` both try the local `NamedValues` table first, then fall back to `GetGlobalVariable`:
+I make `VariableExprAST::codegen` and `AssignmentExprAST::codegen` both try the local `NamedValues` table first, then fall back to `GetGlobalVariable`:
 
 ```cpp
 Value *VariableExprAST::codegen() {
@@ -244,16 +258,21 @@ A local variable always shadows a global of the same name. Inside a function, if
 
 ## REPL Mode: HandleTopLevelExpression
 
-In the REPL, each top-level input is still compiled into its own fresh module. The presence of globals changes what happens after codegen:
+In the REPL, each top-level input is still compiled into its own fresh module. The presence of globals changes what I need to do after codegen:
 
 ```cpp
 static void HandleTopLevelExpression() {
   auto FnAST = ParseTopLevelExpr();
   // ... error handling ...
 
+  string FnName = FnAST->getName();
+  bool SavedInGlobalInit = InGlobalInit;
   InGlobalInit = true;
   if (auto *FnIR = FnAST->codegen()) {
-    InGlobalInit = false;
+    InGlobalInit = SavedInGlobalInit;
+    Log("Parsed a top-level expression.\n");
+    if (VerboseIR)
+      FnIR->print(errs());
 
     bool KeepModule = ModuleHasGlobals;
 
@@ -262,33 +281,42 @@ static void HandleTopLevelExpression() {
       auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
       ExitOnErr(TheJIT->addModule(std::move(TSM)));
       InitializeModuleAndManagers();
+
+      auto ExprSymbol = ExitOnErr(TheJIT->lookup(FnName));
+      double (*FP)() = ExprSymbol.toPtr<double (*)()>();
+      double result = FP();
+      if (IsRepl && LastTopLevelShouldPrint)
+        fprintf(stderr, "%f\n", result);
     } else {
       // No globals — use a ResourceTracker to free the module after the call.
       auto RT = TheJIT->getMainJITDylib().createResourceTracker();
       auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
       ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
       InitializeModuleAndManagers();
-    }
 
-    auto ExprSymbol = ExitOnErr(TheJIT->lookup(FnName));
-    double (*FP)() = ExprSymbol.toPtr<double (*)()>();
-    double result = FP();
-    if (IsRepl && LastTopLevelShouldPrint)
-      fprintf(stderr, "%f\n", result);
+      auto ExprSymbol = ExitOnErr(TheJIT->lookup(FnName));
+      double (*FP)() = ExprSymbol.toPtr<double (*)()>();
+      double result = FP();
+      if (IsRepl && LastTopLevelShouldPrint)
+        fprintf(stderr, "Evaluated to %f\n", result);
 
-    if (!KeepModule)
       ExitOnErr(RT->remove());
+    }
+  } else {
+    InGlobalInit = SavedInGlobalInit;
   }
 }
 ```
 
-`ModuleHasGlobals` is set by `VarStmtAST::codegen` when it emits a `GlobalVariable`. If the flag is set, the module must be kept permanently — freeing it would destroy the global's storage. If not, the old ResourceTracker path applies and the module is freed after execution.
+`ModuleHasGlobals` is set by `VarStmtAST::codegen` when it emits a `GlobalVariable`. If the flag is set, I have to keep the module permanently — freeing it would destroy the global's storage. If not, the old ResourceTracker path from chapter 6 applies and the module is freed after execution.
 
-`InGlobalInit = true` tells `VarStmtAST::codegen` to emit globals rather than allocas for top-level `var` statements.
+Notice the two branches print with different formats — `"%f\n"` when the module sticks around, `"Evaluated to %f\n"` when it gets freed. That's not a deliberate stylistic choice, it's just what falls out of keeping the two branches' `printf` calls where chapter 6 originally put them. I'm noting it here because it's the kind of small inconsistency I'd otherwise forget I introduced, and a reader diffing the REPL output against expectations deserves to know it's real, not a typo.
+
+I save and restore `InGlobalInit` rather than hard-resetting it to `false` after codegen, in case `HandleTopLevelExpression` is ever called while something else already has it set. It isn't today, but restoring the old value instead of assuming what it was is a habit worth keeping. Setting it to `true` before codegen is what tells `VarStmtAST::codegen` to emit globals rather than allocas for top-level `var` statements.
 
 ## File Mode: FileModeLoop and RunFileMode
 
-File mode handles globals differently. Rather than compiling and executing each statement as it's parsed, it collects all top-level statements first:
+File mode needs to handle globals differently. Rather than compiling and executing each statement as it's parsed, I collect all top-level statements first:
 
 ```cpp
 static vector<unique_ptr<ExprAST>> FileTopLevelStmts;
@@ -308,7 +336,7 @@ static void FileModeLoop() {
 }
 ```
 
-`HandleTopLevelStatementFileMode` just parses and appends to `FileTopLevelStmts`. After the entire file is parsed, `RunFileMode` wraps the collected statements into `__pyxc.global_init` and runs it:
+`HandleTopLevelStatementFileMode` just parses and appends to `FileTopLevelStmts`. Once the entire file is parsed, `RunFileMode` wraps the collected statements into `__pyxc.global_init` and runs it:
 
 ```cpp
 static void RunFileMode() {
@@ -342,13 +370,13 @@ static void RunFileMode() {
 }
 ```
 
-The ordering guarantee: `def` and `extern` statements are compiled as they're encountered during `FileModeLoop` (same as before). Top-level `var` and assignment statements are deferred until `RunFileMode`. At the point `__pyxc.global_init` runs, all functions are already compiled and in the JIT — so initializer expressions can call user-defined functions.
+The ordering guarantee I'm relying on: `def` and `extern` statements are compiled as they're encountered during `FileModeLoop` (same as before). Top-level `var` and assignment statements are deferred until `RunFileMode`. By the time `__pyxc.global_init` runs, all functions are already compiled and in the JIT — so initializer expressions can call user-defined functions.
 
 If the user defines `main`, it runs after `__pyxc.global_init`, so all globals are fully initialized before `main` executes.
 
 ## Scoping Rules
 
-With globals in place, Pyxc now has three scopes:
+With globals in place, pyxc now has three scopes:
 
 | Scope | Declared by | Storage | Lifetime |
 |---|---|---|---|
@@ -357,6 +385,27 @@ With globals in place, Pyxc now has three scopes:
 | Global | `var` at top level | `GlobalVariable` | Entire session |
 
 Lookup always goes inner-to-outer: block → function → global. A `var x` inside a function shadows a global `x` for the duration of that function call. The global is unaffected.
+
+## A Quiet Change: Implicit Return Is Always 0.0
+
+While testing this chapter I noticed something that isn't really *about* globals but that I ended up changing at the same time, because I ran into it directly while wiring up `tick()`-style examples. In chapter 11, a function with no explicit `return` implicitly returned whatever its last statement's `codegen()` happened to produce. For something like `def tick(): count = count + 1`, that meant the function's return value was the newly-assigned value — a side effect of how `AssignmentExprAST::codegen` is written, not something I ever deliberately decided a function's "result" should be.
+
+Once `var`, assignment, `if`, and `for` are all first-class statements that can be the last thing in a body, I don't want a function's implicit return value to quietly depend on which kind of statement happened to be last. So `FunctionAST::codegen` now ignores the body's codegen result for the purposes of the implicit return, and always returns `0.0` when a function falls off the end without hitting a `return`:
+
+```cpp
+// Step 4: codegen the body, optimise, verify, or erase on failure.
+if (Value *BodyVal = Body->codegen()) {
+  // If the body didn't already terminate the current block (e.g. via
+  // return), return 0.0. Implicit returns never use the last expression.
+  if (!Builder->GetInsertBlock()->getTerminator())
+    Builder->CreateRet(ConstantFP::get(*TheContext, APFloat(0.0)));
+  verifyFunction(*TheFunction);
+  TheFPM->run(*TheFunction, *TheFAM);
+  return TheFunction;
+}
+```
+
+Concretely: `def tick(): count = count + 1` now always returns `0.0` when called, no matter what `count` becomes. The global still updates correctly — I verified that separately — it's only the *return value* of a body-less-`return` function that's now a fixed `0.0`. If you want a function to hand back a value, write `return` explicitly. This is why the REPL transcript below prints `Evaluated to 0.000000` after every `tick()` call rather than the incrementing count.
 
 ## Known Limitations
 
@@ -370,14 +419,27 @@ Lookup always goes inner-to-outer: block → function → global. A `var x` insi
 
 ```pyxc
 ready> extern def printd(x)
+Parsed an extern.
 ready> var count = 0
+Parsed a top-level expression.
 ready> def tick(): count = count + 1
+Parsed a function definition.
 ready> tick()
+Parsed a top-level expression.
+Evaluated to 0.000000
 ready> tick()
+Parsed a top-level expression.
+Evaluated to 0.000000
 ready> tick()
+Parsed a top-level expression.
+Evaluated to 0.000000
 ready> printd(count)
+Parsed a top-level expression.
 3.000000
+Evaluated to 0.000000
 ```
+
+The `Evaluated to 0.000000` after each line is the JIT reporting the return value of that line's own top-level wrapper function. `ParseTopLevelExpr` always wraps a bare expression in an explicit `return`, so for `tick()` the wrapper is really `return tick();` — the `0.0` comes from *inside* `tick()`, from the implicit-return rule I just added: `tick`'s own body (`count = count + 1`) has no explicit `return`, so `tick()` itself always evaluates to `0.0` now, and that's what the wrapper hands back up. For `printd(count)` the `0.0` is unrelated to that rule entirely — it's just `printd`'s own C-level return value, which has always been `0.0` by convention. `count` itself is updating correctly underneath the whole time — `3.000000` is `printd` doing its actual job of printing; `Evaluated to 0.000000` is a second, separate thing the JIT reports about the wrapper's return value.
 
 **File mode: globals + main**
 
@@ -419,7 +481,7 @@ cmake -S . -B build && cmake --build build
 
 ## What's Next
 
-Chapter 13 adds object file emission. Instead of JIT-compiling everything at runtime, Pyxc will be able to write a `.o` file that a system linker can combine with other objects into a standalone native binary — no JIT required.
+In Chapter 13 I add object file emission. Instead of JIT-compiling everything at runtime, pyxc will be able to write a `.o` file that a system linker can combine with other objects into a standalone native binary — no JIT required.
 
 ## Need Help?
 

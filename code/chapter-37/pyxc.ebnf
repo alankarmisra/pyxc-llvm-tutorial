@@ -46,7 +46,7 @@ whilestmt       = "while" expression ":" suite ;
 dowhilestmt     = "do" ":" suite eols "while" expression ;
 switchstmt      = "switch" expression ":" eols indent switchbody dedent ;
 switchbody      = switchcase { eols switchcase } [ eols defaultcase ] ;
-switchcase      = "case" switchint ":" suite ;
+switchcase      = "case" switchint { "," switchint } ":" suite ;
 defaultcase     = "default" ":" suite ;
 forstmt         = "for"
                   ( "var" identifier ":" type | identifier )

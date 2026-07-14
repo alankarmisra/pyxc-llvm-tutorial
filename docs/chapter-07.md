@@ -7,14 +7,14 @@ description: "Add file input mode and a -v IR flag so pyxc can execute source fi
 
 [Chapter 6](chapter-06.md) added a JIT that evaluates expressions immediately. But there's no way to run a source file — you have to type everything into the REPL. 
 
-At the end of this chapter we'll be able to pass a filename argument to pyxc like so:
+At the end of this chapter I'll be able to pass a filename argument to pyxc like so:
 
 ```bash
 $ build/pyxc test/file_mode.pyxc
 7.000000
 ```
 
-In addition, we'll remove the default IR printing, and we will introduce a new switch, `-v` which will output the IR instead:
+In addition, I'll remove the default IR printing, and introduce a new switch, `-v`, which outputs the IR instead:
 
 <!-- code-merge:start -->
 ```bash
@@ -70,7 +70,7 @@ cd pyxc-llvm-tutorial/code/chapter-07
 
 ## One `FILE*` for Both Modes
 
-The key insight is that `fgetc` doesn't care whether it reads from a terminal or a file — it just reads the next character from a `FILE*`. If we make the lexer's character source a `FILE*` variable instead of always using `stdin`, file mode is essentially free.
+The key insight is that `fgetc` doesn't care whether it reads from a terminal or a file — it just reads the next character from a `FILE*`. If I make the lexer's character source a `FILE*` variable instead of always using `stdin`, file mode is essentially free.
 
 ```cpp
 static FILE *Input = stdin;

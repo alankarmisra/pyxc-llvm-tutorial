@@ -7,7 +7,7 @@ description: "Add mutable local variables and assignment using a temporary var .
 
 [Chapter 9](chapter-09.md) treated every variable as read-only. Function parameters were read-only. `for` loops introduced variables, and could  update them internally. However, you, the mighty programmer, couldn't create your own local variables and update them. That changes now. This chapter adds two things:
 
-- `var` — creates a new variable we can modify
+- `var` — creates a new variable I can modify
 - `=` — updates existing variables
 
 Nothing you aren't already familiar with. But the way LLVM handles this internally is super interesting. 
@@ -28,9 +28,9 @@ Evaluated to 6.000000
 ```
 <!-- code-merge:end -->
 
-**A note on style:** The examples look clunky. `var x = n: x = x + 1` isn't code we would write if we have any self-respect. That's intentional. Pyxc still only supports single expression bodies: everything after `:` must be a single expression. Multi-step mutation feels forced because it *is* forced.
+**A note on style:** The examples look clunky. `var x = n: x = x + 1` isn't code I'd write if I had any self-respect. That's intentional. Pyxc still only supports single expression bodies: everything after `:` must be a single expression. Multi-step mutation feels forced because it *is* forced.
 
-We're keeping it this way because this chapter isn't about syntax. It's about what happens underneath. The next chapter replaces expression bodies with real statement blocks. There, the same machinery will look natural.
+I'm keeping it this way because this chapter isn't about syntax. It's about what happens underneath. The next chapter replaces expression bodies with real statement blocks. There, the same machinery will look natural.
 
 ```pyxc
 var x = n
@@ -54,7 +54,7 @@ varexpr         = "var" varbinding { "," varbinding } ":" [ eols ] expression ;
 varbinding      = identifier [ "=" expression ] ;
 ```
 
-Assignment requires a destination — somewhere in memory to write a value to. Using the two sides of `=`, we make up a couple of terms:
+Assignment requires a destination — somewhere in memory to write a value to. Using the two sides of `=`, I'll make up a couple of terms:
 ```
 lvalue = rvalue
 ```
@@ -280,7 +280,7 @@ Mutable variables break that model. Once `x` can be reassigned, the name `x` can
 ```cpp
 // After: the name maps to a memory slot that holds the current value.
 AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, Arg.getName()); // reserve a slot
-Builder->CreateStore(&Arg, Alloca);          // copy the incoming value into it
+TheBuilder->CreateStore(&Arg, Alloca);          // copy the incoming value into it
 NamedValues[Arg.getName()] = Alloca;         // name now points to the slot, not the value
 ```
 
@@ -317,7 +317,7 @@ static AllocaInst *CreateEntryBlockAlloca(Function *TheFunction,
 }
 ```
 
-A temporary `IRBuilder` (`TmpB`) is used instead of the main `Builder` because we may be codegenning deep inside a branch or loop body, but allocas for local variables belong in the function entry block — not wherever the main builder happens to be pointing. Placing all allocas at the start of the entry block is a requirement for `mem2reg` to work correctly.
+A temporary `IRBuilder` (`TmpB`) is used instead of the main `TheBuilder` because I may be codegenning deep inside a branch or loop body, but allocas for local variables belong in the function entry block — not wherever the main builder happens to be pointing. Placing all allocas at the start of the entry block is a requirement for `mem2reg` to work correctly.
 
 Because `TmpB` is always reset to `begin()` of the entry block, each new alloca lands before all the previous ones. Declaring `var x, y` produces allocas in reverse order:
 
@@ -344,7 +344,7 @@ Value *VariableExprAST::codegen() {
   AllocaInst *A = NamedValues[Name];
   if (!A)
     return LogErrorV("Unknown variable name");
-  return Builder->CreateLoad(Type::getDoubleTy(*TheContext), A, Name.c_str());
+  return TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), A, Name.c_str());
   //   → %x2 = load double, ptr %x, align 8
 }
 ```
@@ -364,7 +364,7 @@ Value *AssignmentExprAST::codegen() {
   if (!A)
     return LogErrorV("Unknown variable name");
 
-  Builder->CreateStore(Val, A); // → store double %val, ptr %x, align 8
+  TheBuilder->CreateStore(Val, A); // → store double %val, ptr %x, align 8
   return Val;                   // return the assigned value (makes a = b = 1 work)
 }
 ```
@@ -381,7 +381,7 @@ store double %addtmp, ptr %x, align 8
 ```cpp
 Value *VarExprAST::codegen() {
   vector<pair<string, AllocaInst *>> OldBindings;
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
 
   for (auto &Var : VarNames) {
     const string &VarName = Var.first;
@@ -392,7 +392,7 @@ Value *VarExprAST::codegen() {
 
     AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
     // → %x = alloca double, align 8
-    Builder->CreateStore(InitVal, Alloca);
+    TheBuilder->CreateStore(InitVal, Alloca);
     // → store double %initval, ptr %x, align 8
 ```
 
@@ -455,7 +455,7 @@ for (auto &Arg : TheFunction->args()) {
   AllocaInst *Alloca =
       CreateEntryBlockAlloca(TheFunction, string(Arg.getName()));
   // Copy the incoming argument value into the slot.
-  Builder->CreateStore(&Arg, Alloca);
+  TheBuilder->CreateStore(&Arg, Alloca);
   NamedValues[string(Arg.getName())] = Alloca;
 }
 ```
@@ -464,20 +464,20 @@ This unifies the whole language: parameters, `var` locals, and loop variables al
 
 ## for Loops Switch to the Same Model
 
-The old `for` implementation bound the loop variable directly to the incoming `Value*`. That no longer fits now that all mutable locals use allocas. So we change `ForExprAST::codegen` to use a memory slot for the loop variable too:
+The old `for` implementation bound the loop variable directly to the incoming `Value*`. That no longer fits now that all mutable locals use allocas. So I change `ForExprAST::codegen` to use a memory slot for the loop variable too:
 
 ```cpp
 // Allocate a memory slot for the loop variable and store the start value.
 AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
-Builder->CreateStore(StartVal, Alloca);
+TheBuilder->CreateStore(StartVal, Alloca);
 
 // ...
 
 // In the loop body, load the current value, add the step, store back.
 Value *CurVar =
-    Builder->CreateLoad(Type::getDoubleTy(*TheContext), Alloca, VarName);
-Value *NextVar = Builder->CreateFAdd(CurVar, StepVal, "nextvar");
-Builder->CreateStore(NextVar, Alloca);
+    TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), Alloca, VarName);
+Value *NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
+TheBuilder->CreateStore(NextVar, Alloca);
 ```
 
 The parser records whether `var` was present by setting an `IsVarDecl` flag on `ForExprAST`:
@@ -494,14 +494,14 @@ Codegen uses that flag to decide whether to create a fresh slot or reuse an exis
 if (IsVarDecl) {
   // 'for var i': allocate a new slot and store the start value.
   Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
-  Builder->CreateStore(StartVal, Alloca);
+  TheBuilder->CreateStore(StartVal, Alloca);
 } else {
   // 'for i': look up the existing alloca — error if i is not in scope.
   auto It = NamedValues.find(VarName);
   if (It == NamedValues.end() || !It->second)
     return LogErrorV("Unknown variable name");
   Alloca = It->second;
-  Builder->CreateStore(StartVal, Alloca);
+  TheBuilder->CreateStore(StartVal, Alloca);
 }
 ```
 

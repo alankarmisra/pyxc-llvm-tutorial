@@ -5,7 +5,7 @@ description: "Add bitwise operators &, |, ^, <<, >> and unary ~ with C-standard 
 
 ## Where We Are
 
-[Chapter 33](chapter-33.md) completed the loop story. The last major gap before K&R-style systems programming is bitwise manipulation. After this chapter, flags, masks, and bit-shifting all work:
+I think I'm pretty much done with the loop story in [Chapter 33](chapter-33.md). The last major gap before K&R-style systems programming is bitwise manipulation. If I can add that, I can use flags, masks, and bit-shifting in my code and crack more of the K&R style problems. Here's what I'm aiming to get working:
 
 ```pyxc
 extern def printd(x: float64)
@@ -36,7 +36,7 @@ cd pyxc-llvm-tutorial/code/chapter-34
 
 ## New Tokens for `<<` and `>>`
 
-Single-character operators `&`, `|`, `^`, and `~` are already handled by the catch-all ASCII path — they are returned as their character values. The shift operators require two new token values because `<` and `>` are already comparison operators:
+I handled single-character operators like `&`, `|`, `^`, and `~` in the catch-all ASCII path — returning their character values. Since '<<' and '>>' are multi-character tokens, I'm gonna need to send them back as enums. 
 
 ```cpp
 tok_shl = -58, // <<
@@ -45,7 +45,7 @@ tok_shr = -59, // >>
 
 ## Lexer Peek-Ahead for Shifts
 
-The existing `<` and `>` paths in the lexer previously looked ahead for `=` only. They are expanded to also look for a second `<` or `>`:
+I know that the existing `<` and `>` paths in the lexer previously looked ahead for `=` only. I can just expand them to also look for a second `<` or `>`:
 
 ```cpp
 if (LexerLastChar == '<') {
@@ -71,11 +71,11 @@ if (LexerLastChar == '>') {
 }
 ```
 
-`peek()` reads ahead without consuming. If the next character matches, `advance()` consumes it and the two-character token is returned. Any other character leaves `Tok` as the single character.
+That was easy. 
 
 ## Precedence — A Full Restructuring
 
-Adding bitwise operators requires reorganising the existing precedence table. Previously all comparisons sat at the same level (10). The new table follows C exactly:
+I wasn't really sure about the precedence of these operators cause before this, all comparisons has equal precedence. I looked up what C does and just copied it's precedence and re-assigned values accordingly. 
 
 ```cpp
 {tok_or,  5},  // ||
@@ -94,7 +94,7 @@ Adding bitwise operators requires reorganising the existing precedence table. Pr
 // arithmetic remains at 20–40
 ```
 
-The important consequence: `&` is below `==` and `!=`. So `a & b == 0` parses as `a & (b == 0)`, not `(a & b) == 0`. If you want the latter, add parentheses.
+I spent some time toying with it, and realized that I had put `&` below `==` and `!=`. So `a & b == 0` will parse as `a & (b == 0)`, not `(a & b) == 0`. If I want the latter, I'm going to have to add parentheses. I think C does it this way too so I'll allow it. 
 
 ## Type-Checking Predicates and `GetBinaryResultType`
 

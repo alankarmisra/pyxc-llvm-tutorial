@@ -216,24 +216,40 @@ static constexpr int IndentTabWidth = 8;
 // purely for printing token stream output.
 static map<int, string> TokenNames = [] {
   // Unprintable character tokens, and multi-character tokens.
-  static map<int, string> Names = {
-      {tok_eof, "end of input"},  {tok_eol, "newline"},
-      {tok_error, "error"},       {tok_def, "'def'"},
-      {tok_extern, "'extern'"},   {tok_identifier, "identifier"},
-      {tok_number, "number"},     {tok_return, "'return'"},
-      {tok_eq, "'=='"},           {tok_neq, "'!='"},
-      {tok_leq, "'<='"},          {tok_geq, "'>='"},
-      {tok_arrow, "'->'"},        {tok_if, "'if'"},
-      {tok_else, "'else'"},       {tok_for, "'for'"},
-      {tok_binary, "'binary'"},   {tok_unary, "'unary'"},
-      {tok_var, "'var'"},         {tok_int, "'int'"},
-      {tok_int8, "'int8'"},       {tok_int16, "'int16'"},
-      {tok_int32, "'int32'"},     {tok_int64, "'int64'"},
-      {tok_float, "'float'"},     {tok_float32, "'float32'"},
-      {tok_float64, "'float64'"}, {tok_bool, "'bool'"},
-      {tok_none, "'None'"},       {tok_true, "'True'"},
-      {tok_false, "'False'"},     {tok_struct, "'struct'"},
-      {tok_indent, "indent"},     {tok_dedent, "dedent"},
+  static map<int, string> Names = {{tok_eof, "end of input"},
+                                   {tok_eol, "newline"},
+                                   {tok_error, "error"},
+                                   {tok_def, "'def'"},
+                                   {tok_extern, "'extern'"},
+                                   {tok_identifier, "identifier"},
+                                   {tok_number, "number"},
+                                   {tok_return, "'return'"},
+                                   {tok_eq, "'=='"},
+                                   {tok_neq, "'!='"},
+                                   {tok_leq, "'<='"},
+                                   {tok_geq, "'>='"},
+                                   {tok_arrow, "'->'"},
+                                   {tok_if, "'if'"},
+                                   {tok_else, "'else'"},
+                                   {tok_for, "'for'"},
+                                   {tok_binary, "'binary'"},
+                                   {tok_unary, "'unary'"},
+                                   {tok_var, "'var'"},
+                                   {tok_int, "'int'"},
+                                   {tok_int8, "'int8'"},
+                                   {tok_int16, "'int16'"},
+                                   {tok_int32, "'int32'"},
+                                   {tok_int64, "'int64'"},
+                                   {tok_float, "'float'"},
+                                   {tok_float32, "'float32'"},
+                                   {tok_float64, "'float64'"},
+                                   {tok_bool, "'bool'"},
+                                   {tok_none, "'None'"},
+                                   {tok_true, "'True'"},
+                                   {tok_false, "'False'"},
+                                   {tok_struct, "'struct'"},
+                                   {tok_indent, "indent"},
+                                   {tok_dedent, "dedent"},
                                    {tok_block_end, "block-end"}};
 
   // Single character tokens.
@@ -274,7 +290,8 @@ struct SourceLocation {
 static SourceLocation CurLoc;
 static SourceLocation LexLoc = {1, 0};
 static void LogErrorAtLoc(const char *Str, SourceLocation Loc);
-static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation Loc);
+static void LogInvalidNumberLiteralAtLoc(const string &Literal,
+                                         SourceLocation Loc);
 
 /// SourceManager - Buffers every source line as it is read so that error
 /// messages can reprint the offending line with a caret underneath it.
@@ -421,7 +438,10 @@ static int gettok() {
       LexerLastChar = advance();
     int CurrentIndentRead = 0;
     while (LexerLastChar == ' ' || LexerLastChar == '\t') {
-      CurrentIndentRead += (LexerLastChar == ' ') ? 1 : (IndentTabWidth - CurrentIndentRead % IndentTabWidth);
+      CurrentIndentRead +=
+          (LexerLastChar == ' ')
+              ? 1
+              : (IndentTabWidth - CurrentIndentRead % IndentTabWidth);
       LexerLastChar = advance();
     }
 
@@ -554,8 +574,8 @@ static int gettok() {
         LexerLastChar = advance();
       }
       if (!isdigit(LexerLastChar)) {
-      LogInvalidNumberLiteralAtLoc(NumStr, CurLoc);
-      return tok_error;
+        LogInvalidNumberLiteralAtLoc(NumStr, CurLoc);
+        return tok_error;
       }
       ConsumeDigits();
     }
@@ -715,13 +735,13 @@ static void PrintErrorSourceContext(SourceLocation Loc) {
   fprintf(stderr, "^~~~\n");
 }
 
-
 static void LogErrorAtLoc(const char *Str, SourceLocation Loc) {
   fprintf(stderr, "Error (Line %d, Column %d): %s\n", Loc.Line, Loc.Col, Str);
   PrintErrorSourceContext(Loc);
 }
 
-static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation Loc) {
+static void LogInvalidNumberLiteralAtLoc(const string &Literal,
+                                         SourceLocation Loc) {
   LogErrorAtLoc(("invalid number literal '" + Literal + "'").c_str(), Loc);
 }
 
@@ -1280,8 +1300,6 @@ struct LoopScopeGuard {
   ~LoopScopeGuard() { EndLoopScope(); }
 };
 
-
-
 struct ReturnTypeGuard {
   ValueType Saved;
   ReturnTypeGuard(ValueType Type) : Saved(CurrentFunctionReturnType) {
@@ -1386,7 +1404,6 @@ static unique_ptr<ExprAST> ParseStatement();
 static unique_ptr<ExprAST> ParseSimpleStmt();
 static unique_ptr<ExprAST> ParseBlock();
 static unique_ptr<ExprAST> ParseFunctionBody();
-
 
 // Counter to give each anonymous top-level expression a unique name.
 static unsigned TopLevelExprCounter = 0;
@@ -1933,7 +1950,8 @@ static unique_ptr<ExprAST> ParseIfStmt() {
     if (!Else)
       return nullptr;
   } else if (ThenWasBlock) {
-    // No else: restore the synthetic separator for the enclosing block/top level.
+    // No else: restore the synthetic separator for the enclosing block/top
+    // level.
     PendingTokens.push_front(CurTok);
     CurTok = tok_block_end;
   }
@@ -2293,43 +2311,43 @@ ParseFieldAssignmentRHS(unique_ptr<FieldExprAST> LHS) {
 // and reject trailing assignment when the parsed LHS is not assignable.
 static unique_ptr<ExprAST> ParseLeadingIdentifierSimpleStmt() {
   unique_ptr<ExprAST> Expr;
-    string Name = IdentifierStr;
-    getNextToken(); // eat identifier.
+  string Name = IdentifierStr;
+  getNextToken(); // eat identifier.
 
-    if (CurTok == '=') {
-      return ParseAssignmentRHS(Name);
-    }
-
-    Expr = ParseIdentifierExprWithName(std::move(Name));
-    if (!Expr)
-      return nullptr;
-    if (CurTok == '.') {
-      auto *Var = dynamic_cast<VariableExprAST *>(Expr.get());
-      if (!Var)
-        return LogError("Field access base must be a variable");
-      auto Field = ParseFieldAccessExpr(Var->getName(), Var->getType(),
-                                        Var->getStructName());
-      if (!Field)
-        return LogError("Invalid field access");
-      Expr = std::move(Field);
-    }
-    Expr = ParseBinOpRHS(0, std::move(Expr));
-    if (!Expr)
-      return nullptr;
-
-    if (CurTok != '=')
-      return Expr;
-
-    if (auto *Field = dynamic_cast<FieldExprAST *>(Expr.get())) {
-      auto Owned = std::unique_ptr<FieldExprAST>(Field);
-      Expr.release();
-      return ParseFieldAssignmentRHS(std::move(Owned));
-    }
-    const string *AssignedName = Expr->getLValueName();
-    if (!AssignedName)
-      return LogError("Destination of '=' must be a variable");
-    return ParseAssignmentRHS(*AssignedName);
+  if (CurTok == '=') {
+    return ParseAssignmentRHS(Name);
   }
+
+  Expr = ParseIdentifierExprWithName(std::move(Name));
+  if (!Expr)
+    return nullptr;
+  if (CurTok == '.') {
+    auto *Var = dynamic_cast<VariableExprAST *>(Expr.get());
+    if (!Var)
+      return LogError("Field access base must be a variable");
+    auto Field = ParseFieldAccessExpr(Var->getName(), Var->getType(),
+                                      Var->getStructName());
+    if (!Field)
+      return LogError("Invalid field access");
+    Expr = std::move(Field);
+  }
+  Expr = ParseBinOpRHS(0, std::move(Expr));
+  if (!Expr)
+    return nullptr;
+
+  if (CurTok != '=')
+    return Expr;
+
+  if (auto *Field = dynamic_cast<FieldExprAST *>(Expr.get())) {
+    auto Owned = std::unique_ptr<FieldExprAST>(Field);
+    //   Expr.release();
+    return ParseFieldAssignmentRHS(std::move(Owned));
+  }
+  const string *AssignedName = Expr->getLValueName();
+  if (!AssignedName)
+    return LogError("Destination of '=' must be a variable");
+  return ParseAssignmentRHS(*AssignedName);
+}
 
 // Parse non-identifier-leading expression forms for simplestmt and reject
 // trailing assignment so diagnostics stay local and specific.
@@ -3964,7 +3982,6 @@ Value *ForExprAST::codegen() {
 
   Builder->SetInsertPoint(CondBB);
 
-
   Value *CondVal = Cond->codegen();
   if (!CondVal)
     return nullptr;
@@ -4383,7 +4400,8 @@ static void SynchronizeToLineBoundary() {
 /// CurTok is on 'binary' or 'unary'. Delegates to ParseDecoratedDef.
 static void HandleDecorator() {
   auto FnAST = ParseDecoratedDef();
-  bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
+  bool HasTrailing =
+      (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
   if (!FnAST || HasTrailing) {
     if (FnAST)
       LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
@@ -4413,7 +4431,8 @@ static void HandleDecorator() {
 /// On parse failure or unexpected trailing tokens: discard the line.
 static void HandleDefinition() {
   auto FnAST = ParseDefinition();
-  bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
+  bool HasTrailing =
+      (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
   if (!FnAST || HasTrailing) {
     if (FnAST)
       LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
@@ -4478,7 +4497,8 @@ static void HandleStructDef() {
     SynchronizeToLineBoundary();
     return;
   }
-  bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
+  bool HasTrailing =
+      (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
   if (HasTrailing) {
     LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
     SynchronizeToLineBoundary();
@@ -4506,7 +4526,8 @@ static void HandleStructDef() {
 ///      transferred to the JIT in step 4, so eraseFromParent() is not needed.
 static void HandleTopLevelExpression() {
   auto FnAST = ParseTopLevelExpr();
-  bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
+  bool HasTrailing =
+      (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
   if (!FnAST || HasTrailing) {
     if (FnAST)
       LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
@@ -4692,7 +4713,8 @@ static void HandleTopLevelExpression() {
 /// __pyxc.global_init function after the entire file is parsed.
 static void HandleTopLevelStatementFileMode() {
   auto Stmt = ParseTopLevelStatement();
-  bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
+  bool HasTrailing =
+      (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
   if (!Stmt || HasTrailing) {
     if (Stmt)
       LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
