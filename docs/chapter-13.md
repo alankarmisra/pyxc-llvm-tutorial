@@ -372,13 +372,13 @@ InitializeNativeTargetAsmParser();
 
 **Emit mode does not run the program.** `--emit` compiles to a file and exits. If you want to both emit and run, compile, link, and execute the binary separately.
 
-**Single-file compilation only.** Pyxc does not have a multi-file model. Each invocation compiles one source file to one output file. Linking multiple Pyxc objects together is possible but requires manual `extern def` declarations at the moment.
+**Single-file compilation only.** pyxc does not have a multi-file model. Each invocation compiles one source file to one output file. Linking multiple pyxc objects together is possible but requires manual `extern def` declarations at the moment.
 
-**No debug information.** The emitted object files contain no DWARF or other debug info. Debuggers cannot map machine instructions back to Pyxc source lines.
+**No debug information.** The emitted object files contain no DWARF or other debug info. Debuggers cannot map machine instructions back to pyxc source lines.
 
 **Target is always the host.** There is no cross-compilation support. The output file targets the same CPU and OS as the machine running `pyxc`.
 
-**`main()` always returns 0.** The synthesised `int main()` wrapper ignores the double value returned by the user's `main()` and always returns `0`. There is no way to return a non-zero exit code from a Pyxc program yet.
+**`main()` always returns 0.** The synthesised `int main()` wrapper ignores the double value returned by the user's `main()` and always returns `0`. There is no way to return a non-zero exit code from a pyxc program yet.
 
 ## Try It
 

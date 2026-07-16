@@ -21,14 +21,13 @@ enum Token {
 
   // commands
   tok_def = -3,
-  tok_extern = -4,
 
   // primary
-  tok_identifier = -5,
-  tok_number = -6,
+  tok_identifier = -4,
+  tok_number = -5,
 
   // control
-  tok_return = -7
+  tok_return = -6
 };
 
 static string IdentifierStr; // Filled in if tok_identifier
@@ -74,8 +73,6 @@ int gettok() {
     // TODO: Push this into a map
     if (IdentifierStr == "def")
       return tok_def;
-    if (IdentifierStr == "extern")
-      return tok_extern;
     if (IdentifierStr == "return")
       return tok_return;
 
@@ -448,23 +445,11 @@ static unique_ptr<FunctionAST> ParseTopLevelExpr() {
   return nullptr;
 }
 
-/// external
-///   = "extern" "def" prototype
-static unique_ptr<PrototypeAST> ParseExtern() {
-  getNextToken(); // eat extern.
-
-  if (CurTok != tok_def)
-    return LogErrorP("Expected `def` after extern.");
-
-  getNextToken(); // eat def
-  return ParsePrototype();
-}
-
 //===----------------------------------------===//
 // Top-Level parsing
 //===----------------------------------------===//
 
-/// HandleDefinition/Extern/TopLevelExpression - Called by MainLoop when it sees
+/// HandleDefinition/TopLevelExpression - Called by MainLoop when it sees
 /// the appropriate leading token. On success, print a confirmation. On failure,
 /// skip one token and continue — crude error recovery that keeps the REPL alive
 /// after a bad input without getting stuck on the same bad token forever.
@@ -472,13 +457,6 @@ static unique_ptr<PrototypeAST> ParseExtern() {
 static void HandleDefinition() {
   if (ParseDefinition())
     fprintf(stderr, "Parsed a function definition.\n");
-  else
-    getNextToken(); // skip bad token
-}
-
-static void HandleExtern() {
-  if (ParseExtern())
-    fprintf(stderr, "Parsed an extern.\n");
   else
     getNextToken(); // skip bad token
 }
@@ -492,7 +470,7 @@ static void HandleTopLevelExpression() {
 
 /// MainLoop - Dispatch loop for the REPL.
 ///
-/// grammar: top = { definition | external | expression | newline }
+/// grammar: top = { definition | expression | newline }
 ///
 /// CurTok is primed before MainLoop() is called (see main()). After each
 /// successful parse the handler prints a confirmation; after a failed parse it
@@ -512,9 +490,6 @@ static void MainLoop() {
     switch (CurTok) {
     case tok_def:
       HandleDefinition();
-      break;
-    case tok_extern:
-      HandleExtern();
       break;
     default:
       HandleTopLevelExpression();

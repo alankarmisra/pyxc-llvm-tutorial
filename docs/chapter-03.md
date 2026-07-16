@@ -10,7 +10,7 @@ I have a nice little parser after [Chapter 2](chapter-02.md). But the error mess
 I'm going to attempt to make this:
 ```pyxc
 ready> def bad(x) return x
-Error: Expected ':' in function definition (token: -7)
+Error: Expected ':' in function definition (token: -6)
 ```
 
 look like this:
@@ -58,7 +58,6 @@ static map<int, string> TokenNames = [] {
       {tok_eol,        "newline"},
       {tok_error,      "error"},
       {tok_def,        "'def'"},
-      {tok_extern,     "'extern'"},
       {tok_identifier, "identifier"},
       {tok_number,     "number"},
       {tok_return,     "'return'"},
@@ -366,7 +365,7 @@ static void HandleDefinition() {
 }
 ```
 
-The same pattern applies to `HandleExtern` and `HandleTopLevelExpression`. After any failure — whether the parser returned `nullptr` or left unexpected tokens in `CurTok` — I synchronize to the line boundary and let the main loop print a fresh prompt.
+The same pattern applies to `HandleTopLevelExpression`. After any failure — whether the parser returned `nullptr` or left unexpected tokens in `CurTok` — I synchronize to the line boundary and let the main loop print a fresh prompt.
 
 ## Catching Malformed Numbers
 
@@ -416,7 +415,6 @@ First, let's simplify the keyword lookup code.
 
 ```cpp
 if (IdentifierStr == "def")    return tok_def;
-if (IdentifierStr == "extern") return tok_extern;
 if (IdentifierStr == "return") return tok_return;
 return tok_identifier;
 ```
@@ -424,8 +422,8 @@ return tok_identifier;
 This works, but every new keyword needs a new `if`. A map is more honest about what's happening — it *is* a lookup table — and adding a keyword is a one-line change:
 
 ```cpp
-static map<string, Token> Keywords = {
-    {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return}};
+static map<string, Token> Keywords = {{"def", tok_def},
+                                       {"return", tok_return}};
 ```
 
 The lookup replaces the chain:

@@ -102,9 +102,8 @@ Here's the complete grammar for Pyxc at this stage.
 (* parser territory *)
 program        = [ eols ] [ top { eols top } ] [ eols ] ;
 eols           = eol { eol } ;
-top            = definition | external | toplevelexpr ;
+top            = definition | toplevelexpr ;
 definition     = "def" prototype ":" [ eols ] "return" expression ;
-external       = "extern" "def" prototype ;
 toplevelexpr   = expression ;
 prototype      = identifier "(" [ identifier { "," identifier } ] ")" ;
 expression     = primary binoprhs ;
@@ -221,7 +220,7 @@ public:
 };
 ```
 
-Functions are split into two classes. The prototype captures just the signature — name and parameter names. I need it separately because `extern` declarations have a prototype but no function body:
+Functions are split into two classes. The prototype captures just the signature — name and parameter names. Right now every function I parse has a body, so this split doesn't buy me much yet. But I'm keeping the two concepts separate on purpose: a few chapters from now I'll want a prototype with no body at all — a way to declare that a function exists (a C library function, for instance) without defining it myself. Building the separation in now means I don't have to retrofit it later:
 
 ```cpp
 class PrototypeAST {
@@ -611,24 +610,6 @@ static void consumeNewlines() {
 }
 ```
 
-### Extern Declarations
-
-```cpp
-/// external
-///   = "extern" "def" prototype
-static unique_ptr<PrototypeAST> ParseExtern() {
-  getNextToken(); // eat extern.
-
-  if (CurTok != tok_def)
-    return LogErrorP("Expected `def` after extern.");
-
-  getNextToken(); // eat def
-  return ParsePrototype();
-}
-```
-
-An `extern` is just a prototype — I'm declaring a name and its parameter count so the compiler knows how to call it. The actual implementation lives elsewhere (a C library, or, once I add multi-file support, a different object file). I use `def` after `extern` to keep the syntax consistent — `extern def` reads as "this is an external definition," parallel to `def` for local ones. This is just a personal preference. There's no universal law. It's your language, design it as you please. I know I say this a lot, but I cannot iterate this enough. YOU are in the drivers seat. Feel free to experiment, break things, or accept defaults and move along — there's no right way. What is shown here is one way.
-
 ### Top-Level Expressions
 
 So far I have the infrastructure to read function definitions and call them. But what happens to bare expressions like `1 + 2 * 3`? I just wrap them in a function with an internal name and reuse the existing infrastructure to read and run it:
@@ -649,19 +630,12 @@ The name `__anon_expr` is a placeholder I invented — it could be any valid ide
 
 ## The Driver
 
-Three handler functions, one for each top-level construct. Each calls the appropriate parser, prints a success message, or skips one bad token to keep the REPL alive:
+Two handler functions, one for each top-level construct. Each calls the appropriate parser, prints a success message, or skips one bad token to keep the REPL alive:
 
 ```cpp
 static void HandleDefinition() {
   if (ParseDefinition())
     fprintf(stderr, "Parsed a function definition.\n");
-  else
-    getNextToken(); // skip bad token
-}
-
-static void HandleExtern() {
-  if (ParseExtern())
-    fprintf(stderr, "Parsed an extern.\n");
   else
     getNextToken(); // skip bad token
 }
@@ -691,7 +665,6 @@ static void MainLoop() {
 
     switch (CurTok) {
     case tok_def:    HandleDefinition();         break;
-    case tok_extern: HandleExtern();             break;
     default:         HandleTopLevelExpression(); break;
     }
   }
@@ -767,14 +740,12 @@ Parsed a function definition.
 ready> def fib(n):
 return fib(n-1) + fib(n-2)
 Parsed a function definition.
-ready> extern def sin(x)
-Parsed an extern.
 ready> 1 + 2 * 3
 Parsed a top-level expression.
 ready> sin(1.0) + cos(2.0)
 Parsed a top-level expression.
 ready> def bad(x) return x
-Error: Expected ':' in function definition (token: -7)
+Error: Expected ':' in function definition (token: -6)
 ready>
 ```
 
@@ -784,7 +755,7 @@ The parser accepts valid syntax and rejects invalid syntax with an error message
 
 - **`1.2.3` silently lexes as `1.2`.** The lexer reads the `1.2.3` as a number but `strtod` quietly drops `.3` without explicitly saying so. I fix this in [Chapter 3](chapter-03.md).
 
-- **Error messages show raw token numbers.** `token: -7` means `tok_return`. [Chapter 3](chapter-03.md) replaces this with readable names and source locations.
+- **Error messages show raw token numbers.** `token: -6` means `tok_return`. [Chapter 3](chapter-03.md) replaces this with readable names and source locations.
 
 ### Avoiding a Grammar Pitfall: Left Recursion
 

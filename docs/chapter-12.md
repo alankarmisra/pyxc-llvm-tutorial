@@ -409,7 +409,7 @@ Concretely: `def tick(): count = count + 1` now always returns `0.0` when called
 
 ## Known Limitations
 
-**`main` takes no arguments.** `RunFileMode` checks that `main()` has zero parameters. There is no way to pass command-line arguments to a Pyxc program yet.
+**`main` takes no arguments.** `RunFileMode` checks that `main()` has zero parameters. There is no way to pass command-line arguments to a pyxc program yet.
 
 **No global-to-global forward references in initializers.** Initializers run in source order. `var b = a * 2` sees `a`'s initialized value only if `var a = ...` appeared earlier in the file. Referencing a global before it has been initialized reads `0.0` (the constant default).
 

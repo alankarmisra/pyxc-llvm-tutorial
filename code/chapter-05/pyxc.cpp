@@ -36,24 +36,23 @@ enum Token {
 
   // commands
   tok_def = -4,
-  tok_extern = -5,
 
   // primary
-  tok_identifier = -6,
-  tok_number = -7,
+  tok_identifier = -5,
+  tok_number = -6,
 
   // control
-  tok_return = -8
+  tok_return = -7
 };
 
 static string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;        // Filled in if tok_number
 static string NumLiteralStr; // Filled in if tok_number, used in error messages
 
-// Keywords words like `def`, `extern` and `return`. The lexer will return the
+// Keywords words like `def` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
-static map<string, Token> Keywords = {
-    {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return}};
+static map<string, Token> Keywords = {{"def", tok_def},
+                                       {"return", tok_return}};
 
 // Debug-only token names. Kept separate from Keywords because this map is
 // purely for printing token stream output.
@@ -62,7 +61,7 @@ static map<int, string> TokenNames = [] {
   static map<int, string> Names = {
       {tok_eof, "end of input"}, {tok_eol, "newline"},
       {tok_error, "error"},      {tok_def, "'def'"},
-      {tok_extern, "'extern'"},  {tok_identifier, "identifier"},
+      {tok_identifier, "identifier"},
       {tok_number, "number"},    {tok_return, "'return'"},
   };
 
@@ -679,16 +678,6 @@ static unique_ptr<FunctionAST> ParseTopLevelExpr() {
   return nullptr;
 }
 
-/// external
-///   = "extern" "def" prototype
-static unique_ptr<PrototypeAST> ParseExtern() {
-  getNextToken(); // eat extern.
-  if (CurTok != tok_def)
-    return LogErrorP("Expected `def` after extern.");
-  getNextToken(); // eat def
-  return ParsePrototype();
-}
-
 //===----------------------------------------===//
 // Code Generation
 //===----------------------------------------===//
@@ -697,9 +686,9 @@ static unique_ptr<PrototypeAST> ParseExtern() {
 // interning tables that ensure two uses of 'double' resolve to the same
 // object. One context per compilation unit (one per thread in threaded builds).
 //
-// TheModule - The unit of compilation. Every function definition and extern
-// declaration lands here. At session end we print the whole module so the
-// reader can see all accumulated IR in one place.
+// TheModule - The unit of compilation. Every function definition lands here.
+// At session end we print the whole module so the reader can see all
+// accumulated IR in one place.
 //
 // Builder - A cursor into the IR being built. Point it at a BasicBlock with
 // SetInsertPoint(), then call methods like CreateFAdd or CreateFMul to append
@@ -787,9 +776,9 @@ Value *BinaryExprAST::codegen() {
 /// argument count, codegen each argument, then emit a call instruction.
 ///
 /// getFunction searches the module for a declaration or definition with the
-/// given name. This covers both previous 'extern' declarations and previously
-/// defined functions. The argument count check catches mismatches that a typed
-/// language would catch statically.
+/// given name — any function already defined earlier in this session. The
+/// argument count check catches mismatches that a typed language would catch
+/// statically.
 Value *CallExprAST::codegen() {
   Function *CalleeF = TheModule->getFunction(Callee);
   if (!CalleeF)
@@ -812,9 +801,10 @@ Value *CallExprAST::codegen() {
 /// return type (always double), and parameter types (all double).
 ///
 /// ExternalLinkage makes the function visible outside this module. That is
-/// what allows 'extern def sin(x)' to link against the C library's sin at
-/// runtime, and what lets 'def foo(...)' be called from later expressions in
-/// the same session.
+/// what lets 'def foo(...)' be called from later expressions in the same
+/// session. I'll lean on this same linkage again in chapter 6, when 'extern'
+/// declarations use it to resolve against real C library functions at
+/// runtime.
 ///
 /// Arg.setName() is optional — it only affects the printed IR, making output
 /// read as 'double %a, double %b' rather than 'double %0, double %1'.
@@ -839,8 +829,9 @@ Function *PrototypeAST::codegen() {
 ///
 /// Four steps:
 ///
-/// 1. Get or create the function declaration. If 'extern def foo(x)' was seen
-///    earlier, getFunction finds it. Otherwise Proto->codegen() creates a fresh
+/// 1. Get or create the function declaration. If this name was already
+///    declared earlier in this session, getFunction finds it — used below to
+///    catch redefinition. Otherwise Proto->codegen() creates a fresh
 ///    declaration. Either way TheFunction is a valid Function* with no body
 ///    yet.
 ///
@@ -858,7 +849,7 @@ Function *PrototypeAST::codegen() {
 ///    block without a terminator. On failure, eraseFromParent() removes the
 ///    partially-built function so no broken declaration is left in the module.
 Function *FunctionAST::codegen() {
-  // Step 1: reuse an existing `extern` declaration if one exists.
+  // Step 1: look for an existing declaration under this name.
   Function *TheFunction = TheModule->getFunction(Proto->getName());
 
   // Bail if the function is already fully defined — redefinition is an error.
@@ -945,35 +936,6 @@ static void HandleDefinition() {
   }
 }
 
-/// HandleExtern - Parse and codegen an 'extern def' declaration.
-///
-/// On success: codegen the prototype (which emits a 'declare' with
-/// ExternalLinkage), print the confirmation message and the IR. The
-/// declaration stays in TheModule so subsequent call expressions can find it
-/// via getFunction().
-/// On parse failure or unexpected trailing tokens: discard the rest of the
-/// line and return.
-static void HandleExtern() {
-  auto ProtoAST = ParseExtern();
-  if (!ProtoAST) {
-    SynchronizeToLineBoundary();
-    return;
-  }
-
-  if (CurTok != tok_eol && CurTok != tok_eof) {
-    if (CurTok)
-      LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
-    SynchronizeToLineBoundary();
-    return;
-  }
-
-  if (auto *FnIR = ProtoAST->codegen()) {
-    fprintf(stderr, "Parsed an extern.\n");
-    FnIR->print(errs());
-    fprintf(stderr, "\n");
-  }
-}
-
 /// HandleTopLevelExpression - Parse and codegen a bare expression.
 ///
 /// The expression is wrapped in an anonymous function '__anon_expr' so it
@@ -1003,7 +965,7 @@ static void HandleTopLevelExpression() {
 
 /// MainLoop - Dispatch loop for the REPL.
 ///
-/// grammar: top = { definition | external | expression | newline }
+/// grammar: top = { definition | expression | newline }
 ///
 /// CurTok is primed before MainLoop() is called (see main()). After each
 /// successful parse the handler prints a confirmation; after a failed parse it
@@ -1028,9 +990,6 @@ static void MainLoop() {
     switch (CurTok) {
     case tok_def:
       HandleDefinition();
-      break;
-    case tok_extern:
-      HandleExtern();
       break;
     default:
       HandleTopLevelExpression();

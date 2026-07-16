@@ -269,7 +269,7 @@ Let's *codegen* it.
 ```cpp
 Value *CallExprAST::codegen() {
   // Let's see if I can find the function first. This would be a function 
-  // that was previously declared with `extern` or defined with `def`.
+  // that was previously defined with `def` earlier in this session.
   Function *CalleeF = TheModule->getFunction(Callee /* the function name is in the Callee property*/); 
 
   // Uh-oh
@@ -300,10 +300,10 @@ Value *CallExprAST::codegen() {
 }
 ```
 
-For example, `extern def sin(x)` followed by `sin(10)` produces:
+For example, once `sum` has been defined (as above), calling `sum(10, 20)` produces:
 
 ```llvm
-%calltmp = call double @sin(double 1.000000e+01)  
+%calltmp = call double @sum(double 1.000000e+01, double 2.000000e+01)
 ```
 
 ## Function Codegen
@@ -390,7 +390,7 @@ Now let's use these properties and methods to codegen.
 
 ```cpp
 Function *FunctionAST::codegen() {
-  // Step 1: reuse an existing `extern` declaration if one exists.
+  // Step 1: look for an existing declaration under this name.
   Function *TheFunction = TheModule->getFunction(Proto->getName());
 
   // Bail if the function is already fully defined — redefinition is an error.
@@ -434,7 +434,7 @@ Function *FunctionAST::codegen() {
 
 Five steps:
 
-1. **Get or create the function declaration.** If `extern def foo(x, y)` was seen earlier, `TheModule->getFunction` finds it. Otherwise `Proto->codegen()` creates a `Function*` object in the module — which at this point is just a signature with no body, equivalent to a `declare`:
+1. **Get or create the function declaration.** If this name was already declared earlier in this session, `TheModule->getFunction` finds it — used below to catch redefinition. Otherwise `Proto->codegen()` creates a `Function*` object in the module — which at this point is just a signature with no body, equivalent to a `declare`:
 
    ```llvm
    declare double @foo(double %x, double %y)
@@ -473,12 +473,6 @@ Each `Handle*` function prints the IR for that input immediately after codegen s
 // HandleDefinition
 if (auto *FnIR = FnAST->codegen()) {
   fprintf(stderr, "Parsed a function definition.\n");
-  FnIR->print(errs());
-}
-
-// HandleExtern
-if (auto *FnIR = ProtoAST->codegen()) {
-  fprintf(stderr, "Parsed an extern.\n");
   FnIR->print(errs());
 }
 
@@ -561,36 +555,6 @@ entry:
 ```
 <!-- code-merge:end -->
 
-**Declaring and calling an external function:**
-
-<!-- code-merge:start -->
-```pyxc
-ready> extern def cos(x)
-```
-```text
-Parsed an extern.
-```
-```llvm
-declare double @cos(double)
-```
-<!-- code-merge:end -->
-
-`extern def cos(x)` emits a `declare` — a signature with no body. At link time this resolves to the C library's `cos`.
-
-<!-- code-merge:start -->
-```pyxc
-ready> cos(1.234)
-```
-```llvm
-Parsed a top-level expression.
-define double @__anon_expr() {
-entry:
-  %calltmp = call double @cos(double 1.234000e+00)
-  ret double %calltmp
-}
-```
-<!-- code-merge:end -->
-
 Press `^D` to end the session — the full module dumps:
 
 <!-- code-merge:start -->
@@ -605,15 +569,14 @@ entry:
   %addtmp = fadd double %a, %b
   ret double %addtmp
 }
-declare double @cos(double)
 ```
 <!-- code-merge:end -->
 
-The end-of-session dump shows only `sum` and the `cos` declaration. The `__anon_expr` functions are absent because `HandleTopLevelExpression` calls `eraseFromParent()` after printing — they were only useful for display.
+The end-of-session dump shows only `sum`. The `__anon_expr` functions are absent because `HandleTopLevelExpression` calls `eraseFromParent()` after printing — they were only useful for display.
 
 ## What's Next
 
-The IR is correct — but it just prints and does nothing. In [Chapter 6](chapter-06.md) I plug in an **On Request Compilation (ORC)** JIT layer so that top-level expressions actually execute and print their results. I also add an optimization pass manager so the IR that runs is clean and fast. This is the chapter where the compiler comes alive. 
+The IR is correct — but it just prints and does nothing. In [Chapter 6](chapter-06.md) I plug in an **On Request Compilation (ORC)** JIT layer so that top-level expressions actually execute and print their results. I also add an optimization pass manager so the IR that runs is clean and fast — and, now that code actually runs, bring back the `extern` keyword from a few chapters ago so I can call real C library functions. This is the chapter where the compiler comes alive. 
 
 ## Need Help?
 

@@ -17,14 +17,13 @@ enum Token {
 
   // commands
   tok_def = -3,
-  tok_extern = -4,
 
   // primary
-  tok_identifier = -5,
-  tok_number = -6,
+  tok_identifier = -4,
+  tok_number = -5,
 
   // control
-  tok_return = -7
+  tok_return = -6
 };
 
 static string IdentifierStr; // Filled in if tok_identifier
@@ -37,7 +36,6 @@ static map<int, string> TokenNames = {
     {tok_eof, "tok_eof"},
     {tok_eol, "tok_eol"},
     {tok_def, "tok_def"},
-    {tok_extern, "tok_extern"},
     {tok_identifier, "tok_identifier"},
     {tok_number, "tok_number"},
     {tok_return, "tok_return"},
@@ -83,8 +81,6 @@ int gettok() {
     // TODO: Push this into a map
     if (IdentifierStr == "def")
       return tok_def;
-    if (IdentifierStr == "extern")
-      return tok_extern;
     if (IdentifierStr == "return")
       return tok_return;
 

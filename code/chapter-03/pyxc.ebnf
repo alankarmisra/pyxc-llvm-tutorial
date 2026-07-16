@@ -9,9 +9,8 @@
 *)
 program        = [ eols ] [ top { eols top } ] [ eols ] ;
 eols           = eol { eol } ;
-top            = definition | external | toplevelexpr ;
+top            = definition | toplevelexpr ;
 definition     = "def" prototype ":" [ eols ] "return" expression ;
-external       = "extern" "def" prototype ;
 toplevelexpr   = expression ;
 prototype      = identifier "(" [ identifier { "," identifier } ] ")" ;
 expression     = primary binoprhs ;

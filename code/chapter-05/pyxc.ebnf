@@ -12,11 +12,9 @@ program        = [ top { eols top } ] [ eols ] ;
 eols           = eol { eol } ;
 
 top            = definition
-                 | external
                  | toplevelexpr ;
 
 definition     = "def" prototype ":" [eols] "return" expression ;
-external       = "extern" "def" prototype ;
 toplevelexpr   = expression ;
 
 prototype      = identifier "(" [ identifier { "," identifier } ] ")" ;

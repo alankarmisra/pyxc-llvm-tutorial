@@ -3,4 +3,4 @@
 # RUN: grep -q "Expected ')' or ',' in parameter list" %t
 
 # prototype: missing closing ')' in parameter list
-extern def broken(x
+def broken(x

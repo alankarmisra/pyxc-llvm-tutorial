@@ -25,24 +25,23 @@ enum Token {
 
   // commands
   tok_def = -4,
-  tok_extern = -5,
 
   // primary
-  tok_identifier = -6,
-  tok_number = -7,
+  tok_identifier = -5,
+  tok_number = -6,
 
   // control
-  tok_return = -8
+  tok_return = -7
 };
 
 static string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;        // Filled in if tok_number
 static string NumLiteralStr; // Filled in if tok_number, used in error messages
 
-// Keywords words like `def`, `extern` and `return`. The lexer will return the
+// Keywords words like `def` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
-static map<string, Token> Keywords = {
-    {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return}};
+static map<string, Token> Keywords = {{"def", tok_def},
+                                       {"return", tok_return}};
 
 // Debug-only token names. Kept separate from Keywords because this map is
 // purely for printing token stream output.
@@ -51,7 +50,7 @@ static map<int, string> TokenNames = [] {
   static map<int, string> Names = {
       {tok_eof, "end of input"}, {tok_eol, "newline"},
       {tok_error, "error"},      {tok_def, "'def'"},
-      {tok_extern, "'extern'"},  {tok_identifier, "identifier"},
+      {tok_identifier, "identifier"},
       {tok_number, "number"},    {tok_return, "'return'"},
   };
 
@@ -661,16 +660,6 @@ static unique_ptr<FunctionAST> ParseTopLevelExpr() {
   return nullptr;
 }
 
-/// external
-///   = "extern" "def" prototype
-static unique_ptr<PrototypeAST> ParseExtern() {
-  getNextToken(); // eat extern.
-  if (CurTok != tok_def)
-    return LogErrorP("Expected `def` after extern.");
-  getNextToken(); // eat def
-  return ParsePrototype();
-}
-
 //===----------------------------------------===//
 // Top-Level parsing
 //===----------------------------------------===//
@@ -681,7 +670,7 @@ static unique_ptr<PrototypeAST> ParseExtern() {
 /// unexpected trailing token, ensuring the REPL always returns to a known
 /// state before printing the next prompt.
 ///
-/// HandleDefinition/HandleExtern/HandleTopLevelExpression - Called by MainLoop
+/// HandleDefinition/HandleTopLevelExpression - Called by MainLoop
 /// when it sees the appropriate leading token. On success, print a
 /// confirmation. On failure or unexpected trailing tokens, call
 /// SynchronizeToLineBoundary() to discard the rest of the input line.
@@ -704,19 +693,6 @@ static void HandleDefinition() {
   }
 }
 
-static void HandleExtern() {
-  if (ParseExtern()) {
-    if (CurTok != tok_eol && CurTok != tok_eof) {
-      LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
-      SynchronizeToLineBoundary();
-      return;
-    }
-    fprintf(stderr, "Parsed an extern.\n");
-  } else {
-    SynchronizeToLineBoundary();
-  }
-}
-
 static void HandleTopLevelExpression() {
   if (ParseTopLevelExpr()) {
     if (CurTok != tok_eol && CurTok != tok_eof) {
@@ -732,7 +708,7 @@ static void HandleTopLevelExpression() {
 
 /// MainLoop - Dispatch loop for the REPL.
 ///
-/// grammar: top = { definition | external | expression | newline }
+/// grammar: top = { definition | expression | newline }
 ///
 /// CurTok is primed before MainLoop() is called (see main()). After each
 /// successful parse the handler prints a confirmation; after a failed parse it
@@ -757,9 +733,6 @@ static void MainLoop() {
     switch (CurTok) {
     case tok_def:
       HandleDefinition();
-      break;
-    case tok_extern:
-      HandleExtern();
       break;
     default:
       HandleTopLevelExpression();

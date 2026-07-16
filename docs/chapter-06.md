@@ -1,5 +1,5 @@
 ---
-description: "Add ORC JIT and an optimization pass pipeline: top-level expressions now execute immediately and functions come out smaller."
+description: "Add ORC JIT and an optimization pass pipeline: top-level expressions now execute immediately and functions come out smaller. Also adds the extern keyword for calling real C library functions."
 ---
 # 6. pyxc: JIT and Optimization
 
@@ -245,6 +245,104 @@ if (auto *FnIR = FnAST->codegen()) {
 > `Expected<T>` is LLVM's error-returning wrapper — `ExitOnErr` unwraps it or terminates the process on failure. JIT calls that can fail (`addModule`, `lookup`, `RT->remove()`) return it; calls that can't (`createResourceTracker()`) return plain values.
 
 Named functions (`def foo`) are added to the JIT's internal registry without a tracker — they stay compiled permanently.
+
+## Calling Functions I Didn't Write
+
+Now that expressions actually execute, calling out to code I didn't write becomes worth doing — the C standard library's `sin` and `cos`, or, once I add a small runtime library later in this chapter, functions I wrote myself in C++. `def` can't express this: it always expects a body, and I don't have one to give it — the whole point is that the implementation lives somewhere else. I need a keyword that says "this function exists, here's its signature, trust me" and stops there.
+
+A new token:
+
+```cpp
+enum Token {
+  ...
+  tok_def    = -4,
+  tok_extern = -5,
+  ...
+};
+```
+
+Added to the keyword table right alongside `def` and `return`:
+
+```cpp
+static map<string, Token> Keywords = {
+    {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return}};
+```
+
+And a grammar rule — a prototype with no body:
+
+```ebnf
+external = "extern" "def" prototype ;
+top      = definition | external | toplevelexpr ;
+```
+
+The parser is almost embarrassingly small, because all the hard work — parsing a signature — was already built for `def` back in [Chapter 2](chapter-02.md):
+
+```cpp
+/// external
+///   = "extern" "def" prototype
+static unique_ptr<PrototypeAST> ParseExtern() {
+  getNextToken(); // eat extern.
+  if (CurTok != tok_def)
+    return LogErrorP("Expected `def` after extern.");
+  getNextToken(); // eat def
+  return ParsePrototype();
+}
+```
+
+`extern` wants the same thing `def` wants, up to the point where `def` would need a `:` and a body. It stops right there.
+
+Codegen doesn't need anything new either. `PrototypeAST::codegen()` (from [Chapter 5](chapter-05.md)) already builds exactly what I want: a `Function*` with the right signature and no body, which LLVM prints as a `declare`:
+
+```llvm
+declare double @sin(double)
+```
+
+`FunctionAST::codegen()` is the one that adds a body — skip it, and a `declare` is all you get. That's what "the implementation lives somewhere else" means in LLVM terms.
+
+The driver's `HandleExtern` ties parsing and codegen together:
+
+```cpp
+static void HandleExtern() {
+  auto ProtoAST = ParseExtern();
+
+  if (!ProtoAST || (CurTok != tok_eol && CurTok != tok_eof)) {
+    if (ProtoAST)
+      LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+    SynchronizeToLineBoundary();
+    return;
+  }
+
+  if (auto *FnIR = ProtoAST->codegen()) {
+    Log("Parsed an extern.\n");
+    FnIR->print(errs());
+    FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
+  }
+}
+```
+
+That last line — saving the prototype into `FunctionProtos` — doesn't matter yet. It will, a couple of sections from now, once I explain why one module isn't enough to get through a whole session. For now, the visible result is just this:
+
+```pyxc
+ready> extern def sin(x)
+Parsed an extern.
+declare double @sin(double)
+```
+
+A signature, no body, ready to be resolved against the real `sin` at JIT time. `MainLoop` dispatches to it the same way it dispatches to `HandleDefinition`:
+
+```cpp
+switch (CurTok) {
+case tok_def:
+  HandleDefinition();
+  break;
+case tok_extern:
+  HandleExtern();
+  break;
+default:
+  HandleTopLevelExpression();
+  break;
+}
+```
 
 ## One Module Per Compilation Unit
 

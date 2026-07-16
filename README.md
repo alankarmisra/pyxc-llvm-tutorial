@@ -292,7 +292,7 @@ All 43 chapters are complete. Each one is a standalone, buildable snapshot of th
 
 ### Language Features
 
-- [Chapter 6: JIT and Optimisation](docs/chapter-06.md) — LLVM optimisation passes and ORC JIT so expressions evaluate immediately in the REPL.
+- [Chapter 6: JIT and Optimisation](docs/chapter-06.md) — LLVM optimisation passes and ORC JIT so expressions evaluate immediately in the REPL; adds `extern` for calling real C library functions.
 - [Chapter 7: File Input Mode](docs/chapter-07.md) — Run source files through the same JIT pipeline as the REPL, plus a `-v` IR flag.
 - [Chapter 8: Control Flow](docs/chapter-08.md) — Comparison operators, `if`/`else` expressions, `for` loops, and the Mandelbrot set in ASCII.
 - [Chapter 9: User-Defined Operators](docs/chapter-09.md) — `@binary(N)` and `@unary` decorators so pyxc programs can define new operators.
