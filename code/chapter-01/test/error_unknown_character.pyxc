@@ -1,0 +1,4 @@
+# RUN: %pyxc < %s | grep -Fxq "error"
+
+# unknown character: punctuation outside the language is a lexer error.
+$

@@ -1,4 +1,4 @@
-# RUN: %pyxc < %s | grep -q "tok_identifier: foo"
+# RUN: %pyxc < %s | grep -q "identifier: foo"
 
 # identifier: plain name with no underscore
 foo

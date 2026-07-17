@@ -11,10 +11,8 @@ For starters, I'll write out some small programs just to get an idea of the synt
 
 ```pyxc
 # add.pyxc
-# These are comments, like in python.
-# Let's define our own function
-def add(x, y):
-    return x + y
+def add(x, y): # define a function
+    return x + y # return the sum
 
 print(add(1, 2)) # call the add function and print its value
 ```
@@ -36,7 +34,7 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-01
 ```
 
-## Understanding words
+## Understanding Words
 
 When I write this:
 
@@ -60,47 +58,67 @@ enum Token {
 !!!note
     Breaking up the source into words is called *lexing* (from Latin *lexis*, meaning word) and these individual enum values, we will call `tokens` because that's what people who wrote compilers before us called them.  
 
-How do I represent function and variable names? I can create a catch-all `tok_identifier` to represent all kinds of names. 
-
-I'll do the same for numbers with `tok_number`. 
-
-But with both of these, I'll need to know *which name* and *which number* I saw in the source. Since I'm analyzing things one token at a time, I'll create a global variable for each:
+How do I represent function and variable names which are dynamic i.e. the user will invent their own names? Can't have an enum for every possible name. So I can create a catch-all `tok_identifier` to signal that I read a name and then I can have a separate variable which I update with the name I just read. 
 
 ```cpp
-static string IdentifierStr; // Filled in if tok_identifier
-static double NumVal;        // Filled in if tok_number
+static string IdentifierStr; // Filled in with the identifier name just read
 ```
 
 When I read the name `foo`, I return `tok_identifier` and set `IdentifierStr = "foo"`.
-When I read `3.14`, I return `tok_number` and set `NumVal = 3.14`.
 
-Since pyxc is python like, I also need to consider new lines. So let's have a `tok_eol`. And finally, we need to indicate that we've reached the end of file somehow, so let's also do a `tok_eof`. 
+One variable is enough because any later compiler code that needs the name reads `IdentifierStr` and makes a copy of it before asking the lexer for another token. 
 
-So here's what I got so far (and the negative numbers might surprise you, but I'll explain!):
+I'll do the same for numbers with `tok_number`. 
 
 ```cpp
+static double NumVal;        // Filled in with the number read
+```
+
+When I read `3.14`, I return `tok_number` and set `NumVal = 3.14`.
+
+Since pyxc is Python-like, I also need to consider new lines. So let's have a `tok_eol`. 
+
+And finally, we need to indicate that we've reached the end of file somehow, so let's also do a `tok_eof`. 
+
+Adding the punctuation and remaining keywords from the sample I end up with:
+
+```cpp
+//===----------------------------------------===//
+// Lexer
+//===----------------------------------------===//
+
+// The lexer returns one of these named tokens. Characters that do not belong
+// to the language are reported as tok_error.
 enum Token {
-  tok_eof = -1,  // End of file
-  tok_eol = -2,  // End of line ('\n')
+  // input boundaries
+  tok_eof = 1,
+  tok_eol,
 
-  tok_def    = -3,  // 'def' keyword
+  // lexer errors
+  tok_error,
 
-  tok_identifier = -4, // Variable/function names: foo, my_var
-  tok_number     = -5, // Numbers: 42, 3.14
+  // function definitions
+  tok_def,
 
-  tok_return = -6 // 'return' keyword
+  // tokens that need additional information attached
+  tok_identifier,
+  tok_number,
+
+  // control flow
+  tok_return,
+
+  // punctuation
+  tok_lparen,
+  tok_rparen,
+  tok_comma,
+  tok_colon,
+  tok_plus,
 };
 ```
 
-Notice I haven't dealt with single-character tokens like `+`, `(`, `)`, and so on — they only take one comparison anyway, so defining an enum entry for each would be busywork (it also simplifies error reporting later — more on that when I get there). For anything that's just one character, I return its own ASCII value directly instead, which is always positive. So I made my named tokens negative — a trick borrowed from the Kaleidoscope tutorial — keeping the two ranges from ever colliding. Large positive numbers past the ASCII range would have worked just as well; negative was simply Kaleidoscope's choice, and I kept it.
+## Reading Newlines
 
-- `tok_def` → -3
-- `+` → 43 (ASCII)
-- `(` → 40 (ASCII)
-
-## Reading Characters
-
-Before I write the actual token reader, I need a way to read characters I can trust. Old Mac OS used `\r` for a newline, the new Macs use `\n`, Windows uses `\r\n`. I don't want three different newline checks scattered through my lexer, so I'll normalize all of that down to `\n` at the one point where I actually read a character — everything downstream only ever has to think about `\n`. I'm not touching the source file itself here, just what my compiler sees internally.
+I have one token, `tok_eol`, for a newline. However, Old Mac OS used `\r` for a newline, modern macOS and Unix use `\n`, Windows uses `\r\n`. I don't want three different newline checks in my lexer, so I'll normalize all of that down to `\n`. Then I only need to think about `\n`, which I convert to `tok_eol` for the rest of the compiler to use. I'm not touching the source file itself here, just what my code sees internally. Here's my `advance()` function that reads one character, normalizes any newline into `\n`.
 
 ```cpp
 int advance() {
@@ -119,108 +137,101 @@ int advance() {
 ```
 
 
-## gettok(): Reading One Token at a Time
+## gettok(): Generating One Token At A Time
 
-`gettok()` is where I read characters and turn them into tokens, one token per call.
+`gettok()` is where I read characters and turn them into tokens, one per call. 
 
 ```cpp
 int gettok() {
   static int LastChar = ' ';
 ```
 
-I start the static `LastChar` off as a *space* rather than some sentinel value, because a space is something my whitespace-skipping loop already knows how to handle — no special first-call case needed. Then I loop over whitespace until I hit something real:
+I start the static `LastChar` off as a *space*. Right after this, I skip whitespace other than newlines in a loop. On the first call, I skip past the initialization space and any whitespace at the start of the file. On later calls, I skip whitespace between tokens the same way. I stop this loop at a newline, a non-whitespace character, or end of file:
 
 ```cpp
   while (isspace(LastChar) && LastChar != '\n')
     LastChar = advance();
 ```
 
-I'm not just skipping space at the top of the file or the start of a line — since `gettok()` runs fresh on every call, I skip space *between* tokens too. Here's a concrete example:
- 
- ```pyxc
-# main.pyxc
-
-#  ^------- I'll skip all this space
-def add(x,y):    
-#  ^------- I'll skip this space too     
-    return x + y
-# ^------- I'll skip these spaces too
- ```
- 
-I could have initialized `LastChar` to something else instead — an **init_token** set to, say, *-1000000* — but then I'd have to check for it explicitly:
-```cpp
-  while ((isspace(LastChar) || LastChar == init_token) && LastChar != '\n')
-    LastChar = advance();
-```
-
-Initializing to a *space* instead means I skip that extra check entirely. It's a small thing — not a hill I'd die on, and an init_token wouldn't be terrible either — but it's one less special case to carry around.
-
-From here on, `LastChar` holds the last character I read that *hasn't been consumed yet* by the time `gettok()` returns. That's the rule every branch below leans on — it's how I can tell what kind of token I'm looking at.
+After this loop, `LastChar` holds the next input value to process: the first character of the next token, a newline, or `EOF`.
 
 ### Identifiers and Keywords
+
+I recognize an identifier when it begins with a letter or underscore. I then accumulate letters, digits, and underscores into `IdentifierStr`, and check whether it matches one of my two keywords. If it does, I return that keyword's token. Otherwise it's just an identifier. 
+
+I'll dump all my keywords into a map for easy lookup and conversion.
+
+```cpp
+static map<string, Token> Keywords = {
+    {"def", tok_def},
+    {"return", tok_return},
+};
+```
+
+And now I collect characters and return an appropriate token.
 
 ```cpp
   if (isalpha(LastChar) || LastChar == '_') {
     IdentifierStr = LastChar;
     while (isalnum(LastChar = advance()) || LastChar == '_')
       IdentifierStr += LastChar;
-    
-    if (IdentifierStr == "def")    return tok_def;
-    if (IdentifierStr == "return") return tok_return;
-    
+    // LastChar now holds the first character that is not part of this name / keyword.
+
+    // Keyword check.
+    auto KeywordIt = Keywords.find(IdentifierStr);
+    if (KeywordIt != Keywords.end())
+      return KeywordIt->second;
     return tok_identifier;
-    
-    // LastChar is a character that is neither an alphabet nor a number, i.e the last unprocessed character. 
   }
 ```
 
-I accumulate letters, digits, and underscores into `IdentifierStr`, then check whether it matches one of my two keywords. If it does, I return that keyword's token. Otherwise it's just an identifier.
+`LastChar` holds the first character that is not part of the name or keyword. I'll keep this in mind; it'll help me track where I am in the input stream later on. It could be any character that is not valid in a name, including whitespace and punctuation, or `EOF`. 
 
 Examples:
 - `def` → `tok_def`
 - `foo` → `tok_identifier`, `IdentifierStr = "foo"`
 - `my_var` → `tok_identifier`, `IdentifierStr = "my_var"`
 
-An if-chain like this is fine for two keywords — I can read the whole thing at a glance. Once I add more keywords later (`extern`, `if`, `else`, `while`, `var`), a chain of string comparisons stops being fine and I'll want a lookup table instead. I'm not there yet, so I'll leave a TODO in the code rather than build the table before I actually need it.
-
 ### Numbers
 
-```cpp
+I take numbers through a similar accumulate-then-convert path: I read everything that looks like it belongs to a number into `NumStr`, then hand the whole string to [strtod](https://en.cppreference.com/w/cpp/string/byte/strtof) to parse into `NumVal`.
+
+```cpp  
   if (isdigit(LastChar) || LastChar == '.') {
     string NumStr;
     do {
       NumStr += LastChar;
       LastChar = advance();
     } while (isdigit(LastChar) || LastChar == '.');
+    // LastChar now holds the first character that is not part of this number.
 
+    // TODO: This incorrectly lexes 1.23.45.67 as 1.23
     NumVal = strtod(NumStr.c_str(), 0);
     return tok_number;
   }
 ```
-
-I take numbers through a similar accumulate-then-convert path: I read everything that looks like it belongs to a number into `NumStr`, then hand the whole string to `strtod` to parse into `NumVal`.
 
 This works for the inputs I actually care about right now:
 - `42` → `tok_number`, `NumVal = 42.0`
 - `3.14` → `tok_number`, `NumVal = 3.14`
 - `.5` → `tok_number`, `NumVal = 0.5`
 
-There's a bug lurking here, though I'm going to let it lurk for now. `strtod` parses as far as it can and just stops at the second `.` — so `1.23.45.67` silently becomes `1.23`, and the `.45.67` part is dropped on the floor without a word. Fixing it properly means checking where `strtod` stopped and erroring on whatever's left over, which is more machinery than I want to build before I even have a parser to report the error to. TODO for later; it doesn't bite me on valid input.
-
-Next: newlines. Unlike other whitespace, I don't want to throw these away. pyxc is Python-like, and in a Python-like language a newline marks the end of a statement — it's meaningful to the parser. So instead of skipping over it like I do with spaces, I hand it forward as a real token.
+There is a bug here, but I'll leave it for now. I collect an invalid number like `1.23.45.67` into a single `NumStr`. `strtod` accepts and converts only the `1.23` prefix and ignores the rest, and I've already consumed `.45.67` from the input stream, so it disappears instead of producing an error. I'll leave a *TODO* to fix this later; for now, valid numbers work and I want to keep this proof of concept small.
 
 ### Newlines
 
+When `LastChar` holds a normalized newline, I return `tok_eol`. I read in another character to keep my promise that `LastChar` always holds the next character I haven't consumed yet. 
+
 ```cpp
   if (LastChar == '\n') {
-    LastChar = ' ';
+    LastChar = advance();
     return tok_eol;
   }
 ```
 
-This is the one place where I break my own "`LastChar` is always the next unconsumed character" rule — I don't call `advance()` here. If I did, I'd immediately go looking for whatever comes after the newline before I even return from `gettok()`. Reading from a file that's harmless, but in the REPL it's fatal: I'd just sit there waiting for another keystroke before telling you anything about the line you already typed and hit Enter on. So instead I reset `LastChar` to a space and return right away. On the next call, I skip that space the same way I skip any other whitespace, then move on to the real next token.
-
 ### Comments
+
+Comments run from `#` to the end of the line, same as Python. I don't keep any of it. I read forward to the newline (or `EOF`), throw the whole thing away, then return `tok_eol`. If a comment follows code on a line, `tok_eol` marks that code line as complete.
 
 ```cpp
   if (LastChar == '#') {
@@ -229,111 +240,226 @@ This is the one place where I break my own "`LastChar` is always the next uncons
     } while (LastChar != '\n' && LastChar != EOF);
 
     if (LastChar != EOF) {
-      LastChar = ' ';
+      LastChar = advance();
       return tok_eol;
     }
   }
 ```
 
-Comments run from `#` to the end of the line, same as Python. I don't keep any of it — read forward to the newline (or EOF) and throw the whole thing away, then return `tok_eol` as if the comment line had been blank all along.
-
-Same `LastChar = ' '` trick as the newline case, and for the same reason — return immediately instead of blocking the REPL.
-
-If the comment runs straight into `EOF` with no trailing newline, `LastChar` ends up `EOF` and I fall through to the EOF case below.
+If the comment runs straight into `EOF` with no trailing newline, `LastChar` holds `EOF` and I fall through to the EOF case below.
 
 ### End Of File
+
+When `LastChar` holds an `EOF`, the input stream has no more data, and I return `tok_eof`.
+
 ```cpp
   if (LastChar == EOF)
     return tok_eof;
 ```
 
-Nothing left to check but end of file. I return it without consuming it, so nothing downstream has to guess whether there's more input coming.
 
-### Everything Else
+### Punctuation and Operators
+
+And finally, I handle punctuation, operators, and unrecognized characters. Since these are single-character comparisons, a simple `switch` works. 
 
 ```cpp
+  // Single-character punctuation and operators.
   int ThisChar = LastChar;
   LastChar = advance();
-  return ThisChar;
+  switch (ThisChar) {
+  case '(':
+    return tok_lparen;
+  case ')':
+    return tok_rparen;
+  case ',':
+    return tok_comma;
+  case ':':
+    return tok_colon;
+  case '+':
+    return tok_plus;
+  default:
+    return tok_error;
+  }
 }
 ```
 
-If none of the above matched, whatever's left is a single character on its own — `+`, `(`, `:`, and so on. I return its ASCII value straight through; in the next chapter I'll compare it against character literals like `'+'` or `'('` directly in the parser, no separate token needed.
+## Testing Token Generation 
 
-## The Driver
-
-I need two more things before I can actually watch this work: something that turns a token number into a name I can read, and a `main()` where I drive the loop and print what I see.
-
-`TokenNames` maps each named token to a readable string:
+I’ll pipe pyxc source into my lexer and print the tokens I generate. To make those token values readable, I map each token to a display string. I'll keep using the enum values themselves everywhere else in the compiler; these strings are only for debug output and, later, for error reporting.
 
 ```cpp
+// TokenNames maps each named token to a readable string for debug output.
 static map<int, string> TokenNames = {
-    {tok_eof,        "tok_eof"},
-    {tok_eol,        "tok_eol"},
-    {tok_def,        "tok_def"},
-    {tok_identifier, "tok_identifier"},
-    {tok_number,     "tok_number"},
-    {tok_return,     "tok_return"},
+    {tok_eof, "end of input"},
+    {tok_eol, "newline"},
+    {tok_error, "error"},
+    {tok_def, "'def'"},
+    {tok_identifier, "identifier"},
+    {tok_number, "number"},
+    {tok_return, "'return'"},
+    {tok_lparen, "'('"},
+    {tok_rparen, "')'"},
+    {tok_comma, "','"},
+    {tok_colon, "':'"},
+    {tok_plus, "'+'"},
 };
 ```
 
-In [Chapter 3](chapter-03.md), I grow `TokenNames` to cover every possible token — including single-character ones like `+` and `(` — with friendlier names for error messages. I don't need that yet, just enough to see `gettok()` working.
-
-In `main()`, I call `gettok()` in a loop and print each token, until I hit EOF:
+OK, I have what I need now, so in `main()`, I call `gettok()` in a loop and print each token, until I hit `tok_eof`:
 
 ```cpp
 int main() {
   int tok;
   while ((tok = gettok()) != tok_eof) {
     if (tok == tok_identifier)
-      fprintf(stdout, "tok_identifier: %s\n", IdentifierStr.c_str());
+      fprintf(stdout, "%s: %s\n", TokenNames.at(tok).c_str(),
+              IdentifierStr.c_str());
     else if (tok == tok_number)
-      fprintf(stdout, "tok_number: %g\n", NumVal);
-    else if (tok < 0)
-      fprintf(stdout, "%s\n", TokenNames[tok].c_str());
+      fprintf(stdout, "%s: %g\n", TokenNames.at(tok).c_str(), NumVal);
     else
-      fprintf(stdout, "'%c'\n", (char)tok);
+      fprintf(stdout, "%s\n", TokenNames.at(tok).c_str());
   }
   return 0;
 }
 ```
 
-`tok_identifier` and `tok_number` need special-casing here because the token value alone doesn't tell the whole story — I also want to see the actual identifier text or number, which is exactly why I stashed them in those two globals earlier. Everything else with a name goes through `TokenNames`. Single-character tokens (positive ASCII values) print as `'c'`.
+For `tok_identifier` and `tok_number`, the token alone is not enough, so I also print the identifier text or numeric value.
 
 ## Build and Run
 
 ```bash
 cd code/chapter-01
 cmake -S . -B build && cmake --build build
-printf "def add(x, y):\n    return x + y\n" | ./build/pyxc
+printf "# add.pyxc\ndef add(x, y): # define a function\n    return x + y # return the sum\n\nprint(add(1, 2)) # call the add function and print its value\n" | ./build/pyxc
 ```
 
-```
-tok_def
-tok_identifier: add
+```text
+newline
+'def'
+identifier: add
 '('
-tok_identifier: x
+identifier: x
 ','
-tok_identifier: y
+identifier: y
 ')'
 ':'
-tok_eol
-tok_return
-tok_identifier: x
+newline
+'return'
+identifier: x
 '+'
-tok_identifier: y
-tok_eol
+identifier: y
+newline
+newline
+identifier: print
+'('
+identifier: add
+'('
+number: 1
+','
+number: 2
+')'
+')'
+newline
 ```
 
-The `test/` directory has lit tests covering each token type — one file per rule. Browse them for more input examples, or run the suite:
+You can see that while comments do not produce tokens of their own, comment-only and blank lines still produce newline tokens. I'm ok with this behavior. 
+
+## `lit` or `llvm-lit` Quickstart
+
+I use LLVM's `lit` test runner for all my tests. Each test is a small `.pyxc` file with a `# RUN:` line that tells `lit` what command to run and how to check the result; `lit` runs every `.pyxc` file in a directory, as configured in `test/lit.cfg.py`, and reports pass or fail for each one.
+
+`test/sample_chapter_1.pyxc` is the exact `add.pyxc` program from earlier in this chapter, wrapped in `# RUN:` lines:
+
+```pyxc
+# RUN: %pyxc < %s | grep -Fxq "'def'"
+# RUN: %pyxc < %s | grep -Fxq "identifier: print"
+# RUN: %pyxc < %s | grep -Fxq "number: 1"
+# RUN: %pyxc < %s | grep -Fxq "number: 2"
+
+# sample: the add.pyxc example from the doc, run end-to-end through the lexer.
+# add.pyxc
+def add(x, y): # define a function
+    return x + y # return the sum
+
+print(add(1, 2)) # call the add function and print its value
+```
+
+`%pyxc` is a substitution `lit` fills in for me, defined in `test/lit.cfg.py`:
+
+```python
+config.substitutions.append(("%pyxc", os.path.join(chapter_dir, "build", "pyxc")))
+```
+
+It expands to the path of the binary I just built. 
+
+`%s`, unlike `%pyxc`, isn't something I define myself, `lit` provides it automatically as the path to whichever test file the `# RUN:` line came from. 
+
+So `%pyxc < %s` becomes something like `build/pyxc < test/sample_chapter_1.pyxc`.
+
+`grep -Fxq` does three things: 
+1. `-F` treats the pattern as a literal string, not a regex; 
+2. `-x` matches the whole line exactly, not just a substring somewhere in it; 
+3. `-q` stays quiet and just sets the exit status, `0` if found, `1` if not, which is what `lit` checks to decide pass or fail.
+
+Each `# RUN:` line follows the same pipeline:
+
+1. Runs `%pyxc < %s`, i.e. `build/pyxc < test/sample_chapter_1.pyxc`
+2. Pipes the output to `grep`, checking for one token I expect to see: the `def` keyword, `print` showing up as a plain `identifier` just as any function name will in my scheme (even though it's currently an undefined function), or one of the two numbers, `1` and `2`.
+3. `grep` exits `0` if it finds a match and `1` if it doesn't.
+4. `lit` reads that exit code to decide pass or fail. 
+
+Running this on my sample test file:
 
 ```bash
-llvm-lit code/chapter-01/test/
+llvm-lit test/sample_chapter_1.pyxc -v
 ```
+
+I get:
+
+```text
+-- Testing: 1 tests, 1 workers --
+PASS: pyxc-chapter01 :: sample_chapter_1.pyxc (1 of 1)
+
+Testing Time: 0.12s
+
+Total Discovered Tests: 1
+  Passed: 1 (100.00%)
+```
+
+I could chain the greps to a single `# RUN:` but then I wouldn't know what condition the test is failing on, so I'll do each test with a separate run. 
+
+The `test/` directory has lit tests covering each token type, one file per rule. Browse them for more input examples, or run the suite:
+
+```bash
+llvm-lit test/
+```
+
+```text
+-- Testing: 12 tests, 8 workers --
+PASS: pyxc-chapter01 :: sample_chapter_1.pyxc (1 of 12)
+PASS: pyxc-chapter01 :: identifier_underscore.pyxc (2 of 12)
+PASS: pyxc-chapter01 :: keyword_def.pyxc (3 of 12)
+PASS: pyxc-chapter01 :: number_leading_dot.pyxc (4 of 12)
+PASS: pyxc-chapter01 :: punctuation_tokens.pyxc (5 of 12)
+PASS: pyxc-chapter01 :: comment_eof.pyxc (6 of 12)
+PASS: pyxc-chapter01 :: error_unknown_character.pyxc (7 of 12)
+PASS: pyxc-chapter01 :: identifier_simple.pyxc (8 of 12)
+PASS: pyxc-chapter01 :: number_integer.pyxc (9 of 12)
+PASS: pyxc-chapter01 :: comment_discards.pyxc (10 of 12)
+PASS: pyxc-chapter01 :: number_decimal.pyxc (11 of 12)
+PASS: pyxc-chapter01 :: keyword_return.pyxc (12 of 12)
+
+Testing Time: 0.25s
+
+Total Discovered Tests: 12
+  Passed: 12 (100.00%)
+```
+
+The test order and timing above are from one run; `lit` runs tests in parallel across several workers, so both vary from run to run.
 
 ## What's Next
 
-In [Chapter 2](chapter-02.md) I build a parser on top of the lexer. I read the token stream and work out the structure — that `def add(x, y)` is a function taking two arguments, that `x + y` is an addition.
+In [Chapter 2](chapter-02.md) I'll read the token stream and work out the structure: that `def add(x, y)` is a function taking two arguments, that `x + y` is an addition. 
 
 ## Need Help?
 

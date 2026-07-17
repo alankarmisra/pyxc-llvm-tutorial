@@ -1,5 +1,6 @@
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <map>
 #include <string>
 
@@ -9,36 +10,56 @@ using namespace std;
 // Lexer
 //===----------------------------------------===//
 
-// The lexer returns tokens [0-255] if it is an unknown character, otherwise one
-// of these for known things.
+// The lexer returns one of these named tokens. Characters that do not belong
+// to the language are reported as tok_error.
 enum Token {
-  tok_eof = -1,
-  tok_eol = -2,
+  // input boundaries
+  tok_eof = 1,
+  tok_eol,
 
-  // commands
-  tok_def = -3,
+  // lexer errors
+  tok_error,
 
-  // primary
-  tok_identifier = -4,
-  tok_number = -5,
+  // function definitions
+  tok_def,
 
-  // control
-  tok_return = -6
+  // tokens that need additional information attached
+  tok_identifier,
+  tok_number,
+
+  // control flow
+  tok_return,
+
+  // punctuation
+  tok_lparen,
+  tok_rparen,
+  tok_comma,
+  tok_colon,
+  tok_plus,
 };
 
 static string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;        // Filled in if tok_number
 
-// TokenNames maps each named token to a readable string for debug output. In
-// Chapter 3, this map is expanded to cover single-character tokens too, with
-// friendlier names for error messages.
+static map<string, Token> Keywords = {
+    {"def", tok_def},
+    {"return", tok_return},
+};
+
+// TokenNames maps each named token to a readable string for debug output.
 static map<int, string> TokenNames = {
-    {tok_eof, "tok_eof"},
-    {tok_eol, "tok_eol"},
-    {tok_def, "tok_def"},
-    {tok_identifier, "tok_identifier"},
-    {tok_number, "tok_number"},
-    {tok_return, "tok_return"},
+    {tok_eof, "end of input"},
+    {tok_eol, "newline"},
+    {tok_error, "error"},
+    {tok_def, "'def'"},
+    {tok_identifier, "identifier"},
+    {tok_number, "number"},
+    {tok_return, "'return'"},
+    {tok_lparen, "'('"},
+    {tok_rparen, "')'"},
+    {tok_comma, "','"},
+    {tok_colon, "':'"},
+    {tok_plus, "'+'"},
 };
 
 /// advance - returns the next character, coalescing `\r\n` (Windows) into `\n`
@@ -63,31 +84,20 @@ int gettok() {
   while (isspace(LastChar) && LastChar != '\n')
     LastChar = advance();
 
-  // Check for newline.
-  if (LastChar == '\n') {
-    // Don't try and read the next character. This will stall the REPL.
-    // Just reset LastChar to a space which will force a new character
-    // advance in the next call.
-    LastChar = ' ';
-    return tok_eol;
-  }
-
   if (isalpha(LastChar) || LastChar == '_') {
     IdentifierStr = LastChar;
-    while (isalnum(LastChar = advance()) || LastChar == '_') {
+    while (isalnum(LastChar = advance()) || LastChar == '_')
       IdentifierStr += LastChar;
-    }
+    // LastChar now holds the first character that is not part of this
+    // name/keyword.
 
-    // TODO: Push this into a map
-    if (IdentifierStr == "def")
-      return tok_def;
-    if (IdentifierStr == "return")
-      return tok_return;
-
+    // Keyword check.
+    auto KeywordIt = Keywords.find(IdentifierStr);
+    if (KeywordIt != Keywords.end())
+      return KeywordIt->second;
     return tok_identifier;
   }
 
-  // TODO: This incorrectly lexes 1.23.45.67 as 1.23
   if (isdigit(LastChar) || LastChar == '.') {
     string NumStr;
     do {
@@ -95,6 +105,7 @@ int gettok() {
       LastChar = advance();
     } while (isdigit(LastChar) || LastChar == '.');
 
+    // TODO: This incorrectly lexes 1.23.45.67 as 1.23
     NumVal = strtod(NumStr.c_str(), 0);
     return tok_number;
   }
@@ -106,21 +117,38 @@ int gettok() {
     } while (LastChar != '\n' && LastChar != EOF);
 
     if (LastChar != EOF) {
-      // Don't attempt to read another character at the end of the line,
-      // otherwise the REPL will stall waiting for another character.
-      LastChar = ' ';
+      LastChar = advance();
       return tok_eol;
     }
   }
 
-  // Check for end of file.  Don't eat the EOF.
+  // Newline.
+  if (LastChar == '\n') {
+    LastChar = advance();
+    return tok_eol;
+  }
+
+  // End of file.
   if (LastChar == EOF)
     return tok_eof;
 
-  // Otherwise, just return the character as its ascii value
+  // Single-character punctuation and operators.
   int ThisChar = LastChar;
   LastChar = advance();
-  return ThisChar;
+  switch (ThisChar) {
+  case '(':
+    return tok_lparen;
+  case ')':
+    return tok_rparen;
+  case ',':
+    return tok_comma;
+  case ':':
+    return tok_colon;
+  case '+':
+    return tok_plus;
+  default:
+    return tok_error;
+  }
 }
 
 //===----------------------------------------===//
@@ -131,13 +159,12 @@ int main() {
   int tok;
   while ((tok = gettok()) != tok_eof) {
     if (tok == tok_identifier)
-      fprintf(stdout, "tok_identifier: %s\n", IdentifierStr.c_str());
+      fprintf(stdout, "%s: %s\n", TokenNames.at(tok).c_str(),
+              IdentifierStr.c_str());
     else if (tok == tok_number)
-      fprintf(stdout, "tok_number: %g\n", NumVal);
-    else if (tok < 0)
-      fprintf(stdout, "%s\n", TokenNames[tok].c_str());
+      fprintf(stdout, "%s: %g\n", TokenNames.at(tok).c_str(), NumVal);
     else
-      fprintf(stdout, "'%c'\n", (char)tok);
+      fprintf(stdout, "%s\n", TokenNames.at(tok).c_str());
   }
   return 0;
 }

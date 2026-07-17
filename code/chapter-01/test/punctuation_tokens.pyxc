@@ -1,0 +1,8 @@
+# RUN: %pyxc < %s | grep -Fxq "'('"
+# RUN: %pyxc < %s | grep -Fxq "')'"
+# RUN: %pyxc < %s | grep -Fxq "','"
+# RUN: %pyxc < %s | grep -Fxq "':'"
+# RUN: %pyxc < %s | grep -Fxq "'+'"
+
+# punctuation: every Chapter 1 syntax character has a named token.
+(),:+
