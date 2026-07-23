@@ -6,6 +6,6 @@
 # After defining unary '^', defining binary '^' must fail.
 
 @unary
-def $(x: float64) -> float64: return x
+def ^(x: float64) -> float64: return x
 @binary(5)
-def $(x: float64, y: float64) -> float64: return x + y
+def ^(x: float64, y: float64) -> float64: return x + y

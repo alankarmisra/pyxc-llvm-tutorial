@@ -36,14 +36,6 @@ def main() -> int:
                 key = "tok_leq"
             elif op == ">=":
                 key = "tok_geq"
-            elif op == "&&":
-                key = "tok_and"
-            elif op == "||":
-                key = "tok_or"
-            elif op == "<<":
-                key = "tok_shl"
-            elif op == ">>":
-                key = "tok_shr"
             else:
                 key = ""
         if key not in ops_map:

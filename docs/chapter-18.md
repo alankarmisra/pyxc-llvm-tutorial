@@ -1,30 +1,29 @@
 ---
-description: "Add pointer types, addr() for taking addresses, and p[i] indexing — so functions can modify the caller's data."
+description: "Add struct types with field declarations, field read/write, and nested field access."
 ---
-# 18. pyxc: Pointers
+# 18. pyxc: Structs
 
-## Where We Are
+## Where's the code at?
 
-[Chapter 17](chapter-17.md) added structs, but with a catch: structs are passed by value. If you hand a struct to a function and the function modifies a field, the caller's copy is unchanged. That's fine for pure computations, and it's a deliberate design choice — but sometimes you actually want to modify the caller's data.
-
-That's what pointers are for. After this chapter:
+I think I'll add *structs* to the language now. I have enough *scalar* types and I'm keen on getting some structural help from the language for my data so I can keep related information together. The following is what I'm hoping to have by the end of this chapter. 
 
 ```pyxc
+# defining a structure with multiple elements
 struct Point:
   x: int
   y: int
 
-def translate(p: ptr[Point], dx: int, dy: int) -> None:
-  p[0].x = p[0].x + dx
-  p[0].y = p[0].y + dy
+# passing a structure by value and accessing different elements of the structure
+def distance_sq(p: Point) -> float64:
+  return float64(p.x * p.x + p.y * p.y)
 
 def main() -> int:
-  var pt: Point
-  pt.x = 3
-  pt.y = 4
-  translate(addr(pt), 10, 20)
-  printd(float64(pt.x))  # 13.000000
-  printd(float64(pt.y))  # 24.000000
+  var p: Point # define it
+  p.x = 3 # mutate element
+  p.y = 4 # mutate element
+
+  # pass to a function and print the result
+  printd(distance_sq(p))  # 25.000000
   return 0
 ```
 
@@ -37,376 +36,727 @@ cd pyxc-llvm-tutorial/code/chapter-18
 
 ## Grammar
 
+First I'll extend the grammar cause it helps me write the lexer and parser better. 
+
+To define something like this in my grammar:
+
+```pyxc
+struct Point:
+```
+
+I could write:
+
 ```ebnf
-type        ::= ...
-              | 'ptr' '[' type ']'   (* pointer to type — no nesting allowed *)
-
-addr-expr   ::= 'addr' '(' lvalue ')'
-
-lvalue      ::= identifier ('.' identifier)*
-
-index-expr  ::= lvalue '[' expression ']' ('.' identifier)*
-
-index-assign ::= lvalue '[' expression ']' ('.' identifier)* '=' expression
+struct-def    ::= 'struct' identifier ':'
 ```
 
-`ptr[T]` is a type annotation only — you cannot construct one without `addr`. `addr` takes an lvalue (a named variable, optionally followed by field access) and returns a pointer to it. `p[i]` reads or writes the value at offset `i` from the pointer. `p[i].field` chains field access after indexing, for pointers to structs.
+`identifier` can be any legal pyxc name like *Point*, *Car*, etc. Next I deal with fields.
 
-Nested pointer types (`ptr[ptr[int]]`) and pointers to `None` are rejected at parse time.
-
-## Two New Keywords
-
-```cpp
-tok_ptr  = -35,
-tok_addr = -36,
+```pyxc
+struct Point: # a NEWLINE follows
+  x: int  # an INDENT followed by a field
 ```
 
-Registered in the keyword map:
+which I add as...
 
-```cpp
-{"ptr", tok_ptr}, {"addr", tok_addr}
+```ebnf
+struct-def    ::= 'struct' identifier ':' NEWLINE INDENT field
 ```
 
-## `ValueType::Pointer`
+I need muliple fields and then a `DEDENT` to indicate I've finished defining the fields of the struct so I add a `+` to `field` and add the remaining items to complete `struct-def`:
 
-`Pointer` is a new entry in the `ValueType` enum, after `Struct`. Unlike scalar types, a pointer value is not self-describing — `ValueType::Pointer` alone does not tell you what the pointer points to. You need the pointee type alongside it.
+```ebnf
+struct-def    ::= 'struct' identifier ':' NEWLINE INDENT field+ DEDENT
+```
 
-For scalar types and structs, the pointee information is carried in the `StructName` string field that already exists on every `ExprAST` node. For pointers, that same field is reused to carry an encoded string describing the pointee:
+Since a field looks like 
+```pyxc
+x: int
+```
+I define a field as:
+
+```ebnf
+field         ::= identifier ':' type NEWLINE
+```
+
+Notice that the way I've defined `field` forces it to end in a `NEWLINE`. Something like this would be invalid according to this grammar.
+
+```pyxc
+struct Point
+  x: int
+  y: int<EOF>
+``` 
+
+That seems ok with me right now. It's an edge case and I don't want to complicate my parser to account for this right now. Next I'll deal with accessing struct fields:
+
+```pyxc
+printd(p.x) # pyxc won't understand p.x just yet so I have to extend the grammar
+```
+
+```ebnf
+field-expr    ::= identifier ('.' identifier)+
+```
+
+I grouped `('.' identifier)` and added a `+` because I might have structs with inner structs and so I could have something like `route.destination.x`, for example.
+
+and finally I deal with assignments to the fields.
+
+```pyxc
+point.x = 10
+```
+
+```ebnf
+field-assign  ::= field-expr '=' expression
+```
+
+Structs will define a new type, so I need to extend the `type` rule too:
+
+```ebnf
+type          ::= ...
+               | identifier   (* struct name — must be declared above the point of use *)
+```
+
+Putting it all together below for reference:
+
+```ebnf
+struct-def    ::= 'struct' identifier ':' NEWLINE INDENT field+ DEDENT
+
+field         ::= identifier ':' type NEWLINE
+
+field-expr    ::= identifier ('.' identifier)+
+
+field-assign  ::= field-expr '=' expression
+
+type          ::= ...
+               | identifier   (* struct name — must be declared above the point of use *)
+```
+
+I think that should do it. I'll try implementing this first and come back to it if I see gaps in the language. I can already see that I haven't extended the field accessor notation to expressions, so I can't do something like:
+
+```pyxc
+make_point().x
+```
+
+I think for now, this is ok. 
+
+## The `struct` Keyword
+
+I'll start extending the lexer/parser. First I need a token for the `struct` keyword.  
 
 ```cpp
-static string EncodePointerType(ValueType PointeeType,
-                                const string &PointeeStructName) {
-  return std::to_string(static_cast<int>(PointeeType)) + ":" + PointeeStructName;
+enum Token {
+    ...
+    tok_struct = -34,
+    ...
 }
+```
 
-static bool DecodePointerType(const string &Encoded, ValueType &PointeeType,
-                              string &PointeeStructName) {
-  auto Pos = Encoded.find(':');
-  // split on ':', parse the int as ValueType, rest is struct name
+I will also need to add the `struct` string to my keywords map
+
+```cpp
+static map<string, Token> Keywords = {
+    ...
+    {"struct", tok_struct}
+}
+```
+
+Great, now I can read the struct definitions and emit the tokens.
+
+## Where do I keep track of struct definitions?
+
+Now that the lexer hands me a `tok_struct`, I need somewhere to actually record what a struct looks like once I've parsed it. What do I need to know about a struct? Its name, and its list of fields — each with a name and a type.
+
+I'm also going to need to catch two mistakes as I parse: defining the same struct twice, and declaring the same field twice inside one struct. Both of those are "have I seen this name before?" checks, so I want a lookup by name, not just a list I'd have to scan linearly. A `map<string, ...>` keyed on the name gets me that.
+
+So — one map for the fields of a single struct, and one map for all the structs I know about:
+
+```cpp
+struct StructFieldInfo {
+  string Name;
+  ValueType Type = ValueType::Error;
+  string StructName;  // only set if Type == Struct
+};
+```
+
+I added `StructName` to the field because a field's type might itself be a struct (a struct containing a struct), and `ValueType::Struct` alone doesn't tell me *which* struct — I'll run into this same problem again in a minute for variables generally.
+
+```cpp
+struct StructTypeInfo {
+  string Name;
+  vector<StructFieldInfo> Fields;
+  std::map<string, size_t> FieldIndex;  // field name → index into Fields
+};
+```
+
+I kept `Fields` as an ordered `vector` and *also* added `FieldIndex`, a map from field name to its position in that vector. I need the vector because field order matters — it's the order LLVM will lay the fields out in memory, and I'll need to walk them in order for codegen. But I also need fast lookup by name for two things: checking for a duplicate field while parsing, and later, resolving `p.x` to "field 0" when I generate code for it. A map alongside the vector gets me both: ordered storage, and O(log n) lookup by name.
+
+And then the registry that ties struct names to this info, so I can look up any struct I've seen so far:
+
+```cpp
+static std::map<string, StructTypeInfo> StructTypes;
+```
+
+`StructTypes` is the global registry of all declared structs. It gets populated as I parse `struct` blocks, and I'll consult it constantly afterward — every field access and every struct type annotation needs to look the struct up here to validate it.
+
+## Parsing a Struct Definition
+
+With the data structures in place I can write the actual parsing function. Let me walk through the grammar rule again and turn it into code step by step:
+
+```ebnf
+struct-def    ::= 'struct' identifier ':' NEWLINE INDENT field+ DEDENT
+```
+
+`CurTok` is `tok_struct` when this function is called, so first thing, eat it and expect a name:
+
+```cpp
+getNextToken(); // eat 'struct'
+if (CurTok != tok_identifier) {
+  LogError("Expected struct name");
+  return false;
+}
+string StructName = IdentifierStr;
+```
+
+Before I go any further I should check whether I've already seen this struct — that's exactly the "have I seen this name before" check I built `StructTypes` for:
+
+```cpp
+if (StructTypes.count(StructName)) {
+  LogError(("Struct '" + StructName + "' is already defined").c_str());
+  return false;
+}
+```
+
+Then the `':' NEWLINE INDENT` part of the grammar, which is just token bookkeeping I've done before for function bodies:
+
+```cpp
+getNextToken(); // eat struct name
+if (CurTok != ':') {
+  LogError("Expected ':' after struct name");
+  return false;
+}
+getNextToken(); // eat ':'
+if (CurTok == tok_eol)
+  consumeNewlines();
+if (CurTok != tok_indent) {
+  LogError("Expected an indented struct body");
+  return false;
+}
+getNextToken(); // eat INDENT
+```
+
+Now the `field+` part. I need to loop, reading one field per iteration, until I hit the `DEDENT`. Each field is `identifier ':' type NEWLINE`, so inside the loop I read a name, a colon, and a type:
+
+```cpp
+StructTypeInfo Info;
+Info.Name = StructName;
+while (CurTok != tok_dedent && CurTok != tok_block_end && CurTok != tok_eof) {
+  if (CurTok == tok_eol) {
+    consumeNewlines();
+    continue;
+  }
+  if (CurTok != tok_identifier) {
+    LogError("Expected field name in struct body");
+    return false;
+  }
+  string FieldName = IdentifierStr;
+  getNextToken();
+  if (CurTok != ':') {
+    LogError("Expected ':' after field name");
+    return false;
+  }
+  getNextToken();
+  string FieldStructName;
+  ValueType FieldType = ParseTypeToken(&FieldStructName);
+  if (FieldType == ValueType::Error || FieldType == ValueType::None) {
+    LogError("Invalid struct field type");
+    return false;
+  }
+```
+
+I'm reusing `ParseTypeToken` here rather than writing a separate type parser for struct fields — it already knows how to parse `int`, `float64`, and so on, and I'm about to teach it to also recognize other struct names as types. One parser, every place a type can appear.
+
+Before I add the field, I need the duplicate-field check — this is the other reason I built `FieldIndex` as a map:
+
+```cpp
+  if (Info.FieldIndex.count(FieldName)) {
+    LogError(("Duplicate struct field '" + FieldName + "'").c_str());
+    return false;
+  }
+  Info.FieldIndex[FieldName] = Info.Fields.size();
+  Info.Fields.push_back({FieldName, FieldType, FieldStructName});
+  if (CurTok == tok_eol)
+    consumeNewlines();
+}
+```
+
+`Info.Fields.size()` before the push is exactly the index the new field is about to land at, so I record that in `FieldIndex` first, then push. Finally the `DEDENT`, and I register the finished struct in `StructTypes`:
+
+```cpp
+if (CurTok != tok_dedent) {
+  LogError("Expected dedent after struct body");
+  return false;
+}
+PendingTokens.push_front(tok_block_end);
+getNextToken(); // eat DEDENT, then surface tok_block_end
+StructTypes[StructName] = std::move(Info);
+return true;
+```
+
+That `PendingTokens.push_front(tok_block_end)` trick isn't new to this chapter — I'm reusing the same synthetic-token mechanism I used for function bodies, so whatever calls `ParseStructDefinition` sees a clean `tok_block_end` marker after the DEDENT instead of having to special-case struct endings.
+
+## The `struct` handler
+
+I need a top-level handler like I have for `def` and `extern`. It just calls the parser and recovers from errors the same way the others do:
+
+```cpp
+static void HandleStructDef() {
+  bool Ok = ParseStructDefinition();
+  if (!Ok) {
+    SynchronizeToLineBoundary();
+    return;
+  }
+  bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
+  if (HasTrailing) {
+    LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+    SynchronizeToLineBoundary();
+    return;
+  }
+}
+```
+
+And wire it into both loops that dispatch on the current token — the REPL's `MainLoop` and the file-mode `FileModeLoop`:
+
+```cpp
+switch (CurTok) {
+case tok_struct:
+  HandleStructDef();
+  break;
+case tok_def:
+  HandleDefinition();
+  break;
   ...
 }
 ```
 
-Every type in the compiler is described by two fields: a `ValueType` enum and a `StructName` string. For most types `StructName` is empty. For structs it holds the struct name. For pointers it holds a serialized description of the pointee, because `ValueType::Pointer` alone does not say what the pointer points to:
+Let's handle field access now.
 
-| Type | `ValueType` | `StructName` |
-|---|---|---|
-| `int`, `float64`, … | `Int`, `Float64`, … | `""` |
-| `Point` (struct) | `Struct` | `"Point"` |
-| `ptr[int]` | `Pointer` | `"1:"` |
-| `ptr[Point]` | `Pointer` | `"10:Point"` |
+## `struct` as a type
 
-The format is `"<ValueType int>:<struct name>"`. `ptr[int]` encodes as `"1:"` (`ValueType::Int` = 1, no struct name). `ptr[Point]` encodes as `"10:Point"` (`ValueType::Struct` = 10, struct name `"Point"`). The caller that created the pointer type is responsible for encoding; any site that needs the pointee type decodes it.
-
-This reuses the existing type-tracking infrastructure without adding a new field to the base class. It is a tradeoff: the encoding is not beautiful, but it works and the surface is small.
-
-## The LLVM Pointer Type
-
-In LLVM IR, all pointer types are the same opaque type:
+Before I can write `x: int` *or* `p: Point` in the same field/parameter/variable declaration, `ParseTypeToken` needs to accept a struct name where it currently only accepts the scalar keywords. An identifier that isn't a keyword and shows up where a type is expected — that's a struct name, if it's one I know about:
 
 ```cpp
-case ValueType::Pointer:
-  return PointerType::getUnqual(*TheContext);
-```
-
-`PointerType::getUnqual` produces the opaque `ptr` type — LLVM does not distinguish `ptr[int]` from `ptr[Point]` in the type system. The element type only appears in `getelementptr` and `load`/`store` instructions, not in the pointer type itself. This is LLVM's opaque pointer model, which has been the default since LLVM 15.
-
-The zero value for a pointer is null:
-
-```cpp
-case ValueType::Pointer:
-  return ConstantPointerNull::get(cast<PointerType>(LLVMTypeFor(ValueType::Pointer)));
-```
-
-`var p: ptr[int]` with no initializer starts as a null pointer.
-
-## Parsing `ptr[T]`
-
-`ParseTypeToken` handles the `tok_ptr` case:
-
-```cpp
-case tok_ptr: {
-  getNextToken(); // eat 'ptr'
-  // expect '['
-  getNextToken(); // eat '['
-  string PointeeStructName;
-  ValueType PointeeType = ParseTypeToken(&PointeeStructName);
-  // reject None and nested ptr
-  getNextToken(); // eat ']'
+case tok_identifier: {
+  string TyName = IdentifierStr;
+  if (!StructTypes.count(TyName)) {
+    LogError(("Unknown type '" + TyName + "'").c_str());
+    return ValueType::Error;
+  }
+  getNextToken();
   if (StructName)
-    *StructName = EncodePointerType(PointeeType, PointeeStructName);
-  return ValueType::Pointer;
+    *StructName = TyName;
+  return ValueType::Struct;
 }
 ```
 
-The parsed pointee type is immediately encoded and written into the `StructName` output parameter. From this point on, the pointer's pointee information travels with it as an opaque string through `VarScopes`, `PrototypeAST::ArgInfo`, `VariableExprAST`, and every other place that stores a `ValueType` alongside a `StructName`.
+This is why I keep needing that "struct name alongside the type" pattern — `ValueType::Struct` on its own doesn't say *which* struct, so `ParseTypeToken` takes an optional `string *StructName` output parameter, and every caller that cares about struct types passes one in. I checked `StructTypes` for the name rather than just accepting any identifier — this also means a struct has to be declared *before* anything uses it as a type. No forward references. I could lift that restriction later with a pre-pass that just collects names, but I don't need it yet.
 
-## `addr`: Taking the Address of an Lvalue
+## Two New AST Nodes
 
-`addr(x)` returns a pointer to `x`. `addr(p.x)` returns a pointer to the field `x` of struct `p`. `ParseAddrExpr` handles both:
+Now for the parts of the grammar I haven't touched yet — reading a field and writing to one. Each needs its own AST node, because they compile to different code (a load vs. a `getelementptr` + store), even though they share a lot of the same "walk the field path" logic.
 
-```cpp
-static unique_ptr<ExprAST> ParseAddrExpr() {
-  getNextToken(); // eat 'addr'
-  // expect '('
-  getNextToken(); // eat '('
-  // expect identifier — addr requires an lvalue
-  string BaseName = IdentifierStr;
-  getNextToken(); // eat identifier
-  ValueType CurType = LookupVarType(BaseName);
-  // walk optional field chain: addr(o.inner.value)
-  vector<string> Path;
-  while (CurTok == '.') {
-    // validate each field, advance CurType and CurStruct
-    Path.push_back(Field);
-  }
-  // expect ')'
-  return make_unique<AddrExprAST>(BaseName, Path, CurType,
-                                  EncodePointerType(CurType, CurStruct));
-}
-```
+### `FieldExprAST`
 
-The resulting `AddrExprAST` has type `ValueType::Pointer` and its `StructName` holds the encoded pointee type.
-
-`addr` only accepts a named variable, optionally with field access. Expressions like `addr(1 + 2)` are rejected immediately — the parser checks for `tok_identifier` right after the opening `(`.
-
-### `AddrExprAST::codegen`
+A field read: `p.x`, `o.inner.value`. What does this node actually need to remember? Not the whole chain as one string — I want the pieces separately so codegen can walk them one GEP at a time. So: the name of the variable at the root, and the list of field names after it.
 
 ```cpp
-Value *AddrExprAST::codegen() {
-  if (FieldPath.empty()) {
-    // addr(x) — return the alloca or global directly
-    auto It = NamedValues.find(BaseName);
-    if (It != NamedValues.end() && It->second)
-      return It->second;
-    if (auto *GV = GetGlobalVariable(BaseName))
-      return GV;
-    return LogErrorV("Unknown variable name");
-  }
-  // addr(p.x) — return the field pointer from GetFieldAddress
-  Value *Ptr = GetFieldAddress(BaseName, FieldPath);
-  return Ptr;
-}
-```
-
-For a local variable, LLVM already represents it as an `alloca` — a pointer to its storage. `addr(x)` simply returns that pointer without any new instruction. For a struct field, `GetFieldAddress` (from chapter 17) computes and returns the GEP pointer for that field.
-
-```llvm
-; var x: int = 42
-; var p: ptr[int] = addr(x)
-%x = alloca i64
-store i64 42, ptr %x
-%p = alloca ptr
-store ptr %x, ptr %p   ; addr(x) is just %x — the alloca itself
-```
-
-```llvm
-; var pt: Point
-; var px: ptr[int] = addr(pt.x)
-%pt = alloca %struct.Point
-...
-%fieldptr = getelementptr inbounds %struct.Point, ptr %pt, i32 0, i32 0
-%px = alloca ptr
-store ptr %fieldptr, ptr %px
-```
-
-## `p[i]`: Pointer Indexing
-
-`p[i]` computes the address at offset `i` from the pointer and loads from it. `p[i] = v` stores to it.
-
-### Parsing
-
-`ParseIndexExpr` is called from `ParseIdentifierExpr` whenever `[` follows a pointer-typed variable or field:
-
-```cpp
-static unique_ptr<ExprAST> ParseIndexExpr(string BaseName,
-                                          vector<string> FieldPath,
-                                          ValueType BaseType,
-                                          const string &BaseStructName) {
-  // reject if base is not a pointer
-  getNextToken(); // eat '['
-  auto Index = ParseExpression();
-  // reject if index is not an integer type
-  getNextToken(); // eat ']'
-  // decode pointee type from BaseStructName
-  return make_unique<IndexExprAST>(BaseName, FieldPath, Index, ElemType, ElemStruct);
-}
-```
-
-The element type (what the pointer points to) is decoded from the encoded string in `BaseStructName`.
-
-### `BuildIndexElementPtr`: the shared address computation
-
-Both reads and writes need the element address. `BuildIndexElementPtr` computes it without loading:
-
-```cpp
-static Value *BuildIndexElementPtr(IndexExprAST *IdxExpr) {
-  // load the pointer value from the base variable or field
-  Value *BasePtr = LoadPointerValue(IdxExpr->getBaseName(),
-                                    IdxExpr->getFieldPath(), ...);
-  // widen index to i64 if needed
-  Value *IdxVal = ...;
-  // GEP: &base[i]
-  return Builder->CreateInBoundsGEP(
-      LLVMTypeFor(IdxExpr->getType(), IdxExpr->getStructName()),
-      BasePtr, IdxVal, "elemptr");
-}
-```
-
-The index is always widened to `i64` before the GEP — LLVM requires a consistent index type.
-
-### Read codegen
-
-```cpp
-Value *IndexExprAST::codegen() {
-  Value *ElemPtr = BuildIndexElementPtr(this);
-  return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()),
-                             ElemPtr, "elemload");
-}
-```
-
-For `p[0]` where `p: ptr[int]`:
-
-```llvm
-%ptrload = load ptr, ptr %p        ; load the pointer value
-%elemptr = getelementptr inbounds i64, ptr %ptrload, i64 0
-%elemload = load i64, ptr %elemptr
-```
-
-For `p[1]`:
-
-```llvm
-%ptrload = load ptr, ptr %p
-%elemptr = getelementptr inbounds i64, ptr %ptrload, i64 1
-%elemload = load i64, ptr %elemptr
-```
-
-### Write codegen
-
-```cpp
-Value *IndexAssignmentExprAST::codegen() {
-  Value *ElemPtr = BuildIndexElementPtr(LHS.get());
-  Value *Val = RHS->codegen();
-  Val = EmitImplicitCast(Val, RHS->getType(), getType());
-  Builder->CreateStore(Val, ElemPtr);
-  return Val;
-}
-```
-
-For `p[0] = 99` where `p: ptr[int]`:
-
-```llvm
-%ptrload = load ptr, ptr %p
-%elemptr = getelementptr inbounds i64, ptr %ptrload, i64 0
-store i64 99, ptr %elemptr
-```
-
-The implicit cast rules from chapter 16 apply — assigning an integer to a `ptr[float64]` is a type error; assigning `int8` to `ptr[int]` widens.
-
-## `p[i].field`: Field Access After Indexing
-
-For pointers to structs, you can chain field access after the index: `p[0].x`. This requires a separate AST node because the base is an index expression, not a named variable.
-
-### `IndexedFieldExprAST`
-
-```cpp
-class IndexedFieldExprAST : public ExprAST {
-  unique_ptr<IndexExprAST> BaseIndex;  // the p[i] part
-  vector<string> FieldPath;            // the field chain
+class FieldExprAST : public ExprAST {
+  string BaseName;           // the variable at the root: "p" or "o"
+  vector<string> FieldPath;  // the chain of field names: ["x"] or ["inner", "value"]
   ...
 };
 ```
 
-`ParseIndexedFieldAccessExpr` is called when `ParseIdentifierExpr` sees a `.` after parsing an index expression. It walks the field chain exactly like `ParseFieldAccessExpr` from chapter 17:
+The type of the whole expression is whatever the *last* field in the path resolves to, so I set that in the constructor once the parser has walked the chain. `getLValueName()` returns `&BaseName` — that's what assignment codegen will use to find the root pointer to start GEP-ing from.
+
+### `FieldAssignmentExprAST`
+
+A field write: `p.x = 5`. This one just needs the field expression on the left (so it knows *where* to write) and an expression on the right (what to write):
+
+```cpp
+class FieldAssignmentExprAST : public ExprAST {
+  unique_ptr<FieldExprAST> LHS;
+  unique_ptr<ExprAST> RHS;
+  ...
+};
+```
+
+Like the plain `AssignmentExprAST` I already have, `shouldPrintValue()` returns `false` — an assignment shouldn't print anything at the REPL.
+
+## Parsing Field Access
+
+Now the actual parsing. `ParseFieldAccessExpr` gets called once the parser has already seen an identifier and then a `.` after it. What I need to do is walk the chain of `.field` steps, and at each step, check that what I'm accessing *is* a struct field and figure out what type it produces — so I can validate the *next* step in the chain, and so the final node knows its own type.
+
+```cpp
+static unique_ptr<FieldExprAST> ParseFieldAccessExpr(string BaseName,
+                                                     ValueType BaseType,
+                                                     string BaseStructName) {
+  vector<string> Path;
+  ValueType CurType = BaseType;
+  string CurStruct = std::move(BaseStructName);
+  while (CurTok == '.') {
+    getNextToken(); // eat '.'
+    if (CurTok != tok_identifier) {
+      LogError("Expected field name after '.'");
+      return nullptr;
+    }
+    string Field = IdentifierStr;
+    getNextToken(); // eat field name
+```
+
+Before I look the field up, I have to make sure I'm actually looking at a struct — if `CurType` isn't `ValueType::Struct`, there's nothing to access a field *of*:
+
+```cpp
+    if (CurType != ValueType::Struct || CurStruct.empty()) {
+      LogError("Field access requires a struct value");
+      return nullptr;
+    }
+    auto SI = StructTypes.find(CurStruct);
+    if (SI == StructTypes.end()) {
+      LogError("Unknown struct type in field access");
+      return nullptr;
+    }
+    auto FI = SI->second.FieldIndex.find(Field);
+    if (FI == SI->second.FieldIndex.end()) {
+      LogError(("Unknown field '" + Field + "' on struct '" + CurStruct + "'")
+                   .c_str());
+      return nullptr;
+    }
+```
+
+And here's exactly where `FieldIndex` earns its keep again — I use it to find the field's entry in `Fields`, then advance `CurType`/`CurStruct` to that field's type before the next loop iteration:
+
+```cpp
+    const auto &FD = SI->second.Fields[FI->second];
+    CurType = FD.Type;
+    CurStruct = FD.StructName;
+    Path.push_back(Field);
+  }
+  return make_unique<FieldExprAST>(std::move(BaseName), std::move(Path),
+                                   CurType, CurStruct);
+}
+```
+
+By the time the loop ends, `CurType`/`CurStruct` describe the *leaf* field — that's what the whole `p.x` or `o.inner.value` expression evaluates to. This is why `route.destination.x` from the grammar section just falls out for free — each `.` step is the same lookup, chained.
+
+I call this from `ParseIdentifierExpr`, where I already know the base identifier resolved to a variable. If it's a struct variable and I see a `.` next, hand off to `ParseFieldAccessExpr`:
+
+```cpp
+auto *Var = dynamic_cast<VariableExprAST *>(Base.get());
+if (!Var)
+  return LogError("Field access base must be a variable");
+auto Field =
+    ParseFieldAccessExpr(IdName, Var->getType(), Var->getStructName());
+```
+
+That `dynamic_cast` check is me enforcing the "field access must start with a named variable" limitation I noted in the grammar section — `make_point().x` isn't a `VariableExprAST`, so it's rejected here rather than crashing somewhere in codegen.
+
+Field access on the *left* of `=` reuses the exact same `ParseFieldAccessExpr` — I don't want two copies of that chain-walking logic. It just gets handed off to a different continuation, `ParseFieldAssignmentRHS`, once I see the `=`:
 
 ```cpp
 static unique_ptr<ExprAST>
-ParseIndexedFieldAccessExpr(unique_ptr<IndexExprAST> BaseIndex) {
-  // walk '.field' chain, validating each step against StructTypes
-  return make_unique<IndexedFieldExprAST>(BaseIndex, Path, CurType, CurStruct);
+ParseFieldAssignmentRHS(unique_ptr<FieldExprAST> LHS) {
+  ValueType DestType = LHS->getType();
+  getNextToken(); // eat '='
+  ExpectedLiteralTypeGuard Guard(DestType);
+  auto RHS = ParseExpression();
+  if (!RHS)
+    return nullptr;
+  if (!IsAssignable(DestType, RHS->getType()))
+    return LogError("Type mismatch in assignment");
+  return make_unique<FieldAssignmentExprAST>(std::move(LHS), std::move(RHS),
+                                             DestType);
 }
 ```
 
-### Codegen
+Same `IsAssignable` check I already use for plain variable assignment — a struct field is just an assignable location with a type, same rules apply.
+
+## A Lurking Lexer Bug
+
+I was trying to run one of my `.pyxc` test files and hit a bug that was already there but only surfaced now. The number lexer entered the float-parsing path whenever it saw a standalone `.`:
 
 ```cpp
-Value *IndexedFieldExprAST::codegen() {
-  // get the element address without loading (BuildIndexElementPtr)
-  Value *Ptr = BuildIndexElementPtr(BaseIndex.get());
-  // walk field GEPs from that address
-  for (const auto &FieldName : FieldPath) {
-    Ptr = Builder->CreateStructGEP(BaseLLVM, Ptr, Idx, "fieldptr");
-    // advance type
-  }
-  return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), Ptr, "fieldload");
+// Before — wrong
+if (isdigit(LexerLastChar) || LexerLastChar == '.') {
+```
+
+That meant `p.x` would lex as: identifier `p`, then see `.` and enter the number-parsing path, find `x` instead of a digit, and produce garbage. Fine when `.` meant nothing on its own. Fatal now that it separates a variable from its field.
+
+The fix — only enter the float path when the character *after* `.` is actually a digit. I already had a `peek()` helper for exactly this kind of one-character lookahead, so I just use it:
+
+```cpp
+// After — correct
+if (isdigit(LexerLastChar) ||
+    (LexerLastChar == '.' && isdigit(peek()))) {
+```
+
+`.5` still works as a float literal. `p.x` no longer gets eaten.
+
+## Tracking Struct Names in Scope
+
+Field access parsing needs to know a variable's struct name, not just that it's `ValueType::Struct` — I keep running into this. Chapter 17 already tracks variable *types* with `VarScopes: vector<map<string, ValueType>>`, a stack of maps for nested scopes. I need the same shape of thing, but for struct names, so I add a parallel stack rather than changing what `VarScopes` stores:
+
+```cpp
+static vector<std::map<string, string>> VarStructScopes;
+```
+
+I kept it separate instead of, say, changing `VarScopes` to hold a `(ValueType, string)` pair, because most variables aren't structs and I don't want every scope lookup paying for a string that's usually empty. Every place that pushes or pops a scope for `VarScopes` now does the same for `VarStructScopes` right alongside it — `BeginFunctionScope`, `BeginBlockScope`, `BeginLoopScope`, and their `End*` counterparts. And `DeclareVar` records into both when the variable being declared is a struct:
+
+```cpp
+static void DeclareVar(const string &Name, ValueType Type,
+                       const string &StructName = "") {
+  VarScopes.back()[Name] = Type;
+  if (Type == ValueType::Struct)
+    VarStructScopes.back()[Name] = StructName;
 }
 ```
 
-`BuildIndexElementPtr` computes the element address without loading the struct value — so the struct GEPs can chain directly from the element pointer.
+And lookup mirrors `LookupVarType` exactly — walk the scope stack innermost-first, fall back to the globals map if nothing local matches:
 
-For `p[0].x` where `p: ptr[Point]`:
+```cpp
+static string LookupVarStructName(const string &Name) {
+  for (auto It = VarStructScopes.rbegin(); It != VarStructScopes.rend(); ++It) {
+    auto Found = It->find(Name);
+    if (Found != It->end())
+      return Found->second;
+  }
+  auto GI = GlobalVarStructTypes.find(Name);
+  if (GI != GlobalVarStructTypes.end())
+    return GI->second;
+  return "";
+}
+```
+
+Function parameters need the same treatment for the same reason — a parameter's `ValueType::Struct` alone doesn't say which struct. So the old `pair<string, ValueType>` per argument in `PrototypeAST` isn't enough anymore; I turn it into a small struct with room for the struct name too:
+
+```cpp
+struct ArgInfo {
+  string Name;
+  ValueType Type;
+  string StructName;
+};
+```
+
+And `PrototypeAST` grows a matching `ReturnStructName` field for the same reason — a function returning a struct needs to say which one. Same mechanics as everywhere else in this chapter; just more places to carry the extra string.
+
+## From Struct Name to LLVM Type
+
+Everything so far has been the parser's view of a struct — I know the fields, I know the types, I've validated field accesses. Now I actually need to generate code, which means I need a real `StructType*` LLVM object, not just my own `StructTypeInfo`.
+
+```cpp
+static std::map<string, StructType *> LLVMStructTypes;
+
+static Type *GetOrCreateLLVMStructType(const string &StructName) {
+  auto It = LLVMStructTypes.find(StructName);
+  if (It != LLVMStructTypes.end())
+    return It->second;
+
+  auto *ST = StructType::create(*TheContext, "struct." + StructName);
+  LLVMStructTypes[StructName] = ST;  // register before filling the body
+
+  vector<Type *> FieldTys;
+  for (const auto &Field : StructTypes[StructName].Fields)
+    FieldTys.push_back(LLVMTypeFor(Field.Type, Field.StructName));
+  ST->setBody(FieldTys, false);
+  return ST;
+}
+```
+
+I need the cache — `LLVMStructTypes` — because LLVM creates a brand-new `StructType` object every time I call `StructType::create` with the same name; it doesn't deduplicate for me. Without the cache, two separate `alloca`s for the same pyxc struct would end up backed by two different LLVM types that just happen to have the same layout but different identity — every load, store, and GEP mixing them would fail.
+
+I also deliberately register the type in the cache *before* I fill in its body. That's not an accident: it's what lets a struct hold a pointer to itself without this function recursing forever. (A struct containing *itself by value*, rather than a pointer to itself, would need infinite memory, so that case can't come up in code that passed my earlier checks anyway.)
+
+`setBody(FieldTys, false)` — the `false` is "not packed," meaning fields get natural alignment, same default as a C struct.
+
+And I wire it into `LLVMTypeFor`, the function everything else in codegen already goes through to turn a `ValueType` into an LLVM `Type*`:
+
+```cpp
+case ValueType::Struct:
+  return GetOrCreateLLVMStructType(StructName);
+```
+
+## The IR Layout
+
+Let me check what this actually produces. For:
+
+```pyxc
+struct Point:
+  x: int
+  y: int
+```
+
+I get, with the `"struct."` prefix I chose above:
 
 ```llvm
-%ptrload = load ptr, ptr %p
-%elemptr  = getelementptr inbounds %struct.Point, ptr %ptrload, i64 0
-%fieldptr = getelementptr inbounds %struct.Point, ptr %elemptr, i32 0, i32 0
+%struct.Point = type { i64, i64 }
+```
+
+`int` is pointer-width, `i64` on my 64-bit host — that's not new to this chapter, just carried over. A struct with a `float64` field:
+
+```pyxc
+struct Circle:
+  radius: float64
+```
+
+```llvm
+%struct.Circle = type { double }
+```
+
+Fields show up in declaration order, which matches what I said `Fields` needed to preserve back when I chose a `vector` over just a `map`. LLVM inserts whatever padding the target's data layout calls for — I don't see it in the IR, but it's there in the generated machine code.
+
+## Codegen: Getting a Field's Address
+
+Both reading and writing a field come down to the same first step: compute a pointer to the field, then either load from it or store to it. So I want one function that does the pointer arithmetic, shared by both. `GetFieldAddress` walks `FieldPath` one step at a time, the same way `ParseFieldAccessExpr` did at parse time — except now I need an actual base pointer, not just a type.
+
+I look the base variable up in `NamedValues` first (a local), and fall back to a global if it's not local:
+
+```cpp
+static Value *GetFieldAddress(const string &BaseName,
+                              const vector<string> &FieldPath, ...) {
+  // find the base pointer — local alloca or global variable
+  Value *Ptr = BasePtr;
+  for (const auto &FieldName : FieldPath) {
+    size_t Idx = StructTypes[CurStruct].FieldIndex[FieldName];
+    Type *BaseLLVM = LLVMTypeFor(CurType, CurStruct);
+    Ptr = Builder->CreateStructGEP(BaseLLVM, Ptr, Idx, "fieldptr");
+    // advance CurType and CurStruct to this field's type
+  }
+  return Ptr;
+}
+```
+
+`FieldIndex` again — same map, now doing its third job: turning a field name into the integer index `CreateStructGEP` actually wants. `CreateStructGEP` emits a `getelementptr inbounds` for struct field access; one GEP per step in the path. For `p.x` on a `Point`:
+
+```llvm
+%fieldptr = getelementptr inbounds %struct.Point, ptr %p, i32 0, i32 0
+```
+
+And for `o.inner.value`, where `inner` is itself an `Inner`, I get one GEP per level rather than a single multi-index GEP — I could combine them into one instruction with multiple indices, but chaining single-field GEPs is simpler to emit and LLVM optimizes it the same either way:
+
+```llvm
+%fieldptr  = getelementptr inbounds %struct.Outer, ptr %o, i32 0, i32 0
+%fieldptr1 = getelementptr inbounds %struct.Inner, ptr %fieldptr, i32 0, i32 0
+```
+
+## Codegen: Reading and Writing Fields
+
+With `GetFieldAddress` written, the two AST nodes' `codegen()` methods are almost trivial.
+
+**Read** — get the pointer, load through it:
+
+```cpp
+Value *FieldExprAST::codegen() {
+  Value *Ptr = GetFieldAddress(*getLValueName(), FieldPath, ...);
+  return Builder->CreateLoad(LLVMTypeFor(LeafType, LeafStruct), Ptr, "fieldload");
+}
+```
+
+For `p.x` where `x: int`:
+
+```llvm
+%fieldptr  = getelementptr inbounds %struct.Point, ptr %p, i32 0, i32 0
 %fieldload = load i64, ptr %fieldptr
 ```
 
-For `p[0].x = v` (write):
+**Write** — get the pointer, codegen the RHS, cast if the types don't line up exactly, then store:
 
-```llvm
-%ptrload = load ptr, ptr %p
-%elemptr  = getelementptr inbounds %struct.Point, ptr %ptrload, i64 0
-%fieldptr = getelementptr inbounds %struct.Point, ptr %elemptr, i32 0, i32 0
-store i64 %v, ptr %fieldptr
+```cpp
+Value *FieldAssignmentExprAST::codegen() {
+  Value *Ptr = GetFieldAddress(*LHS->getLValueName(), LHS->getFieldPath(), ...);
+  Value *Val = RHS->codegen();
+  Val = EmitImplicitCast(Val, RHS->getType(), DestType);
+  Builder->CreateStore(Val, Ptr);
+  return Val;
+}
 ```
 
-Two GEPs: one to reach element 0 of the array, one to reach field `x` of that element. No load between them — the pointer chains through.
+For `p.x = 5` where `x: int`:
 
-## Mutation Through a Pointer Parameter
+```llvm
+%fieldptr = getelementptr inbounds %struct.Point, ptr %p, i32 0, i32 0
+store i64 5, ptr %fieldptr
+```
 
-This is the payoff. A function that takes `ptr[T]` can modify the caller's data:
+I didn't need to write any new casting logic here — the implicit cast rules from chapter 16 apply exactly as-is. Assigning a `float64` into an `int` field is still a type error; assigning an `int8` into an `int` field still widens silently. A struct field is just another typed storage location as far as casting is concerned.
+
+## Struct Variables and Zero Initialization
+
+I already have zero-initialization for scalar `var` declarations with no initializer. Structs should work the same way, just with a struct-shaped zero value instead of a scalar one. `var p: Point` with no initializer allocates stack space and zero-fills it:
+
+```cpp
+InitVal = ZeroConstant(VarType, VarStructName);
+// ...
+Builder->CreateStore(InitVal, Alloca);
+```
+
+`ZeroConstant` for a struct doesn't need to build up a `{0, 0}` aggregate field by field — LLVM has a shortcut, `Constant::getNullValue`, that produces an all-zero constant of whatever type I hand it:
+
+```llvm
+%p = alloca %struct.Point
+store %struct.Point zeroinitializer, ptr %p
+```
+
+There's no struct initializer syntax yet — I can't write `var p: Point = Point{x: 1, y: 2}`. That's more grammar and more parsing I don't need for this chapter. Struct variables always start zeroed, and fields get assigned individually after.
+
+## Structs Are Passed by Value
+
+I haven't written any special-casing for struct parameters — they go through the exact same by-value parameter passing every other type already uses. Worth checking that actually does what I expect, though:
 
 ```pyxc
-def set_value(p: ptr[int], v: int) -> None:
-  p[0] = v
+struct Box:
+  value: int
+
+def clobber(b: Box) -> None:
+  b.value = 0
 
 def main() -> int:
-  var x: int = 5
-  set_value(addr(x), 100)
-  # x is now 100
+  var b: Box
+  b.value = 99
+  clobber(b)
+  # b.value is still 99 here
   return 0
 ```
 
+The IR confirms it:
+
 ```llvm
-define void @set_value(ptr %p, i64 %v) {
+define void @clobber(%struct.Box %b) {
 entry:
-  %p.addr = alloca ptr
-  store ptr %p, ptr %p.addr
-  %ptrload = load ptr, ptr %p.addr
-  %elemptr = getelementptr inbounds i64, ptr %ptrload, i64 0
-  store i64 %v, ptr %elemptr
+  %b.addr = alloca %struct.Box
+  store %struct.Box %b, ptr %b.addr
+  %fieldptr = getelementptr inbounds %struct.Box, ptr %b.addr, i32 0, i32 0
+  store i64 0, ptr %fieldptr
   ret void
 }
 ```
 
-The pointer is passed by value (it's just an address), but the store through it writes to `x`'s alloca in the caller's stack frame. The caller sees the updated value.
+`clobber` gets its own copy of `b`, allocated fresh inside its own stack frame. Writing to `b.value` inside `clobber` only ever touches that copy. The caller's struct is untouched after the call — which is what I'd want by default, but it does mean that if I ever want a function to mutate the caller's struct, passing by value can't do that. I'll need a pointer for that, which is chapter 18.
 
-Pointer arguments are type-checked: passing `ptr[float64]` where `ptr[int]` is expected is a type error.
+## Global Struct Variables
 
-## Parse Flow in `ParseIdentifierExpr`
+I didn't have to write anything new here either — struct globals fall out of the existing global-variable machinery once `ZeroConstant` and `LLVMTypeFor` both handle `ValueType::Struct`:
 
-The full sequence of what `ParseIdentifierExpr` handles, in order:
+```pyxc
+struct Counter:
+  value: int
 
-1. Parse the base identifier.
-2. If `.` follows → parse field chain (`FieldExprAST`).
-3. If `[` follows → parse index expression (`IndexExprAST`).
-4. If `.` follows after step 3 → parse field chain on the index result (`IndexedFieldExprAST`).
+var g: Counter
+```
 
-This covers: `x`, `p.field`, `p[i]`, `p.field[i]`, `p[i].field`, `p[i].field.subfield`.
+```llvm
+@g = global %struct.Counter zeroinitializer
+```
 
-The statement parser has the same sequence to handle the left side of assignments.
+And field reads/writes on globals go through the same `GetFieldAddress` I already wrote — it checks `NamedValues` for a local first, then falls back to `GetGlobalVariable`, exactly like every other variable lookup in this compiler.
 
 ## Build and Run
 
@@ -417,56 +767,20 @@ cmake -S . -B build && cmake --build build
 
 ## Try It
 
-### Take an address, read through it
+### Basic field access
 
 ```pyxc
-extern def printd(x: float64)
-
-def main() -> int:
-  var x: int = 42
-  var p: ptr[int] = addr(x)
-  printd(float64(p[0]))
-  return 0
-```
-
-```bash
-42.000000
-```
-
-### Write through a pointer, see it in the caller
-
-```pyxc
-extern def printd(x: float64)
-
-def main() -> int:
-  var x: int = 5
-  var p: ptr[int] = addr(x)
-  p[0] = 99
-  printd(float64(x))
-  return 0
-```
-
-```bash
-99.000000
-```
-
-### Pass a struct by pointer
-
-```pyxc
-extern def printd(x: float64)
-
 struct Point:
   x: int
   y: int
 
-def set_x(p: ptr[Point], v: int) -> None:
-  p[0].x = v
+extern def printd(x: float64)
 
 def main() -> int:
-  var pt: Point
-  pt.x = 3
-  set_x(addr(pt), 7)
-  printd(float64(pt.x))
+  var p: Point
+  p.x = 3
+  p.y = 4
+  printd(float64(p.x + p.y))
   return 0
 ```
 
@@ -474,51 +788,144 @@ def main() -> int:
 7.000000
 ```
 
-### Address of a struct field
+### Passing a struct to a function
 
 ```pyxc
-extern def printd(x: float64)
-
 struct Point:
   x: int
   y: int
 
+extern def printd(x: float64)
+
+def sum_point(p: Point) -> int:
+  return p.x + p.y
+
 def main() -> int:
   var p: Point
-  p.x = 11
-  var px: ptr[int] = addr(p.x)
-  printd(float64(px[0]))
+  p.x = 5
+  p.y = 7
+  printd(float64(sum_point(p)))
   return 0
 ```
 
 ```bash
-11.000000
+12.000000
+```
+
+### Nested field access
+
+```pyxc
+struct Inner:
+  value: int
+
+struct Outer:
+  inner: Inner
+
+extern def printd(x: float64)
+
+def main() -> int:
+  var o: Outer
+  o.inner.value = 9
+  printd(float64(o.inner.value))
+  return 0
+```
+
+```bash
+9.000000
 ```
 
 ### Inspect the IR
 
 ```bash
 pyxc --emit llvm-ir -o out.ll program.pyxc
-grep 'getelementptr\|load\|store' out.ll
+grep 'struct\|getelementptr\|alloca' out.ll
+```
+
+**Basic field access (`point.pyxc`):**
+
+```llvm
+; ModuleID = 'PyxcJIT'
+source_filename = "PyxcJIT"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+
+%struct.Point = type { i64, i64 }
+
+declare void @printd(double)
+
+define i64 @__pyxc.user_main() {
+entry:
+  %p = alloca %struct.Point, align 8
+  store %struct.Point zeroinitializer, ptr %p, align 8
+  %fieldptr = getelementptr inbounds nuw %struct.Point, ptr %p, i32 0, i32 0
+  store i64 3, ptr %fieldptr, align 8
+  %fieldptr1 = getelementptr inbounds nuw %struct.Point, ptr %p, i32 0, i32 1
+  store i64 4, ptr %fieldptr1, align 8
+  %fieldptr2 = getelementptr inbounds nuw %struct.Point, ptr %p, i32 0, i32 0
+  %fieldload = load i64, ptr %fieldptr2, align 8
+  %fieldptr3 = getelementptr inbounds nuw %struct.Point, ptr %p, i32 0, i32 1
+  %fieldload4 = load i64, ptr %fieldptr3, align 8
+  %addtmp = add i64 %fieldload, %fieldload4
+  %sitofp = sitofp i64 %addtmp to double
+  call void @printd(double %sitofp)
+  ret i64 0
+}
+
+define i32 @main() {
+entry:
+  %0 = call i64 @__pyxc.user_main()
+  %1 = trunc i64 %0 to i32
+  ret i32 %1
+}
+```
+
+**Nested field access (`inner_outer.pyxc`):**
+
+```llvm
+; ModuleID = 'PyxcJIT'
+source_filename = "PyxcJIT"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
+
+%struct.Outer = type { %struct.Inner }
+%struct.Inner = type { i64 }
+
+declare void @printd(double)
+
+define i64 @__pyxc.user_main() {
+entry:
+  %o = alloca %struct.Outer, align 8
+  store %struct.Outer zeroinitializer, ptr %o, align 8
+  %fieldptr = getelementptr inbounds nuw %struct.Outer, ptr %o, i32 0, i32 0
+  %fieldptr1 = getelementptr inbounds nuw %struct.Inner, ptr %fieldptr, i32 0, i32 0
+  store i64 9, ptr %fieldptr1, align 8
+  %fieldptr2 = getelementptr inbounds nuw %struct.Outer, ptr %o, i32 0, i32 0
+  %fieldptr3 = getelementptr inbounds nuw %struct.Inner, ptr %fieldptr2, i32 0, i32 0
+  %fieldload = load i64, ptr %fieldptr3, align 8
+  %sitofp = sitofp i64 %fieldload to double
+  call void @printd(double %sitofp)
+  ret i64 0
+}
+
+define i32 @main() {
+entry:
+  %0 = call i64 @__pyxc.user_main()
+  %1 = trunc i64 %0 to i32
+  ret i32 %1
+}
 ```
 
 ## Known Limitations
 
-**No pointer arithmetic.** `p + 1` is not supported — use `p[1]` to access adjacent elements.
+**No struct initializer syntax.** `var p: Point = Point{x: 1, y: 2}` is not supported. Fields must be assigned individually after declaration.
 
-**No nested pointers.** `ptr[ptr[int]]` is rejected at parse time.
+**No struct-to-struct copy.** `var p2: Point = p1` is not supported. Whole-struct initialization from another variable isn't implemented yet.
 
-**No pointer comparisons.** `p == nullptr` is not supported.
+**Field access must start with a named variable.** `make_point().x` is rejected — the base must be a variable in scope, not an expression.
 
-**No pointer-to-pointer casting.** You cannot reinterpret a `ptr[int]` as a `ptr[float64]`.
-
-**Null pointer is silent.** `var p: ptr[int]` with no initializer is a null pointer. Dereferencing it crashes at runtime with no helpful error. Bounds checking and null safety are not implemented.
-
-**Pointee type is encoded in a string.** The `StructName` field on `ExprAST` nodes doubles as pointer type metadata, stored as `"<ValueType int>:<struct name>"` (e.g. `"1:"` for `ptr[int]`, `"10:Point"` for `ptr[Point]`). It works but is not the cleanest representation — a dedicated field would be cleaner. This is a consequence of the single-AST-hierarchy design established in chapter 12.
+**No pointer-to-struct.** Functions take structs by value. To share a struct across functions and have modifications be visible to the caller, you need a pointer — that's chapter 18.
 
 ## What's Next
 
-[Chapter 19](chapter-19.md) adds fixed-size arrays: `T[N]`, stack allocation, indexing, and array-to-pointer decay. With arrays and pointers in place, you have the building blocks for the string and C interop chapter that follows.
+[Chapter 19](chapter-19.md) adds pointers: `ptr[T]` as a type, `addr(x)` to take the address of a variable, and `p[i]` for pointer indexing. With pointers, you can pass a struct by reference and have functions modify the caller's data.
 
 ## Need Help?
 

@@ -10,8 +10,8 @@
 # for each compiled function is printed. Program output still requires explicit
 # print calls.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-def sq(x: float64) -> float64: return x * x
+def sq(x): return x * x
 
 printd(sq(3))

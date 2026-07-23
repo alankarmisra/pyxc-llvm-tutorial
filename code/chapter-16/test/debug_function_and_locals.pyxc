@@ -7,12 +7,12 @@
 
 # Tests: -g emits function, parameter, and local variable debug metadata.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-def add(a: float64, b: float64) -> float64:
-    var s: float64 = a
+def add(a, b):
+    var s = a
     s = s + b
     return s
 
-def main() -> None:
+def main():
     printd(add(1, 2))

@@ -8,9 +8,9 @@
 # optimization level. Optimization may degrade debuggability (instructions
 # reordered, variables optimized out) but the metadata nodes are present.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-def sq(x: float64) -> float64: return x * x
+def sq(x): return x * x
 
-def main() -> None:
+def main():
     printd(sq(3))

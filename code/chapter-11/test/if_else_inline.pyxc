@@ -3,10 +3,9 @@
 # CHECK: Evaluated to 10.000000
 
 
-# Tests: inline if/else statement with both branches on one line.
-# ifstmt = "if" expression ":" suite [ eols "else" ":" suite ]
+# Tests: inline if/else (condition, then, and else all on one line).
+# conditionalexpr = "if" expression ":" [ eols ] expression [ eols ] "else" ":" [ eols ] expression
 
-def maxval(a, b):
-    if a > b: return a else: return b
+def maxval(a, b): return if a > b: a else: b
 
 maxval(10, 5)

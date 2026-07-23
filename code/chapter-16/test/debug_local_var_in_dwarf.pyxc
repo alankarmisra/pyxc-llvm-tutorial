@@ -8,13 +8,13 @@
 # DW_TAG_variable with the correct DW_AT_name. This is distinct from
 # DW_TAG_formal_parameter (which is for parameters).
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-def sum_to(n: float64) -> float64:
-    var accumulator: float64 = 0.0
-    for var i: float64 = 1, i < n + 1, 1:
+def sum_to(n):
+    var accumulator = 0
+    for var i = 1, i < n + 1, 1:
         accumulator = accumulator + i
     return accumulator
 
-def main() -> None:
+def main():
     printd(sum_to(5))

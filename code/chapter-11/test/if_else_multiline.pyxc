@@ -3,13 +3,14 @@
 # CHECK: Evaluated to 5.000000
 
 
-# Tests: if/else with then and else blocks on separate lines.
-# ifstmt = "if" expression ":" suite [ eols "else" ":" suite ] ;
+# Tests: if/else with then and else expressions on separate lines.
+# conditionalexpr = "if" expression ":" [ eols ] expression [ eols ] "else" ":" [ eols ] expression
+# The [ eols ] tokens before 'else' and after 'else:' allow this layout.
 
 def minval(a, b):
-    if a < b:
-        return a
-    else:
-        return b
+return if a < b:
+a
+else:
+b
 
 minval(5, 10)

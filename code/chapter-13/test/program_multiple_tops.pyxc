@@ -1,5 +1,7 @@
 # RUN: %pyxc < %s 2>&1 | FileCheck %s
-# CHECK: 2.000000
+# CHECK: Parsed an extern.
+# CHECK: Parsed a function definition.
+# CHECK: Evaluated to 2.000000
 
 
 # Tests: a program with multiple top-level forms separated by blank lines.

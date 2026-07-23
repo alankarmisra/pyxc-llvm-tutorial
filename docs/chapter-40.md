@@ -1,31 +1,38 @@
 ---
-description: "Add variadic extern declarations so pyxc code can call C functions like printf and scanf that take a variable number of arguments."
+description: "Allow assignment inside an expression so patterns like while (c = getchar()) != EOF work without a separate priming read."
 ---
-# 40. pyxc: Variadic Extern Functions
+# 40. pyxc: Assignment as Expression
 
 ## Where We Are
 
-[Chapter 39](chapter-39.md) completed the K&R toolbox. pyxc can call C functions via `extern def`, but only functions with a fixed number of typed parameters. `printf`, `scanf`, `sprintf`, and most other C I/O functions take a variable number of arguments — the `...` in their C signatures. Trying to declare them currently produces an error:
-
-```
-Error: Expected parameter name in prototype
-```
-
-After this chapter, variadic `extern` declarations work:
+[Chapter 39](chapter-39.md) added unsigned integer types. pyxc can call `getchar()`, but the canonical K&R idiom for reading until EOF still doesn't compile:
 
 ```pyxc
-type string = ptr[int8]
-extern def printf(fmt: string, ...) -> int32
+# What we want to write:
+while (c = getchar()) != EOF:
+    ...
+```
+
+```
+Error: Assignment target must be assignable
+```
+
+The problem is that `=` is a statement in pyxc — it cannot appear inside an expression like a while condition. After this chapter it can:
+
+```pyxc
+extern def getchar() -> int32
+extern def printd(x: float64)
+
+var EOF: int32 = -1
 
 def main() -> int:
-  printf("hello world\n")
-  printf("answer: %ld\n", 42)
+  var c: int32
+  var blanks: int
+  while (c = getchar()) != EOF:
+    if c == ' ':
+      blanks += 1
+  printd(float64(blanks))
   return 0
-```
-
-```
-hello world
-answer: 42
 ```
 
 ## Source Code
@@ -35,164 +42,136 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-40
 ```
 
-## `IsVarArg` on `PrototypeAST`
+## `ParseExpression` — Tail Assignment Check
 
-The only structural change is a new `bool IsVarArg` field on `PrototypeAST`:
+`ParseExpression` already parsed `unaryexpr binoprhs`. The change adds a check after `ParseBinOpRHS` resolves: if the next token is `=` or a compound-assign operator, treat the result as an lvalue and parse the right-hand side recursively:
 
 ```cpp
-class PrototypeAST {
-  ...
-  bool IsVarArg;
-public:
-  PrototypeAST(string Name, vector<ArgInfo> Args, SourceLocation Loc,
-               ValueType ReturnType = ValueType::Float64,
-               bool IsOperator = false, bool IsVarArg = false,
-               unsigned Prec = 0, string ReturnStructName = "")
-      : ..., IsVarArg(IsVarArg), ... {}
+static unique_ptr<ExprAST> ParseExpression() {
+  auto LHS = ParseUnary();
+  if (!LHS)
+    return nullptr;
 
-  bool isVarArg() const { return IsVarArg; }
-};
+  LHS = ParseBinOpRHS(0, std::move(LHS));
+  if (!LHS)
+    return nullptr;
+
+  // Assignment tail — fires only if '=' or '+=' etc. follows
+  if (CurTok != '=' && !IsCompoundAssignTok(CurTok))
+    return LHS;
+
+  int AssignTok = CurTok;
+  getNextToken(); // eat assignment operator
+  ExpectedLiteralTypeGuard Guard(LHS->getType(), LHS->getStructName());
+  auto RHS = ParseExpression(); // right-associative: recurse
+  if (!RHS)
+    return nullptr;
+  return BuildAssignmentExpr(AssignTok, std::move(LHS), std::move(RHS));
+}
 ```
 
-`IsVarArg` defaults to `false`. All existing callers pass it implicitly or explicitly as `false`. Only the `extern def` path sets it to `true`.
+Because the right-hand side recurses to `ParseExpression`, chained assignment is automatically right-associative: `a = b = 4` parses as `a = (b = 4)`.
 
-## `ParsePrototype` — `AllowVarArgs` Parameter
+`ExpectedLiteralTypeGuard` propagates the lvalue's type into the RHS parse, so `x = 5` when `x` is `int32` will treat `5` as `int32` without an explicit cast.
 
-`ParsePrototype` gains an `AllowVarArgs` parameter that defaults to `false`:
+## `BuildAssignmentExpr` — Lvalue Validation and Node Construction
+
+All lvalue validation is done in `BuildAssignmentExpr`, a new helper extracted from the old statement-level assignment parser. It pattern-matches on the node type of `LHS`:
 
 ```cpp
-static unique_ptr<PrototypeAST> ParsePrototype(bool AllowVarArgs = false) {
-  ...
-  bool IsVarArg = false;
-  while (CurTok != ')') {
-    // parse normal typed parameters...
+static unique_ptr<ExprAST> BuildAssignmentExpr(int AssignTok,
+                                               unique_ptr<ExprAST> LHS,
+                                               unique_ptr<ExprAST> RHS) {
+  if (!LHS || !RHS)
+    return nullptr;
 
-    if (AllowVarArgs && CurTok == '.') {
-      getNextToken();
-      if (CurTok != '.')
-        return LogErrorP("Expected '...' in variadic prototype");
-      getNextToken();
-      if (CurTok != '.')
-        return LogErrorP("Expected '...' in variadic prototype");
-      getNextToken();
-      IsVarArg = true;
-      if (CurTok != ')')
-        return LogErrorP("Variadic marker must be last in parameter list");
-      break;
-    }
+  if (auto *Var = dynamic_cast<VariableExprAST *>(LHS.get())) {
+    // plain variable: produce AssignmentExprAST or CompoundAssignmentExprAST
     ...
   }
-  return make_unique<PrototypeAST>(FnName, std::move(ArgNames), ProtoLoc,
-                                   ValueType::Float64, false, IsVarArg);
+  if (auto *Field = dynamic_cast<FieldExprAST *>(LHS.get())) {
+    // field access: produce FieldAssignmentExprAST or FieldCompoundAssignmentExprAST
+    ...
+  }
+  if (auto *Idx = dynamic_cast<IndexExprAST *>(LHS.get())) {
+    // array index: produce IndexAssignmentExprAST or IndexCompoundAssignmentExprAST
+    ...
+  }
+  if (auto *IdxField = dynamic_cast<IndexedFieldExprAST *>(LHS.get())) {
+    // indexed field: produce IndexedFieldAssignmentExprAST or variant
+    ...
+  }
+
+  return LogError("Assignment target must be assignable");
 }
 ```
 
-`...` is not a lexer token — the lexer returns three consecutive `.` characters. The parser consumes them one at a time. If any of the three dots is missing, `LogErrorP` fires immediately. `...` must be the last item before `)` — parameters after it are a parse error.
+Four lvalue kinds are recognised: variable, field, array index, and indexed field. Any other expression kind — including `x + 1` or a function call — reaches the final `LogError`. The existing `AssignmentExprAST`, `CompoundAssignmentExprAST`, and their field/index variants are reused unchanged; `BuildAssignmentExpr` is the only new code.
 
-## Only `extern def` Passes `AllowVarArgs = true`
+## The Value of an Assignment Expression
 
-Regular `def` and `decorateddef` call `ParsePrototype()` with the default `false`. Only `ParseExtern` passes `true`:
+`AssignmentExprAST::codegen` already stores the value and returns it. That return value is now visible to the caller because `ParseExpression` can produce an assignment node at any nesting level:
 
-```cpp
-// ParseExtern:
-auto Proto = ParsePrototype(true);  // variadic allowed here
+```pyxc
+var result: int = (c = 5) + 1   # result is 6; c is 5
 ```
 
-All other `ParsePrototype` call sites pass the default (`false`) or explicitly pass `/*IsVarArg=*/false`:
+Compound assignment also works as an expression. `(n -= 1)` produces the new value of `n`.
 
-```cpp
-// ParseDefinition, ParseBinaryDef, ParseUnaryDef:
-return make_unique<PrototypeAST>(..., /*IsVarArg=*/false, Precedence);
+## Right Associativity
+
+The recursive call to `ParseExpression` (not `ParseBinOpRHS`) means `=` binds more loosely than all binary operators and chains right:
+
+```pyxc
+a = b = 4   # parsed as: a = (b = 4)
 ```
 
-Attempting `...` in a user-defined function body fails because `AllowVarArgs` is `false` and the parser sees the first `.` as an unexpected token.
+`b = 4` evaluates first — stores 4 into `b`, produces 4 — then `a = 4` stores that value into `a`.
 
-## Arity Check Updated at Call Sites
+## Parentheses Are Transparent for Lvalues
 
-The call-site arity check was previously an exact match. For variadic functions it becomes "at least the fixed count":
+The parens in `(c = getchar())` are parsed as a `ParenExprAST` that wraps a `VariableExprAST`. `BuildAssignmentExpr` sees through the paren by the time it runs because `ParsePrimary` returns the inner expression node from `ParseParenExpr`. So assignment through `(x)` works correctly:
 
-```cpp
-// In ParseCallArgs / call codegen:
-if ((!Proto->isVarArg() && Proto->getNumArgs() != Args.size()) ||
-    (Proto->isVarArg() && Args.size() < Proto->getNumArgs()))
-  return LogError("Incorrect # arguments passed");
+```pyxc
+(x) = 2     # valid: same as x = 2
+(p[i]) = v  # valid: same as p[i] = v
 ```
-
-Type-checking the arguments only iterates over the fixed parameters:
-
-```cpp
-for (size_t i = 0; i < Args.size() && i < Proto->getNumArgs(); ++i) {
-  // check Args[i] against Proto->getArgType(i)
-}
-```
-
-Arguments beyond the fixed count are passed through as-is. Their types are whatever the caller provides. The same guard is applied in `CallExprAST::codegen`:
-
-```cpp
-if ((!CalleeF->isVarArg() && CalleeF->arg_size() != Args.size()) ||
-    (CalleeF->isVarArg() && Args.size() < CalleeF->arg_size()))
-  return LogErrorV("Incorrect # arguments passed");
-```
-
-## Codegen — `FunctionType::get` with `IsVarArg`
-
-The function type construction in `PrototypeAST::codegen` passes `IsVarArg` to `FunctionType::get` instead of the previous hardcoded `false`:
-
-```cpp
-FunctionType *FT = FunctionType::get(
-    LLVMTypeFor(ReturnType, ReturnStructName), ArgTys, IsVarArg);
-```
-
-LLVM emits the IR declaration with `...`:
-
-```
-declare i32 @printf(ptr, ...)
-```
-
-At the call site, LLVM handles the variadic ABI automatically. Arguments past the declared fixed parameters are passed using the platform's default variadic calling convention.
 
 ## Grammar
 
 ```ebnf
-external        = "extern" "def" externprototype [ "->" type ] ;  -- changed
-externprototype = identifier "(" [ typedparam { "," typedparam } [ "," "..." ] | "..." ] ")" ; -- new
+expression = lvalue assignop expression | unaryexpr binoprhs ; -- changed
 ```
 
-Regular `prototype` (used by `def`) is unchanged — `...` is not valid there.
+The `assignstmt` rule is unchanged — assignment as a statement still works as before.
 
 ## Error Cases
 
-**Incomplete `...`:**
+**Non-lvalue target:**
 ```pyxc
-extern def bad(fmt: ptr[int8], ..) -> int32
-# Error: Expected '...' in variadic prototype
+(x + 1) = 3   # Error: Assignment target must be assignable
 ```
 
-**Too few fixed arguments:**
+**Precedence trap without parens:**
 ```pyxc
-extern def printf(fmt: ptr[int8], ...) -> int32
-printf()   # Error: Incorrect # arguments passed
-```
-
-**`...` in a user-defined function:**
-```pyxc
-def bad(x: int, ...) -> int:  # Error: Expected parameter name in prototype
-  return x
+while c = getchar() != EOF:
+  ...
+# Parses as: c = (getchar() != EOF)
+# If c is int32, this is a type error (assigning bool to int32).
+# Always use: while (c = getchar()) != EOF:
 ```
 
 ## Things Worth Knowing
 
-**`%ld` not `%d` for pyxc's `int`.** pyxc's `int` is 64-bit. `printf`'s `%d` expects a 32-bit `int`. Use `%ld` or `%lld`; use `%d` only when you have explicitly cast to `int32`.
+**Parentheses required when combining assignment with another operator.** `(c = getchar()) != EOF` is correct. `c = getchar() != EOF` assigns a `bool` to `c`.
 
-**Variadic arguments are not type-checked.** Fixed parameters are checked at compile time. Anything past `...` is your responsibility.
+**Assignment expressions do not print in the REPL.** Top-level assignments set variables silently, exactly as before.
 
-**You cannot implement a variadic function in pyxc.** `...` is only valid in `extern def`. There is no `va_list`, `va_start`, or `va_arg` in pyxc. If you need a variadic-style interface, write an overloaded wrapper or accept a fixed-size array.
-
-**Pure `...` with no fixed parameters is valid syntax.** `extern def f(...)` compiles and generates `declare ... @f(...)`. However, any real C function declared this way would have ABI issues because `va_start` needs at least one named parameter.
+**Compound assignment also works as an expression.** `(n -= 1)` produces the new value of `n`. Idioms like `while (n -= 1) > 0:` work.
 
 ## What's Next
 
-Phase 5 is complete. pyxc now has the full K&R toolbox: signed and unsigned integer types, character literals, the complete set of operators, `if`/`elif`/`else`, `switch`, `while`, `do/while`, `break`, `continue`, assignment as expression, and direct C library interop via `extern` (including variadic functions). [Chapter 41](chapter-41.md) begins Phase 6: module declarations and imports, giving pyxc programs a way to split across multiple files.
+[Chapter 41](chapter-41.md) adds variadic `extern` declarations, enabling `printf`, `scanf`, and other C variadic functions.
 
 ## Need Help?
 

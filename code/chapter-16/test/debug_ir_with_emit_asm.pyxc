@@ -6,9 +6,9 @@
 # (ELF) or debug sections (Mach-O). The exact directive differs by platform
 # but the presence of debug information in the assembly is platform-independent.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-def triple(x: float64) -> float64: return x * 3
+def triple(x): return x * 3
 
-def main() -> None:
+def main():
     printd(triple(4))

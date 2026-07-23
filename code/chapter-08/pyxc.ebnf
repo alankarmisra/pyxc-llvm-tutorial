@@ -1,6 +1,6 @@
 (*
    pyxc.ebnf
-   Grammar for chapter 8 - Control Flow: if, else, and for.
+   Grammar for chapter 7 - File Input Mode.
 *)
 
 (*
@@ -10,23 +10,20 @@
 
 program         = [ eols ] [ top { eols top } ] [ eols ] ;
 eols            = eol { eol } ;
-top             = definition | external | toplevelexpr ;
-definition      = "def" prototype ":" [ eols ] "return" expression ;
-external        = "extern" "def" prototype ;
+top             = functiondef | external | toplevelexpr ;
+functiondef      = "def" functionsignature ":" [ eols ] "return" expression ;
+external        = "extern" "def" functionsignature ;
 toplevelexpr    = expression ;
-prototype       = identifier "(" [ identifier { "," identifier } ] ")" ;
-ifexpr          = "if" expression ":" [ eols ] expression [ eols ] "else" ":" [ eols ] expression ;
-forexpr         = "for" identifier "=" expression "," expression "," expression ":" [ eols ] expression ;
+functionsignature       = name "(" [ name { "," name } ] ")" ;
 expression      = primary binoprhs ;
 binoprhs        = { binaryop primary } ;
-primary         = identifierexpr | numberexpr | parenexpr
-                | ifexpr | forexpr ;
-identifierexpr  = identifier | callexpr ;
-callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
+primary         = nameexpr | numberexpr | parenexpr ;
+nameexpr  = name | callexpr ;
+callexpr        = name "(" [ expression { "," expression } ] ")" ;
 numberexpr      = number ;
 parenexpr       = "(" expression ")" ;
-binaryop        = "==" | "!=" | "<=" | ">=" | "<" | ">" | "+" | "-" | "*" ;
-identifier      = (letter | "_") { letter | digit | "_" } ;
+binaryop        = "+" | "-" | "*" ;
+name      = (letter | "_") { letter | digit | "_" } ;
 number          = digit { digit } [ "." { digit } ]
                 | "." digit { digit } ;
 letter          = "A".."Z" | "a".."z" ;

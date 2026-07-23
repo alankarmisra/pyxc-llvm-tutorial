@@ -1,4 +1,5 @@
 # RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Parsed a user-defined operator.
 # CHECK: conflicts with an existing unary operator
 
 

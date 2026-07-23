@@ -168,7 +168,6 @@ enum Token {
   tok_none = -31,
   tok_true = -32,
   tok_false = -33,
-  tok_struct = -34,
 };
 
 enum class ValueType {
@@ -182,7 +181,6 @@ enum class ValueType {
   Float32,
   Float64,
   Bool,
-  Struct,
   Error
 };
 
@@ -208,48 +206,31 @@ static map<string, Token> Keywords = {
     {"int", tok_int},         {"int8", tok_int8},       {"int16", tok_int16},
     {"int32", tok_int32},     {"int64", tok_int64},     {"float", tok_float},
     {"float32", tok_float32}, {"float64", tok_float64}, {"bool", tok_bool},
-    {"None", tok_none},       {"True", tok_true},       {"False", tok_false},
-    {"struct", tok_struct}};
+    {"None", tok_none},       {"True", tok_true},       {"False", tok_false}};
 static constexpr int IndentTabWidth = 8;
 
 // Debug-only token names. Kept separate from Keywords because this map is
 // purely for printing token stream output.
 static map<int, string> TokenNames = [] {
   // Unprintable character tokens, and multi-character tokens.
-  static map<int, string> Names = {{tok_eof, "end of input"},
-                                   {tok_eol, "newline"},
-                                   {tok_error, "error"},
-                                   {tok_def, "'def'"},
-                                   {tok_extern, "'extern'"},
-                                   {tok_identifier, "identifier"},
-                                   {tok_number, "number"},
-                                   {tok_return, "'return'"},
-                                   {tok_eq, "'=='"},
-                                   {tok_neq, "'!='"},
-                                   {tok_leq, "'<='"},
-                                   {tok_geq, "'>='"},
-                                   {tok_arrow, "'->'"},
-                                   {tok_if, "'if'"},
-                                   {tok_else, "'else'"},
-                                   {tok_for, "'for'"},
-                                   {tok_binary, "'binary'"},
-                                   {tok_unary, "'unary'"},
-                                   {tok_var, "'var'"},
-                                   {tok_int, "'int'"},
-                                   {tok_int8, "'int8'"},
-                                   {tok_int16, "'int16'"},
-                                   {tok_int32, "'int32'"},
-                                   {tok_int64, "'int64'"},
-                                   {tok_float, "'float'"},
-                                   {tok_float32, "'float32'"},
-                                   {tok_float64, "'float64'"},
-                                   {tok_bool, "'bool'"},
-                                   {tok_none, "'None'"},
-                                   {tok_true, "'True'"},
-                                   {tok_false, "'False'"},
-                                   {tok_struct, "'struct'"},
-                                   {tok_indent, "indent"},
-                                   {tok_dedent, "dedent"},
+  static map<int, string> Names = {
+      {tok_eof, "end of input"},  {tok_eol, "newline"},
+      {tok_error, "error"},       {tok_def, "'def'"},
+      {tok_extern, "'extern'"},   {tok_identifier, "identifier"},
+      {tok_number, "number"},     {tok_return, "'return'"},
+      {tok_eq, "'=='"},           {tok_neq, "'!='"},
+      {tok_leq, "'<='"},          {tok_geq, "'>='"},
+      {tok_arrow, "'->'"},        {tok_if, "'if'"},
+      {tok_else, "'else'"},       {tok_for, "'for'"},
+      {tok_binary, "'binary'"},   {tok_unary, "'unary'"},
+      {tok_var, "'var'"},         {tok_int, "'int'"},
+      {tok_int8, "'int8'"},       {tok_int16, "'int16'"},
+      {tok_int32, "'int32'"},     {tok_int64, "'int64'"},
+      {tok_float, "'float'"},     {tok_float32, "'float32'"},
+      {tok_float64, "'float64'"}, {tok_bool, "'bool'"},
+      {tok_none, "'None'"},       {tok_true, "'True'"},
+      {tok_false, "'False'"},     {tok_indent, "indent"},
+      {tok_dedent, "dedent"},
                                    {tok_block_end, "block-end"}};
 
   // Single character tokens.
@@ -290,8 +271,7 @@ struct SourceLocation {
 static SourceLocation CurLoc;
 static SourceLocation LexLoc = {1, 0};
 static void LogErrorAtLoc(const char *Str, SourceLocation Loc);
-static void LogInvalidNumberLiteralAtLoc(const string &Literal,
-                                         SourceLocation Loc);
+static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation Loc);
 
 /// SourceManager - Buffers every source line as it is read so that error
 /// messages can reprint the offending line with a caret underneath it.
@@ -438,10 +418,7 @@ static int gettok() {
       LexerLastChar = advance();
     int CurrentIndentRead = 0;
     while (LexerLastChar == ' ' || LexerLastChar == '\t') {
-      CurrentIndentRead +=
-          (LexerLastChar == ' ')
-              ? 1
-              : (IndentTabWidth - CurrentIndentRead % IndentTabWidth);
+      CurrentIndentRead += (LexerLastChar == ' ') ? 1 : (IndentTabWidth - CurrentIndentRead % IndentTabWidth);
       LexerLastChar = advance();
     }
 
@@ -538,7 +515,7 @@ static int gettok() {
     return (It == Keywords.end()) ? tok_identifier : It->second;
   }
 
-  if (isdigit(LexerLastChar) || (LexerLastChar == '.' && isdigit(peek()))) {
+  if (isdigit(LexerLastChar) || LexerLastChar == '.') {
     string NumStr;
     bool SawDot = false;
     bool SawExp = false;
@@ -574,8 +551,8 @@ static int gettok() {
         LexerLastChar = advance();
       }
       if (!isdigit(LexerLastChar)) {
-        LogInvalidNumberLiteralAtLoc(NumStr, CurLoc);
-        return tok_error;
+      LogInvalidNumberLiteralAtLoc(NumStr, CurLoc);
+      return tok_error;
       }
       ConsumeDigits();
     }
@@ -735,13 +712,13 @@ static void PrintErrorSourceContext(SourceLocation Loc) {
   fprintf(stderr, "^~~~\n");
 }
 
+
 static void LogErrorAtLoc(const char *Str, SourceLocation Loc) {
   fprintf(stderr, "Error (Line %d, Column %d): %s\n", Loc.Line, Loc.Col, Str);
   PrintErrorSourceContext(Loc);
 }
 
-static void LogInvalidNumberLiteralAtLoc(const string &Literal,
-                                         SourceLocation Loc) {
+static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation Loc) {
   LogErrorAtLoc(("invalid number literal '" + Literal + "'").c_str(), Loc);
 }
 
@@ -753,12 +730,10 @@ namespace {
 /// ExprAST - Base class for all expression nodes.
 class ExprAST {
   ValueType Type = ValueType::Error;
-  string StructName;
 
 public:
   virtual ~ExprAST() = default;
   ValueType getType() const { return Type; }
-  const string &getStructName() const { return StructName; }
   // getLValueName - If this node is a plain assignable variable, return its
   // name; otherwise return nullptr.
   virtual const string *getLValueName() const { return nullptr; }
@@ -770,10 +745,7 @@ public:
   virtual Value *codegen() = 0;
 
 protected:
-  void setType(ValueType NewType, const string &NewStructName = "") {
-    Type = NewType;
-    StructName = NewStructName;
-  }
+  void setType(ValueType NewType) { Type = NewType; }
 };
 
 /// NumberExprAST - Expression class for numeric literals.
@@ -803,35 +775,17 @@ public:
   Value *codegen() override;
 };
 
-/// VariableExprAST - Expression class for referencing a variable, like "a".
-class VariableExprAST : public ExprAST {
+/// NameExprAST - Expression class for referencing a variable, like "a".
+class NameExprAST : public ExprAST {
   string Name;
 
 public:
-  VariableExprAST(const string &Name, ValueType Type,
-                  const string &StructName = "")
-      : Name(Name) {
-    setType(Type, StructName);
+  NameExprAST(const string &Name, ValueType Type) : Name(Name) {
+    setType(Type);
   }
   // convenience function
   const string &getName() const { return Name; }
   const string *getLValueName() const override { return &Name; }
-  Value *codegen() override;
-};
-
-/// FieldExprAST - Nested field access, e.g. p.x or p.inner.value
-class FieldExprAST : public ExprAST {
-  string BaseName;
-  vector<string> FieldPath;
-
-public:
-  FieldExprAST(string BaseName, vector<string> FieldPath, ValueType Type,
-               const string &StructName = "")
-      : BaseName(std::move(BaseName)), FieldPath(std::move(FieldPath)) {
-    setType(Type, StructName);
-  }
-  const string *getLValueName() const override { return &BaseName; }
-  const vector<string> &getFieldPath() const { return FieldPath; }
   Value *codegen() override;
 };
 
@@ -846,21 +800,6 @@ public:
   AssignmentExprAST(const string &Name, unique_ptr<ExprAST> Expr,
                     ValueType Type)
       : Name(Name), Expr(std::move(Expr)) {
-    setType(Type);
-  }
-  bool shouldPrintValue() const override { return false; }
-  Value *codegen() override;
-};
-
-/// FieldAssignmentExprAST - Assignment to a field path, e.g. p.x = 1
-class FieldAssignmentExprAST : public ExprAST {
-  unique_ptr<FieldExprAST> LHS;
-  unique_ptr<ExprAST> RHS;
-
-public:
-  FieldAssignmentExprAST(unique_ptr<FieldExprAST> LHS, unique_ptr<ExprAST> RHS,
-                         ValueType Type)
-      : LHS(std::move(LHS)), RHS(std::move(RHS)) {
     setType(Type);
   }
   bool shouldPrintValue() const override { return false; }
@@ -1000,7 +939,6 @@ public:
 struct VarBinding {
   string Name;
   ValueType Type;
-  string StructName;
   unique_ptr<ExprAST> Init;
 };
 
@@ -1019,7 +957,7 @@ public:
   Value *codegen() override;
 };
 
-/// PrototypeAST - This class represents the "prototype" for a function,
+/// FunctionSignatureAST - This class represents the "function signature" for a function,
 /// which captures its name, and its argument names (thus implicitly the number
 /// of arguments the function takes).
 ///
@@ -1028,51 +966,32 @@ public:
 /// unary '!' operator. Precedence is only meaningful for binary operators — it
 /// is installed into BinopPrecedence at codegen time, making the new operator
 /// immediately available to the parser for subsequent expressions.
-class PrototypeAST {
-public:
-  struct ArgInfo {
-    string Name;
-    ValueType Type;
-    string StructName;
-  };
-
-private:
+class FunctionSignatureAST {
   string Name;
-  vector<ArgInfo> Args;
+  vector<pair<string, ValueType>> Args;
   ValueType ReturnType;
-  string ReturnStructName;
   bool IsOperator;
   unsigned Precedence; // binary operators only
   SourceLocation Loc;
 
 public:
-  PrototypeAST(const string &Name, vector<ArgInfo> Args, SourceLocation Loc,
-               ValueType ReturnType = ValueType::Float64,
-               bool IsOperator = false, unsigned Prec = 0,
-               string ReturnStructName = "")
+  FunctionSignatureAST(const string &Name, vector<pair<string, ValueType>> Args,
+               SourceLocation Loc, ValueType ReturnType = ValueType::Float64,
+               bool IsOperator = false, unsigned Prec = 0)
       : Name(Name), Args(std::move(Args)), ReturnType(ReturnType),
-        ReturnStructName(std::move(ReturnStructName)), IsOperator(IsOperator),
-        Precedence(Prec), Loc(Loc) {}
+        IsOperator(IsOperator), Precedence(Prec), Loc(Loc) {}
 
   const string &getName() const { return Name; }
-  const vector<ArgInfo> &getArgs() const { return Args; }
+  const vector<pair<string, ValueType>> &getArgs() const { return Args; }
   size_t getNumArgs() const { return Args.size(); }
   SourceLocation getLocation() const { return Loc; }
   ValueType getReturnType() const { return ReturnType; }
-  const string &getReturnStructName() const { return ReturnStructName; }
   void setReturnType(ValueType Type) { ReturnType = Type; }
-  void setReturnStructName(const string &Name) { ReturnStructName = Name; }
 
   ValueType getArgType(size_t Index) const {
     if (Index >= Args.size())
       return ValueType::Error;
-    return Args[Index].Type;
-  }
-  const string &getArgStructName(size_t Index) const {
-    static string Empty;
-    if (Index >= Args.size())
-      return Empty;
-    return Args[Index].StructName;
+    return Args[Index].second;
   }
 
   bool isUnaryOp() const { return IsOperator && Args.size() == 1; }
@@ -1081,30 +1000,30 @@ public:
   // The operator character is the last character of the encoded name.
   // e.g. "binary+" -> '+', "unary!" -> '!'
   char getOperatorName() const {
-    assert((isUnaryOp() || isBinaryOp()) && "Not an operator prototype");
+    assert((isUnaryOp() || isBinaryOp()) && "Not an operator function signature");
     return Name.back();
   }
 
   unsigned getBinaryPrecedence() const { return Precedence; }
 
-  std::unique_ptr<PrototypeAST> clone() const {
-    return std::make_unique<PrototypeAST>(
-        Name, Args, Loc, ReturnType, IsOperator, Precedence, ReturnStructName);
+  std::unique_ptr<FunctionSignatureAST> clone() const {
+    return std::make_unique<FunctionSignatureAST>(Name, Args, Loc, ReturnType,
+                                          IsOperator, Precedence);
   }
 
   Function *codegen();
 };
 
-/// FunctionAST - This class represents a function definition itself.
-class FunctionAST {
-  unique_ptr<PrototypeAST> Proto;
+/// FunctionDefAST - This class represents a function definition itself.
+class FunctionDefAST {
+  unique_ptr<FunctionSignatureAST> Signature;
   unique_ptr<ExprAST> Body;
 
 public:
-  FunctionAST(unique_ptr<PrototypeAST> Proto, unique_ptr<ExprAST> Body)
-      : Proto(std::move(Proto)), Body(std::move(Body)) {}
-  const string &getName() const { return Proto->getName(); }
-  ValueType getReturnType() const { return Proto->getReturnType(); }
+  FunctionDefAST(unique_ptr<FunctionSignatureAST> Signature, unique_ptr<ExprAST> Body)
+      : Signature(std::move(Signature)), Body(std::move(Body)) {}
+  const string &getName() const { return Signature->getName(); }
+  ValueType getReturnType() const { return Signature->getReturnType(); }
   Function *codegen();
 };
 
@@ -1166,33 +1085,17 @@ static void ResetKnownUnaryOperators() {
   KnownUnaryOperators = DefaultKnownUnaryOperators;
 }
 
-// FunctionProtos - Persistent prototype registry used by the parser to detect
+// FunctionSignatures - Persistent function signature registry used by the parser to detect
 // redefinition of operators. Also used by codegen to re-emit declarations into
 // fresh modules. Declared here so parser functions can access it.
-static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
-
-struct StructFieldInfo {
-  string Name;
-  ValueType Type = ValueType::Error;
-  string StructName;
-};
-
-struct StructTypeInfo {
-  string Name;
-  vector<StructFieldInfo> Fields;
-  std::map<string, size_t> FieldIndex;
-};
-
-static std::map<string, StructTypeInfo> StructTypes;
+static std::map<std::string, std::unique_ptr<FunctionSignatureAST>> FunctionSignatures;
 
 // Parse-time variable tracking for assignments and types.
 // Scopes are stacked: function scope plus nested block scopes.
 // for-loop variables are scoped to the loop body only.
 static vector<std::map<string, ValueType>> VarScopes;
-static vector<std::map<string, string>> VarStructScopes;
 // Global variables declared at top level (persist across modules).
 static std::map<string, ValueType> GlobalVarTypes;
-static std::map<string, string> GlobalVarStructTypes;
 // Track which globals were declared in this translation unit (for redeclare
 // checks).
 static std::set<string> GlobalVarDecls;
@@ -1202,86 +1105,60 @@ static bool ParsingTopLevel = false;
 static bool HadError = false;
 // Current function's declared return type during parsing/codegen.
 static ValueType CurrentFunctionReturnType = ValueType::None;
-static string CurrentFunctionReturnStructName;
 
 struct TopLevelParseGuard {
   TopLevelParseGuard() { ParsingTopLevel = true; }
   ~TopLevelParseGuard() { ParsingTopLevel = false; }
 };
 
-static void BeginFunctionScope(const vector<PrototypeAST::ArgInfo> &Args) {
+static void BeginFunctionScope(const vector<pair<string, ValueType>> &Args) {
   VarScopes.clear();
-  VarStructScopes.clear();
   VarScopes.emplace_back();
-  VarStructScopes.emplace_back();
-  for (const auto &Arg : Args) {
-    VarScopes.front()[Arg.Name] = Arg.Type;
-    if (Arg.Type == ValueType::Struct)
-      VarStructScopes.front()[Arg.Name] = Arg.StructName;
-  }
+  for (const auto &Arg : Args)
+    VarScopes.front()[Arg.first] = Arg.second;
 }
 
-static void EndFunctionScope() {
-  VarScopes.clear();
-  VarStructScopes.clear();
-}
+static void EndFunctionScope() { VarScopes.clear(); }
 
-static void DeclareVar(const string &Name, ValueType Type,
-                       const string &StructName = "") {
+static void DeclareVar(const string &Name, ValueType Type) {
   // Only declare into an active local scope; at top level VarScopes is empty.
   if (VarScopes.empty())
     return;
   VarScopes.back()[Name] = Type;
-  if (Type == ValueType::Struct)
-    VarStructScopes.back()[Name] = StructName;
 }
 
-static void BeginBlockScope() {
-  VarScopes.emplace_back();
-  VarStructScopes.emplace_back();
-}
+static void BeginBlockScope() { VarScopes.emplace_back(); }
 
 // Pop a block scope if one is active.
 // Size > 1 means a nested block inside a function; never pop the function scope
 // here. Size == 1 is only popped for top-level blocks (function scope is popped
 // in EndFunctionScope).
 static void EndBlockScope() {
-  if (VarScopes.size() > 1) {
+  if (VarScopes.size() > 1)
     VarScopes.pop_back();
-    VarStructScopes.pop_back();
-  } else if (ParsingTopLevel && VarScopes.size() == 1) {
+  else if (ParsingTopLevel && VarScopes.size() == 1)
     VarScopes.pop_back();
-    VarStructScopes.pop_back();
-  }
 }
 
 // Check only the innermost scope (used for redeclaration checks).
 
 // Ensure a function scope exists, then add a new scope for the loop variable.
-static void BeginLoopScope(const string &Name, ValueType Type,
-                           const string &StructName = "") {
+static void BeginLoopScope(const string &Name, ValueType Type) {
   VarScopes.emplace_back();
-  VarStructScopes.emplace_back();
   VarScopes.back()[Name] = Type;
-  if (Type == ValueType::Struct)
-    VarStructScopes.back()[Name] = StructName;
 }
 
 // Size == 1 is only popped for top-level blocks (function scope is popped in
 // EndFunctionScope).
 static void EndLoopScope() {
-  if (VarScopes.size() > 1) {
+  if (VarScopes.size() > 1)
     VarScopes.pop_back();
-    VarStructScopes.pop_back();
-  }
-  if (ParsingTopLevel && VarScopes.size() == 1) {
+  if (ParsingTopLevel && VarScopes.size() == 1)
     VarScopes.pop_back();
-    VarStructScopes.pop_back();
-  }
 }
 
 struct FunctionScopeGuard {
-  FunctionScopeGuard(const vector<PrototypeAST::ArgInfo> &Args) {
+  FunctionScopeGuard(const vector<pair<string, ValueType>> &Args) {
     BeginFunctionScope(Args);
   }
   ~FunctionScopeGuard() { EndFunctionScope(); }
@@ -1293,12 +1170,13 @@ struct BlockScopeGuard {
 };
 
 struct LoopScopeGuard {
-  LoopScopeGuard(const string &Name, ValueType Type,
-                 const string &StructName = "") {
-    BeginLoopScope(Name, Type, StructName);
+  LoopScopeGuard(const string &Name, ValueType Type) {
+    BeginLoopScope(Name, Type);
   }
   ~LoopScopeGuard() { EndLoopScope(); }
 };
+
+
 
 struct ReturnTypeGuard {
   ValueType Saved;
@@ -1339,18 +1217,6 @@ static ValueType LookupVarType(const string &Name) {
   return ValueType::Error;
 }
 
-static string LookupVarStructName(const string &Name) {
-  for (auto It = VarStructScopes.rbegin(); It != VarStructScopes.rend(); ++It) {
-    auto Found = It->find(Name);
-    if (Found != It->end())
-      return Found->second;
-  }
-  auto GI = GlobalVarStructTypes.find(Name);
-  if (GI != GlobalVarStructTypes.end())
-    return GI->second;
-  return "";
-}
-
 /// GetTokPrecedence - Returns the precedence of CurTok if it is a known binary
 /// operator, or -1 if it is not. Both single-character ASCII operators ('+',
 /// '-', '*', '<', '>') and named multi-character token enums (tok_eq, tok_neq,
@@ -1387,12 +1253,12 @@ unique_ptr<ExprAST> LogError(const char *Str) {
   return nullptr;
 }
 
-unique_ptr<PrototypeAST> LogErrorP(const char *Str) {
+unique_ptr<FunctionSignatureAST> LogErrorSignature(const char *Str) {
   LogError(Str);
   return nullptr;
 }
 
-unique_ptr<FunctionAST> LogErrorF(const char *Str) {
+unique_ptr<FunctionDefAST> LogErrorF(const char *Str) {
   LogError(Str);
   return nullptr;
 }
@@ -1405,21 +1271,21 @@ static unique_ptr<ExprAST> ParseSimpleStmt();
 static unique_ptr<ExprAST> ParseBlock();
 static unique_ptr<ExprAST> ParseFunctionBody();
 
+
 // Counter to give each anonymous top-level expression a unique name.
 static unsigned TopLevelExprCounter = 0;
 // Whether the last top-level form should be printed in the REPL.
 static bool LastTopLevelShouldPrint = true;
 
 static unique_ptr<ExprAST> ParseSuite();
-static ValueType ParseTypeToken(string *StructName = nullptr);
-static bool ParseStructDefinition();
+static ValueType ParseTypeToken();
 static const char *TypeName(ValueType Type);
 static bool IsNumericType(ValueType Type);
 static bool IsIntType(ValueType Type);
 static bool IsFloatType(ValueType Type);
 static bool IsAssignable(ValueType Dest, ValueType Src);
-static Type *LLVMTypeFor(ValueType Type, const string &StructName = "");
-static PrototypeAST *GetFunctionProto(const string &Name);
+static Type *LLVMTypeFor(ValueType Type);
+static FunctionSignatureAST *GetFunctionSignature(const string &Name);
 // Optional expected type for numeric literals (used for float/float32).
 static ValueType ExpectedLiteralType = ValueType::Error;
 
@@ -1514,9 +1380,7 @@ static unique_ptr<ExprAST> ParseNumberExpr() {
 ///   = "int" | "int8" | "int16" | "int32" | "int64"
 ///   | "float" | "float32" | "float64"
 ///   | "bool" ;
-static ValueType ParseTypeToken(string *StructName) {
-  if (StructName)
-    StructName->clear();
+static ValueType ParseTypeToken() {
   switch (CurTok) {
   case tok_int:
     getNextToken();
@@ -1548,17 +1412,6 @@ static ValueType ParseTypeToken(string *StructName) {
   case tok_none:
     getNextToken();
     return ValueType::None;
-  case tok_identifier: {
-    string TyName = IdentifierStr;
-    if (!StructTypes.count(TyName)) {
-      LogError(("Unknown type '" + TyName + "'").c_str());
-      return ValueType::Error;
-    }
-    getNextToken();
-    if (StructName)
-      *StructName = TyName;
-    return ValueType::Struct;
-  }
   default:
     LogError("Expected a type");
     return ValueType::Error;
@@ -1573,8 +1426,6 @@ static unique_ptr<ExprAST> ParseCastExpr() {
     return nullptr;
   if (Type == ValueType::None)
     return LogError("Cannot cast to None");
-  if (Type == ValueType::Struct)
-    return LogError("Cannot cast to struct type");
   if (CurTok != '(')
     return LogError("Expected '(' after cast type");
   getNextToken(); // eat '('
@@ -1613,24 +1464,23 @@ static unique_ptr<ExprAST> ParseIdentifierExprWithName(const string &IdName) {
     if (Type == ValueType::Error) {
       return LogError("Unknown variable name");
     }
-    return make_unique<VariableExprAST>(IdName, Type,
-                                        LookupVarStructName(IdName));
+    return make_unique<NameExprAST>(IdName, Type);
   }
 
   // Call.
   getNextToken(); // eat (
 
-  // Proto may be null for forward references. We still parse the call to keep
+  // Signature may be null for forward references. We still parse the call to keep
   // the token stream aligned; the “unknown function” error is raised later
   // during semantic/codegen.
-  PrototypeAST *Proto = GetFunctionProto(IdName);
+  FunctionSignatureAST *Signature = GetFunctionSignature(IdName);
   vector<unique_ptr<ExprAST>> Args;
   if (CurTok != ')') {
     size_t ArgIndex = 0;
     while (true) {
       ValueType Expected = ValueType::Error;
-      if (Proto && ArgIndex < Proto->getNumArgs())
-        Expected = Proto->getArgType(ArgIndex);
+      if (Signature && ArgIndex < Signature->getNumArgs())
+        Expected = Signature->getArgType(ArgIndex);
       {
         ExpectedLiteralTypeGuard Guard(Expected);
         if (auto Arg = ParseExpression())
@@ -1652,14 +1502,14 @@ static unique_ptr<ExprAST> ParseIdentifierExprWithName(const string &IdName) {
   // Eat the ')'.
   getNextToken();
 
-  if (!Proto)
+  if (!Signature)
     return LogError("Unknown function referenced");
-  if (Proto->getNumArgs() != Args.size())
+  if (Signature->getNumArgs() != Args.size())
     return LogError("Incorrect # arguments passed");
 
   for (size_t i = 0; i < Args.size(); ++i) {
     ValueType ArgType = Args[i]->getType();
-    ValueType ParamType = Proto->getArgType(i);
+    ValueType ParamType = Signature->getArgType(i);
     if (!IsAssignable(ParamType, ArgType)) {
       return LogError(("argument " + std::to_string(i + 1) + " expects " +
                        TypeName(ParamType))
@@ -1668,45 +1518,7 @@ static unique_ptr<ExprAST> ParseIdentifierExprWithName(const string &IdName) {
   }
 
   return make_unique<CallExprAST>(IdName, std::move(Args),
-                                  Proto->getReturnType());
-}
-
-static unique_ptr<FieldExprAST> ParseFieldAccessExpr(string BaseName,
-                                                     ValueType BaseType,
-                                                     string BaseStructName) {
-  vector<string> Path;
-  ValueType CurType = BaseType;
-  string CurStruct = std::move(BaseStructName);
-  while (CurTok == '.') {
-    getNextToken(); // eat '.'
-    if (CurTok != tok_identifier) {
-      LogError("Expected field name after '.'");
-      return nullptr;
-    }
-    string Field = IdentifierStr;
-    getNextToken(); // eat field name
-    if (CurType != ValueType::Struct || CurStruct.empty()) {
-      LogError("Field access requires a struct value");
-      return nullptr;
-    }
-    auto SI = StructTypes.find(CurStruct);
-    if (SI == StructTypes.end()) {
-      LogError("Unknown struct type in field access");
-      return nullptr;
-    }
-    auto FI = SI->second.FieldIndex.find(Field);
-    if (FI == SI->second.FieldIndex.end()) {
-      LogError(("Unknown field '" + Field + "' on struct '" + CurStruct + "'")
-                   .c_str());
-      return nullptr;
-    }
-    const auto &FD = SI->second.Fields[FI->second];
-    CurType = FD.Type;
-    CurStruct = FD.StructName;
-    Path.push_back(Field);
-  }
-  return make_unique<FieldExprAST>(std::move(BaseName), std::move(Path),
-                                   CurType, CurStruct);
+                                  Signature->getReturnType());
 }
 
 static unique_ptr<ExprAST> ParseIdentifierExpr() {
@@ -1714,21 +1526,7 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
 
   getNextToken(); // eat identifier.
 
-  auto Base = ParseIdentifierExprWithName(IdName);
-  if (!Base)
-    return nullptr;
-
-  if (CurTok != '.')
-    return Base;
-
-  auto *Var = dynamic_cast<VariableExprAST *>(Base.get());
-  if (!Var)
-    return LogError("Field access base must be a variable");
-  auto Field =
-      ParseFieldAccessExpr(IdName, Var->getType(), Var->getStructName());
-  if (!Field)
-    return LogError("Invalid field access");
-  return Field;
+  return ParseIdentifierExprWithName(IdName);
 }
 
 // ParseForParts - Parse the "= start, cond, step : suite" tail of a for-loop.
@@ -1862,8 +1660,7 @@ static unique_ptr<ExprAST> ParseVarStmt() {
       return LogError(
           "Variable declaration requires a type annotation (e.g., ': int32')");
     getNextToken(); // eat ':'
-    string DeclStructName;
-    ValueType DeclType = ParseTypeToken(&DeclStructName);
+    ValueType DeclType = ParseTypeToken();
     if (DeclType == ValueType::Error)
       return nullptr;
     if (DeclType == ValueType::None)
@@ -1890,22 +1687,16 @@ static unique_ptr<ExprAST> ParseVarStmt() {
       if (!IsAssignable(DeclType, Init->getType()))
         return LogError("Type mismatch in variable initialization");
     } else {
-      if (DeclType != ValueType::Struct) {
-        Init = MakeZeroLiteral(DeclType);
-        if (!Init)
-          return nullptr;
-      }
+      Init = MakeZeroLiteral(DeclType);
+      if (!Init)
+        return nullptr;
     }
 
-    VarNames.push_back({Name, DeclType, DeclStructName, std::move(Init)});
-    if (IsGlobalDecl) {
-      GlobalVarTypes[Name] = DeclType;
-      GlobalVarDecls.insert(Name);
-      if (DeclType == ValueType::Struct)
-        GlobalVarStructTypes[Name] = DeclStructName;
-    } else {
-      DeclareVar(Name, DeclType, DeclStructName);
-    }
+    VarNames.push_back({Name, DeclType, std::move(Init)});
+    if (IsGlobalDecl)
+      GlobalVarTypes[Name] = DeclType, GlobalVarDecls.insert(Name);
+    else
+      DeclareVar(Name, DeclType);
 
     if (CurTok != ',')
       break;
@@ -1950,8 +1741,7 @@ static unique_ptr<ExprAST> ParseIfStmt() {
     if (!Else)
       return nullptr;
   } else if (ThenWasBlock) {
-    // No else: restore the synthetic separator for the enclosing block/top
-    // level.
+    // No else: restore the synthetic separator for the enclosing block/top level.
     PendingTokens.push_front(CurTok);
     CurTok = tok_block_end;
   }
@@ -2159,18 +1949,18 @@ static unique_ptr<ExprAST> ParseUnary() {
   int Opc = CurTok;
   getNextToken(); // eat the operator character
   if (auto Operand = ParseUnary()) {
-    auto Proto = GetFunctionProto(string("unary") + (char)Opc);
-    if (!Proto)
+    auto Signature = GetFunctionSignature(string("unary") + (char)Opc);
+    if (!Signature)
       return LogError("Unknown unary operator");
-    if (Proto->getNumArgs() != 1)
+    if (Signature->getNumArgs() != 1)
       return LogError("Unary operator must have exactly one argument");
-    ValueType ParamType = Proto->getArgType(0);
+    ValueType ParamType = Signature->getArgType(0);
     if (!IsAssignable(ParamType, Operand->getType())) {
       return LogError(
           ("unary operator expects " + string(TypeName(ParamType))).c_str());
     }
     return make_unique<UnaryExprAST>(Opc, std::move(Operand),
-                                     Proto->getReturnType());
+                                     Signature->getReturnType());
   }
   return nullptr;
 }
@@ -2215,13 +2005,13 @@ static unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
       if (ResultType == ValueType::Error)
         return LogError("Type mismatch in binary operator");
     } else {
-      auto Proto = GetFunctionProto(string("binary") + (char)BinOp);
-      if (!Proto)
+      auto Signature = GetFunctionSignature(string("binary") + (char)BinOp);
+      if (!Signature)
         return LogError("Unknown binary operator");
-      if (Proto->getNumArgs() != 2)
+      if (Signature->getNumArgs() != 2)
         return LogError("Binary operator must have exactly two arguments");
-      ValueType LType = Proto->getArgType(0);
-      ValueType RType = Proto->getArgType(1);
+      ValueType LType = Signature->getArgType(0);
+      ValueType RType = Signature->getArgType(1);
       if (!IsAssignable(LType, LHS->getType()))
         return LogError(("binary operator expects " + string(TypeName(LType)) +
                          " for left operand")
@@ -2230,7 +2020,7 @@ static unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
         return LogError(("binary operator expects " + string(TypeName(RType)) +
                          " for right operand")
                             .c_str());
-      ResultType = Proto->getReturnType();
+      ResultType = Signature->getReturnType();
     }
 
     // Merge LHS/RHS.
@@ -2289,71 +2079,42 @@ static unique_ptr<ExprAST> ParseAssignmentRHS(const string &Name) {
   return make_unique<AssignmentExprAST>(Name, std::move(RHS), VarType);
 }
 
-static unique_ptr<ExprAST>
-ParseFieldAssignmentRHS(unique_ptr<FieldExprAST> LHS) {
-  ValueType DestType = LHS->getType();
-  getNextToken(); // eat '='
-  ExpectedLiteralTypeGuard Guard(DestType);
-  auto RHS = ParseExpression();
-  if (!RHS)
-    return nullptr;
-  if (!IsAssignable(DestType, RHS->getType()))
-    return LogError("Type mismatch in assignment");
-  return make_unique<FieldAssignmentExprAST>(std::move(LHS), std::move(RHS),
-                                             DestType);
-}
 
-/// simplestmt
-///   = returnstmt | varstmt | assignstmt | expression ;
 // Parse identifier-led forms in simplestmt:
 //   assignstmt   : identifier "=" expression
 //   expression   : identifier ...
-// and reject trailing assignment when the parsed LHS is not assignable.
+// and reject trailing '=' when the parsed LHS is not assignable.
 static unique_ptr<ExprAST> ParseLeadingIdentifierSimpleStmt() {
-  unique_ptr<ExprAST> Expr;
   string Name = IdentifierStr;
-  getNextToken(); // eat identifier.
+  getNextToken(); // eat identifier
 
-  if (CurTok == '=') {
+  // Fast path for assignstmt: x = ...
+  if (CurTok == '=')
     return ParseAssignmentRHS(Name);
-  }
 
-  Expr = ParseIdentifierExprWithName(std::move(Name));
+  // Otherwise parse as expression starting from identifier.
+  auto Expr = ParseIdentifierExprWithName(std::move(Name));
   if (!Expr)
     return nullptr;
-  if (CurTok == '.') {
-    auto *Var = dynamic_cast<VariableExprAST *>(Expr.get());
-    if (!Var)
-      return LogError("Field access base must be a variable");
-    auto Field = ParseFieldAccessExpr(Var->getName(), Var->getType(),
-                                      Var->getStructName());
-    if (!Field)
-      return LogError("Invalid field access");
-    Expr = std::move(Field);
-  }
   Expr = ParseBinOpRHS(0, std::move(Expr));
   if (!Expr)
     return nullptr;
 
+  // Optional assignment tail: (<expr>) = ...
   if (CurTok != '=')
     return Expr;
 
-  if (auto *Field = dynamic_cast<FieldExprAST *>(Expr.get())) {
-    auto Owned = std::unique_ptr<FieldExprAST>(Field);
-    //   Expr.release();
-    return ParseFieldAssignmentRHS(std::move(Owned));
-  }
   const string *AssignedName = Expr->getLValueName();
   if (!AssignedName)
     return LogError("Destination of '=' must be a variable");
+
   return ParseAssignmentRHS(*AssignedName);
 }
 
-// Parse non-identifier-leading expression forms for simplestmt and reject
-// trailing assignment so diagnostics stay local and specific.
+// Parse non-identifier-leading expression forms for simplestmt and reject a
+// trailing '=' so assignment diagnostics stay local and specific.
 static unique_ptr<ExprAST> ParseNonLeadingIdentifierSimpleStmt() {
-  unique_ptr<ExprAST> Expr;
-  Expr = ParseExpression();
+  auto Expr = ParseExpression();
   if (!Expr)
     return nullptr;
 
@@ -2363,7 +2124,11 @@ static unique_ptr<ExprAST> ParseNonLeadingIdentifierSimpleStmt() {
   return LogError("Destination of '=' must be a variable");
 }
 
+
+/// simplestmt
+///   = returnstmt | varstmt | assignstmt | expression ;
 static unique_ptr<ExprAST> ParseSimpleStmt() {
+  // simplestmt = returnstmt | varstmt | assignstmt | expression
   if (CurTok == tok_return)
     return ParseReturnStmt();
   if (CurTok == tok_var)
@@ -2450,16 +2215,16 @@ static unique_ptr<ExprAST> ParseBlock() {
   return make_unique<BlockExprAST>(std::move(Stmts));
 }
 
-/// prototype
+/// functionsignature
 ///   = identifier "(" [ typedparam { "," typedparam } ] ")" ;
 ///
 /// typedparam
 ///   = identifier ":" type ;
-static unique_ptr<PrototypeAST> ParsePrototype() {
-  SourceLocation ProtoLoc = CurLoc;
+static unique_ptr<FunctionSignatureAST> ParseFunctionSignature() {
+  SourceLocation SignatureLoc = CurLoc;
 
   if (CurTok != tok_identifier)
-    return LogErrorP("Expected function name in prototype");
+    return LogErrorSignature("Expected function name in function signature");
   string FnName = IdentifierStr;
   if ((FnName.size() == 7 && FnName.rfind("binary", 0) == 0 &&
        isascii(static_cast<unsigned char>(FnName[6])) &&
@@ -2475,40 +2240,39 @@ static unique_ptr<PrototypeAST> ParsePrototype() {
   getNextToken(); // eat function name
 
   if (CurTok != '(')
-    return LogErrorP("Expected '(' in prototype");
+    return LogErrorSignature("Expected '(' in function signature");
 
-  vector<PrototypeAST::ArgInfo> ArgNames;
+  vector<pair<string, ValueType>> ArgNames;
   getNextToken(); // eat '('
 
   if (CurTok != ')') {
     while (true) {
       if (CurTok != tok_identifier)
-        return LogErrorP("Expected parameter name in prototype");
+        return LogErrorSignature("Expected parameter name in function signature");
       string ArgName = IdentifierStr;
       getNextToken(); // eat identifier
 
       if (CurTok != ':')
-        return LogErrorP(
+        return LogErrorSignature(
             "Parameter requires a type annotation (e.g., ': int32')");
       getNextToken(); // eat ':'
-      string ArgStructName;
-      ValueType ArgType = ParseTypeToken(&ArgStructName);
+      ValueType ArgType = ParseTypeToken();
       if (ArgType == ValueType::Error)
         return nullptr;
       if (ArgType == ValueType::None)
-        return LogErrorP("Parameters cannot have None type");
-      ArgNames.push_back({ArgName, ArgType, ArgStructName});
+        return LogErrorSignature("Parameters cannot have None type");
+      ArgNames.push_back({ArgName, ArgType});
 
       if (CurTok == ')')
         break;
       if (CurTok != ',')
-        return LogErrorP("Expected ')' or ',' in parameter list");
+        return LogErrorSignature("Expected ')' or ',' in parameter list");
       getNextToken(); // eat ','
     }
   }
 
   getNextToken(); // eat ')'
-  return make_unique<PrototypeAST>(FnName, std::move(ArgNames), ProtoLoc);
+  return make_unique<FunctionSignatureAST>(FnName, std::move(ArgNames), SignatureLoc);
 }
 
 // DefaultType controls what return type is assumed when no '->' is present.
@@ -2520,16 +2284,6 @@ ParseOptionalReturnType(ValueType DefaultType = ValueType::None) {
   getNextToken(); // eat '->'
   ValueType Type = ParseTypeToken();
   return Type;
-}
-
-static ValueType
-ParseOptionalReturnTypeWithStruct(string &StructName,
-                                  ValueType DefaultType = ValueType::None) {
-  StructName.clear();
-  if (CurTok != tok_arrow)
-    return DefaultType;
-  getNextToken();
-  return ParseTypeToken(&StructName);
 }
 
 /// functionbody
@@ -2546,21 +2300,18 @@ static unique_ptr<ExprAST> ParseFunctionBody() {
 }
 
 /// definition
-static unique_ptr<FunctionAST> ParseDefinition() {
+static unique_ptr<FunctionDefAST> ParseFunctionDef() {
   getNextToken(); // eat 'def'
-  auto Proto = ParsePrototype();
-  if (!Proto)
+  auto Signature = ParseFunctionSignature();
+  if (!Signature)
     return nullptr;
-  string RetStructName;
-  ValueType RetType =
-      ParseOptionalReturnTypeWithStruct(RetStructName, ValueType::None);
+  ValueType RetType = ParseOptionalReturnType(ValueType::None);
   if (RetType == ValueType::Error)
     return nullptr;
-  Proto->setReturnType(RetType);
-  Proto->setReturnStructName(RetStructName);
-  FunctionProtos[Proto->getName()] = Proto->clone();
+  Signature->setReturnType(RetType);
+  FunctionSignatures[Signature->getName()] = Signature->clone();
   ReturnTypeGuard RetGuard(RetType);
-  FunctionScopeGuard Scope(Proto->getArgs());
+  FunctionScopeGuard Scope(Signature->getArgs());
 
   if (CurTok != ':')
     return LogErrorF("Expected ':' in function definition");
@@ -2568,9 +2319,9 @@ static unique_ptr<FunctionAST> ParseDefinition() {
   unique_ptr<ExprAST> Body = ParseFunctionBody();
 
   if (Body) {
-    return make_unique<FunctionAST>(std::move(Proto), std::move(Body));
+    return make_unique<FunctionDefAST>(std::move(Signature), std::move(Body));
   }
-  FunctionProtos.erase(Proto->getName());
+  FunctionSignatures.erase(Signature->getName());
   return nullptr;
 }
 
@@ -2667,11 +2418,11 @@ static bool IsKnownUnaryOperatorToken(int Tok) {
 /// CurTok is on the operator character.
 /// The function is stored internally as "binary<opchar>" (e.g. "binary%"),
 /// which is how BinaryExprAST::codegen() looks it up at call sites.
-static unique_ptr<PrototypeAST> ParseBinaryOpPrototype(unsigned Precedence) {
-  SourceLocation ProtoLoc = CurLoc;
+static unique_ptr<FunctionSignatureAST> ParseBinaryOpSignature(unsigned Precedence) {
+  SourceLocation SignatureLoc = CurLoc;
   if (!IsCustomOpChar(CurTok))
-    return LogErrorP(
-        "Expected operator character in binary operator prototype");
+    return LogErrorSignature(
+        "Expected operator character in binary operator signature");
 
   char OpChar = (char)CurTok;
   string FnName = string("binary") + OpChar;
@@ -2680,69 +2431,68 @@ static unique_ptr<PrototypeAST> ParseBinaryOpPrototype(unsigned Precedence) {
   // This covers both language built-ins and previously defined custom
   // operators, since both live in BinopPrecedence.
   if (IsKnownBinaryOperatorToken(CurTok))
-    return LogErrorP(
+    return LogErrorSignature(
         (string("Binary operator '") + OpChar + "' is already defined")
             .c_str());
 
   // Reject cross-arity reuse: if a token is already known as a unary operator,
   // we do not allow defining it as binary.
   if (IsKnownUnaryOperatorToken(CurTok))
-    return LogErrorP((string("Binary operator '") + OpChar +
+    return LogErrorSignature((string("Binary operator '") + OpChar +
                       "' conflicts with an existing unary operator")
                          .c_str());
 
-  // Separate guard: reject any existing function/prototype named "binary<op>".
+  // Separate guard: reject any existing function/function signature named "binary<op>".
   // This catches symbol collisions even if the operator was not registered in
   // BinopPrecedence (e.g. an earlier extern/def with the same encoded name).
   // Without this, a new definition could silently shadow the old symbol in the
   // JIT. For operators, we don't want this. For other functions, shadowing is
   // permissable.
-  if (FunctionProtos.count(FnName))
-    return LogErrorP((string("Function name 'binary") + OpChar +
+  if (FunctionSignatures.count(FnName))
+    return LogErrorSignature((string("Function name 'binary") + OpChar +
                       "' conflicts with operator-reserved naming")
                          .c_str());
 
   getNextToken(); // eat operator char
 
   if (CurTok != '(')
-    return LogErrorP("Expected '(' in binary operator prototype");
+    return LogErrorSignature("Expected '(' in binary operator signature");
 
-  vector<PrototypeAST::ArgInfo> ArgNames;
+  vector<pair<string, ValueType>> ArgNames;
   getNextToken(); // eat '('
   if (CurTok != ')') {
     while (true) {
       if (CurTok != tok_identifier)
-        return LogErrorP("Expected parameter name in operator prototype");
+        return LogErrorSignature("Expected parameter name in operator function signature");
       string ArgName = IdentifierStr;
       getNextToken(); // eat identifier
       if (CurTok != ':')
-        return LogErrorP("Operator parameters require a type annotation (e.g., "
+        return LogErrorSignature("Operator parameters require a type annotation (e.g., "
                          "': float64')");
       getNextToken(); // eat ':'
-      string ArgStructName;
-      ValueType ArgType = ParseTypeToken(&ArgStructName);
+      ValueType ArgType = ParseTypeToken();
       if (ArgType == ValueType::Error)
         return nullptr;
       if (ArgType == ValueType::None)
-        return LogErrorP("Parameters cannot have None type");
-      ArgNames.push_back({ArgName, ArgType, ArgStructName});
+        return LogErrorSignature("Parameters cannot have None type");
+      ArgNames.push_back({ArgName, ArgType});
 
       if (CurTok == ')')
         break;
       if (CurTok != ',')
-        return LogErrorP("Expected ')' or ',' in parameter list");
+        return LogErrorSignature("Expected ')' or ',' in parameter list");
       getNextToken(); // eat ','
     }
   }
 
   if (CurTok != ')')
-    return LogErrorP("Expected ')' in binary operator prototype");
+    return LogErrorSignature("Expected ')' in binary operator signature");
   getNextToken(); // eat ')'
 
   if (ArgNames.size() != 2)
-    return LogErrorP("Binary operator must have exactly two arguments");
+    return LogErrorSignature("Binary operator must have exactly two arguments");
 
-  return make_unique<PrototypeAST>(FnName, std::move(ArgNames), ProtoLoc,
+  return make_unique<FunctionSignatureAST>(FnName, std::move(ArgNames), SignatureLoc,
                                    ValueType::None, /*IsOperator=*/true,
                                    Precedence);
 }
@@ -2753,10 +2503,10 @@ static unique_ptr<PrototypeAST> ParseBinaryOpPrototype(unsigned Precedence) {
 /// CurTok is on the operator character.
 /// The function is stored internally as "unary<opchar>" (e.g. "unary&"),
 /// which is how ParseUnary() looks it up at call sites.
-static unique_ptr<PrototypeAST> ParseUnaryOpPrototype() {
-  SourceLocation ProtoLoc = CurLoc;
+static unique_ptr<FunctionSignatureAST> ParseUnaryOpSignature() {
+  SourceLocation SignatureLoc = CurLoc;
   if (!IsCustomOpChar(CurTok))
-    return LogErrorP("Expected operator character in unary operator prototype");
+    return LogErrorSignature("Expected operator character in unary operator signature");
 
   char OpChar = (char)CurTok;
   string FnName = string("unary") + OpChar;
@@ -2765,65 +2515,64 @@ static unique_ptr<PrototypeAST> ParseUnaryOpPrototype() {
   // This covers reserved unary operators and previously defined custom unary
   // operators tracked in KnownUnaryOperators.
   if (IsKnownUnaryOperatorToken(CurTok))
-    return LogErrorP(
+    return LogErrorSignature(
         (string("Unary operator '") + OpChar + "' is already defined").c_str());
 
   // Reject cross-arity reuse: if a token is already known as a binary operator,
   // we do not allow defining it as unary.
   if (IsKnownBinaryOperatorToken(CurTok))
-    return LogErrorP((string("Unary operator '") + OpChar +
+    return LogErrorSignature((string("Unary operator '") + OpChar +
                       "' conflicts with an existing binary operator")
                          .c_str());
 
-  // Prevent silent JIT shadowing (same reason as in ParseBinaryOpPrototype).
-  if (FunctionProtos.count(FnName))
-    return LogErrorP((string("Function name 'unary") + OpChar +
+  // Prevent silent JIT shadowing (same reason as in ParseBinaryOpSignature).
+  if (FunctionSignatures.count(FnName))
+    return LogErrorSignature((string("Function name 'unary") + OpChar +
                       "' conflicts with operator-reserved naming")
                          .c_str());
 
   getNextToken(); // eat operator char
 
   if (CurTok != '(')
-    return LogErrorP("Expected '(' in unary operator prototype");
+    return LogErrorSignature("Expected '(' in unary operator signature");
 
-  vector<PrototypeAST::ArgInfo> ArgNames;
+  vector<pair<string, ValueType>> ArgNames;
   getNextToken(); // eat '('
   if (CurTok != ')') {
     while (true) {
       if (CurTok != tok_identifier)
-        return LogErrorP("Expected parameter name in operator prototype");
+        return LogErrorSignature("Expected parameter name in operator function signature");
       string ArgName = IdentifierStr;
       getNextToken(); // eat identifier
       if (CurTok != ':')
-        return LogErrorP("Operator parameters require a type annotation (e.g., "
+        return LogErrorSignature("Operator parameters require a type annotation (e.g., "
                          "': float64')");
       getNextToken(); // eat ':'
-      string ArgStructName;
-      ValueType ArgType = ParseTypeToken(&ArgStructName);
+      ValueType ArgType = ParseTypeToken();
       if (ArgType == ValueType::Error)
         return nullptr;
       if (ArgType == ValueType::None)
-        return LogErrorP("Parameters cannot have None type");
-      ArgNames.push_back({ArgName, ArgType, ArgStructName});
+        return LogErrorSignature("Parameters cannot have None type");
+      ArgNames.push_back({ArgName, ArgType});
 
       if (CurTok == ')')
         break;
       if (CurTok != ',')
-        return LogErrorP("Expected ')' or ',' in parameter list");
+        return LogErrorSignature("Expected ')' or ',' in parameter list");
       getNextToken(); // eat ','
     }
   }
 
   if (CurTok != ')')
-    return LogErrorP("Expected ')' in unary operator prototype");
+    return LogErrorSignature("Expected ')' in unary operator signature");
   getNextToken(); // eat ')'
 
   if (ArgNames.size() != 1)
-    return LogErrorP("Unary operator must have exactly one argument");
+    return LogErrorSignature("Unary operator must have exactly one argument");
 
   // Unary operators have no precedence — they bind tighter than any binary op
   // by virtue of being parsed before ParseBinOpRHS is entered.
-  return make_unique<PrototypeAST>(FnName, std::move(ArgNames), ProtoLoc,
+  return make_unique<FunctionSignatureAST>(FnName, std::move(ArgNames), SignatureLoc,
                                    ValueType::None, /*IsOperator=*/true,
                                    /*Precedence=*/0);
 }
@@ -2835,12 +2584,12 @@ static unique_ptr<PrototypeAST> ParseUnaryOpPrototype() {
 ///
 /// Called after '@' has been consumed. CurTok is on 'binary' or 'unary'.
 /// The two branches share the same body structure (':' / block).
-static unique_ptr<FunctionAST> ParseDecoratedDef() {
+static unique_ptr<FunctionDefAST> ParseDecoratedFunctionDef() {
   if (CurTok != tok_binary && CurTok != tok_unary)
     return LogErrorF("Expected 'binary' or 'unary' after '@'");
 
   bool IsBinary = (CurTok == tok_binary);
-  unique_ptr<PrototypeAST> Proto;
+  unique_ptr<FunctionSignatureAST> Signature;
 
   if (IsBinary) {
     unsigned Prec = ParseBinaryDecorator(); // consumes "binary(N)"
@@ -2853,7 +2602,7 @@ static unique_ptr<FunctionAST> ParseDecoratedDef() {
     if (CurTok != tok_def)
       return LogErrorF("Expected 'def' after decorator");
     getNextToken(); // eat 'def'
-    Proto = ParseBinaryOpPrototype(Prec);
+    Signature = ParseBinaryOpSignature(Prec);
   } else {
     ParseUnaryDecorator(); // consumes "unary"
     if (CurTok != tok_eol)
@@ -2862,32 +2611,30 @@ static unique_ptr<FunctionAST> ParseDecoratedDef() {
     if (CurTok != tok_def)
       return LogErrorF("Expected 'def' after decorator");
     getNextToken(); // eat 'def'
-    Proto = ParseUnaryOpPrototype();
+    Signature = ParseUnaryOpSignature();
   }
 
-  if (!Proto)
+  if (!Signature)
     return nullptr;
-  string RetStructName;
-  ValueType RetType = ParseOptionalReturnTypeWithStruct(RetStructName);
+  ValueType RetType = ParseOptionalReturnType();
   if (RetType == ValueType::Error)
     return nullptr;
-  Proto->setReturnType(RetType);
-  Proto->setReturnStructName(RetStructName);
-  FunctionProtos[Proto->getName()] = Proto->clone();
+  Signature->setReturnType(RetType);
+  FunctionSignatures[Signature->getName()] = Signature->clone();
   ReturnTypeGuard RetGuard(RetType);
-  FunctionScopeGuard Scope(Proto->getArgs());
+  FunctionScopeGuard Scope(Signature->getArgs());
 
   // Shared body: ":" ( simplestmt | eols block ) — identical to
-  // ParseDefinition.
+  // ParseFunctionDef.
   if (CurTok != ':')
     return LogErrorF("Expected ':' in operator definition");
   getNextToken(); // eat ':'
   unique_ptr<ExprAST> Body = ParseFunctionBody();
 
   if (Body) {
-    return make_unique<FunctionAST>(std::move(Proto), std::move(Body));
+    return make_unique<FunctionDefAST>(std::move(Signature), std::move(Body));
   }
-  FunctionProtos.erase(Proto->getName());
+  FunctionSignatures.erase(Signature->getName());
   return nullptr;
 }
 
@@ -2906,10 +2653,10 @@ static unique_ptr<ExprAST> ParseTopLevelStatement() {
 /// toplevelexpr
 ///   = statement
 /// A top-level statement (e.g. "1 + 2", "var x = 1", "if ...") is wrapped in
-/// an anonymous function so it fits the same FunctionAST shape as everything
+/// an anonymous function so it fits the same FunctionDefAST shape as everything
 /// else. HandleTopLevelExpression compiles it into the JIT, calls it to get
 /// the numeric result, then removes it from the JIT via a ResourceTracker.
-static unique_ptr<FunctionAST> ParseTopLevelExpr() {
+static unique_ptr<FunctionDefAST> ParseTopLevelExpr() {
   auto Stmt = ParseTopLevelStatement();
   if (!Stmt)
     return nullptr;
@@ -2919,97 +2666,26 @@ static unique_ptr<FunctionAST> ParseTopLevelExpr() {
     Stmt = make_unique<ReturnExprAST>(std::move(Stmt));
 
   string FnName = "__pyxc.toplevel." + to_string(TopLevelExprCounter++);
-  auto Proto = make_unique<PrototypeAST>(
-      FnName, vector<PrototypeAST::ArgInfo>(), CurLoc, RetType);
-  return make_unique<FunctionAST>(std::move(Proto), std::move(Stmt));
+  auto Signature = make_unique<FunctionSignatureAST>(
+      FnName, vector<pair<string, ValueType>>(), CurLoc, RetType);
+  return make_unique<FunctionDefAST>(std::move(Signature), std::move(Stmt));
 }
 
 /// external
-///   = "extern" "def" prototype [ "->" type ] ;
-static unique_ptr<PrototypeAST> ParseExtern() {
+///   = "extern" "def" function signature [ "->" type ] ;
+static unique_ptr<FunctionSignatureAST> ParseExtern() {
   getNextToken(); // eat extern.
   if (CurTok != tok_def)
-    return LogErrorP("Expected `def` after extern.");
+    return LogErrorSignature("Expected `def` after extern.");
   getNextToken(); // eat def
-  auto Proto = ParsePrototype();
-  if (!Proto)
+  auto Signature = ParseFunctionSignature();
+  if (!Signature)
     return nullptr;
-  string RetStructName;
-  ValueType RetType = ParseOptionalReturnTypeWithStruct(RetStructName);
+  ValueType RetType = ParseOptionalReturnType();
   if (RetType == ValueType::Error)
     return nullptr;
-  Proto->setReturnType(RetType);
-  Proto->setReturnStructName(RetStructName);
-  return Proto;
-}
-
-static bool ParseStructDefinition() {
-  // CurTok is 'struct'
-  getNextToken(); // eat 'struct'
-  if (CurTok != tok_identifier) {
-    LogError("Expected struct name");
-    return false;
-  }
-  string StructName = IdentifierStr;
-  if (StructTypes.count(StructName)) {
-    LogError(("Struct '" + StructName + "' is already defined").c_str());
-    return false;
-  }
-  getNextToken(); // eat struct name
-  if (CurTok != ':') {
-    LogError("Expected ':' after struct name");
-    return false;
-  }
-  getNextToken(); // eat ':'
-  if (CurTok == tok_eol)
-    consumeNewlines();
-  if (CurTok != tok_indent) {
-    LogError("Expected an indented struct body");
-    return false;
-  }
-  getNextToken(); // eat INDENT
-
-  StructTypeInfo Info;
-  Info.Name = StructName;
-  while (CurTok != tok_dedent && CurTok != tok_block_end && CurTok != tok_eof) {
-    if (CurTok == tok_eol) {
-      consumeNewlines();
-      continue;
-    }
-    if (CurTok != tok_identifier) {
-      LogError("Expected field name in struct body");
-      return false;
-    }
-    string FieldName = IdentifierStr;
-    getNextToken();
-    if (CurTok != ':') {
-      LogError("Expected ':' after field name");
-      return false;
-    }
-    getNextToken();
-    string FieldStructName;
-    ValueType FieldType = ParseTypeToken(&FieldStructName);
-    if (FieldType == ValueType::Error || FieldType == ValueType::None) {
-      LogError("Invalid struct field type");
-      return false;
-    }
-    if (Info.FieldIndex.count(FieldName)) {
-      LogError(("Duplicate struct field '" + FieldName + "'").c_str());
-      return false;
-    }
-    Info.FieldIndex[FieldName] = Info.Fields.size();
-    Info.Fields.push_back({FieldName, FieldType, FieldStructName});
-    if (CurTok == tok_eol)
-      consumeNewlines();
-  }
-  if (CurTok != tok_dedent) {
-    LogError("Expected dedent after struct body");
-    return false;
-  }
-  PendingTokens.push_front(tok_block_end);
-  getNextToken(); // eat DEDENT, then surface tok_block_end
-  StructTypes[StructName] = std::move(Info);
-  return true;
+  Signature->setReturnType(RetType);
+  return Signature;
 }
 
 //===----------------------------------------===//
@@ -3027,9 +2703,6 @@ static std::unique_ptr<Module> TheModule;
 static std::unique_ptr<IRBuilder<NoFolder>> Builder;
 // NamedValues - Maps variable names to allocas in the current function.
 static std::map<std::string, AllocaInst *> NamedValues;
-static std::map<std::string, ValueType> NamedValueTypes;
-static std::map<std::string, string> NamedValueStructNames;
-static std::map<std::string, StructType *> LLVMStructTypes;
 // InGlobalInit - True while emitting the synthetic global init function.
 static bool InGlobalInit = false;
 // ModuleHasGlobals - Tracks whether this module defines any globals.
@@ -3103,8 +2776,6 @@ static const char *TypeName(ValueType Type) {
     return "float64";
   case ValueType::Bool:
     return "bool";
-  case ValueType::Struct:
-    return "struct";
   default:
     return "<error>";
   }
@@ -3125,28 +2796,7 @@ static bool IsNumericType(ValueType Type) {
   return IsIntType(Type) || IsFloatType(Type);
 }
 
-static Type *GetOrCreateLLVMStructType(const string &StructName) {
-  auto It = LLVMStructTypes.find(StructName);
-  if (It != LLVMStructTypes.end())
-    return It->second;
-  auto DefIt = StructTypes.find(StructName);
-  if (DefIt == StructTypes.end())
-    return nullptr;
-  auto *ST = StructType::create(*TheContext, "struct." + StructName);
-  LLVMStructTypes[StructName] = ST;
-  std::vector<Type *> FieldTys;
-  FieldTys.reserve(DefIt->second.Fields.size());
-  for (const auto &Field : DefIt->second.Fields) {
-    Type *FT = LLVMTypeFor(Field.Type, Field.StructName);
-    if (!FT)
-      return nullptr;
-    FieldTys.push_back(FT);
-  }
-  ST->setBody(FieldTys, false);
-  return ST;
-}
-
-static Type *LLVMTypeFor(ValueType Type, const string &StructName) {
+static Type *LLVMTypeFor(ValueType Type) {
   switch (Type) {
   case ValueType::Int: {
     unsigned bits = TheModule->getDataLayout().getPointerSizeInBits();
@@ -3168,8 +2818,6 @@ static Type *LLVMTypeFor(ValueType Type, const string &StructName) {
     return Type::getDoubleTy(*TheContext);
   case ValueType::Bool:
     return Type::getInt1Ty(*TheContext);
-  case ValueType::Struct:
-    return GetOrCreateLLVMStructType(StructName);
   case ValueType::None:
     return Type::getVoidTy(*TheContext);
   default:
@@ -3233,14 +2881,14 @@ Value *LogErrorV(const char *Str) {
 /// CreateEntryBlockAlloca - Create a stack slot in the current function's
 /// entry block for a mutable variable.
 static AllocaInst *CreateEntryBlockAlloca(Function *TheFunction,
-                                          const string &VarName, ValueType Type,
-                                          const string &StructName = "") {
+                                          const string &VarName,
+                                          ValueType Type) {
   IRBuilder<> TmpB(&TheFunction->getEntryBlock(),
                    TheFunction->getEntryBlock().begin());
-  return TmpB.CreateAlloca(LLVMTypeFor(Type, StructName), nullptr, VarName);
+  return TmpB.CreateAlloca(LLVMTypeFor(Type), nullptr, VarName);
 }
 
-static Constant *ZeroConstant(ValueType Type, const string &StructName = "") {
+static Constant *ZeroConstant(ValueType Type) {
   switch (Type) {
   case ValueType::Int8:
     return ConstantInt::get(Type::getInt8Ty(*TheContext), 0);
@@ -3260,8 +2908,6 @@ static Constant *ZeroConstant(ValueType Type, const string &StructName = "") {
     return ConstantFP::get(*TheContext, APFloat(0.0));
   case ValueType::Bool:
     return ConstantInt::get(Type::getInt1Ty(*TheContext), 0);
-  case ValueType::Struct:
-    return Constant::getNullValue(LLVMTypeFor(Type, StructName));
   default:
     return nullptr;
   }
@@ -3456,24 +3102,24 @@ static GlobalVariable *GetGlobalVariable(const string &Name) {
 
   if (!GlobalVarTypes.count(Name))
     return nullptr;
-  auto *Type = LLVMTypeFor(GlobalVarTypes[Name], GlobalVarStructTypes[Name]);
+  auto *Type = LLVMTypeFor(GlobalVarTypes[Name]);
   return new GlobalVariable(*TheModule, Type, false,
                             GlobalValue::ExternalLinkage, nullptr, Name);
 }
 
-static PrototypeAST *GetFunctionProto(const string &Name) {
-  auto It = FunctionProtos.find(Name);
-  if (It != FunctionProtos.end())
+static FunctionSignatureAST *GetFunctionSignature(const string &Name) {
+  auto It = FunctionSignatures.find(Name);
+  if (It != FunctionSignatures.end())
     return It->second.get();
   return nullptr;
 }
 
 /// getFunction - Resolve a function name to an LLVM Function* in the current
-/// module, re-emitting a declaration from FunctionProtos if necessary.
+/// module, re-emitting a declaration from FunctionSignatures if necessary.
 ///
 /// Because each top-level input gets its own Module, a function defined in an
 /// earlier module is no longer in TheModule->getFunction(). When that happens
-/// we look up its PrototypeAST in FunctionProtos and call codegen() on it,
+/// we look up its FunctionSignatureAST in FunctionSignatures and call codegen() on it,
 /// which emits a fresh 'declare' with ExternalLinkage in the current module.
 /// The JIT resolves that extern to the already-compiled body at link time.
 Function *getFunction(const std::string &Name) {
@@ -3481,9 +3127,9 @@ Function *getFunction(const std::string &Name) {
   if (auto *F = TheModule->getFunction(Name))
     return F;
 
-  // Slow path: re-emit a declaration from the saved prototype.
-  auto FI = FunctionProtos.find(Name);
-  if (FI != FunctionProtos.end())
+  // Slow path: re-emit a declaration from the saved function signature.
+  auto FI = FunctionSignatures.find(Name);
+  if (FI != FunctionSignatures.end())
     return FI->second->codegen();
 
   return nullptr;
@@ -3503,83 +3149,18 @@ Value *BoolExprAST::codegen() {
   return ConstantInt::get(Type::getInt1Ty(*TheContext), Val ? 1 : 0);
 }
 
-/// VariableExprAST::codegen - A variable reference loads the current value
+/// NameExprAST::codegen - A variable reference loads the current value
 /// from the variable's stack slot.
-Value *VariableExprAST::codegen() {
+Value *NameExprAST::codegen() {
   auto It = NamedValues.find(Name);
   if (It != NamedValues.end() && It->second)
-    return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()),
-                               It->second, Name.c_str());
-
-  if (auto *GV = GetGlobalVariable(Name))
-    return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), GV,
+    return Builder->CreateLoad(LLVMTypeFor(getType()), It->second,
                                Name.c_str());
 
+  if (auto *GV = GetGlobalVariable(Name))
+    return Builder->CreateLoad(LLVMTypeFor(getType()), GV, Name.c_str());
+
   return LogErrorV("Unknown variable name");
-}
-
-static Value *GetFieldAddress(const string &BaseName,
-                              const vector<string> &FieldPath,
-                              ValueType *OutType = nullptr,
-                              string *OutStructName = nullptr) {
-  Value *BasePtr = nullptr;
-  ValueType BaseType = ValueType::Error;
-  string BaseStruct;
-  auto It = NamedValues.find(BaseName);
-  if (It != NamedValues.end() && It->second) {
-    BasePtr = It->second;
-    auto TI = NamedValueTypes.find(BaseName);
-    if (TI != NamedValueTypes.end())
-      BaseType = TI->second;
-    auto SI = NamedValueStructNames.find(BaseName);
-    if (SI != NamedValueStructNames.end())
-      BaseStruct = SI->second;
-  } else if (auto *GV = GetGlobalVariable(BaseName)) {
-    BasePtr = GV;
-    auto TI = GlobalVarTypes.find(BaseName);
-    if (TI != GlobalVarTypes.end())
-      BaseType = TI->second;
-    auto SI = GlobalVarStructTypes.find(BaseName);
-    if (SI != GlobalVarStructTypes.end())
-      BaseStruct = SI->second;
-  }
-  if (!BasePtr)
-    return nullptr;
-  if (BaseType != ValueType::Struct || BaseStruct.empty())
-    return nullptr;
-
-  Value *Ptr = BasePtr;
-  ValueType CurType = BaseType;
-  string CurStruct = BaseStruct;
-  for (const auto &FieldName : FieldPath) {
-    auto SI = StructTypes.find(CurStruct);
-    if (SI == StructTypes.end())
-      return nullptr;
-    auto FI = SI->second.FieldIndex.find(FieldName);
-    if (FI == SI->second.FieldIndex.end())
-      return nullptr;
-    const auto &FD = SI->second.Fields[FI->second];
-    Type *BaseLLVM = LLVMTypeFor(CurType, CurStruct);
-    Ptr = Builder->CreateStructGEP(BaseLLVM, Ptr, FI->second, "fieldptr");
-    CurType = FD.Type;
-    CurStruct = FD.StructName;
-  }
-  if (OutType)
-    *OutType = CurType;
-  if (OutStructName)
-    *OutStructName = CurStruct;
-  return Ptr;
-}
-
-Value *FieldExprAST::codegen() {
-  ValueType LeafType = ValueType::Error;
-  string LeafStruct;
-  Value *Ptr =
-      GetFieldAddress(*getLValueName(), FieldPath, &LeafType, &LeafStruct);
-  if (!Ptr)
-    return LogErrorV("Unknown field access");
-  return Builder->CreateLoad(LLVMTypeFor(LeafType, LeafStruct), Ptr,
-                             "fieldload");
 }
 
 /// AssignmentExprAST::codegen - Evaluate the RHS, store it into the variable's
@@ -3606,23 +3187,6 @@ Value *AssignmentExprAST::codegen() {
   return LogErrorV("Unknown variable name");
 }
 
-Value *FieldAssignmentExprAST::codegen() {
-  ValueType DestType = ValueType::Error;
-  string DestStruct;
-  Value *Ptr = GetFieldAddress(*LHS->getLValueName(), LHS->getFieldPath(),
-                               &DestType, &DestStruct);
-  if (!Ptr)
-    return LogErrorV("Unknown field access");
-  Value *Val = RHS->codegen();
-  if (!Val)
-    return nullptr;
-  Val = EmitImplicitCast(Val, RHS->getType(), DestType);
-  if (!Val)
-    return LogErrorV("Type mismatch in assignment");
-  Builder->CreateStore(Val, Ptr);
-  return Val;
-}
-
 /// ReturnExprAST::codegen - Emit a return from the current function.
 Value *ReturnExprAST::codegen() {
   if (!Expr) {
@@ -3645,8 +3209,6 @@ Value *ReturnExprAST::codegen() {
 /// declared inside the block are not visible after it exits.
 Value *BlockExprAST::codegen() {
   auto SavedBindings = NamedValues;
-  auto SavedTypes = NamedValueTypes;
-  auto SavedStructs = NamedValueStructNames;
 
   Value *Last = nullptr;
   for (auto &Stmt : Stmts) {
@@ -3655,15 +3217,11 @@ Value *BlockExprAST::codegen() {
     Last = Stmt->codegen();
     if (!Last) {
       NamedValues = SavedBindings;
-      NamedValueTypes = SavedTypes;
-      NamedValueStructNames = SavedStructs;
       return nullptr;
     }
   }
 
   NamedValues = SavedBindings;
-  NamedValueTypes = SavedTypes;
-  NamedValueStructNames = SavedStructs;
 
   if (!Last)
     return LogErrorV("Empty block");
@@ -3868,15 +3426,15 @@ Value *CallExprAST::codegen() {
   if (CalleeF->arg_size() != Args.size())
     return LogErrorV("Incorrect # arguments passed");
 
-  PrototypeAST *Proto = GetFunctionProto(Callee);
+  FunctionSignatureAST *Signature = GetFunctionSignature(Callee);
   std::vector<Value *> ArgsV;
   for (unsigned i = 0, e = Args.size(); i != e; ++i) {
     Value *ArgVal = Args[i]->codegen();
     if (!ArgVal)
       return nullptr;
-    if (Proto) {
+    if (Signature) {
       ArgVal =
-          EmitImplicitCast(ArgVal, Args[i]->getType(), Proto->getArgType(i));
+          EmitImplicitCast(ArgVal, Args[i]->getType(), Signature->getArgType(i));
       if (!ArgVal)
         return LogErrorV("Argument type mismatch");
     }
@@ -3950,8 +3508,6 @@ Value *ForExprAST::codegen() {
     EmitDebugDeclare(Alloca, VarName, CurFunctionLine, false, 0, VarType);
     VarPtr = Alloca;
     NamedValues[VarName] = Alloca;
-    NamedValueTypes[VarName] = VarType;
-    NamedValueStructNames.erase(VarName);
   } else {
     auto It = NamedValues.find(VarName);
     if (It != NamedValues.end() && It->second)
@@ -3981,6 +3537,7 @@ Value *ForExprAST::codegen() {
   Builder->CreateBr(CondBB);
 
   Builder->SetInsertPoint(CondBB);
+
 
   Value *CondVal = Cond->codegen();
   if (!CondVal)
@@ -4017,8 +3574,6 @@ Value *ForExprAST::codegen() {
       NamedValues[VarName] = OldVal;
     else
       NamedValues.erase(VarName);
-    NamedValueTypes.erase(VarName);
-    NamedValueStructNames.erase(VarName);
   }
 
   return ConstantFP::get(*TheContext, APFloat(0.0));
@@ -4030,40 +3585,34 @@ Value *VarStmtAST::codegen() {
     for (auto &Var : VarNames) {
       const string &VarName = Var.Name;
       ValueType VarType = Var.Type;
-      const string &VarStructName = Var.StructName;
       ExprAST *Init = Var.Init.get();
 
       auto *GV = TheModule->getNamedGlobal(VarName);
       if (GV && !GV->isDeclaration())
         return LogErrorV("Global variable already defined");
-      if (GV && GV->getValueType() != LLVMTypeFor(VarType, VarStructName))
+      if (GV && GV->getValueType() != LLVMTypeFor(VarType))
         return LogErrorV("Global variable type mismatch");
 
       if (!GV) {
-        auto *Type = LLVMTypeFor(VarType, VarStructName);
+        auto *Type = LLVMTypeFor(VarType);
         GV = new GlobalVariable(*TheModule, Type, false,
                                 GlobalValue::ExternalLinkage,
-                                ZeroConstant(VarType, VarStructName), VarName);
+                                ZeroConstant(VarType), VarName);
         EmitDebugGlobal(GV, VarName, CurFunctionLine, VarType);
       } else if (GV->isDeclaration()) {
-        GV->setInitializer(ZeroConstant(VarType, VarStructName));
+        GV->setInitializer(ZeroConstant(VarType));
         GV->setLinkage(GlobalValue::ExternalLinkage);
         EmitDebugGlobal(GV, VarName, CurFunctionLine, VarType);
       }
 
       ModuleHasGlobals = true;
 
-      Value *InitVal = nullptr;
-      if (Init) {
-        InitVal = Init->codegen();
-        if (!InitVal)
-          return nullptr;
-        InitVal = EmitImplicitCast(InitVal, Init->getType(), VarType);
-        if (!InitVal)
-          return LogErrorV("Type mismatch in variable initialization");
-      } else {
-        InitVal = ZeroConstant(VarType, VarStructName);
-      }
+      Value *InitVal = Init->codegen();
+      if (!InitVal)
+        return nullptr;
+      InitVal = EmitImplicitCast(InitVal, Init->getType(), VarType);
+      if (!InitVal)
+        return LogErrorV("Type mismatch in variable initialization");
 
       Builder->CreateStore(InitVal, GV);
     }
@@ -4076,37 +3625,25 @@ Value *VarStmtAST::codegen() {
   for (auto &Var : VarNames) {
     const string &VarName = Var.Name;
     ValueType VarType = Var.Type;
-    const string &VarStructName = Var.StructName;
     ExprAST *Init = Var.Init.get();
 
-    Value *InitVal = nullptr;
-    if (Init) {
-      InitVal = Init->codegen();
-      if (!InitVal)
-        return nullptr;
-      InitVal = EmitImplicitCast(InitVal, Init->getType(), VarType);
-      if (!InitVal)
-        return LogErrorV("Type mismatch in variable initialization");
-    } else {
-      InitVal = ZeroConstant(VarType, VarStructName);
-    }
+    Value *InitVal = Init->codegen();
+    if (!InitVal)
+      return nullptr;
+    InitVal = EmitImplicitCast(InitVal, Init->getType(), VarType);
+    if (!InitVal)
+      return LogErrorV("Type mismatch in variable initialization");
 
-    AllocaInst *Alloca =
-        CreateEntryBlockAlloca(TheFunction, VarName, VarType, VarStructName);
+    AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName, VarType);
     Builder->CreateStore(InitVal, Alloca);
     NamedValues[VarName] = Alloca;
-    NamedValueTypes[VarName] = VarType;
-    if (VarType == ValueType::Struct)
-      NamedValueStructNames[VarName] = VarStructName;
-    else
-      NamedValueStructNames.erase(VarName);
     EmitDebugDeclare(Alloca, VarName, CurFunctionLine, false, 0, VarType);
   }
 
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
-/// PrototypeAST::codegen - Create a function declaration in TheModule: name,
+/// FunctionSignatureAST::codegen - Create a function declaration in TheModule: name,
 /// return type, and parameter types.
 ///
 /// ExternalLinkage makes the function visible outside this module. That is
@@ -4116,14 +3653,13 @@ Value *VarStmtAST::codegen() {
 ///
 /// Arg.setName() is optional — it only affects the printed IR, making output
 /// read as 'double %a, double %b' rather than 'double %0, double %1'.
-Function *PrototypeAST::codegen() {
+Function *FunctionSignatureAST::codegen() {
   std::vector<Type *> ArgTys;
   ArgTys.reserve(Args.size());
   for (const auto &Arg : Args)
-    ArgTys.push_back(LLVMTypeFor(Arg.Type, Arg.StructName));
-  FunctionType *FT =
-      FunctionType::get(LLVMTypeFor(ReturnType, ReturnStructName), ArgTys,
-                        false /* not variadic */);
+    ArgTys.push_back(LLVMTypeFor(Arg.second));
+  FunctionType *FT = FunctionType::get(LLVMTypeFor(ReturnType), ArgTys,
+                                       false /* not variadic */);
 
   Function *F =
       Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
@@ -4131,7 +3667,7 @@ Function *PrototypeAST::codegen() {
   // Name arguments so the printed IR is readable.
   unsigned Idx = 0;
   for (auto &Arg : F->args())
-    Arg.setName(Args[Idx++].Name);
+    Arg.setName(Args[Idx++].first);
 
   // For user-defined binary operators, register the precedence in the global
   // table so the parser knows how tightly the new operator binds.  This happens
@@ -4148,15 +3684,15 @@ Function *PrototypeAST::codegen() {
   return F;
 }
 
-/// FunctionAST::codegen - Generate IR for a complete function definition.
+/// FunctionDefAST::codegen - Generate IR for a complete function definition.
 ///
 /// Four steps:
 ///
-/// 1. Register the prototype. The PrototypeAST is moved into FunctionProtos
+/// 1. Register the function signature. The FunctionSignatureAST is moved into FunctionSignatures
 ///    so that future modules can re-emit a declaration for this function via
 ///    getFunction(). A reference is kept for the getFunction() call below.
 ///    getFunction() either finds an existing declaration in the current module
-///    (e.g. from a prior 'extern def') or calls Proto->codegen() to create one.
+///    (e.g. from a prior 'extern def') or calls Signature->codegen() to create one.
 ///
 /// 2. Create the entry BasicBlock and point the Builder at it. A basic block
 ///    is a straight-line sequence of instructions with one entry and one exit.
@@ -4171,10 +3707,10 @@ Function *PrototypeAST::codegen() {
 ///    (LLVM's internal consistency checker), then run TheFPM to apply the
 ///    optimisation pipeline. On failure, eraseFromParent() removes the
 ///    partially-built function so no broken declaration is left in the module.
-Function *FunctionAST::codegen() {
-  // Step 1: register the prototype and resolve the Function*.
-  auto &P = *Proto;
-  FunctionProtos[Proto->getName()] = std::move(Proto);
+Function *FunctionDefAST::codegen() {
+  // Step 1: register the function signature and resolve the Function*.
+  auto &P = *Signature;
+  FunctionSignatures[Signature->getName()] = std::move(Signature);
 
   // Step 1: reuse an existing `extern` declaration if one exists.
   Function *TheFunction = getFunction(P.getName());
@@ -4218,21 +3754,14 @@ Function *FunctionAST::codegen() {
 
   // Step 3: populate NamedValues with entry-block allocas for each argument.
   NamedValues.clear();
-  NamedValueTypes.clear();
-  NamedValueStructNames.clear();
   unsigned ArgIndex = 1;
   size_t ArgTypeIndex = 0;
   for (auto &Arg : TheFunction->args()) {
-    ValueType ArgType = P.getArgType(ArgTypeIndex);
-    string ArgStructName = P.getArgStructName(ArgTypeIndex);
-    ++ArgTypeIndex;
+    ValueType ArgType = P.getArgType(ArgTypeIndex++);
     AllocaInst *Alloca = CreateEntryBlockAlloca(
-        TheFunction, std::string(Arg.getName()), ArgType, ArgStructName);
+        TheFunction, std::string(Arg.getName()), ArgType);
     Builder->CreateStore(&Arg, Alloca);
     NamedValues[std::string(Arg.getName())] = Alloca;
-    NamedValueTypes[std::string(Arg.getName())] = ArgType;
-    if (ArgType == ValueType::Struct)
-      NamedValueStructNames[std::string(Arg.getName())] = ArgStructName;
     EmitDebugDeclare(Alloca, Arg.getName(), CurFunctionLine, true, ArgIndex++,
                      ArgType);
   }
@@ -4288,13 +3817,10 @@ static vector<unique_ptr<ExprAST>> FileTopLevelStmts;
 /// Multi-file compilation emits each source into its own module, so symbols,
 /// globals, and top-level statements should not leak across files.
 static void ResetParserStateForFile() {
-  FunctionProtos.clear();
-  StructTypes.clear();
+  FunctionSignatures.clear();
   GlobalVarTypes.clear();
-  GlobalVarStructTypes.clear();
   GlobalVarDecls.clear();
   VarScopes.clear();
-  VarStructScopes.clear();
   FileTopLevelStmts.clear();
   LastTopLevelShouldPrint = true;
   InGlobalInit = false;
@@ -4330,7 +3856,6 @@ static void InitializeModuleAndManagers(bool FreshContext = true) {
   if (FreshContext || !TheContext)
     TheContext = std::make_unique<LLVMContext>();
   TheModule = std::make_unique<Module>("PyxcJIT", *TheContext);
-  LLVMStructTypes.clear();
   // Inform the module of the JIT's target data layout so codegen emits
   // correctly-sized types for the host machine.
   TheModule->setDataLayout(TheJIT->getDataLayout());
@@ -4397,11 +3922,10 @@ static void SynchronizeToLineBoundary() {
 ///   def opchar(x): ...
 ///
 /// The '@' has already been consumed by MainLoop before calling here.
-/// CurTok is on 'binary' or 'unary'. Delegates to ParseDecoratedDef.
+/// CurTok is on 'binary' or 'unary'. Delegates to ParseDecoratedFunctionDef.
 static void HandleDecorator() {
-  auto FnAST = ParseDecoratedDef();
-  bool HasTrailing =
-      (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
+  auto FnAST = ParseDecoratedFunctionDef();
+  bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
   if (!FnAST || HasTrailing) {
     if (FnAST)
       LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
@@ -4420,19 +3944,18 @@ static void HandleDecorator() {
   }
 }
 
-/// HandleDefinition - Parse, optimise, and JIT-compile a 'def' definition.
+/// HandleFunctionDef - Parse, optimise, and JIT-compile a 'def' definition.
 ///
 /// On success: codegen + optimise the function (TheFPM runs inside
-/// FunctionAST::codegen), print the optimised IR, then hand the entire module
+/// FunctionDefAST::codegen), print the optimised IR, then hand the entire module
 /// to the JIT via addModule. The JIT takes ownership of TheModule and
 /// TheContext, so InitializeModuleAndManagers() is called immediately after to
 /// create a fresh module for the next input. The compiled function remains
 /// accessible in the JIT's symbol table for the rest of the session.
 /// On parse failure or unexpected trailing tokens: discard the line.
-static void HandleDefinition() {
-  auto FnAST = ParseDefinition();
-  bool HasTrailing =
-      (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
+static void HandleFunctionDef() {
+  auto FnAST = ParseFunctionDef();
+  bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
   if (!FnAST || HasTrailing) {
     if (FnAST)
       LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
@@ -4454,10 +3977,10 @@ static void HandleDefinition() {
 
 /// HandleExtern - Parse and register an 'extern def' declaration.
 ///
-/// On success: codegen the prototype (emits a 'declare' in the current module),
-/// print it, then save the PrototypeAST into FunctionProtos. Saving into
-/// FunctionProtos is the critical step — when this module is handed to the JIT
-/// and a new one is created, getFunction() uses FunctionProtos to re-emit the
+/// On success: codegen the function signature (emits a 'declare' in the current module),
+/// print it, then save the FunctionSignatureAST into FunctionSignatures. Saving into
+/// FunctionSignatures is the critical step — when this module is handed to the JIT
+/// and a new one is created, getFunction() uses FunctionSignatures to re-emit the
 /// 'declare' in whichever module needs to call the extern.
 /// On parse failure or unexpected trailing tokens: discard the line.
 static void HandleExtern() {
@@ -4472,8 +3995,8 @@ static void HandleExtern() {
 
   // Reject conflicting redeclarations: in Pyxc, function identity is just
   // name + arity. We validate types separately in the parser.
-  auto Existing = FunctionProtos.find(ProtoAST->getName());
-  if (Existing != FunctionProtos.end() &&
+  auto Existing = FunctionSignatures.find(ProtoAST->getName());
+  if (Existing != FunctionSignatures.end() &&
       Existing->second->getNumArgs() != ProtoAST->getNumArgs()) {
     LogError((string("Conflicting extern declaration for '") +
               ProtoAST->getName() + "'")
@@ -4486,23 +4009,8 @@ static void HandleExtern() {
     Log("Parsed an extern.\n");
     if (ShouldDumpIR())
       FnIR->print(errs());
-    // Save the prototype so getFunction() can re-emit it in future modules.
-    FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
-  }
-}
-
-static void HandleStructDef() {
-  bool Ok = ParseStructDefinition();
-  if (!Ok) {
-    SynchronizeToLineBoundary();
-    return;
-  }
-  bool HasTrailing =
-      (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
-  if (HasTrailing) {
-    LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
-    SynchronizeToLineBoundary();
-    return;
+    // Save the function signature so getFunction() can re-emit it in future modules.
+    FunctionSignatures[ProtoAST->getName()] = std::move(ProtoAST);
   }
 }
 
@@ -4526,8 +4034,7 @@ static void HandleStructDef() {
 ///      transferred to the JIT in step 4, so eraseFromParent() is not needed.
 static void HandleTopLevelExpression() {
   auto FnAST = ParseTopLevelExpr();
-  bool HasTrailing =
-      (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
+  bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
   if (!FnAST || HasTrailing) {
     if (FnAST)
       LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
@@ -4713,8 +4220,7 @@ static void HandleTopLevelExpression() {
 /// __pyxc.global_init function after the entire file is parsed.
 static void HandleTopLevelStatementFileMode() {
   auto Stmt = ParseTopLevelStatement();
-  bool HasTrailing =
-      (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
+  bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
   if (!Stmt || HasTrailing) {
     if (Stmt)
       LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
@@ -4760,7 +4266,7 @@ extern "C" DLLEXPORT double printd(double X) {
 /// top             = definition | external | toplevelstmt ;
 ///
 /// Dispatches on the leading token of each top-level form:
-///   tok_def    → HandleDefinition   (definition)
+///   tok_def    → HandleFunctionDef   (definition)
 ///   tok_extern → HandleExtern       (external)
 ///   '@'        → HandleDecorator    (decorateddef: @binary / @unary)
 ///   tok_eol    → skip blank line
@@ -4801,11 +4307,8 @@ static void MainLoop() {
     }
 
     switch (CurTok) {
-    case tok_struct:
-      HandleStructDef();
-      break;
     case tok_def:
-      HandleDefinition();
+      HandleFunctionDef();
       break;
     case tok_extern:
       HandleExtern();
@@ -4853,11 +4356,8 @@ static void FileModeLoop() {
     }
 
     switch (CurTok) {
-    case tok_struct:
-      HandleStructDef();
-      break;
     case tok_def:
-      HandleDefinition();
+      HandleFunctionDef();
       break;
     case tok_extern:
       HandleExtern();
@@ -4877,10 +4377,10 @@ static void FileModeLoop() {
 static void RunFileMode() {
   if (!FileTopLevelStmts.empty()) {
     auto Block = make_unique<BlockExprAST>(std::move(FileTopLevelStmts));
-    auto Proto = make_unique<PrototypeAST>(
-        "__pyxc.global_init", vector<PrototypeAST::ArgInfo>(),
+    auto Signature = make_unique<FunctionSignatureAST>(
+        "__pyxc.global_init", vector<pair<string, ValueType>>(),
         SourceLocation{1, 1}, ValueType::None);
-    auto FnAST = make_unique<FunctionAST>(std::move(Proto), std::move(Block));
+    auto FnAST = make_unique<FunctionDefAST>(std::move(Signature), std::move(Block));
 
     bool SavedInGlobalInit = InGlobalInit;
     InGlobalInit = true;
@@ -4902,8 +4402,8 @@ static void RunFileMode() {
     }
   }
 
-  auto MainIt = FunctionProtos.find("main");
-  if (MainIt == FunctionProtos.end())
+  auto MainIt = FunctionSignatures.find("main");
+  if (MainIt == FunctionSignatures.end())
     return;
 
   if (MainIt->second->getNumArgs() != 0) {
@@ -5116,7 +4616,7 @@ static bool CompileFileToObject(const string &Path, const string &ObjPath,
     return false;
 
   if (HasMain)
-    *HasMain = FunctionProtos.find("main") != FunctionProtos.end();
+    *HasMain = FunctionSignatures.find("main") != FunctionSignatures.end();
 
   if (!PrepareFileModeModule())
     return false;
@@ -5284,10 +4784,10 @@ static bool LinkExecutable(const vector<string> &Inputs,
 static bool PrepareFileModeModule() {
   if (!FileTopLevelStmts.empty()) {
     auto Block = make_unique<BlockExprAST>(std::move(FileTopLevelStmts));
-    auto Proto = make_unique<PrototypeAST>(
-        "__pyxc.global_init", vector<PrototypeAST::ArgInfo>(),
+    auto Signature = make_unique<FunctionSignatureAST>(
+        "__pyxc.global_init", vector<pair<string, ValueType>>(),
         SourceLocation{1, 1}, ValueType::None);
-    auto FnAST = make_unique<FunctionAST>(std::move(Proto), std::move(Block));
+    auto FnAST = make_unique<FunctionDefAST>(std::move(Signature), std::move(Block));
 
     bool SavedInGlobalInit = InGlobalInit;
     InGlobalInit = true;
@@ -5302,14 +4802,14 @@ static bool PrepareFileModeModule() {
     }
   }
 
-  auto MainIt = FunctionProtos.find("main");
-  if (MainIt != FunctionProtos.end() && MainIt->second->getNumArgs() != 0) {
+  auto MainIt = FunctionSignatures.find("main");
+  if (MainIt != FunctionSignatures.end() && MainIt->second->getNumArgs() != 0) {
     fprintf(stderr, "Error: main() must take no arguments\n");
     HadError = true;
     return false;
   }
 
-  if (MainIt != FunctionProtos.end()) {
+  if (MainIt != FunctionSignatures.end()) {
     ValueType MainRet = MainIt->second->getReturnType();
     if (MainRet != ValueType::Int && MainRet != ValueType::None) {
       fprintf(stderr, "Error: main() must return int or None\n");

@@ -5,9 +5,9 @@
 # Tests: a top-level for loop can accumulate into a global variable.
 # sum = 1+2+3+4+5 = 15.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-var sum: float64 = 0.0
-for var i: float64 = 1, i < 6, 1:
+var sum = 0
+for var i = 1, i < 6, 1:
     sum = sum + i
 printd(sum)

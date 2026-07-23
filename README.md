@@ -1,3 +1,7 @@
+# A word
+
+This tutorial is under active development. A lot has changed in the first two chapters to create a more grounded explanation of the concepts. These changes have not been pushed to the following chapters. I'm working on it. Please write me an email if you prefer to be informed once I'm done. 
+
 # pyxc (Pixie)
 
 `pyxc` is a Pythonic language and compiler built with LLVM as an educational tool.

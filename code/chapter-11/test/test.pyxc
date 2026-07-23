@@ -1,10 +1,5 @@
-extern def printd(d)
+extern def printd(x)
 
-def sum_to(n):
-var acc = 0
-    for var i = 1, i <= n, 1:
-        acc = acc + i
-    return acc
+def test(a, b): return var x, a = b = 1, x = a : x
 
-
-printd(sum_to(20))
+printd(test(20, 30))

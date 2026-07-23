@@ -7,5 +7,5 @@
 
 # Tests: -g embeds DWARF sections in emitted executables.
 
-def main() -> None:
-    return
+def main():
+    return 0

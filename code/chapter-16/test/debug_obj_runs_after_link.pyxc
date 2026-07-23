@@ -7,9 +7,9 @@
 # correctly with clang. Debug info does not corrupt the object file's code
 # or relocation sections.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-def add(a: float64, b: float64) -> float64: return a + b
+def add(a, b): return a + b
 
-def main() -> None:
+def main():
     printd(add(3, 4))

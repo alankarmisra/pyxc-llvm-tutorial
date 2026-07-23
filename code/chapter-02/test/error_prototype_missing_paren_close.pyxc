@@ -2,5 +2,5 @@
 # RUN: grep -q "Error: " %t
 # RUN: grep -q "Expected ')' or ',' in parameter list" %t
 
-# prototype: missing closing ')' in parameter list
+# function signature: missing closing ')' in parameter list
 def broken(x

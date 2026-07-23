@@ -5,9 +5,10 @@
 # Tests: -g --emit exe produces a working executable. Debug info must not
 # corrupt code generation — the program must run and produce the correct result.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-def sq(x: float64) -> float64: return x * x
+def sq(x): return x * x
 
-def main() -> None:
+def main():
     printd(sq(5))
+    return 0

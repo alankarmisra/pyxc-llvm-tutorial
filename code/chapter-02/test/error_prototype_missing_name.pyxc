@@ -1,6 +1,6 @@
 # RUN: %pyxc < %s > %t 2>&1
 # RUN: grep -q "Error: " %t
-# RUN: grep -q "Expected function name in prototype" %t
+# RUN: grep -q "Expected function name in function signature" %t
 
-# prototype: first token after 'def' is not an identifier
+# function signature: first token after 'def' is not a name
 def 1(x): return x

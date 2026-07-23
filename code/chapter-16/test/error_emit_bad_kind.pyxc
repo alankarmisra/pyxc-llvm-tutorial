@@ -4,6 +4,6 @@
 # Tests: passing an unrecognized kind to --emit produces a clear error.
 # Valid kinds are: llvm-ir, asm, obj.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-def sq(x: float64) -> float64: return x * x
+def sq(x): return x * x

@@ -1,26 +1,25 @@
 ---
-description: "Add --emit exe so Pyxc compiles and links a standalone executable in one command, using LLD as a library with no external tools."
+description: "Add object-file emission so Pyxc can compile programs to standalone native binaries without the JIT."
 ---
-# 14. pyxc: One-Step Executables
+# 14. pyxc: Emitting Native Code
 
 ## Where We Are
 
-[Chapter 13](chapter-13.md) added `--emit obj`, `--emit asm`, and `--emit llvm-ir`. Producing a runnable binary from a pyxc program still needed an external tool:
+[Chapter 13](chapter-13.md) gave pyxc global variables and a proper file-mode entry point. By the end of that chapter, I could write a complete pyxc program — global state, helper functions, a `main` — and run it through the JIT:
+
+```bash
+./build/pyxc program.pyxc
+```
+
+But every run recompiled the program from source. There was no way to produce a `.o` file, link it with other objects, or ship a standalone binary. I want to fix that this chapter.
+
+After this chapter:
 
 ```bash
 pyxc --emit obj -o program.o program.pyxc
-clang program.o runtime.c -o program   # ← still needed clang
+clang program.o runtime.c -o program
 ./program
 ```
-
-I want to remove that second step this chapter. After it:
-
-```bash
-pyxc --emit exe -o program program.pyxc
-./program
-```
-
-No `clang`, no `runtime.c`, no separate link invocation. One command.
 
 ## Source Code
 
@@ -29,209 +28,218 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-14
 ```
 
+## What Changes
+
+I'm adding four tightly-coupled pieces on top of chapter 12's codebase:
+
+1. **Command-line flags** — `--emit llvm-ir|asm|obj`, `-o <file>`, and `--dump-ir`.
+2. **`EmitModuleToFile`** — writes the compiled module to a file as LLVM IR, native assembly, or a native object file.
+3. **`EmitFileMode`** — orchestrates compilation for emit mode: builds `__pyxc.global_init`, wraps `main()`, then calls `EmitModuleToFile`.
+4. **`AddGlobalCtor`** — registers `__pyxc.global_init` in the `llvm.global_ctors` array so the linker wires it to run before `main()` in the emitted binary.
+
+No parser or codegen changes are needed — the chapter 12 IR is already correct. Everything new this chapter is about routing that IR to a file instead of a JIT.
+
 ## Grammar
 
-No grammar changes. The language is unchanged — this is purely a compiler-driver extension.
+No grammar changes in this chapter. The language itself is unchanged — this is purely a compiler-driver extension.
 
 ## The Design
 
-The key insight I'm leaning on: LLVM ships LLD — a full production linker — as a C++ library. Instead of shelling out to `clang` or `ld`, I can call `lld::macho::link` (or `lld::elf::link` on Linux) directly in-process. The pipeline becomes:
+The key insight I'm leaning on: the compilation pipeline doesn't need to change at all — source → tokens → AST → LLVM IR → optimised IR stays exactly as it was. What changes is the *sink*. In JIT mode the sink is the JIT's in-process linker. In emit mode the sink is a file on disk. Because the IR is the same either way, the entire parser and codegen carry over with no modification.
 
-```
-.pyxc → compile → temp .o
-.o inputs → pass through
-synthesize runtime .o (printd, putchard)
-─────────────────────────────────────────
-LLD links all .o files into executable
-```
+## Command-Line Interface
 
-The runtime functions `printd` and `putchard` are generated as LLVM IR and emitted to a temporary `.o` — no `runtime.c` or external compiler needed.
-
-## What Changes
-
-I'm adding five new pieces on top of chapter 13:
-
-1. **`cl::list<string> InputFiles`** — the positional argument changes from a single string to a list, enabling multiple inputs.
-2. **`EmitRuntimeObject`** — synthesizes `printd` and `putchard` as LLVM IR, emits them to a temporary `.o`.
-3. **`CompileFileToObject`** — per-file compilation: open → lex → parse → codegen → `.o`.
-4. **`PrepareFileModeModule`** — refactored out of `EmitFileMode`: the shared logic that builds `__pyxc.global_init`, registers it in `llvm.global_ctors`, and wraps `main()`.
-5. **`LinkExecutable`** + **`FindMacOSSDKRoot`** — LLD-as-library dispatch with platform-aware system library detection.
-6. **`EmitExecutable`** — the new orchestrator that wires all of the above together.
-
-## Multiple Inputs: `cl::list`
-
-In chapter 13, the positional argument was a single optional `cl::opt`:
+I declare three new options with LLVM's command-line library:
 
 ```cpp
-// Chapter 13
-static cl::opt<std::string> InputFile(cl::Positional, ...);
+static cl::opt<std::string>
+    EmitKindOpt("emit",
+                cl::desc("Emit output: llvm-ir | asm | obj"),
+                cl::init(""), cl::cat(PyxcCategory));
+
+static cl::opt<std::string> OutputFile("o", cl::desc("Output filename"),
+                                       cl::value_desc("filename"),
+                                       cl::init(""), cl::cat(PyxcCategory));
+
+static cl::opt<bool>
+    DumpIR("dump-ir", cl::desc("Print generated LLVM IR to stderr"),
+           cl::init(false), cl::cat(PyxcCategory));
+// Backward-compat alias.
+static cl::opt<bool>
+    VerboseIR("v", cl::desc("Alias for --dump-ir"), cl::init(false),
+              cl::cat(PyxcCategory));
 ```
 
-I need it to be a list instead, so the driver can accept any number of `.pyxc` and `.o` files:
+`ProcessCommandLine` validates and resolves them before I do any parsing:
 
 ```cpp
-// Chapter 14
-static cl::list<std::string>
-    InputFiles(cl::Positional, cl::desc("[inputs]"), cl::ZeroOrMore,
-               cl::cat(PyxcCategory));
-```
-
-I derive `IsRepl` from whether the list is empty now:
-
-```cpp
-IsRepl = InputFiles.empty();
-```
-
-The `--emit exe` path also enforces the multi-input rule:
-
-```cpp
-} else if (EmitKindOpt == "exe") {
-  EmitMode = EmitKind::EXE;
-  if (OutputFile.empty() && InputFiles.size() > 1) {
-    fprintf(stderr, "Error: multiple inputs require -o\n");
+if (!EmitKindOpt.empty()) {
+  if (IsRepl) {
+    fprintf(stderr, "Error: --emit requires a file input\n");
     return -1;
   }
-  if (!OutputFile.empty())
-    EmitOutputPath = OutputFile.getValue();
+
+  if (EmitKindOpt == "llvm-ir") {
+    EmitMode = EmitKind::LLVMIR;
+    EmitOutputPath = OutputFile.empty() ? "out.ll" : OutputFile.getValue();
+  } else if (EmitKindOpt == "asm") {
+    EmitMode = EmitKind::ASM;
+    EmitOutputPath = OutputFile.empty() ? "out.s" : OutputFile.getValue();
+  } else if (EmitKindOpt == "obj") {
+    EmitMode = EmitKind::OBJ;
+    EmitOutputPath = OutputFile.empty() ? "out.o" : OutputFile.getValue();
+  } else {
+    fprintf(stderr, "Error: invalid --emit value '%s'\n",
+            EmitKindOpt.c_str());
+    return -1;
+  }
+} else if (!OutputFile.empty()) {
+  fprintf(stderr, "Error: -o requires --emit\n");
+  return -1;
 }
 ```
 
-`--emit llvm-ir`, `--emit asm`, and `--emit obj` still require exactly one input and are unchanged.
+Key rules I'm enforcing here:
 
-## Output Naming: `DefaultExeOutputPath`
+- `--emit` without a source file is an error. The JIT REPL has no concept of an output file.
+- An unknown emit kind (`--emit wat`) is an error — the valid set is `llvm-ir`, `asm`, `obj`.
+- `-o` without `--emit` is also an error — there's nothing to route to the file.
+- If `-o` is omitted, the output path defaults to `out.ll`, `out.s`, or `out.o` in the current working directory.
 
-When `-o` is omitted and there's exactly one input, I want the output to be the input with its extension stripped — and `.exe` appended on Windows:
+I declare the `EmitKind` enum and a global string for the resolved path alongside the other global state:
 
 ```cpp
-static string DefaultExeOutputPath(StringRef InputPath) {
-  SmallString<256> Out(InputPath);
-  sys::path::replace_extension(Out, "");
-  string OutStr = Out.str().str();
-#ifdef _WIN32
-  OutStr += ".exe";
-#endif
-  return OutStr;
+enum class EmitKind { None, LLVMIR, ASM, OBJ };
+static EmitKind EmitMode = EmitKind::None;
+static string EmitOutputPath;
+
+static bool IsEmitMode() { return EmitMode != EmitKind::None; }
+```
+
+After `FileModeLoop` finishes parsing the source file, I dispatch on `IsEmitMode()` in `main`:
+
+```cpp
+FileModeLoop();
+if (IsEmitMode())
+  EmitFileMode();
+else
+  RunFileMode();
+```
+
+`IsEmitMode()` also gates the per-function JIT path inside `HandleDefinition` and the decorator handler. In JIT mode, each compiled function is immediately transferred to the JIT and the module is replaced:
+
+```cpp
+// HandleDefinition — after codegen:
+if (!IsEmitMode()) {
+  ExitOnErr(TheJIT->addModule(
+      ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
+  InitializeModuleAndManagers();
 }
 ```
 
-`sys::path::replace_extension` handles both `.pyxc` and `.o` inputs uniformly: `foo.pyxc → foo`, `mylib.o → mylib`.
+In emit mode this block is skipped entirely. All functions accumulate in the same `TheModule` until `EmitFileMode` writes it out. If I left the guard out, every `def` would hand the module to the JIT and reinitialise, leaving `EmitFileMode` with an empty module.
 
-## Synthesizing the Runtime: `EmitRuntimeObject`
+## The Emit Pipeline: `EmitModuleToFile`
 
-In `--emit obj` mode (chapter 13), I linked test binaries against `runtime.c` to get `printd` and `putchard`. For `--emit exe` mode, I want pyxc to synthesize those functions itself — no C file, no external compiler:
+`EmitModuleToFile` is the leaf that does the actual file writing. It opens the output path with `raw_fd_ostream` and then branches on the emit kind:
 
 ```cpp
-static bool EmitRuntimeObject(const string &ObjPath) {
-  LLVMContext Ctx;
-  auto M = std::make_unique<Module>("pyxc.runtime", Ctx);
-
-  auto *DoubleTy = Type::getDoubleTy(Ctx);
-  auto *Int32Ty  = Type::getInt32Ty(Ctx);
-  auto *PtrTy    = PointerType::get(Ctx, 0);
-
-  // Declare printf and putchar (provided by libc).
-  FunctionType *PrintfTy = FunctionType::get(Int32Ty, {PtrTy}, /*vararg=*/true);
-  Function *Printf = Function::Create(PrintfTy, Function::ExternalLinkage,
-                                      "printf", M.get());
-
-  FunctionType *PutcharTy = FunctionType::get(Int32Ty, {Int32Ty}, false);
-  Function *Putchar = Function::Create(PutcharTy, Function::ExternalLinkage,
-                                       "putchar", M.get());
-
-  // Define printd(double) → double.
-  FunctionType *PrintdTy = FunctionType::get(DoubleTy, {DoubleTy}, false);
-  Function *Printd = Function::Create(PrintdTy, Function::ExternalLinkage,
-                                      "printd", M.get());
-  {
-    BasicBlock *BB = BasicBlock::Create(Ctx, "entry", Printd);
-    IRBuilder<> B(BB);
-    auto *FmtGV = B.CreateGlobalString("%f\n", "fmt");
-    Value *Zero = ConstantInt::get(Int32Ty, 0);
-    Value *Fmt  = B.CreateInBoundsGEP(FmtGV->getValueType(), FmtGV,
-                                       {Zero, Zero}, "fmt_ptr");
-    B.CreateCall(Printf, {Fmt, Printd->getArg(0)});
-    B.CreateRet(ConstantFP::get(Ctx, APFloat(0.0)));
+static bool EmitModuleToFile() {
+  std::error_code EC;
+  raw_fd_ostream Dest(EmitOutputPath, EC, sys::fs::OF_None);
+  if (EC) {
+    fprintf(stderr, "Error: could not open output file '%s'\n",
+            EmitOutputPath.c_str());
+    return false;
   }
 
-  // Define putchard(double) → double.
-  FunctionType *PutchardTy = FunctionType::get(DoubleTy, {DoubleTy}, false);
-  Function *Putchard = Function::Create(PutchardTy, Function::ExternalLinkage,
-                                        "putchard", M.get());
-  {
-    BasicBlock *BB = BasicBlock::Create(Ctx, "entry", Putchard);
-    IRBuilder<> B(BB);
-    Value *Ch = B.CreateFPToUI(Putchard->getArg(0), Int32Ty, "ch");
-    B.CreateCall(Putchar, {Ch});
-    B.CreateRet(ConstantFP::get(Ctx, APFloat(0.0)));
+  if (EmitMode == EmitKind::LLVMIR) {
+    TheModule->print(Dest, nullptr);
+    return true;
   }
 
-  return EmitModuleToFile(M.get(), EmitKind::OBJ, ObjPath);
+  string TargetTriple = sys::getDefaultTargetTriple();
+  Triple TT(TargetTriple);
+  TheModule->setTargetTriple(TT);
+
+  string Error;
+  const Target *Target = TargetRegistry::lookupTarget(TT, Error);
+  if (!Target) {
+    fprintf(stderr, "Error: %s\n", Error.c_str());
+    return false;
+  }
+
+  TargetOptions Options;
+  auto RM = std::optional<Reloc::Model>();
+  std::unique_ptr<TargetMachine> TM(
+      Target->createTargetMachine(TT, "generic", "", Options, RM));
+  TheModule->setDataLayout(TM->createDataLayout());
+
+  legacy::PassManager PM;
+  CodeGenFileType FileType = (EmitMode == EmitKind::ASM)
+                                 ? CodeGenFileType::AssemblyFile
+                                 : CodeGenFileType::ObjectFile;
+
+  if (TM->addPassesToEmitFile(PM, Dest, nullptr, FileType)) {
+    fprintf(stderr, "Error: target does not support file emission\n");
+    return false;
+  }
+
+  PM.run(*TheModule);
+  return true;
 }
 ```
 
-The key points:
+I named that local variable `Target`, which shadows the `llvm::Target` type it's declared as — a little sloppy, but the compiler doesn't mind and it reads fine in context, so I've left it.
 
-- I use a fresh, independent `LLVMContext` and `Module` — separate from the user's program module. This isolates the runtime from user IR.
-- `printf` and `putchar` are declared as `extern` (they come from libc at link time).
-- `printd` and `putchard` are *defined* with `ExternalLinkage` so the linker can resolve the `extern def printd(x)` declarations in user code.
-- `EmitRuntimeObject` ends by calling `EmitModuleToFile` to write a real `.o` to a temp path. That `.o` gets added to the link list alongside user objects.
+**LLVM IR path.** `Module::print` writes the module's textual IR directly to the stream. No target information is needed — IR is portable.
 
-## Per-File Compilation: `CompileFileToObject`
+**ASM / OBJ path.** These need the full backend pipeline:
 
-I want each `.pyxc` input to go through its own full parse-codegen-emit cycle:
+- `sys::getDefaultTargetTriple()` returns the host's triple (e.g., `arm64-apple-macosx14.0.0`).
+- `TargetRegistry::lookupTarget` finds the backend registered for that triple. It fails if the target wasn't initialized at startup — that's why the three `InitializeNativeTarget*` calls in `main` matter.
+- `createTargetMachine` produces a `TargetMachine` that encapsulates the backend's code generator for the specific CPU and relocation model.
+- I update the module's data layout to match the target, so type sizes and alignments are correct.
+- I use `legacy::PassManager` here (not the new `PassManager`) because `addPassesToEmitFile` is part of the legacy pipeline API — it's the standard LLVM idiom for code generation to a file.
+- `addPassesToEmitFile` adds all the backend passes needed to lower IR to machine code and format it as assembly text or an ELF/Mach-O object file.
+- `PM.run(*TheModule)` runs the pipeline, writing the output into `Dest`.
+
+The new headers required for this path:
 
 ```cpp
-static bool CompileFileToObject(const string &Path, const string &ObjPath,
-                                bool *HasMain) {
-  if (!OpenInputFile(Path))
-    return false;
-
-  ResetLexerState();
-  ResetParserStateForFile();
-  InitializeModuleAndManagers(false);  // false = emit mode, no JIT
-
-  IsRepl = false;
-  PrintReplPrompt(); // a no-op with IsRepl false; keeps this path identical
-                     // to every other entry point that primes the lexer
-  getNextToken();
-  FileModeLoop();
-  CloseInputFile();
-
-  if (HasMain)
-    *HasMain = FunctionProtos.find("main") != FunctionProtos.end();
-
-  if (!PrepareFileModeModule())
-    return false;
-
-  return EmitModuleToFile(TheModule.get(), EmitKind::OBJ, ObjPath);
-}
+#include "llvm/Support/FileSystem.h"       // raw_fd_ostream, OF_None
+#include "llvm/Support/CodeGen.h"          // CodeGenFileType
+#include "llvm/Target/TargetMachine.h"     // TargetMachine, TargetOptions
+#include "llvm/Target/TargetOptions.h"     // TargetOptions
+#include "llvm/MC/TargetRegistry.h"        // TargetRegistry
+#include "llvm/TargetParser/Host.h"        // getDefaultTargetTriple
+#include "llvm/TargetParser/Triple.h"      // Triple
+#include "llvm/IR/LegacyPassManager.h"     // legacy::PassManager
 ```
 
-`ResetLexerState` and `ResetParserStateForFile` clear the persistent lexer and parser state between files, so each `.pyxc` compiles independently. This is what makes multi-file compilation safe — a global declared in `a.pyxc` doesn't silently bleed into `b.pyxc`.
+## `EmitFileMode`: The Orchestrator
 
-## `PrepareFileModeModule`: Shared Codegen Finishing
-
-In chapter 13, `EmitFileMode` contained all the logic for building `__pyxc.global_init`, validating `main`, and wrapping it. I want both the `--emit obj` path and the new per-file `--emit exe` path to share that, so I refactor it out into `PrepareFileModeModule`:
+`EmitFileMode` is the emit-mode counterpart to `RunFileMode`. It does the same setup — build `__pyxc.global_init`, validate `main`, wrap `main` — but instead of JIT-executing the result, it calls `EmitModuleToFile`.
 
 ```cpp
-static bool PrepareFileModeModule() {
-  // 1. Compile __pyxc.global_init from collected top-level statements.
+static void EmitFileMode() {
+  // 1. Compile __pyxc.global_init from the collected top-level statements.
   if (!FileTopLevelStmts.empty()) {
     auto Block = make_unique<BlockExprAST>(std::move(FileTopLevelStmts));
-    auto Proto = make_unique<PrototypeAST>("__pyxc.global_init",
-                                           vector<string>());
-    auto FnAST = make_unique<FunctionAST>(std::move(Proto),
-                                          std::move(Block));
+    auto Proto =
+        make_unique<PrototypeAST>("__pyxc.global_init", vector<string>());
+    auto FnAST = make_unique<FunctionAST>(std::move(Proto), std::move(Block));
+
     bool SavedInGlobalInit = InGlobalInit;
     InGlobalInit = true;
     if (auto *FnIR = FnAST->codegen()) {
       InGlobalInit = SavedInGlobalInit;
       if (ShouldDumpIR())
         FnIR->print(errs());
-      AddGlobalCtor(FnIR);
+      AddGlobalCtor(FnIR);   // <-- differs from RunFileMode
     } else {
       InGlobalInit = SavedInGlobalInit;
-      return false;
+      return;
     }
   }
 
@@ -239,7 +247,7 @@ static bool PrepareFileModeModule() {
   auto MainIt = FunctionProtos.find("main");
   if (MainIt != FunctionProtos.end() && MainIt->second->getNumArgs() != 0) {
     fprintf(stderr, "Error: main() must take no arguments\n");
-    return false;
+    return;
   }
 
   // 3. Wrap main() to return int.
@@ -248,8 +256,9 @@ static bool PrepareFileModeModule() {
       UserMain->setName("__pyxc.user_main");
       FunctionType *FT =
           FunctionType::get(Type::getInt32Ty(*TheContext), false);
-      Function *Wrapper = Function::Create(FT, Function::ExternalLinkage,
-                                           "main", TheModule.get());
+      Function *Wrapper =
+          Function::Create(FT, Function::ExternalLinkage, "main",
+                           TheModule.get());
       BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", Wrapper);
       IRBuilder<> TmpB(BB);
       TmpB.CreateCall(UserMain);
@@ -257,374 +266,199 @@ static bool PrepareFileModeModule() {
     }
   }
 
-  return true;
+  // 4. Write the output file.
+  EmitModuleToFile();
 }
 ```
 
-`EmitFileMode` now calls `PrepareFileModeModule()` followed by `EmitModuleToFile`. `CompileFileToObject` does the same. The logic lives in exactly one place. I save and restore `InGlobalInit` the same way I started doing back in chapter 13, rather than hard-resetting it to `false` — same reasoning as then: restoring whatever it actually was is a safer habit than assuming.
+Three things are meaningfully different from `RunFileMode`:
 
-## Linking with LLD: `LinkExecutable`
+1. **`AddGlobalCtor` instead of JIT-calling `__pyxc.global_init`.** In JIT mode, `RunFileMode` looks up the symbol and calls it directly. In emit mode there is no JIT — the binary hasn't been linked yet. Instead, I register `__pyxc.global_init` in `llvm.global_ctors` so the linker wires it to run before `main()` automatically.
 
-`LinkExecutable` dispatches to the right LLD driver based on the host triple:
+2. **`main()` return-type wrapping.** pyxc's `main()` returns `double` (everything in pyxc is a double). But the C runtime expects `int main()`. `EmitFileMode` detects this mismatch, renames the user's function to `__pyxc.user_main`, and synthesises a new `int main()` that calls it and returns `0`.
+
+3. **`EmitModuleToFile()` as the final step** instead of looking up and calling symbols.
+
+## `AddGlobalCtor`: Wiring Globals into the Binary
+
+When a pyxc program declares global variables, `__pyxc.global_init` must run before `main()` — otherwise globals hold `0.0` when `main` starts. In JIT mode `RunFileMode` calls `__pyxc.global_init` explicitly before calling `main`. In a native binary, the C runtime manages startup: it calls everything in `llvm.global_ctors` before `main()`. `AddGlobalCtor` puts `__pyxc.global_init` into that list.
 
 ```cpp
-static bool LinkExecutable(const vector<string> &Inputs,
-                           const string &OutputPath) {
-  Triple TT(sys::getDefaultTargetTriple());
-  vector<string> ArgStorage;
-  auto PushArg = [&](const string &Arg) { ArgStorage.push_back(Arg); };
+static void AddGlobalCtor(Function *Fn, int Priority = 65535) {
+  auto *Int32Ty = Type::getInt32Ty(*TheContext);
+  auto *VoidPtrTy = PointerType::get(*TheContext, 0);
+  auto *StructTy = StructType::get(Int32Ty, Fn->getType(), VoidPtrTy);
 
-  if (TT.isOSDarwin()) {
-    PushArg("ld64.lld");
-    PushArg("-arch");
-    PushArg(TT.getArchName().str());
-    PushArg("-o");
-    PushArg(OutputPath);
+  Constant *CtorEntry = ConstantStruct::get(
+      StructTy, ConstantInt::get(Int32Ty, Priority), Fn,
+      ConstantPointerNull::get(cast<PointerType>(VoidPtrTy)));
 
-    string SDKRoot = FindMacOSSDKRoot();
-    if (!SDKRoot.empty()) {
-      PushArg("-syslibroot");
-      PushArg(SDKRoot);
-      PushArg("-L" + SDKRoot + "/usr/lib");
-      PushArg("-L" + SDKRoot + "/usr/lib/system");
-      string OSVer = FindMacOSSDKVersion();
-      PushArg("-platform_version");
-      PushArg("macos");
-      PushArg(OSVer);
-      PushArg(OSVer);
-    }
-    // macOS startup is handled by dyld + libSystem; crt1/crti/crtn are
-    // GNU ELF files that do not belong in a Mach-O link and cause warnings
-    // on arm64 (the SDK copy is x86_64-only legacy).
-    for (const auto &Input : Inputs)
-      PushArg(Input);
-    PushArg("-lSystem");
+  // Only one call site (EmitFileMode, for __pyxc.global_init) exists today,
+  // but I guard against a second llvm.global_ctors definition anyway —
+  // LLVM won't merge two globals with the same name for me, it'll just
+  // rename the second one, and that would silently break the linker's
+  // contract with this special symbol.
+  GlobalVariable *GV = TheModule->getGlobalVariable("llvm.global_ctors");
+  if (GV)
+    return;
 
-    vector<const char *> Args;
-    for (auto &Arg : ArgStorage) Args.push_back(Arg.c_str());
-    return lld::macho::link(Args, llvm::outs(), llvm::errs(), false, false);
-  }
-
-  if (TT.isOSLinux()) {
-    PushArg("ld.lld");
-    PushArg("-o"); PushArg(OutputPath);
-    for (const auto &Input : Inputs) PushArg(Input);
-    PushArg("-lc"); PushArg("-lm");
-
-    vector<const char *> Args;
-    for (auto &Arg : ArgStorage) Args.push_back(Arg.c_str());
-    return lld::elf::link(Args, llvm::outs(), llvm::errs(), false, false);
-  }
-
-  if (TT.isOSWindows()) {
-    PushArg("lld-link");
-    PushArg("/OUT:" + OutputPath);
-    for (const auto &Input : Inputs) PushArg(Input);
-
-    vector<const char *> Args;
-    for (auto &Arg : ArgStorage) Args.push_back(Arg.c_str());
-    return lld::coff::link(Args, llvm::outs(), llvm::errs(), false, false);
-  }
-
-  fprintf(stderr, "Error: unsupported target for --emit exe\n");
-  return false;
+  ArrayType *AT = ArrayType::get(StructTy, 1);
+  auto *Init = ConstantArray::get(AT, {CtorEntry});
+  new GlobalVariable(*TheModule, AT, false, GlobalValue::AppendingLinkage, Init,
+                     "llvm.global_ctors");
 }
 ```
 
-That comment above the `-lSystem` line is there because I actually tried pushing `crt1.o`/`crti.o` first, the way a traditional Unix linker invocation does it. It seemed like the obviously-correct thing to include. It was wrong — those are GNU/ELF startup objects, this is a Mach-O link, and including them produced link warnings on arm64 (the SDK's copies are x86_64-only legacy files anyway). macOS doesn't need them: `dyld` and `libSystem` handle process startup on their own. I'm leaving the comment in because "the obvious thing" being wrong here is exactly the kind of trap I'd fall into again without it.
+`llvm.global_ctors` is a special LLVM global with `AppendingLinkage`. The linker concatenates all contributions from different objects into one array. Each element is a `{ i32 priority, ptr fn, ptr data }` struct; the lower the priority number, the earlier the function runs. I use `65535` (lowest priority), which is conventional for user-level constructors.
 
-The LLD API is the same on every platform: an array of `const char*` arguments (identical to what you'd pass on the command line), plus output/error streams and two flags — `exitEarly` (stop on first error) and `disableOutput` (dry-run). The return value is `true` on success.
+The `data` field (third struct member) is a guard pointer: if non-null, the runtime skips the entry under certain conditions. I set it to null, meaning "always run."
 
-This is a key architectural choice: **LLD is called as a library, not as a subprocess**. There's no `fork`/`exec`, no temporary shell script, no PATH lookup. If the library is linked into the `pyxc` binary, it's available.
+## `main()` Return-Type Wrapping
 
-## SDK Detection: `FindMacOSSDKRoot` and `FindMacOSSDKVersion`
+pyxc's type system has only `double`. Every function — including `main` — returns `double`. But the C ABI that the linker and OS loader expect declares `main` as `int main()`.
 
-LLD's Mach-O linker needs a sysroot to find system headers and `libSystem`, plus a version string for the `-platform_version` flag. Both of these are things Xcode's own `xcrun` tool already knows how to answer correctly, so I lean on it rather than re-deriving the logic myself:
+I bridge this automatically inside `EmitFileMode`. When it finds a user-defined `main` function with a `double` return type, it:
 
-```cpp
-static string RunXcrun(const char *Args) {
-  string Cmd = string("xcrun ") + Args + " 2>/dev/null";
-  FILE *Pipe = popen(Cmd.c_str(), "r");
-  if (!Pipe)
-    return "";
-  char Buf[512];
-  string Result;
-  while (fgets(Buf, sizeof(Buf), Pipe))
-    Result += Buf;
-  pclose(Pipe);
-  while (!Result.empty() && (Result.back() == '\n' || Result.back() == '\r' ||
-                             Result.back() == ' '))
-    Result.pop_back();
-  return Result;
+1. Renames the original to `__pyxc.user_main`.
+2. Creates a new `int main()` that calls `__pyxc.user_main` (discarding its return value) and returns the integer `0`.
+
+```
+; Before wrapping:
+define double @main() { ... }
+
+; After wrapping:
+define double @__pyxc.user_main() { ... }
+
+define i32 @main() {
+entry:
+  call double @__pyxc.user_main()
+  ret i32 0
 }
 ```
 
-`FindMacOSSDKRoot` tries an explicit override first, then `xcrun`, then falls back to probing well-known install paths if `xcrun` itself isn't available for some reason:
+This is transparent to the pyxc programmer. You write `def main(): ...` exactly as in file mode.
+
+## `--dump-ir` and `-v`
+
+I renamed the flag that prints generated IR to stderr from `-v` to `--dump-ir`, to make its purpose more explicit. I kept the old `-v` around as a backward-compatible alias:
 
 ```cpp
-static string FindMacOSSDKRoot() {
-  if (const char *EnvSDK = getenv("SDKROOT"))
-    return string(EnvSDK);
+static cl::opt<bool>
+    DumpIR("dump-ir", cl::desc("Print generated LLVM IR to stderr"),
+           cl::init(false), cl::cat(PyxcCategory));
 
-  // Ask xcrun — it resolves the active SDK for the current Xcode/CLT selection
-  // and returns the right path regardless of where Xcode is installed.
-  string XcrunPath = RunXcrun("--sdk macosx --show-sdk-path");
-  if (!XcrunPath.empty() && sys::fs::exists(XcrunPath))
-    return XcrunPath;
+static cl::opt<bool>
+    VerboseIR("v", cl::desc("Alias for --dump-ir"), cl::init(false),
+              cl::cat(PyxcCategory));
 
-  // Fallback: probe well-known paths.
-  const char *XcodeSDK = "/Applications/Xcode.app/Contents/Developer/Platforms/"
-                         "MacOSX.platform/Developer/SDKs/MacOSX.sdk";
-  if (sys::fs::exists(XcodeSDK))
-    return string(XcodeSDK);
-
-  const char *CLTSDK = "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk";
-  if (sys::fs::exists(CLTSDK))
-    return string(CLTSDK);
-
-  return "";
-}
+static bool ShouldDumpIR() { return DumpIR || VerboseIR; }
 ```
 
-I initially wrote this without `xcrun` at all — just the two hardcoded fallback paths, plus the `SDKROOT` override. It worked, but it meant `pyxc` could report a different SDK version than the one Xcode itself considers active, which showed up as a version-mismatch warning from `ld64.lld`. Asking `xcrun` directly is what the rest of Apple's own toolchain does, so I match it instead of maintaining my own guess:
+I call `ShouldDumpIR()` wherever IR is printed — after each function in JIT mode, and after codegen in emit mode. Both flags trigger the same behaviour.
+
+## Target Initialization
+
+The three `InitializeNative*` calls in `main` were already present for the JIT. They stay sufficient for emit mode too, because pyxc always targets the host machine:
 
 ```cpp
-/// FindMacOSSDKVersion - Return the macOS SDK version string (e.g. "26.0").
-/// This matches the version LLVM encodes into object files at compile time,
-/// avoiding a version mismatch warning from ld64.lld.
-static string FindMacOSSDKVersion() {
-  string Ver = RunXcrun("--sdk macosx --show-sdk-version");
-  if (!Ver.empty())
-    return Ver;
-  // Fallback: extract from the triple (may be Darwin kernel version on older
-  // LLVM builds, so prefer xcrun when available).
-  Triple TT(sys::getDefaultTargetTriple());
-  VersionTuple V = TT.getOSVersion();
-  if (V.getMajor()) {
-    std::ostringstream OS;
-    OS << V.getMajor() << "." << V.getMinor().value_or(0);
-    return OS.str();
-  }
-  return "11.0";
-}
+InitializeNativeTarget();
+InitializeNativeTargetAsmPrinter();
+InitializeNativeTargetAsmParser();
 ```
 
-The `-platform_version macos <min> <sdk>` flag is required by the Mach-O linker to set the LC_BUILD_VERSION load command. Without it, the linker produces a warning or errors depending on the LLD version.
-
-## `EmitExecutable`: The Orchestrator
-
-```cpp
-static bool EmitExecutable() {
-  vector<string> ObjectFiles;
-  vector<string> TempFiles;
-  bool SawMain = false;
-  bool SawObjectInput = false;
-
-  auto CleanupTemps = [&]() {
-    for (const auto &Path : TempFiles)
-      sys::fs::remove(Path);
-  };
-
-  for (const auto &InputPath : InputFiles) {
-    if (IsPyxcInput(InputPath)) {
-      int FD = -1;
-      SmallString<128> TmpPath;
-      if (auto EC = sys::fs::createTemporaryFile("pyxc", "o", FD, TmpPath)) {
-        fprintf(stderr, "Error: could not create temporary file: %s\n",
-                EC.message().c_str());
-        CleanupTemps();
-        return false;
-      }
-      if (FD != -1)
-        close(FD);
-
-      string ObjPath = TmpPath.str().str();
-      TempFiles.push_back(ObjPath);
-
-      bool FileHasMain = false;
-      if (!CompileFileToObject(InputPath, ObjPath, &FileHasMain)) {
-        CleanupTemps();
-        return false;
-      }
-      SawMain = SawMain || FileHasMain;
-      ObjectFiles.push_back(ObjPath);
-      continue;
-    }
-
-    if (IsObjectInput(InputPath)) {
-      ObjectFiles.push_back(InputPath);
-      SawObjectInput = true;
-      continue;
-    }
-
-    fprintf(stderr, "Error: unsupported input '%s'\n", InputPath.c_str());
-    CleanupTemps();
-    return false;
-  }
-
-  // If nothing I compiled defines main(), and nothing else was passed in
-  // that might — a pre-built .o could define it — there's no entry point
-  // for the linker to build an executable around.
-  if (!SawMain && !SawObjectInput) {
-    fprintf(stderr, "Error: main() not found\n");
-    CleanupTemps();
-    return false;
-  }
-
-  int RuntimeFD = -1;
-  SmallString<128> RuntimeObj;
-  if (auto EC = sys::fs::createTemporaryFile("pyxc_runtime", "o", RuntimeFD,
-                                             RuntimeObj)) {
-    fprintf(stderr, "Error: could not create runtime object: %s\n",
-            EC.message().c_str());
-    CleanupTemps();
-    return false;
-  }
-  if (RuntimeFD != -1)
-    close(RuntimeFD);
-
-  string RuntimePath = RuntimeObj.str().str();
-  TempFiles.push_back(RuntimePath);
-  if (!EmitRuntimeObject(RuntimePath)) {
-    CleanupTemps();
-    return false;
-  }
-  ObjectFiles.push_back(RuntimePath);
-
-  if (EmitOutputPath.empty()) {
-    if (InputFiles.empty()) {
-      fprintf(stderr, "Error: --emit exe requires a file input\n");
-      CleanupTemps();
-      return false;
-    }
-    EmitOutputPath = DefaultExeOutputPath(InputFiles.front());
-  }
-
-  if (!LinkExecutable(ObjectFiles, EmitOutputPath)) {
-    CleanupTemps();
-    return false;
-  }
-
-  CleanupTemps();
-  return true;
-}
-```
-
-A few things I want to call out here:
-
-- **`sys::fs::createTemporaryFile` takes a file descriptor out-param in this overload.** It actually creates and opens the file (so the name is guaranteed unique and reserved), and I have to `close()` that descriptor myself once I'm done needing it open — I only wanted the path, not a live handle.
-- **`CleanupTemps` is a local lambda, not a separate function.** Every error path in this function needs to remove whatever temp files exist so far before returning `false`. I considered pulling it out into its own named function, but it only ever gets used inside `EmitExecutable`, and the lambda already captures exactly the state it needs by reference — a separate function would just mean passing `TempFiles` in explicitly every time for no real benefit.
-- **The `main()` check.** I hadn't thought about this until I tried linking two plain `.o` files together with no `.pyxc` input at all — nothing in that path was checking whether an entry point existed anywhere, so a missing `main` would silently make it all the way to the linker and fail there with a much less clear error. `SawObjectInput` exists so that "a `.o` might define `main`, I can't inspect it without disassembling it" doesn't turn into a false rejection.
-
-## New Headers and Build Changes
-
-The new headers this chapter:
-
-```cpp
-#include "lld/Common/Driver.h"       // lld::macho::link, lld::elf::link, lld::coff::link
-#include "llvm/Support/VersionTuple.h"  // VersionTuple for OS version extraction
-```
-
-The three LLD driver macros need to appear at file scope to register the drivers:
-
-```cpp
-LLD_HAS_DRIVER(elf)
-LLD_HAS_DRIVER(coff)
-LLD_HAS_DRIVER(macho)
-```
-
-`CMakeLists.txt` links the LLD libraries explicitly — `llvm-config --libs all` doesn't include them:
-
-```cmake
-set(LLD_FLAGS "-llldCommon -llldELF -llldMachO -llldCOFF")
-set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${LLD_FLAGS}")
-```
+`InitializeNativeTargetAsmPrinter` registers the backend that serializes machine instructions to assembly text or object file bytes — the part that `addPassesToEmitFile` depends on. Without it, `TargetRegistry::lookupTarget` would succeed but `addPassesToEmitFile` would fail.
 
 ## Known Limitations
 
-**Target is always the host.** The SDK is detected for the machine running `pyxc`. Cross-compilation is not supported.
+**Emit mode does not run the program.** `--emit` compiles to a file and exits. If you want to both emit and run, compile, link, and execute the binary separately.
 
-**`main()` always exits 0.** The `int main()` wrapper returns `0` unconditionally. There is no way to set a non-zero exit code from a pyxc program yet.
+**Single-file compilation only.** pyxc does not have a multi-file model. Each invocation compiles one source file to one output file. Linking multiple pyxc objects together is possible but requires manual `extern def` declarations at the moment.
 
-**Runtime is always linked in.** Even if a program never calls `printd` or `putchard`, the runtime object is included in every `--emit exe` link. A future chapter could strip unreferenced symbols with LTO.
+**No debug information.** The emitted object files contain no DWARF or other debug info. Debuggers cannot map machine instructions back to pyxc source lines.
 
-**SDK detection depends on `xcrun` being on `PATH`.** `FindMacOSSDKRoot` and `FindMacOSSDKVersion` shell out to `xcrun` first and only fall back to probing fixed filesystem paths if that fails. If you have a non-standard Xcode installation and `xcrun` isn't resolving correctly, set the `SDKROOT` environment variable to the SDK path before running `pyxc` — that override is checked before `xcrun` is ever invoked.
+**Target is always the host.** There is no cross-compilation support. The output file targets the same CPU and OS as the machine running `pyxc`.
 
-**No debug information.** The emitted executables contain no DWARF. Debuggers cannot map instructions back to pyxc source lines.
-
-**Multi-file globals are independent.** Each `.pyxc` file gets its own `__pyxc.global_init`. If two files declare globals with the same name, the linker reports a duplicate-symbol error. There's no cross-file global sharing.
+**`main()` always returns 0.** The synthesised `int main()` wrapper ignores the double value returned by the user's `main()` and always returns `0`. There is no way to return a non-zero exit code from a pyxc program yet.
 
 ## Try It
 
-**The minimal case**
+**Emit LLVM IR and inspect it**
 
 ```bash
-cat hello.pyxc
+cat sq.pyxc
 ```
 ```pyxc
 extern def printd(x)
+def sq(x): return x * x
 def main():
-    printd(42)
+    printd(sq(3))
 ```
 ```bash
-pyxc --emit exe -o hello hello.pyxc
-./hello
+pyxc --emit llvm-ir -o sq.ll sq.pyxc
+cat sq.ll
 ```
-```
-42.000000
+```llvm
+declare double @printd(double)
+
+define double @sq(double %x) {
+entry:
+  %multmp = fmul double %x, %x
+  ret double %multmp
+}
+
+define double @__pyxc.user_main() {
+entry:
+  %calltmp = call double @sq(double 3.000000e+00)
+  %calltmp1 = call double @printd(double %calltmp)
+  ret double 0.000000e+00
+}
+
+define i32 @main() {
+entry:
+  %0 = call double @__pyxc.user_main()
+  ret i32 0
+}
 ```
 
-**Default output name**
+No `__pyxc.global_init` here — `sq.pyxc` has no top-level `var`, so `AddGlobalCtor` never runs. What you do see is the `main()` wrapping from earlier: `main` renamed to `__pyxc.user_main`, and a fresh `i32 @main()` calling it and returning `0`.
 
-```bash
-pyxc --emit exe hello.pyxc   # produces ./hello
-./hello
-```
-
-**Global init runs before main**
-
-```pyxc
-extern def printd(x)
-var total = 0
-for var i = 1, i < 6, 1:
-    total = total + i
-def main():
-    printd(total)   # 15.000000
-```
-
-**Linking two files**
-
-```bash
-# lib.pyxc
-def add(a, b): return a + b
-```
-```bash
-# main.pyxc
-extern def printd(x)
-extern def add(a, b)
-def main():
-    printd(add(3, 4))
-```
-```bash
-pyxc --emit exe -o prog main.pyxc lib.pyxc
-./prog
-```
-```
-7.000000
-```
-
-**Linking a pre-built object**
+**Emit assembly**
 
 ```bash
-pyxc --emit obj -o lib.o lib.pyxc
-pyxc --emit exe -o prog main.pyxc lib.o
-./prog
+pyxc --emit asm -o sq.s sq.pyxc
+grep -A2 "sq:" sq.s
 ```
 
-**Inspect the IR before linking**
+On macOS the label is actually `_sq:` — the platform's C ABI prepends an underscore — but `grep "sq:"` still matches it as a substring, so this works on both macOS and Linux as written.
+
+**Compile to a native binary**
 
 ```bash
-pyxc --dump-ir --emit exe -o prog main.pyxc
+# runtime.c provides printd/putchard for standalone binaries.
+pyxc --emit obj -o sq.o sq.pyxc
+file sq.o
+clang sq.o runtime.c -o sq
+./sq
+```
+```
+sq.o: Mach-O 64-bit object arm64
+9.000000
+```
+
+**Inspect IR while emitting**
+
+```bash
+pyxc --dump-ir --emit llvm-ir -o sq.ll sq.pyxc
+```
+
+The `--dump-ir` flag prints the IR to stderr as each function is compiled — before the file is written, so you see both the intermediate IR and the final output file.
+
+**Default output paths**
+
+```bash
+pyxc --emit llvm-ir sq.pyxc   # writes out.ll
+pyxc --emit asm    sq.pyxc   # writes out.s
+pyxc --emit obj    sq.pyxc   # writes out.o
 ```
 
 ## Build and Run
@@ -632,13 +466,14 @@ pyxc --dump-ir --emit exe -o prog main.pyxc
 ```bash
 cd code/chapter-14
 cmake -S . -B build && cmake --build build
-./build/pyxc --emit exe -o hello hello.pyxc
-./hello
+./build/pyxc --emit obj -o program.o program.pyxc
+clang program.o runtime.c -o program
+./program
 ```
 
 ## What's Next
 
-At this point pyxc can compile multi-file programs to standalone native binaries without requiring any external tools. I'll extend the language itself in future chapters: a type system beyond `double`, string literals, and structured data.
+At this point pyxc can parse, JIT-execute, and ahead-of-time compile programs with functions, control flow, and global variables. I'll build on this foundation in future chapters: a type system, aggregate data, and eventually a self-hosting compiler.
 
 ## Need Help?
 

@@ -5,7 +5,7 @@
 
 
 # Tests: external declaration and callexpr with an argument.
-# external = "extern" "def" prototype
+# external = "extern" "def" function signature
 # callexpr  = identifier "(" expression ")"
 #
 # printd(1.0) writes "1.000000\n" to stderr and returns 0.0,

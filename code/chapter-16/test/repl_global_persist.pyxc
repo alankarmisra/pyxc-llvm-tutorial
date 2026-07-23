@@ -2,11 +2,11 @@
 # CHECK: 10.000000
 # CHECK: 17.000000
 
-# Tests: top-level var and assignment persist across REPL inputs.: float64
+# Tests: top-level var and assignment persist across REPL inputs.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-var x: float64 = 10.0
+var x = 10
 printd(x)
 
 x = x + 7

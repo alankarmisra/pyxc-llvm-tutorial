@@ -1,30 +1,33 @@
 ---
-description: "Add bitwise operators &, |, ^, <<, >> and unary ~ with C-standard precedence and integer-only type checking."
+description: "Complete pyxc's loop story: while, do/while, break, and continue, with correct targets for nested loops and for loops."
 ---
-# 34. pyxc: Bitwise Operators
+# 34. pyxc: Loop Completeness
 
 ## Where We Are
 
-I think I'm pretty much done with the loop story in [Chapter 33](chapter-33.md). The last major gap before K&R-style systems programming is bitwise manipulation. If I can add that, I can use flags, masks, and bit-shifting in my code and crack more of the K&R style problems. Here's what I'm aiming to get working:
+[Chapter 33](chapter-33.md) added logical operators. pyxc has had `for` loops since [Chapter 9](chapter-09.md), but that is the only loop form. After this chapter, `while` and `do/while` join the language, and `break` and `continue` work correctly across nested loops:
 
 ```pyxc
 extern def printd(x: float64)
 
+def collatz(n: int) -> int:
+  var x: int = n
+  var steps: int = 0
+  while x != 1:
+    if x % 2 == 0:
+      x /= 2
+    else:
+      x = x * 3 + 1
+    steps++
+  return steps
+
 def main() -> int:
-  var flags: int = 0
-  flags = flags | 1        # set bit 0
-  flags = flags | 4        # set bit 2
-  flags = flags & ~2       # clear bit 1 (already clear, but pattern works)
-
-  var shifted: int = 1 << 3   # 8
-  var masked: int = shifted & 0xFF
-
-  printd(float64(flags + masked))
+  printd(float64(collatz(27)))
   return 0
 ```
 
 ```
-13.000000
+111.000000
 ```
 
 ## Source Code
@@ -34,239 +37,310 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-34
 ```
 
-## New Tokens for `<<` and `>>`
+## New Tokens and Keywords
 
-I handled single-character operators like `&`, `|`, `^`, and `~` in the catch-all ASCII path — returning their character values. Since '<<' and '>>' are multi-character tokens, I'm gonna need to send them back as enums. 
+Four new tokens:
 
 ```cpp
-tok_shl = -58, // <<
-tok_shr = -59, // >>
+tok_while    = -52,
+tok_do       = -53,
+tok_break    = -54,
+tok_continue = -55,
 ```
 
-## Lexer Peek-Ahead for Shifts
-
-I know that the existing `<` and `>` paths in the lexer previously looked ahead for `=` only. I can just expand them to also look for a second `<` or `>`:
+They are added to the keyword table alongside existing keywords:
 
 ```cpp
-if (LexerLastChar == '<') {
-  int Next = peek();
-  int Tok = '<';
-  if (Next == '=')
-    Tok = (advance(), tok_leq);   // '<=' — comparison
-  else if (Next == '<')
-    Tok = (advance(), tok_shl);   // '<<' — left shift
-  LexerLastChar = advance();
-  return Tok;
+{"while", tok_while}, {"do", tok_do},
+{"break", tok_break}, {"continue", tok_continue},
+```
+
+## New AST Nodes
+
+Three nodes handle the new constructs.
+
+**`WhileExprAST`** covers both `while` and `do/while`. An `IsDoWhile` flag tells codegen which block to branch to first:
+
+```cpp
+class WhileExprAST : public ExprAST {
+  unique_ptr<ExprAST> Cond;
+  unique_ptr<ExprAST> Body;
+  bool IsDoWhile;
+public:
+  WhileExprAST(unique_ptr<ExprAST> Cond, unique_ptr<ExprAST> Body,
+               bool IsDoWhile)
+      : Cond(std::move(Cond)), Body(std::move(Body)), IsDoWhile(IsDoWhile) {
+    setType(ValueType::None);
+  }
+  bool shouldPrintValue() const override { return false; }
+  Value *codegen() override;
+};
+```
+
+**`BreakExprAST`** and **`ContinueExprAST`** carry no data — they emit an unconditional branch at codegen time:
+
+```cpp
+class BreakExprAST : public ExprAST {
+public:
+  BreakExprAST() { setType(ValueType::None); }
+  bool shouldPrintValue() const override { return false; }
+  Value *codegen() override;
+};
+
+class ContinueExprAST : public ExprAST {
+public:
+  ContinueExprAST() { setType(ValueType::None); }
+  bool shouldPrintValue() const override { return false; }
+  Value *codegen() override;
+};
+```
+
+## Parse-Time Depth Tracking
+
+A counter gates `break` and `continue` outside any loop. An RAII guard increments and decrements it automatically:
+
+```cpp
+static int ParseLoopDepth = 0;
+
+struct ParseLoopGuard {
+  ParseLoopGuard()  { ++ParseLoopDepth; }
+  ~ParseLoopGuard() { --ParseLoopDepth; }
+};
+```
+
+`ParseBreakStmt` and `ParseContinueStmt` check the counter before accepting the keyword:
+
+```cpp
+static unique_ptr<ExprAST> ParseBreakStmt() {
+  if (ParseLoopDepth <= 0)
+    return LogError("'break' used outside of a loop");
+  getNextToken(); // eat 'break'
+  return make_unique<BreakExprAST>();
 }
 
-if (LexerLastChar == '>') {
-  int Next = peek();
-  int Tok = '>';
-  if (Next == '=')
-    Tok = (advance(), tok_geq);   // '>=' — comparison
-  else if (Next == '>')
-    Tok = (advance(), tok_shr);   // '>>' — right shift
-  LexerLastChar = advance();
-  return Tok;
-}
-```
-
-That was easy. 
-
-## Precedence — A Full Restructuring
-
-I wasn't really sure about the precedence of these operators cause before this, all comparisons has equal precedence. I looked up what C does and just copied it's precedence and re-assigned values accordingly. 
-
-```cpp
-{tok_or,  5},  // ||
-{tok_and, 7},  // &&
-{'|',    10},  // |
-{'^',    11},  // ^
-{'&',    12},  // &
-{tok_eq, 13},  // ==
-{tok_neq,13},  // !=
-{tok_leq,14},  // <=
-{tok_geq,14},  // >=
-{'<',    14},  // <
-{'>',    14},  // >
-{tok_shl,15},  // <<
-{tok_shr,15},  // >>
-// arithmetic remains at 20–40
-```
-
-I spent some time toying with it, and realized that I had put `&` below `==` and `!=`. So `a & b == 0` will parse as `a & (b == 0)`, not `(a & b) == 0`. If I want the latter, I'm going to have to add parentheses. I think C does it this way too so I'll allow it. 
-
-## Type-Checking Predicates and `GetBinaryResultType`
-
-Two predicates identify the new operator families:
-
-```cpp
-static bool IsBitwiseOp(int Op) { return Op == '&' || Op == '|' || Op == '^'; }
-static bool IsShiftOp(int Op)   { return Op == tok_shl || Op == tok_shr; }
-```
-
-`GetBinaryResultType` gains two new branches. For bitwise ops, both operands must be integers; `IsAssignable` picks the wider of the two as the result type:
-
-```cpp
-if (IsBitwiseOp(Op)) {
-  if (!IsIntType(L) || !IsIntType(R))
-    return ValueType::Error;
-  if (IsAssignable(L, R))
-    return L;
-  if (IsAssignable(R, L))
-    return R;
-  return ValueType::Error;
-}
-```
-
-For shifts, the result type is always the left operand's type, regardless of the shift count's type:
-
-```cpp
-if (IsShiftOp(Op)) {
-  if (!IsIntType(L) || !IsIntType(R))
-    return ValueType::Error;
-  return L;
+static unique_ptr<ExprAST> ParseContinueStmt() {
+  if (ParseLoopDepth <= 0)
+    return LogError("'continue' used outside of a loop");
+  getNextToken(); // eat 'continue'
+  return make_unique<ContinueExprAST>();
 }
 ```
 
-In `ParseBinOpRHS`, the built-in type-check dispatch is extended:
+## `ParseWhileStmt` and `ParseDoWhileStmt`
+
+`ParseWhileStmt` reads the condition first:
 
 ```cpp
-if (IsComparisonOp(BinOp) || IsArithmeticOp(BinOp) || IsLogicalOp(BinOp) ||
-    IsBitwiseOp(BinOp) || IsShiftOp(BinOp)) {
-  ResultType = GetBinaryResultType(BinOp, LHS->getType(), ...);
-  if (ResultType == ValueType::Error)
-    return LogError("Type mismatch in binary operator");
-  LHS = make_unique<BinaryExprAST>(...);
-  continue;
-}
-```
-
-Type errors are caught at parse time. Codegen never runs on a bad operand pair.
-
-## Parsing Unary `~`
-
-`~` is parsed in `ParseUnary` alongside `-` and `!`. The operand must be an integer type; the result type is the same as the operand:
-
-```cpp
-if (CurTok == '~') {
-  getNextToken(); // eat '~'
-  auto Operand = ParseUnary();
-  if (!Operand)
+static unique_ptr<ExprAST> ParseWhileStmt() {
+  getNextToken(); // eat 'while'
+  auto Cond = ParseExpression();
+  if (!Cond)
     return nullptr;
-  if (!IsIntType(Operand->getType()))
-    return LogError("Unary '~' requires an integer operand");
-  return make_unique<UnaryExprAST>('~', std::move(Operand),
-                                   Operand->getType());
+  if (Cond->getType() != ValueType::Bool)
+    return LogError("While loop condition must be bool");
+  if (CurTok != ':')
+    return LogError("Expected ':' after while condition");
+  getNextToken(); // eat ':'
+  ParseLoopGuard LoopGuard;
+  auto Body = ParseSuite();
+  if (!Body)
+    return nullptr;
+  return make_unique<WhileExprAST>(std::move(Cond), std::move(Body),
+                                   /*IsDoWhile=*/false);
 }
 ```
 
-`~~x` (double complement) and `~(x + 1)` both parse naturally because the operand is a full `unaryexpr`.
-
-## Codegen: Binary Bitwise Operators
-
-`BinaryExprAST::codegen` gains cases for `&`, `|`, and `^`. Both operands are coerced to the result type via `EmitImplicitCast` — this handles widening selected by `GetBinaryResultType` (e.g., `int32 & int64` widens `int32` to `int64` before the instruction):
+`ParseDoWhileStmt` reads the body first, then the condition after `while`:
 
 ```cpp
-case '&':
-case '|':
-case '^': {
-  ValueType Ty = getType();
-  L = EmitImplicitCast(L, LType, Ty);
-  R = EmitImplicitCast(R, RType, Ty);
-  if (!L || !R)
-    return LogErrorV("Type mismatch in binary operator");
-  if (Op == '&')
-    return Builder->CreateAnd(L, R, "bwand");
-  if (Op == '|')
-    return Builder->CreateOr(L, R, "bwor");
-  return Builder->CreateXor(L, R, "bwxor");
+static unique_ptr<ExprAST> ParseDoWhileStmt() {
+  getNextToken(); // eat 'do'
+  if (CurTok != ':')
+    return LogError("Expected ':' after 'do'");
+  getNextToken(); // eat ':'
+  ParseLoopGuard LoopGuard;
+  auto Body = ParseSuite();
+  if (!Body)
+    return nullptr;
+  if (CurTok == tok_block_end)
+    getNextToken();
+  if (CurTok == tok_eol)
+    consumeNewlines();
+  if (CurTok != tok_while)
+    return LogError("Expected 'while' after do-body");
+  getNextToken(); // eat 'while'
+  auto Cond = ParseExpression();
+  if (!Cond)
+    return nullptr;
+  if (Cond->getType() != ValueType::Bool)
+    return LogError("Do-while condition must be bool");
+  return make_unique<WhileExprAST>(std::move(Cond), std::move(Body),
+                                   /*IsDoWhile=*/true);
 }
 ```
 
-Each maps directly to a single LLVM instruction: `and`, `or`, or `xor`. These are integer instructions — LLVM has no floating-point equivalents.
+Both parsers install a `ParseLoopGuard` around the body so `break`/`continue` inside are accepted. The guard is destroyed automatically when the function returns, decrementing `ParseLoopDepth`.
 
-Shifts follow the same structure:
+Both `ParseWhileStmt` and `ParseDoWhileStmt` are wired into the compound statement dispatcher alongside `tok_if`, `tok_for`.
+
+## `LoopControlStack` — Codegen Targets
+
+A single stack tracks break and continue targets for all loop types. Each entry holds two blocks:
 
 ```cpp
-case tok_shl:
-case tok_shr: {
-  ValueType Ty = getType();
-  L = EmitImplicitCast(L, LType, Ty);
-  R = EmitImplicitCast(R, RType, Ty);
-  if (!L || !R)
-    return LogErrorV("Type mismatch in binary operator");
-  if (Op == tok_shl)
-    return Builder->CreateShl(L, R, "shltmp");
-  return Builder->CreateAShr(L, R, "shrtmp");
-}
+struct LoopControlTargets {
+  BasicBlock *BreakTarget    = nullptr;  // where 'break' jumps
+  BasicBlock *ContinueTarget = nullptr;  // where 'continue' jumps
+};
+static std::vector<LoopControlTargets> LoopControlStack;
 ```
 
-`CreateShl` emits `shl` — shift left, filling low bits with zeros. `CreateAShr` emits `ashr` — arithmetic shift right, which fills high bits with the sign bit of the left operand. For a negative `int64`, `x >> 1` stays negative. LLVM also has `CreateLShr` for logical (zero-filling) right shift, but pyxc doesn't expose it — `ashr` is correct for signed integers.
+Every loop codegen pushes on entry and pops on exit. The innermost loop is always on top. `break` branches to `back().BreakTarget`; `continue` branches to `back().ContinueTarget`.
 
-## Codegen: Unary `~`
+## `WhileExprAST::codegen`
 
-`UnaryExprAST::codegen` handles `~` after existing cases for `-` and `!`:
+Three basic blocks are created: `while_cond`, `while_body`, `while_after`. The entry branch and condition evaluation differ between `while` and `do/while`:
 
 ```cpp
-if (Opcode == '~') {
-  if (!IsIntType(getType()))
-    return LogErrorV("Unary '~' not supported for this type");
-  return Builder->CreateNot(Op, "bnottmp");
+Value *WhileExprAST::codegen() {
+  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+  BasicBlock *CondBB  = BasicBlock::Create(*TheContext, "while_cond", TheFunction);
+  BasicBlock *BodyBB  = BasicBlock::Create(*TheContext, "while_body", TheFunction);
+  BasicBlock *AfterBB = BasicBlock::Create(*TheContext, "while_after", TheFunction);
+
+  if (IsDoWhile) {
+    Builder->CreateBr(BodyBB);   // do/while: enter body unconditionally
+  } else {
+    Builder->CreateBr(CondBB);   // while: check condition first
+  }
+
+  if (!IsDoWhile) {
+    Builder->SetInsertPoint(CondBB);
+    Value *CondVal = Cond->codegen();
+    CondVal = ToBool(CondVal, Cond->getType());
+    Builder->CreateCondBr(CondVal, BodyBB, AfterBB);
+  }
+
+  Builder->SetInsertPoint(BodyBB);
+  LoopControlStack.push_back({AfterBB, CondBB});
+  if (!Body->codegen()) {
+    LoopControlStack.pop_back();
+    return nullptr;
+  }
+  LoopControlStack.pop_back();
+  if (!Builder->GetInsertBlock()->getTerminator())
+    Builder->CreateBr(CondBB);
+
+  Builder->SetInsertPoint(CondBB);
+  if (IsDoWhile || !CondBB->getTerminator()) {
+    Value *CondVal = Cond->codegen();
+    CondVal = ToBool(CondVal, Cond->getType());
+    Builder->CreateCondBr(CondVal, BodyBB, AfterBB);
+  }
+
+  Builder->SetInsertPoint(AfterBB);
+  return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 ```
 
-`CreateNot` lowers to `xor %val, -1` — XOR-ing every bit with 1 flips it. The name `bnottmp` (bitwise not) distinguishes it from `nottmp` (logical not on `i1`) in the IR.
+For a regular `while`, the body falls back to `CondBB`; for `do/while`, the body also falls to `CondBB`, but the initial branch skips `CondBB` entirely and lands in `BodyBB`.
 
-For a concrete example:
-```pyxc
-var x: int = 9     # binary: ...0001001
-var y: int = ~x    # binary: ...1110110 → -10 in two's complement
-var z: int = y & 7 # mask the low 3 bits → 6
+## `for` Loop Gets a `StepBB`
+
+The existing `for` loop codegen is updated. Previously, the step expression was evaluated inline at the end of the body block. Now it gets its own dedicated basic block so `continue` can jump to it correctly:
+
+```cpp
+BasicBlock *StepBB = BasicBlock::Create(*TheContext, "loop_step", TheFunction);
 ```
 
-`~9` is `-10` because in two's complement, flipping all bits and adding 1 negates: `~x = -(x + 1)`.
+The body's implicit branch now goes to `StepBB` instead of the condition block. `StepBB` evaluates the step expression and then branches to the condition. The `LoopControlTargets` pushed for the `for` loop sets `ContinueTarget = StepBB`, matching C semantics: `continue` in a `for` loop runs the step.
+
+```cpp
+LoopControlStack.push_back({AfterBB, StepBB});
+```
+
+## `BreakExprAST::codegen` and `ContinueExprAST::codegen`
+
+Both emit a single unconditional branch and then stop generating code for the current block (the caller sees the terminator and skips further statements):
+
+```cpp
+Value *BreakExprAST::codegen() {
+  if (LoopControlStack.empty())
+    return LogErrorV("'break' used outside of a loop");
+  Builder->CreateBr(LoopControlStack.back().BreakTarget);
+  // caller checks for terminator; no further instructions emitted
+}
+
+Value *ContinueExprAST::codegen() {
+  if (LoopControlStack.empty())
+    return LogErrorV("'continue' used outside of a loop");
+  Builder->CreateBr(LoopControlStack.back().ContinueTarget);
+  return ConstantFP::get(*TheContext, APFloat(0.0));
+}
+```
+
+## Block Parser Fix
+
+The block parser loop condition is tightened. Previously it stopped on `tok_block_end` or `tok_dedent`; now it stops only on `tok_dedent` (or `tok_eof`) and handles `tok_block_end` inline:
+
+```cpp
+while (CurTok != tok_dedent && CurTok != tok_eof) {
+  if (...) {
+    continue;
+  }
+  if (CurTok == tok_block_end) {
+    getNextToken();
+    continue;
+  }
+  ...
+}
+```
+
+This prevents `tok_block_end` from accidentally terminating a block mid-parse in nested constructs.
 
 ## Grammar
 
 ```ebnf
-unaryop         = "-" | "!" | "~" | "++" | "--" | userdefunaryop ;  -- changed
-builtinbinaryop = "+" | "-" | "*" | "/" | "%"
-                | "<" | "<=" | ">" | ">=" | "==" | "!="
-                | "&&" | "||"
-                | "&" | "|" | "^" | "<<" | ">>" ;                  -- changed
+whilestmt    = "while" expression ":" suite ;                    -- new
+dowhilestmt  = "do" ":" suite eols "while" expression ;          -- new
+compoundstmt = ifstmt | forstmt | whilestmt | dowhilestmt ;      -- changed
+simplestmt   = returnstmt | breakstmt | continuestmt
+             | varstmt | assignstmt | expression ;               -- changed
+breakstmt    = "break" ;                                          -- new
+continuestmt = "continue" ;                                       -- new
 ```
+
+Note the `do/while` form: the body comes first under `do:`, the condition appears after `while` on a separate line with no trailing colon.
 
 ## Error Cases
 
-**Bitwise op on float:**
+**`break` outside a loop:**
 ```pyxc
-var x: float64 = 1.0
-var y: float64 = 2.0
-var z: float64 = x & y  # Error: Type mismatch in binary operator
+def main() -> int:
+  break  # Error: 'break' used outside of a loop
+  return 0
 ```
 
-**`~` on non-integer:**
+**While condition is not bool:**
 ```pyxc
-var x: float64 = 1.0
-var y: float64 = ~x  # Error: Unary '~' requires an integer operand
+var n: int = 5
+while n:     # Error: While loop condition must be bool
+  n -= 1
 ```
-
-Both are caught at parse time and never reach codegen.
 
 ## Things Worth Knowing
 
-**`&` and `|` are not `&&` and `||`.** The single-character forms are bitwise and operate on integers. The double-character forms are logical, operate on `bool`, and short-circuit.
+**`do/while` uses the same AST node as `while`.** The `IsDoWhile` flag is the only structural difference. Codegen for both lives in `WhileExprAST::codegen`.
 
-**Compound assignment works with all bitwise operators.** `x &= mask`, `flags |= bit`, `x ^= pattern`, `x <<= 2`, and `x >>= 1` are all valid — the compound assignment path already handles any binary operator by token value.
+**`continue` target differs between loop types.** In a `while` loop, `continue` goes to the condition block. In a `for` loop, `continue` goes to `StepBB` — the step expression always runs. The `LoopControlStack` stores the right target per loop.
 
-**Right shift is arithmetic (sign-extending).** For a negative `int`, `x >> 1` fills the high bit with the sign bit. Chapter 38 adds unsigned integer types, which use logical shift right (`lshr`).
+**The loop condition must be `bool`.** There is no implicit `int → bool` coercion. Use an explicit comparison: `while n != 0:` not `while n:`.
 
-**The C precedence gotcha.** `a & b == 0` means `a & (b == 0)` in both C and pyxc. Write `(a & b) == 0` when you want that.
+**Nesting is automatic.** The stack means the innermost loop's targets are always on top. `break` inside a nested loop exits only the inner loop.
 
 ## What's Next
 
-[Chapter 35](chapter-35.md) adds `switch` statements.
+[Chapter 35](chapter-35.md) adds bitwise operators: `&`, `|`, `^`, `<<`, `>>`, and `~`.
 
 ## Need Help?
 

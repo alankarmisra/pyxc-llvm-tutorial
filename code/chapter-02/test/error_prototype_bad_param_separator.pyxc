@@ -2,5 +2,5 @@
 # RUN: grep -q "Error: " %t
 # RUN: grep -q "Expected ')' or ',' in parameter list" %t
 
-# prototype: parameters separated by space instead of comma
+# function signature: parameters separated by space instead of comma
 def foo(x y): return x

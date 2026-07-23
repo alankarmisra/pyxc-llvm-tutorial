@@ -24,13 +24,13 @@ enum Token {
   tok_def,
 
   // tokens that need additional information attached
-  tok_identifier,
+  tok_name,
   tok_number,
 
   // control flow
   tok_return,
 
-  // punctuation
+  // punctuation and operators
   tok_lparen,
   tok_rparen,
   tok_comma,
@@ -38,21 +38,22 @@ enum Token {
   tok_plus,
 };
 
-static string IdentifierStr; // Filled in if tok_identifier
-static double NumVal;        // Filled in if tok_number
+static string NameStr; // Filled in with the name just read
+static double NumVal;  // Filled in with the number read
 
 static map<string, Token> Keywords = {
     {"def", tok_def},
     {"return", tok_return},
 };
 
-// TokenNames maps each named token to a readable string for debug output.
+// TokenNames maps each named token to a readable string for debug output and
+// error reporting.
 static map<int, string> TokenNames = {
     {tok_eof, "end of input"},
     {tok_eol, "newline"},
     {tok_error, "error"},
     {tok_def, "'def'"},
-    {tok_identifier, "identifier"},
+    {tok_name, "name"},
     {tok_number, "number"},
     {tok_return, "'return'"},
     {tok_lparen, "'('"},
@@ -84,32 +85,36 @@ int gettok() {
   while (isspace(LastChar) && LastChar != '\n')
     LastChar = advance();
 
+  // Name
   if (isalpha(LastChar) || LastChar == '_') {
-    IdentifierStr = LastChar;
+    NameStr = LastChar;
     while (isalnum(LastChar = advance()) || LastChar == '_')
-      IdentifierStr += LastChar;
+      NameStr += LastChar;
     // LastChar now holds the first character that is not part of this
     // name/keyword.
 
     // Keyword check.
-    auto KeywordIt = Keywords.find(IdentifierStr);
+    auto KeywordIt = Keywords.find(NameStr);
     if (KeywordIt != Keywords.end())
       return KeywordIt->second;
-    return tok_identifier;
+    return tok_name;
   }
 
+  // Number
   if (isdigit(LastChar) || LastChar == '.') {
     string NumStr;
     do {
       NumStr += LastChar;
       LastChar = advance();
     } while (isdigit(LastChar) || LastChar == '.');
+    // LastChar now holds the first character that is not part of this number.
 
     // TODO: This incorrectly lexes 1.23.45.67 as 1.23
     NumVal = strtod(NumStr.c_str(), 0);
     return tok_number;
   }
 
+  // Comment
   if (LastChar == '#') {
     // Comment until the end of the line
     do {
@@ -122,17 +127,17 @@ int gettok() {
     }
   }
 
-  // Newline.
+  // Newline
   if (LastChar == '\n') {
     LastChar = advance();
     return tok_eol;
   }
 
-  // End of file.
+  // End of file
   if (LastChar == EOF)
     return tok_eof;
 
-  // Single-character punctuation and operators.
+  // Single-character punctuation and operators
   int ThisChar = LastChar;
   LastChar = advance();
   switch (ThisChar) {
@@ -158,9 +163,9 @@ int gettok() {
 int main() {
   int tok;
   while ((tok = gettok()) != tok_eof) {
-    if (tok == tok_identifier)
+    if (tok == tok_name)
       fprintf(stdout, "%s: %s\n", TokenNames.at(tok).c_str(),
-              IdentifierStr.c_str());
+              NameStr.c_str());
     else if (tok == tok_number)
       fprintf(stdout, "%s: %g\n", TokenNames.at(tok).c_str(), NumVal);
     else

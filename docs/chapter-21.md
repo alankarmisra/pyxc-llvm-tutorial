@@ -1,32 +1,38 @@
 ---
-description: "Add string literals and C interop — so pyxc programs can call puts, printf, and other C standard library functions directly."
+description: "Add sizeof and pointer casts so pyxc can call malloc and free — heap allocation with manual ownership."
 ---
-# 21. pyxc: String Literals and C Interop
+# 21. pyxc: Heap Allocation
 
 ## Where We Are
 
-[Chapter 20](chapter-20.md) added array literals, giving us a clean syntax for constructing fixed-size arrays inline. But there is one conspicuously missing piece: text. Every useful program eventually needs to produce output that is more than a raw number, and the C standard library is full of functions — `puts`, `printf`, `strlen` — that are ready to help. What we are missing is a way to write string data in pyxc source code.
+[Chapter 20](chapter-20.md) added fixed-size arrays — declared with a size known at compile time, allocated on the stack. That covers most local data, but sometimes you need memory whose size is only known at runtime, or whose lifetime must outlive the function that allocated it. For that you need the heap.
 
 After this chapter:
 
 ```pyxc
-extern def puts(s: ptr[int8]) -> int
-
-def greeting() -> ptr[int8]:
-  return "hello, pyxc"
+extern def malloc(n: int64) -> ptr[int8]
+extern def free(p: ptr[int8])
+extern def printd(x: float64)
 
 def main() -> int:
-  puts(greeting())
+  var n: int64 = 5
+  var raw: ptr[int8] = malloc(n * sizeof(int64))
+  var p: ptr[int64] = ptr[int64](raw)
+  p[0] = 5
+  p[1] = 7
+  p[2] = 9
+  p[3] = 6
+  p[4] = 8
+  var q: ptr[int64] = p + 2
+  printd(float64(q[0] + q[1] + q[2]))  # 23.000000
+  free(raw)
   return 0
 ```
 
-Output:
+`malloc` and `free` are the C standard library functions. pyxc calls them directly through `extern` declarations. The two new pieces this chapter adds are:
 
-```
-hello, pyxc
-```
-
-String literals are `ptr[int8]` — a pointer to the first byte of a null-terminated buffer. That is exactly what C's `char *` is. `puts`, `printf`, `strlen`, and every other C string function accept `ptr[int8]` directly, with no adapter needed.
+- **`sizeof(T)`** — a compile-time constant giving the byte size of type `T`, so you can compute the right argument to `malloc`.
+- **`ptr[T](expr)`** — a pointer cast that reinterprets a `ptr[S]` as a `ptr[T]`, carrying the new pointee type metadata through without emitting any IR instruction.
 
 ## Source Code
 
@@ -38,176 +44,203 @@ cd pyxc-llvm-tutorial/code/chapter-21
 ## Grammar
 
 ```ebnf
-string-expr ::= '"' { char | escape-seq } '"'
-escape-seq  ::= '\\' | '\"' | '\n' | '\t' | '\0'
+sizeof-expr ::= 'sizeof' '(' type ')'
+
+cast-expr   ::= type '(' expression ')'   (* extended: ptr[T](expr) now allowed *)
 ```
 
-A string literal is a sequence of characters and escape sequences enclosed in double quotes. It has type `ptr[int8]` regardless of context. The closing quote must appear on the same line as the opening quote — unterminated strings are a lexer error.
+`sizeof` takes a type (not an expression) and returns an `int64` compile-time constant. `ptr[T](expr)` extends the existing cast expression to allow pointer-to-pointer reinterpretation; previously, casting to a pointer type was rejected.
 
-Supported escape sequences: `\\` (backslash), `\"` (double quote), `\n` (newline), `\t` (tab), `\0` (null byte). Any other `\x` is a lexer error.
+`sizeof(None)` is rejected at parse time. `ptr[T](expr)` requires that `expr` is already a pointer — you cannot cast an integer to a pointer.
 
-## A New Token: `tok_string`
+## One New Keyword
 
 ```cpp
-tok_string = -38,
+tok_sizeof = -37,
 ```
 
-Unlike keywords, `tok_string` is not registered in the keyword map. The lexer produces it directly when it encounters a `"` character. The string's content — with escapes already resolved — is stored in a global:
+Registered in the keyword map:
 
 ```cpp
-static string StringLiteralStr;
+{"sizeof", tok_sizeof}
 ```
 
-This mirrors the existing pattern for `IdentifierStr` and `NumVal`: the lexer fills a global, and the parser consumes it before calling `getNextToken` again.
+## `sizeof`: Compile-Time Type Size
 
-## Lexer String Handling
+`sizeof(T)` evaluates to the number of bytes that an instance of type `T` occupies in memory, as determined by the target's data layout. It always has type `int64` and is computed entirely at compile time — no function call, no runtime overhead.
 
-In `getTok`, the `LexerLastChar == '"'` branch handles the full scan:
-
-```cpp
-if (LexerLastChar == '"') {
-  StringLiteralStr.clear();
-  LexerLastChar = advance(); // eat opening quote
-  while (LexerLastChar != '"' && LexerLastChar != EOF && LexerLastChar != '\n') {
-    if (LexerLastChar == '\\') {
-      LexerLastChar = advance();
-      switch (LexerLastChar) {
-      case '\\': StringLiteralStr.push_back('\\'); break;
-      case '"':  StringLiteralStr.push_back('"');  break;
-      case 'n':  StringLiteralStr.push_back('\n'); break;
-      case 't':  StringLiteralStr.push_back('\t'); break;
-      case '0':  StringLiteralStr.push_back('\0'); break;
-      default:
-        fprintf(stderr, "Error: invalid string escape\n");
-        return tok_error;
-      }
-    } else {
-      StringLiteralStr.push_back(static_cast<char>(LexerLastChar));
-    }
-    LexerLastChar = advance();
-  }
-  if (LexerLastChar != '"') {
-    fprintf(stderr, "Error: unterminated string literal\n");
-    return tok_error;
-  }
-  LexerLastChar = advance(); // eat closing quote
-  return tok_string;
-}
-```
-
-The loop advances character by character. When it sees `\`, it immediately advances again to read the escape character. Each recognized escape is pushed as its actual byte value. Anything not in the switch returns `tok_error` immediately, which aborts compilation.
-
-The while condition checks for both EOF and `\n` in addition to the closing `"`. This means hitting end-of-file or end-of-line before the closing quote is caught as an unterminated string rather than looping forever.
-
-## `StringExprAST`
+### `SizeofExprAST`
 
 ```cpp
-class StringExprAST : public ExprAST {
-  string Text;
+class SizeofExprAST : public ExprAST {
+  ValueType TargetType;
+  string TargetStructName;
 public:
-  explicit StringExprAST(string Text, const string &PtrTypeInfo)
-      : Text(std::move(Text)) {
-    setType(ValueType::Pointer, PtrTypeInfo);
+  SizeofExprAST(ValueType TargetType, const string &TargetStructName = "")
+      : TargetType(TargetType), TargetStructName(TargetStructName) {
+    setType(ValueType::Int64);
   }
   Value *codegen() override;
 };
 ```
 
-The type is always `ptr[int8]`. `PtrTypeInfo` is `EncodePointerType(ValueType::Int8, "")` — the same encoding used for any other `ptr[int8]` in the system. From the type checker's perspective, a string literal is indistinguishable from any other `ptr[int8]` value.
+The constructor immediately calls `setType(ValueType::Int64)` — the result type is always `int64`, regardless of what type was queried.
 
-`Text` holds the processed string content: the characters between the quotes, with all escape sequences already resolved to their byte values. No further processing happens at codegen time.
-
-## Parsing `tok_string`
-
-The `ParsePrimary` switch gains a `tok_string` case:
+### Codegen
 
 ```cpp
-case tok_string: {
-  string S = StringLiteralStr;
-  getNextToken();
-  return make_unique<StringExprAST>(
-      std::move(S), EncodePointerType(ValueType::Int8, ""));
+Value *SizeofExprAST::codegen() {
+  llvm::Type *Ty = LLVMTypeFor(TargetType, TargetStructName);
+  uint64_t Bytes = TheModule->getDataLayout().getTypeAllocSize(Ty).getFixedValue();
+  return ConstantInt::get(Type::getInt64Ty(*TheContext), Bytes);
 }
 ```
 
-The global `StringLiteralStr` is copied into a local before `getNextToken` is called — the same pattern used for `IdentifierStr` in the `tok_identifier` case. There is no context-sensitivity: string literals are always `ptr[int8]`, regardless of where they appear.
+`getTypeAllocSize` returns the number of bytes including any tail padding that the ABI requires between consecutive elements in an array. The result is emitted directly as a constant integer — not a call, not a load.
 
-## `StringExprAST::codegen`
+### IR example
 
-```cpp
-Value *StringExprAST::codegen() {
-  auto *I8Ty = Type::getInt8Ty(*TheContext);
-  auto *ArrTy = ArrayType::get(I8Ty, Text.size() + 1);
-  auto *Init = ConstantDataArray::getString(*TheContext, Text, true);
-  string Name = ".str." + to_string(StringLiteralCounter++);
-  auto *GV = new GlobalVariable(*TheModule, ArrTy, true,
-                                GlobalValue::PrivateLinkage, Init, Name);
-  GV->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
-  GV->setAlignment(Align(1));
-  ModuleHasGlobals = true;
-  Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
-  return Builder->CreateInBoundsGEP(ArrTy, GV, {Zero, Zero}, "strptr");
-}
-```
-
-Each string literal becomes a private global constant in the LLVM module. The details:
-
-**Array type.** The string `"hello"` (5 bytes) becomes `[6 x i8]`. The `+ 1` accounts for the null terminator. The `true` argument to `ConstantDataArray::getString` appends the `\0` automatically.
-
-**`PrivateLinkage`.** The global is not visible outside the translation unit. Two different `.c`/`.pyxc` files can each have a `.str.0` without name collision.
-
-**`UnnamedAddr::Global`.** The address of the constant does not matter to the program — it is only ever used through the pointer, not compared for identity. This attribute lets LLVM merge identical string constants at link time when optimizing.
-
-**`Align(1)`.** Byte-aligned, correct for a `char` array. No stricter alignment is required or useful.
-
-**`StringLiteralCounter`.** A `static unsigned` declared at module scope, reset to 0 at the start of each new module compilation. It generates unique names: `.str.0`, `.str.1`, and so on. Two identical string literals in the same file produce two separate globals at `-O0`; LLVM may merge them at higher optimization levels.
-
-**The GEP.** The global `GV` has type `[N x i8]` — it is a pointer to an array, not a pointer to a byte. `CreateInBoundsGEP` with indices `{i64 0, i64 0}` steps through the global (first index, advancing zero array elements) and then to byte 0 (second index, advancing zero bytes within the array). The result has type `ptr` pointing to the first byte. This is the standard C idiom for converting an array to a pointer.
-
-**`ModuleHasGlobals = true`.** String literal globals require the module-level `__init_globals` function to be emitted even if the user has declared no global variables. Setting this flag ensures that function is generated.
-
-### Generated IR
-
-For `"hello"`:
+For a function that returns `sizeof(int64)`:
 
 ```llvm
-@.str.0 = private unnamed_addr constant [6 x i8] c"hello\00"
-
-define i32 @main() {
+define i64 @size_i64() {
 entry:
-  %strptr = getelementptr inbounds [6 x i8], ptr @.str.0, i64 0, i64 0
-  call i32 @puts(ptr %strptr)
-  ret i32 0
+  ret i64 8
 }
 ```
 
-The global is a read-only constant — `true` in the `GlobalVariable` constructor sets the `isConstant` flag. LLVM is free to place it in the `.rodata` section (or equivalent on the target platform).
+The compiler never emits a `sizeof` instruction. By the time code generation runs, the size has been computed and folded into a literal.
 
-## The String Type in pyxc
+### Sizes on a 64-bit target
 
-Strings in pyxc are `ptr[int8]`. There is no separate `string` type — a string literal is simply a pointer to the first byte of a null-terminated buffer, exactly matching C's `char *`. Every C string function accepts `ptr[int8]` directly:
+| Type | `sizeof` |
+|------|---------|
+| `int8` | 1 |
+| `int32` | 4 |
+| `int64` | 8 |
+| `ptr[int8]` | 8 |
+| `Point` (two `int` fields) | 16 |
 
-```pyxc
-extern def puts(s: ptr[int8]) -> int
-extern def printf(fmt: ptr[int8]) -> int
-extern def strlen(s: ptr[int8]) -> int
+All pointer types are 8 bytes on a 64-bit target regardless of what they point to — LLVM's opaque pointer model means there is only one pointer representation.
+
+### Parsing
+
+```cpp
+static unique_ptr<ExprAST> ParseSizeofExpr() {
+  getNextToken(); // eat 'sizeof'
+  // expect '('
+  getNextToken(); // eat '('
+  string TargetStructName;
+  ValueType TargetType = ParseTypeToken(&TargetStructName);
+  if (TargetType == ValueType::None)
+    return LogError("Cannot take sizeof(None)");
+  // expect ')'
+  getNextToken(); // eat ')'
+  return make_unique<SizeofExprAST>(TargetType, TargetStructName);
+}
 ```
 
-Returning a string from a function works because the return type check compares `ptr[int8]` against `ptr[int8]`:
+`ParseTypeToken` is the same function used everywhere else a type annotation is parsed — `sizeof` reuses it directly. After parsing, `ParsePrimary` routes `tok_sizeof` here:
 
-```pyxc
-def greeting() -> ptr[int8]:
-  return "hello"
+```cpp
+case tok_sizeof:
+  return ParseSizeofExpr();
 ```
 
-Storing a string literal in a variable works the same way:
+## `ptr[T](expr)`: Pointer-to-Pointer Casts
 
-```pyxc
-var msg: ptr[int8] = "hello, pyxc"
-puts(msg)
+Before this chapter, `ParseCastExpr` rejected any cast whose target type was a pointer or array:
+
+```cpp
+// old guard — now removed for the pointer case
+if (Type == ValueType::Pointer || Type == ValueType::Array)
+  return LogError("Cannot cast to pointer or array type");
 ```
 
-The pointer stored in `msg` points directly into the global constant. The storage for the string is static — it lives for the lifetime of the program.
+Chapter 21 lifts the restriction for pointers. A cast like `ptr[int64](raw)` is now valid, provided the operand is itself a pointer:
+
+```cpp
+if (Type == ValueType::Pointer && Expr->getType() != ValueType::Pointer)
+  return LogError("Pointer casts require a pointer operand");
+return make_unique<CastExprAST>(Type, std::move(Expr), TargetStructName);
+```
+
+### `CastExprAST` extended
+
+`CastExprAST`'s constructor now accepts a `TargetStructName` parameter and passes it to `setType`:
+
+```cpp
+CastExprAST(ValueType TargetType, unique_ptr<ExprAST> Expr,
+            const string &TargetStructName = "")
+    : Expr(std::move(Expr)) {
+  setType(TargetType, TargetStructName);
+}
+```
+
+Without this, a cast to `ptr[int64]` would carry no pointee information — the result would be typed as `ptr[?]` and subsequent indexing or field access would fail.
+
+### Codegen: `EmitImplicitCast` Pointer→Pointer path
+
+```cpp
+if (From == ValueType::Pointer && To == ValueType::Pointer)
+  return Builder->CreateBitCast(V, LLVMTypeFor(ValueType::Pointer), "ptrcast");
+```
+
+With LLVM's opaque pointer model, all pointers are the same IR type. `CreateBitCast` on two opaque `ptr` values emits no instruction at all — the IR value passes through unchanged. The cast's only real effect is at the pyxc level: the result node has type `ptr[int64]` instead of `ptr[int8]`, so downstream code generates correct GEPs and loads.
+
+### IR example
+
+For `ptr[int64](raw)` where `raw: ptr[int8]`:
+
+```llvm
+%ptrload = load ptr, ptr %raw
+; no bitcast instruction emitted — opaque pointers are identical in IR
+```
+
+The pointer value is simply used with a different element type in any subsequent `getelementptr` or `load`/`store`.
+
+## Routing in `ParsePrimary`
+
+Two new cases:
+
+```cpp
+case tok_ptr:
+  return ParseCastExpr();  // falls into existing cast path, now allows ptr[T](expr)
+
+case tok_sizeof:
+  return ParseSizeofExpr();
+```
+
+`tok_ptr` already appeared in `ParsePrimary` via the type-annotation path; now it also leads to `ParseCastExpr`, which handles the `ptr[T](expr)` form.
+
+## Calling `malloc` and `free`
+
+`malloc` and `free` are declared with `extern`, exactly like any other external C function:
+
+```pyxc
+extern def malloc(n: int64) -> ptr[int8]
+extern def free(p: ptr[int8])
+```
+
+pyxc emits a standard LLVM `call` instruction, and the linker resolves it against the C runtime. There is nothing special about these declarations — any C function with compatible types can be called the same way.
+
+The pattern for heap-allocating a single struct:
+
+```pyxc
+struct Point:
+  x: int
+  y: int
+
+def main() -> int:
+  var raw: ptr[int8] = malloc(sizeof(Point))
+  var p: ptr[Point] = ptr[Point](raw)
+  p[0].x = 77
+  printd(float64(p[0].x))
+  free(raw)
+  return 0
+```
+
+`malloc` returns `ptr[int8]` — a raw byte pointer, same as in C. `ptr[Point](raw)` reinterprets it as a `ptr[Point]` so that `p[0].x` generates the right GEP. `free` receives the original `ptr[int8]`; passing `p` directly would be a type error because `p` is `ptr[Point]`.
 
 ## Build and Run
 
@@ -218,99 +251,113 @@ cmake -S . -B build && cmake --build build
 
 ## Try It
 
-### Basic string literal
+### sizeof of scalar types and a struct
 
 ```pyxc
-extern def puts(s: ptr[int8]) -> int
+extern def printd(x: float64)
+
+struct Point:
+  x: int
+  y: int
 
 def main() -> int:
-  puts("hello, pyxc")
+  printd(float64(sizeof(int8)))
+  printd(float64(sizeof(int32)))
+  printd(float64(sizeof(int64)))
+  printd(float64(sizeof(ptr[int8])))
+  printd(float64(sizeof(Point)))
   return 0
 ```
 
 ```bash
-hello, pyxc
+1.000000
+4.000000
+8.000000
+8.000000
+16.000000
 ```
 
-### Escape sequences
+### malloc, pointer cast, and field access
 
 ```pyxc
-extern def puts(s: ptr[int8]) -> int
+extern def malloc(n: int64) -> ptr[int8]
+extern def free(p: ptr[int8])
+extern def printd(x: float64)
+
+struct Point:
+  x: int
+  y: int
 
 def main() -> int:
-  puts("line one\nline two")
+  var raw: ptr[int8] = malloc(sizeof(Point))
+  var p: ptr[Point] = ptr[Point](raw)
+  p[0].x = 77
+  p[0].y = 33
+  printd(float64(p[0].x))
+  printd(float64(p[0].y))
+  free(raw)
   return 0
 ```
 
 ```bash
-line one
-line two
+77.000000
+33.000000
 ```
 
-The `\n` inside the string literal is resolved by the lexer to a real newline byte. `puts` adds a trailing newline of its own, so the output ends with a blank line.
-
-### Return a string from a function
+### malloc and pointer arithmetic — a heap array
 
 ```pyxc
-extern def puts(s: ptr[int8]) -> int
-
-def greeting() -> ptr[int8]:
-  return "hello from a function"
+extern def malloc(n: int64) -> ptr[int8]
+extern def free(p: ptr[int8])
+extern def printd(x: float64)
 
 def main() -> int:
-  puts(greeting())
+  var n: int64 = 5
+  var raw: ptr[int8] = malloc(n * sizeof(int64))
+  var p: ptr[int64] = ptr[int64](raw)
+  p[0] = 5
+  p[1] = 7
+  p[2] = 9
+  p[3] = 6
+  p[4] = 8
+  var q: ptr[int64] = p + 2
+  printd(float64(q[0] + q[1] + q[2]))
+  free(raw)
   return 0
 ```
 
 ```bash
-hello from a function
+23.000000
 ```
 
-### Store in a variable, then pass
+### Inspect the IR: sizeof is a constant
 
-```pyxc
-extern def puts(s: ptr[int8]) -> int
-
-def main() -> int:
-  var msg: ptr[int8] = "stored string"
-  puts(msg)
-  return 0
-```
-
-```bash
-stored string
-```
-
-### Inspect the IR for a string global
+Save the `sizeof(int64)` program and emit IR:
 
 ```bash
 pyxc --emit llvm-ir -o out.ll program.pyxc
-grep '\.str\.' out.ll
+grep 'ret i64' out.ll
 ```
-
-You will see lines like:
 
 ```llvm
-@.str.0 = private unnamed_addr constant [14 x i8] c"stored string\00"
+ret i64 8
 ```
 
-Each string literal in the source file produces one entry. The counter suffix increments for each additional literal.
+No call, no load — just a literal `8`.
 
 ## Known Limitations
 
-**No length tracking.** Strings are raw `ptr[int8]` — there is no stored length. Operations like bounds checking or safe slicing require the caller to track the length separately or call `strlen`.
+**No null check.** `malloc` can return null when the system is out of memory. pyxc does not insert a null check; dereferencing a null pointer crashes silently.
 
-**No built-in string operations.** Concatenation, comparison, and copying are not in the language. Use the C standard library (`strcat`, `strcmp`, `strcpy`) via `extern` declarations, or allocate a buffer with `malloc` (chapter 20) and write to it manually.
+**No bounds checking.** Accessing `p[n]` on a heap buffer of size `n` is an out-of-bounds write. pyxc does not track buffer sizes.
 
-**No deduplication at `-O0`.** Two identical string literals in the same file produce two separate globals. LLVM may merge them at higher optimization levels thanks to `UnnamedAddr::Global`, but not at `-O0`.
+**Manual ownership.** There is no destructor, no reference counting, and no garbage collector. Forgetting to call `free` leaks memory; calling `free` twice or reading after `free` is undefined behavior — silently corrupted data or a crash.
 
-**No `string` type alias yet.** Writing `ptr[int8]` everywhere is verbose. Chapter 22 adds `type string = ptr[int8]`, which makes string-typed function signatures read naturally without any new runtime machinery.
-
-**Mutable string buffers require malloc.** String literal globals are read-only constants. To build or modify a string at runtime you need a heap-allocated buffer, which requires `malloc` (chapter 20).
+**Pointer casts are pointer-only.** `ptr[T](expr)` requires `expr` to already be a pointer. You cannot cast an integer to a pointer (e.g., to use a raw address). Casting between pointer types is a reinterpretation at the pyxc metadata level only; LLVM sees no instruction.
 
 ## What's Next
 
-[Chapter 22](chapter-22.md) adds type aliases — `type string = ptr[int8]` — so you can write `string` wherever you currently write `ptr[int8]`. The underlying representation does not change at all; the alias is purely syntactic, resolved at parse time.
+[Chapter 22](chapter-22.md) adds string literals — `"hello"` as a `ptr[int8]`, null-terminated global constants stored in the module, and escape sequences. With heap allocation in place, the compiler already knows how to pass `ptr[int8]` to C functions; string literals are the natural next step.
 
 ## Need Help?
 

@@ -30,9 +30,9 @@ The rest of this page is a roadmap for the tutorial. I honestly won't judge you 
 
 In **Chapters 1-3**, I build the analysis part of pyxc where it begins to understand my program's structure and intention, and communicates what it can't understand or does not expect. 
 
-In **Chapter 4** I set up LLVM. As you follow along, the process could be smooth, or reasonably bumpy. If it's the latter, allow yourself a break. But do come back, because the compiler isn't going to build itself. Of course if you don't succeed, you can [get in touch with me](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues) and we can take a crack at it together. 
+In **Chapter 5** I set up LLVM. As you follow along, the process could be smooth, or reasonably bumpy. If it's the latter, allow yourself a break. But do come back, because the compiler isn't going to build itself. Of course if you don't succeed, you can [get in touch with me](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues) and we can take a crack at it together. 
 
-In **Chapter 5** I extend the compiler to convert a pyxc program's intentions into LLVM's internal representation (IR). I find that the IR resembles assembly which is understandable. The IR is what LLVM will convert to machine code for a host of different architectures allowing us to have a multi-platform language with very little work. 
+In **Chapter 6** I extend the compiler to convert a pyxc program's intentions into LLVM's internal representation (IR). I find that the IR resembles assembly which is understandable. The IR is what LLVM will convert to machine code for a host of different architectures allowing us to have a multi-platform language with very little work. 
 
 By **Chapters 6 and 7** we can generate and run this IR code in either a python-like interactive REPL interface, or from a source file. We will find that, even though we have a limited syntax and language features, we can express short programs that can outperform similar Python code. 
 
@@ -40,7 +40,7 @@ In **Chapters 8–11** I add language features such as control flow (`if`/`for`)
 
 In **Chapters 12–15** I add the missing bells and whistles to make the pyxc compiler feel like a production compiler: a proper command line interface that offers different options like object file output, native executable linking, and debug info for source-level debugging. If some of these terms make no sense to you, don't worry about it. You will soon. 
 
-In **Chapter 16** I add a static type system: `int`, `int8`, `int16`, `int64`, `float32`, `float64`, `bool`, and `None` (void) which lets us write programs that rival C/C++/Rust speeds. Not surprising, since we use the same LLVM infrastructure, but super cool nevertheless. 
+In **Chapter 17** I add a static type system: `int`, `int8`, `int16`, `int64`, `float32`, `float64`, `bool`, and `None` (void) which lets us write programs that rival C/C++/Rust speeds. Not surprising, since we use the same LLVM infrastructure, but super cool nevertheless. 
 
 In **Chapters 17–23** I implement the full C-style memory model: structs and field access, pointer types and address-of, pointer arithmetic, heap allocation with `malloc`/`free`/`sizeof`, string literals and C interop, type aliases, and fixed-size arrays. By the end of this phase, pyxc is a serious systems programming language — I can write K&R-style algorithms (a benchmark that I randomly chose to gauge language completeness), call any C library function, and manually manage memory just as I would in C or C++. Like C/C++, I don't want pyxc to have a garbage collector trading simplicity for raw power. I will, however, want to think about how to extend the language to prevent the same memory corruption horrors that plague C/C++. We don't just want C/C++ features, we want to do better in some respects otherwise we are just reinventing the wheel. I won't be surprised if future C++ versions also address this issue better. Smart pointers in C++ already address some of the issues in C.
 

@@ -1,4 +1,4 @@
-# RUN: %pyxc < %s | grep -qv "identifier: secret"
+# RUN: %pyxc < %s | grep -qv "name: secret"
 
-# comment: text after '#' must not appear as tok_identifier
+# comment: text after '#' must not appear as tok_name
 # secret

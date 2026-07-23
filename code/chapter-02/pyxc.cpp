@@ -13,25 +13,57 @@ using namespace std;
 // Lexer
 //===----------------------------------------===//
 
-// The lexer returns tokens [0-255] if it is an unknown character, otherwise one
-// of these for known things.
+// The lexer returns one of these named tokens. Characters that do not belong
+// to the language are reported as tok_error.
 enum Token {
-  tok_eof = -1,
-  tok_eol = -2,
+  // input boundaries
+  tok_eof = 1,
+  tok_eol,
 
-  // commands
-  tok_def = -3,
+  // lexer errors
+  tok_error,
 
-  // primary
-  tok_identifier = -4,
-  tok_number = -5,
+  // function definitions
+  tok_def,
 
-  // control
-  tok_return = -6
+  // tokens that need additional information attached
+  tok_name,
+  tok_number,
+
+  // control flow
+  tok_return,
+
+  // punctuation and operators
+  tok_lparen,
+  tok_rparen,
+  tok_comma,
+  tok_colon,
+  tok_plus,
 };
 
-static string IdentifierStr; // Filled in if tok_identifier
-static double NumVal;        // Filled in if tok_number
+static string NameStr; // Filled in with the name just read
+static double NumVal;  // Filled in with the number read
+static map<string, Token> Keywords = {
+    {"def", tok_def},
+    {"return", tok_return},
+};
+
+// TokenNames maps each named token to a readable string for debug output and
+// error reporting.
+static map<int, string> TokenNames = {
+    {tok_eof, "end of input"},
+    {tok_eol, "newline"},
+    {tok_error, "error"},
+    {tok_def, "'def'"},
+    {tok_name, "name"},
+    {tok_number, "number"},
+    {tok_return, "'return'"},
+    {tok_lparen, "'('"},
+    {tok_rparen, "')'"},
+    {tok_comma, "','"},
+    {tok_colon, "':'"},
+    {tok_plus, "'+'"},
+};
 
 /// advance - returns the next character, coalescing `\r\n` (Windows) into `\n`
 /// and converting bare `\r` (Old Macs) into `\n`.
@@ -55,42 +87,37 @@ int gettok() {
   while (isspace(LastChar) && LastChar != '\n')
     LastChar = advance();
 
-  // Check for newline.
-  if (LastChar == '\n') {
-    // Don't try and read the next character. This will stall the REPL.
-    // Just reset LastChar to a space which will force a new character
-    // advance in the next call.
-    LastChar = ' ';
-    return tok_eol;
-  }
-
+  // Name
   if (isalpha(LastChar) || LastChar == '_') {
-    IdentifierStr = LastChar;
-    while (isalnum(LastChar = advance()) || LastChar == '_') {
-      IdentifierStr += LastChar;
-    }
+    NameStr = LastChar;
+    while (isalnum(LastChar = advance()) || LastChar == '_')
+      NameStr += LastChar;
 
-    // TODO: Push this into a map
-    if (IdentifierStr == "def")
-      return tok_def;
-    if (IdentifierStr == "return")
-      return tok_return;
+    // LastChar now holds the first character that is not part of this
+    // name/keyword.
 
-    return tok_identifier;
+    // Keyword check.
+    auto KeywordIt = Keywords.find(NameStr);
+    if (KeywordIt != Keywords.end())
+      return KeywordIt->second;
+    return tok_name;
   }
 
-  // TODO: This incorrectly lexes 1.23.45.67 as 1.23
+  // Number
   if (isdigit(LastChar) || LastChar == '.') {
     string NumStr;
     do {
       NumStr += LastChar;
       LastChar = advance();
     } while (isdigit(LastChar) || LastChar == '.');
+    // LastChar now holds the first character that is not part of this number.
 
+    // TODO: This incorrectly lexes 1.23.45.67 as 1.23
     NumVal = strtod(NumStr.c_str(), 0);
     return tok_number;
   }
 
+  // Comment
   if (LastChar == '#') {
     // Comment until the end of the line
     do {
@@ -98,93 +125,110 @@ int gettok() {
     } while (LastChar != '\n' && LastChar != EOF);
 
     if (LastChar != EOF) {
-      // Don't attempt to read another character at the end of the line,
-      // otherwise the REPL will stall waiting for another character.
-      LastChar = ' ';
+      LastChar = advance();
       return tok_eol;
     }
   }
 
-  // Check for end of file.  Don't eat the EOF.
+  // Newline
+  if (LastChar == '\n') {
+    LastChar = advance();
+    return tok_eol;
+  }
+
+  // End of file
   if (LastChar == EOF)
     return tok_eof;
 
-  // Otherwise, just return the character as its ascii value
+  // Single-character punctuation and operators
   int ThisChar = LastChar;
   LastChar = advance();
-  return ThisChar;
+  switch (ThisChar) {
+  case '(':
+    return tok_lparen;
+  case ')':
+    return tok_rparen;
+  case ',':
+    return tok_comma;
+  case ':':
+    return tok_colon;
+  case '+':
+    return tok_plus;
+  default:
+    return tok_error;
+  }
 }
 
 //===----------------------------------------===//
-// Abstract Syntax Tree (aka Parse Tree)
+// Syntax Tree Nodes
 //===----------------------------------------===//
 
 namespace {
 
-/// ExprAST - Base class for all expression nodes.
-class ExprAST {
+/// ExpressionNode - Base class for all expression nodes.
+class ExpressionNode {
 public:
-  virtual ~ExprAST() = default;
+  virtual ~ExpressionNode() = default;
 };
 
-/// NumberExprAST - Expression class for numeric literals like "1.0".
-class NumberExprAST : public ExprAST {
+/// NumberExpressionNode - Expression class for numeric literals like "1.0".
+class NumberExpressionNode : public ExpressionNode {
   double Val;
 
 public:
-  NumberExprAST(double Val) : Val(Val) {}
+  NumberExpressionNode(double Val) : Val(Val) {}
 };
 
-/// VariableExprAST - Expression class for referencing a variable, like "a".
-class VariableExprAST : public ExprAST {
+/// NameExpressionNode - Expression class for referencing a variable, like "a".
+class NameExpressionNode : public ExpressionNode {
   string Name;
 
 public:
-  VariableExprAST(const string &Name) : Name(Name) {}
+  NameExpressionNode(const string &Name) : Name(Name) {}
 };
 
-/// BinaryExprAST - Expression class for a binary operator.
-class BinaryExprAST : public ExprAST {
-  char Op;
-  unique_ptr<ExprAST> LHS, RHS;
+/// BinaryExpressionNode - Expression class for a binary operator.
+class BinaryExpressionNode : public ExpressionNode {
+  int Op;
+  unique_ptr<ExpressionNode> LHS, RHS;
 
 public:
-  BinaryExprAST(char Op, unique_ptr<ExprAST> LHS, unique_ptr<ExprAST> RHS)
+  BinaryExpressionNode(int Op, unique_ptr<ExpressionNode> LHS, unique_ptr<ExpressionNode> RHS)
       : Op(Op), LHS(std::move(LHS)), RHS(std::move(RHS)) {}
 };
 
-/// CallExprAST - Expression class for function calls.
-class CallExprAST : public ExprAST {
+/// CallExpressionNode - Expression class for function calls.
+class CallExpressionNode : public ExpressionNode {
   string Callee;
-  vector<unique_ptr<ExprAST>> Args;
+  vector<unique_ptr<ExpressionNode>> Args;
 
 public:
-  CallExprAST(const string &Callee, vector<unique_ptr<ExprAST>> Args)
+  CallExpressionNode(const string &Callee, vector<unique_ptr<ExpressionNode>> Args)
       : Callee(Callee), Args(std::move(Args)) {}
 };
 
-/// PrototypeAST - This class represents the "prototype" for a function,
+/// FunctionSignatureNode - This class represents the "function signature" for a function,
 /// which captures its name, and its argument names (thus implicitly the number
 /// of arguments the function takes).
-class PrototypeAST {
+class FunctionSignatureNode {
   string Name;
   vector<string> Args;
 
 public:
-  PrototypeAST(const string &Name, vector<string> Args)
+  FunctionSignatureNode(const string &Name, vector<string> Args)
       : Name(Name), Args(std::move(Args)) {}
 
   const string &getName() const { return Name; }
 };
 
-/// FunctionAST - This class represents a function definition itself.
-class FunctionAST {
-  unique_ptr<PrototypeAST> Proto;
-  unique_ptr<ExprAST> Body;
+/// FunctionDefinitionNode - This class represents a function definition itself.
+class FunctionDefinitionNode {
+  unique_ptr<FunctionSignatureNode> Signature;
+  unique_ptr<ExpressionNode> Body;
 
 public:
-  FunctionAST(unique_ptr<PrototypeAST> Proto, unique_ptr<ExprAST> Body)
-      : Proto(std::move(Proto)), Body(std::move(Body)) {}
+  FunctionDefinitionNode(unique_ptr<FunctionSignatureNode> Signature, unique_ptr<ExpressionNode> Body)
+      : Signature(std::move(Signature)), Body(std::move(Body)) {}
 };
 
 } // end anonymous namespace
@@ -209,92 +253,74 @@ static void consumeNewlines() {
     getNextToken();
 }
 
-/// BinopPrecedence - Maps each binary operator character to its precedence.
-/// Higher numbers bind more tightly: '*' (40) > '+'/'-' (20) > '<' (10).
-/// Operators not in this map return -1 from GetTokPrecedence(), which tells
-/// ParseBinOpRHS to stop consuming operators and return what it has so far.
-static map<char, int> BinopPrecedence;
-
-/// GetTokPrecedence - Returns the precedence of CurTok if it is a known binary
-/// operator, or -1 if it is not. Non-ASCII tokens (our named token enums) are
-/// rejected immediately since they can never be binary operators here.
-static int GetTokPrecedence() {
-  if (!isascii(CurTok))
-    return -1;
-
-  auto It = BinopPrecedence.find(CurTok);
-  if (It == BinopPrecedence.end() || It->second <= 0)
-    return -1;
-  return It->second;
-}
-
 /// LogError* - Error reporting helpers. Each returns nullptr for its respective
-/// type so parse functions can write: return LogError("message");
-/// We print the raw CurTok number for now. Chapter 3 will replace this with
-/// readable token names and source location (line/column).
-unique_ptr<ExprAST> LogError(const char *Str) {
-  fprintf(stderr, "Error: %s (token: %d)\nready> ", Str, CurTok);
+/// node type, allowing parse functions to return an error directly.
+/// TokenNames provides a readable token description. Chapter 3 will add source
+/// location (line/column) to these diagnostics.
+unique_ptr<ExpressionNode> LogErrorExpression(const char *Str) {
+  fprintf(stderr, "Error: %s (token: %s)\nready> ", Str,
+          TokenNames.at(CurTok).c_str());
   return nullptr;
 }
-unique_ptr<PrototypeAST> LogErrorP(const char *Str) {
-  LogError(Str);
+unique_ptr<FunctionSignatureNode> LogErrorSignature(const char *Str) {
+  LogErrorExpression(Str);
   return nullptr;
 }
-unique_ptr<FunctionAST> LogErrorF(const char *Str) {
-  LogError(Str);
+unique_ptr<FunctionDefinitionNode> LogErrorFunction(const char *Str) {
+  LogErrorExpression(Str);
   return nullptr;
 }
 
-static unique_ptr<ExprAST> ParseExpression();
+static unique_ptr<ExpressionNode> ParseExpression();
 
-/// numberexpr
+/// number-expression
 ///   = number ;
-static unique_ptr<ExprAST> ParseNumberExpr() {
-  auto Result = make_unique<NumberExprAST>(NumVal);
+static unique_ptr<ExpressionNode> ParseNumberExpression() {
+  auto Result = make_unique<NumberExpressionNode>(NumVal);
   getNextToken(); // consume the number
   return std::move(Result);
 }
 
-/// parenexpr
+/// parenthesized-expression
 ///   = "(" expression ")" ;
-static unique_ptr<ExprAST> ParseParenExpr() {
+static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
   getNextToken(); // eat (.
   auto V = ParseExpression();
   if (!V)
     return nullptr;
 
-  if (CurTok != ')')
-    return LogError("expected ')'");
+  if (CurTok != tok_rparen)
+    return LogErrorExpression("expected ')'");
   getNextToken(); // eat ).
   return V;
 }
 
-/// identifierexpr
-///   = identifier
-///   | identifier "("[expression{"," expression}]")" ;
-static unique_ptr<ExprAST> ParseIdentifierExpr() {
-  string IdName = IdentifierStr;
+/// name-expression
+///   = name
+///   | name "("[expression{"," expression}]")" ;
+static unique_ptr<ExpressionNode> ParseNameExpression() {
+  string Name = NameStr;
 
-  getNextToken(); // eat identifier.
+  getNextToken(); // eat name.
 
-  if (CurTok != '(') // Simple variable ref.
-    return make_unique<VariableExprAST>(IdName);
+  if (CurTok != tok_lparen) // Simple variable ref.
+    return make_unique<NameExpressionNode>(Name);
 
   // Call.
   getNextToken(); // eat (
-  vector<unique_ptr<ExprAST>> Args;
-  if (CurTok != ')') {
+  vector<unique_ptr<ExpressionNode>> Args;
+  if (CurTok != tok_rparen) {
     while (true) {
       if (auto Arg = ParseExpression())
         Args.push_back(std::move(Arg));
       else
         return nullptr;
 
-      if (CurTok == ')')
+      if (CurTok == tok_rparen)
         break;
 
-      if (CurTok != ',')
-        return LogError("Expected ')' or ',' in argument list");
+      if (CurTok != tok_comma)
+        return LogErrorExpression("Expected ')' or ',' in argument list");
       getNextToken();
     }
   }
@@ -302,119 +328,92 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
   // Eat the ')'.
   getNextToken();
 
-  return make_unique<CallExprAST>(IdName, std::move(Args));
+  return make_unique<CallExpressionNode>(Name, std::move(Args));
 }
 
 /// primary
-///   = identifierexpr
-///   | numberexpr
-///   | parenexpr ;
-static unique_ptr<ExprAST> ParsePrimary() {
+///   = name-expression
+///   | number-expression
+///   | parenthesized-expression ;
+static unique_ptr<ExpressionNode> ParsePrimary() {
   switch (CurTok) {
   default:
-    return LogError("unknown token when expecting an expression");
-  case tok_identifier:
-    return ParseIdentifierExpr();
+    return LogErrorExpression("unknown token when expecting an expression");
+  case tok_name:
+    return ParseNameExpression();
   case tok_number:
-    return ParseNumberExpr();
-  case '(':
-    return ParseParenExpr();
-  }
-}
-
-/// binoprhs
-///   = { binaryop primary } ;
-static unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
-                                         unique_ptr<ExprAST> LHS) {
-  // If this is a binop, find its precedence.
-  while (true) {
-    int TokPrec = GetTokPrecedence();
-
-    // If this is a binop that binds at least as tightly as the current binop,
-    // consume it, otherwise we are done.
-    if (TokPrec < ExprPrec)
-      return LHS;
-
-    // Okay, we know this is a binop.
-    int BinOp = CurTok;
-    getNextToken(); // eat binop
-
-    // Parse the primary expression after the binary operator.
-    auto RHS = ParsePrimary();
-    if (!RHS)
-      return nullptr;
-
-    // If BinOp binds less tightly with RHS than the operator after RHS, let
-    // the pending operator take RHS as its LHS.
-    int NextPrec = GetTokPrecedence();
-    if (TokPrec < NextPrec) {
-      RHS = ParseBinOpRHS(TokPrec + 1, std::move(RHS));
-      if (!RHS)
-        return nullptr;
-    }
-
-    // Merge LHS/RHS.
-    LHS = make_unique<BinaryExprAST>(BinOp, std::move(LHS), std::move(RHS));
+    return ParseNumberExpression();
+  case tok_lparen:
+    return ParseParenthesizedExpression();
   }
 }
 
 /// expression
-///   = primary binoprhs ;
-static unique_ptr<ExprAST> ParseExpression() {
+///   = primary { "+" primary } ;
+static unique_ptr<ExpressionNode> ParseExpression() {
   auto LHS = ParsePrimary();
   if (!LHS)
     return nullptr;
 
-  return ParseBinOpRHS(0, std::move(LHS));
+  while (CurTok == tok_plus) {
+    getNextToken(); // eat '+'
+    auto RHS = ParsePrimary();
+    if (!RHS)
+      return nullptr;
+    LHS = make_unique<BinaryExpressionNode>(tok_plus, std::move(LHS),
+                                     std::move(RHS));
+  }
+
+  return LHS;
 }
 
-/// prototype
-///   = identifier "(" [identifier {"," identifier}] ")" ;
-static unique_ptr<PrototypeAST> ParsePrototype() {
-  if (CurTok != tok_identifier)
-    return LogErrorP("Expected function name in prototype");
+/// function-signature
+///   = name "(" [name {"," name}] ")" ;
+static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
+  if (CurTok != tok_name)
+    return LogErrorSignature("Expected function name in function signature");
 
-  string FnName = IdentifierStr;
+  string FnName = NameStr;
   getNextToken(); // eat function name
 
-  if (CurTok != '(')
-    return LogErrorP("Expected '(' in prototype");
+  if (CurTok != tok_lparen)
+    return LogErrorSignature("Expected '(' in function signature");
 
   // Parse argument names. The loop calls getNextToken() at the top to advance
   // past '(' on the first iteration, and past ',' on subsequent ones.
-  // Inside the body we call getNextToken() again to move past the identifier
+  // Inside the body we call getNextToken() again to move past the name
   // we just stored, then check whether ')' or ',' follows.
 
   vector<string> ArgNames;
-  while (getNextToken() == tok_identifier) {
-    ArgNames.push_back(IdentifierStr);
+  while (getNextToken() == tok_name) {
+    ArgNames.push_back(NameStr);
 
-    if (getNextToken() == ')') // eat identifier, check what follows
+    if (getNextToken() == tok_rparen) // eat name, check what follows
       break;
 
-    if (CurTok != ',')
-      return LogErrorP("Expected ')' or ',' in parameter list");
+    if (CurTok != tok_comma)
+      return LogErrorSignature("Expected ')' or ',' in parameter list");
     // loop continues: getNextToken() at the top eats the ','
   }
 
-  if (CurTok != ')')
-    return LogErrorP("Expected ')' in prototype");
+  if (CurTok != tok_rparen)
+    return LogErrorSignature("Expected ')' in function signature");
 
   getNextToken(); // eat ')'
 
-  return make_unique<PrototypeAST>(FnName, std::move(ArgNames));
+  return make_unique<FunctionSignatureNode>(FnName, std::move(ArgNames));
 }
 
-/// definition
-///   = "def" prototype ":" ["newline"] "return" expression ;
-static unique_ptr<FunctionAST> ParseDefinition() {
+/// function-definition
+///   = "def" function-signature ":" [ end-of-lines ] "return" expression ;
+static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
   getNextToken(); // eat 'def'
-  auto Proto = ParsePrototype();
-  if (!Proto)
+  auto Signature = ParseFunctionSignature();
+  if (!Signature)
     return nullptr;
 
-  if (CurTok != ':')
-    return LogErrorF("Expected ':' in function definition");
+  if (CurTok != tok_colon)
+    return LogErrorFunction("Expected ':' in function definition");
   getNextToken(); // eat ':'
 
   // Skip any newlines between ':' and 'return'. This allows the body to be
@@ -424,23 +423,23 @@ static unique_ptr<FunctionAST> ParseDefinition() {
   consumeNewlines();
 
   if (CurTok != tok_return)
-    return LogErrorF("Expected 'return' in function body");
+    return LogErrorFunction("Expected 'return' in function body");
   getNextToken(); // eat 'return'
 
   if (auto E = ParseExpression())
-    return make_unique<FunctionAST>(std::move(Proto), std::move(E));
+    return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(E));
   return nullptr;
 }
 
-/// toplevelexpr
+/// top-level-expression
 ///   = expression
 /// A top-level expression (e.g. "1 + 2") is wrapped in an anonymous function
-/// so it fits the same FunctionAST shape as everything else. When we add JIT
+/// so it fits the same FunctionDefinitionNode shape as everything else. When we add JIT
 /// execution later, we'll look up "__anon_expr" and call it to get the result.
-static unique_ptr<FunctionAST> ParseTopLevelExpr() {
+static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
   if (auto E = ParseExpression()) {
-    auto Proto = make_unique<PrototypeAST>("__anon_expr", vector<string>());
-    return make_unique<FunctionAST>(std::move(Proto), std::move(E));
+    auto Signature = make_unique<FunctionSignatureNode>("__anon_expr", vector<string>());
+    return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(E));
   }
   return nullptr;
 }
@@ -449,20 +448,20 @@ static unique_ptr<FunctionAST> ParseTopLevelExpr() {
 // Top-Level parsing
 //===----------------------------------------===//
 
-/// HandleDefinition/TopLevelExpression - Called by MainLoop when it sees
+/// HandleFunctionDefinition/TopLevelExpression - Called by MainLoop when it sees
 /// the appropriate leading token. On success, print a confirmation. On failure,
 /// skip one token and continue — crude error recovery that keeps the REPL alive
 /// after a bad input without getting stuck on the same bad token forever.
 
-static void HandleDefinition() {
-  if (ParseDefinition())
+static void HandleFunctionDefinition() {
+  if (ParseFunctionDefinition())
     fprintf(stderr, "Parsed a function definition.\n");
   else
     getNextToken(); // skip bad token
 }
 
 static void HandleTopLevelExpression() {
-  if (ParseTopLevelExpr())
+  if (ParseTopLevelExpression())
     fprintf(stderr, "Parsed a top-level expression.\n");
   else
     getNextToken(); // skip bad token
@@ -489,7 +488,7 @@ static void MainLoop() {
 
     switch (CurTok) {
     case tok_def:
-      HandleDefinition();
+      HandleFunctionDefinition();
       break;
     default:
       HandleTopLevelExpression();
@@ -503,12 +502,6 @@ static void MainLoop() {
 //===----------------------------------------===//
 
 int main() {
-  // Register binary operators and their precedence (higher = tighter binding).
-  BinopPrecedence['<'] = 10;
-  BinopPrecedence['+'] = 20;
-  BinopPrecedence['-'] = 20;
-  BinopPrecedence['*'] = 40;
-
   // Print the first prompt and load the first token before entering the loop.
   // Every parse function expects CurTok to already be loaded when it is called.
   fprintf(stderr, "ready> ");

@@ -2,5 +2,5 @@
 # RUN: grep -q "Error: " %t
 # RUN: grep -q "Expected ':' in function definition" %t
 
-# definition: line ends after prototype with no ':' at all
+# definition: line ends after function signature with no ':' at all
 def foo(x)

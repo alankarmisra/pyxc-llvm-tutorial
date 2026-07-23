@@ -1,4 +1,6 @@
 # RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Parsed an extern.
+# CHECK: Parsed a function definition.
 # CHECK: 1.000000
 # CHECK: 2.000000
 

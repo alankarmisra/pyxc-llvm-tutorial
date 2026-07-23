@@ -7,10 +7,10 @@
 # Tests: function parameters produce DILocalVariable nodes with explicit
 # arg numbers and preserved names in the debug metadata.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-def area(width: float64, height: float64) -> float64:
+def area(width, height):
     return width * height
 
-def main() -> None:
+def main():
     printd(area(4, 5))

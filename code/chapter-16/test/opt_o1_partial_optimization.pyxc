@@ -8,9 +8,5 @@
 # (1 + 2) * 3 = 9 is a trivially constant expression that any non-zero
 # optimization level should fold.
 
-def f() -> float64:
-    return (1.0 + 2.0) * 3.0
-
-def main() -> None:
-    f()
-    return
+def main():
+    return (1 + 2) * 3

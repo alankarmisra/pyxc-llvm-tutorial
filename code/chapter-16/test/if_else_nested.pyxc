@@ -6,12 +6,12 @@
 
 # Tests: nested if/else — the else branch is itself an if/else statement.
 
-def clamp(x: float64) -> float64:
+def clamp(x):
     if x < 0:
-        return 0.0
+        return 0
     else:
         if x > 10:
-            return 10.0
+            return 10
         else:
             return x
 

@@ -7,9 +7,9 @@
 # Tests: printd is provided as a built-in by the compiler — no runtime.c or
 # --emit obj + clang link step needed. Multiple printd calls all work.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-def main() -> None:
-    printd(1.0)
-    printd(2.0)
-    printd(3.0)
+def main():
+    printd(1)
+    printd(2)
+    printd(3)

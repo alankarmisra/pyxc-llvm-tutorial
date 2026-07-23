@@ -5,10 +5,10 @@
 
 # Tests: three inputs (one main + two helpers) linked into a single executable.
 
-extern def printd(x: float64) -> float64
-extern def add(a: float64, b: float64) -> float64
-extern def cube(x: float64) -> float64
+extern def printd(x)
+extern def add(a, b)
+extern def cube(x)
 
-def main() -> None:
+def main():
     printd(add(4, 7))
     printd(cube(3))

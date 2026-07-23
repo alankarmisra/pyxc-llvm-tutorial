@@ -1,31 +1,39 @@
 ---
-description: "Add &&, ||, and ! — logical operators with short-circuit evaluation and a dedicated bool result type."
+description: "Complete pyxc's arithmetic: add / and %, five compound assignment operators, and prefix/postfix ++/-- for all lvalue shapes."
 ---
-# 32. pyxc: Logical Operators
+# 32. pyxc: Arithmetic Completeness
 
 ## Where We Are
 
-[Chapter 31](chapter-31.md) completed arithmetic — division, remainder, compound assignment, and `++`/`--`. Conditions in `if` and `while` can now involve complex expressions, but there is still no way to combine two boolean checks or negate one. After this chapter:
+[Chapter 31](chapter-31.md) finished the object model. Before moving further, there is a gap worth closing: pyxc has `+`, `-`, and `*` but not `/` or `%`. Compound assignment (`+=`, `*=` etc.) does not exist. Neither do `++` and `--`. After this chapter, all of that works:
 
 ```pyxc
 extern def printd(x: float64)
 
-def is_between(x: int, lo: int, hi: int) -> bool:
-  return x >= lo && x <= hi
-
 def main() -> int:
-  var a: bool = True
-  var b: bool = !a
-  if b || is_between(5, 1, 10):
-    printd(1.0)
+  var a: int = 17
+  var b: int = 4
+  var q: int = a / b
+  var r: int = a % b
+
+  var x: int = 10
+  x += 5
+  x -= 3
+  x *= 2
+  x /= 4
+  x %= 10
+
+  var i: int = 0
+  i++
+  ++i
+
+  printd(float64(q + r + x + i))
   return 0
 ```
 
 ```
-1.000000
+14.000000
 ```
-
-`&&` and `||` short-circuit: the right-hand side is not evaluated if the result is already determined by the left.
 
 ## Source Code
 
@@ -34,216 +42,317 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-32
 ```
 
+## Grammar
+
+Three areas of the grammar change.
+
+`assignop` replaces the bare `=` in `assignstmt`, now accepting any of the six assignment operators. `postfixexpr` is inserted between `unaryexpr` and `primary` to capture postfix `++`/`--`. `builtinbinaryop` gains `/` and `%`.
+
+```ebnf
+assignstmt      = lvalue assignop expression ;           -- changed
+assignop        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;  -- new
+unaryexpr       = unaryop unaryexpr | postfixexpr ;      -- changed
+unaryop         = "-" | "++" | "--" | userdefunaryop ;   -- changed
+postfixexpr     = primary [ postfixop ] ;                -- new
+postfixop       = "++" | "--" ;                          -- new
+builtinbinaryop = "+" | "-" | "*" | "/" | "%"
+                | "<" | "<=" | ">" | ">=" | "==" | "!=" ;  -- changed
+```
+
+### Full Grammar
+
+`code/chapter-32/pyxc.ebnf`
+
+```ebnf
+program         = [ eols ] [ top { eols top } ] [ eols ] ;
+eols            = eol { eol } ;
+top             = typealias | traitdef | structdef | classdef | impldef | definition | decorateddef | external | toplevelexpr ;
+typealias       = "type" identifier "=" type ;
+traitdef        = "trait" identifier [ "[" identifier "]" ] ":" eols traitblock ;
+traitblock      = indent traitmethodsig { eols traitmethodsig } dedent ;
+traitmethodsig  = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ;
+structdef       = "struct" identifier ":" eols structblock ;
+classdef        = "class" identifier [ "(" traitref { "," traitref } ")" ] ":" eols structblock ;
+traitref        = identifier [ "[" type "]" ] ;
+impldef         = "impl" traitref "for" identifier ":" eols implblock ;
+implblock       = indent implmethod { eols implmethod } dedent ;
+implmethod      = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ":" ( simplestmt | eols block ) ;
+structblock     = indent classmember { eols classmember } dedent ;
+classmember     = [ visibility ] ( fielddecl | methoddef ) ;
+visibility      = "public" | "private" ;
+methoddef       = "def" identifier "(" [ typedparam { "," typedparam } ] ")"
+                  [ "->" type ] ":" ( simplestmt | eols block ) ;
+fielddecl       = identifier ":" type ;
+definition      = "def" prototype [ "->" type ] ":" ( simplestmt | eols block ) ;
+decorateddef    = binarydecorator eols "def" binaryopprototype [ "->" type ] ":" ( simplestmt | eols block )
+                | unarydecorator  eols "def" unaryopprototype  [ "->" type ] ":" ( simplestmt | eols block ) ;
+binarydecorator = "@" "binary" "(" integer ")" ;
+unarydecorator  = "@" "unary" ;
+binaryopprototype = customopchar "(" typedparam "," typedparam ")" ;
+unaryopprototype  = customopchar "(" typedparam ")" ;
+external        = "extern" "def" prototype [ "->" type ] ;
+toplevelexpr    = expression ;
+prototype       = identifier "(" [ typedparam { "," typedparam } ] ")" ;
+typedparam      = identifier ":" type ;
+ifstmt          = "if" expression ":" suite
+                [ eols "else" ":" suite ] ;
+forstmt         = "for"
+                  ( "var" identifier ":" type | identifier )
+                  "=" expression "," expression "," expression ":" suite ;
+varstmt         = "var" varbinding { "," varbinding } ;
+assignstmt      = lvalue assignop expression ;
+simplestmt      = returnstmt | varstmt | assignstmt | expression ;
+compoundstmt    = ifstmt | forstmt ;
+statement       = simplestmt | compoundstmt ;
+suite           = simplestmt | compoundstmt | eols block ;
+returnstmt      = "return" [ expression ] ;
+block           = indent statement { eols statement } dedent ;
+expression      = unaryexpr binoprhs ;
+binoprhs        = { binaryop unaryexpr } ;
+lvalue          = identifier | fieldaccess | indexexpr ;
+varbinding      = identifier ":" type [ "=" expression ] ;
+unaryexpr       = unaryop unaryexpr | postfixexpr ;
+unaryop         = "-" | "++" | "--" | userdefunaryop ;
+postfixexpr     = primary [ postfixop ] ;
+postfixop       = "++" | "--" ;
+primary         = castexpr | sizeofexpr | addrexpr | arrayliteral | stringliteral | identifierexpr | fieldaccess | indexexpr | numberexpr | bool_literal | parenexpr ;
+castexpr        = casttype "(" expression ")" ;
+sizeofexpr      = "sizeof" "(" type ")" ;
+addrexpr        = "addr" "(" lvalue ")" ;
+identifierexpr  = identifier | callexpr | methodcallexpr | ctorcallexpr ;
+callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
+methodcallexpr  = identifier "." identifier "(" [ expression { "," expression } ] ")" ;
+ctorcallexpr    = identifier "(" [ expression { "," expression } ] ")" ;
+fieldaccess     = identifier "." identifier { "." identifier } ;
+indexexpr       = identifier "[" expression "]" ;
+numberexpr      = number ;
+arrayliteral    = "[" [ expression { "," expression } ] "]" ;
+stringliteral   = "\"" { ? any char except " and newline ? | escape } "\"" ;
+escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
+parenexpr       = "(" expression ")" ;
+binaryop        = builtinbinaryop | userdefbinaryop ;
+indent          = INDENT ;
+dedent          = DEDENT ;
+
+assignop        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
+builtinbinaryop = "+" | "-" | "*" | "/" | "%"
+                | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
+userdefbinaryop = ? any opchar defined as a custom binary operator ? ;
+userdefunaryop  = ? any opchar defined as a custom unary operator ? ;
+customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
+                    and not already defined as a custom operator ? ;
+opchar          = ? any single ASCII punctuation character ? ;
+identifier      = (letter | "_") { letter | digit | "_" } ;
+builtintype     = "int" | "int8" | "int16" | "int32" | "int64"
+                | "float" | "float32" | "float64"
+                | "bool" | "None" ;
+aliastype       = identifier ;
+structtype      = identifier ;
+pointertype     = "ptr" "[" type "]" ;
+type            = basetype [ arraysuffix ] ;
+basetype        = builtintype | aliastype | structtype | pointertype ;
+arraysuffix     = "[" integer "]" ;
+casttype        = "int" | "int8" | "int16" | "int32" | "int64"
+                | "float" | "float32" | "float64"
+                | "bool" | pointertype ;
+integer         = digit { digit } ;
+number          = digit { digit } [ "." { digit } ]
+                | "." digit { digit } ;
+bool_literal    = "True" | "False" ;
+letter          = "A".."Z" | "a".."z" ;
+digit           = "0".."9" ;
+eol             = "\r\n" | "\r" | "\n" ;
+ws              = " " | "\t" ;
+INDENT          = ? synthetic token emitted by lexer ? ;
+DEDENT          = ? synthetic token emitted by lexer ? ;
+```
+
 ## New Tokens and Lexer Peek-Ahead
 
-Two new token values:
+Seven new tokens cover the compound assignment operators and the increment/decrement operators:
 
 ```cpp
-tok_and = -50, // &&
-tok_or  = -51, // ||
+tok_pluseq     = -45,   // +=
+tok_minuseq    = -46,   // -=
+tok_muleq      = -47,   // *=
+tok_diveq      = -48,   // /=
+tok_modeq      = -49,   // %=
+tok_plusplus   = -56,   // ++
+tok_minusminus = -57,   // --
 ```
 
-Single `&` and `|` remain as their ASCII character values — they are distinct tokens (bitwise operators, added in a later chapter). The lexer peeks one character ahead to decide which to emit:
+Each is produced by a one-character peek in the lexer. The `+` path illustrates the pattern — on seeing `+`, it peeks at the next character to decide between `+=`, `++`, and bare `+`:
 
 ```cpp
-if (LexerLastChar == '&') {
-  int Tok = (peek() == '&') ? (advance(), tok_and) : '&';
+if (LexerLastChar == '+') {
+  int Next = peek();
+  int Tok = '+';
+  if (Next == '=')      Tok = (advance(), tok_pluseq);
+  else if (Next == '+') Tok = (advance(), tok_plusplus);
   LexerLastChar = advance();
   return Tok;
 }
-
-if (LexerLastChar == '|') {
-  int Tok = (peek() == '|') ? (advance(), tok_or) : '|';
-  LexerLastChar = advance();
-  return Tok;
-}
 ```
 
-If the next character is another `&` or `|`, `advance()` consumes it and the two-character token is returned. Otherwise the single-character token falls through unchanged.
+The same pattern applies to `-` (which must also handle `->` for the arrow token), `*`, `/`, and `%`. The `/` path is new — previously `/` was an unknown character. Now it returns `'/'` bare or `tok_diveq` if followed by `=`.
 
-## Precedence
+## Division and Remainder
 
-`||` and `&&` get their own entries in the precedence table, sitting below all arithmetic and comparison operators:
+`/` and `%` are added to the precedence table at level 40 — the same level as `*`:
 
 ```cpp
-{tok_or,  5},  // ||
-{tok_and, 7},  // &&
+{'/', 40},
+{'%', 40},
 ```
 
-The full ordering from lowest to highest: `||` (5) → `&&` (7) → comparisons (10) → arithmetic (20–40). `&&` binds more tightly than `||`, so `a || b && c` parses as `a || (b && c)`.
+The LLVM instructions emitted by `EmitBuiltInArithmetic` differ by type:
 
-## Type Checking — `IsLogicalOp` and `GetBinaryResultType`
+| Op | Integer | Float |
+|----|---------|-------|
+| `/` | `sdiv` | `fdiv` |
+| `%` | `srem` | error |
 
-A new predicate identifies the logical operators:
-
-```cpp
-static bool IsLogicalOp(int Op) { return Op == tok_and || Op == tok_or; }
-```
-
-`GetBinaryResultType` gains a branch for them. Both operands must be `bool`; anything else is a type error:
+`%` on float operands is a type error — `GetBinaryResultType` returns `ValueType::Error` for `%` when either operand is not an integer:
 
 ```cpp
-if (IsLogicalOp(Op)) {
-  if (L == ValueType::Bool && R == ValueType::Bool)
-    return ValueType::Bool;
+if (Op == '%' && (!IsIntType(L) || !IsIntType(R)))
   return ValueType::Error;
+```
+
+The pointer arithmetic guard is also tightened: only `+` and `−` allow a pointer on one side. `/` and `%` with a pointer operand are now explicitly rejected:
+
+```cpp
+if ((Op == '+' || Op == '-') &&
+    ((L == ValueType::Pointer && IsIntType(R)) || ...)) {
+  // pointer arithmetic
 }
 ```
 
-The result type is always `bool`. In `ParseBinOpRHS`, the check for built-in operators is extended:
+## Compound Assignment AST Nodes
+
+There are four AST node classes, one for each lvalue shape, all sharing the same structure: an lvalue, an operator token, and an RHS expression:
 
 ```cpp
-if (IsComparisonOp(BinOp) || IsArithmeticOp(BinOp) || IsLogicalOp(BinOp)) {
-  ResultType = GetBinaryResultType(BinOp, LHS->getType(), ...);
-  if (ResultType == ValueType::Error)
-    return LogError("Type mismatch in binary operator");
-  ...
+class CompoundAssignmentExprAST : public ExprAST {       // plain variable
+  string Name; int Op; unique_ptr<ExprAST> RHS; ...
+};
+class FieldCompoundAssignmentExprAST : public ExprAST {  // p.x += 1
+  unique_ptr<FieldExprAST> LHS; int Op; unique_ptr<ExprAST> RHS; ...
+};
+class IndexCompoundAssignmentExprAST : public ExprAST {  // arr[i] *= 2
+  unique_ptr<IndexExprAST> LHS; int Op; unique_ptr<ExprAST> RHS; ...
+};
+class IndexedFieldCompoundAssignmentExprAST : public ExprAST { // arr[i].x += 3
+  unique_ptr<IndexedFieldExprAST> LHS; int Op; unique_ptr<ExprAST> RHS; ...
+};
+```
+
+All four override `shouldPrintValue()` to return `false` — compound assignment is a statement, not a value expression, so the REPL does not auto-print its result.
+
+Two helpers drive the parse dispatch. `IsCompoundAssignTok` checks whether the current token is one of the five compound assignment tokens. `CompoundAssignToBinaryOp` converts it to the corresponding arithmetic operator character so codegen can call `EmitBuiltInArithmetic`:
+
+```cpp
+static bool IsCompoundAssignTok(int Tok) {
+  return Tok == tok_pluseq || Tok == tok_minuseq || Tok == tok_muleq ||
+         Tok == tok_diveq  || Tok == tok_modeq;
+}
+static int CompoundAssignToBinaryOp(int Tok) {
+  switch (Tok) {
+  case tok_pluseq:  return '+';
+  case tok_minuseq: return '-';
+  case tok_muleq:   return '*';
+  case tok_diveq:   return '/';
+  case tok_modeq:   return '%';
+  default:          return 0;
+  }
 }
 ```
 
-## `LogicalNotExprAST` — Built-In `!` for Bool
+`ParseCompoundAssignmentRHS` handles the plain-variable case. It looks up the destination type, converts the token to a binary op, calls `ParseExpression` for the RHS, type-checks the result, and returns a `CompoundAssignmentExprAST`. The field and index variants follow the same pattern in their respective parse helpers (`ParseFieldCompoundAssignmentRHS`, etc.).
 
-`!` gets a dedicated AST node separate from user-defined unary operators:
+Codegen for all four nodes is identical in structure: resolve the lvalue to a pointer, load the current value, call `EmitBuiltInArithmetic(Op, old, rhs)`, store the result back.
+
+## `IncDecExprAST` — Prefix and Postfix `++`/`--`
+
+A single AST node handles all four combinations of prefix/postfix × increment/decrement:
 
 ```cpp
-class LogicalNotExprAST : public ExprAST {
+class IncDecExprAST : public ExprAST {
   unique_ptr<ExprAST> Operand;
+  bool IsIncrement;  // true for ++, false for --
+  bool IsPrefix;     // true for prefix, false for postfix
 public:
-  explicit LogicalNotExprAST(unique_ptr<ExprAST> Operand)
-      : Operand(std::move(Operand)) {
-    setType(ValueType::Bool);
+  IncDecExprAST(unique_ptr<ExprAST> Operand, bool IsIncrement, bool IsPrefix,
+                ValueType Type, const string &StructName = "")
+      : Operand(std::move(Operand)), IsIncrement(IsIncrement),
+        IsPrefix(IsPrefix) {
+    setType(Type, StructName);
   }
   Value *codegen() override;
 };
 ```
 
-The constructor immediately sets the result type to `Bool` — no type inference needed.
-
-Parsing `!` in `ParseUnary` checks whether the operand is `bool`. If so, it creates `LogicalNotExprAST`. If not, it falls through to the user-defined `unary!` lookup for backward compatibility:
+The operand must pass `IsIncDecAssignableExpr` — it must be a variable, field, index, or indexed-field expression:
 
 ```cpp
-if (CurTok == '!') {
-  getNextToken(); // eat '!'
+static bool IsIncDecAssignableExpr(const ExprAST *E) {
+  return dynamic_cast<const VariableExprAST *>(E) ||
+         dynamic_cast<const FieldExprAST *>(E) ||
+         dynamic_cast<const IndexExprAST *>(E) ||
+         dynamic_cast<const IndexedFieldExprAST *>(E);
+}
+```
+
+Codegen: load the old value → compute `old ± 1` via `EmitBuiltInArithmetic` → store the new value → return `IsPrefix ? new : old`. The postfix form returns the value that existed *before* the mutation, matching C semantics.
+
+## Parsing `++`/`--`
+
+**Postfix** is handled by `ParsePostfixIncDec`, which wraps the primary expression in an `IncDecExprAST` if followed by `++` or `--`. `ParseUnary` now calls this instead of `ParsePrimary` directly:
+
+```cpp
+static unique_ptr<ExprAST> ParsePostfixIncDec(unique_ptr<ExprAST> Base) {
+  while (CurTok == tok_plusplus || CurTok == tok_minusminus) {
+    bool IsIncrement = (CurTok == tok_plusplus);
+    if (!IsIncDecAssignableExpr(Base.get()))
+      return LogError("Increment/decrement target must be assignable");
+    getNextToken(); // eat ++/--
+    Base = make_unique<IncDecExprAST>(std::move(Base), IsIncrement,
+                                     /*IsPrefix=*/false, ...);
+  }
+  return Base;
+}
+// In ParseUnary:
+return ParsePostfixIncDec(ParsePrimary());
+```
+
+**Prefix** is handled at the top of `ParseUnary`, before the primary:
+
+```cpp
+if (CurTok == tok_plusplus || CurTok == tok_minusminus) {
+  bool IsIncrement = (CurTok == tok_plusplus);
+  getNextToken(); // eat ++/--
   auto Operand = ParseUnary();
-  if (!Operand)
-    return nullptr;
-  if (Operand->getType() == ValueType::Bool)
-    return make_unique<LogicalNotExprAST>(std::move(Operand));
-  auto Proto = GetFunctionProto("unary!");
-  if (!Proto)
-    return LogError("Unknown unary operator");
-  if (Proto->getNumArgs() != 1)
-    return LogError("Unary operator must have exactly one argument");
-  ValueType ParamType = Proto->getArgType(0);
-  if (!IsAssignable(ParamType, Operand->getType())) {
-    return LogError(
-        ("unary operator expects " + string(TypeName(ParamType))).c_str());
-  }
-  return make_unique<UnaryExprAST>('!', std::move(Operand),
-                                   Proto->getReturnType());
+  // validate assignable and numeric/pointer
+  return make_unique<IncDecExprAST>(std::move(Operand), IsIncrement,
+                                   /*IsPrefix=*/true, ...);
 }
 ```
 
-Codegen for `LogicalNotExprAST` emits a single `CreateNot` on the `i1` value:
-
-```cpp
-Value *LogicalNotExprAST::codegen() {
-  Value *V = Operand->codegen();
-  if (!V)
-    return nullptr;
-  if (Operand->getType() != ValueType::Bool)
-    return LogErrorV("Type mismatch in unary operator");
-  return Builder->CreateNot(V, "nottmp");
-}
-```
-
-## Short-Circuit Codegen for `&&` and `||`
-
-`&&` and `||` do not use the standard binary expression path. In `BinaryExprAST::codegen`, they are intercepted before the operand is evaluated on the right:
-
-```cpp
-if (Op == tok_and || Op == tok_or) {
-  Value *L = LHS->codegen();
-  if (!L)
-    return nullptr;
-  if (LHS->getType() != ValueType::Bool || RHS->getType() != ValueType::Bool)
-    return LogErrorV("Type mismatch in binary operator");
-
-  Function *F = Builder->GetInsertBlock()->getParent();
-  BasicBlock *LHSBB  = Builder->GetInsertBlock();
-  BasicBlock *RHSBB  = BasicBlock::Create(*TheContext, "logic.rhs", F);
-  BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "logic.end");
-
-  if (Op == tok_and)
-    Builder->CreateCondBr(L, RHSBB, MergeBB);
-  else
-    Builder->CreateCondBr(L, MergeBB, RHSBB);
-
-  Builder->SetInsertPoint(RHSBB);
-  Value *RHSVal = RHS->codegen();
-  if (!RHSVal)
-    return nullptr;
-  Builder->CreateBr(MergeBB);
-  RHSBB = Builder->GetInsertBlock();
-
-  F->insert(F->end(), MergeBB);
-  Builder->SetInsertPoint(MergeBB);
-  PHINode *PN =
-      Builder->CreatePHI(Type::getInt1Ty(*TheContext), 2, "logictmp");
-  if (Op == tok_and) {
-    PN->addIncoming(ConstantInt::getFalse(*TheContext), LHSBB);
-    PN->addIncoming(RHSVal, RHSBB);
-  } else {
-    PN->addIncoming(ConstantInt::getTrue(*TheContext), LHSBB);
-    PN->addIncoming(RHSVal, RHSBB);
-  }
-  return PN;
-}
-```
-
-For `a && b`:
-- Evaluate `a`.  If false, jump to `logic.end` with a `false` constant.
-- If true, fall into `logic.rhs`, evaluate `b`, jump to `logic.end`.
-- The `phi` node in `logic.end` selects between `false` (the short-circuit path) and the result of `b`.
-
-For `a || b` the condition is inverted: if `a` is true, jump to `logic.end` with `true` immediately. The PHI node produces `true` on that path and the result of `b` on the other.
-
-The LLVM `phi` uses `i1` — the native boolean type — throughout. If `b` is a function call with side effects, it genuinely does not execute when the short-circuit fires.
-
-## Grammar
-
-`!` is added to `unaryop`. `&&` and `||` join `builtinbinaryop`.
-
-```ebnf
-unaryop         = "-" | "!" | "++" | "--" | userdefunaryop ;  -- changed
-builtinbinaryop = "+" | "-" | "*" | "/" | "%"
-                | "<" | "<=" | ">" | ">=" | "==" | "!="
-                | "&&" | "||" ;                               -- changed
-```
-
-## Error Cases
-
-**Non-bool operand:**
-```pyxc
-var x: int = 1
-var y: bool = True
-if x && y:  # Error: Type mismatch in binary operator
-  return 1
-```
-
-Both sides must be `bool`. There is no implicit conversion from `int` to `bool`.
+Recursive descent through `ParseUnary` means `++++x` is syntactically valid (prefix applied twice) but only meaningful if `x` is assignable at each level.
 
 ## Things Worth Knowing
 
-**Short-circuit is real, not just an optimisation.** The right-hand side is structurally placed behind a conditional branch in the IR. A function call on the right of `&&` or `||` will genuinely not execute if the left determines the result.
+**`EmitBuiltInArithmetic` is the single implementation path.** Both `BinaryExprAST` and every compound assignment and `IncDecExprAST` node call it. Adding a new arithmetic operator means touching one function.
 
-**`!` on a non-bool falls through to user-defined `unary!`.** If you have defined a custom `unary!` for some other type, it continues to work. The built-in path only activates for `bool`.
+**Postfix `++` returns the old value.** `var y: int = x++` captures the value before the increment — identical to C.
 
-**`&&` and `||` are not bitwise.** For bitwise AND and OR on integers, see [Chapter 34](chapter-34.md).
+**`++`/`--` work on pointers.** `p++` advances by one element. Pointer arithmetic rules apply.
+
+**`%` on floats is an error.** There is no floating-point remainder operator in pyxc.
 
 ## What's Next
 
-[Chapter 33](chapter-33.md) adds `while`, `do/while`, `break`, and `continue`.
+[Chapter 33](chapter-33.md) adds `&&`, `||`, and `!` — logical operators with short-circuit evaluation.
 
 ## Need Help?
 

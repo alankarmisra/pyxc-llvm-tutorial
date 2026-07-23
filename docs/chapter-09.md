@@ -1,28 +1,67 @@
 ---
-description: "Add user-defined operators via Python-style decorators — @binary(N) and @unary — backed by dedicated parser functions with compile-time validation."
+description: "Add comparison operators, if/else expressions, and for loops — then use them to render the Mandelbrot set in ASCII."
 ---
-# 9. pyxc: User-Defined Operators
+# 9. pyxc:  Control Flow: if, else, and for
 
-## Where We Are
+## What I'm building
 
-[Chapter 8](chapter-08.md) added comparison operators, `if`/`else`, and `for` loops, but every operator Pyxc knows is still hardwired into the compiler. This chapter adds user-defined operators — a detour into some interesting parsing techniques that pays off with a surprisingly clean syntax.
+[Chapter 8](chapter-08.md) added file input mode. The language itself still has only basic arithmetic, and function calls — no way to branch, no way to loop, no way to compare two values. This chapter adds all three. You have more experience with LLVM and compilers now, so I can move at a slightly faster pace. 
 
-By the end, you'll be able to define new operators directly in Pyxc using Python-style decorators. The decorator line sets the type and precedence; the `def` line gives it a body:
+My implementation of comparison operators will produce double values: `1.0` for true and `0.0` for false. This way, if the operator is part of a greater expression, the expression will produce a double value as is expected across pyxc expressions. 
 
 <!-- code-merge:start -->
 ```pyxc
-ready> @binary(5) # an operator precedence of 5
-def |(x, y): return if x != 0: 1 else: if y != 0: 1 else: 0
-```
-```bash
-Parsed a user-defined operator.
-```
-```pyxc
-ready> 1 | 0
+ready> 1 < 2
 ```
 ```bash
 Parsed a top-level expression.
 Evaluated to 1.000000
+```
+```pyxc
+ready> 3 != 3
+```
+```bash
+Parsed a top-level expression.
+Evaluated to 0.000000
+```
+<!-- code-merge:end -->
+
+I'll implement an *expression* form of `if` for now. What this means is that both branches are always required and each of them has to return a value so the entire `if/else` expression has a value. Once I get to the statement form of `if`, you'll see a more familiar syntax where the `else` becomes optional and it doesn't matter whether or not the subexpressions produce a value or not. Statement-style `if` arrives with blocks (multi-statement bodies) in a later chapter. Let's see some examples.
+
+<!-- code-merge:start -->
+```pyxc
+ready> def absdiff(a, b): return if a > b: a - b else: b - a
+```
+```bash
+Parsed a function definition.
+```
+```pyxc
+ready> absdiff(10, 5)
+```
+```bash
+Parsed a top-level expression.
+Evaluated to 5.000000
+```
+<!-- code-merge:end -->
+
+Similarly I implement an expression form of `for`. It repeats its body expression and always produces `0.0`. Unlike `if`, `for` has no natural value to produce. `0.0` is a placeholder. Again, my implementation of blocks will fix this in a later chapter, where `for` will return nothing as you've probably grown to expect in most programming languages. However, this is not a rule set in stone. You are the inventor here. You can choose whatever appeals to your semantic senses. 
+
+<!-- code-merge:start -->
+```pyxc
+ready> extern def printd(x)
+```
+```bash
+Parsed an extern.
+```
+```pyxc
+ready> for i = 1, i <= 3, 1: printd(i)
+```
+```bash
+Parsed a top-level expression.
+1.000000
+2.000000
+3.000000
+Evaluated to 0.000000
 ```
 <!-- code-merge:end -->
 
@@ -33,62 +72,29 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-09
 ```
 
-## The Design
-
-In Pyxc, user-defined operators are just functions with funny names. A user-defined binary operator `|` is stored as an ordinary function named `binary|` — LLVM knows nothing special about the name. A unary operator `!` is stored as `unary!`. When the parser encounters `a | b`, it looks up `binary|` and generates a call. Built-in operators like `+` and `*` are handled directly in `BinaryExprAST::codegen` with `CreateFAdd` and `CreateFMul` — no function call involved.
-
-This means:
-- The JIT treats user-defined operators exactly like regular functions.
-- The parser needs to know about new operators *at parse time* so it can apply precedence rules. Binary operators register their precedence in `BinopPrecedence` when codegen runs. This works because each definition is parsed and codegenned before the next one is processed — in both REPL and file mode. An operator is available to the parser from the line after it is defined. For example, if `|` has precedence `5` and `+` has precedence `20`, then `a + b | 1` parses as `(a + b) | 1`. The built-in precedences are:
-
-| Operators | Precedence |
-|-----------|-----------|
-| `==` `!=` `<` `>` `<=` `>=` | 10 |
-| `+` `-` | 20 |
-| `*` | 40 |
-
-Pick a value relative to this table. Precedence `1` binds looser than everything; precedence `50` binds tighter than `*`.
-
-Unary operators are a different case: they bind tighter than any binary operator by design, so `-x + 1` always means `(-x) + 1`. They are parsed in a dedicated step before any binary expression is evaluated.
-
 ## Grammar
 [pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-09/pyxc.ebnf)
 
 ```ebnf
 program         = [ eols ] [ top { eols top } ] [ eols ] ;
 eols            = eol { eol } ;
-top             = definition | decorateddef | external | toplevelexpr ;
+top             = definition | external | toplevelexpr ;
 definition      = "def" prototype ":" [ eols ] "return" expression ;
-decorateddef      = binarydecorator eols "def" binaryopprototype ":" [ eols ] "return" expression
-                  | unarydecorator  eols "def" unaryopprototype  ":" [ eols ] "return" expression ;
-binarydecorator   = "@" "binary" "(" integer ")" ;
-unarydecorator    = "@" "unary" ;
-binaryopprototype = customopchar "(" identifier "," identifier ")" ;
-unaryopprototype  = customopchar "(" identifier ")" ;
 external        = "extern" "def" prototype ;
 toplevelexpr    = expression ;
 prototype       = identifier "(" [ identifier { "," identifier } ] ")" ;
 ifexpr          = "if" expression ":" [ eols ] expression [ eols ] "else" ":" [ eols ] expression ;
 forexpr         = "for" identifier "=" expression "," expression "," expression ":" [ eols ] expression ;
-expression      = unaryexpr binoprhs ;
-binoprhs        = { binaryop unaryexpr } ;
-unaryexpr       = unaryop unaryexpr | primary ;
-unaryop         = "-" | userdefunaryop ;
+expression      = primary binoprhs ;
+binoprhs        = { binaryop primary } ;
 primary         = identifierexpr | numberexpr | parenexpr
-                | ifexpr | forexpr ;
+                | ifexpr | forexpr ;                          -- new: ifexpr, forexpr
 identifierexpr  = identifier | callexpr ;
 callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
 numberexpr      = number ;
 parenexpr       = "(" expression ")" ;
-binaryop        = builtinbinaryop | userdefbinaryop ;
-builtinbinaryop = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
-userdefbinaryop = ? any opchar defined as a custom binary operator ? ;
-userdefunaryop  = ? any opchar defined as a custom unary operator ? ;
-customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
-                    and not already defined as a custom operator ? ;
-opchar          = ? any single ASCII punctuation character ? ;
+binaryop        = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;  
 identifier      = (letter | "_") { letter | digit | "_" } ;
-integer         = digit { digit } ;
 number          = digit { digit } [ "." { digit } ]
                 | "." digit { digit } ;
 letter          = "A".."Z" | "a".."z" ;
@@ -99,594 +105,913 @@ ws              = " " | "\t" ;
 
 ### What Changed
 
-Chapter 9 adds three things: `decorateddef` for `@binary`/`@unary` definitions; `unaryexpr` inserted between `expression` and `primary` (every operand slot that previously called `primary` now calls `unaryexpr`, which either applies a unary op and recurses, or delegates to `primary`); and `integer` as a distinct terminal to reject fractional precedence values.
+This chapter adds two new `primary` expression forms (`ifexpr` and `forexpr`) and six binary comparison operators. The rest of the grammar is unchanged.
 
 ```ebnf
 -- Chapter 8
-expression = primary binoprhs ;
-binoprhs   = { binaryop primary } ;
+primary  = identifierexpr | numberexpr | parenexpr ;
+binaryop = "+" | "-" | "*" ;
 
 -- Chapter 9
-expression = unaryexpr binoprhs ;
-binoprhs   = { binaryop unaryexpr } ;
-unaryexpr  = unaryop unaryexpr | primary ;
-```
-
-`integer` appears only in `binarydecorator`. It is a subset of `number` with no decimal point — `@binary(5)` is valid, `@binary(1.5)` is not. The lexer has no separate `tok_integer` token; it always emits `tok_number`. The parser enforces the integer constraint by inspecting the raw source string for a decimal point.
-
-```ebnf
-...
-binarydecorator   = "@" "binary" "(" integer ")" ;
-....
-integer         = digit { digit } ;
-```
-
-`customopchar` is any ASCII punctuation character except `@`, except built-in operator characters (including reserved unary `-`), and except any character already defined as a custom operator (unary or binary). The "not already defined" part is enforced by parser checks, not the grammar itself.
-
-```ebnf
-customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
-                    and not already defined as a custom operator ? ;
+primary  = identifierexpr | numberexpr | parenexpr | ifexpr | forexpr ;
+binaryop = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
 ```
 
 ## New Tokens
 
-Two new keywords: `binary` and `unary`. They appear only in decorator lines, never in expressions.
+I add more token enums:
 
 ```cpp
 enum Token {
-  // ...existing tokens...
+...
+// comparison operators
+// Only multi-character operators use explicit tokens;
+// single-character operators continue to be returned as
+// their character value.
+tok_eq  = -8,   // ==
+tok_neq = -9,   // !=
+tok_leq = -10,  // <=
+tok_geq = -11,  // >=
 
-  // user-defined operators
-  tok_binary = -16,
-  tok_unary  = -17,
+// control flow
+tok_if   = -12,
+tok_else = -13,
+
+...
+
+// loops
+tok_for = -15,
+```
+
+`tok_if`, `tok_else`, and `tok_for` are keywords added to the `Keywords` map. The comparison tokens are returned by the lexer when it sees two-character sequences. If you look at the `gettok()` code, you'll see that keywords go through the identifier string route and the operators go through their own recognition code towards the bottom of the function, basically extending my existing code. There are more optimized and standardized ways to do this through lexer generators, but such optimization purity comes at the cost of a more complex pipeline. I'll explore these optimizations later. 
+
+## Comparison Operators
+
+### Lexer: Two-Character Tokens
+
+The lexer reads one character at a time. Recognizing `==` means seeing `=` first, then deciding whether the next character is also `=` and needs to be consumed. A `peek()` helper reads one character and immediately unreads it — reading ahead without consuming:
+
+```cpp
+static int peek() {
+  int c = fgetc(Input);
+  if (c != EOF)
+    ungetc(c, Input);
+  return c;
+}
+```
+
+Each two-character operator follows the same pattern in `gettok()`:
+
+```cpp
+if (LastChar == '=') {
+  int Tok = (peek() == '=') ? (advance(), tok_eq) : '=';
+  LastChar = advance();
+  return Tok;
+}
+```
+
+If the next character is also `=`, consume it with `advance()` and return `tok_eq`. Otherwise return the bare `=`. Either way, call `advance()` at the end to preload `LastChar` for the next `gettok()` call. The same pattern handles `!`, `<`, and `>`.
+
+### Parser: `BinopPrecedence` keyed on int
+
+In earlier chapters `BinopPrecedence` used `char` keys. However, I've extended my operator set with new tokens that are negative integers — `tok_eq` == -8, for example. Since those won't fit in a `char`, I extend the key type to `int`:
+
+```cpp
+static map<int /* changed from char to int */, int> BinopPrecedence = {
+    {tok_eq /* -8, needs an int size */, 10}, {tok_neq, 10}, {tok_leq, 10}, {tok_geq, 10},  // new
+    {'<', 10}, {'>', 10},
+    // ... plus '+', '-', '*' from before ...
 };
 ```
 
-They are added to the `Keywords` map alongside the other keywords:
+All six comparison operators share precedence `10` — they bind equally tightly. Like all binary operators in pyxc, they are left-associative, so `a < b == c` parses as `(a < b) == c`, not `a < (b == c)`. In particular, chained comparisons like `1 < x < 10` do not work as they do in Python — they parse as `(1 < x) < 10`, which is always true — `1 < x` produces `1.0` or `0.0`, and both are less than `10`. A later chapter will make this work exactly as Python does.
+
+`BinaryExprAST::Op` also changes from `char` to `int` so it can store negative token values without truncation.
 
 ```cpp
-{"binary", tok_binary}, {"unary", tok_unary}
+class BinaryExprAST : public ExprAST {
+  int Op;   // was char; negative token values don't fit in char
+  ...
 ```
 
-The lexer returns `tok_binary` or `tok_unary` when it reads the corresponding word.
+### Comparison Codegen
 
-## Extending PrototypeAST
+pyxc comparison operators like `==`, `!=`, `<`, and `>` are converted to LLVM's [fcmp](https://llvm.org/docs/LangRef.html#fcmp-instruction)
+instruction.
 
-A prototype needs to know whether it describes a regular function or an operator, and for binary operators it needs the precedence:
+For example, the `==` case in `BinaryExprAST::codegen` is:
 
 ```cpp
-class PrototypeAST {
-  // ...existing Name, Args...
-  bool IsOperator;
-  unsigned Precedence; // binary only; 0 for all others
-
-  bool isUnaryOp()  const { return IsOperator && Args.size() == 1; }
-  bool isBinaryOp() const { return IsOperator && Args.size() == 2; }
-
-  // Last character of the encoded name: "binary|" → '|', "unary!" → '!'
-  char getOperatorName() const { return Name.back(); }
-};
+case tok_eq:
+  L = Builder->CreateFCmpOEQ(L, R, "cmptmp");  
 ```
 
-Regular function prototypes keep the defaults `IsOperator=false, Prec=0` and are unaffected.
+which produces:
 
-## A New AST Node: UnaryExprAST
-
-Binary operators already have `BinaryExprAST`. A new node handles unary operator applications:
-
-```cpp
-class UnaryExprAST : public ExprAST {
-  char Opcode; // char suffices — unary operators are always a single ASCII character.
-  unique_ptr<ExprAST> Operand;
-
-public:
-  UnaryExprAST(char Opcode, unique_ptr<ExprAST> Operand)
-      : Opcode(Opcode), Operand(std::move(Operand)) {}
-
-  Value *codegen() override;
-};
+```llvm
+%cmptmp = fcmp oeq double %L, %R
 ```
 
-## Defining Operators
+The predicate `oeq` has a cousin, `ueq`. The only difference between them is how they handle `NaN`: `oeq` returns `false` when either operand is `NaN`; `ueq` returns `true`. Every comparison predicate follows this pattern — each has an ordered (`o*`) version and an unordered (`u*`) version with exactly that treatment of `NaN`. So alongside `oeq`/`ueq` there are `olt`/`ult`, `one`/`une`, and so on.
 
-### Parsing `@binary(5) def |(x, y): ...`
+The names come from numeric order. Real numbers can be placed on a number line — they are *ordered*. NaN cannot, so any comparison involving NaN is *unordered*. An ordered predicate returns `false` in that case; an unordered predicate returns `true`. NaN arises from undefined floating-point operations — pyxc cannot produce it yet, but `extern` functions written in C can.
 
-`MainLoop` eats the `@` itself before dispatching to `HandleDecorator`, so by the time `ParseDecoratedDef` runs, `CurTok` is already sitting on `binary` or `unary`. `ParseDecoratedDef` manages both branches:
+pyxc follows C's behaviour:
+
+- `==`, `<`, `<=`, `>`, and `>=` use ordered predicates — NaN comparisons return `false`
+- `!=` uses unordered not-equal (`une`) — so `x != NaN` is `true`, matching IEEE 754
 
 ```cpp
-/// decorateddef
-///   = binarydecorator eols "def" binaryopprototype ":" [ eols ] "return" expression
-///   | unarydecorator  eols "def" unaryopprototype  ":" [ eols ] "return" expression
-///
-/// Called after '@' has been consumed. CurTok is on 'binary' or 'unary'.
-static unique_ptr<FunctionAST> ParseDecoratedDef() {
-  if (CurTok != tok_binary && CurTok != tok_unary)
-    return LogErrorF("Expected 'binary' or 'unary' after '@'");
+case tok_neq:
+  L = Builder->CreateFCmpUNE(L, R, "cmptmp");
+```
 
-  bool IsBinary = (CurTok == tok_binary);
-  unique_ptr<PrototypeAST> Proto;
+which produces:
 
-  if (IsBinary) {
-    unsigned Prec = ParseBinaryDecorator(); // consumes "binary(N)"
-    if (!Prec)
-      return nullptr;
-    if (CurTok != tok_eol) // the decorator must end at a newline before 'def'
-      return LogErrorF("Expected newline after '@binary(...)' decorator");
-    consumeNewlines();
-    if (CurTok != tok_def)
-      return LogErrorF("Expected 'def' after decorator");
-    getNextToken(); // eat 'def'
-    Proto = ParseBinaryOpPrototype(Prec);
-  } else {
-    ParseUnaryDecorator(); // consumes "unary"
-    // ... same newline enforcement, eat 'def' ...
-    Proto = ParseUnaryOpPrototype();
-  }
+```llvm
+%cmptmp = fcmp une double %L, %R
+```
 
-  // Shared body tail — same as ParseDefinition, where `return` and expression are parsed.
+If you want an explicit NaN test in IR, you can use `fcmp uno`. It returns true if either operand is NaN:
+
+```cpp
+Builder->CreateFCmpUNO(L, R, "has_nan");
+```
+```llvm
+%has_nan = fcmp uno double %L, %R
+```
+
+#### Converting `i1` Back to `double`
+
+`fcmp` produces an `i1` — LLVM's one-bit boolean (`false` or `true`). But pyxc does not have a separate boolean type. Comparison results are ordinary numbers in the language, so I widen that `i1` back to `double`:
+
+```cpp
+// CreateUIToFP (Unsigned Int -> Floating Point)
+return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+```
+
+which produces:
+
+```llvm
+%booltmp = uitofp i1 %cmptmp to double
+```
+
+This gives pyxc its usual comparison result convention: `false → 0.0`, `true → 1.0`. That value is what later flows into `if` conditions and arithmetic expressions. 
+
+## if/else Expressions
+
+As discussed earlier, in pyxc, `if` is an expression: it evaluates to a value and can appear anywhere an expression is allowed — as part of a larger expression, as a function argument, as a loop body, or nested inside another `if`.
+
+```pyxc
+if condition: then_expr else: else_expr
+```
+
+Any non-zero value is treated as true. `if 0.5:` and `if 2:` both take the then-branch; only `if 0:` takes the else-branch. The condition can be any expression — it does not have to be a comparison.
+
+### Parsing
+
+`ParseIfExpr` eats `if`, parses the condition, expects `:`, allows newlines, then parses the then-branch. It then allows newlines before `else`, expects `else:`, allows more newlines, and parses the else-branch. Indentation is cosmetic — the parser only skips newlines. There are no statement blocks yet, so the then- and else-branches are each a single expression:
+
+```cpp
+static unique_ptr<ExprAST> ParseIfExpr() {
+  getNextToken(); // eat 'if'
+
+  auto Cond = ParseExpression();
+  if (!Cond)
+    return nullptr;
+
+  if (CurTok != ':')
+    return LogError("Expected ':' after if condition");
+  getNextToken(); // eat ':'
+
+  consumeNewlines(); // allow body on next line
+
+  auto Then = ParseExpression();
+  if (!Then)
+    return nullptr;
+
+  consumeNewlines(); // allow 'else' on next line
+
+  if (CurTok != tok_else)
+    return LogError("Expected 'else' in if expression");
+  getNextToken(); // eat 'else'
+
+  if (CurTok != ':')
+    return LogError("Expected ':' after else");
+  getNextToken(); // eat ':'
+
+  consumeNewlines(); // allow body on next line
+
+  auto Else = ParseExpression();
+  if (!Else)
+    return nullptr;
+
+  return make_unique<IfExprAST>(std::move(Cond), std::move(Then),
+                                std::move(Else));
+}
+```
+
+`consumeNewlines()` eats one or more consecutive `tok_eol` tokens, so both inline and multi-line forms are accepted:
+
+```pyxc
+if a > b: a - b else: b - a            # all on one line
+
+if a > b:                              # multi-line
+    a - b
+else:
+    b - a
+```
+
+### Codegen: Building the then / else / join Blocks
+
+Codegen for an `if` expression has three jobs:
+
+1. Evaluate the condition.
+2. Run exactly one of the two branches.
+3. Continue afterward with the value produced by the branch that ran.
+
+For an `if`, I need one block for the `then` path, one for
+the `else` path, and one final block where both paths meet again.
+
+I'll keep using the same example function from above:
+
+```pyxc
+def absdiff(a, b): return if a > b: a - b else: b - a
+```
+
+Inside that function, the `if` expression is:
+
+```pyxc
+if a > b: a - b else: b - a
+```
+
+The generated block layout looks like this:
+
+```diagram
+                entry
+                  │
+             if (a > b)?
+          ┌───────┴────────┐
+     true ▼                ▼ false
+ then: %subtmp = a-b   else: %subtmp1 = b-a
+          └───────┬────────┘
+                  ▼
+                ifcont
+```
+
+Here `entry` is the current block, `then` and `else` are two branch blocks, and `ifcont` is the block where execution continues after either branch. Note that in LLVM, control never falls through from one block to the next the way it does in C. Every block must end with an explicit branch — conditional or unconditional — to name where execution goes next. This is why you'll see explicit branching `br` instructions with conditions `br i1 %cond` or without `br label %label` in the IR that follows. 
+
+`IfExprAST::codegen` builds this shape in five steps. I'll trace the body of
+`absdiff`.
+
+At the LLVM level, I'm filling in this function body:
+
+```llvm
+define double @absdiff(double %a, double %b) {
+entry:
   ...
 }
 ```
 
-**`ParseBinaryDecorator`** consumes `binary(5)` and returns `5`. The lexer has no `tok_integer` — it emits `tok_number` for both `5` and `1.5` — so the decimal check inspects `NumLiteralStr`, the raw source text. It returns `unsigned`, not a `unique_ptr`, so on failure it calls the plain `LogError` (which prints the message and returns a discarded `nullptr`) and then explicitly returns `0`:
+**Step 1 — Generate the condition in the current block.**
+
+First I generate code for the condition expression:
 
 ```cpp
-/// binarydecorator
-///   = "binary" "(" integer ")"
-///
-/// Called after '@' has been consumed. CurTok is on 'binary'.
-/// Returns the parsed precedence (>= 1), or 0 on error.
-/// 0 is a safe sentinel because valid precedences must be >= 1.
-static unsigned ParseBinaryDecorator() {
-  getNextToken(); // eat 'binary'
-
-  if (CurTok != '(') {
-    LogError("Expected '(' after '@binary'");
-    return 0;
-  }
-  getNextToken(); // eat '('
-
-  if (CurTok != tok_number) {
-    LogError("Expected precedence number in '@binary(...)'");
-    return 0;
-  }
-  // The lexer has no separate tok_integer — it emits tok_number for both
-  // integer and decimal literals. Reject decimals by checking the raw source.
-  if (NumLiteralStr.find('.') != string::npos) {
-    LogError("Precedence must be an integer, not a decimal literal");
-    return 0;
-  }
-  if (NumVal < 1) {
-    LogError("Precedence must be a positive integer");
-    return 0;
-  }
-  unsigned Prec = static_cast<unsigned>(NumVal);
-  getNextToken(); // eat number
-
-  if (CurTok != ')') {
-    LogError("Expected ')' after precedence in '@binary(...)'");
-    return 0;
-  }
-  getNextToken(); // eat ')'
-
-  return Prec;
-}
+Value *CondV = Cond->codegen();
 ```
 
-Zero is rejected because it is the sentinel/marker value `GetTokPrecedence` returns for unknown operators.
-
-**`ParseBinaryOpPrototype`** reads `|`, encodes it as `"binary|"`, runs three redefinition checks, then reads `x` and `y`:
+For `absdiff`, `Cond->codegen()` generates code for `a > b`. 
 
 ```cpp
-/// binaryopprototype
-///   = customopchar "(" identifier "," identifier ")"
-///
-/// CurTok is on the operator character.
-/// The function is stored internally as "binary<opchar>" (e.g. "binary%"),
-/// which is how BinaryExprAST::codegen() looks it up at call sites.
-static unique_ptr<PrototypeAST> ParseBinaryOpPrototype(unsigned Precedence) {
-    if (!IsCustomOpChar(CurTok))
-        return LogErrorP("Expected operator character in binary operator prototype");
-    char OpChar = (char)CurTok;
-    string FnName = string("binary") + OpChar;  // → "binary|"
-
-    if (IsKnownBinaryOperatorToken(CurTok)) ...  // already a binary op?
-    if (IsKnownUnaryOperatorToken(CurTok))  ...  // already a unary op?
-    if (FunctionProtos.count(FnName))       ...  // encoded name collision? (FunctionProtos is the map of parsed prototypes from chapter 6)
-
-    getNextToken(); // eat operator char
-    // ... read (x, y) — same as ParsePrototype, expect exactly 2 args ...
-    return make_unique<PrototypeAST>(FnName, ArgNames, true, Precedence);
-}
+case '>':
+  L = Builder->CreateFCmpOGT(L, R, "cmptmp");
+  return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
 ```
 
-`IsCustomOpChar` checks `isascii(Tok) && ispunct(Tok) && Tok != '@'`. `@` is excluded because it is the decorator introducer — allowing it as an operator character would make `@@binary(5)` ambiguous. The defensive `FunctionProtos` check guards against future parser changes.
-
-### Parsing `@unary def !(v): ...`
-
-The unary path follows a similar scheme. `ParseUnaryDecorator` simply eats `unary` — no precedence argument, since unary operators always bind tighter than any binary operator by design. Among unary operators themselves, there is no precedence either — `-!x` parses as `-(! x)` because `ParseUnary` recurses into itself, applying operators from the outside in and resolving them inside out. `ParseUnaryOpPrototype` encodes the name as `"unary!"` and runs the same two redefinition checks:
-
-```cpp
-if (!IsCustomOpChar(CurTok))
-    return LogErrorP("Expected operator character in unary operator prototype");
-
-string FnName = string("unary") + OpChar;  // → "unary!"
-
-if (IsKnownUnaryOperatorToken(CurTok))  ...  // already a unary op?
-if (IsKnownBinaryOperatorToken(CurTok)) ...  // already a binary op?
-```
-
-Since unary operators have no precedence, `PrototypeAST` is created with `Precedence = 0`. Body parsing is identical to the binary path.
-
-## Parsing Unary Expressions
-
-`ParseUnary` is called wherever the grammar expects a `unaryexpr` — as the operand on either side of a binary operator, so `!x + 1` and `f(x) + !y` both work. 
-
-```cpp
-static unique_ptr<ExprAST> ParseUnary() {
-  // Primary starters — hand off to ParsePrimary.
-  if (!isascii(CurTok) || CurTok == '(' || isalpha(CurTok) || isdigit(CurTok))
-    return ParsePrimary();
-  // Built-in unary minus.
-  if (CurTok == '-')
-    return ParseUnaryMinus();
-  // ASCII punctuation — treat as a user-defined unary prefix.
-  int Opc = CurTok;
-  getNextToken(); // eat the operator character
-  if (auto Operand = ParseUnary())
-    return make_unique<UnaryExprAST>(Opc, std::move(Operand));
-  return nullptr;
-}
-```
-
-Any punctuation token that isn't `-` parses as a unary prefix — undefined operators are accepted here and only fail at codegen with "Unknown unary operator".
-
-`ParseUnaryMinus` eats `-`, recurses into `ParseUnary` for the operand, and builds a `UnaryExprAST` with opcode `'-'`:
-
-```cpp
-static unique_ptr<ExprAST> ParseUnaryMinus() {
-  getNextToken(); // eat '-'
-  auto Operand = ParseUnary();
-  if (!Operand)
-    return nullptr;
-  return make_unique<UnaryExprAST>('-', std::move(Operand));
-}
-```
-
-During codegen, `UnaryExprAST` treats `-` as a built-in and emits `fneg`; all other opcodes are resolved as `unary<opchar>` function calls.
-
-## Code Generation
-
-### PrototypeAST::codegen — Registering Operators
-
-When a binary operator prototype is compiled, its precedence is installed in `BinopPrecedence`. When a unary operator prototype is compiled, its token is inserted into `KnownUnaryOperators`. Both happen at JIT time — inside `codegen` — so the operator is immediately usable in subsequent REPL lines or file definitions:
-
-```cpp
-Function *PrototypeAST::codegen() {
-  // ...create the LLVM function as before...
-
-  // Register binary operator precedence so the parser recognises it in
-  // subsequent expressions.
-  if (isBinaryOp())
-    BinopPrecedence[getOperatorName()] = Precedence;
-
-  // Register unary operator so ParseUnaryOpPrototype can detect redefinitions.
-  if (isUnaryOp())
-    KnownUnaryOperators.insert(getOperatorName());
-
-  return F;
-}
-```
-
-The `BinopPrecedence` side-effect is what makes `GetTokPrecedence()` return the right value for new operators. The `KnownUnaryOperators` side-effect is what lets `ParseUnaryOpPrototype` detect and reject redefinition attempts.
-
-### BinaryExprAST::codegen — User-Defined Fallthrough
-
-The existing `switch` handles built-in operators. Everything else falls through to a function lookup:
-
-```cpp
-Value *BinaryExprAST::codegen() {
-  // ...codegen L and R...
-
-  switch (Op) {
-  // ...built-in operators...
-  default: break;
-  }
-
-  // User-defined: look up "binary<op>" and emit a call.
-  Function *F = getFunction(std::string("binary") + (char)Op);
-  if (!F)
-    return LogErrorV("invalid binary operator");
-  Value *Ops[] = {L, R};
-  return TheBuilder->CreateCall(F, Ops, "binop");
-}
-```
-
-Because user-defined operators lower to regular function calls, operands are evaluated before the call is emitted. As a consequence, user-defined operators cannot have short-circuit functionality.
-
-### UnaryExprAST::codegen
-
-```cpp
-Value *UnaryExprAST::codegen() {
-  Value *Op = Operand->codegen();
-  if (!Op)
-    return nullptr;
-
-  // Built-in unary minus.
-  if (Opcode == '-')
-    return TheBuilder->CreateFNeg(Op, "negtmp");
-
-  // User-defined unary operator.
-  Function *F = getFunction(std::string("unary") + Opcode);
-  if (!F)
-    return LogErrorV("Unknown unary operator");
-
-  return TheBuilder->CreateCall(F, Op, "unop");
-}
-```
-
-The generated IR for `-x` results in a call to LLVM's fneg:
-```llvm
-%negtmp = fneg double %x
-```
-
-The generated IR for `!x` is a regular function call:
+That produces:
 
 ```llvm
-%unop = call double @unary!(double %x)
+define double @absdiff(double %a, double %b) {
+entry:
+  %cmptmp  = fcmp ogt double %a, %b
+  %booltmp = uitofp i1 %cmptmp to double
+}
 ```
 
-And if you mix the two:
-For `-!x`:
+`Cond->codegen()` gives me a `double`, because pyxc represents booleans as
+`0.0` or `1.0`. LLVM branches need an `i1`, so before I can branch I must
+turn that `double` back into an `i1`. 
+
+I do that by comparing the condition value against `0.0`:
+
+```cpp
+CondV = Builder->CreateFCmpONE(
+    CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "ifcond");
+```
+
+This means: treat the condition as true if it is not equal to `0.0`.
+
+A reader might notice that a comparison like `a > b` takes an unnecessary roundtrip: `fcmp` produces an `i1`, `uitofp` widens it to `double`, and then `fcmp one ... 0.0` narrows it back to `i1`. The roundtrip exists because the condition is just a `double` by the time I get here — it could equally be a bare number like `if 2:`. Codegen has no way to distinguish the two cases, so the `double → i1` step is always required. The optimizer collapses the roundtrip when it can.
+
+The current block now looks like this:
 
 ```llvm
-%unop = call double @unary!(double %x)
-%negtmp = fneg double %unop
+define double @absdiff(double %a, double %b) {
+entry:
+  %cmptmp  = fcmp ogt double %a, %b
+  %booltmp = uitofp i1 %cmptmp to double
+  %ifcond  = fcmp one double %booltmp, 0.0
+}
 ```
 
-## How It All Fits Together
+At this point the builder is still inserting instructions into the current
+block, which is the block that was already active before the `if`.
 
-Here is the complete path for:
+**Step 2 — Create the `then`, `else`, and join blocks.**
+
+```cpp
+BasicBlock *ThenBB = BasicBlock::Create(*TheContext, "then", TheFunction);
+BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else", TheFunction);
+BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont", TheFunction);
+Builder->CreateCondBr(CondV, ThenBB, ElseBB);
+```
+
+All three blocks are attached to the function immediately. `CreateCondBr` finishes the current block with a conditional jump — in LLVM, every basic block must end with a *terminator instruction* (LLVM will reject IR where a block has no terminator or has instructions after one). A `br` is one kind of terminator; `ret` is another — you'll see both. In IR that looks like:
+
+```llvm
+br i1 %ifcond, label %then, label %else
+```
+
+Check `%ifcond`; jump to `%then` if true, `%else` if false.
+
+Now I have:
+
+```llvm
+define double @absdiff(double %a, double %b) {
+entry:
+  %cmptmp  = fcmp ogt double %a, %b
+  %booltmp = uitofp i1 %cmptmp to double
+  %ifcond  = fcmp one double %booltmp, 0.0
+  br i1 %ifcond, label %then, label %else
+
+then:    ; (empty)
+else:    ; (empty)
+ifcont:  ; (empty)
+}
+```
+
+**Step 3 — Move the builder cursor into `then` and generate that branch.**
+
+```cpp
+Builder->SetInsertPoint(ThenBB);
+Value *ThenV = Then->codegen();
+Builder->CreateBr(MergeBB);
+```
+
+`SetInsertPoint` is the important move here: it tells LLVM, "append the next
+instructions into the `then` block."
+
+After `Then->codegen()` finishes, I emit an unconditional branch to `ifcont` so execution continues in the join block after the then-branch completes.
+
+```llvm
+then:                           ; reached when the condition is true
+  %subtmp = fsub double %a, %b
+  br label %ifcont
+```
+
+Finally, I update `ThenBB` so it points to the block where the `then` path
+actually finished.
+
+```cpp
+// Update ThenBB to the block where the then-path actually ended.
+// This matters for nested control flow; explained just below.
+ThenBB = Builder->GetInsertBlock();
+```
+
+This matters because nested control flow can create more blocks and move the
+builder cursor. I want the block where the `then` path ended, not the block where it
+started. This only matters for nested `if` expressions; I'll look at that
+case a little later in this chapter.
+
+**Step 4 — Do the same for `else`.**
+
+```cpp
+Builder->SetInsertPoint(ElseBB);
+Value *ElseV = Else->codegen();
+Builder->CreateBr(MergeBB);
+ElseBB = Builder->GetInsertBlock();
+```
+
+Step 4 is the same idea for `else`: move the builder cursor into `else`, generate the
+expression, branch to `ifcont`, and update `ElseBB` to the block where that
+path ended.
+
+```llvm
+else:                           ; reached when the condition is false
+  %subtmp1 = fsub double %b, %a
+  br label %ifcont
+```
+
+**Step 5 — Fill the join block and choose the final value.**
+
+Both branches have produced a value, but the join block needs one name for "the value from whichever branch actually ran." LLVM solves this with a **PHI node** — each bracket pairs a value with the block it came from:
+
+```llvm
+%iftmp = phi double [ %subtmp, %then ], [ %subtmp1, %else ]
+```
+
+Read it as: "if execution arrived here from `then`, use `%subtmp`; if from `else`, use `%subtmp1`." The name **phi** comes from the φ-function notation in the SSA papers of the late 1980s — exactly the piecewise-function idea of "this value if condition A, that value if condition B."
+
+```cpp
+Builder->SetInsertPoint(MergeBB);
+PHINode *PN = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
+PN->addIncoming(ThenV, ThenBB);
+PN->addIncoming(ElseV, ElseBB);
+return PN;
+```
+
+> **Note:** LLVM requires PHI nodes to appear before any non-PHI instructions in a basic block, so that any instruction using the PHI value is guaranteed to find it already resolved. `CreatePHI` inserts into `MergeBB` immediately after `SetInsertPoint`, so this is satisfied here — but if you ever generate other instructions into a merge block before creating the PHI, LLVM will reject the IR with a verifier error.
+
+**Full unoptimized IR for `absdiff`:**
+
+```llvm
+define double @absdiff(double %a, double %b) {
+entry:
+  %cmptmp  = fcmp ogt double %a, %b
+  %booltmp = uitofp i1 %cmptmp to double
+  %ifcond  = fcmp one double %booltmp, 0.0
+  br i1 %ifcond, label %then, label %else
+
+then:                                         ; reached when the condition is true
+  %subtmp = fsub double %a, %b
+  br label %ifcont
+
+else:                                         ; reached when the condition is false
+  %subtmp1 = fsub double %b, %a
+  br label %ifcont
+
+ifcont:                                       ; both branches rejoin here
+  %iftmp = phi double [ %subtmp, %then ], [ %subtmp1, %else ]
+  ret double %iftmp
+}
+```
+
+Because execution jumps directly to either `then` or `else` and never enters the other block, `if`/`else` short-circuits — the branch not taken is never evaluated.
+
+### What `-v` Shows
+
+`build/pyxc -v` uses the default optimization level (`-O2`), so the IR you see is already optimized. For `absdiff`, the optimizer notices that the branches only compute values with no side effects, and replaces the entire three-block `if` shape with a single `select` instruction:
+
+```llvm
+define double @absdiff(double %a, double %b) {
+entry:
+  %cmptmp = fcmp ogt double %a, %b
+  %subtmp = fsub double %a, %b
+  %subtmp1 = fsub double %b, %a
+  %iftmp = select i1 %cmptmp, double %subtmp, double %subtmp1
+  ret double %iftmp
+}
+```
+
+LLVM writes `select` like this:
+
+```llvm
+%result = select i1 <condition>, <type> <true-value>, <type> <false-value>
+```
+
+`select` is LLVM's ternary operator: choose one value if the condition is true, otherwise the other. No extra branch blocks are needed. Note that `select` evaluates both sides — the short-circuit property of the source `if` is gone. LLVM only applies this transformation when both branches are cheap and pure: no side effects and low instruction cost. When either condition fails, the three-block branch structure is preserved.
+
+The optimizer also removes the `i1` → `double` → `i1` roundtrip and uses `%cmptmp` directly as the branch condition. This is the general pattern: unifying everything as `double` at the language level costs nothing at runtime — the optimizer recovers the efficient `i1` branch condition automatically.
+
+Functions where the branches make calls (`printd`, `putchard`) keep the full three-block structure because those calls must actually run in one branch and not the other.
+
+To see the unoptimized IR shown above, run `build/pyxc -v -O0`.
+
+### Why Nested ifs Change the End Block
+
+Consider this pyxc code:
+
 ```pyxc
-@binary(5)
-def |(x, y): return if x != 0: 1 else: if y != 0: 1 else: 0
+def xor(a, b):
+    return if a == 1:         # %a1
+        if b == 1: 0          # %a1_b1
+        else: 1               # %a1_b0
+        # these join at %a1_merge
+    else:                     # %a0
+        if b == 1: 1          # %a0_b1
+        else: 0               # %a0_b0
+        # these join at %a0_merge
+    
+    # the final result is chosen at %merge
+```    
+
+The IR for the `a == 1` branch:
+
+```llvm
+a1:                                      ; a == 1
+  ...
+
+a1_b1:                                   ; a == 1, b == 1 → 0
+  ...
+
+a1_b0:                                   ; a == 1, b == 0 → 1
+  ...
+
+a1_merge:
+  %a1_result = phi double [ 0.0, %a1_b1 ],
+                          [ 1.0, %a1_b0 ]
+  ...
 ```
 
-1. **MainLoop** sees `@`. Eats it → CurTok is `tok_binary`. Calls `HandleDecorator`.
+Once execution enters `a1`, the nested `if` sends it through either `a1_b1` or
+`a1_b0`, and both of those rejoin at `a1_merge`.
 
-2. **HandleDecorator** calls `ParseDecoratedDef`.
+So if control later reaches the final PHI from the `a == 1` side, it is
+arriving from `a1_merge`, not from `a1`.
 
-3. **ParseDecoratedDef** sees `tok_binary` → `IsBinary = true`. Calls `ParseBinaryDecorator`.
+The `a == 0` side works the same way:
 
-4. **ParseBinaryDecorator**: eats `binary` → eats `(` → sees `tok_number`: `NumLiteralStr = "5"`, `NumVal = 5.0`. No `.` in literal. `NumVal ≥ 1`. `Prec = 5`. Eats `5` → eats `)`. Returns `5`.
+```llvm
+a0:                                      ; a == 0
+  ...
 
-5. **ParseDecoratedDef**: `Prec = 5`. Checks `CurTok == tok_eol` (end of decorator line) — yes. Calls `consumeNewlines()`, which eats one or more consecutive `tok_eol` tokens. CurTok is now `tok_def`. Eats `def` → CurTok is `|`. Calls `ParseBinaryOpPrototype(5)`.
+a0_b1:                                   ; a == 0, b == 1 → 1
+  ...
 
-6. **ParseBinaryOpPrototype**: `IsCustomOpChar('|')` → true. `OpChar = '|'`, `FnName = "binary|"`. `IsKnownBinaryOperatorToken('|')` → false. `FunctionProtos.count("binary|")` → 0. Eats `|` → eats `(` → reads `x`, `,`, `y` → eats `)`. `ArgNames = {"x", "y"}`, size = 2 → ok. Returns `PrototypeAST("binary|", {"x","y"}, true, 5)`.
+a0_b0:                                   ; a == 0, b == 0 → 0
+  ...
 
-7. **ParseDecoratedDef**: eats `:` → `consumeNewlines()` (body is inline, no eols) → eats `return` → calls `ParseExpression()`. The expression `if x != 0: 1 else: if y != 0: 1 else: 0` is parsed into a nested `IfExprAST`. Returns `FunctionAST("binary|", body)`.
-
-8. **HandleDecorator** calls `FnAST->codegen()`.
-
-9. **FunctionAST::codegen** moves the prototype into `FunctionProtos["binary|"]`. Calls `getFunction("binary|")`, which calls `PrototypeAST::codegen()`:
-   - Creates `double @binary|(double %x, double %y)` in `TheModule`.
-   - `isBinaryOp()` is true → installs `BinopPrecedence['|'] = 5`.
-
-10. **FunctionAST::codegen** creates the entry block, populates `NamedValues` with `{x, y}`, codegens the body, emits `ret`, runs the optimiser. Returns the compiled `Function*`.
-
-11. **HandleDecorator** prints `"Parsed a user-defined operator."`. Hands the module to the JIT. Calls `InitializeModuleAndManagers`.
-
-Now `|` is a live binary operator. When the parser next sees `1 | 0`, `GetTokPrecedence` returns 5, `ParseBinOpRHS` builds `BinaryExprAST('|', 1, 0)`, and codegen looks up `binary|` in the JIT and emits a call.
-
-## Build and Run
-
-```bash
-cmake -S . -B build
-cmake --build build
-./build/pyxc
+a0_merge:
+  %a0_result = phi double [ 1.0, %a0_b1 ],
+                          [ 0.0, %a0_b0 ]
+  ...
 ```
 
-The binary runs as an interactive REPL when given no file argument. Press `Ctrl-D` to exit.
+Again, execution does not go straight from `a0` to the final PHI. Once it
+enters `a0`, the nested `if` sends it through `a0_b1` or `a0_b0`, and both of
+those rejoin at `a0_merge`.
 
-## Try It
+So if control reaches the final PHI from the `a == 0` side, it is arriving
+from `a0_merge`, not from `a0`.
 
-### Defining a binary operator
+Now the final PHI makes sense:
 
-The decorator line ends at the newline. The REPL waits silently for the `def` line — no second `ready>` prompt appears between the two lines.
+```llvm
+merge:
+  %xor_result = phi double [ %a1_result, %a1_merge ],
+                           [ %a0_result, %a0_merge ]
+  ret double %xor_result
+```
 
-<!-- code-merge:start -->
+The final PHI uses the exit points, not the entry points:
+
+- if execution arrives from `a1_merge`, use `%a1_result`
+- if execution arrives from `a0_merge`, use `%a0_result`
+
+That is why these updates matter in the code generator:
+
+```cpp
+ThenBB = Builder->GetInsertBlock();
+...
+ElseBB = Builder->GetInsertBlock();
+```
+
+In the actual emitted IR, LLVM names these blocks `then`, `else`, and `ifcont`. The XOR example uses descriptive names like `a1`, `a1_merge`, and `merge` for clarity of exposition.
+
+## for Loop Expressions
+
+The `for` expression repeats a body expression while a condition holds:
+
 ```pyxc
-ready> @binary(5)
-def |(x, y): return if x != 0: 1 else: if y != 0: 1 else: 0
+for var = start, condition, step: body
 ```
-```bash
-Parsed a user-defined operator.
-```
-```pyxc
-ready> 1 | 0
-```
-```bash
-Parsed a top-level expression.
-Evaluated to 1.000000
-```
-```pyxc
-ready> 0 | 0
-```
-```bash
-Parsed a top-level expression.
-Evaluated to 0.000000
-```
-```pyxc
-ready>
-```
-<!-- code-merge:end -->
 
-### Defining a unary operator
-<!-- code-merge:start -->
-```pyxc
-ready> @unary
-def !(x): return if x == 0: 1 else: 0
-```
-```bash
-Parsed a user-defined operator.
-```
-```pyxc
-ready> !0
-```
-```bash
-Parsed a top-level expression.
-Evaluated to 1.000000
-```
-```pyxc
-ready> !5
-```
-```bash
-Parsed a top-level expression.
-Evaluated to 0.000000
-```
-```pyxc
-ready>
-```
-<!-- code-merge:end -->
+The loop runs while `condition` is non-zero. `var` is introduced by the `for` and is in scope for `condition`, `step`, and `body`. The body's return value is discarded each iteration. Unlike Python's `range`, the step is always required — omitting it is a parse error.
 
-### Composing unary minus and a user-defined unary operator
+### Parsing
 
-`ParseUnaryMinus` recurses into `ParseUnary` for its operand, so `-!x` parses as unary-minus applied to `!x`:
+`ParseForExpr` reads the variable name, `=`, start, `,`, condition, `,`, step, `:`, then the body — the same eat/parse/eat pattern as `ParseIfExpr`. `consumeNewlines()` before the body allows it on the next line:
 
-<!-- code-merge:start -->
-```pyxc
-ready> @unary
-def !(x): return if x == 0: 1 else: 0
-```
-```bash
-Parsed a user-defined operator.
-```
-```pyxc
-ready> -!0
-```
-```bash
-Parsed a top-level expression.
-Evaluated to -1.000000
-```
-```pyxc
-ready> -!5
-```
-```bash
-Parsed a top-level expression.
-Evaluated to -0.000000
-```
-```pyxc
-ready>
-```
-<!-- code-merge:end -->
+```cpp
+static unique_ptr<ExprAST> ParseForExpr() {
+  getNextToken(); // eat 'for'
 
-`-!5` evaluates to `-0.000000` because `!5` is `0.0` and `fneg 0.0` is IEEE 754 negative zero. Negative zero compares equal to `0.0` in any subsequent expression, so this is harmless.
+  string VarName = IdentifierStr;
+  getNextToken(); // eat identifier
 
-Running `./build/pyxc -v` shows the generated IR for `-!5`:
+  getNextToken(); // eat '='
 
-<!-- code-merge:start -->
+  auto Start = ParseExpression();
+  // ... eat ',', parse Cond, eat ',', parse Step, eat ':' ...
+  consumeNewlines();
+
+  auto Body = ParseExpression();
+  return make_unique<ForExprAST>(VarName, std::move(Start), std::move(Cond),
+                                 std::move(Step), std::move(Body));
+}
+```
+
+### Codegen
+
+```diagram
+      entry
+        │
+        ▼
+    loop_cond ◄─────────────────┐
+        │                       │
+   ┌────┴────┐                  │
+   ▼         ▼                  │
+loop_body  after_loop           │
+   │        ret 0.0             │
+   └── (i = i + step) ──────────┘
+```
+
+Evaluation order is `start → condition → body → step → condition → …` — a pre-check loop. If the condition is false on entry, the body never runs. I'll trace through `for i = 1, i <= 3, 1: printd(i)` to see how each block is built.
+
+**Step 1 — Evaluate start in the preheader and jump to the condition block.**
+
+```cpp
+Value *StartVal = Start->codegen();           // 1.0
+BasicBlock *PreheaderBB = Builder->GetInsertBlock();
+BasicBlock *CondBB  = BasicBlock::Create(*TheContext, "loop_cond", TheFunction);
+BasicBlock *BodyBB  = BasicBlock::Create(*TheContext, "loop_body", TheFunction);
+BasicBlock *AfterBB = BasicBlock::Create(*TheContext, "after_loop", TheFunction);
+Builder->CreateBr(CondBB);
+```
+
+All three loop blocks are attached to the function immediately. `CreateBr`
+finishes the preheader by jumping into the loop condition block.
+
+IR so far — the preheader is finished, and the other loop blocks exist but are
+still empty:
+
 ```llvm
 define double @__anon_expr() {
 entry:
-  %unop = call double @"unary!"(double 5.000000e+00)
-  %negtmp = fneg double %unop
-  ret double %negtmp
+  br label %loop_cond
+
+loop_cond:   ; (empty)
+loop_body:   ; (empty)
+after_loop:  ; (empty)
 }
 ```
-```bash
-Evaluated to -0.000000
+
+**Step 2 — Build the condition block: PHI node + branch.**
+
+```cpp
+Builder->SetInsertPoint(CondBB);
+PHINode *Variable = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
+Variable->addIncoming(StartVal, PreheaderBB);   // first-iteration value
 ```
-<!-- code-merge:end -->
 
-### A low-precedence sequencing operator
+The PHI node is created with only one incoming for now — the preheader. The
+back-edge from the loop body is added later, once I know where the body ends.
 
-Setting precedence to 1 — lower than all built-ins — lets `;` act as a sequencer: `a ; b` evaluates `a` for its side effects and returns `b`:
+The condition block starts to look like this:
 
-<!-- code-merge:start -->
+```llvm
+loop_cond:
+  %i = phi double [ 1.000000e+00, %entry ]
+```
+
+Next I generate the loop condition expression:
+
+```cpp
+Value *CondV = Cond->codegen();
+```
+
+For `i <= 3`, that adds:
+
+```llvm
+loop_cond:
+  %i = phi double [ 1.000000e+00, %entry ]
+  %cmptmp  = fcmp ole double %i, 3.000000e+00
+  %booltmp = uitofp i1 %cmptmp to double
+```
+
+Then convert that `double` condition into an `i1` for branching:
+
+```cpp
+Value *LoopCond = Builder->CreateFCmpONE(
+    CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "loopcond");
+```
+
+which adds:
+
+```llvm
+  %loopcond = fcmp one double %booltmp, 0.000000e+00
+```
+
+Finally, branch to the loop body or the after-loop block:
+
+```cpp
+Builder->CreateCondBr(LoopCond, BodyBB, AfterBB);
+```
+
+which completes the block:
+
+```llvm
+define double @__anon_expr() {
+entry:
+  br label %loop_cond
+
+loop_cond:
+  %i = phi double [ 1.000000e+00, %entry ]
+  %cmptmp  = fcmp ole double %i, 3.000000e+00
+  %booltmp = uitofp i1 %cmptmp to double
+  %loopcond = fcmp one double %booltmp, 0.000000e+00
+  br i1 %loopcond, label %loop_body, label %after_loop
+
+loop_body:   ; (empty)
+after_loop:  ; (empty)
+}
+```
+
+**Step 3 — Fill the body block.**
+
+```cpp
+Builder->SetInsertPoint(BodyBB);
+Body->codegen();                                // return value discarded
+```
+
+For `printd(i)`, that adds:
+
+```llvm
+loop_body:
+  %calltmp = call double @printd(double %i)
+```
+
+Next generate the step value and the next loop variable:
+
+```cpp
+Value *StepVal = Step->codegen();               // 1.0
+Value *NextVar  = Builder->CreateFAdd(Variable, StepVal, "nextvar");
+```
+
+which adds:
+
+```llvm
+  %nextvar = fadd double %i, 1.000000e+00
+```
+
+Finally, update the PHI with the back-edge value and branch back to
+`loop_cond`:
+
+```cpp
+BasicBlock *BodyEndBB = Builder->GetInsertBlock();
+Variable->addIncoming(NextVar, BodyEndBB);      // complete the PHI
+Builder->CreateBr(CondBB);
+```
+
+That completes the loop body and gives the PHI its second incoming value:
+
+```llvm
+define double @__anon_expr() {
+entry:
+  br label %loop_cond
+
+loop_cond:
+  %i = phi double [ 1.000000e+00, %entry ], [ %nextvar, %loop_body ]
+  %cmptmp  = fcmp ole double %i, 3.000000e+00
+  %booltmp = uitofp i1 %cmptmp to double
+  %loopcond = fcmp one double %booltmp, 0.000000e+00
+  br i1 %loopcond, label %loop_body, label %after_loop
+
+loop_body:
+  %calltmp = call double @printd(double %i)
+  %nextvar = fadd double %i, 1.000000e+00
+  br label %loop_cond
+
+after_loop:  ; (empty)
+}
+```
+
+**Step 4 — After-loop block returns `0.0`.**
+
+```cpp
+Builder->SetInsertPoint(AfterBB);
+return ConstantFP::get(*TheContext, APFloat(0.0));
+```
+
+The loop has no natural return value, so the after-loop block returns `0.0`.
+
+**Full unoptimized IR for `for i = 1, i <= 3, 1: printd(i)` as a top-level expression:**
+
+```llvm
+define double @__anon_expr() {
+entry:
+  br label %loop_cond
+
+loop_cond:                                    ; entered first from entry, later from loop_body
+  %i = phi double [ 1.000000e+00, %entry ], [ %nextvar, %loop_body ]
+  %cmptmp  = fcmp ole double %i, 3.000000e+00
+  %booltmp = uitofp i1 %cmptmp to double
+  %loopcond = fcmp one double %booltmp, 0.000000e+00
+  br i1 %loopcond, label %loop_body, label %after_loop
+
+loop_body:                                    ; runs while the loop condition is true
+  %calltmp = call double @printd(double %i)
+  %nextvar = fadd double %i, 1.000000e+00
+  br label %loop_cond
+
+after_loop:                                   ; reached when the loop condition becomes false
+  ret double 0.000000e+00
+}
+```
+
+### What `-v` Shows After Optimization
+
+As with `if/else`, the optimizer removes the `i1` → `double` → `i1` roundtrip:
+
+```llvm
+; unoptimized
+%cmptmp  = fcmp ole double %i, 3.000000e+00
+%booltmp = uitofp i1 %cmptmp to double
+%loopcond = fcmp one double %booltmp, 0.000000e+00
+br i1 %loopcond, label %loop_body, label %after_loop
+```
+
+```llvm
+; optimized
+%cmptmp = fcmp ugt double %i, 3.000000e+00
+br i1 %cmptmp, label %after_loop, label %loop_body
+```
+
+Notice also that LLVM rewrote `ole` (ordered less-than-or-equal) as `ugt` (unordered greater-than) and flipped the branch destinations. Can you verify these are equivalent? Hint: `ole` and `ugt` are complements — swapping the predicate and flipping the branch destinations leaves the control flow unchanged. You could use truth tables.
+
+The full optimized function:
+
+```llvm
+define double @__anon_expr() {
+entry:
+  br label %loop_cond
+loop_cond:
+  %i = phi double [ 1.000000e+00, %entry ], [ %nextvar, %loop_body ]
+  %cmptmp = fcmp ugt double %i, 3.000000e+00
+  br i1 %cmptmp, label %after_loop, label %loop_body
+loop_body:
+  %calltmp = call double @printd(double %i)
+  %nextvar = fadd double %i, 1.000000e+00
+  br label %loop_cond
+after_loop:
+  ret double 0.000000e+00
+}
+```
+
+### Variable Shadowing
+
+If an outer function parameter has the same name as the loop variable, the loop variable takes precedence inside the loop. The outer binding is saved before the loop and restored in `after_loop`:
+
+```cpp
+Value *OldVal = NamedValues[VarName];
+NamedValues[VarName] = Variable;
+// ... condition, step, body codegen ...
+if (OldVal)
+  NamedValues[VarName] = OldVal;
+else
+  NamedValues.erase(VarName);
+```
+
+## The Mandelbrot Set
+
+With comparisons, `if`/`else`, and `for`, pyxc is expressive enough to render the Mandelbrot set. The Mandelbrot set is the set of complex numbers `c` for which the iteration `z = z² + c` (starting from `z = 0`) does not diverge to infinity. `mandelconverger` uses recursion rather than a loop because `iters` needs to increment each iteration — without mutable variables, passing it as a parameter is the only option.
+
 ```pyxc
-ready> extern def printd(x)
-```
-```bash
-Parsed an extern.
-```
-```pyxc
-ready> @binary(1)
-def ;(lhs, rhs): return rhs
-```
-```bash
-Parsed a user-defined operator.
-```
-```pyxc
-ready> printd(1) ; printd(2) ; 99
-```
-```bash
-Parsed a top-level expression.
-1.000000
-2.000000
-Evaluated to 99.000000
-```
-```pyxc
-ready>
-```
-<!-- code-merge:end -->
+# test/mandel.pyxc
+extern def putchard(x)
 
-### Validation errors
+def mandelconverger(real, imag, iters, creal, cimag):
+    return if iters > 255: iters
+           else: if (real * real + imag * imag) > 4: iters
+                 else: mandelconverger(real * real - imag * imag + creal, 2 * real * imag + cimag, iters + 1, creal, cimag)
 
-Attempting to redefine a built-in binary operator:
+def mandelconverge(real, imag):
+    return mandelconverger(real, imag, 0, real, imag)
 
-<!-- code-merge:start -->
-```pyxc
-ready> @binary(5)
-def +(x, y): return x + y
-```
-```bash
-Error (Line 2, Column 5): Binary operator '+' is already defined
-def +(
-    ^~~~
-ready>
-```
-<!-- code-merge:end -->
+def mandelrow(xmin, xmax, xstep, y):
+    return for x = xmin, x < xmax, xstep:
+               putchard(if mandelconverge(x, y) > 255: 32 else: 42)
 
-Decimal precedence:
+def mandelhelp(xmin, xmax, xstep, ymin, ymax, ystep):
+    return for y = ymin, y < ymax, ystep:
+               mandelrow(xmin, xmax, xstep, y) + putchard(10)
 
-<!-- code-merge:start -->
-```pyxc
-ready> @binary(1.5)
-def %(x, y): return x - y
-```
-```bash
-Error (Line 1, Column 9): Precedence must be an integer, not a decimal literal
-@binary(1.5)
-        ^~~~
-ready>
-```
-<!-- code-merge:end -->
+def mandel(realstart, imagstart, realmag, imagmag):
+    return mandelhelp(realstart, realstart + realmag * 78, realmag, imagstart, imagstart + imagmag * 40, imagmag)
 
-Unary/Binary conflict — once `|` is binary, it cannot also become unary (and vice-versa):
+mandel(0 - 2.3, 0 - 1.3, 0.05, 0.07)
 
-<!-- code-merge:start -->
-```pyxc
-ready> @binary(5)
-def |(x, y): return if x != 0: 1 else: if y != 0: 1 else: 0
+# Try these too
+# mandel(0 - 2, 0 - 1, 0.02, 0.04)
+# mandel(0 - 0.9, 0 - 1.4, 0.02, 0.03)
 ```
-```bash
-Parsed a user-defined operator.
-```
-```pyxc
-ready> @unary
-def |(x): return if x != 0: 0 else: 1
-```
-```bash
-Error (Line 4, Column 5): Unary operator '|' conflicts with an existing binary operator
-def |(
-    ^~~~
-ready>
-```
-<!-- code-merge:end -->
 
-## The Payoff: Density-Shaded Mandelbrot
+**Line breaks.** The parser only allows newlines in specific positions — after `:` in `def`, `if`, and `for` bodies. A newline anywhere else (inside a function argument list, mid-expression) is a parse error. This is why `mandelconverge`'s nested `if`/`else` chain can span lines (each `else:` starts a new allowed position) but `mandel`'s long argument list must stay on a single line.
 
-[Chapter 8](chapter-08.md) already rendered the Mandelbrot set — but every point was either `*` (outside the set) or space (inside). The fractal boundary was a hard edge:
+**Sequencing with `+`.** `mandelhelp` writes `mandelrow(...) + putchard(10)` to print a newline after each row. Both calls return `0.0`, so adding them is a no-op — it is just a way to chain two side-effect calls into a single expression. pyxc has no sequencing operator yet. [Chapter 10](chapter-10.md) introduces `@binary(1) def ;(x, y): return y` to make this intent explicit.
+
+**Unary minus.** pyxc has no unary minus yet — `-2.3` would be parsed as the binary operator `-` applied to nothing, which is an error. The workaround is `0 - 2.3`: a fully-formed binary subtraction that the optimizer collapses to the literal `-2.3` with no extra instructions emitted. [Chapter 10](chapter-10.md) adds unary-expression parsing and built-in unary minus support.
 
 ```
 ******************************************************************************
@@ -731,159 +1056,27 @@ ready>
 ******************************************************************************
 ```
 
-Now that I have user-defined operators, I can rewrite the renderer to shade by density — mapping how quickly each point escapes to a different character. The boundary dissolves into gradients of `*`, `+`, `.`, and space.
+The entire renderer — iteration, branching, output — is pyxc code. The only runtime function provided by the host is `putchard`, which writes one ASCII character to `stderr`.
 
-Four things change from the chapter 8 version:
+## Build and Run
 
-- **Unary minus.** Built-in unary minus is now parsed directly (`ParseUnaryMinus`) and lowered by `UnaryExprAST::codegen` to LLVM `fneg`, so `-2.3` works without the `0 - 2.3` workaround from chapter 8.
-- **`;` for sequencing.** Chapter 8 wrote `mandelrow(...) + putchard(10)` to chain two side-effect calls — adding two `0.0` return values happens to work, but is misleading. The new `@binary(1) def ;(x, y)` makes intent explicit: evaluate left for its side effect, return right.
-- **`|` to combine exit conditions.** Chapter 8's `mandelconverge` checked the iteration limit and the escape radius with nested `if`. Chapter 9 tests `iters > 255 | (real * real + imag * imag > 4)` in one expression using `@binary(5) def |`.
-- **`printdensity` for shading.** Instead of mapping each point to just inside/outside, the iteration count at escape determines the shade character.
-
-```pyxc
-# test/mandel.pyxc
-extern def putchard(x)
-
-# Logical not: 0 -> 1, non-zero -> 0.
-@unary
-def !(v):
-    return if v == 0: 1 else: 0
-
-# Sequencing operator: evaluate lhs for side effects, then return rhs.
-@binary(1)
-def ;(x, y):
-    return y
-
-# Logical OR (no short-circuit).
-@binary(5)
-def |(lhs, rhs):
-    return if lhs: 1 else: if rhs: 1 else: 0
-
-# Logical AND (no short-circuit).
-# !!rhs normalises rhs to 0.0 or 1.0 — rhs might be any double, not just a boolean.
-@binary(6)
-def &(lhs, rhs):
-    return if !lhs: 0 else: !!rhs
-
-# printdensity - map iteration count to an ASCII shade.
-def printdensity(d):
-    return if d > 8: putchard(32) else: if d > 4: putchard(46) else: if d > 2: putchard(43) else: putchard(42)
-
-# Determine whether z = z^2 + c diverges for the given point.
-def mandelconverger(real, imag, iters, creal, cimag):
-    return if iters > 255 | (real * real + imag * imag > 4): iters else: mandelconverger(real * real - imag * imag + creal, 2 * real * imag + cimag, iters + 1, creal, cimag)
-
-# Return number of iterations required for escape.
-def mandelconverge(real, imag):
-    return mandelconverger(real, imag, 0, real, imag)
-
-# Render one row.
-def mandelrow(xmin, xmax, xstep, y):
-    return for x = xmin, x < xmax, xstep:
-               printdensity(mandelconverge(x, y))
-
-# Render full 2D region.
-def mandelhelp(xmin, xmax, xstep, ymin, ymax, ystep):
-    return for y = ymin, y < ymax, ystep:
-               mandelrow(xmin, xmax, xstep, y) ; putchard(10)
-
-# Top-level helper.
-def mandel(realstart, imagstart, realmag, imagmag):
-    return mandelhelp(realstart, realstart + realmag * 78, realmag, imagstart, imagstart + imagmag * 40, imagmag)
-
-mandel(-2.3, -1.3, 0.05, 0.07)
-mandel(-2, -1, 0.02, 0.04)
-mandel(-0.9, -1.4, 0.02, 0.03)
+```bash
+cmake -S . -B build
+cmake --build build
+./build/pyxc
 ```
 
-The four custom operators:
+The binary runs as an interactive REPL when given no file argument. Press `Ctrl-D` to exit.
 
-- `@unary def !(v)` — logical NOT: returns `1` if `v == 0`, else `0`.
-- `@binary(1) def ;(x, y)` — sequencing: evaluates `x` for side effects, returns `y`. Used as `mandelrow(...) ; putchard(10)` to print a newline after each row.
-- `@binary(5) def |(lhs, rhs)` — logical OR (no short-circuit): `if lhs: 1 else: if rhs: 1 else: 0`.
-- `@binary(6) def &(lhs, rhs)` — logical AND (no short-circuit): `if !lhs: 0 else: !!rhs`. Its body uses the already-defined `!` — operators become available immediately after their prototype is JIT-compiled.
-
-The precedences are chosen carefully: `|` (5) and `&` (6) are both lower than comparisons (10), so `iters > 255 | (real * real + imag * imag > 4)` parses as `(iters > 255) | (...)` as intended. If `|` had higher precedence than `>`, the condition would parse wrong.
-
-`printdensity(d)` maps an iteration count to an ASCII shade character:
-
-| count | char | meaning |
-|-------|------|---------|
-| > 8   | ` ` (space) | deep inside — survived 9+ iterations |
-| > 4   | `.`  | boundary zone — survived 5–8 iterations |
-| > 2   | `+`  | near boundary — survived 3–4 iterations |
-| ≤ 2   | `*`  | fast escape — outside the set |
-
-`mandelconverger` combines the two exit conditions with `|`:
-
-```pyxc
-if iters > 255 | (real * real + imag * imag > 4): iters else: ...
-```
-
-Run it directly:
+To run the Mandelbrot renderer directly:
 
 ```bash
 ./build/pyxc test/mandel.pyxc
 ```
 
-The same view as chapter 8 (`mandel(-2.3, -1.3, 0.05, 0.07)`) now produces:
-
-```
-******************************************************************************
-******************************************************************************
-****************************************++++++********************************
-************************************+++++...++++++****************************
-*********************************++++++++.. ...+++++**************************
-*******************************++++++++++..   ..+++++*************************
-******************************++++++++++.     ..++++++************************
-****************************+++++++++....      ..++++++***********************
-**************************++++++++.......      .....++++**********************
-*************************++++++++.   .            ... .++*********************
-***********************++++++++...                     ++*********************
-*********************+++++++++....                    .+++********************
-******************+++..+++++....                      ..+++*******************
-**************++++++. ..........                        +++*******************
-***********++++++++..        ..                         .++*******************
-*********++++++++++...                                 .++++******************
-********++++++++++..                                   .++++******************
-*******++++++.....                                    ..++++******************
-*******+........                                     ...++++******************
-*******+... ....                                     ...++++******************
-*******+++++......                                    ..++++******************
-*******++++++++++...                                   .++++******************
-*********++++++++++...                                  ++++******************
-**********+++++++++..        ..                        ..++*******************
-*************++++++.. ..........                        +++*******************
-******************+++...+++.....                      ..+++*******************
-*********************+++++++++....                    ..++********************
-***********************++++++++...                     +++********************
-*************************+++++++..   .            ... .++*********************
-**************************++++++++.......      ......+++**********************
-****************************+++++++++....      ..++++++***********************
-*****************************++++++++++..     ..++++++************************
-*******************************++++++++++..  ...+++++*************************
-*********************************++++++++.. ...+++++**************************
-***********************************++++++....+++++****************************
-***************************************++++++++*******************************
-******************************************************************************
-******************************************************************************
-******************************************************************************
-******************************************************************************
-```
-
-The file then calls `mandel(...)` two more times, zooming into different regions of the complex plane, with the density shading revealing finer boundary detail at each zoom level.
-
-## Things Worth Knowing
-
-- **An operator is either unary or binary, not both.** Once `|` is defined as binary, it cannot also be defined as unary (and vice-versa). This is enforced at parse time.
-
-- **Operators cannot be removed or redefined within a session.** Once a custom operator is registered, there is no mechanism to remove or reassign it. Restart the REPL to get a clean slate.
-
-- **User-defined operators do not short-circuit.** They are ordinary function calls — both operands are evaluated before the function runs. Python's `or` and `and` skip the right operand when the left is conclusive; `|` and `&` defined in Pyxc do not. Use nested `if` expressions when short-circuit evaluation matters.
-
 ## What's Next
 
-[Chapter 10](chapter-10.md) adds mutable local variables and assignment using a temporary `var ... :` expression form. This keeps Pyxc expression-oriented for one more chapter before real statement blocks arrive.
+[Chapter 10](chapter-10.md) adds user-defined operators via Python-style decorators — `@binary(precedence)` and `@unary` — and also introduces unary-expression parsing with built-in unary minus, so `-x` finally works. The chapter payoff is a richer Mandelbrot renderer with density shading and a clean sequencing operator.
 
 ## Need Help?
 

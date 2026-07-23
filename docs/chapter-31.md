@@ -1,39 +1,38 @@
 ---
-description: "Complete pyxc's arithmetic: add / and %, five compound assignment operators, and prefix/postfix ++/-- for all lvalue shapes."
+description: "Add type parameters to traits: trait Addable[T] declares a contract over an abstract type, and classes instantiate it with a concrete type at the impl site."
 ---
-# 31. pyxc: Arithmetic Completeness
+# 31. pyxc: Generic Traits
 
 ## Where We Are
 
-[Chapter 30](chapter-30.md) finished the object model. Before moving further, there is a gap worth closing: pyxc has `+`, `-`, and `*` but not `/` or `%`. Compound assignment (`+=`, `*=` etc.) does not exist. Neither do `++` and `--`. After this chapter, all of that works:
+[Chapter 30](chapter-30.md) added `impl` blocks. A trait is still limited to concrete types — `trait Adder` specifies `int` parameters explicitly. After this chapter, a trait can name an abstract type parameter and leave the concrete type to be supplied by each implementor:
 
 ```pyxc
 extern def printd(x: float64)
 
+trait Addable[T]:
+  def add(x: T, y: T) -> T
+
+class Calc:
+  public bias: int
+
+impl Addable[int] for Calc:
+  def add(x: int, y: int) -> int:
+    return x + y + self.bias
+
+
 def main() -> int:
-  var a: int = 17
-  var b: int = 4
-  var q: int = a / b
-  var r: int = a % b
-
-  var x: int = 10
-  x += 5
-  x -= 3
-  x *= 2
-  x /= 4
-  x %= 10
-
-  var i: int = 0
-  i++
-  ++i
-
-  printd(float64(q + r + x + i))
+  var c: Calc = Calc()
+  c.bias = 2
+  printd(float64(c.add(4, 5)))
   return 0
 ```
 
 ```
-14.000000
+11.000000
 ```
+
+`Addable[int]` and `Addable[float64]` are separate contracts. A class can implement both with separate `impl` blocks.
 
 ## Source Code
 
@@ -44,19 +43,13 @@ cd pyxc-llvm-tutorial/code/chapter-31
 
 ## Grammar
 
-Three areas of the grammar change.
-
-`assignop` replaces the bare `=` in `assignstmt`, now accepting any of the six assignment operators. `postfixexpr` is inserted between `unaryexpr` and `primary` to capture postfix `++`/`--`. `builtinbinaryop` gains `/` and `%`.
+`traitdef` gains an optional type parameter. `classdef` and `impldef` use `traitref` wherever they previously used a bare identifier.
 
 ```ebnf
-assignstmt      = lvalue assignop expression ;           -- changed
-assignop        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;  -- new
-unaryexpr       = unaryop unaryexpr | postfixexpr ;      -- changed
-unaryop         = "-" | "++" | "--" | userdefunaryop ;   -- changed
-postfixexpr     = primary [ postfixop ] ;                -- new
-postfixop       = "++" | "--" ;                          -- new
-builtinbinaryop = "+" | "-" | "*" | "/" | "%"
-                | "<" | "<=" | ">" | ">=" | "==" | "!=" ;  -- changed
+traitdef  = "trait" identifier [ "[" identifier "]" ] ":" eols traitblock ;  -- changed
+classdef  = "class" identifier [ "(" traitref { "," traitref } ")" ] ":" eols structblock ;  -- changed
+traitref  = identifier [ "[" type "]" ] ;  -- new
+impldef   = "impl" traitref "for" identifier ":" eols implblock ;  -- changed
 ```
 
 ### Full Grammar
@@ -100,7 +93,7 @@ forstmt         = "for"
                   ( "var" identifier ":" type | identifier )
                   "=" expression "," expression "," expression ":" suite ;
 varstmt         = "var" varbinding { "," varbinding } ;
-assignstmt      = lvalue assignop expression ;
+assignstmt      = lvalue "=" expression ;
 simplestmt      = returnstmt | varstmt | assignstmt | expression ;
 compoundstmt    = ifstmt | forstmt ;
 statement       = simplestmt | compoundstmt ;
@@ -111,10 +104,8 @@ expression      = unaryexpr binoprhs ;
 binoprhs        = { binaryop unaryexpr } ;
 lvalue          = identifier | fieldaccess | indexexpr ;
 varbinding      = identifier ":" type [ "=" expression ] ;
-unaryexpr       = unaryop unaryexpr | postfixexpr ;
-unaryop         = "-" | "++" | "--" | userdefunaryop ;
-postfixexpr     = primary [ postfixop ] ;
-postfixop       = "++" | "--" ;
+unaryexpr       = unaryop unaryexpr | primary ;
+unaryop         = "-" | userdefunaryop ;
 primary         = castexpr | sizeofexpr | addrexpr | arrayliteral | stringliteral | identifierexpr | fieldaccess | indexexpr | numberexpr | bool_literal | parenexpr ;
 castexpr        = casttype "(" expression ")" ;
 sizeofexpr      = "sizeof" "(" type ")" ;
@@ -134,9 +125,7 @@ binaryop        = builtinbinaryop | userdefbinaryop ;
 indent          = INDENT ;
 dedent          = DEDENT ;
 
-assignop        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
-builtinbinaryop = "+" | "-" | "*" | "/" | "%"
-                | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
+builtinbinaryop = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
 userdefbinaryop = ? any opchar defined as a custom binary operator ? ;
 userdefunaryop  = ? any opchar defined as a custom unary operator ? ;
 customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
@@ -167,192 +156,197 @@ INDENT          = ? synthetic token emitted by lexer ? ;
 DEDENT          = ? synthetic token emitted by lexer ? ;
 ```
 
-## New Tokens and Lexer Peek-Ahead
+## `ValueType::TypeVar` and `ActiveTypeParams`
 
-Seven new tokens cover the compound assignment operators and the increment/decrement operators:
+A new enum value represents an unresolved type parameter inside a trait body:
 
 ```cpp
-tok_pluseq     = -45,   // +=
-tok_minuseq    = -46,   // -=
-tok_muleq      = -47,   // *=
-tok_diveq      = -48,   // /=
-tok_modeq      = -49,   // %=
-tok_plusplus   = -56,   // ++
-tok_minusminus = -57,   // --
+enum class ValueType {
+  // ...existing values...
+  TypeVar,
+};
 ```
 
-Each is produced by a one-character peek in the lexer. The `+` path illustrates the pattern — on seeing `+`, it peeks at the next character to decide between `+=`, `++`, and bare `+`:
+The set of currently active type parameter names is tracked in a global:
 
 ```cpp
-if (LexerLastChar == '+') {
-  int Next = peek();
-  int Tok = '+';
-  if (Next == '=')      Tok = (advance(), tok_pluseq);
-  else if (Next == '+') Tok = (advance(), tok_plusplus);
-  LexerLastChar = advance();
-  return Tok;
+static std::set<string> ActiveTypeParams;
+```
+
+`ParseTraitDefinition` populates this set before parsing the trait body and clears it after:
+
+```cpp
+TI.TypeParamName = TypeParamName;
+ActiveTypeParams.clear();
+if (!TypeParamName.empty())
+  ActiveTypeParams.insert(TypeParamName);
+// ... parse body ...
+ActiveTypeParams.clear();  // reset after body closes
+```
+
+`ParseTypeToken` checks `ActiveTypeParams` before treating an unknown identifier as an error. If the name is active, it returns `ValueType::TypeVar` and stores the parameter name as the struct name:
+
+```cpp
+if (ActiveTypeParams.count(TyName)) {
+  getNextToken();
+  if (StructName) *StructName = TyName;
+  return ValueType::TypeVar;
 }
 ```
 
-The same pattern applies to `-` (which must also handle `->` for the arrow token), `*`, `/`, and `%`. The `/` path is new — previously `/` was an unknown character. Now it returns `'/'` bare or `tok_diveq` if followed by `=`.
+This means `T` in `def add(x: T, y: T) -> T` resolves to `(ValueType::TypeVar, "T")` rather than failing as an unknown type. Outside a trait body, `T` has no meaning and would fall through to the normal identifier handling.
 
-## Division and Remainder
+## Parsing the Type Parameter in `ParseTraitDefinition`
 
-`/` and `%` are added to the precedence table at level 40 — the same level as `*`:
-
-```cpp
-{'/', 40},
-{'%', 40},
-```
-
-The LLVM instructions emitted by `EmitBuiltInArithmetic` differ by type:
-
-| Op | Integer | Float |
-|----|---------|-------|
-| `/` | `sdiv` | `fdiv` |
-| `%` | `srem` | error |
-
-`%` on float operands is a type error — `GetBinaryResultType` returns `ValueType::Error` for `%` when either operand is not an integer:
+`ParseTraitDefinition` checks for an optional `[Param]` after the trait name:
 
 ```cpp
-if (Op == '%' && (!IsIntType(L) || !IsIntType(R)))
-  return ValueType::Error;
-```
-
-The pointer arithmetic guard is also tightened: only `+` and `−` allow a pointer on one side. `/` and `%` with a pointer operand are now explicitly rejected:
-
-```cpp
-if ((Op == '+' || Op == '-') &&
-    ((L == ValueType::Pointer && IsIntType(R)) || ...)) {
-  // pointer arithmetic
-}
-```
-
-## Compound Assignment AST Nodes
-
-There are four AST node classes, one for each lvalue shape, all sharing the same structure: an lvalue, an operator token, and an RHS expression:
-
-```cpp
-class CompoundAssignmentExprAST : public ExprAST {       // plain variable
-  string Name; int Op; unique_ptr<ExprAST> RHS; ...
-};
-class FieldCompoundAssignmentExprAST : public ExprAST {  // p.x += 1
-  unique_ptr<FieldExprAST> LHS; int Op; unique_ptr<ExprAST> RHS; ...
-};
-class IndexCompoundAssignmentExprAST : public ExprAST {  // arr[i] *= 2
-  unique_ptr<IndexExprAST> LHS; int Op; unique_ptr<ExprAST> RHS; ...
-};
-class IndexedFieldCompoundAssignmentExprAST : public ExprAST { // arr[i].x += 3
-  unique_ptr<IndexedFieldExprAST> LHS; int Op; unique_ptr<ExprAST> RHS; ...
-};
-```
-
-All four override `shouldPrintValue()` to return `false` — compound assignment is a statement, not a value expression, so the REPL does not auto-print its result.
-
-Two helpers drive the parse dispatch. `IsCompoundAssignTok` checks whether the current token is one of the five compound assignment tokens. `CompoundAssignToBinaryOp` converts it to the corresponding arithmetic operator character so codegen can call `EmitBuiltInArithmetic`:
-
-```cpp
-static bool IsCompoundAssignTok(int Tok) {
-  return Tok == tok_pluseq || Tok == tok_minuseq || Tok == tok_muleq ||
-         Tok == tok_diveq  || Tok == tok_modeq;
-}
-static int CompoundAssignToBinaryOp(int Tok) {
-  switch (Tok) {
-  case tok_pluseq:  return '+';
-  case tok_minuseq: return '-';
-  case tok_muleq:   return '*';
-  case tok_diveq:   return '/';
-  case tok_modeq:   return '%';
-  default:          return 0;
+string TypeParamName;
+if (CurTok == '[') {
+  getNextToken(); // eat '['
+  if (CurTok != tok_identifier) {
+    LogError("Expected type parameter name in trait definition");
+    return false;
   }
+  TypeParamName = IdentifierStr;
+  getNextToken(); // eat type parameter name
+  if (CurTok != ']') {
+    LogError("Expected ']' after trait type parameter");
+    return false;
+  }
+  getNextToken(); // eat ']'
 }
+TI.TypeParamName = TypeParamName;
+ActiveTypeParams.clear();
+if (!TypeParamName.empty())
+  ActiveTypeParams.insert(TypeParamName);
 ```
 
-`ParseCompoundAssignmentRHS` handles the plain-variable case. It looks up the destination type, converts the token to a binary op, calls `ParseExpression` for the RHS, type-checks the result, and returns a `CompoundAssignmentExprAST`. The field and index variants follow the same pattern in their respective parse helpers (`ParseFieldCompoundAssignmentRHS`, etc.).
+`TypeParamName` is stored on `TraitInfo`. An empty `TypeParamName` means the trait is non-generic.
 
-Codegen for all four nodes is identical in structure: resolve the lvalue to a pointer, load the current value, call `EmitBuiltInArithmetic(Op, old, rhs)`, store the result back.
+## `ImplTraitRef` — Carrying the Type Argument
 
-## `IncDecExprAST` — Prefix and Postfix `++`/`--`
-
-A single AST node handles all four combinations of prefix/postfix × increment/decrement:
+In chapter 29, `ImplementedTraits` was a `vector<string>`. This chapter replaces the element type with `ImplTraitRef`, which carries both the trait name and the concrete type argument supplied at the impl or class header:
 
 ```cpp
-class IncDecExprAST : public ExprAST {
-  unique_ptr<ExprAST> Operand;
-  bool IsIncrement;  // true for ++, false for --
-  bool IsPrefix;     // true for prefix, false for postfix
-public:
-  IncDecExprAST(unique_ptr<ExprAST> Operand, bool IsIncrement, bool IsPrefix,
-                ValueType Type, const string &StructName = "")
-      : Operand(std::move(Operand)), IsIncrement(IsIncrement),
-        IsPrefix(IsPrefix) {
-    setType(Type, StructName);
-  }
-  Value *codegen() override;
+struct ImplTraitRef {
+  string TraitName;
+  bool HasTypeArg = false;
+  ValueType TypeArg = ValueType::Error;
+  string TypeArgStructName;
 };
 ```
 
-The operand must pass `IsIncDecAssignableExpr` — it must be a variable, field, index, or indexed-field expression:
+Both `ParseAggregateDefinition` (class header) and `ParseImplDefinition` (impl header) parse the optional `[type]` and fill this struct:
 
 ```cpp
-static bool IsIncDecAssignableExpr(const ExprAST *E) {
-  return dynamic_cast<const VariableExprAST *>(E) ||
-         dynamic_cast<const FieldExprAST *>(E) ||
-         dynamic_cast<const IndexExprAST *>(E) ||
-         dynamic_cast<const IndexedFieldExprAST *>(E);
-}
-```
-
-Codegen: load the old value → compute `old ± 1` via `EmitBuiltInArithmetic` → store the new value → return `IsPrefix ? new : old`. The postfix form returns the value that existed *before* the mutation, matching C semantics.
-
-## Parsing `++`/`--`
-
-**Postfix** is handled by `ParsePostfixIncDec`, which wraps the primary expression in an `IncDecExprAST` if followed by `++` or `--`. `ParseUnary` now calls this instead of `ParsePrimary` directly:
-
-```cpp
-static unique_ptr<ExprAST> ParsePostfixIncDec(unique_ptr<ExprAST> Base) {
-  while (CurTok == tok_plusplus || CurTok == tok_minusminus) {
-    bool IsIncrement = (CurTok == tok_plusplus);
-    if (!IsIncDecAssignableExpr(Base.get()))
-      return LogError("Increment/decrement target must be assignable");
-    getNextToken(); // eat ++/--
-    Base = make_unique<IncDecExprAST>(std::move(Base), IsIncrement,
-                                     /*IsPrefix=*/false, ...);
+StructTypeInfo::ImplTraitRef Ref;
+Ref.TraitName = TraitName;
+if (!TraitDef.TypeParamName.empty()) {
+  // trait requires a type argument
+  if (CurTok != '[') {
+    LogError(("Trait '" + TraitName + "' requires a type argument").c_str());
+    return false;
   }
-  return Base;
+  getNextToken(); // eat '['
+  ValueType TypeArg = ParseTypeToken(&TypeArgStruct);
+  // validate — must be a concrete type (not TypeVar, not Error, not None)
+  getNextToken(); // eat ']'
+  Ref.HasTypeArg = true;
+  Ref.TypeArg = TypeArg;
+  Ref.TypeArgStructName = TypeArgStruct;
+} else if (CurTok == '[') {
+  LogError(("Trait '" + TraitName + "' does not take type arguments").c_str());
+  return false;
 }
-// In ParseUnary:
-return ParsePostfixIncDec(ParsePrimary());
 ```
 
-**Prefix** is handled at the top of `ParseUnary`, before the primary:
+The duplicate impl check is updated to compare full `ImplTraitRef` values using a `SameImpl` lambda, so `impl Addable[int] for Calc` and `impl Addable[float64] for Calc` are treated as distinct and both allowed.
+
+## `VerifyTraitConformance` with Type Substitution
+
+`VerifyTraitConformance` now takes an `ImplTraitRef` instead of a bare `string`, and substitutes the concrete type for every `TypeVar` occurrence in the trait signature before comparing:
 
 ```cpp
-if (CurTok == tok_plusplus || CurTok == tok_minusminus) {
-  bool IsIncrement = (CurTok == tok_plusplus);
-  getNextToken(); // eat ++/--
-  auto Operand = ParseUnary();
-  // validate assignable and numeric/pointer
-  return make_unique<IncDecExprAST>(std::move(Operand), IsIncrement,
-                                   /*IsPrefix=*/true, ...);
+static bool VerifyTraitConformance(const string &ClassName,
+                                   const StructTypeInfo::ImplTraitRef &ImplRef) {
+  const string &TraitName = ImplRef.TraitName;
+  const auto &TI = Traits.at(TraitName);
+
+  // Verify type-arg consistency
+  if (!TI.TypeParamName.empty() && !ImplRef.HasTypeArg) {
+    LogError(("Trait '" + TraitName + "' requires a type argument").c_str());
+    return false;
+  }
+
+  // Lambda: resolve TypeVar → concrete type, leave everything else unchanged
+  auto ResolveReq = [&](ValueType T, const string &S)
+      -> std::pair<ValueType, string> {
+    if (T == ValueType::TypeVar && S == TI.TypeParamName)
+      return {ImplRef.TypeArg, ImplRef.TypeArgStructName};
+    return {T, S};
+  };
+
+  for (const auto &Req : TI.Methods) {
+    // check method exists, is public ...
+    auto ReqRet = ResolveReq(Req.ReturnType, Req.ReturnStructName);
+    if (P->getReturnType() != ReqRet.first ||
+        P->getReturnStructName() != ReqRet.second) {
+      LogError("does not match trait signature");
+      return false;
+    }
+    for (size_t I = 0; I < Req.Args.size(); ++I) {
+      auto ReqArg = ResolveReq(Req.Args[I].Type, Req.Args[I].StructName);
+      if (P->getArgType(I + 1) != ReqArg.first ||
+          P->getArgStructName(I + 1) != ReqArg.second) {
+        LogError("does not match trait signature");
+        return false;
+      }
+    }
+  }
+  return true;
 }
 ```
 
-Recursive descent through `ParseUnary` means `++++x` is syntactically valid (prefix applied twice) but only meaningful if `x` is assignable at each level.
+For a non-generic trait, `ResolveReq` always returns its arguments unchanged — conformance works identically to chapter 29.
+
+## Error Cases
+
+**Missing type argument on a generic trait:**
+```pyxc
+class Bad(Addable):   # Error: Trait 'Addable' requires a type argument
+```
+
+**Spurious type argument on a non-generic trait:**
+```pyxc
+impl Adder[int] for Calc:  # Error: Trait 'Adder' does not take type arguments
+```
+
+**Wrong concrete type in the method:**
+```pyxc
+impl Addable[int] for Bad:
+  def add(x: int, y: float64) -> int:  # Error: does not match trait signature
+    return x
+```
+
+## What This Is Not
+
+Type parameters exist only on trait signatures. There are no generic functions, no generic structs, and no generic classes. `T` cannot appear in a field declaration, a variable type, or a function return type outside a trait body. The feature is deliberately narrow: it solves the specific problem of writing a single trait that applies to multiple element types without adding a general generics system.
 
 ## Things Worth Knowing
 
-**`EmitBuiltInArithmetic` is the single implementation path.** Both `BinaryExprAST` and every compound assignment and `IncDecExprAST` node call it. Adding a new arithmetic operator means touching one function.
+**The type parameter name is just a label.** `trait Addable[T]` and `trait Addable[Element]` are equivalent.
 
-**Postfix `++` returns the old value.** `var y: int = x++` captures the value before the increment — identical to C.
+**A class can implement the same generic trait with different type arguments.** `class Calc(Addable[int], Addable[float64]):` is valid. Each instantiation is verified separately.
 
-**`++`/`--` work on pointers.** `p++` advances by one element. Pointer arithmetic rules apply.
+**`TypeVar` does not appear in the IR.** Conformance resolves all `TypeVar` occurrences to concrete types at compile time. The generated methods use `i64`, `double`, or whatever LLVM type corresponds to the argument.
 
-**`%` on floats is an error.** There is no floating-point remainder operator in pyxc.
+## Build and Run
 
-## What's Next
-
-[Chapter 32](chapter-32.md) adds `&&`, `||`, and `!` — logical operators with short-circuit evaluation.
+```bash
+cd code/chapter-31
+cmake -S . -B build && cmake --build build
+```
 
 ## Need Help?
 

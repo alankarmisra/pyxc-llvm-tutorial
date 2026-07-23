@@ -13,8 +13,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 #   2. LLVM_PREFIX set explicitly (custom build) — looks in <prefix>/bin/
 #   3. PATH — covers Homebrew, the official Windows installer, and system installs
 #
-# For Homebrew:     ensure $LLVM_ROOT/bin is on PATH (see chapter-04)
-# For Windows:      ensure C:\Program Files\LLVM\bin is on PATH (installer option)
+# For Homebrew:   ensure $LLVM_ROOT/bin is on PATH (see chapter-04)
+# For Windows:    ensure C:\Program Files\LLVM\bin is on PATH (installer option)
 # For custom build: pass -DLLVM_PREFIX=$HOME/llvm-21-with-clang-lld-lldb
 # ---------------------------------------------------------------------------
 

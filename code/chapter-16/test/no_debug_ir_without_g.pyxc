@@ -7,9 +7,9 @@
 # Tests: without -g, --emit llvm-ir produces clean IR with no debug metadata.
 # Metadata nodes like !DICompileUnit and Dwarf Version must be absent.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-def sq(x: float64) -> float64: return x * x
+def sq(x): return x * x
 
-def main() -> None:
+def main():
     printd(sq(3))

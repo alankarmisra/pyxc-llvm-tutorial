@@ -3,9 +3,9 @@
 # CHECK: A
 
 # Tests: putchard is provided as a built-in by the compiler (no external runtime
-# object needed). putchard(65.0) prints ASCII 'A' to stderr.
+# object needed). putchard(65) prints ASCII 'A' to stderr.
 
-extern def putchard(x: float64) -> float64
+extern def putchard(x)
 
-def main() -> None:
-    putchard(65.0)
+def main():
+    putchard(65)

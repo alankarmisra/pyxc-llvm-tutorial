@@ -8,9 +8,5 @@
 # body reduces to a single constant return with no arithmetic instructions.
 # Compare with g_and_o2_keeps_opt.pyxc which uses -g -O2.
 
-def f() -> float64:
-    return (1.0 + 2.0) * 3.0
-
-def main() -> None:
-    f()
-    return
+def main():
+    return (1 + 2) * 3

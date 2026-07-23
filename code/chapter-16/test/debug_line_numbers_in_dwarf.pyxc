@@ -8,10 +8,10 @@
 # The hex address pattern confirms that actual code addresses are present,
 # not just an empty or stub line table.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-def f(x: float64) -> float64:
+def f(x):
     return x + 1
 
-def main() -> None:
+def main():
     printd(f(10))

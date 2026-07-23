@@ -1,5 +1,5 @@
 # RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
-# CHECK: {{already defined as an aggregate type|already defined as a struct}}
+# CHECK: {{already defined as a struct}}
 
 struct Node:
   value: int

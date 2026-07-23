@@ -8,9 +8,9 @@
 # mem2reg has not promoted them to SSA values. This is the baseline unoptimized
 # IR that debuggers can map cleanly to source lines.
 
-def f(x: float64) -> float64:
-    var y: float64 = x + 1
+def f(x):
+    var y = x + 1
     return y
 
-def main() -> None:
-    return
+def main():
+    return f(5)

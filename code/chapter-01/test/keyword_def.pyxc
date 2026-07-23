@@ -1,4 +1,4 @@
 # RUN: %pyxc < %s | grep -Fxq "'def'"
 
-# keyword: 'def' must be recognised as a keyword, not an identifier
+# keyword: 'def' must be recognised as a keyword, not a name
 def

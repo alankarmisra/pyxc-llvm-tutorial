@@ -8,5 +8,5 @@
 # the source file. Debuggers use this to display the correct filename in
 # backtraces and source views.
 
-def main() -> None:
-    return
+def main():
+    return 0

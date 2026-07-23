@@ -12,18 +12,18 @@
 # the debug info generation loop handles multiple functions correctly, not just
 # the first or last one.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-def fib(n: float64) -> float64:
+def fib(n):
     if n < 2:
         return n
     return fib(n - 1) + fib(n - 2)
 
-def fac(n: float64) -> float64:
+def fac(n):
     if n < 2:
-        return 1.0
+        return 1
     return n * fac(n - 1)
 
-def main() -> None:
+def main():
     printd(fib(7))
     printd(fac(5))

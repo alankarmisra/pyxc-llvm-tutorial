@@ -7,5 +7,5 @@
 # consumer which version of the protocol to expect. These are mandatory for any
 # compliant DWARF consumer to interpret the debug sections correctly.
 
-def main() -> None:
-    return
+def main():
+    return 0

@@ -1,6 +1,6 @@
 (*
    pyxc.ebnf
-   Grammar for chapter 37 — character literals.
+   Grammar for chapter 35 — switch.
 *)
 
 (*
@@ -10,35 +10,35 @@
 
 program         = [ eols ] [ top { eols top } ] [ eols ] ;
 eols            = eol { eol } ;
-top             = typealias | traitdef | structdef | classdef | impldef | definition | decorateddef | external | toplevelexpr ;
-typealias       = "type" identifier "=" type ;
-traitdef        = "trait" identifier [ "[" identifier "]" ] ":" eols traitblock ;
+top             = typealias | traitdef | structdef | classdef | impldef | functiondef | decoratedfunctiondef | external | toplevelexpr ;
+typealias       = "type" name "=" type ;
+traitdef        = "trait" name [ "[" name "]" ] ":" eols traitblock ;
 traitblock      = indent traitmethodsig { eols traitmethodsig } dedent ;
-traitmethodsig  = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ;
-structdef       = "struct" identifier ":" eols structblock ;
-classdef        = "class" identifier [ "(" traitref { "," traitref } ")" ] ":" eols structblock ;
-traitref        = identifier [ "[" type "]" ] ;
-impldef         = "impl" traitref "for" identifier ":" eols implblock ;
+traitmethodsig  = "def" name "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ;
+structdef       = "struct" name ":" eols structblock ;
+classdef        = "class" name [ "(" traitref { "," traitref } ")" ] ":" eols structblock ;
+traitref        = name [ "[" type "]" ] ;
+impldef         = "impl" traitref "for" name ":" eols implblock ;
 implblock       = indent implmethod { eols implmethod } dedent ;
-implmethod      = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ":" ( simplestmt | eols block ) ;
+implmethod      = "def" name "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ":" ( simplestmt | eols block ) ;
 structblock     = indent classmember { eols classmember } dedent ;
 classmember     = [ visibility ] ( fielddecl | methoddef ) ;
 visibility      = "public" | "private" ;
-methoddef       = "def" identifier "(" [ typedparam { "," typedparam } ] ")"
+methoddef       = "def" name "(" [ typedparam { "," typedparam } ] ")"
                   [ "->" type ] ":" ( simplestmt | eols block ) ;
-fielddecl       = identifier ":" type ;
-definition      = "def" prototype [ "->" type ] ":" ( simplestmt | eols block ) ;
+fielddecl       = name ":" type ;
+functiondef      = "def" functionsignature [ "->" type ] ":" ( simplestmt | eols block ) ;
 (* If the return type is omitted, it defaults to None. *)
-decorateddef    = binarydecorator eols "def" binaryopprototype [ "->" type ] ":" ( simplestmt | eols block )
-                | unarydecorator  eols "def" unaryopprototype  [ "->" type ] ":" ( simplestmt | eols block ) ;
+decoratedfunctiondef    = binarydecorator eols "def" binaryopsignature [ "->" type ] ":" ( simplestmt | eols block )
+                | unarydecorator  eols "def" unaryopsignature  [ "->" type ] ":" ( simplestmt | eols block ) ;
 binarydecorator = "@" "binary" "(" integer ")" ;
 unarydecorator  = "@" "unary" ;
-binaryopprototype = customopchar "(" typedparam "," typedparam ")" ;
-unaryopprototype  = customopchar "(" typedparam ")" ;
-external        = "extern" "def" prototype [ "->" type ] ;
+binaryopsignature = customopchar "(" typedparam "," typedparam ")" ;
+unaryopsignature  = customopchar "(" typedparam ")" ;
+external        = "extern" "def" functionsignature [ "->" type ] ;
 toplevelexpr    = expression ;
-prototype       = identifier "(" [ typedparam { "," typedparam } ] ")" ;
-typedparam      = identifier ":" type ;
+functionsignature       = name "(" [ typedparam { "," typedparam } ] ")" ;
+typedparam      = name ":" type ;
 ifstmt          = "if" expression ":" suite
                 { eols "elif" expression ":" suite }
                 [ eols "else" ":" suite ] ;
@@ -49,7 +49,7 @@ switchbody      = switchcase { eols switchcase } [ eols defaultcase ] ;
 switchcase      = "case" switchint { "," switchint } ":" suite ;
 defaultcase     = "default" ":" suite ;
 forstmt         = "for"
-                  ( "var" identifier ":" type | identifier )
+                  ( "var" name ":" type | name )
                   "=" expression "," expression "," expression ":" suite ;
 varstmt         = "var" varbinding { "," varbinding } ;
 assignstmt      = lvalue assignop expression ; (* assignment is a statement here *)
@@ -64,28 +64,26 @@ stmtsep = eols | BLOCK_END ;
 block = indent statement { stmtsep statement } dedent ;
 expression      = unaryexpr binoprhs ;
 binoprhs        = { binaryop unaryexpr } ;
-lvalue          = identifier | fieldaccess | indexexpr ;
-varbinding      = identifier ":" type [ "=" expression ] ;
+lvalue          = name | fieldaccess | indexexpr ;
+varbinding      = name ":" type [ "=" expression ] ;
 unaryexpr       = unaryop unaryexpr | postfixexpr ;
 unaryop         = "-" | "!" | "~" | "++" | "--" | userdefunaryop ;
 postfixexpr     = primary [ postfixop ] ;
 postfixop       = "++" | "--" ;
-primary         = castexpr | sizeofexpr | addrexpr | arrayliteral | stringliteral | charliteral | identifierexpr | fieldaccess | indexexpr | numberexpr | bool_literal | parenexpr ;
+primary         = castexpr | sizeofexpr | addrexpr | arrayliteral | stringliteral | nameexpr | fieldaccess | indexexpr | numberexpr | bool_literal | parenexpr ;
 castexpr        = casttype "(" expression ")" ;
 sizeofexpr      = "sizeof" "(" type ")" ;
 addrexpr        = "addr" "(" lvalue ")" ;
-identifierexpr  = identifier | callexpr | methodcallexpr | ctorcallexpr ;
-callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
-methodcallexpr  = identifier "." identifier "(" [ expression { "," expression } ] ")" ;
-ctorcallexpr    = identifier "(" [ expression { "," expression } ] ")" ;
-fieldaccess     = identifier "." identifier { "." identifier } ;
-indexexpr       = identifier "[" expression "]" ;
+nameexpr  = name | callexpr | methodcallexpr | ctorcallexpr ;
+callexpr        = name "(" [ expression { "," expression } ] ")" ;
+methodcallexpr  = name "." name "(" [ expression { "," expression } ] ")" ;
+ctorcallexpr    = name "(" [ expression { "," expression } ] ")" ;
+fieldaccess     = name "." name { "." name } ;
+indexexpr       = name "[" expression "]" ;
 numberexpr      = number ;
 arrayliteral    = "[" [ expression { "," expression } ] "]" ;
 stringliteral   = "\"" { ? any char except " and newline ? | escape } "\"" ;
-charliteral     = "'" ( ? any char except ' and newline ? | charescape ) "'" ;
 escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
-charescape      = "\\" ( "\\" | "'" | "n" | "t" | "0" ) ;
 parenexpr       = "(" expression ")" ;
 binaryop        = builtinbinaryop | userdefbinaryop ;
 indent          = INDENT ;
@@ -101,12 +99,12 @@ userdefunaryop  = ? any opchar defined as a custom unary operator ? ;
 customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
                     and not already defined as a custom operator ? ;
 opchar          = ? any single ASCII punctuation character ? ;
-identifier      = (letter | "_") { letter | digit | "_" } ;
+name      = (letter | "_") { letter | digit | "_" } ;
 builtintype     = "int" | "int8" | "int16" | "int32" | "int64"
                 | "float" | "float32" | "float64"
                 | "bool" | "None" ;
-aliastype       = identifier ;
-structtype      = identifier ;
+aliastype       = name ;
+structtype      = name ;
 pointertype     = "ptr" "[" type "]" ;
 type            = basetype [ arraysuffix ] ;
 basetype        = builtintype | aliastype | structtype | pointertype ;

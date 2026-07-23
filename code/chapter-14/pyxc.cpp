@@ -1,5 +1,4 @@
 #include "../include/PyxcJIT.h"
-#include "lld/Common/Driver.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
@@ -17,9 +16,7 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/FileSystem.h"
-#include "llvm/Support/Path.h"
 #include "llvm/Support/TargetSelect.h"
-#include "llvm/Support/VersionTuple.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
@@ -49,18 +46,14 @@ using namespace std;
 using namespace llvm;
 using namespace llvm::orc;
 
-LLD_HAS_DRIVER(elf)
-LLD_HAS_DRIVER(coff)
-LLD_HAS_DRIVER(macho)
-
 //===----------------------------------------===//
 // Command line
 //===----------------------------------------===//
 static cl::OptionCategory PyxcCategory("Pyxc options");
 
-// Optional positional inputs: 0 args => REPL, 1+ args => file mode.
-static cl::list<std::string> InputFiles(cl::Positional, cl::desc("[inputs]"),
-                                        cl::ZeroOrMore, cl::cat(PyxcCategory));
+// Optional positional input: 0 args => REPL, 1 arg => file mode.
+static cl::opt<std::string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
+                                      cl::init(""), cl::cat(PyxcCategory));
 
 // Dump IR to stderr in JIT modes.
 static cl::opt<bool> DumpIR("dump-ir",
@@ -72,7 +65,7 @@ static cl::opt<bool> VerboseIR("v", cl::desc("Alias for --dump-ir"),
 
 // Emit output file in file mode.
 static cl::opt<std::string>
-    EmitKindOpt("emit", cl::desc("Emit output: llvm-ir | asm | obj | exe"),
+    EmitKindOpt("emit", cl::desc("Emit output: llvm-ir | asm | obj"),
                 cl::init(""), cl::cat(PyxcCategory));
 static cl::opt<std::string> OutputFile("o", cl::desc("Output filename"),
                                        cl::value_desc("filename"), cl::init(""),
@@ -87,7 +80,7 @@ static cl::opt<unsigned> OptLevel("O", cl::desc("Optimization level"),
 static FILE *Input = stdin;
 static bool IsRepl = true;
 
-enum class EmitKind { None, LLVMIR, ASM, OBJ, EXE };
+enum class EmitKind { None, LLVMIR, ASM, OBJ };
 static EmitKind EmitMode = EmitKind::None;
 static string EmitOutputPath;
 
@@ -143,7 +136,6 @@ enum Token {
 static string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;        // Filled in if tok_number
 static string NumLiteralStr; // Filled in if tok_number
-static int LexerLastChar = ' ';
 static vector<int> IndentStack = {0};
 static deque<int> PendingTokens;
 static bool AtLineStart = true;
@@ -345,6 +337,8 @@ static int peek() {
 /// no tokens). It flips false as soon as indentation is settled and the line
 /// is known to contain a real token, even before that token is emitted.
 static int gettok() {
+  static int LastChar = ' ';
+
   // Drain tokens queued by a multi-level dedent on the previous line.
   if (!PendingTokens.empty()) {
     int Tok = PendingTokens.front();
@@ -354,40 +348,40 @@ static int gettok() {
   // ── Line-start: count indentation, emit INDENT / DEDENT ──────────────
   if (AtLineStart) {
     // Prime sentinel space once so indentation scans real input.
-    if (LexerLastChar == ' ')
-      LexerLastChar = advance();
+    if (LastChar == ' ')
+      LastChar = advance();
     int CurrentIndentRead = 0;
-    while (LexerLastChar == ' ' || LexerLastChar == '\t') {
-      CurrentIndentRead += (LexerLastChar == ' ') ? 1 : (IndentTabWidth - CurrentIndentRead % IndentTabWidth);
-      LexerLastChar = advance();
+    while (LastChar == ' ' || LastChar == '\t') {
+      CurrentIndentRead += (LastChar == ' ') ? 1 : (IndentTabWidth - CurrentIndentRead % IndentTabWidth);
+      LastChar = advance();
     }
 
     // Blank line: ignore in file mode; close the block immediately in REPL.
-    if (LexerLastChar == '\n') {
+    if (LastChar == '\n') {
       if (IsRepl && IndentStack.size() > 1) {
         IndentStack.pop_back();
         return tok_dedent;
       }
       CurLoc = LexLoc;
-      LexerLastChar = ' ';
+      LastChar = ' ';
       return tok_eol;
     }
 
     // Comment-only line: consume and return a newline.
-    if (LexerLastChar == '#') {
+    if (LastChar == '#') {
       do
-        LexerLastChar = advance();
-      while (LexerLastChar != EOF && LexerLastChar != '\n');
-      if (LexerLastChar != EOF) {
+        LastChar = advance();
+      while (LastChar != EOF && LastChar != '\n');
+      if (LastChar != EOF) {
         CurLoc = LexLoc;
-        LexerLastChar = ' ';
+        LastChar = ' ';
         return tok_eol;
       }
       // else fall through to EOF handling below
     }
 
     // EOF (with or without trailing newline): flush open blocks one at a time.
-    if (LexerLastChar == EOF) {
+    if (LastChar == EOF) {
       if (IndentStack.size() > 1) {
         IndentStack.pop_back();
         return tok_dedent;
@@ -425,37 +419,37 @@ static int gettok() {
 
   // Not at line start anymore. Skip horizontal whitespace between tokens.
   // Stop at '\n' — it becomes tok_eol.
-  while (isspace(LexerLastChar) && LexerLastChar != '\n')
-    LexerLastChar = advance();
+  while (isspace(LastChar) && LastChar != '\n')
+    LastChar = advance();
 
   // Snapshot position for the upcoming token. See note above about tok_eol.
   CurLoc = LexLoc;
 
-  if (LexerLastChar == '\n') {
+  if (LastChar == '\n') {
     // Do not call advance() here.
     // We should return the newline token immediately. If we read one more
     // character first, REPL mode may wait for extra input before processing
     // the line the user just submitted.
-    LexerLastChar = ' ';
+    LastChar = ' ';
     AtLineStart = true;
     return tok_eol;
   }
 
-  if (isalpha(LexerLastChar) || LexerLastChar == '_') {
-    IdentifierStr = LexerLastChar;
-    while (isalnum((LexerLastChar = advance())) || LexerLastChar == '_')
-      IdentifierStr += LexerLastChar;
+  if (isalpha(LastChar) || LastChar == '_') {
+    IdentifierStr = LastChar;
+    while (isalnum((LastChar = advance())) || LastChar == '_')
+      IdentifierStr += LastChar;
 
     auto It = Keywords.find(IdentifierStr);
     return (It == Keywords.end()) ? tok_identifier : It->second;
   }
 
-  if (isdigit(LexerLastChar) || LexerLastChar == '.') {
+  if (isdigit(LastChar) || LastChar == '.') {
     string NumStr;
     do {
-      NumStr += LexerLastChar;
-      LexerLastChar = advance();
-    } while (isdigit(LexerLastChar) || LexerLastChar == '.');
+      NumStr += LastChar;
+      LastChar = advance();
+    } while (isdigit(LastChar) || LastChar == '.');
 
     NumLiteralStr = NumStr;
     char *End = nullptr;
@@ -468,19 +462,19 @@ static int gettok() {
     return tok_number;
   }
 
-  if (LexerLastChar == '#') {
+  if (LastChar == '#') {
     // Consume the rest of the line (comment). Stop at '\n' or EOF.
     do
-      LexerLastChar = advance();
-    while (LexerLastChar != EOF && LexerLastChar != '\n');
+      LastChar = advance();
+    while (LastChar != EOF && LastChar != '\n');
 
-    if (LexerLastChar != EOF) {
+    if (LastChar != EOF) {
       // Re-snapshot CurLoc now that the '\n' has been consumed and LexLoc
       // has advanced to the next line. Without this, CurLoc would point at
       // the '#' column, and GetDiagnosticAnchorLoc would look up the wrong
       // line (because it subtracts 1) when the next token triggers an error.
       CurLoc = LexLoc;
-      LexerLastChar = ' ';
+      LastChar = ' ';
       AtLineStart = true;
       return tok_eol;
     }
@@ -488,35 +482,35 @@ static int gettok() {
 
   // peek(), if the next one completes a recognized token, eat it, and return
   // token else return the single character token.
-  if (LexerLastChar == '=') {
+  if (LastChar == '=') {
     int Tok = (peek() == '=') ? (advance(), tok_eq) : '=';
-    LexerLastChar = advance();
+    LastChar = advance();
     return Tok;
   }
 
-  if (LexerLastChar == '!') {
+  if (LastChar == '!') {
     int Tok = (peek() == '=') ? (advance(), tok_neq) : '!';
-    LexerLastChar = advance();
+    LastChar = advance();
     return Tok;
   }
 
-  if (LexerLastChar == '<') {
+  if (LastChar == '<') {
     int Tok = (peek() == '=') ? (advance(), tok_leq) : '<';
-    LexerLastChar = advance();
+    LastChar = advance();
     return Tok;
   }
 
-  if (LexerLastChar == '>') {
+  if (LastChar == '>') {
     int Tok = (peek() == '=') ? (advance(), tok_geq) : '>';
-    LexerLastChar = advance();
+    LastChar = advance();
     return Tok;
   }
 
-  if (LexerLastChar == EOF) {
+  if (LastChar == EOF) {
     // If the final line has no trailing newline, synthesize one so the parser
     // still sees a normal statement terminator before EOF.
     if (!AtLineStart) {
-      LexerLastChar = ' ';
+      LastChar = ' ';
       AtLineStart = true;
       return tok_eol;
     }
@@ -524,27 +518,13 @@ static int gettok() {
   }
 
   // Single character token
-  int ThisChar = LexerLastChar;
+  int ThisChar = LastChar;
 
   // Position the lexer at the next character so the next gettok() starts there.
-  LexerLastChar = advance();
+  LastChar = advance();
 
   // Return ThisChar.
   return ThisChar;
-}
-
-/// ResetLexerState - Restore lexer globals to their initial state.
-///
-/// Used when starting a new input file so indentation, source locations,
-/// and buffered source lines do not carry over between files.
-static void ResetLexerState() {
-  IndentStack = {0};
-  PendingTokens.clear();
-  AtLineStart = true;
-  LexLoc = {1, 0};
-  CurLoc = {1, 0};
-  LexerLastChar = ' ';
-  PyxcSourceMgr.reset();
 }
 
 //===----------------------------------------===//
@@ -646,12 +626,12 @@ public:
   Value *codegen() override;
 };
 
-/// VariableExprAST - Expression class for referencing a variable, like "a".
-class VariableExprAST : public ExprAST {
+/// NameExprAST - Expression class for referencing a variable, like "a".
+class NameExprAST : public ExprAST {
   string Name;
 
 public:
-  VariableExprAST(const string &Name) : Name(Name) {}
+  NameExprAST(const string &Name) : Name(Name) {}
   // convenience function
   const string &getName() const { return Name; }
   const string *getLValueName() const override { return &Name; }
@@ -780,7 +760,7 @@ public:
   Value *codegen() override;
 };
 
-/// PrototypeAST - This class represents the "prototype" for a function,
+/// FunctionSignatureAST - This class represents the "function signature" for a function,
 /// which captures its name, and its argument names (thus implicitly the number
 /// of arguments the function takes).
 ///
@@ -789,14 +769,14 @@ public:
 /// unary '!' operator. Precedence is only meaningful for binary operators — it
 /// is installed into BinopPrecedence at codegen time, making the new operator
 /// immediately available to the parser for subsequent expressions.
-class PrototypeAST {
+class FunctionSignatureAST {
   string Name;
   vector<string> Args;
   bool IsOperator;
   unsigned Precedence; // binary operators only
 
 public:
-  PrototypeAST(const string &Name, vector<string> Args, bool IsOperator = false,
+  FunctionSignatureAST(const string &Name, vector<string> Args, bool IsOperator = false,
                unsigned Prec = 0)
       : Name(Name), Args(std::move(Args)), IsOperator(IsOperator),
         Precedence(Prec) {}
@@ -811,7 +791,7 @@ public:
   // The operator character is the last character of the encoded name.
   // e.g. "binary+" -> '+', "unary!" -> '!'
   char getOperatorName() const {
-    assert((isUnaryOp() || isBinaryOp()) && "Not an operator prototype");
+    assert((isUnaryOp() || isBinaryOp()) && "Not an operator function signature");
     return Name.back();
   }
 
@@ -820,15 +800,15 @@ public:
   Function *codegen();
 };
 
-/// FunctionAST - This class represents a function definition itself.
-class FunctionAST {
-  unique_ptr<PrototypeAST> Proto;
+/// FunctionDefAST - This class represents a function definition itself.
+class FunctionDefAST {
+  unique_ptr<FunctionSignatureAST> Signature;
   unique_ptr<ExprAST> Body;
 
 public:
-  FunctionAST(unique_ptr<PrototypeAST> Proto, unique_ptr<ExprAST> Body)
-      : Proto(std::move(Proto)), Body(std::move(Body)) {}
-  const string &getName() const { return Proto->getName(); }
+  FunctionDefAST(unique_ptr<FunctionSignatureAST> Signature, unique_ptr<ExprAST> Body)
+      : Signature(std::move(Signature)), Body(std::move(Body)) {}
+  const string &getName() const { return Signature->getName(); }
   Function *codegen();
 };
 
@@ -863,7 +843,7 @@ static void consumeNewlines() {
 /// are left-associative. Operators not in this map return -1 from
 /// GetTokPrecedence(), which tells ParseBinOpRHS to stop consuming operators
 /// and return what it has so far.
-static const map<int, int> DefaultBinopPrecedence = {
+static map<int, int> BinopPrecedence = {
     {tok_eq, 10},  // ==
     {tok_neq, 10}, // !=
     {tok_leq, 10}, // <=
@@ -874,26 +854,18 @@ static const map<int, int> DefaultBinopPrecedence = {
     {'-', 20},     // -
     {'*', 40},     // *
 };
-static map<int, int> BinopPrecedence = DefaultBinopPrecedence;
-
-static void ResetBinopPrecedence() { BinopPrecedence = DefaultBinopPrecedence; }
 
 // KnownUnaryOperators - Tracks unary operator tokens that are already reserved
 // or defined.
 //
 // Seed with '-' because unary minus is a built-in form handled by
 // ParseUnaryMinus(), so users cannot define a custom unary '-'.
-static const std::set<int> DefaultKnownUnaryOperators = {'-'};
-static std::set<int> KnownUnaryOperators = DefaultKnownUnaryOperators;
+static std::set<int> KnownUnaryOperators = {'-'};
 
-static void ResetKnownUnaryOperators() {
-  KnownUnaryOperators = DefaultKnownUnaryOperators;
-}
-
-// FunctionProtos - Persistent prototype registry used by the parser to detect
+// FunctionSignatures - Persistent function signature registry used by the parser to detect
 // redefinition of operators. Also used by codegen to re-emit declarations into
 // fresh modules. Declared here so parser functions can access it.
-static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
+static std::map<std::string, std::unique_ptr<FunctionSignatureAST>> FunctionSignatures;
 
 // Parse-time variable tracking for assignments.
 // Scopes are stacked: function scope plus nested block scopes.
@@ -1022,12 +994,12 @@ unique_ptr<ExprAST> LogError(const char *Str) {
   return nullptr;
 }
 
-unique_ptr<PrototypeAST> LogErrorP(const char *Str) {
+unique_ptr<FunctionSignatureAST> LogErrorSignature(const char *Str) {
   LogError(Str);
   return nullptr;
 }
 
-unique_ptr<FunctionAST> LogErrorF(const char *Str) {
+unique_ptr<FunctionDefAST> LogErrorF(const char *Str) {
   LogError(Str);
   return nullptr;
 }
@@ -1072,7 +1044,7 @@ static unique_ptr<ExprAST> ParseParenExpr() {
 ///   | identifier "("[expression{"," expression}]")" ;
 static unique_ptr<ExprAST> ParseIdentifierExprWithName(const string &IdName) {
   if (CurTok != '(') // Simple variable ref.
-    return make_unique<VariableExprAST>(IdName);
+    return make_unique<NameExprAST>(IdName);
 
   // Call.
   getNextToken(); // eat (
@@ -1553,11 +1525,11 @@ static unique_ptr<ExprAST> ParseBlock() {
   return make_unique<BlockExprAST>(std::move(Stmts));
 }
 
-/// prototype
+/// functionsignature
 ///   = identifier "(" [ identifier { "," identifier } ] ")" ;
-static unique_ptr<PrototypeAST> ParsePrototype() {
+static unique_ptr<FunctionSignatureAST> ParseFunctionSignature() {
   if (CurTok != tok_identifier)
-    return LogErrorP("Expected function name in prototype");
+    return LogErrorSignature("Expected function name in function signature");
   string FnName = IdentifierStr;
   if ((FnName.size() == 7 && FnName.rfind("binary", 0) == 0 &&
        isascii(static_cast<unsigned char>(FnName[6])) &&
@@ -1573,7 +1545,7 @@ static unique_ptr<PrototypeAST> ParsePrototype() {
   getNextToken(); // eat function name
 
   if (CurTok != '(')
-    return LogErrorP("Expected '(' in prototype");
+    return LogErrorSignature("Expected '(' in function signature");
 
   // Parse argument names. The loop calls getNextToken() at the top to advance
   // past '(' on the first iteration, and past ',' on subsequent ones.
@@ -1586,15 +1558,15 @@ static unique_ptr<PrototypeAST> ParsePrototype() {
     if (getNextToken() == ')') // eat identifier, check what follows
       break;
     if (CurTok != ',')
-      return LogErrorP("Expected ')' or ',' in parameter list");
+      return LogErrorSignature("Expected ')' or ',' in parameter list");
     // loop continues: getNextToken() at the top eats the ','
   }
 
   if (CurTok != ')')
-    return LogErrorP("Expected ')' in prototype");
+    return LogErrorSignature("Expected ')' in function signature");
   getNextToken(); // eat ')'
 
-  return make_unique<PrototypeAST>(FnName, std::move(ArgNames));
+  return make_unique<FunctionSignatureAST>(FnName, std::move(ArgNames));
 }
 
 /// functionbody
@@ -1611,12 +1583,12 @@ static unique_ptr<ExprAST> ParseFunctionBody() {
 }
 
 /// definition
-static unique_ptr<FunctionAST> ParseDefinition() {
+static unique_ptr<FunctionDefAST> ParseFunctionDef() {
   getNextToken(); // eat 'def'
-  auto Proto = ParsePrototype();
-  if (!Proto)
+  auto Signature = ParseFunctionSignature();
+  if (!Signature)
     return nullptr;
-  FunctionScopeGuard Scope(Proto->getArgs());
+  FunctionScopeGuard Scope(Signature->getArgs());
 
   if (CurTok != ':')
     return LogErrorF("Expected ':' in function definition");
@@ -1624,7 +1596,7 @@ static unique_ptr<FunctionAST> ParseDefinition() {
   unique_ptr<ExprAST> Body = ParseFunctionBody();
 
   if (Body) {
-    return make_unique<FunctionAST>(std::move(Proto), std::move(Body));
+    return make_unique<FunctionDefAST>(std::move(Signature), std::move(Body));
   }
   return nullptr;
 }
@@ -1713,10 +1685,10 @@ static bool IsKnownUnaryOperatorToken(int Tok) {
 /// CurTok is on the operator character.
 /// The function is stored internally as "binary<opchar>" (e.g. "binary%"),
 /// which is how BinaryExprAST::codegen() looks it up at call sites.
-static unique_ptr<PrototypeAST> ParseBinaryOpPrototype(unsigned Precedence) {
+static unique_ptr<FunctionSignatureAST> ParseBinaryOpSignature(unsigned Precedence) {
   if (!IsCustomOpChar(CurTok))
-    return LogErrorP(
-        "Expected operator character in binary operator prototype");
+    return LogErrorSignature(
+        "Expected operator character in binary operator signature");
 
   char OpChar = (char)CurTok;
   string FnName = string("binary") + OpChar;
@@ -1725,32 +1697,32 @@ static unique_ptr<PrototypeAST> ParseBinaryOpPrototype(unsigned Precedence) {
   // This covers both language built-ins and previously defined custom
   // operators, since both live in BinopPrecedence.
   if (IsKnownBinaryOperatorToken(CurTok))
-    return LogErrorP(
+    return LogErrorSignature(
         (string("Binary operator '") + OpChar + "' is already defined")
             .c_str());
 
   // Reject cross-arity reuse: if a token is already known as a unary operator,
   // we do not allow defining it as binary.
   if (IsKnownUnaryOperatorToken(CurTok))
-    return LogErrorP((string("Binary operator '") + OpChar +
+    return LogErrorSignature((string("Binary operator '") + OpChar +
                       "' conflicts with an existing unary operator")
                          .c_str());
 
-  // Separate guard: reject any existing function/prototype named "binary<op>".
+  // Separate guard: reject any existing function/function signature named "binary<op>".
   // This catches symbol collisions even if the operator was not registered in
   // BinopPrecedence (e.g. an earlier extern/def with the same encoded name).
   // Without this, a new definition could silently shadow the old symbol in the
   // JIT. For operators, we don't want this. For other functions, shadowing is
   // permissable.
-  if (FunctionProtos.count(FnName))
-    return LogErrorP((string("Function name 'binary") + OpChar +
+  if (FunctionSignatures.count(FnName))
+    return LogErrorSignature((string("Function name 'binary") + OpChar +
                       "' conflicts with operator-reserved naming")
                          .c_str());
 
   getNextToken(); // eat operator char
 
   if (CurTok != '(')
-    return LogErrorP("Expected '(' in binary operator prototype");
+    return LogErrorSignature("Expected '(' in binary operator signature");
 
   vector<string> ArgNames;
   while (getNextToken() == tok_identifier) {
@@ -1758,17 +1730,17 @@ static unique_ptr<PrototypeAST> ParseBinaryOpPrototype(unsigned Precedence) {
     if (getNextToken() == ')')
       break;
     if (CurTok != ',')
-      return LogErrorP("Expected ')' or ',' in parameter list");
+      return LogErrorSignature("Expected ')' or ',' in parameter list");
   }
 
   if (CurTok != ')')
-    return LogErrorP("Expected ')' in binary operator prototype");
+    return LogErrorSignature("Expected ')' in binary operator signature");
   getNextToken(); // eat ')'
 
   if (ArgNames.size() != 2)
-    return LogErrorP("Binary operator must have exactly two arguments");
+    return LogErrorSignature("Binary operator must have exactly two arguments");
 
-  return make_unique<PrototypeAST>(FnName, std::move(ArgNames),
+  return make_unique<FunctionSignatureAST>(FnName, std::move(ArgNames),
                                    /*IsOperator=*/true, Precedence);
 }
 
@@ -1778,9 +1750,9 @@ static unique_ptr<PrototypeAST> ParseBinaryOpPrototype(unsigned Precedence) {
 /// CurTok is on the operator character.
 /// The function is stored internally as "unary<opchar>" (e.g. "unary&"),
 /// which is how ParseUnary() looks it up at call sites.
-static unique_ptr<PrototypeAST> ParseUnaryOpPrototype() {
+static unique_ptr<FunctionSignatureAST> ParseUnaryOpSignature() {
   if (!IsCustomOpChar(CurTok))
-    return LogErrorP("Expected operator character in unary operator prototype");
+    return LogErrorSignature("Expected operator character in unary operator signature");
 
   char OpChar = (char)CurTok;
   string FnName = string("unary") + OpChar;
@@ -1789,26 +1761,26 @@ static unique_ptr<PrototypeAST> ParseUnaryOpPrototype() {
   // This covers reserved unary operators and previously defined custom unary
   // operators tracked in KnownUnaryOperators.
   if (IsKnownUnaryOperatorToken(CurTok))
-    return LogErrorP(
+    return LogErrorSignature(
         (string("Unary operator '") + OpChar + "' is already defined").c_str());
 
   // Reject cross-arity reuse: if a token is already known as a binary operator,
   // we do not allow defining it as unary.
   if (IsKnownBinaryOperatorToken(CurTok))
-    return LogErrorP((string("Unary operator '") + OpChar +
+    return LogErrorSignature((string("Unary operator '") + OpChar +
                       "' conflicts with an existing binary operator")
                          .c_str());
 
-  // Prevent silent JIT shadowing (same reason as in ParseBinaryOpPrototype).
-  if (FunctionProtos.count(FnName))
-    return LogErrorP((string("Function name 'unary") + OpChar +
+  // Prevent silent JIT shadowing (same reason as in ParseBinaryOpSignature).
+  if (FunctionSignatures.count(FnName))
+    return LogErrorSignature((string("Function name 'unary") + OpChar +
                       "' conflicts with operator-reserved naming")
                          .c_str());
 
   getNextToken(); // eat operator char
 
   if (CurTok != '(')
-    return LogErrorP("Expected '(' in unary operator prototype");
+    return LogErrorSignature("Expected '(' in unary operator signature");
 
   vector<string> ArgNames;
   while (getNextToken() == tok_identifier) {
@@ -1816,19 +1788,19 @@ static unique_ptr<PrototypeAST> ParseUnaryOpPrototype() {
     if (getNextToken() == ')')
       break;
     if (CurTok != ',')
-      return LogErrorP("Expected ')' or ',' in parameter list");
+      return LogErrorSignature("Expected ')' or ',' in parameter list");
   }
 
   if (CurTok != ')')
-    return LogErrorP("Expected ')' in unary operator prototype");
+    return LogErrorSignature("Expected ')' in unary operator signature");
   getNextToken(); // eat ')'
 
   if (ArgNames.size() != 1)
-    return LogErrorP("Unary operator must have exactly one argument");
+    return LogErrorSignature("Unary operator must have exactly one argument");
 
   // Unary operators have no precedence — they bind tighter than any binary op
   // by virtue of being parsed before ParseBinOpRHS is entered.
-  return make_unique<PrototypeAST>(FnName, std::move(ArgNames),
+  return make_unique<FunctionSignatureAST>(FnName, std::move(ArgNames),
                                    /*IsOperator=*/true, /*Precedence=*/0);
 }
 
@@ -1839,12 +1811,12 @@ static unique_ptr<PrototypeAST> ParseUnaryOpPrototype() {
 ///
 /// Called after '@' has been consumed. CurTok is on 'binary' or 'unary'.
 /// The two branches share the same body structure (':' / block).
-static unique_ptr<FunctionAST> ParseDecoratedDef() {
+static unique_ptr<FunctionDefAST> ParseDecoratedFunctionDef() {
   if (CurTok != tok_binary && CurTok != tok_unary)
     return LogErrorF("Expected 'binary' or 'unary' after '@'");
 
   bool IsBinary = (CurTok == tok_binary);
-  unique_ptr<PrototypeAST> Proto;
+  unique_ptr<FunctionSignatureAST> Signature;
 
   if (IsBinary) {
     unsigned Prec = ParseBinaryDecorator(); // consumes "binary(N)"
@@ -1857,7 +1829,7 @@ static unique_ptr<FunctionAST> ParseDecoratedDef() {
     if (CurTok != tok_def)
       return LogErrorF("Expected 'def' after decorator");
     getNextToken(); // eat 'def'
-    Proto = ParseBinaryOpPrototype(Prec);
+    Signature = ParseBinaryOpSignature(Prec);
   } else {
     ParseUnaryDecorator(); // consumes "unary"
     if (CurTok != tok_eol)
@@ -1866,22 +1838,22 @@ static unique_ptr<FunctionAST> ParseDecoratedDef() {
     if (CurTok != tok_def)
       return LogErrorF("Expected 'def' after decorator");
     getNextToken(); // eat 'def'
-    Proto = ParseUnaryOpPrototype();
+    Signature = ParseUnaryOpSignature();
   }
 
-  if (!Proto)
+  if (!Signature)
     return nullptr;
-  FunctionScopeGuard Scope(Proto->getArgs());
+  FunctionScopeGuard Scope(Signature->getArgs());
 
   // Shared body: ":" ( simplestmt | eols block ) — identical to
-  // ParseDefinition.
+  // ParseFunctionDef.
   if (CurTok != ':')
     return LogErrorF("Expected ':' in operator definition");
   getNextToken(); // eat ':'
   unique_ptr<ExprAST> Body = ParseFunctionBody();
 
   if (Body) {
-    return make_unique<FunctionAST>(std::move(Proto), std::move(Body));
+    return make_unique<FunctionDefAST>(std::move(Signature), std::move(Body));
   }
   return nullptr;
 }
@@ -1900,10 +1872,10 @@ static unique_ptr<ExprAST> ParseTopLevelStatement() {
 /// toplevelexpr
 ///   = statement
 /// A top-level statement (e.g. "1 + 2", "var x = 1", "if ...") is wrapped in
-/// an anonymous function so it fits the same FunctionAST shape as everything
+/// an anonymous function so it fits the same FunctionDefAST shape as everything
 /// else. HandleTopLevelExpression compiles it into the JIT, calls it to get
 /// the numeric result, then removes it from the JIT via a ResourceTracker.
-static unique_ptr<FunctionAST> ParseTopLevelExpr() {
+static unique_ptr<FunctionDefAST> ParseTopLevelExpr() {
   auto Stmt = ParseTopLevelStatement();
   if (!Stmt)
     return nullptr;
@@ -1912,18 +1884,18 @@ static unique_ptr<FunctionAST> ParseTopLevelExpr() {
     Stmt = make_unique<ReturnExprAST>(std::move(Stmt));
 
   string FnName = "__pyxc.toplevel." + to_string(TopLevelExprCounter++);
-  auto Proto = make_unique<PrototypeAST>(FnName, vector<string>());
-  return make_unique<FunctionAST>(std::move(Proto), std::move(Stmt));
+  auto Signature = make_unique<FunctionSignatureAST>(FnName, vector<string>());
+  return make_unique<FunctionDefAST>(std::move(Signature), std::move(Stmt));
 }
 
 /// external
-///   = "extern" "def" prototype
-static unique_ptr<PrototypeAST> ParseExtern() {
+///   = "extern" "def" function signature
+static unique_ptr<FunctionSignatureAST> ParseExtern() {
   getNextToken(); // eat extern.
   if (CurTok != tok_def)
-    return LogErrorP("Expected `def` after extern.");
+    return LogErrorSignature("Expected `def` after extern.");
   getNextToken(); // eat def
-  return ParsePrototype();
+  return ParseFunctionSignature();
 }
 
 //===----------------------------------------===//
@@ -2011,11 +1983,11 @@ static GlobalVariable *GetGlobalVariable(const string &Name) {
 }
 
 /// getFunction - Resolve a function name to an LLVM Function* in the current
-/// module, re-emitting a declaration from FunctionProtos if necessary.
+/// module, re-emitting a declaration from FunctionSignatures if necessary.
 ///
 /// Because each top-level input gets its own Module, a function defined in an
 /// earlier module is no longer in TheModule->getFunction(). When that happens
-/// we look up its PrototypeAST in FunctionProtos and call codegen() on it,
+/// we look up its FunctionSignatureAST in FunctionSignatures and call codegen() on it,
 /// which emits a fresh 'declare' with ExternalLinkage in the current module.
 /// The JIT resolves that extern to the already-compiled body at link time.
 Function *getFunction(const std::string &Name) {
@@ -2023,9 +1995,9 @@ Function *getFunction(const std::string &Name) {
   if (auto *F = TheModule->getFunction(Name))
     return F;
 
-  // Slow path: re-emit a declaration from the saved prototype.
-  auto FI = FunctionProtos.find(Name);
-  if (FI != FunctionProtos.end())
+  // Slow path: re-emit a declaration from the saved function signature.
+  auto FI = FunctionSignatures.find(Name);
+  if (FI != FunctionSignatures.end())
     return FI->second->codegen();
 
   return nullptr;
@@ -2044,9 +2016,9 @@ Value *NumberExprAST::codegen() {
   return ConstantFP::get(*TheContext, APFloat(Val));
 }
 
-/// VariableExprAST::codegen - A variable reference loads the current value
+/// NameExprAST::codegen - A variable reference loads the current value
 /// from the variable's stack slot.
-Value *VariableExprAST::codegen() {
+Value *NameExprAST::codegen() {
   auto It = NamedValues.find(Name);
   if (It != NamedValues.end() && It->second)
     return Builder->CreateLoad(Type::getDoubleTy(*TheContext), It->second,
@@ -2392,7 +2364,7 @@ Value *VarStmtAST::codegen() {
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
-/// PrototypeAST::codegen - Create a function declaration in TheModule: name,
+/// FunctionSignatureAST::codegen - Create a function declaration in TheModule: name,
 /// return type (always double), and parameter types (all double).
 ///
 /// ExternalLinkage makes the function visible outside this module. That is
@@ -2402,7 +2374,7 @@ Value *VarStmtAST::codegen() {
 ///
 /// Arg.setName() is optional — it only affects the printed IR, making output
 /// read as 'double %a, double %b' rather than 'double %0, double %1'.
-Function *PrototypeAST::codegen() {
+Function *FunctionSignatureAST::codegen() {
   // All parameters and the return value are double.
   std::vector<Type *> Doubles(Args.size(), Type::getDoubleTy(*TheContext));
   FunctionType *FT = FunctionType::get(Type::getDoubleTy(*TheContext), Doubles,
@@ -2431,15 +2403,15 @@ Function *PrototypeAST::codegen() {
   return F;
 }
 
-/// FunctionAST::codegen - Generate IR for a complete function definition.
+/// FunctionDefAST::codegen - Generate IR for a complete function definition.
 ///
 /// Four steps:
 ///
-/// 1. Register the prototype. The PrototypeAST is moved into FunctionProtos
+/// 1. Register the function signature. The FunctionSignatureAST is moved into FunctionSignatures
 ///    so that future modules can re-emit a declaration for this function via
 ///    getFunction(). A reference is kept for the getFunction() call below.
 ///    getFunction() either finds an existing declaration in the current module
-///    (e.g. from a prior 'extern def') or calls Proto->codegen() to create one.
+///    (e.g. from a prior 'extern def') or calls Signature->codegen() to create one.
 ///
 /// 2. Create the entry BasicBlock and point the Builder at it. A basic block
 ///    is a straight-line sequence of instructions with one entry and one exit.
@@ -2454,10 +2426,10 @@ Function *PrototypeAST::codegen() {
 ///    (LLVM's internal consistency checker), then run TheFPM to apply the
 ///    optimisation pipeline. On failure, eraseFromParent() removes the
 ///    partially-built function so no broken declaration is left in the module.
-Function *FunctionAST::codegen() {
-  // Step 1: register the prototype and resolve the Function*.
-  auto &P = *Proto;
-  FunctionProtos[Proto->getName()] = std::move(Proto);
+Function *FunctionDefAST::codegen() {
+  // Step 1: register the function signature and resolve the Function*.
+  auto &P = *Signature;
+  FunctionSignatures[Signature->getName()] = std::move(Signature);
 
   // Step 1: reuse an existing `extern` declaration if one exists.
   Function *TheFunction = getFunction(P.getName());
@@ -2510,22 +2482,6 @@ Function *FunctionAST::codegen() {
 
 static vector<unique_ptr<ExprAST>> FileTopLevelStmts;
 
-/// ResetParserStateForFile - Clear parser/compiler state between input files.
-///
-/// Multi-file compilation emits each source into its own module, so symbols,
-/// globals, and top-level statements should not leak across files.
-static void ResetParserStateForFile() {
-  FunctionProtos.clear();
-  GlobalVarNames.clear();
-  VarScopes.clear();
-  FileTopLevelStmts.clear();
-  LastTopLevelShouldPrint = true;
-  InGlobalInit = false;
-  ModuleHasGlobals = false;
-  ResetBinopPrecedence();
-  ResetKnownUnaryOperators();
-}
-
 /// InitializeModuleAndManagers - Create a fresh module, IR builder, and
 /// optimisation pipeline.
 ///
@@ -2547,10 +2503,9 @@ static void ResetParserStateForFile() {
 ///
 /// The analysis managers are cross-registered so that a function pass that
 /// needs loop information can reach TheLAM, and so on.
-static void InitializeModuleAndManagers(bool FreshContext = true) {
+static void InitializeModuleAndManagers() {
   // Fresh context and module for this compilation unit.
-  if (FreshContext || !TheContext)
-    TheContext = std::make_unique<LLVMContext>();
+  TheContext = std::make_unique<LLVMContext>();
   TheModule = std::make_unique<Module>("PyxcJIT", *TheContext);
   // Inform the module of the JIT's target data layout so codegen emits
   // correctly-sized types for the host machine.
@@ -2606,9 +2561,9 @@ static void SynchronizeToLineBoundary() {
 ///   def opchar(x): ...
 ///
 /// The '@' has already been consumed by MainLoop before calling here.
-/// CurTok is on 'binary' or 'unary'. Delegates to ParseDecoratedDef.
+/// CurTok is on 'binary' or 'unary'. Delegates to ParseDecoratedFunctionDef.
 static void HandleDecorator() {
-  auto FnAST = ParseDecoratedDef();
+  auto FnAST = ParseDecoratedFunctionDef();
   bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
   if (!FnAST || HasTrailing) {
     if (FnAST)
@@ -2628,17 +2583,17 @@ static void HandleDecorator() {
   }
 }
 
-/// HandleDefinition - Parse, optimise, and JIT-compile a 'def' definition.
+/// HandleFunctionDef - Parse, optimise, and JIT-compile a 'def' definition.
 ///
 /// On success: codegen + optimise the function (TheFPM runs inside
-/// FunctionAST::codegen), print the optimised IR, then hand the entire module
+/// FunctionDefAST::codegen), print the optimised IR, then hand the entire module
 /// to the JIT via addModule. The JIT takes ownership of TheModule and
 /// TheContext, so InitializeModuleAndManagers() is called immediately after to
 /// create a fresh module for the next input. The compiled function remains
 /// accessible in the JIT's symbol table for the rest of the session.
 /// On parse failure or unexpected trailing tokens: discard the line.
-static void HandleDefinition() {
-  auto FnAST = ParseDefinition();
+static void HandleFunctionDef() {
+  auto FnAST = ParseFunctionDef();
   bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
   if (!FnAST || HasTrailing) {
     if (FnAST)
@@ -2661,10 +2616,10 @@ static void HandleDefinition() {
 
 /// HandleExtern - Parse and register an 'extern def' declaration.
 ///
-/// On success: codegen the prototype (emits a 'declare' in the current module),
-/// print it, then save the PrototypeAST into FunctionProtos. Saving into
-/// FunctionProtos is the critical step — when this module is handed to the JIT
-/// and a new one is created, getFunction() uses FunctionProtos to re-emit the
+/// On success: codegen the function signature (emits a 'declare' in the current module),
+/// print it, then save the FunctionSignatureAST into FunctionSignatures. Saving into
+/// FunctionSignatures is the critical step — when this module is handed to the JIT
+/// and a new one is created, getFunction() uses FunctionSignatures to re-emit the
 /// 'declare' in whichever module needs to call the extern.
 /// On parse failure or unexpected trailing tokens: discard the line.
 static void HandleExtern() {
@@ -2679,8 +2634,8 @@ static void HandleExtern() {
 
   // Reject conflicting redeclarations: in Pyxc, function identity is just
   // name + arity, since all parameter and return types are double.
-  auto Existing = FunctionProtos.find(ProtoAST->getName());
-  if (Existing != FunctionProtos.end() &&
+  auto Existing = FunctionSignatures.find(ProtoAST->getName());
+  if (Existing != FunctionSignatures.end() &&
       Existing->second->getNumArgs() != ProtoAST->getNumArgs()) {
     LogError((string("Conflicting extern declaration for '") +
               ProtoAST->getName() + "'")
@@ -2693,8 +2648,8 @@ static void HandleExtern() {
     Log("Parsed an extern.\n");
     if (ShouldDumpIR())
       FnIR->print(errs());
-    // Save the prototype so getFunction() can re-emit it in future modules.
-    FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
+    // Save the function signature so getFunction() can re-emit it in future modules.
+    FunctionSignatures[ProtoAST->getName()] = std::move(ProtoAST);
   }
 }
 
@@ -2827,7 +2782,7 @@ extern "C" DLLEXPORT double printd(double X) {
 /// top             = definition | external | toplevelstmt ;
 ///
 /// Dispatches on the leading token of each top-level form:
-///   tok_def    → HandleDefinition   (definition)
+///   tok_def    → HandleFunctionDef   (definition)
 ///   tok_extern → HandleExtern       (external)
 ///   '@'        → HandleDecorator    (decorateddef: @binary / @unary)
 ///   tok_eol    → skip blank line
@@ -2869,7 +2824,7 @@ static void MainLoop() {
 
     switch (CurTok) {
     case tok_def:
-      HandleDefinition();
+      HandleFunctionDef();
       break;
     case tok_extern:
       HandleExtern();
@@ -2918,7 +2873,7 @@ static void FileModeLoop() {
 
     switch (CurTok) {
     case tok_def:
-      HandleDefinition();
+      HandleFunctionDef();
       break;
     case tok_extern:
       HandleExtern();
@@ -2938,9 +2893,9 @@ static void FileModeLoop() {
 static void RunFileMode() {
   if (!FileTopLevelStmts.empty()) {
     auto Block = make_unique<BlockExprAST>(std::move(FileTopLevelStmts));
-    auto Proto =
-        make_unique<PrototypeAST>("__pyxc.global_init", vector<string>());
-    auto FnAST = make_unique<FunctionAST>(std::move(Proto), std::move(Block));
+    auto Signature =
+        make_unique<FunctionSignatureAST>("__pyxc.global_init", vector<string>());
+    auto FnAST = make_unique<FunctionDefAST>(std::move(Signature), std::move(Block));
 
     bool SavedInGlobalInit = InGlobalInit;
     InGlobalInit = true;
@@ -2962,8 +2917,8 @@ static void RunFileMode() {
     }
   }
 
-  auto MainIt = FunctionProtos.find("main");
-  if (MainIt == FunctionProtos.end())
+  auto MainIt = FunctionSignatures.find("main");
+  if (MainIt == FunctionSignatures.end())
     return;
 
   if (MainIt->second->getNumArgs() != 0) {
@@ -2997,50 +2952,40 @@ static void AddGlobalCtor(Function *Fn, int Priority = 65535) {
                      "llvm.global_ctors");
 }
 
-/// CreateTargetMachine - Build a TargetMachine for the host triple.
-static std::unique_ptr<TargetMachine> CreateTargetMachine() {
+/// EmitModuleToFile - Write the current module to EmitOutputPath.
+static bool EmitModuleToFile() {
+  std::error_code EC;
+  raw_fd_ostream Dest(EmitOutputPath, EC, sys::fs::OF_None);
+  if (EC) {
+    fprintf(stderr, "Error: could not open output file '%s'\n",
+            EmitOutputPath.c_str());
+    return false;
+  }
+
+  if (EmitMode == EmitKind::LLVMIR) {
+    TheModule->print(Dest, nullptr);
+    return true;
+  }
+
   string TargetTriple = sys::getDefaultTargetTriple();
   Triple TT(TargetTriple);
+  TheModule->setTargetTriple(TT);
 
   string Error;
   const Target *Target = TargetRegistry::lookupTarget(TT, Error);
   if (!Target) {
     fprintf(stderr, "Error: %s\n", Error.c_str());
-    return nullptr;
+    return false;
   }
 
   TargetOptions Options;
   auto RM = std::optional<Reloc::Model>();
-  return std::unique_ptr<TargetMachine>(
+  std::unique_ptr<TargetMachine> TM(
       Target->createTargetMachine(TT, "generic", "", Options, RM));
-}
-
-/// EmitModuleToFile - Write the module to the requested path in the given
-/// format.
-static bool EmitModuleToFile(Module *M, EmitKind Kind,
-                             const string &OutputPath) {
-  std::error_code EC;
-  raw_fd_ostream Dest(OutputPath, EC, sys::fs::OF_None);
-  if (EC) {
-    fprintf(stderr, "Error: could not open output file '%s'\n",
-            OutputPath.c_str());
-    return false;
-  }
-
-  if (Kind == EmitKind::LLVMIR) {
-    M->print(Dest, nullptr);
-    return true;
-  }
-
-  auto TM = CreateTargetMachine();
-  if (!TM)
-    return false;
-
-  M->setTargetTriple(TM->getTargetTriple());
-  M->setDataLayout(TM->createDataLayout());
+  TheModule->setDataLayout(TM->createDataLayout());
 
   legacy::PassManager PM;
-  CodeGenFileType FileType = (Kind == EmitKind::ASM)
+  CodeGenFileType FileType = (EmitMode == EmitKind::ASM)
                                  ? CodeGenFileType::AssemblyFile
                                  : CodeGenFileType::ObjectFile;
 
@@ -3049,261 +2994,17 @@ static bool EmitModuleToFile(Module *M, EmitKind Kind,
     return false;
   }
 
-  PM.run(*M);
+  PM.run(*TheModule);
   return true;
 }
 
-static bool PrepareFileModeModule();
-
-static bool OpenInputFile(const string &Path) {
-  Input = fopen(Path.c_str(), "r");
-  if (!Input) {
-    perror(Path.c_str());
-    return false;
-  }
-  return true;
-}
-
-static void CloseInputFile() {
-  if (Input && Input != stdin) {
-    fclose(Input);
-    Input = stdin;
-  }
-}
-
-static bool EndsWithInsensitive(StringRef Path, StringRef Suffix) {
-  if (Path.size() < Suffix.size())
-    return false;
-  return Path.take_back(Suffix.size()).equals_insensitive(Suffix);
-}
-
-static bool IsPyxcInput(StringRef Path) {
-  return EndsWithInsensitive(Path, ".pyxc");
-}
-
-static bool IsObjectInput(StringRef Path) {
-  return EndsWithInsensitive(Path, ".o") || EndsWithInsensitive(Path, ".obj");
-}
-
-static string DefaultExeOutputPath(StringRef InputPath) {
-  SmallString<256> Out(InputPath);
-  sys::path::replace_extension(Out, "");
-  string OutStr = Out.str().str();
-#ifdef _WIN32
-  OutStr += ".exe";
-#endif
-  return OutStr;
-}
-
-static bool EmitRuntimeObject(const string &ObjPath) {
-  LLVMContext Ctx;
-  auto M = std::make_unique<Module>("pyxc.runtime", Ctx);
-
-  auto *DoubleTy = Type::getDoubleTy(Ctx);
-  auto *Int32Ty = Type::getInt32Ty(Ctx);
-  auto *CharPtrTy = PointerType::get(Ctx, 0);
-
-  FunctionType *PrintfTy = FunctionType::get(Int32Ty, {CharPtrTy}, true);
-  Function *Printf =
-      Function::Create(PrintfTy, Function::ExternalLinkage, "printf", M.get());
-
-  FunctionType *PutcharTy = FunctionType::get(Int32Ty, {Int32Ty}, false);
-  Function *Putchar = Function::Create(PutcharTy, Function::ExternalLinkage,
-                                       "putchar", M.get());
-
-  FunctionType *PrintdTy = FunctionType::get(DoubleTy, {DoubleTy}, false);
-  Function *Printd =
-      Function::Create(PrintdTy, Function::ExternalLinkage, "printd", M.get());
-  {
-    BasicBlock *BB = BasicBlock::Create(Ctx, "entry", Printd);
-    IRBuilder<> B(BB);
-    auto *FmtGV = B.CreateGlobalString("%f\n", "fmt");
-    Value *Zero = ConstantInt::get(Int32Ty, 0);
-    Value *Fmt = B.CreateInBoundsGEP(FmtGV->getValueType(), FmtGV, {Zero, Zero},
-                                     "fmt_ptr");
-    Value *Arg = Printd->getArg(0);
-    B.CreateCall(Printf, {Fmt, Arg});
-    B.CreateRet(ConstantFP::get(Ctx, APFloat(0.0)));
-  }
-
-  FunctionType *PutchardTy = FunctionType::get(DoubleTy, {DoubleTy}, false);
-  Function *Putchard = Function::Create(PutchardTy, Function::ExternalLinkage,
-                                        "putchard", M.get());
-  {
-    BasicBlock *BB = BasicBlock::Create(Ctx, "entry", Putchard);
-    IRBuilder<> B(BB);
-    Value *Arg = Putchard->getArg(0);
-    Value *Ch = B.CreateFPToUI(Arg, Int32Ty, "ch");
-    B.CreateCall(Putchar, {Ch});
-    B.CreateRet(ConstantFP::get(Ctx, APFloat(0.0)));
-  }
-
-  return EmitModuleToFile(M.get(), EmitKind::OBJ, ObjPath);
-}
-
-static bool CompileFileToObject(const string &Path, const string &ObjPath,
-                                bool *HasMain) {
-  if (!OpenInputFile(Path))
-    return false;
-
-  ResetLexerState();
-  ResetParserStateForFile();
-  InitializeModuleAndManagers(false);
-
-  IsRepl = false;
-  PrintReplPrompt();
-  getNextToken();
-
-  FileModeLoop();
-  CloseInputFile();
-
-  if (HasMain)
-    *HasMain = FunctionProtos.find("main") != FunctionProtos.end();
-
-  if (!PrepareFileModeModule())
-    return false;
-
-  return EmitModuleToFile(TheModule.get(), EmitKind::OBJ, ObjPath);
-}
-
-/// RunXcrun - Shell out to xcrun and return trimmed stdout, or "" on failure.
-static string RunXcrun(const char *Args) {
-  string Cmd = string("xcrun ") + Args + " 2>/dev/null";
-  FILE *Pipe = popen(Cmd.c_str(), "r");
-  if (!Pipe)
-    return "";
-  char Buf[512];
-  string Result;
-  while (fgets(Buf, sizeof(Buf), Pipe))
-    Result += Buf;
-  pclose(Pipe);
-  while (!Result.empty() && (Result.back() == '\n' || Result.back() == '\r' ||
-                             Result.back() == ' '))
-    Result.pop_back();
-  return Result;
-}
-
-static string FindMacOSSDKRoot() {
-  if (const char *EnvSDK = getenv("SDKROOT"))
-    return string(EnvSDK);
-
-  // Ask xcrun — it resolves the active SDK for the current Xcode/CLT selection
-  // and returns the right path regardless of where Xcode is installed.
-  string XcrunPath = RunXcrun("--sdk macosx --show-sdk-path");
-  if (!XcrunPath.empty() && sys::fs::exists(XcrunPath))
-    return XcrunPath;
-
-  // Fallback: probe well-known paths.
-  const char *XcodeSDK = "/Applications/Xcode.app/Contents/Developer/Platforms/"
-                         "MacOSX.platform/Developer/SDKs/MacOSX.sdk";
-  if (sys::fs::exists(XcodeSDK))
-    return string(XcodeSDK);
-
-  const char *CLTSDK = "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk";
-  if (sys::fs::exists(CLTSDK))
-    return string(CLTSDK);
-
-  return "";
-}
-
-/// FindMacOSSDKVersion - Return the macOS SDK version string (e.g. "26.0").
-/// This matches the version LLVM encodes into object files at compile time,
-/// avoiding a version mismatch warning from ld64.lld.
-static string FindMacOSSDKVersion() {
-  string Ver = RunXcrun("--sdk macosx --show-sdk-version");
-  if (!Ver.empty())
-    return Ver;
-  // Fallback: extract from the triple (may be Darwin kernel version on older
-  // LLVM builds, so prefer xcrun when available).
-  Triple TT(sys::getDefaultTargetTriple());
-  VersionTuple V = TT.getOSVersion();
-  if (V.getMajor()) {
-    std::ostringstream OS;
-    OS << V.getMajor() << "." << V.getMinor().value_or(0);
-    return OS.str();
-  }
-  return "11.0";
-}
-
-static bool LinkExecutable(const vector<string> &Inputs,
-                           const string &OutputPath) {
-  Triple TT(sys::getDefaultTargetTriple());
-  vector<string> ArgStorage;
-  auto PushArg = [&](const string &Arg) { ArgStorage.push_back(Arg); };
-
-  if (TT.isOSDarwin()) {
-    PushArg("ld64.lld");
-    PushArg("-arch");
-    PushArg(TT.getArchName().str());
-    PushArg("-o");
-    PushArg(OutputPath);
-
-    string SDKRoot = FindMacOSSDKRoot();
-    if (!SDKRoot.empty()) {
-      PushArg("-syslibroot");
-      PushArg(SDKRoot);
-      PushArg("-L" + SDKRoot + "/usr/lib");
-      PushArg("-L" + SDKRoot + "/usr/lib/system");
-      string OSVer = FindMacOSSDKVersion();
-      PushArg("-platform_version");
-      PushArg("macos");
-      PushArg(OSVer);
-      PushArg(OSVer);
-    }
-    // macOS startup is handled by dyld + libSystem; crt1/crti/crtn are
-    // GNU ELF files that do not belong in a MachO link and cause warnings
-    // on arm64 (the SDK copy is x86_64-only legacy).
-    for (const auto &Input : Inputs)
-      PushArg(Input);
-    PushArg("-lSystem");
-
-    vector<const char *> Args;
-    Args.reserve(ArgStorage.size());
-    for (auto &Arg : ArgStorage)
-      Args.push_back(Arg.c_str());
-    return lld::macho::link(Args, llvm::outs(), llvm::errs(), false, false);
-  }
-
-  if (TT.isOSLinux()) {
-    PushArg("ld.lld");
-    PushArg("-o");
-    PushArg(OutputPath);
-    for (const auto &Input : Inputs)
-      PushArg(Input);
-    PushArg("-lc");
-    PushArg("-lm");
-    vector<const char *> Args;
-    Args.reserve(ArgStorage.size());
-    for (auto &Arg : ArgStorage)
-      Args.push_back(Arg.c_str());
-    return lld::elf::link(Args, llvm::outs(), llvm::errs(), false, false);
-  }
-
-  if (TT.isOSWindows()) {
-    PushArg("lld-link");
-    PushArg("/OUT:" + OutputPath);
-    for (const auto &Input : Inputs)
-      PushArg(Input);
-    vector<const char *> Args;
-    Args.reserve(ArgStorage.size());
-    for (auto &Arg : ArgStorage)
-      Args.push_back(Arg.c_str());
-    return lld::coff::link(Args, llvm::outs(), llvm::errs(), false, false);
-  }
-
-  fprintf(stderr, "Error: unsupported target for --emit exe\n");
-  return false;
-}
-
-/// PrepareFileModeModule - Build __pyxc.global_init and main wrapper.
-///
-/// Returns false on error (e.g., invalid main signature).
-static bool PrepareFileModeModule() {
+/// EmitFileMode - Build __pyxc.global_init and emit the requested output file.
+static void EmitFileMode() {
   if (!FileTopLevelStmts.empty()) {
     auto Block = make_unique<BlockExprAST>(std::move(FileTopLevelStmts));
-    auto Proto =
-        make_unique<PrototypeAST>("__pyxc.global_init", vector<string>());
-    auto FnAST = make_unique<FunctionAST>(std::move(Proto), std::move(Block));
+    auto Signature =
+        make_unique<FunctionSignatureAST>("__pyxc.global_init", vector<string>());
+    auto FnAST = make_unique<FunctionDefAST>(std::move(Signature), std::move(Block));
 
     bool SavedInGlobalInit = InGlobalInit;
     InGlobalInit = true;
@@ -3314,14 +3015,14 @@ static bool PrepareFileModeModule() {
       AddGlobalCtor(FnIR);
     } else {
       InGlobalInit = SavedInGlobalInit;
-      return false;
+      return;
     }
   }
 
-  auto MainIt = FunctionProtos.find("main");
-  if (MainIt != FunctionProtos.end() && MainIt->second->getNumArgs() != 0) {
+  auto MainIt = FunctionSignatures.find("main");
+  if (MainIt != FunctionSignatures.end() && MainIt->second->getNumArgs() != 0) {
     fprintf(stderr, "Error: main() must take no arguments\n");
-    return false;
+    return;
   }
 
   if (auto *UserMain = TheModule->getFunction("main")) {
@@ -3338,107 +3039,7 @@ static bool PrepareFileModeModule() {
     }
   }
 
-  return true;
-}
-
-/// EmitFileMode - Build __pyxc.global_init and emit the requested output file.
-static void EmitFileMode() {
-  if (!PrepareFileModeModule())
-    return;
-  EmitModuleToFile(TheModule.get(), EmitMode, EmitOutputPath);
-}
-
-/// EmitExecutable - Compile inputs to objects and link them into an executable.
-static bool EmitExecutable() {
-  vector<string> ObjectFiles;
-  vector<string> TempFiles;
-  bool SawMain = false;
-  bool SawObjectInput = false;
-
-  auto CleanupTemps = [&]() {
-    for (const auto &Path : TempFiles)
-      sys::fs::remove(Path);
-  };
-
-  for (const auto &InputPath : InputFiles) {
-    if (IsPyxcInput(InputPath)) {
-      int FD = -1;
-      SmallString<128> TmpPath;
-      if (auto EC = sys::fs::createTemporaryFile("pyxc", "o", FD, TmpPath)) {
-        fprintf(stderr, "Error: could not create temporary file: %s\n",
-                EC.message().c_str());
-        CleanupTemps();
-        return false;
-      }
-      if (FD != -1)
-        close(FD);
-
-      string ObjPath = TmpPath.str().str();
-      TempFiles.push_back(ObjPath);
-
-      bool FileHasMain = false;
-      if (!CompileFileToObject(InputPath, ObjPath, &FileHasMain)) {
-        CleanupTemps();
-        return false;
-      }
-      SawMain = SawMain || FileHasMain;
-      ObjectFiles.push_back(ObjPath);
-      continue;
-    }
-
-    if (IsObjectInput(InputPath)) {
-      ObjectFiles.push_back(InputPath);
-      SawObjectInput = true;
-      continue;
-    }
-
-    fprintf(stderr, "Error: unsupported input '%s'\n", InputPath.c_str());
-    CleanupTemps();
-    return false;
-  }
-
-  if (!SawMain && !SawObjectInput) {
-    fprintf(stderr, "Error: main() not found\n");
-    CleanupTemps();
-    return false;
-  }
-
-  int RuntimeFD = -1;
-  SmallString<128> RuntimeObj;
-  if (auto EC = sys::fs::createTemporaryFile("pyxc_runtime", "o", RuntimeFD,
-                                             RuntimeObj)) {
-    fprintf(stderr, "Error: could not create runtime object: %s\n",
-            EC.message().c_str());
-    CleanupTemps();
-    return false;
-  }
-  if (RuntimeFD != -1)
-    close(RuntimeFD);
-
-  string RuntimePath = RuntimeObj.str().str();
-  TempFiles.push_back(RuntimePath);
-  if (!EmitRuntimeObject(RuntimePath)) {
-    CleanupTemps();
-    return false;
-  }
-  ObjectFiles.push_back(RuntimePath);
-
-  if (EmitOutputPath.empty()) {
-    if (InputFiles.empty()) {
-      fprintf(stderr, "Error: --emit exe requires a file input\n");
-      CleanupTemps();
-      return false;
-    }
-    EmitOutputPath = DefaultExeOutputPath(InputFiles.front());
-  }
-
-  if (!LinkExecutable(ObjectFiles, EmitOutputPath)) {
-    CleanupTemps();
-    return false;
-  }
-
-  CleanupTemps();
-  return true;
+  EmitModuleToFile();
 }
 
 /// ProcessCommandLine - Parse argv and configure the global Input/IsRepl state.
@@ -3454,7 +3055,16 @@ int ProcessCommandLine(int argc, const char **argv) {
     return -1;
   }
 
-  IsRepl = InputFiles.empty();
+  if (!InputFile.empty()) {
+    Input = fopen(InputFile.c_str(), "r");
+    if (!Input) {
+      perror(InputFile.c_str());
+      return -1;
+    }
+    IsRepl = false;
+  } else {
+    IsRepl = true;
+  }
 
   if (!EmitKindOpt.empty()) {
     if (IsRepl) {
@@ -3464,33 +3074,13 @@ int ProcessCommandLine(int argc, const char **argv) {
 
     if (EmitKindOpt == "llvm-ir") {
       EmitMode = EmitKind::LLVMIR;
-      if (InputFiles.size() != 1) {
-        fprintf(stderr, "Error: --emit requires a single input file\n");
-        return -1;
-      }
       EmitOutputPath = OutputFile.empty() ? "out.ll" : OutputFile.getValue();
     } else if (EmitKindOpt == "asm") {
       EmitMode = EmitKind::ASM;
-      if (InputFiles.size() != 1) {
-        fprintf(stderr, "Error: --emit requires a single input file\n");
-        return -1;
-      }
       EmitOutputPath = OutputFile.empty() ? "out.s" : OutputFile.getValue();
     } else if (EmitKindOpt == "obj") {
       EmitMode = EmitKind::OBJ;
-      if (InputFiles.size() != 1) {
-        fprintf(stderr, "Error: --emit requires a single input file\n");
-        return -1;
-      }
       EmitOutputPath = OutputFile.empty() ? "out.o" : OutputFile.getValue();
-    } else if (EmitKindOpt == "exe") {
-      EmitMode = EmitKind::EXE;
-      if (OutputFile.empty() && InputFiles.size() > 1) {
-        fprintf(stderr, "Error: multiple inputs require -o\n");
-        return -1;
-      }
-      if (!OutputFile.empty())
-        EmitOutputPath = OutputFile.getValue();
     } else {
       fprintf(stderr, "Error: invalid --emit value '%s'\n",
               EmitKindOpt.c_str());
@@ -3498,9 +3088,6 @@ int ProcessCommandLine(int argc, const char **argv) {
     }
   } else if (!OutputFile.empty()) {
     fprintf(stderr, "Error: -o requires --emit\n");
-    return -1;
-  } else if (!IsRepl && InputFiles.size() > 1) {
-    fprintf(stderr, "Error: multiple inputs require --emit exe\n");
     return -1;
   }
 
@@ -3530,37 +3117,29 @@ int main(int argc, const char **argv) {
   InitializeNativeTargetAsmPrinter();
   InitializeNativeTargetAsmParser();
 
+  // Prime the input: print prompt (REPL only) and load the first token.
+  // Every parse function expects CurTok to be loaded before it is called.
+  PrintReplPrompt();
+  getNextToken();
+
   // Create the JIT first — InitializeModuleAndManagers() needs TheJIT in
   // order to set the data layout on the new module.
   TheJIT = ExitOnErr(PyxcJIT::Create());
   InitializeModuleAndManagers();
 
   if (IsRepl) {
-    PrintReplPrompt();
-    getNextToken();
     MainLoop();
   } else {
-    if (EmitMode == EmitKind::EXE) {
-      if (!EmitExecutable())
-        return 1;
-    } else {
-      if (InputFiles.empty())
-        return 1;
-      if (!OpenInputFile(InputFiles.front()))
-        return 1;
-      ResetLexerState();
-      ResetParserStateForFile();
-      PrintReplPrompt();
-      getNextToken();
+    FileModeLoop();
+    if (IsEmitMode())
+      EmitFileMode();
+    else
+      RunFileMode();
+  }
 
-      FileModeLoop();
-      if (IsEmitMode())
-        EmitFileMode();
-      else
-        RunFileMode();
-
-      CloseInputFile();
-    }
+  if (Input && Input != stdin) {
+    fclose(Input);
+    Input = stdin;
   }
 
   return 0;

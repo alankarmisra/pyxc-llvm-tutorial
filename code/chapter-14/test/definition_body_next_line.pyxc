@@ -3,7 +3,7 @@
 
 
 # Tests: definition body on the line after ':' using an indented block.
-# definition = "def" prototype ":" ( simplestmt | eols block ) ;
+# definition = "def" function signature ":" ( simplestmt | eols block ) ;
 
 def inc(x):
     return x + 1

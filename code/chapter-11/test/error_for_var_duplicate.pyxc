@@ -5,7 +5,4 @@
 
 extern def printd(x)
 
-def count(n):
-    for var var i = 1, i <= n, 1:
-        printd(i)
-    return 0
+def count(n): return for var var i = 1, i <= n, 1: printd(i)

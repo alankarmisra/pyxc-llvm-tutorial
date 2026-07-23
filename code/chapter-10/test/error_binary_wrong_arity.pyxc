@@ -2,7 +2,7 @@
 # CHECK: Binary operator must have exactly two arguments
 
 
-# Tests: a binary operator prototype with only one argument is rejected.
+# Tests: a binary operator function signature with only one argument is rejected.
 # binaryopprototype = customopchar "(" identifier "," identifier ")"
 # ParseBinaryOpPrototype checks ArgNames.size() != 2.
 

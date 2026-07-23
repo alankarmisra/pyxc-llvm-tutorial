@@ -3,10 +3,10 @@
 # CHECK: Evaluated to 3.000000
 
 
-# Tests: definition body on the line after ':' using an indented block.
-# definition = "def" prototype ":" ( simplestmt | eols block ) ;
+# Tests: definition body on the line after ':'.
+# definition = "def" function signature ":" [ eols ] "return" expression
 
 def inc(x):
-    return x + 1
+return x + 1
 
 inc(2)

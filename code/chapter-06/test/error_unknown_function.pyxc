@@ -2,6 +2,6 @@
 # RUN: grep -q "Error" %t
 # RUN: grep -q "Unknown function referenced" %t
 
-# Error paths still work with JIT: calling a function that was never declared
-# or defined must produce an error via getFunction() returning nullptr.
-notdeclared(1)
+# CallExprAST::codegen error path: TheModule->getFunction returns nullptr when
+# the callee has never been declared or defined.
+def bad(x): return notdeclared(x)

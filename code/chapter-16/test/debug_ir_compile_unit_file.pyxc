@@ -8,5 +8,5 @@
 # source file being compiled. Debuggers use this to map addresses back to
 # source files.
 
-def main() -> None:
-    return
+def main():
+    return 0

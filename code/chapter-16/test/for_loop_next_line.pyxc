@@ -6,10 +6,10 @@
 # Tests: for loop body on the next line after ':'.
 # forstmt = "for" identifier "=" expression "," expression "," expression ":" suite ;
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-def run() -> None:
-    for var i: float64 = 1, i < 3, 1:
+def run():
+    for var i = 1, i < 3, 1:
         printd(i)
 
 run()

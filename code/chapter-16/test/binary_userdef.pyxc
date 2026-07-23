@@ -9,7 +9,7 @@
 # userdefbinaryop = ? any opchar defined as a custom binary operator ?
 
 @binary(5)
-def |(x: float64, y: float64) -> float64:
+def |(x, y):
     if x != 0:
         return 1
     else:
@@ -19,6 +19,6 @@ def |(x: float64, y: float64) -> float64:
             return 0
 
 # Logical OR: false | false = 0, true | false = 1.
-0.0 | 0.0
+0 | 0
 
-1.0 | 0.0
+1 | 0

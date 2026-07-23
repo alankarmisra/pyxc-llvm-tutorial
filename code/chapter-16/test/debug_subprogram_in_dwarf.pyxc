@@ -10,10 +10,10 @@
 # correct DW_AT_name. Verifies that function names are preserved end-to-end
 # through codegen and into the final object file.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-def multiply(a: float64, b: float64) -> float64:
+def multiply(a, b):
     return a * b
 
-def main() -> None:
+def main():
     printd(multiply(6, 7))

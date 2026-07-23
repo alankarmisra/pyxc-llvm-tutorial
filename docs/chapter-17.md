@@ -1,30 +1,26 @@
 ---
-description: "Add struct types with field declarations, field read/write, and nested field access."
+description: "Add a static type system: int, int8, int16, int32, int64, float, float32, float64, bool, and void (None). Parameters, variables, and return types are all explicitly annotated."
 ---
-# 17. pyxc: Structs
+# 17. pyxc: A Static Type System
 
-## Where's the code at?
+## Where We Are
 
-I think I'll add *structs* to the language now. I have enough *scalar* types and I'm keen on getting some structural help from the language for my data so I can keep related information together. The following is what I'm hoping to have by the end of this chapter. 
+[Chapter 16](chapter-16.md) gave Pyxc debug info and proper optimisation pipelines. The language itself still has exactly one type: `double`. Every variable, parameter, return value, and literal is a 64-bit float, and the compiler never needs to ask "what type is this?".
+
+This chapter adds a real type system. After this chapter:
 
 ```pyxc
-# defining a structure with multiple elements
-struct Point:
-  x: int
-  y: int
+def add(a: int32, b: int32) -> int32:
+    return a + b
 
-# passing a structure by value and accessing different elements of the structure
-def distance_sq(p: Point) -> float64:
-  return float64(p.x * p.x + p.y * p.y)
+var counter: int = 0
+var ratio: float64 = 3.14
 
-def main() -> int:
-  var p: Point # define it
-  p.x = 3 # mutate element
-  p.y = 4 # mutate element
+def classify(x: float64) -> bool:
+    return x > 0.0
 
-  # pass to a function and print the result
-  printd(distance_sq(p))  # 25.000000
-  return 0
+if classify(1.5):
+    printd(float64(counter))
 ```
 
 ## Source Code
@@ -36,896 +32,1311 @@ cd pyxc-llvm-tutorial/code/chapter-17
 
 ## Grammar
 
-First I'll extend the grammar cause it helps me write the lexer and parser better. 
-
-To define something like this in my grammar:
-
-```pyxc
-struct Point:
-```
-
-I could write:
+The grammar gains type annotations throughout:
 
 ```ebnf
-struct-def    ::= 'struct' identifier ':'
+type        ::= 'int' | 'int8' | 'int16' | 'int32' | 'int64'
+              | 'float' | 'float32' | 'float64'
+              | 'bool' | 'None'
+
+param       ::= identifier ':' type
+paramlist   ::= param (',' param)*
+
+prototype   ::= identifier '(' paramlist? ')'
+return-ann  ::= ('->' type)?
+
+definition  ::= 'def' prototype return-ann ':' suite
+extern-def  ::= 'extern' 'def' prototype return-ann
+
+var-stmt    ::= 'var' identifier ':' type ('=' expression)?
+              | 'var' identifier ':' type (',' identifier ':' type)*
+
+for-stmt    ::= 'for' ('var' identifier ':' type | identifier) '='
+                expression ',' expression ',' expression ':' suite
+
+castexpr    ::= type '(' expression ')'
+
+bool-literal ::= 'True' | 'False'
 ```
 
-`identifier` can be any legal pyxc name like *Point*, *Car*, etc. Next I deal with fields.
+Key changes from chapter 15:
 
-```pyxc
-struct Point: # a NEWLINE follows
-  x: int  # an INDENT followed by a field
-```
+- Every parameter requires `: type`.
+- `var` declarations require `: type`, optionally followed by `= expression`.
+- `for var` loop variables require `: type` between the name and `=`.
+  A plain `for i = ...` reuses an existing variable and does not accept a type.
+- A function carries `-> type` between `)` and `:`. If absent, `def` defaults to `None` (void); `extern def` and operator defs default to `float64`.
+- `None` is the void return type annotation; it cannot be used as a variable or parameter type.
+- `True` and `False` are new boolean literal keywords.
 
-which I add as...
+## The Design
 
-```ebnf
-struct-def    ::= 'struct' identifier ':' NEWLINE INDENT field
-```
+### The ValueType Enum
 
-I need muliple fields and then a `DEDENT` to indicate I've finished defining the fields of the struct so I add a `+` to `field` and add the remaining items to complete `struct-def`:
-
-```ebnf
-struct-def    ::= 'struct' identifier ':' NEWLINE INDENT field+ DEDENT
-```
-
-Since a field looks like 
-```pyxc
-x: int
-```
-I define a field as:
-
-```ebnf
-field         ::= identifier ':' type NEWLINE
-```
-
-Notice that the way I've defined `field` forces it to end in a `NEWLINE`. Something like this would be invalid according to this grammar.
-
-```pyxc
-struct Point
-  x: int
-  y: int<EOF>
-``` 
-
-That seems ok with me right now. It's an edge case and I don't want to complicate my parser to account for this right now. Next I'll deal with accessing struct fields:
-
-```pyxc
-printd(p.x) # pyxc won't understand p.x just yet so I have to extend the grammar
-```
-
-```ebnf
-field-expr    ::= identifier ('.' identifier)+
-```
-
-I grouped `('.' identifier)` and added a `+` because I might have structs with inner structs and so I could have something like `route.destination.x`, for example.
-
-and finally I deal with assignments to the fields.
-
-```pyxc
-point.x = 10
-```
-
-```ebnf
-field-assign  ::= field-expr '=' expression
-```
-
-Structs will define a new type, so I need to extend the `type` rule too:
-
-```ebnf
-type          ::= ...
-               | identifier   (* struct name — must be declared above the point of use *)
-```
-
-Putting it all together below for reference:
-
-```ebnf
-struct-def    ::= 'struct' identifier ':' NEWLINE INDENT field+ DEDENT
-
-field         ::= identifier ':' type NEWLINE
-
-field-expr    ::= identifier ('.' identifier)+
-
-field-assign  ::= field-expr '=' expression
-
-type          ::= ...
-               | identifier   (* struct name — must be declared above the point of use *)
-```
-
-I think that should do it. I'll try implementing this first and come back to it if I see gaps in the language. I can already see that I haven't extended the field accessor notation to expressions, so I can't do something like:
-
-```pyxc
-make_point().x
-```
-
-I think for now, this is ok. 
-
-## The `struct` Keyword
-
-I'll start extending the lexer/parser. First I need a token for the `struct` keyword.  
+Every value now has a type, represented as a `ValueType` enum:
 
 ```cpp
-enum Token {
-    ...
-    tok_struct = -34,
-    ...
-}
-```
-
-I will also need to add the `struct` string to my keywords map
-
-```cpp
-static map<string, Token> Keywords = {
-    ...
-    {"struct", tok_struct}
-}
-```
-
-Great, now I can read the struct definitions and emit the tokens.
-
-## Where do I keep track of struct definitions?
-
-Now that the lexer hands me a `tok_struct`, I need somewhere to actually record what a struct looks like once I've parsed it. What do I need to know about a struct? Its name, and its list of fields — each with a name and a type.
-
-I'm also going to need to catch two mistakes as I parse: defining the same struct twice, and declaring the same field twice inside one struct. Both of those are "have I seen this name before?" checks, so I want a lookup by name, not just a list I'd have to scan linearly. A `map<string, ...>` keyed on the name gets me that.
-
-So — one map for the fields of a single struct, and one map for all the structs I know about:
-
-```cpp
-struct StructFieldInfo {
-  string Name;
-  ValueType Type = ValueType::Error;
-  string StructName;  // only set if Type == Struct
+enum class ValueType {
+  None,    // void — no return value
+  Int,     // target-machine default integer (pointer-sized: 32 or 64 bits)
+  Int8,    // 8-bit signed integer
+  Int16,   // 16-bit signed integer
+  Int32,   // 32-bit signed integer
+  Int64,   // 64-bit signed integer
+  Float,   // 64-bit double (the 'float' keyword)
+  Float32, // 32-bit float
+  Float64, // 64-bit double (the 'float64' keyword)
+  Bool,    // 1-bit boolean (i1)
+  Error    // sentinel — parse/type error
 };
 ```
 
-I added `StructName` to the field because a field's type might itself be a struct (a struct containing a struct), and `ValueType::Struct` alone doesn't tell me *which* struct — I'll run into this same problem again in a minute for variables generally.
+Each `ValueType` maps to a fixed LLVM IR type:
+
+| ValueType | Keyword | LLVM IR type | Notes |
+|-----------|---------|--------------|-------|
+| `Int` | `int` | `i64` / `i32` | pointer-width — host-dependent |
+| `Int8` | `int8` | `i8` | always 8-bit |
+| `Int16` | `int16` | `i16` | always 16-bit |
+| `Int32` | `int32` | `i32` | always 32-bit |
+| `Int64` | `int64` | `i64` | always 64-bit |
+| `Float` | `float` | `double` | same IR type as Float64 |
+| `Float32` | `float32` | `float` | 32-bit IEEE single |
+| `Float64` | `float64` | `double` | 64-bit IEEE double |
+| `Bool` | `bool` | `i1` | 1-bit integer |
+| `None` | `None` | `void` | no-value return |
+
+`Int` (no size suffix) maps to the pointer-width integer on the target machine. On a 64-bit host it is `i64`; on a 32-bit host it is `i32`.
+
+`Int32` is always `i32` regardless of target. `int32(x)` is a reliable cross-platform 32-bit integer; `int` is a platform-default convenience.
+
+`Float` and `Float64` are **distinct enum values but compile to the same IR type** — both produce `double` from `LLVMTypeFor`. The `float` keyword gives you `ValueType::Float`; the `float64` keyword gives you `ValueType::Float64`. They are interchangeable everywhere: assignment, binary operations, function arguments, and debug info all treat them as the same 64-bit float. The distinction exists at the token and enum level only so that error messages and `TypeName()` can round-trip the exact keyword the programmer wrote.
+
+`None` is the return type of functions that produce no value. It corresponds to LLVM's `void` and cannot be used as a variable or parameter type.
+
+`Error` is a sentinel returned by type helpers when something is wrong. It propagates errors without needing `Optional`.
+
+### Implicit Conversions
+
+The type system is strict. The only implicit conversions allowed are:
+
+1. **Same type → always allowed.**
+2. **Float ↔ Float64** — the two 64-bit float spellings are freely interchangeable. No instruction is emitted since they share the same IR type.
+3. **Integer widening** — smaller fixed-size integers can be assigned to larger ones: `Int8 → Int16 → Int32 → Int64`. Also, `Int` (pointer-width) can widen to `Int64`. Emits `sext`.
+4. **Any integer type → any float type** — an integer can be silently converted to `Float`, `Float32`, or `Float64`. Emits `sitofp`.
+
+Everything else requires an explicit cast. In particular:
+- Narrowing (e.g., `int64` to `int32`) always requires an explicit cast.
+- `Bool` is not implicitly assignable from any other type.
+- `Int` does not widen to `Int32` or smaller fixed-size types (use an explicit cast).
+
+In IR, the three implicit cases look like:
+
+```llvm
+; Integer widening: int8 → int16
+%wide = sext i8 %x to i16
+
+; Integer → float: int32 → float64
+%asf = sitofp i32 %n to double
+
+; Float ↔ Float64: no instruction — same IR type double
+; the LLVM Value* is used directly
+```
+
+## New Tokens
+
+Three groups of tokens are added.
+
+### The `->` Arrow
 
 ```cpp
-struct StructTypeInfo {
-  string Name;
-  vector<StructFieldInfo> Fields;
-  std::map<string, size_t> FieldIndex;  // field name → index into Fields
+tok_arrow = -12, // ->
+```
+
+The lexer detects `->` as a single token:
+
+```cpp
+if (LexerLastChar == '-') {
+  int Tok = (peek() == '>') ? (advance(), tok_arrow) : '-';
+  LexerLastChar = advance();
+  return Tok;
+}
+```
+
+This must appear before the generic `-` path so that `->` is never split into two tokens.
+
+### Type Keywords
+
+```cpp
+tok_int = -20,
+tok_int8 = -23,  tok_int16 = -24, tok_int32 = -25, tok_int64 = -26,
+tok_float = -27, tok_float32 = -28, tok_float64 = -29,
+tok_bool = -30,
+tok_none = -31,
+```
+
+Registered in the keyword map:
+
+```cpp
+{"int", tok_int},         {"int8", tok_int8},       {"int16", tok_int16},
+{"int32", tok_int32},     {"int64", tok_int64},
+{"float", tok_float},     {"float32", tok_float32},  {"float64", tok_float64},
+{"bool", tok_bool},
+{"None", tok_none}
+```
+
+`float` and `float64` are **separate tokens** — `tok_float = -27` and `tok_float64 = -29`. `ParseTypeToken` maps `tok_float → ValueType::Float` and `tok_float64 → ValueType::Float64`. Both compile to `double`, but the distinction is preserved through the entire pipeline until IR emission.
+
+### Boolean Literal Keywords
+
+```cpp
+tok_true = -32,
+tok_false = -33,
+```
+
+```cpp
+{"True", tok_true}, {"False", tok_false}
+```
+
+`True` and `False` (capital first letter, matching Python) are lexed as keywords, not identifiers.
+
+## Numeric Literal Types
+
+Before chapter 16, every number literal stored a `double`. Now literals have proper types. The lexer sets a flag:
+
+```cpp
+NumIsFloat = NumStr.find('.') != string::npos;
+```
+
+`ParseNumberExpr` uses `APInt` or `APFloat` depending on this flag:
+
+```cpp
+static unique_ptr<ExprAST> ParseNumberExpr() {
+  ValueType Type = NumIsFloat ? ValueType::Float64 : ValueType::Int;
+  if (NumIsFloat) {
+    if (IsFloatType(ExpectedLiteralType))
+      Type = ExpectedLiteralType;
+    const fltSemantics &Semantics =
+        (Type == ValueType::Float32) ? APFloat::IEEEsingle()
+                                     : APFloat::IEEEdouble();
+    APFloat Val(Semantics, NumLiteralStr);
+    return make_unique<NumberExprAST>(Val, Type);
+  } else {
+    if (IsIntType(ExpectedLiteralType))
+      Type = ExpectedLiteralType;
+    unsigned Bits = LLVMTypeFor(Type)->getIntegerBitWidth();
+    // ...parse APInt and range-check...
+    return make_unique<NumberExprAST>(Val, Type);
+  }
+}
+```
+
+`NumberExprAST` stores the literal with full precision:
+
+```cpp
+class NumberExprAST : public ExprAST {
+  bool IsIntLiteral;
+  APInt IntVal;
+  APFloat FloatVal;
+public:
+  NumberExprAST(APInt Val, ValueType Type)
+      : IsIntLiteral(true), IntVal(std::move(Val)), FloatVal(0.0) { setType(Type); }
+  NumberExprAST(APFloat Val, ValueType Type)
+      : IsIntLiteral(false), IntVal(1, 0), FloatVal(std::move(Val)) { setType(Type); }
 };
 ```
 
-I kept `Fields` as an ordered `vector` and *also* added `FieldIndex`, a map from field name to its position in that vector. I need the vector because field order matters — it's the order LLVM will lay the fields out in memory, and I'll need to walk them in order for codegen. But I also need fast lookup by name for two things: checking for a duplicate field while parsing, and later, resolving `p.x` to "field 0" when I generate code for it. A map alongside the vector gets me both: ordered storage, and O(log n) lookup by name.
+The IR constants each produces:
 
-And then the registry that ties struct names to this info, so I can look up any struct I've seen so far:
+```llvm
+; 42   — integer literal, no '.', defaults to Int (i64 on 64-bit host)
+i64 42
 
-```cpp
-static std::map<string, StructTypeInfo> StructTypes;
+; 42.0 — float literal, has '.', defaults to Float64
+double 4.200000e+01
+
+; var x: int32 = 5   — context sets int32, literal is parsed as i32 directly
+i32 5
+
+; var x: float32 = 1.5  — context sets float32, literal parsed at single precision
+float 1.500000e+00
+
+; var b: int8 = 200   — out of range for i8, parse error before any IR is emitted
+; Error: Integer literal out of range for type
 ```
 
-`StructTypes` is the global registry of all declared structs. It gets populated as I parse `struct` blocks, and I'll consult it constantly afterward — every field access and every struct type annotation needs to look the struct up here to validate it.
+`3.14` in a `var x: float32` context becomes a `Float32` literal parsed with IEEE single precision — so `3.14` stores the nearest `float` value, not the nearest `double`. Without this, the parse would produce a `double` constant and then require an `fptrunc` to `float` at the store — which is not an implicit conversion and would be a type error.
 
-## Parsing a Struct Definition
+## Context-Sensitive Literal Types
 
-With the data structures in place I can write the actual parsing function. Let me walk through the grammar rule again and turn it into code step by step:
-
-```ebnf
-struct-def    ::= 'struct' identifier ':' NEWLINE INDENT field+ DEDENT
-```
-
-`CurTok` is `tok_struct` when this function is called, so first thing, eat it and expect a name:
+`ParseNumberExpr` consults a global `ExpectedLiteralType`:
 
 ```cpp
-getNextToken(); // eat 'struct'
-if (CurTok != tok_identifier) {
-  LogError("Expected struct name");
-  return false;
-}
-string StructName = IdentifierStr;
-```
+static ValueType ExpectedLiteralType = ValueType::Error;
 
-Before I go any further I should check whether I've already seen this struct — that's exactly the "have I seen this name before" check I built `StructTypes` for:
-
-```cpp
-if (StructTypes.count(StructName)) {
-  LogError(("Struct '" + StructName + "' is already defined").c_str());
-  return false;
-}
-```
-
-Then the `':' NEWLINE INDENT` part of the grammar, which is just token bookkeeping I've done before for function bodies:
-
-```cpp
-getNextToken(); // eat struct name
-if (CurTok != ':') {
-  LogError("Expected ':' after struct name");
-  return false;
-}
-getNextToken(); // eat ':'
-if (CurTok == tok_eol)
-  consumeNewlines();
-if (CurTok != tok_indent) {
-  LogError("Expected an indented struct body");
-  return false;
-}
-getNextToken(); // eat INDENT
-```
-
-Now the `field+` part. I need to loop, reading one field per iteration, until I hit the `DEDENT`. Each field is `identifier ':' type NEWLINE`, so inside the loop I read a name, a colon, and a type:
-
-```cpp
-StructTypeInfo Info;
-Info.Name = StructName;
-while (CurTok != tok_dedent && CurTok != tok_block_end && CurTok != tok_eof) {
-  if (CurTok == tok_eol) {
-    consumeNewlines();
-    continue;
+struct ExpectedLiteralTypeGuard {
+  ValueType Saved;
+  ExpectedLiteralTypeGuard(ValueType Type) : Saved(ExpectedLiteralType) {
+    ExpectedLiteralType = Type;
   }
-  if (CurTok != tok_identifier) {
-    LogError("Expected field name in struct body");
-    return false;
-  }
-  string FieldName = IdentifierStr;
+  ~ExpectedLiteralTypeGuard() { ExpectedLiteralType = Saved; }
+};
+```
+
+Four sites install a guard:
+
+- **`var` initializers.** `ParseVarStmt` installs the declared type so `var x: int32 = 5` parses `5` as `int32` directly.
+- **Assignment RHS.** `ParseAssignmentRHS` looks up the type of the already-declared variable and installs it before parsing the right-hand side, so `x = 10` (where `x: int32`) parses `10` as `int32`.
+- **Function call arguments.** `ParseIdentifierExpr` (the call parser) installs each parameter's declared type before parsing the corresponding argument expression.
+- **`return` expressions.** `ParseReturn` installs the enclosing function's return type so `return 10` inside a `-> int32` function parses `10` as `int32`.
+
+The effect on the IR is that no redundant cast instruction appears:
+
+```llvm
+; WITHOUT context guard: var x: float32 = 1.5
+; 1.5 parsed as double, then an fptrunc would be needed — but that's not implicit,
+; so this would be a type error.
+
+; WITH context guard: var x: float32 = 1.5
+; 1.5 parsed as float directly — clean alloca + store, no cast
+%x = alloca float
+store float 1.500000e+00, ptr %x
+```
+
+The guard is a scoped RAII object: when it goes out of scope, `ExpectedLiteralType` reverts to whatever it was before, so nested expressions are not affected.
+
+## Boolean Literals
+
+`True` and `False` are parsed in `ParsePrimary`:
+
+```cpp
+case tok_true:
   getNextToken();
-  if (CurTok != ':') {
-    LogError("Expected ':' after field name");
-    return false;
-  }
+  return make_unique<BoolExprAST>(true);
+case tok_false:
   getNextToken();
-  string FieldStructName;
-  ValueType FieldType = ParseTypeToken(&FieldStructName);
-  if (FieldType == ValueType::Error || FieldType == ValueType::None) {
-    LogError("Invalid struct field type");
-    return false;
-  }
+  return make_unique<BoolExprAST>(false);
 ```
 
-I'm reusing `ParseTypeToken` here rather than writing a separate type parser for struct fields — it already knows how to parse `int`, `float64`, and so on, and I'm about to teach it to also recognize other struct names as types. One parser, every place a type can appear.
-
-Before I add the field, I need the duplicate-field check — this is the other reason I built `FieldIndex` as a map:
+`BoolExprAST` is a new AST class:
 
 ```cpp
-  if (Info.FieldIndex.count(FieldName)) {
-    LogError(("Duplicate struct field '" + FieldName + "'").c_str());
-    return false;
-  }
-  Info.FieldIndex[FieldName] = Info.Fields.size();
-  Info.Fields.push_back({FieldName, FieldType, FieldStructName});
-  if (CurTok == tok_eol)
-    consumeNewlines();
+class BoolExprAST : public ExprAST {
+  bool Val;
+public:
+  BoolExprAST(bool Val) : Val(Val) { setType(ValueType::Bool); }
+  Value *codegen() override;
+};
+```
+
+`BoolExprAST::codegen` emits an `i1` constant:
+
+```cpp
+Value *BoolExprAST::codegen() {
+  return ConstantInt::get(Type::getInt1Ty(*TheContext), Val ? 1 : 0);
 }
 ```
 
-`Info.Fields.size()` before the push is exactly the index the new field is about to land at, so I record that in `FieldIndex` first, then push. Finally the `DEDENT`, and I register the finished struct in `StructTypes`:
+```llvm
+; True
+i1 true
 
-```cpp
-if (CurTok != tok_dedent) {
-  LogError("Expected dedent after struct body");
-  return false;
-}
-PendingTokens.push_front(tok_block_end);
-getNextToken(); // eat DEDENT, then surface tok_block_end
-StructTypes[StructName] = std::move(Info);
-return true;
+; False
+i1 false
 ```
 
-That `PendingTokens.push_front(tok_block_end)` trick isn't new to this chapter — I'm reusing the same synthetic-token mechanism I used for function bodies, so whatever calls `ParseStructDefinition` sees a clean `tok_block_end` marker after the DEDENT instead of having to special-case struct endings.
+`Bool` is a distinct type. It is not the result of a comparison widened to an integer — it stays `i1` throughout. Comparisons also return `Bool` / `i1` in chapter 16.
 
-## The `struct` handler
+## ParseTypeToken and ParseOptionalReturnType
 
-I need a top-level handler like I have for `def` and `extern`. It just calls the parser and recovers from errors the same way the others do:
-
-```cpp
-static void HandleStructDef() {
-  bool Ok = ParseStructDefinition();
-  if (!Ok) {
-    SynchronizeToLineBoundary();
-    return;
-  }
-  bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof && CurTok != tok_block_end);
-  if (HasTrailing) {
-    LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
-    SynchronizeToLineBoundary();
-    return;
-  }
-}
-```
-
-And wire it into both loops that dispatch on the current token — the REPL's `MainLoop` and the file-mode `FileModeLoop`:
+`ParseTypeToken` consumes the current token if it is a type keyword and returns the corresponding `ValueType`:
 
 ```cpp
-switch (CurTok) {
-case tok_struct:
-  HandleStructDef();
-  break;
-case tok_def:
-  HandleDefinition();
-  break;
-  ...
-}
-```
-
-Let's handle field access now.
-
-## `struct` as a type
-
-Before I can write `x: int` *or* `p: Point` in the same field/parameter/variable declaration, `ParseTypeToken` needs to accept a struct name where it currently only accepts the scalar keywords. An identifier that isn't a keyword and shows up where a type is expected — that's a struct name, if it's one I know about:
-
-```cpp
-case tok_identifier: {
-  string TyName = IdentifierStr;
-  if (!StructTypes.count(TyName)) {
-    LogError(("Unknown type '" + TyName + "'").c_str());
+static ValueType ParseTypeToken() {
+  switch (CurTok) {
+  case tok_int:     getNextToken(); return ValueType::Int;
+  case tok_int8:    getNextToken(); return ValueType::Int8;
+  case tok_int16:   getNextToken(); return ValueType::Int16;
+  case tok_int32:   getNextToken(); return ValueType::Int32;
+  case tok_int64:   getNextToken(); return ValueType::Int64;
+  case tok_float:   getNextToken(); return ValueType::Float;
+  case tok_float32: getNextToken(); return ValueType::Float32;
+  case tok_float64: getNextToken(); return ValueType::Float64;
+  case tok_bool:    getNextToken(); return ValueType::Bool;
+  case tok_none:    getNextToken(); return ValueType::None;
+  default:
+    LogError("Expected a type");
     return ValueType::Error;
   }
-  getNextToken();
-  if (StructName)
-    *StructName = TyName;
-  return ValueType::Struct;
 }
 ```
 
-This is why I keep needing that "struct name alongside the type" pattern — `ValueType::Struct` on its own doesn't say *which* struct, so `ParseTypeToken` takes an optional `string *StructName` output parameter, and every caller that cares about struct types passes one in. I checked `StructTypes` for the name rather than just accepting any identifier — this also means a struct has to be declared *before* anything uses it as a type. No forward references. I could lift that restriction later with a pre-pass that just collects names, but I don't need it yet.
+`tok_float` and `tok_float64` produce distinct `ValueType` values even though both compile to `double`.
 
-## Two New AST Nodes
-
-Now for the parts of the grammar I haven't touched yet — reading a field and writing to one. Each needs its own AST node, because they compile to different code (a load vs. a `getelementptr` + store), even though they share a lot of the same "walk the field path" logic.
-
-### `FieldExprAST`
-
-A field read: `p.x`, `o.inner.value`. What does this node actually need to remember? Not the whole chain as one string — I want the pieces separately so codegen can walk them one GEP at a time. So: the name of the variable at the root, and the list of field names after it.
+`ParseOptionalReturnType` wraps it with a default:
 
 ```cpp
-class FieldExprAST : public ExprAST {
-  string BaseName;           // the variable at the root: "p" or "o"
-  vector<string> FieldPath;  // the chain of field names: ["x"] or ["inner", "value"]
-  ...
-};
+static ValueType ParseOptionalReturnType(
+    ValueType DefaultType = ValueType::None) {
+  if (CurTok != tok_arrow)
+    return DefaultType;
+  getNextToken(); // eat '->'
+  return ParseTypeToken();
+}
 ```
 
-The type of the whole expression is whatever the *last* field in the path resolves to, so I set that in the constructor once the parser has walked the chain. `getLValueName()` returns `&BaseName` — that's what assignment codegen will use to find the root pointer to start GEP-ing from.
+The `DefaultType` parameter is the key design decision:
 
-### `FieldAssignmentExprAST`
+- `ParseDefinition` calls `ParseOptionalReturnType(ValueType::None)` — unannotated `def` is void.
+- `ParseExtern` and operator parsers call `ParseOptionalReturnType()` (default `Float64`) — extern declarations and operator overloads default to `float64` because they are typically C library functions or mathematical operators. `ParseDecoratedDef` calls `ParseOptionalReturnType()` and immediately calls `Proto->setReturnType(RetTy)`, so any explicit `->` annotation overrides that placeholder.
 
-A field write: `p.x = 5`. This one just needs the field expression on the left (so it knows *where* to write) and an expression on the right (what to write):
+`ValueType::None` also serves as a placeholder type for all statement-like AST nodes that produce no meaningful value: `ReturnExprAST`, `BlockExprAST`, `ForExprAST`, `IfStmtAST`, and `VarStmtAST` all call `setType(ValueType::None)` in their constructors, and all override `shouldPrintValue()` to return `false`. This is the same pattern as the single-hierarchy AST design noted in chapter 12 — in a clean Stmt/Expr split, statements would carry no type at all. Here, `None` is the convention that means "this node is a statement; its type is not meaningful."
+
+## ParsePrototype: Typed Parameters
+
+Chapter 16's prototype parser accepted bare identifiers:
 
 ```cpp
-class FieldAssignmentExprAST : public ExprAST {
-  unique_ptr<FieldExprAST> LHS;
-  unique_ptr<ExprAST> RHS;
-  ...
-};
+// Chapter 16
+while (getNextToken() == tok_identifier)
+  ArgNames.push_back(IdentifierStr);
 ```
 
-Like the plain `AssignmentExprAST` I already have, `shouldPrintValue()` returns `false` — an assignment shouldn't print anything at the REPL.
-
-## Parsing Field Access
-
-Now the actual parsing. `ParseFieldAccessExpr` gets called once the parser has already seen an identifier and then a `.` after it. What I need to do is walk the chain of `.field` steps, and at each step, check that what I'm accessing *is* a struct field and figure out what type it produces — so I can validate the *next* step in the chain, and so the final node knows its own type.
+Chapter 17 requires `name : type` for every parameter:
 
 ```cpp
-static unique_ptr<FieldExprAST> ParseFieldAccessExpr(string BaseName,
-                                                     ValueType BaseType,
-                                                     string BaseStructName) {
-  vector<string> Path;
-  ValueType CurType = BaseType;
-  string CurStruct = std::move(BaseStructName);
-  while (CurTok == '.') {
-    getNextToken(); // eat '.'
-    if (CurTok != tok_identifier) {
-      LogError("Expected field name after '.'");
-      return nullptr;
-    }
-    string Field = IdentifierStr;
-    getNextToken(); // eat field name
-```
-
-Before I look the field up, I have to make sure I'm actually looking at a struct — if `CurType` isn't `ValueType::Struct`, there's nothing to access a field *of*:
-
-```cpp
-    if (CurType != ValueType::Struct || CurStruct.empty()) {
-      LogError("Field access requires a struct value");
-      return nullptr;
-    }
-    auto SI = StructTypes.find(CurStruct);
-    if (SI == StructTypes.end()) {
-      LogError("Unknown struct type in field access");
-      return nullptr;
-    }
-    auto FI = SI->second.FieldIndex.find(Field);
-    if (FI == SI->second.FieldIndex.end()) {
-      LogError(("Unknown field '" + Field + "' on struct '" + CurStruct + "'")
-                   .c_str());
-      return nullptr;
-    }
-```
-
-And here's exactly where `FieldIndex` earns its keep again — I use it to find the field's entry in `Fields`, then advance `CurType`/`CurStruct` to that field's type before the next loop iteration:
-
-```cpp
-    const auto &FD = SI->second.Fields[FI->second];
-    CurType = FD.Type;
-    CurStruct = FD.StructName;
-    Path.push_back(Field);
+// Chapter 17
+vector<pair<string, ValueType>> ArgNames;
+getNextToken(); // eat '('
+if (CurTok != ')') {
+  while (true) {
+    string ArgName = IdentifierStr;
+    getNextToken(); // eat identifier
+    if (CurTok != ':')
+      return LogErrorP("Parameters require type annotations (e.g., ': int32')");
+    getNextToken(); // eat ':'
+    ValueType ArgTy = ParseTypeToken();
+    if (ArgTy == ValueType::None)
+      return LogErrorP("Parameters cannot have None type");
+    ArgNames.push_back({ArgName, ArgTy});
+    if (CurTok == ')') break;
+    if (CurTok != ',') return LogErrorP("Expected ')' or ','");
+    getNextToken(); // eat ','
   }
-  return make_unique<FieldExprAST>(std::move(BaseName), std::move(Path),
-                                   CurType, CurStruct);
 }
 ```
 
-By the time the loop ends, `CurType`/`CurStruct` describe the *leaf* field — that's what the whole `p.x` or `o.inner.value` expression evaluates to. This is why `route.destination.x` from the grammar section just falls out for free — each `.` step is the same lookup, chained.
+`PrototypeAST` now stores `vector<pair<string, ValueType>>` and a `ReturnType` field, with helpers `getArgType(i)`, `getReturnType()`, `setReturnType()`, and `clone()`.
 
-I call this from `ParseIdentifierExpr`, where I already know the base identifier resolved to a variable. If it's a struct variable and I see a `.` next, hand off to `ParseFieldAccessExpr`:
+The same function signature in chapter 15 vs chapter 16:
 
-```cpp
-auto *Var = dynamic_cast<VariableExprAST *>(Base.get());
-if (!Var)
-  return LogError("Field access base must be a variable");
-auto Field =
-    ParseFieldAccessExpr(IdName, Var->getType(), Var->getStructName());
+```llvm
+; Chapter 16
+define double @add(double %a, double %b) { ... }
+
+; Chapter 17
+define i32 @add(i32 %a, i32 %b) { ... }
+define i1 @classify(double %x) { ... }
+define void @greet() { ... }
 ```
 
-That `dynamic_cast` check is me enforcing the "field access must start with a named variable" limitation I noted in the grammar section — `make_point().x` isn't a `VariableExprAST`, so it's rejected here rather than crashing somewhere in codegen.
+Every parameter type and every return type now appears literally in the IR rather than being uniformly `double`.
 
-Field access on the *left* of `=` reuses the exact same `ParseFieldAccessExpr` — I don't want two copies of that chain-walking logic. It just gets handed off to a different continuation, `ParseFieldAssignmentRHS`, once I see the `=`:
+## VarScopes: From Set to Map
+
+Chapter 16 tracked which variable names were in scope using a `set<string>`:
 
 ```cpp
-static unique_ptr<ExprAST>
-ParseFieldAssignmentRHS(unique_ptr<FieldExprAST> LHS) {
-  ValueType DestType = LHS->getType();
-  getNextToken(); // eat '='
-  ExpectedLiteralTypeGuard Guard(DestType);
-  auto RHS = ParseExpression();
-  if (!RHS)
-    return nullptr;
-  if (!IsAssignable(DestType, RHS->getType()))
-    return LogError("Type mismatch in assignment");
-  return make_unique<FieldAssignmentExprAST>(std::move(LHS), std::move(RHS),
-                                             DestType);
-}
+// Chapter 16
+static vector<set<string>> VarScopes;
 ```
 
-Same `IsAssignable` check I already use for plain variable assignment — a struct field is just an assignable location with a type, same rules apply.
-
-## A Lurking Lexer Bug
-
-I was trying to run one of my `.pyxc` test files and hit a bug that was already there but only surfaced now. The number lexer entered the float-parsing path whenever it saw a standalone `.`:
+Chapter 17 upgrades to `map<string, ValueType>` so the type of each variable is also tracked:
 
 ```cpp
-// Before — wrong
-if (isdigit(LexerLastChar) || LexerLastChar == '.') {
+// Chapter 17
+static vector<std::map<string, ValueType>> VarScopes;
 ```
 
-That meant `p.x` would lex as: identifier `p`, then see `.` and enter the number-parsing path, find `x` instead of a digit, and produce garbage. Fine when `.` meant nothing on its own. Fatal now that it separates a variable from its field.
-
-The fix — only enter the float path when the character *after* `.` is actually a digit. I already had a `peek()` helper for exactly this kind of one-character lookahead, so I just use it:
+`LookupVarType` searches the scope stack innermost-first, then falls back to `GlobalVarTypes`:
 
 ```cpp
-// After — correct
-if (isdigit(LexerLastChar) ||
-    (LexerLastChar == '.' && isdigit(peek()))) {
-```
-
-`.5` still works as a float literal. `p.x` no longer gets eaten.
-
-## Tracking Struct Names in Scope
-
-Field access parsing needs to know a variable's struct name, not just that it's `ValueType::Struct` — I keep running into this. Chapter 16 already tracks variable *types* with `VarScopes: vector<map<string, ValueType>>`, a stack of maps for nested scopes. I need the same shape of thing, but for struct names, so I add a parallel stack rather than changing what `VarScopes` stores:
-
-```cpp
-static vector<std::map<string, string>> VarStructScopes;
-```
-
-I kept it separate instead of, say, changing `VarScopes` to hold a `(ValueType, string)` pair, because most variables aren't structs and I don't want every scope lookup paying for a string that's usually empty. Every place that pushes or pops a scope for `VarScopes` now does the same for `VarStructScopes` right alongside it — `BeginFunctionScope`, `BeginBlockScope`, `BeginLoopScope`, and their `End*` counterparts. And `DeclareVar` records into both when the variable being declared is a struct:
-
-```cpp
-static void DeclareVar(const string &Name, ValueType Type,
-                       const string &StructName = "") {
-  VarScopes.back()[Name] = Type;
-  if (Type == ValueType::Struct)
-    VarStructScopes.back()[Name] = StructName;
-}
-```
-
-And lookup mirrors `LookupVarType` exactly — walk the scope stack innermost-first, fall back to the globals map if nothing local matches:
-
-```cpp
-static string LookupVarStructName(const string &Name) {
-  for (auto It = VarStructScopes.rbegin(); It != VarStructScopes.rend(); ++It) {
+static ValueType LookupVarType(const string &Name) {
+  for (auto It = VarScopes.rbegin(); It != VarScopes.rend(); ++It) {
     auto Found = It->find(Name);
     if (Found != It->end())
       return Found->second;
   }
-  auto GI = GlobalVarStructTypes.find(Name);
-  if (GI != GlobalVarStructTypes.end())
+  auto GI = GlobalVarTypes.find(Name);
+  if (GI != GlobalVarTypes.end())
     return GI->second;
-  return "";
+  return ValueType::Error;
 }
 ```
 
-Function parameters need the same treatment for the same reason — a parameter's `ValueType::Struct` alone doesn't say which struct. So the old `pair<string, ValueType>` per argument in `PrototypeAST` isn't enough anymore; I turn it into a small struct with room for the struct name too:
+Every `VariableExprAST` carries its resolved type at parse time. When codegen runs, a load uses `LLVMTypeFor(resolvedType)` for the type operand:
+
+```llvm
+; var x: int32 — load uses i32
+%x_val = load i32, ptr %x
+
+; var r: float32 — load uses float
+%r_val = load float, ptr %r
+```
+
+## var Declarations: Required Type Annotation
+
+Before:
+
+```pyxc
+var x = 1.0
+var y
+```
+
+After:
+
+```pyxc
+var x: float64 = 1.0
+var y: int32
+var a: int8, b: int16   # multiple bindings in one statement
+```
+
+The colon-type is mandatory. `ParseVarStmt` reads it:
 
 ```cpp
-struct ArgInfo {
+if (CurTok != ':')
+  return LogError(
+      "Variable declaration requires a type annotation (e.g., ': int32')");
+getNextToken(); // eat ':'
+ValueType DeclTy = ParseTypeToken();
+if (DeclTy == ValueType::None)
+  return LogError("Variables cannot have None type");
+```
+
+If there is no initialiser, a zero constant of the declared type is generated. If there is one, the parser installs a `ExpectedLiteralTypeGuard(DeclTy)` before parsing the initializer expression, then checks assignability:
+
+```cpp
+{
+  ExpectedLiteralTypeGuard Guard(DeclTy);
+  Init = ParseExpression();
+}
+if (!IsAssignable(DeclTy, Init->getType()))
+  return LogError("Type mismatch in variable initialization");
+```
+
+`VarBinding` replaces the old `pair<string, unique_ptr<ExprAST>>`:
+
+```cpp
+struct VarBinding {
   string Name;
-  ValueType Type;
-  string StructName;
+  ValueType Ty;
+  unique_ptr<ExprAST> Init;
 };
 ```
 
-And `PrototypeAST` grows a matching `ReturnStructName` field for the same reason — a function returning a struct needs to say which one. Same mechanics as everywhere else in this chapter; just more places to carry the extra string.
-
-## From Struct Name to LLVM Type
-
-Everything so far has been the parser's view of a struct — I know the fields, I know the types, I've validated field accesses. Now I actually need to generate code, which means I need a real `StructType*` LLVM object, not just my own `StructTypeInfo`.
-
-```cpp
-static std::map<string, StructType *> LLVMStructTypes;
-
-static Type *GetOrCreateLLVMStructType(const string &StructName) {
-  auto It = LLVMStructTypes.find(StructName);
-  if (It != LLVMStructTypes.end())
-    return It->second;
-
-  auto *ST = StructType::create(*TheContext, "struct." + StructName);
-  LLVMStructTypes[StructName] = ST;  // register before filling the body
-
-  vector<Type *> FieldTys;
-  for (const auto &Field : StructTypes[StructName].Fields)
-    FieldTys.push_back(LLVMTypeFor(Field.Type, Field.StructName));
-  ST->setBody(FieldTys, false);
-  return ST;
-}
-```
-
-I need the cache — `LLVMStructTypes` — because LLVM creates a brand-new `StructType` object every time I call `StructType::create` with the same name; it doesn't deduplicate for me. Without the cache, two separate `alloca`s for the same pyxc struct would end up backed by two different LLVM types that just happen to have the same layout but different identity — every load, store, and GEP mixing them would fail.
-
-I also deliberately register the type in the cache *before* I fill in its body. That's not an accident: it's what lets a struct hold a pointer to itself without this function recursing forever. (A struct containing *itself by value*, rather than a pointer to itself, would need infinite memory, so that case can't come up in code that passed my earlier checks anyway.)
-
-`setBody(FieldTys, false)` — the `false` is "not packed," meaning fields get natural alignment, same default as a C struct.
-
-And I wire it into `LLVMTypeFor`, the function everything else in codegen already goes through to turn a `ValueType` into an LLVM `Type*`:
-
-```cpp
-case ValueType::Struct:
-  return GetOrCreateLLVMStructType(StructName);
-```
-
-## The IR Layout
-
-Let me check what this actually produces. For:
-
-```pyxc
-struct Point:
-  x: int
-  y: int
-```
-
-I get, with the `"struct."` prefix I chose above:
+The generated IR per declaration:
 
 ```llvm
-%struct.Point = type { i64, i64 }
+; var x: float64 = 1.0
+%x = alloca double
+store double 1.000000e+00, ptr %x
+
+; var y: int32     (no initializer — zero)
+%y = alloca i32
+store i32 0, ptr %y
+
+; var a: int8, b: int16
+%a = alloca i8
+store i8 0, ptr %a
+%b = alloca i16
+store i16 0, ptr %b
+
+; var ratio: float64 = 3.14
+%ratio = alloca double
+store double 3.140000e+00, ptr %ratio
 ```
 
-`int` is pointer-width, `i64` on my 64-bit host — that's not new to this chapter, just carried over. A struct with a `float64` field:
+## for Loops: Typed Loop Variable
 
 ```pyxc
-struct Circle:
-  radius: float64
+# Chapter 16
+for var i = 1, i <= n, 1:
+    body
+
+# Chapter 17
+for var i: int = 1, i <= n, 1:
+    body
 ```
 
-```llvm
-%struct.Circle = type { double }
-```
+The `: type` annotation follows the loop variable name directly, but only when
+the loop declares a fresh variable with `var`. The type is validated:
 
-Fields show up in declaration order, which matches what I said `Fields` needed to preserve back when I chose a `vector` over just a `map`. LLVM inserts whatever padding the target's data layout calls for — I don't see it in the IR, but it's there in the generated machine code.
+- Must be numeric (`IsNumericType`).
+- The start expression must be assignable to it.
+- The step expression must be assignable to it.
 
-## Codegen: Getting a Field's Address
-
-Both reading and writing a field come down to the same first step: compute a pointer to the field, then either load from it or store to it. So I want one function that does the pointer arithmetic, shared by both. `GetFieldAddress` walks `FieldPath` one step at a time, the same way `ParseFieldAccessExpr` did at parse time — except now I need an actual base pointer, not just a type.
-
-I look the base variable up in `NamedValues` first (a local), and fall back to a global if it's not local:
+`ForExprAST` stores `VarType`, and `ForExprAST::codegen` uses `LLVMTypeFor(VarType)` for the `alloca` and the increment:
 
 ```cpp
-static Value *GetFieldAddress(const string &BaseName,
-                              const vector<string> &FieldPath, ...) {
-  // find the base pointer — local alloca or global variable
-  Value *Ptr = BasePtr;
-  for (const auto &FieldName : FieldPath) {
-    size_t Idx = StructTypes[CurStruct].FieldIndex[FieldName];
-    Type *BaseLLVM = LLVMTypeFor(CurType, CurStruct);
-    Ptr = Builder->CreateStructGEP(BaseLLVM, Ptr, Idx, "fieldptr");
-    // advance CurType and CurStruct to this field's type
+if (IsFloatType(VarType))
+  NextVar = Builder->CreateFAdd(CurVar, StepVal, "nextvar");
+else
+  NextVar = Builder->CreateAdd(CurVar, StepVal, "nextvar");
+```
+
+For an integer loop variable the alloca and step use the declared integer type:
+
+```llvm
+; for var i: int = 1, i <= 10, 1:
+%i = alloca i64
+store i64 1, ptr %i
+
+loop:
+  %i_cur = load i64, ptr %i
+  %cmptmp = icmp sle i64 %i_cur, 10
+  br i1 %cmptmp, label %body, label %afterloop
+
+body:
+  ; ... body ...
+  %nextvar = add i64 %i_cur, 1
+  store i64 %nextvar, ptr %i
+  br label %loop
+```
+
+Compare with chapter 15 where `i` would have been `alloca double` and used `fadd` for the increment.
+
+## Explicit Casts
+
+Any type name used as a function call performs a cast:
+
+```pyxc
+int32(3.14)     # float64 → int32 (truncates to 3)
+float64(42)     # int → float64
+int8(x)         # any integer → 8-bit (truncates if needed)
+bool(x)         # any value → 0 or 1
+float32(n)      # int → float32
+```
+
+`ParseCastExpr` is invoked from `ParsePrimary` when the current token is a type keyword:
+
+```cpp
+case tok_int:    case tok_int8:   case tok_int16:  case tok_int32:
+case tok_int64:  case tok_float:  case tok_float32: case tok_float64:
+case tok_bool:
+  return ParseCastExpr();
+```
+
+`CastExprAST::codegen` delegates to `EmitCast`, which emits one of these instructions depending on the type pair:
+
+```llvm
+; int32(3.14)  — float to signed integer (truncates toward zero)
+%cast = fptosi double 3.140000e+00 to i32
+; result: i32 3
+
+; float64(42)  — integer to double
+%cast = sitofp i64 42 to double
+; result: double 4.200000e+01
+
+; int8(x) where x: int32  — narrowing truncation
+%cast = trunc i32 %x to i8
+
+; int16(x) where x: int8  — widening sign-extension (explicit cast, same as implicit sext)
+%cast = sext i8 %x to i16
+
+; float32(n) where n: int32  — integer to single
+%cast = sitofp i32 %n to float
+
+; float64(r) where r: float32  — float extension
+%cast = fpext float %r to double
+
+; float32(r) where r: float64  — float truncation
+%cast = fptrunc double %r to float
+
+; bool(x) where x: int32  — compare against zero
+%cast = icmp ne i32 %x, 0
+; result: i1
+
+; bool(f) where f: float64  — compare float against zero
+%cast = fcmp one double %f, 0.000000e+00
+; result: i1
+```
+
+## LLVMTypeFor and ZeroConstant
+
+Two helpers translate `ValueType` to LLVM IR constructs.
+
+`LLVMTypeFor` maps each type to its LLVM `Type*`:
+
+```cpp
+static Type *LLVMTypeFor(ValueType Ty) {
+  switch (Ty) {
+  case ValueType::Int: {
+    unsigned bits = TheModule->getDataLayout().getPointerSizeInBits();
+    return IntegerType::get(*TheContext, bits);
   }
-  return Ptr;
+  case ValueType::Int8:    return Type::getInt8Ty(*TheContext);
+  case ValueType::Int16:   return Type::getInt16Ty(*TheContext);
+  case ValueType::Int32:   return Type::getInt32Ty(*TheContext);
+  case ValueType::Int64:   return Type::getInt64Ty(*TheContext);
+  case ValueType::Float:   return Type::getDoubleTy(*TheContext);  // same as Float64
+  case ValueType::Float32: return Type::getFloatTy(*TheContext);
+  case ValueType::Float64: return Type::getDoubleTy(*TheContext);
+  case ValueType::Bool:    return Type::getInt1Ty(*TheContext);
+  case ValueType::None:    return Type::getVoidTy(*TheContext);
+  default:                 return nullptr;
+  }
 }
 ```
 
-`FieldIndex` again — same map, now doing its third job: turning a field name into the integer index `CreateStructGEP` actually wants. `CreateStructGEP` emits a `getelementptr inbounds` for struct field access; one GEP per step in the path. For `p.x` on a `Point`:
+`Float` and `Float64` both return `getDoubleTy`. In the IR they are indistinguishable.
 
-```llvm
-%fieldptr = getelementptr inbounds %struct.Point, ptr %p, i32 0, i32 0
-```
-
-And for `o.inner.value`, where `inner` is itself an `Inner`, I get one GEP per level rather than a single multi-index GEP — I could combine them into one instruction with multiple indices, but chaining single-field GEPs is simpler to emit and LLVM optimizes it the same either way:
-
-```llvm
-%fieldptr  = getelementptr inbounds %struct.Outer, ptr %o, i32 0, i32 0
-%fieldptr1 = getelementptr inbounds %struct.Inner, ptr %fieldptr, i32 0, i32 0
-```
-
-## Codegen: Reading and Writing Fields
-
-With `GetFieldAddress` written, the two AST nodes' `codegen()` methods are almost trivial.
-
-**Read** — get the pointer, load through it:
+`ZeroConstant` produces the IR zero initializer for each type, used for uninitialised `var` declarations and global variable default values:
 
 ```cpp
-Value *FieldExprAST::codegen() {
-  Value *Ptr = GetFieldAddress(*getLValueName(), FieldPath, ...);
-  return Builder->CreateLoad(LLVMTypeFor(LeafType, LeafStruct), Ptr, "fieldload");
+static Constant *ZeroConstant(ValueType Ty) {
+  switch (Ty) {
+  case ValueType::Int8:    return ConstantInt::get(Type::getInt8Ty(*TheContext), 0);
+  case ValueType::Int16:   return ConstantInt::get(Type::getInt16Ty(*TheContext), 0);
+  case ValueType::Int32:   return ConstantInt::get(Type::getInt32Ty(*TheContext), 0);
+  case ValueType::Int:     return ConstantInt::get(LLVMTypeFor(Ty), 0);
+  case ValueType::Int64:   return ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
+  case ValueType::Float:   return ConstantFP::get(*TheContext, APFloat(0.0));
+  case ValueType::Float32: return ConstantFP::get(Type::getFloatTy(*TheContext), 0.0);
+  case ValueType::Float64: return ConstantFP::get(*TheContext, APFloat(0.0));
+  case ValueType::Bool:    return ConstantInt::get(Type::getInt1Ty(*TheContext), 0);
+  default:                 return nullptr;
+  }
 }
 ```
 
-For `p.x` where `x: int`:
+Each `ZeroConstant(Ty)` call produces the IR literal you would write inline:
 
 ```llvm
-%fieldptr  = getelementptr inbounds %struct.Point, ptr %p, i32 0, i32 0
-%fieldload = load i64, ptr %fieldptr
+i8 0     i16 0     i32 0     i64 0
+float 0.000000e+00    double 0.000000e+00    i1 false
 ```
 
-**Write** — get the pointer, codegen the RHS, cast if the types don't line up exactly, then store:
+## IsAssignable and Implicit Widening
+
+`IsAssignable(Dest, Src)` determines whether a value of type `Src` can appear where `Dest` is expected without an explicit cast:
 
 ```cpp
-Value *FieldAssignmentExprAST::codegen() {
-  Value *Ptr = GetFieldAddress(*LHS->getLValueName(), LHS->getFieldPath(), ...);
-  Value *Val = RHS->codegen();
-  Val = EmitImplicitCast(Val, RHS->getType(), DestType);
-  Builder->CreateStore(Val, Ptr);
-  return Val;
+static bool IsAssignable(ValueType Dest, ValueType Src) {
+  if (Dest == Src)
+    return true;
+  // float and float64 are interchangeable
+  if ((Dest == ValueType::Float && Src == ValueType::Float64) ||
+      (Dest == ValueType::Float64 && Src == ValueType::Float))
+    return true;
+  if (IsIntType(Dest) && IsIntType(Src) && CanWidenInt(Src, Dest))
+    return true;
+  if (IsFloatType(Dest) && IsIntType(Src))
+    return true;
+  return false;
 }
 ```
 
-For `p.x = 5` where `x: int`:
+The fourth rule covers `IsFloatType(Dest)` — any integer can widen to any float type (`Float`, `Float32`, or `Float64`).
 
-```llvm
-%fieldptr = getelementptr inbounds %struct.Point, ptr %p, i32 0, i32 0
-store i64 5, ptr %fieldptr
-```
-
-I didn't need to write any new casting logic here — the implicit cast rules from chapter 16 apply exactly as-is. Assigning a `float64` into an `int` field is still a type error; assigning an `int8` into an `int` field still widens silently. A struct field is just another typed storage location as far as casting is concerned.
-
-## Struct Variables and Zero Initialization
-
-I already have zero-initialization for scalar `var` declarations with no initializer. Structs should work the same way, just with a struct-shaped zero value instead of a scalar one. `var p: Point` with no initializer allocates stack space and zero-fills it:
+`CanWidenInt` determines integer widening legality:
 
 ```cpp
-InitVal = ZeroConstant(VarType, VarStructName);
-// ...
-Builder->CreateStore(InitVal, Alloca);
+static bool CanWidenInt(ValueType From, ValueType To) {
+  if (From == To) return true;
+  // Fixed-size integers: allowed if rank(From) <= rank(To).
+  if (IsFixedIntType(From) && IsFixedIntType(To))
+    return FixedIntRank(From) <= FixedIntRank(To);
+  // Platform int can widen to int64.
+  if (From == ValueType::Int && To == ValueType::Int64)
+    return true;
+  return false;
+}
 ```
 
-`ZeroConstant` for a struct doesn't need to build up a `{0, 0}` aggregate field by field — LLVM has a shortcut, `Constant::getNullValue`, that produces an all-zero constant of whatever type I hand it:
+Where `FixedIntRank` assigns `Int8=1, Int16=2, Int32=3, Int64=4`.
+
+`IsFixedIntType` covers `Int8`, `Int16`, `Int32`, `Int64` — but not `Int`. `Int` is the platform default integer and is treated separately: it can widen to `Int64`, but not to `Int32` or smaller (since on a 64-bit host `Int` is already 64-bit wide).
+
+Each allowed implicit conversion and the IR it produces:
+
+| Assignment | Allowed? | IR emitted |
+|-----------|----------|------------|
+| `var x: int16 = int8_val` | Yes | `sext i8 %v to i16` |
+| `var x: int32 = int16_val` | Yes | `sext i16 %v to i32` |
+| `var x: int64 = int32_val` | Yes | `sext i32 %v to i64` |
+| `var x: float64 = int_val` | Yes | `sitofp i64 %v to double` |
+| `var x: float32 = int_val` | Yes | `sitofp i64 %v to float` |
+| `var x: float = float64_val` | Yes | *(no instruction — same IR type)* |
+| `var x: int32 = int64_val` | No | type error |
+| `var x: bool = int_val` | No | type error |
+
+`EmitImplicitCast` is called by codegen whenever one of the allowed cases applies:
+
+```cpp
+static Value *EmitImplicitCast(Value *V, ValueType From, ValueType To) {
+  if (From == To) return V;
+  if ((From == ValueType::Float && To == ValueType::Float64) ||
+      (From == ValueType::Float64 && To == ValueType::Float))
+    return V;  // same IR type — no instruction
+  if (IsIntType(From) && IsIntType(To) && CanWidenInt(From, To)) {
+    unsigned FromBits = LLVMTypeFor(From)->getIntegerBitWidth();
+    unsigned ToBits   = LLVMTypeFor(To)->getIntegerBitWidth();
+    if (FromBits == ToBits) return V;
+    return Builder->CreateSExt(V, LLVMTypeFor(To), "sext");
+  }
+  if (IsIntType(From) && IsFloatType(To))
+    return Builder->CreateSIToFP(V, LLVMTypeFor(To), "sitofp");
+  return nullptr;
+}
+```
+
+## Binary Operators: Type-Aware Arithmetic
+
+`GetBinaryResultType` decides the type of a binary expression at parse time:
+
+```cpp
+static ValueType GetBinaryResultType(int Op, ValueType L, ValueType R) {
+  if (IsArithmeticOp(Op)) {
+    if (!IsNumericType(L) || !IsNumericType(R))
+      return ValueType::Error;
+    // Float and Float64 can be mixed — result is Float64
+    if (IsFloatType(L) && IsFloatType(R)) {
+      if (L == R) return L;
+      if ((L == ValueType::Float && R == ValueType::Float64) ||
+          (L == ValueType::Float64 && R == ValueType::Float))
+        return ValueType::Float64;
+      return ValueType::Error;
+    }
+    if (IsAssignable(L, R)) return L;  // R widens into L
+    if (IsAssignable(R, L)) return R;  // L widens into R
+    return ValueType::Error;
+  }
+  if (IsComparisonOp(Op)) {
+    if (L == ValueType::Bool && R == ValueType::Bool) {
+      if (Op == tok_eq || Op == tok_neq) return ValueType::Bool;
+      return ValueType::Error;
+    }
+    if (!IsNumericType(L) || !IsNumericType(R))
+      return ValueType::Error;
+    if (IsFloatType(L) && IsFloatType(R)) {
+      if (L == R || (L == ValueType::Float && R == ValueType::Float64) ||
+          (L == ValueType::Float64 && R == ValueType::Float))
+        return ValueType::Bool;
+      return ValueType::Error;
+    }
+    if (IsAssignable(L, R) || IsAssignable(R, L))
+      return ValueType::Bool;
+    return ValueType::Error;
+  }
+  // User-defined operators: float64 only
+  if (L == ValueType::Float64 && R == ValueType::Float64)
+    return ValueType::Float64;
+  return ValueType::Error;
+}
+```
+
+`BinaryExprAST::codegen` implicitly casts both operands to the result type then selects float vs integer instructions:
+
+```cpp
+L = EmitImplicitCast(L, LTy, getType());
+R = EmitImplicitCast(R, RTy, getType());
+if (IsFloatType(getType())) {
+  if (Op == '+') return Builder->CreateFAdd(L, R, "addtmp");
+  if (Op == '-') return Builder->CreateFSub(L, R, "subtmp");
+  return Builder->CreateFMul(L, R, "multmp");
+}
+if (Op == '+') return Builder->CreateAdd(L, R, "addtmp");
+if (Op == '-') return Builder->CreateSub(L, R, "subtmp");
+return Builder->CreateMul(L, R, "multmp");
+```
+
+Each case and its IR:
 
 ```llvm
-%p = alloca %struct.Point
-store %struct.Point zeroinitializer, ptr %p
+; int8 + int16 → int16   (int8 widens into int16)
+%sext = sext i8 %a to i16
+%addtmp = add i16 %sext, %b
+
+; int32 + int64 → int64   (int32 widens into int64)
+%sext = sext i32 %a to i64
+%addtmp = add i64 %sext, %b
+
+; int32 + float64 → float64   (int32 widens into float64)
+%sitofp = sitofp i32 %a to double
+%addtmp = fadd double %sitofp, %b
+
+; int32 + float32 → float32   (int32 widens into float32)
+%sitofp = sitofp i32 %a to float
+%addtmp = fadd float %sitofp, %b
+
+; float + float64 → float64   (Float↔Float64: no cast instruction)
+%addtmp = fadd double %a, %b
+
+; int32 < int64 → bool   (int32 widens, result is i1)
+%sext = sext i32 %a to i64
+%cmptmp = icmp slt i64 %sext, %b
+
+; float64 == float64 → bool
+%cmptmp = fcmp oeq double %a, %b
+
+; float32 + float64 → error   (different float sizes; rejected at parse time)
 ```
 
-There's no struct initializer syntax yet — I can't write `var p: Point = Point{x: 1, y: 2}`. That's more grammar and more parsing I don't need for this chapter. Struct variables always start zeroed, and fields get assigned individually after.
+Comparisons return `i1` directly — there is no `UIToFP` widening to `double` as there was in chapter 15. The old pattern emerged from having only `double`; now each comparison produces a proper `Bool`.
 
-## Structs Are Passed by Value
+## EmitCast: Explicit Conversion Table
 
-I haven't written any special-casing for struct parameters — they go through the exact same by-value parameter passing every other type already uses. Worth checking that actually does what I expect, though:
+`EmitCast` handles all explicit `type(expr)` conversions. The full set of instruction choices:
+
+| From | To | IR instruction |
+|------|----|----------------|
+| any int | float32 | `sitofp iN %v to float` |
+| any int | float / float64 | `sitofp iN %v to double` |
+| float32 | any int | `fptosi float %v to iN` |
+| float / float64 | any int | `fptosi double %v to iN` |
+| smaller int | larger int | `sext iN %v to iM` |
+| larger int | smaller int | `trunc iN %v to iM` |
+| float32 | float / float64 | `fpext float %v to double` |
+| float / float64 | float32 | `fptrunc double %v to float` |
+| float ↔ float64 | either | *(no instruction — same IR type)* |
+| any int | bool | `icmp ne iN %v, 0` |
+| any float | bool | `fcmp one double/float %v, 0.0` |
+
+## Void (None) Functions
+
+A `def` without `->` produces a void function:
 
 ```pyxc
-struct Box:
-  value: int
-
-def clobber(b: Box) -> None:
-  b.value = 0
-
-def main() -> int:
-  var b: Box
-  b.value = 99
-  clobber(b)
-  # b.value is still 99 here
-  return 0
+def greet():        # return type = None (void)
+    printd(42.0)
 ```
 
-The IR confirms it:
+Explicit `-> None` is identical at the IR level — it is documentary only:
+
+```pyxc
+def greet() -> None:
+    printd(42.0)
+```
+
+Both produce:
 
 ```llvm
-define void @clobber(%struct.Box %b) {
+define void @greet() {
 entry:
-  %b.addr = alloca %struct.Box
-  store %struct.Box %b, ptr %b.addr
-  %fieldptr = getelementptr inbounds %struct.Box, ptr %b.addr, i32 0, i32 0
-  store i64 0, ptr %fieldptr
+  %calltmp = call double @printd(double 4.200000e+01)
   ret void
 }
 ```
 
-`clobber` gets its own copy of `b`, allocated fresh inside its own stack frame. Writing to `b.value` inside `clobber` only ever touches that copy. The caller's struct is untouched after the call — which is what I'd want by default, but it does mean that if I ever want a function to mutate the caller's struct, passing by value can't do that. I'll need a pointer for that, which is chapter 18.
+The `call` result is present in the IR (LLVM always names it) but no `ret` of that value follows — `ret void` terminates the block.
 
-## Global Struct Variables
+### ReturnTypeGuard
 
-I didn't have to write anything new here either — struct globals fall out of the existing global-variable machinery once `ZeroConstant` and `LLVMTypeFor` both handle `ValueType::Struct`:
+To validate `return` statements during parsing, a global `CurrentFunctionReturnType` tracks the enclosing function's return type. `ReturnTypeGuard` manages it with RAII:
 
-```pyxc
-struct Counter:
-  value: int
+```cpp
+struct ReturnTypeGuard {
+  ValueType Saved;
+  ReturnTypeGuard(ValueType Ty) : Saved(CurrentFunctionReturnType) {
+    CurrentFunctionReturnType = Ty;
+  }
+  ~ReturnTypeGuard() { CurrentFunctionReturnType = Saved; }
+};
+```
 
-var g: Counter
+`ParseDefinition` instantiates a `ReturnTypeGuard` before parsing the body. `ParseReturn` also installs an `ExpectedLiteralTypeGuard(CurrentFunctionReturnType)` before parsing the return value, so bare integer or float literals in `return` statements are given the function's return type directly. Then it validates:
+
+```cpp
+// bare 'return' (no value)
+if (CurTok == tok_eol || CurTok == tok_dedent || CurTok == tok_eof) {
+  if (CurrentFunctionReturnType != ValueType::None)
+    return LogError("Return value required");
+  return make_unique<ReturnExprAST>(nullptr);
+}
+// return with value
+if (CurrentFunctionReturnType == ValueType::None)
+  return LogError("cannot return a value from a None function");
+if (!IsAssignable(CurrentFunctionReturnType, Expr->getType()))
+  return LogError("cannot return X from function returning Y");
+```
+
+The IR for a typed return with an implicit widening:
+
+```llvm
+; def sum(a: int8, b: int8) -> int32:
+;     return a + b
+;
+; a + b → int8 (result type of int8+int8)
+; int8 is assignable to int32 (widening), so EmitImplicitCast runs
+
+%addtmp = add i8 %a, %b
+%sext = sext i8 %addtmp to i32
+ret i32 %sext
+```
+
+### Implicit Fallthrough
+
+At the end of a function body, if no terminator was emitted:
+
+```cpp
+if (!Builder->GetInsertBlock()->getTerminator()) {
+  if (P.getReturnType() == ValueType::None) {
+    Builder->CreateRetVoid();
+  } else {
+    if (!IsEntry && pred_empty(CurBB)) {
+      Builder->CreateUnreachable();
+    } else {
+      LogErrorV("Non-None function must return a value");
+      TheFunction->eraseFromParent();
+      return nullptr;
+    }
+  }
+}
+```
+
+For a void function that falls off the end:
+
+```llvm
+define void @setup() {
+entry:
+  ; ... body ...
+  ret void          ; inserted automatically
+}
+```
+
+For a dead block after an early return (e.g., an `if`/`else` where one branch returns):
+
+```llvm
+unreachable         ; inserted for pred-empty dead blocks
+```
+
+### Void Top-Level Expressions
+
+In the REPL and file-run mode, every top-level expression is wrapped in an anonymous function. If the expression is void (e.g., a call to a void function), the anonymous wrapper must still be correctly typed:
+
+```cpp
+ValueType RetTy = Stmt->getType();
+if (!Stmt->isReturnExpr() && RetTy != ValueType::None)
+  Stmt = make_unique<ReturnExprAST>(std::move(Stmt));
+
+auto Proto = make_unique<PrototypeAST>(
+    FnName, vector<pair<string, ValueType>>(), CurLoc, RetTy);
 ```
 
 ```llvm
-@g = global %struct.Counter zeroinitializer
+; calling greet() at top level — wrapper is void
+define void @__pyxc.toplevel.3() {
+entry:
+  call void @greet()
+  ret void
+}
+
+; evaluating 1 + 2 at top level — wrapper returns int64
+define i64 @__pyxc.toplevel.4() {
+entry:
+  ret i64 3
+}
 ```
 
-And field reads/writes on globals go through the same `GetFieldAddress` I already wrote — it checks `NamedValues` for a local first, then falls back to `GetGlobalVariable`, exactly like every other variable lookup in this compiler.
+`CallExprAST` overrides `shouldPrintValue()` — void calls are silently discarded in the REPL without printing anything.
+
+## The main() Wrapper
+
+When `--emit exe` is used, the user's `main()` must have a C-ABI `int main()` entry point. The wrapper is created unconditionally — regardless of what `main()` returns — and correctly forwards an `int32` return value or substitutes `0` for void:
+
+```cpp
+if (auto *UserMain = TheModule->getFunction("main")) {
+  UserMain->setName("__pyxc.user_main");
+  FunctionType *FT = FunctionType::get(Type::getInt32Ty(*TheContext), false);
+  Function *Wrapper = Function::Create(FT, Function::ExternalLinkage,
+                                        "main", TheModule.get());
+  BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", Wrapper);
+  IRBuilder<> TmpB(BB);
+  if (UserMain->getReturnType()->isIntegerTy(32)) {
+    Value *Ret = TmpB.CreateCall(UserMain);
+    TmpB.CreateRet(Ret);
+  } else {
+    TmpB.CreateCall(UserMain);
+    TmpB.CreateRet(ConstantInt::get(Type::getInt32Ty(*TheContext), 0));
+  }
+}
+```
+
+For a `def main() -> int32` user function:
+
+```llvm
+define i32 @__pyxc.user_main() {
+  ; ... user code ...
+  ret i32 0
+}
+
+define i32 @main() {
+entry:
+  %ret = call i32 @__pyxc.user_main()
+  ret i32 %ret
+}
+```
+
+For a `def main()` (void) user function:
+
+```llvm
+define void @__pyxc.user_main() {
+  ; ... user code ...
+  ret void
+}
+
+define i32 @main() {
+entry:
+  call void @__pyxc.user_main()
+  ret i32 0
+}
+```
+
+The wrapper is what the OS and C runtime call. The user-visible `main` function name is preserved by renaming the user's function to `__pyxc.user_main`, then wrapping it.
+
+## JIT Dispatch: Type-Switched Invocation
+
+Before chapter 16, the JIT always called the anonymous top-level function as `double (*)()`. Now the return type determines both the function pointer type and the print format:
+
+```cpp
+if (RetTy == ValueType::None) {
+  void (*FP)() = ExprSymbol.toPtr<void (*)()>();
+  FP();
+  // nothing printed
+} else {
+  switch (RetTy) {
+  case ValueType::Float64: {
+    double (*FP)() = ExprSymbol.toPtr<double (*)()>();
+    double result = FP();
+    if (IsRepl && LastTopLevelShouldPrint)
+      fprintf(stderr, "%f\n", result);
+    break;
+  }
+  case ValueType::Float32: {
+    float (*FP)() = ExprSymbol.toPtr<float (*)()>();
+    double result = static_cast<double>(FP());
+    if (IsRepl && LastTopLevelShouldPrint)
+      fprintf(stderr, "%f\n", result);
+    break;
+  }
+  case ValueType::Int: {
+    intptr_t (*FP)() = ExprSymbol.toPtr<intptr_t (*)()>();
+    long long result = static_cast<long long>(FP());
+    if (IsRepl && LastTopLevelShouldPrint)
+      fprintf(stderr, "%lld\n", result);
+    break;
+  }
+  // Int8, Int16, Int32, Int64 all use int*_t pointers and %lld
+  case ValueType::Bool: {
+    bool (*FP)() = ExprSymbol.toPtr<bool (*)()>();
+    bool result = FP();
+    if (IsRepl && LastTopLevelShouldPrint)
+      fprintf(stderr, "%s\n", result ? "True" : "False");
+    break;
+  }
+  default: break;
+  }
+}
+```
+
+Key points:
+- `Float` and `Float64` both print as `%f`.
+- Integer types print as `%lld` — decimal integer notation, not floating-point.
+- `Bool` prints as `True` or `False` — matching the keyword spelling.
+- `None` (void) produces no output.
+
+## Debug Info: Per-Type DWARF Descriptors
+
+Chapter 16 had one `DblDIType` for everything. Chapter 17 needs a descriptor per type:
+
+```cpp
+static DIType *IntDIType     = nullptr;
+static DIType *Float64DIType = nullptr;
+static DIType *Int8DIType    = nullptr;
+static DIType *Int16DIType   = nullptr;
+static DIType *Int32DIType   = nullptr;
+static DIType *Int64DIType   = nullptr;
+static DIType *Float32DIType = nullptr;
+static DIType *BoolDIType    = nullptr;
+```
+
+Initialized in `InitializeDebugInfo`:
+
+```cpp
+unsigned bits = TheModule->getDataLayout().getPointerSizeInBits();
+IntDIType     = DIB->createBasicType("int",     bits, dwarf::DW_ATE_signed);
+Float64DIType = DIB->createBasicType("float64",   64, dwarf::DW_ATE_float);
+VoidDIType    = DIB->createUnspecifiedType("None");
+Int8DIType    = DIB->createBasicType("int8",       8, dwarf::DW_ATE_signed);
+Int16DIType   = DIB->createBasicType("int16",     16, dwarf::DW_ATE_signed);
+Int32DIType   = DIB->createBasicType("int32",     32, dwarf::DW_ATE_signed);
+Int64DIType   = DIB->createBasicType("int64",     64, dwarf::DW_ATE_signed);
+Float32DIType = DIB->createBasicType("float32",   32, dwarf::DW_ATE_float);
+BoolDIType    = DIB->createBasicType("bool",       1, dwarf::DW_ATE_boolean);
+```
+
+Both `ValueType::Float` and `ValueType::Float64` return `Float64DIType`. In the DWARF output, a debugger sees `int32`, `float64`, `bool`, etc. as distinct named types rather than everything as `double`.
+
+The void type uses `createUnspecifiedType("None")` — the correct DWARF tag `DW_TAG_unspecified_type` for a type with no representation.
+
+## HadError and Exit Codes
+
+Chapter 16 always returned `0`. File-mode programs with type errors would print to stderr but exit cleanly, making shell scripts and test harnesses oblivious to failures.
+
+Chapter 17 adds a global `HadError` flag set by every `LogError` call. File-mode loops check it after parsing:
+
+```cpp
+if (HadError) {
+  CloseInputFile();
+  return 1;
+}
+```
+
+The final return:
+
+```cpp
+if (IsRepl)
+  return 0;        // REPL: errors are per-expression and non-fatal
+return HadError ? 1 : 0;
+```
+
+The REPL keeps running after a type error; file mode aborts with exit code 1.
+
+## Putting It Together: A Full Typed Program
+
+Here is a small program that exercises the type system, and the IR it produces:
+
+```pyxc
+extern def printd(x: float64) -> float64
+
+def add(a: int32, b: int32) -> int32:
+    return a + b
+
+def main() -> int32:
+    var x: int32 = add(10, 5)
+    var y: float64 = float64(x)
+    printd(y)
+    return 0
+```
+
+```llvm
+declare double @printd(double)
+
+define i32 @add(i32 %a, i32 %b) {
+entry:
+  %addtmp = add i32 %a, %b
+  ret i32 %addtmp
+}
+
+define i32 @__pyxc.user_main() {
+entry:
+  %x = alloca i32
+  %call = call i32 @add(i32 10, i32 5)
+  store i32 %call, ptr %x
+
+  %y = alloca double
+  %x_val = load i32, ptr %x
+  %cast = sitofp i32 %x_val to double
+  store double %cast, ptr %y
+
+  %y_val = load double, ptr %y
+  call double @printd(double %y_val)
+
+  ret i32 0
+}
+
+define i32 @main() {
+entry:
+  %ret = call i32 @__pyxc.user_main()
+  ret i32 %ret
+}
+```
+
+Before chapter 16 every value in this program would have been `double`. Now `add` uses `i32`, the local variable `x` is an `i32` alloca, the `sitofp` appears exactly once and only where the program explicitly asked for it with `float64(x)`, and `main` has a proper `i32` return type.
+
+## Known Limitations
+
+**No operator overloading.** Each operator character maps to exactly one function (`binary+`, `unary!`). Redefining an operator that is already defined is rejected at parse time. You cannot have two versions of the same operator that differ only in their parameter types.
+
+**`None` cannot be used as a variable type.** `var x: None` is rejected. `None` is only valid as a return type annotation.
+
+**`Int` does not widen to fixed-size integers.** `Int` (pointer-width) can widen to `Int64`, but not to `Int32` or smaller — even on a 32-bit host where they would have the same width. Use an explicit cast when crossing `Int`/`Int32` boundaries.
+
+**`float32 + float64` is a type error.** The two float sizes are not interchangeable in binary operations — only `float` and `float64` are. Use an explicit cast: `float64(x) + y`.
+
+## Try It
+
+**Boolean literals**
+
+```pyxc
+ready> True
+True
+ready> False
+False
+ready> True == False
+False
+```
+
+**REPL prints by type**
+
+```pyxc
+ready> var n: int32 = 42
+ready> n
+42
+ready> var x: float64 = 3.14
+ready> x
+3.140000
+ready> True
+True
+```
+
+**Trigger a type error**
+
+```pyxc
+# mismatch.pyxc
+def add(a: int32, b: int32) -> int32:
+    return a + b
+add(1.0, 2.0)  # Error: argument 1 expects int32
+```
+
+```bash
+pyxc mismatch.pyxc  # exits with status 1
+```
+
+**Mixed int sizes — widening is automatic**
+
+```pyxc
+var a: int8 = 10
+var b: int16 = 200
+var c: int32 = a + b   # int8 widens to int16, result int16 widens to int32
+```
+
+**Explicit cast round-trip**
+
+```pyxc
+var x: float64 = 3.99
+var y: int32 = int32(x)      # fptosi → 3
+var z: float64 = float64(y)  # sitofp → 3.0
+```
+
+**Inspect the IR**
+
+```bash
+pyxc --emit llvm-ir -o out.ll program.pyxc
+grep 'define\|alloca\|fptosi\|sitofp\|sext\|fadd\|add ' out.ll
+```
 
 ## Build and Run
 
 ```bash
 cd code/chapter-17
 cmake -S . -B build && cmake --build build
+echo "var x: int32 = 7" | ./build/pyxc
 ```
-
-## Try It
-
-### Basic field access
-
-```pyxc
-struct Point:
-  x: int
-  y: int
-
-extern def printd(x: float64)
-
-def main() -> int:
-  var p: Point
-  p.x = 3
-  p.y = 4
-  printd(float64(p.x + p.y))
-  return 0
-```
-
-```bash
-7.000000
-```
-
-### Passing a struct to a function
-
-```pyxc
-struct Point:
-  x: int
-  y: int
-
-extern def printd(x: float64)
-
-def sum_point(p: Point) -> int:
-  return p.x + p.y
-
-def main() -> int:
-  var p: Point
-  p.x = 5
-  p.y = 7
-  printd(float64(sum_point(p)))
-  return 0
-```
-
-```bash
-12.000000
-```
-
-### Nested field access
-
-```pyxc
-struct Inner:
-  value: int
-
-struct Outer:
-  inner: Inner
-
-extern def printd(x: float64)
-
-def main() -> int:
-  var o: Outer
-  o.inner.value = 9
-  printd(float64(o.inner.value))
-  return 0
-```
-
-```bash
-9.000000
-```
-
-### Inspect the IR
-
-```bash
-pyxc --emit llvm-ir -o out.ll program.pyxc
-grep 'struct\|getelementptr\|alloca' out.ll
-```
-
-**Basic field access (`point.pyxc`):**
-
-```llvm
-; ModuleID = 'PyxcJIT'
-source_filename = "PyxcJIT"
-target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
-
-%struct.Point = type { i64, i64 }
-
-declare void @printd(double)
-
-define i64 @__pyxc.user_main() {
-entry:
-  %p = alloca %struct.Point, align 8
-  store %struct.Point zeroinitializer, ptr %p, align 8
-  %fieldptr = getelementptr inbounds nuw %struct.Point, ptr %p, i32 0, i32 0
-  store i64 3, ptr %fieldptr, align 8
-  %fieldptr1 = getelementptr inbounds nuw %struct.Point, ptr %p, i32 0, i32 1
-  store i64 4, ptr %fieldptr1, align 8
-  %fieldptr2 = getelementptr inbounds nuw %struct.Point, ptr %p, i32 0, i32 0
-  %fieldload = load i64, ptr %fieldptr2, align 8
-  %fieldptr3 = getelementptr inbounds nuw %struct.Point, ptr %p, i32 0, i32 1
-  %fieldload4 = load i64, ptr %fieldptr3, align 8
-  %addtmp = add i64 %fieldload, %fieldload4
-  %sitofp = sitofp i64 %addtmp to double
-  call void @printd(double %sitofp)
-  ret i64 0
-}
-
-define i32 @main() {
-entry:
-  %0 = call i64 @__pyxc.user_main()
-  %1 = trunc i64 %0 to i32
-  ret i32 %1
-}
-```
-
-**Nested field access (`inner_outer.pyxc`):**
-
-```llvm
-; ModuleID = 'PyxcJIT'
-source_filename = "PyxcJIT"
-target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
-
-%struct.Outer = type { %struct.Inner }
-%struct.Inner = type { i64 }
-
-declare void @printd(double)
-
-define i64 @__pyxc.user_main() {
-entry:
-  %o = alloca %struct.Outer, align 8
-  store %struct.Outer zeroinitializer, ptr %o, align 8
-  %fieldptr = getelementptr inbounds nuw %struct.Outer, ptr %o, i32 0, i32 0
-  %fieldptr1 = getelementptr inbounds nuw %struct.Inner, ptr %fieldptr, i32 0, i32 0
-  store i64 9, ptr %fieldptr1, align 8
-  %fieldptr2 = getelementptr inbounds nuw %struct.Outer, ptr %o, i32 0, i32 0
-  %fieldptr3 = getelementptr inbounds nuw %struct.Inner, ptr %fieldptr2, i32 0, i32 0
-  %fieldload = load i64, ptr %fieldptr3, align 8
-  %sitofp = sitofp i64 %fieldload to double
-  call void @printd(double %sitofp)
-  ret i64 0
-}
-
-define i32 @main() {
-entry:
-  %0 = call i64 @__pyxc.user_main()
-  %1 = trunc i64 %0 to i32
-  ret i32 %1
-}
-```
-
-## Known Limitations
-
-**No struct initializer syntax.** `var p: Point = Point{x: 1, y: 2}` is not supported. Fields must be assigned individually after declaration.
-
-**No struct-to-struct copy.** `var p2: Point = p1` is not supported. Whole-struct initialization from another variable isn't implemented yet.
-
-**Field access must start with a named variable.** `make_point().x` is rejected — the base must be a variable in scope, not an expression.
-
-**No pointer-to-struct.** Functions take structs by value. To share a struct across functions and have modifications be visible to the caller, you need a pointer — that's chapter 18.
 
 ## What's Next
 
-[Chapter 18](chapter-18.md) adds pointers: `ptr[T]` as a type, `addr(x)` to take the address of a variable, and `p[i]` for pointer indexing. With pointers, you can pass a struct by reference and have functions modify the caller's data.
+Pyxc now has a real type system with ten scalar types, explicit casts, typed parameters and return values, and a void type for side-effecting functions. The next step is aggregate types — structs — which require extending the type system beyond scalars and introducing memory layout decisions. The debug info infrastructure built in chapters 15 and 16 will handle them immediately once the right DWARF descriptors are wired in.
 
 ## Need Help?
 
@@ -933,10 +1344,3 @@ Build issues? Questions?
 
 - **GitHub Issues:** [Report problems](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues)
 - **Discussions:** [Ask questions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
-
-Include:
-- Your OS and version
-- Full error message
-- Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
-
-We'll figure it out.

@@ -1,5 +1,7 @@
 # RUN: %pyxc < %s 2>&1 | FileCheck %s
-# CHECK: -1.000000
+# CHECK: Parsed a user-defined operator.
+# CHECK: Parsed a function definition.
+# CHECK: Evaluated to -1.000000
 
 
 # unaryminus applied to a user-defined unary op: -!x

@@ -1,6 +1,10 @@
 # RUN: %pyxc < %s 2>&1 | FileCheck %s
-# CHECK: Assignment target must be assignable
+# CHECK: Destination of '=' must be a variable
 
-# Tests: non-lvalue assignment target is rejected.
+# Tests: the left-hand side of "=" in a simple statement must be a plain
+# variable name; a parenthesised expression is rejected.
+# ParseSimpleStmt calls Expr->getVariableName() after seeing "="; a
+# parenthesised expression returns nullptr and triggers this error.
+# simplestmt = returnstmt | varstmt | assignstmt | expression ;
 
 (1 + 2) = 3

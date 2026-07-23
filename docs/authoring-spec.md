@@ -174,15 +174,17 @@ Do not comment every line. A comment on every line is noise. Reserve inline comm
 
 ### 3.5 Naming Conventions
 
-Follow the LLVM naming conventions used in the original Kaleidoscope tutorial because readers are often cross-referencing both:
+Naming decisions are made for what's clearest to a reader learning compilers for the first time, not for compatibility with the original LLVM Kaleidoscope tutorial and not out of deference to "that's how compiler theory names things." If a name is foundational to a whole tradition of compiler writing but is abbreviated, ambiguous, or confusing without prior context, we rename it. Pyxc already does this: Kaleidoscope's `ExprAST`/`PrototypeAST` became `ExpressionAST`/`FunctionSignatureAST` because full words read clearer to newcomers than abbreviations. Don't reach for "but the reference tutorial/textbook does it this way" as a justification. Think from first principles about what a reader needs to follow along, every time, including for names that feel load-bearing or sacred elsewhere.
 
-- Types and class names: `PascalCase` (`SourceManager`, `ExprAST`)
-- Functions: `PascalCase` for parse/codegen functions (`ParseExpression`, `ParsePrototype`), `camelCase` for helpers
+House style within pyxc, kept for internal consistency, not because any external tutorial uses it:
+
+- Types and class names: `PascalCase` (`SourceManager`, `ExpressionAST`)
+- Functions: `PascalCase` for parse/codegen functions (`ParseExpression`, `ParseFunctionSignature`), `camelCase` for helpers
 - Local variables: `PascalCase` for LLVM types (`TheFunction`, `RetVal`), `PascalCase` for all variables in parse/codegen functions
 - Loop indices: single lowercase letters are fine (`i`, `e`) but prefer descriptive names for outer loops
 - Globals: `PascalCase` prefixed with `The` for LLVM singletons (`TheContext`, `TheModule`, `TheBuilder`)
 
-The LLVM tutorial itself uses capital `C` and `I` as loop variables in the lexer. We do not; we use `ch` and `idx` (lowercase) for loop variables in our own code, but we do not "fix" LLVM-provided code we copy verbatim.
+We use lowercase `ch` and `idx` for loop variables in code we write ourselves, even where the original Kaleidoscope tutorial uses capital `C`/`I`. We don't "fix" LLVM API code we copy verbatim (e.g. IRBuilder call patterns), since that's third-party code, not a teaching choice we made.
 
 ---
 

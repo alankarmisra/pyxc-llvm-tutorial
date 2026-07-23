@@ -2,8 +2,8 @@
 # CHECK: 42.000000
 
 
-# Tests: definition with a zero-argument prototype.
-# prototype = identifier "(" ")"
+# Tests: definition with a zero-argument function signature.
+# function signature = identifier "(" ")"
 
 def answer(): return 42.0
 

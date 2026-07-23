@@ -1,24 +1,32 @@
 ---
-description: "Add type aliases so any type — scalar, pointer, or struct — can be given a readable name that vanishes completely from the generated IR."
+description: "Add string literals and C interop — so pyxc programs can call puts, printf, and other C standard library functions directly."
 ---
-# 22. pyxc: Type Aliases
+# 22. pyxc: String Literals and C Interop
 
 ## Where We Are
 
-[Chapter 21](chapter-21.md) added string literals. We can write `"hello"` and pass it to `puts`. But the parameter type is a C-style `ptr[int8]` which is a bit annoying to write all the time. After this chapter we can write:
+[Chapter 21](chapter-21.md) added array literals, giving us a clean syntax for constructing fixed-size arrays inline. But there is one conspicuously missing piece: text. Every useful program eventually needs to produce output that is more than a raw number, and the C standard library is full of functions — `puts`, `printf`, `strlen` — that are ready to help. What we are missing is a way to write string data in pyxc source code.
+
+After this chapter:
 
 ```pyxc
-type string = ptr[int8]
+extern def puts(s: ptr[int8]) -> int
 
-extern def puts(s: string) -> int
-
-def greet(name: string) -> int:
-  return puts(name)
+def greeting() -> ptr[int8]:
+  return "hello, pyxc"
 
 def main() -> int:
-  greet("world")
+  puts(greeting())
   return 0
 ```
+
+Output:
+
+```
+hello, pyxc
+```
+
+String literals are `ptr[int8]` — a pointer to the first byte of a null-terminated buffer. That is exactly what C's `char *` is. `puts`, `printf`, `strlen`, and every other C string function accept `ptr[int8]` directly, with no adapter needed.
 
 ## Source Code
 
@@ -29,252 +37,177 @@ cd pyxc-llvm-tutorial/code/chapter-22
 
 ## Grammar
 
-This chapter adds two new productions (`typealias`, `aliastype`) and extends two existing ones (`top` gains a `typealias` alternative; `type` gains an `aliastype` alternative).
-
-`code/chapter-22/pyxc.ebnf`
-
 ```ebnf
-program    = [ eols ] [ top { eols top } ] [ eols ] ;
-top        = typealias | structdef | definition | decorateddef | external | toplevelexpr ; -- new
-typealias  = "type" identifier "=" type ;                                                  -- new
-...
-type       = builtintype | aliastype | structtype | pointertype ;                          -- new (aliastype)
-aliastype  = identifier ;                                                                  -- new
+string-expr ::= '"' { char | escape-seq } '"'
+escape-seq  ::= '\\' | '\"' | '\n' | '\t' | '\0'
 ```
 
-`aliastype` and `structtype` are both written as `identifier`. The parser tries `TypeAliases` first, then `StructTypes`, and rejects the identifier if neither lookup succeeds.
+A string literal is a sequence of characters and escape sequences enclosed in double quotes. It has type `ptr[int8]` regardless of context. The closing quote must appear on the same line as the opening quote — unterminated strings are a lexer error.
 
-### Full Grammar
+Supported escape sequences: `\\` (backslash), `\"` (double quote), `\n` (newline), `\t` (tab), `\0` (null byte). Any other `\x` is a lexer error.
 
-`code/chapter-22/pyxc.ebnf`
-
-```ebnf
-program         = [ eols ] [ top { eols top } ] [ eols ] ;
-eols            = eol { eol } ;
-top             = typealias | structdef | definition | decorateddef | external | toplevelexpr ;
-typealias       = "type" identifier "=" type ;
-structdef       = "struct" identifier ":" eols structblock ;
-structblock     = indent fielddecl { eols fielddecl } dedent ;
-fielddecl       = identifier ":" type ;
-definition      = "def" prototype [ "->" type ] ":" ( simplestmt | eols block ) ;
-decorateddef    = binarydecorator eols "def" binaryopprototype [ "->" type ] ":" ( simplestmt | eols block )
-                | unarydecorator  eols "def" unaryopprototype  [ "->" type ] ":" ( simplestmt | eols block ) ;
-binarydecorator = "@" "binary" "(" integer ")" ;
-unarydecorator  = "@" "unary" ;
-binaryopprototype = customopchar "(" typedparam "," typedparam ")" ;
-unaryopprototype  = customopchar "(" typedparam ")" ;
-external        = "extern" "def" prototype [ "->" type ] ;
-toplevelexpr    = expression ;
-prototype       = identifier "(" [ typedparam { "," typedparam } ] ")" ;
-typedparam      = identifier ":" type ;
-ifstmt          = "if" expression ":" suite
-                [ eols "else" ":" suite ] ;
-forstmt         = "for"
-                  ( "var" identifier ":" type | identifier )
-                  "=" expression "," expression "," expression ":" suite ;
-varstmt         = "var" varbinding { "," varbinding } ;
-assignstmt      = lvalue "=" expression ;
-simplestmt      = returnstmt | varstmt | assignstmt | expression ;
-compoundstmt    = ifstmt | forstmt ;
-statement       = simplestmt | compoundstmt ;
-suite           = simplestmt | compoundstmt | eols block ;
-returnstmt      = "return" [ expression ] ;
-block           = indent statement { eols statement } dedent ;
-expression      = unaryexpr binoprhs ;
-binoprhs        = { binaryop unaryexpr } ;
-lvalue          = identifier | fieldaccess | indexexpr ;
-varbinding      = identifier ":" type [ "=" expression ] ;
-unaryexpr       = unaryop unaryexpr | primary ;
-unaryop         = "-" | userdefunaryop ;
-primary         = castexpr | sizeofexpr | addrexpr | stringliteral | identifierexpr | fieldaccess | indexexpr | numberexpr | bool_literal | parenexpr ;
-castexpr        = casttype "(" expression ")" ;
-sizeofexpr      = "sizeof" "(" type ")" ;
-addrexpr        = "addr" "(" lvalue ")" ;
-identifierexpr  = identifier | callexpr ;
-callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
-fieldaccess     = identifier "." identifier { "." identifier } ;
-indexexpr       = identifier "[" expression "]" ;
-numberexpr      = number ;
-stringliteral   = "\"" { ? any char except " and newline ? | escape } "\"" ;
-escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
-parenexpr       = "(" expression ")" ;
-binaryop        = builtinbinaryop | userdefbinaryop ;
-indent          = INDENT ;
-dedent          = DEDENT ;
-
-builtinbinaryop = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
-userdefbinaryop = ? any opchar defined as a custom binary operator ? ;
-userdefunaryop  = ? any opchar defined as a custom unary operator ? ;
-customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
-                    and not already defined as a custom operator ? ;
-opchar          = ? any single ASCII punctuation character ? ;
-identifier      = (letter | "_") { letter | digit | "_" } ;
-builtintype     = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | "None" ;
-aliastype       = identifier ;
-structtype      = identifier ;
-pointertype     = "ptr" "[" type "]" ;
-type            = builtintype | aliastype | structtype | pointertype ;
-casttype        = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | pointertype ;
-integer         = digit { digit } ;
-number          = digit { digit } [ "." { digit } ]
-                | "." digit { digit } ;
-bool_literal    = "True" | "False" ;
-letter          = "A".."Z" | "a".."z" ;
-digit           = "0".."9" ;
-eol             = "\r\n" | "\r" | "\n" ;
-ws              = " " | "\t" ;
-INDENT          = ? synthetic token emitted by lexer ? ;
-DEDENT          = ? synthetic token emitted by lexer ? ;
-```
-## New Keyword: `type`
+## A New Token: `tok_string`
 
 ```cpp
-tok_type = -39,
+tok_string = -38,
 ```
 
-Registered in the keyword table:
+Unlike keywords, `tok_string` is not registered in the keyword map. The lexer produces it directly when it encounters a `"` character. The string's content — with escapes already resolved — is stored in a global:
 
 ```cpp
-{"type", tok_type}
+static string StringLiteralStr;
 ```
 
-## The `TypeAliases` Map
+This mirrors the existing pattern for `IdentifierStr` and `NumVal`: the lexer fills a global, and the parser consumes it before calling `getNextToken` again.
+
+## Lexer String Handling
+
+In `getTok`, the `LexerLastChar == '"'` branch handles the full scan:
 
 ```cpp
-static std::map<string, std::pair<ValueType, string>> TypeAliases;
-```
-
-This maps an alias name to the fully-resolved type it stands for. The pair is `(ValueType, StructName)`, you will notice, is the same two-field representation used in [chapter 18](chapter-18.md). 
-
-`TypeAliases.clear()` is called at the start of each new module (inside `ResetParserStateForFile`), alongside `StructTypes.clear()`. For now, aliases do not persist across compilation units. This will change once we get into multi-file and `import` territory.
-
-## Extending `ParseTypeToken`
-
-`ParseTypeToken` is the single function that all type annotations in the language go through — parameter types, return types, `var` declarations, `sizeof` operands, cast targets. That means adding alias resolution in one place makes aliases work everywhere.
-
-Before this chapter, an unknown identifier in `ParseTypeToken` was an immediate error. Now there is a lookup before the error:
-
-```cpp
-case tok_identifier: {
-  string TyName = IdentifierStr;
-  auto AliasIt = TypeAliases.find(TyName);
-  if (AliasIt != TypeAliases.end()) {
-    getNextToken();
-    if (StructName)
-      *StructName = AliasIt->second.second;
-    return AliasIt->second.first;
+if (LexerLastChar == '"') {
+  StringLiteralStr.clear();
+  LexerLastChar = advance(); // eat opening quote
+  while (LexerLastChar != '"' && LexerLastChar != EOF && LexerLastChar != '\n') {
+    if (LexerLastChar == '\\') {
+      LexerLastChar = advance();
+      switch (LexerLastChar) {
+      case '\\': StringLiteralStr.push_back('\\'); break;
+      case '"':  StringLiteralStr.push_back('"');  break;
+      case 'n':  StringLiteralStr.push_back('\n'); break;
+      case 't':  StringLiteralStr.push_back('\t'); break;
+      case '0':  StringLiteralStr.push_back('\0'); break;
+      default:
+        fprintf(stderr, "Error: invalid string escape\n");
+        return tok_error;
+      }
+    } else {
+      StringLiteralStr.push_back(static_cast<char>(LexerLastChar));
+    }
+    LexerLastChar = advance();
   }
-  if (!StructTypes.count(TyName)) {
-    LogError(("Unknown type '" + TyName + "'").c_str());
-    return ValueType::Error;
+  if (LexerLastChar != '"') {
+    fprintf(stderr, "Error: unterminated string literal\n");
+    return tok_error;
   }
+  LexerLastChar = advance(); // eat closing quote
+  return tok_string;
+}
+```
+
+The loop advances character by character. When it sees `\`, it immediately advances again to read the escape character. Each recognized escape is pushed as its actual byte value. Anything not in the switch returns `tok_error` immediately, which aborts compilation.
+
+The while condition checks for both EOF and `\n` in addition to the closing `"`. This means hitting end-of-file or end-of-line before the closing quote is caught as an unterminated string rather than looping forever.
+
+## `StringExprAST`
+
+```cpp
+class StringExprAST : public ExprAST {
+  string Text;
+public:
+  explicit StringExprAST(string Text, const string &PtrTypeInfo)
+      : Text(std::move(Text)) {
+    setType(ValueType::Pointer, PtrTypeInfo);
+  }
+  Value *codegen() override;
+};
+```
+
+The type is always `ptr[int8]`. `PtrTypeInfo` is `EncodePointerType(ValueType::Int8, "")` — the same encoding used for any other `ptr[int8]` in the system. From the type checker's perspective, a string literal is indistinguishable from any other `ptr[int8]` value.
+
+`Text` holds the processed string content: the characters between the quotes, with all escape sequences already resolved to their byte values. No further processing happens at codegen time.
+
+## Parsing `tok_string`
+
+The `ParsePrimary` switch gains a `tok_string` case:
+
+```cpp
+case tok_string: {
+  string S = StringLiteralStr;
   getNextToken();
-  if (StructName)
-    *StructName = TyName;
-  return ValueType::Struct;
+  return make_unique<StringExprAST>(
+      std::move(S), EncodePointerType(ValueType::Int8, ""));
 }
 ```
 
-If the identifier matches an alias, the resolved type and struct name are returned directly. No other part of the compiler needs to change — the alias is transparent from this point on.
+The global `StringLiteralStr` is copied into a local before `getNextToken` is called — the same pattern used for `IdentifierStr` in the `tok_identifier` case. There is no context-sensitivity: string literals are always `ptr[int8]`, regardless of where they appear.
 
-## `ParseTypeAliasDefinition`
+## `StringExprAST::codegen`
 
 ```cpp
-static bool ParseTypeAliasDefinition() {
-  getNextToken(); // eat 'type'
-  // expect identifier
-  string AliasName = IdentifierStr;
-  if (TypeAliases.count(AliasName))
-    return LogError("Type alias 'X' is already defined");
-  if (StructTypes.count(AliasName))
-    return LogError("Name 'X' is already defined as a struct");
-  getNextToken(); // eat alias name
-  // expect '='
-  getNextToken(); // eat '='
-  string AliasStructName;
-  ValueType AliasType = ParseTypeToken(&AliasStructName);
-  if (AliasType == ValueType::Error)
-    return false;
-  TypeAliases[AliasName] = {AliasType, AliasStructName};
-  LastTopLevelEndedWithBlock = false;
-  return true;
+Value *StringExprAST::codegen() {
+  auto *I8Ty = Type::getInt8Ty(*TheContext);
+  auto *ArrTy = ArrayType::get(I8Ty, Text.size() + 1);
+  auto *Init = ConstantDataArray::getString(*TheContext, Text, true);
+  string Name = ".str." + to_string(StringLiteralCounter++);
+  auto *GV = new GlobalVariable(*TheModule, ArrTy, true,
+                                GlobalValue::PrivateLinkage, Init, Name);
+  GV->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
+  GV->setAlignment(Align(1));
+  ModuleHasGlobals = true;
+  Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
+  return Builder->CreateInBoundsGEP(ArrTy, GV, {Zero, Zero}, "strptr");
 }
 ```
 
-The parser eats `type`, validates the alias name against both `TypeAliases` and `StructTypes`, eats the `=`, then calls `ParseTypeToken` to resolve the right-hand side. Whatever `ParseTypeToken` returns — after fully resolving any chain of aliases — is stored directly. There is no stored pointer to the original name.
+Each string literal becomes a private global constant in the LLVM module. The details:
 
-`HandleTypeAliasDef` wraps this in the standard top-level handler and is wired into both the file-mode and REPL-mode dispatch loops under `tok_type`.
+**Array type.** The string `"hello"` (5 bytes) becomes `[6 x i8]`. The `+ 1` accounts for the null terminator. The `true` argument to `ConstantDataArray::getString` appends the `\0` automatically.
 
-Resolution happens at definition time, not at use time. When `type Score = MyInt` is processed, `ParseTypeToken("MyInt")` runs immediately and looks up `MyInt` in `TypeAliases`. If `MyInt` is already defined as `(Int, "")`, then `Score` is stored as `(Int, "")`. There is no indirection at use time — `Score` and `int64` are identical to the compiler from the moment the alias is defined.
+**`PrivateLinkage`.** The global is not visible outside the translation unit. Two different `.c`/`.pyxc` files can each have a `.str.0` without name collision.
 
+**`UnnamedAddr::Global`.** The address of the constant does not matter to the program — it is only ever used through the pointer, not compared for identity. This attribute lets LLVM merge identical string constants at link time when optimizing.
 
-## Conflict Rules
+**`Align(1)`.** Byte-aligned, correct for a `char` array. No stricter alignment is required or useful.
 
-The name spaces for aliases and struct types are shared. Three conflicts are checked:
+**`StringLiteralCounter`.** A `static unsigned` declared at module scope, reset to 0 at the start of each new module compilation. It generates unique names: `.str.0`, `.str.1`, and so on. Two identical string literals in the same file produce two separate globals at `-O0`; LLVM may merge them at higher optimization levels.
 
-**Alias redefinition.** Defining the same alias name twice is an error:
+**The GEP.** The global `GV` has type `[N x i8]` — it is a pointer to an array, not a pointer to a byte. `CreateInBoundsGEP` with indices `{i64 0, i64 0}` steps through the global (first index, advancing zero array elements) and then to byte 0 (second index, advancing zero bytes within the array). The result has type `ptr` pointing to the first byte. This is the standard C idiom for converting an array to a pointer.
 
-```
-type Foo = int
-type Foo = int64   → Error: Type alias 'Foo' is already defined
-```
+**`ModuleHasGlobals = true`.** String literal globals require the module-level `__init_globals` function to be emitted even if the user has declared no global variables. Setting this flag ensures that function is generated.
 
-**Alias name collides with a struct.** If a struct is already defined under that name, the alias is rejected:
+### Generated IR
 
-```
-struct Foo:
-  x: int
-type Foo = int     → Error: Name 'Foo' is already defined as a struct
-```
-
-**Struct name collides with an alias.** `ParseStructDefinition` checks `TypeAliases` before accepting the struct name:
-
-```
-type Foo = int
-struct Foo:        → Error: Name 'Foo' is already defined as a type alias
-  x: int
-```
-
-Forward references are not supported. Using an alias before defining it gives "Unknown type 'X'" — `ParseTypeToken` only searches entries that already exist in the map.
-
-## IR Transparency
-
-Aliases produce no IR. They are resolved entirely during parsing and leave no trace in the generated output.
-
-```pyxc
-type Score = int64
-
-def id(x: Score) -> Score:
-  return x
-```
+For `"hello"`:
 
 ```llvm
-define i64 @id(i64 %x) {
+@.str.0 = private unnamed_addr constant [6 x i8] c"hello\00"
+
+define i32 @main() {
 entry:
-  %x.addr = alloca i64
-  store i64 %x, ptr %x.addr
-  %x1 = load i64, ptr %x.addr
-  ret i64 %x1
+  %strptr = getelementptr inbounds [6 x i8], ptr @.str.0, i64 0, i64 0
+  call i32 @puts(ptr %strptr)
+  ret i32 0
 }
 ```
 
-`Score` does not appear. LLVM sees `i64` exactly as if `int64` had been written directly. The same holds for pointer aliases:
+The global is a read-only constant — `true` in the `GlobalVariable` constructor sets the `isConstant` flag. LLVM is free to place it in the `.rodata` section (or equivalent on the target platform).
+
+## The String Type in pyxc
+
+Strings in pyxc are `ptr[int8]`. There is no separate `string` type — a string literal is simply a pointer to the first byte of a null-terminated buffer, exactly matching C's `char *`. Every C string function accepts `ptr[int8]` directly:
 
 ```pyxc
-type string = ptr[int8]
+extern def puts(s: ptr[int8]) -> int
+extern def printf(fmt: ptr[int8]) -> int
+extern def strlen(s: ptr[int8]) -> int
+```
 
-def say(msg: string) -> int:
-  return puts(msg)
+Returning a string from a function works because the return type check compares `ptr[int8]` against `ptr[int8]`:
 
-def greeting() -> string:
+```pyxc
+def greeting() -> ptr[int8]:
   return "hello"
 ```
 
-The IR for both functions is identical to what you would get with `ptr[int8]` in every annotation.
+Storing a string literal in a variable works the same way:
+
+```pyxc
+var msg: ptr[int8] = "hello, pyxc"
+puts(msg)
+```
+
+The pointer stored in `msg` points directly into the global constant. The storage for the string is static — it lives for the lifetime of the program.
 
 ## Build and Run
 
@@ -285,98 +218,99 @@ cmake -S . -B build && cmake --build build
 
 ## Try It
 
-### `string` as a type
+### Basic string literal
 
 ```pyxc
 extern def puts(s: ptr[int8]) -> int
 
-type string = ptr[int8]
-
-def greet(name: string) -> int:
-  return puts(name)
-
 def main() -> int:
-  greet("world")
+  puts("hello, pyxc")
   return 0
 ```
 
 ```bash
-world
+hello, pyxc
 ```
 
-`string` is accepted as a parameter type and return type. The IR uses `ptr` throughout.
-
-### IR transparency
+### Escape sequences
 
 ```pyxc
-type Score = int64
+extern def puts(s: ptr[int8]) -> int
 
-def id(x: Score) -> Score:
-  return x
+def main() -> int:
+  puts("line one\nline two")
+  return 0
 ```
 
 ```bash
+line one
+line two
+```
+
+The `\n` inside the string literal is resolved by the lexer to a real newline byte. `puts` adds a trailing newline of its own, so the output ends with a blank line.
+
+### Return a string from a function
+
+```pyxc
+extern def puts(s: ptr[int8]) -> int
+
+def greeting() -> ptr[int8]:
+  return "hello from a function"
+
+def main() -> int:
+  puts(greeting())
+  return 0
+```
+
+```bash
+hello from a function
+```
+
+### Store in a variable, then pass
+
+```pyxc
+extern def puts(s: ptr[int8]) -> int
+
+def main() -> int:
+  var msg: ptr[int8] = "stored string"
+  puts(msg)
+  return 0
+```
+
+```bash
+stored string
+```
+
+### Inspect the IR for a string global
+
+```bash
 pyxc --emit llvm-ir -o out.ll program.pyxc
-grep 'define' out.ll
+grep '\.str\.' out.ll
 ```
 
-```
-define i64 @id(i64 %x)
-```
+You will see lines like:
 
-`Score` is gone. The function signature is plain `i64`.
-
-### Alias chain
-
-```pyxc
-type MyInt = int
-type Score = MyInt
+```llvm
+@.str.0 = private unnamed_addr constant [14 x i8] c"stored string\00"
 ```
 
-`Score` resolves to `(Int, "")` at definition time. `type Score = MyInt` calls `ParseTypeToken("MyInt")`, which finds the alias and returns `(Int, "")` immediately. The chain is collapsed to a single lookup in the map.
-
-### Alias for a struct type
-
-```pyxc
-struct Point:
-  x: int
-  y: int
-
-type Vec2 = Point
-```
-
-After this, `Vec2` can be used as a parameter type, return type, or `var` type, and the compiler treats it exactly like `Point`.
-
-### Forward reference error
-
-```pyxc
-def use_it(x: Meters) -> Meters:
-  return x
-
-type Meters = int64
-```
-
-```
-Error: Unknown type 'Meters'
-```
-
-The alias must be defined before it is used. There are no forward references.
+Each string literal in the source file produces one entry. The counter suffix increments for each additional literal.
 
 ## Known Limitations
 
-**No forward references.** The alias must appear before any use. `type List = ptr[List]` would fail because `List` is not yet in `TypeAliases` when the right-hand side is parsed.
+**No length tracking.** Strings are raw `ptr[int8]` — there is no stored length. Operations like bounds checking or safe slicing require the caller to track the length separately or call `strlen`.
 
-**No recursive aliases.** A consequence of no forward references — self-referential alias definitions are not possible.
+**No built-in string operations.** Concatenation, comparison, and copying are not in the language. Use the C standard library (`strcat`, `strcmp`, `strcpy`) via `extern` declarations, or allocate a buffer with `malloc` (chapter 20) and write to it manually.
 
-**Aliases are purely syntactic.** There is no nominal typing. `Score` and `int64` are the same type to the compiler; a function expecting `Score` will accept an `int64` without complaint.
+**No deduplication at `-O0`.** Two identical string literals in the same file produce two separate globals. LLVM may merge them at higher optimization levels thanks to `UnnamedAddr::Global`, but not at `-O0`.
 
-**No parameterized aliases.** `type Pair[T] = ...` is not supported. Type parameters are outside the scope of this chapter.
+**No `string` type alias yet.** Writing `ptr[int8]` everywhere is verbose. Chapter 23 adds `type string = ptr[int8]`, which makes string-typed function signatures read naturally without any new runtime machinery.
 
-**No re-export or scoping.** All aliases are global to the module. There is no way to limit visibility of an alias to a single function.
+**Mutable string buffers require malloc.** String literal globals are read-only constants. To build or modify a string at runtime you need a heap-allocated buffer, which requires `malloc` (chapter 20).
 
 ## What's Next
 
-[Chapter 23](chapter-23.md) adds fixed-size arrays (`T[N]`), stack allocation, indexing, and array literals — completing the types and memory phase.
+[Chapter 23](chapter-23.md) adds type aliases — `type string = ptr[int8]` — so you can write `string` wherever you currently write `ptr[int8]`. The underlying representation does not change at all; the alias is purely syntactic, resolved at parse time.
 
 ## Need Help?
 

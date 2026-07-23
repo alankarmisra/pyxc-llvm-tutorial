@@ -5,11 +5,11 @@
 # Tests: -g -O2 --emit exe produces a correct, executable binary. Debug info
 # and optimization are both active; the program output must be unchanged.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-var total: float64 = 0.0
+var total = 0
 
-def main() -> None:
-    for var i: float64 = 1, i < 6, 1:
+def main():
+    for var i = 1, i < 6, 1:
         total = total + i
     printd(total)

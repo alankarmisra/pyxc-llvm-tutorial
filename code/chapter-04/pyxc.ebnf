@@ -1,0 +1,34 @@
+(* 
+   pyx.ebnf
+   Baseline grammar for chapter 3. 
+*)
+
+(* 
+   { } = zero or more (any number of...)
+   [ ] = zero or one (optional)
+*)
+program        = [ eols ] [ top { eols top } ] [ eols ] ;
+eols           = eol { eol } ;
+top            = functiondef | toplevelexpr ;
+functiondef     = "def" functionsignature ":" [ eols ] "return" expression ;
+toplevelexpr   = expression ;
+functionsignature      = name "(" [ name { "," name } ] ")" ;
+expression     = primary binoprhs ;
+binoprhs       = { binaryop primary } ;
+primary        = nameexpr | numberexpr | parenexpr ;
+nameexpr = name
+                 | name "(" [ expression { "," expression } ] ")" ;
+numberexpr     = number ;
+parenexpr      = "(" expression ")" ;
+binaryop       = "+" | "-" | "*" | "<" ;
+name     = (letter | "_") { letter | digit | "_" } ;
+number         = digit { digit } [ "." { digit } ]
+                 | "." digit { digit } ;
+letter         = "A".."Z" | "a".."z" ;
+digit          = "0".."9" ;
+eol            = "\r\n" | "\r" | "\n" ;
+(*  
+    `ws` may appear between any two tokens 
+     and is ignored by the lexer.  
+*)
+ws             = " " | "\t" ;

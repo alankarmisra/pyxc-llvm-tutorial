@@ -5,11 +5,11 @@
 # Tests: a top-level for loop executes inside __pyxc.global_init before main().
 # main() sees the accumulated result of the loop.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-var total: float64 = 0.0
-for var i: float64 = 1, i < 5, 1:
+var total = 0
+for var i = 1, i < 5, 1:
     total = total + i
 
-def main() -> None:
+def main():
     printd(total)

@@ -1,24 +1,26 @@
 ---
-description: "Add object-file emission so Pyxc can compile programs to standalone native binaries without the JIT."
+description: "Add global variables so top-level var declarations and assignments persist across REPL inputs and work naturally in compiled files."
 ---
-# 13. pyxc: Emitting Native Code
+# 13. pyxc: Global Variables
 
 ## Where We Are
 
-[Chapter 12](chapter-12.md) gave pyxc global variables and a proper file-mode entry point. By the end of that chapter, I could write a complete pyxc program — global state, helper functions, a `main` — and run it through the JIT:
+[Chapter 12](chapter-12.md) introduced statement blocks, indentation, and `var` as a proper statement. But `var` only worked inside function bodies. At the top level — both in the REPL and in file mode — there was no way to declare a variable that outlived a single expression:
 
-```bash
-./build/pyxc program.pyxc
+```pyxc
+# Chapter 12 — neither of these works at top level:
+var x = 10     # parse error: var is not an expression
+x = x + 1     # parse error: x is undeclared
 ```
 
-But every run recompiled the program from source. There was no way to produce a `.o` file, link it with other objects, or ship a standalone binary. I want to fix that this chapter.
+I want to fix that this chapter. Once I do, the REPL works the way you'd expect, and file mode has a proper entry point:
 
-After this chapter:
-
-```bash
-pyxc --emit obj -o program.o program.pyxc
-clang program.o runtime.c -o program
-./program
+```pyxc
+ready> var x = 10
+ready> x = x + 7
+ready> extern def printd(n)
+ready> printd(x)
+17.000000
 ```
 
 ## Source Code
@@ -28,437 +30,445 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-13
 ```
 
-## What Changes
+## The Problem in Detail
 
-I'm adding four tightly-coupled pieces on top of chapter 12's codebase:
+In chapter 11, `ParseTopLevelExpr` called `ParseExpression`, which only accepted expressions — not statements. And even if `var x = 10` had somehow parsed, I'd have compiled it into a fresh `__anon_expr` function that gets freed immediately after execution. The variable and its storage would both be gone before the next REPL line was read.
 
-1. **Command-line flags** — `--emit llvm-ir|asm|obj`, `-o <file>`, and `--dump-ir`.
-2. **`EmitModuleToFile`** — writes the compiled module to a file as LLVM IR, native assembly, or a native object file.
-3. **`EmitFileMode`** — orchestrates compilation for emit mode: builds `__pyxc.global_init`, wraps `main()`, then calls `EmitModuleToFile`.
-4. **`AddGlobalCtor`** — registers `__pyxc.global_init` in the `llvm.global_ctors` array so the linker wires it to run before `main()` in the emitted binary.
+The root cause is architectural: the REPL compiles each top-level input into a new module, then hands that module to the JIT and (for expressions) frees it. A local `alloca` inside a freed module is unreachable. I need storage for global mutable state that survives across module boundaries.
 
-No parser or codegen changes are needed — the chapter 12 IR is already correct. Everything new this chapter is about routing that IR to a file instead of a JIT.
+I'm going to solve this in two parts:
+
+1. **`GlobalVariable` instead of `alloca`** — LLVM global variables live at a fixed address in the JIT's address space. Any module can declare one as `extern` and the JIT resolves all references to the same storage.
+
+2. **`__pyxc.global_init`** — top-level statements need to run in order. I'll have both the REPL and file mode collect top-level statements into an internal function called `__pyxc.global_init` and call it as an entry point.
 
 ## Grammar
 
-No grammar changes in this chapter. The language itself is unchanged — this is purely a compiler-driver extension.
+The grammar itself is unchanged from chapter 11. What changes is what the top-level dispatch accepts. Previously `top` only dispatched statements as expressions; now it needs to handle the full statement set:
 
-## The Design
-
-The key insight I'm leaning on: the compilation pipeline doesn't need to change at all — source → tokens → AST → LLVM IR → optimised IR stays exactly as it was. What changes is the *sink*. In JIT mode the sink is the JIT's in-process linker. In emit mode the sink is a file on disk. Because the IR is the same either way, the entire parser and codegen carry over with no modification.
-
-## Command-Line Interface
-
-I declare three new options with LLVM's command-line library:
-
-```cpp
-static cl::opt<std::string>
-    EmitKindOpt("emit",
-                cl::desc("Emit output: llvm-ir | asm | obj"),
-                cl::init(""), cl::cat(PyxcCategory));
-
-static cl::opt<std::string> OutputFile("o", cl::desc("Output filename"),
-                                       cl::value_desc("filename"),
-                                       cl::init(""), cl::cat(PyxcCategory));
-
-static cl::opt<bool>
-    DumpIR("dump-ir", cl::desc("Print generated LLVM IR to stderr"),
-           cl::init(false), cl::cat(PyxcCategory));
-// Backward-compat alias.
-static cl::opt<bool>
-    VerboseIR("v", cl::desc("Alias for --dump-ir"), cl::init(false),
-              cl::cat(PyxcCategory));
+```ebnf
+(* unchanged from chapter 11 — the grammar already supported this *)
+top        = definition | decorateddef | external | toplevelstmt ;
+toplevelstmt = statement ;  (* was: toplevelexpr = expression *)
 ```
 
-`ProcessCommandLine` validates and resolves them before I do any parsing:
+`toplevelstmt` covers everything `statement` covers: `var`, assignment, `if`, `for`, `return`, and plain expressions. The grammar rule is a one-word change; the real work is in the parser and codegen.
+
+## A Side Effect Worth Noting
+
+In chapter 11, `var` was a statement but its scope was always a function body — the variable and the code using it were always in the same compilation unit. A top-level `var` breaks that: the declaration is one REPL input (one module), and the code that reads the variable is a different input (a different module). Sharing state across modules needs a different storage mechanism than `alloca`, which is what I introduce this chapter.
+
+## Parse-Time Tracking
+
+Chapter 12 tracked declared variables in `VarScopes` — a stack of sets, one per active scope. I add a parallel set for globals:
 
 ```cpp
-if (!EmitKindOpt.empty()) {
-  if (IsRepl) {
-    fprintf(stderr, "Error: --emit requires a file input\n");
-    return -1;
-  }
+static vector<set<string>> VarScopes;    // locals and block scopes
+static set<string> GlobalVarNames;       // top-level globals (persist forever)
+static bool ParsingTopLevel = false;     // true while parsing a top-level statement
+```
 
-  if (EmitKindOpt == "llvm-ir") {
-    EmitMode = EmitKind::LLVMIR;
-    EmitOutputPath = OutputFile.empty() ? "out.ll" : OutputFile.getValue();
-  } else if (EmitKindOpt == "asm") {
-    EmitMode = EmitKind::ASM;
-    EmitOutputPath = OutputFile.empty() ? "out.s" : OutputFile.getValue();
-  } else if (EmitKindOpt == "obj") {
-    EmitMode = EmitKind::OBJ;
-    EmitOutputPath = OutputFile.empty() ? "out.o" : OutputFile.getValue();
+I set `ParsingTopLevel` with a scope guard whenever the top-level dispatch is active:
+
+```cpp
+struct TopLevelParseGuard {
+  TopLevelParseGuard()  { ParsingTopLevel = true; }
+  ~TopLevelParseGuard() { ParsingTopLevel = false; }
+};
+```
+
+`ParseVarStmt` checks this flag and routes to the right tracking set:
+
+```cpp
+static unique_ptr<ExprAST> ParseVarStmt() {
+  getNextToken(); // eat 'var'
+  bool IsGlobalDecl = ParsingTopLevel;
+  // ...
+  if (IsGlobalDecl) {
+    if (GlobalVarNames.count(Name))
+      return LogError("Variable '...' already declared in this scope");
+    // ...
+    GlobalVarNames.insert(Name);
   } else {
-    fprintf(stderr, "Error: invalid --emit value '%s'\n",
-            EmitKindOpt.c_str());
-    return -1;
+    if (IsDeclaredInCurrentScope(Name))
+      return LogError("Variable '...' already declared in this scope");
+    // ...
+    DeclareVar(Name);
   }
-} else if (!OutputFile.empty()) {
-  fprintf(stderr, "Error: -o requires --emit\n");
-  return -1;
 }
 ```
 
-Key rules I'm enforcing here:
-
-- `--emit` without a source file is an error. The JIT REPL has no concept of an output file.
-- An unknown emit kind (`--emit wat`) is an error — the valid set is `llvm-ir`, `asm`, `obj`.
-- `-o` without `--emit` is also an error — there's nothing to route to the file.
-- If `-o` is omitted, the output path defaults to `out.ll`, `out.s`, or `out.o` in the current working directory.
-
-I declare the `EmitKind` enum and a global string for the resolved path alongside the other global state:
+`IsDeclaredVar` checks both sets now — so inside a function body, a name resolves as declared if it was declared locally or globally:
 
 ```cpp
-enum class EmitKind { None, LLVMIR, ASM, OBJ };
-static EmitKind EmitMode = EmitKind::None;
-static string EmitOutputPath;
-
-static bool IsEmitMode() { return EmitMode != EmitKind::None; }
-```
-
-After `FileModeLoop` finishes parsing the source file, I dispatch on `IsEmitMode()` in `main`:
-
-```cpp
-FileModeLoop();
-if (IsEmitMode())
-  EmitFileMode();
-else
-  RunFileMode();
-```
-
-`IsEmitMode()` also gates the per-function JIT path inside `HandleDefinition` and the decorator handler. In JIT mode, each compiled function is immediately transferred to the JIT and the module is replaced:
-
-```cpp
-// HandleDefinition — after codegen:
-if (!IsEmitMode()) {
-  ExitOnErr(TheJIT->addModule(
-      ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
-  InitializeModuleAndManagers();
+static bool IsDeclaredVar(const string &Name) {
+  for (auto It = VarScopes.rbegin(); It != VarScopes.rend(); ++It)
+    if (It->count(Name)) return true;
+  return GlobalVarNames.count(Name) > 0;
 }
 ```
 
-In emit mode this block is skipped entirely. All functions accumulate in the same `TheModule` until `EmitFileMode` writes it out. If I left the guard out, every `def` would hand the module to the JIT and reinitialise, leaving `EmitFileMode` with an empty module.
+## Top-Level Parsing
 
-## The Emit Pipeline: `EmitModuleToFile`
-
-`EmitModuleToFile` is the leaf that does the actual file writing. It opens the output path with `raw_fd_ostream` and then branches on the emit kind:
+`ParseTopLevelStatement` wraps my existing `ParseStatement` with the top-level guard:
 
 ```cpp
-static bool EmitModuleToFile() {
-  std::error_code EC;
-  raw_fd_ostream Dest(EmitOutputPath, EC, sys::fs::OF_None);
-  if (EC) {
-    fprintf(stderr, "Error: could not open output file '%s'\n",
-            EmitOutputPath.c_str());
-    return false;
-  }
-
-  if (EmitMode == EmitKind::LLVMIR) {
-    TheModule->print(Dest, nullptr);
-    return true;
-  }
-
-  string TargetTriple = sys::getDefaultTargetTriple();
-  Triple TT(TargetTriple);
-  TheModule->setTargetTriple(TT);
-
-  string Error;
-  const Target *Target = TargetRegistry::lookupTarget(TT, Error);
-  if (!Target) {
-    fprintf(stderr, "Error: %s\n", Error.c_str());
-    return false;
-  }
-
-  TargetOptions Options;
-  auto RM = std::optional<Reloc::Model>();
-  std::unique_ptr<TargetMachine> TM(
-      Target->createTargetMachine(TT, "generic", "", Options, RM));
-  TheModule->setDataLayout(TM->createDataLayout());
-
-  legacy::PassManager PM;
-  CodeGenFileType FileType = (EmitMode == EmitKind::ASM)
-                                 ? CodeGenFileType::AssemblyFile
-                                 : CodeGenFileType::ObjectFile;
-
-  if (TM->addPassesToEmitFile(PM, Dest, nullptr, FileType)) {
-    fprintf(stderr, "Error: target does not support file emission\n");
-    return false;
-  }
-
-  PM.run(*TheModule);
-  return true;
+static unique_ptr<ExprAST> ParseTopLevelStatement() {
+  LastTopLevelEndedWithBlock = false;
+  TopLevelParseGuard Guard;
+  auto Stmt = ParseStatement();
+  if (!Stmt) return nullptr;
+  LastTopLevelShouldPrint = Stmt->shouldPrintValue();
+  LastTopLevelEndedWithBlock = LastStatementWasBlock;
+  return Stmt;
 }
 ```
 
-I named that local variable `Target`, which shadows the `llvm::Target` type it's declared as — a little sloppy, but the compiler doesn't mind and it reads fine in context, so I've left it.
+`shouldPrintValue()` is a virtual method on `ExprAST`. Statements like `var`, `if`, and `for` return `false` — their result (always `0.0`) is noise, not a value the user asked to see. Plain expressions return `true`. This is how I get the REPL to suppress the unwanted `0.000000` that would otherwise appear after every `var` declaration.
 
-**LLVM IR path.** `Module::print` writes the module's textual IR directly to the stream. No target information is needed — IR is portable.
+I need this flag because the AST has a single `ExprAST` hierarchy for both statements and expressions. If I'd split the two into separate base classes — `StmtAST` producing no value, `ExprAST` producing one — the distinction would be structural and `shouldPrintValue()` wouldn't be needed at all. For now, adding a virtual boolean is the least-invasive fix without a full AST refactor.
 
-**ASM / OBJ path.** These need the full backend pipeline:
-
-- `sys::getDefaultTargetTriple()` returns the host's triple (e.g., `arm64-apple-macosx14.0.0`).
-- `TargetRegistry::lookupTarget` finds the backend registered for that triple. It fails if the target wasn't initialized at startup — that's why the three `InitializeNativeTarget*` calls in `main` matter.
-- `createTargetMachine` produces a `TargetMachine` that encapsulates the backend's code generator for the specific CPU and relocation model.
-- I update the module's data layout to match the target, so type sizes and alignments are correct.
-- I use `legacy::PassManager` here (not the new `PassManager`) because `addPassesToEmitFile` is part of the legacy pipeline API — it's the standard LLVM idiom for code generation to a file.
-- `addPassesToEmitFile` adds all the backend passes needed to lower IR to machine code and format it as assembly text or an ELF/Mach-O object file.
-- `PM.run(*TheModule)` runs the pipeline, writing the output into `Dest`.
-
-The new headers required for this path:
+`ParseTopLevelExpr` wraps the parsed statement in a uniquely-named function so it goes through the same `FunctionAST` codegen path as everything else:
 
 ```cpp
-#include "llvm/Support/FileSystem.h"       // raw_fd_ostream, OF_None
-#include "llvm/Support/CodeGen.h"          // CodeGenFileType
-#include "llvm/Target/TargetMachine.h"     // TargetMachine, TargetOptions
-#include "llvm/Target/TargetOptions.h"     // TargetOptions
-#include "llvm/MC/TargetRegistry.h"        // TargetRegistry
-#include "llvm/TargetParser/Host.h"        // getDefaultTargetTriple
-#include "llvm/TargetParser/Triple.h"      // Triple
-#include "llvm/IR/LegacyPassManager.h"     // legacy::PassManager
+static unique_ptr<FunctionAST> ParseTopLevelExpr() {
+  auto Stmt = ParseTopLevelStatement();
+  if (!Stmt) return nullptr;
+
+  if (!Stmt->isReturnExpr())
+    Stmt = make_unique<ReturnExprAST>(std::move(Stmt));
+
+  string FnName = "__pyxc.toplevel." + to_string(TopLevelExprCounter++);
+  auto Proto = make_unique<PrototypeAST>(FnName, vector<string>());
+  return make_unique<FunctionAST>(std::move(Proto), std::move(Stmt));
+}
 ```
 
-## `EmitFileMode`: The Orchestrator
+Each top-level input gets a unique name (`__pyxc.toplevel.0`, `__pyxc.toplevel.1`, …) so the JIT can look them up individually after adding the module.
 
-`EmitFileMode` is the emit-mode counterpart to `RunFileMode`. It does the same setup — build `__pyxc.global_init`, validate `main`, wrap `main` — but instead of JIT-executing the result, it calls `EmitModuleToFile`.
+## Codegen: GlobalVariable
+
+I want `VarStmtAST::codegen` to emit a `GlobalVariable` instead of an `alloca` when it's running inside a `__pyxc.global_init` context. There's one wrinkle: by the time a `var` statement codegens, `GetGlobalVariable` (below) may have already emitted a bare *declaration* for this name in the current module — some earlier statement in the same file might have referenced it before its `var` line was reached. So I can't just unconditionally create a new global; I have to check whether one already exists in this module and, if it's only a declaration, promote it to a real definition instead of creating a second, colliding global:
 
 ```cpp
-static void EmitFileMode() {
-  // 1. Compile __pyxc.global_init from the collected top-level statements.
+Value *VarStmtAST::codegen() {
+  if (InGlobalInit) {
+    for (auto &Var : VarNames) {
+      const string &VarName = Var.first;
+      ExprAST *Init = Var.second.get();
+
+      auto *GV = TheModule->getNamedGlobal(VarName);
+      if (GV && !GV->isDeclaration())
+        return LogErrorV("Global variable already defined");
+
+      if (!GV) {
+        // No global by this name yet in this module — create one with a
+        // constant zero initializer.
+        auto *Ty = Type::getDoubleTy(*TheContext);
+        GV = new GlobalVariable(
+            *TheModule, Ty, false, GlobalValue::ExternalLinkage,
+            ConstantFP::get(*TheContext, APFloat(0.0)), VarName);
+      } else if (GV->isDeclaration()) {
+        // A bare 'extern'-style declaration already exists for this name —
+        // turn it into a real definition instead of creating a duplicate.
+        GV->setInitializer(ConstantFP::get(*TheContext, APFloat(0.0)));
+        GV->setLinkage(GlobalValue::ExternalLinkage);
+      }
+
+      ModuleHasGlobals = true;
+
+      // Run the initializer at runtime and store the result.
+      Value *InitVal = Init->codegen();
+      if (!InitVal) return nullptr;
+      Builder->CreateStore(InitVal, GV);
+    }
+    return ConstantFP::get(*TheContext, APFloat(0.0));
+  }
+
+  // Inside a function: alloca path, unchanged from chapter 11.
+  // ...
+}
+```
+
+A few things worth noting:
+
+- **Constant zero initializer, then runtime store.** LLVM global variables require a *constant* initializer in the IR — I can't write `@x = global double sin(1.0)`. So every global starts as `0.0`. The actual initializer expression is evaluated at runtime inside `__pyxc.global_init` and stored into the global. This means initializers run in source order, and each one can read the already-initialized value of any earlier global.
+
+- **`ExternalLinkage`.** This makes the symbol visible across module boundaries. Any later module that declares `@x` as `extern` will have its reference resolved by the JIT to the same storage.
+
+- **Reusing an existing declaration.** Without the `GV->isDeclaration()` branch, defining a global whose name was already declared elsewhere in this same module would leave two distinct `GlobalVariable` objects fighting over one name — LLVM would just silently rename the second one rather than error, and the two objects would no longer refer to the same storage. Checking first and promoting the existing declaration in place avoids that entirely.
+
+`GetGlobalVariable` is what creates those bare declarations, and it's what handles cross-module visibility generally. When a later module references a global that was defined in an earlier one, it emits a declaration in the current module and lets the JIT resolve it:
+
+```cpp
+static GlobalVariable *GetGlobalVariable(const string &Name) {
+  // Fast path: already defined or declared in this module.
+  if (auto *GV = TheModule->getNamedGlobal(Name))
+    return GV;
+
+  // Not in this module — emit an extern declaration so the JIT can link it.
+  if (!GlobalVarNames.count(Name))
+    return nullptr;
+
+  auto *Ty = Type::getDoubleTy(*TheContext);
+  return new GlobalVariable(*TheModule, Ty,
+                            /*isConstant=*/false,
+                            GlobalValue::ExternalLinkage,
+                            /*Initializer=*/nullptr,  // declaration, not definition
+                            Name);
+}
+```
+
+A `GlobalVariable` with a null initializer is a *declaration* — it says "this symbol exists somewhere, find it at link time." The JIT resolves declarations to their definitions when the module is added.
+
+I make `VariableExprAST::codegen` and `AssignmentExprAST::codegen` both try the local `NamedValues` table first, then fall back to `GetGlobalVariable`:
+
+```cpp
+Value *VariableExprAST::codegen() {
+  auto It = NamedValues.find(Name);
+  if (It != NamedValues.end() && It->second)
+    return Builder->CreateLoad(Type::getDoubleTy(*TheContext), It->second, Name);
+
+  if (auto *GV = GetGlobalVariable(Name))
+    return Builder->CreateLoad(Type::getDoubleTy(*TheContext), GV, Name);
+
+  return LogErrorV("Unknown variable name");
+}
+
+Value *AssignmentExprAST::codegen() {
+  Value *Val = Expr->codegen();
+  if (!Val) return nullptr;
+
+  auto It = NamedValues.find(Name);
+  if (It != NamedValues.end() && It->second) {
+    Builder->CreateStore(Val, It->second);
+    return Val;
+  }
+
+  if (auto *GV = GetGlobalVariable(Name)) {
+    Builder->CreateStore(Val, GV);
+    return Val;
+  }
+
+  return LogErrorV("Unknown variable name");
+}
+```
+
+A local variable always shadows a global of the same name. Inside a function, if you declare `var x`, the alloca goes into `NamedValues` and the `NamedValues` check wins. After the function returns and `NamedValues` is cleared, the global is visible again.
+
+## REPL Mode: HandleTopLevelExpression
+
+In the REPL, each top-level input is still compiled into its own fresh module. The presence of globals changes what I need to do after codegen:
+
+```cpp
+static void HandleTopLevelExpression() {
+  auto FnAST = ParseTopLevelExpr();
+  // ... error handling ...
+
+  string FnName = FnAST->getName();
+  bool SavedInGlobalInit = InGlobalInit;
+  InGlobalInit = true;
+  if (auto *FnIR = FnAST->codegen()) {
+    InGlobalInit = SavedInGlobalInit;
+    Log("Parsed a top-level expression.\n");
+    if (VerboseIR)
+      FnIR->print(errs());
+
+    bool KeepModule = ModuleHasGlobals;
+
+    if (KeepModule) {
+      // Module contains GlobalVariable definitions — add it permanently.
+      auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
+      ExitOnErr(TheJIT->addModule(std::move(TSM)));
+      InitializeModuleAndManagers();
+
+      auto ExprSymbol = ExitOnErr(TheJIT->lookup(FnName));
+      double (*FP)() = ExprSymbol.toPtr<double (*)()>();
+      double result = FP();
+      if (IsRepl && LastTopLevelShouldPrint)
+        fprintf(stderr, "%f\n", result);
+    } else {
+      // No globals — use a ResourceTracker to free the module after the call.
+      auto RT = TheJIT->getMainJITDylib().createResourceTracker();
+      auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
+      ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
+      InitializeModuleAndManagers();
+
+      auto ExprSymbol = ExitOnErr(TheJIT->lookup(FnName));
+      double (*FP)() = ExprSymbol.toPtr<double (*)()>();
+      double result = FP();
+      if (IsRepl && LastTopLevelShouldPrint)
+        fprintf(stderr, "Evaluated to %f\n", result);
+
+      ExitOnErr(RT->remove());
+    }
+  } else {
+    InGlobalInit = SavedInGlobalInit;
+  }
+}
+```
+
+`ModuleHasGlobals` is set by `VarStmtAST::codegen` when it emits a `GlobalVariable`. If the flag is set, I have to keep the module permanently — freeing it would destroy the global's storage. If not, the old ResourceTracker path from chapter 6 applies and the module is freed after execution.
+
+Notice the two branches print with different formats — `"%f\n"` when the module sticks around, `"Evaluated to %f\n"` when it gets freed. That's not a deliberate stylistic choice, it's just what falls out of keeping the two branches' `printf` calls where chapter 6 originally put them. I'm noting it here because it's the kind of small inconsistency I'd otherwise forget I introduced, and a reader diffing the REPL output against expectations deserves to know it's real, not a typo.
+
+I save and restore `InGlobalInit` rather than hard-resetting it to `false` after codegen, in case `HandleTopLevelExpression` is ever called while something else already has it set. It isn't today, but restoring the old value instead of assuming what it was is a habit worth keeping. Setting it to `true` before codegen is what tells `VarStmtAST::codegen` to emit globals rather than allocas for top-level `var` statements.
+
+## File Mode: FileModeLoop and RunFileMode
+
+File mode needs to handle globals differently. Rather than compiling and executing each statement as it's parsed, I collect all top-level statements first:
+
+```cpp
+static vector<unique_ptr<ExprAST>> FileTopLevelStmts;
+
+static void FileModeLoop() {
+  while (true) {
+    // ...
+    switch (CurTok) {
+    case tok_def:    HandleDefinition(); break;
+    case tok_extern: HandleExtern();     break;
+    case '@':        /* ... */           break;
+    default:
+      HandleTopLevelStatementFileMode(); // collect, don't execute
+      break;
+    }
+  }
+}
+```
+
+`HandleTopLevelStatementFileMode` just parses and appends to `FileTopLevelStmts`. Once the entire file is parsed, `RunFileMode` wraps the collected statements into `__pyxc.global_init` and runs it:
+
+```cpp
+static void RunFileMode() {
   if (!FileTopLevelStmts.empty()) {
+    // Wrap all top-level statements into __pyxc.global_init.
     auto Block = make_unique<BlockExprAST>(std::move(FileTopLevelStmts));
-    auto Proto =
-        make_unique<PrototypeAST>("__pyxc.global_init", vector<string>());
+    auto Proto = make_unique<PrototypeAST>("__pyxc.global_init", vector<string>());
     auto FnAST = make_unique<FunctionAST>(std::move(Proto), std::move(Block));
 
-    bool SavedInGlobalInit = InGlobalInit;
     InGlobalInit = true;
     if (auto *FnIR = FnAST->codegen()) {
-      InGlobalInit = SavedInGlobalInit;
-      if (ShouldDumpIR())
-        FnIR->print(errs());
-      AddGlobalCtor(FnIR);   // <-- differs from RunFileMode
-    } else {
-      InGlobalInit = SavedInGlobalInit;
-      return;
+      InGlobalInit = false;
+      auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
+      ExitOnErr(TheJIT->addModule(std::move(TSM)));
+      InitializeModuleAndManagers();
+
+      // Call the initializer.
+      auto InitSymbol = ExitOnErr(TheJIT->lookup("__pyxc.global_init"));
+      double (*InitFn)() = InitSymbol.toPtr<double (*)()>();
+      InitFn();
     }
   }
 
-  // 2. Validate main() arity.
+  // If the user defined main(), call it after globals are initialized.
   auto MainIt = FunctionProtos.find("main");
-  if (MainIt != FunctionProtos.end() && MainIt->second->getNumArgs() != 0) {
-    fprintf(stderr, "Error: main() must take no arguments\n");
-    return;
-  }
+  if (MainIt == FunctionProtos.end()) return;
 
-  // 3. Wrap main() to return int.
-  if (auto *UserMain = TheModule->getFunction("main")) {
-    if (UserMain->getReturnType()->isDoubleTy()) {
-      UserMain->setName("__pyxc.user_main");
-      FunctionType *FT =
-          FunctionType::get(Type::getInt32Ty(*TheContext), false);
-      Function *Wrapper =
-          Function::Create(FT, Function::ExternalLinkage, "main",
-                           TheModule.get());
-      BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", Wrapper);
-      IRBuilder<> TmpB(BB);
-      TmpB.CreateCall(UserMain);
-      TmpB.CreateRet(ConstantInt::get(Type::getInt32Ty(*TheContext), 0));
-    }
-  }
-
-  // 4. Write the output file.
-  EmitModuleToFile();
+  auto MainSymbol = ExitOnErr(TheJIT->lookup("main"));
+  double (*MainFn)() = MainSymbol.toPtr<double (*)()>();
+  MainFn();
 }
 ```
 
-Three things are meaningfully different from `RunFileMode`:
+The ordering guarantee I'm relying on: `def` and `extern` statements are compiled as they're encountered during `FileModeLoop` (same as before). Top-level `var` and assignment statements are deferred until `RunFileMode`. By the time `__pyxc.global_init` runs, all functions are already compiled and in the JIT — so initializer expressions can call user-defined functions.
 
-1. **`AddGlobalCtor` instead of JIT-calling `__pyxc.global_init`.** In JIT mode, `RunFileMode` looks up the symbol and calls it directly. In emit mode there is no JIT — the binary hasn't been linked yet. Instead, I register `__pyxc.global_init` in `llvm.global_ctors` so the linker wires it to run before `main()` automatically.
+If the user defines `main`, it runs after `__pyxc.global_init`, so all globals are fully initialized before `main` executes.
 
-2. **`main()` return-type wrapping.** pyxc's `main()` returns `double` (everything in pyxc is a double). But the C runtime expects `int main()`. `EmitFileMode` detects this mismatch, renames the user's function to `__pyxc.user_main`, and synthesises a new `int main()` that calls it and returns `0`.
+## Scoping Rules
 
-3. **`EmitModuleToFile()` as the final step** instead of looking up and calling symbols.
+With globals in place, pyxc now has three scopes:
 
-## `AddGlobalCtor`: Wiring Globals into the Binary
+| Scope | Declared by | Storage | Lifetime |
+|---|---|---|---|
+| Block | `var` inside an indented block | alloca | Until block exits |
+| Function | `var` inside a function body | alloca | Until function returns |
+| Global | `var` at top level | `GlobalVariable` | Entire session |
 
-When a pyxc program declares global variables, `__pyxc.global_init` must run before `main()` — otherwise globals hold `0.0` when `main` starts. In JIT mode `RunFileMode` calls `__pyxc.global_init` explicitly before calling `main`. In a native binary, the C runtime manages startup: it calls everything in `llvm.global_ctors` before `main()`. `AddGlobalCtor` puts `__pyxc.global_init` into that list.
+Lookup always goes inner-to-outer: block → function → global. A `var x` inside a function shadows a global `x` for the duration of that function call. The global is unaffected.
+
+## A Quiet Change: Implicit Return Is Always 0.0
+
+While testing this chapter I noticed something that isn't really *about* globals but that I ended up changing at the same time, because I ran into it directly while wiring up `tick()`-style examples. In chapter 11, a function with no explicit `return` implicitly returned whatever its last statement's `codegen()` happened to produce. For something like `def tick(): count = count + 1`, that meant the function's return value was the newly-assigned value — a side effect of how `AssignmentExprAST::codegen` is written, not something I ever deliberately decided a function's "result" should be.
+
+Once `var`, assignment, `if`, and `for` are all first-class statements that can be the last thing in a body, I don't want a function's implicit return value to quietly depend on which kind of statement happened to be last. So `FunctionAST::codegen` now ignores the body's codegen result for the purposes of the implicit return, and always returns `0.0` when a function falls off the end without hitting a `return`:
 
 ```cpp
-static void AddGlobalCtor(Function *Fn, int Priority = 65535) {
-  auto *Int32Ty = Type::getInt32Ty(*TheContext);
-  auto *VoidPtrTy = PointerType::get(*TheContext, 0);
-  auto *StructTy = StructType::get(Int32Ty, Fn->getType(), VoidPtrTy);
-
-  Constant *CtorEntry = ConstantStruct::get(
-      StructTy, ConstantInt::get(Int32Ty, Priority), Fn,
-      ConstantPointerNull::get(cast<PointerType>(VoidPtrTy)));
-
-  // Only one call site (EmitFileMode, for __pyxc.global_init) exists today,
-  // but I guard against a second llvm.global_ctors definition anyway —
-  // LLVM won't merge two globals with the same name for me, it'll just
-  // rename the second one, and that would silently break the linker's
-  // contract with this special symbol.
-  GlobalVariable *GV = TheModule->getGlobalVariable("llvm.global_ctors");
-  if (GV)
-    return;
-
-  ArrayType *AT = ArrayType::get(StructTy, 1);
-  auto *Init = ConstantArray::get(AT, {CtorEntry});
-  new GlobalVariable(*TheModule, AT, false, GlobalValue::AppendingLinkage, Init,
-                     "llvm.global_ctors");
+// Step 4: codegen the body, optimise, verify, or erase on failure.
+if (Value *BodyVal = Body->codegen()) {
+  // If the body didn't already terminate the current block (e.g. via
+  // return), return 0.0. Implicit returns never use the last expression.
+  if (!Builder->GetInsertBlock()->getTerminator())
+    Builder->CreateRet(ConstantFP::get(*TheContext, APFloat(0.0)));
+  verifyFunction(*TheFunction);
+  TheFPM->run(*TheFunction, *TheFAM);
+  return TheFunction;
 }
 ```
 
-`llvm.global_ctors` is a special LLVM global with `AppendingLinkage`. The linker concatenates all contributions from different objects into one array. Each element is a `{ i32 priority, ptr fn, ptr data }` struct; the lower the priority number, the earlier the function runs. I use `65535` (lowest priority), which is conventional for user-level constructors.
-
-The `data` field (third struct member) is a guard pointer: if non-null, the runtime skips the entry under certain conditions. I set it to null, meaning "always run."
-
-## `main()` Return-Type Wrapping
-
-pyxc's type system has only `double`. Every function — including `main` — returns `double`. But the C ABI that the linker and OS loader expect declares `main` as `int main()`.
-
-I bridge this automatically inside `EmitFileMode`. When it finds a user-defined `main` function with a `double` return type, it:
-
-1. Renames the original to `__pyxc.user_main`.
-2. Creates a new `int main()` that calls `__pyxc.user_main` (discarding its return value) and returns the integer `0`.
-
-```
-; Before wrapping:
-define double @main() { ... }
-
-; After wrapping:
-define double @__pyxc.user_main() { ... }
-
-define i32 @main() {
-entry:
-  call double @__pyxc.user_main()
-  ret i32 0
-}
-```
-
-This is transparent to the pyxc programmer. You write `def main(): ...` exactly as in file mode.
-
-## `--dump-ir` and `-v`
-
-I renamed the flag that prints generated IR to stderr from `-v` to `--dump-ir`, to make its purpose more explicit. I kept the old `-v` around as a backward-compatible alias:
-
-```cpp
-static cl::opt<bool>
-    DumpIR("dump-ir", cl::desc("Print generated LLVM IR to stderr"),
-           cl::init(false), cl::cat(PyxcCategory));
-
-static cl::opt<bool>
-    VerboseIR("v", cl::desc("Alias for --dump-ir"), cl::init(false),
-              cl::cat(PyxcCategory));
-
-static bool ShouldDumpIR() { return DumpIR || VerboseIR; }
-```
-
-I call `ShouldDumpIR()` wherever IR is printed — after each function in JIT mode, and after codegen in emit mode. Both flags trigger the same behaviour.
-
-## Target Initialization
-
-The three `InitializeNative*` calls in `main` were already present for the JIT. They stay sufficient for emit mode too, because pyxc always targets the host machine:
-
-```cpp
-InitializeNativeTarget();
-InitializeNativeTargetAsmPrinter();
-InitializeNativeTargetAsmParser();
-```
-
-`InitializeNativeTargetAsmPrinter` registers the backend that serializes machine instructions to assembly text or object file bytes — the part that `addPassesToEmitFile` depends on. Without it, `TargetRegistry::lookupTarget` would succeed but `addPassesToEmitFile` would fail.
+Concretely: `def tick(): count = count + 1` now always returns `0.0` when called, no matter what `count` becomes. The global still updates correctly — I verified that separately — it's only the *return value* of a body-less-`return` function that's now a fixed `0.0`. If you want a function to hand back a value, write `return` explicitly. This is why the REPL transcript below prints `Evaluated to 0.000000` after every `tick()` call rather than the incrementing count.
 
 ## Known Limitations
 
-**Emit mode does not run the program.** `--emit` compiles to a file and exits. If you want to both emit and run, compile, link, and execute the binary separately.
+**`main` takes no arguments.** `RunFileMode` checks that `main()` has zero parameters. There is no way to pass command-line arguments to a pyxc program yet.
 
-**Single-file compilation only.** pyxc does not have a multi-file model. Each invocation compiles one source file to one output file. Linking multiple pyxc objects together is possible but requires manual `extern def` declarations at the moment.
-
-**No debug information.** The emitted object files contain no DWARF or other debug info. Debuggers cannot map machine instructions back to pyxc source lines.
-
-**Target is always the host.** There is no cross-compilation support. The output file targets the same CPU and OS as the machine running `pyxc`.
-
-**`main()` always returns 0.** The synthesised `int main()` wrapper ignores the double value returned by the user's `main()` and always returns `0`. There is no way to return a non-zero exit code from a pyxc program yet.
+**No global-to-global forward references in initializers.** Initializers run in source order. `var b = a * 2` sees `a`'s initialized value only if `var a = ...` appeared earlier in the file. Referencing a global before it has been initialized reads `0.0` (the constant default).
 
 ## Try It
 
-**Emit LLVM IR and inspect it**
+**REPL: persistent counter**
 
-```bash
-cat sq.pyxc
+```pyxc
+ready> extern def printd(x)
+Parsed an extern.
+ready> var count = 0
+Parsed a top-level expression.
+ready> def tick(): count = count + 1
+Parsed a function definition.
+ready> tick()
+Parsed a top-level expression.
+Evaluated to 0.000000
+ready> tick()
+Parsed a top-level expression.
+Evaluated to 0.000000
+ready> tick()
+Parsed a top-level expression.
+Evaluated to 0.000000
+ready> printd(count)
+Parsed a top-level expression.
+3.000000
+Evaluated to 0.000000
 ```
+
+The `Evaluated to 0.000000` after each line is the JIT reporting the return value of that line's own top-level wrapper function. `ParseTopLevelExpr` always wraps a bare expression in an explicit `return`, so for `tick()` the wrapper is really `return tick();` — the `0.0` comes from *inside* `tick()`, from the implicit-return rule I just added: `tick`'s own body (`count = count + 1`) has no explicit `return`, so `tick()` itself always evaluates to `0.0` now, and that's what the wrapper hands back up. For `printd(count)` the `0.0` is unrelated to that rule entirely — it's just `printd`'s own C-level return value, which has always been `0.0` by convention. `count` itself is updating correctly underneath the whole time — `3.000000` is `printd` doing its actual job of printing; `Evaluated to 0.000000` is a second, separate thing the JIT reports about the wrapper's return value.
+
+**File mode: globals + main**
+
 ```pyxc
 extern def printd(x)
-def sq(x): return x * x
+
+var total = 0
+
+def add(n):
+    total = total + n
+
 def main():
-    printd(sq(3))
-```
-```bash
-pyxc --emit llvm-ir -o sq.ll sq.pyxc
-cat sq.ll
-```
-```llvm
-declare double @printd(double)
-
-define double @sq(double %x) {
-entry:
-  %multmp = fmul double %x, %x
-  ret double %multmp
-}
-
-define double @__pyxc.user_main() {
-entry:
-  %calltmp = call double @sq(double 3.000000e+00)
-  %calltmp1 = call double @printd(double %calltmp)
-  ret double 0.000000e+00
-}
-
-define i32 @main() {
-entry:
-  %0 = call double @__pyxc.user_main()
-  ret i32 0
-}
+    add(10)
+    add(5)
+    printd(total)
 ```
 
-No `__pyxc.global_init` here — `sq.pyxc` has no top-level `var`, so `AddGlobalCtor` never runs. What you do see is the `main()` wrapping from earlier: `main` renamed to `__pyxc.user_main`, and a fresh `i32 @main()` calling it and returning `0`.
-
-**Emit assembly**
-
-```bash
-pyxc --emit asm -o sq.s sq.pyxc
-grep -A2 "sq:" sq.s
+```
+15.000000
 ```
 
-On macOS the label is actually `_sq:` — the platform's C ABI prepends an underscore — but `grep "sq:"` still matches it as a substring, so this works on both macOS and Linux as written.
+**Initialization order**
 
-**Compile to a native binary**
+```pyxc
+extern def printd(x)
 
-```bash
-# runtime.c provides printd/putchard for standalone binaries.
-pyxc --emit obj -o sq.o sq.pyxc
-file sq.o
-clang sq.o runtime.c -o sq
-./sq
-```
-```
-sq.o: Mach-O 64-bit object arm64
-9.000000
-```
-
-**Inspect IR while emitting**
-
-```bash
-pyxc --dump-ir --emit llvm-ir -o sq.ll sq.pyxc
-```
-
-The `--dump-ir` flag prints the IR to stderr as each function is compiled — before the file is written, so you see both the intermediate IR and the final output file.
-
-**Default output paths**
-
-```bash
-pyxc --emit llvm-ir sq.pyxc   # writes out.ll
-pyxc --emit asm    sq.pyxc   # writes out.s
-pyxc --emit obj    sq.pyxc   # writes out.o
+var a = 3
+var b = a * 4   # sees a = 3, not 0
+printd(b)       # 12.000000
 ```
 
 ## Build and Run
@@ -466,14 +476,12 @@ pyxc --emit obj    sq.pyxc   # writes out.o
 ```bash
 cd code/chapter-13
 cmake -S . -B build && cmake --build build
-./build/pyxc --emit obj -o program.o program.pyxc
-clang program.o runtime.c -o program
-./program
+./build/pyxc
 ```
 
 ## What's Next
 
-At this point pyxc can parse, JIT-execute, and ahead-of-time compile programs with functions, control flow, and global variables. I'll build on this foundation in future chapters: a type system, aggregate data, and eventually a self-hosting compiler.
+In Chapter 14 I add object file emission. Instead of JIT-compiling everything at runtime, pyxc will be able to write a `.o` file that a system linker can combine with other objects into a standalone native binary — no JIT required.
 
 ## Need Help?
 

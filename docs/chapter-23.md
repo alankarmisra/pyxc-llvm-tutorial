@@ -1,23 +1,23 @@
 ---
-description: "Add fixed-size stack arrays: declare int[4], initialise with [1,2,3,4], and index with arr[i]. Arrays decay to pointers when passed to functions."
+description: "Add type aliases so any type — scalar, pointer, or struct — can be given a readable name that vanishes completely from the generated IR."
 ---
-# 23. pyxc: Arrays
+# 23. pyxc: Type Aliases
 
 ## Where We Are
 
-[Chapter 22](chapter-22.md) added type aliases. The type system covers scalars, structs, and pointers, but there is no way to allocate a fixed-size sequence of values on the stack. After this chapter:
+[Chapter 22](chapter-22.md) added string literals. We can write `"hello"` and pass it to `puts`. But the parameter type is a C-style `ptr[int8]` which is a bit annoying to write all the time. After this chapter we can write:
 
 ```pyxc
-extern def printd(x: float64)
+type string = ptr[int8]
+
+extern def puts(s: string) -> int
+
+def greet(name: string) -> int:
+  return puts(name)
 
 def main() -> int:
-  var scores: int[4] = [10, 20, 30, 40]
-  printd(float64(scores[2]))
+  greet("world")
   return 0
-```
-
-```
-30.000000
 ```
 
 ## Source Code
@@ -29,15 +29,20 @@ cd pyxc-llvm-tutorial/code/chapter-23
 
 ## Grammar
 
-This chapter extends `type` with an optional `arraysuffix` and adds the `arrayliteral` production to `primary`.
+This chapter adds two new productions (`typealias`, `aliastype`) and extends two existing ones (`top` gains a `typealias` alternative; `type` gains an `aliastype` alternative).
+
+`code/chapter-23/pyxc.ebnf`
 
 ```ebnf
-type        = basetype [ arraysuffix ] ;   -- changed
-basetype    = builtintype | aliastype | structtype | pointertype ;  -- new
-arraysuffix = "[" integer "]" ;            -- new
-arrayliteral = "[" [ expression { "," expression } ] "]" ;  -- new
-primary     = castexpr | sizeofexpr | addrexpr | arrayliteral | ...  -- changed
+program    = [ eols ] [ top { eols top } ] [ eols ] ;
+top        = typealias | structdef | definition | decorateddef | external | toplevelexpr ; -- new
+typealias  = "type" identifier "=" type ;                                                  -- new
+...
+type       = builtintype | aliastype | structtype | pointertype ;                          -- new (aliastype)
+aliastype  = identifier ;                                                                  -- new
 ```
+
+`aliastype` and `structtype` are both written as `identifier`. The parser tries `TypeAliases` first, then `StructTypes`, and rejects the identifier if neither lookup succeeds.
 
 ### Full Grammar
 
@@ -81,7 +86,7 @@ lvalue          = identifier | fieldaccess | indexexpr ;
 varbinding      = identifier ":" type [ "=" expression ] ;
 unaryexpr       = unaryop unaryexpr | primary ;
 unaryop         = "-" | userdefunaryop ;
-primary         = castexpr | sizeofexpr | addrexpr | arrayliteral | stringliteral | identifierexpr | fieldaccess | indexexpr | numberexpr | bool_literal | parenexpr ;
+primary         = castexpr | sizeofexpr | addrexpr | stringliteral | identifierexpr | fieldaccess | indexexpr | numberexpr | bool_literal | parenexpr ;
 castexpr        = casttype "(" expression ")" ;
 sizeofexpr      = "sizeof" "(" type ")" ;
 addrexpr        = "addr" "(" lvalue ")" ;
@@ -90,7 +95,6 @@ callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
 fieldaccess     = identifier "." identifier { "." identifier } ;
 indexexpr       = identifier "[" expression "]" ;
 numberexpr      = number ;
-arrayliteral    = "[" [ expression { "," expression } ] "]" ;
 stringliteral   = "\"" { ? any char except " and newline ? | escape } "\"" ;
 escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
 parenexpr       = "(" expression ")" ;
@@ -111,9 +115,7 @@ builtintype     = "int" | "int8" | "int16" | "int32" | "int64"
 aliastype       = identifier ;
 structtype      = identifier ;
 pointertype     = "ptr" "[" type "]" ;
-type            = basetype [ arraysuffix ] ;
-basetype        = builtintype | aliastype | structtype | pointertype ;
-arraysuffix     = "[" integer "]" ;
+type            = builtintype | aliastype | structtype | pointertype ;
 casttype        = "int" | "int8" | "int16" | "int32" | "int64"
                 | "float" | "float32" | "float64"
                 | "bool" | pointertype ;
@@ -128,268 +130,151 @@ ws              = " " | "\t" ;
 INDENT          = ? synthetic token emitted by lexer ? ;
 DEDENT          = ? synthetic token emitted by lexer ? ;
 ```
-
-## New Enum Value and AST Node
-
-A single new `ValueType` entry covers all array types regardless of element type:
+## New Keyword: `type`
 
 ```cpp
-enum class ValueType {
-  // ...existing values...
-  Array,
-  // ...
-};
+tok_type = -39,
 ```
 
-The corresponding AST node stores the element list and carries the full array type info through the `ExprAST` base class:
+Registered in the keyword table:
 
 ```cpp
-class ArrayLiteralExprAST : public ExprAST {
-  vector<unique_ptr<ExprAST>> Elements;
-public:
-  ArrayLiteralExprAST(vector<unique_ptr<ExprAST>> Elements,
-                      const string &ArrayTypeInfo)
-      : Elements(std::move(Elements)) {
-    setType(ValueType::Array, ArrayTypeInfo);
+{"type", tok_type}
+```
+
+## The `TypeAliases` Map
+
+```cpp
+static std::map<string, std::pair<ValueType, string>> TypeAliases;
+```
+
+This maps an alias name to the fully-resolved type it stands for. The pair is `(ValueType, StructName)`, you will notice, is the same two-field representation used in [chapter 18](chapter-19.md). 
+
+`TypeAliases.clear()` is called at the start of each new module (inside `ResetParserStateForFile`), alongside `StructTypes.clear()`. For now, aliases do not persist across compilation units. This will change once we get into multi-file and `import` territory.
+
+## Extending `ParseTypeToken`
+
+`ParseTypeToken` is the single function that all type annotations in the language go through — parameter types, return types, `var` declarations, `sizeof` operands, cast targets. That means adding alias resolution in one place makes aliases work everywhere.
+
+Before this chapter, an unknown identifier in `ParseTypeToken` was an immediate error. Now there is a lookup before the error:
+
+```cpp
+case tok_identifier: {
+  string TyName = IdentifierStr;
+  auto AliasIt = TypeAliases.find(TyName);
+  if (AliasIt != TypeAliases.end()) {
+    getNextToken();
+    if (StructName)
+      *StructName = AliasIt->second.second;
+    return AliasIt->second.first;
   }
-  const vector<unique_ptr<ExprAST>> &getElements() const { return Elements; }
-  Value *codegen() override;
-};
-```
-
-`ArrayTypeInfo` is an encoded string (see Group 2) that packs the element type, optional element struct name, and element count into the single `structName` slot that `ExprAST` already provides.
-
-## Type Encoding Helpers
-
-The existing `(ValueType, structName)` pair that represents types throughout the compiler is extended for arrays with a third field — the element count. All three are serialised into one colon-separated string stored in the struct name slot:
-
-```
-"<ElemTypeInt>:<ElemStructName>:<Count>"
-```
-
-| Type         | Encoding       |
-|--------------|----------------|
-| `int[4]`     | `"1::4"`       |
-| `float64[3]` | `"8::3"`       |
-| `Point[2]`   | `"10:Point:2"` |
-
-Three helpers manage this encoding:
-
-**`EncodeArrayType`** builds the string:
-
-```cpp
-static string EncodeArrayType(ValueType ElemType, const string &ElemStructName,
-                              uint64_t Count) {
-  return std::to_string(static_cast<int>(ElemType)) + ":" + ElemStructName +
-         ":" + std::to_string(Count);
+  if (!StructTypes.count(TyName)) {
+    LogError(("Unknown type '" + TyName + "'").c_str());
+    return ValueType::Error;
+  }
+  getNextToken();
+  if (StructName)
+    *StructName = TyName;
+  return ValueType::Struct;
 }
 ```
 
-**`DecodeArrayType`** splits it back out — first `:` separates the type integer, last `:` separates the count, and the middle portion is the struct name:
+If the identifier matches an alias, the resolved type and struct name are returned directly. No other part of the compiler needs to change — the alias is transparent from this point on.
+
+## `ParseTypeAliasDefinition`
 
 ```cpp
-static bool DecodeArrayType(const string &Encoded, ValueType &ElemType,
-                            string &ElemStructName, uint64_t &Count);
-```
-
-**`ArrayDecaysToPointerType`** answers the question "can this array be passed where a `ptr[T]` is expected?" by decoding both the array encoding and the pointer encoding and comparing element types:
-
-```cpp
-static bool ArrayDecaysToPointerType(const string &ArrayInfo,
-                                     const string &PointerInfo);
-```
-
-**`ParseUnsignedDecimal`** parses a digit string with overflow protection. It is used by both `DecodeArrayType` (to read the count field) and `ParseTypeToken` (to validate the size literal at parse time):
-
-```cpp
-static bool ParseUnsignedDecimal(const string &Text, uint64_t &Out) {
-  if (Text.empty()) return false;
-  uint64_t V = 0;
-  for (char C : Text) {
-    if (C < '0' || C > '9') return false;
-    uint64_t D = static_cast<uint64_t>(C - '0');
-    if (V > (std::numeric_limits<uint64_t>::max() - D) / 10) return false;
-    V = V * 10 + D;
-  }
-  Out = V;
+static bool ParseTypeAliasDefinition() {
+  getNextToken(); // eat 'type'
+  // expect identifier
+  string AliasName = IdentifierStr;
+  if (TypeAliases.count(AliasName))
+    return LogError("Type alias 'X' is already defined");
+  if (StructTypes.count(AliasName))
+    return LogError("Name 'X' is already defined as a struct");
+  getNextToken(); // eat alias name
+  // expect '='
+  getNextToken(); // eat '='
+  string AliasStructName;
+  ValueType AliasType = ParseTypeToken(&AliasStructName);
+  if (AliasType == ValueType::Error)
+    return false;
+  TypeAliases[AliasName] = {AliasType, AliasStructName};
+  LastTopLevelEndedWithBlock = false;
   return true;
 }
 ```
 
-## Parsing Array Types — `ParseTypeToken` Refactor
+The parser eats `type`, validates the alias name against both `TypeAliases` and `StructTypes`, eats the `=`, then calls `ParseTypeToken` to resolve the right-hand side. Whatever `ParseTypeToken` returns — after fully resolving any chain of aliases — is stored directly. There is no stored pointer to the original name.
 
-Previously, `ParseTypeToken` returned immediately after identifying the base type:
+`HandleTypeAliasDef` wraps this in the standard top-level handler and is wired into both the file-mode and REPL-mode dispatch loops under `tok_type`.
 
-```cpp
-case tok_int:
-  return ValueType::Int;
+Resolution happens at definition time, not at use time. When `type Score = MyInt` is processed, `ParseTypeToken("MyInt")` runs immediately and looks up `MyInt` in `TypeAliases`. If `MyInt` is already defined as `(Int, "")`, then `Score` is stored as `(Int, "")`. There is no indirection at use time — `Score` and `int64` are identical to the compiler from the moment the alias is defined.
+
+
+## Conflict Rules
+
+The name spaces for aliases and struct types are shared. Three conflicts are checked:
+
+**Alias redefinition.** Defining the same alias name twice is an error:
+
+```
+type Foo = int
+type Foo = int64   → Error: Type alias 'Foo' is already defined
 ```
 
-That `return` makes suffix parsing impossible — once the function returns there is nowhere to check for `[`. This chapter refactors `ParseTypeToken` to collect the base type into local variables and then fall through to a suffix check:
+**Alias name collides with a struct.** If a struct is already defined under that name, the alias is rejected:
 
-```cpp
-ValueType BaseType = ValueType::Error;
-string BaseStructName;
-switch (CurTok) {
-  case tok_int:   BaseType = ValueType::Int;   break;
-  case tok_float: BaseType = ValueType::Float; break;
-  // ... all other scalar cases ...
-  case tok_ptr:
-    // parse ptr[T] as before, but store into BaseType/BaseStructName instead of returning
-    BaseType = ValueType::Pointer;
-    BaseStructName = EncodePointerType(PointeeType, PointeeStructName);
-    break;
-  case tok_identifier:
-    BaseType = ValueType::Struct;
-    BaseStructName = TyName;
-    break;
-}
-
-// Now check for array suffix
-if (CurTok == '[') {
-  // error on None[] or nested arrays
-  getNextToken(); // eat '['
-  // parse integer size via ParseUnsignedDecimal
-  // eat number, eat ']'
-  if (StructName) *StructName = EncodeArrayType(BaseType, BaseStructName, Count);
-  return ValueType::Array;
-}
-
-// No suffix — return the base type
-if (StructName) *StructName = BaseStructName;
-return BaseType;
+```
+struct Foo:
+  x: int
+type Foo = int     → Error: Name 'Foo' is already defined as a struct
 ```
 
-`None[N]` and pointer-to-array (`ptr[int[4]]`) are rejected with explicit errors at parse time.
+**Struct name collides with an alias.** `ParseStructDefinition` checks `TypeAliases` before accepting the struct name:
 
-## Context-Driven Parsing — `ExpectedLiteralTypeGuard` and `ParseArrayLiteralExpr`
-
-An array literal `[10, 20, 30, 40]` has no type of its own. The compiler must know what array type is expected to validate element types and count. This context is carried through a global pair:
-
-```cpp
-static ValueType ExpectedLiteralType;
-static string    ExpectedLiteralStructName;  // new this chapter
+```
+type Foo = int
+struct Foo:        → Error: Name 'Foo' is already defined as a type alias
+  x: int
 ```
 
-**`ExpectedLiteralTypeGuard`** is extended to save and restore both fields. All callers that set a type context are updated to also pass the struct name:
+Forward references are not supported. Using an alias before defining it gives "Unknown type 'X'" — `ParseTypeToken` only searches entries that already exist in the map.
 
-```cpp
-struct ExpectedLiteralTypeGuard {
-  ValueType Saved;
-  string    SavedStruct;
-  ExpectedLiteralTypeGuard(ValueType Type, const string &StructName = "")
-      : Saved(ExpectedLiteralType), SavedStruct(ExpectedLiteralStructName) {
-    ExpectedLiteralType      = Type;
-    ExpectedLiteralStructName = StructName;
-  }
-  ~ExpectedLiteralTypeGuard() {
-    ExpectedLiteralType      = Saved;
-    ExpectedLiteralStructName = SavedStruct;
-  }
-};
-```
+## IR Transparency
 
-`ReturnTypeGuard` gains the same struct name field for the same reason — functions that return an array type need the full context propagated into the body.
-
-**`ParseArrayLiteralExpr`** reads both globals at entry and errors immediately if the context is not an array type:
-
-```cpp
-static unique_ptr<ExprAST> ParseArrayLiteralExpr() {
-  if (ExpectedLiteralType != ValueType::Array)
-    return LogError("Array literal requires an expected array type");
-  ValueType ElemType; string ElemStructName; uint64_t Count;
-  DecodeArrayType(ExpectedLiteralStructName, ElemType, ElemStructName, Count);
-
-  getNextToken(); // eat '['
-  vector<unique_ptr<ExprAST>> Elements;
-  while (CurTok != ']') {
-    ExpectedLiteralTypeGuard Guard(ElemType, ElemStructName); // propagate into element expr
-    auto E = ParseExpression();
-    // type-check E against ElemType / ElemStructName
-    Elements.push_back(std::move(E));
-    if (CurTok == ',') getNextToken();
-  }
-  getNextToken(); // eat ']'
-  if (Elements.size() != Count)
-    return LogError("Array literal element count mismatch");
-  return make_unique<ArrayLiteralExprAST>(std::move(Elements), ExpectedLiteralStructName);
-}
-```
-
-The primary dispatch in `ParsePrimary` routes to this function when `CurTok == '['`. When the `var` statement parser reaches an initialiser, it sets `ExpectedLiteralTypeGuard(DeclType, DeclStructName)` before calling `ParseExpression`, so the type context is available by the time `ParseArrayLiteralExpr` runs.
-
-## Codegen — `ArrayLiteralExprAST::codegen`
-
-The literal is built in LLVM IR as a value of aggregate type, element-by-element, using `insertvalue`. There is no alloca here — this is pure register-level aggregate construction:
-
-```cpp
-Value *ArrayLiteralExprAST::codegen() {
-  ValueType ElemType; string ElemStructName; uint64_t Count;
-  DecodeArrayType(getStructName(), ElemType, ElemStructName, Count);
-
-  auto *ArrTy = dyn_cast<ArrayType>(LLVMTypeFor(getType(), getStructName()));
-  Value *Agg = UndefValue::get(ArrTy);  // start as undefined
-
-  for (size_t I = 0; I < Elements.size(); ++I) {
-    Value *Elem = Elements[I]->codegen();
-    Elem = EmitImplicitCast(Elem, Elements[I]->getType(), ElemType);
-    Agg = Builder->CreateInsertValue(Agg, Elem, {static_cast<unsigned>(I)},
-                                     "arr.ins");
-  }
-  return Agg;  // SSA value of type [N x ElemTy]
-}
-```
-
-`insertvalue` fills one slot of the aggregate per iteration. The returned SSA value has type `[4 x i64]` for `int[4]`. This is then stored into the alloca when assigned in a `var` statement:
-
-```llvm
-%scores = alloca [4 x i64]
-store [4 x i64] %arr.ins.3, ptr %scores
-```
-
-## Codegen — Array Indexing and Variable Decay
-
-**Indexing** (`scores[2]`) in `IndexExprAST::codegen` now handles `ValueType::Array` alongside `ValueType::Pointer`. For arrays, the element type and count are decoded from the array encoding, and a two-index GEP is emitted:
-
-```llvm
-%ptr = getelementptr inbounds [4 x i64], ptr %scores, i64 0, i64 2
-%val = load i64, ptr %ptr
-```
-
-The first index (`i64 0`) steps through the alloca header to reach the array. The second index selects the element.
-
-**Array decay** in `VariableExprAST::codegen` handles the case where an array variable is used in an expression context rather than indexed. Loading an array variable would produce the entire aggregate — which is only valid for `store`. To pass an array to a `ptr[T]` parameter, the compiler needs a pointer to its first element. A `DecayArray` lambda emits this GEP:
-
-```cpp
-auto DecayArray = [&](Value *BasePtr) -> Value * {
-  if (getType() != ValueType::Array) return BasePtr;
-  auto *ArrTy = LLVMTypeFor(getType(), getStructName());
-  Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
-  return Builder->CreateInBoundsGEP(ArrTy, BasePtr, {Zero, Zero}, "arraydecay");
-};
-```
-
-This is applied for both local and global array variables. In function call codegen, the argument check path explicitly allows `ValueType::Array` where `ValueType::Pointer` is expected, delegating to `ArrayDecaysToPointerType` to confirm element-type compatibility.
-
-## What Lands in the IR
+Aliases produce no IR. They are resolved entirely during parsing and leave no trace in the generated output.
 
 ```pyxc
-def sum4(a: int[4]) -> int:
-  return a[0] + a[1] + a[2] + a[3]
+type Score = int64
+
+def id(x: Score) -> Score:
+  return x
 ```
 
 ```llvm
-define i64 @sum4([4 x i64] %a) {
+define i64 @id(i64 %x) {
 entry:
-  %a.addr = alloca [4 x i64]
-  store [4 x i64] %a, ptr %a.addr
-  %p0 = getelementptr inbounds [4 x i64], ptr %a.addr, i64 0, i64 0
-  %v0 = load i64, ptr %p0
-  ; ... and so on for indices 1, 2, 3
-  %sum = add i64 %v0, ...
-  ret i64 %sum
+  %x.addr = alloca i64
+  store i64 %x, ptr %x.addr
+  %x1 = load i64, ptr %x.addr
+  ret i64 %x1
 }
 ```
+
+`Score` does not appear. LLVM sees `i64` exactly as if `int64` had been written directly. The same holds for pointer aliases:
+
+```pyxc
+type string = ptr[int8]
+
+def say(msg: string) -> int:
+  return puts(msg)
+
+def greeting() -> string:
+  return "hello"
+```
+
+The IR for both functions is identical to what you would get with `ptr[int8]` in every annotation.
 
 ## Build and Run
 
@@ -398,21 +283,100 @@ cd code/chapter-23
 cmake -S . -B build && cmake --build build
 ```
 
-## Things Worth Knowing
+## Try It
 
-**Size must be a literal.** `var buf: int[n]` is rejected — variable sizes are not supported. The element count must be a constant integer known at parse time.
+### `string` as a type
 
-**No nested arrays.** `int[4][2]` is not valid syntax. An array of arrays is not supported. Use a struct with multiple array fields for a 2-D layout.
+```pyxc
+extern def puts(s: ptr[int8]) -> int
 
-**No heap arrays.** Arrays in this chapter live on the stack only. Heap allocation is done through `malloc` and `ptr[T]` from [chapter 20](chapter-20.md).
+type string = ptr[int8]
 
-**Struct fields cannot be arrays.** Array fields in struct definitions are not yet supported. Struct fields use scalar or pointer types from earlier chapters.
+def greet(name: string) -> int:
+  return puts(name)
 
-**No pointer arithmetic on arrays.** Indexing works. Direct pointer arithmetic on an array variable does not — use `addr(arr[i])` to get a pointer to an element.
+def main() -> int:
+  greet("world")
+  return 0
+```
+
+```bash
+world
+```
+
+`string` is accepted as a parameter type and return type. The IR uses `ptr` throughout.
+
+### IR transparency
+
+```pyxc
+type Score = int64
+
+def id(x: Score) -> Score:
+  return x
+```
+
+```bash
+pyxc --emit llvm-ir -o out.ll program.pyxc
+grep 'define' out.ll
+```
+
+```
+define i64 @id(i64 %x)
+```
+
+`Score` is gone. The function signature is plain `i64`.
+
+### Alias chain
+
+```pyxc
+type MyInt = int
+type Score = MyInt
+```
+
+`Score` resolves to `(Int, "")` at definition time. `type Score = MyInt` calls `ParseTypeToken("MyInt")`, which finds the alias and returns `(Int, "")` immediately. The chain is collapsed to a single lookup in the map.
+
+### Alias for a struct type
+
+```pyxc
+struct Point:
+  x: int
+  y: int
+
+type Vec2 = Point
+```
+
+After this, `Vec2` can be used as a parameter type, return type, or `var` type, and the compiler treats it exactly like `Point`.
+
+### Forward reference error
+
+```pyxc
+def use_it(x: Meters) -> Meters:
+  return x
+
+type Meters = int64
+```
+
+```
+Error: Unknown type 'Meters'
+```
+
+The alias must be defined before it is used. There are no forward references.
+
+## Known Limitations
+
+**No forward references.** The alias must appear before any use. `type List = ptr[List]` would fail because `List` is not yet in `TypeAliases` when the right-hand side is parsed.
+
+**No recursive aliases.** A consequence of no forward references — self-referential alias definitions are not possible.
+
+**Aliases are purely syntactic.** There is no nominal typing. `Score` and `int64` are the same type to the compiler; a function expecting `Score` will accept an `int64` without complaint.
+
+**No parameterized aliases.** `type Pair[T] = ...` is not supported. Type parameters are outside the scope of this chapter.
+
+**No re-export or scoping.** All aliases are global to the module. There is no way to limit visibility of an alias to a single function.
 
 ## What's Next
 
-[Chapter 24](chapter-24.md) adds the `class` keyword — a named aggregate type that will support methods, constructors, and visibility in the chapters that follow.
+[Chapter 24](chapter-24.md) adds fixed-size arrays (`T[N]`), stack allocation, indexing, and array literals — completing the types and memory phase.
 
 ## Need Help?
 

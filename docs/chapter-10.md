@@ -1,42 +1,30 @@
 ---
-description: "Add mutable local variables and assignment using a temporary var ... : expression form, backed by memory slots, loads, and stores."
+description: "Add user-defined operators via Python-style decorators — @binary(N) and @unary — backed by dedicated parser functions with compile-time validation."
 ---
-# 10. pyxc: Mutable Variables
+# 10. pyxc: User-Defined Operators
 
 ## Where We Are
 
-[Chapter 9](chapter-09.md) treated every variable as read-only. Function parameters were read-only. `for` loops introduced variables, and could  update them internally. However, you, the mighty programmer, couldn't create your own local variables and update them. That changes now. This chapter adds two things:
+[Chapter 9](chapter-09.md) added comparison operators, `if`/`else`, and `for` loops, but every operator Pyxc knows is still hardwired into the compiler. This chapter adds user-defined operators — a detour into some interesting parsing techniques that pays off with a surprisingly clean syntax.
 
-- `var` — creates a new variable I can modify
-- `=` — updates existing variables
-
-Nothing you aren't already familiar with. But the way LLVM handles this internally is super interesting. 
+By the end, you'll be able to define new operators directly in Pyxc using Python-style decorators. The decorator line sets the type and precedence; the `def` line gives it a body:
 
 <!-- code-merge:start -->
 ```pyxc
-ready> def bump(n): return var x = n: x = x + 1
+ready> @binary(5) # an operator precedence of 5
+def |(x, y): return if x != 0: 1 else: if y != 0: 1 else: 0
 ```
 ```bash
-Parsed a function definition.
+Parsed a user-defined operator.
 ```
 ```pyxc
-ready> bump(5)
+ready> 1 | 0
 ```
 ```bash
 Parsed a top-level expression.
-Evaluated to 6.000000
+Evaluated to 1.000000
 ```
 <!-- code-merge:end -->
-
-**A note on style:** The examples look clunky. `var x = n: x = x + 1` isn't code I'd write if I had any self-respect. That's intentional. Pyxc still only supports single expression bodies: everything after `:` must be a single expression. Multi-step mutation feels forced because it *is* forced.
-
-I'm keeping it this way because this chapter isn't about syntax. It's about what happens underneath. The next chapter replaces expression bodies with real statement blocks. There, the same machinery will look natural.
-
-```pyxc
-var x = n
-...
-x = x + 1
-```
 
 ## Source Code
 
@@ -45,33 +33,25 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-10
 ```
 
+## The Design
+
+In Pyxc, user-defined operators are just functions with funny names. A user-defined binary operator `|` is stored as an ordinary function named `binary|` — LLVM knows nothing special about the name. A unary operator `!` is stored as `unary!`. When the parser encounters `a | b`, it looks up `binary|` and generates a call. Built-in operators like `+` and `*` are handled directly in `BinaryExprAST::codegen` with `CreateFAdd` and `CreateFMul` — no function call involved.
+
+This means:
+- The JIT treats user-defined operators exactly like regular functions.
+- The parser needs to know about new operators *at parse time* so it can apply precedence rules. Binary operators register their precedence in `BinopPrecedence` when codegen runs. This works because each definition is parsed and codegenned before the next one is processed — in both REPL and file mode. An operator is available to the parser from the line after it is defined. For example, if `|` has precedence `5` and `+` has precedence `20`, then `a + b | 1` parses as `(a + b) | 1`. The built-in precedences are:
+
+| Operators | Precedence |
+|-----------|-----------|
+| `==` `!=` `<` `>` `<=` `>=` | 10 |
+| `+` `-` | 20 |
+| `*` | 40 |
+
+Pick a value relative to this table. Precedence `1` binds looser than everything; precedence `50` binds tighter than `*`.
+
+Unary operators are a different case: they bind tighter than any binary operator by design, so `-x + 1` always means `(-x) + 1`. They are parsed in a dedicated step before any binary expression is evaluated.
+
 ## Grammar
-Two new productions:
-
-```ebnf
-expression      = varexpr | identifier "=" expression | unaryexpr binoprhs ;
-varexpr         = "var" varbinding { "," varbinding } ":" [ eols ] expression ;
-varbinding      = identifier [ "=" expression ] ;
-```
-
-Assignment requires a destination — somewhere in memory to write a value to. Using the two sides of `=`, I'll make up a couple of terms:
-```
-lvalue = rvalue
-```
-**lvalue** — a memory location (like a variable)
-**rvalue** — a value (like 5, x, x + y, or a function result)
-
-If you're thinking, `x` could be an `lvalue` or an `rvalue`, you're right. The parser will treat the left as a memory destination to put the value into, and the right is be where you read the value from. 
-
-`=` has the lowest precedence of any operator. `a + b = c` parses as `(a + b) = c`, which fails because `a + b` isn't a valid *lvalue*. The parser enforces that the left side of = must be a plain variable name.
-
-`var` introduces one or more mutable locals and evaluates to the body's value. Later bindings can reference earlier ones:
-
-```pyxc
-var x = 1, y = x + 1: y   # evaluates to 2
-```
-
-### Full Grammar
 [pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-10/pyxc.ebnf)
 
 ```ebnf
@@ -79,21 +59,19 @@ program         = [ eols ] [ top { eols top } ] [ eols ] ;
 eols            = eol { eol } ;
 top             = definition | decorateddef | external | toplevelexpr ;
 definition      = "def" prototype ":" [ eols ] "return" expression ;
-decorateddef    = binarydecorator eols "def" binaryopprototype ":" [ eols ] "return" expression
-                | unarydecorator  eols "def" unaryopprototype  ":" [ eols ] "return" expression ;
-binarydecorator = "@" "binary" "(" integer ")" ;
-unarydecorator  = "@" "unary" ;
+decorateddef      = binarydecorator eols "def" binaryopprototype ":" [ eols ] "return" expression
+                  | unarydecorator  eols "def" unaryopprototype  ":" [ eols ] "return" expression ;
+binarydecorator   = "@" "binary" "(" integer ")" ;
+unarydecorator    = "@" "unary" ;
 binaryopprototype = customopchar "(" identifier "," identifier ")" ;
 unaryopprototype  = customopchar "(" identifier ")" ;
 external        = "extern" "def" prototype ;
 toplevelexpr    = expression ;
 prototype       = identifier "(" [ identifier { "," identifier } ] ")" ;
 ifexpr          = "if" expression ":" [ eols ] expression [ eols ] "else" ":" [ eols ] expression ;
-forexpr         = "for" [ "var" ] identifier "=" expression "," expression "," expression ":" [ eols ] expression ;
-expression      = varexpr | identifier "=" expression | unaryexpr binoprhs ;
+forexpr         = "for" identifier "=" expression "," expression "," expression ":" [ eols ] expression ;
+expression      = unaryexpr binoprhs ;
 binoprhs        = { binaryop unaryexpr } ;
-varexpr         = "var" varbinding { "," varbinding } ":" [ eols ] expression ;
-varbinding      = identifier [ "=" expression ] ;
 unaryexpr       = unaryop unaryexpr | primary ;
 unaryop         = "-" | userdefunaryop ;
 primary         = identifierexpr | numberexpr | parenexpr
@@ -119,677 +97,793 @@ eol             = "\r\n" | "\r" | "\n" ;
 ws              = " " | "\t" ;
 ```
 
+### What Changed
 
-## New Token and AST Nodes
+Chapter 10 adds three things: `decorateddef` for `@binary`/`@unary` definitions; `unaryexpr` inserted between `expression` and `primary` (every operand slot that previously called `primary` now calls `unaryexpr`, which either applies a unary op and recurses, or delegates to `primary`); and `integer` as a distinct terminal to reject fractional precedence values.
 
-The lexer gains one new keyword token:
+```ebnf
+-- Chapter 9
+expression = primary binoprhs ;
+binoprhs   = { binaryop primary } ;
 
-```cpp
-tok_var = -18,
+-- Chapter 10
+expression = unaryexpr binoprhs ;
+binoprhs   = { binaryop unaryexpr } ;
+unaryexpr  = unaryop unaryexpr | primary ;
 ```
 
-Added to the keyword table like every other reserved word:
+`integer` appears only in `binarydecorator`. It is a subset of `number` with no decimal point — `@binary(5)` is valid, `@binary(1.5)` is not. The lexer has no separate `tok_integer` token; it always emits `tok_number`. The parser enforces the integer constraint by inspecting the raw source string for a decimal point.
 
-```cpp
-{"binary", tok_binary}, {"unary", tok_unary}, {"var", tok_var}
+```ebnf
+...
+binarydecorator   = "@" "binary" "(" integer ")" ;
+....
+integer         = digit { digit } ;
 ```
 
-Two new AST nodes do the real work.
+`customopchar` is any ASCII punctuation character except `@`, except built-in operator characters (including reserved unary `-`), and except any character already defined as a custom operator (unary or binary). The "not already defined" part is enforced by parser checks, not the grammar itself.
 
-`AssignmentExprAST` represents `x = x + 1`. It stores the destination name (the **lvalue**) and the right-hand side expression (the **rvalue**):
+```ebnf
+customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
+                    and not already defined as a custom operator ? ;
+```
+
+## New Tokens
+
+Two new keywords: `binary` and `unary`. They appear only in decorator lines, never in expressions.
 
 ```cpp
-class AssignmentExprAST : public ExprAST {
-  string Name; // lvalue
-  unique_ptr<ExprAST> Expr; // rvalue
+enum Token {
+  // ...existing tokens...
+
+  // user-defined operators
+  tok_binary = -16,
+  tok_unary  = -17,
+};
+```
+
+They are added to the `Keywords` map alongside the other keywords:
+
+```cpp
+{"binary", tok_binary}, {"unary", tok_unary}
+```
+
+The lexer returns `tok_binary` or `tok_unary` when it reads the corresponding word.
+
+## Extending PrototypeAST
+
+A prototype needs to know whether it describes a regular function or an operator, and for binary operators it needs the precedence:
+
+```cpp
+class PrototypeAST {
+  // ...existing Name, Args...
+  bool IsOperator;
+  unsigned Precedence; // binary only; 0 for all others
+
+  bool isUnaryOp()  const { return IsOperator && Args.size() == 1; }
+  bool isBinaryOp() const { return IsOperator && Args.size() == 2; }
+
+  // Last character of the encoded name: "binary|" → '|', "unary!" → '!'
+  char getOperatorName() const { return Name.back(); }
+};
+```
+
+Regular function prototypes keep the defaults `IsOperator=false, Prec=0` and are unaffected.
+
+## A New AST Node: UnaryExprAST
+
+Binary operators already have `BinaryExprAST`. A new node handles unary operator applications:
+
+```cpp
+class UnaryExprAST : public ExprAST {
+  char Opcode; // char suffices — unary operators are always a single ASCII character.
+  unique_ptr<ExprAST> Operand;
 
 public:
-  AssignmentExprAST(const string &Name, unique_ptr<ExprAST> Expr)
-      : Name(Name), Expr(std::move(Expr)) {}
+  UnaryExprAST(char Opcode, unique_ptr<ExprAST> Operand)
+      : Opcode(Opcode), Operand(std::move(Operand)) {}
+
   Value *codegen() override;
 };
 ```
 
-`VarExprAST` represents `var a = 1, b = 2: body`. It stores the list of bindings plus the body:
+## Defining Operators
+
+### Parsing `@binary(5) def |(x, y): ...`
+
+`MainLoop` eats the `@` itself before dispatching to `HandleDecorator`, so by the time `ParseDecoratedDef` runs, `CurTok` is already sitting on `binary` or `unary`. `ParseDecoratedDef` manages both branches:
 
 ```cpp
-class VarExprAST : public ExprAST {
-  vector<pair<string, unique_ptr<ExprAST>>> VarNames;
-  unique_ptr<ExprAST> Body;
-
-public:
-  VarExprAST(vector<pair<string, unique_ptr<ExprAST>>> VarNames,
-             unique_ptr<ExprAST> Body)
-      : VarNames(std::move(VarNames)), Body(std::move(Body)) {}
-  Value *codegen() override;
-};
-```
-
-## Parsing var
-
-`ParseVarExpr` reads four things in sequence: the `var` keyword, one or more `name [= initializer]` bindings, a mandatory `:`, and then the body expression.
-
-**Step 1: Eat `var` and prepare the binding list.**
-
-```cpp
-static unique_ptr<ExprAST> ParseVarExpr() {
-  getNextToken(); // eat 'var'
-  vector<pair<string, unique_ptr<ExprAST>>> VarNames;
-```
-
-**Step 2: Parse each binding — a name, then an optional initializer.**
-
-```cpp
-  while (true) {
-    if (CurTok != tok_identifier)
-      return LogError("Expected identifier after 'var'");
-
-    string Name = IdentifierStr;
-    getNextToken(); // eat identifier
-
-    unique_ptr<ExprAST> Init;
-    if (CurTok == '=') {
-      getNextToken(); // eat '='
-      Init = ParseExpression();
-      if (!Init) return nullptr;
-    } else {
-      Init = make_unique<NumberExprAST>(0.0); // no initializer → default to 0.0
-    }
-
-    VarNames.push_back({Name, std::move(Init)});
-```
-
-If there is no `=`, the variable defaults to `0.0`. The binding always produces a value, so the code that follows never has to special-case an empty initializer.
-
-**Step 3: `,` means another binding; anything else ends the list.**
-
-```cpp
-    if (CurTok != ',') break;
-    getNextToken(); // eat ',' and loop for the next binding
-  }
-```
-
-**Step 4: Expect `:`, allow the body on the next line, parse the body.**
-
-```cpp
-  if (CurTok != ':')
-    return LogError("Expected ':' after var bindings");
-  getNextToken(); // eat ':'
-
-  consumeNewlines(); // body may start on the next line
-
-  auto Body = ParseExpression();
-  if (!Body) return nullptr;
-
-  return make_unique<VarExprAST>(std::move(VarNames), std::move(Body));
-}
-```
-
-If the current token is `var`, `ParseExpression` routes to `ParseVarExpr` before attempting the usual binary-expression path:
-
-```cpp
-static unique_ptr<ExprAST> ParseExpression() {
-  if (CurTok == tok_var)
-    return ParseVarExpr();
-
-  auto LHS = ParseUnary();
-  // ...
-}
-```
-
-## Parsing Assignment
-
-After `ParseBinOpRHS` returns, `ParseExpression` checks whether the next token is `=`. If not, the expression is returned as-is. If yes, the left-hand side must be a plain variable name — anything else is a parse error:
-
-```cpp
-  if (CurTok != '=')
-    return Expr; // no assignment — return the binary expression
-
-  // The left-hand side must be a plain variable name (an lvalue).
-  const string *AssignedName = Expr->getLValueName();
-  if (!AssignedName)
-    return LogError("Destination of '=' must be a variable");
-
-  string Name = *AssignedName;
-  getNextToken(); // eat '='
-
-  auto RHS = ParseExpression(); // right-recursive, so a = b = 1 parses as a = (b = 1)
-  if (!RHS) return nullptr;
-
-  return make_unique<AssignmentExprAST>(Name, std::move(RHS));
-```
-
-This makes assignment:
-
-- lower precedence than all binary operators — the entire left-hand binary expression is parsed before `=` is checked
-- right-associative — `a = b = 1` parses as `a = (b = 1)`
-
-The parser enforces that the left-hand side is a plain variable name, not an arbitrary expression. `(1 + 2) = 3` is a parse error.
-
-## Memory Slots: From Values to Storage
-
-Until chapter 9, `NamedValues` mapped variable names directly to LLVM `Value*` — the incoming argument value, fixed at the point the function was called. That worked only because variables were immutable: a parameter name could always refer to the same value forever.
-
-```cpp
-// Before: the name maps directly to the incoming argument — fixed, immutable.
-NamedValues[Arg.getName()] = &Arg;
-```
-
-Mutable variables break that model. Once `x` can be reassigned, the name `x` can no longer mean "this one fixed value". It has to mean "the place where the current value of `x` lives".
-
-```cpp
-// After: the name maps to a memory slot that holds the current value.
-AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, Arg.getName()); // reserve a slot
-TheBuilder->CreateStore(&Arg, Alloca);          // copy the incoming value into it
-NamedValues[Arg.getName()] = Alloca;         // name now points to the slot, not the value
-```
-
-So `NamedValues` changes from:
-
-```cpp
-static map<string, Value *> NamedValues;
-```
-
-to:
-
-```cpp
-static map<string, AllocaInst *> NamedValues;
-```
-
-Each variable name now maps to an `AllocaInst` — a memory slot in the current function's entry block. That is the entire core implementation change.
-
-## CreateEntryBlockAlloca
-
-This helper creates the memory slots:
-
-```cpp
-/// CreateEntryBlockAlloca - Create a memory slot in the current function's
-/// entry block for a mutable variable.
-static AllocaInst *CreateEntryBlockAlloca(Function *TheFunction,
-                                          const string &VarName) {
-  IRBuilder<> TmpB(
-      &TheFunction->getEntryBlock(),     // insert into the entry block
-      TheFunction->getEntryBlock().begin()); // at the very start, before any instructions
-  return TmpB.CreateAlloca(
-      Type::getDoubleTy(*TheContext), // type: a single double
-      nullptr,                        // no array size (scalar slot)
-      VarName);                       // name for the IR printout
-}
-```
-
-A temporary `IRBuilder` (`TmpB`) is used instead of the main `TheBuilder` because I may be codegenning deep inside a branch or loop body, but allocas for local variables belong in the function entry block — not wherever the main builder happens to be pointing. Placing all allocas at the start of the entry block is a requirement for `mem2reg` to work correctly.
-
-Because `TmpB` is always reset to `begin()` of the entry block, each new alloca lands before all the previous ones. Declaring `var x, y` produces allocas in reverse order:
-
-```pyxc
-def foo(): return var x, y: 0
-```
-
-```llvm
-entry:
-  %y = alloca double, align 8   ; inserted second, lands first
-  %x = alloca double, align 8   ; inserted first, lands last
-```
-
-The reversal is harmless — allocas are just slot reservations with no ordering dependency. The stores that write the initial values happen afterward in declaration order, and `mem2reg` doesn't care about alloca order.
-
-## Loading and Storing Variables
-
-Once names map to memory slots, reading and writing a variable becomes explicit load and store instructions.
-
-A variable reference loads the current value:
-
-```cpp
-Value *VariableExprAST::codegen() {
-  AllocaInst *A = NamedValues[Name];
-  if (!A)
-    return LogErrorV("Unknown variable name");
-  return TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), A, Name.c_str());
-  //   → %x2 = load double, ptr %x, align 8
-}
-```
-
-```llvm
-%x2 = load double, ptr %x, align 8
-```
-
-An assignment evaluates the right-hand side, stores it into the memory slot, and returns the assigned value:
-
-```cpp
-Value *AssignmentExprAST::codegen() {
-  Value *Val = Expr->codegen(); // evaluate the right-hand side first
-  if (!Val) return nullptr;
-
-  AllocaInst *A = NamedValues[Name];
-  if (!A)
-    return LogErrorV("Unknown variable name");
-
-  TheBuilder->CreateStore(Val, A); // → store double %val, ptr %x, align 8
-  return Val;                   // return the assigned value (makes a = b = 1 work)
-}
-```
-
-```llvm
-store double %addtmp, ptr %x, align 8
-```
-
-
-## VarExprAST::codegen
-
-**Step 1: Evaluate initializers and allocate memory slots.**
-
-```cpp
-Value *VarExprAST::codegen() {
-  vector<pair<string, AllocaInst *>> OldBindings;
-  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
-
-  for (auto &Var : VarNames) {
-    const string &VarName = Var.first;
-    ExprAST *Init = Var.second.get();
-
-    Value *InitVal = Init->codegen(); // evaluate before installing the binding
-    if (!InitVal) return nullptr;
-
-    AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
-    // → %x = alloca double, align 8
-    TheBuilder->CreateStore(InitVal, Alloca);
-    // → store double %initval, ptr %x, align 8
-```
-
-**Step 2: Install the new binding, saving any shadowed outer binding.**
-
-If a variable with the same name already exists, its alloca is saved so it can be restored later:
-
-```cpp
-    OldBindings.push_back({VarName, NamedValues[VarName]});
-    NamedValues[VarName] = Alloca; // shadow any outer binding
-  }
-```
-
-After steps 1 and 2, `var x = 1: x = x + 1` has emitted:
-
-```llvm
-%x    = alloca double, align 8
-store double 1.000000e+00, ptr %x, align 8
-```
-
-**Step 3: Codegen the body under the new bindings.**
-
-The body `x = x + 1` loads `x`, adds 1, stores back, and returns the result:
-
-```llvm
-%x1     = load double, ptr %x, align 8
-%addtmp = fadd double %x1, 1.000000e+00
-store double %addtmp, ptr %x, align 8
-```
-
-```cpp
-  Value *BodyVal = Body->codegen();
-  if (!BodyVal) return nullptr;
-```
-
-**Step 4: Restore outer bindings after the body.**
-
-```cpp
-  for (auto I = OldBindings.rbegin(), E = OldBindings.rend(); I != E; ++I) {
-    if (I->second)
-      NamedValues[I->first] = I->second; // restore saved binding
-    else
-      NamedValues.erase(I->first);        // name was not in scope before — remove it
+/// decorateddef
+///   = binarydecorator eols "def" binaryopprototype ":" [ eols ] "return" expression
+///   | unarydecorator  eols "def" unaryopprototype  ":" [ eols ] "return" expression
+///
+/// Called after '@' has been consumed. CurTok is on 'binary' or 'unary'.
+static unique_ptr<FunctionAST> ParseDecoratedDef() {
+  if (CurTok != tok_binary && CurTok != tok_unary)
+    return LogErrorF("Expected 'binary' or 'unary' after '@'");
+
+  bool IsBinary = (CurTok == tok_binary);
+  unique_ptr<PrototypeAST> Proto;
+
+  if (IsBinary) {
+    unsigned Prec = ParseBinaryDecorator(); // consumes "binary(N)"
+    if (!Prec)
+      return nullptr;
+    if (CurTok != tok_eol) // the decorator must end at a newline before 'def'
+      return LogErrorF("Expected newline after '@binary(...)' decorator");
+    consumeNewlines();
+    if (CurTok != tok_def)
+      return LogErrorF("Expected 'def' after decorator");
+    getNextToken(); // eat 'def'
+    Proto = ParseBinaryOpPrototype(Prec);
+  } else {
+    ParseUnaryDecorator(); // consumes "unary"
+    // ... same newline enforcement, eat 'def' ...
+    Proto = ParseUnaryOpPrototype();
   }
 
-  return BodyVal;
+  // Shared body tail — same as ParseDefinition, where `return` and expression are parsed.
+  ...
 }
 ```
 
-If an outer variable had the same name, it's visible again after the `var` body exits. This gives `var` normal lexical shadowing behavior.
-
-## Parameters Become Mutable Too
-
-Once `NamedValues` holds allocas, function parameters must use the same representation. `FunctionAST::codegen` now creates an entry-block alloca for each argument and stores the incoming LLVM argument value into it:
+**`ParseBinaryDecorator`** consumes `binary(5)` and returns `5`. The lexer has no `tok_integer` — it emits `tok_number` for both `5` and `1.5` — so the decimal check inspects `NumLiteralStr`, the raw source text. It returns `unsigned`, not a `unique_ptr`, so on failure it calls the plain `LogError` (which prints the message and returns a discarded `nullptr`) and then explicitly returns `0`:
 
 ```cpp
-NamedValues.clear();
-for (auto &Arg : TheFunction->args()) {
-  // Create a memory slot for each parameter.
-  AllocaInst *Alloca =
-      CreateEntryBlockAlloca(TheFunction, string(Arg.getName()));
-  // Copy the incoming argument value into the slot.
-  TheBuilder->CreateStore(&Arg, Alloca);
-  NamedValues[string(Arg.getName())] = Alloca;
+/// binarydecorator
+///   = "binary" "(" integer ")"
+///
+/// Called after '@' has been consumed. CurTok is on 'binary'.
+/// Returns the parsed precedence (>= 1), or 0 on error.
+/// 0 is a safe sentinel because valid precedences must be >= 1.
+static unsigned ParseBinaryDecorator() {
+  getNextToken(); // eat 'binary'
+
+  if (CurTok != '(') {
+    LogError("Expected '(' after '@binary'");
+    return 0;
+  }
+  getNextToken(); // eat '('
+
+  if (CurTok != tok_number) {
+    LogError("Expected precedence number in '@binary(...)'");
+    return 0;
+  }
+  // The lexer has no separate tok_integer — it emits tok_number for both
+  // integer and decimal literals. Reject decimals by checking the raw source.
+  if (NumLiteralStr.find('.') != string::npos) {
+    LogError("Precedence must be an integer, not a decimal literal");
+    return 0;
+  }
+  if (NumVal < 1) {
+    LogError("Precedence must be a positive integer");
+    return 0;
+  }
+  unsigned Prec = static_cast<unsigned>(NumVal);
+  getNextToken(); // eat number
+
+  if (CurTok != ')') {
+    LogError("Expected ')' after precedence in '@binary(...)'");
+    return 0;
+  }
+  getNextToken(); // eat ')'
+
+  return Prec;
 }
 ```
 
-This unifies the whole language: parameters, `var` locals, and loop variables all live in memory slots. Variable references always load; assignments always store. One model everywhere.
+Zero is rejected because it is the sentinel/marker value `GetTokPrecedence` returns for unknown operators.
 
-## for Loops Switch to the Same Model
-
-The old `for` implementation bound the loop variable directly to the incoming `Value*`. That no longer fits now that all mutable locals use allocas. So I change `ForExprAST::codegen` to use a memory slot for the loop variable too:
+**`ParseBinaryOpPrototype`** reads `|`, encodes it as `"binary|"`, runs three redefinition checks, then reads `x` and `y`:
 
 ```cpp
-// Allocate a memory slot for the loop variable and store the start value.
-AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
-TheBuilder->CreateStore(StartVal, Alloca);
+/// binaryopprototype
+///   = customopchar "(" identifier "," identifier ")"
+///
+/// CurTok is on the operator character.
+/// The function is stored internally as "binary<opchar>" (e.g. "binary%"),
+/// which is how BinaryExprAST::codegen() looks it up at call sites.
+static unique_ptr<PrototypeAST> ParseBinaryOpPrototype(unsigned Precedence) {
+    if (!IsCustomOpChar(CurTok))
+        return LogErrorP("Expected operator character in binary operator prototype");
+    char OpChar = (char)CurTok;
+    string FnName = string("binary") + OpChar;  // → "binary|"
 
-// ...
+    if (IsKnownBinaryOperatorToken(CurTok)) ...  // already a binary op?
+    if (IsKnownUnaryOperatorToken(CurTok))  ...  // already a unary op?
+    if (FunctionProtos.count(FnName))       ...  // encoded name collision? (FunctionProtos is the map of parsed prototypes from chapter 6)
 
-// In the loop body, load the current value, add the step, store back.
-Value *CurVar =
-    TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), Alloca, VarName);
-Value *NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
-TheBuilder->CreateStore(NextVar, Alloca);
-```
-
-The parser records whether `var` was present by setting an `IsVarDecl` flag on `ForExprAST`:
-
-```cpp
-bool IsVarDecl = false;
-if (CurTok == tok_var)
-  IsVarDecl = true, getNextToken(); // optional 'var'
-```
-
-Codegen uses that flag to decide whether to create a fresh slot or reuse an existing one:
-
-```cpp
-if (IsVarDecl) {
-  // 'for var i': allocate a new slot and store the start value.
-  Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
-  TheBuilder->CreateStore(StartVal, Alloca);
-} else {
-  // 'for i': look up the existing alloca — error if i is not in scope.
-  auto It = NamedValues.find(VarName);
-  if (It == NamedValues.end() || !It->second)
-    return LogErrorV("Unknown variable name");
-  Alloca = It->second;
-  TheBuilder->CreateStore(StartVal, Alloca);
+    getNextToken(); // eat operator char
+    // ... read (x, y) — same as ParsePrototype, expect exactly 2 args ...
+    return make_unique<PrototypeAST>(FnName, ArgNames, true, Precedence);
 }
 ```
 
-`IsVarDecl` also controls teardown: when `var` was used, the loop variable is removed from `NamedValues` (or the shadowed outer binding is restored) after the loop exits; when it was not, the existing slot is left untouched.
+`IsCustomOpChar` checks `isascii(Tok) && ispunct(Tok) && Tok != '@'`. `@` is excluded because it is the decorator introducer — allowing it as an operator character would make `@@binary(5)` ambiguous. The defensive `FunctionProtos` check guards against future parser changes.
 
-Here is `def count(n): return for var i = 1, i < n, 1: i` with `-O0 -v`:
+### Parsing `@unary def !(v): ...`
+
+The unary path follows a similar scheme. `ParseUnaryDecorator` simply eats `unary` — no precedence argument, since unary operators always bind tighter than any binary operator by design. Among unary operators themselves, there is no precedence either — `-!x` parses as `-(! x)` because `ParseUnary` recurses into itself, applying operators from the outside in and resolving them inside out. `ParseUnaryOpPrototype` encodes the name as `"unary!"` and runs the same two redefinition checks:
+
+```cpp
+if (!IsCustomOpChar(CurTok))
+    return LogErrorP("Expected operator character in unary operator prototype");
+
+string FnName = string("unary") + OpChar;  // → "unary!"
+
+if (IsKnownUnaryOperatorToken(CurTok))  ...  // already a unary op?
+if (IsKnownBinaryOperatorToken(CurTok)) ...  // already a binary op?
+```
+
+Since unary operators have no precedence, `PrototypeAST` is created with `Precedence = 0`. Body parsing is identical to the binary path.
+
+## Parsing Unary Expressions
+
+`ParseUnary` is called wherever the grammar expects a `unaryexpr` — as the operand on either side of a binary operator, so `!x + 1` and `f(x) + !y` both work. 
+
+```cpp
+static unique_ptr<ExprAST> ParseUnary() {
+  // Primary starters — hand off to ParsePrimary.
+  if (!isascii(CurTok) || CurTok == '(' || isalpha(CurTok) || isdigit(CurTok))
+    return ParsePrimary();
+  // Built-in unary minus.
+  if (CurTok == '-')
+    return ParseUnaryMinus();
+  // ASCII punctuation — treat as a user-defined unary prefix.
+  int Opc = CurTok;
+  getNextToken(); // eat the operator character
+  if (auto Operand = ParseUnary())
+    return make_unique<UnaryExprAST>(Opc, std::move(Operand));
+  return nullptr;
+}
+```
+
+Any punctuation token that isn't `-` parses as a unary prefix — undefined operators are accepted here and only fail at codegen with "Unknown unary operator".
+
+`ParseUnaryMinus` eats `-`, recurses into `ParseUnary` for the operand, and builds a `UnaryExprAST` with opcode `'-'`:
+
+```cpp
+static unique_ptr<ExprAST> ParseUnaryMinus() {
+  getNextToken(); // eat '-'
+  auto Operand = ParseUnary();
+  if (!Operand)
+    return nullptr;
+  return make_unique<UnaryExprAST>('-', std::move(Operand));
+}
+```
+
+During codegen, `UnaryExprAST` treats `-` as a built-in and emits `fneg`; all other opcodes are resolved as `unary<opchar>` function calls.
+
+## Code Generation
+
+### PrototypeAST::codegen — Registering Operators
+
+When a binary operator prototype is compiled, its precedence is installed in `BinopPrecedence`. When a unary operator prototype is compiled, its token is inserted into `KnownUnaryOperators`. Both happen at JIT time — inside `codegen` — so the operator is immediately usable in subsequent REPL lines or file definitions:
+
+```cpp
+Function *PrototypeAST::codegen() {
+  // ...create the LLVM function as before...
+
+  // Register binary operator precedence so the parser recognises it in
+  // subsequent expressions.
+  if (isBinaryOp())
+    BinopPrecedence[getOperatorName()] = Precedence;
+
+  // Register unary operator so ParseUnaryOpPrototype can detect redefinitions.
+  if (isUnaryOp())
+    KnownUnaryOperators.insert(getOperatorName());
+
+  return F;
+}
+```
+
+The `BinopPrecedence` side-effect is what makes `GetTokPrecedence()` return the right value for new operators. The `KnownUnaryOperators` side-effect is what lets `ParseUnaryOpPrototype` detect and reject redefinition attempts.
+
+### BinaryExprAST::codegen — User-Defined Fallthrough
+
+The existing `switch` handles built-in operators. Everything else falls through to a function lookup:
+
+```cpp
+Value *BinaryExprAST::codegen() {
+  // ...codegen L and R...
+
+  switch (Op) {
+  // ...built-in operators...
+  default: break;
+  }
+
+  // User-defined: look up "binary<op>" and emit a call.
+  Function *F = getFunction(std::string("binary") + (char)Op);
+  if (!F)
+    return LogErrorV("invalid binary operator");
+  Value *Ops[] = {L, R};
+  return TheBuilder->CreateCall(F, Ops, "binop");
+}
+```
+
+Because user-defined operators lower to regular function calls, operands are evaluated before the call is emitted. As a consequence, user-defined operators cannot have short-circuit functionality.
+
+### UnaryExprAST::codegen
+
+```cpp
+Value *UnaryExprAST::codegen() {
+  Value *Op = Operand->codegen();
+  if (!Op)
+    return nullptr;
+
+  // Built-in unary minus.
+  if (Opcode == '-')
+    return TheBuilder->CreateFNeg(Op, "negtmp");
+
+  // User-defined unary operator.
+  Function *F = getFunction(std::string("unary") + Opcode);
+  if (!F)
+    return LogErrorV("Unknown unary operator");
+
+  return TheBuilder->CreateCall(F, Op, "unop");
+}
+```
+
+The generated IR for `-x` results in a call to LLVM's fneg:
+```llvm
+%negtmp = fneg double %x
+```
+
+The generated IR for `!x` is a regular function call:
 
 ```llvm
-; def count(n): return for var i = 1, i < n, 1: i
-
-define double @count(double %n) {
-entry:
-  %i  = alloca double, align 8        ; slot for loop variable i
-  %n1 = alloca double, align 8        ; slot for parameter n
-  store double %n, ptr %n1, align 8   ; store incoming n into its slot
-  store double 1.000000e+00, ptr %i, align 8 ; i = 1 (start value)
-  br label %loop_cond
-
-loop_cond:
-  %i2  = load double, ptr %i, align 8         ; load i
-  %n3  = load double, ptr %n1, align 8        ; load n
-  %cmptmp   = fcmp olt double %i2, %n3        ; i < n
-  %booltmp  = uitofp i1 %cmptmp to double     ; bool → double (1.0 or 0.0)
-  %loopcond = fcmp one double %booltmp, 0.000000e+00 ; non-zero?
-  br i1 %loopcond, label %loop_body, label %after_loop
-
-loop_body:
-  %i4 = load double, ptr %i, align 8          ; body: i (result unused)
-  %i5 = load double, ptr %i, align 8          ; load i for step computation
-  %nextvar = fadd double %i5, 1.000000e+00    ; i + step (1.0)
-  store double %nextvar, ptr %i, align 8      ; write new i back
-  br label %loop_cond
-
-after_loop:
-  ret double 0.000000e+00  ; for always returns 0.0 (established in chapter 8)
-}
+%unop = call double @unary!(double %x)
 ```
 
-`%i4` and `%i5` are two separate loads of `i` — `%i4` evaluates the body expression (`: i`) whose result is unused, and `%i5` loads `i` again for the step computation. The `uitofp`/`fcmp one` pair converts the boolean comparison to a double and back — with optimizations on, `InstCombinePass` folds this away and `mem2reg` removes the slots entirely.
+And if you mix the two:
+For `-!x`:
 
-### The Optional `var` in `for`
-
-The grammar for `for` in this chapter is:
-
-```
-for [var] identifier = start, condition, step: body
+```llvm
+%unop = call double @unary!(double %x)
+%negtmp = fneg double %unop
 ```
 
-The `var` keyword is optional and follows C++ semantics:
+## How It All Fits Together
 
-- **`for var i = ...`** — declares a new alloca slot named `i` in the current scope. If `i` already exists in the enclosing scope, this is an error.
-- **`for i = ...`** — reuses an existing variable `i` that must already be in scope. If it does not exist, this is an error.
-
-When `for var i` is used, the parser allocates a fresh alloca slot for `i`, stores the start value into it, and tears it down when the loop exits. When `for i` is used, the parser looks up the existing alloca for `i` and stores the start value into that — no new slot is created. The difference is not just scope rules: `for i = ...` will fail if `i` has not already been declared.
-
-The distinction is mostly academic at this stage because a function body is still a single expression, not a sequence of statements. The one case where it surfaces is a nested loop reusing the outer loop variable:
-
+Here is the complete path for:
 ```pyxc
-for var i = 0, i < 10, 1:
-   for i = 5, i < 11, 1:
-    printd(i)
+@binary(5)
+def |(x, y): return if x != 0: 1 else: if y != 0: 1 else: 0
 ```
 
-Here the outer `for var i` introduces `i` into scope. The inner `for i` finds that same slot and reuses it — the inner loop overwrites `i` on every outer iteration, then the outer condition re-evaluates with whatever `i` was left at after the inner loop finished. That is almost never useful deliberately; it is shown here to make the semantics concrete.
+1. **MainLoop** sees `@`. Eats it → CurTok is `tok_binary`. Calls `HandleDecorator`.
 
-The more natural use of `for i = ...` (without `var`) becomes clear in the next chapter once `var` statements exist independently:
+2. **HandleDecorator** calls `ParseDecoratedDef`.
 
-```pyxc
-var x = 0.0
-for x = 1, x < 10, 1:   # reuses x declared above
-    printd(x)
-```
+3. **ParseDecoratedDef** sees `tok_binary` → `IsBinary = true`. Calls `ParseBinaryDecorator`.
 
-Until then, `var` in `for` is the safe default.
+4. **ParseBinaryDecorator**: eats `binary` → eats `(` → sees `tok_number`: `NumLiteralStr = "5"`, `NumVal = 5.0`. No `.` in literal. `NumVal ≥ 1`. `Prec = 5`. Eats `5` → eats `)`. Returns `5`.
 
-## mem2reg: Cleaning Up the Memory Slots
+5. **ParseDecoratedDef**: `Prec = 5`. Checks `CurTok == tok_eol` (end of decorator line) — yes. Calls `consumeNewlines()`, which eats one or more consecutive `tok_eol` tokens. CurTok is now `tok_def`. Eats `def` → CurTok is `|`. Calls `ParseBinaryOpPrototype(5)`.
 
-This chapter adds `PromotePass` (commonly called `mem2reg`) to the optimization pipeline:
+6. **ParseBinaryOpPrototype**: `IsCustomOpChar('|')` → true. `OpChar = '|'`, `FnName = "binary|"`. `IsKnownBinaryOperatorToken('|')` → false. `FunctionProtos.count("binary|")` → 0. Eats `|` → eats `(` → reads `x`, `,`, `y` → eats `)`. `ArgNames = {"x", "y"}`, size = 2 → ok. Returns `PrototypeAST("binary|", {"x","y"}, true, 5)`.
 
-```cpp
-TheFPM->addPass(PromotePass()); // mem2reg: replace alloca/load/store with plain values
-```
+7. **ParseDecoratedDef**: eats `:` → `consumeNewlines()` (body is inline, no eols) → eats `return` → calls `ParseExpression()`. The expression `if x != 0: 1 else: if y != 0: 1 else: 0` is parsed into a nested `IfExprAST`. Returns `FunctionAST("binary|", body)`.
 
-Every parameter and local variable gets a memory slot. Without optimizations, `def bump(n): return var x = n: x = x + 1` produces:
+8. **HandleDecorator** calls `FnAST->codegen()`.
 
-```llvm
-define double @bump(double %n) {
-entry:
-  %x  = alloca double, align 8        ; slot for local x
-  %n1 = alloca double, align 8        ; slot for parameter n
-  store double %n, ptr %n1, align 8   ; store incoming n
-  %n2 = load double, ptr %n1, align 8 ; load n to initialise x
-  store double %n2, ptr %x, align 8   ; x = n
-  %x3 = load double, ptr %x, align 8  ; load x for addition
-  %addtmp = fadd double %x3, 1.000000e+00 ; x + 1
-  store double %addtmp, ptr %x, align 8   ; x = x + 1
-  ret double %addtmp
-}
-```
+9. **FunctionAST::codegen** moves the prototype into `FunctionProtos["binary|"]`. Calls `getFunction("binary|")`, which calls `PrototypeAST::codegen()`:
+   - Creates `double @binary|(double %x, double %y)` in `TheModule`.
+   - `isBinaryOp()` is true → installs `BinopPrecedence['|'] = 5`.
 
-Two slots, four loads, three stores — just to add 1 to a parameter. `mem2reg` looks at each `alloca`, traces every store and load, and replaces the whole pattern with plain values. With optimizations on:
+10. **FunctionAST::codegen** creates the entry block, populates `NamedValues` with `{x, y}`, codegens the body, emits `ret`, runs the optimiser. Returns the compiled `Function*`.
 
-```llvm
-define double @bump(double %n) {
-entry:
-  %addtmp = fadd double %n, 1.000000e+00
-  ret double %addtmp
-}
-```
+11. **HandleDecorator** prints `"Parsed a user-defined operator."`. Hands the module to the JIT. Calls `InitializeModuleAndManagers`.
 
-Nine instructions down to two.
-
-> **Note:** Without `mem2reg` collapsing needless memory operations, `GVNPass` and `InstCombinePass` will have to be conservative around memory operations and will miss optimizations they'd otherwise catch.
-
-### A More Complex Example
-
-When control flow is involved, `mem2reg` has more work to do. Define `;` as a sequencing operator and an accumulator loop that returns its result:
-
-```pyxc
-@binary(1)
-def ;(x, y): return y
-
-def acc_loop(n): return var acc = 0: (for var i = 1, i < n, 1: acc = acc + i) ; acc
-```
-
-Without optimizations (`-O0 -v`), three slots and repeated loads/stores on every iteration:
-
-```llvm
-define double @acc_loop(double %n) {
-entry:
-  %i   = alloca double, align 8          ; slot for loop variable i
-  %acc = alloca double, align 8          ; slot for accumulator
-  %n1  = alloca double, align 8          ; slot for parameter n
-  store double %n, ptr %n1, align 8      ; store n
-  store double 0.000000e+00, ptr %acc, align 8 ; acc = 0
-  store double 1.000000e+00, ptr %i, align 8   ; i = 1
-  br label %loop_cond
-
-loop_cond:
-  %i2  = load double, ptr %i, align 8    ; load i
-  %n3  = load double, ptr %n1, align 8   ; load n
-  %cmptmp  = fcmp olt double %i2, %n3   ; i < n
-  %booltmp = uitofp i1 %cmptmp to double
-  %loopcond = fcmp one double %booltmp, 0.000000e+00
-  br i1 %loopcond, label %loop_body, label %after_loop
-
-loop_body:
-  %acc4   = load double, ptr %acc, align 8 ; load acc
-  %i5     = load double, ptr %i, align 8   ; load i
-  %addtmp = fadd double %acc4, %i5         ; acc + i
-  store double %addtmp, ptr %acc, align 8  ; acc = acc + i
-  %i6     = load double, ptr %i, align 8   ; load i for step
-  %nextvar = fadd double %i6, 1.000000e+00 ; i + 1
-  store double %nextvar, ptr %i, align 8   ; i = i + 1
-  br label %loop_cond
-
-after_loop:
-  %acc7  = load double, ptr %acc, align 8  ; load final acc
-  %binop = call double @"binary;"(double 0.000000e+00, double %acc7)
-  ret double %binop
-}
-```
-
-With optimizations on, all three slots and every load/store disappear. In their place, two phi nodes at the top of `loop_cond` — one for each mutable variable:
-
-```llvm
-define double @acc_loop(double %n) {
-entry:
-  br label %loop_cond  ; jump straight to condition
-
-loop_cond:
-  ; acc: 0.0 on first iteration, acc+i on subsequent ones
-  %acc.0 = phi double [ 0.000000e+00, %entry ], [ %addtmp, %loop_body ]
-  ; i: 1.0 on first iteration, i+1 on subsequent ones
-  %i.0   = phi double [ 1.000000e+00, %entry ], [ %nextvar, %loop_body ]
-  %cmptmp = fcmp olt double %i.0, %n  ; i < n
-  br i1 %cmptmp, label %loop_body, label %after_loop
-
-loop_body:
-  %addtmp  = fadd double %acc.0, %i.0       ; acc + i
-  %nextvar = fadd double %i.0, 1.000000e+00 ; i + 1
-  br label %loop_cond
-
-after_loop:
-  ; binary; discards 0.0 (for's return value) and returns acc.
-  ; the call is still present because binary; has no readnone attribute —
-  ; the optimizer can't prove it has no side effects, so it keeps the call.
-  %binop = call double @"binary;"(double 0.000000e+00, double %acc.0)
-  ret double %binop
-}
-```
-
-Each phi node says: "on the first iteration take the initial value (from `%entry`); on every subsequent iteration take the updated value (from `%loop_body`)." Two mutable variables, two phi nodes — one per slot that `mem2reg` promoted.
+Now `|` is a live binary operator. When the parser next sees `1 | 0`, `GetTokPrecedence` returns 5, `ParseBinOpRHS` builds `BinaryExprAST('|', 1, 0)`, and codegen looks up `binary|` in the JIT and emits a call.
 
 ## Build and Run
 
 ```bash
-cd code/chapter-10
-cmake -S . -B build && cmake --build build
+cmake -S . -B build
+cmake --build build
 ./build/pyxc
 ```
 
+The binary runs as an interactive REPL when given no file argument. Press `Ctrl-D` to exit.
+
 ## Try It
 
-Simple local update:
+### Defining a binary operator
+
+The decorator line ends at the newline. The REPL waits silently for the `def` line — no second `ready>` prompt appears between the two lines.
 
 <!-- code-merge:start -->
 ```pyxc
-ready> var x = 1: x = x + 1
-```
-```bash
-Parsed a top-level expression.
-Evaluated to 2.000000
-```
-<!-- code-merge:end -->
-
-Multiple bindings — later initializers see earlier ones:
-
-<!-- code-merge:start -->
-```pyxc
-ready> var x = 1, y = x + 1: y
-```
-```bash
-Parsed a top-level expression.
-Evaluated to 2.000000
-```
-<!-- code-merge:end -->
-
-Local variable inside a function:
-
-<!-- code-merge:start -->
-```pyxc
-ready> def bump(n): return var x = n: x = x + 1  # returns n+1
-```
-```bash
-Parsed a function definition.
-```
-```pyxc
-ready> bump(5)
-```
-```bash
-Parsed a top-level expression.
-Evaluated to 6.000000
-```
-<!-- code-merge:end -->
-
-Accumulator with a loop:
-
-<!-- code-merge:start -->
-```pyxc
-ready> @binary(1)
-def ;(x, y): return y
+ready> @binary(5)
+def |(x, y): return if x != 0: 1 else: if y != 0: 1 else: 0
 ```
 ```bash
 Parsed a user-defined operator.
 ```
 ```pyxc
-ready> def sum_to(n): return var acc = 0:
-    (for var i = 1, i < n + 1, 1: acc = acc + i) ; acc
-```
-```bash
-Parsed a function definition.
-```
-```pyxc
-ready> sum_to(5)
+ready> 1 | 0
 ```
 ```bash
 Parsed a top-level expression.
-Evaluated to 15.000000
+Evaluated to 1.000000
+```
+```pyxc
+ready> 0 | 0
+```
+```bash
+Parsed a top-level expression.
+Evaluated to 0.000000
+```
+```pyxc
+ready>
 ```
 <!-- code-merge:end -->
 
-Invalid assignment target:
+### Defining a unary operator
+<!-- code-merge:start -->
+```pyxc
+ready> @unary
+def !(x): return if x == 0: 1 else: 0
+```
+```bash
+Parsed a user-defined operator.
+```
+```pyxc
+ready> !0
+```
+```bash
+Parsed a top-level expression.
+Evaluated to 1.000000
+```
+```pyxc
+ready> !5
+```
+```bash
+Parsed a top-level expression.
+Evaluated to 0.000000
+```
+```pyxc
+ready>
+```
+<!-- code-merge:end -->
+
+### Composing unary minus and a user-defined unary operator
+
+`ParseUnaryMinus` recurses into `ParseUnary` for its operand, so `-!x` parses as unary-minus applied to `!x`:
 
 <!-- code-merge:start -->
 ```pyxc
-ready> (1 + 2) = 3
+ready> @unary
+def !(x): return if x == 0: 1 else: 0
 ```
 ```bash
-Error (Line 1, Column 9): Destination of '=' must be a variable
-(1 + 2) =
-        ^~~~
+Parsed a user-defined operator.
+```
+```pyxc
+ready> -!0
+```
+```bash
+Parsed a top-level expression.
+Evaluated to -1.000000
+```
+```pyxc
+ready> -!5
+```
+```bash
+Parsed a top-level expression.
+Evaluated to -0.000000
+```
+```pyxc
+ready>
 ```
 <!-- code-merge:end -->
 
+`-!5` evaluates to `-0.000000` because `!5` is `0.0` and `fneg 0.0` is IEEE 754 negative zero. Negative zero compares equal to `0.0` in any subsequent expression, so this is harmless.
+
+Running `./build/pyxc -v` shows the generated IR for `-!5`:
+
+<!-- code-merge:start -->
+```llvm
+define double @__anon_expr() {
+entry:
+  %unop = call double @"unary!"(double 5.000000e+00)
+  %negtmp = fneg double %unop
+  ret double %negtmp
+}
+```
+```bash
+Evaluated to -0.000000
+```
+<!-- code-merge:end -->
+
+### A low-precedence sequencing operator
+
+Setting precedence to 1 — lower than all built-ins — lets `;` act as a sequencer: `a ; b` evaluates `a` for its side effects and returns `b`:
+
+<!-- code-merge:start -->
+```pyxc
+ready> extern def printd(x)
+```
+```bash
+Parsed an extern.
+```
+```pyxc
+ready> @binary(1)
+def ;(lhs, rhs): return rhs
+```
+```bash
+Parsed a user-defined operator.
+```
+```pyxc
+ready> printd(1) ; printd(2) ; 99
+```
+```bash
+Parsed a top-level expression.
+1.000000
+2.000000
+Evaluated to 99.000000
+```
+```pyxc
+ready>
+```
+<!-- code-merge:end -->
+
+### Validation errors
+
+Attempting to redefine a built-in binary operator:
+
+<!-- code-merge:start -->
+```pyxc
+ready> @binary(5)
+def +(x, y): return x + y
+```
+```bash
+Error (Line 2, Column 5): Binary operator '+' is already defined
+def +(
+    ^~~~
+ready>
+```
+<!-- code-merge:end -->
+
+Decimal precedence:
+
+<!-- code-merge:start -->
+```pyxc
+ready> @binary(1.5)
+def %(x, y): return x - y
+```
+```bash
+Error (Line 1, Column 9): Precedence must be an integer, not a decimal literal
+@binary(1.5)
+        ^~~~
+ready>
+```
+<!-- code-merge:end -->
+
+Unary/Binary conflict — once `|` is binary, it cannot also become unary (and vice-versa):
+
+<!-- code-merge:start -->
+```pyxc
+ready> @binary(5)
+def |(x, y): return if x != 0: 1 else: if y != 0: 1 else: 0
+```
+```bash
+Parsed a user-defined operator.
+```
+```pyxc
+ready> @unary
+def |(x): return if x != 0: 0 else: 1
+```
+```bash
+Error (Line 4, Column 5): Unary operator '|' conflicts with an existing binary operator
+def |(
+    ^~~~
+ready>
+```
+<!-- code-merge:end -->
+
+## The Payoff: Density-Shaded Mandelbrot
+
+[Chapter 9](chapter-09.md) already rendered the Mandelbrot set — but every point was either `*` (outside the set) or space (inside). The fractal boundary was a hard edge:
+
+```
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************   *********************************
+******************************************    ********************************
+*******************************************  *********************************
+************************************ **          *****************************
+************************************                 *************************
+***********************************                 **************************
+**********************************                   *************************
+*********************************                     ************************
+*********************** *  *****                      ************************
+***********************       **                      ************************
+**********************         *                      ************************
+*******************  *         *                     *************************
+*******************  *         *                     *************************
+**********************         *                      ************************
+***********************       **                      ************************
+*********************** *   ****                      ************************
+*********************************                     ************************
+**********************************                   *************************
+***********************************                 **************************
+*************************************                *************************
+************************************ *           *****************************
+*******************************************  *********************************
+******************************************    ********************************
+******************************************    ********************************
+******************************************** *********************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+```
+
+Now that I have user-defined operators, I can rewrite the renderer to shade by density — mapping how quickly each point escapes to a different character. The boundary dissolves into gradients of `*`, `+`, `.`, and space.
+
+Four things change from the chapter 8 version:
+
+- **Unary minus.** Built-in unary minus is now parsed directly (`ParseUnaryMinus`) and lowered by `UnaryExprAST::codegen` to LLVM `fneg`, so `-2.3` works without the `0 - 2.3` workaround from chapter 8.
+- **`;` for sequencing.** Chapter 9 wrote `mandelrow(...) + putchard(10)` to chain two side-effect calls — adding two `0.0` return values happens to work, but is misleading. The new `@binary(1) def ;(x, y)` makes intent explicit: evaluate left for its side effect, return right.
+- **`|` to combine exit conditions.** Chapter 9's `mandelconverge` checked the iteration limit and the escape radius with nested `if`. Chapter 10 tests `iters > 255 | (real * real + imag * imag > 4)` in one expression using `@binary(5) def |`.
+- **`printdensity` for shading.** Instead of mapping each point to just inside/outside, the iteration count at escape determines the shade character.
+
+```pyxc
+# test/mandel.pyxc
+extern def putchard(x)
+
+# Logical not: 0 -> 1, non-zero -> 0.
+@unary
+def !(v):
+    return if v == 0: 1 else: 0
+
+# Sequencing operator: evaluate lhs for side effects, then return rhs.
+@binary(1)
+def ;(x, y):
+    return y
+
+# Logical OR (no short-circuit).
+@binary(5)
+def |(lhs, rhs):
+    return if lhs: 1 else: if rhs: 1 else: 0
+
+# Logical AND (no short-circuit).
+# !!rhs normalises rhs to 0.0 or 1.0 — rhs might be any double, not just a boolean.
+@binary(6)
+def &(lhs, rhs):
+    return if !lhs: 0 else: !!rhs
+
+# printdensity - map iteration count to an ASCII shade.
+def printdensity(d):
+    return if d > 8: putchard(32) else: if d > 4: putchard(46) else: if d > 2: putchard(43) else: putchard(42)
+
+# Determine whether z = z^2 + c diverges for the given point.
+def mandelconverger(real, imag, iters, creal, cimag):
+    return if iters > 255 | (real * real + imag * imag > 4): iters else: mandelconverger(real * real - imag * imag + creal, 2 * real * imag + cimag, iters + 1, creal, cimag)
+
+# Return number of iterations required for escape.
+def mandelconverge(real, imag):
+    return mandelconverger(real, imag, 0, real, imag)
+
+# Render one row.
+def mandelrow(xmin, xmax, xstep, y):
+    return for x = xmin, x < xmax, xstep:
+               printdensity(mandelconverge(x, y))
+
+# Render full 2D region.
+def mandelhelp(xmin, xmax, xstep, ymin, ymax, ystep):
+    return for y = ymin, y < ymax, ystep:
+               mandelrow(xmin, xmax, xstep, y) ; putchard(10)
+
+# Top-level helper.
+def mandel(realstart, imagstart, realmag, imagmag):
+    return mandelhelp(realstart, realstart + realmag * 78, realmag, imagstart, imagstart + imagmag * 40, imagmag)
+
+mandel(-2.3, -1.3, 0.05, 0.07)
+mandel(-2, -1, 0.02, 0.04)
+mandel(-0.9, -1.4, 0.02, 0.03)
+```
+
+The four custom operators:
+
+- `@unary def !(v)` — logical NOT: returns `1` if `v == 0`, else `0`.
+- `@binary(1) def ;(x, y)` — sequencing: evaluates `x` for side effects, returns `y`. Used as `mandelrow(...) ; putchard(10)` to print a newline after each row.
+- `@binary(5) def |(lhs, rhs)` — logical OR (no short-circuit): `if lhs: 1 else: if rhs: 1 else: 0`.
+- `@binary(6) def &(lhs, rhs)` — logical AND (no short-circuit): `if !lhs: 0 else: !!rhs`. Its body uses the already-defined `!` — operators become available immediately after their prototype is JIT-compiled.
+
+The precedences are chosen carefully: `|` (5) and `&` (6) are both lower than comparisons (10), so `iters > 255 | (real * real + imag * imag > 4)` parses as `(iters > 255) | (...)` as intended. If `|` had higher precedence than `>`, the condition would parse wrong.
+
+`printdensity(d)` maps an iteration count to an ASCII shade character:
+
+| count | char | meaning |
+|-------|------|---------|
+| > 8   | ` ` (space) | deep inside — survived 9+ iterations |
+| > 4   | `.`  | boundary zone — survived 5–8 iterations |
+| > 2   | `+`  | near boundary — survived 3–4 iterations |
+| ≤ 2   | `*`  | fast escape — outside the set |
+
+`mandelconverger` combines the two exit conditions with `|`:
+
+```pyxc
+if iters > 255 | (real * real + imag * imag > 4): iters else: ...
+```
+
+Run it directly:
+
+```bash
+./build/pyxc test/mandel.pyxc
+```
+
+The same view as chapter 8 (`mandel(-2.3, -1.3, 0.05, 0.07)`) now produces:
+
+```
+******************************************************************************
+******************************************************************************
+****************************************++++++********************************
+************************************+++++...++++++****************************
+*********************************++++++++.. ...+++++**************************
+*******************************++++++++++..   ..+++++*************************
+******************************++++++++++.     ..++++++************************
+****************************+++++++++....      ..++++++***********************
+**************************++++++++.......      .....++++**********************
+*************************++++++++.   .            ... .++*********************
+***********************++++++++...                     ++*********************
+*********************+++++++++....                    .+++********************
+******************+++..+++++....                      ..+++*******************
+**************++++++. ..........                        +++*******************
+***********++++++++..        ..                         .++*******************
+*********++++++++++...                                 .++++******************
+********++++++++++..                                   .++++******************
+*******++++++.....                                    ..++++******************
+*******+........                                     ...++++******************
+*******+... ....                                     ...++++******************
+*******+++++......                                    ..++++******************
+*******++++++++++...                                   .++++******************
+*********++++++++++...                                  ++++******************
+**********+++++++++..        ..                        ..++*******************
+*************++++++.. ..........                        +++*******************
+******************+++...+++.....                      ..+++*******************
+*********************+++++++++....                    ..++********************
+***********************++++++++...                     +++********************
+*************************+++++++..   .            ... .++*********************
+**************************++++++++.......      ......+++**********************
+****************************+++++++++....      ..++++++***********************
+*****************************++++++++++..     ..++++++************************
+*******************************++++++++++..  ...+++++*************************
+*********************************++++++++.. ...+++++**************************
+***********************************++++++....+++++****************************
+***************************************++++++++*******************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+```
+
+The file then calls `mandel(...)` two more times, zooming into different regions of the complex plane, with the density shading revealing finer boundary detail at each zoom level.
+
+## Things Worth Knowing
+
+- **An operator is either unary or binary, not both.** Once `|` is defined as binary, it cannot also be defined as unary (and vice-versa). This is enforced at parse time.
+
+- **Operators cannot be removed or redefined within a session.** Once a custom operator is registered, there is no mechanism to remove or reassign it. Restart the REPL to get a clean slate.
+
+- **User-defined operators do not short-circuit.** They are ordinary function calls — both operands are evaluated before the function runs. Python's `or` and `and` skip the right operand when the left is conclusive; `|` and `&` defined in Pyxc do not. Use nested `if` expressions when short-circuit evaluation matters.
+
 ## What's Next
 
-[Chapter 11](chapter-11.md) replaces the single-expression function body with real statement blocks. That makes mutable variables much more natural to use: assignment can stand on its own line, `return` can appear anywhere in a function body, and examples stop needing expression-level workarounds like `var acc = 0: (for ...) ; acc`.
+[Chapter 11](chapter-11.md) adds mutable local variables and assignment using a temporary `var ... :` expression form. This keeps Pyxc expression-oriented for one more chapter before real statement blocks arrive.
 
 ## Need Help?
 

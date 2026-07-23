@@ -1,5 +1,6 @@
 # RUN: %pyxc < %s 2>&1 | FileCheck %s
-# CHECK: 10.000000
+# CHECK: Parsed a function definition.
+# CHECK: Evaluated to 10.000000
 
 
 # Tests: inline if/else statement with both branches on one line.

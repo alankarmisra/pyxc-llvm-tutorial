@@ -1,34 +1,30 @@
 ---
-description: "Add pointer arithmetic — ptr + int, ptr - int, ptr - ptr, and pointer comparisons — so you can walk memory with a pointer."
+description: "Add pointer types, addr() for taking addresses, and p[i] indexing — so functions can modify the caller's data."
 ---
-# 19. pyxc: Pointer Arithmetic
+# 19. pyxc: Pointers
 
 ## Where We Are
 
-[Chapter 18](chapter-18.md) gave us pointers: `addr` to take an address, `p[i]` to index, and pointer parameters so functions can modify the caller's data. What we could not do was walk a pointer forward or backward, or compare two pointers. The K&R summing-loop pattern — compute an end pointer, advance `p` until `p != end` — was out of reach.
+[Chapter 18](chapter-18.md) added structs, but with a catch: structs are passed by value. If you hand a struct to a function and the function modifies a field, the caller's copy is unchanged. That's fine for pure computations, and it's a deliberate design choice — but sometimes you actually want to modify the caller's data.
 
-After this chapter, that pattern works:
+That's what pointers are for. After this chapter:
 
 ```pyxc
-extern def printd(x: float64)
+struct Point:
+  x: int
+  y: int
 
-struct Triple:
-  a: int
-  b: int
-  c: int
+def translate(p: ptr[Point], dx: int, dy: int) -> None:
+  p[0].x = p[0].x + dx
+  p[0].y = p[0].y + dy
 
 def main() -> int:
-  var t: Triple
-  t.a = 10
-  t.b = 20
-  t.c = 30
-  var p: ptr[int] = addr(t.a)
-  var end: ptr[int] = p + 3
-  var total: int = 0
-  while p != end:
-    total = total + p[0]
-    p = p + 1
-  printd(float64(total))  # 60.000000
+  var pt: Point
+  pt.x = 3
+  pt.y = 4
+  translate(addr(pt), 10, 20)
+  printd(float64(pt.x))  # 13.000000
+  printd(float64(pt.y))  # 24.000000
   return 0
 ```
 
@@ -41,182 +37,376 @@ cd pyxc-llvm-tutorial/code/chapter-19
 
 ## Grammar
 
-Pointer arithmetic reuses the existing binary operator infrastructure. No new tokens or keywords are needed — the type system drives the new behavior.
-
 ```ebnf
-expr ::= ...
-       | expr '+' expr   (* if one side is ptr[T] and other is int *)
-       | expr '-' expr   (* ptr[T] - int, or ptr[T] - ptr[T] *)
-       | expr '<' expr   (* pointer comparison *)
-       | expr '>' expr
-       | expr '==' expr
-       | expr '!=' expr
-       | expr '<=' expr
-       | expr '>=' expr
+type        ::= ...
+              | 'ptr' '[' type ']'   (* pointer to type — no nesting allowed *)
+
+addr-expr   ::= 'addr' '(' lvalue ')'
+
+lvalue      ::= identifier ('.' identifier)*
+
+index-expr  ::= lvalue '[' expression ']' ('.' identifier)*
+
+index-assign ::= lvalue '[' expression ']' ('.' identifier)* '=' expression
 ```
 
-The same tokens already existed. The change is that `GetBinaryResultType` now accepts pointer operands and returns pointer or integer types accordingly.
+`ptr[T]` is a type annotation only — you cannot construct one without `addr`. `addr` takes an lvalue (a named variable, optionally followed by field access) and returns a pointer to it. `p[i]` reads or writes the value at offset `i` from the pointer. `p[i].field` chains field access after indexing, for pointers to structs.
 
-## Semantic Rules
+Nested pointer types (`ptr[ptr[int]]`) and pointers to `None` are rejected at parse time.
 
-| Expression | Operand types | Result type |
+## Two New Keywords
+
+```cpp
+tok_ptr  = -35,
+tok_addr = -36,
+```
+
+Registered in the keyword map:
+
+```cpp
+{"ptr", tok_ptr}, {"addr", tok_addr}
+```
+
+## `ValueType::Pointer`
+
+`Pointer` is a new entry in the `ValueType` enum, after `Struct`. Unlike scalar types, a pointer value is not self-describing — `ValueType::Pointer` alone does not tell you what the pointer points to. You need the pointee type alongside it.
+
+For scalar types and structs, the pointee information is carried in the `StructName` string field that already exists on every `ExprAST` node. For pointers, that same field is reused to carry an encoded string describing the pointee:
+
+```cpp
+static string EncodePointerType(ValueType PointeeType,
+                                const string &PointeeStructName) {
+  return std::to_string(static_cast<int>(PointeeType)) + ":" + PointeeStructName;
+}
+
+static bool DecodePointerType(const string &Encoded, ValueType &PointeeType,
+                              string &PointeeStructName) {
+  auto Pos = Encoded.find(':');
+  // split on ':', parse the int as ValueType, rest is struct name
+  ...
+}
+```
+
+Every type in the compiler is described by two fields: a `ValueType` enum and a `StructName` string. For most types `StructName` is empty. For structs it holds the struct name. For pointers it holds a serialized description of the pointee, because `ValueType::Pointer` alone does not say what the pointer points to:
+
+| Type | `ValueType` | `StructName` |
 |---|---|---|
-| `p + n` | `ptr[T]`, int | `ptr[T]` |
-| `n + p` | int, `ptr[T]` | `ptr[T]` |
-| `p - n` | `ptr[T]`, int | `ptr[T]` |
-| `p - q` | `ptr[T]`, `ptr[T]` (same T) | `int64` |
-| `p < q`, `p > q`, etc. | `ptr[T]`, `ptr[T]` (same T) | `bool` |
-| `p * n` | `ptr[T]`, int | **type error** |
-| `p + q` | `ptr[T]`, `ptr[U]` | **type error** |
-| `p - q` | `ptr[T]`, `ptr[U]` (T ≠ U) | **type error** |
+| `int`, `float64`, … | `Int`, `Float64`, … | `""` |
+| `Point` (struct) | `Struct` | `"Point"` |
+| `ptr[int]` | `Pointer` | `"1:"` |
+| `ptr[Point]` | `Pointer` | `"10:Point"` |
 
-Pointer difference (`p - q`) yields an element count, not bytes. If `p` and `q` are both `ptr[int]` and they are 24 bytes apart, `p - q` is 3 — the number of `int`-sized steps between them.
+The format is `"<ValueType int>:<struct name>"`. `ptr[int]` encodes as `"1:"` (`ValueType::Int` = 1, no struct name). `ptr[Point]` encodes as `"10:Point"` (`ValueType::Struct` = 10, struct name `"Point"`). The caller that created the pointer type is responsible for encoding; any site that needs the pointee type decodes it.
 
-Multiplication by a pointer is blocked. There is no sensible meaning for `ptr[T] * int` in terms of memory addresses.
+This reuses the existing type-tracking infrastructure without adding a new field to the base class. It is a tradeoff: the encoding is not beautiful, but it works and the surface is small.
 
-## `GetBinaryResultType` Extended
+## The LLVM Pointer Type
 
-`GetBinaryResultType` is the central function that decides what type a binary expression produces. Its signature is extended to carry struct-name information for both operands and to write the result struct name back:
+In LLVM IR, all pointer types are the same opaque type:
 
 ```cpp
-if (IsArithmeticOp(Op)) {
-  if (Op != '*' &&
-      ((L == ValueType::Pointer && IsIntType(R)) ||
-       (R == ValueType::Pointer && IsIntType(L)))) {
-    if (ResultStructName)
-      *ResultStructName = (L == ValueType::Pointer) ? LStruct : RStruct;
-    return ValueType::Pointer;
+case ValueType::Pointer:
+  return PointerType::getUnqual(*TheContext);
+```
+
+`PointerType::getUnqual` produces the opaque `ptr` type — LLVM does not distinguish `ptr[int]` from `ptr[Point]` in the type system. The element type only appears in `getelementptr` and `load`/`store` instructions, not in the pointer type itself. This is LLVM's opaque pointer model, which has been the default since LLVM 15.
+
+The zero value for a pointer is null:
+
+```cpp
+case ValueType::Pointer:
+  return ConstantPointerNull::get(cast<PointerType>(LLVMTypeFor(ValueType::Pointer)));
+```
+
+`var p: ptr[int]` with no initializer starts as a null pointer.
+
+## Parsing `ptr[T]`
+
+`ParseTypeToken` handles the `tok_ptr` case:
+
+```cpp
+case tok_ptr: {
+  getNextToken(); // eat 'ptr'
+  // expect '['
+  getNextToken(); // eat '['
+  string PointeeStructName;
+  ValueType PointeeType = ParseTypeToken(&PointeeStructName);
+  // reject None and nested ptr
+  getNextToken(); // eat ']'
+  if (StructName)
+    *StructName = EncodePointerType(PointeeType, PointeeStructName);
+  return ValueType::Pointer;
+}
+```
+
+The parsed pointee type is immediately encoded and written into the `StructName` output parameter. From this point on, the pointer's pointee information travels with it as an opaque string through `VarScopes`, `PrototypeAST::ArgInfo`, `VariableExprAST`, and every other place that stores a `ValueType` alongside a `StructName`.
+
+## `addr`: Taking the Address of an Lvalue
+
+`addr(x)` returns a pointer to `x`. `addr(p.x)` returns a pointer to the field `x` of struct `p`. `ParseAddrExpr` handles both:
+
+```cpp
+static unique_ptr<ExprAST> ParseAddrExpr() {
+  getNextToken(); // eat 'addr'
+  // expect '('
+  getNextToken(); // eat '('
+  // expect identifier — addr requires an lvalue
+  string BaseName = IdentifierStr;
+  getNextToken(); // eat identifier
+  ValueType CurType = LookupVarType(BaseName);
+  // walk optional field chain: addr(o.inner.value)
+  vector<string> Path;
+  while (CurTok == '.') {
+    // validate each field, advance CurType and CurStruct
+    Path.push_back(Field);
   }
-  if (Op == '-' && L == ValueType::Pointer && R == ValueType::Pointer &&
-      LStruct == RStruct)
-    return ValueType::Int64;
-  ...
-}
-if (IsComparisonOp(Op)) {
-  if (L == ValueType::Pointer && R == ValueType::Pointer &&
-      LStruct == RStruct)
-    return ValueType::Bool;
-  ...
+  // expect ')'
+  return make_unique<AddrExprAST>(BaseName, Path, CurType,
+                                  EncodePointerType(CurType, CurStruct));
 }
 ```
 
-For `ptr + int` and `int + ptr`, the result inherits the struct name (which encodes the pointee type) from whichever operand is the pointer. For `ptr - ptr`, no struct name is needed because the result is a plain `int64`. For pointer comparisons, the result is `bool`.
+The resulting `AddrExprAST` has type `ValueType::Pointer` and its `StructName` holds the encoded pointee type.
 
-Mismatched pointer types (`ptr[int] - ptr[float64]`) fall through to the default error path because `LStruct != RStruct`.
+`addr` only accepts a named variable, optionally with field access. Expressions like `addr(1 + 2)` are rejected immediately — the parser checks for `tok_identifier` right after the opening `(`.
 
-## `BinaryExprAST` Constructor Extended
-
-`BinaryExprAST` gains an optional `StructName` parameter so the pointer type of an arithmetic result can be carried through the AST:
+### `AddrExprAST::codegen`
 
 ```cpp
-BinaryExprAST(char Op, unique_ptr<ExprAST> LHS, unique_ptr<ExprAST> RHS,
-              ValueType Type = ValueType::Unknown,
-              const string &StructName = "")
-```
-
-The constructor calls `setType(Type, StructName)`. Previously, only the parse-loop fallback path (for non-pointer results) needed to store a type on the node. Now the pointer arithmetic path explicitly constructs the node with both type and struct name set, then `continue`s to skip the old assignment statement.
-
-## Parse Loop Change
-
-The binary-operator parse loop now calls the extended `GetBinaryResultType` with both operands' struct names and a `ResultStructName` output. When the result is a pointer, the loop constructs the node with the full type information and continues:
-
-```cpp
-string ResultStructName;
-ValueType ResultType = GetBinaryResultType(BinOp,
-                                           LHS->getType(), LHS->getStructName(),
-                                           RHS->getType(), RHS->getStructName(),
-                                           &ResultStructName);
-if (ResultType == ValueType::Pointer) {
-  LHS = make_unique<BinaryExprAST>(BinOp, std::move(LHS), std::move(RHS),
-                                   ResultType, ResultStructName);
-  continue;
-}
-```
-
-For non-pointer results the loop falls through to the existing assignment path unchanged.
-
-## Codegen: `ptr + int` and `int + ptr`
-
-Advancing a pointer by an integer uses `CreateGEP`. The integer index is widened to `i64` first:
-
-```cpp
-if (getType() == ValueType::Pointer) {
-  Value *Ptr = nullptr;
-  Value *Idx = nullptr;
-  if (LType == ValueType::Pointer && IsIntType(RType) && Op == '+') {
-    Ptr = L; Idx = EmitImplicitCast(R, RType, ValueType::Int64);
-  } else if (RType == ValueType::Pointer && IsIntType(LType) && Op == '+') {
-    Ptr = R; Idx = EmitImplicitCast(L, LType, ValueType::Int64);
-  } else if (LType == ValueType::Pointer && IsIntType(RType) && Op == '-') {
-    Ptr = L; Idx = EmitImplicitCast(R, RType, ValueType::Int64);
-    if (Idx) Idx = Builder->CreateNeg(Idx, "negidx");
+Value *AddrExprAST::codegen() {
+  if (FieldPath.empty()) {
+    // addr(x) — return the alloca or global directly
+    auto It = NamedValues.find(BaseName);
+    if (It != NamedValues.end() && It->second)
+      return It->second;
+    if (auto *GV = GetGlobalVariable(BaseName))
+      return GV;
+    return LogErrorV("Unknown variable name");
   }
-  // ...
-  return Builder->CreateGEP(ElemLLVM, Ptr, Idx, "ptrarith");
+  // addr(p.x) — return the field pointer from GetFieldAddress
+  Value *Ptr = GetFieldAddress(BaseName, FieldPath);
+  return Ptr;
 }
 ```
 
-`DecodePointerType` extracts the element LLVM type from the result's encoded struct name. This is the type that GEP uses to compute its stride.
+For a local variable, LLVM already represents it as an `alloca` — a pointer to its storage. `addr(x)` simply returns that pointer without any new instruction. For a struct field, `GetFieldAddress` (from chapter 17) computes and returns the GEP pointer for that field.
 
-For `p + 1` where `p: ptr[int]`:
+```llvm
+; var x: int = 42
+; var p: ptr[int] = addr(x)
+%x = alloca i64
+store i64 42, ptr %x
+%p = alloca ptr
+store ptr %x, ptr %p   ; addr(x) is just %x — the alloca itself
+```
+
+```llvm
+; var pt: Point
+; var px: ptr[int] = addr(pt.x)
+%pt = alloca %struct.Point
+...
+%fieldptr = getelementptr inbounds %struct.Point, ptr %pt, i32 0, i32 0
+%px = alloca ptr
+store ptr %fieldptr, ptr %px
+```
+
+## `p[i]`: Pointer Indexing
+
+`p[i]` computes the address at offset `i` from the pointer and loads from it. `p[i] = v` stores to it.
+
+### Parsing
+
+`ParseIndexExpr` is called from `ParseIdentifierExpr` whenever `[` follows a pointer-typed variable or field:
+
+```cpp
+static unique_ptr<ExprAST> ParseIndexExpr(string BaseName,
+                                          vector<string> FieldPath,
+                                          ValueType BaseType,
+                                          const string &BaseStructName) {
+  // reject if base is not a pointer
+  getNextToken(); // eat '['
+  auto Index = ParseExpression();
+  // reject if index is not an integer type
+  getNextToken(); // eat ']'
+  // decode pointee type from BaseStructName
+  return make_unique<IndexExprAST>(BaseName, FieldPath, Index, ElemType, ElemStruct);
+}
+```
+
+The element type (what the pointer points to) is decoded from the encoded string in `BaseStructName`.
+
+### `BuildIndexElementPtr`: the shared address computation
+
+Both reads and writes need the element address. `BuildIndexElementPtr` computes it without loading:
+
+```cpp
+static Value *BuildIndexElementPtr(IndexExprAST *IdxExpr) {
+  // load the pointer value from the base variable or field
+  Value *BasePtr = LoadPointerValue(IdxExpr->getBaseName(),
+                                    IdxExpr->getFieldPath(), ...);
+  // widen index to i64 if needed
+  Value *IdxVal = ...;
+  // GEP: &base[i]
+  return Builder->CreateInBoundsGEP(
+      LLVMTypeFor(IdxExpr->getType(), IdxExpr->getStructName()),
+      BasePtr, IdxVal, "elemptr");
+}
+```
+
+The index is always widened to `i64` before the GEP — LLVM requires a consistent index type.
+
+### Read codegen
+
+```cpp
+Value *IndexExprAST::codegen() {
+  Value *ElemPtr = BuildIndexElementPtr(this);
+  return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()),
+                             ElemPtr, "elemload");
+}
+```
+
+For `p[0]` where `p: ptr[int]`:
+
+```llvm
+%ptrload = load ptr, ptr %p        ; load the pointer value
+%elemptr = getelementptr inbounds i64, ptr %ptrload, i64 0
+%elemload = load i64, ptr %elemptr
+```
+
+For `p[1]`:
 
 ```llvm
 %ptrload = load ptr, ptr %p
-%ptrarith = getelementptr i64, ptr %ptrload, i64 1
+%elemptr = getelementptr inbounds i64, ptr %ptrload, i64 1
+%elemload = load i64, ptr %elemptr
 ```
 
-## Codegen: `ptr - int`
+### Write codegen
 
-Subtracting an integer is the same as adding its negation. The index is widened to `i64` and then negated with `CreateNeg` before being passed to GEP:
+```cpp
+Value *IndexAssignmentExprAST::codegen() {
+  Value *ElemPtr = BuildIndexElementPtr(LHS.get());
+  Value *Val = RHS->codegen();
+  Val = EmitImplicitCast(Val, RHS->getType(), getType());
+  Builder->CreateStore(Val, ElemPtr);
+  return Val;
+}
+```
+
+For `p[0] = 99` where `p: ptr[int]`:
 
 ```llvm
 %ptrload = load ptr, ptr %p
-%negidx = neg i64 2
-%ptrarith = getelementptr i64, ptr %ptrload, i64 %negidx
+%elemptr = getelementptr inbounds i64, ptr %ptrload, i64 0
+store i64 99, ptr %elemptr
 ```
 
-For `p - 2`, GEP steps backward by two elements.
+The implicit cast rules from chapter 16 apply — assigning an integer to a `ptr[float64]` is a type error; assigning `int8` to `ptr[int]` widens.
 
-## Codegen: `ptr - ptr`
+## `p[i].field`: Field Access After Indexing
 
-Pointer subtraction uses LLVM's `CreatePtrDiff`, which handles the ptrtoint / subtract / divide sequence internally:
+For pointers to structs, you can chain field access after the index: `p[0].x`. This requires a separate AST node because the base is an index expression, not a named variable.
+
+### `IndexedFieldExprAST`
 
 ```cpp
-if (Op == '-' && getType() == ValueType::Int64 &&
-    LType == ValueType::Pointer && RType == ValueType::Pointer) {
-  // ...
-  return Builder->CreatePtrDiff(ElemLLVM, L, R, "ptrdiff");
+class IndexedFieldExprAST : public ExprAST {
+  unique_ptr<IndexExprAST> BaseIndex;  // the p[i] part
+  vector<string> FieldPath;            // the field chain
+  ...
+};
+```
+
+`ParseIndexedFieldAccessExpr` is called when `ParseIdentifierExpr` sees a `.` after parsing an index expression. It walks the field chain exactly like `ParseFieldAccessExpr` from chapter 17:
+
+```cpp
+static unique_ptr<ExprAST>
+ParseIndexedFieldAccessExpr(unique_ptr<IndexExprAST> BaseIndex) {
+  // walk '.field' chain, validating each step against StructTypes
+  return make_unique<IndexedFieldExprAST>(BaseIndex, Path, CurType, CurStruct);
 }
 ```
 
-`CreatePtrDiff` takes the element type so it can divide the byte difference by `sizeof(T)` to produce an element count. For two `ptr[int]` values that are 24 bytes apart, the result is 3.
+### Codegen
+
+```cpp
+Value *IndexedFieldExprAST::codegen() {
+  // get the element address without loading (BuildIndexElementPtr)
+  Value *Ptr = BuildIndexElementPtr(BaseIndex.get());
+  // walk field GEPs from that address
+  for (const auto &FieldName : FieldPath) {
+    Ptr = Builder->CreateStructGEP(BaseLLVM, Ptr, Idx, "fieldptr");
+    // advance type
+  }
+  return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), Ptr, "fieldload");
+}
+```
+
+`BuildIndexElementPtr` computes the element address without loading the struct value — so the struct GEPs can chain directly from the element pointer.
+
+For `p[0].x` where `p: ptr[Point]`:
 
 ```llvm
-; q - p where p and q are both ptr[int]
-%ptrdiff = ...  ; ptrtoint both, subtract, sdiv by sizeof(i64) = 8
+%ptrload = load ptr, ptr %p
+%elemptr  = getelementptr inbounds %struct.Point, ptr %ptrload, i64 0
+%fieldptr = getelementptr inbounds %struct.Point, ptr %elemptr, i32 0, i32 0
+%fieldload = load i64, ptr %fieldptr
 ```
 
-The element type is decoded from the left operand's struct name encoding using `DecodePointerType`.
+For `p[0].x = v` (write):
 
-## Codegen: Pointer Comparisons
+```llvm
+%ptrload = load ptr, ptr %p
+%elemptr  = getelementptr inbounds %struct.Point, ptr %ptrload, i64 0
+%fieldptr = getelementptr inbounds %struct.Point, ptr %elemptr, i32 0, i32 0
+store i64 %v, ptr %fieldptr
+```
 
-Pointer comparisons use unsigned integer comparison instructions. Addresses are non-negative, so unsigned comparison gives the correct ordering:
+Two GEPs: one to reach element 0 of the array, one to reach field `x` of that element. No load between them — the pointer chains through.
 
-```cpp
-if (LType == ValueType::Pointer && RType == ValueType::Pointer &&
-    LHS->getStructName() == RHS->getStructName()) {
-  switch (Op) {
-  case tok_eq:  return Builder->CreateICmpEQ(L, R, "cmptmp");
-  case tok_neq: return Builder->CreateICmpNE(L, R, "cmptmp");
-  case '<':     return Builder->CreateICmpULT(L, R, "cmptmp");
-  case '>':     return Builder->CreateICmpUGT(L, R, "cmptmp");
-  case tok_leq: return Builder->CreateICmpULE(L, R, "cmptmp");
-  case tok_geq: return Builder->CreateICmpUGE(L, R, "cmptmp");
-  }
+## Mutation Through a Pointer Parameter
+
+This is the payoff. A function that takes `ptr[T]` can modify the caller's data:
+
+```pyxc
+def set_value(p: ptr[int], v: int) -> None:
+  p[0] = v
+
+def main() -> int:
+  var x: int = 5
+  set_value(addr(x), 100)
+  # x is now 100
+  return 0
+```
+
+```llvm
+define void @set_value(ptr %p, i64 %v) {
+entry:
+  %p.addr = alloca ptr
+  store ptr %p, ptr %p.addr
+  %ptrload = load ptr, ptr %p.addr
+  %elemptr = getelementptr inbounds i64, ptr %ptrload, i64 0
+  store i64 %v, ptr %elemptr
+  ret void
 }
 ```
 
-Using `ICmpULT` (unsigned less-than) rather than `ICmpSLT` (signed) is correct here. On 64-bit platforms, pointer values are 64-bit integers and addresses in the upper half of the address space would appear negative under signed comparison. Unsigned comparison treats all addresses as non-negative and orders them correctly.
+The pointer is passed by value (it's just an address), but the store through it writes to `x`'s alloca in the caller's stack frame. The caller sees the updated value.
+
+Pointer arguments are type-checked: passing `ptr[float64]` where `ptr[int]` is expected is a type error.
+
+## Parse Flow in `ParseIdentifierExpr`
+
+The full sequence of what `ParseIdentifierExpr` handles, in order:
+
+1. Parse the base identifier.
+2. If `.` follows → parse field chain (`FieldExprAST`).
+3. If `[` follows → parse index expression (`IndexExprAST`).
+4. If `.` follows after step 3 → parse field chain on the index result (`IndexedFieldExprAST`).
+
+This covers: `x`, `p.field`, `p[i]`, `p.field[i]`, `p[i].field`, `p[i].field.subfield`.
+
+The statement parser has the same sequence to handle the left side of assignments.
 
 ## Build and Run
 
@@ -227,124 +417,108 @@ cmake -S . -B build && cmake --build build
 
 ## Try It
 
-### Advance a pointer and read the next element
+### Take an address, read through it
 
 ```pyxc
 extern def printd(x: float64)
 
 def main() -> int:
-  var a: int = 10
-  var b: int = 20
-  var p: ptr[int] = addr(a)
-  printd(float64(p[0]))    # 10.000000
-  p = p + 1
-  printd(float64(p[0]))    # 20.000000 (b is next on the stack — layout-dependent)
+  var x: int = 42
+  var p: ptr[int] = addr(x)
+  printd(float64(p[0]))
   return 0
 ```
 
 ```bash
-10.000000
-20.000000
+42.000000
 ```
 
-### Walk backward with `p - 1`
+### Write through a pointer, see it in the caller
 
 ```pyxc
 extern def printd(x: float64)
 
-struct Pair:
-  first: int
-  second: int
-
 def main() -> int:
-  var pair: Pair
-  pair.first = 100
-  pair.second = 200
-  var p: ptr[int] = addr(pair.second)
-  printd(float64(p[0]))    # 200.000000
-  p = p - 1
-  printd(float64(p[0]))    # 100.000000
+  var x: int = 5
+  var p: ptr[int] = addr(x)
+  p[0] = 99
+  printd(float64(x))
   return 0
 ```
 
 ```bash
-200.000000
-100.000000
+99.000000
 ```
 
-### Compute pointer difference between two fields
+### Pass a struct by pointer
 
 ```pyxc
 extern def printd(x: float64)
 
-struct Triple:
-  a: int
-  b: int
-  c: int
+struct Point:
+  x: int
+  y: int
+
+def set_x(p: ptr[Point], v: int) -> None:
+  p[0].x = v
 
 def main() -> int:
-  var t: Triple
-  var pa: ptr[int] = addr(t.a)
-  var pc: ptr[int] = addr(t.c)
-  printd(float64(pc - pa))  # 2.000000 (two int-sized steps from a to c)
+  var pt: Point
+  pt.x = 3
+  set_x(addr(pt), 7)
+  printd(float64(pt.x))
   return 0
 ```
 
 ```bash
-2.000000
+7.000000
 ```
 
-### The K&R loop with `!= end`
+### Address of a struct field
 
 ```pyxc
 extern def printd(x: float64)
 
-struct Triple:
-  a: int
-  b: int
-  c: int
+struct Point:
+  x: int
+  y: int
 
 def main() -> int:
-  var t: Triple
-  t.a = 10
-  t.b = 20
-  t.c = 30
-  var p: ptr[int] = addr(t.a)
-  var end: ptr[int] = p + 3
-  var total: int = 0
-  while p != end:
-    total = total + p[0]
-    p = p + 1
-  printd(float64(total))  # 60.000000
+  var p: Point
+  p.x = 11
+  var px: ptr[int] = addr(p.x)
+  printd(float64(px[0]))
   return 0
 ```
 
 ```bash
-60.000000
+11.000000
 ```
 
 ### Inspect the IR
 
 ```bash
 pyxc --emit llvm-ir -o out.ll program.pyxc
-grep 'getelementptr\|ptrdiff\|icmp' out.ll
+grep 'getelementptr\|load\|store' out.ll
 ```
 
 ## Known Limitations
 
-**No bounds checking.** Out-of-bounds pointer arithmetic is silent undefined behavior. There is no runtime check and no compile-time warning.
+**No pointer arithmetic.** `p + 1` is not supported — use `p[1]` to access adjacent elements.
 
-**`ptr * int` is intentionally rejected.** Multiplying a pointer by an integer has no defined memory meaning. The type checker blocks it.
+**No nested pointers.** `ptr[ptr[int]]` is rejected at parse time.
 
-**Mismatched pointer types are a type error.** `ptr[int] + ptr[float64]` and `ptr[int] - ptr[float64]` are both rejected. Only pointers with identical encoded struct names can interact.
+**No pointer comparisons.** `p == nullptr` is not supported.
 
-**`p - q` yields element count, not bytes.** If you need the byte distance, multiply by the element size manually. There is no `sizeof` operator yet — that comes in chapter 20.
+**No pointer-to-pointer casting.** You cannot reinterpret a `ptr[int]` as a `ptr[float64]`.
 
-**No pointer-to-integer casts.** You cannot convert a pointer to an integer to inspect its numeric address.
+**Null pointer is silent.** `var p: ptr[int]` with no initializer is a null pointer. Dereferencing it crashes at runtime with no helpful error. Bounds checking and null safety are not implemented.
+
+**Pointee type is encoded in a string.** The `StructName` field on `ExprAST` nodes doubles as pointer type metadata, stored as `"<ValueType int>:<struct name>"` (e.g. `"1:"` for `ptr[int]`, `"10:Point"` for `ptr[Point]`). It works but is not the cleanest representation — a dedicated field would be cleaner. This is a consequence of the single-AST-hierarchy design established in chapter 12.
 
 ## What's Next
 
-[Chapter 20](chapter-20.md) adds `malloc`, `free`, and `sizeof` — heap allocation built directly on the pointer arithmetic from this chapter. With `p + n`, `p - q`, and a way to allocate arbitrary memory, dynamic data structures become possible.
+[Chapter 20](chapter-20.md) adds fixed-size arrays: `T[N]`, stack allocation, indexing, and array-to-pointer decay. With arrays and pointers in place, you have the building blocks for the string and C interop chapter that follows.
 
 ## Need Help?
 

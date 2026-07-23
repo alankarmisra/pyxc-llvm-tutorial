@@ -1,34 +1,31 @@
 ---
-description: "Add switch statements with integer case matching, an optional default, break support, and no implicit fallthrough."
+description: "Add bitwise operators &, |, ^, <<, >> and unary ~ with C-standard precedence and integer-only type checking."
 ---
-# 35. pyxc: Switch
+# 35. pyxc: Bitwise Operators
 
 ## Where We Are
 
-[Chapter 34](chapter-34.md) added bitwise operators. Multi-way branching on an integer value is currently done with chains of `if`/`else if`. After this chapter, `switch` is available:
+I think I'm pretty much done with the loop story in [Chapter 34](chapter-34.md). The last major gap before K&R-style systems programming is bitwise manipulation. If I can add that, I can use flags, masks, and bit-shifting in my code and crack more of the K&R style problems. Here's what I'm aiming to get working:
 
 ```pyxc
 extern def printd(x: float64)
 
-def day_type(d: int) -> int:
-  var result: int = 0
-  switch d:
-    case 0, 6:
-      result = 2   # Sunday or Saturday
-    default:
-      result = 1   # weekday
-  return result
-
 def main() -> int:
-  printd(float64(day_type(0) + day_type(3) + day_type(6)))
+  var flags: int = 0
+  flags = flags | 1        # set bit 0
+  flags = flags | 4        # set bit 2
+  flags = flags & ~2       # clear bit 1 (already clear, but pattern works)
+
+  var shifted: int = 1 << 3   # 8
+  var masked: int = shifted & 0xFF
+
+  printd(float64(flags + masked))
   return 0
 ```
 
 ```
-5.000000
+13.000000
 ```
-
-`switch` dispatches to the matching `case` and stops there. There is no fallthrough — but a single `case` can list more than one value, so `0` and `6` sharing a body doesn't need two separate `case` lines.
 
 ## Source Code
 
@@ -37,324 +34,239 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-35
 ```
 
-## New Tokens and Keywords
+## New Tokens for `<<` and `>>`
 
-Three new token values:
+I handled single-character operators like `&`, `|`, `^`, and `~` in the catch-all ASCII path — returning their character values. Since '<<' and '>>' are multi-character tokens, I'm gonna need to send them back as enums. 
 
 ```cpp
-tok_switch  = -60,
-tok_case    = -61,
-tok_default = -62,
+tok_shl = -58, // <<
+tok_shr = -59, // >>
 ```
 
-Added to the keyword table:
+## Lexer Peek-Ahead for Shifts
+
+I know that the existing `<` and `>` paths in the lexer previously looked ahead for `=` only. I can just expand them to also look for a second `<` or `>`:
 
 ```cpp
-{"switch", tok_switch}, {"case", tok_case}, {"default", tok_default},
-```
+if (LexerLastChar == '<') {
+  int Next = peek();
+  int Tok = '<';
+  if (Next == '=')
+    Tok = (advance(), tok_leq);   // '<=' — comparison
+  else if (Next == '<')
+    Tok = (advance(), tok_shl);   // '<<' — left shift
+  LexerLastChar = advance();
+  return Tok;
+}
 
-## `SwitchExprAST`
-
-The AST node stores the condition, a vector of (value list, body) pairs, and an optional default body. Each case can list more than one value — `case 'a', 'e', 'i', 'o', 'u':` — so all of them share the same body:
-
-```cpp
-class SwitchExprAST : public ExprAST {
-  unique_ptr<ExprAST> Cond;
-  vector<pair<vector<int64_t>, unique_ptr<ExprAST>>> Cases;
-  unique_ptr<ExprAST> DefaultCase;
-public:
-  SwitchExprAST(unique_ptr<ExprAST> Cond,
-                vector<pair<vector<int64_t>, unique_ptr<ExprAST>>> Cases,
-                unique_ptr<ExprAST> DefaultCase)
-      : Cond(std::move(Cond)), Cases(std::move(Cases)),
-        DefaultCase(std::move(DefaultCase)) {
-    setType(ValueType::None);
-  }
-  bool shouldPrintValue() const override { return false; }
-  Value *codegen() override;
-};
-```
-
-Case values are `int64_t` — signed integer literals parsed at compile time.
-
-## Parse-Time Switch Depth
-
-Like loop depth for `break`/`continue`, a counter and RAII guard track whether the parser is inside a switch:
-
-```cpp
-static int ParseSwitchDepth = 0;
-
-struct ParseSwitchGuard {
-  ParseSwitchGuard()  { ++ParseSwitchDepth; }
-  ~ParseSwitchGuard() { --ParseSwitchDepth; }
-};
-```
-
-`ParseBreakStmt` is updated to accept `break` inside a switch as well as a loop:
-
-```cpp
-static unique_ptr<ExprAST> ParseBreakStmt() {
-  if (ParseLoopDepth <= 0 && ParseSwitchDepth <= 0)
-    return LogError("'break' used outside of a loop or switch");
-  getNextToken(); // eat 'break'
-  return make_unique<BreakExprAST>();
+if (LexerLastChar == '>') {
+  int Next = peek();
+  int Tok = '>';
+  if (Next == '=')
+    Tok = (advance(), tok_geq);   // '>=' — comparison
+  else if (Next == '>')
+    Tok = (advance(), tok_shr);   // '>>' — right shift
+  LexerLastChar = advance();
+  return Tok;
 }
 ```
 
-## `ParseSwitchCaseValue` — Parsing Case Literals
+That was easy. 
 
-Case values are signed integer literals. An optional leading `-` is handled explicitly before the number:
+## Precedence — A Full Restructuring
+
+I wasn't really sure about the precedence of these operators cause before this, all comparisons has equal precedence. I looked up what C does and just copied it's precedence and re-assigned values accordingly. 
 
 ```cpp
-static bool ParseSwitchCaseValue(int64_t &Out) {
-  bool Neg = false;
-  if (CurTok == '-') {
-    Neg = true;
-    getNextToken();
-  }
-  if (CurTok != tok_number || NumIsFloat)
-    return LogError("Switch case value must be an integer literal"), false;
-  uint64_t Raw = 0;
-  if (!ParseUnsignedDecimal(NumLiteralStr, Raw))
-    return LogError("Invalid switch case value"), false;
-  getNextToken(); // eat number
-  if (Neg) {
-    if (Raw > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1ULL)
-      return LogError("Switch case value out of range"), false;
-    Out = static_cast<int64_t>(0) - static_cast<int64_t>(Raw);
-  } else {
-    if (Raw > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return LogError("Switch case value out of range"), false;
-    Out = static_cast<int64_t>(Raw);
-  }
-  return true;
+{tok_or,  5},  // ||
+{tok_and, 7},  // &&
+{'|',    10},  // |
+{'^',    11},  // ^
+{'&',    12},  // &
+{tok_eq, 13},  // ==
+{tok_neq,13},  // !=
+{tok_leq,14},  // <=
+{tok_geq,14},  // >=
+{'<',    14},  // <
+{'>',    14},  // >
+{tok_shl,15},  // <<
+{tok_shr,15},  // >>
+// arithmetic remains at 20–40
+```
+
+I spent some time toying with it, and realized that I had put `&` below `==` and `!=`. So `a & b == 0` will parse as `a & (b == 0)`, not `(a & b) == 0`. If I want the latter, I'm going to have to add parentheses. I think C does it this way too so I'll allow it. 
+
+## Type-Checking Predicates and `GetBinaryResultType`
+
+Two predicates identify the new operator families:
+
+```cpp
+static bool IsBitwiseOp(int Op) { return Op == '&' || Op == '|' || Op == '^'; }
+static bool IsShiftOp(int Op)   { return Op == tok_shl || Op == tok_shr; }
+```
+
+`GetBinaryResultType` gains two new branches. For bitwise ops, both operands must be integers; `IsAssignable` picks the wider of the two as the result type:
+
+```cpp
+if (IsBitwiseOp(Op)) {
+  if (!IsIntType(L) || !IsIntType(R))
+    return ValueType::Error;
+  if (IsAssignable(L, R))
+    return L;
+  if (IsAssignable(R, L))
+    return R;
+  return ValueType::Error;
 }
 ```
 
-Overflow is checked explicitly for both positive and negative cases. `case -9223372036854775808:` (the minimum `int64_t`) is handled correctly by the `Raw > max + 1` path.
-
-## `ParseSwitchStmt`
-
-The parser eats `switch`, verifies the condition is an integer type, then reads an indented block of `case` and `default` clauses. A `case` reads one value, then keeps reading more as long as a `,` follows — that's what lets `case 'a', 'e', 'i', 'o', 'u':` share one body across five values:
+For shifts, the result type is always the left operand's type, regardless of the shift count's type:
 
 ```cpp
-static unique_ptr<ExprAST> ParseSwitchStmt() {
-  getNextToken(); // eat 'switch'
-  auto Cond = ParseExpression();
-  if (!Cond)
+if (IsShiftOp(Op)) {
+  if (!IsIntType(L) || !IsIntType(R))
+    return ValueType::Error;
+  return L;
+}
+```
+
+In `ParseBinOpRHS`, the built-in type-check dispatch is extended:
+
+```cpp
+if (IsComparisonOp(BinOp) || IsArithmeticOp(BinOp) || IsLogicalOp(BinOp) ||
+    IsBitwiseOp(BinOp) || IsShiftOp(BinOp)) {
+  ResultType = GetBinaryResultType(BinOp, LHS->getType(), ...);
+  if (ResultType == ValueType::Error)
+    return LogError("Type mismatch in binary operator");
+  LHS = make_unique<BinaryExprAST>(...);
+  continue;
+}
+```
+
+Type errors are caught at parse time. Codegen never runs on a bad operand pair.
+
+## Parsing Unary `~`
+
+`~` is parsed in `ParseUnary` alongside `-` and `!`. The operand must be an integer type; the result type is the same as the operand:
+
+```cpp
+if (CurTok == '~') {
+  getNextToken(); // eat '~'
+  auto Operand = ParseUnary();
+  if (!Operand)
     return nullptr;
-  if (!IsIntType(Cond->getType()))
-    return LogError("Switch condition must be an integer type");
-  if (CurTok != ':')
-    return LogError("Expected ':' after switch expression");
-  getNextToken(); // eat ':'
-  if (CurTok == tok_eol)
-    consumeNewlines();
-  if (CurTok != tok_indent)
-    return LogError("Expected an indented switch body");
-  getNextToken(); // eat INDENT
-
-  ParseSwitchGuard SwitchGuard;
-  vector<pair<vector<int64_t>, unique_ptr<ExprAST>>> Cases;
-  std::set<int64_t> SeenCaseValues;
-  unique_ptr<ExprAST> DefaultCase;
-
-  while (CurTok != tok_dedent && CurTok != tok_eof) {
-    if (CurTok == tok_case) {
-      getNextToken(); // eat 'case'
-      vector<int64_t> CaseVals;
-      while (true) {
-        int64_t CaseVal = 0;
-        if (!ParseSwitchCaseValue(CaseVal))
-          return nullptr;
-        if (!SeenCaseValues.insert(CaseVal).second)
-          return LogError("Duplicate switch case value");
-        CaseVals.push_back(CaseVal);
-        if (CurTok != ',')
-          break;
-        getNextToken(); // eat ',' and parse the next case value
-      }
-      if (CurTok != ':')
-        return LogError("Expected ':' after case value");
-      getNextToken(); // eat ':'
-      auto Body = ParseSuite();
-      if (!Body)
-        return nullptr;
-      Cases.emplace_back(std::move(CaseVals), std::move(Body));
-    } else if (CurTok == tok_default) {
-      if (DefaultCase)
-        return LogError("Duplicate default case");
-      getNextToken(); // eat 'default'
-      if (CurTok != ':')
-        return LogError("Expected ':' after default");
-      getNextToken(); // eat ':'
-      DefaultCase = ParseSuite();
-      if (!DefaultCase)
-        return nullptr;
-    } else {
-      return LogError("Expected 'case' or 'default' in switch body");
-    }
-    if (CurTok == tok_block_end)
-      getNextToken();
-    if (CurTok == tok_eol)
-      consumeNewlines();
-  }
-  if (CurTok != tok_dedent)
-    return LogError("Expected dedent after switch body");
-  PendingTokens.push_front(tok_block_end);
-  getNextToken(); // eat DEDENT
-  return make_unique<SwitchExprAST>(std::move(Cond), std::move(Cases),
-                                    std::move(DefaultCase));
+  if (!IsIntType(Operand->getType()))
+    return LogError("Unary '~' requires an integer operand");
+  return make_unique<UnaryExprAST>('~', std::move(Operand),
+                                   Operand->getType());
 }
 ```
 
-Duplicate case values are rejected at parse time using a `std::set<int64_t>` — checked as each value is read, so a repeat within one comma-separated list (`case 1, 2, 1:`) is caught exactly the same way as a repeat across two separate `case` lines. Multiple `default` clauses are also rejected at parse time. The `ParseSwitchGuard` is installed around the body loop so `break` inside any case is legal.
+`~~x` (double complement) and `~(x + 1)` both parse naturally because the operand is a full `unaryexpr`.
 
-## `BreakTargetStack` — Refactoring Break Targets
+## Codegen: Binary Bitwise Operators
 
-Chapter 33's `LoopControlStack` carried both `BreakTarget` and `ContinueTarget` together. Switches need to push a break target without disturbing `continue` targets (which still refer to the enclosing loop). So this chapter introduces a separate stack for break:
-
-```cpp
-static std::vector<BasicBlock *> BreakTargetStack;
-```
-
-Both the `for` and `while` loop codegens are updated to push and pop `BreakTargetStack` in addition to `LoopControlStack`:
+`BinaryExprAST::codegen` gains cases for `&`, `|`, and `^`. Both operands are coerced to the result type via `EmitImplicitCast` — this handles widening selected by `GetBinaryResultType` (e.g., `int32 & int64` widens `int32` to `int64` before the instruction):
 
 ```cpp
-// for loop:
-BreakTargetStack.push_back(AfterBB);
-if (!Body->codegen()) {
-  BreakTargetStack.pop_back();
-  return nullptr;
-}
-BreakTargetStack.pop_back();
-
-// while loop:
-BreakTargetStack.push_back(AfterBB);
-// ...
-BreakTargetStack.pop_back();
-```
-
-`BreakExprAST::codegen` is updated to use `BreakTargetStack` instead of `LoopControlStack.back().BreakTarget`:
-
-```cpp
-Value *BreakExprAST::codegen() {
-  if (BreakTargetStack.empty())
-    return LogErrorV("'break' used outside of a loop or switch");
-  Builder->CreateBr(BreakTargetStack.back());
+case '&':
+case '|':
+case '^': {
+  ValueType Ty = getType();
+  L = EmitImplicitCast(L, LType, Ty);
+  R = EmitImplicitCast(R, RType, Ty);
+  if (!L || !R)
+    return LogErrorV("Type mismatch in binary operator");
+  if (Op == '&')
+    return Builder->CreateAnd(L, R, "bwand");
+  if (Op == '|')
+    return Builder->CreateOr(L, R, "bwor");
+  return Builder->CreateXor(L, R, "bwxor");
 }
 ```
 
-`continue` is unaffected — it still reads from `LoopControlStack.back().ContinueTarget`, which the switch never touches.
+Each maps directly to a single LLVM instruction: `and`, `or`, or `xor`. These are integer instructions — LLVM has no floating-point equivalents.
 
-## `SwitchExprAST::codegen`
-
-Codegen uses LLVM's `switch` instruction, which maps directly to a machine-level multi-way branch. Each case gets its own basic block — and since LLVM's `switch` instruction natively supports many values pointing at the same destination block, giving a case several values is just a loop over `C.first` calling `addCase` once per value, all targeting the one `CaseBB` created for that case:
+Shifts follow the same structure:
 
 ```cpp
-Value *SwitchExprAST::codegen() {
-  Value *CondVal = Cond->codegen();
-  // ...type checks...
-  Function *F = Builder->GetInsertBlock()->getParent();
-  BasicBlock *AfterBB  = BasicBlock::Create(*TheContext, "switch.after", F);
-  BasicBlock *DefaultBB =
-      DefaultCase ? BasicBlock::Create(*TheContext, "switch.default", F)
-                  : AfterBB;
-  auto *SwitchI = Builder->CreateSwitch(CondVal, DefaultBB, Cases.size());
-
-  vector<BasicBlock *> CaseBBs;
-  CaseBBs.reserve(Cases.size());
-  for (const auto &C : Cases) {
-    BasicBlock *CaseBB = BasicBlock::Create(*TheContext, "switch.case", F);
-    CaseBBs.push_back(CaseBB);
-    for (int64_t Val : C.first) {
-      auto *CaseConst = ConstantInt::get(cast<IntegerType>(CondLLVMType),
-                                         static_cast<uint64_t>(Val),
-                                         /*isSigned=*/true);
-      SwitchI->addCase(CaseConst, CaseBB);
-    }
-  }
-
-  BreakTargetStack.push_back(AfterBB);
-  for (size_t I = 0; I < Cases.size(); ++I) {
-    Builder->SetInsertPoint(CaseBBs[I]);
-    if (!Cases[I].second->codegen()) {
-      BreakTargetStack.pop_back();
-      return nullptr;
-    }
-    if (!Builder->GetInsertBlock()->getTerminator())
-      Builder->CreateBr(AfterBB);    // implicit no-fallthrough
-  }
-
-  if (DefaultCase) {
-    Builder->SetInsertPoint(DefaultBB);
-    if (!DefaultCase->codegen()) {
-      BreakTargetStack.pop_back();
-      return nullptr;
-    }
-    if (!Builder->GetInsertBlock()->getTerminator())
-      Builder->CreateBr(AfterBB);
-  }
-  BreakTargetStack.pop_back();
-
-  Builder->SetInsertPoint(AfterBB);
-  return ConstantFP::get(*TheContext, APFloat(0.0));
+case tok_shl:
+case tok_shr: {
+  ValueType Ty = getType();
+  L = EmitImplicitCast(L, LType, Ty);
+  R = EmitImplicitCast(R, RType, Ty);
+  if (!L || !R)
+    return LogErrorV("Type mismatch in binary operator");
+  if (Op == tok_shl)
+    return Builder->CreateShl(L, R, "shltmp");
+  return Builder->CreateAShr(L, R, "shrtmp");
 }
 ```
 
-`Builder->CreateSwitch(CondVal, DefaultBB, Cases.size())` emits the IR `switch` instruction with the default destination and a hint for how many cases to expect. `SwitchI->addCase(CaseConst, CaseBB)` registers each case. If no case body ends with a terminator, the implicit `br switch.after` provides the no-fallthrough semantics.
+`CreateShl` emits `shl` — shift left, filling low bits with zeros. `CreateAShr` emits `ashr` — arithmetic shift right, which fills high bits with the sign bit of the left operand. For a negative `int64`, `x >> 1` stays negative. LLVM also has `CreateLShr` for logical (zero-filling) right shift, but pyxc doesn't expose it — `ashr` is correct for signed integers.
+
+## Codegen: Unary `~`
+
+`UnaryExprAST::codegen` handles `~` after existing cases for `-` and `!`:
+
+```cpp
+if (Opcode == '~') {
+  if (!IsIntType(getType()))
+    return LogErrorV("Unary '~' not supported for this type");
+  return Builder->CreateNot(Op, "bnottmp");
+}
+```
+
+`CreateNot` lowers to `xor %val, -1` — XOR-ing every bit with 1 flips it. The name `bnottmp` (bitwise not) distinguishes it from `nottmp` (logical not on `i1`) in the IR.
+
+For a concrete example:
+```pyxc
+var x: int = 9     # binary: ...0001001
+var y: int = ~x    # binary: ...1110110 → -10 in two's complement
+var z: int = y & 7 # mask the low 3 bits → 6
+```
+
+`~9` is `-10` because in two's complement, flipping all bits and adding 1 negates: `~x = -(x + 1)`.
 
 ## Grammar
 
 ```ebnf
-switchstmt   = "switch" expression ":" eols indent switchbody dedent ;  -- new
-switchbody   = switchcase { eols switchcase } [ eols defaultcase ] ;     -- new
-switchcase   = "case" switchint { "," switchint } ":" suite ;            -- new
-defaultcase  = "default" ":" suite ;                                     -- new
-switchint    = [ "-" ] integer ;                                          -- new
-compoundstmt = ifstmt | forstmt | whilestmt | dowhilestmt | switchstmt ; -- changed
+unaryop         = "-" | "!" | "~" | "++" | "--" | userdefunaryop ;  -- changed
+builtinbinaryop = "+" | "-" | "*" | "/" | "%"
+                | "<" | "<=" | ">" | ">=" | "==" | "!="
+                | "&&" | "||"
+                | "&" | "|" | "^" | "<<" | ">>" ;                  -- changed
 ```
 
 ## Error Cases
 
-**Non-integer switch condition:**
+**Bitwise op on float:**
 ```pyxc
 var x: float64 = 1.0
-switch x:           # Error: Switch condition must be an integer type
-  case 1:
-    return 1
+var y: float64 = 2.0
+var z: float64 = x & y  # Error: Type mismatch in binary operator
 ```
 
-**Duplicate case value:**
+**`~` on non-integer:**
 ```pyxc
-switch x:
-  case 1:
-    return 1
-  case 1:           # Error: Duplicate switch case value
-    return 2
+var x: float64 = 1.0
+var y: float64 = ~x  # Error: Unary '~' requires an integer operand
 ```
 
-Both are caught at parse time.
+Both are caught at parse time and never reach codegen.
 
 ## Things Worth Knowing
 
-**Case values are compile-time integer literals only.** You cannot use a variable or expression as a case value. This restriction allows LLVM to emit an efficient branch table or binary search.
+**`&` and `|` are not `&&` and `||`.** The single-character forms are bitwise and operate on integers. The double-character forms are logical, operate on `bool`, and short-circuit.
 
-**A case can list more than one value.** `case 0, 6:` matches either `0` or `6` and runs the one shared body — no need to repeat the body under two separate `case` lines, and no C-style fallthrough involved in getting there.
+**Compound assignment works with all bitwise operators.** `x &= mask`, `flags |= bit`, `x ^= pattern`, `x <<= 2`, and `x >>= 1` are all valid — the compound assignment path already handles any binary operator by token value.
 
-**Negative case values are supported.** `case -1:` is valid. `switchint` accepts a leading `-`.
+**Right shift is arithmetic (sign-extending).** For a negative `int`, `x >> 1` fills the high bit with the sign bit. Chapter 39 adds unsigned integer types, which use logical shift right (`lshr`).
 
-**LLVM emits a real `switch` instruction.** The IR contains `switch i64`, not a chain of comparisons. The backend lowers it to a jump table, binary search, or comparison chain depending on case density and count.
-
-**`default` is optional.** If no case matches and there is no `default`, execution continues after the switch with no action.
-
-**`continue` inside a switch refers to the enclosing loop.** The `LoopControlStack` is not touched by the switch. `break` inside a switch exits only the switch, not any enclosing loop.
-
-**No fallthrough — by design.** Each case implicitly branches to `switch.after`. The C idiom of stacking empty cases to share a body does not work; extract the shared logic into a function instead.
+**The C precedence gotcha.** `a & b == 0` means `a & (b == 0)` in both C and pyxc. Write `(a & b) == 0` when you want that.
 
 ## What's Next
 
-Phase 5 — K&R compatibility — is now complete. pyxc has `while`, `do/while`, `break`, `continue`, `switch`, the full set of arithmetic and bitwise operators, `++`/`--`, compound assignment, logical operators, and the C memory model from Chapters 17–22. The next phase brings modules, imports, and the standard library.
+[Chapter 36](chapter-36.md) adds `switch` statements.
 
 ## Need Help?
 

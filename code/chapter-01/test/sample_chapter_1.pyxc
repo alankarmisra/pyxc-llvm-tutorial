@@ -1,5 +1,5 @@
 # RUN: %pyxc < %s | grep -Fxq "'def'"
-# RUN: %pyxc < %s | grep -Fxq "identifier: print"
+# RUN: %pyxc < %s | grep -Fxq "name: print"
 # RUN: %pyxc < %s | grep -Fxq "number: 1"
 # RUN: %pyxc < %s | grep -Fxq "number: 2"
 

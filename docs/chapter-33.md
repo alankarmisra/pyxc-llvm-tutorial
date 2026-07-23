@@ -1,34 +1,31 @@
 ---
-description: "Complete pyxc's loop story: while, do/while, break, and continue, with correct targets for nested loops and for loops."
+description: "Add &&, ||, and ! — logical operators with short-circuit evaluation and a dedicated bool result type."
 ---
-# 33. pyxc: Loop Completeness
+# 33. pyxc: Logical Operators
 
 ## Where We Are
 
-[Chapter 32](chapter-32.md) added logical operators. pyxc has had `for` loops since [Chapter 8](chapter-08.md), but that is the only loop form. After this chapter, `while` and `do/while` join the language, and `break` and `continue` work correctly across nested loops:
+[Chapter 32](chapter-32.md) completed arithmetic — division, remainder, compound assignment, and `++`/`--`. Conditions in `if` and `while` can now involve complex expressions, but there is still no way to combine two boolean checks or negate one. After this chapter:
 
 ```pyxc
 extern def printd(x: float64)
 
-def collatz(n: int) -> int:
-  var x: int = n
-  var steps: int = 0
-  while x != 1:
-    if x % 2 == 0:
-      x /= 2
-    else:
-      x = x * 3 + 1
-    steps++
-  return steps
+def is_between(x: int, lo: int, hi: int) -> bool:
+  return x >= lo && x <= hi
 
 def main() -> int:
-  printd(float64(collatz(27)))
+  var a: bool = True
+  var b: bool = !a
+  if b || is_between(5, 1, 10):
+    printd(1.0)
   return 0
 ```
 
 ```
-111.000000
+1.000000
 ```
+
+`&&` and `||` short-circuit: the right-hand side is not evaluated if the result is already determined by the left.
 
 ## Source Code
 
@@ -37,310 +34,216 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-33
 ```
 
-## New Tokens and Keywords
+## New Tokens and Lexer Peek-Ahead
 
-Four new tokens:
+Two new token values:
 
 ```cpp
-tok_while    = -52,
-tok_do       = -53,
-tok_break    = -54,
-tok_continue = -55,
+tok_and = -50, // &&
+tok_or  = -51, // ||
 ```
 
-They are added to the keyword table alongside existing keywords:
+Single `&` and `|` remain as their ASCII character values — they are distinct tokens (bitwise operators, added in a later chapter). The lexer peeks one character ahead to decide which to emit:
 
 ```cpp
-{"while", tok_while}, {"do", tok_do},
-{"break", tok_break}, {"continue", tok_continue},
-```
-
-## New AST Nodes
-
-Three nodes handle the new constructs.
-
-**`WhileExprAST`** covers both `while` and `do/while`. An `IsDoWhile` flag tells codegen which block to branch to first:
-
-```cpp
-class WhileExprAST : public ExprAST {
-  unique_ptr<ExprAST> Cond;
-  unique_ptr<ExprAST> Body;
-  bool IsDoWhile;
-public:
-  WhileExprAST(unique_ptr<ExprAST> Cond, unique_ptr<ExprAST> Body,
-               bool IsDoWhile)
-      : Cond(std::move(Cond)), Body(std::move(Body)), IsDoWhile(IsDoWhile) {
-    setType(ValueType::None);
-  }
-  bool shouldPrintValue() const override { return false; }
-  Value *codegen() override;
-};
-```
-
-**`BreakExprAST`** and **`ContinueExprAST`** carry no data — they emit an unconditional branch at codegen time:
-
-```cpp
-class BreakExprAST : public ExprAST {
-public:
-  BreakExprAST() { setType(ValueType::None); }
-  bool shouldPrintValue() const override { return false; }
-  Value *codegen() override;
-};
-
-class ContinueExprAST : public ExprAST {
-public:
-  ContinueExprAST() { setType(ValueType::None); }
-  bool shouldPrintValue() const override { return false; }
-  Value *codegen() override;
-};
-```
-
-## Parse-Time Depth Tracking
-
-A counter gates `break` and `continue` outside any loop. An RAII guard increments and decrements it automatically:
-
-```cpp
-static int ParseLoopDepth = 0;
-
-struct ParseLoopGuard {
-  ParseLoopGuard()  { ++ParseLoopDepth; }
-  ~ParseLoopGuard() { --ParseLoopDepth; }
-};
-```
-
-`ParseBreakStmt` and `ParseContinueStmt` check the counter before accepting the keyword:
-
-```cpp
-static unique_ptr<ExprAST> ParseBreakStmt() {
-  if (ParseLoopDepth <= 0)
-    return LogError("'break' used outside of a loop");
-  getNextToken(); // eat 'break'
-  return make_unique<BreakExprAST>();
+if (LexerLastChar == '&') {
+  int Tok = (peek() == '&') ? (advance(), tok_and) : '&';
+  LexerLastChar = advance();
+  return Tok;
 }
 
-static unique_ptr<ExprAST> ParseContinueStmt() {
-  if (ParseLoopDepth <= 0)
-    return LogError("'continue' used outside of a loop");
-  getNextToken(); // eat 'continue'
-  return make_unique<ContinueExprAST>();
+if (LexerLastChar == '|') {
+  int Tok = (peek() == '|') ? (advance(), tok_or) : '|';
+  LexerLastChar = advance();
+  return Tok;
 }
 ```
 
-## `ParseWhileStmt` and `ParseDoWhileStmt`
+If the next character is another `&` or `|`, `advance()` consumes it and the two-character token is returned. Otherwise the single-character token falls through unchanged.
 
-`ParseWhileStmt` reads the condition first:
+## Precedence
+
+`||` and `&&` get their own entries in the precedence table, sitting below all arithmetic and comparison operators:
 
 ```cpp
-static unique_ptr<ExprAST> ParseWhileStmt() {
-  getNextToken(); // eat 'while'
-  auto Cond = ParseExpression();
-  if (!Cond)
-    return nullptr;
-  if (Cond->getType() != ValueType::Bool)
-    return LogError("While loop condition must be bool");
-  if (CurTok != ':')
-    return LogError("Expected ':' after while condition");
-  getNextToken(); // eat ':'
-  ParseLoopGuard LoopGuard;
-  auto Body = ParseSuite();
-  if (!Body)
-    return nullptr;
-  return make_unique<WhileExprAST>(std::move(Cond), std::move(Body),
-                                   /*IsDoWhile=*/false);
+{tok_or,  5},  // ||
+{tok_and, 7},  // &&
+```
+
+The full ordering from lowest to highest: `||` (5) → `&&` (7) → comparisons (10) → arithmetic (20–40). `&&` binds more tightly than `||`, so `a || b && c` parses as `a || (b && c)`.
+
+## Type Checking — `IsLogicalOp` and `GetBinaryResultType`
+
+A new predicate identifies the logical operators:
+
+```cpp
+static bool IsLogicalOp(int Op) { return Op == tok_and || Op == tok_or; }
+```
+
+`GetBinaryResultType` gains a branch for them. Both operands must be `bool`; anything else is a type error:
+
+```cpp
+if (IsLogicalOp(Op)) {
+  if (L == ValueType::Bool && R == ValueType::Bool)
+    return ValueType::Bool;
+  return ValueType::Error;
 }
 ```
 
-`ParseDoWhileStmt` reads the body first, then the condition after `while`:
+The result type is always `bool`. In `ParseBinOpRHS`, the check for built-in operators is extended:
 
 ```cpp
-static unique_ptr<ExprAST> ParseDoWhileStmt() {
-  getNextToken(); // eat 'do'
-  if (CurTok != ':')
-    return LogError("Expected ':' after 'do'");
-  getNextToken(); // eat ':'
-  ParseLoopGuard LoopGuard;
-  auto Body = ParseSuite();
-  if (!Body)
-    return nullptr;
-  if (CurTok == tok_block_end)
-    getNextToken();
-  if (CurTok == tok_eol)
-    consumeNewlines();
-  if (CurTok != tok_while)
-    return LogError("Expected 'while' after do-body");
-  getNextToken(); // eat 'while'
-  auto Cond = ParseExpression();
-  if (!Cond)
-    return nullptr;
-  if (Cond->getType() != ValueType::Bool)
-    return LogError("Do-while condition must be bool");
-  return make_unique<WhileExprAST>(std::move(Cond), std::move(Body),
-                                   /*IsDoWhile=*/true);
-}
-```
-
-Both parsers install a `ParseLoopGuard` around the body so `break`/`continue` inside are accepted. The guard is destroyed automatically when the function returns, decrementing `ParseLoopDepth`.
-
-Both `ParseWhileStmt` and `ParseDoWhileStmt` are wired into the compound statement dispatcher alongside `tok_if`, `tok_for`.
-
-## `LoopControlStack` — Codegen Targets
-
-A single stack tracks break and continue targets for all loop types. Each entry holds two blocks:
-
-```cpp
-struct LoopControlTargets {
-  BasicBlock *BreakTarget    = nullptr;  // where 'break' jumps
-  BasicBlock *ContinueTarget = nullptr;  // where 'continue' jumps
-};
-static std::vector<LoopControlTargets> LoopControlStack;
-```
-
-Every loop codegen pushes on entry and pops on exit. The innermost loop is always on top. `break` branches to `back().BreakTarget`; `continue` branches to `back().ContinueTarget`.
-
-## `WhileExprAST::codegen`
-
-Three basic blocks are created: `while_cond`, `while_body`, `while_after`. The entry branch and condition evaluation differ between `while` and `do/while`:
-
-```cpp
-Value *WhileExprAST::codegen() {
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
-  BasicBlock *CondBB  = BasicBlock::Create(*TheContext, "while_cond", TheFunction);
-  BasicBlock *BodyBB  = BasicBlock::Create(*TheContext, "while_body", TheFunction);
-  BasicBlock *AfterBB = BasicBlock::Create(*TheContext, "while_after", TheFunction);
-
-  if (IsDoWhile) {
-    Builder->CreateBr(BodyBB);   // do/while: enter body unconditionally
-  } else {
-    Builder->CreateBr(CondBB);   // while: check condition first
-  }
-
-  if (!IsDoWhile) {
-    Builder->SetInsertPoint(CondBB);
-    Value *CondVal = Cond->codegen();
-    CondVal = ToBool(CondVal, Cond->getType());
-    Builder->CreateCondBr(CondVal, BodyBB, AfterBB);
-  }
-
-  Builder->SetInsertPoint(BodyBB);
-  LoopControlStack.push_back({AfterBB, CondBB});
-  if (!Body->codegen()) {
-    LoopControlStack.pop_back();
-    return nullptr;
-  }
-  LoopControlStack.pop_back();
-  if (!Builder->GetInsertBlock()->getTerminator())
-    Builder->CreateBr(CondBB);
-
-  Builder->SetInsertPoint(CondBB);
-  if (IsDoWhile || !CondBB->getTerminator()) {
-    Value *CondVal = Cond->codegen();
-    CondVal = ToBool(CondVal, Cond->getType());
-    Builder->CreateCondBr(CondVal, BodyBB, AfterBB);
-  }
-
-  Builder->SetInsertPoint(AfterBB);
-  return ConstantFP::get(*TheContext, APFloat(0.0));
-}
-```
-
-For a regular `while`, the body falls back to `CondBB`; for `do/while`, the body also falls to `CondBB`, but the initial branch skips `CondBB` entirely and lands in `BodyBB`.
-
-## `for` Loop Gets a `StepBB`
-
-The existing `for` loop codegen is updated. Previously, the step expression was evaluated inline at the end of the body block. Now it gets its own dedicated basic block so `continue` can jump to it correctly:
-
-```cpp
-BasicBlock *StepBB = BasicBlock::Create(*TheContext, "loop_step", TheFunction);
-```
-
-The body's implicit branch now goes to `StepBB` instead of the condition block. `StepBB` evaluates the step expression and then branches to the condition. The `LoopControlTargets` pushed for the `for` loop sets `ContinueTarget = StepBB`, matching C semantics: `continue` in a `for` loop runs the step.
-
-```cpp
-LoopControlStack.push_back({AfterBB, StepBB});
-```
-
-## `BreakExprAST::codegen` and `ContinueExprAST::codegen`
-
-Both emit a single unconditional branch and then stop generating code for the current block (the caller sees the terminator and skips further statements):
-
-```cpp
-Value *BreakExprAST::codegen() {
-  if (LoopControlStack.empty())
-    return LogErrorV("'break' used outside of a loop");
-  Builder->CreateBr(LoopControlStack.back().BreakTarget);
-  // caller checks for terminator; no further instructions emitted
-}
-
-Value *ContinueExprAST::codegen() {
-  if (LoopControlStack.empty())
-    return LogErrorV("'continue' used outside of a loop");
-  Builder->CreateBr(LoopControlStack.back().ContinueTarget);
-  return ConstantFP::get(*TheContext, APFloat(0.0));
-}
-```
-
-## Block Parser Fix
-
-The block parser loop condition is tightened. Previously it stopped on `tok_block_end` or `tok_dedent`; now it stops only on `tok_dedent` (or `tok_eof`) and handles `tok_block_end` inline:
-
-```cpp
-while (CurTok != tok_dedent && CurTok != tok_eof) {
-  if (...) {
-    continue;
-  }
-  if (CurTok == tok_block_end) {
-    getNextToken();
-    continue;
-  }
+if (IsComparisonOp(BinOp) || IsArithmeticOp(BinOp) || IsLogicalOp(BinOp)) {
+  ResultType = GetBinaryResultType(BinOp, LHS->getType(), ...);
+  if (ResultType == ValueType::Error)
+    return LogError("Type mismatch in binary operator");
   ...
 }
 ```
 
-This prevents `tok_block_end` from accidentally terminating a block mid-parse in nested constructs.
+## `LogicalNotExprAST` — Built-In `!` for Bool
+
+`!` gets a dedicated AST node separate from user-defined unary operators:
+
+```cpp
+class LogicalNotExprAST : public ExprAST {
+  unique_ptr<ExprAST> Operand;
+public:
+  explicit LogicalNotExprAST(unique_ptr<ExprAST> Operand)
+      : Operand(std::move(Operand)) {
+    setType(ValueType::Bool);
+  }
+  Value *codegen() override;
+};
+```
+
+The constructor immediately sets the result type to `Bool` — no type inference needed.
+
+Parsing `!` in `ParseUnary` checks whether the operand is `bool`. If so, it creates `LogicalNotExprAST`. If not, it falls through to the user-defined `unary!` lookup for backward compatibility:
+
+```cpp
+if (CurTok == '!') {
+  getNextToken(); // eat '!'
+  auto Operand = ParseUnary();
+  if (!Operand)
+    return nullptr;
+  if (Operand->getType() == ValueType::Bool)
+    return make_unique<LogicalNotExprAST>(std::move(Operand));
+  auto Proto = GetFunctionProto("unary!");
+  if (!Proto)
+    return LogError("Unknown unary operator");
+  if (Proto->getNumArgs() != 1)
+    return LogError("Unary operator must have exactly one argument");
+  ValueType ParamType = Proto->getArgType(0);
+  if (!IsAssignable(ParamType, Operand->getType())) {
+    return LogError(
+        ("unary operator expects " + string(TypeName(ParamType))).c_str());
+  }
+  return make_unique<UnaryExprAST>('!', std::move(Operand),
+                                   Proto->getReturnType());
+}
+```
+
+Codegen for `LogicalNotExprAST` emits a single `CreateNot` on the `i1` value:
+
+```cpp
+Value *LogicalNotExprAST::codegen() {
+  Value *V = Operand->codegen();
+  if (!V)
+    return nullptr;
+  if (Operand->getType() != ValueType::Bool)
+    return LogErrorV("Type mismatch in unary operator");
+  return Builder->CreateNot(V, "nottmp");
+}
+```
+
+## Short-Circuit Codegen for `&&` and `||`
+
+`&&` and `||` do not use the standard binary expression path. In `BinaryExprAST::codegen`, they are intercepted before the operand is evaluated on the right:
+
+```cpp
+if (Op == tok_and || Op == tok_or) {
+  Value *L = LHS->codegen();
+  if (!L)
+    return nullptr;
+  if (LHS->getType() != ValueType::Bool || RHS->getType() != ValueType::Bool)
+    return LogErrorV("Type mismatch in binary operator");
+
+  Function *F = Builder->GetInsertBlock()->getParent();
+  BasicBlock *LHSBB  = Builder->GetInsertBlock();
+  BasicBlock *RHSBB  = BasicBlock::Create(*TheContext, "logic.rhs", F);
+  BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "logic.end");
+
+  if (Op == tok_and)
+    Builder->CreateCondBr(L, RHSBB, MergeBB);
+  else
+    Builder->CreateCondBr(L, MergeBB, RHSBB);
+
+  Builder->SetInsertPoint(RHSBB);
+  Value *RHSVal = RHS->codegen();
+  if (!RHSVal)
+    return nullptr;
+  Builder->CreateBr(MergeBB);
+  RHSBB = Builder->GetInsertBlock();
+
+  F->insert(F->end(), MergeBB);
+  Builder->SetInsertPoint(MergeBB);
+  PHINode *PN =
+      Builder->CreatePHI(Type::getInt1Ty(*TheContext), 2, "logictmp");
+  if (Op == tok_and) {
+    PN->addIncoming(ConstantInt::getFalse(*TheContext), LHSBB);
+    PN->addIncoming(RHSVal, RHSBB);
+  } else {
+    PN->addIncoming(ConstantInt::getTrue(*TheContext), LHSBB);
+    PN->addIncoming(RHSVal, RHSBB);
+  }
+  return PN;
+}
+```
+
+For `a && b`:
+- Evaluate `a`.  If false, jump to `logic.end` with a `false` constant.
+- If true, fall into `logic.rhs`, evaluate `b`, jump to `logic.end`.
+- The `phi` node in `logic.end` selects between `false` (the short-circuit path) and the result of `b`.
+
+For `a || b` the condition is inverted: if `a` is true, jump to `logic.end` with `true` immediately. The PHI node produces `true` on that path and the result of `b` on the other.
+
+The LLVM `phi` uses `i1` — the native boolean type — throughout. If `b` is a function call with side effects, it genuinely does not execute when the short-circuit fires.
 
 ## Grammar
 
-```ebnf
-whilestmt    = "while" expression ":" suite ;                    -- new
-dowhilestmt  = "do" ":" suite eols "while" expression ;          -- new
-compoundstmt = ifstmt | forstmt | whilestmt | dowhilestmt ;      -- changed
-simplestmt   = returnstmt | breakstmt | continuestmt
-             | varstmt | assignstmt | expression ;               -- changed
-breakstmt    = "break" ;                                          -- new
-continuestmt = "continue" ;                                       -- new
-```
+`!` is added to `unaryop`. `&&` and `||` join `builtinbinaryop`.
 
-Note the `do/while` form: the body comes first under `do:`, the condition appears after `while` on a separate line with no trailing colon.
+```ebnf
+unaryop         = "-" | "!" | "++" | "--" | userdefunaryop ;  -- changed
+builtinbinaryop = "+" | "-" | "*" | "/" | "%"
+                | "<" | "<=" | ">" | ">=" | "==" | "!="
+                | "&&" | "||" ;                               -- changed
+```
 
 ## Error Cases
 
-**`break` outside a loop:**
+**Non-bool operand:**
 ```pyxc
-def main() -> int:
-  break  # Error: 'break' used outside of a loop
-  return 0
+var x: int = 1
+var y: bool = True
+if x && y:  # Error: Type mismatch in binary operator
+  return 1
 ```
 
-**While condition is not bool:**
-```pyxc
-var n: int = 5
-while n:     # Error: While loop condition must be bool
-  n -= 1
-```
+Both sides must be `bool`. There is no implicit conversion from `int` to `bool`.
 
 ## Things Worth Knowing
 
-**`do/while` uses the same AST node as `while`.** The `IsDoWhile` flag is the only structural difference. Codegen for both lives in `WhileExprAST::codegen`.
+**Short-circuit is real, not just an optimisation.** The right-hand side is structurally placed behind a conditional branch in the IR. A function call on the right of `&&` or `||` will genuinely not execute if the left determines the result.
 
-**`continue` target differs between loop types.** In a `while` loop, `continue` goes to the condition block. In a `for` loop, `continue` goes to `StepBB` — the step expression always runs. The `LoopControlStack` stores the right target per loop.
+**`!` on a non-bool falls through to user-defined `unary!`.** If you have defined a custom `unary!` for some other type, it continues to work. The built-in path only activates for `bool`.
 
-**The loop condition must be `bool`.** There is no implicit `int → bool` coercion. Use an explicit comparison: `while n != 0:` not `while n:`.
-
-**Nesting is automatic.** The stack means the innermost loop's targets are always on top. `break` inside a nested loop exits only the inner loop.
+**`&&` and `||` are not bitwise.** For bitwise AND and OR on integers, see [Chapter 35](chapter-35.md).
 
 ## What's Next
 
-[Chapter 34](chapter-34.md) adds bitwise operators: `&`, `|`, `^`, `<<`, `>>`, and `~`.
+[Chapter 34](chapter-34.md) adds `while`, `do/while`, `break`, and `continue`.
 
 ## Need Help?
 

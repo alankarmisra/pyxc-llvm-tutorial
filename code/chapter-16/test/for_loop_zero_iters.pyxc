@@ -6,11 +6,9 @@
 # The implicit function return is 0.0 when nothing returns explicitly.
 # forexpr = "for" identifier "=" expression "," expression "," expression ":" [ eols ] ( block | statement )
 
-def no_iters(x: float64) -> float64:
-    var y: float64 = 0
-    for var i: float64 = 1, i < 1, 1:
-        y = y + x
-    return y
+def no_iters(x):
+    for var i = 1, i < 1, 1:
+        x
 
-# The loop never executes; the accumulator stays at 0.0.
+# The body 'x' is never evaluated; the function yields 0.0.
 no_iters(42)

@@ -7,5 +7,5 @@
 # Tests: without -g, no DWARF sections are emitted. The object file contains
 # only code and data sections.
 
-def main() -> None:
-    return
+def main():
+    return 0

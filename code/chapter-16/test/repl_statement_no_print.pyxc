@@ -4,7 +4,7 @@
 
 # Tests: top-level statements do not print values in the REPL.
 
-var i: float64 = 10.0
+var i = 10
 
 i = 20
 

@@ -7,10 +7,10 @@
 # metadata attached to the LLVM GlobalVariable. The variable name is
 # preserved as a DIGlobalVariable node.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-var counter: float64 = 0.0
+var counter = 0
 
-def main() -> None:
+def main():
     counter = counter + 1
     printd(counter)

@@ -6,12 +6,12 @@
 
 
 # Tests: for loop body on the next line after ':'.
-# forstmt = "for" identifier "=" expression "," expression "," expression ":" suite ;
+# forexpr = "for" identifier "=" expression "," expression "," expression ":" [ eols ] expression
 
 extern def printd(x)
 
 def run():
-    for var i = 1, i < 3, 1:
-        printd(i)
+  return for var i = 1, i < 3, 1:
+    printd(i)
 
 run()

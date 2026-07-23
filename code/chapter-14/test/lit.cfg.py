@@ -8,7 +8,7 @@ config.test_format = lit.formats.ShTest(True)
 config.suffixes = [".pyxc"]
 config.test_source_root = os.path.dirname(__file__)
 config.test_exec_root = config.test_source_root
-config.excludes = ["Inputs", "mandel.pyxc", "test.pyxc", "demo.pyxc"]
+config.excludes = ["mandel.pyxc", "test.pyxc", "demo.pyxc"]
 
 chapter_dir = os.path.abspath(os.path.join(config.test_source_root, ".."))
 config.substitutions.append(("%pyxc", os.path.join(chapter_dir, "build", "pyxc")))

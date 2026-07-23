@@ -5,5 +5,5 @@
 
 # Tests: -g emits a DWARF line table for source locations.
 
-def main() -> None:
-    return
+def main():
+    return 0

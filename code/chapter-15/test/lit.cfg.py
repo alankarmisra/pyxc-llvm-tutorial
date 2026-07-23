@@ -1,5 +1,4 @@
 import os
-import platform
 import shutil
 
 import lit.formats
@@ -22,16 +21,3 @@ config.substitutions.append(
 # Resolve clang for linking emitted object files.
 clang = "/usr/bin/clang" if os.path.exists("/usr/bin/clang") else (shutil.which("clang") or "clang")
 config.substitutions.append(("%clang", clang))
-
-# Optional tools for debug-info tests.
-dwarfdump = shutil.which("llvm-dwarfdump") or shutil.which("dwarfdump") or ""
-readelf = shutil.which("llvm-readelf") or shutil.which("readelf") or ""
-config.substitutions.append(("%dwarfdump", dwarfdump))
-config.substitutions.append(("%readelf", readelf))
-if dwarfdump:
-  config.available_features.add("llvm-dwarfdump")
-if readelf:
-  config.available_features.add("llvm-readelf")
-
-if platform.system() == "Darwin":
-  config.available_features.add("system-darwin")

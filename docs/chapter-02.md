@@ -1,36 +1,21 @@
 ---
-description: "Build a recursive-descent parser and AST: turn tokens into structure and see 'Parsed a function definition' for the first time."
+description: "Build a recursive-descent parser and syntax-tree nodes: turn tokens into structure and see 'Parsed a function definition' for the first time."
 ---
-# 2. pyxc: The Parser and AST
+# 2. pyxc: The Parser and Syntax Tree
 
 ## Where We Are
 
-In [Chapter 1](chapter-01.md) I built a lexer that turns raw source text into a stream of tokens. Given this:
+I'll continue working with the `add` function example from [Chapter 1](chapter-01.md).
 
 ```pyxc
 # adds two numbers
 def add(x, y):    
     return x + y
+
+print(add(1, 2)) # call the add function and print its value    
 ```
 
-The lexer produces:
-
-```
-keyword:'def'  identifier:'add'  '('  identifier:'x'  ','  identifier:'y'  ')'  ':'  newline
-keyword:'return'  identifier:'x'  '+'  identifier:'y'  newline
-```
-
-That's progress — the whitespace and comments are gone, and I can focus on the essentials. But it's still just a flat list of tokens. I don't know that `add` is a function name, that `x` and `y` are its parameters, or that `x + y` is the return value.
-
-By the end of this chapter, typing that same function into the REPL gives me:
-
-```pyxc
-ready> def add(x, y):
-return x + y
-Parsed a function definition.
-```
-
-That's my compiler saying, "The structure has been understood and validated." That's what I'm building this chapter.
+In the last chapter I managed to strip out all the comments and convert the code into a stream of tokens. I now want to arrange these tokens into some sort of a hierarchical structure so the relationships between different items are clear. Let me do that next.  
 
 ## Source Code
 
@@ -39,309 +24,245 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-02
 ```
 
-## Writing Down the Rules
-
-Before I can write a parser — that bit of the compiler that verifies the syntax of a program — I need to write down the rules of the language. These rules are called the *grammar* of the language just like they are with human languages. What's a valid program? What's a valid function? What's a valid expression? Grammars are meant to give more structure to implementation efforts, but if you've never written a parser, it will just feel like a lot of cognitive load. As a consequence, my recommendation is to skim through the grammar section, have a vague language structure in your head, write the parser to fortify your understanding of the mechanics, and then come back to the grammar section to polish off your theoretical concepts. You might find yourself referencing the grammar more than once as you proceed through the parser implementation. I've put grammar snippets everywhere to reduce scroll fatigue. Once you've had enough experience, it will become second nature to write the grammar first before moving on to the implementation.
-
-Let's start with one rule in plain English. A function definition looks like:
-
-```text
-the word "def", followed by a function name, a parameter list in parentheses,  
-a colon, optional newlines, "return", and finally, an expression.
-```
-
-Yeah, I don't want to write a language spec like that. So let's tighten it up and invent a shorthand.
-
-### A Compact Notation for Grammar Rules
-
-I've invented the following notation for myself. The notation isn't set in stone. Nothing is, except maybe the physical laws. And don't let them fool you into believing that taxes are inevitable either. Now, you could invent your own notation and that's totally fine. But I'll use my notation for the rest of the tutorial, so maybe just familiarize yourself with this one. You can discard it from your human memory once you're done with the tutorial and replace it with something you prefer.
-
-- Quoted text like `"def"` for exact keywords and punctuation
-- Unquoted words like `identifier` or `expression` for "fill in a valid thing of this kind here"
-- `|` to mean "or" — either this or that
-- `[ ... ]` to mean "optionally — zero or one of these"
-- `{ ... }` to mean "zero or more of these, repeated"
-
-With that shorthand, a function definition becomes:
-
-```ebnf
-definition = "def" prototype ":" [ eols ] "return" expression
-```
-
-In plain English: *the keyword `def`, then a prototype, then `:`, then optionally one or more newlines, then `return`, then an expression* — exactly what I wrote above, just more compact. Notice that `prototype` and `expression` are without quotes — they are themselves rules, not literal text. The grammar is written top-down: I expand on `prototype` and `expression` below, and the full grammar appears at the end of this section.
-
-Here's `prototype` which is just the function signature.
-
-```ebnf
-prototype = identifier "(" [ identifier { "," identifier } ] ")"
-```
-
-In plain English: *a function name (an identifier), then `(`, then optionally one or more comma-separated parameter names (also identifiers), then `)`*.
-
-And `expression`:
-
-```ebnf
-expression = primary { binaryop primary }
-```
-
-Where `primary` is the building block — a variable, a number, or a parenthesized expression:
-
-```ebnf
-primary = identifierexpr | numberexpr | parenexpr ;
-```
-
-I totally lied about inventing this notation. It is used ubiquitously and has a formal name: **EBNF**, short for *Extended Backus-Naur Form*. But if I said that in the beginning, you'd think it's complicated. So I went the re-invention route. It's the standard way grammars are written in programming language textbooks with a few customizations based on author preferences. You can do this too. There is nothing magical about any of this. I've always had issues with theoretical foundations being written like they were invented by aliens with massive brains. Sure, the inventions were incredibly forward looking at the time, and all credit to the inventors. But placing things on a pedestal makes them opaque to scrutiny and recognizing that they aren't as complicated as one was made to believe. Meet your Gods. Recognize they are human. Respect them anyway.
-
-### The Full Grammar
-
-Here's the complete grammar for Pyxc at this stage.  
-
-[pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-02/pyxc.ebnf)
-
-```ebnf
-(* parser territory *)
-program        = [ eols ] [ top { eols top } ] [ eols ] ;
-eols           = eol { eol } ;
-top            = definition | toplevelexpr ;
-definition     = "def" prototype ":" [ eols ] "return" expression ;
-toplevelexpr   = expression ;
-prototype      = identifier "(" [ identifier { "," identifier } ] ")" ;
-expression     = primary binoprhs ;
-binoprhs       = { binaryop primary } ;
-primary        = identifierexpr | numberexpr | parenexpr ;
-identifierexpr = identifier
-                 | identifier "(" [ expression { "," expression } ] ")" ;
-numberexpr     = number ;
-parenexpr      = "(" expression ")" ;
-
-(* lexer territory *)
-binaryop       = "+" | "-" | "*" | "<" ;
-identifier     = (letter | "_") { letter | digit | "_" } ;
-number         = digit { digit } [ "." { digit } ]
-                 | "." digit { digit } ;
-letter         = "A".."Z" | "a".."z" ;
-digit          = "0".."9" ;
-eol            = "\r\n" | "\r" | "\n" ;
-(*  
-    `ws` may appear between any two tokens 
-     and is ignored by the lexer.  
-*)
-ws             = " " | "\t" ;
-```
-
-The grammar has two layers. The bottom rules — `identifier`, `number`, `letter`, `digit`, `eol`, `ws` — describe what the *lexer* understands: raw characters and how they combine to form tokens. The top rules — `expression`, `definition`, `prototype`, etc. — describe what the *parser* understands: the syntax of things. What token follows what other token and so on.
-
 ## Representing Structure
 
-Look at the expression `(x + y) * 2`. You and I both know that the correct thing to do is to first add, then multiply. So I put all the items I want to add in one *bucket* or *folder* with an instruction to add the contents. 
+### Function definitions 
 
-```
-├── add (+)
-│   ├── variable "x"
-│   └── variable "y"
-```
+For a function definition like  `def add(x, y): return x + y`, I start with the function name as the parent, and then group `parameters` and `body` underneath. This way I can look up a function by name and get all its components. Mind you, `parameters` and `body` are simple grouping mechanisms (classes and pointers). They aren't additional tokens. This will become clearer once you see the code to implement these structures.
 
-And then I put the result of that into a multiply bucket with the parameters that need to be multiplied with the result.
-
-```
-multiply (*)
-├── add (+)
-│   ├── variable "x"
-│   └── variable "y"
-└── number 2.0
+```text
+(def, "add")
+├── parameters
+│   ├── (name, "x")
+│   └── (name, "y")
+└── body
+    └── return
+        └── +
+            ├── (name, "x")
+            └── (name, "y")
 ```
 
-Historically, such constructions have been represented as:
+I will do this for every function definition in the source file.
 
+### Function calls 
+
+I follow a similar approach for function calls. The `call` is the parent, with the function name and the call arguments as two branches beneath it. Again `call` is not a token here, it's a grouping mechanism.
+
+`add(1, 2)` becomes:
+
+```text
+call
+├── (name, "add")
+└── arguments
+    ├── (number, 1)
+    └── (number, 2)
 ```
-        (*)
-       /   \
-     (+)   2.0
-    /   \
-  "x"   "y"
-```  
 
-Looks like an upside-down tree no? With the root at the (\*), tiny branches, and the parameters/function arguments/constants at the leaves. I'm not being creative. Computational literature uses exactly this analogy. This whole construction is called an **Abstract Syntax Tree** — "abstract" because I've stripped away the syntax details that were only needed for parsing (like the parentheses and the colon). What remains captures the *meaning* without the noise.
+and `print(...)` becomes:
 
-### The Node Classes
+```text
+call
+├── (name, "print")
+└── argument
+    └── ...
+```
 
-I represent each kind of node as an *expression* class:
+Merging both we get the full tree for `print(add(1, 2))`:
+
+```text
+call
+├── (name, "print")
+└── argument
+    └── call
+        ├── (name, "add")
+        └── arguments
+            ├── (number, 1)
+            └── (number, 2)
+```
+
+Compiler writers call this an **Abstract Syntax Tree**, or **AST**. *Abstract* means I leave out punctuation that a hierarchical structure doesn't need, such as the parentheses in `add(1, 2)`. The tree already records which arguments belong to which call. *Syntax tree*, because it represents, well, the syntax: how the pieces fit together, not whether they make sense together. For example, the tree would happily record a call to `add` with three arguments even though `add` only takes two. Catching a mismatch like that is a semantic check, and it needs a separate pass over the tree, one I'll add later once I can look up what `add` actually expects.
+
+## Coding Trees
+
+Now I need to turn these trees into code. Compiler writers call each piece of the tree a **node**, so I'll use that name too.
+
+### The Base Class
+
+Most of my nodes derive from a base `ExpressionNode` class, since they represent things that have or return a value:
 
 ```cpp
-class ExprAST {
+class ExpressionNode {
 public:
-  virtual ~ExprAST() = default;
+  virtual ~ExpressionNode() = default;
 };
 ```
 
-The virtual destructor is all I need in the base class for now. 
+I'll create a virtual destructor for the base. Without it, deleting one of these nodes through a unique_ptr<ExpressionNode> would only run `ExpressionNode`'s destructor, skipping the derived class's. Marking it virtual fixes that. 
 
-A number literal stores its value as a double, because I only support doubles for now:
+### Numbers
+
+Next, I'll deal with data types. pyxc's only data type is a number, represented by a `double`. That's easy to model with a `NumberExpressionNode` that stores a double value:
 
 ```cpp
-class NumberExprAST : public ExprAST {
+class NumberExpressionNode : public ExpressionNode {
   double Val;
 public:
-  NumberExprAST(double Val) : Val(Val) {}
+  NumberExpressionNode(double Val) : Val(Val) {}
 };
 ```
 
-A variable reference stores only its name:
+### Names
+
+The only **name values** I have right now are function parameters.  I use`NameExpressionNode` to store the name of a parameter. I haven't figured out how I'll bind values to a name in function calls just yet. 
 
 ```cpp
-class VariableExprAST : public ExprAST {
+class NameExpressionNode : public ExpressionNode {
   string Name;
 public:
-  VariableExprAST(const string &Name) : Name(Name) {}
+  NameExpressionNode(const string &Name) : Name(Name) {}
 };
 ```
 
-A binary operation stores the operator character and its two operands. The operands are owned by the node — when the node is destroyed, the operands are too:
+### Binary Expressions
+
+A `BinaryExpressionNode` stores the operator token and its two operands. 
 
 ```cpp
-class BinaryExprAST : public ExprAST {
-  char Op;
-  unique_ptr<ExprAST> LHS, RHS;
+class BinaryExpressionNode : public ExpressionNode {
+  int Op;
+  unique_ptr<ExpressionNode> LHS, RHS;
 public:
-  BinaryExprAST(char Op, unique_ptr<ExprAST> LHS, unique_ptr<ExprAST> RHS)
+  BinaryExpressionNode(int Op, unique_ptr<ExpressionNode> LHS, unique_ptr<ExpressionNode> RHS)
       : Op(Op), LHS(std::move(LHS)), RHS(std::move(RHS)) {}
 };
 ```
 
-A function call stores the callee name and a list of argument expressions:
+### Function Calls
+
+A function call stores the callee name and a list of argument expressions. I model each argument as an `ExpressionNode` so I can model `add(x, y)`, `add(1, 2)`, `add(1+2, 3+4)`:
 
 ```cpp
-class CallExprAST : public ExprAST {
+class CallExpressionNode : public ExpressionNode {
   string Callee;
-  vector<unique_ptr<ExprAST>> Args;
+  vector<unique_ptr<ExpressionNode>> Args;
 public:
-  CallExprAST(const string &Callee, vector<unique_ptr<ExprAST>> Args)
+  CallExpressionNode(const string &Callee, vector<unique_ptr<ExpressionNode>> Args)
       : Callee(Callee), Args(std::move(Args)) {}
 };
 ```
 
-Functions are split into two classes. The prototype captures just the signature — name and parameter names. Right now every function I parse has a body, so this split doesn't buy me much yet. But I'm keeping the two concepts separate on purpose: a few chapters from now I'll want a prototype with no body at all — a way to declare that a function exists (a C library function, for instance) without defining it myself. Building the separation in now means I don't have to retrofit it later:
+`add(x, y)`:
+
+```
+CallExpressionNode
+├── Callee = "add"
+└── Args
+    ├── NameExpressionNode  name="x"
+    └── NameExpressionNode  name="y"
+```
+
+`add(1, 2)`:
+
+```
+CallExpressionNode
+├── Callee = "add"
+└── Args
+    ├── NumberExpressionNode  val=1
+    └── NumberExpressionNode  val=2
+```
+
+`add(1+2, 3+4)`:
+
+```
+CallExpressionNode
+├── Callee = "add"
+└── Args
+    ├── BinaryExpressionNode  op='+'
+    │   ├── LHS -> NumberExpressionNode  val=1
+    │   └── RHS -> NumberExpressionNode  val=2
+    └── BinaryExpressionNode  op='+'
+        ├── LHS -> NumberExpressionNode  val=3
+        └── RHS -> NumberExpressionNode  val=4
+```
+
+### Function Signatures
+
+I split functions into two classes. The function signature captures the name and parameter names. Since a function signature is not an expression, I don't derive it from `ExpressionNode`.
 
 ```cpp
-class PrototypeAST {
+class FunctionSignatureNode {
   string Name;
   vector<string> Args;
 public:
-  PrototypeAST(const string &Name, vector<string> Args)
+  FunctionSignatureNode(const string &Name, vector<string> Args)
       : Name(Name), Args(std::move(Args)) {}
   const string &getName() const { return Name; }
 };
 ```
 
-Notice `PrototypeAST` doesn't inherit from `ExprAST` — a function signature is not an expression.
+### Function Definitions
 
-The full function definition pairs a prototype with a body expression:
+The full function definition pairs a function signature with a body expression. Again, since a function definition is not an expression, I don't derive it from `ExpressionNode`.
 
 ```cpp
-class FunctionAST {
-  unique_ptr<PrototypeAST> Proto;
-  unique_ptr<ExprAST> Body;
+class FunctionDefinitionNode {
+  unique_ptr<FunctionSignatureNode> Signature;
+  unique_ptr<ExpressionNode> Body;
 public:
-  FunctionAST(unique_ptr<PrototypeAST> Proto, unique_ptr<ExprAST> Body)
-      : Proto(std::move(Proto)), Body(std::move(Body)) {}
+  FunctionDefinitionNode(unique_ptr<FunctionSignatureNode> Signature,
+                 unique_ptr<ExpressionNode> Body)
+      : Signature(std::move(Signature)), Body(std::move(Body)) {}
 };
 ```
 
-In terms of AST, for a function definition like `def add(x, y): return (x + y) * 2`, the structure is:
+With this structure in place, for a function definition like `def add(x, y): return x + y`, I need to build something like:
 
 ```
-FunctionAST
-├── PrototypeAST  name="add"  args=["x", "y"]
-└── BinaryExprAST  op='*'
-    ├── BinaryExprAST  op='+'
-    │   ├── VariableExprAST  name="x"
-    │   └── VariableExprAST  name="y"
-    └── NumberExprAST  val=2.0
+FunctionDefinitionNode
+├── Signature -> FunctionSignatureNode  name="add"  args=["x", "y"]
+└── Body -> BinaryExpressionNode  op='+'
+    ├── NameExpressionNode  name="x"
+    └── NameExpressionNode  name="y"
 ```
 
 ## The Parser
 
-### The Lookahead Invariant
+### Looking Ahead 
 
-The parser needs to look at the current token to decide what to do. I keep one token of lookahead in a global. There are parsing strategies that use more than one token to determine future action, but I've designed the grammar in a way that one token is sufficient:
+The parser keeps one token of lookahead in a global `CurTok`: every parse function assumes it's already loaded when called, and leaves it pointing at the first unconsumed token when it returns.
 
 ```cpp
 static int CurTok;
 static int getNextToken() { return CurTok = gettok(); }
 ```
 
-A value that doesn't change is called a constant (or immutable, depending on the language).
-A *fact about the program* that doesn't change is called an **invariant**.
-
-Every parse function operates by this invariant: *`CurTok` is already loaded when the function is called, and when the function returns, `CurTok` is pointing at the first token it did not consume.* This is always true in my parser. 
-
-In other words: the function that calls you is responsible for loading `CurTok` before the call. You eat what you need, and leave the next thing for whoever called you.
-
-Once you internalize this rule, all the `getNextToken()` calls in the parser make immediate sense.
-
-### Error Reporting
-
-When parsing fails, I return `nullptr` and print a message. I need three overloads — one per return type — because C++ can't overload on return type:
+When parsing fails, I return `nullptr` and print a message. I use three clearly
+named helpers—one per return type—because C++ can't overload on return type:
 
 ```cpp
-unique_ptr<ExprAST> LogError(const char *Str) {
+unique_ptr<ExpressionNode> LogErrorExpression(const char *Str) {
   fprintf(stderr, "Error: %s (token: %d)\nready> ", Str, CurTok);
   return nullptr;
 }
-unique_ptr<PrototypeAST> LogErrorP(const char *Str) { LogError(Str); return nullptr; }
-unique_ptr<FunctionAST>  LogErrorF(const char *Str) { LogError(Str); return nullptr; }
+unique_ptr<FunctionSignatureNode> LogErrorSignature(const char *Str) { LogErrorExpression(Str); return nullptr; }
+unique_ptr<FunctionDefinitionNode>  LogErrorFunction(const char *Str) { LogErrorExpression(Str); return nullptr; }
 ```
 
-You haven't seen the main loop yet, but if a parse error occurs at the end of a line, the main loop won't print a new prompt — so I print it in LogError. This is one of those 'Trust me bro' moments. But I will explain it later, I promise.
-
-[Chapter 3](chapter-03.md) replaces the raw token number with a readable token name and source location.
-
-### Operator Precedence
-
-Since binary expressions can be ambiguous (does `x+y*z` mean `(x+y)*z` or `x+(y*z)` ?) I have to tell the compiler that `*` should *bind* more tightly than `+`. *Bind more tightly* is a fancy way of saying *compute before others*. I only use *binding* because compiler literature uses it. I use numbers to decide the binding order, and the number is called **precedence**. If you know C++, you know about operator precedence tables, so accuse me of *obvious-splaining* or *o-splaining* if you will, another term I just invented. It's easy to invent things. 
-
-I store precedences in a map. Higher precedence means tighter binding:
-
-```cpp
-static map<char, int> BinopPrecedence;
-```
-
-Populated in `main()`:
-
-```cpp
-BinopPrecedence['<'] = 10;
-BinopPrecedence['+'] = 20;
-BinopPrecedence['-'] = 20;
-BinopPrecedence['*'] = 40;  // highest
-```
-
-A helper returns the precedence of whatever is in `CurTok`, or `-1` if it's not a known binary operator:
-
-```cpp
-static int GetTokPrecedence() {
-    if (!isascii(CurTok))
-        return -1;
-
-    auto It = BinopPrecedence.find(CurTok);
-    if (It == BinopPrecedence.end() || It->second <= 0)
-        return -1;
-    return It->second;
-}
-```
-
-The `isascii` guard rejects my named `Token` enums (which are negative integers) so they can never be mistaken for operators.
+[Chapter 4](chapter-04.md) replaces the raw token number with a readable token name and source location.
 
 ## Parsing Expressions
 
 ### Numbers
 
+Above each parsing function I write the grammar rule it implements, as a short comment directly above it. I'll build up the notation one symbol at a time. Here's the simplest form: `number-expression` is just a `number`, nothing more. The word `number` is unquoted, which means it's a placeholder: fill in a valid thing of that kind here, not the literal text `number`.
+
 When the lexer returns `tok_number`, it has already set the global `NumVal`. I copy its current value into a node and advance:
 
 ```cpp
-/// numberexpr
+/// number-expression
 ///   = number ;
-static unique_ptr<ExprAST> ParseNumberExpr() {
-  auto Result = make_unique<NumberExprAST>(NumVal);
+static unique_ptr<ExpressionNode> ParseNumberExpression() {
+  auto Result = make_unique<NumberExpressionNode>(NumVal);
   getNextToken(); // consume the number
   return std::move(Result);
 }
@@ -349,62 +270,64 @@ static unique_ptr<ExprAST> ParseNumberExpr() {
 
 ### Parentheses
 
-Parse whatever is inside, verify the closing `)`, and return the inner expression directly. I don't create a parentheses node — the tree structure already captures the grouping:
+`parenthesized-expression` introduces one more symbol: quoted text, like `"("` and `")"`, means an exact character or keyword the parser expects to see there, not a placeholder.
+
+Parse whatever is inside, verify the closing `)`, and return the inner expression directly. I don't create a parentheses node, the tree structure already captures the grouping:
 
 ```cpp
-/// parenexpr
+/// parenthesized-expression
 ///   = "(" expression ")" ;
-static unique_ptr<ExprAST> ParseParenExpr() {
+static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
   getNextToken(); // eat '('
   auto V = ParseExpression();
   if (!V)
     return nullptr;
 
-  if (CurTok != ')')
-    return LogError("expected ')'");
+  if (CurTok != tok_rparen)
+    return LogErrorExpression("expected ')'");
   getNextToken(); // eat ')'
   return V;
 }
 ```
 
-### Identifiers and Calls
+### Names and Calls
 
-After reading an identifier, I peek at the next token. No `(` means it's a plain variable. A `(` means it's a function call.
+After reading a name, I peek at the next token. No `(` means it's a plain variable. A `(` means it's a function call.
 
 ```pyxc
 x     # variable
 foo() # function call
 ```
 
-Here's the parsing code.
+That's two forms for one rule, so the grammar needs a few more symbols: `|` means "or" (either this form or that one), `[ ... ]` means "optional, zero or one of these," and `{ ... }` means "zero or more of these, repeated." Here's the parsing code.
 
 ```cpp
-/// identifierexpr
-///   = identifier
-///   | identifier "("[expression{"," expression}]")" ;
-static unique_ptr<ExprAST> ParseIdentifierExpr() {
-  string IdName = IdentifierStr;
+/// name-expression
+///   = name
+///   | name "("[expression{"," expression}]")" ;
+static unique_ptr<ExpressionNode> ParseNameExpression() {
+  string Name = NameStr;
 
-  getNextToken(); // eat identifier.
+  getNextToken(); // eat name.
 
-  if (CurTok != '(') // Simple variable ref.
-    return make_unique<VariableExprAST>(IdName);
+  if (CurTok != tok_lparen) // Simple variable ref.
+    return make_unique<NameExpressionNode>(Name);
 
   // Call.
   getNextToken(); // eat (
-  vector<unique_ptr<ExprAST>> Args;
-  if (CurTok != ')') {
+  vector<unique_ptr<ExpressionNode>> Args;
+  if (CurTok != tok_rparen) {
     while (true) {
       if (auto Arg = ParseExpression())
         Args.push_back(std::move(Arg));
       else
         return nullptr;
 
-      if (CurTok == ')')
+      if (CurTok == tok_rparen)
         break;
 
-      if (CurTok != ',')
-        return LogError("Expected ')' or ',' in argument list");
+      if (CurTok != tok_comma)
+        return LogErrorExpression("Expected ')' or ',' in argument list");
       getNextToken();
     }
   }
@@ -412,7 +335,7 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
   // Eat the ')'.
   getNextToken();
 
-  return make_unique<CallExprAST>(IdName, std::move(Args));
+  return make_unique<CallExpressionNode>(Name, std::move(Args));
 }
 ```
 
@@ -422,150 +345,103 @@ I have all my mini-parsers ready for different token types. `ParsePrimary` looks
 
 ```cpp
 /// primary
-///   = identifierexpr
-///   | numberexpr
-///   | parenexpr ;
-static unique_ptr<ExprAST> ParsePrimary() {
+///   = name-expression
+///   | number-expression
+///   | parenthesized-expression ;
+static unique_ptr<ExpressionNode> ParsePrimary() {
   switch (CurTok) {
-  case tok_identifier: return ParseIdentifierExpr();
-  case tok_number:     return ParseNumberExpr();
-  case '(':            return ParseParenExpr();
+  case tok_name: return ParseNameExpression();
+  case tok_number:     return ParseNumberExpression();
+  case tok_lparen:     return ParseParenthesizedExpression();
   default:
-    return LogError("unknown token when expecting an expression");
+    return LogErrorExpression("unknown token when expecting an expression");
   }
 }
 ```
 
-### Binary Expressions: Precedence Climbing
+### Binary Expressions
 
-The most subtle function in the parser is `ParseBinOpRHS`. It handles a sequence of binary operators with correct precedence.
-
-The key idea: when I'm parsing `a + b * c + d`, I need to figure out which operators go together. The `*` between `b` and `c` binds more tightly than the `+` around it, so `b * c` should be grouped first.
-
-I solve this by setting a minimum precedence. `ParseBinOpRHS` is told: only deal with operators at this precedence level or higher. If it sees a higher-precedence operator on the right, it steps aside (recurses) and lets that operator take its operands first.
-
-```cpp
-/// binoprhs
-///   = { binaryop primary } ;
-static unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
-                                         unique_ptr<ExprAST> LHS) {
-  // If this is a binop, find its precedence.
-  while (true) {
-    int TokPrec = GetTokPrecedence();
-
-    // If this is a binop that binds at least as tightly as the current binop,
-    // consume it, otherwise we are done.
-    if (TokPrec < ExprPrec)
-      return LHS;
-
-    // Okay, we know this is a binop.
-    int BinOp = CurTok;
-    getNextToken(); // eat binop
-
-    // Parse the primary expression after the binary operator.
-    auto RHS = ParsePrimary();
-    if (!RHS)
-      return nullptr;
-
-    // If BinOp binds less tightly with RHS than the operator after RHS, let
-    // the pending operator take RHS as its LHS.
-    int NextPrec = GetTokPrecedence();
-    if (TokPrec < NextPrec) {
-      RHS = ParseBinOpRHS(TokPrec + 1, std::move(RHS));
-      if (!RHS)
-        return nullptr;
-    }
-
-    // Merge LHS/RHS.
-    LHS = make_unique<BinaryExprAST>(BinOp, std::move(LHS), std::move(RHS));
-  }
-}
-```
-
-Let's trace `a + b * c + d` step by step:
-
-1. Called with precedence level of 0, `LHS = a`. Current operator is `+` (prec 20).
-2. 20 ≥ 0 — consume `+`. Parse `b` as `RHS`. Next operator is `*` (prec 40).
-3. 40 > 20 — recurse: `ParseBinOpRHS(21, b)`.
-4. Inside recursion: current operator is `*` (prec 40). 40 ≥ 21 — consume `*`. Parse `c`. Next is `+` (prec 20). 20 < 21 — stop. Return `b*c`.
-5. Back in outer call: `RHS = b*c`. Build `a + (b*c)`.
-6. Loop continues. Next operator is `+` (prec 20). 20 ≥ 0 — consume `+`. Parse `d`. Next token is not an operator — return. Build `(a+(b*c)) + d`.
-
-The `TokPrec + 1` makes sure operators group from left to right.
-
-For operators at the same level — like `a - b - c` — I want `(a - b) - c`, not `a - (b - c)`.
-
-The `+1` means the recursive call stops when it sees another operator at the same level, leaving it for the outer loop to handle.
-
-`ParseExpression` kicks everything off with threshold 0 (accept any operator):
+`ParsePrimary` alone stops after one name, number, or parenthesized group, so `x + y` needs one more layer. `ParseExpression` parses a primary, then loops: as long as `CurTok` is `+`, it eats the `+` and parses another primary, folding the result into a `BinaryExpressionNode`.
 
 ```cpp
 /// expression
-///   = primary binoprhs ;
-static unique_ptr<ExprAST> ParseExpression() {
+///   = primary { "+" primary } ;
+static unique_ptr<ExpressionNode> ParseExpression() {
   auto LHS = ParsePrimary();
   if (!LHS)
     return nullptr;
-  return ParseBinOpRHS(0, std::move(LHS));
+
+  while (CurTok == tok_plus) {
+    getNextToken(); // eat '+'
+    auto RHS = ParsePrimary();
+    if (!RHS)
+      return nullptr;
+    LHS = make_unique<BinaryExpressionNode>(tok_plus, std::move(LHS),
+                                     std::move(RHS));
+  }
+
+  return LHS;
 }
 ```
+
+`{ "+" primary }` is the `{ }` repetition symbol again: zero or more `+ primary` pairs, which is exactly what the `while` loop encodes. pyxc only understands `+` for now; more operators and real operator precedence arrive in a later chapter.
 
 ## Parsing Function Definitions
 
-### Prototype
+### Function Signature
 
-A prototype is the function's signature: name and parameter names (no types yet — everything is `double` for now).
+A function signature has a name and parameter names (no types yet — everything is `double` for now).
 
 ```cpp
-/// prototype
-///   = identifier "(" [identifier {"," identifier}] ")" ;
-static unique_ptr<PrototypeAST> ParsePrototype() {
-  if (CurTok != tok_identifier)
-    return LogErrorP("Expected function name in prototype");
+/// function-signature
+///   = name "(" [name {"," name}] ")" ;
+static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
+  if (CurTok != tok_name)
+    return LogErrorSignature("Expected function name in function signature");
 
-  string FnName = IdentifierStr;
+  string FnName = NameStr;
   getNextToken(); // eat function name
 
-  if (CurTok != '(')
-    return LogErrorP("Expected '(' in prototype");
+  if (CurTok != tok_lparen)
+    return LogErrorSignature("Expected '(' in function signature");
 
   vector<string> ArgNames;
-  while (getNextToken() == tok_identifier) {
-    ArgNames.push_back(IdentifierStr);
+  while (getNextToken() == tok_name) {
+    ArgNames.push_back(NameStr);
 
-    if (getNextToken() == ')')  // eat identifier, check what follows
+    if (getNextToken() == tok_rparen)  // eat name, check what follows
       break;
 
-    if (CurTok != ',')
-      return LogErrorP("Expected ')' or ',' in parameter list");
+    if (CurTok != tok_comma)
+      return LogErrorSignature("Expected ')' or ',' in parameter list");
     // loop continues: getNextToken() at the top eats the ','
   }
 
-  if (CurTok != ')')
-    return LogErrorP("Expected ')' in prototype");
+  if (CurTok != tok_rparen)
+    return LogErrorSignature("Expected ')' in function signature");
 
   getNextToken(); // eat ')'
-  return make_unique<PrototypeAST>(FnName, std::move(ArgNames));
+  return make_unique<FunctionSignatureNode>(FnName, std::move(ArgNames));
 }
 ```
 
-Do you see how straightforward this is? I just look at the grammar and sequence out the commands to parse those bits. Could writing this parser be automated? Absolutely, and several such tools exist. In fact, in a few more chapters, you'll know enough to write such a tool yourself, but I'll leave that for the more free-spirited to pursue — I won't discuss such tools any further in this tutorial. Writing parsers by hand is an extremely good exercise for really driving home core concepts, and I'm not going to cheat myself out of that experience. I don't strap my Garmin onto my pets and make them run around the block, do I? Do I?? Don't trust my Strava.
+Do you see how straightforward this is? I just look at the grammar and sequence out the commands to parse those bits. Tools exist to generate parsers automatically, but writing one by hand is too good an exercise to skip, so that's what I'm doing here.
 
-### Definition
+### Function Definition
 
 Let's read function definitions now.
 
 ```cpp
-/// definition
-///   = "def" prototype ":" [ eols ] "return" expression ;
-static unique_ptr<FunctionAST> ParseDefinition() {
+/// function-definition
+///   = "def" function-signature ":" [ end-of-lines ] "return" expression ;
+static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
   getNextToken(); // eat 'def'
-  auto Proto = ParsePrototype();
-  if (!Proto)
+  auto Signature = ParseFunctionSignature();
+  if (!Signature)
     return nullptr;
 
-  if (CurTok != ':')
-    return LogErrorF("Expected ':' in function definition");
+  if (CurTok != tok_colon)
+    return LogErrorFunction("Expected ':' in function definition");
   getNextToken(); // eat ':'
 ```
 
@@ -591,16 +467,16 @@ Next: `return`.
 
 ```cpp
   if (CurTok != tok_return)
-    return LogErrorF("Expected 'return' in function body");
-  getNextToken(); // eat 'return' — not stored in the AST
+    return LogErrorFunction("Expected 'return' in function body");
+  getNextToken(); // eat 'return' — not stored in the tree
 
   if (auto E = ParseExpression())
-    return make_unique<FunctionAST>(std::move(Proto), std::move(E));
+    return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(E));
   return nullptr;
 }
 ```
 
-`getNextToken()` eats the `return` keyword but nothing stores it in the AST. For now every function body is a single expression, so `return` is just syntax that says "this expression is the result." In a later chapter, when functions can have multiple statements and multiple return points, `return` becomes a first-class AST node.
+`getNextToken()` eats the `return` keyword but nothing stores it in the tree. For now every function body is a single expression, so `return` is just syntax that says "this expression is the result." In a later chapter, when functions can have multiple statements and multiple return points, `return` becomes a first-class node.
 
 `consumeNewlines()` is trivial to implement.
 ```cpp
@@ -610,38 +486,38 @@ static void consumeNewlines() {
 }
 ```
 
-### Top-Level Expressions
+## Parsing Top-Level Expressions
 
 So far I have the infrastructure to read function definitions and call them. But what happens to bare expressions like `1 + 2 * 3`? I just wrap them in a function with an internal name and reuse the existing infrastructure to read and run it:
 
 ```cpp
-/// toplevelexpr
+/// top-level-expression
 ///   = expression
-static unique_ptr<FunctionAST> ParseTopLevelExpr() {
+static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
   if (auto E = ParseExpression()) {
-    auto Proto = make_unique<PrototypeAST>("__anon_expr", vector<string>());
-    return make_unique<FunctionAST>(std::move(Proto), std::move(E));
+    auto Signature = make_unique<FunctionSignatureNode>("__anon_expr", vector<string>());
+    return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(E));
   }
   return nullptr;
 }
 ```
 
-The name `__anon_expr` is a placeholder I invented — it could be any valid identifier. In a later chapter when I add JIT execution, I'll look up this function by name and call it to evaluate the expression immediately. Wrapping it in `FunctionAST` now means the rest of the pipeline — code generation, optimization, JIT — doesn't need any special cases for top-level expressions. They can be treated as ordinary functions.
+The name `__anon_expr` is a placeholder I invented — it could be any valid name. In a later chapter when I add JIT execution, I'll look up this function by name and call it to evaluate the expression immediately. Wrapping it in `FunctionDefinitionNode` now means the rest of the pipeline — code generation, optimization, JIT — doesn't need any special cases for top-level expressions. They can be treated as ordinary functions.
 
 ## The Driver
 
 Two handler functions, one for each top-level construct. Each calls the appropriate parser, prints a success message, or skips one bad token to keep the REPL alive:
 
 ```cpp
-static void HandleDefinition() {
-  if (ParseDefinition())
+static void HandleFunctionDefinition() {
+  if (ParseFunctionDefinition())
     fprintf(stderr, "Parsed a function definition.\n");
   else
     getNextToken(); // skip bad token
 }
 
 static void HandleTopLevelExpression() {
-  if (ParseTopLevelExpr())
+  if (ParseTopLevelExpression())
     fprintf(stderr, "Parsed a top-level expression.\n");
   else
     getNextToken(); // skip bad token
@@ -664,49 +540,41 @@ static void MainLoop() {
     }
 
     switch (CurTok) {
-    case tok_def:    HandleDefinition();         break;
+    case tok_def:    HandleFunctionDefinition();  break;
     default:         HandleTopLevelExpression(); break;
     }
   }
 }
 ```
 
-## Don’t trust me no more bro
+## A Bug I Found After Wiring Up MainLoop
 
-Now that you've seen the main loop, you'll see why I printed `ready>` inside LogError. It's because if the error happens at the end of a line, I don't go back to the main loop right away. Here's an example:
+I didn't catch this until I actually ran the REPL against MainLoop. Make an innocent error at the end of a line, and the prompt after the error never showed up. The REPL just sat there, looking frozen:
 
 ```pyxc
 ready> def add   
-Error: Expected '(' in prototype (token: -2)
+Error: Expected '(' in function signature (token: -2)
 ready>   
-```        
+```
 
-When I hit the error at the end of `add`, `HandleDefinition` tries to skip the bad token:
+Here's why. When I hit the error at the end of `add`, `HandleFunctionDefinition` tries to skip the bad token:
 
 ```cpp
 getNextToken();
 ```
 
-That call blocks waiting for input. So nothing else runs.
+That call blocks waiting for input. So nothing else runs:
+- MainLoop doesn't run
+- `ready>` doesn't get printed
 
-Which means:
-- MainLoop doesn’t run
-- `ready>` doesn’t get printed
-
-So if I don't print the prompt inside `LogError`, the program would just sit there silently and appear frozen.
+The fix: print the prompt from inside `LogErrorExpression` itself, right after the error message, so it's already on screen before that blocking `getNextToken()` call ever happens. That's why the `LogErrorExpression` code back in [Error Reporting](#error-reporting) has a `\nready> ` baked into its `fprintf`.
 
 ## The final touches
 
-`main()` sets up operator precedences, prints the first prompt, loads the first token, then hands off to the loop:
+`main()` prints the first prompt, loads the first token, then hands off to the loop:
 
 ```cpp
 int main() {
-  // Register binary operators. Higher number = tighter binding.
-  BinopPrecedence['<'] = 10;
-  BinopPrecedence['+'] = 20;
-  BinopPrecedence['-'] = 20;
-  BinopPrecedence['*'] = 40;
-
   // Print the first prompt and load the first token before entering the loop.
   // Every parse function expects CurTok to already be loaded when it is called.
   fprintf(stderr, "ready> ");
@@ -753,9 +621,57 @@ The parser accepts valid syntax and rejects invalid syntax with an error message
 
 ## Things Worth Knowing
 
-- **`1.2.3` silently lexes as `1.2`.** The lexer reads the `1.2.3` as a number but `strtod` quietly drops `.3` without explicitly saying so. I fix this in [Chapter 3](chapter-03.md).
+- **`1.2.3` silently lexes as `1.2`.** The lexer reads the `1.2.3` as a number but `strtod` quietly drops `.3` without explicitly saying so. I fix this in [Chapter 4](chapter-04.md).
 
-- **Error messages show raw token numbers.** `token: -6` means `tok_return`. [Chapter 3](chapter-03.md) replaces this with readable names and source locations.
+- **Error messages show raw token numbers.** `token: -6` means `tok_return`. [Chapter 4](chapter-04.md) replaces this with readable names and source locations.
+
+### The Full Grammar
+
+Here's the complete grammar for Pyxc at this stage, using the shorthand I built up above:
+
+- Quoted text, like `"def"`, for exact keywords and punctuation
+- Unquoted words, like `name` or `expression`, meaning "fill in a valid thing of this kind here" (a reference to another rule, not literal text)
+- `|` for "or": either this or that
+- `[ ... ]` for "optional": zero or one of these
+- `{ ... }` for "repeated": zero or more of these
+
+[pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-02/pyxc.ebnf)
+
+```ebnf
+(* parser territory *)
+program                    = [ end-of-lines ]
+                             [ top-level-item { end-of-lines top-level-item } ]
+                             [ end-of-lines ] ;
+end-of-lines               = end-of-line { end-of-line } ;
+top-level-item             = function-definition | top-level-expression ;
+function-definition        = "def" function-signature ":"
+                             [ end-of-lines ] "return" expression ;
+top-level-expression       = expression ;
+function-signature         = name "(" [ name { "," name } ] ")" ;
+expression                 = primary { "+" primary } ;
+primary                    = name-expression
+                             | number-expression
+                             | parenthesized-expression ;
+name-expression            = name
+                             | name "(" [ expression { "," expression } ] ")" ;
+number-expression          = number ;
+parenthesized-expression   = "(" expression ")" ;
+
+(* lexer territory *)
+name                       = (letter | "_") { letter | digit | "_" } ;
+number                     = digit { digit } [ "." { digit } ]
+                             | "." digit { digit } ;
+letter                     = "A".."Z" | "a".."z" ;
+digit                      = "0".."9" ;
+end-of-line                = "\r\n" | "\r" | "\n" ;
+(*
+    `whitespace` may appear between any two tokens
+     and is ignored by the lexer.
+*)
+whitespace                 = " " | "\t" ;
+```
+
+The grammar has two layers. The bottom rules — `name`, `number`, `letter`, `digit`, `end-of-line`, `whitespace` — describe what the *lexer* understands: raw characters and how they combine to form tokens. The top rules — `expression`, `function-definition`, `function-signature`, etc. — describe what the *parser* understands: the syntax of things. What token follows what other token and so on.
 
 ### Avoiding a Grammar Pitfall: Left Recursion
 
@@ -763,7 +679,7 @@ There's a rule you can't write for a top-down parser: a rule that starts with it
 
 ```ebnf
 (* DON'T DO THIS *)
-expression = expression binaryop primary | primary
+expression = expression "+" primary | primary
 ```
 
 The parser would try to parse `expression`, which requires parsing `expression`, which requires parsing `expression`... infinite recursion, immediate crash.
@@ -771,14 +687,14 @@ The parser would try to parse `expression`, which requires parsing `expression`,
 The fix is to use iteration instead of recursion:
 
 ```ebnf
-expression = primary { binaryop primary }
+expression = primary { "+" primary }
 ```
 
 "Parse one primary, then loop and grab (operator, primary) pairs until there are no more." Same language, no recursion. Pyxc grammar always does this.
 
 ## What's Next
 
-I now have a parser that understands the structure of pyxc code and builds a tree of objects representing it. But before I hook this up to LLVM and generate real machine code, [Chapter 3](chapter-03.md) revisits the lexer: readable error messages, source locations, and the keyword map. The parser works but [Chapter 3](chapter-03.md) makes it pleasant to use.
+I now have a parser that understands the structure of pyxc code and builds a tree of objects representing it. But before I hook this up to LLVM and generate real machine code, [Chapter 4](chapter-04.md) revisits the lexer: readable error messages, source locations, and the keyword map. The parser works but [Chapter 4](chapter-04.md) makes it pleasant to use.
 
 ## Need Help?
 

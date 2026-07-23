@@ -1,38 +1,40 @@
 ---
-description: "Add type parameters to traits: trait Addable[T] declares a contract over an abstract type, and classes instantiate it with a concrete type at the impl site."
+description: "Add impl blocks: implement a trait for an existing class after the class definition, separating the class layout from its trait conformance."
 ---
-# 30. pyxc: Generic Traits
+# 30. pyxc: impl Blocks
 
 ## Where We Are
 
-[Chapter 29](chapter-29.md) added `impl` blocks. A trait is still limited to concrete types — `trait Adder` specifies `int` parameters explicitly. After this chapter, a trait can name an abstract type parameter and leave the concrete type to be supplied by each implementor:
+[Chapter 29](chapter-29.md) added traits. A class declares the traits it implements in its header, and the compiler verifies conformance when the class body closes. That works well when you write both the trait and the class together, but what if you want to implement a standard trait on a class that was already written?
+
+After this chapter, trait conformance can be declared outside the class body entirely:
 
 ```pyxc
 extern def printd(x: float64)
 
-trait Addable[T]:
-  def add(x: T, y: T) -> T
+trait Adder:
+  def add(x: int, y: int) -> int
 
 class Calc:
   public bias: int
 
-impl Addable[int] for Calc:
+impl Adder for Calc:
   def add(x: int, y: int) -> int:
     return x + y + self.bias
 
 
 def main() -> int:
   var c: Calc = Calc()
-  c.bias = 2
-  printd(float64(c.add(4, 5)))
+  c.bias = 5
+  printd(float64(c.add(3, 4)))
   return 0
 ```
 
 ```
-11.000000
+12.000000
 ```
 
-`Addable[int]` and `Addable[float64]` are separate contracts. A class can implement both with separate `impl` blocks.
+The methods defined in the `impl` block become regular methods on `Calc`, callable with `c.add(...)` just like any other method.
 
 ## Source Code
 
@@ -43,14 +45,16 @@ cd pyxc-llvm-tutorial/code/chapter-30
 
 ## Grammar
 
-`traitdef` gains an optional type parameter. `classdef` and `impldef` use `traitref` wherever they previously used a bare identifier.
+This chapter adds one new production and extends `top`.
 
 ```ebnf
-traitdef  = "trait" identifier [ "[" identifier "]" ] ":" eols traitblock ;  -- changed
-classdef  = "class" identifier [ "(" traitref { "," traitref } ")" ] ":" eols structblock ;  -- changed
-traitref  = identifier [ "[" type "]" ] ;  -- new
-impldef   = "impl" traitref "for" identifier ":" eols implblock ;  -- changed
+top       = typealias | traitdef | structdef | classdef | impldef | definition | ...  -- changed
+impldef   = "impl" identifier "for" identifier ":" eols implblock ;  -- new
+implblock = indent implmethod { eols implmethod } dedent ;           -- new
+implmethod = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ":" ( simplestmt | eols block ) ;  -- new
 ```
+
+`implmethod` has a full body, unlike `traitmethodsig`. Methods in an `impl` block are fully defined here.
 
 ### Full Grammar
 
@@ -61,13 +65,12 @@ program         = [ eols ] [ top { eols top } ] [ eols ] ;
 eols            = eol { eol } ;
 top             = typealias | traitdef | structdef | classdef | impldef | definition | decorateddef | external | toplevelexpr ;
 typealias       = "type" identifier "=" type ;
-traitdef        = "trait" identifier [ "[" identifier "]" ] ":" eols traitblock ;
+traitdef        = "trait" identifier ":" eols traitblock ;
 traitblock      = indent traitmethodsig { eols traitmethodsig } dedent ;
 traitmethodsig  = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ;
 structdef       = "struct" identifier ":" eols structblock ;
-classdef        = "class" identifier [ "(" traitref { "," traitref } ")" ] ":" eols structblock ;
-traitref        = identifier [ "[" type "]" ] ;
-impldef         = "impl" traitref "for" identifier ":" eols implblock ;
+classdef        = "class" identifier [ "(" identifier { "," identifier } ")" ] ":" eols structblock ;
+impldef         = "impl" identifier "for" identifier ":" eols implblock ;
 implblock       = indent implmethod { eols implmethod } dedent ;
 implmethod      = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ":" ( simplestmt | eols block ) ;
 structblock     = indent classmember { eols classmember } dedent ;
@@ -156,150 +159,59 @@ INDENT          = ? synthetic token emitted by lexer ? ;
 DEDENT          = ? synthetic token emitted by lexer ? ;
 ```
 
-## `ValueType::TypeVar` and `ActiveTypeParams`
-
-A new enum value represents an unresolved type parameter inside a trait body:
+## New Token and Keyword
 
 ```cpp
-enum class ValueType {
-  // ...existing values...
-  TypeVar,
-};
+tok_impl = -44,
 ```
 
-The set of currently active type parameter names is tracked in a global:
+Registered in the keyword table:
 
 ```cpp
-static std::set<string> ActiveTypeParams;
+{"impl", tok_impl}
 ```
 
-`ParseTraitDefinition` populates this set before parsing the trait body and clears it after:
+The `for` in `impl TraitName for ClassName` reuses the existing `tok_for` token — the same token produced by the `for` keyword in loop statements. There is no ambiguity because `impl` always precedes it and the parser knows it is reading an impl header, not a loop.
 
-```cpp
-TI.TypeParamName = TypeParamName;
-ActiveTypeParams.clear();
-if (!TypeParamName.empty())
-  ActiveTypeParams.insert(TypeParamName);
-// ... parse body ...
-ActiveTypeParams.clear();  // reset after body closes
-```
+## `VerifyTraitConformance` Extracted as a Shared Function
 
-`ParseTypeToken` checks `ActiveTypeParams` before treating an unknown identifier as an error. If the name is active, it returns `ValueType::TypeVar` and stores the parameter name as the struct name:
-
-```cpp
-if (ActiveTypeParams.count(TyName)) {
-  getNextToken();
-  if (StructName) *StructName = TyName;
-  return ValueType::TypeVar;
-}
-```
-
-This means `T` in `def add(x: T, y: T) -> T` resolves to `(ValueType::TypeVar, "T")` rather than failing as an unknown type. Outside a trait body, `T` has no meaning and would fall through to the normal identifier handling.
-
-## Parsing the Type Parameter in `ParseTraitDefinition`
-
-`ParseTraitDefinition` checks for an optional `[Param]` after the trait name:
-
-```cpp
-string TypeParamName;
-if (CurTok == '[') {
-  getNextToken(); // eat '['
-  if (CurTok != tok_identifier) {
-    LogError("Expected type parameter name in trait definition");
-    return false;
-  }
-  TypeParamName = IdentifierStr;
-  getNextToken(); // eat type parameter name
-  if (CurTok != ']') {
-    LogError("Expected ']' after trait type parameter");
-    return false;
-  }
-  getNextToken(); // eat ']'
-}
-TI.TypeParamName = TypeParamName;
-ActiveTypeParams.clear();
-if (!TypeParamName.empty())
-  ActiveTypeParams.insert(TypeParamName);
-```
-
-`TypeParamName` is stored on `TraitInfo`. An empty `TypeParamName` means the trait is non-generic.
-
-## `ImplTraitRef` — Carrying the Type Argument
-
-In chapter 29, `ImplementedTraits` was a `vector<string>`. This chapter replaces the element type with `ImplTraitRef`, which carries both the trait name and the concrete type argument supplied at the impl or class header:
-
-```cpp
-struct ImplTraitRef {
-  string TraitName;
-  bool HasTypeArg = false;
-  ValueType TypeArg = ValueType::Error;
-  string TypeArgStructName;
-};
-```
-
-Both `ParseAggregateDefinition` (class header) and `ParseImplDefinition` (impl header) parse the optional `[type]` and fill this struct:
-
-```cpp
-StructTypeInfo::ImplTraitRef Ref;
-Ref.TraitName = TraitName;
-if (!TraitDef.TypeParamName.empty()) {
-  // trait requires a type argument
-  if (CurTok != '[') {
-    LogError(("Trait '" + TraitName + "' requires a type argument").c_str());
-    return false;
-  }
-  getNextToken(); // eat '['
-  ValueType TypeArg = ParseTypeToken(&TypeArgStruct);
-  // validate — must be a concrete type (not TypeVar, not Error, not None)
-  getNextToken(); // eat ']'
-  Ref.HasTypeArg = true;
-  Ref.TypeArg = TypeArg;
-  Ref.TypeArgStructName = TypeArgStruct;
-} else if (CurTok == '[') {
-  LogError(("Trait '" + TraitName + "' does not take type arguments").c_str());
-  return false;
-}
-```
-
-The duplicate impl check is updated to compare full `ImplTraitRef` values using a `SameImpl` lambda, so `impl Addable[int] for Calc` and `impl Addable[float64] for Calc` are treated as distinct and both allowed.
-
-## `VerifyTraitConformance` with Type Substitution
-
-`VerifyTraitConformance` now takes an `ImplTraitRef` instead of a bare `string`, and substitutes the concrete type for every `TypeVar` occurrence in the trait signature before comparing:
+In chapter 28, the conformance check was inlined inside `ParseAggregateDefinition`. This chapter extracts it into a standalone function so both `ParseAggregateDefinition` (end of class body) and `ParseImplDefinition` (end of impl body) can call it:
 
 ```cpp
 static bool VerifyTraitConformance(const string &ClassName,
-                                   const StructTypeInfo::ImplTraitRef &ImplRef) {
-  const string &TraitName = ImplRef.TraitName;
+                                   const string &TraitName) {
+  auto CI = StructTypes.find(ClassName);
+  // class must exist and be a class
   const auto &TI = Traits.at(TraitName);
-
-  // Verify type-arg consistency
-  if (!TI.TypeParamName.empty() && !ImplRef.HasTypeArg) {
-    LogError(("Trait '" + TraitName + "' requires a type argument").c_str());
-    return false;
-  }
-
-  // Lambda: resolve TypeVar → concrete type, leave everything else unchanged
-  auto ResolveReq = [&](ValueType T, const string &S)
-      -> std::pair<ValueType, string> {
-    if (T == ValueType::TypeVar && S == TI.TypeParamName)
-      return {ImplRef.TypeArg, ImplRef.TypeArgStructName};
-    return {T, S};
-  };
+  const auto &ClassInfo = CI->second;
 
   for (const auto &Req : TI.Methods) {
-    // check method exists, is public ...
-    auto ReqRet = ResolveReq(Req.ReturnType, Req.ReturnStructName);
-    if (P->getReturnType() != ReqRet.first ||
-        P->getReturnStructName() != ReqRet.second) {
-      LogError("does not match trait signature");
+    // 1. Method must exist
+    auto PI = FunctionProtos.find(ClassName + "." + Req.Name);
+    if (PI == FunctionProtos.end()) {
+      LogError(("Class '" + ClassName + "' does not implement trait '" +
+                TraitName + "' method '" + Req.Name + "'").c_str());
+      return false;
+    }
+    // 2. Method must be public
+    auto MI = ClassInfo.MethodIsPublic.find(Req.Name);
+    if (MI == ClassInfo.MethodIsPublic.end() || !MI->second) {
+      LogError(("Trait method '" + Req.Name + "' on class '" + ClassName +
+                "' must be public").c_str());
+      return false;
+    }
+    // 3. Signature must match (self is at index 0; Req.Args starts at index 1)
+    PrototypeAST *P = PI->second.get();
+    if (P->getNumArgs() != Req.Args.size() + 1 ||
+        P->getReturnType() != Req.ReturnType ||
+        P->getReturnStructName() != Req.ReturnStructName) {
+      LogError(...);
       return false;
     }
     for (size_t I = 0; I < Req.Args.size(); ++I) {
-      auto ReqArg = ResolveReq(Req.Args[I].Type, Req.Args[I].StructName);
-      if (P->getArgType(I + 1) != ReqArg.first ||
-          P->getArgStructName(I + 1) != ReqArg.second) {
-        LogError("does not match trait signature");
+      if (P->getArgType(I + 1) != Req.Args[I].Type ||
+          P->getArgStructName(I + 1) != Req.Args[I].StructName) {
+        LogError(...);
         return false;
       }
     }
@@ -308,45 +220,94 @@ static bool VerifyTraitConformance(const string &ClassName,
 }
 ```
 
-For a non-generic trait, `ResolveReq` always returns its arguments unchanged — conformance works identically to chapter 29.
+`ParseAggregateDefinition` now calls `VerifyTraitConformance(StructName, TraitName)` at the closing DEDENT. The logic is identical to chapter 28 — it has just moved into its own function.
 
-## Error Cases
+## `ParseImplDefinition` — The impl Block Parser
 
-**Missing type argument on a generic trait:**
-```pyxc
-class Bad(Addable):   # Error: Trait 'Addable' requires a type argument
+`ParseImplDefinition` validates the header, parses and compiles the methods, then calls `VerifyTraitConformance`:
+
+```cpp
+static bool ParseImplDefinition() {
+  getNextToken(); // eat 'impl'
+
+  // 1. Validate trait name
+  string TraitName = IdentifierStr;
+  if (!Traits.count(TraitName)) {
+    LogError(("Unknown trait '" + TraitName + "'").c_str());
+    return false;
+  }
+  getNextToken(); // eat trait name
+
+  // 2. Expect 'for' (reuses tok_for)
+  if (CurTok != tok_for) {
+    LogError("Expected 'for' in impl definition");
+    return false;
+  }
+  getNextToken(); // eat 'for'
+
+  // 3. Validate class name — must exist and be a class, not a struct
+  string ClassName = IdentifierStr;
+  auto CI = StructTypes.find(ClassName);
+  if (CI == StructTypes.end()) {
+    LogError(("Unknown class '" + ClassName + "'").c_str());
+    return false;
+  }
+  if (!CI->second.IsClass) {
+    LogError(("'" + ClassName +
+              "' is a struct, not a class; traits can only be implemented "
+              "on classes").c_str());
+    return false;
+  }
+  getNextToken(); // eat class name
+
+  // 4. Reject duplicate impl for the same trait/class pair
+  if (std::find(CI->second.ImplementedTraits.begin(),
+                CI->second.ImplementedTraits.end(), TraitName)
+      != CI->second.ImplementedTraits.end()) {
+    LogError(("Trait '" + TraitName + "' is already implemented for class '"
+              + ClassName + "'").c_str());
+    return false;
+  }
+
+  // ... eat ':', eat EOL, expect INDENT ...
+
+  // 5. Parse and compile each method body
+  while (CurTok != tok_dedent && ...) {
+    auto FnAST = ParseMethodDefinitionInClass(ClassName, /*IsPublic=*/true);
+    if (auto *FnIR = FnAST->codegen()) { /* optionally dump IR */ }
+  }
+
+  // eat DEDENT, inject tok_block_end
+
+  // 6. Record conformance and verify
+  CI->second.ImplementedTraits.push_back(TraitName);
+  if (!VerifyTraitConformance(ClassName, TraitName))
+    return false;
+  return true;
+}
 ```
 
-**Spurious type argument on a non-generic trait:**
-```pyxc
-impl Adder[int] for Calc:  # Error: Trait 'Adder' does not take type arguments
-```
+All methods in an `impl` block are forced public (`IsPublic=true`). Satisfying a trait contract is a public commitment — private trait methods are caught by `VerifyTraitConformance`'s public check.
 
-**Wrong concrete type in the method:**
-```pyxc
-impl Addable[int] for Bad:
-  def add(x: int, y: float64) -> int:  # Error: does not match trait signature
-    return x
-```
+`HandleImplDef` calls `ParseImplDefinition` with the same error-recovery pattern used by `HandleStructDef` and `HandleClassDef`, and both `MainLoop` and `FileModeLoop` dispatch on `tok_impl`.
 
-## What This Is Not
+## Methods Defined in `impl` Are Regular Methods
 
-Type parameters exist only on trait signatures. There are no generic functions, no generic structs, and no generic classes. `T` cannot appear in a field declaration, a variable type, or a function return type outside a trait body. The feature is deliberately narrow: it solves the specific problem of writing a single trait that applies to multiple element types without adding a general generics system.
+There is no runtime distinction between a method defined in the class body and one defined in an `impl` block. Both are stored in `FunctionProtos` under the mangled name `ClassName.MethodName` and emitted as `@ClassName.MethodName` in the IR. A caller cannot tell where the method was defined.
 
 ## Things Worth Knowing
 
-**The type parameter name is just a label.** `trait Addable[T]` and `trait Addable[Element]` are equivalent.
+**The trait must be defined before the `impl`.** `impl Adder for Calc:` requires that `Adder` is already in scope.
 
-**A class can implement the same generic trait with different type arguments.** `class Calc(Addable[int], Addable[float64]):` is valid. Each instantiation is verified separately.
+**The class must be defined before the `impl`.** The class name is looked up in `StructTypes` at parse time.
 
-**`TypeVar` does not appear in the IR.** Conformance resolves all `TypeVar` occurrences to concrete types at compile time. The generated methods use `i64`, `double`, or whatever LLVM type corresponds to the argument.
+**Implementing a trait on a struct is rejected.** The `IsClass` flag is checked — a struct gives: `'S' is a struct, not a class; traits can only be implemented on classes`.
 
-## Build and Run
+**`impl` cannot be used twice for the same trait/class pair.** A second `impl Adder for Calc:` is rejected: "Trait 'Adder' is already implemented for class 'Calc'".
 
-```bash
-cd code/chapter-30
-cmake -S . -B build && cmake --build build
-```
+## What's Next
+
+[Chapter 31](chapter-31.md) adds type parameters to traits — `trait Addable[T]:` — so the same contract can be expressed for different element types.
 
 ## Need Help?
 

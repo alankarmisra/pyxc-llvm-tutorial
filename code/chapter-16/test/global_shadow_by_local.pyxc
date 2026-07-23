@@ -3,15 +3,15 @@
 # CHECK: 1.000000
 # CHECK-NOT: ready>
 
-# Tests: a local var inside a function shadows a global of the same name: float64
+# Tests: a local var inside a function shadows a global of the same name
 # without affecting the global. After f() returns, the global x is still 1.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-var x: float64 = 1.0
+var x = 1
 
-def f() -> float64:
-    var x: float64 = 99.0
+def f():
+    var x = 99
     return x
 
 printd(f())

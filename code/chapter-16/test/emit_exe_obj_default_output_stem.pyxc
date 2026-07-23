@@ -11,7 +11,7 @@
 # Tests: when a single .o file is passed as the sole input with no -o, the
 # output filename is the stem of that .o (fullprog.o → fullprog).
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-def main() -> None:
-    printd(5.0)
+def main():
+    printd(5)

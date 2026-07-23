@@ -2,5 +2,5 @@
 # RUN: grep -q "Error: " %t
 # RUN: grep -q "Expected ')' or ',' in argument list" %t
 
-# identifierexpr: arguments separated by space instead of comma
+# nameexpr: arguments separated by space instead of comma
 foo(1 2)

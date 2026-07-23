@@ -1,0 +1,11 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 0.000000
+
+# Tests: var without an initializer defaults to 0.0.: float64
+# varbinding = identifier [ "=" expression ] ;
+
+def f() -> float64:
+    var x: float64
+    return x
+
+f()

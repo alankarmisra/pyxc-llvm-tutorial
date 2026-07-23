@@ -1,38 +1,36 @@
 ---
-description: "Add sizeof and pointer casts so pyxc can call malloc and free — heap allocation with manual ownership."
+description: "Add pointer arithmetic — ptr + int, ptr - int, ptr - ptr, and pointer comparisons — so you can walk memory with a pointer."
 ---
-# 20. pyxc: Heap Allocation
+# 20. pyxc: Pointer Arithmetic
 
 ## Where We Are
 
-[Chapter 19](chapter-19.md) added fixed-size arrays — declared with a size known at compile time, allocated on the stack. That covers most local data, but sometimes you need memory whose size is only known at runtime, or whose lifetime must outlive the function that allocated it. For that you need the heap.
+[Chapter 19](chapter-19.md) gave us pointers: `addr` to take an address, `p[i]` to index, and pointer parameters so functions can modify the caller's data. What we could not do was walk a pointer forward or backward, or compare two pointers. The K&R summing-loop pattern — compute an end pointer, advance `p` until `p != end` — was out of reach.
 
-After this chapter:
+After this chapter, that pattern works:
 
 ```pyxc
-extern def malloc(n: int64) -> ptr[int8]
-extern def free(p: ptr[int8])
 extern def printd(x: float64)
 
+struct Triple:
+  a: int
+  b: int
+  c: int
+
 def main() -> int:
-  var n: int64 = 5
-  var raw: ptr[int8] = malloc(n * sizeof(int64))
-  var p: ptr[int64] = ptr[int64](raw)
-  p[0] = 5
-  p[1] = 7
-  p[2] = 9
-  p[3] = 6
-  p[4] = 8
-  var q: ptr[int64] = p + 2
-  printd(float64(q[0] + q[1] + q[2]))  # 23.000000
-  free(raw)
+  var t: Triple
+  t.a = 10
+  t.b = 20
+  t.c = 30
+  var p: ptr[int] = addr(t.a)
+  var end: ptr[int] = p + 3
+  var total: int = 0
+  while p != end:
+    total = total + p[0]
+    p = p + 1
+  printd(float64(total))  # 60.000000
   return 0
 ```
-
-`malloc` and `free` are the C standard library functions. pyxc calls them directly through `extern` declarations. The two new pieces this chapter adds are:
-
-- **`sizeof(T)`** — a compile-time constant giving the byte size of type `T`, so you can compute the right argument to `malloc`.
-- **`ptr[T](expr)`** — a pointer cast that reinterprets a `ptr[S]` as a `ptr[T]`, carrying the new pointee type metadata through without emitting any IR instruction.
 
 ## Source Code
 
@@ -43,204 +41,182 @@ cd pyxc-llvm-tutorial/code/chapter-20
 
 ## Grammar
 
+Pointer arithmetic reuses the existing binary operator infrastructure. No new tokens or keywords are needed — the type system drives the new behavior.
+
 ```ebnf
-sizeof-expr ::= 'sizeof' '(' type ')'
-
-cast-expr   ::= type '(' expression ')'   (* extended: ptr[T](expr) now allowed *)
+expr ::= ...
+       | expr '+' expr   (* if one side is ptr[T] and other is int *)
+       | expr '-' expr   (* ptr[T] - int, or ptr[T] - ptr[T] *)
+       | expr '<' expr   (* pointer comparison *)
+       | expr '>' expr
+       | expr '==' expr
+       | expr '!=' expr
+       | expr '<=' expr
+       | expr '>=' expr
 ```
 
-`sizeof` takes a type (not an expression) and returns an `int64` compile-time constant. `ptr[T](expr)` extends the existing cast expression to allow pointer-to-pointer reinterpretation; previously, casting to a pointer type was rejected.
+The same tokens already existed. The change is that `GetBinaryResultType` now accepts pointer operands and returns pointer or integer types accordingly.
 
-`sizeof(None)` is rejected at parse time. `ptr[T](expr)` requires that `expr` is already a pointer — you cannot cast an integer to a pointer.
+## Semantic Rules
 
-## One New Keyword
+| Expression | Operand types | Result type |
+|---|---|---|
+| `p + n` | `ptr[T]`, int | `ptr[T]` |
+| `n + p` | int, `ptr[T]` | `ptr[T]` |
+| `p - n` | `ptr[T]`, int | `ptr[T]` |
+| `p - q` | `ptr[T]`, `ptr[T]` (same T) | `int64` |
+| `p < q`, `p > q`, etc. | `ptr[T]`, `ptr[T]` (same T) | `bool` |
+| `p * n` | `ptr[T]`, int | **type error** |
+| `p + q` | `ptr[T]`, `ptr[U]` | **type error** |
+| `p - q` | `ptr[T]`, `ptr[U]` (T ≠ U) | **type error** |
+
+Pointer difference (`p - q`) yields an element count, not bytes. If `p` and `q` are both `ptr[int]` and they are 24 bytes apart, `p - q` is 3 — the number of `int`-sized steps between them.
+
+Multiplication by a pointer is blocked. There is no sensible meaning for `ptr[T] * int` in terms of memory addresses.
+
+## `GetBinaryResultType` Extended
+
+`GetBinaryResultType` is the central function that decides what type a binary expression produces. Its signature is extended to carry struct-name information for both operands and to write the result struct name back:
 
 ```cpp
-tok_sizeof = -37,
-```
-
-Registered in the keyword map:
-
-```cpp
-{"sizeof", tok_sizeof}
-```
-
-## `sizeof`: Compile-Time Type Size
-
-`sizeof(T)` evaluates to the number of bytes that an instance of type `T` occupies in memory, as determined by the target's data layout. It always has type `int64` and is computed entirely at compile time — no function call, no runtime overhead.
-
-### `SizeofExprAST`
-
-```cpp
-class SizeofExprAST : public ExprAST {
-  ValueType TargetType;
-  string TargetStructName;
-public:
-  SizeofExprAST(ValueType TargetType, const string &TargetStructName = "")
-      : TargetType(TargetType), TargetStructName(TargetStructName) {
-    setType(ValueType::Int64);
+if (IsArithmeticOp(Op)) {
+  if (Op != '*' &&
+      ((L == ValueType::Pointer && IsIntType(R)) ||
+       (R == ValueType::Pointer && IsIntType(L)))) {
+    if (ResultStructName)
+      *ResultStructName = (L == ValueType::Pointer) ? LStruct : RStruct;
+    return ValueType::Pointer;
   }
-  Value *codegen() override;
-};
-```
-
-The constructor immediately calls `setType(ValueType::Int64)` — the result type is always `int64`, regardless of what type was queried.
-
-### Codegen
-
-```cpp
-Value *SizeofExprAST::codegen() {
-  llvm::Type *Ty = LLVMTypeFor(TargetType, TargetStructName);
-  uint64_t Bytes = TheModule->getDataLayout().getTypeAllocSize(Ty).getFixedValue();
-  return ConstantInt::get(Type::getInt64Ty(*TheContext), Bytes);
+  if (Op == '-' && L == ValueType::Pointer && R == ValueType::Pointer &&
+      LStruct == RStruct)
+    return ValueType::Int64;
+  ...
+}
+if (IsComparisonOp(Op)) {
+  if (L == ValueType::Pointer && R == ValueType::Pointer &&
+      LStruct == RStruct)
+    return ValueType::Bool;
+  ...
 }
 ```
 
-`getTypeAllocSize` returns the number of bytes including any tail padding that the ABI requires between consecutive elements in an array. The result is emitted directly as a constant integer — not a call, not a load.
+For `ptr + int` and `int + ptr`, the result inherits the struct name (which encodes the pointee type) from whichever operand is the pointer. For `ptr - ptr`, no struct name is needed because the result is a plain `int64`. For pointer comparisons, the result is `bool`.
 
-### IR example
+Mismatched pointer types (`ptr[int] - ptr[float64]`) fall through to the default error path because `LStruct != RStruct`.
 
-For a function that returns `sizeof(int64)`:
+## `BinaryExprAST` Constructor Extended
+
+`BinaryExprAST` gains an optional `StructName` parameter so the pointer type of an arithmetic result can be carried through the AST:
+
+```cpp
+BinaryExprAST(char Op, unique_ptr<ExprAST> LHS, unique_ptr<ExprAST> RHS,
+              ValueType Type = ValueType::Unknown,
+              const string &StructName = "")
+```
+
+The constructor calls `setType(Type, StructName)`. Previously, only the parse-loop fallback path (for non-pointer results) needed to store a type on the node. Now the pointer arithmetic path explicitly constructs the node with both type and struct name set, then `continue`s to skip the old assignment statement.
+
+## Parse Loop Change
+
+The binary-operator parse loop now calls the extended `GetBinaryResultType` with both operands' struct names and a `ResultStructName` output. When the result is a pointer, the loop constructs the node with the full type information and continues:
+
+```cpp
+string ResultStructName;
+ValueType ResultType = GetBinaryResultType(BinOp,
+                                           LHS->getType(), LHS->getStructName(),
+                                           RHS->getType(), RHS->getStructName(),
+                                           &ResultStructName);
+if (ResultType == ValueType::Pointer) {
+  LHS = make_unique<BinaryExprAST>(BinOp, std::move(LHS), std::move(RHS),
+                                   ResultType, ResultStructName);
+  continue;
+}
+```
+
+For non-pointer results the loop falls through to the existing assignment path unchanged.
+
+## Codegen: `ptr + int` and `int + ptr`
+
+Advancing a pointer by an integer uses `CreateGEP`. The integer index is widened to `i64` first:
+
+```cpp
+if (getType() == ValueType::Pointer) {
+  Value *Ptr = nullptr;
+  Value *Idx = nullptr;
+  if (LType == ValueType::Pointer && IsIntType(RType) && Op == '+') {
+    Ptr = L; Idx = EmitImplicitCast(R, RType, ValueType::Int64);
+  } else if (RType == ValueType::Pointer && IsIntType(LType) && Op == '+') {
+    Ptr = R; Idx = EmitImplicitCast(L, LType, ValueType::Int64);
+  } else if (LType == ValueType::Pointer && IsIntType(RType) && Op == '-') {
+    Ptr = L; Idx = EmitImplicitCast(R, RType, ValueType::Int64);
+    if (Idx) Idx = Builder->CreateNeg(Idx, "negidx");
+  }
+  // ...
+  return Builder->CreateGEP(ElemLLVM, Ptr, Idx, "ptrarith");
+}
+```
+
+`DecodePointerType` extracts the element LLVM type from the result's encoded struct name. This is the type that GEP uses to compute its stride.
+
+For `p + 1` where `p: ptr[int]`:
 
 ```llvm
-define i64 @size_i64() {
-entry:
-  ret i64 8
-}
+%ptrload = load ptr, ptr %p
+%ptrarith = getelementptr i64, ptr %ptrload, i64 1
 ```
 
-The compiler never emits a `sizeof` instruction. By the time code generation runs, the size has been computed and folded into a literal.
+## Codegen: `ptr - int`
 
-### Sizes on a 64-bit target
-
-| Type | `sizeof` |
-|------|---------|
-| `int8` | 1 |
-| `int32` | 4 |
-| `int64` | 8 |
-| `ptr[int8]` | 8 |
-| `Point` (two `int` fields) | 16 |
-
-All pointer types are 8 bytes on a 64-bit target regardless of what they point to — LLVM's opaque pointer model means there is only one pointer representation.
-
-### Parsing
-
-```cpp
-static unique_ptr<ExprAST> ParseSizeofExpr() {
-  getNextToken(); // eat 'sizeof'
-  // expect '('
-  getNextToken(); // eat '('
-  string TargetStructName;
-  ValueType TargetType = ParseTypeToken(&TargetStructName);
-  if (TargetType == ValueType::None)
-    return LogError("Cannot take sizeof(None)");
-  // expect ')'
-  getNextToken(); // eat ')'
-  return make_unique<SizeofExprAST>(TargetType, TargetStructName);
-}
-```
-
-`ParseTypeToken` is the same function used everywhere else a type annotation is parsed — `sizeof` reuses it directly. After parsing, `ParsePrimary` routes `tok_sizeof` here:
-
-```cpp
-case tok_sizeof:
-  return ParseSizeofExpr();
-```
-
-## `ptr[T](expr)`: Pointer-to-Pointer Casts
-
-Before this chapter, `ParseCastExpr` rejected any cast whose target type was a pointer or array:
-
-```cpp
-// old guard — now removed for the pointer case
-if (Type == ValueType::Pointer || Type == ValueType::Array)
-  return LogError("Cannot cast to pointer or array type");
-```
-
-Chapter 20 lifts the restriction for pointers. A cast like `ptr[int64](raw)` is now valid, provided the operand is itself a pointer:
-
-```cpp
-if (Type == ValueType::Pointer && Expr->getType() != ValueType::Pointer)
-  return LogError("Pointer casts require a pointer operand");
-return make_unique<CastExprAST>(Type, std::move(Expr), TargetStructName);
-```
-
-### `CastExprAST` extended
-
-`CastExprAST`'s constructor now accepts a `TargetStructName` parameter and passes it to `setType`:
-
-```cpp
-CastExprAST(ValueType TargetType, unique_ptr<ExprAST> Expr,
-            const string &TargetStructName = "")
-    : Expr(std::move(Expr)) {
-  setType(TargetType, TargetStructName);
-}
-```
-
-Without this, a cast to `ptr[int64]` would carry no pointee information — the result would be typed as `ptr[?]` and subsequent indexing or field access would fail.
-
-### Codegen: `EmitImplicitCast` Pointer→Pointer path
-
-```cpp
-if (From == ValueType::Pointer && To == ValueType::Pointer)
-  return Builder->CreateBitCast(V, LLVMTypeFor(ValueType::Pointer), "ptrcast");
-```
-
-With LLVM's opaque pointer model, all pointers are the same IR type. `CreateBitCast` on two opaque `ptr` values emits no instruction at all — the IR value passes through unchanged. The cast's only real effect is at the pyxc level: the result node has type `ptr[int64]` instead of `ptr[int8]`, so downstream code generates correct GEPs and loads.
-
-### IR example
-
-For `ptr[int64](raw)` where `raw: ptr[int8]`:
+Subtracting an integer is the same as adding its negation. The index is widened to `i64` and then negated with `CreateNeg` before being passed to GEP:
 
 ```llvm
-%ptrload = load ptr, ptr %raw
-; no bitcast instruction emitted — opaque pointers are identical in IR
+%ptrload = load ptr, ptr %p
+%negidx = neg i64 2
+%ptrarith = getelementptr i64, ptr %ptrload, i64 %negidx
 ```
 
-The pointer value is simply used with a different element type in any subsequent `getelementptr` or `load`/`store`.
+For `p - 2`, GEP steps backward by two elements.
 
-## Routing in `ParsePrimary`
+## Codegen: `ptr - ptr`
 
-Two new cases:
+Pointer subtraction uses LLVM's `CreatePtrDiff`, which handles the ptrtoint / subtract / divide sequence internally:
 
 ```cpp
-case tok_ptr:
-  return ParseCastExpr();  // falls into existing cast path, now allows ptr[T](expr)
-
-case tok_sizeof:
-  return ParseSizeofExpr();
+if (Op == '-' && getType() == ValueType::Int64 &&
+    LType == ValueType::Pointer && RType == ValueType::Pointer) {
+  // ...
+  return Builder->CreatePtrDiff(ElemLLVM, L, R, "ptrdiff");
+}
 ```
 
-`tok_ptr` already appeared in `ParsePrimary` via the type-annotation path; now it also leads to `ParseCastExpr`, which handles the `ptr[T](expr)` form.
+`CreatePtrDiff` takes the element type so it can divide the byte difference by `sizeof(T)` to produce an element count. For two `ptr[int]` values that are 24 bytes apart, the result is 3.
 
-## Calling `malloc` and `free`
-
-`malloc` and `free` are declared with `extern`, exactly like any other external C function:
-
-```pyxc
-extern def malloc(n: int64) -> ptr[int8]
-extern def free(p: ptr[int8])
+```llvm
+; q - p where p and q are both ptr[int]
+%ptrdiff = ...  ; ptrtoint both, subtract, sdiv by sizeof(i64) = 8
 ```
 
-pyxc emits a standard LLVM `call` instruction, and the linker resolves it against the C runtime. There is nothing special about these declarations — any C function with compatible types can be called the same way.
+The element type is decoded from the left operand's struct name encoding using `DecodePointerType`.
 
-The pattern for heap-allocating a single struct:
+## Codegen: Pointer Comparisons
 
-```pyxc
-struct Point:
-  x: int
-  y: int
+Pointer comparisons use unsigned integer comparison instructions. Addresses are non-negative, so unsigned comparison gives the correct ordering:
 
-def main() -> int:
-  var raw: ptr[int8] = malloc(sizeof(Point))
-  var p: ptr[Point] = ptr[Point](raw)
-  p[0].x = 77
-  printd(float64(p[0].x))
-  free(raw)
-  return 0
+```cpp
+if (LType == ValueType::Pointer && RType == ValueType::Pointer &&
+    LHS->getStructName() == RHS->getStructName()) {
+  switch (Op) {
+  case tok_eq:  return Builder->CreateICmpEQ(L, R, "cmptmp");
+  case tok_neq: return Builder->CreateICmpNE(L, R, "cmptmp");
+  case '<':     return Builder->CreateICmpULT(L, R, "cmptmp");
+  case '>':     return Builder->CreateICmpUGT(L, R, "cmptmp");
+  case tok_leq: return Builder->CreateICmpULE(L, R, "cmptmp");
+  case tok_geq: return Builder->CreateICmpUGE(L, R, "cmptmp");
+  }
+}
 ```
 
-`malloc` returns `ptr[int8]` — a raw byte pointer, same as in C. `ptr[Point](raw)` reinterprets it as a `ptr[Point]` so that `p[0].x` generates the right GEP. `free` receives the original `ptr[int8]`; passing `p` directly would be a type error because `p` is `ptr[Point]`.
+Using `ICmpULT` (unsigned less-than) rather than `ICmpSLT` (signed) is correct here. On 64-bit platforms, pointer values are 64-bit integers and addresses in the upper half of the address space would appear negative under signed comparison. Unsigned comparison treats all addresses as non-negative and orders them correctly.
 
 ## Build and Run
 
@@ -251,113 +227,124 @@ cmake -S . -B build && cmake --build build
 
 ## Try It
 
-### sizeof of scalar types and a struct
+### Advance a pointer and read the next element
 
 ```pyxc
 extern def printd(x: float64)
 
-struct Point:
-  x: int
-  y: int
-
 def main() -> int:
-  printd(float64(sizeof(int8)))
-  printd(float64(sizeof(int32)))
-  printd(float64(sizeof(int64)))
-  printd(float64(sizeof(ptr[int8])))
-  printd(float64(sizeof(Point)))
+  var a: int = 10
+  var b: int = 20
+  var p: ptr[int] = addr(a)
+  printd(float64(p[0]))    # 10.000000
+  p = p + 1
+  printd(float64(p[0]))    # 20.000000 (b is next on the stack — layout-dependent)
   return 0
 ```
 
 ```bash
-1.000000
-4.000000
-8.000000
-8.000000
-16.000000
+10.000000
+20.000000
 ```
 
-### malloc, pointer cast, and field access
+### Walk backward with `p - 1`
 
 ```pyxc
-extern def malloc(n: int64) -> ptr[int8]
-extern def free(p: ptr[int8])
 extern def printd(x: float64)
 
-struct Point:
-  x: int
-  y: int
+struct Pair:
+  first: int
+  second: int
 
 def main() -> int:
-  var raw: ptr[int8] = malloc(sizeof(Point))
-  var p: ptr[Point] = ptr[Point](raw)
-  p[0].x = 77
-  p[0].y = 33
-  printd(float64(p[0].x))
-  printd(float64(p[0].y))
-  free(raw)
+  var pair: Pair
+  pair.first = 100
+  pair.second = 200
+  var p: ptr[int] = addr(pair.second)
+  printd(float64(p[0]))    # 200.000000
+  p = p - 1
+  printd(float64(p[0]))    # 100.000000
   return 0
 ```
 
 ```bash
-77.000000
-33.000000
+200.000000
+100.000000
 ```
 
-### malloc and pointer arithmetic — a heap array
+### Compute pointer difference between two fields
 
 ```pyxc
-extern def malloc(n: int64) -> ptr[int8]
-extern def free(p: ptr[int8])
 extern def printd(x: float64)
 
+struct Triple:
+  a: int
+  b: int
+  c: int
+
 def main() -> int:
-  var n: int64 = 5
-  var raw: ptr[int8] = malloc(n * sizeof(int64))
-  var p: ptr[int64] = ptr[int64](raw)
-  p[0] = 5
-  p[1] = 7
-  p[2] = 9
-  p[3] = 6
-  p[4] = 8
-  var q: ptr[int64] = p + 2
-  printd(float64(q[0] + q[1] + q[2]))
-  free(raw)
+  var t: Triple
+  var pa: ptr[int] = addr(t.a)
+  var pc: ptr[int] = addr(t.c)
+  printd(float64(pc - pa))  # 2.000000 (two int-sized steps from a to c)
   return 0
 ```
 
 ```bash
-23.000000
+2.000000
 ```
 
-### Inspect the IR: sizeof is a constant
+### The K&R loop with `!= end`
 
-Save the `sizeof(int64)` program and emit IR:
+```pyxc
+extern def printd(x: float64)
+
+struct Triple:
+  a: int
+  b: int
+  c: int
+
+def main() -> int:
+  var t: Triple
+  t.a = 10
+  t.b = 20
+  t.c = 30
+  var p: ptr[int] = addr(t.a)
+  var end: ptr[int] = p + 3
+  var total: int = 0
+  while p != end:
+    total = total + p[0]
+    p = p + 1
+  printd(float64(total))  # 60.000000
+  return 0
+```
+
+```bash
+60.000000
+```
+
+### Inspect the IR
 
 ```bash
 pyxc --emit llvm-ir -o out.ll program.pyxc
-grep 'ret i64' out.ll
+grep 'getelementptr\|ptrdiff\|icmp' out.ll
 ```
-
-```llvm
-ret i64 8
-```
-
-No call, no load — just a literal `8`.
 
 ## Known Limitations
 
-**No null check.** `malloc` can return null when the system is out of memory. pyxc does not insert a null check; dereferencing a null pointer crashes silently.
+**No bounds checking.** Out-of-bounds pointer arithmetic is silent undefined behavior. There is no runtime check and no compile-time warning.
 
-**No bounds checking.** Accessing `p[n]` on a heap buffer of size `n` is an out-of-bounds write. pyxc does not track buffer sizes.
+**`ptr * int` is intentionally rejected.** Multiplying a pointer by an integer has no defined memory meaning. The type checker blocks it.
 
-**Manual ownership.** There is no destructor, no reference counting, and no garbage collector. Forgetting to call `free` leaks memory; calling `free` twice or reading after `free` is undefined behavior — silently corrupted data or a crash.
+**Mismatched pointer types are a type error.** `ptr[int] + ptr[float64]` and `ptr[int] - ptr[float64]` are both rejected. Only pointers with identical encoded struct names can interact.
 
-**Pointer casts are pointer-only.** `ptr[T](expr)` requires `expr` to already be a pointer. You cannot cast an integer to a pointer (e.g., to use a raw address). Casting between pointer types is a reinterpretation at the pyxc metadata level only; LLVM sees no instruction.
+**`p - q` yields element count, not bytes.** If you need the byte distance, multiply by the element size manually. There is no `sizeof` operator yet — that comes in chapter 20.
+
+**No pointer-to-integer casts.** You cannot convert a pointer to an integer to inspect its numeric address.
 
 ## What's Next
 
-[Chapter 21](chapter-21.md) adds string literals — `"hello"` as a `ptr[int8]`, null-terminated global constants stored in the module, and escape sequences. With heap allocation in place, the compiler already knows how to pass `ptr[int8]` to C functions; string literals are the natural next step.
+[Chapter 21](chapter-21.md) adds `malloc`, `free`, and `sizeof` — heap allocation built directly on the pointer arithmetic from this chapter. With `p + n`, `p - q`, and a way to allocate arbitrary memory, dynamic data structures become possible.
 
 ## Need Help?
 

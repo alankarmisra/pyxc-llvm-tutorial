@@ -10,14 +10,7 @@
 # userdefbinaryop = ? any opchar defined as a custom binary operator ?
 
 @binary(5)
-def |(x, y):
-    if x != 0:
-        return 1
-    else:
-        if y != 0:
-            return 1
-        else:
-            return 0
+def |(x, y): return if x != 0: 1 else: if y != 0: 1 else: 0
 
 # Logical OR: false | false = 0, true | false = 1.
 0 | 0

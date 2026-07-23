@@ -1,43 +1,46 @@
 ---
-description: "Add traits: named method-signature contracts that a class declares it satisfies. Conformance is verified at compile time with no runtime overhead."
+description: "Add public and private visibility modifiers to class fields and methods. Private members are only accessible from within the class's own method bodies."
 ---
-# 28. pyxc: Traits
+# 28. pyxc: Visibility
 
 ## Where We Are
 
-[Chapter 27](chapter-27.md) added visibility. Classes can now hide implementation details. But there is no way to say "this class promises to have these methods" — no interface contract, no way to write code that works against any class satisfying a given shape.
-
-After this chapter:
+[Chapter 27](chapter-27.md) added constructors. Classes can now be initialised, but every field and method is accessible from anywhere. After this chapter, a class can hide its internals:
 
 ```pyxc
 extern def printd(x: float64)
 
-trait Measurable:
-  def area() -> int
+class BoundedCounter:
+  private count: int
+  private limit: int
 
-class Rect(Measurable):
-  public w: int
-  public h: int
+  def __init__(max: int):
+    self.count = 0
+    self.limit = max
 
-  def __init__(w: int, h: int):
-    self.w = w
-    self.h = h
+  public def increment():
+    if self.count < self.limit:
+      self.count = self.count + 1
 
-  public def area() -> int:
-    return self.w * self.h
+  public def get() -> int:
+    return self.count
 
 
 def main() -> int:
-  var r: Rect = Rect(3, 4)
-  printd(float64(r.area()))
+  var c: BoundedCounter = BoundedCounter(3)
+  c.increment()
+  c.increment()
+  c.increment()
+  c.increment()    # no effect — limit reached
+  printd(float64(c.get()))
   return 0
 ```
 
 ```
-12.000000
+3.000000
 ```
 
-If `Rect` does not implement `area`, or implements it with the wrong signature, the compiler reports an error before any code is generated.
+Accessing `c.count` directly from outside the class would be an error.
 
 ## Source Code
 
@@ -48,17 +51,12 @@ cd pyxc-llvm-tutorial/code/chapter-28
 
 ## Grammar
 
-This chapter adds two new productions (`traitdef`, `traitblock`, `traitmethodsig`) and extends `top` and `classdef`.
+`classmember` gains an optional visibility prefix. `visibility` is a new production.
 
 ```ebnf
-top            = typealias | traitdef | structdef | classdef | ...  -- changed
-traitdef       = "trait" identifier ":" eols traitblock ;           -- new
-traitblock     = indent traitmethodsig { eols traitmethodsig } dedent ;  -- new
-traitmethodsig = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ;  -- new
-classdef       = "class" identifier [ "(" identifier { "," identifier } ")" ] ":" eols structblock ;  -- changed
+classmember = [ visibility ] ( fielddecl | methoddef ) ;  -- changed
+visibility  = "public" | "private" ;                      -- new
 ```
-
-`traitmethodsig` looks like a method definition but has no body and no `self` parameter. The `classdef` gains an optional parenthesised list of trait names after the class name.
 
 ### Full Grammar
 
@@ -67,13 +65,10 @@ classdef       = "class" identifier [ "(" identifier { "," identifier } ")" ] ":
 ```ebnf
 program         = [ eols ] [ top { eols top } ] [ eols ] ;
 eols            = eol { eol } ;
-top             = typealias | traitdef | structdef | classdef | definition | decorateddef | external | toplevelexpr ;
+top             = typealias | structdef | classdef | definition | decorateddef | external | toplevelexpr ;
 typealias       = "type" identifier "=" type ;
-traitdef        = "trait" identifier ":" eols traitblock ;
-traitblock      = indent traitmethodsig { eols traitmethodsig } dedent ;
-traitmethodsig  = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ;
 structdef       = "struct" identifier ":" eols structblock ;
-classdef        = "class" identifier [ "(" identifier { "," identifier } ")" ] ":" eols structblock ;
+classdef        = "class" identifier ":" eols structblock ;
 structblock     = indent classmember { eols classmember } dedent ;
 classmember     = [ visibility ] ( fielddecl | methoddef ) ;
 visibility      = "public" | "private" ;
@@ -160,206 +155,161 @@ INDENT          = ? synthetic token emitted by lexer ? ;
 DEDENT          = ? synthetic token emitted by lexer ? ;
 ```
 
-## New Token and Data Structures
+## New Tokens
 
 ```cpp
-tok_trait = -43,
+tok_public  = -41,
+tok_private = -42,
 ```
 
-Registered in the keyword table:
+Both are registered in the keyword table:
 
 ```cpp
-{"trait", tok_trait}
+{"public",  tok_public},
+{"private", tok_private},
 ```
 
-Trait data is stored in two new structs and one new global map:
+They are also added to the token name map so error messages print `'public'` and `'private'`.
+
+## Storing Visibility in `StructTypeInfo`
+
+Visibility is stored on two places in `StructTypeInfo`:
+
+**Fields** gain an `IsPublic` flag:
 
 ```cpp
-struct TraitMethodSig {
+struct FieldInfo {
   string Name;
-  vector<PrototypeAST::ArgInfo> Args;  // explicit params only — no self
-  ValueType ReturnType = ValueType::None;
-  string ReturnStructName;
+  ValueType Type;
+  string StructName;
+  bool IsPublic = true;    // new — default public
 };
-
-struct TraitInfo {
-  string Name;
-  vector<TraitMethodSig> Methods;
-};
-
-static std::map<string, TraitInfo> Traits;
 ```
 
-`TraitMethodSig` stores explicit parameters only — `self` is not included. When conformance is checked, the compiler accounts for `self` being at index 0 of the implementing method's prototype by comparing `Req.Args[I]` against `P->getArgType(I + 1)`.
-
-`StructTypeInfo` gains a list of trait names the class declares:
+**Methods** are tracked in a map from method name to boolean:
 
 ```cpp
 struct StructTypeInfo {
   // ...
-  vector<string> ImplementedTraits;  // new
+  std::map<string, bool> MethodIsPublic;  // new
 };
 ```
 
-`Traits` is cleared on each compiler reset (alongside `FunctionProtos`, `StructTypes`, etc.) so REPL sessions don't accumulate stale trait definitions.
+Methods use a map rather than a flag on the prototype because the prototype lives in `FunctionProtos` and visibility is class metadata, not function metadata.
 
-## `ParseTraitDefinition` — Parsing Trait Bodies
+## Parsing Visibility Modifiers
 
-`ParseTraitDefinition` is structured like `ParseAggregateDefinition` but simpler — no fields, no methods, just signatures:
+In `ParseAggregateDefinition`, the body loop now reads an optional visibility token before each member:
 
 ```cpp
-static bool ParseTraitDefinition() {
-  getNextToken(); // eat 'trait'
-  string TraitName = IdentifierStr;
-  // Reject clashes with existing traits, struct types, and type aliases
-  if (Traits.count(TraitName) || StructTypes.count(TraitName) ||
-      TypeAliases.count(TraitName)) {
-    LogError(("Name '" + TraitName + "' is already defined").c_str());
-    return false;
-  }
-  getNextToken(); // eat trait name
-  // ... eat ':', eat EOL, expect INDENT ...
-
-  TraitInfo TI;
-  TI.Name = TraitName;
-  while (CurTok != tok_dedent && ...) {
-    // expect 'def'
-    getNextToken(); // eat 'def'
-    string MethodName = IdentifierStr;
-    getNextToken(); // eat method name
-    // parse '(' params ')' with type annotations (same as prototype parsing)
-    vector<PrototypeAST::ArgInfo> Args;
-    // ... parse each param ...
-
-    // parse optional -> ReturnType
-    ValueType RetType = ParseOptionalReturnTypeWithStruct(RetStructName, ValueType::None);
-
-    // A body (colon) here is an error
-    if (CurTok == ':') {
-      LogError("Trait methods cannot have a body");
-      return false;
-    }
-    // Reject duplicate method names
-    TI.Methods.push_back({MethodName, std::move(Args), RetType, RetStructName});
-  }
-  // eat DEDENT, inject tok_block_end
-  PendingTokens.push_front(tok_block_end);
-  getNextToken();
-  Traits[TraitName] = std::move(TI);
-  return true;
+bool MemberIsPublic = true;
+bool HasVisibilityModifier = false;
+if (CurTok == tok_public || CurTok == tok_private) {
+  HasVisibilityModifier = true;
+  MemberIsPublic = (CurTok == tok_public);
+  getNextToken(); // eat visibility modifier
+}
+if (HasVisibilityModifier && !Info.IsClass) {
+  LogError("Visibility modifiers are only allowed inside class bodies");
+  return false;
 }
 ```
 
-Key points:
-- `self` is not parsed — it appears in no trait signature.
-- Method bodies are explicitly rejected with an error: "Trait methods cannot have a body".
-- Duplicate method names within one trait are rejected.
-- The name clash check covers `Traits`, `StructTypes`, and `TypeAliases` — a trait name cannot shadow any of these.
+If no modifier is present, `MemberIsPublic` stays `true` — the default is public. If the modifier appears inside a `struct` body, it is rejected immediately.
 
-`HandleTraitDef` calls `ParseTraitDefinition` and handles error recovery, then dispatches from both `MainLoop` and `FileModeLoop` on `tok_trait`.
-
-## Declaring Trait Conformance in the Class Header
-
-`ParseAggregateDefinition` is extended to parse an optional trait list between the class name and the `:`  colon. This only applies to classes (`IsClass == true`):
+After parsing a field, the visibility is stored in `FieldInfo`:
 
 ```cpp
-vector<string> ImplementedTraits;
-bool IsClass = (strcmp(KindName, "class") == 0);
-if (IsClass && CurTok == '(') {
-  std::set<string> SeenTraits;
-  getNextToken(); // eat '('
-  while (CurTok != ')') {
-    string TraitName = IdentifierStr;
-    if (!Traits.count(TraitName)) {
-      LogError(("Unknown trait '" + TraitName + "'").c_str());
-      return false;
-    }
-    if (SeenTraits.count(TraitName)) {
-      LogError(("Duplicate trait '" + TraitName + "' in class implements list").c_str());
-      return false;
-    }
-    SeenTraits.insert(TraitName);
-    ImplementedTraits.push_back(TraitName);
-    getNextToken(); // eat trait name
-    if (CurTok == ')') break;
-    getNextToken(); // eat ','
-  }
-  getNextToken(); // eat ')'
-}
-// ...
-Info.IsClass = IsClass;
-Info.ImplementedTraits = ImplementedTraits;
+Info.Fields.push_back({FieldName, FieldType, FieldStructName, MemberIsPublic});
 ```
 
-Each trait name must already be in `Traits` — forward declarations are not supported. Listing the same trait twice is caught by `SeenTraits`.
-
-## `VerifyTraitConformance` — Checking the Class at Close
-
-After parsing the entire class body (at the closing `tok_dedent`), the compiler walks each declared trait and checks conformance. All three of the following must hold for every method in every declared trait:
-
-1. **The method exists.** `ClassName.MethodName` must be in `FunctionProtos`.
-2. **The method is public.** Trait conformance requires the method to be accessible to callers.
-3. **The signature matches exactly.** Return type, return struct name, parameter count, and each parameter type must agree.
+After parsing a method, the method's visibility is registered in `MethodIsPublic` by `ParseMethodDefinitionInClass` (which now takes `bool IsPublic` as a parameter):
 
 ```cpp
-for (const auto &TraitName : Info.ImplementedTraits) {
-  const auto &TI = Traits.at(TraitName);
-  for (const auto &Req : TI.Methods) {
-    // 1. Method must exist
-    auto PI = FunctionProtos.find(StructName + "." + Req.Name);
-    if (PI == FunctionProtos.end()) {
-      LogError(("Class '" + StructName + "' does not implement trait '" +
-                TraitName + "' method '" + Req.Name + "'").c_str());
-      return false;
-    }
-    // 2. Method must be public
-    auto MI = Info.MethodIsPublic.find(Req.Name);
-    if (MI == Info.MethodIsPublic.end() || !MI->second) {
-      LogError(("Trait method '" + Req.Name + "' on class '" + StructName +
-                "' must be public").c_str());
-      return false;
-    }
-    // 3. Signature must match (Req.Args.size() + 1 because self is at index 0)
-    PrototypeAST *P = PI->second.get();
-    if (P->getNumArgs() != Req.Args.size() + 1 ||
-        P->getReturnType() != Req.ReturnType ||
-        P->getReturnStructName() != Req.ReturnStructName) {
-      LogError(("Method '" + Req.Name + "' on class '" + StructName +
-                "' does not match trait signature").c_str());
-      return false;
-    }
-    for (size_t I = 0; I < Req.Args.size(); ++I) {
-      if (P->getArgType(I + 1) != Req.Args[I].Type ||
-          P->getArgStructName(I + 1) != Req.Args[I].StructName) {
-        LogError(...);
-        return false;
-      }
-    }
-  }
+StructTypes[ClassName].MethodIsPublic[MethodName] = IsPublic;
+```
+
+The `StructTypes[StructName]` entry is written back after each member — `Info.MethodIsPublic = StructTypes[StructName].MethodIsPublic` — so the running map is always current as parsing proceeds.
+
+## `CanAccessClassMember` and `ClassScopeGuard`
+
+Access is decided by a single function:
+
+```cpp
+static string CurrentClassScopeName;
+
+static bool CanAccessClassMember(const string &OwnerClass, bool IsPublic) {
+  return IsPublic || (!CurrentClassScopeName.empty() &&
+                      CurrentClassScopeName == OwnerClass);
 }
 ```
 
-The `+ 1` offset in `P->getArgType(I + 1)` is because `self` occupies index 0 of the implementing method but does not appear in `TraitMethodSig::Args` at all.
+A member is accessible if it is `public`, **or** if the code currently being compiled belongs to the same class. "Currently being compiled" is tracked by `CurrentClassScopeName`.
 
-## What Traits Are Not
+`ClassScopeGuard` sets and restores `CurrentClassScopeName` around method codegen:
 
-There is no dynamic dispatch. There is no vtable. The trait check is purely structural: it verifies that the method exists with the right signature and is public. The generated IR is identical to what you would get without the trait — trait methods are just regular LLVM functions.
+```cpp
+struct ClassScopeGuard {
+  string Saved;
+  ClassScopeGuard(const string &ClassName) : Saved(CurrentClassScopeName) {
+    CurrentClassScopeName = ClassName;
+  }
+  ~ClassScopeGuard() { CurrentClassScopeName = Saved; }
+};
+```
 
-There is no way in this chapter to pass a `Measurable` to a function without knowing the concrete type. Traits are a documentation and enforcement mechanism, not a polymorphism mechanism. Dynamic dispatch comes in a later chapter.
+`ParseMethodDefinitionInClass` creates a `ClassScopeGuard` before entering the body. When the method is done, the destructor restores the previous class scope (which is `""` at the top level, or the enclosing class if methods are somehow nested — though pyxc does not currently support nested classes).
+
+## Access Checks at Every Use Site
+
+`CanAccessClassMember` is inserted at every point where the compiler touches a class member:
+
+**Field access** — in the `ConsumeField` lambda inside `ParseFieldAccessFromFirstMember`:
+
+```cpp
+if (!CanAccessClassMember(CurStruct, FD.IsPublic))
+  return LogError(("Field '" + Field + "' is private on '" + CurStruct + "'").c_str());
+```
+
+This fires for both read (`obj.x`) and write (`obj.x = v`) paths, because both go through `ParseFieldAccessFromFirstMember`.
+
+**Method call** — in `ParseMethodCallExpr`, after looking up `ClassName.MethodName`:
+
+```cpp
+auto MI = CI->second.MethodIsPublic.find(MethodName);
+if (MI != CI->second.MethodIsPublic.end() &&
+    !CanAccessClassMember(ClassName, MI->second)) {
+  return LogError(("Method '" + MethodName + "' is private on '" + ClassName + "'").c_str());
+}
+```
+
+**Constructor call** — in `ParseIdentifierExpr`, if `__init__` exists:
+
+```cpp
+auto MI = SI->second.MethodIsPublic.find("__init__");
+if (MI != SI->second.MethodIsPublic.end() &&
+    !CanAccessClassMember(IdName, MI->second)) {
+  return LogError(("Method '__init__' is private on '" + IdName + "'").c_str());
+}
+```
+
+## IR Is Unchanged
+
+Visibility is enforced entirely at parse and semantic check time. Nothing changes in the generated IR — `public` and `private` leave no trace in the output. A `private int` and a `public int` generate identical `i64` fields.
 
 ## Things Worth Knowing
 
-**Traits must be defined before the classes that implement them.** The trait name lookup happens at class parse time; if the trait does not exist yet, it is an error.
+**Default is public.** A member without a modifier is public. Existing code from chapters 25 and 26, which has no modifiers, continues to work exactly as before.
 
-**A class can implement multiple traits.** List them comma-separated in the class header. Listing the same trait twice is an error.
+**`private __init__` prevents external construction.** If `__init__` is private, `ClassName(args)` from outside the class body is rejected.
 
-**Trait methods cannot have bodies.** Writing `:` after a trait method signature is a parse error: "Trait methods cannot have a body".
+**There is no `protected`.** Access is either class-private or world-public. No inheritance hierarchy, no friend declarations.
 
-**Structs cannot implement traits.** The `(Trait)` syntax is only valid on `class` definitions.
+**Visibility modifiers on structs are rejected.** `struct` members are always public. The parser errors immediately if it sees `public` or `private` in a struct body.
 
 ## What's Next
 
-[Chapter 29](chapter-29.md) adds `impl` blocks — a way to implement a trait for a class outside the class definition, after the fact.
+[Chapter 29](chapter-29.md) adds traits — named contracts that a class can declare it satisfies. Conformance is checked at compile time.
 
 ## Need Help?
 

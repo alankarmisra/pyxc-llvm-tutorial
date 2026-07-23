@@ -1,38 +1,27 @@
 ---
-description: "Allow assignment inside an expression so patterns like while (c = getchar()) != EOF work without a separate priming read."
+description: "Add unsigned integer types uint8, uint16, uint32, and uint64 with correct unsigned arithmetic, comparisons, and casts throughout."
 ---
-# 39. pyxc: Assignment as Expression
+# 39. pyxc: Unsigned Integer Types
 
 ## Where We Are
 
-[Chapter 38](chapter-38.md) added unsigned integer types. pyxc can call `getchar()`, but the canonical K&R idiom for reading until EOF still doesn't compile:
+[Chapter 38](chapter-38.md) added character literals. pyxc has had signed integers since [Chapter 17](chapter-17.md), but all of them interpret their top bit as a sign. Sizes, counts, and bit masks are commonly stored as unsigned values in systems code, and without unsigned types the compiler has no way to generate the right instructions for them. After this chapter, `uint8`, `uint16`, `uint32`, and `uint64` are available:
 
 ```pyxc
-# What we want to write:
-while (c = getchar()) != EOF:
-    ...
-```
-
-```
-Error: Assignment target must be assignable
-```
-
-The problem is that `=` is a statement in pyxc — it cannot appear inside an expression like a while condition. After this chapter it can:
-
-```pyxc
-extern def getchar() -> int32
 extern def printd(x: float64)
 
-var EOF: int32 = -1
-
 def main() -> int:
-  var c: int32
-  var blanks: int
-  while (c = getchar()) != EOF:
-    if c == ' ':
-      blanks += 1
-  printd(float64(blanks))
+  var flags: uint32 = 0
+  flags |= uint32(1) << uint32(3)   # set bit 3
+  flags |= uint32(1) << uint32(7)   # set bit 7
+
+  var mask: uint32 = uint32(0xFF)
+  printd(float64(flags & mask))     # 136.000000
   return 0
+```
+
+```
+136.000000
 ```
 
 ## Source Code
@@ -42,136 +31,227 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-39
 ```
 
-## `ParseExpression` — Tail Assignment Check
+## New Tokens, Keywords, and `ValueType` Enum Values
 
-`ParseExpression` already parsed `unaryexpr binoprhs`. The change adds a check after `ParseBinOpRHS` resolves: if the next token is `=` or a compound-assign operator, treat the result as an lvalue and parse the right-hand side recursively:
+Four new tokens and keywords:
 
 ```cpp
-static unique_ptr<ExprAST> ParseExpression() {
-  auto LHS = ParseUnary();
-  if (!LHS)
-    return nullptr;
+tok_uint8  = -65,
+tok_uint16 = -66,
+tok_uint32 = -67,
+tok_uint64 = -68,
+```
 
-  LHS = ParseBinOpRHS(0, std::move(LHS));
-  if (!LHS)
-    return nullptr;
+```cpp
+{"uint8", tok_uint8}, {"uint16", tok_uint16},
+{"uint32", tok_uint32}, {"uint64", tok_uint64},
+```
 
-  // Assignment tail — fires only if '=' or '+=' etc. follows
-  if (CurTok != '=' && !IsCompoundAssignTok(CurTok))
-    return LHS;
+Four new values in the `ValueType` enum:
 
-  int AssignTok = CurTok;
-  getNextToken(); // eat assignment operator
-  ExpectedLiteralTypeGuard Guard(LHS->getType(), LHS->getStructName());
-  auto RHS = ParseExpression(); // right-associative: recurse
-  if (!RHS)
-    return nullptr;
-  return BuildAssignmentExpr(AssignTok, std::move(LHS), std::move(RHS));
+```cpp
+UInt8,
+UInt16,
+UInt32,
+UInt64,
+```
+
+`ParseTypeToken` gets cases for all four so they work in type annotations and the `casttype` production:
+
+```cpp
+case tok_uint8:  getNextToken(); BaseType = ValueType::UInt8;  break;
+case tok_uint16: getNextToken(); BaseType = ValueType::UInt16; break;
+case tok_uint32: getNextToken(); BaseType = ValueType::UInt32; break;
+case tok_uint64: getNextToken(); BaseType = ValueType::UInt64; break;
+```
+
+## No New LLVM IR Types
+
+LLVM has no separate "unsigned integer" types. `uint32` and `int32` are both `i32` in the IR. `LLVMTypeFor` maps the four new `ValueType` values to the same LLVM types as their signed counterparts:
+
+```cpp
+case ValueType::UInt8:  return Type::getInt8Ty(*TheContext);
+case ValueType::UInt16: return Type::getInt16Ty(*TheContext);
+case ValueType::UInt32: return Type::getInt32Ty(*TheContext);
+case ValueType::UInt64: return Type::getInt64Ty(*TheContext);
+```
+
+The signedness lives entirely in which instruction the compiler emits.
+
+## `IsUnsignedIntType` and `IsSignedIntType`
+
+Two new predicate functions drive all instruction selection:
+
+```cpp
+static bool IsUnsignedIntType(ValueType Type) {
+  return Type == ValueType::UInt8 || Type == ValueType::UInt16 ||
+         Type == ValueType::UInt32 || Type == ValueType::UInt64;
+}
+
+static bool IsSignedIntType(ValueType Type) {
+  return IsIntType(Type) && !IsUnsignedIntType(Type);
 }
 ```
 
-Because the right-hand side recurses to `ParseExpression`, chained assignment is automatically right-associative: `a = b = 4` parses as `a = (b = 4)`.
-
-`ExpectedLiteralTypeGuard` propagates the lvalue's type into the RHS parse, so `x = 5` when `x` is `int32` will treat `5` as `int32` without an explicit cast.
-
-## `BuildAssignmentExpr` — Lvalue Validation and Node Construction
-
-All lvalue validation is done in `BuildAssignmentExpr`, a new helper extracted from the old statement-level assignment parser. It pattern-matches on the node type of `LHS`:
+`IsIntType` is expanded to include all four unsigned types:
 
 ```cpp
-static unique_ptr<ExprAST> BuildAssignmentExpr(int AssignTok,
-                                               unique_ptr<ExprAST> LHS,
-                                               unique_ptr<ExprAST> RHS) {
-  if (!LHS || !RHS)
-    return nullptr;
+return Type == ValueType::Int || Type == ValueType::Int8 || ... ||
+       Type == ValueType::UInt8 || Type == ValueType::UInt16 ||
+       Type == ValueType::UInt32 || Type == ValueType::UInt64;
+```
 
-  if (auto *Var = dynamic_cast<VariableExprAST *>(LHS.get())) {
-    // plain variable: produce AssignmentExprAST or CompoundAssignmentExprAST
-    ...
-  }
-  if (auto *Field = dynamic_cast<FieldExprAST *>(LHS.get())) {
-    // field access: produce FieldAssignmentExprAST or FieldCompoundAssignmentExprAST
-    ...
-  }
-  if (auto *Idx = dynamic_cast<IndexExprAST *>(LHS.get())) {
-    // array index: produce IndexAssignmentExprAST or IndexCompoundAssignmentExprAST
-    ...
-  }
-  if (auto *IdxField = dynamic_cast<IndexedFieldExprAST *>(LHS.get())) {
-    // indexed field: produce IndexedFieldAssignmentExprAST or variant
-    ...
-  }
+## Implicit Widening Rule — Same Signedness Only
 
-  return LogError("Assignment target must be assignable");
+`IsAssignable` gains a signedness gate. The bit-width comparison added in the previous chapter is now also gated on signedness:
+
+```cpp
+if (IsIntType(From) && IsIntType(To)) {
+  unsigned FromBits = LLVMTypeFor(From)->getIntegerBitWidth();
+  unsigned ToBits   = LLVMTypeFor(To)->getIntegerBitWidth();
+  if (IsUnsignedIntType(From) != IsUnsignedIntType(To))
+    return false;          // signed/unsigned mixing forbidden implicitly
+  return FromBits <= ToBits;
 }
 ```
 
-Four lvalue kinds are recognised: variable, field, array index, and indexed field. Any other expression kind — including `x + 1` or a function call — reaches the final `LogError`. The existing `AssignmentExprAST`, `CompoundAssignmentExprAST`, and their field/index variants are reused unchanged; `BuildAssignmentExpr` is the only new code.
+`uint8 → uint64` widens without a cast. `int32 → uint32` or `uint32 → int64` requires an explicit cast. This matches the design intent: implicit signed/unsigned conversion is a common bug source in C; pyxc won't do it silently.
 
-## The Value of an Assignment Expression
+## Instruction Selection — Seven Changed Sites
 
-`AssignmentExprAST::codegen` already stores the value and returns it. That return value is now visible to the caller because `ParseExpression` can produce an assignment node at any nesting level:
+### Integer widening (`EmitImplicitCast`)
 
-```pyxc
-var result: int = (c = 5) + 1   # result is 6; c is 5
+```cpp
+// Before: always sext
+return Builder->CreateSExt(V, LLVMTypeFor(To), "sext");
+
+// After:
+return IsUnsignedIntType(From)
+           ? Builder->CreateZExt(V, LLVMTypeFor(To), "zext")
+           : Builder->CreateSExt(V, LLVMTypeFor(To), "sext");
 ```
 
-Compound assignment also works as an expression. `(n -= 1)` produces the new value of `n`.
+Unsigned types use `zext` (zero-extend) rather than `sext` (sign-extend).
 
-## Right Associativity
+### Integer → float
 
-The recursive call to `ParseExpression` (not `ParseBinOpRHS`) means `=` binds more loosely than all binary operators and chains right:
-
-```pyxc
-a = b = 4   # parsed as: a = (b = 4)
+```cpp
+return IsUnsignedIntType(From)
+           ? Builder->CreateUIToFP(V, LLVMTypeFor(To), "uitofp")
+           : Builder->CreateSIToFP(V, LLVMTypeFor(To), "sitofp");
 ```
 
-`b = 4` evaluates first — stores 4 into `b`, produces 4 — then `a = 4` stores that value into `a`.
+`uitofp` treats the bit pattern as an unsigned integer, producing the correct positive float for `uint32(-1)` = 4294967295.0.
 
-## Parentheses Are Transparent for Lvalues
+### Float → integer
 
-The parens in `(c = getchar())` are parsed as a `ParenExprAST` that wraps a `VariableExprAST`. `BuildAssignmentExpr` sees through the paren by the time it runs because `ParsePrimary` returns the inner expression node from `ParseParenExpr`. So assignment through `(x)` works correctly:
+```cpp
+return IsUnsignedIntType(To)
+           ? Builder->CreateFPToUI(V, LLVMTypeFor(To), "fptoui")
+           : Builder->CreateFPToSI(V, LLVMTypeFor(To), "fptosi");
+```
+
+### Division and remainder
+
+```cpp
+// / operator:
+return IsUnsignedIntType(ResultType) ? Builder->CreateUDiv(L, R, "divtmp")
+                                     : Builder->CreateSDiv(L, R, "divtmp");
+// % operator:
+return IsUnsignedIntType(ResultType) ? Builder->CreateURem(L, R, "modtmp")
+                                     : Builder->CreateSRem(L, R, "modtmp");
+```
+
+### Right shift
+
+```cpp
+return IsUnsignedIntType(Ty) ? Builder->CreateLShr(L, R, "shrtmp")
+                              : Builder->CreateAShr(L, R, "shrtmp");
+```
+
+`lshr` fills vacated high bits with zero. `ashr` fills with the sign bit.
+
+### Comparisons (`<`, `<=`, `>`, `>=`)
+
+```cpp
+// '<':
+return IsUnsignedIntType(CompareType)
+           ? Builder->CreateICmpULT(L, R, "cmptmp")
+           : Builder->CreateICmpSLT(L, R, "cmptmp");
+// '>':
+return IsUnsignedIntType(CompareType)
+           ? Builder->CreateICmpUGT(L, R, "cmptmp")
+           : Builder->CreateICmpSGT(L, R, "cmptmp");
+// '<=':
+return IsUnsignedIntType(CompareType)
+           ? Builder->CreateICmpULE(L, R, "cmptmp")
+           : Builder->CreateICmpSLE(L, R, "cmptmp");
+// '>=':
+return IsUnsignedIntType(CompareType)
+           ? Builder->CreateICmpUGE(L, R, "cmptmp")
+           : Builder->CreateICmpSGE(L, R, "cmptmp");
+```
+
+`==` and `!=` are signedness-agnostic (`icmp eq` / `icmp ne`); they are unchanged.
+
+### Literal range check
+
+`ParseNumberExpr` already checks that a literal fits in the target type. The max value calculation is updated to use `APInt::getAllOnes(Bits)` for unsigned types:
+
+```cpp
+APInt Max = IsUnsignedIntType(Type) ? APInt::getAllOnes(Bits)
+                                    : APInt::getSignedMaxValue(Bits);
+```
+
+`getAllOnes` is the all-bits-set value (`0xFF`, `0xFFFF`, etc.), which is the maximum for an unsigned type. `getSignedMaxValue` is `0x7F`, `0x7FFF`, etc.
+
+## Explicit Casts
+
+Explicit casts between signed and unsigned types are always allowed. They reinterpret the bit pattern:
 
 ```pyxc
-(x) = 2     # valid: same as x = 2
-(p[i]) = v  # valid: same as p[i] = v
+var x: int32  = -1
+var y: uint32 = uint32(x)   # 4294967295
+var z: int32  = int32(y)    # -1
 ```
+
+Same bit width: bits are unchanged. Narrowing truncates to the low bits.
 
 ## Grammar
 
 ```ebnf
-expression = lvalue assignop expression | unaryexpr binoprhs ; -- changed
+builtintype = "int" | "int8" | "int16" | "int32" | "int64"
+            | "uint8" | "uint16" | "uint32" | "uint64"   -- changed
+            | "float" | "float32" | "float64"
+            | "bool" | "None" ;
+casttype    = "int" | "int8" | "int16" | "int32" | "int64"
+            | "uint8" | "uint16" | "uint32" | "uint64"   -- changed
+            | "float" | "float32" | "float64"
+            | "bool" | pointertype ;
 ```
-
-The `assignstmt` rule is unchanged — assignment as a statement still works as before.
 
 ## Error Cases
 
-**Non-lvalue target:**
+**Implicit signed/unsigned mix:**
 ```pyxc
-(x + 1) = 3   # Error: Assignment target must be assignable
+var a: uint32 = 1
+var b: int32  = 2
+a = a + b   # Error: Type mismatch
 ```
 
-**Precedence trap without parens:**
-```pyxc
-while c = getchar() != EOF:
-  ...
-# Parses as: c = (getchar() != EOF)
-# If c is int32, this is a type error (assigning bool to int32).
-# Always use: while (c = getchar()) != EOF:
-```
+Cast explicitly: `a = a + uint32(b)`.
 
 ## Things Worth Knowing
 
-**Parentheses required when combining assignment with another operator.** `(c = getchar()) != EOF` is correct. `c = getchar() != EOF` assigns a `bool` to `c`.
+**`uint64(-1)` is `18446744073709551615`.** Converting it to `float64` rounds up because `float64` can only represent integers exactly up to `2^53`.
 
-**Assignment expressions do not print in the REPL.** Top-level assignments set variables silently, exactly as before.
+**Right shift is always logical for unsigned types.** `uint32(-1) >> 1` fills the vacated high bit with zero, giving `2147483647`.
 
-**Compound assignment also works as an expression.** `(n -= 1)` produces the new value of `n`. Idioms like `while (n -= 1) > 0:` work.
+**`size_t` maps to `uint64` on 64-bit targets.** When calling C functions that take or return `size_t`, declare the parameter as `uint64`.
 
 ## What's Next
 
-[Chapter 40](chapter-40.md) adds variadic `extern` declarations, enabling `printf`, `scanf`, and other C variadic functions.
+[Chapter 40](chapter-40.md) allows assignment to appear inside an expression — enabling the `while (c = getchar()) != EOF` pattern from K&R.
 
 ## Need Help?
 

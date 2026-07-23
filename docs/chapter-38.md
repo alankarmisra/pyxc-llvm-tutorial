@@ -1,27 +1,22 @@
 ---
-description: "Add unsigned integer types uint8, uint16, uint32, and uint64 with correct unsigned arithmetic, comparisons, and casts throughout."
+description: "Add character literals so single characters can be written as 'a', '\n', '\t', and '\\' instead of their numeric ASCII values."
 ---
-# 38. pyxc: Unsigned Integer Types
+# 38. pyxc: Character Literals
 
 ## Where We Are
 
-[Chapter 37](chapter-37.md) added character literals. pyxc has had signed integers since [Chapter 16](chapter-16.md), but all of them interpret their top bit as a sign. Sizes, counts, and bit masks are commonly stored as unsigned values in systems code, and without unsigned types the compiler has no way to generate the right instructions for them. After this chapter, `uint8`, `uint16`, `uint32`, and `uint64` are available:
+[Chapter 37](chapter-37.md) added `elif`. pyxc can call C library functions like `getchar()`, but comparing the result to a space or newline requires knowing the ASCII value off the top of your head:
 
 ```pyxc
-extern def printd(x: float64)
-
-def main() -> int:
-  var flags: uint32 = 0
-  flags |= uint32(1) << uint32(3)   # set bit 3
-  flags |= uint32(1) << uint32(7)   # set bit 7
-
-  var mask: uint32 = uint32(0xFF)
-  printd(float64(flags & mask))     # 136.000000
-  return 0
+if c == 32:   # space
+if c == 10:   # newline — or was it 13?
 ```
 
-```
-136.000000
+After this chapter, you can write what you mean:
+
+```pyxc
+if c == ' ':
+if c == '\n':
 ```
 
 ## Source Code
@@ -31,227 +26,171 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-38
 ```
 
-## New Tokens, Keywords, and `ValueType` Enum Values
+## New Token and Storage Global
 
-Four new tokens and keywords:
+One new token:
 
 ```cpp
-tok_uint8  = -65,
-tok_uint16 = -66,
-tok_uint32 = -67,
-tok_uint64 = -68,
+tok_char = -64,
 ```
 
+The lexer stores the character's integer value in a new global before returning the token:
+
 ```cpp
-{"uint8", tok_uint8}, {"uint16", tok_uint16},
-{"uint32", tok_uint32}, {"uint64", tok_uint64},
+static uint32_t CharLiteralValue = 0; // Filled in if tok_char
 ```
 
-Four new values in the `ValueType` enum:
+## Lexer: Scanning the Character Literal
+
+When the lexer sees `'`, it reads the character content, checks for the closing `'`, and sets `CharLiteralValue`:
 
 ```cpp
-UInt8,
-UInt16,
-UInt32,
-UInt64,
-```
+if (LexerLastChar == '\'') {
+  LexerLastChar = advance(); // eat opening quote
+  if (LexerLastChar == '\'' || LexerLastChar == '\n' || LexerLastChar == EOF) {
+    // error: empty or unterminated
+    return tok_error;
+  }
 
-`ParseTypeToken` gets cases for all four so they work in type annotations and the `casttype` production:
+  uint32_t Value = 0;
+  if (LexerLastChar == '\\') {
+    LexerLastChar = advance();
+    switch (LexerLastChar) {
+    case '\\': Value = '\\'; break;
+    case '\'': Value = '\''; break;
+    case 'n':  Value = '\n'; break;
+    case 't':  Value = '\t'; break;
+    case '0':  Value = '\0'; break;
+    default:
+      // error: invalid character escape
+      return tok_error;
+    }
+  } else {
+    Value = static_cast<unsigned char>(LexerLastChar);
+  }
 
-```cpp
-case tok_uint8:  getNextToken(); BaseType = ValueType::UInt8;  break;
-case tok_uint16: getNextToken(); BaseType = ValueType::UInt16; break;
-case tok_uint32: getNextToken(); BaseType = ValueType::UInt32; break;
-case tok_uint64: getNextToken(); BaseType = ValueType::UInt64; break;
-```
-
-## No New LLVM IR Types
-
-LLVM has no separate "unsigned integer" types. `uint32` and `int32` are both `i32` in the IR. `LLVMTypeFor` maps the four new `ValueType` values to the same LLVM types as their signed counterparts:
-
-```cpp
-case ValueType::UInt8:  return Type::getInt8Ty(*TheContext);
-case ValueType::UInt16: return Type::getInt16Ty(*TheContext);
-case ValueType::UInt32: return Type::getInt32Ty(*TheContext);
-case ValueType::UInt64: return Type::getInt64Ty(*TheContext);
-```
-
-The signedness lives entirely in which instruction the compiler emits.
-
-## `IsUnsignedIntType` and `IsSignedIntType`
-
-Two new predicate functions drive all instruction selection:
-
-```cpp
-static bool IsUnsignedIntType(ValueType Type) {
-  return Type == ValueType::UInt8 || Type == ValueType::UInt16 ||
-         Type == ValueType::UInt32 || Type == ValueType::UInt64;
-}
-
-static bool IsSignedIntType(ValueType Type) {
-  return IsIntType(Type) && !IsUnsignedIntType(Type);
+  LexerLastChar = advance();
+  if (LexerLastChar != '\'') {
+    // error: unterminated character literal
+    return tok_error;
+  }
+  LexerLastChar = advance(); // eat closing quote
+  CharLiteralValue = Value;
+  return tok_char;
 }
 ```
 
-`IsIntType` is expanded to include all four unsigned types:
+The five escape sequences:
+
+| Written | Value | Meaning |
+|---|---|---|
+| `'\\'` | 92 | backslash |
+| `'\''` | 39 | single quote |
+| `'\n'` | 10 | newline |
+| `'\t'` | 9 | horizontal tab |
+| `'\0'` | 0 | null byte |
+
+A bare character (no backslash) stores its unsigned byte value via `static_cast<unsigned char>`. Any backslash sequence other than the five listed is a `tok_error`.
+
+## `ParseCharExpr` — Building the AST Node
+
+`ParseCharExpr` is called from the primary expression dispatcher when `CurTok == tok_char`. It reuses `NumberExprAST` — a character literal is just an integer constant:
 
 ```cpp
-return Type == ValueType::Int || Type == ValueType::Int8 || ... ||
-       Type == ValueType::UInt8 || Type == ValueType::UInt16 ||
-       Type == ValueType::UInt32 || Type == ValueType::UInt64;
+static unique_ptr<ExprAST> ParseCharExpr() {
+  ValueType Type = ValueType::Int32;
+  if (IsIntType(ExpectedLiteralType))
+    Type = ExpectedLiteralType;
+  unsigned Bits = LLVMTypeFor(Type)->getIntegerBitWidth();
+  APInt Max = IsUnsignedIntType(Type) ? APInt::getAllOnes(Bits)
+                                      : APInt::getSignedMaxValue(Bits);
+  APInt Val(std::max(1u, Bits), CharLiteralValue, false);
+  if (Val.ugt(Max))
+    return LogError("Character literal out of range for type");
+  if (Val.getBitWidth() != Bits)
+    Val = Val.trunc(Bits);
+  auto Result = make_unique<NumberExprAST>(Val, Type);
+  getNextToken(); // consume tok_char
+  return Result;
+}
 ```
 
-## Implicit Widening Rule — Same Signedness Only
+The default type is `Int32`, matching `getchar()`'s return type and C's `int`. If the surrounding context (from `ExpectedLiteralTypeGuard`) expects a different integer type — say `var c: int8 = 'A'` — the literal adopts that type, with a range check against the target's maximum. A character value that doesn't fit in the target width is a parse error.
 
-`IsAssignable` gains a signedness gate. The bit-width comparison added in the previous chapter is now also gated on signedness:
+## `IsAssignable` Widening Fix
+
+This chapter also removes the old `IsFixedIntType` / `FixedIntRank` helper pair and replaces the integer widening check with a direct bit-width comparison that works for all integer types, including the unsigned types added next chapter:
 
 ```cpp
+// Before (ch36 and earlier):
+static bool IsFixedIntType(ValueType Type) {
+  return Type == ValueType::Int8 || Type == ValueType::Int16 ||
+         Type == ValueType::Int32 || Type == ValueType::Int64;
+}
+static int FixedIntRank(ValueType Type) { /* 1–4 */ }
+
+// Now (ch37 onward):
 if (IsIntType(From) && IsIntType(To)) {
   unsigned FromBits = LLVMTypeFor(From)->getIntegerBitWidth();
   unsigned ToBits   = LLVMTypeFor(To)->getIntegerBitWidth();
-  if (IsUnsignedIntType(From) != IsUnsignedIntType(To))
-    return false;          // signed/unsigned mixing forbidden implicitly
   return FromBits <= ToBits;
 }
 ```
 
-`uint8 → uint64` widens without a cast. `int32 → uint32` or `uint32 → int64` requires an explicit cast. This matches the design intent: implicit signed/unsigned conversion is a common bug source in C; pyxc won't do it silently.
+Using the LLVM type's bit width means the same code works for signed and unsigned integers without a separate rank table.
 
-## Instruction Selection — Seven Changed Sites
+## Primary Expression Dispatch
 
-### Integer widening (`EmitImplicitCast`)
-
-```cpp
-// Before: always sext
-return Builder->CreateSExt(V, LLVMTypeFor(To), "sext");
-
-// After:
-return IsUnsignedIntType(From)
-           ? Builder->CreateZExt(V, LLVMTypeFor(To), "zext")
-           : Builder->CreateSExt(V, LLVMTypeFor(To), "sext");
-```
-
-Unsigned types use `zext` (zero-extend) rather than `sext` (sign-extend).
-
-### Integer → float
+`tok_char` is wired into `ParsePrimary`:
 
 ```cpp
-return IsUnsignedIntType(From)
-           ? Builder->CreateUIToFP(V, LLVMTypeFor(To), "uitofp")
-           : Builder->CreateSIToFP(V, LLVMTypeFor(To), "sitofp");
+case tok_char:
+  return ParseCharExpr();
 ```
-
-`uitofp` treats the bit pattern as an unsigned integer, producing the correct positive float for `uint32(-1)` = 4294967295.0.
-
-### Float → integer
-
-```cpp
-return IsUnsignedIntType(To)
-           ? Builder->CreateFPToUI(V, LLVMTypeFor(To), "fptoui")
-           : Builder->CreateFPToSI(V, LLVMTypeFor(To), "fptosi");
-```
-
-### Division and remainder
-
-```cpp
-// / operator:
-return IsUnsignedIntType(ResultType) ? Builder->CreateUDiv(L, R, "divtmp")
-                                     : Builder->CreateSDiv(L, R, "divtmp");
-// % operator:
-return IsUnsignedIntType(ResultType) ? Builder->CreateURem(L, R, "modtmp")
-                                     : Builder->CreateSRem(L, R, "modtmp");
-```
-
-### Right shift
-
-```cpp
-return IsUnsignedIntType(Ty) ? Builder->CreateLShr(L, R, "shrtmp")
-                              : Builder->CreateAShr(L, R, "shrtmp");
-```
-
-`lshr` fills vacated high bits with zero. `ashr` fills with the sign bit.
-
-### Comparisons (`<`, `<=`, `>`, `>=`)
-
-```cpp
-// '<':
-return IsUnsignedIntType(CompareType)
-           ? Builder->CreateICmpULT(L, R, "cmptmp")
-           : Builder->CreateICmpSLT(L, R, "cmptmp");
-// '>':
-return IsUnsignedIntType(CompareType)
-           ? Builder->CreateICmpUGT(L, R, "cmptmp")
-           : Builder->CreateICmpSGT(L, R, "cmptmp");
-// '<=':
-return IsUnsignedIntType(CompareType)
-           ? Builder->CreateICmpULE(L, R, "cmptmp")
-           : Builder->CreateICmpSLE(L, R, "cmptmp");
-// '>=':
-return IsUnsignedIntType(CompareType)
-           ? Builder->CreateICmpUGE(L, R, "cmptmp")
-           : Builder->CreateICmpSGE(L, R, "cmptmp");
-```
-
-`==` and `!=` are signedness-agnostic (`icmp eq` / `icmp ne`); they are unchanged.
-
-### Literal range check
-
-`ParseNumberExpr` already checks that a literal fits in the target type. The max value calculation is updated to use `APInt::getAllOnes(Bits)` for unsigned types:
-
-```cpp
-APInt Max = IsUnsignedIntType(Type) ? APInt::getAllOnes(Bits)
-                                    : APInt::getSignedMaxValue(Bits);
-```
-
-`getAllOnes` is the all-bits-set value (`0xFF`, `0xFFFF`, etc.), which is the maximum for an unsigned type. `getSignedMaxValue` is `0x7F`, `0x7FFF`, etc.
-
-## Explicit Casts
-
-Explicit casts between signed and unsigned types are always allowed. They reinterpret the bit pattern:
-
-```pyxc
-var x: int32  = -1
-var y: uint32 = uint32(x)   # 4294967295
-var z: int32  = int32(y)    # -1
-```
-
-Same bit width: bits are unchanged. Narrowing truncates to the low bits.
 
 ## Grammar
 
 ```ebnf
-builtintype = "int" | "int8" | "int16" | "int32" | "int64"
-            | "uint8" | "uint16" | "uint32" | "uint64"   -- changed
-            | "float" | "float32" | "float64"
-            | "bool" | "None" ;
-casttype    = "int" | "int8" | "int16" | "int32" | "int64"
-            | "uint8" | "uint16" | "uint32" | "uint64"   -- changed
-            | "float" | "float32" | "float64"
-            | "bool" | pointertype ;
+primary     = castexpr | sizeofexpr | addrexpr | arrayliteral | stringliteral
+            | charliteral | identifierexpr | fieldaccess | indexexpr  -- changed
+            | numberexpr | bool_literal | parenexpr ;
+charliteral = "'" ( ? any char except ' and newline ? | charescape ) "'" ; -- new
+charescape  = "\\" ( "\\" | "'" | "n" | "t" | "0" ) ;                      -- new
 ```
 
 ## Error Cases
 
-**Implicit signed/unsigned mix:**
+**Invalid escape sequence:**
 ```pyxc
-var a: uint32 = 1
-var b: int32  = 2
-a = a + b   # Error: Type mismatch
+var x: int32 = '\x'  # Error: invalid character escape
 ```
 
-Cast explicitly: `a = a + uint32(b)`.
+**Empty literal:**
+```pyxc
+var x: int32 = ''    # Error: empty character literal
+```
+
+**Unterminated literal:**
+```pyxc
+var x: int32 = 'a    # Error: unterminated character literal
+```
+
+**Value out of range for type:**
+```pyxc
+var c: int8 = '\xFF'  # Error: Character literal out of range for type
+```
 
 ## Things Worth Knowing
 
-**`uint64(-1)` is `18446744073709551615`.** Converting it to `float64` rounds up because `float64` can only represent integers exactly up to `2^53`.
+**A character literal is just an integer.** `'a' + 1` is `98`. `'z' - 'a'` is `25`. Arithmetic on character values works exactly as it does in C.
 
-**Right shift is always logical for unsigned types.** `uint32(-1) >> 1` fills the vacated high bit with zero, giving `2147483647`.
+**The default type is `int32`, not `int8`.** This matches `getchar()`, which returns `int32` to distinguish `EOF` (−1) from a valid byte (0–255). If you store into an `int8`, values above 127 will be negative.
 
-**`size_t` maps to `uint64` on 64-bit targets.** When calling C functions that take or return `size_t`, declare the parameter as `uint64`.
+**No multi-character literals.** `'ab'` is not valid. Use string literals for strings.
 
 ## What's Next
 
-[Chapter 39](chapter-39.md) allows assignment to appear inside an expression — enabling the `while (c = getchar()) != EOF` pattern from K&R.
+[Chapter 39](chapter-39.md) adds unsigned integer types: `uint8`, `uint16`, `uint32`, and `uint64`.
 
 ## Need Help?
 

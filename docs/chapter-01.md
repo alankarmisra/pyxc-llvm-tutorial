@@ -58,15 +58,15 @@ enum Token {
 !!!note
     Breaking up the source into words is called *lexing* (from Latin *lexis*, meaning word) and these individual enum values, we will call `tokens` because that's what people who wrote compilers before us called them.  
 
-How do I represent function and variable names which are dynamic i.e. the user will invent their own names? Can't have an enum for every possible name. So I can create a catch-all `tok_identifier` to signal that I read a name and then I can have a separate variable which I update with the name I just read. 
+How do I represent function and variable names which are dynamic i.e. the user will invent their own names? Can't have an enum for every possible name. So I can create a catch-all `tok_name` to signal that I read a name and then I can have a separate variable which I update with the name I just read. 
 
 ```cpp
-static string IdentifierStr; // Filled in with the identifier name just read
+static string NameStr; // Filled in with the name just read
 ```
 
-When I read the name `foo`, I return `tok_identifier` and set `IdentifierStr = "foo"`.
+When I read the name `foo`, I return `tok_name` and set `NameStr = "foo"`.
 
-One variable is enough because any later compiler code that needs the name reads `IdentifierStr` and makes a copy of it before asking the lexer for another token. 
+One variable is enough because any later compiler code that needs the name reads `NameStr` and makes a copy of it before asking the lexer for another token. 
 
 I'll do the same for numbers with `tok_number`. 
 
@@ -101,7 +101,7 @@ enum Token {
   tok_def,
 
   // tokens that need additional information attached
-  tok_identifier,
+  tok_name,
   tok_number,
 
   // control flow
@@ -121,10 +121,11 @@ enum Token {
 I have one token, `tok_eol`, for a newline. However, Old Mac OS used `\r` for a newline, modern macOS and Unix use `\n`, Windows uses `\r\n`. I don't want three different newline checks in my lexer, so I'll normalize all of that down to `\n`. Then I only need to think about `\n`, which I convert to `tok_eol` for the rest of the compiler to use. I'm not touching the source file itself here, just what my code sees internally. Here's my `advance()` function that reads one character, normalizes any newline into `\n`.
 
 ```cpp
+/// advance - returns the next character, coalescing `\r\n` (Windows) into `\n`
+/// and converting bare `\r` (Old Macs) into `\n`.
 int advance() {
   int LastChar = getchar();
 
-  // Coalesce \r\n (Windows) into \n, convert bare \r (old Mac) to \n
   if (LastChar == '\r') {
     int NextChar = getchar();
     if (NextChar != '\n' && NextChar != EOF)
@@ -142,6 +143,7 @@ int advance() {
 `gettok()` is where I read characters and turn them into tokens, one per call. 
 
 ```cpp
+/// gettok - Return the next token from standard input.
 int gettok() {
   static int LastChar = ' ';
 ```
@@ -149,15 +151,16 @@ int gettok() {
 I start the static `LastChar` off as a *space*. Right after this, I skip whitespace other than newlines in a loop. On the first call, I skip past the initialization space and any whitespace at the start of the file. On later calls, I skip whitespace between tokens the same way. I stop this loop at a newline, a non-whitespace character, or end of file:
 
 ```cpp
+  // Skip whitespace EXCEPT newlines
   while (isspace(LastChar) && LastChar != '\n')
     LastChar = advance();
 ```
 
 After this loop, `LastChar` holds the next input value to process: the first character of the next token, a newline, or `EOF`.
 
-### Identifiers and Keywords
+### Names and Keywords
 
-I recognize an identifier when it begins with a letter or underscore. I then accumulate letters, digits, and underscores into `IdentifierStr`, and check whether it matches one of my two keywords. If it does, I return that keyword's token. Otherwise it's just an identifier. 
+I recognize a name when it begins with a letter or underscore. I then accumulate letters, digits, and underscores into `NameStr`, and check whether it matches one of my two keywords. If it does, I return that keyword's token. Otherwise it's just a name. 
 
 I'll dump all my keywords into a map for easy lookup and conversion.
 
@@ -171,17 +174,19 @@ static map<string, Token> Keywords = {
 And now I collect characters and return an appropriate token.
 
 ```cpp
+  // Name
   if (isalpha(LastChar) || LastChar == '_') {
-    IdentifierStr = LastChar;
+    NameStr = LastChar;
     while (isalnum(LastChar = advance()) || LastChar == '_')
-      IdentifierStr += LastChar;
-    // LastChar now holds the first character that is not part of this name / keyword.
+      NameStr += LastChar;
+    // LastChar now holds the first character that is not part of this
+    // name/keyword.
 
     // Keyword check.
-    auto KeywordIt = Keywords.find(IdentifierStr);
+    auto KeywordIt = Keywords.find(NameStr);
     if (KeywordIt != Keywords.end())
       return KeywordIt->second;
-    return tok_identifier;
+    return tok_name;
   }
 ```
 
@@ -189,14 +194,15 @@ And now I collect characters and return an appropriate token.
 
 Examples:
 - `def` → `tok_def`
-- `foo` → `tok_identifier`, `IdentifierStr = "foo"`
-- `my_var` → `tok_identifier`, `IdentifierStr = "my_var"`
+- `foo` → `tok_name`, `NameStr = "foo"`
+- `my_var` → `tok_name`, `NameStr = "my_var"`
 
 ### Numbers
 
 I take numbers through a similar accumulate-then-convert path: I read everything that looks like it belongs to a number into `NumStr`, then hand the whole string to [strtod](https://en.cppreference.com/w/cpp/string/byte/strtof) to parse into `NumVal`.
 
 ```cpp  
+  // Number
   if (isdigit(LastChar) || LastChar == '.') {
     string NumStr;
     do {
@@ -223,6 +229,7 @@ There is a bug here, but I'll leave it for now. I collect an invalid number like
 When `LastChar` holds a normalized newline, I return `tok_eol`. I read in another character to keep my promise that `LastChar` always holds the next character I haven't consumed yet. 
 
 ```cpp
+  // Newline
   if (LastChar == '\n') {
     LastChar = advance();
     return tok_eol;
@@ -234,7 +241,9 @@ When `LastChar` holds a normalized newline, I return `tok_eol`. I read in anothe
 Comments run from `#` to the end of the line, same as Python. I don't keep any of it. I read forward to the newline (or `EOF`), throw the whole thing away, then return `tok_eol`. If a comment follows code on a line, `tok_eol` marks that code line as complete.
 
 ```cpp
+  // Comment
   if (LastChar == '#') {
+    // Comment until the end of the line
     do {
       LastChar = advance();
     } while (LastChar != '\n' && LastChar != EOF);
@@ -253,6 +262,7 @@ If the comment runs straight into `EOF` with no trailing newline, `LastChar` hol
 When `LastChar` holds an `EOF`, the input stream has no more data, and I return `tok_eof`.
 
 ```cpp
+  // End of file
   if (LastChar == EOF)
     return tok_eof;
 ```
@@ -288,13 +298,14 @@ And finally, I handle punctuation, operators, and unrecognized characters. Since
 I’ll pipe pyxc source into my lexer and print the tokens I generate. To make those token values readable, I map each token to a display string. I'll keep using the enum values themselves everywhere else in the compiler; these strings are only for debug output and, later, for error reporting.
 
 ```cpp
-// TokenNames maps each named token to a readable string for debug output.
+// TokenNames maps each named token to a readable string for debug output and
+// error reporting.
 static map<int, string> TokenNames = {
     {tok_eof, "end of input"},
     {tok_eol, "newline"},
     {tok_error, "error"},
     {tok_def, "'def'"},
-    {tok_identifier, "identifier"},
+    {tok_name, "name"},
     {tok_number, "number"},
     {tok_return, "'return'"},
     {tok_lparen, "'('"},
@@ -308,12 +319,16 @@ static map<int, string> TokenNames = {
 OK, I have what I need now, so in `main()`, I call `gettok()` in a loop and print each token, until I hit `tok_eof`:
 
 ```cpp
+//===----------------------------------------===//
+// Driver
+//===----------------------------------------===//
+
 int main() {
   int tok;
   while ((tok = gettok()) != tok_eof) {
-    if (tok == tok_identifier)
+    if (tok == tok_name)
       fprintf(stdout, "%s: %s\n", TokenNames.at(tok).c_str(),
-              IdentifierStr.c_str());
+              NameStr.c_str());
     else if (tok == tok_number)
       fprintf(stdout, "%s: %g\n", TokenNames.at(tok).c_str(), NumVal);
     else
@@ -323,7 +338,7 @@ int main() {
 }
 ```
 
-For `tok_identifier` and `tok_number`, the token alone is not enough, so I also print the identifier text or numeric value.
+For `tok_name` and `tok_number`, the token alone is not enough, so I also print the name text or numeric value.
 
 ## Build and Run
 
@@ -336,23 +351,23 @@ printf "# add.pyxc\ndef add(x, y): # define a function\n    return x + y # retur
 ```text
 newline
 'def'
-identifier: add
+name: add
 '('
-identifier: x
+name: x
 ','
-identifier: y
+name: y
 ')'
 ':'
 newline
 'return'
-identifier: x
+name: x
 '+'
-identifier: y
+name: y
 newline
 newline
-identifier: print
+name: print
 '('
-identifier: add
+name: add
 '('
 number: 1
 ','
@@ -372,7 +387,7 @@ I use LLVM's `lit` test runner for all my tests. Each test is a small `.pyxc` fi
 
 ```pyxc
 # RUN: %pyxc < %s | grep -Fxq "'def'"
-# RUN: %pyxc < %s | grep -Fxq "identifier: print"
+# RUN: %pyxc < %s | grep -Fxq "name: print"
 # RUN: %pyxc < %s | grep -Fxq "number: 1"
 # RUN: %pyxc < %s | grep -Fxq "number: 2"
 
@@ -404,7 +419,7 @@ So `%pyxc < %s` becomes something like `build/pyxc < test/sample_chapter_1.pyxc`
 Each `# RUN:` line follows the same pipeline:
 
 1. Runs `%pyxc < %s`, i.e. `build/pyxc < test/sample_chapter_1.pyxc`
-2. Pipes the output to `grep`, checking for one token I expect to see: the `def` keyword, `print` showing up as a plain `identifier` just as any function name will in my scheme (even though it's currently an undefined function), or one of the two numbers, `1` and `2`.
+2. Pipes the output to `grep`, checking for one token I expect to see: the `def` keyword, `print` showing up as a plain `name` just as any function name will in my scheme (even though it's currently an undefined function), or one of the two numbers, `1` and `2`.
 3. `grep` exits `0` if it finds a match and `1` if it doesn't.
 4. `lit` reads that exit code to decide pass or fail. 
 
@@ -437,13 +452,13 @@ llvm-lit test/
 ```text
 -- Testing: 12 tests, 8 workers --
 PASS: pyxc-chapter01 :: sample_chapter_1.pyxc (1 of 12)
-PASS: pyxc-chapter01 :: identifier_underscore.pyxc (2 of 12)
+PASS: pyxc-chapter01 :: name_underscore.pyxc (2 of 12)
 PASS: pyxc-chapter01 :: keyword_def.pyxc (3 of 12)
 PASS: pyxc-chapter01 :: number_leading_dot.pyxc (4 of 12)
 PASS: pyxc-chapter01 :: punctuation_tokens.pyxc (5 of 12)
 PASS: pyxc-chapter01 :: comment_eof.pyxc (6 of 12)
 PASS: pyxc-chapter01 :: error_unknown_character.pyxc (7 of 12)
-PASS: pyxc-chapter01 :: identifier_simple.pyxc (8 of 12)
+PASS: pyxc-chapter01 :: name_simple.pyxc (8 of 12)
 PASS: pyxc-chapter01 :: number_integer.pyxc (9 of 12)
 PASS: pyxc-chapter01 :: comment_discards.pyxc (10 of 12)
 PASS: pyxc-chapter01 :: number_decimal.pyxc (11 of 12)

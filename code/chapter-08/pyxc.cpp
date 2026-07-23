@@ -75,33 +75,18 @@ enum Token {
   tok_identifier = -6,
   tok_number = -7,
 
-  // comparison operators
-  // Only multi-character operators use explicit tokens;
-  // single-character operators continue to be returned as
-  // their character value.
-  tok_eq = -8,   // ==
-  tok_neq = -9,  // !=
-  tok_leq = -10, // <=
-  tok_geq = -11, // >=
-
   // control
-  tok_if = -12,
-  tok_else = -13,
-  tok_return = -14,
-
-  // loops
-  tok_for = -15,
+  tok_return = -8,
 };
 
 static string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;        // Filled in if tok_number
-static string NumLiteralStr; // Filled in if tok_number, used in error messages
+static string NumLiteralStr; // Filled in if tok_number
 
 // Keywords like `def`, `extern` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
 static map<string, Token> Keywords = {
-    {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return},
-    {"if", tok_if},   {"else", tok_else},     {"for", tok_for}};
+    {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return}};
 
 // Debug-only token names. Kept separate from Keywords because this map is
 // purely for printing token stream output.
@@ -111,11 +96,7 @@ static map<int, string> TokenNames = [] {
       {tok_eof, "end of input"}, {tok_eol, "newline"},
       {tok_error, "error"},      {tok_def, "'def'"},
       {tok_extern, "'extern'"},  {tok_identifier, "identifier"},
-      {tok_number, "number"},    {tok_return, "'return'"},
-      {tok_eq, "'=='"},          {tok_neq, "'!='"},
-      {tok_leq, "'<='"},         {tok_geq, "'>='"},
-      {tok_if, "'if'"},          {tok_else, "'else'"},
-      {tok_for, "'for'"}};
+      {tok_number, "number"},    {tok_return, "'return'"}};
 
   // Single character tokens.
   for (int ch = 0; ch <= 255; ++ch) {
@@ -252,18 +233,6 @@ static int advance() {
   return LastChar;
 }
 
-/// peek - Return the next character from the input stream without consuming it.
-///
-/// Used by the two-character operator branches in gettok() to decide whether
-/// '=' should become '==' (tok_eq), '!' should become '!=' (tok_neq), etc.,
-/// without advancing LexLoc or notifying SourceManager.
-static int peek() {
-  int c = fgetc(Input);
-  if (c != EOF)
-    ungetc(c, Input);
-  return c;
-}
-
 /// gettok - Return the next token from standard input.
 ///
 /// LastChar holds the last character read by advance() but not yet consumed
@@ -342,32 +311,6 @@ static int gettok() {
       LastChar = ' ';
       return tok_eol;
     }
-  }
-
-  // peek(), if the next one completes a recognized token, eat it, and return
-  // token else return the single character token.
-  if (LastChar == '=') {
-    int Tok = (peek() == '=') ? (advance(), tok_eq) : '=';
-    LastChar = advance();
-    return Tok;
-  }
-
-  if (LastChar == '!') {
-    int Tok = (peek() == '=') ? (advance(), tok_neq) : '!';
-    LastChar = advance();
-    return Tok;
-  }
-
-  if (LastChar == '<') {
-    int Tok = (peek() == '=') ? (advance(), tok_leq) : '<';
-    LastChar = advance();
-    return Tok;
-  }
-
-  if (LastChar == '>') {
-    int Tok = (peek() == '=') ? (advance(), tok_geq) : '>';
-    LastChar = advance();
-    return Tok;
   }
 
   if (LastChar == EOF)
@@ -470,20 +413,20 @@ public:
   Value *codegen() override;
 };
 
-/// VariableExprAST - Expression class for referencing a variable, like "a".
-class VariableExprAST : public ExprAST {
+/// NameExprAST - Expression class for referencing a variable, like "a".
+class NameExprAST : public ExprAST {
   string Name;
 
 public:
-  VariableExprAST(const string &Name) : Name(Name) {}
+  NameExprAST(const string &Name) : Name(Name) {}
   Value *codegen() override;
 };
 
 /// BinaryExprAST - Expression class for a binary operator.
-/// Op is an int (not char) to accommodate both single-character ASCII operators
-/// like '+' and named multi-character token enums like tok_eq (==).
+/// Op is stored as an int token code. In chapter 7 all binary operators are
+/// single-character ASCII tokens ('+', '-', '*').
 class BinaryExprAST : public ExprAST {
-  int Op;
+  char Op;
   unique_ptr<ExprAST> LHS, RHS;
 
 public:
@@ -503,44 +446,15 @@ public:
   Value *codegen() override;
 };
 
-/// ForExprAST - Expression class for for loops.
-///   for <var> = <start>, <cond>, <step>: <body>
-/// The loop variable is in scope for <cond>, <step>, and <body> (through
-/// NamedValues). The expression always produces 0.0 — the loop is used for side
-/// effects.
-class ForExprAST : public ExprAST {
-  string VarName;
-  unique_ptr<ExprAST> Start, Cond, Step, Body;
-
-public:
-  ForExprAST(const string &VarName, unique_ptr<ExprAST> Start,
-             unique_ptr<ExprAST> Cond, unique_ptr<ExprAST> Step,
-             unique_ptr<ExprAST> Body)
-      : VarName(VarName), Start(std::move(Start)), Cond(std::move(Cond)),
-        Step(std::move(Step)), Body(std::move(Body)) {}
-  Value *codegen() override;
-};
-
-/// IfExprAST - Expression class for if/else.
-class IfExprAST : public ExprAST {
-  unique_ptr<ExprAST> Cond, Then, Else;
-
-public:
-  IfExprAST(unique_ptr<ExprAST> Cond, unique_ptr<ExprAST> Then,
-            unique_ptr<ExprAST> Else)
-      : Cond(std::move(Cond)), Then(std::move(Then)), Else(std::move(Else)) {}
-  Value *codegen() override;
-};
-
-/// PrototypeAST - This class represents the "prototype" for a function,
+/// FunctionSignatureAST - This class represents the "function signature" for a function,
 /// which captures its name, and its argument names (thus implicitly the number
 /// of arguments the function takes).
-class PrototypeAST {
+class FunctionSignatureAST {
   string Name;
   vector<string> Args;
 
 public:
-  PrototypeAST(const string &Name, vector<string> Args)
+  FunctionSignatureAST(const string &Name, vector<string> Args)
       : Name(Name), Args(std::move(Args)) {}
 
   const string &getName() const { return Name; }
@@ -548,14 +462,14 @@ public:
   Function *codegen();
 };
 
-/// FunctionAST - This class represents a function definition itself.
-class FunctionAST {
-  unique_ptr<PrototypeAST> Proto;
+/// FunctionDefAST - This class represents a function definition itself.
+class FunctionDefAST {
+  unique_ptr<FunctionSignatureAST> Signature;
   unique_ptr<ExprAST> Body;
 
 public:
-  FunctionAST(unique_ptr<PrototypeAST> Proto, unique_ptr<ExprAST> Body)
-      : Proto(std::move(Proto)), Body(std::move(Body)) {}
+  FunctionDefAST(unique_ptr<FunctionSignatureAST> Signature, unique_ptr<ExprAST> Body)
+      : Signature(std::move(Signature)), Body(std::move(Body)) {}
   Function *codegen();
 };
 
@@ -582,30 +496,17 @@ static void consumeNewlines() {
 }
 
 /// BinopPrecedence - Maps each binary operator token to its precedence.
-/// Higher numbers bind more tightly: '*' (40) > '+'/'-' (20) > comparisons
-/// (10). The key is an int rather than char so it can hold both
-/// single-character ASCII operators ('+', '-', '*', '<', '>') and
-/// multi-character named token enums (tok_eq, tok_neq, tok_leq, tok_geq). All
-/// comparison operators share precedence 10 so they bind equally tightly and
-/// are left-associative. Operators not in this map return -1 from
-/// GetTokPrecedence(), which tells ParseBinOpRHS to stop consuming operators
-/// and return what it has so far.
-static map<int, int> BinopPrecedence = {
-    {tok_eq, 10},  // ==
-    {tok_neq, 10}, // !=
-    {tok_leq, 10}, // <=
-    {tok_geq, 10}, // >=
-    {'<', 10},     // <
-    {'>', 10},     // >
-    {'+', 20},     // +
-    {'-', 20},     // -
-    {'*', 40},     // *
+/// Higher numbers bind more tightly: '*' (40) > '+'/'-' (20). Operators not in
+/// this map return -1 from GetTokPrecedence(), which tells ParseBinOpRHS to
+/// stop consuming operators and return what it has so far.
+static map<char, int> BinopPrecedence = {
+    {'+', 20}, // +
+    {'-', 20}, // -
+    {'*', 40}, // *
 };
 
 /// GetTokPrecedence - Returns the precedence of CurTok if it is a known binary
-/// operator, or -1 if it is not. Both single-character ASCII operators ('+',
-/// '-', '*', '<', '>') and named multi-character token enums (tok_eq, tok_neq,
-/// tok_leq, tok_geq) are looked up in BinopPrecedence.
+/// operator, or -1 if it is not.
 static int GetTokPrecedence() {
   auto It = BinopPrecedence.find(CurTok);
   if (It == BinopPrecedence.end() || It->second <= 0)
@@ -639,18 +540,17 @@ unique_ptr<ExprAST> LogError(const char *Str) {
   return nullptr;
 }
 
-unique_ptr<PrototypeAST> LogErrorP(const char *Str) {
+unique_ptr<FunctionSignatureAST> LogErrorSignature(const char *Str) {
   LogError(Str);
   return nullptr;
 }
 
-unique_ptr<FunctionAST> LogErrorF(const char *Str) {
+unique_ptr<FunctionDefAST> LogErrorF(const char *Str) {
   LogError(Str);
   return nullptr;
 }
 
 static unique_ptr<ExprAST> ParseExpression();
-static unique_ptr<ExprAST> ParsePrimary();
 
 /// numberexpr
 ///   = number ;
@@ -683,7 +583,7 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
   getNextToken(); // eat identifier.
 
   if (CurTok != '(') // Simple variable ref.
-    return make_unique<VariableExprAST>(IdName);
+    return make_unique<NameExprAST>(IdName);
 
   // Call.
   getNextToken(); // eat (
@@ -710,107 +610,10 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
   return make_unique<CallExprAST>(IdName, std::move(Args));
 }
 
-/// forexpr
-///   = "for" identifier "=" expression "," expression "," expression
-///     ":" [eols] expression ;
-///
-/// The loop variable is introduced by the "for" and is in scope for the
-/// condition, step, and body. It shadows any outer variable of the same name.
-static unique_ptr<ExprAST> ParseForExpr() {
-  getNextToken(); // eat 'for'
-
-  if (CurTok != tok_identifier)
-    return LogError("Expected identifier after 'for'");
-  string VarName = IdentifierStr;
-  getNextToken(); // eat identifier
-
-  if (CurTok != '=')
-    return LogError("Expected '=' after for variable");
-  getNextToken(); // eat '='
-
-  auto Start = ParseExpression();
-  if (!Start)
-    return nullptr;
-
-  if (CurTok != ',')
-    return LogError("Expected ',' after for start value");
-  getNextToken(); // eat ','
-
-  auto Cond = ParseExpression();
-  if (!Cond)
-    return nullptr;
-
-  if (CurTok != ',')
-    return LogError("Expected ',' after for condition");
-  getNextToken(); // eat ','
-
-  auto Step = ParseExpression();
-  if (!Step)
-    return nullptr;
-
-  if (CurTok != ':')
-    return LogError("Expected ':' after for step");
-  getNextToken(); // eat ':'
-
-  // Allow body on next line.
-  consumeNewlines();
-
-  auto Body = ParseExpression();
-  if (!Body)
-    return nullptr;
-
-  return make_unique<ForExprAST>(VarName, std::move(Start), std::move(Cond),
-                                 std::move(Step), std::move(Body));
-}
-
-/// ifexpr
-///   = "if" expression ":" expression "else" ":" expression ;
-static unique_ptr<ExprAST> ParseIfExpr() {
-  getNextToken(); // eat 'if'
-
-  auto Cond = ParseExpression();
-  if (!Cond)
-    return nullptr;
-
-  if (CurTok != ':')
-    return LogError("Expected ':' after if condition");
-  getNextToken(); // eat ':'
-
-  // Allow body on next line
-  consumeNewlines();
-
-  auto Then = ParseExpression();
-  if (!Then)
-    return nullptr;
-
-  // Allow 'else' on next line
-  consumeNewlines();
-
-  if (CurTok != tok_else)
-    return LogError("Expected 'else' in if expression");
-  getNextToken(); // eat 'else'
-
-  if (CurTok != ':')
-    return LogError("Expected ':' after else");
-  getNextToken(); // eat ':'
-
-  // Allow body on next line
-  consumeNewlines();
-
-  auto Else = ParseExpression();
-  if (!Else)
-    return nullptr;
-
-  return make_unique<IfExprAST>(std::move(Cond), std::move(Then),
-                                std::move(Else));
-}
-
 /// primary
 ///   = identifierexpr
 ///   | numberexpr
-///   | parenexpr
-///   | conditionalexpr
-///   | forexpr ;
+///   | parenexpr ;
 static unique_ptr<ExprAST> ParsePrimary() {
   switch (CurTok) {
   default:
@@ -821,10 +624,6 @@ static unique_ptr<ExprAST> ParsePrimary() {
     return ParseNumberExpr();
   case '(':
     return ParseParenExpr();
-  case tok_if:
-    return ParseIfExpr();
-  case tok_for:
-    return ParseForExpr();
   }
 }
 
@@ -875,28 +674,17 @@ static unique_ptr<ExprAST> ParseExpression() {
   return ParseBinOpRHS(0, std::move(LHS));
 }
 
-/// prototype
+/// functionsignature
 ///   = identifier "(" [ identifier { "," identifier } ] ")" ;
-static unique_ptr<PrototypeAST> ParsePrototype() {
+static unique_ptr<FunctionSignatureAST> ParseFunctionSignature() {
   if (CurTok != tok_identifier)
-    return LogErrorP("Expected function name in prototype");
+    return LogErrorSignature("Expected function name in function signature");
 
   string FnName = IdentifierStr;
-  if ((FnName.size() == 7 && FnName.rfind("binary", 0) == 0 &&
-       isascii(static_cast<unsigned char>(FnName[6])) &&
-       ispunct(static_cast<unsigned char>(FnName[6]))) ||
-      (FnName.size() == 6 && FnName.rfind("unary", 0) == 0 &&
-       isascii(static_cast<unsigned char>(FnName[5])) &&
-       ispunct(static_cast<unsigned char>(FnName[5])))) {
-    fprintf(stderr,
-            "Warning: Function name '%s' may conflict with "
-            "operator-reserved naming\n",
-            FnName.c_str());
-  }
   getNextToken(); // eat function name
 
   if (CurTok != '(')
-    return LogErrorP("Expected '(' in prototype");
+    return LogErrorSignature("Expected '(' in function signature");
 
   // Parse argument names. The loop calls getNextToken() at the top to advance
   // past '(' on the first iteration, and past ',' on subsequent ones.
@@ -910,24 +698,24 @@ static unique_ptr<PrototypeAST> ParsePrototype() {
       break;
 
     if (CurTok != ',')
-      return LogErrorP("Expected ')' or ',' in parameter list");
+      return LogErrorSignature("Expected ')' or ',' in parameter list");
     // loop continues: getNextToken() at the top eats the ','
   }
 
   if (CurTok != ')')
-    return LogErrorP("Expected ')' in prototype");
+    return LogErrorSignature("Expected ')' in function signature");
 
   getNextToken(); // eat ')'
 
-  return make_unique<PrototypeAST>(FnName, std::move(ArgNames));
+  return make_unique<FunctionSignatureAST>(FnName, std::move(ArgNames));
 }
 
 /// definition
-///   = "def" prototype ":" [ eols ] "return" expression ;
-static unique_ptr<FunctionAST> ParseDefinition() {
+///   = "def" function signature ":" [ eols ] "return" expression ;
+static unique_ptr<FunctionDefAST> ParseFunctionDef() {
   getNextToken(); // eat 'def'
-  auto Proto = ParsePrototype();
-  if (!Proto)
+  auto Signature = ParseFunctionSignature();
+  if (!Signature)
     return nullptr;
 
   if (CurTok != ':')
@@ -945,32 +733,32 @@ static unique_ptr<FunctionAST> ParseDefinition() {
   getNextToken(); // eat 'return'
 
   if (auto E = ParseExpression())
-    return make_unique<FunctionAST>(std::move(Proto), std::move(E));
+    return make_unique<FunctionDefAST>(std::move(Signature), std::move(E));
   return nullptr;
 }
 
 /// toplevelexpr
 ///   = expression
 /// A top-level expression (e.g. "1 + 2") is wrapped in an anonymous function
-/// so it fits the same FunctionAST shape as everything else.
+/// so it fits the same FunctionDefAST shape as everything else.
 /// HandleTopLevelExpression compiles it into the JIT, calls it to get the
 /// numeric result, then removes it from the JIT via a ResourceTracker.
-static unique_ptr<FunctionAST> ParseTopLevelExpr() {
+static unique_ptr<FunctionDefAST> ParseTopLevelExpr() {
   if (auto E = ParseExpression()) {
-    auto Proto = make_unique<PrototypeAST>("__anon_expr", vector<string>());
-    return make_unique<FunctionAST>(std::move(Proto), std::move(E));
+    auto Signature = make_unique<FunctionSignatureAST>("__anon_expr", vector<string>());
+    return make_unique<FunctionDefAST>(std::move(Signature), std::move(E));
   }
   return nullptr;
 }
 
 /// external
-///   = "extern" "def" prototype
-static unique_ptr<PrototypeAST> ParseExtern() {
+///   = "extern" "def" function signature
+static unique_ptr<FunctionSignatureAST> ParseExtern() {
   getNextToken(); // eat extern.
   if (CurTok != tok_def)
-    return LogErrorP("Expected `def` after extern.");
+    return LogErrorSignature("Expected `def` after extern.");
   getNextToken(); // eat def
-  return ParsePrototype();
+  return ParseFunctionSignature();
 }
 
 //===----------------------------------------===//
@@ -1006,9 +794,9 @@ static unique_ptr<PrototypeAST> ParseExtern() {
 // need loop or CGSCC analyses can find them.
 //
 //
-// FunctionProtos - Persistent prototype registry. Because each function
+// FunctionSignatures - Persistent function signature registry. Because each function
 // lands in its own module, a later module that calls 'foo' cannot find 'foo'
-// in TheModule->getFunction(). FunctionProtos stores the PrototypeAST for
+// in TheModule->getFunction(). FunctionSignatures stores the FunctionSignatureAST for
 // every declared or defined function so getFunction() can re-emit a
 // declaration into the current module on demand.
 //
@@ -1025,7 +813,7 @@ static std::unique_ptr<LoopAnalysisManager> TheLAM;
 static std::unique_ptr<FunctionAnalysisManager> TheFAM;
 static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
 static std::unique_ptr<ModuleAnalysisManager> TheMAM;
-static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
+static std::map<std::string, std::unique_ptr<FunctionSignatureAST>> FunctionSignatures;
 static ExitOnError ExitOnErr;
 
 /// LogErrorV - Codegen-level error helper. Delegates to LogError for printing,
@@ -1036,11 +824,11 @@ Value *LogErrorV(const char *Str) {
 }
 
 /// getFunction - Resolve a function name to an LLVM Function* in the current
-/// module, re-emitting a declaration from FunctionProtos if necessary.
+/// module, re-emitting a declaration from FunctionSignatures if necessary.
 ///
 /// Because each top-level input gets its own Module, a function defined in an
 /// earlier module is no longer in TheModule->getFunction(). When that happens
-/// we look up its PrototypeAST in FunctionProtos and call codegen() on it,
+/// we look up its FunctionSignatureAST in FunctionSignatures and call codegen() on it,
 /// which emits a fresh 'declare' with ExternalLinkage in the current module.
 /// The JIT resolves that extern to the already-compiled body at link time.
 Function *getFunction(const std::string &Name) {
@@ -1048,9 +836,9 @@ Function *getFunction(const std::string &Name) {
   if (auto *F = TheModule->getFunction(Name))
     return F;
 
-  // Slow path: re-emit a declaration from the saved prototype.
-  auto FI = FunctionProtos.find(Name);
-  if (FI != FunctionProtos.end())
+  // Slow path: re-emit a declaration from the saved function signature.
+  auto FI = FunctionSignatures.find(Name);
+  if (FI != FunctionSignatures.end())
     return FI->second->codegen();
 
   return nullptr;
@@ -1069,13 +857,13 @@ Value *NumberExprAST::codegen() {
   return ConstantFP::get(*TheContext, APFloat(Val));
 }
 
-/// VariableExprAST::codegen - A variable reference looks up the name in
+/// NameExprAST::codegen - A variable reference looks up the name in
 /// NamedValues and returns the Value* for the corresponding function argument.
 ///
 /// For now NamedValues only contains the current function's parameters; any
 /// other name is an error. Mutable local variables (alloca/store/load) come
 /// in a later chapter.
-Value *VariableExprAST::codegen() {
+Value *NameExprAST::codegen() {
   auto It = NamedValues.find(Name);
   if (It == NamedValues.end() || !It->second)
     return LogErrorV("Unknown variable name");
@@ -1090,15 +878,6 @@ Value *VariableExprAST::codegen() {
 /// numeric suffix when the same hint would otherwise repeat. They have no
 /// effect on correctness.
 ///
-/// Comparison operators ('<', '>', tok_eq, tok_neq, tok_leq, tok_geq) each
-/// require two steps: CreateFCmp* produces a 1-bit integer (i1) — LLVM's
-/// boolean type. Since Pyxc treats everything as double, CreateUIToFP widens
-/// it: false -> 0.0, true -> 1.0. This double boolean is then used as the
-/// condition value in if/for expressions, where fcmp one != 0.0 converts it
-/// back to i1.
-/// We use ordered floating-point comparisons for ==, <, <=, >, and >=, so
-/// comparisons involving NaN evaluate false. For != we use unordered
-/// comparison, so x != NaN evaluates true.
 Value *BinaryExprAST::codegen() {
   Value *L = LHS->codegen();
   if (!L)
@@ -1115,26 +894,6 @@ Value *BinaryExprAST::codegen() {
     return Builder->CreateFSub(L, R, "subtmp");
   case '*':
     return Builder->CreateFMul(L, R, "multmp");
-  case '<':
-    L = Builder->CreateFCmpOLT(L, R, "cmptmp");
-    // Widen the i1 boolean to double: false -> 0.0, true -> 1.0.
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
-  case '>':
-    L = Builder->CreateFCmpOGT(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
-  case tok_eq:
-    L = Builder->CreateFCmpOEQ(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
-  case tok_neq:
-    // Use unordered comparsion so that 1 != NaN  returns true.
-    L = Builder->CreateFCmpUNE(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
-  case tok_leq:
-    L = Builder->CreateFCmpOLE(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
-  case tok_geq:
-    L = Builder->CreateFCmpOGE(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   default:
     return LogErrorV("invalid binary operator");
   }
@@ -1165,178 +924,7 @@ Value *CallExprAST::codegen() {
   return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
-/// IfExprAST::codegen - Emit LLVM IR for an if/else expression.
-///
-/// Emitted control flow:
-///
-///   <current>:
-///     ; Cond codegen emits a double value %condv
-///     %ifcond = fcmp one double %condv, 0.0 ; convert the double to i1
-///     br i1 %ifcond, label %then, label %else
-///
-///   then:
-///     ; Then codegen emits %thenv
-///     br label %ifcont
-///
-///   else:
-///     ; Else codegen emits %elsev
-///     br label %ifcont
-///
-///   ifcont:
-///     %iftmp = phi double [ %thenv, %then_end ], [ %elsev, %else_end ]
-///
-/// `%iftmp` is the value of the whole if-expression.
-///
-/// We recapture `ThenBB` and `ElseBB` after branch codegen because nested
-/// control flow can move the Builder insertion point to a different block.
-/// PHI incoming edges must use the actual terminating blocks of each arm.
-Value *IfExprAST::codegen() {
-  Value *CondV = Cond->codegen();
-  if (!CondV)
-    return nullptr;
-
-  // Convert condition to bool by comparing != 0.0
-  CondV = Builder->CreateFCmpONE(
-      CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "ifcond");
-
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
-
-  // Create blocks for then, else, and merge.
-  BasicBlock *ThenBB = BasicBlock::Create(*TheContext, "then", TheFunction);
-  BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else", TheFunction);
-  BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont", TheFunction);
-
-  Builder->CreateCondBr(CondV, ThenBB, ElseBB);
-
-  // Emit then block.
-  Builder->SetInsertPoint(ThenBB);
-  Value *ThenV = Then->codegen();
-  if (!ThenV)
-    return nullptr;
-  Builder->CreateBr(MergeBB);
-
-  // Codegen can change the current block — capture where then ended.
-  ThenBB = Builder->GetInsertBlock();
-
-  // Emit else block.
-  Builder->SetInsertPoint(ElseBB);
-  Value *ElseV = Else->codegen();
-  if (!ElseV)
-    return nullptr;
-  Builder->CreateBr(MergeBB);
-  ElseBB = Builder->GetInsertBlock();
-
-  // Emit merge block with phi node.
-  Builder->SetInsertPoint(MergeBB);
-  PHINode *PN = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
-  PN->addIncoming(ThenV, ThenBB);
-  PN->addIncoming(ElseV, ElseBB);
-
-  return PN;
-}
-
-/// ForExprAST::codegen - Emit LLVM IR for a for-expression.
-///
-/// CFG shape:
-///
-///   <preheader>:
-///     %start = <Start codegen>
-///     br label %loop_cond
-///
-///   loop_cond:
-///     %i = phi double [ %start, %preheader ], [ %nextvar, %body_end ]
-///     %condv = <Cond codegen>
-///     %loopcond = fcmp one double %condv, 0.0
-///     br i1 %loopcond, label %loop_body, label %after_loop
-///
-///   loop_body:
-///     ; <Body codegen> (value ignored)
-///     %step = <Step codegen>
-///     %nextvar = fadd double %i, %step
-///     br label %loop_cond
-///
-///   after_loop:
-///     ; restore shadowed outer binding of loop variable (if any)
-///     ; for-expression result:
-///     ret-like value = 0.0
-///
-/// The loop variable name is rebound to `%i` while generating Cond/Step/Body,
-/// then restored after the loop.
-Value *ForExprAST::codegen() {
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
-
-  // Emit start value in the preheader (current block before the loop).
-  Value *StartVal = Start->codegen();
-  if (!StartVal)
-    return nullptr;
-
-  BasicBlock *PreheaderBB = Builder->GetInsertBlock();
-
-  // Create all three blocks up front so we can reference them in branches.
-  BasicBlock *CondBB =
-      BasicBlock::Create(*TheContext, "loop_cond", TheFunction);
-  BasicBlock *BodyBB =
-      BasicBlock::Create(*TheContext, "loop_body", TheFunction);
-  BasicBlock *AfterBB =
-      BasicBlock::Create(*TheContext, "after_loop", TheFunction);
-
-  // Unconditional jump from preheader into the condition check.
-  Builder->CreateBr(CondBB);
-
-  // ---- loop_cond ----
-  Builder->SetInsertPoint(CondBB);
-
-  // PHI picks start_val on the first iteration, next_i on subsequent ones.
-  // The back-edge incoming value is added below once we know BodyEndBB.
-  PHINode *Variable =
-      Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
-  Variable->addIncoming(StartVal, PreheaderBB);
-
-  // Shadow any outer variable of the same name so the body sees the loop var.
-  Value *OldVal = NamedValues[VarName];
-  NamedValues[VarName] = Variable;
-
-  // Evaluate the condition; treat 0.0 as false, anything else as true.
-  Value *CondVal = Cond->codegen();
-  if (!CondVal)
-    return nullptr;
-  CondVal = Builder->CreateFCmpONE(
-      CondVal, ConstantFP::get(*TheContext, APFloat(0.0)), "loopcond");
-  Builder->CreateCondBr(CondVal, BodyBB, AfterBB);
-
-  // ---- loop_body ----
-  Builder->SetInsertPoint(BodyBB);
-
-  // Body is evaluated for side effects; its value is discarded.
-  if (!Body->codegen())
-    return nullptr;
-
-  // Step: advance the loop variable.
-  Value *StepVal = Step->codegen();
-  if (!StepVal)
-    return nullptr;
-  Value *NextVar = Builder->CreateFAdd(Variable, StepVal, "nextvar");
-
-  // Body codegen may have changed the insert block (e.g. nested ifs added
-  // blocks). Capture where the body actually ended for the PHI back-edge.
-  BasicBlock *BodyEndBB = Builder->GetInsertBlock();
-  Variable->addIncoming(NextVar, BodyEndBB);
-  Builder->CreateBr(CondBB);
-
-  // ---- after_loop ----
-  Builder->SetInsertPoint(AfterBB);
-
-  // Restore the shadowed variable (if any) now that the loop is done.
-  if (OldVal)
-    NamedValues[VarName] = OldVal;
-  else
-    NamedValues.erase(VarName);
-
-  // The for expression always produces 0.0.
-  return ConstantFP::get(*TheContext, APFloat(0.0));
-}
-
-/// PrototypeAST::codegen - Create a function declaration in TheModule: name,
+/// FunctionSignatureAST::codegen - Create a function declaration in TheModule: name,
 /// return type (always double), and parameter types (all double).
 ///
 /// ExternalLinkage makes the function visible outside this module. That is
@@ -1346,7 +934,7 @@ Value *ForExprAST::codegen() {
 ///
 /// Arg.setName() is optional — it only affects the printed IR, making output
 /// read as 'double %a, double %b' rather than 'double %0, double %1'.
-Function *PrototypeAST::codegen() {
+Function *FunctionSignatureAST::codegen() {
   // All parameters and the return value are double.
   std::vector<Type *> Doubles(Args.size(), Type::getDoubleTy(*TheContext));
   FunctionType *FT = FunctionType::get(Type::getDoubleTy(*TheContext), Doubles,
@@ -1363,32 +951,32 @@ Function *PrototypeAST::codegen() {
   return F;
 }
 
-/// FunctionAST::codegen - Generate IR for a complete function definition.
+/// FunctionDefAST::codegen - Generate IR for a complete function definition.
 ///
 /// Four steps:
 ///
-/// 1. Register the prototype. The PrototypeAST is moved into FunctionProtos
+/// 1. Register the function signature. The FunctionSignatureAST is moved into FunctionSignatures
 ///    so that future modules can re-emit a declaration for this function via
 ///    getFunction(). A reference is kept for the getFunction() call below.
 ///    getFunction() either finds an existing declaration in the current module
-///    (e.g. from a prior 'extern def') or calls Proto->codegen() to create one.
+///    (e.g. from a prior 'extern def') or calls Signature->codegen() to create one.
 ///
 /// 2. Create the entry BasicBlock and point the Builder at it. A basic block
 ///    is a straight-line sequence of instructions with one entry and one exit.
 ///    Every function starts with exactly one entry block.
 ///
 /// 3. Populate NamedValues. Clear the table (the previous function's arguments
-///    are irrelevant) and insert each argument. VariableExprAST nodes in the
+///    are irrelevant) and insert each argument. NameExprAST nodes in the
 ///    body look names up here.
 ///
 /// 4. Codegen the body expression. On success, emit 'ret', run verifyFunction
 ///    (LLVM's internal consistency checker), then run TheFPM to apply the
 ///    optimisation pipeline. On failure, eraseFromParent() removes the
 ///    partially-built function so no broken declaration is left in the module.
-Function *FunctionAST::codegen() {
-  // Step 1: register the prototype and resolve the Function*.
-  auto &P = *Proto;
-  FunctionProtos[Proto->getName()] = std::move(Proto);
+Function *FunctionDefAST::codegen() {
+  // Step 1: register the function signature and resolve the Function*.
+  auto &P = *Signature;
+  FunctionSignatures[Signature->getName()] = std::move(Signature);
 
   // Step 1: reuse an existing `extern` declaration if one exists.
   Function *TheFunction = getFunction(P.getName());
@@ -1498,17 +1086,17 @@ static void SynchronizeToLineBoundary() {
     getNextToken();
 }
 
-/// HandleDefinition - Parse, optimise, and JIT-compile a 'def' definition.
+/// HandleFunctionDef - Parse, optimise, and JIT-compile a 'def' definition.
 ///
 /// On success: codegen + optimise the function (TheFPM runs inside
-/// FunctionAST::codegen), print the optimised IR, then hand the entire
+/// FunctionDefAST::codegen), print the optimised IR, then hand the entire
 /// module to the JIT via addModule. The JIT takes ownership of TheModule and
 /// TheContext, so InitializeModuleAndManagers() is called immediately after
 /// to create a fresh module for the next input. The compiled function remains
 /// accessible in the JIT's symbol table for the rest of the session.
 /// On parse failure or unexpected trailing tokens: discard the line.
-static void HandleDefinition() {
-  auto FnAST = ParseDefinition();
+static void HandleFunctionDef() {
+  auto FnAST = ParseFunctionDef();
   if (!FnAST || (CurTok != tok_eol && CurTok != tok_eof)) {
     if (FnAST)
       LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
@@ -1528,10 +1116,10 @@ static void HandleDefinition() {
 
 /// HandleExtern - Parse and register an 'extern def' declaration.
 ///
-/// On success: codegen the prototype (emits a 'declare' in the current module),
-/// print it, then save the PrototypeAST into FunctionProtos. Saving into
-/// FunctionProtos is the critical step — when this module is handed to the JIT
-/// and a new one is created, getFunction() uses FunctionProtos to re-emit the
+/// On success: codegen the function signature (emits a 'declare' in the current module),
+/// print it, then save the FunctionSignatureAST into FunctionSignatures. Saving into
+/// FunctionSignatures is the critical step — when this module is handed to the JIT
+/// and a new one is created, getFunction() uses FunctionSignatures to re-emit the
 /// 'declare' in whichever module needs to call the extern.
 /// On parse failure or unexpected trailing tokens: discard the line.
 static void HandleExtern() {
@@ -1546,8 +1134,8 @@ static void HandleExtern() {
 
   // Reject conflicting redeclarations: in Pyxc, function identity is just
   // name + arity, since all parameter and return types are double.
-  auto Existing = FunctionProtos.find(ProtoAST->getName());
-  if (Existing != FunctionProtos.end() &&
+  auto Existing = FunctionSignatures.find(ProtoAST->getName());
+  if (Existing != FunctionSignatures.end() &&
       Existing->second->getNumArgs() != ProtoAST->getNumArgs()) {
     LogError((string("Conflicting extern declaration for '") +
               ProtoAST->getName() + "'")
@@ -1560,8 +1148,8 @@ static void HandleExtern() {
     Log("Parsed an extern.\n");
     if (VerboseIR)
       FnIR->print(errs());
-    // Save the prototype so getFunction() can re-emit it in future modules.
-    FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
+    // Save the function signature so getFunction() can re-emit it in future modules.
+    FunctionSignatures[ProtoAST->getName()] = std::move(ProtoAST);
   }
 }
 
@@ -1653,9 +1241,8 @@ extern "C" DLLEXPORT double printd(double X) {
 /// top             = definition | external | toplevelexpr ;
 ///
 /// Dispatches on the leading token of each top-level form:
-///   tok_def    → HandleDefinition   (definition)
+///   tok_def    → HandleFunctionDef   (definition)
 ///   tok_extern → HandleExtern       (external)
-///   '@'        → HandleDecorator    (decorateddef: @binary / @unary)
 ///   tok_eol    → skip blank line
 ///   anything else → HandleTopLevelExpression (toplevelexpr)
 ///
@@ -1683,7 +1270,7 @@ static void MainLoop() {
 
     switch (CurTok) {
     case tok_def:
-      HandleDefinition();
+      HandleFunctionDef();
       break;
     case tok_extern:
       HandleExtern();

@@ -12,10 +12,10 @@
 # IfStmtAST::codegen must not require an else branch; when Else is nullptr it
 # simply emits a branch to the merge block from the else slot.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-def abs(x: float64) -> float64:
-    var result: float64 = x
+def abs(x):
+    var result = x
     if x < 0:
         result = 0 - x
     return result

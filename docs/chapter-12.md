@@ -1,27 +1,24 @@
 ---
-description: "Add global variables so top-level var declarations and assignments persist across REPL inputs and work naturally in compiled files."
+description: "Switch from expression-only bodies to statement blocks with indentation, and make if/for/var/return statements."
 ---
-# 12. pyxc: Global Variables
+# 12. pyxc: Statement Blocks
 
 ## Where We Are
 
-[Chapter 11](chapter-11.md) introduced statement blocks, indentation, and `var` as a proper statement. But `var` only worked inside function bodies. At the top level — both in the REPL and in file mode — there was no way to declare a variable that outlived a single expression:
+[Chapter 11](chapter-11.md) added mutable variables, but the function body was still a single expression. The `var` form needed a `:` and a body expression, and `for` loops were expressions that produced `0.0`. This chapter introduces real statement blocks and indentation-sensitive syntax. After this chapter you'll be able to write code more naturally:
 
+<!-- code-merge:start -->
 ```pyxc
-# Chapter 11 — neither of these works at top level:
-var x = 10     # parse error: var is not an expression
-x = x + 1     # parse error: x is undeclared
+ready> def sum_to(n):
+    var acc = 0
+    for var i = 1, i <= n, 1:
+        acc = acc + i
+    return acc
 ```
-
-I want to fix that this chapter. Once I do, the REPL works the way you'd expect, and file mode has a proper entry point:
-
-```pyxc
-ready> var x = 10
-ready> x = x + 7
-ready> extern def printd(n)
-ready> printd(x)
-17.000000
+```bash
+Parsed a function definition.
 ```
+<!-- code-merge:end -->
 
 ## Source Code
 
@@ -30,446 +27,867 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-12
 ```
 
-## The Problem in Detail
-
-In chapter 11, `ParseTopLevelExpr` called `ParseExpression`, which only accepted expressions — not statements. And even if `var x = 10` had somehow parsed, I'd have compiled it into a fresh `__anon_expr` function that gets freed immediately after execution. The variable and its storage would both be gone before the next REPL line was read.
-
-The root cause is architectural: the REPL compiles each top-level input into a new module, then hands that module to the JIT and (for expressions) frees it. A local `alloca` inside a freed module is unreachable. I need storage for global mutable state that survives across module boundaries.
-
-I'm going to solve this in two parts:
-
-1. **`GlobalVariable` instead of `alloca`** — LLVM global variables live at a fixed address in the JIT's address space. Any module can declare one as `extern` and the JIT resolves all references to the same storage.
-
-2. **`__pyxc.global_init`** — top-level statements need to run in order. I'll have both the REPL and file mode collect top-level statements into an internal function called `__pyxc.global_init` and call it as an entry point.
-
 ## Grammar
 
-The grammar itself is unchanged from chapter 11. What changes is what the top-level dispatch accepts. Previously `top` only dispatched statements as expressions; now it needs to handle the full statement set:
+The central shift: `if`, `for`, `var`, and `return` move out of the expression grammar and become statements. Expressions are now purely value-producing.
+
+**What changed or is new:**
 
 ```ebnf
-(* unchanged from chapter 11 — the grammar already supported this *)
-top        = definition | decorateddef | external | toplevelstmt ;
-toplevelstmt = statement ;  (* was: toplevelexpr = expression *)
+(* changed: body is now a statement or indented block, not an expression *)
+definition   = "def" prototype ":" ( simplestmt | eols block ) ;
+decorateddef = binarydecorator eols "def" binaryopprototype ":" ( simplestmt | eols block )
+             | unarydecorator  eols "def" unaryopprototype  ":" ( simplestmt | eols block ) ;
+
+(* new: statement forms *)
+ifstmt       = "if" expression ":" suite [ eols "else" ":" suite ] ;
+forstmt      = "for" [ "var" ] identifier "=" expression "," expression "," expression ":" suite ;
+varstmt      = "var" varbinding { "," varbinding } ;  (* no body — var is now a statement *)
+assignstmt   = identifier "=" expression ;
+returnstmt   = "return" expression ;
+simplestmt   = returnstmt | varstmt | assignstmt | expression ;
+compoundstmt = ifstmt | forstmt ;
+statement    = simplestmt | compoundstmt ;
+suite        = simplestmt | compoundstmt | eols block ;
+stmtsep      = eols | BLOCK_END ;           (* new: what separates statements inside a block *)
+block        = indent statement { stmtsep statement } dedent ;
+indent       = INDENT ;
+dedent       = DEDENT ;
+INDENT       = ? synthetic token emitted by the lexer when indentation increases ? ;
+DEDENT       = ? synthetic token emitted by the lexer when indentation decreases ? ;
+BLOCK_END    = ? synthetic token injected by ParseBlock after it consumes DEDENT ? ;
+
+(* simplified: var and assignment removed; if/for removed from primary *)
+expression   = unaryexpr binoprhs ;
+primary      = identifierexpr | numberexpr | parenexpr ;
 ```
 
-`toplevelstmt` covers everything `statement` covers: `var`, assignment, `if`, `for`, `return`, and plain expressions. The grammar rule is a one-word change; the real work is in the parser and codegen.
+- **`suite`** — what follows a `:`. Either a single statement on the same line, or a newline followed by an indented block.
+- **`simplestmt`** — statements that fit on one line: `return`, `var`, assignment, or a bare expression.
+- **`compoundstmt`** — statements that introduce a new suite: `if` and `for`.
+- **`stmtsep`** — what separates two statements inside a block. Normally that's one or more newlines (`eols`). But when the first statement was itself a block (an `if` or `for` with an indented body), no newline follows — the `DEDENT` already consumed the line break. `BLOCK_END` covers that case; see below.
+- **`block`** — an `INDENT` token, one or more statements separated by `stmtsep`, a `DEDENT` token.
+- **`INDENT` / `DEDENT`** — tokens emitted by the lexer when indentation increases or decreases. One `INDENT` is emitted when a block opens, one `DEDENT` when it closes — not one per line. The parser sees them like matched parentheses:
+- **`BLOCK_END`** — a synthetic token injected by `ParseBlock` into the token stream just before it returns. It signals "a nested block just closed here". The enclosing `ParseBlock` loop consumes it instead of expecting a newline, and any outer caller (like `HandleDefinition`) can check for it too. See the Parsing a Block section for details.
 
-## A Side Effect Worth Noting
-
-In chapter 11, `var` was a statement but its scope was always a function body — the variable and the code using it were always in the same compilation unit. A top-level `var` breaks that: the declaration is one REPL input (one module), and the code that reads the variable is a different input (a different module). Sharing state across modules needs a different storage mechanism than `alloca`, which is what I introduce this chapter.
-
-## Parse-Time Tracking
-
-Chapter 11 tracked declared variables in `VarScopes` — a stack of sets, one per active scope. I add a parallel set for globals:
-
-```cpp
-static vector<set<string>> VarScopes;    // locals and block scopes
-static set<string> GlobalVarNames;       // top-level globals (persist forever)
-static bool ParsingTopLevel = false;     // true while parsing a top-level statement
+```pyxc
+def f():
+    var x = 5      # ← INDENT emitted here (indentation increased)
+    x = x + 1      # ← nothing (same level)
+    return x       # ← nothing (same level)
+                   # ← DEDENT emitted here (indentation decreased)
 ```
 
-I set `ParsingTopLevel` with a scope guard whenever the top-level dispatch is active:
+**Full grammar** — [pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-12/pyxc.ebnf):
+
+```ebnf
+program         = [ eols ] [ top { eols top } ] [ eols ] ;
+eols            = eol { eol } ;
+top             = definition | decorateddef | external | toplevelexpr ;
+definition      = "def" prototype ":" ( simplestmt | eols block ) ;
+decorateddef    = binarydecorator eols "def" binaryopprototype ":" ( simplestmt | eols block )
+                | unarydecorator  eols "def" unaryopprototype  ":" ( simplestmt | eols block ) ;
+binarydecorator = "@" "binary" "(" integer ")" ;
+unarydecorator  = "@" "unary" ;
+binaryopprototype = customopchar "(" identifier "," identifier ")" ;
+unaryopprototype  = customopchar "(" identifier ")" ;
+external        = "extern" "def" prototype ;
+toplevelexpr    = expression ;
+prototype       = identifier "(" [ identifier { "," identifier } ] ")" ;
+ifstmt          = "if" expression ":" suite [ eols "else" ":" suite ] ;
+forstmt         = "for" [ "var" ] identifier "=" expression "," expression "," expression ":" suite ;
+varstmt         = "var" varbinding { "," varbinding } ;
+assignstmt      = identifier "=" expression ;
+simplestmt      = returnstmt | varstmt | assignstmt | expression ;
+compoundstmt    = ifstmt | forstmt ;
+statement       = simplestmt | compoundstmt ;
+suite           = simplestmt | compoundstmt | eols block ;
+returnstmt      = "return" expression ;
+stmtsep         = eols | BLOCK_END ;
+block           = indent statement { stmtsep statement } dedent ;
+expression      = unaryexpr binoprhs ;
+binoprhs        = { binaryop unaryexpr } ;
+varbinding      = identifier [ "=" expression ] ;
+unaryexpr       = unaryop unaryexpr | primary ;
+unaryop         = "-" | userdefunaryop ;
+primary         = identifierexpr | numberexpr | parenexpr ;
+identifierexpr  = identifier | callexpr ;
+callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
+numberexpr      = number ;
+parenexpr       = "(" expression ")" ;
+binaryop        = builtinbinaryop | userdefbinaryop ;
+indent          = INDENT ;
+dedent          = DEDENT ;
+INDENT          = ? synthetic token emitted by lexer when indentation increases ? ;
+DEDENT          = ? synthetic token emitted by lexer when indentation decreases ? ;
+BLOCK_END       = ? synthetic token injected into the stream by ParseBlock
+                    immediately after it consumes DEDENT ? ;
+builtinbinaryop = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
+userdefbinaryop = ? any opchar defined as a custom binary operator ? ;
+userdefunaryop  = ? any opchar defined as a custom unary operator ? ;
+customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
+                    and not already defined as a custom operator ? ;
+opchar          = ? any single ASCII punctuation character ? ;
+identifier      = (letter | "_") { letter | digit | "_" } ;
+integer         = digit { digit } ;
+number          = digit { digit } [ "." { digit } ]
+                | "." digit { digit } ;
+letter          = "A".."Z" | "a".."z" ;
+digit           = "0".."9" ;
+eol             = "\r\n" | "\r" | "\n" ;
+ws              = " " | "\t" ;
+```
+
+**A side effect of this grammar change.** In [chapter 10](chapter-11.md), `var` was an expression with a body — `var x = 5 in x + 1`. The variable and the code that used it were a single syntactic unit, so the variable's lifetime was self-contained. Now that `var` is a free-standing statement, a variable declared in one statement could in principle be referenced in any later statement — including one compiled in a completely separate module.
+
+That last part is the problem. In the REPL, each top-level input is compiled into its own throw-away module and immediately freed after evaluation. A `var` at the top level would need its storage to survive across module boundaries, which the current JIT design doesn't support. Chapter 13 fixes this properly — both for the REPL and for compiled executables.
+
+## Statements vs Expressions
+
+Before this chapter, `if`, `for`, and `var` were expressions — they produced a value and could be nested:
+
+```pyxc
+var acc = 0: for var i = 1, ...: acc = acc + i
+```
+
+Statements don't produce values — they *do* things. Once `if`, `for`, `var`, and `return` are statements, a function body becomes a flat list of them:
+
+```pyxc
+var acc = 0
+for var i = 1, ...:
+    acc = acc + i
+return acc
+```
+
+`ParseExpression` no longer handles `var`, `if`, `for`, or assignment `=`. Those are all in `ParseStatement` and `ParseSimpleStmt`. Expressions are now purely value-producing — operators, calls, variable reads.
+
+## New Tokens and AST Nodes
+
+Three new token values are added to the lexer's enum:
 
 ```cpp
-struct TopLevelParseGuard {
-  TopLevelParseGuard()  { ParsingTopLevel = true; }
-  ~TopLevelParseGuard() { ParsingTopLevel = false; }
+tok_indent    = -19, // synthetic: emitted by lexer when indentation increases
+tok_dedent    = -20, // synthetic: emitted by lexer when indentation decreases
+tok_block_end = -21, // synthetic: injected by ParseBlock after eating DEDENT
+```
+
+`tok_indent` and `tok_dedent` come from the lexer — they are pushed into `PendingTokens` when the lexer detects a change in indentation. `tok_block_end` never comes from the lexer. It is injected by `ParseBlock` into `PendingTokens` just before it returns, so the calling parser sees it as `CurTok`. It is a signal in the token stream, not a character in the source.
+
+And three new AST node classes:
+
+**`ReturnExprAST`** — a `return` statement:
+
+```cpp
+class ReturnExprAST : public ExprAST {
+  unique_ptr<ExprAST> Expr;
+public:
+  ReturnExprAST(unique_ptr<ExprAST> Expr) : Expr(std::move(Expr)) {}
+  Value *codegen() override;
 };
 ```
 
-`ParseVarStmt` checks this flag and routes to the right tracking set:
+**`BlockExprAST`** — a sequence of statements evaluated in order. If execution reaches the end without a `return`, the function implicitly returns `0.0`. Use an explicit `return` if you need a specific value:
 
 ```cpp
-static unique_ptr<ExprAST> ParseVarStmt() {
-  getNextToken(); // eat 'var'
-  bool IsGlobalDecl = ParsingTopLevel;
-  // ...
-  if (IsGlobalDecl) {
-    if (GlobalVarNames.count(Name))
-      return LogError("Variable '...' already declared in this scope");
-    // ...
-    GlobalVarNames.insert(Name);
-  } else {
-    if (IsDeclaredInCurrentScope(Name))
-      return LogError("Variable '...' already declared in this scope");
-    // ...
-    DeclareVar(Name);
+class BlockExprAST : public ExprAST {
+  vector<unique_ptr<ExprAST>> Stmts;
+public:
+  BlockExprAST(vector<unique_ptr<ExprAST>> Stmts)
+      : Stmts(std::move(Stmts)) {}
+  Value *codegen() override;
+};
+```
+
+**`VarStmtAST`** — the statement form of `var`. Unlike `VarExprAST` from [chapter 10](chapter-11.md), it has no body. Variables declared here persist for the rest of the function:
+
+```cpp
+class VarStmtAST : public ExprAST {
+  vector<pair<string, unique_ptr<ExprAST>>> VarNames;
+public:
+  VarStmtAST(vector<pair<string, unique_ptr<ExprAST>>> VarNames)
+      : VarNames(std::move(VarNames)) {}
+  Value *codegen() override;
+};
+```
+
+`IfStmtAST` also exists — the statement form of `if`. It differs from `IfExprAST` in that it doesn't need to produce a value, so it has no PHI node and the `else` branch is optional.
+
+## INDENT and DEDENT
+
+A single counter isn't enough to track indentation — nested blocks need to remember every level that was opened. When indentation drops, the lexer needs to know which level it's returning to, and how many blocks it's closing at once. That's why the lexer keeps an `IndentStack` and a pending-token queue.
+
+At the start of each line it finds the indentation level, compares it to the top of the stack, and pushes `INDENT` or `DEDENT` tokens into the queue. When indentation drops by multiple levels in one step, one `DEDENT` is queued per level closed and the parser drains them one at a time:
+
+```pyxc
+def f(x):            # stack: [0]
+    if x > 0:        # stack: [0, 4]        → INDENT
+        if x > 10:   # stack: [0, 4, 8]     → INDENT
+            return x # stack: [0, 4, 8, 12] → INDENT
+    return 0         # col 4: three levels closed → DEDENT, DEDENT, DEDENT queued
+                     # stack drains back to [0, 4]; parser sees them one at a time
+```
+
+Blocks are also automatically closed at end of file — no trailing blank line needed:
+
+```pyxc
+def f():
+    var x = 5        # stack: [0, 4] → INDENT
+    return x         # stack: [0, 4]   nothing
+# EOF                # col 0: stack has [0, 4] → DEDENT pushed into PendingTokens
+                     # parser drains it on the next getNextToken() call
+```
+
+```cpp
+static vector<int> IndentStack = {0}; // starts at column 0
+static deque<int>  PendingTokens;     // buffered tokens the parser hasn't seen yet
+static bool AtLineStart = true;       // true right after a newline
+```
+
+Inside `gettok()`, before any normal token logic, the indentation is processed in three steps.
+
+**Step 1: Find the indentation level of the current line.**
+
+```cpp
+if (AtLineStart) {
+  int IndentCol = 0;
+  while (LastChar == ' ' || LastChar == '\t') {
+    IndentCol += (LastChar == ' ') ? 1 : (8 - IndentCol % 8); // tabs → columns
+    LastChar = advance();
+  }
+```
+
+Spaces contribute 1 column each. Tabs advance to the next multiple of 8 — the delta is `8 - (IndentCol % 8)`:
+
+| IndentCol before tab | IndentCol % 8 | delta | IndentCol after tab |
+|---|---|---|---|
+| 0 | 0 | 8 | 8 |
+| 1 | 1 | 7 | 8 |
+| 7 | 7 | 1 | 8 |
+| 8 | 0 | 8 | 16 |
+| 11 | 3 | 5 | 16 |
+
+A tab always snaps forward to the next 8-column boundary, never backward and never past it.
+
+**Step 2: Compare to the top of the stack and queue INDENT or DEDENT tokens.**
+
+```cpp
+  if (IndentCol > IndentStack.back()) {
+    // More indented → push one INDENT.
+    IndentStack.push_back(IndentCol);
+    PendingTokens.push_back(tok_indent);
+  } else if (IndentCol < IndentStack.back()) {
+    // Less indented → push one DEDENT per level closed.
+    while (IndentStack.size() > 1 && IndentCol < IndentStack.back()) {
+      IndentStack.pop_back();
+      PendingTokens.push_back(tok_dedent);
+    }
+    // Dedenting to a level that was never opened is an error.
+    if (IndentCol != IndentStack.back()) {
+      fprintf(stderr, "Error (...): inconsistent indentation\n");
+      return tok_error;
+    }
+  }
+```
+
+A single dedent can push multiple `DEDENT` tokens — one for each level that closed. Each time the parser calls `gettok()`, `PendingTokens` is drained first; only when it is empty does the lexer go looking for the next real token.
+
+**Step 3: Drain the queue — return the first pending token if any.**
+
+```cpp
+  AtLineStart = false;
+  if (!PendingTokens.empty()) {
+    int Tok = PendingTokens.front();
+    PendingTokens.pop_front();
+    return Tok;
   }
 }
 ```
 
-`IsDeclaredVar` checks both sets now — so inside a function body, a name resolves as declared if it was declared locally or globally:
+`gettok()` is called again for each subsequent token, draining the queue one entry at a time before returning to normal lexing.
+
+At EOF, the lexer flushes one `DEDENT` per still-open block:
 
 ```cpp
+if (LastChar == EOF) {
+  if (IndentStack.size() > 1) {
+    IndentStack.pop_back();
+    return tok_dedent; // gettok is called again for the next one
+  }
+  return tok_eof;
+}
+```
+
+In REPL mode, a blank line ends the current indented block immediately — the same behavior as the Python REPL.
+
+## Pyxc Indentation Rules
+
+These are similar to Python's indentation rules, with one difference: Pyxc allows mixing tabs and spaces (Python 3 disallows it).
+
+- Each space advances one column; each tab advances to the next multiple of 8.
+- Mixing tabs and spaces is allowed — the column count is what matters.
+- Dedenting to a column that was never opened is an error.
+- Blank lines and comment-only lines do not affect indentation in file mode. In REPL mode, a blank line closes the current block immediately.
+- A block opens after `:` followed by a newline and a deeper indentation level.
+
+## Parse-Time Variable Tracking
+
+Assignment to an undeclared variable is a parse-time error:
+
+```pyxc
+ready> x = 1
+Error: Assignment to undeclared variable
+```
+
+To detect this, the parser maintains a scope stack of declared variable names. `var` declarations register names; `for var` loops introduce a loop variable into a temporary inner scope:
+
+```cpp
+static vector<set<string>> VarScopes;
+
+static void BeginFunctionScope(const vector<string> &Args) {
+  VarScopes.clear();
+  VarScopes.emplace_back();
+  for (const auto &Arg : Args)
+    VarScopes.front().insert(Arg); // parameters are pre-declared
+}
+
+static void EndFunctionScope() { VarScopes.clear(); }
+
+static void DeclareVar(const string &Name) {
+  if (!VarScopes.empty())
+    VarScopes.back().insert(Name); // declare in the innermost (current) scope
+}
+
+static bool IsDeclaredInCurrentScope(const string &Name) {
+  if (VarScopes.empty()) return false;
+  return VarScopes.back().count(Name) > 0;
+}
+
+static void BeginBlockScope() { VarScopes.emplace_back(); }
+static void EndBlockScope() {
+  if (VarScopes.size() > 1) VarScopes.pop_back();
+}
+
 static bool IsDeclaredVar(const string &Name) {
   for (auto It = VarScopes.rbegin(); It != VarScopes.rend(); ++It)
     if (It->count(Name)) return true;
-  return GlobalVarNames.count(Name) > 0;
+  return false;
 }
 ```
 
-## Top-Level Parsing
-
-`ParseTopLevelStatement` wraps my existing `ParseStatement` with the top-level guard:
+Each scope guard is a small C++ struct. The constructor opens the scope; the destructor closes it. When the guard variable goes out of scope — at the end of a block, or when an early return is hit — the scope closes automatically without any explicit cleanup calls:
 
 ```cpp
-static unique_ptr<ExprAST> ParseTopLevelStatement() {
-  LastTopLevelEndedWithBlock = false;
-  TopLevelParseGuard Guard;
-  auto Stmt = ParseStatement();
-  if (!Stmt) return nullptr;
-  LastTopLevelShouldPrint = Stmt->shouldPrintValue();
-  LastTopLevelEndedWithBlock = LastStatementWasBlock;
-  return Stmt;
-}
+struct FunctionScopeGuard {
+  FunctionScopeGuard(const vector<string> &Args) { BeginFunctionScope(Args); }
+  ~FunctionScopeGuard() { EndFunctionScope(); }
+};
+
+struct LoopScopeGuard {
+  LoopScopeGuard(const string &Name) { EnterLoopScope(Name); }
+  ~LoopScopeGuard() { ExitLoopScope(); }
+};
+
+struct BlockScopeGuard {
+  BlockScopeGuard()  { BeginBlockScope(); }
+  ~BlockScopeGuard() { EndBlockScope(); }
+};
 ```
 
-`shouldPrintValue()` is a virtual method on `ExprAST`. Statements like `var`, `if`, and `for` return `false` — their result (always `0.0`) is noise, not a value the user asked to see. Plain expressions return `true`. This is how I get the REPL to suppress the unwanted `0.000000` that would otherwise appear after every `var` declaration.
-
-I need this flag because the AST has a single `ExprAST` hierarchy for both statements and expressions. If I'd split the two into separate base classes — `StmtAST` producing no value, `ExprAST` producing one — the distinction would be structural and `shouldPrintValue()` wouldn't be needed at all. For now, adding a virtual boolean is the least-invasive fix without a full AST refactor.
-
-`ParseTopLevelExpr` wraps the parsed statement in a uniquely-named function so it goes through the same `FunctionAST` codegen path as everything else:
+`ParseDefinition` creates a `FunctionScopeGuard` immediately after parsing the prototype — before parsing the body:
 
 ```cpp
-static unique_ptr<FunctionAST> ParseTopLevelExpr() {
-  auto Stmt = ParseTopLevelStatement();
-  if (!Stmt) return nullptr;
+static unique_ptr<FunctionAST> ParseDefinition() {
+  getNextToken(); // eat 'def'
+  auto Proto = ParsePrototype();
+  if (!Proto) return nullptr;
 
-  if (!Stmt->isReturnExpr())
-    Stmt = make_unique<ReturnExprAST>(std::move(Stmt));
+  FunctionScopeGuard Scope(Proto->getArgs()); // parameters enter scope here
 
-  string FnName = "__pyxc.toplevel." + to_string(TopLevelExprCounter++);
-  auto Proto = make_unique<PrototypeAST>(FnName, vector<string>());
-  return make_unique<FunctionAST>(std::move(Proto), std::move(Stmt));
+  // ... parse ':' and body ...
 }
 ```
 
-Each top-level input gets a unique name (`__pyxc.toplevel.0`, `__pyxc.toplevel.1`, …) so the JIT can look them up individually after adding the module.
+`ParseForStmt` creates a `LoopScopeGuard` only when the loop introduces a new
+variable with `var`. Without `var`, the loop reuses an existing variable and
+errors if it is undeclared.
 
-## Codegen: GlobalVariable
+```cpp
+string VarName = IdentifierStr;
+getNextToken(); // eat identifier
+LoopScopeGuard LoopScope(VarName); // only when "var" is present
+```
 
-I want `VarStmtAST::codegen` to emit a `GlobalVariable` instead of an `alloca` when it's running inside a `__pyxc.global_init` context. There's one wrinkle: by the time a `var` statement codegens, `GetGlobalVariable` (below) may have already emitted a bare *declaration* for this name in the current module — some earlier statement in the same file might have referenced it before its `var` line was reached. So I can't just unconditionally create a new global; I have to check whether one already exists in this module and, if it's only a declaration, promote it to a real definition instead of creating a second, colliding global:
+## Parsing a Suite
+
+After every `:`, the parser calls `ParseSuite`. A suite is either an inline statement or an indented block:
+
+```cpp
+/// suite = simplestmt | compoundstmt | eols block ;
+static unique_ptr<ExprAST> ParseSuite() {
+  if (CurTok == tok_eol) {
+    // Newline after ':' → expect an indented block.
+    consumeNewlines();
+    if (CurTok != tok_indent)
+      return LogError("Expected an indented block");
+    return ParseBlock(); // CurTok = tok_block_end on return
+  }
+  if (CurTok == tok_indent)
+    return ParseBlock(); // CurTok = tok_block_end on return
+  // Same line after ':' → parse an inline statement.
+  return ParseStatement();
+}
+```
+
+When `ParseSuite` delegates to `ParseBlock`, it returns exactly what `ParseBlock` returns, with `CurTok = tok_block_end`. The caller can inspect `CurTok` to know whether the suite ended with a block.
+
+`ParseIfStmt` and `ParseForStmt` both call `ParseSuite` after eating `:`. A `def` body works slightly differently — the inline form only accepts a `simplestmt`, not a compound statement. You cannot write `def f(x): if x > 0: return 1` on one line.
+
+## Parsing a Block
+
+`ParseBlock` consumes `INDENT`, reads statements separated by `stmtsep` until `DEDENT`, injects `tok_block_end`, and returns:
+
+```cpp
+/// block = INDENT statement { stmtsep statement } DEDENT ;
+static unique_ptr<ExprAST> ParseBlock() {
+  if (CurTok != tok_indent)
+    return LogError("Expected an indented block");
+  getNextToken(); // eat INDENT
+
+  BlockScopeGuard Scope; // each block gets its own var scope
+
+  // Parse the first statement (required — empty blocks are not allowed).
+  auto First = ParseStatement();
+  if (!First) return nullptr;
+  vector<unique_ptr<ExprAST>> Stmts;
+  Stmts.push_back(std::move(First));
+
+  while (true) {
+    if (CurTok == tok_eol) {
+      consumeNewlines();        // stmtsep = eols
+      if (CurTok == tok_dedent) break;
+    } else if (CurTok == tok_block_end) {
+      // stmtsep = BLOCK_END: a nested block just closed.
+      // No tok_eol follows — consume the marker and continue.
+      getNextToken();
+      if (CurTok == tok_dedent) break;
+    } else if (CurTok == tok_dedent) {
+      break;
+    } else {
+      return LogError("Expected newline or end of block");
+    }
+
+    auto Stmt = ParseStatement();
+    if (!Stmt) return nullptr;
+    Stmts.push_back(std::move(Stmt));
+  }
+
+  // Inject tok_block_end before advancing past DEDENT so callers see it
+  // as CurTok on return, removing the need for any boolean flag.
+  PendingTokens.push_front(tok_block_end);
+  getNextToken(); // → CurTok = tok_block_end (DEDENT is overwritten and consumed)
+  return make_unique<BlockExprAST>(std::move(Stmts));
+}
+```
+
+The last three lines are the key. When the loop breaks on `tok_dedent`, `CurTok` holds the DEDENT token. I push `tok_block_end` to the front of `PendingTokens` and call `getNextToken()`. That call pops `tok_block_end` from `PendingTokens` and overwrites `CurTok` — the DEDENT is quietly consumed in the process, and `ParseBlock` returns with `CurTok = tok_block_end`.
+
+Every caller that previously needed a boolean "did this suite end with a block?" can now just check `CurTok == tok_block_end`.
+
+## BLOCK_END and the else Problem
+
+`tok_block_end` flows cleanly through most of the parser — `ParseBlock`'s loop consumes it and keeps going, `HandleDefinition` checks for it instead of checking for `tok_eol`. One case is trickier: `if` with an optional `else`.
+
+After `ParseSuite` returns the then-branch, `CurTok` might be `tok_block_end` (if the then was a block) or `tok_eol` (if the then was inline, e.g. `if cond: return 1`). Either way, `else` — if present — lives on the very next line at the same indentation level, right where that separator token is sitting. `ParseIfStmt` needs to look past it to check.
+
+The approach: consume the separator temporarily to peek at what follows. If it's `else`, great — parse the else branch normally. If it's not, re-inject the separator so the enclosing `ParseBlock` loop still sees it.
+
+```cpp
+unique_ptr<ExprAST> Then = ParseSuite();
+if (!Then) return nullptr;
+
+bool ThenWasBlock = (CurTok == tok_block_end);
+if (ThenWasBlock)
+  getNextToken(); // consume tok_block_end → CurTok = next real token
+
+// If Then was inline, CurTok is tok_eol right now (unless there was no
+// trailing newline at all). Remember that so it can be restored below.
+bool ThenHadTrailingEol = (CurTok == tok_eol);
+
+consumeNewlines(); // skip any blank lines before 'else'
+
+unique_ptr<ExprAST> Else;
+if (CurTok == tok_else) {
+  getNextToken(); // eat 'else'
+  if (CurTok != ':') return LogError("Expected ':' after else");
+  getNextToken(); // eat ':'
+  Else = ParseSuite();
+  if (!Else) return nullptr;
+} else if (ThenWasBlock) {
+  // No else. Re-inject tok_block_end so the enclosing block sees it.
+  // Save the token we already advanced to — it must not be lost.
+  PendingTokens.push_front(CurTok); // push current lookahead back
+  CurTok = tok_block_end;           // restore the signal directly
+} else if (ThenHadTrailingEol) {
+  // No else, and Then was inline. consumeNewlines() above swallowed the
+  // newline that separates this statement from the next one — restore it.
+  PendingTokens.push_front(CurTok); // push current lookahead back
+  CurTok = tok_eol;                 // restore the separator directly
+}
+```
+
+The critical detail is the last three lines of each `else if` branch. After `getNextToken()` consumed `tok_block_end` (or after `consumeNewlines()` consumed a real `tok_eol`), a real token — say, `tok_return`, or the next `tok_dedent` — landed in `CurTok`. If I naively pushed the separator to `PendingTokens` and called `getNextToken()` again, that new call would pop the separator right back out — and the token already sitting in `CurTok` would be **overwritten and lost**. The statement after the `if` would parse incorrectly, or the outer block would close at the wrong point.
+
+Instead: push the current `CurTok` to `PendingTokens`, then set `CurTok` to the separator directly without calling `getNextToken()`. The saved token is now first in `PendingTokens`; the next `getNextToken()` call anywhere upstream will retrieve it correctly.
+
+I found this the hard way: my first pass only handled the `ThenWasBlock` case, on the assumption that an inline `then` always ends cleanly at a `tok_eol` that nothing downstream would touch. That's true in isolation — but `consumeNewlines()` a few lines later doesn't know or care whether it's looking at a "real" separator or one it's about to strand a statement without. It consumes any `tok_eol` in front of it while probing for `else`, block or no block. Miss the inline case and `if x > 10: return 20` parses fine as the *last* statement in a block, but breaks the moment another statement follows it at the same indentation — the newline that `ParseBlock`'s loop needed as a separator is gone, and it sees the next statement's leading token where it expected `tok_eol`, `tok_dedent`, or `tok_block_end`. `ThenHadTrailingEol` closes that gap the same way `ThenWasBlock` already did for the block case.
+
+## Parsing Statements
+
+`ParseStatement` dispatches to compound or simple statement parsers:
+
+```cpp
+/// statement = simplestmt | compoundstmt ;
+static unique_ptr<ExprAST> ParseStatement() {
+  if (CurTok == tok_if)  return ParseIfStmt();
+  if (CurTok == tok_for) return ParseForStmt();
+  return ParseSimpleStmt();
+}
+```
+
+`ParseSimpleStmt` handles `return`, `var`, assignment, and bare expressions:
+
+```cpp
+/// simplestmt = returnstmt | varstmt | assignstmt | expression ;
+static unique_ptr<ExprAST> ParseSimpleStmt() {
+  if (CurTok == tok_return) return ParseReturnStmt();
+  if (CurTok == tok_var)    return ParseVarStmt();
+
+  // Fast path: if the current token is an identifier, peek at what follows
+  // before committing to a full expression parse. This lets me detect
+  // "x = expr" (assignment) without going through ParseExpression first.
+  if (CurTok == tok_identifier) {
+    string Name = IdentifierStr;
+    getNextToken(); // eat identifier
+
+    if (CurTok == '=') {
+      if (!IsDeclaredVar(Name))
+        return LogError("Assignment to undeclared variable");
+      getNextToken(); // eat '='
+      auto RHS = ParseExpression();
+      if (!RHS) return nullptr;
+      return make_unique<AssignmentExprAST>(Name, std::move(RHS));
+    }
+
+    // Not an assignment — parse the rest as an expression.
+    auto Expr = ParseIdentifierExprWithName(std::move(Name));
+    if (!Expr) return nullptr;
+    return ParseBinOpRHS(0, std::move(Expr));
+  }
+
+  // Non-identifier start: parse a full expression, then check for '='.
+  auto Expr = ParseExpression();
+  if (!Expr) return nullptr;
+
+  if (CurTok != '=')
+    return Expr; // bare expression statement
+
+  const string *AssignedName = Expr->getLValueName();
+  if (!AssignedName)
+    return LogError("Destination of '=' must be a variable");
+
+  string Name = *AssignedName;
+  if (!IsDeclaredVar(Name))
+    return LogError("Assignment to undeclared variable");
+
+  getNextToken(); // eat '='
+  auto RHS = ParseExpression();
+  if (!RHS) return nullptr;
+  return make_unique<AssignmentExprAST>(Name, std::move(RHS));
+}
+```
+
+Assignment to an undeclared variable is rejected at parse time via `IsDeclaredVar` — no codegen is needed to catch it.
+
+## Parsing Var as a Statement
+
+`var` in chapter 11 has no body. It declares one or more names that persist for the rest of the function:
+
+```cpp
+/// varstmt = "var" varbinding { "," varbinding } ;
+static unique_ptr<ExprAST> ParseVarStmt() {
+  getNextToken(); // eat 'var'
+  vector<pair<string, unique_ptr<ExprAST>>> VarNames;
+
+  while (true) {
+    if (CurTok != tok_identifier)
+      return LogError("Expected identifier after 'var'");
+
+    string Name = IdentifierStr;
+    getNextToken(); // eat identifier
+
+    unique_ptr<ExprAST> Init;
+    if (CurTok == '=') {
+      getNextToken(); // eat '='
+      Init = ParseExpression();
+      if (!Init) return nullptr;
+    } else {
+      Init = make_unique<NumberExprAST>(0.0); // default to 0.0
+    }
+
+    DeclareVar(Name); // register name in the current block scope
+    VarNames.push_back({Name, std::move(Init)});
+
+    if (CurTok != ',') break;
+    getNextToken(); // eat ','
+  }
+
+  return make_unique<VarStmtAST>(std::move(VarNames));
+}
+```
+
+The critical difference from [chapter 10](chapter-11.md): no `:` and no body. `DeclareVar(Name)` registers `Name` in the current block scope — so later assignments to it will pass the `IsDeclaredVar` check. If the `var` is inside an `if` or `for` block, that name is only visible inside that block.
+
+## Return
+
+`ParseReturnStmt` is straightforward:
+
+```cpp
+/// returnstmt = "return" expression ;
+static unique_ptr<ExprAST> ParseReturnStmt() {
+  getNextToken(); // eat 'return'
+  auto Expr = ParseExpression();
+  if (!Expr) return nullptr;
+  return make_unique<ReturnExprAST>(std::move(Expr));
+}
+```
+
+`ReturnExprAST::codegen` emits a real LLVM terminator — a `ret` instruction that ends the current basic block:
+
+```cpp
+Value *ReturnExprAST::codegen() {
+  Value *RetVal = Expr->codegen();
+  if (!RetVal) return nullptr;
+  Builder->CreateRet(RetVal); // terminates the current basic block
+  return RetVal;
+}
+```
+
+## Block Codegen
+
+`BlockExprAST::codegen` evaluates statements in order. It stops early if a `return` has already terminated the current block — statements after a `return` are unreachable. It also saves and restores `NamedValues` around the block body so that variables declared inside the block with `var` don't leak to the outer scope:
+
+```cpp
+Value *BlockExprAST::codegen() {
+  auto SavedBindings = NamedValues; // snapshot outer bindings
+  Value *Last = nullptr;
+  for (auto &Stmt : Stmts) {
+    // If a previous statement already emitted a terminator (e.g. 'return'),
+    // skip the rest — I'd be emitting into a block with no successor.
+    if (Builder->GetInsertBlock()->getTerminator()) break;
+    Last = Stmt->codegen();
+    if (!Last) {
+      NamedValues = SavedBindings;
+      return nullptr;
+    }
+  }
+  NamedValues = SavedBindings; // restore outer bindings when block exits
+  if (!Last)
+    return LogErrorV("Empty block");
+  return ConstantFP::get(*TheContext, APFloat(0.0));
+}
+```
+
+## Var and Assignment Codegen
+
+`VarStmtAST::codegen` allocates stack slots and initializes them. Duplicate declarations in the same scope are caught at parse time, so codegen just sets up the alloca and records the binding:
 
 ```cpp
 Value *VarStmtAST::codegen() {
-  if (InGlobalInit) {
-    for (auto &Var : VarNames) {
-      const string &VarName = Var.first;
-      ExprAST *Init = Var.second.get();
+  Function *TheFunction = Builder->GetInsertBlock()->getParent();
 
-      auto *GV = TheModule->getNamedGlobal(VarName);
-      if (GV && !GV->isDeclaration())
-        return LogErrorV("Global variable already defined");
+  for (auto &Var : VarNames) {
+    const string &VarName = Var.first;
+    ExprAST *Init = Var.second.get();
 
-      if (!GV) {
-        // No global by this name yet in this module — create one with a
-        // constant zero initializer.
-        auto *Ty = Type::getDoubleTy(*TheContext);
-        GV = new GlobalVariable(
-            *TheModule, Ty, false, GlobalValue::ExternalLinkage,
-            ConstantFP::get(*TheContext, APFloat(0.0)), VarName);
-      } else if (GV->isDeclaration()) {
-        // A bare 'extern'-style declaration already exists for this name —
-        // turn it into a real definition instead of creating a duplicate.
-        GV->setInitializer(ConstantFP::get(*TheContext, APFloat(0.0)));
-        GV->setLinkage(GlobalValue::ExternalLinkage);
-      }
+    Value *InitVal = Init->codegen();
+    if (!InitVal) return nullptr;
 
-      ModuleHasGlobals = true;
-
-      // Run the initializer at runtime and store the result.
-      Value *InitVal = Init->codegen();
-      if (!InitVal) return nullptr;
-      Builder->CreateStore(InitVal, GV);
-    }
-    return ConstantFP::get(*TheContext, APFloat(0.0));
+    AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
+    Builder->CreateStore(InitVal, Alloca);
+    NamedValues[VarName] = Alloca;
   }
 
-  // Inside a function: alloca path, unchanged from chapter 11.
-  // ...
+  return ConstantFP::get(*TheContext, APFloat(0.0)); // var statement produces 0.0
 }
 ```
 
-A few things worth noting:
+`AssignmentExprAST::codegen` is unchanged from [chapter 10](chapter-11.md) — it loads the alloca from `NamedValues`, stores the new value, and returns it.
 
-- **Constant zero initializer, then runtime store.** LLVM global variables require a *constant* initializer in the IR — I can't write `@x = global double sin(1.0)`. So every global starts as `0.0`. The actual initializer expression is evaluated at runtime inside `__pyxc.global_init` and stored into the global. This means initializers run in source order, and each one can read the already-initialized value of any earlier global.
+## if as a Statement
 
-- **`ExternalLinkage`.** This makes the symbol visible across module boundaries. Any later module that declares `@x` as `extern` will have its reference resolved by the JIT to the same storage.
+[Chapter 11](chapter-11.md) had `IfExprAST`, which always produced a value via a PHI node and required both `then` and `else` branches. Chapter 12 adds `IfStmtAST` — the statement form. The condition check, basic block creation, and branch structure are identical to [chapter 10](chapter-11.md). Two things change:
 
-- **Reusing an existing declaration.** Without the `GV->isDeclaration()` branch, defining a global whose name was already declared elsewhere in this same module would leave two distinct `GlobalVariable` objects fighting over one name — LLVM would just silently rename the second one rather than error, and the two objects would no longer refer to the same storage. Checking first and promoting the existing declaration in place avoids that entirely.
-
-`GetGlobalVariable` is what creates those bare declarations, and it's what handles cross-module visibility generally. When a later module references a global that was defined in an earlier one, it emits a declaration in the current module and lets the JIT resolve it:
-
-```cpp
-static GlobalVariable *GetGlobalVariable(const string &Name) {
-  // Fast path: already defined or declared in this module.
-  if (auto *GV = TheModule->getNamedGlobal(Name))
-    return GV;
-
-  // Not in this module — emit an extern declaration so the JIT can link it.
-  if (!GlobalVarNames.count(Name))
-    return nullptr;
-
-  auto *Ty = Type::getDoubleTy(*TheContext);
-  return new GlobalVariable(*TheModule, Ty,
-                            /*isConstant=*/false,
-                            GlobalValue::ExternalLinkage,
-                            /*Initializer=*/nullptr,  // declaration, not definition
-                            Name);
-}
-```
-
-A `GlobalVariable` with a null initializer is a *declaration* — it says "this symbol exists somewhere, find it at link time." The JIT resolves declarations to their definitions when the module is added.
-
-I make `VariableExprAST::codegen` and `AssignmentExprAST::codegen` both try the local `NamedValues` table first, then fall back to `GetGlobalVariable`:
+1. **`else` is optional.** If there is no `else`, the else block just falls through to merge.
+2. **No PHI node.** The statement doesn't produce a value.
 
 ```cpp
-Value *VariableExprAST::codegen() {
-  auto It = NamedValues.find(Name);
-  if (It != NamedValues.end() && It->second)
-    return Builder->CreateLoad(Type::getDoubleTy(*TheContext), It->second, Name);
-
-  if (auto *GV = GetGlobalVariable(Name))
-    return Builder->CreateLoad(Type::getDoubleTy(*TheContext), GV, Name);
-
-  return LogErrorV("Unknown variable name");
-}
-
-Value *AssignmentExprAST::codegen() {
-  Value *Val = Expr->codegen();
-  if (!Val) return nullptr;
-
-  auto It = NamedValues.find(Name);
-  if (It != NamedValues.end() && It->second) {
-    Builder->CreateStore(Val, It->second);
-    return Val;
-  }
-
-  if (auto *GV = GetGlobalVariable(Name)) {
-    Builder->CreateStore(Val, GV);
-    return Val;
-  }
-
-  return LogErrorV("Unknown variable name");
-}
-```
-
-A local variable always shadows a global of the same name. Inside a function, if you declare `var x`, the alloca goes into `NamedValues` and the `NamedValues` check wins. After the function returns and `NamedValues` is cleared, the global is visible again.
-
-## REPL Mode: HandleTopLevelExpression
-
-In the REPL, each top-level input is still compiled into its own fresh module. The presence of globals changes what I need to do after codegen:
-
-```cpp
-static void HandleTopLevelExpression() {
-  auto FnAST = ParseTopLevelExpr();
-  // ... error handling ...
-
-  string FnName = FnAST->getName();
-  bool SavedInGlobalInit = InGlobalInit;
-  InGlobalInit = true;
-  if (auto *FnIR = FnAST->codegen()) {
-    InGlobalInit = SavedInGlobalInit;
-    Log("Parsed a top-level expression.\n");
-    if (VerboseIR)
-      FnIR->print(errs());
-
-    bool KeepModule = ModuleHasGlobals;
-
-    if (KeepModule) {
-      // Module contains GlobalVariable definitions — add it permanently.
-      auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
-      ExitOnErr(TheJIT->addModule(std::move(TSM)));
-      InitializeModuleAndManagers();
-
-      auto ExprSymbol = ExitOnErr(TheJIT->lookup(FnName));
-      double (*FP)() = ExprSymbol.toPtr<double (*)()>();
-      double result = FP();
-      if (IsRepl && LastTopLevelShouldPrint)
-        fprintf(stderr, "%f\n", result);
-    } else {
-      // No globals — use a ResourceTracker to free the module after the call.
-      auto RT = TheJIT->getMainJITDylib().createResourceTracker();
-      auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
-      ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
-      InitializeModuleAndManagers();
-
-      auto ExprSymbol = ExitOnErr(TheJIT->lookup(FnName));
-      double (*FP)() = ExprSymbol.toPtr<double (*)()>();
-      double result = FP();
-      if (IsRepl && LastTopLevelShouldPrint)
-        fprintf(stderr, "Evaluated to %f\n", result);
-
-      ExitOnErr(RT->remove());
-    }
-  } else {
-    InGlobalInit = SavedInGlobalInit;
-  }
-}
-```
-
-`ModuleHasGlobals` is set by `VarStmtAST::codegen` when it emits a `GlobalVariable`. If the flag is set, I have to keep the module permanently — freeing it would destroy the global's storage. If not, the old ResourceTracker path from chapter 6 applies and the module is freed after execution.
-
-Notice the two branches print with different formats — `"%f\n"` when the module sticks around, `"Evaluated to %f\n"` when it gets freed. That's not a deliberate stylistic choice, it's just what falls out of keeping the two branches' `printf` calls where chapter 6 originally put them. I'm noting it here because it's the kind of small inconsistency I'd otherwise forget I introduced, and a reader diffing the REPL output against expectations deserves to know it's real, not a typo.
-
-I save and restore `InGlobalInit` rather than hard-resetting it to `false` after codegen, in case `HandleTopLevelExpression` is ever called while something else already has it set. It isn't today, but restoring the old value instead of assuming what it was is a habit worth keeping. Setting it to `true` before codegen is what tells `VarStmtAST::codegen` to emit globals rather than allocas for top-level `var` statements.
-
-## File Mode: FileModeLoop and RunFileMode
-
-File mode needs to handle globals differently. Rather than compiling and executing each statement as it's parsed, I collect all top-level statements first:
-
-```cpp
-static vector<unique_ptr<ExprAST>> FileTopLevelStmts;
-
-static void FileModeLoop() {
-  while (true) {
-    // ...
-    switch (CurTok) {
-    case tok_def:    HandleDefinition(); break;
-    case tok_extern: HandleExtern();     break;
-    case '@':        /* ... */           break;
-    default:
-      HandleTopLevelStatementFileMode(); // collect, don't execute
-      break;
-    }
-  }
-}
-```
-
-`HandleTopLevelStatementFileMode` just parses and appends to `FileTopLevelStmts`. Once the entire file is parsed, `RunFileMode` wraps the collected statements into `__pyxc.global_init` and runs it:
-
-```cpp
-static void RunFileMode() {
-  if (!FileTopLevelStmts.empty()) {
-    // Wrap all top-level statements into __pyxc.global_init.
-    auto Block = make_unique<BlockExprAST>(std::move(FileTopLevelStmts));
-    auto Proto = make_unique<PrototypeAST>("__pyxc.global_init", vector<string>());
-    auto FnAST = make_unique<FunctionAST>(std::move(Proto), std::move(Block));
-
-    InGlobalInit = true;
-    if (auto *FnIR = FnAST->codegen()) {
-      InGlobalInit = false;
-      auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
-      ExitOnErr(TheJIT->addModule(std::move(TSM)));
-      InitializeModuleAndManagers();
-
-      // Call the initializer.
-      auto InitSymbol = ExitOnErr(TheJIT->lookup("__pyxc.global_init"));
-      double (*InitFn)() = InitSymbol.toPtr<double (*)()>();
-      InitFn();
-    }
-  }
-
-  // If the user defined main(), call it after globals are initialized.
-  auto MainIt = FunctionProtos.find("main");
-  if (MainIt == FunctionProtos.end()) return;
-
-  auto MainSymbol = ExitOnErr(TheJIT->lookup("main"));
-  double (*MainFn)() = MainSymbol.toPtr<double (*)()>();
-  MainFn();
-}
-```
-
-The ordering guarantee I'm relying on: `def` and `extern` statements are compiled as they're encountered during `FileModeLoop` (same as before). Top-level `var` and assignment statements are deferred until `RunFileMode`. By the time `__pyxc.global_init` runs, all functions are already compiled and in the JIT — so initializer expressions can call user-defined functions.
-
-If the user defines `main`, it runs after `__pyxc.global_init`, so all globals are fully initialized before `main` executes.
-
-## Scoping Rules
-
-With globals in place, pyxc now has three scopes:
-
-| Scope | Declared by | Storage | Lifetime |
-|---|---|---|---|
-| Block | `var` inside an indented block | alloca | Until block exits |
-| Function | `var` inside a function body | alloca | Until function returns |
-| Global | `var` at top level | `GlobalVariable` | Entire session |
-
-Lookup always goes inner-to-outer: block → function → global. A `var x` inside a function shadows a global `x` for the duration of that function call. The global is unaffected.
-
-## A Quiet Change: Implicit Return Is Always 0.0
-
-While testing this chapter I noticed something that isn't really *about* globals but that I ended up changing at the same time, because I ran into it directly while wiring up `tick()`-style examples. In chapter 11, a function with no explicit `return` implicitly returned whatever its last statement's `codegen()` happened to produce. For something like `def tick(): count = count + 1`, that meant the function's return value was the newly-assigned value — a side effect of how `AssignmentExprAST::codegen` is written, not something I ever deliberately decided a function's "result" should be.
-
-Once `var`, assignment, `if`, and `for` are all first-class statements that can be the last thing in a body, I don't want a function's implicit return value to quietly depend on which kind of statement happened to be last. So `FunctionAST::codegen` now ignores the body's codegen result for the purposes of the implicit return, and always returns `0.0` when a function falls off the end without hitting a `return`:
-
-```cpp
-// Step 4: codegen the body, optimise, verify, or erase on failure.
-if (Value *BodyVal = Body->codegen()) {
-  // If the body didn't already terminate the current block (e.g. via
-  // return), return 0.0. Implicit returns never use the last expression.
+  // Emit the then branch.
+  Builder->SetInsertPoint(ThenBB);
+  if (!Then->codegen()) return nullptr;
   if (!Builder->GetInsertBlock()->getTerminator())
-    Builder->CreateRet(ConstantFP::get(*TheContext, APFloat(0.0)));
+    Builder->CreateBr(MergeBB);
+
+  // Emit the else branch — skipped entirely if there is no else.
+  Builder->SetInsertPoint(ElseBB);
+  if (Else) {
+    if (!Else->codegen()) return nullptr;
+  }
+  if (!Builder->GetInsertBlock()->getTerminator())
+    Builder->CreateBr(MergeBB);
+
+  Builder->SetInsertPoint(MergeBB);
+  return ConstantFP::get(*TheContext, APFloat(0.0));
+  // No PHI node — statements don't produce values.
+```
+
+The `getTerminator()` check before each `CreateBr` is what makes `return` inside an `if` work correctly. If the `then` block already has a `ret`, I don't emit a second branch — that would be ill-formed IR.
+
+## Implicit Return
+
+In [chapter 10](chapter-11.md), `FunctionAST::codegen` always emitted `CreateRet(RetVal)` unconditionally after `Body->codegen()` returned. That breaks now that `return` statements emit their own `ret` instructions.
+
+Chapter 12 checks whether the current block already has a terminator before deciding whether to add one:
+
+```cpp
+// Step 4: codegen the body, verify, optimize — or erase on failure.
+if (Value *RetVal = Body->codegen()) {
+  // Only emit a return if the body didn't already terminate the block.
+  // A 'return' statement in the body emits its own 'ret', so I don't
+  // want to emit a second one.
+  if (!Builder->GetInsertBlock()->getTerminator())
+    Builder->CreateRet(RetVal);
   verifyFunction(*TheFunction);
   TheFPM->run(*TheFunction, *TheFAM);
   return TheFunction;
 }
 ```
 
-Concretely: `def tick(): count = count + 1` now always returns `0.0` when called, no matter what `count` becomes. The global still updates correctly — I verified that separately — it's only the *return value* of a body-less-`return` function that's now a fixed `0.0`. If you want a function to hand back a value, write `return` explicitly. This is why the REPL transcript below prints `Evaluated to 0.000000` after every `tick()` call rather than the incrementing count.
+This is what makes the following valid — the `if` path returns explicitly; the fall-through path gets an implicit `return 0.0`:
+
+```pyxc
+def threshold(x):
+    if x > 10: return x
+    # no explicit return — implicit return 0.0 inserted by codegen
+```
+
+## After a Top-Level Block
+
+When a `def` body ends with an indented block, `ParseDefinition` returns with `CurTok = tok_block_end`. The `MainLoop` and `HandleDefinition` check for it explicitly:
+
+```cpp
+// In MainLoop:
+if (CurTok == tok_block_end) {
+  getNextToken(); // consume the marker; next token starts the next definition
+  continue;
+}
+```
+
+```cpp
+// In HandleDefinition:
+bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof &&
+                    CurTok != tok_block_end);
+if (!FnAST || HasTrailing) {
+  // error recovery
+}
+```
+
+No boolean flag needed. `tok_block_end` in `CurTok` is the signal — it's the same mechanism that `ParseBlock`'s own loop uses. Two definitions back to back with no blank line between them work correctly because `MainLoop` eats the `tok_block_end` before dispatching the next top-level form.
+
+## Things Worth Knowing
+
+- `var` without an initializer defaults to `0.0`.
+- `var` is block-scoped. A variable declared inside an `if` or `for` block is not visible after that block exits. An outer variable with the same name is shadowed inside the block and restored when the block exits.
+- Declaring the same variable twice in the same block is a parse-time error.
+- Assignment only works on variables that were declared with `var` or are function parameters. Undeclared assignments are rejected at parse time.
+- `for var` introduces a loop variable scoped to the loop body only.
+- The inline body of a `def` accepts only a `simplestmt`. Compound statements (`if`, `for`) require an indented block.
 
 ## Known Limitations
 
-**`main` takes no arguments.** `RunFileMode` checks that `main()` has zero parameters. There is no way to pass command-line arguments to a pyxc program yet.
+**No global variables.** `var` is only valid inside a function body. `ParseTopLevelExpr` calls `ParseExpression`, so `var x = 10` at the top level is a parse error. Each top-level expression also gets its own fresh function scope, so there is no way to declare a variable on one REPL line and reference it on the next.
 
-**No global-to-global forward references in initializers.** Initializers run in source order. `var b = a * 2` sees `a`'s initialized value only if `var a = ...` appeared earlier in the file. Referencing a global before it has been initialized reads `0.0` (the constant default).
+This is the main practical limitation of the current chapter. In the REPL it means you cannot build up state across lines:
+
+```pyxc
+# Does not work in the REPL:
+var x = 10      # parse error — var is not an expression
+x = x + 10     # x is undeclared in this expression's scope
+printd(x)
+```
+
+For now, keep mutable state inside a function:
+
+```pyxc
+def f():
+    var x = 10
+    x = x + 10
+    return x
+
+printd(f())   # prints 20.000000
+```
+
+Chapter 13 addresses this properly. When compiling to an executable, all top-level statements are collected into a synthesized `main()`, so `var` declarations and assignments at the top level work naturally. Full REPL support for global state requires additional runtime infrastructure and is also covered in chapter 12.
 
 ## Try It
 
-**REPL: persistent counter**
+Simple function with multiple statements:
 
+<!-- code-merge:start -->
 ```pyxc
-ready> extern def printd(x)
-Parsed an extern.
-ready> var count = 0
-Parsed a top-level expression.
-ready> def tick(): count = count + 1
+ready> def f(x):
+    if x > 10: return 20
+    return 10
+```
+```bash
 Parsed a function definition.
-ready> tick()
-Parsed a top-level expression.
-Evaluated to 0.000000
-ready> tick()
-Parsed a top-level expression.
-Evaluated to 0.000000
-ready> tick()
-Parsed a top-level expression.
-Evaluated to 0.000000
-ready> printd(count)
-Parsed a top-level expression.
-3.000000
-Evaluated to 0.000000
 ```
-
-The `Evaluated to 0.000000` after each line is the JIT reporting the return value of that line's own top-level wrapper function. `ParseTopLevelExpr` always wraps a bare expression in an explicit `return`, so for `tick()` the wrapper is really `return tick();` — the `0.0` comes from *inside* `tick()`, from the implicit-return rule I just added: `tick`'s own body (`count = count + 1`) has no explicit `return`, so `tick()` itself always evaluates to `0.0` now, and that's what the wrapper hands back up. For `printd(count)` the `0.0` is unrelated to that rule entirely — it's just `printd`'s own C-level return value, which has always been `0.0` by convention. `count` itself is updating correctly underneath the whole time — `3.000000` is `printd` doing its actual job of printing; `Evaluated to 0.000000` is a second, separate thing the JIT reports about the wrapper's return value.
-
-**File mode: globals + main**
-
 ```pyxc
-extern def printd(x)
-
-var total = 0
-
-def add(n):
-    total = total + n
-
-def main():
-    add(10)
-    add(5)
-    printd(total)
+ready> f(5)
 ```
-
+```bash
+Parsed a top-level expression.
+Evaluated to 10.000000
 ```
-15.000000
-```
-
-**Initialization order**
-
 ```pyxc
-extern def printd(x)
-
-var a = 3
-var b = a * 4   # sees a = 3, not 0
-printd(b)       # 12.000000
+ready> f(20)
 ```
+```bash
+Parsed a top-level expression.
+Evaluated to 20.000000
+```
+<!-- code-merge:end -->
+
+Accumulator loop — the [chapter 10](chapter-11.md) workaround, now written naturally:
+
+<!-- code-merge:start -->
+```pyxc
+ready> def sum_to(n):
+    var acc = 0
+    for var i = 1, i <= n, 1:
+        acc = acc + i
+    return acc
+```
+```bash
+Parsed a function definition.
+```
+```pyxc
+ready> sum_to(5)
+```
+```bash
+Parsed a top-level expression.
+Evaluated to 15.000000
+```
+<!-- code-merge:end -->
 
 ## Build and Run
 
@@ -481,7 +899,7 @@ cmake -S . -B build && cmake --build build
 
 ## What's Next
 
-In Chapter 13 I add object file emission. Instead of JIT-compiling everything at runtime, pyxc will be able to write a `.o` file that a system linker can combine with other objects into a standalone native binary — no JIT required.
+Chapter 13 resolves the global variable limitation described in Known Limitations. For compiled programs, all top-level statements are collected into a synthesized `main()` so `var` declarations and assignments work naturally. For the REPL, a persistent variable store backed by a runtime helper lets state survive across JIT module boundaries. Once globals work in both modes, chapter 13 emits object files and chapter 14 links them into native executables — turning Pyxc from a JIT toy into a real compiler.
 
 ## Need Help?
 
@@ -489,3 +907,10 @@ Build issues? Questions?
 
 - **GitHub Issues:** [Report problems](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues)
 - **Discussions:** [Ask questions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
+
+Include:
+- Your OS and version
+- Full error message
+- Output of `cmake --version` and `ninja --version`
+
+We'll figure it out.

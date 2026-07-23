@@ -1,37 +1,11 @@
 ---
-description: "Add import declarations: pyxc finds the source file, scans its exported signatures, and makes them available — no extern def needed for pyxc-to-pyxc calls."
+description: "Introduce module declarations and export: name your compilation unit, mark your public API, and split a pyxc project across multiple files."
 ---
-# 42. pyxc: Imports
+# 42. pyxc: Module Declarations and Export
 
 ## Where We Are
 
-[Chapter 41](chapter-41.md) introduced `module` and `export`. A module now has a name and a public API, but callers still have to write `extern def` by hand. After this chapter:
-
-```pyxc
-# app/math.pyxc
-module app.math
-
-export def add(x: int, y: int) -> int:
-  return x + y
-```
-
-```pyxc
-# main.pyxc
-module app.main
-import app.math
-
-extern def printd(x: float64) -> float64
-
-def main() -> int:
-  printd(float64(add(2, 3)))   # 5.000000
-  return 0
-```
-
-```bash
-pyxc --emit exe -o out main.pyxc
-```
-
-No `extern def add`. The compiler finds `app/math.pyxc`, reads its `export` declarations, and injects the prototype. In `--emit exe` mode, it compiles `app/math.pyxc` automatically too.
+[Chapter 41](chapter-41.md) completed Phase 5. pyxc can call any C library function and express everything in the first four chapters of *The C Programming Language*. What we haven't addressed is scale. Every non-trivial program lives in more than one file. pyxc can already compile multiple files — but there's no way to say which functions are public and which are internal. This chapter introduces `module` and `export` to fix that.
 
 ## Source Code
 
@@ -40,375 +14,232 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-42
 ```
 
-## `SignatureScanMode` — Parsing Without Codegen
+## New Tokens and Keywords
 
-A new global flag suppresses codegen during the import scan:
+Three new tokens:
 
 ```cpp
-static bool SignatureScanMode = false;
-static std::set<string> SignatureVisitedFiles; // deduplication
+tok_module = -69,
+tok_import = -70,
+tok_export = -71,
 ```
 
-When `SignatureScanMode` is true, `ParseAggregateDefinition` skips method body codegen and calls a leaner helper instead:
+Added to the keyword table and token name map:
 
 ```cpp
-if (SignatureScanMode) {
-  if (!ParseMethodSignatureOnlyInClass(StructName, MemberIsPublic))
+{"module", tok_module}, {"import", tok_import}, {"export", tok_export}
+```
+
+## File-Level State Globals
+
+Four new globals track module metadata while parsing a file:
+
+```cpp
+static bool SeenNonModuleTopLevel = false;  // true once any def/struct/etc. seen
+static bool ModuleDeclaredInFile  = false;  // true once 'module' has been seen
+static string CurrentModuleName;            // e.g. "app.math"
+static vector<string> ImportedModules;      // import names seen in this file
+```
+
+These are reset at the start of each file compilation:
+
+```cpp
+SeenNonModuleTopLevel = false;
+ModuleDeclaredInFile  = false;
+CurrentModuleName.clear();
+ImportedModules.clear();
+```
+
+## `ParseDottedModuleName` — Dotted Path Parser
+
+Both `module` and `import` share a parser for the dotted module path:
+
+```cpp
+static bool ParseDottedModuleName(string &OutName) {
+  OutName.clear();
+  if (CurTok != tok_identifier) {
+    LogError("Expected module path");
     return false;
-} else {
-  auto FnAST = ParseMethodDefinitionInClass(StructName, MemberIsPublic);
-  // ... codegen ...
+  }
+  OutName = IdentifierStr;
+  getNextToken(); // eat first identifier
+  while (CurTok == '.') {
+    getNextToken(); // eat '.'
+    if (CurTok != tok_identifier) {
+      LogError("Expected identifier after '.' in module path");
+      return false;
+    }
+    OutName += ".";
+    OutName += IdentifierStr;
+    getNextToken(); // eat identifier
+  }
+  return true;
 }
 ```
 
-## `SkipSignatureBody` — Discarding Function Bodies
+This produces strings like `"app.math"` or `"geo.shapes"`.
 
-While scanning signatures, function bodies need to be consumed and thrown away:
+## `ParseModuleDefinition` — The `module` Declaration
 
 ```cpp
-static void SkipSignatureBody() {
-  if (CurTok == tok_eol) {
-    consumeNewlines();
-    if (CurTok == tok_indent) {
-      int Depth = 1;
-      getNextToken(); // eat first indent
-      while (CurTok != tok_eof && Depth > 0) {
-        if (CurTok == tok_indent)  ++Depth;
-        else if (CurTok == tok_dedent) --Depth;
-        getNextToken();
-      }
-      return;
-    }
+static bool ParseModuleDefinition() {
+  getNextToken(); // eat 'module'
+  if (!ParseDottedModuleName(CurrentModuleName))
+    return false;
+  if (ModuleDeclaredInFile) {
+    LogError("Only one module declaration is allowed per file");
+    return false;
+  }
+  if (SeenNonModuleTopLevel) {
+    LogError("module declaration must appear before other top-level forms");
+    return false;
+  }
+  ModuleDeclaredInFile = true;
+  return true;
+}
+```
+
+Two validations: only one `module` per file, and it must precede all other top-level forms.
+
+## `ParseImportDefinition`
+
+```cpp
+static bool ParseImportDefinition() {
+  getNextToken(); // eat 'import'
+  string ImportName;
+  if (!ParseDottedModuleName(ImportName))
+    return false;
+  ImportedModules.push_back(ImportName);
+  return true;
+}
+```
+
+In this chapter, import names are collected but not yet resolved to files. That is Chapter 43's job.
+
+## `SeenNonModuleTopLevel` Tracking
+
+Every top-level handler sets the flag when it runs:
+
+```cpp
+static void HandleDefinition()    { SeenNonModuleTopLevel = true; ... }
+static void HandleExtern()        { SeenNonModuleTopLevel = true; ... }
+static void HandleStructDef()     { SeenNonModuleTopLevel = true; ... }
+static void HandleClassDef()      { SeenNonModuleTopLevel = true; ... }
+static void HandleTypeAliasDef()  { SeenNonModuleTopLevel = true; ... }
+static void HandleTraitDef()      { SeenNonModuleTopLevel = true; ... }
+static void HandleImplDef()       { SeenNonModuleTopLevel = true; ... }
+// ... and HandleTopLevelExpression
+```
+
+This is how `ParseModuleDefinition` can detect that `module` appeared too late.
+
+## `HandleModuleDef`, `HandleImportDef`, `HandleExportDef`
+
+`HandleModuleDef` and `HandleImportDef` reject REPL input and then delegate to their parse functions:
+
+```cpp
+static void HandleModuleDef() {
+  if (IsRepl) {
+    LogError("'module' is only supported in file mode");
+    SynchronizeToLineBoundary();
     return;
   }
-  // single-line body
-  while (CurTok != tok_eof && CurTok != tok_eol)
-    getNextToken();
-  if (CurTok == tok_eol)
-    getNextToken();
+  if (!ParseModuleDefinition())
+    SynchronizeToLineBoundary();
+}
+
+static void HandleImportDef() {
+  if (IsRepl) {
+    LogError("'import' is only supported in file mode");
+    SynchronizeToLineBoundary();
+    return;
+  }
+  if (!ParseImportDefinition())
+    SynchronizeToLineBoundary();
 }
 ```
 
-This counts INDENT/DEDENT pairs to skip multi-line bodies correctly.
-
-## `ParseDefinitionSignatureOnly`
-
-Parses a `def` signature, registers the prototype in `FunctionProtos`, then discards the body:
+`HandleExportDef` eats `export` and then dispatches to the appropriate existing handler based on the following token:
 
 ```cpp
-static bool ParseDefinitionSignatureOnly() {
-  getNextToken(); // eat 'def'
-  auto Proto = ParsePrototype();
-  if (!Proto)
-    return false;
-  string RetStructName;
-  ValueType RetType =
-      ParseOptionalReturnTypeWithStruct(RetStructName, ValueType::None);
-  if (RetType == ValueType::Error)
-    return false;
-  Proto->setReturnType(RetType);
-  Proto->setReturnStructName(RetStructName);
-  FunctionProtos[Proto->getName()] = Proto->clone();
-  if (CurTok != ':')
-    return LogError("Expected ':' in definition"), false;
-  getNextToken(); // eat ':'
-  SkipSignatureBody();
-  return true;
-}
-```
-
-## `ParseMethodSignatureOnlyInClass`
-
-Registers a method prototype — including the implicit `self` injection — without generating any IR:
-
-```cpp
-static bool ParseMethodSignatureOnlyInClass(const string &ClassName,
-                                            bool IsPublic) {
-  getNextToken(); // eat 'def'
-  // ... parse method name and parameter list (same as ParseMethodDefinitionInClass) ...
-  // inject implicit self:
-  ArgNames.push_back({"self", ValueType::Pointer,
-                      EncodePointerType(ValueType::Struct, ClassName)});
-  // ... parse remaining params and return type ...
-  string MangledName = ClassName + "." + MethodName;
-  auto Proto = make_unique<PrototypeAST>(MangledName, std::move(ArgNames), ProtoLoc, RetType);
-  FunctionProtos[Proto->getName()] = Proto->clone();
-  // update visibility map:
-  StructTypes[ClassName].MethodIsPublic[MethodName] = IsPublic;
-  getNextToken(); // eat ':'
-  SkipSignatureBody();
-  return true;
-}
-```
-
-## `ParseExportSignatureOnly`
-
-Dispatches on the token after `export` to run the right signature-only parser:
-
-```cpp
-static bool ParseExportSignatureOnly() {
+static void HandleExportDef() {
+  if (IsRepl) {
+    LogError("'export' is only supported in file mode");
+    SynchronizeToLineBoundary();
+    return;
+  }
   getNextToken(); // eat 'export'
-  if (CurTok == tok_def)    return ParseDefinitionSignatureOnly();
-  if (CurTok == tok_extern) {
-    auto Proto = ParseExtern();
-    if (!Proto) return false;
-    FunctionProtos[Proto->getName()] = std::move(Proto);
-    return true;
+  switch (CurTok) {
+  case tok_def:    HandleDefinition(); return;
+  case tok_extern: HandleExtern();     return;
+  case tok_struct: HandleStructDef();  return;
+  case tok_class:  HandleClassDef();   return;
+  case tok_type:   HandleTypeAliasDef(); return;
+  case tok_trait:  HandleTraitDef();   return;
+  case tok_impl:   HandleImplDef();    return;
+  default:
+    LogError("'export' must be followed by a top-level declaration");
+    SynchronizeToLineBoundary();
+    return;
   }
-  if (CurTok == tok_struct) return ParseAggregateDefinition("struct");
-  if (CurTok == tok_class)  return ParseAggregateDefinition("class");
-  if (CurTok == tok_trait)  return ParseTraitDefinition();
-  if (CurTok == tok_type)   return ParseTypeAliasDefinition();
-  return LogError("Invalid export target"), false;
 }
 ```
 
-Struct, class, trait, and type alias parsers already register into `StructTypes`, `Traits`, and `TypeAliases`. They work unchanged in `SignatureScanMode` because their "bodies" are field/trait-method declarations, not IR-generating code.
+In this chapter `export` is a visibility marker but does not yet restrict which symbols cross file boundaries — enforcement comes in Chapter 43.
 
-## `ResolveImportToPath`
+## Main Loop Dispatch
 
-Converts `app.math` to an absolute file path by replacing dots with slashes and probing relative to the importer's location:
-
-```cpp
-static bool ResolveImportToPath(const string &ImporterPath,
-                                const string &Import, string &OutPath) {
-  string Rel = Import;
-  std::replace(Rel.begin(), Rel.end(), '.', '/');
-  SmallString<256> Candidate(ImporterPath);
-  path::remove_filename(Candidate);
-  path::append(Candidate, Rel + ".pyxc");
-  if (fs::exists(Candidate)) {
-    OutPath = std::string(Candidate.str());
-    return true;
-  }
-  // Test-friendly fallback: Inputs/ subdirectory
-  SmallString<256> InputsCandidate(ImporterPath);
-  path::remove_filename(InputsCandidate);
-  path::append(InputsCandidate, "Inputs");
-  path::append(InputsCandidate, Rel + ".pyxc");
-  if (fs::exists(InputsCandidate)) {
-    OutPath = std::string(InputsCandidate.str());
-    return true;
-  }
-  return false;
-}
-```
-
-If neither probe succeeds, the import is unresolved and the compiler errors.
-
-## `CanonicalizePath`
-
-Converts a path to its canonical form for deduplication:
+Both `MainLoop` and `FileModeLoop` gain three new cases:
 
 ```cpp
-static string CanonicalizePath(const string &Path) {
-  SmallString<256> Canon(Path);
-  if (!llvm::sys::fs::real_path(Path, Canon))
-    return std::string(Canon.str());
-  // fallback: make absolute and remove dots
-  SmallString<256> Abs(Path);
-  llvm::sys::fs::make_absolute(Abs);
-  llvm::sys::path::remove_dots(Abs, true);
-  return std::string(Abs.str());
-}
-```
-
-## `CollectSignaturesFromFile`
-
-The core of the import system. Opens the file, switches to `SignatureScanMode`, scans for `export` declarations, and saves/restores all global parser state:
-
-```cpp
-static bool CollectSignaturesFromFile(const string &Path) {
-  const string CanonPath = CanonicalizePath(Path);
-  if (!SignatureVisitedFiles.insert(CanonPath).second)
-    return true; // already visited
-
-  FILE *SavedInput = Input;
-  bool SavedIsRepl = IsRepl;
-  string SavedSourcePath = CurrentSourcePath;
-  int SavedCurTok = CurTok;
-  bool SavedHadError = HadError;
-  bool OK = true;
-
-  if (!OpenInputFile(Path))
-    return false;
-  ResetLexerState();
-  IsRepl = false;
-  SignatureScanMode = true;
-  HadError = false;
-  getNextToken();
-
-  while (CurTok != tok_eof) {
-    if (CurTok == tok_eol || CurTok == tok_indent || CurTok == tok_dedent) {
-      getNextToken(); continue;
-    }
-    if (CurTok == tok_import) {
-      // Recurse eagerly into nested imports
-      getNextToken(); // eat 'import'
-      string ImportName;
-      if (!ParseDottedModuleName(ImportName)) { OK = false; break; }
-      string ImportPath;
-      if (!ResolveImportToPath(CanonPath, ImportName, ImportPath)) {
-        LogError(("Could not resolve import '" + ImportName + "'...").c_str());
-        OK = false; break;
-      }
-      if (!CollectSignaturesFromFile(ImportPath)) { OK = false; break; }
-      continue;
-    }
-    if (CurTok == tok_export) {
-      if (!ParseExportSignatureOnly()) { OK = false; break; }
-      continue;
-    }
-    SkipSignatureBody(); // skip non-exported forms
-  }
-
-  if (HadError) OK = false;
-
-  CloseInputFile();
-  Input = SavedInput;
-  IsRepl = SavedIsRepl;
-  CurrentSourcePath = SavedSourcePath;
-  CurTok = SavedCurTok;
-  SignatureScanMode = false;
-  HadError = SavedHadError;
-  ResetLexerState();
-  return OK;
-}
-```
-
-State save/restore lets the scanner work recursively — scanning B while in the middle of scanning A — without corrupting the outer parse.
-
-## `ExtractTopLevelImports` — Text-Based Import Discovery
-
-Before the lexer runs on the main file, a fast line-based scanner extracts its `import` names using `std::ifstream`. This avoids invoking the full lexer on the entry file twice:
-
-```cpp
-static vector<string> ExtractTopLevelImports(const string &Path) {
-  vector<string> Result;
-  std::ifstream In(Path);
-  string Line;
-  while (std::getline(In, Line)) {
-    // skip blank lines and comments
-    auto first = Line.find_first_not_of(" \t");
-    if (first == string::npos || Line[first] == '#') continue;
-    string Trim = Line.substr(first);
-    if (Trim.rfind("module ", 0) == 0) continue;
-    if (Trim.rfind("import ", 0) == 0) {
-      string Name = Trim.substr(7);
-      // strip inline comments
-      auto hash = Name.find('#');
-      if (hash != string::npos) Name = Name.substr(0, hash);
-      while (!Name.empty() && isspace((unsigned char)Name.back())) Name.pop_back();
-      if (!Name.empty()) Result.push_back(Name);
-      continue;
-    }
-    if (Trim.rfind("export ", 0) == 0) continue;
-    break; // first non-import top-level form — stop
-  }
-  return Result;
-}
-```
-
-It stops at the first line that is neither `module`, `import`, nor `export` — so function bodies are never read.
-
-## `PreloadImportedSignatures`
-
-Called before the main parse loop of any file. Clears the visited set, then runs `CollectSignaturesFromFile` for each import:
-
-```cpp
-static bool PreloadImportedSignatures(const string &Path) {
-  SignatureVisitedFiles.clear();
-  for (const auto &ImportName : ExtractTopLevelImports(Path)) {
-    string ImportPath;
-    if (!ResolveImportToPath(Path, ImportName, ImportPath)) {
-      LogError(...);
-      return false;
-    }
-    if (!CollectSignaturesFromFile(ImportPath))
-      return false;
-  }
-  return true;
-}
-```
-
-## `CollectImportClosure` — Auto-Expanding `--emit exe`
-
-For `--emit exe`, every transitively imported `.pyxc` file must be compiled and linked. `CollectImportClosure` does a DFS of the import graph and returns the full file list:
-
-```cpp
-static bool CollectImportClosure(const string &Path, std::set<string> &Visited,
-                                 vector<string> &OutFiles) {
-  const string CanonPath = CanonicalizePath(Path);
-  if (!Visited.insert(CanonPath).second)
-    return true; // already in closure
-  OutFiles.push_back(CanonPath);
-  for (const auto &ImportName : ExtractTopLevelImports(CanonPath)) {
-    string ImportPath;
-    if (!ResolveImportToPath(CanonPath, ImportName, ImportPath)) {
-      LogError(...);
-      return false;
-    }
-    if (!CollectImportClosure(ImportPath, Visited, OutFiles))
-      return false;
-  }
-  return true;
-}
-```
-
-The `--emit exe` driver replaces its explicit input list with the `ExpandedInputs` produced by this function:
-
-```cpp
-// Before: compile each file listed on the command line
-// After: expand the import closure, then compile each file in the closure
-vector<string> ExpandedInputs;
-std::set<string> SeenPyxcInputs;
-for each InputPath:
-  if IsPyxcInput(InputPath):
-    CollectImportClosure(InputPath, SeenPyxcInputs, ExpandedInputs);
-  else:
-    ExpandedInputs.push_back(InputPath);
-// then compile everything in ExpandedInputs
+case tok_module: HandleModuleDef(); break;
+case tok_import: HandleImportDef(); break;
+case tok_export: HandleExportDef(); break;
 ```
 
 ## Grammar
 
 ```ebnf
-importdecl = "import" modulepath ;   -- new
-modulepath = identifier { "." identifier } ;
+moduledecl  = "module" modulepath ;                                -- new
+importdecl  = "import" modulepath ;                                -- new
+exportdecl  = "export" ( definition | external | structdef
+                        | classdef | typealias | traitdef
+                        | impldef ) ;                              -- new
+modulepath  = identifier { "." identifier } ;                      -- new
 ```
 
-`import` is file-mode only. Use it after `module` and before the first function definition.
+`module` must be the first non-comment line. A file can have at most one `module` declaration. Both `module` and `export` are file-mode only.
 
 ## Error Cases
 
-**Import not found:**
+**`module` after a definition:**
 ```pyxc
-import does.not.exist   # Error: Could not resolve import 'does.not.exist' from '...'
+def a() -> int:
+  return 0
+module late.name   # Error: module declaration must appear before other top-level forms
 ```
 
-**Calling a non-exported function:**
+**Duplicate `module`:**
 ```pyxc
-import app.math
-validate(5)   # Error: Unknown function referenced (not exported)
+module app.a
+module app.b   # Error: Only one module declaration is allowed per file
 ```
 
-**Wrong argument type from imported function:**
+**`export` on a non-declaration:**
 ```pyxc
-import app.math
-add(1.0, 2)   # Error: argument 1 expects int
+module app.bad
+export 1 + 2   # Error: 'export' must be followed by a top-level declaration
 ```
 
-## Things Worth Knowing
-
-**`--emit llvm-ir` does not auto-include dependencies.** The closure expansion is specific to `--emit exe`. IR output is one-file-in, one-file-out.
-
-**`import` in the REPL is not supported.** The import system is file-mode only.
-
-**Circular imports work.** If A imports B and B imports A, the `SignatureVisitedFiles` set stops the recursion. Chapter 43 makes this more robust with a two-phase algorithm that handles the case where B's exports are needed by A before B finishes scanning.
+**`module` or `export` in the REPL:**
+```
+>>> module foo
+Error: 'module' is only supported in file mode
+```
 
 ## What's Next
 
-[Chapter 43](chapter-43.md) explains how the compiler handles cyclic imports without infinite recursion.
+[Chapter 43](chapter-43.md) implements the import resolver: the compiler finds the source file, scans its `export` declarations, and makes them available — no `extern def` needed for pyxc-to-pyxc calls.
 
 ## Need Help?
 

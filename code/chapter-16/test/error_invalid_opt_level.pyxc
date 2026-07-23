@@ -5,5 +5,5 @@
 # Tests: -O4 (out of range) is rejected with a clear error message. The valid
 # range is -O0 through -O3.
 
-def main() -> None:
-    return
+def main():
+    return 0

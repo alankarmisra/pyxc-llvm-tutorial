@@ -1,6 +1,6 @@
 (*
    pyxc.ebnf
-   Grammar for chapter 19 — Pointer arithmetic.
+   Grammar for chapter 18 — Pointers and address-of.
 *)
 
 (*
@@ -10,26 +10,26 @@
 
 program         = [ eols ] [ top { eols top } ] [ eols ] ;
 eols            = eol { eol } ;
-top             = structdef | definition | decorateddef | external | toplevelexpr ;
-structdef       = "struct" identifier ":" eols structblock ;
+top             = structdef | functiondef | decoratedfunctiondef | external | toplevelexpr ;
+structdef       = "struct" name ":" eols structblock ;
 structblock     = indent fielddecl { eols fielddecl } dedent ;
-fielddecl       = identifier ":" type ;
-definition      = "def" prototype [ "->" type ] ":" ( simplestmt | eols block ) ;
+fielddecl       = name ":" type ;
+functiondef      = "def" functionsignature [ "->" type ] ":" ( simplestmt | eols block ) ;
 (* If the return type is omitted, it defaults to None. *)
-decorateddef    = binarydecorator eols "def" binaryopprototype [ "->" type ] ":" ( simplestmt | eols block )
-                | unarydecorator  eols "def" unaryopprototype  [ "->" type ] ":" ( simplestmt | eols block ) ;
+decoratedfunctiondef    = binarydecorator eols "def" binaryopsignature [ "->" type ] ":" ( simplestmt | eols block )
+                | unarydecorator  eols "def" unaryopsignature  [ "->" type ] ":" ( simplestmt | eols block ) ;
 binarydecorator = "@" "binary" "(" integer ")" ;
 unarydecorator  = "@" "unary" ;
-binaryopprototype = customopchar "(" typedparam "," typedparam ")" ;
-unaryopprototype  = customopchar "(" typedparam ")" ;
-external        = "extern" "def" prototype [ "->" type ] ;
+binaryopsignature = customopchar "(" typedparam "," typedparam ")" ;
+unaryopsignature  = customopchar "(" typedparam ")" ;
+external        = "extern" "def" functionsignature [ "->" type ] ;
 toplevelexpr    = expression ;
-prototype       = identifier "(" [ typedparam { "," typedparam } ] ")" ;
-typedparam      = identifier ":" type ;
+functionsignature       = name "(" [ typedparam { "," typedparam } ] ")" ;
+typedparam      = name ":" type ;
 ifstmt          = "if" expression ":" suite
                 [ eols "else" ":" suite ] ;
 forstmt         = "for"
-                  ( "var" identifier ":" type | identifier )
+                  ( "var" name ":" type | name )
                   "=" expression "," expression "," expression ":" suite ;
 varstmt         = "var" varbinding { "," varbinding } ;
 assignstmt      = lvalue "=" expression ; (* assignment is a statement here *)
@@ -42,17 +42,17 @@ stmtsep = eols | BLOCK_END ;
 block = indent statement { stmtsep statement } dedent ;
 expression      = unaryexpr binoprhs ;
 binoprhs        = { binaryop unaryexpr } ;
-lvalue          = identifier | fieldaccess | indexexpr ;
-varbinding      = identifier ":" type [ "=" expression ] ;
+lvalue          = name | fieldaccess | indexexpr ;
+varbinding      = name ":" type [ "=" expression ] ;
 unaryexpr       = unaryop unaryexpr | primary ;
 unaryop         = "-" | userdefunaryop ;
-primary         = castexpr | addrexpr | identifierexpr | fieldaccess | indexexpr | numberexpr | bool_literal | parenexpr ;
+primary         = castexpr | addrexpr | nameexpr | fieldaccess | indexexpr | numberexpr | bool_literal | parenexpr ;
 castexpr        = casttype "(" expression ")" ;
 addrexpr        = "addr" "(" lvalue ")" ;
-identifierexpr  = identifier | callexpr ;
-callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
-fieldaccess     = identifier "." identifier { "." identifier } ;
-indexexpr       = identifier "[" expression "]" ;
+nameexpr  = name | callexpr ;
+callexpr        = name "(" [ expression { "," expression } ] ")" ;
+fieldaccess     = name "." name { "." name } ;
+indexexpr       = name "[" expression "]" ;
 numberexpr      = number ;
 parenexpr       = "(" expression ")" ;
 binaryop        = builtinbinaryop | userdefbinaryop ;
@@ -65,11 +65,11 @@ userdefunaryop  = ? any opchar defined as a custom unary operator ? ;
 customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
                     and not already defined as a custom operator ? ;
 opchar          = ? any single ASCII punctuation character ? ;
-identifier      = (letter | "_") { letter | digit | "_" } ;
+name      = (letter | "_") { letter | digit | "_" } ;
 builtintype     = "int" | "int8" | "int16" | "int32" | "int64"
                 | "float" | "float32" | "float64"
                 | "bool" | "None" ;
-structtype      = identifier ;
+structtype      = name ;
 pointertype     = "ptr" "[" type "]" ;
 type            = builtintype | structtype | pointertype ;
 casttype        = "int" | "int8" | "int16" | "int32" | "int64"

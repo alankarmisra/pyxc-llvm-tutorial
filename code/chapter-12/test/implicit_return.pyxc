@@ -6,7 +6,7 @@
 # Tests: a function with no explicit return on all paths gets an implicit return 0.0.
 # When the block ends without a terminator, codegen inserts:
 #   Builder->CreateRet(ConstantFP::get(*TheContext, APFloat(0.0)))
-# definition = "def" prototype ":" ( simplestmt | eols block ) ;
+# definition = "def" function signature ":" ( simplestmt | eols block ) ;
 # ifstmt = "if" expression ":" suite [ eols "else" ":" suite ] ;  (no else here)
 
 extern def printd(x)

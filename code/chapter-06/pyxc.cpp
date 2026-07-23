@@ -1,4 +1,3 @@
-#include "../include/PyxcJIT.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
@@ -7,17 +6,8 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
-#include "llvm/IR/PassManager.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Verifier.h"
-#include "llvm/Passes/PassBuilder.h"
-#include "llvm/Passes/StandardInstrumentations.h"
-#include "llvm/Support/TargetSelect.h"
-#include "llvm/Target/TargetMachine.h"
-#include "llvm/Transforms/InstCombine/InstCombine.h"
-#include "llvm/Transforms/Scalar.h"
-#include "llvm/Transforms/Scalar/GVN.h"
-#include "llvm/Transforms/Scalar/Reassociate.h"
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -32,16 +22,6 @@
 
 using namespace std;
 using namespace llvm;
-using namespace llvm::orc;
-
-//===----------------------------------------===//
-// Command line
-//===----------------------------------------===//
-static cl::OptionCategory PyxcCategory("Pyxc options");
-
-static cl::opt<unsigned> OptLevel("O", cl::desc("Optimization level"),
-                                  cl::value_desc("0|1|2|3"), cl::Prefix,
-                                  cl::init(2), cl::cat(PyxcCategory));
 
 //===----------------------------------------===//
 // Lexer
@@ -56,24 +36,23 @@ enum Token {
 
   // commands
   tok_def = -4,
-  tok_extern = -5,
 
   // primary
-  tok_identifier = -6,
-  tok_number = -7,
+  tok_identifier = -5,
+  tok_number = -6,
 
   // control
-  tok_return = -8,
+  tok_return = -7
 };
 
 static string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;        // Filled in if tok_number
-static string NumLiteralStr; // Filled in if tok_number
+static string NumLiteralStr; // Filled in if tok_number, used in error messages
 
-// Keywords like `def`, `extern` and `return`. The lexer will return the
+// Keywords words like `def` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
-static map<string, Token> Keywords = {
-    {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return}};
+static map<string, Token> Keywords = {{"def", tok_def},
+                                       {"return", tok_return}};
 
 // Debug-only token names. Kept separate from Keywords because this map is
 // purely for printing token stream output.
@@ -82,8 +61,9 @@ static map<int, string> TokenNames = [] {
   static map<int, string> Names = {
       {tok_eof, "end of input"}, {tok_eol, "newline"},
       {tok_error, "error"},      {tok_def, "'def'"},
-      {tok_extern, "'extern'"},  {tok_identifier, "identifier"},
-      {tok_number, "number"},    {tok_return, "'return'"}};
+      {tok_identifier, "identifier"},
+      {tok_number, "number"},    {tok_return, "'return'"},
+  };
 
   // Single character tokens.
   for (int ch = 0; ch <= 255; ++ch) {
@@ -107,15 +87,15 @@ static map<int, string> TokenNames = [] {
   return Names;
 }();
 
-/// SourceLocation - A {Line, Col} pair. Line and Col are 1-based.
-///
-/// Two globals track position as characters are consumed:
-///   LexLoc  - where the character-read head (advance()) currently is.
-///             Updated on every advance() call. After a '\n', Line increments
-///             and Col resets to 0 so the next character will be Col 1.
-///   CurLoc  - snapshotted at the start of each token in gettok(), before
-///             consuming any of the token's characters. This is the position
-///             the parser and diagnostics see.
+// SourceLocation - A {Line, Col} pair. Line and Col are 1-based.
+//
+// Two globals track position as characters are consumed:
+//   LexLoc  - where the character-read head (advance()) currently is.
+//             Updated on every advance() call. After a '\n', Line increments
+//             and Col resets to 0 so the next character will be Col 1.
+//   CurLoc  - snapshotted at the start of each token in gettok(), before
+//             consuming any of the token's characters. This is the position
+//             the parser and diagnostics infrastructure see.
 struct SourceLocation {
   int Line;
   int Col;
@@ -123,33 +103,30 @@ struct SourceLocation {
 static SourceLocation CurLoc;
 static SourceLocation LexLoc = {1, 0};
 
-/// SourceManager - Buffers every source line as it is read so that error
-/// messages can reprint the offending line with a caret underneath it.
-///
-/// advance() calls onChar() for every character it consumes. When a '\n'
-/// arrives, the just-completed line is moved into CompletedLines and
-/// CurrentLine starts fresh. getLine(N) returns a pointer to the Nth line
-/// (1-based): completed lines are stored in the vector; the line currently
-/// being assembled is in CurrentLine.
+// SourceManager - Buffers every source line as it is read so that error
+// messages can reprint the offending line with a caret underneath it.
+//
+// advance() calls onChar() for every character it consumes. When a '\n'
+// arrives, the just-completed line is moved into CompletedLines and
+// CurrentLine starts fresh. getLine(N) returns a pointer to the Nth line
+// (1-based): completed lines are stable in the vector; the line currently
+// being assembled is in CurrentLine.
+//
+// Because the REPL accumulates all input in one session, line numbers
+// increase monotonically across inputs and getLine() can retrieve any
+// previously seen line — useful for multi-line function bodies and for
+// pointing the caret at a line that was parsed several inputs ago.
 class SourceManager {
   vector<string> CompletedLines;
   string CurrentLine;
 
 public:
-  /// reset - Clear all buffered source lines.
-  ///
-  /// Used when starting a new input stream so diagnostics only reference the
-  /// current script/session content.
   void reset() {
     CompletedLines.clear();
     CurrentLine.clear();
   }
 
-  /// onChar - Feed one consumed character into the source buffer.
-  ///
-  /// Preconditions:
-  /// - Must be called for every character consumed by advance().
-  /// - '\n' terminates the current line; EOF is ignored.
+  // Called by advance() for every character consumed from the input.
   void onChar(int C) {
     if (C == '\n') {
       CompletedLines.push_back(CurrentLine);
@@ -160,17 +137,9 @@ public:
       CurrentLine.push_back(static_cast<char>(C));
   }
 
-  /// getLine - Return a pointer to a buffered source line by 1-based index.
-  ///
-  /// Completed lines come from CompletedLines; the in-progress line is
-  /// CurrentLine when OneBasedLine == CompletedLines.size() + 1.
-  ///
-  /// Preconditions:
-  /// - OneBasedLine is 1-based. Non-positive indices return nullptr.
-  ///
-  /// Note:
-  /// - Do not retain the returned pointer across advance()/onChar() calls;
-  ///   buffers may reallocate.
+  // Returns a pointer to the text of line OneBasedLine, or nullptr if out of
+  // range. The pointer is stable for completed lines; CurrentLine may move if
+  // more characters arrive, so callers should not hold it across advance().
   const string *getLine(int OneBasedLine) const {
     if (OneBasedLine <= 0)
       return nullptr;
@@ -193,9 +162,8 @@ static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation L
 /// Every token branch in gettok() calls advance() rather than getchar()
 /// directly, so LexLoc and the source buffer are always in sync.
 ///
-/// Windows line endings (\r\n) are coalesced to a single \n
-/// as are bare (old) Mac \r's (without a trailing \n)
-/// so the rest of the lexer never needs to handle \r.
+/// Windows line endings (\r\n) are coalesced to a single \n so the rest of
+/// the lexer never needs to handle \r.
 static int advance() {
   int LastChar = getchar();
   if (LastChar == '\r') {
@@ -248,10 +216,6 @@ static int gettok() {
   CurLoc = LexLoc;
 
   if (LastChar == '\n') {
-    // Do not call advance() here.
-    // We should return the newline token immediately. If we read one more
-    // character first, REPL mode may wait for extra input before processing
-    // the line the user just submitted.
     LastChar = ' ';
     return tok_eol;
   }
@@ -275,8 +239,7 @@ static int gettok() {
     NumLiteralStr = NumStr;
     char *End = nullptr;
     NumVal = strtod(NumStr.c_str(), &End);
-    if (End == NumStr.c_str() /* no conversion */
-        || *End != '\0' /* trailing unparsed characters */) {
+    if (!End || *End != '\0') {
       LogInvalidNumberLiteralAtLoc(NumStr, CurLoc);
       return tok_error;
     }
@@ -293,7 +256,7 @@ static int gettok() {
       // Re-snapshot CurLoc now that the '\n' has been consumed and LexLoc
       // has advanced to the next line. Without this, CurLoc would point at
       // the '#' column, and GetDiagnosticAnchorLoc would look up the wrong
-      // line (because it subtracts 1) when the next token triggers an error.
+      // line when the next token triggers an error.
       CurLoc = LexLoc;
       LastChar = ' ';
       return tok_eol;
@@ -303,13 +266,8 @@ static int gettok() {
   if (LastChar == EOF)
     return tok_eof;
 
-  // Single character token
   int ThisChar = LastChar;
-
-  // Position the lexer at the next character so the next gettok() starts there.
   LastChar = advance();
-
-  // Return ThisChar.
   return ThisChar;
 }
 
@@ -327,18 +285,17 @@ static int gettok() {
 /// character — pointing just after the final token on the line, which is
 /// where the missing token (e.g. ':') should have appeared.
 static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
-  if (Tok != tok_eol || Loc.Line <= 1)
+  if (Tok != tok_eol)
     return Loc;
 
-  // Tok == tok_eol && Loc.Line > 1
   int PrevLine = Loc.Line - 1;
-  const string *PrevLineText = PyxcSourceMgr.getLine(PrevLine);
+  if (PrevLine <= 0)
+    return Loc;
 
-  // guard
+  const string *PrevLineText = PyxcSourceMgr.getLine(PrevLine);
   if (!PrevLineText)
     return Loc;
 
-  // return a pointer just past the end of the previous line.
   return {PrevLine, static_cast<int>(PrevLineText->size()) + 1};
 }
 
@@ -368,8 +325,11 @@ static void PrintErrorSourceContext(SourceLocation Loc) {
     return;
 
   fprintf(stderr, "%s\n", LineText->c_str());
-  int spaces = max(0, Loc.Col - 1);
-  fprintf(stderr, "%*s", spaces, " ");
+  int spaces = Loc.Col - 1;
+  if (spaces < 0)
+    spaces = 0;
+  for (int i = 0; i < spaces; ++i)
+    fputc(' ', stderr);
   fprintf(stderr, "^~~~\n");
 }
 
@@ -382,6 +342,7 @@ static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation L
 //===----------------------------------------===//
 // Abstract Syntax Tree (aka Parse Tree)
 //===----------------------------------------===//
+
 namespace {
 
 /// ExprAST - Base class for all expression nodes.
@@ -400,24 +361,22 @@ public:
   Value *codegen() override;
 };
 
-/// VariableExprAST - Expression class for referencing a variable, like "a".
-class VariableExprAST : public ExprAST {
+/// NameExprAST - Expression class for referencing a variable, like "a".
+class NameExprAST : public ExprAST {
   string Name;
 
 public:
-  VariableExprAST(const string &Name) : Name(Name) {}
+  NameExprAST(const string &Name) : Name(Name) {}
   Value *codegen() override;
 };
 
 /// BinaryExprAST - Expression class for a binary operator.
-/// Op is stored as an int token code. In chapter 7 all binary operators are
-/// single-character ASCII tokens ('+', '-', '*').
 class BinaryExprAST : public ExprAST {
   char Op;
   unique_ptr<ExprAST> LHS, RHS;
 
 public:
-  BinaryExprAST(int Op, unique_ptr<ExprAST> LHS, unique_ptr<ExprAST> RHS)
+  BinaryExprAST(char Op, unique_ptr<ExprAST> LHS, unique_ptr<ExprAST> RHS)
       : Op(Op), LHS(std::move(LHS)), RHS(std::move(RHS)) {}
   Value *codegen() override;
 };
@@ -433,30 +392,29 @@ public:
   Value *codegen() override;
 };
 
-/// PrototypeAST - This class represents the "prototype" for a function,
+/// FunctionSignatureAST - This class represents the "function signature" for a function,
 /// which captures its name, and its argument names (thus implicitly the number
 /// of arguments the function takes).
-class PrototypeAST {
+class FunctionSignatureAST {
   string Name;
   vector<string> Args;
 
 public:
-  PrototypeAST(const string &Name, vector<string> Args)
+  FunctionSignatureAST(const string &Name, vector<string> Args)
       : Name(Name), Args(std::move(Args)) {}
 
   const string &getName() const { return Name; }
-  size_t getNumArgs() const { return Args.size(); }
   Function *codegen();
 };
 
-/// FunctionAST - This class represents a function definition itself.
-class FunctionAST {
-  unique_ptr<PrototypeAST> Proto;
+/// FunctionDefAST - This class represents a function definition itself.
+class FunctionDefAST {
+  unique_ptr<FunctionSignatureAST> Signature;
   unique_ptr<ExprAST> Body;
 
 public:
-  FunctionAST(unique_ptr<PrototypeAST> Proto, unique_ptr<ExprAST> Body)
-      : Proto(std::move(Proto)), Body(std::move(Body)) {}
+  FunctionDefAST(unique_ptr<FunctionSignatureAST> Signature, unique_ptr<ExprAST> Body)
+      : Signature(std::move(Signature)), Body(std::move(Body)) {}
   Function *codegen();
 };
 
@@ -482,31 +440,24 @@ static void consumeNewlines() {
     getNextToken();
 }
 
-/// BinopPrecedence - Maps each binary operator token to its precedence.
-/// Higher numbers bind more tightly: '*' (40) > '+'/'-' (20). Operators not in
-/// this map return -1 from GetTokPrecedence(), which tells ParseBinOpRHS to
-/// stop consuming operators and return what it has so far.
-static map<char, int> BinopPrecedence = {
-    {'+', 20}, // +
-    {'-', 20}, // -
-    {'*', 40}, // *
-};
+/// BinopPrecedence - Maps each binary operator character to its precedence.
+/// Higher numbers bind more tightly: '*' (40) > '+'/'-' (20) > '<' (10).
+/// Operators not in this map return -1 from GetTokPrecedence(), which tells
+/// ParseBinOpRHS to stop consuming operators and return what it has so far.
+static map<char, int> BinopPrecedence;
 
 /// GetTokPrecedence - Returns the precedence of CurTok if it is a known binary
-/// operator, or -1 if it is not.
+/// operator, or -1 if it is not. Non-ASCII tokens (our named token enums) are
+/// rejected immediately since they can never be binary operators here.
 static int GetTokPrecedence() {
+  if (!isascii(CurTok))
+    return -1;
+
   auto It = BinopPrecedence.find(CurTok);
   if (It == BinopPrecedence.end() || It->second <= 0)
     return -1;
   return It->second;
 }
-
-/// PrintReplPrompt - Print the interactive prompt to stderr.
-void PrintReplPrompt() { fprintf(stderr, "ready> "); }
-
-/// Log - Write a diagnostic message to stderr.
-/// Used by the Handle* functions to confirm what was parsed.
-void Log(const string &message) { fprintf(stderr, "%s", message.c_str()); }
 
 /// LogError* - Error reporting helpers. Each returns nullptr for its respective
 /// type so parse functions can write: return LogError("message");
@@ -518,12 +469,12 @@ unique_ptr<ExprAST> LogError(const char *Str) {
   return nullptr;
 }
 
-unique_ptr<PrototypeAST> LogErrorP(const char *Str) {
+unique_ptr<FunctionSignatureAST> LogErrorSignature(const char *Str) {
   LogError(Str);
   return nullptr;
 }
 
-unique_ptr<FunctionAST> LogErrorF(const char *Str) {
+unique_ptr<FunctionDefAST> LogErrorF(const char *Str) {
   LogError(Str);
   return nullptr;
 }
@@ -561,7 +512,7 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
   getNextToken(); // eat identifier.
 
   if (CurTok != '(') // Simple variable ref.
-    return make_unique<VariableExprAST>(IdName);
+    return make_unique<NameExprAST>(IdName);
 
   // Call.
   getNextToken(); // eat (
@@ -618,8 +569,7 @@ static unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
     if (TokPrec < ExprPrec)
       return LHS;
 
-    // Okay, we know this is a binop and that binds at least as tightly as the
-    // current binop.
+    // Okay, we know this is a binop.
     int BinOp = CurTok;
     getNextToken(); // eat binop
 
@@ -652,17 +602,17 @@ static unique_ptr<ExprAST> ParseExpression() {
   return ParseBinOpRHS(0, std::move(LHS));
 }
 
-/// prototype
-///   = identifier "(" [ identifier { "," identifier } ] ")" ;
-static unique_ptr<PrototypeAST> ParsePrototype() {
+/// functionsignature
+///   = identifier "(" [identifier {"," identifier}] ")" ;
+static unique_ptr<FunctionSignatureAST> ParseFunctionSignature() {
   if (CurTok != tok_identifier)
-    return LogErrorP("Expected function name in prototype");
+    return LogErrorSignature("Expected function name in function signature");
 
   string FnName = IdentifierStr;
   getNextToken(); // eat function name
 
   if (CurTok != '(')
-    return LogErrorP("Expected '(' in prototype");
+    return LogErrorSignature("Expected '(' in function signature");
 
   // Parse argument names. The loop calls getNextToken() at the top to advance
   // past '(' on the first iteration, and past ',' on subsequent ones.
@@ -676,31 +626,32 @@ static unique_ptr<PrototypeAST> ParsePrototype() {
       break;
 
     if (CurTok != ',')
-      return LogErrorP("Expected ')' or ',' in parameter list");
+      return LogErrorSignature("Expected ')' or ',' in parameter list");
     // loop continues: getNextToken() at the top eats the ','
   }
 
   if (CurTok != ')')
-    return LogErrorP("Expected ')' in prototype");
+    return LogErrorSignature("Expected ')' in function signature");
 
   getNextToken(); // eat ')'
 
-  return make_unique<PrototypeAST>(FnName, std::move(ArgNames));
+  return make_unique<FunctionSignatureAST>(FnName, std::move(ArgNames));
 }
 
 /// definition
-///   = "def" prototype ":" [ eols ] "return" expression ;
-static unique_ptr<FunctionAST> ParseDefinition() {
+///   = "def" function signature ":" ["newline"] "return" expression ;
+static unique_ptr<FunctionDefAST> ParseFunctionDef() {
   getNextToken(); // eat 'def'
-  auto Proto = ParsePrototype();
-  if (!Proto)
+  auto Signature = ParseFunctionSignature();
+  if (!Signature)
     return nullptr;
 
   if (CurTok != ':')
     return LogErrorF("Expected ':' in function definition");
   getNextToken(); // eat ':'
 
-  // Allow the function body to start on the next line:
+  // Skip any newlines between ':' and 'return'. This allows the body to be
+  // written on the next line:
   //   def foo(x):
   //     return x + 1
   consumeNewlines();
@@ -710,113 +661,52 @@ static unique_ptr<FunctionAST> ParseDefinition() {
   getNextToken(); // eat 'return'
 
   if (auto E = ParseExpression())
-    return make_unique<FunctionAST>(std::move(Proto), std::move(E));
+    return make_unique<FunctionDefAST>(std::move(Signature), std::move(E));
   return nullptr;
 }
 
 /// toplevelexpr
 ///   = expression
 /// A top-level expression (e.g. "1 + 2") is wrapped in an anonymous function
-/// so it fits the same FunctionAST shape as everything else.
-/// HandleTopLevelExpression compiles it into the JIT, calls it to get the
-/// numeric result, then removes it from the JIT via a ResourceTracker.
-static unique_ptr<FunctionAST> ParseTopLevelExpr() {
+/// so it fits the same FunctionDefAST shape as everything else. When we add JIT
+/// execution later, we'll look up "__anon_expr" and call it to get the result.
+static unique_ptr<FunctionDefAST> ParseTopLevelExpr() {
   if (auto E = ParseExpression()) {
-    auto Proto = make_unique<PrototypeAST>("__anon_expr", vector<string>());
-    return make_unique<FunctionAST>(std::move(Proto), std::move(E));
+    auto Signature = make_unique<FunctionSignatureAST>("__anon_expr", vector<string>());
+    return make_unique<FunctionDefAST>(std::move(Signature), std::move(E));
   }
   return nullptr;
-}
-
-/// external
-///   = "extern" "def" prototype
-static unique_ptr<PrototypeAST> ParseExtern() {
-  getNextToken(); // eat extern.
-  if (CurTok != tok_def)
-    return LogErrorP("Expected `def` after extern.");
-  getNextToken(); // eat def
-  return ParsePrototype();
 }
 
 //===----------------------------------------===//
 // Code Generation
 //===----------------------------------------===//
 
-// TheContext/TheModule/Builder/NamedValues - Core IR construction globals.
-// Recreated fresh for each new module (see InitializeModuleAndManagers).
-//
 // TheContext - Owns all LLVM data structures: types, constants, and the
 // interning tables that ensure two uses of 'double' resolve to the same
-// object.
+// object. One context per compilation unit (one per thread in threaded builds).
 //
-// TheModule - The unit of compilation handed to the JIT. Because the JIT
-// takes ownership of the module when a function is compiled, we create a
-// new module for every top-level input. Functions defined in earlier modules
-// remain callable via the JIT's symbol table.
+// TheModule - The unit of compilation. Every function definition lands here.
+// At session end we print the whole module so the reader can see all
+// accumulated IR in one place.
 //
 // Builder - A cursor into the IR being built. Point it at a BasicBlock with
-// SetInsertPoint(), then call Create* methods to append instructions.
+// SetInsertPoint(), then call methods like CreateFAdd or CreateFMul to append
+// instructions. Each method returns the Value* representing the result.
 //
-// NamedValues - Symbol table for the current function's parameters. Cleared
-// and repopulated at the start of each function body. Mutable local
-// variables come in a later chapter.
-//
-// TheJIT - The ORC JIT instance. Created once in main() and lives for the
-// whole session. Compiled modules are added to it; symbols from C libraries
-// (e.g. sin, cos) are resolved through the process's dynamic symbol table.
-//
-// TheFPM / TheLAM / TheFAM / TheCGAM / TheMAM - The new-PM pass and
-// analysis managers. TheFPM holds the optimisation pipeline; the analysis
-// managers cache analysis results and are cross-registered so passes that
-// need loop or CGSCC analyses can find them.
-//
-// FunctionProtos - Persistent prototype registry. Because each function
-// lands in its own module, a later module that calls 'foo' cannot find 'foo'
-// in TheModule->getFunction(). FunctionProtos stores the PrototypeAST for
-// every declared or defined function so getFunction() can re-emit a
-// declaration into the current module on demand.
-//
-// ExitOnErr - Convenience wrapper that terminates the process on a
-// recoverable LLVM error. Used for JIT operations that should never fail
-// in a correct implementation.
-static std::unique_ptr<LLVMContext> TheContext;
-static std::unique_ptr<Module> TheModule;
-static std::unique_ptr<IRBuilder<>> Builder;
-static std::map<std::string, Value *> NamedValues;
-static std::unique_ptr<PyxcJIT> TheJIT;
-static std::unique_ptr<FunctionPassManager> TheFPM;
-static std::unique_ptr<LoopAnalysisManager> TheLAM;
-static std::unique_ptr<FunctionAnalysisManager> TheFAM;
-static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
-static std::unique_ptr<ModuleAnalysisManager> TheMAM;
-static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
-static ExitOnError ExitOnErr;
+// NamedValues - Symbol table mapping parameter names to their Value*.
+// Populated fresh at the start of each function body and cleared between
+// functions — it only ever holds the current function's arguments. Mutable
+// local variables come in a later chapter.
+static unique_ptr<LLVMContext> TheContext;
+static unique_ptr<Module> TheModule;
+static unique_ptr<IRBuilder<>> Builder;
+static map<std::string, Value *> NamedValues;
 
-/// LogErrorV - Codegen-level error helper. Delegates to LogError for printing,
-/// then returns nullptr so codegen callers can write: return LogErrorV("msg");
+// LogErrorV - Codegen-level error helper. Delegates to LogError for printing,
+// then returns nullptr so codegen callers can write: return LogErrorV("msg");
 Value *LogErrorV(const char *Str) {
   LogError(Str);
-  return nullptr;
-}
-
-/// getFunction - Resolve a function name to an LLVM Function* in the current
-/// module, re-emitting a declaration from FunctionProtos if necessary.
-///
-/// Because each top-level input gets its own Module, a function defined in an
-/// earlier module is no longer in TheModule->getFunction(). When that happens
-/// we look up its PrototypeAST in FunctionProtos and call codegen() on it,
-/// which emits a fresh 'declare' with ExternalLinkage in the current module.
-/// The JIT resolves that extern to the already-compiled body at link time.
-Function *getFunction(const std::string &Name) {
-  // Fast path: declaration or definition already in the current module.
-  if (auto *F = TheModule->getFunction(Name))
-    return F;
-
-  // Slow path: re-emit a declaration from the saved prototype.
-  auto FI = FunctionProtos.find(Name);
-  if (FI != FunctionProtos.end())
-    return FI->second->codegen();
-
   return nullptr;
 }
 
@@ -833,13 +723,13 @@ Value *NumberExprAST::codegen() {
   return ConstantFP::get(*TheContext, APFloat(Val));
 }
 
-/// VariableExprAST::codegen - A variable reference looks up the name in
+/// NameExprAST::codegen - A variable reference looks up the name in
 /// NamedValues and returns the Value* for the corresponding function argument.
 ///
 /// For now NamedValues only contains the current function's parameters; any
 /// other name is an error. Mutable local variables (alloca/store/load) come
 /// in a later chapter.
-Value *VariableExprAST::codegen() {
+Value *NameExprAST::codegen() {
   auto It = NamedValues.find(Name);
   if (It == NamedValues.end() || !It->second)
     return LogErrorV("Unknown variable name");
@@ -854,6 +744,9 @@ Value *VariableExprAST::codegen() {
 /// numeric suffix when the same hint would otherwise repeat. They have no
 /// effect on correctness.
 ///
+/// '<' requires two steps: CreateFCmpULT produces a 1-bit integer (i1) —
+/// LLVM's boolean type. Since Pyxc treats everything as double, CreateUIToFP
+/// widens it: false -> 0.0, true -> 1.0.
 Value *BinaryExprAST::codegen() {
   Value *L = LHS->codegen();
   if (!L)
@@ -870,6 +763,10 @@ Value *BinaryExprAST::codegen() {
     return Builder->CreateFSub(L, R, "subtmp");
   case '*':
     return Builder->CreateFMul(L, R, "multmp");
+  case '<':
+    L = Builder->CreateFCmpULT(L, R, "cmptmp");
+    // Widen the i1 boolean to double: false -> 0.0, true -> 1.0.
+    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   default:
     return LogErrorV("invalid binary operator");
   }
@@ -879,11 +776,11 @@ Value *BinaryExprAST::codegen() {
 /// argument count, codegen each argument, then emit a call instruction.
 ///
 /// getFunction searches the module for a declaration or definition with the
-/// given name. This covers both previous 'extern' declarations and previously
-/// defined functions. The argument count check catches mismatches that a typed
-/// language would catch statically.
+/// given name — any function already defined earlier in this session. The
+/// argument count check catches mismatches that a typed language would catch
+/// statically.
 Value *CallExprAST::codegen() {
-  Function *CalleeF = getFunction(Callee);
+  Function *CalleeF = TheModule->getFunction(Callee);
   if (!CalleeF)
     return LogErrorV("Unknown function referenced");
 
@@ -900,17 +797,18 @@ Value *CallExprAST::codegen() {
   return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
-/// PrototypeAST::codegen - Create a function declaration in TheModule: name,
+/// FunctionSignatureAST::codegen - Create a function declaration in TheModule: name,
 /// return type (always double), and parameter types (all double).
 ///
 /// ExternalLinkage makes the function visible outside this module. That is
-/// what allows 'extern def sin(x)' to link against the C library's sin at
-/// runtime, and what lets 'def foo(...)' be called from later expressions in
-/// the same session.
+/// what lets 'def foo(...)' be called from later expressions in the same
+/// session. I'll lean on this same linkage again in chapter 6, when 'extern'
+/// declarations use it to resolve against real C library functions at
+/// runtime.
 ///
 /// Arg.setName() is optional — it only affects the printed IR, making output
 /// read as 'double %a, double %b' rather than 'double %0, double %1'.
-Function *PrototypeAST::codegen() {
+Function *FunctionSignatureAST::codegen() {
   // All parameters and the return value are double.
   std::vector<Type *> Doubles(Args.size(), Type::getDoubleTy(*TheContext));
   FunctionType *FT = FunctionType::get(Type::getDoubleTy(*TheContext), Doubles,
@@ -927,35 +825,32 @@ Function *PrototypeAST::codegen() {
   return F;
 }
 
-/// FunctionAST::codegen - Generate IR for a complete function definition.
+/// FunctionDefAST::codegen - Generate IR for a complete function definition.
 ///
 /// Four steps:
 ///
-/// 1. Register the prototype. The PrototypeAST is moved into FunctionProtos
-///    so that future modules can re-emit a declaration for this function via
-///    getFunction(). A reference is kept for the getFunction() call below.
-///    getFunction() either finds an existing declaration in the current module
-///    (e.g. from a prior 'extern def') or calls Proto->codegen() to create one.
+/// 1. Get or create the function declaration. If this name was already
+///    declared earlier in this session, getFunction finds it — used below to
+///    catch redefinition. Otherwise Signature->codegen() creates a fresh
+///    declaration. Either way TheFunction is a valid Function* with no body
+///    yet.
 ///
 /// 2. Create the entry BasicBlock and point the Builder at it. A basic block
 ///    is a straight-line sequence of instructions with one entry and one exit.
 ///    Every function starts with exactly one entry block.
 ///
 /// 3. Populate NamedValues. Clear the table (the previous function's arguments
-///    are irrelevant) and insert each argument. VariableExprAST nodes in the
+///    are irrelevant) and insert each argument. NameExprAST nodes in the
 ///    body look names up here.
 ///
-/// 4. Codegen the body expression. On success, emit 'ret', run verifyFunction
-///    (LLVM's internal consistency checker), then run TheFPM to apply the
-///    optimisation pipeline. On failure, eraseFromParent() removes the
+/// 4. Codegen the body expression. On success, emit 'ret' and run
+///    verifyFunction — LLVM's internal consistency checker that catches codegen
+///    bugs such as using a value defined in a different function or leaving a
+///    block without a terminator. On failure, eraseFromParent() removes the
 ///    partially-built function so no broken declaration is left in the module.
-Function *FunctionAST::codegen() {
-  // Step 1: register the prototype and resolve the Function*.
-  auto &P = *Proto;
-  FunctionProtos[Proto->getName()] = std::move(Proto);
-
-  // Step 1: reuse an existing `extern` declaration if one exists.
-  Function *TheFunction = getFunction(P.getName());
+Function *FunctionDefAST::codegen() {
+  // Step 1: look for an existing declaration under this name.
+  Function *TheFunction = TheModule->getFunction(Signature->getName());
 
   // Bail if the function is already fully defined — redefinition is an error.
   if (TheFunction && !TheFunction->empty()) {
@@ -963,6 +858,11 @@ Function *FunctionAST::codegen() {
     return nullptr;
   }
 
+  // The function was neither declared nor defined — create a fresh declaration.
+  if (!TheFunction)
+    TheFunction = Signature->codegen();
+
+  // Signature codegen failed.
   if (!TheFunction)
     return nullptr;
 
@@ -975,19 +875,16 @@ Function *FunctionAST::codegen() {
   for (auto &Arg : TheFunction->args())
     NamedValues[std::string(Arg.getName())] = &Arg;
 
-  // Step 4: codegen the body, optimise, verify, or erase on failure.
+  // Step 4: codegen the body, emit ret, verify, or erase on failure.
   if (Value *RetVal = Body->codegen()) {
     Builder->CreateRet(RetVal);
+    // Validate the generated code, checking for consistency.
     verifyFunction(*TheFunction);
-
-    // Run the optimisation pipeline: InstCombine, Reassociate, GVN,
-    // SimplifyCFG.
-    TheFPM->run(*TheFunction, *TheFAM);
     return TheFunction;
   }
 
-  // Body codegen failed — remove the incomplete function so it cannot be
-  // called and does not pollute the module handed to the JIT.
+  // Body codegen failed — remove the incomplete function from the module so
+  // it cannot be called and does not pollute the final IR dump.
   TheFunction->eraseFromParent();
   return nullptr;
 }
@@ -996,58 +893,14 @@ Function *FunctionAST::codegen() {
 // Top-Level parsing and JIT Driver
 //===----------------------------------------===//
 
-/// InitializeModuleAndManagers - Create a fresh module, IR builder, and
-/// optimisation pipeline.
-///
-/// Called once at startup and again after every top-level input that hands
-/// its module to the JIT. Because the JIT takes ownership of TheModule via
-/// ThreadSafeModule, we cannot keep emitting into the old module — a new one
-/// must be created for every subsequent definition or expression.
-///
-/// The optimisation pipeline is also recreated each time because
-/// FunctionPassManager is tied to a specific LLVMContext (via
-/// StandardInstrumentations).
-///
-/// Pipeline:
-///   InstCombinePass  - Peephole rewrites: a+0->a, x*2->x<<1, etc.
-///   ReassociatePass  - Reorder commutative ops to expose more folding:
-///                      (x+2)+3 -> x+(2+3) -> x+5.
-///   GVNPass          - Global Value Numbering: eliminate redundant loads and
-///                      common sub-expressions across basic blocks.
-///
-/// The analysis managers are cross-registered so that a function pass that
-/// needs loop information can reach TheLAM, and so on.
+/// InitializeModule - Create the three LLVM globals that all codegen depends
+/// on. Called once before MainLoop(). In a later chapter that adds JIT
+/// execution this will be called fresh for each top-level expression, because
+/// the JIT takes ownership of the module after compiling it.
 static void InitializeModuleAndManagers() {
-  // Fresh context and module for this compilation unit.
   TheContext = std::make_unique<LLVMContext>();
   TheModule = std::make_unique<Module>("PyxcJIT", *TheContext);
-  // Inform the module of the JIT's target data layout so codegen emits
-  // correctly-sized types for the host machine.
-  TheModule->setDataLayout(TheJIT->getDataLayout());
-
   Builder = std::make_unique<IRBuilder<>>(*TheContext);
-
-  // Pass and analysis managers.
-  TheFPM = std::make_unique<FunctionPassManager>();
-  TheLAM = std::make_unique<LoopAnalysisManager>();
-  TheFAM = std::make_unique<FunctionAnalysisManager>();
-  TheCGAM = std::make_unique<CGSCCAnalysisManager>();
-  TheMAM = std::make_unique<ModuleAnalysisManager>();
-
-  // Optimisation pipeline (applied per function after codegen).
-  if (OptLevel != 0) {
-    TheFPM->addPass(InstCombinePass()); // peephole rewrites
-    TheFPM->addPass(ReassociatePass()); // canonicalise commutative ops
-    TheFPM->addPass(GVNPass());         // eliminate common sub-expressions
-  }
-
-  PassBuilder PB;
-  PB.registerModuleAnalyses(*TheMAM);
-  PB.registerCGSCCAnalyses(*TheCGAM);
-  PB.registerFunctionAnalyses(*TheFAM);
-  PB.registerLoopAnalyses(*TheLAM);
-  // Cross-register so passes can access any analysis tier they need.
-  PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
 }
 
 /// SynchronizeToLineBoundary - Panic-mode error recovery.
@@ -1061,17 +914,15 @@ static void SynchronizeToLineBoundary() {
     getNextToken();
 }
 
-/// HandleDefinition - Parse, optimise, and JIT-compile a 'def' definition.
+/// HandleFunctionDef - Parse and codegen a 'def' function definition.
 ///
-/// On success: codegen + optimise the function (TheFPM runs inside
-/// FunctionAST::codegen), print the optimised IR, then hand the entire
-/// module to the JIT via addModule. The JIT takes ownership of TheModule and
-/// TheContext, so InitializeModuleAndManagers() is called immediately after
-/// to create a fresh module for the next input. The compiled function remains
-/// accessible in the JIT's symbol table for the rest of the session.
-/// On parse failure or unexpected trailing tokens: discard the line.
-static void HandleDefinition() {
-  auto FnAST = ParseDefinition();
+/// On success: codegen the function, print the confirmation message and the
+/// resulting IR. The function remains in TheModule for the rest of the session
+/// so later calls to it can be resolved.
+/// On parse failure or unexpected trailing tokens: discard the rest of the
+/// line and return.
+static void HandleFunctionDef() {
+  auto FnAST = ParseFunctionDef();
   if (!FnAST || (CurTok != tok_eol && CurTok != tok_eof)) {
     if (FnAST)
       LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
@@ -1079,70 +930,20 @@ static void HandleDefinition() {
     return;
   }
   if (auto *FnIR = FnAST->codegen()) {
-    Log("Parsed a function definition.\n");
+    fprintf(stderr, "Parsed a function definition.\n");
     FnIR->print(errs());
-    // Transfer the module to the JIT. TheModule is now invalid; reinitialise.
-    ExitOnErr(TheJIT->addModule(
-        ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
-    InitializeModuleAndManagers();
+    fprintf(stderr, "\n");
   }
 }
 
-/// HandleExtern - Parse and register an 'extern def' declaration.
+/// HandleTopLevelExpression - Parse and codegen a bare expression.
 ///
-/// On success: codegen the prototype (emits a 'declare' in the current module),
-/// print it, then save the PrototypeAST into FunctionProtos. Saving into
-/// FunctionProtos is the critical step — when this module is handed to the JIT
-/// and a new one is created, getFunction() uses FunctionProtos to re-emit the
-/// 'declare' in whichever module needs to call the extern.
-/// On parse failure or unexpected trailing tokens: discard the line.
-static void HandleExtern() {
-  auto ProtoAST = ParseExtern();
-
-  if (!ProtoAST || (CurTok != tok_eol && CurTok != tok_eof)) {
-    if (ProtoAST)
-      LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
-    SynchronizeToLineBoundary();
-    return;
-  }
-
-  // Reject conflicting redeclarations: in Pyxc, function identity is just
-  // name + arity, since all parameter and return types are double.
-  auto Existing = FunctionProtos.find(ProtoAST->getName());
-  if (Existing != FunctionProtos.end() &&
-      Existing->second->getNumArgs() != ProtoAST->getNumArgs()) {
-    LogError((string("Conflicting extern declaration for '") +
-              ProtoAST->getName() + "'")
-                 .c_str());
-    SynchronizeToLineBoundary();
-    return;
-  }
-
-  if (auto *FnIR = ProtoAST->codegen()) {
-    Log("Parsed an extern.\n");
-    FnIR->print(errs());
-    // Save the prototype so getFunction() can re-emit it in future modules.
-    FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
-  }
-}
-
-/// HandleTopLevelExpression - Compile, execute, and discard a bare expression.
-///
-/// The expression is wrapped in '__anon_expr' (a zero-argument function that
-/// returns double) so it goes through the same codegen path as everything else.
-///
-/// Execution steps:
-///   1. Codegen + optimise the anonymous function.
-///   2. Print the optimised IR so the reader can inspect it.
-///   3. Create a ResourceTracker scoped to this expression. The RT lets us
-///      release the JIT-compiled code and its associated memory immediately
-///      after execution, without disturbing other compiled functions.
-///   4. Hand the module to the JIT (TheModule is now owned by the JIT).
-///      Reinitialise for the next input.
-///   5. Look up '__anon_expr' in the JIT, cast its address to a function
-///      pointer, call it, and print the result.
-///   6. Call RT->remove() to free the compiled code. The module was already
-///      transferred to the JIT in step 4, so eraseFromParent() is not needed.
+/// The expression is wrapped in an anonymous function '__anon_expr' so it
+/// fits the same FunctionDefAST shape as everything else. After printing the IR
+/// we call eraseFromParent() to remove it from the module — anonymous
+/// expressions are for display only and should not appear in the final dump.
+/// In a later chapter the JIT will execute the function before erasing it,
+/// printing the numeric result.
 static void HandleTopLevelExpression() {
   auto FnAST = ParseTopLevelExpr();
   if (!FnAST || (CurTok != tok_eol && CurTok != tok_eof)) {
@@ -1152,76 +953,23 @@ static void HandleTopLevelExpression() {
     return;
   }
   if (auto *FnIR = FnAST->codegen()) {
-    Log("Parsed a top-level expression.\n");
+    fprintf(stderr, "Parsed a top-level expression.\n");
     FnIR->print(errs());
+    fprintf(stderr, "\n");
 
-    // ResourceTracker scopes the JIT memory for this expression so we can
-    // free it precisely after the call, without affecting other symbols.
-    auto RT = TheJIT->getMainJITDylib().createResourceTracker();
-
-    // Transfer ownership of the module to the JIT; reinitialise for next input.
-    auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
-    ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
-    InitializeModuleAndManagers();
-
-    // Locate the compiled function in the JIT's symbol table.
-    auto ExprSymbol = ExitOnErr(TheJIT->lookup("__anon_expr"));
-
-    // Cast the symbol address to a callable function pointer and invoke it.
-    double (*FP)() = ExprSymbol.toPtr<double (*)()>();
-    double result = FP();
-    fprintf(stderr, "Evaluated to %f\n", result);
-
-    // Release the compiled code and JIT memory for this expression.
-    ExitOnErr(RT->remove());
+    // Erase after printing — anonymous expressions don't belong in the final
+    // module dump.
+    FnIR->eraseFromParent();
   }
-}
-
-//===----------------------------------------===//
-// Runtime library — callable via 'extern def'
-//===----------------------------------------===//
-
-// These functions are compiled into the pyxc binary itself and exported with
-// C linkage so the JIT can resolve 'extern def putchard(x)' and
-// 'extern def printd(x)' against them at runtime.
-//
-// DLLEXPORT is required on Windows where symbols are not exported by default.
-// On macOS/Linux it is a no-op — all extern "C" symbols are visible.
-
-#ifdef _WIN32
-#define DLLEXPORT __declspec(dllexport)
-#else
-#define DLLEXPORT
-#endif
-
-/// putchard - Write a single ASCII character to stderr. The double argument
-/// is truncated to char. Returns 0.0 so it can be used as an expression.
-extern "C" DLLEXPORT double putchard(double X) {
-  fputc((char)X, stderr);
-  return 0;
-}
-
-/// printd - Print a double to stderr as "%f\n". Returns 0.0.
-extern "C" DLLEXPORT double printd(double X) {
-  fprintf(stderr, "%f\n", X);
-  return 0;
 }
 
 /// MainLoop - Dispatch loop for the REPL.
 ///
-/// top             = definition | external | toplevelexpr ;
-///
-/// Dispatches on the leading token of each top-level form:
-///   tok_def    → HandleDefinition   (definition)
-///   tok_extern → HandleExtern       (external)
-///   tok_eol    → skip blank line
-///   anything else → HandleTopLevelExpression (toplevelexpr)
+/// grammar: top = { definition | expression | newline }
 ///
 /// CurTok is primed before MainLoop() is called (see main()). After each
-/// successful parse the handler prints a confirmation; after a failed parse
-/// the handler calls SynchronizeToLineBoundary() to discard all remaining
-/// tokens on the current line. Either way we return here to look at the
-/// next CurTok.
+/// successful parse the handler prints a confirmation; after a failed parse it
+/// skips one token. Either way we come back here and look at the new CurTok.
 static void MainLoop() {
   while (true) {
     if (CurTok == tok_eof)
@@ -1229,7 +977,7 @@ static void MainLoop() {
 
     // A bare newline: just print a fresh prompt and read the next token.
     if (CurTok == tok_eol) {
-      PrintReplPrompt();
+      fprintf(stderr, "ready> ");
       getNextToken();
       continue;
     }
@@ -1241,10 +989,7 @@ static void MainLoop() {
 
     switch (CurTok) {
     case tok_def:
-      HandleDefinition();
-      break;
-    case tok_extern:
-      HandleExtern();
+      HandleFunctionDef();
       break;
     default:
       HandleTopLevelExpression();
@@ -1253,53 +998,29 @@ static void MainLoop() {
   }
 }
 
-/// ProcessCommandLine - Parse argv and configure the global Input/IsRepl state.
-///
-/// Returns 0 on success, -1 on error if any.
-int ProcessCommandLine(int argc, const char **argv) {
-  cl::HideUnrelatedOptions(PyxcCategory);
-  cl::ParseCommandLineOptions(argc, argv, "pyxc\n");
-
-  if (OptLevel > 3) {
-    fprintf(stderr, "Error: -O level must be 0, 1, 2, or 3\n");
-    return -1;
-  }
-
-  return 0;
-}
-
 //===----------------------------------------===//
 // Main driver code.
 //===----------------------------------------===//
 
-/// main - Entry point for the Pyxc compiler/REPL.
-///
-/// Initialises the LLVM native backend, creates the ORC JIT and an initial
-/// module, then hands control to MainLoop().
-int main(int argc, const char **argv) {
-  int commandLineResult = ProcessCommandLine(argc, argv);
-  if (commandLineResult != 0) {
-    return commandLineResult;
-  }
+int main() {
+  // Register binary operators and their precedence (higher = tighter binding).
+  BinopPrecedence['<'] = 10;
+  BinopPrecedence['+'] = 20;
+  BinopPrecedence['-'] = 20;
+  BinopPrecedence['*'] = 40;
 
-  // Initialise LLVM's backend for the host machine. These three calls
-  // together register the native target's instruction set, assembler, and
-  // disassembler so the JIT can compile and link for the current CPU.
-  InitializeNativeTarget();
-  InitializeNativeTargetAsmPrinter();
-  InitializeNativeTargetAsmParser();
-
-  // Prime the REPL: print the first prompt and load the first token.
-  // Every parse function expects CurTok to be loaded before it is called.
-  PrintReplPrompt();
+  // Print the first prompt and load the first token before entering the loop.
+  // Every parse function expects CurTok to already be loaded when it is called.
+  fprintf(stderr, "ready> ");
   getNextToken();
 
-  // Create the JIT first — InitializeModuleAndManagers() needs TheJIT in
-  // order to set the data layout on the new module.
-  TheJIT = ExitOnErr(PyxcJIT::Create());
+  // Make the module, which holds all the code.
   InitializeModuleAndManagers();
 
   MainLoop();
+
+  // Print out all of the generated code.
+  TheModule->print(errs(), nullptr);
 
   return 0;
 }

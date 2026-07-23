@@ -6,9 +6,5 @@
 
 # Tests: -g with explicit -O2 keeps optimization (constant folding present).
 
-def f() -> float64:
-    return (1.0 + 2.0) * 3.0
-
-def main() -> None:
-    f()
-    return
+def main():
+    return (1 + 2) * 3

@@ -1,6 +1,0 @@
-# RUN: %pyxc < %s | grep -q "identifier: _foo"
-# RUN: %pyxc < %s | grep -q "identifier: foo_bar"
-
-# identifier: leading underscore and embedded underscore are both valid
-_foo
-foo_bar

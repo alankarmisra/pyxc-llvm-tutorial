@@ -1,46 +1,44 @@
 ---
-description: "Add public and private visibility modifiers to class fields and methods. Private members are only accessible from within the class's own method bodies."
+description: "Add constructors: define __init__ to initialise a class instance, and call it with ClassName(args) syntax. Instances are always zero-initialised before __init__ runs."
 ---
-# 27. pyxc: Visibility
+# 27. pyxc: Constructors
 
 ## Where We Are
 
-[Chapter 26](chapter-26.md) added constructors. Classes can now be initialised, but every field and method is accessible from anywhere. After this chapter, a class can hide its internals:
+[Chapter 26](chapter-26.md) added methods. You can define behaviour on a class and call it through `obj.method(args)`. But creating a class instance requires writing field assignments by hand:
+
+```pyxc
+var c: Calc
+c.x = 3
+c.y = 4
+```
+
+After this chapter, a class can define `__init__` to package that work up, and callers use `ClassName(args)` to create a ready-to-use instance in one expression:
 
 ```pyxc
 extern def printd(x: float64)
 
-class BoundedCounter:
-  private count: int
-  private limit: int
+class Point:
+  x: int
+  y: int
 
-  def __init__(max: int):
-    self.count = 0
-    self.limit = max
+  def __init__(px: int, py: int):
+    self.x = px
+    self.y = py
 
-  public def increment():
-    if self.count < self.limit:
-      self.count = self.count + 1
-
-  public def get() -> int:
-    return self.count
+  def sum() -> int:
+    return self.x + self.y
 
 
 def main() -> int:
-  var c: BoundedCounter = BoundedCounter(3)
-  c.increment()
-  c.increment()
-  c.increment()
-  c.increment()    # no effect — limit reached
-  printd(float64(c.get()))
+  var p: Point = Point(3, 4)
+  printd(float64(p.sum()))
   return 0
 ```
 
 ```
-3.000000
+7.000000
 ```
-
-Accessing `c.count` directly from outside the class would be an error.
 
 ## Source Code
 
@@ -51,11 +49,11 @@ cd pyxc-llvm-tutorial/code/chapter-27
 
 ## Grammar
 
-`classmember` gains an optional visibility prefix. `visibility` is a new production.
+`ctorcallexpr` is added to `identifierexpr`. It is syntactically identical to `callexpr` — both are an identifier followed by `(args)`. The parser disambiguates by checking whether the identifier names a known class.
 
 ```ebnf
-classmember = [ visibility ] ( fielddecl | methoddef ) ;  -- changed
-visibility  = "public" | "private" ;                      -- new
+identifierexpr = identifier | callexpr | methodcallexpr | ctorcallexpr ;  -- changed
+ctorcallexpr   = identifier "(" [ expression { "," expression } ] ")" ;   -- new
 ```
 
 ### Full Grammar
@@ -70,8 +68,7 @@ typealias       = "type" identifier "=" type ;
 structdef       = "struct" identifier ":" eols structblock ;
 classdef        = "class" identifier ":" eols structblock ;
 structblock     = indent classmember { eols classmember } dedent ;
-classmember     = [ visibility ] ( fielddecl | methoddef ) ;
-visibility      = "public" | "private" ;
+classmember     = fielddecl | methoddef ;
 methoddef       = "def" identifier "(" [ typedparam { "," typedparam } ] ")"
                   [ "->" type ] ":" ( simplestmt | eols block ) ;
 fielddecl       = identifier ":" type ;
@@ -155,161 +152,159 @@ INDENT          = ? synthetic token emitted by lexer ? ;
 DEDENT          = ? synthetic token emitted by lexer ? ;
 ```
 
-## New Tokens
+## New AST Node — `ConstructorCallExprAST`
+
+A constructor call `Point(3, 4)` is not the same as a function call `foo(3, 4)` — it allocates memory, zeroes it, may call `__init__`, and returns a struct value. A dedicated AST node captures this:
 
 ```cpp
-tok_public  = -41,
-tok_private = -42,
-```
-
-Both are registered in the keyword table:
-
-```cpp
-{"public",  tok_public},
-{"private", tok_private},
-```
-
-They are also added to the token name map so error messages print `'public'` and `'private'`.
-
-## Storing Visibility in `StructTypeInfo`
-
-Visibility is stored on two places in `StructTypeInfo`:
-
-**Fields** gain an `IsPublic` flag:
-
-```cpp
-struct FieldInfo {
-  string Name;
-  ValueType Type;
-  string StructName;
-  bool IsPublic = true;    // new — default public
-};
-```
-
-**Methods** are tracked in a map from method name to boolean:
-
-```cpp
-struct StructTypeInfo {
-  // ...
-  std::map<string, bool> MethodIsPublic;  // new
-};
-```
-
-Methods use a map rather than a flag on the prototype because the prototype lives in `FunctionProtos` and visibility is class metadata, not function metadata.
-
-## Parsing Visibility Modifiers
-
-In `ParseAggregateDefinition`, the body loop now reads an optional visibility token before each member:
-
-```cpp
-bool MemberIsPublic = true;
-bool HasVisibilityModifier = false;
-if (CurTok == tok_public || CurTok == tok_private) {
-  HasVisibilityModifier = true;
-  MemberIsPublic = (CurTok == tok_public);
-  getNextToken(); // eat visibility modifier
-}
-if (HasVisibilityModifier && !Info.IsClass) {
-  LogError("Visibility modifiers are only allowed inside class bodies");
-  return false;
-}
-```
-
-If no modifier is present, `MemberIsPublic` stays `true` — the default is public. If the modifier appears inside a `struct` body, it is rejected immediately.
-
-After parsing a field, the visibility is stored in `FieldInfo`:
-
-```cpp
-Info.Fields.push_back({FieldName, FieldType, FieldStructName, MemberIsPublic});
-```
-
-After parsing a method, the method's visibility is registered in `MethodIsPublic` by `ParseMethodDefinitionInClass` (which now takes `bool IsPublic` as a parameter):
-
-```cpp
-StructTypes[ClassName].MethodIsPublic[MethodName] = IsPublic;
-```
-
-The `StructTypes[StructName]` entry is written back after each member — `Info.MethodIsPublic = StructTypes[StructName].MethodIsPublic` — so the running map is always current as parsing proceeds.
-
-## `CanAccessClassMember` and `ClassScopeGuard`
-
-Access is decided by a single function:
-
-```cpp
-static string CurrentClassScopeName;
-
-static bool CanAccessClassMember(const string &OwnerClass, bool IsPublic) {
-  return IsPublic || (!CurrentClassScopeName.empty() &&
-                      CurrentClassScopeName == OwnerClass);
-}
-```
-
-A member is accessible if it is `public`, **or** if the code currently being compiled belongs to the same class. "Currently being compiled" is tracked by `CurrentClassScopeName`.
-
-`ClassScopeGuard` sets and restores `CurrentClassScopeName` around method codegen:
-
-```cpp
-struct ClassScopeGuard {
-  string Saved;
-  ClassScopeGuard(const string &ClassName) : Saved(CurrentClassScopeName) {
-    CurrentClassScopeName = ClassName;
+class ConstructorCallExprAST : public ExprAST {
+  string ClassName;
+  vector<unique_ptr<ExprAST>> Args;
+public:
+  ConstructorCallExprAST(const string &ClassName,
+                         vector<unique_ptr<ExprAST>> Args)
+      : ClassName(ClassName), Args(std::move(Args)) {
+    setType(ValueType::Struct, ClassName);  // result type is the class itself
   }
-  ~ClassScopeGuard() { CurrentClassScopeName = Saved; }
+  Value *codegen() override;
 };
 ```
 
-`ParseMethodDefinitionInClass` creates a `ClassScopeGuard` before entering the body. When the method is done, the destructor restores the previous class scope (which is `""` at the top level, or the enclosing class if methods are somehow nested — though pyxc does not currently support nested classes).
+The result type is `ValueType::Struct` with `ClassName` as the struct name — the same type you get from `var p: Point`.
 
-## Access Checks at Every Use Site
+## Disambiguating Constructor Calls at Parse Time
 
-`CanAccessClassMember` is inserted at every point where the compiler touches a class member:
-
-**Field access** — in the `ConsumeField` lambda inside `ParseFieldAccessFromFirstMember`:
+In `ParseIdentifierExpr`, when the parser sees `identifier(`, it now checks whether the identifier is a known class before deciding what to build. The check runs before the existing function-call path:
 
 ```cpp
-if (!CanAccessClassMember(CurStruct, FD.IsPublic))
-  return LogError(("Field '" + Field + "' is private on '" + CurStruct + "'").c_str());
+// Constructor call: ClassName(...)
+auto SI = StructTypes.find(IdName);
+if (SI != StructTypes.end() && SI->second.IsClass) {
+  getNextToken(); // eat '('
+  string InitName = IdName + ".__init__";
+  PrototypeAST *InitProto = GetFunctionProto(InitName);
+
+  vector<unique_ptr<ExprAST>> Args;
+  if (CurTok != ')') {
+    size_t ArgIndex = 0;
+    while (true) {
+      // Set expected type from __init__ prototype (skipping self at index 0)
+      ValueType Expected = ValueType::Error;
+      string ExpectedStructName;
+      if (InitProto && ArgIndex + 1 < InitProto->getNumArgs()) {
+        Expected = InitProto->getArgType(ArgIndex + 1);
+        ExpectedStructName = InitProto->getArgStructName(ArgIndex + 1);
+      }
+      ExpectedLiteralTypeGuard Guard(Expected, ExpectedStructName);
+      auto Arg = ParseExpression();
+      Args.push_back(std::move(Arg));
+      if (CurTok == ')') break;
+      getNextToken(); // eat ','
+      ++ArgIndex;
+    }
+  }
+  getNextToken(); // eat ')'
+
+  // Validate arg count and types against __init__ (minus self)
+  if (InitProto) {
+    size_t ExpectedArgs = InitProto->getNumArgs() > 0
+                            ? InitProto->getNumArgs() - 1 : 0;
+    if (Args.size() != ExpectedArgs)
+      return LogError("Incorrect # arguments passed");
+    // ...type check each arg...
+  } else if (!Args.empty()) {
+    return LogError("Class has no constructor; expected zero arguments");
+  }
+  return make_unique<ConstructorCallExprAST>(IdName, std::move(Args));
+}
+
+// Function call (falls through here if not a class)
 ```
 
-This fires for both read (`obj.x`) and write (`obj.x = v`) paths, because both go through `ParseFieldAccessFromFirstMember`.
+If the class has `__init__`, argument count and types are checked against the prototype (minus the implicit `self` at index 0). If there is no `__init__`, any non-empty argument list is an error.
 
-**Method call** — in `ParseMethodCallExpr`, after looking up `ClassName.MethodName`:
+## `__init__` Must Return None
+
+`ParseMethodDefinitionInClass` validates that `__init__` does not declare a return type:
 
 ```cpp
-auto MI = CI->second.MethodIsPublic.find(MethodName);
-if (MI != CI->second.MethodIsPublic.end() &&
-    !CanAccessClassMember(ClassName, MI->second)) {
-  return LogError(("Method '" + MethodName + "' is private on '" + ClassName + "'").c_str());
+if (MethodName == "__init__" && RetType != ValueType::None)
+  return LogErrorF("Constructor '__init__' must return None");
+```
+
+This check runs after parsing the optional `-> type` return annotation and before parsing the body. `__init__` always returns `None` — it cannot return a value.
+
+## `ConstructorCallExprAST::codegen` — Allocate, Zero, Call, Load
+
+The codegen for a constructor call does three things in a fixed order:
+
+```cpp
+Value *ConstructorCallExprAST::codegen() {
+  // 1. Allocate in the function's entry block
+  Function *CurFn = Builder->GetInsertBlock()->getParent();
+  AllocaInst *Tmp = CreateEntryBlockAlloca(CurFn, "ctor.tmp",
+                                           ValueType::Struct, ClassName);
+
+  // 2. Zero-initialise the entire struct
+  Builder->CreateStore(ZeroConstant(ValueType::Struct, ClassName), Tmp);
+
+  // 3. Call __init__ if it exists, passing Tmp as self
+  string InitName = ClassName + ".__init__";
+  if (PrototypeAST *InitProto = GetFunctionProto(InitName)) {
+    Function *InitF = getFunction(InitName);
+    vector<Value *> ArgsV;
+    ArgsV.push_back(Tmp);  // implicit self
+    for (unsigned I = 0; I < Args.size(); ++I) {
+      Value *ArgVal = Args[I]->codegen();
+      // apply implicit casts, handle array decay...
+      ArgsV.push_back(ArgVal);
+    }
+    Builder->CreateCall(InitF, ArgsV);
+  } else if (!Args.empty()) {
+    return LogErrorV("Constructor argument mismatch");
+  }
+
+  // 4. Load the finished struct as a value
+  return Builder->CreateLoad(ClassTy, Tmp, "ctor.obj");
 }
 ```
 
-**Constructor call** — in `ParseIdentifierExpr`, if `__init__` exists:
+**Why `CreateEntryBlockAlloca`?** LLVM's `mem2reg` pass — which turns stack slots into SSA values — only works on allocas in the function's entry block. If the constructor call is inside a loop, allocating there would push the alloca deeper and prevent promotion. Placing the alloca in the entry block keeps the loop's stack frame constant regardless of iteration count.
 
-```cpp
-auto MI = SI->second.MethodIsPublic.find("__init__");
-if (MI != SI->second.MethodIsPublic.end() &&
-    !CanAccessClassMember(IdName, MI->second)) {
-  return LogError(("Method '__init__' is private on '" + IdName + "'").c_str());
-}
+**Why zero first?** Zero-initialising before calling `__init__` guarantees that fields not touched by `__init__` hold a defined value, not garbage.
+
+**The result is a value, not a pointer.** The `CreateLoad` at the end copies the struct out of `Tmp`. What `Point(3, 4)` returns is a `%Point` aggregate, not a `ptr`. When assigned to `var p: Point`, this value is stored into `p`'s own alloca.
+
+## What Lands in the IR
+
+```pyxc
+var p: Point = Point(3, 4)
 ```
 
-## IR Is Unchanged
+```llvm
+; In the entry block of the calling function:
+%ctor.tmp = alloca %Point
 
-Visibility is enforced entirely at parse and semantic check time. Nothing changes in the generated IR — `public` and `private` leave no trace in the output. A `private int` and a `public int` generate identical `i64` fields.
+; At the call site:
+store %Point zeroinitializer, ptr %ctor.tmp
+call void @Point.__init__(ptr %ctor.tmp, i64 3, i64 4)
+%ctor.obj = load %Point, ptr %ctor.tmp
+store %Point %ctor.obj, ptr %p
+```
 
 ## Things Worth Knowing
 
-**Default is public.** A member without a modifier is public. Existing code from chapters 25 and 26, which has no modifiers, continues to work exactly as before.
+**`__init__` must return `None`.** Attempting to give it a return type annotation is a parse-time error.
 
-**`private __init__` prevents external construction.** If `__init__` is private, `ClassName(args)` from outside the class body is rejected.
+**`__init__` is a regular method.** It can call other methods via `self`, access all fields, and use any other class feature. It is not special beyond its name and the "must return None" rule.
 
-**There is no `protected`.** Access is either class-private or world-public. No inheritance hierarchy, no friend declarations.
+**No overloading.** Only one `__init__` per class. A second definition is a redefinition error.
 
-**Visibility modifiers on structs are rejected.** `struct` members are always public. The parser errors immediately if it sees `public` or `private` in a struct body.
+**`ClassName()` with no `__init__` is always valid.** It produces a zero-initialised instance. `ClassName(args)` with arguments but no `__init__` is an error.
 
 ## What's Next
 
-[Chapter 28](chapter-28.md) adds traits — named contracts that a class can declare it satisfies. Conformance is checked at compile time.
+[Chapter 28](chapter-28.md) adds visibility — `public` and `private` modifiers on class fields and methods, enforced at every access site.
 
 ## Need Help?
 

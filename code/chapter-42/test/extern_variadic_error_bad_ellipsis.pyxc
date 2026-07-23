@@ -1,5 +1,5 @@
 # RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
-# CHECK: Expected '...' in variadic prototype
+# CHECK: Expected '...' in variadic function signature
 
 extern def bad(fmt: ptr[int8], ..) -> int64
 

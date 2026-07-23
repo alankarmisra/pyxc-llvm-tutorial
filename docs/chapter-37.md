@@ -1,22 +1,33 @@
 ---
-description: "Add character literals so single characters can be written as 'a', '\n', '\t', and '\\' instead of their numeric ASCII values."
+description: "Add Python-style elif chains so multi-way conditionals don't nest into a pyramid of else blocks."
 ---
-# 37. pyxc: Character Literals
+# 37. pyxc: `elif` Chains
 
 ## Where We Are
 
-[Chapter 36](chapter-36.md) added `elif`. pyxc can call C library functions like `getchar()`, but comparing the result to a space or newline requires knowing the ASCII value off the top of your head:
+[Chapter 36](chapter-36.md) added `switch`. Multi-way conditionals on non-integer values — booleans, comparisons, method results — are still written as nested `if`/`else` blocks, which stack up fast:
 
 ```pyxc
-if c == 32:   # space
-if c == 10:   # newline — or was it 13?
+def classify(x: int) -> int:
+  if x < 0:
+    return -1
+  else:
+    if x == 0:
+      return 0
+    else:
+      return 1
 ```
 
-After this chapter, you can write what you mean:
+After this chapter, the same logic reads cleanly:
 
 ```pyxc
-if c == ' ':
-if c == '\n':
+def classify(x: int) -> int:
+  if x < 0:
+    return -1
+  elif x == 0:
+    return 0
+  else:
+    return 1
 ```
 
 ## Source Code
@@ -26,171 +37,135 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-37
 ```
 
-## New Token and Storage Global
+## New Token and Keyword
 
 One new token:
 
 ```cpp
-tok_char = -64,
+tok_elif = -63,
 ```
 
-The lexer stores the character's integer value in a new global before returning the token:
+Added to the keyword table:
 
 ```cpp
-static uint32_t CharLiteralValue = 0; // Filled in if tok_char
+{"elif", tok_elif},
 ```
 
-## Lexer: Scanning the Character Literal
-
-When the lexer sees `'`, it reads the character content, checks for the closing `'`, and sets `CharLiteralValue`:
+And to the token name map for error messages:
 
 ```cpp
-if (LexerLastChar == '\'') {
-  LexerLastChar = advance(); // eat opening quote
-  if (LexerLastChar == '\'' || LexerLastChar == '\n' || LexerLastChar == EOF) {
-    // error: empty or unterminated
-    return tok_error;
-  }
+{tok_elif, "'elif'"},
+```
 
-  uint32_t Value = 0;
-  if (LexerLastChar == '\\') {
-    LexerLastChar = advance();
-    switch (LexerLastChar) {
-    case '\\': Value = '\\'; break;
-    case '\'': Value = '\''; break;
-    case 'n':  Value = '\n'; break;
-    case 't':  Value = '\t'; break;
-    case '0':  Value = '\0'; break;
-    default:
-      // error: invalid character escape
-      return tok_error;
-    }
-  } else {
-    Value = static_cast<unsigned char>(LexerLastChar);
-  }
+## `ParseIfStmt` Refactored to Collect Branches
 
-  LexerLastChar = advance();
-  if (LexerLastChar != '\'') {
-    // error: unterminated character literal
-    return tok_error;
-  }
-  LexerLastChar = advance(); // eat closing quote
-  CharLiteralValue = Value;
-  return tok_char;
+Previously `ParseIfStmt` parsed a single condition and body. Now it collects an arbitrary number of `(condition, body)` pairs in a loop:
+
+```cpp
+vector<pair<unique_ptr<ExprAST>, unique_ptr<ExprAST>>> Branches;
+bool LastBranchWasBlock = false;
+
+// eat 'if'
+getNextToken();
+
+while (true) {
+  auto Cond = ParseExpression();
+  if (!Cond)
+    return nullptr;
+  if (Cond->getType() != ValueType::Bool)
+    return LogError("If condition must be bool");
+
+  if (CurTok != ':')
+    return LogError("Expected ':' after if/elif condition");
+  getNextToken(); // eat ':'
+
+  auto Body = ParseSuite();
+  if (!Body)
+    return nullptr;
+  LastBranchWasBlock = (CurTok == tok_block_end);
+  if (LastBranchWasBlock)
+    getNextToken();
+  Branches.push_back({std::move(Cond), std::move(Body)});
+
+  consumeNewlines();
+  if (CurTok != tok_elif)
+    break;
+  getNextToken(); // eat 'elif'
 }
 ```
 
-The five escape sequences:
+After each body, `consumeNewlines()` skips the line ending. If the next token is `tok_elif`, the loop continues — eating `elif` and parsing another condition and body. Any other token (including `tok_else` or anything else) exits the loop.
 
-| Written | Value | Meaning |
-|---|---|---|
-| `'\\'` | 92 | backslash |
-| `'\''` | 39 | single quote |
-| `'\n'` | 10 | newline |
-| `'\t'` | 9 | horizontal tab |
-| `'\0'` | 0 | null byte |
+## Lowering to a Nested `IfStmtAST` Tree
 
-A bare character (no backslash) stores its unsigned byte value via `static_cast<unsigned char>`. Any backslash sequence other than the five listed is a `tok_error`.
-
-## `ParseCharExpr` — Building the AST Node
-
-`ParseCharExpr` is called from the primary expression dispatcher when `CurTok == tok_char`. It reuses `NumberExprAST` — a character literal is just an integer constant:
+No new AST node is introduced. The `elif` chain is lowered directly to a right-nested `IfStmtAST` tree during parsing. The optional `else` body becomes the initial innermost node, and the `Branches` vector is walked in reverse:
 
 ```cpp
-static unique_ptr<ExprAST> ParseCharExpr() {
-  ValueType Type = ValueType::Int32;
-  if (IsIntType(ExpectedLiteralType))
-    Type = ExpectedLiteralType;
-  unsigned Bits = LLVMTypeFor(Type)->getIntegerBitWidth();
-  APInt Max = IsUnsignedIntType(Type) ? APInt::getAllOnes(Bits)
-                                      : APInt::getSignedMaxValue(Bits);
-  APInt Val(std::max(1u, Bits), CharLiteralValue, false);
-  if (Val.ugt(Max))
-    return LogError("Character literal out of range for type");
-  if (Val.getBitWidth() != Bits)
-    Val = Val.trunc(Bits);
-  auto Result = make_unique<NumberExprAST>(Val, Type);
-  getNextToken(); // consume tok_char
-  return Result;
+// Lower if/elif chain to nested IfStmtAST in else branch.
+unique_ptr<ExprAST> Tree = std::move(Else);
+for (auto It = Branches.rbegin(); It != Branches.rend(); ++It) {
+  Tree = make_unique<IfStmtAST>(std::move(It->first), std::move(It->second),
+                                std::move(Tree));
 }
+return Tree;
 ```
 
-The default type is `Int32`, matching `getchar()`'s return type and C's `int`. If the surrounding context (from `ExpectedLiteralTypeGuard`) expects a different integer type — say `var c: int8 = 'A'` — the literal adopts that type, with a range check against the target's maximum. A character value that doesn't fit in the target width is a parse error.
-
-## `IsAssignable` Widening Fix
-
-This chapter also removes the old `IsFixedIntType` / `FixedIntRank` helper pair and replaces the integer widening check with a direct bit-width comparison that works for all integer types, including the unsigned types added next chapter:
-
-```cpp
-// Before (ch36 and earlier):
-static bool IsFixedIntType(ValueType Type) {
-  return Type == ValueType::Int8 || Type == ValueType::Int16 ||
-         Type == ValueType::Int32 || Type == ValueType::Int64;
-}
-static int FixedIntRank(ValueType Type) { /* 1–4 */ }
-
-// Now (ch37 onward):
-if (IsIntType(From) && IsIntType(To)) {
-  unsigned FromBits = LLVMTypeFor(From)->getIntegerBitWidth();
-  unsigned ToBits   = LLVMTypeFor(To)->getIntegerBitWidth();
-  return FromBits <= ToBits;
-}
+Given:
+```pyxc
+if a:    body_a
+elif b:  body_b
+elif c:  body_c
+else:    body_d
 ```
 
-Using the LLVM type's bit width means the same code works for signed and unsigned integers without a separate rank table.
+The parser builds:
 
-## Primary Expression Dispatch
-
-`tok_char` is wired into `ParsePrimary`:
-
-```cpp
-case tok_char:
-  return ParseCharExpr();
 ```
+IfStmtAST(a, body_a,
+  IfStmtAST(b, body_b,
+    IfStmtAST(c, body_c,
+      body_d)))
+```
+
+Codegen sees exactly what it would see for hand-written nested `if`/`else` blocks. The IR is identical.
 
 ## Grammar
 
 ```ebnf
-primary     = castexpr | sizeofexpr | addrexpr | arrayliteral | stringliteral
-            | charliteral | identifierexpr | fieldaccess | indexexpr  -- changed
-            | numberexpr | bool_literal | parenexpr ;
-charliteral = "'" ( ? any char except ' and newline ? | charescape ) "'" ; -- new
-charescape  = "\\" ( "\\" | "'" | "n" | "t" | "0" ) ;                      -- new
+ifstmt = "if" expression ":" suite
+       { eols "elif" expression ":" suite }   -- new
+       [ eols "else" ":" suite ] ;            -- changed
 ```
 
 ## Error Cases
 
-**Invalid escape sequence:**
+**Missing colon after `elif` condition:**
 ```pyxc
-var x: int32 = '\x'  # Error: invalid character escape
+if x > 0:
+  return 1
+elif x == 0
+  return 0   # Error: Expected ':' after if/elif condition
 ```
 
-**Empty literal:**
+**Non-bool `elif` condition:**
 ```pyxc
-var x: int32 = ''    # Error: empty character literal
-```
-
-**Unterminated literal:**
-```pyxc
-var x: int32 = 'a    # Error: unterminated character literal
-```
-
-**Value out of range for type:**
-```pyxc
-var c: int8 = '\xFF'  # Error: Character literal out of range for type
+if x > 0:
+  return 1
+elif x + 1:   # Error: If condition must be bool
+  return 0
 ```
 
 ## Things Worth Knowing
 
-**A character literal is just an integer.** `'a' + 1` is `98`. `'z' - 'a'` is `25`. Arithmetic on character values works exactly as it does in C.
+**`elif` without `else` is fine.** If no branch matches and there is no `else`, execution continues after the chain. The same is true for a plain `if` without `else`.
 
-**The default type is `int32`, not `int8`.** This matches `getchar()`, which returns `int32` to distinguish `EOF` (−1) from a valid byte (0–255). If you store into an `int8`, values above 127 will be negative.
+**`elif` uses the same condition type rule as `if`.** Every condition must be `bool`. There is no implicit integer-to-bool coercion.
 
-**No multi-character literals.** `'ab'` is not valid. Use string literals for strings.
+**Use `switch` for integer dispatch on constants; use `elif` for everything else.** `switch` is limited to compile-time integer literals and allows LLVM to emit a real branch table. `elif` works on any `bool` expression but generates a linear chain of comparisons.
 
 ## What's Next
 
-[Chapter 38](chapter-38.md) adds unsigned integer types: `uint8`, `uint16`, `uint32`, and `uint64`.
+[Chapter 38](chapter-38.md) adds character literals: `'a'`, `'\n'`, `'\t'`, and friends.
 
 ## Need Help?
 

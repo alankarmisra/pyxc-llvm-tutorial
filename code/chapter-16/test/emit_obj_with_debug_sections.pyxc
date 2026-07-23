@@ -6,5 +6,5 @@
 
 # Tests: -g embeds DWARF sections in emitted object files.
 
-def main() -> None:
-    return
+def main():
+    return 0
