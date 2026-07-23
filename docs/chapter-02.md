@@ -28,56 +28,63 @@ cd pyxc-llvm-tutorial/code/chapter-02
 
 ### Function definitions 
 
-For a function definition like  `def add(x, y): return x + y`, I start with the function name as the parent, and then group `parameters` and `body` underneath. This way I can look up a function by name and get all its components. Mind you, `parameters` and `body` are simple grouping mechanisms (classes and pointers). They aren't additional tokens. This will become clearer once you see the code to implement these structures.
+For a function definition like `def add(x, y): return x + y`, I start with a
+`FunctionDefinition`, then group its `Signature` and `Body` underneath. The
+signature records the function name and its `Arguments`. These labels describe
+parts of the structure, not additional tokens. This will become clearer once
+you see the code that implements them.
 
 ```text
-(def, "add")
-├── parameters
-│   ├── (name, "x")
-│   └── (name, "y")
-└── body
+FunctionDefinition
+├── Signature = "add"
+│   └── Arguments
+│       ├── NameExpression  name="x"
+│       └── NameExpression  name="y"
+└── Body
     └── return
-        └── +
-            ├── (name, "x")
-            └── (name, "y")
+        └── BinaryExpression  op='+'
+            ├── NameExpression  name="x"
+            └── NameExpression  name="y"
 ```
 
 I will do this for every function definition in the source file.
 
 ### Function calls 
 
-I follow a similar approach for function calls. The `call` is the parent, with the function name and the call arguments as two branches beneath it. Again `call` is not a token here, it's a grouping mechanism.
+I follow a similar approach for function calls. The `CallExpression` is the
+parent, with its `Callee` and `Arguments` as two branches beneath it. Again,
+`CallExpression` names part of the structure; it is not a token.
 
 `add(1, 2)` becomes:
 
 ```text
-call
-├── (name, "add")
-└── arguments
-    ├── (number, 1)
-    └── (number, 2)
+CallExpression
+├── Callee = "add"
+└── Arguments
+    ├── NumberExpression  val=1
+    └── NumberExpression  val=2
 ```
 
 and `print(...)` becomes:
 
 ```text
-call
-├── (name, "print")
-└── argument
+CallExpression
+├── Callee = "print"
+└── Arguments
     └── ...
 ```
 
 Merging both we get the full tree for `print(add(1, 2))`:
 
 ```text
-call
-├── (name, "print")
-└── argument
-    └── call
-        ├── (name, "add")
-        └── arguments
-            ├── (number, 1)
-            └── (number, 2)
+CallExpression
+├── Callee = "print"
+└── Arguments
+    └── CallExpression
+        ├── Callee = "add"
+        └── Arguments
+            ├── NumberExpression  val=1
+            └── NumberExpression  val=2
 ```
 
 Compiler writers call this an **Abstract Syntax Tree**, or **AST**. *Abstract* means I leave out punctuation that a hierarchical structure doesn't need, such as the parentheses in `add(1, 2)`. The tree already records which arguments belong to which call. *Syntax tree*, because it represents, well, the syntax: how the pieces fit together, not whether they make sense together. For example, the tree would happily record a call to `add` with three arguments even though `add` only takes two. Catching a mismatch like that is a semantic check, and it needs a separate pass over the tree, one I'll add later once I can look up what `add` actually expects.
@@ -144,10 +151,11 @@ A function call stores the callee name and a list of argument expressions. I mod
 ```cpp
 class CallExpressionNode : public ExpressionNode {
   string Callee;
-  vector<unique_ptr<ExpressionNode>> Args;
+  vector<unique_ptr<ExpressionNode>> Arguments;
 public:
-  CallExpressionNode(const string &Callee, vector<unique_ptr<ExpressionNode>> Args)
-      : Callee(Callee), Args(std::move(Args)) {}
+  CallExpressionNode(const string &Callee,
+                     vector<unique_ptr<ExpressionNode>> Arguments)
+      : Callee(Callee), Arguments(std::move(Arguments)) {}
 };
 ```
 
@@ -156,7 +164,7 @@ public:
 ```
 CallExpressionNode
 ├── Callee = "add"
-└── Args
+└── Arguments
     ├── NameExpressionNode  name="x"
     └── NameExpressionNode  name="y"
 ```
@@ -166,7 +174,7 @@ CallExpressionNode
 ```
 CallExpressionNode
 ├── Callee = "add"
-└── Args
+└── Arguments
     ├── NumberExpressionNode  val=1
     └── NumberExpressionNode  val=2
 ```
@@ -176,7 +184,7 @@ CallExpressionNode
 ```
 CallExpressionNode
 ├── Callee = "add"
-└── Args
+└── Arguments
     ├── BinaryExpressionNode  op='+'
     │   ├── LHS -> NumberExpressionNode  val=1
     │   └── RHS -> NumberExpressionNode  val=2
@@ -192,10 +200,10 @@ I split functions into two classes. The function signature captures the name and
 ```cpp
 class FunctionSignatureNode {
   string Name;
-  vector<string> Args;
+  vector<string> Arguments;
 public:
-  FunctionSignatureNode(const string &Name, vector<string> Args)
-      : Name(Name), Args(std::move(Args)) {}
+  FunctionSignatureNode(const string &Name, vector<string> Arguments)
+      : Name(Name), Arguments(std::move(Arguments)) {}
   const string &getName() const { return Name; }
 };
 ```
@@ -219,7 +227,7 @@ With this structure in place, for a function definition like `def add(x, y): ret
 
 ```
 FunctionDefinitionNode
-├── Signature -> FunctionSignatureNode  name="add"  args=["x", "y"]
+├── Signature -> FunctionSignatureNode  name="add"  Arguments=["x", "y"]
 └── Body -> BinaryExpressionNode  op='+'
     ├── NameExpressionNode  name="x"
     └── NameExpressionNode  name="y"
@@ -315,11 +323,11 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
 
   // Call.
   getNextToken(); // eat (
-  vector<unique_ptr<ExpressionNode>> Args;
+  vector<unique_ptr<ExpressionNode>> Arguments;
   if (CurTok != tok_rparen) {
     while (true) {
       if (auto Arg = ParseExpression())
-        Args.push_back(std::move(Arg));
+        Arguments.push_back(std::move(Arg));
       else
         return nullptr;
 
@@ -335,7 +343,7 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
   // Eat the ')'.
   getNextToken();
 
-  return make_unique<CallExpressionNode>(Name, std::move(Args));
+  return make_unique<CallExpressionNode>(Name, std::move(Arguments));
 }
 ```
 

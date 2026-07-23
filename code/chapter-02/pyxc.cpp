@@ -200,11 +200,12 @@ public:
 /// CallExpressionNode - Expression class for function calls.
 class CallExpressionNode : public ExpressionNode {
   string Callee;
-  vector<unique_ptr<ExpressionNode>> Args;
+  vector<unique_ptr<ExpressionNode>> Arguments;
 
 public:
-  CallExpressionNode(const string &Callee, vector<unique_ptr<ExpressionNode>> Args)
-      : Callee(Callee), Args(std::move(Args)) {}
+  CallExpressionNode(const string &Callee,
+                     vector<unique_ptr<ExpressionNode>> Arguments)
+      : Callee(Callee), Arguments(std::move(Arguments)) {}
 };
 
 /// FunctionSignatureNode - This class represents the "function signature" for a function,
@@ -212,11 +213,11 @@ public:
 /// of arguments the function takes).
 class FunctionSignatureNode {
   string Name;
-  vector<string> Args;
+  vector<string> Arguments;
 
 public:
-  FunctionSignatureNode(const string &Name, vector<string> Args)
-      : Name(Name), Args(std::move(Args)) {}
+  FunctionSignatureNode(const string &Name, vector<string> Arguments)
+      : Name(Name), Arguments(std::move(Arguments)) {}
 
   const string &getName() const { return Name; }
 };
@@ -308,11 +309,11 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
 
   // Call.
   getNextToken(); // eat (
-  vector<unique_ptr<ExpressionNode>> Args;
+  vector<unique_ptr<ExpressionNode>> Arguments;
   if (CurTok != tok_rparen) {
     while (true) {
       if (auto Arg = ParseExpression())
-        Args.push_back(std::move(Arg));
+        Arguments.push_back(std::move(Arg));
       else
         return nullptr;
 
@@ -328,7 +329,7 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
   // Eat the ')'.
   getNextToken();
 
-  return make_unique<CallExpressionNode>(Name, std::move(Args));
+  return make_unique<CallExpressionNode>(Name, std::move(Arguments));
 }
 
 /// primary
