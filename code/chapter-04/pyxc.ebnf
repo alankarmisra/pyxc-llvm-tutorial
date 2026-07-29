@@ -10,7 +10,7 @@
 program        = [ eols ] [ top { eols top } ] [ eols ] ;
 eols           = eol { eol } ;
 top            = functiondef | toplevelexpr ;
-functiondef     = "def" functionsignature ":" [ eols ] "return" expression ;
+functiondef     = "def" functionsignature ":" [ eols ] expression ;
 toplevelexpr   = expression ;
 functionsignature      = name "(" [ name { "," name } ] ")" ;
 expression     = primary binoprhs ;

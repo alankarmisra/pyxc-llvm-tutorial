@@ -7,4 +7,4 @@
 # ParseUnaryOpPrototype checks ArgNames.size() != 1.
 
 @unary
-def %(x, y): return x
+def %(x, y): x

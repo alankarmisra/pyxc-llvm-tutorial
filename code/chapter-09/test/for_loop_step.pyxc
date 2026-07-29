@@ -13,6 +13,6 @@
 
 extern def printd(x)
 
-def odds(n): return for i = 1, i <= n, 2: printd(i)
+def odds(n): for i = 1, i <= n, 2: printd(i)
 
 odds(5)

@@ -39,20 +39,16 @@ enum Token {
 
   // primary
   tok_identifier = -5,
-  tok_number = -6,
-
-  // control
-  tok_return = -7
+  tok_number = -6
 };
 
 static string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;        // Filled in if tok_number
 static string NumLiteralStr; // Filled in if tok_number, used in error messages
 
-// Keywords words like `def` and `return`. The lexer will return the
+// Keywords like `def`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
-static map<string, Token> Keywords = {{"def", tok_def},
-                                       {"return", tok_return}};
+static map<string, Token> Keywords = {{"def", tok_def}};
 
 // Debug-only token names. Kept separate from Keywords because this map is
 // purely for printing token stream output.
@@ -61,8 +57,7 @@ static map<int, string> TokenNames = [] {
   static map<int, string> Names = {
       {tok_eof, "end of input"}, {tok_eol, "newline"},
       {tok_error, "error"},      {tok_def, "'def'"},
-      {tok_identifier, "identifier"},
-      {tok_number, "number"},    {tok_return, "'return'"},
+      {tok_identifier, "identifier"}, {tok_number, "number"},
   };
 
   // Single character tokens.
@@ -639,7 +634,7 @@ static unique_ptr<FunctionSignatureAST> ParseFunctionSignature() {
 }
 
 /// definition
-///   = "def" function signature ":" ["newline"] "return" expression ;
+///   = "def" function signature ":" ["newline"] expression ;
 static unique_ptr<FunctionDefAST> ParseFunctionDef() {
   getNextToken(); // eat 'def'
   auto Signature = ParseFunctionSignature();
@@ -650,15 +645,10 @@ static unique_ptr<FunctionDefAST> ParseFunctionDef() {
     return LogErrorF("Expected ':' in function definition");
   getNextToken(); // eat ':'
 
-  // Skip any newlines between ':' and 'return'. This allows the body to be
-  // written on the next line:
+  // Allow the body expression to start on the next line:
   //   def foo(x):
-  //     return x + 1
+  //     x + 1
   consumeNewlines();
-
-  if (CurTok != tok_return)
-    return LogErrorF("Expected 'return' in function body");
-  getNextToken(); // eat 'return'
 
   if (auto E = ParseExpression())
     return make_unique<FunctionDefAST>(std::move(Signature), std::move(E));

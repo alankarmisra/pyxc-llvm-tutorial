@@ -4,4 +4,4 @@
 # RUN: grep -q "def 1" %t
 
 # function signature: first token after 'def' is not an identifier
-def 1(x): return x
+def 1(x): x

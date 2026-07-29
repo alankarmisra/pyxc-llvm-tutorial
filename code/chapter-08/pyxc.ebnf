@@ -11,7 +11,7 @@
 program         = [ eols ] [ top { eols top } ] [ eols ] ;
 eols            = eol { eol } ;
 top             = functiondef | external | toplevelexpr ;
-functiondef      = "def" functionsignature ":" [ eols ] "return" expression ;
+functiondef      = "def" functionsignature ":" [ eols ] expression ;
 external        = "extern" "def" functionsignature ;
 toplevelexpr    = expression ;
 functionsignature       = name "(" [ name { "," name } ] ")" ;

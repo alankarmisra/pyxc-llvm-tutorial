@@ -2,5 +2,5 @@
 # RUN: grep -q "Error: " %t
 # RUN: grep -q "expected ')'" %t
 
-# parenexpr: missing closing parenthesis
+# parenthesized expression: missing closing parenthesis
 (1 + 2

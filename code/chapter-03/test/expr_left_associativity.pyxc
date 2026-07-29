@@ -1,0 +1,9 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -c "Parsed a top-level expression." %t | grep -q "2"
+
+# binary-operator-right: same-precedence operators are left-associative
+# a - b - c groups as (a-b)-c, not a-(b-c). Chains at one precedence level
+# never recurse (the TokenPrecedence + 1 threshold only matters once a
+# tighter operator is nested in between), so this test does not exercise it.
+1 - 2 - 3
+4 + 5 + 6

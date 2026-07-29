@@ -5,4 +5,4 @@
 
 # PrototypeAST::codegen: Arg.setName() makes argument names appear in the IR.
 # Without setName the IR would show %0 and %1 instead of %a and %b.
-def f(a, b): return a + b
+def f(a, b): a + b

@@ -5,5 +5,5 @@
 # Error recovery + JIT: a parse error on one line must not prevent subsequent
 # inputs from compiling and executing. The REPL must recover and evaluate the
 # next expression correctly.
-def bad(x) return x
+def bad(x) x
 1

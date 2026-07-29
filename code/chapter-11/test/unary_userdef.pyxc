@@ -10,7 +10,7 @@
 # userdefunaryop = ? any opchar defined as a custom unary operator ?
 
 @unary
-def !(x): return if x == 0: 1 else: 0
+def !(x): if x == 0: 1 else: 0
 
 # Logical NOT: !0 = 1 (zero is false), !5 = 0 (non-zero is true).
 !0

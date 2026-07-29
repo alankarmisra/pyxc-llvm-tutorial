@@ -1,5 +1,8 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 1.000000
+
 extern def printd(x)
 
-def test(a, b): return var x, a = b = 1, x = a : x
+def test(a, b): var x, a = b = 1, x = a : x
 
 printd(test(20, 30))

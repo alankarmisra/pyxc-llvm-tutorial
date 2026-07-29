@@ -8,7 +8,7 @@
 # The second @binary(5) definition is rejected by ParseBinaryOpPrototype.
 
 @binary(5)
-def %(x, y): return x - y
+def %(x, y): x - y
 
 @binary(5)
-def %(x, y): return x + y
+def %(x, y): x + y

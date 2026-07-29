@@ -1,4 +1,0 @@
-# RUN: %pyxc < %s | grep -Fxq "'return'"
-
-# keyword: 'return' must be recognised as a keyword, not a name
-return

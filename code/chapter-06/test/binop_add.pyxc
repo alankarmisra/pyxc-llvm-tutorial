@@ -4,4 +4,4 @@
 
 # BinaryExprAST::codegen '+': CreateFAdd emits an fadd instruction.
 # Parameters are non-constant so folding does not apply.
-def add(a, b): return a + b
+def add(a, b): a + b

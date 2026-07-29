@@ -6,7 +6,7 @@
 # Tests: callexpr where an argument is itself a non-trivial expression.
 # callexpr = identifier "(" expression { "," expression } ")"
 
-def square(x): return x * x
+def square(x): x * x
 
 # Argument is (1 + 2) = 3; square(3) = 9.
 square(1 + 2)

@@ -2,5 +2,5 @@
 # RUN: grep -c "Parsed a function definition." %t | grep -q "2"
 
 # function signature: multiple arguments (the { } repeating)
-def add(x, y): return x + y
-def many(a, b, c, d, e): return a + b + c + d + e
+def add(x, y): x + y
+def many(a, b, c, d, e): a + b + c + d + e

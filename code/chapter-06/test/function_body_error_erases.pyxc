@@ -6,4 +6,4 @@
 # FunctionAST::codegen: when Body->codegen() fails, eraseFromParent() removes
 # the partially-built function. The final module dump must not contain a
 # 'define double @bad' — no broken declaration is left behind.
-def bad(x): return z
+def bad(x): z

@@ -1,5 +1,5 @@
 # RUN: %pyxc < %s > %t 2>&1
 # RUN: grep -q "Parsed a function definition." %t
 
-# function signature: one argument
-def square(x): return x * x
+# function signature: zero arguments (the [ ] is absent)
+def pi(): 3.14159

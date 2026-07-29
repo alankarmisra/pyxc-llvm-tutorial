@@ -2,5 +2,5 @@
 # RUN: grep -q "Error: " %t
 # RUN: grep -q "Expected ':' in function definition" %t
 
-# definition: ':' is absent; 'return' seen where ':' is expected
-def foo(x) return x
+# definition: ':' is absent; the body expression is seen where ':' is expected
+def foo(x) x

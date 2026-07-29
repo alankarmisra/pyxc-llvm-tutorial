@@ -3,4 +3,4 @@
 # RUN: grep -q "Expected ')' or ',' in parameter list" %t
 
 # function signature: parameters separated by space instead of comma
-def foo(x y): return x
+def foo(x y): x

@@ -2,4 +2,4 @@
 # RUN: grep -q "Parsed a function definition." %t
 
 # function signature: zero arguments (the [ ] is absent)
-def pi(): return 3.14159
+def pi(): 3.14159

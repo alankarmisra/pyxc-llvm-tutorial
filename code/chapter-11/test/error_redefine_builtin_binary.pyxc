@@ -6,4 +6,4 @@
 # ParseBinaryOpPrototype rejects any opchar already in BinopPrecedence.
 
 @binary(5)
-def +(x, y): return x + y
+def +(x, y): x + y

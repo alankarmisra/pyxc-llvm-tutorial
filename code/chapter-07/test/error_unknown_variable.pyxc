@@ -4,4 +4,4 @@
 
 # Error paths still work with JIT: a reference to an undeclared variable
 # must produce an error, not a crash or silent wrong result.
-def bad(x): return z
+def bad(x): z

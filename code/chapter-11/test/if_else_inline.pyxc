@@ -6,6 +6,6 @@
 # Tests: inline if/else (condition, then, and else all on one line).
 # conditionalexpr = "if" expression ":" [ eols ] expression [ eols ] "else" ":" [ eols ] expression
 
-def maxval(a, b): return if a > b: a else: b
+def maxval(a, b): if a > b: a else: b
 
 maxval(10, 5)

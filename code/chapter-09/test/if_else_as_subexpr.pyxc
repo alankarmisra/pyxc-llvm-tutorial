@@ -11,7 +11,7 @@
 # bonus(10, 1): 10 + 5 = 15  (flag is true)
 # bonus(10, 0): 10 + 0 = 10  (flag is false)
 
-def bonus(x, flag): return x + if flag: 5 else: 0
+def bonus(x, flag): x + if flag: 5 else: 0
 
 bonus(10, 1)
 

@@ -7,12 +7,12 @@ description: "Analyzing program words"
 
 I've been told writing compilers is hard. The more I think about it, the harder it seems. So I'm going to start small, and build from there. 
 
-For starters, I'll write out some small programs just to get an idea of the syntax I want. I've made plenty of calculators to learn new programming languages so let's start with an `add` function.
+For starters, I'll write out some small programs just to get an idea of the syntax I want. I've made plenty of calculators to learn new programming languages so I'll start with an `add` function.
 
 ```pyxc
 # add.pyxc
 def add(x, y): # define a function
-    return x + y # return the sum
+    x + y # return the sum
 
 print(add(1, 2)) # call the add function and print its value
 ```
@@ -25,7 +25,9 @@ I want this to print:
 
 pyxc will eventually have data types because I want it to compile down to binary with runtime efficiencies approaching C. But for now I'm skipping types and assuming *double* for both, function input and output, so in the code above, `x`, `y` and the return value of `add` will implicitly be *double*. 
 
-I think this is a good enough scope for some initial experimentation.
+I'm also restricting a function to just a single expression, i.e. anything that *expresses*, computes down to, a value which is returned from the function. I will eventually support multi-statement functions, conditionals like `if`, `elif`, `else` and will need to introduce `return` statements to know what to return. 
+
+For now, I think this is a good enough scope for some initial experimentation.
 
 ## Source Code
 
@@ -41,7 +43,7 @@ When I write this:
 ```pyxc
 # an add function
 def add(x,y):
-    return x + y    
+    x + y    
 ```
 
 *I* know that `def` defines a function, `add` is the *function name*, `x` and `y` are *parameters*, and *comments* follow the *#* character. I have to represent this structure somehow in a way that allows me to analyze the syntax and grammar. 
@@ -51,34 +53,33 @@ For analysis, I could just pass around the strings 'def', 'add', '(', 'x', ... b
 ```cpp
 enum Token {
     tok_def, // the keyword 'def'
-    tok_return // the keyword 'return'
-}
+};
 ```
 
 !!!note
-    Breaking up the source into words is called *lexing* (from Latin *lexis*, meaning word) and these individual enum values, we will call `tokens` because that's what people who wrote compilers before us called them.  
+    Breaking up the source into words is called *lexing* (from Latin *lexis*, meaning word) and these individual enum values, I will call `tokens`, because that's what people who wrote compilers before me called them.  
 
 How do I represent function and variable names which are dynamic i.e. the user will invent their own names? Can't have an enum for every possible name. So I can create a catch-all `tok_name` to signal that I read a name and then I can have a separate variable which I update with the name I just read. 
 
 ```cpp
-static string NameStr; // Filled in with the name just read
+static string Name; // Filled in with the name just read
 ```
 
-When I read the name `foo`, I return `tok_name` and set `NameStr = "foo"`.
+When I read the name `foo`, I return `tok_name` and set `Name = "foo"`.
 
-One variable is enough because any later compiler code that needs the name reads `NameStr` and makes a copy of it before asking the lexer for another token. 
+One variable is enough because, whenever I later need the name, I read `Name` and make a copy of it before asking the lexer for another token. 
 
 I'll do the same for numbers with `tok_number`. 
 
 ```cpp
-static double NumVal;        // Filled in with the number read
+static double NumberValue;        // Filled in with the number read
 ```
 
-When I read `3.14`, I return `tok_number` and set `NumVal = 3.14`.
+When I read `3.14`, I return `tok_number` and set `NumberValue = 3.14`.
 
-Since pyxc is Python-like, I also need to consider new lines. So let's have a `tok_eol`. 
+Since pyxc is Python-like, I also need to consider new lines. So I'll add a `tok_eol`. 
 
-And finally, we need to indicate that we've reached the end of file somehow, so let's also do a `tok_eof`. 
+And finally, I need to indicate that I've reached the end of file somehow, so I'll also add a `tok_eof`. 
 
 Adding the punctuation and remaining keywords from the sample I end up with:
 
@@ -104,10 +105,7 @@ enum Token {
   tok_name,
   tok_number,
 
-  // control flow
-  tok_return,
-
-  // punctuation
+  // punctuation and operators
   tok_lparen,
   tok_rparen,
   tok_comma,
@@ -138,13 +136,13 @@ int advance() {
 ```
 
 
-## gettok(): Generating One Token At A Time
+## getToken(): Generating One Token At A Time
 
-`gettok()` is where I read characters and turn them into tokens, one per call. 
+`getToken()` is where I read characters and turn them into tokens, one per call. 
 
 ```cpp
-/// gettok - Return the next token from standard input.
-int gettok() {
+/// getToken - Return the next token from standard input.
+int getToken() {
   static int LastChar = ' ';
 ```
 
@@ -160,14 +158,13 @@ After this loop, `LastChar` holds the next input value to process: the first cha
 
 ### Names and Keywords
 
-I recognize a name when it begins with a letter or underscore. I then accumulate letters, digits, and underscores into `NameStr`, and check whether it matches one of my two keywords. If it does, I return that keyword's token. Otherwise it's just a name. 
+I recognize a name when it begins with a letter or underscore. I then accumulate letters, digits, and underscores into `Name`, and check whether it matches one of my keywords (only one for now). If it does, I return that keyword's token. Otherwise it's just a name. 
 
 I'll dump all my keywords into a map for easy lookup and conversion.
 
 ```cpp
 static map<string, Token> Keywords = {
     {"def", tok_def},
-    {"return", tok_return},
 };
 ```
 
@@ -176,14 +173,14 @@ And now I collect characters and return an appropriate token.
 ```cpp
   // Name
   if (isalpha(LastChar) || LastChar == '_') {
-    NameStr = LastChar;
+    Name = LastChar;
     while (isalnum(LastChar = advance()) || LastChar == '_')
-      NameStr += LastChar;
+      Name += LastChar;
     // LastChar now holds the first character that is not part of this
     // name/keyword.
 
     // Keyword check.
-    auto KeywordIt = Keywords.find(NameStr);
+    auto KeywordIt = Keywords.find(Name);
     if (KeywordIt != Keywords.end())
       return KeywordIt->second;
     return tok_name;
@@ -194,12 +191,12 @@ And now I collect characters and return an appropriate token.
 
 Examples:
 - `def` → `tok_def`
-- `foo` → `tok_name`, `NameStr = "foo"`
-- `my_var` → `tok_name`, `NameStr = "my_var"`
+- `foo` → `tok_name`, `Name = "foo"`
+- `my_var` → `tok_name`, `Name = "my_var"`
 
 ### Numbers
 
-I take numbers through a similar accumulate-then-convert path: I read everything that looks like it belongs to a number into `NumStr`, then hand the whole string to [strtod](https://en.cppreference.com/w/cpp/string/byte/strtof) to parse into `NumVal`.
+I take numbers through a similar accumulate-then-convert path: I read everything that looks like it belongs to a number into `NumStr`, then hand the whole string to [strtod](https://en.cppreference.com/w/cpp/string/byte/strtof) to parse into `NumberValue`.
 
 ```cpp  
   // Number
@@ -212,17 +209,17 @@ I take numbers through a similar accumulate-then-convert path: I read everything
     // LastChar now holds the first character that is not part of this number.
 
     // TODO: This incorrectly lexes 1.23.45.67 as 1.23
-    NumVal = strtod(NumStr.c_str(), 0);
+    NumberValue = strtod(NumStr.c_str(), 0);
     return tok_number;
   }
 ```
 
 This works for the inputs I actually care about right now:
-- `42` → `tok_number`, `NumVal = 42.0`
-- `3.14` → `tok_number`, `NumVal = 3.14`
-- `.5` → `tok_number`, `NumVal = 0.5`
+- `42` → `tok_number`, `NumberValue = 42.0`
+- `3.14` → `tok_number`, `NumberValue = 3.14`
+- `.5` → `tok_number`, `NumberValue = 0.5`
 
-There is a bug here, but I'll leave it for now. I collect an invalid number like `1.23.45.67` into a single `NumStr`. `strtod` accepts and converts only the `1.23` prefix and ignores the rest, and I've already consumed `.45.67` from the input stream, so it disappears instead of producing an error. I'll leave a *TODO* to fix this later; for now, valid numbers work and I want to keep this proof of concept small.
+There is a bug here, but I'll leave it for now. I collect an invalid number like `1.23.45.67` into a single `NumStr`. `strtod` accepts and converts only the `1.23` prefix and ignores the rest, and I've already consumed `.45.67` from the input stream, so it disappears instead of producing an error. Similarly `.` gets parsed as a `0`. I'll leave a *TODO* to fix this later; for now, valid numbers work and I want to keep this proof of concept small.
 
 ### Newlines
 
@@ -238,7 +235,7 @@ When `LastChar` holds a normalized newline, I return `tok_eol`. I read in anothe
 
 ### Comments
 
-Comments run from `#` to the end of the line, same as Python. I don't keep any of it. I read forward to the newline (or `EOF`), throw the whole thing away, then return `tok_eol`. If a comment follows code on a line, `tok_eol` marks that code line as complete.
+Comments run from `#` to the end of the line, same as Python. I don't keep any of it. I read forward to the newline (or `EOF`), throw the whole thing away, then return `tok_eol`. If a comment follows code on a line, I use that trailing `tok_eol` to mark the code line as complete.
 
 ```cpp
   // Comment
@@ -270,7 +267,7 @@ When `LastChar` holds an `EOF`, the input stream has no more data, and I return 
 
 ### Punctuation and Operators
 
-And finally, I handle punctuation, operators, and unrecognized characters. Since these are single-character comparisons, a simple `switch` works. 
+And finally, I handle punctuation, operators, and unrecognized characters. Since these are single-character comparisons, I handle them with a simple `switch`. 
 
 ```cpp
   // Single-character punctuation and operators.
@@ -307,7 +304,6 @@ static map<int, string> TokenNames = {
     {tok_def, "'def'"},
     {tok_name, "name"},
     {tok_number, "number"},
-    {tok_return, "'return'"},
     {tok_lparen, "'('"},
     {tok_rparen, "')'"},
     {tok_comma, "','"},
@@ -316,7 +312,7 @@ static map<int, string> TokenNames = {
 };
 ```
 
-OK, I have what I need now, so in `main()`, I call `gettok()` in a loop and print each token, until I hit `tok_eof`:
+OK, I have what I need now, so in `main()`, I call `getToken()` in a loop and print each token, until I hit `tok_eof`:
 
 ```cpp
 //===----------------------------------------===//
@@ -325,12 +321,12 @@ OK, I have what I need now, so in `main()`, I call `gettok()` in a loop and prin
 
 int main() {
   int tok;
-  while ((tok = gettok()) != tok_eof) {
+  while ((tok = getToken()) != tok_eof) {
     if (tok == tok_name)
       fprintf(stdout, "%s: %s\n", TokenNames.at(tok).c_str(),
-              NameStr.c_str());
+              Name.c_str());
     else if (tok == tok_number)
-      fprintf(stdout, "%s: %g\n", TokenNames.at(tok).c_str(), NumVal);
+      fprintf(stdout, "%s: %g\n", TokenNames.at(tok).c_str(), NumberValue);
     else
       fprintf(stdout, "%s\n", TokenNames.at(tok).c_str());
   }
@@ -345,7 +341,7 @@ For `tok_name` and `tok_number`, the token alone is not enough, so I also print 
 ```bash
 cd code/chapter-01
 cmake -S . -B build && cmake --build build
-printf "# add.pyxc\ndef add(x, y): # define a function\n    return x + y # return the sum\n\nprint(add(1, 2)) # call the add function and print its value\n" | ./build/pyxc
+printf "# add.pyxc\ndef add(x, y): # define a function\n    x + y # return the sum\n\nprint(add(1, 2)) # call the add function and print its value\n" | ./build/pyxc
 ```
 
 ```text
@@ -359,7 +355,6 @@ name: y
 ')'
 ':'
 newline
-'return'
 name: x
 '+'
 name: y
@@ -394,7 +389,7 @@ I use LLVM's `lit` test runner for all my tests. Each test is a small `.pyxc` fi
 # sample: the add.pyxc example from the doc, run end-to-end through the lexer.
 # add.pyxc
 def add(x, y): # define a function
-    return x + y # return the sum
+    x + y # return the sum
 
 print(add(1, 2)) # call the add function and print its value
 ```
@@ -443,31 +438,30 @@ Total Discovered Tests: 1
 
 I could chain the greps to a single `# RUN:` but then I wouldn't know what condition the test is failing on, so I'll do each test with a separate run. 
 
-The `test/` directory has lit tests covering each token type, one file per rule. Browse them for more input examples, or run the suite:
+The `test/` directory has lit tests covering each token type. Browse them for more input examples, or run the suite:
 
 ```bash
 llvm-lit test/
 ```
 
 ```text
--- Testing: 12 tests, 8 workers --
-PASS: pyxc-chapter01 :: sample_chapter_1.pyxc (1 of 12)
-PASS: pyxc-chapter01 :: name_underscore.pyxc (2 of 12)
-PASS: pyxc-chapter01 :: keyword_def.pyxc (3 of 12)
-PASS: pyxc-chapter01 :: number_leading_dot.pyxc (4 of 12)
-PASS: pyxc-chapter01 :: punctuation_tokens.pyxc (5 of 12)
-PASS: pyxc-chapter01 :: comment_eof.pyxc (6 of 12)
-PASS: pyxc-chapter01 :: error_unknown_character.pyxc (7 of 12)
-PASS: pyxc-chapter01 :: name_simple.pyxc (8 of 12)
-PASS: pyxc-chapter01 :: number_integer.pyxc (9 of 12)
-PASS: pyxc-chapter01 :: comment_discards.pyxc (10 of 12)
-PASS: pyxc-chapter01 :: number_decimal.pyxc (11 of 12)
-PASS: pyxc-chapter01 :: keyword_return.pyxc (12 of 12)
+-- Testing: 11 tests, 8 workers --
+PASS: pyxc-chapter01 :: comment_discards.pyxc (1 of 11)
+PASS: pyxc-chapter01 :: error_unknown_character.pyxc (2 of 11)
+PASS: pyxc-chapter01 :: number_leading_dot.pyxc (3 of 11)
+PASS: pyxc-chapter01 :: name_underscore.pyxc (4 of 11)
+PASS: pyxc-chapter01 :: sample_chapter_1.pyxc (5 of 11)
+PASS: pyxc-chapter01 :: number_integer.pyxc (6 of 11)
+PASS: pyxc-chapter01 :: punctuation_tokens.pyxc (7 of 11)
+PASS: pyxc-chapter01 :: number_decimal.pyxc (8 of 11)
+PASS: pyxc-chapter01 :: comment_eof.pyxc (9 of 11)
+PASS: pyxc-chapter01 :: keyword_def.pyxc (10 of 11)
+PASS: pyxc-chapter01 :: name_simple.pyxc (11 of 11)
 
-Testing Time: 0.25s
+Testing Time: 0.31s
 
-Total Discovered Tests: 12
-  Passed: 12 (100.00%)
+Total Discovered Tests: 11
+  Passed: 11 (100.00%)
 ```
 
 The test order and timing above are from one run; `lit` runs tests in parallel across several workers, so both vary from run to run.

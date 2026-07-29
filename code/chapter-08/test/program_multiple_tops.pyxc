@@ -10,6 +10,6 @@
 
 extern def printd(x)
 
-def double(x): return x + x
+def double(x): x + x
 
 double(1)

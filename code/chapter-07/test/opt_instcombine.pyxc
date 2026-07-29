@@ -7,4 +7,4 @@
 # fmul-by-2 with fadd in this configuration — the fmul is preserved as-is.
 # This test documents what the actual IR looks like so that if a future pass
 # change does introduce strength reduction, the test will catch it.
-def double_it(x): return x * 2
+def double_it(x): x * 2

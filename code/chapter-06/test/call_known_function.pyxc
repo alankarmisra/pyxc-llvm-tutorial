@@ -4,5 +4,5 @@
 
 # CallExprAST::codegen: callee looked up by name in TheModule; emits a call
 # instruction against it. Both the callee definition and the caller must appear.
-def double_it(x): return x + x
-def caller(a): return double_it(a)
+def double_it(x): x + x
+def caller(a): double_it(a)

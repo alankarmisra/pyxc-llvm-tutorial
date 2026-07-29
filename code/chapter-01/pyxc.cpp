@@ -27,9 +27,6 @@ enum Token {
   tok_name,
   tok_number,
 
-  // control flow
-  tok_return,
-
   // punctuation and operators
   tok_lparen,
   tok_rparen,
@@ -38,12 +35,11 @@ enum Token {
   tok_plus,
 };
 
-static string NameStr; // Filled in with the name just read
-static double NumVal;  // Filled in with the number read
+static string Name; // Filled in with the name just read
+static double NumberValue;  // Filled in with the number read
 
 static map<string, Token> Keywords = {
     {"def", tok_def},
-    {"return", tok_return},
 };
 
 // TokenNames maps each named token to a readable string for debug output and
@@ -55,7 +51,6 @@ static map<int, string> TokenNames = {
     {tok_def, "'def'"},
     {tok_name, "name"},
     {tok_number, "number"},
-    {tok_return, "'return'"},
     {tok_lparen, "'('"},
     {tok_rparen, "')'"},
     {tok_comma, "','"},
@@ -77,8 +72,8 @@ int advance() {
   return LastChar;
 }
 
-/// gettok - Return the next token from standard input.
-int gettok() {
+/// getToken - Return the next token from standard input.
+int getToken() {
   static int LastChar = ' ';
 
   // Skip whitespace EXCEPT newlines
@@ -87,14 +82,14 @@ int gettok() {
 
   // Name
   if (isalpha(LastChar) || LastChar == '_') {
-    NameStr = LastChar;
+    Name = LastChar;
     while (isalnum(LastChar = advance()) || LastChar == '_')
-      NameStr += LastChar;
+      Name += LastChar;
     // LastChar now holds the first character that is not part of this
     // name/keyword.
 
     // Keyword check.
-    auto KeywordIt = Keywords.find(NameStr);
+    auto KeywordIt = Keywords.find(Name);
     if (KeywordIt != Keywords.end())
       return KeywordIt->second;
     return tok_name;
@@ -110,7 +105,7 @@ int gettok() {
     // LastChar now holds the first character that is not part of this number.
 
     // TODO: This incorrectly lexes 1.23.45.67 as 1.23
-    NumVal = strtod(NumStr.c_str(), 0);
+    NumberValue = strtod(NumStr.c_str(), 0);
     return tok_number;
   }
 
@@ -162,12 +157,12 @@ int gettok() {
 
 int main() {
   int tok;
-  while ((tok = gettok()) != tok_eof) {
+  while ((tok = getToken()) != tok_eof) {
     if (tok == tok_name)
       fprintf(stdout, "%s: %s\n", TokenNames.at(tok).c_str(),
-              NameStr.c_str());
+              Name.c_str());
     else if (tok == tok_number)
-      fprintf(stdout, "%s: %g\n", TokenNames.at(tok).c_str(), NumVal);
+      fprintf(stdout, "%s: %g\n", TokenNames.at(tok).c_str(), NumberValue);
     else
       fprintf(stdout, "%s\n", TokenNames.at(tok).c_str());
   }

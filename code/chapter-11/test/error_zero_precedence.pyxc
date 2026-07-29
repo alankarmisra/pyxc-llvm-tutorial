@@ -7,4 +7,4 @@
 # ParseBinaryDecorator checks NumVal < 1.
 
 @binary(0)
-def %(x, y): return x - y
+def %(x, y): x - y

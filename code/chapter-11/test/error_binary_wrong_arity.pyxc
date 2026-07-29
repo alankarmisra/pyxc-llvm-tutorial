@@ -7,4 +7,4 @@
 # ParseBinaryOpPrototype checks ArgNames.size() != 2.
 
 @binary(5)
-def %(x): return x
+def %(x): x

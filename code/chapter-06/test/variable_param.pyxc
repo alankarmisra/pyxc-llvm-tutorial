@@ -6,4 +6,4 @@
 # VariableExprAST::codegen: a parameter reference looks up NamedValues and
 # returns the Value* for the argument. The IR must name the argument 'x' and
 # return it directly — no instruction needed.
-def identity(x): return x
+def identity(x): x

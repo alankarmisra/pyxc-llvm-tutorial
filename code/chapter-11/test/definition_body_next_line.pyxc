@@ -4,9 +4,9 @@
 
 
 # Tests: definition body on the line after ':'.
-# definition = "def" function signature ":" [ eols ] "return" expression
+# definition = "def" function signature ":" [ eols ] expression
 
 def inc(x):
-return x + 1
+x + 1
 
 inc(2)

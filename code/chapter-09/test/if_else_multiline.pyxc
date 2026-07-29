@@ -8,7 +8,7 @@
 # The [ eols ] tokens before 'else' and after 'else:' allow this layout.
 
 def minval(a, b):
-return if a < b:
+if a < b:
 a
 else:
 b

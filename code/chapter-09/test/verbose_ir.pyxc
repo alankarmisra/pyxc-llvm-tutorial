@@ -12,6 +12,6 @@
 
 extern def printd(x)
 
-def sq(x): return x * x
+def sq(x): x * x
 
 printd(sq(3))

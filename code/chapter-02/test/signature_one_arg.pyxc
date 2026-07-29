@@ -1,0 +1,6 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed a function definition." %t
+# RUN: not grep -q "Error:" %t
+
+# function signature: one argument
+def double(x): x + x

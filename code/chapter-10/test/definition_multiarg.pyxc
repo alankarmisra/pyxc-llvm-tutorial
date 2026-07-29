@@ -7,6 +7,6 @@
 # function signature  = identifier "(" identifier { "," identifier } ")"
 # callexpr   = identifier "(" expression { "," expression } ")"
 
-def add3(a, b, c): return a + b + c
+def add3(a, b, c): a + b + c
 
 add3(1, 2, 4)

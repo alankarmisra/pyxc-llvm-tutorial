@@ -16,7 +16,7 @@
 extern def printd(x)
 
 def grid(m, n):
-    return for i = 1, i <= m, 1:
+    for i = 1, i <= m, 1:
                for j = 1, j <= n, 1:
                    printd(i * 10 + j)
 

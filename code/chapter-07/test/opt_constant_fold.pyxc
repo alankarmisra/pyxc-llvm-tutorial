@@ -11,4 +11,4 @@
 #   - ReassociatePass and GVN recognise both factors are (x+3), collapsing
 #     the expression to a single fadd and a single fmul of %addtmp with itself.
 # No double-print here: the module is handed to the JIT, not dumped at exit.
-def test(x): return (1+2+x)*(x+(1+2))
+def test(x): (1+2+x)*(x+(1+2))

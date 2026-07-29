@@ -7,7 +7,7 @@
 # After defining unary '%', defining binary '%' must fail.
 
 @unary
-def %(x): return x
+def %(x): x
 
 @binary(5)
-def %(x, y): return x + y
+def %(x, y): x + y

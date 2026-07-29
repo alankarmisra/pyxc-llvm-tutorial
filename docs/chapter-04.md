@@ -409,32 +409,6 @@ NumLiteralStr = NumStr;
 
 Notice I'm in the lexer section of the code in `gettok()`, which returns an `int`. So I can't return `LogError(...)` here like I do with parser-level errors, which returns `nullptr`. For now, I just call the helper directly from inside `gettok()` and move on. If I find myself printing more and more lexer errors inline, I'll refactor it. 
 
-## Cleanup: a Table for Keywords
-
-First, let's simplify the keyword lookup code. 
-
-```cpp
-if (IdentifierStr == "def")    return tok_def;
-if (IdentifierStr == "return") return tok_return;
-return tok_identifier;
-```
-
-This works, but every new keyword needs a new `if`. A map is more honest about what's happening — it *is* a lookup table — and adding a keyword is a one-line change:
-
-```cpp
-static map<string, Token> Keywords = {{"def", tok_def},
-                                       {"return", tok_return}};
-```
-
-The lookup replaces the chain:
-
-```cpp
-auto It = Keywords.find(IdentifierStr);
-return (It == Keywords.end()) ? tok_identifier : It->second;
-```
-
-If an identifier-like string is not a keyword, it's an identifier. As with most languages, I won't allow keywords like `def` to be used as variables. If I did, it would make the language a little goofy. 
-
 ## Build and Run
 
 ```bash

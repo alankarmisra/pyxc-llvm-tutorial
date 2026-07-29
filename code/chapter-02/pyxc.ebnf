@@ -13,7 +13,7 @@ program                    = [ end-of-lines ]
 end-of-lines               = end-of-line { end-of-line } ;
 top-level-item             = function-definition | top-level-expression ;
 function-definition        = "def" function-signature ":"
-                             [ end-of-lines ] "return" expression ;
+                             [ end-of-lines ] expression ;
 top-level-expression       = expression ;
 function-signature         = name "(" [ name { "," name } ] ")" ;
 expression                 = primary { "+" primary } ;
@@ -31,7 +31,13 @@ letter                     = "A".."Z" | "a".."z" ;
 digit                      = "0".."9" ;
 end-of-line                = "\r\n" | "\r" | "\n" ;
 (*
-    `whitespace` may appear between any two tokens
+    A `comment` begins with "#" and continues to the end of the line. The lexer
+     ignores its text and returns an end-of-line token when one follows it.
+*)
+comment                    = "#" { comment-character } ;
+comment-character          = ? any character except "\r" and "\n" ? ;
+(*
+    `whitespace` may appear before or between tokens
      and is ignored by the lexer.
 *)
-whitespace                 = " " | "\t" ;
+whitespace                 = " " | "\t" | "\v" | "\f" ;

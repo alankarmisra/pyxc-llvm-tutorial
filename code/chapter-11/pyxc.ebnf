@@ -11,9 +11,9 @@
 program         = [ eols ] [ top { eols top } ] [ eols ] ;
 eols            = eol { eol } ;
 top             = functiondef | decoratedfunctiondef | external | toplevelexpr ;
-functiondef      = "def" functionsignature ":" [ eols ] "return" expression ;
-decoratedfunctiondef    = binarydecorator eols "def" binaryopsignature ":" [ eols ] "return" expression
-                | unarydecorator  eols "def" unaryopsignature  ":" [ eols ] "return" expression ;
+functiondef      = "def" functionsignature ":" [ eols ] expression ;
+decoratedfunctiondef    = binarydecorator eols "def" binaryopsignature ":" [ eols ] expression
+                | unarydecorator  eols "def" unaryopsignature  ":" [ eols ] expression ;
 binarydecorator = "@" "binary" "(" integer ")" ;
 unarydecorator  = "@" "unary" ;
 binaryopsignature = customopchar "(" name "," name ")" ;

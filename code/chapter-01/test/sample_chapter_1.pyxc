@@ -6,6 +6,6 @@
 # sample: the add.pyxc example from the doc, run end-to-end through the lexer.
 # add.pyxc
 def add(x, y): # define a function
-    return x + y # return the sum
+    x + y # return the sum
 
 print(add(1, 2)) # call the add function and print its value

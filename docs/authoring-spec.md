@@ -58,6 +58,12 @@ Every chapter follows this order, without deviation:
 
 ### 2.3 Writing Style
 
+**First-person, present-tense voice.** Every design decision is narrated as something *I* am doing right now, not as an established fact about the language. Write "I'll use an enum" or "I store precedences in a map," not "an enum is used" or "precedences are stored in a map." Passive voice and third-person description ("the parser handles X") are signs the sentence needs rewriting into what *I* decided and why. The one exception is `chapter-00.md`, which uses "we" for the shared capability the reader and author have as language users; every per-chapter body uses "I."
+
+**Justify a choice against a rejected alternative.** Don't just state what the code does — show what a reader would naturally try first, why it falls short, and what you do instead. For example: "For analysis, I could just pass around the strings 'def', 'add', '(', 'x', ... but then I have to do string comparisons at each analysis stage... Instead I'll use an enum." A decision presented without the alternative it beat reads like a spec handed down from nowhere, not like someone building something and making calls as they go.
+
+**Account for every code change from the previous chapter, not just the new concept.** Before writing a chapter, diff its `pyxc.cpp` against the prior chapter's in full, and account for every hunk somewhere in the prose, not only the part that motivated the chapter. A three-line lexer addition (new tokens) is just as much "what changed" as the headline algorithm; skipping it leaves the reader unable to find where new syntax entered the language at all. If a change is truly incidental (formatting, a rename already covered by [§3.5](#35-naming-conventions)), it's fine to leave unexplained, but that should be a deliberate judgment, not an oversight from only looking at the interesting diff.
+
 **Before/after in "Where We Are".** The opening section always shows a concrete problem in the current state and the improved output after the chapter. This frames every concept that follows.
 
 ```
@@ -144,12 +150,12 @@ static int advance() { ... }
 Parser functions also get an EBNF banner after the function-level doc comment, enclosed in `[ ]` to mark it as a grammar rule, not code:
 
 ```cpp
-/// ParsePrototype - Parse a function prototype.
+/// ParseFunctionSignature - Parse a function signature.
 ///
-///   prototype ::= id '(' id* ')'
+///   function-signature = name "(" [ name { "," name } ] ")" ;
 ///
-/// Returns nullptr on failure; leaves CurTok on the first token past the ')'.
-static unique_ptr<PrototypeAST> ParsePrototype() { ... }
+/// Returns nullptr on failure; leaves CurrentToken on the first token past the ')'.
+static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() { ... }
 ```
 
 Internal helpers (e.g., `LogError`) that are self-evident from their name and body get a one-line `//` comment.
@@ -174,7 +180,7 @@ Do not comment every line. A comment on every line is noise. Reserve inline comm
 
 ### 3.5 Naming Conventions
 
-Naming decisions are made for what's clearest to a reader learning compilers for the first time, not for compatibility with the original LLVM Kaleidoscope tutorial and not out of deference to "that's how compiler theory names things." If a name is foundational to a whole tradition of compiler writing but is abbreviated, ambiguous, or confusing without prior context, we rename it. Pyxc already does this: Kaleidoscope's `ExprAST`/`PrototypeAST` became `ExpressionAST`/`FunctionSignatureAST` because full words read clearer to newcomers than abbreviations. Don't reach for "but the reference tutorial/textbook does it this way" as a justification. Think from first principles about what a reader needs to follow along, every time, including for names that feel load-bearing or sacred elsewhere.
+Naming decisions are made for what's clearest to a reader learning compilers for the first time, not for compatibility with the original LLVM Kaleidoscope tutorial and not out of deference to "that's how compiler theory names things." If a name is foundational to a whole tradition of compiler writing but is abbreviated, ambiguous, or confusing without prior context, we rename it. Pyxc already does this: Kaleidoscope's `ExprAST`/`PrototypeAST` became `ExpressionNode`/`FunctionSignatureNode` because full words read clearer to newcomers than abbreviations. Don't reach for "but the reference tutorial/textbook does it this way" as a justification. Think from first principles about what a reader needs to follow along, every time, including for names that feel load-bearing or sacred elsewhere.
 
 House style within pyxc, kept for internal consistency, not because any external tutorial uses it:
 
@@ -185,6 +191,27 @@ House style within pyxc, kept for internal consistency, not because any external
 - Globals: `PascalCase` prefixed with `The` for LLVM singletons (`TheContext`, `TheModule`, `TheBuilder`)
 
 We use lowercase `ch` and `idx` for loop variables in code we write ourselves, even where the original Kaleidoscope tutorial uses capital `C`/`I`. We don't "fix" LLVM API code we copy verbatim (e.g. IRBuilder call patterns), since that's third-party code, not a teaching choice we made.
+
+**AST node suffix.** Node classes use the `Node` suffix (`ExpressionNode`, `BinaryExpressionNode`), not Kaleidoscope's `AST` suffix. Each class is one node in the tree, not the tree itself, so `Node` says what the class is more literally than `AST` does.
+
+**Full-word identifier migration.** The table below is the canonical spelling for identifiers inherited from Kaleidoscope in abbreviated form. Chapters 2 and 3 already use the right-hand column throughout. Chapters 4 and later still use the left-hand (Kaleidoscope-era) column as of this writing; migrate a chapter's identifiers to the right-hand column whenever that chapter is next substantially edited, rather than doing a mechanical repo-wide rename in one pass.
+
+| Old (Kaleidoscope-derived) | New |
+|---|---|
+| `...AST` suffix (`ExprAST`, `BinaryExprAST`) | `...Node` suffix (`ExpressionNode`, `BinaryExpressionNode`) |
+| `Op` | `Operator` |
+| `LHS` | `Left` |
+| `RHS` | `Right` |
+| `Val` | `Value` |
+| `Args` (as a field/param name) | `Arguments` |
+| `BinopPrecedence` (the precedence map) | `OperatorPrecedence` |
+| `GetTokPrecedence()` | `GetTokenPrecedence()` |
+| `ExprPrec` (param: minimum precedence accepted) | `ExpressionPrecedence` |
+| `TokPrec` (precedence of the current token) | `TokenPrecedence` |
+| `NextPrec` (precedence after parsing the right operand) | `NextTokenPrecedence` |
+| `ParseBinOpRHS()` | `ParseBinaryOperatorRight()` |
+
+When a chapter introduces a new abbreviated identifier not yet in this table, add it here rather than leaving it as a one-off.
 
 ---
 
@@ -283,8 +310,8 @@ Every test file is a valid Pyxc input that pyxc reads from stdin. Lines beginnin
 # RUN: %pyxc < %s > %t 2>&1
 # RUN: grep -q "Parsed a function definition" %t
 
-# prototype: one-arg form; parser must accept and echo "Parsed a function definition."
-def foo(x): return x
+# function signature: one-arg form; parser must accept and echo "Parsed a function definition."
+def foo(x): x
 ```
 
 Header format:
@@ -299,9 +326,9 @@ Tests are derived from the grammar, not written ad hoc. For each grammar rule:
 
 **One test per optional element (present and absent):**
 ```
-prototype_zero_args.pyxc   — def foo(): return 0
-prototype_one_arg.pyxc     — def foo(x): return x
-prototype_multi_args.pyxc  — def foo(x, y, z): return x
+signature_zero_args.pyxc   — def foo(): 0
+signature_one_arg.pyxc     — def foo(x): x
+signature_multi_args.pyxc  — def foo(x, y, z): x
 ```
 
 **One test per error branch in the parser:** Every `LogError` or `return nullptr` in a Parse* function gets a test. The test checks:
@@ -328,7 +355,7 @@ Examples:
 ```
 call_zero_args.pyxc
 call_multi_args.pyxc
-error_prototype_missing_name.pyxc
+error_signature_missing_name.pyxc
 error_definition_missing_colon.pyxc
 location_after_comment.pyxc
 location_sequential_lines.pyxc

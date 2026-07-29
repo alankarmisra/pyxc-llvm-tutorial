@@ -3,4 +3,4 @@
 # RUN: grep -q "Expected '(' in function signature" %t
 
 # function signature: no '(' after function name
-def foo x: return x
+def foo x: x

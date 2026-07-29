@@ -3,4 +3,4 @@
 # RUN: grep -q "fmul double" %t
 
 # BinaryExprAST::codegen '*': CreateFMul emits an fmul instruction.
-def mul(a, b): return a * b
+def mul(a, b): a * b

@@ -6,4 +6,4 @@
 # BinaryExprAST::codegen '<': two-step codegen — CreateFCmpULT produces an i1,
 # then CreateUIToFP widens it to double (false->0.0, true->1.0).
 # Both instructions must appear in the IR.
-def lt(a, b): return a < b
+def lt(a, b): a < b

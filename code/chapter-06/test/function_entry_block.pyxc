@@ -5,4 +5,4 @@
 
 # FunctionAST::codegen: every function body begins with a basic block named
 # 'entry' and ends with a ret instruction. Both must appear in the IR.
-def f(x): return x
+def f(x): x

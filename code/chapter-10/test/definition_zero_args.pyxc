@@ -6,6 +6,6 @@
 # Tests: definition with a zero-argument function signature.
 # function signature = identifier "(" ")"
 
-def answer(): return 42.0
+def answer(): 42.0
 
 answer()

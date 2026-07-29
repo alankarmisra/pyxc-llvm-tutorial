@@ -3,4 +3,4 @@
 # RUN: grep -q "Expected function name in function signature" %t
 
 # function signature: first token after 'def' is not a name
-def 1(x): return x
+def 1(x): x

@@ -61,19 +61,16 @@ enum Token {
   // primary
   tok_identifier = -6,
   tok_number = -7,
-
-  // control
-  tok_return = -8,
 };
 
 static string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;        // Filled in if tok_number
 static string NumLiteralStr; // Filled in if tok_number
 
-// Keywords like `def`, `extern` and `return`. The lexer will return the
+// Keywords like `def` and `extern`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
-static map<string, Token> Keywords = {
-    {"def", tok_def}, {"extern", tok_extern}, {"return", tok_return}};
+static map<string, Token> Keywords = {{"def", tok_def},
+                                      {"extern", tok_extern}};
 
 // Debug-only token names. Kept separate from Keywords because this map is
 // purely for printing token stream output.
@@ -83,7 +80,7 @@ static map<int, string> TokenNames = [] {
       {tok_eof, "end of input"}, {tok_eol, "newline"},
       {tok_error, "error"},      {tok_def, "'def'"},
       {tok_extern, "'extern'"},  {tok_identifier, "identifier"},
-      {tok_number, "number"},    {tok_return, "'return'"}};
+      {tok_number, "number"}};
 
   // Single character tokens.
   for (int ch = 0; ch <= 255; ++ch) {
@@ -689,7 +686,7 @@ static unique_ptr<FunctionSignatureAST> ParseFunctionSignature() {
 }
 
 /// definition
-///   = "def" function signature ":" [ eols ] "return" expression ;
+///   = "def" function signature ":" [ eols ] expression ;
 static unique_ptr<FunctionDefAST> ParseFunctionDef() {
   getNextToken(); // eat 'def'
   auto Signature = ParseFunctionSignature();
@@ -702,12 +699,8 @@ static unique_ptr<FunctionDefAST> ParseFunctionDef() {
 
   // Allow the function body to start on the next line:
   //   def foo(x):
-  //     return x + 1
+  //     x + 1
   consumeNewlines();
-
-  if (CurTok != tok_return)
-    return LogErrorF("Expected 'return' in function body");
-  getNextToken(); // eat 'return'
 
   if (auto E = ParseExpression())
     return make_unique<FunctionDefAST>(std::move(Signature), std::move(E));

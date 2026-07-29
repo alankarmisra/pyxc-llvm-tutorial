@@ -12,6 +12,6 @@
 
 extern def printd(x)
 
-def add(a, b): return a + b
+def add(a, b): a + b
 
 printd(add(3, 4))

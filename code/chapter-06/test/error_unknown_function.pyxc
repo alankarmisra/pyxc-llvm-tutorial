@@ -4,4 +4,4 @@
 
 # CallExprAST::codegen error path: TheModule->getFunction returns nullptr when
 # the callee has never been declared or defined.
-def bad(x): return notdeclared(x)
+def bad(x): notdeclared(x)
