@@ -3,5 +3,5 @@
 # RUN: grep -q "Expected ')' or ',' in argument list" %t
 # RUN: grep -q "foo(1" %t
 
-# identifierexpr: arguments separated by space instead of comma
+# name-expression: arguments separated by space instead of comma
 foo(1 2)

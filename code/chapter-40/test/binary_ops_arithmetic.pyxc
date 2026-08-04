@@ -5,7 +5,7 @@
 
 
 # Tests: builtin binary arithmetic operators +, -, *.
-# builtinbinaryop = "+" | "-" | "*" | ...
+# builtin-binary-operator = "+" | "-" | "*" | ...
 
 4 + 5
 

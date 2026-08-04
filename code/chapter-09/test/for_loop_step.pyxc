@@ -7,7 +7,7 @@
 
 
 # Tests: for loop with a step value greater than 1.
-# forexpr = "for" identifier "=" expression "," expression "," expression ":" [ eols ] expression
+# forexpr = "for" name "=" expression "," expression "," expression ":" [ end-of-lines ] expression
 #
 # odds(5): i=1 (print), i=3 (print), i=5 (print), i=7 (7<=5 false, stop).
 

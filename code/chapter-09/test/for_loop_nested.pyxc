@@ -8,7 +8,7 @@
 
 
 # Tests: nested for loops — the body of the outer for is itself a for expression.
-# forexpr = "for" identifier "=" expression "," expression "," expression ":" [ eols ] expression
+# forexpr = "for" name "=" expression "," expression "," expression ":" [ end-of-lines ] expression
 #
 # grid(2, 2): outer i=1,2; inner j=1,2 each pass.
 # printd(i * 10 + j) produces 11, 12, 21, 22.

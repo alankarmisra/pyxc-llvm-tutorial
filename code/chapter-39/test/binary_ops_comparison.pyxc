@@ -14,7 +14,7 @@
 
 # Tests: all six builtin binary comparison operators.
 # Comparisons return True for true, False for false.
-# builtinbinaryop = ... | "<" | "<=" | ">" | ">=" | "==" | "!="
+# builtin-binary-operator = ... | "<" | "<=" | ">" | ">=" | "==" | "!="
 
 1 < 2
 

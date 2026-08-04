@@ -6,7 +6,7 @@
 
 
 # Tests: for loop body on the next line after ':'.
-# forstmt = "for" identifier "=" expression "," expression "," expression ":" suite ;
+# forstmt = "for" name "=" expression "," expression "," expression ":" suite ;
 
 extern def printd(x)
 

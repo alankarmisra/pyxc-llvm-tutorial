@@ -5,7 +5,7 @@ description: "Add subtraction, multiplication, and comparison to the lexer, then
 
 ## Where We Are
 
-In this chapter, I'll expand the binary operators to include *, -, and <, and add precedence so they group the way arithmetic already does: `k < a + b * c + d` becomes `k < ((a + (b * c)) + d)`.
+In this chapter, I'll expand the binary operators to include `*`, `-`, and `<`, and add precedence so they group the way arithmetic already does: `k < a + b * c + d` becomes `k < ((a + (b * c)) + d)`.
 
 ## Source Code
 
@@ -55,7 +55,7 @@ static map<int, string> TokenNames = {
 
 ## Operator Precedence
 
-I give each operator a number, and the number decides binding order: higher number, tighter binding. I keep them in a map:
+I give each operator a number, and the number decides binding order. The higher the number, the tighter the operator binds: it groups with its operands before a looser operator does. I keep them in a map:
 
 ```cpp
 static const map<int, int> OperatorPrecedence = {
@@ -79,11 +79,11 @@ static int GetTokenPrecedence() {
 }
 ```
 
-If `CurrentToken` isn't in the table (`)`, a newline, `tok_eof`, anything that isn't one of my four operators), I return `-1`. That's not just "not found," it's a sentinel I chose so it always loses: every real precedence I hand out is 10 or higher, so wherever I ask "is there an operator here?" I get an unambiguous no.
+If `CurrentToken` isn't in the table (a newline, `)`,`tok_eof`, anything that isn't one of my four operators), I return `-1`. That's not just "not found," it's a sentinel I chose so it always loses: every real precedence I hand out is 10 or higher, so wherever I ask "is there an operator here?" I get an unambiguous no.
 
 ## Binary Expressions: Precedence Climbing
 
-In Chapter 2, I wrote `ParseExpression` as a loop that only ever looked for `+`. That doesn't survive operators with different precedence, so I split the work into two functions: `ParseBinaryOperatorRight` does the actual work, and `ParseExpression` just kicks it off.
+In [Chapter 2](chapter-02.md), I wrote `ParseExpression` as a loop that only ever looked for `+`. That doesn't work with operators of different precedence, so I split the work into two functions: `ParseBinaryOperatorRight` does the actual work, and `ParseExpression` just kicks it off.
 
 The idea: parse a primary, then look at what follows. If it's a binary operator at least as tight as whatever minimum I'm currently allowed to accept, I consume it and parse the next primary. If the operator *after that* is tighter still, I don't grab it myself, I hand off to a fresh call of `ParseBinaryOperatorRight` with a stricter minimum, letting that call claim the tighter operator's operands before handing control back to me.
 
@@ -125,18 +125,23 @@ ParseBinaryOperatorRight(int ExpressionPrecedence,
 }
 ```
 
-Let me trace `k < a + b * c + d`:
+Let me trace `k < a + b * c + d`. Three calls to `ParseBinaryOperatorRight` end up active at once, each with its own minimum and its own `Left`:
 
-1. Called with a minimum precedence of 0 and `Left = k`. Current operator is `<` (10).
-2. 10 ≥ 0: consume `<`. Parse `a` as `Right`. Next operator is `+` (20).
-3. 20 > 10: recurse: `ParseBinaryOperatorRight(11, a)`.
-4. Inside that call: current operator is `+` (20). 20 ≥ 11: consume `+`. Parse `b` as `Right`. Next operator is `*` (40).
-5. 40 > 20: recurse again: `ParseBinaryOperatorRight(21, b)`.
-6. Inside the deeper call: current operator is `*` (40). 40 ≥ 21: consume `*`. Parse `c`. Next operator is `+` (20). 20 < 21: stop, return `b * c`.
-7. Back in the `min = 11` call: `Right = b * c`. Build `a + (b * c)`. Loop again: next operator is `+` (20). 20 ≥ 11: consume `+`. Parse `d`. Nothing follows: return `(a + (b * c)) + d`.
-8. Back in the outermost call: `Right = (a + (b * c)) + d`. Build `k < ((a + (b * c)) + d)`. Nothing follows: return. Final tree: `k < ((a + (b * c)) + d)`.
+There are two separate checks happening throughout: whether an operator is *tighter than the one I just consumed* (decides whether to hand off to a deeper call), and whether an operator *meets this call's own minimum* (decides whether this call keeps going or returns). Same numbers, two different questions:
 
-In step 5, adding 1 to `TokenPrecedence` serves a specific purpose: once I've recursed into a tighter operator, it stops that recursive call from also swallowing an operator back at the *original* level. `a - b - c` doesn't actually exercise this, since both `-`s are equal precedence and the recursion never triggers for them at all. `a - b * c - d` does: the recursive call handling `b * c` gets a minimum of 21, not 20, so when it loops back and sees the second `-` at precedence 20, `20 < 21` correctly kicks control back to the outer frame instead of letting the inner call consume it too. Without the `+1`, that inner call would grab the second `-` as well, building `a - ((b * c) - d)` instead of `(a - (b * c)) - d`. Compiler writers call the correct grouping left-associativity, the same grouping I built in Chapter 2 for chains of `+`. That `+1` is the one detail responsible for it: I only let a recursive call claim an operator strictly tighter than the one that triggered it, so same-level operators always fall through to the *outer* loop, which is how I keep building leftward.
+| Call | This op | Next op | Decision |
+|---|---|---|---|
+| **Call A** (min=0) | `<` (10) | `+` (20) | 10 ≥ 0: consume, parse `a`. Next op 20 is tighter than 10 → hand off to call B (min=11) |
+| **Call B** (min=11) | `+` (20) | `*` (40) | 20 ≥ 11: consume, parse `b`. Next op 40 is tighter than 20 → hand off to call C (min=21) |
+| **Call C** (min=21) | `*` (40) | `+` (20) | 40 ≥ 21: consume, parse `c`. Next op 20 is not tighter than 40 → merge now: `Left = b * c` |
+| **Call C** (min=21) | `+` (20) | — | 20 doesn't meet call C's own min (21) → return `b * c` to call B |
+| **Call B** (min=11) | — | — | Received `Right = b * c` → merge: `Left = a + (b * c)` |
+| **Call B** (min=11) | `+` (20) | `EOF` (−1) | 20 ≥ 11: consume, parse `d`. Next op is `EOF`, not tighter than 20 → merge now: `Left = (a + (b * c)) + d` |
+| **Call B** (min=11) | `EOF` (−1) | — | −1 doesn't meet call B's own min (11) → return `(a + (b * c)) + d` to call A |
+| **Call A** (min=0) | — | — | Received `Right = (a + (b * c)) + d` → merge: `Left = k < ((a + (b * c)) + d)` |
+| **Call A** (min=0) | `EOF` (−1) | — | −1 doesn't meet call A's own min (0) → return final tree |
+
+Adding 1 to `TokenPrecedence` when I recurse (call B handing off to call C) stops that recursive call from also grabbing an operator at the *same* level as the one that triggered it. `a - b - c` doesn't exercise this, since equal-precedence operators never recurse in the first place; `a - b * c - d` does: the call handling `b * c` gets minimum 21, so when it sees the second `-` at precedence 20, `20 < 21` correctly kicks control back to the outer call instead of letting the inner one swallow it too, which would build `a - ((b * c) - d)` instead of `(a - (b * c)) - d`. Compiler writers call the correct grouping left-associativity, the same grouping I built in Chapter 2 for chains of `+`.
 
 With `ParseBinaryOperatorRight` doing the looping, `ParseExpression` simplifies to:
 

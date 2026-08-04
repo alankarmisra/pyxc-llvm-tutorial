@@ -3,7 +3,7 @@
 # CHECK-NOT: ready>
 
 # Tests: assignment to a var-declared local inside a statement block.
-# assignstmt = identifier "=" expression ;
+# assignstmt = name "=" expression ;
 # varstmt = "var" varbinding { "," varbinding } ;
 #
 # "var x = 1" declares x; "x = x + 2" assigns to it (IsDeclaredVar check passes).

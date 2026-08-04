@@ -5,8 +5,8 @@
 
 
 # Tests: a program with multiple top-level forms separated by blank lines.
-# program = [ eols ] [ top { eols top } ] [ eols ]
-# top     = definition | external | toplevelexpr
+# program = [ end-of-lines ] [ top { end-of-lines top } ] [ end-of-lines ]
+# top     = definition | external | top-level-expression
 
 extern def printd(x)
 

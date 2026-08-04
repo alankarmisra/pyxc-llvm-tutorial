@@ -3,6 +3,6 @@
 # RUN: grep -q "expected ')'" %t
 # RUN: grep -q "(1 + 2" %t
 
-# parenexpr: missing closing parenthesis
+# parenthesized-expression: missing closing parenthesis
 # tok_eol is seen where ')' is expected; source context shows the input line.
 (1 + 2

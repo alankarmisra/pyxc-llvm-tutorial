@@ -11,15 +11,15 @@ def main() -> int:
     ebnf = Path(sys.argv[1]).read_text()
     cpp = Path(sys.argv[2]).read_text()
 
-    m = re.search(r"builtinbinaryop\s*=\s*([^;]+);", ebnf)
+    m = re.search(r"builtin-binary-operator\s*=\s*([^;]+);", ebnf)
     if not m:
-        print("builtinbinaryop not found")
+        print("builtin-binary-operator not found")
         return 1
     ops = re.findall(r'"([+\-*/<>!=]+)"', m.group(1))
 
-    m2 = re.search(r"DefaultBinopPrecedence\s*=\s*\{(.*?)\};", cpp, re.S)
+    m2 = re.search(r"DefaultOperatorPrecedence\s*=\s*\{(.*?)\};", cpp, re.S)
     if not m2:
-        print("DefaultBinopPrecedence not found")
+        print("DefaultOperatorPrecedence not found")
         return 1
     ops_map = set(re.findall(r"\{\s*([^,\s]+)\s*,", m2.group(1)))
 
@@ -42,7 +42,7 @@ def main() -> int:
             missing.append(op)
 
     if missing:
-        print(f"Missing in DefaultBinopPrecedence: {missing}")
+        print(f"Missing in DefaultOperatorPrecedence: {missing}")
         return 1
     return 0
 

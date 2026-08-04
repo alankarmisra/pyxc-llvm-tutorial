@@ -4,7 +4,7 @@
 
 
 # Tests: definition body on the line after ':'.
-# definition = "def" function signature ":" [ eols ] expression
+# definition = "def" function signature ":" [ end-of-lines ] expression
 
 def inc(x):
 x + 1

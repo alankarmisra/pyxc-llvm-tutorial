@@ -25,7 +25,7 @@ I want this to print:
 
 pyxc will eventually have data types because I want it to compile down to binary with runtime efficiencies approaching C. But for now I'm skipping types and assuming *double* for both, function input and output, so in the code above, `x`, `y` and the return value of `add` will implicitly be *double*. 
 
-I'm also restricting a function to just a single expression, i.e. anything that *expresses*, computes down to, a value which is returned from the function. I will eventually support multi-statement functions, conditionals like `if`, `elif`, `else` and will need to introduce `return` statements to know what to return. 
+I'm also restricting a function to just a single **expression**, i.e. anything that *expresses*, computes down to, a value which is returned from the function. I will eventually support multi-statement functions, conditionals like `if`, `elif`, `else` and will introduce `return` statements to know what to return and when. 
 
 For now, I think this is a good enough scope for some initial experimentation.
 
@@ -46,9 +46,9 @@ def add(x,y):
     x + y    
 ```
 
-*I* know that `def` defines a function, `add` is the *function name*, `x` and `y` are *parameters*, and *comments* follow the *#* character. I have to represent this structure somehow in a way that allows me to analyze the syntax and grammar. 
+*I* know that `def` defines a function, `add` is the *function name*, `x` and `y` are *parameters*, and *comments* follow the *#* character. I need a way to represent this structure so I can check the program for correctness. 
 
-For analysis, I could just pass around the strings 'def', 'add', '(', 'x', ... but then I have to do string comparisons at each analysis stage. Comparing ['d', 'e', 'f'] with ['d', 'e', 'f'] is 3 character comparisons. This will add up over multiple strings being compared during analysis. Instead I'll use an enum to represent the different words I see. This way future comparisons are just one integer comparison. 
+For analysis, I could just pass around the strings "def", "add", "(", "x", ... but then I have to do string comparisons at each analysis stage. Comparing ['d', 'e', 'f'] with ['d', 'e', 'f'] is 3 character comparisons. This will add up over multiple strings being compared during analysis. Instead I'll use an enum to represent the different words I see. This way future comparisons are just one integer comparison. 
 
 ```cpp
 enum Token {
@@ -67,7 +67,7 @@ static string Name; // Filled in with the name just read
 
 When I read the name `foo`, I return `tok_name` and set `Name = "foo"`.
 
-One variable is enough because, whenever I later need the name, I read `Name` and make a copy of it before asking the lexer for another token. 
+One variable is enough because I always read `Name` and copy it out before asking the lexer for another token, the only thing that would overwrite it. 
 
 I'll do the same for numbers with `tok_number`. 
 
@@ -77,7 +77,7 @@ static double NumberValue;        // Filled in with the number read
 
 When I read `3.14`, I return `tok_number` and set `NumberValue = 3.14`.
 
-Since pyxc is Python-like, I also need to consider new lines. So I'll add a `tok_eol`. 
+Since pyxc is Python-like, I also need to consider new lines. So I'll add a `tok_eol` instead of ignoring newlines like I do with spaces. 
 
 And finally, I need to indicate that I've reached the end of file somehow, so I'll also add a `tok_eof`. 
 

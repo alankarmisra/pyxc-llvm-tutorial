@@ -5,7 +5,7 @@
 
 # Tests: for loop whose initial condition is false — the body never executes.
 # The for expression returns 0.0 when it makes zero iterations.
-# forexpr = "for" identifier "=" expression "," expression "," expression ":" [ eols ] expression
+# forexpr = "for" name "=" expression "," expression "," expression ":" [ end-of-lines ] expression
 
 def no_iters(x): for var i = 1, i < 1, 1: x
 

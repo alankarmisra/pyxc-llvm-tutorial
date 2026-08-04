@@ -3,7 +3,7 @@
 
 # Tests: the left-hand side of "=" in a simple statement must be a plain
 # variable name; a parenthesised expression is rejected.
-# ParseSimpleStmt calls Expr->getVariableName() after seeing "="; a
+# ParseSimpleStatement calls Expr->getVariableName() after seeing "="; a
 # parenthesised expression returns nullptr and triggers this error.
 # simplestmt = returnstmt | varstmt | assignstmt | expression ;
 

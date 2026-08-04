@@ -3,7 +3,7 @@
 # RUN: grep -q "Parsed a top-level expression." %t
 
 # program: multiple top-level items separated by single and multiple blank lines
-# also exercises eols = eol { eol }
+# also exercises end-of-lines = end-of-line { end-of-line }
 def foo(x):
   x + 1
 

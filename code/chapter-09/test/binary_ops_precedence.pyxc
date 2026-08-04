@@ -4,7 +4,7 @@
 
 
 # Tests: operator precedence (* > +) and left-associativity of -.
-# binoprhs = { binaryop primary }
+# binary-operator-right = { binary-operator primary }
 #
 # 2 + 3 * 4 = 2 + 12 = 14  (not (2+3)*4 = 20)
 # 10 - 2 - 1 = (10-2) - 1 = 7  (not 10 - (2-1) = 9, confirming left-assoc)

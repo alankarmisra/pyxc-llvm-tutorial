@@ -5,7 +5,7 @@
 
 # Tests: forstmt nested inside ifstmt block.
 # compoundstmt = ifstmt | forstmt ;
-# suite = simplestmt | compoundstmt | eols block ;
+# suite = simplestmt | compoundstmt | end-of-lines block ;
 # When n > 0, the if block runs the for loop. When n <= 0, nothing is printed.
 
 extern def printd(x: float64) -> float64

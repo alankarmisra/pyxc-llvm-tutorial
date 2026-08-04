@@ -5,7 +5,7 @@
 
 
 # Tests: user-defined unary operator definition and use in an expression.
-# decorateddef   = unarydecorator eols "def" unaryopprototype ":" ...
+# decorateddef   = unarydecorator end-of-lines "def" unaryopprototype ":" ...
 # unarydecorator = "@" "unary"
 # userdefunaryop = ? any opchar defined as a custom unary operator ?
 

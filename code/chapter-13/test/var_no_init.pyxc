@@ -3,7 +3,7 @@
 # CHECK: Evaluated to 0.000000
 
 # Tests: var without an initializer defaults to 0.0.
-# varbinding = identifier [ "=" expression ] ;
+# varbinding = name [ "=" expression ] ;
 
 def f():
     var x

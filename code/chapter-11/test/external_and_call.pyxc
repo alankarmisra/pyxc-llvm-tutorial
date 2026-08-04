@@ -4,9 +4,9 @@
 # CHECK: Evaluated to 0.000000
 
 
-# Tests: external declaration and callexpr with an argument.
+# Tests: external declaration and call-expression with an argument.
 # external = "extern" "def" function signature
-# callexpr  = identifier "(" expression ")"
+# call-expression  = name "(" expression ")"
 #
 # printd(1.0) writes "1.000000\n" to stderr and returns 0.0,
 # so the top-level expression evaluates to 0.000000.

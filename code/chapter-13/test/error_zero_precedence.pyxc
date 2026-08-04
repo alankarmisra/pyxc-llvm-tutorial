@@ -4,7 +4,7 @@
 
 # Tests: a precedence of zero in @binary(...) is rejected.
 # Valid precedences are >= 1; 0 is the sentinel returned on parse failure.
-# ParseBinaryDecorator checks NumVal < 1.
+# ParseBinaryDecorator checks NumberValue < 1.
 
 @binary(0)
 def %(x, y): return x - y

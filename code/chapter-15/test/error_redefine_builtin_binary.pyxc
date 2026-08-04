@@ -3,7 +3,7 @@
 
 
 # Tests: attempting to redefine a built-in binary operator is rejected.
-# ParseBinaryOpPrototype rejects any opchar already in BinopPrecedence.
+# ParseBinaryOperatorSignature rejects any opchar already in OperatorPrecedence.
 
 @binary(5)
 def +(x, y): return x + y

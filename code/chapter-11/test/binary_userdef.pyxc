@@ -5,7 +5,7 @@
 
 
 # Tests: user-defined binary operator definition and use in an expression.
-# decorateddef    = binarydecorator eols "def" binaryopprototype ":" ...
+# decorateddef    = binarydecorator end-of-lines "def" binaryopprototype ":" ...
 # binarydecorator = "@" "binary" "(" integer ")"
 # userdefbinaryop = ? any opchar defined as a custom binary operator ?
 

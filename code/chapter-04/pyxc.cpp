@@ -27,13 +27,13 @@ enum Token {
   tok_def = -4,
 
   // primary
-  tok_identifier = -5,
+  tok_name = -5,
   tok_number = -6
 };
 
-static string IdentifierStr; // Filled in if tok_identifier
-static double NumVal;        // Filled in if tok_number
-static string NumLiteralStr; // Filled in if tok_number, used in error messages
+static string Name; // Filled in if tok_name
+static double NumberValue;        // Filled in if tok_number
+static string NumberLiteral; // Filled in if tok_number, used in error messages
 
 // Keywords like `def`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
@@ -46,7 +46,7 @@ static map<int, string> TokenNames = [] {
   static map<int, string> Names = {
       {tok_eof, "end of input"}, {tok_eol, "newline"},
       {tok_error, "error"},      {tok_def, "'def'"},
-      {tok_identifier, "identifier"}, {tok_number, "number"},
+      {tok_name, "name"}, {tok_number, "number"},
   };
 
   // Single character tokens.
@@ -77,7 +77,7 @@ static map<int, string> TokenNames = [] {
 //   LexLoc  - where the character-read head (advance()) currently is.
 //             Updated on every advance() call. After a '\n', Line increments
 //             and Col resets to 0 so the next character will be Col 1.
-//   CurLoc  - snapshotted at the start of each token in gettok(), before
+//   CurLoc  - snapshotted at the start of each token in getToken(), before
 //             consuming any of the token's characters. This is the position
 //             the parser and diagnostics infrastructure see.
 struct SourceLocation {
@@ -143,7 +143,7 @@ static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation L
 /// advance - Read one character from stdin, update LexLoc and SourceManager.
 ///
 /// This is the single point through which all character consumption flows.
-/// Every token branch in gettok() calls advance() rather than getchar()
+/// Every token branch in getToken() calls advance() rather than getchar()
 /// directly, so LexLoc and the source buffer are always in sync.
 ///
 /// Windows line endings (\r\n) are coalesced to a single \n so the rest of
@@ -172,7 +172,7 @@ static int advance() {
   return LastChar;
 }
 
-/// gettok - Return the next token from standard input.
+/// getToken - Return the next token from standard input.
 ///
 /// LastChar holds the last character read by advance() but not yet consumed
 /// by a token. It is initialised to ' ' so the first call skips straight to
@@ -189,7 +189,7 @@ static int advance() {
 /// The comment path ('#' branch) re-snapshots CurLoc just before returning
 /// tok_eol because it consumes many characters (the whole comment) after the
 /// initial snapshot, leaving LexLoc well past the '#' position.
-static int gettok() {
+static int getToken() {
   static int LastChar = ' ';
 
   // Skip horizontal whitespace. Stop at '\n' — that becomes tok_eol.
@@ -205,12 +205,12 @@ static int gettok() {
   }
 
   if (isalpha(LastChar) || LastChar == '_') {
-    IdentifierStr = LastChar;
+    Name = LastChar;
     while (isalnum((LastChar = advance())) || LastChar == '_')
-      IdentifierStr += LastChar;
+      Name += LastChar;
 
-    auto It = Keywords.find(IdentifierStr);
-    return (It == Keywords.end()) ? tok_identifier : It->second;
+    auto It = Keywords.find(Name);
+    return (It == Keywords.end()) ? tok_name : It->second;
   }
 
   if (isdigit(LastChar) || LastChar == '.') {
@@ -220,9 +220,9 @@ static int gettok() {
       LastChar = advance();
     } while (isdigit(LastChar) || LastChar == '.');
 
-    NumLiteralStr = NumStr;
+    NumberLiteral = NumStr;
     char *End = nullptr;
-    NumVal = strtod(NumStr.c_str(), &End);
+    NumberValue = strtod(NumStr.c_str(), &End);
     if (!End || *End != '\0') {
       LogInvalidNumberLiteralAtLoc(NumStr, CurLoc);
       return tok_error;
@@ -284,15 +284,15 @@ static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
 }
 
 /// FormatTokenForMessage - Return a human-readable description of Tok for use
-/// in error messages. Identifier and number tokens include their actual text
-/// (e.g. "identifier 'foo'", "number '3.14'") since the name alone is not
+/// in error messages. Name and number tokens include their actual text
+/// (e.g. "name 'foo'", "number '3.14'") since the name alone is not
 /// enough to diagnose the problem. Everything else uses the static TokenNames
 /// entry.
 static string FormatTokenForMessage(int Tok) {
-  if (Tok == tok_identifier)
-    return "identifier '" + IdentifierStr + "'";
+  if (Tok == tok_name)
+    return "name '" + Name + "'";
   if (Tok == tok_number)
-    return "number '" + NumLiteralStr + "'";
+    return "number '" + NumberLiteral + "'";
 
   auto It = TokenNames.find(Tok);
   if (It != TokenNames.end())
@@ -329,69 +329,69 @@ static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation L
 
 namespace {
 
-/// ExprAST - Base class for all expression nodes.
-class ExprAST {
+/// ExpressionNode - Base class for all expression nodes.
+class ExpressionNode {
 public:
-  virtual ~ExprAST() = default;
+  virtual ~ExpressionNode() = default;
 };
 
-/// NumberExprAST - Expression class for numeric literals like "1.0".
-class NumberExprAST : public ExprAST {
-  double Val;
+/// NumberExpressionNode - Expression class for numeric literals like "1.0".
+class NumberExpressionNode : public ExpressionNode {
+  double Value;
 
 public:
-  NumberExprAST(double Val) : Val(Val) {}
+  NumberExpressionNode(double Value) : Value(Value) {}
 };
 
-/// NameExprAST - Expression class for referencing a variable, like "a".
-class NameExprAST : public ExprAST {
+/// NameExpressionNode - Expression class for referencing a variable, like "a".
+class NameExpressionNode : public ExpressionNode {
   string Name;
 
 public:
-  NameExprAST(const string &Name) : Name(Name) {}
+  NameExpressionNode(const string &Name) : Name(Name) {}
 };
 
-/// BinaryExprAST - Expression class for a binary operator.
-class BinaryExprAST : public ExprAST {
-  char Op;
-  unique_ptr<ExprAST> LHS, RHS;
+/// BinaryExpressionNode - Expression class for a binary operator.
+class BinaryExpressionNode : public ExpressionNode {
+  char Operator;
+  unique_ptr<ExpressionNode> Left, Right;
 
 public:
-  BinaryExprAST(char Op, unique_ptr<ExprAST> LHS, unique_ptr<ExprAST> RHS)
-      : Op(Op), LHS(std::move(LHS)), RHS(std::move(RHS)) {}
+  BinaryExpressionNode(char Operator, unique_ptr<ExpressionNode> Left, unique_ptr<ExpressionNode> Right)
+      : Operator(Operator), Left(std::move(Left)), Right(std::move(Right)) {}
 };
 
-/// CallExprAST - Expression class for function calls.
-class CallExprAST : public ExprAST {
+/// CallExpressionNode - Expression class for function calls.
+class CallExpressionNode : public ExpressionNode {
   string Callee;
-  vector<unique_ptr<ExprAST>> Args;
+  vector<unique_ptr<ExpressionNode>> Arguments;
 
 public:
-  CallExprAST(const string &Callee, vector<unique_ptr<ExprAST>> Args)
-      : Callee(Callee), Args(std::move(Args)) {}
+  CallExpressionNode(const string &Callee, vector<unique_ptr<ExpressionNode>> Arguments)
+      : Callee(Callee), Arguments(std::move(Arguments)) {}
 };
 
-/// FunctionSignatureAST - This class represents the "function signature" for a function,
+/// FunctionSignatureNode - This class represents the "function signature" for a function,
 /// which captures its name, and its argument names (thus implicitly the number
 /// of arguments the function takes).
-class FunctionSignatureAST {
+class FunctionSignatureNode {
   string Name;
-  vector<string> Args;
+  vector<string> Parameters;
 
 public:
-  FunctionSignatureAST(const string &Name, vector<string> Args)
-      : Name(Name), Args(std::move(Args)) {}
+  FunctionSignatureNode(const string &Name, vector<string> Parameters)
+      : Name(Name), Parameters(std::move(Parameters)) {}
 
   const string &getName() const { return Name; }
 };
 
-/// FunctionDefAST - This class represents a function definition itself.
-class FunctionDefAST {
-  unique_ptr<FunctionSignatureAST> Signature;
-  unique_ptr<ExprAST> Body;
+/// FunctionDefinitionNode - This class represents a function function-definition itself.
+class FunctionDefinitionNode {
+  unique_ptr<FunctionSignatureNode> Signature;
+  unique_ptr<ExpressionNode> Body;
 
 public:
-  FunctionDefAST(unique_ptr<FunctionSignatureAST> Signature, unique_ptr<ExprAST> Body)
+  FunctionDefinitionNode(unique_ptr<FunctionSignatureNode> Signature, unique_ptr<ExpressionNode> Body)
       : Signature(std::move(Signature)), Body(std::move(Body)) {}
 };
 
@@ -401,110 +401,110 @@ public:
 // Parser
 //===----------------------------------------===//
 
-/// CurTok is the current token the parser is looking at.
-/// getNextToken reads the next token from the lexer and stores it in CurTok.
-/// Every parse function assumes CurTok is already loaded before it is called,
-/// and leaves CurTok pointing at the first token it did not consume.
-static int CurTok;
-static int getNextToken() { return CurTok = gettok(); }
+/// CurrentToken is the current token the parser is looking at.
+/// getNextToken reads the next token from the lexer and stores it in CurrentToken.
+/// Every parse function assumes CurrentToken is already loaded before it is called,
+/// and leaves CurrentToken pointing at the first token it did not consume.
+static int CurrentToken;
+static int getNextToken() { return CurrentToken = getToken(); }
 
 /// consumeNewlines - Consume all consecutive tok_eol tokens.
 ///
 /// Called after eating a structural token (e.g. ':') to allow the body or
 /// next clause to appear on the following line.
 static void consumeNewlines() {
-  while (CurTok == tok_eol)
+  while (CurrentToken == tok_eol)
     getNextToken();
 }
 
-/// BinopPrecedence - Maps each binary operator character to its precedence.
+/// OperatorPrecedence - Maps each binary operator character to its precedence.
 /// Higher numbers bind more tightly: '*' (40) > '+'/'-' (20) > '<' (10).
-/// Operators not in this map return -1 from GetTokPrecedence(), which tells
-/// ParseBinOpRHS to stop consuming operators and return what it has so far.
-static map<char, int> BinopPrecedence;
+/// Operators not in this map return -1 from GetTokenPrecedence(), which tells
+/// ParseBinaryOperatorRight to stop consuming operators and return what it has so far.
+static map<char, int> OperatorPrecedence;
 
-/// GetTokPrecedence - Returns the precedence of CurTok if it is a known binary
+/// GetTokenPrecedence - Returns the precedence of CurrentToken if it is a known binary
 /// operator, or -1 if it is not. Non-ASCII tokens (our named token enums) are
 /// rejected immediately since they can never be binary operators here.
-static int GetTokPrecedence() {
-  if (!isascii(CurTok))
+static int GetTokenPrecedence() {
+  if (!isascii(CurrentToken))
     return -1;
 
-  auto It = BinopPrecedence.find(CurTok);
-  if (It == BinopPrecedence.end() || It->second <= 0)
+  auto It = OperatorPrecedence.find(CurrentToken);
+  if (It == OperatorPrecedence.end() || It->second <= 0)
     return -1;
   return It->second;
 }
 
 /// LogError* - Error reporting helpers. Each returns nullptr for its respective
 /// type so parse functions can write: return LogError("message");
-unique_ptr<ExprAST> LogError(const char *Str) {
-  SourceLocation Anchor = GetDiagnosticAnchorLoc(CurLoc, CurTok);
+unique_ptr<ExpressionNode> LogError(const char *Str) {
+  SourceLocation Anchor = GetDiagnosticAnchorLoc(CurLoc, CurrentToken);
   fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
           Str);
   PrintErrorSourceContext(Anchor);
   return nullptr;
 }
 
-unique_ptr<FunctionSignatureAST> LogErrorSignature(const char *Str) {
+unique_ptr<FunctionSignatureNode> LogErrorSignature(const char *Str) {
   LogError(Str);
   return nullptr;
 }
 
-unique_ptr<FunctionDefAST> LogErrorF(const char *Str) {
+unique_ptr<FunctionDefinitionNode> LogErrorF(const char *Str) {
   LogError(Str);
   return nullptr;
 }
 
-static unique_ptr<ExprAST> ParseExpression();
+static unique_ptr<ExpressionNode> ParseExpression();
 
-/// numberexpr
+/// number-expression
 ///   = number ;
-static unique_ptr<ExprAST> ParseNumberExpr() {
-  auto Result = make_unique<NumberExprAST>(NumVal);
+static unique_ptr<ExpressionNode> ParseNumberExpression() {
+  auto Result = make_unique<NumberExpressionNode>(NumberValue);
   getNextToken(); // consume the number
   return std::move(Result);
 }
 
-/// parenexpr
+/// parenthesized-expression
 ///   = "(" expression ")" ;
-static unique_ptr<ExprAST> ParseParenExpr() {
+static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
   getNextToken(); // eat (.
   auto V = ParseExpression();
   if (!V)
     return nullptr;
 
-  if (CurTok != ')')
+  if (CurrentToken != ')')
     return LogError("expected ')'");
   getNextToken(); // eat ).
   return V;
 }
 
-/// identifierexpr
-///   = identifier
-///   | identifier "("[expression{"," expression}]")" ;
-static unique_ptr<ExprAST> ParseIdentifierExpr() {
-  string IdName = IdentifierStr;
+/// name-expression
+///   = name
+///   | name "("[expression{"," expression}]")" ;
+static unique_ptr<ExpressionNode> ParseNameExpression() {
+  string ParsedName = Name;
 
-  getNextToken(); // eat identifier.
+  getNextToken(); // eat name.
 
-  if (CurTok != '(') // Simple variable ref.
-    return make_unique<NameExprAST>(IdName);
+  if (CurrentToken != '(') // Simple variable ref.
+    return make_unique<NameExpressionNode>(ParsedName);
 
   // Call.
   getNextToken(); // eat (
-  vector<unique_ptr<ExprAST>> Args;
-  if (CurTok != ')') {
+  vector<unique_ptr<ExpressionNode>> Arguments;
+  if (CurrentToken != ')') {
     while (true) {
       if (auto Arg = ParseExpression())
-        Args.push_back(std::move(Arg));
+        Arguments.push_back(std::move(Arg));
       else
         return nullptr;
 
-      if (CurTok == ')')
+      if (CurrentToken == ')')
         break;
 
-      if (CurTok != ',')
+      if (CurrentToken != ',')
         return LogError("Expected ')' or ',' in argument list");
       getNextToken();
     }
@@ -513,117 +513,117 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
   // Eat the ')'.
   getNextToken();
 
-  return make_unique<CallExprAST>(IdName, std::move(Args));
+  return make_unique<CallExpressionNode>(ParsedName, std::move(Arguments));
 }
 
 /// primary
-///   = identifierexpr
-///   | numberexpr
-///   | parenexpr ;
-static unique_ptr<ExprAST> ParsePrimary() {
-  switch (CurTok) {
+///   = name-expression
+///   | number-expression
+///   | parenthesized-expression ;
+static unique_ptr<ExpressionNode> ParsePrimary() {
+  switch (CurrentToken) {
   default:
     return LogError("unknown token when expecting an expression");
-  case tok_identifier:
-    return ParseIdentifierExpr();
+  case tok_name:
+    return ParseNameExpression();
   case tok_number:
-    return ParseNumberExpr();
+    return ParseNumberExpression();
   case '(':
-    return ParseParenExpr();
+    return ParseParenthesizedExpression();
   }
 }
 
-/// binoprhs
-///   = { binaryop primary } ;
-static unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
-                                         unique_ptr<ExprAST> LHS) {
-  // If this is a binop, find its precedence.
+/// binary-operator-right
+///   = { binary-operator primary } ;
+static unique_ptr<ExpressionNode> ParseBinaryOperatorRight(int ExpressionPrecedence,
+                                         unique_ptr<ExpressionNode> Left) {
+  // If this is a binary operator, find its precedence.
   while (true) {
-    int TokPrec = GetTokPrecedence();
+    int TokenPrecedence = GetTokenPrecedence();
 
-    // If this is a binop that binds at least as tightly as the current binop,
+    // If this is a binary operator that binds at least as tightly as the current binary operator,
     // consume it, otherwise we are done.
-    if (TokPrec < ExprPrec)
-      return LHS;
+    if (TokenPrecedence < ExpressionPrecedence)
+      return Left;
 
-    // Okay, we know this is a binop.
-    int BinOp = CurTok;
-    getNextToken(); // eat binop
+    // Okay, we know this is a binary operator.
+    int Operator = CurrentToken;
+    getNextToken(); // eat binary operator
 
     // Parse the primary expression after the binary operator.
-    auto RHS = ParsePrimary();
-    if (!RHS)
+    auto Right = ParsePrimary();
+    if (!Right)
       return nullptr;
 
-    // If BinOp binds less tightly with RHS than the operator after RHS, let
-    // the pending operator take RHS as its LHS.
-    int NextPrec = GetTokPrecedence();
-    if (TokPrec < NextPrec) {
-      RHS = ParseBinOpRHS(TokPrec + 1, std::move(RHS));
-      if (!RHS)
+    // If Operator binds less tightly with Right than the operator after Right, let
+    // the pending operator take Right as its Left.
+    int NextTokenPrecedence = GetTokenPrecedence();
+    if (TokenPrecedence < NextTokenPrecedence) {
+      Right = ParseBinaryOperatorRight(TokenPrecedence + 1, std::move(Right));
+      if (!Right)
         return nullptr;
     }
 
-    // Merge LHS/RHS.
-    LHS = make_unique<BinaryExprAST>(BinOp, std::move(LHS), std::move(RHS));
+    // Merge Left/Right.
+    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left), std::move(Right));
   }
 }
 
 /// expression
-///   = primary binoprhs ;
-static unique_ptr<ExprAST> ParseExpression() {
-  auto LHS = ParsePrimary();
-  if (!LHS)
+///   = primary binary-operator-right ;
+static unique_ptr<ExpressionNode> ParseExpression() {
+  auto Left = ParsePrimary();
+  if (!Left)
     return nullptr;
 
-  return ParseBinOpRHS(0, std::move(LHS));
+  return ParseBinaryOperatorRight(0, std::move(Left));
 }
 
-/// functionsignature
-///   = identifier "(" [identifier {"," identifier}] ")" ;
-static unique_ptr<FunctionSignatureAST> ParseFunctionSignature() {
-  if (CurTok != tok_identifier)
+/// function-signature
+///   = name "(" [name {"," name}] ")" ;
+static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
+  if (CurrentToken != tok_name)
     return LogErrorSignature("Expected function name in function signature");
 
-  string FnName = IdentifierStr;
+  string FnName = Name;
   getNextToken(); // eat function name
 
-  if (CurTok != '(')
+  if (CurrentToken != '(')
     return LogErrorSignature("Expected '(' in function signature");
 
   // Parse argument names. The loop calls getNextToken() at the top to advance
   // past '(' on the first iteration, and past ',' on subsequent ones.
-  // Inside the body we call getNextToken() again to move past the identifier
+  // Inside the body we call getNextToken() again to move past the name
   // we just stored, then check whether ')' or ',' follows.
-  vector<string> ArgNames;
-  while (getNextToken() == tok_identifier) {
-    ArgNames.push_back(IdentifierStr);
+  vector<string> ParameterNames;
+  while (getNextToken() == tok_name) {
+    ParameterNames.push_back(Name);
 
-    if (getNextToken() == ')') // eat identifier, check what follows
+    if (getNextToken() == ')') // eat name, check what follows
       break;
 
-    if (CurTok != ',')
+    if (CurrentToken != ',')
       return LogErrorSignature("Expected ')' or ',' in parameter list");
     // loop continues: getNextToken() at the top eats the ','
   }
 
-  if (CurTok != ')')
+  if (CurrentToken != ')')
     return LogErrorSignature("Expected ')' in function signature");
 
   getNextToken(); // eat ')'
 
-  return make_unique<FunctionSignatureAST>(FnName, std::move(ArgNames));
+  return make_unique<FunctionSignatureNode>(FnName, std::move(ParameterNames));
 }
 
-/// definition
+/// function-definition
 ///   = "def" function signature ":" ["newline"] expression ;
-static unique_ptr<FunctionDefAST> ParseFunctionDef() {
+static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
   getNextToken(); // eat 'def'
   auto Signature = ParseFunctionSignature();
   if (!Signature)
     return nullptr;
 
-  if (CurTok != ':')
+  if (CurrentToken != ':')
     return LogErrorF("Expected ':' in function definition");
   getNextToken(); // eat ':'
 
@@ -633,19 +633,19 @@ static unique_ptr<FunctionDefAST> ParseFunctionDef() {
   consumeNewlines();
 
   if (auto E = ParseExpression())
-    return make_unique<FunctionDefAST>(std::move(Signature), std::move(E));
+    return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(E));
   return nullptr;
 }
 
-/// toplevelexpr
+/// top-level-expression
 ///   = expression
 /// A top-level expression (e.g. "1 + 2") is wrapped in an anonymous function
-/// so it fits the same FunctionDefAST shape as everything else. When we add JIT
+/// so it fits the same FunctionDefinitionNode shape as everything else. When we add JIT
 /// execution later, we'll look up "__anon_expr" and call it to get the result.
-static unique_ptr<FunctionDefAST> ParseTopLevelExpr() {
+static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
   if (auto E = ParseExpression()) {
-    auto Signature = make_unique<FunctionSignatureAST>("__anon_expr", vector<string>());
-    return make_unique<FunctionDefAST>(std::move(Signature), std::move(E));
+    auto Signature = make_unique<FunctionSignatureNode>("__anon_expr", vector<string>());
+    return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(E));
   }
   return nullptr;
 }
@@ -660,20 +660,20 @@ static unique_ptr<FunctionDefAST> ParseTopLevelExpr() {
 /// unexpected trailing token, ensuring the REPL always returns to a known
 /// state before printing the next prompt.
 ///
-/// HandleFunctionDef/HandleTopLevelExpression - Called by MainLoop
+/// HandleFunctionDefinition/HandleTopLevelExpression - Called by MainLoop
 /// when it sees the appropriate leading token. On success, print a
 /// confirmation. On failure or unexpected trailing tokens, call
 /// SynchronizeToLineBoundary() to discard the rest of the input line.
 
 static void SynchronizeToLineBoundary() {
-  while (CurTok != tok_eol && CurTok != tok_eof)
+  while (CurrentToken != tok_eol && CurrentToken != tok_eof)
     getNextToken();
 }
 
-static void HandleFunctionDef() {
-  if (ParseFunctionDef()) {
-    if (CurTok != tok_eol && CurTok != tok_eof) {
-      LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+static void HandleFunctionDefinition() {
+  if (ParseFunctionDefinition()) {
+    if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
+      LogError(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
       SynchronizeToLineBoundary();
       return;
     }
@@ -684,9 +684,9 @@ static void HandleFunctionDef() {
 }
 
 static void HandleTopLevelExpression() {
-  if (ParseTopLevelExpr()) {
-    if (CurTok != tok_eol && CurTok != tok_eof) {
-      LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+  if (ParseTopLevelExpression()) {
+    if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
+      LogError(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
       SynchronizeToLineBoundary();
       return;
     }
@@ -698,31 +698,31 @@ static void HandleTopLevelExpression() {
 
 /// MainLoop - Dispatch loop for the REPL.
 ///
-/// grammar: top = { definition | expression | newline }
+/// grammar: top = { function-definition | expression | newline }
 ///
-/// CurTok is primed before MainLoop() is called (see main()). After each
+/// CurrentToken is primed before MainLoop() is called (see main()). After each
 /// successful parse the handler prints a confirmation; after a failed parse it
-/// skips one token. Either way we come back here and look at the new CurTok.
+/// skips one token. Either way we come back here and look at the new CurrentToken.
 static void MainLoop() {
   while (true) {
-    if (CurTok == tok_eof)
+    if (CurrentToken == tok_eof)
       return;
 
     // A bare newline: just print a fresh prompt and read the next token.
-    if (CurTok == tok_eol) {
+    if (CurrentToken == tok_eol) {
       fprintf(stderr, "ready> ");
       getNextToken();
       continue;
     }
 
-    if (CurTok == tok_error) {
+    if (CurrentToken == tok_error) {
       SynchronizeToLineBoundary();
       continue;
     }
 
-    switch (CurTok) {
+    switch (CurrentToken) {
     case tok_def:
-      HandleFunctionDef();
+      HandleFunctionDefinition();
       break;
     default:
       HandleTopLevelExpression();
@@ -737,13 +737,13 @@ static void MainLoop() {
 
 int main() {
   // Register binary operators and their precedence (higher = tighter binding).
-  BinopPrecedence['<'] = 10;
-  BinopPrecedence['+'] = 20;
-  BinopPrecedence['-'] = 20;
-  BinopPrecedence['*'] = 40;
+  OperatorPrecedence['<'] = 10;
+  OperatorPrecedence['+'] = 20;
+  OperatorPrecedence['-'] = 20;
+  OperatorPrecedence['*'] = 40;
 
   // Print the first prompt and load the first token before entering the loop.
-  // Every parse function expects CurTok to already be loaded when it is called.
+  // Every parse function expects CurrentToken to already be loaded when it is called.
   fprintf(stderr, "ready> ");
   getNextToken();
 

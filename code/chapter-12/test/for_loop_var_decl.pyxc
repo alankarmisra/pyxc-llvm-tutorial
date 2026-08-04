@@ -6,7 +6,7 @@
 # CHECK: 3.000000
 
 # Tests: for loop allows optional 'var' before the loop variable.
-# forstmt = "for" [ "var" ] identifier "=" expression "," expression "," expression ":" suite
+# forstmt = "for" [ "var" ] name "=" expression "," expression "," expression ":" suite
 
 extern def printd(x)
 

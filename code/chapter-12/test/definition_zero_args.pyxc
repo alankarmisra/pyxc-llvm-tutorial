@@ -4,7 +4,7 @@
 
 
 # Tests: definition with a zero-argument function signature.
-# function signature = identifier "(" ")"
+# function signature = name "(" ")"
 
 def answer(): return 42.0
 

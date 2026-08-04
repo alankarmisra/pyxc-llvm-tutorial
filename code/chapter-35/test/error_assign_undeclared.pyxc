@@ -3,7 +3,7 @@
 
 # Tests: assigning to an undeclared variable is an error.
 # assignstmt requires the target to already exist as a mutable local (via var).
-# assignstmt = identifier "=" expression ;
+# assignstmt = name "=" expression ;
 
 def f() -> float64:
     x = 1

@@ -3,5 +3,5 @@
 # RUN: grep -q "Expected function name in function signature" %t
 # RUN: grep -q "def 1" %t
 
-# function signature: first token after 'def' is not an identifier
+# function signature: first token after 'def' is not an name
 def 1(x): x

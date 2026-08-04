@@ -59,13 +59,13 @@ enum Token {
   tok_extern = -5,
 
   // primary
-  tok_identifier = -6,
+  tok_name = -6,
   tok_number = -7,
 };
 
-static string IdentifierStr; // Filled in if tok_identifier
-static double NumVal;        // Filled in if tok_number
-static string NumLiteralStr; // Filled in if tok_number
+static string Name; // Filled in if tok_name
+static double NumberValue;        // Filled in if tok_number
+static string NumberLiteral; // Filled in if tok_number
 
 // Keywords like `def` and `extern`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
@@ -79,7 +79,7 @@ static map<int, string> TokenNames = [] {
   static map<int, string> Names = {
       {tok_eof, "end of input"}, {tok_eol, "newline"},
       {tok_error, "error"},      {tok_def, "'def'"},
-      {tok_extern, "'extern'"},  {tok_identifier, "identifier"},
+      {tok_extern, "'extern'"},  {tok_name, "name"},
       {tok_number, "number"}};
 
   // Single character tokens.
@@ -110,7 +110,7 @@ static map<int, string> TokenNames = [] {
 ///   LexLoc  - where the character-read head (advance()) currently is.
 ///             Updated on every advance() call. After a '\n', Line increments
 ///             and Col resets to 0 so the next character will be Col 1.
-///   CurLoc  - snapshotted at the start of each token in gettok(), before
+///   CurLoc  - snapshotted at the start of each token in getToken(), before
 ///             consuming any of the token's characters. This is the position
 ///             the parser and diagnostics see.
 struct SourceLocation {
@@ -187,7 +187,7 @@ static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation L
 /// advance - Read one character from stdin, update LexLoc and SourceManager.
 ///
 /// This is the single point through which all character consumption flows.
-/// Every token branch in gettok() calls advance() rather than getchar()
+/// Every token branch in getToken() calls advance() rather than getchar()
 /// directly, so LexLoc and the source buffer are always in sync.
 ///
 /// Windows line endings (\r\n) are coalesced to a single \n
@@ -217,7 +217,7 @@ static int advance() {
   return LastChar;
 }
 
-/// gettok - Return the next token from standard input.
+/// getToken - Return the next token from standard input.
 ///
 /// LastChar holds the last character read by advance() but not yet consumed
 /// by a token. It is initialised to ' ' so the first call skips straight to
@@ -234,7 +234,7 @@ static int advance() {
 /// The comment path ('#' branch) re-snapshots CurLoc just before returning
 /// tok_eol because it consumes many characters (the whole comment) after the
 /// initial snapshot, leaving LexLoc well past the '#' position.
-static int gettok() {
+static int getToken() {
   static int LastChar = ' ';
 
   // Skip horizontal whitespace. Stop at '\n' — that becomes tok_eol.
@@ -254,12 +254,12 @@ static int gettok() {
   }
 
   if (isalpha(LastChar) || LastChar == '_') {
-    IdentifierStr = LastChar;
+    Name = LastChar;
     while (isalnum((LastChar = advance())) || LastChar == '_')
-      IdentifierStr += LastChar;
+      Name += LastChar;
 
-    auto It = Keywords.find(IdentifierStr);
-    return (It == Keywords.end()) ? tok_identifier : It->second;
+    auto It = Keywords.find(Name);
+    return (It == Keywords.end()) ? tok_name : It->second;
   }
 
   if (isdigit(LastChar) || LastChar == '.') {
@@ -269,9 +269,9 @@ static int gettok() {
       LastChar = advance();
     } while (isdigit(LastChar) || LastChar == '.');
 
-    NumLiteralStr = NumStr;
+    NumberLiteral = NumStr;
     char *End = nullptr;
-    NumVal = strtod(NumStr.c_str(), &End);
+    NumberValue = strtod(NumStr.c_str(), &End);
     if (End == NumStr.c_str() /* no conversion */
         || *End != '\0' /* trailing unparsed characters */) {
       LogInvalidNumberLiteralAtLoc(NumStr, CurLoc);
@@ -303,7 +303,7 @@ static int gettok() {
   // Single character token
   int ThisChar = LastChar;
 
-  // Position the lexer at the next character so the next gettok() starts there.
+  // Position the lexer at the next character so the next getToken() starts there.
   LastChar = advance();
 
   // Return ThisChar.
@@ -340,15 +340,15 @@ static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
 }
 
 /// FormatTokenForMessage - Return a human-readable description of Tok for use
-/// in error messages. Identifier and number tokens include their actual text
-/// (e.g. "identifier 'foo'", "number '3.14'") since the name alone is not
+/// in error messages. Name and number tokens include their actual text
+/// (e.g. "name 'foo'", "number '3.14'") since the name alone is not
 /// enough to diagnose the problem. Everything else uses the static TokenNames
 /// entry.
 static string FormatTokenForMessage(int Tok) {
-  if (Tok == tok_identifier)
-    return "identifier '" + IdentifierStr + "'";
+  if (Tok == tok_name)
+    return "name '" + Name + "'";
   if (Tok == tok_number)
-    return "number '" + NumLiteralStr + "'";
+    return "number '" + NumberLiteral + "'";
 
   auto It = TokenNames.find(Tok);
   if (It != TokenNames.end())
@@ -381,78 +381,78 @@ static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation L
 //===----------------------------------------===//
 namespace {
 
-/// ExprAST - Base class for all expression nodes.
-class ExprAST {
+/// ExpressionNode - Base class for all expression nodes.
+class ExpressionNode {
 public:
-  virtual ~ExprAST() = default;
+  virtual ~ExpressionNode() = default;
   virtual Value *codegen() = 0;
 };
 
-/// NumberExprAST - Expression class for numeric literals like "1.0".
-class NumberExprAST : public ExprAST {
-  double Val;
+/// NumberExpressionNode - Expression class for numeric literals like "1.0".
+class NumberExpressionNode : public ExpressionNode {
+  double Value;
 
 public:
-  NumberExprAST(double Val) : Val(Val) {}
-  Value *codegen() override;
+  NumberExpressionNode(double Value) : Value(Value) {}
+  llvm::Value *codegen() override;
 };
 
-/// NameExprAST - Expression class for referencing a variable, like "a".
-class NameExprAST : public ExprAST {
+/// NameExpressionNode - Expression class for referencing a variable, like "a".
+class NameExpressionNode : public ExpressionNode {
   string Name;
 
 public:
-  NameExprAST(const string &Name) : Name(Name) {}
+  NameExpressionNode(const string &Name) : Name(Name) {}
   Value *codegen() override;
 };
 
-/// BinaryExprAST - Expression class for a binary operator.
-/// Op is stored as an int token code. In chapter 7 all binary operators are
+/// BinaryExpressionNode - Expression class for a binary operator.
+/// Operator is stored as an int token code. In chapter 7 all binary operators are
 /// single-character ASCII tokens ('+', '-', '*').
-class BinaryExprAST : public ExprAST {
-  char Op;
-  unique_ptr<ExprAST> LHS, RHS;
+class BinaryExpressionNode : public ExpressionNode {
+  char Operator;
+  unique_ptr<ExpressionNode> Left, Right;
 
 public:
-  BinaryExprAST(int Op, unique_ptr<ExprAST> LHS, unique_ptr<ExprAST> RHS)
-      : Op(Op), LHS(std::move(LHS)), RHS(std::move(RHS)) {}
+  BinaryExpressionNode(int Operator, unique_ptr<ExpressionNode> Left, unique_ptr<ExpressionNode> Right)
+      : Operator(Operator), Left(std::move(Left)), Right(std::move(Right)) {}
   Value *codegen() override;
 };
 
-/// CallExprAST - Expression class for function calls.
-class CallExprAST : public ExprAST {
+/// CallExpressionNode - Expression class for function calls.
+class CallExpressionNode : public ExpressionNode {
   string Callee;
-  vector<unique_ptr<ExprAST>> Args;
+  vector<unique_ptr<ExpressionNode>> Arguments;
 
 public:
-  CallExprAST(const string &Callee, vector<unique_ptr<ExprAST>> Args)
-      : Callee(Callee), Args(std::move(Args)) {}
+  CallExpressionNode(const string &Callee, vector<unique_ptr<ExpressionNode>> Arguments)
+      : Callee(Callee), Arguments(std::move(Arguments)) {}
   Value *codegen() override;
 };
 
-/// FunctionSignatureAST - This class represents the "function signature" for a function,
+/// FunctionSignatureNode - This class represents the "function signature" for a function,
 /// which captures its name, and its argument names (thus implicitly the number
 /// of arguments the function takes).
-class FunctionSignatureAST {
+class FunctionSignatureNode {
   string Name;
-  vector<string> Args;
+  vector<string> Parameters;
 
 public:
-  FunctionSignatureAST(const string &Name, vector<string> Args)
-      : Name(Name), Args(std::move(Args)) {}
+  FunctionSignatureNode(const string &Name, vector<string> Parameters)
+      : Name(Name), Parameters(std::move(Parameters)) {}
 
   const string &getName() const { return Name; }
-  size_t getNumArgs() const { return Args.size(); }
+  size_t getNumParameters() const { return Parameters.size(); }
   Function *codegen();
 };
 
-/// FunctionDefAST - This class represents a function definition itself.
-class FunctionDefAST {
-  unique_ptr<FunctionSignatureAST> Signature;
-  unique_ptr<ExprAST> Body;
+/// FunctionDefinitionNode - This class represents a function function-definition itself.
+class FunctionDefinitionNode {
+  unique_ptr<FunctionSignatureNode> Signature;
+  unique_ptr<ExpressionNode> Body;
 
 public:
-  FunctionDefAST(unique_ptr<FunctionSignatureAST> Signature, unique_ptr<ExprAST> Body)
+  FunctionDefinitionNode(unique_ptr<FunctionSignatureNode> Signature, unique_ptr<ExpressionNode> Body)
       : Signature(std::move(Signature)), Body(std::move(Body)) {}
   Function *codegen();
 };
@@ -463,37 +463,37 @@ public:
 // Parser
 //===----------------------------------------===//
 
-/// CurTok is the current token the parser is looking at.
-/// getNextToken reads the next token from the lexer and stores it in CurTok.
-/// Every parse function assumes CurTok is already loaded before it is called,
-/// and leaves CurTok pointing at the first token it did not consume.
-static int CurTok;
-static int getNextToken() { return CurTok = gettok(); }
+/// CurrentToken is the current token the parser is looking at.
+/// getNextToken reads the next token from the lexer and stores it in CurrentToken.
+/// Every parse function assumes CurrentToken is already loaded before it is called,
+/// and leaves CurrentToken pointing at the first token it did not consume.
+static int CurrentToken;
+static int getNextToken() { return CurrentToken = getToken(); }
 
 /// consumeNewlines - Consume all consecutive tok_eol tokens.
 ///
 /// Called after eating a structural token (e.g. ':') to allow the body or
 /// next clause to appear on the following line.
 static void consumeNewlines() {
-  while (CurTok == tok_eol)
+  while (CurrentToken == tok_eol)
     getNextToken();
 }
 
-/// BinopPrecedence - Maps each binary operator token to its precedence.
+/// OperatorPrecedence - Maps each binary operator token to its precedence.
 /// Higher numbers bind more tightly: '*' (40) > '+'/'-' (20). Operators not in
-/// this map return -1 from GetTokPrecedence(), which tells ParseBinOpRHS to
+/// this map return -1 from GetTokenPrecedence(), which tells ParseBinaryOperatorRight to
 /// stop consuming operators and return what it has so far.
-static map<char, int> BinopPrecedence = {
+static map<char, int> OperatorPrecedence = {
     {'+', 20}, // +
     {'-', 20}, // -
     {'*', 40}, // *
 };
 
-/// GetTokPrecedence - Returns the precedence of CurTok if it is a known binary
+/// GetTokenPrecedence - Returns the precedence of CurrentToken if it is a known binary
 /// operator, or -1 if it is not.
-static int GetTokPrecedence() {
-  auto It = BinopPrecedence.find(CurTok);
-  if (It == BinopPrecedence.end() || It->second <= 0)
+static int GetTokenPrecedence() {
+  auto It = OperatorPrecedence.find(CurrentToken);
+  if (It == OperatorPrecedence.end() || It->second <= 0)
     return -1;
   return It->second;
 }
@@ -507,73 +507,73 @@ void Log(const string &message) { fprintf(stderr, "%s", message.c_str()); }
 
 /// LogError* - Error reporting helpers. Each returns nullptr for its respective
 /// type so parse functions can write: return LogError("message");
-unique_ptr<ExprAST> LogError(const char *Str) {
-  SourceLocation Anchor = GetDiagnosticAnchorLoc(CurLoc, CurTok);
+unique_ptr<ExpressionNode> LogError(const char *Str) {
+  SourceLocation Anchor = GetDiagnosticAnchorLoc(CurLoc, CurrentToken);
   fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
           Str);
   PrintErrorSourceContext(Anchor);
   return nullptr;
 }
 
-unique_ptr<FunctionSignatureAST> LogErrorSignature(const char *Str) {
+unique_ptr<FunctionSignatureNode> LogErrorSignature(const char *Str) {
   LogError(Str);
   return nullptr;
 }
 
-unique_ptr<FunctionDefAST> LogErrorF(const char *Str) {
+unique_ptr<FunctionDefinitionNode> LogErrorF(const char *Str) {
   LogError(Str);
   return nullptr;
 }
 
-static unique_ptr<ExprAST> ParseExpression();
+static unique_ptr<ExpressionNode> ParseExpression();
 
-/// numberexpr
+/// number-expression
 ///   = number ;
-static unique_ptr<ExprAST> ParseNumberExpr() {
-  auto Result = make_unique<NumberExprAST>(NumVal);
+static unique_ptr<ExpressionNode> ParseNumberExpression() {
+  auto Result = make_unique<NumberExpressionNode>(NumberValue);
   getNextToken(); // consume the number
   return std::move(Result);
 }
 
-/// parenexpr
+/// parenthesized-expression
 ///   = "(" expression ")" ;
-static unique_ptr<ExprAST> ParseParenExpr() {
+static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
   getNextToken(); // eat (.
   auto V = ParseExpression();
   if (!V)
     return nullptr;
 
-  if (CurTok != ')')
+  if (CurrentToken != ')')
     return LogError("expected ')'");
   getNextToken(); // eat ).
   return V;
 }
 
-/// identifierexpr
-///   = identifier
-///   | identifier "("[expression{"," expression}]")" ;
-static unique_ptr<ExprAST> ParseIdentifierExpr() {
-  string IdName = IdentifierStr;
+/// name-expression
+///   = name
+///   | name "("[expression{"," expression}]")" ;
+static unique_ptr<ExpressionNode> ParseNameExpression() {
+  string ParsedName = Name;
 
-  getNextToken(); // eat identifier.
+  getNextToken(); // eat name.
 
-  if (CurTok != '(') // Simple variable ref.
-    return make_unique<NameExprAST>(IdName);
+  if (CurrentToken != '(') // Simple variable ref.
+    return make_unique<NameExpressionNode>(ParsedName);
 
   // Call.
   getNextToken(); // eat (
-  vector<unique_ptr<ExprAST>> Args;
-  if (CurTok != ')') {
+  vector<unique_ptr<ExpressionNode>> Arguments;
+  if (CurrentToken != ')') {
     while (true) {
       if (auto Arg = ParseExpression())
-        Args.push_back(std::move(Arg));
+        Arguments.push_back(std::move(Arg));
       else
         return nullptr;
 
-      if (CurTok == ')')
+      if (CurrentToken == ')')
         break;
 
-      if (CurTok != ',')
+      if (CurrentToken != ',')
         return LogError("Expected ')' or ',' in argument list");
       getNextToken();
     }
@@ -582,118 +582,118 @@ static unique_ptr<ExprAST> ParseIdentifierExpr() {
   // Eat the ')'.
   getNextToken();
 
-  return make_unique<CallExprAST>(IdName, std::move(Args));
+  return make_unique<CallExpressionNode>(ParsedName, std::move(Arguments));
 }
 
 /// primary
-///   = identifierexpr
-///   | numberexpr
-///   | parenexpr ;
-static unique_ptr<ExprAST> ParsePrimary() {
-  switch (CurTok) {
+///   = name-expression
+///   | number-expression
+///   | parenthesized-expression ;
+static unique_ptr<ExpressionNode> ParsePrimary() {
+  switch (CurrentToken) {
   default:
     return LogError("unknown token when expecting an expression");
-  case tok_identifier:
-    return ParseIdentifierExpr();
+  case tok_name:
+    return ParseNameExpression();
   case tok_number:
-    return ParseNumberExpr();
+    return ParseNumberExpression();
   case '(':
-    return ParseParenExpr();
+    return ParseParenthesizedExpression();
   }
 }
 
-/// binoprhs
-///   = { binaryop primary } ;
-static unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
-                                         unique_ptr<ExprAST> LHS) {
-  // If this is a binop, find its precedence.
+/// binary-operator-right
+///   = { binary-operator primary } ;
+static unique_ptr<ExpressionNode> ParseBinaryOperatorRight(int ExpressionPrecedence,
+                                         unique_ptr<ExpressionNode> Left) {
+  // If this is a binary operator, find its precedence.
   while (true) {
-    int TokPrec = GetTokPrecedence();
+    int TokenPrecedence = GetTokenPrecedence();
 
-    // If this is a binop that binds at least as tightly as the current binop,
+    // If this is a binary operator that binds at least as tightly as the current binary operator,
     // consume it, otherwise we are done.
-    if (TokPrec < ExprPrec)
-      return LHS;
+    if (TokenPrecedence < ExpressionPrecedence)
+      return Left;
 
-    // Okay, we know this is a binop and that binds at least as tightly as the
-    // current binop.
-    int BinOp = CurTok;
-    getNextToken(); // eat binop
+    // Okay, we know this is a binary operator and that binds at least as tightly as the
+    // current binary operator.
+    int Operator = CurrentToken;
+    getNextToken(); // eat binary operator
 
     // Parse the primary expression after the binary operator.
-    auto RHS = ParsePrimary();
-    if (!RHS)
+    auto Right = ParsePrimary();
+    if (!Right)
       return nullptr;
 
-    // If BinOp binds less tightly with RHS than the operator after RHS, let
-    // the pending operator take RHS as its LHS.
-    int NextPrec = GetTokPrecedence();
-    if (TokPrec < NextPrec) {
-      RHS = ParseBinOpRHS(TokPrec + 1, std::move(RHS));
-      if (!RHS)
+    // If Operator binds less tightly with Right than the operator after Right, let
+    // the pending operator take Right as its Left.
+    int NextTokenPrecedence = GetTokenPrecedence();
+    if (TokenPrecedence < NextTokenPrecedence) {
+      Right = ParseBinaryOperatorRight(TokenPrecedence + 1, std::move(Right));
+      if (!Right)
         return nullptr;
     }
 
-    // Merge LHS/RHS.
-    LHS = make_unique<BinaryExprAST>(BinOp, std::move(LHS), std::move(RHS));
+    // Merge Left/Right.
+    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left), std::move(Right));
   }
 }
 
 /// expression
-///   = primary binoprhs ;
-static unique_ptr<ExprAST> ParseExpression() {
-  auto LHS = ParsePrimary();
-  if (!LHS)
+///   = primary binary-operator-right ;
+static unique_ptr<ExpressionNode> ParseExpression() {
+  auto Left = ParsePrimary();
+  if (!Left)
     return nullptr;
 
-  return ParseBinOpRHS(0, std::move(LHS));
+  return ParseBinaryOperatorRight(0, std::move(Left));
 }
 
-/// functionsignature
-///   = identifier "(" [ identifier { "," identifier } ] ")" ;
-static unique_ptr<FunctionSignatureAST> ParseFunctionSignature() {
-  if (CurTok != tok_identifier)
+/// function-signature
+///   = name "(" [ name { "," name } ] ")" ;
+static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
+  if (CurrentToken != tok_name)
     return LogErrorSignature("Expected function name in function signature");
 
-  string FnName = IdentifierStr;
+  string FnName = Name;
   getNextToken(); // eat function name
 
-  if (CurTok != '(')
+  if (CurrentToken != '(')
     return LogErrorSignature("Expected '(' in function signature");
 
   // Parse argument names. The loop calls getNextToken() at the top to advance
   // past '(' on the first iteration, and past ',' on subsequent ones.
-  // Inside the body we call getNextToken() again to move past the identifier
+  // Inside the body we call getNextToken() again to move past the name
   // we just stored, then check whether ')' or ',' follows.
-  vector<string> ArgNames;
-  while (getNextToken() == tok_identifier) {
-    ArgNames.push_back(IdentifierStr);
+  vector<string> ParameterNames;
+  while (getNextToken() == tok_name) {
+    ParameterNames.push_back(Name);
 
-    if (getNextToken() == ')') // eat identifier, check what follows
+    if (getNextToken() == ')') // eat name, check what follows
       break;
 
-    if (CurTok != ',')
+    if (CurrentToken != ',')
       return LogErrorSignature("Expected ')' or ',' in parameter list");
     // loop continues: getNextToken() at the top eats the ','
   }
 
-  if (CurTok != ')')
+  if (CurrentToken != ')')
     return LogErrorSignature("Expected ')' in function signature");
 
   getNextToken(); // eat ')'
 
-  return make_unique<FunctionSignatureAST>(FnName, std::move(ArgNames));
+  return make_unique<FunctionSignatureNode>(FnName, std::move(ParameterNames));
 }
 
-/// definition
-///   = "def" function signature ":" [ eols ] expression ;
-static unique_ptr<FunctionDefAST> ParseFunctionDef() {
+/// function-definition
+///   = "def" function signature ":" [ end-of-lines ] expression ;
+static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
   getNextToken(); // eat 'def'
   auto Signature = ParseFunctionSignature();
   if (!Signature)
     return nullptr;
 
-  if (CurTok != ':')
+  if (CurrentToken != ':')
     return LogErrorF("Expected ':' in function definition");
   getNextToken(); // eat ':'
 
@@ -703,29 +703,29 @@ static unique_ptr<FunctionDefAST> ParseFunctionDef() {
   consumeNewlines();
 
   if (auto E = ParseExpression())
-    return make_unique<FunctionDefAST>(std::move(Signature), std::move(E));
+    return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(E));
   return nullptr;
 }
 
-/// toplevelexpr
+/// top-level-expression
 ///   = expression
 /// A top-level expression (e.g. "1 + 2") is wrapped in an anonymous function
-/// so it fits the same FunctionDefAST shape as everything else.
+/// so it fits the same FunctionDefinitionNode shape as everything else.
 /// HandleTopLevelExpression compiles it into the JIT, calls it to get the
 /// numeric result, then removes it from the JIT via a ResourceTracker.
-static unique_ptr<FunctionDefAST> ParseTopLevelExpr() {
+static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
   if (auto E = ParseExpression()) {
-    auto Signature = make_unique<FunctionSignatureAST>("__anon_expr", vector<string>());
-    return make_unique<FunctionDefAST>(std::move(Signature), std::move(E));
+    auto Signature = make_unique<FunctionSignatureNode>("__anon_expr", vector<string>());
+    return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(E));
   }
   return nullptr;
 }
 
 /// external
 ///   = "extern" "def" function signature
-static unique_ptr<FunctionSignatureAST> ParseExtern() {
+static unique_ptr<FunctionSignatureNode> ParseExtern() {
   getNextToken(); // eat extern.
-  if (CurTok != tok_def)
+  if (CurrentToken != tok_def)
     return LogErrorSignature("Expected `def` after extern.");
   getNextToken(); // eat def
   return ParseFunctionSignature();
@@ -765,7 +765,7 @@ static unique_ptr<FunctionSignatureAST> ParseExtern() {
 //
 // FunctionSignatures - Persistent function signature registry. Because each function
 // lands in its own module, a later module that calls 'foo' cannot find 'foo'
-// in TheModule->getFunction(). FunctionSignatures stores the FunctionSignatureAST for
+// in TheModule->getFunction(). FunctionSignatures stores the FunctionSignatureNode for
 // every declared or defined function so getFunction() can re-emit a
 // declaration into the current module on demand.
 //
@@ -782,7 +782,7 @@ static std::unique_ptr<LoopAnalysisManager> TheLAM;
 static std::unique_ptr<FunctionAnalysisManager> TheFAM;
 static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
 static std::unique_ptr<ModuleAnalysisManager> TheMAM;
-static std::map<std::string, std::unique_ptr<FunctionSignatureAST>> FunctionSignatures;
+static std::map<std::string, std::unique_ptr<FunctionSignatureNode>> FunctionSignatures;
 static ExitOnError ExitOnErr;
 
 /// LogErrorV - Codegen-level error helper. Delegates to LogError for printing,
@@ -797,7 +797,7 @@ Value *LogErrorV(const char *Str) {
 ///
 /// Because each top-level input gets its own Module, a function defined in an
 /// earlier module is no longer in TheModule->getFunction(). When that happens
-/// we look up its FunctionSignatureAST in FunctionSignatures and call codegen() on it,
+/// we look up its FunctionSignatureNode in FunctionSignatures and call codegen() on it,
 /// which emits a fresh 'declare' with ExternalLinkage in the current module.
 /// The JIT resolves that extern to the already-compiled body at link time.
 Function *getFunction(const std::string &Name) {
@@ -813,7 +813,7 @@ Function *getFunction(const std::string &Name) {
   return nullptr;
 }
 
-/// NumberExprAST::codegen - A numeric literal becomes a floating-point
+/// NumberExpressionNode::codegen - A numeric literal becomes a floating-point
 /// constant value.
 ///
 /// ConstantFP::get wraps an APFloat (LLVM's arbitrary-precision float) into a
@@ -822,24 +822,24 @@ Function *getFunction(const std::string &Name) {
 /// IRBuilder also recognises when both operands of a binary op are constants
 /// and short-circuits to a single constant rather than emitting an instruction
 /// at all (constant folding).
-Value *NumberExprAST::codegen() {
-  return ConstantFP::get(*TheContext, APFloat(Val));
+Value *NumberExpressionNode::codegen() {
+  return ConstantFP::get(*TheContext, APFloat(Value));
 }
 
-/// NameExprAST::codegen - A variable reference looks up the name in
+/// NameExpressionNode::codegen - A variable reference looks up the name in
 /// NamedValues and returns the Value* for the corresponding function argument.
 ///
 /// For now NamedValues only contains the current function's parameters; any
 /// other name is an error. Mutable local variables (alloca/store/load) come
 /// in a later chapter.
-Value *NameExprAST::codegen() {
+Value *NameExpressionNode::codegen() {
   auto It = NamedValues.find(Name);
   if (It == NamedValues.end() || !It->second)
     return LogErrorV("Unknown variable name");
   return It->second;
 }
 
-/// BinaryExprAST::codegen - Recursively codegen both operands, then emit the
+/// BinaryExpressionNode::codegen - Recursively codegen both operands, then emit the
 /// operator-specific instruction.
 ///
 /// The string arguments to each Create* call ("addtmp", "multmp", etc.) are
@@ -847,16 +847,16 @@ Value *NameExprAST::codegen() {
 /// numeric suffix when the same hint would otherwise repeat. They have no
 /// effect on correctness.
 ///
-Value *BinaryExprAST::codegen() {
-  Value *L = LHS->codegen();
+Value *BinaryExpressionNode::codegen() {
+  Value *L = Left->codegen();
   if (!L)
     return nullptr;
 
-  Value *R = RHS->codegen();
+  Value *R = Right->codegen();
   if (!R)
     return nullptr;
 
-  switch (Op) {
+  switch (Operator) {
   case '+':
     return Builder->CreateFAdd(L, R, "addtmp");
   case '-':
@@ -868,24 +868,24 @@ Value *BinaryExprAST::codegen() {
   }
 }
 
-/// CallExprAST::codegen - Look up the callee by name in TheModule, verify the
+/// CallExpressionNode::codegen - Look up the callee by name in TheModule, verify the
 /// argument count, codegen each argument, then emit a call instruction.
 ///
-/// getFunction searches the module for a declaration or definition with the
+/// getFunction searches the module for a declaration or function-definition with the
 /// given name. This covers both previous 'extern' declarations and previously
 /// defined functions. The argument count check catches mismatches that a typed
 /// language would catch statically.
-Value *CallExprAST::codegen() {
+Value *CallExpressionNode::codegen() {
   Function *CalleeF = getFunction(Callee);
   if (!CalleeF)
     return LogErrorV("Unknown function referenced");
 
-  if (CalleeF->arg_size() != Args.size())
+  if (CalleeF->arg_size() != Arguments.size())
     return LogErrorV("Incorrect # arguments passed");
 
   std::vector<Value *> ArgsV;
-  for (unsigned i = 0, e = Args.size(); i != e; ++i) {
-    ArgsV.push_back(Args[i]->codegen());
+  for (unsigned i = 0, e = Arguments.size(); i != e; ++i) {
+    ArgsV.push_back(Arguments[i]->codegen());
     if (!ArgsV.back())
       return nullptr;
   }
@@ -893,7 +893,7 @@ Value *CallExprAST::codegen() {
   return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
-/// FunctionSignatureAST::codegen - Create a function declaration in TheModule: name,
+/// FunctionSignatureNode::codegen - Create a function declaration in TheModule: name,
 /// return type (always double), and parameter types (all double).
 ///
 /// ExternalLinkage makes the function visible outside this module. That is
@@ -903,9 +903,9 @@ Value *CallExprAST::codegen() {
 ///
 /// Arg.setName() is optional — it only affects the printed IR, making output
 /// read as 'double %a, double %b' rather than 'double %0, double %1'.
-Function *FunctionSignatureAST::codegen() {
+Function *FunctionSignatureNode::codegen() {
   // All parameters and the return value are double.
-  std::vector<Type *> Doubles(Args.size(), Type::getDoubleTy(*TheContext));
+  std::vector<Type *> Doubles(Parameters.size(), Type::getDoubleTy(*TheContext));
   FunctionType *FT = FunctionType::get(Type::getDoubleTy(*TheContext), Doubles,
                                        false /* not variadic */);
 
@@ -915,16 +915,16 @@ Function *FunctionSignatureAST::codegen() {
   // Name arguments so the printed IR is readable.
   unsigned Idx = 0;
   for (auto &Arg : F->args())
-    Arg.setName(Args[Idx++]);
+    Arg.setName(Parameters[Idx++]);
 
   return F;
 }
 
-/// FunctionDefAST::codegen - Generate IR for a complete function definition.
+/// FunctionDefinitionNode::codegen - Generate IR for a complete function function-definition.
 ///
 /// Four steps:
 ///
-/// 1. Register the function signature. The FunctionSignatureAST is moved into FunctionSignatures
+/// 1. Register the function signature. The FunctionSignatureNode is moved into FunctionSignatures
 ///    so that future modules can re-emit a declaration for this function via
 ///    getFunction(). A reference is kept for the getFunction() call below.
 ///    getFunction() either finds an existing declaration in the current module
@@ -935,14 +935,14 @@ Function *FunctionSignatureAST::codegen() {
 ///    Every function starts with exactly one entry block.
 ///
 /// 3. Populate NamedValues. Clear the table (the previous function's arguments
-///    are irrelevant) and insert each argument. NameExprAST nodes in the
+///    are irrelevant) and insert each argument. NameExpressionNode nodes in the
 ///    body look names up here.
 ///
 /// 4. Codegen the body expression. On success, emit 'ret', run verifyFunction
 ///    (LLVM's internal consistency checker), then run TheFPM to apply the
 ///    optimisation pipeline. On failure, eraseFromParent() removes the
 ///    partially-built function so no broken declaration is left in the module.
-Function *FunctionDefAST::codegen() {
+Function *FunctionDefinitionNode::codegen() {
   // Step 1: register the function signature and resolve the Function*.
   auto &P = *Signature;
   FunctionSignatures[Signature->getName()] = std::move(Signature);
@@ -995,7 +995,7 @@ Function *FunctionDefAST::codegen() {
 /// Called once at startup and again after every top-level input that hands
 /// its module to the JIT. Because the JIT takes ownership of TheModule via
 /// ThreadSafeModule, we cannot keep emitting into the old module — a new one
-/// must be created for every subsequent definition or expression.
+/// must be created for every subsequent function-definition or expression.
 ///
 /// The optimisation pipeline is also recreated each time because
 /// FunctionPassManager is tied to a specific LLVMContext (via
@@ -1050,24 +1050,24 @@ static void InitializeModuleAndManagers() {
 /// and after any unexpected trailing token, ensuring the REPL always returns
 /// to a clean state before printing the next prompt.
 static void SynchronizeToLineBoundary() {
-  while (CurTok != tok_eol && CurTok != tok_eof)
+  while (CurrentToken != tok_eol && CurrentToken != tok_eof)
     getNextToken();
 }
 
-/// HandleFunctionDef - Parse, optimise, and JIT-compile a 'def' definition.
+/// HandleFunctionDefinition - Parse, optimise, and JIT-compile a 'def' function-definition.
 ///
 /// On success: codegen + optimise the function (TheFPM runs inside
-/// FunctionDefAST::codegen), print the optimised IR, then hand the entire
+/// FunctionDefinitionNode::codegen), print the optimised IR, then hand the entire
 /// module to the JIT via addModule. The JIT takes ownership of TheModule and
 /// TheContext, so InitializeModuleAndManagers() is called immediately after
 /// to create a fresh module for the next input. The compiled function remains
 /// accessible in the JIT's symbol table for the rest of the session.
 /// On parse failure or unexpected trailing tokens: discard the line.
-static void HandleFunctionDef() {
-  auto FnAST = ParseFunctionDef();
-  if (!FnAST || (CurTok != tok_eol && CurTok != tok_eof)) {
+static void HandleFunctionDefinition() {
+  auto FnAST = ParseFunctionDefinition();
+  if (!FnAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (FnAST)
-      LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+      LogError(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
   }
@@ -1084,7 +1084,7 @@ static void HandleFunctionDef() {
 /// HandleExtern - Parse and register an 'extern def' declaration.
 ///
 /// On success: codegen the function signature (emits a 'declare' in the current module),
-/// print it, then save the FunctionSignatureAST into FunctionSignatures. Saving into
+/// print it, then save the FunctionSignatureNode into FunctionSignatures. Saving into
 /// FunctionSignatures is the critical step — when this module is handed to the JIT
 /// and a new one is created, getFunction() uses FunctionSignatures to re-emit the
 /// 'declare' in whichever module needs to call the extern.
@@ -1092,9 +1092,9 @@ static void HandleFunctionDef() {
 static void HandleExtern() {
   auto ProtoAST = ParseExtern();
 
-  if (!ProtoAST || (CurTok != tok_eol && CurTok != tok_eof)) {
+  if (!ProtoAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (ProtoAST)
-      LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+      LogError(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
   }
@@ -1103,7 +1103,7 @@ static void HandleExtern() {
   // name + arity, since all parameter and return types are double.
   auto Existing = FunctionSignatures.find(ProtoAST->getName());
   if (Existing != FunctionSignatures.end() &&
-      Existing->second->getNumArgs() != ProtoAST->getNumArgs()) {
+      Existing->second->getNumParameters() != ProtoAST->getNumParameters()) {
     LogError((string("Conflicting extern declaration for '") +
               ProtoAST->getName() + "'")
                  .c_str());
@@ -1137,10 +1137,10 @@ static void HandleExtern() {
 ///   6. Call RT->remove() to free the compiled code. The module was already
 ///      transferred to the JIT in step 4, so eraseFromParent() is not needed.
 static void HandleTopLevelExpression() {
-  auto FnAST = ParseTopLevelExpr();
-  if (!FnAST || (CurTok != tok_eol && CurTok != tok_eof)) {
+  auto FnAST = ParseTopLevelExpression();
+  if (!FnAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (FnAST)
-      LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+      LogError(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
   }
@@ -1202,39 +1202,39 @@ extern "C" DLLEXPORT double printd(double X) {
 
 /// MainLoop - Dispatch loop for the REPL.
 ///
-/// top             = definition | external | toplevelexpr ;
+/// top             = function-definition | external | top-level-expression ;
 ///
 /// Dispatches on the leading token of each top-level form:
-///   tok_def    → HandleFunctionDef   (definition)
+///   tok_def    → HandleFunctionDefinition   (function-definition)
 ///   tok_extern → HandleExtern       (external)
 ///   tok_eol    → skip blank line
-///   anything else → HandleTopLevelExpression (toplevelexpr)
+///   anything else → HandleTopLevelExpression (top-level-expression)
 ///
-/// CurTok is primed before MainLoop() is called (see main()). After each
+/// CurrentToken is primed before MainLoop() is called (see main()). After each
 /// successful parse the handler prints a confirmation; after a failed parse
 /// the handler calls SynchronizeToLineBoundary() to discard all remaining
 /// tokens on the current line. Either way we return here to look at the
-/// next CurTok.
+/// next CurrentToken.
 static void MainLoop() {
   while (true) {
-    if (CurTok == tok_eof)
+    if (CurrentToken == tok_eof)
       return;
 
     // A bare newline: just print a fresh prompt and read the next token.
-    if (CurTok == tok_eol) {
+    if (CurrentToken == tok_eol) {
       PrintReplPrompt();
       getNextToken();
       continue;
     }
 
-    if (CurTok == tok_error) {
+    if (CurrentToken == tok_error) {
       SynchronizeToLineBoundary();
       continue;
     }
 
-    switch (CurTok) {
+    switch (CurrentToken) {
     case tok_def:
-      HandleFunctionDef();
+      HandleFunctionDefinition();
       break;
     case tok_extern:
       HandleExtern();
@@ -1283,7 +1283,7 @@ int main(int argc, const char **argv) {
   InitializeNativeTargetAsmParser();
 
   // Prime the REPL: print the first prompt and load the first token.
-  // Every parse function expects CurTok to be loaded before it is called.
+  // Every parse function expects CurrentToken to be loaded before it is called.
   PrintReplPrompt();
   getNextToken();
 

@@ -3,7 +3,7 @@
 
 
 # Tests: inline if/else statement with both branches on one line.
-# ifstmt = "if" expression ":" suite [ eols "else" ":" suite ]
+# ifstmt = "if" expression ":" suite [ end-of-lines "else" ":" suite ]
 
 def maxval(a: float64, b: float64) -> float64:
     if a > b: return a else: return b

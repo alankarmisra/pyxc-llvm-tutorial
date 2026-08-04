@@ -1,7 +1,7 @@
 # RUN: %pyxc < %s > %t 2>&1
 # RUN: grep -c "Parsed a top-level expression." %t | grep -q "2"
 
-# binoprhs: same-precedence operators are left-associative (TokPrec+1 threshold)
+# binary-operator-right: same-precedence operators are left-associative (TokenPrecedence+1 threshold)
 # a - b - c groups as (a-b)-c, not a-(b-c)
 1 - 2 - 3
 4 + 5 + 6

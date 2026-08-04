@@ -4,8 +4,8 @@
 
 
 # Tests: if/else with then and else expressions on separate lines.
-# conditionalexpr = "if" expression ":" [ eols ] expression [ eols ] "else" ":" [ eols ] expression
-# The [ eols ] tokens before 'else' and after 'else:' allow this layout.
+# conditionalexpr = "if" expression ":" [ end-of-lines ] expression [ end-of-lines ] "else" ":" [ end-of-lines ] expression
+# The [ end-of-lines ] tokens before 'else' and after 'else:' allow this layout.
 
 def minval(a, b):
 if a < b:

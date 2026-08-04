@@ -3,8 +3,8 @@
 # CHECK: Evaluated to 9.000000
 
 
-# Tests: callexpr where an argument is itself a non-trivial expression.
-# callexpr = identifier "(" expression { "," expression } ")"
+# Tests: call-expression where an argument is itself a non-trivial expression.
+# call-expression = name "(" expression { "," expression } ")"
 
 def square(x): return x * x
 

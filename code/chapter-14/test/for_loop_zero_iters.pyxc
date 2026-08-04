@@ -4,7 +4,7 @@
 
 # Tests: for loop whose initial condition is false — the body never executes.
 # The implicit function return is 0.0 when nothing returns explicitly.
-# forexpr = "for" identifier "=" expression "," expression "," expression ":" [ eols ] ( block | statement )
+# forexpr = "for" name "=" expression "," expression "," expression ":" [ end-of-lines ] ( block | statement )
 
 def no_iters(x):
     for var i = 1, i < 1, 1:

@@ -1,9 +1,9 @@
-(* 
+(*
    pyxc.ebnf
-   Baseline grammar for chapter 2. 
+   Baseline grammar for chapter 2.
 *)
 
-(* 
+(*
    { } = zero or more (any number of...)
    [ ] = zero or one (optional)
 *)

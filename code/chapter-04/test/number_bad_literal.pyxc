@@ -3,6 +3,6 @@
 # RUN: grep -q "invalid number literal" %t
 # RUN: grep -q "1.2.3" %t
 
-# numberexpr: strtod check catches multiple decimal points; tok_error is returned
+# number-expression: strtod check catches multiple decimal points; tok_error is returned
 # so the parser never sees the token and does not produce a cascade error.
 1.2.3

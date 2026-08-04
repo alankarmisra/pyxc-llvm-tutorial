@@ -4,7 +4,7 @@
 
 
 # Tests: if/else with then and else blocks on separate lines.
-# ifstmt = "if" expression ":" suite [ eols "else" ":" suite ] ;
+# ifstmt = "if" expression ":" suite [ end-of-lines "else" ":" suite ] ;
 
 def minval(a, b):
     if a < b:

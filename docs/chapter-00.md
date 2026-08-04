@@ -32,17 +32,15 @@ In **Chapters 1-3**, I build the analysis part of pyxc where it begins to unders
 
 In **Chapter 5** I set up LLVM. As you follow along, the process could be smooth, or reasonably bumpy. If it's the latter, allow yourself a break. But do come back, because the compiler isn't going to build itself. Of course if you don't succeed, you can [get in touch with me](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues) and we can take a crack at it together. 
 
-In **Chapter 6** I extend the compiler to convert a pyxc program's intentions into LLVM's internal representation (IR). I find that the IR resembles assembly which is understandable. The IR is what LLVM will convert to machine code for a host of different architectures allowing us to have a multi-platform language with very little work. 
-
-By **Chapters 6 and 7** we can generate and run this IR code in either a python-like interactive REPL interface, or from a source file. We will find that, even though we have a limited syntax and language features, we can express short programs that can outperform similar Python code. 
+In **Chapters 6 and 7** I extend the compiler to convert a pyxc program's intentions into LLVM's internal representation (IR), which reads a lot like assembly and is what LLVM converts to machine code for a host of different architectures, giving us a multi-platform language with very little extra work. I can then generate and run this IR either through a python-like interactive REPL, or from a source file. Even with a limited syntax and few language features, I can already express short programs that outperform similar Python code. 
 
 In **Chapters 8–11** I add language features such as control flow (`if`/`for`), user-defined operators, mutable variables, and *real statement blocks* with Python-style indentation. You might even confuse pyxc code with real python.   
 
 In **Chapters 12–15** I add the missing bells and whistles to make the pyxc compiler feel like a production compiler: a proper command line interface that offers different options like object file output, native executable linking, and debug info for source-level debugging. If some of these terms make no sense to you, don't worry about it. You will soon. 
 
-In **Chapter 17** I add a static type system: `int`, `int8`, `int16`, `int64`, `float32`, `float64`, `bool`, and `None` (void) which lets us write programs that rival C/C++/Rust speeds. Not surprising, since we use the same LLVM infrastructure, but super cool nevertheless. 
+In **Chapter 17** I add a static type system: `int`, `int8`, `int16`, `int64`, `float32`, `float64`, `bool`, and `None` (void), which lets me write programs that rival C/C++/Rust speeds, since I'm using the same LLVM infrastructure. 
 
-In **Chapters 17–23** I implement the full C-style memory model: structs and field access, pointer types and address-of, pointer arithmetic, heap allocation with `malloc`/`free`/`sizeof`, string literals and C interop, type aliases, and fixed-size arrays. By the end of this phase, pyxc is a serious systems programming language — I can write K&R-style algorithms (a benchmark that I randomly chose to gauge language completeness), call any C library function, and manually manage memory just as I would in C or C++. Like C/C++, I don't want pyxc to have a garbage collector trading simplicity for raw power. I will, however, want to think about how to extend the language to prevent the same memory corruption horrors that plague C/C++. We don't just want C/C++ features, we want to do better in some respects otherwise we are just reinventing the wheel. I won't be surprised if future C++ versions also address this issue better. Smart pointers in C++ already address some of the issues in C.
+In **Chapters 17–23** I implement the full C-style memory model: structs and field access, pointer types and address-of, pointer arithmetic, heap allocation with `malloc`/`free`/`sizeof`, string literals and C interop, type aliases, and fixed-size arrays. By the end of this phase, pyxc is a serious systems programming language: I can write K&R-style algorithms, call any C library function, and manually manage memory just as I would in C or C++.
 
 ```pyxc
 extern def malloc(n: int64) -> ptr[int8]
@@ -74,7 +72,7 @@ def main() -> int:
   return 0
 ```
 
-In **Chapters 24–30** I add an object model: `class` declarations, methods with `self`, constructors, visibility rules, traits, and the beginnings of generics so I can use more object-oriented programming approaches in problem-solving. We are leaving the C domain behind here and stepping on some C++/Rust toes.
+In **Chapters 24–30** I add an object model: `class` declarations, methods with `self`, constructors, visibility rules, traits, and the beginnings of generics so I can use more object-oriented programming approaches in problem-solving. I'm leaving the C domain behind here and stepping on some C++/Rust toes.
 
 ```pyxc
 extern def printd(x: float64)
@@ -132,7 +130,7 @@ def main() -> int:
   return 0
 ```
 
-In **Chapters 31–40** I close the K&R compatibility gap: division and remainder, compound assignment, `++`/`--`, logical operators with short-circuit evaluation, `while` and `do/while` loops, `break` and `continue`, bitwise operators, `switch`, `elif` chains, character literals, unsigned integer types, and assignment as an expression. By the end of this phase, pyxc's control flow and operators cover everything in the first four chapters of *The C Programming Language*.
+In **Chapters 31–40** I close the K&R compatibility gap: division and remainder, compound assignment, `++`/`--`, logical operators with short-circuit evaluation, `while` and `do/while` loops, `break` and `continue`, bitwise operators, `switch`, `elif` chains, character literals, unsigned integer types, and assignment as an expression. By the end of this phase, pyxc's control flow and operators are on par with C's.
 
 ```pyxc
 type string = ptr[int8]
