@@ -59,7 +59,7 @@ I'm going to introduce some terminology here so I have some vocabulary to use la
 
 Consider `a * b + c * d`. By standard arithmetic convention, it is grouped as:
 
-```text
+```pyxc
 (a * b) + (c * d)
 ```
 
@@ -68,7 +68,7 @@ Consider `a * b + c * d`. By standard arithmetic convention, it is grouped as:
 
 Conceptually, the grouped expression looks like this:
 
-```python
+```pyxc
 # Higher precedence
 r1 = a * b
 r2 = c * d
@@ -443,7 +443,7 @@ This is the actual function in `pyxc.cpp`. I never ask "what's the next tier?" I
 
 Here's the tree I build for `a + b * c`. I tag each row with the precedence of the operator that owns it:
 
-```text
+```ast
 20 │ BinaryExpression '+'
 20 │ ├── Left  -> a
 40 │ └── Right -> BinaryExpression '*'
@@ -455,7 +455,7 @@ I produce the `20` rows and the `40` rows in two different calls to `ParseBinary
 
 I handle the full expression, `k < a + b * c + d`, the same way, just with a third tier:
 
-```text
+```ast
 10 │ BinaryExpression '<'
 10 │ ├── Left  -> k
 20 │ └── Right -> BinaryExpression '+'

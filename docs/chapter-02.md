@@ -32,7 +32,7 @@ A fair number of iterations went into coming up with the structures in the follo
 
 For something like `def add(x, y): x + y`, I start with a function definition as the primary group, and store the signature and body underneath it. I've isolated the signature so that I can compare the function signature with function calls to ensure argument counts match. The following shows instances of the classes and subclasses I'll define soon, built in response to the tokens I see for the function definition.
 
-```text
+```ast
 FunctionDefinition
 ├──  Signature -> FunctionSignature
 │                 ├──  Name      = "add"
@@ -49,7 +49,7 @@ I follow a similar approach for function calls. The call expression is the paren
 
 `add(1, 2)` becomes:
 
-```text
+```ast
 CallExpression
 ├──  Callee = "add"
 └──  Arguments
@@ -59,7 +59,7 @@ CallExpression
 
 and `print(...)` becomes:
 
-```text
+```ast
 CallExpression
 ├──  Callee = "print"
 └──  Arguments
@@ -68,7 +68,7 @@ CallExpression
 
 Merging both we get the full hierarchy for `print(add(1, 2))`:
 
-```text
+```ast
 CallExpression
 ├──  Callee = "print"
 └──  Arguments
@@ -139,7 +139,7 @@ public:
 
 How will I handle `1 + 2 + 3`? I'll build a tree iteratively that groups them like so `((1 + 2) + 3)`. Them compiler writers call it *Left associativity* so I'll call it that too. 
 
-```text
+```ast
 BinaryExpressionNode
 ├──  Operator='+'
 ├──  Left  -> BinaryExpressionNode
@@ -168,7 +168,7 @@ public:
 
 `add(x, y)`:
 
-```
+```ast
 CallExpressionNode
 ├──  Callee = "add"
 └──  Arguments
@@ -178,7 +178,7 @@ CallExpressionNode
 
 `add(1, 2)`:
 
-```
+```ast
 CallExpressionNode
 ├──  Callee = "add"
 └──  Arguments
@@ -188,7 +188,7 @@ CallExpressionNode
 
 `add(1+2, 3+4)`:
 
-```
+```ast
 CallExpressionNode
 ├──  Callee = "add"
 └──  Arguments
@@ -236,7 +236,7 @@ public:
 
 With this structure in place, for a function definition like `def add(x, y): x + y`, I will build something like:
 
-```
+```ast
 FunctionDefinitionNode
 ├──  Signature -> FunctionSignatureNode
 │                 ├──  Name      = "add"
