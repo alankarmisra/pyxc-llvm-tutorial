@@ -358,15 +358,92 @@ ret i64 8
 [pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-21/pyxc.ebnf)
 
 ```ebnf
-primary         = cast-expression | sizeof-expression | address-expression | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
+program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
+end-of-lines            = end-of-line { end-of-line } ;
+top-level-item             = struct-definition | function-definition | decorated-function-definition | external | top-level-expression ;
+struct-definition       = "struct" name ":" end-of-lines struct-block ;
+struct-block     = indent field-declaration { end-of-lines field-declaration } dedent ;
+field-declaration       = name ":" type ;
+function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+(* If the return type is omitted, it defaults to None. *)
+decorated-function-definition    = binary-decorator end-of-lines "def" binary-operator-signature [ "->" type ] ":" ( simple-statement | end-of-lines block )
+                | unary-decorator  end-of-lines "def" unary-operator-signature  [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+binary-decorator = "@" "binary" "(" integer ")" ;
+unary-decorator  = "@" "unary" ;
+binary-operator-signature = custom-operator-character "(" typed-parameter "," typed-parameter ")" ;
+unary-operator-signature  = custom-operator-character "(" typed-parameter ")" ;
+external        = "extern" "def" function-signature [ "->" type ] ;
+top-level-expression    = expression ;
+function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
+typed-parameter      = name ":" type ;
+if-statement          = "if" expression ":" suite
+                [ end-of-lines "else" ":" suite ] ;
+for-statement         = "for"
+                  ( "var" name ":" type | name )
+                  "=" expression "," expression "," expression ":" suite ;
+variable-statement         = "var" variable-binding { "," variable-binding } ;
+assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
+simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
+compound-statement    = if-statement | for-statement ;
+statement       = simple-statement | compound-statement ;
+suite           = simple-statement | compound-statement | end-of-lines block ;
+return-statement      = "return" [ expression ] ;
+statement-separator = end-of-lines | BLOCK_END ;
+block = indent statement { statement-separator statement } dedent ;
+expression      = unary-expression binary-operator-right ;
+binary-operator-right        = { binary-operator unary-expression } ;
+lvalue          = name | field-access | index-expression ;
+variable-binding      = name ":" type [ "=" expression ] ;
+unary-expression       = unary-operator unary-expression | primary ;
+unary-operator         = "-" | user-defined-unary-operator ;
+primary         = cast-expression | sizeof-expression | address-expression | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;   (* changed: sizeof-expression added *)
 cast-expression        = cast-type "(" expression ")" ;
 sizeof-expression      = "sizeof" "(" type ")" ;                       (* new *)
+address-expression        = "addr" "(" lvalue ")" ;
+name-expression  = name | call-expression ;
+call-expression        = name "(" [ expression { "," expression } ] ")" ;
+field-access     = name "." name { "." name } ;
+index-expression       = name "[" expression "]" ;
+number-expression      = number ;
+parenthesized-expression       = "(" expression ")" ;
+binary-operator        = builtin-binary-operator | user-defined-binary-operator ;
+indent          = INDENT ;
+dedent          = DEDENT ;
+
+builtin-binary-operator = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
+user-defined-binary-operator = ? any operator-character defined as a custom binary operator ? ;
+user-defined-unary-operator  = ? any operator-character defined as a custom unary operator ? ;
+custom-operator-character    = ? any operator-character that is not "-" or a builtin-binary-operator,
+                    and not already defined as a custom operator ? ;
+operator-character          = ? any single ASCII punctuation character ? ;
+name      = (letter | "_") { letter | digit | "_" } ;
+builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
+                | "float" | "float32" | "float64"
+                | "bool" | "None" ;
+struct-type      = name ;
+pointer-type     = "ptr" "[" type "]" ;
+type            = builtin-type | struct-type | pointer-type ;
 cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
                 | "float" | "float32" | "float64"
                 | "bool" | pointer-type ;                              (* changed: pointer-type added *)
+integer         = digit { digit } ;
+number          = ( digit { digit } [ "." { digit } ]
+                  | "." digit { digit } ) [ exponent ] ;
+exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
+boolean-literal    = "True" | "False" ;
+letter          = "A".."Z" | "a".."z" ;
+digit           = "0".."9" ;
+end-of-line             = "\r\n" | "\r" | "\n" ;
+comment = "#" { comment-character } ;
+comment-character = ? any character except "\r" and "\n" ? ;
+whitespace = " " | "\t" | "\v" | "\f" ;
+INDENT          = ? synthetic token emitted by lexer ? ;
+DEDENT          = ? synthetic token emitted by lexer ? ;
+
+BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
-`sizeof-expression` is new. `cast-type` changed: `pointer-type` (`ptr[T]`) is now a valid cast target, where before it was rejected. Everything else (`type`, `field-access`, `index-expression`, and the rest of `primary`) is unchanged from [Chapter 20](chapter-20.md).
+Two productions changed for this chapter: `primary` gained the `sizeof-expression` alternative, and `cast-type` gained `pointer-type`, since a pointer cast target is now legal where it wasn't before. `sizeof-expression` itself is new. Everything else is exactly what [Chapter 20](chapter-20.md) already had.
 
 ## What's Next
 

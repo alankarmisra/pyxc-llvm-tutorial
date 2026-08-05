@@ -2420,7 +2420,7 @@ static unique_ptr<ExpressionNode> ParseUnary() {
 
 /// binary-operator-right
 ///   = { binary-operator unaryexpr } ;
-static unique_ptr<ExpressionNode> ParseBinaryOperatorRight(int ExpressionPrecedence,
+static unique_ptr<ExpressionNode> ParseBinaryOperatorRight(int MinimumPrecedence,
                                          unique_ptr<ExpressionNode> Left) {
   // If this is a binary operator, find its precedence.
   while (true) {
@@ -2428,7 +2428,7 @@ static unique_ptr<ExpressionNode> ParseBinaryOperatorRight(int ExpressionPrecede
 
     // If this is a binary operator that binds at least as tightly as the current binary operator,
     // consume it, otherwise we are done.
-    if (TokenPrecedence < ExpressionPrecedence)
+    if (TokenPrecedence < MinimumPrecedence)
       return Left;
 
     // Okay, we know this is a binary operator and that binds at least as tightly as the
@@ -3662,7 +3662,7 @@ static Value *EmitImplicitCast(Value *V, ValueType From, ValueType To) {
       return V;
     return Builder->CreateSExt(V, LLVMTypeFor(To), "sext");
   }
-  if (IsIntType(From) && To == ValueType::Float64)
+  if (IsIntType(From) && IsFloatType(To))
     return Builder->CreateSIToFP(V, LLVMTypeFor(To), "sitofp");
   return nullptr;
 }

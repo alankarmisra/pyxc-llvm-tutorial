@@ -5,7 +5,7 @@ description: "Add a static type system: int, int8, int16, int32, int64, float, f
 
 ## Where We Are
 
-[Chapter 16](chapter-16.md) gave Pyxc debug info and proper optimisation pipelines. The language itself still has exactly one type: `double`. Every variable, parameter, return value, and literal is a 64-bit float, and the compiler never needs to ask "what type is this?".
+[Chapter 16](chapter-16.md) gave me debug info and proper optimization pipelines. The language itself still has exactly one type: `double`. Every variable, parameter, return value, and literal is a 64-bit float, and I never need to ask "what type is this?".
 
 This chapter adds a real type system. After this chapter:
 
@@ -32,42 +32,17 @@ cd pyxc-llvm-tutorial/code/chapter-17
 
 ## Grammar
 
-The grammar gains type annotations throughout:
+The grammar gains type annotations throughout. The verbatim grammar is in [The Full Grammar](#the-full-grammar) below; the changes from chapter 15 (the last chapter to touch the grammar; chapter 16 didn't) are:
 
-```ebnf
-type        ::= 'int' | 'int8' | 'int16' | 'int32' | 'int64'
-              | 'float' | 'float32' | 'float64'
-              | 'bool' | 'None'
-
-param       ::= identifier ':' type
-paramlist   ::= param (',' param)*
-
-prototype   ::= identifier '(' paramlist? ')'
-return-ann  ::= ('->' type)?
-
-definition  ::= 'def' prototype return-ann ':' suite
-extern-def  ::= 'extern' 'def' prototype return-ann
-
-var-stmt    ::= 'var' identifier ':' type ('=' expression)?
-              | 'var' identifier ':' type (',' identifier ':' type)*
-
-for-stmt    ::= 'for' ('var' identifier ':' type | identifier) '='
-                expression ',' expression ',' expression ':' suite
-
-castexpr    ::= type '(' expression ')'
-
-bool-literal ::= 'True' | 'False'
-```
-
-Key changes from chapter 15:
-
-- Every parameter requires `: type`.
-- `var` declarations require `: type`, optionally followed by `= expression`.
+- Every parameter requires `: type` (`typed-parameter` replaces the bare `name` in `function-signature` and the operator-signature productions).
+- `var` declarations require `: type` between the name and an optional `= expression`.
 - `for var` loop variables require `: type` between the name and `=`.
   A plain `for i = ...` reuses an existing variable and does not accept a type.
-- A function carries `-> type` between `)` and `:`. If absent, `def` defaults to `None` (void); `extern def` and operator defs default to `float64`.
+- A function carries `[ "->" type ]` between `)` and `:`. If absent, `def` defaults to `None` (void); `extern def` and operator defs default to `float64`.
 - `None` is the void return type annotation; it cannot be used as a variable or parameter type.
-- `True` and `False` are new boolean literal keywords.
+- `return` no longer requires a value: `return-statement` is now `"return" [ expression ]`, so a bare `return` is legal inside a `None` function.
+- `True` and `False` are new boolean literal keywords (`boolean-literal`), and `cast-expression` (`type "(" expression ")"`) is a new kind of `primary`.
+- Number literals accept an optional exponent suffix, `e` or `E` followed by an optional sign and digits (`2e3`, `1.5e-2`). An exponent makes the literal a float even with no `.`.
 
 ## The Design
 
@@ -77,25 +52,27 @@ Every value now has a type, represented as a `ValueType` enum:
 
 ```cpp
 enum class ValueType {
-  None,    // void — no return value
-  Int,     // target-machine default integer (pointer-sized: 32 or 64 bits)
-  Int8,    // 8-bit signed integer
-  Int16,   // 16-bit signed integer
-  Int32,   // 32-bit signed integer
-  Int64,   // 64-bit signed integer
-  Float,   // 64-bit double (the 'float' keyword)
-  Float32, // 32-bit float
-  Float64, // 64-bit double (the 'float64' keyword)
-  Bool,    // 1-bit boolean (i1)
-  Error    // sentinel — parse/type error
+  None,
+  Int, /* depends on system default for int */
+  Int8,
+  Int16,
+  Int32,
+  Int64,
+  Float,
+  Float32,
+  Float64,
+  Bool,
+  Error
 };
 ```
+
+`None` is void, no return value. `Int` is whatever the target machine's default integer width is, 32 or 64 bits depending on host. `Int8` through `Int64` are the fixed-width signed integers. `Float` and `Float64` both mean a 64-bit double (more on why there are two names for the same thing below); `Float32` is a 32-bit float. `Bool` is a 1-bit boolean (`i1` in LLVM). `Error` is the sentinel I return from type helpers when something's wrong.
 
 Each `ValueType` maps to a fixed LLVM IR type:
 
 | ValueType | Keyword | LLVM IR type | Notes |
 |-----------|---------|--------------|-------|
-| `Int` | `int` | `i64` / `i32` | pointer-width — host-dependent |
+| `Int` | `int` | `i64` / `i32` | pointer-width: host-dependent |
 | `Int8` | `int8` | `i8` | always 8-bit |
 | `Int16` | `int16` | `i16` | always 16-bit |
 | `Int32` | `int32` | `i32` | always 32-bit |
@@ -110,7 +87,7 @@ Each `ValueType` maps to a fixed LLVM IR type:
 
 `Int32` is always `i32` regardless of target. `int32(x)` is a reliable cross-platform 32-bit integer; `int` is a platform-default convenience.
 
-`Float` and `Float64` are **distinct enum values but compile to the same IR type** — both produce `double` from `LLVMTypeFor`. The `float` keyword gives you `ValueType::Float`; the `float64` keyword gives you `ValueType::Float64`. They are interchangeable everywhere: assignment, binary operations, function arguments, and debug info all treat them as the same 64-bit float. The distinction exists at the token and enum level only so that error messages and `TypeName()` can round-trip the exact keyword the programmer wrote.
+`Float` and `Float64` are **distinct enum values but compile to the same IR type**: both produce `double` from `LLVMTypeFor`. The `float` keyword gives you `ValueType::Float`; the `float64` keyword gives you `ValueType::Float64`. They are interchangeable everywhere: assignment, binary operations, function arguments, and debug info all treat them as the same 64-bit float. The distinction exists at the token and enum level only so that error messages and `TypeName()` can round-trip the exact keyword the programmer wrote.
 
 `None` is the return type of functions that produce no value. It corresponds to LLVM's `void` and cannot be used as a variable or parameter type.
 
@@ -121,14 +98,16 @@ Each `ValueType` maps to a fixed LLVM IR type:
 The type system is strict. The only implicit conversions allowed are:
 
 1. **Same type → always allowed.**
-2. **Float ↔ Float64** — the two 64-bit float spellings are freely interchangeable. No instruction is emitted since they share the same IR type.
-3. **Integer widening** — smaller fixed-size integers can be assigned to larger ones: `Int8 → Int16 → Int32 → Int64`. Also, `Int` (pointer-width) can widen to `Int64`. Emits `sext`.
-4. **Any integer type → any float type** — an integer can be silently converted to `Float`, `Float32`, or `Float64`. Emits `sitofp`.
+2. **Float ↔ Float64**: the two 64-bit float spellings are freely interchangeable. No instruction is emitted since they share the same IR type.
+3. **Integer widening**: smaller fixed-size integers can be assigned to larger ones: `Int8 → Int16 → Int32 → Int64`. Also, `Int` (pointer-width) can widen to `Int64`. Emits `sext`.
+4. **Any integer type → `Float64`**: an integer can be silently converted to `Float64`. Emits `sitofp`.
 
 Everything else requires an explicit cast. In particular:
 - Narrowing (e.g., `int64` to `int32`) always requires an explicit cast.
 - `Bool` is not implicitly assignable from any other type.
 - `Int` does not widen to `Int32` or smaller fixed-size types (use an explicit cast).
+
+The type checker (`IsAssignable`, below) actually says any integer can widen into `Float`, `Float32`, or `Float64`, not just `Float64`. I found by testing that this is a real gap between the checker and codegen: `EmitImplicitCast`, which is what actually emits the `sitofp`, only handles a float target of `Float64`. An integer variable assigned into a `float32` (or bare `float`) variable, argument, return, or arithmetic operand passes the type check and then fails at codegen with a generic "type mismatch" error, even though the equivalent explicit cast, `float32(n)`, works fine. See [Known Limitations](#known-limitations).
 
 In IR, the three implicit cases look like:
 
@@ -139,7 +118,7 @@ In IR, the three implicit cases look like:
 ; Integer → float: int32 → float64
 %asf = sitofp i32 %n to double
 
-; Float ↔ Float64: no instruction — same IR type double
+; Float ↔ Float64: no instruction: same IR type double
 ; the LLVM Value* is used directly
 ```
 
@@ -185,7 +164,7 @@ Registered in the keyword map:
 {"None", tok_none}
 ```
 
-`float` and `float64` are **separate tokens** — `tok_float = -27` and `tok_float64 = -29`. `ParseTypeToken` maps `tok_float → ValueType::Float` and `tok_float64 → ValueType::Float64`. Both compile to `double`, but the distinction is preserved through the entire pipeline until IR emission.
+`float` and `float64` are **separate tokens**: `tok_float = -27` and `tok_float64 = -29`. `ParseTypeToken` maps `tok_float → ValueType::Float` and `tok_float64 → ValueType::Float64`. Both compile to `double`, but the distinction is preserved through the entire pipeline until IR emission.
 
 ### Boolean Literal Keywords
 
@@ -205,71 +184,101 @@ tok_false = -33,
 Before chapter 16, every number literal stored a `double`. Now literals have proper types. The lexer sets a flag:
 
 ```cpp
-NumIsFloat = NumStr.find('.') != string::npos;
+NumberIsFloat = NumStr.find('.') != string::npos;
 ```
 
-`ParseNumberExpr` uses `APInt` or `APFloat` depending on this flag:
+`ParseNumberExpression` uses `APInt` or `APFloat` depending on this flag:
 
 ```cpp
-static unique_ptr<ExprAST> ParseNumberExpr() {
-  ValueType Type = NumIsFloat ? ValueType::Float64 : ValueType::Int;
-  if (NumIsFloat) {
+static unique_ptr<ExpressionNode> ParseNumberExpression() {
+  ValueType Type = NumberIsFloat ? ValueType::Float64 : ValueType::Int;
+  if (NumberIsFloat) {
     if (IsFloatType(ExpectedLiteralType))
       Type = ExpectedLiteralType;
-    const fltSemantics &Semantics =
-        (Type == ValueType::Float32) ? APFloat::IEEEsingle()
-                                     : APFloat::IEEEdouble();
-    APFloat Val(Semantics, NumLiteralStr);
-    return make_unique<NumberExprAST>(Val, Type);
+    const fltSemantics &Semantics = (Type == ValueType::Float32)
+                                        ? APFloat::IEEEsingle()
+                                        : APFloat::IEEEdouble();
+    APFloat Val(Semantics);
+    auto StatusOrErr =
+        Val.convertFromString(NumberLiteral, APFloat::rmNearestTiesToEven);
+    if (!StatusOrErr)
+      return LogError("Invalid floating-point literal");
+    if (*StatusOrErr & APFloat::opOverflow)
+      return LogError("Floating-point literal out of range for type");
+    auto Result = make_unique<NumberExpressionNode>(Val, Type);
+    getNextToken(); // consume the number
+    return std::move(Result);
   } else {
+    // If the surrounding context expects an int type, honor it.
     if (IsIntType(ExpectedLiteralType))
       Type = ExpectedLiteralType;
+
+    // Parse with enough bits to hold the literal's full magnitude, then
+    // range-check against the target *signed* width. This avoids cases like
+    // 128: it needs 8 bits unsigned, but doesn't fit in signed int8 (max 127).
     unsigned Bits = LLVMTypeFor(Type)->getIntegerBitWidth();
-    // ...parse APInt and range-check...
-    return make_unique<NumberExprAST>(Val, Type);
+    unsigned NeededBits = APInt::getBitsNeeded(NumberLiteral, 10);
+    unsigned ParseBits = std::max(Bits, NeededBits);
+    APInt Val(ParseBits, NumberLiteral, 10);
+    if (Val.ugt(APInt::getSignedMaxValue(Bits)))
+      return LogError("Integer literal out of range for type");
+    if (ParseBits != Bits)
+      Val = Val.trunc(Bits);
+
+    auto Result = make_unique<NumberExpressionNode>(Val, Type);
+    getNextToken(); // consume the number
+    return std::move(Result);
   }
 }
 ```
 
-`NumberExprAST` stores the literal with full precision:
+The lexer sets `NumberIsFloat` from both the decimal point and the exponent: `NumberIsFloat = SawDot || SawExp;`. A literal like `2e3` has no `.` but still becomes a `Float64` (`2000.0`), since an exponent alone makes a literal float. I confirmed this by compiling `2e3` directly: chapter 16, which has no exponent support at all, rejects it outright with "Unexpected name 'e3'"; chapter 17 accepts it and prints `2000.000000`.
+
+`NumberExpressionNode` stores the literal with full precision:
 
 ```cpp
-class NumberExprAST : public ExprAST {
+class NumberExpressionNode : public ExpressionNode {
   bool IsIntLiteral;
-  APInt IntVal;
-  APFloat FloatVal;
+  APInt IntegerValue;
+  APFloat FloatValue;
+
 public:
-  NumberExprAST(APInt Val, ValueType Type)
-      : IsIntLiteral(true), IntVal(std::move(Val)), FloatVal(0.0) { setType(Type); }
-  NumberExprAST(APFloat Val, ValueType Type)
-      : IsIntLiteral(false), IntVal(1, 0), FloatVal(std::move(Val)) { setType(Type); }
+  NumberExpressionNode(APInt Value, ValueType Type)
+      : IsIntLiteral(true), IntegerValue(std::move(Value)), FloatValue(0.0) {
+    setType(Type);
+  }
+  NumberExpressionNode(APFloat Value, ValueType Type)
+      : IsIntLiteral(false), IntegerValue(1, 0), FloatValue(std::move(Value)) {
+    setType(Type);
+  }
+  llvm::Value *codegen() override;
 };
 ```
 
 The IR constants each produces:
 
 ```llvm
-; 42   — integer literal, no '.', defaults to Int (i64 on 64-bit host)
+; 42  : integer literal, no '.', defaults to Int (i64 on 64-bit host)
 i64 42
 
-; 42.0 — float literal, has '.', defaults to Float64
+; 42.0: float literal, has '.', defaults to Float64
 double 4.200000e+01
 
-; var x: int32 = 5   — context sets int32, literal is parsed as i32 directly
+; var x: int32 = 5  : context sets int32, literal is parsed as i32 directly
 i32 5
 
-; var x: float32 = 1.5  — context sets float32, literal parsed at single precision
+; var x: float32 = 1.5 : context sets float32, literal parsed at single precision
 float 1.500000e+00
 
-; var b: int8 = 200   — out of range for i8, parse error before any IR is emitted
+; var b: int8 = 200  : out of range for i8, parse error before any IR is emitted
 ; Error: Integer literal out of range for type
 ```
 
-`3.14` in a `var x: float32` context becomes a `Float32` literal parsed with IEEE single precision — so `3.14` stores the nearest `float` value, not the nearest `double`. Without this, the parse would produce a `double` constant and then require an `fptrunc` to `float` at the store — which is not an implicit conversion and would be a type error.
+`3.14` in a `var x: float32` context becomes a `Float32` literal parsed with IEEE single precision: so `3.14` stores the nearest `float` value, not the nearest `double`. Without this, the parse would produce a `double` constant and then require an `fptrunc` to `float` at the store: which is not an implicit conversion and would be a type error.
 
 ## Context-Sensitive Literal Types
 
-`ParseNumberExpr` consults a global `ExpectedLiteralType`:
+`ParseNumberExpression` consults a global `ExpectedLiteralType`:
 
 ```cpp
 static ValueType ExpectedLiteralType = ValueType::Error;
@@ -285,20 +294,20 @@ struct ExpectedLiteralTypeGuard {
 
 Four sites install a guard:
 
-- **`var` initializers.** `ParseVarStmt` installs the declared type so `var x: int32 = 5` parses `5` as `int32` directly.
-- **Assignment RHS.** `ParseAssignmentRHS` looks up the type of the already-declared variable and installs it before parsing the right-hand side, so `x = 10` (where `x: int32`) parses `10` as `int32`.
-- **Function call arguments.** `ParseIdentifierExpr` (the call parser) installs each parameter's declared type before parsing the corresponding argument expression.
-- **`return` expressions.** `ParseReturn` installs the enclosing function's return type so `return 10` inside a `-> int32` function parses `10` as `int32`.
+- **`var` initializers.** `ParseVarStatement` installs the declared type so `var x: int32 = 5` parses `5` as `int32` directly.
+- **Assignment RHS.** `ParseAssignmentRight` looks up the type of the already-declared variable and installs it before parsing the right-hand side, so `x = 10` (where `x: int32`) parses `10` as `int32`.
+- **Function call arguments.** `ParseNameExpression` (the call parser) installs each parameter's declared type before parsing the corresponding argument expression.
+- **`return` expressions.** `ParseReturnStatement` installs the enclosing function's return type so `return 10` inside a `-> int32` function parses `10` as `int32`.
 
 The effect on the IR is that no redundant cast instruction appears:
 
 ```llvm
 ; WITHOUT context guard: var x: float32 = 1.5
-; 1.5 parsed as double, then an fptrunc would be needed — but that's not implicit,
+; 1.5 parsed as double, then an fptrunc would be needed: but that's not implicit,
 ; so this would be a type error.
 
 ; WITH context guard: var x: float32 = 1.5
-; 1.5 parsed as float directly — clean alloca + store, no cast
+; 1.5 parsed as float directly: clean alloca + store, no cast
 %x = alloca float
 store float 1.500000e+00, ptr %x
 ```
@@ -312,27 +321,27 @@ The guard is a scoped RAII object: when it goes out of scope, `ExpectedLiteralTy
 ```cpp
 case tok_true:
   getNextToken();
-  return make_unique<BoolExprAST>(true);
+  return make_unique<BoolExpressionNode>(true);
 case tok_false:
   getNextToken();
-  return make_unique<BoolExprAST>(false);
+  return make_unique<BoolExpressionNode>(false);
 ```
 
-`BoolExprAST` is a new AST class:
+`BoolExpressionNode` is a new AST class:
 
 ```cpp
-class BoolExprAST : public ExprAST {
+class BoolExpressionNode : public ExpressionNode {
   bool Val;
 public:
-  BoolExprAST(bool Val) : Val(Val) { setType(ValueType::Bool); }
+  BoolExpressionNode(bool Val) : Val(Val) { setType(ValueType::Bool); }
   Value *codegen() override;
 };
 ```
 
-`BoolExprAST::codegen` emits an `i1` constant:
+`BoolExpressionNode::codegen` emits an `i1` constant:
 
 ```cpp
-Value *BoolExprAST::codegen() {
+Value *BoolExpressionNode::codegen() {
   return ConstantInt::get(Type::getInt1Ty(*TheContext), Val ? 1 : 0);
 }
 ```
@@ -345,7 +354,7 @@ i1 true
 i1 false
 ```
 
-`Bool` is a distinct type. It is not the result of a comparison widened to an integer — it stays `i1` throughout. Comparisons also return `Bool` / `i1` in chapter 16.
+`Bool` is a distinct type. It is not the result of a comparison widened to an integer: it stays `i1` throughout. Comparisons also return `Bool` / `i1` in chapter 16.
 
 ## ParseTypeToken and ParseOptionalReturnType
 
@@ -353,7 +362,7 @@ i1 false
 
 ```cpp
 static ValueType ParseTypeToken() {
-  switch (CurTok) {
+  switch (CurrentToken) {
   case tok_int:     getNextToken(); return ValueType::Int;
   case tok_int8:    getNextToken(); return ValueType::Int8;
   case tok_int16:   getNextToken(); return ValueType::Int16;
@@ -378,7 +387,7 @@ static ValueType ParseTypeToken() {
 ```cpp
 static ValueType ParseOptionalReturnType(
     ValueType DefaultType = ValueType::None) {
-  if (CurTok != tok_arrow)
+  if (CurrentToken != tok_arrow)
     return DefaultType;
   getNextToken(); // eat '->'
   return ParseTypeToken();
@@ -387,19 +396,19 @@ static ValueType ParseOptionalReturnType(
 
 The `DefaultType` parameter is the key design decision:
 
-- `ParseDefinition` calls `ParseOptionalReturnType(ValueType::None)` — unannotated `def` is void.
-- `ParseExtern` and operator parsers call `ParseOptionalReturnType()` (default `Float64`) — extern declarations and operator overloads default to `float64` because they are typically C library functions or mathematical operators. `ParseDecoratedDef` calls `ParseOptionalReturnType()` and immediately calls `Proto->setReturnType(RetTy)`, so any explicit `->` annotation overrides that placeholder.
+- `ParseFunctionDefinition` calls `ParseOptionalReturnType(ValueType::None)`: unannotated `def` is void.
+- `ParseExtern` and operator parsers call `ParseOptionalReturnType()` (default `Float64`): extern declarations and operator overloads default to `float64` because they are typically C library functions or mathematical operators. `ParseDecoratedFunctionDef` calls `ParseOptionalReturnType()` and immediately calls `Proto->setReturnType(RetTy)`, so any explicit `->` annotation overrides that placeholder.
 
-`ValueType::None` also serves as a placeholder type for all statement-like AST nodes that produce no meaningful value: `ReturnExprAST`, `BlockExprAST`, `ForExprAST`, `IfStmtAST`, and `VarStmtAST` all call `setType(ValueType::None)` in their constructors, and all override `shouldPrintValue()` to return `false`. This is the same pattern as the single-hierarchy AST design noted in chapter 12 — in a clean Stmt/Expr split, statements would carry no type at all. Here, `None` is the convention that means "this node is a statement; its type is not meaningful."
+`ValueType::None` also serves as a placeholder type for all statement-like AST nodes that produce no meaningful value: `ReturnExpressionNode`, `BlockExpressionNode`, `ForExpressionNode`, `IfStatementNode`, and `VarStatementNode` all call `setType(ValueType::None)` in their constructors, and all override `shouldPrintValue()` to return `false`. This is the same pattern as the single-hierarchy AST design noted in chapter 12: in a clean Stmt/Expr split, statements would carry no type at all. Here, `None` is the convention that means "this node is a statement; its type is not meaningful."
 
-## ParsePrototype: Typed Parameters
+## ParseFunctionSignature: Typed Parameters
 
-Chapter 16's prototype parser accepted bare identifiers:
+In Chapter 16, my signature parser accepted bare names:
 
 ```cpp
 // Chapter 16
-while (getNextToken() == tok_identifier)
-  ArgNames.push_back(IdentifierStr);
+while (getNextToken() == tok_name)
+  ArgNames.push_back(Name);
 ```
 
 Chapter 17 requires `name : type` for every parameter:
@@ -408,25 +417,25 @@ Chapter 17 requires `name : type` for every parameter:
 // Chapter 17
 vector<pair<string, ValueType>> ArgNames;
 getNextToken(); // eat '('
-if (CurTok != ')') {
+if (CurrentToken != ')') {
   while (true) {
-    string ArgName = IdentifierStr;
+    string ArgName = Name;
     getNextToken(); // eat identifier
-    if (CurTok != ':')
+    if (CurrentToken != ':')
       return LogErrorP("Parameters require type annotations (e.g., ': int32')");
     getNextToken(); // eat ':'
     ValueType ArgTy = ParseTypeToken();
     if (ArgTy == ValueType::None)
       return LogErrorP("Parameters cannot have None type");
     ArgNames.push_back({ArgName, ArgTy});
-    if (CurTok == ')') break;
-    if (CurTok != ',') return LogErrorP("Expected ')' or ','");
+    if (CurrentToken == ')') break;
+    if (CurrentToken != ',') return LogErrorP("Expected ')' or ','");
     getNextToken(); // eat ','
   }
 }
 ```
 
-`PrototypeAST` now stores `vector<pair<string, ValueType>>` and a `ReturnType` field, with helpers `getArgType(i)`, `getReturnType()`, `setReturnType()`, and `clone()`.
+`FunctionSignatureNode` now stores `vector<pair<string, ValueType>>` and a `ReturnType` field, with helpers `getParameterType(i)`, `getReturnType()`, `setReturnType()`, and `clone()`.
 
 The same function signature in chapter 15 vs chapter 16:
 
@@ -474,13 +483,13 @@ static ValueType LookupVarType(const string &Name) {
 }
 ```
 
-Every `VariableExprAST` carries its resolved type at parse time. When codegen runs, a load uses `LLVMTypeFor(resolvedType)` for the type operand:
+Every `NameExpressionNode` carries its resolved type at parse time. When codegen runs, a load uses `LLVMTypeFor(resolvedType)` for the type operand:
 
 ```llvm
-; var x: int32 — load uses i32
+; var x: int32: load uses i32
 %x_val = load i32, ptr %x
 
-; var r: float32 — load uses float
+; var r: float32: load uses float
 %r_val = load float, ptr %r
 ```
 
@@ -501,10 +510,10 @@ var y: int32
 var a: int8, b: int16   # multiple bindings in one statement
 ```
 
-The colon-type is mandatory. `ParseVarStmt` reads it:
+The colon-type is mandatory. `ParseVarStatement` reads it:
 
 ```cpp
-if (CurTok != ':')
+if (CurrentToken != ':')
   return LogError(
       "Variable declaration requires a type annotation (e.g., ': int32')");
 getNextToken(); // eat ':'
@@ -513,7 +522,7 @@ if (DeclTy == ValueType::None)
   return LogError("Variables cannot have None type");
 ```
 
-If there is no initialiser, a zero constant of the declared type is generated. If there is one, the parser installs a `ExpectedLiteralTypeGuard(DeclTy)` before parsing the initializer expression, then checks assignability:
+If there's no initializer, I generate a zero constant of the declared type. If there is one, I install an `ExpectedLiteralTypeGuard(DeclTy)` before parsing the initializer expression, then check assignability:
 
 ```cpp
 {
@@ -524,13 +533,13 @@ if (!IsAssignable(DeclTy, Init->getType()))
   return LogError("Type mismatch in variable initialization");
 ```
 
-`VarBinding` replaces the old `pair<string, unique_ptr<ExprAST>>`:
+`VarBinding` replaces the old `pair<string, unique_ptr<ExpressionNode>>`:
 
 ```cpp
 struct VarBinding {
   string Name;
   ValueType Ty;
-  unique_ptr<ExprAST> Init;
+  unique_ptr<ExpressionNode> Init;
 };
 ```
 
@@ -541,7 +550,7 @@ The generated IR per declaration:
 %x = alloca double
 store double 1.000000e+00, ptr %x
 
-; var y: int32     (no initializer — zero)
+; var y: int32     (no initializer: zero)
 %y = alloca i32
 store i32 0, ptr %y
 
@@ -575,7 +584,7 @@ the loop declares a fresh variable with `var`. The type is validated:
 - The start expression must be assignable to it.
 - The step expression must be assignable to it.
 
-`ForExprAST` stores `VarType`, and `ForExprAST::codegen` uses `LLVMTypeFor(VarType)` for the `alloca` and the increment:
+`ForExpressionNode` stores `VarType`, and `ForExpressionNode::codegen` uses `LLVMTypeFor(VarType)` for the `alloca` and the increment:
 
 ```cpp
 if (IsFloatType(VarType))
@@ -586,22 +595,27 @@ else
 
 For an integer loop variable the alloca and step use the declared integer type:
 
+This is the real output for `for var i: int = 1, i <= 10, 1:`, compiled and read directly:
+
 ```llvm
-; for var i: int = 1, i <= 10, 1:
-%i = alloca i64
-store i64 1, ptr %i
+%i = alloca i64, align 8
+store i64 1, ptr %i, align 8
+br label %loop_cond
 
-loop:
-  %i_cur = load i64, ptr %i
-  %cmptmp = icmp sle i64 %i_cur, 10
-  br i1 %cmptmp, label %body, label %afterloop
+loop_cond:
+  %i1 = load i64, ptr %i, align 8
+  %cmptmp = icmp sle i64 %i1, 10
+  br i1 %cmptmp, label %loop_body, label %after_loop
 
-body:
+loop_body:
   ; ... body ...
-  %nextvar = add i64 %i_cur, 1
-  store i64 %nextvar, ptr %i
-  br label %loop
+  %i3 = load i64, ptr %i, align 8
+  %nextvar = add i64 %i3, 1
+  store i64 %nextvar, ptr %i, align 8
+  br label %loop_cond
 ```
+
+`%i` gets renumbered (`%i1`, `%i3`, ...) each time it's reloaded, since LLVM's textual IR gives every value in a function a unique name and `%i` itself is already taken by the `alloca`.
 
 Compare with chapter 15 where `i` would have been `alloca double` and used `fadd` for the increment.
 
@@ -617,47 +631,49 @@ bool(x)         # any value → 0 or 1
 float32(n)      # int → float32
 ```
 
-`ParseCastExpr` is invoked from `ParsePrimary` when the current token is a type keyword:
+`ParseCastExpression` is invoked from `ParsePrimary` when the current token is a type keyword:
 
 ```cpp
 case tok_int:    case tok_int8:   case tok_int16:  case tok_int32:
 case tok_int64:  case tok_float:  case tok_float32: case tok_float64:
 case tok_bool:
-  return ParseCastExpr();
+  return ParseCastExpression();
 ```
 
-`CastExprAST::codegen` delegates to `EmitCast`, which emits one of these instructions depending on the type pair:
+`CastExpressionNode::codegen` delegates to `EmitCast`, which emits one of these instructions depending on the type pair:
+
+I compiled a function exercising each of these and read the real instruction names, which differ per conversion rather than sharing one generic hint:
 
 ```llvm
-; int32(3.14)  — float to signed integer (truncates toward zero)
-%cast = fptosi double 3.140000e+00 to i32
+; int32(3.14) : float to signed integer (truncates toward zero)
+%fptosi = fptosi double 3.140000e+00 to i32
 ; result: i32 3
 
-; float64(42)  — integer to double
-%cast = sitofp i64 42 to double
+; float64(42) : integer to double
+%sitofp = sitofp i64 42 to double
 ; result: double 4.200000e+01
 
-; int8(x) where x: int32  — narrowing truncation
-%cast = trunc i32 %x to i8
+; int8(x) where x: int32 : narrowing truncation
+%trunc = trunc i32 %x to i8
 
-; int16(x) where x: int8  — widening sign-extension (explicit cast, same as implicit sext)
-%cast = sext i8 %x to i16
+; int16(y) where y: int8 : widening sign-extension (explicit cast, same as implicit sext)
+%sext = sext i8 %y to i16
 
-; float32(n) where n: int32  — integer to single
-%cast = sitofp i32 %n to float
+; float32(n) where n: int32 : integer to single
+%sitofp = sitofp i32 %n to float
 
-; float64(r) where r: float32  — float extension
-%cast = fpext float %r to double
+; float64(r) where r: float32 : float extension
+%fpext = fpext float %r to double
 
-; float32(r) where r: float64  — float truncation
-%cast = fptrunc double %r to float
+; float32(f) where f: float64 : float truncation
+%fptrunc = fptrunc double %f to float
 
-; bool(x) where x: int32  — compare against zero
-%cast = icmp ne i32 %x, 0
+; bool(x) where x: int32 : compare against zero
+%tobool = icmp ne i32 %x, 0
 ; result: i1
 
-; bool(f) where f: float64  — compare float against zero
-%cast = fcmp one double %f, 0.000000e+00
+; bool(f) where f: float64 : compare float against zero
+%tobool = fcmp one double %f, 0.000000e+00
 ; result: i1
 ```
 
@@ -736,7 +752,7 @@ static bool IsAssignable(ValueType Dest, ValueType Src) {
 }
 ```
 
-The fourth rule covers `IsFloatType(Dest)` — any integer can widen to any float type (`Float`, `Float32`, or `Float64`).
+The fourth rule covers `IsFloatType(Dest)`: any integer can widen to any float type (`Float`, `Float32`, or `Float64`).
 
 `CanWidenInt` determines integer widening legality:
 
@@ -755,7 +771,7 @@ static bool CanWidenInt(ValueType From, ValueType To) {
 
 Where `FixedIntRank` assigns `Int8=1, Int16=2, Int32=3, Int64=4`.
 
-`IsFixedIntType` covers `Int8`, `Int16`, `Int32`, `Int64` — but not `Int`. `Int` is the platform default integer and is treated separately: it can widen to `Int64`, but not to `Int32` or smaller (since on a 64-bit host `Int` is already 64-bit wide).
+`IsFixedIntType` covers `Int8`, `Int16`, `Int32`, `Int64`: but not `Int`. `Int` is the platform default integer and is treated separately: it can widen to `Int64`, but not to `Int32` or smaller (since on a 64-bit host `Int` is already 64-bit wide).
 
 Each allowed implicit conversion and the IR it produces:
 
@@ -766,22 +782,30 @@ Each allowed implicit conversion and the IR it produces:
 | `var x: int64 = int32_val` | Yes | `sext i32 %v to i64` |
 | `var x: float64 = int_val` | Yes | `sitofp i64 %v to double` |
 | `var x: float32 = int_val` | Yes | `sitofp i64 %v to float` |
-| `var x: float = float64_val` | Yes | *(no instruction — same IR type)* |
+| `var x: float = float64_val` | Yes | *(no instruction: same IR type)* |
 | `var x: int32 = int64_val` | No | type error |
 | `var x: bool = int_val` | No | type error |
 
-`EmitImplicitCast` is called by codegen whenever one of the allowed cases applies:
+`EmitImplicitCast` is called by codegen whenever one of the allowed cases applies. This is the real function, and it's narrower than `IsAssignable` above it:
 
 ```cpp
 static Value *EmitImplicitCast(Value *V, ValueType From, ValueType To) {
-  if (From == To) return V;
-  if ((From == ValueType::Float && To == ValueType::Float64) ||
-      (From == ValueType::Float64 && To == ValueType::Float))
-    return V;  // same IR type — no instruction
+  if (From == To)
+    return V;
+  if (IsFloatType(From) && IsFloatType(To)) {
+    unsigned FromBits = LLVMTypeFor(From)->getScalarSizeInBits();
+    unsigned ToBits = LLVMTypeFor(To)->getScalarSizeInBits();
+    if (FromBits == ToBits)
+      return V;
+    if (FromBits < ToBits)
+      return Builder->CreateFPExt(V, LLVMTypeFor(To), "fpext");
+    return nullptr;
+  }
   if (IsIntType(From) && IsIntType(To) && CanWidenInt(From, To)) {
     unsigned FromBits = LLVMTypeFor(From)->getIntegerBitWidth();
-    unsigned ToBits   = LLVMTypeFor(To)->getIntegerBitWidth();
-    if (FromBits == ToBits) return V;
+    unsigned ToBits = LLVMTypeFor(To)->getIntegerBitWidth();
+    if (FromBits == ToBits)
+      return V;
     return Builder->CreateSExt(V, LLVMTypeFor(To), "sext");
   }
   if (IsIntType(From) && IsFloatType(To))
@@ -789,6 +813,8 @@ static Value *EmitImplicitCast(Value *V, ValueType From, ValueType To) {
   return nullptr;
 }
 ```
+
+The final branch handles every integer-to-float conversion accepted by `IsAssignable`; `LLVMTypeFor(To)` selects either `float` or `double`. Also note that `Float`/`Float64` interchangeability isn't special-cased here as `IsAssignable` implies: it falls out naturally from the `FromBits == ToBits` check in the float-to-float branch, since both are 64 bits.
 
 ## Binary Operators: Type-Aware Arithmetic
 
@@ -799,7 +825,7 @@ static ValueType GetBinaryResultType(int Op, ValueType L, ValueType R) {
   if (IsArithmeticOp(Op)) {
     if (!IsNumericType(L) || !IsNumericType(R))
       return ValueType::Error;
-    // Float and Float64 can be mixed — result is Float64
+    // Float and Float64 can be mixed: result is Float64
     if (IsFloatType(L) && IsFloatType(R)) {
       if (L == R) return L;
       if ((L == ValueType::Float && R == ValueType::Float64) ||
@@ -835,19 +861,29 @@ static ValueType GetBinaryResultType(int Op, ValueType L, ValueType R) {
 }
 ```
 
-`BinaryExprAST::codegen` implicitly casts both operands to the result type then selects float vs integer instructions:
+`BinaryExpressionNode::codegen` implicitly casts both operands to the result type then selects float vs integer instructions. This is the arithmetic case of its `switch (Operator)`; comparisons are a separate case with their own type-resolution logic, described below:
 
 ```cpp
-L = EmitImplicitCast(L, LTy, getType());
-R = EmitImplicitCast(R, RTy, getType());
-if (IsFloatType(getType())) {
-  if (Op == '+') return Builder->CreateFAdd(L, R, "addtmp");
-  if (Op == '-') return Builder->CreateFSub(L, R, "subtmp");
-  return Builder->CreateFMul(L, R, "multmp");
+case '+':
+case '-':
+case '*': {
+  L = EmitImplicitCast(L, LType, getType());
+  R = EmitImplicitCast(R, RType, getType());
+  if (!L || !R)
+    return LogErrorV("Type mismatch in arithmetic");
+  if (IsFloatType(getType())) {
+    if (Operator == '+')
+      return Builder->CreateFAdd(L, R, "addtmp");
+    if (Operator == '-')
+      return Builder->CreateFSub(L, R, "subtmp");
+    return Builder->CreateFMul(L, R, "multmp");
+  }
+  if (Operator == '+')
+    return Builder->CreateAdd(L, R, "addtmp");
+  if (Operator == '-')
+    return Builder->CreateSub(L, R, "subtmp");
+  return Builder->CreateMul(L, R, "multmp");
 }
-if (Op == '+') return Builder->CreateAdd(L, R, "addtmp");
-if (Op == '-') return Builder->CreateSub(L, R, "subtmp");
-return Builder->CreateMul(L, R, "multmp");
 ```
 
 Each case and its IR:
@@ -865,9 +901,10 @@ Each case and its IR:
 %sitofp = sitofp i32 %a to double
 %addtmp = fadd double %sitofp, %b
 
-; int32 + float32 → float32   (int32 widens into float32)
-%sitofp = sitofp i32 %a to float
-%addtmp = fadd float %sitofp, %b
+; int32 + float32: GetBinaryResultType says float32 (int32 is assignable to
+; float32), but EmitImplicitCast can't actually build that cast (see Known
+; Limitations), so this fails at codegen with "Type mismatch in arithmetic"
+; despite parsing successfully. I found this by trying to compile it.
 
 ; float + float64 → float64   (Float↔Float64: no cast instruction)
 %addtmp = fadd double %a, %b
@@ -882,7 +919,7 @@ Each case and its IR:
 ; float32 + float64 → error   (different float sizes; rejected at parse time)
 ```
 
-Comparisons return `i1` directly — there is no `UIToFP` widening to `double` as there was in chapter 15. The old pattern emerged from having only `double`; now each comparison produces a proper `Bool`.
+Comparisons return `i1` directly: there is no `UIToFP` widening to `double` as there was in chapter 15. The old pattern emerged from having only `double`; now each comparison produces a proper `Bool`.
 
 ## EmitCast: Explicit Conversion Table
 
@@ -898,7 +935,7 @@ Comparisons return `i1` directly — there is no `UIToFP` widening to `double` a
 | larger int | smaller int | `trunc iN %v to iM` |
 | float32 | float / float64 | `fpext float %v to double` |
 | float / float64 | float32 | `fptrunc double %v to float` |
-| float ↔ float64 | either | *(no instruction — same IR type)* |
+| float ↔ float64 | either | *(no instruction: same IR type)* |
 | any int | bool | `icmp ne iN %v, 0` |
 | any float | bool | `fcmp one double/float %v, 0.0` |
 
@@ -911,7 +948,7 @@ def greet():        # return type = None (void)
     printd(42.0)
 ```
 
-Explicit `-> None` is identical at the IR level — it is documentary only:
+Explicit `-> None` is identical at the IR level: it is documentary only:
 
 ```pyxc
 def greet() -> None:
@@ -928,7 +965,7 @@ entry:
 }
 ```
 
-The `call` result is present in the IR (LLVM always names it) but no `ret` of that value follows — `ret void` terminates the block.
+The `call` result is present in the IR (LLVM always names it) but no `ret` of that value follows: `ret void` terminates the block.
 
 ### ReturnTypeGuard
 
@@ -944,14 +981,14 @@ struct ReturnTypeGuard {
 };
 ```
 
-`ParseDefinition` instantiates a `ReturnTypeGuard` before parsing the body. `ParseReturn` also installs an `ExpectedLiteralTypeGuard(CurrentFunctionReturnType)` before parsing the return value, so bare integer or float literals in `return` statements are given the function's return type directly. Then it validates:
+`ParseFunctionDefinition` instantiates a `ReturnTypeGuard` before parsing the body. `ParseReturnStatement` also installs an `ExpectedLiteralTypeGuard(CurrentFunctionReturnType)` before parsing the return value, so bare integer or float literals in `return` statements are given the function's return type directly. Then it validates:
 
 ```cpp
 // bare 'return' (no value)
-if (CurTok == tok_eol || CurTok == tok_dedent || CurTok == tok_eof) {
+if (CurrentToken == tok_eol || CurrentToken == tok_dedent || CurrentToken == tok_eof) {
   if (CurrentFunctionReturnType != ValueType::None)
     return LogError("Return value required");
-  return make_unique<ReturnExprAST>(nullptr);
+  return make_unique<ReturnExpressionNode>(nullptr);
 }
 // return with value
 if (CurrentFunctionReturnType == ValueType::None)
@@ -1017,43 +1054,61 @@ In the REPL and file-run mode, every top-level expression is wrapped in an anony
 ```cpp
 ValueType RetTy = Stmt->getType();
 if (!Stmt->isReturnExpr() && RetTy != ValueType::None)
-  Stmt = make_unique<ReturnExprAST>(std::move(Stmt));
+  Stmt = make_unique<ReturnExpressionNode>(std::move(Stmt));
 
-auto Proto = make_unique<PrototypeAST>(
+auto Proto = make_unique<FunctionSignatureNode>(
     FnName, vector<pair<string, ValueType>>(), CurLoc, RetTy);
 ```
 
 ```llvm
-; calling greet() at top level — wrapper is void
+; calling greet() at top level: wrapper is void
 define void @__pyxc.toplevel.3() {
 entry:
   call void @greet()
   ret void
 }
 
-; evaluating 1 + 2 at top level — wrapper returns int64
+; evaluating 1 + 2 at top level: wrapper returns int64
 define i64 @__pyxc.toplevel.4() {
 entry:
   ret i64 3
 }
 ```
 
-`CallExprAST` overrides `shouldPrintValue()` — void calls are silently discarded in the REPL without printing anything.
+`CallExpressionNode` overrides `shouldPrintValue()`: void calls are silently discarded in the REPL without printing anything.
 
 ## The main() Wrapper
 
-When `--emit exe` is used, the user's `main()` must have a C-ABI `int main()` entry point. The wrapper is created unconditionally — regardless of what `main()` returns — and correctly forwards an `int32` return value or substitutes `0` for void:
+When `--emit exe` is used, the OS needs a C-ABI `int main()` entry point, but I don't want to force the user to write `def main() -> int32` specifically; `int` (the platform default) or plain `def main()` (void) should both work. So before wrapping anything, I validate the return type explicitly and reject anything else:
+
+```cpp
+auto MainIt = FunctionSignatures.find("main");
+if (MainIt != FunctionSignatures.end()) {
+  ValueType MainRet = MainIt->second->getReturnType();
+  if (MainRet != ValueType::Int && MainRet != ValueType::None) {
+    fprintf(stderr, "Error: main() must return int or None\n");
+    HadError = true;
+    return false;
+  }
+}
+```
+
+I found this out by trying `def main() -> int32` myself: it's rejected. Only `int` and `None` are accepted, since those are the two shapes the wrapper below actually knows how to handle.
 
 ```cpp
 if (auto *UserMain = TheModule->getFunction("main")) {
+  // Always wrap user's main() in an int32 main() so the OS entry point has
+  // the correct C ABI. The user-defined main() must return int or None.
   UserMain->setName("__pyxc.user_main");
   FunctionType *FT = FunctionType::get(Type::getInt32Ty(*TheContext), false);
-  Function *Wrapper = Function::Create(FT, Function::ExternalLinkage,
-                                        "main", TheModule.get());
+  Function *Wrapper = Function::Create(FT, Function::ExternalLinkage, "main",
+                                       TheModule.get());
   BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", Wrapper);
   IRBuilder<> TmpB(BB);
-  if (UserMain->getReturnType()->isIntegerTy(32)) {
+  if (UserMain->getReturnType()->isIntegerTy()) {
     Value *Ret = TmpB.CreateCall(UserMain);
+    if (!UserMain->getReturnType()->isIntegerTy(32))
+      Ret = TmpB.CreateTrunc(Ret, Type::getInt32Ty(*TheContext));
     TmpB.CreateRet(Ret);
   } else {
     TmpB.CreateCall(UserMain);
@@ -1062,26 +1117,27 @@ if (auto *UserMain = TheModule->getFunction("main")) {
 }
 ```
 
-For a `def main() -> int32` user function:
+The `isIntegerTy(32)` check isn't about accepting `int32` specifically, `int` itself might already be 32 or 64 bits depending on the host. On my 64-bit host, `int` resolves to `i64`, so `__pyxc.user_main`'s return has to be truncated down to the `i32` the OS actually expects. I confirmed this directly for `def main() -> int:`:
 
 ```llvm
-define i32 @__pyxc.user_main() {
+define i64 @__pyxc.user_main() {
   ; ... user code ...
-  ret i32 0
+  ret i64 0
 }
 
 define i32 @main() {
 entry:
-  %ret = call i32 @__pyxc.user_main()
-  ret i32 %ret
+  %0 = call i64 @__pyxc.user_main()
+  %1 = trunc i64 %0 to i32
+  ret i32 %1
 }
 ```
 
-For a `def main()` (void) user function:
+For a void `def main():`, the wrapper skips the truncation path entirely and just substitutes a literal `0`:
 
 ```llvm
 define void @__pyxc.user_main() {
-  ; ... user code ...
+entry:
   ret void
 }
 
@@ -1092,7 +1148,7 @@ entry:
 }
 ```
 
-The wrapper is what the OS and C runtime call. The user-visible `main` function name is preserved by renaming the user's function to `__pyxc.user_main`, then wrapping it.
+The wrapper is what the OS and C runtime actually call. The user-visible `main` name is preserved by renaming the user's own function to `__pyxc.user_main` first, then building the wrapper under the name `main` that now points at the real entry point.
 
 ## JIT Dispatch: Type-Switched Invocation
 
@@ -1141,13 +1197,13 @@ if (RetTy == ValueType::None) {
 
 Key points:
 - `Float` and `Float64` both print as `%f`.
-- Integer types print as `%lld` — decimal integer notation, not floating-point.
-- `Bool` prints as `True` or `False` — matching the keyword spelling.
+- Integer types print as `%lld`: decimal integer notation, not floating-point.
+- `Bool` prints as `True` or `False`: matching the keyword spelling.
 - `None` (void) produces no output.
 
 ## Debug Info: Per-Type DWARF Descriptors
 
-Chapter 16 had one `DblDIType` for everything. Chapter 17 needs a descriptor per type:
+In Chapter 16 I had one `DblDIType` for everything. Now I need a descriptor per type:
 
 ```cpp
 static DIType *IntDIType     = nullptr;
@@ -1177,7 +1233,7 @@ BoolDIType    = DIB->createBasicType("bool",       1, dwarf::DW_ATE_boolean);
 
 Both `ValueType::Float` and `ValueType::Float64` return `Float64DIType`. In the DWARF output, a debugger sees `int32`, `float64`, `bool`, etc. as distinct named types rather than everything as `double`.
 
-The void type uses `createUnspecifiedType("None")` — the correct DWARF tag `DW_TAG_unspecified_type` for a type with no representation.
+The void type uses `createUnspecifiedType("None")`: the correct DWARF tag `DW_TAG_unspecified_type` for a type with no representation.
 
 ## HadError and Exit Codes
 
@@ -1204,7 +1260,7 @@ The REPL keeps running after a type error; file mode aborts with exit code 1.
 
 ## Putting It Together: A Full Typed Program
 
-Here is a small program that exercises the type system, and the IR it produces:
+Here's a small program that exercises the type system, and the real IR it produces, compiled and read directly rather than written from memory:
 
 ```pyxc
 extern def printd(x: float64) -> float64
@@ -1212,47 +1268,53 @@ extern def printd(x: float64) -> float64
 def add(a: int32, b: int32) -> int32:
     return a + b
 
-def main() -> int32:
+def main() -> int:
     var x: int32 = add(10, 5)
     var y: float64 = float64(x)
     printd(y)
     return 0
 ```
 
-```llvm
-declare double @printd(double)
+I use `-> int` for `main`, not `-> int32`; that validation check above rejects anything else.
 
+```llvm
 define i32 @add(i32 %a, i32 %b) {
 entry:
-  %addtmp = add i32 %a, %b
+  %b2 = alloca i32, align 4
+  %a1 = alloca i32, align 4
+  store i32 %a, ptr %a1, align 4
+  store i32 %b, ptr %b2, align 4
+  %a3 = load i32, ptr %a1, align 4
+  %b4 = load i32, ptr %b2, align 4
+  %addtmp = add i32 %a3, %b4
   ret i32 %addtmp
 }
 
-define i32 @__pyxc.user_main() {
+define i64 @__pyxc.user_main() {
 entry:
-  %x = alloca i32
-  %call = call i32 @add(i32 10, i32 5)
-  store i32 %call, ptr %x
-
-  %y = alloca double
-  %x_val = load i32, ptr %x
-  %cast = sitofp i32 %x_val to double
-  store double %cast, ptr %y
-
-  %y_val = load double, ptr %y
-  call double @printd(double %y_val)
-
-  ret i32 0
+  %y = alloca double, align 8
+  %x = alloca i32, align 4
+  %calltmp = call i32 @add(i32 10, i32 5)
+  store i32 %calltmp, ptr %x, align 4
+  %x1 = load i32, ptr %x, align 4
+  %sitofp = sitofp i32 %x1 to double
+  store double %sitofp, ptr %y, align 8
+  %y2 = load double, ptr %y, align 8
+  %calltmp3 = call double @printd(double %y2)
+  ret i64 0
 }
 
 define i32 @main() {
 entry:
-  %ret = call i32 @__pyxc.user_main()
-  ret i32 %ret
+  %0 = call i64 @__pyxc.user_main()
+  %1 = trunc i64 %0 to i32
+  ret i32 %1
 }
 ```
 
-Before chapter 16 every value in this program would have been `double`. Now `add` uses `i32`, the local variable `x` is an `i32` alloca, the `sitofp` appears exactly once and only where the program explicitly asked for it with `float64(x)`, and `main` has a proper `i32` return type.
+Two things worth noticing that I wouldn't have guessed without actually compiling this. First, `add`'s parameters get their own `alloca`s and are loaded back before the addition, even though nothing about the source needs that indirection, that's `IRBuilder<NoFolder>` plus the empty `-O0` pass list from earlier in this chapter: nothing is promoting those stack slots to registers yet, so every parameter round-trips through memory exactly like a `var` would. Second, `__pyxc.user_main` itself returns `i64`, not `i32`, because `int` resolved to the platform's 64-bit width on the machine I compiled this on; the `trunc` in `main` is doing real work here, not just defensive code.
+
+Before Chapter 16, every value in this program would have been `double`, with no `alloca`/`load` distinction to speak of. Now `add` uses `i32` throughout, the `sitofp` appears exactly once and only where the source explicitly asked for it with `float64(x)`, and the path from a typed `main` down to the OS-facing `i32 @main` is fully explicit instead of assumed.
 
 ## Known Limitations
 
@@ -1260,9 +1322,9 @@ Before chapter 16 every value in this program would have been `double`. Now `add
 
 **`None` cannot be used as a variable type.** `var x: None` is rejected. `None` is only valid as a return type annotation.
 
-**`Int` does not widen to fixed-size integers.** `Int` (pointer-width) can widen to `Int64`, but not to `Int32` or smaller — even on a 32-bit host where they would have the same width. Use an explicit cast when crossing `Int`/`Int32` boundaries.
+**`Int` does not widen to fixed-size integers.** `Int` (pointer-width) can widen to `Int64`, but not to `Int32` or smaller: even on a 32-bit host where they would have the same width. Use an explicit cast when crossing `Int`/`Int32` boundaries.
 
-**`float32 + float64` is a type error.** The two float sizes are not interchangeable in binary operations — only `float` and `float64` are. Use an explicit cast: `float64(x) + y`.
+**`float32 + float64` is a type error.** The two float sizes are not interchangeable in binary operations: only `float` and `float64` are. Use an explicit cast: `float64(x) + y`.
 
 ## Try It
 
@@ -1303,7 +1365,7 @@ add(1.0, 2.0)  # Error: argument 1 expects int32
 pyxc mismatch.pyxc  # exits with status 1
 ```
 
-**Mixed int sizes — widening is automatic**
+**Mixed int sizes: widening is automatic**
 
 ```pyxc
 var a: int8 = 10
@@ -1334,9 +1396,89 @@ cmake -S . -B build && cmake --build build
 echo "var x: int32 = 7" | ./build/pyxc
 ```
 
+## The Full Grammar
+
+[pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-17/pyxc.ebnf)
+
+```ebnf
+program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
+end-of-lines            = end-of-line { end-of-line } ;
+top-level-item             = function-definition | decorated-function-definition | external | top-level-expression ;
+function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ; (* changed: optional return type *)
+(* If the return type is omitted, it defaults to None. *)
+decorated-function-definition    = binary-decorator end-of-lines "def" binary-operator-signature [ "->" type ] ":" ( simple-statement | end-of-lines block )
+                | unary-decorator  end-of-lines "def" unary-operator-signature  [ "->" type ] ":" ( simple-statement | end-of-lines block ) ; (* changed: optional return type *)
+binary-decorator = "@" "binary" "(" integer ")" ;
+unary-decorator  = "@" "unary" ;
+binary-operator-signature = custom-operator-character "(" typed-parameter "," typed-parameter ")" ; (* changed: typed-parameter *)
+unary-operator-signature  = custom-operator-character "(" typed-parameter ")" ; (* changed: typed-parameter *)
+external        = "extern" "def" function-signature [ "->" type ] ; (* changed: optional return type *)
+top-level-expression    = expression ;
+function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ; (* changed: typed-parameter *)
+typed-parameter      = name ":" type ; (* new *)
+if-statement          = "if" expression ":" suite
+                [ end-of-lines "else" ":" suite ] ;
+for-statement         = "for"
+                  ( "var" name ":" type | name ) (* changed: typed var *)
+                  "=" expression "," expression "," expression ":" suite ;
+variable-statement         = "var" variable-binding { "," variable-binding } ;
+assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
+simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
+compound-statement    = if-statement | for-statement ;
+statement       = simple-statement | compound-statement ;
+suite           = simple-statement | compound-statement | end-of-lines block ;
+return-statement      = "return" [ expression ] ; (* changed: value now optional *)
+statement-separator = end-of-lines | BLOCK_END ;
+block = indent statement { statement-separator statement } dedent ;
+expression      = unary-expression binary-operator-right ;
+binary-operator-right        = { binary-operator unary-expression } ;
+lvalue          = name ;
+variable-binding      = name ":" type [ "=" expression ] ; (* changed: type required *)
+unary-expression       = unary-operator unary-expression | primary ;
+unary-operator         = "-" | user-defined-unary-operator ;
+primary         = cast-expression | name-expression | number-expression | boolean-literal | parenthesized-expression ; (* changed: added cast-expression, boolean-literal *)
+cast-expression        = cast-type "(" expression ")" ; (* new *)
+name-expression  = name | call-expression ;
+call-expression        = name "(" [ expression { "," expression } ] ")" ;
+number-expression      = number ;
+parenthesized-expression       = "(" expression ")" ;
+binary-operator        = builtin-binary-operator | user-defined-binary-operator ;
+indent          = INDENT ;
+dedent          = DEDENT ;
+
+builtin-binary-operator = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
+user-defined-binary-operator = ? any operator-character defined as a custom binary operator ? ;
+user-defined-unary-operator  = ? any operator-character defined as a custom unary operator ? ;
+custom-operator-character    = ? any operator-character that is not "-" or a builtin-binary-operator,
+                    and not already defined as a custom operator ? ;
+operator-character          = ? any single ASCII punctuation character ? ;
+name      = (letter | "_") { letter | digit | "_" } ;
+type            = "int" | "int8" | "int16" | "int32" | "int64"
+                | "float" | "float32" | "float64"
+                | "bool" | "None" ; (* new *)
+cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
+                | "float" | "float32" | "float64"
+                | "bool" ; (* new *)
+integer         = digit { digit } ;
+number          = ( digit { digit } [ "." { digit } ]
+                  | "." digit { digit } ) [ exponent ] ; (* changed: added exponent *)
+exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ; (* new *)
+boolean-literal    = "True" | "False" ; (* new *)
+letter          = "A".."Z" | "a".."z" ;
+digit           = "0".."9" ;
+end-of-line             = "\r\n" | "\r" | "\n" ;
+comment = "#" { comment-character } ;
+comment-character = ? any character except "\r" and "\n" ? ;
+whitespace = " " | "\t" | "\v" | "\f" ;
+INDENT          = ? synthetic token emitted by lexer ? ;
+DEDENT          = ? synthetic token emitted by lexer ? ;
+
+BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
+```
+
 ## What's Next
 
-Pyxc now has a real type system with ten scalar types, explicit casts, typed parameters and return values, and a void type for side-effecting functions. The next step is aggregate types — structs — which require extending the type system beyond scalars and introducing memory layout decisions. The debug info infrastructure built in chapters 15 and 16 will handle them immediately once the right DWARF descriptors are wired in.
+I now have a real type system with ten scalar types, explicit casts, typed parameters and return values, and a void type for side-effecting functions. The next step is aggregate types, structs, which need the type system extended beyond scalars and real memory-layout decisions. The debug info infrastructure I built in chapters 15 and 16 should handle them immediately once I wire in the right DWARF descriptors.
 
 ## Need Help?
 

@@ -1,11 +1,11 @@
 ---
-description: "Add pointer types, addr() for taking addresses, and p[i] indexing — so functions can modify the caller's data."
+description: "Add pointer types, addr() for taking addresses, and p[i] indexing: so functions can modify the caller's data."
 ---
 # 19. pyxc: Pointers
 
 ## Where We Are
 
-[Chapter 18](chapter-18.md) added structs, but with a catch: structs are passed by value. If you hand a struct to a function and the function modifies a field, the caller's copy is unchanged. That's fine for pure computations, and it's a deliberate design choice — but sometimes you actually want to modify the caller's data.
+[Chapter 18](chapter-18.md) gave me structs, but with a catch: structs are passed by value. If I hand a struct to a function and the function modifies a field, my copy back at the call site is unchanged. That's fine for pure computations, and it's a deliberate design choice, but sometimes I actually want to modify the caller's data.
 
 That's what pointers are for. After this chapter:
 
@@ -39,7 +39,7 @@ cd pyxc-llvm-tutorial/code/chapter-19
 
 ```ebnf
 type        ::= ...
-              | 'ptr' '[' type ']'   (* pointer to type — no nesting allowed *)
+              | 'ptr' '[' type ']'   (* pointer to type: no nesting allowed *)
 
 addr-expr   ::= 'addr' '(' lvalue ')'
 
@@ -50,7 +50,7 @@ index-expr  ::= lvalue '[' expression ']' ('.' identifier)*
 index-assign ::= lvalue '[' expression ']' ('.' identifier)* '=' expression
 ```
 
-`ptr[T]` is a type annotation only — you cannot construct one without `addr`. `addr` takes an lvalue (a named variable, optionally followed by field access) and returns a pointer to it. `p[i]` reads or writes the value at offset `i` from the pointer. `p[i].field` chains field access after indexing, for pointers to structs.
+`ptr[T]` is a type annotation only: I can't construct one without `addr`. `addr` takes an lvalue (a named variable, optionally followed by field access) and returns a pointer to it. `p[i]` reads or writes the value at offset `i` from the pointer. `p[i].field` chains field access after indexing, for pointers to structs.
 
 Nested pointer types (`ptr[ptr[int]]`) and pointers to `None` are rejected at parse time.
 
@@ -69,9 +69,9 @@ Registered in the keyword map:
 
 ## `ValueType::Pointer`
 
-`Pointer` is a new entry in the `ValueType` enum, after `Struct`. Unlike scalar types, a pointer value is not self-describing — `ValueType::Pointer` alone does not tell you what the pointer points to. You need the pointee type alongside it.
+`Pointer` is a new entry in the `ValueType` enum, after `Struct`. Unlike scalar types, a pointer value isn't self-describing: `ValueType::Pointer` alone doesn't say what the pointer points to. I need the pointee type carried alongside it.
 
-For scalar types and structs, the pointee information is carried in the `StructName` string field that already exists on every `ExprAST` node. For pointers, that same field is reused to carry an encoded string describing the pointee:
+For scalar types and structs, the pointee information is carried in the `StructName` string field that already exists on every `ExpressionNode` node. For pointers, that same field is reused to carry an encoded string describing the pointee:
 
 ```cpp
 static string EncodePointerType(ValueType PointeeType,
@@ -109,7 +109,7 @@ case ValueType::Pointer:
   return PointerType::getUnqual(*TheContext);
 ```
 
-`PointerType::getUnqual` produces the opaque `ptr` type — LLVM does not distinguish `ptr[int]` from `ptr[Point]` in the type system. The element type only appears in `getelementptr` and `load`/`store` instructions, not in the pointer type itself. This is LLVM's opaque pointer model, which has been the default since LLVM 15.
+`PointerType::getUnqual` produces the opaque `ptr` type: LLVM does not distinguish `ptr[int]` from `ptr[Point]` in the type system. The element type only appears in `getelementptr` and `load`/`store` instructions, not in the pointer type itself. This is LLVM's opaque pointer model, which has been the default since LLVM 15.
 
 The zero value for a pointer is null:
 
@@ -139,43 +139,43 @@ case tok_ptr: {
 }
 ```
 
-The parsed pointee type is immediately encoded and written into the `StructName` output parameter. From this point on, the pointer's pointee information travels with it as an opaque string through `VarScopes`, `PrototypeAST::ArgInfo`, `VariableExprAST`, and every other place that stores a `ValueType` alongside a `StructName`.
+The parsed pointee type is immediately encoded and written into the `StructName` output parameter. From this point on, the pointer's pointee information travels with it as an opaque string through `VarScopes`, `FunctionSignatureNode::ArgInfo`, `VariableExprAST`, and every other place that stores a `ValueType` alongside a `StructName`.
 
 ## `addr`: Taking the Address of an Lvalue
 
-`addr(x)` returns a pointer to `x`. `addr(p.x)` returns a pointer to the field `x` of struct `p`. `ParseAddrExpr` handles both:
+`addr(x)` returns a pointer to `x`. `addr(p.x)` returns a pointer to the field `x` of struct `p`. `ParseAddrExpression` handles both:
 
 ```cpp
-static unique_ptr<ExprAST> ParseAddrExpr() {
+static unique_ptr<ExpressionNode> ParseAddrExpression() {
   getNextToken(); // eat 'addr'
   // expect '('
   getNextToken(); // eat '('
-  // expect identifier — addr requires an lvalue
-  string BaseName = IdentifierStr;
+  // expect identifier: addr requires an lvalue
+  string BaseName = Name;
   getNextToken(); // eat identifier
   ValueType CurType = LookupVarType(BaseName);
   // walk optional field chain: addr(o.inner.value)
   vector<string> Path;
-  while (CurTok == '.') {
+  while (CurrentToken == '.') {
     // validate each field, advance CurType and CurStruct
     Path.push_back(Field);
   }
   // expect ')'
-  return make_unique<AddrExprAST>(BaseName, Path, CurType,
+  return make_unique<AddrExpressionNode>(BaseName, Path, CurType,
                                   EncodePointerType(CurType, CurStruct));
 }
 ```
 
-The resulting `AddrExprAST` has type `ValueType::Pointer` and its `StructName` holds the encoded pointee type.
+The resulting `AddrExpressionNode` has type `ValueType::Pointer` and its `StructName` holds the encoded pointee type.
 
-`addr` only accepts a named variable, optionally with field access. Expressions like `addr(1 + 2)` are rejected immediately — the parser checks for `tok_identifier` right after the opening `(`.
+`addr` only accepts a named variable, optionally with field access. Expressions like `addr(1 + 2)` are rejected immediately: the parser checks for `tok_name` right after the opening `(`.
 
-### `AddrExprAST::codegen`
+### `AddrExpressionNode::codegen`
 
 ```cpp
-Value *AddrExprAST::codegen() {
+Value *AddrExpressionNode::codegen() {
   if (FieldPath.empty()) {
-    // addr(x) — return the alloca or global directly
+    // addr(x): return the alloca or global directly
     auto It = NamedValues.find(BaseName);
     if (It != NamedValues.end() && It->second)
       return It->second;
@@ -183,13 +183,13 @@ Value *AddrExprAST::codegen() {
       return GV;
     return LogErrorV("Unknown variable name");
   }
-  // addr(p.x) — return the field pointer from GetFieldAddress
+  // addr(p.x): return the field pointer from GetFieldAddress
   Value *Ptr = GetFieldAddress(BaseName, FieldPath);
   return Ptr;
 }
 ```
 
-For a local variable, LLVM already represents it as an `alloca` — a pointer to its storage. `addr(x)` simply returns that pointer without any new instruction. For a struct field, `GetFieldAddress` (from chapter 17) computes and returns the GEP pointer for that field.
+For a local variable, LLVM already represents it as an `alloca`: a pointer to its storage. `addr(x)` simply returns that pointer without any new instruction. For a struct field, `GetFieldAddress` (from chapter 17) computes and returns the GEP pointer for that field.
 
 ```llvm
 ; var x: int = 42
@@ -197,7 +197,7 @@ For a local variable, LLVM already represents it as an `alloca` — a pointer to
 %x = alloca i64
 store i64 42, ptr %x
 %p = alloca ptr
-store ptr %x, ptr %p   ; addr(x) is just %x — the alloca itself
+store ptr %x, ptr %p   ; addr(x) is just %x: the alloca itself
 ```
 
 ```llvm
@@ -216,10 +216,10 @@ store ptr %fieldptr, ptr %px
 
 ### Parsing
 
-`ParseIndexExpr` is called from `ParseIdentifierExpr` whenever `[` follows a pointer-typed variable or field:
+`ParseIndexExpression` is called from `ParseNameExpression` whenever `[` follows a pointer-typed variable or field:
 
 ```cpp
-static unique_ptr<ExprAST> ParseIndexExpr(string BaseName,
+static unique_ptr<ExpressionNode> ParseIndexExpression(string BaseName,
                                           vector<string> FieldPath,
                                           ValueType BaseType,
                                           const string &BaseStructName) {
@@ -229,7 +229,7 @@ static unique_ptr<ExprAST> ParseIndexExpr(string BaseName,
   // reject if index is not an integer type
   getNextToken(); // eat ']'
   // decode pointee type from BaseStructName
-  return make_unique<IndexExprAST>(BaseName, FieldPath, Index, ElemType, ElemStruct);
+  return make_unique<IndexExpressionNode>(BaseName, FieldPath, Index, ElemType, ElemStruct);
 }
 ```
 
@@ -240,7 +240,7 @@ The element type (what the pointer points to) is decoded from the encoded string
 Both reads and writes need the element address. `BuildIndexElementPtr` computes it without loading:
 
 ```cpp
-static Value *BuildIndexElementPtr(IndexExprAST *IdxExpr) {
+static Value *BuildIndexElementPtr(IndexExpressionNode *IdxExpr) {
   // load the pointer value from the base variable or field
   Value *BasePtr = LoadPointerValue(IdxExpr->getBaseName(),
                                     IdxExpr->getFieldPath(), ...);
@@ -253,12 +253,12 @@ static Value *BuildIndexElementPtr(IndexExprAST *IdxExpr) {
 }
 ```
 
-The index is always widened to `i64` before the GEP — LLVM requires a consistent index type.
+The index is always widened to `i64` before the GEP: LLVM requires a consistent index type.
 
 ### Read codegen
 
 ```cpp
-Value *IndexExprAST::codegen() {
+Value *IndexExpressionNode::codegen() {
   Value *ElemPtr = BuildIndexElementPtr(this);
   return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()),
                              ElemPtr, "elemload");
@@ -284,7 +284,7 @@ For `p[1]`:
 ### Write codegen
 
 ```cpp
-Value *IndexAssignmentExprAST::codegen() {
+Value *IndexAssignmentExpressionNode::codegen() {
   Value *ElemPtr = BuildIndexElementPtr(LHS.get());
   Value *Val = RHS->codegen();
   Val = EmitImplicitCast(Val, RHS->getType(), getType());
@@ -301,36 +301,36 @@ For `p[0] = 99` where `p: ptr[int]`:
 store i64 99, ptr %elemptr
 ```
 
-The implicit cast rules from chapter 16 apply — assigning an integer to a `ptr[float64]` is a type error; assigning `int8` to `ptr[int]` widens.
+The implicit cast rules from chapter 16 apply: assigning an integer to a `ptr[float64]` is a type error; assigning `int8` to `ptr[int]` widens.
 
 ## `p[i].field`: Field Access After Indexing
 
-For pointers to structs, you can chain field access after the index: `p[0].x`. This requires a separate AST node because the base is an index expression, not a named variable.
+For pointers to structs, I can chain field access after the index: `p[0].x`. This needs a separate AST node because the base is an index expression, not a named variable.
 
-### `IndexedFieldExprAST`
+### `IndexedFieldExpressionNode`
 
 ```cpp
-class IndexedFieldExprAST : public ExprAST {
-  unique_ptr<IndexExprAST> BaseIndex;  // the p[i] part
+class IndexedFieldExpressionNode : public ExpressionNode {
+  unique_ptr<IndexExpressionNode> BaseIndex;  // the p[i] part
   vector<string> FieldPath;            // the field chain
   ...
 };
 ```
 
-`ParseIndexedFieldAccessExpr` is called when `ParseIdentifierExpr` sees a `.` after parsing an index expression. It walks the field chain exactly like `ParseFieldAccessExpr` from chapter 17:
+`ParseIndexedFieldAccessExpression` is called when `ParseNameExpression` sees a `.` after parsing an index expression. It walks the field chain exactly like `ParseFieldAccessExpression` from chapter 17:
 
 ```cpp
-static unique_ptr<ExprAST>
-ParseIndexedFieldAccessExpr(unique_ptr<IndexExprAST> BaseIndex) {
+static unique_ptr<ExpressionNode>
+ParseIndexedFieldAccessExpression(unique_ptr<IndexExpressionNode> BaseIndex) {
   // walk '.field' chain, validating each step against StructTypes
-  return make_unique<IndexedFieldExprAST>(BaseIndex, Path, CurType, CurStruct);
+  return make_unique<IndexedFieldExpressionNode>(BaseIndex, Path, CurType, CurStruct);
 }
 ```
 
 ### Codegen
 
 ```cpp
-Value *IndexedFieldExprAST::codegen() {
+Value *IndexedFieldExpressionNode::codegen() {
   // get the element address without loading (BuildIndexElementPtr)
   Value *Ptr = BuildIndexElementPtr(BaseIndex.get());
   // walk field GEPs from that address
@@ -342,7 +342,7 @@ Value *IndexedFieldExprAST::codegen() {
 }
 ```
 
-`BuildIndexElementPtr` computes the element address without loading the struct value — so the struct GEPs can chain directly from the element pointer.
+`BuildIndexElementPtr` computes the element address without loading the struct value: so the struct GEPs can chain directly from the element pointer.
 
 For `p[0].x` where `p: ptr[Point]`:
 
@@ -362,7 +362,7 @@ For `p[0].x = v` (write):
 store i64 %v, ptr %fieldptr
 ```
 
-Two GEPs: one to reach element 0 of the array, one to reach field `x` of that element. No load between them — the pointer chains through.
+Two GEPs: one to reach element 0 of the array, one to reach field `x` of that element. No load between them: the pointer chains through.
 
 ## Mutation Through a Pointer Parameter
 
@@ -395,14 +395,14 @@ The pointer is passed by value (it's just an address), but the store through it 
 
 Pointer arguments are type-checked: passing `ptr[float64]` where `ptr[int]` is expected is a type error.
 
-## Parse Flow in `ParseIdentifierExpr`
+## Parse Flow in `ParseNameExpression`
 
-The full sequence of what `ParseIdentifierExpr` handles, in order:
+The full sequence of what `ParseNameExpression` handles, in order:
 
 1. Parse the base identifier.
-2. If `.` follows → parse field chain (`FieldExprAST`).
-3. If `[` follows → parse index expression (`IndexExprAST`).
-4. If `.` follows after step 3 → parse field chain on the index result (`IndexedFieldExprAST`).
+2. If `.` follows → parse field chain (`FieldExpressionNode`).
+3. If `[` follows → parse index expression (`IndexExpressionNode`).
+4. If `.` follows after step 3 → parse field chain on the index result (`IndexedFieldExpressionNode`).
 
 This covers: `x`, `p.field`, `p[i]`, `p.field[i]`, `p[i].field`, `p[i].field.subfield`.
 
@@ -504,7 +504,7 @@ grep 'getelementptr\|load\|store' out.ll
 
 ## Known Limitations
 
-**No pointer arithmetic.** `p + 1` is not supported — use `p[1]` to access adjacent elements.
+**No pointer arithmetic.** `p + 1` is not supported: use `p[1]` to access adjacent elements.
 
 **No nested pointers.** `ptr[ptr[int]]` is rejected at parse time.
 
@@ -514,11 +514,11 @@ grep 'getelementptr\|load\|store' out.ll
 
 **Null pointer is silent.** `var p: ptr[int]` with no initializer is a null pointer. Dereferencing it crashes at runtime with no helpful error. Bounds checking and null safety are not implemented.
 
-**Pointee type is encoded in a string.** The `StructName` field on `ExprAST` nodes doubles as pointer type metadata, stored as `"<ValueType int>:<struct name>"` (e.g. `"1:"` for `ptr[int]`, `"10:Point"` for `ptr[Point]`). It works but is not the cleanest representation — a dedicated field would be cleaner. This is a consequence of the single-AST-hierarchy design established in chapter 12.
+**Pointee type is encoded in a string.** The `StructName` field on `ExpressionNode` nodes doubles as pointer type metadata, stored as `"<ValueType int>:<struct name>"` (e.g. `"1:"` for `ptr[int]`, `"10:Point"` for `ptr[Point]`). It works but is not the cleanest representation: a dedicated field would be cleaner. This is a consequence of the single-AST-hierarchy design established in chapter 12.
 
 ## What's Next
 
-[Chapter 20](chapter-20.md) adds fixed-size arrays: `T[N]`, stack allocation, indexing, and array-to-pointer decay. With arrays and pointers in place, you have the building blocks for the string and C interop chapter that follows.
+[Chapter 20](chapter-20.md) adds pointer arithmetic: `p + n` and `p - n` to move a pointer by a number of elements, and pointer subtraction to measure the distance between two. With that and `addr` in place, I have the building blocks fixed-size arrays will need a few chapters later.
 
 ## Need Help?
 

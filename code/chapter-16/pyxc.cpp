@@ -1361,7 +1361,7 @@ static unique_ptr<ExpressionNode> ParseUnary() {
 
 /// binary-operator-right
 ///   = { binary-operator unaryexpr } ;
-static unique_ptr<ExpressionNode> ParseBinaryOperatorRight(int ExpressionPrecedence,
+static unique_ptr<ExpressionNode> ParseBinaryOperatorRight(int MinimumPrecedence,
                                          unique_ptr<ExpressionNode> Left) {
   // If this is a binary operator, find its precedence.
   while (true) {
@@ -1369,7 +1369,7 @@ static unique_ptr<ExpressionNode> ParseBinaryOperatorRight(int ExpressionPrecede
 
     // If this is a binary operator that binds at least as tightly as the current binary operator,
     // consume it, otherwise we are done.
-    if (TokenPrecedence < ExpressionPrecedence)
+    if (TokenPrecedence < MinimumPrecedence)
       return Left;
 
     // Okay, we know this is a binary operator and that binds at least as tightly as the
@@ -2632,8 +2632,9 @@ Function *FunctionDefinitionNode::codegen() {
       Builder->CreateRet(ConstantFP::get(*TheContext, APFloat(0.0)));
     verifyFunction(*TheFunction);
 
-    // Run the optimisation pipeline: InstCombine, Reassociate, GVN,
-    // SimplifyCFG.
+    // Run the function-level optimisation pipeline built in
+    // InitializeModuleAndManagers (empty at -O0, PassBuilder's
+    // buildFunctionSimplificationPipeline otherwise).
     TheFPM->run(*TheFunction, *TheFAM);
     CurDIScope = nullptr;
     return TheFunction;

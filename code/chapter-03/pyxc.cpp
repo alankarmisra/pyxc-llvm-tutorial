@@ -382,7 +382,7 @@ static unique_ptr<ExpressionNode> ParsePrimary() {
 /// binary-operator-right
 ///   = { binary-operator primary } ;
 static unique_ptr<ExpressionNode>
-ParseBinaryOperatorRight(int ExpressionPrecedence,
+ParseBinaryOperatorRight(int MinimumPrecedence,
                          unique_ptr<ExpressionNode> Left) {
   // If this is a binary operator, find its precedence.
   while (true) {
@@ -390,7 +390,7 @@ ParseBinaryOperatorRight(int ExpressionPrecedence,
 
     // If this binary operator binds at least as tightly as the current
     // expression, consume it; otherwise, I'm done.
-    if (TokenPrecedence < ExpressionPrecedence)
+    if (TokenPrecedence < MinimumPrecedence)
       return Left;
 
     // Okay, this is a binary operator.

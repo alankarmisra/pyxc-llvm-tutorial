@@ -1665,10 +1665,10 @@ static unique_ptr<ExpressionNode> ParseNumberExpression() {
 ///   | "float" | "float32" | "float64"
 ///   | "bool" | "None" ;
 ///
-/// casttype
+/// cast-type
 ///   = "int" | "int8" | "int16" | "int32" | "int64"
 ///   | "float" | "float32" | "float64"
-///   | "bool" ;
+///   | "bool" | pointer-type ;
 static ValueType ParseTypeToken(string *StructName) {
   if (StructName)
     StructName->clear();
@@ -1755,8 +1755,8 @@ static ValueType ParseTypeToken(string *StructName) {
   }
 }
 
-/// castexpr
-///   = casttype "(" expression ")" ;
+/// cast-expression
+///   = cast-type "(" expression ")" ;
 static unique_ptr<ExpressionNode> ParseCastExpression() {
   string TargetStructName;
   ValueType Type = ParseTypeToken(&TargetStructName);
@@ -1780,6 +1780,8 @@ static unique_ptr<ExpressionNode> ParseCastExpression() {
   return make_unique<CastExpressionNode>(Type, std::move(Expr), TargetStructName);
 }
 
+/// sizeof-expression
+///   = "sizeof" "(" type ")" ;
 static unique_ptr<ExpressionNode> ParseSizeofExpression() {
   getNextToken(); // eat 'sizeof'
   if (CurrentToken != '(')
@@ -2445,10 +2447,15 @@ static unique_ptr<ExpressionNode> ParseUnaryMinus() {
 }
 
 /// primary
-///   = castexpr
+///   = cast-expression
+///   | sizeof-expression
+///   | address-expression
+///   | string-literal
 ///   | name-expression
+///   | field-access
+///   | index-expression
 ///   | number-expression
-///   | bool_literal
+///   | boolean-literal
 ///   | parenthesized-expression ;
 static unique_ptr<ExpressionNode> ParsePrimary() {
   switch (CurrentToken) {
@@ -2539,7 +2546,7 @@ static unique_ptr<ExpressionNode> ParseUnary() {
 
 /// binary-operator-right
 ///   = { binary-operator unaryexpr } ;
-static unique_ptr<ExpressionNode> ParseBinaryOperatorRight(int ExpressionPrecedence,
+static unique_ptr<ExpressionNode> ParseBinaryOperatorRight(int MinimumPrecedence,
                                          unique_ptr<ExpressionNode> Left) {
   // If this is a binary operator, find its precedence.
   while (true) {
@@ -2547,7 +2554,7 @@ static unique_ptr<ExpressionNode> ParseBinaryOperatorRight(int ExpressionPrecede
 
     // If this is a binary operator that binds at least as tightly as the current binary operator,
     // consume it, otherwise we are done.
-    if (TokenPrecedence < ExpressionPrecedence)
+    if (TokenPrecedence < MinimumPrecedence)
       return Left;
 
     // Okay, we know this is a binary operator and that binds at least as tightly as the
@@ -3821,7 +3828,7 @@ static Value *EmitImplicitCast(Value *V, ValueType From, ValueType To) {
       return V;
     return Builder->CreateSExt(V, LLVMTypeFor(To), "sext");
   }
-  if (IsIntType(From) && To == ValueType::Float64)
+  if (IsIntType(From) && IsFloatType(To))
     return Builder->CreateSIToFP(V, LLVMTypeFor(To), "sitofp");
   return nullptr;
 }

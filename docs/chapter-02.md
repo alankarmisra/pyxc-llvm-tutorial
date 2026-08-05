@@ -777,7 +777,7 @@ ready> ready>
 
 The parser accepts valid syntax and rejects invalid syntax with an error message. The REPL keeps running after errors.
 
-### The Full Grammar
+## The Full Grammar
 
 I've collected all the grammar rules I've been writing above each parsing function, and put them here. This makes up the complete grammar for pyxc at this stage:
 

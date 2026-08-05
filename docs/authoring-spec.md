@@ -206,7 +206,7 @@ We use lowercase `ch` and `idx` for loop variables in code we write ourselves, e
 | `Args` (as a field/param name) | `Arguments` |
 | `BinopPrecedence` (the precedence map) | `OperatorPrecedence` |
 | `GetTokPrecedence()` | `GetTokenPrecedence()` |
-| `ExprPrec` (param: minimum precedence accepted) | `ExpressionPrecedence` |
+| `ExprPrec` (param: minimum precedence accepted) | `MinimumPrecedence` |
 | `TokPrec` (precedence of the current token) | `TokenPrecedence` |
 | `NextPrec` (precedence after parsing the right operand) | `NextTokenPrecedence` |
 | `ParseBinOpRHS()` | `ParseBinaryOperatorRight()` |

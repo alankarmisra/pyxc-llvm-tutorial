@@ -1,11 +1,13 @@
 ---
-description: "Add fixed-size stack arrays: declare int[4], initialise with [1,2,3,4], and index with arr[i]. Arrays decay to pointers when passed to functions."
+description: "Add fixed-size stack arrays: declare int[4], initialize with [1, 2, 3, 4], index with arr[i], and pass them anywhere a pointer is expected."
 ---
 # 24. pyxc: Arrays
 
 ## Where We Are
 
-[Chapter 23](chapter-23.md) added type aliases. The type system covers scalars, structs, and pointers, but there is no way to allocate a fixed-size sequence of values on the stack. After this chapter:
+[Chapter 23](chapter-23.md) gave me type aliases, but the type system still can't express "a fixed number of these, sitting next to each other." For that I need arrays: `int[4]`, allocated on the stack, indexed with `arr[i]`.
+
+After this chapter:
 
 ```pyxc
 extern def printd(x: float64)
@@ -16,7 +18,7 @@ def main() -> int:
   return 0
 ```
 
-```
+```text
 30.000000
 ```
 
@@ -27,111 +29,9 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-24
 ```
 
-## Grammar
+## One New `ValueType`, One New Node
 
-This chapter extends `type` with an optional `arraysuffix` and adds the `arrayliteral` production to `primary`.
-
-```ebnf
-type        = basetype [ arraysuffix ] ;   -- changed
-basetype    = builtintype | aliastype | structtype | pointertype ;  -- new
-arraysuffix = "[" integer "]" ;            -- new
-arrayliteral = "[" [ expression { "," expression } ] "]" ;  -- new
-primary     = castexpr | sizeofexpr | addrexpr | arrayliteral | ...  -- changed
-```
-
-### Full Grammar
-
-`code/chapter-24/pyxc.ebnf`
-
-```ebnf
-program         = [ eols ] [ top { eols top } ] [ eols ] ;
-eols            = eol { eol } ;
-top             = typealias | structdef | definition | decorateddef | external | toplevelexpr ;
-typealias       = "type" identifier "=" type ;
-structdef       = "struct" identifier ":" eols structblock ;
-structblock     = indent fielddecl { eols fielddecl } dedent ;
-fielddecl       = identifier ":" type ;
-definition      = "def" prototype [ "->" type ] ":" ( simplestmt | eols block ) ;
-decorateddef    = binarydecorator eols "def" binaryopprototype [ "->" type ] ":" ( simplestmt | eols block )
-                | unarydecorator  eols "def" unaryopprototype  [ "->" type ] ":" ( simplestmt | eols block ) ;
-binarydecorator = "@" "binary" "(" integer ")" ;
-unarydecorator  = "@" "unary" ;
-binaryopprototype = customopchar "(" typedparam "," typedparam ")" ;
-unaryopprototype  = customopchar "(" typedparam ")" ;
-external        = "extern" "def" prototype [ "->" type ] ;
-toplevelexpr    = expression ;
-prototype       = identifier "(" [ typedparam { "," typedparam } ] ")" ;
-typedparam      = identifier ":" type ;
-ifstmt          = "if" expression ":" suite
-                [ eols "else" ":" suite ] ;
-forstmt         = "for"
-                  ( "var" identifier ":" type | identifier )
-                  "=" expression "," expression "," expression ":" suite ;
-varstmt         = "var" varbinding { "," varbinding } ;
-assignstmt      = lvalue "=" expression ;
-simplestmt      = returnstmt | varstmt | assignstmt | expression ;
-compoundstmt    = ifstmt | forstmt ;
-statement       = simplestmt | compoundstmt ;
-suite           = simplestmt | compoundstmt | eols block ;
-returnstmt      = "return" [ expression ] ;
-block           = indent statement { eols statement } dedent ;
-expression      = unaryexpr binoprhs ;
-binoprhs        = { binaryop unaryexpr } ;
-lvalue          = identifier | fieldaccess | indexexpr ;
-varbinding      = identifier ":" type [ "=" expression ] ;
-unaryexpr       = unaryop unaryexpr | primary ;
-unaryop         = "-" | userdefunaryop ;
-primary         = castexpr | sizeofexpr | addrexpr | arrayliteral | stringliteral | identifierexpr | fieldaccess | indexexpr | numberexpr | bool_literal | parenexpr ;
-castexpr        = casttype "(" expression ")" ;
-sizeofexpr      = "sizeof" "(" type ")" ;
-addrexpr        = "addr" "(" lvalue ")" ;
-identifierexpr  = identifier | callexpr ;
-callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
-fieldaccess     = identifier "." identifier { "." identifier } ;
-indexexpr       = identifier "[" expression "]" ;
-numberexpr      = number ;
-arrayliteral    = "[" [ expression { "," expression } ] "]" ;
-stringliteral   = "\"" { ? any char except " and newline ? | escape } "\"" ;
-escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
-parenexpr       = "(" expression ")" ;
-binaryop        = builtinbinaryop | userdefbinaryop ;
-indent          = INDENT ;
-dedent          = DEDENT ;
-
-builtinbinaryop = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
-userdefbinaryop = ? any opchar defined as a custom binary operator ? ;
-userdefunaryop  = ? any opchar defined as a custom unary operator ? ;
-customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
-                    and not already defined as a custom operator ? ;
-opchar          = ? any single ASCII punctuation character ? ;
-identifier      = (letter | "_") { letter | digit | "_" } ;
-builtintype     = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | "None" ;
-aliastype       = identifier ;
-structtype      = identifier ;
-pointertype     = "ptr" "[" type "]" ;
-type            = basetype [ arraysuffix ] ;
-basetype        = builtintype | aliastype | structtype | pointertype ;
-arraysuffix     = "[" integer "]" ;
-casttype        = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | pointertype ;
-integer         = digit { digit } ;
-number          = digit { digit } [ "." { digit } ]
-                | "." digit { digit } ;
-bool_literal    = "True" | "False" ;
-letter          = "A".."Z" | "a".."z" ;
-digit           = "0".."9" ;
-eol             = "\r\n" | "\r" | "\n" ;
-ws              = " " | "\t" ;
-INDENT          = ? synthetic token emitted by lexer ? ;
-DEDENT          = ? synthetic token emitted by lexer ? ;
-```
-
-## New Enum Value and AST Node
-
-A single new `ValueType` entry covers all array types regardless of element type:
+A single enum value covers every array regardless of element type:
 
 ```cpp
 enum class ValueType {
@@ -141,41 +41,36 @@ enum class ValueType {
 };
 ```
 
-The corresponding AST node stores the element list and carries the full array type info through the `ExprAST` base class:
+An array literal needs its own node, since it's not a name, a number, or anything else I already have a class for:
 
 ```cpp
-class ArrayLiteralExprAST : public ExprAST {
-  vector<unique_ptr<ExprAST>> Elements;
+class ArrayLiteralExpressionNode : public ExpressionNode {
+  vector<unique_ptr<ExpressionNode>> Elements;
+
 public:
-  ArrayLiteralExprAST(vector<unique_ptr<ExprAST>> Elements,
+  ArrayLiteralExpressionNode(vector<unique_ptr<ExpressionNode>> Elements,
                       const string &ArrayTypeInfo)
       : Elements(std::move(Elements)) {
     setType(ValueType::Array, ArrayTypeInfo);
   }
-  const vector<unique_ptr<ExprAST>> &getElements() const { return Elements; }
+  const vector<unique_ptr<ExpressionNode>> &getElements() const { return Elements; }
   Value *codegen() override;
 };
 ```
 
-`ArrayTypeInfo` is an encoded string (see Group 2) that packs the element type, optional element struct name, and element count into the single `structName` slot that `ExprAST` already provides.
+## Encoding Element Type and Count Together
 
-## Type Encoding Helpers
+Every pointer in pyxc already carries its pointee type through the struct-name slot every `ExpressionNode` has, encoded as a string. An array needs the same thing plus one more field: how many elements. I extend the same encoding scheme with a third colon-separated part:
 
-The existing `(ValueType, structName)` pair that represents types throughout the compiler is extended for arrays with a third field — the element count. All three are serialised into one colon-separated string stored in the struct name slot:
-
-```
+```text
 "<ElemTypeInt>:<ElemStructName>:<Count>"
 ```
 
-| Type         | Encoding       |
-|--------------|----------------|
-| `int[4]`     | `"1::4"`       |
-| `float64[3]` | `"8::3"`       |
-| `Point[2]`   | `"10:Point:2"` |
-
-Three helpers manage this encoding:
-
-**`EncodeArrayType`** builds the string:
+| Type | Encoding |
+|------|----------|
+| `int[4]` | `"1::4"` |
+| `float64[3]` | `"8::3"` |
+| `Point[2]` | `"10:Point:2"` |
 
 ```cpp
 static string EncodeArrayType(ValueType ElemType, const string &ElemStructName,
@@ -185,30 +80,33 @@ static string EncodeArrayType(ValueType ElemType, const string &ElemStructName,
 }
 ```
 
-**`DecodeArrayType`** splits it back out — first `:` separates the type integer, last `:` separates the count, and the middle portion is the struct name:
+Decoding reverses it, splitting on the first and last `:` so the middle piece (the struct name, which could itself be empty) doesn't have to be delimiter-free:
 
 ```cpp
 static bool DecodeArrayType(const string &Encoded, ValueType &ElemType,
                             string &ElemStructName, uint64_t &Count);
 ```
 
-**`ArrayDecaysToPointerType`** answers the question "can this array be passed where a `ptr[T]` is expected?" by decoding both the array encoding and the pointer encoding and comparing element types:
+I need one more helper: can I pass this array where a pointer is expected? An array decays to a pointer of the same element type, the same way a C array decays to `T *`, so the check just decodes both sides and compares element types:
 
 ```cpp
 static bool ArrayDecaysToPointerType(const string &ArrayInfo,
                                      const string &PointerInfo);
 ```
 
-**`ParseUnsignedDecimal`** parses a digit string with overflow protection. It is used by both `DecodeArrayType` (to read the count field) and `ParseTypeToken` (to validate the size literal at parse time):
+And since an array size is a plain decimal literal I read out of `NumberLiteral` (a string) rather than something the lexer already parsed as a number, I need a small, careful integer parser rather than reusing the float-tolerant number path:
 
 ```cpp
 static bool ParseUnsignedDecimal(const string &Text, uint64_t &Out) {
-  if (Text.empty()) return false;
+  if (Text.empty())
+    return false;
   uint64_t V = 0;
   for (char C : Text) {
-    if (C < '0' || C > '9') return false;
+    if (C < '0' || C > '9')
+      return false;
     uint64_t D = static_cast<uint64_t>(C - '0');
-    if (V > (std::numeric_limits<uint64_t>::max() - D) / 10) return false;
+    if (V > (std::numeric_limits<uint64_t>::max() - D) / 10)
+      return false;
     V = V * 10 + D;
   }
   Out = V;
@@ -216,180 +114,266 @@ static bool ParseUnsignedDecimal(const string &Text, uint64_t &Out) {
 }
 ```
 
-## Parsing Array Types — `ParseTypeToken` Refactor
+The overflow check matters here specifically because array size feeds directly into `ArrayType::get`; I'd rather reject `int[99999999999999999999]` at parse time with a clear error than let it wrap around into something silently wrong.
 
-Previously, `ParseTypeToken` returned immediately after identifying the base type:
+## Teaching `ParseTypeToken` About `[N]`
 
-```cpp
-case tok_int:
-  return ValueType::Int;
-```
-
-That `return` makes suffix parsing impossible — once the function returns there is nowhere to check for `[`. This chapter refactors `ParseTypeToken` to collect the base type into local variables and then fall through to a suffix check:
+Before this chapter, `ParseTypeToken` returned the moment it recognized a base type; there was nowhere left to check for a trailing `[4]`. I have it collect the base type into a local instead of returning immediately, so I can look at what follows before deciding what to return:
 
 ```cpp
-ValueType BaseType = ValueType::Error;
-string BaseStructName;
-switch (CurTok) {
-  case tok_int:   BaseType = ValueType::Int;   break;
-  case tok_float: BaseType = ValueType::Float; break;
-  // ... all other scalar cases ...
-  case tok_ptr:
-    // parse ptr[T] as before, but store into BaseType/BaseStructName instead of returning
-    BaseType = ValueType::Pointer;
-    BaseStructName = EncodePointerType(PointeeType, PointeeStructName);
-    break;
-  case tok_identifier:
-    BaseType = ValueType::Struct;
-    BaseStructName = TyName;
-    break;
-}
-
-// Now check for array suffix
-if (CurTok == '[') {
-  // error on None[] or nested arrays
+if (CurrentToken == '[') {
+  if (BaseType == ValueType::None)
+    return LogError("Arrays of None are not allowed"), ValueType::Error;
+  if (BaseType == ValueType::Array)
+    return LogError("Nested array types are not supported"), ValueType::Error;
   getNextToken(); // eat '['
-  // parse integer size via ParseUnsignedDecimal
-  // eat number, eat ']'
-  if (StructName) *StructName = EncodeArrayType(BaseType, BaseStructName, Count);
+  if (CurrentToken != tok_number || NumberIsFloat)
+    return LogError("Array size must be an integer literal"),
+           ValueType::Error;
+  uint64_t Count = 0;
+  if (!ParseUnsignedDecimal(NumberLiteral, Count))
+    return LogError("Invalid array size"), ValueType::Error;
+  if (Count == 0)
+    return LogError("Array size must be > 0"), ValueType::Error;
+  getNextToken(); // eat number
+  if (CurrentToken != ']')
+    return LogError("Expected ']' after array size"), ValueType::Error;
+  getNextToken(); // eat ']'
+  if (StructName)
+    *StructName = EncodeArrayType(BaseType, BaseStructName, Count);
+  if (CurrentToken == '[')
+    return LogError("Nested arrays are not supported"), ValueType::Error;
   return ValueType::Array;
 }
 
-// No suffix — return the base type
-if (StructName) *StructName = BaseStructName;
+if (StructName)
+  *StructName = BaseStructName;
 return BaseType;
 ```
 
-`None[N]` and pointer-to-array (`ptr[int[4]]`) are rejected with explicit errors at parse time.
+Two different situations both count as "nested array," and I reject both: an alias whose *own* underlying type is already an array (`BaseType == ValueType::Array`), and a literal double suffix like `int[4][2]` (the trailing check after the closing `]`). I verified both:
 
-## Context-Driven Parsing — `ExpectedLiteralTypeGuard` and `ParseArrayLiteralExpr`
-
-An array literal `[10, 20, 30, 40]` has no type of its own. The compiler must know what array type is expected to validate element types and count. This context is carried through a global pair:
-
-```cpp
-static ValueType ExpectedLiteralType;
-static string    ExpectedLiteralStructName;  // new this chapter
+```pyxc
+var m: int[4][2]
 ```
 
-**`ExpectedLiteralTypeGuard`** is extended to save and restore both fields. All callers that set a type context are updated to also pass the struct name:
+```text
+Error (Line 2, Column 16): Nested arrays are not supported
+```
+
+```pyxc
+def f(n: int) -> int:
+  var buf: int[n]
+```
+
+```text
+Error (Line 2, Column 16): Array size must be an integer literal
+```
+
+## Array Literals Need to Know What They're Building
+
+`[10, 20, 30, 40]` carries no type information of its own; a bare list of numbers could be `int[4]` or `float64[4]` or something else entirely. I already have a mechanism for this: `ExpectedLiteralType`, a global that every context expecting a literal, a `var` initializer, a return statement, a function argument, sets before parsing the expression. I just extend it to also carry a struct name, since "expected type" now sometimes means "expected array of a specific element type and count," not just a bare `ValueType`:
 
 ```cpp
 struct ExpectedLiteralTypeGuard {
   ValueType Saved;
-  string    SavedStruct;
+  string SavedStruct;
   ExpectedLiteralTypeGuard(ValueType Type, const string &StructName = "")
       : Saved(ExpectedLiteralType), SavedStruct(ExpectedLiteralStructName) {
-    ExpectedLiteralType      = Type;
+    ExpectedLiteralType = Type;
     ExpectedLiteralStructName = StructName;
   }
   ~ExpectedLiteralTypeGuard() {
-    ExpectedLiteralType      = Saved;
+    ExpectedLiteralType = Saved;
     ExpectedLiteralStructName = SavedStruct;
   }
 };
 ```
 
-`ReturnTypeGuard` gains the same struct name field for the same reason — functions that return an array type need the full context propagated into the body.
+`ReturnTypeGuard` gets the identical treatment, for the same reason: a function returning `int[4]` needs that full context available while its body parses.
 
-**`ParseArrayLiteralExpr`** reads both globals at entry and errors immediately if the context is not an array type:
+With that in place, parsing the literal itself is straightforward: read the expected element type and count out of the guard, then parse exactly that many elements:
 
 ```cpp
-static unique_ptr<ExprAST> ParseArrayLiteralExpr() {
+static unique_ptr<ExpressionNode> ParseArrayLiteralExpression() {
   if (ExpectedLiteralType != ValueType::Array)
     return LogError("Array literal requires an expected array type");
-  ValueType ElemType; string ElemStructName; uint64_t Count;
-  DecodeArrayType(ExpectedLiteralStructName, ElemType, ElemStructName, Count);
+  ValueType ElemType = ValueType::Error;
+  string ElemStructName;
+  uint64_t Count = 0;
+  if (!DecodeArrayType(ExpectedLiteralStructName, ElemType, ElemStructName,
+                       Count))
+    return LogError("Invalid expected array type");
 
   getNextToken(); // eat '['
-  vector<unique_ptr<ExprAST>> Elements;
-  while (CurTok != ']') {
-    ExpectedLiteralTypeGuard Guard(ElemType, ElemStructName); // propagate into element expr
-    auto E = ParseExpression();
-    // type-check E against ElemType / ElemStructName
-    Elements.push_back(std::move(E));
-    if (CurTok == ',') getNextToken();
+  vector<unique_ptr<ExpressionNode>> Elements;
+  if (CurrentToken != ']') {
+    while (true) {
+      ExpectedLiteralTypeGuard Guard(ElemType, ElemStructName);
+      auto E = ParseExpression();
+      if (!E)
+        return nullptr;
+      if (!IsAssignable(ElemType, E->getType()))
+        return LogError("Array literal element type mismatch");
+      if ((ElemType == ValueType::Pointer || ElemType == ValueType::Array ||
+           ElemType == ValueType::Struct) &&
+          ElemStructName != E->getStructName())
+        return LogError("Array literal element type mismatch");
+      Elements.push_back(std::move(E));
+      if (CurrentToken == ']')
+        break;
+      if (CurrentToken != ',')
+        return LogError("Expected ']' or ',' in array literal");
+      getNextToken();
+    }
   }
   getNextToken(); // eat ']'
   if (Elements.size() != Count)
     return LogError("Array literal element count mismatch");
-  return make_unique<ArrayLiteralExprAST>(std::move(Elements), ExpectedLiteralStructName);
+  return make_unique<ArrayLiteralExpressionNode>(std::move(Elements),
+                                          ExpectedLiteralStructName);
 }
 ```
 
-The primary dispatch in `ParsePrimary` routes to this function when `CurTok == '['`. When the `var` statement parser reaches an initialiser, it sets `ExpectedLiteralTypeGuard(DeclType, DeclStructName)` before calling `ParseExpression`, so the type context is available by the time `ParseArrayLiteralExpr` runs.
+I check the element count only after parsing every element, not as I go, since a short-circuit "too many elements" error the moment I see one extra value would be less useful than parsing the whole literal and reporting the real mismatch:
 
-## Codegen — `ArrayLiteralExprAST::codegen`
+```pyxc
+var a: int[4] = [1, 2, 3]
+```
 
-The literal is built in LLVM IR as a value of aggregate type, element-by-element, using `insertvalue`. There is no alloca here — this is pure register-level aggregate construction:
+```text
+Error (Line 2, Column 28): Array literal element count mismatch
+```
+
+## Codegen: Building the Literal as a Register Value
+
+An array literal isn't stored anywhere until something assigns it, so its own codegen builds a pure SSA aggregate value, one element at a time, with `insertvalue`, no `alloca` involved:
 
 ```cpp
-Value *ArrayLiteralExprAST::codegen() {
-  ValueType ElemType; string ElemStructName; uint64_t Count;
-  DecodeArrayType(getStructName(), ElemType, ElemStructName, Count);
+Value *ArrayLiteralExpressionNode::codegen() {
+  ValueType ElemType = ValueType::Error;
+  string ElemStructName;
+  uint64_t Count = 0;
+  if (!DecodeArrayType(getStructName(), ElemType, ElemStructName, Count))
+    return LogErrorV("Invalid array literal type");
+  if (Elements.size() != Count)
+    return LogErrorV("Array literal element count mismatch");
 
   auto *ArrTy = dyn_cast<ArrayType>(LLVMTypeFor(getType(), getStructName()));
-  Value *Agg = UndefValue::get(ArrTy);  // start as undefined
+  if (!ArrTy)
+    return LogErrorV("Invalid array LLVM type");
 
+  Value *Agg = UndefValue::get(ArrTy);
   for (size_t I = 0; I < Elements.size(); ++I) {
     Value *Elem = Elements[I]->codegen();
+    if (!Elem)
+      return nullptr;
     Elem = EmitImplicitCast(Elem, Elements[I]->getType(), ElemType);
+    if (!Elem)
+      return nullptr;
     Agg = Builder->CreateInsertValue(Agg, Elem, {static_cast<unsigned>(I)},
                                      "arr.ins");
   }
-  return Agg;  // SSA value of type [N x ElemTy]
+  return Agg;
 }
 ```
 
-`insertvalue` fills one slot of the aggregate per iteration. The returned SSA value has type `[4 x i64]` for `int[4]`. This is then stored into the alloca when assigned in a `var` statement:
+Whatever consumes this value, a `var` initializer, is what actually stores it into stack memory; this function never allocates anything itself.
 
-```llvm
-%scores = alloca [4 x i64]
-store [4 x i64] %arr.ins.3, ptr %scores
+## Indexing: Reusing Pointer Arithmetic Instead of Duplicating It
+
+I already had a helper, `BuildIndexElementPtr`, that computes the address `arr[i]` should read from or write to for pointer values. Rather than write a second, parallel version for arrays, I teach the *first step* of that helper to also accept an array, producing an equivalent starting pointer, then let everything after that step stay exactly as it was:
+
+```cpp
+static Value *BuildIndexElementPtr(IndexExpressionNode *IdxExpr) {
+  ValueType PtrType = ValueType::Error;
+  string PtrStructName;
+  Value *BasePtr = nullptr;
+  if (IdxExpr->getFieldPath().empty()) {
+    auto It = NamedValues.find(IdxExpr->getBaseName());
+    if (It != NamedValues.end() && It->second) {
+      PtrType = NamedValueTypes[IdxExpr->getBaseName()];
+      PtrStructName = NamedValueStructNames[IdxExpr->getBaseName()];
+      if (PtrType == ValueType::Pointer) {
+        BasePtr = Builder->CreateLoad(LLVMTypeFor(ValueType::Pointer),
+                                      It->second, "ptrload");
+      } else if (PtrType == ValueType::Array) {
+        Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
+        auto *ArrTy = LLVMTypeFor(PtrType, PtrStructName);
+        BasePtr = Builder->CreateInBoundsGEP(ArrTy, It->second, {Zero, Zero},
+                                             "arraydecay");
+      }
+    } else if (auto *GV = GetGlobalVariable(IdxExpr->getBaseName())) {
+      PtrType = GlobalVarTypes[IdxExpr->getBaseName()];
+      PtrStructName = GlobalVarStructTypes[IdxExpr->getBaseName()];
+      if (PtrType == ValueType::Pointer) {
+        BasePtr =
+            Builder->CreateLoad(LLVMTypeFor(ValueType::Pointer), GV, "ptrload");
+      } else if (PtrType == ValueType::Array) {
+        Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
+        auto *ArrTy = LLVMTypeFor(PtrType, PtrStructName);
+        BasePtr =
+            Builder->CreateInBoundsGEP(ArrTy, GV, {Zero, Zero}, "arraydecay");
+      }
+    }
+  } else {
+    BasePtr = LoadPointerValue(IdxExpr->getBaseName(), IdxExpr->getFieldPath(),
+                               PtrType, PtrStructName);
+  }
+  if (!BasePtr)
+    return LogErrorV("Indexing requires a pointer or array value");
+  Value *IdxVal = IdxExpr->getIndex()->codegen();
+  if (!IdxVal)
+    return nullptr;
+  if (!IsIntType(IdxExpr->getIndex()->getType()))
+    return LogErrorV("Pointer index must be an integer");
+  if (IdxExpr->getIndex()->getType() != ValueType::Int64) {
+    IdxVal = EmitImplicitCast(IdxVal, IdxExpr->getIndex()->getType(),
+                              ValueType::Int64);
+    if (!IdxVal)
+      return LogErrorV("Index must be an integer");
+  }
+  return Builder->CreateInBoundsGEP(
+      LLVMTypeFor(IdxExpr->getType(), IdxExpr->getStructName()), BasePtr,
+      IdxVal, "elemptr");
+}
 ```
 
-## Codegen — Array Indexing and Variable Decay
-
-**Indexing** (`scores[2]`) in `IndexExprAST::codegen` now handles `ValueType::Array` alongside `ValueType::Pointer`. For arrays, the element type and count are decoded from the array encoding, and a two-index GEP is emitted:
+For a pointer, `BasePtr` is just whatever address it holds, loaded normally. For an array, there's no pointer stored anywhere to load; the array's storage *is* the value. So I get an equivalent pointer the same way C does, a GEP with two zero indices that steps through the alloca to the array, then through the array to its first element. Once `BasePtr` exists, both cases fall through to the exact same final `getelementptr`, offset by the index. I confirmed this produces two separate GEP instructions, not one combined one, by compiling and reading the IR myself rather than assuming:
 
 ```llvm
-%ptr = getelementptr inbounds [4 x i64], ptr %scores, i64 0, i64 2
-%val = load i64, ptr %ptr
+%arraydecay = getelementptr inbounds [4 x i64], ptr %a1, i64 0, i64 0
+%elemptr = getelementptr inbounds i64, ptr %arraydecay, i64 0
+%elemload = load i64, ptr %elemptr, align 8
 ```
 
-The first index (`i64 0`) steps through the alloca header to reach the array. The second index selects the element.
+## Using an Array Where a Pointer Is Expected
 
-**Array decay** in `VariableExprAST::codegen` handles the case where an array variable is used in an expression context rather than indexed. Loading an array variable would produce the entire aggregate — which is only valid for `store`. To pass an array to a `ptr[T]` parameter, the compiler needs a pointer to its first element. A `DecayArray` lambda emits this GEP:
+Indexing isn't the only place an array needs to become a pointer. Passing an array variable as a whole, to a function expecting `ptr[T]`, needs the same decay. `NameExpressionNode::codegen` gets a small local lambda for exactly this:
 
 ```cpp
 auto DecayArray = [&](Value *BasePtr) -> Value * {
-  if (getType() != ValueType::Array) return BasePtr;
+  if (getType() != ValueType::Array)
+    return BasePtr;
   auto *ArrTy = LLVMTypeFor(getType(), getStructName());
   Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
-  return Builder->CreateInBoundsGEP(ArrTy, BasePtr, {Zero, Zero}, "arraydecay");
+  return Builder->CreateInBoundsGEP(ArrTy, BasePtr, {Zero, Zero},
+                                    "arraydecay");
 };
 ```
 
-This is applied for both local and global array variables. In function call codegen, the argument check path explicitly allows `ValueType::Array` where `ValueType::Pointer` is expected, delegating to `ArrayDecaysToPointerType` to confirm element-type compatibility.
-
-## What Lands in the IR
+Loading an array by name would otherwise hand back the entire aggregate, which is only meaningful as something to `store`, not something to pass around as a value. Function-call argument checking uses `ArrayDecaysToPointerType` to allow this specific case through even though `ptr[int]` and `int[4]` aren't the same `ValueType`:
 
 ```pyxc
-def sum4(a: int[4]) -> int:
-  return a[0] + a[1] + a[2] + a[3]
+def sum4(p: ptr[int]) -> int:
+  return p[0] + p[1] + p[2] + p[3]
+
+def main() -> int:
+  var scores: int[4] = [10, 20, 30, 40]
+  return sum4(scores)
 ```
 
-```llvm
-define i64 @sum4([4 x i64] %a) {
-entry:
-  %a.addr = alloca [4 x i64]
-  store [4 x i64] %a, ptr %a.addr
-  %p0 = getelementptr inbounds [4 x i64], ptr %a.addr, i64 0, i64 0
-  %v0 = load i64, ptr %p0
-  ; ... and so on for indices 1, 2, 3
-  %sum = add i64 %v0, ...
-  ret i64 %sum
-}
-```
+I ran this rather than take the decay on faith; it returns `100`.
 
 ## Build and Run
 
@@ -398,21 +382,186 @@ cd code/chapter-24
 cmake -S . -B build && cmake --build build
 ```
 
-## Things Worth Knowing
+## Try It
 
-**Size must be a literal.** `var buf: int[n]` is rejected — variable sizes are not supported. The element count must be a constant integer known at parse time.
+### Declare, initialize, index
 
-**No nested arrays.** `int[4][2]` is not valid syntax. An array of arrays is not supported. Use a struct with multiple array fields for a 2-D layout.
+```pyxc
+extern def printd(x: float64)
 
-**No heap arrays.** Arrays in this chapter live on the stack only. Heap allocation is done through `malloc` and `ptr[T]` from [chapter 20](chapter-21.md).
+def main() -> int:
+  var scores: int[4] = [10, 20, 30, 40]
+  printd(float64(scores[2]))
+  return 0
+```
 
-**Struct fields cannot be arrays.** Array fields in struct definitions are not yet supported. Struct fields use scalar or pointer types from earlier chapters.
+```text
+30.000000
+```
 
-**No pointer arithmetic on arrays.** Indexing works. Direct pointer arithmetic on an array variable does not — use `addr(arr[i])` to get a pointer to an element.
+### An array parameter, indexed in the body
+
+```pyxc
+def sum4(a: int[4]) -> int:
+  return a[0] + a[1] + a[2] + a[3]
+```
+
+```bash
+pyxc --emit llvm-ir -o out.ll program.pyxc
+grep -A3 'define.*sum4' out.ll
+```
+
+```llvm
+define i64 @sum4([4 x i64] %a) {
+entry:
+  %a1 = alloca [4 x i64], align 8
+  store [4 x i64] %a, ptr %a1, align 8
+```
+
+### An array decaying to a pointer argument
+
+```pyxc
+extern def printd(x: float64)
+
+def sum4(p: ptr[int]) -> int:
+  return p[0] + p[1] + p[2] + p[3]
+
+def main() -> int:
+  var scores: int[4] = [10, 20, 30, 40]
+  printd(float64(sum4(scores)))
+  return 0
+```
+
+```text
+100.000000
+```
+
+### Element count mismatch
+
+```pyxc
+def main() -> int:
+  var a: int[4] = [1, 2, 3]
+  return 0
+```
+
+```text
+Error (Line 2, Column 28): Array literal element count mismatch
+```
+
+## Known Limitations
+
+**Size must be a literal.** `var buf: int[n]` is rejected; the element count has to be a constant integer known while parsing, not a variable.
+
+**No nested arrays.** `int[4][2]` isn't valid syntax, whether written directly or through an alias whose underlying type is already an array. A struct with multiple array fields is the way to get a 2D layout.
+
+**No heap arrays.** Everything in this chapter lives on the stack. For dynamically sized or long-lived data, [Chapter 21](chapter-21.md)'s `malloc` and `ptr[T]` are still what I reach for.
+
+**Struct fields can't be arrays yet.** Struct fields are still limited to scalar, pointer, and struct types.
+
+**No pointer arithmetic directly on an array.** Indexing works; adding an integer to an array variable itself doesn't. `addr(arr[i])` gets a pointer to a specific element if I need one.
+
+## The Full Grammar
+
+[pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-24/pyxc.ebnf)
+
+```ebnf
+program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
+end-of-lines            = end-of-line { end-of-line } ;
+top-level-item             = type-alias | struct-definition | function-definition | decorated-function-definition | external | top-level-expression ;
+type-alias       = "type" name "=" type ;
+struct-definition       = "struct" name ":" end-of-lines struct-block ;
+struct-block     = indent field-declaration { end-of-lines field-declaration } dedent ;
+field-declaration       = name ":" type ;
+function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+(* If the return type is omitted, it defaults to None. *)
+decorated-function-definition    = binary-decorator end-of-lines "def" binary-operator-signature [ "->" type ] ":" ( simple-statement | end-of-lines block )
+                | unary-decorator  end-of-lines "def" unary-operator-signature  [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+binary-decorator = "@" "binary" "(" integer ")" ;
+unary-decorator  = "@" "unary" ;
+binary-operator-signature = custom-operator-character "(" typed-parameter "," typed-parameter ")" ;
+unary-operator-signature  = custom-operator-character "(" typed-parameter ")" ;
+external        = "extern" "def" function-signature [ "->" type ] ;
+top-level-expression    = expression ;
+function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
+typed-parameter      = name ":" type ;
+if-statement          = "if" expression ":" suite
+                [ end-of-lines "else" ":" suite ] ;
+for-statement         = "for"
+                  ( "var" name ":" type | name )
+                  "=" expression "," expression "," expression ":" suite ;
+variable-statement         = "var" variable-binding { "," variable-binding } ;
+assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
+simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
+compound-statement    = if-statement | for-statement ;
+statement       = simple-statement | compound-statement ;
+suite           = simple-statement | compound-statement | end-of-lines block ;
+return-statement      = "return" [ expression ] ;
+statement-separator = end-of-lines | BLOCK_END ;
+block = indent statement { statement-separator statement } dedent ;
+expression      = unary-expression binary-operator-right ;
+binary-operator-right        = { binary-operator unary-expression } ;
+lvalue          = name | field-access | index-expression ;
+variable-binding      = name ":" type [ "=" expression ] ;
+unary-expression       = unary-operator unary-expression | primary ;
+unary-operator         = "-" | user-defined-unary-operator ;
+primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;   (* changed: array-literal added *)
+cast-expression        = cast-type "(" expression ")" ;
+sizeof-expression      = "sizeof" "(" type ")" ;
+address-expression        = "addr" "(" lvalue ")" ;
+name-expression  = name | call-expression ;
+call-expression        = name "(" [ expression { "," expression } ] ")" ;
+field-access     = name "." name { "." name } ;
+index-expression       = name "[" expression "]" ;
+number-expression      = number ;
+array-literal    = "[" [ expression { "," expression } ] "]" ;         (* new *)
+string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
+escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
+parenthesized-expression       = "(" expression ")" ;
+binary-operator        = builtin-binary-operator | user-defined-binary-operator ;
+indent          = INDENT ;
+dedent          = DEDENT ;
+
+builtin-binary-operator = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
+user-defined-binary-operator = ? any operator-character defined as a custom binary operator ? ;
+user-defined-unary-operator  = ? any operator-character defined as a custom unary operator ? ;
+custom-operator-character    = ? any operator-character that is not "-" or a builtin-binary-operator,
+                    and not already defined as a custom operator ? ;
+operator-character          = ? any single ASCII punctuation character ? ;
+name      = (letter | "_") { letter | digit | "_" } ;
+builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
+                | "float" | "float32" | "float64"
+                | "bool" | "None" ;
+alias-type       = name ;
+struct-type      = name ;
+pointer-type     = "ptr" "[" type "]" ;
+type            = base-type [ array-suffix ] ;                        (* changed *)
+base-type        = builtin-type | alias-type | struct-type | pointer-type ;   (* new *)
+array-suffix     = "[" integer "]" ;                                   (* new *)
+cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
+                | "float" | "float32" | "float64"
+                | "bool" | pointer-type ;
+integer         = digit { digit } ;
+number          = ( digit { digit } [ "." { digit } ]
+                  | "." digit { digit } ) [ exponent ] ;
+exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
+boolean-literal    = "True" | "False" ;
+letter          = "A".."Z" | "a".."z" ;
+digit           = "0".."9" ;
+end-of-line             = "\r\n" | "\r" | "\n" ;
+comment = "#" { comment-character } ;
+comment-character = ? any character except "\r" and "\n" ? ;
+whitespace = " " | "\t" | "\v" | "\f" ;
+INDENT          = ? synthetic token emitted by lexer ? ;
+DEDENT          = ? synthetic token emitted by lexer ? ;
+
+BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
+```
+
+`type` now splits into `base-type` plus an optional `array-suffix`, both new productions; `primary` gained `array-literal`, also new. Everything else is unchanged from [Chapter 23](chapter-23.md).
 
 ## What's Next
 
-[Chapter 25](chapter-25.md) adds the `class` keyword — a named aggregate type that will support methods, constructors, and visibility in the chapters that follow.
+[Chapter 25](chapter-25.md) adds the `class` keyword: a named aggregate type that gets methods, constructors, and visibility rules in the chapters that follow.
 
 ## Need Help?
 

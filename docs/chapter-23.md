@@ -1,11 +1,13 @@
 ---
-description: "Add type aliases so any type — scalar, pointer, or struct — can be given a readable name that vanishes completely from the generated IR."
+description: "Add type aliases so any type, scalar, pointer, or struct, can be given a readable name that vanishes completely from the generated IR."
 ---
 # 23. pyxc: Type Aliases
 
 ## Where We Are
 
-[Chapter 22](chapter-22.md) added string literals. We can write `"hello"` and pass it to `puts`. But the parameter type is a C-style `ptr[int8]` which is a bit annoying to write all the time. After this chapter we can write:
+[Chapter 22](chapter-22.md) gave me string literals, but only as `ptr[int8]`. That's accurate, but it's not what I want to keep typing every time a function takes or returns text. I want a name for it.
+
+After this chapter:
 
 ```pyxc
 type string = ptr[int8]
@@ -20,6 +22,10 @@ def main() -> int:
   return 0
 ```
 
+```text
+world
+```
+
 ## Source Code
 
 ```bash
@@ -27,116 +33,11 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-23
 ```
 
-## Grammar
-
-This chapter adds two new productions (`typealias`, `aliastype`) and extends two existing ones (`top` gains a `typealias` alternative; `type` gains an `aliastype` alternative).
-
-`code/chapter-23/pyxc.ebnf`
-
-```ebnf
-program    = [ eols ] [ top { eols top } ] [ eols ] ;
-top        = typealias | structdef | definition | decorateddef | external | toplevelexpr ; -- new
-typealias  = "type" identifier "=" type ;                                                  -- new
-...
-type       = builtintype | aliastype | structtype | pointertype ;                          -- new (aliastype)
-aliastype  = identifier ;                                                                  -- new
-```
-
-`aliastype` and `structtype` are both written as `identifier`. The parser tries `TypeAliases` first, then `StructTypes`, and rejects the identifier if neither lookup succeeds.
-
-### Full Grammar
-
-`code/chapter-23/pyxc.ebnf`
-
-```ebnf
-program         = [ eols ] [ top { eols top } ] [ eols ] ;
-eols            = eol { eol } ;
-top             = typealias | structdef | definition | decorateddef | external | toplevelexpr ;
-typealias       = "type" identifier "=" type ;
-structdef       = "struct" identifier ":" eols structblock ;
-structblock     = indent fielddecl { eols fielddecl } dedent ;
-fielddecl       = identifier ":" type ;
-definition      = "def" prototype [ "->" type ] ":" ( simplestmt | eols block ) ;
-decorateddef    = binarydecorator eols "def" binaryopprototype [ "->" type ] ":" ( simplestmt | eols block )
-                | unarydecorator  eols "def" unaryopprototype  [ "->" type ] ":" ( simplestmt | eols block ) ;
-binarydecorator = "@" "binary" "(" integer ")" ;
-unarydecorator  = "@" "unary" ;
-binaryopprototype = customopchar "(" typedparam "," typedparam ")" ;
-unaryopprototype  = customopchar "(" typedparam ")" ;
-external        = "extern" "def" prototype [ "->" type ] ;
-toplevelexpr    = expression ;
-prototype       = identifier "(" [ typedparam { "," typedparam } ] ")" ;
-typedparam      = identifier ":" type ;
-ifstmt          = "if" expression ":" suite
-                [ eols "else" ":" suite ] ;
-forstmt         = "for"
-                  ( "var" identifier ":" type | identifier )
-                  "=" expression "," expression "," expression ":" suite ;
-varstmt         = "var" varbinding { "," varbinding } ;
-assignstmt      = lvalue "=" expression ;
-simplestmt      = returnstmt | varstmt | assignstmt | expression ;
-compoundstmt    = ifstmt | forstmt ;
-statement       = simplestmt | compoundstmt ;
-suite           = simplestmt | compoundstmt | eols block ;
-returnstmt      = "return" [ expression ] ;
-block           = indent statement { eols statement } dedent ;
-expression      = unaryexpr binoprhs ;
-binoprhs        = { binaryop unaryexpr } ;
-lvalue          = identifier | fieldaccess | indexexpr ;
-varbinding      = identifier ":" type [ "=" expression ] ;
-unaryexpr       = unaryop unaryexpr | primary ;
-unaryop         = "-" | userdefunaryop ;
-primary         = castexpr | sizeofexpr | addrexpr | stringliteral | identifierexpr | fieldaccess | indexexpr | numberexpr | bool_literal | parenexpr ;
-castexpr        = casttype "(" expression ")" ;
-sizeofexpr      = "sizeof" "(" type ")" ;
-addrexpr        = "addr" "(" lvalue ")" ;
-identifierexpr  = identifier | callexpr ;
-callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
-fieldaccess     = identifier "." identifier { "." identifier } ;
-indexexpr       = identifier "[" expression "]" ;
-numberexpr      = number ;
-stringliteral   = "\"" { ? any char except " and newline ? | escape } "\"" ;
-escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
-parenexpr       = "(" expression ")" ;
-binaryop        = builtinbinaryop | userdefbinaryop ;
-indent          = INDENT ;
-dedent          = DEDENT ;
-
-builtinbinaryop = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
-userdefbinaryop = ? any opchar defined as a custom binary operator ? ;
-userdefunaryop  = ? any opchar defined as a custom unary operator ? ;
-customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
-                    and not already defined as a custom operator ? ;
-opchar          = ? any single ASCII punctuation character ? ;
-identifier      = (letter | "_") { letter | digit | "_" } ;
-builtintype     = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | "None" ;
-aliastype       = identifier ;
-structtype      = identifier ;
-pointertype     = "ptr" "[" type "]" ;
-type            = builtintype | aliastype | structtype | pointertype ;
-casttype        = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | pointertype ;
-integer         = digit { digit } ;
-number          = digit { digit } [ "." { digit } ]
-                | "." digit { digit } ;
-bool_literal    = "True" | "False" ;
-letter          = "A".."Z" | "a".."z" ;
-digit           = "0".."9" ;
-eol             = "\r\n" | "\r" | "\n" ;
-ws              = " " | "\t" ;
-INDENT          = ? synthetic token emitted by lexer ? ;
-DEDENT          = ? synthetic token emitted by lexer ? ;
-```
 ## New Keyword: `type`
 
 ```cpp
 tok_type = -39,
 ```
-
-Registered in the keyword table:
 
 ```cpp
 {"type", tok_type}
@@ -148,19 +49,29 @@ Registered in the keyword table:
 static std::map<string, std::pair<ValueType, string>> TypeAliases;
 ```
 
-This maps an alias name to the fully-resolved type it stands for. The pair is `(ValueType, StructName)`, you will notice, is the same two-field representation used in [chapter 18](chapter-19.md). 
+An alias maps a name to a fully-resolved type: the same `(ValueType, StructName)` pair I already use everywhere a type needs a pointee or struct name attached, going back to [Chapter 18](chapter-18.md)'s structs. `TypeAliases` gets cleared alongside every other per-file symbol table in `ResetParserStateForFile`, so aliases don't leak from one compiled file into the next:
 
-`TypeAliases.clear()` is called at the start of each new module (inside `ResetParserStateForFile`), alongside `StructTypes.clear()`. For now, aliases do not persist across compilation units. This will change once we get into multi-file and `import` territory.
+```cpp
+static void ResetParserStateForFile() {
+  FunctionSignatures.clear();
+  StructTypes.clear();
+  TypeAliases.clear();
+  GlobalVarTypes.clear();
+  GlobalVarStructTypes.clear();
+  GlobalVarDecls.clear();
+  VarScopes.clear();
+  VarStructScopes.clear();
+```
 
 ## Extending `ParseTypeToken`
 
-`ParseTypeToken` is the single function that all type annotations in the language go through — parameter types, return types, `var` declarations, `sizeof` operands, cast targets. That means adding alias resolution in one place makes aliases work everywhere.
+Every type annotation in pyxc, parameter types, return types, `var` declarations, `sizeof` operands, cast targets, goes through `ParseTypeToken`. That means I only have to teach alias resolution to one function for it to work everywhere else automatically.
 
-Before this chapter, an unknown identifier in `ParseTypeToken` was an immediate error. Now there is a lookup before the error:
+Before this chapter, an unrecognized name here was just an error. Now I check `TypeAliases` first:
 
 ```cpp
-case tok_identifier: {
-  string TyName = IdentifierStr;
+case tok_name: {
+  string TyName = Name;
   auto AliasIt = TypeAliases.find(TyName);
   if (AliasIt != TypeAliases.end()) {
     getNextToken();
@@ -179,71 +90,117 @@ case tok_identifier: {
 }
 ```
 
-If the identifier matches an alias, the resolved type and struct name are returned directly. No other part of the compiler needs to change — the alias is transparent from this point on.
+If the name is a known alias, I return whatever it resolves to and I'm done; nothing downstream can even tell an alias was involved. If it isn't an alias, the old struct-name check runs exactly as before.
 
-## `ParseTypeAliasDefinition`
+## Parsing the Definition Itself
 
 ```cpp
 static bool ParseTypeAliasDefinition() {
+  // CurrentToken is 'type'
   getNextToken(); // eat 'type'
-  // expect identifier
-  string AliasName = IdentifierStr;
-  if (TypeAliases.count(AliasName))
-    return LogError("Type alias 'X' is already defined");
-  if (StructTypes.count(AliasName))
-    return LogError("Name 'X' is already defined as a struct");
+  if (CurrentToken != tok_name) {
+    LogError("Expected alias name after 'type'");
+    return false;
+  }
+  string AliasName = Name;
+  if (TypeAliases.count(AliasName)) {
+    LogError(("Type alias '" + AliasName + "' is already defined").c_str());
+    return false;
+  }
+  if (StructTypes.count(AliasName)) {
+    LogError(
+        ("Name '" + AliasName + "' is already defined as a struct").c_str());
+    return false;
+  }
   getNextToken(); // eat alias name
-  // expect '='
+  if (CurrentToken != '=') {
+    LogError("Expected '=' in type alias");
+    return false;
+  }
   getNextToken(); // eat '='
   string AliasStructName;
   ValueType AliasType = ParseTypeToken(&AliasStructName);
   if (AliasType == ValueType::Error)
     return false;
   TypeAliases[AliasName] = {AliasType, AliasStructName};
-  LastTopLevelEndedWithBlock = false;
   return true;
 }
 ```
 
-The parser eats `type`, validates the alias name against both `TypeAliases` and `StructTypes`, eats the `=`, then calls `ParseTypeToken` to resolve the right-hand side. Whatever `ParseTypeToken` returns — after fully resolving any chain of aliases — is stored directly. There is no stored pointer to the original name.
+The right-hand side is parsed with the exact same `ParseTypeToken` I just extended, which means aliasing an alias works for free: `type Score = MyInt` resolves `MyInt` through the same lookup, and whatever `MyInt` already resolves to is what gets stored under `Score`. There's no chain kept around to walk later, by the time this function returns, `Score` and `MyInt`'s underlying type are indistinguishable.
 
-`HandleTypeAliasDef` wraps this in the standard top-level handler and is wired into both the file-mode and REPL-mode dispatch loops under `tok_type`.
-
-Resolution happens at definition time, not at use time. When `type Score = MyInt` is processed, `ParseTypeToken("MyInt")` runs immediately and looks up `MyInt` in `TypeAliases`. If `MyInt` is already defined as `(Int, "")`, then `Score` is stored as `(Int, "")`. There is no indirection at use time — `Score` and `int64` are identical to the compiler from the moment the alias is defined.
-
+`HandleTypeAliasDef` wraps this the same way every other top-level form is wrapped, and `tok_type` is wired into both the REPL and file-mode dispatch switches.
 
 ## Conflict Rules
 
-The name spaces for aliases and struct types are shared. Three conflicts are checked:
+Aliases and structs share one namespace, so I check both directions.
 
-**Alias redefinition.** Defining the same alias name twice is an error:
+Defining the same alias twice:
 
-```
+```pyxc
 type Foo = int
-type Foo = int64   → Error: Type alias 'Foo' is already defined
+type Foo = int64
 ```
 
-**Alias name collides with a struct.** If a struct is already defined under that name, the alias is rejected:
-
+```text
+Error (Line 2, Column 6): Type alias 'Foo' is already defined
+type Foo 
+     ^~~~
 ```
+
+An alias colliding with an existing struct:
+
+```pyxc
 struct Foo:
   x: int
-type Foo = int     → Error: Name 'Foo' is already defined as a struct
-```
-
-**Struct name collides with an alias.** `ParseStructDefinition` checks `TypeAliases` before accepting the struct name:
-
-```
 type Foo = int
-struct Foo:        → Error: Name 'Foo' is already defined as a type alias
+```
+
+```text
+Error (Line 3, Column 6): Name 'Foo' is already defined as a struct
+type Foo 
+     ^~~~
+```
+
+And the reverse, a struct colliding with an existing alias, checked inside `ParseStructDefinition` itself:
+
+```cpp
+if (TypeAliases.count(StructName)) {
+  LogError(("Name '" + StructName + "' is already defined as a type alias")
+               .c_str());
+  return false;
+}
+```
+
+```pyxc
+type Foo = int
+struct Foo:
   x: int
 ```
 
-Forward references are not supported. Using an alias before defining it gives "Unknown type 'X'" — `ParseTypeToken` only searches entries that already exist in the map.
+```text
+Error (Line 2, Column 8): Name 'Foo' is already defined as a type alias
+struct Foo:
+       ^~~~
+```
+
+There's no forward reference either way. An alias has to exist in `TypeAliases` at the moment its name is looked up, and that lookup only ever happens while parsing something that comes after the `type` line:
+
+```pyxc
+def use_it(x: Meters) -> Meters:
+  return x
+type Meters = int64
+```
+
+```text
+Error (Line 1, Column 15): Unknown type 'Meters'
+def use_it(x: Meters)
+              ^~~~
+```
 
 ## IR Transparency
 
-Aliases produce no IR. They are resolved entirely during parsing and leave no trace in the generated output.
+An alias produces no IR of its own. It's resolved entirely while parsing, so by the time code generation runs, there's nothing left that knows the alias ever existed.
 
 ```pyxc
 type Score = int64
@@ -254,27 +211,23 @@ def id(x: Score) -> Score:
 
 ```llvm
 define i64 @id(i64 %x) {
-entry:
-  %x.addr = alloca i64
-  store i64 %x, ptr %x.addr
-  %x1 = load i64, ptr %x.addr
-  ret i64 %x1
-}
 ```
 
-`Score` does not appear. LLVM sees `i64` exactly as if `int64` had been written directly. The same holds for pointer aliases:
+`Score` doesn't appear anywhere; LLVM sees `i64`, exactly as if I'd written `int64` directly. Chaining aliases doesn't change this:
 
 ```pyxc
-type string = ptr[int8]
+type MyInt = int
+type Score = MyInt
 
-def say(msg: string) -> int:
-  return puts(msg)
-
-def greeting() -> string:
-  return "hello"
+def id(x: Score) -> Score:
+  return x
 ```
 
-The IR for both functions is identical to what you would get with `ptr[int8]` in every annotation.
+```llvm
+define i64 @id(i64 %x) {
+```
+
+Same IR. `Score` resolved through `MyInt` down to `int` at the moment `type Score = MyInt` was parsed, so there's no chain left to collapse later, there was never a chain to begin with once parsing moved on.
 
 ## Build and Run
 
@@ -285,7 +238,7 @@ cmake -S . -B build && cmake --build build
 
 ## Try It
 
-### `string` as a type
+### `string` as a parameter type
 
 ```pyxc
 extern def puts(s: ptr[int8]) -> int
@@ -300,83 +253,159 @@ def main() -> int:
   return 0
 ```
 
-```bash
+```text
 world
 ```
 
-`string` is accepted as a parameter type and return type. The IR uses `ptr` throughout.
-
-### IR transparency
+### Aliasing a struct
 
 ```pyxc
-type Score = int64
+extern def printd(x: float64)
 
-def id(x: Score) -> Score:
-  return x
+struct Point:
+  x: int
+  y: int
+
+type Vec2 = Point
+
+def main() -> int:
+  var v: Vec2
+  v.x = 3
+  v.y = 4
+  printd(float64(v.x))
+  return 0
 ```
+
+```text
+3.000000
+```
+
+`Vec2` behaves exactly like `Point` everywhere: as a `var` type, and for field access.
+
+### Inspecting the IR
 
 ```bash
 pyxc --emit llvm-ir -o out.ll program.pyxc
 grep 'define' out.ll
 ```
 
-```
+For the `Score` example above:
+
+```text
 define i64 @id(i64 %x)
 ```
 
-`Score` is gone. The function signature is plain `i64`.
-
-### Alias chain
-
-```pyxc
-type MyInt = int
-type Score = MyInt
-```
-
-`Score` resolves to `(Int, "")` at definition time. `type Score = MyInt` calls `ParseTypeToken("MyInt")`, which finds the alias and returns `(Int, "")` immediately. The chain is collapsed to a single lookup in the map.
-
-### Alias for a struct type
-
-```pyxc
-struct Point:
-  x: int
-  y: int
-
-type Vec2 = Point
-```
-
-After this, `Vec2` can be used as a parameter type, return type, or `var` type, and the compiler treats it exactly like `Point`.
-
-### Forward reference error
-
-```pyxc
-def use_it(x: Meters) -> Meters:
-  return x
-
-type Meters = int64
-```
-
-```
-Error: Unknown type 'Meters'
-```
-
-The alias must be defined before it is used. There are no forward references.
-
 ## Known Limitations
 
-**No forward references.** The alias must appear before any use. `type List = ptr[List]` would fail because `List` is not yet in `TypeAliases` when the right-hand side is parsed.
+**No forward references.** An alias has to be defined before anything uses it. `type List = ptr[List]` fails because `List` doesn't exist yet in `TypeAliases` when the right-hand side is parsed.
 
-**No recursive aliases.** A consequence of no forward references — self-referential alias definitions are not possible.
+**No recursive aliases**, for the same reason: a self-referential definition would need the forward reference this chapter doesn't support.
 
-**Aliases are purely syntactic.** There is no nominal typing. `Score` and `int64` are the same type to the compiler; a function expecting `Score` will accept an `int64` without complaint.
+**Aliases are purely syntactic.** There's no nominal typing anywhere in this. `Score` and `int64` are one type as far as the compiler is concerned, so a function expecting `Score` accepts a plain `int64` without complaint.
 
-**No parameterized aliases.** `type Pair[T] = ...` is not supported. Type parameters are outside the scope of this chapter.
+**No parameterized aliases.** `type Pair[T] = ...` isn't supported; type parameters are out of scope for this chapter.
 
-**No re-export or scoping.** All aliases are global to the module. There is no way to limit visibility of an alias to a single function.
+**No scoping.** Every alias is global to the module. There's no way to limit one to a single function or file.
+
+## The Full Grammar
+
+[pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-23/pyxc.ebnf)
+
+```ebnf
+program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
+end-of-lines            = end-of-line { end-of-line } ;
+top-level-item             = type-alias | struct-definition | function-definition | decorated-function-definition | external | top-level-expression ;   (* changed: type-alias added *)
+type-alias       = "type" name "=" type ;                                                                                                                (* new *)
+struct-definition       = "struct" name ":" end-of-lines struct-block ;
+struct-block     = indent field-declaration { end-of-lines field-declaration } dedent ;
+field-declaration       = name ":" type ;
+function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+(* If the return type is omitted, it defaults to None. *)
+decorated-function-definition    = binary-decorator end-of-lines "def" binary-operator-signature [ "->" type ] ":" ( simple-statement | end-of-lines block )
+                | unary-decorator  end-of-lines "def" unary-operator-signature  [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+binary-decorator = "@" "binary" "(" integer ")" ;
+unary-decorator  = "@" "unary" ;
+binary-operator-signature = custom-operator-character "(" typed-parameter "," typed-parameter ")" ;
+unary-operator-signature  = custom-operator-character "(" typed-parameter ")" ;
+external        = "extern" "def" function-signature [ "->" type ] ;
+top-level-expression    = expression ;
+function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
+typed-parameter      = name ":" type ;
+if-statement          = "if" expression ":" suite
+                [ end-of-lines "else" ":" suite ] ;
+for-statement         = "for"
+                  ( "var" name ":" type | name )
+                  "=" expression "," expression "," expression ":" suite ;
+variable-statement         = "var" variable-binding { "," variable-binding } ;
+assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
+simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
+compound-statement    = if-statement | for-statement ;
+statement       = simple-statement | compound-statement ;
+suite           = simple-statement | compound-statement | end-of-lines block ;
+return-statement      = "return" [ expression ] ;
+statement-separator = end-of-lines | BLOCK_END ;
+block = indent statement { statement-separator statement } dedent ;
+expression      = unary-expression binary-operator-right ;
+binary-operator-right        = { binary-operator unary-expression } ;
+lvalue          = name | field-access | index-expression ;
+variable-binding      = name ":" type [ "=" expression ] ;
+unary-expression       = unary-operator unary-expression | primary ;
+unary-operator         = "-" | user-defined-unary-operator ;
+primary         = cast-expression | sizeof-expression | address-expression | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
+cast-expression        = cast-type "(" expression ")" ;
+sizeof-expression      = "sizeof" "(" type ")" ;
+address-expression        = "addr" "(" lvalue ")" ;
+name-expression  = name | call-expression ;
+call-expression        = name "(" [ expression { "," expression } ] ")" ;
+field-access     = name "." name { "." name } ;
+index-expression       = name "[" expression "]" ;
+number-expression      = number ;
+string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
+escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
+parenthesized-expression       = "(" expression ")" ;
+binary-operator        = builtin-binary-operator | user-defined-binary-operator ;
+indent          = INDENT ;
+dedent          = DEDENT ;
+
+builtin-binary-operator = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
+user-defined-binary-operator = ? any operator-character defined as a custom binary operator ? ;
+user-defined-unary-operator  = ? any operator-character defined as a custom unary operator ? ;
+custom-operator-character    = ? any operator-character that is not "-" or a builtin-binary-operator,
+                    and not already defined as a custom operator ? ;
+operator-character          = ? any single ASCII punctuation character ? ;
+name      = (letter | "_") { letter | digit | "_" } ;
+builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
+                | "float" | "float32" | "float64"
+                | "bool" | "None" ;
+alias-type       = name ;                                              (* new *)
+struct-type      = name ;
+pointer-type     = "ptr" "[" type "]" ;
+type            = builtin-type | alias-type | struct-type | pointer-type ;   (* changed: alias-type added *)
+cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
+                | "float" | "float32" | "float64"
+                | "bool" | pointer-type ;
+integer         = digit { digit } ;
+number          = ( digit { digit } [ "." { digit } ]
+                  | "." digit { digit } ) [ exponent ] ;
+exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
+boolean-literal    = "True" | "False" ;
+letter          = "A".."Z" | "a".."z" ;
+digit           = "0".."9" ;
+end-of-line             = "\r\n" | "\r" | "\n" ;
+comment = "#" { comment-character } ;
+comment-character = ? any character except "\r" and "\n" ? ;
+whitespace = " " | "\t" | "\v" | "\f" ;
+INDENT          = ? synthetic token emitted by lexer ? ;
+DEDENT          = ? synthetic token emitted by lexer ? ;
+
+BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
+```
+
+`alias-type` and `struct-type` are both written identically, as a plain `name`. `ParseTypeToken` is what actually tells them apart, by trying `TypeAliases` before `StructTypes` and rejecting the name if neither lookup succeeds. `top-level-item` gained `type-alias`, and `type` gained `alias-type`; both are marked above. Everything else is unchanged from [Chapter 22](chapter-22.md).
 
 ## What's Next
 
-[Chapter 24](chapter-24.md) adds fixed-size arrays (`T[N]`), stack allocation, indexing, and array literals — completing the types and memory phase.
+[Chapter 24](chapter-24.md) adds fixed-size arrays: `T[N]` types, stack allocation, indexing, and array literals.
 
 ## Need Help?
 

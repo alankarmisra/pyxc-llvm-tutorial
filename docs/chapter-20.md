@@ -1,11 +1,11 @@
 ---
-description: "Add pointer arithmetic — ptr + int, ptr - int, ptr - ptr, and pointer comparisons — so you can walk memory with a pointer."
+description: "Add pointer arithmetic: ptr + int, ptr - int, ptr - ptr, and pointer comparisons: so you can walk memory with a pointer."
 ---
 # 20. pyxc: Pointer Arithmetic
 
 ## Where We Are
 
-[Chapter 19](chapter-19.md) gave us pointers: `addr` to take an address, `p[i]` to index, and pointer parameters so functions can modify the caller's data. What we could not do was walk a pointer forward or backward, or compare two pointers. The K&R summing-loop pattern — compute an end pointer, advance `p` until `p != end` — was out of reach.
+[Chapter 19](chapter-19.md) gave me pointers: `addr` to take an address, `p[i]` to index, and pointer parameters so functions can modify the caller's data. What I couldn't do yet was walk a pointer forward or backward, or compare two pointers. The classic K&R summing-loop pattern, compute an end pointer, then advance `p` until it equals `end`, was out of reach.
 
 After this chapter, that pattern works:
 
@@ -25,9 +25,8 @@ def main() -> int:
   var p: ptr[int] = addr(t.a)
   var end: ptr[int] = p + 3
   var total: int = 0
-  while p != end:
-    total = total + p[0]
-    p = p + 1
+  for var i: int = 0, p + i != end, 1:
+    total = total + p[i]
   printd(float64(total))  # 60.000000
   return 0
 ```
@@ -41,7 +40,7 @@ cd pyxc-llvm-tutorial/code/chapter-20
 
 ## Grammar
 
-Pointer arithmetic reuses the existing binary operator infrastructure. No new tokens or keywords are needed — the type system drives the new behavior.
+Pointer arithmetic reuses the existing binary operator infrastructure. No new tokens or keywords are needed: the type system drives the new behavior.
 
 ```ebnf
 expr ::= ...
@@ -70,7 +69,7 @@ The same tokens already existed. The change is that `GetBinaryResultType` now ac
 | `p + q` | `ptr[T]`, `ptr[U]` | **type error** |
 | `p - q` | `ptr[T]`, `ptr[U]` (T ≠ U) | **type error** |
 
-Pointer difference (`p - q`) yields an element count, not bytes. If `p` and `q` are both `ptr[int]` and they are 24 bytes apart, `p - q` is 3 — the number of `int`-sized steps between them.
+Pointer difference (`p - q`) yields an element count, not bytes. If `p` and `q` are both `ptr[int]` and they are 24 bytes apart, `p - q` is 3: the number of `int`-sized steps between them.
 
 Multiplication by a pointer is blocked. There is no sensible meaning for `ptr[T] * int` in terms of memory addresses.
 
@@ -104,14 +103,13 @@ For `ptr + int` and `int + ptr`, the result inherits the struct name (which enco
 
 Mismatched pointer types (`ptr[int] - ptr[float64]`) fall through to the default error path because `LStruct != RStruct`.
 
-## `BinaryExprAST` Constructor Extended
+## `BinaryExpressionNode` Constructor Extended
 
-`BinaryExprAST` gains an optional `StructName` parameter so the pointer type of an arithmetic result can be carried through the AST:
+`BinaryExpressionNode` gains an optional `StructName` parameter so the pointer type of an arithmetic result can be carried through the AST. `Type` itself stays required, only the new `StructName` gets a default:
 
 ```cpp
-BinaryExprAST(char Op, unique_ptr<ExprAST> LHS, unique_ptr<ExprAST> RHS,
-              ValueType Type = ValueType::Unknown,
-              const string &StructName = "")
+BinaryExpressionNode(int Operator, unique_ptr<ExpressionNode> Left, unique_ptr<ExpressionNode> Right,
+              ValueType Type, const string &StructName = "")
 ```
 
 The constructor calls `setType(Type, StructName)`. Previously, only the parse-loop fallback path (for non-pointer results) needed to store a type on the node. Now the pointer arithmetic path explicitly constructs the node with both type and struct name set, then `continue`s to skip the old assignment statement.
@@ -127,7 +125,7 @@ ValueType ResultType = GetBinaryResultType(BinOp,
                                            RHS->getType(), RHS->getStructName(),
                                            &ResultStructName);
 if (ResultType == ValueType::Pointer) {
-  LHS = make_unique<BinaryExprAST>(BinOp, std::move(LHS), std::move(RHS),
+  LHS = make_unique<BinaryExpressionNode>(BinOp, std::move(LHS), std::move(RHS),
                                    ResultType, ResultStructName);
   continue;
 }
@@ -238,7 +236,7 @@ def main() -> int:
   var p: ptr[int] = addr(a)
   printd(float64(p[0]))    # 10.000000
   p = p + 1
-  printd(float64(p[0]))    # 20.000000 (b is next on the stack — layout-dependent)
+  printd(float64(p[0]))    # 20.000000 (b is next on the stack: layout-dependent)
   return 0
 ```
 
@@ -294,7 +292,7 @@ def main() -> int:
 2.000000
 ```
 
-### The K&R loop with `!= end`
+### An end-pointer loop with `!= end`
 
 ```pyxc
 extern def printd(x: float64)
@@ -312,9 +310,8 @@ def main() -> int:
   var p: ptr[int] = addr(t.a)
   var end: ptr[int] = p + 3
   var total: int = 0
-  while p != end:
-    total = total + p[0]
-    p = p + 1
+  for var i: int = 0, p + i != end, 1:
+    total = total + p[i]
   printd(float64(total))  # 60.000000
   return 0
 ```
@@ -338,13 +335,13 @@ grep 'getelementptr\|ptrdiff\|icmp' out.ll
 
 **Mismatched pointer types are a type error.** `ptr[int] + ptr[float64]` and `ptr[int] - ptr[float64]` are both rejected. Only pointers with identical encoded struct names can interact.
 
-**`p - q` yields element count, not bytes.** If you need the byte distance, multiply by the element size manually. There is no `sizeof` operator yet — that comes in chapter 20.
+**`p - q` yields element count, not bytes.** If you need the byte distance, multiply by the element size manually. There is no `sizeof` operator yet: that comes in [Chapter 21](chapter-21.md).
 
 **No pointer-to-integer casts.** You cannot convert a pointer to an integer to inspect its numeric address.
 
 ## What's Next
 
-[Chapter 21](chapter-21.md) adds `malloc`, `free`, and `sizeof` — heap allocation built directly on the pointer arithmetic from this chapter. With `p + n`, `p - q`, and a way to allocate arbitrary memory, dynamic data structures become possible.
+[Chapter 21](chapter-21.md) adds `malloc`, `free`, and `sizeof`: heap allocation built directly on the pointer arithmetic from this chapter. With `p + n`, `p - q`, and a way to allocate arbitrary memory, dynamic data structures become possible.
 
 ## Need Help?
 

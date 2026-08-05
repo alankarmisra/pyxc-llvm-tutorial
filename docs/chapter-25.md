@@ -1,11 +1,13 @@
 ---
-description: "Add the class keyword as a distinct aggregate type. Classes share struct IR layout but carry an IsClass flag that unlocks methods, constructors, and visibility in subsequent chapters."
+description: "Add the class keyword as a second way to declare an aggregate type, sharing every bit of struct's parsing and layout machinery."
 ---
 # 25. pyxc: Classes
 
 ## Where We Are
 
-[Chapter 24](chapter-24.md) added arrays. We now have a decent type system, but the only aggregate type is `struct`. After this chapter, the `class` keyword is available:
+[Chapter 24](chapter-24.md) gave me arrays, so the type system now covers scalars, structs, pointers, aliases, and fixed-size sequences. The one aggregate keyword I have is `struct`. Before I can add methods, constructors, or visibility in later chapters, I need a second keyword to hang those concepts off of: `class`.
+
+After this chapter:
 
 ```pyxc
 class Point:
@@ -19,7 +21,7 @@ def main() -> int:
   return 0
 ```
 
-On its own, `class` behaves identically to `struct` — same field layout, same IR, same field access syntax. The difference lives inside the compiler: a class sets `IsClass = true` in `StructTypeInfo`. That flag is what the next three chapters gate everything on.
+I ran this; it compiles and exits cleanly. Right now, `class` behaves exactly like `struct`, same field layout, same field access, same everything. The distinction is nowhere yet, not even as a hidden flag; that's deliberate. This chapter is only about parsing the keyword and sharing the existing struct machinery. Whatever a future chapter needs to tell classes and structs apart, once methods show up, isn't here yet.
 
 ## Source Code
 
@@ -28,171 +30,128 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-25
 ```
 
-## Grammar
-
-This chapter adds one new production and extends `top`.
-
-```ebnf
-top      = typealias | structdef | classdef | definition | decorateddef | external | toplevelexpr ;  -- changed
-classdef = "class" identifier ":" eols structblock ;  -- new
-```
-
-`classdef` and `structdef` share the same body grammar (`structblock`). The only syntactic difference is the keyword.
-
-### Full Grammar
-
-`code/chapter-25/pyxc.ebnf`
-
-```ebnf
-program         = [ eols ] [ top { eols top } ] [ eols ] ;
-eols            = eol { eol } ;
-top             = typealias | structdef | classdef | definition | decorateddef | external | toplevelexpr ;
-typealias       = "type" identifier "=" type ;
-structdef       = "struct" identifier ":" eols structblock ;
-classdef        = "class" identifier ":" eols structblock ;
-structblock     = indent fielddecl { eols fielddecl } dedent ;
-fielddecl       = identifier ":" type ;
-definition      = "def" prototype [ "->" type ] ":" ( simplestmt | eols block ) ;
-decorateddef    = binarydecorator eols "def" binaryopprototype [ "->" type ] ":" ( simplestmt | eols block )
-                | unarydecorator  eols "def" unaryopprototype  [ "->" type ] ":" ( simplestmt | eols block ) ;
-binarydecorator = "@" "binary" "(" integer ")" ;
-unarydecorator  = "@" "unary" ;
-binaryopprototype = customopchar "(" typedparam "," typedparam ")" ;
-unaryopprototype  = customopchar "(" typedparam ")" ;
-external        = "extern" "def" prototype [ "->" type ] ;
-toplevelexpr    = expression ;
-prototype       = identifier "(" [ typedparam { "," typedparam } ] ")" ;
-typedparam      = identifier ":" type ;
-ifstmt          = "if" expression ":" suite
-                [ eols "else" ":" suite ] ;
-forstmt         = "for"
-                  ( "var" identifier ":" type | identifier )
-                  "=" expression "," expression "," expression ":" suite ;
-varstmt         = "var" varbinding { "," varbinding } ;
-assignstmt      = lvalue "=" expression ;
-simplestmt      = returnstmt | varstmt | assignstmt | expression ;
-compoundstmt    = ifstmt | forstmt ;
-statement       = simplestmt | compoundstmt ;
-suite           = simplestmt | compoundstmt | eols block ;
-returnstmt      = "return" [ expression ] ;
-block           = indent statement { eols statement } dedent ;
-expression      = unaryexpr binoprhs ;
-binoprhs        = { binaryop unaryexpr } ;
-lvalue          = identifier | fieldaccess | indexexpr ;
-varbinding      = identifier ":" type [ "=" expression ] ;
-unaryexpr       = unaryop unaryexpr | primary ;
-unaryop         = "-" | userdefunaryop ;
-primary         = castexpr | sizeofexpr | addrexpr | arrayliteral | stringliteral | identifierexpr | fieldaccess | indexexpr | numberexpr | bool_literal | parenexpr ;
-castexpr        = casttype "(" expression ")" ;
-sizeofexpr      = "sizeof" "(" type ")" ;
-addrexpr        = "addr" "(" lvalue ")" ;
-identifierexpr  = identifier | callexpr ;
-callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
-fieldaccess     = identifier "." identifier { "." identifier } ;
-indexexpr       = identifier "[" expression "]" ;
-numberexpr      = number ;
-arrayliteral    = "[" [ expression { "," expression } ] "]" ;
-stringliteral   = "\"" { ? any char except " and newline ? | escape } "\"" ;
-escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
-parenexpr       = "(" expression ")" ;
-binaryop        = builtinbinaryop | userdefbinaryop ;
-indent          = INDENT ;
-dedent          = DEDENT ;
-
-builtinbinaryop = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
-userdefbinaryop = ? any opchar defined as a custom binary operator ? ;
-userdefunaryop  = ? any opchar defined as a custom unary operator ? ;
-customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
-                    and not already defined as a custom operator ? ;
-opchar          = ? any single ASCII punctuation character ? ;
-identifier      = (letter | "_") { letter | digit | "_" } ;
-builtintype     = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | "None" ;
-aliastype       = identifier ;
-structtype      = identifier ;
-pointertype     = "ptr" "[" type "]" ;
-type            = basetype [ arraysuffix ] ;
-basetype        = builtintype | aliastype | structtype | pointertype ;
-arraysuffix     = "[" integer "]" ;
-casttype        = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | pointertype ;
-integer         = digit { digit } ;
-number          = digit { digit } [ "." { digit } ]
-                | "." digit { digit } ;
-bool_literal    = "True" | "False" ;
-letter          = "A".."Z" | "a".."z" ;
-digit           = "0".."9" ;
-eol             = "\r\n" | "\r" | "\n" ;
-ws              = " " | "\t" ;
-INDENT          = ? synthetic token emitted by lexer ? ;
-DEDENT          = ? synthetic token emitted by lexer ? ;
-```
-
-## New Token
+## One New Token
 
 ```cpp
 tok_class = -40,
 ```
 
-Registered in the keyword table alongside `tok_struct`:
-
 ```cpp
-{"struct", tok_struct},
-{"class",  tok_class},
+{"struct", tok_struct},   {"class", tok_class},     {"ptr", tok_ptr},
+{"addr", tok_addr},       {"sizeof", tok_sizeof},   {"type", tok_type}
 ```
 
-`tok_class` is also added to the token name map so error messages print `'class'` rather than a raw integer.
+## One Parser, Two Keywords
 
-## One Parser, Two Keywords — `ParseAggregateDefinition`
-
-Previously the struct parser was `ParseStructDefinition()`. This chapter replaces it with a single function that handles both keywords. The caller passes `"struct"` or `"class"` as a string, and the parser uses it only to:
-
-1. Produce readable error messages (`"Expected struct name"` vs `"Expected class name"`)
-2. Set the `IsClass` flag (see Group 3)
+Before this chapter, struct parsing lived in a function that only knew about `struct`. Rather than write a second, nearly identical function for `class`, I parameterize the existing one on which keyword actually introduced this definition, using that only to build readable error messages:
 
 ```cpp
 static bool ParseAggregateDefinition(const char *KindName) {
-  // CurTok is tok_struct or tok_class
+  // CurrentToken is 'struct' or 'class'
   getNextToken(); // eat keyword
-  if (CurTok != tok_identifier)
-    return LogError((string("Expected ") + KindName + " name").c_str());
-  string StructName = IdentifierStr;
-
-  // Check for redefinition
-  if (StructTypes.count(StructName))
-    return LogError(("Aggregate '" + StructName + "' is already defined").c_str());
-
+  if (CurrentToken != tok_name) {
+    LogError((string("Expected ") + KindName + " name").c_str());
+    return false;
+  }
+  string StructName = Name;
+  if (TypeAliases.count(StructName)) {
+    LogError(("Name '" + StructName + "' is already defined as a type alias")
+                 .c_str());
+    return false;
+  }
+  if (StructTypes.count(StructName)) {
+    LogError(("Aggregate '" + StructName + "' is already defined").c_str());
+    return false;
+  }
   getNextToken(); // eat aggregate name
-  // ... parse ':', INDENT, fields, DEDENT ...
+  if (CurrentToken != ':') {
+    LogError((string("Expected ':' after ") + KindName + " name").c_str());
+    return false;
+  }
+  getNextToken(); // eat ':'
+  if (CurrentToken == tok_eol)
+    consumeNewlines();
+  if (CurrentToken != tok_indent) {
+    LogError((string("Expected an indented ") + KindName + " body").c_str());
+    return false;
+  }
+  getNextToken(); // eat INDENT
 
-  Info.IsClass = (strcmp(KindName, "class") == 0);
+  StructTypeInfo Info;
+  Info.Name = StructName;
+  while (CurrentToken != tok_dedent && CurrentToken != tok_block_end && CurrentToken != tok_eof) {
+    if (CurrentToken == tok_eol) {
+      consumeNewlines();
+      continue;
+    }
+    if (CurrentToken != tok_name) {
+      LogError(
+          (string("Expected field name in ") + KindName + " body").c_str());
+      return false;
+    }
+    string FieldName = Name;
+    getNextToken();
+    if (CurrentToken != ':') {
+      LogError("Expected ':' after field name");
+      return false;
+    }
+    getNextToken();
+    string FieldStructName;
+    ValueType FieldType = ParseTypeToken(&FieldStructName);
+    if (FieldType == ValueType::Error || FieldType == ValueType::None) {
+      LogError((string("Invalid ") + KindName + " field type").c_str());
+      return false;
+    }
+    if (Info.FieldIndex.count(FieldName)) {
+      LogError((string("Duplicate ") + KindName + " field '" + FieldName + "'")
+                   .c_str());
+      return false;
+    }
+    Info.FieldIndex[FieldName] = Info.Fields.size();
+    Info.Fields.push_back({FieldName, FieldType, FieldStructName});
+    if (CurrentToken == tok_eol)
+      consumeNewlines();
+  }
+  if (CurrentToken != tok_dedent) {
+    LogError((string("Expected dedent after ") + KindName + " body").c_str());
+    return false;
+  }
+  PendingTokens.push_front(tok_block_end);
+  getNextToken(); // eat DEDENT, then surface tok_block_end
   StructTypes[StructName] = std::move(Info);
   return true;
 }
 ```
 
-All error strings are parameterised on `KindName`, so a mis-formed class body reports `"Expected dedent after class body"` instead of the generic struct message.
-
-`HandleStructDef` and `HandleClassDef` each call this with `"struct"` or `"class"`:
+`KindName` shows up in every error message this function produces, "Expected class name," "Duplicate class field 'x'," and so on, but that's the entire extent of what distinguishes the two keywords here. By the time `Info` lands in `StructTypes`, there's nothing left in it that remembers whether the source said `struct` or `class`. `StructTypeInfo` itself has no flag for it:
 
 ```cpp
-static void HandleStructDef() {
-  bool Ok = ParseAggregateDefinition("struct");
-  if (!Ok) { SynchronizeToLineBoundary(); return; }
-  // check for trailing tokens on the same line
-}
+struct StructTypeInfo {
+  string Name;
+  vector<StructFieldInfo> Fields;
+  std::map<string, size_t> FieldIndex;
+};
+```
 
+`HandleStructDef` and the new `HandleClassDef` just call this with the matching string:
+
+```cpp
 static void HandleClassDef() {
   bool Ok = ParseAggregateDefinition("class");
-  // same error recovery
+  if (!Ok) {
+    SynchronizeToLineBoundary();
+    return;
+  }
+  bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
+  if (HasTrailing) {
+    LogError(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+    SynchronizeToLineBoundary();
+    return;
+  }
 }
 ```
 
-`HandleStructDef` now also includes improved error recovery — if parsing succeeds but there are unexpected tokens on the same line, it logs an error and synchronises to the line boundary.
-
-The dispatch loops in `MainLoop` and `FileModeLoop` add a `tok_class` case:
+And both `MainLoop` and `FileModeLoop` get a matching case:
 
 ```cpp
 case tok_class:
@@ -200,56 +159,44 @@ case tok_class:
   break;
 ```
 
-## The `IsClass` Flag
+## The IR Doesn't Know Either
 
-`StructTypeInfo` gains one boolean field:
-
-```cpp
-struct StructTypeInfo {
-  string Name;
-  bool IsClass = false;      // new
-  vector<FieldInfo> Fields;
-  // ...
-};
-```
-
-`ParseAggregateDefinition` sets `IsClass = true` when `KindName == "class"`, false otherwise. This flag is the sole distinction between structs and classes in `StructTypes`. It does nothing yet in chapter 24 — but chapter 25 checks it before parsing methods, chapter 26 checks it for constructors, and so on.
-
-## IR Layout
-
-A class has exactly the same IR layout as a struct with the same fields. The LLVM type system uses a `"struct."` prefix for the named aggregate type for both source-level `struct` and `class` — a comment in the code makes this explicit:
-
-```cpp
-// LLVM named aggregate types use a conventional "struct." prefix here for
-// both source-level 'struct' and 'class' in chapter 24. They are layout-
-// equivalent at this stage; chapter 25 can layer semantic distinctions.
-```
+I confirmed there's no hidden distinction at the LLVM level either. A `class` produces exactly the type a `struct` with the same fields would:
 
 ```pyxc
 class Vec2:
   x: float64
   y: float64
+
+def main() -> int:
+  var v: Vec2
+  v.x = 1.0
+  return 0
 ```
 
 ```llvm
-%Vec2 = type { double, double }
+%struct.Vec2 = type { double, double }
 ```
 
-There is nothing in the generated LLVM IR that distinguishes a `class Vec2` from a `struct Vec2`. The distinction is a compile-time concept only.
+Note the name: LLVM's named type is `%struct.Vec2`, not `%Vec2`. That `struct.` prefix is a naming convention I apply uniformly to every named aggregate type, regardless of whether the source used `struct` or `class`, so there's nothing there to distinguish them either.
 
 ## Conflict Rules
 
-Class names and struct names share the same namespace (`StructTypes`). Defining a class and a struct with the same name, in either order, is rejected:
+Struct names and class names share one namespace, the same `StructTypes` map, so defining one under a name the other already used is rejected regardless of order:
 
 ```pyxc
 struct Foo:
   x: int
 
-class Foo:   # Error: Aggregate 'Foo' is already defined
+class Foo:
   y: int
 ```
 
-Type alias names also conflict: a class name that collides with an existing type alias, or vice versa, is rejected with `"Name '...' is already defined as an aggregate type"`.
+```text
+Error (Line 3, Column 7): Aggregate 'Foo' is already defined
+```
+
+The type-alias namespace is shared too. A class name colliding with an existing alias is rejected the same way a struct name colliding with an alias already was, both routed through the same `TypeAliases.count(StructName)` check near the top of `ParseAggregateDefinition`.
 
 ## Build and Run
 
@@ -258,9 +205,115 @@ cd code/chapter-25
 cmake -S . -B build && cmake --build build
 ```
 
+## The Full Grammar
+
+[pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-25/pyxc.ebnf)
+
+```ebnf
+program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
+end-of-lines            = end-of-line { end-of-line } ;
+top-level-item             = type-alias | struct-definition | class-definition | function-definition | decorated-function-definition | external | top-level-expression ;   (* changed: class-definition added *)
+type-alias       = "type" name "=" type ;
+struct-definition       = "struct" name ":" end-of-lines struct-block ;
+class-definition        = "class" name ":" end-of-lines struct-block ;                                                                                                       (* new *)
+struct-block     = indent field-declaration { end-of-lines field-declaration } dedent ;
+field-declaration       = name ":" type ;
+function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+(* If the return type is omitted, it defaults to None. *)
+decorated-function-definition    = binary-decorator end-of-lines "def" binary-operator-signature [ "->" type ] ":" ( simple-statement | end-of-lines block )
+                | unary-decorator  end-of-lines "def" unary-operator-signature  [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+binary-decorator = "@" "binary" "(" integer ")" ;
+unary-decorator  = "@" "unary" ;
+binary-operator-signature = custom-operator-character "(" typed-parameter "," typed-parameter ")" ;
+unary-operator-signature  = custom-operator-character "(" typed-parameter ")" ;
+external        = "extern" "def" function-signature [ "->" type ] ;
+top-level-expression    = expression ;
+function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
+typed-parameter      = name ":" type ;
+if-statement          = "if" expression ":" suite
+                [ end-of-lines "else" ":" suite ] ;
+for-statement         = "for"
+                  ( "var" name ":" type | name )
+                  "=" expression "," expression "," expression ":" suite ;
+variable-statement         = "var" variable-binding { "," variable-binding } ;
+assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
+simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
+compound-statement    = if-statement | for-statement ;
+statement       = simple-statement | compound-statement ;
+suite           = simple-statement | compound-statement | end-of-lines block ;
+return-statement      = "return" [ expression ] ;
+statement-separator = end-of-lines | BLOCK_END ;
+block = indent statement { statement-separator statement } dedent ;
+expression      = unary-expression binary-operator-right ;
+binary-operator-right        = { binary-operator unary-expression } ;
+lvalue          = name | field-access | index-expression ;
+variable-binding      = name ":" type [ "=" expression ] ;
+unary-expression       = unary-operator unary-expression | primary ;
+unary-operator         = "-" | user-defined-unary-operator ;
+primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
+cast-expression        = cast-type "(" expression ")" ;
+sizeof-expression      = "sizeof" "(" type ")" ;
+address-expression        = "addr" "(" lvalue ")" ;
+name-expression  = name | call-expression ;
+call-expression        = name "(" [ expression { "," expression } ] ")" ;
+field-access     = name "." name { "." name } ;
+index-expression       = name "[" expression "]" ;
+number-expression      = number ;
+array-literal    = "[" [ expression { "," expression } ] "]" ;
+string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
+escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
+parenthesized-expression       = "(" expression ")" ;
+binary-operator        = builtin-binary-operator | user-defined-binary-operator ;
+indent          = INDENT ;
+dedent          = DEDENT ;
+
+builtin-binary-operator = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
+user-defined-binary-operator = ? any operator-character defined as a custom binary operator ? ;
+user-defined-unary-operator  = ? any operator-character defined as a custom unary operator ? ;
+custom-operator-character    = ? any operator-character that is not "-" or a builtin-binary-operator,
+                    and not already defined as a custom operator ? ;
+operator-character          = ? any single ASCII punctuation character ? ;
+name      = (letter | "_") { letter | digit | "_" } ;
+builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
+                | "float" | "float32" | "float64"
+                | "bool" | "None" ;
+alias-type       = name ;
+struct-type      = name ;
+pointer-type     = "ptr" "[" type "]" ;
+type            = base-type [ array-suffix ] ;
+base-type        = builtin-type | alias-type | struct-type | pointer-type ;
+array-suffix     = "[" integer "]" ;
+cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
+                | "float" | "float32" | "float64"
+                | "bool" | pointer-type ;
+integer         = digit { digit } ;
+number          = ( digit { digit } [ "." { digit } ]
+                  | "." digit { digit } ) [ exponent ] ;
+exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
+boolean-literal    = "True" | "False" ;
+letter          = "A".."Z" | "a".."z" ;
+digit           = "0".."9" ;
+end-of-line             = "\r\n" | "\r" | "\n" ;
+comment = "#" { comment-character } ;
+comment-character = ? any character except "\r" and "\n" ? ;
+whitespace = " " | "\t" | "\v" | "\f" ;
+INDENT          = ? synthetic token emitted by lexer ? ;
+DEDENT          = ? synthetic token emitted by lexer ? ;
+
+BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
+```
+
+`top-level-item` gained `class-definition`, and `class-definition` itself is new, both marked above. It shares `struct-block` with `struct-definition` entirely; there's no separate body grammar for a class. Everything else is unchanged from [Chapter 24](chapter-24.md).
+
+## Known Limitations
+
+**No distinction exists yet, anywhere.** Not a flag, not a naming difference, nothing. If a later chapter needs to treat classes differently from structs, giving them methods, for instance, it has to introduce that tracking itself; this chapter deliberately doesn't.
+
+**Same body grammar as struct.** A class body is field declarations only, exactly like a struct. Nothing method-shaped parses yet.
+
 ## What's Next
 
-[Chapter 26](chapter-26.md) adds methods — functions defined inside a class body and called with `obj.method(args)`. The `IsClass` flag gates all of this: structs do not get methods.
+[Chapter 26](chapter-26.md) adds methods, called with `obj.method(args)`, and with them, the first actual distinction between a class and a struct: a boolean the parser sets based on which keyword it saw.
 
 ## Need Help?
 
