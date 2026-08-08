@@ -15,8 +15,8 @@ using namespace std;
 // Lexer
 //===----------------------------------------===//
 
-// The lexer returns tokens [0-255] if it is an unknown character, otherwise one
-// of these for known things.
+// I return named tokens for known language elements. I preserve the [0-255]
+// character value of any other single character for diagnostics and custom operators.
 enum Token {
   tok_eof = -1,
   tok_eol = -2,
@@ -27,7 +27,18 @@ enum Token {
 
   // primary
   tok_name = -5,
-  tok_number = -6
+  tok_number = -6,
+
+  // punctuation and operators
+  tok_lparen = '(',
+  tok_rparen = ')',
+  tok_comma = ',',
+  tok_colon = ':',
+  tok_plus = '+',
+  tok_minus = '-',
+  tok_star = '*',
+  tok_slash = '/',
+  tok_less = '<',
 };
 
 static string Name; // Filled in if tok_name
@@ -50,9 +61,9 @@ static map<int, string> TokenNames = [] {
 
   // Single character tokens.
   for (int ch = 0; ch <= 255; ++ch) {
-    if (isprint(static_cast<unsigned char>(ch)))
+    if (isprint(static_cast<unsigned char>(ch))) // printable
       Names[ch] = "'" + string(1, static_cast<char>(ch)) + "'";
-    else if (ch == '\n')
+    else if (ch == '\n') // common whitespace
       Names[ch] = "'\\n'";
     else if (ch == '\t')
       Names[ch] = "'\\t'";
@@ -60,7 +71,7 @@ static map<int, string> TokenNames = [] {
       Names[ch] = "'\\r'";
     else if (ch == '\0')
       Names[ch] = "'\\0'";
-    else {
+    else { // everything else: hex code
       ostringstream OS;
       OS << "0x" << uppercase << hex << setw(2) << setfill('0') << ch;
       Names[ch] = OS.str();
@@ -151,8 +162,11 @@ static int advance() {
   int LastChar = getchar();
   if (LastChar == '\r') {
     int NextChar = getchar();
-    if (NextChar != '\n' && NextChar != EOF)
+    if (NextChar != '\n' && NextChar != EOF) {
+      // I read one character too far while checking for '\r\n', so I put it
+      // back.
       ungetc(NextChar, stdin);
+    }
     PyxcSourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
@@ -251,7 +265,29 @@ static int getToken() {
 
   int ThisChar = LastChar;
   LastChar = advance();
-  return ThisChar;
+  // I return a named token for known punctuation and operators.
+  switch (ThisChar) {
+  case '(':
+    return tok_lparen;
+  case ')':
+    return tok_rparen;
+  case ',':
+    return tok_comma;
+  case ':':
+    return tok_colon;
+  case '+':
+    return tok_plus;
+  case '-':
+    return tok_minus;
+  case '*':
+    return tok_star;
+  case '/':
+    return tok_slash;
+  case '<':
+    return tok_less;
+  default:
+    return ThisChar;
+  }
 }
 
 //===----------------------------------------===//
@@ -309,6 +345,7 @@ static void PrintErrorSourceContext(SourceLocation Loc) {
 
   fprintf(stderr, "%s\n", LineText->c_str());
   int spaces = Loc.Col - 1;
+  // I guard against an invalid column before printing the spaces.
   if (spaces < 0)
     spaces = 0;
   for (int i = 0; i < spaces; ++i)
@@ -454,7 +491,7 @@ static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
   if (!V)
     return nullptr;
 
-  if (CurrentToken != ')')
+  if (CurrentToken != tok_rparen)
     return LogErrorExpression("expected ')'");
   getNextToken(); // eat ).
   return V;
@@ -472,23 +509,23 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
 
   getNextToken(); // eat name.
 
-  if (CurrentToken != '(') // Simple variable ref.
+  if (CurrentToken != tok_lparen) // Simple variable ref.
     return make_unique<NameExpressionNode>(ParsedName);
 
   // Call.
   getNextToken(); // eat (
   vector<unique_ptr<ExpressionNode>> Arguments;
-  if (CurrentToken != ')') {
+  if (CurrentToken != tok_rparen) {
     while (true) {
       if (auto Arg = ParseExpression())
         Arguments.push_back(std::move(Arg));
       else
         return nullptr;
 
-      if (CurrentToken == ')')
+      if (CurrentToken == tok_rparen)
         break;
 
-      if (CurrentToken != ',')
+      if (CurrentToken != tok_comma)
         return LogErrorExpression("Expected ')' or ',' in argument list");
       getNextToken();
     }
@@ -512,7 +549,7 @@ static unique_ptr<ExpressionNode> ParsePrimary() {
     return ParseNameExpression();
   case tok_number:
     return ParseNumberExpression();
-  case '(':
+  case tok_lparen:
     return ParseParenthesizedExpression();
   }
 }
@@ -524,7 +561,7 @@ static unique_ptr<ExpressionNode> ParseTerm() {
   if (!Left)
     return nullptr;
 
-  while (CurrentToken == '*' || CurrentToken == '/') {
+  while (CurrentToken == tok_star || CurrentToken == tok_slash) {
     int Operator = CurrentToken;
     getNextToken();
 
@@ -546,7 +583,7 @@ static unique_ptr<ExpressionNode> ParseSum() {
   if (!Left)
     return nullptr;
 
-  while (CurrentToken == '+' || CurrentToken == '-') {
+  while (CurrentToken == tok_plus || CurrentToken == tok_minus) {
     int Operator = CurrentToken;
     getNextToken();
 
@@ -568,7 +605,7 @@ static unique_ptr<ExpressionNode> ParseComparison() {
   if (!Left)
     return nullptr;
 
-  while (CurrentToken == '<') {
+  while (CurrentToken == tok_less) {
     int Operator = CurrentToken;
     getNextToken();
 
@@ -602,7 +639,7 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
   string FnName = Name;
   getNextToken(); // eat function name
 
-  if (CurrentToken != '(')
+  if (CurrentToken != tok_lparen)
     return LogErrorSignature("Expected '(' in function signature");
 
   // Parse parameter names. The loop calls getNextToken() at the top to advance
@@ -613,15 +650,15 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
   while (getNextToken() == tok_name) {
     ParameterNames.push_back(Name);
 
-    if (getNextToken() == ')') // eat name, check what follows
+    if (getNextToken() == tok_rparen) // eat name, check what follows
       break;
 
-    if (CurrentToken != ',')
+    if (CurrentToken != tok_comma)
       return LogErrorSignature("Expected ')' or ',' in parameter list");
     // loop continues: getNextToken() at the top eats the ','
   }
 
-  if (CurrentToken != ')')
+  if (CurrentToken != tok_rparen)
     return LogErrorSignature("Expected ')' in function signature");
 
   getNextToken(); // eat ')'
@@ -637,7 +674,7 @@ static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
   if (!Signature)
     return nullptr;
 
-  if (CurrentToken != ':')
+  if (CurrentToken != tok_colon)
     return LogErrorFunction("Expected ':' in function definition");
   getNextToken(); // eat ':'
 
@@ -680,6 +717,7 @@ static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
 /// SynchronizeToLineBoundary() to discard the rest of the input line.
 
 static void SynchronizeToLineBoundary() {
+  // I leave the boundary token for MainLoop() to handle.
   while (CurrentToken != tok_eol && CurrentToken != tok_eof)
     getNextToken();
 }

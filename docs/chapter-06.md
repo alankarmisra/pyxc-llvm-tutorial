@@ -3,15 +3,17 @@ description: "Connect the AST to LLVM IR: add codegen() to every node and see re
 ---
 # 6. pyxc: Code Generation
 
-## Where We Are
+## Where I Am
 
-In [Chapter 4](chapter-04.md) I wrote a parser that builds a syntax tree and reports error messages, if any. The next step is to generate intermediate code (IR) and pass that on to the LLVM tooling, either to compile and run immediately, or to compile to machine code to be run later. This chapter focuses on generating the IR. If you type something like:
+In [Chapter 4](chapter-04.md), I wrote a parser that builds a syntax tree and reports errors. I now want to turn that tree into LLVM intermediate representation (IR). In a later chapter, I will ask LLVM to compile and run this IR. For now, I focus on generating and printing it.
+
+If I enter a function definition:
 
 ```pyxc
-ready> def sum(a, b): return a + b
+ready> def sum(a, b): a + b
 ```
 
-You should see...
+I print the function as LLVM IR:
 
 <!-- code-merge:start -->
 ```text
@@ -26,7 +28,7 @@ entry:
 ```
 <!-- code-merge:end -->
 
-That's the internal representation LLVM needs to be able to run code. It can take that IR and compile it to x86, ARM, or any other target it supports. If you're wondering, and even if you're not, yes it's possible to just write the IR out by hand in a text file and run it through LLVM. I won't be doing that here. Instead I'll use the LLVM utility functions to translate pyxc code into something LLVM can run.
+LLVM can later compile this IR for x86, ARM, or another supported target. I could write IR by hand, but I will generate it from the syntax tree with LLVM's C++ API.
 
 ## Source Code
 
@@ -37,19 +39,19 @@ cd pyxc-llvm-tutorial/code/chapter-06
 
 ## The Three LLVM Objects
 
-Code generation in LLVM revolves around three objects. I keep them as globals:
+I use three LLVM objects during code generation and keep them as globals:
 
 ```cpp
 static unique_ptr<LLVMContext> TheContext;
-static unique_ptr<Module>      TheModule;
+static unique_ptr<Module> TheModule;
 static unique_ptr<IRBuilder<>> Builder;
 ```
 
-**`LLVMContext`** is at the root of my compiled code. Items shared across modules like global constants land up here. You pass the context to almost every LLVM API call.
+LLVM assigns a specific role to each object. To generate IR, I use them as LLVM expects:
 
-**`Module`** belongs to the context and represents one source file's worth of compiled output — the functions and global variables defined in it. A single LLVMContext can contain multiple modules.
-
-**`IRBuilder`** is what I use to emit LLVM instructions, as you'll see soon.
+- I keep shared LLVM state, such as types and constants, in `LLVMContext`.
+- I store the functions and global variables I generate in `Module`.
+- I use `IRBuilder` to create LLVM instructions inside those functions.
 
 ```diagram
                  ┌───────────────────────┐
@@ -81,7 +83,7 @@ static unique_ptr<IRBuilder<>> Builder;
                 └───────────────────┘
 ```
 
-Initialization bundles the three objects:
+I create all three objects in one function:
 
 ```cpp
 static void InitializeModuleAndManagers() {
@@ -91,30 +93,34 @@ static void InitializeModuleAndManagers() {
 }
 ```
 
-`"PyxcJIT"` is the module identifier — it can be anything I want. In a later chapter when I add file mode, I use the source filename as the module id instead, to keep things sensible. The name `InitializeModuleAndManagers` looks ahead too: in [Chapter 7](chapter-07.md) this function grows to also set up the optimization pass managers, so I'm naming it for what it becomes, not just what it does today.
+`"PyxcJIT"` is the module identifier. I can choose any name here. When I add file mode later, I will use the source filename instead.
+
+I call the function `InitializeModuleAndManagers` because I will also create optimization managers in [Chapter 7](chapter-07.md).
 
 ## Adding codegen() to the AST
 
-In chapters [2](chapter-02.md) and [3](chapter-04.md), the AST nodes had no methods beyond their constructors. Now I add a pure virtual `codegen()` to the base class and every derived class can decide what it wants to emit:
+In Chapters [2](chapter-02.md) and [3](chapter-03.md), I created the syntax tree without generating LLVM IR. I now add a pure virtual `codegen()` method to the base expression class:
 
 ```cpp
-class ExprAST {
+class ExpressionNode {
 public:
-  virtual ~ExprAST() = default;
+  virtual ~ExpressionNode() = default;
   virtual Value *codegen() = 0;
 };
 ```
 
-`Value` is LLVM's base class for anything that produces a value — constants, instructions, function arguments. Every expression node returns a `Value*` from its `codegen()`. However, `PrototypeAST` and `FunctionAST` produce `Function*` instead of `Value*` — a function and its prototype are not expressions, so they don't inherit from `ExprAST`
+I implement this method in every derived expression class. Each implementation returns an LLVM `Value*`. LLVM uses `Value` as the base class for values such as constants, instructions, and function arguments.
+
+A function signature and a function definition are not expressions, so they do not derive from `ExpressionNode`. I give them `codegen()` methods that return an LLVM `Function*` instead:
 
 ```cpp
-class PrototypeAST {
-  ...
+class FunctionSignatureNode {
+  // ...
   Function *codegen();
 };
 
-class FunctionAST {
-  ...
+class FunctionDefinitionNode {
+  // ...
   Function *codegen();
 };
 ```
@@ -123,25 +129,24 @@ class FunctionAST {
 
 ### Number Literals
 
-A number literal becomes a floating-point constant:
+For a number literal, I create an LLVM floating-point constant:
 
 ```cpp
-Value *NumberExprAST::codegen() {
-  return ConstantFP::get(*TheContext, APFloat(Val));
+Value *NumberExpressionNode::codegen() {
+  return ConstantFP::get(*TheContext, APFloat(Value));
 }
 ```
 
-`APFloat` is LLVM's floating-point value type. `ConstantFP::get` creates a constant and stores it in the context — which is why I pass `TheContext`. No instruction is emitted; constants are values that get copied into whichever instruction uses them. 
+`APFloat` holds the floating-point value in LLVM's format. I pass it to `ConstantFP::get` to create a constant in `TheContext`. I do not need to emit an instruction because LLVM constants can be used directly as instruction operands.
 
-### Variable References
+### Name References
 
-A variable reference looks up the name in `NamedValues` and returns the referenced value:
+For a name, I need to find the LLVM value that the name represents. I keep those values in `NamedValues`:
 
 ```cpp
 static map<std::string, Value *> NamedValues;
-...
 
-Value *VariableExprAST::codegen() {
+Value *NameExpressionNode::codegen() {
   auto It = NamedValues.find(Name);
   if (It == NamedValues.end() || !It->second)
     return LogErrorV("Unknown variable name");
@@ -149,9 +154,9 @@ Value *VariableExprAST::codegen() {
 }
 ```
 
-For now `NamedValues` only contains function parameters, which are `Value*` objects, unlike the functions themselves which are `Function*`. When I introduce local variables in a later chapter, I'll stuff them into this map as well.
+For now, I only add function parameters to this map. When I add local variables later, I will store them here too.
 
-`LogErrorV` is a new error helper that returns nullptr cast as a `Value*`:
+Code generation needs an error helper with the same return type as an expression's `codegen()` method. I add `LogErrorV`, which reports the error and returns `nullptr`:
 
 ```cpp
 Value *LogErrorV(const char *Str) {
@@ -160,323 +165,282 @@ Value *LogErrorV(const char *Str) {
 }
 ```
 
-so I can now do:
+This lets me report an error directly from a `Value*` function:
 
 ```cpp
-if(some_error_condition) return LogErrorV("Error specifics");
-
-// No error if I'm here, continue processing.
-...
-
+if (SomeErrorCondition)
+  return LogErrorV("Error specifics");
 ```
 
 ### Binary Expressions
 
-`BinaryExprAST::codegen()` recurses into the left and right sides so they can generate their `Value*`s, then emits a single instruction for the operator combining the two:
+For a binary expression, I first generate the left and right values. I then use the operator to choose an LLVM instruction:
 
 ```cpp
-Value *BinaryExprAST::codegen() {
-  // Generate the Value* from the LHS expression
-  Value *L = LHS->codegen();
+Value *BinaryExpressionNode::codegen() {
+  Value *L = Left->codegen();
   if (!L)
     return nullptr;
-  // Generate the Value* from the RHS expression
-  Value *R = RHS->codegen();
+
+  Value *R = Right->codegen();
   if (!R)
     return nullptr;
 
-  switch (Op) { // Based on the operator, emit the appropriate LLVM instruction
-  case '+': return Builder->CreateFAdd(L, R, "addtmp"); 
-```
-
-This generates the following LLVM instruction:
-
-```llvm
-%addtmp = fadd double %x, %y
-```
-
-`fadd` is the actual LLVM instruction. `double` specifies the operand types (LLVM is strongly typed). The result of `fadd double %x, %y` is then called `%addtmp` — which is the variable name *prefix* I supplied. If I didn't supply a *prefix*, LLVM would just invent one. In this tutorial I supply my own variable name prefixes so the output is sensible to human eyes. Why do I keep saying *prefix*? Because I could do something like this
-
-```cpp
-Builder->CreateFAdd(L, R, "addtmp"); 
-....
-// Elsewhere in the code in a different expression
-Builder->CreateFAdd(L, R, "addtmp"); 
-```
-
-LLVM suffixes the second hinted variable name with a number to make it unique, and that's why *prefix* makes sense as a name. Notice how only the second one has a suffix. Most programs will have multiple add statements, so I just call these prefixes. Some literature calls these *hints* which is fine too. 
-
-```llvm
-%addtmp = fadd double %x, %y
-...
-%addtmp1 = fadd double %x, %y
-```
-
-Now let's do all the other operators within the same switch statement.
-
-
-Each case and the IR it produces:
-
-**`-`**
-```cpp
-case '-': return Builder->CreateFSub(L, R, "subtmp");
-```
-```llvm
-%subtmp = fsub double %x, %y
-```
-
-**`*`**
-```cpp
-case '*': return Builder->CreateFMul(L, R, "multmp");
-```
-```llvm
-%multmp = fmul double %x, %y
-```
-
-**`<`**
-```cpp
-case '<':
-  L = Builder->CreateFCmpULT(L, R, "cmptmp");
-  return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
-```
-```llvm
-%cmptmp = fcmp ult double %x, %y
-%booltmp = uitofp i1 %cmptmp to double
-```
-
-`<` needs two steps — `fcmp ult` does an unsigned less than (u-l-t) comparison and produces a 1-bit integer (`i1`). Since Pyxc treats everything as `double`, I widen it with unsigned-integer-to-floating-point (u-i-to-f-p) `uitofp`: `false` → `0.0`, `true` → `1.0`. This way expressions up the chain that are expecting a double get a double.
-
-If either side fails codegen, I return `nullptr` immediately. The parent node does the same — a failure anywhere in the tree bubbles up and aborts the whole codegen.
-
-### Function Calls
-
-Here's what I want to do for a function call:
-1. Find the function being called
-2. Check the argument count
-3. Codegen each argument
-4. Call the function.
-
-Remember `CallExprAST` properties look like so:
-```cpp
-class CallExprAST : public ExprAST {
-  string Callee;
-  vector<unique_ptr<ExprAST>> Args;
-...  
-```
-
-Let's *codegen* it.
-
-```cpp
-Value *CallExprAST::codegen() {
-  // Let's see if I can find the function first. This would be a function 
-  // that was previously defined with `def` earlier in this session.
-  Function *CalleeF = TheModule->getFunction(Callee /* the function name is in the Callee property*/); 
-
-  // Uh-oh
-  if (!CalleeF)
-    return LogErrorV("Unknown function referenced");
-
-  // Got the function. Let's do an argument count check for the call
-
-  // Geez Luis. 
-  if (CalleeF->arg_size() != Args.size())
-    return LogErrorV("Incorrect # arguments passed");
-  
-  // Checks out. Let's codegen the arguments first so the values are
-  // available to the function
-  vector<Value *> ArgsV;
-  for (unsigned i = 0, e = Args.size(); i != e; ++i) {
-    ArgsV.push_back(Args[i]->codegen());
-    // Aikaramba
-    if (!ArgsV.back())  // codegen failed — bail out
-      return nullptr;
+  switch (Operator) {
+  case tok_plus:
+    return Builder->CreateFAdd(L, R, "addtmp");
+  // ...
   }
-  
-  // Function exists, has the right parameters, and they evaluate to something 
-  // meaningful, let's call it. 
-  return Builder->CreateCall(CalleeF,    /* function to call */
-                             ArgsV,      /* arguments */
-                             "calltmp"); /* prefix for the result */
 }
 ```
 
-For example, once `sum` has been defined (as above), calling `sum(10, 20)` produces:
+If either operand fails, I return `nullptr` and stop generating this expression. Its parent will do the same, so an error can travel back through the tree.
+
+For `+`, I call `CreateFAdd`:
+
+```cpp
+case tok_plus:
+  return Builder->CreateFAdd(L, R, "addtmp");
+```
+
+That call can generate an instruction like this:
+
+```llvm
+%addtmp = fadd double %x, %y
+```
+
+`fadd` is LLVM's floating-point addition instruction. `double` is the type of both operands. `%x` and `%y` are the operands, and `%addtmp` names the result.
+
+I pass `"addtmp"` as a name hint. If I use the same hint again in the same function, LLVM adds a number to keep the names unique:
+
+```llvm
+%addtmp = fadd double %x, %y
+%addtmp1 = fadd double %a, %b
+```
+
+I add subtraction, multiplication, and division in the same way:
+
+```cpp
+case tok_minus:
+  return Builder->CreateFSub(L, R, "subtmp");
+case tok_star:
+  return Builder->CreateFMul(L, R, "multmp");
+case tok_slash:
+  return Builder->CreateFDiv(L, R, "divtmp");
+```
+
+These calls generate `fsub`, `fmul`, and `fdiv` instructions:
+
+```llvm
+%subtmp = fsub double %x, %y
+%multmp = fmul double %x, %y
+%divtmp = fdiv double %x, %y
+```
+
+I need two instructions for `<`:
+
+```cpp
+case tok_less:
+  L = Builder->CreateFCmpULT(L, R, "cmptmp");
+  return Builder->CreateUIToFP(
+      L, Type::getDoubleTy(*TheContext), "booltmp");
+```
+
+The first instruction compares the two doubles and produces an `i1`, LLVM's one-bit boolean type. `ult` means unordered or less than: the result is true if either operand is a NaN or the left operand is less than the right operand.
+
+```llvm
+%cmptmp = fcmp ult double %x, %y
+```
+
+pyxc currently represents every value as a `double`, so I cannot return the `i1` directly. I use `uitofp` to convert false to `0.0` and true to `1.0`:
+
+```llvm
+%booltmp = uitofp i1 %cmptmp to double
+```
+
+### Function Calls
+
+For a function call, I perform four actions:
+
+1. I find the function in the module.
+2. I check the number of arguments.
+3. I generate a value for each argument.
+4. I emit the call.
+
+The syntax tree node stores the function name and its arguments:
+
+```cpp
+class CallExpressionNode : public ExpressionNode {
+  string Callee;
+  vector<unique_ptr<ExpressionNode>> Arguments;
+  // ...
+};
+```
+
+I use those fields in `codegen()`:
+
+```cpp
+Value *CallExpressionNode::codegen() {
+  Function *CalleeF = TheModule->getFunction(Callee);
+  if (!CalleeF)
+    return LogErrorV("Unknown function referenced");
+
+  if (CalleeF->arg_size() != Arguments.size())
+    return LogErrorV("Incorrect # arguments passed");
+
+  std::vector<Value *> ArgsV;
+  for (unsigned i = 0, e = Arguments.size(); i != e; ++i) {
+    ArgsV.push_back(Arguments[i]->codegen());
+    if (!ArgsV.back())
+      return nullptr;
+  }
+
+  return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
+}
+```
+
+`TheModule->getFunction` finds a function that I already defined in this session. I reject an unknown function or the wrong number of arguments before emitting a call. I then generate each argument from left to right and store the resulting `Value*` objects in `ArgsV`.
+
+After I define `sum`, the call `sum(10, 20)` produces:
 
 ```llvm
 %calltmp = call double @sum(double 1.000000e+01, double 2.000000e+01)
 ```
 
-## Function Codegen
+## Generating Functions
 
-### Prototypes
+### Function Signatures
 
-A prototype creates the function signature in the module: 
-- name
-- return type
-- parameter types and 
-- parameters names.
-
-I just need to repackage the existing node information into something LLVM can consume. 
+For a function signature, I add an LLVM function declaration to the module. I need the function name, its return type, and its parameter types and names.
 
 ```cpp
-Function *PrototypeAST::codegen() {    
-  // All parameters are double — build a vector of N double types
-  vector<Type *> Doubles(Args.size(), Type::getDoubleTy(*TheContext));
-  
+Function *FunctionSignatureNode::codegen() {
+  // I use double for every parameter and for the return value.
+  std::vector<Type *> Doubles(
+      Parameters.size(), Type::getDoubleTy(*TheContext));
 
-  // Now ask LLVM to generate a function prototype stub
-  FunctionType *FT =
-      FunctionType::get(Type::getDoubleTy(*TheContext), /* return type */
-                        Doubles,                        /* parameter types */
-                        false);                         /* not variadic */
-  
-  // And create a function prototype from that stub, and add it to the module.
-  Function *F =
-      Function::Create(FT,                         /* signature */
-                       Function::ExternalLinkage,  /* visible outside module */
-                       Name,                       /* function name */
-                       TheModule.get());           /* module to add it to */
+  FunctionType *FT = FunctionType::get(
+      Type::getDoubleTy(*TheContext), Doubles, false /* not variadic */);
 
-  // Name each argument — optional, but makes the printed IR readable
+  Function *F = Function::Create(
+      FT, Function::ExternalLinkage, Name, TheModule.get());
+
+  // I name the arguments so the printed IR is easier to read.
   unsigned Idx = 0;
   for (auto &Arg : F->args())
-    Arg.setName(Args[Idx++]);
+    Arg.setName(Parameters[Idx++]);
 
   return F;
 }
 ```
 
-Everything in Pyxc is a `double` for now — parameters and return value alike. 
+I use `double` for every parameter and for the return value. I pass those types to `FunctionType::get`, along with `false` because pyxc functions are not variadic.
 
-`ExternalLinkage` means the function is visible outside this module. I do this for all functions, even functions I don't intend to call outside the module. The specifics of why regular functions need this will make more sense in [Chapter 7](chapter-07.md) when I set up the JIT. Right now, let's run with "*Just trust me bro*". And yes, there exists `InternalLinkage` just as you suspected. 
+I then call `Function::Create` to add the declaration to `TheModule`. I use `ExternalLinkage` so the function can be found outside this module. I will rely on that linkage when I add the JIT in [Chapter 7](chapter-07.md).
 
-Setting argument names via `setName` is optional — it only affects the printed IR. But it makes the output readable:
+I also copy each parameter name into the LLVM arguments. This step only makes the printed IR easier to read:
 
 ```llvm
 define double @foo(double %x, double %y) {
 ```
 
-instead of what LLVM would generate if you didn't use setName:
+Without those names, LLVM would print numbered values instead:
 
 ```llvm
 define double @foo(double %0, double %1) {
 ```
 
-`%0` and `%1` are just names LLVM prints in the IR. The underlying objects are identical — `%x` and `%0` refer to the same thing. The code works either way; only the string output differs.
+The names do not change the function's behavior.
 
 ### Function Definitions
 
-A function definition first checks whether the module already has a declaration for this name, then creates the body. First, let's recap what `PrototypeAST` and `FunctionAST` nodes look like:
+A function definition contains a signature and a body:
 
 ```cpp
-class PrototypeAST {
-  string Name;
-  vector<string> Args;
-...
-public:
-  const string &getName() const { return Name; }
-  Function *codegen();
+class FunctionDefinitionNode {
+  unique_ptr<FunctionSignatureNode> Signature;
+  unique_ptr<ExpressionNode> Body;
+  // ...
+};
 ```
 
-```cpp
-/// FunctionAST - This class represents a function definition itself.
-class FunctionAST {
-  unique_ptr<PrototypeAST> Proto;
-  unique_ptr<ExprAST> Body;
-...
-```
-
-Now let's use these properties and methods to codegen.
+I generate the complete function in four steps:
 
 ```cpp
-Function *FunctionAST::codegen() {
-  // Step 1: look for an existing declaration under this name.
-  Function *TheFunction = TheModule->getFunction(Proto->getName());
+Function *FunctionDefinitionNode::codegen() {
+  // Step 1: I get an existing declaration or create a new one.
+  Function *TheFunction = TheModule->getFunction(Signature->getName());
 
-  // Bail if the function is already fully defined — redefinition is an error.
   if (TheFunction && !TheFunction->empty()) {
     LogError("Function cannot be redefined.");
     return nullptr;
   }
 
-  // The function was neither declared nor defined — create a fresh declaration.
   if (!TheFunction)
-    TheFunction = Proto->codegen();
+    TheFunction = Signature->codegen();
 
-  // Proto codegen failed.
   if (!TheFunction)
     return nullptr;
 
-  // Step 2: create the entry basic block and point the builder at it
-  // A basic block is a straight-line sequence of instructions that ends
-  // with a branch or return. Every function body has at least one.
+  // Step 2: I create the entry block and insert new instructions there.
   BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
   Builder->SetInsertPoint(BB);
 
-  // Step 3: populate NamedValues so the body can resolve parameter names
+  // Step 3: I make the parameters available to the body.
   NamedValues.clear();
   for (auto &Arg : TheFunction->args())
-    NamedValues[string(Arg.getName())] = &Arg;
+    NamedValues[std::string(Arg.getName())] = &Arg;
 
-  // Step 4: codegen the body expression, wrap its result in a `ret` instruction,
-  // which is what LLVM needs to see to return a value from the function.
-  // Verify the function — or erase it from the module if codegen failed.
+  // Step 4: I generate the body, return its value, and verify the function.
   if (Value *RetVal = Body->codegen()) {
     Builder->CreateRet(RetVal);
     verifyFunction(*TheFunction);
     return TheFunction;
   }
 
+  // I remove an incomplete function after an error.
   TheFunction->eraseFromParent();
   return nullptr;
 }
 ```
 
-Five steps:
+First, I look for the function name in the module. If I find a function that already has a body, I report a redefinition. If I do not find a declaration, I generate one from the signature.
 
-1. **Get or create the function declaration.** If this name was already declared earlier in this session, `TheModule->getFunction` finds it — used below to catch redefinition. Otherwise `Proto->codegen()` creates a `Function*` object in the module — which at this point is just a signature with no body, equivalent to a `declare`:
+Next, I create the function's `entry` basic block. A basic block is a straight-line sequence of instructions with one entry and one exit. `SetInsertPoint` tells `Builder` where I want to add the next instruction.
 
-   ```llvm
-   declare double @foo(double %x, double %y)
-   ```
-2. **Reject redefinitions.** If the function already has a body — someone defined `def foo` twice — I error out here before touching anything. I check this before calling `Proto->codegen()` to avoid unnecessary work.
+```llvm
+define double @foo(double %x, double %y) {
+entry:
+  ; I insert the next instruction here.
+}
+```
 
-3. **Create the entry basic block.** A basic block is a straight-line sequence of instructions that ends with a branch or return. Every function starts with one. `SetInsertPoint` tells the builder to append new instructions here.
+I then clear `NamedValues` and add the new function's parameters. This prevents names from the previous function from leaking into the new one. When I generate the body, each `NameExpressionNode` can now find its parameter.
 
-   ```llvm
-   define double @foo(double %x, double %y) {
-   entry:
-    ; <-- insert point is here
-   }
-   ```
+Finally, I generate the body and pass its result to `CreateRet`. Although pyxc source does not use a `return` keyword yet, every LLVM function needs a terminating instruction. I create an LLVM `ret` instruction because the body expression is the function's result.
 
+```llvm
+define double @foo(double %x, double %y) {
+entry:
+  %addtmp = fadd double %x, %y
+  ret double %addtmp
+}
+```
 
+I call `verifyFunction` to ask LLVM to check the structure of the function. If body generation fails, I remove the incomplete function from the module.
 
-4. **Populate `NamedValues`.** Clear the table (parameters from the last function are irrelevant) and add each argument. Now when the body's `VariableExprAST` nodes look up parameter names, they find the `Value*` representing the incoming argument.
+## Printing IR as I Type
 
-5. **Codegen the body.** If it succeeds, `CreateRet` wraps the resulting value in an LLVM `ret` instruction — that is how LLVM functions return a value. Then `verifyFunction` runs LLVM's internal consistency checks — it catches structural IR problems like type mismatches or a basic block with no instruction to end it (a branch or return). If codegen fails, the partially-built function is erased from the module so it doesn't leave a broken declaration behind.
-
-   ```llvm
-   define double @foo(double %x, double %y) {
-   entry:
-     ; body codegenned
-     %addtmp = fadd double %x, %y
-     ret double %addtmp
-   }
-   ```
-
-## Printing IR as You Type
-
-Each `Handle*` function prints the IR for that input immediately after codegen succeeds:
+After code generation succeeds, I print the IR for the current input:
 
 ```cpp
-// HandleDefinition
+// In HandleFunctionDefinition:
 if (auto *FnIR = FnAST->codegen()) {
   fprintf(stderr, "Parsed a function definition.\n");
   FnIR->print(errs());
 }
 
-// HandleTopLevelExpression
+// In HandleTopLevelExpression:
 if (auto *FnIR = FnAST->codegen()) {
   fprintf(stderr, "Parsed a top-level expression.\n");
   FnIR->print(errs());
@@ -484,19 +448,19 @@ if (auto *FnIR = FnAST->codegen()) {
 }
 ```
 
-`errs()` is LLVM's wrapper around `stderr`. `FnIR->print(errs())` dumps the function's IR in human-readable form.
+`errs()` is LLVM's wrapper around `stderr`. I pass it to `FnIR->print` to print the function in LLVM's text format.
 
-`HandleTopLevelExpression` does a bit extra. Recall from [Chapter 4](chapter-04.md) that top-level expressions like `1 + 2` are wrapped in a synthetic anonymous function (`__anon_expr`) so the parser always has a `FunctionAST` to work with. That anonymous function is what gets codegenned here. It calls `eraseFromParent()` after printing because it was only needed to show the IR — it shouldn't accumulate in the module and shouldn't appear in the end-of-session dump. This doesn't mean I'm ignoring it. In the next chapter, my JIT will run the top-level expression as you'd expect, then discard it before defining another anonymous function for the next top-level expression, and so on.
+For a top-level expression such as `1 + 2`, I create a temporary function named `__anon_expr`. LLVM instructions must belong to a function, so this wrapper gives me a place to generate the expression. After I print its IR, I remove it from the module. In the next chapter, I will execute it before removing it.
 
-## The Module at Session End
+## Printing the Module at Session End
 
-At the end of the session, `main()` prints the full module:
+At the end of the session, I print the complete module:
 
 ```cpp
 TheModule->print(errs(), nullptr);
 ```
 
-This dumps every function that was defined or declared, in one block. It's how you see the accumulated result of the whole session. As mentioned earlier, anonymous expressions don't appear here because `eraseFromParent()` already removed them.
+This shows every function that remains in the module. It does not show the temporary `__anon_expr` functions because I already removed them.
 
 ## Build and Run
 
@@ -508,7 +472,7 @@ cmake -S . -B build && cmake --build build
 
 ## Try It
 
-A **bare expression**:
+I can enter a bare expression:
 
 <!-- code-merge:start -->
 ```pyxc
@@ -523,12 +487,13 @@ entry:
 ```
 <!-- code-merge:end -->
 
-Note how `4 + 5` folds to `9.0` at IR construction time — `IRBuilder` recognizes two constants and returns a single value rather than emitting a `fadd`. This is **constant folding** and happens by default. 
+`IRBuilder` sees that both operands are constants, so it calculates `4 + 5` while constructing the IR. It returns the constant `9.0` instead of emitting an `fadd` instruction. This is **constant folding**.
 
-**Defining and calling a function:**
+I can also define and call a function:
+
 <!-- code-merge:start -->
 ```pyxc
-ready> def sum(a, b): return a + b
+ready> def sum(a, b): a + b
 ```
 ```text
 Parsed a function definition.
@@ -555,7 +520,7 @@ entry:
 ```
 <!-- code-merge:end -->
 
-Press `^D` to end the session — the full module dumps:
+When I press `Ctrl-D`, I print the full module:
 
 <!-- code-merge:start -->
 ```text
@@ -572,11 +537,11 @@ entry:
 ```
 <!-- code-merge:end -->
 
-The end-of-session dump shows only `sum`. The `__anon_expr` functions are absent because `HandleTopLevelExpression` calls `eraseFromParent()` after printing — they were only useful for display.
+Only `sum` remains. I removed each temporary `__anon_expr` after printing it.
 
 ## What's Next
 
-The IR is correct — but it just prints and does nothing. In [Chapter 7](chapter-07.md) I plug in an **On Request Compilation (ORC)** JIT layer so that top-level expressions actually execute and print their results. I also add an optimization pass manager so the IR that runs is clean and fast — and, now that code actually runs, bring back the `extern` keyword from a few chapters ago so I can call real C library functions. This is the chapter where the compiler comes alive. 
+I can now generate LLVM IR, but I do not execute it yet. In [Chapter 7](chapter-07.md), I add LLVM's On-Request Compilation (ORC) JIT so I can run top-level expressions and print their results. I also add optimization passes and restore `extern` so I can call C library functions.
 
 ## Need Help?
 
@@ -586,6 +551,7 @@ Build issues? Questions?
 - **Discussions:** [Ask questions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
 
 Include:
+
 - Your OS and version
 - Full error message
 - Output of `cmake --version`, `ninja --version`, and `llvm-config --version`

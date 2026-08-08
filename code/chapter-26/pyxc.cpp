@@ -113,8 +113,8 @@ static bool IsEmitMode() { return EmitMode != EmitKind::None; }
 // Lexer
 //===----------------------------------------===//
 
-// The lexer returns tokens [0-255] if it is an unknown character, otherwise one
-// of these for known things.
+// I return named tokens for known language elements. I preserve the [0-255]
+// character value of any other single character for diagnostics and custom operators.
 enum Token {
   tok_eof = -1,
   tok_eol = -2,
@@ -177,6 +177,23 @@ enum Token {
   tok_string = -38,
   tok_type = -39,
   tok_class = -40,
+
+  // punctuation and operators
+  tok_lparen = '(',
+  tok_rparen = ')',
+  tok_comma = ',',
+  tok_colon = ':',
+  tok_plus = '+',
+  tok_minus = '-',
+  tok_star = '*',
+  tok_slash = '/',
+  tok_less = '<',
+  tok_greater = '>',
+  tok_equal = '=',
+  tok_at = '@',
+  tok_dot = '.',
+  tok_lbracket = '[',
+  tok_rbracket = ']',
 };
 
 enum class ValueType {
@@ -669,15 +686,15 @@ static int getToken() {
   }
 
   // peek(), if the next one completes a recognized token, eat it, and return
-  // token else return the single character token.
+  // token; otherwise, I return the named single-character token.
   if (LexerLastChar == '-') {
-    int Tok = (peek() == '>') ? (advance(), tok_arrow) : '-';
+    int Tok = (peek() == '>') ? (advance(), tok_arrow) : tok_minus;
     LexerLastChar = advance();
     return Tok;
   }
 
   if (LexerLastChar == '=') {
-    int Tok = (peek() == '=') ? (advance(), tok_eq) : '=';
+    int Tok = (peek() == '=') ? (advance(), tok_eq) : tok_equal;
     LexerLastChar = advance();
     return Tok;
   }
@@ -689,13 +706,13 @@ static int getToken() {
   }
 
   if (LexerLastChar == '<') {
-    int Tok = (peek() == '=') ? (advance(), tok_leq) : '<';
+    int Tok = (peek() == '=') ? (advance(), tok_leq) : tok_less;
     LexerLastChar = advance();
     return Tok;
   }
 
   if (LexerLastChar == '>') {
-    int Tok = (peek() == '=') ? (advance(), tok_geq) : '>';
+    int Tok = (peek() == '=') ? (advance(), tok_geq) : tok_greater;
     LexerLastChar = advance();
     return Tok;
   }
@@ -711,14 +728,47 @@ static int getToken() {
     return tok_eof;
   }
 
-  // Single character token
+  // I read a single-character token.
   int ThisChar = LexerLastChar;
 
   // Position the lexer at the next character so the next getToken() starts there.
   LexerLastChar = advance();
 
-  // Return ThisChar.
-  return ThisChar;
+  // I return a named token for known punctuation and operators.
+  switch (ThisChar) {
+  case '(':
+    return tok_lparen;
+  case ')':
+    return tok_rparen;
+  case ',':
+    return tok_comma;
+  case ':':
+    return tok_colon;
+  case '+':
+    return tok_plus;
+  case '-':
+    return tok_minus;
+  case '*':
+    return tok_star;
+  case '/':
+    return tok_slash;
+  case '<':
+    return tok_less;
+  case '>':
+    return tok_greater;
+  case '=':
+    return tok_equal;
+  case '@':
+    return tok_at;
+  case '.':
+    return tok_dot;
+  case '[':
+    return tok_lbracket;
+  case ']':
+    return tok_rbracket;
+  default:
+    return ThisChar;
+  }
 }
 
 /// ResetLexerState - Restore lexer globals to their initial state.
@@ -1323,11 +1373,11 @@ static const map<int, int> DefaultOperatorPrecedence = {
     {tok_neq, 10}, // !=
     {tok_leq, 10}, // <=
     {tok_geq, 10}, // >=
-    {'<', 10},     // <
-    {'>', 10},     // >
-    {'+', 20},     // +
-    {'-', 20},     // -
-    {'*', 40},     // *
+    {tok_less, 10},     // <
+    {tok_greater, 10},     // >
+    {tok_plus, 20},     // +
+    {tok_minus, 20},     // -
+    {tok_star, 40},     // *
 };
 static map<int, int> OperatorPrecedence = DefaultOperatorPrecedence;
 
@@ -1338,7 +1388,7 @@ static void ResetOperatorPrecedence() { OperatorPrecedence = DefaultOperatorPrec
 //
 // Seed with '-' because unary minus is a built-in form handled by
 // ParseUnaryMinus(), so users cannot define a custom unary '-'.
-static const std::set<int> DefaultKnownUnaryOperators = {'-'};
+static const std::set<int> DefaultKnownUnaryOperators = {tok_minus};
 static std::set<int> KnownUnaryOperators = DefaultKnownUnaryOperators;
 
 static void ResetKnownUnaryOperators() {
@@ -1735,7 +1785,7 @@ static unique_ptr<ExpressionNode> ParseArrayLiteralExpression() {
 
   getNextToken(); // eat '['
   vector<unique_ptr<ExpressionNode>> Elements;
-  if (CurrentToken != ']') {
+  if (CurrentToken != tok_rbracket) {
     while (true) {
       ExpectedLiteralTypeGuard Guard(ElemType, ElemStructName);
       auto E = ParseExpression();
@@ -1748,9 +1798,9 @@ static unique_ptr<ExpressionNode> ParseArrayLiteralExpression() {
           ElemStructName != E->getStructName())
         return LogError("Array literal element type mismatch");
       Elements.push_back(std::move(E));
-      if (CurrentToken == ']')
+      if (CurrentToken == tok_rbracket)
         break;
-      if (CurrentToken != ',')
+      if (CurrentToken != tok_comma)
         return LogError("Expected ']' or ',' in array literal");
       getNextToken();
     }
@@ -1819,7 +1869,7 @@ static ValueType ParseTypeToken(string *StructName) {
     break;
   case tok_ptr: {
     getNextToken(); // eat 'ptr'
-    if (CurrentToken != '[') {
+    if (CurrentToken != tok_lbracket) {
       LogError("Expected '[' after ptr");
       return ValueType::Error;
     }
@@ -1840,7 +1890,7 @@ static ValueType ParseTypeToken(string *StructName) {
       LogError("Pointers to array types are not supported");
       return ValueType::Error;
     }
-    if (CurrentToken != ']') {
+    if (CurrentToken != tok_rbracket) {
       LogError("Expected ']' after pointer pointee type");
       return ValueType::Error;
     }
@@ -1872,7 +1922,7 @@ static ValueType ParseTypeToken(string *StructName) {
     return ValueType::Error;
   }
 
-  if (CurrentToken == '[') {
+  if (CurrentToken == tok_lbracket) {
     if (BaseType == ValueType::None)
       return LogError("Arrays of None are not allowed"), ValueType::Error;
     if (BaseType == ValueType::Array)
@@ -1887,12 +1937,12 @@ static ValueType ParseTypeToken(string *StructName) {
     if (Count == 0)
       return LogError("Array size must be > 0"), ValueType::Error;
     getNextToken(); // eat number
-    if (CurrentToken != ']')
+    if (CurrentToken != tok_rbracket)
       return LogError("Expected ']' after array size"), ValueType::Error;
     getNextToken(); // eat ']'
     if (StructName)
       *StructName = EncodeArrayType(BaseType, BaseStructName, Count);
-    if (CurrentToken == '[')
+    if (CurrentToken == tok_lbracket)
       return LogError("Nested arrays are not supported"), ValueType::Error;
     return ValueType::Array;
   }
@@ -1915,13 +1965,13 @@ static unique_ptr<ExpressionNode> ParseCastExpression() {
     return LogError("Cannot cast to struct type");
   if (Type == ValueType::Array)
     return LogError("Cannot cast to array type");
-  if (CurrentToken != '(')
+  if (CurrentToken != tok_lparen)
     return LogError("Expected '(' after cast type");
   getNextToken(); // eat '('
   auto Expr = ParseExpression();
   if (!Expr)
     return nullptr;
-  if (CurrentToken != ')')
+  if (CurrentToken != tok_rparen)
     return LogError("Expected ')' after cast expression");
   getNextToken(); // eat ')'
   if (Type == ValueType::Pointer && Expr->getType() != ValueType::Pointer)
@@ -1931,7 +1981,7 @@ static unique_ptr<ExpressionNode> ParseCastExpression() {
 
 static unique_ptr<ExpressionNode> ParseSizeofExpression() {
   getNextToken(); // eat 'sizeof'
-  if (CurrentToken != '(')
+  if (CurrentToken != tok_lparen)
     return LogError("Expected '(' after sizeof");
   getNextToken(); // eat '('
   string TargetStructName;
@@ -1940,7 +1990,7 @@ static unique_ptr<ExpressionNode> ParseSizeofExpression() {
     return nullptr;
   if (TargetType == ValueType::None)
     return LogError("Cannot take sizeof(None)");
-  if (CurrentToken != ')')
+  if (CurrentToken != tok_rparen)
     return LogError("Expected ')' after sizeof type");
   getNextToken(); // eat ')'
   return make_unique<SizeofExpressionNode>(TargetType, TargetStructName);
@@ -1948,7 +1998,7 @@ static unique_ptr<ExpressionNode> ParseSizeofExpression() {
 
 static unique_ptr<ExpressionNode> ParseAddrExpression() {
   getNextToken(); // eat 'addr'
-  if (CurrentToken != '(')
+  if (CurrentToken != tok_lparen)
     return LogError("Expected '(' after addr");
   getNextToken(); // eat '('
   if (CurrentToken != tok_name)
@@ -1960,7 +2010,7 @@ static unique_ptr<ExpressionNode> ParseAddrExpression() {
     return LogError("Unknown variable name");
   string CurStruct = LookupVarStructName(BaseName);
   vector<string> Path;
-  while (CurrentToken == '.') {
+  while (CurrentToken == tok_dot) {
     getNextToken(); // eat '.'
     if (CurrentToken != tok_name)
       return LogError("Expected field name after '.'");
@@ -1979,7 +2029,7 @@ static unique_ptr<ExpressionNode> ParseAddrExpression() {
     CurStruct = FD.StructName;
     Path.push_back(Field);
   }
-  if (CurrentToken != ')')
+  if (CurrentToken != tok_rparen)
     return LogError("Expected ')' after addr operand");
   getNextToken(); // eat ')'
   return make_unique<AddrExpressionNode>(std::move(BaseName), std::move(Path),
@@ -1994,7 +2044,7 @@ static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
   if (!V)
     return nullptr;
 
-  if (CurrentToken != ')')
+  if (CurrentToken != tok_rparen)
     return LogError("expected ')'");
   getNextToken(); // eat ).
   return V;
@@ -2007,7 +2057,7 @@ static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
 /// call-expression
 ///   = name "(" [ expression { "," expression } ] ")" ;
 static unique_ptr<ExpressionNode> ParseNameExpressionWithName(const string &ParsedName) {
-  if (CurrentToken != '(') { // Simple variable ref.
+  if (CurrentToken != tok_lparen) { // Simple variable ref.
     ValueType Type = LookupVarType(ParsedName);
     if (Type == ValueType::Error) {
       return LogError("Unknown variable name");
@@ -2024,7 +2074,7 @@ static unique_ptr<ExpressionNode> ParseNameExpressionWithName(const string &Pars
   // during semantic/codegen.
   FunctionSignatureNode *Signature = GetFunctionSignature(ParsedName);
   vector<unique_ptr<ExpressionNode>> Arguments;
-  if (CurrentToken != ')') {
+  if (CurrentToken != tok_rparen) {
     size_t ArgIndex = 0;
     while (true) {
       ValueType Expected = ValueType::Error;
@@ -2041,10 +2091,10 @@ static unique_ptr<ExpressionNode> ParseNameExpressionWithName(const string &Pars
           return nullptr;
       }
 
-      if (CurrentToken == ')')
+      if (CurrentToken == tok_rparen)
         break;
 
-      if (CurrentToken != ',')
+      if (CurrentToken != tok_comma)
         return LogError("Expected ')' or ',' in argument list");
       getNextToken();
       ++ArgIndex;
@@ -2120,7 +2170,7 @@ static unique_ptr<ExpressionNode> ParseMethodCallExpression(unique_ptr<Expressio
   } else {
     return LogError("Method call base must be an lvalue");
   }
-  if (CurrentToken != ')') {
+  if (CurrentToken != tok_rparen) {
     size_t ArgIndex = 1; // skip implicit self
     while (true) {
       ValueType Expected = ValueType::Error;
@@ -2134,9 +2184,9 @@ static unique_ptr<ExpressionNode> ParseMethodCallExpression(unique_ptr<Expressio
       if (!Arg)
         return nullptr;
       Arguments.push_back(std::move(Arg));
-      if (CurrentToken == ')')
+      if (CurrentToken == tok_rparen)
         break;
-      if (CurrentToken != ',')
+      if (CurrentToken != tok_comma)
         return LogError("Expected ')' or ',' in argument list");
       getNextToken(); // eat ','
       ++ArgIndex;
@@ -2174,7 +2224,7 @@ static unique_ptr<FieldExpressionNode> ParseFieldAccessExpression(string BaseNam
   vector<string> Path;
   ValueType CurType = BaseType;
   string CurStruct = std::move(BaseStructName);
-  while (CurrentToken == '.') {
+  while (CurrentToken == tok_dot) {
     getNextToken(); // eat '.'
     if (CurrentToken != tok_name) {
       LogError("Expected field name after '.'");
@@ -2258,7 +2308,7 @@ ParseFieldAccessFromFirstMember(string BaseName, ValueType BaseType,
 
   if (!ConsumeField(FirstMember))
     return nullptr;
-  while (CurrentToken == '.') {
+  while (CurrentToken == tok_dot) {
     getNextToken(); // eat '.'
     if (CurrentToken != tok_name) {
       LogError("Expected field name after '.'");
@@ -2285,7 +2335,7 @@ static unique_ptr<ExpressionNode> ParseIndexExpression(string BaseName,
     return nullptr;
   if (!IsIntType(Index->getType()))
     return LogError("Index must be an integer");
-  if (CurrentToken != ']')
+  if (CurrentToken != tok_rbracket)
     return LogError("Expected ']' after index expression");
   getNextToken(); // eat ']'
   ValueType ElemType = ValueType::Error;
@@ -2307,7 +2357,7 @@ ParseIndexedFieldAccessExpression(unique_ptr<IndexExpressionNode> BaseIndex) {
   ValueType CurType = BaseIndex->getType();
   string CurStruct = BaseIndex->getStructName();
   vector<string> Path;
-  while (CurrentToken == '.') {
+  while (CurrentToken == tok_dot) {
     getNextToken(); // eat '.'
     if (CurrentToken != tok_name)
       return LogError("Expected field name after '.'");
@@ -2341,13 +2391,13 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
   if (!Base)
     return nullptr;
 
-  if (CurrentToken == '.') {
+  if (CurrentToken == tok_dot) {
     getNextToken(); // eat '.'
     if (CurrentToken != tok_name)
       return LogError("Expected field or method name after '.'");
     string MemberName = Name;
     getNextToken(); // eat member name
-    if (CurrentToken == '(') {
+    if (CurrentToken == tok_lparen) {
       Base = ParseMethodCallExpression(std::move(Base), MemberName);
       if (!Base)
         return nullptr;
@@ -2362,7 +2412,7 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
       Base = std::move(Field);
     }
   }
-  if (CurrentToken == '[') {
+  if (CurrentToken == tok_lbracket) {
     if (auto *Var = dynamic_cast<NameExpressionNode *>(Base.get())) {
       Base = ParseIndexExpression(Var->getName(), {}, Var->getType(),
                             Var->getStructName());
@@ -2375,7 +2425,7 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
     if (!Base)
       return nullptr;
   }
-  if (CurrentToken == '.') {
+  if (CurrentToken == tok_dot) {
     auto *Idx = dynamic_cast<IndexExpressionNode *>(Base.get());
     if (!Idx)
       return LogError("Field access base must be a struct value");
@@ -2394,7 +2444,7 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
 static bool ParseForParts(ValueType VarType, unique_ptr<ExpressionNode> &Start,
                           unique_ptr<ExpressionNode> &Cond, unique_ptr<ExpressionNode> &Step,
                           unique_ptr<ExpressionNode> &Body) {
-  if (CurrentToken != '=')
+  if (CurrentToken != tok_equal)
     return LogError("Expected '=' after for variable"), false;
   getNextToken(); // eat '='
 
@@ -2406,7 +2456,7 @@ static bool ParseForParts(ValueType VarType, unique_ptr<ExpressionNode> &Start,
   if (!IsNumericType(VarType))
     return LogError("For loop variable must be numeric"), false;
 
-  if (CurrentToken != ',')
+  if (CurrentToken != tok_comma)
     return LogError("Expected ',' after for start value"), false;
   getNextToken(); // eat ','
 
@@ -2416,7 +2466,7 @@ static bool ParseForParts(ValueType VarType, unique_ptr<ExpressionNode> &Start,
   if (Cond->getType() != ValueType::Bool)
     return LogError("For loop condition must be bool"), false;
 
-  if (CurrentToken != ',')
+  if (CurrentToken != tok_comma)
     return LogError("Expected ',' after for condition"), false;
   getNextToken(); // eat ','
 
@@ -2426,7 +2476,7 @@ static bool ParseForParts(ValueType VarType, unique_ptr<ExpressionNode> &Start,
   if (!IsAssignable(VarType, Step->getType()))
     return LogError("For loop step must match loop variable type"), false;
 
-  if (CurrentToken != ':')
+  if (CurrentToken != tok_colon)
     return LogError("Expected ':' after for step"), false;
   getNextToken(); // eat ':'
 
@@ -2460,7 +2510,7 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
 
   ValueType VarType = ValueType::Error;
   if (IsVarDecl) {
-    if (CurrentToken != ':')
+    if (CurrentToken != tok_colon)
       return LogError(
           "For loop variable requires a type annotation (e.g., ': int')");
     getNextToken(); // eat ':'
@@ -2474,7 +2524,7 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
           ("Variable '" + VarName + "' already declared in this scope")
               .c_str());
   } else {
-    if (CurrentToken == ':')
+    if (CurrentToken == tok_colon)
       return LogError("For loop variable requires 'var' to declare a type");
     VarType = LookupVarType(VarName);
     if (VarType == ValueType::Error)
@@ -2515,7 +2565,7 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
     string ParsedName = Name;
     getNextToken(); // eat name
 
-    if (CurrentToken != ':')
+    if (CurrentToken != tok_colon)
       return LogError(
           "Variable declaration requires a type annotation (e.g., ': int32')");
     getNextToken(); // eat ':'
@@ -2538,7 +2588,7 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
 
     unique_ptr<ExpressionNode> Init;
     // [ "=" expression ]
-    if (CurrentToken == '=') {
+    if (CurrentToken == tok_equal) {
       getNextToken(); // eat '='
       ExpectedLiteralTypeGuard Guard(DeclType, DeclStructName);
       Init = ParseExpression();
@@ -2573,7 +2623,7 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
       DeclareVar(ParsedName, DeclType, DeclStructName);
     }
 
-    if (CurrentToken != ',')
+    if (CurrentToken != tok_comma)
       break;
     getNextToken(); // eat ','
   }
@@ -2591,7 +2641,7 @@ static unique_ptr<ExpressionNode> ParseIfStatement() {
   if (Cond->getType() != ValueType::Bool)
     return LogError("If condition must be bool");
 
-  if (CurrentToken != ':')
+  if (CurrentToken != tok_colon)
     return LogError("Expected ':' after if condition");
   getNextToken(); // eat ':'
 
@@ -2609,7 +2659,7 @@ static unique_ptr<ExpressionNode> ParseIfStatement() {
   unique_ptr<ExpressionNode> Else;
   if (CurrentToken == tok_else) {
     getNextToken(); // eat 'else'
-    if (CurrentToken != ':')
+    if (CurrentToken != tok_colon)
       return LogError("Expected ':' after else");
     getNextToken(); // eat ':'
     Else = ParseSuite();
@@ -2663,12 +2713,12 @@ static bool CanWidenInt(ValueType From, ValueType To) {
 }
 
 static bool IsComparisonOp(int Operator) {
-  return Operator == '<' || Operator == '>' || Operator == tok_eq || Operator == tok_neq ||
+  return Operator == tok_less || Operator == tok_greater || Operator == tok_eq || Operator == tok_neq ||
          Operator == tok_leq || Operator == tok_geq;
 }
 
 static bool IsArithmeticOp(int Operator) {
-  return Operator == '+' || Operator == '-' || Operator == '*';
+  return Operator == tok_plus || Operator == tok_minus || Operator == tok_star;
 }
 
 // GetBinaryResultType decision table (Operator, L, R -> result)
@@ -2700,13 +2750,13 @@ static ValueType GetBinaryResultType(int Operator, ValueType L, const string &LS
   if (ResultStructName)
     ResultStructName->clear();
   if (IsArithmeticOp(Operator)) {
-    if (Operator != '*' && ((L == ValueType::Pointer && IsIntType(R)) ||
+    if (Operator != tok_star && ((L == ValueType::Pointer && IsIntType(R)) ||
                       (R == ValueType::Pointer && IsIntType(L)))) {
       if (ResultStructName)
         *ResultStructName = (L == ValueType::Pointer) ? LStruct : RStruct;
       return ValueType::Pointer;
     }
-    if (Operator == '-' && L == ValueType::Pointer && R == ValueType::Pointer &&
+    if (Operator == tok_minus && L == ValueType::Pointer && R == ValueType::Pointer &&
         LStruct == RStruct)
       return ValueType::Int64;
     if (!IsNumericType(L) || !IsNumericType(R))
@@ -2771,7 +2821,7 @@ static unique_ptr<ExpressionNode> ParseUnaryMinus() {
     return nullptr;
   if (!IsNumericType(Operand->getType()))
     return LogError("Unary '-' requires a numeric operand");
-  return make_unique<UnaryExpressionNode>('-', std::move(Operand), Operand->getType());
+  return make_unique<UnaryExpressionNode>(tok_minus, std::move(Operand), Operand->getType());
 }
 
 /// primary
@@ -2813,11 +2863,11 @@ static unique_ptr<ExpressionNode> ParsePrimary() {
     return ParseCastExpression();
   case tok_sizeof:
     return ParseSizeofExpression();
-  case '[':
+  case tok_lbracket:
     return ParseArrayLiteralExpression();
   case tok_addr:
     return ParseAddrExpression();
-  case '(':
+  case tok_lparen:
     return ParseParenthesizedExpression();
   }
 }
@@ -2841,12 +2891,12 @@ static unique_ptr<ExpressionNode> ParsePrimary() {
 /// work in both positions: !x + 1 and f(x) + !y.
 static unique_ptr<ExpressionNode> ParseUnary() {
   // Primary starters will be handled with ParsePrimary.
-  if (!isascii(CurrentToken) /* multi-character tokens */ || CurrentToken == '(' ||
-      CurrentToken == '[' || isalpha(CurrentToken) || isdigit(CurrentToken))
+  if (!isascii(CurrentToken) /* multi-character tokens */ || CurrentToken == tok_lparen ||
+      CurrentToken == tok_lbracket || isalpha(CurrentToken) || isdigit(CurrentToken))
     return ParsePrimary();
 
   // Built-in unary minus.
-  if (CurrentToken == '-')
+  if (CurrentToken == tok_minus)
     return ParseUnaryMinus();
 
   // It's an ASCII punctuation character — treat it as a user-defined unary op.
@@ -3021,20 +3071,20 @@ static unique_ptr<ExpressionNode> ParseLeadingNameSimpleStatement() {
     string ParsedName = Name;
     getNextToken(); // eat name.
 
-    if (CurrentToken == '=') {
+    if (CurrentToken == tok_equal) {
       return ParseAssignmentRight(ParsedName);
     }
 
     Expr = ParseNameExpressionWithName(std::move(ParsedName));
     if (!Expr)
       return nullptr;
-    if (CurrentToken == '.') {
+    if (CurrentToken == tok_dot) {
       getNextToken(); // eat '.'
       if (CurrentToken != tok_name)
         return LogError("Expected field or method name after '.'");
       string MemberName = Name;
       getNextToken(); // eat member name
-      if (CurrentToken == '(') {
+      if (CurrentToken == tok_lparen) {
         Expr = ParseMethodCallExpression(std::move(Expr), MemberName);
         if (!Expr)
           return nullptr;
@@ -3049,7 +3099,7 @@ static unique_ptr<ExpressionNode> ParseLeadingNameSimpleStatement() {
         Expr = std::move(Field);
       }
     }
-    if (CurrentToken == '[') {
+    if (CurrentToken == tok_lbracket) {
       if (auto *Var = dynamic_cast<NameExpressionNode *>(Expr.get())) {
         Expr = ParseIndexExpression(Var->getName(), {}, Var->getType(),
                               Var->getStructName());
@@ -3062,7 +3112,7 @@ static unique_ptr<ExpressionNode> ParseLeadingNameSimpleStatement() {
       if (!Expr)
         return nullptr;
     }
-    if (CurrentToken == '.') {
+    if (CurrentToken == tok_dot) {
       if (auto *Idx = dynamic_cast<IndexExpressionNode *>(Expr.get())) {
         auto Owned = std::unique_ptr<IndexExpressionNode>(Idx);
         Expr.release();
@@ -3077,7 +3127,7 @@ static unique_ptr<ExpressionNode> ParseLeadingNameSimpleStatement() {
     if (!Expr)
       return nullptr;
 
-    if (CurrentToken != '=')
+    if (CurrentToken != tok_equal)
       return Expr;
 
     if (auto *Field = dynamic_cast<FieldExpressionNode *>(Expr.get())) {
@@ -3130,7 +3180,7 @@ static unique_ptr<ExpressionNode> ParseNonLeadingNameSimpleStatement() {
   if (!Expr)
     return nullptr;
 
-  if (CurrentToken != '=')
+  if (CurrentToken != tok_equal)
     return Expr;
 
   return LogError("Destination of '=' must be a variable");
@@ -3247,20 +3297,20 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
   }
   getNextToken(); // eat function name
 
-  if (CurrentToken != '(')
+  if (CurrentToken != tok_lparen)
     return LogErrorSignature("Expected '(' in function signature");
 
   vector<FunctionSignatureNode::ParameterInfo> ParameterNames;
   getNextToken(); // eat '('
 
-  if (CurrentToken != ')') {
+  if (CurrentToken != tok_rparen) {
     while (true) {
       if (CurrentToken != tok_name)
         return LogErrorSignature("Expected parameter name in function signature");
       string ArgName = Name;
       getNextToken(); // eat name
 
-      if (CurrentToken != ':')
+      if (CurrentToken != tok_colon)
         return LogErrorSignature(
             "Parameter requires a type annotation (e.g., ': int32')");
       getNextToken(); // eat ':'
@@ -3272,9 +3322,9 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
         return LogErrorSignature("Parameters cannot have None type");
       ParameterNames.push_back({ArgName, ArgType, ArgStructName});
 
-      if (CurrentToken == ')')
+      if (CurrentToken == tok_rparen)
         break;
-      if (CurrentToken != ',')
+      if (CurrentToken != tok_comma)
         return LogErrorSignature("Expected ')' or ',' in parameter list");
       getNextToken(); // eat ','
     }
@@ -3335,7 +3385,7 @@ static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
   ReturnTypeGuard RetGuard(RetType, RetStructName);
   FunctionScopeGuard Scope(Signature->getParameters());
 
-  if (CurrentToken != ':')
+  if (CurrentToken != tok_colon)
     return LogErrorF("Expected ':' in function definition");
   getNextToken(); // eat ':'
   unique_ptr<ExpressionNode> Body = ParseFunctionBody();
@@ -3356,7 +3406,7 @@ ParseMethodDefinitionInClass(const string &ClassName) {
   string MethodName = Name;
   SourceLocation SignatureLoc = CurLoc;
   getNextToken(); // eat method name
-  if (CurrentToken != '(')
+  if (CurrentToken != tok_lparen)
     return LogErrorF("Expected '(' in method function signature");
   getNextToken(); // eat '('
 
@@ -3365,7 +3415,7 @@ ParseMethodDefinitionInClass(const string &ClassName) {
   ParameterNames.push_back({"self", ValueType::Pointer,
                       EncodePointerType(ValueType::Struct, ClassName)});
 
-  if (CurrentToken != ')') {
+  if (CurrentToken != tok_rparen) {
     while (true) {
       if (CurrentToken != tok_name)
         return LogErrorF("Expected parameter name in method function signature");
@@ -3373,7 +3423,7 @@ ParseMethodDefinitionInClass(const string &ClassName) {
       if (ArgName == "self")
         return LogErrorF("Method parameters cannot be named 'self'");
       getNextToken(); // eat name
-      if (CurrentToken != ':')
+      if (CurrentToken != tok_colon)
         return LogErrorF(
             "Method parameters require a type annotation (e.g., ': int')");
       getNextToken(); // eat ':'
@@ -3385,15 +3435,15 @@ ParseMethodDefinitionInClass(const string &ClassName) {
         return LogErrorF("Parameters cannot have None type");
       ParameterNames.push_back({ArgName, ArgType, ArgStructName});
 
-      if (CurrentToken == ')')
+      if (CurrentToken == tok_rparen)
         break;
-      if (CurrentToken != ',')
+      if (CurrentToken != tok_comma)
         return LogErrorF("Expected ')' or ',' in parameter list");
       getNextToken(); // eat ','
     }
   }
 
-  if (CurrentToken != ')')
+  if (CurrentToken != tok_rparen)
     return LogErrorF("Expected ')' in method function signature");
   getNextToken(); // eat ')'
 
@@ -3417,7 +3467,7 @@ ParseMethodDefinitionInClass(const string &ClassName) {
   ReturnTypeGuard RetGuard(RetType, RetStructName);
   FunctionScopeGuard Scope(Signature->getParameters());
 
-  if (CurrentToken != ':')
+  if (CurrentToken != tok_colon)
     return LogErrorF("Expected ':' in method definition");
   getNextToken(); // eat ':'
   unique_ptr<ExpressionNode> Body = ParseFunctionBody();
@@ -3437,7 +3487,7 @@ ParseMethodDefinitionInClass(const string &ClassName) {
 static unsigned ParseBinaryDecorator() {
   getNextToken(); // eat 'binary'
 
-  if (CurrentToken != '(') {
+  if (CurrentToken != tok_lparen) {
     LogError("Expected '(' after '@binary'");
     return 0;
   }
@@ -3469,7 +3519,7 @@ static unsigned ParseBinaryDecorator() {
   unsigned Prec = static_cast<unsigned>(Val.getZExtValue());
   getNextToken(); // eat number
 
-  if (CurrentToken != ')') {
+  if (CurrentToken != tok_rparen) {
     LogError("Expected ')' after precedence in '@binary(...)'");
     return 0;
   }
@@ -3493,7 +3543,7 @@ static void ParseUnaryDecorator() {
 // predictable across platforms/locales. '@' is reserved for decorator syntax
 // (@binary / @unary), so it is explicitly excluded.
 static bool IsCustomOpChar(int Tok) {
-  return isascii(Tok) && ispunct(static_cast<unsigned char>(Tok)) && Tok != '@';
+  return isascii(Tok) && ispunct(static_cast<unsigned char>(Tok)) && Tok != tok_at;
 }
 
 // IsKnownBinaryOperatorToken - Return true if Tok is already present in the
@@ -3558,18 +3608,18 @@ static unique_ptr<FunctionSignatureNode> ParseBinaryOperatorSignature(unsigned P
 
   getNextToken(); // eat operator char
 
-  if (CurrentToken != '(')
+  if (CurrentToken != tok_lparen)
     return LogErrorSignature("Expected '(' in binary operator signature");
 
   vector<FunctionSignatureNode::ParameterInfo> ParameterNames;
   getNextToken(); // eat '('
-  if (CurrentToken != ')') {
+  if (CurrentToken != tok_rparen) {
     while (true) {
       if (CurrentToken != tok_name)
         return LogErrorSignature("Expected parameter name in operator function signature");
       string ArgName = Name;
       getNextToken(); // eat name
-      if (CurrentToken != ':')
+      if (CurrentToken != tok_colon)
         return LogErrorSignature("Operator parameters require a type annotation (e.g., "
                          "': float64')");
       getNextToken(); // eat ':'
@@ -3581,15 +3631,15 @@ static unique_ptr<FunctionSignatureNode> ParseBinaryOperatorSignature(unsigned P
         return LogErrorSignature("Parameters cannot have None type");
       ParameterNames.push_back({ArgName, ArgType, ArgStructName});
 
-      if (CurrentToken == ')')
+      if (CurrentToken == tok_rparen)
         break;
-      if (CurrentToken != ',')
+      if (CurrentToken != tok_comma)
         return LogErrorSignature("Expected ')' or ',' in parameter list");
       getNextToken(); // eat ','
     }
   }
 
-  if (CurrentToken != ')')
+  if (CurrentToken != tok_rparen)
     return LogErrorSignature("Expected ')' in binary operator signature");
   getNextToken(); // eat ')'
 
@@ -3637,18 +3687,18 @@ static unique_ptr<FunctionSignatureNode> ParseUnaryOperatorSignature() {
 
   getNextToken(); // eat operator char
 
-  if (CurrentToken != '(')
+  if (CurrentToken != tok_lparen)
     return LogErrorSignature("Expected '(' in unary operator signature");
 
   vector<FunctionSignatureNode::ParameterInfo> ParameterNames;
   getNextToken(); // eat '('
-  if (CurrentToken != ')') {
+  if (CurrentToken != tok_rparen) {
     while (true) {
       if (CurrentToken != tok_name)
         return LogErrorSignature("Expected parameter name in operator function signature");
       string ArgName = Name;
       getNextToken(); // eat name
-      if (CurrentToken != ':')
+      if (CurrentToken != tok_colon)
         return LogErrorSignature("Operator parameters require a type annotation (e.g., "
                          "': float64')");
       getNextToken(); // eat ':'
@@ -3660,15 +3710,15 @@ static unique_ptr<FunctionSignatureNode> ParseUnaryOperatorSignature() {
         return LogErrorSignature("Parameters cannot have None type");
       ParameterNames.push_back({ArgName, ArgType, ArgStructName});
 
-      if (CurrentToken == ')')
+      if (CurrentToken == tok_rparen)
         break;
-      if (CurrentToken != ',')
+      if (CurrentToken != tok_comma)
         return LogErrorSignature("Expected ')' or ',' in parameter list");
       getNextToken(); // eat ','
     }
   }
 
-  if (CurrentToken != ')')
+  if (CurrentToken != tok_rparen)
     return LogErrorSignature("Expected ')' in unary operator signature");
   getNextToken(); // eat ')'
 
@@ -3733,7 +3783,7 @@ static unique_ptr<FunctionDefinitionNode> ParseDecoratedFunctionDef() {
 
   // Shared body: ":" ( simplestmt | end-of-lines block ) — identical to
   // ParseFunctionDefinition.
-  if (CurrentToken != ':')
+  if (CurrentToken != tok_colon)
     return LogErrorF("Expected ':' in operator definition");
   getNextToken(); // eat ':'
   unique_ptr<ExpressionNode> Body = ParseFunctionBody();
@@ -3815,7 +3865,7 @@ static bool ParseAggregateDefinition(const char *KindName) {
     return false;
   }
   getNextToken(); // eat aggregate name
-  if (CurrentToken != ':') {
+  if (CurrentToken != tok_colon) {
     LogError((string("Expected ':' after ") + KindName + " name").c_str());
     return false;
   }
@@ -3868,7 +3918,7 @@ static bool ParseAggregateDefinition(const char *KindName) {
     }
     string FieldName = Name;
     getNextToken();
-    if (CurrentToken != ':') {
+    if (CurrentToken != tok_colon) {
       LogError("Expected ':' after field name");
       return false;
     }
@@ -3920,7 +3970,7 @@ static bool ParseTypeAliasDefinition() {
     return false;
   }
   getNextToken(); // eat alias name
-  if (CurrentToken != '=') {
+  if (CurrentToken != tok_equal) {
     LogError("Expected '=' in type alias");
     return false;
   }
@@ -4993,19 +5043,19 @@ Value *BinaryExpressionNode::codegen() {
   ValueType RType = Right->getType();
 
   switch (Operator) {
-  case '+':
-  case '-':
-  case '*': {
+  case tok_plus:
+  case tok_minus:
+  case tok_star: {
     if (getType() == ValueType::Pointer) {
       Value *Ptr = nullptr;
       Value *Idx = nullptr;
-      if (LType == ValueType::Pointer && IsIntType(RType) && Operator == '+') {
+      if (LType == ValueType::Pointer && IsIntType(RType) && Operator == tok_plus) {
         Ptr = L;
         Idx = EmitImplicitCast(R, RType, ValueType::Int64);
-      } else if (RType == ValueType::Pointer && IsIntType(LType) && Operator == '+') {
+      } else if (RType == ValueType::Pointer && IsIntType(LType) && Operator == tok_plus) {
         Ptr = R;
         Idx = EmitImplicitCast(L, LType, ValueType::Int64);
-      } else if (LType == ValueType::Pointer && IsIntType(RType) && Operator == '-') {
+      } else if (LType == ValueType::Pointer && IsIntType(RType) && Operator == tok_minus) {
         Ptr = L;
         Idx = EmitImplicitCast(R, RType, ValueType::Int64);
         if (Idx)
@@ -5022,7 +5072,7 @@ Value *BinaryExpressionNode::codegen() {
         return LogErrorV("Invalid pointer element type");
       return Builder->CreateInBoundsGEP(ElemLLVM, Ptr, Idx, "ptrarith");
     }
-    if (Operator == '-' && getType() == ValueType::Int64 &&
+    if (Operator == tok_minus && getType() == ValueType::Int64 &&
         LType == ValueType::Pointer && RType == ValueType::Pointer &&
         Left->getStructName() == Right->getStructName()) {
       ValueType ElemType = ValueType::Error;
@@ -5039,20 +5089,20 @@ Value *BinaryExpressionNode::codegen() {
     if (!L || !R)
       return LogErrorV("Type mismatch in arithmetic");
     if (IsFloatType(getType())) {
-      if (Operator == '+')
+      if (Operator == tok_plus)
         return Builder->CreateFAdd(L, R, "addtmp");
-      if (Operator == '-')
+      if (Operator == tok_minus)
         return Builder->CreateFSub(L, R, "subtmp");
       return Builder->CreateFMul(L, R, "multmp");
     }
-    if (Operator == '+')
+    if (Operator == tok_plus)
       return Builder->CreateAdd(L, R, "addtmp");
-    if (Operator == '-')
+    if (Operator == tok_minus)
       return Builder->CreateSub(L, R, "subtmp");
     return Builder->CreateMul(L, R, "multmp");
   }
-  case '<':
-  case '>':
+  case tok_less:
+  case tok_greater:
   case tok_eq:
   case tok_neq:
   case tok_leq:
@@ -5064,9 +5114,9 @@ Value *BinaryExpressionNode::codegen() {
         return Builder->CreateICmpEQ(L, R, "cmptmp");
       case tok_neq:
         return Builder->CreateICmpNE(L, R, "cmptmp");
-      case '<':
+      case tok_less:
         return Builder->CreateICmpULT(L, R, "cmptmp");
-      case '>':
+      case tok_greater:
         return Builder->CreateICmpUGT(L, R, "cmptmp");
       case tok_leq:
         return Builder->CreateICmpULE(L, R, "cmptmp");
@@ -5116,9 +5166,9 @@ Value *BinaryExpressionNode::codegen() {
 
     if (IsFloatType(CompareType)) {
       switch (Operator) {
-      case '<':
+      case tok_less:
         return Builder->CreateFCmpOLT(L, R, "cmptmp");
-      case '>':
+      case tok_greater:
         return Builder->CreateFCmpOGT(L, R, "cmptmp");
       case tok_eq:
         return Builder->CreateFCmpOEQ(L, R, "cmptmp");
@@ -5133,9 +5183,9 @@ Value *BinaryExpressionNode::codegen() {
       }
     } else {
       switch (Operator) {
-      case '<':
+      case tok_less:
         return Builder->CreateICmpSLT(L, R, "cmptmp");
-      case '>':
+      case tok_greater:
         return Builder->CreateICmpSGT(L, R, "cmptmp");
       case tok_eq:
         return Builder->CreateICmpEQ(L, R, "cmptmp");
@@ -5174,7 +5224,7 @@ Value *UnaryExpressionNode::codegen() {
     return nullptr;
 
   // Built-in unary minus.
-  if (Opcode == '-') {
+  if (Opcode == tok_minus) {
     if (IsIntType(getType()))
       return Builder->CreateNeg(Operator, "negtmp");
     if (IsFloatType(getType()))
@@ -6206,7 +6256,7 @@ static void MainLoop() {
     case tok_extern:
       HandleExtern();
       break;
-    case '@':
+    case tok_at:
       // Decorator: '@binary(N)' or '@unary' — consume the '@' then dispatch.
       getNextToken(); // eat '@', now on 'binary' or 'unary'
       HandleDecorator();
@@ -6264,7 +6314,7 @@ static void FileModeLoop() {
     case tok_extern:
       HandleExtern();
       break;
-    case '@':
+    case tok_at:
       getNextToken(); // eat '@'
       HandleDecorator();
       break;

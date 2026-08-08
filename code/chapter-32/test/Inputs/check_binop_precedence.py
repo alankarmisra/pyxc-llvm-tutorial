@@ -3,6 +3,17 @@ import sys
 from pathlib import Path
 
 
+single_character_tokens = {
+    "+": "tok_plus",
+    "-": "tok_minus",
+    "*": "tok_star",
+    "/": "tok_slash",
+    "%": "tok_percent",
+    "<": "tok_less",
+    ">": "tok_greater",
+}
+
+
 def main() -> int:
     if len(sys.argv) != 3:
         print("usage: check_binop_precedence.py <pyxc.ebnf> <pyxc.cpp>")
@@ -26,7 +37,7 @@ def main() -> int:
     missing = []
     for op in ops:
         if len(op) == 1:
-            key = f"'{op}'"
+            key = single_character_tokens.get(op, "")
         else:
             if op == "==":
                 key = "tok_eq"

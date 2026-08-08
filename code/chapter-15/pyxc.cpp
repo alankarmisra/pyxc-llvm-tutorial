@@ -98,8 +98,8 @@ static bool IsEmitMode() { return EmitMode != EmitKind::None; }
 // Lexer
 //===----------------------------------------===//
 
-// The lexer returns tokens [0-255] if it is an unknown character, otherwise one
-// of these for known things.
+// I return named tokens for known language elements. I preserve the [0-255]
+// character value of any other single character for diagnostics and custom operators.
 enum Token {
   tok_eof = -1,
   tok_eol = -2,
@@ -138,6 +138,20 @@ enum Token {
   tok_indent = -19,
   tok_dedent = -20,
   tok_block_end = -100, // synthetic: injected by ParseBlock after eating DEDENT
+
+  // punctuation and operators
+  tok_lparen = '(',
+  tok_rparen = ')',
+  tok_comma = ',',
+  tok_colon = ':',
+  tok_plus = '+',
+  tok_minus = '-',
+  tok_star = '*',
+  tok_slash = '/',
+  tok_less = '<',
+  tok_greater = '>',
+  tok_equal = '=',
+  tok_at = '@',
 };
 
 static string Name; // Filled in if tok_name
@@ -487,9 +501,9 @@ static int getToken() {
   }
 
   // peek(), if the next one completes a recognized token, eat it, and return
-  // token else return the single character token.
+  // token; otherwise, I return the named single-character token.
   if (LexerLastChar == '=') {
-    int Tok = (peek() == '=') ? (advance(), tok_eq) : '=';
+    int Tok = (peek() == '=') ? (advance(), tok_eq) : tok_equal;
     LexerLastChar = advance();
     return Tok;
   }
@@ -501,13 +515,13 @@ static int getToken() {
   }
 
   if (LexerLastChar == '<') {
-    int Tok = (peek() == '=') ? (advance(), tok_leq) : '<';
+    int Tok = (peek() == '=') ? (advance(), tok_leq) : tok_less;
     LexerLastChar = advance();
     return Tok;
   }
 
   if (LexerLastChar == '>') {
-    int Tok = (peek() == '=') ? (advance(), tok_geq) : '>';
+    int Tok = (peek() == '=') ? (advance(), tok_geq) : tok_greater;
     LexerLastChar = advance();
     return Tok;
   }
@@ -523,14 +537,41 @@ static int getToken() {
     return tok_eof;
   }
 
-  // Single character token
+  // I read a single-character token.
   int ThisChar = LexerLastChar;
 
   // Position the lexer at the next character so the next getToken() starts there.
   LexerLastChar = advance();
 
-  // Return ThisChar.
-  return ThisChar;
+  // I return a named token for known punctuation and operators.
+  switch (ThisChar) {
+  case '(':
+    return tok_lparen;
+  case ')':
+    return tok_rparen;
+  case ',':
+    return tok_comma;
+  case ':':
+    return tok_colon;
+  case '+':
+    return tok_plus;
+  case '-':
+    return tok_minus;
+  case '*':
+    return tok_star;
+  case '/':
+    return tok_slash;
+  case '<':
+    return tok_less;
+  case '>':
+    return tok_greater;
+  case '=':
+    return tok_equal;
+  case '@':
+    return tok_at;
+  default:
+    return ThisChar;
+  }
 }
 
 /// ResetLexerState - Restore lexer globals to their initial state.
@@ -868,11 +909,11 @@ static const map<int, int> DefaultOperatorPrecedence = {
     {tok_neq, 10}, // !=
     {tok_leq, 10}, // <=
     {tok_geq, 10}, // >=
-    {'<', 10},     // <
-    {'>', 10},     // >
-    {'+', 20},     // +
-    {'-', 20},     // -
-    {'*', 40},     // *
+    {tok_less, 10},     // <
+    {tok_greater, 10},     // >
+    {tok_plus, 20},     // +
+    {tok_minus, 20},     // -
+    {tok_star, 40},     // *
 };
 static map<int, int> OperatorPrecedence = DefaultOperatorPrecedence;
 
@@ -883,7 +924,7 @@ static void ResetOperatorPrecedence() { OperatorPrecedence = DefaultOperatorPrec
 //
 // Seed with '-' because unary minus is a built-in form handled by
 // ParseUnaryMinus(), so users cannot define a custom unary '-'.
-static const std::set<int> DefaultKnownUnaryOperators = {'-'};
+static const std::set<int> DefaultKnownUnaryOperators = {tok_minus};
 static std::set<int> KnownUnaryOperators = DefaultKnownUnaryOperators;
 
 static void ResetKnownUnaryOperators() {
@@ -1061,7 +1102,7 @@ static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
   if (!V)
     return nullptr;
 
-  if (CurrentToken != ')')
+  if (CurrentToken != tok_rparen)
     return LogError("expected ')'");
   getNextToken(); // eat ).
   return V;
@@ -1071,23 +1112,23 @@ static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
 ///   = name
 ///   | name "("[expression{"," expression}]")" ;
 static unique_ptr<ExpressionNode> ParseNameExpressionWithName(const string &ParsedName) {
-  if (CurrentToken != '(') // Simple variable ref.
+  if (CurrentToken != tok_lparen) // Simple variable ref.
     return make_unique<NameExpressionNode>(ParsedName);
 
   // Call.
   getNextToken(); // eat (
   vector<unique_ptr<ExpressionNode>> Arguments;
-  if (CurrentToken != ')') {
+  if (CurrentToken != tok_rparen) {
     while (true) {
       if (auto Arg = ParseExpression())
         Arguments.push_back(std::move(Arg));
       else
         return nullptr;
 
-      if (CurrentToken == ')')
+      if (CurrentToken == tok_rparen)
         break;
 
-      if (CurrentToken != ',')
+      if (CurrentToken != tok_comma)
         return LogError("Expected ')' or ',' in argument list");
       getNextToken();
     }
@@ -1109,7 +1150,7 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
 
 static bool ParseForParts(unique_ptr<ExpressionNode> &Start, unique_ptr<ExpressionNode> &Cond,
                           unique_ptr<ExpressionNode> &Step, unique_ptr<ExpressionNode> &Body) {
-  if (CurrentToken != '=')
+  if (CurrentToken != tok_equal)
     return LogError("Expected '=' after for variable"), false;
   getNextToken(); // eat '='
 
@@ -1117,7 +1158,7 @@ static bool ParseForParts(unique_ptr<ExpressionNode> &Start, unique_ptr<Expressi
   if (!Start)
     return false;
 
-  if (CurrentToken != ',')
+  if (CurrentToken != tok_comma)
     return LogError("Expected ',' after for start value"), false;
   getNextToken(); // eat ','
 
@@ -1125,7 +1166,7 @@ static bool ParseForParts(unique_ptr<ExpressionNode> &Start, unique_ptr<Expressi
   if (!Cond)
     return false;
 
-  if (CurrentToken != ',')
+  if (CurrentToken != tok_comma)
     return LogError("Expected ',' after for condition"), false;
   getNextToken(); // eat ','
 
@@ -1133,7 +1174,7 @@ static bool ParseForParts(unique_ptr<ExpressionNode> &Start, unique_ptr<Expressi
   if (!Step)
     return false;
 
-  if (CurrentToken != ':')
+  if (CurrentToken != tok_colon)
     return LogError("Expected ':' after for step"), false;
   getNextToken(); // eat ':'
 
@@ -1214,7 +1255,7 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
     }
 
     unique_ptr<ExpressionNode> Init;
-    if (CurrentToken == '=') {
+    if (CurrentToken == tok_equal) {
       getNextToken(); // eat '='
       Init = ParseExpression();
       if (!Init)
@@ -1229,7 +1270,7 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
     else
       DeclareVar(ParsedName);
 
-    if (CurrentToken != ',')
+    if (CurrentToken != tok_comma)
       break;
     getNextToken(); // eat ','
   }
@@ -1245,7 +1286,7 @@ static unique_ptr<ExpressionNode> ParseIfStatement() {
   if (!Cond)
     return nullptr;
 
-  if (CurrentToken != ':')
+  if (CurrentToken != tok_colon)
     return LogError("Expected ':' after if condition");
   getNextToken(); // eat ':'
 
@@ -1263,7 +1304,7 @@ static unique_ptr<ExpressionNode> ParseIfStatement() {
   unique_ptr<ExpressionNode> Else;
   if (CurrentToken == tok_else) {
     getNextToken(); // eat 'else'
-    if (CurrentToken != ':')
+    if (CurrentToken != tok_colon)
       return LogError("Expected ':' after else");
     getNextToken(); // eat ':'
     Else = ParseSuite();
@@ -1292,7 +1333,7 @@ static unique_ptr<ExpressionNode> ParseUnaryMinus() {
   auto Operand = ParseUnary();
   if (!Operand)
     return nullptr;
-  return make_unique<UnaryExpressionNode>('-', std::move(Operand));
+  return make_unique<UnaryExpressionNode>(tok_minus, std::move(Operand));
 }
 
 /// primary
@@ -1307,7 +1348,7 @@ static unique_ptr<ExpressionNode> ParsePrimary() {
     return ParseNameExpression();
   case tok_number:
     return ParseNumberExpression();
-  case '(':
+  case tok_lparen:
     return ParseParenthesizedExpression();
   }
 }
@@ -1331,12 +1372,12 @@ static unique_ptr<ExpressionNode> ParsePrimary() {
 /// work in both positions: !x + 1 and f(x) + !y.
 static unique_ptr<ExpressionNode> ParseUnary() {
   // Primary starters will be handled with ParsePrimary.
-  if (!isascii(CurrentToken) /* multi-character tokens */ || CurrentToken == '(' ||
+  if (!isascii(CurrentToken) /* multi-character tokens */ || CurrentToken == tok_lparen ||
       isalpha(CurrentToken) || isdigit(CurrentToken))
     return ParsePrimary();
 
   // Built-in unary minus.
-  if (CurrentToken == '-')
+  if (CurrentToken == tok_minus)
     return ParseUnaryMinus();
 
   // It's an ASCII punctuation character — treat it as a user-defined unary op.
@@ -1427,7 +1468,7 @@ static unique_ptr<ExpressionNode> ParseLeadingNameSimpleStatement() {
   getNextToken(); // eat name
 
   // Fast path for assignstmt: x = ...
-  if (CurrentToken == '=')
+  if (CurrentToken == tok_equal)
     return ParseAssignmentRight(ParsedName);
 
   // Otherwise parse as expression starting from name.
@@ -1439,7 +1480,7 @@ static unique_ptr<ExpressionNode> ParseLeadingNameSimpleStatement() {
     return nullptr;
 
   // Optional assignment tail: (<expr>) = ...
-  if (CurrentToken != '=')
+  if (CurrentToken != tok_equal)
     return Expr;
 
   const string *AssignedName = Expr->getLValueName();
@@ -1456,7 +1497,7 @@ static unique_ptr<ExpressionNode> ParseNonLeadingNameSimpleStatement() {
   if (!Expr)
     return nullptr;
 
-  if (CurrentToken != '=')
+  if (CurrentToken != tok_equal)
     return Expr;
 
   return LogError("Destination of '=' must be a variable");
@@ -1572,7 +1613,7 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
   }
   getNextToken(); // eat function name
 
-  if (CurrentToken != '(')
+  if (CurrentToken != tok_lparen)
     return LogErrorSignature("Expected '(' in function signature");
 
   // Parse argument names. The loop calls getNextToken() at the top to advance
@@ -1583,14 +1624,14 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
   vector<string> ParameterNames;
   while (getNextToken() == tok_name) {
     ParameterNames.push_back(Name);
-    if (getNextToken() == ')') // eat name, check what follows
+    if (getNextToken() == tok_rparen) // eat name, check what follows
       break;
-    if (CurrentToken != ',')
+    if (CurrentToken != tok_comma)
       return LogErrorSignature("Expected ')' or ',' in parameter list");
     // loop continues: getNextToken() at the top eats the ','
   }
 
-  if (CurrentToken != ')')
+  if (CurrentToken != tok_rparen)
     return LogErrorSignature("Expected ')' in function signature");
   getNextToken(); // eat ')'
 
@@ -1618,7 +1659,7 @@ static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
     return nullptr;
   FunctionScopeGuard Scope(Signature->getParameters());
 
-  if (CurrentToken != ':')
+  if (CurrentToken != tok_colon)
     return LogErrorF("Expected ':' in function definition");
   getNextToken(); // eat ':'
   unique_ptr<ExpressionNode> Body = ParseFunctionBody();
@@ -1638,7 +1679,7 @@ static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
 static unsigned ParseBinaryDecorator() {
   getNextToken(); // eat 'binary'
 
-  if (CurrentToken != '(') {
+  if (CurrentToken != tok_lparen) {
     LogError("Expected '(' after '@binary'");
     return 0;
   }
@@ -1661,7 +1702,7 @@ static unsigned ParseBinaryDecorator() {
   unsigned Prec = static_cast<unsigned>(NumberValue);
   getNextToken(); // eat number
 
-  if (CurrentToken != ')') {
+  if (CurrentToken != tok_rparen) {
     LogError("Expected ')' after precedence in '@binary(...)'");
     return 0;
   }
@@ -1685,7 +1726,7 @@ static void ParseUnaryDecorator() {
 // predictable across platforms/locales. '@' is reserved for decorator syntax
 // (@binary / @unary), so it is explicitly excluded.
 static bool IsCustomOpChar(int Tok) {
-  return isascii(Tok) && ispunct(static_cast<unsigned char>(Tok)) && Tok != '@';
+  return isascii(Tok) && ispunct(static_cast<unsigned char>(Tok)) && Tok != tok_at;
 }
 
 // IsKnownBinaryOperatorToken - Return true if Tok is already present in the
@@ -1749,19 +1790,19 @@ static unique_ptr<FunctionSignatureNode> ParseBinaryOperatorSignature(unsigned P
 
   getNextToken(); // eat operator char
 
-  if (CurrentToken != '(')
+  if (CurrentToken != tok_lparen)
     return LogErrorSignature("Expected '(' in binary operator signature");
 
   vector<string> ParameterNames;
   while (getNextToken() == tok_name) {
     ParameterNames.push_back(Name);
-    if (getNextToken() == ')')
+    if (getNextToken() == tok_rparen)
       break;
-    if (CurrentToken != ',')
+    if (CurrentToken != tok_comma)
       return LogErrorSignature("Expected ')' or ',' in parameter list");
   }
 
-  if (CurrentToken != ')')
+  if (CurrentToken != tok_rparen)
     return LogErrorSignature("Expected ')' in binary operator signature");
   getNextToken(); // eat ')'
 
@@ -1807,19 +1848,19 @@ static unique_ptr<FunctionSignatureNode> ParseUnaryOperatorSignature() {
 
   getNextToken(); // eat operator char
 
-  if (CurrentToken != '(')
+  if (CurrentToken != tok_lparen)
     return LogErrorSignature("Expected '(' in unary operator signature");
 
   vector<string> ParameterNames;
   while (getNextToken() == tok_name) {
     ParameterNames.push_back(Name);
-    if (getNextToken() == ')')
+    if (getNextToken() == tok_rparen)
       break;
-    if (CurrentToken != ',')
+    if (CurrentToken != tok_comma)
       return LogErrorSignature("Expected ')' or ',' in parameter list");
   }
 
-  if (CurrentToken != ')')
+  if (CurrentToken != tok_rparen)
     return LogErrorSignature("Expected ')' in unary operator signature");
   getNextToken(); // eat ')'
 
@@ -1875,7 +1916,7 @@ static unique_ptr<FunctionDefinitionNode> ParseDecoratedFunctionDef() {
 
   // Shared body: ":" ( simplestmt | end-of-lines block ) — identical to
   // ParseFunctionDefinition.
-  if (CurrentToken != ':')
+  if (CurrentToken != tok_colon)
     return LogErrorF("Expected ':' in operator definition");
   getNextToken(); // eat ':'
   unique_ptr<ExpressionNode> Body = ParseFunctionBody();
@@ -2144,17 +2185,17 @@ Value *BinaryExpressionNode::codegen() {
     return nullptr;
 
   switch (Operator) {
-  case '+':
+  case tok_plus:
     return Builder->CreateFAdd(L, R, "addtmp");
-  case '-':
+  case tok_minus:
     return Builder->CreateFSub(L, R, "subtmp");
-  case '*':
+  case tok_star:
     return Builder->CreateFMul(L, R, "multmp");
-  case '<':
+  case tok_less:
     L = Builder->CreateFCmpOLT(L, R, "cmptmp");
     // Widen the i1 boolean to double: false -> 0.0, true -> 1.0.
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
-  case '>':
+  case tok_greater:
     L = Builder->CreateFCmpOGT(L, R, "cmptmp");
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case tok_eq:
@@ -2192,7 +2233,7 @@ Value *UnaryExpressionNode::codegen() {
     return nullptr;
 
   // Built-in unary minus.
-  if (Opcode == '-')
+  if (Opcode == tok_minus)
     return Builder->CreateFNeg(Operator, "negtmp");
 
   // User-defined unary operator.
@@ -2874,7 +2915,7 @@ static void MainLoop() {
     case tok_extern:
       HandleExtern();
       break;
-    case '@':
+    case tok_at:
       // Decorator: '@binary(N)' or '@unary' — consume the '@' then dispatch.
       getNextToken(); // eat '@', now on 'binary' or 'unary'
       HandleDecorator();
@@ -2923,7 +2964,7 @@ static void FileModeLoop() {
     case tok_extern:
       HandleExtern();
       break;
-    case '@':
+    case tok_at:
       getNextToken(); // eat '@'
       HandleDecorator();
       break;

@@ -47,8 +47,8 @@ static cl::opt<unsigned> OptLevel("O", cl::desc("Optimization level"),
 // Lexer
 //===----------------------------------------===//
 
-// The lexer returns tokens [0-255] if it is an unknown character, otherwise one
-// of these for known things.
+// I return named tokens for known language elements. I preserve the [0-255]
+// character value of any other single character for diagnostics and custom operators.
 enum Token {
   tok_eof = -1,
   tok_eol = -2,
@@ -61,6 +61,17 @@ enum Token {
   // primary
   tok_name = -6,
   tok_number = -7,
+
+  // punctuation and operators
+  tok_lparen = '(',
+  tok_rparen = ')',
+  tok_comma = ',',
+  tok_colon = ':',
+  tok_plus = '+',
+  tok_minus = '-',
+  tok_star = '*',
+  tok_slash = '/',
+  tok_less = '<',
 };
 
 static string Name; // Filled in if tok_name
@@ -300,14 +311,35 @@ static int getToken() {
   if (LastChar == EOF)
     return tok_eof;
 
-  // Single character token
+  // I read a single-character token.
   int ThisChar = LastChar;
 
   // Position the lexer at the next character so the next getToken() starts there.
   LastChar = advance();
 
-  // Return ThisChar.
-  return ThisChar;
+  // I return a named token for known punctuation and operators.
+  switch (ThisChar) {
+  case '(':
+    return tok_lparen;
+  case ')':
+    return tok_rparen;
+  case ',':
+    return tok_comma;
+  case ':':
+    return tok_colon;
+  case '+':
+    return tok_plus;
+  case '-':
+    return tok_minus;
+  case '*':
+    return tok_star;
+  case '/':
+    return tok_slash;
+  case '<':
+    return tok_less;
+  default:
+    return ThisChar;
+  }
 }
 
 //===----------------------------------------===//
@@ -408,7 +440,7 @@ public:
 
 /// BinaryExpressionNode - Expression class for a binary operator.
 /// Operator is stored as an int token code. In chapter 7 all binary operators are
-/// single-character ASCII tokens ('+', '-', '*').
+/// named single-character tokens with their corresponding ASCII values.
 class BinaryExpressionNode : public ExpressionNode {
   char Operator;
   unique_ptr<ExpressionNode> Left, Right;
@@ -524,7 +556,7 @@ static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
   if (!V)
     return nullptr;
 
-  if (CurrentToken != ')')
+  if (CurrentToken != tok_rparen)
     return LogError("expected ')'");
   getNextToken(); // eat ).
   return V;
@@ -542,23 +574,23 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
 
   getNextToken(); // eat name.
 
-  if (CurrentToken != '(') // Simple variable ref.
+  if (CurrentToken != tok_lparen) // Simple variable ref.
     return make_unique<NameExpressionNode>(ParsedName);
 
   // Call.
   getNextToken(); // eat (
   vector<unique_ptr<ExpressionNode>> Arguments;
-  if (CurrentToken != ')') {
+  if (CurrentToken != tok_rparen) {
     while (true) {
       if (auto Arg = ParseExpression())
         Arguments.push_back(std::move(Arg));
       else
         return nullptr;
 
-      if (CurrentToken == ')')
+      if (CurrentToken == tok_rparen)
         break;
 
-      if (CurrentToken != ',')
+      if (CurrentToken != tok_comma)
         return LogError("Expected ')' or ',' in argument list");
       getNextToken();
     }
@@ -582,7 +614,7 @@ static unique_ptr<ExpressionNode> ParsePrimary() {
     return ParseNameExpression();
   case tok_number:
     return ParseNumberExpression();
-  case '(':
+  case tok_lparen:
     return ParseParenthesizedExpression();
   }
 }
@@ -593,7 +625,7 @@ static unique_ptr<ExpressionNode> ParseTerm() {
   auto Left = ParsePrimary();
   if (!Left)
     return nullptr;
-  while (CurrentToken == '*' || CurrentToken == '/') {
+  while (CurrentToken == tok_star || CurrentToken == tok_slash) {
     int Operator = CurrentToken;
     getNextToken();
     auto Right = ParsePrimary();
@@ -611,7 +643,7 @@ static unique_ptr<ExpressionNode> ParseSum() {
   auto Left = ParseTerm();
   if (!Left)
     return nullptr;
-  while (CurrentToken == '+' || CurrentToken == '-') {
+  while (CurrentToken == tok_plus || CurrentToken == tok_minus) {
     int Operator = CurrentToken;
     getNextToken();
     auto Right = ParseTerm();
@@ -629,7 +661,7 @@ static unique_ptr<ExpressionNode> ParseComparison() {
   auto Left = ParseSum();
   if (!Left)
     return nullptr;
-  while (CurrentToken == '<') {
+  while (CurrentToken == tok_less) {
     int Operator = CurrentToken;
     getNextToken();
     auto Right = ParseSum();
@@ -660,7 +692,7 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
   string FnName = Name;
   getNextToken(); // eat function name
 
-  if (CurrentToken != '(')
+  if (CurrentToken != tok_lparen)
     return LogErrorSignature("Expected '(' in function signature");
 
   // Parse argument names. The loop calls getNextToken() at the top to advance
@@ -671,15 +703,15 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
   while (getNextToken() == tok_name) {
     ParameterNames.push_back(Name);
 
-    if (getNextToken() == ')') // eat name, check what follows
+    if (getNextToken() == tok_rparen) // eat name, check what follows
       break;
 
-    if (CurrentToken != ',')
+    if (CurrentToken != tok_comma)
       return LogErrorSignature("Expected ')' or ',' in parameter list");
     // loop continues: getNextToken() at the top eats the ','
   }
 
-  if (CurrentToken != ')')
+  if (CurrentToken != tok_rparen)
     return LogErrorSignature("Expected ')' in function signature");
 
   getNextToken(); // eat ')'
@@ -695,7 +727,7 @@ static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
   if (!Signature)
     return nullptr;
 
-  if (CurrentToken != ':')
+  if (CurrentToken != tok_colon)
     return LogErrorF("Expected ':' in function definition");
   getNextToken(); // eat ':'
 
@@ -859,15 +891,15 @@ Value *BinaryExpressionNode::codegen() {
     return nullptr;
 
   switch (Operator) {
-  case '+':
+  case tok_plus:
     return Builder->CreateFAdd(L, R, "addtmp");
-  case '-':
+  case tok_minus:
     return Builder->CreateFSub(L, R, "subtmp");
-  case '*':
+  case tok_star:
     return Builder->CreateFMul(L, R, "multmp");
-  case '/':
+  case tok_slash:
     return Builder->CreateFDiv(L, R, "divtmp");
-  case '<':
+  case tok_less:
     L = Builder->CreateFCmpULT(L, R, "cmptmp");
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   default:
