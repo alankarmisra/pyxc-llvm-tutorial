@@ -32,7 +32,7 @@ cd pyxc-llvm-tutorial/code/chapter-17
 
 ## Grammar
 
-The grammar gains type annotations throughout. The verbatim grammar is in [The Full Grammar](#the-full-grammar) below; the changes from chapter 15 (the last chapter to touch the grammar; chapter 16 didn't) are:
+The grammar gains type annotations throughout. The verbatim grammar is in [Grammar](#the-full-grammar) below; the changes from chapter 15 (the last chapter to touch the grammar; chapter 16 didn't) are:
 
 - Every parameter requires `: type` (`typed-parameter` replaces the bare `name` in `function-signature` and the operator-signature productions).
 - `var` declarations require `: type` between the name and an optional `= expression`.
@@ -1396,7 +1396,7 @@ cmake -S . -B build && cmake --build build
 echo "var x: int32 = 7" | ./build/pyxc
 ```
 
-## The Full Grammar
+## Grammar
 
 [pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-17/pyxc.ebnf)
 

@@ -2,5 +2,5 @@
 # RUN: grep -q "Parsed a top-level expression." %t
 # RUN: not grep -q "Error:" %t
 
-# nameexpr: call result used inside a larger expression
+# call-expression: call result used inside a larger expression
 foo(1) + bar(2, 3) + baz()

@@ -1,11 +1,11 @@
 ---
-description: "Add subtraction, multiplication, and comparison to the lexer, then give the parser a precedence table so `1 + 2 * 3` groups the way everyone expects."
+description: "Encode operator precedence in the grammar, then parse subtraction, multiplication, division, and comparison with one function for each grammar layer."
 ---
-# 3. pyxc: Operator Precedence
+# 3. pyxc: Encoding Precedence in the Grammar
 
-## Where We Are
+## Where I Am
 
-In this chapter, I'll expand the binary operators to include `*`, `-`, and `<`, and add operator precedence rules so they group the way arithmetic already does: `k < a + b * c + d` becomes `k < ((a + (b * c)) + d)`.
+In this chapter, I add `-`, `*`, `/`, and `<`. I use the grammar to implement arithmetic precedence for `+`, `-`, `*`, and `/`, and I make `<` bind more loosely than all four. For example, I group `a + b * c` as `a + (b * c)`.
 
 ## Source Code
 
@@ -14,9 +14,84 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-03
 ```
 
+## Encoding the Tiers in the Grammar
+
+I first build the `*` and `/` groups. I use those groups to build the `+` and `-` groups, then I use the completed `+` and `-` groups as the operands of `<`.
+
+For example:
+
+```pyxc
+k < a * b + c * d
+```
+
+becomes:
+
+```pyxc
+k < ((a * b) + (c * d))
+```
+
+I need a few names for the pieces of this expression:
+
+- A **primary** is one basic operand: a name such as `a`, a number such as `2`, or a parenthesized expression such as `(a + b)`. The expression inside parentheses may be larger, but I treat the complete parenthesized group as one operand.
+- A **term** is one multiplication/division group. It may be a single primary such as `k`, or several primaries joined by `*` or `/`, such as `a * b`.
+- A **sum** is one addition/subtraction group. It may be a single term, or several terms joined by `+` or `-`, such as `(a * b) + (c * d)`.
+- A **comparison** combines sums with `<`. In this example, I compare the sum `k` with the sum `(a * b) + (c * d)`.
+
+With that vocabulary, I can sketch the parser as the following functions:
+
+```cpp
+// Pseudocode
+Expression ParseComparison() {
+  Expression Left = ParseSum();   // I parse k as a sum containing one term.
+  getNextToken();                 // I eat '<'.
+  Expression Right = ParseSum();  // I parse (a * b) + (c * d).
+  return Left < Right;            // I combine the two sums.
+}
+```
+
+```cpp
+// Pseudocode
+Expression ParseSum() {
+  Expression Left = ParseTerm();   // I parse a * b as the first term.
+  int Operator = CurrentToken;     // I remember whether I saw '+' or '-'.
+  getNextToken();                  // I eat the operator.
+  Expression Right = ParseTerm();  // I parse c * d as the next term.
+  return Operator == '+' ? Left + Right : Left - Right; // I build the sum.
+}
+```
+
+```cpp
+// Pseudocode
+Expression ParseTerm() {
+  Expression Left = ParsePrimary();  // I parse one name, number, or parenthesized expression.
+  int Operator = CurrentToken;       // I remember whether I saw '*' or '/'.
+  getNextToken();                    // I eat the operator.
+  Expression Right = ParsePrimary(); // I parse the next primary.
+  return Operator == '*' ? Left * Right : Left / Right; // I build the term.
+}
+```
+
+These are deliberately small sketches of the example above. In the real parser, I let each function return its first operand when it does not find an operator from its own group. I also use a loop so it can parse more than one operator from that group.
+
+I build primaries into terms, terms into sums, and sums into comparisons. Using precedence terminology, I say that `*` and `/` **bind tighter** than `+` and `-`, which bind tighter than `<`.
+
+I can express the same chain of calls in the grammar:
+
+```ebnf
+expression = comparison ;
+comparison = sum { "<" sum } ;
+sum        = term { ("+" | "-") term } ;
+term       = primary { ("*" | "/") primary } ;
+primary    = name-expression
+           | number-expression
+           | parenthesized-expression ;
+```
+
+I place the loosest-binding rule at the top and the tightest-binding rule at the bottom. I place `primary` below them because it gives me the individual operands. When I parse an expression, I work down to `primary`, then use the completed tighter operands as I return through the looser rules.
+
 ## Teaching the Lexer New Operators
 
-Before I can parse `-`, `*`, and `<`, I first have to teach my lexer to recognize them as tokens at all. For each I'll add a named enum value, a readable name for error messages, and a case in `getToken()`'s switch statement.
+Before I can use these grammar rules, I have to teach the lexer to recognize the new operators. Chapter 2 already had `+`. I add named tokens for `-`, `*`, `/`, and `<` beside it:
 
 ```cpp
 enum Token {
@@ -24,9 +99,12 @@ enum Token {
   tok_plus,
   tok_minus,
   tok_star,
+  tok_slash,
   tok_less,
 };
 ```
+
+I give each token a readable name for error messages:
 
 ```cpp
 static map<int, string> TokenNames = {
@@ -34,9 +112,12 @@ static map<int, string> TokenNames = {
     {tok_plus, "'+'"},
     {tok_minus, "'-'"},
     {tok_star, "'*'"},
+    {tok_slash, "'/'"},
     {tok_less, "'<'"},
 };
 ```
+
+Finally, I return the corresponding token when the lexer reads each character:
 
 ```cpp
   switch (ThisChar) {
@@ -47,441 +128,163 @@ static map<int, string> TokenNames = {
     return tok_minus;
   case '*':
     return tok_star;
+  case '/':
+    return tok_slash;
   case '<':
     return tok_less;
-  // ...    
+  // ...
   }
 ```
 
-## Defining Operator Precedence
+These are all single-character operators. Multi-character operators such as `==` and `<=` need a little more lexer logic, so I leave those for a later chapter.
 
-I'm going to introduce some terminology here so I have some vocabulary to use later on in my thinking process.
+## Writing One Parser for Each Grammar Layer
 
-Consider `a * b + c * d`. By standard arithmetic convention, it is grouped as:
-
-```pyxc
-(a * b) + (c * d)
-```
-
-- In terms of operators, `*` **binds tighter** than `+`. Each multiplication takes its operands before `+` takes the results.
-- In terms of precedence, the multiplications belong to a **higher-precedence tier**, while the addition belongs to a **lower-precedence tier**.
-
-Conceptually, the grouped expression looks like this:
-
-```pyxc
-# Higher precedence
-r1 = a * b
-r2 = c * d
-
-# Lower precedence
-result = r1 + r2
-```
-
-I assign each precedence tier a number and store the operators in a map:
+I already have `ParsePrimary()` from Chapter 2. I now translate the three new grammar rules into `ParseTerm()`, `ParseSum()`, and `ParseComparison()`.
 
 ```cpp
-static const map<int, int> OperatorPrecedence = {
-    {tok_less, 10},
-    {tok_plus, 20},
-    {tok_minus, 20},
-    {tok_star, 40},
-};
-```
-
-- `*` has the highest precedence and binds the tightest.
-- `+` and `-` form the middle precedence tier.
-- `<` has the lowest precedence and binds the loosest.
-
-I write a small helper that reads the precedence of the token I'm currently looking at:
-
-```cpp
-static int GetTokenPrecedence() {
-  auto It = OperatorPrecedence.find(CurrentToken);
-  if (It == OperatorPrecedence.end() || It->second <= 0)
-    return -1;
-  return It->second;
-}
-```
-
-If `CurrentToken` isn't an operator, and consequently not in the table, I return `-1`. This tells my expression parsing function that there is nothing more to process.
-
-## Parsing Binary Expressions
-
-### Parsing Operators Explicitly
-
-I'm going to start thinking and iterating in code. The first thing I'd reach for: one function per precedence tier, each parsing the operators assigned to that tier.
-
-```cpp
-// I parse the tightest binary tier: multiplication.
-// Because no binary operator binds tighter than '*', I parse each operand
-// directly as a primary.
-static unique_ptr<ExpressionNode> ParseStar() {
-  auto Left = ParsePrimary();
-
-  while (CurrentToken == tok_star) {
-    getNextToken(); // eat '*'
-    auto Right = ParsePrimary();
-
-    // I fold repeated multiplications into the left side:
-    // a * b * c becomes (a * b) * c.
-    Left = make_unique<BinaryExpressionNode>(
-        tok_star, std::move(Left), std::move(Right));
-  }
-
-  return Left;
-}
-
-// I parse the additive tier. I ask ParseStar() for each operand so any
-// multiplication is grouped before I consume '+' or '-'.
-// If I find no additive operator, I return the subtree ParseStar() built.
-static unique_ptr<ExpressionNode> ParsePlusMinus() {
-  auto Left = ParseStar();
-
-  while (CurrentToken == tok_plus
-      || CurrentToken == tok_minus) {
-    int Operator = CurrentToken;
-    getNextToken(); // eat '+' or '-'
-    auto Right = ParseStar();
-
-    // I fold operators at the same tier into the left side.
-    Left = make_unique<BinaryExpressionNode>(
-        Operator, std::move(Left), std::move(Right));
-  }
-
-  return Left;
-}
-
-// I parse the loosest tier. I ask ParsePlusMinus() for each operand so
-// arithmetic is grouped before I consume '<'.
-// If I find no '<', I return the subtree ParsePlusMinus() built.
-static unique_ptr<ExpressionNode> ParseLess() {
-  auto Left = ParsePlusMinus();
-
-  while (CurrentToken == tok_less) {
-    getNextToken(); // eat '<'
-    auto Right = ParsePlusMinus();
-
-    Left = make_unique<BinaryExpressionNode>(
-        tok_less, std::move(Left), std::move(Right));
-  }
-
-  return Left;
-}
-```
-
-### Passing the Precedence Tier
-
-The functions have the same overall shape. Each one parses `Left`, consumes the operators in its tier, parses `Right`, and merges them. For now, I still check for each tier's operator tokens directly. In `ParseStar()` and `ParseLess()`  I check for one operator token:
-
-```cpp
-static unique_ptr<ExpressionNode> ParseStar() {
-    ...
-    while (CurrentToken == tok_star) // <-- one token
-    ...
-}
-
-static unique_ptr<ExpressionNode> ParseLess() {
-    ...
-    while (CurrentToken == tok_less) // <-- one token
-    ...
-}
-```
-
-and in `ParsePlusMinus()` I check for two operator tokens.
-
-```cpp
-static unique_ptr<ExpressionNode> ParsePlusMinus() {
-    ...
-    while (CurrentToken == tok_plus
-        || CurrentToken == tok_minus) // <-- two tokens
-    ...
-}
-```
-
-But if I used the precedence tiers, I could reduce the checking to the current precedence tier instead of the operator tokens.
-
-```cppdiff
-// I pass the tier into ParseStar so I can replace the tok_star check.
--static unique_ptr<ExpressionNode> ParseStar() {
-+static unique_ptr<ExpressionNode> ParseStar(int PrecedenceTier) {
-  auto Left = ParsePrimary();
-
-  // I compare precedence tiers instead of checking specifically for '*'.
--  while (CurrentToken == tok_star) {
-+  while (GetTokenPrecedence() == PrecedenceTier) {
-+    // I save the operator because any token assigned to this tier can match.
-+    int Operator = CurrentToken;
-    getNextToken();
-
-    auto Right = ParsePrimary();
-
-    // I use the operator I saved instead of hard-coding tok_star.
-    Left = make_unique<BinaryExpressionNode>(
--        tok_star, std::move(Left), std::move(Right));
-+        Operator, std::move(Left), std::move(Right));
-  }
-
-  return Left;
-}
-
-// I pass the tier into ParsePlusMinus so I can replace the '+' and '-' checks.
--static unique_ptr<ExpressionNode> ParsePlusMinus() {
-+static unique_ptr<ExpressionNode> ParsePlusMinus(int PrecedenceTier) {
-  // I pass the multiplication tier to ParseStar.
--  auto Left = ParseStar();
-+  auto Left = ParseStar(OperatorPrecedence.at(tok_star));
-
-  // I compare one precedence tier instead of checking both '+' and '-'.
--  while (CurrentToken == tok_plus || CurrentToken == tok_minus) {
-+  while (GetTokenPrecedence() == PrecedenceTier) {
-    int Operator = CurrentToken;
-    getNextToken();
-
-    // I pass the multiplication tier to ParseStar for Right too.
--    auto Right = ParseStar();
-+    auto Right = ParseStar(OperatorPrecedence.at(tok_star));
-
-    Left = make_unique<BinaryExpressionNode>(
-        Operator, std::move(Left), std::move(Right));
-  }
-
-  return Left;
-}
-
-// I pass the tier into ParseLess so I can replace the tok_less check.
--static unique_ptr<ExpressionNode> ParseLess() {
-+static unique_ptr<ExpressionNode> ParseLess(int PrecedenceTier) {
-  // I use tok_plus to look up the tier shared by '+' and '-'.
--  auto Left = ParsePlusMinus();
-+  auto Left = ParsePlusMinus(OperatorPrecedence.at(tok_plus));
-
-  // I compare precedence tiers instead of checking specifically for '<'.
--  while (CurrentToken == tok_less) {
-+  while (GetTokenPrecedence() == PrecedenceTier) {
-+    // I save the operator because any token assigned to this tier can match.
-+    int Operator = CurrentToken;
-    getNextToken();
-
-    // I pass the additive tier to ParsePlusMinus for Right too.
--    auto Right = ParsePlusMinus();
-+    auto Right = ParsePlusMinus(OperatorPrecedence.at(tok_plus));
-
-    // I use the operator I saved instead of hard-coding tok_less.
-    Left = make_unique<BinaryExpressionNode>(
--        tok_less, std::move(Left), std::move(Right));
-+        Operator, std::move(Left), std::move(Right));
-  }
-
-  return Left;
-}
-```
-
-I start parsing at the loosest tier:
-
-```cpp
-auto Expression =
-    ParseLess(OperatorPrecedence.at(tok_less));
-```
-
-### Merging the Tier Parsers
-
-Now the loop and merge logic look identical. The only meaningful difference I have left is how I parse `Left` and `Right`. In the tightest tier, I call `ParsePrimary()`. In every other tier, I call the next tighter parser and pass it the corresponding precedence from the map.
-
-I call the next higher precedence first so I collect its operands before I return to the current tier. So let me write a helper that I use to find the next precedence tier, and then I can merge all three functions into one. I have to be careful, though, because `ParseStar()` doesn't have a next precedence; I use `ParsePrimary()` for `Left` and `Right` there.
-
-```cpp
-static int GetNextPrecedenceTier(int CurrentPrecedenceTier) {
-  int NextPrecedenceTier = -1;
-
-  for (const auto &[Operator, PrecedenceTier] : OperatorPrecedence) {
-    if (PrecedenceTier <= CurrentPrecedenceTier)
-      continue;
-
-    // I already know PrecedenceTier is higher than the current tier.
-    // I keep it if it is my first candidate, or if it is lower than the
-    // best candidate I have found so far, which makes it the closer tier.
-    if (NextPrecedenceTier == -1 ||
-        PrecedenceTier < NextPrecedenceTier)
-      NextPrecedenceTier = PrecedenceTier;
-  }
-
-  return NextPrecedenceTier;
-}
-```
-
-When my recursion reaches the highest precedence tier, `GetNextPrecedenceTier()` returns `-1` because I have no higher tier in the map. I use that as my cue to call `ParsePrimary()`. The merged function looks like this:
-
-```cpp
-static unique_ptr<ExpressionNode>
-ParsePrecedenceTier(int PrecedenceTier) {
-  int NextPrecedenceTier =
-      GetNextPrecedenceTier(PrecedenceTier);
-
-  unique_ptr<ExpressionNode> Left;
-
-  if (NextPrecedenceTier == -1)
-    Left = ParsePrimary();
-  else
-    Left = ParsePrecedenceTier(NextPrecedenceTier);
-
-  while (GetTokenPrecedence() == PrecedenceTier) {
-    int Operator = CurrentToken;
-    getNextToken();
-
-    unique_ptr<ExpressionNode> Right;
-
-    if (NextPrecedenceTier == -1)
-      Right = ParsePrimary();
-    else
-      Right = ParsePrecedenceTier(NextPrecedenceTier);
-
-    Left = make_unique<BinaryExpressionNode>(
-        Operator, std::move(Left), std::move(Right));
-  }
-
-  return Left;
-}
-```
-
-I start the merged parser at the lowest precedence tier:
-
-```cpp
-auto Expression =
-    ParsePrecedenceTier(OperatorPrecedence.at(tok_less));
-```
-
-### Precedence Climbing
-
-I no longer need to find the next registered tier. Instead, I can make each recursive call accept any operator whose precedence is above a minimum. This changes my function from walking exact tiers to climbing by minimum precedence.
-
-```cpp
-static unique_ptr<ExpressionNode>
-ParseBinaryExpression(int MinimumPrecedence) {
-  auto Left = ParsePrimary();
-
-  while (true) {
-    int TokenPrecedence = GetTokenPrecedence();
-
-    // I leave this operator for an earlier call if it binds more loosely
-    // than the minimum precedence I require here.
-    if (TokenPrecedence < MinimumPrecedence)
-      return Left;
-
-    int Operator = CurrentToken;
-    getNextToken();
-
-    // I use + 1 to accept only operators that bind more tightly than
-    // the current operator.
-    auto Right =
-        ParseBinaryExpression(TokenPrecedence + 1);
-
-    Left = make_unique<BinaryExpressionNode>(
-        Operator, std::move(Left), std::move(Right));
-  }
-}
-
-// start the whole thing
-auto Expression =
-    ParseBinaryExpression(OperatorPrecedence.at(tok_less));
-```
-
-`TokenPrecedence + 1` does not mean that the next registered tier is numerically one higher. It means that I accept only operators that bind more tightly than the current operator. With tiers `10`, `20`, and `40`, passing `21` still accepts `40`.
-
-This works. But now I recurse even when I don't need to. I'll optimize it one more time and add a check to see whether I need to recurse.
-
-```diff
- static unique_ptr<ExpressionNode>
--ParseBinaryExpression(int MinimumPrecedence) {
--  auto Left = ParsePrimary();
--
-+ParseBinaryOperatorRight(int MinimumPrecedence,
-+                         unique_ptr<ExpressionNode> Left) {
-+  // I find the precedence of the binary operator in front of me.
-   while (true) {
-     int TokenPrecedence = GetTokenPrecedence();
-
--    // I leave this operator for an earlier call if it binds more loosely
--    // than the minimum precedence I require here.
-+    // I stop if this operator binds more loosely than the minimum
-+    // precedence accepted by this call.
-     if (TokenPrecedence < MinimumPrecedence)
-       return Left;
-
-+    // I save the operator before I consume it.
-     int Operator = CurrentToken;
--    getNextToken();
-+    getNextToken(); // eat binary operator
-
--    // I use + 1 to accept only operators that bind more tightly than
--    // the current operator.
--    auto Right =
--        ParseBinaryExpression(TokenPrecedence + 1);
-+    // I parse the primary expression after the binary operator.
-+    auto Right = ParsePrimary();
-+    if (!Right)
-+      return nullptr;
-+
-+    // If the operator after Right binds tighter than Operator, I let it
-+    // consume Right before I merge Operator with Left.
-+    int NextTokenPrecedence = GetTokenPrecedence();
-+    if (TokenPrecedence < NextTokenPrecedence) {
-+      Right = ParseBinaryOperatorRight(TokenPrecedence + 1, std::move(Right));
-+      if (!Right)
-+        return nullptr;
-+    }
-
--    Left = make_unique<BinaryExpressionNode>(
--        Operator, std::move(Left), std::move(Right));
-+    // I merge Left and Right under Operator.
-+    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
-+                                             std::move(Right));
-   }
- }
-```
-
-This is the actual function in `pyxc.cpp`. I never ask "what's the next tier?" I use `+ 1` and the minimum-precedence comparison to accept any tighter tier without keeping another lookup table that says what comes next.
-
-Here's the tree I build for `a + b * c`. I tag each row with the precedence of the operator that owns it:
-
-```ast
-20 │ BinaryExpression '+'
-20 │ ├── Left  -> a
-40 │ └── Right -> BinaryExpression '*'
-40 │              ├── Left  -> b
-40 │              └── Right -> c
-```
-
-I produce the `20` rows and the `40` rows in two different calls to `ParseBinaryOperatorRight`. When I see `*` waiting on the right of `+`, I know that `*` binds tighter (`40 > 20`), so I start a new call and pass `Right` to it before I merge anything. In that call, I build `b * c`.
-
-I handle the full expression, `k < a + b * c + d`, the same way, just with a third tier:
-
-```ast
-10 │ BinaryExpression '<'
-10 │ ├── Left  -> k
-20 │ └── Right -> BinaryExpression '+'
-20 │              ├── Left  -> BinaryExpression '+'
-20 │              │            ├── Left  -> a
-40 │              │            └── Right -> BinaryExpression '*'
-40 │              │                         ├── Left  -> b
-40 │              │                         └── Right -> c
-20 │              └── Right -> d
-```
-
-I build both `+` nodes in the same call, so both are tagged `20`. Because the two `+` operators have equal precedence, I don't start another recursive call for the second one. I stay in the same call, loop around, and merge again. That is what makes the chain nest left instead of right: `(a + (b * c)) + d`, not `a + ((b * c) + d)`. I handle `<` (`10`) and `*` (`40`) in separate calls because they are strictly looser or tighter than their neighbors.
-
-Because I put the loop in `ParseBinaryOperatorRight`, I can simplify `ParseExpression` to:
-
-```cpp
-static unique_ptr<ExpressionNode> ParseExpression() {
+/// term
+///   = primary { ("*" | "/") primary } ;
+static unique_ptr<ExpressionNode> ParseTerm() {
+  // I start the term by parsing one primary.
   auto Left = ParsePrimary();
   if (!Left)
     return nullptr;
 
-  return ParseBinaryOperatorRight(0, std::move(Left));
+  // I consume only the operators that belong to this tier.
+  while (CurrentToken == tok_star || CurrentToken == tok_slash) {
+    int Operator = CurrentToken;
+    getNextToken(); // I eat '*' or '/'.
+    auto Right = ParsePrimary();
+    if (!Right)
+      return nullptr;
+
+    // I fold each new operation into the tree on my left.
+    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
+                                             std::move(Right));
+  }
+
+  return Left;
 }
 ```
 
-I pass `0` as the minimum precedence so the first call accepts any operator I know about. That gives me the right starting condition for a fresh expression.
+```cpp
+/// sum
+///   = term { ("+" | "-") term } ;
+static unique_ptr<ExpressionNode> ParseSum() {
+  // I call ParseTerm() so I finish every tighter * or / operation first.
+  auto Left = ParseTerm();
+  if (!Left)
+    return nullptr;
+
+  while (CurrentToken == tok_plus || CurrentToken == tok_minus) {
+    int Operator = CurrentToken;
+    getNextToken(); // I eat '+' or '-'.
+    auto Right = ParseTerm();
+    if (!Right)
+      return nullptr;
+    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
+                                             std::move(Right));
+  }
+
+  return Left;
+}
+```
+
+```cpp
+/// comparison
+///   = sum { "<" sum } ;
+static unique_ptr<ExpressionNode> ParseComparison() {
+  // I call ParseSum() so I finish both sums before I build the comparison.
+  auto Left = ParseSum();
+  if (!Left)
+    return nullptr;
+
+  while (CurrentToken == tok_less) {
+    int Operator = CurrentToken;
+    getNextToken(); // I eat '<'.
+    auto Right = ParseSum();
+    if (!Right)
+      return nullptr;
+    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
+                                             std::move(Right));
+  }
+
+  return Left;
+}
+```
+
+```cpp
+/// expression
+///   = comparison ;
+static unique_ptr<ExpressionNode> ParseExpression() {
+  // I start at the loosest tier so the expression can contain every tier.
+  return ParseComparison();
+}
+```
+
+I implement the grammar's `{ ... }` repetition with `while` loops. If I find no operator from the current tier, I return the first operand unchanged. If I find one or more, I keep adding binary nodes to `Left`.
+
+I make `ParseTerm()` get its operands from `ParsePrimary()`. I use `ParseExpression()` as the entry point and call `ParseComparison()` first so the expression can contain every layer.
+
+## Left Associativity
+
+I group operators from different tiers through the order in which I call my parsing functions. I make `ParseSum()` call `ParseTerm()`, so I finish `*` and `/` expressions before I use them as operands for `+` or `-`. That is how I make `*` and `/` bind tighter than `+` and `-`.
+
+I still need to choose how I group repeated operators from the same tier.
+
+For example, I could group `8 / 2 / 2` in two ways:
+
+- If I group from the left, I get `(8 / 2) / 2`, which produces `2`.
+- If I group from the right, I get `8 / (2 / 2)`, which produces `8`.
+
+Unless I find parentheses that require the second form, I choose the first one. I group the division operations from left to right. This choice is **left associativity**.
+
+I implement that choice in the loop inside `ParseTerm()`:
+
+```cpp
+auto Left = ParsePrimary();
+if (!Left)
+  return nullptr;
+
+while (CurrentToken == tok_star || CurrentToken == tok_slash) {
+  int Operator = CurrentToken;
+  getNextToken(); // I eat '*' or '/'.
+  auto Right = ParsePrimary();
+  if (!Right)
+    return nullptr;
+
+  // I replace Left with the new binary expression.
+  Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
+                                           std::move(Right));
+}
+```
+
+I begin by parsing `8` into `Left`. When I see the first `/`, I parse `2` into `Right` and replace `Left` with this tree:
+
+`(8 / 2)`
+
+```ast
+BinaryExpression '/'
+├── Left  -> 8
+└── Right -> 2
+```
+
+When I see the second `/`, `Left` already contains the entire first tree. I parse the final `2` into `Right` and replace `Left` again:
+
+`((8 / 2) / 2)`
+
+```ast
+BinaryExpression '/'
+├── Left  -> BinaryExpression '/'
+│            ├── Left  -> 8
+│            └── Right -> 2
+└── Right -> 2
+```
+
+For each new operator, I use the entire tree I have already built as its `Left` operand. I use the same loop shape for `+`, `-`, and `<`.
+
+I create precedence by choosing which parsing function I call for each operand. I create left associativity within each tier by replacing `Left` inside its loop.
 
 ## Build and Run
 
@@ -490,6 +293,8 @@ cd code/chapter-03
 cmake -S . -B build && cmake --build build
 ./build/pyxc
 ```
+
+I run the chapter tests with:
 
 ```bash
 llvm-lit test/
@@ -506,19 +311,23 @@ fib(n-1) + fib(n-2)
 Parsed a function definition.
 ready> 1 + 2 * 3
 Parsed a top-level expression.
-ready> sin(1.0) + cos(2.0)
+ready> 8 / 2 + 1
+Parsed a top-level expression.
+ready> 1 < 2 + 3 * 4
 Parsed a top-level expression.
 ready> -5
 Error: unknown token when expecting an expression (token: '-')
-ready> Parsed a top-level expression. # the leftover `5` parses as its own top-level expression once recovery skips the bad `-`
+ready> Parsed a top-level expression.
 ready>
 ```
 
-That last line shows a real gap: `-` only works as a binary operator right now, not a unary one. I wired `tok_minus` into `OperatorPrecedence` and `ParseBinaryOperatorRight`, but `ParsePrimary` still has no case for a leading `-`, so it can't start an expression on its own. `x - -3` fails the same way. Negative literals and unary negation are a later chapter's problem.
+The final example shows two separate limitations. First, `-` works only as a binary operator. I put `tok_minus` in `ParseSum()`, but `ParsePrimary()` still has no case for a leading `-`. That means `-5` and `x - -3` both fail. I will add unary operators later.
 
-## The Full Grammar
+Second, Chapter 3 has only crude error recovery. After the parse fails, I skip the bad `-` token and continue. That leaves `5` to be parsed as a separate top-level expression, which produces the second message.
 
-Here's the full grammar, shown as a diff against Chapter 2's. I reflowed Chapter 2's rules to the same column width as Chapter 3's so only the real grammar changes show up as `+`/`-`, not the column shift caused by `binary-operator-right` being a longer name than anything Chapter 2 had.
+## Grammar
+
+Here is the complete grammar as a diff against Chapter 2. I reflow Chapter 2’s rules to the same width so the leading `+` and `-` diff markers show only the grammar changes.
 
 [pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-03/pyxc.ebnf)
 
@@ -533,19 +342,25 @@ Here's the full grammar, shown as a diff against Chapter 2's. I reflowed Chapter
  function-definition               = "def" function-signature ":"
                                      [ end-of-lines ] expression ;
  top-level-expression              = expression ;
- function-signature                = name "(" [ name { "," name } ] ")" ;
--expression                        = primary { "+" primary } ;
-+expression                        = primary binary-operator-right ;
-+binary-operator-right             = { binary-operator primary } ;
+ function-signature                = name "(" [ parameters ] ")" ;
+ parameters                        = parameter { "," parameter } ;
+ parameter                         = name ;
+-expression                        = sum ;
++expression                        = comparison ;
++comparison                        = sum { "<" sum } ;
+-sum                               = term { "+" term } ;
++sum                               = term { ("+" | "-") term } ;
+-term                              = primary ;
++term                              = primary { ("*" | "/") primary } ;
  primary                           = name-expression
                                      | number-expression
                                      | parenthesized-expression ;
  name-expression                   = name
-                                     | name "("
-                                       [ expression { "," expression } ] ")" ;
+                                     | call-expression ;
+ call-expression                   = name "(" [ arguments ] ")" ;
+ arguments                         = expression { "," expression } ;
  number-expression                 = number ;
  parenthesized-expression          = "(" expression ")" ;
-+binary-operator                   = "+" | "-" | "*" | "<" ;
  name                              = (letter | "_")
                                      { letter | digit | "_" } ;
  number                            = digit { digit } [ "." { digit } ]
@@ -558,11 +373,11 @@ Here's the full grammar, shown as a diff against Chapter 2's. I reflowed Chapter
  whitespace                        = " " | "\t" | "\v" | "\f" ;
 ```
 
-I changed `expression` to route through `binary-operator-right` instead of hardcoding `"+"`, and I added `binary-operator-right` and `binary-operator`, neither of which needed to exist when `+` was the only operator in the language. Everything else, the whole shape of a function definition, a call, a name, a number, is exactly what it was in Chapter 2.
+I changed only the expression hierarchy. I route `expression` through `comparison`, add `<` at the comparison tier, add `-` at the sum tier, and add `*` and `/` at the term tier. The grammar for functions, calls, names, numbers, comments, and whitespace stays the same.
 
 ## What's Next
 
-I now have a parser that understands operator precedence, but its error messages still show only a single readable token name, with no idea which line or column it came from. [Chapter 4](chapter-04.md) fixes that: source locations, caret diagnostics, and a proper keyword table.
+I now enforce operator precedence by structuring the parser around grammar layers. My error messages still show only a token name, without the source line or column. In [Chapter 4](chapter-04.md), I track source locations, print caret diagnostics, and recover from errors at line boundaries.
 
 ## Need Help?
 
@@ -572,8 +387,9 @@ Build issues? Questions?
 - **Discussions:** [Ask questions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
 
 Include:
+
 - Your OS and version
 - Full error message
-- Output of `cmake --version` and `ninja --version`
+- Output of `cmake --version`
 
-We'll figure it out.
+I'll help you figure it out.

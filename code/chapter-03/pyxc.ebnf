@@ -17,18 +17,22 @@ top-level-item                    = function-definition
 function-definition               = "def" function-signature ":"
                                     [ end-of-lines ] expression ;
 top-level-expression              = expression ;
-function-signature                = name "(" [ name { "," name } ] ")" ;
-expression                        = primary binary-operator-right ;
-binary-operator-right             = { binary-operator primary } ;
+function-signature                = name "(" [ parameters ] ")" ;
+parameters                        = parameter { "," parameter } ;
+parameter                         = name ;
+expression                        = comparison ;
+comparison                        = sum { "<" sum } ;
+sum                               = term { ("+" | "-") term } ;
+term                              = primary { ("*" | "/") primary } ;
 primary                           = name-expression
                                     | number-expression
                                     | parenthesized-expression ;
 name-expression                   = name
-                                    | name "("
-                                      [ expression { "," expression } ] ")" ;
+                                    | call-expression ;
+call-expression                   = name "(" [ arguments ] ")" ;
+arguments                         = expression { "," expression } ;
 number-expression                 = number ;
 parenthesized-expression          = "(" expression ")" ;
-binary-operator                   = "+" | "-" | "*" | "<" ;
 name                              = (letter | "_")
                                     { letter | digit | "_" } ;
 number                            = digit { digit } [ "." { digit } ]

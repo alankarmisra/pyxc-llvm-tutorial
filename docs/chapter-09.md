@@ -76,45 +76,64 @@ cd pyxc-llvm-tutorial/code/chapter-09
 [pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-09/pyxc.ebnf)
 
 ```ebnf
-program         = [ eols ] [ top { eols top } ] [ eols ] ;
-eols            = eol { eol } ;
-top             = definition | external | toplevelexpr ;
-definition      = "def" prototype ":" [ eols ] "return" expression ;
-external        = "extern" "def" prototype ;
-toplevelexpr    = expression ;
-prototype       = identifier "(" [ identifier { "," identifier } ] ")" ;
-ifexpr          = "if" expression ":" [ eols ] expression [ eols ] "else" ":" [ eols ] expression ;
-forexpr         = "for" identifier "=" expression "," expression "," expression ":" [ eols ] expression ;
-expression      = primary binoprhs ;
-binoprhs        = { binaryop primary } ;
-primary         = identifierexpr | numberexpr | parenexpr
-                | ifexpr | forexpr ;                          -- new: ifexpr, forexpr
-identifierexpr  = identifier | callexpr ;
-callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
-numberexpr      = number ;
-parenexpr       = "(" expression ")" ;
-binaryop        = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;  
-identifier      = (letter | "_") { letter | digit | "_" } ;
+(*
+   pyxc.ebnf
+   Grammar for chapter 9 - Control Flow: if, else, and for.
+*)
+
+(*
+   { } = zero or more (any number of...)
+   [ ] = zero or one (optional)
+*)
+
+program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
+end-of-lines            = end-of-line { end-of-line } ;
+top-level-item             = function-definition | external | top-level-expression ;
+function-definition      = "def" function-signature ":" [ end-of-lines ] expression ;
+external        = "extern" "def" function-signature ;
+top-level-expression    = expression ;
+function-signature       = name "(" [ parameters ] ")" ;
+parameters               = parameter { "," parameter } ;
+parameter                = name ;
+ifexpr          = "if" expression ":" [ end-of-lines ] expression [ end-of-lines ] "else" ":" [ end-of-lines ] expression ;
+forexpr         = "for" name "=" expression "," expression "," expression ":" [ end-of-lines ] expression ;
+expression               = comparison ;
+comparison               = sum { comparison-operator sum } ;
+comparison-operator      = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+sum                      = term { ("+" | "-") term } ;
+term                     = primary { ("*" | "/") primary } ;
+primary         = name-expression | number-expression | parenthesized-expression
+                | ifexpr | forexpr ;
+name-expression  = name | call-expression ;
+call-expression         = name "(" [ arguments ] ")" ;
+arguments               = expression { "," expression } ;
+number-expression      = number ;
+parenthesized-expression       = "(" expression ")" ;
+name      = (letter | "_") { letter | digit | "_" } ;
 number          = digit { digit } [ "." { digit } ]
                 | "." digit { digit } ;
 letter          = "A".."Z" | "a".."z" ;
 digit           = "0".."9" ;
-eol             = "\r\n" | "\r" | "\n" ;
-ws              = " " | "\t" ;
+end-of-line             = "\r\n" | "\r" | "\n" ;
+comment = "#" { comment-character } ;
+comment-character = ? any character except "\r" and "\n" ? ;
+whitespace = " " | "\t" | "\v" | "\f" ;
 ```
 
 ### What Changed
 
-This chapter adds two new `primary` expression forms (`ifexpr` and `forexpr`) and six binary comparison operators. The rest of the grammar is unchanged.
+This chapter adds two new `primary` expression forms (`ifexpr` and `forexpr`) and five additional comparison operators. The rest of the grammar is unchanged.
 
 ```ebnf
 -- Chapter 8
-primary  = identifierexpr | numberexpr | parenexpr ;
-binaryop = "+" | "-" | "*" ;
+primary    = name-expression | number-expression | parenthesized-expression ;
+comparison = sum { "<" sum } ;
 
 -- Chapter 9
-primary  = identifierexpr | numberexpr | parenexpr | ifexpr | forexpr ;
-binaryop = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
+primary             = name-expression | number-expression | parenthesized-expression
+                    | ifexpr | forexpr ;
+comparison          = sum { comparison-operator sum } ;
+comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
 ```
 
 ## New Tokens

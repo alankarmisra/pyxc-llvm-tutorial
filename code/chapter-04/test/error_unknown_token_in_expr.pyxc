@@ -5,6 +5,6 @@
 
 # primary: default branch — token that is not name, number, or '('
 # The second '+' is the bad token; source context must show the input line.
-# We match "1 + +" rather than "1 + + 2" because the error fires on the second
+# I match "1 + +" rather than "1 + + 2" because the error fires on the second
 # '+' before '2' has been consumed into CurrentLine.
 1 + + 2

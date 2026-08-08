@@ -286,7 +286,7 @@ For the "stored string" example above:
 
 **String buffers are read-only.** A string literal's backing global is a constant. Building or mutating text at runtime still needs a heap buffer from `malloc`.
 
-## The Full Grammar
+## Grammar
 
 [pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-22/pyxc.ebnf)
 

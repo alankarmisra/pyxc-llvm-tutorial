@@ -6,7 +6,6 @@
 #include <memory>
 #include <sstream>
 #include <string>
-#include <unistd.h>
 #include <utility>
 #include <vector>
 
@@ -265,7 +264,7 @@ static int getToken() {
 /// unchanged. The special case is tok_eol: CurLoc for a newline token is
 /// snapshotted after advance() has consumed the '\n' and incremented
 /// LexLoc.Line, so CurLoc.Line is already the *next* line. Subtracting one
-/// gives the line that just ended, and we report a column one past its last
+/// gives the line that just ended, and I report a column one past its last
 /// character — pointing just after the final token on the line, which is
 /// where the missing token (e.g. ':') should have appeared.
 static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
@@ -301,7 +300,7 @@ static string FormatTokenForMessage(int Tok) {
 }
 
 /// PrintErrorSourceContext - Reprint the source line at Loc and place a
-/// '^~~~' caret under column Loc.Col. Col is 1-based, so we print Col-1
+/// '^~~~' caret under column Loc.Col. Col is 1-based, so I print Col-1
 /// spaces before the caret.
 static void PrintErrorSourceContext(SourceLocation Loc) {
   const string *LineText = PyxcSourceMgr.getLine(Loc.Line);
@@ -372,8 +371,8 @@ public:
 };
 
 /// FunctionSignatureNode - This class represents the "function signature" for a function,
-/// which captures its name, and its argument names (thus implicitly the number
-/// of arguments the function takes).
+/// which captures its name, and its parameter names (thus implicitly the number
+/// of parameters the function takes).
 class FunctionSignatureNode {
   string Name;
   vector<string> Parameters;
@@ -385,7 +384,7 @@ public:
   const string &getName() const { return Name; }
 };
 
-/// FunctionDefinitionNode - This class represents a function function-definition itself.
+/// FunctionDefinitionNode - This class represents a function definition itself.
 class FunctionDefinitionNode {
   unique_ptr<FunctionSignatureNode> Signature;
   unique_ptr<ExpressionNode> Body;
@@ -417,28 +416,9 @@ static void consumeNewlines() {
     getNextToken();
 }
 
-/// OperatorPrecedence - Maps each binary operator character to its precedence.
-/// Higher numbers bind more tightly: '*' (40) > '+'/'-' (20) > '<' (10).
-/// Operators not in this map return -1 from GetTokenPrecedence(), which tells
-/// ParseBinaryOperatorRight to stop consuming operators and return what it has so far.
-static map<char, int> OperatorPrecedence;
-
-/// GetTokenPrecedence - Returns the precedence of CurrentToken if it is a known binary
-/// operator, or -1 if it is not. Non-ASCII tokens (our named token enums) are
-/// rejected immediately since they can never be binary operators here.
-static int GetTokenPrecedence() {
-  if (!isascii(CurrentToken))
-    return -1;
-
-  auto It = OperatorPrecedence.find(CurrentToken);
-  if (It == OperatorPrecedence.end() || It->second <= 0)
-    return -1;
-  return It->second;
-}
-
 /// LogError* - Error reporting helpers. Each returns nullptr for its respective
-/// type so parse functions can write: return LogError("message");
-unique_ptr<ExpressionNode> LogError(const char *Str) {
+/// type so parse functions can write: return LogErrorExpression("message");
+unique_ptr<ExpressionNode> LogErrorExpression(const char *Str) {
   SourceLocation Anchor = GetDiagnosticAnchorLoc(CurLoc, CurrentToken);
   fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
           Str);
@@ -447,12 +427,12 @@ unique_ptr<ExpressionNode> LogError(const char *Str) {
 }
 
 unique_ptr<FunctionSignatureNode> LogErrorSignature(const char *Str) {
-  LogError(Str);
+  LogErrorExpression(Str);
   return nullptr;
 }
 
-unique_ptr<FunctionDefinitionNode> LogErrorF(const char *Str) {
-  LogError(Str);
+unique_ptr<FunctionDefinitionNode> LogErrorFunction(const char *Str) {
+  LogErrorExpression(Str);
   return nullptr;
 }
 
@@ -475,14 +455,18 @@ static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
     return nullptr;
 
   if (CurrentToken != ')')
-    return LogError("expected ')'");
+    return LogErrorExpression("expected ')'");
   getNextToken(); // eat ).
   return V;
 }
 
 /// name-expression
 ///   = name
-///   | name "("[expression{"," expression}]")" ;
+///   | call-expression ;
+/// call-expression
+///   = name "(" [ arguments ] ")" ;
+/// arguments
+///   = expression { "," expression } ;
 static unique_ptr<ExpressionNode> ParseNameExpression() {
   string ParsedName = Name;
 
@@ -505,7 +489,7 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
         break;
 
       if (CurrentToken != ',')
-        return LogError("Expected ')' or ',' in argument list");
+        return LogErrorExpression("Expected ')' or ',' in argument list");
       getNextToken();
     }
   }
@@ -523,7 +507,7 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
 static unique_ptr<ExpressionNode> ParsePrimary() {
   switch (CurrentToken) {
   default:
-    return LogError("unknown token when expecting an expression");
+    return LogErrorExpression("unknown token when expecting an expression");
   case tok_name:
     return ParseNameExpression();
   case tok_number:
@@ -533,54 +517,84 @@ static unique_ptr<ExpressionNode> ParsePrimary() {
   }
 }
 
-/// binary-operator-right
-///   = { binary-operator primary } ;
-static unique_ptr<ExpressionNode> ParseBinaryOperatorRight(int MinimumPrecedence,
-                                         unique_ptr<ExpressionNode> Left) {
-  // If this is a binary operator, find its precedence.
-  while (true) {
-    int TokenPrecedence = GetTokenPrecedence();
-
-    // If this is a binary operator that binds at least as tightly as the current binary operator,
-    // consume it, otherwise we are done.
-    if (TokenPrecedence < MinimumPrecedence)
-      return Left;
-
-    // Okay, we know this is a binary operator.
-    int Operator = CurrentToken;
-    getNextToken(); // eat binary operator
-
-    // Parse the primary expression after the binary operator.
-    auto Right = ParsePrimary();
-    if (!Right)
-      return nullptr;
-
-    // If Operator binds less tightly with Right than the operator after Right, let
-    // the pending operator take Right as its Left.
-    int NextTokenPrecedence = GetTokenPrecedence();
-    if (TokenPrecedence < NextTokenPrecedence) {
-      Right = ParseBinaryOperatorRight(TokenPrecedence + 1, std::move(Right));
-      if (!Right)
-        return nullptr;
-    }
-
-    // Merge Left/Right.
-    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left), std::move(Right));
-  }
-}
-
-/// expression
-///   = primary binary-operator-right ;
-static unique_ptr<ExpressionNode> ParseExpression() {
+/// term
+///   = primary { ("*" | "/") primary } ;
+static unique_ptr<ExpressionNode> ParseTerm() {
   auto Left = ParsePrimary();
   if (!Left)
     return nullptr;
 
-  return ParseBinaryOperatorRight(0, std::move(Left));
+  while (CurrentToken == '*' || CurrentToken == '/') {
+    int Operator = CurrentToken;
+    getNextToken();
+
+    auto Right = ParsePrimary();
+    if (!Right)
+      return nullptr;
+
+    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
+                                             std::move(Right));
+  }
+
+  return Left;
+}
+
+/// sum
+///   = term { ("+" | "-") term } ;
+static unique_ptr<ExpressionNode> ParseSum() {
+  auto Left = ParseTerm();
+  if (!Left)
+    return nullptr;
+
+  while (CurrentToken == '+' || CurrentToken == '-') {
+    int Operator = CurrentToken;
+    getNextToken();
+
+    auto Right = ParseTerm();
+    if (!Right)
+      return nullptr;
+
+    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
+                                             std::move(Right));
+  }
+
+  return Left;
+}
+
+/// comparison
+///   = sum { "<" sum } ;
+static unique_ptr<ExpressionNode> ParseComparison() {
+  auto Left = ParseSum();
+  if (!Left)
+    return nullptr;
+
+  while (CurrentToken == '<') {
+    int Operator = CurrentToken;
+    getNextToken();
+
+    auto Right = ParseSum();
+    if (!Right)
+      return nullptr;
+
+    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
+                                             std::move(Right));
+  }
+
+  return Left;
+}
+
+/// expression
+///   = comparison ;
+static unique_ptr<ExpressionNode> ParseExpression() {
+  return ParseComparison();
 }
 
 /// function-signature
-///   = name "(" [name {"," name}] ")" ;
+///   = name "(" [ parameters ] ")" ;
+/// parameters
+///   = parameter { "," parameter } ;
+/// parameter
+///   = name ;
 static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
   if (CurrentToken != tok_name)
     return LogErrorSignature("Expected function name in function signature");
@@ -591,10 +605,10 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
   if (CurrentToken != '(')
     return LogErrorSignature("Expected '(' in function signature");
 
-  // Parse argument names. The loop calls getNextToken() at the top to advance
+  // Parse parameter names. The loop calls getNextToken() at the top to advance
   // past '(' on the first iteration, and past ',' on subsequent ones.
-  // Inside the body we call getNextToken() again to move past the name
-  // we just stored, then check whether ')' or ',' follows.
+  // Inside the body I call getNextToken() again to move past the name
+  // I just stored, then check whether ')' or ',' follows.
   vector<string> ParameterNames;
   while (getNextToken() == tok_name) {
     ParameterNames.push_back(Name);
@@ -616,7 +630,7 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
 }
 
 /// function-definition
-///   = "def" function signature ":" ["newline"] expression ;
+///   = "def" function-signature ":" [ end-of-lines ] expression ;
 static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
   getNextToken(); // eat 'def'
   auto Signature = ParseFunctionSignature();
@@ -624,7 +638,7 @@ static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
     return nullptr;
 
   if (CurrentToken != ':')
-    return LogErrorF("Expected ':' in function definition");
+    return LogErrorFunction("Expected ':' in function definition");
   getNextToken(); // eat ':'
 
   // Allow the body expression to start on the next line:
@@ -638,10 +652,10 @@ static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
 }
 
 /// top-level-expression
-///   = expression
+///   = expression ;
 /// A top-level expression (e.g. "1 + 2") is wrapped in an anonymous function
-/// so it fits the same FunctionDefinitionNode shape as everything else. When we add JIT
-/// execution later, we'll look up "__anon_expr" and call it to get the result.
+/// so it fits the same FunctionDefinitionNode shape as everything else. When I add JIT
+/// execution later, I'll look up "__anon_expr" and call it to get the result.
 static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
   if (auto E = ParseExpression()) {
     auto Signature = make_unique<FunctionSignatureNode>("__anon_expr", vector<string>());
@@ -673,7 +687,7 @@ static void SynchronizeToLineBoundary() {
 static void HandleFunctionDefinition() {
   if (ParseFunctionDefinition()) {
     if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
-      LogError(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
       SynchronizeToLineBoundary();
       return;
     }
@@ -686,7 +700,7 @@ static void HandleFunctionDefinition() {
 static void HandleTopLevelExpression() {
   if (ParseTopLevelExpression()) {
     if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
-      LogError(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
       SynchronizeToLineBoundary();
       return;
     }
@@ -698,11 +712,15 @@ static void HandleTopLevelExpression() {
 
 /// MainLoop - Dispatch loop for the REPL.
 ///
-/// grammar: top = { function-definition | expression | newline }
+/// program
+///   = [ end-of-lines ]
+///     [ top-level-item { end-of-lines top-level-item } ]
+///     [ end-of-lines ] ;
 ///
 /// CurrentToken is primed before MainLoop() is called (see main()). After each
-/// successful parse the handler prints a confirmation; after a failed parse it
-/// skips one token. Either way we come back here and look at the new CurrentToken.
+/// successful parse the handler prints a confirmation; after a failed parse I
+/// synchronize to a line boundary. Either way I come back here and look at the
+/// new CurrentToken.
 static void MainLoop() {
   while (true) {
     if (CurrentToken == tok_eof)
@@ -736,12 +754,6 @@ static void MainLoop() {
 //===----------------------------------------===//
 
 int main() {
-  // Register binary operators and their precedence (higher = tighter binding).
-  OperatorPrecedence['<'] = 10;
-  OperatorPrecedence['+'] = 20;
-  OperatorPrecedence['-'] = 20;
-  OperatorPrecedence['*'] = 40;
-
   // Print the first prompt and load the first token before entering the loop.
   // Every parse function expects CurrentToken to already be loaded when it is called.
   fprintf(stderr, "ready> ");

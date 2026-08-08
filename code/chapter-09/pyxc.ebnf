@@ -14,18 +14,23 @@ top-level-item             = function-definition | external | top-level-expressi
 function-definition      = "def" function-signature ":" [ end-of-lines ] expression ;
 external        = "extern" "def" function-signature ;
 top-level-expression    = expression ;
-function-signature       = name "(" [ name { "," name } ] ")" ;
+function-signature       = name "(" [ parameters ] ")" ;
+parameters               = parameter { "," parameter } ;
+parameter                = name ;
 ifexpr          = "if" expression ":" [ end-of-lines ] expression [ end-of-lines ] "else" ":" [ end-of-lines ] expression ;
 forexpr         = "for" name "=" expression "," expression "," expression ":" [ end-of-lines ] expression ;
-expression      = primary binary-operator-right ;
-binary-operator-right        = { binary-operator primary } ;
+expression               = comparison ;
+comparison               = sum { comparison-operator sum } ;
+comparison-operator      = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+sum                      = term { ("+" | "-") term } ;
+term                     = primary { ("*" | "/") primary } ;
 primary         = name-expression | number-expression | parenthesized-expression
                 | ifexpr | forexpr ;
 name-expression  = name | call-expression ;
-call-expression        = name "(" [ expression { "," expression } ] ")" ;
+call-expression         = name "(" [ arguments ] ")" ;
+arguments               = expression { "," expression } ;
 number-expression      = number ;
 parenthesized-expression       = "(" expression ")" ;
-binary-operator        = "==" | "!=" | "<=" | ">=" | "<" | ">" | "+" | "-" | "*" ;
 name      = (letter | "_") { letter | digit | "_" } ;
 number          = digit { digit } [ "." { digit } ]
                 | "." digit { digit } ;

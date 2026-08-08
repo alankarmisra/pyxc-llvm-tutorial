@@ -353,7 +353,7 @@ ret i64 8
 
 **Pointer casts are pointer-only.** `ptr[T](expr)` requires `expr` to already be a pointer; I don't let an integer become a pointer through a cast. And casting a pointer-returning `extern` call result to its own declared type, as shown above, isn't optional: I have to do it every time, since the call itself doesn't carry pointee metadata.
 
-## The Full Grammar
+## Grammar
 
 [pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-21/pyxc.ebnf)
 

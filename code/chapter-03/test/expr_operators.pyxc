@@ -1,8 +1,9 @@
 # RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -c "Parsed a top-level expression." %t | grep -q "4"
+# RUN: grep -c "Parsed a top-level expression." %t | grep -q "5"
 
-# binary-operator-right: each supported binary operator
+# expression/sum/term: each supported binary operator
 1 + 2
 3 - 4
 5 * 6
+8 / 2
 1 < 2

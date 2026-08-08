@@ -15,13 +15,19 @@ top-level-item             = function-definition | top-level-expression ;
 function-definition        = "def" function-signature ":"
                              [ end-of-lines ] expression ;
 top-level-expression       = expression ;
-function-signature         = name "(" [ name { "," name } ] ")" ;
-expression                 = primary { "+" primary } ;
+function-signature         = name "(" [ parameters ] ")" ;
+parameters                 = parameter { "," parameter } ;
+parameter                  = name ;
+expression                 = sum ;
+sum                        = term { "+" term } ;
+term                       = primary ;
 primary                    = name-expression
                              | number-expression
                              | parenthesized-expression ;
 name-expression            = name
-                             | name "(" [ expression { "," expression } ] ")" ;
+                             | call-expression ;
+call-expression            = name "(" [ arguments ] ")" ;
+arguments                  = expression { "," expression } ;
 number-expression          = number ;
 parenthesized-expression   = "(" expression ")" ;
 name                       = (letter | "_") { letter | digit | "_" } ;

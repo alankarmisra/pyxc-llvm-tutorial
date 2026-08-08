@@ -444,8 +444,8 @@ public:
 };
 
 /// FunctionSignatureNode - This class represents the "function signature" for a function,
-/// which captures its name, and its argument names (thus implicitly the number
-/// of arguments the function takes).
+/// which captures its name, and its parameter names (thus implicitly the number
+/// of parameters the function takes).
 class FunctionSignatureNode {
   string Name;
   vector<string> Parameters;
@@ -490,25 +490,6 @@ static int getNextToken() { return CurrentToken = getToken(); }
 static void consumeNewlines() {
   while (CurrentToken == tok_eol)
     getNextToken();
-}
-
-/// OperatorPrecedence - Maps each binary operator token to its precedence.
-/// Higher numbers bind more tightly: '*' (40) > '+'/'-' (20). Operators not in
-/// this map return -1 from GetTokenPrecedence(), which tells ParseBinaryOperatorRight to
-/// stop consuming operators and return what it has so far.
-static map<char, int> OperatorPrecedence = {
-    {'+', 20}, // +
-    {'-', 20}, // -
-    {'*', 40}, // *
-};
-
-/// GetTokenPrecedence - Returns the precedence of CurrentToken if it is a known binary
-/// operator, or -1 if it is not.
-static int GetTokenPrecedence() {
-  auto It = OperatorPrecedence.find(CurrentToken);
-  if (It == OperatorPrecedence.end() || It->second <= 0)
-    return -1;
-  return It->second;
 }
 
 /// PrintReplPrompt - Print the interactive prompt to stderr.
@@ -573,7 +554,11 @@ static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
 
 /// name-expression
 ///   = name
-///   | name "("[expression{"," expression}]")" ;
+///   | call-expression ;
+/// call-expression
+///   = name "(" [ arguments ] ")" ;
+/// arguments
+///   = expression { "," expression } ;
 static unique_ptr<ExpressionNode> ParseNameExpression() {
   string ParsedName = Name;
 
@@ -624,55 +609,72 @@ static unique_ptr<ExpressionNode> ParsePrimary() {
   }
 }
 
-/// binary-operator-right
-///   = { binary-operator primary } ;
-static unique_ptr<ExpressionNode> ParseBinaryOperatorRight(int MinimumPrecedence,
-                                         unique_ptr<ExpressionNode> Left) {
-  // If this is a binary operator, find its precedence.
-  while (true) {
-    int TokenPrecedence = GetTokenPrecedence();
-
-    // If this is a binary operator that binds at least as tightly as the current binary operator,
-    // consume it, otherwise we are done.
-    if (TokenPrecedence < MinimumPrecedence)
-      return Left;
-
-    // Okay, we know this is a binary operator and that binds at least as tightly as the
-    // current binary operator.
-    int Operator = CurrentToken;
-    getNextToken(); // eat binary operator
-
-    // Parse the primary expression after the binary operator.
-    auto Right = ParsePrimary();
-    if (!Right)
-      return nullptr;
-
-    // If Operator binds less tightly with Right than the operator after Right, let
-    // the pending operator take Right as its Left.
-    int NextTokenPrecedence = GetTokenPrecedence();
-    if (TokenPrecedence < NextTokenPrecedence) {
-      Right = ParseBinaryOperatorRight(TokenPrecedence + 1, std::move(Right));
-      if (!Right)
-        return nullptr;
-    }
-
-    // Merge Left/Right.
-    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left), std::move(Right));
-  }
-}
-
-/// expression
-///   = primary binary-operator-right ;
-static unique_ptr<ExpressionNode> ParseExpression() {
+/// term
+///   = primary { ("*" | "/") primary } ;
+static unique_ptr<ExpressionNode> ParseTerm() {
   auto Left = ParsePrimary();
   if (!Left)
     return nullptr;
+  while (CurrentToken == '*' || CurrentToken == '/') {
+    int Operator = CurrentToken;
+    getNextToken();
+    auto Right = ParsePrimary();
+    if (!Right)
+      return nullptr;
+    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
+                                             std::move(Right));
+  }
+  return Left;
+}
 
-  return ParseBinaryOperatorRight(0, std::move(Left));
+/// sum
+///   = term { ("+" | "-") term } ;
+static unique_ptr<ExpressionNode> ParseSum() {
+  auto Left = ParseTerm();
+  if (!Left)
+    return nullptr;
+  while (CurrentToken == '+' || CurrentToken == '-') {
+    int Operator = CurrentToken;
+    getNextToken();
+    auto Right = ParseTerm();
+    if (!Right)
+      return nullptr;
+    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
+                                             std::move(Right));
+  }
+  return Left;
+}
+
+/// comparison
+///   = sum { "<" sum } ;
+static unique_ptr<ExpressionNode> ParseComparison() {
+  auto Left = ParseSum();
+  if (!Left)
+    return nullptr;
+  while (CurrentToken == '<') {
+    int Operator = CurrentToken;
+    getNextToken();
+    auto Right = ParseSum();
+    if (!Right)
+      return nullptr;
+    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
+                                             std::move(Right));
+  }
+  return Left;
+}
+
+/// expression
+///   = comparison ;
+static unique_ptr<ExpressionNode> ParseExpression() {
+  return ParseComparison();
 }
 
 /// function-signature
-///   = name "(" [ name { "," name } ] ")" ;
+///   = name "(" [ parameters ] ")" ;
+/// parameters
+///   = parameter { "," parameter } ;
+/// parameter
+///   = name ;
 static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
   if (CurrentToken != tok_name)
     return LogErrorSignature("Expected function name in function signature");
@@ -886,6 +888,11 @@ Value *BinaryExpressionNode::codegen() {
     return Builder->CreateFSub(L, R, "subtmp");
   case '*':
     return Builder->CreateFMul(L, R, "multmp");
+  case '/':
+    return Builder->CreateFDiv(L, R, "divtmp");
+  case '<':
+    L = Builder->CreateFCmpULT(L, R, "cmptmp");
+    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   default:
     return LogErrorV("invalid binary operator");
   }

@@ -269,37 +269,41 @@ static unique_ptr<ExpressionNode> ParseExpression();
 ///   = number ;
 static unique_ptr<ExpressionNode> ParseNumberExpression() {
   auto Result = make_unique<NumberExpressionNode>(NumberValue);
-  getNextToken(); // consume the number
+  getNextToken(); // I consume the number.
   return std::move(Result);
 }
 
 /// parenthesized-expression
 ///   = "(" expression ")" ;
 static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
-  getNextToken(); // eat '('
+  getNextToken(); // I eat '('.
   auto V = ParseExpression();
   if (!V)
     return nullptr;
 
   if (CurrentToken != tok_rparen)
     return LogErrorExpression("expected ')'");
-  getNextToken(); // eat ')'
+  getNextToken(); // I eat ')'.
   return V;
 }
 
 /// name-expression
 ///   = name
-///   | name "(" [ expression { "," expression } ] ")" ;
+///   | call-expression ;
+/// call-expression
+///   = name "(" [ arguments ] ")" ;
+/// arguments
+///   = expression { "," expression } ;
 static unique_ptr<ExpressionNode> ParseNameExpression() {
   string ParsedName = Name;
 
-  getNextToken(); // eat name.
+  getNextToken(); // I eat the name.
 
-  if (CurrentToken != tok_lparen) // Simple name, not a call.
+  if (CurrentToken != tok_lparen) // I return a name, not a call.
     return make_unique<NameExpressionNode>(ParsedName);
 
-  // Call.
-  getNextToken(); // eat (
+  // I parse a call.
+  getNextToken(); // I eat '('.
   vector<unique_ptr<ExpressionNode>> Arguments;
   if (CurrentToken != tok_rparen) {
     while (true) {
@@ -317,7 +321,7 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
     }
   }
 
-  // Eat the ')'.
+  // I eat ')'.
   getNextToken();
 
   return make_unique<CallExpressionNode>(ParsedName, std::move(Arguments));
@@ -330,26 +334,30 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
 static unique_ptr<ExpressionNode> ParsePrimary() {
   switch (CurrentToken) {
   case tok_name:
-    return ParseNameExpression(); // handles names like `a` or function calls like `add(...)`
+    return ParseNameExpression(); // I parse `a` or `add(...)`.
   case tok_number:
-    return ParseNumberExpression(); // handles singular numbers like 3.14
+    return ParseNumberExpression(); // I parse a number such as 3.14.
   case tok_lparen:
-    return ParseParenthesizedExpression(); // handles parenthesized expressions like `(` ... `)`
+    return ParseParenthesizedExpression(); // I parse `( ... )`.
   default:
     return LogErrorExpression("unknown token when expecting an expression");
   }
 }
 
-/// expression
-///   = primary { "+" primary } ;
-static unique_ptr<ExpressionNode> ParseExpression() {
-  auto Left = ParsePrimary();
+/// term
+///   = primary ;
+static unique_ptr<ExpressionNode> ParseTerm() { return ParsePrimary(); }
+
+/// sum
+///   = term { "+" term } ;
+static unique_ptr<ExpressionNode> ParseSum() {
+  auto Left = ParseTerm();
   if (!Left)
     return nullptr;
 
   while (CurrentToken == tok_plus) {
-    getNextToken(); // eat '+'
-    auto Right = ParsePrimary();
+    getNextToken(); // I eat '+'.
+    auto Right = ParseTerm();
     if (!Right)
       return nullptr;
     Left = make_unique<BinaryExpressionNode>(tok_plus, std::move(Left),
@@ -359,20 +367,30 @@ static unique_ptr<ExpressionNode> ParseExpression() {
   return Left;
 }
 
+/// expression
+///   = sum ;
+static unique_ptr<ExpressionNode> ParseExpression() {
+  return ParseSum();
+}
+
 /// function-signature
-///   = name "(" [ name { "," name } ] ")" ;
+///   = name "(" [ parameters ] ")" ;
+/// parameters
+///   = parameter { "," parameter } ;
+/// parameter
+///   = name ;
 static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
   if (CurrentToken != tok_name)
     return LogErrorSignature("Expected function name in function signature");
 
   string FnName = Name;
-  getNextToken(); // eat function name
+  getNextToken(); // I eat the function name.
 
   if (CurrentToken != tok_lparen)
     return LogErrorSignature("Expected '(' in function signature");
 
-  // Parse parameter names. The loop calls getNextToken() at the top to advance
-  // past '(' on the first iteration, and past ',' on subsequent ones.
+  // I parse parameter names. I call getNextToken() at the top to advance past
+  // '(' on the first iteration, and past ',' on subsequent ones.
   // Inside the body I call getNextToken() again to move past the name
   // I just stored, then check whether ')' or ',' follows.
 
@@ -380,18 +398,18 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
   while (getNextToken() == tok_name) {
     ParameterNames.push_back(Name);
 
-    if (getNextToken() == tok_rparen) // eat name, check what follows
+    if (getNextToken() == tok_rparen) // I eat the name and check what follows.
       break;
 
     if (CurrentToken != tok_comma)
       return LogErrorSignature("Expected ')' or ',' in parameter list");
-    // loop continues: getNextToken() at the top eats the ','
+    // I continue the loop so getNextToken() at the top eats the ','.
   }
 
   if (CurrentToken != tok_rparen)
     return LogErrorSignature("Expected ')' in function signature");
 
-  getNextToken(); // eat ')'
+  getNextToken(); // I eat ')'.
 
   return make_unique<FunctionSignatureNode>(FnName, std::move(ParameterNames));
 }
@@ -399,16 +417,16 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
 /// function-definition
 ///   = "def" function-signature ":" [ end-of-lines ] expression ;
 static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
-  getNextToken(); // eat 'def'
+  getNextToken(); // I eat 'def'.
   auto Signature = ParseFunctionSignature();
   if (!Signature)
     return nullptr;
 
   if (CurrentToken != tok_colon)
     return LogErrorFunction("Expected ':' in function definition");
-  getNextToken(); // eat ':'
+  getNextToken(); // I eat ':'.
 
-  // Allow the body expression to start on the next line:
+  // I allow the body expression to start on the next line:
   //   def foo(x):
   //     x + 1
   consumeNewlines();
@@ -449,14 +467,14 @@ static void HandleFunctionDefinition() {
   if (ParseFunctionDefinition())
     fprintf(stderr, "Parsed a function definition.\n");
   else
-    getNextToken(); // skip bad token
+    getNextToken(); // I skip the bad token.
 }
 
 static void HandleTopLevelExpression() {
   if (ParseTopLevelExpression())
     fprintf(stderr, "Parsed a top-level expression.\n");
   else
-    getNextToken(); // skip bad token
+    getNextToken(); // I skip the bad token.
 }
 
 /// MainLoop - Dispatch loop for the REPL.
@@ -474,7 +492,7 @@ static void MainLoop() {
     if (CurrentToken == tok_eof)
       return;
 
-    // A bare newline: just print a fresh prompt and read the next token.
+    // For a bare newline, I print a fresh prompt and read the next token.
     if (CurrentToken == tok_eol) {
       fprintf(stderr, "ready> ");
       getNextToken();
@@ -497,9 +515,8 @@ static void MainLoop() {
 //===----------------------------------------===//
 
 int main() {
-  // Print the first prompt and load the first token before entering the loop.
-  // Every parse function expects CurrentToken to already be loaded when it is
-  // called.
+  // I print the first prompt and load the first token before entering the loop.
+  // I load CurrentToken before I call any parse function.
   fprintf(stderr, "ready> ");
   getNextToken();
 

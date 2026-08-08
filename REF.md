@@ -15,6 +15,169 @@ Principle: Programmers are not here for a learning adventure. They just want to 
 - Push toward C‑like semantics first; expand toward Python later.
 - Consider MLIR only if it adds clear value.
 
+## Python Grammar Vocabulary
+
+Use CPython's grammar vocabulary where it makes Pyxc's grammar clearer and
+gives later language features a natural place to go. Borrow the non-terminal
+names selectively; do not reproduce CPython's implementation-oriented PEG
+rules or imply that Pyxc has identical semantics.
+
+Primary reference:
+[Python's full grammar specification](https://docs.python.org/3.15/reference/grammar.html).
+
+### Expression hierarchy
+
+Python's expression grammar provides a useful long-term ordering:
+
+```text
+expression
+disjunction
+conjunction
+inversion
+comparison
+bitwise-or
+bitwise-xor
+bitwise-and
+shift-expression
+sum
+term
+factor
+power
+primary
+atom
+```
+
+Pyxc can introduce those names gradually as the corresponding syntax arrives:
+
+```ebnf
+expression       = disjunction ;
+disjunction      = conjunction { "||" conjunction } ;
+conjunction      = inversion { "&&" inversion } ;
+inversion        = "!" inversion | comparison ;
+comparison       = bitwise-or
+                   { comparison-operator bitwise-or } ;
+bitwise-or       = bitwise-xor { "|" bitwise-xor } ;
+bitwise-xor      = bitwise-and { "^" bitwise-and } ;
+bitwise-and      = shift-expression { "&" shift-expression } ;
+shift-expression = sum { ("<<" | ">>") sum } ;
+sum              = term { ("+" | "-") term } ;
+term             = factor { ("*" | "/" | "%") factor } ;
+factor           = ("-" | "~") factor | primary ;
+```
+
+Python spells its logical operators `or`, `and`, and `not`. The grammatical
+names `disjunction`, `conjunction`, and `inversion` still describe Pyxc's
+symbolic `||`, `&&`, and `!` operators accurately if Pyxc retains those
+spellings.
+
+CPython's PEG grammar uses left-recursive productions for rules such as `sum`
+and `term`. Pyxc's handwritten recursive-descent parser should express the
+same left-associative behavior with EBNF repetition and parsing loops, not by
+copying the left recursion literally.
+
+### Vocabulary for the early chapters
+
+Use these names in Chapters 2 and 3:
+
+```ebnf
+expression = comparison ;
+comparison = sum { "<" sum } ;
+sum        = term { ("+" | "-") term } ;
+term       = primary { "*" primary } ;
+```
+
+Chapter 2 introduces the smaller initial subset:
+
+```ebnf
+expression = sum ;
+sum        = term { "+" term } ;
+term       = primary ;
+```
+
+Introduce `factor` when unary operators arrive:
+
+```ebnf
+term   = factor { "*" factor } ;
+factor = "-" factor | primary ;
+```
+
+### Primary elements
+
+Python distinguishes an `atom`, which is a basic value, from a `primary`,
+which can extend an atom with calls, indexing, and field access. `group` is a
+parenthesized expression. This distinction becomes useful once Pyxc supports
+postfix chains:
+
+```ebnf
+primary = atom
+        | call-expression
+        | field-access
+        | index-expression ;
+atom    = name
+        | number
+        | boolean-literal
+        | string-literal
+        | array-literal
+        | group ;
+group   = "(" expression ")" ;
+```
+
+Do not introduce `atom` and `group` merely for terminology. Add them when the
+postfix grammar becomes rich enough for the distinction to simplify the
+parser.
+
+### Parameters and arguments
+
+Use explicit non-terminals to preserve the distinction between declaration
+parameters and call arguments:
+
+```ebnf
+function-signature = name "(" [ parameters ] ")" ;
+parameters         = parameter { "," parameter } ;
+parameter          = name ;
+call-expression    = name "(" [ arguments ] ")" ;
+arguments          = expression { "," expression } ;
+```
+
+When types arrive, extend `parameter` rather than changing the surrounding
+rules:
+
+```ebnf
+parameter = name ":" type ;
+```
+
+### Statement vocabulary
+
+Python's statement names also map cleanly onto Pyxc. Retain Pyxc's hyphenated
+EBNF spelling while using the same conceptual structure:
+
+```ebnf
+statements         = statement { end-of-lines statement } ;
+statement          = simple-statement | compound-statement ;
+simple-statement   = assignment
+                   | variable-statement
+                   | return-statement
+                   | break-statement
+                   | continue-statement
+                   | expression ;
+compound-statement = if-statement
+                   | for-statement
+                   | while-statement
+                   | switch-statement ;
+block              = indent statements dedent ;
+```
+
+Useful Python names include `statements`, `statement`, `simple-statement`,
+`compound-statement`, `block`, `assignment`, `augmented-assignment`,
+`return-statement`, `break-statement`, `continue-statement`, `if-statement`,
+`for-statement`, `while-statement`, `function-definition`, and
+`class-definition`.
+
+Avoid borrowing CPython rules that exist for features Pyxc does not have or
+for PEG implementation details, including `await_primary`,
+`star_named_expression`, `compare_op_bitwise_or_pair`, and the `invalid_*`
+error-recovery rules.
+
 ## Reference: Python‑to‑Native Compilers and Transpilers
 
 ### True native compilers (AOT/LLVM)

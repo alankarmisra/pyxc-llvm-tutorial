@@ -271,8 +271,8 @@ static map<string, Token> Keywords = {
 And a grammar rule — a prototype with no body:
 
 ```ebnf
-external = "extern" "def" prototype ;
-top      = definition | external | toplevelexpr ;
+external       = "extern" "def" function-signature ;
+top-level-item = function-definition | external | top-level-expression ;
 ```
 
 The parser is almost embarrassingly small, because all the hard work — parsing a signature — was already built for `def` back in [Chapter 2](chapter-02.md):

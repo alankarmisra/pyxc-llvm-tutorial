@@ -307,7 +307,7 @@ define i64 @id(i64 %x)
 
 **No scoping.** Every alias is global to the module. There's no way to limit one to a single function or file.
 
-## The Full Grammar
+## Grammar
 
 [pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-23/pyxc.ebnf)
 

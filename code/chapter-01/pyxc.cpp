@@ -10,8 +10,8 @@ using namespace std;
 // Lexer
 //===----------------------------------------===//
 
-// The lexer returns one of these named tokens. Characters that do not belong
-// to the language are reported as tok_error.
+// I return one of these named tokens from the lexer. I report characters that
+// do not belong to the language as tok_error.
 enum Token {
   // input boundaries
   tok_eof = 1,
@@ -35,15 +35,15 @@ enum Token {
   tok_plus,
 };
 
-static string Name; // Filled in with the name just read
-static double NumberValue;  // Filled in with the number read
+static string Name;        // I store the name I just read.
+static double NumberValue; // I store the number I just read.
 
 static map<string, Token> Keywords = {
     {"def", tok_def},
 };
 
-// TokenNames maps each named token to a readable string for debug output and
-// error reporting.
+// I map each named token to a readable string for debug output and error
+// reporting.
 static map<int, string> TokenNames = {
     {tok_eof, "end of input"},
     {tok_eol, "newline"},
@@ -58,8 +58,8 @@ static map<int, string> TokenNames = {
     {tok_plus, "'+'"},
 };
 
-/// advance - returns the next character, coalescing `\r\n` (Windows) into `\n`
-/// and converting bare `\r` (Old Macs) into `\n`.
+/// advance - I return the next character, coalescing `\r\n` (Windows) into
+/// `\n` and converting bare `\r` (Old Macs) into `\n`.
 int advance() {
   int LastChar = getchar();
   if (LastChar == '\r') {
@@ -72,46 +72,46 @@ int advance() {
   return LastChar;
 }
 
-/// getToken - Return the next token from standard input.
+/// getToken - I return the next token from standard input.
 int getToken() {
   static int LastChar = ' ';
 
-  // Skip whitespace EXCEPT newlines
+  // I skip whitespace except newlines.
   while (isspace(LastChar) && LastChar != '\n')
     LastChar = advance();
 
-  // Name
+  // I read a name or keyword.
   if (isalpha(LastChar) || LastChar == '_') {
     Name = LastChar;
     while (isalnum(LastChar = advance()) || LastChar == '_')
       Name += LastChar;
-    // LastChar now holds the first character that is not part of this
-    // name/keyword.
+    // I leave the first character that is not part of this name or keyword in
+    // LastChar.
 
-    // Keyword check.
+    // I check whether the name is a keyword.
     auto KeywordIt = Keywords.find(Name);
     if (KeywordIt != Keywords.end())
       return KeywordIt->second;
     return tok_name;
   }
 
-  // Number
+  // I read a number.
   if (isdigit(LastChar) || LastChar == '.') {
     string NumStr;
     do {
       NumStr += LastChar;
       LastChar = advance();
     } while (isdigit(LastChar) || LastChar == '.');
-    // LastChar now holds the first character that is not part of this number.
+    // I leave the first character that is not part of this number in LastChar.
 
-    // TODO: This incorrectly lexes 1.23.45.67 as 1.23
+    // TODO: I incorrectly lex 1.23.45.67 as 1.23.
     NumberValue = strtod(NumStr.c_str(), 0);
     return tok_number;
   }
 
-  // Comment
+  // I discard a comment.
   if (LastChar == '#') {
-    // Comment until the end of the line
+    // I consume characters through the end of the line.
     do {
       LastChar = advance();
     } while (LastChar != '\n' && LastChar != EOF);
@@ -122,17 +122,17 @@ int getToken() {
     }
   }
 
-  // Newline
+  // I recognize a newline.
   if (LastChar == '\n') {
     LastChar = advance();
     return tok_eol;
   }
 
-  // End of file
+  // I recognize the end of the file.
   if (LastChar == EOF)
     return tok_eof;
 
-  // Single-character punctuation and operators
+  // I read single-character punctuation and operators.
   int ThisChar = LastChar;
   LastChar = advance();
   switch (ThisChar) {

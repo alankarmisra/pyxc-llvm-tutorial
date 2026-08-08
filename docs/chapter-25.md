@@ -205,7 +205,7 @@ cd code/chapter-25
 cmake -S . -B build && cmake --build build
 ```
 
-## The Full Grammar
+## Grammar
 
 [pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-25/pyxc.ebnf)
 

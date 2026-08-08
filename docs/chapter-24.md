@@ -460,7 +460,7 @@ Error (Line 2, Column 28): Array literal element count mismatch
 
 **No pointer arithmetic directly on an array.** Indexing works; adding an integer to an array variable itself doesn't. `addr(arr[i])` gets a pointer to a specific element if I need one.
 
-## The Full Grammar
+## Grammar
 
 [pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-24/pyxc.ebnf)
 

@@ -1,6 +1,7 @@
 # RUN: %pyxc < %s 2>&1 | FileCheck %s
 # CHECK: Evaluated to 14.000000
 # CHECK: Evaluated to 7.000000
+# CHECK: Evaluated to 5.000000
 
 
 # Tests: operator precedence (* > +) and left-associativity of -.
@@ -12,3 +13,5 @@
 2 + 3 * 4
 
 10 - 2 - 1
+
+8 / 2 + 1
