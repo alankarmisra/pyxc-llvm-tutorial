@@ -1,0 +1,15 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 1.000000
+
+# Tests: the native-width int type and a fixed-width integer can be compared
+# when the fixed-width value can widen to int.
+
+extern def printd(x: float64) -> float64
+
+def main() -> None:
+    if int32(5) == 10:
+        printd(0.0)
+    else:
+        printd(1.0)
+    return

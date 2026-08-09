@@ -1,0 +1,5 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Evaluated to 4" %t
+
+# JIT execution: division evaluates to the correct number.
+8 / 2

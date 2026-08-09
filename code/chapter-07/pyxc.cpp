@@ -26,7 +26,6 @@
 #include <memory>
 #include <sstream>
 #include <string>
-#include <unistd.h>
 #include <utility>
 #include <vector>
 
@@ -48,7 +47,7 @@ static cl::opt<unsigned> OptLevel("O", cl::desc("Optimization level"),
 //===----------------------------------------===//
 
 // I return named tokens for known language elements. I preserve the [0-255]
-// character value of any other single character for diagnostics and custom operators.
+// character value of any other single character for diagnostics.
 enum Token {
   tok_eof = -1,
   tok_eol = -2,
@@ -518,9 +517,9 @@ void PrintReplPrompt() { fprintf(stderr, "ready> "); }
 /// Used by the Handle* functions to confirm what was parsed.
 void Log(const string &message) { fprintf(stderr, "%s", message.c_str()); }
 
-/// LogError* - Error reporting helpers. Each returns nullptr for its respective
-/// type so parse functions can write: return LogError("message");
-unique_ptr<ExpressionNode> LogError(const char *Str) {
+/// LogErrorExpression* - Error reporting helpers. Each returns nullptr for its respective
+/// type so parse functions can write: return LogErrorExpression("message");
+unique_ptr<ExpressionNode> LogErrorExpression(const char *Str) {
   SourceLocation Anchor = GetDiagnosticAnchorLoc(CurLoc, CurrentToken);
   fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
           Str);
@@ -529,12 +528,12 @@ unique_ptr<ExpressionNode> LogError(const char *Str) {
 }
 
 unique_ptr<FunctionSignatureNode> LogErrorSignature(const char *Str) {
-  LogError(Str);
+  LogErrorExpression(Str);
   return nullptr;
 }
 
-unique_ptr<FunctionDefinitionNode> LogErrorF(const char *Str) {
-  LogError(Str);
+unique_ptr<FunctionDefinitionNode> LogErrorFunction(const char *Str) {
+  LogErrorExpression(Str);
   return nullptr;
 }
 
@@ -557,7 +556,7 @@ static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
     return nullptr;
 
   if (CurrentToken != tok_rparen)
-    return LogError("expected ')'");
+    return LogErrorExpression("expected ')'");
   getNextToken(); // eat ).
   return V;
 }
@@ -591,7 +590,7 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
         break;
 
       if (CurrentToken != tok_comma)
-        return LogError("Expected ')' or ',' in argument list");
+        return LogErrorExpression("Expected ')' or ',' in argument list");
       getNextToken();
     }
   }
@@ -609,7 +608,7 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
 static unique_ptr<ExpressionNode> ParsePrimary() {
   switch (CurrentToken) {
   default:
-    return LogError("unknown token when expecting an expression");
+    return LogErrorExpression("unknown token when expecting an expression");
   case tok_name:
     return ParseNameExpression();
   case tok_number:
@@ -728,7 +727,7 @@ static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
     return nullptr;
 
   if (CurrentToken != tok_colon)
-    return LogErrorF("Expected ':' in function definition");
+    return LogErrorFunction("Expected ':' in function definition");
   getNextToken(); // eat ':'
 
   // Allow the function body to start on the next line:
@@ -819,10 +818,10 @@ static std::unique_ptr<ModuleAnalysisManager> TheMAM;
 static std::map<std::string, std::unique_ptr<FunctionSignatureNode>> FunctionSignatures;
 static ExitOnError ExitOnErr;
 
-/// LogErrorV - Codegen-level error helper. Delegates to LogError for printing,
+/// LogErrorV - Codegen-level error helper. Delegates to LogErrorExpression for printing,
 /// then returns nullptr so codegen callers can write: return LogErrorV("msg");
 Value *LogErrorV(const char *Str) {
-  LogError(Str);
+  LogErrorExpression(Str);
   return nullptr;
 }
 
@@ -991,7 +990,7 @@ Function *FunctionDefinitionNode::codegen() {
 
   // Bail if the function is already fully defined — redefinition is an error.
   if (TheFunction && !TheFunction->empty()) {
-    LogError("Function cannot be redefined.");
+    LogErrorExpression("Function cannot be redefined.");
     return nullptr;
   }
 
@@ -1106,7 +1105,7 @@ static void HandleFunctionDefinition() {
   auto FnAST = ParseFunctionDefinition();
   if (!FnAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (FnAST)
-      LogError(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
   }
@@ -1133,7 +1132,7 @@ static void HandleExtern() {
 
   if (!ProtoAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (ProtoAST)
-      LogError(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
   }
@@ -1143,7 +1142,7 @@ static void HandleExtern() {
   auto Existing = FunctionSignatures.find(ProtoAST->getName());
   if (Existing != FunctionSignatures.end() &&
       Existing->second->getNumParameters() != ProtoAST->getNumParameters()) {
-    LogError((string("Conflicting extern declaration for '") +
+    LogErrorExpression((string("Conflicting extern declaration for '") +
               ProtoAST->getName() + "'")
                  .c_str());
     SynchronizeToLineBoundary();
@@ -1179,7 +1178,7 @@ static void HandleTopLevelExpression() {
   auto FnAST = ParseTopLevelExpression();
   if (!FnAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (FnAST)
-      LogError(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
   }

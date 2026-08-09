@@ -25,10 +25,8 @@
 #include <iomanip>
 #include <map>
 #include <memory>
-#include <set>
 #include <sstream>
 #include <string>
-#include <unistd.h>
 #include <utility>
 #include <vector>
 
@@ -64,7 +62,7 @@ static bool IsRepl = true;
 //===----------------------------------------===//
 
 // I return named tokens for known language elements. I preserve the [0-255]
-// character value of any other single character for diagnostics and custom operators.
+// character value of any other single character for diagnostics.
 enum Token {
   tok_eof = -1,
   tok_eol = -2,
@@ -91,10 +89,6 @@ enum Token {
   // loops
   tok_for = -15,
 
-  // user-defined operators
-  tok_binary = -16,
-  tok_unary = -17,
-
   // mutable variables
   tok_var = -18,
 
@@ -110,7 +104,6 @@ enum Token {
   tok_less = '<',
   tok_greater = '>',
   tok_equal = '=',
-  tok_at = '@',
 };
 
 static string Name; // Filled in if tok_name
@@ -121,8 +114,7 @@ static string NumberLiteral; // Filled in if tok_number
 // associated Token. Additional language keywords can easily be added here.
 static map<string, Token> Keywords = {
     {"def", tok_def},       {"extern", tok_extern}, {"if", tok_if},
-    {"else", tok_else},     {"for", tok_for},
-    {"binary", tok_binary}, {"unary", tok_unary},   {"var", tok_var}};
+    {"else", tok_else},     {"for", tok_for},       {"var", tok_var}};
 
 // Debug-only token names. Kept separate from Keywords because this map is
 // purely for printing token stream output.
@@ -136,8 +128,7 @@ static map<int, string> TokenNames = [] {
       {tok_eq, "'=='"},          {tok_neq, "'!='"},
       {tok_leq, "'<='"},         {tok_geq, "'>='"},
       {tok_if, "'if'"},          {tok_else, "'else'"},
-      {tok_for, "'for'"},        {tok_binary, "'binary'"},
-      {tok_unary, "'unary'"},    {tok_var, "'var'"}};
+      {tok_for, "'for'"},        {tok_var, "'var'"}};
 
   // Single character tokens.
   for (int ch = 0; ch <= 255; ++ch) {
@@ -426,8 +417,6 @@ static int getToken() {
     return tok_greater;
   case '=':
     return tok_equal;
-  case '@':
-    return tok_at;
   default:
     return ThisChar;
   }
@@ -593,10 +582,8 @@ public:
 };
 
 /// UnaryExpressionNode - Expression class for a unary operator application.
-/// The operator is identified by its ASCII character (e.g. '-' or '!').
-/// Built-in unary minus is represented here with opcode '-' and lowered
-/// directly to LLVM `fneg`. All other unary operators are resolved as regular
-/// functions named "unary<op>" (e.g. "unary!") and called with the operand.
+/// Unary minus is represented with opcode '-' and lowered directly to LLVM
+/// `fneg`.
 class UnaryExpressionNode : public ExpressionNode {
   char Opcode;
   unique_ptr<ExpressionNode> Operand;
@@ -637,38 +624,16 @@ public:
 /// FunctionSignatureNode - This class represents the "function signature" for a function,
 /// which captures its name, and its argument names (thus implicitly the number
 /// of arguments the function takes).
-///
-/// For user-defined operators, IsOperator is true and the function name encodes
-/// the operator character: "binary+" for a binary '+' operator, "unary!" for a
-/// unary '!' operator. Precedence is only meaningful for binary operators — it
-/// is installed into OperatorPrecedence at codegen time, making the new operator
-/// immediately available to the parser for subsequent expressions.
 class FunctionSignatureNode {
   string Name;
   vector<string> Parameters;
-  bool IsOperator;
-  unsigned Precedence; // binary operators only
 
 public:
-  FunctionSignatureNode(const string &Name, vector<string> Parameters, bool IsOperator = false,
-               unsigned Prec = 0)
-      : Name(Name), Parameters(std::move(Parameters)), IsOperator(IsOperator),
-        Precedence(Prec) {}
+  FunctionSignatureNode(const string &Name, vector<string> Parameters)
+      : Name(Name), Parameters(std::move(Parameters)) {}
 
   const string &getName() const { return Name; }
   size_t getNumParameters() const { return Parameters.size(); }
-
-  bool isUnaryOp() const { return IsOperator && Parameters.size() == 1; }
-  bool isBinaryOp() const { return IsOperator && Parameters.size() == 2; }
-
-  // The operator character is the last character of the encoded name.
-  // e.g. "binary+" -> '+', "unary!" -> '!'
-  char getOperatorName() const {
-    assert((isUnaryOp() || isBinaryOp()) && "Not an operator function signature");
-    return Name.back();
-  }
-
-  unsigned getBinaryPrecedence() const { return Precedence; }
 
   Function *codegen();
 };
@@ -706,49 +671,9 @@ static void consumeNewlines() {
     getNextToken();
 }
 
-/// OperatorPrecedence - Maps each binary operator token to its precedence.
-/// Higher numbers bind more tightly: '*' (40) > '+'/'-' (20) > comparisons
-/// (10). The key is an int rather than char so it can hold both
-/// single-character ASCII operators ('+', '-', '*', '<', '>') and
-/// multi-character named token enums (tok_eq, tok_neq, tok_leq, tok_geq). All
-/// comparison operators share precedence 10 so they bind equally tightly and
-/// are left-associative. Operators not in this map return -1 from
-/// GetTokenPrecedence(), which tells ParseBinaryOperatorRight to stop consuming operators
-/// and return what it has so far.
-static map<int, int> OperatorPrecedence = {
-    {tok_eq, 10},  // ==
-    {tok_neq, 10}, // !=
-    {tok_leq, 10}, // <=
-    {tok_geq, 10}, // >=
-    {tok_less, 10},     // <
-    {tok_greater, 10},     // >
-    {tok_plus, 20},     // +
-    {tok_minus, 20},     // -
-    {tok_star, 40},     // *
-};
-
-// KnownUnaryOperators - Tracks unary operator tokens that are already reserved
-// or defined.
-//
-// Seed with '-' because unary minus is a built-in form handled by
-// ParseUnaryMinus(), so users cannot define a custom unary '-'.
-static std::set<int> KnownUnaryOperators = {tok_minus};
-
-// FunctionSignatures - Persistent function signature registry used by the parser to detect
-// redefinition of operators. Also used by codegen to re-emit declarations into
-// fresh modules. Declared here so parser functions can access it.
+// FunctionSignatures - Persistent function signature registry used by codegen
+// to re-emit declarations into fresh modules.
 static std::map<std::string, std::unique_ptr<FunctionSignatureNode>> FunctionSignatures;
-
-/// GetTokenPrecedence - Returns the precedence of CurrentToken if it is a known binary
-/// operator, or -1 if it is not. Both single-character ASCII operators ('+',
-/// '-', '*', '<', '>') and named multi-character token enums (tok_eq, tok_neq,
-/// tok_leq, tok_geq) are looked up in OperatorPrecedence.
-static int GetTokenPrecedence() {
-  auto It = OperatorPrecedence.find(CurrentToken);
-  if (It == OperatorPrecedence.end() || It->second <= 0)
-    return -1;
-  return It->second;
-}
 
 /// PrintReplPrompt - Print the interactive prompt to stderr.
 /// Only emits output in REPL mode; silent when running a script file.
@@ -766,9 +691,9 @@ void Log(const string &message) {
     fprintf(stderr, "%s", message.c_str());
 }
 
-/// LogError* - Error reporting helpers. Each returns nullptr for its respective
-/// type so parse functions can write: return LogError("message");
-unique_ptr<ExpressionNode> LogError(const char *Str) {
+/// LogErrorExpression* - Error reporting helpers. Each returns nullptr for its respective
+/// type so parse functions can write: return LogErrorExpression("message");
+unique_ptr<ExpressionNode> LogErrorExpression(const char *Str) {
   SourceLocation Anchor = GetDiagnosticAnchorLoc(CurLoc, CurrentToken);
   fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
           Str);
@@ -777,12 +702,12 @@ unique_ptr<ExpressionNode> LogError(const char *Str) {
 }
 
 unique_ptr<FunctionSignatureNode> LogErrorSignature(const char *Str) {
-  LogError(Str);
+  LogErrorExpression(Str);
   return nullptr;
 }
 
-unique_ptr<FunctionDefinitionNode> LogErrorF(const char *Str) {
-  LogError(Str);
+unique_ptr<FunctionDefinitionNode> LogErrorFunction(const char *Str) {
+  LogErrorExpression(Str);
   return nullptr;
 }
 
@@ -807,7 +732,7 @@ static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
     return nullptr;
 
   if (CurrentToken != tok_rparen)
-    return LogError("expected ')'");
+    return LogErrorExpression("expected ')'");
   getNextToken(); // eat ).
   return V;
 }
@@ -833,7 +758,7 @@ static unique_ptr<ExpressionNode> ParseNameExpressionWithName(const string &Pars
         break;
 
       if (CurrentToken != tok_comma)
-        return LogError("Expected ')' or ',' in argument list");
+        return LogErrorExpression("Expected ')' or ',' in argument list");
       getNextToken();
     }
   }
@@ -864,12 +789,12 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
     IsVarDecl = true, getNextToken(); // optional 'var'
 
   if (CurrentToken != tok_name)
-    return LogError("Expected name after 'for'");
+    return LogErrorExpression("Expected name after 'for'");
   string VarName = Name;
   getNextToken(); // eat name
 
   if (CurrentToken != tok_equal)
-    return LogError("Expected '=' after for variable");
+    return LogErrorExpression("Expected '=' after for variable");
   getNextToken(); // eat '='
 
   auto Start = ParseExpression();
@@ -877,7 +802,7 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
     return nullptr;
 
   if (CurrentToken != tok_comma)
-    return LogError("Expected ',' after for start value");
+    return LogErrorExpression("Expected ',' after for start value");
   getNextToken(); // eat ','
 
   auto Cond = ParseExpression();
@@ -885,7 +810,7 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
     return nullptr;
 
   if (CurrentToken != tok_comma)
-    return LogError("Expected ',' after for condition");
+    return LogErrorExpression("Expected ',' after for condition");
   getNextToken(); // eat ','
 
   auto Step = ParseExpression();
@@ -893,7 +818,7 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
     return nullptr;
 
   if (CurrentToken != tok_colon)
-    return LogError("Expected ':' after for step");
+    return LogErrorExpression("Expected ':' after for step");
   getNextToken(); // eat ':'
 
   // Allow body on next line.
@@ -920,7 +845,7 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
 
   while (true) {
     if (CurrentToken != tok_name)
-      return LogError("Expected name after 'var'");
+      return LogErrorExpression("Expected name after 'var'");
 
     string ParsedName = Name;
     getNextToken(); // eat name
@@ -943,7 +868,7 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
   }
 
   if (CurrentToken != tok_colon)
-    return LogError("Expected ':' after var bindings");
+    return LogErrorExpression("Expected ':' after var bindings");
   getNextToken(); // eat ':'
 
   consumeNewlines();
@@ -965,7 +890,7 @@ static unique_ptr<ExpressionNode> ParseIfStatement() {
     return nullptr;
 
   if (CurrentToken != tok_colon)
-    return LogError("Expected ':' after if condition");
+    return LogErrorExpression("Expected ':' after if condition");
   getNextToken(); // eat ':'
 
   // Allow body on next line
@@ -979,11 +904,11 @@ static unique_ptr<ExpressionNode> ParseIfStatement() {
   consumeNewlines();
 
   if (CurrentToken != tok_else)
-    return LogError("Expected 'else' in if expression");
+    return LogErrorExpression("Expected 'else' in if expression");
   getNextToken(); // eat 'else'
 
   if (CurrentToken != tok_colon)
-    return LogError("Expected ':' after else");
+    return LogErrorExpression("Expected ':' after else");
   getNextToken(); // eat ':'
 
   // Allow body on next line
@@ -1017,12 +942,12 @@ static unique_ptr<ExpressionNode> ParseUnaryMinus() {
 ///   = name-expression
 ///   | number-expression
 ///   | parenthesized-expression
-///   | conditionalexpr
+///   | ifexpr
 ///   | forexpr ;
 static unique_ptr<ExpressionNode> ParsePrimary() {
   switch (CurrentToken) {
   default:
-    return LogError("unknown token when expecting an expression");
+    return LogErrorExpression("unknown token when expecting an expression");
   case tok_name:
     return ParseNameExpression();
   case tok_number:
@@ -1036,91 +961,78 @@ static unique_ptr<ExpressionNode> ParsePrimary() {
   }
 }
 
-/// unaryexpr
-///   = unaryop unaryexpr
+/// unary-expression
+///   = "-" unary-expression
 ///   | primary ;
-///
-/// unaryop
-///   = "-"
-///   | userdefunaryop ;
-///
-/// Parsing strategy:
-/// 1) If the token starts a primary, parse primary.
-/// 2) If we see '-', parse built-in unary minus.
-/// 3) Else treat the token as a user-defined unary operator and recurse for
-///    its operand.
-///
-/// This is called from both ParseExpression (as the Left seed) and from
-/// ParseBinaryOperatorRight (as the Right of a binary operator), so user-defined unary ops
-/// work in both positions: !x + 1 and f(x) + !y.
 static unique_ptr<ExpressionNode> ParseUnary() {
-  // Primary starters will be handled with ParsePrimary.
-  if (!isascii(CurrentToken) /* multi-character tokens */ || CurrentToken == tok_lparen ||
-      isalpha(CurrentToken) || isdigit(CurrentToken))
-    return ParsePrimary();
-
-  // Built-in unary minus.
   if (CurrentToken == tok_minus)
     return ParseUnaryMinus();
-
-  // It's an ASCII punctuation character — treat it as a user-defined unary op.
-  int Opc = CurrentToken;
-  getNextToken(); // eat the operator character
-  if (auto Operand = ParseUnary())
-    return make_unique<UnaryExpressionNode>(Opc, std::move(Operand));
-  return nullptr;
+  return ParsePrimary();
 }
 
-/// binary-operator-right
-///   = { binary-operator unaryexpr } ;
-static unique_ptr<ExpressionNode> ParseBinaryOperatorRight(int MinimumPrecedence,
-                                         unique_ptr<ExpressionNode> Left) {
-  // If this is a binary operator, find its precedence.
-  while (true) {
-    int TokenPrecedence = GetTokenPrecedence();
-
-    // If this is a binary operator that binds at least as tightly as the current binary operator,
-    // consume it, otherwise we are done.
-    if (TokenPrecedence < MinimumPrecedence)
-      return Left;
-
-    // Okay, we know this is a binary operator and that binds at least as tightly as the
-    // current binary operator.
+/// term
+///   = unary-expression { ("*" | "/") unary-expression } ;
+static unique_ptr<ExpressionNode> ParseTerm() {
+  auto Left = ParseUnary();
+  if (!Left)
+    return nullptr;
+  while (CurrentToken == tok_star || CurrentToken == tok_slash) {
     int Operator = CurrentToken;
-    getNextToken(); // eat binary operator
-
-    // Parse the unary expression after the binary operator.  Using ParseUnary
-    // here (rather than ParsePrimary directly) means unary operators bind
-    // tighter than any binary operator, matching normal convention.
+    getNextToken();
     auto Right = ParseUnary();
     if (!Right)
       return nullptr;
-
-    // If Operator binds less tightly with Right than the operator after Right, let
-    // the pending operator take Right as its Left.
-    int NextTokenPrecedence = GetTokenPrecedence();
-    if (TokenPrecedence < NextTokenPrecedence) {
-      Right = ParseBinaryOperatorRight(TokenPrecedence + 1, std::move(Right));
-      if (!Right)
-        return nullptr;
-    }
-
-    // Merge Left/Right.
-    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left), std::move(Right));
+    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
+                                             std::move(Right));
   }
+  return Left;
+}
+
+/// sum
+///   = term { ("+" | "-") term } ;
+static unique_ptr<ExpressionNode> ParseSum() {
+  auto Left = ParseTerm();
+  if (!Left)
+    return nullptr;
+  while (CurrentToken == tok_plus || CurrentToken == tok_minus) {
+    int Operator = CurrentToken;
+    getNextToken();
+    auto Right = ParseTerm();
+    if (!Right)
+      return nullptr;
+    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
+                                             std::move(Right));
+  }
+  return Left;
+}
+
+/// comparison
+///   = sum { comparison-operator sum } ;
+static unique_ptr<ExpressionNode> ParseComparison() {
+  auto Left = ParseSum();
+  if (!Left)
+    return nullptr;
+  while (CurrentToken == tok_eq || CurrentToken == tok_neq ||
+         CurrentToken == tok_leq || CurrentToken == tok_geq ||
+         CurrentToken == tok_less || CurrentToken == tok_greater) {
+    int Operator = CurrentToken;
+    getNextToken();
+    auto Right = ParseSum();
+    if (!Right)
+      return nullptr;
+    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
+                                             std::move(Right));
+  }
+  return Left;
 }
 
 /// expression
-///   = varexpr | name "=" expression | unaryexpr binary-operator-right ;
+///   = varexpr | comparison [ "=" expression ] ;
 static unique_ptr<ExpressionNode> ParseExpression() {
   if (CurrentToken == tok_var)
     return ParseVarStatement();
 
-  auto Left = ParseUnary();
-  if (!Left)
-    return nullptr;
-
-  auto Expr = ParseBinaryOperatorRight(0, std::move(Left));
+  auto Expr = ParseComparison();
   if (!Expr)
     return nullptr;
 
@@ -1129,7 +1041,7 @@ static unique_ptr<ExpressionNode> ParseExpression() {
 
   const string *AssignedName = Expr->getLValueName();
   if (!AssignedName)
-    return LogError("Destination of '=' must be a variable");
+    return LogErrorExpression("Destination of '=' must be a variable");
 
   string Name = *AssignedName;
   getNextToken(); // eat '='
@@ -1147,17 +1059,6 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
   if (CurrentToken != tok_name)
     return LogErrorSignature("Expected function name in function signature");
   string FnName = Name;
-  if ((FnName.size() == 7 && FnName.rfind("binary", 0) == 0 &&
-       isascii(static_cast<unsigned char>(FnName[6])) &&
-       ispunct(static_cast<unsigned char>(FnName[6]))) ||
-      (FnName.size() == 6 && FnName.rfind("unary", 0) == 0 &&
-       isascii(static_cast<unsigned char>(FnName[5])) &&
-       ispunct(static_cast<unsigned char>(FnName[5])))) {
-    fprintf(stderr,
-            "Warning: Function name '%s' may conflict with "
-            "operator-reserved naming\n",
-            FnName.c_str());
-  }
   getNextToken(); // eat function name
 
   if (CurrentToken != tok_lparen)
@@ -1194,268 +1095,13 @@ static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
     return nullptr;
 
   if (CurrentToken != tok_colon)
-    return LogErrorF("Expected ':' in function definition");
+    return LogErrorFunction("Expected ':' in function definition");
   getNextToken(); // eat ':'
 
   // Allow the body expression to start on the next line:
   //   def foo(x):
   //     x + 1
   consumeNewlines();
-
-  if (auto E = ParseExpression())
-    return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(E));
-  return nullptr;
-}
-
-/// binarydecorator
-///   = "binary" "(" integer ")"
-///
-/// Called after '@' has been consumed. CurrentToken is on 'binary'.
-/// Returns the parsed precedence (>= 1), or 0 on error.
-/// 0 is a safe sentinel because valid precedences must be >= 1.
-static unsigned ParseBinaryDecorator() {
-  getNextToken(); // eat 'binary'
-
-  if (CurrentToken != tok_lparen) {
-    LogError("Expected '(' after '@binary'");
-    return 0;
-  }
-  getNextToken(); // eat '('
-
-  if (CurrentToken != tok_number) {
-    LogError("Expected precedence number in '@binary(...)'");
-    return 0;
-  }
-  // The lexer has no separate tok_integer — it emits tok_number for both
-  // integer and decimal literals. Reject decimals by checking the raw source.
-  if (NumberLiteral.find('.') != string::npos) {
-    LogError("Precedence must be an integer, not a decimal literal");
-    return 0;
-  }
-  if (NumberValue < 1) {
-    LogError("Precedence must be a positive integer");
-    return 0;
-  }
-  unsigned Prec = static_cast<unsigned>(NumberValue);
-  getNextToken(); // eat number
-
-  if (CurrentToken != tok_rparen) {
-    LogError("Expected ')' after precedence in '@binary(...)'");
-    return 0;
-  }
-  getNextToken(); // eat ')'
-
-  return Prec;
-}
-
-/// unarydecorator
-///   = "unary"
-/// Called after '@' has been consumed. CurrentToken is on 'unary'.
-/// Consumes the 'unary' token.
-static void ParseUnaryDecorator() {
-  getNextToken(); // eat 'unary'
-}
-
-// IsCustomOpChar - Return true if Tok can be used as a user-defined operator
-// character in Pyxc operator prototypes.
-//
-// We restrict to ASCII punctuation so operator definitions stay single-char and
-// predictable across platforms/locales. '@' is reserved for decorator syntax
-// (@binary / @unary), so it is explicitly excluded.
-static bool IsCustomOpChar(int Tok) {
-  return isascii(Tok) && ispunct(static_cast<unsigned char>(Tok)) && Tok != tok_at;
-}
-
-// IsKnownBinaryOperatorToken - Return true if Tok is already present in the
-// parser's binary-operator table.
-//
-// OperatorPrecedence contains built-in binary operators at startup and gains
-// custom binary operators as their prototypes are codegen'd. This makes it a
-// single source of truth for "is this binary operator already known?".
-static bool IsKnownBinaryOperatorToken(int Tok) {
-  return OperatorPrecedence.find(Tok) != OperatorPrecedence.end();
-}
-
-// IsKnownUnaryOperatorToken - Return true if Tok is already present in the
-// parser's unary-operator registry.
-//
-// KnownUnaryOperators contains reserved built-in unary operators at startup
-// and gains custom unary operators as their prototypes are codegen'd.
-static bool IsKnownUnaryOperatorToken(int Tok) {
-  return KnownUnaryOperators.find(Tok) != KnownUnaryOperators.end();
-}
-
-/// binaryopprototype
-///   = customopchar "(" name "," name ")"
-///
-/// CurrentToken is on the operator character.
-/// The function is stored internally as "binary<opchar>" (e.g. "binary%"),
-/// which is how BinaryExpressionNode::codegen() looks it up at call sites.
-static unique_ptr<FunctionSignatureNode> ParseBinaryOperatorSignature(unsigned Precedence) {
-  if (!IsCustomOpChar(CurrentToken))
-    return LogErrorSignature(
-        "Expected operator character in binary operator signature");
-
-  char OperatorCharacter = (char)CurrentToken;
-  string FnName = string("binary") + OperatorCharacter;
-
-  // Reject redefining any binary operator that is already known to the parser.
-  // This covers both language built-ins and previously defined custom
-  // operators, since both live in OperatorPrecedence.
-  if (IsKnownBinaryOperatorToken(CurrentToken))
-    return LogErrorSignature(
-        (string("Binary operator '") + OperatorCharacter + "' is already defined")
-            .c_str());
-
-  // Reject cross-arity reuse: if a token is already known as a unary operator,
-  // we do not allow defining it as binary.
-  if (IsKnownUnaryOperatorToken(CurrentToken))
-    return LogErrorSignature((string("Binary operator '") + OperatorCharacter +
-                      "' conflicts with an existing unary operator")
-                         .c_str());
-
-  // Separate guard: reject any existing function/function signature named "binary<op>".
-  // This catches symbol collisions even if the operator was not registered in
-  // OperatorPrecedence (e.g. an earlier extern/def with the same encoded name).
-  // Without this, a new definition could silently shadow the old symbol in the
-  // JIT. For operators, we don't want this. For other functions, shadowing is
-  // permissable.
-  if (FunctionSignatures.count(FnName))
-    return LogErrorSignature((string("Function name 'binary") + OperatorCharacter +
-                      "' conflicts with operator-reserved naming")
-                         .c_str());
-
-  getNextToken(); // eat operator char
-
-  if (CurrentToken != tok_lparen)
-    return LogErrorSignature("Expected '(' in binary operator signature");
-
-  vector<string> ParameterNames;
-  while (getNextToken() == tok_name) {
-    ParameterNames.push_back(Name);
-    if (getNextToken() == tok_rparen)
-      break;
-    if (CurrentToken != tok_comma)
-      return LogErrorSignature("Expected ')' or ',' in parameter list");
-  }
-
-  if (CurrentToken != tok_rparen)
-    return LogErrorSignature("Expected ')' in binary operator signature");
-  getNextToken(); // eat ')'
-
-  if (ParameterNames.size() != 2)
-    return LogErrorSignature("Binary operator must have exactly two arguments");
-
-  return make_unique<FunctionSignatureNode>(FnName, std::move(ParameterNames),
-                                   /*IsOperator=*/true, Precedence);
-}
-
-/// unaryopprototype
-///   = customopchar "(" name ")"
-///
-/// CurrentToken is on the operator character.
-/// The function is stored internally as "unary<opchar>" (e.g. "unary&"),
-/// which is how ParseUnary() looks it up at call sites.
-static unique_ptr<FunctionSignatureNode> ParseUnaryOperatorSignature() {
-  if (!IsCustomOpChar(CurrentToken))
-    return LogErrorSignature("Expected operator character in unary operator signature");
-
-  char OperatorCharacter = (char)CurrentToken;
-  string FnName = string("unary") + OperatorCharacter;
-
-  // Reject redefining any unary operator that is already known to the parser.
-  // This covers reserved unary operators and previously defined custom unary
-  // operators tracked in KnownUnaryOperators.
-  if (IsKnownUnaryOperatorToken(CurrentToken))
-    return LogErrorSignature(
-        (string("Unary operator '") + OperatorCharacter + "' is already defined").c_str());
-
-  // Reject cross-arity reuse: if a token is already known as a binary operator,
-  // we do not allow defining it as unary.
-  if (IsKnownBinaryOperatorToken(CurrentToken))
-    return LogErrorSignature((string("Unary operator '") + OperatorCharacter +
-                      "' conflicts with an existing binary operator")
-                         .c_str());
-
-  // Prevent silent JIT shadowing (same reason as in ParseBinaryOperatorSignature).
-  if (FunctionSignatures.count(FnName))
-    return LogErrorSignature((string("Function name 'unary") + OperatorCharacter +
-                      "' conflicts with operator-reserved naming")
-                         .c_str());
-
-  getNextToken(); // eat operator char
-
-  if (CurrentToken != tok_lparen)
-    return LogErrorSignature("Expected '(' in unary operator signature");
-
-  vector<string> ParameterNames;
-  while (getNextToken() == tok_name) {
-    ParameterNames.push_back(Name);
-    if (getNextToken() == tok_rparen)
-      break;
-    if (CurrentToken != tok_comma)
-      return LogErrorSignature("Expected ')' or ',' in parameter list");
-  }
-
-  if (CurrentToken != tok_rparen)
-    return LogErrorSignature("Expected ')' in unary operator signature");
-  getNextToken(); // eat ')'
-
-  if (ParameterNames.size() != 1)
-    return LogErrorSignature("Unary operator must have exactly one argument");
-
-  // Unary operators have no precedence — they bind tighter than any binary op
-  // by virtue of being parsed before ParseBinaryOperatorRight is entered.
-  return make_unique<FunctionSignatureNode>(FnName, std::move(ParameterNames),
-                                   /*IsOperator=*/true, /*Precedence=*/0);
-}
-
-/// decorateddef
-///   = binarydecorator end-of-lines "def" binaryopprototype ":" [ end-of-lines ] expression
-///   | unarydecorator end-of-lines "def" unaryopprototype ":" [ end-of-lines ] expression
-///
-/// Called after '@' has been consumed. CurrentToken is on 'binary' or 'unary'.
-/// The two branches share the same body structure (':' / expression).
-static unique_ptr<FunctionDefinitionNode> ParseDecoratedFunctionDef() {
-  if (CurrentToken != tok_binary && CurrentToken != tok_unary)
-    return LogErrorF("Expected 'binary' or 'unary' after '@'");
-
-  bool IsBinary = (CurrentToken == tok_binary);
-  unique_ptr<FunctionSignatureNode> Signature;
-
-  if (IsBinary) {
-    unsigned Prec = ParseBinaryDecorator(); // consumes "binary(N)"
-    if (!Prec)
-      return nullptr;
-    // The decorator must end at a newline before 'def'.
-    if (CurrentToken != tok_eol)
-      return LogErrorF("Expected newline after '@binary(...)' decorator");
-    consumeNewlines();
-    if (CurrentToken != tok_def)
-      return LogErrorF("Expected 'def' after decorator");
-    getNextToken(); // eat 'def'
-    Signature = ParseBinaryOperatorSignature(Prec);
-  } else {
-    ParseUnaryDecorator(); // consumes "unary"
-    if (CurrentToken != tok_eol)
-      return LogErrorF("Expected newline after '@unary' decorator");
-    consumeNewlines();
-    if (CurrentToken != tok_def)
-      return LogErrorF("Expected 'def' after decorator");
-    getNextToken(); // eat 'def'
-    Signature = ParseUnaryOperatorSignature();
-  }
-
-  if (!Signature)
-    return nullptr;
-
-  // Shared body: ":" [ end-of-lines ] expression — identical to
-  // ParseFunctionDefinition.
-  if (CurrentToken != tok_colon)
-    return LogErrorF("Expected ':' in operator definition");
-  getNextToken(); // eat ':'
-
-  consumeNewlines(); // allow body on the next line
 
   if (auto E = ParseExpression())
     return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(E));
@@ -1535,10 +1181,10 @@ static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
 static std::unique_ptr<ModuleAnalysisManager> TheMAM;
 static ExitOnError ExitOnErr;
 
-/// LogErrorV - Codegen-level error helper. Delegates to LogError for printing,
+/// LogErrorV - Codegen-level error helper. Delegates to LogErrorExpression for printing,
 /// then returns nullptr so codegen callers can write: return LogErrorV("msg");
 Value *LogErrorV(const char *Str) {
-  LogError(Str);
+  LogErrorExpression(Str);
   return nullptr;
 }
 
@@ -1643,6 +1289,8 @@ Value *BinaryExpressionNode::codegen() {
     return TheBuilder->CreateFSub(L, R, "subtmp");
   case tok_star:
     return TheBuilder->CreateFMul(L, R, "multmp");
+  case tok_slash:
+    return TheBuilder->CreateFDiv(L, R, "divtmp");
   case tok_less:
     L = TheBuilder->CreateFCmpOLT(L, R, "cmptmp");
     // Widen the i1 boolean to double: false -> 0.0, true -> 1.0.
@@ -1669,37 +1317,19 @@ Value *BinaryExpressionNode::codegen() {
     return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext),
                                     "booltmp");
   default:
-    break;
-  }
-
-  // If we get here it's not a built-in operator — look for a user-defined one.
-  // User-defined binary operators are stored as regular functions named
-  // "binary" + opchar.  We call that function with L and R as arguments.
-  Function *F = getFunction(std::string("binary") + (char)Operator);
-  if (!F)
     return LogErrorV("invalid binary operator");
-
-  Value *Ops[] = {L, R};
-  return TheBuilder->CreateCall(F, Ops, "binop");
+  }
 }
 
-/// UnaryExpressionNode::codegen - Emit built-in unary minus directly, or call a
-/// user-defined unary operator function ("unary" + opchar).
+/// UnaryExpressionNode::codegen - Emit built-in unary minus directly.
 Value *UnaryExpressionNode::codegen() {
   Value *Operator = Operand->codegen();
   if (!Operator)
     return nullptr;
 
-  // Built-in unary minus.
   if (Opcode == tok_minus)
     return TheBuilder->CreateFNeg(Operator, "negtmp");
-
-  // User-defined unary operator.
-  Function *F = getFunction(std::string("unary") + Opcode);
-  if (!F)
-    return LogErrorV("Unknown unary operator");
-
-  return TheBuilder->CreateCall(F, Operator, "unop");
+  return LogErrorV("Unknown unary operator");
 }
 
 /// CallExpressionNode::codegen - Look up the callee by name in TheModule, verify the
@@ -1955,18 +1585,6 @@ Function *FunctionSignatureNode::codegen() {
   for (auto &Arg : F->args())
     Arg.setName(Parameters[Idx++]);
 
-  // For user-defined binary operators, register the precedence in the global
-  // table so the parser knows how tightly the new operator binds.  This happens
-  // at JIT time (inside codegen), meaning the operator is immediately usable in
-  // subsequent REPL lines or file definitions — exactly what we want.
-  if (isBinaryOp())
-    OperatorPrecedence[getOperatorName()] = Precedence;
-
-  // For user-defined unary operators, register the operator token in the
-  // unary registry so later definitions can detect duplicates.
-  if (isUnaryOp())
-    KnownUnaryOperators.insert(getOperatorName());
-
   return F;
 }
 
@@ -2003,7 +1621,7 @@ Function *FunctionDefinitionNode::codegen() {
 
   // Bail if the function is already fully defined — redefinition is an error.
   if (TheFunction && !TheFunction->empty()) {
-    LogError("Function cannot be redefined.");
+    LogErrorExpression("Function cannot be redefined.");
     return nullptr;
   }
 
@@ -2112,35 +1730,6 @@ static void SynchronizeToLineBoundary() {
     getNextToken();
 }
 
-/// HandleDecorator - Parse a decorator line and the 'def' that follows it.
-///
-/// Decorator syntax (note: decorator and 'def' must be on separate lines):
-///   @binary(precedence)
-///   def opchar(lhs, rhs): ...
-///
-///   @unary
-///   def opchar(x): ...
-///
-/// The '@' has already been consumed by MainLoop before calling here.
-/// CurrentToken is on 'binary' or 'unary'. Delegates to ParseDecoratedFunctionDef.
-static void HandleDecorator() {
-  auto FnAST = ParseDecoratedFunctionDef();
-  if (!FnAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
-    if (FnAST)
-      LogError(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
-    return;
-  }
-  if (auto *FnIR = FnAST->codegen()) {
-    Log("Parsed a user-defined operator.\n");
-    if (VerboseIR)
-      FnIR->print(errs());
-    ExitOnErr(TheJIT->addModule(
-        ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
-    InitializeModuleAndManagers();
-  }
-}
-
 /// HandleFunctionDefinition - Parse, optimise, and JIT-compile a 'def' function-definition.
 ///
 /// On success: codegen + optimise the function (TheFPM runs inside
@@ -2154,7 +1743,7 @@ static void HandleFunctionDefinition() {
   auto FnAST = ParseFunctionDefinition();
   if (!FnAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (FnAST)
-      LogError(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
   }
@@ -2182,7 +1771,7 @@ static void HandleExtern() {
 
   if (!ProtoAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (ProtoAST)
-      LogError(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
   }
@@ -2192,7 +1781,7 @@ static void HandleExtern() {
   auto Existing = FunctionSignatures.find(ProtoAST->getName());
   if (Existing != FunctionSignatures.end() &&
       Existing->second->getNumParameters() != ProtoAST->getNumParameters()) {
-    LogError((string("Conflicting extern declaration for '") +
+    LogErrorExpression((string("Conflicting extern declaration for '") +
               ProtoAST->getName() + "'")
                  .c_str());
     SynchronizeToLineBoundary();
@@ -2229,7 +1818,7 @@ static void HandleTopLevelExpression() {
   auto FnAST = ParseTopLevelExpression();
   if (!FnAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (FnAST)
-      LogError(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
   }
@@ -2298,7 +1887,6 @@ extern "C" DLLEXPORT double printd(double X) {
 /// Dispatches on the leading token of each top-level form:
 ///   tok_def    → HandleFunctionDefinition   (function-definition)
 ///   tok_extern → HandleExtern       (external)
-///   '@'        → HandleDecorator    (decorateddef: @binary / @unary)
 ///   tok_eol    → skip blank line
 ///   anything else → HandleTopLevelExpression (top-level-expression)
 ///
@@ -2330,11 +1918,6 @@ static void MainLoop() {
       break;
     case tok_extern:
       HandleExtern();
-      break;
-    case tok_at:
-      // Decorator: '@binary(N)' or '@unary' — consume the '@' then dispatch.
-      getNextToken(); // eat '@', now on 'binary' or 'unary'
-      HandleDecorator();
       break;
     default:
       HandleTopLevelExpression();

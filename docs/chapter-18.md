@@ -191,7 +191,7 @@ struct-block      = indent field-declaration { end-of-lines field-declaration } 
 ```cpp
 getNextToken(); // eat 'struct'
 if (CurrentToken != tok_name) {
-  LogError("Expected struct name");
+  LogErrorExpression("Expected struct name");
   return false;
 }
 string StructName = Name;
@@ -201,7 +201,7 @@ Before I go any further I should check whether I've already seen this struct: th
 
 ```cpp
 if (StructTypes.count(StructName)) {
-  LogError(("Struct '" + StructName + "' is already defined").c_str());
+  LogErrorExpression(("Struct '" + StructName + "' is already defined").c_str());
   return false;
 }
 ```
@@ -211,14 +211,14 @@ Then the `':' NEWLINE INDENT` part of the grammar, which is just token bookkeepi
 ```cpp
 getNextToken(); // eat struct name
 if (CurrentToken != ':') {
-  LogError("Expected ':' after struct name");
+  LogErrorExpression("Expected ':' after struct name");
   return false;
 }
 getNextToken(); // eat ':'
 if (CurrentToken == tok_eol)
   consumeNewlines();
 if (CurrentToken != tok_indent) {
-  LogError("Expected an indented struct body");
+  LogErrorExpression("Expected an indented struct body");
   return false;
 }
 getNextToken(); // eat INDENT
@@ -235,20 +235,20 @@ while (CurrentToken != tok_dedent && CurrentToken != tok_block_end && CurrentTok
     continue;
   }
   if (CurrentToken != tok_name) {
-    LogError("Expected field name in struct body");
+    LogErrorExpression("Expected field name in struct body");
     return false;
   }
   string FieldName = Name;
   getNextToken();
   if (CurrentToken != ':') {
-    LogError("Expected ':' after field name");
+    LogErrorExpression("Expected ':' after field name");
     return false;
   }
   getNextToken();
   string FieldStructName;
   ValueType FieldType = ParseTypeToken(&FieldStructName);
   if (FieldType == ValueType::Error || FieldType == ValueType::None) {
-    LogError("Invalid struct field type");
+    LogErrorExpression("Invalid struct field type");
     return false;
   }
 ```
@@ -259,7 +259,7 @@ Before I add the field, I need the duplicate-field check: this is the other reas
 
 ```cpp
   if (Info.FieldIndex.count(FieldName)) {
-    LogError(("Duplicate struct field '" + FieldName + "'").c_str());
+    LogErrorExpression(("Duplicate struct field '" + FieldName + "'").c_str());
     return false;
   }
   Info.FieldIndex[FieldName] = Info.Fields.size();
@@ -273,7 +273,7 @@ Before I add the field, I need the duplicate-field check: this is the other reas
 
 ```cpp
 if (CurrentToken != tok_dedent) {
-  LogError("Expected dedent after struct body");
+  LogErrorExpression("Expected dedent after struct body");
   return false;
 }
 PendingTokens.push_front(tok_block_end);
@@ -297,7 +297,7 @@ static void HandleStructDef() {
   }
   bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
   if (HasTrailing) {
-    LogError(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+    LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
   }
@@ -328,7 +328,7 @@ Before I can write `x: int` *or* `p: Point` in the same field/parameter/variable
 case tok_name: {
   string TyName = Name;
   if (!StructTypes.count(TyName)) {
-    LogError(("Unknown type '" + TyName + "'").c_str());
+    LogErrorExpression(("Unknown type '" + TyName + "'").c_str());
     return ValueType::Error;
   }
   getNextToken();
@@ -386,7 +386,7 @@ static unique_ptr<FieldExpressionNode> ParseFieldAccessExpression(string BaseNam
   while (CurrentToken == '.') {
     getNextToken(); // eat '.'
     if (CurrentToken != tok_name) {
-      LogError("Expected field name after '.'");
+      LogErrorExpression("Expected field name after '.'");
       return nullptr;
     }
     string Field = Name;
@@ -397,17 +397,17 @@ Before I look the field up, I have to make sure I'm actually looking at a struct
 
 ```cpp
     if (CurType != ValueType::Struct || CurStruct.empty()) {
-      LogError("Field access requires a struct value");
+      LogErrorExpression("Field access requires a struct value");
       return nullptr;
     }
     auto SI = StructTypes.find(CurStruct);
     if (SI == StructTypes.end()) {
-      LogError("Unknown struct type in field access");
+      LogErrorExpression("Unknown struct type in field access");
       return nullptr;
     }
     auto FI = SI->second.FieldIndex.find(Field);
     if (FI == SI->second.FieldIndex.end()) {
-      LogError(("Unknown field '" + Field + "' on struct '" + CurStruct + "'")
+      LogErrorExpression(("Unknown field '" + Field + "' on struct '" + CurStruct + "'")
                    .c_str());
       return nullptr;
     }
@@ -433,7 +433,7 @@ I call this from `ParseNameExpression`, where I already know the base identifier
 ```cpp
 auto *Var = dynamic_cast<NameExpressionNode *>(Base.get());
 if (!Var)
-  return LogError("Field access base must be a variable");
+  return LogErrorExpression("Field access base must be a variable");
 auto Field =
     ParseFieldAccessExpression(IdName, Var->getType(), Var->getStructName());
 ```
@@ -452,7 +452,7 @@ ParseFieldAssignmentRight(unique_ptr<FieldExpressionNode> LHS) {
   if (!RHS)
     return nullptr;
   if (!IsAssignable(DestType, RHS->getType()))
-    return LogError("Type mismatch in assignment");
+    return LogErrorExpression("Type mismatch in assignment");
   return make_unique<FieldAssignmentExpressionNode>(std::move(LHS), std::move(RHS),
                                              DestType);
 }

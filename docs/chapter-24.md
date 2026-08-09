@@ -123,26 +123,26 @@ Before this chapter, `ParseTypeToken` returned the moment it recognized a base t
 ```cpp
 if (CurrentToken == '[') {
   if (BaseType == ValueType::None)
-    return LogError("Arrays of None are not allowed"), ValueType::Error;
+    return LogErrorExpression("Arrays of None are not allowed"), ValueType::Error;
   if (BaseType == ValueType::Array)
-    return LogError("Nested array types are not supported"), ValueType::Error;
+    return LogErrorExpression("Nested array types are not supported"), ValueType::Error;
   getNextToken(); // eat '['
   if (CurrentToken != tok_number || NumberIsFloat)
-    return LogError("Array size must be an integer literal"),
+    return LogErrorExpression("Array size must be an integer literal"),
            ValueType::Error;
   uint64_t Count = 0;
   if (!ParseUnsignedDecimal(NumberLiteral, Count))
-    return LogError("Invalid array size"), ValueType::Error;
+    return LogErrorExpression("Invalid array size"), ValueType::Error;
   if (Count == 0)
-    return LogError("Array size must be > 0"), ValueType::Error;
+    return LogErrorExpression("Array size must be > 0"), ValueType::Error;
   getNextToken(); // eat number
   if (CurrentToken != ']')
-    return LogError("Expected ']' after array size"), ValueType::Error;
+    return LogErrorExpression("Expected ']' after array size"), ValueType::Error;
   getNextToken(); // eat ']'
   if (StructName)
     *StructName = EncodeArrayType(BaseType, BaseStructName, Count);
   if (CurrentToken == '[')
-    return LogError("Nested arrays are not supported"), ValueType::Error;
+    return LogErrorExpression("Nested arrays are not supported"), ValueType::Error;
   return ValueType::Array;
 }
 
@@ -197,13 +197,13 @@ With that in place, parsing the literal itself is straightforward: read the expe
 ```cpp
 static unique_ptr<ExpressionNode> ParseArrayLiteralExpression() {
   if (ExpectedLiteralType != ValueType::Array)
-    return LogError("Array literal requires an expected array type");
+    return LogErrorExpression("Array literal requires an expected array type");
   ValueType ElemType = ValueType::Error;
   string ElemStructName;
   uint64_t Count = 0;
   if (!DecodeArrayType(ExpectedLiteralStructName, ElemType, ElemStructName,
                        Count))
-    return LogError("Invalid expected array type");
+    return LogErrorExpression("Invalid expected array type");
 
   getNextToken(); // eat '['
   vector<unique_ptr<ExpressionNode>> Elements;
@@ -214,22 +214,22 @@ static unique_ptr<ExpressionNode> ParseArrayLiteralExpression() {
       if (!E)
         return nullptr;
       if (!IsAssignable(ElemType, E->getType()))
-        return LogError("Array literal element type mismatch");
+        return LogErrorExpression("Array literal element type mismatch");
       if ((ElemType == ValueType::Pointer || ElemType == ValueType::Array ||
            ElemType == ValueType::Struct) &&
           ElemStructName != E->getStructName())
-        return LogError("Array literal element type mismatch");
+        return LogErrorExpression("Array literal element type mismatch");
       Elements.push_back(std::move(E));
       if (CurrentToken == ']')
         break;
       if (CurrentToken != ',')
-        return LogError("Expected ']' or ',' in array literal");
+        return LogErrorExpression("Expected ']' or ',' in array literal");
       getNextToken();
     }
   }
   getNextToken(); // eat ']'
   if (Elements.size() != Count)
-    return LogError("Array literal element count mismatch");
+    return LogErrorExpression("Array literal element count mismatch");
   return make_unique<ArrayLiteralExpressionNode>(std::move(Elements),
                                           ExpectedLiteralStructName);
 }

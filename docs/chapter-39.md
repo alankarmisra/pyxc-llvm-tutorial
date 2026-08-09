@@ -103,15 +103,20 @@ return Type == ValueType::Int || Type == ValueType::Int8 || ... ||
 
 ## Implicit Widening Rule — Same Signedness Only
 
-`IsAssignable` gains a signedness gate. The bit-width comparison added in the previous chapter is now also gated on signedness:
+`CanWidenInt` gains a signedness gate. `IsAssignable` itself is unchanged: it still just calls `CanWidenInt` for the integer-to-integer case, but that helper now rejects mixed signedness before comparing the bit widths it's been comparing since Chapter 17:
 
 ```cpp
-if (IsIntType(From) && IsIntType(To)) {
-  unsigned FromBits = LLVMTypeFor(From)->getIntegerBitWidth();
-  unsigned ToBits   = LLVMTypeFor(To)->getIntegerBitWidth();
-  if (IsUnsignedIntType(From) != IsUnsignedIntType(To))
-    return false;          // signed/unsigned mixing forbidden implicitly
-  return FromBits <= ToBits;
+static bool CanWidenInt(ValueType From, ValueType To) {
+  if (From == To)
+    return true;
+  if (IsIntType(From) && IsIntType(To)) {
+    if (IsUnsignedIntType(From) != IsUnsignedIntType(To))
+      return false;
+    unsigned FromBits = LLVMTypeFor(From)->getIntegerBitWidth();
+    unsigned ToBits = LLVMTypeFor(To)->getIntegerBitWidth();
+    return FromBits <= ToBits;
+  }
+  return false;
 }
 ```
 

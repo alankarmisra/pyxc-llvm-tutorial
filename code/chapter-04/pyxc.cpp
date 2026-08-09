@@ -16,7 +16,7 @@ using namespace std;
 //===----------------------------------------===//
 
 // I return named tokens for known language elements. I preserve the [0-255]
-// character value of any other single character for diagnostics and custom operators.
+// character value of any other single character for diagnostics.
 enum Token {
   tok_eof = -1,
   tok_eol = -2,
@@ -52,18 +52,18 @@ static map<string, Token> Keywords = {{"def", tok_def}};
 // Debug-only token names. Kept separate from Keywords because this map is
 // purely for printing token stream output.
 static map<int, string> TokenNames = [] {
-  // Unprintable character tokens, and multi-character tokens.
+  // I list tokens that are not single characters.
   static map<int, string> Names = {
       {tok_eof, "end of input"}, {tok_eol, "newline"},
       {tok_error, "error"},      {tok_def, "'def'"},
       {tok_name, "name"}, {tok_number, "number"},
   };
 
-  // Single character tokens.
+  // I add a readable name for every single-character value.
   for (int ch = 0; ch <= 255; ++ch) {
-    if (isprint(static_cast<unsigned char>(ch))) // printable
+    if (isprint(static_cast<unsigned char>(ch)))
       Names[ch] = "'" + string(1, static_cast<char>(ch)) + "'";
-    else if (ch == '\n') // common whitespace
+    else if (ch == '\n')
       Names[ch] = "'\\n'";
     else if (ch == '\t')
       Names[ch] = "'\\t'";
@@ -71,7 +71,7 @@ static map<int, string> TokenNames = [] {
       Names[ch] = "'\\r'";
     else if (ch == '\0')
       Names[ch] = "'\\0'";
-    else { // everything else: hex code
+    else {
       ostringstream OS;
       OS << "0x" << uppercase << hex << setw(2) << setfill('0') << ch;
       Names[ch] = OS.str();
@@ -120,7 +120,6 @@ public:
     CurrentLine.clear();
   }
 
-  // Called by advance() for every character consumed from the input.
   void onChar(int C) {
     if (C == '\n') {
       CompletedLines.push_back(CurrentLine);
@@ -131,15 +130,13 @@ public:
       CurrentLine.push_back(static_cast<char>(C));
   }
 
-  // Returns a pointer to the text of line OneBasedLine, or nullptr if out of
-  // range. The pointer is stable for completed lines; CurrentLine may move if
-  // more characters arrive, so callers should not hold it across advance().
   const string *getLine(int OneBasedLine) const {
     if (OneBasedLine <= 0)
       return nullptr;
     size_t Index = static_cast<size_t>(OneBasedLine - 1);
     if (Index < CompletedLines.size())
       return &CompletedLines[Index];
+    // I may need the current line before I have consumed its newline.
     if (Index == CompletedLines.size())
       return &CurrentLine;
     return nullptr;
@@ -163,8 +160,7 @@ static int advance() {
   if (LastChar == '\r') {
     int NextChar = getchar();
     if (NextChar != '\n' && NextChar != EOF) {
-      // I read one character too far while checking for '\r\n', so I put it
-      // back.
+      // I read one character too far while checking for '\r\n', so I put it back.
       ungetc(NextChar, stdin);
     }
     PyxcSourceMgr.onChar('\n');
@@ -479,21 +475,21 @@ static unique_ptr<ExpressionNode> ParseExpression();
 ///   = number ;
 static unique_ptr<ExpressionNode> ParseNumberExpression() {
   auto Result = make_unique<NumberExpressionNode>(NumberValue);
-  getNextToken(); // consume the number
+  getNextToken(); // I consume the number.
   return std::move(Result);
 }
 
 /// parenthesized-expression
 ///   = "(" expression ")" ;
 static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
-  getNextToken(); // eat (.
+  getNextToken(); // I eat '('.
   auto V = ParseExpression();
   if (!V)
     return nullptr;
 
   if (CurrentToken != tok_rparen)
     return LogErrorExpression("expected ')'");
-  getNextToken(); // eat ).
+  getNextToken(); // I eat ')'.
   return V;
 }
 
@@ -507,13 +503,13 @@ static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
 static unique_ptr<ExpressionNode> ParseNameExpression() {
   string ParsedName = Name;
 
-  getNextToken(); // eat name.
+  getNextToken(); // I eat the name.
 
-  if (CurrentToken != tok_lparen) // Simple variable ref.
+  if (CurrentToken != tok_lparen) // I return a name, not a call.
     return make_unique<NameExpressionNode>(ParsedName);
 
-  // Call.
-  getNextToken(); // eat (
+  // I parse a call.
+  getNextToken(); // I eat '('.
   vector<unique_ptr<ExpressionNode>> Arguments;
   if (CurrentToken != tok_rparen) {
     while (true) {
@@ -531,7 +527,7 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
     }
   }
 
-  // Eat the ')'.
+  // I eat ')'.
   getNextToken();
 
   return make_unique<CallExpressionNode>(ParsedName, std::move(Arguments));
@@ -546,29 +542,32 @@ static unique_ptr<ExpressionNode> ParsePrimary() {
   default:
     return LogErrorExpression("unknown token when expecting an expression");
   case tok_name:
-    return ParseNameExpression();
+    return ParseNameExpression(); // I parse `a` or `add(...)`.
   case tok_number:
-    return ParseNumberExpression();
+    return ParseNumberExpression(); // I parse a number such as 3.14.
   case tok_lparen:
-    return ParseParenthesizedExpression();
+    return ParseParenthesizedExpression(); // I parse `( ... )`.
   }
 }
 
 /// term
 ///   = primary { ("*" | "/") primary } ;
 static unique_ptr<ExpressionNode> ParseTerm() {
+  // I start the term by parsing one primary.
   auto Left = ParsePrimary();
   if (!Left)
     return nullptr;
 
+  // I consume only the operators that belong to this tier.
   while (CurrentToken == tok_star || CurrentToken == tok_slash) {
     int Operator = CurrentToken;
-    getNextToken();
+    getNextToken(); // I eat '*' or '/'.
 
     auto Right = ParsePrimary();
     if (!Right)
       return nullptr;
 
+    // I fold each new operation into the tree on my left.
     Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
                                              std::move(Right));
   }
@@ -579,13 +578,14 @@ static unique_ptr<ExpressionNode> ParseTerm() {
 /// sum
 ///   = term { ("+" | "-") term } ;
 static unique_ptr<ExpressionNode> ParseSum() {
+  // I call ParseTerm() so I finish every tighter * or / operation first.
   auto Left = ParseTerm();
   if (!Left)
     return nullptr;
 
   while (CurrentToken == tok_plus || CurrentToken == tok_minus) {
     int Operator = CurrentToken;
-    getNextToken();
+    getNextToken(); // I eat '+' or '-'.
 
     auto Right = ParseTerm();
     if (!Right)
@@ -601,13 +601,14 @@ static unique_ptr<ExpressionNode> ParseSum() {
 /// comparison
 ///   = sum { "<" sum } ;
 static unique_ptr<ExpressionNode> ParseComparison() {
+  // I call ParseSum() so I finish both sums before I build the comparison.
   auto Left = ParseSum();
   if (!Left)
     return nullptr;
 
   while (CurrentToken == tok_less) {
     int Operator = CurrentToken;
-    getNextToken();
+    getNextToken(); // I eat '<'.
 
     auto Right = ParseSum();
     if (!Right)
@@ -623,6 +624,7 @@ static unique_ptr<ExpressionNode> ParseComparison() {
 /// expression
 ///   = comparison ;
 static unique_ptr<ExpressionNode> ParseExpression() {
+  // I start at the loosest tier so the expression can contain every tier.
   return ParseComparison();
 }
 
@@ -637,31 +639,31 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
     return LogErrorSignature("Expected function name in function signature");
 
   string FnName = Name;
-  getNextToken(); // eat function name
+  getNextToken(); // I eat the function name.
 
   if (CurrentToken != tok_lparen)
     return LogErrorSignature("Expected '(' in function signature");
 
-  // Parse parameter names. The loop calls getNextToken() at the top to advance
-  // past '(' on the first iteration, and past ',' on subsequent ones.
+  // I parse parameter names. I call getNextToken() at the top to advance past
+  // '(' on the first iteration, and past ',' on subsequent ones.
   // Inside the body I call getNextToken() again to move past the name
   // I just stored, then check whether ')' or ',' follows.
   vector<string> ParameterNames;
   while (getNextToken() == tok_name) {
     ParameterNames.push_back(Name);
 
-    if (getNextToken() == tok_rparen) // eat name, check what follows
+    if (getNextToken() == tok_rparen) // I eat the name and check what follows.
       break;
 
     if (CurrentToken != tok_comma)
       return LogErrorSignature("Expected ')' or ',' in parameter list");
-    // loop continues: getNextToken() at the top eats the ','
+    // I continue the loop so getNextToken() at the top eats the ','.
   }
 
   if (CurrentToken != tok_rparen)
     return LogErrorSignature("Expected ')' in function signature");
 
-  getNextToken(); // eat ')'
+  getNextToken(); // I eat ')'.
 
   return make_unique<FunctionSignatureNode>(FnName, std::move(ParameterNames));
 }
@@ -669,16 +671,16 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
 /// function-definition
 ///   = "def" function-signature ":" [ end-of-lines ] expression ;
 static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
-  getNextToken(); // eat 'def'
+  getNextToken(); // I eat 'def'.
   auto Signature = ParseFunctionSignature();
   if (!Signature)
     return nullptr;
 
   if (CurrentToken != tok_colon)
     return LogErrorFunction("Expected ':' in function definition");
-  getNextToken(); // eat ':'
+  getNextToken(); // I eat ':'.
 
-  // Allow the body expression to start on the next line:
+  // I allow the body expression to start on the next line:
   //   def foo(x):
   //     x + 1
   consumeNewlines();
@@ -764,7 +766,7 @@ static void MainLoop() {
     if (CurrentToken == tok_eof)
       return;
 
-    // A bare newline: just print a fresh prompt and read the next token.
+    // For a bare newline, I print a fresh prompt and read the next token.
     if (CurrentToken == tok_eol) {
       fprintf(stderr, "ready> ");
       getNextToken();
@@ -792,8 +794,8 @@ static void MainLoop() {
 //===----------------------------------------===//
 
 int main() {
-  // Print the first prompt and load the first token before entering the loop.
-  // Every parse function expects CurrentToken to already be loaded when it is called.
+  // I print the first prompt and load the first token before entering the loop.
+  // I load CurrentToken before I call any parse function.
   fprintf(stderr, "ready> ");
   getNextToken();
 

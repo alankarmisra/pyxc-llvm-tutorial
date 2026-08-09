@@ -16,7 +16,6 @@
 #include <memory>
 #include <sstream>
 #include <string>
-#include <unistd.h>
 #include <utility>
 #include <vector>
 
@@ -28,7 +27,7 @@ using namespace llvm;
 //===----------------------------------------===//
 
 // I return named tokens for known language elements. I preserve the [0-255]
-// character value of any other single character for diagnostics and custom operators.
+// character value of any other single character for diagnostics.
 enum Token {
   tok_eof = -1,
   tok_eol = -2,
@@ -64,14 +63,14 @@ static map<string, Token> Keywords = {{"def", tok_def}};
 // Debug-only token names. Kept separate from Keywords because this map is
 // purely for printing token stream output.
 static map<int, string> TokenNames = [] {
-  // Unprintable character tokens, and multi-character tokens.
+  // I list tokens that are not single characters.
   static map<int, string> Names = {
       {tok_eof, "end of input"}, {tok_eol, "newline"},
       {tok_error, "error"},      {tok_def, "'def'"},
       {tok_name, "name"}, {tok_number, "number"},
   };
 
-  // Single character tokens.
+  // I add a readable name for every single-character value.
   for (int ch = 0; ch <= 255; ++ch) {
     if (isprint(static_cast<unsigned char>(ch)))
       Names[ch] = "'" + string(1, static_cast<char>(ch)) + "'";
@@ -132,7 +131,6 @@ public:
     CurrentLine.clear();
   }
 
-  // Called by advance() for every character consumed from the input.
   void onChar(int C) {
     if (C == '\n') {
       CompletedLines.push_back(CurrentLine);
@@ -143,15 +141,13 @@ public:
       CurrentLine.push_back(static_cast<char>(C));
   }
 
-  // Returns a pointer to the text of line OneBasedLine, or nullptr if out of
-  // range. The pointer is stable for completed lines; CurrentLine may move if
-  // more characters arrive, so callers should not hold it across advance().
   const string *getLine(int OneBasedLine) const {
     if (OneBasedLine <= 0)
       return nullptr;
     size_t Index = static_cast<size_t>(OneBasedLine - 1);
     if (Index < CompletedLines.size())
       return &CompletedLines[Index];
+    // I may need the current line before I have consumed its newline.
     if (Index == CompletedLines.size())
       return &CurrentLine;
     return nullptr;
@@ -174,8 +170,10 @@ static int advance() {
   int LastChar = getchar();
   if (LastChar == '\r') {
     int NextChar = getchar();
-    if (NextChar != '\n' && NextChar != EOF)
+    if (NextChar != '\n' && NextChar != EOF) {
+      // I read one character too far while checking for '\r\n', so I put it back.
       ungetc(NextChar, stdin);
+    }
     PyxcSourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
@@ -309,7 +307,7 @@ static int getToken() {
 /// unchanged. The special case is tok_eol: CurLoc for a newline token is
 /// snapshotted after advance() has consumed the '\n' and incremented
 /// LexLoc.Line, so CurLoc.Line is already the *next* line. Subtracting one
-/// gives the line that just ended, and we report a column one past its last
+/// gives the line that just ended, and I report a column one past its last
 /// character — pointing just after the final token on the line, which is
 /// where the missing token (e.g. ':') should have appeared.
 static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
@@ -345,7 +343,7 @@ static string FormatTokenForMessage(int Tok) {
 }
 
 /// PrintErrorSourceContext - Reprint the source line at Loc and place a
-/// '^~~~' caret under column Loc.Col. Col is 1-based, so we print Col-1
+/// '^~~~' caret under column Loc.Col. Col is 1-based, so I print Col-1
 /// spaces before the caret.
 static void PrintErrorSourceContext(SourceLocation Loc) {
   const string *LineText = PyxcSourceMgr.getLine(Loc.Line);
@@ -354,6 +352,7 @@ static void PrintErrorSourceContext(SourceLocation Loc) {
 
   fprintf(stderr, "%s\n", LineText->c_str());
   int spaces = Loc.Col - 1;
+  // I guard against an invalid column before printing the spaces.
   if (spaces < 0)
     spaces = 0;
   for (int i = 0; i < spaces; ++i)
@@ -435,7 +434,7 @@ public:
   Function *codegen();
 };
 
-/// FunctionDefinitionNode - This class represents a function function-definition itself.
+/// FunctionDefinitionNode - This class represents a function definition itself.
 class FunctionDefinitionNode {
   unique_ptr<FunctionSignatureNode> Signature;
   unique_ptr<ExpressionNode> Body;
@@ -468,9 +467,9 @@ static void consumeNewlines() {
     getNextToken();
 }
 
-/// LogError* - Error reporting helpers. Each returns nullptr for its respective
-/// type so parse functions can write: return LogError("message");
-unique_ptr<ExpressionNode> LogError(const char *Str) {
+/// LogErrorExpression* - Error reporting helpers. Each returns nullptr for its respective
+/// type so parse functions can write: return LogErrorExpression("message");
+unique_ptr<ExpressionNode> LogErrorExpression(const char *Str) {
   SourceLocation Anchor = GetDiagnosticAnchorLoc(CurLoc, CurrentToken);
   fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
           Str);
@@ -479,12 +478,12 @@ unique_ptr<ExpressionNode> LogError(const char *Str) {
 }
 
 unique_ptr<FunctionSignatureNode> LogErrorSignature(const char *Str) {
-  LogError(Str);
+  LogErrorExpression(Str);
   return nullptr;
 }
 
-unique_ptr<FunctionDefinitionNode> LogErrorF(const char *Str) {
-  LogError(Str);
+unique_ptr<FunctionDefinitionNode> LogErrorFunction(const char *Str) {
+  LogErrorExpression(Str);
   return nullptr;
 }
 
@@ -494,21 +493,21 @@ static unique_ptr<ExpressionNode> ParseExpression();
 ///   = number ;
 static unique_ptr<ExpressionNode> ParseNumberExpression() {
   auto Result = make_unique<NumberExpressionNode>(NumberValue);
-  getNextToken(); // consume the number
+  getNextToken(); // I consume the number.
   return std::move(Result);
 }
 
 /// parenthesized-expression
 ///   = "(" expression ")" ;
 static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
-  getNextToken(); // eat (.
+  getNextToken(); // I eat '('.
   auto V = ParseExpression();
   if (!V)
     return nullptr;
 
   if (CurrentToken != tok_rparen)
-    return LogError("expected ')'");
-  getNextToken(); // eat ).
+    return LogErrorExpression("expected ')'");
+  getNextToken(); // I eat ')'.
   return V;
 }
 
@@ -522,13 +521,13 @@ static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
 static unique_ptr<ExpressionNode> ParseNameExpression() {
   string ParsedName = Name;
 
-  getNextToken(); // eat name.
+  getNextToken(); // I eat the name.
 
-  if (CurrentToken != tok_lparen) // Simple variable ref.
+  if (CurrentToken != tok_lparen) // I return a name, not a call.
     return make_unique<NameExpressionNode>(ParsedName);
 
-  // Call.
-  getNextToken(); // eat (
+  // I parse a call.
+  getNextToken(); // I eat '('.
   vector<unique_ptr<ExpressionNode>> Arguments;
   if (CurrentToken != tok_rparen) {
     while (true) {
@@ -541,12 +540,12 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
         break;
 
       if (CurrentToken != tok_comma)
-        return LogError("Expected ')' or ',' in argument list");
+        return LogErrorExpression("Expected ')' or ',' in argument list");
       getNextToken();
     }
   }
 
-  // Eat the ')'.
+  // I eat ')'.
   getNextToken();
 
   return make_unique<CallExpressionNode>(ParsedName, std::move(Arguments));
@@ -559,29 +558,33 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
 static unique_ptr<ExpressionNode> ParsePrimary() {
   switch (CurrentToken) {
   default:
-    return LogError("unknown token when expecting an expression");
+    return LogErrorExpression("unknown token when expecting an expression");
   case tok_name:
-    return ParseNameExpression();
+    return ParseNameExpression(); // I parse `a` or `add(...)`.
   case tok_number:
-    return ParseNumberExpression();
+    return ParseNumberExpression(); // I parse a number such as 3.14.
   case tok_lparen:
-    return ParseParenthesizedExpression();
+    return ParseParenthesizedExpression(); // I parse `( ... )`.
   }
 }
 
 /// term
 ///   = primary { ("*" | "/") primary } ;
 static unique_ptr<ExpressionNode> ParseTerm() {
+  // I start the term by parsing one primary.
   auto Left = ParsePrimary();
   if (!Left)
     return nullptr;
 
+  // I consume only the operators that belong to this tier.
   while (CurrentToken == tok_star || CurrentToken == tok_slash) {
     int Operator = CurrentToken;
-    getNextToken();
+    getNextToken(); // I eat '*' or '/'.
     auto Right = ParsePrimary();
     if (!Right)
       return nullptr;
+
+    // I fold each new operation into the tree on my left.
     Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
                                              std::move(Right));
   }
@@ -591,12 +594,13 @@ static unique_ptr<ExpressionNode> ParseTerm() {
 /// sum
 ///   = term { ("+" | "-") term } ;
 static unique_ptr<ExpressionNode> ParseSum() {
+  // I call ParseTerm() so I finish every tighter * or / operation first.
   auto Left = ParseTerm();
   if (!Left)
     return nullptr;
   while (CurrentToken == tok_plus || CurrentToken == tok_minus) {
     int Operator = CurrentToken;
-    getNextToken();
+    getNextToken(); // I eat '+' or '-'.
     auto Right = ParseTerm();
     if (!Right)
       return nullptr;
@@ -609,12 +613,13 @@ static unique_ptr<ExpressionNode> ParseSum() {
 /// comparison
 ///   = sum { "<" sum } ;
 static unique_ptr<ExpressionNode> ParseComparison() {
+  // I call ParseSum() so I finish both sums before I build the comparison.
   auto Left = ParseSum();
   if (!Left)
     return nullptr;
   while (CurrentToken == tok_less) {
     int Operator = CurrentToken;
-    getNextToken();
+    getNextToken(); // I eat '<'.
     auto Right = ParseSum();
     if (!Right)
       return nullptr;
@@ -627,6 +632,7 @@ static unique_ptr<ExpressionNode> ParseComparison() {
 /// expression
 ///   = comparison ;
 static unique_ptr<ExpressionNode> ParseExpression() {
+  // I start at the loosest tier so the expression can contain every tier.
   return ParseComparison();
 }
 
@@ -641,48 +647,48 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
     return LogErrorSignature("Expected function name in function signature");
 
   string FnName = Name;
-  getNextToken(); // eat function name
+  getNextToken(); // I eat the function name.
 
   if (CurrentToken != tok_lparen)
     return LogErrorSignature("Expected '(' in function signature");
 
-  // Parse argument names. The loop calls getNextToken() at the top to advance
-  // past '(' on the first iteration, and past ',' on subsequent ones.
-  // Inside the body we call getNextToken() again to move past the name
-  // we just stored, then check whether ')' or ',' follows.
+  // I parse parameter names. I call getNextToken() at the top to advance past
+  // '(' on the first iteration, and past ',' on subsequent ones.
+  // Inside the body I call getNextToken() again to move past the name
+  // I just stored, then check whether ')' or ',' follows.
   vector<string> ParameterNames;
   while (getNextToken() == tok_name) {
     ParameterNames.push_back(Name);
 
-    if (getNextToken() == tok_rparen) // eat name, check what follows
+    if (getNextToken() == tok_rparen) // I eat the name and check what follows.
       break;
 
     if (CurrentToken != tok_comma)
       return LogErrorSignature("Expected ')' or ',' in parameter list");
-    // loop continues: getNextToken() at the top eats the ','
+    // I continue the loop so getNextToken() at the top eats the ','.
   }
 
   if (CurrentToken != tok_rparen)
     return LogErrorSignature("Expected ')' in function signature");
 
-  getNextToken(); // eat ')'
+  getNextToken(); // I eat ')'.
 
   return make_unique<FunctionSignatureNode>(FnName, std::move(ParameterNames));
 }
 
 /// function-definition
-///   = "def" function signature ":" ["newline"] expression ;
+///   = "def" function-signature ":" [ end-of-lines ] expression ;
 static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
-  getNextToken(); // eat 'def'
+  getNextToken(); // I eat 'def'.
   auto Signature = ParseFunctionSignature();
   if (!Signature)
     return nullptr;
 
   if (CurrentToken != tok_colon)
-    return LogErrorF("Expected ':' in function definition");
-  getNextToken(); // eat ':'
+    return LogErrorFunction("Expected ':' in function definition");
+  getNextToken(); // I eat ':'.
 
-  // Allow the body expression to start on the next line:
+  // I allow the body expression to start on the next line:
   //   def foo(x):
   //     x + 1
   consumeNewlines();
@@ -693,10 +699,10 @@ static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
 }
 
 /// top-level-expression
-///   = expression
+///   = expression ;
 /// A top-level expression (e.g. "1 + 2") is wrapped in an anonymous function
-/// so it fits the same FunctionDefinitionNode shape as everything else. When we add JIT
-/// execution later, we'll look up "__anon_expr" and call it to get the result.
+/// so it fits the same FunctionDefinitionNode shape as everything else. When I add JIT
+/// execution later, I'll look up "__anon_expr" and call it to get the result.
 static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
   if (auto E = ParseExpression()) {
     auto Signature = make_unique<FunctionSignatureNode>("__anon_expr", vector<string>());
@@ -714,8 +720,8 @@ static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
 // object. One context per compilation unit (one per thread in threaded builds).
 //
 // TheModule - The unit of compilation. Every function definition lands here.
-// At session end we print the whole module so the reader can see all
-// accumulated IR in one place.
+// At session end I print the whole module so I can inspect all accumulated IR
+// in one place.
 //
 // Builder - A cursor into the IR being built. Point it at a BasicBlock with
 // SetInsertPoint(), then call methods like CreateFAdd or CreateFMul to append
@@ -730,10 +736,10 @@ static unique_ptr<Module> TheModule;
 static unique_ptr<IRBuilder<>> Builder;
 static map<std::string, Value *> NamedValues;
 
-// LogErrorV - Codegen-level error helper. Delegates to LogError for printing,
+// LogErrorV - Codegen-level error helper. Delegates to LogErrorExpression for printing,
 // then returns nullptr so codegen callers can write: return LogErrorV("msg");
 Value *LogErrorV(const char *Str) {
-  LogError(Str);
+  LogErrorExpression(Str);
   return nullptr;
 }
 
@@ -831,14 +837,14 @@ Value *CallExpressionNode::codegen() {
 ///
 /// ExternalLinkage makes the function visible outside this module. That is
 /// what lets 'def foo(...)' be called from later expressions in the same
-/// session. I'll lean on this same linkage again in chapter 6, when 'extern'
+/// session. I'll lean on this same linkage again in chapter 7, when 'extern'
 /// declarations use it to resolve against real C library functions at
 /// runtime.
 ///
 /// Arg.setName() is optional — it only affects the printed IR, making output
 /// read as 'double %a, double %b' rather than 'double %0, double %1'.
 Function *FunctionSignatureNode::codegen() {
-  // All parameters and the return value are double.
+  // I use double for every parameter and for the return value.
   std::vector<Type *> Doubles(Parameters.size(), Type::getDoubleTy(*TheContext));
   FunctionType *FT = FunctionType::get(Type::getDoubleTy(*TheContext), Doubles,
                                        false /* not variadic */);
@@ -846,7 +852,7 @@ Function *FunctionSignatureNode::codegen() {
   Function *F =
       Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
 
-  // Name arguments so the printed IR is readable.
+  // I name the arguments so the printed IR is easier to read.
   unsigned Idx = 0;
   for (auto &Arg : F->args())
     Arg.setName(Parameters[Idx++]);
@@ -854,7 +860,7 @@ Function *FunctionSignatureNode::codegen() {
   return F;
 }
 
-/// FunctionDefinitionNode::codegen - Generate IR for a complete function function-definition.
+/// FunctionDefinitionNode::codegen - Generate IR for a complete function definition.
 ///
 /// Four steps:
 ///
@@ -878,42 +884,37 @@ Function *FunctionSignatureNode::codegen() {
 ///    block without a terminator. On failure, eraseFromParent() removes the
 ///    partially-built function so no broken declaration is left in the module.
 Function *FunctionDefinitionNode::codegen() {
-  // Step 1: look for an existing declaration under this name.
+  // Step 1: I get an existing declaration or create a new one.
   Function *TheFunction = TheModule->getFunction(Signature->getName());
 
-  // Bail if the function is already fully defined — redefinition is an error.
   if (TheFunction && !TheFunction->empty()) {
-    LogError("Function cannot be redefined.");
+    LogErrorExpression("Function cannot be redefined.");
     return nullptr;
   }
 
-  // The function was neither declared nor defined — create a fresh declaration.
   if (!TheFunction)
     TheFunction = Signature->codegen();
 
-  // Signature codegen failed.
   if (!TheFunction)
     return nullptr;
 
-  // Step 2: create the entry block and point the builder at it.
+  // Step 2: I create the entry block and insert new instructions there.
   BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
   Builder->SetInsertPoint(BB);
 
-  // Step 3: populate NamedValues with this function's arguments.
+  // Step 3: I make the parameters available to the body.
   NamedValues.clear();
   for (auto &Arg : TheFunction->args())
     NamedValues[std::string(Arg.getName())] = &Arg;
 
-  // Step 4: codegen the body, emit ret, verify, or erase on failure.
+  // Step 4: I generate the body, return its value, and verify the function.
   if (Value *RetVal = Body->codegen()) {
     Builder->CreateRet(RetVal);
-    // Validate the generated code, checking for consistency.
     verifyFunction(*TheFunction);
     return TheFunction;
   }
 
-  // Body codegen failed — remove the incomplete function from the module so
-  // it cannot be called and does not pollute the final IR dump.
+  // I remove an incomplete function after an error.
   TheFunction->eraseFromParent();
   return nullptr;
 }
@@ -939,11 +940,12 @@ static void InitializeModuleAndManagers() {
 /// and after any unexpected trailing token, ensuring the REPL always returns
 /// to a clean state before printing the next prompt.
 static void SynchronizeToLineBoundary() {
+  // I leave the boundary token for MainLoop() to handle.
   while (CurrentToken != tok_eol && CurrentToken != tok_eof)
     getNextToken();
 }
 
-/// HandleFunctionDefinition - Parse and codegen a 'def' function function-definition.
+/// HandleFunctionDefinition - Parse and codegen a 'def' function definition.
 ///
 /// On success: codegen the function, print the confirmation message and the
 /// resulting IR. The function remains in TheModule for the rest of the session
@@ -954,7 +956,7 @@ static void HandleFunctionDefinition() {
   auto FnAST = ParseFunctionDefinition();
   if (!FnAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (FnAST)
-      LogError(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
   }
@@ -969,7 +971,7 @@ static void HandleFunctionDefinition() {
 ///
 /// The expression is wrapped in an anonymous function '__anon_expr' so it
 /// fits the same FunctionDefinitionNode shape as everything else. After printing the IR
-/// we call eraseFromParent() to remove it from the module — anonymous
+/// I call eraseFromParent() to remove it from the module — anonymous
 /// expressions are for display only and should not appear in the final dump.
 /// In a later chapter the JIT will execute the function before erasing it,
 /// printing the numeric result.
@@ -977,7 +979,7 @@ static void HandleTopLevelExpression() {
   auto FnAST = ParseTopLevelExpression();
   if (!FnAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (FnAST)
-      LogError(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
   }
@@ -994,17 +996,20 @@ static void HandleTopLevelExpression() {
 
 /// MainLoop - Dispatch loop for the REPL.
 ///
-/// grammar: top = { function-definition | expression | newline }
+/// program
+///   = [ end-of-lines ]
+///     [ top-level-item { end-of-lines top-level-item } ]
+///     [ end-of-lines ] ;
 ///
 /// CurrentToken is primed before MainLoop() is called (see main()). After each
 /// successful parse the handler prints a confirmation; after a failed parse it
-/// skips one token. Either way we come back here and look at the new CurrentToken.
+/// skips one token. Either way I come back here and look at the new CurrentToken.
 static void MainLoop() {
   while (true) {
     if (CurrentToken == tok_eof)
       return;
 
-    // A bare newline: just print a fresh prompt and read the next token.
+    // For a bare newline, I print a fresh prompt and read the next token.
     if (CurrentToken == tok_eol) {
       fprintf(stderr, "ready> ");
       getNextToken();
@@ -1032,8 +1037,8 @@ static void MainLoop() {
 //===----------------------------------------===//
 
 int main() {
-  // Print the first prompt and load the first token before entering the loop.
-  // Every parse function expects CurrentToken to already be loaded when it is called.
+  // I print the first prompt and load the first token before entering the loop.
+  // I load CurrentToken before I call any parse function.
   fprintf(stderr, "ready> ");
   getNextToken();
 

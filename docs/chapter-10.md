@@ -201,7 +201,7 @@ public:
 /// Called after '@' has been consumed. CurTok is on 'binary' or 'unary'.
 static unique_ptr<FunctionAST> ParseDecoratedDef() {
   if (CurTok != tok_binary && CurTok != tok_unary)
-    return LogErrorF("Expected 'binary' or 'unary' after '@'");
+    return LogErrorFunction("Expected 'binary' or 'unary' after '@'");
 
   bool IsBinary = (CurTok == tok_binary);
   unique_ptr<PrototypeAST> Proto;
@@ -211,10 +211,10 @@ static unique_ptr<FunctionAST> ParseDecoratedDef() {
     if (!Prec)
       return nullptr;
     if (CurTok != tok_eol) // the decorator must end at a newline before 'def'
-      return LogErrorF("Expected newline after '@binary(...)' decorator");
+      return LogErrorFunction("Expected newline after '@binary(...)' decorator");
     consumeNewlines();
     if (CurTok != tok_def)
-      return LogErrorF("Expected 'def' after decorator");
+      return LogErrorFunction("Expected 'def' after decorator");
     getNextToken(); // eat 'def'
     Proto = ParseBinaryOpPrototype(Prec);
   } else {
@@ -228,7 +228,7 @@ static unique_ptr<FunctionAST> ParseDecoratedDef() {
 }
 ```
 
-**`ParseBinaryDecorator`** consumes `binary(5)` and returns `5`. The lexer has no `tok_integer` — it emits `tok_number` for both `5` and `1.5` — so the decimal check inspects `NumLiteralStr`, the raw source text. It returns `unsigned`, not a `unique_ptr`, so on failure it calls the plain `LogError` (which prints the message and returns a discarded `nullptr`) and then explicitly returns `0`:
+**`ParseBinaryDecorator`** consumes `binary(5)` and returns `5`. The lexer has no `tok_integer` — it emits `tok_number` for both `5` and `1.5` — so the decimal check inspects `NumLiteralStr`, the raw source text. It returns `unsigned`, not a `unique_ptr`, so on failure it calls the plain `LogErrorExpression` (which prints the message and returns a discarded `nullptr`) and then explicitly returns `0`:
 
 ```cpp
 /// binarydecorator
@@ -241,30 +241,30 @@ static unsigned ParseBinaryDecorator() {
   getNextToken(); // eat 'binary'
 
   if (CurTok != '(') {
-    LogError("Expected '(' after '@binary'");
+    LogErrorExpression("Expected '(' after '@binary'");
     return 0;
   }
   getNextToken(); // eat '('
 
   if (CurTok != tok_number) {
-    LogError("Expected precedence number in '@binary(...)'");
+    LogErrorExpression("Expected precedence number in '@binary(...)'");
     return 0;
   }
   // The lexer has no separate tok_integer — it emits tok_number for both
   // integer and decimal literals. Reject decimals by checking the raw source.
   if (NumLiteralStr.find('.') != string::npos) {
-    LogError("Precedence must be an integer, not a decimal literal");
+    LogErrorExpression("Precedence must be an integer, not a decimal literal");
     return 0;
   }
   if (NumVal < 1) {
-    LogError("Precedence must be a positive integer");
+    LogErrorExpression("Precedence must be a positive integer");
     return 0;
   }
   unsigned Prec = static_cast<unsigned>(NumVal);
   getNextToken(); // eat number
 
   if (CurTok != ')') {
-    LogError("Expected ')' after precedence in '@binary(...)'");
+    LogErrorExpression("Expected ')' after precedence in '@binary(...)'");
     return 0;
   }
   getNextToken(); // eat ')'

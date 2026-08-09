@@ -136,7 +136,7 @@ if (IsComparisonOp(BinOp) || IsArithmeticOp(BinOp) || IsLogicalOp(BinOp) ||
     IsBitwiseOp(BinOp) || IsShiftOp(BinOp)) {
   ResultType = GetBinaryResultType(BinOp, LHS->getType(), ...);
   if (ResultType == ValueType::Error)
-    return LogError("Type mismatch in binary operator");
+    return LogErrorExpression("Type mismatch in binary operator");
   LHS = make_unique<BinaryExprAST>(...);
   continue;
 }
@@ -155,7 +155,7 @@ if (CurTok == '~') {
   if (!Operand)
     return nullptr;
   if (!IsIntType(Operand->getType()))
-    return LogError("Unary '~' requires an integer operand");
+    return LogErrorExpression("Unary '~' requires an integer operand");
   return make_unique<UnaryExprAST>('~', std::move(Operand),
                                    Operand->getType());
 }

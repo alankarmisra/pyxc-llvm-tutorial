@@ -6,7 +6,7 @@ description: "Learn compilers by building a real programming language from scrat
 
 ## Requirements
 
-You should know some C++. You really don't need to be a master craftsman though. I'll use basic C++ and if I do venture into something complex-y, I'll *ELI5* it for you. You don't need to know any compiler theory. You will learn by doing. A fair bit of the compiler theory you learn elsewhere will automagically make sense to you once you build a compiler on your own. When you do learn the theory, it can then help you structure and expand your thinking to problems we have not considered here, or more excitingly, not considered anywhere else in the world. 
+You should know some C++. You really don't need to be a master craftsman, though. I'll use basic C++. If I do venture into something complex-y, I'll *ELI5* it for you. You don't need to know any compiler theory. You will learn by doing. A fair bit of the compiler theory you learn elsewhere will automagically make sense to you once you build a compiler on your own. When you do learn the theory, it can then help you structure and expand your thinking to problems we have not considered here, or more excitingly, not considered anywhere else in the world. 
 
 You definitely do not need to know anything about `LLVM`, except that it will help you write compilers faster. LLVM has been used to write Rust, Swift, Kotlin/Native, C/C++ compilers (Clang), among others. Using the `IIGEFTIGEFU` principle (*if it's good enough for them, it's good enough for us*), we will use LLVM. 
 
@@ -14,33 +14,33 @@ You should know that there are alternatives to LLVM. Regardless of what tool you
 
 ## What We'll Build
 
-We'll invent a programming language called **pyxc** (pronounced "Pixie") that resembles Python syntax. *Pythonic*, if you will. We'll be able to run it interactively through a REPL using just-in-time compilation (fast), or compile down to a native executable (very fast). I'm not going to expend a paragraph, or two, or three, trying to convince you that doing this is a good idea, and that doing this with *this* tutorial is an even better idea. I'm going to assume, rather naively, that if you are here, building a compiler is something you want to do with me. As you progress through the tutorial, you will be the ultimate arbiter of whether this tutorial is a good fit for your preferred pace and style. It's hard, if not impossible to cater to everyone, but I've tried to keep things simple enough to cater to the hobbyist language designer while not dumbing it down to feel like a toy. 
+We'll invent a programming language called **pyxc** (pronounced "Pixie") that resembles Python syntax. *Pythonic*, if you will. We'll be able to run it interactively through a REPL using just-in-time compilation (fast), or compile down to a native executable (very fast). I'm not going to expend a paragraph, or two, or three, trying to convince you that doing this is a good idea, and that doing this with *this* tutorial is an even better idea. I'm going to assume, rather naively, that if you are here, building a compiler is something you want to do with me. As you progress through the tutorial, you will be the ultimate arbiter of whether this tutorial is a good fit for your preferred pace and style. It's hard, if not impossible, to cater to everyone. I've tried to keep things simple enough for the hobbyist language designer without dumbing it down to feel like a toy. 
 
 ## About The Tone
 
-I've tried to use an informal tone where possible, and a formal tone only to the extent necessary. Furthermore, I write in the first person so as to make it less pedagogical, and more of an insight into a fellow software engineer's mind as he tackles a complex task. There are plenty of pedagogical references in the compiler construction world. It is not my desire to replace them — I just want to let you witness my conversations with myself, so that you may validate (or invalidate) my approach through your own experiments at building the compiler alongside me. I've personally found this way of mirroring someone else to be a much better way for me to learn things (I'm largely an autodidact) and I figure that there are others like me - which is why this blog exists.
+I've tried to use an informal tone where possible, and a formal tone only to the extent necessary. Furthermore, I write in the first person so as to make it read less like a textbook, and more like an insight into a fellow software engineer's mind as he tackles a complex task. There are many text books in the compiler construction world. I'm not trying to replace them. I just want to let you witness my conversations with myself, so that you can validate (or invalidate) my approach through your own experiments with building a compiler alongside me. I'm largely an autodidact, and I find that I learn better by mirroring someone else's process. I assume there are others like me. Hence, this blog.
 
 ## Why "pyxc"? 
-pyxc is a small, nimble, fast, executable, and magical language. Or just something that looks like py-thon and creates x-c-cutables. I didn't dwell on this much. It came to me quite naturally. 
+pyxc is a small, nimble, fast, executable, and magical language. Or just something that looks like py-thon and creates x-c-cutables. I didn't dwell on this much. I like it, is what I'm saying. 
 
 ## Skip and start building, or keep reading.
 The rest of this page is a roadmap for the tutorial. I honestly won't judge you if you just dive into [Chapter 1](chapter-01.md) and start building.  But if you're the sort who needs some structure, read ahead. 
 
 ## Where We're Headed
 
-In **Chapters 1-3**, I build the analysis part of pyxc where it begins to understand my program's structure and intention, and communicates what it can't understand or does not expect. 
+In **Chapters 1-4**, I build the analysis part of pyxc where it begins to understand my program's structure and reports what it can't understand or does not expect. 
 
-In **Chapter 5** I set up LLVM. As you follow along, the process could be smooth, or reasonably bumpy. If it's the latter, allow yourself a break. But do come back, because the compiler isn't going to build itself. Of course if you don't succeed, you can [get in touch with me](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues) and we can take a crack at it together. 
+In **Chapter 5**, I set up LLVM. As you follow along, your experience could be smooth, or reasonably bumpy. If it's the latter, allow yourself a break. But do come back, because the compiler isn't going to build itself. Of course, if you don't succeed, you can [get in touch with me](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues) and we can take a crack at it together. 
 
-In **Chapters 6 and 7** I extend the compiler to convert a pyxc program's intentions into LLVM's internal representation (IR), which reads a lot like assembly and is what LLVM converts to machine code for a host of different architectures, giving us a multi-platform language with very little extra work. I can then generate and run this IR either through a python-like interactive REPL, or from a source file. Even with a limited syntax and few language features, I can already express short programs that outperform similar Python code. 
+In **Chapters 6 and 7**, I extend the compiler to understand and convert a pyxc program's intentions into LLVM's internal representation (IR). The IR reads a lot like assembly. It's what LLVM converts to machine code for a host of different architectures, giving us a multi-platform language with very little extra work. At this stage, we can run this IR in a REPL and see the output of our programs.
 
-In **Chapters 8–11** I add language features such as control flow (`if`/`for`), user-defined operators, mutable variables, and *real statement blocks* with Python-style indentation. You might even confuse pyxc code with real python.   
+In **Chapters 8–11**, I add language features such as control flow (`if`/`for`), mutable variables, and *real statement blocks* with Python-style indentation. You might even confuse pyxc code with real Python.   
 
-In **Chapters 12–15** I add the missing bells and whistles to make the pyxc compiler feel like a production compiler: a proper command line interface that offers different options like object file output, native executable linking, and debug info for source-level debugging. If some of these terms make no sense to you, don't worry about it. You will soon. 
+In **Chapters 12–16**, I add the missing bells and whistles to make the pyxc compiler feel like a production compiler: a proper command line interface that offers different options like object file output, native executable linking, and debug info for source-level debugging. If some of these terms make no sense to you, don't worry about it. You will soon. 
 
-In **Chapter 17** I add a static type system: `int`, `int8`, `int16`, `int64`, `float32`, `float64`, `bool`, and `None` (void), which lets me write programs that rival C/C++/Rust speeds, since I'm using the same LLVM infrastructure. 
+In **Chapter 17**, I add a static type system: `int`, `int8`, `int16`, `int32`, `int64`, `float`, `float32`, `float64`, `bool`, and `None` (void), which lets me write programs that rival C/C++/Rust speeds, since I'm using the same LLVM infrastructure. 
 
-In **Chapters 17–23** I implement the full C-style memory model: structs and field access, pointer types and address-of, pointer arithmetic, heap allocation with `malloc`/`free`/`sizeof`, string literals and C interop, type aliases, and fixed-size arrays. By the end of this phase, pyxc is a serious systems programming language: I can write K&R-style algorithms, call any C library function, and manually manage memory just as I would in C or C++.
+In **Chapters 18–23**, I implement the full C-style memory model: structs and field access, pointer types and address-of, pointer arithmetic, heap allocation with `malloc`/`free`/`sizeof`, string literals and C interop, type aliases, and fixed-size arrays. By the end of this phase, pyxc is a serious systems programming language: I can write K&R-style algorithms, call any C library function, and manually manage memory just as I would in C or C++.
 
 ```pyxc
 extern def malloc(n: int64) -> ptr[int8]
@@ -72,7 +72,7 @@ def main() -> int:
   return 0
 ```
 
-In **Chapters 24–30** I add an object model: `class` declarations, methods with `self`, constructors, visibility rules, traits, and the beginnings of generics so I can use more object-oriented programming approaches in problem-solving. I'm leaving the C domain behind here and stepping on some C++/Rust toes.
+In **Chapters 24–30**, I add an object model: `class` declarations, methods with `self`, constructors, visibility rules, traits, and the beginnings of generics so I can use more object-oriented programming approaches in problem-solving. I'm leaving the C domain behind here and stepping on some C++/Rust toes.
 
 ```pyxc
 extern def printd(x: float64)
@@ -130,7 +130,7 @@ def main() -> int:
   return 0
 ```
 
-In **Chapters 31–40** I close the K&R compatibility gap: division and remainder, compound assignment, `++`/`--`, logical operators with short-circuit evaluation, `while` and `do/while` loops, `break` and `continue`, bitwise operators, `switch`, `elif` chains, character literals, unsigned integer types, and assignment as an expression. By the end of this phase, pyxc's control flow and operators are on par with C's.
+In **Chapters 31–40**, I close the K&R compatibility gap: remainder `%`, compound assignment `+=`/`-=`/`*=`/`/=`, `++`/`--`, logical operators with short-circuit evaluation, `while` and `do/while` loops, `break` and `continue`, bitwise operators, `switch`, `elif` chains, character literals, unsigned integer types, and assignment as an expression. By the end of this phase, pyxc's control flow and operators are on par with C's.
 
 ```pyxc
 type string = ptr[int8]
@@ -193,7 +193,7 @@ def main() -> int:
     return 0
 ```
 
-In **Chapters 41–43** I add a module system: `module` declarations name a compilation unit, `export` marks its public API, and `import` lets one pyxc file use another's exported functions and types without hand-written `extern def` declarations. A two-phase scan handles files that import each other without falling into infinite recursion.
+In **Chapters 41–43**, I add a module system: `module` declarations name a compilation unit, `export` marks its public API, and `import` lets one pyxc file use another's exported functions and types without hand-written `extern def` declarations. A two-phase scan handles files that import each other without falling into infinite recursion.
 
 ```pyxc
 # app/math.pyxc
@@ -227,7 +227,7 @@ There's so much more I want to do beyond these features but I'm evaluating the c
 
 ## Credits
 
-For the early chapters, I was inspired by the excellent [LLVM Kaleidoscope Tutorial](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html). It is brilliant in its pacing and leaves a reader more curious and wanting. I reworked that tutorial to suit a syntax, tone and depth that made more sense to me. Everything the Kaleidoscope tutorial covers, this one does too. In later chapters, as the chapter overview shows, I push the compiler further in order to support more advanced features. And should you so decide, feel free to use this as a template to push the sharing of knowledge even further than I have. We have immense privilege to be able to learn what we do, and to do what we do. It is only fair that we share and spread this privilege to the far corners of the earth. But, as my mother would often say, "No pressure. Have fun."
+For the early chapters, I was inspired by the excellent [LLVM Kaleidoscope Tutorial](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html). It is brilliant in its pacing and leaves a reader more curious and wanting. I reworked that tutorial to suit a syntax, tone and depth that made more sense to me. Everything the Kaleidoscope tutorial covers, this one does too. In later chapters, as the chapter overview shows, I push the compiler further in order to support more advanced features. And should you so decide, feel free to use this as a template to push the sharing of knowledge even further than I have. We have the incredible privilege of having access to the greatest library known to mankind. It is only fair that we share and spread this privilege to the far corners of the earth. But, as my mother would often say, "No pressure. Remember to have fun."
 
 ## Need Help?
 

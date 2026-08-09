@@ -110,7 +110,7 @@ static bool ParseDefinitionSignatureOnly() {
   Proto->setReturnStructName(RetStructName);
   FunctionProtos[Proto->getName()] = Proto->clone();
   if (CurTok != ':')
-    return LogError("Expected ':' in definition"), false;
+    return LogErrorExpression("Expected ':' in definition"), false;
   getNextToken(); // eat ':'
   SkipSignatureBody();
   return true;
@@ -159,7 +159,7 @@ static bool ParseExportSignatureOnly() {
   if (CurTok == tok_class)  return ParseAggregateDefinition("class");
   if (CurTok == tok_trait)  return ParseTraitDefinition();
   if (CurTok == tok_type)   return ParseTypeAliasDefinition();
-  return LogError("Invalid export target"), false;
+  return LogErrorExpression("Invalid export target"), false;
 }
 ```
 
@@ -249,7 +249,7 @@ static bool CollectSignaturesFromFile(const string &Path) {
       if (!ParseDottedModuleName(ImportName)) { OK = false; break; }
       string ImportPath;
       if (!ResolveImportToPath(CanonPath, ImportName, ImportPath)) {
-        LogError(("Could not resolve import '" + ImportName + "'...").c_str());
+        LogErrorExpression(("Could not resolve import '" + ImportName + "'...").c_str());
         OK = false; break;
       }
       if (!CollectSignaturesFromFile(ImportPath)) { OK = false; break; }
@@ -321,7 +321,7 @@ static bool PreloadImportedSignatures(const string &Path) {
   for (const auto &ImportName : ExtractTopLevelImports(Path)) {
     string ImportPath;
     if (!ResolveImportToPath(Path, ImportName, ImportPath)) {
-      LogError(...);
+      LogErrorExpression(...);
       return false;
     }
     if (!CollectSignaturesFromFile(ImportPath))
@@ -345,7 +345,7 @@ static bool CollectImportClosure(const string &Path, std::set<string> &Visited,
   for (const auto &ImportName : ExtractTopLevelImports(CanonPath)) {
     string ImportPath;
     if (!ResolveImportToPath(CanonPath, ImportName, ImportPath)) {
-      LogError(...);
+      LogErrorExpression(...);
       return false;
     }
     if (!CollectImportClosure(ImportPath, Visited, OutFiles))

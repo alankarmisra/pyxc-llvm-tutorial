@@ -3,18 +3,18 @@ description: "Add file input mode and a -v IR flag so pyxc can execute source fi
 ---
 # 8. pyxc: File Input Mode
 
-## Where We Are
+## Where I Am
 
-[Chapter 7](chapter-07.md) added a JIT that evaluates expressions immediately. But there's no way to run a source file — you have to type everything into the REPL. 
+In [Chapter 7](chapter-07.md), I added a JIT that evaluates expressions immediately. I can still only provide source through the REPL, so I now add file input.
 
-At the end of this chapter I'll be able to pass a filename argument to pyxc like so:
+After this change, I can pass a filename to `pyxc`:
 
 ```bash
 $ build/pyxc test/file_mode.pyxc
 7.000000
 ```
 
-In addition, I'll remove the default IR printing, and introduce a new switch, `-v`, which outputs the IR instead:
+I also stop printing IR by default and add `-v` for cases where I want to inspect it:
 
 <!-- code-merge:start -->
 ```bash
@@ -40,13 +40,13 @@ entry:
 <!-- code-merge:end -->
 
 
-The same flag works in the REPL:
+I can use the same option in the REPL:
 <!-- code-merge:start -->
 ```bash
 $ build/pyxc -v
 ```
 ```pyxc
-ready> def add(a, b): return a + b
+ready> def add(a, b): a + b
 ```
 ```bash
 Parsed a function definition.
@@ -70,14 +70,14 @@ cd pyxc-llvm-tutorial/code/chapter-08
 
 ## One `FILE*` for Both Modes
 
-The key insight is that `fgetc` doesn't care whether it reads from a terminal or a file — it just reads the next character from a `FILE*`. If I make the lexer's character source a `FILE*` variable instead of always using `stdin`, file mode is essentially free.
+The C input API represents both standard input and an open file as a `FILE*`. I make the lexer read through an `Input` variable so I can point it at either source:
 
 ```cpp
 static FILE *Input = stdin;
 static bool IsRepl = true;
 ```
 
-`Input` starts as `stdin`. When the user passes a filename, `main` opens the file and sets `Input` to that handle. The lexer calls `fgetc(Input)` everywhere — it never asks whether it's in REPL mode or file mode.
+I start with `Input` pointing to `stdin`. If I receive a filename, I open it and replace that pointer. The lexer always reads from `Input`, so I do not need separate lexer logic for the two modes.
 
 ```cpp
 static int advance() {
@@ -86,28 +86,23 @@ static int advance() {
 }
 ```
 
-That's the whole mechanism. One variable swap, and the existing lexer handles both cases without modification.
+Changing the pointer changes the source of every later character read.
 
-## Command-Line Parsing with LLVM's cl::
+## Parsing the Command Line
 
-Chapter 7 added a `-O` switch to control the optimization level. This chapter adds two more: a positional filename argument `InputFile` that makes `pyxc` run a source file instead of starting the REPL, and a `-v` flag internally represented as `VerboseIR` that prints the generated IR to stderr.
+LLVM already requires me to process `-O` through its command-line library. I add two more options to the same setup: an optional filename and `-v`.
 
-**InputFile** and **IsRepl**
+### Selecting the Input Mode
 
 ```cpp
-static cl::OptionCategory PyxcCategory("Pyxc options");
-...
-// new option
 static cl::opt<std::string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
                                       cl::init(""), cl::cat(PyxcCategory));
 ```
 
-`cl::Positional` means the argument has no flag — it's just a bare filename on the command line. `cl::opt<std::string>` with `cl::init("")` defaults to an empty string when no file is given, so the check in `ProcessCommandLine` is simply `!InputFile.empty()`. For clarity, `IsRepl` stores the result of that check. 
+I mark `InputFile` as positional so a bare argument such as `program.pyxc` fills it. I use an empty string as the default, which means no filename was provided.
 
 ```cpp
 int ProcessCommandLine(int argc, const char **argv) {
-  ...
-
   if (!InputFile.empty()) {
     Input = fopen(InputFile.c_str(), "r");
     if (!Input) {
@@ -119,41 +114,38 @@ int ProcessCommandLine(int argc, const char **argv) {
     IsRepl = true;
   }
 
-  ...
+  return 0;
 }
 ```
 
-When a file is given, `fopen` opens it and `Input` is set to the resulting handle. `IsRepl` flips to `false`. When no file is given, everything stays at its default.
+If I have a filename, I open it, point `Input` at the resulting handle, and disable REPL output. Otherwise, I keep reading from `stdin`.
 
-`perror` is the right tool for `fopen` failures. It reads `errno` — which `fopen` sets on failure — and prints a human-readable message:
+When `fopen` fails, it sets `errno`. I use `perror` to print the filename followed by the operating system's error description:
 
 ```bash
 $ build/pyxc nosuchfile.pyxc
 nosuchfile.pyxc:  No such file or directory
 ```
 
-The string passed to `perror` is the label printed before the colon. The actual error description comes from `errno`.
-
-**VerboseIR**
+### Selecting IR Output
 
 ```cpp
-// new option
 static cl::opt<bool> VerboseIR("v",
                                cl::desc("Print generated LLVM IR to stderr"),
                                cl::init(false), cl::cat(PyxcCategory));
 ```
 
-`cl::opt<bool> VerboseIR` with the name parameter set to `"v"` registers the `-v` flag. 
+I register `VerboseIR` as a Boolean option named `v`. It remains false unless I pass `-v`.
 
 ## Suppressing REPL Noise in File Mode
 
-The REPL prints several things that make no sense when running a file:
+I suppress output that belongs to an interactive session when I run a file:
 
 - `ready>` prompts
 - `Parsed a function definition.` / `Parsed an extern.` / `Parsed a top-level expression.` confirmations
 - `Evaluated to ...` after each expression
 
-All of these are gated on `IsRepl`. Two helpers centralize the check:
+I centralize the repeated `IsRepl` check in two helpers:
 
 ```cpp
 void PrintReplPrompt() {
@@ -167,7 +159,7 @@ void Log(const string &message) {
 }
 ```
 
-And in `HandleTopLevelExpression`, the evaluated result is suppressed the same way:
+I apply the same check to the automatic result in `HandleTopLevelExpression()`:
 
 ```cpp
 double result = FP();
@@ -175,14 +167,14 @@ if (IsRepl)
   fprintf(stderr, "Evaluated to %f\n", result);
 ```
 
-When `IsRepl` is `false`, none of that text appears. The only output from a file run is what the Pyxc program itself explicitly produces — calls to `printd`, `putchard`, or any other `extern def` function.
+In file mode, the program only produces output that the pyxc source requests through functions such as `printd` and `putchard`.
 
-## The -v Flag
+## Printing IR with -v
 
-`VerboseIR` is a `cl::opt<bool>` that starts `false`. When the user passes `-v`, LLVM's parser sets it to `true`. The three handlers check it before printing IR:
+Each handler checks `VerboseIR` before printing generated IR:
 
 ```cpp
-// In HandleDefinition:
+// In HandleFunctionDefinition():
 if (VerboseIR)
   FnIR->print(errs());
 
@@ -195,7 +187,7 @@ if (VerboseIR)
   FnIR->print(errs());
 ```
 
-When running a file, `Input` is a handle that needs to be closed after `MainLoop` returns:
+After `MainLoop()` finishes, I close an input file that I opened:
 
 ```cpp
 if (Input && Input != stdin) {
@@ -204,7 +196,7 @@ if (Input && Input != stdin) {
 }
 ```
 
-The `Input != stdin` guard avoids closing `stdin` in REPL mode. Resetting `Input` to `stdin` afterwards is defensive — it ensures that if anything runs after `MainLoop`, it doesn't use a stale or closed handle.
+I check `Input != stdin` because I do not own standard input and must not close it. I reset the pointer after closing the file so it no longer refers to a closed handle.
 
 ## Build and Run
 
@@ -225,7 +217,7 @@ or
 
 ## What's Next
 
-[Chapter 9](chapter-09.md) adds comparison operators (`==`, `!=`, `<=`, `>=`, `<`, `>`), `if`/`else` expressions, and `for` loops — giving Pyxc its first control flow and enough expressive power to render the Mandelbrot set.
+In [Chapter 9](chapter-09.md), I add comparison operators, `if`/`else` expressions, and `for` loops. These features provide enough control flow to render the Mandelbrot set.
 
 ## Need Help?
 

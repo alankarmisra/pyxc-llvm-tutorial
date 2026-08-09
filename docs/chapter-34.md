@@ -113,14 +113,14 @@ struct ParseLoopGuard {
 ```cpp
 static unique_ptr<ExprAST> ParseBreakStmt() {
   if (ParseLoopDepth <= 0)
-    return LogError("'break' used outside of a loop");
+    return LogErrorExpression("'break' used outside of a loop");
   getNextToken(); // eat 'break'
   return make_unique<BreakExprAST>();
 }
 
 static unique_ptr<ExprAST> ParseContinueStmt() {
   if (ParseLoopDepth <= 0)
-    return LogError("'continue' used outside of a loop");
+    return LogErrorExpression("'continue' used outside of a loop");
   getNextToken(); // eat 'continue'
   return make_unique<ContinueExprAST>();
 }
@@ -137,9 +137,9 @@ static unique_ptr<ExprAST> ParseWhileStmt() {
   if (!Cond)
     return nullptr;
   if (Cond->getType() != ValueType::Bool)
-    return LogError("While loop condition must be bool");
+    return LogErrorExpression("While loop condition must be bool");
   if (CurTok != ':')
-    return LogError("Expected ':' after while condition");
+    return LogErrorExpression("Expected ':' after while condition");
   getNextToken(); // eat ':'
   ParseLoopGuard LoopGuard;
   auto Body = ParseSuite();
@@ -156,7 +156,7 @@ static unique_ptr<ExprAST> ParseWhileStmt() {
 static unique_ptr<ExprAST> ParseDoWhileStmt() {
   getNextToken(); // eat 'do'
   if (CurTok != ':')
-    return LogError("Expected ':' after 'do'");
+    return LogErrorExpression("Expected ':' after 'do'");
   getNextToken(); // eat ':'
   ParseLoopGuard LoopGuard;
   auto Body = ParseSuite();
@@ -167,13 +167,13 @@ static unique_ptr<ExprAST> ParseDoWhileStmt() {
   if (CurTok == tok_eol)
     consumeNewlines();
   if (CurTok != tok_while)
-    return LogError("Expected 'while' after do-body");
+    return LogErrorExpression("Expected 'while' after do-body");
   getNextToken(); // eat 'while'
   auto Cond = ParseExpression();
   if (!Cond)
     return nullptr;
   if (Cond->getType() != ValueType::Bool)
-    return LogError("Do-while condition must be bool");
+    return LogErrorExpression("Do-while condition must be bool");
   return make_unique<WhileExprAST>(std::move(Cond), std::move(Body),
                                    /*IsDoWhile=*/true);
 }

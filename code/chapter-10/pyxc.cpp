@@ -25,7 +25,6 @@
 #include <memory>
 #include <sstream>
 #include <string>
-#include <unistd.h>
 #include <utility>
 #include <vector>
 
@@ -61,7 +60,7 @@ static bool IsRepl = true;
 //===----------------------------------------===//
 
 // I return named tokens for known language elements. I preserve the [0-255]
-// character value of any other single character for diagnostics and custom operators.
+// character value of any other single character for diagnostics.
 enum Token {
   tok_eof = -1,
   tok_eol = -2,
@@ -632,41 +631,9 @@ static void consumeNewlines() {
     getNextToken();
 }
 
-/// OperatorPrecedence - Maps each binary operator token to its precedence.
-/// Higher numbers bind more tightly: '*' (40) > '+'/'-' (20) > comparisons
-/// (10). The key is an int rather than char so it can hold both
-/// single-character ASCII operators ('+', '-', '*', '<', '>') and
-/// multi-character named token enums (tok_eq, tok_neq, tok_leq, tok_geq). All
-/// comparison operators share precedence 10 so they bind equally tightly and
-/// are left-associative. Operators not in this map return -1 from
-/// GetTokenPrecedence(), which tells ParseBinaryOperatorRight to stop consuming operators
-/// and return what it has so far.
-static const map<int, int> OperatorPrecedence = {
-    {tok_eq, 10},  // ==
-    {tok_neq, 10}, // !=
-    {tok_leq, 10}, // <=
-    {tok_geq, 10}, // >=
-    {tok_less, 10},     // <
-    {tok_greater, 10},     // >
-    {tok_plus, 20},     // +
-    {tok_minus, 20},     // -
-    {tok_star, 40},     // *
-};
-
 // FunctionSignatures - Persistent function signature registry used by codegen
 // to re-emit declarations into fresh modules.
 static std::map<std::string, std::unique_ptr<FunctionSignatureNode>> FunctionSignatures;
-
-/// GetTokenPrecedence - Returns the precedence of CurrentToken if it is a known binary
-/// operator, or -1 if it is not. Both single-character ASCII operators ('+',
-/// '-', '*', '<', '>') and named multi-character token enums (tok_eq, tok_neq,
-/// tok_leq, tok_geq) are looked up in OperatorPrecedence.
-static int GetTokenPrecedence() {
-  auto It = OperatorPrecedence.find(CurrentToken);
-  if (It == OperatorPrecedence.end() || It->second <= 0)
-    return -1;
-  return It->second;
-}
 
 /// PrintReplPrompt - Print the interactive prompt to stderr.
 /// Only emits output in REPL mode; silent when running a script file.
@@ -684,9 +651,9 @@ void Log(const string &message) {
     fprintf(stderr, "%s", message.c_str());
 }
 
-/// LogError* - Error reporting helpers. Each returns nullptr for its respective
-/// type so parse functions can write: return LogError("message");
-unique_ptr<ExpressionNode> LogError(const char *Str) {
+/// LogErrorExpression* - Error reporting helpers. Each returns nullptr for its respective
+/// type so parse functions can write: return LogErrorExpression("message");
+unique_ptr<ExpressionNode> LogErrorExpression(const char *Str) {
   SourceLocation Anchor = GetDiagnosticAnchorLoc(CurLoc, CurrentToken);
   fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
           Str);
@@ -695,12 +662,12 @@ unique_ptr<ExpressionNode> LogError(const char *Str) {
 }
 
 unique_ptr<FunctionSignatureNode> LogErrorSignature(const char *Str) {
-  LogError(Str);
+  LogErrorExpression(Str);
   return nullptr;
 }
 
-unique_ptr<FunctionDefinitionNode> LogErrorF(const char *Str) {
-  LogError(Str);
+unique_ptr<FunctionDefinitionNode> LogErrorFunction(const char *Str) {
+  LogErrorExpression(Str);
   return nullptr;
 }
 
@@ -724,7 +691,7 @@ static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
     return nullptr;
 
   if (CurrentToken != tok_rparen)
-    return LogError("expected ')'");
+    return LogErrorExpression("expected ')'");
   getNextToken(); // eat ).
   return V;
 }
@@ -754,7 +721,7 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
         break;
 
       if (CurrentToken != tok_comma)
-        return LogError("Expected ')' or ',' in argument list");
+        return LogErrorExpression("Expected ')' or ',' in argument list");
       getNextToken();
     }
   }
@@ -775,12 +742,12 @@ static unique_ptr<ExpressionNode> ParseForExpression() {
   getNextToken(); // eat 'for'
 
   if (CurrentToken != tok_name)
-    return LogError("Expected name after 'for'");
+    return LogErrorExpression("Expected name after 'for'");
   string VarName = Name;
   getNextToken(); // eat name
 
   if (CurrentToken != tok_equal)
-    return LogError("Expected '=' after for variable");
+    return LogErrorExpression("Expected '=' after for variable");
   getNextToken(); // eat '='
 
   auto Start = ParseExpression();
@@ -788,7 +755,7 @@ static unique_ptr<ExpressionNode> ParseForExpression() {
     return nullptr;
 
   if (CurrentToken != tok_comma)
-    return LogError("Expected ',' after for start value");
+    return LogErrorExpression("Expected ',' after for start value");
   getNextToken(); // eat ','
 
   auto Cond = ParseExpression();
@@ -796,7 +763,7 @@ static unique_ptr<ExpressionNode> ParseForExpression() {
     return nullptr;
 
   if (CurrentToken != tok_comma)
-    return LogError("Expected ',' after for condition");
+    return LogErrorExpression("Expected ',' after for condition");
   getNextToken(); // eat ','
 
   auto Step = ParseExpression();
@@ -804,7 +771,7 @@ static unique_ptr<ExpressionNode> ParseForExpression() {
     return nullptr;
 
   if (CurrentToken != tok_colon)
-    return LogError("Expected ':' after for step");
+    return LogErrorExpression("Expected ':' after for step");
   getNextToken(); // eat ':'
 
   // Allow body on next line.
@@ -828,7 +795,7 @@ static unique_ptr<ExpressionNode> ParseIfExpression() {
     return nullptr;
 
   if (CurrentToken != tok_colon)
-    return LogError("Expected ':' after if condition");
+    return LogErrorExpression("Expected ':' after if condition");
   getNextToken(); // eat ':'
 
   // Allow body on next line
@@ -842,11 +809,11 @@ static unique_ptr<ExpressionNode> ParseIfExpression() {
   consumeNewlines();
 
   if (CurrentToken != tok_else)
-    return LogError("Expected 'else' in if expression");
+    return LogErrorExpression("Expected 'else' in if expression");
   getNextToken(); // eat 'else'
 
   if (CurrentToken != tok_colon)
-    return LogError("Expected ':' after else");
+    return LogErrorExpression("Expected ':' after else");
   getNextToken(); // eat ':'
 
   // Allow body on next line
@@ -880,12 +847,12 @@ static unique_ptr<ExpressionNode> ParseUnaryMinus() {
 ///   = name-expression
 ///   | number-expression
 ///   | parenthesized-expression
-///   | conditionalexpr
+///   | ifexpr
 ///   | forexpr ;
 static unique_ptr<ExpressionNode> ParsePrimary() {
   switch (CurrentToken) {
   default:
-    return LogError("unknown token when expecting an expression");
+    return LogErrorExpression("unknown token when expecting an expression");
   case tok_name:
     return ParseNameExpression();
   case tok_number:
@@ -908,53 +875,69 @@ static unique_ptr<ExpressionNode> ParseUnary() {
   return ParsePrimary();
 }
 
-/// binary-operator-right
-///   = { binary-operator unaryexpr } ;
-static unique_ptr<ExpressionNode> ParseBinaryOperatorRight(int MinimumPrecedence,
-                                         unique_ptr<ExpressionNode> Left) {
-  // If this is a binary operator, find its precedence.
-  while (true) {
-    int TokenPrecedence = GetTokenPrecedence();
-
-    // If this is a binary operator that binds at least as tightly as the current binary operator,
-    // consume it, otherwise we are done.
-    if (TokenPrecedence < MinimumPrecedence)
-      return Left;
-
-    // Okay, we know this is a binary operator and that binds at least as tightly as the
-    // current binary operator.
-    int Operator = CurrentToken;
-    getNextToken(); // eat binary operator
-
-    // Parse the unary expression after the binary operator.  Using ParseUnary
-    // here (rather than ParsePrimary directly) means unary operators bind
-    // tighter than any binary operator, matching normal convention.
-    auto Right = ParseUnary();
-    if (!Right)
-      return nullptr;
-
-    // If Operator binds less tightly with Right than the operator after Right, let
-    // the pending operator take Right as its Left.
-    int NextTokenPrecedence = GetTokenPrecedence();
-    if (TokenPrecedence < NextTokenPrecedence) {
-      Right = ParseBinaryOperatorRight(TokenPrecedence + 1, std::move(Right));
-      if (!Right)
-        return nullptr;
-    }
-
-    // Merge Left/Right.
-    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left), std::move(Right));
-  }
-}
-
-/// expression
-///   = unaryexpr binary-operator-right ;
-static unique_ptr<ExpressionNode> ParseExpression() {
+/// term
+///   = unary-expression { ("*" | "/") unary-expression } ;
+static unique_ptr<ExpressionNode> ParseTerm() {
   auto Left = ParseUnary();
   if (!Left)
     return nullptr;
 
-  return ParseBinaryOperatorRight(0, std::move(Left));
+  while (CurrentToken == tok_star || CurrentToken == tok_slash) {
+    int Operator = CurrentToken;
+    getNextToken();
+    auto Right = ParseUnary();
+    if (!Right)
+      return nullptr;
+    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
+                                             std::move(Right));
+  }
+  return Left;
+}
+
+/// sum
+///   = term { ("+" | "-") term } ;
+static unique_ptr<ExpressionNode> ParseSum() {
+  auto Left = ParseTerm();
+  if (!Left)
+    return nullptr;
+
+  while (CurrentToken == tok_plus || CurrentToken == tok_minus) {
+    int Operator = CurrentToken;
+    getNextToken();
+    auto Right = ParseTerm();
+    if (!Right)
+      return nullptr;
+    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
+                                             std::move(Right));
+  }
+  return Left;
+}
+
+/// comparison
+///   = sum { comparison-operator sum } ;
+static unique_ptr<ExpressionNode> ParseComparison() {
+  auto Left = ParseSum();
+  if (!Left)
+    return nullptr;
+
+  while (CurrentToken == tok_eq || CurrentToken == tok_neq ||
+         CurrentToken == tok_leq || CurrentToken == tok_geq ||
+         CurrentToken == tok_less || CurrentToken == tok_greater) {
+    int Operator = CurrentToken;
+    getNextToken();
+    auto Right = ParseSum();
+    if (!Right)
+      return nullptr;
+    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
+                                             std::move(Right));
+  }
+  return Left;
+}
+
+/// expression
+///   = comparison ;
+static unique_ptr<ExpressionNode> ParseExpression() {
+  return ParseComparison();
 }
 
 /// function-signature
@@ -963,17 +946,6 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
   if (CurrentToken != tok_name)
     return LogErrorSignature("Expected function name in function signature");
   string FnName = Name;
-  if ((FnName.size() == 7 && FnName.rfind("binary", 0) == 0 &&
-       isascii(static_cast<unsigned char>(FnName[6])) &&
-       ispunct(static_cast<unsigned char>(FnName[6]))) ||
-      (FnName.size() == 6 && FnName.rfind("unary", 0) == 0 &&
-       isascii(static_cast<unsigned char>(FnName[5])) &&
-       ispunct(static_cast<unsigned char>(FnName[5])))) {
-    fprintf(stderr,
-            "Warning: Function name '%s' may conflict with "
-            "operator-reserved naming\n",
-            FnName.c_str());
-  }
   getNextToken(); // eat function name
 
   if (CurrentToken != tok_lparen)
@@ -1010,7 +982,7 @@ static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
     return nullptr;
 
   if (CurrentToken != tok_colon)
-    return LogErrorF("Expected ':' in function definition");
+    return LogErrorFunction("Expected ':' in function definition");
   getNextToken(); // eat ':'
 
   // Allow the body expression to start on the next line:
@@ -1095,10 +1067,10 @@ static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
 static std::unique_ptr<ModuleAnalysisManager> TheMAM;
 static ExitOnError ExitOnErr;
 
-/// LogErrorV - Codegen-level error helper. Delegates to LogError for printing,
+/// LogErrorV - Codegen-level error helper. Delegates to LogErrorExpression for printing,
 /// then returns nullptr so codegen callers can write: return LogErrorV("msg");
 Value *LogErrorV(const char *Str) {
-  LogError(Str);
+  LogErrorExpression(Str);
   return nullptr;
 }
 
@@ -1182,6 +1154,8 @@ Value *BinaryExpressionNode::codegen() {
     return TheBuilder->CreateFSub(L, R, "subtmp");
   case tok_star:
     return TheBuilder->CreateFMul(L, R, "multmp");
+  case tok_slash:
+    return TheBuilder->CreateFDiv(L, R, "divtmp");
   case tok_less:
     L = TheBuilder->CreateFCmpOLT(L, R, "cmptmp");
     // Widen the i1 boolean to double: false -> 0.0, true -> 1.0.
@@ -1479,7 +1453,7 @@ Function *FunctionDefinitionNode::codegen() {
 
   // Bail if the function is already fully defined — redefinition is an error.
   if (TheFunction && !TheFunction->empty()) {
-    LogError("Function cannot be redefined.");
+    LogErrorExpression("Function cannot be redefined.");
     return nullptr;
   }
 
@@ -1595,7 +1569,7 @@ static void HandleFunctionDefinition() {
   auto FnAST = ParseFunctionDefinition();
   if (!FnAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (FnAST)
-      LogError(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
   }
@@ -1623,7 +1597,7 @@ static void HandleExtern() {
 
   if (!ProtoAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (ProtoAST)
-      LogError(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
   }
@@ -1633,7 +1607,7 @@ static void HandleExtern() {
   auto Existing = FunctionSignatures.find(ProtoAST->getName());
   if (Existing != FunctionSignatures.end() &&
       Existing->second->getNumParameters() != ProtoAST->getNumParameters()) {
-    LogError((string("Conflicting extern declaration for '") +
+    LogErrorExpression((string("Conflicting extern declaration for '") +
               ProtoAST->getName() + "'")
                  .c_str());
     SynchronizeToLineBoundary();
@@ -1670,7 +1644,7 @@ static void HandleTopLevelExpression() {
   auto FnAST = ParseTopLevelExpression();
   if (!FnAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (FnAST)
-      LogError(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
   }

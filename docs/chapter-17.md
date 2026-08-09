@@ -202,9 +202,9 @@ static unique_ptr<ExpressionNode> ParseNumberExpression() {
     auto StatusOrErr =
         Val.convertFromString(NumberLiteral, APFloat::rmNearestTiesToEven);
     if (!StatusOrErr)
-      return LogError("Invalid floating-point literal");
+      return LogErrorExpression("Invalid floating-point literal");
     if (*StatusOrErr & APFloat::opOverflow)
-      return LogError("Floating-point literal out of range for type");
+      return LogErrorExpression("Floating-point literal out of range for type");
     auto Result = make_unique<NumberExpressionNode>(Val, Type);
     getNextToken(); // consume the number
     return std::move(Result);
@@ -221,7 +221,7 @@ static unique_ptr<ExpressionNode> ParseNumberExpression() {
     unsigned ParseBits = std::max(Bits, NeededBits);
     APInt Val(ParseBits, NumberLiteral, 10);
     if (Val.ugt(APInt::getSignedMaxValue(Bits)))
-      return LogError("Integer literal out of range for type");
+      return LogErrorExpression("Integer literal out of range for type");
     if (ParseBits != Bits)
       Val = Val.trunc(Bits);
 
@@ -374,7 +374,7 @@ static ValueType ParseTypeToken() {
   case tok_bool:    getNextToken(); return ValueType::Bool;
   case tok_none:    getNextToken(); return ValueType::None;
   default:
-    LogError("Expected a type");
+    LogErrorExpression("Expected a type");
     return ValueType::Error;
   }
 }
@@ -514,12 +514,12 @@ The colon-type is mandatory. `ParseVarStatement` reads it:
 
 ```cpp
 if (CurrentToken != ':')
-  return LogError(
+  return LogErrorExpression(
       "Variable declaration requires a type annotation (e.g., ': int32')");
 getNextToken(); // eat ':'
 ValueType DeclTy = ParseTypeToken();
 if (DeclTy == ValueType::None)
-  return LogError("Variables cannot have None type");
+  return LogErrorExpression("Variables cannot have None type");
 ```
 
 If there's no initializer, I generate a zero constant of the declared type. If there is one, I install an `ExpectedLiteralTypeGuard(DeclTy)` before parsing the initializer expression, then check assignability:
@@ -530,7 +530,7 @@ If there's no initializer, I generate a zero constant of the declared type. If t
   Init = ParseExpression();
 }
 if (!IsAssignable(DeclTy, Init->getType()))
-  return LogError("Type mismatch in variable initialization");
+  return LogErrorExpression("Type mismatch in variable initialization");
 ```
 
 `VarBinding` replaces the old `pair<string, unique_ptr<ExpressionNode>>`:
@@ -758,33 +758,35 @@ The fourth rule covers `IsFloatType(Dest)`: any integer can widen to any float t
 
 ```cpp
 static bool CanWidenInt(ValueType From, ValueType To) {
-  if (From == To) return true;
-  // Fixed-size integers: allowed if rank(From) <= rank(To).
-  if (IsFixedIntType(From) && IsFixedIntType(To))
-    return FixedIntRank(From) <= FixedIntRank(To);
-  // Platform int can widen to int64.
-  if (From == ValueType::Int && To == ValueType::Int64)
+  if (From == To)
     return true;
+  if (IsIntType(From) && IsIntType(To)) {
+    unsigned FromBits = LLVMTypeFor(From)->getIntegerBitWidth();
+    unsigned ToBits = LLVMTypeFor(To)->getIntegerBitWidth();
+    return FromBits <= ToBits;
+  }
   return false;
 }
 ```
 
-Where `FixedIntRank` assigns `Int8=1, Int16=2, Int32=3, Int64=4`.
+Instead of comparing types by name, I ask LLVM for each type's actual bit width and compare those. `LLVMTypeFor(ValueType::Int)` doesn't return a fixed size: it asks the target's data layout for its pointer width, so `Int` is whatever width the platform uses (64 bits on the machines I've been building on, but this isn't guaranteed). Every other integer type (`Int8`, `Int16`, `Int32`, `Int64`) maps to its fixed LLVM width. Widening is legal whenever the source width is no greater than the destination width, `Int` included.
 
-`IsFixedIntType` covers `Int8`, `Int16`, `Int32`, `Int64`: but not `Int`. `Int` is the platform default integer and is treated separately: it can widen to `Int64`, but not to `Int32` or smaller (since on a 64-bit host `Int` is already 64-bit wide).
-
-Each allowed implicit conversion and the IR it produces:
+Each allowed implicit conversion and the IR it produces (assuming a target where `Int` is 64 bits, matching `Int64`):
 
 | Assignment | Allowed? | IR emitted |
 |-----------|----------|------------|
 | `var x: int16 = int8_val` | Yes | `sext i8 %v to i16` |
 | `var x: int32 = int16_val` | Yes | `sext i16 %v to i32` |
 | `var x: int64 = int32_val` | Yes | `sext i32 %v to i64` |
+| `var x: int = int32_val` | Yes, since `Int` is at least as wide as `Int32` here | `sext i32 %v to i64` |
+| `var x: int64 = int_val` | Yes, since `Int` and `Int64` are the same width here | *(no instruction: same IR type)* |
 | `var x: float64 = int_val` | Yes | `sitofp i64 %v to double` |
 | `var x: float32 = int_val` | Yes | `sitofp i64 %v to float` |
 | `var x: float = float64_val` | Yes | *(no instruction: same IR type)* |
 | `var x: int32 = int64_val` | No | type error |
 | `var x: bool = int_val` | No | type error |
+
+On a target where `Int` is narrower, say 32 bits, the `Int`/`Int64` rows flip: `int64_val` could no longer implicitly narrow into `Int` (unchanged, that direction was always disallowed), but `int_val` widening into `Int64` would now emit a `sext` instead of passing through unchanged. The rule itself (`FromBits <= ToBits`) doesn't change; only which concrete widths it's comparing does.
 
 `EmitImplicitCast` is called by codegen whenever one of the allowed cases applies. This is the real function, and it's narrower than `IsAssignable` above it:
 
@@ -987,14 +989,14 @@ struct ReturnTypeGuard {
 // bare 'return' (no value)
 if (CurrentToken == tok_eol || CurrentToken == tok_dedent || CurrentToken == tok_eof) {
   if (CurrentFunctionReturnType != ValueType::None)
-    return LogError("Return value required");
+    return LogErrorExpression("Return value required");
   return make_unique<ReturnExpressionNode>(nullptr);
 }
 // return with value
 if (CurrentFunctionReturnType == ValueType::None)
-  return LogError("cannot return a value from a None function");
+  return LogErrorExpression("cannot return a value from a None function");
 if (!IsAssignable(CurrentFunctionReturnType, Expr->getType()))
-  return LogError("cannot return X from function returning Y");
+  return LogErrorExpression("cannot return X from function returning Y");
 ```
 
 The IR for a typed return with an implicit widening:
@@ -1239,7 +1241,7 @@ The void type uses `createUnspecifiedType("None")`: the correct DWARF tag `DW_TA
 
 Chapter 16 always returned `0`. File-mode programs with type errors would print to stderr but exit cleanly, making shell scripts and test harnesses oblivious to failures.
 
-Chapter 17 adds a global `HadError` flag set by every `LogError` call. File-mode loops check it after parsing:
+Chapter 17 adds a global `HadError` flag set by every `LogErrorExpression` call. File-mode loops check it after parsing:
 
 ```cpp
 if (HadError) {

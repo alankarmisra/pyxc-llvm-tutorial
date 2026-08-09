@@ -428,7 +428,7 @@ static unique_ptr<ExprAST> ParseSuite() {
     // Newline after ':' → expect an indented block.
     consumeNewlines();
     if (CurTok != tok_indent)
-      return LogError("Expected an indented block");
+      return LogErrorExpression("Expected an indented block");
     return ParseBlock(); // CurTok = tok_block_end on return
   }
   if (CurTok == tok_indent)
@@ -450,7 +450,7 @@ When `ParseSuite` delegates to `ParseBlock`, it returns exactly what `ParseBlock
 /// block = INDENT statement { stmtsep statement } DEDENT ;
 static unique_ptr<ExprAST> ParseBlock() {
   if (CurTok != tok_indent)
-    return LogError("Expected an indented block");
+    return LogErrorExpression("Expected an indented block");
   getNextToken(); // eat INDENT
 
   BlockScopeGuard Scope; // each block gets its own var scope
@@ -473,7 +473,7 @@ static unique_ptr<ExprAST> ParseBlock() {
     } else if (CurTok == tok_dedent) {
       break;
     } else {
-      return LogError("Expected newline or end of block");
+      return LogErrorExpression("Expected newline or end of block");
     }
 
     auto Stmt = ParseStatement();
@@ -518,7 +518,7 @@ consumeNewlines(); // skip any blank lines before 'else'
 unique_ptr<ExprAST> Else;
 if (CurTok == tok_else) {
   getNextToken(); // eat 'else'
-  if (CurTok != ':') return LogError("Expected ':' after else");
+  if (CurTok != ':') return LogErrorExpression("Expected ':' after else");
   getNextToken(); // eat ':'
   Else = ParseSuite();
   if (!Else) return nullptr;
@@ -571,7 +571,7 @@ static unique_ptr<ExprAST> ParseSimpleStmt() {
 
     if (CurTok == '=') {
       if (!IsDeclaredVar(Name))
-        return LogError("Assignment to undeclared variable");
+        return LogErrorExpression("Assignment to undeclared variable");
       getNextToken(); // eat '='
       auto RHS = ParseExpression();
       if (!RHS) return nullptr;
@@ -593,11 +593,11 @@ static unique_ptr<ExprAST> ParseSimpleStmt() {
 
   const string *AssignedName = Expr->getLValueName();
   if (!AssignedName)
-    return LogError("Destination of '=' must be a variable");
+    return LogErrorExpression("Destination of '=' must be a variable");
 
   string Name = *AssignedName;
   if (!IsDeclaredVar(Name))
-    return LogError("Assignment to undeclared variable");
+    return LogErrorExpression("Assignment to undeclared variable");
 
   getNextToken(); // eat '='
   auto RHS = ParseExpression();
@@ -620,7 +620,7 @@ static unique_ptr<ExprAST> ParseVarStmt() {
 
   while (true) {
     if (CurTok != tok_identifier)
-      return LogError("Expected identifier after 'var'");
+      return LogErrorExpression("Expected identifier after 'var'");
 
     string Name = IdentifierStr;
     getNextToken(); // eat identifier

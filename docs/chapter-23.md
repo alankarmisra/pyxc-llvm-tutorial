@@ -80,7 +80,7 @@ case tok_name: {
     return AliasIt->second.first;
   }
   if (!StructTypes.count(TyName)) {
-    LogError(("Unknown type '" + TyName + "'").c_str());
+    LogErrorExpression(("Unknown type '" + TyName + "'").c_str());
     return ValueType::Error;
   }
   getNextToken();
@@ -99,22 +99,22 @@ static bool ParseTypeAliasDefinition() {
   // CurrentToken is 'type'
   getNextToken(); // eat 'type'
   if (CurrentToken != tok_name) {
-    LogError("Expected alias name after 'type'");
+    LogErrorExpression("Expected alias name after 'type'");
     return false;
   }
   string AliasName = Name;
   if (TypeAliases.count(AliasName)) {
-    LogError(("Type alias '" + AliasName + "' is already defined").c_str());
+    LogErrorExpression(("Type alias '" + AliasName + "' is already defined").c_str());
     return false;
   }
   if (StructTypes.count(AliasName)) {
-    LogError(
+    LogErrorExpression(
         ("Name '" + AliasName + "' is already defined as a struct").c_str());
     return false;
   }
   getNextToken(); // eat alias name
   if (CurrentToken != '=') {
-    LogError("Expected '=' in type alias");
+    LogErrorExpression("Expected '=' in type alias");
     return false;
   }
   getNextToken(); // eat '='
@@ -166,7 +166,7 @@ And the reverse, a struct colliding with an existing alias, checked inside `Pars
 
 ```cpp
 if (TypeAliases.count(StructName)) {
-  LogError(("Name '" + StructName + "' is already defined as a type alias")
+  LogErrorExpression(("Name '" + StructName + "' is already defined as a type alias")
                .c_str());
   return false;
 }

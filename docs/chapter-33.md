@@ -96,7 +96,7 @@ The result type is always `bool`. In `ParseBinOpRHS`, the check for built-in ope
 if (IsComparisonOp(BinOp) || IsArithmeticOp(BinOp) || IsLogicalOp(BinOp)) {
   ResultType = GetBinaryResultType(BinOp, LHS->getType(), ...);
   if (ResultType == ValueType::Error)
-    return LogError("Type mismatch in binary operator");
+    return LogErrorExpression("Type mismatch in binary operator");
   ...
 }
 ```
@@ -131,12 +131,12 @@ if (CurTok == '!') {
     return make_unique<LogicalNotExprAST>(std::move(Operand));
   auto Proto = GetFunctionProto("unary!");
   if (!Proto)
-    return LogError("Unknown unary operator");
+    return LogErrorExpression("Unknown unary operator");
   if (Proto->getNumArgs() != 1)
-    return LogError("Unary operator must have exactly one argument");
+    return LogErrorExpression("Unary operator must have exactly one argument");
   ValueType ParamType = Proto->getArgType(0);
   if (!IsAssignable(ParamType, Operand->getType())) {
-    return LogError(
+    return LogErrorExpression(
         ("unary operator expects " + string(TypeName(ParamType))).c_str());
   }
   return make_unique<UnaryExprAST>('!', std::move(Operand),

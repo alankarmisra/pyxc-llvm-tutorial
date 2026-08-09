@@ -71,52 +71,59 @@ If you're thinking, `x` could be an `lvalue` or an `rvalue`, you're right. The p
 var x = 1, y = x + 1: y   # evaluates to 2
 ```
 
-### Full Grammar
+### Grammar
 [pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-11/pyxc.ebnf)
 
-```ebnf
-program         = [ eols ] [ top { eols top } ] [ eols ] ;
-eols            = eol { eol } ;
-top             = definition | decorateddef | external | toplevelexpr ;
-definition      = "def" prototype ":" [ eols ] "return" expression ;
-decorateddef    = binarydecorator eols "def" binaryopprototype ":" [ eols ] "return" expression
-                | unarydecorator  eols "def" unaryopprototype  ":" [ eols ] "return" expression ;
-binarydecorator = "@" "binary" "(" integer ")" ;
-unarydecorator  = "@" "unary" ;
-binaryopprototype = customopchar "(" identifier "," identifier ")" ;
-unaryopprototype  = customopchar "(" identifier ")" ;
-external        = "extern" "def" prototype ;
-toplevelexpr    = expression ;
-prototype       = identifier "(" [ identifier { "," identifier } ] ")" ;
-ifexpr          = "if" expression ":" [ eols ] expression [ eols ] "else" ":" [ eols ] expression ;
-forexpr         = "for" [ "var" ] identifier "=" expression "," expression "," expression ":" [ eols ] expression ;
-expression      = varexpr | identifier "=" expression | unaryexpr binoprhs ;
-binoprhs        = { binaryop unaryexpr } ;
-varexpr         = "var" varbinding { "," varbinding } ":" [ eols ] expression ;
-varbinding      = identifier [ "=" expression ] ;
-unaryexpr       = unaryop unaryexpr | primary ;
-unaryop         = "-" | userdefunaryop ;
-primary         = identifierexpr | numberexpr | parenexpr
-                | ifexpr | forexpr ;
-identifierexpr  = identifier | callexpr ;
-callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
-numberexpr      = number ;
-parenexpr       = "(" expression ")" ;
-binaryop        = builtinbinaryop | userdefbinaryop ;
-builtinbinaryop = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
-userdefbinaryop = ? any opchar defined as a custom binary operator ? ;
-userdefunaryop  = ? any opchar defined as a custom unary operator ? ;
-customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
-                    and not already defined as a custom operator ? ;
-opchar          = ? any single ASCII punctuation character ? ;
-identifier      = (letter | "_") { letter | digit | "_" } ;
-integer         = digit { digit } ;
-number          = digit { digit } [ "." { digit } ]
-                | "." digit { digit } ;
-letter          = "A".."Z" | "a".."z" ;
-digit           = "0".."9" ;
-eol             = "\r\n" | "\r" | "\n" ;
-ws              = " " | "\t" ;
+```grammardiff
+ program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
+ end-of-lines            = end-of-line { end-of-line } ;
+-top-level-item             = function-definition | external | top-level-expression ;
++top-level-item             = function-definition | decorated-function-definition | external | top-level-expression ;
+ function-definition      = "def" function-signature ":" [ end-of-lines ] expression ;
++decorated-function-definition    = binary-decorator end-of-lines "def" binary-operator-signature ":" [ end-of-lines ] expression
++                | unary-decorator  end-of-lines "def" unary-operator-signature  ":" [ end-of-lines ] expression ;
++binary-decorator = "@" "binary" "(" integer ")" ;
++unary-decorator  = "@" "unary" ;
++binary-operator-signature = custom-operator-character "(" name "," name ")" ;
++unary-operator-signature  = custom-operator-character "(" name ")" ;
+ external        = "extern" "def" function-signature ;
+ top-level-expression    = expression ;
+ function-signature       = name "(" [ name { "," name } ] ")" ;
+ ifexpr          = "if" expression ":" [ end-of-lines ] expression [ end-of-lines ] "else" ":" [ end-of-lines ] expression ;
+-forexpr         = "for" name "=" expression "," expression "," expression ":" [ end-of-lines ] expression ;
+-expression      = unary-expression binary-operator-right ;
++forexpr         = "for" [ "var" ] name "=" expression "," expression "," expression ":" [ end-of-lines ] expression ;
++expression      = varexpr | name "=" expression | unary-expression binary-operator-right ;
+ binary-operator-right        = { binary-operator unary-expression } ;
+-unary-expression       = "-" unary-expression | primary ;
++varexpr         = "var" variable-binding { "," variable-binding } ":" [ end-of-lines ] expression ;
++variable-binding      = name [ "=" expression ] ;
++unary-expression       = unary-operator unary-expression | primary ;
++unary-operator         = "-" | user-defined-unary-operator ;
+ primary         = name-expression | number-expression | parenthesized-expression
+                 | ifexpr | forexpr ;
+ name-expression  = name | call-expression ;
+ call-expression        = name "(" [ expression { "," expression } ] ")" ;
+ number-expression      = number ;
+ parenthesized-expression       = "(" expression ")" ;
+-binary-operator = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
++binary-operator        = builtin-binary-operator | user-defined-binary-operator ;
++builtin-binary-operator = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
++user-defined-binary-operator = ? any operator-character defined as a custom binary operator ? ;
++user-defined-unary-operator  = ? any operator-character defined as a custom unary operator ? ;
++custom-operator-character    = ? any operator-character that is not "-" or a builtin-binary-operator,
++                    and not already defined as a custom operator ? ;
++operator-character          = ? any single ASCII punctuation character ? ;
+ name      = (letter | "_") { letter | digit | "_" } ;
++integer         = digit { digit } ;
+ number          = digit { digit } [ "." { digit } ]
+                 | "." digit { digit } ;
+ letter          = "A".."Z" | "a".."z" ;
+ digit           = "0".."9" ;
+ end-of-line             = "\r\n" | "\r" | "\n" ;
+ comment = "#" { comment-character } ;
+ comment-character = ? any character except "\r" and "\n" ? ;
+ whitespace = " " | "\t" | "\v" | "\f" ;
 ```
 
 
@@ -182,7 +189,7 @@ static unique_ptr<ExprAST> ParseVarExpr() {
 ```cpp
   while (true) {
     if (CurTok != tok_identifier)
-      return LogError("Expected identifier after 'var'");
+      return LogErrorExpression("Expected identifier after 'var'");
 
     string Name = IdentifierStr;
     getNextToken(); // eat identifier
@@ -213,7 +220,7 @@ If there is no `=`, the variable defaults to `0.0`. The binding always produces 
 
 ```cpp
   if (CurTok != ':')
-    return LogError("Expected ':' after var bindings");
+    return LogErrorExpression("Expected ':' after var bindings");
   getNextToken(); // eat ':'
 
   consumeNewlines(); // body may start on the next line
@@ -248,7 +255,7 @@ After `ParseBinOpRHS` returns, `ParseExpression` checks whether the next token i
   // The left-hand side must be a plain variable name (an lvalue).
   const string *AssignedName = Expr->getLValueName();
   if (!AssignedName)
-    return LogError("Destination of '=' must be a variable");
+    return LogErrorExpression("Destination of '=' must be a variable");
 
   string Name = *AssignedName;
   getNextToken(); // eat '='

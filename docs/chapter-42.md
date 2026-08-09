@@ -58,7 +58,7 @@ Both `module` and `import` share a parser for the dotted module path:
 static bool ParseDottedModuleName(string &OutName) {
   OutName.clear();
   if (CurTok != tok_identifier) {
-    LogError("Expected module path");
+    LogErrorExpression("Expected module path");
     return false;
   }
   OutName = IdentifierStr;
@@ -66,7 +66,7 @@ static bool ParseDottedModuleName(string &OutName) {
   while (CurTok == '.') {
     getNextToken(); // eat '.'
     if (CurTok != tok_identifier) {
-      LogError("Expected identifier after '.' in module path");
+      LogErrorExpression("Expected identifier after '.' in module path");
       return false;
     }
     OutName += ".";
@@ -87,11 +87,11 @@ static bool ParseModuleDefinition() {
   if (!ParseDottedModuleName(CurrentModuleName))
     return false;
   if (ModuleDeclaredInFile) {
-    LogError("Only one module declaration is allowed per file");
+    LogErrorExpression("Only one module declaration is allowed per file");
     return false;
   }
   if (SeenNonModuleTopLevel) {
-    LogError("module declaration must appear before other top-level forms");
+    LogErrorExpression("module declaration must appear before other top-level forms");
     return false;
   }
   ModuleDeclaredInFile = true;
@@ -140,7 +140,7 @@ This is how `ParseModuleDefinition` can detect that `module` appeared too late.
 ```cpp
 static void HandleModuleDef() {
   if (IsRepl) {
-    LogError("'module' is only supported in file mode");
+    LogErrorExpression("'module' is only supported in file mode");
     SynchronizeToLineBoundary();
     return;
   }
@@ -150,7 +150,7 @@ static void HandleModuleDef() {
 
 static void HandleImportDef() {
   if (IsRepl) {
-    LogError("'import' is only supported in file mode");
+    LogErrorExpression("'import' is only supported in file mode");
     SynchronizeToLineBoundary();
     return;
   }
@@ -164,7 +164,7 @@ static void HandleImportDef() {
 ```cpp
 static void HandleExportDef() {
   if (IsRepl) {
-    LogError("'export' is only supported in file mode");
+    LogErrorExpression("'export' is only supported in file mode");
     SynchronizeToLineBoundary();
     return;
   }
@@ -178,7 +178,7 @@ static void HandleExportDef() {
   case tok_trait:  HandleTraitDef();   return;
   case tok_impl:   HandleImplDef();    return;
   default:
-    LogError("'export' must be followed by a top-level declaration");
+    LogErrorExpression("'export' must be followed by a top-level declaration");
     SynchronizeToLineBoundary();
     return;
   }

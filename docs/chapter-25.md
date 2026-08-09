@@ -50,29 +50,29 @@ static bool ParseAggregateDefinition(const char *KindName) {
   // CurrentToken is 'struct' or 'class'
   getNextToken(); // eat keyword
   if (CurrentToken != tok_name) {
-    LogError((string("Expected ") + KindName + " name").c_str());
+    LogErrorExpression((string("Expected ") + KindName + " name").c_str());
     return false;
   }
   string StructName = Name;
   if (TypeAliases.count(StructName)) {
-    LogError(("Name '" + StructName + "' is already defined as a type alias")
+    LogErrorExpression(("Name '" + StructName + "' is already defined as a type alias")
                  .c_str());
     return false;
   }
   if (StructTypes.count(StructName)) {
-    LogError(("Aggregate '" + StructName + "' is already defined").c_str());
+    LogErrorExpression(("Aggregate '" + StructName + "' is already defined").c_str());
     return false;
   }
   getNextToken(); // eat aggregate name
   if (CurrentToken != ':') {
-    LogError((string("Expected ':' after ") + KindName + " name").c_str());
+    LogErrorExpression((string("Expected ':' after ") + KindName + " name").c_str());
     return false;
   }
   getNextToken(); // eat ':'
   if (CurrentToken == tok_eol)
     consumeNewlines();
   if (CurrentToken != tok_indent) {
-    LogError((string("Expected an indented ") + KindName + " body").c_str());
+    LogErrorExpression((string("Expected an indented ") + KindName + " body").c_str());
     return false;
   }
   getNextToken(); // eat INDENT
@@ -85,25 +85,25 @@ static bool ParseAggregateDefinition(const char *KindName) {
       continue;
     }
     if (CurrentToken != tok_name) {
-      LogError(
+      LogErrorExpression(
           (string("Expected field name in ") + KindName + " body").c_str());
       return false;
     }
     string FieldName = Name;
     getNextToken();
     if (CurrentToken != ':') {
-      LogError("Expected ':' after field name");
+      LogErrorExpression("Expected ':' after field name");
       return false;
     }
     getNextToken();
     string FieldStructName;
     ValueType FieldType = ParseTypeToken(&FieldStructName);
     if (FieldType == ValueType::Error || FieldType == ValueType::None) {
-      LogError((string("Invalid ") + KindName + " field type").c_str());
+      LogErrorExpression((string("Invalid ") + KindName + " field type").c_str());
       return false;
     }
     if (Info.FieldIndex.count(FieldName)) {
-      LogError((string("Duplicate ") + KindName + " field '" + FieldName + "'")
+      LogErrorExpression((string("Duplicate ") + KindName + " field '" + FieldName + "'")
                    .c_str());
       return false;
     }
@@ -113,7 +113,7 @@ static bool ParseAggregateDefinition(const char *KindName) {
       consumeNewlines();
   }
   if (CurrentToken != tok_dedent) {
-    LogError((string("Expected dedent after ") + KindName + " body").c_str());
+    LogErrorExpression((string("Expected dedent after ") + KindName + " body").c_str());
     return false;
   }
   PendingTokens.push_front(tok_block_end);
@@ -144,7 +144,7 @@ static void HandleClassDef() {
   }
   bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
   if (HasTrailing) {
-    LogError(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+    LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
   }

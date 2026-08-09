@@ -86,12 +86,12 @@ static unique_ptr<ExprAST> ParseVarStmt() {
   // ...
   if (IsGlobalDecl) {
     if (GlobalVarNames.count(Name))
-      return LogError("Variable '...' already declared in this scope");
+      return LogErrorExpression("Variable '...' already declared in this scope");
     // ...
     GlobalVarNames.insert(Name);
   } else {
     if (IsDeclaredInCurrentScope(Name))
-      return LogError("Variable '...' already declared in this scope");
+      return LogErrorExpression("Variable '...' already declared in this scope");
     // ...
     DeclareVar(Name);
   }

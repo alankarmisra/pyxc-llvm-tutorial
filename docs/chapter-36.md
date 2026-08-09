@@ -95,7 +95,7 @@ struct ParseSwitchGuard {
 ```cpp
 static unique_ptr<ExprAST> ParseBreakStmt() {
   if (ParseLoopDepth <= 0 && ParseSwitchDepth <= 0)
-    return LogError("'break' used outside of a loop or switch");
+    return LogErrorExpression("'break' used outside of a loop or switch");
   getNextToken(); // eat 'break'
   return make_unique<BreakExprAST>();
 }
@@ -113,18 +113,18 @@ static bool ParseSwitchCaseValue(int64_t &Out) {
     getNextToken();
   }
   if (CurTok != tok_number || NumIsFloat)
-    return LogError("Switch case value must be an integer literal"), false;
+    return LogErrorExpression("Switch case value must be an integer literal"), false;
   uint64_t Raw = 0;
   if (!ParseUnsignedDecimal(NumLiteralStr, Raw))
-    return LogError("Invalid switch case value"), false;
+    return LogErrorExpression("Invalid switch case value"), false;
   getNextToken(); // eat number
   if (Neg) {
     if (Raw > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1ULL)
-      return LogError("Switch case value out of range"), false;
+      return LogErrorExpression("Switch case value out of range"), false;
     Out = static_cast<int64_t>(0) - static_cast<int64_t>(Raw);
   } else {
     if (Raw > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return LogError("Switch case value out of range"), false;
+      return LogErrorExpression("Switch case value out of range"), false;
     Out = static_cast<int64_t>(Raw);
   }
   return true;
@@ -144,14 +144,14 @@ static unique_ptr<ExprAST> ParseSwitchStmt() {
   if (!Cond)
     return nullptr;
   if (!IsIntType(Cond->getType()))
-    return LogError("Switch condition must be an integer type");
+    return LogErrorExpression("Switch condition must be an integer type");
   if (CurTok != ':')
-    return LogError("Expected ':' after switch expression");
+    return LogErrorExpression("Expected ':' after switch expression");
   getNextToken(); // eat ':'
   if (CurTok == tok_eol)
     consumeNewlines();
   if (CurTok != tok_indent)
-    return LogError("Expected an indented switch body");
+    return LogErrorExpression("Expected an indented switch body");
   getNextToken(); // eat INDENT
 
   ParseSwitchGuard SwitchGuard;
@@ -168,14 +168,14 @@ static unique_ptr<ExprAST> ParseSwitchStmt() {
         if (!ParseSwitchCaseValue(CaseVal))
           return nullptr;
         if (!SeenCaseValues.insert(CaseVal).second)
-          return LogError("Duplicate switch case value");
+          return LogErrorExpression("Duplicate switch case value");
         CaseVals.push_back(CaseVal);
         if (CurTok != ',')
           break;
         getNextToken(); // eat ',' and parse the next case value
       }
       if (CurTok != ':')
-        return LogError("Expected ':' after case value");
+        return LogErrorExpression("Expected ':' after case value");
       getNextToken(); // eat ':'
       auto Body = ParseSuite();
       if (!Body)
@@ -183,16 +183,16 @@ static unique_ptr<ExprAST> ParseSwitchStmt() {
       Cases.emplace_back(std::move(CaseVals), std::move(Body));
     } else if (CurTok == tok_default) {
       if (DefaultCase)
-        return LogError("Duplicate default case");
+        return LogErrorExpression("Duplicate default case");
       getNextToken(); // eat 'default'
       if (CurTok != ':')
-        return LogError("Expected ':' after default");
+        return LogErrorExpression("Expected ':' after default");
       getNextToken(); // eat ':'
       DefaultCase = ParseSuite();
       if (!DefaultCase)
         return nullptr;
     } else {
-      return LogError("Expected 'case' or 'default' in switch body");
+      return LogErrorExpression("Expected 'case' or 'default' in switch body");
     }
     if (CurTok == tok_block_end)
       getNextToken();
@@ -200,7 +200,7 @@ static unique_ptr<ExprAST> ParseSwitchStmt() {
       consumeNewlines();
   }
   if (CurTok != tok_dedent)
-    return LogError("Expected dedent after switch body");
+    return LogErrorExpression("Expected dedent after switch body");
   PendingTokens.push_front(tok_block_end);
   getNextToken(); // eat DEDENT
   return make_unique<SwitchExprAST>(std::move(Cond), std::move(Cases),

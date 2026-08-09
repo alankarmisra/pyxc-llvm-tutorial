@@ -5,7 +5,7 @@ description: "Complete pyxc's arithmetic: add / and %, five compound assignment 
 
 ## Where We Are
 
-[Chapter 31](chapter-31.md) finished the object model. Before moving further, there is a gap worth closing: pyxc has `+`, `-`, and `*` but not `/` or `%`. Compound assignment (`+=`, `*=` etc.) does not exist. Neither do `++` and `--`. After this chapter, all of that works:
+In [Chapter 31](chapter-31.md), I finished the object model. Before moving further, I want to close a gap: I've given pyxc `+`, `-`, and `*`, but not `/` or `%`. I haven't added compound assignment (`+=`, `*=`, etc.), and I haven't added `++` or `--` either. After this chapter, all of that works:
 
 ```pyxc
 extern def printd(x: float64)
@@ -42,134 +42,9 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-32
 ```
 
-## Grammar
-
-Three areas of the grammar change.
-
-`assignop` replaces the bare `=` in `assignstmt`, now accepting any of the six assignment operators. `postfixexpr` is inserted between `unaryexpr` and `primary` to capture postfix `++`/`--`. `builtinbinaryop` gains `/` and `%`.
-
-```ebnf
-assignstmt      = lvalue assignop expression ;           -- changed
-assignop        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;  -- new
-unaryexpr       = unaryop unaryexpr | postfixexpr ;      -- changed
-unaryop         = "-" | "++" | "--" | userdefunaryop ;   -- changed
-postfixexpr     = primary [ postfixop ] ;                -- new
-postfixop       = "++" | "--" ;                          -- new
-builtinbinaryop = "+" | "-" | "*" | "/" | "%"
-                | "<" | "<=" | ">" | ">=" | "==" | "!=" ;  -- changed
-```
-
-### Full Grammar
-
-`code/chapter-32/pyxc.ebnf`
-
-```ebnf
-program         = [ eols ] [ top { eols top } ] [ eols ] ;
-eols            = eol { eol } ;
-top             = typealias | traitdef | structdef | classdef | impldef | definition | decorateddef | external | toplevelexpr ;
-typealias       = "type" identifier "=" type ;
-traitdef        = "trait" identifier [ "[" identifier "]" ] ":" eols traitblock ;
-traitblock      = indent traitmethodsig { eols traitmethodsig } dedent ;
-traitmethodsig  = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ;
-structdef       = "struct" identifier ":" eols structblock ;
-classdef        = "class" identifier [ "(" traitref { "," traitref } ")" ] ":" eols structblock ;
-traitref        = identifier [ "[" type "]" ] ;
-impldef         = "impl" traitref "for" identifier ":" eols implblock ;
-implblock       = indent implmethod { eols implmethod } dedent ;
-implmethod      = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ":" ( simplestmt | eols block ) ;
-structblock     = indent classmember { eols classmember } dedent ;
-classmember     = [ visibility ] ( fielddecl | methoddef ) ;
-visibility      = "public" | "private" ;
-methoddef       = "def" identifier "(" [ typedparam { "," typedparam } ] ")"
-                  [ "->" type ] ":" ( simplestmt | eols block ) ;
-fielddecl       = identifier ":" type ;
-definition      = "def" prototype [ "->" type ] ":" ( simplestmt | eols block ) ;
-decorateddef    = binarydecorator eols "def" binaryopprototype [ "->" type ] ":" ( simplestmt | eols block )
-                | unarydecorator  eols "def" unaryopprototype  [ "->" type ] ":" ( simplestmt | eols block ) ;
-binarydecorator = "@" "binary" "(" integer ")" ;
-unarydecorator  = "@" "unary" ;
-binaryopprototype = customopchar "(" typedparam "," typedparam ")" ;
-unaryopprototype  = customopchar "(" typedparam ")" ;
-external        = "extern" "def" prototype [ "->" type ] ;
-toplevelexpr    = expression ;
-prototype       = identifier "(" [ typedparam { "," typedparam } ] ")" ;
-typedparam      = identifier ":" type ;
-ifstmt          = "if" expression ":" suite
-                [ eols "else" ":" suite ] ;
-forstmt         = "for"
-                  ( "var" identifier ":" type | identifier )
-                  "=" expression "," expression "," expression ":" suite ;
-varstmt         = "var" varbinding { "," varbinding } ;
-assignstmt      = lvalue assignop expression ;
-simplestmt      = returnstmt | varstmt | assignstmt | expression ;
-compoundstmt    = ifstmt | forstmt ;
-statement       = simplestmt | compoundstmt ;
-suite           = simplestmt | compoundstmt | eols block ;
-returnstmt      = "return" [ expression ] ;
-block           = indent statement { eols statement } dedent ;
-expression      = unaryexpr binoprhs ;
-binoprhs        = { binaryop unaryexpr } ;
-lvalue          = identifier | fieldaccess | indexexpr ;
-varbinding      = identifier ":" type [ "=" expression ] ;
-unaryexpr       = unaryop unaryexpr | postfixexpr ;
-unaryop         = "-" | "++" | "--" | userdefunaryop ;
-postfixexpr     = primary [ postfixop ] ;
-postfixop       = "++" | "--" ;
-primary         = castexpr | sizeofexpr | addrexpr | arrayliteral | stringliteral | identifierexpr | fieldaccess | indexexpr | numberexpr | bool_literal | parenexpr ;
-castexpr        = casttype "(" expression ")" ;
-sizeofexpr      = "sizeof" "(" type ")" ;
-addrexpr        = "addr" "(" lvalue ")" ;
-identifierexpr  = identifier | callexpr | methodcallexpr | ctorcallexpr ;
-callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
-methodcallexpr  = identifier "." identifier "(" [ expression { "," expression } ] ")" ;
-ctorcallexpr    = identifier "(" [ expression { "," expression } ] ")" ;
-fieldaccess     = identifier "." identifier { "." identifier } ;
-indexexpr       = identifier "[" expression "]" ;
-numberexpr      = number ;
-arrayliteral    = "[" [ expression { "," expression } ] "]" ;
-stringliteral   = "\"" { ? any char except " and newline ? | escape } "\"" ;
-escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
-parenexpr       = "(" expression ")" ;
-binaryop        = builtinbinaryop | userdefbinaryop ;
-indent          = INDENT ;
-dedent          = DEDENT ;
-
-assignop        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
-builtinbinaryop = "+" | "-" | "*" | "/" | "%"
-                | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
-userdefbinaryop = ? any opchar defined as a custom binary operator ? ;
-userdefunaryop  = ? any opchar defined as a custom unary operator ? ;
-customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
-                    and not already defined as a custom operator ? ;
-opchar          = ? any single ASCII punctuation character ? ;
-identifier      = (letter | "_") { letter | digit | "_" } ;
-builtintype     = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | "None" ;
-aliastype       = identifier ;
-structtype      = identifier ;
-pointertype     = "ptr" "[" type "]" ;
-type            = basetype [ arraysuffix ] ;
-basetype        = builtintype | aliastype | structtype | pointertype ;
-arraysuffix     = "[" integer "]" ;
-casttype        = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | pointertype ;
-integer         = digit { digit } ;
-number          = digit { digit } [ "." { digit } ]
-                | "." digit { digit } ;
-bool_literal    = "True" | "False" ;
-letter          = "A".."Z" | "a".."z" ;
-digit           = "0".."9" ;
-eol             = "\r\n" | "\r" | "\n" ;
-ws              = " " | "\t" ;
-INDENT          = ? synthetic token emitted by lexer ? ;
-DEDENT          = ? synthetic token emitted by lexer ? ;
-```
-
 ## New Tokens and Lexer Peek-Ahead
 
-Seven new tokens cover the compound assignment operators and the increment/decrement operators:
+I add seven new tokens to cover the compound assignment operators and the increment/decrement operators:
 
 ```cpp
 tok_pluseq     = -45,   // +=
@@ -181,75 +56,93 @@ tok_plusplus   = -56,   // ++
 tok_minusminus = -57,   // --
 ```
 
-Each is produced by a one-character peek in the lexer. The `+` path illustrates the pattern — on seeing `+`, it peeks at the next character to decide between `+=`, `++`, and bare `+`:
+I produce each with a one-character peek in the lexer. The `+` path illustrates the pattern: when I see `+`, I peek at the next character to decide between `+=`, `++`, and bare `+`:
 
 ```cpp
 if (LexerLastChar == '+') {
   int Next = peek();
-  int Tok = '+';
-  if (Next == '=')      Tok = (advance(), tok_pluseq);
-  else if (Next == '+') Tok = (advance(), tok_plusplus);
+  int Tok = tok_plus;
+  if (Next == '=')
+    Tok = (advance(), tok_pluseq);
+  else if (Next == '+')
+    Tok = (advance(), tok_plusplus);
   LexerLastChar = advance();
   return Tok;
 }
 ```
 
-The same pattern applies to `-` (which must also handle `->` for the arrow token), `*`, `/`, and `%`. The `/` path is new — previously `/` was an unknown character. Now it returns `'/'` bare or `tok_diveq` if followed by `=`.
+I apply the same pattern to `-` (which must also handle `->` for the arrow token), `*`, `/`, and `%`. The `/` path is new — previously `/` was an unknown character. Now I return `'/'` bare, or `tok_diveq` if it's followed by `=`.
 
 ## Division and Remainder
 
-`/` and `%` are added to the precedence table at level 40 — the same level as `*`:
+I add `/` and `%` to the precedence table at level 40 — the same level as `*`:
 
 ```cpp
-{'/', 40},
-{'%', 40},
+{tok_slash, 40},   // /
+{tok_percent, 40}, // %
 ```
 
-The LLVM instructions emitted by `EmitBuiltInArithmetic` differ by type:
+The LLVM instructions I emit from `EmitBuiltInArithmetic` differ by type:
 
 | Op | Integer | Float |
 |----|---------|-------|
 | `/` | `sdiv` | `fdiv` |
 | `%` | `srem` | error |
 
-`%` on float operands is a type error — `GetBinaryResultType` returns `ValueType::Error` for `%` when either operand is not an integer:
+`%` on float operands is a type error — I return `ValueType::Error` from `GetBinaryResultType` when either operand of `%` is not an integer:
 
 ```cpp
-if (Op == '%' && (!IsIntType(L) || !IsIntType(R)))
+if (Operator == tok_percent && (!IsIntType(L) || !IsIntType(R)))
   return ValueType::Error;
 ```
 
-The pointer arithmetic guard is also tightened: only `+` and `−` allow a pointer on one side. `/` and `%` with a pointer operand are now explicitly rejected:
+I report the resulting `ValueType::Error` as a type mismatch — the same generic error every binary operator falls back to, not something specific to `%`:
+
+```pyxc
+def main() -> int:
+  var a: float64 = 5.5
+  var b: float64 = 2.0
+  var r: float64 = a % b
+  return 0
+```
+```
+Error (Line 4, Column 25): Type mismatch in binary operator
+  var r: float64 = a % b
+                        ^~~~
+```
+
+I also tighten the pointer arithmetic guard: only `+` and `−` allow a pointer on one side. I now explicitly reject `/` and `%` with a pointer operand:
 
 ```cpp
-if ((Op == '+' || Op == '-') &&
-    ((L == ValueType::Pointer && IsIntType(R)) || ...)) {
+if ((Operator == tok_plus || Operator == tok_minus) &&
+    ((L == ValueType::Pointer && IsIntType(R)) ||
+     (R == ValueType::Pointer && IsIntType(L)))) {
   // pointer arithmetic
 }
 ```
 
 ## Compound Assignment AST Nodes
 
-There are four AST node classes, one for each lvalue shape, all sharing the same structure: an lvalue, an operator token, and an RHS expression:
+I add four AST node classes, one for each lvalue shape, all sharing the same structure: an lvalue, an operator token, and an RHS expression:
 
 ```cpp
-class CompoundAssignmentExprAST : public ExprAST {       // plain variable
-  string Name; int Op; unique_ptr<ExprAST> RHS; ...
+class CompoundAssignmentExpressionNode : public ExpressionNode {  // plain variable
+  string Name; int Operator; unique_ptr<ExpressionNode> Right; ...
 };
-class FieldCompoundAssignmentExprAST : public ExprAST {  // p.x += 1
-  unique_ptr<FieldExprAST> LHS; int Op; unique_ptr<ExprAST> RHS; ...
+class FieldCompoundAssignmentExpressionNode : public ExpressionNode {  // p.x += 1
+  unique_ptr<FieldExpressionNode> Left; int Operator; unique_ptr<ExpressionNode> Right; ...
 };
-class IndexCompoundAssignmentExprAST : public ExprAST {  // arr[i] *= 2
-  unique_ptr<IndexExprAST> LHS; int Op; unique_ptr<ExprAST> RHS; ...
+class IndexCompoundAssignmentExpressionNode : public ExpressionNode {  // arr[i] *= 2
+  unique_ptr<IndexExpressionNode> Left; int Operator; unique_ptr<ExpressionNode> Right; ...
 };
-class IndexedFieldCompoundAssignmentExprAST : public ExprAST { // arr[i].x += 3
-  unique_ptr<IndexedFieldExprAST> LHS; int Op; unique_ptr<ExprAST> RHS; ...
+class IndexedFieldCompoundAssignmentExpressionNode : public ExpressionNode {  // arr[i].x += 3
+  unique_ptr<IndexedFieldExpressionNode> Left; int Operator; unique_ptr<ExpressionNode> Right; ...
 };
 ```
 
-All four override `shouldPrintValue()` to return `false` — compound assignment is a statement, not a value expression, so the REPL does not auto-print its result.
+I make all four override `shouldPrintValue()` to return `false` — compound assignment is a statement, not a value expression, so the REPL doesn't auto-print its result.
 
-Two helpers drive the parse dispatch. `IsCompoundAssignTok` checks whether the current token is one of the five compound assignment tokens. `CompoundAssignToBinaryOp` converts it to the corresponding arithmetic operator character so codegen can call `EmitBuiltInArithmetic`:
+I drive the parse dispatch with two helpers: I check whether the current token is one of the five compound assignment tokens (`IsCompoundAssignTok`), then convert it to the corresponding arithmetic operator character (`CompoundAssignToBinaryOp`) so codegen can call `EmitBuiltInArithmetic`:
 
 ```cpp
 static bool IsCompoundAssignTok(int Tok) {
@@ -258,31 +151,38 @@ static bool IsCompoundAssignTok(int Tok) {
 }
 static int CompoundAssignToBinaryOp(int Tok) {
   switch (Tok) {
-  case tok_pluseq:  return '+';
-  case tok_minuseq: return '-';
-  case tok_muleq:   return '*';
-  case tok_diveq:   return '/';
-  case tok_modeq:   return '%';
-  default:          return 0;
+  case tok_pluseq:
+    return tok_plus;
+  case tok_minuseq:
+    return tok_minus;
+  case tok_muleq:
+    return tok_star;
+  case tok_diveq:
+    return tok_slash;
+  case tok_modeq:
+    return tok_percent;
+  default:
+    return 0;
   }
 }
 ```
 
-`ParseCompoundAssignmentRHS` handles the plain-variable case. It looks up the destination type, converts the token to a binary op, calls `ParseExpression` for the RHS, type-checks the result, and returns a `CompoundAssignmentExprAST`. The field and index variants follow the same pattern in their respective parse helpers (`ParseFieldCompoundAssignmentRHS`, etc.).
+I handle the plain-variable case in `ParseCompoundAssignmentRight`: I look up the destination type, convert the token to a binary op, call `ParseExpression` for the right-hand side, type-check the result, and return a `CompoundAssignmentExpressionNode`. The field case follows the same pattern in its own helper, `ParseFieldCompoundAssignmentRight`. The index and indexed-field cases follow the identical pattern too, but inline inside `ParseLeadingNameSimpleStatement` rather than in their own helpers.
 
-Codegen for all four nodes is identical in structure: resolve the lvalue to a pointer, load the current value, call `EmitBuiltInArithmetic(Op, old, rhs)`, store the result back.
+I write codegen the same way for all four nodes: resolve the lvalue to a pointer, load the current value, call `EmitBuiltInArithmetic(Operator, old, right)`, and store the result back.
 
-## `IncDecExprAST` — Prefix and Postfix `++`/`--`
+## Prefix and Postfix `++`/`--`
 
-A single AST node handles all four combinations of prefix/postfix × increment/decrement:
+I handle all four combinations of prefix/postfix × increment/decrement with a single AST node:
 
 ```cpp
-class IncDecExprAST : public ExprAST {
-  unique_ptr<ExprAST> Operand;
-  bool IsIncrement;  // true for ++, false for --
-  bool IsPrefix;     // true for prefix, false for postfix
+class IncDecExpressionNode : public ExpressionNode {
+  unique_ptr<ExpressionNode> Operand;
+  bool IsIncrement;
+  bool IsPrefix;
+
 public:
-  IncDecExprAST(unique_ptr<ExprAST> Operand, bool IsIncrement, bool IsPrefix,
+  IncDecExpressionNode(unique_ptr<ExpressionNode> Operand, bool IsIncrement, bool IsPrefix,
                 ValueType Type, const string &StructName = "")
       : Operand(std::move(Operand)), IsIncrement(IsIncrement),
         IsPrefix(IsPrefix) {
@@ -292,63 +192,186 @@ public:
 };
 ```
 
-The operand must pass `IsIncDecAssignableExpr` — it must be a variable, field, index, or indexed-field expression:
+I require the operand to pass `IsIncDecAssignableExpr` — it must be a variable, field, index, or indexed-field expression:
 
 ```cpp
-static bool IsIncDecAssignableExpr(const ExprAST *E) {
-  return dynamic_cast<const VariableExprAST *>(E) ||
-         dynamic_cast<const FieldExprAST *>(E) ||
-         dynamic_cast<const IndexExprAST *>(E) ||
-         dynamic_cast<const IndexedFieldExprAST *>(E);
+static bool IsIncDecAssignableExpr(const ExpressionNode *E) {
+  return dynamic_cast<const NameExpressionNode *>(E) ||
+         dynamic_cast<const FieldExpressionNode *>(E) ||
+         dynamic_cast<const IndexExpressionNode *>(E) ||
+         dynamic_cast<const IndexedFieldExpressionNode *>(E);
 }
 ```
 
-Codegen: load the old value → compute `old ± 1` via `EmitBuiltInArithmetic` → store the new value → return `IsPrefix ? new : old`. The postfix form returns the value that existed *before* the mutation, matching C semantics.
+In codegen, I load the old value, compute `old ± 1` via `EmitBuiltInArithmetic`, store the new value, and return `IsPrefix ? new : old`. For postfix, I return the value that existed *before* the mutation, matching C semantics.
+
+Because I reuse `EmitBuiltInArithmetic` here — the same function `+` and `-` already go through — `p++` on a pointer automatically advances by one element through the pointer-arithmetic path from earlier in this chapter. I don't need to add anything pointer-specific here.
 
 ## Parsing `++`/`--`
 
-**Postfix** is handled by `ParsePostfixIncDec`, which wraps the primary expression in an `IncDecExprAST` if followed by `++` or `--`. `ParseUnary` now calls this instead of `ParsePrimary` directly:
+**Postfix** I handle in `ParsePostfixIncDec`, which wraps the primary expression in an `IncDecExpressionNode` if it's followed by `++` or `--`. Both paths require the operand to be numeric or a pointer, in addition to being assignable. `ParseUnary` calls `ParsePostfixIncDec(ParsePrimary())` instead of calling `ParsePrimary` alone:
 
 ```cpp
-static unique_ptr<ExprAST> ParsePostfixIncDec(unique_ptr<ExprAST> Base) {
-  while (CurTok == tok_plusplus || CurTok == tok_minusminus) {
-    bool IsIncrement = (CurTok == tok_plusplus);
+static unique_ptr<ExpressionNode> ParsePostfixIncDec(unique_ptr<ExpressionNode> Base) {
+  while (CurrentToken == tok_plusplus || CurrentToken == tok_minusminus) {
+    bool IsIncrement = (CurrentToken == tok_plusplus);
     if (!IsIncDecAssignableExpr(Base.get()))
-      return LogError("Increment/decrement target must be assignable");
+      return LogErrorExpression("Increment/decrement target must be assignable");
+    if (!IsNumericType(Base->getType()) &&
+        Base->getType() != ValueType::Pointer)
+      return LogErrorExpression("Increment/decrement requires numeric or pointer type");
+    ValueType T = Base->getType();
+    string S = Base->getStructName();
     getNextToken(); // eat ++/--
-    Base = make_unique<IncDecExprAST>(std::move(Base), IsIncrement,
-                                     /*IsPrefix=*/false, ...);
+    Base = make_unique<IncDecExpressionNode>(std::move(Base), IsIncrement,
+                                      /*IsPrefix=*/false, T, S);
   }
   return Base;
 }
-// In ParseUnary:
-return ParsePostfixIncDec(ParsePrimary());
 ```
 
-**Prefix** is handled at the top of `ParseUnary`, before the primary:
+**Prefix** I handle at the top of `ParseUnary`, before the primary:
 
 ```cpp
-if (CurTok == tok_plusplus || CurTok == tok_minusminus) {
-  bool IsIncrement = (CurTok == tok_plusplus);
+if (CurrentToken == tok_plusplus || CurrentToken == tok_minusminus) {
+  bool IsIncrement = (CurrentToken == tok_plusplus);
   getNextToken(); // eat ++/--
   auto Operand = ParseUnary();
-  // validate assignable and numeric/pointer
-  return make_unique<IncDecExprAST>(std::move(Operand), IsIncrement,
-                                   /*IsPrefix=*/true, ...);
+  if (!Operand)
+    return nullptr;
+  if (!IsIncDecAssignableExpr(Operand.get()))
+    return LogErrorExpression("Increment/decrement target must be assignable");
+  if (!IsNumericType(Operand->getType()) &&
+      Operand->getType() != ValueType::Pointer)
+    return LogErrorExpression("Increment/decrement requires numeric or pointer type");
+  return make_unique<IncDecExpressionNode>(std::move(Operand), IsIncrement,
+                                    /*IsPrefix=*/true, Operand->getType(),
+                                    Operand->getStructName());
 }
 ```
 
-Recursive descent through `ParseUnary` means `++++x` is syntactically valid (prefix applied twice) but only meaningful if `x` is assignable at each level.
+Because `ParseUnary` recurses, `++++x` is syntactically valid (prefix applied twice), though I only accept it as meaningful if `x` is assignable at each level.
 
-## Things Worth Knowing
+## Grammar
 
-**`EmitBuiltInArithmetic` is the single implementation path.** Both `BinaryExprAST` and every compound assignment and `IncDecExprAST` node call it. Adding a new arithmetic operator means touching one function.
+I change three areas of the grammar. I replace the bare `=` in `assignment-statement` with `assignment-operator`, now accepting any of the six assignment operators. I insert `postfix-expression` between `unary-expression` and `primary` to capture postfix `++`/`--`. And I extend `builtin-binary-operator` with `/` and `%`.
 
-**Postfix `++` returns the old value.** `var y: int = x++` captures the value before the increment — identical to C.
+`code/chapter-32/pyxc.ebnf`
 
-**`++`/`--` work on pointers.** `p++` advances by one element. Pointer arithmetic rules apply.
+```grammardiff
+ program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
+ end-of-lines            = end-of-line { end-of-line } ;
+ top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | decorated-function-definition | external | top-level-expression ;
+ type-alias       = "type" name "=" type ;
+ trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
+ trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
+ trait-method-signature  = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ;
+ struct-definition       = "struct" name ":" end-of-lines struct-block ;
+ class-definition        = "class" name [ "(" trait-reference { "," trait-reference } ")" ] ":" end-of-lines struct-block ;
+ trait-reference        = name [ "[" type "]" ] ;
+ implementation-definition         = "impl" trait-reference "for" name ":" end-of-lines implementation-block ;
+ implementation-block       = indent implementation-method { end-of-lines implementation-method } dedent ;
+ implementation-method      = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ struct-block     = indent class-member { end-of-lines class-member } dedent ;
+ class-member     = [ visibility ] ( field-declaration | method-definition ) ;
+ visibility      = "public" | "private" ;
+ method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")"
+                   [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ field-declaration       = name ":" type ;
+ function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ (* If the return type is omitted, it defaults to None. *)
+ decorated-function-definition    = binary-decorator end-of-lines "def" binary-operator-signature [ "->" type ] ":" ( simple-statement | end-of-lines block )
+                 | unary-decorator  end-of-lines "def" unary-operator-signature  [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ binary-decorator = "@" "binary" "(" integer ")" ;
+ unary-decorator  = "@" "unary" ;
+ binary-operator-signature = custom-operator-character "(" typed-parameter "," typed-parameter ")" ;
+ unary-operator-signature  = custom-operator-character "(" typed-parameter ")" ;
+ external        = "extern" "def" function-signature [ "->" type ] ;
+ top-level-expression    = expression ;
+ function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
+ typed-parameter      = name ":" type ;
+ if-statement          = "if" expression ":" suite
+                 [ end-of-lines "else" ":" suite ] ;
+ for-statement         = "for"
+                   ( "var" name ":" type | name )
+                   "=" expression "," expression "," expression ":" suite ;
+ variable-statement         = "var" variable-binding { "," variable-binding } ;
+-assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
++assignment-statement      = lvalue assignment-operator expression ; (* assignment is a statement here *)
+ simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
+ compound-statement    = if-statement | for-statement ;
+ statement       = simple-statement | compound-statement ;
+ suite           = simple-statement | compound-statement | end-of-lines block ;
+ return-statement      = "return" [ expression ] ;
+ statement-separator = end-of-lines | BLOCK_END ;
+ block = indent statement { statement-separator statement } dedent ;
+ expression      = unary-expression binary-operator-right ;
+ binary-operator-right        = { binary-operator unary-expression } ;
+ lvalue          = name | field-access | index-expression ;
+ variable-binding      = name ":" type [ "=" expression ] ;
+-unary-expression       = unary-operator unary-expression | primary ;
++unary-expression       = unary-operator unary-expression | postfix-expression ;
+-unary-operator         = "-" | user-defined-unary-operator ;
++unary-operator         = "-" | "++" | "--" | user-defined-unary-operator ;
++postfix-expression     = primary [ postfix-operator ] ;
++postfix-operator       = "++" | "--" ;
+ primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
+ cast-expression        = cast-type "(" expression ")" ;
+ sizeof-expression      = "sizeof" "(" type ")" ;
+ address-expression        = "addr" "(" lvalue ")" ;
+ name-expression  = name | call-expression | method-call-expression | constructor-call-expression ;
+ call-expression        = name "(" [ expression { "," expression } ] ")" ;
+ method-call-expression  = name "." name "(" [ expression { "," expression } ] ")" ;
+ constructor-call-expression    = name "(" [ expression { "," expression } ] ")" ;
+ field-access     = name "." name { "." name } ;
+ index-expression       = name "[" expression "]" ;
+ number-expression      = number ;
+ array-literal    = "[" [ expression { "," expression } ] "]" ;
+ string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
+ escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
+ parenthesized-expression       = "(" expression ")" ;
+ binary-operator        = builtin-binary-operator | user-defined-binary-operator ;
+ indent          = INDENT ;
+ dedent          = DEDENT ;
 
-**`%` on floats is an error.** There is no floating-point remainder operator in pyxc.
++assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
+-builtin-binary-operator = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
++builtin-binary-operator = "+" | "-" | "*" | "/" | "%"
++                | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
+ user-defined-binary-operator = ? any operator-character defined as a custom binary operator ? ;
+ user-defined-unary-operator  = ? any operator-character defined as a custom unary operator ? ;
+ custom-operator-character    = ? any operator-character that is not "-" or a builtin-binary-operator,
+                     and not already defined as a custom operator ? ;
+ operator-character          = ? any single ASCII punctuation character ? ;
+ name      = (letter | "_") { letter | digit | "_" } ;
+ builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+                 | "bool" | "None" ;
+ alias-type       = name ;
+ struct-type      = name ;
+ pointer-type     = "ptr" "[" type "]" ;
+ type            = base-type [ array-suffix ] ;
+ base-type        = builtin-type | alias-type | struct-type | pointer-type ;
+ array-suffix     = "[" integer "]" ;
+ cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+                 | "bool" | pointer-type ;
+ integer         = digit { digit } ;
+ number          = ( digit { digit } [ "." { digit } ]
+                   | "." digit { digit } ) [ exponent ] ;
+ exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
+ boolean-literal    = "True" | "False" ;
+ letter          = "A".."Z" | "a".."z" ;
+ digit           = "0".."9" ;
+ end-of-line             = "\r\n" | "\r" | "\n" ;
+ comment = "#" { comment-character } ;
+ comment-character = ? any character except "\r" and "\n" ? ;
+ whitespace = " " | "\t" | "\v" | "\f" ;
+ INDENT          = ? synthetic token emitted by lexer ? ;
+ DEDENT          = ? synthetic token emitted by lexer ? ;
+
+ BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
+```
 
 ## What's Next
 

@@ -115,7 +115,7 @@ The call-site arity check was previously an exact match. For variadic functions 
 // In ParseCallArgs / call codegen:
 if ((!Proto->isVarArg() && Proto->getNumArgs() != Args.size()) ||
     (Proto->isVarArg() && Args.size() < Proto->getNumArgs()))
-  return LogError("Incorrect # arguments passed");
+  return LogErrorExpression("Incorrect # arguments passed");
 ```
 
 Type-checking the arguments only iterates over the fixed parameters:

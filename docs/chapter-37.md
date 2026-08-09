@@ -73,10 +73,10 @@ while (true) {
   if (!Cond)
     return nullptr;
   if (Cond->getType() != ValueType::Bool)
-    return LogError("If condition must be bool");
+    return LogErrorExpression("If condition must be bool");
 
   if (CurTok != ':')
-    return LogError("Expected ':' after if/elif condition");
+    return LogErrorExpression("Expected ':' after if/elif condition");
   getNextToken(); // eat ':'
 
   auto Body = ParseSuite();

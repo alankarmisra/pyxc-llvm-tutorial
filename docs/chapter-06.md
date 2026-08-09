@@ -39,6 +39,23 @@ cd pyxc-llvm-tutorial/code/chapter-06
 
 ## The Three LLVM Objects
 
+I add the LLVM headers these codegen types come from, and pull in the `llvm` namespace alongside `std`:
+
+```cpp
+#include "llvm/ADT/APFloat.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IR/Type.h"
+#include "llvm/IR/Verifier.h"
+
+using namespace llvm;
+```
+
 I use three LLVM objects during code generation and keep them as globals:
 
 ```cpp
@@ -160,7 +177,7 @@ Code generation needs an error helper with the same return type as an expression
 
 ```cpp
 Value *LogErrorV(const char *Str) {
-  LogError(Str);
+  LogErrorExpression(Str);
   return nullptr;
 }
 ```
@@ -372,7 +389,7 @@ Function *FunctionDefinitionNode::codegen() {
   Function *TheFunction = TheModule->getFunction(Signature->getName());
 
   if (TheFunction && !TheFunction->empty()) {
-    LogError("Function cannot be redefined.");
+    LogErrorExpression("Function cannot be redefined.");
     return nullptr;
   }
 
@@ -438,17 +455,19 @@ After code generation succeeds, I print the IR for the current input:
 if (auto *FnIR = FnAST->codegen()) {
   fprintf(stderr, "Parsed a function definition.\n");
   FnIR->print(errs());
+  fprintf(stderr, "\n");
 }
 
 // In HandleTopLevelExpression:
 if (auto *FnIR = FnAST->codegen()) {
   fprintf(stderr, "Parsed a top-level expression.\n");
   FnIR->print(errs());
+  fprintf(stderr, "\n");
   FnIR->eraseFromParent();
 }
 ```
 
-`errs()` is LLVM's wrapper around `stderr`. I pass it to `FnIR->print` to print the function in LLVM's text format.
+`errs()` is LLVM's wrapper around `stderr`. I pass it to `FnIR->print` to print the function in LLVM's text format. The extra `fprintf(stderr, "\n")` afterward is just spacing, so the next `ready>` prompt doesn't run up against the last line of IR.
 
 For a top-level expression such as `1 + 2`, I create a temporary function named `__anon_expr`. LLVM instructions must belong to a function, so this wrapper gives me a place to generate the expression. After I print its IR, I remove it from the module. In the next chapter, I will execute it before removing it.
 

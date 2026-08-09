@@ -102,11 +102,11 @@ static unique_ptr<ExprAST> BuildAssignmentExpr(int AssignTok,
     ...
   }
 
-  return LogError("Assignment target must be assignable");
+  return LogErrorExpression("Assignment target must be assignable");
 }
 ```
 
-Four lvalue kinds are recognised: variable, field, array index, and indexed field. Any other expression kind — including `x + 1` or a function call — reaches the final `LogError`. The existing `AssignmentExprAST`, `CompoundAssignmentExprAST`, and their field/index variants are reused unchanged; `BuildAssignmentExpr` is the only new code.
+Four lvalue kinds are recognised: variable, field, array index, and indexed field. Any other expression kind — including `x + 1` or a function call — reaches the final `LogErrorExpression`. The existing `AssignmentExprAST`, `CompoundAssignmentExprAST`, and their field/index variants are reused unchanged; `BuildAssignmentExpr` is the only new code.
 
 ## The Value of an Assignment Expression
 

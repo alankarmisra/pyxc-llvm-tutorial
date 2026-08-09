@@ -5,7 +5,7 @@ description: "Encode operator precedence in the grammar, then parse subtraction,
 
 ## Where I Am
 
-In this chapter, I add `-`, `*`, `/`, and `<`. I use the grammar to implement arithmetic precedence for `+`, `-`, `*`, and `/`, and I make `<` bind more loosely than all four. For example, I group `a + b * c` as `a + (b * c)`.
+In this chapter, I add `-`, `*`, `/`, and `<`. 
 
 ## Source Code
 
@@ -254,7 +254,7 @@ while (CurrentToken == tok_star || CurrentToken == tok_slash) {
   if (!Right)
     return nullptr;
 
-  // I replace Left with the new binary expression.
+  // I fold each new operation into the tree on my left.
   Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
                                            std::move(Right));
 }

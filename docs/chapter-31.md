@@ -52,108 +52,118 @@ traitref  = identifier [ "[" type "]" ] ;  -- new
 impldef   = "impl" traitref "for" identifier ":" eols implblock ;  -- changed
 ```
 
-### Full Grammar
+### Grammar
 
 `code/chapter-31/pyxc.ebnf`
 
-```ebnf
-program         = [ eols ] [ top { eols top } ] [ eols ] ;
-eols            = eol { eol } ;
-top             = typealias | traitdef | structdef | classdef | impldef | definition | decorateddef | external | toplevelexpr ;
-typealias       = "type" identifier "=" type ;
-traitdef        = "trait" identifier [ "[" identifier "]" ] ":" eols traitblock ;
-traitblock      = indent traitmethodsig { eols traitmethodsig } dedent ;
-traitmethodsig  = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ;
-structdef       = "struct" identifier ":" eols structblock ;
-classdef        = "class" identifier [ "(" traitref { "," traitref } ")" ] ":" eols structblock ;
-traitref        = identifier [ "[" type "]" ] ;
-impldef         = "impl" traitref "for" identifier ":" eols implblock ;
-implblock       = indent implmethod { eols implmethod } dedent ;
-implmethod      = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ":" ( simplestmt | eols block ) ;
-structblock     = indent classmember { eols classmember } dedent ;
-classmember     = [ visibility ] ( fielddecl | methoddef ) ;
-visibility      = "public" | "private" ;
-methoddef       = "def" identifier "(" [ typedparam { "," typedparam } ] ")"
-                  [ "->" type ] ":" ( simplestmt | eols block ) ;
-fielddecl       = identifier ":" type ;
-definition      = "def" prototype [ "->" type ] ":" ( simplestmt | eols block ) ;
-decorateddef    = binarydecorator eols "def" binaryopprototype [ "->" type ] ":" ( simplestmt | eols block )
-                | unarydecorator  eols "def" unaryopprototype  [ "->" type ] ":" ( simplestmt | eols block ) ;
-binarydecorator = "@" "binary" "(" integer ")" ;
-unarydecorator  = "@" "unary" ;
-binaryopprototype = customopchar "(" typedparam "," typedparam ")" ;
-unaryopprototype  = customopchar "(" typedparam ")" ;
-external        = "extern" "def" prototype [ "->" type ] ;
-toplevelexpr    = expression ;
-prototype       = identifier "(" [ typedparam { "," typedparam } ] ")" ;
-typedparam      = identifier ":" type ;
-ifstmt          = "if" expression ":" suite
-                [ eols "else" ":" suite ] ;
-forstmt         = "for"
-                  ( "var" identifier ":" type | identifier )
-                  "=" expression "," expression "," expression ":" suite ;
-varstmt         = "var" varbinding { "," varbinding } ;
-assignstmt      = lvalue "=" expression ;
-simplestmt      = returnstmt | varstmt | assignstmt | expression ;
-compoundstmt    = ifstmt | forstmt ;
-statement       = simplestmt | compoundstmt ;
-suite           = simplestmt | compoundstmt | eols block ;
-returnstmt      = "return" [ expression ] ;
-block           = indent statement { eols statement } dedent ;
-expression      = unaryexpr binoprhs ;
-binoprhs        = { binaryop unaryexpr } ;
-lvalue          = identifier | fieldaccess | indexexpr ;
-varbinding      = identifier ":" type [ "=" expression ] ;
-unaryexpr       = unaryop unaryexpr | primary ;
-unaryop         = "-" | userdefunaryop ;
-primary         = castexpr | sizeofexpr | addrexpr | arrayliteral | stringliteral | identifierexpr | fieldaccess | indexexpr | numberexpr | bool_literal | parenexpr ;
-castexpr        = casttype "(" expression ")" ;
-sizeofexpr      = "sizeof" "(" type ")" ;
-addrexpr        = "addr" "(" lvalue ")" ;
-identifierexpr  = identifier | callexpr | methodcallexpr | ctorcallexpr ;
-callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
-methodcallexpr  = identifier "." identifier "(" [ expression { "," expression } ] ")" ;
-ctorcallexpr    = identifier "(" [ expression { "," expression } ] ")" ;
-fieldaccess     = identifier "." identifier { "." identifier } ;
-indexexpr       = identifier "[" expression "]" ;
-numberexpr      = number ;
-arrayliteral    = "[" [ expression { "," expression } ] "]" ;
-stringliteral   = "\"" { ? any char except " and newline ? | escape } "\"" ;
-escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
-parenexpr       = "(" expression ")" ;
-binaryop        = builtinbinaryop | userdefbinaryop ;
-indent          = INDENT ;
-dedent          = DEDENT ;
+```grammardiff
+ program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
+ end-of-lines            = end-of-line { end-of-line } ;
+ top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | decorated-function-definition | external | top-level-expression ;
+ type-alias       = "type" name "=" type ;
+-trait-definition        = "trait" name ":" end-of-lines trait-block ;
++trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
+ trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
+ trait-method-signature  = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ;
+ struct-definition       = "struct" name ":" end-of-lines struct-block ;
+-class-definition        = "class" name [ "(" name { "," name } ")" ] ":" end-of-lines struct-block ;
+-implementation-definition         = "impl" name "for" name ":" end-of-lines implementation-block ;
++class-definition        = "class" name [ "(" trait-reference { "," trait-reference } ")" ] ":" end-of-lines struct-block ;
++trait-reference        = name [ "[" type "]" ] ;
++implementation-definition         = "impl" trait-reference "for" name ":" end-of-lines implementation-block ;
+ implementation-block       = indent implementation-method { end-of-lines implementation-method } dedent ;
+ implementation-method      = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ struct-block     = indent class-member { end-of-lines class-member } dedent ;
+ class-member     = [ visibility ] ( field-declaration | method-definition ) ;
+ visibility      = "public" | "private" ;
+ method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")"
+                   [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ field-declaration       = name ":" type ;
+ function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ (* If the return type is omitted, it defaults to None. *)
+ decorated-function-definition    = binary-decorator end-of-lines "def" binary-operator-signature [ "->" type ] ":" ( simple-statement | end-of-lines block )
+                 | unary-decorator  end-of-lines "def" unary-operator-signature  [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ binary-decorator = "@" "binary" "(" integer ")" ;
+ unary-decorator  = "@" "unary" ;
+ binary-operator-signature = custom-operator-character "(" typed-parameter "," typed-parameter ")" ;
+ unary-operator-signature  = custom-operator-character "(" typed-parameter ")" ;
+ external        = "extern" "def" function-signature [ "->" type ] ;
+ top-level-expression    = expression ;
+ function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
+ typed-parameter      = name ":" type ;
+ if-statement          = "if" expression ":" suite
+                 [ end-of-lines "else" ":" suite ] ;
+ for-statement         = "for"
+                   ( "var" name ":" type | name )
+                   "=" expression "," expression "," expression ":" suite ;
+ variable-statement         = "var" variable-binding { "," variable-binding } ;
+ assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
+ simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
+ compound-statement    = if-statement | for-statement ;
+ statement       = simple-statement | compound-statement ;
+ suite           = simple-statement | compound-statement | end-of-lines block ;
+ return-statement      = "return" [ expression ] ;
+ statement-separator = end-of-lines | BLOCK_END ;
+ block = indent statement { statement-separator statement } dedent ;
+ expression      = unary-expression binary-operator-right ;
+ binary-operator-right        = { binary-operator unary-expression } ;
+ lvalue          = name | field-access | index-expression ;
+ variable-binding      = name ":" type [ "=" expression ] ;
+ unary-expression       = unary-operator unary-expression | primary ;
+ unary-operator         = "-" | user-defined-unary-operator ;
+ primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
+ cast-expression        = cast-type "(" expression ")" ;
+ sizeof-expression      = "sizeof" "(" type ")" ;
+ address-expression        = "addr" "(" lvalue ")" ;
+ name-expression  = name | call-expression | method-call-expression | constructor-call-expression ;
+ call-expression        = name "(" [ expression { "," expression } ] ")" ;
+ method-call-expression  = name "." name "(" [ expression { "," expression } ] ")" ;
+ constructor-call-expression    = name "(" [ expression { "," expression } ] ")" ;
+ field-access     = name "." name { "." name } ;
+ index-expression       = name "[" expression "]" ;
+ number-expression      = number ;
+ array-literal    = "[" [ expression { "," expression } ] "]" ;
+ string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
+ escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
+ parenthesized-expression       = "(" expression ")" ;
+ binary-operator        = builtin-binary-operator | user-defined-binary-operator ;
+ indent          = INDENT ;
+ dedent          = DEDENT ;
 
-builtinbinaryop = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
-userdefbinaryop = ? any opchar defined as a custom binary operator ? ;
-userdefunaryop  = ? any opchar defined as a custom unary operator ? ;
-customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
-                    and not already defined as a custom operator ? ;
-opchar          = ? any single ASCII punctuation character ? ;
-identifier      = (letter | "_") { letter | digit | "_" } ;
-builtintype     = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | "None" ;
-aliastype       = identifier ;
-structtype      = identifier ;
-pointertype     = "ptr" "[" type "]" ;
-type            = basetype [ arraysuffix ] ;
-basetype        = builtintype | aliastype | structtype | pointertype ;
-arraysuffix     = "[" integer "]" ;
-casttype        = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | pointertype ;
-integer         = digit { digit } ;
-number          = digit { digit } [ "." { digit } ]
-                | "." digit { digit } ;
-bool_literal    = "True" | "False" ;
-letter          = "A".."Z" | "a".."z" ;
-digit           = "0".."9" ;
-eol             = "\r\n" | "\r" | "\n" ;
-ws              = " " | "\t" ;
-INDENT          = ? synthetic token emitted by lexer ? ;
-DEDENT          = ? synthetic token emitted by lexer ? ;
+ builtin-binary-operator = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
+ user-defined-binary-operator = ? any operator-character defined as a custom binary operator ? ;
+ user-defined-unary-operator  = ? any operator-character defined as a custom unary operator ? ;
+ custom-operator-character    = ? any operator-character that is not "-" or a builtin-binary-operator,
+                     and not already defined as a custom operator ? ;
+ operator-character          = ? any single ASCII punctuation character ? ;
+ name      = (letter | "_") { letter | digit | "_" } ;
+ builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+                 | "bool" | "None" ;
+ alias-type       = name ;
+ struct-type      = name ;
+ pointer-type     = "ptr" "[" type "]" ;
+ type            = base-type [ array-suffix ] ;
+ base-type        = builtin-type | alias-type | struct-type | pointer-type ;
+ array-suffix     = "[" integer "]" ;
+ cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+                 | "bool" | pointer-type ;
+ integer         = digit { digit } ;
+ number          = ( digit { digit } [ "." { digit } ]
+                   | "." digit { digit } ) [ exponent ] ;
+ exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
+ boolean-literal    = "True" | "False" ;
+ letter          = "A".."Z" | "a".."z" ;
+ digit           = "0".."9" ;
+ end-of-line             = "\r\n" | "\r" | "\n" ;
+ comment = "#" { comment-character } ;
+ comment-character = ? any character except "\r" and "\n" ? ;
+ whitespace = " " | "\t" | "\v" | "\f" ;
+ INDENT          = ? synthetic token emitted by lexer ? ;
+ DEDENT          = ? synthetic token emitted by lexer ? ;
+
+ BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
 ## `ValueType::TypeVar` and `ActiveTypeParams`
@@ -205,13 +215,13 @@ string TypeParamName;
 if (CurTok == '[') {
   getNextToken(); // eat '['
   if (CurTok != tok_identifier) {
-    LogError("Expected type parameter name in trait definition");
+    LogErrorExpression("Expected type parameter name in trait definition");
     return false;
   }
   TypeParamName = IdentifierStr;
   getNextToken(); // eat type parameter name
   if (CurTok != ']') {
-    LogError("Expected ']' after trait type parameter");
+    LogErrorExpression("Expected ']' after trait type parameter");
     return false;
   }
   getNextToken(); // eat ']'
@@ -245,7 +255,7 @@ Ref.TraitName = TraitName;
 if (!TraitDef.TypeParamName.empty()) {
   // trait requires a type argument
   if (CurTok != '[') {
-    LogError(("Trait '" + TraitName + "' requires a type argument").c_str());
+    LogErrorExpression(("Trait '" + TraitName + "' requires a type argument").c_str());
     return false;
   }
   getNextToken(); // eat '['
@@ -256,7 +266,7 @@ if (!TraitDef.TypeParamName.empty()) {
   Ref.TypeArg = TypeArg;
   Ref.TypeArgStructName = TypeArgStruct;
 } else if (CurTok == '[') {
-  LogError(("Trait '" + TraitName + "' does not take type arguments").c_str());
+  LogErrorExpression(("Trait '" + TraitName + "' does not take type arguments").c_str());
   return false;
 }
 ```
@@ -275,7 +285,7 @@ static bool VerifyTraitConformance(const string &ClassName,
 
   // Verify type-arg consistency
   if (!TI.TypeParamName.empty() && !ImplRef.HasTypeArg) {
-    LogError(("Trait '" + TraitName + "' requires a type argument").c_str());
+    LogErrorExpression(("Trait '" + TraitName + "' requires a type argument").c_str());
     return false;
   }
 
@@ -292,14 +302,14 @@ static bool VerifyTraitConformance(const string &ClassName,
     auto ReqRet = ResolveReq(Req.ReturnType, Req.ReturnStructName);
     if (P->getReturnType() != ReqRet.first ||
         P->getReturnStructName() != ReqRet.second) {
-      LogError("does not match trait signature");
+      LogErrorExpression("does not match trait signature");
       return false;
     }
     for (size_t I = 0; I < Req.Args.size(); ++I) {
       auto ReqArg = ResolveReq(Req.Args[I].Type, Req.Args[I].StructName);
       if (P->getArgType(I + 1) != ReqArg.first ||
           P->getArgStructName(I + 1) != ReqArg.second) {
-        LogError("does not match trait signature");
+        LogErrorExpression("does not match trait signature");
         return false;
       }
     }

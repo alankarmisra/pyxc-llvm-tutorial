@@ -60,104 +60,113 @@ classdef       = "class" identifier [ "(" identifier { "," identifier } ")" ] ":
 
 `traitmethodsig` looks like a method definition but has no body and no `self` parameter. The `classdef` gains an optional parenthesised list of trait names after the class name.
 
-### Full Grammar
+### Grammar
 
 `code/chapter-29/pyxc.ebnf`
 
-```ebnf
-program         = [ eols ] [ top { eols top } ] [ eols ] ;
-eols            = eol { eol } ;
-top             = typealias | traitdef | structdef | classdef | definition | decorateddef | external | toplevelexpr ;
-typealias       = "type" identifier "=" type ;
-traitdef        = "trait" identifier ":" eols traitblock ;
-traitblock      = indent traitmethodsig { eols traitmethodsig } dedent ;
-traitmethodsig  = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ;
-structdef       = "struct" identifier ":" eols structblock ;
-classdef        = "class" identifier [ "(" identifier { "," identifier } ")" ] ":" eols structblock ;
-structblock     = indent classmember { eols classmember } dedent ;
-classmember     = [ visibility ] ( fielddecl | methoddef ) ;
-visibility      = "public" | "private" ;
-methoddef       = "def" identifier "(" [ typedparam { "," typedparam } ] ")"
-                  [ "->" type ] ":" ( simplestmt | eols block ) ;
-fielddecl       = identifier ":" type ;
-definition      = "def" prototype [ "->" type ] ":" ( simplestmt | eols block ) ;
-decorateddef    = binarydecorator eols "def" binaryopprototype [ "->" type ] ":" ( simplestmt | eols block )
-                | unarydecorator  eols "def" unaryopprototype  [ "->" type ] ":" ( simplestmt | eols block ) ;
-binarydecorator = "@" "binary" "(" integer ")" ;
-unarydecorator  = "@" "unary" ;
-binaryopprototype = customopchar "(" typedparam "," typedparam ")" ;
-unaryopprototype  = customopchar "(" typedparam ")" ;
-external        = "extern" "def" prototype [ "->" type ] ;
-toplevelexpr    = expression ;
-prototype       = identifier "(" [ typedparam { "," typedparam } ] ")" ;
-typedparam      = identifier ":" type ;
-ifstmt          = "if" expression ":" suite
-                [ eols "else" ":" suite ] ;
-forstmt         = "for"
-                  ( "var" identifier ":" type | identifier )
-                  "=" expression "," expression "," expression ":" suite ;
-varstmt         = "var" varbinding { "," varbinding } ;
-assignstmt      = lvalue "=" expression ;
-simplestmt      = returnstmt | varstmt | assignstmt | expression ;
-compoundstmt    = ifstmt | forstmt ;
-statement       = simplestmt | compoundstmt ;
-suite           = simplestmt | compoundstmt | eols block ;
-returnstmt      = "return" [ expression ] ;
-block           = indent statement { eols statement } dedent ;
-expression      = unaryexpr binoprhs ;
-binoprhs        = { binaryop unaryexpr } ;
-lvalue          = identifier | fieldaccess | indexexpr ;
-varbinding      = identifier ":" type [ "=" expression ] ;
-unaryexpr       = unaryop unaryexpr | primary ;
-unaryop         = "-" | userdefunaryop ;
-primary         = castexpr | sizeofexpr | addrexpr | arrayliteral | stringliteral | identifierexpr | fieldaccess | indexexpr | numberexpr | bool_literal | parenexpr ;
-castexpr        = casttype "(" expression ")" ;
-sizeofexpr      = "sizeof" "(" type ")" ;
-addrexpr        = "addr" "(" lvalue ")" ;
-identifierexpr  = identifier | callexpr | methodcallexpr | ctorcallexpr ;
-callexpr        = identifier "(" [ expression { "," expression } ] ")" ;
-methodcallexpr  = identifier "." identifier "(" [ expression { "," expression } ] ")" ;
-ctorcallexpr    = identifier "(" [ expression { "," expression } ] ")" ;
-fieldaccess     = identifier "." identifier { "." identifier } ;
-indexexpr       = identifier "[" expression "]" ;
-numberexpr      = number ;
-arrayliteral    = "[" [ expression { "," expression } ] "]" ;
-stringliteral   = "\"" { ? any char except " and newline ? | escape } "\"" ;
-escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
-parenexpr       = "(" expression ")" ;
-binaryop        = builtinbinaryop | userdefbinaryop ;
-indent          = INDENT ;
-dedent          = DEDENT ;
+```grammardiff
+ program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
+ end-of-lines            = end-of-line { end-of-line } ;
+-top-level-item             = type-alias | struct-definition | class-definition | function-definition | decorated-function-definition | external | top-level-expression ;
++top-level-item             = type-alias | trait-definition | struct-definition | class-definition | function-definition | decorated-function-definition | external | top-level-expression ;
+ type-alias       = "type" name "=" type ;
++trait-definition        = "trait" name ":" end-of-lines trait-block ;
++trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
++trait-method-signature  = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ;
+ struct-definition       = "struct" name ":" end-of-lines struct-block ;
+-class-definition        = "class" name ":" end-of-lines struct-block ;
++class-definition        = "class" name [ "(" name { "," name } ")" ] ":" end-of-lines struct-block ;
+ struct-block     = indent class-member { end-of-lines class-member } dedent ;
+ class-member     = [ visibility ] ( field-declaration | method-definition ) ;
+ visibility      = "public" | "private" ;
+ method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")"
+                   [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ field-declaration       = name ":" type ;
+ function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ (* If the return type is omitted, it defaults to None. *)
+ decorated-function-definition    = binary-decorator end-of-lines "def" binary-operator-signature [ "->" type ] ":" ( simple-statement | end-of-lines block )
+                 | unary-decorator  end-of-lines "def" unary-operator-signature  [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ binary-decorator = "@" "binary" "(" integer ")" ;
+ unary-decorator  = "@" "unary" ;
+ binary-operator-signature = custom-operator-character "(" typed-parameter "," typed-parameter ")" ;
+ unary-operator-signature  = custom-operator-character "(" typed-parameter ")" ;
+ external        = "extern" "def" function-signature [ "->" type ] ;
+ top-level-expression    = expression ;
+ function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
+ typed-parameter      = name ":" type ;
+ if-statement          = "if" expression ":" suite
+                 [ end-of-lines "else" ":" suite ] ;
+ for-statement         = "for"
+                   ( "var" name ":" type | name )
+                   "=" expression "," expression "," expression ":" suite ;
+ variable-statement         = "var" variable-binding { "," variable-binding } ;
+ assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
+ simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
+ compound-statement    = if-statement | for-statement ;
+ statement       = simple-statement | compound-statement ;
+ suite           = simple-statement | compound-statement | end-of-lines block ;
+ return-statement      = "return" [ expression ] ;
+ statement-separator = end-of-lines | BLOCK_END ;
+ block = indent statement { statement-separator statement } dedent ;
+ expression      = unary-expression binary-operator-right ;
+ binary-operator-right        = { binary-operator unary-expression } ;
+ lvalue          = name | field-access | index-expression ;
+ variable-binding      = name ":" type [ "=" expression ] ;
+ unary-expression       = unary-operator unary-expression | primary ;
+ unary-operator         = "-" | user-defined-unary-operator ;
+ primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
+ cast-expression        = cast-type "(" expression ")" ;
+ sizeof-expression      = "sizeof" "(" type ")" ;
+ address-expression        = "addr" "(" lvalue ")" ;
+ name-expression  = name | call-expression | method-call-expression | constructor-call-expression ;
+ call-expression        = name "(" [ expression { "," expression } ] ")" ;
+ method-call-expression  = name "." name "(" [ expression { "," expression } ] ")" ;
+ constructor-call-expression    = name "(" [ expression { "," expression } ] ")" ;
+ field-access     = name "." name { "." name } ;
+ index-expression       = name "[" expression "]" ;
+ number-expression      = number ;
+ array-literal    = "[" [ expression { "," expression } ] "]" ;
+ string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
+ escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
+ parenthesized-expression       = "(" expression ")" ;
+ binary-operator        = builtin-binary-operator | user-defined-binary-operator ;
+ indent          = INDENT ;
+ dedent          = DEDENT ;
 
-builtinbinaryop = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
-userdefbinaryop = ? any opchar defined as a custom binary operator ? ;
-userdefunaryop  = ? any opchar defined as a custom unary operator ? ;
-customopchar    = ? any opchar that is not "-" or a builtinbinaryop,
-                    and not already defined as a custom operator ? ;
-opchar          = ? any single ASCII punctuation character ? ;
-identifier      = (letter | "_") { letter | digit | "_" } ;
-builtintype     = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | "None" ;
-aliastype       = identifier ;
-structtype      = identifier ;
-pointertype     = "ptr" "[" type "]" ;
-type            = basetype [ arraysuffix ] ;
-basetype        = builtintype | aliastype | structtype | pointertype ;
-arraysuffix     = "[" integer "]" ;
-casttype        = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | pointertype ;
-integer         = digit { digit } ;
-number          = digit { digit } [ "." { digit } ]
-                | "." digit { digit } ;
-bool_literal    = "True" | "False" ;
-letter          = "A".."Z" | "a".."z" ;
-digit           = "0".."9" ;
-eol             = "\r\n" | "\r" | "\n" ;
-ws              = " " | "\t" ;
-INDENT          = ? synthetic token emitted by lexer ? ;
-DEDENT          = ? synthetic token emitted by lexer ? ;
+ builtin-binary-operator = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
+ user-defined-binary-operator = ? any operator-character defined as a custom binary operator ? ;
+ user-defined-unary-operator  = ? any operator-character defined as a custom unary operator ? ;
+ custom-operator-character    = ? any operator-character that is not "-" or a builtin-binary-operator,
+                     and not already defined as a custom operator ? ;
+ operator-character          = ? any single ASCII punctuation character ? ;
+ name      = (letter | "_") { letter | digit | "_" } ;
+ builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+                 | "bool" | "None" ;
+ alias-type       = name ;
+ struct-type      = name ;
+ pointer-type     = "ptr" "[" type "]" ;
+ type            = base-type [ array-suffix ] ;
+ base-type        = builtin-type | alias-type | struct-type | pointer-type ;
+ array-suffix     = "[" integer "]" ;
+ cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+                 | "bool" | pointer-type ;
+ integer         = digit { digit } ;
+ number          = ( digit { digit } [ "." { digit } ]
+                   | "." digit { digit } ) [ exponent ] ;
+ exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
+ boolean-literal    = "True" | "False" ;
+ letter          = "A".."Z" | "a".."z" ;
+ digit           = "0".."9" ;
+ end-of-line             = "\r\n" | "\r" | "\n" ;
+ comment = "#" { comment-character } ;
+ comment-character = ? any character except "\r" and "\n" ? ;
+ whitespace = " " | "\t" | "\v" | "\f" ;
+ INDENT          = ? synthetic token emitted by lexer ? ;
+ DEDENT          = ? synthetic token emitted by lexer ? ;
+
+ BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
 ## New Token and Data Structures
@@ -214,7 +223,7 @@ static bool ParseTraitDefinition() {
   // Reject clashes with existing traits, struct types, and type aliases
   if (Traits.count(TraitName) || StructTypes.count(TraitName) ||
       TypeAliases.count(TraitName)) {
-    LogError(("Name '" + TraitName + "' is already defined").c_str());
+    LogErrorExpression(("Name '" + TraitName + "' is already defined").c_str());
     return false;
   }
   getNextToken(); // eat trait name
@@ -236,7 +245,7 @@ static bool ParseTraitDefinition() {
 
     // A body (colon) here is an error
     if (CurTok == ':') {
-      LogError("Trait methods cannot have a body");
+      LogErrorExpression("Trait methods cannot have a body");
       return false;
     }
     // Reject duplicate method names
@@ -271,11 +280,11 @@ if (IsClass && CurTok == '(') {
   while (CurTok != ')') {
     string TraitName = IdentifierStr;
     if (!Traits.count(TraitName)) {
-      LogError(("Unknown trait '" + TraitName + "'").c_str());
+      LogErrorExpression(("Unknown trait '" + TraitName + "'").c_str());
       return false;
     }
     if (SeenTraits.count(TraitName)) {
-      LogError(("Duplicate trait '" + TraitName + "' in class implements list").c_str());
+      LogErrorExpression(("Duplicate trait '" + TraitName + "' in class implements list").c_str());
       return false;
     }
     SeenTraits.insert(TraitName);
@@ -308,14 +317,14 @@ for (const auto &TraitName : Info.ImplementedTraits) {
     // 1. Method must exist
     auto PI = FunctionProtos.find(StructName + "." + Req.Name);
     if (PI == FunctionProtos.end()) {
-      LogError(("Class '" + StructName + "' does not implement trait '" +
+      LogErrorExpression(("Class '" + StructName + "' does not implement trait '" +
                 TraitName + "' method '" + Req.Name + "'").c_str());
       return false;
     }
     // 2. Method must be public
     auto MI = Info.MethodIsPublic.find(Req.Name);
     if (MI == Info.MethodIsPublic.end() || !MI->second) {
-      LogError(("Trait method '" + Req.Name + "' on class '" + StructName +
+      LogErrorExpression(("Trait method '" + Req.Name + "' on class '" + StructName +
                 "' must be public").c_str());
       return false;
     }
@@ -324,14 +333,14 @@ for (const auto &TraitName : Info.ImplementedTraits) {
     if (P->getNumArgs() != Req.Args.size() + 1 ||
         P->getReturnType() != Req.ReturnType ||
         P->getReturnStructName() != Req.ReturnStructName) {
-      LogError(("Method '" + Req.Name + "' on class '" + StructName +
+      LogErrorExpression(("Method '" + Req.Name + "' on class '" + StructName +
                 "' does not match trait signature").c_str());
       return false;
     }
     for (size_t I = 0; I < Req.Args.size(); ++I) {
       if (P->getArgType(I + 1) != Req.Args[I].Type ||
           P->getArgStructName(I + 1) != Req.Args[I].StructName) {
-        LogError(...);
+        LogErrorExpression(...);
         return false;
       }
     }

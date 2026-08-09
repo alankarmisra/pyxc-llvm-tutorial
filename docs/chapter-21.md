@@ -81,16 +81,16 @@ Parsing it means reusing `ParseTypeToken`, the same function every other type an
 static unique_ptr<ExpressionNode> ParseSizeofExpression() {
   getNextToken(); // eat 'sizeof'
   if (CurrentToken != '(')
-    return LogError("Expected '(' after sizeof");
+    return LogErrorExpression("Expected '(' after sizeof");
   getNextToken(); // eat '('
   string TargetStructName;
   ValueType TargetType = ParseTypeToken(&TargetStructName);
   if (TargetType == ValueType::Error)
     return nullptr;
   if (TargetType == ValueType::None)
-    return LogError("Cannot take sizeof(None)");
+    return LogErrorExpression("Cannot take sizeof(None)");
   if (CurrentToken != ')')
-    return LogError("Expected ')' after sizeof type");
+    return LogErrorExpression("Expected ')' after sizeof type");
   getNextToken(); // eat ')'
   return make_unique<SizeofExpressionNode>(TargetType, TargetStructName);
 }
@@ -157,7 +157,7 @@ Once `tok_ptr` is reachable, though, I do need one new guard, since `ParseCastEx
 
 ```cpp
 if (Type == ValueType::Pointer && Expr->getType() != ValueType::Pointer)
-  return LogError("Pointer casts require a pointer operand");
+  return LogErrorExpression("Pointer casts require a pointer operand");
 return make_unique<CastExpressionNode>(Type, std::move(Expr), TargetStructName);
 ```
 

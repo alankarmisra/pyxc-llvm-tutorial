@@ -10,18 +10,12 @@
 
 program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
 end-of-lines            = end-of-line { end-of-line } ;
-top-level-item             = struct-definition | function-definition | decorated-function-definition | external | top-level-expression ;
+top-level-item             = struct-definition | function-definition | external | top-level-expression ;
 struct-definition       = "struct" name ":" end-of-lines struct-block ;
 struct-block     = indent field-declaration { end-of-lines field-declaration } dedent ;
 field-declaration       = name ":" type ;
 function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
 (* If the return type is omitted, it defaults to None. *)
-decorated-function-definition    = binary-decorator end-of-lines "def" binary-operator-signature [ "->" type ] ":" ( simple-statement | end-of-lines block )
-                | unary-decorator  end-of-lines "def" unary-operator-signature  [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
-binary-decorator = "@" "binary" "(" integer ")" ;
-unary-decorator  = "@" "unary" ;
-binary-operator-signature = custom-operator-character "(" typed-parameter "," typed-parameter ")" ;
-unary-operator-signature  = custom-operator-character "(" typed-parameter ")" ;
 external        = "extern" "def" function-signature [ "->" type ] ;
 top-level-expression    = expression ;
 function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
@@ -40,12 +34,14 @@ suite           = simple-statement | compound-statement | end-of-lines block ;
 return-statement      = "return" [ expression ] ;
 statement-separator = end-of-lines | BLOCK_END ;
 block = indent statement { statement-separator statement } dedent ;
-expression      = unary-expression binary-operator-right ;
-binary-operator-right        = { binary-operator unary-expression } ;
+expression      = comparison ;
+comparison      = sum { comparison-operator sum } ;
+comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+sum             = term { ("+" | "-") term } ;
+term            = unary-expression { ("*" | "/") unary-expression } ;
 lvalue          = name | field-access | index-expression ;
 variable-binding      = name ":" type [ "=" expression ] ;
-unary-expression       = unary-operator unary-expression | primary ;
-unary-operator         = "-" | user-defined-unary-operator ;
+unary-expression       = "-" unary-expression | primary ;
 primary         = cast-expression | sizeof-expression | address-expression | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
 cast-expression        = cast-type "(" expression ")" ;
 sizeof-expression      = "sizeof" "(" type ")" ;
@@ -58,16 +54,9 @@ number-expression      = number ;
 string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
 escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
 parenthesized-expression       = "(" expression ")" ;
-binary-operator        = builtin-binary-operator | user-defined-binary-operator ;
 indent          = INDENT ;
 dedent          = DEDENT ;
 
-builtin-binary-operator = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
-user-defined-binary-operator = ? any operator-character defined as a custom binary operator ? ;
-user-defined-unary-operator  = ? any operator-character defined as a custom unary operator ? ;
-custom-operator-character    = ? any operator-character that is not "-" or a builtin-binary-operator,
-                    and not already defined as a custom operator ? ;
-operator-character          = ? any single ASCII punctuation character ? ;
 name      = (letter | "_") { letter | digit | "_" } ;
 builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
                 | "float" | "float32" | "float64"

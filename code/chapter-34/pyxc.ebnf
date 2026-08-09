@@ -10,7 +10,7 @@
 
 program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
 end-of-lines            = end-of-line { end-of-line } ;
-top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | decorated-function-definition | external | top-level-expression ;
+top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | external | top-level-expression ;
 type-alias       = "type" name "=" type ;
 trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
 trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
@@ -29,12 +29,6 @@ method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter
 field-declaration       = name ":" type ;
 function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
 (* If the return type is omitted, it defaults to None. *)
-decorated-function-definition    = binary-decorator end-of-lines "def" binary-operator-signature [ "->" type ] ":" ( simple-statement | end-of-lines block )
-                | unary-decorator  end-of-lines "def" unary-operator-signature  [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
-binary-decorator = "@" "binary" "(" integer ")" ;
-unary-decorator  = "@" "unary" ;
-binary-operator-signature = custom-operator-character "(" typed-parameter "," typed-parameter ")" ;
-unary-operator-signature  = custom-operator-character "(" typed-parameter ")" ;
 external        = "extern" "def" function-signature [ "->" type ] ;
 top-level-expression    = expression ;
 function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
@@ -57,12 +51,16 @@ break-statement       = "break" ;
 continue-statement    = "continue" ;
 statement-separator = end-of-lines | BLOCK_END ;
 block = indent statement { statement-separator statement } dedent ;
-expression      = unary-expression binary-operator-right ;
-binary-operator-right        = { binary-operator unary-expression } ;
+expression      = logical-or ;
+logical-or      = logical-and { "||" logical-and } ;
+logical-and     = comparison { "&&" comparison } ;
+comparison      = sum { comparison-operator sum } ;
+comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+sum             = term { ("+" | "-") term } ;
+term            = unary-expression { ("*" | "/" | "%") unary-expression } ;
 lvalue          = name | field-access | index-expression ;
 variable-binding      = name ":" type [ "=" expression ] ;
-unary-expression       = unary-operator unary-expression | postfix-expression ;
-unary-operator         = "-" | "!" | "++" | "--" | user-defined-unary-operator ;
+unary-expression       = ("-" | "!" | "++" | "--") unary-expression | postfix-expression ;
 postfix-expression     = primary [ postfix-operator ] ;
 postfix-operator       = "++" | "--" ;
 primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
@@ -80,19 +78,10 @@ array-literal    = "[" [ expression { "," expression } ] "]" ;
 string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
 escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
 parenthesized-expression       = "(" expression ")" ;
-binary-operator        = builtin-binary-operator | user-defined-binary-operator ;
 indent          = INDENT ;
 dedent          = DEDENT ;
 
 assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
-builtin-binary-operator = "+" | "-" | "*" | "/" | "%"
-                | "<" | "<=" | ">" | ">=" | "==" | "!="
-                | "&&" | "||" ;
-user-defined-binary-operator = ? any operator-character defined as a custom binary operator ? ;
-user-defined-unary-operator  = ? any operator-character defined as a custom unary operator ? ;
-custom-operator-character    = ? any operator-character that is not "-" or a builtin-binary-operator,
-                    and not already defined as a custom operator ? ;
-operator-character          = ? any single ASCII punctuation character ? ;
 name      = (letter | "_") { letter | digit | "_" } ;
 builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
                 | "float" | "float32" | "float64"
