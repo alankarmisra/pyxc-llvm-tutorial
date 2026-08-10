@@ -37,7 +37,7 @@ I add `character-literal` as a `primary` alternative, and two new productions fo
 ```grammardiff
  program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
  end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | decorated-function-definition | external | top-level-expression ;
+ top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | external | top-level-expression ;
  type-alias       = "type" name "=" type ;
  trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
  trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
@@ -56,12 +56,6 @@ I add `character-literal` as a `primary` alternative, and two new productions fo
  field-declaration       = name ":" type ;
  function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
  (* If the return type is omitted, it defaults to None. *)
- decorated-function-definition    = binary-decorator end-of-lines "def" binary-operator-signature [ "->" type ] ":" ( simple-statement | end-of-lines block )
-                 | unary-decorator  end-of-lines "def" unary-operator-signature  [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- binary-decorator = "@" "binary" "(" integer ")" ;
- unary-decorator  = "@" "unary" ;
- binary-operator-signature = custom-operator-character "(" typed-parameter "," typed-parameter ")" ;
- unary-operator-signature  = custom-operator-character "(" typed-parameter ")" ;
  external        = "extern" "def" function-signature [ "->" type ] ;
  top-level-expression    = expression ;
  function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
@@ -89,12 +83,20 @@ I add `character-literal` as a `primary` alternative, and two new productions fo
  continue-statement    = "continue" ;
  statement-separator = end-of-lines | BLOCK_END ;
  block = indent statement { statement-separator statement } dedent ;
- expression      = unary-expression binary-operator-right ;
- binary-operator-right        = { binary-operator unary-expression } ;
+ expression      = logical-or ;
+ logical-or      = logical-and { "||" logical-and } ;
+ logical-and     = bitwise-or { "&&" bitwise-or } ;
+ bitwise-or      = bitwise-xor { "|" bitwise-xor } ;
+ bitwise-xor     = bitwise-and { "^" bitwise-and } ;
+ bitwise-and     = equality { "&" equality } ;
+ equality        = relational { ("==" | "!=") relational } ;
+ relational      = shift { ("<" | "<=" | ">" | ">=") shift } ;
+ shift           = sum { ("<<" | ">>") sum } ;
+ sum             = term { ("+" | "-") term } ;
+ term            = unary-expression { ("*" | "/" | "%") unary-expression } ;
  lvalue          = name | field-access | index-expression ;
  variable-binding      = name ":" type [ "=" expression ] ;
- unary-expression       = unary-operator unary-expression | postfix-expression ;
- unary-operator         = "-" | "!" | "~" | "++" | "--" | user-defined-unary-operator ;
+ unary-expression       = ("-" | "!" | "~" | "++" | "--") unary-expression | postfix-expression ;
  postfix-expression     = primary [ postfix-operator ] ;
  postfix-operator       = "++" | "--" ;
 -primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
@@ -113,22 +115,13 @@ I add `character-literal` as a `primary` alternative, and two new productions fo
  string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
 +character-literal     = "'" ( ? any char except ' and newline ? | character-escape ) "'" ;
  escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
-+character-escape      = "\\" ( "\\" | "'" | "n" | "t" | "0" ) ;
++character-escape      = "\\" ( "a" | "b" | "f" | "n" | "r" | "t" | "v"
++                        | "\\" | "'" | "\"" | "?" | "0" | "x" hex-digit hex-digit ) ;
  parenthesized-expression       = "(" expression ")" ;
- binary-operator        = builtin-binary-operator | user-defined-binary-operator ;
  indent          = INDENT ;
  dedent          = DEDENT ;
 
  assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
- builtin-binary-operator = "+" | "-" | "*" | "/" | "%"
-                 | "<" | "<=" | ">" | ">=" | "==" | "!="
-                 | "&&" | "||"
-                 | "&" | "|" | "^" | "<<" | ">>" ;
- user-defined-binary-operator = ? any operator-character defined as a custom binary operator ? ;
- user-defined-unary-operator  = ? any operator-character defined as a custom unary operator ? ;
- custom-operator-character    = ? any operator-character that is not "-" or a builtin-binary-operator,
-                     and not already defined as a custom operator ? ;
- operator-character          = ? any single ASCII punctuation character ? ;
  name      = (letter | "_") { letter | digit | "_" } ;
  builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
                  | "float" | "float32" | "float64"
@@ -150,6 +143,7 @@ I add `character-literal` as a `primary` alternative, and two new productions fo
  boolean-literal    = "True" | "False" ;
  letter          = "A".."Z" | "a".."z" ;
  digit           = "0".."9" ;
++hex-digit       = digit | "A".."F" | "a".."f" ;
  end-of-line             = "\r\n" | "\r" | "\n" ;
  comment = "#" { comment-character } ;
  comment-character = ? any character except "\r" and "\n" ? ;
@@ -183,6 +177,7 @@ When I see `'`, I'll read the character content, check for the closing `'`, and 
 ```cpp
 if (LexerLastChar == '\'') {
   LexerLastChar = advance(); // eat opening quote
+  // Nothing between the quotes, e.g. var e: int32 = ''
   if (LexerLastChar == '\'' || LexerLastChar == '\n' ||
       LexerLastChar == EOF) {
     fprintf(stderr, "Error (Line %d, Column %d): empty character literal\n",
@@ -192,25 +187,72 @@ if (LexerLastChar == '\'') {
   }
 
   uint32_t Value = 0;
-  if (LexerLastChar == '\\') {
-    LexerLastChar = advance();
-    switch (LexerLastChar) {
-    case '\\':
-      Value = '\\';
-      break;
-    case '\'':
-      Value = '\'';
-      break;
-    case 'n':
-      Value = '\n';
-      break;
-    case 't':
-      Value = '\t';
-      break;
-    case '0':
-      Value = '\0';
-      break;
+    if (LexerLastChar == '\\') {
+      LexerLastChar = advance();
+      switch (LexerLastChar) {
+      case 'a':
+        Value = '\a';
+        break;
+      case 'b':
+        Value = '\b';
+        break;
+      case 'f':
+        Value = '\f';
+        break;
+      case 'n':
+        Value = '\n';
+        break;
+      case 'r':
+        Value = '\r';
+        break;
+      case 't':
+        Value = '\t';
+        break;
+      case 'v':
+        Value = '\v';
+        break;
+      case '\\':
+        Value = '\\';
+        break;
+      case '\'':
+        Value = '\'';
+        break;
+      case '"':
+        Value = '"';
+        break;
+      case '?':
+        Value = '?';
+        break;
+      case '0':
+        Value = '\0';
+        break;
+      case 'x': {
+        auto HexDigitValue = [](int Ch) -> int {
+          if (Ch >= '0' && Ch <= '9')
+            return Ch - '0';
+          if (Ch >= 'a' && Ch <= 'f')
+            return Ch - 'a' + 10;
+          if (Ch >= 'A' && Ch <= 'F')
+            return Ch - 'A' + 10;
+          return -1;
+        };
+
+        int High = HexDigitValue(advance());
+        int Low = HexDigitValue(advance());
+        // Fewer than two hex digits after \x, e.g. var b: int32 = '\x'
+        if (High < 0 || Low < 0) {
+          fprintf(stderr,
+                  "Error (Line %d, Column %d): invalid character escape\n",
+                  CurLoc.Line, CurLoc.Col);
+          PrintErrorSourceContext(CurLoc);
+          return tok_error;
+        }
+        Value = static_cast<uint32_t>((High << 4) | Low);
+        break;
+      }
     default:
+      // Backslash followed by a letter that isn't one of the escapes above,
+      // e.g. var q: int32 = '\q'
       fprintf(stderr,
               "Error (Line %d, Column %d): invalid character escape\n",
               CurLoc.Line, CurLoc.Col);
@@ -222,6 +264,7 @@ if (LexerLastChar == '\'') {
   }
 
   LexerLastChar = advance();
+  // No closing quote where one is expected, e.g. var u: int32 = 'a
   if (LexerLastChar != '\'') {
     fprintf(stderr,
             "Error (Line %d, Column %d): unterminated character literal\n",
@@ -235,30 +278,7 @@ if (LexerLastChar == '\'') {
 }
 ```
 
-I'll support five escapes: `\\`, `\'`, `\n`, `\t`, and `\0` — the same ones C uses.  Anything other than these is a `tok_error`.
-
-## Error Cases
-
-**Invalid escape sequence:**
-```pyxc
-var x: int32 = '\x'  # Error: invalid character escape
-```
-
-**Empty literal:**
-```pyxc
-var x: int32 = ''    # Error: empty character literal
-```
-
-**Unterminated literal:**
-```pyxc
-var x: int32 = 'a    # Error: unterminated character literal
-```
-
-**Value out of range for type:** a bare character stores its raw byte value, so any byte from 128–255 (outside ASCII) exceeds `int8`'s signed maximum of 127:
-```
-Error (Line 2, Column 17): Character literal out of range for type
-```
-This one is awkward to type into an example — there's no `\xNN` escape (only the five in the table above), so triggering it means a raw byte ≥ 128 actually sitting between the quotes, which ordinary UTF-8 source text won't produce.
+I'll support all eleven of C's [simple escape sequences](https://en.cppreference.com/c/language/escape): `\a`, `\b`, `\f`, `\n`, `\r`, `\t`, `\v`, `\\`, `\'`, `\"`, and `\?`. I take two deliberate departures from that reference, though. C's numeric escapes are `\nnn` (an arbitrary-length octal value) and `\xn...` (an arbitrary-length hex value); I only keep `\0` as a fixed single-character case for the null byte, not general octal, and I require `\xNN` to be exactly two hex digits rather than an open-ended run. C's universal character names, `\unnnn` and `\Unnnnnnnn`, aren't supported at all yet, those arrive in [Chapter 39](chapter-39.md). Anything else is a `tok_error`.
 
 ## Building the AST Node
 
@@ -285,6 +305,9 @@ static unique_ptr<ExpressionNode> ParseCharExpression() {
   unsigned Bits = LLVMTypeFor(Type)->getIntegerBitWidth();
   APInt Max = APInt::getSignedMaxValue(Bits);
   APInt Val(std::max(1u, Bits), CharLiteralValue, false);
+  // A bare character stores its raw byte value, so any byte from 128-255
+  // (outside ASCII) exceeds int8's signed maximum of 127. Trigger this with
+  // a hex escape, e.g. var c: int8 = '\x80'.
   if (Val.ugt(Max))
     return LogErrorExpression("Character literal out of range for type");
   if (Val.getBitWidth() != Bits)
@@ -295,9 +318,78 @@ static unique_ptr<ExpressionNode> ParseCharExpression() {
 }
 ```
 
+## Try It
+
+<!-- code-merge:start -->
+```pyxc
+ready> 'a' == 97
+```
+```text
+True
+```
+```pyxc
+ready> '\n' == 10
+```
+```text
+True
+```
+```pyxc
+ready> var c: int8 = 'A'
+ready> c
+```
+```text
+65
+```
+```pyxc
+ready> var d: int8 = '\x80'
+```
+```text
+Error (Line 5, Column 15): Character literal out of range for type
+var d: int8 = '\x80'
+              ^~~~
+```
+```pyxc
+ready> var e: int32 = ''
+```
+```text
+Error (Line 6, Column 16): empty character literal
+var e: int32 = ''
+               ^~~~
+Error (Line 6, Column 16): unknown token when expecting an expression
+var e: int32 = ''
+               ^~~~
+Error (Line 6, Column 17): empty character literal
+var e: int32 = ''
+                ^~~~
+```
+```pyxc
+ready> var b: int32 = '\x'
+```
+```text
+Error (Line 7, Column 16): invalid character escape
+var b: int32 = '\x'
+               ^~~~
+Error (Line 7, Column 16): unknown token when expecting an expression
+var b: int32 = '\x'
+               ^~~~
+```
+```pyxc
+ready> var u: int32 = 'a
+```
+```text
+Error (Line 8, Column 16): unterminated character literal
+var u: int32 = 'a
+               ^~~~
+```
+<!-- code-merge:end -->
+
+`'a'` compares equal to its ASCII code without me writing the number out, `'\n'` resolves to `10` through the escape path, and `'A'` assigned into an `int8` carries its value through untruncated since 65 fits comfortably under `int8`'s signed max of 127.
+
+The remaining four lines trigger the error checks called out above: `'\x80'` trips the range check in `ParseCharExpression` since 128 exceeds `int8`'s signed max, `''` trips the empty-literal check, `'\x'` trips the bad-hex-digit check, and the unclosed `'a` trips the missing-closing-quote check. Each lexer-level error (the last three) is followed by a second "unknown token when expecting an expression" line: once the lexer returns `tok_error`, the parser reports its own failure to parse an expression from that token, and the REPL's line-recovery logic re-scans the remainder of the input, which is why the empty-literal case reports the same error twice more.
+
 ## What's Next
 
-[Chapter 39](chapter-39.md) adds unsigned integer types: `uint8`, `uint16`, `uint32`, and `uint64`.
+[Chapter 39](chapter-39.md) adds Unicode escapes and validated raw UTF-8 to character and string literals.
 
 ## Need Help?
 

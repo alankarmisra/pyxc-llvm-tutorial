@@ -1,0 +1,7 @@
+trait Adder:
+  def add(x: int, y: int) -> int
+class Calc:
+  x: int
+impl Adder[int] for Calc:
+  def add(x: int, y: int) -> int:
+    return x

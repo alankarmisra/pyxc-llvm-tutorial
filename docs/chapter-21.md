@@ -3,7 +3,7 @@ description: "Add sizeof and pointer casts so pyxc can call malloc and free: hea
 ---
 # 21. pyxc: Heap Allocation
 
-## Where We Are
+## What I Am Building
 
 [Chapter 20](chapter-20.md) gave me pointer arithmetic over fixed-size arrays, but those arrays have two limits I can't get around: their size has to be known at compile time, and they die the moment the function that declared them returns. Neither works for data whose size I only know at runtime, or that needs to outlive the function that created it. For that I need the heap, and the heap means calling `malloc` and `free`.
 
@@ -39,6 +39,87 @@ def main() -> int:
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-21
+```
+
+## Grammar
+
+Two productions change this chapter: `primary` gains a `sizeof-expression` alternative, and `cast-type` gains `pointer-type`, since a pointer cast target is now legal where it wasn't before. Everything else is exactly what [Chapter 20](chapter-20.md) already had:
+
+```grammardiff
+ program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
+ end-of-lines            = end-of-line { end-of-line } ;
+ top-level-item             = struct-definition | function-definition | external | top-level-expression ;
+ struct-definition       = "struct" name ":" end-of-lines struct-block ;
+ struct-block     = indent field-declaration { end-of-lines field-declaration } dedent ;
+ field-declaration       = name ":" type ;
+ function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ (* If the return type is omitted, it defaults to None. *)
+ external        = "extern" "def" function-signature [ "->" type ] ;
+ top-level-expression    = expression ;
+ function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
+ typed-parameter      = name ":" type ;
+ if-statement          = "if" expression ":" suite
+                 [ end-of-lines "else" ":" suite ] ;
+ for-statement         = "for"
+                   ( "var" name ":" type | name )
+                   "=" expression "," expression "," expression ":" suite ;
+ variable-statement         = "var" variable-binding { "," variable-binding } ;
+ assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
+ simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
+ compound-statement    = if-statement | for-statement ;
+ statement       = simple-statement | compound-statement ;
+ suite           = simple-statement | compound-statement | end-of-lines block ;
+ return-statement      = "return" [ expression ] ;
+ statement-separator = end-of-lines | BLOCK_END ;
+ block = indent statement { statement-separator statement } dedent ;
+ expression      = comparison ;
+ comparison      = sum { comparison-operator sum } ;
+ comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ sum             = term { ("+" | "-") term } ;
+ term            = unary-expression { ("*" | "/") unary-expression } ;
+ lvalue          = name | field-access | index-expression ;
+ variable-binding      = name ":" type [ "=" expression ] ;
+ unary-expression       = "-" unary-expression | primary ;
+-primary         = cast-expression | address-expression | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
++primary         = cast-expression | sizeof-expression | address-expression | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
+ cast-expression        = cast-type "(" expression ")" ;
++sizeof-expression      = "sizeof" "(" type ")" ;
+ address-expression        = "addr" "(" lvalue ")" ;
+ name-expression  = name | call-expression ;
+ call-expression        = name "(" [ expression { "," expression } ] ")" ;
+ field-access     = name "." name { "." name } ;
+ index-expression       = name "[" expression "]" ;
+ number-expression      = number ;
+ parenthesized-expression       = "(" expression ")" ;
+ indent          = INDENT ;
+ dedent          = DEDENT ;
+ 
+ name      = (letter | "_") { letter | digit | "_" } ;
+ builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+                 | "bool" | "None" ;
+ struct-type      = name ;
+ pointer-type     = "ptr" "[" type "]" ;
+ type            = builtin-type | struct-type | pointer-type ;
+ cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+-                | "bool" ;
++                | "bool" | pointer-type ;
+ integer         = digit { digit } ;
+ number          = ( digit { digit } [ "." { digit } ]
+                   | "." digit { digit } ) [ exponent ] ;
+ exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
+ boolean-literal    = "True" | "False" ;
+ letter          = "A".."Z" | "a".."z" ;
+ digit           = "0".."9" ;
+ end-of-line             = "\r\n" | "\r" | "\n" ;
+ comment = "#" { comment-character } ;
+ comment-character = ? any character except "\r" and "\n" ? ;
+ whitespace = " " | "\t" | "\v" | "\f" ;
+ INDENT          = ? synthetic token emitted by lexer ? ;
+ DEDENT          = ? synthetic token emitted by lexer ? ;
+ 
+ BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
 ## One New Keyword
@@ -80,7 +161,7 @@ Parsing it means reusing `ParseTypeToken`, the same function every other type an
 ```cpp
 static unique_ptr<ExpressionNode> ParseSizeofExpression() {
   getNextToken(); // eat 'sizeof'
-  if (CurrentToken != '(')
+  if (CurrentToken != tok_lparen)
     return LogErrorExpression("Expected '(' after sizeof");
   getNextToken(); // eat '('
   string TargetStructName;
@@ -89,7 +170,7 @@ static unique_ptr<ExpressionNode> ParseSizeofExpression() {
     return nullptr;
   if (TargetType == ValueType::None)
     return LogErrorExpression("Cannot take sizeof(None)");
-  if (CurrentToken != ')')
+  if (CurrentToken != tok_rparen)
     return LogErrorExpression("Expected ')' after sizeof type");
   getNextToken(); // eat ')'
   return make_unique<SizeofExpressionNode>(TargetType, TargetStructName);
@@ -353,98 +434,6 @@ ret i64 8
 
 **Pointer casts are pointer-only.** `ptr[T](expr)` requires `expr` to already be a pointer; I don't let an integer become a pointer through a cast. And casting a pointer-returning `extern` call result to its own declared type, as shown above, isn't optional: I have to do it every time, since the call itself doesn't carry pointee metadata.
 
-## Grammar
-
-[pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-21/pyxc.ebnf)
-
-```ebnf
-program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
-end-of-lines            = end-of-line { end-of-line } ;
-top-level-item             = struct-definition | function-definition | decorated-function-definition | external | top-level-expression ;
-struct-definition       = "struct" name ":" end-of-lines struct-block ;
-struct-block     = indent field-declaration { end-of-lines field-declaration } dedent ;
-field-declaration       = name ":" type ;
-function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
-(* If the return type is omitted, it defaults to None. *)
-decorated-function-definition    = binary-decorator end-of-lines "def" binary-operator-signature [ "->" type ] ":" ( simple-statement | end-of-lines block )
-                | unary-decorator  end-of-lines "def" unary-operator-signature  [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
-binary-decorator = "@" "binary" "(" integer ")" ;
-unary-decorator  = "@" "unary" ;
-binary-operator-signature = custom-operator-character "(" typed-parameter "," typed-parameter ")" ;
-unary-operator-signature  = custom-operator-character "(" typed-parameter ")" ;
-external        = "extern" "def" function-signature [ "->" type ] ;
-top-level-expression    = expression ;
-function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
-typed-parameter      = name ":" type ;
-if-statement          = "if" expression ":" suite
-                [ end-of-lines "else" ":" suite ] ;
-for-statement         = "for"
-                  ( "var" name ":" type | name )
-                  "=" expression "," expression "," expression ":" suite ;
-variable-statement         = "var" variable-binding { "," variable-binding } ;
-assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
-simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
-compound-statement    = if-statement | for-statement ;
-statement       = simple-statement | compound-statement ;
-suite           = simple-statement | compound-statement | end-of-lines block ;
-return-statement      = "return" [ expression ] ;
-statement-separator = end-of-lines | BLOCK_END ;
-block = indent statement { statement-separator statement } dedent ;
-expression      = unary-expression binary-operator-right ;
-binary-operator-right        = { binary-operator unary-expression } ;
-lvalue          = name | field-access | index-expression ;
-variable-binding      = name ":" type [ "=" expression ] ;
-unary-expression       = unary-operator unary-expression | primary ;
-unary-operator         = "-" | user-defined-unary-operator ;
-primary         = cast-expression | sizeof-expression | address-expression | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;   (* changed: sizeof-expression added *)
-cast-expression        = cast-type "(" expression ")" ;
-sizeof-expression      = "sizeof" "(" type ")" ;                       (* new *)
-address-expression        = "addr" "(" lvalue ")" ;
-name-expression  = name | call-expression ;
-call-expression        = name "(" [ expression { "," expression } ] ")" ;
-field-access     = name "." name { "." name } ;
-index-expression       = name "[" expression "]" ;
-number-expression      = number ;
-parenthesized-expression       = "(" expression ")" ;
-binary-operator        = builtin-binary-operator | user-defined-binary-operator ;
-indent          = INDENT ;
-dedent          = DEDENT ;
-
-builtin-binary-operator = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
-user-defined-binary-operator = ? any operator-character defined as a custom binary operator ? ;
-user-defined-unary-operator  = ? any operator-character defined as a custom unary operator ? ;
-custom-operator-character    = ? any operator-character that is not "-" or a builtin-binary-operator,
-                    and not already defined as a custom operator ? ;
-operator-character          = ? any single ASCII punctuation character ? ;
-name      = (letter | "_") { letter | digit | "_" } ;
-builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | "None" ;
-struct-type      = name ;
-pointer-type     = "ptr" "[" type "]" ;
-type            = builtin-type | struct-type | pointer-type ;
-cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | pointer-type ;                              (* changed: pointer-type added *)
-integer         = digit { digit } ;
-number          = ( digit { digit } [ "." { digit } ]
-                  | "." digit { digit } ) [ exponent ] ;
-exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
-boolean-literal    = "True" | "False" ;
-letter          = "A".."Z" | "a".."z" ;
-digit           = "0".."9" ;
-end-of-line             = "\r\n" | "\r" | "\n" ;
-comment = "#" { comment-character } ;
-comment-character = ? any character except "\r" and "\n" ? ;
-whitespace = " " | "\t" | "\v" | "\f" ;
-INDENT          = ? synthetic token emitted by lexer ? ;
-DEDENT          = ? synthetic token emitted by lexer ? ;
-
-BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
-```
-
-Two productions changed for this chapter: `primary` gained the `sizeof-expression` alternative, and `cast-type` gained `pointer-type`, since a pointer cast target is now legal where it wasn't before. `sizeof-expression` itself is new. Everything else is exactly what [Chapter 20](chapter-20.md) already had.
-
 ## What's Next
 
 [Chapter 22](chapter-22.md) adds string literals: `"hello"` as a `ptr[int8]`, null-terminated global constants stored in the module, and escape sequences. With heap allocation and pointer casts already in place, I already know how to pass a `ptr[int8]` to a C function; string literals are the natural next step.
@@ -461,4 +450,4 @@ Include:
 - Full error message
 - Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
-We'll figure it out.
+I'll help you figure it out.

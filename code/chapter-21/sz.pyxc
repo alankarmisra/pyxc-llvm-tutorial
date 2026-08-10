@@ -1,0 +1,11 @@
+extern def printd(x: float64)
+struct Point:
+  x: int
+  y: int
+def main() -> int:
+  printd(float64(sizeof(int8)))
+  printd(float64(sizeof(int32)))
+  printd(float64(sizeof(int64)))
+  printd(float64(sizeof(ptr[int8])))
+  printd(float64(sizeof(Point)))
+  return 0

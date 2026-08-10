@@ -3,7 +3,7 @@ description: "Add fixed-size stack arrays: declare int[4], initialize with [1, 2
 ---
 # 24. pyxc: Arrays
 
-## Where We Are
+## What I Am Building
 
 [Chapter 23](chapter-23.md) gave me type aliases, but the type system still can't express "a fixed number of these, sitting next to each other." For that I need arrays: `int[4]`, allocated on the stack, indexed with `arr[i]`.
 
@@ -29,7 +29,95 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-24
 ```
 
-## One New `ValueType`, One New Node
+## Grammar
+
+`type` now splits into `base-type` plus an optional `array-suffix`, both new productions; `primary` gains `array-literal`, also new. Everything else is unchanged from [Chapter 23](chapter-23.md):
+
+```grammardiff
+ program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
+ end-of-lines            = end-of-line { end-of-line } ;
+ top-level-item             = type-alias | struct-definition | function-definition | external | top-level-expression ;
+ type-alias       = "type" name "=" type ;
+ struct-definition       = "struct" name ":" end-of-lines struct-block ;
+ struct-block     = indent field-declaration { end-of-lines field-declaration } dedent ;
+ field-declaration       = name ":" type ;
+ function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ (* If the return type is omitted, it defaults to None. *)
+ external        = "extern" "def" function-signature [ "->" type ] ;
+ top-level-expression    = expression ;
+ function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
+ typed-parameter      = name ":" type ;
+ if-statement          = "if" expression ":" suite
+                 [ end-of-lines "else" ":" suite ] ;
+ for-statement         = "for"
+                   ( "var" name ":" type | name )
+                   "=" expression "," expression "," expression ":" suite ;
+ variable-statement         = "var" variable-binding { "," variable-binding } ;
+ assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
+ simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
+ compound-statement    = if-statement | for-statement ;
+ statement       = simple-statement | compound-statement ;
+ suite           = simple-statement | compound-statement | end-of-lines block ;
+ return-statement      = "return" [ expression ] ;
+ statement-separator = end-of-lines | BLOCK_END ;
+ block = indent statement { statement-separator statement } dedent ;
+ expression      = comparison ;
+ comparison      = sum { comparison-operator sum } ;
+ comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ sum             = term { ("+" | "-") term } ;
+ term            = unary-expression { ("*" | "/") unary-expression } ;
+ lvalue          = name | field-access | index-expression ;
+ variable-binding      = name ":" type [ "=" expression ] ;
+ unary-expression       = "-" unary-expression | primary ;
+-primary         = cast-expression | sizeof-expression | address-expression | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
++primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
+ cast-expression        = cast-type "(" expression ")" ;
+ sizeof-expression      = "sizeof" "(" type ")" ;
+ address-expression        = "addr" "(" lvalue ")" ;
+ name-expression  = name | call-expression ;
+ call-expression        = name "(" [ expression { "," expression } ] ")" ;
+ field-access     = name "." name { "." name } ;
+ index-expression       = name "[" expression "]" ;
+ number-expression      = number ;
++array-literal    = "[" [ expression { "," expression } ] "]" ;
+ string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
+ escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
+ parenthesized-expression       = "(" expression ")" ;
+ indent          = INDENT ;
+ dedent          = DEDENT ;
+ 
+ name      = (letter | "_") { letter | digit | "_" } ;
+ builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+                 | "bool" | "None" ;
+ alias-type       = name ;
+ struct-type      = name ;
+ pointer-type     = "ptr" "[" type "]" ;
+-type            = builtin-type | alias-type | struct-type | pointer-type ;
++type            = base-type [ array-suffix ] ;
++base-type        = builtin-type | alias-type | struct-type | pointer-type ;
++array-suffix     = "[" integer "]" ;
+ cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+                 | "bool" | pointer-type ;
+ integer         = digit { digit } ;
+ number          = ( digit { digit } [ "." { digit } ]
+                   | "." digit { digit } ) [ exponent ] ;
+ exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
+ boolean-literal    = "True" | "False" ;
+ letter          = "A".."Z" | "a".."z" ;
+ digit           = "0".."9" ;
+ end-of-line             = "\r\n" | "\r" | "\n" ;
+ comment = "#" { comment-character } ;
+ comment-character = ? any character except "\r" and "\n" ? ;
+ whitespace = " " | "\t" | "\v" | "\f" ;
+ INDENT          = ? synthetic token emitted by lexer ? ;
+ DEDENT          = ? synthetic token emitted by lexer ? ;
+ 
+ BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
+```
+
+## One New Type, One New Node
 
 A single enum value covers every array regardless of element type:
 
@@ -116,12 +204,12 @@ static bool ParseUnsignedDecimal(const string &Text, uint64_t &Out) {
 
 The overflow check matters here specifically because array size feeds directly into `ArrayType::get`; I'd rather reject `int[99999999999999999999]` at parse time with a clear error than let it wrap around into something silently wrong.
 
-## Teaching `ParseTypeToken` About `[N]`
+## Extending Type Parsing for Array Suffixes
 
 Before this chapter, `ParseTypeToken` returned the moment it recognized a base type; there was nowhere left to check for a trailing `[4]`. I have it collect the base type into a local instead of returning immediately, so I can look at what follows before deciding what to return:
 
 ```cpp
-if (CurrentToken == '[') {
+if (CurrentToken == tok_lbracket) {
   if (BaseType == ValueType::None)
     return LogErrorExpression("Arrays of None are not allowed"), ValueType::Error;
   if (BaseType == ValueType::Array)
@@ -136,12 +224,12 @@ if (CurrentToken == '[') {
   if (Count == 0)
     return LogErrorExpression("Array size must be > 0"), ValueType::Error;
   getNextToken(); // eat number
-  if (CurrentToken != ']')
+  if (CurrentToken != tok_rbracket)
     return LogErrorExpression("Expected ']' after array size"), ValueType::Error;
   getNextToken(); // eat ']'
   if (StructName)
     *StructName = EncodeArrayType(BaseType, BaseStructName, Count);
-  if (CurrentToken == '[')
+  if (CurrentToken == tok_lbracket)
     return LogErrorExpression("Nested arrays are not supported"), ValueType::Error;
   return ValueType::Array;
 }
@@ -207,7 +295,7 @@ static unique_ptr<ExpressionNode> ParseArrayLiteralExpression() {
 
   getNextToken(); // eat '['
   vector<unique_ptr<ExpressionNode>> Elements;
-  if (CurrentToken != ']') {
+  if (CurrentToken != tok_rbracket) {
     while (true) {
       ExpectedLiteralTypeGuard Guard(ElemType, ElemStructName);
       auto E = ParseExpression();
@@ -220,9 +308,9 @@ static unique_ptr<ExpressionNode> ParseArrayLiteralExpression() {
           ElemStructName != E->getStructName())
         return LogErrorExpression("Array literal element type mismatch");
       Elements.push_back(std::move(E));
-      if (CurrentToken == ']')
+      if (CurrentToken == tok_rbracket)
         break;
-      if (CurrentToken != ',')
+      if (CurrentToken != tok_comma)
         return LogErrorExpression("Expected ']' or ',' in array literal");
       getNextToken();
     }
@@ -460,105 +548,6 @@ Error (Line 2, Column 28): Array literal element count mismatch
 
 **No pointer arithmetic directly on an array.** Indexing works; adding an integer to an array variable itself doesn't. `addr(arr[i])` gets a pointer to a specific element if I need one.
 
-## Grammar
-
-[pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-24/pyxc.ebnf)
-
-```ebnf
-program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
-end-of-lines            = end-of-line { end-of-line } ;
-top-level-item             = type-alias | struct-definition | function-definition | decorated-function-definition | external | top-level-expression ;
-type-alias       = "type" name "=" type ;
-struct-definition       = "struct" name ":" end-of-lines struct-block ;
-struct-block     = indent field-declaration { end-of-lines field-declaration } dedent ;
-field-declaration       = name ":" type ;
-function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
-(* If the return type is omitted, it defaults to None. *)
-decorated-function-definition    = binary-decorator end-of-lines "def" binary-operator-signature [ "->" type ] ":" ( simple-statement | end-of-lines block )
-                | unary-decorator  end-of-lines "def" unary-operator-signature  [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
-binary-decorator = "@" "binary" "(" integer ")" ;
-unary-decorator  = "@" "unary" ;
-binary-operator-signature = custom-operator-character "(" typed-parameter "," typed-parameter ")" ;
-unary-operator-signature  = custom-operator-character "(" typed-parameter ")" ;
-external        = "extern" "def" function-signature [ "->" type ] ;
-top-level-expression    = expression ;
-function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
-typed-parameter      = name ":" type ;
-if-statement          = "if" expression ":" suite
-                [ end-of-lines "else" ":" suite ] ;
-for-statement         = "for"
-                  ( "var" name ":" type | name )
-                  "=" expression "," expression "," expression ":" suite ;
-variable-statement         = "var" variable-binding { "," variable-binding } ;
-assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
-simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
-compound-statement    = if-statement | for-statement ;
-statement       = simple-statement | compound-statement ;
-suite           = simple-statement | compound-statement | end-of-lines block ;
-return-statement      = "return" [ expression ] ;
-statement-separator = end-of-lines | BLOCK_END ;
-block = indent statement { statement-separator statement } dedent ;
-expression      = unary-expression binary-operator-right ;
-binary-operator-right        = { binary-operator unary-expression } ;
-lvalue          = name | field-access | index-expression ;
-variable-binding      = name ":" type [ "=" expression ] ;
-unary-expression       = unary-operator unary-expression | primary ;
-unary-operator         = "-" | user-defined-unary-operator ;
-primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;   (* changed: array-literal added *)
-cast-expression        = cast-type "(" expression ")" ;
-sizeof-expression      = "sizeof" "(" type ")" ;
-address-expression        = "addr" "(" lvalue ")" ;
-name-expression  = name | call-expression ;
-call-expression        = name "(" [ expression { "," expression } ] ")" ;
-field-access     = name "." name { "." name } ;
-index-expression       = name "[" expression "]" ;
-number-expression      = number ;
-array-literal    = "[" [ expression { "," expression } ] "]" ;         (* new *)
-string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
-escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
-parenthesized-expression       = "(" expression ")" ;
-binary-operator        = builtin-binary-operator | user-defined-binary-operator ;
-indent          = INDENT ;
-dedent          = DEDENT ;
-
-builtin-binary-operator = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
-user-defined-binary-operator = ? any operator-character defined as a custom binary operator ? ;
-user-defined-unary-operator  = ? any operator-character defined as a custom unary operator ? ;
-custom-operator-character    = ? any operator-character that is not "-" or a builtin-binary-operator,
-                    and not already defined as a custom operator ? ;
-operator-character          = ? any single ASCII punctuation character ? ;
-name      = (letter | "_") { letter | digit | "_" } ;
-builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | "None" ;
-alias-type       = name ;
-struct-type      = name ;
-pointer-type     = "ptr" "[" type "]" ;
-type            = base-type [ array-suffix ] ;                        (* changed *)
-base-type        = builtin-type | alias-type | struct-type | pointer-type ;   (* new *)
-array-suffix     = "[" integer "]" ;                                   (* new *)
-cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | pointer-type ;
-integer         = digit { digit } ;
-number          = ( digit { digit } [ "." { digit } ]
-                  | "." digit { digit } ) [ exponent ] ;
-exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
-boolean-literal    = "True" | "False" ;
-letter          = "A".."Z" | "a".."z" ;
-digit           = "0".."9" ;
-end-of-line             = "\r\n" | "\r" | "\n" ;
-comment = "#" { comment-character } ;
-comment-character = ? any character except "\r" and "\n" ? ;
-whitespace = " " | "\t" | "\v" | "\f" ;
-INDENT          = ? synthetic token emitted by lexer ? ;
-DEDENT          = ? synthetic token emitted by lexer ? ;
-
-BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
-```
-
-`type` now splits into `base-type` plus an optional `array-suffix`, both new productions; `primary` gained `array-literal`, also new. Everything else is unchanged from [Chapter 23](chapter-23.md).
-
 ## What's Next
 
 [Chapter 25](chapter-25.md) adds the `class` keyword: a named aggregate type that gets methods, constructors, and visibility rules in the chapters that follow.
@@ -575,4 +564,4 @@ Include:
 - Full error message
 - Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
-We'll figure it out.
+I'll help you figure it out.

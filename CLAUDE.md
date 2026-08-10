@@ -12,20 +12,20 @@ The matching tutorial docs live in `docs/chapter-NN.md`. `docs/chapter-00.md` is
 
 **Build a chapter:**
 ```bash
-cd code/chapter-43          # or whichever chapter
+cd code/chapter-45          # or whichever chapter
 cmake -S . -B build
 cmake --build build
 ```
 
 **Run all tests for a chapter:**
 ```bash
-cd code/chapter-43
+cd code/chapter-45
 lit test/ -j4
 ```
 
 **Run a single test:**
 ```bash
-cd code/chapter-43
+cd code/chapter-45
 lit test/module_import_cycle_exec.pyxc -v
 ```
 

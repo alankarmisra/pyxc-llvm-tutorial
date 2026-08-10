@@ -1,0 +1,11 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: @x = global i{{32|64}}
+# CHECK: store i{{32|64}} 1, ptr @x
+
+# Tests: typed var uses integer storage.
+
+var x: int = 1
+
+def main() -> None:
+    return

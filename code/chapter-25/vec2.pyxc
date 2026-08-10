@@ -1,0 +1,8 @@
+class Vec2:
+  x: float64
+  y: float64
+
+def main() -> int:
+  var v: Vec2
+  v.x = 1.0
+  return 0

@@ -1,0 +1,6 @@
+def main() -> int:
+  var x: int = 1
+  var y: bool = True
+  if x && y:
+    return 1
+  return 0

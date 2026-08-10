@@ -1,0 +1,6 @@
+extern def printd(x: float64) -> float64
+def main():
+    var x: float64 = 3.99
+    var y: int32 = int32(x)
+    var z: float64 = float64(y)
+    printd(z)

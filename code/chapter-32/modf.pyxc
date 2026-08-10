@@ -1,0 +1,5 @@
+def main() -> int:
+  var a: float64 = 5.5
+  var b: float64 = 2.0
+  var r: float64 = a % b
+  return 0

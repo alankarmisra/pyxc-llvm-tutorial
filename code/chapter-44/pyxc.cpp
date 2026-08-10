@@ -538,6 +538,202 @@ static int peek() {
   return c;
 }
 
+enum class LiteralDecodeError {
+  None,
+  InvalidEscape,
+  InvalidUtf8,
+  InvalidCodePoint,
+};
+
+static int HexDigitValue(int Ch) {
+  if (Ch >= '0' && Ch <= '9')
+    return Ch - '0';
+  if (Ch >= 'a' && Ch <= 'f')
+    return Ch - 'a' + 10;
+  if (Ch >= 'A' && Ch <= 'F')
+    return Ch - 'A' + 10;
+  return -1;
+}
+
+static bool IsUnicodeScalarValue(uint32_t Value) {
+  return Value <= 0x10FFFF && !(Value >= 0xD800 && Value <= 0xDFFF);
+}
+
+// I decode one escaped or raw UTF-8 code point and leave LexerLastChar at the
+// first byte after it. I use this path for character and string literals.
+static LiteralDecodeError DecodeLiteralCodePoint(uint32_t &Value) {
+  if (LexerLastChar == '\\') {
+    LexerLastChar = advance(); // eat the backslash
+    switch (LexerLastChar) {
+    case 'a':
+      Value = '\a';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'b':
+      Value = '\b';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'f':
+      Value = '\f';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'n':
+      Value = '\n';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'r':
+      Value = '\r';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 't':
+      Value = '\t';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'v':
+      Value = '\v';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case '\\':
+      Value = '\\';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case '\'':
+      Value = '\'';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case '"':
+      Value = '"';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case '?':
+      Value = '?';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'x': {
+      int High = HexDigitValue(advance());
+      int Low = HexDigitValue(advance());
+      if (High < 0 || Low < 0)
+        return LiteralDecodeError::InvalidEscape;
+      Value = static_cast<uint32_t>((High << 4) | Low);
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    }
+    case 'u':
+    case 'U': {
+      int Digits = LexerLastChar == 'u' ? 4 : 8;
+      Value = 0;
+      for (int I = 0; I < Digits; ++I) {
+        int Digit = HexDigitValue(advance());
+        if (Digit < 0)
+          return LiteralDecodeError::InvalidEscape;
+        Value = (Value << 4) | static_cast<uint32_t>(Digit);
+      }
+      LexerLastChar = advance();
+      if (!IsUnicodeScalarValue(Value))
+        return LiteralDecodeError::InvalidCodePoint;
+      return LiteralDecodeError::None;
+    }
+    default:
+      if (LexerLastChar < '0' || LexerLastChar > '7')
+        return LiteralDecodeError::InvalidEscape;
+
+      Value = 0;
+      for (int I = 0; I < 3; ++I) {
+        Value = (Value << 3) |
+                static_cast<uint32_t>(LexerLastChar - '0');
+        int Next = peek();
+        if (I == 2 || Next < '0' || Next > '7') {
+          LexerLastChar = advance();
+          break;
+        }
+        LexerLastChar = advance();
+      }
+      return LiteralDecodeError::None;
+    }
+  }
+
+  unsigned Lead = static_cast<unsigned char>(LexerLastChar);
+  if (Lead < 0x80) {
+    Value = Lead;
+    LexerLastChar = advance();
+    return LiteralDecodeError::None;
+  }
+
+  int Length = 0;
+  uint32_t Minimum = 0;
+  if (Lead >= 0xC2 && Lead <= 0xDF) {
+    Length = 2;
+    Value = Lead & 0x1F;
+    Minimum = 0x80;
+  } else if (Lead >= 0xE0 && Lead <= 0xEF) {
+    Length = 3;
+    Value = Lead & 0x0F;
+    Minimum = 0x800;
+  } else if (Lead >= 0xF0 && Lead <= 0xF4) {
+    Length = 4;
+    Value = Lead & 0x07;
+    Minimum = 0x10000;
+  } else {
+    return LiteralDecodeError::InvalidUtf8;
+  }
+
+  for (int I = 1; I < Length; ++I) {
+    int Next = advance();
+    if (Next == EOF || (Next & 0xC0) != 0x80)
+      return LiteralDecodeError::InvalidUtf8;
+    Value = (Value << 6) | static_cast<uint32_t>(Next & 0x3F);
+  }
+  LexerLastChar = advance();
+
+  if (Value < Minimum)
+    return LiteralDecodeError::InvalidUtf8;
+  if (!IsUnicodeScalarValue(Value))
+    return LiteralDecodeError::InvalidCodePoint;
+  return LiteralDecodeError::None;
+}
+
+static void AppendUtf8(string &Output, uint32_t Value) {
+  if (Value <= 0x7F) {
+    Output.push_back(static_cast<char>(Value));
+  } else if (Value <= 0x7FF) {
+    Output.push_back(static_cast<char>(0xC0 | (Value >> 6)));
+    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
+  } else if (Value <= 0xFFFF) {
+    Output.push_back(static_cast<char>(0xE0 | (Value >> 12)));
+    Output.push_back(static_cast<char>(0x80 | ((Value >> 6) & 0x3F)));
+    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
+  } else {
+    Output.push_back(static_cast<char>(0xF0 | (Value >> 18)));
+    Output.push_back(static_cast<char>(0x80 | ((Value >> 12) & 0x3F)));
+    Output.push_back(static_cast<char>(0x80 | ((Value >> 6) & 0x3F)));
+    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
+  }
+}
+
+static int LogLiteralDecodeError(LiteralDecodeError Error,
+                                 const char *LiteralKind) {
+  const char *Message = nullptr;
+  switch (Error) {
+  case LiteralDecodeError::InvalidEscape:
+    fprintf(stderr, "Error (Line %d, Column %d): invalid %s escape\n",
+            CurLoc.Line, CurLoc.Col, LiteralKind);
+    PrintErrorSourceContext(CurLoc);
+    return tok_error;
+  case LiteralDecodeError::InvalidUtf8:
+    Message = "invalid UTF-8";
+    break;
+  case LiteralDecodeError::InvalidCodePoint:
+    Message = "invalid Unicode code point";
+    break;
+  case LiteralDecodeError::None:
+    return tok_error;
+  }
+  fprintf(stderr, "Error (Line %d, Column %d): %s in %s literal\n",
+          CurLoc.Line, CurLoc.Col, Message, LiteralKind);
+  PrintErrorSourceContext(CurLoc);
+  return tok_error;
+}
+
 /// getToken - Return the next token from standard input.
 ///
 /// LastChar holds the last character read by advance() but not yet consumed
@@ -729,34 +925,11 @@ static int getToken() {
     LexerLastChar = advance(); // eat opening quote
     while (LexerLastChar != '"' && LexerLastChar != EOF &&
            LexerLastChar != '\n') {
-      if (LexerLastChar == '\\') {
-        LexerLastChar = advance();
-        switch (LexerLastChar) {
-        case '\\':
-          StringLiteralStr.push_back('\\');
-          break;
-        case '"':
-          StringLiteralStr.push_back('"');
-          break;
-        case 'n':
-          StringLiteralStr.push_back('\n');
-          break;
-        case 't':
-          StringLiteralStr.push_back('\t');
-          break;
-        case '0':
-          StringLiteralStr.push_back('\0');
-          break;
-        default:
-          fprintf(stderr, "Error (Line %d, Column %d): invalid string escape\n",
-                  CurLoc.Line, CurLoc.Col);
-          PrintErrorSourceContext(CurLoc);
-          return tok_error;
-        }
-      } else {
-        StringLiteralStr.push_back(static_cast<char>(LexerLastChar));
-      }
-      LexerLastChar = advance();
+      uint32_t Value = 0;
+      LiteralDecodeError Error = DecodeLiteralCodePoint(Value);
+      if (Error != LiteralDecodeError::None)
+        return LogLiteralDecodeError(Error, "string");
+      AppendUtf8(StringLiteralStr, Value);
     }
 
     if (LexerLastChar != '"') {
@@ -781,36 +954,9 @@ static int getToken() {
     }
 
     uint32_t Value = 0;
-    if (LexerLastChar == '\\') {
-      LexerLastChar = advance();
-      switch (LexerLastChar) {
-      case '\\':
-        Value = '\\';
-        break;
-      case '\'':
-        Value = '\'';
-        break;
-      case 'n':
-        Value = '\n';
-        break;
-      case 't':
-        Value = '\t';
-        break;
-      case '0':
-        Value = '\0';
-        break;
-      default:
-        fprintf(stderr,
-                "Error (Line %d, Column %d): invalid character escape\n",
-                CurLoc.Line, CurLoc.Col);
-        PrintErrorSourceContext(CurLoc);
-        return tok_error;
-      }
-    } else {
-      Value = static_cast<unsigned char>(LexerLastChar);
-    }
-
-    LexerLastChar = advance();
+    LiteralDecodeError Error = DecodeLiteralCodePoint(Value);
+    if (Error != LiteralDecodeError::None)
+      return LogLiteralDecodeError(Error, "character");
     if (LexerLastChar != '\'') {
       fprintf(stderr,
               "Error (Line %d, Column %d): unterminated character literal\n",
@@ -2026,16 +2172,14 @@ static bool IsCompoundAssignTok(int Tok);
 static unsigned TopLevelExprCounter = 0;
 // Whether the last top-level form should be printed in the REPL.
 static bool LastTopLevelShouldPrint = true;
-// Chapter 41 module/import bookkeeping (single-file happy path).
+// Chapter 43 module/import bookkeeping (single-file happy path).
 static bool SeenNonModuleTopLevel = false;
 static bool ModuleDeclaredInFile = false;
 static string CurrentModuleName;
 static vector<string> ImportedModules;
-// Chapter 42: lightweight import signature collection.
+// Chapter 44: lightweight import signature collection.
 static bool SignatureScanMode = false;
-enum class SignatureScanState { InProgress, Done };
-static std::map<string, SignatureScanState> SignatureFileStates;
-static std::map<string, string> ResolvedImportPathCache;
+static std::set<string> SignatureVisitedFiles;
 
 static unique_ptr<ExpressionNode> ParseSuite();
 static ValueType ParseTypeToken(string *StructName = nullptr);
@@ -2063,7 +2207,6 @@ static bool ParseTypeAliasDefinition();
 static bool ParseModuleDefinition();
 static bool ParseImportDefinition();
 static bool CollectSignaturesFromFile(const string &Path);
-static string CanonicalizePath(const string &Path);
 static const char *TypeName(ValueType Type);
 static bool IsNumericType(ValueType Type);
 static bool IsIntType(ValueType Type);
@@ -4522,8 +4665,10 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature(bool AllowVarArg
       (FnName.size() == 6 && FnName.rfind("unary", 0) == 0 &&
        isascii(static_cast<unsigned char>(FnName[5])) &&
        ispunct(static_cast<unsigned char>(FnName[5])))) {
-    Log((string("Warning: Function name '") + FnName +
-         "' may conflict with operator-reserved naming\n"));
+    fprintf(stderr,
+            "Warning: Function name '%s' may conflict with "
+            "operator-reserved naming\n",
+            FnName.c_str());
   }
   getNextToken(); // eat function name
 
@@ -8704,43 +8849,25 @@ static bool ResolveImportToPath(const string &ImporterPath,
                                 const string &Import, string &OutPath) {
   namespace fs = llvm::sys::fs;
   namespace path = llvm::sys::path;
-  const string CanonImporter = CanonicalizePath(ImporterPath);
-  const string CacheKey = CanonImporter + "->" + Import;
-  auto CacheIt = ResolvedImportPathCache.find(CacheKey);
-  if (CacheIt != ResolvedImportPathCache.end()) {
-    if (CacheIt->second.empty())
-      return false;
-    OutPath = CacheIt->second;
-    return true;
-  }
+  SmallString<256> Candidate(ImporterPath);
+  path::remove_filename(Candidate);
   string Rel = Import;
   std::replace(Rel.begin(), Rel.end(), '.', '/');
-  SmallString<256> Base(CanonImporter);
-  path::remove_filename(Base);
-  SmallString<256> Probe(Base);
-  while (true) {
-    SmallString<256> Candidate(Probe);
-    path::append(Candidate, Rel + ".pyxc");
-    if (fs::exists(Candidate)) {
-      OutPath = std::string(Candidate.str());
-      ResolvedImportPathCache[CacheKey] = OutPath;
-      return true;
-    }
-    SmallString<256> InputsCandidate(Probe);
-    path::append(InputsCandidate, "Inputs");
-    path::append(InputsCandidate, Rel + ".pyxc");
-    if (fs::exists(InputsCandidate)) {
-      OutPath = std::string(InputsCandidate.str());
-      ResolvedImportPathCache[CacheKey] = OutPath;
-      return true;
-    }
-    SmallString<256> Parent(Probe);
-    path::remove_filename(Parent);
-    if (Parent == Probe || Parent.empty())
-      break;
-    Probe = Parent;
+  path::append(Candidate, Rel + ".pyxc");
+  if (fs::exists(Candidate)) {
+    OutPath = std::string(Candidate.str());
+    return true;
   }
-  ResolvedImportPathCache[CacheKey] = "";
+
+  // Test-friendly fallback: allow colocated "Inputs/" modules.
+  SmallString<256> InputsCandidate(ImporterPath);
+  path::remove_filename(InputsCandidate);
+  path::append(InputsCandidate, "Inputs");
+  path::append(InputsCandidate, Rel + ".pyxc");
+  if (fs::exists(InputsCandidate)) {
+    OutPath = std::string(InputsCandidate.str());
+    return true;
+  }
   return false;
 }
 
@@ -8756,15 +8883,8 @@ static string CanonicalizePath(const string &Path) {
 
 static bool CollectSignaturesFromFile(const string &Path) {
   const string CanonPath = CanonicalizePath(Path);
-  auto StateIt = SignatureFileStates.find(CanonPath);
-  if (StateIt != SignatureFileStates.end()) {
-    if (StateIt->second == SignatureScanState::Done)
-      return true;
-    // Cycle detected. Resolve by allowing the in-progress scan to complete and
-    // reusing whatever exported signatures are already known.
+  if (!SignatureVisitedFiles.insert(CanonPath).second)
     return true;
-  }
-  SignatureFileStates[CanonPath] = SignatureScanState::InProgress;
 
   FILE *SavedInput = Input;
   bool SavedIsRepl = IsRepl;
@@ -8776,11 +8896,11 @@ static bool CollectSignaturesFromFile(const string &Path) {
   if (!OpenInputFile(Path))
     return false;
   ResetLexerState();
+  ResetParserStateForFile();
   IsRepl = false;
   SignatureScanMode = true;
   HadError = false;
   getNextToken();
-  vector<string> NestedImports;
 
   while (CurrentToken != tok_eof) {
     if (CurrentToken == tok_eol || CurrentToken == tok_indent || CurrentToken == tok_dedent) {
@@ -8788,15 +8908,25 @@ static bool CollectSignaturesFromFile(const string &Path) {
       continue;
     }
     if (CurrentToken == tok_import) {
-      // Record nested imports and scan them after collecting this file's own
-      // exports. This supports cyclic import graphs.
+      // Resolve nested imports eagerly so their symbols are available.
       getNextToken(); // eat import
       string ImportName;
       if (!ParseDottedModuleName(ImportName)) {
         OK = false;
         break;
       }
-      NestedImports.push_back(ImportName);
+      string ImportPath;
+      if (!ResolveImportToPath(CanonPath, ImportName, ImportPath)) {
+        LogErrorExpression(("Could not resolve import '" + ImportName + "' from '" +
+                  CanonPath + "'")
+                     .c_str());
+        OK = false;
+        break;
+      }
+      if (!CollectSignaturesFromFile(ImportPath)) {
+        OK = false;
+        break;
+      }
       continue;
     }
     if (CurrentToken == tok_export) {
@@ -8810,23 +8940,6 @@ static bool CollectSignaturesFromFile(const string &Path) {
     SkipSignatureBody();
   }
 
-  if (OK) {
-    for (const auto &ImportName : NestedImports) {
-      string ImportPath;
-      if (!ResolveImportToPath(CanonPath, ImportName, ImportPath)) {
-        LogErrorExpression(("Could not resolve import '" + ImportName + "' from '" +
-                  CanonPath + "'")
-                     .c_str());
-        OK = false;
-        break;
-      }
-      if (!CollectSignaturesFromFile(ImportPath)) {
-        OK = false;
-        break;
-      }
-    }
-  }
-
   if (HadError)
     OK = false;
 
@@ -8838,10 +8951,6 @@ static bool CollectSignaturesFromFile(const string &Path) {
   SignatureScanMode = false;
   HadError = SavedHadError;
   ResetLexerState();
-  SignatureFileStates[CanonPath] =
-      OK ? SignatureScanState::Done : SignatureScanState::InProgress;
-  if (!OK)
-    SignatureFileStates.erase(CanonPath);
   return OK;
 }
 
@@ -8880,8 +8989,7 @@ static vector<string> ExtractTopLevelImports(const string &Path) {
 }
 
 static bool PreloadImportedSignatures(const string &Path) {
-  SignatureFileStates.clear();
-  ResolvedImportPathCache.clear();
+  SignatureVisitedFiles.clear();
   for (const auto &ImportName : ExtractTopLevelImports(Path)) {
     string ImportPath;
     if (!ResolveImportToPath(Path, ImportName, ImportPath)) {

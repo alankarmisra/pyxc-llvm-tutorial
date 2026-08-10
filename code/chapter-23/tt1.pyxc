@@ -1,0 +1,7 @@
+extern def puts(s: ptr[int8]) -> int
+type string = ptr[int8]
+def greet(name: string) -> int:
+  return puts(name)
+def main() -> int:
+  greet("world")
+  return 0

@@ -1,0 +1,7 @@
+class Foo:
+  x: int
+  private def __init__():
+    self.x = 0
+def main() -> int:
+  var f: Foo = Foo()
+  return 0

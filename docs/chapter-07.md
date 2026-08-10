@@ -354,7 +354,7 @@ InitializeModuleAndManagers();
 
 ORC requires me to transfer the `Module` together with its `LLVMContext`, so I package them in a `ThreadSafeModule`.
 
-## `getFunction` and the Cross-Module Problem
+## The Cross-Module Function Lookup Problem
 
 In Chapter 6, I found a called function with `TheModule->getFunction(Callee)`. That only searches the current module. After I hand `foo`'s module to the JIT and create a new module, that lookup can no longer find `foo`.
 

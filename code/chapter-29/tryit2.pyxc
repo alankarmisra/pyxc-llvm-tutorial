@@ -1,0 +1,6 @@
+trait Measurable:
+  def area() -> int
+class Rect(Measurable):
+  w: int
+  private def area() -> int:
+    return self.w

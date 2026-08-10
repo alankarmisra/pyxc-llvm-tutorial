@@ -1,0 +1,4 @@
+struct Counter:
+  value: int
+
+var g: Counter

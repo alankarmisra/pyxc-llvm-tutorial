@@ -1,0 +1,2 @@
+extern def printd(x)
+def foo(): return 1

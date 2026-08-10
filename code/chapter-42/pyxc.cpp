@@ -171,9 +171,6 @@ enum Token {
   tok_uint16 = -66,
   tok_uint32 = -67,
   tok_uint64 = -68,
-  tok_module = -69,
-  tok_import = -70,
-  tok_export = -71,
   tok_float = -27,
   tok_float32 = -28,
   tok_float64 = -29,
@@ -308,10 +305,7 @@ static map<string, Token> Keywords = {{"def", tok_def},
                                       {"sizeof", tok_sizeof},
                                       {"type", tok_type},
                                       {"trait", tok_trait},
-                                      {"impl", tok_impl},
-                                      {"module", tok_module},
-                                      {"import", tok_import},
-                                      {"export", tok_export}};
+                                      {"impl", tok_impl}};
 static constexpr int IndentTabWidth = 8;
 
 // Debug-only token names. Kept separate from Keywords because this map is
@@ -352,9 +346,6 @@ static map<int, string> TokenNames = [] {
                                    {tok_uint16, "'uint16'"},
                                    {tok_uint32, "'uint32'"},
                                    {tok_uint64, "'uint64'"},
-                                   {tok_module, "'module'"},
-                                   {tok_import, "'import'"},
-                                   {tok_export, "'export'"},
                                    {tok_float, "'float'"},
                                    {tok_float32, "'float32'"},
                                    {tok_float64, "'float64'"},
@@ -535,6 +526,202 @@ static int peek() {
   if (c != EOF)
     ungetc(c, Input);
   return c;
+}
+
+enum class LiteralDecodeError {
+  None,
+  InvalidEscape,
+  InvalidUtf8,
+  InvalidCodePoint,
+};
+
+static int HexDigitValue(int Ch) {
+  if (Ch >= '0' && Ch <= '9')
+    return Ch - '0';
+  if (Ch >= 'a' && Ch <= 'f')
+    return Ch - 'a' + 10;
+  if (Ch >= 'A' && Ch <= 'F')
+    return Ch - 'A' + 10;
+  return -1;
+}
+
+static bool IsUnicodeScalarValue(uint32_t Value) {
+  return Value <= 0x10FFFF && !(Value >= 0xD800 && Value <= 0xDFFF);
+}
+
+// I decode one escaped or raw UTF-8 code point and leave LexerLastChar at the
+// first byte after it. I use this path for character and string literals.
+static LiteralDecodeError DecodeLiteralCodePoint(uint32_t &Value) {
+  if (LexerLastChar == '\\') {
+    LexerLastChar = advance(); // eat the backslash
+    switch (LexerLastChar) {
+    case 'a':
+      Value = '\a';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'b':
+      Value = '\b';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'f':
+      Value = '\f';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'n':
+      Value = '\n';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'r':
+      Value = '\r';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 't':
+      Value = '\t';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'v':
+      Value = '\v';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case '\\':
+      Value = '\\';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case '\'':
+      Value = '\'';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case '"':
+      Value = '"';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case '?':
+      Value = '?';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'x': {
+      int High = HexDigitValue(advance());
+      int Low = HexDigitValue(advance());
+      if (High < 0 || Low < 0)
+        return LiteralDecodeError::InvalidEscape;
+      Value = static_cast<uint32_t>((High << 4) | Low);
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    }
+    case 'u':
+    case 'U': {
+      int Digits = LexerLastChar == 'u' ? 4 : 8;
+      Value = 0;
+      for (int I = 0; I < Digits; ++I) {
+        int Digit = HexDigitValue(advance());
+        if (Digit < 0)
+          return LiteralDecodeError::InvalidEscape;
+        Value = (Value << 4) | static_cast<uint32_t>(Digit);
+      }
+      LexerLastChar = advance();
+      if (!IsUnicodeScalarValue(Value))
+        return LiteralDecodeError::InvalidCodePoint;
+      return LiteralDecodeError::None;
+    }
+    default:
+      if (LexerLastChar < '0' || LexerLastChar > '7')
+        return LiteralDecodeError::InvalidEscape;
+
+      Value = 0;
+      for (int I = 0; I < 3; ++I) {
+        Value = (Value << 3) |
+                static_cast<uint32_t>(LexerLastChar - '0');
+        int Next = peek();
+        if (I == 2 || Next < '0' || Next > '7') {
+          LexerLastChar = advance();
+          break;
+        }
+        LexerLastChar = advance();
+      }
+      return LiteralDecodeError::None;
+    }
+  }
+
+  unsigned Lead = static_cast<unsigned char>(LexerLastChar);
+  if (Lead < 0x80) {
+    Value = Lead;
+    LexerLastChar = advance();
+    return LiteralDecodeError::None;
+  }
+
+  int Length = 0;
+  uint32_t Minimum = 0;
+  if (Lead >= 0xC2 && Lead <= 0xDF) {
+    Length = 2;
+    Value = Lead & 0x1F;
+    Minimum = 0x80;
+  } else if (Lead >= 0xE0 && Lead <= 0xEF) {
+    Length = 3;
+    Value = Lead & 0x0F;
+    Minimum = 0x800;
+  } else if (Lead >= 0xF0 && Lead <= 0xF4) {
+    Length = 4;
+    Value = Lead & 0x07;
+    Minimum = 0x10000;
+  } else {
+    return LiteralDecodeError::InvalidUtf8;
+  }
+
+  for (int I = 1; I < Length; ++I) {
+    int Next = advance();
+    if (Next == EOF || (Next & 0xC0) != 0x80)
+      return LiteralDecodeError::InvalidUtf8;
+    Value = (Value << 6) | static_cast<uint32_t>(Next & 0x3F);
+  }
+  LexerLastChar = advance();
+
+  if (Value < Minimum)
+    return LiteralDecodeError::InvalidUtf8;
+  if (!IsUnicodeScalarValue(Value))
+    return LiteralDecodeError::InvalidCodePoint;
+  return LiteralDecodeError::None;
+}
+
+static void AppendUtf8(string &Output, uint32_t Value) {
+  if (Value <= 0x7F) {
+    Output.push_back(static_cast<char>(Value));
+  } else if (Value <= 0x7FF) {
+    Output.push_back(static_cast<char>(0xC0 | (Value >> 6)));
+    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
+  } else if (Value <= 0xFFFF) {
+    Output.push_back(static_cast<char>(0xE0 | (Value >> 12)));
+    Output.push_back(static_cast<char>(0x80 | ((Value >> 6) & 0x3F)));
+    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
+  } else {
+    Output.push_back(static_cast<char>(0xF0 | (Value >> 18)));
+    Output.push_back(static_cast<char>(0x80 | ((Value >> 12) & 0x3F)));
+    Output.push_back(static_cast<char>(0x80 | ((Value >> 6) & 0x3F)));
+    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
+  }
+}
+
+static int LogLiteralDecodeError(LiteralDecodeError Error,
+                                 const char *LiteralKind) {
+  const char *Message = nullptr;
+  switch (Error) {
+  case LiteralDecodeError::InvalidEscape:
+    fprintf(stderr, "Error (Line %d, Column %d): invalid %s escape\n",
+            CurLoc.Line, CurLoc.Col, LiteralKind);
+    PrintErrorSourceContext(CurLoc);
+    return tok_error;
+  case LiteralDecodeError::InvalidUtf8:
+    Message = "invalid UTF-8";
+    break;
+  case LiteralDecodeError::InvalidCodePoint:
+    Message = "invalid Unicode code point";
+    break;
+  case LiteralDecodeError::None:
+    return tok_error;
+  }
+  fprintf(stderr, "Error (Line %d, Column %d): %s in %s literal\n",
+          CurLoc.Line, CurLoc.Col, Message, LiteralKind);
+  PrintErrorSourceContext(CurLoc);
+  return tok_error;
 }
 
 /// getToken - Return the next token from standard input.
@@ -728,34 +915,11 @@ static int getToken() {
     LexerLastChar = advance(); // eat opening quote
     while (LexerLastChar != '"' && LexerLastChar != EOF &&
            LexerLastChar != '\n') {
-      if (LexerLastChar == '\\') {
-        LexerLastChar = advance();
-        switch (LexerLastChar) {
-        case '\\':
-          StringLiteralStr.push_back('\\');
-          break;
-        case '"':
-          StringLiteralStr.push_back('"');
-          break;
-        case 'n':
-          StringLiteralStr.push_back('\n');
-          break;
-        case 't':
-          StringLiteralStr.push_back('\t');
-          break;
-        case '0':
-          StringLiteralStr.push_back('\0');
-          break;
-        default:
-          fprintf(stderr, "Error (Line %d, Column %d): invalid string escape\n",
-                  CurLoc.Line, CurLoc.Col);
-          PrintErrorSourceContext(CurLoc);
-          return tok_error;
-        }
-      } else {
-        StringLiteralStr.push_back(static_cast<char>(LexerLastChar));
-      }
-      LexerLastChar = advance();
+      uint32_t Value = 0;
+      LiteralDecodeError Error = DecodeLiteralCodePoint(Value);
+      if (Error != LiteralDecodeError::None)
+        return LogLiteralDecodeError(Error, "string");
+      AppendUtf8(StringLiteralStr, Value);
     }
 
     if (LexerLastChar != '"') {
@@ -780,36 +944,9 @@ static int getToken() {
     }
 
     uint32_t Value = 0;
-    if (LexerLastChar == '\\') {
-      LexerLastChar = advance();
-      switch (LexerLastChar) {
-      case '\\':
-        Value = '\\';
-        break;
-      case '\'':
-        Value = '\'';
-        break;
-      case 'n':
-        Value = '\n';
-        break;
-      case 't':
-        Value = '\t';
-        break;
-      case '0':
-        Value = '\0';
-        break;
-      default:
-        fprintf(stderr,
-                "Error (Line %d, Column %d): invalid character escape\n",
-                CurLoc.Line, CurLoc.Col);
-        PrintErrorSourceContext(CurLoc);
-        return tok_error;
-      }
-    } else {
-      Value = static_cast<unsigned char>(LexerLastChar);
-    }
-
-    LexerLastChar = advance();
+    LiteralDecodeError Error = DecodeLiteralCodePoint(Value);
+    if (Error != LiteralDecodeError::None)
+      return LogLiteralDecodeError(Error, "character");
     if (LexerLastChar != '\'') {
       fprintf(stderr,
               "Error (Line %d, Column %d): unterminated character literal\n",
@@ -2025,11 +2162,6 @@ static bool IsCompoundAssignTok(int Tok);
 static unsigned TopLevelExprCounter = 0;
 // Whether the last top-level form should be printed in the REPL.
 static bool LastTopLevelShouldPrint = true;
-// Chapter 41 module/import bookkeeping (single-file happy path).
-static bool SeenNonModuleTopLevel = false;
-static bool ModuleDeclaredInFile = false;
-static string CurrentModuleName;
-static vector<string> ImportedModules;
 
 static unique_ptr<ExpressionNode> ParseSuite();
 static ValueType ParseTypeToken(string *StructName = nullptr);
@@ -2052,8 +2184,6 @@ static bool VerifyTraitConformance(const string &ClassName,
                                    const StructTypeInfo::ImplTraitRef &ImplRef);
 static bool ParseImplDefinition();
 static bool ParseTypeAliasDefinition();
-static bool ParseModuleDefinition();
-static bool ParseImportDefinition();
 static const char *TypeName(ValueType Type);
 static bool IsNumericType(ValueType Type);
 static bool IsIntType(ValueType Type);
@@ -5072,54 +5202,6 @@ static bool ParseTypeAliasDefinition() {
   return true;
 }
 
-static bool ParseDottedModuleName(string &OutName) {
-  OutName.clear();
-  if (CurrentToken != tok_name) {
-    LogErrorExpression("Expected module path");
-    return false;
-  }
-  OutName = Name;
-  getNextToken(); // eat first name
-  while (CurrentToken == tok_dot) {
-    getNextToken(); // eat '.'
-    if (CurrentToken != tok_name) {
-      LogErrorExpression("Expected name after '.' in module path");
-      return false;
-    }
-    OutName += ".";
-    OutName += Name;
-    getNextToken(); // eat name
-  }
-  return true;
-}
-
-static bool ParseModuleDefinition() {
-  // CurrentToken is 'module'
-  getNextToken(); // eat 'module'
-  if (!ParseDottedModuleName(CurrentModuleName))
-    return false;
-  if (ModuleDeclaredInFile) {
-    LogErrorExpression("Only one module declaration is allowed per file");
-    return false;
-  }
-  if (SeenNonModuleTopLevel) {
-    LogErrorExpression("module declaration must appear before other top-level forms");
-    return false;
-  }
-  ModuleDeclaredInFile = true;
-  return true;
-}
-
-static bool ParseImportDefinition() {
-  // CurrentToken is 'import'
-  getNextToken(); // eat 'import'
-  string ImportName;
-  if (!ParseDottedModuleName(ImportName))
-    return false;
-  ImportedModules.push_back(ImportName);
-  return true;
-}
-
 static bool ParseTraitDefinition() {
   // CurrentToken is 'trait'
   getNextToken(); // eat 'trait'
@@ -7679,10 +7761,6 @@ static void ResetParserStateForFile() {
   VarStructScopes.clear();
   FileTopLevelStmts.clear();
   LastTopLevelShouldPrint = true;
-  SeenNonModuleTopLevel = false;
-  ModuleDeclaredInFile = false;
-  CurrentModuleName.clear();
-  ImportedModules.clear();
   InGlobalInit = false;
   ModuleHasGlobals = false;
   HadError = false;
@@ -7782,7 +7860,6 @@ static void SynchronizeToLineBoundary() {
 /// accessible in the JIT's symbol table for the rest of the session.
 /// On parse failure or unexpected trailing tokens: discard the line.
 static void HandleFunctionDefinition() {
-  SeenNonModuleTopLevel = true;
   auto FnAST = ParseFunctionDefinition();
   bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
   if (!FnAST || HasTrailing) {
@@ -7813,7 +7890,6 @@ static void HandleFunctionDefinition() {
 /// 'declare' in whichever module needs to call the extern.
 /// On parse failure or unexpected trailing tokens: discard the line.
 static void HandleExtern() {
-  SeenNonModuleTopLevel = true;
   auto ProtoAST = ParseExtern();
 
   if (!ProtoAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
@@ -7845,7 +7921,6 @@ static void HandleExtern() {
 }
 
 static void HandleStructDef() {
-  SeenNonModuleTopLevel = true;
   bool Ok = ParseAggregateDefinition("struct");
   if (!Ok) {
     SynchronizeToLineBoundary();
@@ -7860,7 +7935,6 @@ static void HandleStructDef() {
 }
 
 static void HandleClassDef() {
-  SeenNonModuleTopLevel = true;
   bool Ok = ParseAggregateDefinition("class");
   if (!Ok) {
     SynchronizeToLineBoundary();
@@ -7875,7 +7949,6 @@ static void HandleClassDef() {
 }
 
 static void HandleTypeAliasDef() {
-  SeenNonModuleTopLevel = true;
   bool Ok = ParseTypeAliasDefinition();
   if (!Ok) {
     SynchronizeToLineBoundary();
@@ -7890,7 +7963,6 @@ static void HandleTypeAliasDef() {
 }
 
 static void HandleTraitDef() {
-  SeenNonModuleTopLevel = true;
   bool Ok = ParseTraitDefinition();
   if (!Ok) {
     SynchronizeToLineBoundary();
@@ -7905,7 +7977,6 @@ static void HandleTraitDef() {
 }
 
 static void HandleImplDef() {
-  SeenNonModuleTopLevel = true;
   bool Ok = ParseImplDefinition();
   if (!Ok) {
     SynchronizeToLineBoundary();
@@ -7938,7 +8009,6 @@ static void HandleImplDef() {
 ///   6. Call RT->remove() to free the compiled code. The module was already
 ///      transferred to the JIT in step 4, so eraseFromParent() is not needed.
 static void HandleTopLevelExpression() {
-  SeenNonModuleTopLevel = true;
   auto FnAST = ParseTopLevelExpression();
   bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
   if (!FnAST || HasTrailing) {
@@ -8125,7 +8195,6 @@ static void HandleTopLevelExpression() {
 /// In file mode, top-level statements are collected and emitted into a single
 /// __pyxc.global_init function after the entire file is parsed.
 static void HandleTopLevelStatementFileMode() {
-  SeenNonModuleTopLevel = true;
   auto Stmt = ParseTopLevelStatement();
   bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
   if (!Stmt || HasTrailing) {
@@ -8136,82 +8205,6 @@ static void HandleTopLevelStatementFileMode() {
   }
 
   FileTopLevelStmts.push_back(std::move(Stmt));
-}
-
-static void HandleModuleDef() {
-  if (IsRepl) {
-    LogErrorExpression("'module' is only supported in file mode");
-    SynchronizeToLineBoundary();
-    return;
-  }
-  bool Ok = ParseModuleDefinition();
-  if (!Ok) {
-    SynchronizeToLineBoundary();
-    return;
-  }
-  bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
-  if (HasTrailing) {
-    LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
-    return;
-  }
-}
-
-static void HandleImportDef() {
-  if (IsRepl) {
-    LogErrorExpression("'import' is only supported in file mode");
-    SynchronizeToLineBoundary();
-    return;
-  }
-  bool Ok = ParseImportDefinition();
-  if (!Ok) {
-    SynchronizeToLineBoundary();
-    return;
-  }
-  bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
-  if (HasTrailing) {
-    LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
-    return;
-  }
-}
-
-static void HandleExportDef() {
-  if (IsRepl) {
-    LogErrorExpression("'export' is only supported in file mode");
-    SynchronizeToLineBoundary();
-    return;
-  }
-  // 'export' is a visibility marker in chapter 41's single-file happy path.
-  // It forwards to a top-level declaration handler.
-  getNextToken(); // eat 'export'
-  switch (CurrentToken) {
-  case tok_def:
-    HandleFunctionDefinition();
-    return;
-  case tok_extern:
-    HandleExtern();
-    return;
-  case tok_struct:
-    HandleStructDef();
-    return;
-  case tok_class:
-    HandleClassDef();
-    return;
-  case tok_type:
-    HandleTypeAliasDef();
-    return;
-  case tok_trait:
-    HandleTraitDef();
-    return;
-  case tok_impl:
-    HandleImplDef();
-    return;
-  default:
-    LogErrorExpression("'export' must be followed by a top-level declaration");
-    SynchronizeToLineBoundary();
-    return;
-  }
 }
 
 //===----------------------------------------===//
@@ -8289,15 +8282,6 @@ static void MainLoop() {
     }
 
     switch (CurrentToken) {
-    case tok_module:
-      HandleModuleDef();
-      break;
-    case tok_import:
-      HandleImportDef();
-      break;
-    case tok_export:
-      HandleExportDef();
-      break;
     case tok_struct:
       HandleStructDef();
       break;
@@ -8357,15 +8341,6 @@ static void FileModeLoop() {
     }
 
     switch (CurrentToken) {
-    case tok_module:
-      HandleModuleDef();
-      break;
-    case tok_import:
-      HandleImportDef();
-      break;
-    case tok_export:
-      HandleExportDef();
-      break;
     case tok_struct:
       HandleStructDef();
       break;

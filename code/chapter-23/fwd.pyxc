@@ -1,0 +1,3 @@
+def use_it(x: Meters) -> Meters:
+  return x
+type Meters = int64

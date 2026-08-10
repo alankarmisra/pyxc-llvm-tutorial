@@ -167,10 +167,6 @@ enum Token {
   tok_int16 = -24,
   tok_int32 = -25,
   tok_int64 = -26,
-  tok_uint8 = -65,
-  tok_uint16 = -66,
-  tok_uint32 = -67,
-  tok_uint64 = -68,
   tok_float = -27,
   tok_float32 = -28,
   tok_float64 = -29,
@@ -233,10 +229,6 @@ enum class ValueType {
   Int16,
   Int32,
   Int64,
-  UInt8,
-  UInt16,
-  UInt32,
-  UInt64,
   Float,
   Float32,
   Float64,
@@ -285,10 +277,6 @@ static map<string, Token> Keywords = {{"def", tok_def},
                                       {"int16", tok_int16},
                                       {"int32", tok_int32},
                                       {"int64", tok_int64},
-                                      {"uint8", tok_uint8},
-                                      {"uint16", tok_uint16},
-                                      {"uint32", tok_uint32},
-                                      {"uint64", tok_uint64},
                                       {"float", tok_float},
                                       {"float32", tok_float32},
                                       {"float64", tok_float64},
@@ -342,10 +330,6 @@ static map<int, string> TokenNames = [] {
                                    {tok_int16, "'int16'"},
                                    {tok_int32, "'int32'"},
                                    {tok_int64, "'int64'"},
-                                   {tok_uint8, "'uint8'"},
-                                   {tok_uint16, "'uint16'"},
-                                   {tok_uint32, "'uint32'"},
-                                   {tok_uint64, "'uint64'"},
                                    {tok_float, "'float'"},
                                    {tok_float32, "'float32'"},
                                    {tok_float64, "'float64'"},
@@ -526,6 +510,202 @@ static int peek() {
   if (c != EOF)
     ungetc(c, Input);
   return c;
+}
+
+enum class LiteralDecodeError {
+  None,
+  InvalidEscape,
+  InvalidUtf8,
+  InvalidCodePoint,
+};
+
+static int HexDigitValue(int Ch) {
+  if (Ch >= '0' && Ch <= '9')
+    return Ch - '0';
+  if (Ch >= 'a' && Ch <= 'f')
+    return Ch - 'a' + 10;
+  if (Ch >= 'A' && Ch <= 'F')
+    return Ch - 'A' + 10;
+  return -1;
+}
+
+static bool IsUnicodeScalarValue(uint32_t Value) {
+  return Value <= 0x10FFFF && !(Value >= 0xD800 && Value <= 0xDFFF);
+}
+
+// I decode one escaped or raw UTF-8 code point and leave LexerLastChar at the
+// first byte after it. I use this path for character and string literals.
+static LiteralDecodeError DecodeLiteralCodePoint(uint32_t &Value) {
+  if (LexerLastChar == '\\') {
+    LexerLastChar = advance(); // eat the backslash
+    switch (LexerLastChar) {
+    case 'a':
+      Value = '\a';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'b':
+      Value = '\b';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'f':
+      Value = '\f';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'n':
+      Value = '\n';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'r':
+      Value = '\r';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 't':
+      Value = '\t';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'v':
+      Value = '\v';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case '\\':
+      Value = '\\';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case '\'':
+      Value = '\'';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case '"':
+      Value = '"';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case '?':
+      Value = '?';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'x': {
+      int High = HexDigitValue(advance());
+      int Low = HexDigitValue(advance());
+      if (High < 0 || Low < 0)
+        return LiteralDecodeError::InvalidEscape;
+      Value = static_cast<uint32_t>((High << 4) | Low);
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    }
+    case 'u':
+    case 'U': {
+      int Digits = LexerLastChar == 'u' ? 4 : 8;
+      Value = 0;
+      for (int I = 0; I < Digits; ++I) {
+        int Digit = HexDigitValue(advance());
+        if (Digit < 0)
+          return LiteralDecodeError::InvalidEscape;
+        Value = (Value << 4) | static_cast<uint32_t>(Digit);
+      }
+      LexerLastChar = advance();
+      if (!IsUnicodeScalarValue(Value))
+        return LiteralDecodeError::InvalidCodePoint;
+      return LiteralDecodeError::None;
+    }
+    default:
+      if (LexerLastChar < '0' || LexerLastChar > '7')
+        return LiteralDecodeError::InvalidEscape;
+
+      Value = 0;
+      for (int I = 0; I < 3; ++I) {
+        Value = (Value << 3) |
+                static_cast<uint32_t>(LexerLastChar - '0');
+        int Next = peek();
+        if (I == 2 || Next < '0' || Next > '7') {
+          LexerLastChar = advance();
+          break;
+        }
+        LexerLastChar = advance();
+      }
+      return LiteralDecodeError::None;
+    }
+  }
+
+  unsigned Lead = static_cast<unsigned char>(LexerLastChar);
+  if (Lead < 0x80) {
+    Value = Lead;
+    LexerLastChar = advance();
+    return LiteralDecodeError::None;
+  }
+
+  int Length = 0;
+  uint32_t Minimum = 0;
+  if (Lead >= 0xC2 && Lead <= 0xDF) {
+    Length = 2;
+    Value = Lead & 0x1F;
+    Minimum = 0x80;
+  } else if (Lead >= 0xE0 && Lead <= 0xEF) {
+    Length = 3;
+    Value = Lead & 0x0F;
+    Minimum = 0x800;
+  } else if (Lead >= 0xF0 && Lead <= 0xF4) {
+    Length = 4;
+    Value = Lead & 0x07;
+    Minimum = 0x10000;
+  } else {
+    return LiteralDecodeError::InvalidUtf8;
+  }
+
+  for (int I = 1; I < Length; ++I) {
+    int Next = advance();
+    if (Next == EOF || (Next & 0xC0) != 0x80)
+      return LiteralDecodeError::InvalidUtf8;
+    Value = (Value << 6) | static_cast<uint32_t>(Next & 0x3F);
+  }
+  LexerLastChar = advance();
+
+  if (Value < Minimum)
+    return LiteralDecodeError::InvalidUtf8;
+  if (!IsUnicodeScalarValue(Value))
+    return LiteralDecodeError::InvalidCodePoint;
+  return LiteralDecodeError::None;
+}
+
+static void AppendUtf8(string &Output, uint32_t Value) {
+  if (Value <= 0x7F) {
+    Output.push_back(static_cast<char>(Value));
+  } else if (Value <= 0x7FF) {
+    Output.push_back(static_cast<char>(0xC0 | (Value >> 6)));
+    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
+  } else if (Value <= 0xFFFF) {
+    Output.push_back(static_cast<char>(0xE0 | (Value >> 12)));
+    Output.push_back(static_cast<char>(0x80 | ((Value >> 6) & 0x3F)));
+    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
+  } else {
+    Output.push_back(static_cast<char>(0xF0 | (Value >> 18)));
+    Output.push_back(static_cast<char>(0x80 | ((Value >> 12) & 0x3F)));
+    Output.push_back(static_cast<char>(0x80 | ((Value >> 6) & 0x3F)));
+    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
+  }
+}
+
+static int LogLiteralDecodeError(LiteralDecodeError Error,
+                                 const char *LiteralKind) {
+  const char *Message = nullptr;
+  switch (Error) {
+  case LiteralDecodeError::InvalidEscape:
+    fprintf(stderr, "Error (Line %d, Column %d): invalid %s escape\n",
+            CurLoc.Line, CurLoc.Col, LiteralKind);
+    PrintErrorSourceContext(CurLoc);
+    return tok_error;
+  case LiteralDecodeError::InvalidUtf8:
+    Message = "invalid UTF-8";
+    break;
+  case LiteralDecodeError::InvalidCodePoint:
+    Message = "invalid Unicode code point";
+    break;
+  case LiteralDecodeError::None:
+    return tok_error;
+  }
+  fprintf(stderr, "Error (Line %d, Column %d): %s in %s literal\n",
+          CurLoc.Line, CurLoc.Col, Message, LiteralKind);
+  PrintErrorSourceContext(CurLoc);
+  return tok_error;
 }
 
 /// getToken - Return the next token from standard input.
@@ -719,34 +899,11 @@ static int getToken() {
     LexerLastChar = advance(); // eat opening quote
     while (LexerLastChar != '"' && LexerLastChar != EOF &&
            LexerLastChar != '\n') {
-      if (LexerLastChar == '\\') {
-        LexerLastChar = advance();
-        switch (LexerLastChar) {
-        case '\\':
-          StringLiteralStr.push_back('\\');
-          break;
-        case '"':
-          StringLiteralStr.push_back('"');
-          break;
-        case 'n':
-          StringLiteralStr.push_back('\n');
-          break;
-        case 't':
-          StringLiteralStr.push_back('\t');
-          break;
-        case '0':
-          StringLiteralStr.push_back('\0');
-          break;
-        default:
-          fprintf(stderr, "Error (Line %d, Column %d): invalid string escape\n",
-                  CurLoc.Line, CurLoc.Col);
-          PrintErrorSourceContext(CurLoc);
-          return tok_error;
-        }
-      } else {
-        StringLiteralStr.push_back(static_cast<char>(LexerLastChar));
-      }
-      LexerLastChar = advance();
+      uint32_t Value = 0;
+      LiteralDecodeError Error = DecodeLiteralCodePoint(Value);
+      if (Error != LiteralDecodeError::None)
+        return LogLiteralDecodeError(Error, "string");
+      AppendUtf8(StringLiteralStr, Value);
     }
 
     if (LexerLastChar != '"') {
@@ -771,36 +928,9 @@ static int getToken() {
     }
 
     uint32_t Value = 0;
-    if (LexerLastChar == '\\') {
-      LexerLastChar = advance();
-      switch (LexerLastChar) {
-      case '\\':
-        Value = '\\';
-        break;
-      case '\'':
-        Value = '\'';
-        break;
-      case 'n':
-        Value = '\n';
-        break;
-      case 't':
-        Value = '\t';
-        break;
-      case '0':
-        Value = '\0';
-        break;
-      default:
-        fprintf(stderr,
-                "Error (Line %d, Column %d): invalid character escape\n",
-                CurLoc.Line, CurLoc.Col);
-        PrintErrorSourceContext(CurLoc);
-        return tok_error;
-      }
-    } else {
-      Value = static_cast<unsigned char>(LexerLastChar);
-    }
-
-    LexerLastChar = advance();
+    LiteralDecodeError Error = DecodeLiteralCodePoint(Value);
+    if (Error != LiteralDecodeError::None)
+      return LogLiteralDecodeError(Error, "character");
     if (LexerLastChar != '\'') {
       fprintf(stderr,
               "Error (Line %d, Column %d): unterminated character literal\n",
@@ -2032,8 +2162,6 @@ static bool ParseTypeAliasDefinition();
 static const char *TypeName(ValueType Type);
 static bool IsNumericType(ValueType Type);
 static bool IsIntType(ValueType Type);
-static bool IsUnsignedIntType(ValueType Type);
-static bool IsSignedIntType(ValueType Type);
 static bool IsFloatType(ValueType Type);
 static bool IsAssignable(ValueType Dest, ValueType Src);
 static Type *LLVMTypeFor(ValueType Type, const string &StructName = "");
@@ -2114,9 +2242,8 @@ static unique_ptr<ExpressionNode> ParseNumberExpression() {
     unsigned ParseBits = std::max(Bits, NeededBits);
     APInt Val(ParseBits, NumberLiteral, 10);
 
-    // Reject if the literal doesn't fit in the target width.
-    APInt Max = IsUnsignedIntType(Type) ? APInt::getAllOnes(Bits)
-                                        : APInt::getSignedMaxValue(Bits);
+    // Reject if the literal doesn't fit in the target signed width.
+    APInt Max = APInt::getSignedMaxValue(Bits);
     if (Val.ugt(Max))
       return LogErrorExpression("Integer literal out of range for type");
 
@@ -2138,8 +2265,7 @@ static unique_ptr<ExpressionNode> ParseCharExpression() {
   if (IsIntType(ExpectedLiteralType))
     Type = ExpectedLiteralType;
   unsigned Bits = LLVMTypeFor(Type)->getIntegerBitWidth();
-  APInt Max = IsUnsignedIntType(Type) ? APInt::getAllOnes(Bits)
-                                      : APInt::getSignedMaxValue(Bits);
+  APInt Max = APInt::getSignedMaxValue(Bits);
   APInt Val(std::max(1u, Bits), CharLiteralValue, false);
   if (Val.ugt(Max))
     return LogErrorExpression("Character literal out of range for type");
@@ -2223,22 +2349,6 @@ static ValueType ParseTypeToken(string *StructName) {
   case tok_int64:
     getNextToken();
     BaseType = ValueType::Int64;
-    break;
-  case tok_uint8:
-    getNextToken();
-    BaseType = ValueType::UInt8;
-    break;
-  case tok_uint16:
-    getNextToken();
-    BaseType = ValueType::UInt16;
-    break;
-  case tok_uint32:
-    getNextToken();
-    BaseType = ValueType::UInt32;
-    break;
-  case tok_uint64:
-    getNextToken();
-    BaseType = ValueType::UInt64;
     break;
   case tok_float:
     getNextToken();
@@ -3331,7 +3441,6 @@ static unique_ptr<ExpressionNode>
 ParseUnary(); // forward declaration for ParseUnaryMinus
 
 static bool IsIntType(ValueType Type);
-static bool IsUnsignedIntType(ValueType Type);
 static bool IsFloatType(ValueType Type);
 static bool IsNumericType(ValueType Type);
 
@@ -3339,8 +3448,6 @@ static bool CanWidenInt(ValueType From, ValueType To) {
   if (From == To)
     return true;
   if (IsIntType(From) && IsIntType(To)) {
-    if (IsUnsignedIntType(From) != IsUnsignedIntType(To))
-      return false;
     unsigned FromBits = LLVMTypeFor(From)->getIntegerBitWidth();
     unsigned ToBits = LLVMTypeFor(To)->getIntegerBitWidth();
     return FromBits <= ToBits;
@@ -3548,10 +3655,6 @@ static unique_ptr<ExpressionNode> ParsePrimary() {
   case tok_int16:
   case tok_int32:
   case tok_int64:
-  case tok_uint8:
-  case tok_uint16:
-  case tok_uint32:
-  case tok_uint64:
   case tok_float:
   case tok_float32:
   case tok_float64:
@@ -5269,14 +5372,6 @@ static const char *TypeName(ValueType Type) {
     return "int32";
   case ValueType::Int64:
     return "int64";
-  case ValueType::UInt8:
-    return "uint8";
-  case ValueType::UInt16:
-    return "uint16";
-  case ValueType::UInt32:
-    return "uint32";
-  case ValueType::UInt64:
-    return "uint64";
   case ValueType::Float:
     return "float";
   case ValueType::Float32:
@@ -5380,18 +5475,7 @@ static bool ParseUnsignedDecimal(const string &Text, uint64_t &Out) {
 static bool IsIntType(ValueType Type) {
   return Type == ValueType::Int8 || Type == ValueType::Int16 ||
          Type == ValueType::Int32 || Type == ValueType::Int ||
-         Type == ValueType::Int64 || Type == ValueType::UInt8 ||
-         Type == ValueType::UInt16 || Type == ValueType::UInt32 ||
-         Type == ValueType::UInt64;
-}
-
-static bool IsUnsignedIntType(ValueType Type) {
-  return Type == ValueType::UInt8 || Type == ValueType::UInt16 ||
-         Type == ValueType::UInt32 || Type == ValueType::UInt64;
-}
-
-static bool IsSignedIntType(ValueType Type) {
-  return IsIntType(Type) && !IsUnsignedIntType(Type);
+         Type == ValueType::Int64;
 }
 
 static bool IsFloatType(ValueType Type) {
@@ -5440,14 +5524,6 @@ static Type *LLVMTypeFor(ValueType Type, const string &StructName) {
   case ValueType::Int32:
     return Type::getInt32Ty(*TheContext);
   case ValueType::Int64:
-    return Type::getInt64Ty(*TheContext);
-  case ValueType::UInt8:
-    return Type::getInt8Ty(*TheContext);
-  case ValueType::UInt16:
-    return Type::getInt16Ty(*TheContext);
-  case ValueType::UInt32:
-    return Type::getInt32Ty(*TheContext);
-  case ValueType::UInt64:
     return Type::getInt64Ty(*TheContext);
   case ValueType::Float:
     return Type::getDoubleTy(*TheContext);
@@ -5587,24 +5663,16 @@ static Value *EmitCast(Value *V, ValueType From, ValueType To) {
     return V;
   // Integer ↔ float conversions.
   if (IsIntType(From) && IsFloatType(To))
-    return IsUnsignedIntType(From)
-               ? Builder->CreateUIToFP(V, LLVMTypeFor(To), "uitofp")
-               : Builder->CreateSIToFP(V, LLVMTypeFor(To), "sitofp");
+    return Builder->CreateSIToFP(V, LLVMTypeFor(To), "sitofp");
   if (IsFloatType(From) && IsIntType(To))
-    return IsUnsignedIntType(To)
-               ? Builder->CreateFPToUI(V, LLVMTypeFor(To), "fptoui")
-               : Builder->CreateFPToSI(V, LLVMTypeFor(To), "fptosi");
+    return Builder->CreateFPToSI(V, LLVMTypeFor(To), "fptosi");
   // Integer resize (trunc or sign-extend).
   if (IsIntType(From) && IsIntType(To)) {
     unsigned FromBits = LLVMTypeFor(From)->getIntegerBitWidth();
     unsigned ToBits = LLVMTypeFor(To)->getIntegerBitWidth();
-    if (FromBits == ToBits)
-      return V;
     if (ToBits < FromBits)
       return Builder->CreateTrunc(V, LLVMTypeFor(To), "trunc");
-    return IsUnsignedIntType(From)
-               ? Builder->CreateZExt(V, LLVMTypeFor(To), "zext")
-               : Builder->CreateSExt(V, LLVMTypeFor(To), "sext");
+    return Builder->CreateSExt(V, LLVMTypeFor(To), "sext");
   }
   // Float resize.
   if (IsFloatType(From) && IsFloatType(To)) {
@@ -5644,14 +5712,10 @@ static Value *EmitImplicitCast(Value *V, ValueType From, ValueType To) {
     unsigned ToBits = LLVMTypeFor(To)->getIntegerBitWidth();
     if (FromBits == ToBits)
       return V;
-    return IsUnsignedIntType(From)
-               ? Builder->CreateZExt(V, LLVMTypeFor(To), "zext")
-               : Builder->CreateSExt(V, LLVMTypeFor(To), "sext");
+    return Builder->CreateSExt(V, LLVMTypeFor(To), "sext");
   }
   if (IsIntType(From) && IsFloatType(To))
-    return IsUnsignedIntType(From)
-               ? Builder->CreateUIToFP(V, LLVMTypeFor(To), "uitofp")
-               : Builder->CreateSIToFP(V, LLVMTypeFor(To), "sitofp");
+    return Builder->CreateSIToFP(V, LLVMTypeFor(To), "sitofp");
   return nullptr;
 }
 
@@ -6218,10 +6282,8 @@ static Value *EmitBuiltInArithmetic(int Operator, Value *L, ValueType LType,
   if (Operator == tok_star)
     return Builder->CreateMul(L, R, "multmp");
   if (Operator == tok_slash)
-    return IsUnsignedIntType(ResultType) ? Builder->CreateUDiv(L, R, "divtmp")
-                                         : Builder->CreateSDiv(L, R, "divtmp");
-  return IsUnsignedIntType(ResultType) ? Builder->CreateURem(L, R, "modtmp")
-                                       : Builder->CreateSRem(L, R, "modtmp");
+    return Builder->CreateSDiv(L, R, "divtmp");
+  return Builder->CreateSRem(L, R, "modtmp");
 }
 
 Value *IndexExpressionNode::codegen() {
@@ -6602,8 +6664,7 @@ Value *BinaryExpressionNode::codegen() {
       return LogErrorV("Type mismatch in binary operator");
     if (Operator == tok_shl)
       return Builder->CreateShl(L, R, "shltmp");
-    return IsUnsignedIntType(Ty) ? Builder->CreateLShr(L, R, "shrtmp")
-                                 : Builder->CreateAShr(L, R, "shrtmp");
+    return Builder->CreateAShr(L, R, "shrtmp");
   }
   case tok_less:
   case tok_greater:
@@ -6688,25 +6749,17 @@ Value *BinaryExpressionNode::codegen() {
     } else {
       switch (Operator) {
       case tok_less:
-        return IsUnsignedIntType(CompareType)
-                   ? Builder->CreateICmpULT(L, R, "cmptmp")
-                   : Builder->CreateICmpSLT(L, R, "cmptmp");
+        return Builder->CreateICmpSLT(L, R, "cmptmp");
       case tok_greater:
-        return IsUnsignedIntType(CompareType)
-                   ? Builder->CreateICmpUGT(L, R, "cmptmp")
-                   : Builder->CreateICmpSGT(L, R, "cmptmp");
+        return Builder->CreateICmpSGT(L, R, "cmptmp");
       case tok_eq:
         return Builder->CreateICmpEQ(L, R, "cmptmp");
       case tok_neq:
         return Builder->CreateICmpNE(L, R, "cmptmp");
       case tok_leq:
-        return IsUnsignedIntType(CompareType)
-                   ? Builder->CreateICmpULE(L, R, "cmptmp")
-                   : Builder->CreateICmpSLE(L, R, "cmptmp");
+        return Builder->CreateICmpSLE(L, R, "cmptmp");
       case tok_geq:
-        return IsUnsignedIntType(CompareType)
-                   ? Builder->CreateICmpUGE(L, R, "cmptmp")
-                   : Builder->CreateICmpSGE(L, R, "cmptmp");
+        return Builder->CreateICmpSGE(L, R, "cmptmp");
       default:
         break;
       }

@@ -1,11 +1,11 @@
 ---
 description: "Add impl blocks: implement a trait for an existing class after the class definition, separating the class layout from its trait conformance."
 ---
-# 30. pyxc: impl Blocks
+# 30. pyxc: `impl` Blocks
 
-## Where We Are
+## What I Am Building
 
-[Chapter 29](chapter-29.md) added traits. A class declares the traits it implements in its header, and the compiler verifies conformance when the class body closes. That works well when you write both the trait and the class together, but what if you want to implement a standard trait on a class that was already written?
+[Chapter 29](chapter-29.md) added traits. A class declares the traits it implements in its own header, and the compiler verifies conformance when the class body closes. That works well when I write the trait and the class together, but what if I want to implement a trait on a class that was already written, without touching its definition?
 
 After this chapter, trait conformance can be declared outside the class body entirely:
 
@@ -30,7 +30,7 @@ def main() -> int:
   return 0
 ```
 
-```
+```text
 12.000000
 ```
 
@@ -45,26 +45,13 @@ cd pyxc-llvm-tutorial/code/chapter-30
 
 ## Grammar
 
-This chapter adds one new production and extends `top`.
-
-```ebnf
-top       = typealias | traitdef | structdef | classdef | impldef | definition | ...  -- changed
-impldef   = "impl" identifier "for" identifier ":" eols implblock ;  -- new
-implblock = indent implmethod { eols implmethod } dedent ;           -- new
-implmethod = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ":" ( simplestmt | eols block ) ;  -- new
-```
-
-`implmethod` has a full body, unlike `traitmethodsig`. Methods in an `impl` block are fully defined here.
-
-### Grammar
-
-`code/chapter-30/pyxc.ebnf`
+One new production, `implementation-definition`, plus its own block and method productions. `implementation-method` has a full body, unlike `trait-method-signature`; methods in an `impl` block are fully defined right there:
 
 ```grammardiff
  program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
  end-of-lines            = end-of-line { end-of-line } ;
--top-level-item             = type-alias | trait-definition | struct-definition | class-definition | function-definition | decorated-function-definition | external | top-level-expression ;
-+top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | decorated-function-definition | external | top-level-expression ;
+-top-level-item             = type-alias | trait-definition | struct-definition | class-definition | function-definition | external | top-level-expression ;
++top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | external | top-level-expression ;
  type-alias       = "type" name "=" type ;
  trait-definition        = "trait" name ":" end-of-lines trait-block ;
  trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
@@ -82,12 +69,6 @@ implmethod = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" t
  field-declaration       = name ":" type ;
  function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
  (* If the return type is omitted, it defaults to None. *)
- decorated-function-definition    = binary-decorator end-of-lines "def" binary-operator-signature [ "->" type ] ":" ( simple-statement | end-of-lines block )
-                 | unary-decorator  end-of-lines "def" unary-operator-signature  [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- binary-decorator = "@" "binary" "(" integer ")" ;
- unary-decorator  = "@" "unary" ;
- binary-operator-signature = custom-operator-character "(" typed-parameter "," typed-parameter ")" ;
- unary-operator-signature  = custom-operator-character "(" typed-parameter ")" ;
  external        = "extern" "def" function-signature [ "->" type ] ;
  top-level-expression    = expression ;
  function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
@@ -106,12 +87,14 @@ implmethod = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" t
  return-statement      = "return" [ expression ] ;
  statement-separator = end-of-lines | BLOCK_END ;
  block = indent statement { statement-separator statement } dedent ;
- expression      = unary-expression binary-operator-right ;
- binary-operator-right        = { binary-operator unary-expression } ;
+ expression      = comparison ;
+ comparison      = sum { comparison-operator sum } ;
+ comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ sum             = term { ("+" | "-") term } ;
+ term            = unary-expression { ("*" | "/") unary-expression } ;
  lvalue          = name | field-access | index-expression ;
  variable-binding      = name ":" type [ "=" expression ] ;
- unary-expression       = unary-operator unary-expression | primary ;
- unary-operator         = "-" | user-defined-unary-operator ;
+ unary-expression       = "-" unary-expression | primary ;
  primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
  cast-expression        = cast-type "(" expression ")" ;
  sizeof-expression      = "sizeof" "(" type ")" ;
@@ -127,16 +110,9 @@ implmethod = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" t
  string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
  escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
  parenthesized-expression       = "(" expression ")" ;
- binary-operator        = builtin-binary-operator | user-defined-binary-operator ;
  indent          = INDENT ;
  dedent          = DEDENT ;
-
- builtin-binary-operator = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
- user-defined-binary-operator = ? any operator-character defined as a custom binary operator ? ;
- user-defined-unary-operator  = ? any operator-character defined as a custom unary operator ? ;
- custom-operator-character    = ? any operator-character that is not "-" or a builtin-binary-operator,
-                     and not already defined as a custom operator ? ;
- operator-character          = ? any single ASCII punctuation character ? ;
+ 
  name      = (letter | "_") { letter | digit | "_" } ;
  builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
                  | "float" | "float32" | "float64"
@@ -163,7 +139,7 @@ implmethod = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" t
  whitespace = " " | "\t" | "\v" | "\f" ;
  INDENT          = ? synthetic token emitted by lexer ? ;
  DEDENT          = ? synthetic token emitted by lexer ? ;
-
+ 
  BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
@@ -173,53 +149,56 @@ implmethod = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" t
 tok_impl = -44,
 ```
 
-Registered in the keyword table:
+Registered in the keyword table like every other keyword. The `for` in `impl TraitName for ClassName` reuses the existing `tok_for` token, the same one `for` loop statements produce. There's no ambiguity: `impl` always precedes it, and the parser already knows it's reading an impl header at that point, not a loop.
 
-```cpp
-{"impl", tok_impl}
-```
+## Pulling Trait Conformance Checking Out into Its Own Function
 
-The `for` in `impl TraitName for ClassName` reuses the existing `tok_for` token — the same token produced by the `for` keyword in loop statements. There is no ambiguity because `impl` always precedes it and the parser knows it is reading an impl header, not a loop.
-
-## `VerifyTraitConformance` Extracted as a Shared Function
-
-In chapter 28, the conformance check was inlined inside `ParseAggregateDefinition`. This chapter extracts it into a standalone function so both `ParseAggregateDefinition` (end of class body) and `ParseImplDefinition` (end of impl body) can call it:
+In [Chapter 29](chapter-29.md), the conformance check was inlined at the end of `ParseAggregateDefinition`. This chapter pulls it out into a standalone function, `VerifyTraitConformance`, so both `ParseAggregateDefinition` (class body close) and the new `ParseImplDefinition` (impl body close) can call the same logic instead of duplicating it:
 
 ```cpp
 static bool VerifyTraitConformance(const string &ClassName,
                                    const string &TraitName) {
   auto CI = StructTypes.find(ClassName);
-  // class must exist and be a class
+  if (CI == StructTypes.end() || !CI->second.IsClass) {
+    LogErrorExpression(("Unknown class '" + ClassName + "'").c_str());
+    return false;
+  }
+  if (!Traits.count(TraitName)) {
+    LogErrorExpression(("Unknown trait '" + TraitName + "'").c_str());
+    return false;
+  }
   const auto &TI = Traits.at(TraitName);
   const auto &ClassInfo = CI->second;
-
   for (const auto &Req : TI.Methods) {
-    // 1. Method must exist
-    auto PI = FunctionProtos.find(ClassName + "." + Req.Name);
-    if (PI == FunctionProtos.end()) {
+    auto PI = FunctionSignatures.find(ClassName + "." + Req.Name);
+    if (PI == FunctionSignatures.end()) {
       LogErrorExpression(("Class '" + ClassName + "' does not implement trait '" +
-                TraitName + "' method '" + Req.Name + "'").c_str());
+                TraitName + "' method '" + Req.Name + "'")
+                   .c_str());
       return false;
     }
-    // 2. Method must be public
     auto MI = ClassInfo.MethodIsPublic.find(Req.Name);
     if (MI == ClassInfo.MethodIsPublic.end() || !MI->second) {
       LogErrorExpression(("Trait method '" + Req.Name + "' on class '" + ClassName +
-                "' must be public").c_str());
+                "' must be public")
+                   .c_str());
       return false;
     }
-    // 3. Signature must match (self is at index 0; Req.Args starts at index 1)
-    PrototypeAST *P = PI->second.get();
-    if (P->getNumArgs() != Req.Args.size() + 1 ||
+    FunctionSignatureNode *P = PI->second.get();
+    if (P->getNumParameters() != Req.Arguments.size() + 1 ||
         P->getReturnType() != Req.ReturnType ||
         P->getReturnStructName() != Req.ReturnStructName) {
-      LogErrorExpression(...);
+      LogErrorExpression(("Method '" + Req.Name + "' on class '" + ClassName +
+                "' does not match trait signature")
+                   .c_str());
       return false;
     }
-    for (size_t I = 0; I < Req.Args.size(); ++I) {
-      if (P->getArgType(I + 1) != Req.Args[I].Type ||
-          P->getArgStructName(I + 1) != Req.Args[I].StructName) {
-        LogErrorExpression(...);
+    for (size_t I = 0; I < Req.Arguments.size(); ++I) {
+      if (P->getParameterType(I + 1) != Req.Arguments[I].Type ||
+          P->getParameterStructName(I + 1) != Req.Arguments[I].StructName) {
+        LogErrorExpression(("Method '" + Req.Name + "' on class '" + ClassName +
+                  "' does not match trait signature")
+                     .c_str());
         return false;
       }
     }
@@ -228,66 +207,75 @@ static bool VerifyTraitConformance(const string &ClassName,
 }
 ```
 
-`ParseAggregateDefinition` now calls `VerifyTraitConformance(StructName, TraitName)` at the closing DEDENT. The logic is identical to chapter 28 — it has just moved into its own function.
+The three checks per required method (exists, public, signature matches) are exactly what [Chapter 29](chapter-29.md) already did inline; only the two guards at the top — unknown class, unknown trait — are new, needed now that this function can be called from a context (`impl`) where neither name was already looked up by the caller. `ParseAggregateDefinition` calls `VerifyTraitConformance(StructName, TraitName)` at the class body's closing DEDENT, same as before, just through the extracted function now.
 
-## `ParseImplDefinition` — The impl Block Parser
+## The `impl` Block Parser
 
-`ParseImplDefinition` validates the header, parses and compiles the methods, then calls `VerifyTraitConformance`:
+`ParseImplDefinition` validates the header — trait exists, `for` follows, class exists and is actually a class, not a struct — parses and compiles each method, then checks conformance:
 
 ```cpp
 static bool ParseImplDefinition() {
+  // CurrentToken is 'impl'
   getNextToken(); // eat 'impl'
-
-  // 1. Validate trait name
-  string TraitName = IdentifierStr;
-  if (!Traits.count(TraitName)) {
-    LogErrorExpression(("Unknown trait '" + TraitName + "'").c_str());
-    return false;
-  }
+  if (CurrentToken != tok_name)
+    return LogErrorExpression("Expected trait name after 'impl'"), false;
+  string TraitName = Name;
+  if (!Traits.count(TraitName))
+    return LogErrorExpression(("Unknown trait '" + TraitName + "'").c_str()), false;
   getNextToken(); // eat trait name
-
-  // 2. Expect 'for' (reuses tok_for)
-  if (CurTok != tok_for) {
-    LogErrorExpression("Expected 'for' in impl definition");
-    return false;
-  }
+  if (CurrentToken != tok_for)
+    return LogErrorExpression("Expected 'for' in impl definition"), false;
   getNextToken(); // eat 'for'
-
-  // 3. Validate class name — must exist and be a class, not a struct
-  string ClassName = IdentifierStr;
+  if (CurrentToken != tok_name)
+    return LogErrorExpression("Expected class name after 'for'"), false;
+  string ClassName = Name;
   auto CI = StructTypes.find(ClassName);
-  if (CI == StructTypes.end()) {
-    LogErrorExpression(("Unknown class '" + ClassName + "'").c_str());
-    return false;
-  }
-  if (!CI->second.IsClass) {
-    LogErrorExpression(("'" + ClassName +
-              "' is a struct, not a class; traits can only be implemented "
-              "on classes").c_str());
-    return false;
-  }
+  if (CI == StructTypes.end())
+    return LogErrorExpression(("Unknown class '" + ClassName + "'").c_str()), false;
+  if (!CI->second.IsClass)
+    return LogErrorExpression(("'" + ClassName +
+              "' is a struct, not a class; traits can only be implemented on "
+              "classes").c_str()), false;
   getNextToken(); // eat class name
+  if (CurrentToken != tok_colon)
+    return LogErrorExpression("Expected ':' in impl definition"), false;
+  getNextToken(); // eat ':'
+  if (CurrentToken == tok_eol)
+    consumeNewlines();
+  if (CurrentToken != tok_indent)
+    return LogErrorExpression("Expected an indented impl body"), false;
+  getNextToken(); // eat INDENT
 
-  // 4. Reject duplicate impl for the same trait/class pair
   if (std::find(CI->second.ImplementedTraits.begin(),
-                CI->second.ImplementedTraits.end(), TraitName)
-      != CI->second.ImplementedTraits.end()) {
-    LogErrorExpression(("Trait '" + TraitName + "' is already implemented for class '"
-              + ClassName + "'").c_str());
-    return false;
-  }
+                CI->second.ImplementedTraits.end(),
+                TraitName) != CI->second.ImplementedTraits.end())
+    return LogErrorExpression(("Trait '" + TraitName + "' is already implemented for class '" +
+              ClassName + "'").c_str()), false;
 
-  // ... eat ':', eat EOL, expect INDENT ...
-
-  // 5. Parse and compile each method body
-  while (CurTok != tok_dedent && ...) {
+  while (CurrentToken != tok_dedent && CurrentToken != tok_block_end && CurrentToken != tok_eof) {
+    if (CurrentToken == tok_eol) {
+      consumeNewlines();
+      continue;
+    }
+    if (CurrentToken != tok_def)
+      return LogErrorExpression("Expected method definition in impl body"), false;
     auto FnAST = ParseMethodDefinitionInClass(ClassName, /*IsPublic=*/true);
-    if (auto *FnIR = FnAST->codegen()) { /* optionally dump IR */ }
+    if (!FnAST)
+      return false;
+    if (auto *FnIR = FnAST->codegen()) {
+      if (ShouldDumpIR())
+        FnIR->print(errs());
+    }
+    if (CurrentToken == tok_eol)
+      consumeNewlines();
+    else if (CurrentToken == tok_block_end)
+      getNextToken();
   }
+  if (CurrentToken != tok_dedent)
+    return LogErrorExpression("Expected dedent after impl body"), false;
+  PendingTokens.push_front(tok_block_end);
+  getNextToken(); // eat DEDENT, then surface tok_block_end
 
-  // eat DEDENT, inject tok_block_end
-
-  // 6. Record conformance and verify
   CI->second.ImplementedTraits.push_back(TraitName);
   if (!VerifyTraitConformance(ClassName, TraitName))
     return false;
@@ -295,27 +283,27 @@ static bool ParseImplDefinition() {
 }
 ```
 
-All methods in an `impl` block are forced public (`IsPublic=true`). Satisfying a trait contract is a public commitment — private trait methods are caught by `VerifyTraitConformance`'s public check.
+The duplicate-`impl` check runs after the header is fully parsed and the body's `INDENT` consumed, not before — so a second `impl Adder for Calc:` reports its error from inside the body (at the first `def`), not at the header line itself. I confirmed this rather than assume it: compiling two `impl Adder for Calc:` blocks back to back reports the error on the line of the second block's first method, not its `impl` line.
 
-`HandleImplDef` calls `ParseImplDefinition` with the same error-recovery pattern used by `HandleStructDef` and `HandleClassDef`, and both `MainLoop` and `FileModeLoop` dispatch on `tok_impl`.
+Every method parsed here goes through `ParseMethodDefinitionInClass` with `IsPublic` hardcoded to `true`. Satisfying a trait is a public commitment; there's no such thing as a private trait method, so `impl` doesn't offer a visibility modifier to write one. A method that's private in spirit would just fail `VerifyTraitConformance`'s public check anyway, so forcing `true` here just skips straight to the outcome that check would have produced.
+
+`HandleImplDef` calls `ParseImplDefinition` with the same error-recovery pattern `HandleStructDef` and `HandleClassDef` already use, and `tok_impl` is wired into the dispatch switch in both `MainLoop` and `FileModeLoop`.
 
 ## Methods Defined in `impl` Are Regular Methods
 
-There is no runtime distinction between a method defined in the class body and one defined in an `impl` block. Both are stored in `FunctionProtos` under the mangled name `ClassName.MethodName` and emitted as `@ClassName.MethodName` in the IR. A caller cannot tell where the method was defined.
+There's no runtime distinction between a method defined in the class body and one defined in an `impl` block. Both land in `FunctionSignatures` under the same mangled name, `ClassName.MethodName`, and are emitted as `@ClassName.MethodName` in the IR. A caller has no way to tell where the method was defined, and doesn't need to.
 
-## Things Worth Knowing
+## Known Limitations
 
-**The trait must be defined before the `impl`.** `impl Adder for Calc:` requires that `Adder` is already in scope.
+**The trait must already exist.** `impl Adder for Calc:` requires `Adder` to already be registered in `Traits` at the point the `impl` block is parsed.
 
-**The class must be defined before the `impl`.** The class name is looked up in `StructTypes` at parse time.
+**The class must already exist, and must be a class.** The name is looked up in `StructTypes` at parse time; a struct gives `'S' is a struct, not a class; traits can only be implemented on classes`.
 
-**Implementing a trait on a struct is rejected.** The `IsClass` flag is checked — a struct gives: `'S' is a struct, not a class; traits can only be implemented on classes`.
-
-**`impl` cannot be used twice for the same trait/class pair.** A second `impl Adder for Calc:` is rejected: "Trait 'Adder' is already implemented for class 'Calc'".
+**`impl` cannot be used twice for the same trait/class pair.** A second `impl Adder for Calc:` is rejected: `Trait 'Adder' is already implemented for class 'Calc'`.
 
 ## What's Next
 
-[Chapter 31](chapter-31.md) adds type parameters to traits — `trait Addable[T]:` — so the same contract can be expressed for different element types.
+[Chapter 31](chapter-31.md) adds type parameters to traits: `trait Addable[T]:`, so the same contract can be expressed for different element types.
 
 ## Need Help?
 
@@ -329,4 +317,4 @@ Include:
 - Full error message
 - Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
-We'll figure it out.
+I'll help you figure it out.

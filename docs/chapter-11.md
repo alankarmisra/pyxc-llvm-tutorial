@@ -3,18 +3,29 @@ description: "Add mutable local variables and assignment using a temporary var .
 ---
 # 11. pyxc: Mutable Variables
 
-## Where We Are
+## What I Am Building
 
-[Chapter 10](chapter-10.md) treated every variable as read-only. Function parameters were read-only. `for` loops introduced variables, and could  update them internally. However, you, the mighty programmer, couldn't create your own local variables and update them. That changes now. This chapter adds two things:
-
-- `var` — creates a new variable I can modify
-- `=` — updates existing variables
-
-Nothing you aren't already familiar with. But the way LLVM handles this internally is super interesting. 
+[Chapter 10](chapter-10.md) treated every variable as read-only. Function parameters were read-only. `for` loops introduced a variable and could update it internally, but I had no way to declare my own local variable and change it:
 
 <!-- code-merge:start -->
 ```pyxc
-ready> def bump(n): return var x = n: x = x + 1
+ready> def bump(n): var x = n: x = x + 1
+```
+```bash
+Error (Line 1, Column 18): Unexpected name 'x'
+def bump(n): var x 
+                 ^~~~
+```
+<!-- code-merge:end -->
+
+I add two things:
+
+- `var` — creates a new variable I can modify
+- `=` — updates an existing variable
+
+<!-- code-merge:start -->
+```pyxc
+ready> def bump(n): var x = n: x = x + 1
 ```
 ```bash
 Parsed a function definition.
@@ -28,9 +39,7 @@ Evaluated to 6.000000
 ```
 <!-- code-merge:end -->
 
-**A note on style:** The examples look clunky. `var x = n: x = x + 1` isn't code I'd write if I had any self-respect. That's intentional. Pyxc still only supports single expression bodies: everything after `:` must be a single expression. Multi-step mutation feels forced because it *is* forced.
-
-I'm keeping it this way because this chapter isn't about syntax. It's about what happens underneath. The next chapter replaces expression bodies with real statement blocks. There, the same machinery will look natural.
+**A note on style:** `var x = n: x = x + 1` isn't code I'd choose to write. Pyxc still only supports single-expression bodies — everything after `:` has to be one expression — so multi-step mutation feels forced because it *is* forced right now. This chapter isn't about that syntax; it's about what happens underneath it. [Chapter 12](chapter-12.md) replaces expression bodies with real statement blocks, and the same machinery starts looking natural:
 
 ```pyxc
 var x = n
@@ -46,76 +55,43 @@ cd pyxc-llvm-tutorial/code/chapter-11
 ```
 
 ## Grammar
-Two new productions:
 
-```ebnf
-expression      = varexpr | identifier "=" expression | unaryexpr binoprhs ;
-varexpr         = "var" varbinding { "," varbinding } ":" [ eols ] expression ;
-varbinding      = identifier [ "=" expression ] ;
-```
+I add `varexpr` as a second alternative for `expression`, and give `comparison` an optional `"=" expression` tail. `forexpr` gains an optional leading `"var"`:
 
-Assignment requires a destination — somewhere in memory to write a value to. Using the two sides of `=`, I'll make up a couple of terms:
-```
-lvalue = rvalue
-```
-**lvalue** — a memory location (like a variable)
-**rvalue** — a value (like 5, x, x + y, or a function result)
-
-If you're thinking, `x` could be an `lvalue` or an `rvalue`, you're right. The parser will treat the left as a memory destination to put the value into, and the right is be where you read the value from. 
-
-`=` has the lowest precedence of any operator. `a + b = c` parses as `(a + b) = c`, which fails because `a + b` isn't a valid *lvalue*. The parser enforces that the left side of = must be a plain variable name.
-
-`var` introduces one or more mutable locals and evaluates to the body's value. Later bindings can reference earlier ones:
-
-```pyxc
-var x = 1, y = x + 1: y   # evaluates to 2
-```
-
-### Grammar
-[pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-11/pyxc.ebnf)
+`code/chapter-11/pyxc.ebnf`
 
 ```grammardiff
  program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
  end-of-lines            = end-of-line { end-of-line } ;
--top-level-item             = function-definition | external | top-level-expression ;
-+top-level-item             = function-definition | decorated-function-definition | external | top-level-expression ;
+ top-level-item             = function-definition | external | top-level-expression ;
  function-definition      = "def" function-signature ":" [ end-of-lines ] expression ;
-+decorated-function-definition    = binary-decorator end-of-lines "def" binary-operator-signature ":" [ end-of-lines ] expression
-+                | unary-decorator  end-of-lines "def" unary-operator-signature  ":" [ end-of-lines ] expression ;
-+binary-decorator = "@" "binary" "(" integer ")" ;
-+unary-decorator  = "@" "unary" ;
-+binary-operator-signature = custom-operator-character "(" name "," name ")" ;
-+unary-operator-signature  = custom-operator-character "(" name ")" ;
  external        = "extern" "def" function-signature ;
  top-level-expression    = expression ;
- function-signature       = name "(" [ name { "," name } ] ")" ;
+ function-signature       = name "(" [ parameters ] ")" ;
+ parameters               = parameter { "," parameter } ;
+ parameter                = name ;
  ifexpr          = "if" expression ":" [ end-of-lines ] expression [ end-of-lines ] "else" ":" [ end-of-lines ] expression ;
 -forexpr         = "for" name "=" expression "," expression "," expression ":" [ end-of-lines ] expression ;
--expression      = unary-expression binary-operator-right ;
+-expression               = comparison ;
 +forexpr         = "for" [ "var" ] name "=" expression "," expression "," expression ":" [ end-of-lines ] expression ;
-+expression      = varexpr | name "=" expression | unary-expression binary-operator-right ;
- binary-operator-right        = { binary-operator unary-expression } ;
--unary-expression       = "-" unary-expression | primary ;
++expression      = varexpr | comparison [ "=" expression ] ;
 +varexpr         = "var" variable-binding { "," variable-binding } ":" [ end-of-lines ] expression ;
 +variable-binding      = name [ "=" expression ] ;
-+unary-expression       = unary-operator unary-expression | primary ;
-+unary-operator         = "-" | user-defined-unary-operator ;
+ comparison               = sum { comparison-operator sum } ;
+ comparison-operator      = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ sum                      = term { ("+" | "-") term } ;
+ term                     = unary-expression { ("*" | "/") unary-expression } ;
+ unary-expression       = "-" unary-expression | primary ;
  primary         = name-expression | number-expression | parenthesized-expression
                  | ifexpr | forexpr ;
  name-expression  = name | call-expression ;
- call-expression        = name "(" [ expression { "," expression } ] ")" ;
+-call-expression         = name "(" [ arguments ] ")" ;
+-arguments               = expression { "," expression } ;
++call-expression        = name "(" [ arguments ] ")" ;
++arguments              = expression { "," expression } ;
  number-expression      = number ;
  parenthesized-expression       = "(" expression ")" ;
--binary-operator = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
-+binary-operator        = builtin-binary-operator | user-defined-binary-operator ;
-+builtin-binary-operator = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
-+user-defined-binary-operator = ? any operator-character defined as a custom binary operator ? ;
-+user-defined-unary-operator  = ? any operator-character defined as a custom unary operator ? ;
-+custom-operator-character    = ? any operator-character that is not "-" or a builtin-binary-operator,
-+                    and not already defined as a custom operator ? ;
-+operator-character          = ? any single ASCII punctuation character ? ;
  name      = (letter | "_") { letter | digit | "_" } ;
-+integer         = digit { digit } ;
  number          = digit { digit } [ "." { digit } ]
                  | "." digit { digit } ;
  letter          = "A".."Z" | "a".."z" ;
@@ -126,6 +102,21 @@ var x = 1, y = x + 1: y   # evaluates to 2
  whitespace = " " | "\t" | "\v" | "\f" ;
 ```
 
+Assignment needs a destination — somewhere in memory to write a value to. Using the two sides of `=`, I'll borrow a couple of terms:
+
+```
+lvalue = rvalue
+```
+
+**lvalue** — a memory location (like a variable). **rvalue** — a value (like `5`, `x`, `x + y`, or a function result).
+
+`x` could be either, depending on which side of `=` it's on: the left side names a destination to write into, the right side is read to produce the value being written. `=` sits at the loosest level in the grammar — it's not part of `comparison`, `sum`, or `term`, it's a tail on the whole `expression` production — so `a + b = c` parses as `(a + b) = c`. That fails, because `a + b` isn't a variable name, and the parser only accepts a plain name as the left side of `=`.
+
+`var` introduces one or more mutable locals and evaluates to the body's value. Later bindings can see earlier ones:
+
+```pyxc
+var x = 1, y = x + 1: y   # evaluates to 2
+```
 
 ## New Token and AST Nodes
 
@@ -138,119 +129,139 @@ tok_var = -18,
 Added to the keyword table like every other reserved word:
 
 ```cpp
-{"binary", tok_binary}, {"unary", tok_unary}, {"var", tok_var}
+{"if", tok_if}, {"else", tok_else}, {"for", tok_for}, {"var", tok_var}
 ```
 
 Two new AST nodes do the real work.
 
-`AssignmentExprAST` represents `x = x + 1`. It stores the destination name (the **lvalue**) and the right-hand side expression (the **rvalue**):
+`AssignmentExpressionNode` represents `x = x + 1`. It stores the destination name (the **lvalue**) and the right-hand side expression (the **rvalue**):
 
 ```cpp
-class AssignmentExprAST : public ExprAST {
-  string Name; // lvalue
-  unique_ptr<ExprAST> Expr; // rvalue
+/// AssignmentExpressionNode - Expression class for assignment to an existing variable.
+/// The expression stores Expr into the named variable and produces the assigned
+/// value.
+class AssignmentExpressionNode : public ExpressionNode {
+  string Name;
+  unique_ptr<ExpressionNode> Expr;
 
 public:
-  AssignmentExprAST(const string &Name, unique_ptr<ExprAST> Expr)
+  AssignmentExpressionNode(const string &Name, unique_ptr<ExpressionNode> Expr)
       : Name(Name), Expr(std::move(Expr)) {}
   Value *codegen() override;
 };
 ```
 
-`VarExprAST` represents `var a = 1, b = 2: body`. It stores the list of bindings plus the body:
+`VarStatementNode` represents `var a = 1, b = 2: body`. It stores the list of bindings plus the body:
 
 ```cpp
-class VarExprAST : public ExprAST {
-  vector<pair<string, unique_ptr<ExprAST>>> VarNames;
-  unique_ptr<ExprAST> Body;
+/// VarExpressionNode - Expression class for mutable local variable bindings.
+///   var a = <init>, b = <init> : <body>
+/// Each binding allocates stack storage in the current function's entry block,
+/// stores its initializer, shadows any outer binding of the same name for the
+/// duration of the body, then restores the old binding afterward.
+class VarStatementNode : public ExpressionNode {
+  vector<pair<string, unique_ptr<ExpressionNode>>> VarNames;
+  unique_ptr<ExpressionNode> Body;
 
 public:
-  VarExprAST(vector<pair<string, unique_ptr<ExprAST>>> VarNames,
-             unique_ptr<ExprAST> Body)
+  VarStatementNode(vector<pair<string, unique_ptr<ExpressionNode>>> VarNames,
+             unique_ptr<ExpressionNode> Body)
       : VarNames(std::move(VarNames)), Body(std::move(Body)) {}
   Value *codegen() override;
 };
 ```
 
-## Parsing var
+`getLValueName` is a new virtual on `ExpressionNode` itself, defaulting to `nullptr`. Only a plain variable reference overrides it to return its own name — that's how the assignment parser below decides whether the left-hand side of `=` is a legal destination:
 
-`ParseVarExpr` reads four things in sequence: the `var` keyword, one or more `name [= initializer]` bindings, a mandatory `:`, and then the body expression.
+```cpp
+// getLValueName - If this node is a plain assignable variable, return its
+// name. Every other expression kind returns nullptr.
+virtual const string *getLValueName() const { return nullptr; }
+```
+
+## Parsing `var`
+
+`ParseVarStatement` reads four things in sequence: the `var` keyword, one or more `name [= initializer]` bindings, a mandatory `:`, and then the body expression.
 
 **Step 1: Eat `var` and prepare the binding list.**
 
 ```cpp
-static unique_ptr<ExprAST> ParseVarExpr() {
+static unique_ptr<ExpressionNode> ParseVarStatement() {
   getNextToken(); // eat 'var'
-  vector<pair<string, unique_ptr<ExprAST>>> VarNames;
+
+  vector<pair<string, unique_ptr<ExpressionNode>>> VarNames;
 ```
 
 **Step 2: Parse each binding — a name, then an optional initializer.**
 
 ```cpp
   while (true) {
-    if (CurTok != tok_identifier)
-      return LogErrorExpression("Expected identifier after 'var'");
+    if (CurrentToken != tok_name)
+      return LogErrorExpression("Expected name after 'var'");
 
-    string Name = IdentifierStr;
-    getNextToken(); // eat identifier
+    string ParsedName = Name;
+    getNextToken(); // eat name
 
-    unique_ptr<ExprAST> Init;
-    if (CurTok == '=') {
+    unique_ptr<ExpressionNode> Init;
+    if (CurrentToken == tok_equal) {
       getNextToken(); // eat '='
       Init = ParseExpression();
-      if (!Init) return nullptr;
+      if (!Init)
+        return nullptr;
     } else {
-      Init = make_unique<NumberExprAST>(0.0); // no initializer → default to 0.0
+      Init = make_unique<NumberExpressionNode>(0.0);
     }
 
-    VarNames.push_back({Name, std::move(Init)});
+    VarNames.push_back({ParsedName, std::move(Init)});
 ```
 
-If there is no `=`, the variable defaults to `0.0`. The binding always produces a value, so the code that follows never has to special-case an empty initializer.
+If there's no `=`, the variable defaults to `0.0`. The binding always produces a value, so what follows never has to special-case a missing initializer.
 
 **Step 3: `,` means another binding; anything else ends the list.**
 
 ```cpp
-    if (CurTok != ',') break;
-    getNextToken(); // eat ',' and loop for the next binding
+    if (CurrentToken != tok_comma)
+      break;
+    getNextToken(); // eat ','
   }
 ```
 
 **Step 4: Expect `:`, allow the body on the next line, parse the body.**
 
 ```cpp
-  if (CurTok != ':')
+  if (CurrentToken != tok_colon)
     return LogErrorExpression("Expected ':' after var bindings");
   getNextToken(); // eat ':'
 
-  consumeNewlines(); // body may start on the next line
+  consumeNewlines();
 
   auto Body = ParseExpression();
-  if (!Body) return nullptr;
+  if (!Body)
+    return nullptr;
 
-  return make_unique<VarExprAST>(std::move(VarNames), std::move(Body));
+  return make_unique<VarStatementNode>(std::move(VarNames), std::move(Body));
 }
 ```
 
-If the current token is `var`, `ParseExpression` routes to `ParseVarExpr` before attempting the usual binary-expression path:
+`ParseExpression` routes to `ParseVarStatement` before anything else, if the current token is `var`:
 
 ```cpp
-static unique_ptr<ExprAST> ParseExpression() {
-  if (CurTok == tok_var)
-    return ParseVarExpr();
+static unique_ptr<ExpressionNode> ParseExpression() {
+  if (CurrentToken == tok_var)
+    return ParseVarStatement();
 
-  auto LHS = ParseUnary();
+  auto Expr = ParseComparison();
   // ...
 }
 ```
 
 ## Parsing Assignment
 
-After `ParseBinOpRHS` returns, `ParseExpression` checks whether the next token is `=`. If not, the expression is returned as-is. If yes, the left-hand side must be a plain variable name — anything else is a parse error:
+Once `ParseComparison` returns — the same top-of-the-chain call chapter 9 already parses every expression through — `ParseExpression` checks whether `=` follows. If not, it hands back the expression unchanged. If so, the left-hand side has to be a plain variable name, or it's a parse error:
 
 ```cpp
-  if (CurTok != '=')
-    return Expr; // no assignment — return the binary expression
+  if (CurrentToken != tok_equal)
+    return Expr; // no assignment — return the expression as-is
 
   // The left-hand side must be a plain variable name (an lvalue).
   const string *AssignedName = Expr->getLValueName();
@@ -260,38 +271,49 @@ After `ParseBinOpRHS` returns, `ParseExpression` checks whether the next token i
   string Name = *AssignedName;
   getNextToken(); // eat '='
 
-  auto RHS = ParseExpression(); // right-recursive, so a = b = 1 parses as a = (b = 1)
-  if (!RHS) return nullptr;
+  auto Right = ParseExpression(); // right-recursive, so a = b = 1 parses as a = (b = 1)
+  if (!Right)
+    return nullptr;
 
-  return make_unique<AssignmentExprAST>(Name, std::move(RHS));
+  return make_unique<AssignmentExpressionNode>(Name, std::move(Right));
+}
 ```
 
 This makes assignment:
 
-- lower precedence than all binary operators — the entire left-hand binary expression is parsed before `=` is checked
-- right-associative — `a = b = 1` parses as `a = (b = 1)`
+- lower precedence than everything else — the entire left-hand expression is parsed before I even check for `=`
+- right-associative — `a = b = 1` parses as `a = (b = 1)`, since the right side recurses into `ParseExpression` rather than stopping at `ParseComparison`
 
-The parser enforces that the left-hand side is a plain variable name, not an arbitrary expression. `(1 + 2) = 3` is a parse error.
+```pyxc
+(1 + 2) = 3
+```
+```
+Error (Line 1, Column 9): Destination of '=' must be a variable
+(1 + 2) = 
+        ^~~~
+```
+
+`(1 + 2)` parses fine as an expression, but its `getLValueName()` returns `nullptr` — only a bare name overrides that — so the assignment is rejected before I ever look at the right-hand side.
 
 ## Memory Slots: From Values to Storage
 
-Until chapter 9, `NamedValues` mapped variable names directly to LLVM `Value*` — the incoming argument value, fixed at the point the function was called. That worked only because variables were immutable: a parameter name could always refer to the same value forever.
+Through chapter 10, `NamedValues` mapped variable names directly to LLVM `Value*` — the incoming argument value, fixed at the point the function was called. That worked only because variables were immutable: a parameter name could always refer to the same value forever.
 
 ```cpp
 // Before: the name maps directly to the incoming argument — fixed, immutable.
 NamedValues[Arg.getName()] = &Arg;
 ```
 
-Mutable variables break that model. Once `x` can be reassigned, the name `x` can no longer mean "this one fixed value". It has to mean "the place where the current value of `x` lives".
+Mutable variables break that model. Once `x` can be reassigned, the name `x` can't mean "this one fixed value" anymore. It has to mean "the place where the current value of `x` lives":
 
 ```cpp
 // After: the name maps to a memory slot that holds the current value.
 AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, Arg.getName()); // reserve a slot
-TheBuilder->CreateStore(&Arg, Alloca);          // copy the incoming value into it
+TheBuilder->CreateStore(&Arg, Alloca);       // copy the incoming value into it
 NamedValues[Arg.getName()] = Alloca;         // name now points to the slot, not the value
 ```
 
-So `NamedValues` changes from:
+So `NamedValues` changes type, from:
 
 ```cpp
 static map<string, Value *> NamedValues;
@@ -303,33 +325,27 @@ to:
 static map<string, AllocaInst *> NamedValues;
 ```
 
-Each variable name now maps to an `AllocaInst` — a memory slot in the current function's entry block. That is the entire core implementation change.
+Every variable name now maps to an `AllocaInst` — a memory slot in the current function's entry block. That's the entire core implementation change; everything else in this chapter follows from it.
 
-## CreateEntryBlockAlloca
-
-This helper creates the memory slots:
+## Creating the Memory Slots
 
 ```cpp
 /// CreateEntryBlockAlloca - Create a memory slot in the current function's
 /// entry block for a mutable variable.
 static AllocaInst *CreateEntryBlockAlloca(Function *TheFunction,
                                           const string &VarName) {
-  IRBuilder<> TmpB(
-      &TheFunction->getEntryBlock(),     // insert into the entry block
-      TheFunction->getEntryBlock().begin()); // at the very start, before any instructions
-  return TmpB.CreateAlloca(
-      Type::getDoubleTy(*TheContext), // type: a single double
-      nullptr,                        // no array size (scalar slot)
-      VarName);                       // name for the IR printout
+  IRBuilder<> TmpB(&TheFunction->getEntryBlock(),
+                   TheFunction->getEntryBlock().begin());
+  return TmpB.CreateAlloca(Type::getDoubleTy(*TheContext), nullptr, VarName);
 }
 ```
 
-A temporary `IRBuilder` (`TmpB`) is used instead of the main `TheBuilder` because I may be codegenning deep inside a branch or loop body, but allocas for local variables belong in the function entry block — not wherever the main builder happens to be pointing. Placing all allocas at the start of the entry block is a requirement for `mem2reg` to work correctly.
+I use a temporary `IRBuilder` (`TmpB`) instead of the main `TheBuilder` because codegen might be deep inside a branch or loop body when this runs, but allocas for local variables belong at the very start of the function's entry block — not wherever the main builder happens to be pointing. Placing every alloca at the start of the entry block is a requirement for `mem2reg` to work correctly, further down this chapter.
 
-Because `TmpB` is always reset to `begin()` of the entry block, each new alloca lands before all the previous ones. Declaring `var x, y` produces allocas in reverse order:
+Because `TmpB` is always reset to `begin()` of the entry block, each new alloca lands *before* all the previous ones. Declaring `var x, y` produces allocas in reverse order:
 
 ```pyxc
-def foo(): return var x, y: 0
+def foo(): var x, y: 0
 ```
 
 ```llvm
@@ -338,21 +354,23 @@ entry:
   %x = alloca double, align 8   ; inserted first, lands last
 ```
 
-The reversal is harmless — allocas are just slot reservations with no ordering dependency. The stores that write the initial values happen afterward in declaration order, and `mem2reg` doesn't care about alloca order.
+The reversal is harmless — allocas are just slot reservations with no ordering dependency between them. The stores that write the initial values happen afterward, in declaration order, and `mem2reg` doesn't care about alloca order either.
 
 ## Loading and Storing Variables
 
-Once names map to memory slots, reading and writing a variable becomes explicit load and store instructions.
+Once names map to memory slots, reading and writing a variable becomes an explicit load and store.
 
 A variable reference loads the current value:
 
 ```cpp
-Value *VariableExprAST::codegen() {
-  AllocaInst *A = NamedValues[Name];
-  if (!A)
+/// NameExpressionNode::codegen - A variable reference loads the current value
+/// from the variable's memory slot.
+Value *NameExpressionNode::codegen() {
+  auto It = NamedValues.find(Name);
+  if (It == NamedValues.end() || !It->second)
     return LogErrorV("Unknown variable name");
-  return TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), A, Name.c_str());
-  //   → %x2 = load double, ptr %x, align 8
+  return TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), It->second,
+                                Name.c_str());
 }
 ```
 
@@ -360,19 +378,22 @@ Value *VariableExprAST::codegen() {
 %x2 = load double, ptr %x, align 8
 ```
 
-An assignment evaluates the right-hand side, stores it into the memory slot, and returns the assigned value:
+An assignment evaluates the right-hand side, stores it into the memory slot, and returns the assigned value — that return is what makes `a = b = 1` work, since the inner `b = 1` has to produce `1.0` for the outer `a = ...` to store:
 
 ```cpp
-Value *AssignmentExprAST::codegen() {
-  Value *Val = Expr->codegen(); // evaluate the right-hand side first
-  if (!Val) return nullptr;
+/// AssignmentExpressionNode::codegen - Evaluate the Expr, store it into the variable's
+/// memory slot, and produce the assigned value.
+Value *AssignmentExpressionNode::codegen() {
+  Value *Val = Expr->codegen();
+  if (!Val)
+    return nullptr;
 
-  AllocaInst *A = NamedValues[Name];
-  if (!A)
+  auto It = NamedValues.find(Name);
+  if (It == NamedValues.end() || !It->second)
     return LogErrorV("Unknown variable name");
 
-  TheBuilder->CreateStore(Val, A); // → store double %val, ptr %x, align 8
-  return Val;                   // return the assigned value (makes a = b = 1 work)
+  TheBuilder->CreateStore(Val, It->second);
+  return Val;
 }
 ```
 
@@ -380,32 +401,28 @@ Value *AssignmentExprAST::codegen() {
 store double %addtmp, ptr %x, align 8
 ```
 
-
-## VarExprAST::codegen
+## Codegen for `var`
 
 **Step 1: Evaluate initializers and allocate memory slots.**
 
 ```cpp
-Value *VarExprAST::codegen() {
+Value *VarStatementNode::codegen() {
   vector<pair<string, AllocaInst *>> OldBindings;
   Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
 
   for (auto &Var : VarNames) {
     const string &VarName = Var.first;
-    ExprAST *Init = Var.second.get();
+    ExpressionNode *Init = Var.second.get();
 
     Value *InitVal = Init->codegen(); // evaluate before installing the binding
-    if (!InitVal) return nullptr;
+    if (!InitVal)
+      return nullptr;
 
     AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
-    // → %x = alloca double, align 8
     TheBuilder->CreateStore(InitVal, Alloca);
-    // → store double %initval, ptr %x, align 8
 ```
 
 **Step 2: Install the new binding, saving any shadowed outer binding.**
-
-If a variable with the same name already exists, its alloca is saved so it can be restored later:
 
 ```cpp
     OldBindings.push_back({VarName, NamedValues[VarName]});
@@ -416,7 +433,7 @@ If a variable with the same name already exists, its alloca is saved so it can b
 After steps 1 and 2, `var x = 1: x = x + 1` has emitted:
 
 ```llvm
-%x    = alloca double, align 8
+%x = alloca double, align 8
 store double 1.000000e+00, ptr %x, align 8
 ```
 
@@ -425,14 +442,15 @@ store double 1.000000e+00, ptr %x, align 8
 The body `x = x + 1` loads `x`, adds 1, stores back, and returns the result:
 
 ```llvm
-%x1     = load double, ptr %x, align 8
-%addtmp = fadd double %x1, 1.000000e+00
+%x3 = load double, ptr %x, align 8
+%addtmp = fadd double %x3, 1.000000e+00
 store double %addtmp, ptr %x, align 8
 ```
 
 ```cpp
   Value *BodyVal = Body->codegen();
-  if (!BodyVal) return nullptr;
+  if (!BodyVal)
+    return nullptr;
 ```
 
 **Step 4: Restore outer bindings after the body.**
@@ -449,29 +467,27 @@ store double %addtmp, ptr %x, align 8
 }
 ```
 
-If an outer variable had the same name, it's visible again after the `var` body exits. This gives `var` normal lexical shadowing behavior.
+If an outer variable had the same name, it's visible again after the `var` body exits — normal lexical shadowing.
 
 ## Parameters Become Mutable Too
 
-Once `NamedValues` holds allocas, function parameters must use the same representation. `FunctionAST::codegen` now creates an entry-block alloca for each argument and stores the incoming LLVM argument value into it:
+Once `NamedValues` holds allocas, function parameters have to use the same representation. `FunctionDefinitionNode::codegen` now creates an entry-block alloca for each argument and stores the incoming LLVM argument value into it:
 
 ```cpp
 NamedValues.clear();
 for (auto &Arg : TheFunction->args()) {
-  // Create a memory slot for each parameter.
   AllocaInst *Alloca =
-      CreateEntryBlockAlloca(TheFunction, string(Arg.getName()));
-  // Copy the incoming argument value into the slot.
+      CreateEntryBlockAlloca(TheFunction, std::string(Arg.getName()));
   TheBuilder->CreateStore(&Arg, Alloca);
-  NamedValues[string(Arg.getName())] = Alloca;
+  NamedValues[std::string(Arg.getName())] = Alloca;
 }
 ```
 
 This unifies the whole language: parameters, `var` locals, and loop variables all live in memory slots. Variable references always load; assignments always store. One model everywhere.
 
-## for Loops Switch to the Same Model
+## `for` Loops Switch to the Same Model
 
-The old `for` implementation bound the loop variable directly to the incoming `Value*`. That no longer fits now that all mutable locals use allocas. So I change `ForExprAST::codegen` to use a memory slot for the loop variable too:
+The old `for` codegen bound the loop variable directly to the incoming `Value*`. That no longer fits now that every mutable local uses an alloca, so `ForExpressionNode::codegen` switches to a memory slot for the loop variable too:
 
 ```cpp
 // Allocate a memory slot for the loop variable and store the start value.
@@ -487,15 +503,15 @@ Value *NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
 TheBuilder->CreateStore(NextVar, Alloca);
 ```
 
-The parser records whether `var` was present by setting an `IsVarDecl` flag on `ForExprAST`:
+The parser records whether `var` was present by setting an `IsVarDecl` flag on `ForExpressionNode`:
 
 ```cpp
 bool IsVarDecl = false;
-if (CurTok == tok_var)
+if (CurrentToken == tok_var)
   IsVarDecl = true, getNextToken(); // optional 'var'
 ```
 
-Codegen uses that flag to decide whether to create a fresh slot or reuse an existing one:
+Codegen uses that flag to decide whether to allocate a fresh slot or reuse an existing one:
 
 ```cpp
 if (IsVarDecl) {
@@ -512,34 +528,32 @@ if (IsVarDecl) {
 }
 ```
 
-`IsVarDecl` also controls teardown: when `var` was used, the loop variable is removed from `NamedValues` (or the shadowed outer binding is restored) after the loop exits; when it was not, the existing slot is left untouched.
+`IsVarDecl` also controls teardown: when `var` was used, the loop variable is removed from `NamedValues` (or the shadowed outer binding is restored) after the loop exits; when it wasn't, the existing slot is left untouched.
 
-Here is `def count(n): return for var i = 1, i < n, 1: i` with `-O0 -v`:
+Here is `def count(n): for var i = 1, i < n, 1: i` with `-O0 -v`:
 
 ```llvm
-; def count(n): return for var i = 1, i < n, 1: i
-
 define double @count(double %n) {
 entry:
-  %i  = alloca double, align 8        ; slot for loop variable i
-  %n1 = alloca double, align 8        ; slot for parameter n
-  store double %n, ptr %n1, align 8   ; store incoming n into its slot
+  %i = alloca double, align 8        ; slot for loop variable i
+  %n1 = alloca double, align 8       ; slot for parameter n
+  store double %n, ptr %n1, align 8  ; store incoming n into its slot
   store double 1.000000e+00, ptr %i, align 8 ; i = 1 (start value)
   br label %loop_cond
 
 loop_cond:
-  %i2  = load double, ptr %i, align 8         ; load i
-  %n3  = load double, ptr %n1, align 8        ; load n
-  %cmptmp   = fcmp olt double %i2, %n3        ; i < n
-  %booltmp  = uitofp i1 %cmptmp to double     ; bool → double (1.0 or 0.0)
+  %i2 = load double, ptr %i, align 8         ; load i
+  %n3 = load double, ptr %n1, align 8        ; load n
+  %cmptmp = fcmp olt double %i2, %n3         ; i < n
+  %booltmp = uitofp i1 %cmptmp to double     ; bool → double (1.0 or 0.0)
   %loopcond = fcmp one double %booltmp, 0.000000e+00 ; non-zero?
   br i1 %loopcond, label %loop_body, label %after_loop
 
 loop_body:
-  %i4 = load double, ptr %i, align 8          ; body: i (result unused)
-  %i5 = load double, ptr %i, align 8          ; load i for step computation
-  %nextvar = fadd double %i5, 1.000000e+00    ; i + step (1.0)
-  store double %nextvar, ptr %i, align 8      ; write new i back
+  %i4 = load double, ptr %i, align 8         ; body: i (result unused)
+  %i5 = load double, ptr %i, align 8         ; load i for step computation
+  %nextvar = fadd double %i5, 1.000000e+00   ; i + step (1.0)
+  store double %nextvar, ptr %i, align 8     ; write new i back
   br label %loop_cond
 
 after_loop:
@@ -547,24 +561,20 @@ after_loop:
 }
 ```
 
-`%i4` and `%i5` are two separate loads of `i` — `%i4` evaluates the body expression (`: i`) whose result is unused, and `%i5` loads `i` again for the step computation. The `uitofp`/`fcmp one` pair converts the boolean comparison to a double and back — with optimizations on, `InstCombinePass` folds this away and `mem2reg` removes the slots entirely.
+`%i4` and `%i5` are two separate loads of `i`: `%i4` evaluates the body expression (`: i`) whose result goes unused, and `%i5` loads `i` again for the step computation. The `uitofp`/`fcmp one` pair converts the boolean comparison to a double and back — with optimizations on, `InstCombinePass` folds this away, and `mem2reg` removes the slots entirely.
 
 ### The Optional `var` in `for`
 
-The grammar for `for` in this chapter is:
-
 ```
-for [var] identifier = start, condition, step: body
+for [var] name = start, condition, step: body
 ```
 
-The `var` keyword is optional and follows C++ semantics:
+`var` is optional and follows C++ semantics:
 
-- **`for var i = ...`** — declares a new alloca slot named `i` in the current scope. If `i` already exists in the enclosing scope, this is an error.
-- **`for i = ...`** — reuses an existing variable `i` that must already be in scope. If it does not exist, this is an error.
+- **`for var i = ...`** — declares a new alloca slot named `i` in the current scope. If `i` already exists in the enclosing scope, this shadows it.
+- **`for i = ...`** — reuses an existing variable `i` that must already be in scope. If it doesn't exist, this is an error.
 
-When `for var i` is used, the parser allocates a fresh alloca slot for `i`, stores the start value into it, and tears it down when the loop exits. When `for i` is used, the parser looks up the existing alloca for `i` and stores the start value into that — no new slot is created. The difference is not just scope rules: `for i = ...` will fail if `i` has not already been declared.
-
-The distinction is mostly academic at this stage because a function body is still a single expression, not a sequence of statements. The one case where it surfaces is a nested loop reusing the outer loop variable:
+The distinction is mostly academic right now, because a function body is still a single expression, not a sequence of statements. The one place it surfaces is a nested loop reusing the outer loop variable:
 
 ```pyxc
 for var i = 0, i < 10, 1:
@@ -572,9 +582,9 @@ for var i = 0, i < 10, 1:
     printd(i)
 ```
 
-Here the outer `for var i` introduces `i` into scope. The inner `for i` finds that same slot and reuses it — the inner loop overwrites `i` on every outer iteration, then the outer condition re-evaluates with whatever `i` was left at after the inner loop finished. That is almost never useful deliberately; it is shown here to make the semantics concrete.
+The outer `for var i` introduces `i` into scope. The inner `for i` finds that same slot and reuses it — the inner loop overwrites `i` on every outer iteration, then the outer condition re-evaluates with whatever `i` was left at once the inner loop finished. That's almost never useful deliberately; it's here to make the semantics concrete.
 
-The more natural use of `for i = ...` (without `var`) becomes clear in the next chapter once `var` statements exist independently:
+The more natural use of `for i = ...` (without `var`) becomes clear once `var` statements exist independently of expressions, next chapter:
 
 ```pyxc
 var x = 0.0
@@ -586,18 +596,21 @@ Until then, `var` in `for` is the safe default.
 
 ## mem2reg: Cleaning Up the Memory Slots
 
-This chapter adds `PromotePass` (commonly called `mem2reg`) to the optimization pipeline:
+This chapter adds `PromotePass` — commonly called `mem2reg` — to the optimization pipeline, ahead of the three passes I already had:
 
 ```cpp
-TheFPM->addPass(PromotePass()); // mem2reg: replace alloca/load/store with plain values
+TheFPM->addPass(PromotePass());     // mem2reg: memory slots -> SSA registers
+TheFPM->addPass(InstCombinePass()); // peephole rewrites
+TheFPM->addPass(ReassociatePass()); // canonicalise commutative ops
+TheFPM->addPass(GVNPass());         // eliminate common sub-expressions
 ```
 
-Every parameter and local variable gets a memory slot. Without optimizations, `def bump(n): return var x = n: x = x + 1` produces:
+Every parameter and local variable now gets a memory slot. Without optimizations, `def bump(n): var x = n: x = x + 1` produces:
 
 ```llvm
 define double @bump(double %n) {
 entry:
-  %x  = alloca double, align 8        ; slot for local x
+  %x = alloca double, align 8         ; slot for local x
   %n1 = alloca double, align 8        ; slot for parameter n
   store double %n, ptr %n1, align 8   ; store incoming n
   %n2 = load double, ptr %n1, align 8 ; load n to initialise x
@@ -621,17 +634,14 @@ entry:
 
 Nine instructions down to two.
 
-> **Note:** Without `mem2reg` collapsing needless memory operations, `GVNPass` and `InstCombinePass` will have to be conservative around memory operations and will miss optimizations they'd otherwise catch.
+> Without `mem2reg` collapsing needless memory operations first, `GVNPass` and `InstCombinePass` would have to stay conservative around memory operations and would miss optimizations they'd otherwise catch.
 
 ### A More Complex Example
 
-When control flow is involved, `mem2reg` has more work to do. Define `;` as a sequencing operator and an accumulator loop that returns its result:
+When control flow is involved, `mem2reg` has more work to do. I still don't have a way to sequence two side-effecting expressions cleanly — that's still chapters away — so I reuse the same `+`-as-sequencer trick chapter 9's Mandelbrot renderer used: `for` always returns `0.0`, and `0.0 + acc` is just `acc`.
 
 ```pyxc
-@binary(1)
-def ;(x, y): return y
-
-def acc_loop(n): return var acc = 0: (for var i = 1, i < n, 1: acc = acc + i) ; acc
+def acc_loop(n): var acc = 0: (for var i = 1, i < n, 1: acc = acc + i) + acc
 ```
 
 Without optimizations (`-O0 -v`), three slots and repeated loads/stores on every iteration:
@@ -639,40 +649,40 @@ Without optimizations (`-O0 -v`), three slots and repeated loads/stores on every
 ```llvm
 define double @acc_loop(double %n) {
 entry:
-  %i   = alloca double, align 8          ; slot for loop variable i
+  %i = alloca double, align 8            ; slot for loop variable i
   %acc = alloca double, align 8          ; slot for accumulator
-  %n1  = alloca double, align 8          ; slot for parameter n
+  %n1 = alloca double, align 8           ; slot for parameter n
   store double %n, ptr %n1, align 8      ; store n
   store double 0.000000e+00, ptr %acc, align 8 ; acc = 0
   store double 1.000000e+00, ptr %i, align 8   ; i = 1
   br label %loop_cond
 
 loop_cond:
-  %i2  = load double, ptr %i, align 8    ; load i
-  %n3  = load double, ptr %n1, align 8   ; load n
-  %cmptmp  = fcmp olt double %i2, %n3   ; i < n
+  %i2 = load double, ptr %i, align 8    ; load i
+  %n3 = load double, ptr %n1, align 8   ; load n
+  %cmptmp = fcmp olt double %i2, %n3    ; i < n
   %booltmp = uitofp i1 %cmptmp to double
   %loopcond = fcmp one double %booltmp, 0.000000e+00
   br i1 %loopcond, label %loop_body, label %after_loop
 
 loop_body:
-  %acc4   = load double, ptr %acc, align 8 ; load acc
-  %i5     = load double, ptr %i, align 8   ; load i
-  %addtmp = fadd double %acc4, %i5         ; acc + i
-  store double %addtmp, ptr %acc, align 8  ; acc = acc + i
-  %i6     = load double, ptr %i, align 8   ; load i for step
+  %acc4 = load double, ptr %acc, align 8 ; load acc
+  %i5 = load double, ptr %i, align 8     ; load i
+  %addtmp = fadd double %acc4, %i5       ; acc + i
+  store double %addtmp, ptr %acc, align 8 ; acc = acc + i
+  %i6 = load double, ptr %i, align 8     ; load i for step
   %nextvar = fadd double %i6, 1.000000e+00 ; i + 1
   store double %nextvar, ptr %i, align 8   ; i = i + 1
   br label %loop_cond
 
 after_loop:
-  %acc7  = load double, ptr %acc, align 8  ; load final acc
-  %binop = call double @"binary;"(double 0.000000e+00, double %acc7)
-  ret double %binop
+  %acc7 = load double, ptr %acc, align 8   ; load final acc
+  %addtmp8 = fadd double 0.000000e+00, %acc7 ; 0.0 + acc — the sequencing trick
+  ret double %addtmp8
 }
 ```
 
-With optimizations on, all three slots and every load/store disappear. In their place, two phi nodes at the top of `loop_cond` — one for each mutable variable:
+With optimizations on, all three slots and every load/store disappear. In their place, two PHI nodes at the top of `loop_cond` — one per mutable variable:
 
 ```llvm
 define double @acc_loop(double %n) {
@@ -683,25 +693,24 @@ loop_cond:
   ; acc: 0.0 on first iteration, acc+i on subsequent ones
   %acc.0 = phi double [ 0.000000e+00, %entry ], [ %addtmp, %loop_body ]
   ; i: 1.0 on first iteration, i+1 on subsequent ones
-  %i.0   = phi double [ 1.000000e+00, %entry ], [ %nextvar, %loop_body ]
+  %i.0 = phi double [ 1.000000e+00, %entry ], [ %nextvar, %loop_body ]
   %cmptmp = fcmp olt double %i.0, %n  ; i < n
   br i1 %cmptmp, label %loop_body, label %after_loop
 
 loop_body:
-  %addtmp  = fadd double %acc.0, %i.0       ; acc + i
+  %addtmp = fadd double %acc.0, %i.0       ; acc + i
   %nextvar = fadd double %i.0, 1.000000e+00 ; i + 1
   br label %loop_cond
 
 after_loop:
-  ; binary; discards 0.0 (for's return value) and returns acc.
-  ; the call is still present because binary; has no readnone attribute —
-  ; the optimizer can't prove it has no side effects, so it keeps the call.
-  %binop = call double @"binary;"(double 0.000000e+00, double %acc.0)
-  ret double %binop
+  %addtmp8 = fadd double %acc.0, 0.000000e+00 ; the sequencing add survives — no fast-math
+  ret double %addtmp8
 }
 ```
 
-Each phi node says: "on the first iteration take the initial value (from `%entry`); on every subsequent iteration take the updated value (from `%loop_body`)." Two mutable variables, two phi nodes — one per slot that `mem2reg` promoted.
+The trailing `fadd ... 0.0` doesn't disappear, even after optimization. None of my three passes fold "add zero" away, and without `-ffast-math` LLVM wouldn't do it unconditionally anyway — `x + 0.0` isn't always exactly `x` in IEEE 754 (`-0.0 + 0.0` is `0.0`, not `-0.0`), so removing it is only safe if LLVM knows the sign of zero never matters here. It doesn't know that, so the instruction stays.
+
+Each PHI node says: "on the first iteration, take the initial value (from `%entry`); on every subsequent iteration, take the updated value (from `%loop_body`)." Two mutable variables, two PHI nodes — one per slot that `mem2reg` promoted.
 
 ## Build and Run
 
@@ -741,7 +750,7 @@ Local variable inside a function:
 
 <!-- code-merge:start -->
 ```pyxc
-ready> def bump(n): return var x = n: x = x + 1  # returns n+1
+ready> def bump(n): var x = n: x = x + 1
 ```
 ```bash
 Parsed a function definition.
@@ -755,19 +764,11 @@ Evaluated to 6.000000
 ```
 <!-- code-merge:end -->
 
-Accumulator with a loop:
+Accumulator with a loop, using the `+`-as-sequencer trick:
 
 <!-- code-merge:start -->
 ```pyxc
-ready> @binary(1)
-def ;(x, y): return y
-```
-```bash
-Parsed a user-defined operator.
-```
-```pyxc
-ready> def sum_to(n): return var acc = 0:
-    (for var i = 1, i < n + 1, 1: acc = acc + i) ; acc
+ready> def sum_to(n): var acc = 0: (for var i = 1, i < n + 1, 1: acc = acc + i) + acc
 ```
 ```bash
 Parsed a function definition.
@@ -789,14 +790,14 @@ ready> (1 + 2) = 3
 ```
 ```bash
 Error (Line 1, Column 9): Destination of '=' must be a variable
-(1 + 2) =
+(1 + 2) = 
         ^~~~
 ```
 <!-- code-merge:end -->
 
 ## What's Next
 
-[Chapter 12](chapter-12.md) replaces the single-expression function body with real statement blocks. That makes mutable variables much more natural to use: assignment can stand on its own line, `return` can appear anywhere in a function body, and examples stop needing expression-level workarounds like `var acc = 0: (for ...) ; acc`.
+[Chapter 12](chapter-12.md) replaces the single-expression function body with real statement blocks. That makes mutable variables much more natural to use: assignment can stand on its own line, `return` can appear anywhere in a function body, and examples stop needing expression-level workarounds like `var acc = 0: (for ...) + acc`.
 
 ## Need Help?
 
@@ -810,4 +811,4 @@ Include:
 - Full error message
 - Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
-We'll figure it out.
+I'll help you figure it out.

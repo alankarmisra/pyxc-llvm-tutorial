@@ -1,0 +1,2 @@
+def f(p: ptr[int]):
+  var q = p * 2

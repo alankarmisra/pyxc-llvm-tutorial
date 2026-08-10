@@ -1,0 +1,4 @@
+def f(p: ptr[int]):
+  var x: int = p[0]
+def g(p: ptr[float64]):
+  f(p)

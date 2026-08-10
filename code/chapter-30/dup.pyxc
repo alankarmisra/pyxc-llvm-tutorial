@@ -1,0 +1,10 @@
+trait Foo:
+  def bar()
+class C:
+  x: int
+impl Foo for C:
+  def bar():
+    self.x
+impl Foo for C:
+  def bar():
+    self.x

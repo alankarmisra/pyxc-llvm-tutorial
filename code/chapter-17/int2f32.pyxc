@@ -1,0 +1,3 @@
+def k(n: int32) -> float32:
+    var r: float32 = n
+    return r

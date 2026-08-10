@@ -1,0 +1,4 @@
+extern def puts(s: ptr[int8]) -> int
+def main() -> int:
+  puts("line one\nline two")
+  return 0

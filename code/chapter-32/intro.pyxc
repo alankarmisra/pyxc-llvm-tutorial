@@ -1,0 +1,21 @@
+extern def printd(x: float64)
+
+def main() -> int:
+  var a: int = 17
+  var b: int = 4
+  var q: int = a / b
+  var r: int = a % b
+
+  var x: int = 10
+  x += 5
+  x -= 3
+  x *= 2
+  x /= 4
+  x %= 10
+
+  var i: int = 0
+  i++
+  ++i
+
+  printd(float64(q + r + x + i))
+  return 0

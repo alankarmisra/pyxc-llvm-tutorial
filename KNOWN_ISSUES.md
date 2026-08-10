@@ -138,6 +138,46 @@ otherwise. Documented as-is in `docs/chapter-21.md`; flagging here only
 because it's the kind of ergonomics gap that a later chapter might want to
 close (e.g., by threading a target type hint into cast-of-call parsing).
 
+### 6. Chapter 38's escape-sequence "departures" paragraph needs a rewrite (docs only, no code issue)
+
+**Files:** `docs/chapter-38.md` (needs the fix), `docs/chapter-39.md` (already correct).
+
+While adding a cppreference citation to chapter 38's character-literal escape
+list, I wrote a paragraph framing pyxc's `\0`-only null escape and
+fixed-2-digit `\xNN` as unexplained "departures" from C's spec. The user
+asked why, and I didn't know — Codex supplied an answer, which I verified
+against the real chapter 39 source before trusting it:
+
+- **`\0`-only was a chapter 38 staging restriction, not permanent.** Chapter
+  39's `DecodeLiteralCodePoint` (~line 610, the `default:` case) parses a
+  full 1-to-3-digit octal escape (`\0`, `\12`, `\101`, `\777`), confirmed by
+  reading the real loop in `code/chapter-39/pyxc.cpp`. `docs/chapter-39.md`
+  already documents this correctly (its own grammar diff adds
+  `octal-escape`, and its prose explicitly says *"I keep `\xNN` at exactly
+  two hexadecimal digits, as I defined it in Chapter 38"* — meaning chapter
+  39's author already treated the 2-digit hex width as an intentional,
+  carried-forward choice, not an oversight).
+- **Fixed-2-digit `\xNN` is a real, permanent, deliberate design choice**,
+  still true in chapter 39 (`case 'x'` there still reads exactly `High`/`Low`,
+  two hex digits, same as chapter 38). The reasoning Codex gave — C's `\x`
+  escape is greedy and consumes every following hex digit, so `"\x41B"` in C
+  is one escape (`0x41B`) rather than `\x41` followed by `B`, and a
+  fixed-width form removes that ambiguity — is consistent with the code but
+  I have not confirmed it's the user's actual original reasoning (as opposed
+  to a plausible reconstruction). `\u`/`\U` in chapter 39 also use fixed
+  widths (4 and 8 digits), consistent with sidestepping the same class of
+  greedy-parse ambiguity.
+
+**Action item:** rewrite the "two deliberate departures" paragraph in
+`docs/chapter-38.md` (the one citing
+https://en.cppreference.com/c/language/escape) to say the `\0`-only
+restriction is temporary/staging (superseded by chapter 39's full octal
+support) rather than a permanent departure, and reframe the `\xNN`
+fixed-width choice as a permanent, intentional design decision rather than
+an unexplained one — but confirm with the user first whether the
+greedy-parsing rationale is actually why, since that part is Codex's
+reconstruction, not a fact pulled from a comment in the source.
+
 ---
 
 ## Summary for hand-off
@@ -146,5 +186,5 @@ The only compiler defect in this report was bug #1, and it is resolved. Bug #2
 was an incorrect use of the loop's step expression; the affected Chapter 20
 examples and their coverage are now fixed.
 
-Everything else in this file (#3–#5) is a documentation/feature-awareness
+Everything else in this file (#3–#6) is a documentation/feature-awareness
 note, not a defect to fix.

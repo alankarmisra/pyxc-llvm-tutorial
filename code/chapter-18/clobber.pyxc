@@ -1,0 +1,11 @@
+struct Box:
+  value: int
+
+def clobber(b: Box) -> None:
+  b.value = 0
+
+def main() -> int:
+  var b: Box
+  b.value = 99
+  clobber(b)
+  return 0

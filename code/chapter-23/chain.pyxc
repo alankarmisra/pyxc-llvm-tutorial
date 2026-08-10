@@ -1,0 +1,5 @@
+type MyInt = int
+type Score = MyInt
+
+def id(x: Score) -> Score:
+  return x

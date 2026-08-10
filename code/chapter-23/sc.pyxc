@@ -1,0 +1,4 @@
+type Score = int64
+
+def id(x: Score) -> Score:
+  return x

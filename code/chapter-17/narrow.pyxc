@@ -1,0 +1,3 @@
+def n(a: float64) -> float32:
+    var r: float32 = a
+    return r

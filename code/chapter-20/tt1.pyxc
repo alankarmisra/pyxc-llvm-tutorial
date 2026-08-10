@@ -1,0 +1,9 @@
+extern def printd(x: float64)
+def main() -> int:
+  var a: int = 10
+  var b: int = 20
+  var p: ptr[int] = addr(a)
+  printd(float64(p[0]))
+  p = p + 1
+  printd(float64(p[0]))
+  return 0

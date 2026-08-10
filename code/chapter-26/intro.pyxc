@@ -1,0 +1,19 @@
+extern def printd(x: float64)
+
+class Counter:
+  value: int
+
+  def increment():
+    self.value = self.value + 1
+
+  def get() -> int:
+    return self.value
+
+
+def main() -> int:
+  var c: Counter
+  c.increment()
+  c.increment()
+  c.increment()
+  printd(float64(c.get()))
+  return 0

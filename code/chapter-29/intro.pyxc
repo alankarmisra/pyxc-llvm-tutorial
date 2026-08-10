@@ -1,0 +1,21 @@
+extern def printd(x: float64)
+
+trait Measurable:
+  def area() -> int
+
+class Rect(Measurable):
+  public w: int
+  public h: int
+
+  def __init__(w: int, h: int):
+    self.w = w
+    self.h = h
+
+  public def area() -> int:
+    return self.w * self.h
+
+
+def main() -> int:
+  var r: Rect = Rect(3, 4)
+  printd(float64(r.area()))
+  return 0

@@ -1,0 +1,17 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: define void @sink(double %x)
+# CHECK: ret void
+
+# Tests: a void function with no explicit 'return' statement falls through to
+# an implicit 'ret void'. Both the explicit-return and no-return variants
+# must produce 'ret void'.
+
+extern def printd(x: float64) -> float64
+
+def sink(x: float64) -> None:
+    printd(x)
+
+def main() -> None:
+    sink(3.14)
+    return

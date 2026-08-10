@@ -1,0 +1,2 @@
+def g(a: float32, b: float64) -> float64:
+    return a + b

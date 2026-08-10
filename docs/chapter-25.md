@@ -3,7 +3,7 @@ description: "Add the class keyword as a second way to declare an aggregate type
 ---
 # 25. pyxc: Classes
 
-## Where We Are
+## What I Am Building
 
 [Chapter 24](chapter-24.md) gave me arrays, so the type system now covers scalars, structs, pointers, aliases, and fixed-size sequences. The one aggregate keyword I have is `struct`. Before I can add methods, constructors, or visibility in later chapters, I need a second keyword to hang those concepts off of: `class`.
 
@@ -28,6 +28,94 @@ I ran this; it compiles and exits cleanly. Right now, `class` behaves exactly li
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-25
+```
+
+## Grammar
+
+`top-level-item` gains `class-definition`, and `class-definition` itself is new. It shares `struct-block` with `struct-definition` entirely; there's no separate body grammar for a class. Everything else is unchanged from [Chapter 24](chapter-24.md):
+
+```grammardiff
+ program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
+ end-of-lines            = end-of-line { end-of-line } ;
+-top-level-item             = type-alias | struct-definition | function-definition | external | top-level-expression ;
++top-level-item             = type-alias | struct-definition | class-definition | function-definition | external | top-level-expression ;
+ type-alias       = "type" name "=" type ;
+ struct-definition       = "struct" name ":" end-of-lines struct-block ;
++class-definition        = "class" name ":" end-of-lines struct-block ;
+ struct-block     = indent field-declaration { end-of-lines field-declaration } dedent ;
+ field-declaration       = name ":" type ;
+ function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ (* If the return type is omitted, it defaults to None. *)
+ external        = "extern" "def" function-signature [ "->" type ] ;
+ top-level-expression    = expression ;
+ function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
+ typed-parameter      = name ":" type ;
+ if-statement          = "if" expression ":" suite
+                 [ end-of-lines "else" ":" suite ] ;
+ for-statement         = "for"
+                   ( "var" name ":" type | name )
+                   "=" expression "," expression "," expression ":" suite ;
+ variable-statement         = "var" variable-binding { "," variable-binding } ;
+ assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
+ simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
+ compound-statement    = if-statement | for-statement ;
+ statement       = simple-statement | compound-statement ;
+ suite           = simple-statement | compound-statement | end-of-lines block ;
+ return-statement      = "return" [ expression ] ;
+ statement-separator = end-of-lines | BLOCK_END ;
+ block = indent statement { statement-separator statement } dedent ;
+ expression      = comparison ;
+ comparison      = sum { comparison-operator sum } ;
+ comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ sum             = term { ("+" | "-") term } ;
+ term            = unary-expression { ("*" | "/") unary-expression } ;
+ lvalue          = name | field-access | index-expression ;
+ variable-binding      = name ":" type [ "=" expression ] ;
+ unary-expression       = "-" unary-expression | primary ;
+ primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
+ cast-expression        = cast-type "(" expression ")" ;
+ sizeof-expression      = "sizeof" "(" type ")" ;
+ address-expression        = "addr" "(" lvalue ")" ;
+ name-expression  = name | call-expression ;
+ call-expression        = name "(" [ expression { "," expression } ] ")" ;
+ field-access     = name "." name { "." name } ;
+ index-expression       = name "[" expression "]" ;
+ number-expression      = number ;
+ array-literal    = "[" [ expression { "," expression } ] "]" ;
+ string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
+ escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
+ parenthesized-expression       = "(" expression ")" ;
+ indent          = INDENT ;
+ dedent          = DEDENT ;
+ 
+ name      = (letter | "_") { letter | digit | "_" } ;
+ builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+                 | "bool" | "None" ;
+ alias-type       = name ;
+ struct-type      = name ;
+ pointer-type     = "ptr" "[" type "]" ;
+ type            = base-type [ array-suffix ] ;
+ base-type        = builtin-type | alias-type | struct-type | pointer-type ;
+ array-suffix     = "[" integer "]" ;
+ cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+                 | "bool" | pointer-type ;
+ integer         = digit { digit } ;
+ number          = ( digit { digit } [ "." { digit } ]
+                   | "." digit { digit } ) [ exponent ] ;
+ exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
+ boolean-literal    = "True" | "False" ;
+ letter          = "A".."Z" | "a".."z" ;
+ digit           = "0".."9" ;
+ end-of-line             = "\r\n" | "\r" | "\n" ;
+ comment = "#" { comment-character } ;
+ comment-character = ? any character except "\r" and "\n" ? ;
+ whitespace = " " | "\t" | "\v" | "\f" ;
+ INDENT          = ? synthetic token emitted by lexer ? ;
+ DEDENT          = ? synthetic token emitted by lexer ? ;
+ 
+ BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
 ## One New Token
@@ -64,7 +152,7 @@ static bool ParseAggregateDefinition(const char *KindName) {
     return false;
   }
   getNextToken(); // eat aggregate name
-  if (CurrentToken != ':') {
+  if (CurrentToken != tok_colon) {
     LogErrorExpression((string("Expected ':' after ") + KindName + " name").c_str());
     return false;
   }
@@ -91,7 +179,7 @@ static bool ParseAggregateDefinition(const char *KindName) {
     }
     string FieldName = Name;
     getNextToken();
-    if (CurrentToken != ':') {
+    if (CurrentToken != tok_colon) {
       LogErrorExpression("Expected ':' after field name");
       return false;
     }
@@ -193,7 +281,7 @@ class Foo:
 ```
 
 ```text
-Error (Line 3, Column 7): Aggregate 'Foo' is already defined
+Error (Line 4, Column 7): Aggregate 'Foo' is already defined
 ```
 
 The type-alias namespace is shared too. A class name colliding with an existing alias is rejected the same way a struct name colliding with an alias already was, both routed through the same `TypeAliases.count(StructName)` check near the top of `ParseAggregateDefinition`.
@@ -204,106 +292,6 @@ The type-alias namespace is shared too. A class name colliding with an existing 
 cd code/chapter-25
 cmake -S . -B build && cmake --build build
 ```
-
-## Grammar
-
-[pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-25/pyxc.ebnf)
-
-```ebnf
-program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
-end-of-lines            = end-of-line { end-of-line } ;
-top-level-item             = type-alias | struct-definition | class-definition | function-definition | decorated-function-definition | external | top-level-expression ;   (* changed: class-definition added *)
-type-alias       = "type" name "=" type ;
-struct-definition       = "struct" name ":" end-of-lines struct-block ;
-class-definition        = "class" name ":" end-of-lines struct-block ;                                                                                                       (* new *)
-struct-block     = indent field-declaration { end-of-lines field-declaration } dedent ;
-field-declaration       = name ":" type ;
-function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
-(* If the return type is omitted, it defaults to None. *)
-decorated-function-definition    = binary-decorator end-of-lines "def" binary-operator-signature [ "->" type ] ":" ( simple-statement | end-of-lines block )
-                | unary-decorator  end-of-lines "def" unary-operator-signature  [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
-binary-decorator = "@" "binary" "(" integer ")" ;
-unary-decorator  = "@" "unary" ;
-binary-operator-signature = custom-operator-character "(" typed-parameter "," typed-parameter ")" ;
-unary-operator-signature  = custom-operator-character "(" typed-parameter ")" ;
-external        = "extern" "def" function-signature [ "->" type ] ;
-top-level-expression    = expression ;
-function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
-typed-parameter      = name ":" type ;
-if-statement          = "if" expression ":" suite
-                [ end-of-lines "else" ":" suite ] ;
-for-statement         = "for"
-                  ( "var" name ":" type | name )
-                  "=" expression "," expression "," expression ":" suite ;
-variable-statement         = "var" variable-binding { "," variable-binding } ;
-assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
-simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
-compound-statement    = if-statement | for-statement ;
-statement       = simple-statement | compound-statement ;
-suite           = simple-statement | compound-statement | end-of-lines block ;
-return-statement      = "return" [ expression ] ;
-statement-separator = end-of-lines | BLOCK_END ;
-block = indent statement { statement-separator statement } dedent ;
-expression      = unary-expression binary-operator-right ;
-binary-operator-right        = { binary-operator unary-expression } ;
-lvalue          = name | field-access | index-expression ;
-variable-binding      = name ":" type [ "=" expression ] ;
-unary-expression       = unary-operator unary-expression | primary ;
-unary-operator         = "-" | user-defined-unary-operator ;
-primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
-cast-expression        = cast-type "(" expression ")" ;
-sizeof-expression      = "sizeof" "(" type ")" ;
-address-expression        = "addr" "(" lvalue ")" ;
-name-expression  = name | call-expression ;
-call-expression        = name "(" [ expression { "," expression } ] ")" ;
-field-access     = name "." name { "." name } ;
-index-expression       = name "[" expression "]" ;
-number-expression      = number ;
-array-literal    = "[" [ expression { "," expression } ] "]" ;
-string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
-escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
-parenthesized-expression       = "(" expression ")" ;
-binary-operator        = builtin-binary-operator | user-defined-binary-operator ;
-indent          = INDENT ;
-dedent          = DEDENT ;
-
-builtin-binary-operator = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
-user-defined-binary-operator = ? any operator-character defined as a custom binary operator ? ;
-user-defined-unary-operator  = ? any operator-character defined as a custom unary operator ? ;
-custom-operator-character    = ? any operator-character that is not "-" or a builtin-binary-operator,
-                    and not already defined as a custom operator ? ;
-operator-character          = ? any single ASCII punctuation character ? ;
-name      = (letter | "_") { letter | digit | "_" } ;
-builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | "None" ;
-alias-type       = name ;
-struct-type      = name ;
-pointer-type     = "ptr" "[" type "]" ;
-type            = base-type [ array-suffix ] ;
-base-type        = builtin-type | alias-type | struct-type | pointer-type ;
-array-suffix     = "[" integer "]" ;
-cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | pointer-type ;
-integer         = digit { digit } ;
-number          = ( digit { digit } [ "." { digit } ]
-                  | "." digit { digit } ) [ exponent ] ;
-exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
-boolean-literal    = "True" | "False" ;
-letter          = "A".."Z" | "a".."z" ;
-digit           = "0".."9" ;
-end-of-line             = "\r\n" | "\r" | "\n" ;
-comment = "#" { comment-character } ;
-comment-character = ? any character except "\r" and "\n" ? ;
-whitespace = " " | "\t" | "\v" | "\f" ;
-INDENT          = ? synthetic token emitted by lexer ? ;
-DEDENT          = ? synthetic token emitted by lexer ? ;
-
-BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
-```
-
-`top-level-item` gained `class-definition`, and `class-definition` itself is new, both marked above. It shares `struct-block` with `struct-definition` entirely; there's no separate body grammar for a class. Everything else is unchanged from [Chapter 24](chapter-24.md).
 
 ## Known Limitations
 
@@ -327,4 +315,4 @@ Include:
 - Full error message
 - Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
-We'll figure it out.
+I'll help you figure it out.

@@ -1,0 +1,6 @@
+struct Point:
+  x: int
+  y: int
+def f():
+  var pt: Point
+  var px: ptr[int] = addr(pt.x)

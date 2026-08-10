@@ -1,0 +1,3 @@
+extern def puts(s: ptr[int8]) -> int
+def f():
+  puts("hello")

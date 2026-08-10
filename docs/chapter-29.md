@@ -3,9 +3,9 @@ description: "Add traits: named method-signature contracts that a class declares
 ---
 # 29. pyxc: Traits
 
-## Where We Are
+## What I Am Building
 
-[Chapter 28](chapter-28.md) added visibility. Classes can now hide implementation details. But there is no way to say "this class promises to have these methods" — no interface contract, no way to write code that works against any class satisfying a given shape.
+[Chapter 28](chapter-28.md) added visibility. Classes can now hide implementation details. But there's no way to say "this class promises to have these methods": no interface contract, no way to write code that works against any class satisfying a given shape.
 
 After this chapter:
 
@@ -33,11 +33,11 @@ def main() -> int:
   return 0
 ```
 
-```
+```text
 12.000000
 ```
 
-If `Rect` does not implement `area`, or implements it with the wrong signature, the compiler reports an error before any code is generated.
+If `Rect` doesn't implement `area`, or implements it with the wrong signature, the compiler reports an error before any code is generated.
 
 ## Source Code
 
@@ -48,27 +48,13 @@ cd pyxc-llvm-tutorial/code/chapter-29
 
 ## Grammar
 
-This chapter adds two new productions (`traitdef`, `traitblock`, `traitmethodsig`) and extends `top` and `classdef`.
-
-```ebnf
-top            = typealias | traitdef | structdef | classdef | ...  -- changed
-traitdef       = "trait" identifier ":" eols traitblock ;           -- new
-traitblock     = indent traitmethodsig { eols traitmethodsig } dedent ;  -- new
-traitmethodsig = "def" identifier "(" [ typedparam { "," typedparam } ] ")" [ "->" type ] ;  -- new
-classdef       = "class" identifier [ "(" identifier { "," identifier } ")" ] ":" eols structblock ;  -- changed
-```
-
-`traitmethodsig` looks like a method definition but has no body and no `self` parameter. The `classdef` gains an optional parenthesised list of trait names after the class name.
-
-### Grammar
-
-`code/chapter-29/pyxc.ebnf`
+Three new productions (`trait-definition`, `trait-block`, `trait-method-signature`), and `class-definition` gains an optional parenthesized trait list. A `trait-method-signature` looks like a method definition but has no body and no `self` parameter:
 
 ```grammardiff
  program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
  end-of-lines            = end-of-line { end-of-line } ;
--top-level-item             = type-alias | struct-definition | class-definition | function-definition | decorated-function-definition | external | top-level-expression ;
-+top-level-item             = type-alias | trait-definition | struct-definition | class-definition | function-definition | decorated-function-definition | external | top-level-expression ;
+-top-level-item             = type-alias | struct-definition | class-definition | function-definition | external | top-level-expression ;
++top-level-item             = type-alias | trait-definition | struct-definition | class-definition | function-definition | external | top-level-expression ;
  type-alias       = "type" name "=" type ;
 +trait-definition        = "trait" name ":" end-of-lines trait-block ;
 +trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
@@ -84,12 +70,6 @@ classdef       = "class" identifier [ "(" identifier { "," identifier } ")" ] ":
  field-declaration       = name ":" type ;
  function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
  (* If the return type is omitted, it defaults to None. *)
- decorated-function-definition    = binary-decorator end-of-lines "def" binary-operator-signature [ "->" type ] ":" ( simple-statement | end-of-lines block )
-                 | unary-decorator  end-of-lines "def" unary-operator-signature  [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- binary-decorator = "@" "binary" "(" integer ")" ;
- unary-decorator  = "@" "unary" ;
- binary-operator-signature = custom-operator-character "(" typed-parameter "," typed-parameter ")" ;
- unary-operator-signature  = custom-operator-character "(" typed-parameter ")" ;
  external        = "extern" "def" function-signature [ "->" type ] ;
  top-level-expression    = expression ;
  function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
@@ -108,12 +88,14 @@ classdef       = "class" identifier [ "(" identifier { "," identifier } ")" ] ":
  return-statement      = "return" [ expression ] ;
  statement-separator = end-of-lines | BLOCK_END ;
  block = indent statement { statement-separator statement } dedent ;
- expression      = unary-expression binary-operator-right ;
- binary-operator-right        = { binary-operator unary-expression } ;
+ expression      = comparison ;
+ comparison      = sum { comparison-operator sum } ;
+ comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ sum             = term { ("+" | "-") term } ;
+ term            = unary-expression { ("*" | "/") unary-expression } ;
  lvalue          = name | field-access | index-expression ;
  variable-binding      = name ":" type [ "=" expression ] ;
- unary-expression       = unary-operator unary-expression | primary ;
- unary-operator         = "-" | user-defined-unary-operator ;
+ unary-expression       = "-" unary-expression | primary ;
  primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
  cast-expression        = cast-type "(" expression ")" ;
  sizeof-expression      = "sizeof" "(" type ")" ;
@@ -129,16 +111,9 @@ classdef       = "class" identifier [ "(" identifier { "," identifier } ")" ] ":
  string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
  escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
  parenthesized-expression       = "(" expression ")" ;
- binary-operator        = builtin-binary-operator | user-defined-binary-operator ;
  indent          = INDENT ;
  dedent          = DEDENT ;
-
- builtin-binary-operator = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
- user-defined-binary-operator = ? any operator-character defined as a custom binary operator ? ;
- user-defined-unary-operator  = ? any operator-character defined as a custom unary operator ? ;
- custom-operator-character    = ? any operator-character that is not "-" or a builtin-binary-operator,
-                     and not already defined as a custom operator ? ;
- operator-character          = ? any single ASCII punctuation character ? ;
+ 
  name      = (letter | "_") { letter | digit | "_" } ;
  builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
                  | "float" | "float32" | "float64"
@@ -165,7 +140,7 @@ classdef       = "class" identifier [ "(" identifier { "," identifier } ")" ] ":
  whitespace = " " | "\t" | "\v" | "\f" ;
  INDENT          = ? synthetic token emitted by lexer ? ;
  DEDENT          = ? synthetic token emitted by lexer ? ;
-
+ 
  BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
@@ -175,18 +150,12 @@ classdef       = "class" identifier [ "(" identifier { "," identifier } ")" ] ":
 tok_trait = -43,
 ```
 
-Registered in the keyword table:
-
-```cpp
-{"trait", tok_trait}
-```
-
-Trait data is stored in two new structs and one new global map:
+Registered in the keyword table like every other keyword. Trait data lives in two new structs and one new global map:
 
 ```cpp
 struct TraitMethodSig {
   string Name;
-  vector<PrototypeAST::ArgInfo> Args;  // explicit params only — no self
+  vector<FunctionSignatureNode::ParameterInfo> Arguments;  // explicit params only — no self
   ValueType ReturnType = ValueType::None;
   string ReturnStructName;
 };
@@ -199,100 +168,122 @@ struct TraitInfo {
 static std::map<string, TraitInfo> Traits;
 ```
 
-`TraitMethodSig` stores explicit parameters only — `self` is not included. When conformance is checked, the compiler accounts for `self` being at index 0 of the implementing method's prototype by comparing `Req.Args[I]` against `P->getArgType(I + 1)`.
+`TraitMethodSig::Arguments` holds explicit parameters only; `self` isn't included at all. When conformance is checked later, the compiler accounts for `self` sitting at index 0 of the implementing method's real signature by comparing `Req.Arguments[I]` against `P->getParameterType(I + 1)`.
 
 `StructTypeInfo` gains a list of trait names the class declares:
 
 ```cpp
-struct StructTypeInfo {
-  // ...
-  vector<string> ImplementedTraits;  // new
-};
+vector<string> ImplementedTraits;
 ```
 
-`Traits` is cleared on each compiler reset (alongside `FunctionProtos`, `StructTypes`, etc.) so REPL sessions don't accumulate stale trait definitions.
+`Traits` is cleared on every per-file parser reset alongside `FunctionSignatures`, `StructTypes`, and the rest, so REPL sessions and separate file compiles don't accumulate stale trait definitions.
 
-## `ParseTraitDefinition` — Parsing Trait Bodies
+## Parsing Trait Bodies
 
-`ParseTraitDefinition` is structured like `ParseAggregateDefinition` but simpler — no fields, no methods, just signatures:
+`ParseTraitDefinition` is structured like `ParseAggregateDefinition` but simpler: no fields, no method bodies, just signatures. It also checks for name collisions across all three top-level naming tables at once, since a trait name and a struct or alias name would otherwise be free to collide:
 
 ```cpp
 static bool ParseTraitDefinition() {
+  // CurrentToken is 'trait'
   getNextToken(); // eat 'trait'
-  string TraitName = IdentifierStr;
-  // Reject clashes with existing traits, struct types, and type aliases
+  if (CurrentToken != tok_name) {
+    LogErrorExpression("Expected trait name");
+    return false;
+  }
+  string TraitName = Name;
   if (Traits.count(TraitName) || StructTypes.count(TraitName) ||
       TypeAliases.count(TraitName)) {
     LogErrorExpression(("Name '" + TraitName + "' is already defined").c_str());
     return false;
   }
   getNextToken(); // eat trait name
-  // ... eat ':', eat EOL, expect INDENT ...
+  if (CurrentToken != tok_colon)
+    return LogErrorExpression("Expected ':' after trait name"), false;
+  getNextToken(); // eat ':'
+  if (CurrentToken == tok_eol)
+    consumeNewlines();
+  if (CurrentToken != tok_indent)
+    return LogErrorExpression("Expected an indented trait body"), false;
+  getNextToken(); // eat INDENT
 
   TraitInfo TI;
   TI.Name = TraitName;
-  while (CurTok != tok_dedent && ...) {
-    // expect 'def'
-    getNextToken(); // eat 'def'
-    string MethodName = IdentifierStr;
-    getNextToken(); // eat method name
-    // parse '(' params ')' with type annotations (same as prototype parsing)
-    vector<PrototypeAST::ArgInfo> Args;
-    // ... parse each param ...
-
-    // parse optional -> ReturnType
-    ValueType RetType = ParseOptionalReturnTypeWithStruct(RetStructName, ValueType::None);
-
-    // A body (colon) here is an error
-    if (CurTok == ':') {
-      LogErrorExpression("Trait methods cannot have a body");
-      return false;
+  while (CurrentToken != tok_dedent && CurrentToken != tok_block_end && CurrentToken != tok_eof) {
+    if (CurrentToken == tok_eol) {
+      consumeNewlines();
+      continue;
     }
-    // Reject duplicate method names
-    TI.Methods.push_back({MethodName, std::move(Args), RetType, RetStructName});
+    if (CurrentToken != tok_def)
+      return LogErrorExpression("Expected method signature in trait body"), false;
+    getNextToken(); // eat 'def'
+    string MethodName = Name;
+    getNextToken(); // eat method name
+    // ... parse '(' typed-parameter { ',' typed-parameter } ')' into Arguments ...
+    string RetStructName;
+    ValueType RetType =
+        ParseOptionalReturnTypeWithStruct(RetStructName, ValueType::None);
+    if (RetType == ValueType::Error)
+      return false;
+
+    for (const auto &M : TI.Methods) {
+      if (M.Name == MethodName)
+        return LogErrorExpression(("Duplicate trait method '" + MethodName + "'").c_str()), false;
+    }
+    TI.Methods.push_back({MethodName, std::move(Arguments), RetType, RetStructName});
+    if (CurrentToken == tok_colon)
+      return LogErrorExpression("Trait methods cannot have a body"), false;
+    if (CurrentToken == tok_eol)
+      consumeNewlines();
   }
-  // eat DEDENT, inject tok_block_end
+  if (CurrentToken != tok_dedent)
+    return LogErrorExpression("Expected dedent after trait body"), false;
   PendingTokens.push_front(tok_block_end);
-  getNextToken();
+  getNextToken(); // eat DEDENT, then surface tok_block_end
   Traits[TraitName] = std::move(TI);
   return true;
 }
 ```
 
 Key points:
-- `self` is not parsed — it appears in no trait signature.
-- Method bodies are explicitly rejected with an error: "Trait methods cannot have a body".
-- Duplicate method names within one trait are rejected.
-- The name clash check covers `Traits`, `StructTypes`, and `TypeAliases` — a trait name cannot shadow any of these.
+- `self` is never parsed; it appears in no trait signature.
+- A `:` where a next signature or the dedent was expected means someone wrote a body, and that's rejected immediately: "Trait methods cannot have a body".
+- Duplicate method names within one trait are rejected before the duplicate is even added.
+- The name-clash check up front covers `Traits`, `StructTypes`, and `TypeAliases` together, so a trait name can't shadow any of them.
 
-`HandleTraitDef` calls `ParseTraitDefinition` and handles error recovery, then dispatches from both `MainLoop` and `FileModeLoop` on `tok_trait`.
+`HandleTraitDef` calls `ParseTraitDefinition` and handles error recovery the same way `HandleStructDef` and `HandleClassDef` do, and `tok_trait` is wired into the dispatch switch in both `MainLoop` and `FileModeLoop`.
 
 ## Declaring Trait Conformance in the Class Header
 
-`ParseAggregateDefinition` is extended to parse an optional trait list between the class name and the `:`  colon. This only applies to classes (`IsClass == true`):
+`ParseAggregateDefinition` now parses an optional trait list between the class name and the `:`. This only runs for classes (`IsClass == true`) — a `struct` never sees this branch at all, since `IsClass` gates it before the token is even inspected:
 
 ```cpp
 vector<string> ImplementedTraits;
 bool IsClass = (strcmp(KindName, "class") == 0);
-if (IsClass && CurTok == '(') {
+if (IsClass && CurrentToken == tok_lparen) {
   std::set<string> SeenTraits;
   getNextToken(); // eat '('
-  while (CurTok != ')') {
-    string TraitName = IdentifierStr;
-    if (!Traits.count(TraitName)) {
-      LogErrorExpression(("Unknown trait '" + TraitName + "'").c_str());
-      return false;
+  if (CurrentToken != tok_rparen) {
+    while (true) {
+      if (CurrentToken != tok_name)
+        return LogErrorExpression("Expected trait name in class implements list"), false;
+      string TraitName = Name;
+      if (!Traits.count(TraitName))
+        return LogErrorExpression(("Unknown trait '" + TraitName + "'").c_str()), false;
+      if (SeenTraits.count(TraitName))
+        return LogErrorExpression(
+            ("Duplicate trait '" + TraitName + "' in class implements list").c_str()), false;
+      SeenTraits.insert(TraitName);
+      ImplementedTraits.push_back(TraitName);
+      getNextToken(); // eat trait name
+      if (CurrentToken == tok_rparen)
+        break;
+      if (CurrentToken != tok_comma)
+        return LogErrorExpression("Expected ')' or ',' in class implements list"), false;
+      getNextToken(); // eat ','
     }
-    if (SeenTraits.count(TraitName)) {
-      LogErrorExpression(("Duplicate trait '" + TraitName + "' in class implements list").c_str());
-      return false;
-    }
-    SeenTraits.insert(TraitName);
-    ImplementedTraits.push_back(TraitName);
-    getNextToken(); // eat trait name
-    if (CurTok == ')') break;
-    getNextToken(); // eat ','
   }
+  if (CurrentToken != tok_rparen)
+    return LogErrorExpression("Expected ')' after class implements list"), false;
   getNextToken(); // eat ')'
 }
 // ...
@@ -300,75 +291,97 @@ Info.IsClass = IsClass;
 Info.ImplementedTraits = ImplementedTraits;
 ```
 
-Each trait name must already be in `Traits` — forward declarations are not supported. Listing the same trait twice is caught by `SeenTraits`.
+Each trait name has to already be in `Traits`; forward declarations aren't supported, so `trait` blocks have to appear before any class that implements them. Listing the same trait twice is caught by `SeenTraits`. Because `struct` never enters this branch, writing `struct S(Foo):` doesn't fail with an unknown-trait error — it fails one step later with "Expected ':' after struct name", since the parser is still expecting the colon it always expected there.
 
-## `VerifyTraitConformance` — Checking the Class at Close
+## Checking Trait Conformance at Class Close
 
-After parsing the entire class body (at the closing `tok_dedent`), the compiler walks each declared trait and checks conformance. All three of the following must hold for every method in every declared trait:
-
-1. **The method exists.** `ClassName.MethodName` must be in `FunctionProtos`.
-2. **The method is public.** Trait conformance requires the method to be accessible to callers.
-3. **The signature matches exactly.** Return type, return struct name, parameter count, and each parameter type must agree.
+Right after the class body's closing `DEDENT`, if `Info.IsClass` is true, the compiler walks every declared trait and checks three things for every method that trait requires:
 
 ```cpp
-for (const auto &TraitName : Info.ImplementedTraits) {
-  const auto &TI = Traits.at(TraitName);
-  for (const auto &Req : TI.Methods) {
-    // 1. Method must exist
-    auto PI = FunctionProtos.find(StructName + "." + Req.Name);
-    if (PI == FunctionProtos.end()) {
-      LogErrorExpression(("Class '" + StructName + "' does not implement trait '" +
-                TraitName + "' method '" + Req.Name + "'").c_str());
-      return false;
-    }
-    // 2. Method must be public
-    auto MI = Info.MethodIsPublic.find(Req.Name);
-    if (MI == Info.MethodIsPublic.end() || !MI->second) {
-      LogErrorExpression(("Trait method '" + Req.Name + "' on class '" + StructName +
-                "' must be public").c_str());
-      return false;
-    }
-    // 3. Signature must match (Req.Args.size() + 1 because self is at index 0)
-    PrototypeAST *P = PI->second.get();
-    if (P->getNumArgs() != Req.Args.size() + 1 ||
-        P->getReturnType() != Req.ReturnType ||
-        P->getReturnStructName() != Req.ReturnStructName) {
-      LogErrorExpression(("Method '" + Req.Name + "' on class '" + StructName +
-                "' does not match trait signature").c_str());
-      return false;
-    }
-    for (size_t I = 0; I < Req.Args.size(); ++I) {
-      if (P->getArgType(I + 1) != Req.Args[I].Type ||
-          P->getArgStructName(I + 1) != Req.Args[I].StructName) {
-        LogErrorExpression(...);
-        return false;
+if (Info.IsClass) {
+  for (const auto &TraitName : Info.ImplementedTraits) {
+    const auto &TI = Traits.at(TraitName);
+    for (const auto &Req : TI.Methods) {
+      // 1. The method must exist.
+      auto PI = FunctionSignatures.find(StructName + "." + Req.Name);
+      if (PI == FunctionSignatures.end())
+        return LogErrorExpression(("Class '" + StructName + "' does not implement trait '" +
+                  TraitName + "' method '" + Req.Name + "'").c_str()), false;
+
+      // 2. The method must be public.
+      auto MI = Info.MethodIsPublic.find(Req.Name);
+      if (MI == Info.MethodIsPublic.end() || !MI->second)
+        return LogErrorExpression(("Trait method '" + Req.Name + "' on class '" + StructName +
+                  "' must be public").c_str()), false;
+
+      // 3. The signature must match exactly (the +1 skips self).
+      FunctionSignatureNode *P = PI->second.get();
+      if (P->getNumParameters() != Req.Arguments.size() + 1 ||
+          P->getReturnType() != Req.ReturnType ||
+          P->getReturnStructName() != Req.ReturnStructName)
+        return LogErrorExpression(("Method '" + Req.Name + "' on class '" + StructName +
+                  "' does not match trait signature").c_str()), false;
+      for (size_t I = 0; I < Req.Arguments.size(); ++I) {
+        if (P->getParameterType(I + 1) != Req.Arguments[I].Type ||
+            P->getParameterStructName(I + 1) != Req.Arguments[I].StructName)
+          return LogErrorExpression(("Method '" + Req.Name + "' on class '" + StructName +
+                    "' does not match trait signature").c_str()), false;
       }
     }
   }
 }
 ```
 
-The `+ 1` offset in `P->getArgType(I + 1)` is because `self` occupies index 0 of the implementing method but does not appear in `TraitMethodSig::Args` at all.
+`P->getNumParameters() != Req.Arguments.size() + 1` is the same `self`-at-index-0 offset showing up again: the implementing method's own signature always has one more parameter than the trait requires it to declare.
 
 ## What Traits Are Not
 
-There is no dynamic dispatch. There is no vtable. The trait check is purely structural: it verifies that the method exists with the right signature and is public. The generated IR is identical to what you would get without the trait — trait methods are just regular LLVM functions.
+There's no dynamic dispatch and no vtable. The check is purely structural: it verifies a matching, public method exists, nothing more. The generated IR is identical to what a class without the trait declaration would produce — a trait method is just a regular LLVM function, mangled the same way every other method is.
 
-There is no way in this chapter to pass a `Measurable` to a function without knowing the concrete type. Traits are a documentation and enforcement mechanism, not a polymorphism mechanism. Dynamic dispatch comes in a later chapter.
+There's also no way yet to pass a `Measurable` to a function without knowing the concrete class. Traits are a documentation-and-enforcement mechanism here, not a polymorphism mechanism.
 
-## Things Worth Knowing
+## Known Limitations
 
-**Traits must be defined before the classes that implement them.** The trait name lookup happens at class parse time; if the trait does not exist yet, it is an error.
+**Traits must be defined before the classes that implement them.** The trait-name lookup happens while parsing the class header; if the trait doesn't exist yet, `Unknown trait '...'` is reported right there.
 
-**A class can implement multiple traits.** List them comma-separated in the class header. Listing the same trait twice is an error.
+**A class can implement multiple traits.** List them comma-separated in the class header. Listing the same trait twice is rejected.
 
-**Trait methods cannot have bodies.** Writing `:` after a trait method signature is a parse error: "Trait methods cannot have a body".
+**Structs cannot implement traits.** The `(Trait)` syntax is gated on `IsClass`, so it's only reachable after `class`; writing it after `struct` fails on the colon that would otherwise follow the name.
 
-**Structs cannot implement traits.** The `(Trait)` syntax is only valid on `class` definitions.
+## Try It
+
+**Missing trait method**
+
+```pyxc
+trait Measurable:
+  def area() -> int
+
+class Rect(Measurable):
+  w: int
+```
+
+```text
+Error (Line 6, Column 0): Class 'Rect' does not implement trait 'Measurable' method 'area'
+```
+
+**Private implementation of a trait method**
+
+```pyxc
+trait Measurable:
+  def area() -> int
+class Rect(Measurable):
+  w: int
+  private def area() -> int:
+    return self.w
+```
+
+```text
+Error (Line 7, Column 0): Trait method 'area' on class 'Rect' must be public
+```
 
 ## What's Next
 
-[Chapter 30](chapter-30.md) adds `impl` blocks — a way to implement a trait for a class outside the class definition, after the fact.
+[Chapter 30](chapter-30.md) adds `impl` blocks: a way to implement a trait for a class outside the class definition, after the fact.
 
 ## Need Help?
 
@@ -382,4 +395,4 @@ Include:
 - Full error message
 - Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
-We'll figure it out.
+I'll help you figure it out.

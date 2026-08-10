@@ -1,0 +1,9 @@
+extern def printd(x: float64)
+def main() -> int:
+  var i: int = 5
+  var a: int = i++
+  var b: int = ++i
+  printd(float64(a))
+  printd(float64(b))
+  printd(float64(i))
+  return 0

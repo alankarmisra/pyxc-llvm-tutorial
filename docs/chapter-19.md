@@ -3,7 +3,7 @@ description: "Add pointer types, addr() for taking addresses, and p[i] indexing:
 ---
 # 19. pyxc: Pointers
 
-## Where We Are
+## What I Am Building
 
 [Chapter 18](chapter-18.md) gave me structs, but with a catch: structs are passed by value. If I hand a struct to a function and the function modifies a field, my copy back at the call site is unchanged. That's fine for pure computations, and it's a deliberate design choice, but sometimes I actually want to modify the caller's data.
 
@@ -37,22 +37,88 @@ cd pyxc-llvm-tutorial/code/chapter-19
 
 ## Grammar
 
-```ebnf
-type        ::= ...
-              | 'ptr' '[' type ']'   (* pointer to type: no nesting allowed *)
-
-addr-expr   ::= 'addr' '(' lvalue ')'
-
-lvalue      ::= identifier ('.' identifier)*
-
-index-expr  ::= lvalue '[' expression ']' ('.' identifier)*
-
-index-assign ::= lvalue '[' expression ']' ('.' identifier)* '=' expression
+```grammardiff
+ program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
+ end-of-lines            = end-of-line { end-of-line } ;
+ top-level-item             = struct-definition | function-definition | external | top-level-expression ;
+ struct-definition       = "struct" name ":" end-of-lines struct-block ;
+ struct-block     = indent field-declaration { end-of-lines field-declaration } dedent ;
+ field-declaration       = name ":" type ;
+ function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ (* If the return type is omitted, it defaults to None. *)
+ external        = "extern" "def" function-signature [ "->" type ] ;
+ top-level-expression    = expression ;
+ function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
+ typed-parameter      = name ":" type ;
+ if-statement          = "if" expression ":" suite
+                 [ end-of-lines "else" ":" suite ] ;
+ for-statement         = "for"
+                   ( "var" name ":" type | name )
+                   "=" expression "," expression "," expression ":" suite ;
+ variable-statement         = "var" variable-binding { "," variable-binding } ;
+ assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
+ simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
+ compound-statement    = if-statement | for-statement ;
+ statement       = simple-statement | compound-statement ;
+ suite           = simple-statement | compound-statement | end-of-lines block ;
+ return-statement      = "return" [ expression ] ;
+ statement-separator = end-of-lines | BLOCK_END ;
+ block = indent statement { statement-separator statement } dedent ;
+ expression      = comparison ;
+ comparison      = sum { comparison-operator sum } ;
+ comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ sum             = term { ("+" | "-") term } ;
+ term            = unary-expression { ("*" | "/") unary-expression } ;
+-lvalue          = name | field-access ;
++lvalue          = name | field-access | index-expression ;
+ variable-binding      = name ":" type [ "=" expression ] ;
+ unary-expression       = "-" unary-expression | primary ;
+-primary         = cast-expression | name-expression | field-access | number-expression | boolean-literal | parenthesized-expression ;
++primary         = cast-expression | address-expression | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
+ cast-expression        = cast-type "(" expression ")" ;
++address-expression        = "addr" "(" lvalue ")" ;
+ name-expression  = name | call-expression ;
+ call-expression        = name "(" [ expression { "," expression } ] ")" ;
+ field-access     = name "." name { "." name } ;
++index-expression       = name "[" expression "]" ;
+ number-expression      = number ;
+ parenthesized-expression       = "(" expression ")" ;
+ indent          = INDENT ;
+ dedent          = DEDENT ;
+ 
+ name      = (letter | "_") { letter | digit | "_" } ;
+ builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+                 | "bool" | "None" ;
+ struct-type      = name ;
+-type            = builtin-type | struct-type ;
++pointer-type     = "ptr" "[" type "]" ;
++type            = builtin-type | struct-type | pointer-type ;
+ cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+                 | "bool" ;
+ integer         = digit { digit } ;
+ number          = ( digit { digit } [ "." { digit } ]
+                   | "." digit { digit } ) [ exponent ] ;
+ exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
+ boolean-literal    = "True" | "False" ;
+ letter          = "A".."Z" | "a".."z" ;
+ digit           = "0".."9" ;
+ end-of-line             = "\r\n" | "\r" | "\n" ;
+ comment = "#" { comment-character } ;
+ comment-character = ? any character except "\r" and "\n" ? ;
+ whitespace = " " | "\t" | "\v" | "\f" ;
+ INDENT          = ? synthetic token emitted by lexer ? ;
+ DEDENT          = ? synthetic token emitted by lexer ? ;
+ 
+ BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
 `ptr[T]` is a type annotation only: I can't construct one without `addr`. `addr` takes an lvalue (a named variable, optionally followed by field access) and returns a pointer to it. `p[i]` reads or writes the value at offset `i` from the pointer. `p[i].field` chains field access after indexing, for pointers to structs.
 
 Nested pointer types (`ptr[ptr[int]]`) and pointers to `None` are rejected at parse time.
+
+One honest gap between this grammar and the real parser: `index-expression` above is written as `name "[" expression "]"`, a bare name only. But the parser's `ParseIndexExpression` is also called with a field chain as the base (`p.field[i]`, when `p.field` is itself a pointer) — the `.ebnf` file doesn't spell that out as its own alternative. I noticed the same kind of drift between the `.ebnf` file and the real parser back in [Chapter 13](chapter-13.md); this is the same category of thing, not a new problem.
 
 ## Two New Keywords
 
@@ -67,7 +133,7 @@ Registered in the keyword map:
 {"ptr", tok_ptr}, {"addr", tok_addr}
 ```
 
-## `ValueType::Pointer`
+## Representing a Pointer's Type
 
 `Pointer` is a new entry in the `ValueType` enum, after `Struct`. Unlike scalar types, a pointer value isn't self-describing: `ValueType::Pointer` alone doesn't say what the pointer points to. I need the pointee type carried alongside it.
 
@@ -139,7 +205,7 @@ case tok_ptr: {
 }
 ```
 
-The parsed pointee type is immediately encoded and written into the `StructName` output parameter. From this point on, the pointer's pointee information travels with it as an opaque string through `VarScopes`, `FunctionSignatureNode::ArgInfo`, `VariableExprAST`, and every other place that stores a `ValueType` alongside a `StructName`.
+The parsed pointee type is immediately encoded and written into the `StructName` output parameter. From this point on, the pointer's pointee information travels with it as an opaque string through `VarScopes`, `FunctionSignatureNode::ParameterInfo`, `NameExpressionNode`, and every other place that stores a `ValueType` alongside a `StructName`.
 
 ## `addr`: Taking the Address of an Lvalue
 
@@ -170,7 +236,7 @@ The resulting `AddrExpressionNode` has type `ValueType::Pointer` and its `Struct
 
 `addr` only accepts a named variable, optionally with field access. Expressions like `addr(1 + 2)` are rejected immediately: the parser checks for `tok_name` right after the opening `(`.
 
-### `AddrExpressionNode::codegen`
+### Codegen for `addr`
 
 ```cpp
 Value *AddrExpressionNode::codegen() {
@@ -194,21 +260,23 @@ For a local variable, LLVM already represents it as an `alloca`: a pointer to it
 ```llvm
 ; var x: int = 42
 ; var p: ptr[int] = addr(x)
-%x = alloca i64
-store i64 42, ptr %x
-%p = alloca ptr
-store ptr %x, ptr %p   ; addr(x) is just %x: the alloca itself
+%p = alloca ptr, align 8
+%x = alloca i64, align 8
+store i64 42, ptr %x, align 8
+store ptr %x, ptr %p, align 8   ; addr(x) is just %x: the alloca itself
 ```
 
 ```llvm
 ; var pt: Point
 ; var px: ptr[int] = addr(pt.x)
-%pt = alloca %struct.Point
-...
-%fieldptr = getelementptr inbounds %struct.Point, ptr %pt, i32 0, i32 0
-%px = alloca ptr
-store ptr %fieldptr, ptr %px
+%px = alloca ptr, align 8
+%pt = alloca %struct.Point, align 8
+store %struct.Point zeroinitializer, ptr %pt, align 8
+%fieldptr = getelementptr inbounds nuw %struct.Point, ptr %pt, i32 0, i32 0
+store ptr %fieldptr, ptr %px, align 8
 ```
+
+`%p`/`%px` show up before `%x`/`%pt` in the IR even though they're declared second in the source: `CreateEntryBlockAlloca` inserts every new `alloca` at the very front of the entry block (`TheFunction->getEntryBlock().begin()`), not after whatever's already there, so each variable's `alloca` ends up ahead of every one declared before it.
 
 ## `p[i]`: Pointer Indexing
 
@@ -235,7 +303,7 @@ static unique_ptr<ExpressionNode> ParseIndexExpression(string BaseName,
 
 The element type (what the pointer points to) is decoded from the encoded string in `BaseStructName`.
 
-### `BuildIndexElementPtr`: the shared address computation
+### The Shared Address Computation
 
 Both reads and writes need the element address. `BuildIndexElementPtr` computes it without loading:
 
@@ -307,7 +375,7 @@ The implicit cast rules from chapter 16 apply: assigning an integer to a `ptr[fl
 
 For pointers to structs, I can chain field access after the index: `p[0].x`. This needs a separate AST node because the base is an index expression, not a named variable.
 
-### `IndexedFieldExpressionNode`
+### AST Node for Indexed Field Access
 
 ```cpp
 class IndexedFieldExpressionNode : public ExpressionNode {
@@ -382,11 +450,14 @@ def main() -> int:
 ```llvm
 define void @set_value(ptr %p, i64 %v) {
 entry:
-  %p.addr = alloca ptr
-  store ptr %p, ptr %p.addr
-  %ptrload = load ptr, ptr %p.addr
+  %v2 = alloca i64, align 8
+  %p1 = alloca ptr, align 8
+  store ptr %p, ptr %p1, align 8
+  store i64 %v, ptr %v2, align 8
+  %ptrload = load ptr, ptr %p1, align 8
   %elemptr = getelementptr inbounds i64, ptr %ptrload, i64 0
-  store i64 %v, ptr %elemptr
+  %v3 = load i64, ptr %v2, align 8
+  store i64 %v3, ptr %elemptr, align 8
   ret void
 }
 ```
@@ -395,7 +466,7 @@ The pointer is passed by value (it's just an address), but the store through it 
 
 Pointer arguments are type-checked: passing `ptr[float64]` where `ptr[int]` is expected is a type error.
 
-## Parse Flow in `ParseNameExpression`
+## Parse Flow for Name Expressions
 
 The full sequence of what `ParseNameExpression` handles, in order:
 
@@ -532,4 +603,4 @@ Include:
 - Full error message
 - Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
-We'll figure it out.
+I'll help you figure it out.

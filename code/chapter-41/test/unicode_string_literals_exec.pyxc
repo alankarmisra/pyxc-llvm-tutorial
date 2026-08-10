@@ -1,0 +1,17 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: Hi
+# CHECK-NEXT: Hi
+# CHECK-NEXT: café Ω 🙂
+# CHECK-NEXT: café Ω 🙂
+
+# Tests: strings encode octal and Unicode escapes as UTF-8 and validate raw UTF-8.
+
+extern def puts(s: ptr[int8]) -> int
+
+def main() -> int:
+  puts("\110\151")
+  puts("\x48\x69")
+  puts("caf\u00E9 \u03A9 \U0001F642")
+  puts("café Ω 🙂")
+  return 0

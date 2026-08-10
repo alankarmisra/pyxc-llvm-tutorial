@@ -1,0 +1,10 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: fpext float %{{.*}} to double
+
+# Tests: float32 values can be widened to float64 implicitly.
+
+def main() -> None:
+    var a: float32 = 1.5
+    var b: float64 = a
+    return

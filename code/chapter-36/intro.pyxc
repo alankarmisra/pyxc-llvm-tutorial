@@ -1,0 +1,14 @@
+extern def printd(x: float64)
+
+def day_type(d: int) -> int:
+  var result: int = 0
+  switch d:
+    case 0, 6:
+      result = 2   # Sunday or Saturday
+    default:
+      result = 1   # weekday
+  return result
+
+def main() -> int:
+  printd(float64(day_type(0) + day_type(3) + day_type(6)))
+  return 0

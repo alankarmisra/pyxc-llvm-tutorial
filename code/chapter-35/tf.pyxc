@@ -1,0 +1,4 @@
+def main() -> int:
+  var x: float64 = 1.0
+  var y: float64 = ~x
+  return 0

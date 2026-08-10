@@ -3,9 +3,9 @@ description: "Add type parameters to traits: trait Addable[T] declares a contrac
 ---
 # 31. pyxc: Generic Traits
 
-## Where We Are
+## What I Am Building
 
-[Chapter 30](chapter-30.md) added `impl` blocks. A trait is still limited to concrete types — `trait Adder` specifies `int` parameters explicitly. After this chapter, a trait can name an abstract type parameter and leave the concrete type to be supplied by each implementor:
+[Chapter 30](chapter-30.md) added `impl` blocks. A trait was still limited to concrete types: `trait Adder` had to spell out `int` parameters explicitly. After this chapter, a trait can name an abstract type parameter and leave the concrete type to be supplied by each implementor:
 
 ```pyxc
 extern def printd(x: float64)
@@ -28,11 +28,11 @@ def main() -> int:
   return 0
 ```
 
-```
+```text
 11.000000
 ```
 
-`Addable[int]` and `Addable[float64]` are separate contracts. A class can implement both with separate `impl` blocks.
+`Addable[int]` and `Addable[float64]` are separate contracts. A class can satisfy either one, though — as I found out while testing this chapter — not both at once on the same class (see Known Limitations).
 
 ## Source Code
 
@@ -43,23 +43,12 @@ cd pyxc-llvm-tutorial/code/chapter-31
 
 ## Grammar
 
-`traitdef` gains an optional type parameter. `classdef` and `impldef` use `traitref` wherever they previously used a bare identifier.
-
-```ebnf
-traitdef  = "trait" identifier [ "[" identifier "]" ] ":" eols traitblock ;  -- changed
-classdef  = "class" identifier [ "(" traitref { "," traitref } ")" ] ":" eols structblock ;  -- changed
-traitref  = identifier [ "[" type "]" ] ;  -- new
-impldef   = "impl" traitref "for" identifier ":" eols implblock ;  -- changed
-```
-
-### Grammar
-
-`code/chapter-31/pyxc.ebnf`
+`trait-definition` gains an optional type parameter. `class-definition` and `implementation-definition` use a new `trait-reference` production wherever they previously used a bare trait name:
 
 ```grammardiff
  program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
  end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | decorated-function-definition | external | top-level-expression ;
+ top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | external | top-level-expression ;
  type-alias       = "type" name "=" type ;
 -trait-definition        = "trait" name ":" end-of-lines trait-block ;
 +trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
@@ -81,12 +70,6 @@ impldef   = "impl" traitref "for" identifier ":" eols implblock ;  -- changed
  field-declaration       = name ":" type ;
  function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
  (* If the return type is omitted, it defaults to None. *)
- decorated-function-definition    = binary-decorator end-of-lines "def" binary-operator-signature [ "->" type ] ":" ( simple-statement | end-of-lines block )
-                 | unary-decorator  end-of-lines "def" unary-operator-signature  [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- binary-decorator = "@" "binary" "(" integer ")" ;
- unary-decorator  = "@" "unary" ;
- binary-operator-signature = custom-operator-character "(" typed-parameter "," typed-parameter ")" ;
- unary-operator-signature  = custom-operator-character "(" typed-parameter ")" ;
  external        = "extern" "def" function-signature [ "->" type ] ;
  top-level-expression    = expression ;
  function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
@@ -105,12 +88,14 @@ impldef   = "impl" traitref "for" identifier ":" eols implblock ;  -- changed
  return-statement      = "return" [ expression ] ;
  statement-separator = end-of-lines | BLOCK_END ;
  block = indent statement { statement-separator statement } dedent ;
- expression      = unary-expression binary-operator-right ;
- binary-operator-right        = { binary-operator unary-expression } ;
+ expression      = comparison ;
+ comparison      = sum { comparison-operator sum } ;
+ comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ sum             = term { ("+" | "-") term } ;
+ term            = unary-expression { ("*" | "/") unary-expression } ;
  lvalue          = name | field-access | index-expression ;
  variable-binding      = name ":" type [ "=" expression ] ;
- unary-expression       = unary-operator unary-expression | primary ;
- unary-operator         = "-" | user-defined-unary-operator ;
+ unary-expression       = "-" unary-expression | primary ;
  primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
  cast-expression        = cast-type "(" expression ")" ;
  sizeof-expression      = "sizeof" "(" type ")" ;
@@ -126,16 +111,9 @@ impldef   = "impl" traitref "for" identifier ":" eols implblock ;  -- changed
  string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
  escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
  parenthesized-expression       = "(" expression ")" ;
- binary-operator        = builtin-binary-operator | user-defined-binary-operator ;
  indent          = INDENT ;
  dedent          = DEDENT ;
-
- builtin-binary-operator = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
- user-defined-binary-operator = ? any operator-character defined as a custom binary operator ? ;
- user-defined-unary-operator  = ? any operator-character defined as a custom unary operator ? ;
- custom-operator-character    = ? any operator-character that is not "-" or a builtin-binary-operator,
-                     and not already defined as a custom operator ? ;
- operator-character          = ? any single ASCII punctuation character ? ;
+ 
  name      = (letter | "_") { letter | digit | "_" } ;
  builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
                  | "float" | "float32" | "float64"
@@ -162,13 +140,13 @@ impldef   = "impl" traitref "for" identifier ":" eols implblock ;  -- changed
  whitespace = " " | "\t" | "\v" | "\f" ;
  INDENT          = ? synthetic token emitted by lexer ? ;
  DEDENT          = ? synthetic token emitted by lexer ? ;
-
+ 
  BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
-## `ValueType::TypeVar` and `ActiveTypeParams`
+## Representing an Unresolved Type Parameter
 
-A new enum value represents an unresolved type parameter inside a trait body:
+A new `ValueType` enum value represents an unresolved type parameter inside a trait body:
 
 ```cpp
 enum class ValueType {
@@ -183,173 +161,218 @@ The set of currently active type parameter names is tracked in a global:
 static std::set<string> ActiveTypeParams;
 ```
 
-`ParseTraitDefinition` populates this set before parsing the trait body and clears it after:
+`ParseTypeToken` checks `ActiveTypeParams` before falling back to alias and struct lookup. If the name is active, it returns `ValueType::TypeVar` and stores the parameter name itself as the struct name:
 
 ```cpp
-TI.TypeParamName = TypeParamName;
-ActiveTypeParams.clear();
-if (!TypeParamName.empty())
-  ActiveTypeParams.insert(TypeParamName);
-// ... parse body ...
-ActiveTypeParams.clear();  // reset after body closes
-```
-
-`ParseTypeToken` checks `ActiveTypeParams` before treating an unknown identifier as an error. If the name is active, it returns `ValueType::TypeVar` and stores the parameter name as the struct name:
-
-```cpp
-if (ActiveTypeParams.count(TyName)) {
-  getNextToken();
-  if (StructName) *StructName = TyName;
-  return ValueType::TypeVar;
+case tok_name: {
+  string TyName = Name;
+  if (ActiveTypeParams.count(TyName)) {
+    getNextToken();
+    if (StructName)
+      *StructName = TyName;
+    return ValueType::TypeVar;
+  }
+  // ...alias lookup, then struct lookup, as before...
 }
 ```
 
-This means `T` in `def add(x: T, y: T) -> T` resolves to `(ValueType::TypeVar, "T")` rather than failing as an unknown type. Outside a trait body, `T` has no meaning and would fall through to the normal identifier handling.
+This is why `T` in `def add(x: T, y: T) -> T` resolves to `(ValueType::TypeVar, "T")` instead of failing as an unknown type: the check runs first, before the alias and struct maps are even consulted. Outside a trait body `ActiveTypeParams` is empty, so `T` falls straight through to the ordinary unknown-type error.
 
-## Parsing the Type Parameter in `ParseTraitDefinition`
+## Parsing the Trait's Type Parameter
 
-`ParseTraitDefinition` checks for an optional `[Param]` after the trait name:
+`ParseTraitDefinition` checks for an optional `[Param]` right after the trait name, before the `:`:
 
 ```cpp
+getNextToken(); // eat trait name
 string TypeParamName;
-if (CurTok == '[') {
+if (CurrentToken == tok_lbracket) {
   getNextToken(); // eat '['
-  if (CurTok != tok_identifier) {
-    LogErrorExpression("Expected type parameter name in trait definition");
-    return false;
-  }
-  TypeParamName = IdentifierStr;
+  if (CurrentToken != tok_name)
+    return LogErrorExpression("Expected type parameter name in trait definition"), false;
+  TypeParamName = Name;
   getNextToken(); // eat type parameter name
-  if (CurTok != ']') {
-    LogErrorExpression("Expected ']' after trait type parameter");
-    return false;
-  }
+  if (CurrentToken != tok_rbracket)
+    return LogErrorExpression("Expected ']' after trait type parameter"), false;
   getNextToken(); // eat ']'
 }
+if (CurrentToken != tok_colon)
+  return LogErrorExpression("Expected ':' after trait name"), false;
+// ...eat ':', consume newlines, expect INDENT...
+
+TraitInfo TI;
+TI.Name = TraitName;
 TI.TypeParamName = TypeParamName;
 ActiveTypeParams.clear();
 if (!TypeParamName.empty())
   ActiveTypeParams.insert(TypeParamName);
 ```
 
-`TypeParamName` is stored on `TraitInfo`. An empty `TypeParamName` means the trait is non-generic.
+`TypeParamName` is stored on `TraitInfo`. An empty `TypeParamName` means the trait isn't generic, and `ActiveTypeParams` stays empty for the whole body — every `T`-like name in a non-generic trait is still just an ordinary, probably-unknown identifier.
 
-## `ImplTraitRef` — Carrying the Type Argument
+## Carrying the Type Argument
 
-In chapter 29, `ImplementedTraits` was a `vector<string>`. This chapter replaces the element type with `ImplTraitRef`, which carries both the trait name and the concrete type argument supplied at the impl or class header:
+In [Chapter 29](chapter-29.md), `StructTypeInfo::ImplementedTraits` was a `vector<string>`. This chapter replaces the element type with a nested struct, `StructTypeInfo::ImplTraitRef`, that carries both the trait name and the concrete type argument supplied at the class header or the `impl` header:
 
 ```cpp
-struct ImplTraitRef {
-  string TraitName;
-  bool HasTypeArg = false;
-  ValueType TypeArg = ValueType::Error;
-  string TypeArgStructName;
+struct StructTypeInfo {
+  // ...
+  struct ImplTraitRef {
+    string TraitName;
+    bool HasTypeArg = false;
+    ValueType TypeArg = ValueType::Error;
+    string TypeArgStructName;
+  };
+  vector<ImplTraitRef> ImplementedTraits;
 };
 ```
 
-Both `ParseAggregateDefinition` (class header) and `ParseImplDefinition` (impl header) parse the optional `[type]` and fill this struct:
+Both `ParseAggregateDefinition` (class header) and `ParseImplDefinition` (impl header) parse the optional `[type]` and fill one of these:
 
 ```cpp
 StructTypeInfo::ImplTraitRef Ref;
 Ref.TraitName = TraitName;
-if (!TraitDef.TypeParamName.empty()) {
+const auto &TI = Traits.at(TraitName);
+if (!TI.TypeParamName.empty()) {
   // trait requires a type argument
-  if (CurTok != '[') {
-    LogErrorExpression(("Trait '" + TraitName + "' requires a type argument").c_str());
-    return false;
-  }
+  if (CurrentToken != tok_lbracket)
+    return LogErrorExpression(("Trait '" + TraitName + "' requires a type argument").c_str()), false;
   getNextToken(); // eat '['
+  string TypeArgStruct;
   ValueType TypeArg = ParseTypeToken(&TypeArgStruct);
-  // validate — must be a concrete type (not TypeVar, not Error, not None)
+  if (TypeArg == ValueType::Error || TypeArg == ValueType::None ||
+      TypeArg == ValueType::TypeVar)
+    return LogErrorExpression("Invalid trait type argument"), false;
+  if (CurrentToken != tok_rbracket)
+    return LogErrorExpression("Expected ']' after trait type argument"), false;
   getNextToken(); // eat ']'
   Ref.HasTypeArg = true;
   Ref.TypeArg = TypeArg;
   Ref.TypeArgStructName = TypeArgStruct;
-} else if (CurTok == '[') {
-  LogErrorExpression(("Trait '" + TraitName + "' does not take type arguments").c_str());
-  return false;
+} else if (CurrentToken == tok_lbracket) {
+  return LogErrorExpression(("Trait '" + TraitName + "' does not take type arguments").c_str()), false;
 }
 ```
 
-The duplicate impl check is updated to compare full `ImplTraitRef` values using a `SameImpl` lambda, so `impl Addable[int] for Calc` and `impl Addable[float64] for Calc` are treated as distinct and both allowed.
+In the `impl`-header path, the duplicate-impl check from [Chapter 30](chapter-30.md) is upgraded from comparing trait names to comparing full `ImplTraitRef`s with a `SameImpl` lambda:
 
-## `VerifyTraitConformance` with Type Substitution
+```cpp
+auto SameImpl = [&](const StructTypeInfo::ImplTraitRef &R) {
+  return R.TraitName == ImplRef.TraitName &&
+         R.HasTypeArg == ImplRef.HasTypeArg && R.TypeArg == ImplRef.TypeArg &&
+         R.TypeArgStructName == ImplRef.TypeArgStructName;
+};
+```
 
-`VerifyTraitConformance` now takes an `ImplTraitRef` instead of a bare `string`, and substitutes the concrete type for every `TypeVar` occurrence in the trait signature before comparing:
+So two separate `impl` blocks, `impl Addable[int] for Calc:` and `impl Addable[float64] for Calc:`, are recognized as different implementations, not a duplicate of each other — at the `impl`-header level. The class-header trait list is a different story; see Known Limitations.
+
+## Conformance Checking with Type Substitution
+
+`VerifyTraitConformance` now takes an `ImplTraitRef` instead of a bare trait-name string, checks that the trait's own type-parameter-ness agrees with whether an argument was supplied, then substitutes the concrete type for every `TypeVar` occurrence before comparing signatures:
 
 ```cpp
 static bool VerifyTraitConformance(const string &ClassName,
                                    const StructTypeInfo::ImplTraitRef &ImplRef) {
   const string &TraitName = ImplRef.TraitName;
+  auto CI = StructTypes.find(ClassName);
+  if (CI == StructTypes.end() || !CI->second.IsClass)
+    return LogErrorExpression(("Unknown class '" + ClassName + "'").c_str()), false;
+  if (!Traits.count(TraitName))
+    return LogErrorExpression(("Unknown trait '" + TraitName + "'").c_str()), false;
   const auto &TI = Traits.at(TraitName);
+  if (!TI.TypeParamName.empty() && !ImplRef.HasTypeArg)
+    return LogErrorExpression(("Trait '" + TraitName + "' requires a type argument").c_str()), false;
+  if (TI.TypeParamName.empty() && ImplRef.HasTypeArg)
+    return LogErrorExpression(("Trait '" + TraitName + "' does not take type arguments").c_str()), false;
 
-  // Verify type-arg consistency
-  if (!TI.TypeParamName.empty() && !ImplRef.HasTypeArg) {
-    LogErrorExpression(("Trait '" + TraitName + "' requires a type argument").c_str());
-    return false;
-  }
-
-  // Lambda: resolve TypeVar → concrete type, leave everything else unchanged
-  auto ResolveReq = [&](ValueType T, const string &S)
-      -> std::pair<ValueType, string> {
+  const auto &ClassInfo = CI->second;
+  auto ResolveReq = [&](ValueType T,
+                        const string &S) -> std::pair<ValueType, string> {
     if (T == ValueType::TypeVar && S == TI.TypeParamName)
       return {ImplRef.TypeArg, ImplRef.TypeArgStructName};
     return {T, S};
   };
-
   for (const auto &Req : TI.Methods) {
-    // check method exists, is public ...
+    // ...method exists, is public, same as chapter 30...
+    FunctionSignatureNode *P = /* ... */;
     auto ReqRet = ResolveReq(Req.ReturnType, Req.ReturnStructName);
-    if (P->getReturnType() != ReqRet.first ||
-        P->getReturnStructName() != ReqRet.second) {
-      LogErrorExpression("does not match trait signature");
-      return false;
-    }
-    for (size_t I = 0; I < Req.Args.size(); ++I) {
-      auto ReqArg = ResolveReq(Req.Args[I].Type, Req.Args[I].StructName);
-      if (P->getArgType(I + 1) != ReqArg.first ||
-          P->getArgStructName(I + 1) != ReqArg.second) {
-        LogErrorExpression("does not match trait signature");
-        return false;
-      }
+    if (P->getNumParameters() != Req.Arguments.size() + 1 ||
+        P->getReturnType() != ReqRet.first ||
+        P->getReturnStructName() != ReqRet.second)
+      return LogErrorExpression("does not match trait signature"), false;
+    for (size_t I = 0; I < Req.Arguments.size(); ++I) {
+      auto ReqArg = ResolveReq(Req.Arguments[I].Type, Req.Arguments[I].StructName);
+      if (P->getParameterType(I + 1) != ReqArg.first ||
+          P->getParameterStructName(I + 1) != ReqArg.second)
+        return LogErrorExpression("does not match trait signature"), false;
     }
   }
   return true;
 }
 ```
 
-For a non-generic trait, `ResolveReq` always returns its arguments unchanged — conformance works identically to chapter 29.
-
-## Error Cases
-
-**Missing type argument on a generic trait:**
-```pyxc
-class Bad(Addable):   # Error: Trait 'Addable' requires a type argument
-```
-
-**Spurious type argument on a non-generic trait:**
-```pyxc
-impl Adder[int] for Calc:  # Error: Trait 'Adder' does not take type arguments
-```
-
-**Wrong concrete type in the method:**
-```pyxc
-impl Addable[int] for Bad:
-  def add(x: int, y: float64) -> int:  # Error: does not match trait signature
-    return x
-```
+For a non-generic trait, every `Req` type is already concrete, so `ResolveReq` always returns its arguments unchanged: conformance works exactly as it did in [Chapter 30](chapter-30.md).
 
 ## What This Is Not
 
-Type parameters exist only on trait signatures. There are no generic functions, no generic structs, and no generic classes. `T` cannot appear in a field declaration, a variable type, or a function return type outside a trait body. The feature is deliberately narrow: it solves the specific problem of writing a single trait that applies to multiple element types without adding a general generics system.
+Type parameters exist only on trait signatures. There are no generic functions, no generic structs, and no generic classes. `T` can't appear in a field declaration, a variable type, or a function return type outside a trait body — `ActiveTypeParams` is only ever populated while a trait body is being parsed.
 
-## Things Worth Knowing
+There's also no dynamic dispatch here, same as [Chapter 29](chapter-29.md): a generic trait is still a compile-time-checked contract, not a mechanism for writing code that's polymorphic over "anything implementing `Addable[T]`."
 
-**The type parameter name is just a label.** `trait Addable[T]` and `trait Addable[Element]` are equivalent.
+## Known Limitations
 
-**A class can implement the same generic trait with different type arguments.** `class Calc(Addable[int], Addable[float64]):` is valid. Each instantiation is verified separately.
+**A class cannot implement the same generic trait twice, even with different type arguments.** I initially assumed `class Calc(Addable[int], Addable[float64]):` would work, since `impl`'s own duplicate check (`SameImpl`) does account for the type argument. But I tried it and it doesn't: the class-header trait list's duplicate check, unchanged since [Chapter 29](chapter-29.md), only compares trait *names*, so it rejects `Addable[int], Addable[float64]` as a duplicate before type arguments ever enter into it. And even sidestepping the header by using two separate `impl` blocks instead, both implementations of `Addable[T]` need a method literally named `add` — there's no per-instantiation mangling, so the second `impl`'s `def add` collides with the first's under the ordinary "Method 'add' is already defined on 'Calc'" redefinition error. I confirmed both failure modes directly rather than assume either worked.
 
-**`TypeVar` does not appear in the IR.** Conformance resolves all `TypeVar` occurrences to concrete types at compile time. The generated methods use `i64`, `double`, or whatever LLVM type corresponds to the argument.
+**Type arguments must be concrete.** `ValueType::TypeVar` itself is rejected as a type argument, so a generic trait can't be implemented in terms of another trait's still-unresolved type parameter.
+
+**No forward references.** A trait must exist before any class or `impl` references it, same restriction [Chapter 29](chapter-29.md) already had.
+
+## Try It
+
+**Missing type argument on a generic trait**
+
+```pyxc
+trait Addable[T]:
+  def add(x: T, y: T) -> T
+
+class Bad(Addable):
+  x: int
+```
+
+```text
+Error (Line 4, Column 18): Trait 'Addable' requires a type argument
+```
+
+**Spurious type argument on a non-generic trait**
+
+```pyxc
+trait Adder:
+  def add(x: int, y: int) -> int
+class Calc:
+  x: int
+impl Adder[int] for Calc:
+  def add(x: int, y: int) -> int:
+    return x
+```
+
+```text
+Error (Line 5, Column 11): Trait 'Adder' does not take type arguments
+```
+
+**Wrong concrete type in the method**
+
+```pyxc
+trait Addable[T]:
+  def add(x: T, y: T) -> T
+class Bad:
+  x: int
+impl Addable[int] for Bad:
+  def add(x: int, y: float64) -> int:
+    return x
+```
+
+```text
+Error (Line 8, Column 0): Method 'add' on class 'Bad' does not match trait signature
+```
 
 ## Build and Run
 
@@ -357,6 +380,10 @@ Type parameters exist only on trait signatures. There are no generic functions, 
 cd code/chapter-31
 cmake -S . -B build && cmake --build build
 ```
+
+## What's Next
+
+[Chapter 32](chapter-32.md) closes a long-standing gap in the arithmetic: `/` and `%`, five compound-assignment operators, and prefix/postfix `++`/`--`.
 
 ## Need Help?
 
@@ -370,4 +397,4 @@ Include:
 - Full error message
 - Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
-We'll figure it out.
+I'll help you figure it out.

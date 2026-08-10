@@ -528,6 +528,202 @@ static int peek() {
   return c;
 }
 
+enum class LiteralDecodeError {
+  None,
+  InvalidEscape,
+  InvalidUtf8,
+  InvalidCodePoint,
+};
+
+static int HexDigitValue(int Ch) {
+  if (Ch >= '0' && Ch <= '9')
+    return Ch - '0';
+  if (Ch >= 'a' && Ch <= 'f')
+    return Ch - 'a' + 10;
+  if (Ch >= 'A' && Ch <= 'F')
+    return Ch - 'A' + 10;
+  return -1;
+}
+
+static bool IsUnicodeScalarValue(uint32_t Value) {
+  return Value <= 0x10FFFF && !(Value >= 0xD800 && Value <= 0xDFFF);
+}
+
+// I decode one escaped or raw UTF-8 code point and leave LexerLastChar at the
+// first byte after it. I use this path for character and string literals.
+static LiteralDecodeError DecodeLiteralCodePoint(uint32_t &Value) {
+  if (LexerLastChar == '\\') {
+    LexerLastChar = advance(); // eat the backslash
+    switch (LexerLastChar) {
+    case 'a':
+      Value = '\a';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'b':
+      Value = '\b';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'f':
+      Value = '\f';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'n':
+      Value = '\n';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'r':
+      Value = '\r';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 't':
+      Value = '\t';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'v':
+      Value = '\v';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case '\\':
+      Value = '\\';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case '\'':
+      Value = '\'';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case '"':
+      Value = '"';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case '?':
+      Value = '?';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'x': {
+      int High = HexDigitValue(advance());
+      int Low = HexDigitValue(advance());
+      if (High < 0 || Low < 0)
+        return LiteralDecodeError::InvalidEscape;
+      Value = static_cast<uint32_t>((High << 4) | Low);
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    }
+    case 'u':
+    case 'U': {
+      int Digits = LexerLastChar == 'u' ? 4 : 8;
+      Value = 0;
+      for (int I = 0; I < Digits; ++I) {
+        int Digit = HexDigitValue(advance());
+        if (Digit < 0)
+          return LiteralDecodeError::InvalidEscape;
+        Value = (Value << 4) | static_cast<uint32_t>(Digit);
+      }
+      LexerLastChar = advance();
+      if (!IsUnicodeScalarValue(Value))
+        return LiteralDecodeError::InvalidCodePoint;
+      return LiteralDecodeError::None;
+    }
+    default:
+      if (LexerLastChar < '0' || LexerLastChar > '7')
+        return LiteralDecodeError::InvalidEscape;
+
+      Value = 0;
+      for (int I = 0; I < 3; ++I) {
+        Value = (Value << 3) |
+                static_cast<uint32_t>(LexerLastChar - '0');
+        int Next = peek();
+        if (I == 2 || Next < '0' || Next > '7') {
+          LexerLastChar = advance();
+          break;
+        }
+        LexerLastChar = advance();
+      }
+      return LiteralDecodeError::None;
+    }
+  }
+
+  unsigned Lead = static_cast<unsigned char>(LexerLastChar);
+  if (Lead < 0x80) {
+    Value = Lead;
+    LexerLastChar = advance();
+    return LiteralDecodeError::None;
+  }
+
+  int Length = 0;
+  uint32_t Minimum = 0;
+  if (Lead >= 0xC2 && Lead <= 0xDF) {
+    Length = 2;
+    Value = Lead & 0x1F;
+    Minimum = 0x80;
+  } else if (Lead >= 0xE0 && Lead <= 0xEF) {
+    Length = 3;
+    Value = Lead & 0x0F;
+    Minimum = 0x800;
+  } else if (Lead >= 0xF0 && Lead <= 0xF4) {
+    Length = 4;
+    Value = Lead & 0x07;
+    Minimum = 0x10000;
+  } else {
+    return LiteralDecodeError::InvalidUtf8;
+  }
+
+  for (int I = 1; I < Length; ++I) {
+    int Next = advance();
+    if (Next == EOF || (Next & 0xC0) != 0x80)
+      return LiteralDecodeError::InvalidUtf8;
+    Value = (Value << 6) | static_cast<uint32_t>(Next & 0x3F);
+  }
+  LexerLastChar = advance();
+
+  if (Value < Minimum)
+    return LiteralDecodeError::InvalidUtf8;
+  if (!IsUnicodeScalarValue(Value))
+    return LiteralDecodeError::InvalidCodePoint;
+  return LiteralDecodeError::None;
+}
+
+static void AppendUtf8(string &Output, uint32_t Value) {
+  if (Value <= 0x7F) {
+    Output.push_back(static_cast<char>(Value));
+  } else if (Value <= 0x7FF) {
+    Output.push_back(static_cast<char>(0xC0 | (Value >> 6)));
+    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
+  } else if (Value <= 0xFFFF) {
+    Output.push_back(static_cast<char>(0xE0 | (Value >> 12)));
+    Output.push_back(static_cast<char>(0x80 | ((Value >> 6) & 0x3F)));
+    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
+  } else {
+    Output.push_back(static_cast<char>(0xF0 | (Value >> 18)));
+    Output.push_back(static_cast<char>(0x80 | ((Value >> 12) & 0x3F)));
+    Output.push_back(static_cast<char>(0x80 | ((Value >> 6) & 0x3F)));
+    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
+  }
+}
+
+static int LogLiteralDecodeError(LiteralDecodeError Error,
+                                 const char *LiteralKind) {
+  const char *Message = nullptr;
+  switch (Error) {
+  case LiteralDecodeError::InvalidEscape:
+    fprintf(stderr, "Error (Line %d, Column %d): invalid %s escape\n",
+            CurLoc.Line, CurLoc.Col, LiteralKind);
+    PrintErrorSourceContext(CurLoc);
+    return tok_error;
+  case LiteralDecodeError::InvalidUtf8:
+    Message = "invalid UTF-8";
+    break;
+  case LiteralDecodeError::InvalidCodePoint:
+    Message = "invalid Unicode code point";
+    break;
+  case LiteralDecodeError::None:
+    return tok_error;
+  }
+  fprintf(stderr, "Error (Line %d, Column %d): %s in %s literal\n",
+          CurLoc.Line, CurLoc.Col, Message, LiteralKind);
+  PrintErrorSourceContext(CurLoc);
+  return tok_error;
+}
+
 /// getToken - Return the next token from standard input.
 ///
 /// LastChar holds the last character read by advance() but not yet consumed
@@ -719,34 +915,11 @@ static int getToken() {
     LexerLastChar = advance(); // eat opening quote
     while (LexerLastChar != '"' && LexerLastChar != EOF &&
            LexerLastChar != '\n') {
-      if (LexerLastChar == '\\') {
-        LexerLastChar = advance();
-        switch (LexerLastChar) {
-        case '\\':
-          StringLiteralStr.push_back('\\');
-          break;
-        case '"':
-          StringLiteralStr.push_back('"');
-          break;
-        case 'n':
-          StringLiteralStr.push_back('\n');
-          break;
-        case 't':
-          StringLiteralStr.push_back('\t');
-          break;
-        case '0':
-          StringLiteralStr.push_back('\0');
-          break;
-        default:
-          fprintf(stderr, "Error (Line %d, Column %d): invalid string escape\n",
-                  CurLoc.Line, CurLoc.Col);
-          PrintErrorSourceContext(CurLoc);
-          return tok_error;
-        }
-      } else {
-        StringLiteralStr.push_back(static_cast<char>(LexerLastChar));
-      }
-      LexerLastChar = advance();
+      uint32_t Value = 0;
+      LiteralDecodeError Error = DecodeLiteralCodePoint(Value);
+      if (Error != LiteralDecodeError::None)
+        return LogLiteralDecodeError(Error, "string");
+      AppendUtf8(StringLiteralStr, Value);
     }
 
     if (LexerLastChar != '"') {
@@ -771,36 +944,9 @@ static int getToken() {
     }
 
     uint32_t Value = 0;
-    if (LexerLastChar == '\\') {
-      LexerLastChar = advance();
-      switch (LexerLastChar) {
-      case '\\':
-        Value = '\\';
-        break;
-      case '\'':
-        Value = '\'';
-        break;
-      case 'n':
-        Value = '\n';
-        break;
-      case 't':
-        Value = '\t';
-        break;
-      case '0':
-        Value = '\0';
-        break;
-      default:
-        fprintf(stderr,
-                "Error (Line %d, Column %d): invalid character escape\n",
-                CurLoc.Line, CurLoc.Col);
-        PrintErrorSourceContext(CurLoc);
-        return tok_error;
-      }
-    } else {
-      Value = static_cast<unsigned char>(LexerLastChar);
-    }
-
-    LexerLastChar = advance();
+    LiteralDecodeError Error = DecodeLiteralCodePoint(Value);
+    if (Error != LiteralDecodeError::None)
+      return LogLiteralDecodeError(Error, "character");
     if (LexerLastChar != '\'') {
       fprintf(stderr,
               "Error (Line %d, Column %d): unterminated character literal\n",
@@ -2001,10 +2147,6 @@ static unique_ptr<ExpressionNode> ParseStatement();
 static unique_ptr<ExpressionNode> ParseSimpleStatement();
 static unique_ptr<ExpressionNode> ParseBlock();
 static unique_ptr<ExpressionNode> ParseFunctionBody();
-static unique_ptr<ExpressionNode> BuildAssignmentExpr(int AssignTok,
-                                               unique_ptr<ExpressionNode> Left,
-                                               unique_ptr<ExpressionNode> Right);
-static bool IsCompoundAssignTok(int Tok);
 
 
 // Counter to give each anonymous top-level expression a unique name.
@@ -3896,22 +4038,9 @@ ParseBinaryExpressionRight(unique_ptr<ExpressionNode> Left) {
 }
 
 /// expression
-///   = lvalue assignment-operator expression | logicalor ;
+///   = logicalor ;
 static unique_ptr<ExpressionNode> ParseExpression() {
-  auto Left = ParseLogicalOr();
-  if (!Left)
-    return nullptr;
-
-  if (CurrentToken != tok_equal && !IsCompoundAssignTok(CurrentToken))
-    return Left;
-
-  int AssignTok = CurrentToken;
-  getNextToken(); // eat assignment operator
-  ExpectedLiteralTypeGuard Guard(Left->getType(), Left->getStructName());
-  auto Right = ParseExpression(); // right-associative assignment
-  if (!Right)
-    return nullptr;
-  return BuildAssignmentExpr(AssignTok, std::move(Left), std::move(Right));
+  return ParseLogicalOr();
 }
 
 /// returnstmt
@@ -4063,140 +4192,6 @@ ParseFieldCompoundAssignmentRight(unique_ptr<FieldExpressionNode> Left, int Assi
     return LogErrorExpression("Type mismatch in assignment");
   return make_unique<FieldCompoundAssignmentExpressionNode>(
       std::move(Left), Operator, std::move(Right), DestType, DestStruct);
-}
-
-static unique_ptr<ExpressionNode> BuildAssignmentExpr(int AssignTok,
-                                               unique_ptr<ExpressionNode> Left,
-                                               unique_ptr<ExpressionNode> Right) {
-  if (!Left || !Right)
-    return nullptr;
-
-  if (auto *Var = dynamic_cast<NameExpressionNode *>(Left.get())) {
-    ValueType DestType = Var->getType();
-    const string &DestStruct = Var->getStructName();
-    if (AssignTok == tok_equal) {
-      if (!IsAssignable(DestType, Right->getType()))
-        return LogErrorExpression("Type mismatch in assignment");
-      if ((DestType == ValueType::Pointer || DestType == ValueType::Array ||
-           DestType == ValueType::Struct) &&
-          DestStruct != Right->getStructName())
-        return LogErrorExpression("Type mismatch in assignment");
-      return make_unique<AssignmentExpressionNode>(Var->getName(), std::move(Right),
-                                            DestType);
-    }
-    int Operator = CompoundAssignToBinaryOp(AssignTok);
-    if (!Operator)
-      return LogErrorExpression("Unknown compound assignment operator");
-    string ResultStructName;
-    ValueType ResultType =
-        GetBinaryResultType(Operator, DestType, DestStruct, Right->getType(),
-                            Right->getStructName(), &ResultStructName);
-    if (ResultType == ValueType::Error || !IsAssignable(DestType, ResultType) ||
-        (DestType == ValueType::Pointer && DestStruct != ResultStructName))
-      return LogErrorExpression("Type mismatch in assignment");
-    return make_unique<CompoundAssignmentExpressionNode>(
-        Var->getName(), Operator, std::move(Right), DestType, DestStruct);
-  }
-
-  if (auto *Field = dynamic_cast<FieldExpressionNode *>(Left.get())) {
-    auto Owned = std::unique_ptr<FieldExpressionNode>(Field);
-    Left.release();
-    if (AssignTok == tok_equal) {
-      ValueType DestType = Owned->getType();
-      if (!IsAssignable(DestType, Right->getType()))
-        return LogErrorExpression("Type mismatch in assignment");
-      if ((DestType == ValueType::Pointer || DestType == ValueType::Array ||
-           DestType == ValueType::Struct) &&
-          Owned->getStructName() != Right->getStructName())
-        return LogErrorExpression("Type mismatch in assignment");
-      return make_unique<FieldAssignmentExpressionNode>(std::move(Owned),
-                                                 std::move(Right), DestType);
-    }
-    int Operator = CompoundAssignToBinaryOp(AssignTok);
-    if (!Operator)
-      return LogErrorExpression("Unknown compound assignment operator");
-    ValueType DestType = Owned->getType();
-    string DestStruct = Owned->getStructName();
-    string ResultStructName;
-    ValueType ResultType =
-        GetBinaryResultType(Operator, DestType, DestStruct, Right->getType(),
-                            Right->getStructName(), &ResultStructName);
-    if (ResultType == ValueType::Error || !IsAssignable(DestType, ResultType) ||
-        (DestType == ValueType::Pointer && DestStruct != ResultStructName))
-      return LogErrorExpression("Type mismatch in assignment");
-    return make_unique<FieldCompoundAssignmentExpressionNode>(
-        std::move(Owned), Operator, std::move(Right), DestType, DestStruct);
-  }
-
-  if (auto *Idx = dynamic_cast<IndexExpressionNode *>(Left.get())) {
-    auto Owned = std::unique_ptr<IndexExpressionNode>(Idx);
-    Left.release();
-    if (AssignTok == tok_equal) {
-      if (!IsAssignable(Owned->getType(), Right->getType()))
-        return LogErrorExpression("Type mismatch in assignment");
-      if ((Owned->getType() == ValueType::Pointer ||
-           Owned->getType() == ValueType::Array ||
-           Owned->getType() == ValueType::Struct) &&
-          Owned->getStructName() != Right->getStructName())
-        return LogErrorExpression("Type mismatch in assignment");
-      ValueType T = Owned->getType();
-      string S = Owned->getStructName();
-      return std::make_unique<IndexAssignmentExpressionNode>(std::move(Owned),
-                                                      std::move(Right), T, S);
-    }
-    int Operator = CompoundAssignToBinaryOp(AssignTok);
-    if (!Operator)
-      return LogErrorExpression("Unknown compound assignment operator");
-    string ResultStructName;
-    ValueType ResultType = GetBinaryResultType(
-        Operator, Owned->getType(), Owned->getStructName(), Right->getType(),
-        Right->getStructName(), &ResultStructName);
-    if (ResultType == ValueType::Error ||
-        !IsAssignable(Owned->getType(), ResultType) ||
-        (Owned->getType() == ValueType::Pointer &&
-         Owned->getStructName() != ResultStructName))
-      return LogErrorExpression("Type mismatch in assignment");
-    ValueType T = Owned->getType();
-    string S = Owned->getStructName();
-    return std::make_unique<IndexCompoundAssignmentExpressionNode>(
-        std::move(Owned), Operator, std::move(Right), T, S);
-  }
-
-  if (auto *IdxField = dynamic_cast<IndexedFieldExpressionNode *>(Left.get())) {
-    auto Owned = std::unique_ptr<IndexedFieldExpressionNode>(IdxField);
-    Left.release();
-    if (AssignTok == tok_equal) {
-      if (!IsAssignable(Owned->getType(), Right->getType()))
-        return LogErrorExpression("Type mismatch in assignment");
-      if ((Owned->getType() == ValueType::Pointer ||
-           Owned->getType() == ValueType::Array ||
-           Owned->getType() == ValueType::Struct) &&
-          Owned->getStructName() != Right->getStructName())
-        return LogErrorExpression("Type mismatch in assignment");
-      ValueType T = Owned->getType();
-      string S = Owned->getStructName();
-      return std::make_unique<IndexedFieldAssignmentExpressionNode>(
-          std::move(Owned), std::move(Right), T, S);
-    }
-    int Operator = CompoundAssignToBinaryOp(AssignTok);
-    if (!Operator)
-      return LogErrorExpression("Unknown compound assignment operator");
-    string ResultStructName;
-    ValueType ResultType = GetBinaryResultType(
-        Operator, Owned->getType(), Owned->getStructName(), Right->getType(),
-        Right->getStructName(), &ResultStructName);
-    if (ResultType == ValueType::Error ||
-        !IsAssignable(Owned->getType(), ResultType) ||
-        (Owned->getType() == ValueType::Pointer &&
-         Owned->getStructName() != ResultStructName))
-      return LogErrorExpression("Type mismatch in assignment");
-    ValueType T = Owned->getType();
-    string S = Owned->getStructName();
-    return std::make_unique<IndexedFieldCompoundAssignmentExpressionNode>(
-        std::move(Owned), Operator, std::move(Right), T, S);
-  }
-
-  return LogErrorExpression("Assignment target must be assignable");
 }
 
 /// simplestmt

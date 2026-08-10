@@ -1,0 +1,10 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: from var
+
+extern def puts(s: ptr[int8]) -> int
+
+def main() -> int:
+  var s: ptr[int8] = "from var"
+  puts(s)
+  return 0

@@ -1,0 +1,5 @@
+extern def printd(x: float64)
+def main() -> int:
+  var scores: int[4] = [10, 20, 30, 40]
+  printd(float64(scores[2]))
+  return 0

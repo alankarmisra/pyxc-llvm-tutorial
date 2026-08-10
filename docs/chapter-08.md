@@ -103,6 +103,7 @@ I mark `InputFile` as positional so a bare argument such as `program.pyxc` fills
 
 ```cpp
 int ProcessCommandLine(int argc, const char **argv) {
+  // ... parse LLVM's cl::opt flags, including -O ...
   if (!InputFile.empty()) {
     Input = fopen(InputFile.c_str(), "r");
     if (!Input) {
@@ -124,7 +125,7 @@ When `fopen` fails, it sets `errno`. I use `perror` to print the filename follow
 
 ```bash
 $ build/pyxc nosuchfile.pyxc
-nosuchfile.pyxc:  No such file or directory
+nosuchfile.pyxc: No such file or directory
 ```
 
 ### Selecting IR Output

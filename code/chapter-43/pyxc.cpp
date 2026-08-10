@@ -44,7 +44,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
-#include <fstream>
 #include <iomanip>
 #include <limits>
 #include <map>
@@ -538,6 +537,202 @@ static int peek() {
   return c;
 }
 
+enum class LiteralDecodeError {
+  None,
+  InvalidEscape,
+  InvalidUtf8,
+  InvalidCodePoint,
+};
+
+static int HexDigitValue(int Ch) {
+  if (Ch >= '0' && Ch <= '9')
+    return Ch - '0';
+  if (Ch >= 'a' && Ch <= 'f')
+    return Ch - 'a' + 10;
+  if (Ch >= 'A' && Ch <= 'F')
+    return Ch - 'A' + 10;
+  return -1;
+}
+
+static bool IsUnicodeScalarValue(uint32_t Value) {
+  return Value <= 0x10FFFF && !(Value >= 0xD800 && Value <= 0xDFFF);
+}
+
+// I decode one escaped or raw UTF-8 code point and leave LexerLastChar at the
+// first byte after it. I use this path for character and string literals.
+static LiteralDecodeError DecodeLiteralCodePoint(uint32_t &Value) {
+  if (LexerLastChar == '\\') {
+    LexerLastChar = advance(); // eat the backslash
+    switch (LexerLastChar) {
+    case 'a':
+      Value = '\a';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'b':
+      Value = '\b';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'f':
+      Value = '\f';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'n':
+      Value = '\n';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'r':
+      Value = '\r';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 't':
+      Value = '\t';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'v':
+      Value = '\v';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case '\\':
+      Value = '\\';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case '\'':
+      Value = '\'';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case '"':
+      Value = '"';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case '?':
+      Value = '?';
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    case 'x': {
+      int High = HexDigitValue(advance());
+      int Low = HexDigitValue(advance());
+      if (High < 0 || Low < 0)
+        return LiteralDecodeError::InvalidEscape;
+      Value = static_cast<uint32_t>((High << 4) | Low);
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    }
+    case 'u':
+    case 'U': {
+      int Digits = LexerLastChar == 'u' ? 4 : 8;
+      Value = 0;
+      for (int I = 0; I < Digits; ++I) {
+        int Digit = HexDigitValue(advance());
+        if (Digit < 0)
+          return LiteralDecodeError::InvalidEscape;
+        Value = (Value << 4) | static_cast<uint32_t>(Digit);
+      }
+      LexerLastChar = advance();
+      if (!IsUnicodeScalarValue(Value))
+        return LiteralDecodeError::InvalidCodePoint;
+      return LiteralDecodeError::None;
+    }
+    default:
+      if (LexerLastChar < '0' || LexerLastChar > '7')
+        return LiteralDecodeError::InvalidEscape;
+
+      Value = 0;
+      for (int I = 0; I < 3; ++I) {
+        Value = (Value << 3) |
+                static_cast<uint32_t>(LexerLastChar - '0');
+        int Next = peek();
+        if (I == 2 || Next < '0' || Next > '7') {
+          LexerLastChar = advance();
+          break;
+        }
+        LexerLastChar = advance();
+      }
+      return LiteralDecodeError::None;
+    }
+  }
+
+  unsigned Lead = static_cast<unsigned char>(LexerLastChar);
+  if (Lead < 0x80) {
+    Value = Lead;
+    LexerLastChar = advance();
+    return LiteralDecodeError::None;
+  }
+
+  int Length = 0;
+  uint32_t Minimum = 0;
+  if (Lead >= 0xC2 && Lead <= 0xDF) {
+    Length = 2;
+    Value = Lead & 0x1F;
+    Minimum = 0x80;
+  } else if (Lead >= 0xE0 && Lead <= 0xEF) {
+    Length = 3;
+    Value = Lead & 0x0F;
+    Minimum = 0x800;
+  } else if (Lead >= 0xF0 && Lead <= 0xF4) {
+    Length = 4;
+    Value = Lead & 0x07;
+    Minimum = 0x10000;
+  } else {
+    return LiteralDecodeError::InvalidUtf8;
+  }
+
+  for (int I = 1; I < Length; ++I) {
+    int Next = advance();
+    if (Next == EOF || (Next & 0xC0) != 0x80)
+      return LiteralDecodeError::InvalidUtf8;
+    Value = (Value << 6) | static_cast<uint32_t>(Next & 0x3F);
+  }
+  LexerLastChar = advance();
+
+  if (Value < Minimum)
+    return LiteralDecodeError::InvalidUtf8;
+  if (!IsUnicodeScalarValue(Value))
+    return LiteralDecodeError::InvalidCodePoint;
+  return LiteralDecodeError::None;
+}
+
+static void AppendUtf8(string &Output, uint32_t Value) {
+  if (Value <= 0x7F) {
+    Output.push_back(static_cast<char>(Value));
+  } else if (Value <= 0x7FF) {
+    Output.push_back(static_cast<char>(0xC0 | (Value >> 6)));
+    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
+  } else if (Value <= 0xFFFF) {
+    Output.push_back(static_cast<char>(0xE0 | (Value >> 12)));
+    Output.push_back(static_cast<char>(0x80 | ((Value >> 6) & 0x3F)));
+    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
+  } else {
+    Output.push_back(static_cast<char>(0xF0 | (Value >> 18)));
+    Output.push_back(static_cast<char>(0x80 | ((Value >> 12) & 0x3F)));
+    Output.push_back(static_cast<char>(0x80 | ((Value >> 6) & 0x3F)));
+    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
+  }
+}
+
+static int LogLiteralDecodeError(LiteralDecodeError Error,
+                                 const char *LiteralKind) {
+  const char *Message = nullptr;
+  switch (Error) {
+  case LiteralDecodeError::InvalidEscape:
+    fprintf(stderr, "Error (Line %d, Column %d): invalid %s escape\n",
+            CurLoc.Line, CurLoc.Col, LiteralKind);
+    PrintErrorSourceContext(CurLoc);
+    return tok_error;
+  case LiteralDecodeError::InvalidUtf8:
+    Message = "invalid UTF-8";
+    break;
+  case LiteralDecodeError::InvalidCodePoint:
+    Message = "invalid Unicode code point";
+    break;
+  case LiteralDecodeError::None:
+    return tok_error;
+  }
+  fprintf(stderr, "Error (Line %d, Column %d): %s in %s literal\n",
+          CurLoc.Line, CurLoc.Col, Message, LiteralKind);
+  PrintErrorSourceContext(CurLoc);
+  return tok_error;
+}
+
 /// getToken - Return the next token from standard input.
 ///
 /// LastChar holds the last character read by advance() but not yet consumed
@@ -729,34 +924,11 @@ static int getToken() {
     LexerLastChar = advance(); // eat opening quote
     while (LexerLastChar != '"' && LexerLastChar != EOF &&
            LexerLastChar != '\n') {
-      if (LexerLastChar == '\\') {
-        LexerLastChar = advance();
-        switch (LexerLastChar) {
-        case '\\':
-          StringLiteralStr.push_back('\\');
-          break;
-        case '"':
-          StringLiteralStr.push_back('"');
-          break;
-        case 'n':
-          StringLiteralStr.push_back('\n');
-          break;
-        case 't':
-          StringLiteralStr.push_back('\t');
-          break;
-        case '0':
-          StringLiteralStr.push_back('\0');
-          break;
-        default:
-          fprintf(stderr, "Error (Line %d, Column %d): invalid string escape\n",
-                  CurLoc.Line, CurLoc.Col);
-          PrintErrorSourceContext(CurLoc);
-          return tok_error;
-        }
-      } else {
-        StringLiteralStr.push_back(static_cast<char>(LexerLastChar));
-      }
-      LexerLastChar = advance();
+      uint32_t Value = 0;
+      LiteralDecodeError Error = DecodeLiteralCodePoint(Value);
+      if (Error != LiteralDecodeError::None)
+        return LogLiteralDecodeError(Error, "string");
+      AppendUtf8(StringLiteralStr, Value);
     }
 
     if (LexerLastChar != '"') {
@@ -781,36 +953,9 @@ static int getToken() {
     }
 
     uint32_t Value = 0;
-    if (LexerLastChar == '\\') {
-      LexerLastChar = advance();
-      switch (LexerLastChar) {
-      case '\\':
-        Value = '\\';
-        break;
-      case '\'':
-        Value = '\'';
-        break;
-      case 'n':
-        Value = '\n';
-        break;
-      case 't':
-        Value = '\t';
-        break;
-      case '0':
-        Value = '\0';
-        break;
-      default:
-        fprintf(stderr,
-                "Error (Line %d, Column %d): invalid character escape\n",
-                CurLoc.Line, CurLoc.Col);
-        PrintErrorSourceContext(CurLoc);
-        return tok_error;
-      }
-    } else {
-      Value = static_cast<unsigned char>(LexerLastChar);
-    }
-
-    LexerLastChar = advance();
+    LiteralDecodeError Error = DecodeLiteralCodePoint(Value);
+    if (Error != LiteralDecodeError::None)
+      return LogLiteralDecodeError(Error, "character");
     if (LexerLastChar != '\'') {
       fprintf(stderr,
               "Error (Line %d, Column %d): unterminated character literal\n",
@@ -2026,14 +2171,11 @@ static bool IsCompoundAssignTok(int Tok);
 static unsigned TopLevelExprCounter = 0;
 // Whether the last top-level form should be printed in the REPL.
 static bool LastTopLevelShouldPrint = true;
-// Chapter 41 module/import bookkeeping (single-file happy path).
+// Chapter 43 module/import bookkeeping (single-file happy path).
 static bool SeenNonModuleTopLevel = false;
 static bool ModuleDeclaredInFile = false;
 static string CurrentModuleName;
 static vector<string> ImportedModules;
-// Chapter 42: lightweight import signature collection.
-static bool SignatureScanMode = false;
-static std::set<string> SignatureVisitedFiles;
 
 static unique_ptr<ExpressionNode> ParseSuite();
 static ValueType ParseTypeToken(string *StructName = nullptr);
@@ -2051,8 +2193,6 @@ static bool ParseUnsignedDecimal(const string &Text, uint64_t &Out);
 static bool ParseAggregateDefinition(const char *KindName);
 static unique_ptr<FunctionDefinitionNode>
 ParseMethodDefinitionInClass(const string &ClassName, bool IsPublic);
-static bool ParseMethodSignatureOnlyInClass(const string &ClassName,
-                                            bool IsPublic);
 static bool ParseTraitDefinition();
 static bool VerifyTraitConformance(const string &ClassName,
                                    const StructTypeInfo::ImplTraitRef &ImplRef);
@@ -2060,7 +2200,6 @@ static bool ParseImplDefinition();
 static bool ParseTypeAliasDefinition();
 static bool ParseModuleDefinition();
 static bool ParseImportDefinition();
-static bool CollectSignaturesFromFile(const string &Path);
 static const char *TypeName(ValueType Type);
 static bool IsNumericType(ValueType Type);
 static bool IsIntType(ValueType Type);
@@ -4910,17 +5049,12 @@ static bool ParseAggregateDefinition(const char *KindName) {
         LogErrorExpression("Methods are only allowed inside classes");
         return false;
       }
-      if (SignatureScanMode) {
-        if (!ParseMethodSignatureOnlyInClass(StructName, MemberIsPublic))
-          return false;
-      } else {
-        auto FnAST = ParseMethodDefinitionInClass(StructName, MemberIsPublic);
-        if (!FnAST)
-          return false;
-        if (auto *FnIR = FnAST->codegen()) {
-          if (ShouldDumpIR())
-            FnIR->print(errs());
-        }
+      auto FnAST = ParseMethodDefinitionInClass(StructName, MemberIsPublic);
+      if (!FnAST)
+        return false;
+      if (auto *FnIR = FnAST->codegen()) {
+        if (ShouldDumpIR())
+          FnIR->print(errs());
       }
       if (CurrentToken == tok_eol)
         consumeNewlines();
@@ -5130,152 +5264,6 @@ static bool ParseImportDefinition() {
     return false;
   ImportedModules.push_back(ImportName);
   return true;
-}
-
-static void SkipSignatureBody() {
-  if (CurrentToken == tok_eol) {
-    consumeNewlines();
-    if (CurrentToken == tok_indent) {
-      int Depth = 1;
-      getNextToken(); // eat first indent
-      while (CurrentToken != tok_eof && Depth > 0) {
-        if (CurrentToken == tok_indent)
-          ++Depth;
-        else if (CurrentToken == tok_dedent)
-          --Depth;
-        getNextToken();
-      }
-      return;
-    }
-    return;
-  }
-  while (CurrentToken != tok_eof && CurrentToken != tok_eol)
-    getNextToken();
-  if (CurrentToken == tok_eol)
-    getNextToken();
-}
-
-static bool ParseDefinitionSignatureOnly() {
-  getNextToken(); // eat def
-  auto Signature = ParseFunctionSignature();
-  if (!Signature)
-    return false;
-  string RetStructName;
-  ValueType RetType =
-      ParseOptionalReturnTypeWithStruct(RetStructName, ValueType::None);
-  if (RetType == ValueType::Error)
-    return false;
-  Signature->setReturnType(RetType);
-  Signature->setReturnStructName(RetStructName);
-  FunctionSignatures[Signature->getName()] = Signature->clone();
-  if (CurrentToken != tok_colon) {
-    LogErrorExpression("Expected ':' in definition");
-    return false;
-  }
-  getNextToken(); // eat ':'
-  SkipSignatureBody();
-  return true;
-}
-
-static bool ParseMethodSignatureOnlyInClass(const string &ClassName,
-                                            bool IsPublic) {
-  // CurrentToken is 'def'
-  getNextToken(); // eat def
-  if (CurrentToken != tok_name)
-    return LogErrorExpression("Expected method name in class definition"), false;
-  string MethodName = Name;
-  SourceLocation SignatureLoc = CurLoc;
-  getNextToken(); // eat method name
-  if (CurrentToken != tok_lparen)
-    return LogErrorExpression("Expected '(' in method function signature"), false;
-  getNextToken(); // eat '('
-
-  vector<FunctionSignatureNode::ParameterInfo> ParameterNames;
-  ParameterNames.push_back({"self", ValueType::Pointer,
-                      EncodePointerType(ValueType::Struct, ClassName)});
-
-  if (CurrentToken != tok_rparen) {
-    while (true) {
-      if (CurrentToken != tok_name)
-        return LogErrorExpression("Expected parameter name in method function signature"), false;
-      string ArgName = Name;
-      if (ArgName == "self")
-        return LogErrorExpression("Method parameters cannot be named 'self'"), false;
-      getNextToken(); // eat name
-      if (CurrentToken != tok_colon)
-        return LogErrorExpression("Method parameters require a type annotation"), false;
-      getNextToken(); // eat ':'
-      string ArgStructName;
-      ValueType ArgType = ParseTypeToken(&ArgStructName);
-      if (ArgType == ValueType::Error)
-        return false;
-      if (ArgType == ValueType::None)
-        return LogErrorExpression("Parameters cannot have None type"), false;
-      ParameterNames.push_back({ArgName, ArgType, ArgStructName});
-      if (CurrentToken == tok_rparen)
-        break;
-      if (CurrentToken != tok_comma)
-        return LogErrorExpression("Expected ')' or ',' in parameter list"), false;
-      getNextToken(); // eat ','
-    }
-  }
-
-  if (CurrentToken != tok_rparen)
-    return LogErrorExpression("Expected ')' in method function signature"), false;
-  getNextToken(); // eat ')'
-
-  string RetStructName;
-  ValueType RetType =
-      ParseOptionalReturnTypeWithStruct(RetStructName, ValueType::None);
-  if (RetType == ValueType::Error)
-    return false;
-  if (MethodName == "__init__" && RetType != ValueType::None)
-    return LogErrorExpression("Constructor '__init__' must return None"), false;
-
-  string MangledName = ClassName + "." + MethodName;
-  if (FunctionSignatures.count(MangledName))
-    return LogErrorExpression(("Method '" + MethodName + "' is already defined on '" +
-                     ClassName + "'")
-                        .c_str()),
-           false;
-
-  auto Signature = make_unique<FunctionSignatureNode>(MangledName, std::move(ParameterNames),
-                                         SignatureLoc, RetType);
-  Signature->setReturnStructName(RetStructName);
-  FunctionSignatures[Signature->getName()] = Signature->clone();
-
-  if (CurrentToken != tok_colon)
-    return LogErrorExpression("Expected ':' in function definition"), false;
-  getNextToken(); // eat ':'
-  SkipSignatureBody();
-
-  auto It = StructTypes.find(ClassName);
-  if (It != StructTypes.end())
-    It->second.MethodIsPublic[MethodName] = IsPublic;
-  return true;
-}
-
-static bool ParseExportSignatureOnly() {
-  getNextToken(); // eat export
-  if (CurrentToken == tok_def)
-    return ParseDefinitionSignatureOnly();
-  if (CurrentToken == tok_extern) {
-    auto Signature = ParseExtern();
-    if (!Signature)
-      return false;
-    FunctionSignatures[Signature->getName()] = std::move(Signature);
-    return true;
-  }
-  if (CurrentToken == tok_struct)
-    return ParseAggregateDefinition("struct");
-  if (CurrentToken == tok_class)
-    return ParseAggregateDefinition("class");
-  if (CurrentToken == tok_trait)
-    return ParseTraitDefinition();
-  if (CurrentToken == tok_type)
-    return ParseTypeAliasDefinition();
-  LogErrorExpression("Invalid export target");
-  return false;
 }
 
 static bool ParseTraitDefinition() {
@@ -8687,7 +8675,6 @@ static bool EmitModuleToFile(Module *M, EmitKind Kind,
 }
 
 static bool PrepareFileModeModule();
-static void CloseInputFile();
 
 static bool OpenInputFile(const string &Path) {
   Input = fopen(Path.c_str(), "r");
@@ -8696,186 +8683,6 @@ static bool OpenInputFile(const string &Path) {
     return false;
   }
   CurrentSourcePath = Path;
-  return true;
-}
-
-static bool ResolveImportToPath(const string &ImporterPath,
-                                const string &Import, string &OutPath) {
-  namespace fs = llvm::sys::fs;
-  namespace path = llvm::sys::path;
-  SmallString<256> Candidate(ImporterPath);
-  path::remove_filename(Candidate);
-  string Rel = Import;
-  std::replace(Rel.begin(), Rel.end(), '.', '/');
-  path::append(Candidate, Rel + ".pyxc");
-  if (fs::exists(Candidate)) {
-    OutPath = std::string(Candidate.str());
-    return true;
-  }
-
-  // Test-friendly fallback: allow colocated "Inputs/" modules.
-  SmallString<256> InputsCandidate(ImporterPath);
-  path::remove_filename(InputsCandidate);
-  path::append(InputsCandidate, "Inputs");
-  path::append(InputsCandidate, Rel + ".pyxc");
-  if (fs::exists(InputsCandidate)) {
-    OutPath = std::string(InputsCandidate.str());
-    return true;
-  }
-  return false;
-}
-
-static string CanonicalizePath(const string &Path) {
-  SmallString<256> Canon(Path);
-  if (!llvm::sys::fs::real_path(Path, Canon))
-    return std::string(Canon.str());
-  SmallString<256> Abs(Path);
-  llvm::sys::fs::make_absolute(Abs);
-  llvm::sys::path::remove_dots(Abs, true);
-  return std::string(Abs.str());
-}
-
-static bool CollectSignaturesFromFile(const string &Path) {
-  const string CanonPath = CanonicalizePath(Path);
-  if (!SignatureVisitedFiles.insert(CanonPath).second)
-    return true;
-
-  FILE *SavedInput = Input;
-  bool SavedIsRepl = IsRepl;
-  string SavedSourcePath = CurrentSourcePath;
-  int SavedCurTok = CurrentToken;
-  bool SavedHadError = HadError;
-  bool OK = true;
-
-  if (!OpenInputFile(Path))
-    return false;
-  ResetLexerState();
-  ResetParserStateForFile();
-  IsRepl = false;
-  SignatureScanMode = true;
-  HadError = false;
-  getNextToken();
-
-  while (CurrentToken != tok_eof) {
-    if (CurrentToken == tok_eol || CurrentToken == tok_indent || CurrentToken == tok_dedent) {
-      getNextToken();
-      continue;
-    }
-    if (CurrentToken == tok_import) {
-      // Resolve nested imports eagerly so their symbols are available.
-      getNextToken(); // eat import
-      string ImportName;
-      if (!ParseDottedModuleName(ImportName)) {
-        OK = false;
-        break;
-      }
-      string ImportPath;
-      if (!ResolveImportToPath(CanonPath, ImportName, ImportPath)) {
-        LogErrorExpression(("Could not resolve import '" + ImportName + "' from '" +
-                  CanonPath + "'")
-                     .c_str());
-        OK = false;
-        break;
-      }
-      if (!CollectSignaturesFromFile(ImportPath)) {
-        OK = false;
-        break;
-      }
-      continue;
-    }
-    if (CurrentToken == tok_export) {
-      if (!ParseExportSignatureOnly()) {
-        OK = false;
-        break;
-      }
-      continue;
-    }
-    // Skip any non-exported top-level form in signature-collection mode.
-    SkipSignatureBody();
-  }
-
-  if (HadError)
-    OK = false;
-
-  CloseInputFile();
-  Input = SavedInput;
-  IsRepl = SavedIsRepl;
-  CurrentSourcePath = SavedSourcePath;
-  CurrentToken = SavedCurTok;
-  SignatureScanMode = false;
-  HadError = SavedHadError;
-  ResetLexerState();
-  return OK;
-}
-
-static vector<string> ExtractTopLevelImports(const string &Path) {
-  vector<string> Result;
-  std::ifstream In(Path);
-  if (!In)
-    return Result;
-  string Line;
-  while (std::getline(In, Line)) {
-    // Stop once non-import/module/export top-level code starts.
-    string Trim = Line;
-    auto first = Trim.find_first_not_of(" \t");
-    if (first == string::npos || Trim[first] == '#')
-      continue;
-    Trim = Trim.substr(first);
-    if (Trim.rfind("module ", 0) == 0)
-      continue;
-    if (Trim.rfind("import ", 0) == 0) {
-      string Name = Trim.substr(7);
-      // strip inline comments and trailing spaces
-      auto hash = Name.find('#');
-      if (hash != string::npos)
-        Name = Name.substr(0, hash);
-      while (!Name.empty() && isspace(static_cast<unsigned char>(Name.back())))
-        Name.pop_back();
-      if (!Name.empty())
-        Result.push_back(Name);
-      continue;
-    }
-    if (Trim.rfind("export ", 0) == 0)
-      continue;
-    break;
-  }
-  return Result;
-}
-
-static bool PreloadImportedSignatures(const string &Path) {
-  SignatureVisitedFiles.clear();
-  for (const auto &ImportName : ExtractTopLevelImports(Path)) {
-    string ImportPath;
-    if (!ResolveImportToPath(Path, ImportName, ImportPath)) {
-      LogErrorExpression(
-          ("Could not resolve import '" + ImportName + "' from '" + Path + "'")
-              .c_str());
-      return false;
-    }
-    if (!CollectSignaturesFromFile(ImportPath))
-      return false;
-  }
-  return true;
-}
-
-static bool CollectImportClosure(const string &Path, std::set<string> &Visited,
-                                 vector<string> &OutFiles) {
-  const string CanonPath = CanonicalizePath(Path);
-  if (!Visited.insert(CanonPath).second)
-    return true;
-  OutFiles.push_back(CanonPath);
-
-  for (const auto &ImportName : ExtractTopLevelImports(CanonPath)) {
-    string ImportPath;
-    if (!ResolveImportToPath(CanonPath, ImportName, ImportPath)) {
-      LogErrorExpression(("Could not resolve import '" + ImportName + "' from '" +
-                CanonPath + "'")
-                   .c_str());
-      return false;
-    }
-    if (!CollectImportClosure(ImportPath, Visited, OutFiles))
-      return false;
-  }
   return true;
 }
 
@@ -8965,10 +8772,6 @@ static bool CompileFileToObject(const string &Path, const string &ObjPath,
   ResetLexerState();
   ResetParserStateForFile();
   InitializeModuleAndManagers(false);
-  if (!PreloadImportedSignatures(Path)) {
-    CloseInputFile();
-    return false;
-  }
 
   IsRepl = false;
   PrintReplPrompt();
@@ -9225,8 +9028,6 @@ static bool EmitExecutable() {
   vector<string> TempFiles;
   bool SawMain = false;
   bool SawObjectInput = false;
-  vector<string> ExpandedInputs;
-  std::set<string> SeenPyxcInputs;
 
   auto CleanupTemps = [&]() {
     for (const auto &Path : TempFiles)
@@ -9234,17 +9035,6 @@ static bool EmitExecutable() {
   };
 
   for (const auto &InputPath : InputFiles) {
-    if (IsPyxcInput(InputPath)) {
-      if (!CollectImportClosure(InputPath, SeenPyxcInputs, ExpandedInputs)) {
-        CleanupTemps();
-        return false;
-      }
-    } else {
-      ExpandedInputs.push_back(InputPath);
-    }
-  }
-
-  for (const auto &InputPath : ExpandedInputs) {
     if (IsPyxcInput(InputPath)) {
       int FD = -1;
       SmallString<128> TmpPath;
@@ -9308,12 +9098,12 @@ static bool EmitExecutable() {
   ObjectFiles.push_back(RuntimePath);
 
   if (EmitOutputPath.empty()) {
-    if (ExpandedInputs.empty()) {
+    if (InputFiles.empty()) {
       fprintf(stderr, "Error: --emit exe requires a file input\n");
       CleanupTemps();
       return false;
     }
-    EmitOutputPath = DefaultExeOutputPath(ExpandedInputs.front());
+    EmitOutputPath = DefaultExeOutputPath(InputFiles.front());
   }
 
   if (!LinkExecutable(ObjectFiles, EmitOutputPath)) {
@@ -9443,10 +9233,6 @@ int main(int argc, const char **argv) {
         return 1;
       ResetLexerState();
       ResetParserStateForFile();
-      if (!PreloadImportedSignatures(InputFiles.front())) {
-        CloseInputFile();
-        return 1;
-      }
       PrintReplPrompt();
       getNextToken();
 

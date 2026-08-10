@@ -3,7 +3,7 @@ description: "Add pointer arithmetic: ptr + int, ptr - int, ptr - ptr, and point
 ---
 # 20. pyxc: Pointer Arithmetic
 
-## Where We Are
+## What I Am Building
 
 [Chapter 19](chapter-19.md) gave me pointers: `addr` to take an address, `p[i]` to index, and pointer parameters so functions can modify the caller's data. What I couldn't do yet was walk a pointer forward or backward, or compare two pointers. The classic K&R summing-loop pattern, compute an end pointer, then advance `p` until it equals `end`, was out of reach.
 
@@ -40,21 +40,7 @@ cd pyxc-llvm-tutorial/code/chapter-20
 
 ## Grammar
 
-Pointer arithmetic reuses the existing binary operator infrastructure. No new tokens or keywords are needed: the type system drives the new behavior.
-
-```ebnf
-expr ::= ...
-       | expr '+' expr   (* if one side is ptr[T] and other is int *)
-       | expr '-' expr   (* ptr[T] - int, or ptr[T] - ptr[T] *)
-       | expr '<' expr   (* pointer comparison *)
-       | expr '>' expr
-       | expr '==' expr
-       | expr '!=' expr
-       | expr '<=' expr
-       | expr '>=' expr
-```
-
-The same tokens already existed. The change is that `GetBinaryResultType` now accepts pointer operands and returns pointer or integer types accordingly.
+No grammar change this chapter — `code/chapter-20/pyxc.ebnf` is byte-identical to chapter 19's. `+`, `-`, and the comparison operators already existed as `sum`/`comparison` productions; nothing new needs to be parsed. What changes is purely semantic: `GetBinaryResultType` now accepts pointer operands and returns pointer or integer types accordingly, so the same syntax that already parsed `a + b` for two integers now also accepts one pointer and one integer operand.
 
 ## Semantic Rules
 
@@ -73,25 +59,25 @@ Pointer difference (`p - q`) yields an element count, not bytes. If `p` and `q` 
 
 Multiplication by a pointer is blocked. There is no sensible meaning for `ptr[T] * int` in terms of memory addresses.
 
-## `GetBinaryResultType` Extended
+## Extending Binary Result Type Resolution
 
 `GetBinaryResultType` is the central function that decides what type a binary expression produces. Its signature is extended to carry struct-name information for both operands and to write the result struct name back:
 
 ```cpp
-if (IsArithmeticOp(Op)) {
-  if (Op != '*' &&
+if (IsArithmeticOp(Operator)) {
+  if (Operator != tok_star &&
       ((L == ValueType::Pointer && IsIntType(R)) ||
        (R == ValueType::Pointer && IsIntType(L)))) {
     if (ResultStructName)
       *ResultStructName = (L == ValueType::Pointer) ? LStruct : RStruct;
     return ValueType::Pointer;
   }
-  if (Op == '-' && L == ValueType::Pointer && R == ValueType::Pointer &&
+  if (Operator == tok_minus && L == ValueType::Pointer && R == ValueType::Pointer &&
       LStruct == RStruct)
     return ValueType::Int64;
   ...
 }
-if (IsComparisonOp(Op)) {
+if (IsComparisonOp(Operator)) {
   if (L == ValueType::Pointer && R == ValueType::Pointer &&
       LStruct == RStruct)
     return ValueType::Bool;
@@ -103,7 +89,7 @@ For `ptr + int` and `int + ptr`, the result inherits the struct name (which enco
 
 Mismatched pointer types (`ptr[int] - ptr[float64]`) fall through to the default error path because `LStruct != RStruct`.
 
-## `BinaryExpressionNode` Constructor Extended
+## Extending the Binary Expression Constructor
 
 `BinaryExpressionNode` gains an optional `StructName` parameter so the pointer type of an arithmetic result can be carried through the AST. `Type` itself stays required, only the new `StructName` gets a default:
 
@@ -112,55 +98,61 @@ BinaryExpressionNode(int Operator, unique_ptr<ExpressionNode> Left, unique_ptr<E
               ValueType Type, const string &StructName = "")
 ```
 
-The constructor calls `setType(Type, StructName)`. Previously, only the parse-loop fallback path (for non-pointer results) needed to store a type on the node. Now the pointer arithmetic path explicitly constructs the node with both type and struct name set, then `continue`s to skip the old assignment statement.
+The constructor calls `setType(Type, StructName)`. Before this chapter, `MergeBinaryExpression` had no struct name to pass in, because no binary result could be a pointer. Now it does, whether or not the particular result happens to be one.
 
-## Parse Loop Change
+## One Merge Path for Every Operator
 
-The binary-operator parse loop now calls the extended `GetBinaryResultType` with both operands' struct names and a `ResultStructName` output. When the result is a pointer, the loop constructs the node with the full type information and continues:
+I don't need a separate branch for pointer results. `MergeBinaryExpression` already existed from [Chapter 19](chapter-19.md) as the one place every binary-operator parser (`ParseTermRight`, and its counterparts for `sum` and `comparison`) funnels through. I just extend the two calls it makes, `GetBinaryResultType` and the `BinaryExpressionNode` constructor, to carry struct names in both directions:
 
 ```cpp
-string ResultStructName;
-ValueType ResultType = GetBinaryResultType(BinOp,
-                                           LHS->getType(), LHS->getStructName(),
-                                           RHS->getType(), RHS->getStructName(),
-                                           &ResultStructName);
-if (ResultType == ValueType::Pointer) {
-  LHS = make_unique<BinaryExpressionNode>(BinOp, std::move(LHS), std::move(RHS),
-                                   ResultType, ResultStructName);
-  continue;
+static unique_ptr<ExpressionNode>
+MergeBinaryExpression(int Operator, unique_ptr<ExpressionNode> Left,
+                      unique_ptr<ExpressionNode> Right) {
+  string ResultStructName;
+  ValueType ResultType =
+      GetBinaryResultType(Operator, Left->getType(), Left->getStructName(),
+                          Right->getType(), Right->getStructName(),
+                          &ResultStructName);
+  if (ResultType == ValueType::Error)
+    return LogErrorExpression("Type mismatch in binary operator");
+  return make_unique<BinaryExpressionNode>(
+      Operator, std::move(Left), std::move(Right), ResultType,
+      ResultStructName);
 }
 ```
 
-For non-pointer results the loop falls through to the existing assignment path unchanged.
+Every binary expression, pointer arithmetic or not, goes through this exact same function unchanged. `ResultStructName` is empty for anything that isn't a pointer result, so the extension is free for the common case: it costs one more argument to thread through, not a new code path.
 
 ## Codegen: `ptr + int` and `int + ptr`
 
-Advancing a pointer by an integer uses `CreateGEP`. The integer index is widened to `i64` first:
+Advancing a pointer by an integer uses `CreateInBoundsGEP`. The integer index is widened to `i64` first:
 
 ```cpp
 if (getType() == ValueType::Pointer) {
   Value *Ptr = nullptr;
   Value *Idx = nullptr;
-  if (LType == ValueType::Pointer && IsIntType(RType) && Op == '+') {
+  if (LType == ValueType::Pointer && IsIntType(RType) && Operator == tok_plus) {
     Ptr = L; Idx = EmitImplicitCast(R, RType, ValueType::Int64);
-  } else if (RType == ValueType::Pointer && IsIntType(LType) && Op == '+') {
+  } else if (RType == ValueType::Pointer && IsIntType(LType) && Operator == tok_plus) {
     Ptr = R; Idx = EmitImplicitCast(L, LType, ValueType::Int64);
-  } else if (LType == ValueType::Pointer && IsIntType(RType) && Op == '-') {
+  } else if (LType == ValueType::Pointer && IsIntType(RType) && Operator == tok_minus) {
     Ptr = L; Idx = EmitImplicitCast(R, RType, ValueType::Int64);
     if (Idx) Idx = Builder->CreateNeg(Idx, "negidx");
   }
+  if (!Ptr || !Idx)
+    return LogErrorV("Type mismatch in arithmetic");
   // ...
-  return Builder->CreateGEP(ElemLLVM, Ptr, Idx, "ptrarith");
+  return Builder->CreateInBoundsGEP(ElemLLVM, Ptr, Idx, "ptrarith");
 }
 ```
 
-`DecodePointerType` extracts the element LLVM type from the result's encoded struct name. This is the type that GEP uses to compute its stride.
+`DecodePointerType` extracts the element LLVM type from the result's encoded struct name. This is the type that GEP uses to compute its stride. I use the `inbounds` variant, `CreateInBoundsGEP`, which tells LLVM's optimizer the pointer arithmetic never leaves the bounds of the allocation it started in: that assumption enables optimizations a plain GEP can't get, at the cost of undefined behavior if the assumption is ever wrong. This chapter doesn't check that assumption at runtime (see Known Limitations).
 
-For `p + 1` where `p: ptr[int]`:
+For `p + 1` where `p: ptr[int]`, compiled and read directly:
 
 ```llvm
-%ptrload = load ptr, ptr %p
-%ptrarith = getelementptr i64, ptr %ptrload, i64 1
+%p2 = load ptr, ptr %p1
+%ptrarith = getelementptr inbounds i64, ptr %p2, i64 1
 ```
 
 ## Codegen: `ptr - int`
@@ -168,9 +160,9 @@ For `p + 1` where `p: ptr[int]`:
 Subtracting an integer is the same as adding its negation. The index is widened to `i64` and then negated with `CreateNeg` before being passed to GEP:
 
 ```llvm
-%ptrload = load ptr, ptr %p
-%negidx = neg i64 2
-%ptrarith = getelementptr i64, ptr %ptrload, i64 %negidx
+%p2 = load ptr, ptr %p1
+%negidx = sub i64 0, 2
+%ptrarith = getelementptr inbounds i64, ptr %p2, i64 %negidx
 ```
 
 For `p - 2`, GEP steps backward by two elements.
@@ -202,14 +194,14 @@ Pointer comparisons use unsigned integer comparison instructions. Addresses are 
 
 ```cpp
 if (LType == ValueType::Pointer && RType == ValueType::Pointer &&
-    LHS->getStructName() == RHS->getStructName()) {
-  switch (Op) {
-  case tok_eq:  return Builder->CreateICmpEQ(L, R, "cmptmp");
-  case tok_neq: return Builder->CreateICmpNE(L, R, "cmptmp");
-  case '<':     return Builder->CreateICmpULT(L, R, "cmptmp");
-  case '>':     return Builder->CreateICmpUGT(L, R, "cmptmp");
-  case tok_leq: return Builder->CreateICmpULE(L, R, "cmptmp");
-  case tok_geq: return Builder->CreateICmpUGE(L, R, "cmptmp");
+    Left->getStructName() == Right->getStructName()) {
+  switch (Operator) {
+  case tok_eq:      return Builder->CreateICmpEQ(L, R, "cmptmp");
+  case tok_neq:     return Builder->CreateICmpNE(L, R, "cmptmp");
+  case tok_less:    return Builder->CreateICmpULT(L, R, "cmptmp");
+  case tok_greater: return Builder->CreateICmpUGT(L, R, "cmptmp");
+  case tok_leq:     return Builder->CreateICmpULE(L, R, "cmptmp");
+  case tok_geq:     return Builder->CreateICmpUGE(L, R, "cmptmp");
   }
 }
 ```
@@ -355,4 +347,4 @@ Include:
 - Full error message
 - Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
-We'll figure it out.
+I'll help you figure it out.

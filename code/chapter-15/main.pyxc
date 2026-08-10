@@ -1,0 +1,4 @@
+extern def printd(x)
+extern def add(a, b)
+def main():
+    printd(add(3, 4))

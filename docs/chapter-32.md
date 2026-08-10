@@ -3,7 +3,7 @@ description: "Complete pyxc's arithmetic: add / and %, five compound assignment 
 ---
 # 32. pyxc: Arithmetic Completeness
 
-## Where We Are
+## What I Am Building
 
 In [Chapter 31](chapter-31.md), I finished the object model. Before moving further, I want to close a gap: I've given pyxc `+`, `-`, and `*`, but not `/` or `%`. I haven't added compound assignment (`+=`, `*=`, etc.), and I haven't added `++` or `--` either. After this chapter, all of that works:
 
@@ -32,7 +32,7 @@ def main() -> int:
 ```
 
 ```
-14.000000
+13.000000
 ```
 
 ## Source Code
@@ -40,6 +40,112 @@ def main() -> int:
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-32
+```
+
+## Grammar
+
+I change three areas of the grammar. I replace the bare `=` in `assignment-statement` with `assignment-operator`, now accepting any of the six assignment operators. `term` and `unary-expression` both change to fold in `%` and `++`/`--`, and a new `postfix-expression` production captures postfix `++`/`--` between `unary-expression` and `primary`:
+
+```grammardiff
+ program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
+ end-of-lines            = end-of-line { end-of-line } ;
+ top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | external | top-level-expression ;
+ type-alias       = "type" name "=" type ;
+ trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
+ trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
+ trait-method-signature  = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ;
+ struct-definition       = "struct" name ":" end-of-lines struct-block ;
+ class-definition        = "class" name [ "(" trait-reference { "," trait-reference } ")" ] ":" end-of-lines struct-block ;
+ trait-reference        = name [ "[" type "]" ] ;
+ implementation-definition         = "impl" trait-reference "for" name ":" end-of-lines implementation-block ;
+ implementation-block       = indent implementation-method { end-of-lines implementation-method } dedent ;
+ implementation-method      = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ struct-block     = indent class-member { end-of-lines class-member } dedent ;
+ class-member     = [ visibility ] ( field-declaration | method-definition ) ;
+ visibility      = "public" | "private" ;
+ method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")"
+                   [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ field-declaration       = name ":" type ;
+ function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ (* If the return type is omitted, it defaults to None. *)
+ external        = "extern" "def" function-signature [ "->" type ] ;
+ top-level-expression    = expression ;
+ function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
+ typed-parameter      = name ":" type ;
+ if-statement          = "if" expression ":" suite
+                 [ end-of-lines "else" ":" suite ] ;
+ for-statement         = "for"
+                   ( "var" name ":" type | name )
+                   "=" expression "," expression "," expression ":" suite ;
+ variable-statement         = "var" variable-binding { "," variable-binding } ;
+-assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
++assignment-statement      = lvalue assignment-operator expression ; (* assignment is a statement here *)
+ simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
+ compound-statement    = if-statement | for-statement ;
+ statement       = simple-statement | compound-statement ;
+ suite           = simple-statement | compound-statement | end-of-lines block ;
+ return-statement      = "return" [ expression ] ;
+ statement-separator = end-of-lines | BLOCK_END ;
+ block = indent statement { statement-separator statement } dedent ;
+ expression      = comparison ;
+ comparison      = sum { comparison-operator sum } ;
+ comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ sum             = term { ("+" | "-") term } ;
+-term            = unary-expression { ("*" | "/") unary-expression } ;
++term            = unary-expression { ("*" | "/" | "%") unary-expression } ;
+ lvalue          = name | field-access | index-expression ;
+ variable-binding      = name ":" type [ "=" expression ] ;
+-unary-expression       = "-" unary-expression | primary ;
++unary-expression       = ("-" | "++" | "--") unary-expression | postfix-expression ;
++postfix-expression     = primary [ postfix-operator ] ;
++postfix-operator       = "++" | "--" ;
+ primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
+ cast-expression        = cast-type "(" expression ")" ;
+ sizeof-expression      = "sizeof" "(" type ")" ;
+ address-expression        = "addr" "(" lvalue ")" ;
+ name-expression  = name | call-expression | method-call-expression | constructor-call-expression ;
+ call-expression        = name "(" [ expression { "," expression } ] ")" ;
+ method-call-expression  = name "." name "(" [ expression { "," expression } ] ")" ;
+ constructor-call-expression    = name "(" [ expression { "," expression } ] ")" ;
+ field-access     = name "." name { "." name } ;
+ index-expression       = name "[" expression "]" ;
+ number-expression      = number ;
+ array-literal    = "[" [ expression { "," expression } ] "]" ;
+ string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
+ escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
+ parenthesized-expression       = "(" expression ")" ;
+ indent          = INDENT ;
+ dedent          = DEDENT ;
+ 
++assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
+ name      = (letter | "_") { letter | digit | "_" } ;
+ builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+                 | "bool" | "None" ;
+ alias-type       = name ;
+ struct-type      = name ;
+ pointer-type     = "ptr" "[" type "]" ;
+ type            = base-type [ array-suffix ] ;
+ base-type        = builtin-type | alias-type | struct-type | pointer-type ;
+ array-suffix     = "[" integer "]" ;
+ cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+                 | "bool" | pointer-type ;
+ integer         = digit { digit } ;
+ number          = ( digit { digit } [ "." { digit } ]
+                   | "." digit { digit } ) [ exponent ] ;
+ exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
+ boolean-literal    = "True" | "False" ;
+ letter          = "A".."Z" | "a".."z" ;
+ digit           = "0".."9" ;
+ end-of-line             = "\r\n" | "\r" | "\n" ;
+ comment = "#" { comment-character } ;
+ comment-character = ? any character except "\r" and "\n" ? ;
+ whitespace = " " | "\t" | "\v" | "\f" ;
+ INDENT          = ? synthetic token emitted by lexer ? ;
+ DEDENT          = ? synthetic token emitted by lexer ? ;
+ 
+ BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
 ## New Tokens and Lexer Peek-Ahead
@@ -252,125 +358,59 @@ if (CurrentToken == tok_plusplus || CurrentToken == tok_minusminus) {
 
 Because `ParseUnary` recurses, `++++x` is syntactically valid (prefix applied twice), though I only accept it as meaningful if `x` is assignable at each level.
 
-## Grammar
+## Try It
 
-I change three areas of the grammar. I replace the bare `=` in `assignment-statement` with `assignment-operator`, now accepting any of the six assignment operators. I insert `postfix-expression` between `unary-expression` and `primary` to capture postfix `++`/`--`. And I extend `builtin-binary-operator` with `/` and `%`.
+**Compound assignment on a field**
 
-`code/chapter-32/pyxc.ebnf`
+```pyxc
+extern def printd(x: float64)
+struct Point:
+  x: int
+def main() -> int:
+  var p: Point
+  p.x = 10
+  p.x += 5
+  printd(float64(p.x))
+  return 0
+```
 
-```grammardiff
- program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
- end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | decorated-function-definition | external | top-level-expression ;
- type-alias       = "type" name "=" type ;
- trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
- trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
- trait-method-signature  = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ;
- struct-definition       = "struct" name ":" end-of-lines struct-block ;
- class-definition        = "class" name [ "(" trait-reference { "," trait-reference } ")" ] ":" end-of-lines struct-block ;
- trait-reference        = name [ "[" type "]" ] ;
- implementation-definition         = "impl" trait-reference "for" name ":" end-of-lines implementation-block ;
- implementation-block       = indent implementation-method { end-of-lines implementation-method } dedent ;
- implementation-method      = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- struct-block     = indent class-member { end-of-lines class-member } dedent ;
- class-member     = [ visibility ] ( field-declaration | method-definition ) ;
- visibility      = "public" | "private" ;
- method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")"
-                   [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- field-declaration       = name ":" type ;
- function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- (* If the return type is omitted, it defaults to None. *)
- decorated-function-definition    = binary-decorator end-of-lines "def" binary-operator-signature [ "->" type ] ":" ( simple-statement | end-of-lines block )
-                 | unary-decorator  end-of-lines "def" unary-operator-signature  [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- binary-decorator = "@" "binary" "(" integer ")" ;
- unary-decorator  = "@" "unary" ;
- binary-operator-signature = custom-operator-character "(" typed-parameter "," typed-parameter ")" ;
- unary-operator-signature  = custom-operator-character "(" typed-parameter ")" ;
- external        = "extern" "def" function-signature [ "->" type ] ;
- top-level-expression    = expression ;
- function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
- typed-parameter      = name ":" type ;
- if-statement          = "if" expression ":" suite
-                 [ end-of-lines "else" ":" suite ] ;
- for-statement         = "for"
-                   ( "var" name ":" type | name )
-                   "=" expression "," expression "," expression ":" suite ;
- variable-statement         = "var" variable-binding { "," variable-binding } ;
--assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
-+assignment-statement      = lvalue assignment-operator expression ; (* assignment is a statement here *)
- simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
- compound-statement    = if-statement | for-statement ;
- statement       = simple-statement | compound-statement ;
- suite           = simple-statement | compound-statement | end-of-lines block ;
- return-statement      = "return" [ expression ] ;
- statement-separator = end-of-lines | BLOCK_END ;
- block = indent statement { statement-separator statement } dedent ;
- expression      = unary-expression binary-operator-right ;
- binary-operator-right        = { binary-operator unary-expression } ;
- lvalue          = name | field-access | index-expression ;
- variable-binding      = name ":" type [ "=" expression ] ;
--unary-expression       = unary-operator unary-expression | primary ;
-+unary-expression       = unary-operator unary-expression | postfix-expression ;
--unary-operator         = "-" | user-defined-unary-operator ;
-+unary-operator         = "-" | "++" | "--" | user-defined-unary-operator ;
-+postfix-expression     = primary [ postfix-operator ] ;
-+postfix-operator       = "++" | "--" ;
- primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
- cast-expression        = cast-type "(" expression ")" ;
- sizeof-expression      = "sizeof" "(" type ")" ;
- address-expression        = "addr" "(" lvalue ")" ;
- name-expression  = name | call-expression | method-call-expression | constructor-call-expression ;
- call-expression        = name "(" [ expression { "," expression } ] ")" ;
- method-call-expression  = name "." name "(" [ expression { "," expression } ] ")" ;
- constructor-call-expression    = name "(" [ expression { "," expression } ] ")" ;
- field-access     = name "." name { "." name } ;
- index-expression       = name "[" expression "]" ;
- number-expression      = number ;
- array-literal    = "[" [ expression { "," expression } ] "]" ;
- string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
- escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
- parenthesized-expression       = "(" expression ")" ;
- binary-operator        = builtin-binary-operator | user-defined-binary-operator ;
- indent          = INDENT ;
- dedent          = DEDENT ;
+```text
+15.000000
+```
 
-+assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
--builtin-binary-operator = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
-+builtin-binary-operator = "+" | "-" | "*" | "/" | "%"
-+                | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
- user-defined-binary-operator = ? any operator-character defined as a custom binary operator ? ;
- user-defined-unary-operator  = ? any operator-character defined as a custom unary operator ? ;
- custom-operator-character    = ? any operator-character that is not "-" or a builtin-binary-operator,
-                     and not already defined as a custom operator ? ;
- operator-character          = ? any single ASCII punctuation character ? ;
- name      = (letter | "_") { letter | digit | "_" } ;
- builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | "None" ;
- alias-type       = name ;
- struct-type      = name ;
- pointer-type     = "ptr" "[" type "]" ;
- type            = base-type [ array-suffix ] ;
- base-type        = builtin-type | alias-type | struct-type | pointer-type ;
- array-suffix     = "[" integer "]" ;
- cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | pointer-type ;
- integer         = digit { digit } ;
- number          = ( digit { digit } [ "." { digit } ]
-                   | "." digit { digit } ) [ exponent ] ;
- exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
- boolean-literal    = "True" | "False" ;
- letter          = "A".."Z" | "a".."z" ;
- digit           = "0".."9" ;
- end-of-line             = "\r\n" | "\r" | "\n" ;
- comment = "#" { comment-character } ;
- comment-character = ? any character except "\r" and "\n" ? ;
- whitespace = " " | "\t" | "\v" | "\f" ;
- INDENT          = ? synthetic token emitted by lexer ? ;
- DEDENT          = ? synthetic token emitted by lexer ? ;
+**Compound assignment on an array element**
 
- BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
+```pyxc
+extern def printd(x: float64)
+def main() -> int:
+  var arr: int[3] = [1, 2, 3]
+  arr[1] *= 10
+  printd(float64(arr[1]))
+  return 0
+```
+
+```text
+20.000000
+```
+
+**Prefix vs. postfix, as values**
+
+```pyxc
+extern def printd(x: float64)
+def main() -> int:
+  var i: int = 5
+  var a: int = i++   # a gets the old value, 5; i becomes 6
+  var b: int = ++i   # i becomes 7 first, b gets the new value, 7
+  printd(float64(a))
+  printd(float64(b))
+  printd(float64(i))
+  return 0
+```
+
+```text
+5.000000
+7.000000
+7.000000
 ```
 
 ## What's Next
@@ -389,4 +429,4 @@ Include:
 - Full error message
 - Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
-We'll figure it out.
+I'll help you figure it out.

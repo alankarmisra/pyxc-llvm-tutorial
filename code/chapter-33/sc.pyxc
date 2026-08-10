@@ -1,0 +1,10 @@
+extern def printd(x: float64)
+def sideeffect() -> bool:
+  printd(99.0)
+  return True
+def main() -> int:
+  var f: bool = False
+  if f && sideeffect():
+    printd(1.0)
+  printd(2.0)
+  return 0

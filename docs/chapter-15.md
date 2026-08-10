@@ -3,7 +3,7 @@ description: "Add --emit exe so Pyxc compiles and links a standalone executable 
 ---
 # 15. pyxc: One-Step Executables
 
-## Where We Are
+## What I Am Building
 
 [Chapter 14](chapter-14.md) added `--emit obj`, `--emit asm`, and `--emit llvm-ir`. Producing a runnable binary from a pyxc program still needed an external tool:
 
@@ -49,7 +49,7 @@ The runtime functions `printd` and `putchard` are generated as LLVM IR and emitt
 
 ## What Changes
 
-I'm adding five new pieces on top of chapter 13:
+I'm adding six new pieces on top of chapter 14:
 
 1. **`cl::list<string> InputFiles`** — the positional argument changes from a single string to a list, enabling multiple inputs.
 2. **`EmitRuntimeObject`** — synthesizes `printd` and `putchard` as LLVM IR, emits them to a temporary `.o`.
@@ -58,7 +58,9 @@ I'm adding five new pieces on top of chapter 13:
 5. **`LinkExecutable`** + **`FindMacOSSDKRoot`** — LLD-as-library dispatch with platform-aware system library detection.
 6. **`EmitExecutable`** — the new orchestrator that wires all of the above together.
 
-## Multiple Inputs: `cl::list`
+One more change ties these together but isn't new behavior on its own: `EmitModuleToFile` (from chapter 14) now takes a `Module*`, an `EmitKind`, and an output path as parameters instead of reading them off file-scope globals. It has to — this chapter calls it three separate times against three different modules (the runtime object, each compiled `.pyxc` file, and the final wrapped file-mode module), and a single global-module version can't do that.
+
+## Accepting Multiple Input Files
 
 In chapter 13, the positional argument was a single optional `cl::opt`:
 
@@ -98,7 +100,7 @@ The `--emit exe` path also enforces the multi-input rule:
 
 `--emit llvm-ir`, `--emit asm`, and `--emit obj` still require exactly one input and are unchanged.
 
-## Output Naming: `DefaultExeOutputPath`
+## Output Naming
 
 When `-o` is omitted and there's exactly one input, I want the output to be the input with its extension stripped — and `.exe` appended on Windows:
 
@@ -116,7 +118,7 @@ static string DefaultExeOutputPath(StringRef InputPath) {
 
 `sys::path::replace_extension` handles both `.pyxc` and `.o` inputs uniformly: `foo.pyxc → foo`, `mylib.o → mylib`.
 
-## Synthesizing the Runtime: `EmitRuntimeObject`
+## Synthesizing the Runtime
 
 In `--emit obj` mode (chapter 13), I linked test binaries against `runtime.c` to get `printd` and `putchard`. For `--emit exe` mode, I want pyxc to synthesize those functions itself — no C file, no external compiler:
 
@@ -125,12 +127,12 @@ static bool EmitRuntimeObject(const string &ObjPath) {
   LLVMContext Ctx;
   auto M = std::make_unique<Module>("pyxc.runtime", Ctx);
 
-  auto *DoubleTy = Type::getDoubleTy(Ctx);
-  auto *Int32Ty  = Type::getInt32Ty(Ctx);
-  auto *PtrTy    = PointerType::get(Ctx, 0);
+  auto *DoubleTy  = Type::getDoubleTy(Ctx);
+  auto *Int32Ty   = Type::getInt32Ty(Ctx);
+  auto *CharPtrTy = PointerType::get(Ctx, 0);
 
   // Declare printf and putchar (provided by libc).
-  FunctionType *PrintfTy = FunctionType::get(Int32Ty, {PtrTy}, /*vararg=*/true);
+  FunctionType *PrintfTy = FunctionType::get(Int32Ty, {CharPtrTy}, /*vararg=*/true);
   Function *Printf = Function::Create(PrintfTy, Function::ExternalLinkage,
                                       "printf", M.get());
 
@@ -176,7 +178,7 @@ The key points:
 - `printd` and `putchard` are *defined* with `ExternalLinkage` so the linker can resolve the `extern def printd(x)` declarations in user code.
 - `EmitRuntimeObject` ends by calling `EmitModuleToFile` to write a real `.o` to a temp path. That `.o` gets added to the link list alongside user objects.
 
-## Per-File Compilation: `CompileFileToObject`
+## Per-File Compilation
 
 I want each `.pyxc` input to go through its own full parse-codegen-emit cycle:
 
@@ -188,17 +190,17 @@ static bool CompileFileToObject(const string &Path, const string &ObjPath,
 
   ResetLexerState();
   ResetParserStateForFile();
-  InitializeModuleAndManagers(false);  // false = emit mode, no JIT
+  InitializeModuleAndManagers(false);
 
   IsRepl = false;
-  PrintReplPrompt(); // a no-op with IsRepl false; keeps this path identical
-                     // to every other entry point that primes the lexer
+  PrintReplPrompt();
   getNextToken();
+
   FileModeLoop();
   CloseInputFile();
 
   if (HasMain)
-    *HasMain = FunctionProtos.find("main") != FunctionProtos.end();
+    *HasMain = FunctionSignatures.find("main") != FunctionSignatures.end();
 
   if (!PrepareFileModeModule())
     return false;
@@ -209,7 +211,7 @@ static bool CompileFileToObject(const string &Path, const string &ObjPath,
 
 `ResetLexerState` and `ResetParserStateForFile` clear the persistent lexer and parser state between files, so each `.pyxc` compiles independently. This is what makes multi-file compilation safe — a global declared in `a.pyxc` doesn't silently bleed into `b.pyxc`.
 
-## `PrepareFileModeModule`: Shared Codegen Finishing
+## Shared Codegen Finishing
 
 In chapter 13, `EmitFileMode` contained all the logic for building `__pyxc.global_init`, validating `main`, and wrapping it. I want both the `--emit obj` path and the new per-file `--emit exe` path to share that, so I refactor it out into `PrepareFileModeModule`:
 
@@ -217,11 +219,11 @@ In chapter 13, `EmitFileMode` contained all the logic for building `__pyxc.globa
 static bool PrepareFileModeModule() {
   // 1. Compile __pyxc.global_init from collected top-level statements.
   if (!FileTopLevelStmts.empty()) {
-    auto Block = make_unique<BlockExprAST>(std::move(FileTopLevelStmts));
-    auto Proto = make_unique<PrototypeAST>("__pyxc.global_init",
-                                           vector<string>());
-    auto FnAST = make_unique<FunctionAST>(std::move(Proto),
-                                          std::move(Block));
+    auto Block = make_unique<BlockExpressionNode>(std::move(FileTopLevelStmts));
+    auto Signature = make_unique<FunctionSignatureNode>("__pyxc.global_init",
+                                                        vector<string>());
+    auto FnAST = make_unique<FunctionDefinitionNode>(std::move(Signature),
+                                                     std::move(Block));
     bool SavedInGlobalInit = InGlobalInit;
     InGlobalInit = true;
     if (auto *FnIR = FnAST->codegen()) {
@@ -236,8 +238,8 @@ static bool PrepareFileModeModule() {
   }
 
   // 2. Validate main() arity.
-  auto MainIt = FunctionProtos.find("main");
-  if (MainIt != FunctionProtos.end() && MainIt->second->getNumArgs() != 0) {
+  auto MainIt = FunctionSignatures.find("main");
+  if (MainIt != FunctionSignatures.end() && MainIt->second->getNumParameters() != 0) {
     fprintf(stderr, "Error: main() must take no arguments\n");
     return false;
   }
@@ -263,7 +265,7 @@ static bool PrepareFileModeModule() {
 
 `EmitFileMode` now calls `PrepareFileModeModule()` followed by `EmitModuleToFile`. `CompileFileToObject` does the same. The logic lives in exactly one place. I save and restore `InGlobalInit` the same way I started doing back in chapter 13, rather than hard-resetting it to `false` — same reasoning as then: restoring whatever it actually was is a safer habit than assuming.
 
-## Linking with LLD: `LinkExecutable`
+## Linking with LLD
 
 `LinkExecutable` dispatches to the right LLD driver based on the host triple:
 
@@ -294,36 +296,44 @@ static bool LinkExecutable(const vector<string> &Inputs,
       PushArg(OSVer);
     }
     // macOS startup is handled by dyld + libSystem; crt1/crti/crtn are
-    // GNU ELF files that do not belong in a Mach-O link and cause warnings
+    // GNU ELF files that do not belong in a MachO link and cause warnings
     // on arm64 (the SDK copy is x86_64-only legacy).
     for (const auto &Input : Inputs)
       PushArg(Input);
     PushArg("-lSystem");
 
-    vector<const char *> Args;
-    for (auto &Arg : ArgStorage) Args.push_back(Arg.c_str());
-    return lld::macho::link(Args, llvm::outs(), llvm::errs(), false, false);
+    vector<const char *> Arguments;
+    Arguments.reserve(ArgStorage.size());
+    for (auto &Arg : ArgStorage)
+      Arguments.push_back(Arg.c_str());
+    return lld::macho::link(Arguments, llvm::outs(), llvm::errs(), false, false);
   }
 
   if (TT.isOSLinux()) {
     PushArg("ld.lld");
-    PushArg("-o"); PushArg(OutputPath);
-    for (const auto &Input : Inputs) PushArg(Input);
-    PushArg("-lc"); PushArg("-lm");
-
-    vector<const char *> Args;
-    for (auto &Arg : ArgStorage) Args.push_back(Arg.c_str());
-    return lld::elf::link(Args, llvm::outs(), llvm::errs(), false, false);
+    PushArg("-o");
+    PushArg(OutputPath);
+    for (const auto &Input : Inputs)
+      PushArg(Input);
+    PushArg("-lc");
+    PushArg("-lm");
+    vector<const char *> Arguments;
+    Arguments.reserve(ArgStorage.size());
+    for (auto &Arg : ArgStorage)
+      Arguments.push_back(Arg.c_str());
+    return lld::elf::link(Arguments, llvm::outs(), llvm::errs(), false, false);
   }
 
   if (TT.isOSWindows()) {
     PushArg("lld-link");
     PushArg("/OUT:" + OutputPath);
-    for (const auto &Input : Inputs) PushArg(Input);
-
-    vector<const char *> Args;
-    for (auto &Arg : ArgStorage) Args.push_back(Arg.c_str());
-    return lld::coff::link(Args, llvm::outs(), llvm::errs(), false, false);
+    for (const auto &Input : Inputs)
+      PushArg(Input);
+    vector<const char *> Arguments;
+    Arguments.reserve(ArgStorage.size());
+    for (auto &Arg : ArgStorage)
+      Arguments.push_back(Arg.c_str());
+    return lld::coff::link(Arguments, llvm::outs(), llvm::errs(), false, false);
   }
 
   fprintf(stderr, "Error: unsupported target for --emit exe\n");
@@ -337,7 +347,7 @@ The LLD API is the same on every platform: an array of `const char*` arguments (
 
 This is a key architectural choice: **LLD is called as a library, not as a subprocess**. There's no `fork`/`exec`, no temporary shell script, no PATH lookup. If the library is linked into the `pyxc` binary, it's available.
 
-## SDK Detection: `FindMacOSSDKRoot` and `FindMacOSSDKVersion`
+## SDK Detection
 
 LLD's Mach-O linker needs a sysroot to find system headers and `libSystem`, plus a version string for the `-platform_version` flag. Both of these are things Xcode's own `xcrun` tool already knows how to answer correctly, so I lean on it rather than re-deriving the logic myself:
 
@@ -411,7 +421,7 @@ static string FindMacOSSDKVersion() {
 
 The `-platform_version macos <min> <sdk>` flag is required by the Mach-O linker to set the LC_BUILD_VERSION load command. Without it, the linker produces a warning or errors depending on the LLD version.
 
-## `EmitExecutable`: The Orchestrator
+## The Orchestrator
 
 ```cpp
 static bool EmitExecutable() {

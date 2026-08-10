@@ -3,7 +3,7 @@ description: "Add DWARF debug info via DIBuilder and replace the fixed optimizat
 ---
 # 16. pyxc: Debug Info and the Optimization Pipeline
 
-## Where We Are
+## What I Am Building
 
 [Chapter 15](chapter-15.md) gave me `--emit exe`: I can compile a program to a native binary in one step. What I can't do yet is tell a debugger anything useful about it. I compile with `-g`, set a breakpoint in lldb, and the debugger sees only machine addresses. No source file name, no line numbers, no variable names.
 
@@ -43,7 +43,7 @@ if (DebugInfo && OptLevel.getNumOccurrences() == 0)
 
 `getNumOccurrences()` is 0 only if the flag was never supplied at all. So `-g` alone silently coerces to `-O0`, while `-g -O2` leaves the opt level at 2, letting me opt into debug-with-optimization explicitly while the common case, just `-g`, stays safe by default.
 
-## `IRBuilder<NoFolder>`: Keeping the IR I Actually Wrote
+## Keeping the IR I Actually Wrote
 
 The first change that touches every code path is the `Builder` declaration itself:
 
@@ -206,7 +206,7 @@ static void SetCurrentDebugLocation(unsigned Line) {
 
 I call this once, right after creating each function's entry block, and every instruction I emit after that point picks up this location automatically until I change it again. I don't call it again per statement, which means every instruction in a function's body, no matter what line the actual statement is on, gets attributed to the function's own definition line. I verified this directly: compiling a two-line function with `-g` and reading the IR shows every instruction, the multiply and the return included, tagged with line 1, the `def` line, not line 2 where the `return` actually is. Line-per-statement tracking is a real gap this chapter leaves open, not just the column tracking I call out below. The second argument, `1`, is the column; I don't track columns at all yet, so it's always `1`.
 
-## Functions Get a `DISubprogram`
+## Attaching Debug Info to Each Function
 
 `FunctionDefinitionNode::codegen` creates one for every function whose name isn't one of my own internal `__pyxc.`-prefixed helpers:
 
@@ -234,7 +234,7 @@ if (DIB && TheDIFile) {
 
 `createSubroutineType` wants a flat list, return type first, then each parameter's type in order. Since pyxc only has `double`, every entry is the same `DblDIType`. `setSubprogram` is the step that actually attaches this descriptor to the LLVM `Function*`, without it, even a correctly-built `DISubprogram` node wouldn't get connected to the function's machine code by the DWARF emitter. `CurDIScope` gets cleared back to `nullptr` after the body finishes, both on success and on the error path, so anything emitted outside a function, module-level init code, for instance, doesn't accidentally inherit whatever scope the previous function left behind.
 
-## Parameters and Locals: `EmitDebugDeclare`
+## Parameters and Locals
 
 ```cpp
 static void EmitDebugDeclare(AllocaInst *Alloca, StringRef Name, unsigned Line,
@@ -261,7 +261,7 @@ static void EmitDebugDeclare(AllocaInst *Alloca, StringRef Name, unsigned Line,
 
 I fall back to building a fresh `double` type descriptor if `DblDIType` somehow isn't set yet rather than assume it always is; cheap insurance against a call-ordering mistake I'd rather not debug later. `createParameterVariable` and `createAutoVariable` produce the same kind of node, `DILocalVariable`, differing only in the DWARF tag underneath (`DW_TAG_formal_parameter` versus `DW_TAG_variable`); `ArgNo`, 1-based, is what tells the parameter case its position. `insertDeclare` is what actually emits the debug-info record binding this `alloca` to that descriptor, so a debugger knows where in memory to find the variable's current value. I call this from three places: once per argument in `FunctionDefinitionNode::codegen`, once per declared variable in `VarStatementNode::codegen`, and once in `ForExpressionNode::codegen` when the loop introduces its own variable (`for var i = ...`, as opposed to reusing an existing one). All three land on the same `CurFunctionLine`, since that's the only line I'm tracking, so a `for`-loop variable's debug entry shows the function's `def` line rather than the line the `for` actually appears on.
 
-## Globals: `EmitDebugGlobal`
+## Globals
 
 ```cpp
 static void EmitDebugGlobal(GlobalVariable *GV, StringRef Name, unsigned Line) {
@@ -278,7 +278,7 @@ static void EmitDebugGlobal(GlobalVariable *GV, StringRef Name, unsigned Line) {
 
 A global has no `alloca` to declare against, so this takes a different path: I build a `DIGlobalVariableExpression` and attach it directly to the `GlobalVariable` IR node with `addDebugInfo`. `VarStatementNode::codegen` calls this whenever it creates a brand-new module-level global, not on every assignment, just the one time the global itself comes into existence.
 
-## macOS Needs One More Step: `MaybeEmitDsymBundle`
+## macOS Needs One More Step
 
 On macOS, the system linker doesn't copy DWARF into the final executable the way ELF linkers do. It writes debug-map stab entries that point back at the original `.o` files instead, so a debugger has to go find those object files to read any debug info at all. `dsymutil` resolves that indirection into a self-contained `.dSYM` bundle:
 
@@ -416,4 +416,4 @@ Include:
 - Full error message
 - Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
-We'll figure it out.
+I'll help you figure it out.

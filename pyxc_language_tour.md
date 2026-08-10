@@ -1,6 +1,6 @@
 # pyxc Language Tour
 
-This document gives a practical syntax tour of pyxc as of the chapter-43 codebase, and then lists the biggest missing pieces to reach a full systems-language feature set.
+This document gives a practical syntax tour of pyxc as of the chapter-45 codebase, and then lists the biggest missing pieces to reach a full systems-language feature set.
 
 ## 1) Program structure
 

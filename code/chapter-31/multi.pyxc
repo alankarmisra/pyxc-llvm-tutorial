@@ -1,0 +1,16 @@
+extern def printd(x: float64)
+
+trait Addable[T]:
+  def add(x: T, y: T) -> T
+
+class Calc(Addable[int], Addable[float64]):
+  x: int
+
+impl Addable[int] for Calc:
+  def add(x: int, y: int) -> int:
+    return x + y
+
+def main() -> int:
+  var c: Calc = Calc()
+  printd(float64(c.add(3, 4)))
+  return 0

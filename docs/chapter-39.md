@@ -1,28 +1,21 @@
 ---
-description: "Add unsigned integer types uint8, uint16, uint32, and uint64 with correct unsigned arithmetic, comparisons, and casts throughout."
+description: "Decode Unicode escapes and raw UTF-8 in character and string literals while rejecting invalid Unicode values."
 ---
-# 39. pyxc: Unsigned Integer Types
+# 39. pyxc: Unicode Literals
 
-## Where We Are
+## What I Am Building
 
-[Chapter 38](chapter-38.md) added character literals. pyxc has had signed integers since [Chapter 17](chapter-17.md), but all of them interpret their top bit as a sign. Sizes, counts, and bit masks are commonly stored as unsigned values in systems code, and without unsigned types the compiler has no way to generate the right instructions for them. After this chapter, `uint8`, `uint16`, `uint32`, and `uint64` are available:
+[Chapter 38](chapter-38.md) added character literals and byte-sized hexadecimal escapes. I can write `'A'`, `'\n'`, and `'\x41'`, but I cannot write a character such as `Ω` or `🙂` yet. String literals copy non-ASCII bytes without checking whether those bytes form valid UTF-8.
+
+In this chapter, I make both literal forms understand Unicode:
 
 ```pyxc
-extern def printd(x: float64)
-
-def main() -> int:
-  var flags: uint32 = 0
-  flags |= uint32(1) << uint32(3)   # set bit 3
-  flags |= uint32(1) << uint32(7)   # set bit 7
-
-  var mask: uint32 = uint32(0xFF)
-  printd(float64(flags & mask))     # 136.000000
-  return 0
+var omega: int32 = 'Ω'
+var smile: int32 = '\U0001F642'
+puts("caf\u00E9 Ω 🙂")
 ```
 
-```
-136.000000
-```
+I'm only adding Unicode to character and string literals here. Unicode identifiers — `café` as a variable name — are a separate problem with their own rules; I'm leaving that for later.
 
 ## Source Code
 
@@ -31,232 +24,357 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-39
 ```
 
-## New Tokens, Keywords, and `ValueType` Enum Values
-
-Four new tokens and keywords:
-
-```cpp
-tok_uint8  = -65,
-tok_uint16 = -66,
-tok_uint32 = -67,
-tok_uint64 = -68,
-```
-
-```cpp
-{"uint8", tok_uint8}, {"uint16", tok_uint16},
-{"uint32", tok_uint32}, {"uint64", tok_uint64},
-```
-
-Four new values in the `ValueType` enum:
-
-```cpp
-UInt8,
-UInt16,
-UInt32,
-UInt64,
-```
-
-`ParseTypeToken` gets cases for all four so they work in type annotations and the `casttype` production:
-
-```cpp
-case tok_uint8:  getNextToken(); BaseType = ValueType::UInt8;  break;
-case tok_uint16: getNextToken(); BaseType = ValueType::UInt16; break;
-case tok_uint32: getNextToken(); BaseType = ValueType::UInt32; break;
-case tok_uint64: getNextToken(); BaseType = ValueType::UInt64; break;
-```
-
-## No New LLVM IR Types
-
-LLVM has no separate "unsigned integer" types. `uint32` and `int32` are both `i32` in the IR. `LLVMTypeFor` maps the four new `ValueType` values to the same LLVM types as their signed counterparts:
-
-```cpp
-case ValueType::UInt8:  return Type::getInt8Ty(*TheContext);
-case ValueType::UInt16: return Type::getInt16Ty(*TheContext);
-case ValueType::UInt32: return Type::getInt32Ty(*TheContext);
-case ValueType::UInt64: return Type::getInt64Ty(*TheContext);
-```
-
-The signedness lives entirely in which instruction the compiler emits.
-
-## `IsUnsignedIntType` and `IsSignedIntType`
-
-Two new predicate functions drive all instruction selection:
-
-```cpp
-static bool IsUnsignedIntType(ValueType Type) {
-  return Type == ValueType::UInt8 || Type == ValueType::UInt16 ||
-         Type == ValueType::UInt32 || Type == ValueType::UInt64;
-}
-
-static bool IsSignedIntType(ValueType Type) {
-  return IsIntType(Type) && !IsUnsignedIntType(Type);
-}
-```
-
-`IsIntType` is expanded to include all four unsigned types:
-
-```cpp
-return Type == ValueType::Int || Type == ValueType::Int8 || ... ||
-       Type == ValueType::UInt8 || Type == ValueType::UInt16 ||
-       Type == ValueType::UInt32 || Type == ValueType::UInt64;
-```
-
-## Implicit Widening Rule — Same Signedness Only
-
-`CanWidenInt` gains a signedness gate. `IsAssignable` itself is unchanged: it still just calls `CanWidenInt` for the integer-to-integer case, but that helper now rejects mixed signedness before comparing the bit widths it's been comparing since Chapter 17:
-
-```cpp
-static bool CanWidenInt(ValueType From, ValueType To) {
-  if (From == To)
-    return true;
-  if (IsIntType(From) && IsIntType(To)) {
-    if (IsUnsignedIntType(From) != IsUnsignedIntType(To))
-      return false;
-    unsigned FromBits = LLVMTypeFor(From)->getIntegerBitWidth();
-    unsigned ToBits = LLVMTypeFor(To)->getIntegerBitWidth();
-    return FromBits <= ToBits;
-  }
-  return false;
-}
-```
-
-`uint8 → uint64` widens without a cast. `int32 → uint32` or `uint32 → int64` requires an explicit cast. This matches the design intent: implicit signed/unsigned conversion is a common bug source in C; pyxc won't do it silently.
-
-## Instruction Selection — Seven Changed Sites
-
-### Integer widening (`EmitImplicitCast`)
-
-```cpp
-// Before: always sext
-return Builder->CreateSExt(V, LLVMTypeFor(To), "sext");
-
-// After:
-return IsUnsignedIntType(From)
-           ? Builder->CreateZExt(V, LLVMTypeFor(To), "zext")
-           : Builder->CreateSExt(V, LLVMTypeFor(To), "sext");
-```
-
-Unsigned types use `zext` (zero-extend) rather than `sext` (sign-extend).
-
-### Integer → float
-
-```cpp
-return IsUnsignedIntType(From)
-           ? Builder->CreateUIToFP(V, LLVMTypeFor(To), "uitofp")
-           : Builder->CreateSIToFP(V, LLVMTypeFor(To), "sitofp");
-```
-
-`uitofp` treats the bit pattern as an unsigned integer, producing the correct positive float for `uint32(-1)` = 4294967295.0.
-
-### Float → integer
-
-```cpp
-return IsUnsignedIntType(To)
-           ? Builder->CreateFPToUI(V, LLVMTypeFor(To), "fptoui")
-           : Builder->CreateFPToSI(V, LLVMTypeFor(To), "fptosi");
-```
-
-### Division and remainder
-
-```cpp
-// / operator:
-return IsUnsignedIntType(ResultType) ? Builder->CreateUDiv(L, R, "divtmp")
-                                     : Builder->CreateSDiv(L, R, "divtmp");
-// % operator:
-return IsUnsignedIntType(ResultType) ? Builder->CreateURem(L, R, "modtmp")
-                                     : Builder->CreateSRem(L, R, "modtmp");
-```
-
-### Right shift
-
-```cpp
-return IsUnsignedIntType(Ty) ? Builder->CreateLShr(L, R, "shrtmp")
-                              : Builder->CreateAShr(L, R, "shrtmp");
-```
-
-`lshr` fills vacated high bits with zero. `ashr` fills with the sign bit.
-
-### Comparisons (`<`, `<=`, `>`, `>=`)
-
-```cpp
-// '<':
-return IsUnsignedIntType(CompareType)
-           ? Builder->CreateICmpULT(L, R, "cmptmp")
-           : Builder->CreateICmpSLT(L, R, "cmptmp");
-// '>':
-return IsUnsignedIntType(CompareType)
-           ? Builder->CreateICmpUGT(L, R, "cmptmp")
-           : Builder->CreateICmpSGT(L, R, "cmptmp");
-// '<=':
-return IsUnsignedIntType(CompareType)
-           ? Builder->CreateICmpULE(L, R, "cmptmp")
-           : Builder->CreateICmpSLE(L, R, "cmptmp");
-// '>=':
-return IsUnsignedIntType(CompareType)
-           ? Builder->CreateICmpUGE(L, R, "cmptmp")
-           : Builder->CreateICmpSGE(L, R, "cmptmp");
-```
-
-`==` and `!=` are signedness-agnostic (`icmp eq` / `icmp ne`); they are unchanged.
-
-### Literal range check
-
-`ParseNumberExpr` already checks that a literal fits in the target type. The max value calculation is updated to use `APInt::getAllOnes(Bits)` for unsigned types:
-
-```cpp
-APInt Max = IsUnsignedIntType(Type) ? APInt::getAllOnes(Bits)
-                                    : APInt::getSignedMaxValue(Bits);
-```
-
-`getAllOnes` is the all-bits-set value (`0xFF`, `0xFFFF`, etc.), which is the maximum for an unsigned type. `getSignedMaxValue` is `0x7F`, `0x7FFF`, etc.
-
-## Explicit Casts
-
-Explicit casts between signed and unsigned types are always allowed. They reinterpret the bit pattern:
-
-```pyxc
-var x: int32  = -1
-var y: uint32 = uint32(x)   # 4294967295
-var z: int32  = int32(y)    # -1
-```
-
-Same bit width: bits are unchanged. Narrowing truncates to the low bits.
-
 ## Grammar
 
-```ebnf
-builtintype = "int" | "int8" | "int16" | "int32" | "int64"
-            | "uint8" | "uint16" | "uint32" | "uint64"   -- changed
-            | "float" | "float32" | "float64"
-            | "bool" | "None" ;
-casttype    = "int" | "int8" | "int16" | "int32" | "int64"
-            | "uint8" | "uint16" | "uint32" | "uint64"   -- changed
-            | "float" | "float32" | "float64"
-            | "bool" | pointertype ;
+I replace the separate string and character escape productions with one `literal-escape` production. I also add octal, `\u`, and `\U` forms:
+
+`code/chapter-39/pyxc.ebnf`
+
+```grammardiff
+ program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
+ end-of-lines            = end-of-line { end-of-line } ;
+ top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | external | top-level-expression ;
+ type-alias       = "type" name "=" type ;
+ trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
+ trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
+ trait-method-signature  = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ;
+ struct-definition       = "struct" name ":" end-of-lines struct-block ;
+ class-definition        = "class" name [ "(" trait-reference { "," trait-reference } ")" ] ":" end-of-lines struct-block ;
+ trait-reference        = name [ "[" type "]" ] ;
+ implementation-definition         = "impl" trait-reference "for" name ":" end-of-lines implementation-block ;
+ implementation-block       = indent implementation-method { end-of-lines implementation-method } dedent ;
+ implementation-method      = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ struct-block     = indent class-member { end-of-lines class-member } dedent ;
+ class-member     = [ visibility ] ( field-declaration | method-definition ) ;
+ visibility      = "public" | "private" ;
+ method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")"
+                   [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ field-declaration       = name ":" type ;
+ function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ (* If the return type is omitted, it defaults to None. *)
+ external        = "extern" "def" function-signature [ "->" type ] ;
+ top-level-expression    = expression ;
+ function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
+ typed-parameter      = name ":" type ;
+ if-statement          = "if" expression ":" suite
+                 { end-of-lines "elif" expression ":" suite }
+                 [ end-of-lines "else" ":" suite ] ;
+ while-statement       = "while" expression ":" suite ;
+ do-while-statement     = "do" ":" suite end-of-lines "while" expression ;
+ switch-statement      = "switch" expression ":" end-of-lines indent switch-body dedent ;
+ switch-body      = switch-case { end-of-lines switch-case } [ end-of-lines default-case ] ;
+ switch-case      = "case" switch-integer { "," switch-integer } ":" suite ;
+ default-case     = "default" ":" suite ;
+ for-statement         = "for"
+                   ( "var" name ":" type | name )
+                   "=" expression "," expression "," expression ":" suite ;
+ variable-statement         = "var" variable-binding { "," variable-binding } ;
+ assignment-statement      = lvalue assignment-operator expression ; (* assignment is a statement here *)
+ simple-statement      = return-statement | break-statement | continue-statement | variable-statement | assignment-statement | expression ;
+ compound-statement    = if-statement | for-statement | while-statement | do-while-statement | switch-statement ;
+ statement       = simple-statement | compound-statement ;
+ suite           = simple-statement | compound-statement | end-of-lines block ;
+ return-statement      = "return" [ expression ] ;
+ break-statement       = "break" ;
+ continue-statement    = "continue" ;
+ statement-separator = end-of-lines | BLOCK_END ;
+ block = indent statement { statement-separator statement } dedent ;
+ expression      = logical-or ;
+ logical-or      = logical-and { "||" logical-and } ;
+ logical-and     = bitwise-or { "&&" bitwise-or } ;
+ bitwise-or      = bitwise-xor { "|" bitwise-xor } ;
+ bitwise-xor     = bitwise-and { "^" bitwise-and } ;
+ bitwise-and     = equality { "&" equality } ;
+ equality        = relational { ("==" | "!=") relational } ;
+ relational      = shift { ("<" | "<=" | ">" | ">=") shift } ;
+ shift           = sum { ("<<" | ">>") sum } ;
+ sum             = term { ("+" | "-") term } ;
+ term            = unary-expression { ("*" | "/" | "%") unary-expression } ;
+ lvalue          = name | field-access | index-expression ;
+ variable-binding      = name ":" type [ "=" expression ] ;
+ unary-expression       = ("-" | "!" | "~" | "++" | "--") unary-expression | postfix-expression ;
+ postfix-expression     = primary [ postfix-operator ] ;
+ postfix-operator       = "++" | "--" ;
+ primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | character-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
+ cast-expression        = cast-type "(" expression ")" ;
+ sizeof-expression      = "sizeof" "(" type ")" ;
+ address-expression        = "addr" "(" lvalue ")" ;
+ name-expression  = name | call-expression | method-call-expression | constructor-call-expression ;
+ call-expression        = name "(" [ expression { "," expression } ] ")" ;
+ method-call-expression  = name "." name "(" [ expression { "," expression } ] ")" ;
+ constructor-call-expression    = name "(" [ expression { "," expression } ] ")" ;
+ field-access     = name "." name { "." name } ;
+ index-expression       = name "[" expression "]" ;
+ number-expression      = number ;
+ array-literal    = "[" [ expression { "," expression } ] "]" ;
+-string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
+-character-literal     = "'" ( ? any char except ' and newline ? | character-escape ) "'" ;
+-escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
+-character-escape      = "\\" ( "a" | "b" | "f" | "n" | "r" | "t" | "v"
+-                        | "\\" | "'" | "\"" | "?" | "0" | "x" hex-digit hex-digit ) ;
++string-literal   = "\"" { ? valid Unicode scalar value except " and newline, encoded as UTF-8 ? | literal-escape } "\"" ;
++character-literal     = "'" ( ? valid Unicode scalar value except ' and newline, encoded as UTF-8 ? | literal-escape ) "'" ;
++literal-escape   = "\\" ( simple-escape | octal-escape | "x" hex-digit hex-digit
++                   | "u" hex-digit hex-digit hex-digit hex-digit
++                   | "U" hex-digit hex-digit hex-digit hex-digit
++                         hex-digit hex-digit hex-digit hex-digit ) ;
++simple-escape    = "a" | "b" | "f" | "n" | "r" | "t" | "v"
++                 | "\\" | "'" | "\"" | "?" ;
++octal-escape     = octal-digit [ octal-digit [ octal-digit ] ] ;
+ parenthesized-expression       = "(" expression ")" ;
+ indent          = INDENT ;
+ dedent          = DEDENT ;
+ 
+ assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
+ name      = (letter | "_") { letter | digit | "_" } ;
+ builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+                 | "bool" | "None" ;
+ alias-type       = name ;
+ struct-type      = name ;
+ pointer-type     = "ptr" "[" type "]" ;
+ type            = base-type [ array-suffix ] ;
+ base-type        = builtin-type | alias-type | struct-type | pointer-type ;
+ array-suffix     = "[" integer "]" ;
+ cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+                 | "bool" | pointer-type ;
+ integer         = digit { digit } ;
+ switch-integer       = [ "-" ] integer ;
+ number          = ( digit { digit } [ "." { digit } ]
+                   | "." digit { digit } ) [ exponent ] ;
+ exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
+ boolean-literal    = "True" | "False" ;
+ letter          = "A".."Z" | "a".."z" ;
+ digit           = "0".."9" ;
+ hex-digit       = digit | "A".."F" | "a".."f" ;
++octal-digit     = "0".."7" ;
+ end-of-line             = "\r\n" | "\r" | "\n" ;
+ comment = "#" { comment-character } ;
+ comment-character = ? any character except "\r" and "\n" ? ;
+ whitespace = " " | "\t" | "\v" | "\f" ;
+ INDENT          = ? synthetic token emitted by lexer ? ;
+ DEDENT          = ? synthetic token emitted by lexer ? ;
+ 
+ BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
-## Error Cases
+I keep `\xNN` at exactly two hexadecimal digits, as I defined it in Chapter 38. I let an octal escape consume one, two, or three digits. I give `\u` a fixed four hex digits and `\U` a fixed eight.
 
-**Implicit signed/unsigned mix:**
+## Code Points and UTF-8
+
+I decode either literal down to one code point. For a character literal, that code point is the value. For a string literal, I go one step further and encode it as UTF-8 bytes.
+
+Unicode only defines code points through `U+10FFFF`. The range `U+D800` through `U+DFFF` is reserved for UTF-16 surrogate pairs, so those values are not standalone Unicode characters. I reject both cases with one check:
+
+```cpp
+static bool IsUnicodeScalarValue(uint32_t Value) {
+  return Value <= 0x10FFFF && !(Value >= 0xD800 && Value <= 0xDFFF);
+}
+```
+
+The valid values are called Unicode scalar values.
+
+## Sharing One Decoder
+
+Strings and characters now accept the same escape forms and the same raw UTF-8. I use one result type for the failures that can occur along the way:
+
+```cpp
+enum class LiteralDecodeError {
+  None,
+  InvalidEscape,
+  InvalidUtf8,
+  InvalidCodePoint,
+};
+```
+
+I then send both literal paths through `DecodeLiteralCodePoint()`. The function reads either one escape or one raw UTF-8 sequence, returns its code point through `Value`, and leaves `LexerLastChar` at the first byte after it.
+
+### Decoding Escapes
+
+The existing simple escapes each become their corresponding code point. I parse `\xNN` as two hexadecimal digits. Anything else falls to a default case: if it's not an octal digit either, it's not a valid escape at all — `\q` or `\8` both land here and get rejected. Otherwise I consume up to three octal digits:
+
+```cpp
+default:
+  if (LexerLastChar < '0' || LexerLastChar > '7')
+    return LiteralDecodeError::InvalidEscape;
+
+  Value = 0;
+  for (int I = 0; I < 3; ++I) {
+    Value = (Value << 3) |
+            static_cast<uint32_t>(LexerLastChar - '0');
+    int Next = peek();
+    if (I == 2 || Next < '0' || Next > '7') {
+      LexerLastChar = advance();
+      break;
+    }
+    LexerLastChar = advance();
+  }
+  return LiteralDecodeError::None;
+```
+
+`'\101'` is octal for 65 — the letter `A`.
+
+For `\u` and `\U`, I read exactly four or eight hexadecimal digits and then validate the result:
+
+```cpp
+case 'u':
+case 'U': {
+  int Digits = LexerLastChar == 'u' ? 4 : 8;
+  Value = 0;
+  for (int I = 0; I < Digits; ++I) {
+    int Digit = HexDigitValue(advance());
+    if (Digit < 0)
+      return LiteralDecodeError::InvalidEscape;
+    Value = (Value << 4) | static_cast<uint32_t>(Digit);
+  }
+  LexerLastChar = advance();
+  if (!IsUnicodeScalarValue(Value))
+    return LiteralDecodeError::InvalidCodePoint;
+  return LiteralDecodeError::None;
+}
+```
+
+So `\u03A9` gives me `Ω`, and `\U0001F642` gives me `🙂`.
+
+**Incomplete escape:**
 ```pyxc
-var a: uint32 = 1
-var b: int32  = 2
-a = a + b   # Error: Type mismatch
+var x: int32 = '\u123'
+```
+```
+Error (Line 2, Column 18): invalid character escape
+  var x: int32 = '\u123'
+                 ^~~~
 ```
 
-Cast explicitly: `a = a + uint32(b)`.
+**Surrogate value:**
+```pyxc
+var x: int32 = '\uD800'
+```
+```
+Error (Line 2, Column 18): invalid Unicode code point in character literal
+  var x: int32 = '\uD800'
+                 ^~~~
+```
 
-## Things Worth Knowing
+### Decoding Raw UTF-8
 
-**`uint64(-1)` is `18446744073709551615`.** Converting it to `float64` rounds up because `float64` can only represent integers exactly up to `2^53`.
+For a raw non-ASCII character, I inspect the leading byte to decide whether the sequence contains two, three, or four bytes. I then require every remaining byte to have the UTF-8 continuation-byte shape `10xxxxxx`:
 
-**Right shift is always logical for unsigned types.** `uint32(-1) >> 1` fills the vacated high bit with zero, giving `2147483647`.
+```cpp
+for (int I = 1; I < Length; ++I) {
+  int Next = advance();
+  if (Next == EOF || (Next & 0xC0) != 0x80)
+    return LiteralDecodeError::InvalidUtf8;
+  Value = (Value << 6) | static_cast<uint32_t>(Next & 0x3F);
+}
+LexerLastChar = advance();
+```
 
-**`size_t` maps to `uint64` on 64-bit targets.** When calling C functions that take or return `size_t`, declare the parameter as `uint64`.
+I also reject invalid leading bytes, overlong encodings, surrogate values, and values above `U+10FFFF`. A stray continuation byte on its own — one that never follows a valid leading byte — hits that same rejection:
+```
+Error (Line 2, Column 18): invalid UTF-8 in character literal
+```
+
+Raw and escaped spellings reach the same validated code point:
+
+```pyxc
+'Ω' == '\u03A9'
+'🙂' == '\U0001F642'
+```
+
+## Producing Character Values
+
+The character-literal branch now asks the shared decoder for one code point:
+
+```cpp
+uint32_t Value = 0;
+LiteralDecodeError Error = DecodeLiteralCodePoint(Value);
+if (Error != LiteralDecodeError::None)
+  return LogLiteralDecodeError(Error, "character");
+
+if (LexerLastChar != '\'') {
+  fprintf(stderr,
+          "Error (Line %d, Column %d): unterminated character literal\n",
+          CurLoc.Line, CurLoc.Col);
+  PrintErrorSourceContext(CurLoc);
+  return tok_error;
+}
+```
+
+I still turn `CharLiteralValue` into a `NumberExpressionNode`, same as before. A Unicode character stays an integer, so it goes through the same range checks every other character literal already does.
+
+## Producing UTF-8 Strings
+
+For a string, I decode one code point at a time and append its UTF-8 encoding:
+
+```cpp
+while (LexerLastChar != '"' && LexerLastChar != EOF &&
+       LexerLastChar != '\n') {
+  uint32_t Value = 0;
+  LiteralDecodeError Error = DecodeLiteralCodePoint(Value);
+  if (Error != LiteralDecodeError::None)
+    return LogLiteralDecodeError(Error, "string");
+  AppendUtf8(StringLiteralStr, Value);
+}
+```
+
+`AppendUtf8()` emits one byte for ASCII and two, three, or four bytes for larger code points:
+
+```cpp
+static void AppendUtf8(string &Output, uint32_t Value) {
+  if (Value <= 0x7F) {
+    Output.push_back(static_cast<char>(Value));
+  } else if (Value <= 0x7FF) {
+    Output.push_back(static_cast<char>(0xC0 | (Value >> 6)));
+    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
+  } else if (Value <= 0xFFFF) {
+    Output.push_back(static_cast<char>(0xE0 | (Value >> 12)));
+    Output.push_back(static_cast<char>(0x80 | ((Value >> 6) & 0x3F)));
+    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
+  } else {
+    Output.push_back(static_cast<char>(0xF0 | (Value >> 18)));
+    Output.push_back(static_cast<char>(0x80 | ((Value >> 12) & 0x3F)));
+    Output.push_back(static_cast<char>(0x80 | ((Value >> 6) & 0x3F)));
+    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
+  }
+}
+```
+
+Raw UTF-8 goes through this same decode-and-encode path — I validate it now instead of just copying it blindly.
+
+## Try It
+
+```pyxc
+extern def puts(s: ptr[int8]) -> int
+
+def main() -> int:
+  puts("caf\u00E9")
+  puts("Ω 🙂")
+  return 0
+```
+
+```
+café
+Ω 🙂
+```
+
+## Known Limitations
+
+**Identifiers are still ASCII-only.** `var café: int` doesn't work; Unicode in variable, function, struct, or class names is a separate problem I'm leaving for later.
+
+**No Unicode normalization.** Two visually identical strings that use different Unicode representations (e.g. precomposed vs. combining-character forms) are different byte sequences to pyxc; there's no NFC/NFD normalization step.
+
+## Build and Run
+
+```bash
+cd code/chapter-39
+cmake -S . -B build && cmake --build build
+```
 
 ## What's Next
 
-[Chapter 40](chapter-40.md) allows assignment to appear inside an expression — enabling the `while (c = getchar()) != EOF` pattern from K&R.
+[Chapter 40](chapter-40.md) adds unsigned integer types: `uint8`, `uint16`, `uint32`, and `uint64`.
 
 ## Need Help?
 
@@ -270,4 +388,4 @@ Include:
 - Full error message
 - Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
-We'll figure it out.
+I'll help you figure it out.

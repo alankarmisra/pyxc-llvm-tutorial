@@ -1,0 +1,18 @@
+extern def printd(x: float64)
+
+trait Adder:
+  def add(x: int, y: int) -> int
+
+class Calc:
+  public bias: int
+
+impl Adder for Calc:
+  def add(x: int, y: int) -> int:
+    return x + y + self.bias
+
+
+def main() -> int:
+  var c: Calc = Calc()
+  c.bias = 5
+  printd(float64(c.add(3, 4)))
+  return 0

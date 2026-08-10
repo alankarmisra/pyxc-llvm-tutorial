@@ -1,0 +1,8 @@
+extern def puts(s: ptr[int8]) -> int
+
+def greeting() -> ptr[int8]:
+  return "hello, pyxc"
+
+def main() -> int:
+  puts(greeting())
+  return 0

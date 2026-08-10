@@ -1,0 +1,15 @@
+struct Point:
+  x: int
+  y: int
+
+extern def printd(x: float64)
+
+def sum_point(p: Point) -> int:
+  return p.x + p.y
+
+def main() -> int:
+  var p: Point
+  p.x = 5
+  p.y = 7
+  printd(float64(sum_point(p)))
+  return 0

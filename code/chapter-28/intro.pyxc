@@ -1,0 +1,26 @@
+extern def printd(x: float64)
+
+class BoundedCounter:
+  private count: int
+  private limit: int
+
+  def __init__(max: int):
+    self.count = 0
+    self.limit = max
+
+  public def increment():
+    if self.count < self.limit:
+      self.count = self.count + 1
+
+  public def get() -> int:
+    return self.count
+
+
+def main() -> int:
+  var c: BoundedCounter = BoundedCounter(3)
+  c.increment()
+  c.increment()
+  c.increment()
+  c.increment()
+  printd(float64(c.get()))
+  return 0

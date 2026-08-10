@@ -1,0 +1,2 @@
+def sum4(a: int[4]) -> int:
+  return a[0] + a[1] + a[2] + a[3]

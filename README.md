@@ -265,11 +265,11 @@ llvm-lit code/chapter-11/test/
 ├── docs/
 │   ├── chapter-00.md   # tone, motivation, and a narrative tour of the tutorial
 │   ├── chapter-01.md
-│   └── ... chapter-43.md
+│   └── ... chapter-45.md
 ├── code/
 │   ├── chapter-01/
 │   ├── chapter-02/
-│   └── ... chapter-43/
+│   └── ... chapter-45/
 │       ├── pyxc.cpp
 │       ├── CMakeLists.txt
 │       └── test/
@@ -326,32 +326,33 @@ All 43 chapters are complete. Each one is a standalone, buildable snapshot of th
 
 ### OOP Core
 
-- [Chapter 24: Classes](docs/chapter-24.md) — The `class` keyword as a new way to bundle data, distinct from `struct`.
-- [Chapter 25: Methods and `self`](docs/chapter-25.md) — Methods defined inside a class body, called as `obj.method(args)`.
-- [Chapter 26: Constructors](docs/chapter-26.md) — `__init__` and `ClassName(args)` syntax; instances always start zeroed out.
-- [Chapter 27: Visibility](docs/chapter-27.md) — `public` and `private` on class fields and methods.
-- [Chapter 28: Traits](docs/chapter-28.md) — Named method contracts, checked at compile time with no runtime cost.
-- [Chapter 29: impl Blocks](docs/chapter-29.md) — `impl TraitName for ClassName:` to pick up a trait's contract after the fact.
-- [Chapter 30: Generic Traits](docs/chapter-30.md) — Type parameters on traits, e.g. `trait Addable[T]`.
+- [Chapter 25: Classes](docs/chapter-25.md) — The `class` keyword as a new way to bundle data, distinct from `struct`.
+- [Chapter 26: Methods and `self`](docs/chapter-26.md) — Methods defined inside a class body, called as `obj.method(args)`.
+- [Chapter 27: Constructors](docs/chapter-27.md) — `__init__` and `ClassName(args)` syntax; instances always start zeroed out.
+- [Chapter 28: Visibility](docs/chapter-28.md) — `public` and `private` on class fields and methods.
+- [Chapter 29: Traits](docs/chapter-29.md) — Named method contracts, checked at compile time with no runtime cost.
+- [Chapter 30: impl Blocks](docs/chapter-30.md) — `impl TraitName for ClassName:` to pick up a trait's contract after the fact.
+- [Chapter 31: Generic Traits](docs/chapter-31.md) — Type parameters on traits, e.g. `trait Addable[T]`.
 
 ### K&R Compatibility
 
-- [Chapter 31: Arithmetic Completeness](docs/chapter-31.md) — `/`, `%`, compound assignment, and prefix/postfix `++`/`--`.
-- [Chapter 32: Logical Operators](docs/chapter-32.md) — `&&`, `||`, and `!` with real short-circuit evaluation and a dedicated `bool` type.
-- [Chapter 33: Loop Completeness](docs/chapter-33.md) — `while`, `do/while`, `break`, and `continue`, correctly targeting nested loops.
-- [Chapter 34: Bitwise Operators](docs/chapter-34.md) — `&`, `|`, `^`, `<<`, `>>`, `~`, integer-only with C-standard precedence.
-- [Chapter 35: Switch](docs/chapter-35.md) — `switch` with integer cases, `default`, and no implicit fallthrough.
-- [Chapter 36: `elif` Chains](docs/chapter-36.md) — Python-style `elif` so conditionals don't nest into a pyramid.
-- [Chapter 37: Character Literals](docs/chapter-37.md) — `'a'`, `'\n'`, `'\t'`, and the rest.
-- [Chapter 38: Unsigned Integer Types](docs/chapter-38.md) — `uint8` through `uint64`, with correct unsigned arithmetic and no silent signed/unsigned mixing.
-- [Chapter 39: Assignment as Expression](docs/chapter-39.md) — `=` inside an expression, enabling patterns like `while (c = getchar()) != EOF`.
-- [Chapter 40: Variadic Extern Functions](docs/chapter-40.md) — `extern def` with a variable number of arguments, so pyxc can call `printf`/`scanf`.
+- [Chapter 32: Arithmetic Completeness](docs/chapter-32.md) — `/`, `%`, compound assignment, and prefix/postfix `++`/`--`.
+- [Chapter 33: Logical Operators](docs/chapter-33.md) — `&&`, `||`, and `!` with real short-circuit evaluation and a dedicated `bool` type.
+- [Chapter 34: Loop Completeness](docs/chapter-34.md) — `while`, `do/while`, `break`, and `continue`, correctly targeting nested loops.
+- [Chapter 35: Bitwise Operators](docs/chapter-35.md) — `&`, `|`, `^`, `<<`, `>>`, `~`, integer-only with C-standard precedence.
+- [Chapter 36: Switch](docs/chapter-36.md) — `switch` with integer cases, `default`, and no implicit fallthrough.
+- [Chapter 37: `elif` Chains](docs/chapter-37.md) — Python-style `elif` so conditionals don't nest into a pyramid.
+- [Chapter 38: Character Literals](docs/chapter-38.md) — Simple C escapes and strict two-digit hexadecimal escapes for integer-valued characters.
+- [Chapter 39: Unicode Literals](docs/chapter-39.md) — Unicode escapes and validated raw UTF-8 in character and string literals.
+- [Chapter 40: Unsigned Integer Types](docs/chapter-40.md) — `uint8` through `uint64`, with correct unsigned arithmetic and no silent signed/unsigned mixing.
+- [Chapter 41: Assignment as Expression](docs/chapter-41.md) — `=` inside an expression, enabling patterns like `while (c = getchar()) != EOF`.
+- [Chapter 42: Variadic Extern Functions](docs/chapter-42.md) — `extern def` with a variable number of arguments, so pyxc can call `printf`/`scanf`.
 
 ### Program Structure
 
-- [Chapter 41: Module Declarations and Export](docs/chapter-41.md) — `module` names a compilation unit; `export` marks its public API.
-- [Chapter 42: Imports](docs/chapter-42.md) — `import` pulls in another file's exported functions and types by name.
-- [Chapter 43: Cyclic Imports](docs/chapter-43.md) — Two files that import each other compile correctly, without infinite recursion.
+- [Chapter 43: Module Declarations and Export](docs/chapter-43.md) — `module` names a compilation unit; `export` marks its public API.
+- [Chapter 44: Imports](docs/chapter-44.md) — `import` pulls in another file's exported functions and types by name.
+- [Chapter 45: Cyclic Imports](docs/chapter-45.md) — Two files that import each other compile correctly, without infinite recursion.
 
 ## Credits
 

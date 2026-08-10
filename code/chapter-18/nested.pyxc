@@ -1,0 +1,13 @@
+struct Inner:
+  value: int
+
+struct Outer:
+  inner: Inner
+
+extern def printd(x: float64)
+
+def main() -> int:
+  var o: Outer
+  o.inner.value = 9
+  printd(float64(o.inner.value))
+  return 0

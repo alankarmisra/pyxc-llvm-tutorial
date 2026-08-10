@@ -3,7 +3,7 @@ description: "Add type aliases so any type, scalar, pointer, or struct, can be g
 ---
 # 23. pyxc: Type Aliases
 
-## Where We Are
+## What I Am Building
 
 [Chapter 22](chapter-22.md) gave me string literals, but only as `ptr[int8]`. That's accurate, but it's not what I want to keep typing every time a function takes or returns text. I want a name for it.
 
@@ -33,6 +33,91 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-23
 ```
 
+## Grammar
+
+`top-level-item` gains `type-alias`, and `type` gains `alias-type`. `alias-type` and `struct-type` are both written identically, as a plain `name`; `ParseTypeToken` is what actually tells them apart, by trying `TypeAliases` before `StructTypes` and rejecting the name if neither lookup succeeds. Everything else is unchanged from [Chapter 22](chapter-22.md):
+
+```grammardiff
+ program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
+ end-of-lines            = end-of-line { end-of-line } ;
+-top-level-item             = struct-definition | function-definition | external | top-level-expression ;
++top-level-item             = type-alias | struct-definition | function-definition | external | top-level-expression ;
++type-alias       = "type" name "=" type ;
+ struct-definition       = "struct" name ":" end-of-lines struct-block ;
+ struct-block     = indent field-declaration { end-of-lines field-declaration } dedent ;
+ field-declaration       = name ":" type ;
+ function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ (* If the return type is omitted, it defaults to None. *)
+ external        = "extern" "def" function-signature [ "->" type ] ;
+ top-level-expression    = expression ;
+ function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
+ typed-parameter      = name ":" type ;
+ if-statement          = "if" expression ":" suite
+                 [ end-of-lines "else" ":" suite ] ;
+ for-statement         = "for"
+                   ( "var" name ":" type | name )
+                   "=" expression "," expression "," expression ":" suite ;
+ variable-statement         = "var" variable-binding { "," variable-binding } ;
+ assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
+ simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
+ compound-statement    = if-statement | for-statement ;
+ statement       = simple-statement | compound-statement ;
+ suite           = simple-statement | compound-statement | end-of-lines block ;
+ return-statement      = "return" [ expression ] ;
+ statement-separator = end-of-lines | BLOCK_END ;
+ block = indent statement { statement-separator statement } dedent ;
+ expression      = comparison ;
+ comparison      = sum { comparison-operator sum } ;
+ comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ sum             = term { ("+" | "-") term } ;
+ term            = unary-expression { ("*" | "/") unary-expression } ;
+ lvalue          = name | field-access | index-expression ;
+ variable-binding      = name ":" type [ "=" expression ] ;
+ unary-expression       = "-" unary-expression | primary ;
+ primary         = cast-expression | sizeof-expression | address-expression | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
+ cast-expression        = cast-type "(" expression ")" ;
+ sizeof-expression      = "sizeof" "(" type ")" ;
+ address-expression        = "addr" "(" lvalue ")" ;
+ name-expression  = name | call-expression ;
+ call-expression        = name "(" [ expression { "," expression } ] ")" ;
+ field-access     = name "." name { "." name } ;
+ index-expression       = name "[" expression "]" ;
+ number-expression      = number ;
+ string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
+ escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
+ parenthesized-expression       = "(" expression ")" ;
+ indent          = INDENT ;
+ dedent          = DEDENT ;
+ 
+ name      = (letter | "_") { letter | digit | "_" } ;
+ builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+                 | "bool" | "None" ;
++alias-type       = name ;
+ struct-type      = name ;
+ pointer-type     = "ptr" "[" type "]" ;
+-type            = builtin-type | struct-type | pointer-type ;
++type            = builtin-type | alias-type | struct-type | pointer-type ;
+ cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+                 | "bool" | pointer-type ;
+ integer         = digit { digit } ;
+ number          = ( digit { digit } [ "." { digit } ]
+                   | "." digit { digit } ) [ exponent ] ;
+ exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
+ boolean-literal    = "True" | "False" ;
+ letter          = "A".."Z" | "a".."z" ;
+ digit           = "0".."9" ;
+ end-of-line             = "\r\n" | "\r" | "\n" ;
+ comment = "#" { comment-character } ;
+ comment-character = ? any character except "\r" and "\n" ? ;
+ whitespace = " " | "\t" | "\v" | "\f" ;
+ INDENT          = ? synthetic token emitted by lexer ? ;
+ DEDENT          = ? synthetic token emitted by lexer ? ;
+ 
+ BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
+```
+
 ## New Keyword: `type`
 
 ```cpp
@@ -43,7 +128,7 @@ tok_type = -39,
 {"type", tok_type}
 ```
 
-## The `TypeAliases` Map
+## The Type-Alias Table
 
 ```cpp
 static std::map<string, std::pair<ValueType, string>> TypeAliases;
@@ -63,7 +148,7 @@ static void ResetParserStateForFile() {
   VarStructScopes.clear();
 ```
 
-## Extending `ParseTypeToken`
+## Extending Type Parsing for Aliases
 
 Every type annotation in pyxc, parameter types, return types, `var` declarations, `sizeof` operands, cast targets, goes through `ParseTypeToken`. That means I only have to teach alias resolution to one function for it to work everywhere else automatically.
 
@@ -113,7 +198,7 @@ static bool ParseTypeAliasDefinition() {
     return false;
   }
   getNextToken(); // eat alias name
-  if (CurrentToken != '=') {
+  if (CurrentToken != tok_equal) {
     LogErrorExpression("Expected '=' in type alias");
     return false;
   }
@@ -307,102 +392,6 @@ define i64 @id(i64 %x)
 
 **No scoping.** Every alias is global to the module. There's no way to limit one to a single function or file.
 
-## Grammar
-
-[pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-23/pyxc.ebnf)
-
-```ebnf
-program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
-end-of-lines            = end-of-line { end-of-line } ;
-top-level-item             = type-alias | struct-definition | function-definition | decorated-function-definition | external | top-level-expression ;   (* changed: type-alias added *)
-type-alias       = "type" name "=" type ;                                                                                                                (* new *)
-struct-definition       = "struct" name ":" end-of-lines struct-block ;
-struct-block     = indent field-declaration { end-of-lines field-declaration } dedent ;
-field-declaration       = name ":" type ;
-function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
-(* If the return type is omitted, it defaults to None. *)
-decorated-function-definition    = binary-decorator end-of-lines "def" binary-operator-signature [ "->" type ] ":" ( simple-statement | end-of-lines block )
-                | unary-decorator  end-of-lines "def" unary-operator-signature  [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
-binary-decorator = "@" "binary" "(" integer ")" ;
-unary-decorator  = "@" "unary" ;
-binary-operator-signature = custom-operator-character "(" typed-parameter "," typed-parameter ")" ;
-unary-operator-signature  = custom-operator-character "(" typed-parameter ")" ;
-external        = "extern" "def" function-signature [ "->" type ] ;
-top-level-expression    = expression ;
-function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
-typed-parameter      = name ":" type ;
-if-statement          = "if" expression ":" suite
-                [ end-of-lines "else" ":" suite ] ;
-for-statement         = "for"
-                  ( "var" name ":" type | name )
-                  "=" expression "," expression "," expression ":" suite ;
-variable-statement         = "var" variable-binding { "," variable-binding } ;
-assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
-simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
-compound-statement    = if-statement | for-statement ;
-statement       = simple-statement | compound-statement ;
-suite           = simple-statement | compound-statement | end-of-lines block ;
-return-statement      = "return" [ expression ] ;
-statement-separator = end-of-lines | BLOCK_END ;
-block = indent statement { statement-separator statement } dedent ;
-expression      = unary-expression binary-operator-right ;
-binary-operator-right        = { binary-operator unary-expression } ;
-lvalue          = name | field-access | index-expression ;
-variable-binding      = name ":" type [ "=" expression ] ;
-unary-expression       = unary-operator unary-expression | primary ;
-unary-operator         = "-" | user-defined-unary-operator ;
-primary         = cast-expression | sizeof-expression | address-expression | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
-cast-expression        = cast-type "(" expression ")" ;
-sizeof-expression      = "sizeof" "(" type ")" ;
-address-expression        = "addr" "(" lvalue ")" ;
-name-expression  = name | call-expression ;
-call-expression        = name "(" [ expression { "," expression } ] ")" ;
-field-access     = name "." name { "." name } ;
-index-expression       = name "[" expression "]" ;
-number-expression      = number ;
-string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
-escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
-parenthesized-expression       = "(" expression ")" ;
-binary-operator        = builtin-binary-operator | user-defined-binary-operator ;
-indent          = INDENT ;
-dedent          = DEDENT ;
-
-builtin-binary-operator = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
-user-defined-binary-operator = ? any operator-character defined as a custom binary operator ? ;
-user-defined-unary-operator  = ? any operator-character defined as a custom unary operator ? ;
-custom-operator-character    = ? any operator-character that is not "-" or a builtin-binary-operator,
-                    and not already defined as a custom operator ? ;
-operator-character          = ? any single ASCII punctuation character ? ;
-name      = (letter | "_") { letter | digit | "_" } ;
-builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | "None" ;
-alias-type       = name ;                                              (* new *)
-struct-type      = name ;
-pointer-type     = "ptr" "[" type "]" ;
-type            = builtin-type | alias-type | struct-type | pointer-type ;   (* changed: alias-type added *)
-cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | pointer-type ;
-integer         = digit { digit } ;
-number          = ( digit { digit } [ "." { digit } ]
-                  | "." digit { digit } ) [ exponent ] ;
-exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
-boolean-literal    = "True" | "False" ;
-letter          = "A".."Z" | "a".."z" ;
-digit           = "0".."9" ;
-end-of-line             = "\r\n" | "\r" | "\n" ;
-comment = "#" { comment-character } ;
-comment-character = ? any character except "\r" and "\n" ? ;
-whitespace = " " | "\t" | "\v" | "\f" ;
-INDENT          = ? synthetic token emitted by lexer ? ;
-DEDENT          = ? synthetic token emitted by lexer ? ;
-
-BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
-```
-
-`alias-type` and `struct-type` are both written identically, as a plain `name`. `ParseTypeToken` is what actually tells them apart, by trying `TypeAliases` before `StructTypes` and rejecting the name if neither lookup succeeds. `top-level-item` gained `type-alias`, and `type` gained `alias-type`; both are marked above. Everything else is unchanged from [Chapter 22](chapter-22.md).
-
 ## What's Next
 
 [Chapter 24](chapter-24.md) adds fixed-size arrays: `T[N]` types, stack allocation, indexing, and array literals.
@@ -419,4 +408,4 @@ Include:
 - Full error message
 - Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
-We'll figure it out.
+I'll help you figure it out.

@@ -3,9 +3,9 @@ description: "Complete pyxc's loop story: while, do/while, break, and continue, 
 ---
 # 34. pyxc: Loop Completeness
 
-## Where We Are
+## What I Am Building
 
-[Chapter 33](chapter-33.md) added logical operators. pyxc has had `for` loops since [Chapter 9](chapter-09.md), but that is the only loop form. After this chapter, `while` and `do/while` join the language, and `break` and `continue` work correctly across nested loops:
+[Chapter 33](chapter-33.md) added logical operators. pyxc has had `for` loops since [Chapter 9](chapter-09.md), but that's the only loop form. After this chapter, `while` and `do`/`while` join the language, and `break` and `continue` work correctly across nested loops:
 
 ```pyxc
 extern def printd(x: float64)
@@ -26,7 +26,7 @@ def main() -> int:
   return 0
 ```
 
-```
+```text
 111.000000
 ```
 
@@ -36,6 +36,119 @@ def main() -> int:
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-34
 ```
+
+## Grammar
+
+Four new productions: `while-statement`, `do-while-statement`, `break-statement`, and `continue-statement`. `compound-statement` gains the first two; `simple-statement` gains the last two:
+
+```grammardiff
+ program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
+ end-of-lines            = end-of-line { end-of-line } ;
+ top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | external | top-level-expression ;
+ type-alias       = "type" name "=" type ;
+ trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
+ trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
+ trait-method-signature  = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ;
+ struct-definition       = "struct" name ":" end-of-lines struct-block ;
+ class-definition        = "class" name [ "(" trait-reference { "," trait-reference } ")" ] ":" end-of-lines struct-block ;
+ trait-reference        = name [ "[" type "]" ] ;
+ implementation-definition         = "impl" trait-reference "for" name ":" end-of-lines implementation-block ;
+ implementation-block       = indent implementation-method { end-of-lines implementation-method } dedent ;
+ implementation-method      = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ struct-block     = indent class-member { end-of-lines class-member } dedent ;
+ class-member     = [ visibility ] ( field-declaration | method-definition ) ;
+ visibility      = "public" | "private" ;
+ method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")"
+                   [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ field-declaration       = name ":" type ;
+ function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ (* If the return type is omitted, it defaults to None. *)
+ external        = "extern" "def" function-signature [ "->" type ] ;
+ top-level-expression    = expression ;
+ function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
+ typed-parameter      = name ":" type ;
+ if-statement          = "if" expression ":" suite
+                 [ end-of-lines "else" ":" suite ] ;
+ for-statement         = "for"
+                   ( "var" name ":" type | name )
+                   "=" expression "," expression "," expression ":" suite ;
++while-statement       = "while" expression ":" suite ;
++do-while-statement     = "do" ":" suite end-of-lines "while" expression ;
+ variable-statement         = "var" variable-binding { "," variable-binding } ;
+ assignment-statement      = lvalue assignment-operator expression ; (* assignment is a statement here *)
+-simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
+-compound-statement    = if-statement | for-statement ;
++simple-statement      = return-statement | break-statement | continue-statement | variable-statement | assignment-statement | expression ;
++compound-statement    = if-statement | for-statement | while-statement | do-while-statement ;
+ statement       = simple-statement | compound-statement ;
+ suite           = simple-statement | compound-statement | end-of-lines block ;
+ return-statement      = "return" [ expression ] ;
++break-statement       = "break" ;
++continue-statement    = "continue" ;
+ statement-separator = end-of-lines | BLOCK_END ;
+ block = indent statement { statement-separator statement } dedent ;
+ expression      = logical-or ;
+ logical-or      = logical-and { "||" logical-and } ;
+ logical-and     = comparison { "&&" comparison } ;
+ comparison      = sum { comparison-operator sum } ;
+ comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ sum             = term { ("+" | "-") term } ;
+ term            = unary-expression { ("*" | "/" | "%") unary-expression } ;
+ lvalue          = name | field-access | index-expression ;
+ variable-binding      = name ":" type [ "=" expression ] ;
+ unary-expression       = ("-" | "!" | "++" | "--") unary-expression | postfix-expression ;
+ postfix-expression     = primary [ postfix-operator ] ;
+ postfix-operator       = "++" | "--" ;
+ primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
+ cast-expression        = cast-type "(" expression ")" ;
+ sizeof-expression      = "sizeof" "(" type ")" ;
+ address-expression        = "addr" "(" lvalue ")" ;
+ name-expression  = name | call-expression | method-call-expression | constructor-call-expression ;
+ call-expression        = name "(" [ expression { "," expression } ] ")" ;
+ method-call-expression  = name "." name "(" [ expression { "," expression } ] ")" ;
+ constructor-call-expression    = name "(" [ expression { "," expression } ] ")" ;
+ field-access     = name "." name { "." name } ;
+ index-expression       = name "[" expression "]" ;
+ number-expression      = number ;
+ array-literal    = "[" [ expression { "," expression } ] "]" ;
+ string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
+ escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
+ parenthesized-expression       = "(" expression ")" ;
+ indent          = INDENT ;
+ dedent          = DEDENT ;
+ 
+ assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
+ name      = (letter | "_") { letter | digit | "_" } ;
+ builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+                 | "bool" | "None" ;
+ alias-type       = name ;
+ struct-type      = name ;
+ pointer-type     = "ptr" "[" type "]" ;
+ type            = base-type [ array-suffix ] ;
+ base-type        = builtin-type | alias-type | struct-type | pointer-type ;
+ array-suffix     = "[" integer "]" ;
+ cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+                 | "bool" | pointer-type ;
+ integer         = digit { digit } ;
+ number          = ( digit { digit } [ "." { digit } ]
+                   | "." digit { digit } ) [ exponent ] ;
+ exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
+ boolean-literal    = "True" | "False" ;
+ letter          = "A".."Z" | "a".."z" ;
+ digit           = "0".."9" ;
+ end-of-line             = "\r\n" | "\r" | "\n" ;
+ comment = "#" { comment-character } ;
+ comment-character = ? any character except "\r" and "\n" ? ;
+ whitespace = " " | "\t" | "\v" | "\f" ;
+ INDENT          = ? synthetic token emitted by lexer ? ;
+ DEDENT          = ? synthetic token emitted by lexer ? ;
+ 
+ BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
+```
+
+Note the `do`/`while` shape: the body comes first under `do:`, and the condition appears after `while` on its own line with no trailing colon — `do: ... while cond`, not `do: ... while cond:`.
 
 ## New Tokens and Keywords
 
@@ -48,26 +161,20 @@ tok_break    = -54,
 tok_continue = -55,
 ```
 
-They are added to the keyword table alongside existing keywords:
-
-```cpp
-{"while", tok_while}, {"do", tok_do},
-{"break", tok_break}, {"continue", tok_continue},
-```
+Registered in the keyword table alongside every other keyword.
 
 ## New AST Nodes
 
-Three nodes handle the new constructs.
-
-**`WhileExprAST`** covers both `while` and `do/while`. An `IsDoWhile` flag tells codegen which block to branch to first:
+Three nodes handle the new constructs. `WhileExpressionNode` covers both `while` and `do`/`while`; an `IsDoWhile` flag tells codegen which block to branch to first:
 
 ```cpp
-class WhileExprAST : public ExprAST {
-  unique_ptr<ExprAST> Cond;
-  unique_ptr<ExprAST> Body;
+class WhileExpressionNode : public ExpressionNode {
+  unique_ptr<ExpressionNode> Cond;
+  unique_ptr<ExpressionNode> Body;
   bool IsDoWhile;
+
 public:
-  WhileExprAST(unique_ptr<ExprAST> Cond, unique_ptr<ExprAST> Body,
+  WhileExpressionNode(unique_ptr<ExpressionNode> Cond, unique_ptr<ExpressionNode> Body,
                bool IsDoWhile)
       : Cond(std::move(Cond)), Body(std::move(Body)), IsDoWhile(IsDoWhile) {
     setType(ValueType::None);
@@ -77,19 +184,19 @@ public:
 };
 ```
 
-**`BreakExprAST`** and **`ContinueExprAST`** carry no data — they emit an unconditional branch at codegen time:
+`BreakExpressionNode` and `ContinueExpressionNode` carry no data at all; each just emits an unconditional branch at codegen time:
 
 ```cpp
-class BreakExprAST : public ExprAST {
+class BreakExpressionNode : public ExpressionNode {
 public:
-  BreakExprAST() { setType(ValueType::None); }
+  BreakExpressionNode() { setType(ValueType::None); }
   bool shouldPrintValue() const override { return false; }
   Value *codegen() override;
 };
 
-class ContinueExprAST : public ExprAST {
+class ContinueExpressionNode : public ExpressionNode {
 public:
-  ContinueExprAST() { setType(ValueType::None); }
+  ContinueExpressionNode() { setType(ValueType::None); }
   bool shouldPrintValue() const override { return false; }
   Value *codegen() override;
 };
@@ -97,7 +204,7 @@ public:
 
 ## Parse-Time Depth Tracking
 
-A counter gates `break` and `continue` outside any loop. An RAII guard increments and decrements it automatically:
+A counter gates `break` and `continue` outside any loop, guarded automatically by RAII:
 
 ```cpp
 static int ParseLoopDepth = 0;
@@ -108,65 +215,65 @@ struct ParseLoopGuard {
 };
 ```
 
-`ParseBreakStmt` and `ParseContinueStmt` check the counter before accepting the keyword:
+`ParseBreakStatement` and `ParseContinueStatement` check the counter before accepting the keyword:
 
 ```cpp
-static unique_ptr<ExprAST> ParseBreakStmt() {
+static unique_ptr<ExpressionNode> ParseBreakStatement() {
   if (ParseLoopDepth <= 0)
     return LogErrorExpression("'break' used outside of a loop");
   getNextToken(); // eat 'break'
-  return make_unique<BreakExprAST>();
+  return make_unique<BreakExpressionNode>();
 }
 
-static unique_ptr<ExprAST> ParseContinueStmt() {
+static unique_ptr<ExpressionNode> ParseContinueStatement() {
   if (ParseLoopDepth <= 0)
     return LogErrorExpression("'continue' used outside of a loop");
   getNextToken(); // eat 'continue'
-  return make_unique<ContinueExprAST>();
+  return make_unique<ContinueExpressionNode>();
 }
 ```
 
-## `ParseWhileStmt` and `ParseDoWhileStmt`
+## Parsing `while` and `do`/`while`
 
-`ParseWhileStmt` reads the condition first:
+`ParseWhileStatement` reads the condition first:
 
 ```cpp
-static unique_ptr<ExprAST> ParseWhileStmt() {
+static unique_ptr<ExpressionNode> ParseWhileStatement() {
   getNextToken(); // eat 'while'
   auto Cond = ParseExpression();
   if (!Cond)
     return nullptr;
   if (Cond->getType() != ValueType::Bool)
     return LogErrorExpression("While loop condition must be bool");
-  if (CurTok != ':')
+  if (CurrentToken != tok_colon)
     return LogErrorExpression("Expected ':' after while condition");
   getNextToken(); // eat ':'
   ParseLoopGuard LoopGuard;
   auto Body = ParseSuite();
   if (!Body)
     return nullptr;
-  return make_unique<WhileExprAST>(std::move(Cond), std::move(Body),
+  return make_unique<WhileExpressionNode>(std::move(Cond), std::move(Body),
                                    /*IsDoWhile=*/false);
 }
 ```
 
-`ParseDoWhileStmt` reads the body first, then the condition after `while`:
+`ParseDoWhileStatement` reads the body first, then the condition after `while`:
 
 ```cpp
-static unique_ptr<ExprAST> ParseDoWhileStmt() {
+static unique_ptr<ExpressionNode> ParseDoWhileStatement() {
   getNextToken(); // eat 'do'
-  if (CurTok != ':')
+  if (CurrentToken != tok_colon)
     return LogErrorExpression("Expected ':' after 'do'");
   getNextToken(); // eat ':'
   ParseLoopGuard LoopGuard;
   auto Body = ParseSuite();
   if (!Body)
     return nullptr;
-  if (CurTok == tok_block_end)
+  if (CurrentToken == tok_block_end)
     getNextToken();
-  if (CurTok == tok_eol)
+  if (CurrentToken == tok_eol)
     consumeNewlines();
-  if (CurTok != tok_while)
+  if (CurrentToken != tok_while)
     return LogErrorExpression("Expected 'while' after do-body");
   getNextToken(); // eat 'while'
   auto Cond = ParseExpression();
@@ -174,50 +281,55 @@ static unique_ptr<ExprAST> ParseDoWhileStmt() {
     return nullptr;
   if (Cond->getType() != ValueType::Bool)
     return LogErrorExpression("Do-while condition must be bool");
-  return make_unique<WhileExprAST>(std::move(Cond), std::move(Body),
+  return make_unique<WhileExpressionNode>(std::move(Cond), std::move(Body),
                                    /*IsDoWhile=*/true);
 }
 ```
 
-Both parsers install a `ParseLoopGuard` around the body so `break`/`continue` inside are accepted. The guard is destroyed automatically when the function returns, decrementing `ParseLoopDepth`.
+Both parsers install a `ParseLoopGuard` around the body, so `break`/`continue` inside are accepted; the guard's destructor decrements `ParseLoopDepth` automatically when the function returns, whichever path it returns through. Both functions are wired into the compound-statement dispatcher alongside `tok_if` and `tok_for`.
 
-Both `ParseWhileStmt` and `ParseDoWhileStmt` are wired into the compound statement dispatcher alongside `tok_if`, `tok_for`.
+## Codegen Targets for Loop Control
 
-## `LoopControlStack` — Codegen Targets
-
-A single stack tracks break and continue targets for all loop types. Each entry holds two blocks:
+A single stack tracks break and continue targets for every loop type. Each entry holds two blocks:
 
 ```cpp
 struct LoopControlTargets {
-  BasicBlock *BreakTarget    = nullptr;  // where 'break' jumps
-  BasicBlock *ContinueTarget = nullptr;  // where 'continue' jumps
+  BasicBlock *BreakTarget = nullptr;
+  BasicBlock *ContinueTarget = nullptr;
 };
 static std::vector<LoopControlTargets> LoopControlStack;
 ```
 
-Every loop codegen pushes on entry and pops on exit. The innermost loop is always on top. `break` branches to `back().BreakTarget`; `continue` branches to `back().ContinueTarget`.
+Every loop's codegen pushes an entry on the way in and pops it on the way out, so the innermost active loop is always on top. `break` branches to `LoopControlStack.back().BreakTarget`; `continue` branches to `.ContinueTarget`. Nesting falls out of this for free: a `break` inside a nested loop only ever sees the innermost loop's targets, so it can only exit that loop.
 
-## `WhileExprAST::codegen`
+## While-Loop Codegen
 
-Three basic blocks are created: `while_cond`, `while_body`, `while_after`. The entry branch and condition evaluation differ between `while` and `do/while`:
+Three basic blocks: `while_cond`, `while_body`, `while_after`. Only the entry branch and where the first condition check happens differ between `while` and `do`/`while`:
 
 ```cpp
-Value *WhileExprAST::codegen() {
+Value *WhileExpressionNode::codegen() {
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
-  BasicBlock *CondBB  = BasicBlock::Create(*TheContext, "while_cond", TheFunction);
-  BasicBlock *BodyBB  = BasicBlock::Create(*TheContext, "while_body", TheFunction);
-  BasicBlock *AfterBB = BasicBlock::Create(*TheContext, "while_after", TheFunction);
+  BasicBlock *CondBB =
+      BasicBlock::Create(*TheContext, "while_cond", TheFunction);
+  BasicBlock *BodyBB =
+      BasicBlock::Create(*TheContext, "while_body", TheFunction);
+  BasicBlock *AfterBB =
+      BasicBlock::Create(*TheContext, "while_after", TheFunction);
 
   if (IsDoWhile) {
-    Builder->CreateBr(BodyBB);   // do/while: enter body unconditionally
+    Builder->CreateBr(BodyBB);
   } else {
-    Builder->CreateBr(CondBB);   // while: check condition first
+    Builder->CreateBr(CondBB);
   }
 
   if (!IsDoWhile) {
     Builder->SetInsertPoint(CondBB);
     Value *CondVal = Cond->codegen();
+    if (!CondVal)
+      return nullptr;
     CondVal = ToBool(CondVal, Cond->getType());
+    if (!CondVal)
+      return LogErrorV("Invalid loop condition type");
     Builder->CreateCondBr(CondVal, BodyBB, AfterBB);
   }
 
@@ -234,7 +346,11 @@ Value *WhileExprAST::codegen() {
   Builder->SetInsertPoint(CondBB);
   if (IsDoWhile || !CondBB->getTerminator()) {
     Value *CondVal = Cond->codegen();
+    if (!CondVal)
+      return nullptr;
     CondVal = ToBool(CondVal, Cond->getType());
+    if (!CondVal)
+      return LogErrorV("Invalid loop condition type");
     Builder->CreateCondBr(CondVal, BodyBB, AfterBB);
   }
 
@@ -243,35 +359,39 @@ Value *WhileExprAST::codegen() {
 }
 ```
 
-For a regular `while`, the body falls back to `CondBB`; for `do/while`, the body also falls to `CondBB`, but the initial branch skips `CondBB` entirely and lands in `BodyBB`.
+For a plain `while`, the entry branch goes straight to `CondBB`, so the condition is checked before the body ever runs. For `do`/`while`, the entry branch goes to `BodyBB` directly, skipping `CondBB` entirely the first time through; `CondBB` still gets filled in afterward for every subsequent iteration, which is why the function only guards the *first* `CreateCondBr` on `!IsDoWhile` and lets the second one run unconditionally through `IsDoWhile || !CondBB->getTerminator()`.
 
-## `for` Loop Gets a `StepBB`
+The `ConstantFP::get(*TheContext, APFloat(0.0))` return at the end isn't special to `while`: it's the same "statements always return a dummy `0.0` at the LLVM level" convention every statement-shaped node has used since [Chapter 11](chapter-11.md), even now that the type system tracks `ValueType::None` separately for what the value actually *means* at the pyxc level.
 
-The existing `for` loop codegen is updated. Previously, the step expression was evaluated inline at the end of the body block. Now it gets its own dedicated basic block so `continue` can jump to it correctly:
+## `for` Loops Get a Dedicated Step Block
+
+The existing `for`-loop codegen changes too. Before this chapter, the step expression ran inline at the end of the body block. Now it gets its own basic block, so `continue` has somewhere correct to jump to:
 
 ```cpp
 BasicBlock *StepBB = BasicBlock::Create(*TheContext, "loop_step", TheFunction);
 ```
 
-The body's implicit branch now goes to `StepBB` instead of the condition block. `StepBB` evaluates the step expression and then branches to the condition. The `LoopControlTargets` pushed for the `for` loop sets `ContinueTarget = StepBB`, matching C semantics: `continue` in a `for` loop runs the step.
+The body's implicit fallthrough branch now targets `StepBB` instead of the condition block directly. `StepBB` evaluates the step expression and then branches to the condition block itself. The `LoopControlTargets` pushed for a `for` loop sets `ContinueTarget = StepBB`:
 
 ```cpp
 LoopControlStack.push_back({AfterBB, StepBB});
 ```
 
-## `BreakExprAST::codegen` and `ContinueExprAST::codegen`
+That's what makes `continue` inside a `for` loop run the step before re-checking the condition, matching C semantics, rather than skipping straight to the condition check the way `continue` in a `while` loop does. I confirmed this distinction is real by writing a `for` loop that sums every value except one skipped with `continue`, and checking the skipped iteration's contribution really is missing from the total (see Try It).
 
-Both emit a single unconditional branch and then stop generating code for the current block (the caller sees the terminator and skips further statements):
+## `break` and `continue` Codegen
+
+Both emit a single unconditional branch to whichever target is on top of `LoopControlStack`:
 
 ```cpp
-Value *BreakExprAST::codegen() {
+Value *BreakExpressionNode::codegen() {
   if (LoopControlStack.empty())
     return LogErrorV("'break' used outside of a loop");
   Builder->CreateBr(LoopControlStack.back().BreakTarget);
-  // caller checks for terminator; no further instructions emitted
+  return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
-Value *ContinueExprAST::codegen() {
+Value *ContinueExpressionNode::codegen() {
   if (LoopControlStack.empty())
     return LogErrorV("'continue' used outside of a loop");
   Builder->CreateBr(LoopControlStack.back().ContinueTarget);
@@ -279,64 +399,88 @@ Value *ContinueExprAST::codegen() {
 }
 ```
 
-## Block Parser Fix
+The `CreateBr` makes the current block terminated; any code that would otherwise follow `break` or `continue` in the same block never actually gets appended to it, since a well-formed basic block can only have one terminator.
 
-The block parser loop condition is tightened. Previously it stopped on `tok_block_end` or `tok_dedent`; now it stops only on `tok_dedent` (or `tok_eof`) and handles `tok_block_end` inline:
+## Known Limitations
 
-```cpp
-while (CurTok != tok_dedent && CurTok != tok_eof) {
-  if (...) {
-    continue;
-  }
-  if (CurTok == tok_block_end) {
-    getNextToken();
-    continue;
-  }
-  ...
-}
-```
+**The loop condition must be `bool`.** There's no implicit `int → bool` coercion. `while n:` doesn't work; `while n != 0:` does.
 
-This prevents `tok_block_end` from accidentally terminating a block mid-parse in nested constructs.
+**`break` and `continue` outside any loop are parse-time errors**, caught by `ParseLoopDepth` before codegen ever runs.
 
-## Grammar
+## Try It
 
-```ebnf
-whilestmt    = "while" expression ":" suite ;                    -- new
-dowhilestmt  = "do" ":" suite eols "while" expression ;          -- new
-compoundstmt = ifstmt | forstmt | whilestmt | dowhilestmt ;      -- changed
-simplestmt   = returnstmt | breakstmt | continuestmt
-             | varstmt | assignstmt | expression ;               -- changed
-breakstmt    = "break" ;                                          -- new
-continuestmt = "continue" ;                                       -- new
-```
+**`break` outside a loop**
 
-Note the `do/while` form: the body comes first under `do:`, the condition appears after `while` on a separate line with no trailing colon.
-
-## Error Cases
-
-**`break` outside a loop:**
 ```pyxc
 def main() -> int:
-  break  # Error: 'break' used outside of a loop
+  break
   return 0
 ```
 
-**While condition is not bool:**
-```pyxc
-var n: int = 5
-while n:     # Error: While loop condition must be bool
-  n -= 1
+```text
+Error (Line 2, Column 3): 'break' used outside of a loop
 ```
 
-## Things Worth Knowing
+**`while` condition must be `bool`**
 
-**`do/while` uses the same AST node as `while`.** The `IsDoWhile` flag is the only structural difference. Codegen for both lives in `WhileExprAST::codegen`.
+```pyxc
+def main() -> int:
+  var n: int = 5
+  while n:
+    n -= 1
+  return 0
+```
 
-**`continue` target differs between loop types.** In a `while` loop, `continue` goes to the condition block. In a `for` loop, `continue` goes to `StepBB` — the step expression always runs. The `LoopControlStack` stores the right target per loop.
+```text
+Error (Line 3, Column 10): While loop condition must be bool
+```
 
-**The loop condition must be `bool`.** There is no implicit `int → bool` coercion. Use an explicit comparison: `while n != 0:` not `while n:`.
+**`continue` in a `for` loop still runs the step**
 
-**Nesting is automatic.** The stack means the innermost loop's targets are always on top. `break` inside a nested loop exits only the inner loop.
+```pyxc
+extern def printd(x: float64)
+def main() -> int:
+  var sum: int = 0
+  for var i: int = 0, i < 5, 1:
+    if i == 2:
+      continue
+    sum += i
+  printd(float64(sum))
+  return 0
+```
+
+```text
+8.000000
+```
+
+`sum` skips `i == 2` (0 + 1 + 3 + 4 = 8), and the loop still terminates normally: `continue` reaching `StepBB` means `i` keeps incrementing instead of looping forever on the same value.
+
+**`do`/`while` always runs the body once**
+
+```pyxc
+extern def printd(x: float64)
+def main() -> int:
+  var n: int = 10
+  var count: int = 0
+  do:
+    count++
+  while n < 5
+  printd(float64(count))
+  return 0
+```
+
+```text
+1.000000
+```
+
+The condition `n < 5` is false from the start, but the body still ran exactly once before it was ever checked.
+
+## Build and Run
+
+```bash
+cd code/chapter-34
+cmake -S . -B build && cmake --build build
+```
 
 ## What's Next
 
@@ -354,4 +498,4 @@ Include:
 - Full error message
 - Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
-We'll figure it out.
+I'll help you figure it out.

@@ -1,0 +1,6 @@
+class Foo:
+  private x: int
+def main() -> int:
+  var f: Foo
+  f.x = 3
+  return 0

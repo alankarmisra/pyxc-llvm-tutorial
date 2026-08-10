@@ -1,0 +1,5 @@
+trait Addable[T]:
+  def add(x: T, y: T) -> T
+
+class Bad(Addable):
+  x: int

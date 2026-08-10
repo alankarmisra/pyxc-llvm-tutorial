@@ -1,0 +1,17 @@
+extern def malloc(n: int64) -> ptr[int8]
+extern def free(p: ptr[int8])
+extern def printd(x: float64)
+
+def main() -> int:
+  var n: int64 = 5
+  var raw: ptr[int8] = ptr[int8](malloc(n * sizeof(int64)))
+  var p: ptr[int64] = ptr[int64](raw)
+  p[0] = 5
+  p[1] = 7
+  p[2] = 9
+  p[3] = 6
+  p[4] = 8
+  var q: ptr[int64] = p + 2
+  printd(float64(q[0] + q[1] + q[2]))
+  free(raw)
+  return 0

@@ -1,0 +1,16 @@
+extern def printd(x: float64)
+
+def collatz(n: int) -> int:
+  var x: int = n
+  var steps: int = 0
+  while x != 1:
+    if x % 2 == 0:
+      x /= 2
+    else:
+      x = x * 3 + 1
+    steps++
+  return steps
+
+def main() -> int:
+  printd(float64(collatz(27)))
+  return 0

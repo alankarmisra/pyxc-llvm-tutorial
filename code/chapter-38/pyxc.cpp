@@ -758,21 +758,65 @@ static int getToken() {
     if (LexerLastChar == '\\') {
       LexerLastChar = advance();
       switch (LexerLastChar) {
+      case 'a':
+        Value = '\a';
+        break;
+      case 'b':
+        Value = '\b';
+        break;
+      case 'f':
+        Value = '\f';
+        break;
+      case 'n':
+        Value = '\n';
+        break;
+      case 'r':
+        Value = '\r';
+        break;
+      case 't':
+        Value = '\t';
+        break;
+      case 'v':
+        Value = '\v';
+        break;
       case '\\':
         Value = '\\';
         break;
       case '\'':
         Value = '\'';
         break;
-      case 'n':
-        Value = '\n';
+      case '"':
+        Value = '"';
         break;
-      case 't':
-        Value = '\t';
+      case '?':
+        Value = '?';
         break;
       case '0':
         Value = '\0';
         break;
+      case 'x': {
+        auto HexDigitValue = [](int Ch) -> int {
+          if (Ch >= '0' && Ch <= '9')
+            return Ch - '0';
+          if (Ch >= 'a' && Ch <= 'f')
+            return Ch - 'a' + 10;
+          if (Ch >= 'A' && Ch <= 'F')
+            return Ch - 'A' + 10;
+          return -1;
+        };
+
+        int High = HexDigitValue(advance());
+        int Low = HexDigitValue(advance());
+        if (High < 0 || Low < 0) {
+          fprintf(stderr,
+                  "Error (Line %d, Column %d): invalid character escape\n",
+                  CurLoc.Line, CurLoc.Col);
+          PrintErrorSourceContext(CurLoc);
+          return tok_error;
+        }
+        Value = static_cast<uint32_t>((High << 4) | Low);
+        break;
+      }
       default:
         fprintf(stderr,
                 "Error (Line %d, Column %d): invalid character escape\n",

@@ -3,7 +3,7 @@ description: "Add object-file emission so Pyxc can compile programs to standalon
 ---
 # 14. pyxc: Emitting Native Code
 
-## Where We Are
+## What I Am Building
 
 [Chapter 13](chapter-13.md) gave pyxc global variables and a proper file-mode entry point. By the end of that chapter, I could write a complete pyxc program — global state, helper functions, a `main` — and run it through the JIT:
 
@@ -17,7 +17,7 @@ After this chapter:
 
 ```bash
 pyxc --emit obj -o program.o program.pyxc
-clang program.o runtime.c -o program
+clang program.o test/runtime.c -o program
 ./program
 ```
 
@@ -126,10 +126,10 @@ else
   RunFileMode();
 ```
 
-`IsEmitMode()` also gates the per-function JIT path inside `HandleDefinition` and the decorator handler. In JIT mode, each compiled function is immediately transferred to the JIT and the module is replaced:
+`IsEmitMode()` also gates the per-function JIT path inside `HandleFunctionDefinition`. In JIT mode, each compiled function is immediately transferred to the JIT and the module is replaced:
 
 ```cpp
-// HandleDefinition — after codegen:
+// HandleFunctionDefinition — after codegen:
 if (!IsEmitMode()) {
   ExitOnErr(TheJIT->addModule(
       ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
@@ -139,7 +139,7 @@ if (!IsEmitMode()) {
 
 In emit mode this block is skipped entirely. All functions accumulate in the same `TheModule` until `EmitFileMode` writes it out. If I left the guard out, every `def` would hand the module to the JIT and reinitialise, leaving `EmitFileMode` with an empty module.
 
-## The Emit Pipeline: `EmitModuleToFile`
+## The Emit Pipeline
 
 `EmitModuleToFile` is the leaf that does the actual file writing. It opens the output path with `raw_fd_ostream` and then branches on the emit kind:
 
@@ -217,7 +217,7 @@ The new headers required for this path:
 #include "llvm/IR/LegacyPassManager.h"     // legacy::PassManager
 ```
 
-## `EmitFileMode`: The Orchestrator
+## The Orchestrator
 
 `EmitFileMode` is the emit-mode counterpart to `RunFileMode`. It does the same setup — build `__pyxc.global_init`, validate `main`, wrap `main` — but instead of JIT-executing the result, it calls `EmitModuleToFile`.
 
@@ -225,10 +225,10 @@ The new headers required for this path:
 static void EmitFileMode() {
   // 1. Compile __pyxc.global_init from the collected top-level statements.
   if (!FileTopLevelStmts.empty()) {
-    auto Block = make_unique<BlockExprAST>(std::move(FileTopLevelStmts));
-    auto Proto =
-        make_unique<PrototypeAST>("__pyxc.global_init", vector<string>());
-    auto FnAST = make_unique<FunctionAST>(std::move(Proto), std::move(Block));
+    auto Block = make_unique<BlockExpressionNode>(std::move(FileTopLevelStmts));
+    auto Signature =
+        make_unique<FunctionSignatureNode>("__pyxc.global_init", vector<string>());
+    auto FnAST = make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(Block));
 
     bool SavedInGlobalInit = InGlobalInit;
     InGlobalInit = true;
@@ -244,8 +244,8 @@ static void EmitFileMode() {
   }
 
   // 2. Validate main() arity.
-  auto MainIt = FunctionProtos.find("main");
-  if (MainIt != FunctionProtos.end() && MainIt->second->getNumArgs() != 0) {
+  auto MainIt = FunctionSignatures.find("main");
+  if (MainIt != FunctionSignatures.end() && MainIt->second->getNumParameters() != 0) {
     fprintf(stderr, "Error: main() must take no arguments\n");
     return;
   }
@@ -279,7 +279,7 @@ Three things are meaningfully different from `RunFileMode`:
 
 3. **`EmitModuleToFile()` as the final step** instead of looking up and calling symbols.
 
-## `AddGlobalCtor`: Wiring Globals into the Binary
+## Wiring Globals into the Binary
 
 When a pyxc program declares global variables, `__pyxc.global_init` must run before `main()` — otherwise globals hold `0.0` when `main` starts. In JIT mode `RunFileMode` calls `__pyxc.global_init` explicitly before calling `main`. In a native binary, the C runtime manages startup: it calls everything in `llvm.global_ctors` before `main()`. `AddGlobalCtor` puts `__pyxc.global_init` into that list.
 
@@ -293,11 +293,6 @@ static void AddGlobalCtor(Function *Fn, int Priority = 65535) {
       StructTy, ConstantInt::get(Int32Ty, Priority), Fn,
       ConstantPointerNull::get(cast<PointerType>(VoidPtrTy)));
 
-  // Only one call site (EmitFileMode, for __pyxc.global_init) exists today,
-  // but I guard against a second llvm.global_ctors definition anyway —
-  // LLVM won't merge two globals with the same name for me, it'll just
-  // rename the second one, and that would silently break the linker's
-  // contract with this special symbol.
   GlobalVariable *GV = TheModule->getGlobalVariable("llvm.global_ctors");
   if (GV)
     return;
@@ -308,6 +303,8 @@ static void AddGlobalCtor(Function *Fn, int Priority = 65535) {
                      "llvm.global_ctors");
 }
 ```
+
+Only one call site (`EmitFileMode`, for `__pyxc.global_init`) exists today, but the early `if (GV) return;` guards against a second `llvm.global_ctors` definition anyway. LLVM won't merge two globals with the same name for me — it'll just rename the second one — and that would silently break the linker's contract with this special symbol.
 
 `llvm.global_ctors` is a special LLVM global with `AppendingLinkage`. The linker concatenates all contributions from different objects into one array. Each element is a `{ i32 priority, ptr fn, ptr data }` struct; the lower the priority number, the earlier the function runs. I use `65535` (lowest priority), which is conventional for user-level constructors.
 
@@ -434,10 +431,10 @@ On macOS the label is actually `_sq:` — the platform's C ABI prepends an under
 **Compile to a native binary**
 
 ```bash
-# runtime.c provides printd/putchard for standalone binaries.
+# test/runtime.c provides printd/putchard for standalone binaries.
 pyxc --emit obj -o sq.o sq.pyxc
 file sq.o
-clang sq.o runtime.c -o sq
+clang sq.o test/runtime.c -o sq
 ./sq
 ```
 ```
@@ -467,7 +464,7 @@ pyxc --emit obj    sq.pyxc   # writes out.o
 cd code/chapter-14
 cmake -S . -B build && cmake --build build
 ./build/pyxc --emit obj -o program.o program.pyxc
-clang program.o runtime.c -o program
+clang program.o test/runtime.c -o program
 ./program
 ```
 

@@ -2045,12 +2045,12 @@ static bool LastTopLevelEndedWithBlock = false;
 static unsigned TopLevelExprCounter = 0;
 // Whether the last top-level form should be printed in the REPL.
 static bool LastTopLevelShouldPrint = true;
-// Chapter 41 module/import bookkeeping (single-file happy path).
+// Chapter 43 module/import bookkeeping (single-file happy path).
 static bool SeenNonModuleTopLevel = false;
 static bool ModuleDeclaredInFile = false;
 static string CurrentModuleName;
 static vector<string> ImportedModules;
-// Chapter 42: lightweight import signature collection.
+// Chapter 44: lightweight import signature collection.
 static bool SignatureScanMode = false;
 enum class SignatureScanState { InProgress, Done };
 static std::map<string, SignatureScanState> SignatureFileStates;

@@ -1,0 +1,12 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: If condition must be bool
+
+# Tests: int conditions are rejected; conditions must be bool.
+
+extern def printd(x: float64) -> float64
+
+def main() -> None:
+    var flag: int = 1
+    if flag:
+        printd(1.0)
+    return

@@ -1,0 +1,40 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK-COUNT-6: 1.000000
+
+# Tests: octal, Unicode escapes, and raw UTF-8 character literals.
+
+extern def printd(x: float64)
+
+def main() -> int:
+  if '\101' == 65 && '\777' == 511:
+    printd(1.0)
+  else:
+    printd(0.0)
+
+  if '\u03A9' == 937:
+    printd(1.0)
+  else:
+    printd(0.0)
+
+  if '\U0001F642' == 128578:
+    printd(1.0)
+  else:
+    printd(0.0)
+
+  if 'é' == 233:
+    printd(1.0)
+  else:
+    printd(0.0)
+
+  if 'Ω' == 937:
+    printd(1.0)
+  else:
+    printd(0.0)
+
+  if '🙂' == 128578:
+    printd(1.0)
+  else:
+    printd(0.0)
+
+  return 0

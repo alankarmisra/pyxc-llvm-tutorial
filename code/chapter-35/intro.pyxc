@@ -1,0 +1,13 @@
+extern def printd(x: float64)
+
+def main() -> int:
+  var flags: int = 0
+  flags = flags | 1
+  flags = flags | 4
+  flags = flags & ~2
+
+  var shifted: int = 1 << 3
+  var masked: int = shifted & 0xFF
+
+  printd(float64(flags + masked))
+  return 0

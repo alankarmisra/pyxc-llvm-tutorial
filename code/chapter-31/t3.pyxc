@@ -1,0 +1,7 @@
+trait Addable[T]:
+  def add(x: T, y: T) -> T
+class Bad:
+  x: int
+impl Addable[int] for Bad:
+  def add(x: int, y: float64) -> int:
+    return x

@@ -1,0 +1,11 @@
+extern def printd(x: float64)
+
+def is_between(x: int, lo: int, hi: int) -> bool:
+  return x >= lo && x <= hi
+
+def main() -> int:
+  var a: bool = True
+  var b: bool = !a
+  if b || is_between(5, 1, 10):
+    printd(1.0)
+  return 0

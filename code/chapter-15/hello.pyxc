@@ -1,0 +1,3 @@
+extern def printd(x)
+def main():
+    printd(42)

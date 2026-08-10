@@ -73,67 +73,46 @@ cd pyxc-llvm-tutorial/code/chapter-09
 ```
 
 ## Grammar
-[pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-09/pyxc.ebnf)
 
-```ebnf
-(*
-   pyxc.ebnf
-   Grammar for chapter 9 - Control Flow: if, else, and for.
-*)
+I add `ifexpr` and `forexpr` to `primary`, and replace the single `<` alternative in `comparison` with a `comparison-operator` rule containing six operators:
 
-(*
-   { } = zero or more (any number of...)
-   [ ] = zero or one (optional)
-*)
+`code/chapter-09/pyxc.ebnf`
 
-program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
-end-of-lines            = end-of-line { end-of-line } ;
-top-level-item             = function-definition | external | top-level-expression ;
-function-definition      = "def" function-signature ":" [ end-of-lines ] expression ;
-external        = "extern" "def" function-signature ;
-top-level-expression    = expression ;
-function-signature       = name "(" [ parameters ] ")" ;
-parameters               = parameter { "," parameter } ;
-parameter                = name ;
-ifexpr          = "if" expression ":" [ end-of-lines ] expression [ end-of-lines ] "else" ":" [ end-of-lines ] expression ;
-forexpr         = "for" name "=" expression "," expression "," expression ":" [ end-of-lines ] expression ;
-expression               = comparison ;
-comparison               = sum { comparison-operator sum } ;
-comparison-operator      = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
-sum                      = term { ("+" | "-") term } ;
-term                     = primary { ("*" | "/") primary } ;
-primary         = name-expression | number-expression | parenthesized-expression
-                | ifexpr | forexpr ;
-name-expression  = name | call-expression ;
-call-expression         = name "(" [ arguments ] ")" ;
-arguments               = expression { "," expression } ;
-number-expression      = number ;
-parenthesized-expression       = "(" expression ")" ;
-name      = (letter | "_") { letter | digit | "_" } ;
-number          = digit { digit } [ "." { digit } ]
-                | "." digit { digit } ;
-letter          = "A".."Z" | "a".."z" ;
-digit           = "0".."9" ;
-end-of-line             = "\r\n" | "\r" | "\n" ;
-comment = "#" { comment-character } ;
-comment-character = ? any character except "\r" and "\n" ? ;
-whitespace = " " | "\t" | "\v" | "\f" ;
-```
-
-### What Changed
-
-I add two forms to `primary`: `ifexpr` and `forexpr`. I also replace the single `<` alternative with a `comparison-operator` rule containing six operators.
-
-```ebnf
--- Chapter 8
-primary    = name-expression | number-expression | parenthesized-expression ;
-comparison = sum { "<" sum } ;
-
--- Chapter 9
-primary             = name-expression | number-expression | parenthesized-expression
-                    | ifexpr | forexpr ;
-comparison          = sum { comparison-operator sum } ;
-comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+```grammardiff
+ program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
+ end-of-lines            = end-of-line { end-of-line } ;
+ top-level-item             = function-definition | external | top-level-expression ;
+ function-definition      = "def" function-signature ":" [ end-of-lines ] expression ;
+ external        = "extern" "def" function-signature ;
+ top-level-expression    = expression ;
+ function-signature       = name "(" [ parameters ] ")" ;
+ parameters               = parameter { "," parameter } ;
+ parameter                = name ;
++ifexpr          = "if" expression ":" [ end-of-lines ] expression [ end-of-lines ] "else" ":" [ end-of-lines ] expression ;
++forexpr         = "for" name "=" expression "," expression "," expression ":" [ end-of-lines ] expression ;
+ expression               = comparison ;
+-comparison               = sum { "<" sum } ;
++comparison               = sum { comparison-operator sum } ;
++comparison-operator      = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ sum                      = term { ("+" | "-") term } ;
+ term                     = primary { ("*" | "/") primary } ;
+-primary         = name-expression | number-expression | parenthesized-expression ;
++primary         = name-expression | number-expression | parenthesized-expression
++                | ifexpr | forexpr ;
+ name-expression  = name | call-expression ;
+ call-expression         = name "(" [ arguments ] ")" ;
+ arguments               = expression { "," expression } ;
+ number-expression      = number ;
+ parenthesized-expression       = "(" expression ")" ;
+ name      = (letter | "_") { letter | digit | "_" } ;
+ number          = digit { digit } [ "." { digit } ]
+                 | "." digit { digit } ;
+ letter          = "A".."Z" | "a".."z" ;
+ digit           = "0".."9" ;
+ end-of-line             = "\r\n" | "\r" | "\n" ;
+ comment = "#" { comment-character } ;
+ comment-character = ? any character except "\r" and "\n" ? ;
+ whitespace = " " | "\t" | "\v" | "\f" ;
 ```
 
 ## New Tokens
@@ -584,32 +563,31 @@ Because execution jumps directly to either `then` or `else` and never enters the
 
 ### What `-v` Shows
 
-At the default `-O2`, I print optimized IR. LLVM can replace this three-block shape with `select` because both branches only compute values and have no side effects:
+By default I print optimized IR. My pass pipeline is only three fixed passes — `InstCombinePass`, `ReassociatePass`, `GVNPass` — not LLVM's full `-O2`, so it cleans up redundant instructions but doesn't restructure control flow. The `then`/`else`/`ifcont` blocks and the `phi` stay exactly as I built them:
 
 ```llvm
 define double @absdiff(double %a, double %b) {
 entry:
   %cmptmp = fcmp ogt double %a, %b
+  br i1 %cmptmp, label %then, label %else
+
+then:                                             ; preds = %entry
   %subtmp = fsub double %a, %b
+  br label %ifcont
+
+else:                                             ; preds = %entry
   %subtmp1 = fsub double %b, %a
-  %iftmp = select i1 %cmptmp, double %subtmp, double %subtmp1
+  br label %ifcont
+
+ifcont:                                           ; preds = %else, %then
+  %iftmp = phi double [ %subtmp, %then ], [ %subtmp1, %else ]
   ret double %iftmp
 }
 ```
 
-LLVM writes `select` like this:
+The only thing that changes from the unoptimized IR is the condition: `InstCombinePass` recognizes `fcmp one (uitofp i1 %cmptmp to double), 0.0` as a round trip back to `%cmptmp` itself, and folds it away — so `br` branches on `%cmptmp` directly instead of the reconstructed `%ifcond`. I keep the simple all-`double` language model in the code I write; the optimizer is what notices the `i1` was there all along.
 
-```llvm
-%result = select i1 <condition>, <type> <true-value>, <type> <false-value>
-```
-
-`select` chooses one of two already-computed values. It does not short-circuit, so LLVM only makes this transformation when computing both sides is safe and inexpensive. Calls with possible side effects keep the branch structure.
-
-LLVM also removes the `i1 → double → i1` round trip and uses `%cmptmp` directly. I keep the simple all-`double` language model while the optimized IR retains an `i1` condition.
-
-When a branch calls `printd` or `putchard`, LLVM preserves the blocks so only the selected call runs.
-
-To see the unoptimized IR shown above, run `build/pyxc -v -O0`.
+Turning branches into a branchless `select` is a real LLVM transformation, but it needs passes I haven't added yet (`SimplifyCFGPass` in particular). Until I do, `if`/`else` always keeps its block structure, at every `-O` level pyxc accepts, including `-O0`. `-O0` skips even the three passes I do have, which is why the unoptimized IR above still shows the full `i1 → double → i1` round trip.
 
 ### Why Nested ifs Change the End Block
 
@@ -793,7 +771,7 @@ PHINode *Variable = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarNam
 Variable->addIncoming(StartVal, PreheaderBB);   // first-iteration value
 ```
 
-The PHI node is created with only one incoming for now — the preheader. The
+I create the PHI node with only one incoming value for now — the preheader. The
 back-edge from the loop body is added later, once I know where the body ends.
 
 The condition block starts to look like this:
@@ -1037,9 +1015,9 @@ mandel(0 - 2.3, 0 - 1.3, 0.05, 0.07)
 
 **Line breaks.** I only consume newlines after `:` in `def`, `if`, and `for` forms, and before `else`. I reject a newline in an argument list or in the middle of another expression. The nested `if` can therefore span lines, while the long call in `mandel` must remain on one line.
 
-**Sequencing with `+`.** I write `mandelrow(...) + putchard(10)` to perform two calls in one expression. Both return `0.0`, so the addition only gives me a way to sequence their side effects. In [Chapter 10](chapter-10.md), I introduce a dedicated sequencing operator.
+**Sequencing with `+`.** I write `mandelrow(...) + putchard(10)` to perform two calls in one expression. Both return `0.0`, so the addition only gives me a way to sequence their side effects. In [Chapter 10](chapter-10.md), I replace this with a small `sequence(x, y)` helper function instead.
 
-**Unary minus.** pyxc has no unary minus yet, so I write `0 - 2.3`. LLVM folds that subtraction to the negative constant. In Chapter 10, I add unary expressions and built-in unary minus.
+**Unary minus.** pyxc has no unary minus yet, so I write `0 - 2.3`. LLVM folds that subtraction to the negative constant. In [Chapter 10](chapter-10.md), I add unary expressions and built-in unary minus, so this becomes `-2.3` directly.
 
 ```
 ******************************************************************************
@@ -1104,7 +1082,7 @@ To run the Mandelbrot renderer directly:
 
 ## What's Next
 
-In [Chapter 10](chapter-10.md), I add unary expressions, built-in unary minus, and user-defined operators through `@binary(precedence)` and `@unary`.
+In [Chapter 10](chapter-10.md), I add unary expressions and built-in unary minus, and use it to shade the Mandelbrot renderer by density instead of a hard inside/outside edge.
 
 ## Need Help?
 

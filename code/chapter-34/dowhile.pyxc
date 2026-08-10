@@ -1,0 +1,9 @@
+extern def printd(x: float64)
+def main() -> int:
+  var n: int = 10
+  var count: int = 0
+  do:
+    count++
+  while n < 5
+  printd(float64(count))
+  return 0

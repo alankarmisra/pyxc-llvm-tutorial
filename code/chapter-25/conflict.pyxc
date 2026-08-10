@@ -1,0 +1,5 @@
+struct Foo:
+  x: int
+
+class Foo:
+  y: int

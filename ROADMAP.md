@@ -18,36 +18,37 @@ Pyxc is explicitly **no-GC**. Memory is managed like C++/Rust: stack allocation 
 
 ---
 
-## Phase 1: Foundations — Complete (Chapters 1–11)
+## Phase 1: Foundations — Complete (Chapters 1–12)
 
 | # | Title | Status |
 |---|-------|--------|
 | 1 | Lexer Basics | ✅ |
-| 2 | Parser and AST | ✅ |
-| 3 | Building LLVM from Source | ✅ |
-| 4 | Command-Line Interface | ✅ |
-| 5 | Code Generation to LLVM IR | ✅ |
-| 6 | Optimization and JIT Execution | ✅ |
-| 7 | User-Defined Operators | ✅ |
-| 8 | Unary Operators | ✅ |
-| 9 | Comparison and Logical Operators | ✅ |
-| 10 | Mutable Variables and Assignment | ✅ |
-| 11 | Statement Blocks and Indentation | ✅ |
+| 2 | Parser and Syntax Tree | ✅ |
+| 3 | Encoding Precedence in the Grammar | ✅ |
+| 4 | Better Errors | ✅ |
+| 5 | Installing LLVM | ✅ |
+| 6 | Code Generation | ✅ |
+| 7 | JIT and Optimization | ✅ |
+| 8 | File Input Mode | ✅ |
+| 9 | Control Flow: if, else, and for | ✅ |
+| 10 | Unary Minus | ✅ |
+| 11 | Mutable Variables | ✅ |
+| 12 | Statement Blocks | ✅ |
 
 ---
 
-## Phase 2: Native Toolchain (Chapters 12–15)
+## Phase 2: Native Toolchain (Chapters 13–16)
 
 | # | Title | Notes |
 |---|-------|-------|
-| 12 | Driver and Modes | ✅ `repl`, `run`, `build` subcommands; `--emit tokens\|llvm-ir` |
-| 13 | Object Files | ✅ `TargetMachine` setup, host triple, emit `.o`; honour `-O0`..`-O3` |
-| 14 | Native Executables | ✅ Link `.o` + runtime into an executable; `-o` output path |
-| 15 | Debug Info | ✅ `-g` with `DIBuilder`; emit DWARF; `nm`/`objdump` basics |
+| 13 | Global Variables | ✅ Top-level `var` declarations and assignments persist across REPL inputs and compiled files |
+| 14 | Emitting Native Code | ✅ Object-file emission; pyxc compiles to standalone native binaries without the JIT |
+| 15 | One-Step Executables | ✅ `--emit exe` compiles and links a standalone executable in one command, using LLD as a library, no external tools |
+| 16 | Debug Info and the Optimization Pipeline | ✅ DWARF debug info via `DIBuilder`; replaces the fixed pass list with LLVM's standard `-O0`..`-O3` pipelines |
 
 ---
 
-## Phase 3: Types and Memory (Chapters 16–23)
+## Phase 3: Types and Memory (Chapters 17–24)
 
 Pointer-first track for C/C++ learners:
 - Prioritise pointer arithmetic + heap before arrays/string sugar.
@@ -55,59 +56,61 @@ Pointer-first track for C/C++ learners:
 
 | # | Title | Notes |
 |---|-------|-------|
-| 16 | Types and Typed Variables | ✅ `int`, `float64`, `bool`, `void`; typed parameters, return types, type checking, casts |
-| 17 | Structs and Field Access | ✅ `struct` declarations, layout, field offsets, `.` lvalue/rvalue |
-| 18 | Pointers and Address-Of | ✅ `ptr[T]` type, `addr(x)`, pointer indexing `p[i]`, `p[i].field` |
-| 19 | Pointer Arithmetic | ✅ `ptr ± int`, `ptr - ptr`, pointer comparisons, element-size aware offsets |
-| 20 | Heap Allocation | ✅ `malloc`/`free` via `extern`, `sizeof(type)` compile-time sizing, pointer casts from raw buffers (`ptr[T](raw)`), and K&R-style `malloc(n * sizeof(T))` patterns |
-| 21 | String Literals and C Interop | ✅ `"hello"` as `ptr[int8]`, null-terminated global constants, escape sequences, `extern` C runtime calls |
-| 22 | Type Aliasing | ✅ `type name = type`, alias chains, alias/struct name conflict checks |
-| 23 | Arrays and Array Literals | ✅ Fixed-size `T[N]`, stack allocation, indexing, decay, `[1,2,3]` initializers |
+| 17 | A Static Type System | ✅ `int`, `int8`..`int64`, `float`, `float32`/`float64`, `bool`, `void`; typed parameters, return types, casts |
+| 18 | Structs | ✅ `struct` declarations, field read/write, nested field access |
+| 19 | Pointers | ✅ `ptr[T]` type, `addr(x)`, pointer indexing `p[i]` |
+| 20 | Pointer Arithmetic | ✅ `ptr + int`, `ptr - int`, `ptr - ptr`, pointer comparisons |
+| 21 | Heap Allocation | ✅ `sizeof` and pointer casts so pyxc can call `malloc`/`free` |
+| 22 | String Literals and C Interop | ✅ String literals; calls `puts`, `printf`, and other C standard library functions directly |
+| 23 | Type Aliases | ✅ `type name = type`, alias chains, alias/struct name conflict checks |
+| 24 | Arrays | ✅ Fixed-size `T[N]`, stack allocation, indexing, `[1,2,3]` initializers |
+
 ---
 
-## Phase 4: OOP Core (Chapters 24–30)
+## Phase 4: OOP Core (Chapters 25–31)
 
 | # | Title | Notes |
 |---|-------|-------|
-| 24 | Class Syntax and Field Layout | ✅ Class declarations, field offsets |
-| 25 | Methods and `self` | ✅ Method dispatch, `self` as implicit first arg |
-| 26 | Constructors and Initialization | ✅ Construction rules, field init order |
-| 27 | Visibility and Encapsulation | ✅ Public/private members |
-| 28 | Traits and Interfaces | ✅ Trait declarations and contracts |
-| 29 | Trait Implementations and Dispatch | ✅ Impl blocks, static vs dynamic dispatch |
-| 30 | Generic Traits and Constraints | ✅ Intro to constrained generics |
+| 25 | Classes | ✅ `class` keyword as a second way to declare an aggregate type, sharing `struct`'s parsing/layout machinery |
+| 26 | Methods and `self` | ✅ Methods defined in the class body, called with `obj.method(args)`, implicit `self` pointer |
+| 27 | Constructors | ✅ `__init__`, called via `ClassName(args)`; instances are zero-initialised before `__init__` runs |
+| 28 | Visibility | ✅ Public/private visibility modifiers on fields and methods |
+| 29 | Traits | ✅ Named method-signature contracts; conformance verified at compile time, no runtime overhead |
+| 30 | impl Blocks | ✅ Implement a trait for an existing class after the class definition |
+| 31 | Generic Traits | ✅ Type parameters on traits: `trait Addable[T]`; classes instantiate with a concrete type at the `impl` site |
 
 ---
 
-## Phase 5: Control Flow and Ergonomics (Chapters 31–40)
+## Phase 5: Control Flow and Ergonomics (Chapters 32–42)
 
 | # | Title | Notes |
 |---|-------|-------|
-| 31 | Arithmetic Completeness | ✅ `/`, `%`, compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`), and pre/post `++`/`--`; read-modify-write on lvalues |
-| 32 | Logical Operators | ✅ `&&`, `||`, `!`; short-circuit codegen with control flow + PHI nodes |
-| 33 | Loop Completeness | ✅ `while`, `do/while`, `break`, `continue`; loop header/exit stacks for control transfer |
-| 34 | Bitwise Operators | ✅ `&`, `|`, `^`, `~`, `<<`, `>>`; integer-only operator semantics and precedence |
-| 35 | `switch` | ✅ Native LLVM `switch` lowering; case/default dispatch and optimization potential |
-| 36 | `if` / `elif` Chains | ✅ Python-style `elif` syntax sugar for conditional chains (`elif` == `else if`) |
-| 37 | Character Literals | ✅ `'a'`, escaped chars (`'\n'`, `'\t'`, `'\0'`), and integer interoperability for C-style text processing |
-| 38 | Unsigned Integer Types | ✅ `uint8/16/32/64`; signed/unsigned cast+promotion rules; unsigned comparisons and shifts (`lshr` vs `ashr`); `size_t` mapping to `uint64` |
-| 39 | Assignment as Expression | ✅ `x = expr` in expression context; `(c = getchar()) != EOF` works; right-associative; lvalue-checked at parse time via `BuildAssignmentExpr` |
-| 40 | Variadic Extern Functions | ✅ `extern def f(a: T, ...)` support; variadic call arity checks for fixed parameters; LLVM variadic function types |
+| 32 | Arithmetic Completeness | ✅ `/`, `%`, compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`), and pre/post `++`/`--`; read-modify-write on lvalues |
+| 33 | Logical Operators | ✅ `&&`, `||`, `!`; short-circuit codegen with control flow + PHI nodes |
+| 34 | Loop Completeness | ✅ `while`, `do/while`, `break`, `continue`; loop header/exit stacks for control transfer |
+| 35 | Bitwise Operators | ✅ `&`, `|`, `^`, `~`, `<<`, `>>`; integer-only operator semantics and precedence |
+| 36 | `switch` | ✅ Native LLVM `switch` lowering; case/default dispatch and optimization potential |
+| 37 | `if` / `elif` Chains | ✅ Python-style `elif` syntax sugar for conditional chains (`elif` == `else if`) |
+| 38 | Character Literals | ✅ `'a'`, simple C escapes, strict two-digit hexadecimal escapes, and integer interoperability for C-style text processing |
+| 39 | Unicode Literals | ✅ Octal and Unicode escapes, validated raw UTF-8, integer code points for characters, and UTF-8 strings |
+| 40 | Unsigned Integer Types | ✅ `uint8/16/32/64`; signed/unsigned cast+promotion rules; unsigned comparisons and shifts (`lshr` vs `ashr`); `size_t` mapping to `uint64` |
+| 41 | Assignment as Expression | ✅ `x = expr` in expression context; `(c = getchar()) != EOF` works; right-associative; lvalue-checked at parse time via `BuildAssignmentExpr` |
+| 42 | Variadic Extern Functions | ✅ `extern def f(a: T, ...)` support; variadic call arity checks for fixed parameters; LLVM variadic function types |
 
 
 ---
 
-## Phase 6: Program Structure (Chapters 41–44)
+## Phase 6: Program Structure (Chapters 43–46)
 
 | # | Title | Notes |
 |---|-------|-------|
-| 41 | Module Declarations and Export | ✅ `module` names the compilation unit; `export` marks public API; multi-file compilation via `extern def` + `--emit exe`; cliffhanger for ch42 |
-| 42 | Imports | ✅ `import app.math` resolves file, scans `export` signatures, injects prototypes; only exported symbols importable; struct/class/trait/type transfer; `--emit exe` auto-closure |
-| 43 | Cyclic Imports and Caching | ✅ Two-phase scan (own exports first, then recurse); `InProgress`/`Done` state machine; import path cache; A→B→A cycle handled correctly |
-| 44 | Closures | Lambda syntax, captured variables, closure struct + function pointer in LLVM IR. **Note:** need to decide capture semantics before implementation — capture by value is safe with no-GC; capture by reference requires closed-over variables to outlive the closure (Rust-style lifetime problem). |
+| 43 | Module Declarations and Export | ✅ `module` names the compilation unit; `export` marks public API; multi-file compilation via `extern def` + `--emit exe`; cliffhanger for ch44 |
+| 44 | Imports | ✅ `import app.math` resolves file, scans `export` signatures, injects prototypes; only exported symbols importable; struct/class/trait/type transfer; `--emit exe` auto-closure |
+| 45 | Cyclic Imports and Caching | ✅ Two-phase scan (own exports first, then recurse); `InProgress`/`Done` state machine; import path cache; A→B→A cycle handled correctly |
+| 46 | Closures | Lambda syntax, captured variables, closure struct + function pointer in LLVM IR. **Note:** need to decide capture semantics before implementation — capture by value is safe with no-GC; capture by reference requires closed-over variables to outlive the closure (Rust-style lifetime problem). |
 ---
 
-## Chapter 44-0 (Pre-Closures Follow-up)
+## Chapter 46-0 (Pre-Closures Follow-up)
 
 - **Cross-module custom operators in module/import mode**
   - Current import/signature scan wires exported function/type signatures, but does not import operator parser metadata (`@binary`/`@unary`, precedence, arity).
@@ -116,17 +119,17 @@ Pointer-first track for C/C++ learners:
 
 ---
 
-## Phase 7: Concurrency (Chapters 45–51)
+## Phase 7: Concurrency (Chapters 47–53)
 
 | # | Title | Notes |
 |---|-------|-------|
-| 45 | Concurrency Model and Safety Rules | Overview, ownership rules for shared state |
-| 46 | Spawning Tasks and Threads | Task/thread primitives |
-| 47 | Shared State and Synchronization | Mutexes, atomics |
-| 48 | Message Passing | Channels and queues |
-| 49 | Parallel Loops and Work Partitioning | Data-parallel patterns |
-| 50 | Determinism, Races, and Debugging | Race detection, deterministic replay |
-| 51 | Parallel Compilation Pipeline | Parallelise the Pyxc compiler itself |
+| 47 | Concurrency Model and Safety Rules | Overview, ownership rules for shared state |
+| 48 | Spawning Tasks and Threads | Task/thread primitives |
+| 49 | Shared State and Synchronization | Mutexes, atomics |
+| 50 | Message Passing | Channels and queues |
+| 51 | Parallel Loops and Work Partitioning | Data-parallel patterns |
+| 52 | Determinism, Races, and Debugging | Race detection, deterministic replay |
+| 53 | Parallel Compilation Pipeline | Parallelise the Pyxc compiler itself |
 
 ---
 
@@ -158,6 +161,7 @@ These can be inserted where they fit best, ordered roughly by implementation dif
 - **Command-line arguments to `main`** — `def main(argc: int32, argv: ptr[ptr[int8]]) -> int`; currently `main` takes no arguments. Required for any CLI tool written in pyxc.
 - **`len()` built-in** — `len(arr)` returns the element count of a fixed-size array as a compile-time constant; avoids manual tracking of `N` in `T[N]`.
 - **`in` operator** — `x in arr` membership test; lowers to a linear scan for arrays, hook for trait-based custom containers later.
+- **Unicode identifiers** — allow non-ASCII names (`café`, `变量`) in `name`, not just string/char literal content. Prerequisite: Chapter 39 (Unicode Literals), which already has UTF-8 decoding but deliberately stops short of this. Moderately hard, medium-sized chapter on its own: needs `XID_Start`/`XID_Continue` Unicode property tables (not a hand-rolled range check), a normalization decision (typically NFC — store normalized or preserve original spelling?), diagnostics/column math that work correctly across multibyte characters, and a policy on visually confusing identifiers (Latin `a` vs. Cyrillic `а`) — a real security question, not just an implementation detail, since this is effectively the IDN-homograph problem applied to source code. A naive "accept any non-ASCII scalar" version is a few hours of work but wrongly accepts combining marks and punctuation in identifier position — not recommended. Proper XID classification with generated tables, normalization, diagnostics, and tests is roughly a full focused day, more if avoiding an external Unicode library. Best inserted immediately after Unicode Literals if picked up, but not committed to a fixed chapter number until the normalization/homoglyph policy is actually decided.
 
 ### Types
 - **Enums** — `enum Color: Red, Green, Blue` or `enum Status: Ok = 0, Err = 1`; named integral constants with optional explicit values; `switch`-friendly; no implicit int conversion.

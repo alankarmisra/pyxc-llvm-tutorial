@@ -1,0 +1,11 @@
+extern def printd(x: float64)
+struct Point:
+  x: int
+  y: int
+type Vec2 = Point
+def main() -> int:
+  var v: Vec2
+  v.x = 3
+  v.y = 4
+  printd(float64(v.x))
+  return 0

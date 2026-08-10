@@ -1,0 +1,13 @@
+extern def printd(x: float64)
+struct Pair:
+  first: int
+  second: int
+def main() -> int:
+  var pair: Pair
+  pair.first = 100
+  pair.second = 200
+  var p: ptr[int] = addr(pair.second)
+  printd(float64(p[0]))
+  p = p - 1
+  printd(float64(p[0]))
+  return 0

@@ -3,9 +3,9 @@ description: "Add public and private visibility modifiers to class fields and me
 ---
 # 28. pyxc: Visibility
 
-## Where We Are
+## What I Am Building
 
-[Chapter 27](chapter-27.md) added constructors. Classes can now be initialised, but every field and method is accessible from anywhere. After this chapter, a class can hide its internals:
+[Chapter 27](chapter-27.md) added constructors. Classes can now be initialized, but every field and method is accessible from anywhere. After this chapter, a class can hide its internals:
 
 ```pyxc
 extern def printd(x: float64)
@@ -36,11 +36,11 @@ def main() -> int:
   return 0
 ```
 
-```
+```text
 3.000000
 ```
 
-Accessing `c.count` directly from outside the class would be an error.
+Accessing `c.count` directly from outside the class is an error.
 
 ## Source Code
 
@@ -51,21 +51,12 @@ cd pyxc-llvm-tutorial/code/chapter-28
 
 ## Grammar
 
-`classmember` gains an optional visibility prefix. `visibility` is a new production.
-
-```ebnf
-classmember = [ visibility ] ( fielddecl | methoddef ) ;  -- changed
-visibility  = "public" | "private" ;                      -- new
-```
-
-### Grammar
-
-`code/chapter-28/pyxc.ebnf`
+`class-member` gains an optional visibility prefix. `visibility` is a new production:
 
 ```grammardiff
  program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
  end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = type-alias | struct-definition | class-definition | function-definition | decorated-function-definition | external | top-level-expression ;
+ top-level-item             = type-alias | struct-definition | class-definition | function-definition | external | top-level-expression ;
  type-alias       = "type" name "=" type ;
  struct-definition       = "struct" name ":" end-of-lines struct-block ;
  class-definition        = "class" name ":" end-of-lines struct-block ;
@@ -78,12 +69,6 @@ visibility  = "public" | "private" ;                      -- new
  field-declaration       = name ":" type ;
  function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
  (* If the return type is omitted, it defaults to None. *)
- decorated-function-definition    = binary-decorator end-of-lines "def" binary-operator-signature [ "->" type ] ":" ( simple-statement | end-of-lines block )
-                 | unary-decorator  end-of-lines "def" unary-operator-signature  [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- binary-decorator = "@" "binary" "(" integer ")" ;
- unary-decorator  = "@" "unary" ;
- binary-operator-signature = custom-operator-character "(" typed-parameter "," typed-parameter ")" ;
- unary-operator-signature  = custom-operator-character "(" typed-parameter ")" ;
  external        = "extern" "def" function-signature [ "->" type ] ;
  top-level-expression    = expression ;
  function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
@@ -102,12 +87,14 @@ visibility  = "public" | "private" ;                      -- new
  return-statement      = "return" [ expression ] ;
  statement-separator = end-of-lines | BLOCK_END ;
  block = indent statement { statement-separator statement } dedent ;
- expression      = unary-expression binary-operator-right ;
- binary-operator-right        = { binary-operator unary-expression } ;
+ expression      = comparison ;
+ comparison      = sum { comparison-operator sum } ;
+ comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ sum             = term { ("+" | "-") term } ;
+ term            = unary-expression { ("*" | "/") unary-expression } ;
  lvalue          = name | field-access | index-expression ;
  variable-binding      = name ":" type [ "=" expression ] ;
- unary-expression       = unary-operator unary-expression | primary ;
- unary-operator         = "-" | user-defined-unary-operator ;
+ unary-expression       = "-" unary-expression | primary ;
  primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
  cast-expression        = cast-type "(" expression ")" ;
  sizeof-expression      = "sizeof" "(" type ")" ;
@@ -123,16 +110,9 @@ visibility  = "public" | "private" ;                      -- new
  string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
  escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
  parenthesized-expression       = "(" expression ")" ;
- binary-operator        = builtin-binary-operator | user-defined-binary-operator ;
  indent          = INDENT ;
  dedent          = DEDENT ;
-
- builtin-binary-operator = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
- user-defined-binary-operator = ? any operator-character defined as a custom binary operator ? ;
- user-defined-unary-operator  = ? any operator-character defined as a custom unary operator ? ;
- custom-operator-character    = ? any operator-character that is not "-" or a builtin-binary-operator,
-                     and not already defined as a custom operator ? ;
- operator-character          = ? any single ASCII punctuation character ? ;
+ 
  name      = (letter | "_") { letter | digit | "_" } ;
  builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
                  | "float" | "float32" | "float64"
@@ -159,62 +139,56 @@ visibility  = "public" | "private" ;                      -- new
  whitespace = " " | "\t" | "\v" | "\f" ;
  INDENT          = ? synthetic token emitted by lexer ? ;
  DEDENT          = ? synthetic token emitted by lexer ? ;
-
+ 
  BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
 ## New Tokens
 
 ```cpp
-tok_public  = -41,
+tok_public = -41,
 tok_private = -42,
 ```
 
-Both are registered in the keyword table:
+Both are registered in the keyword table and in the token-name map, so error messages print `'public'` and `'private'`.
+
+## Storing Visibility Information
+
+Visibility lands in two places on `StructTypeInfo`. Fields gain an `IsPublic` flag directly on `StructFieldInfo`:
 
 ```cpp
-{"public",  tok_public},
-{"private", tok_private},
-```
-
-They are also added to the token name map so error messages print `'public'` and `'private'`.
-
-## Storing Visibility in `StructTypeInfo`
-
-Visibility is stored on two places in `StructTypeInfo`:
-
-**Fields** gain an `IsPublic` flag:
-
-```cpp
-struct FieldInfo {
+struct StructFieldInfo {
   string Name;
-  ValueType Type;
+  ValueType Type = ValueType::Error;
   string StructName;
-  bool IsPublic = true;    // new — default public
+  bool IsPublic = true;
 };
 ```
 
-**Methods** are tracked in a map from method name to boolean:
+Methods are tracked separately, in a map from method name to visibility:
 
 ```cpp
 struct StructTypeInfo {
-  // ...
-  std::map<string, bool> MethodIsPublic;  // new
+  string Name;
+  bool IsClass = false;
+  vector<StructFieldInfo> Fields;
+  std::map<string, size_t> FieldIndex;
+  std::map<string, bool> MethodIsPublic;
 };
 ```
 
-Methods use a map rather than a flag on the prototype because the prototype lives in `FunctionProtos` and visibility is class metadata, not function metadata.
+Methods need their own map rather than a flag next to the field, since a method's signature lives in `FunctionSignatures`, not in `StructTypeInfo::Fields` — there's no single struct visibility could hang off of the way `IsPublic` hangs off `StructFieldInfo`.
 
 ## Parsing Visibility Modifiers
 
-In `ParseAggregateDefinition`, the body loop now reads an optional visibility token before each member:
+The body loop inside `ParseAggregateDefinition` now reads an optional visibility token before deciding whether the member is a field or a method:
 
 ```cpp
 bool MemberIsPublic = true;
 bool HasVisibilityModifier = false;
-if (CurTok == tok_public || CurTok == tok_private) {
+if (CurrentToken == tok_public || CurrentToken == tok_private) {
   HasVisibilityModifier = true;
-  MemberIsPublic = (CurTok == tok_public);
+  MemberIsPublic = (CurrentToken == tok_public);
   getNextToken(); // eat visibility modifier
 }
 if (HasVisibilityModifier && !Info.IsClass) {
@@ -223,25 +197,25 @@ if (HasVisibilityModifier && !Info.IsClass) {
 }
 ```
 
-If no modifier is present, `MemberIsPublic` stays `true` — the default is public. If the modifier appears inside a `struct` body, it is rejected immediately.
+With no modifier, `MemberIsPublic` stays `true`: the default is public. A modifier inside a `struct` body is rejected immediately, before the parser even looks at what follows it.
 
-After parsing a field, the visibility is stored in `FieldInfo`:
+A field's visibility rides along with everything else already pushed into `Info.Fields`:
 
 ```cpp
 Info.Fields.push_back({FieldName, FieldType, FieldStructName, MemberIsPublic});
 ```
 
-After parsing a method, the method's visibility is registered in `MethodIsPublic` by `ParseMethodDefinitionInClass` (which now takes `bool IsPublic` as a parameter):
+A method's visibility is passed as an extra argument into `ParseMethodDefinitionInClass`, which now takes `bool IsPublic` and records it directly:
 
 ```cpp
 StructTypes[ClassName].MethodIsPublic[MethodName] = IsPublic;
 ```
 
-The `StructTypes[StructName]` entry is written back after each member — `Info.MethodIsPublic = StructTypes[StructName].MethodIsPublic` — so the running map is always current as parsing proceeds.
+`Info.MethodIsPublic` is copied back out of `StructTypes[StructName]` after every field (`Info.MethodIsPublic = StructTypes[StructName].MethodIsPublic;`), for the same reason [Chapter 26](chapter-26.md) already re-registers `StructTypes[StructName] = Info` after every member: methods parsed earlier in the body need to stay visible while later members are parsed, and vice versa.
 
-## `CanAccessClassMember` and `ClassScopeGuard`
+## Enforcing Private Access
 
-Access is decided by a single function:
+Access is decided by one small function:
 
 ```cpp
 static string CurrentClassScopeName;
@@ -252,9 +226,7 @@ static bool CanAccessClassMember(const string &OwnerClass, bool IsPublic) {
 }
 ```
 
-A member is accessible if it is `public`, **or** if the code currently being compiled belongs to the same class. "Currently being compiled" is tracked by `CurrentClassScopeName`.
-
-`ClassScopeGuard` sets and restores `CurrentClassScopeName` around method codegen:
+A member is reachable if it's `public`, or if the code currently being parsed belongs to the same class the member is on. "Currently being parsed" is `CurrentClassScopeName`, set and restored by an RAII guard:
 
 ```cpp
 struct ClassScopeGuard {
@@ -266,58 +238,111 @@ struct ClassScopeGuard {
 };
 ```
 
-`ParseMethodDefinitionInClass` creates a `ClassScopeGuard` before entering the body. When the method is done, the destructor restores the previous class scope (which is `""` at the top level, or the enclosing class if methods are somehow nested — though pyxc does not currently support nested classes).
+`ParseMethodDefinitionInClass` instantiates a `ClassScopeGuard` before parsing the method's body. When the method is done, the destructor restores whatever `CurrentClassScopeName` was before — empty at the top level, since pyxc has no nested classes to restore into instead.
 
 ## Access Checks at Every Use Site
 
-`CanAccessClassMember` is inserted at every point where the compiler touches a class member:
+`CanAccessClassMember` is checked wherever the parser resolves a class member, which turns out to be four places, not one:
 
-**Field access** — in the `ConsumeField` lambda inside `ParseFieldAccessFromFirstMember`:
+**Field access, both existing field-chain parsers.** The auto-deref-capable `ParseFieldAccessFromFirstMember` from [Chapter 26](chapter-26.md) checks it inside its `ConsumeField` lambda:
 
 ```cpp
-if (!CanAccessClassMember(CurStruct, FD.IsPublic))
-  return LogErrorExpression(("Field '" + Field + "' is private on '" + CurStruct + "'").c_str());
+const auto &FD = SI->second.Fields[FI->second];
+if (!CanAccessClassMember(CurStruct, FD.IsPublic)) {
+  LogErrorExpression(
+      ("Field '" + Field + "' is private on '" + CurStruct + "'").c_str());
+  return false;
+}
 ```
 
-This fires for both read (`obj.x`) and write (`obj.x = v`) paths, because both go through `ParseFieldAccessFromFirstMember`.
+The older `ParseFieldAccessExpression` from [Chapter 18](chapter-18.md) — still used for field chains where the whole `.field` sequence is parsed from scratch rather than continuing from an already-consumed first member — gets the identical check inline in its own loop. Both paths reject reading *and* writing a private field, since assignment and read both resolve the field chain through one of these two functions before anything else happens.
 
-**Method call** — in `ParseMethodCallExpr`, after looking up `ClassName.MethodName`:
+**Method call**, in `ParseMethodCallExpression`, right after resolving `ClassName.MethodName`:
 
 ```cpp
 auto MI = CI->second.MethodIsPublic.find(MethodName);
 if (MI != CI->second.MethodIsPublic.end() &&
     !CanAccessClassMember(ClassName, MI->second)) {
-  return LogErrorExpression(("Method '" + MethodName + "' is private on '" + ClassName + "'").c_str());
+  return LogErrorExpression(
+      ("Method '" + MethodName + "' is private on '" + ClassName + "'")
+          .c_str());
 }
 ```
 
-**Constructor call** — in `ParseIdentifierExpr`, if `__init__` exists:
+**Constructor call**, in `ParseNameExpressionWithName`, guarded by whether `__init__` exists at all:
 
 ```cpp
-auto MI = SI->second.MethodIsPublic.find("__init__");
-if (MI != SI->second.MethodIsPublic.end() &&
-    !CanAccessClassMember(IdName, MI->second)) {
-  return LogErrorExpression(("Method '__init__' is private on '" + IdName + "'").c_str());
+if (InitSignature) {
+  auto MI = SI->second.MethodIsPublic.find("__init__");
+  if (MI != SI->second.MethodIsPublic.end() &&
+      !CanAccessClassMember(ParsedName, MI->second)) {
+    return LogErrorExpression(
+        ("Method '__init__' is private on '" + ParsedName + "'").c_str());
+  }
 }
 ```
+
+A private `__init__` makes `ClassName(args)` fail from outside the class, the same way a private method or field would.
 
 ## IR Is Unchanged
 
-Visibility is enforced entirely at parse and semantic check time. Nothing changes in the generated IR — `public` and `private` leave no trace in the output. A `private int` and a `public int` generate identical `i64` fields.
+Visibility is enforced entirely while parsing. Nothing changes in the generated IR: `public` and `private` leave no trace in the output. A `private` field and a `public` field of the same type generate identical IR.
 
-## Things Worth Knowing
+## Known Limitations
 
-**Default is public.** A member without a modifier is public. Existing code from chapters 25 and 26, which has no modifiers, continues to work exactly as before.
+**There is no `protected`.** Access is either class-private or world-public; there's no subclass-visible middle tier, since pyxc has no inheritance.
 
-**`private __init__` prevents external construction.** If `__init__` is private, `ClassName(args)` from outside the class body is rejected.
+**Visibility modifiers on structs are rejected outright.** `struct` members are always public. The parser errors the moment it sees `public` or `private` before a struct member, rather than silently ignoring the modifier.
 
-**There is no `protected`.** Access is either class-private or world-public. No inheritance hierarchy, no friend declarations.
+## Try It
 
-**Visibility modifiers on structs are rejected.** `struct` members are always public. The parser errors immediately if it sees `public` or `private` in a struct body.
+**Private field, accessed from outside**
+
+```pyxc
+class Foo:
+  private x: int
+
+def main() -> int:
+  var f: Foo
+  f.x = 3
+  return 0
+```
+
+```text
+Error (Line 6, Column 7): Field 'x' is private on 'Foo'
+```
+
+**Private constructor, called from outside**
+
+```pyxc
+class Foo:
+  x: int
+  private def __init__():
+    self.x = 0
+
+def main() -> int:
+  var f: Foo = Foo()
+  return 0
+```
+
+```text
+Error (Line 7, Column 20): Method '__init__' is private on 'Foo'
+```
+
+**Visibility modifier on a struct**
+
+```pyxc
+struct Foo:
+  private x: int
+```
+
+```text
+Error (Line 2, Column 11): Visibility modifiers are only allowed inside class bodies
+```
 
 ## What's Next
 
-[Chapter 29](chapter-29.md) adds traits — named contracts that a class can declare it satisfies. Conformance is checked at compile time.
+[Chapter 29](chapter-29.md) adds traits: named contracts a class can declare it satisfies. Conformance is checked at compile time.
 
 ## Need Help?
 
@@ -331,4 +356,4 @@ Include:
 - Full error message
 - Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
-We'll figure it out.
+I'll help you figure it out.

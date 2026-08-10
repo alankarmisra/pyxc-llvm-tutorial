@@ -1,47 +1,42 @@
 ---
-description: "Handle cyclic imports: two modules that import each other compile and link correctly using a two-phase signature scan and an InProgress/Done state machine."
+description: "Add import declarations: pyxc finds the source file, scans its exported signatures, and makes them available — no extern def needed for pyxc-to-pyxc calls."
 ---
-# 44. pyxc: Cyclic Imports
+# 44. pyxc: Imports
 
-## Where We Are
+## What I Am Building
 
-[Chapter 43](chapter-43.md) implemented imports. `import app.math` finds the file, scans its `export` declarations, and injects prototypes. For a tree-shaped import graph this works. For a cycle — A imports B, B imports A — Chapter 43's `SignatureVisitedFiles` set stops the recursion, but it stops it too early: when B tries to scan A it finds A "already visited" and gets nothing. If B calls a function from A, the prototype is missing.
-
-After this chapter, mutual imports work correctly:
+[Chapter 43](chapter-43.md) introduced `module` and `export`. A module now has a name and a public API, but callers still have to write `extern def` by hand. After this chapter:
 
 ```pyxc
-# cycle/a.pyxc
-module cycle.a
-import cycle.b
+# app/math.pyxc
+module app.math
 
-export def fa() -> int:
-  return fb() + 1
-```
-
-```pyxc
-# cycle/b.pyxc
-module cycle.b
-import cycle.a
-
-export def fb() -> int:
-  return 41
+export def add(x: int, y: int) -> int:
+  return x + y
 ```
 
 ```pyxc
 # main.pyxc
 module app.main
-import cycle.a
+import app.math
 
 extern def printd(x: float64) -> float64
 
 def main() -> int:
-  printd(float64(fa()))   # 42.000000
+  printd(float64(add(2, 3)))
   return 0
 ```
 
+```bash
+pyxc --emit exe -o out main.pyxc
 ```
-42.000000
 ```
+5.000000
+```
+
+No `extern def add`. I find `app/math.pyxc`, read its `export` declarations, and inject the prototype. In `--emit exe` mode, I compile `app/math.pyxc` automatically too.
+
+There's no grammar change this chapter — `import` syntax already exists from Chapter 43. This chapter is entirely about what happens once I see one.
 
 ## Source Code
 
@@ -50,203 +45,430 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-44
 ```
 
-## The State Machine
+## Parsing Without Codegen
 
-Chapter 43's `std::set<string> SignatureVisitedFiles` is replaced with a map that distinguishes two completion states:
+I add a global flag that suppresses codegen during an import scan:
 
 ```cpp
-enum class SignatureScanState { InProgress, Done };
-static std::map<string, SignatureScanState> SignatureFileStates;
+static bool SignatureScanMode = false;
+static std::set<string> SignatureVisitedFiles; // deduplication
 ```
 
-| State | Meaning |
-|---|---|
-| Not present | File has not been visited |
-| `InProgress` | Phase 1 complete — own exports collected, phase 2 in progress |
-| `Done` | Both phases complete |
-
-`CollectSignaturesFromFile` checks this map at entry:
+When `SignatureScanMode` is true, `ParseAggregateDefinition` skips method-body codegen and calls a leaner helper instead:
 
 ```cpp
-auto StateIt = SignatureFileStates.find(CanonPath);
-if (StateIt != SignatureFileStates.end()) {
-  if (StateIt->second == SignatureScanState::Done)
-    return true;   // fully scanned — reuse
-  // InProgress: cycle detected — own exports already registered, return safely
+if (SignatureScanMode) {
+  if (!ParseMethodSignatureOnlyInClass(StructName, MemberIsPublic))
+    return false;
+} else {
+  auto FnAST = ParseMethodDefinitionInClass(StructName, MemberIsPublic);
+  // ... codegen ...
+}
+```
+
+## Discarding Function Bodies
+
+While scanning signatures, I still have to consume each function body — I just throw it away instead of parsing it into an AST:
+
+```cpp
+static void SkipSignatureBody() {
+  if (CurrentToken == tok_eol) {
+    consumeNewlines();
+    if (CurrentToken == tok_indent) {
+      int Depth = 1;
+      getNextToken(); // eat first indent
+      while (CurrentToken != tok_eof && Depth > 0) {
+        if (CurrentToken == tok_indent)
+          ++Depth;
+        else if (CurrentToken == tok_dedent)
+          --Depth;
+        getNextToken();
+      }
+      return;
+    }
+    return;
+  }
+  while (CurrentToken != tok_eof && CurrentToken != tok_eol)
+    getNextToken();
+  if (CurrentToken == tok_eol)
+    getNextToken();
+}
+```
+
+I count `INDENT`/`DEDENT` pairs rather than just scanning for the next `DEDENT`, so a nested `if` inside the body doesn't make me stop early.
+
+## Parsing a Function Signature Only
+
+I parse a `def` signature, register it in `FunctionSignatures`, then discard the body:
+
+```cpp
+static bool ParseDefinitionSignatureOnly() {
+  getNextToken(); // eat def
+  auto Signature = ParseFunctionSignature();
+  if (!Signature)
+    return false;
+  string RetStructName;
+  ValueType RetType =
+      ParseOptionalReturnTypeWithStruct(RetStructName, ValueType::None);
+  if (RetType == ValueType::Error)
+    return false;
+  Signature->setReturnType(RetType);
+  Signature->setReturnStructName(RetStructName);
+  FunctionSignatures[Signature->getName()] = Signature->clone();
+  if (CurrentToken != tok_colon) {
+    LogErrorExpression("Expected ':' in definition");
+    return false;
+  }
+  getNextToken(); // eat ':'
+  SkipSignatureBody();
   return true;
 }
-SignatureFileStates[CanonPath] = SignatureScanState::InProgress;
 ```
 
-Both `Done` and `InProgress` return `true` immediately. The difference is meaning: `Done` means "all signatures available"; `InProgress` means "own exports available, recursing into nested imports". The back-edge caller gets whatever is already registered — and because Phase 1 is already complete, that is exactly the current file's exports.
+## Parsing a Method Signature Only
 
-## Two-Phase Signature Collection
-
-The key change is that `import` lines are no longer recursed into eagerly. Instead they are collected into a `NestedImports` vector:
+I register a method prototype — implicit `self` included — without generating any IR:
 
 ```cpp
-SignatureFileStates[CanonPath] = SignatureScanState::InProgress;
-// ... open file, setup scanner state ...
-vector<string> NestedImports;
-
-while (CurTok != tok_eof) {
-  if (CurTok == tok_import) {
-    getNextToken(); // eat 'import'
-    string ImportName;
-    if (!ParseDottedModuleName(ImportName)) { OK = false; break; }
-    NestedImports.push_back(ImportName);   // Phase 1: defer, don't recurse
-    continue;
-  }
-  if (CurTok == tok_export) {
-    if (!ParseExportSignatureOnly()) { OK = false; break; } // Phase 1: collect
-    continue;
-  }
+static bool ParseMethodSignatureOnlyInClass(const string &ClassName,
+                                            bool IsPublic) {
+  getNextToken(); // eat 'def'
+  // ... parse method name and parameter list (same shape as ParseMethodDefinitionInClass) ...
+  ParameterNames.push_back({"self", ValueType::Pointer,
+                      EncodePointerType(ValueType::Struct, ClassName)});
+  // ... parse remaining parameters and return type ...
+  string MangledName = ClassName + "." + MethodName;
+  auto Signature = make_unique<FunctionSignatureNode>(MangledName, std::move(ParameterNames),
+                                         SignatureLoc, RetType);
+  FunctionSignatures[Signature->getName()] = Signature->clone();
+  getNextToken(); // eat ':'
   SkipSignatureBody();
+
+  auto It = StructTypes.find(ClassName);
+  if (It != StructTypes.end())
+    It->second.MethodIsPublic[MethodName] = IsPublic;
+  return true;
 }
 ```
 
-Only after the whole file has been scanned does Phase 2 recurse into the deferred imports:
+## Parsing an Exported Signature
+
+I dispatch on the token after `export` to run the right signature-only parser:
 
 ```cpp
-if (OK) {
-  for (const auto &ImportName : NestedImports) {
-    string ImportPath;
-    if (!ResolveImportToPath(CanonPath, ImportName, ImportPath)) {
-      OK = false; break;
-    }
-    if (!CollectSignaturesFromFile(ImportPath)) {
-      OK = false; break;
-    }
-  }
-}
-// ... restore state ...
-SignatureFileStates[CanonPath] = OK ? SignatureScanState::Done
-                                   : SignatureScanState::InProgress;
-if (!OK)
-  SignatureFileStates.erase(CanonPath);
-```
-
-The state is set to `Done` only after both phases succeed.
-
-## Tracing the A→B→A Cycle
-
-1. `main` imports `cycle.a` → `CollectSignaturesFromFile("a.pyxc")`
-2. A: not present → set `InProgress`
-3. A Phase 1: collect `export def fa()`, defer `import cycle.b`
-4. A Phase 2: process `cycle.b` → `CollectSignaturesFromFile("b.pyxc")`
-5. B: not present → set `InProgress`
-6. B Phase 1: collect `export def fb()`, defer `import cycle.a`
-7. B Phase 2: process `cycle.a` → `CollectSignaturesFromFile("a.pyxc")`
-8. A is `InProgress` → return true (cycle detected, `fa` already registered)
-9. B Phase 2 complete → set B to `Done`
-10. A Phase 2 complete → set A to `Done`
-
-Result: both `fa` and `fb` are in the symbol table. `main.pyxc` compiles normally.
-
-## `ResolveImportToPath` — Directory Tree Walk and Caching
-
-Chapter 43's resolver only checked one directory. This chapter adds two improvements.
-
-**Directory tree walk**: The search starts in the importer's directory and walks up toward the filesystem root, probing at each level:
-
-```cpp
-static bool ResolveImportToPath(const string &ImporterPath,
-                                const string &Import, string &OutPath) {
-  const string CanonImporter = CanonicalizePath(ImporterPath);
-  // Check cache first
-  const string CacheKey = CanonImporter + "->" + Import;
-  auto CacheIt = ResolvedImportPathCache.find(CacheKey);
-  if (CacheIt != ResolvedImportPathCache.end()) {
-    if (CacheIt->second.empty()) return false; // negative cache
-    OutPath = CacheIt->second;
+static bool ParseExportSignatureOnly() {
+  getNextToken(); // eat export
+  if (CurrentToken == tok_def)
+    return ParseDefinitionSignatureOnly();
+  if (CurrentToken == tok_extern) {
+    auto Signature = ParseExtern();
+    if (!Signature)
+      return false;
+    FunctionSignatures[Signature->getName()] = std::move(Signature);
     return true;
   }
-
-  string Rel = Import;
-  std::replace(Rel.begin(), Rel.end(), '.', '/');
-  SmallString<256> Probe(CanonImporter);
-  path::remove_filename(Probe);
-
-  while (true) {
-    SmallString<256> Candidate(Probe);
-    path::append(Candidate, Rel + ".pyxc");
-    if (fs::exists(Candidate)) {
-      OutPath = std::string(Candidate.str());
-      ResolvedImportPathCache[CacheKey] = OutPath;
-      return true;
-    }
-    SmallString<256> InputsCandidate(Probe);
-    path::append(InputsCandidate, "Inputs");
-    path::append(InputsCandidate, Rel + ".pyxc");
-    if (fs::exists(InputsCandidate)) {
-      OutPath = std::string(InputsCandidate.str());
-      ResolvedImportPathCache[CacheKey] = OutPath;
-      return true;
-    }
-    // walk up
-    SmallString<256> Parent(Probe);
-    path::remove_filename(Parent);
-    if (Parent == Probe || Parent.empty()) break;
-    Probe = Parent;
-  }
-
-  ResolvedImportPathCache[CacheKey] = ""; // cache negative result
+  if (CurrentToken == tok_struct)
+    return ParseAggregateDefinition("struct");
+  if (CurrentToken == tok_class)
+    return ParseAggregateDefinition("class");
+  if (CurrentToken == tok_trait)
+    return ParseTraitDefinition();
+  if (CurrentToken == tok_type)
+    return ParseTypeAliasDefinition();
+  LogErrorExpression("Invalid export target");
   return false;
 }
 ```
 
-**Path cache**: Results (both positive and negative) are stored in:
+Struct, class, trait, and type-alias parsers already register into `StructTypes`, `Traits`, and `TypeAliases` on their own — I don't need to change them for `SignatureScanMode`, since their "bodies" are field and trait-method declarations, not IR-generating code, so there's nothing to skip.
+
+## Resolving an Import to a File Path
+
+I turn `app.math` into an absolute file path by replacing dots with slashes and probing relative to the importer's own location:
 
 ```cpp
-static std::map<string, string> ResolvedImportPathCache;
-```
+static bool ResolveImportToPath(const string &ImporterPath,
+                                const string &Import, string &OutPath) {
+  SmallString<256> Candidate(ImporterPath);
+  path::remove_filename(Candidate);
+  string Rel = Import;
+  std::replace(Rel.begin(), Rel.end(), '.', '/');
+  path::append(Candidate, Rel + ".pyxc");
+  if (fs::exists(Candidate)) {
+    OutPath = std::string(Candidate.str());
+    return true;
+  }
 
-The cache is keyed on `"canonicalImporterPath->importName"`. An empty value is a negative cache entry — "we already searched and this doesn't exist." Both the directory walk and the cache are cleared in `PreloadImportedSignatures` at the start of each top-level compilation.
-
-## State Reset
-
-`PreloadImportedSignatures` now clears both the state machine and the path cache:
-
-```cpp
-static bool PreloadImportedSignatures(const string &Path) {
-  SignatureFileStates.clear();
-  ResolvedImportPathCache.clear();
-  // ... as before ...
+  // Test-friendly fallback: allow colocated "Inputs/" modules.
+  SmallString<256> InputsCandidate(ImporterPath);
+  path::remove_filename(InputsCandidate);
+  path::append(InputsCandidate, "Inputs");
+  path::append(InputsCandidate, Rel + ".pyxc");
+  if (fs::exists(InputsCandidate)) {
+    OutPath = std::string(InputsCandidate.str());
+    return true;
+  }
+  return false;
 }
 ```
 
-## What Cyclic Imports Cannot Solve
-
-Cyclic imports resolve the **signature scanning** problem, not the **type layout** problem. A struct cannot contain itself by value — that would be an infinite-size type:
+If neither probe succeeds, the import is unresolved:
 
 ```pyxc
-export struct A:
-  b: B   # Error: struct layout cycle
-export struct B:
-  a: A
+import does.not.exist
+```
+```
+Error (Line 1, Column 0): Could not resolve import 'does.not.exist' from '...'
 ```
 
-Pointer-based mutual reference is fine because pointers are fixed size:
+## Canonicalizing Paths for Deduplication
+
+`app.math` and `./app/math.pyxc` and `../foo/app/math.pyxc` can all name the same file. I canonicalize before deduplicating, so the same file scanned two different ways still counts as one visit:
+
+```cpp
+static string CanonicalizePath(const string &Path) {
+  SmallString<256> Canon(Path);
+  if (!llvm::sys::fs::real_path(Path, Canon))
+    return std::string(Canon.str());
+  // fallback: make absolute and remove dots
+  SmallString<256> Abs(Path);
+  llvm::sys::fs::make_absolute(Abs);
+  llvm::sys::path::remove_dots(Abs, true);
+  return std::string(Abs.str());
+}
+```
+
+## Collecting Signatures From a File
+
+This is the core of the import system. I open the file, switch into `SignatureScanMode`, scan for `export` declarations, and save and restore all the global parser state I touch along the way:
+
+```cpp
+static bool CollectSignaturesFromFile(const string &Path) {
+  const string CanonPath = CanonicalizePath(Path);
+  if (!SignatureVisitedFiles.insert(CanonPath).second)
+    return true; // already visited
+
+  FILE *SavedInput = Input;
+  bool SavedIsRepl = IsRepl;
+  string SavedSourcePath = CurrentSourcePath;
+  int SavedCurTok = CurrentToken;
+  bool SavedHadError = HadError;
+  bool OK = true;
+
+  if (!OpenInputFile(Path))
+    return false;
+  ResetLexerState();
+  ResetParserStateForFile();
+  IsRepl = false;
+  SignatureScanMode = true;
+  HadError = false;
+  getNextToken();
+
+  while (CurrentToken != tok_eof) {
+    if (CurrentToken == tok_eol || CurrentToken == tok_indent || CurrentToken == tok_dedent) {
+      getNextToken(); continue;
+    }
+    if (CurrentToken == tok_import) {
+      // Resolve nested imports eagerly so their symbols are available.
+      getNextToken(); // eat 'import'
+      string ImportName;
+      if (!ParseDottedModuleName(ImportName)) { OK = false; break; }
+      string ImportPath;
+      if (!ResolveImportToPath(CanonPath, ImportName, ImportPath)) {
+        LogErrorExpression(("Could not resolve import '" + ImportName + "'...").c_str());
+        OK = false; break;
+      }
+      if (!CollectSignaturesFromFile(ImportPath)) { OK = false; break; }
+      continue;
+    }
+    if (CurrentToken == tok_export) {
+      if (!ParseExportSignatureOnly()) { OK = false; break; }
+      continue;
+    }
+    SkipSignatureBody(); // skip non-exported forms
+  }
+
+  if (HadError) OK = false;
+
+  CloseInputFile();
+  Input = SavedInput;
+  IsRepl = SavedIsRepl;
+  CurrentSourcePath = SavedSourcePath;
+  CurrentToken = SavedCurTok;
+  SignatureScanMode = false;
+  HadError = SavedHadError;
+  ResetLexerState();
+  return OK;
+}
+```
+
+I recurse straight into `import` lines as I hit them, so by the time I finish scanning a file, every file it (transitively) imports has already been scanned too. Saving and restoring the global parser state is what lets that recursion be safe — scanning B in the middle of scanning A can't corrupt A's own parse position once A resumes.
+
+Calling something that never got registered this way — because it isn't `export`ed — fails the same way calling an undeclared name always has:
 
 ```pyxc
-export struct Node:
-  value: int
-  next: ptr[Node]   # ok — ptr is always 8 bytes
+import app.math2
+
+def main() -> int:
+  return validate(5)
+```
+```
+Error (Line 4, Column 21): Unknown function referenced
+  return validate(5)
+                    ^~~~
 ```
 
-## Things Worth Knowing
+And an imported function is still type-checked against its real signature, same as any other call:
 
-**`Done` state prevents redundant scanning.** If three files all import `app.math`, the scanner runs once and skips on the next two encounters.
+```pyxc
+import app.math
 
-**State is cleared between compilation runs.** `SignatureFileStates` and `ResolvedImportPathCache` are cleared at the start of each `PreloadImportedSignatures` call. They do not persist across `pyxc` invocations.
+def main() -> int:
+  return add(1.0, 2)
+```
+```
+Error (Line 4, Column 21): argument 1 expects int
+  return add(1.0, 2)
+                    ^~~~
+```
 
-**The algorithm is DFS.** Imports are resolved depth-first. This does not affect correctness, but it determines registration order when names conflict (first-registered prototype wins).
+## Text-Based Import Discovery
 
-**`InProgress` return is not an error.** When a back-edge arrives and finds `InProgress`, the function returns `true` — "OK, use what's already there." The caller proceeds normally with whatever prototypes are already in the symbol tables. Because the in-progress file's Phase 1 is complete, those are always the exports the back-edge caller needs.
+Before the lexer even runs on the main file, I use a fast line-based scan to pull out its `import` names with `std::ifstream`. This means I don't have to run the full lexer over the entry file twice:
+
+```cpp
+static vector<string> ExtractTopLevelImports(const string &Path) {
+  vector<string> Result;
+  std::ifstream In(Path);
+  if (!In)
+    return Result;
+  string Line;
+  while (std::getline(In, Line)) {
+    auto first = Line.find_first_not_of(" \t");
+    if (first == string::npos || Line[first] == '#') continue;
+    string Trim = Line.substr(first);
+    if (Trim.rfind("module ", 0) == 0) continue;
+    if (Trim.rfind("import ", 0) == 0) {
+      string Name = Trim.substr(7);
+      // strip inline comments
+      auto hash = Name.find('#');
+      if (hash != string::npos) Name = Name.substr(0, hash);
+      while (!Name.empty() && isspace((unsigned char)Name.back())) Name.pop_back();
+      if (!Name.empty()) Result.push_back(Name);
+      continue;
+    }
+    if (Trim.rfind("export ", 0) == 0) continue;
+    break; // first non-import top-level form — stop
+  }
+  return Result;
+}
+```
+
+I stop at the first line that's neither `module`, `import`, nor `export`, so a function body never gets read here.
+
+## Preloading Imported Signatures
+
+I call this before the main parse loop of any file. It clears the visited set, then runs `CollectSignaturesFromFile` for each import:
+
+```cpp
+static bool PreloadImportedSignatures(const string &Path) {
+  SignatureVisitedFiles.clear();
+  for (const auto &ImportName : ExtractTopLevelImports(Path)) {
+    string ImportPath;
+    if (!ResolveImportToPath(Path, ImportName, ImportPath)) {
+      LogErrorExpression(...);
+      return false;
+    }
+    if (!CollectSignaturesFromFile(ImportPath))
+      return false;
+  }
+  return true;
+}
+```
+
+`import` only works in file mode — the REPL has no file to resolve paths against:
+
+```
+ready> import app.math
+Error (Line 1, Column 1): 'import' is only supported in file mode
+import 
+ ^~~~
+```
+
+## Auto-Expanding `--emit exe`
+
+For `--emit exe`, every transitively imported `.pyxc` file has to actually get compiled and linked, not just have its signatures scanned. `CollectImportClosure` does a DFS of the import graph and collects the full file list:
+
+```cpp
+static bool CollectImportClosure(const string &Path, std::set<string> &Visited,
+                                 vector<string> &OutFiles) {
+  const string CanonPath = CanonicalizePath(Path);
+  if (!Visited.insert(CanonPath).second)
+    return true; // already in closure
+  OutFiles.push_back(CanonPath);
+  for (const auto &ImportName : ExtractTopLevelImports(CanonPath)) {
+    string ImportPath;
+    if (!ResolveImportToPath(CanonPath, ImportName, ImportPath)) {
+      LogErrorExpression(...);
+      return false;
+    }
+    if (!CollectImportClosure(ImportPath, Visited, OutFiles))
+      return false;
+  }
+  return true;
+}
+```
+
+I use it to replace the driver's explicit input list with the expanded closure:
+
+```cpp
+vector<string> ExpandedInputs;
+std::set<string> SeenPyxcInputs;
+for (const auto &InputPath : InputFiles) {
+  if (IsPyxcInput(InputPath)) {
+    if (!CollectImportClosure(InputPath, SeenPyxcInputs, ExpandedInputs)) {
+      CleanupTemps();
+      return false;
+    }
+  } else {
+    ExpandedInputs.push_back(InputPath);
+  }
+}
+// ... compile everything in ExpandedInputs
+```
+
+`--emit llvm-ir` doesn't get any of this — closure expansion is specific to `--emit exe`. IR output stays one-file-in, one-file-out.
+
+## Try It
+
+```bash
+mkdir -p app
+cat > app/math.pyxc <<'PYXC'
+module app.math
+
+export def add(x: int, y: int) -> int:
+  return x + y
+PYXC
+cat > main.pyxc <<'PYXC'
+module app.main
+import app.math
+
+extern def printd(x: float64) -> float64
+
+def main() -> int:
+  printd(float64(add(2, 3)))
+  return 0
+PYXC
+pyxc --emit exe -o out main.pyxc
+./out
+```
+```
+5.000000
+```
 
 ## What's Next
 
-This is the final chapter. Phase 6 — modules and multi-file builds — is complete. pyxc is a full systems language: K&R-compatible operators and types, a class and trait system, a module system with automatic dependency resolution, and cyclic import support.
+[Chapter 45](chapter-45.md) explains how the compiler handles cyclic imports without infinite recursion, and makes the current single-pass scan more robust for the case where B's exports are needed by A before B finishes scanning.
 
 ## Need Help?
 
@@ -260,4 +482,4 @@ Include:
 - Full error message
 - Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
-We'll figure it out.
+I'll help you figure it out.

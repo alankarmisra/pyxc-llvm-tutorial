@@ -3,7 +3,7 @@ description: "Add struct types with field declarations, field read/write, and ne
 ---
 # 18. pyxc: Structs
 
-## Where's the code at?
+## What I Am Building
 
 I think I'll add *structs* to the language now. I have enough *scalar* types and I'm keen on getting some structural help from the language for my data so I can keep related information together. The following is what I'm hoping to have by the end of this chapter. 
 
@@ -92,22 +92,89 @@ field-access = name "." name { "." name } ;
 
 I grouped `"." name` under `{ }` because I might have structs containing structs, so I could have something like `route.destination.x`.
 
-Structs also define a new type, so I need to extend the `type` rule too:
+Structs also define a new type, so I need to extend the `type` rule too. I split the old `type` production into `builtin-type` (everything it used to mean) and a new `struct-type`, then let `type` be either one:
 
 ```ebnf
-type = builtin-type | struct-type ;
-struct-type = name ; (* struct name; must be declared above the point of use *)
+builtin-type = "int" | "int8" | ... | "bool" | "None" ; (* everything type used to mean *)
+struct-type  = name ; (* struct name; must be declared above the point of use *)
+type         = builtin-type | struct-type ;
 ```
 
-Putting it all together below for reference:
+None of these new pieces are reachable yet, though: I've defined `struct-definition` and `field-access` as standalone productions, but nothing in the existing grammar points at them. `struct-definition` needs to join `top-level-item` alongside `function-definition` and the rest, and `field-access` needs to plug into both `lvalue` (so `p.x = 5` parses as an assignment target) and `primary` (so `p.x` parses as a value to read). Here's the real diff against [Chapter 17](chapter-17.md)'s grammar with all of that wired in:
 
-```ebnf
-struct-definition  = "struct" name ":" end-of-lines struct-block ;
-struct-block       = indent field-declaration { end-of-lines field-declaration } dedent ;
-field-declaration  = name ":" type ;
-field-access       = name "." name { "." name } ;
-type               = builtin-type | struct-type ;
-struct-type        = name ; (* struct name; must be declared above the point of use *)
+```grammardiff
+ program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
+ end-of-lines            = end-of-line { end-of-line } ;
+-top-level-item             = function-definition | external | top-level-expression ;
++top-level-item             = struct-definition | function-definition | external | top-level-expression ;
++struct-definition       = "struct" name ":" end-of-lines struct-block ;
++struct-block     = indent field-declaration { end-of-lines field-declaration } dedent ;
++field-declaration       = name ":" type ;
+ function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ (* If the return type is omitted, it defaults to None. *)
+ external        = "extern" "def" function-signature [ "->" type ] ;
+ top-level-expression    = expression ;
+ function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
+ typed-parameter      = name ":" type ;
+ if-statement          = "if" expression ":" suite
+                 [ end-of-lines "else" ":" suite ] ;
+ for-statement         = "for"
+                   ( "var" name ":" type | name )
+                   "=" expression "," expression "," expression ":" suite ;
+ variable-statement         = "var" variable-binding { "," variable-binding } ;
+ assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
+ simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
+ compound-statement    = if-statement | for-statement ;
+ statement       = simple-statement | compound-statement ;
+ suite           = simple-statement | compound-statement | end-of-lines block ;
+ return-statement      = "return" [ expression ] ;
+ statement-separator = end-of-lines | BLOCK_END ;
+ block = indent statement { statement-separator statement } dedent ;
+ expression      = comparison ;
+ comparison               = sum { comparison-operator sum } ;
+ comparison-operator      = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ sum                      = term { ("+" | "-") term } ;
+ term                     = unary-expression { ("*" | "/") unary-expression } ;
+-lvalue          = name ;
++lvalue          = name | field-access ;
+ variable-binding      = name ":" type [ "=" expression ] ;
+ unary-expression       = "-" unary-expression | primary ;
+-primary         = cast-expression | name-expression | number-expression | boolean-literal | parenthesized-expression ;
++primary         = cast-expression | name-expression | field-access | number-expression | boolean-literal | parenthesized-expression ;
+ cast-expression        = cast-type "(" expression ")" ;
+ name-expression  = name | call-expression ;
+ call-expression        = name "(" [ expression { "," expression } ] ")" ;
++field-access     = name "." name { "." name } ;
+ number-expression      = number ;
+ parenthesized-expression       = "(" expression ")" ;
+ indent          = INDENT ;
+ dedent          = DEDENT ;
+ 
+ name      = (letter | "_") { letter | digit | "_" } ;
+-type            = "int" | "int8" | "int16" | "int32" | "int64"
++builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+                 | "bool" | "None" ;
++struct-type      = name ;
++type            = builtin-type | struct-type ;
+ cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+                 | "bool" ;
+ integer         = digit { digit } ;
+ number          = ( digit { digit } [ "." { digit } ]
+                   | "." digit { digit } ) [ exponent ] ;
+ exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
+ boolean-literal    = "True" | "False" ;
+ letter          = "A".."Z" | "a".."z" ;
+ digit           = "0".."9" ;
+ end-of-line             = "\r\n" | "\r" | "\n" ;
+ comment = "#" { comment-character } ;
+ comment-character = ? any character except "\r" and "\n" ? ;
+ whitespace = " " | "\t" | "\v" | "\f" ;
+ INDENT          = ? synthetic token emitted by lexer ? ;
+ DEDENT          = ? synthetic token emitted by lexer ? ;
+ 
+ BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
 I think that should do it. I'll try implementing this first and come back to it if I see gaps in the language. I can already see that I haven't extended the field accessor notation to expressions, so I can't do something like:
@@ -344,7 +411,7 @@ This is why I keep needing that "struct name alongside the type" pattern: `Value
 
 Now for the parts of the grammar I haven't touched yet: reading a field and writing to one. Each needs its own AST node, because they compile to different code (a load vs. a `getelementptr` + store), even though they share a lot of the same "walk the field path" logic.
 
-### `FieldExpressionNode`
+### Field Read
 
 A field read: `p.x`, `o.inner.value`. What does this node actually need to remember? Not the whole chain as one string: I want the pieces separately so codegen can walk them one GEP at a time. So: the name of the variable at the root, and the list of field names after it.
 
@@ -358,7 +425,7 @@ class FieldExpressionNode : public ExpressionNode {
 
 The type of the whole expression is whatever the *last* field in the path resolves to, so I set that in the constructor once the parser has walked the chain. `getLValueName()` returns `&BaseName`: that's what assignment codegen will use to find the root pointer to start GEP-ing from.
 
-### `FieldAssignmentExpressionNode`
+### Field Write
 
 A field write: `p.x = 5`. This one just needs the field expression on the left (so it knows *where* to write) and an expression on the right (what to write):
 
@@ -516,13 +583,17 @@ static string LookupVarStructName(const string &Name) {
 }
 ```
 
-Function parameters need the same treatment for the same reason: a parameter's `ValueType::Struct` alone doesn't say which struct. So the old `pair<string, ValueType>` per argument in `FunctionSignatureNode` isn't enough anymore; I turn it into a small struct with room for the struct name too:
+Function parameters need the same treatment for the same reason: a parameter's `ValueType::Struct` alone doesn't say which struct. So the old `pair<string, ValueType>` per argument in `FunctionSignatureNode` isn't enough anymore; I turn it into a small nested struct with room for the struct name too:
 
 ```cpp
-struct ArgInfo {
-  string Name;
-  ValueType Type;
-  string StructName;
+class FunctionSignatureNode {
+public:
+  struct ParameterInfo {
+    string Name;
+    ValueType Type;
+    string StructName;
+  };
+  ...
 };
 ```
 
@@ -539,17 +610,27 @@ static Type *GetOrCreateLLVMStructType(const string &StructName) {
   auto It = LLVMStructTypes.find(StructName);
   if (It != LLVMStructTypes.end())
     return It->second;
+  auto DefIt = StructTypes.find(StructName);
+  if (DefIt == StructTypes.end())
+    return nullptr;
 
   auto *ST = StructType::create(*TheContext, "struct." + StructName);
   LLVMStructTypes[StructName] = ST;  // register before filling the body
 
-  vector<Type *> FieldTys;
-  for (const auto &Field : StructTypes[StructName].Fields)
-    FieldTys.push_back(LLVMTypeFor(Field.Type, Field.StructName));
+  std::vector<Type *> FieldTys;
+  FieldTys.reserve(DefIt->second.Fields.size());
+  for (const auto &Field : DefIt->second.Fields) {
+    Type *FT = LLVMTypeFor(Field.Type, Field.StructName);
+    if (!FT)
+      return nullptr;
+    FieldTys.push_back(FT);
+  }
   ST->setBody(FieldTys, false);
   return ST;
 }
 ```
+
+I look struct definitions up with `StructTypes.find` rather than `StructTypes[StructName]`: the indexing operator would silently insert an empty `StructTypeInfo` for a name I don't recognize, and I'd rather bail out with `nullptr` than build a zero-field struct type for a typo.
 
 I need the cache: `LLVMStructTypes`: because LLVM creates a brand-new `StructType` object every time I call `StructType::create` with the same name; it doesn't deduplicate for me. Without the cache, two separate `alloca`s for the same pyxc struct would end up backed by two different LLVM types that just happen to have the same layout but different identity: every load, store, and GEP mixing them would fail.
 
@@ -711,15 +792,15 @@ The IR confirms it:
 ```llvm
 define void @clobber(%struct.Box %b) {
 entry:
-  %b.addr = alloca %struct.Box
-  store %struct.Box %b, ptr %b.addr
-  %fieldptr = getelementptr inbounds %struct.Box, ptr %b.addr, i32 0, i32 0
-  store i64 0, ptr %fieldptr
+  %b1 = alloca %struct.Box, align 8
+  store %struct.Box %b, ptr %b1, align 8
+  %fieldptr = getelementptr inbounds nuw %struct.Box, ptr %b1, i32 0, i32 0
+  store i64 0, ptr %fieldptr, align 8
   ret void
 }
 ```
 
-`clobber` gets its own copy of `b`, allocated fresh inside its own stack frame. Writing to `b.value` inside `clobber` only ever touches that copy. The caller's struct is untouched after the call: which is what I'd want by default, but it does mean that if I ever want a function to mutate the caller's struct, passing by value can't do that. I'll need a pointer for that, which is [Chapter 19](chapter-19.md).
+LLVM renames the entry-block alloca to `%b1` since the parameter itself already claimed the name `%b`; functionally it's the same "shadow copy" alloca every parameter gets. `clobber` gets its own copy of `b`, allocated fresh inside its own stack frame. Writing to `b.value` inside `clobber` only ever touches that copy. The caller's struct is untouched after the call: which is what I'd want by default, but it does mean that if I ever want a function to mutate the caller's struct, passing by value can't do that. I'll need a pointer for that, which is [Chapter 19](chapter-19.md).
 
 ## Global Struct Variables
 
@@ -919,4 +1000,4 @@ Include:
 - Full error message
 - Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
-We'll figure it out.
+I'll help you figure it out.

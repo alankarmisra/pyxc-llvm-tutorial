@@ -1,0 +1,5 @@
+def sq(x):
+  return x * x
+extern def printd(x)
+def main():
+    printd(sq(3))

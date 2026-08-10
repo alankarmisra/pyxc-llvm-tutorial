@@ -1,0 +1,7 @@
+extern def printd(x: float64)
+def sum4(p: ptr[int]) -> int:
+  return p[0] + p[1] + p[2] + p[3]
+def main() -> int:
+  var scores: int[4] = [10, 20, 30, 40]
+  printd(float64(sum4(scores)))
+  return 0

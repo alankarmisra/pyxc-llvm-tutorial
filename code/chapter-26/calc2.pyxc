@@ -1,0 +1,9 @@
+class Calc:
+  value: int
+
+  def add(x: int, y: int) -> int:
+    return x + y
+
+def main() -> int:
+  var c: Calc
+  return c.add(3, 4)

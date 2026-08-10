@@ -3,7 +3,7 @@ description: "Add a static type system: int, int8, int16, int32, int64, float, f
 ---
 # 17. pyxc: A Static Type System
 
-## Where We Are
+## What I Am Building
 
 [Chapter 16](chapter-16.md) gave me debug info and proper optimization pipelines. The language itself still has exactly one type: `double`. Every variable, parameter, return value, and literal is a 64-bit float, and I never need to ask "what type is this?".
 
@@ -32,13 +32,93 @@ cd pyxc-llvm-tutorial/code/chapter-17
 
 ## Grammar
 
-The grammar gains type annotations throughout. The verbatim grammar is in [Grammar](#the-full-grammar) below; the changes from chapter 15 (the last chapter to touch the grammar; chapter 16 didn't) are:
+The grammar gains type annotations throughout. Chapter 16 didn't touch the grammar, so this diffs against chapter 15's:
 
-- Every parameter requires `: type` (`typed-parameter` replaces the bare `name` in `function-signature` and the operator-signature productions).
+```grammardiff
+ program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
+ end-of-lines            = end-of-line { end-of-line } ;
+ top-level-item             = function-definition | external | top-level-expression ;
+-function-definition      = "def" function-signature ":" ( simple-statement | end-of-lines block ) ;
+-external        = "extern" "def" function-signature ;
++function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
++(* If the return type is omitted, it defaults to None. *)
++external        = "extern" "def" function-signature [ "->" type ] ;
+ top-level-expression    = expression ;
+-function-signature       = name "(" [ parameters ] ")" ;
+-parameters               = parameter { "," parameter } ;
+-parameter                = name ;
++function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
++typed-parameter      = name ":" type ;
+ if-statement          = "if" expression ":" suite
+                 [ end-of-lines "else" ":" suite ] ;
+-for-statement         = "for" [ "var" ] name "=" expression "," expression "," expression ":" suite ;
++for-statement         = "for"
++                  ( "var" name ":" type | name )
++                  "=" expression "," expression "," expression ":" suite ;
+ variable-statement         = "var" variable-binding { "," variable-binding } ;
+ assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
+ simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
+ compound-statement    = if-statement | for-statement ;
+ statement       = simple-statement | compound-statement ;
+ suite           = simple-statement | compound-statement | end-of-lines block ;
+-return-statement      = "return" expression ;
++return-statement      = "return" [ expression ] ;
+ statement-separator = end-of-lines | BLOCK_END ;
+ block = indent statement { statement-separator statement } dedent ;
+ expression      = comparison ;
+ comparison               = sum { comparison-operator sum } ;
+ comparison-operator      = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ sum                      = term { ("+" | "-") term } ;
+ term                     = unary-expression { ("*" | "/") unary-expression } ;
+ lvalue          = name ;
+-variable-binding      = name [ "=" expression ] ;
++variable-binding      = name ":" type [ "=" expression ] ;
+ unary-expression       = "-" unary-expression | primary ;
+-primary         = name-expression | number-expression | parenthesized-expression ;
++primary         = cast-expression | name-expression | number-expression | boolean-literal | parenthesized-expression ;
++cast-expression        = cast-type "(" expression ")" ;
+ name-expression  = name | call-expression ;
+-call-expression        = name "(" [ arguments ] ")" ;
+-arguments              = expression { "," expression } ;
++call-expression        = name "(" [ expression { "," expression } ] ")" ;
+ number-expression      = number ;
+ parenthesized-expression       = "(" expression ")" ;
+ indent          = INDENT ;
+ dedent          = DEDENT ;
+ 
+ name      = (letter | "_") { letter | digit | "_" } ;
+-number          = digit { digit } [ "." { digit } ]
+-                | "." digit { digit } ;
++type            = "int" | "int8" | "int16" | "int32" | "int64"
++                | "float" | "float32" | "float64"
++                | "bool" | "None" ;
++cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
++                | "float" | "float32" | "float64"
++                | "bool" ;
++integer         = digit { digit } ;
++number          = ( digit { digit } [ "." { digit } ]
++                  | "." digit { digit } ) [ exponent ] ;
++exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
++boolean-literal    = "True" | "False" ;
+ letter          = "A".."Z" | "a".."z" ;
+ digit           = "0".."9" ;
+ end-of-line             = "\r\n" | "\r" | "\n" ;
+ comment = "#" { comment-character } ;
+ comment-character = ? any character except "\r" and "\n" ? ;
+ whitespace = " " | "\t" | "\v" | "\f" ;
+ INDENT          = ? synthetic token emitted by lexer ? ;
+ DEDENT          = ? synthetic token emitted by lexer ? ;
+ 
+ BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
+```
+
+Summary of what changed:
+
+- Every parameter requires `: type` (`typed-parameter` replaces the bare `name` in `function-signature`).
 - `var` declarations require `: type` between the name and an optional `= expression`.
 - `for var` loop variables require `: type` between the name and `=`.
   A plain `for i = ...` reuses an existing variable and does not accept a type.
-- A function carries `[ "->" type ]` between `)` and `:`. If absent, `def` defaults to `None` (void); `extern def` and operator defs default to `float64`.
+- A function carries `[ "->" type ]` between `)` and `:`. If absent, `def` defaults to `None` (void); `extern def` defaults to `float64`.
 - `None` is the void return type annotation; it cannot be used as a variable or parameter type.
 - `return` no longer requires a value: `return-statement` is now `"return" [ expression ]`, so a bare `return` is legal inside a `None` function.
 - `True` and `False` are new boolean literal keywords (`boolean-literal`), and `cast-expression` (`type "(" expression ")"`) is a new kind of `primary`.
@@ -46,7 +126,7 @@ The grammar gains type annotations throughout. The verbatim grammar is in [Gramm
 
 ## The Design
 
-### The ValueType Enum
+### Representing a Value's Type
 
 Every value now has a type, represented as a `ValueType` enum:
 
@@ -100,16 +180,17 @@ The type system is strict. The only implicit conversions allowed are:
 1. **Same type → always allowed.**
 2. **Float ↔ Float64**: the two 64-bit float spellings are freely interchangeable. No instruction is emitted since they share the same IR type.
 3. **Integer widening**: smaller fixed-size integers can be assigned to larger ones: `Int8 → Int16 → Int32 → Int64`. Also, `Int` (pointer-width) can widen to `Int64`. Emits `sext`.
-4. **Any integer type → `Float64`**: an integer can be silently converted to `Float64`. Emits `sitofp`.
+4. **Any integer type → any float type**: an integer can be silently converted to `Float`, `Float32`, or `Float64`. Emits `sitofp` into whichever float width the destination actually is.
+5. **Float32 → Float/Float64**: a narrower float widens to a wider one. Emits `fpext`. The reverse (`Float64 → Float32`) is narrowing and needs an explicit cast, same as integers.
 
 Everything else requires an explicit cast. In particular:
-- Narrowing (e.g., `int64` to `int32`) always requires an explicit cast.
+- Narrowing (e.g., `int64` to `int32`, or `float64` to `float32`) always requires an explicit cast.
 - `Bool` is not implicitly assignable from any other type.
 - `Int` does not widen to `Int32` or smaller fixed-size types (use an explicit cast).
 
-The type checker (`IsAssignable`, below) actually says any integer can widen into `Float`, `Float32`, or `Float64`, not just `Float64`. I found by testing that this is a real gap between the checker and codegen: `EmitImplicitCast`, which is what actually emits the `sitofp`, only handles a float target of `Float64`. An integer variable assigned into a `float32` (or bare `float`) variable, argument, return, or arithmetic operand passes the type check and then fails at codegen with a generic "type mismatch" error, even though the equivalent explicit cast, `float32(n)`, works fine. See [Known Limitations](#known-limitations).
+I confirmed rule 4 by compiling `var r: float32 = n` for an `int32 n`: it produces a clean `sitofp i32 %n to float`, no error, exactly like the `float64` case. `EmitImplicitCast`'s int-to-float branch calls `LLVMTypeFor(To)`, which already resolves to whichever float width `To` actually is, so there was never a `Float64`-only restriction to trip over here.
 
-In IR, the three implicit cases look like:
+In IR, the four implicit cases look like:
 
 ```llvm
 ; Integer widening: int8 → int16
@@ -117,6 +198,12 @@ In IR, the three implicit cases look like:
 
 ; Integer → float: int32 → float64
 %asf = sitofp i32 %n to double
+
+; Integer → float32: int32 → float32
+%asf32 = sitofp i32 %n to float
+
+; Float32 → Float64: widening
+%wide32 = fpext float %r to double
 
 ; Float ↔ Float64: no instruction: same IR type double
 ; the LLVM Value* is used directly
@@ -136,7 +223,7 @@ The lexer detects `->` as a single token:
 
 ```cpp
 if (LexerLastChar == '-') {
-  int Tok = (peek() == '>') ? (advance(), tok_arrow) : '-';
+  int Tok = (peek() == '>') ? (advance(), tok_arrow) : tok_minus;
   LexerLastChar = advance();
   return Tok;
 }
@@ -203,7 +290,10 @@ static unique_ptr<ExpressionNode> ParseNumberExpression() {
         Val.convertFromString(NumberLiteral, APFloat::rmNearestTiesToEven);
     if (!StatusOrErr)
       return LogErrorExpression("Invalid floating-point literal");
-    if (*StatusOrErr & APFloat::opOverflow)
+    APFloat::opStatus Status = *StatusOrErr;
+    if (Status & APFloat::opInvalidOp)
+      return LogErrorExpression("Invalid floating-point literal");
+    if (Status & APFloat::opOverflow)
       return LogErrorExpression("Floating-point literal out of range for type");
     auto Result = make_unique<NumberExpressionNode>(Val, Type);
     getNextToken(); // consume the number
@@ -356,7 +446,7 @@ i1 false
 
 `Bool` is a distinct type. It is not the result of a comparison widened to an integer: it stays `i1` throughout. Comparisons also return `Bool` / `i1` in chapter 16.
 
-## ParseTypeToken and ParseOptionalReturnType
+## Parsing Type Annotations and Optional Return Types
 
 `ParseTypeToken` consumes the current token if it is a type keyword and returns the corresponding `ValueType`:
 
@@ -397,11 +487,11 @@ static ValueType ParseOptionalReturnType(
 The `DefaultType` parameter is the key design decision:
 
 - `ParseFunctionDefinition` calls `ParseOptionalReturnType(ValueType::None)`: unannotated `def` is void.
-- `ParseExtern` and operator parsers call `ParseOptionalReturnType()` (default `Float64`): extern declarations and operator overloads default to `float64` because they are typically C library functions or mathematical operators. `ParseDecoratedFunctionDef` calls `ParseOptionalReturnType()` and immediately calls `Proto->setReturnType(RetTy)`, so any explicit `->` annotation overrides that placeholder.
+- `ParseExtern` calls `ParseOptionalReturnType()` (default `Float64`): extern declarations default to `float64` because they are typically C library functions.
 
 `ValueType::None` also serves as a placeholder type for all statement-like AST nodes that produce no meaningful value: `ReturnExpressionNode`, `BlockExpressionNode`, `ForExpressionNode`, `IfStatementNode`, and `VarStatementNode` all call `setType(ValueType::None)` in their constructors, and all override `shouldPrintValue()` to return `false`. This is the same pattern as the single-hierarchy AST design noted in chapter 12: in a clean Stmt/Expr split, statements would carry no type at all. Here, `None` is the convention that means "this node is a statement; its type is not meaningful."
 
-## ParseFunctionSignature: Typed Parameters
+## Parsing Typed Parameters
 
 In Chapter 16, my signature parser accepted bare names:
 
@@ -451,7 +541,7 @@ define void @greet() { ... }
 
 Every parameter type and every return type now appears literally in the IR rather than being uniformly `double`.
 
-## VarScopes: From Set to Map
+## Tracking Variable Types in Scope
 
 Chapter 16 tracked which variable names were in scope using a `set<string>`:
 
@@ -677,7 +767,7 @@ I compiled a function exercising each of these and read the real instruction nam
 ; result: i1
 ```
 
-## LLVMTypeFor and ZeroConstant
+## Mapping Types to LLVM IR and Zero Values
 
 Two helpers translate `ValueType` to LLVM IR constructs.
 
@@ -732,7 +822,7 @@ i8 0     i16 0     i32 0     i64 0
 float 0.000000e+00    double 0.000000e+00    i1 false
 ```
 
-## IsAssignable and Implicit Widening
+## Checking Whether a Type Can Convert Implicitly
 
 `IsAssignable(Dest, Src)` determines whether a value of type `Src` can appear where `Dest` is expected without an explicit cast:
 
@@ -740,10 +830,15 @@ float 0.000000e+00    double 0.000000e+00    i1 false
 static bool IsAssignable(ValueType Dest, ValueType Src) {
   if (Dest == Src)
     return true;
-  // float and float64 are interchangeable
   if ((Dest == ValueType::Float && Src == ValueType::Float64) ||
       (Dest == ValueType::Float64 && Src == ValueType::Float))
     return true;
+  if (IsFloatType(Dest) && IsFloatType(Src)) {
+    unsigned DestBits = LLVMTypeFor(Dest)->getScalarSizeInBits();
+    unsigned SrcBits = LLVMTypeFor(Src)->getScalarSizeInBits();
+    if (DestBits >= SrcBits)
+      return true;
+  }
   if (IsIntType(Dest) && IsIntType(Src) && CanWidenInt(Src, Dest))
     return true;
   if (IsFloatType(Dest) && IsIntType(Src))
@@ -752,7 +847,7 @@ static bool IsAssignable(ValueType Dest, ValueType Src) {
 }
 ```
 
-The fourth rule covers `IsFloatType(Dest)`: any integer can widen to any float type (`Float`, `Float32`, or `Float64`).
+The third rule is what actually lets `float32` widen into `float64`: `Float`/`Float64` are both 64 bits so the special-case above it already covers them, but this is the general rule that also lets a plain `float32` value flow into a `float64` destination (`DestBits >= SrcBits`, 64 ≥ 32). The last rule covers `IsFloatType(Dest)`: any integer can widen to any float type (`Float`, `Float32`, or `Float64`).
 
 `CanWidenInt` determines integer widening legality:
 
@@ -783,6 +878,8 @@ Each allowed implicit conversion and the IR it produces (assuming a target where
 | `var x: float64 = int_val` | Yes | `sitofp i64 %v to double` |
 | `var x: float32 = int_val` | Yes | `sitofp i64 %v to float` |
 | `var x: float = float64_val` | Yes | *(no instruction: same IR type)* |
+| `var x: float64 = float32_val` | Yes | `fpext float %v to double` |
+| `var x: float32 = float64_val` | No | type error (narrowing) |
 | `var x: int32 = int64_val` | No | type error |
 | `var x: bool = int_val` | No | type error |
 
@@ -856,9 +953,6 @@ static ValueType GetBinaryResultType(int Op, ValueType L, ValueType R) {
       return ValueType::Bool;
     return ValueType::Error;
   }
-  // User-defined operators: float64 only
-  if (L == ValueType::Float64 && R == ValueType::Float64)
-    return ValueType::Float64;
   return ValueType::Error;
 }
 ```
@@ -903,10 +997,9 @@ Each case and its IR:
 %sitofp = sitofp i32 %a to double
 %addtmp = fadd double %sitofp, %b
 
-; int32 + float32: GetBinaryResultType says float32 (int32 is assignable to
-; float32), but EmitImplicitCast can't actually build that cast (see Known
-; Limitations), so this fails at codegen with "Type mismatch in arithmetic"
-; despite parsing successfully. I found this by trying to compile it.
+; int32 + float32 → float32   (int32 widens into float32, same as float64)
+%sitofp = sitofp i32 %a to float
+%addtmp = fadd float %sitofp, %b
 
 ; float + float64 → float64   (Float↔Float64: no cast instruction)
 %addtmp = fadd double %a, %b
@@ -923,7 +1016,7 @@ Each case and its IR:
 
 Comparisons return `i1` directly: there is no `UIToFP` widening to `double` as there was in chapter 15. The old pattern emerged from having only `double`; now each comparison produces a proper `Bool`.
 
-## EmitCast: Explicit Conversion Table
+## Explicit Conversions: The Full Table
 
 `EmitCast` handles all explicit `type(expr)` conversions. The full set of instruction choices:
 
@@ -969,7 +1062,7 @@ entry:
 
 The `call` result is present in the IR (LLVM always names it) but no `ret` of that value follows: `ret void` terminates the block.
 
-### ReturnTypeGuard
+### Tracking the Enclosing Function's Return Type
 
 To validate `return` statements during parsing, a global `CurrentFunctionReturnType` tracks the enclosing function's return type. `ReturnTypeGuard` manages it with RAII:
 
@@ -1320,8 +1413,6 @@ Before Chapter 16, every value in this program would have been `double`, with no
 
 ## Known Limitations
 
-**No operator overloading.** Each operator character maps to exactly one function (`binary+`, `unary!`). Redefining an operator that is already defined is rejected at parse time. You cannot have two versions of the same operator that differ only in their parameter types.
-
 **`None` cannot be used as a variable type.** `var x: None` is rejected. `None` is only valid as a return type annotation.
 
 **`Int` does not widen to fixed-size integers.** `Int` (pointer-width) can widen to `Int64`, but not to `Int32` or smaller: even on a 32-bit host where they would have the same width. Use an explicit cast when crossing `Int`/`Int32` boundaries.
@@ -1396,86 +1487,6 @@ grep 'define\|alloca\|fptosi\|sitofp\|sext\|fadd\|add ' out.ll
 cd code/chapter-17
 cmake -S . -B build && cmake --build build
 echo "var x: int32 = 7" | ./build/pyxc
-```
-
-## Grammar
-
-[pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-17/pyxc.ebnf)
-
-```ebnf
-program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
-end-of-lines            = end-of-line { end-of-line } ;
-top-level-item             = function-definition | decorated-function-definition | external | top-level-expression ;
-function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ; (* changed: optional return type *)
-(* If the return type is omitted, it defaults to None. *)
-decorated-function-definition    = binary-decorator end-of-lines "def" binary-operator-signature [ "->" type ] ":" ( simple-statement | end-of-lines block )
-                | unary-decorator  end-of-lines "def" unary-operator-signature  [ "->" type ] ":" ( simple-statement | end-of-lines block ) ; (* changed: optional return type *)
-binary-decorator = "@" "binary" "(" integer ")" ;
-unary-decorator  = "@" "unary" ;
-binary-operator-signature = custom-operator-character "(" typed-parameter "," typed-parameter ")" ; (* changed: typed-parameter *)
-unary-operator-signature  = custom-operator-character "(" typed-parameter ")" ; (* changed: typed-parameter *)
-external        = "extern" "def" function-signature [ "->" type ] ; (* changed: optional return type *)
-top-level-expression    = expression ;
-function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ; (* changed: typed-parameter *)
-typed-parameter      = name ":" type ; (* new *)
-if-statement          = "if" expression ":" suite
-                [ end-of-lines "else" ":" suite ] ;
-for-statement         = "for"
-                  ( "var" name ":" type | name ) (* changed: typed var *)
-                  "=" expression "," expression "," expression ":" suite ;
-variable-statement         = "var" variable-binding { "," variable-binding } ;
-assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
-simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
-compound-statement    = if-statement | for-statement ;
-statement       = simple-statement | compound-statement ;
-suite           = simple-statement | compound-statement | end-of-lines block ;
-return-statement      = "return" [ expression ] ; (* changed: value now optional *)
-statement-separator = end-of-lines | BLOCK_END ;
-block = indent statement { statement-separator statement } dedent ;
-expression      = unary-expression binary-operator-right ;
-binary-operator-right        = { binary-operator unary-expression } ;
-lvalue          = name ;
-variable-binding      = name ":" type [ "=" expression ] ; (* changed: type required *)
-unary-expression       = unary-operator unary-expression | primary ;
-unary-operator         = "-" | user-defined-unary-operator ;
-primary         = cast-expression | name-expression | number-expression | boolean-literal | parenthesized-expression ; (* changed: added cast-expression, boolean-literal *)
-cast-expression        = cast-type "(" expression ")" ; (* new *)
-name-expression  = name | call-expression ;
-call-expression        = name "(" [ expression { "," expression } ] ")" ;
-number-expression      = number ;
-parenthesized-expression       = "(" expression ")" ;
-binary-operator        = builtin-binary-operator | user-defined-binary-operator ;
-indent          = INDENT ;
-dedent          = DEDENT ;
-
-builtin-binary-operator = "+" | "-" | "*" | "<" | "<=" | ">" | ">=" | "==" | "!=" ;
-user-defined-binary-operator = ? any operator-character defined as a custom binary operator ? ;
-user-defined-unary-operator  = ? any operator-character defined as a custom unary operator ? ;
-custom-operator-character    = ? any operator-character that is not "-" or a builtin-binary-operator,
-                    and not already defined as a custom operator ? ;
-operator-character          = ? any single ASCII punctuation character ? ;
-name      = (letter | "_") { letter | digit | "_" } ;
-type            = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" | "None" ; (* new *)
-cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
-                | "float" | "float32" | "float64"
-                | "bool" ; (* new *)
-integer         = digit { digit } ;
-number          = ( digit { digit } [ "." { digit } ]
-                  | "." digit { digit } ) [ exponent ] ; (* changed: added exponent *)
-exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ; (* new *)
-boolean-literal    = "True" | "False" ; (* new *)
-letter          = "A".."Z" | "a".."z" ;
-digit           = "0".."9" ;
-end-of-line             = "\r\n" | "\r" | "\n" ;
-comment = "#" { comment-character } ;
-comment-character = ? any character except "\r" and "\n" ? ;
-whitespace = " " | "\t" | "\v" | "\f" ;
-INDENT          = ? synthetic token emitted by lexer ? ;
-DEDENT          = ? synthetic token emitted by lexer ? ;
-
-BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
 ## What's Next

@@ -1,0 +1,9 @@
+extern def printd(x: float64)
+struct Point:
+  x: int
+def main() -> int:
+  var p: Point
+  p.x = 10
+  p.x += 5
+  printd(float64(p.x))
+  return 0

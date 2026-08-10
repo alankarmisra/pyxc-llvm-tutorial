@@ -1,0 +1,3 @@
+def add(a: int32, b: int32) -> int32:
+    return a + b
+add(1.0, 2.0)
