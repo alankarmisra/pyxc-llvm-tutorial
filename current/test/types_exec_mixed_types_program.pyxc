@@ -1,0 +1,22 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 10.000000
+# CHECK: 2.500000
+
+# Tests: a program that uses both int and float64 variables and functions
+# in the same module runs correctly. This is an integration test covering
+# type-correct inter-operation.
+
+extern def printd(x: float64) -> float64
+
+def double_int(n: int) -> int:
+    return n * 2
+
+def halve(x: float64) -> float64:
+    return x * 0.5
+
+def main() -> None:
+    var n: int = 5
+    printd(float64(double_int(n)))
+    printd(halve(5))
+    return

@@ -101,8 +101,8 @@ static ExitOnError ExitOnErr;
 
 // I initialize LLVM for the host target.
 InitializeNativeTarget();
-InitializeNativeTargetAsmParser();
 InitializeNativeTargetAsmPrinter();
+InitializeNativeTargetAsmParser();
 
 TheJIT = ExitOnErr(PyxcJIT::Create());
 InitializeModuleAndManagers();
@@ -296,6 +296,18 @@ static void HandleExtern() {
   if (!ProtoAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (ProtoAST)
       LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+    SynchronizeToLineBoundary();
+    return;
+  }
+
+  // Reject conflicting redeclarations: in Pyxc, function identity is just
+  // name + arity, since all parameter and return types are double.
+  auto Existing = FunctionSignatures.find(ProtoAST->getName());
+  if (Existing != FunctionSignatures.end() &&
+      Existing->second->getNumParameters() != ProtoAST->getNumParameters()) {
+    LogErrorExpression((string("Conflicting extern declaration for '") +
+              ProtoAST->getName() + "'")
+                 .c_str());
     SynchronizeToLineBoundary();
     return;
   }
@@ -549,13 +561,13 @@ Parsed a function definition.
 ```llvm
 define double @foo(double %x) {
 entry:
-  %calltmp  = call double @sin(double %x)
+  %calltmp = call double @sin(double %x)
   %calltmp1 = call double @sin(double %x)
-  %multmp   = fmul double %calltmp, %calltmp1
+  %multmp = fmul double %calltmp, %calltmp1
   %calltmp2 = call double @cos(double %x)
   %calltmp3 = call double @cos(double %x)
-  %multmp4  = fmul double %calltmp2, %calltmp3
-  %addtmp   = fadd double %multmp, %multmp4
+  %multmp4 = fmul double %calltmp2, %calltmp3
+  %addtmp = fadd double %multmp, %multmp4
   ret double %addtmp
 }
 ```

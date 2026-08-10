@@ -5,7 +5,7 @@ description: "Add Python-style elif chains so multi-way conditionals don't nest 
 
 ## What I Am Building
 
-In [Chapter 36](chapter-36.md), I added `switch`. Since I haven't got an `elif` yet, I still have to write multi-way conditionals like so, which is annoying:
+In [Chapter 12](chapter-12.md), I added an `if` statement without an `elif`. For multiple conditions, I'm forced to write multiple nested if statements:
 
 ```pyxc
 def classify(x: int) -> int:
@@ -18,7 +18,7 @@ def classify(x: int) -> int:
       return 1
 ```
 
-After this chapter, I can write the same logic as:
+This isn't great. After this chapter, I can write the same logic as:
 
 ```pyxc
 def classify(x: int) -> int:
@@ -29,8 +29,6 @@ def classify(x: int) -> int:
   else:
     return 1
 ```
-
-`switch` only works on fixed integer values. `elif` works on anything else — any expression that comes out `bool`.
 
 ## Source Code
 
@@ -300,13 +298,7 @@ IfStatementNode(a, body_a,
 
 If there's no `else` at all, I leave the innermost node's `Else` null, and my `IfStatementNode` codegen already treats a null `Else` as "fall through" — the same thing a bare `if` without `else` has always done. I don't change anything about that path for `elif`.
 
-My codegen sees exactly what it would see for hand-written nested `if`/`else` blocks, so the IR is identical — which also means an `elif` chain compiles to a linear sequence of comparisons, not a branch table. I still reach for `switch` from Chapter 36 when dispatching on compile-time integer constants; I use `elif` for everything else.
-
-## Known Limitations
-
-**No `elif` on `switch`.** `elif` chains and `switch` are separate constructs; there's no way to mix a `case` clause into an `if`/`elif` chain or vice versa.
-
-**Compiles to a linear comparison chain, not a branch table.** An `elif` chain lowers to nested `if`/`else`, so it's evaluated top to bottom like hand-written nested `if`s would be — there's no jump-table optimization the way [Chapter 36](chapter-36.md)'s `switch` gets from LLVM. Use `switch` instead of a long `elif` chain when dispatching on compile-time integer constants.
+My codegen sees exactly what it would see for hand-written nested `if`/`else` blocks, so at `-O0` the IR evaluates conditions top to bottom, same as nested `if`/`else` would. At higher optimization levels LLVM may turn the chain into a `switch` or lookup table on its own. I still reach for `switch` from Chapter 36 when dispatching on compile-time integer constants; I use `elif` for everything else.
 
 ## Build and Run
 

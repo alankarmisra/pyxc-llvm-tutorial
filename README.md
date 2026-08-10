@@ -28,42 +28,46 @@ It is designed to be readable like Python, but much closer to C in behavior and 
 
 The tutorial builds up in stages:
 
-**Chapters 1–11** build a working language with a JIT REPL. By the end, this runs:
+**Chapters 1–17 (Foundations through Native Toolchain)** build a working language with a JIT REPL, `elif`, full loop control, and a real native toolchain. By the end, this runs:
 
 ```python
-extern def printd(x)
+extern def printd(x: float64)
 
-@binary(6)
-def ^(base, exp):
-    var result = 1
-    for var i = 1, i <= exp, 1:
-        result = result * base
-    return result
-
-def fib(n):
+def fib(n: int) -> int:
     if n <= 1: return n
     return fib(n - 1) + fib(n - 2)
 
-def sum_squares(n):
-    var total = 0
-    for var i = 1, i <= n, 1:
-        total = total + i * i
+def classify(n: int) -> int:
+    if n < 0:
+        return -1
+    elif n == 0:
+        return 0
+    else:
+        return 1
+
+def sum_until(limit: int) -> int:
+    var total: int = 0
+    var i: int = 1
+    while True:
+        if i > limit:
+            break
+        total = total + i
+        i = i + 1
     return total
 
-printd(fib(10))            # 55
-printd(2 ^ 10)             # 1024
-printd(sum_squares(10))    # 385
+printd(float64(fib(10)))          # 55.000000
+printd(float64(classify(-5)))     # -1.000000
+printd(float64(sum_until(10)))    # 55.000000
 ```
 
-**Chapters 12–15** add a real toolchain: `--emit` modes for IR, assembly, object files, and native executables; LLD-based linking; and DWARF debug info with `-g`.
+**Chapters 18–23 (Types and Typed Operations)** add a static type system, unsigned integers, DWARF debug info keyed to real types, logical and bitwise operators, and `switch`.
 
-**Chapters 16–23** add a static type system and a C-style memory model — types, structs, pointers, pointer arithmetic, heap allocation, strings, type aliases, and fixed-size arrays. By the end, pyxc can do K&R-style systems programming:
+**Chapters 24–35 (Data and Memory, Expression and Mutation Conveniences)** add a C-style memory model — structs, pointers, pointer arithmetic, arrays, heap allocation, type aliases, strings, characters, Unicode, variadic `extern` functions, assignment-as-expression, and read-modify-write operators. By the end, pyxc can do K&R-style systems programming:
 
 ```python
 extern def malloc(n: int64) -> ptr[int8]
 extern def free(p: ptr[int8])
-extern def puts(s: ptr[int8]) -> int
-extern def printd(x: float64)
+extern def printf(fmt: ptr[int8], ...) -> int32
 
 type string = ptr[int8]
 
@@ -74,6 +78,15 @@ struct Point:
 def dot(p: ptr[Point], q: ptr[Point]) -> int:
   return p[0].x * q[0].x + p[0].y * q[0].y
 
+def digit_count(n: int) -> int:
+    var count: int = 0
+    var x: int = n
+    do:
+        count += 1
+        x /= 10
+    while x != 0
+    return count
+
 def main() -> int:
   var raw: ptr[int8] = malloc(2 * sizeof(Point))
   var pts: ptr[Point] = ptr[Point](raw)
@@ -82,19 +95,19 @@ def main() -> int:
   pts[1].x = 1
   pts[1].y = 2
   var next: ptr[Point] = pts + 1
-  printd(float64(dot(pts, next)))  # 11.000000
+  printf("dot product: %ld\n", dot(pts, next))       # 11
+  printf("digits in 12345: %ld\n", digit_count(12345)) # 5
   var msg: string = "done"
-  puts(msg)
+  printf("%s\n", msg)
   free(raw)
   return 0
 ```
 
-**Chapters 24–30** add an object model: `class` declarations, methods with `self`, constructors, visibility, traits, `impl` blocks, and generic traits. By the end, this runs:
+**Chapters 36–42 (Object-Oriented Features)** add an object model: `class` declarations, methods with `self`, constructors, visibility, traits, `impl` blocks, and generic traits — built on top of a procedural language that's already comfortable to use. By the end, this runs:
 
 
 ```python
 extern def printd(x: float64)
-extern def puts(s: ptr[int8]) -> int
 
 # A trait is a named contract — any class that declares it must satisfy it.
 trait Measurable:
@@ -111,8 +124,8 @@ class Rect:
     self.h = height
 
   public def scale(factor: int):
-    self.w = self.w * factor
-    self.h = self.h * factor
+    self.w *= factor
+    self.h *= factor
 
 # impl adds trait conformance after the class is defined.
 # The compiler verifies that Rect actually has area() and perimeter()
@@ -132,7 +145,7 @@ class IntAcc:
 
 impl Addable[int] for IntAcc:
   def add(x: int, y: int) -> int:
-    self.total = self.total + x + y
+    self.total += x + y
     return self.total
 
 def main() -> int:
@@ -148,70 +161,7 @@ def main() -> int:
   return 0
 ```
 
-**Chapters 31–40** close the K&R compatibility gap: division and remainder, compound assignment, `++`/`--`, logical operators with short-circuit evaluation, `while`/`do-while`/`break`/`continue`, bitwise operators, `switch`, `elif`, character literals, unsigned integer types, and assignment-as-expression. By the end, pyxc can express everything in the first four chapters of *The C Programming Language*:
-
-```python
-type string = ptr[int8]
-extern def printf(fmt: string, ...) -> int32
-
-# Compound assignment and postfix ++
-def factorial(n: int) -> int:
-    var result: int = 1
-    var i: int = 1
-    while i <= n:
-        result *= i
-        i++
-    return result
-
-# Logical and bitwise operators
-def is_power_of_two(n: uint32) -> bool:
-    return n != uint32(0) && (n & (n - uint32(1))) == uint32(0)
-
-# do/while
-def digit_count(n: int) -> int:
-    var count: int = 0
-    var x: int = n
-    do:
-        count += 1
-        x /= 10
-    while x != 0
-    return count
-
-# switch on character literals (comma-separated case values), elif for range checks
-def classify(c: int8) -> string:
-    switch c:
-        case 'a', 'e', 'i', 'o', 'u':
-            return "vowel"
-        default:
-            if c >= '0' && c <= '9':
-                return "digit"
-            elif c >= 'a' && c <= 'z':
-                return "consonant"
-            else:
-                return "other"
-
-# assignment as expression
-def count_spaces(s: string) -> int:
-    var count: int = 0
-    var i: int = 0
-    var c: int8
-    while (c = s[i]) != 0:
-        if c == ' ':
-            count++
-        i++
-    return count
-
-def main() -> int:
-    printf("factorial(5) = %ld\n", factorial(5))              # 120
-    printf("8 is a power of two: %d\n", is_power_of_two(8))   # 1
-    printf("digits in 12345: %ld\n", digit_count(12345))      # 5
-    printf("classify('e') = %s\n", classify('e'))             # vowel
-    printf("classify('7') = %s\n", classify('7'))             # digit
-    printf("spaces in 'a b c': %ld\n", count_spaces("a b c")) # 2
-    return 0
-```
-
-**Chapters 41–43** add a module system: `module` declarations, `export` to mark public API, `import` for pyxc-to-pyxc dependencies without `extern def`, and a two-phase scan to handle cyclic imports.
+**Chapters 43–45 (Program Structure)** add a module system: `module` declarations, `export` to mark public API, `import` for pyxc-to-pyxc dependencies without `extern def`, and a two-phase scan to handle cyclic imports.
 
 ```python
 # app/math.pyxc
@@ -278,81 +228,83 @@ llvm-lit code/chapter-11/test/
 
 ## Chapters
 
-All 43 chapters are complete. Each one is a standalone, buildable snapshot of the compiler at that stage — see [Project Layout](#project-layout).
+Chapters 1–45 are complete. Each one is a standalone, buildable snapshot of the compiler at that stage — see [Project Layout](#project-layout). Chapter 46 (Closures) and the Concurrency track (47–53) are still ahead — see [ROADMAP.md](ROADMAP.md).
 
-### The Front End
+### Foundations
 
-- [Chapter 1: Analyzing program words](docs/chapter-01.md) — Break source text into tokens: keywords, identifiers, numbers, and single characters.
-- [Chapter 2: The Parser and AST](docs/chapter-02.md) — Turn tokens into a tree with a recursive descent parser.
-- [Chapter 3: Better Errors](docs/chapter-03.md) — Malformed-number detection, source locations, and caret-style diagnostics.
+- [Chapter 1: Analyzing Program Words](docs/chapter-01.md) — Break source text into tokens: keywords, identifiers, numbers, and single characters.
+- [Chapter 2: The Parser and Syntax Tree](docs/chapter-02.md) — Turn tokens into a tree with a recursive descent parser.
+- [Chapter 3: Encoding Precedence in the Grammar](docs/chapter-03.md) — Fixed grammar-tier functions replace general precedence-climbing; the architectural chapter everything else builds on.
+- [Chapter 4: Completing Basic Arithmetic](docs/chapter-04.md) — Unary minus and `%`, closing the cliffhanger from Chapter 3 immediately instead of dozens of chapters later.
+- [Chapter 5: Better Errors](docs/chapter-05.md) — Malformed-number detection, source locations, and caret-style diagnostics.
 
-### Setting Up LLVM
+### LLVM and Execution
 
-- [Chapter 4: Installing LLVM](docs/chapter-04.md) — Install LLVM from source with everything needed: clang, lld, lldb, clangd, and lit.
+- [Chapter 6: Installing LLVM](docs/chapter-06.md) — Install LLVM from source with everything needed: clang, lld, lldb, clangd, and lit.
+- [Chapter 7: Code Generation](docs/chapter-07.md) — Connect the AST to LLVM IR.
+- [Chapter 8: JIT and Optimization](docs/chapter-08.md) — LLVM optimisation passes and ORC JIT so expressions evaluate immediately in the REPL; adds `extern` for calling real C library functions.
+- [Chapter 9: File Input Mode](docs/chapter-09.md) — Run source files through the same JIT pipeline as the REPL, plus a `-v` IR flag.
 
-### Code Generation
+### Statements and Control Flow
 
-- [Chapter 5: Code Generation](docs/chapter-05.md) — Connect the AST to LLVM IR.
+- [Chapter 10: Control Flow: `if`, `else`, and `for`](docs/chapter-10.md) — Comparison operators, `if`/`else` expressions, `for` loops, and the Mandelbrot set in ASCII.
+- [Chapter 11: Mutable Variables](docs/chapter-11.md) — Mutable local variables and assignment.
+- [Chapter 12: Statement Blocks](docs/chapter-12.md) — Real statement blocks and Python-style indentation; `if`, `for`, `var`, and `return` become statements.
+- [Chapter 13: `elif` Chains](docs/chapter-13.md) — Python-style `elif` so conditionals don't nest into a pyramid — introduced the moment `if` becomes block-bodied.
+- [Chapter 14: Loop Completeness](docs/chapter-14.md) — `while`, `do/while`, `break`, and `continue`, correctly targeting nested loops.
 
-### Language Features
+### Native Toolchain
 
-- [Chapter 6: JIT and Optimisation](docs/chapter-06.md) — LLVM optimisation passes and ORC JIT so expressions evaluate immediately in the REPL; adds `extern` for calling real C library functions.
-- [Chapter 7: File Input Mode](docs/chapter-07.md) — Run source files through the same JIT pipeline as the REPL, plus a `-v` IR flag.
-- [Chapter 8: Control Flow](docs/chapter-08.md) — Comparison operators, `if`/`else` expressions, `for` loops, and the Mandelbrot set in ASCII.
-- [Chapter 9: User-Defined Operators](docs/chapter-09.md) — `@binary(N)` and `@unary` decorators so pyxc programs can define new operators.
-- [Chapter 10: Mutable Variables](docs/chapter-10.md) — Mutable local variables and assignment via a temporary `var ... :` expression form.
-- [Chapter 11: Statement Blocks](docs/chapter-11.md) — Real statement blocks and Python-style indentation; `if`, `for`, `var`, and `return` become statements.
+- [Chapter 15: Global Variables](docs/chapter-15.md) — Module-level `var` declarations, initialized before `main()` runs.
+- [Chapter 16: Emitting Native Code](docs/chapter-16.md) — Compile straight to a file — object code, assembly, or IR — instead of only running through the JIT.
+- [Chapter 17: One-Step Executables](docs/chapter-17.md) — `--emit exe` compiles and links a standalone executable in one command.
 
-### Toolchain
+### Types and Typed Operations
 
-- [Chapter 12: Global Variables](docs/chapter-12.md) — Module-level `var` declarations, initialized before `main()` runs.
-- [Chapter 13: Emitting Native Code](docs/chapter-13.md) — Compile straight to a file — object code, assembly, or IR — instead of only running through the JIT.
-- [Chapter 14: One-Step Executables](docs/chapter-14.md) — `--emit exe` compiles and links a standalone executable in one command.
-- [Chapter 15: Debug Info and the Optimisation Pipeline](docs/chapter-15.md) — `-g` for real debugger support, plus LLVM's full standard optimization levels.
+- [Chapter 18: A Static Type System](docs/chapter-18.md) — Eight real types, explicit casts, type-aware arithmetic, and a strict assignment checker.
+- [Chapter 19: Unsigned Integer Types](docs/chapter-19.md) — `uint8` through `uint64`, with correct unsigned arithmetic and no silent signed/unsigned mixing.
+- [Chapter 20: Debug Info and the Optimization Pipeline](docs/chapter-20.md) — `-g` for real debugger support with typed DWARF metadata, plus LLVM's full standard optimization levels.
+- [Chapter 21: Logical Operators](docs/chapter-21.md) — `&&`, `||`, and `!` with real short-circuit evaluation.
+- [Chapter 22: Bitwise Operators](docs/chapter-22.md) — `&`, `|`, `^`, `<<`, `>>`, `~`, integer-only with C-standard precedence.
+- [Chapter 23: `switch`](docs/chapter-23.md) — `switch` with integer cases, `default`, comma-separated multi-value cases, and no implicit fallthrough.
 
-### Types
+### Data and Memory
 
-- [Chapter 16: A Static Type System](docs/chapter-16.md) — Eight real types, explicit casts, type-aware arithmetic, and a strict assignment checker.
+- [Chapter 24: Structs](docs/chapter-24.md) — `struct` definitions and `.` field access, passed by value.
+- [Chapter 25: Pointers](docs/chapter-25.md) — Pointer types, `addr(x)`, and `p[i]` indexing, so functions can modify the caller's data.
+- [Chapter 26: Pointer Arithmetic](docs/chapter-26.md) — Pointer + integer, pointer distance, and pointer comparisons.
+- [Chapter 27: Arrays](docs/chapter-27.md) — Fixed-size arrays, array literals, indexing, and array-to-pointer decay — before heap allocation, so bounded storage comes first.
+- [Chapter 28: Heap Allocation](docs/chapter-28.md) — `sizeof(T)` and pointer casts so pyxc can call `malloc`/`free` directly.
+- [Chapter 29: Type Aliases](docs/chapter-29.md) — `type name = type`, purely cosmetic and free at runtime — defined before it's used to name `string`.
+- [Chapter 30: String Literals and C Interop](docs/chapter-30.md) — String literals, escape sequences, and calling any C standard library function.
+- [Chapter 31: Character Literals](docs/chapter-31.md) — Simple C escapes and strict two-digit hexadecimal escapes for integer-valued characters.
+- [Chapter 32: Unicode Literals](docs/chapter-32.md) — Unicode escapes and validated raw UTF-8 in character and string literals.
+- [Chapter 33: Variadic Extern Functions](docs/chapter-33.md) — `extern def` with a variable number of arguments, so pyxc can call `printf`/`scanf`.
 
-### Structs, Pointers, and the C Memory Model
+### Expression and Mutation Conveniences
 
-- [Chapter 17: Structs](docs/chapter-17.md) — `struct` definitions and `.` field access, passed by value.
-- [Chapter 18: Pointers](docs/chapter-18.md) — Pointer types, `addr(x)`, and `p[i]` indexing, so functions can modify the caller's data.
-- [Chapter 19: Pointer Arithmetic](docs/chapter-19.md) — Pointer + integer, pointer distance, and pointer comparisons.
-- [Chapter 20: Heap Allocation](docs/chapter-20.md) — `sizeof(T)` and pointer casts so pyxc can call `malloc`/`free` directly.
-- [Chapter 21: String Literals and C Interop](docs/chapter-21.md) — String literals, escape sequences, and calling any C standard library function.
-- [Chapter 22: Type Aliases](docs/chapter-22.md) — `type name = type`, purely cosmetic and free at runtime.
-- [Chapter 23: Arrays](docs/chapter-23.md) — Fixed-size arrays, array literals, indexing, and array-to-pointer decay.
+- [Chapter 34: Assignment as Expression](docs/chapter-34.md) — `=` inside an expression, enabling patterns like `while (c = getchar()) != EOF`.
+- [Chapter 35: Read-Modify-Write Operators](docs/chapter-35.md) — Compound assignment and prefix/postfix `++`/`--` — pure convenience, sequenced once lvalues and assignment semantics are established.
 
-### OOP Core
+### Object-Oriented Features
 
-- [Chapter 25: Classes](docs/chapter-25.md) — The `class` keyword as a new way to bundle data, distinct from `struct`.
-- [Chapter 26: Methods and `self`](docs/chapter-26.md) — Methods defined inside a class body, called as `obj.method(args)`.
-- [Chapter 27: Constructors](docs/chapter-27.md) — `__init__` and `ClassName(args)` syntax; instances always start zeroed out.
-- [Chapter 28: Visibility](docs/chapter-28.md) — `public` and `private` on class fields and methods.
-- [Chapter 29: Traits](docs/chapter-29.md) — Named method contracts, checked at compile time with no runtime cost.
-- [Chapter 30: impl Blocks](docs/chapter-30.md) — `impl TraitName for ClassName:` to pick up a trait's contract after the fact.
-- [Chapter 31: Generic Traits](docs/chapter-31.md) — Type parameters on traits, e.g. `trait Addable[T]`.
-
-### K&R Compatibility
-
-- [Chapter 32: Arithmetic Completeness](docs/chapter-32.md) — `/`, `%`, compound assignment, and prefix/postfix `++`/`--`.
-- [Chapter 33: Logical Operators](docs/chapter-33.md) — `&&`, `||`, and `!` with real short-circuit evaluation and a dedicated `bool` type.
-- [Chapter 34: Loop Completeness](docs/chapter-34.md) — `while`, `do/while`, `break`, and `continue`, correctly targeting nested loops.
-- [Chapter 35: Bitwise Operators](docs/chapter-35.md) — `&`, `|`, `^`, `<<`, `>>`, `~`, integer-only with C-standard precedence.
-- [Chapter 36: Switch](docs/chapter-36.md) — `switch` with integer cases, `default`, and no implicit fallthrough.
-- [Chapter 37: `elif` Chains](docs/chapter-37.md) — Python-style `elif` so conditionals don't nest into a pyramid.
-- [Chapter 38: Character Literals](docs/chapter-38.md) — Simple C escapes and strict two-digit hexadecimal escapes for integer-valued characters.
-- [Chapter 39: Unicode Literals](docs/chapter-39.md) — Unicode escapes and validated raw UTF-8 in character and string literals.
-- [Chapter 40: Unsigned Integer Types](docs/chapter-40.md) — `uint8` through `uint64`, with correct unsigned arithmetic and no silent signed/unsigned mixing.
-- [Chapter 41: Assignment as Expression](docs/chapter-41.md) — `=` inside an expression, enabling patterns like `while (c = getchar()) != EOF`.
-- [Chapter 42: Variadic Extern Functions](docs/chapter-42.md) — `extern def` with a variable number of arguments, so pyxc can call `printf`/`scanf`.
+- [Chapter 36: Classes](docs/chapter-36.md) — The `class` keyword as a new way to bundle data, distinct from `struct`.
+- [Chapter 37: Methods and `self`](docs/chapter-37.md) — Methods defined inside a class body, called as `obj.method(args)`.
+- [Chapter 38: Constructors](docs/chapter-38.md) — `__init__` and `ClassName(args)` syntax; instances always start zeroed out.
+- [Chapter 39: Visibility](docs/chapter-39.md) — `public` and `private` on class fields and methods.
+- [Chapter 40: Traits](docs/chapter-40.md) — Named method contracts, checked at compile time with no runtime cost.
+- [Chapter 41: `impl` Blocks](docs/chapter-41.md) — `impl TraitName for ClassName:` to pick up a trait's contract after the fact.
+- [Chapter 42: Generic Traits](docs/chapter-42.md) — Type parameters on traits, e.g. `trait Addable[T]`.
 
 ### Program Structure
 
 - [Chapter 43: Module Declarations and Export](docs/chapter-43.md) — `module` names a compilation unit; `export` marks its public API.
 - [Chapter 44: Imports](docs/chapter-44.md) — `import` pulls in another file's exported functions and types by name.
 - [Chapter 45: Cyclic Imports](docs/chapter-45.md) — Two files that import each other compile correctly, without infinite recursion.
+
+### Future Concurrency Track
+
+Chapter 46 (Closures) and Chapters 47–53 (Concurrency Model and Safety Rules, Spawning Tasks and Threads, Shared State and Synchronization, Message Passing, Parallel Loops and Work Partitioning, Determinism/Races/Debugging, Parallel Compilation Pipeline) are planned but not yet written — see [ROADMAP.md](ROADMAP.md) for details and open design questions.
 
 ## Credits
 

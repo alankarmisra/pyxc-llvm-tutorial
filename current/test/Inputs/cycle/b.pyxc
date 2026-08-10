@@ -1,0 +1,5 @@
+module cycle.b
+import cycle.a
+
+export def fb() -> int:
+  return 41

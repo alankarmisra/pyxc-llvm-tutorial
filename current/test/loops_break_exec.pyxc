@@ -1,0 +1,14 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 3.000000
+
+extern def printd(x: float64)
+
+def main() -> int:
+  var i: int = 0
+  while True:
+    if i == 3:
+      break
+    i += 1
+  printd(float64(i))
+  return 0

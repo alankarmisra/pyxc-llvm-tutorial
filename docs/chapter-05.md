@@ -123,13 +123,12 @@ By the end of this chapter, you'll have:
 │   ├── clangd
 │   ├── lld
 │   ├── lldb
-│   ├── llvm-config
-│   └── llvm-lit
+│   └── llvm-config
 ├── lib/
 └── include/
 ```
 
-All the tools I need in one place.
+All the tools I need in one place. `llvm-lit` is the exception: it's a Python script generated in the build tree, and `ninja install` doesn't copy it out. I install it separately with `pip install lit` in Step 6 below.
 
 ### Time and Space Requirements
 
@@ -255,7 +254,7 @@ cmake -G Ninja ..\llvm `
 - **`LLVM_ENABLE_PROJECTS`** - Build clang, clangd, lld, and lldb
 - **`CMAKE_INSTALL_PREFIX`** - Where to install (your home directory)
 - **`LLVM_TARGETS_TO_BUILD`** - Only build for x86 and ARM (speeds up build)
-- **`LLVM_INCLUDE_TESTS=ON`** - Include `llvm-lit` for testing
+- **`LLVM_INCLUDE_TESTS=ON`** - Build LLVM's own test suite (uses `llvm-lit`, which the build generates on its own regardless of this flag)
 
 If CMake complains about missing dependencies, install them and re-run.
 
@@ -286,7 +285,7 @@ Verify it worked:
 ls ~/llvm-21-with-clang-lld-lldb/bin
 ```
 
-You should see: `clang`, `clang++`, `lld`, `lldb`, `llvm-config`, `llvm-lit`, and more.
+You should see: `clang`, `clang++`, `lld`, `lldb`, `llvm-config`, and more. `llvm-lit` won't be there — see Step 6.
 
 Once the install is done, you can delete the `build/` directory to reclaim the ~15 GB of build artifacts:
 
@@ -346,9 +345,16 @@ which clang
 
 clang --version
 llvm-config --version
-llvm-lit --version   # named 'lit' if you installed via pip instead
-# All three should report the version you built
+# Both should report the version you built
 ```
+
+`ninja install` doesn't install `llvm-lit`; it only ever exists in the build tree. Install it separately:
+
+```bash
+pip install lit
+```
+
+After a pip install, the binary is `lit`, not `llvm-lit`. So `lit --version` is what you'd run to verify it.
 
 #### Windows (PowerShell)
 
@@ -358,9 +364,16 @@ Get-Command clang | Select-Object -ExpandProperty Source
 
 clang --version
 llvm-config --version
-llvm-lit --version   # named 'lit' if you installed via pip instead
-# All three should report the version you built
+# Both should report the version you built
 ```
+
+`ninja install` doesn't install `llvm-lit`; it only ever exists in the build tree. Install it separately:
+
+```powershell
+pip install lit
+```
+
+After a pip install, the binary is `lit`, not `llvm-lit`. So `lit --version` is what you'd run to verify it.
 
 If the version shown doesn't match what you built, your `PATH` isn't set correctly. Fix that before continuing.
 

@@ -1,0 +1,13 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: {{[Tt]ype mismatch in binary operator}}
+
+struct Pair:
+  a: int
+  b: int
+
+def main() -> int:
+  var t: Pair
+  var p: ptr[int] = addr(t.a)
+  var q: ptr[int] = addr(t.b)
+  var r: ptr[int] = p + q
+  return 0

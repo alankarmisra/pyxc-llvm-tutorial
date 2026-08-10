@@ -269,7 +269,7 @@ static void consumeNewlines() {
 
 /// LogError* - Error reporting helpers. Each returns nullptr for its respective
 /// node type, allowing parse functions to return an error directly.
-/// TokenNames provides a readable token description. Chapter 4 will add source
+/// TokenNames provides a readable token description. Chapter 5 will add source
 /// location (line/column) to these diagnostics.
 unique_ptr<ExpressionNode> LogErrorExpression(const char *Str) {
   fprintf(stderr, "Error: %s (token: %s)\nready> ", Str,

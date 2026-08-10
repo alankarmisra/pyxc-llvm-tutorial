@@ -1,0 +1,12 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 8.000000
+
+extern def printd(x: float64)
+
+def main() -> int:
+  var a: int
+  var b: int
+  a = b = 4
+  printd(float64(a + b))
+  return 0

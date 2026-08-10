@@ -67,7 +67,7 @@ ready> 1 @ 2
 ```
 ```text
 Error (Line 1, Column 3): Unexpected '@'
-1 @
+1 @ 
   ^~~~
 ```
 <!-- code-merge:end -->

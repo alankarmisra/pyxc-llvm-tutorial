@@ -548,6 +548,7 @@ ready> ^D
 ```llvm
 ; ModuleID = 'PyxcJIT'
 source_filename = "PyxcJIT"
+
 define double @sum(double %a, double %b) {
 entry:
   %addtmp = fadd double %a, %b

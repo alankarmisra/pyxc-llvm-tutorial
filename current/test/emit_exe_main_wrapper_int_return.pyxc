@@ -1,0 +1,10 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t; echo "exit:$?" | FileCheck %s
+# CHECK: exit:0
+
+# Tests: the synthesised int main() wrapper always returns 0 to the OS,
+# regardless of the float64 value that the user's main() returns.
+# Even though user main() returns 42.0, the process exit code is 0.
+
+def main() -> None:
+    return

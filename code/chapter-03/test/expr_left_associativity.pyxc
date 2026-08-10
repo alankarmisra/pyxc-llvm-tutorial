@@ -1,5 +1,6 @@
 # RUN: %pyxc < %s > %t 2>&1
 # RUN: grep -c "Parsed a top-level expression." %t | grep -q "2"
+# RUN: not grep -q "Error:" %t
 
 # sum and term: operators in the same rule are left-associative
 # a - b - c groups as (a-b)-c, not a-(b-c), because ParseSum merges each

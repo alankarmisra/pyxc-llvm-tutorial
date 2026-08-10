@@ -1,0 +1,9 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: {{[Ee]rror}}
+# CHECK: {{void|return|empty}}
+
+# Tests: a bare 'return' (no expression) in a non-void function is an error.
+# A function declared '-> int' must return an int expression.
+
+def f() -> int:
+    return
