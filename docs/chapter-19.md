@@ -6,162 +6,142 @@ description: "Add unsigned integer types uint8, uint16, uint32, and uint64 with 
 
 ## What I Am Building
 
-[Chapter 32](chapter-32.md) added Unicode support to character and string literals. I've had signed integers since [Chapter 18](chapter-18.md), but all of them interpret their top bit as a sign. Sizes, counts, and bit masks are commonly stored as unsigned values in systems code, and without unsigned types I have no way to generate the right instructions for them. After this chapter, `uint8`, `uint16`, `uint32`, and `uint64` are available:
+I've had signed integers since [Chapter 18](chapter-18.md), but all of them interpret their top bit as a sign. Sizes, counts, and raw memory offsets are commonly stored as unsigned values in systems code, and without unsigned types I have no way to generate the right instructions for them — division is the sharpest example, since signed and unsigned division of the same bit pattern can give wildly different answers. After this chapter, `uint8`, `uint16`, `uint32`, and `uint64` are available:
 
+<!-- code-merge:start -->
 ```pyxc
 extern def printd(x: float64)
 
 def main() -> int:
-  var flags: uint32 = 0
-  flags = flags | uint32(1) << uint32(3)   # set bit 3
-  flags = flags | uint32(1) << uint32(7)   # set bit 7
+  var x: uint32 = uint32(-1)   # reinterpreted as 4294967295
+  printd(float64(x / uint32(2)))
 
-  var mask: uint32 = uint32(255)
-  printd(float64(flags & mask))            # 136.000000
+  var a: uint32 = 7
+  var b: uint32 = 3
+  printd(float64(a % b))
+
   return 0
 ```
+```text
+2147483647.000000
+1.000000
+```
+<!-- code-merge:end -->
 
-```
-136.000000
-```
+`uint32(-1)` doesn't produce a negative number — the bit pattern for `-1` reinterpreted as unsigned is `4294967295`, and dividing that unsigned value by `2` gives `2147483647` (`udiv`, truncating). Read as signed, that same bit pattern divided by `2` would give `-1` back (`sdiv`, rounds toward zero) — a completely different answer from the identical bits.
 
 ## Source Code
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-40
+cd pyxc-llvm-tutorial/code/chapter-19
 ```
 
 ## Grammar
 
-I add `uint8`, `uint16`, `uint32`, and `uint64` to `builtin-type` and `cast-type`, the only two productions that name concrete integer types:
+I add `uint8`, `uint16`, `uint32`, and `uint64` to `type` and `cast-type`, the only two productions that name concrete integer types. Nothing else in the grammar changes:
 
-`code/chapter-40/pyxc.ebnf`
+`code/chapter-19/pyxc.ebnf`
 
 ```grammardiff
- program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
- end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | external | top-level-expression ;
- type-alias       = "type" name "=" type ;
- trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
- trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
- trait-method-signature  = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ;
- struct-definition       = "struct" name ":" end-of-lines struct-block ;
- class-definition        = "class" name [ "(" trait-reference { "," trait-reference } ")" ] ":" end-of-lines struct-block ;
- trait-reference        = name [ "[" type "]" ] ;
- implementation-definition         = "impl" trait-reference "for" name ":" end-of-lines implementation-block ;
- implementation-block       = indent implementation-method { end-of-lines implementation-method } dedent ;
- implementation-method      = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- struct-block     = indent class-member { end-of-lines class-member } dedent ;
- class-member     = [ visibility ] ( field-declaration | method-definition ) ;
- visibility      = "public" | "private" ;
- method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")"
-                   [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- field-declaration       = name ":" type ;
- function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- (* If the return type is omitted, it defaults to None. *)
- external        = "extern" "def" function-signature [ "->" type ] ;
- top-level-expression    = expression ;
- function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
- typed-parameter      = name ":" type ;
- if-statement          = "if" expression ":" suite
-                 { end-of-lines "elif" expression ":" suite }
-                 [ end-of-lines "else" ":" suite ] ;
- while-statement       = "while" expression ":" suite ;
- do-while-statement     = "do" ":" suite end-of-lines "while" expression ;
- switch-statement      = "switch" expression ":" end-of-lines indent switch-body dedent ;
- switch-body      = switch-case { end-of-lines switch-case } [ end-of-lines default-case ] ;
- switch-case      = "case" switch-integer { "," switch-integer } ":" suite ;
- default-case     = "default" ":" suite ;
- for-statement         = "for"
-                   ( "var" name ":" type | name )
-                   "=" expression "," expression "," expression ":" suite ;
- variable-statement         = "var" variable-binding { "," variable-binding } ;
- assignment-statement      = lvalue assignment-operator expression ; (* assignment is a statement here *)
- simple-statement      = return-statement | break-statement | continue-statement | variable-statement | assignment-statement | expression ;
- compound-statement    = if-statement | for-statement | while-statement | do-while-statement | switch-statement ;
- statement       = simple-statement | compound-statement ;
- suite           = simple-statement | compound-statement | end-of-lines block ;
- return-statement      = "return" [ expression ] ;
- break-statement       = "break" ;
- continue-statement    = "continue" ;
- statement-separator = end-of-lines | BLOCK_END ;
- block = indent statement { statement-separator statement } dedent ;
- expression      = logical-or ;
- logical-or      = logical-and { "||" logical-and } ;
- logical-and     = bitwise-or { "&&" bitwise-or } ;
- bitwise-or      = bitwise-xor { "|" bitwise-xor } ;
- bitwise-xor     = bitwise-and { "^" bitwise-and } ;
- bitwise-and     = equality { "&" equality } ;
- equality        = relational { ("==" | "!=") relational } ;
- relational      = shift { ("<" | "<=" | ">" | ">=") shift } ;
- shift           = sum { ("<<" | ">>") sum } ;
- sum             = term { ("+" | "-") term } ;
- term            = unary-expression { ("*" | "/" | "%") unary-expression } ;
- lvalue          = name | field-access | index-expression ;
- variable-binding      = name ":" type [ "=" expression ] ;
- unary-expression       = ("-" | "!" | "~" | "++" | "--") unary-expression | postfix-expression ;
- postfix-expression     = primary [ postfix-operator ] ;
- postfix-operator       = "++" | "--" ;
- primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | character-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
- cast-expression        = cast-type "(" expression ")" ;
- sizeof-expression      = "sizeof" "(" type ")" ;
- address-expression        = "addr" "(" lvalue ")" ;
- name-expression  = name | call-expression | method-call-expression | constructor-call-expression ;
- call-expression        = name "(" [ expression { "," expression } ] ")" ;
- method-call-expression  = name "." name "(" [ expression { "," expression } ] ")" ;
- constructor-call-expression    = name "(" [ expression { "," expression } ] ")" ;
- field-access     = name "." name { "." name } ;
- index-expression       = name "[" expression "]" ;
- number-expression      = number ;
- array-literal    = "[" [ expression { "," expression } ] "]" ;
- string-literal   = "\"" { ? valid Unicode scalar value except " and newline, encoded as UTF-8 ? | literal-escape } "\"" ;
- character-literal     = "'" ( ? valid Unicode scalar value except ' and newline, encoded as UTF-8 ? | literal-escape ) "'" ;
- literal-escape   = "\\" ( simple-escape | octal-escape | "x" hex-digit hex-digit
-                    | "u" hex-digit hex-digit hex-digit hex-digit
-                    | "U" hex-digit hex-digit hex-digit hex-digit
-                          hex-digit hex-digit hex-digit hex-digit ) ;
- simple-escape    = "a" | "b" | "f" | "n" | "r" | "t" | "v"
-                  | "\\" | "'" | "\"" | "?" ;
- octal-escape     = octal-digit [ octal-digit [ octal-digit ] ] ;
- parenthesized-expression       = "(" expression ")" ;
- indent          = INDENT ;
- dedent          = DEDENT ;
-
- assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
- name      = (letter | "_") { letter | digit | "_" } ;
- builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
-+                | "uint8" | "uint16" | "uint32" | "uint64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | "None" ;
- alias-type       = name ;
- struct-type      = name ;
- pointer-type     = "ptr" "[" type "]" ;
- type            = base-type [ array-suffix ] ;
- base-type        = builtin-type | alias-type | struct-type | pointer-type ;
- array-suffix     = "[" integer "]" ;
- cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
-+                | "uint8" | "uint16" | "uint32" | "uint64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | pointer-type ;
- integer         = digit { digit } ;
- switch-integer       = [ "-" ] integer ;
- number          = ( digit { digit } [ "." { digit } ]
-                   | "." digit { digit } ) [ exponent ] ;
- exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
- boolean-literal    = "True" | "False" ;
- letter          = "A".."Z" | "a".."z" ;
- digit           = "0".."9" ;
- hex-digit       = digit | "A".."F" | "a".."f" ;
- octal-digit     = "0".."7" ;
- end-of-line             = "\r\n" | "\r" | "\n" ;
- comment = "#" { comment-character } ;
- comment-character = ? any character except "\r" and "\n" ? ;
- whitespace = " " | "\t" | "\v" | "\f" ;
- INDENT          = ? synthetic token emitted by lexer ? ;
- DEDENT          = ? synthetic token emitted by lexer ? ;
-
- BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
+ program                           = [ end-of-lines ]
+                                     [ top-level-item
+                                       { end-of-lines top-level-item } ]
+                                     [ end-of-lines ] ;
+ end-of-lines                      = end-of-line { end-of-line } ;
+ top-level-item                    = function-definition
+                                     | external
+                                     | top-level-statement ;
+ function-definition               = "def" function-signature [ "->" type ] ":"
+                                     ( simple-statement
+                                       | end-of-lines block ) ;
+ external                          = "extern" "def" function-signature [ "->" type ] ;
+ top-level-statement               = statement ;
+ function-signature                = name "(" [ parameters ] ")" ;
+ parameters                        = typed-parameter { "," typed-parameter } ;
+ typed-parameter                   = name ":" type ;
+ if-statement                      = "if" expression ":" suite
+                                     { [ end-of-lines ] "elif" expression ":" suite }
+                                     [ [ end-of-lines ] "else" ":" suite ] ;
+ for-statement                     = "for" ( "var" name ":" type | name )
+                                     "=" expression "," expression "," expression ":" suite ;
+ while-statement                   = "while" expression ":" suite ;
+ do-while-statement                = "do" ":" suite [ end-of-lines ]
+                                     "while" expression ;
+ variable-statement                = "var" variable-binding
+                                     { "," variable-binding } ;
+ assignment-statement              = lvalue "=" expression ;
+ simple-statement                  = return-statement
+                                     | break-statement
+                                     | continue-statement
+                                     | variable-statement
+                                     | assignment-statement
+                                     | expression ;
+ compound-statement                = if-statement
+                                     | for-statement
+                                     | while-statement
+                                     | do-while-statement ;
+ statement                         = simple-statement | compound-statement ;
+ suite                             = simple-statement
+                                     | compound-statement
+                                     | end-of-lines block ;
+ return-statement                  = "return" [ expression ] ;
+ break-statement                   = "break" ;
+ continue-statement                = "continue" ;
+ statement-separator               = end-of-lines | BLOCK_END ;
+ block                             = indent statement
+                                     { statement-separator statement } dedent ;
+ expression                        = comparison ;
+ comparison                        = sum { comparison-operator sum } ;
+ comparison-operator               = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ sum                               = term { ("+" | "-") term } ;
+ term                              = factor { ("*" | "/" | "%") factor } ;
+ lvalue                            = name ;
+ variable-binding                  = name ":" type [ "=" expression ] ;
+ factor                            = "-" factor | primary ;
+ primary                           = cast-expression
+                                     | name-expression
+                                     | number-expression
+                                     | boolean-literal
+                                     | parenthesized-expression ;
+ cast-expression                   = cast-type "(" expression ")" ;
+ name-expression                   = name | call-expression ;
+ call-expression                   = name "(" [ expression { "," expression } ] ")" ;
+ number-expression                 = number ;
+ parenthesized-expression          = "(" expression ")" ;
+ indent                            = INDENT ;
+ dedent                            = DEDENT ;
+ name                              = (letter | "_")
+                                     { letter | digit | "_" } ;
+-type                              = "int" | "int8" | "int16" | "int32"
+-                                    | "int64"
++type                              = "int" | "int8" | "int16" | "int32"
++                                    | "int64" | "uint8" | "uint16"
++                                    | "uint32" | "uint64"
+                                     | "float" | "float32"
+                                     | "float64" | "bool" | "None" ;
+-cast-type                         = "int" | "int8" | "int16" | "int32"
+-                                    | "int64"
++cast-type                         = "int" | "int8" | "int16" | "int32"
++                                    | "int64" | "uint8" | "uint16"
++                                    | "uint32" | "uint64"
+                                     | "float" | "float32"
+                                     | "float64" | "bool" ;
+ number                            = ( digit { digit } [ "." { digit } ]
+                                     | "." digit { digit } ) [ exponent ] ;
+ exponent                          = ( "e" | "E" ) [ "+" | "-" ]
+                                     digit { digit } ;
+ boolean-literal                   = "True" | "False" ;
+ letter                            = "A".."Z" | "a".."z" ;
+ digit                             = "0".."9" ;
+ end-of-line                       = "\r\n" | "\r" | "\n" ;
+ comment                           = "#" { comment-character } ;
+ comment-character                 = ? any character except "\r" and "\n" ? ;
+ whitespace                        = " " | "\t" | "\v" | "\f" ;
+ INDENT                            = ? synthetic token emitted by lexer when indentation increases ? ;
+ DEDENT                            = ? synthetic token emitted by lexer when indentation decreases ? ;
+ BLOCK_END                         = ? synthetic token injected into the stream by ParseBlock
+                                       immediately after it consumes DEDENT ? ;
 ```
 
 ## New Tokens, Keywords, and `ValueType` Enum Values
@@ -268,7 +248,7 @@ a = a + b
 
 Cast explicitly to fix it: `a = a + uint32(b)`.
 
-## Instruction Selection — Seven Changed Sites
+## Instruction Selection — Six Changed Sites
 
 ### Integer Widening
 
@@ -306,21 +286,14 @@ return IsUnsignedIntType(To)
 
 ```cpp
 // / operator:
-return IsUnsignedIntType(ResultType) ? Builder->CreateUDiv(L, R, "divtmp")
-                                     : Builder->CreateSDiv(L, R, "divtmp");
+return IsUnsignedIntType(getType())
+           ? Builder->CreateUDiv(L, R, "divtmp")
+           : Builder->CreateSDiv(L, R, "divtmp");
 // % operator:
-return IsUnsignedIntType(ResultType) ? Builder->CreateURem(L, R, "modtmp")
-                                     : Builder->CreateSRem(L, R, "modtmp");
+return IsUnsignedIntType(getType())
+           ? Builder->CreateURem(L, R, "remtmp")
+           : Builder->CreateSRem(L, R, "remtmp");
 ```
-
-### Right shift
-
-```cpp
-return IsUnsignedIntType(Ty) ? Builder->CreateLShr(L, R, "shrtmp")
-                              : Builder->CreateAShr(L, R, "shrtmp");
-```
-
-`lshr` fills vacated high bits with zero, `ashr` fills with the sign bit, so right shift is always logical for unsigned types: `uint32(-1) >> 1` gives `2147483647`, not a sign-extended `4294967295`.
 
 ### Comparisons (`<`, `<=`, `>`, `>=`)
 
@@ -368,8 +341,17 @@ var z: int32  = int32(y)    # -1
 
 Same bit width: bits are unchanged. Narrowing truncates to the low bits.
 
+## Build and Run
+
+```bash
+cd code/chapter-19
+cmake -S . -B build && cmake --build build
+./build/pyxc
+```
+
 ## Try It
 
+<!-- code-merge:start -->
 ```pyxc
 extern def printd(x: float64)
 
@@ -384,17 +366,17 @@ def main() -> int:
     printd(1.0)
   else:
     printd(0.0)
-  printd(float64(ui >> uint32(1)))
+  printd(float64(ui))
   return 0
 ```
-
-```
+```text
 1.000000
 0.000000
-2147483647.000000
+4294967295.000000
 ```
+<!-- code-merge:end -->
 
-Same 32 bits, `si` and `ui`. As `int32`, that bit pattern is negative. As `uint32`, it's not — `ui < uint32(0)` can never be true, since there's no such thing as a negative `uint32`. And shifting it right doesn't sign-extend: I get `2147483647`, not a value with the top bit still set.
+Same 32 bits, `si` and `ui`. As `int32`, that bit pattern is negative. As `uint32`, it's not — `ui < uint32(0)` can never be true, since there's no such thing as a negative `uint32`. Read back as unsigned, the same bits print as `4294967295`, not `-1`.
 
 ## What's Next
 

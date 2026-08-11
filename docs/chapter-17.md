@@ -26,7 +26,7 @@ No `clang`, no `runtime.c`, no separate link invocation. One command.
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-15
+cd pyxc-llvm-tutorial/code/chapter-17
 ```
 
 ## Grammar
@@ -62,7 +62,7 @@ One more change ties these together but isn't new behavior on its own: `EmitModu
 
 ## Accepting Multiple Input Files
 
-In chapter 15, the positional argument was a single optional `cl::opt`:
+Through chapter 16, the positional argument was a single optional `cl::opt`:
 
 ```cpp
 // Chapter 16
@@ -87,8 +87,8 @@ IsRepl = InputFiles.empty();
 The `--emit exe` path also enforces the multi-input rule:
 
 ```cpp
-} else if (EmitKindOpt == "exe") {
-  EmitMode = EmitKind::EXE;
+} else if (EmitKindOption == "exe") {
+  EmitMode = EmitKind::Executable;
   if (OutputFile.empty() && InputFiles.size() > 1) {
     fprintf(stderr, "Error: multiple inputs require -o\n");
     return -1;
@@ -120,54 +120,54 @@ static string DefaultExeOutputPath(StringRef InputPath) {
 
 ## Synthesizing the Runtime
 
-In `--emit obj` mode (chapter 15), I linked test binaries against `runtime.c` to get `printd` and `putchard`. For `--emit exe` mode, I want pyxc to synthesize those functions itself — no C file, no external compiler:
+In `--emit obj` mode (chapter 16), I linked test binaries against `runtime.c` to get `printd` and `putchard`. For `--emit exe` mode, I want pyxc to synthesize those functions itself — no C file, no external compiler:
 
 ```cpp
-static bool EmitRuntimeObject(const string &ObjPath) {
-  LLVMContext Ctx;
-  auto M = std::make_unique<Module>("pyxc.runtime", Ctx);
+static bool EmitRuntimeObject(const string &ObjectPath) {
+  LLVMContext Context;
+  auto RuntimeModule = make_unique<Module>("pyxc.runtime", Context);
+  auto *DoubleType = Type::getDoubleTy(Context);
+  auto *Int32Type = Type::getInt32Ty(Context);
+  auto *PointerType = llvm::PointerType::get(Context, 0);
 
-  auto *DoubleTy  = Type::getDoubleTy(Ctx);
-  auto *Int32Ty   = Type::getInt32Ty(Ctx);
-  auto *CharPtrTy = PointerType::get(Ctx, 0);
+  FunctionType *PrintfType =
+      FunctionType::get(Int32Type, {PointerType}, true);
+  Function *Printf = Function::Create(
+      PrintfType, Function::ExternalLinkage, "printf", RuntimeModule.get());
+  FunctionType *PutcharType =
+      FunctionType::get(Int32Type, {Int32Type}, false);
+  Function *Putchar = Function::Create(
+      PutcharType, Function::ExternalLinkage, "putchar", RuntimeModule.get());
 
-  // Declare printf and putchar (provided by libc).
-  FunctionType *PrintfTy = FunctionType::get(Int32Ty, {CharPtrTy}, /*vararg=*/true);
-  Function *Printf = Function::Create(PrintfTy, Function::ExternalLinkage,
-                                      "printf", M.get());
-
-  FunctionType *PutcharTy = FunctionType::get(Int32Ty, {Int32Ty}, false);
-  Function *Putchar = Function::Create(PutcharTy, Function::ExternalLinkage,
-                                       "putchar", M.get());
-
-  // Define printd(double) → double.
-  FunctionType *PrintdTy = FunctionType::get(DoubleTy, {DoubleTy}, false);
-  Function *Printd = Function::Create(PrintdTy, Function::ExternalLinkage,
-                                      "printd", M.get());
+  FunctionType *PrintdType =
+      FunctionType::get(DoubleType, {DoubleType}, false);
+  Function *Printd = Function::Create(
+      PrintdType, Function::ExternalLinkage, "printd", RuntimeModule.get());
   {
-    BasicBlock *BB = BasicBlock::Create(Ctx, "entry", Printd);
-    IRBuilder<> B(BB);
-    auto *FmtGV = B.CreateGlobalString("%f\n", "fmt");
-    Value *Zero = ConstantInt::get(Int32Ty, 0);
-    Value *Fmt  = B.CreateInBoundsGEP(FmtGV->getValueType(), FmtGV,
-                                       {Zero, Zero}, "fmt_ptr");
-    B.CreateCall(Printf, {Fmt, Printd->getArg(0)});
-    B.CreateRet(ConstantFP::get(Ctx, APFloat(0.0)));
+    BasicBlock *Entry = BasicBlock::Create(Context, "entry", Printd);
+    IRBuilder<> RuntimeBuilder(Entry);
+    auto *Format = RuntimeBuilder.CreateGlobalString("%f\n", "format");
+    Value *Zero = ConstantInt::get(Int32Type, 0);
+    Value *FormatPointer = RuntimeBuilder.CreateInBoundsGEP(
+        Format->getValueType(), Format, {Zero, Zero}, "format.pointer");
+    RuntimeBuilder.CreateCall(Printf, {FormatPointer, Printd->getArg(0)});
+    RuntimeBuilder.CreateRet(ConstantFP::get(Context, APFloat(0.0)));
   }
 
-  // Define putchard(double) → double.
-  FunctionType *PutchardTy = FunctionType::get(DoubleTy, {DoubleTy}, false);
-  Function *Putchard = Function::Create(PutchardTy, Function::ExternalLinkage,
-                                        "putchard", M.get());
+  FunctionType *PutchardType =
+      FunctionType::get(DoubleType, {DoubleType}, false);
+  Function *Putchard = Function::Create(PutchardType,
+      Function::ExternalLinkage, "putchard", RuntimeModule.get());
   {
-    BasicBlock *BB = BasicBlock::Create(Ctx, "entry", Putchard);
-    IRBuilder<> B(BB);
-    Value *Ch = B.CreateFPToUI(Putchard->getArg(0), Int32Ty, "ch");
-    B.CreateCall(Putchar, {Ch});
-    B.CreateRet(ConstantFP::get(Ctx, APFloat(0.0)));
+    BasicBlock *Entry = BasicBlock::Create(Context, "entry", Putchard);
+    IRBuilder<> RuntimeBuilder(Entry);
+    Value *Character = RuntimeBuilder.CreateFPToUI(
+        Putchard->getArg(0), Int32Type, "character");
+    RuntimeBuilder.CreateCall(Putchar, {Character});
+    RuntimeBuilder.CreateRet(ConstantFP::get(Context, APFloat(0.0)));
   }
 
-  return EmitModuleToFile(M.get(), EmitKind::OBJ, ObjPath);
+  return EmitModuleToFile(RuntimeModule.get(), EmitKind::Object, ObjectPath);
 }
 ```
 
@@ -205,7 +205,7 @@ static bool CompileFileToObject(const string &Path, const string &ObjPath,
   if (!PrepareFileModeModule())
     return false;
 
-  return EmitModuleToFile(TheModule.get(), EmitKind::OBJ, ObjPath);
+  return EmitModuleToFile(TheModule.get(), EmitKind::Object, ObjPath);
 }
 ```
 
@@ -213,49 +213,52 @@ static bool CompileFileToObject(const string &Path, const string &ObjPath,
 
 ## Shared Codegen Finishing
 
-In chapter 15, `EmitFileMode` contained all the logic for building `__pyxc.global_init`, validating `main`, and wrapping it. I want both the `--emit obj` path and the new per-file `--emit exe` path to share that, so I refactor it out into `PrepareFileModeModule`:
+In chapter 16, `EmitFileMode` contained all the logic for building `__pyxc.global_init`, validating `main`, and wrapping it. I want both the `--emit obj` path and the new per-file `--emit exe` path to share that, so I refactor it out into `PrepareFileModeModule`:
 
 ```cpp
 static bool PrepareFileModeModule() {
-  // 1. Compile __pyxc.global_init from collected top-level statements.
-  if (!FileTopLevelStmts.empty()) {
-    auto Block = make_unique<BlockExpressionNode>(std::move(FileTopLevelStmts));
-    auto Signature = make_unique<FunctionSignatureNode>("__pyxc.global_init",
-                                                        vector<string>());
-    auto FnAST = make_unique<FunctionDefinitionNode>(std::move(Signature),
-                                                     std::move(Block));
+  if (!FileTopLevelStatements.empty()) {
+    auto Block =
+        make_unique<BlockStatementNode>(std::move(FileTopLevelStatements));
+    auto Signature = make_unique<FunctionSignatureNode>(
+        "__pyxc.global_init", vector<string>());
+    auto FunctionDefinition = make_unique<FunctionDefinitionNode>(
+        std::move(Signature), std::move(Block));
+
     bool SavedInGlobalInit = InGlobalInit;
     InGlobalInit = true;
-    if (auto *FnIR = FnAST->codegen()) {
+    if (auto *FunctionIR = FunctionDefinition->codegen()) {
       InGlobalInit = SavedInGlobalInit;
       if (ShouldDumpIR())
-        FnIR->print(errs());
-      AddGlobalCtor(FnIR);
+        FunctionIR->print(errs());
+      AddGlobalConstructor(FunctionIR);
     } else {
       InGlobalInit = SavedInGlobalInit;
       return false;
     }
   }
 
-  // 2. Validate main() arity.
-  auto MainIt = FunctionSignatures.find("main");
-  if (MainIt != FunctionSignatures.end() && MainIt->second->getNumParameters() != 0) {
+  auto Main = FunctionSignatures.find("main");
+  if (Main != FunctionSignatures.end() &&
+      Main->second->getNumParameters() != 0) {
     fprintf(stderr, "Error: main() must take no arguments\n");
     return false;
   }
 
-  // 3. Wrap main() to return int.
+  // A Pyxc main returns double. I preserve it under an internal name and
+  // expose the conventional i32 main expected by native linkers.
   if (auto *UserMain = TheModule->getFunction("main")) {
     if (UserMain->getReturnType()->isDoubleTy()) {
       UserMain->setName("__pyxc.user_main");
-      FunctionType *FT =
+      FunctionType *WrapperType =
           FunctionType::get(Type::getInt32Ty(*TheContext), false);
-      Function *Wrapper = Function::Create(FT, Function::ExternalLinkage,
-                                           "main", TheModule.get());
-      BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", Wrapper);
-      IRBuilder<> TmpB(BB);
-      TmpB.CreateCall(UserMain);
-      TmpB.CreateRet(ConstantInt::get(Type::getInt32Ty(*TheContext), 0));
+      Function *Wrapper = Function::Create(
+          WrapperType, Function::ExternalLinkage, "main", TheModule.get());
+      BasicBlock *Entry = BasicBlock::Create(*TheContext, "entry", Wrapper);
+      IRBuilder<> WrapperBuilder(Entry);
+      WrapperBuilder.CreateCall(UserMain);
+      WrapperBuilder.CreateRet(
+          ConstantInt::get(Type::getInt32Ty(*TheContext), 0));
     }
   }
 
@@ -640,7 +643,7 @@ pyxc --dump-ir --emit exe -o prog main.pyxc
 ## Build and Run
 
 ```bash
-cd code/chapter-15
+cd code/chapter-17
 cmake -S . -B build && cmake --build build
 ./build/pyxc --emit exe -o hello hello.pyxc
 ./hello
@@ -656,3 +659,10 @@ Build issues? Questions?
 
 - **GitHub Issues:** [Report problems](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues)
 - **Discussions:** [Ask questions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
+
+Include:
+- Your OS and version
+- Full error message
+- Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
+
+I'll help you figure it out.

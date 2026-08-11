@@ -111,7 +111,7 @@ Chapters 1–45 below are the complete, shipped baseline under the new numbering
 
 | # | Title | Status | Notes |
 |---|-------|--------|-------|
-| 34 | Assignment as an Expression | ✅ | `x = expr` in expression context; `(c = getchar()) != EOF` works; right-associative; lvalue-checked at parse time via `BuildAssignmentExpr` |
+| 34 | Assignment as an Expression | ✅ | `x = expr` in expression context; `(c = getchar()) != EOF` works; right-associative; lvalue-checked at parse time via `ParseAssignment` |
 | 35 | Read-Modify-Write Operators | ✅ | `+=`, `-=`, `*=`, `/=`, `%=`, and prefix/postfix `++`/`--`. Pure convenience over `x = x + 1` — programs don't need these to express the same operations, so they're sequenced late on purpose, once lvalues, types, pointers, and assignment semantics are all established |
 
 ---

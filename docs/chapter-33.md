@@ -5,7 +5,7 @@ description: "Add variadic extern declarations so pyxc code can call C functions
 
 ## What I Am Building
 
-[Chapter 34](chapter-34.md) completed the K&R toolbox. pyxc can call C functions via `extern def`, but only functions with a fixed number of typed parameters. `printf`, `scanf`, `sprintf`, and most other C I/O functions take a variable number of arguments — the `...` in their C signatures. Trying to declare them currently produces:
+[Chapter 32](chapter-32.md) added Unicode escapes and validated UTF-8 strings. pyxc can call C functions via `extern def`, but only functions with a fixed number of typed parameters. `printf`, `scanf`, `sprintf`, and most other C I/O functions take a variable number of arguments — the `...` in their C signatures. Trying to declare them currently produces:
 
 ```pyxc
 type string = ptr[int8]
@@ -40,196 +40,258 @@ answer: 42
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-42
+cd pyxc-llvm-tutorial/code/chapter-33
 ```
 
 ## Grammar
 
 I add a separate signature production for `extern`, since only `extern` allows `...`:
 
-`code/chapter-42/pyxc.ebnf`
+`code/chapter-33/pyxc.ebnf`
 
 ```grammardiff
- program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
- end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | external | top-level-expression ;
- type-alias       = "type" name "=" type ;
- trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
- trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
- trait-method-signature  = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ;
- struct-definition       = "struct" name ":" end-of-lines struct-block ;
- class-definition        = "class" name [ "(" trait-reference { "," trait-reference } ")" ] ":" end-of-lines struct-block ;
- trait-reference        = name [ "[" type "]" ] ;
- implementation-definition         = "impl" trait-reference "for" name ":" end-of-lines implementation-block ;
- implementation-block       = indent implementation-method { end-of-lines implementation-method } dedent ;
- implementation-method      = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- struct-block     = indent class-member { end-of-lines class-member } dedent ;
- class-member     = [ visibility ] ( field-declaration | method-definition ) ;
- visibility      = "public" | "private" ;
- method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")"
-                   [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- field-declaration       = name ":" type ;
- function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- (* If the return type is omitted, it defaults to None. *)
--external        = "extern" "def" function-signature [ "->" type ] ;
-+external        = "extern" "def" external-function-signature [ "->" type ] ;
- top-level-expression    = expression ;
- function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
-+external-function-signature = name "(" [ typed-parameter { "," typed-parameter } [ "," "..." ] | "..." ] ")" ;
- typed-parameter      = name ":" type ;
- if-statement          = "if" expression ":" suite
-                 { end-of-lines "elif" expression ":" suite }
-                 [ end-of-lines "else" ":" suite ] ;
- while-statement       = "while" expression ":" suite ;
- do-while-statement     = "do" ":" suite end-of-lines "while" expression ;
- switch-statement      = "switch" expression ":" end-of-lines indent switch-body dedent ;
- switch-body      = switch-case { end-of-lines switch-case } [ end-of-lines default-case ] ;
- switch-case      = "case" switch-integer { "," switch-integer } ":" suite ;
- default-case     = "default" ":" suite ;
- for-statement         = "for"
-                   ( "var" name ":" type | name )
-                   "=" expression "," expression "," expression ":" suite ;
- variable-statement         = "var" variable-binding { "," variable-binding } ;
- assignment-statement      = lvalue assignment-operator expression ; (* assignment is a statement here *)
- simple-statement      = return-statement | break-statement | continue-statement | variable-statement | assignment-statement | expression ;
- compound-statement    = if-statement | for-statement | while-statement | do-while-statement | switch-statement ;
- statement       = simple-statement | compound-statement ;
- suite           = simple-statement | compound-statement | end-of-lines block ;
- return-statement      = "return" [ expression ] ;
- break-statement       = "break" ;
- continue-statement    = "continue" ;
- statement-separator = end-of-lines | BLOCK_END ;
- block = indent statement { statement-separator statement } dedent ;
- expression      = assignment ;
- assignment      = logical-or [ assignment-operator assignment ] ;
- logical-or      = logical-and { "||" logical-and } ;
- logical-and     = bitwise-or { "&&" bitwise-or } ;
- bitwise-or      = bitwise-xor { "|" bitwise-xor } ;
- bitwise-xor     = bitwise-and { "^" bitwise-and } ;
- bitwise-and     = equality { "&" equality } ;
- equality        = relational { ("==" | "!=") relational } ;
- relational      = shift { ("<" | "<=" | ">" | ">=") shift } ;
- shift           = sum { ("<<" | ">>") sum } ;
- sum             = term { ("+" | "-") term } ;
- term            = unary-expression { ("*" | "/" | "%") unary-expression } ;
- lvalue          = name | field-access | index-expression ;
- variable-binding      = name ":" type [ "=" expression ] ;
- unary-expression       = ("-" | "!" | "~" | "++" | "--") unary-expression | postfix-expression ;
- postfix-expression     = primary [ postfix-operator ] ;
- postfix-operator       = "++" | "--" ;
- primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | character-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
- cast-expression        = cast-type "(" expression ")" ;
- sizeof-expression      = "sizeof" "(" type ")" ;
- address-expression        = "addr" "(" lvalue ")" ;
- name-expression  = name | call-expression | method-call-expression | constructor-call-expression ;
- call-expression        = name "(" [ expression { "," expression } ] ")" ;
- method-call-expression  = name "." name "(" [ expression { "," expression } ] ")" ;
- constructor-call-expression    = name "(" [ expression { "," expression } ] ")" ;
- field-access     = name "." name { "." name } ;
- index-expression       = name "[" expression "]" ;
- number-expression      = number ;
- array-literal    = "[" [ expression { "," expression } ] "]" ;
- string-literal   = "\"" { ? valid Unicode scalar value except " and newline, encoded as UTF-8 ? | literal-escape } "\"" ;
- character-literal     = "'" ( ? valid Unicode scalar value except ' and newline, encoded as UTF-8 ? | literal-escape ) "'" ;
- literal-escape   = "\\" ( simple-escape | octal-escape | "x" hex-digit hex-digit
-                    | "u" hex-digit hex-digit hex-digit hex-digit
-                    | "U" hex-digit hex-digit hex-digit hex-digit
-                          hex-digit hex-digit hex-digit hex-digit ) ;
- simple-escape    = "a" | "b" | "f" | "n" | "r" | "t" | "v"
-                  | "\\" | "'" | "\"" | "?" ;
- octal-escape     = octal-digit [ octal-digit [ octal-digit ] ] ;
- parenthesized-expression       = "(" expression ")" ;
- indent          = INDENT ;
- dedent          = DEDENT ;
- 
- assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
- name      = (letter | "_") { letter | digit | "_" } ;
- builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "uint8" | "uint16" | "uint32" | "uint64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | "None" ;
- alias-type       = name ;
- struct-type      = name ;
- pointer-type     = "ptr" "[" type "]" ;
- type            = base-type [ array-suffix ] ;
- base-type        = builtin-type | alias-type | struct-type | pointer-type ;
- array-suffix     = "[" integer "]" ;
- cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "uint8" | "uint16" | "uint32" | "uint64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | pointer-type ;
- integer         = digit { digit } ;
- switch-integer       = [ "-" ] integer ;
- number          = ( digit { digit } [ "." { digit } ]
-                   | "." digit { digit } ) [ exponent ] ;
- exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
- boolean-literal    = "True" | "False" ;
- letter          = "A".."Z" | "a".."z" ;
- digit           = "0".."9" ;
- hex-digit       = digit | "A".."F" | "a".."f" ;
- octal-digit     = "0".."7" ;
- end-of-line             = "\r\n" | "\r" | "\n" ;
- comment = "#" { comment-character } ;
- comment-character = ? any character except "\r" and "\n" ? ;
- whitespace = " " | "\t" | "\v" | "\f" ;
- INDENT          = ? synthetic token emitted by lexer ? ;
- DEDENT          = ? synthetic token emitted by lexer ? ;
- 
- BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
+ program                           = [ end-of-lines ]
+                                     [ top-level-item
+                                       { end-of-lines top-level-item } ]
+                                     [ end-of-lines ] ;
+ end-of-lines                      = end-of-line { end-of-line } ;
+ top-level-item                    = function-definition
+                                     | type-alias
+                                     | struct-definition
+                                     | external
+                                     | top-level-statement ;
+ struct-definition                 = "struct" name ":" end-of-lines
+                                     struct-block ;
+ type-alias                        = "type" name "=" type ;
+ struct-block                      = indent field-declaration
+                                     { end-of-lines field-declaration } dedent ;
+ field-declaration                 = name ":" type ;
+ function-definition               = "def" function-signature [ "->" type ] ":"
+                                     ( simple-statement
+                                       | end-of-lines block ) ;
+-external                          = "extern" "def" function-signature [ "->" type ] ;
++external                          = "extern" "def" external-function-signature
++                                    [ "->" type ] ;
+ top-level-statement               = statement ;
+ function-signature                = name "(" [ parameters ] ")" ;
++external-function-signature       = name "(" [ parameters [ "," "..." ] | "..." ] ")" ;
+ parameters                        = typed-parameter { "," typed-parameter } ;
+ typed-parameter                   = name ":" type ;
+ if-statement                      = "if" expression ":" suite
+                                     { [ end-of-lines ] "elif" expression ":" suite }
+                                     [ [ end-of-lines ] "else" ":" suite ] ;
+ for-statement                     = "for" ( "var" name ":" type | name )
+                                     "=" expression ","
+                                     expression "," expression ":" suite ;
+ while-statement                   = "while" expression ":" suite ;
+ do-while-statement                = "do" ":" suite [ end-of-lines ]
+                                     "while" expression ;
+ switch-statement                  = "switch" expression ":" end-of-lines
+                                     indent switch-body dedent ;
+ switch-body                       = switch-case
+                                     { end-of-lines switch-case }
+                                     [ end-of-lines default-case ] ;
+ switch-case                       = "case" switch-integer
+                                     { "," switch-integer } ":" suite ;
+ default-case                      = "default" ":" suite ;
+ variable-statement                = "var" variable-binding
+                                     { "," variable-binding } ;
+ assignment-statement              = lvalue "=" expression ;
+ simple-statement                  = return-statement
+                                     | break-statement
+                                     | continue-statement
+                                     | variable-statement
+                                     | assignment-statement
+                                     | expression ;
+ compound-statement                = if-statement
+                                     | for-statement
+                                     | while-statement
+                                     | do-while-statement
+                                     | switch-statement ;
+ statement                         = simple-statement | compound-statement ;
+ suite                             = simple-statement
+                                     | compound-statement
+                                     | end-of-lines block ;
+ return-statement                  = "return" [ expression ] ;
+ break-statement                   = "break" ;
+ continue-statement                = "continue" ;
+ statement-separator               = end-of-lines | BLOCK_END ;
+ block                             = indent statement
+                                     { statement-separator statement } dedent ;
+ expression                        = logical-or ;
+ logical-or                        = logical-and { "||" logical-and } ;
+ logical-and                       = bitwise-or { "&&" bitwise-or } ;
+ bitwise-or                        = bitwise-xor { "|" bitwise-xor } ;
+ bitwise-xor                       = bitwise-and { "^" bitwise-and } ;
+ bitwise-and                       = equality { "&" equality } ;
+ equality                          = relational { ("==" | "!=") relational } ;
+ relational                        = shift { ("<" | "<=" | ">" | ">=") shift } ;
+ shift                             = sum { ("<<" | ">>") sum } ;
+ sum                               = term { ("+" | "-") term } ;
+ term                              = factor { ("*" | "/" | "%") factor } ;
+ lvalue                            = name
+                                     { "." name | "[" expression "]" } ;
+ variable-binding                  = name ":" type [ "=" expression ] ;
+ factor                            = ("-" | "!" | "~") factor | primary ;
+ primary                           = cast-expression
+                                     | sizeof-expression
+                                     | address-expression
+                                     | array-literal
+                                     | string-literal
+                                     | character-literal
+                                     | name-expression
+                                     | number-expression
+                                     | boolean-literal
+                                     | parenthesized-expression ;
+ cast-expression                   = cast-type "(" expression ")" ;
+ sizeof-expression                 = "sizeof" "(" type ")" ;
+ address-expression                = "addr" "(" lvalue ")" ;
+ array-literal                     = "[" [ expression
+                                       { "," expression } ] "]" ;
+ string-literal                    = '"' { string-character | escape } '"' ;
+ escape                            = literal-escape ;
+ string-character                  = ? any character except '"', "\\", "\r", and "\n" ? ;
+ character-literal                 = "'" ( character | character-escape ) "'" ;
+ character-escape                  = literal-escape ;
+ literal-escape                    = "\\" ( "\\" | "'" | '"' | "?"
+                                       | "a" | "b" | "f" | "n" | "r"
+                                       | "t" | "v"
+                                       | "x" hex-digit hex-digit
+                                       | octal-digit [ octal-digit
+                                         [ octal-digit ] ]
+                                       | "u" hex-digit hex-digit hex-digit hex-digit
+                                       | "U" hex-digit hex-digit hex-digit hex-digit
+                                         hex-digit hex-digit hex-digit hex-digit ) ;
+ character                         = ? any character except "'", "\\", "\r", and "\n" ? ;
+ hex-digit                         = digit | "A".."F" | "a".."f" ;
+ octal-digit                       = "0".."7" ;
+ name-expression                   = lvalue | call-expression ;
+ call-expression                   = name "(" [ arguments ] ")" ;
+ arguments                         = expression { "," expression } ;
+ number-expression                 = number ;
+ parenthesized-expression          = "(" expression ")" ;
+ indent                            = INDENT ;
+ dedent                            = DEDENT ;
+ name                              = (letter | "_")
+                                     { letter | digit | "_" } ;
+ type                              = base-type [ array-suffix ] ;
+ base-type                         = builtin-type | alias-type | struct-type
+                                     | pointer-type ;
+ pointer-type                      = "ptr" "[" type "]" ;
+ array-suffix                      = "[" integer "]" ;
+ builtin-type                      = "int" | "int8" | "int16" | "int32"
+                                     | "int64" | "uint8" | "uint16"
+                                     | "uint32" | "uint64"
+                                     | "float" | "float32"
+                                     | "float64" | "bool" | "None" ;
+ struct-type                       = name ;
+ alias-type                        = name ;
+ cast-type                         = builtin-cast-type | pointer-type ;
+ builtin-cast-type                 = "int" | "int8" | "int16" | "int32"
+                                     | "int64" | "uint8" | "uint16"
+                                     | "uint32" | "uint64"
+                                     | "float" | "float32"
+                                     | "float64" | "bool" ;
+ number                            = ( digit { digit } [ "." { digit } ]
+                                     | "." digit { digit } ) [ exponent ] ;
+ switch-integer                    = [ "-" ] digit { digit } ;
+ exponent                          = ( "e" | "E" ) [ "+" | "-" ]
+                                     digit { digit } ;
+ boolean-literal                   = "True" | "False" ;
+ integer                           = digit { digit } ;
+ letter                            = "A".."Z" | "a".."z" ;
+ digit                             = "0".."9" ;
+ end-of-line                       = "\r\n" | "\r" | "\n" ;
+ (*
+     A `comment` begins with "#" and continues to the end of the line. The lexer
+      ignores its text and returns an end-of-line token when one follows it.
+ *)
+ comment                           = "#" { comment-character } ;
+ comment-character                 = ? any character except "\r" and "\n" ? ;
+ (*
+     `whitespace` may appear before or between tokens
+      and is ignored by the lexer.
+ *)
+ whitespace                        = " " | "\t" | "\v" | "\f" ;
+ INDENT                            = ? synthetic token emitted by lexer when indentation increases ? ;
+ DEDENT                            = ? synthetic token emitted by lexer when indentation decreases ? ;
+ BLOCK_END                         = ? synthetic token injected into the stream by ParseBlock
+                                       immediately after it consumes DEDENT ? ;
+
 ```
 
 Regular function signatures (used by `def`) are untouched — `...` isn't valid there.
 
 ## A New Field for Variadic Functions
 
-The structural change is a new `bool IsVarArg` field on `FunctionSignatureNode`:
+The structural change is a new `bool IsVariadic` field on `FunctionSignatureNode`:
 
 ```cpp
 class FunctionSignatureNode {
-  ...
-  bool IsVarArg;
+  string Name;
+  vector<pair<string, ValueType>> Parameters;
+  vector<string> ParameterStructNames;
+  ValueType ReturnType;
+  string ReturnStructName;
+  bool IsVariadic;
+  SourceLocation Loc;
+
 public:
-  FunctionSignatureNode(const string &Name, vector<ParameterInfo> Parameters,
+  FunctionSignatureNode(const string &Name,
+                        vector<pair<string, ValueType>> Parameters,
                         SourceLocation Loc,
                         ValueType ReturnType = ValueType::Float64,
-                        bool IsVarArg = false,
-                        string ReturnStructName = "")
-      : ..., IsVarArg(IsVarArg), ... {}
-
-  bool isVarArg() const { return IsVarArg; }
+                        vector<string> ParameterStructNames = {},
+                        string ReturnStructName = "",
+                        bool IsVariadic = false)
+      : Name(Name), Parameters(std::move(Parameters)), ReturnType(ReturnType),
+        ReturnStructName(std::move(ReturnStructName)), IsVariadic(IsVariadic),
+        Loc(Loc) {
+    this->ParameterStructNames = std::move(ParameterStructNames);
+    this->ParameterStructNames.resize(this->Parameters.size());
+  }
+  ...
+  bool isVariadic() const { return IsVariadic; }
 };
 ```
 
-`IsVarArg` defaults to `false`, so every existing call site that builds a `FunctionSignatureNode` keeps working unchanged. Only the `extern def` path ever sets it to `true`.
+`IsVariadic` defaults to `false`, so every existing call site that builds a `FunctionSignatureNode` keeps working unchanged. Only the `extern def` path ever sets it to `true`.
 
 ## Allowing Variadic Arguments in Parsing
 
-`ParseFunctionSignature` gains an `AllowVarArgs` parameter that defaults to `false`. Inside the parameter loop, I check for `...` before I check for a parameter name:
+`ParseFunctionSignature` gains an `AllowVariadic` parameter that defaults to `false`. Inside the parameter loop, I check for `...` before I check for a parameter name:
 
 ```cpp
-static unique_ptr<FunctionSignatureNode> ParseFunctionSignature(bool AllowVarArgs = false) {
+static unique_ptr<FunctionSignatureNode>
+ParseFunctionSignature(bool AllowVariadic = false) {
   ...
-  bool IsVarArg = false;
+  bool IsVariadic = false;
   if (CurrentToken != tok_rparen) {
     while (true) {
-      if (AllowVarArgs && CurrentToken == tok_dot) {
-        getNextToken();
+      if (AllowVariadic && CurrentToken == tok_dot) {
+        getNextToken(); // eat the first '.'
         if (CurrentToken != tok_dot)
-          return LogErrorSignature("Expected '...' in variadic function signature");
-        getNextToken();
+          return LogErrorSignature(
+              "Expected '...' in variadic function signature");
+        getNextToken(); // eat the second '.'
         if (CurrentToken != tok_dot)
-          return LogErrorSignature("Expected '...' in variadic function signature");
-        getNextToken();
-        IsVarArg = true;
+          return LogErrorSignature(
+              "Expected '...' in variadic function signature");
+        getNextToken(); // eat the third '.'
+        IsVariadic = true;
         if (CurrentToken != tok_rparen)
-          return LogErrorSignature("Variadic marker must be last in parameter list");
+          return LogErrorSignature(
+              "Variadic marker must be last in parameter list");
         break;
       }
       ...
     }
   }
-  return make_unique<FunctionSignatureNode>(FnName, std::move(ParameterNames), SignatureLoc,
-                                   ValueType::Float64, IsVarArg);
+
+  getNextToken(); // eat ')'
+  return make_unique<FunctionSignatureNode>(
+      FnName, std::move(ParameterNames), SignatureLoc, ValueType::Float64,
+      std::move(ParameterStructNames), "", IsVariadic);
 }
 ```
 
@@ -244,7 +306,7 @@ extern def bad(fmt: ptr[int8], ..)
                                  ^~~~
 ```
 
-`...` also has to be the last thing before `)` — the `break` right after setting `IsVarArg` guarantees the loop can't come back around for another parameter. And since the `...` check runs before I even look for a parameter name, `extern def f(...)` with no fixed parameters at all works the same way — it just hits that branch on the very first iteration.
+`...` also has to be the last thing before `)` — the `break` right after setting `IsVariadic` guarantees the loop can't come back around for another parameter. And since the `...` check runs before I even look for a parameter name, `extern def f(...)` with no fixed parameters at all works the same way — it just hits that branch on the very first iteration.
 
 ## Only `extern def` Allows Variadic Arguments
 
@@ -259,7 +321,7 @@ static unique_ptr<FunctionSignatureNode> ParseExtern() {
 }
 ```
 
-So `...` in a regular function definition fails, because `AllowVarArgs` is `false` there and the first `.` isn't a valid parameter name:
+So `...` in a regular function definition fails, because `AllowVariadic` is `false` there and the first `.` isn't a valid parameter name:
 
 ```pyxc
 def bad(x: int, ...) -> int:
@@ -279,10 +341,14 @@ The call-site arity check used to be an exact match. For a variadic signature it
 
 ```cpp
 // ParseNameExpressionWithName:
-if ((!Signature->isVarArg() && Signature->getNumParameters() != Arguments.size()) ||
-    (Signature->isVarArg() && Arguments.size() < Signature->getNumParameters()))
+if ((!Signature->isVariadic() &&
+     Signature->getNumParameters() != Arguments.size()) ||
+    (Signature->isVariadic() &&
+     Arguments.size() < Signature->getNumParameters()))
   return LogErrorExpression("Incorrect # arguments passed");
 ```
+
+The codegen-side check runs the same logic, but against the LLVM `Function` object rather than my own `FunctionSignatureNode`. LLVM's `Function` class already has an `isVarArg()` method built in, so I use that directly:
 
 ```cpp
 // CallExpressionNode::codegen:
@@ -301,21 +367,30 @@ printf()
         ^~~~
 ```
 
-Type-checking only walks the fixed parameters — `for (size_t i = 0; i < Arguments.size() && i < Signature->getNumParameters(); ++i)`. Anything past that is on me: I can pass whatever I want after the fixed parameters, and pyxc won't check it against anything, the same way C's own `printf` doesn't.
+Type-checking only walks the fixed parameters — `for (size_t i = 0; i < Signature->getNumParameters(); ++i)`. Anything past that is on me: I can pass whatever I want after the fixed parameters, and pyxc won't check it against anything, the same way C's own `printf` doesn't.
 
 ## Codegen Passes the Variadic Flag Through
 
-`FunctionSignatureNode::codegen` passes `IsVarArg` to `FunctionType::get` instead of the hardcoded `false` it used before:
+`FunctionSignatureNode::codegen` passes `IsVariadic` to `FunctionType::get` instead of the hardcoded `false` it used before:
 
 ```cpp
 FunctionType *FT = FunctionType::get(
-    LLVMTypeFor(ReturnType, ReturnStructName), ParameterTypes, IsVarArg);
+    LLVMTypeFor(ReturnType, ReturnStructName), ParameterTypes,
+    IsVariadic);
 ```
 
-That's the whole change on the codegen side. LLVM already knows how to emit a variadic declaration and handle the variadic calling convention at each call site — I just have to tell it `IsVarArg` is true:
+That's the whole change on the codegen side. LLVM already knows how to emit a variadic declaration and handle the variadic calling convention at each call site — I just have to tell it `IsVariadic` is true:
 
 ```
 declare i32 @printf(ptr, ...)
+```
+
+## Build and Run
+
+```bash
+cd code/chapter-33
+cmake -S . -B build && cmake --build build
+./build/pyxc
 ```
 
 ## Try It

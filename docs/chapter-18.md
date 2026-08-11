@@ -5,7 +5,7 @@ description: "Add a static type system: int, int8, int16, int32, int64, float, f
 
 ## What I Am Building
 
-[Chapter 20](chapter-20.md) gave me debug info and proper optimization pipelines. The language itself still has exactly one type: `double`. Every variable, parameter, return value, and literal is a 64-bit float, and I never need to ask "what type is this?".
+[Chapter 17](chapter-17.md) gave me `--emit exe` and one-step native executables. The language itself still has exactly one type: `double`. Every variable, parameter, return value, and literal is a 64-bit float, and I never need to ask "what type is this?".
 
 This chapter adds a real type system. After this chapter:
 
@@ -27,12 +27,12 @@ if classify(1.5):
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-17
+cd pyxc-llvm-tutorial/code/chapter-18
 ```
 
 ## Grammar
 
-The grammar gains type annotations throughout. Chapter 20 didn't touch the grammar, so this diffs against chapter 17's:
+The grammar gains type annotations throughout, diffing directly against chapter 17's:
 
 ```grammardiff
  program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
@@ -268,7 +268,7 @@ tok_false = -33,
 
 ## Numeric Literal Types
 
-Before chapter 20, every number literal stored a `double`. Now literals have proper types. The lexer sets a flag:
+Before chapter 17, every number literal stored a `double`. Now literals have proper types. The lexer sets a flag:
 
 ```cpp
 NumberIsFloat = NumStr.find('.') != string::npos;
@@ -322,7 +322,7 @@ static unique_ptr<ExpressionNode> ParseNumberExpression() {
 }
 ```
 
-The lexer sets `NumberIsFloat` from both the decimal point and the exponent: `NumberIsFloat = SawDot || SawExp;`. A literal like `2e3` has no `.` but still becomes a `Float64` (`2000.0`), since an exponent alone makes a literal float. I confirmed this by compiling `2e3` directly: chapter 20, which has no exponent support at all, rejects it outright with "Unexpected name 'e3'"; chapter 18 accepts it and prints `2000.000000`.
+The lexer sets `NumberIsFloat` from both the decimal point and the exponent: `NumberIsFloat = SawDot || SawExp;`. A literal like `2e3` has no `.` but still becomes a `Float64` (`2000.0`), since an exponent alone makes a literal float. I confirmed this by compiling `2e3` directly: chapter 17, which has no exponent support at all, rejects it outright with "Unexpected name 'e3'"; chapter 18 accepts it and prints `2000.000000`.
 
 `NumberExpressionNode` stores the literal with full precision:
 
@@ -444,7 +444,7 @@ i1 true
 i1 false
 ```
 
-`Bool` is a distinct type. It is not the result of a comparison widened to an integer: it stays `i1` throughout. Comparisons also return `Bool` / `i1` in chapter 20.
+`Bool` is a distinct type. It is not the result of a comparison widened to an integer: it stays `i1` throughout. Every comparison operator now returns `Bool` / `i1` directly.
 
 ## Parsing Type Annotations and Optional Return Types
 
@@ -493,10 +493,10 @@ The `DefaultType` parameter is the key design decision:
 
 ## Parsing Typed Parameters
 
-In Chapter 20, my signature parser accepted bare names:
+In Chapter 17, my signature parser accepted bare names:
 
 ```cpp
-// Chapter 20
+// Chapter 17
 while (getNextToken() == tok_name)
   ArgNames.push_back(Name);
 ```
@@ -527,10 +527,10 @@ if (CurrentToken != ')') {
 
 `FunctionSignatureNode` now stores `vector<pair<string, ValueType>>` and a `ReturnType` field, with helpers `getParameterType(i)`, `getReturnType()`, `setReturnType()`, and `clone()`.
 
-The same function signature in chapter 17 vs chapter 20:
+The same function signature in chapter 17 vs chapter 18:
 
 ```llvm
-; Chapter 20
+; Chapter 17
 define double @add(double %a, double %b) { ... }
 
 ; Chapter 18
@@ -543,10 +543,10 @@ Every parameter type and every return type now appears literally in the IR rathe
 
 ## Tracking Variable Types in Scope
 
-Chapter 20 tracked which variable names were in scope using a `set<string>`:
+Chapter 17 tracked which variable names were in scope using a `set<string>`:
 
 ```cpp
-// Chapter 20
+// Chapter 17
 static vector<set<string>> VarScopes;
 ```
 
@@ -658,7 +658,7 @@ store double 3.140000e+00, ptr %ratio
 ## for Loops: Typed Loop Variable
 
 ```pyxc
-# Chapter 20
+# Chapter 17
 for var i = 1, i <= n, 1:
     body
 
@@ -1172,7 +1172,7 @@ entry:
 
 `CallExpressionNode` overrides `shouldPrintValue()`: void calls are silently discarded in the REPL without printing anything.
 
-## The main() Wrapper
+## Wrapping main for the Native ABI
 
 When `--emit exe` is used, the OS needs a C-ABI `int main()` entry point, but I don't want to force the user to write `def main() -> int32` specifically; `int` (the platform default) or plain `def main()` (void) should both work. So before wrapping anything, I validate the return type explicitly and reject anything else:
 
@@ -1247,7 +1247,7 @@ The wrapper is what the OS and C runtime actually call. The user-visible `main` 
 
 ## JIT Dispatch: Type-Switched Invocation
 
-Before chapter 20, the JIT always called the anonymous top-level function as `double (*)()`. Now the return type determines both the function pointer type and the print format:
+Before chapter 17, the JIT always called the anonymous top-level function as `double (*)()`. Now the return type determines both the function pointer type and the print format:
 
 ```cpp
 if (RetTy == ValueType::None) {
@@ -1298,7 +1298,7 @@ Key points:
 
 ## Debug Info: Per-Type DWARF Descriptors
 
-In Chapter 20 I had one `DblDIType` for everything. Now I need a descriptor per type:
+In Chapter 17 I had one `DblDIType` for everything. Now I need a descriptor per type:
 
 ```cpp
 static DIType *IntDIType     = nullptr;
@@ -1332,7 +1332,7 @@ The void type uses `createUnspecifiedType("None")`: the correct DWARF tag `DW_TA
 
 ## HadError and Exit Codes
 
-Chapter 20 always returned `0`. File-mode programs with type errors would print to stderr but exit cleanly, making shell scripts and test harnesses oblivious to failures.
+Chapter 17 always returned `0`. File-mode programs with type errors would print to stderr but exit cleanly, making shell scripts and test harnesses oblivious to failures.
 
 Chapter 18 adds a global `HadError` flag set by every `LogErrorExpression` call. File-mode loops check it after parsing:
 
@@ -1409,7 +1409,7 @@ entry:
 
 Two things worth noticing that I wouldn't have guessed without actually compiling this. First, `add`'s parameters get their own `alloca`s and are loaded back before the addition, even though nothing about the source needs that indirection, that's `IRBuilder<NoFolder>` plus the empty `-O0` pass list from earlier in this chapter: nothing is promoting those stack slots to registers yet, so every parameter round-trips through memory exactly like a `var` would. Second, `__pyxc.user_main` itself returns `i64`, not `i32`, because `int` resolved to the platform's 64-bit width on the machine I compiled this on; the `trunc` in `main` is doing real work here, not just defensive code.
 
-Before Chapter 20, every value in this program would have been `double`, with no `alloca`/`load` distinction to speak of. Now `add` uses `i32` throughout, the `sitofp` appears exactly once and only where the source explicitly asked for it with `float64(x)`, and the path from a typed `main` down to the OS-facing `i32 @main` is fully explicit instead of assumed.
+Before Chapter 17, every value in this program would have been `double`, with no `alloca`/`load` distinction to speak of. Now `add` uses `i32` throughout, the `sitofp` appears exactly once and only where the source explicitly asked for it with `float64(x)`, and the path from a typed `main` down to the OS-facing `i32 @main` is fully explicit instead of assumed.
 
 ## Known Limitations
 
@@ -1484,7 +1484,7 @@ grep 'define\|alloca\|fptosi\|sitofp\|sext\|fadd\|add ' out.ll
 ## Build and Run
 
 ```bash
-cd code/chapter-17
+cd code/chapter-18
 cmake -S . -B build && cmake --build build
 echo "var x: int32 = 7" | ./build/pyxc
 ```
@@ -1499,3 +1499,10 @@ Build issues? Questions?
 
 - **GitHub Issues:** [Report problems](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues)
 - **Discussions:** [Ask questions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
+
+Include:
+- Your OS and version
+- Full error message
+- Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
+
+I'll help you figure it out.

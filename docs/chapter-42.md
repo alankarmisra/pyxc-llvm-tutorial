@@ -38,7 +38,7 @@ def main() -> int:
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-31
+cd pyxc-llvm-tutorial/code/chapter-42
 ```
 
 ## Grammar
@@ -46,102 +46,213 @@ cd pyxc-llvm-tutorial/code/chapter-31
 `trait-definition` gains an optional type parameter. `class-definition` and `implementation-definition` use a new `trait-reference` production wherever they previously used a bare trait name:
 
 ```grammardiff
- program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
- end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | external | top-level-expression ;
- type-alias       = "type" name "=" type ;
--trait-definition        = "trait" name ":" end-of-lines trait-block ;
-+trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
- trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
- trait-method-signature  = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ;
- struct-definition       = "struct" name ":" end-of-lines struct-block ;
--class-definition        = "class" name [ "(" name { "," name } ")" ] ":" end-of-lines struct-block ;
--implementation-definition         = "impl" name "for" name ":" end-of-lines implementation-block ;
-+class-definition        = "class" name [ "(" trait-reference { "," trait-reference } ")" ] ":" end-of-lines struct-block ;
-+trait-reference        = name [ "[" type "]" ] ;
-+implementation-definition         = "impl" trait-reference "for" name ":" end-of-lines implementation-block ;
- implementation-block       = indent implementation-method { end-of-lines implementation-method } dedent ;
- implementation-method      = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- struct-block     = indent class-member { end-of-lines class-member } dedent ;
- class-member     = [ visibility ] ( field-declaration | method-definition ) ;
- visibility      = "public" | "private" ;
- method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")"
-                   [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- field-declaration       = name ":" type ;
- function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- (* If the return type is omitted, it defaults to None. *)
- external        = "extern" "def" function-signature [ "->" type ] ;
- top-level-expression    = expression ;
- function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
- typed-parameter      = name ":" type ;
- if-statement          = "if" expression ":" suite
-                 [ end-of-lines "else" ":" suite ] ;
- for-statement         = "for"
-                   ( "var" name ":" type | name )
-                   "=" expression "," expression "," expression ":" suite ;
- variable-statement         = "var" variable-binding { "," variable-binding } ;
- assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
- simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
- compound-statement    = if-statement | for-statement ;
- statement       = simple-statement | compound-statement ;
- suite           = simple-statement | compound-statement | end-of-lines block ;
- return-statement      = "return" [ expression ] ;
- statement-separator = end-of-lines | BLOCK_END ;
- block = indent statement { statement-separator statement } dedent ;
- expression      = comparison ;
- comparison      = sum { comparison-operator sum } ;
- comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
- sum             = term { ("+" | "-") term } ;
- term            = unary-expression { ("*" | "/") unary-expression } ;
- lvalue          = name | field-access | index-expression ;
- variable-binding      = name ":" type [ "=" expression ] ;
- unary-expression       = "-" unary-expression | primary ;
- primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
- cast-expression        = cast-type "(" expression ")" ;
- sizeof-expression      = "sizeof" "(" type ")" ;
- address-expression        = "addr" "(" lvalue ")" ;
- name-expression  = name | call-expression | method-call-expression | constructor-call-expression ;
- call-expression        = name "(" [ expression { "," expression } ] ")" ;
- method-call-expression  = name "." name "(" [ expression { "," expression } ] ")" ;
- constructor-call-expression    = name "(" [ expression { "," expression } ] ")" ;
- field-access     = name "." name { "." name } ;
- index-expression       = name "[" expression "]" ;
- number-expression      = number ;
- array-literal    = "[" [ expression { "," expression } ] "]" ;
- string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
- escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
- parenthesized-expression       = "(" expression ")" ;
- indent          = INDENT ;
- dedent          = DEDENT ;
- 
- name      = (letter | "_") { letter | digit | "_" } ;
- builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | "None" ;
- alias-type       = name ;
- struct-type      = name ;
- pointer-type     = "ptr" "[" type "]" ;
- type            = base-type [ array-suffix ] ;
- base-type        = builtin-type | alias-type | struct-type | pointer-type ;
- array-suffix     = "[" integer "]" ;
- cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | pointer-type ;
- integer         = digit { digit } ;
- number          = ( digit { digit } [ "." { digit } ]
-                   | "." digit { digit } ) [ exponent ] ;
- exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
- boolean-literal    = "True" | "False" ;
- letter          = "A".."Z" | "a".."z" ;
- digit           = "0".."9" ;
- end-of-line             = "\r\n" | "\r" | "\n" ;
- comment = "#" { comment-character } ;
- comment-character = ? any character except "\r" and "\n" ? ;
- whitespace = " " | "\t" | "\v" | "\f" ;
- INDENT          = ? synthetic token emitted by lexer ? ;
- DEDENT          = ? synthetic token emitted by lexer ? ;
- 
- BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
+ program                           = [ end-of-lines ]
+                                     [ top-level-item
+                                       { end-of-lines top-level-item } ]
+                                     [ end-of-lines ] ;
+ end-of-lines                      = end-of-line { end-of-line } ;
+ top-level-item                    = function-definition
+                                     | type-alias
+                                     | trait-definition
+                                     | implementation-definition
+                                     | struct-definition
+                                     | class-definition
+                                     | external
+                                     | top-level-statement ;
+ struct-definition                 = "struct" name ":" end-of-lines
+                                     struct-block ;
+-trait-definition                  = "trait" name ":" end-of-lines
++trait-definition                  = "trait" name [ "[" name "]" ] ":" end-of-lines
+                                     trait-block ;
+ trait-block                       = indent trait-method-signature
+                                     { end-of-lines trait-method-signature }
+                                     dedent ;
+ trait-method-signature            = "def" name "(" [ parameters ] ")"
+                                     [ "->" type ] ;
+ class-definition                  = "class" name
+                                     [ "(" trait-reference
+                                       { "," trait-reference } ")" ]
+                                     ":" end-of-lines
+                                     class-block ;
+-trait-reference                   = name ;
++trait-reference                   = name [ "[" type "]" ] ;
+ implementation-definition         = "impl" trait-reference "for" name ":"
+                                     end-of-lines implementation-block ;
+ implementation-block              = indent method-definition
+                                     { end-of-lines method-definition } dedent ;
+ type-alias                        = "type" name "=" type ;
+ struct-block                      = indent field-declaration
+                                     { end-of-lines field-declaration } dedent ;
+ class-block                       = indent class-member
+                                     { end-of-lines class-member } dedent ;
+ class-member                      = [ visibility ]
+                                     ( field-declaration | method-definition ) ;
+ visibility                        = "public" | "private" ;
+ field-declaration                 = name ":" type ;
+ method-definition                 = "def" name "(" [ parameters ] ")"
+                                     [ "->" type ] ":"
+                                     ( simple-statement
+                                       | end-of-lines block ) ;
+ function-definition               = "def" function-signature [ "->" type ] ":"
+                                     ( simple-statement
+                                       | end-of-lines block ) ;
+ external                          = "extern" "def" external-function-signature
+                                     [ "->" type ] ;
+ top-level-statement               = statement ;
+ function-signature                = name "(" [ parameters ] ")" ;
+ external-function-signature       = name "(" [ parameters [ "," "..." ] | "..." ] ")" ;
+ parameters                        = typed-parameter { "," typed-parameter } ;
+ typed-parameter                   = name ":" type ;
+ if-statement                      = "if" expression ":" suite
+                                     { [ end-of-lines ] "elif" expression ":" suite }
+                                     [ [ end-of-lines ] "else" ":" suite ] ;
+ for-statement                     = "for" ( "var" name ":" type | name )
+                                     "=" expression ","
+                                     expression "," expression ":" suite ;
+ while-statement                   = "while" expression ":" suite ;
+ do-while-statement                = "do" ":" suite [ end-of-lines ]
+                                     "while" expression ;
+ switch-statement                  = "switch" expression ":" end-of-lines
+                                     indent switch-body dedent ;
+ switch-body                       = switch-case
+                                     { end-of-lines switch-case }
+                                     [ end-of-lines default-case ] ;
+ switch-case                       = "case" switch-integer
+                                     { "," switch-integer } ":" suite ;
+ default-case                      = "default" ":" suite ;
+ variable-statement                = "var" variable-binding
+                                     { "," variable-binding } ;
+ simple-statement                  = return-statement
+                                     | break-statement
+                                     | continue-statement
+                                     | variable-statement
+                                     | expression ;
+ compound-statement                = if-statement
+                                     | for-statement
+                                     | while-statement
+                                     | do-while-statement
+                                     | switch-statement ;
+ statement                         = simple-statement | compound-statement ;
+ suite                             = simple-statement
+                                     | compound-statement
+                                     | end-of-lines block ;
+ return-statement                  = "return" [ expression ] ;
+ break-statement                   = "break" ;
+ continue-statement                = "continue" ;
+ statement-separator               = end-of-lines | BLOCK_END ;
+ block                             = indent statement
+                                     { statement-separator statement } dedent ;
+ expression                        = assignment ;
+ assignment                        = logical-or [ assignment-operator assignment ] ;
+ logical-or                        = logical-and { "||" logical-and } ;
+ logical-and                       = bitwise-or { "&&" bitwise-or } ;
+ bitwise-or                        = bitwise-xor { "|" bitwise-xor } ;
+ bitwise-xor                       = bitwise-and { "^" bitwise-and } ;
+ bitwise-and                       = equality { "&" equality } ;
+ equality                          = relational { ("==" | "!=") relational } ;
+ relational                        = shift { ("<" | "<=" | ">" | ">=") shift } ;
+ shift                             = sum { ("<<" | ">>") sum } ;
+ sum                               = term { ("+" | "-") term } ;
+ term                              = unary-expression
+                                     { ("*" | "/" | "%") unary-expression } ;
+ lvalue                            = name
+                                     { "." name | "[" expression "]" } ;
+ variable-binding                  = name ":" type [ "=" expression ] ;
+ unary-expression                  = ("-" | "!" | "~" | "++" | "--")
+                                     unary-expression
+                                     | postfix-expression ;
+ postfix-expression                = primary [ "++" | "--" ] ;
+ primary                           = cast-expression
+                                     | sizeof-expression
+                                     | address-expression
+                                     | array-literal
+                                     | string-literal
+                                     | character-literal
+                                     | name-expression
+                                     | number-expression
+                                     | boolean-literal
+                                     | parenthesized-expression ;
+ cast-expression                   = cast-type "(" expression ")" ;
+ sizeof-expression                 = "sizeof" "(" type ")" ;
+ address-expression                = "addr" "(" lvalue ")" ;
+ array-literal                     = "[" [ expression
+                                       { "," expression } ] "]" ;
+ string-literal                    = '"' { string-character | escape } '"' ;
+ escape                            = literal-escape ;
+ string-character                  = ? any character except '"', "\\", "\r", and "\n" ? ;
+ character-literal                 = "'" ( character | character-escape ) "'" ;
+ character-escape                  = literal-escape ;
+ literal-escape                    = "\\" ( "\\" | "'" | '"' | "?"
+                                       | "a" | "b" | "f" | "n" | "r"
+                                       | "t" | "v"
+                                       | "x" hex-digit hex-digit
+                                       | octal-digit [ octal-digit
+                                         [ octal-digit ] ]
+                                       | "u" hex-digit hex-digit hex-digit hex-digit
+                                       | "U" hex-digit hex-digit hex-digit hex-digit
+                                         hex-digit hex-digit hex-digit hex-digit ) ;
+ character                         = ? any character except "'", "\\", "\r", and "\n" ? ;
+ hex-digit                         = digit | "A".."F" | "a".."f" ;
+ assignment-operator               = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
+ octal-digit                       = "0".."7" ;
+ name-expression                   = lvalue
+                                     | call-expression
+                                     | method-call-expression
+                                     | constructor-call-expression ;
+ call-expression                   = name "(" [ arguments ] ")" ;
+ method-call-expression            = lvalue "." name "(" [ arguments ] ")" ;
+ constructor-call-expression       = name "(" [ arguments ] ")" ;
+ arguments                         = expression { "," expression } ;
+ number-expression                 = number ;
+ parenthesized-expression          = "(" expression ")" ;
+ indent                            = INDENT ;
+ dedent                            = DEDENT ;
+ name                              = (letter | "_")
+                                     { letter | digit | "_" } ;
+ type                              = base-type [ array-suffix ] ;
+ base-type                         = builtin-type | alias-type | struct-type
+                                     | pointer-type ;
+ pointer-type                      = "ptr" "[" type "]" ;
+ array-suffix                      = "[" integer "]" ;
+ builtin-type                      = "int" | "int8" | "int16" | "int32"
+                                     | "int64" | "uint8" | "uint16"
+                                     | "uint32" | "uint64"
+                                     | "float" | "float32"
+                                     | "float64" | "bool" | "None" ;
+ struct-type                       = name ;
+ alias-type                        = name ;
+ cast-type                         = builtin-cast-type | pointer-type ;
+ builtin-cast-type                 = "int" | "int8" | "int16" | "int32"
+                                     | "int64" | "uint8" | "uint16"
+                                     | "uint32" | "uint64"
+                                     | "float" | "float32"
+                                     | "float64" | "bool" ;
+ number                            = ( digit { digit } [ "." { digit } ]
+                                     | "." digit { digit } ) [ exponent ] ;
+ switch-integer                    = [ "-" ] digit { digit } ;
+ exponent                          = ( "e" | "E" ) [ "+" | "-" ]
+                                     digit { digit } ;
+ boolean-literal                   = "True" | "False" ;
+ integer                           = digit { digit } ;
+ letter                            = "A".."Z" | "a".."z" ;
+ digit                             = "0".."9" ;
+ end-of-line                       = "\r\n" | "\r" | "\n" ;
+ (*
+     A `comment` begins with "#" and continues to the end of the line. The lexer
+      ignores its text and returns an end-of-line token when one follows it.
+ *)
+ comment                           = "#" { comment-character } ;
+ comment-character                 = ? any character except "\r" and "\n" ? ;
+ (*
+     `whitespace` may appear before or between tokens
+      and is ignored by the lexer.
+ *)
+ whitespace                        = " " | "\t" | "\v" | "\f" ;
+ INDENT                            = ? synthetic token emitted by lexer when indentation increases ? ;
+ DEDENT                            = ? synthetic token emitted by lexer when indentation decreases ? ;
+ BLOCK_END                         = ? synthetic token injected into the stream by ParseBlock
+                                       immediately after it consumes DEDENT ? ;
+
 ```
 
 ## Representing an Unresolved Type Parameter
@@ -151,32 +262,46 @@ A new `ValueType` enum value represents an unresolved type parameter inside a tr
 ```cpp
 enum class ValueType {
   // ...existing values...
-  TypeVar,
+  TypeVariable,
 };
 ```
 
-The set of currently active type parameter names is tracked in a global:
+Because only one trait body is ever being parsed at a time, there's no need for a set of active names — a single global string holds the type parameter name currently in scope:
 
 ```cpp
-static std::set<string> ActiveTypeParams;
+static string ActiveTraitTypeParameter;
 ```
 
-`ParseTypeToken` checks `ActiveTypeParams` before falling back to alias and struct lookup. If the name is active, it returns `ValueType::TypeVar` and stores the parameter name itself as the struct name:
+`ParseTypeToken` checks `ActiveTraitTypeParameter` before falling back to alias and struct lookup. If the current name matches it, it returns `ValueType::TypeVariable` and stores the parameter name itself as the struct name:
 
 ```cpp
 case tok_name: {
-  string TyName = Name;
-  if (ActiveTypeParams.count(TyName)) {
+  if (!ActiveTraitTypeParameter.empty() && Name == ActiveTraitTypeParameter) {
+    BaseTypeInfo = Name;
     getNextToken();
-    if (StructName)
-      *StructName = TyName;
-    return ValueType::TypeVar;
+    BaseType = ValueType::TypeVariable;
+    break;
   }
-  // ...alias lookup, then struct lookup, as before...
+  auto Alias = TypeAliases.find(Name);
+  if (Alias != TypeAliases.end()) {
+    BaseType = Alias->second.first;
+    BaseTypeInfo = Alias->second.second;
+    getNextToken();
+    break;
+  }
+  auto Found = StructTypes.find(Name);
+  if (Found == StructTypes.end()) {
+    LogErrorExpression(("Unknown type '" + Name + "'").c_str());
+    return ValueType::Error;
+  }
+  BaseTypeInfo = Name;
+  getNextToken();
+  BaseType = ValueType::Struct;
+  break;
 }
 ```
 
-This is why `T` in `def add(x: T, y: T) -> T` resolves to `(ValueType::TypeVar, "T")` instead of failing as an unknown type: the check runs first, before the alias and struct maps are even consulted. Outside a trait body `ActiveTypeParams` is empty, so `T` falls straight through to the ordinary unknown-type error.
+This is why `T` in `def add(x: T, y: T) -> T` resolves to `(ValueType::TypeVariable, "T")` instead of failing as an unknown type: the check runs first, before the alias and struct maps are even consulted. Outside a trait body `ActiveTraitTypeParameter` is empty, so `T` falls straight through to the ordinary unknown-type error.
 
 ## Parsing the Trait's Type Parameter
 
@@ -184,145 +309,193 @@ This is why `T` in `def add(x: T, y: T) -> T` resolves to `(ValueType::TypeVar, 
 
 ```cpp
 getNextToken(); // eat trait name
-string TypeParamName;
+string TypeParameterName;
 if (CurrentToken == tok_lbracket) {
   getNextToken(); // eat '['
   if (CurrentToken != tok_name)
-    return LogErrorExpression("Expected type parameter name in trait definition"), false;
-  TypeParamName = Name;
+    return LogErrorExpression(
+               "Expected type parameter name in trait definition"),
+           false;
+  TypeParameterName = Name;
   getNextToken(); // eat type parameter name
   if (CurrentToken != tok_rbracket)
-    return LogErrorExpression("Expected ']' after trait type parameter"), false;
+    return LogErrorExpression(
+               "Expected ']' after trait type parameter"),
+           false;
   getNextToken(); // eat ']'
 }
 if (CurrentToken != tok_colon)
   return LogErrorExpression("Expected ':' after trait name"), false;
 // ...eat ':', consume newlines, expect INDENT...
 
-TraitInfo TI;
-TI.Name = TraitName;
-TI.TypeParamName = TypeParamName;
-ActiveTypeParams.clear();
-if (!TypeParamName.empty())
-  ActiveTypeParams.insert(TypeParamName);
+TraitTypeInfo Trait;
+Trait.TypeParameterName = TypeParameterName;
+ActiveTraitTypeParameter = TypeParameterName;
 ```
 
-`TypeParamName` is stored on `TraitInfo`. An empty `TypeParamName` means the trait isn't generic, and `ActiveTypeParams` stays empty for the whole body — every `T`-like name in a non-generic trait is still just an ordinary, probably-unknown identifier.
+`TypeParameterName` is stored on `TraitTypeInfo`, the struct held in the `TraitTypes` map. An empty `TypeParameterName` means the trait isn't generic, and `ActiveTraitTypeParameter` stays empty for the whole body — every `T`-like name in a non-generic trait is still just an ordinary, probably-unknown identifier. `ActiveTraitTypeParameter` is cleared again once the trait body's `DEDENT` is consumed, at the end of `ParseTraitDefinition`.
 
 ## Carrying the Type Argument
 
-In [Chapter 40](chapter-40.md), `StructTypeInfo::ImplementedTraits` was a `vector<string>`. This chapter replaces the element type with a nested struct, `StructTypeInfo::ImplTraitRef`, that carries both the trait name and the concrete type argument supplied at the class header or the `impl` header:
+`StructTypeInfo::ImplementedTraits` gains a nested struct, `StructTypeInfo::TraitReference`, that carries both the trait name and the concrete type argument supplied at the class header or the `impl` header:
 
 ```cpp
 struct StructTypeInfo {
-  // ...
-  struct ImplTraitRef {
-    string TraitName;
-    bool HasTypeArg = false;
-    ValueType TypeArg = ValueType::Error;
-    string TypeArgStructName;
+  struct TraitReference {
+    string Name;
+    bool HasTypeArgument = false;
+    ValueType TypeArgument = ValueType::Error;
+    string TypeArgumentInfo;
   };
-  vector<ImplTraitRef> ImplementedTraits;
+  vector<StructFieldInfo> Fields;
+  map<string, size_t> FieldIndices;
+  map<string, bool> Methods;
+  vector<TraitReference> ImplementedTraits;
+  bool IsClass = false;
 };
 ```
 
-Both `ParseAggregateDefinition` (class header) and `ParseImplDefinition` (impl header) parse the optional `[type]` and fill one of these:
+Both `ParseAggregateDefinition` (class header) and `ParseImplementationDefinition` (impl header) parse the optional `[type]` the same way. Here's the `impl`-header version:
 
 ```cpp
-StructTypeInfo::ImplTraitRef Ref;
-Ref.TraitName = TraitName;
-const auto &TI = Traits.at(TraitName);
-if (!TI.TypeParamName.empty()) {
-  // trait requires a type argument
+const auto &Trait = TraitTypes.at(TraitName);
+if (!Trait.TypeParameterName.empty()) {
   if (CurrentToken != tok_lbracket)
-    return LogErrorExpression(("Trait '" + TraitName + "' requires a type argument").c_str()), false;
+    return LogErrorExpression(
+               ("Trait '" + TraitName + "' requires a type argument")
+                   .c_str()),
+           false;
   getNextToken(); // eat '['
-  string TypeArgStruct;
-  ValueType TypeArg = ParseTypeToken(&TypeArgStruct);
-  if (TypeArg == ValueType::Error || TypeArg == ValueType::None ||
-      TypeArg == ValueType::TypeVar)
+  TraitReference.TypeArgument =
+      ParseTypeToken(&TraitReference.TypeArgumentInfo);
+  if (TraitReference.TypeArgument == ValueType::Error ||
+      TraitReference.TypeArgument == ValueType::None ||
+      TraitReference.TypeArgument == ValueType::TypeVariable)
     return LogErrorExpression("Invalid trait type argument"), false;
   if (CurrentToken != tok_rbracket)
-    return LogErrorExpression("Expected ']' after trait type argument"), false;
+    return LogErrorExpression("Expected ']' after trait type argument"),
+           false;
   getNextToken(); // eat ']'
-  Ref.HasTypeArg = true;
-  Ref.TypeArg = TypeArg;
-  Ref.TypeArgStructName = TypeArgStruct;
+  TraitReference.HasTypeArgument = true;
 } else if (CurrentToken == tok_lbracket) {
-  return LogErrorExpression(("Trait '" + TraitName + "' does not take type arguments").c_str()), false;
+  return LogErrorExpression(
+             ("Trait '" + TraitName + "' does not take type arguments")
+                 .c_str()),
+         false;
 }
 ```
 
-In the `impl`-header path, the duplicate-impl check from [Chapter 41](chapter-41.md) is upgraded from comparing trait names to comparing full `ImplTraitRef`s with a `SameImpl` lambda:
+The duplicate-impl check carried over from [Chapter 41](chapter-41.md) is unchanged: it still compares only the trait `Name`, not the type argument.
 
 ```cpp
-auto SameImpl = [&](const StructTypeInfo::ImplTraitRef &R) {
-  return R.TraitName == ImplRef.TraitName &&
-         R.HasTypeArg == ImplRef.HasTypeArg && R.TypeArg == ImplRef.TypeArg &&
-         R.TypeArgStructName == ImplRef.TypeArgStructName;
-};
+if (any_of(Class->second.ImplementedTraits.begin(),
+           Class->second.ImplementedTraits.end(),
+           [&](const StructTypeInfo::TraitReference &Implemented) {
+             return Implemented.Name == TraitName;
+           }))
+  return LogErrorExpression(
+             ("Trait '" + TraitName + "' is already implemented for class '" +
+              ClassName + "'")
+                 .c_str()),
+         false;
 ```
 
-So two separate `impl` blocks, `impl Addable[int] for Calc:` and `impl Addable[float64] for Calc:`, are recognized as different implementations, not a duplicate of each other — at the `impl`-header level. The class-header trait list is a different story; see Known Limitations.
+So `impl Addable[int] for Calc:` followed later by `impl Addable[float64] for Calc:` doesn't get as far as comparing type arguments — the second `impl` is rejected as already-implemented on the trait name alone. The class-header trait list's own duplicate check, a `SeenTraits` set of names, has the same limitation; see Known Limitations.
 
 ## Conformance Checking with Type Substitution
 
-`VerifyTraitConformance` now takes an `ImplTraitRef` instead of a bare trait-name string, checks that the trait's own type-parameter-ness agrees with whether an argument was supplied, then substitutes the concrete type for every `TypeVar` occurrence before comparing signatures:
+`VerifyTraitConformance` now takes a `StructTypeInfo::TraitReference` instead of a bare trait-name string. It substitutes the concrete type argument for every `TypeVariable` occurrence before comparing signatures:
 
 ```cpp
-static bool VerifyTraitConformance(const string &ClassName,
-                                   const StructTypeInfo::ImplTraitRef &ImplRef) {
-  const string &TraitName = ImplRef.TraitName;
-  auto CI = StructTypes.find(ClassName);
-  if (CI == StructTypes.end() || !CI->second.IsClass)
-    return LogErrorExpression(("Unknown class '" + ClassName + "'").c_str()), false;
-  if (!Traits.count(TraitName))
-    return LogErrorExpression(("Unknown trait '" + TraitName + "'").c_str()), false;
-  const auto &TI = Traits.at(TraitName);
-  if (!TI.TypeParamName.empty() && !ImplRef.HasTypeArg)
-    return LogErrorExpression(("Trait '" + TraitName + "' requires a type argument").c_str()), false;
-  if (TI.TypeParamName.empty() && ImplRef.HasTypeArg)
-    return LogErrorExpression(("Trait '" + TraitName + "' does not take type arguments").c_str()), false;
-
-  const auto &ClassInfo = CI->second;
-  auto ResolveReq = [&](ValueType T,
-                        const string &S) -> std::pair<ValueType, string> {
-    if (T == ValueType::TypeVar && S == TI.TypeParamName)
-      return {ImplRef.TypeArg, ImplRef.TypeArgStructName};
-    return {T, S};
+static bool VerifyTraitConformance(
+    const string &ClassName,
+    const StructTypeInfo::TraitReference &TraitReference) {
+  const string &TraitName = TraitReference.Name;
+  const auto &Trait = TraitTypes.at(TraitName);
+  const auto &Class = StructTypes.at(ClassName);
+  auto ResolveType = [&](ValueType Type,
+                         const string &TypeInfo) -> pair<ValueType, string> {
+    if (Type == ValueType::TypeVariable &&
+        TypeInfo == Trait.TypeParameterName)
+      return {TraitReference.TypeArgument,
+              TraitReference.TypeArgumentInfo};
+    return {Type, TypeInfo};
   };
-  for (const auto &Req : TI.Methods) {
-    // ...method exists, is public, same as chapter 41...
-    FunctionSignatureNode *P = /* ... */;
-    auto ReqRet = ResolveReq(Req.ReturnType, Req.ReturnStructName);
-    if (P->getNumParameters() != Req.Arguments.size() + 1 ||
-        P->getReturnType() != ReqRet.first ||
-        P->getReturnStructName() != ReqRet.second)
-      return LogErrorExpression("does not match trait signature"), false;
-    for (size_t I = 0; I < Req.Arguments.size(); ++I) {
-      auto ReqArg = ResolveReq(Req.Arguments[I].Type, Req.Arguments[I].StructName);
-      if (P->getParameterType(I + 1) != ReqArg.first ||
-          P->getParameterStructName(I + 1) != ReqArg.second)
-        return LogErrorExpression("does not match trait signature"), false;
+  for (const auto &Requirement : Trait.Methods) {
+    string MethodName = ClassName + "." + Requirement.Name;
+    FunctionSignatureNode *Implementation =
+        GetFunctionSignature(MethodName);
+    if (!Implementation) {
+      LogErrorExpression(
+          ("Class '" + ClassName + "' does not implement trait '" + TraitName +
+           "' method '" + Requirement.Name + "'")
+              .c_str());
+      return false;
+    }
+    auto Visibility = Class.Methods.find(Requirement.Name);
+    if (Visibility == Class.Methods.end() || !Visibility->second) {
+      LogErrorExpression(
+          ("Trait method '" + Requirement.Name + "' on class '" + ClassName +
+           "' must be public")
+              .c_str());
+      return false;
+    }
+
+    auto RequiredReturn =
+        ResolveType(Requirement.ReturnType, Requirement.ReturnTypeInfo);
+    bool Matches =
+        Implementation->getNumParameters() ==
+            Requirement.Parameters.size() + 1 &&
+        Implementation->getReturnType() == RequiredReturn.first &&
+        Implementation->getReturnStructName() == RequiredReturn.second;
+    for (size_t Index = 0; Matches && Index < Requirement.Parameters.size();
+         ++Index) {
+      auto RequiredParameter = ResolveType(
+          Requirement.Parameters[Index].second,
+          Requirement.ParameterTypeInfo[Index]);
+      Matches =
+          Implementation->getParameterType(Index + 1) ==
+              RequiredParameter.first &&
+          Implementation->getParameterStructName(Index + 1) ==
+              RequiredParameter.second;
+    }
+    if (!Matches) {
+      LogErrorExpression(
+          ("Method '" + Requirement.Name + "' on class '" + ClassName +
+           "' does not match trait signature")
+              .c_str());
+      return false;
     }
   }
   return true;
 }
 ```
 
-For a non-generic trait, every `Req` type is already concrete, so `ResolveReq` always returns its arguments unchanged: conformance works exactly as it did in [Chapter 41](chapter-41.md).
+For a non-generic trait, `Trait.TypeParameterName` is empty, so `ResolveType` never matches and always returns its arguments unchanged: conformance works exactly as it did in [Chapter 41](chapter-41.md). Note that this function itself doesn't check whether a type argument was required or supplied — that check (`Trait '...' requires a type argument` / `does not take type arguments`) happens earlier, while parsing the class header or `impl` header, before `VerifyTraitConformance` is ever called.
 
 ## What This Is Not
 
-Type parameters exist only on trait signatures. There are no generic functions, no generic structs, and no generic classes. `T` can't appear in a field declaration, a variable type, or a function return type outside a trait body — `ActiveTypeParams` is only ever populated while a trait body is being parsed.
+Type parameters exist only on trait signatures. There are no generic functions, no generic structs, and no generic classes. `T` can't appear in a field declaration, a variable type, or a function return type outside a trait body — `ActiveTraitTypeParameter` is only ever populated while a trait body is being parsed.
 
 There's also no dynamic dispatch here, same as [Chapter 40](chapter-40.md): a generic trait is still a compile-time-checked contract, not a mechanism for writing code that's polymorphic over "anything implementing `Addable[T]`."
 
 ## Known Limitations
 
-**A class cannot implement the same generic trait twice, even with different type arguments.** I initially assumed `class Calc(Addable[int], Addable[float64]):` would work, since `impl`'s own duplicate check (`SameImpl`) does account for the type argument. But I tried it and it doesn't: the class-header trait list's duplicate check, unchanged since [Chapter 40](chapter-40.md), only compares trait *names*, so it rejects `Addable[int], Addable[float64]` as a duplicate before type arguments ever enter into it. And even sidestepping the header by using two separate `impl` blocks instead, both implementations of `Addable[T]` need a method literally named `add` — there's no per-instantiation mangling, so the second `impl`'s `def add` collides with the first's under the ordinary "Method 'add' is already defined on 'Calc'" redefinition error. I confirmed both failure modes directly rather than assume either worked.
+**A class cannot implement the same generic trait twice, even with different type arguments.** I initially thought `class Calc(Addable[int], Addable[float64]):` might work, since a class can list several distinct traits. But the class-header duplicate check only compares trait *names* — it rejects the second `Addable[...]` before the type arguments ever enter into it:
 
-**Type arguments must be concrete.** `ValueType::TypeVar` itself is rejected as a type argument, so a generic trait can't be implemented in terms of another trait's still-unresolved type parameter.
+```
+Error (Line 3, Column 26): Duplicate trait 'Addable' in class implements list
+```
+
+Sidestepping the header by using two separate `impl` blocks instead doesn't work either, for the same reason: the `impl`-header duplicate check also compares only the trait name, so the second `impl Addable[float64] for Calc:` is rejected as already-implemented before it even gets to parsing a body:
+
+```
+Error (Line 8, Column 27): Trait 'Addable' is already implemented for class 'Calc'
+```
+
+I confirmed both failure modes directly rather than assume either worked.
+
+**Type arguments must be concrete.** `ValueType::TypeVariable` itself is rejected as a type argument, so a generic trait can't be implemented in terms of another trait's still-unresolved type parameter.
 
 **No forward references.** A trait must exist before any class or `impl` references it, same restriction [Chapter 40](chapter-40.md) already had.
 
@@ -377,7 +550,7 @@ Error (Line 8, Column 0): Method 'add' on class 'Bad' does not match trait signa
 ## Build and Run
 
 ```bash
-cd code/chapter-31
+cd code/chapter-42
 cmake -S . -B build && cmake --build build
 ```
 

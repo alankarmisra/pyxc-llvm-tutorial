@@ -40,7 +40,7 @@ The methods defined in the `impl` block become regular methods on `Calc`, callab
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-30
+cd pyxc-llvm-tutorial/code/chapter-41
 ```
 
 ## Grammar
@@ -48,224 +48,340 @@ cd pyxc-llvm-tutorial/code/chapter-30
 One new production, `implementation-definition`, plus its own block and method productions. `implementation-method` has a full body, unlike `trait-method-signature`; methods in an `impl` block are fully defined right there:
 
 ```grammardiff
- program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
- end-of-lines            = end-of-line { end-of-line } ;
--top-level-item             = type-alias | trait-definition | struct-definition | class-definition | function-definition | external | top-level-expression ;
-+top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | external | top-level-expression ;
- type-alias       = "type" name "=" type ;
- trait-definition        = "trait" name ":" end-of-lines trait-block ;
- trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
- trait-method-signature  = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ;
- struct-definition       = "struct" name ":" end-of-lines struct-block ;
- class-definition        = "class" name [ "(" name { "," name } ")" ] ":" end-of-lines struct-block ;
-+implementation-definition         = "impl" name "for" name ":" end-of-lines implementation-block ;
-+implementation-block       = indent implementation-method { end-of-lines implementation-method } dedent ;
-+implementation-method      = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- struct-block     = indent class-member { end-of-lines class-member } dedent ;
- class-member     = [ visibility ] ( field-declaration | method-definition ) ;
- visibility      = "public" | "private" ;
- method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")"
-                   [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- field-declaration       = name ":" type ;
- function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- (* If the return type is omitted, it defaults to None. *)
- external        = "extern" "def" function-signature [ "->" type ] ;
- top-level-expression    = expression ;
- function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
- typed-parameter      = name ":" type ;
- if-statement          = "if" expression ":" suite
-                 [ end-of-lines "else" ":" suite ] ;
- for-statement         = "for"
-                   ( "var" name ":" type | name )
-                   "=" expression "," expression "," expression ":" suite ;
- variable-statement         = "var" variable-binding { "," variable-binding } ;
- assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
- simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
- compound-statement    = if-statement | for-statement ;
- statement       = simple-statement | compound-statement ;
- suite           = simple-statement | compound-statement | end-of-lines block ;
- return-statement      = "return" [ expression ] ;
- statement-separator = end-of-lines | BLOCK_END ;
- block = indent statement { statement-separator statement } dedent ;
- expression      = comparison ;
- comparison      = sum { comparison-operator sum } ;
- comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
- sum             = term { ("+" | "-") term } ;
- term            = unary-expression { ("*" | "/") unary-expression } ;
- lvalue          = name | field-access | index-expression ;
- variable-binding      = name ":" type [ "=" expression ] ;
- unary-expression       = "-" unary-expression | primary ;
- primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
- cast-expression        = cast-type "(" expression ")" ;
- sizeof-expression      = "sizeof" "(" type ")" ;
- address-expression        = "addr" "(" lvalue ")" ;
- name-expression  = name | call-expression | method-call-expression | constructor-call-expression ;
- call-expression        = name "(" [ expression { "," expression } ] ")" ;
- method-call-expression  = name "." name "(" [ expression { "," expression } ] ")" ;
- constructor-call-expression    = name "(" [ expression { "," expression } ] ")" ;
- field-access     = name "." name { "." name } ;
- index-expression       = name "[" expression "]" ;
- number-expression      = number ;
- array-literal    = "[" [ expression { "," expression } ] "]" ;
- string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
- escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
- parenthesized-expression       = "(" expression ")" ;
- indent          = INDENT ;
- dedent          = DEDENT ;
- 
- name      = (letter | "_") { letter | digit | "_" } ;
- builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | "None" ;
- alias-type       = name ;
- struct-type      = name ;
- pointer-type     = "ptr" "[" type "]" ;
- type            = base-type [ array-suffix ] ;
- base-type        = builtin-type | alias-type | struct-type | pointer-type ;
- array-suffix     = "[" integer "]" ;
- cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | pointer-type ;
- integer         = digit { digit } ;
- number          = ( digit { digit } [ "." { digit } ]
-                   | "." digit { digit } ) [ exponent ] ;
- exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
- boolean-literal    = "True" | "False" ;
- letter          = "A".."Z" | "a".."z" ;
- digit           = "0".."9" ;
- end-of-line             = "\r\n" | "\r" | "\n" ;
- comment = "#" { comment-character } ;
- comment-character = ? any character except "\r" and "\n" ? ;
- whitespace = " " | "\t" | "\v" | "\f" ;
- INDENT          = ? synthetic token emitted by lexer ? ;
- DEDENT          = ? synthetic token emitted by lexer ? ;
- 
- BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
+ program                           = [ end-of-lines ]
+                                     [ top-level-item
+                                       { end-of-lines top-level-item } ]
+                                     [ end-of-lines ] ;
+ end-of-lines                      = end-of-line { end-of-line } ;
+ top-level-item                    = function-definition
+                                     | type-alias
+                                     | trait-definition
++                                    | implementation-definition
+                                     | struct-definition
+                                     | class-definition
+                                     | external
+                                     | top-level-statement ;
+ struct-definition                 = "struct" name ":" end-of-lines
+                                     struct-block ;
+ trait-definition                  = "trait" name ":" end-of-lines
+                                     trait-block ;
+ trait-block                       = indent trait-method-signature
+                                     { end-of-lines trait-method-signature }
+                                     dedent ;
+ trait-method-signature            = "def" name "(" [ parameters ] ")"
+                                     [ "->" type ] ;
+ class-definition                  = "class" name
+                                     [ "(" trait-reference
+                                       { "," trait-reference } ")" ]
+                                     ":" end-of-lines
+                                     class-block ;
+ trait-reference                   = name ;
++implementation-definition         = "impl" trait-reference "for" name ":"
++                                    end-of-lines implementation-block ;
++implementation-block              = indent method-definition
++                                    { end-of-lines method-definition } dedent ;
+ type-alias                        = "type" name "=" type ;
+ struct-block                      = indent field-declaration
+                                     { end-of-lines field-declaration } dedent ;
+ class-block                       = indent class-member
+                                     { end-of-lines class-member } dedent ;
+ class-member                      = [ visibility ]
+                                     ( field-declaration | method-definition ) ;
+ visibility                        = "public" | "private" ;
+ field-declaration                 = name ":" type ;
+ method-definition                 = "def" name "(" [ parameters ] ")"
+                                     [ "->" type ] ":"
+                                     ( simple-statement
+                                       | end-of-lines block ) ;
+ function-definition               = "def" function-signature [ "->" type ] ":"
+                                     ( simple-statement
+                                       | end-of-lines block ) ;
+ external                          = "extern" "def" external-function-signature
+                                     [ "->" type ] ;
+ top-level-statement               = statement ;
+ function-signature                = name "(" [ parameters ] ")" ;
+ external-function-signature       = name "(" [ parameters [ "," "..." ] | "..." ] ")" ;
+ parameters                        = typed-parameter { "," typed-parameter } ;
+ typed-parameter                   = name ":" type ;
+ if-statement                      = "if" expression ":" suite
+                                     { [ end-of-lines ] "elif" expression ":" suite }
+                                     [ [ end-of-lines ] "else" ":" suite ] ;
+ for-statement                     = "for" ( "var" name ":" type | name )
+                                     "=" expression ","
+                                     expression "," expression ":" suite ;
+ while-statement                   = "while" expression ":" suite ;
+ do-while-statement                = "do" ":" suite [ end-of-lines ]
+                                     "while" expression ;
+ switch-statement                  = "switch" expression ":" end-of-lines
+                                     indent switch-body dedent ;
+ switch-body                       = switch-case
+                                     { end-of-lines switch-case }
+                                     [ end-of-lines default-case ] ;
+ switch-case                       = "case" switch-integer
+                                     { "," switch-integer } ":" suite ;
+ default-case                      = "default" ":" suite ;
+ variable-statement                = "var" variable-binding
+                                     { "," variable-binding } ;
+ simple-statement                  = return-statement
+                                     | break-statement
+                                     | continue-statement
+                                     | variable-statement
+                                     | expression ;
+ compound-statement                = if-statement
+                                     | for-statement
+                                     | while-statement
+                                     | do-while-statement
+                                     | switch-statement ;
+ statement                         = simple-statement | compound-statement ;
+ suite                             = simple-statement
+                                     | compound-statement
+                                     | end-of-lines block ;
+ return-statement                  = "return" [ expression ] ;
+ break-statement                   = "break" ;
+ continue-statement                = "continue" ;
+ statement-separator               = end-of-lines | BLOCK_END ;
+ block                             = indent statement
+                                     { statement-separator statement } dedent ;
+ expression                        = assignment ;
+ assignment                        = logical-or [ assignment-operator assignment ] ;
+ logical-or                        = logical-and { "||" logical-and } ;
+ logical-and                       = bitwise-or { "&&" bitwise-or } ;
+ bitwise-or                        = bitwise-xor { "|" bitwise-xor } ;
+ bitwise-xor                       = bitwise-and { "^" bitwise-and } ;
+ bitwise-and                       = equality { "&" equality } ;
+ equality                          = relational { ("==" | "!=") relational } ;
+ relational                        = shift { ("<" | "<=" | ">" | ">=") shift } ;
+ shift                             = sum { ("<<" | ">>") sum } ;
+ sum                               = term { ("+" | "-") term } ;
+ term                              = unary-expression
+                                     { ("*" | "/" | "%") unary-expression } ;
+ lvalue                            = name
+                                     { "." name | "[" expression "]" } ;
+ variable-binding                  = name ":" type [ "=" expression ] ;
+ unary-expression                  = ("-" | "!" | "~" | "++" | "--")
+                                     unary-expression
+                                     | postfix-expression ;
+ postfix-expression                = primary [ "++" | "--" ] ;
+ primary                           = cast-expression
+                                     | sizeof-expression
+                                     | address-expression
+                                     | array-literal
+                                     | string-literal
+                                     | character-literal
+                                     | name-expression
+                                     | number-expression
+                                     | boolean-literal
+                                     | parenthesized-expression ;
+ cast-expression                   = cast-type "(" expression ")" ;
+ sizeof-expression                 = "sizeof" "(" type ")" ;
+ address-expression                = "addr" "(" lvalue ")" ;
+ array-literal                     = "[" [ expression
+                                       { "," expression } ] "]" ;
+ string-literal                    = '"' { string-character | escape } '"' ;
+ escape                            = literal-escape ;
+ string-character                  = ? any character except '"', "\\", "\r", and "\n" ? ;
+ character-literal                 = "'" ( character | character-escape ) "'" ;
+ character-escape                  = literal-escape ;
+ literal-escape                    = "\\" ( "\\" | "'" | '"' | "?"
+                                       | "a" | "b" | "f" | "n" | "r"
+                                       | "t" | "v"
+                                       | "x" hex-digit hex-digit
+                                       | octal-digit [ octal-digit
+                                         [ octal-digit ] ]
+                                       | "u" hex-digit hex-digit hex-digit hex-digit
+                                       | "U" hex-digit hex-digit hex-digit hex-digit
+                                         hex-digit hex-digit hex-digit hex-digit ) ;
+ character                         = ? any character except "'", "\\", "\r", and "\n" ? ;
+ hex-digit                         = digit | "A".."F" | "a".."f" ;
+ assignment-operator               = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
+ octal-digit                       = "0".."7" ;
+ name-expression                   = lvalue
+                                     | call-expression
+                                     | method-call-expression
+                                     | constructor-call-expression ;
+ call-expression                   = name "(" [ arguments ] ")" ;
+ method-call-expression            = lvalue "." name "(" [ arguments ] ")" ;
+ constructor-call-expression       = name "(" [ arguments ] ")" ;
+ arguments                         = expression { "," expression } ;
+ number-expression                 = number ;
+ parenthesized-expression          = "(" expression ")" ;
+ indent                            = INDENT ;
+ dedent                            = DEDENT ;
+ name                              = (letter | "_")
+                                     { letter | digit | "_" } ;
+ type                              = base-type [ array-suffix ] ;
+ base-type                         = builtin-type | alias-type | struct-type
+                                     | pointer-type ;
+ pointer-type                      = "ptr" "[" type "]" ;
+ array-suffix                      = "[" integer "]" ;
+ builtin-type                      = "int" | "int8" | "int16" | "int32"
+                                     | "int64" | "uint8" | "uint16"
+                                     | "uint32" | "uint64"
+                                     | "float" | "float32"
+                                     | "float64" | "bool" | "None" ;
+ struct-type                       = name ;
+ alias-type                        = name ;
+ cast-type                         = builtin-cast-type | pointer-type ;
+ builtin-cast-type                 = "int" | "int8" | "int16" | "int32"
+                                     | "int64" | "uint8" | "uint16"
+                                     | "uint32" | "uint64"
+                                     | "float" | "float32"
+                                     | "float64" | "bool" ;
+ number                            = ( digit { digit } [ "." { digit } ]
+                                     | "." digit { digit } ) [ exponent ] ;
+ switch-integer                    = [ "-" ] digit { digit } ;
+ exponent                          = ( "e" | "E" ) [ "+" | "-" ]
+                                     digit { digit } ;
+ boolean-literal                   = "True" | "False" ;
+ integer                           = digit { digit } ;
+ letter                            = "A".."Z" | "a".."z" ;
+ digit                             = "0".."9" ;
+ end-of-line                       = "\r\n" | "\r" | "\n" ;
+ (*
+     A `comment` begins with "#" and continues to the end of the line. The lexer
+      ignores its text and returns an end-of-line token when one follows it.
+ *)
+ comment                           = "#" { comment-character } ;
+ comment-character                 = ? any character except "\r" and "\n" ? ;
+ (*
+     `whitespace` may appear before or between tokens
+      and is ignored by the lexer.
+ *)
+ whitespace                        = " " | "\t" | "\v" | "\f" ;
+ INDENT                            = ? synthetic token emitted by lexer when indentation increases ? ;
+ DEDENT                            = ? synthetic token emitted by lexer when indentation decreases ? ;
+ BLOCK_END                         = ? synthetic token injected into the stream by ParseBlock
+                                       immediately after it consumes DEDENT ? ;
+
 ```
 
 ## New Token and Keyword
 
 ```cpp
-tok_impl = -44,
+tok_impl = -68,
 ```
 
 Registered in the keyword table like every other keyword. The `for` in `impl TraitName for ClassName` reuses the existing `tok_for` token, the same one `for` loop statements produce. There's no ambiguity: `impl` always precedes it, and the parser already knows it's reading an impl header at that point, not a loop.
 
-## Pulling Trait Conformance Checking Out into Its Own Function
+## Reusing Trait Conformance Checking
 
-In [Chapter 40](chapter-40.md), the conformance check was inlined at the end of `ParseAggregateDefinition`. This chapter pulls it out into a standalone function, `VerifyTraitConformance`, so both `ParseAggregateDefinition` (class body close) and the new `ParseImplDefinition` (impl body close) can call the same logic instead of duplicating it:
+[Chapter 40](chapter-40.md) already pulled the conformance check out into its own function, `VerifyTraitConformance`, called from `ParseAggregateDefinition` at the class body's closing `DEDENT`. That function is unchanged here:
 
 ```cpp
 static bool VerifyTraitConformance(const string &ClassName,
                                    const string &TraitName) {
-  auto CI = StructTypes.find(ClassName);
-  if (CI == StructTypes.end() || !CI->second.IsClass) {
-    LogErrorExpression(("Unknown class '" + ClassName + "'").c_str());
-    return false;
-  }
-  if (!Traits.count(TraitName)) {
-    LogErrorExpression(("Unknown trait '" + TraitName + "'").c_str());
-    return false;
-  }
-  const auto &TI = Traits.at(TraitName);
-  const auto &ClassInfo = CI->second;
-  for (const auto &Req : TI.Methods) {
-    auto PI = FunctionSignatures.find(ClassName + "." + Req.Name);
-    if (PI == FunctionSignatures.end()) {
-      LogErrorExpression(("Class '" + ClassName + "' does not implement trait '" +
-                TraitName + "' method '" + Req.Name + "'")
-                   .c_str());
+  const auto &Trait = TraitTypes.at(TraitName);
+  const auto &Class = StructTypes.at(ClassName);
+  for (const auto &Requirement : Trait.Methods) {
+    string MethodName = ClassName + "." + Requirement.Name;
+    FunctionSignatureNode *Implementation =
+        GetFunctionSignature(MethodName);
+    if (!Implementation) {
+      LogErrorExpression(
+          ("Class '" + ClassName + "' does not implement trait '" + TraitName +
+           "' method '" + Requirement.Name + "'")
+              .c_str());
       return false;
     }
-    auto MI = ClassInfo.MethodIsPublic.find(Req.Name);
-    if (MI == ClassInfo.MethodIsPublic.end() || !MI->second) {
-      LogErrorExpression(("Trait method '" + Req.Name + "' on class '" + ClassName +
-                "' must be public")
-                   .c_str());
+    auto Visibility = Class.Methods.find(Requirement.Name);
+    if (Visibility == Class.Methods.end() || !Visibility->second) {
+      LogErrorExpression(
+          ("Trait method '" + Requirement.Name + "' on class '" + ClassName +
+           "' must be public")
+              .c_str());
       return false;
     }
-    FunctionSignatureNode *P = PI->second.get();
-    if (P->getNumParameters() != Req.Arguments.size() + 1 ||
-        P->getReturnType() != Req.ReturnType ||
-        P->getReturnStructName() != Req.ReturnStructName) {
-      LogErrorExpression(("Method '" + Req.Name + "' on class '" + ClassName +
-                "' does not match trait signature")
-                   .c_str());
-      return false;
+
+    bool Matches =
+        Implementation->getNumParameters() ==
+            Requirement.Parameters.size() + 1 &&
+        Implementation->getReturnType() == Requirement.ReturnType &&
+        Implementation->getReturnStructName() == Requirement.ReturnTypeInfo;
+    for (size_t Index = 0; Matches && Index < Requirement.Parameters.size();
+         ++Index) {
+      Matches =
+          Implementation->getParameterType(Index + 1) ==
+              Requirement.Parameters[Index].second &&
+          Implementation->getParameterStructName(Index + 1) ==
+              Requirement.ParameterTypeInfo[Index];
     }
-    for (size_t I = 0; I < Req.Arguments.size(); ++I) {
-      if (P->getParameterType(I + 1) != Req.Arguments[I].Type ||
-          P->getParameterStructName(I + 1) != Req.Arguments[I].StructName) {
-        LogErrorExpression(("Method '" + Req.Name + "' on class '" + ClassName +
-                  "' does not match trait signature")
-                     .c_str());
-        return false;
-      }
+    if (!Matches) {
+      LogErrorExpression(
+          ("Method '" + Requirement.Name + "' on class '" + ClassName +
+           "' does not match trait signature")
+              .c_str());
+      return false;
     }
   }
   return true;
 }
 ```
 
-The three checks per required method (exists, public, signature matches) are exactly what [Chapter 40](chapter-40.md) already did inline; only the two guards at the top — unknown class, unknown trait — are new, needed now that this function can be called from a context (`impl`) where neither name was already looked up by the caller. `ParseAggregateDefinition` calls `VerifyTraitConformance(StructName, TraitName)` at the class body's closing DEDENT, same as before, just through the extracted function now.
+It takes a class name and a trait name and doesn't care where they came from. The new `ParseImplementationDefinition` calls it exactly the same way `ParseAggregateDefinition` already does, once it has resolved both names itself and finished parsing the `impl` body.
 
 ## The `impl` Block Parser
 
-`ParseImplDefinition` validates the header — trait exists, `for` follows, class exists and is actually a class, not a struct — parses and compiles each method, then checks conformance:
+`ParseImplementationDefinition` validates the header — trait exists, `for` follows, class exists and is actually a class, not a struct, trait not already implemented — then parses each method, checks conformance, and only compiles the methods once conformance passes:
 
 ```cpp
-static bool ParseImplDefinition() {
-  // CurrentToken is 'impl'
+static bool ParseImplementationDefinition() {
   getNextToken(); // eat 'impl'
   if (CurrentToken != tok_name)
     return LogErrorExpression("Expected trait name after 'impl'"), false;
   string TraitName = Name;
-  if (!Traits.count(TraitName))
-    return LogErrorExpression(("Unknown trait '" + TraitName + "'").c_str()), false;
+  if (!TraitTypes.count(TraitName))
+    return LogErrorExpression(("Unknown trait '" + TraitName + "'").c_str()),
+           false;
   getNextToken(); // eat trait name
   if (CurrentToken != tok_for)
-    return LogErrorExpression("Expected 'for' in impl definition"), false;
+    return LogErrorExpression("Expected 'for' after trait name"), false;
   getNextToken(); // eat 'for'
   if (CurrentToken != tok_name)
     return LogErrorExpression("Expected class name after 'for'"), false;
   string ClassName = Name;
-  auto CI = StructTypes.find(ClassName);
-  if (CI == StructTypes.end())
-    return LogErrorExpression(("Unknown class '" + ClassName + "'").c_str()), false;
-  if (!CI->second.IsClass)
-    return LogErrorExpression(("'" + ClassName +
-              "' is a struct, not a class; traits can only be implemented on "
-              "classes").c_str()), false;
+  auto Class = StructTypes.find(ClassName);
+  if (Class == StructTypes.end())
+    return LogErrorExpression(("Unknown class '" + ClassName + "'").c_str()),
+           false;
+  if (!Class->second.IsClass)
+    return LogErrorExpression("traits can only be implemented on classes"),
+           false;
+  if (find(Class->second.ImplementedTraits.begin(),
+           Class->second.ImplementedTraits.end(),
+           TraitName) != Class->second.ImplementedTraits.end())
+    return LogErrorExpression(
+               ("Trait '" + TraitName + "' is already implemented for class '" +
+                ClassName + "'")
+                   .c_str()),
+           false;
   getNextToken(); // eat class name
   if (CurrentToken != tok_colon)
-    return LogErrorExpression("Expected ':' in impl definition"), false;
+    return LogErrorExpression("Expected ':' after impl header"), false;
   getNextToken(); // eat ':'
-  if (CurrentToken == tok_eol)
-    consumeNewlines();
+  if (CurrentToken != tok_eol)
+    return LogErrorExpression("Expected newline after impl header"), false;
+  consumeNewlines();
   if (CurrentToken != tok_indent)
     return LogErrorExpression("Expected an indented impl body"), false;
   getNextToken(); // eat INDENT
 
-  if (std::find(CI->second.ImplementedTraits.begin(),
-                CI->second.ImplementedTraits.end(),
-                TraitName) != CI->second.ImplementedTraits.end())
-    return LogErrorExpression(("Trait '" + TraitName + "' is already implemented for class '" +
-              ClassName + "'").c_str()), false;
-
-  while (CurrentToken != tok_dedent && CurrentToken != tok_block_end && CurrentToken != tok_eof) {
+  vector<unique_ptr<FunctionDefinitionNode>> Methods;
+  while (CurrentToken != tok_dedent && CurrentToken != tok_eof) {
     if (CurrentToken == tok_eol) {
       consumeNewlines();
       continue;
     }
-    if (CurrentToken != tok_def)
-      return LogErrorExpression("Expected method definition in impl body"), false;
-    auto FnAST = ParseMethodDefinitionInClass(ClassName, /*IsPublic=*/true);
-    if (!FnAST)
-      return false;
-    if (auto *FnIR = FnAST->codegen()) {
-      if (ShouldDumpIR())
-        FnIR->print(errs());
+    if (CurrentToken == tok_block_end) {
+      getNextToken();
+      continue;
     }
+    if (CurrentToken != tok_def)
+      return LogErrorExpression("Expected method definition in impl body"),
+             false;
+    auto Method = ParseMethodDefinition(ClassName, true);
+    if (!Method)
+      return false;
+    Methods.push_back(std::move(Method));
     if (CurrentToken == tok_eol)
       consumeNewlines();
     else if (CurrentToken == tok_block_end)
@@ -273,21 +389,27 @@ static bool ParseImplDefinition() {
   }
   if (CurrentToken != tok_dedent)
     return LogErrorExpression("Expected dedent after impl body"), false;
-  PendingTokens.push_front(tok_block_end);
-  getNextToken(); // eat DEDENT, then surface tok_block_end
 
-  CI->second.ImplementedTraits.push_back(TraitName);
+  StructTypes[ClassName].ImplementedTraits.push_back(TraitName);
   if (!VerifyTraitConformance(ClassName, TraitName))
     return false;
+  for (auto &Method : Methods) {
+    if (!Method->codegen())
+      return false;
+  }
+  PendingTokens.push_front(tok_block_end);
+  getNextToken(); // eat DEDENT, then surface block-end
   return true;
 }
 ```
 
-The duplicate-`impl` check runs after the header is fully parsed and the body's `INDENT` consumed, not before — so a second `impl Adder for Calc:` reports its error from inside the body (at the first `def`), not at the header line itself. I confirmed this rather than assume it: compiling two `impl Adder for Calc:` blocks back to back reports the error on the line of the second block's first method, not its `impl` line.
+The duplicate-`impl` check runs at header-parse time, right after the class is resolved and before the class name token is even consumed — not after the body is parsed. I confirmed this by compiling two `impl Adder for Calc:` blocks back to back: the error lands on the second block's `impl` line, pointing at `Calc`, not on any line inside the body.
 
-Every method parsed here goes through `ParseMethodDefinitionInClass` with `IsPublic` hardcoded to `true`. Satisfying a trait is a public commitment; there's no such thing as a private trait method, so `impl` doesn't offer a visibility modifier to write one. A method that's private in spirit would just fail `VerifyTraitConformance`'s public check anyway, so forcing `true` here just skips straight to the outcome that check would have produced.
+Every method parsed here goes through `ParseMethodDefinition` with `IsPublic` hardcoded to `true`. Satisfying a trait is a public commitment; there's no such thing as a private trait method, so `impl` doesn't offer a visibility modifier to write one. A method that's private in spirit would just fail `VerifyTraitConformance`'s public check anyway, so forcing `true` here just skips straight to the outcome that check would have produced.
 
-`HandleImplDef` calls `ParseImplDefinition` with the same error-recovery pattern `HandleStructDef` and `HandleClassDef` already use, and `tok_impl` is wired into the dispatch switch in both `MainLoop` and `FileModeLoop`.
+Methods are parsed and registered into `FunctionSignatures` (inside `ParseMethodDefinition`) before conformance is checked, but their bodies aren't compiled to IR until after `VerifyTraitConformance` passes. If the class doesn't actually satisfy the trait, `impl`'s methods never reach `codegen()`.
+
+`HandleImplementationDefinition` calls `ParseImplementationDefinition` with the same error-recovery pattern the struct, class, and trait handlers already use, and `tok_impl` is wired into the dispatch switch in both `MainLoop` and `FileModeLoop`.
 
 ## Methods Defined in `impl` Are Regular Methods
 
@@ -297,9 +419,43 @@ There's no runtime distinction between a method defined in the class body and on
 
 **The trait must already exist.** `impl Adder for Calc:` requires `Adder` to already be registered in `Traits` at the point the `impl` block is parsed.
 
-**The class must already exist, and must be a class.** The name is looked up in `StructTypes` at parse time; a struct gives `'S' is a struct, not a class; traits can only be implemented on classes`.
+**The class must already exist, and must be a class.** The name is looked up in `StructTypes` at parse time; a struct gives `traits can only be implemented on classes`.
 
 **`impl` cannot be used twice for the same trait/class pair.** A second `impl Adder for Calc:` is rejected: `Trait 'Adder' is already implemented for class 'Calc'`.
+
+## Build and Run
+
+```bash
+cd code/chapter-41
+cmake -S . -B build && cmake --build build
+```
+
+## Try It
+
+<!-- code-merge:start -->
+```pyxc
+extern def printd(x: float64)
+
+trait Adder:
+  def add(x: int, y: int) -> int
+
+class Calc:
+  public bias: int
+
+impl Adder for Calc:
+  def add(x: int, y: int) -> int:
+    return x + y + self.bias
+
+def main() -> int:
+  var c: Calc = Calc()
+  c.bias = 5
+  printd(float64(c.add(3, 4)))
+  return 0
+```
+```text
+12.000000
+```
+<!-- code-merge:end -->
 
 ## What's Next
 

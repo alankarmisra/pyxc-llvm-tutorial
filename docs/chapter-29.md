@@ -5,32 +5,42 @@ description: "Add type aliases so any type, scalar, pointer, or struct, can be g
 
 ## What I Am Building
 
-[Chapter 30](chapter-30.md) gave me string literals, but only as `ptr[int8]`. That's accurate, but it's not what I want to keep typing every time a function takes or returns text. I want a name for it.
+[Chapter 28](chapter-28.md) gave me the heap: `malloc`, `free`, `sizeof`, and pointer casts. Between structs, pointers, and now heap-allocated memory, my type annotations are getting long and repetitive — `ptr[Node]` shows up everywhere. I want a name for it.
 
 After this chapter:
 
+<!-- code-merge:start -->
 ```pyxc
-type string = ptr[int8]
+extern def printd(x: float64)
 
-extern def puts(s: string) -> int
+struct Point:
+  x: int
+  y: int
 
-def greet(name: string) -> int:
-  return puts(name)
+type Vec2 = Point
+
+def magnitude_sq(v: Vec2) -> int:
+  return v.x * v.x + v.y * v.y
 
 def main() -> int:
-  greet("world")
+  var p: Vec2
+  p.x = 3
+  p.y = 4
+  printd(float64(magnitude_sq(p)))
   return 0
 ```
-
 ```text
-world
+25.000000
 ```
+<!-- code-merge:end -->
+
+`Vec2` is a `Point` in every way that matters — same fields, same layout, same struct underneath — it just has a name I find more meaningful in this context. This is also what sets up [Chapter 30](chapter-30.md): once string literals exist, `type string = ptr[int8]` gives the byte-pointer C functions expect a name I don't have to keep spelling out.
 
 ## Source Code
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-23
+cd pyxc-llvm-tutorial/code/chapter-29
 ```
 
 ## Grammar
@@ -38,84 +48,153 @@ cd pyxc-llvm-tutorial/code/chapter-23
 `top-level-item` gains `type-alias`, and `type` gains `alias-type`. `alias-type` and `struct-type` are both written identically, as a plain `name`; `ParseTypeToken` is what actually tells them apart, by trying `TypeAliases` before `StructTypes` and rejecting the name if neither lookup succeeds. Everything else is unchanged from [Chapter 30](chapter-30.md):
 
 ```grammardiff
- program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
- end-of-lines            = end-of-line { end-of-line } ;
--top-level-item             = struct-definition | function-definition | external | top-level-expression ;
-+top-level-item             = type-alias | struct-definition | function-definition | external | top-level-expression ;
-+type-alias       = "type" name "=" type ;
- struct-definition       = "struct" name ":" end-of-lines struct-block ;
- struct-block     = indent field-declaration { end-of-lines field-declaration } dedent ;
- field-declaration       = name ":" type ;
- function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- (* If the return type is omitted, it defaults to None. *)
- external        = "extern" "def" function-signature [ "->" type ] ;
- top-level-expression    = expression ;
- function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
- typed-parameter      = name ":" type ;
- if-statement          = "if" expression ":" suite
-                 [ end-of-lines "else" ":" suite ] ;
- for-statement         = "for"
-                   ( "var" name ":" type | name )
-                   "=" expression "," expression "," expression ":" suite ;
- variable-statement         = "var" variable-binding { "," variable-binding } ;
- assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
- simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
- compound-statement    = if-statement | for-statement ;
- statement       = simple-statement | compound-statement ;
- suite           = simple-statement | compound-statement | end-of-lines block ;
- return-statement      = "return" [ expression ] ;
- statement-separator = end-of-lines | BLOCK_END ;
- block = indent statement { statement-separator statement } dedent ;
- expression      = comparison ;
- comparison      = sum { comparison-operator sum } ;
- comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
- sum             = term { ("+" | "-") term } ;
- term            = unary-expression { ("*" | "/") unary-expression } ;
- lvalue          = name | field-access | index-expression ;
- variable-binding      = name ":" type [ "=" expression ] ;
- unary-expression       = "-" unary-expression | primary ;
- primary         = cast-expression | sizeof-expression | address-expression | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
- cast-expression        = cast-type "(" expression ")" ;
- sizeof-expression      = "sizeof" "(" type ")" ;
- address-expression        = "addr" "(" lvalue ")" ;
- name-expression  = name | call-expression ;
- call-expression        = name "(" [ expression { "," expression } ] ")" ;
- field-access     = name "." name { "." name } ;
- index-expression       = name "[" expression "]" ;
- number-expression      = number ;
- string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
- escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
- parenthesized-expression       = "(" expression ")" ;
- indent          = INDENT ;
- dedent          = DEDENT ;
- 
- name      = (letter | "_") { letter | digit | "_" } ;
- builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | "None" ;
-+alias-type       = name ;
- struct-type      = name ;
- pointer-type     = "ptr" "[" type "]" ;
--type            = builtin-type | struct-type | pointer-type ;
-+type            = builtin-type | alias-type | struct-type | pointer-type ;
- cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | pointer-type ;
- integer         = digit { digit } ;
- number          = ( digit { digit } [ "." { digit } ]
-                   | "." digit { digit } ) [ exponent ] ;
- exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
- boolean-literal    = "True" | "False" ;
- letter          = "A".."Z" | "a".."z" ;
- digit           = "0".."9" ;
- end-of-line             = "\r\n" | "\r" | "\n" ;
- comment = "#" { comment-character } ;
- comment-character = ? any character except "\r" and "\n" ? ;
- whitespace = " " | "\t" | "\v" | "\f" ;
- INDENT          = ? synthetic token emitted by lexer ? ;
- DEDENT          = ? synthetic token emitted by lexer ? ;
- 
- BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
+ program                           = [ end-of-lines ]
+                                     [ top-level-item
+                                       { end-of-lines top-level-item } ]
+                                     [ end-of-lines ] ;
+ end-of-lines                      = end-of-line { end-of-line } ;
+ top-level-item                    = function-definition
++                                    | type-alias
+                                     | struct-definition
+                                     | external
+                                     | top-level-statement ;
+ struct-definition                 = "struct" name ":" end-of-lines
+                                     struct-block ;
++type-alias                        = "type" name "=" type ;
+ struct-block                      = indent field-declaration
+                                     { end-of-lines field-declaration } dedent ;
+ field-declaration                 = name ":" type ;
+ function-definition               = "def" function-signature [ "->" type ] ":"
+                                     ( simple-statement
+                                       | end-of-lines block ) ;
+ external                          = "extern" "def" function-signature [ "->" type ] ;
+ top-level-statement               = statement ;
+ function-signature                = name "(" [ parameters ] ")" ;
+ parameters                        = typed-parameter { "," typed-parameter } ;
+ typed-parameter                   = name ":" type ;
+ if-statement                      = "if" expression ":" suite
+                                     { [ end-of-lines ] "elif" expression ":" suite }
+                                     [ [ end-of-lines ] "else" ":" suite ] ;
+ for-statement                     = "for" ( "var" name ":" type | name )
+                                     "=" expression ","
+                                     expression "," expression ":" suite ;
+ while-statement                   = "while" expression ":" suite ;
+ do-while-statement                = "do" ":" suite [ end-of-lines ]
+                                     "while" expression ;
+ switch-statement                  = "switch" expression ":" end-of-lines
+                                     indent switch-body dedent ;
+ switch-body                       = switch-case
+                                     { end-of-lines switch-case }
+                                     [ end-of-lines default-case ] ;
+ switch-case                       = "case" switch-integer
+                                     { "," switch-integer } ":" suite ;
+ default-case                      = "default" ":" suite ;
+ variable-statement                = "var" variable-binding
+                                     { "," variable-binding } ;
+ assignment-statement              = lvalue "=" expression ;
+ simple-statement                  = return-statement
+                                     | break-statement
+                                     | continue-statement
+                                     | variable-statement
+                                     | assignment-statement
+                                     | expression ;
+ compound-statement                = if-statement
+                                     | for-statement
+                                     | while-statement
+                                     | do-while-statement
+                                     | switch-statement ;
+ statement                         = simple-statement | compound-statement ;
+ suite                             = simple-statement
+                                     | compound-statement
+                                     | end-of-lines block ;
+ return-statement                  = "return" [ expression ] ;
+ break-statement                   = "break" ;
+ continue-statement                = "continue" ;
+ statement-separator               = end-of-lines | BLOCK_END ;
+ block                             = indent statement
+                                     { statement-separator statement } dedent ;
+ expression                        = logical-or ;
+ logical-or                        = logical-and { "||" logical-and } ;
+ logical-and                       = bitwise-or { "&&" bitwise-or } ;
+ bitwise-or                        = bitwise-xor { "|" bitwise-xor } ;
+ bitwise-xor                       = bitwise-and { "^" bitwise-and } ;
+ bitwise-and                       = equality { "&" equality } ;
+ equality                          = relational { ("==" | "!=") relational } ;
+ relational                        = shift { ("<" | "<=" | ">" | ">=") shift } ;
+ shift                             = sum { ("<<" | ">>") sum } ;
+ sum                               = term { ("+" | "-") term } ;
+ term                              = factor { ("*" | "/" | "%") factor } ;
+ lvalue                            = name
+                                     { "." name | "[" expression "]" } ;
+ variable-binding                  = name ":" type [ "=" expression ] ;
+ factor                            = ("-" | "!" | "~") factor | primary ;
+ primary                           = cast-expression
+                                     | sizeof-expression
+                                     | address-expression
+                                     | array-literal
+                                     | name-expression
+                                     | number-expression
+                                     | boolean-literal
+                                     | parenthesized-expression ;
+ cast-expression                   = cast-type "(" expression ")" ;
+ sizeof-expression                 = "sizeof" "(" type ")" ;
+ address-expression                = "addr" "(" lvalue ")" ;
+ array-literal                     = "[" [ expression
+                                       { "," expression } ] "]" ;
+ name-expression                   = lvalue | call-expression ;
+ call-expression                   = name "(" [ arguments ] ")" ;
+ arguments                         = expression { "," expression } ;
+ number-expression                 = number ;
+ parenthesized-expression          = "(" expression ")" ;
+ indent                            = INDENT ;
+ dedent                            = DEDENT ;
+ name                              = (letter | "_")
+                                     { letter | digit | "_" } ;
+ type                              = base-type [ array-suffix ] ;
+-base-type                         = builtin-type | struct-type | pointer-type ;
++base-type                         = builtin-type | alias-type | struct-type
++                                    | pointer-type ;
+ pointer-type                      = "ptr" "[" type "]" ;
+ array-suffix                      = "[" integer "]" ;
+ builtin-type                      = "int" | "int8" | "int16" | "int32"
+                                     | "int64" | "uint8" | "uint16"
+                                     | "uint32" | "uint64"
+                                     | "float" | "float32"
+                                     | "float64" | "bool" | "None" ;
+ struct-type                       = name ;
++alias-type                        = name ;
+ cast-type                         = builtin-cast-type | pointer-type ;
+ builtin-cast-type                 = "int" | "int8" | "int16" | "int32"
+                                     | "int64" | "uint8" | "uint16"
+                                     | "uint32" | "uint64"
+                                     | "float" | "float32"
+                                     | "float64" | "bool" ;
+ number                            = ( digit { digit } [ "." { digit } ]
+                                     | "." digit { digit } ) [ exponent ] ;
+ switch-integer                    = [ "-" ] digit { digit } ;
+ exponent                          = ( "e" | "E" ) [ "+" | "-" ]
+                                     digit { digit } ;
+ boolean-literal                   = "True" | "False" ;
+ integer                           = digit { digit } ;
+ letter                            = "A".."Z" | "a".."z" ;
+ digit                             = "0".."9" ;
+ end-of-line                       = "\r\n" | "\r" | "\n" ;
+ (*
+     A `comment` begins with "#" and continues to the end of the line. The lexer
+      ignores its text and returns an end-of-line token when one follows it.
+ *)
+ comment                           = "#" { comment-character } ;
+ comment-character                 = ? any character except "\r" and "\n" ? ;
+ (*
+     `whitespace` may appear before or between tokens
+      and is ignored by the lexer.
+ *)
+ whitespace                        = " " | "\t" | "\v" | "\f" ;
+ INDENT                            = ? synthetic token emitted by lexer when indentation increases ? ;
+ DEDENT                            = ? synthetic token emitted by lexer when indentation decreases ? ;
+ BLOCK_END                         = ? synthetic token injected into the stream by ParseBlock
+                                       immediately after it consumes DEDENT ? ;
+
 ```
 
 ## New Keyword: `type`
@@ -317,7 +396,7 @@ Same IR. `Score` resolved through `MyInt` down to `int` at the moment `type Scor
 ## Build and Run
 
 ```bash
-cd code/chapter-23
+cd code/chapter-29
 cmake -S . -B build && cmake --build build
 ```
 

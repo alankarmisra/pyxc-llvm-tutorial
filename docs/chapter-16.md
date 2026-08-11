@@ -25,19 +25,19 @@ clang program.o test/runtime.c -o program
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-14
+cd pyxc-llvm-tutorial/code/chapter-16
 ```
 
 ## What Changes
 
-I'm adding four tightly-coupled pieces on top of chapter 12's codebase:
+I'm adding four tightly-coupled pieces on top of chapter 15's codebase:
 
 1. **Command-line flags** — `--emit llvm-ir|asm|obj`, `-o <file>`, and `--dump-ir`.
 2. **`EmitModuleToFile`** — writes the compiled module to a file as LLVM IR, native assembly, or a native object file.
 3. **`EmitFileMode`** — orchestrates compilation for emit mode: builds `__pyxc.global_init`, wraps `main()`, then calls `EmitModuleToFile`.
-4. **`AddGlobalCtor`** — registers `__pyxc.global_init` in the `llvm.global_ctors` array so the linker wires it to run before `main()` in the emitted binary.
+4. **`AddGlobalConstructor`** — registers `__pyxc.global_init` in the `llvm.global_ctors` array so the linker wires it to run before `main()` in the emitted binary.
 
-No parser or codegen changes are needed — the chapter 12 IR is already correct. Everything new this chapter is about routing that IR to a file instead of a JIT.
+No parser or codegen changes are needed — the chapter 15 IR is already correct. Everything new this chapter is about routing that IR to a file instead of a JIT.
 
 ## Grammar
 
@@ -53,7 +53,7 @@ I declare three new options with LLVM's command-line library:
 
 ```cpp
 static cl::opt<std::string>
-    EmitKindOpt("emit",
+    EmitKindOption("emit",
                 cl::desc("Emit output: llvm-ir | asm | obj"),
                 cl::init(""), cl::cat(PyxcCategory));
 
@@ -73,24 +73,24 @@ static cl::opt<bool>
 `ProcessCommandLine` validates and resolves them before I do any parsing:
 
 ```cpp
-if (!EmitKindOpt.empty()) {
+if (!EmitKindOption.empty()) {
   if (IsRepl) {
     fprintf(stderr, "Error: --emit requires a file input\n");
     return -1;
   }
 
-  if (EmitKindOpt == "llvm-ir") {
+  if (EmitKindOption == "llvm-ir") {
     EmitMode = EmitKind::LLVMIR;
     EmitOutputPath = OutputFile.empty() ? "out.ll" : OutputFile.getValue();
-  } else if (EmitKindOpt == "asm") {
-    EmitMode = EmitKind::ASM;
+  } else if (EmitKindOption == "asm") {
+    EmitMode = EmitKind::Assembly;
     EmitOutputPath = OutputFile.empty() ? "out.s" : OutputFile.getValue();
-  } else if (EmitKindOpt == "obj") {
-    EmitMode = EmitKind::OBJ;
+  } else if (EmitKindOption == "obj") {
+    EmitMode = EmitKind::Object;
     EmitOutputPath = OutputFile.empty() ? "out.o" : OutputFile.getValue();
   } else {
     fprintf(stderr, "Error: invalid --emit value '%s'\n",
-            EmitKindOpt.c_str());
+            EmitKindOption.c_str());
     return -1;
   }
 } else if (!OutputFile.empty()) {
@@ -109,7 +109,7 @@ Key rules I'm enforcing here:
 I declare the `EmitKind` enum and a global string for the resolved path alongside the other global state:
 
 ```cpp
-enum class EmitKind { None, LLVMIR, ASM, OBJ };
+enum class EmitKind { None, LLVMIR, Assembly, Object };
 static EmitKind EmitMode = EmitKind::None;
 static string EmitOutputPath;
 
@@ -145,52 +145,51 @@ In emit mode this block is skipped entirely. All functions accumulate in the sam
 
 ```cpp
 static bool EmitModuleToFile() {
-  std::error_code EC;
-  raw_fd_ostream Dest(EmitOutputPath, EC, sys::fs::OF_None);
-  if (EC) {
+  std::error_code ErrorCode;
+  raw_fd_ostream Destination(EmitOutputPath, ErrorCode, sys::fs::OF_None);
+  if (ErrorCode) {
     fprintf(stderr, "Error: could not open output file '%s'\n",
             EmitOutputPath.c_str());
     return false;
   }
 
   if (EmitMode == EmitKind::LLVMIR) {
-    TheModule->print(Dest, nullptr);
+    TheModule->print(Destination, nullptr);
     return true;
   }
 
-  string TargetTriple = sys::getDefaultTargetTriple();
-  Triple TT(TargetTriple);
-  TheModule->setTargetTriple(TT);
+  Triple TargetTriple(sys::getDefaultTargetTriple());
+  TheModule->setTargetTriple(TargetTriple);
 
   string Error;
-  const Target *Target = TargetRegistry::lookupTarget(TT, Error);
-  if (!Target) {
+  const Target *NativeTarget = TargetRegistry::lookupTarget(TargetTriple, Error);
+  if (!NativeTarget) {
     fprintf(stderr, "Error: %s\n", Error.c_str());
     return false;
   }
 
   TargetOptions Options;
-  auto RM = std::optional<Reloc::Model>();
-  std::unique_ptr<TargetMachine> TM(
-      Target->createTargetMachine(TT, "generic", "", Options, RM));
-  TheModule->setDataLayout(TM->createDataLayout());
+  auto RelocationModel = std::optional<Reloc::Model>();
+  auto Machine = std::unique_ptr<TargetMachine>(NativeTarget->createTargetMachine(
+      TargetTriple, "generic", "", Options, RelocationModel));
+  TheModule->setDataLayout(Machine->createDataLayout());
 
-  legacy::PassManager PM;
-  CodeGenFileType FileType = (EmitMode == EmitKind::ASM)
+  legacy::PassManager PassManager;
+  CodeGenFileType FileType = EmitMode == EmitKind::Assembly
                                  ? CodeGenFileType::AssemblyFile
                                  : CodeGenFileType::ObjectFile;
-
-  if (TM->addPassesToEmitFile(PM, Dest, nullptr, FileType)) {
+  if (Machine->addPassesToEmitFile(PassManager, Destination, nullptr,
+                                   FileType)) {
     fprintf(stderr, "Error: target does not support file emission\n");
     return false;
   }
 
-  PM.run(*TheModule);
+  PassManager.run(*TheModule);
   return true;
 }
 ```
 
-I named that local variable `Target`, which shadows the `llvm::Target` type it's declared as — a little sloppy, but the compiler doesn't mind and it reads fine in context, so I've left it.
+I name the LLVM `Target*` variable `NativeTarget`, since `Target` is already taken by the `llvm::Target` type it points to — naming it `Target` too would shadow the type inside its own declaration.
 
 **LLVM IR path.** `Module::print` writes the module's textual IR directly to the stream. No target information is needed — IR is portable.
 
@@ -202,78 +201,82 @@ I named that local variable `Target`, which shadows the `llvm::Target` type it's
 - I update the module's data layout to match the target, so type sizes and alignments are correct.
 - I use `legacy::PassManager` here (not the new `PassManager`) because `addPassesToEmitFile` is part of the legacy pipeline API — it's the standard LLVM idiom for code generation to a file.
 - `addPassesToEmitFile` adds all the backend passes needed to lower IR to machine code and format it as assembly text or an ELF/Mach-O object file.
-- `PM.run(*TheModule)` runs the pipeline, writing the output into `Dest`.
+- `PassManager.run(*TheModule)` runs the pipeline, writing the output into `Destination`.
 
-The new headers required for this path:
+The new headers this path needs:
 
 ```cpp
-#include "llvm/Support/FileSystem.h"       // raw_fd_ostream, OF_None
-#include "llvm/Support/CodeGen.h"          // CodeGenFileType
-#include "llvm/Target/TargetMachine.h"     // TargetMachine, TargetOptions
-#include "llvm/Target/TargetOptions.h"     // TargetOptions
+#include "llvm/IR/LegacyPassManager.h"     // legacy::PassManager
 #include "llvm/MC/TargetRegistry.h"        // TargetRegistry
+#include "llvm/Support/CodeGen.h"          // CodeGenFileType
+#include "llvm/Support/FileSystem.h"       // raw_fd_ostream, OF_None
+#include "llvm/Support/raw_ostream.h"      // raw_fd_ostream's base class
+#include "llvm/Target/TargetOptions.h"     // TargetOptions
 #include "llvm/TargetParser/Host.h"        // getDefaultTargetTriple
 #include "llvm/TargetParser/Triple.h"      // Triple
-#include "llvm/IR/LegacyPassManager.h"     // legacy::PassManager
 ```
+
+`llvm/Target/TargetMachine.h` is already included from [Chapter 8](chapter-08.md)'s JIT setup, so it isn't new here even though this path depends on it too.
 
 ## The Orchestrator
 
 `EmitFileMode` is the emit-mode counterpart to `RunFileMode`. It does the same setup — build `__pyxc.global_init`, validate `main`, wrap `main` — but instead of JIT-executing the result, it calls `EmitModuleToFile`.
 
 ```cpp
+/// I build the queued global initializer and emit the complete module.
 static void EmitFileMode() {
-  // 1. Compile __pyxc.global_init from the collected top-level statements.
-  if (!FileTopLevelStmts.empty()) {
-    auto Block = make_unique<BlockExpressionNode>(std::move(FileTopLevelStmts));
-    auto Signature =
-        make_unique<FunctionSignatureNode>("__pyxc.global_init", vector<string>());
-    auto FnAST = make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(Block));
+  if (!FileTopLevelStatements.empty()) {
+    auto Block =
+        make_unique<BlockStatementNode>(std::move(FileTopLevelStatements));
+    auto Signature = make_unique<FunctionSignatureNode>(
+        "__pyxc.global_init", vector<string>());
+    auto FunctionDefinition = make_unique<FunctionDefinitionNode>(
+        std::move(Signature), std::move(Block));
 
     bool SavedInGlobalInit = InGlobalInit;
     InGlobalInit = true;
-    if (auto *FnIR = FnAST->codegen()) {
+    if (auto *FunctionIR = FunctionDefinition->codegen()) {
       InGlobalInit = SavedInGlobalInit;
       if (ShouldDumpIR())
-        FnIR->print(errs());
-      AddGlobalCtor(FnIR);   // <-- differs from RunFileMode
+        FunctionIR->print(errs());
+      AddGlobalConstructor(FunctionIR);
     } else {
       InGlobalInit = SavedInGlobalInit;
       return;
     }
   }
 
-  // 2. Validate main() arity.
-  auto MainIt = FunctionSignatures.find("main");
-  if (MainIt != FunctionSignatures.end() && MainIt->second->getNumParameters() != 0) {
+  auto Main = FunctionSignatures.find("main");
+  if (Main != FunctionSignatures.end() &&
+      Main->second->getNumParameters() != 0) {
     fprintf(stderr, "Error: main() must take no arguments\n");
     return;
   }
 
-  // 3. Wrap main() to return int.
+  // A Pyxc main returns double. I preserve it under an internal name and
+  // expose the conventional i32 main expected by native linkers.
   if (auto *UserMain = TheModule->getFunction("main")) {
     if (UserMain->getReturnType()->isDoubleTy()) {
       UserMain->setName("__pyxc.user_main");
-      FunctionType *FT =
+      FunctionType *WrapperType =
           FunctionType::get(Type::getInt32Ty(*TheContext), false);
-      Function *Wrapper =
-          Function::Create(FT, Function::ExternalLinkage, "main",
-                           TheModule.get());
-      BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", Wrapper);
-      IRBuilder<> TmpB(BB);
-      TmpB.CreateCall(UserMain);
-      TmpB.CreateRet(ConstantInt::get(Type::getInt32Ty(*TheContext), 0));
+      Function *Wrapper = Function::Create(
+          WrapperType, Function::ExternalLinkage, "main", TheModule.get());
+      BasicBlock *Entry = BasicBlock::Create(*TheContext, "entry", Wrapper);
+      IRBuilder<> WrapperBuilder(Entry);
+      WrapperBuilder.CreateCall(UserMain);
+      WrapperBuilder.CreateRet(
+          ConstantInt::get(Type::getInt32Ty(*TheContext), 0));
     }
   }
 
-  // 4. Write the output file.
   EmitModuleToFile();
 }
 ```
 
 Three things are meaningfully different from `RunFileMode`:
 
-1. **`AddGlobalCtor` instead of JIT-calling `__pyxc.global_init`.** In JIT mode, `RunFileMode` looks up the symbol and calls it directly. In emit mode there is no JIT — the binary hasn't been linked yet. Instead, I register `__pyxc.global_init` in `llvm.global_ctors` so the linker wires it to run before `main()` automatically.
+1. **`AddGlobalConstructor` instead of JIT-calling `__pyxc.global_init`.** In JIT mode, `RunFileMode` looks up the symbol and calls it directly. In emit mode there is no JIT — the binary hasn't been linked yet. Instead, I register `__pyxc.global_init` in `llvm.global_ctors` so the linker wires it to run before `main()` automatically.
 
 2. **`main()` return-type wrapping.** pyxc's `main()` returns `double` (everything in pyxc is a double). But the C runtime expects `int main()`. `EmitFileMode` detects this mismatch, renames the user's function to `__pyxc.user_main`, and synthesises a new `int main()` that calls it and returns `0`.
 
@@ -281,30 +284,27 @@ Three things are meaningfully different from `RunFileMode`:
 
 ## Wiring Globals into the Binary
 
-When a pyxc program declares global variables, `__pyxc.global_init` must run before `main()` — otherwise globals hold `0.0` when `main` starts. In JIT mode `RunFileMode` calls `__pyxc.global_init` explicitly before calling `main`. In a native binary, the C runtime manages startup: it calls everything in `llvm.global_ctors` before `main()`. `AddGlobalCtor` puts `__pyxc.global_init` into that list.
+When a pyxc program declares global variables, `__pyxc.global_init` must run before `main()` — otherwise globals hold `0.0` when `main` starts. In JIT mode `RunFileMode` calls `__pyxc.global_init` explicitly before calling `main`. In a native binary, the C runtime manages startup: it calls everything in `llvm.global_ctors` before `main()`. `AddGlobalConstructor` puts `__pyxc.global_init` into that list.
 
 ```cpp
-static void AddGlobalCtor(Function *Fn, int Priority = 65535) {
-  auto *Int32Ty = Type::getInt32Ty(*TheContext);
-  auto *VoidPtrTy = PointerType::get(*TheContext, 0);
-  auto *StructTy = StructType::get(Int32Ty, Fn->getType(), VoidPtrTy);
+/// I register the global-initialization function to run before main.
+static void AddGlobalConstructor(Function *FunctionIR, int Priority = 65535) {
+  auto *Int32Type = Type::getInt32Ty(*TheContext);
+  auto *PointerType = llvm::PointerType::get(*TheContext, 0);
+  auto *EntryType = StructType::get(Int32Type, FunctionIR->getType(), PointerType);
 
-  Constant *CtorEntry = ConstantStruct::get(
-      StructTy, ConstantInt::get(Int32Ty, Priority), Fn,
-      ConstantPointerNull::get(cast<PointerType>(VoidPtrTy)));
-
-  GlobalVariable *GV = TheModule->getGlobalVariable("llvm.global_ctors");
-  if (GV)
-    return;
-
-  ArrayType *AT = ArrayType::get(StructTy, 1);
-  auto *Init = ConstantArray::get(AT, {CtorEntry});
-  new GlobalVariable(*TheModule, AT, false, GlobalValue::AppendingLinkage, Init,
+  Constant *Entry = ConstantStruct::get(
+      EntryType, ConstantInt::get(Int32Type, Priority), FunctionIR,
+      ConstantPointerNull::get(PointerType));
+  ArrayType *ConstructorsType = ArrayType::get(EntryType, 1);
+  auto *Initializer = ConstantArray::get(ConstructorsType, {Entry});
+  new GlobalVariable(*TheModule, ConstructorsType, false,
+                     GlobalValue::AppendingLinkage, Initializer,
                      "llvm.global_ctors");
 }
 ```
 
-Only one call site (`EmitFileMode`, for `__pyxc.global_init`) exists today, but the early `if (GV) return;` guards against a second `llvm.global_ctors` definition anyway. LLVM won't merge two globals with the same name for me — it'll just rename the second one — and that would silently break the linker's contract with this special symbol.
+There's only one call site today (`EmitFileMode`, for `__pyxc.global_init`), and no guard against calling this twice — a second call would create a second `llvm.global_ctors` global in the same module, and LLVM would silently rename it rather than merge or error, quietly breaking the linker's contract with this special symbol. That's fine as long as `EmitFileMode` only ever calls it once per module, which is the only way it's used right now.
 
 `llvm.global_ctors` is a special LLVM global with `AppendingLinkage`. The linker concatenates all contributions from different objects into one array. Each element is a `{ i32 priority, ptr fn, ptr data }` struct; the lower the priority number, the earlier the function runs. I use `65535` (lowest priority), which is conventional for user-level constructors.
 
@@ -395,6 +395,10 @@ pyxc --emit llvm-ir -o sq.ll sq.pyxc
 cat sq.ll
 ```
 ```llvm
+; ModuleID = 'PyxcJIT'
+source_filename = "PyxcJIT"
+target datalayout = "..."   ; host-specific; e.g. arm64 macOS
+
 declare double @printd(double)
 
 define double @sq(double %x) {
@@ -417,7 +421,7 @@ entry:
 }
 ```
 
-No `__pyxc.global_init` here — `sq.pyxc` has no top-level `var`, so `AddGlobalCtor` never runs. What you do see is the `main()` wrapping from earlier: `main` renamed to `__pyxc.user_main`, and a fresh `i32 @main()` calling it and returning `0`.
+No `__pyxc.global_init` here — `sq.pyxc` has no top-level `var`, so `AddGlobalConstructor` never runs. What you do see is the `main()` wrapping from earlier: `main` renamed to `__pyxc.user_main`, and a fresh `i32 @main()` calling it and returning `0`.
 
 **Emit assembly**
 
@@ -461,7 +465,7 @@ pyxc --emit obj    sq.pyxc   # writes out.o
 ## Build and Run
 
 ```bash
-cd code/chapter-14
+cd code/chapter-16
 cmake -S . -B build && cmake --build build
 ./build/pyxc --emit obj -o program.o program.pyxc
 clang program.o test/runtime.c -o program
@@ -478,3 +482,10 @@ Build issues? Questions?
 
 - **GitHub Issues:** [Report problems](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues)
 - **Discussions:** [Ask questions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
+
+Include:
+- Your OS and version
+- Full error message
+- Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
+
+I'll help you figure it out.

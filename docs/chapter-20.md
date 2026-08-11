@@ -18,7 +18,7 @@ The two are linked: `-g` without an explicit `-O` forces `-O0`, because optimize
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-16
+cd pyxc-llvm-tutorial/code/chapter-20
 ```
 
 ## Grammar
@@ -130,31 +130,78 @@ static void RunModuleOptimizations(Module *M) {
 
 ## Debug Info: Where the State Lives
 
-Debug information in LLVM is metadata: side-channel nodes attached to the IR that don't affect codegen themselves but get preserved into the final object file as DWARF. `DIBuilder` is the API for constructing it. I add one new state variable for the source path, plus the handful `DIBuilder` itself needs:
+Debug information in LLVM is metadata: side-channel nodes attached to the IR that don't affect codegen themselves but get preserved into the final object file as DWARF. `DIBuilder` is the API for constructing it. Since [Chapter 18](chapter-18.md) gave pyxc a real type system, I need a DWARF basic-type descriptor for every `ValueType`, not just one shared `double` descriptor:
 
 ```cpp
 static std::string CurrentSourcePath = "<stdin>";
 static std::unique_ptr<DIBuilder> DIB;
 static DICompileUnit *TheCU = nullptr;
 static DIFile *TheDIFile = nullptr;
-static DIType *DblDIType = nullptr;
+static DIType *IntDIType = nullptr;
+static DIType *Int8DIType = nullptr;
+static DIType *Int16DIType = nullptr;
+static DIType *Int32DIType = nullptr;
+static DIType *Int64DIType = nullptr;
+static DIType *UInt8DIType = nullptr;
+static DIType *UInt16DIType = nullptr;
+static DIType *UInt32DIType = nullptr;
+static DIType *UInt64DIType = nullptr;
+static DIType *Float32DIType = nullptr;
+static DIType *Float64DIType = nullptr;
+static DIType *BoolDIType = nullptr;
 static DIType *VoidDIType = nullptr;
 static DIScope *CurDIScope = nullptr;
 static unsigned CurFunctionLine = 1;
 ```
 
-Every one of these is null, or `1` for the line, when `-g` is absent, and every helper that touches them checks for that up front, so the no-debug path is completely unaffected by any of this existing.
+Every one of these is null, or `1` for the line, when `-g` is absent, and every helper that touches them checks for that up front, so the no-debug path is completely unaffected by any of this existing. A small helper maps each `ValueType` to its descriptor:
+
+```cpp
+static DIType *DITypeFor(ValueType Type) {
+  switch (Type) {
+  case ValueType::Int:
+    return IntDIType;
+  case ValueType::Int8:
+    return Int8DIType;
+  case ValueType::Int16:
+    return Int16DIType;
+  case ValueType::Int32:
+    return Int32DIType;
+  case ValueType::Int64:
+    return Int64DIType;
+  case ValueType::UInt8:
+    return UInt8DIType;
+  case ValueType::UInt16:
+    return UInt16DIType;
+  case ValueType::UInt32:
+    return UInt32DIType;
+  case ValueType::UInt64:
+    return UInt64DIType;
+  case ValueType::Float:
+  case ValueType::Float64:
+    return Float64DIType;
+  case ValueType::Float32:
+    return Float32DIType;
+  case ValueType::Bool:
+    return BoolDIType;
+  case ValueType::None:
+    return VoidDIType;
+  default:
+    return nullptr;
+  }
+}
+```
+
+`Float` and `Float64` both resolve to `Float64DIType`, the same collapse [Chapter 18](chapter-18.md) already does for the two 64-bit float spellings everywhere else in the type system.
 
 ## Setting Up Once Per Module
 
 ```cpp
 static void InitializeDebugInfo() {
-  if (!DebugInfo) {
+  if (!DebugInfo || !IsEmitMode()) {
     DIB.reset();
     TheCU = nullptr;
     TheDIFile = nullptr;
-    DblDIType = nullptr;
-    VoidDIType = nullptr;
     return;
   }
 
@@ -162,16 +209,28 @@ static void InitializeDebugInfo() {
 
   StringRef FullPath(CurrentSourcePath);
   StringRef FileName = sys::path::filename(FullPath);
-  StringRef Dir = sys::path::parent_path(FullPath);
-  if (Dir.empty())
-    Dir = ".";
+  StringRef Directory = sys::path::parent_path(FullPath);
+  if (Directory.empty())
+    Directory = ".";
 
-  TheDIFile = DIB->createFile(FileName, Dir);
-  bool IsOptimized = OptLevel != 0;
+  TheDIFile = DIB->createFile(FileName, Directory);
   TheCU = DIB->createCompileUnit(dwarf::DW_LANG_C, TheDIFile, "pyxc",
-                                 IsOptimized, "", 0);
-  DblDIType = DIB->createBasicType("double", 64, dwarf::DW_ATE_float);
-  VoidDIType = DIB->createUnspecifiedType("void");
+                                 OptLevel != 0, "", 0);
+
+  unsigned IntBits = TheModule->getDataLayout().getPointerSizeInBits();
+  IntDIType = DIB->createBasicType("int", IntBits, dwarf::DW_ATE_signed);
+  Int8DIType = DIB->createBasicType("int8", 8, dwarf::DW_ATE_signed);
+  Int16DIType = DIB->createBasicType("int16", 16, dwarf::DW_ATE_signed);
+  Int32DIType = DIB->createBasicType("int32", 32, dwarf::DW_ATE_signed);
+  Int64DIType = DIB->createBasicType("int64", 64, dwarf::DW_ATE_signed);
+  UInt8DIType = DIB->createBasicType("uint8", 8, dwarf::DW_ATE_unsigned);
+  UInt16DIType = DIB->createBasicType("uint16", 16, dwarf::DW_ATE_unsigned);
+  UInt32DIType = DIB->createBasicType("uint32", 32, dwarf::DW_ATE_unsigned);
+  UInt64DIType = DIB->createBasicType("uint64", 64, dwarf::DW_ATE_unsigned);
+  Float32DIType = DIB->createBasicType("float32", 32, dwarf::DW_ATE_float);
+  Float64DIType = DIB->createBasicType("float64", 64, dwarf::DW_ATE_float);
+  BoolDIType = DIB->createBasicType("bool", 1, dwarf::DW_ATE_boolean);
+  VoidDIType = DIB->createUnspecifiedType("None");
 
   TheModule->addModuleFlag(Module::Warning, "Dwarf Version",
                            dwarf::DWARF_VERSION);
@@ -180,7 +239,7 @@ static void InitializeDebugInfo() {
 }
 ```
 
-I call it at the end of `InitializeModuleAndManagers`, so it runs exactly once per module. `DW_LANG_C` is the closest fit among the languages DWARF enumerates; pyxc doesn't have its own DWARF language code, and C's scoping and calling-convention assumptions are close enough. `DblDIType` is one shared basic-type descriptor, since pyxc still has exactly one type at this point in the tutorial: `double`. The two module flags are mandatory; without them a consumer like lldb or `llvm-dwarfdump` won't know how to interpret anything else I attach.
+I call it at the end of `InitializeModuleAndManagers`, so it runs exactly once per module — and only in emit mode, since the JIT never produces an object file for DWARF to live in. `DW_LANG_C` is the closest fit among the languages DWARF enumerates; pyxc doesn't have its own DWARF language code, and C's scoping and calling-convention assumptions are close enough. `IntDIType`'s bit width comes from the target's pointer size, matching how `ValueType::Int` itself resolves to `i32` or `i64` depending on host. The two module flags are mandatory; without them a consumer like lldb or `llvm-dwarfdump` won't know how to interpret anything else I attach.
 
 `DIBuilder` accumulates work lazily and doesn't actually write it until `finalize()` runs:
 
@@ -211,68 +270,62 @@ I call this once, right after creating each function's entry block, and every in
 `FunctionDefinitionNode::codegen` creates one for every function whose name isn't one of my own internal `__pyxc.`-prefixed helpers:
 
 ```cpp
-DISubprogram *SP = nullptr;
-if (DIB && TheDIFile) {
-  bool IsInternal = P.getName().rfind("__pyxc.", 0) == 0;
-  if (!IsInternal) {
-    unsigned Line = P.getLocation().Line ? P.getLocation().Line : 1;
-    SmallVector<Metadata *, 8> EltTys;
-    EltTys.push_back(DblDIType);
-    for (size_t i = 0; i < P.getParameters().size(); ++i)
-      EltTys.push_back(DblDIType);
-    auto *SubTy =
-        DIB->createSubroutineType(DIB->getOrCreateTypeArray(EltTys));
-    SP = DIB->createFunction(TheDIFile, P.getName(), StringRef(), TheDIFile,
-                             Line, SubTy, Line, DINode::FlagZero,
-                             DISubprogram::SPFlagDefinition);
-    TheFunction->setSubprogram(SP);
-    CurDIScope = SP;
-    CurFunctionLine = Line;
-  }
+if (DIB && TheDIFile && P.getName().rfind("__pyxc.", 0) != 0) {
+  unsigned Line = P.getLocation().Line ? P.getLocation().Line : 1;
+  SmallVector<Metadata *, 8> Types;
+  Types.push_back(DITypeFor(P.getReturnType()));
+  for (size_t Index = 0; Index < P.getParameters().size(); ++Index)
+    Types.push_back(DITypeFor(P.getParameterType(Index)));
+  auto *SubroutineType =
+      DIB->createSubroutineType(DIB->getOrCreateTypeArray(Types));
+  auto *Subprogram = DIB->createFunction(
+      TheDIFile, P.getName(), StringRef(), TheDIFile, Line, SubroutineType,
+      Line, DINode::FlagZero, DISubprogram::SPFlagDefinition);
+  TheFunction->setSubprogram(Subprogram);
+  CurDIScope = Subprogram;
+  CurFunctionLine = Line;
 }
 ```
 
-`createSubroutineType` wants a flat list, return type first, then each parameter's type in order. Since pyxc only has `double`, every entry is the same `DblDIType`. `setSubprogram` is the step that actually attaches this descriptor to the LLVM `Function*`, without it, even a correctly-built `DISubprogram` node wouldn't get connected to the function's machine code by the DWARF emitter. `CurDIScope` gets cleared back to `nullptr` after the body finishes, both on success and on the error path, so anything emitted outside a function, module-level init code, for instance, doesn't accidentally inherit whatever scope the previous function left behind.
+`createSubroutineType` wants a flat list, return type first, then each parameter's type in order — `DITypeFor` resolves each one to its real descriptor, so a function like `def add(a: int32, b: int32) -> int32` gets three `Int32DIType` entries, not three interchangeable `double`s. `setSubprogram` is the step that actually attaches this descriptor to the LLVM `Function*`, without it, even a correctly-built `DISubprogram` node wouldn't get connected to the function's machine code by the DWARF emitter. `CurDIScope` gets cleared back to `nullptr` after the body finishes, both on success and on the error path, so anything emitted outside a function, module-level init code, for instance, doesn't accidentally inherit whatever scope the previous function left behind.
 
 ## Parameters and Locals
 
 ```cpp
 static void EmitDebugDeclare(AllocaInst *Alloca, StringRef Name, unsigned Line,
-                             bool IsParam, unsigned ArgNo = 0) {
+                             bool IsParameter, unsigned ArgumentNumber,
+                             ValueType Type) {
   if (!DIB || !CurDIScope || !Alloca)
     return;
 
-  DIType *Ty = DblDIType
-                   ? DblDIType
-                   : DIB->createBasicType("double", 64, dwarf::DW_ATE_float);
-  auto *Loc = DILocation::get(*TheContext, Line, 1, CurDIScope);
-  DILocalVariable *Var = nullptr;
-  if (IsParam) {
-    Var = DIB->createParameterVariable(CurDIScope, Name, ArgNo, TheDIFile, Line,
-                                       Ty, true);
+  DIType *DebugType = DITypeFor(Type);
+  auto *Location = DILocation::get(*TheContext, Line, 1, CurDIScope);
+  DILocalVariable *Variable = nullptr;
+  if (IsParameter) {
+    Variable = DIB->createParameterVariable(
+        CurDIScope, Name, ArgumentNumber, TheDIFile, Line, DebugType, true);
   } else {
-    Var = DIB->createAutoVariable(CurDIScope, Name, TheDIFile, Line, Ty, true);
+    Variable = DIB->createAutoVariable(CurDIScope, Name, TheDIFile, Line,
+                                       DebugType, true);
   }
 
-  DIB->insertDeclare(Alloca, Var, DIB->createExpression(), Loc,
+  DIB->insertDeclare(Alloca, Variable, DIB->createExpression(), Location,
                      Builder->GetInsertBlock());
 }
 ```
 
-I fall back to building a fresh `double` type descriptor if `DblDIType` somehow isn't set yet rather than assume it always is; cheap insurance against a call-ordering mistake I'd rather not debug later. `createParameterVariable` and `createAutoVariable` produce the same kind of node, `DILocalVariable`, differing only in the DWARF tag underneath (`DW_TAG_formal_parameter` versus `DW_TAG_variable`); `ArgNo`, 1-based, is what tells the parameter case its position. `insertDeclare` is what actually emits the debug-info record binding this `alloca` to that descriptor, so a debugger knows where in memory to find the variable's current value. I call this from three places: once per argument in `FunctionDefinitionNode::codegen`, once per declared variable in `VarStatementNode::codegen`, and once in `ForExpressionNode::codegen` when the loop introduces its own variable (`for var i = ...`, as opposed to reusing an existing one). All three land on the same `CurFunctionLine`, since that's the only line I'm tracking, so a `for`-loop variable's debug entry shows the function's `def` line rather than the line the `for` actually appears on.
+`DITypeFor(Type)` is what makes each declared variable's debug entry match its actual pyxc type — an `int8` local gets `Int8DIType`, a `bool` gets `BoolDIType`, and so on. `createParameterVariable` and `createAutoVariable` produce the same kind of node, `DILocalVariable`, differing only in the DWARF tag underneath (`DW_TAG_formal_parameter` versus `DW_TAG_variable`); `ArgumentNumber`, 1-based, is what tells the parameter case its position. `insertDeclare` is what actually emits the debug-info record binding this `alloca` to that descriptor, so a debugger knows where in memory to find the variable's current value. I call this from three places: once per argument in `FunctionDefinitionNode::codegen`, once per declared variable in `VarStatementNode::codegen`, and once in `ForStatementNode::codegen` when the loop introduces its own variable (`for var i = ...`, as opposed to reusing an existing one). All three land on the same `CurFunctionLine`, since that's the only line I'm tracking, so a `for`-loop variable's debug entry shows the function's `def` line rather than the line the `for` actually appears on.
 
 ## Globals
 
 ```cpp
-static void EmitDebugGlobal(GlobalVariable *GV, StringRef Name, unsigned Line) {
-  if (!DIB || !TheCU || !GV)
+static void EmitDebugGlobal(GlobalVariable *Global, StringRef Name,
+                            unsigned Line, ValueType Type) {
+  if (!DIB || !TheCU || !Global)
     return;
-  DIType *Ty = DblDIType
-                   ? DblDIType
-                   : DIB->createBasicType("double", 64, dwarf::DW_ATE_float);
-  auto *GVE = DIB->createGlobalVariableExpression(TheCU, Name, Name, TheDIFile,
-                                                  Line, Ty, true);
-  GV->addDebugInfo(GVE);
+  auto *Expression = DIB->createGlobalVariableExpression(
+      TheCU, Name, Name, TheDIFile, Line, DITypeFor(Type), true);
+  Global->addDebugInfo(Expression);
 }
 ```
 
@@ -312,31 +365,34 @@ I run this right after linking, whenever `-g` and `--emit exe` are both active. 
 
 ## What the IR Actually Looks Like
 
-I compiled `def sq(x):\n  return x * x` under `-g -O0` and read the real output rather than write down what I expected:
+I compiled `def sq(x: int32) -> int32:\n  return x * x` under `-g -O0` and read the real output rather than write down what I expected:
 
 ```llvm
-define double @sq(double %x) !dbg !4 {
+define i32 @sq(i32 %x) !dbg !4 {
 entry:
-  %x1 = alloca double, align 8
-  store double %x, ptr %x1, align 8, !dbg !10
+  %x1 = alloca i32, align 4
+  store i32 %x, ptr %x1, align 4, !dbg !10
     #dbg_declare(ptr %x1, !9, !DIExpression(), !10)
-  %x2 = load double, ptr %x1, align 8, !dbg !10
-  %x3 = load double, ptr %x1, align 8, !dbg !10
-  %multmp = fmul double %x2, %x3, !dbg !10
-  ret double %multmp, !dbg !10
+  %x2 = load i32, ptr %x1, align 4, !dbg !10
+  %x3 = load i32, ptr %x1, align 4, !dbg !10
+  %multmp = mul i32 %x2, %x3, !dbg !10
+  ret i32 %multmp, !dbg !10
 }
+
+!9 = !DILocalVariable(name: "x", arg: 1, scope: !4, file: !1, line: 1, type: !7)
+!7 = !DIBasicType(name: "int32", size: 32, encoding: DW_ATE_signed)
 ```
 
-`#dbg_declare` is LLVM's current record syntax for what used to be a `call void @llvm.dbg.declare(...)` intrinsic call; if you're reading IR from an older LLVM version you may still see the call form, they mean the same thing. Note every instruction shares `!dbg !10`, the line-1 location from `SetCurrentDebugLocation`, exactly the limitation described above.
+`#dbg_declare` is LLVM's current record syntax for what used to be a `call void @llvm.dbg.declare(...)` intrinsic call; if you're reading IR from an older LLVM version you may still see the call form, they mean the same thing. Note every instruction shares `!dbg !10`, the line-1 location from `SetCurrentDebugLocation`, exactly the limitation described above. `!9`'s `type: !7` is `Int32DIType`, resolved through `DITypeFor` — a real `int32` descriptor, not a `double` standing in for it.
 
 At `-O2`, the `alloca` is gone and `#dbg_declare` becomes `#dbg_value`, tracking the SSA value directly instead of a memory location:
 
 ```llvm
-define double @sq(double %x) local_unnamed_addr #0 !dbg !4 {
+define i32 @sq(i32 %x) local_unnamed_addr #0 !dbg !4 {
 entry:
-    #dbg_value(double %x, !9, !DIExpression(), !10)
-  %multmp = fmul double %x, %x, !dbg !11
-  ret double %multmp, !dbg !11
+    #dbg_value(i32 %x, !9, !DIExpression(), !10)
+  %multmp = mul i32 %x, %x, !dbg !11
+  ret i32 %multmp, !dbg !11
 }
 ```
 
@@ -345,7 +401,7 @@ The debug info is still correct, the debugger knows `x` lives in whatever regist
 ## Build and Run
 
 ```bash
-cd code/chapter-16
+cd code/chapter-20
 cmake -S . -B build && cmake --build build
 ./build/pyxc -g --emit exe -o program program.pyxc
 lldb program

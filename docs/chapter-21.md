@@ -5,7 +5,7 @@ description: "Add &&, ||, and ! — logical operators with short-circuit evaluat
 
 ## What I Am Building
 
-[Chapter 35](chapter-35.md) completed arithmetic: division, remainder, compound assignment, and `++`/`--`. Conditions in `if` can already involve comparisons, but there's still no way to combine two boolean checks or negate one. After this chapter:
+[Chapter 20](chapter-20.md) added debug info and the real optimization pipeline. Conditions in `if` can already involve comparisons, but there's still no way to combine two boolean checks or negate one. After this chapter:
 
 ```pyxc
 extern def printd(x: float64)
@@ -31,112 +31,114 @@ def main() -> int:
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-33
+cd pyxc-llvm-tutorial/code/chapter-21
 ```
 
 ## Grammar
 
-`&&` and `||` don't join an existing operator list — pyxc's grammar since [Chapter 18](chapter-18.md) is a fixed-tier recursive-descent grammar, not a generic precedence table, so each new operator with its own precedence level needs its own tier. `logical-or` and `logical-and` become the two new outermost tiers, sitting above `comparison`. `!` joins `unary-expression`'s existing alternation:
+`&&` and `||` don't join an existing operator list — pyxc's grammar since [Chapter 18](chapter-18.md) is a fixed-tier recursive-descent grammar, not a generic precedence table, so each new operator with its own precedence level needs its own tier. `logical-or` and `logical-and` become the two new outermost tiers, sitting above `comparison`. `!` joins `factor`'s existing alternation:
 
 ```grammardiff
- program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
- end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | external | top-level-expression ;
- type-alias       = "type" name "=" type ;
- trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
- trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
- trait-method-signature  = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ;
- struct-definition       = "struct" name ":" end-of-lines struct-block ;
- class-definition        = "class" name [ "(" trait-reference { "," trait-reference } ")" ] ":" end-of-lines struct-block ;
- trait-reference        = name [ "[" type "]" ] ;
- implementation-definition         = "impl" trait-reference "for" name ":" end-of-lines implementation-block ;
- implementation-block       = indent implementation-method { end-of-lines implementation-method } dedent ;
- implementation-method      = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- struct-block     = indent class-member { end-of-lines class-member } dedent ;
- class-member     = [ visibility ] ( field-declaration | method-definition ) ;
- visibility      = "public" | "private" ;
- method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")"
-                   [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- field-declaration       = name ":" type ;
- function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- (* If the return type is omitted, it defaults to None. *)
- external        = "extern" "def" function-signature [ "->" type ] ;
- top-level-expression    = expression ;
- function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
- typed-parameter      = name ":" type ;
- if-statement          = "if" expression ":" suite
-                 [ end-of-lines "else" ":" suite ] ;
- for-statement         = "for"
-                   ( "var" name ":" type | name )
-                   "=" expression "," expression "," expression ":" suite ;
- variable-statement         = "var" variable-binding { "," variable-binding } ;
- assignment-statement      = lvalue assignment-operator expression ; (* assignment is a statement here *)
- simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
- compound-statement    = if-statement | for-statement ;
- statement       = simple-statement | compound-statement ;
- suite           = simple-statement | compound-statement | end-of-lines block ;
- return-statement      = "return" [ expression ] ;
- statement-separator = end-of-lines | BLOCK_END ;
- block = indent statement { statement-separator statement } dedent ;
--expression      = comparison ;
-+expression      = logical-or ;
-+logical-or      = logical-and { "||" logical-and } ;
-+logical-and     = comparison { "&&" comparison } ;
- comparison      = sum { comparison-operator sum } ;
- comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
- sum             = term { ("+" | "-") term } ;
- term            = unary-expression { ("*" | "/" | "%") unary-expression } ;
- lvalue          = name | field-access | index-expression ;
- variable-binding      = name ":" type [ "=" expression ] ;
--unary-expression       = ("-" | "++" | "--") unary-expression | postfix-expression ;
-+unary-expression       = ("-" | "!" | "++" | "--") unary-expression | postfix-expression ;
- postfix-expression     = primary [ postfix-operator ] ;
- postfix-operator       = "++" | "--" ;
- primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
- cast-expression        = cast-type "(" expression ")" ;
- sizeof-expression      = "sizeof" "(" type ")" ;
- address-expression        = "addr" "(" lvalue ")" ;
- name-expression  = name | call-expression | method-call-expression | constructor-call-expression ;
- call-expression        = name "(" [ expression { "," expression } ] ")" ;
- method-call-expression  = name "." name "(" [ expression { "," expression } ] ")" ;
- constructor-call-expression    = name "(" [ expression { "," expression } ] ")" ;
- field-access     = name "." name { "." name } ;
- index-expression       = name "[" expression "]" ;
- number-expression      = number ;
- array-literal    = "[" [ expression { "," expression } ] "]" ;
- string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
- escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
- parenthesized-expression       = "(" expression ")" ;
- indent          = INDENT ;
- dedent          = DEDENT ;
- 
- assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
- name      = (letter | "_") { letter | digit | "_" } ;
- builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | "None" ;
- alias-type       = name ;
- struct-type      = name ;
- pointer-type     = "ptr" "[" type "]" ;
- type            = base-type [ array-suffix ] ;
- base-type        = builtin-type | alias-type | struct-type | pointer-type ;
- array-suffix     = "[" integer "]" ;
- cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | pointer-type ;
- integer         = digit { digit } ;
- number          = ( digit { digit } [ "." { digit } ]
-                   | "." digit { digit } ) [ exponent ] ;
- exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
- boolean-literal    = "True" | "False" ;
- letter          = "A".."Z" | "a".."z" ;
- digit           = "0".."9" ;
- end-of-line             = "\r\n" | "\r" | "\n" ;
- comment = "#" { comment-character } ;
- comment-character = ? any character except "\r" and "\n" ? ;
- whitespace = " " | "\t" | "\v" | "\f" ;
- INDENT          = ? synthetic token emitted by lexer ? ;
- DEDENT          = ? synthetic token emitted by lexer ? ;
+ program                           = [ end-of-lines ]
+                                     [ top-level-item
+                                       { end-of-lines top-level-item } ]
+                                     [ end-of-lines ] ;
+ end-of-lines                      = end-of-line { end-of-line } ;
+ top-level-item                    = function-definition
+                                     | external
+                                     | top-level-statement ;
+ function-definition               = "def" function-signature [ "->" type ] ":"
+                                     ( simple-statement
+                                       | end-of-lines block ) ;
+ external                          = "extern" "def" function-signature [ "->" type ] ;
+ top-level-statement               = statement ;
+ function-signature                = name "(" [ parameters ] ")" ;
+ parameters                        = typed-parameter { "," typed-parameter } ;
+ typed-parameter                   = name ":" type ;
+ if-statement                      = "if" expression ":" suite
+                                     { [ end-of-lines ] "elif" expression ":" suite }
+                                     [ [ end-of-lines ] "else" ":" suite ] ;
+ for-statement                     = "for" ( "var" name ":" type | name )
+                                     "=" expression ","
+                                     expression "," expression ":" suite ;
+ while-statement                   = "while" expression ":" suite ;
+ do-while-statement                = "do" ":" suite [ end-of-lines ]
+                                     "while" expression ;
+ variable-statement                = "var" variable-binding
+                                     { "," variable-binding } ;
+ assignment-statement              = lvalue "=" expression ;
+ simple-statement                  = return-statement
+                                     | break-statement
+                                     | continue-statement
+                                     | variable-statement
+                                     | assignment-statement
+                                     | expression ;
+ compound-statement                = if-statement
+                                     | for-statement
+                                     | while-statement
+                                     | do-while-statement ;
+ statement                         = simple-statement | compound-statement ;
+ suite                             = simple-statement
+                                     | compound-statement
+                                     | end-of-lines block ;
+ return-statement                  = "return" [ expression ] ;
+ break-statement                   = "break" ;
+ continue-statement                = "continue" ;
+ statement-separator               = end-of-lines | BLOCK_END ;
+ block                             = indent statement
+                                     { statement-separator statement } dedent ;
+-expression                        = comparison ;
++expression                        = logical-or ;
++logical-or                        = logical-and { "||" logical-and } ;
++logical-and                       = comparison { "&&" comparison } ;
+ comparison                        = sum { comparison-operator sum } ;
+ comparison-operator               = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ sum                               = term { ("+" | "-") term } ;
+ term                              = factor { ("*" | "/" | "%") factor } ;
+ lvalue                            = name ;
+ variable-binding                  = name ":" type [ "=" expression ] ;
+-factor                            = "-" factor | primary ;
++factor                            = ("-" | "!") factor | primary ;
+ primary                           = cast-expression
+                                     | name-expression
+                                     | number-expression
+                                     | boolean-literal
+                                     | parenthesized-expression ;
+ cast-expression                   = cast-type "(" expression ")" ;
+ name-expression                   = name | call-expression ;
+ call-expression                   = name "(" [ arguments ] ")" ;
+ arguments                         = expression { "," expression } ;
+ number-expression                 = number ;
+ parenthesized-expression          = "(" expression ")" ;
+ indent                            = INDENT ;
+ dedent                            = DEDENT ;
+ name                              = (letter | "_")
+                                     { letter | digit | "_" } ;
+ type                              = "int" | "int8" | "int16" | "int32"
+                                     | "int64" | "uint8" | "uint16"
+                                     | "uint32" | "uint64"
+                                     | "float" | "float32"
+                                     | "float64" | "bool" | "None" ;
+ cast-type                         = "int" | "int8" | "int16" | "int32"
+                                     | "int64" | "uint8" | "uint16"
+                                     | "uint32" | "uint64"
+                                     | "float" | "float32"
+                                     | "float64" | "bool" ;
+ number                            = ( digit { digit } [ "." { digit } ]
+                                     | "." digit { digit } ) [ exponent ] ;
+ exponent                          = ( "e" | "E" ) [ "+" | "-" ]
+                                     digit { digit } ;
+ boolean-literal                   = "True" | "False" ;
+ letter                            = "A".."Z" | "a".."z" ;
+ digit                             = "0".."9" ;
+ end-of-line                       = "\r\n" | "\r" | "\n" ;
+ comment                           = "#" { comment-character } ;
+ comment-character                 = ? any character except "\r" and "\n" ? ;
+ whitespace                        = " " | "\t" | "\v" | "\f" ;
+ INDENT                            = ? synthetic token emitted by lexer when indentation increases ? ;
+ DEDENT                            = ? synthetic token emitted by lexer when indentation decreases ? ;
+ BLOCK_END                         = ? synthetic token injected into the stream by ParseBlock
+                                       immediately after it consumes DEDENT ? ;
  
  BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
@@ -172,7 +174,7 @@ If the next character is another `&` or `|`, `advance()` consumes it and the two
 
 ## Parsing `&&` and `||` as Their Own Grammar Tiers
 
-`ParseLogicalAnd` and `ParseLogicalOr` follow the exact same shape every other binary-operator tier has used since [Chapter 26](chapter-26.md): a base case that parses one level down, and a `*Right` helper that consumes a run of same-precedence operators, both funneling through `MergeBinaryExpression`:
+`ParseLogicalAnd` and `ParseLogicalOr` follow the exact same shape every other binary-operator tier has used since [Chapter 18](chapter-18.md): a base case that parses one level down, and a `*Right` helper that consumes a run of same-precedence operators, both funneling through `MergeBinaryExpression`:
 
 ```cpp
 static unique_ptr<ExpressionNode>
@@ -220,7 +222,7 @@ static unique_ptr<ExpressionNode> ParseLogicalOr() {
 }
 ```
 
-`ParseExpression` becomes a one-line call to `ParseLogicalOr`, the new outermost tier. `MergeBinaryExpression` is the same helper [Chapter 26](chapter-26.md) introduced for pointer arithmetic; it's what calls `GetBinaryResultType` for type checking and builds the `BinaryExpressionNode`, so `&&`/`||` don't need any parsing machinery of their own beyond these two tiers.
+`ParseExpression` becomes a one-line call to `ParseLogicalOr`, the new outermost tier. `MergeBinaryExpression` is the same helper [Chapter 18](chapter-18.md) introduced for typed binary operators generally; it's what calls `GetBinaryResultType` for type checking and builds the `BinaryExpressionNode`, so `&&`/`||` don't need any parsing machinery of their own beyond these two tiers.
 
 ## Type-Checking `&&` and `||`
 
@@ -244,45 +246,64 @@ An `int` on either side of `&&` fails here and reports the same generic "Type mi
 
 ## Built-In `!` for Bool
 
-`!` gets its own AST node:
+`!` doesn't get a dedicated AST node — it reuses [Chapter 10](chapter-10.md)'s `UnaryExpressionNode`, the same class unary minus already uses, tagged with its own opcode and result type:
 
 ```cpp
-class LogicalNotExpressionNode : public ExpressionNode {
+class UnaryExpressionNode : public ExpressionNode {
+  char Opcode;
   unique_ptr<ExpressionNode> Operand;
 
 public:
-  explicit LogicalNotExpressionNode(unique_ptr<ExpressionNode> Operand)
-      : Operand(std::move(Operand)) {
-    setType(ValueType::Bool);
+  UnaryExpressionNode(char Opcode, unique_ptr<ExpressionNode> Operand, ValueType Type)
+      : Opcode(Opcode), Operand(std::move(Operand)) {
+    setType(Type);
   }
   Value *codegen() override;
 };
 ```
 
-The constructor sets the result type to `Bool` immediately; there's nothing to infer. Parsing happens in `ParseUnary`, right alongside unary minus and prefix `++`/`--`:
+Parsing happens in `ParseFactor`, right alongside unary minus — `factor`'s grammar rule already reads `("-" | "!") factor | primary`:
 
 ```cpp
-if (CurrentToken == tok_exclamation) {
-  getNextToken(); // eat '!'
-  auto Operand = ParseUnary();
-  if (!Operand)
-    return nullptr;
-  if (Operand->getType() != ValueType::Bool)
-    return LogErrorExpression("Unary '!' requires a bool operand");
-  return make_unique<LogicalNotExpressionNode>(std::move(Operand));
+static unique_ptr<ExpressionNode> ParseFactor() {
+  if (CurrentToken == tok_minus)
+    return ParseUnaryMinus();
+  if (CurrentToken == tok_exclamation) {
+    getNextToken(); // eat '!'
+    auto Operand = ParseFactor();
+    if (!Operand)
+      return nullptr;
+    if (Operand->getType() != ValueType::Bool)
+      return LogErrorExpression("Unary '!' requires a bool operand");
+    return make_unique<UnaryExpressionNode>(tok_exclamation,
+                                             std::move(Operand),
+                                             ValueType::Bool);
+  }
+  return ParsePrimary();
 }
 ```
 
-`!` only ever accepts a `bool` operand; anything else is a parse-time error right there, not a fallback to some other mechanism. Codegen is a single `CreateNot` on the `i1` value:
+`!` only ever accepts a `bool` operand; anything else is a parse-time error right there, not a fallback to some other mechanism. `UnaryExpressionNode::codegen()` branches on `Opcode`, so `!` just adds one more case next to unary minus's existing `CreateNeg`/`CreateFNeg` branch:
 
 ```cpp
-Value *LogicalNotExpressionNode::codegen() {
-  Value *V = Operand->codegen();
-  if (!V)
+Value *UnaryExpressionNode::codegen() {
+  Value *Operator = Operand->codegen();
+  if (!Operator)
     return nullptr;
-  if (Operand->getType() != ValueType::Bool)
-    return LogErrorV("Type mismatch in unary operator");
-  return Builder->CreateNot(V, "nottmp");
+
+  // Built-in unary minus.
+  if (Opcode == tok_minus) {
+    if (IsIntType(getType()))
+      return Builder->CreateNeg(Operator, "negtmp");
+    if (IsFloatType(getType()))
+      return Builder->CreateFNeg(Operator, "negtmp");
+    return LogErrorV("Unary '-' not supported for this type");
+  }
+
+  if (Opcode == tok_exclamation)
+    return Builder->CreateNot(Operator, "nottmp");
+
+  return LogErrorV("Unknown unary operator");
 }
 ```
 
@@ -293,47 +314,46 @@ Value *LogicalNotExpressionNode::codegen() {
 ```cpp
 Value *BinaryExpressionNode::codegen() {
   if (Operator == tok_and || Operator == tok_or) {
-    Value *L = Left->codegen();
-    if (!L)
+    Value *LeftValue = Left->codegen();
+    if (!LeftValue)
       return nullptr;
-    if (Left->getType() != ValueType::Bool || Right->getType() != ValueType::Bool)
-      return LogErrorV("Type mismatch in binary operator");
 
-    Function *F = Builder->GetInsertBlock()->getParent();
-    BasicBlock *LHSBB = Builder->GetInsertBlock();
-    BasicBlock *RHSBB = BasicBlock::Create(*TheContext, "logic.rhs", F);
-    BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "logic.end");
+    Function *FunctionIR = Builder->GetInsertBlock()->getParent();
+    BasicBlock *LeftBlock = Builder->GetInsertBlock();
+    BasicBlock *RightBlock =
+        BasicBlock::Create(*TheContext, "logic.rhs", FunctionIR);
+    BasicBlock *MergeBlock = BasicBlock::Create(*TheContext, "logic.end");
 
     if (Operator == tok_and)
-      Builder->CreateCondBr(L, RHSBB, MergeBB);
+      Builder->CreateCondBr(LeftValue, RightBlock, MergeBlock);
     else
-      Builder->CreateCondBr(L, MergeBB, RHSBB);
+      Builder->CreateCondBr(LeftValue, MergeBlock, RightBlock);
 
-    Builder->SetInsertPoint(RHSBB);
-    Value *RHSVal = Right->codegen();
-    if (!RHSVal)
+    Builder->SetInsertPoint(RightBlock);
+    Value *RightValue = Right->codegen();
+    if (!RightValue)
       return nullptr;
-    if (Right->getType() != ValueType::Bool)
-      return LogErrorV("Type mismatch in binary operator");
-    Builder->CreateBr(MergeBB);
-    RHSBB = Builder->GetInsertBlock();
+    Builder->CreateBr(MergeBlock);
+    RightBlock = Builder->GetInsertBlock();
 
-    F->insert(F->end(), MergeBB);
-    Builder->SetInsertPoint(MergeBB);
-    PHINode *PN =
+    FunctionIR->insert(FunctionIR->end(), MergeBlock);
+    Builder->SetInsertPoint(MergeBlock);
+    PHINode *Result =
         Builder->CreatePHI(Type::getInt1Ty(*TheContext), 2, "logictmp");
     if (Operator == tok_and) {
-      PN->addIncoming(ConstantInt::getFalse(*TheContext), LHSBB);
-      PN->addIncoming(RHSVal, RHSBB);
+      Result->addIncoming(ConstantInt::getFalse(*TheContext), LeftBlock);
+      Result->addIncoming(RightValue, RightBlock);
     } else {
-      PN->addIncoming(ConstantInt::getTrue(*TheContext), LHSBB);
-      PN->addIncoming(RHSVal, RHSBB);
+      Result->addIncoming(ConstantInt::getTrue(*TheContext), LeftBlock);
+      Result->addIncoming(RightValue, RightBlock);
     }
-    return PN;
+    return Result;
   }
   // ...ordinary binary-operator path for everything else...
 }
 ```
+
+There's no runtime type check here — `Left->getType() != ValueType::Bool` never gets asked at codegen time, because it's already been settled at parse time. `MergeBinaryExpression` calls `GetBinaryResultType` before it ever builds this `BinaryExpressionNode`, and that's where a non-`bool` operand to `&&`/`||` gets rejected — codegen only ever runs on a tree that already type-checked.
 
 For `a && b`: evaluate `a`. If false, branch straight to `logic.end` carrying a `false` constant. If true, fall into `logic.rhs`, evaluate `b`, then branch to `logic.end`. The `phi` node in `logic.end` picks between the `false` constant (the short-circuit path) and whatever `b` actually evaluated to.
 
@@ -360,7 +380,17 @@ def main() -> int:
 
 ```text
 Error (Line 4, Column 12): Type mismatch in binary operator
+  if x && y:
+           ^~~~
+Error (Line 5, Column 5): Unexpected indentation
+    r
+    ^~~~
+Error (Line 6, Column 11): cannot return a value from a None function
+  return 0
+          ^~~~
 ```
+
+The first line is the real error; the rest is the parser recovering from the malformed statement, the same cascading behavior earlier chapters' error examples already showed.
 
 **The right-hand side genuinely doesn't run**
 
@@ -388,7 +418,7 @@ def main() -> int:
 ## Build and Run
 
 ```bash
-cd code/chapter-33
+cd code/chapter-21
 cmake -S . -B build && cmake --build build
 ```
 

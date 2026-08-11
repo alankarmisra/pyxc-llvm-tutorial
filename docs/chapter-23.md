@@ -34,128 +34,132 @@ def main() -> int:
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-36
+cd pyxc-llvm-tutorial/code/chapter-23
 ```
 
 ## Grammar
 
 I add `switch-statement` and its three sub-productions, and add it as a `compound-statement` alternative:
 
-`code/chapter-36/pyxc.ebnf`
+`code/chapter-23/pyxc.ebnf`
 
 ```grammardiff
- program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
- end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | external | top-level-expression ;
- type-alias       = "type" name "=" type ;
- trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
- trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
- trait-method-signature  = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ;
- struct-definition       = "struct" name ":" end-of-lines struct-block ;
- class-definition        = "class" name [ "(" trait-reference { "," trait-reference } ")" ] ":" end-of-lines struct-block ;
- trait-reference        = name [ "[" type "]" ] ;
- implementation-definition         = "impl" trait-reference "for" name ":" end-of-lines implementation-block ;
- implementation-block       = indent implementation-method { end-of-lines implementation-method } dedent ;
- implementation-method      = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- struct-block     = indent class-member { end-of-lines class-member } dedent ;
- class-member     = [ visibility ] ( field-declaration | method-definition ) ;
- visibility      = "public" | "private" ;
- method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")"
-                   [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- field-declaration       = name ":" type ;
- function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- (* If the return type is omitted, it defaults to None. *)
- external        = "extern" "def" function-signature [ "->" type ] ;
- top-level-expression    = expression ;
- function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
- typed-parameter      = name ":" type ;
- if-statement          = "if" expression ":" suite
-                 [ end-of-lines "else" ":" suite ] ;
- while-statement       = "while" expression ":" suite ;
- do-while-statement     = "do" ":" suite end-of-lines "while" expression ;
-+switch-statement      = "switch" expression ":" end-of-lines indent switch-body dedent ;
-+switch-body      = switch-case { end-of-lines switch-case } [ end-of-lines default-case ] ;
-+switch-case      = "case" switch-integer { "," switch-integer } ":" suite ;
-+default-case     = "default" ":" suite ;
- for-statement         = "for"
-                   ( "var" name ":" type | name )
-                   "=" expression "," expression "," expression ":" suite ;
- variable-statement         = "var" variable-binding { "," variable-binding } ;
- assignment-statement      = lvalue assignment-operator expression ; (* assignment is a statement here *)
- simple-statement      = return-statement | break-statement | continue-statement | variable-statement | assignment-statement | expression ;
--compound-statement    = if-statement | for-statement | while-statement | do-while-statement ;
-+compound-statement    = if-statement | for-statement | while-statement | do-while-statement | switch-statement ;
- statement       = simple-statement | compound-statement ;
- suite           = simple-statement | compound-statement | end-of-lines block ;
- return-statement      = "return" [ expression ] ;
- break-statement       = "break" ;
- continue-statement    = "continue" ;
- statement-separator = end-of-lines | BLOCK_END ;
- block = indent statement { statement-separator statement } dedent ;
- expression      = logical-or ;
- logical-or      = logical-and { "||" logical-and } ;
- logical-and     = bitwise-or { "&&" bitwise-or } ;
- bitwise-or      = bitwise-xor { "|" bitwise-xor } ;
- bitwise-xor     = bitwise-and { "^" bitwise-and } ;
- bitwise-and     = equality { "&" equality } ;
- equality        = relational { ("==" | "!=") relational } ;
- relational      = shift { ("<" | "<=" | ">" | ">=") shift } ;
- shift           = sum { ("<<" | ">>") sum } ;
- sum             = term { ("+" | "-") term } ;
- term            = unary-expression { ("*" | "/" | "%") unary-expression } ;
- lvalue          = name | field-access | index-expression ;
- variable-binding      = name ":" type [ "=" expression ] ;
- unary-expression       = ("-" | "!" | "~" | "++" | "--") unary-expression | postfix-expression ;
- postfix-expression     = primary [ postfix-operator ] ;
- postfix-operator       = "++" | "--" ;
- primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
- cast-expression        = cast-type "(" expression ")" ;
- sizeof-expression      = "sizeof" "(" type ")" ;
- address-expression        = "addr" "(" lvalue ")" ;
- name-expression  = name | call-expression | method-call-expression | constructor-call-expression ;
- call-expression        = name "(" [ expression { "," expression } ] ")" ;
- method-call-expression  = name "." name "(" [ expression { "," expression } ] ")" ;
- constructor-call-expression    = name "(" [ expression { "," expression } ] ")" ;
- field-access     = name "." name { "." name } ;
- index-expression       = name "[" expression "]" ;
- number-expression      = number ;
- array-literal    = "[" [ expression { "," expression } ] "]" ;
- string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
- escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
- parenthesized-expression       = "(" expression ")" ;
- indent          = INDENT ;
- dedent          = DEDENT ;
- 
- assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
- name      = (letter | "_") { letter | digit | "_" } ;
- builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | "None" ;
- alias-type       = name ;
- struct-type      = name ;
- pointer-type     = "ptr" "[" type "]" ;
- type            = base-type [ array-suffix ] ;
- base-type        = builtin-type | alias-type | struct-type | pointer-type ;
- array-suffix     = "[" integer "]" ;
- cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | pointer-type ;
- integer         = digit { digit } ;
-+switch-integer       = [ "-" ] integer ;
- number          = ( digit { digit } [ "." { digit } ]
-                   | "." digit { digit } ) [ exponent ] ;
- exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
- boolean-literal    = "True" | "False" ;
- letter          = "A".."Z" | "a".."z" ;
- digit           = "0".."9" ;
- end-of-line             = "\r\n" | "\r" | "\n" ;
- comment = "#" { comment-character } ;
- comment-character = ? any character except "\r" and "\n" ? ;
- whitespace = " " | "\t" | "\v" | "\f" ;
- INDENT          = ? synthetic token emitted by lexer ? ;
- DEDENT          = ? synthetic token emitted by lexer ? ;
- 
- BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
+ program                           = [ end-of-lines ]
+                                     [ top-level-item
+                                       { end-of-lines top-level-item } ]
+                                     [ end-of-lines ] ;
+ end-of-lines                      = end-of-line { end-of-line } ;
+ top-level-item                    = function-definition
+                                     | external
+                                     | top-level-statement ;
+ function-definition               = "def" function-signature [ "->" type ] ":"
+                                     ( simple-statement
+                                       | end-of-lines block ) ;
+ external                          = "extern" "def" function-signature [ "->" type ] ;
+ top-level-statement               = statement ;
+ function-signature                = name "(" [ parameters ] ")" ;
+ parameters                        = typed-parameter { "," typed-parameter } ;
+ typed-parameter                   = name ":" type ;
+ if-statement                      = "if" expression ":" suite
+                                     { [ end-of-lines ] "elif" expression ":" suite }
+                                     [ [ end-of-lines ] "else" ":" suite ] ;
+ while-statement                   = "while" expression ":" suite ;
+ do-while-statement                = "do" ":" suite [ end-of-lines ]
+                                     "while" expression ;
++switch-statement                  = "switch" expression ":" end-of-lines
++                                    indent switch-body dedent ;
++switch-body                       = switch-case
++                                    { end-of-lines switch-case }
++                                    [ end-of-lines default-case ] ;
++switch-case                       = "case" switch-integer
++                                    { "," switch-integer } ":" suite ;
++default-case                      = "default" ":" suite ;
+ for-statement                     = "for" ( "var" name ":" type | name )
+                                     "=" expression ","
+                                     expression "," expression ":" suite ;
+ variable-statement                = "var" variable-binding
+                                     { "," variable-binding } ;
+ assignment-statement              = lvalue "=" expression ;
+ simple-statement                  = return-statement
+                                     | break-statement
+                                     | continue-statement
+                                     | variable-statement
+                                     | assignment-statement
+                                     | expression ;
+-compound-statement                = if-statement
+-                                    | for-statement
+-                                    | while-statement
+-                                    | do-while-statement ;
++compound-statement                = if-statement
++                                    | for-statement
++                                    | while-statement
++                                    | do-while-statement
++                                    | switch-statement ;
+ statement                         = simple-statement | compound-statement ;
+ suite                             = simple-statement
+                                     | compound-statement
+                                     | end-of-lines block ;
+ return-statement                  = "return" [ expression ] ;
+ break-statement                   = "break" ;
+ continue-statement                = "continue" ;
+ statement-separator               = end-of-lines | BLOCK_END ;
+ block                             = indent statement
+                                     { statement-separator statement } dedent ;
+ expression                        = logical-or ;
+ logical-or                        = logical-and { "||" logical-and } ;
+ logical-and                       = bitwise-or { "&&" bitwise-or } ;
+ bitwise-or                        = bitwise-xor { "|" bitwise-xor } ;
+ bitwise-xor                       = bitwise-and { "^" bitwise-and } ;
+ bitwise-and                       = equality { "&" equality } ;
+ equality                          = relational { ("==" | "!=") relational } ;
+ relational                        = shift { ("<" | "<=" | ">" | ">=") shift } ;
+ shift                             = sum { ("<<" | ">>") sum } ;
+ sum                               = term { ("+" | "-") term } ;
+ term                              = factor { ("*" | "/" | "%") factor } ;
+ lvalue                            = name ;
+ variable-binding                  = name ":" type [ "=" expression ] ;
+ factor                            = ("-" | "!" | "~") factor | primary ;
+ primary                           = cast-expression
+                                     | name-expression
+                                     | number-expression
+                                     | boolean-literal
+                                     | parenthesized-expression ;
+ cast-expression                   = cast-type "(" expression ")" ;
+ name-expression                   = name | call-expression ;
+ call-expression                   = name "(" [ arguments ] ")" ;
+ arguments                         = expression { "," expression } ;
+ number-expression                 = number ;
+ parenthesized-expression          = "(" expression ")" ;
+ indent                            = INDENT ;
+ dedent                            = DEDENT ;
+ name                              = (letter | "_")
+                                     { letter | digit | "_" } ;
+ type                              = "int" | "int8" | "int16" | "int32"
+                                     | "int64" | "uint8" | "uint16"
+                                     | "uint32" | "uint64"
+                                     | "float" | "float32"
+                                     | "float64" | "bool" | "None" ;
+ cast-type                         = "int" | "int8" | "int16" | "int32"
+                                     | "int64" | "uint8" | "uint16"
+                                     | "uint32" | "uint64"
+                                     | "float" | "float32"
+                                     | "float64" | "bool" ;
++switch-integer                    = [ "-" ] digit { digit } ;
+ number                            = ( digit { digit } [ "." { digit } ]
+                                     | "." digit { digit } ) [ exponent ] ;
+ exponent                          = ( "e" | "E" ) [ "+" | "-" ]
+                                     digit { digit } ;
+ boolean-literal                   = "True" | "False" ;
+ letter                            = "A".."Z" | "a".."z" ;
+ digit                             = "0".."9" ;
+ end-of-line                       = "\r\n" | "\r" | "\n" ;
+ comment                           = "#" { comment-character } ;
+ comment-character                 = ? any character except "\r" and "\n" ? ;
+ whitespace                        = " " | "\t" | "\v" | "\f" ;
+ INDENT                            = ? synthetic token emitted by lexer when indentation increases ? ;
+ DEDENT                            = ? synthetic token emitted by lexer when indentation decreases ? ;
+ BLOCK_END                         = ? synthetic token injected into the stream by ParseBlock
+                                       immediately after it consumes DEDENT ? ;
 ```
 
 ## New Tokens and Keywords
@@ -163,15 +167,16 @@ I add `switch-statement` and its three sub-productions, and add it as a `compoun
 I add three new tokens:
 
 ```cpp
-tok_switch  = -60,
-tok_case    = -61,
-tok_default = -62,
+tok_switch = -47,
+tok_case = -48,
+tok_default = -49,
 ```
 
 And add them to the keyword table:
 
 ```cpp
-{"switch", tok_switch}, {"case", tok_case}, {"default", tok_default},
+{"switch", tok_switch},   {"case", tok_case},
+{"default", tok_default},
 ```
 
 ## Representing `switch` in the AST
@@ -179,15 +184,17 @@ And add them to the keyword table:
 The node stores the condition, a list of (values, body) pairs, and an optional default body. A case can list more than one value — `case 'a', 'e', 'i', 'o', 'u':` — so I store a vector of values per case, not just one:
 
 ```cpp
-class SwitchExpressionNode : public ExpressionNode {
-  unique_ptr<ExpressionNode> Cond;
+class SwitchStatementNode : public ExpressionNode {
+  unique_ptr<ExpressionNode> Condition;
   vector<pair<vector<int64_t>, unique_ptr<ExpressionNode>>> Cases;
   unique_ptr<ExpressionNode> DefaultCase;
+
 public:
-  SwitchExpressionNode(unique_ptr<ExpressionNode> Cond,
-                vector<pair<vector<int64_t>, unique_ptr<ExpressionNode>>> Cases,
-                unique_ptr<ExpressionNode> DefaultCase)
-      : Cond(std::move(Cond)), Cases(std::move(Cases)),
+  SwitchStatementNode(
+      unique_ptr<ExpressionNode> Condition,
+      vector<pair<vector<int64_t>, unique_ptr<ExpressionNode>>> Cases,
+      unique_ptr<ExpressionNode> DefaultCase)
+      : Condition(std::move(Condition)), Cases(std::move(Cases)),
         DefaultCase(std::move(DefaultCase)) {
     setType(ValueType::None);
   }
@@ -218,7 +225,7 @@ static unique_ptr<ExpressionNode> ParseBreakStatement() {
   if (ParseLoopDepth <= 0 && ParseSwitchDepth <= 0)
     return LogErrorExpression("'break' used outside of a loop or switch");
   getNextToken(); // eat 'break'
-  return make_unique<BreakExpressionNode>();
+  return make_unique<BreakStatementNode>();
 }
 ```
 
@@ -227,32 +234,52 @@ static unique_ptr<ExpressionNode> ParseBreakStatement() {
 Case values are signed integer literals. I handle an optional leading `-` explicitly, before reading the number:
 
 ```cpp
-static bool ParseSwitchCaseValue(int64_t &Out) {
-  bool Neg = false;
+static bool ParseSwitchCaseValue(int64_t &Value) {
+  bool Negative = false;
   if (CurrentToken == tok_minus) {
-    Neg = true;
+    Negative = true;
     getNextToken();
   }
-  if (CurrentToken != tok_number || NumberIsFloat)
-    return LogErrorExpression("Switch case value must be an integer literal"), false;
-  uint64_t Raw = 0;
-  if (!ParseUnsignedDecimal(NumberLiteral, Raw))
-    return LogErrorExpression("Invalid switch case value"), false;
-  getNextToken(); // eat number
-  if (Neg) {
-    if (Raw > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1ULL)
-      return LogErrorExpression("Switch case value out of range"), false;
-    Out = static_cast<int64_t>(0) - static_cast<int64_t>(Raw);
+  if (CurrentToken != tok_number || NumberIsFloat) {
+    LogErrorExpression("Switch case value must be an integer literal");
+    return false;
+  }
+
+  uint64_t Magnitude = 0;
+  for (char Digit : NumberLiteral) {
+    unsigned ValueOfDigit = static_cast<unsigned>(Digit - '0');
+    if (Magnitude >
+        (std::numeric_limits<uint64_t>::max() - ValueOfDigit) / 10) {
+      LogErrorExpression("Switch case value out of range");
+      return false;
+    }
+    Magnitude = Magnitude * 10 + ValueOfDigit;
+  }
+  getNextToken(); // eat integer
+
+  uint64_t NegativeLimit =
+      static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1;
+  if (Negative) {
+    if (Magnitude > NegativeLimit) {
+      LogErrorExpression("Switch case value out of range");
+      return false;
+    }
+    Value = Magnitude == NegativeLimit
+                ? std::numeric_limits<int64_t>::min()
+                : -static_cast<int64_t>(Magnitude);
   } else {
-    if (Raw > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return LogErrorExpression("Switch case value out of range"), false;
-    Out = static_cast<int64_t>(Raw);
+    if (Magnitude >
+        static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+      LogErrorExpression("Switch case value out of range");
+      return false;
+    }
+    Value = static_cast<int64_t>(Magnitude);
   }
   return true;
 }
 ```
 
-I check overflow explicitly on both branches, so `case -9223372036854775808:` — the minimum `int64_t` — still parses correctly: it overflows a bare positive `int64_t` by one, which is exactly what the `Raw > max + 1` branch is there to allow. This also means negative case values just work: `case -1:` is valid, no separate rule needed.
+I accumulate the magnitude digit by digit rather than parsing the whole literal and checking after the fact, so overflow is caught mid-parse instead of after a `uint64_t` has already wrapped around silently. `case -9223372036854775808:` — the minimum `int64_t` — still parses correctly: its magnitude is exactly `NegativeLimit` (`INT64_MAX + 1`), one past what a positive `int64_t` can hold, which is exactly the boundary `Magnitude == NegativeLimit` exists to allow. This also means negative case values just work: `case -1:` is valid, no separate rule needed.
 
 ## Parsing the `switch` Statement
 
@@ -261,10 +288,10 @@ I eat `switch`, check the condition is an integer type, then read an indented bl
 ```cpp
 static unique_ptr<ExpressionNode> ParseSwitchStatement() {
   getNextToken(); // eat 'switch'
-  auto Cond = ParseExpression();
-  if (!Cond)
+  auto Condition = ParseExpression();
+  if (!Condition)
     return nullptr;
-  if (!IsIntType(Cond->getType()))
+  if (!IsIntType(Condition->getType()))
     return LogErrorExpression("Switch condition must be an integer type");
   if (CurrentToken != tok_colon)
     return LogErrorExpression("Expected ':' after switch expression");
@@ -275,25 +302,27 @@ static unique_ptr<ExpressionNode> ParseSwitchStatement() {
     return LogErrorExpression("Expected an indented switch body");
   getNextToken(); // eat INDENT
 
-  ParseSwitchGuard SwitchGuard;
+  ParseSwitchGuard Switch;
   vector<pair<vector<int64_t>, unique_ptr<ExpressionNode>>> Cases;
-  std::set<int64_t> SeenCaseValues;
+  set<int64_t> SeenValues;
   unique_ptr<ExpressionNode> DefaultCase;
 
   while (CurrentToken != tok_dedent && CurrentToken != tok_eof) {
     if (CurrentToken == tok_case) {
+      if (DefaultCase)
+        return LogErrorExpression("Case cannot follow default");
       getNextToken(); // eat 'case'
-      vector<int64_t> CaseVals;
+      vector<int64_t> Values;
       while (true) {
-        int64_t CaseVal = 0;
-        if (!ParseSwitchCaseValue(CaseVal))
+        int64_t Value = 0;
+        if (!ParseSwitchCaseValue(Value))
           return nullptr;
-        if (!SeenCaseValues.insert(CaseVal).second)
+        if (!SeenValues.insert(Value).second)
           return LogErrorExpression("Duplicate switch case value");
-        CaseVals.push_back(CaseVal);
+        Values.push_back(Value);
         if (CurrentToken != tok_comma)
           break;
-        getNextToken(); // eat ',' and parse the next case value
+        getNextToken(); // eat ','
       }
       if (CurrentToken != tok_colon)
         return LogErrorExpression("Expected ':' after case value");
@@ -301,7 +330,7 @@ static unique_ptr<ExpressionNode> ParseSwitchStatement() {
       auto Body = ParseSuite();
       if (!Body)
         return nullptr;
-      Cases.emplace_back(std::move(CaseVals), std::move(Body));
+      Cases.emplace_back(std::move(Values), std::move(Body));
     } else if (CurrentToken == tok_default) {
       if (DefaultCase)
         return LogErrorExpression("Duplicate default case");
@@ -315,21 +344,23 @@ static unique_ptr<ExpressionNode> ParseSwitchStatement() {
     } else {
       return LogErrorExpression("Expected 'case' or 'default' in switch body");
     }
+
     if (CurrentToken == tok_block_end)
       getNextToken();
     if (CurrentToken == tok_eol)
       consumeNewlines();
   }
+
   if (CurrentToken != tok_dedent)
     return LogErrorExpression("Expected dedent after switch body");
   PendingTokens.push_front(tok_block_end);
-  getNextToken(); // eat DEDENT, then surface tok_block_end
-  return make_unique<SwitchExpressionNode>(std::move(Cond), std::move(Cases),
-                                    std::move(DefaultCase));
+  getNextToken(); // eat DEDENT, then surface block-end
+  return make_unique<SwitchStatementNode>(
+      std::move(Condition), std::move(Cases), std::move(DefaultCase));
 }
 ```
 
-I reject duplicate case values at parse time with a `std::set<int64_t>`, checked as each value is read — so a repeat within one comma-separated list (`case 1, 2, 1:`) is caught the same way as a repeat across two separate `case` lines. I reject multiple `default` clauses the same way. If nothing matches and there's no `default`, `DefaultCase` just stays null — execution falls through to after the switch with no action.
+I reject duplicate case values at parse time with a `set<int64_t>`, checked as each value is read — so a repeat within one comma-separated list (`case 1, 2, 1:`) is caught the same way as a repeat across two separate `case` lines. I reject multiple `default` clauses the same way, and reject a `case` that comes after `default` at all — `default` has to be the last clause in the switch body. If nothing matches and there's no `default`, `DefaultCase` just stays null — execution falls through to after the switch with no action.
 
 **Non-integer switch condition:**
 ```pyxc
@@ -379,10 +410,10 @@ BreakTargetStack.push_back(AfterBB);
 BreakTargetStack.pop_back();
 ```
 
-And I switch `BreakExpressionNode::codegen` from `LoopControlStack.back().BreakTarget` to `BreakTargetStack`:
+And I switch `BreakStatementNode::codegen` from `LoopControlStack.back().BreakTarget` to `BreakTargetStack`:
 
 ```cpp
-Value *BreakExpressionNode::codegen() {
+Value *BreakStatementNode::codegen() {
   if (BreakTargetStack.empty())
     return LogErrorV("'break' used outside of a loop or switch");
   Builder->CreateBr(BreakTargetStack.back());
@@ -397,67 +428,69 @@ Value *BreakExpressionNode::codegen() {
 I use LLVM's own `switch` instruction — a real multi-way branch, not a chain of comparisons. The backend picks a jump table, binary search, or comparison chain depending on how many cases there are and how dense the values are; I don't have to choose. Each case gets one basic block, and since LLVM's `switch` already supports many values pointing at the same block, giving a case several values is just one `addCase` call per value, all targeting that case's block:
 
 ```cpp
-Value *SwitchExpressionNode::codegen() {
-  Value *CondVal = Cond->codegen();
-  if (!CondVal)
+Value *SwitchStatementNode::codegen() {
+  Value *ConditionValue = Condition->codegen();
+  if (!ConditionValue)
     return nullptr;
 
-  ValueType CondType = Cond->getType();
-  llvm::Type *CondLLVMType = LLVMTypeFor(CondType);
-  if (!CondLLVMType || !CondLLVMType->isIntegerTy())
+  auto *ConditionType = dyn_cast<IntegerType>(LLVMTypeFor(Condition->getType()));
+  if (!ConditionType)
     return LogErrorV("Switch condition must be an integer type");
-  CondVal = EmitImplicitCast(CondVal, CondType, CondType);
-  if (!CondVal)
-    return LogErrorV("Invalid switch condition type");
 
-  Function *F = Builder->GetInsertBlock()->getParent();
-  BasicBlock *AfterBB  = BasicBlock::Create(*TheContext, "switch.after", F);
-  BasicBlock *DefaultBB =
-      DefaultCase ? BasicBlock::Create(*TheContext, "switch.default", F)
-                  : AfterBB;
-  auto *SwitchI = Builder->CreateSwitch(CondVal, DefaultBB, Cases.size());
+  Function *FunctionIR = Builder->GetInsertBlock()->getParent();
+  BasicBlock *AfterBlock =
+      BasicBlock::Create(*TheContext, "switch.after", FunctionIR);
+  BasicBlock *DefaultBlock =
+      DefaultCase
+          ? BasicBlock::Create(*TheContext, "switch.default", FunctionIR)
+          : AfterBlock;
 
-  vector<BasicBlock *> CaseBBs;
-  CaseBBs.reserve(Cases.size());
-  for (const auto &C : Cases) {
-    BasicBlock *CaseBB = BasicBlock::Create(*TheContext, "switch.case", F);
-    CaseBBs.push_back(CaseBB);
-    for (int64_t Val : C.first) {
-      auto *CaseConst = ConstantInt::get(cast<IntegerType>(CondLLVMType),
-                                         static_cast<uint64_t>(Val),
-                                         /*isSigned=*/true);
-      SwitchI->addCase(CaseConst, CaseBB);
+  unsigned CaseCount = 0;
+  for (const auto &Case : Cases)
+    CaseCount += Case.first.size();
+  auto *SwitchIR =
+      Builder->CreateSwitch(ConditionValue, DefaultBlock, CaseCount);
+
+  vector<BasicBlock *> CaseBlocks;
+  for (const auto &Case : Cases) {
+    BasicBlock *CaseBlock =
+        BasicBlock::Create(*TheContext, "switch.case", FunctionIR);
+    CaseBlocks.push_back(CaseBlock);
+    for (int64_t Value : Case.first) {
+      auto *Constant = ConstantInt::get(ConditionType,
+                                        static_cast<uint64_t>(Value), true);
+      SwitchIR->addCase(Constant, CaseBlock);
     }
   }
 
-  BreakTargetStack.push_back(AfterBB);
-  for (size_t I = 0; I < Cases.size(); ++I) {
-    Builder->SetInsertPoint(CaseBBs[I]);
-    if (!Cases[I].second->codegen()) {
+  BreakTargetStack.push_back(AfterBlock);
+  for (size_t Index = 0; Index < Cases.size(); ++Index) {
+    Builder->SetInsertPoint(CaseBlocks[Index]);
+    if (!Cases[Index].second->codegen()) {
       BreakTargetStack.pop_back();
       return nullptr;
     }
     if (!Builder->GetInsertBlock()->getTerminator())
-      Builder->CreateBr(AfterBB);    // implicit no-fallthrough
+      Builder->CreateBr(AfterBlock);
   }
 
   if (DefaultCase) {
-    Builder->SetInsertPoint(DefaultBB);
+    Builder->SetInsertPoint(DefaultBlock);
     if (!DefaultCase->codegen()) {
       BreakTargetStack.pop_back();
       return nullptr;
     }
     if (!Builder->GetInsertBlock()->getTerminator())
-      Builder->CreateBr(AfterBB);
+      Builder->CreateBr(AfterBlock);
   }
   BreakTargetStack.pop_back();
 
-  Builder->SetInsertPoint(AfterBB);
+  Builder->SetInsertPoint(AfterBlock);
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 ```
 
-`Builder->CreateSwitch(CondVal, DefaultBB, Cases.size())` emits the `switch` instruction itself, with the default destination and a hint for how many cases to expect. When there's no `default` in the source, `DefaultBB` is just `AfterBB` — no matching case falls straight through to after the switch, same as a real `default` that does nothing. `SwitchI->addCase(CaseConst, CaseBB)` registers each value.
+`Builder->CreateSwitch(ConditionValue, DefaultBlock, CaseCount)` emits the `switch` instruction itself, with the default destination and a hint for how many cases to expect — `CaseCount` counts individual values, not `case` clauses, so `case 0, 6:` contributes two to the hint even though it's one clause with one body. When there's no `default` in the source, `DefaultBlock` is just `AfterBlock` — no matching value falls straight through to after the switch, same as a real `default` that does nothing. `SwitchIR->addCase(Constant, CaseBlock)` registers each value.
 
 If a case body doesn't end in a terminator, I add an unconditional branch to `switch.after` myself. That's the whole no-fallthrough guarantee — every case exits to `switch.after` unless it already returned or broke somewhere else. There's no way to stack empty `case`s to share a body the way C does; if two values need the same code, list them on one `case` line instead.
 
@@ -474,7 +507,7 @@ I only allow compile-time integer literals as case values, not variables or expr
 ## Build and Run
 
 ```bash
-cd code/chapter-36
+cd code/chapter-23
 cmake -S . -B build && cmake --build build
 ```
 

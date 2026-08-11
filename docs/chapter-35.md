@@ -1,11 +1,11 @@
 ---
-description: "Complete pyxc's arithmetic: add / and %, five compound assignment operators, and prefix/postfix ++/-- for all lvalue shapes."
+description: "Add five compound assignment operators and prefix/postfix ++/-- for every assignable expression shape."
 ---
-# 35. pyxc: Arithmetic Completeness
+# 35. pyxc: Read-Modify-Write Operators
 
 ## What I Am Building
 
-In [Chapter 42](chapter-42.md), I finished the object model. Before moving further, I want to close a gap: I've given pyxc `+`, `-`, and `*`, but not `/` or `%`. I haven't added compound assignment (`+=`, `*=`, etc.), and I haven't added `++` or `--` either. After this chapter, all of that works:
+[Chapter 34](chapter-34.md) let `=` appear inside an expression, not just as a standalone statement. pyxc has had `/` and `%` since [Chapter 4](chapter-04.md) — this chapter isn't about arithmetic operators themselves, it's about convenience over them: I haven't added compound assignment (`+=`, `*=`, etc.), and I haven't added `++` or `--` either. Both are pure sugar over `x = x + 1`-style code; programs don't need them to express anything new. After this chapter, all of that works:
 
 ```pyxc
 extern def printd(x: float64)
@@ -39,7 +39,7 @@ def main() -> int:
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-32
+cd pyxc-llvm-tutorial/code/chapter-35
 ```
 
 ## Grammar
@@ -47,105 +47,180 @@ cd pyxc-llvm-tutorial/code/chapter-32
 I change three areas of the grammar. I replace the bare `=` in `assignment-statement` with `assignment-operator`, now accepting any of the six assignment operators. `term` and `unary-expression` both change to fold in `%` and `++`/`--`, and a new `postfix-expression` production captures postfix `++`/`--` between `unary-expression` and `primary`:
 
 ```grammardiff
- program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
- end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | external | top-level-expression ;
- type-alias       = "type" name "=" type ;
- trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
- trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
- trait-method-signature  = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ;
- struct-definition       = "struct" name ":" end-of-lines struct-block ;
- class-definition        = "class" name [ "(" trait-reference { "," trait-reference } ")" ] ":" end-of-lines struct-block ;
- trait-reference        = name [ "[" type "]" ] ;
- implementation-definition         = "impl" trait-reference "for" name ":" end-of-lines implementation-block ;
- implementation-block       = indent implementation-method { end-of-lines implementation-method } dedent ;
- implementation-method      = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- struct-block     = indent class-member { end-of-lines class-member } dedent ;
- class-member     = [ visibility ] ( field-declaration | method-definition ) ;
- visibility      = "public" | "private" ;
- method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")"
-                   [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- field-declaration       = name ":" type ;
- function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- (* If the return type is omitted, it defaults to None. *)
- external        = "extern" "def" function-signature [ "->" type ] ;
- top-level-expression    = expression ;
- function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
- typed-parameter      = name ":" type ;
- if-statement          = "if" expression ":" suite
-                 [ end-of-lines "else" ":" suite ] ;
- for-statement         = "for"
-                   ( "var" name ":" type | name )
-                   "=" expression "," expression "," expression ":" suite ;
- variable-statement         = "var" variable-binding { "," variable-binding } ;
--assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
-+assignment-statement      = lvalue assignment-operator expression ; (* assignment is a statement here *)
- simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
- compound-statement    = if-statement | for-statement ;
- statement       = simple-statement | compound-statement ;
- suite           = simple-statement | compound-statement | end-of-lines block ;
- return-statement      = "return" [ expression ] ;
- statement-separator = end-of-lines | BLOCK_END ;
- block = indent statement { statement-separator statement } dedent ;
- expression      = comparison ;
- comparison      = sum { comparison-operator sum } ;
- comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
- sum             = term { ("+" | "-") term } ;
--term            = unary-expression { ("*" | "/") unary-expression } ;
-+term            = unary-expression { ("*" | "/" | "%") unary-expression } ;
- lvalue          = name | field-access | index-expression ;
- variable-binding      = name ":" type [ "=" expression ] ;
--unary-expression       = "-" unary-expression | primary ;
-+unary-expression       = ("-" | "++" | "--") unary-expression | postfix-expression ;
-+postfix-expression     = primary [ postfix-operator ] ;
-+postfix-operator       = "++" | "--" ;
- primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
- cast-expression        = cast-type "(" expression ")" ;
- sizeof-expression      = "sizeof" "(" type ")" ;
- address-expression        = "addr" "(" lvalue ")" ;
- name-expression  = name | call-expression | method-call-expression | constructor-call-expression ;
- call-expression        = name "(" [ expression { "," expression } ] ")" ;
- method-call-expression  = name "." name "(" [ expression { "," expression } ] ")" ;
- constructor-call-expression    = name "(" [ expression { "," expression } ] ")" ;
- field-access     = name "." name { "." name } ;
- index-expression       = name "[" expression "]" ;
- number-expression      = number ;
- array-literal    = "[" [ expression { "," expression } ] "]" ;
- string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
- escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
- parenthesized-expression       = "(" expression ")" ;
- indent          = INDENT ;
- dedent          = DEDENT ;
- 
-+assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
- name      = (letter | "_") { letter | digit | "_" } ;
- builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | "None" ;
- alias-type       = name ;
- struct-type      = name ;
- pointer-type     = "ptr" "[" type "]" ;
- type            = base-type [ array-suffix ] ;
- base-type        = builtin-type | alias-type | struct-type | pointer-type ;
- array-suffix     = "[" integer "]" ;
- cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | pointer-type ;
- integer         = digit { digit } ;
- number          = ( digit { digit } [ "." { digit } ]
-                   | "." digit { digit } ) [ exponent ] ;
- exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
- boolean-literal    = "True" | "False" ;
- letter          = "A".."Z" | "a".."z" ;
- digit           = "0".."9" ;
- end-of-line             = "\r\n" | "\r" | "\n" ;
- comment = "#" { comment-character } ;
- comment-character = ? any character except "\r" and "\n" ? ;
- whitespace = " " | "\t" | "\v" | "\f" ;
- INDENT          = ? synthetic token emitted by lexer ? ;
- DEDENT          = ? synthetic token emitted by lexer ? ;
- 
- BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
+ program                           = [ end-of-lines ]
+                                     [ top-level-item
+                                       { end-of-lines top-level-item } ]
+                                     [ end-of-lines ] ;
+ end-of-lines                      = end-of-line { end-of-line } ;
+ top-level-item                    = function-definition
+                                     | type-alias
+                                     | struct-definition
+                                     | external
+                                     | top-level-statement ;
+ struct-definition                 = "struct" name ":" end-of-lines
+                                     struct-block ;
+ type-alias                        = "type" name "=" type ;
+ struct-block                      = indent field-declaration
+                                     { end-of-lines field-declaration } dedent ;
+ field-declaration                 = name ":" type ;
+ function-definition               = "def" function-signature [ "->" type ] ":"
+                                     ( simple-statement
+                                       | end-of-lines block ) ;
+ external                          = "extern" "def" external-function-signature
+                                     [ "->" type ] ;
+ top-level-statement               = statement ;
+ function-signature                = name "(" [ parameters ] ")" ;
+ external-function-signature       = name "(" [ parameters [ "," "..." ] | "..." ] ")" ;
+ parameters                        = typed-parameter { "," typed-parameter } ;
+ typed-parameter                   = name ":" type ;
+ if-statement                      = "if" expression ":" suite
+                                     { [ end-of-lines ] "elif" expression ":" suite }
+                                     [ [ end-of-lines ] "else" ":" suite ] ;
+ for-statement                     = "for" ( "var" name ":" type | name )
+                                     "=" expression ","
+                                     expression "," expression ":" suite ;
+ while-statement                   = "while" expression ":" suite ;
+ do-while-statement                = "do" ":" suite [ end-of-lines ]
+                                     "while" expression ;
+ switch-statement                  = "switch" expression ":" end-of-lines
+                                     indent switch-body dedent ;
+ switch-body                       = switch-case
+                                     { end-of-lines switch-case }
+                                     [ end-of-lines default-case ] ;
+ switch-case                       = "case" switch-integer
+                                     { "," switch-integer } ":" suite ;
+ default-case                      = "default" ":" suite ;
+ variable-statement                = "var" variable-binding
+                                     { "," variable-binding } ;
+ simple-statement                  = return-statement
+                                     | break-statement
+                                     | continue-statement
+                                     | variable-statement
+                                     | expression ;
+ compound-statement                = if-statement
+                                     | for-statement
+                                     | while-statement
+                                     | do-while-statement
+                                     | switch-statement ;
+ statement                         = simple-statement | compound-statement ;
+ suite                             = simple-statement
+                                     | compound-statement
+                                     | end-of-lines block ;
+ return-statement                  = "return" [ expression ] ;
+ break-statement                   = "break" ;
+ continue-statement                = "continue" ;
+ statement-separator               = end-of-lines | BLOCK_END ;
+ block                             = indent statement
+                                     { statement-separator statement } dedent ;
+ expression                        = assignment ;
+-assignment                        = logical-or [ "=" assignment ] ;
++assignment                        = logical-or [ assignment-operator assignment ] ;
+ logical-or                        = logical-and { "||" logical-and } ;
+ logical-and                       = bitwise-or { "&&" bitwise-or } ;
+ bitwise-or                        = bitwise-xor { "|" bitwise-xor } ;
+ bitwise-xor                       = bitwise-and { "^" bitwise-and } ;
+ bitwise-and                       = equality { "&" equality } ;
+ equality                          = relational { ("==" | "!=") relational } ;
+ relational                        = shift { ("<" | "<=" | ">" | ">=") shift } ;
+ shift                             = sum { ("<<" | ">>") sum } ;
+ sum                               = term { ("+" | "-") term } ;
+-term                              = factor { ("*" | "/" | "%") factor } ;
++term                              = unary-expression
++                                    { ("*" | "/" | "%") unary-expression } ;
+ lvalue                            = name
+                                     { "." name | "[" expression "]" } ;
+ variable-binding                  = name ":" type [ "=" expression ] ;
+-factor                            = ("-" | "!" | "~") factor | primary ;
++unary-expression                  = ("-" | "!" | "~" | "++" | "--")
++                                    unary-expression
++                                    | postfix-expression ;
++postfix-expression                = primary [ "++" | "--" ] ;
+ primary                           = cast-expression
+                                     | sizeof-expression
+                                     | address-expression
+                                     | array-literal
+                                     | string-literal
+                                     | character-literal
+                                     | name-expression
+                                     | number-expression
+                                     | boolean-literal
+                                     | parenthesized-expression ;
+ cast-expression                   = cast-type "(" expression ")" ;
+ sizeof-expression                 = "sizeof" "(" type ")" ;
+ address-expression                = "addr" "(" lvalue ")" ;
+ array-literal                     = "[" [ expression
+                                       { "," expression } ] "]" ;
+ string-literal                    = '"' { string-character | escape } '"' ;
+ escape                            = literal-escape ;
+ string-character                  = ? any character except '"', "\\", "\r", and "\n" ? ;
+ character-literal                 = "'" ( character | character-escape ) "'" ;
+ character-escape                  = literal-escape ;
+ literal-escape                    = "\\" ( "\\" | "'" | '"' | "?"
+                                       | "a" | "b" | "f" | "n" | "r"
+                                       | "t" | "v"
+                                       | "x" hex-digit hex-digit
+                                       | octal-digit [ octal-digit
+                                         [ octal-digit ] ]
+                                       | "u" hex-digit hex-digit hex-digit hex-digit
+                                       | "U" hex-digit hex-digit hex-digit hex-digit
+                                         hex-digit hex-digit hex-digit hex-digit ) ;
+ character                         = ? any character except "'", "\\", "\r", and "\n" ? ;
+ hex-digit                         = digit | "A".."F" | "a".."f" ;
++assignment-operator               = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
+ octal-digit                       = "0".."7" ;
+ name-expression                   = lvalue | call-expression ;
+ call-expression                   = name "(" [ arguments ] ")" ;
+ arguments                         = expression { "," expression } ;
+ number-expression                 = number ;
+ parenthesized-expression          = "(" expression ")" ;
+ indent                            = INDENT ;
+ dedent                            = DEDENT ;
+ name                              = (letter | "_")
+                                     { letter | digit | "_" } ;
+ type                              = base-type [ array-suffix ] ;
+ base-type                         = builtin-type | alias-type | struct-type
+                                     | pointer-type ;
+ pointer-type                      = "ptr" "[" type "]" ;
+ array-suffix                      = "[" integer "]" ;
+ builtin-type                      = "int" | "int8" | "int16" | "int32"
+                                     | "int64" | "uint8" | "uint16"
+                                     | "uint32" | "uint64"
+                                     | "float" | "float32"
+                                     | "float64" | "bool" | "None" ;
+ struct-type                       = name ;
+ alias-type                        = name ;
+ cast-type                         = builtin-cast-type | pointer-type ;
+ builtin-cast-type                 = "int" | "int8" | "int16" | "int32"
+                                     | "int64" | "uint8" | "uint16"
+                                     | "uint32" | "uint64"
+                                     | "float" | "float32"
+                                     | "float64" | "bool" ;
+ number                            = ( digit { digit } [ "." { digit } ]
+                                     | "." digit { digit } ) [ exponent ] ;
+ switch-integer                    = [ "-" ] digit { digit } ;
+ exponent                          = ( "e" | "E" ) [ "+" | "-" ]
+                                     digit { digit } ;
+ boolean-literal                   = "True" | "False" ;
+ integer                           = digit { digit } ;
+ letter                            = "A".."Z" | "a".."z" ;
+ digit                             = "0".."9" ;
+ end-of-line                       = "\r\n" | "\r" | "\n" ;
+ (*
+     A `comment` begins with "#" and continues to the end of the line. The lexer
+      ignores its text and returns an end-of-line token when one follows it.
+ *)
+ comment                           = "#" { comment-character } ;
+ comment-character                 = ? any character except "\r" and "\n" ? ;
+ (*
+     `whitespace` may appear before or between tokens
+      and is ignored by the lexer.
+ *)
+ whitespace                        = " " | "\t" | "\v" | "\f" ;
+ INDENT                            = ? synthetic token emitted by lexer when indentation increases ? ;
+ DEDENT                            = ? synthetic token emitted by lexer when indentation decreases ? ;
+ BLOCK_END                         = ? synthetic token injected into the stream by ParseBlock
+                                       immediately after it consumes DEDENT ? ;
+
 ```
 
 ## New Tokens and Lexer Peek-Ahead
@@ -153,13 +228,13 @@ I change three areas of the grammar. I replace the bare `=` in `assignment-state
 I add seven new tokens to cover the compound assignment operators and the increment/decrement operators:
 
 ```cpp
-tok_pluseq     = -45,   // +=
-tok_minuseq    = -46,   // -=
-tok_muleq      = -47,   // *=
-tok_diveq      = -48,   // /=
-tok_modeq      = -49,   // %=
-tok_plusplus   = -56,   // ++
-tok_minusminus = -57,   // --
+tok_plus_equal = -57,
+tok_minus_equal = -58,
+tok_star_equal = -59,
+tok_slash_equal = -60,
+tok_percent_equal = -61,
+tok_plus_plus = -62,
+tok_minus_minus = -63,
 ```
 
 I produce each with a one-character peek in the lexer. The `+` path illustrates the pattern: when I see `+`, I peek at the next character to decide between `+=`, `++`, and bare `+`:
@@ -169,127 +244,241 @@ if (LexerLastChar == '+') {
   int Next = peek();
   int Tok = tok_plus;
   if (Next == '=')
-    Tok = (advance(), tok_pluseq);
+    Tok = (advance(), tok_plus_equal);
   else if (Next == '+')
-    Tok = (advance(), tok_plusplus);
+    Tok = (advance(), tok_plus_plus);
   LexerLastChar = advance();
   return Tok;
 }
 ```
 
-I apply the same pattern to `-` (which must also handle `->` for the arrow token), `*`, `/`, and `%`. The `/` path is new — previously `/` was an unknown character. Now I return `'/'` bare, or `tok_diveq` if it's followed by `=`.
-
-## Division and Remainder
-
-I add `/` and `%` to the precedence table at level 40 — the same level as `*`:
+`-` follows the same shape, plus a third alternative for `->` (the return-type arrow, from [Chapter 18](chapter-18.md)):
 
 ```cpp
-{tok_slash, 40},   // /
-{tok_percent, 40}, // %
-```
-
-The LLVM instructions I emit from `EmitBuiltInArithmetic` differ by type:
-
-| Op | Integer | Float |
-|----|---------|-------|
-| `/` | `sdiv` | `fdiv` |
-| `%` | `srem` | error |
-
-`%` on float operands is a type error — I return `ValueType::Error` from `GetBinaryResultType` when either operand of `%` is not an integer:
-
-```cpp
-if (Operator == tok_percent && (!IsIntType(L) || !IsIntType(R)))
-  return ValueType::Error;
-```
-
-I report the resulting `ValueType::Error` as a type mismatch — the same generic error every binary operator falls back to, not something specific to `%`:
-
-```pyxc
-def main() -> int:
-  var a: float64 = 5.5
-  var b: float64 = 2.0
-  var r: float64 = a % b
-  return 0
-```
-```
-Error (Line 4, Column 25): Type mismatch in binary operator
-  var r: float64 = a % b
-                        ^~~~
-```
-
-I also tighten the pointer arithmetic guard: only `+` and `−` allow a pointer on one side. I now explicitly reject `/` and `%` with a pointer operand:
-
-```cpp
-if ((Operator == tok_plus || Operator == tok_minus) &&
-    ((L == ValueType::Pointer && IsIntType(R)) ||
-     (R == ValueType::Pointer && IsIntType(L)))) {
-  // pointer arithmetic
+if (LexerLastChar == '-') {
+  int Next = peek();
+  int Tok = tok_minus;
+  if (Next == '>')
+    Tok = (advance(), tok_arrow);
+  else if (Next == '=')
+    Tok = (advance(), tok_minus_equal);
+  else if (Next == '-')
+    Tok = (advance(), tok_minus_minus);
+  LexerLastChar = advance();
+  return Tok;
 }
 ```
 
-## Compound Assignment AST Nodes
-
-I add four AST node classes, one for each lvalue shape, all sharing the same structure: an lvalue, an operator token, and an RHS expression:
+`*`, `/`, and `%` don't get `++`/`--` forms, so they share one combined branch instead of three separate ones — this is the branch that already returns bare `tok_slash`/`tok_percent` for plain `/` and `%`, since those tokens have existed since Chapter 4. Only the `= ` alternative is new:
 
 ```cpp
-class CompoundAssignmentExpressionNode : public ExpressionNode {  // plain variable
-  string Name; int Operator; unique_ptr<ExpressionNode> Right; ...
-};
-class FieldCompoundAssignmentExpressionNode : public ExpressionNode {  // p.x += 1
-  unique_ptr<FieldExpressionNode> Left; int Operator; unique_ptr<ExpressionNode> Right; ...
-};
-class IndexCompoundAssignmentExpressionNode : public ExpressionNode {  // arr[i] *= 2
-  unique_ptr<IndexExpressionNode> Left; int Operator; unique_ptr<ExpressionNode> Right; ...
-};
-class IndexedFieldCompoundAssignmentExpressionNode : public ExpressionNode {  // arr[i].x += 3
-  unique_ptr<IndexedFieldExpressionNode> Left; int Operator; unique_ptr<ExpressionNode> Right; ...
+if (LexerLastChar == '*' || LexerLastChar == '/' ||
+    LexerLastChar == '%') {
+  int ThisChar = LexerLastChar;
+  int Tok = ThisChar == '*' ? tok_star
+                            : ThisChar == '/' ? tok_slash : tok_percent;
+  if (peek() == '=') {
+    advance();
+    Tok = ThisChar == '*' ? tok_star_equal
+                          : ThisChar == '/' ? tok_slash_equal
+                                            : tok_percent_equal;
+  }
+  LexerLastChar = advance();
+  return Tok;
+}
+```
+
+## One `isLValue()`/`codegenAddress()` Pair, Not Four Node Classes
+
+`p.x`, `arr[i]`, and a plain name are all different `ExpressionNode` subclasses, but they all need to answer the same two questions for this chapter: "can I assign to you?" and "give me your address." Rather than write separate compound-assignment machinery for each lvalue shape, I add two virtual methods to the base `ExpressionNode` that every lvalue-capable node already overrides:
+
+```cpp
+virtual bool isLValue() const { return false; }
+virtual Value *codegenAddress() { return nullptr; }
+```
+
+`NameExpressionNode`, `FieldExpressionNode`, `IndexExpressionNode`, and `IndexedFieldExpressionNode` each override both, returning `true`/a real address; everything else keeps the base class's `false`/`nullptr`. That's the whole trick: one `CompoundAssignmentExpressionNode`, holding a generic `unique_ptr<ExpressionNode> Left`, works for every lvalue shape, because it only ever calls `Left->isLValue()` and `Left->codegenAddress()` — it never needs to know which concrete node `Left` actually is.
+
+```cpp
+class CompoundAssignmentExpressionNode : public ExpressionNode {
+  unique_ptr<ExpressionNode> Left;
+  unique_ptr<ExpressionNode> Right;
+  int Operator;
+
+public:
+  CompoundAssignmentExpressionNode(unique_ptr<ExpressionNode> Left,
+                                   unique_ptr<ExpressionNode> Right,
+                                   int Operator, ValueType Type,
+                                   const string &StructName = "")
+      : Left(std::move(Left)), Right(std::move(Right)), Operator(Operator) {
+    setType(Type, StructName);
+  }
+  bool shouldPrintValue() const override { return false; }
+  Value *codegen() override;
 };
 ```
 
-I make all four override `shouldPrintValue()` to return `false` — compound assignment is a statement, not a value expression, so the REPL doesn't auto-print its result.
+`shouldPrintValue()` returning `false` is what keeps the REPL from auto-printing a `0.0` after every compound assignment — same convention every statement-shaped node has used since [Chapter 11](chapter-11.md).
 
-I drive the parse dispatch with two helpers: I check whether the current token is one of the five compound assignment tokens (`IsCompoundAssignTok`), then convert it to the corresponding arithmetic operator character (`CompoundAssignToBinaryOp`) so codegen can call `EmitBuiltInArithmetic`:
+## Parsing: One `ParseAssignment`, Not Four
+
+`=` and the five compound-assignment operators are all handled by the same function. I parse the left side as an ordinary expression first, then check whether an assignment operator follows — if `Left` isn't an lvalue, that's a parse-time error regardless of which operator comes next:
 
 ```cpp
-static bool IsCompoundAssignTok(int Tok) {
-  return Tok == tok_pluseq || Tok == tok_minuseq || Tok == tok_muleq ||
-         Tok == tok_diveq  || Tok == tok_modeq;
+static bool IsAssignmentOperator(int Token) {
+  return Token == tok_equal || Token == tok_plus_equal ||
+         Token == tok_minus_equal || Token == tok_star_equal ||
+         Token == tok_slash_equal || Token == tok_percent_equal;
 }
-static int CompoundAssignToBinaryOp(int Tok) {
-  switch (Tok) {
-  case tok_pluseq:
+
+static int AssignmentBinaryOperator(int Token) {
+  switch (Token) {
+  case tok_plus_equal:
     return tok_plus;
-  case tok_minuseq:
+  case tok_minus_equal:
     return tok_minus;
-  case tok_muleq:
+  case tok_star_equal:
     return tok_star;
-  case tok_diveq:
+  case tok_slash_equal:
     return tok_slash;
-  case tok_modeq:
+  case tok_percent_equal:
     return tok_percent;
   default:
     return 0;
   }
 }
+
+/// assignment
+///   = logical-or [ assignment-operator assignment ] ;
+static unique_ptr<ExpressionNode> ParseAssignment() {
+  auto Left = ParseLogicalOr();
+  if (!Left)
+    return nullptr;
+  if (!IsAssignmentOperator(CurrentToken))
+    return Left;
+  if (!Left->isLValue())
+    return LogErrorExpression("Assignment target must be assignable");
+
+  ValueType LeftType = Left->getType();
+  string LeftTypeInfo = Left->getStructName();
+  int AssignmentOperator = CurrentToken;
+  getNextToken(); // eat the assignment operator
+
+  ExpectedLiteralTypeGuard Guard(LeftType, LeftTypeInfo);
+  auto Right = ParseAssignment();
+  if (!Right)
+    return nullptr;
+
+  if (AssignmentOperator != tok_equal) {
+    int BinaryOperator = AssignmentBinaryOperator(AssignmentOperator);
+    ValueType ResultType =
+        GetBinaryResultType(BinaryOperator, LeftType, LeftTypeInfo,
+                            Right->getType(), Right->getStructName());
+    if (ResultType == ValueType::Error || !IsAssignable(LeftType, ResultType))
+      return LogErrorExpression("Type mismatch in assignment");
+    if (LeftType == ValueType::Pointer && ResultType != ValueType::Pointer)
+      return LogErrorExpression("Type mismatch in assignment");
+    return make_unique<CompoundAssignmentExpressionNode>(
+        std::move(Left), std::move(Right), BinaryOperator, LeftType,
+        LeftTypeInfo);
+  }
+
+  // ... plain '=' path, unchanged from Chapter 34 ...
+  return make_unique<AssignmentExpressionNode>(
+      std::move(Left), std::move(Right), LeftType, LeftTypeInfo);
+}
 ```
 
-I handle the plain-variable case in `ParseCompoundAssignmentRight`: I look up the destination type, convert the token to a binary op, call `ParseExpression` for the right-hand side, type-check the result, and return a `CompoundAssignmentExpressionNode`. The field case follows the same pattern in its own helper, `ParseFieldCompoundAssignmentRight`. The index and indexed-field cases follow the identical pattern too, but inline inside `ParseLeadingNameSimpleStatement` rather than in their own helpers.
+`Right` recurses back into `ParseAssignment` itself, not one tier down — that's what makes `a = b += 1` parse as `a = (b += 1)`, right-associative, the same shape [Chapter 34](chapter-34.md) already established for plain `=`. The type check reuses `GetBinaryResultType`, the same function every ordinary binary operator's type checking goes through, so `x += y` is rejected under exactly the same rules as `x + y` would be.
 
-I write codegen the same way for all four nodes: resolve the lvalue to a pointer, load the current value, call `EmitBuiltInArithmetic(Operator, old, right)`, and store the result back.
+## Compound Assignment Codegen
+
+```cpp
+static Value *EmitReadModifyWriteValue(int Operator, Value *LeftValue,
+                                       ValueType LeftType,
+                                       const string &LeftTypeInfo,
+                                       Value *RightValue,
+                                       ValueType RightType) {
+  if (LeftType == ValueType::Pointer) {
+    RightValue = EmitImplicitCast(RightValue, RightType, ValueType::Int64);
+    if (!RightValue)
+      return LogErrorV("Type mismatch in assignment");
+    if (Operator == tok_minus)
+      RightValue = Builder->CreateNeg(RightValue, "negindex");
+    ValueType ElementType = ValueType::Error;
+    string ElementTypeInfo;
+    if (!DecodePointerType(LeftTypeInfo, ElementType, ElementTypeInfo))
+      return LogErrorV("Invalid pointer type metadata");
+    return Builder->CreateInBoundsGEP(
+        LLVMTypeFor(ElementType, ElementTypeInfo), LeftValue, RightValue,
+        "ptrarith");
+  }
+
+  RightValue = EmitImplicitCast(RightValue, RightType, LeftType);
+  if (!RightValue)
+    return LogErrorV("Type mismatch in assignment");
+  if (IsFloatType(LeftType)) {
+    if (Operator == tok_plus)
+      return Builder->CreateFAdd(LeftValue, RightValue, "addtmp");
+    if (Operator == tok_minus)
+      return Builder->CreateFSub(LeftValue, RightValue, "subtmp");
+    if (Operator == tok_star)
+      return Builder->CreateFMul(LeftValue, RightValue, "multmp");
+    if (Operator == tok_slash)
+      return Builder->CreateFDiv(LeftValue, RightValue, "divtmp");
+    return Builder->CreateFRem(LeftValue, RightValue, "remtmp");
+  }
+  if (Operator == tok_plus)
+    return Builder->CreateAdd(LeftValue, RightValue, "addtmp");
+  if (Operator == tok_minus)
+    return Builder->CreateSub(LeftValue, RightValue, "subtmp");
+  if (Operator == tok_star)
+    return Builder->CreateMul(LeftValue, RightValue, "multmp");
+  if (Operator == tok_slash)
+    return IsUnsignedIntType(LeftType)
+               ? Builder->CreateUDiv(LeftValue, RightValue, "divtmp")
+               : Builder->CreateSDiv(LeftValue, RightValue, "divtmp");
+  return IsUnsignedIntType(LeftType)
+             ? Builder->CreateURem(LeftValue, RightValue, "remtmp")
+             : Builder->CreateSRem(LeftValue, RightValue, "remtmp");
+}
+
+Value *CompoundAssignmentExpressionNode::codegen() {
+  Value *Address = Left->codegenAddress();
+  if (!Address)
+    return LogErrorV("Assignment target must be assignable");
+  Value *LeftValue = Builder->CreateLoad(
+      LLVMTypeFor(getType(), getStructName()), Address, "rmw.old");
+  Value *RightValue = Right->codegen();
+  if (!RightValue)
+    return nullptr;
+  Value *Result = EmitReadModifyWriteValue(
+      Operator, LeftValue, getType(), getStructName(), RightValue,
+      Right->getType());
+  if (!Result)
+    return nullptr;
+  Builder->CreateStore(Result, Address);
+  return Result;
+}
+```
+
+`EmitReadModifyWriteValue` is the one place pointer arithmetic (`p += 1`) and ordinary arithmetic (`x += 1`) both go through — the pointer branch is the same `CreateInBoundsGEP` shape [Chapter 26](chapter-26.md) already used for `p + n`, just reached from a different call site. `p.x` never has its own copy of this logic: `Left->codegenAddress()` on a `FieldExpressionNode` already knows how to compute the field's address, so `CompoundAssignmentExpressionNode::codegen()` doesn't need to know or care that `Left` happens to be a field access this time.
 
 ## Prefix and Postfix `++`/`--`
 
-I handle all four combinations of prefix/postfix × increment/decrement with a single AST node:
+One node covers all four combinations of prefix/postfix × increment/decrement:
 
 ```cpp
-class IncDecExpressionNode : public ExpressionNode {
+class IncrementDecrementExpressionNode : public ExpressionNode {
   unique_ptr<ExpressionNode> Operand;
   bool IsIncrement;
   bool IsPrefix;
 
 public:
-  IncDecExpressionNode(unique_ptr<ExpressionNode> Operand, bool IsIncrement, bool IsPrefix,
-                ValueType Type, const string &StructName = "")
+  IncrementDecrementExpressionNode(unique_ptr<ExpressionNode> Operand,
+                                   bool IsIncrement, bool IsPrefix,
+                                   ValueType Type,
+                                   const string &StructName = "")
       : Operand(std::move(Operand)), IsIncrement(IsIncrement),
         IsPrefix(IsPrefix) {
     setType(Type, StructName);
@@ -298,65 +487,100 @@ public:
 };
 ```
 
-I require the operand to pass `IsIncDecAssignableExpr` — it must be a variable, field, index, or indexed-field expression:
+Codegen loads the old value through `Operand->codegenAddress()`, computes `old ± 1` through the same `EmitReadModifyWriteValue` compound assignment already uses, stores the result, and returns `IsPrefix ? NewValue : OldValue`:
 
 ```cpp
-static bool IsIncDecAssignableExpr(const ExpressionNode *E) {
-  return dynamic_cast<const NameExpressionNode *>(E) ||
-         dynamic_cast<const FieldExpressionNode *>(E) ||
-         dynamic_cast<const IndexExpressionNode *>(E) ||
-         dynamic_cast<const IndexedFieldExpressionNode *>(E);
+Value *IncrementDecrementExpressionNode::codegen() {
+  Value *Address = Operand->codegenAddress();
+  if (!Address)
+    return LogErrorV("Increment/decrement target must be assignable");
+  Value *OldValue = Builder->CreateLoad(
+      LLVMTypeFor(getType(), getStructName()), Address, "incdec.old");
+  Value *One = nullptr;
+  ValueType OneType = getType();
+  if (getType() == ValueType::Pointer) {
+    One = ConstantInt::get(Type::getInt64Ty(*TheContext), 1);
+    OneType = ValueType::Int64;
+  } else if (IsIntType(getType())) {
+    One = ConstantInt::get(LLVMTypeFor(getType()), 1);
+  } else {
+    One = ConstantFP::get(LLVMTypeFor(getType()), 1.0);
+  }
+  Value *NewValue = EmitReadModifyWriteValue(
+      IsIncrement ? tok_plus : tok_minus, OldValue, getType(),
+      getStructName(), One, OneType);
+  if (!NewValue)
+    return nullptr;
+  Builder->CreateStore(NewValue, Address);
+  return IsPrefix ? NewValue : OldValue;
 }
 ```
 
-In codegen, I load the old value, compute `old ± 1` via `EmitBuiltInArithmetic`, store the new value, and return `IsPrefix ? new : old`. For postfix, I return the value that existed *before* the mutation, matching C semantics.
-
-Because I reuse `EmitBuiltInArithmetic` here — the same function `+` and `-` already go through — `p++` on a pointer automatically advances by one element through the pointer-arithmetic path from earlier in this chapter. I don't need to add anything pointer-specific here.
+Returning `OldValue` for postfix and `NewValue` for prefix is what makes `i++` evaluate to the value before the increment and `++i` evaluate to the value after it, matching C semantics. `p++` on a pointer automatically advances by one element, not one byte, because `EmitReadModifyWriteValue`'s pointer branch is the same code `p += 1` goes through.
 
 ## Parsing `++`/`--`
 
-**Postfix** I handle in `ParsePostfixIncDec`, which wraps the primary expression in an `IncDecExpressionNode` if it's followed by `++` or `--`. Both paths require the operand to be numeric or a pointer, in addition to being assignable. `ParseUnary` calls `ParsePostfixIncDec(ParsePrimary())` instead of calling `ParsePrimary` alone:
+**Postfix** lives in `ParsePostfixExpression`, right after parsing the primary. `unary-expression`'s grammar rule is `("-" | "!" | "~" | "++" | "--") unary-expression | postfix-expression` — postfix is what `ParseUnaryExpression` falls through to once none of the prefix operators match:
 
 ```cpp
-static unique_ptr<ExpressionNode> ParsePostfixIncDec(unique_ptr<ExpressionNode> Base) {
-  while (CurrentToken == tok_plusplus || CurrentToken == tok_minusminus) {
-    bool IsIncrement = (CurrentToken == tok_plusplus);
-    if (!IsIncDecAssignableExpr(Base.get()))
-      return LogErrorExpression("Increment/decrement target must be assignable");
-    if (!IsNumericType(Base->getType()) &&
-        Base->getType() != ValueType::Pointer)
-      return LogErrorExpression("Increment/decrement requires numeric or pointer type");
-    ValueType T = Base->getType();
-    string S = Base->getStructName();
-    getNextToken(); // eat ++/--
-    Base = make_unique<IncDecExpressionNode>(std::move(Base), IsIncrement,
-                                      /*IsPrefix=*/false, T, S);
-  }
-  return Base;
-}
-```
-
-**Prefix** I handle at the top of `ParseUnary`, before the primary:
-
-```cpp
-if (CurrentToken == tok_plusplus || CurrentToken == tok_minusminus) {
-  bool IsIncrement = (CurrentToken == tok_plusplus);
-  getNextToken(); // eat ++/--
-  auto Operand = ParseUnary();
+static unique_ptr<ExpressionNode> ParsePostfixExpression() {
+  auto Operand = ParsePrimary();
   if (!Operand)
     return nullptr;
-  if (!IsIncDecAssignableExpr(Operand.get()))
-    return LogErrorExpression("Increment/decrement target must be assignable");
+  if (CurrentToken != tok_plus_plus && CurrentToken != tok_minus_minus)
+    return Operand;
+  if (!Operand->isLValue())
+    return LogErrorExpression(
+        "Increment/decrement target must be assignable");
   if (!IsNumericType(Operand->getType()) &&
       Operand->getType() != ValueType::Pointer)
-    return LogErrorExpression("Increment/decrement requires numeric or pointer type");
-  return make_unique<IncDecExpressionNode>(std::move(Operand), IsIncrement,
-                                    /*IsPrefix=*/true, Operand->getType(),
-                                    Operand->getStructName());
+    return LogErrorExpression(
+        "Increment/decrement requires numeric or pointer type");
+
+  bool IsIncrement = CurrentToken == tok_plus_plus;
+  ValueType Type = Operand->getType();
+  string TypeInfo = Operand->getStructName();
+  getNextToken(); // eat '++' or '--'
+  return make_unique<IncrementDecrementExpressionNode>(
+      std::move(Operand), IsIncrement, false, Type, TypeInfo);
 }
 ```
 
-Because `ParseUnary` recurses, `++++x` is syntactically valid (prefix applied twice), though I only accept it as meaningful if `x` is assignable at each level.
+**Prefix** is checked first, at the top of `ParseUnaryExpression`, before `-`, `!`, and `~`:
+
+```cpp
+static unique_ptr<ExpressionNode> ParseUnaryExpression() {
+  if (CurrentToken == tok_plus_plus || CurrentToken == tok_minus_minus) {
+    bool IsIncrement = CurrentToken == tok_plus_plus;
+    getNextToken(); // eat '++' or '--'
+    auto Operand = ParseUnaryExpression();
+    if (!Operand)
+      return nullptr;
+    if (!Operand->isLValue())
+      return LogErrorExpression(
+          "Increment/decrement target must be assignable");
+    if (!IsNumericType(Operand->getType()) &&
+        Operand->getType() != ValueType::Pointer)
+      return LogErrorExpression(
+          "Increment/decrement requires numeric or pointer type");
+    ValueType Type = Operand->getType();
+    string TypeInfo = Operand->getStructName();
+    return make_unique<IncrementDecrementExpressionNode>(
+        std::move(Operand), IsIncrement, true, Type, TypeInfo);
+  }
+  // ... '-', '!', '~' unchanged, falling through to ParsePostfixExpression ...
+}
+```
+
+Because `ParseUnaryExpression` recurses on itself for the prefix case, `++--x` is syntactically valid (prefix increment applied to a prefix decrement), though it's only meaningful if `x` is assignable at each level — `isLValue()` is checked fresh at each recursion.
+
+## Build and Run
+
+```bash
+cd code/chapter-35
+cmake -S . -B build && cmake --build build
+./build/pyxc
+```
 
 ## Try It
 

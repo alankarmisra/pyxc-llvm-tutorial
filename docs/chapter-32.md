@@ -21,142 +21,185 @@ I'm only adding Unicode to character and string literals here. Unicode identifie
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-39
+cd pyxc-llvm-tutorial/code/chapter-32
 ```
 
 ## Grammar
 
 I replace the separate string and character escape productions with one `literal-escape` production. I also add octal, `\u`, and `\U` forms:
 
-`code/chapter-39/pyxc.ebnf`
+`code/chapter-32/pyxc.ebnf`
 
 ```grammardiff
- program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
- end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | external | top-level-expression ;
- type-alias       = "type" name "=" type ;
- trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
- trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
- trait-method-signature  = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ;
- struct-definition       = "struct" name ":" end-of-lines struct-block ;
- class-definition        = "class" name [ "(" trait-reference { "," trait-reference } ")" ] ":" end-of-lines struct-block ;
- trait-reference        = name [ "[" type "]" ] ;
- implementation-definition         = "impl" trait-reference "for" name ":" end-of-lines implementation-block ;
- implementation-block       = indent implementation-method { end-of-lines implementation-method } dedent ;
- implementation-method      = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- struct-block     = indent class-member { end-of-lines class-member } dedent ;
- class-member     = [ visibility ] ( field-declaration | method-definition ) ;
- visibility      = "public" | "private" ;
- method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")"
-                   [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- field-declaration       = name ":" type ;
- function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- (* If the return type is omitted, it defaults to None. *)
- external        = "extern" "def" function-signature [ "->" type ] ;
- top-level-expression    = expression ;
- function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
- typed-parameter      = name ":" type ;
- if-statement          = "if" expression ":" suite
-                 { end-of-lines "elif" expression ":" suite }
-                 [ end-of-lines "else" ":" suite ] ;
- while-statement       = "while" expression ":" suite ;
- do-while-statement     = "do" ":" suite end-of-lines "while" expression ;
- switch-statement      = "switch" expression ":" end-of-lines indent switch-body dedent ;
- switch-body      = switch-case { end-of-lines switch-case } [ end-of-lines default-case ] ;
- switch-case      = "case" switch-integer { "," switch-integer } ":" suite ;
- default-case     = "default" ":" suite ;
- for-statement         = "for"
-                   ( "var" name ":" type | name )
-                   "=" expression "," expression "," expression ":" suite ;
- variable-statement         = "var" variable-binding { "," variable-binding } ;
- assignment-statement      = lvalue assignment-operator expression ; (* assignment is a statement here *)
- simple-statement      = return-statement | break-statement | continue-statement | variable-statement | assignment-statement | expression ;
- compound-statement    = if-statement | for-statement | while-statement | do-while-statement | switch-statement ;
- statement       = simple-statement | compound-statement ;
- suite           = simple-statement | compound-statement | end-of-lines block ;
- return-statement      = "return" [ expression ] ;
- break-statement       = "break" ;
- continue-statement    = "continue" ;
- statement-separator = end-of-lines | BLOCK_END ;
- block = indent statement { statement-separator statement } dedent ;
- expression      = logical-or ;
- logical-or      = logical-and { "||" logical-and } ;
- logical-and     = bitwise-or { "&&" bitwise-or } ;
- bitwise-or      = bitwise-xor { "|" bitwise-xor } ;
- bitwise-xor     = bitwise-and { "^" bitwise-and } ;
- bitwise-and     = equality { "&" equality } ;
- equality        = relational { ("==" | "!=") relational } ;
- relational      = shift { ("<" | "<=" | ">" | ">=") shift } ;
- shift           = sum { ("<<" | ">>") sum } ;
- sum             = term { ("+" | "-") term } ;
- term            = unary-expression { ("*" | "/" | "%") unary-expression } ;
- lvalue          = name | field-access | index-expression ;
- variable-binding      = name ":" type [ "=" expression ] ;
- unary-expression       = ("-" | "!" | "~" | "++" | "--") unary-expression | postfix-expression ;
- postfix-expression     = primary [ postfix-operator ] ;
- postfix-operator       = "++" | "--" ;
- primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | character-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
- cast-expression        = cast-type "(" expression ")" ;
- sizeof-expression      = "sizeof" "(" type ")" ;
- address-expression        = "addr" "(" lvalue ")" ;
- name-expression  = name | call-expression | method-call-expression | constructor-call-expression ;
- call-expression        = name "(" [ expression { "," expression } ] ")" ;
- method-call-expression  = name "." name "(" [ expression { "," expression } ] ")" ;
- constructor-call-expression    = name "(" [ expression { "," expression } ] ")" ;
- field-access     = name "." name { "." name } ;
- index-expression       = name "[" expression "]" ;
- number-expression      = number ;
- array-literal    = "[" [ expression { "," expression } ] "]" ;
--string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
--character-literal     = "'" ( ? any char except ' and newline ? | character-escape ) "'" ;
--escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
--character-escape      = "\\" ( "a" | "b" | "f" | "n" | "r" | "t" | "v"
--                        | "\\" | "'" | "\"" | "?" | "0" | "x" hex-digit hex-digit ) ;
-+string-literal   = "\"" { ? valid Unicode scalar value except " and newline, encoded as UTF-8 ? | literal-escape } "\"" ;
-+character-literal     = "'" ( ? valid Unicode scalar value except ' and newline, encoded as UTF-8 ? | literal-escape ) "'" ;
-+literal-escape   = "\\" ( simple-escape | octal-escape | "x" hex-digit hex-digit
-+                   | "u" hex-digit hex-digit hex-digit hex-digit
-+                   | "U" hex-digit hex-digit hex-digit hex-digit
-+                         hex-digit hex-digit hex-digit hex-digit ) ;
-+simple-escape    = "a" | "b" | "f" | "n" | "r" | "t" | "v"
-+                 | "\\" | "'" | "\"" | "?" ;
-+octal-escape     = octal-digit [ octal-digit [ octal-digit ] ] ;
- parenthesized-expression       = "(" expression ")" ;
- indent          = INDENT ;
- dedent          = DEDENT ;
- 
- assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
- name      = (letter | "_") { letter | digit | "_" } ;
- builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | "None" ;
- alias-type       = name ;
- struct-type      = name ;
- pointer-type     = "ptr" "[" type "]" ;
- type            = base-type [ array-suffix ] ;
- base-type        = builtin-type | alias-type | struct-type | pointer-type ;
- array-suffix     = "[" integer "]" ;
- cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | pointer-type ;
- integer         = digit { digit } ;
- switch-integer       = [ "-" ] integer ;
- number          = ( digit { digit } [ "." { digit } ]
-                   | "." digit { digit } ) [ exponent ] ;
- exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
- boolean-literal    = "True" | "False" ;
- letter          = "A".."Z" | "a".."z" ;
- digit           = "0".."9" ;
- hex-digit       = digit | "A".."F" | "a".."f" ;
-+octal-digit     = "0".."7" ;
- end-of-line             = "\r\n" | "\r" | "\n" ;
- comment = "#" { comment-character } ;
- comment-character = ? any character except "\r" and "\n" ? ;
- whitespace = " " | "\t" | "\v" | "\f" ;
- INDENT          = ? synthetic token emitted by lexer ? ;
- DEDENT          = ? synthetic token emitted by lexer ? ;
- 
- BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
+ program                           = [ end-of-lines ]
+                                     [ top-level-item
+                                       { end-of-lines top-level-item } ]
+                                     [ end-of-lines ] ;
+ end-of-lines                      = end-of-line { end-of-line } ;
+ top-level-item                    = function-definition
+                                     | type-alias
+                                     | struct-definition
+                                     | external
+                                     | top-level-statement ;
+ struct-definition                 = "struct" name ":" end-of-lines
+                                     struct-block ;
+ type-alias                        = "type" name "=" type ;
+ struct-block                      = indent field-declaration
+                                     { end-of-lines field-declaration } dedent ;
+ field-declaration                 = name ":" type ;
+ function-definition               = "def" function-signature [ "->" type ] ":"
+                                     ( simple-statement
+                                       | end-of-lines block ) ;
+ external                          = "extern" "def" function-signature [ "->" type ] ;
+ top-level-statement               = statement ;
+ function-signature                = name "(" [ parameters ] ")" ;
+ parameters                        = typed-parameter { "," typed-parameter } ;
+ typed-parameter                   = name ":" type ;
+ if-statement                      = "if" expression ":" suite
+                                     { [ end-of-lines ] "elif" expression ":" suite }
+                                     [ [ end-of-lines ] "else" ":" suite ] ;
+ for-statement                     = "for" ( "var" name ":" type | name )
+                                     "=" expression ","
+                                     expression "," expression ":" suite ;
+ while-statement                   = "while" expression ":" suite ;
+ do-while-statement                = "do" ":" suite [ end-of-lines ]
+                                     "while" expression ;
+ switch-statement                  = "switch" expression ":" end-of-lines
+                                     indent switch-body dedent ;
+ switch-body                       = switch-case
+                                     { end-of-lines switch-case }
+                                     [ end-of-lines default-case ] ;
+ switch-case                       = "case" switch-integer
+                                     { "," switch-integer } ":" suite ;
+ default-case                      = "default" ":" suite ;
+ variable-statement                = "var" variable-binding
+                                     { "," variable-binding } ;
+ assignment-statement              = lvalue "=" expression ;
+ simple-statement                  = return-statement
+                                     | break-statement
+                                     | continue-statement
+                                     | variable-statement
+                                     | assignment-statement
+                                     | expression ;
+ compound-statement                = if-statement
+                                     | for-statement
+                                     | while-statement
+                                     | do-while-statement
+                                     | switch-statement ;
+ statement                         = simple-statement | compound-statement ;
+ suite                             = simple-statement
+                                     | compound-statement
+                                     | end-of-lines block ;
+ return-statement                  = "return" [ expression ] ;
+ break-statement                   = "break" ;
+ continue-statement                = "continue" ;
+ statement-separator               = end-of-lines | BLOCK_END ;
+ block                             = indent statement
+                                     { statement-separator statement } dedent ;
+ expression                        = logical-or ;
+ logical-or                        = logical-and { "||" logical-and } ;
+ logical-and                       = bitwise-or { "&&" bitwise-or } ;
+ bitwise-or                        = bitwise-xor { "|" bitwise-xor } ;
+ bitwise-xor                       = bitwise-and { "^" bitwise-and } ;
+ bitwise-and                       = equality { "&" equality } ;
+ equality                          = relational { ("==" | "!=") relational } ;
+ relational                        = shift { ("<" | "<=" | ">" | ">=") shift } ;
+ shift                             = sum { ("<<" | ">>") sum } ;
+ sum                               = term { ("+" | "-") term } ;
+ term                              = factor { ("*" | "/" | "%") factor } ;
+ lvalue                            = name
+                                     { "." name | "[" expression "]" } ;
+ variable-binding                  = name ":" type [ "=" expression ] ;
+ factor                            = ("-" | "!" | "~") factor | primary ;
+ primary                           = cast-expression
+                                     | sizeof-expression
+                                     | address-expression
+                                     | array-literal
+                                     | string-literal
+                                     | character-literal
+                                     | name-expression
+                                     | number-expression
+                                     | boolean-literal
+                                     | parenthesized-expression ;
+ cast-expression                   = cast-type "(" expression ")" ;
+ sizeof-expression                 = "sizeof" "(" type ")" ;
+ address-expression                = "addr" "(" lvalue ")" ;
+ array-literal                     = "[" [ expression
+                                       { "," expression } ] "]" ;
+ string-literal                    = '"' { string-character | escape } '"' ;
+-escape                            = "\\" ( "\\" | '"' | "n" | "t" | "0" ) ;
++escape                            = literal-escape ;
+ string-character                  = ? any character except '"', "\\", "\r", and "\n" ? ;
+ character-literal                 = "'" ( character | character-escape ) "'" ;
+-character-escape                  = "\\" ( "\\" | "'" | '"' | "?"
++character-escape                  = literal-escape ;
++literal-escape                    = "\\" ( "\\" | "'" | '"' | "?"
+                                       | "a" | "b" | "f" | "n" | "r"
+-                                      | "t" | "v" | "0"
+-                                      | "x" hex-digit hex-digit ) ;
++                                      | "t" | "v"
++                                      | "x" hex-digit hex-digit
++                                      | octal-digit [ octal-digit
++                                        [ octal-digit ] ]
++                                      | "u" hex-digit hex-digit hex-digit hex-digit
++                                      | "U" hex-digit hex-digit hex-digit hex-digit
++                                        hex-digit hex-digit hex-digit hex-digit ) ;
+ character                         = ? any character except "'", "\\", "\r", and "\n" ? ;
+ hex-digit                         = digit | "A".."F" | "a".."f" ;
++octal-digit                       = "0".."7" ;
+ name-expression                   = lvalue | call-expression ;
+ call-expression                   = name "(" [ arguments ] ")" ;
+ arguments                         = expression { "," expression } ;
+ number-expression                 = number ;
+ parenthesized-expression          = "(" expression ")" ;
+ indent                            = INDENT ;
+ dedent                            = DEDENT ;
+ name                              = (letter | "_")
+                                     { letter | digit | "_" } ;
+ type                              = base-type [ array-suffix ] ;
+ base-type                         = builtin-type | alias-type | struct-type
+                                     | pointer-type ;
+ pointer-type                      = "ptr" "[" type "]" ;
+ array-suffix                      = "[" integer "]" ;
+ builtin-type                      = "int" | "int8" | "int16" | "int32"
+                                     | "int64" | "uint8" | "uint16"
+                                     | "uint32" | "uint64"
+                                     | "float" | "float32"
+                                     | "float64" | "bool" | "None" ;
+ struct-type                       = name ;
+ alias-type                        = name ;
+ cast-type                         = builtin-cast-type | pointer-type ;
+ builtin-cast-type                 = "int" | "int8" | "int16" | "int32"
+                                     | "int64" | "uint8" | "uint16"
+                                     | "uint32" | "uint64"
+                                     | "float" | "float32"
+                                     | "float64" | "bool" ;
+ number                            = ( digit { digit } [ "." { digit } ]
+                                     | "." digit { digit } ) [ exponent ] ;
+ switch-integer                    = [ "-" ] digit { digit } ;
+ exponent                          = ( "e" | "E" ) [ "+" | "-" ]
+                                     digit { digit } ;
+ boolean-literal                   = "True" | "False" ;
+ integer                           = digit { digit } ;
+ letter                            = "A".."Z" | "a".."z" ;
+ digit                             = "0".."9" ;
+ end-of-line                       = "\r\n" | "\r" | "\n" ;
+ (*
+     A `comment` begins with "#" and continues to the end of the line. The lexer
+      ignores its text and returns an end-of-line token when one follows it.
+ *)
+ comment                           = "#" { comment-character } ;
+ comment-character                 = ? any character except "\r" and "\n" ? ;
+ (*
+     `whitespace` may appear before or between tokens
+      and is ignored by the lexer.
+ *)
+ whitespace                        = " " | "\t" | "\v" | "\f" ;
+ INDENT                            = ? synthetic token emitted by lexer when indentation increases ? ;
+ DEDENT                            = ? synthetic token emitted by lexer when indentation decreases ? ;
+ BLOCK_END                         = ? synthetic token injected into the stream by ParseBlock
+                                       immediately after it consumes DEDENT ? ;
+
 ```
 
 I keep `\xNN` at exactly two hexadecimal digits, as I defined it in Chapter 31. I let an octal escape consume one, two, or three digits. I give `\u` a fixed four hex digits and `\U` a fixed eight.
@@ -183,8 +226,8 @@ Strings and characters now accept the same escape forms and the same raw UTF-8. 
 enum class LiteralDecodeError {
   None,
   InvalidEscape,
-  InvalidUtf8,
   InvalidCodePoint,
+  InvalidUtf8,
 };
 ```
 
@@ -198,13 +241,12 @@ The existing simple escapes each become their corresponding code point. I parse 
 default:
   if (LexerLastChar < '0' || LexerLastChar > '7')
     return LiteralDecodeError::InvalidEscape;
-
   Value = 0;
-  for (int I = 0; I < 3; ++I) {
+  for (int Index = 0; Index < 3; ++Index) {
     Value = (Value << 3) |
             static_cast<uint32_t>(LexerLastChar - '0');
     int Next = peek();
-    if (I == 2 || Next < '0' || Next > '7') {
+    if (Index == 2 || Next < '0' || Next > '7') {
       LexerLastChar = advance();
       break;
     }
@@ -220,18 +262,18 @@ For `\u` and `\U`, I read exactly four or eight hexadecimal digits and then vali
 ```cpp
 case 'u':
 case 'U': {
-  int Digits = LexerLastChar == 'u' ? 4 : 8;
+  int DigitCount = LexerLastChar == 'u' ? 4 : 8;
   Value = 0;
-  for (int I = 0; I < Digits; ++I) {
+  for (int Index = 0; Index < DigitCount; ++Index) {
     int Digit = HexDigitValue(advance());
     if (Digit < 0)
       return LiteralDecodeError::InvalidEscape;
     Value = (Value << 4) | static_cast<uint32_t>(Digit);
   }
   LexerLastChar = advance();
-  if (!IsUnicodeScalarValue(Value))
-    return LiteralDecodeError::InvalidCodePoint;
-  return LiteralDecodeError::None;
+  return IsUnicodeScalarValue(Value)
+             ? LiteralDecodeError::None
+             : LiteralDecodeError::InvalidCodePoint;
 }
 ```
 
@@ -262,10 +304,12 @@ Error (Line 2, Column 18): invalid Unicode code point in character literal
 For a raw non-ASCII character, I inspect the leading byte to decide whether the sequence contains two, three, or four bytes. I then require every remaining byte to have the UTF-8 continuation-byte shape `10xxxxxx`:
 
 ```cpp
-for (int I = 1; I < Length; ++I) {
+for (int Index = 1; Index < Length; ++Index) {
   int Next = advance();
-  if (Next == EOF || (Next & 0xC0) != 0x80)
+  if (Next == EOF || (Next & 0xC0) != 0x80) {
+    LexerLastChar = Next;
     return LiteralDecodeError::InvalidUtf8;
+  }
   Value = (Value << 6) | static_cast<uint32_t>(Next & 0x3F);
 }
 LexerLastChar = advance();
@@ -285,24 +329,27 @@ Raw and escaped spellings reach the same validated code point:
 
 ## Producing Character Values
 
-The character-literal branch now asks the shared decoder for one code point:
+The character-literal branch now asks the shared decoder for one code point, writing it straight into the existing `CharacterLiteralValue` global:
 
 ```cpp
-uint32_t Value = 0;
-LiteralDecodeError Error = DecodeLiteralCodePoint(Value);
+LiteralDecodeError Error =
+    DecodeLiteralCodePoint(CharacterLiteralValue);
 if (Error != LiteralDecodeError::None)
-  return LogLiteralDecodeError(Error, "character");
+  return ReportLiteralDecodeError(Error, "character");
 
 if (LexerLastChar != '\'') {
-  fprintf(stderr,
-          "Error (Line %d, Column %d): unterminated character literal\n",
-          CurLoc.Line, CurLoc.Col);
+  const char *Message =
+      (LexerLastChar == EOF || LexerLastChar == '\n')
+          ? "unterminated character literal"
+          : "character literal must contain one character";
+  fprintf(stderr, "Error (Line %d, Column %d): %s\n", CurLoc.Line,
+          CurLoc.Col, Message);
   PrintErrorSourceContext(CurLoc);
   return tok_error;
 }
 ```
 
-I still turn `CharLiteralValue` into a `NumberExpressionNode`, same as before. A Unicode character stays an integer, so it goes through the same range checks every other character literal already does.
+I still turn `CharacterLiteralValue` into a `NumberExpressionNode`, same as before. A Unicode character stays an integer, so it goes through the same range checks every other character literal already does.
 
 ## Producing UTF-8 Strings
 
@@ -311,11 +358,11 @@ For a string, I decode one code point at a time and append its UTF-8 encoding:
 ```cpp
 while (LexerLastChar != '"' && LexerLastChar != EOF &&
        LexerLastChar != '\n') {
-  uint32_t Value = 0;
-  LiteralDecodeError Error = DecodeLiteralCodePoint(Value);
+  uint32_t CodePoint = 0;
+  LiteralDecodeError Error = DecodeLiteralCodePoint(CodePoint);
   if (Error != LiteralDecodeError::None)
-    return LogLiteralDecodeError(Error, "string");
-  AppendUtf8(StringLiteralStr, Value);
+    return ReportLiteralDecodeError(Error, "string");
+  AppendUtf8(StringLiteralValue, CodePoint);
 }
 ```
 
@@ -368,7 +415,7 @@ café
 ## Build and Run
 
 ```bash
-cd code/chapter-39
+cd code/chapter-32
 cmake -S . -B build && cmake --build build
 ```
 

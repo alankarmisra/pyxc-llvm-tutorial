@@ -32,7 +32,7 @@ def main() -> int:
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-18
+cd pyxc-llvm-tutorial/code/chapter-24
 ```
 
 ## Grammar
@@ -101,80 +101,137 @@ struct-type  = name ; (* struct name; must be declared above the point of use *)
 type         = builtin-type | struct-type ;
 ```
 
-None of these new pieces are reachable yet, though: I've defined `struct-definition` and `field-access` as standalone productions, but nothing in the existing grammar points at them. `struct-definition` needs to join `top-level-item` alongside `function-definition` and the rest, and `field-access` needs to plug into both `lvalue` (so `p.x = 5` parses as an assignment target) and `primary` (so `p.x` parses as a value to read). Here's the real diff against [Chapter 18](chapter-18.md)'s grammar with all of that wired in:
+None of these new pieces are reachable yet, though: I've defined `struct-definition` and `field-access` as standalone productions, but nothing in the existing grammar points at them. `struct-definition` needs to join `top-level-item` alongside `function-definition` and the rest, and `field-access` needs to plug into both `lvalue` (so `p.x = 5` parses as an assignment target) and `primary` (so `p.x` parses as a value to read). Here's the real diff against [Chapter 23](chapter-23.md)'s grammar with all of that wired in:
 
 ```grammardiff
- program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
- end-of-lines            = end-of-line { end-of-line } ;
--top-level-item             = function-definition | external | top-level-expression ;
-+top-level-item             = struct-definition | function-definition | external | top-level-expression ;
-+struct-definition       = "struct" name ":" end-of-lines struct-block ;
-+struct-block     = indent field-declaration { end-of-lines field-declaration } dedent ;
-+field-declaration       = name ":" type ;
- function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- (* If the return type is omitted, it defaults to None. *)
- external        = "extern" "def" function-signature [ "->" type ] ;
- top-level-expression    = expression ;
- function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
- typed-parameter      = name ":" type ;
- if-statement          = "if" expression ":" suite
-                 [ end-of-lines "else" ":" suite ] ;
- for-statement         = "for"
-                   ( "var" name ":" type | name )
-                   "=" expression "," expression "," expression ":" suite ;
- variable-statement         = "var" variable-binding { "," variable-binding } ;
- assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
- simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
- compound-statement    = if-statement | for-statement ;
- statement       = simple-statement | compound-statement ;
- suite           = simple-statement | compound-statement | end-of-lines block ;
- return-statement      = "return" [ expression ] ;
- statement-separator = end-of-lines | BLOCK_END ;
- block = indent statement { statement-separator statement } dedent ;
- expression      = comparison ;
- comparison               = sum { comparison-operator sum } ;
- comparison-operator      = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
- sum                      = term { ("+" | "-") term } ;
- term                     = unary-expression { ("*" | "/") unary-expression } ;
--lvalue          = name ;
-+lvalue          = name | field-access ;
- variable-binding      = name ":" type [ "=" expression ] ;
- unary-expression       = "-" unary-expression | primary ;
--primary         = cast-expression | name-expression | number-expression | boolean-literal | parenthesized-expression ;
-+primary         = cast-expression | name-expression | field-access | number-expression | boolean-literal | parenthesized-expression ;
- cast-expression        = cast-type "(" expression ")" ;
- name-expression  = name | call-expression ;
- call-expression        = name "(" [ expression { "," expression } ] ")" ;
-+field-access     = name "." name { "." name } ;
- number-expression      = number ;
- parenthesized-expression       = "(" expression ")" ;
- indent          = INDENT ;
- dedent          = DEDENT ;
- 
- name      = (letter | "_") { letter | digit | "_" } ;
--type            = "int" | "int8" | "int16" | "int32" | "int64"
-+builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | "None" ;
-+struct-type      = name ;
-+type            = builtin-type | struct-type ;
- cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
-                 | "bool" ;
- integer         = digit { digit } ;
- number          = ( digit { digit } [ "." { digit } ]
-                   | "." digit { digit } ) [ exponent ] ;
- exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
- boolean-literal    = "True" | "False" ;
- letter          = "A".."Z" | "a".."z" ;
- digit           = "0".."9" ;
- end-of-line             = "\r\n" | "\r" | "\n" ;
- comment = "#" { comment-character } ;
- comment-character = ? any character except "\r" and "\n" ? ;
- whitespace = " " | "\t" | "\v" | "\f" ;
- INDENT          = ? synthetic token emitted by lexer ? ;
- DEDENT          = ? synthetic token emitted by lexer ? ;
- 
+ program                           = [ end-of-lines ]
+                                     [ top-level-item
+                                       { end-of-lines top-level-item } ]
+                                     [ end-of-lines ] ;
+ end-of-lines                      = end-of-line { end-of-line } ;
+ top-level-item                    = function-definition
++                                    | struct-definition
+                                     | external
+                                     | top-level-statement ;
++struct-definition                 = "struct" name ":" end-of-lines
++                                    struct-block ;
++struct-block                      = indent field-declaration
++                                    { end-of-lines field-declaration } dedent ;
++field-declaration                 = name ":" type ;
+ function-definition               = "def" function-signature [ "->" type ] ":"
+                                     ( simple-statement
+                                       | end-of-lines block ) ;
+ external                          = "extern" "def" function-signature [ "->" type ] ;
+ top-level-statement               = statement ;
+ function-signature                = name "(" [ parameters ] ")" ;
+ parameters                        = typed-parameter { "," typed-parameter } ;
+ typed-parameter                   = name ":" type ;
+ if-statement                      = "if" expression ":" suite
+                                     { [ end-of-lines ] "elif" expression ":" suite }
+                                     [ [ end-of-lines ] "else" ":" suite ] ;
+ for-statement                     = "for" ( "var" name ":" type | name )
+                                     "=" expression ","
+                                     expression "," expression ":" suite ;
+ while-statement                   = "while" expression ":" suite ;
+ do-while-statement                = "do" ":" suite [ end-of-lines ]
+                                     "while" expression ;
+ switch-statement                  = "switch" expression ":" end-of-lines
+                                     indent switch-body dedent ;
+ switch-body                       = switch-case
+                                     { end-of-lines switch-case }
+                                     [ end-of-lines default-case ] ;
+ switch-case                       = "case" switch-integer
+                                     { "," switch-integer } ":" suite ;
+ default-case                      = "default" ":" suite ;
+ variable-statement                = "var" variable-binding
+                                     { "," variable-binding } ;
+ assignment-statement              = lvalue "=" expression ;
+ simple-statement                  = return-statement
+                                     | break-statement
+                                     | continue-statement
+                                     | variable-statement
+                                     | assignment-statement
+                                     | expression ;
+ compound-statement                = if-statement
+                                     | for-statement
+                                     | while-statement
+                                     | do-while-statement
+                                     | switch-statement ;
+ statement                         = simple-statement | compound-statement ;
+ suite                             = simple-statement
+                                     | compound-statement
+                                     | end-of-lines block ;
+ return-statement                  = "return" [ expression ] ;
+ break-statement                   = "break" ;
+ continue-statement                = "continue" ;
+ statement-separator               = end-of-lines | BLOCK_END ;
+ block                             = indent statement
+                                     { statement-separator statement } dedent ;
+ expression                        = logical-or ;
+ logical-or                        = logical-and { "||" logical-and } ;
+ logical-and                       = bitwise-or { "&&" bitwise-or } ;
+ bitwise-or                        = bitwise-xor { "|" bitwise-xor } ;
+ bitwise-xor                       = bitwise-and { "^" bitwise-and } ;
+ bitwise-and                       = equality { "&" equality } ;
+ equality                          = relational { ("==" | "!=") relational } ;
+ relational                        = shift { ("<" | "<=" | ">" | ">=") shift } ;
+ shift                             = sum { ("<<" | ">>") sum } ;
+ sum                               = term { ("+" | "-") term } ;
+ term                              = factor { ("*" | "/" | "%") factor } ;
+-lvalue                            = name ;
++lvalue                            = name | field-access ;
+ variable-binding                  = name ":" type [ "=" expression ] ;
+ factor                            = ("-" | "!" | "~") factor | primary ;
+ primary                           = cast-expression
+                                     | name-expression
++                                    | field-access
+                                     | number-expression
+                                     | boolean-literal
+                                     | parenthesized-expression ;
+ cast-expression                   = cast-type "(" expression ")" ;
+ name-expression                   = name | call-expression ;
+ call-expression                   = name "(" [ arguments ] ")" ;
++field-access                      = name "." name { "." name } ;
+ arguments                         = expression { "," expression } ;
+ number-expression                 = number ;
+ parenthesized-expression          = "(" expression ")" ;
+ indent                            = INDENT ;
+ dedent                            = DEDENT ;
+ name                              = (letter | "_")
+                                     { letter | digit | "_" } ;
+-type                              = "int" | "int8" | "int16" | "int32"
+-                                    | "int64" | "uint8" | "uint16"
+-                                    | "uint32" | "uint64"
+-                                    | "float" | "float32"
+-                                    | "float64" | "bool" | "None" ;
++type                              = builtin-type | struct-type ;
++builtin-type                      = "int" | "int8" | "int16" | "int32"
++                                    | "int64" | "uint8" | "uint16"
++                                    | "uint32" | "uint64"
++                                    | "float" | "float32"
++                                    | "float64" | "bool" | "None" ;
++struct-type                       = name ;
+ cast-type                         = "int" | "int8" | "int16" | "int32"
+                                     | "int64" | "uint8" | "uint16"
+                                     | "uint32" | "uint64"
+                                     | "float" | "float32"
+                                     | "float64" | "bool" ;
+ number                            = ( digit { digit } [ "." { digit } ]
+                                     | "." digit { digit } ) [ exponent ] ;
+ switch-integer                    = [ "-" ] digit { digit } ;
+ exponent                          = ( "e" | "E" ) [ "+" | "-" ]
+                                     digit { digit } ;
+ boolean-literal                   = "True" | "False" ;
+ letter                            = "A".."Z" | "a".."z" ;
+ digit                             = "0".."9" ;
+ end-of-line                       = "\r\n" | "\r" | "\n" ;
+ comment                           = "#" { comment-character } ;
+ comment-character                 = ? any character except "\r" and "\n" ? ;
+ whitespace                        = " " | "\t" | "\v" | "\f" ;
+ INDENT                            = ? synthetic token emitted by lexer when indentation increases ? ;
+ DEDENT                            = ? synthetic token emitted by lexer when indentation decreases ? ;
+ BLOCK_END                         = ? synthetic token injected into the stream by ParseBlock
+                                       immediately after it consumes DEDENT ? ;
  BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
@@ -220,8 +277,8 @@ So: one map for the fields of a single struct, and one map for all the structs I
 ```cpp
 struct StructFieldInfo {
   string Name;
-  ValueType Type = ValueType::Error;
-  string StructName;  // only set if Type == Struct
+  ValueType Type;
+  string StructName;
 };
 ```
 
@@ -229,9 +286,8 @@ I added `StructName` to the field because a field's type might itself be a struc
 
 ```cpp
 struct StructTypeInfo {
-  string Name;
   vector<StructFieldInfo> Fields;
-  std::map<string, size_t> FieldIndex;  // field name → index into Fields
+  map<string, size_t> FieldIndices;  // field name → index into Fields
 };
 ```
 
@@ -259,7 +315,7 @@ struct-block      = indent field-declaration { end-of-lines field-declaration } 
 ```cpp
 getNextToken(); // eat 'struct'
 if (CurrentToken != tok_name) {
-  LogErrorExpression("Expected struct name");
+  LogErrorExpression("Expected name after 'struct'");
   return false;
 }
 string StructName = Name;
@@ -269,7 +325,7 @@ Before I go any further I should check whether I've already seen this struct: th
 
 ```cpp
 if (StructTypes.count(StructName)) {
-  LogErrorExpression(("Struct '" + StructName + "' is already defined").c_str());
+  LogErrorExpression("Struct already defined");
   return false;
 }
 ```
@@ -277,14 +333,17 @@ if (StructTypes.count(StructName)) {
 Then the `':' NEWLINE INDENT` part of the grammar, which is just token bookkeeping I've done before for function bodies:
 
 ```cpp
-getNextToken(); // eat struct name
-if (CurrentToken != ':') {
+getNextToken(); // eat name
+if (CurrentToken != tok_colon) {
   LogErrorExpression("Expected ':' after struct name");
   return false;
 }
 getNextToken(); // eat ':'
-if (CurrentToken == tok_eol)
-  consumeNewlines();
+if (CurrentToken != tok_eol) {
+  LogErrorExpression("Expected newline after struct header");
+  return false;
+}
+consumeNewlines();
 if (CurrentToken != tok_indent) {
   LogErrorExpression("Expected an indented struct body");
   return false;
@@ -292,60 +351,60 @@ if (CurrentToken != tok_indent) {
 getNextToken(); // eat INDENT
 ```
 
-Now the `field+` part. I need to loop, reading one field per iteration, until I hit the `DEDENT`. Each field is `identifier ':' type NEWLINE`, so inside the loop I read a name, a colon, and a type:
+Now the `field+` part. I loop, reading one field per iteration, until I hit the `DEDENT`. Each field is `identifier ':' type NEWLINE`, so inside the loop I read a name, a colon, and a type:
 
 ```cpp
 StructTypeInfo Info;
-Info.Name = StructName;
-while (CurrentToken != tok_dedent && CurrentToken != tok_block_end && CurrentToken != tok_eof) {
-  if (CurrentToken == tok_eol) {
-    consumeNewlines();
-    continue;
-  }
+while (CurrentToken != tok_dedent && CurrentToken != tok_eof) {
   if (CurrentToken != tok_name) {
     LogErrorExpression("Expected field name in struct body");
     return false;
   }
   string FieldName = Name;
-  getNextToken();
-  if (CurrentToken != ':') {
+  if (Info.FieldIndices.count(FieldName)) {
+    LogErrorExpression("Duplicate struct field");
+    return false;
+  }
+  getNextToken(); // eat field name
+  if (CurrentToken != tok_colon) {
     LogErrorExpression("Expected ':' after field name");
     return false;
   }
-  getNextToken();
+  getNextToken(); // eat ':'
   string FieldStructName;
   ValueType FieldType = ParseTypeToken(&FieldStructName);
-  if (FieldType == ValueType::Error || FieldType == ValueType::None) {
-    LogErrorExpression("Invalid struct field type");
+  if (FieldType == ValueType::Error)
+    return false;
+  if (FieldType == ValueType::None) {
+    LogErrorExpression("Struct fields cannot have None type");
     return false;
   }
 ```
 
-I'm reusing `ParseTypeToken` here rather than writing a separate type parser for struct fields: it already knows how to parse `int`, `float64`, and so on, and I'm about to teach it to also recognize other struct names as types. One parser, every place a type can appear.
-
-Before I add the field, I need the duplicate-field check: this is the other reason I built `FieldIndex` as a map:
+I'm reusing `ParseTypeToken` here rather than writing a separate type parser for struct fields: it already knows how to parse `int`, `float64`, and so on, and I'm about to teach it to also recognize other struct names as types. One parser, every place a type can appear. The duplicate-field check runs before I even try to parse the type — that's the other reason I built `FieldIndices` as a map, and it means I catch `x: int` twice before caring whether the second one's type is even valid.
 
 ```cpp
-  if (Info.FieldIndex.count(FieldName)) {
-    LogErrorExpression(("Duplicate struct field '" + FieldName + "'").c_str());
-    return false;
-  }
-  Info.FieldIndex[FieldName] = Info.Fields.size();
+  Info.FieldIndices[FieldName] = Info.Fields.size();
   Info.Fields.push_back({FieldName, FieldType, FieldStructName});
   if (CurrentToken == tok_eol)
     consumeNewlines();
 }
 ```
 
-`Info.Fields.size()` before the push is exactly the index the new field is about to land at, so I record that in `FieldIndex` first, then push. Finally the `DEDENT`, and I register the finished struct in `StructTypes`:
+`Info.Fields.size()` before the push is exactly the index the new field is about to land at, so I record that in `FieldIndices` first, then push. Once the loop exits, one more check before I register the struct — it needs at least one field:
 
 ```cpp
+if (Info.Fields.empty()) {
+  LogErrorExpression("Struct requires at least one field");
+  return false;
+}
 if (CurrentToken != tok_dedent) {
   LogErrorExpression("Expected dedent after struct body");
   return false;
 }
+StructTypes[StructName] = std::move(Info);
 PendingTokens.push_front(tok_block_end);
-getNextToken(); // eat DEDENT, then surface tok_block_end
+getNextToken(); // eat DEDENT, then surface block-end
 StructTypes[StructName] = std::move(Info);
 return true;
 ```
@@ -357,18 +416,18 @@ That `PendingTokens.push_front(tok_block_end)` trick isn't new to this chapter: 
 I need a top-level handler like I have for `def` and `extern`. It just calls the parser and recovers from errors the same way the others do:
 
 ```cpp
-static void HandleStructDef() {
-  bool Ok = ParseStructDefinition();
-  if (!Ok) {
+static void HandleStructDefinition() {
+  bool Parsed = ParseStructDefinition();
+  bool HasTrailing = CurrentToken != tok_eol && CurrentToken != tok_eof &&
+                     CurrentToken != tok_block_end;
+  if (!Parsed || HasTrailing) {
+    if (Parsed)
+      LogErrorExpression(
+          ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
   }
-  bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
-  if (HasTrailing) {
-    LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
-    return;
-  }
+  Log("Parsed a struct definition.\n");
 }
 ```
 
@@ -377,10 +436,10 @@ And wire it into both loops that dispatch on the current token: the REPL's `Main
 ```cpp
 switch (CurrentToken) {
 case tok_struct:
-  HandleStructDef();
+  HandleStructDefinition();
   break;
 case tok_def:
-  HandleDefinition();
+  HandleFunctionDefinition();
   break;
   ...
 }
@@ -823,7 +882,7 @@ And field reads/writes on globals go through the same `GetFieldAddress` I alread
 ## Build and Run
 
 ```bash
-cd code/chapter-18
+cd code/chapter-24
 cmake -S . -B build && cmake --build build
 ```
 

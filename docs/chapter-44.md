@@ -47,23 +47,31 @@ cd pyxc-llvm-tutorial/code/chapter-44
 
 ## Parsing Without Codegen
 
-I add a global flag that suppresses codegen during an import scan:
+I add a global flag that suppresses codegen during an import scan, plus a map that tracks which files have been scanned:
 
 ```cpp
 static bool SignatureScanMode = false;
-static std::set<string> SignatureVisitedFiles; // deduplication
+enum class SignatureScanState { InProgress, Done };
+static map<string, SignatureScanState> SignatureFileStates;
 ```
+
+A file with no entry in `SignatureFileStates` hasn't been scanned yet. `InProgress` means I'm partway through scanning it (used for cycle detection, [Chapter 45](chapter-45.md)); `Done` means its exports are fully registered.
 
 When `SignatureScanMode` is true, `ParseAggregateDefinition` skips method-body codegen and calls a leaner helper instead:
 
 ```cpp
 if (SignatureScanMode) {
-  if (!ParseMethodSignatureOnlyInClass(StructName, MemberIsPublic))
+  if (!ParseMethodSignatureOnly(AggregateName, IsPublic))
     return false;
-} else {
-  auto FnAST = ParseMethodDefinitionInClass(StructName, MemberIsPublic);
-  // ... codegen ...
+  Info.Methods = StructTypes[AggregateName].Methods;
+  StructTypes[AggregateName] = Info;
+  if (CurrentToken == tok_eol)
+    consumeNewlines();
+  else if (CurrentToken == tok_block_end)
+    getNextToken();
+  continue;
 }
+auto Method = ParseMethodDefinition(AggregateName, IsPublic);
 ```
 
 ## Discarding Function Bodies
@@ -71,12 +79,12 @@ if (SignatureScanMode) {
 While scanning signatures, I still have to consume each function body — I just throw it away instead of parsing it into an AST:
 
 ```cpp
-static void SkipSignatureBody() {
+static void SkipExportedDefinitionBody() {
   if (CurrentToken == tok_eol) {
     consumeNewlines();
     if (CurrentToken == tok_indent) {
       int Depth = 1;
-      getNextToken(); // eat first indent
+      getNextToken();
       while (CurrentToken != tok_eof && Depth > 0) {
         if (CurrentToken == tok_indent)
           ++Depth;
@@ -84,13 +92,10 @@ static void SkipSignatureBody() {
           --Depth;
         getNextToken();
       }
-      return;
     }
     return;
   }
   while (CurrentToken != tok_eof && CurrentToken != tok_eol)
-    getNextToken();
-  if (CurrentToken == tok_eol)
     getNextToken();
 }
 ```
@@ -102,25 +107,23 @@ I count `INDENT`/`DEDENT` pairs rather than just scanning for the next `DEDENT`,
 I parse a `def` signature, register it in `FunctionSignatures`, then discard the body:
 
 ```cpp
-static bool ParseDefinitionSignatureOnly() {
-  getNextToken(); // eat def
+static bool ParseExportedFunctionSignature() {
+  getNextToken(); // eat 'def'
   auto Signature = ParseFunctionSignature();
   if (!Signature)
     return false;
-  string RetStructName;
-  ValueType RetType =
-      ParseOptionalReturnTypeWithStruct(RetStructName, ValueType::None);
-  if (RetType == ValueType::Error)
+  string ReturnTypeInfo;
+  ValueType ReturnType =
+      ParseOptionalReturnType(&ReturnTypeInfo, ValueType::None);
+  if (ReturnType == ValueType::Error)
     return false;
-  Signature->setReturnType(RetType);
-  Signature->setReturnStructName(RetStructName);
+  Signature->setReturnType(ReturnType);
+  Signature->setReturnStructName(ReturnTypeInfo);
   FunctionSignatures[Signature->getName()] = Signature->clone();
-  if (CurrentToken != tok_colon) {
-    LogErrorExpression("Expected ':' in definition");
-    return false;
-  }
+  if (CurrentToken != tok_colon)
+    return LogErrorExpression("Expected ':' in function definition"), false;
   getNextToken(); // eat ':'
-  SkipSignatureBody();
+  SkipExportedDefinitionBody();
   return true;
 }
 ```
@@ -130,23 +133,38 @@ static bool ParseDefinitionSignatureOnly() {
 I register a method prototype — implicit `self` included — without generating any IR:
 
 ```cpp
-static bool ParseMethodSignatureOnlyInClass(const string &ClassName,
-                                            bool IsPublic) {
+static bool ParseMethodSignatureOnly(const string &ClassName, bool IsPublic) {
   getNextToken(); // eat 'def'
-  // ... parse method name and parameter list (same shape as ParseMethodDefinitionInClass) ...
-  ParameterNames.push_back({"self", ValueType::Pointer,
-                      EncodePointerType(ValueType::Struct, ClassName)});
-  // ... parse remaining parameters and return type ...
-  string MangledName = ClassName + "." + MethodName;
-  auto Signature = make_unique<FunctionSignatureNode>(MangledName, std::move(ParameterNames),
-                                         SignatureLoc, RetType);
-  FunctionSignatures[Signature->getName()] = Signature->clone();
-  getNextToken(); // eat ':'
-  SkipSignatureBody();
+  if (CurrentToken != tok_name)
+    return LogErrorExpression("Expected method name in class definition"), false;
+  string MethodName = Name;
+  SourceLocation SignatureLocation = CurLoc;
+  getNextToken(); // eat method name
+  if (CurrentToken != tok_lparen)
+    return LogErrorExpression("Expected '(' in method function signature"), false;
+  getNextToken(); // eat '('
 
-  auto It = StructTypes.find(ClassName);
-  if (It != StructTypes.end())
-    It->second.MethodIsPublic[MethodName] = IsPublic;
+  vector<pair<string, ValueType>> Parameters = {{"self", ValueType::Pointer}};
+  vector<string> ParameterTypeInfo = {
+      EncodePointerType(ValueType::Struct, ClassName)};
+  // ... parse remaining parameters (same shape as ParseMethodDefinition) ...
+  getNextToken(); // eat ')'
+
+  string ReturnTypeInfo;
+  ValueType ReturnType =
+      ParseOptionalReturnType(&ReturnTypeInfo, ValueType::None);
+  if (ReturnType == ValueType::Error)
+    return false;
+  string MangledName = ClassName + "." + MethodName;
+  auto Signature = make_unique<FunctionSignatureNode>(
+      MangledName, std::move(Parameters), SignatureLocation, ReturnType,
+      std::move(ParameterTypeInfo), ReturnTypeInfo);
+  FunctionSignatures[MangledName] = std::move(Signature);
+  StructTypes[ClassName].Methods[MethodName] = IsPublic;
+  if (CurrentToken != tok_colon)
+    return LogErrorExpression("Expected ':' in function definition"), false;
+  getNextToken();
+  SkipExportedDefinitionBody();
   return true;
 }
 ```
@@ -156,10 +174,10 @@ static bool ParseMethodSignatureOnlyInClass(const string &ClassName,
 I dispatch on the token after `export` to run the right signature-only parser:
 
 ```cpp
-static bool ParseExportSignatureOnly() {
-  getNextToken(); // eat export
+static bool ParseExportedDeclarationSignature() {
+  getNextToken(); // eat 'export'
   if (CurrentToken == tok_def)
-    return ParseDefinitionSignatureOnly();
+    return ParseExportedFunctionSignature();
   if (CurrentToken == tok_extern) {
     auto Signature = ParseExtern();
     if (!Signature)
@@ -175,8 +193,7 @@ static bool ParseExportSignatureOnly() {
     return ParseTraitDefinition();
   if (CurrentToken == tok_type)
     return ParseTypeAliasDefinition();
-  LogErrorExpression("Invalid export target");
-  return false;
+  return LogErrorExpression("Invalid export target"), false;
 }
 ```
 
@@ -184,35 +201,44 @@ Struct, class, trait, and type-alias parsers already register into `StructTypes`
 
 ## Resolving an Import to a File Path
 
-I turn `app.math` into an absolute file path by replacing dots with slashes and probing relative to the importer's own location:
+I turn `app.math` into a relative file path by replacing dots with slashes, then probe for it starting in the importer's own directory and walking up toward the filesystem root — at each level I also check an `Inputs/` subdirectory, which lets multi-file tests keep their helper modules out of the top-level test directory:
 
 ```cpp
 static bool ResolveImportToPath(const string &ImporterPath,
-                                const string &Import, string &OutPath) {
-  SmallString<256> Candidate(ImporterPath);
-  path::remove_filename(Candidate);
-  string Rel = Import;
-  std::replace(Rel.begin(), Rel.end(), '.', '/');
-  path::append(Candidate, Rel + ".pyxc");
-  if (fs::exists(Candidate)) {
-    OutPath = std::string(Candidate.str());
-    return true;
-  }
+                                const string &ImportName,
+                                string &ResolvedPath) {
+  string RelativePath = ImportName;
+  replace(RelativePath.begin(), RelativePath.end(), '.', '/');
+  RelativePath += ".pyxc";
 
-  // Test-friendly fallback: allow colocated "Inputs/" modules.
-  SmallString<256> InputsCandidate(ImporterPath);
-  path::remove_filename(InputsCandidate);
-  path::append(InputsCandidate, "Inputs");
-  path::append(InputsCandidate, Rel + ".pyxc");
-  if (fs::exists(InputsCandidate)) {
-    OutPath = std::string(InputsCandidate.str());
-    return true;
+  SmallString<256> Directory(ImporterPath);
+  sys::path::remove_filename(Directory);
+  while (!Directory.empty()) {
+    SmallString<256> Candidate(Directory);
+    sys::path::append(Candidate, RelativePath);
+    if (sys::fs::exists(Candidate)) {
+      ResolvedPath = Candidate.str().str();
+      return true;
+    }
+
+    SmallString<256> InputsCandidate(Directory);
+    sys::path::append(InputsCandidate, "Inputs", RelativePath);
+    if (sys::fs::exists(InputsCandidate)) {
+      ResolvedPath = InputsCandidate.str().str();
+      return true;
+    }
+
+    SmallString<256> Parent(Directory);
+    sys::path::remove_filename(Parent);
+    if (Parent == Directory || Parent.empty())
+      break;
+    Directory = Parent;
   }
   return false;
 }
 ```
 
-If neither probe succeeds, the import is unresolved:
+If neither probe succeeds at any level, the import is unresolved:
 
 ```pyxc
 import does.not.exist
@@ -227,82 +253,107 @@ Error (Line 1, Column 0): Could not resolve import 'does.not.exist' from '...'
 
 ```cpp
 static string CanonicalizePath(const string &Path) {
-  SmallString<256> Canon(Path);
-  if (!llvm::sys::fs::real_path(Path, Canon))
-    return std::string(Canon.str());
-  // fallback: make absolute and remove dots
-  SmallString<256> Abs(Path);
-  llvm::sys::fs::make_absolute(Abs);
-  llvm::sys::path::remove_dots(Abs, true);
-  return std::string(Abs.str());
+  SmallString<256> Canonical(Path);
+  if (!sys::fs::real_path(Path, Canonical))
+    return Canonical.str().str();
+  SmallString<256> Absolute(Path);
+  sys::fs::make_absolute(Absolute);
+  sys::path::remove_dots(Absolute, true);
+  return Absolute.str().str();
 }
 ```
 
 ## Collecting Signatures From a File
 
-This is the core of the import system. I open the file, switch into `SignatureScanMode`, scan for `export` declarations, and save and restore all the global parser state I touch along the way:
+This is the core of the import system. I open the file, switch into `SignatureScanMode`, scan for `export` declarations, and save and restore all the global parser state I touch along the way. I check `SignatureFileStates` first: a `Done` file is reused as-is, and — this chapter — a file that's still `InProgress` (meaning I'm already in the middle of scanning it further up the call stack) is a cycle, which I reject outright:
 
 ```cpp
 static bool CollectSignaturesFromFile(const string &Path) {
-  const string CanonPath = CanonicalizePath(Path);
-  if (!SignatureVisitedFiles.insert(CanonPath).second)
-    return true; // already visited
+  string CanonicalPath = CanonicalizePath(Path);
+  auto ExistingState = SignatureFileStates.find(CanonicalPath);
+  if (ExistingState != SignatureFileStates.end()) {
+    if (ExistingState->second == SignatureScanState::Done)
+      return true;
+    return LogErrorExpression("Cyclic imports are not supported"), false;
+  }
+  SignatureFileStates[CanonicalPath] = SignatureScanState::InProgress;
 
   FILE *SavedInput = Input;
   bool SavedIsRepl = IsRepl;
+  bool SavedSignatureScanMode = SignatureScanMode;
   string SavedSourcePath = CurrentSourcePath;
-  int SavedCurTok = CurrentToken;
+  int SavedCurrentToken = CurrentToken;
   bool SavedHadError = HadError;
-  bool OK = true;
+  bool Parsed = true;
 
-  if (!OpenInputFile(Path))
+  if (!OpenInputFile(Path)) {
+    SignatureFileStates.erase(CanonicalPath);
+    Input = SavedInput;
     return false;
+  }
   ResetLexerState();
-  ResetParserStateForFile();
   IsRepl = false;
   SignatureScanMode = true;
   HadError = false;
   getNextToken();
 
   while (CurrentToken != tok_eof) {
-    if (CurrentToken == tok_eol || CurrentToken == tok_indent || CurrentToken == tok_dedent) {
-      getNextToken(); continue;
+    if (CurrentToken == tok_eol || CurrentToken == tok_indent ||
+        CurrentToken == tok_dedent || CurrentToken == tok_block_end) {
+      getNextToken();
+      continue;
     }
     if (CurrentToken == tok_import) {
-      // Resolve nested imports eagerly so their symbols are available.
       getNextToken(); // eat 'import'
       string ImportName;
-      if (!ParseDottedModuleName(ImportName)) { OK = false; break; }
-      string ImportPath;
-      if (!ResolveImportToPath(CanonPath, ImportName, ImportPath)) {
-        LogErrorExpression(("Could not resolve import '" + ImportName + "'...").c_str());
-        OK = false; break;
+      if (!ParseModulePath(ImportName)) {
+        Parsed = false;
+        break;
       }
-      if (!CollectSignaturesFromFile(ImportPath)) { OK = false; break; }
+      string ImportPath;
+      if (!ResolveImportToPath(CanonicalPath, ImportName, ImportPath)) {
+        LogErrorExpression(
+            ("Could not resolve import '" + ImportName + "'").c_str());
+        Parsed = false;
+        break;
+      }
+      if (!CollectSignaturesFromFile(ImportPath)) {
+        Parsed = false;
+        break;
+      }
       continue;
     }
     if (CurrentToken == tok_export) {
-      if (!ParseExportSignatureOnly()) { OK = false; break; }
+      if (!ParseExportedDeclarationSignature()) {
+        Parsed = false;
+        break;
+      }
       continue;
     }
-    SkipSignatureBody(); // skip non-exported forms
+    SkipExportedDefinitionBody();
   }
 
-  if (HadError) OK = false;
-
+  if (HadError)
+    Parsed = false;
   CloseInputFile();
   Input = SavedInput;
   IsRepl = SavedIsRepl;
   CurrentSourcePath = SavedSourcePath;
-  CurrentToken = SavedCurTok;
-  SignatureScanMode = false;
+  CurrentToken = SavedCurrentToken;
+  SignatureScanMode = SavedSignatureScanMode;
   HadError = SavedHadError;
   ResetLexerState();
-  return OK;
+
+  if (!Parsed) {
+    SignatureFileStates.erase(CanonicalPath);
+    return false;
+  }
+  SignatureFileStates[CanonicalPath] = SignatureScanState::Done;
+  return true;
 }
 ```
 
-I recurse straight into `import` lines as I hit them, so by the time I finish scanning a file, every file it (transitively) imports has already been scanned too. Saving and restoring the global parser state is what lets that recursion be safe — scanning B in the middle of scanning A can't corrupt A's own parse position once A resumes.
+I recurse straight into `import` lines as I hit them, so by the time I finish scanning a file, every file it (transitively) imports has already been scanned too. Saving and restoring the global parser state is what lets that recursion be safe — scanning B in the middle of scanning A can't corrupt A's own parse position once A resumes. This chapter's eager recursion is exactly what makes a cycle fatal: if A imports B and B imports A, A is still `InProgress` when B tries to scan it, so the compile fails outright. [Chapter 45](chapter-45.md) fixes that.
 
 Calling something that never got registered this way — because it isn't `export`ed — fails the same way calling an undeclared name always has:
 
@@ -338,47 +389,48 @@ Before the lexer even runs on the main file, I use a fast line-based scan to pul
 
 ```cpp
 static vector<string> ExtractTopLevelImports(const string &Path) {
-  vector<string> Result;
-  std::ifstream In(Path);
-  if (!In)
-    return Result;
+  vector<string> Imports;
+  ifstream Source(Path);
   string Line;
-  while (std::getline(In, Line)) {
-    auto first = Line.find_first_not_of(" \t");
-    if (first == string::npos || Line[first] == '#') continue;
-    string Trim = Line.substr(first);
-    if (Trim.rfind("module ", 0) == 0) continue;
-    if (Trim.rfind("import ", 0) == 0) {
-      string Name = Trim.substr(7);
-      // strip inline comments
-      auto hash = Name.find('#');
-      if (hash != string::npos) Name = Name.substr(0, hash);
-      while (!Name.empty() && isspace((unsigned char)Name.back())) Name.pop_back();
-      if (!Name.empty()) Result.push_back(Name);
+  while (getline(Source, Line)) {
+    size_t First = Line.find_first_not_of(" \t");
+    if (First == string::npos || Line[First] == '#')
       continue;
-    }
-    if (Trim.rfind("export ", 0) == 0) continue;
-    break; // first non-import top-level form — stop
+    string Trimmed = Line.substr(First);
+    if (Trimmed.rfind("module ", 0) == 0 ||
+        Trimmed.rfind("export ", 0) == 0)
+      continue;
+    if (Trimmed.rfind("import ", 0) != 0)
+      break;
+    string ImportName = Trimmed.substr(7);
+    size_t Comment = ImportName.find('#');
+    if (Comment != string::npos)
+      ImportName.erase(Comment);
+    while (!ImportName.empty() &&
+           isspace(static_cast<unsigned char>(ImportName.back())))
+      ImportName.pop_back();
+    if (!ImportName.empty())
+      Imports.push_back(std::move(ImportName));
   }
-  return Result;
+  return Imports;
 }
 ```
 
-I stop at the first line that's neither `module`, `import`, nor `export`, so a function body never gets read here.
+I stop at the first line that isn't blank, a comment, or one of `module`/`import`/`export`, so a function body never gets read here.
 
 ## Preloading Imported Signatures
 
-I call this before the main parse loop of any file. It clears the visited set, then runs `CollectSignaturesFromFile` for each import:
+I call this before the main parse loop of any file. It clears `SignatureFileStates`, then runs `CollectSignaturesFromFile` for each import:
 
 ```cpp
 static bool PreloadImportedSignatures(const string &Path) {
-  SignatureVisitedFiles.clear();
-  for (const auto &ImportName : ExtractTopLevelImports(Path)) {
+  SignatureFileStates.clear();
+  for (const string &ImportName : ExtractTopLevelImports(Path)) {
     string ImportPath;
-    if (!ResolveImportToPath(Path, ImportName, ImportPath)) {
-      LogErrorExpression(...);
-      return false;
-    }
+    if (!ResolveImportToPath(Path, ImportName, ImportPath))
+      return LogErrorExpression(
+                 ("Could not resolve import '" + ImportName + "'").c_str()),
+             false;
     if (!CollectSignaturesFromFile(ImportPath))
       return false;
   }
@@ -400,19 +452,19 @@ import
 For `--emit exe`, every transitively imported `.pyxc` file has to actually get compiled and linked, not just have its signatures scanned. `CollectImportClosure` does a DFS of the import graph and collects the full file list:
 
 ```cpp
-static bool CollectImportClosure(const string &Path, std::set<string> &Visited,
-                                 vector<string> &OutFiles) {
-  const string CanonPath = CanonicalizePath(Path);
-  if (!Visited.insert(CanonPath).second)
-    return true; // already in closure
-  OutFiles.push_back(CanonPath);
-  for (const auto &ImportName : ExtractTopLevelImports(CanonPath)) {
+static bool CollectImportClosure(const string &Path, set<string> &Visited,
+                                 vector<string> &Files) {
+  string CanonicalPath = CanonicalizePath(Path);
+  if (!Visited.insert(CanonicalPath).second)
+    return true;
+  Files.push_back(CanonicalPath);
+  for (const string &ImportName : ExtractTopLevelImports(CanonicalPath)) {
     string ImportPath;
-    if (!ResolveImportToPath(CanonPath, ImportName, ImportPath)) {
-      LogErrorExpression(...);
-      return false;
-    }
-    if (!CollectImportClosure(ImportPath, Visited, OutFiles))
+    if (!ResolveImportToPath(CanonicalPath, ImportName, ImportPath))
+      return LogErrorExpression(
+                 ("Could not resolve import '" + ImportName + "'").c_str()),
+             false;
+    if (!CollectImportClosure(ImportPath, Visited, Files))
       return false;
   }
   return true;
@@ -438,6 +490,14 @@ for (const auto &InputPath : InputFiles) {
 ```
 
 `--emit llvm-ir` doesn't get any of this — closure expansion is specific to `--emit exe`. IR output stays one-file-in, one-file-out.
+
+## Build and Run
+
+```bash
+cd code/chapter-44
+cmake -S . -B build && cmake --build build
+./build/pyxc
+```
 
 ## Try It
 

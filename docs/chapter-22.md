@@ -33,7 +33,7 @@ I use `255` rather than `0xFF` here: pyxc doesn't have hexadecimal number litera
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-35
+cd pyxc-llvm-tutorial/code/chapter-22
 ```
 
 ## Grammar
@@ -160,8 +160,8 @@ cd pyxc-llvm-tutorial/code/chapter-35
 Single-character operators like `&`, `|`, `^`, and `~` already fall through the lexer's catch-all ASCII path, returning their own character values as tokens. `<<` and `>>` are two-character, so they need real token values:
 
 ```cpp
-tok_shl = -58, // <<
-tok_shr = -59, // >>
+tok_shift_left = -45, // <<
+tok_shift_right = -46, // >>
 ```
 
 ## Lexer Peek-Ahead for Shifts
@@ -175,7 +175,7 @@ if (LexerLastChar == '<') {
   if (Next == '=')
     Tok = (advance(), tok_leq);   // '<=' — comparison
   else if (Next == '<')
-    Tok = (advance(), tok_shl);   // '<<' — left shift
+    Tok = (advance(), tok_shift_left);   // '<<' — left shift
   LexerLastChar = advance();
   return Tok;
 }
@@ -186,7 +186,7 @@ if (LexerLastChar == '>') {
   if (Next == '=')
     Tok = (advance(), tok_geq);   // '>=' — comparison
   else if (Next == '>')
-    Tok = (advance(), tok_shr);   // '>>' — right shift
+    Tok = (advance(), tok_shift_right);   // '>>' — right shift
   LexerLastChar = advance();
   return Tok;
 }
@@ -194,12 +194,12 @@ if (LexerLastChar == '>') {
 
 ## Parsing the New Tiers
 
-`ParseShift`, `ParseRelational`, `ParseEquality`, `ParseBitwiseAnd`, `ParseBitwiseXor`, and `ParseBitwiseOr` all follow the same shape every tier has used since [Chapter 26](chapter-26.md): a base case that descends one level, and a `*Right` helper consuming a run of same-tier operators through `MergeBinaryExpression`. `ParseShift`, the innermost new tier, is representative of all six:
+`ParseShift`, `ParseRelational`, `ParseEquality`, `ParseBitwiseAnd`, `ParseBitwiseXor`, and `ParseBitwiseOr` all follow the same shape every tier has used since [Chapter 18](chapter-18.md): a base case that descends one level, and a `*Right` helper consuming a run of same-tier operators through `MergeBinaryExpression`. `ParseShift`, the innermost new tier, is representative of all six:
 
 ```cpp
 static unique_ptr<ExpressionNode>
 ParseShiftRight(unique_ptr<ExpressionNode> Left) {
-  while (CurrentToken == tok_shl || CurrentToken == tok_shr) {
+  while (CurrentToken == tok_shift_left || CurrentToken == tok_shift_right) {
     int Operator = CurrentToken;
     getNextToken();
     auto Right = ParseSum();
@@ -228,7 +228,7 @@ Two predicates identify the new operator families, built on the real token names
 
 ```cpp
 static bool IsBitwiseOp(int Operator) { return Operator == tok_ampersand || Operator == tok_pipe || Operator == tok_caret; }
-static bool IsShiftOp(int Operator) { return Operator == tok_shl || Operator == tok_shr; }
+static bool IsShiftOp(int Operator) { return Operator == tok_shift_left || Operator == tok_shift_right; }
 ```
 
 `GetBinaryResultType` gains two new branches. For bitwise ops, both operands must be integers; `IsAssignable` picks the wider of the two as the result type, same widening rule every other integer binary op already uses:
@@ -255,7 +255,7 @@ if (IsShiftOp(Operator)) {
 }
 ```
 
-Both checks run inside `GetBinaryResultType`, the same function every binary operator's type checking has gone through since [Chapter 26](chapter-26.md), so type errors are caught before `MergeBinaryExpression` ever builds a node — codegen never sees a bad operand pair.
+Both checks run inside `GetBinaryResultType`, the same function every binary operator's type checking has gone through since [Chapter 18](chapter-18.md), so type errors are caught before `MergeBinaryExpression` ever builds a node — codegen never sees a bad operand pair.
 
 ## Parsing Unary `~`
 
@@ -296,22 +296,22 @@ case tok_caret: {
     return Builder->CreateOr(L, R, "bwor");
   return Builder->CreateXor(L, R, "bwxor");
 }
-case tok_shl:
-case tok_shr: {
-  ValueType Ty = getType();
-  L = EmitImplicitCast(L, LType, Ty);
-  R = EmitImplicitCast(R, RType, Ty);
-  if (!L || !R)
-    return LogErrorV("Type mismatch in binary operator");
-  if (Operator == tok_shl)
+case tok_shift_left:
+case tok_shift_right: {
+  R = EmitCast(R, RType, LType);
+  if (!R)
+    return LogErrorV("Type mismatch in shift operator");
+  if (Operator == tok_shift_left)
     return Builder->CreateShl(L, R, "shltmp");
-  return Builder->CreateAShr(L, R, "shrtmp");
+  return IsUnsignedIntType(LType)
+             ? Builder->CreateLShr(L, R, "shrtmp")
+             : Builder->CreateAShr(L, R, "shrtmp");
 }
 ```
 
 Each bitwise operator maps to a single LLVM instruction: `and`, `or`, or `xor`. These are integer-only instructions; LLVM has no floating-point equivalent, which is consistent with `GetBinaryResultType` already rejecting non-integer operands.
 
-`CreateShl` emits `shl`, shifting left and filling low bits with zero. `CreateAShr` emits `ashr`, an arithmetic (sign-extending) right shift: for a negative value, `x >> 1` stays negative because the vacated high bits fill with the sign bit rather than zero. LLVM also has `CreateLShr` for a logical (zero-filling) right shift, but pyxc doesn't expose it here — `ashr` is the correct choice as long as every integer type is signed, which is still true at this point in the tutorial.
+`CreateShl` emits `shl`, shifting left and filling low bits with zero. Right shift dispatches on the left operand's signedness, the same `IsUnsignedIntType` check every arithmetic operator has used since [Chapter 19](chapter-19.md) added unsigned types: `CreateAShr` (`ashr`, arithmetic, sign-extending) for signed integers, `CreateLShr` (`lshr`, logical, zero-filling) for unsigned ones. For a negative signed value, `x >> 1` stays negative because the vacated high bits fill with the sign bit; for a `uint32`, the same shift fills with zero, since there's no sign to preserve.
 
 ## Codegen: Unary `~`
 
@@ -343,8 +343,6 @@ var z: int = y & 7 # mask the low 3 bits → 6
 
 **No compound assignment for bitwise or shift operators.** `x &= mask`, `flags |= bit`, `x ^= pattern`, `x <<= 2`, and `x >>= 1` all fail to parse. [Chapter 35](chapter-35.md)'s compound-assignment mechanism is general — `IsCompoundAssignTok` and `CompoundAssignToBinaryOp` could, in principle, be extended to cover `&=`, `|=`, `^=`, `<<=`, and `>>=` the same way they cover `+=` through `%=` — but this chapter doesn't add the tokens or the table entries to do it. I confirmed this by trying `x &= mask` directly and getting a parse error, not a working compound assignment.
 
-**Right shift is always arithmetic (sign-extending).** There's no unsigned integer type yet for a logical right shift to make sense on; every integer type is signed through this chapter.
-
 ## Try It
 
 **Bitwise operator on a float is a type error**
@@ -359,6 +357,11 @@ def main() -> int:
 
 ```text
 Error (Line 4, Column 25): Type mismatch in binary operator
+  var z: float64 = x & y
+                        ^~~~
+Error (Line 5, Column 11): cannot return a value from a None function
+  return 0
+          ^~~~
 ```
 
 **`~` on a non-integer is a type error**
@@ -372,6 +375,11 @@ def main() -> int:
 
 ```text
 Error (Line 3, Column 22): Unary '~' requires an integer operand
+  var y: float64 = ~x
+                     ^~~~
+Error (Line 4, Column 11): cannot return a value from a None function
+  return 0
+          ^~~~
 ```
 
 Both are caught while parsing and never reach codegen.
@@ -379,7 +387,7 @@ Both are caught while parsing and never reach codegen.
 ## Build and Run
 
 ```bash
-cd code/chapter-35
+cd code/chapter-22
 cmake -S . -B build && cmake --build build
 ```
 

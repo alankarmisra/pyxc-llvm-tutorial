@@ -1,11 +1,11 @@
 ---
-description: "Handle cyclic imports: two modules that import each other compile and link correctly using a two-phase signature scan and an InProgress/Done state machine."
+description: "Handle cyclic imports: two modules that import each other compile and link correctly by deferring import recursion until each file's own exports are registered."
 ---
 # 45. pyxc: Cyclic Imports
 
 ## What I Am Building
 
-[Chapter 44](chapter-44.md) implemented imports. `import app.math` finds the file, scans its `export` declarations, and injects prototypes. For a tree-shaped import graph this works. For a cycle — A imports B, B imports A — Chapter 44's `SignatureVisitedFiles` set stops the recursion, but it stops it too early: when B tries to scan A it finds A "already visited" and gets nothing. If B calls a function from A, the prototype is missing.
+[Chapter 44](chapter-44.md) implemented imports. `import app.math` finds the file, scans its `export` declarations, and injects prototypes. For a tree-shaped import graph this works. For a cycle — A imports B, B imports A — Chapter 44 recurses into each `import` line the moment it's seen, so scanning A means immediately scanning B, which means immediately scanning A again. `SignatureFileStates` marks A `InProgress` while it's still being scanned, so that re-entry is caught — but Chapter 44 treats it as an error and rejects the compile with `"Cyclic imports are not supported"`, even though A's own exports (registered before it recursed into B) were already sitting in the symbol table.
 
 After this chapter, mutual imports work correctly:
 
@@ -54,82 +54,97 @@ cd pyxc-llvm-tutorial/code/chapter-45
 
 ## The State Machine
 
-I replace Chapter 44's `std::set<string> SignatureVisitedFiles` with a map that distinguishes two completion states:
+`SignatureFileStates` already exists from Chapter 44 — I'm not introducing it here, I'm changing what happens on an `InProgress` hit:
 
 ```cpp
 enum class SignatureScanState { InProgress, Done };
-static std::map<string, SignatureScanState> SignatureFileStates;
+static map<string, SignatureScanState> SignatureFileStates;
 ```
 
 | State | Meaning |
 |---|---|
 | Not present | File has not been visited |
-| `InProgress` | Phase 1 complete — own exports collected, phase 2 in progress |
-| `Done` | Both phases complete |
+| `InProgress` | Currently being scanned (own exports may or may not be registered yet, depending on when in the scan the hit occurs) |
+| `Done` | Fully scanned — exports registered |
 
-`CollectSignaturesFromFile` checks this map at entry:
+`CollectSignaturesFromFile` checks this map at entry. Chapter 44's version treated an `InProgress` hit as an error; I change that one line to a plain success:
 
 ```cpp
-auto StateIt = SignatureFileStates.find(CanonPath);
-if (StateIt != SignatureFileStates.end()) {
-  if (StateIt->second == SignatureScanState::Done)
-    return true;   // fully scanned — reuse
-  // Cycle detected. Resolve by allowing the in-progress scan to complete and
-  // reusing whatever exported signatures are already known.
+auto ExistingState = SignatureFileStates.find(CanonicalPath);
+if (ExistingState != SignatureFileStates.end()) {
+  if (ExistingState->second == SignatureScanState::Done)
+    return true;
   return true;
 }
-SignatureFileStates[CanonPath] = SignatureScanState::InProgress;
+SignatureFileStates[CanonicalPath] = SignatureScanState::InProgress;
 ```
 
-Both `Done` and `InProgress` return `true` immediately — an `InProgress` hit isn't an error, it's "OK, use what's already there." The difference between the two states is just what "already there" means: `Done` means every signature this file exports is registered; `InProgress` means only its own exports are registered so far, and it's still off recursing into what it imports. Since Phase 1 always finishes before Phase 2 starts (next section), an `InProgress` file's own exports are always already registered by the time anything can ask for them — that's exactly why returning `true` for a back-edge is safe.
+Both `Done` and `InProgress` now return `true` immediately — an `InProgress` hit isn't an error, it's "OK, use what's already there." That's only safe because of the second change this chapter makes, described next: without it, an `InProgress` hit could land before the in-progress file's own exports have even been collected.
 
 ## Two-Phase Signature Collection
 
-The change that actually breaks the cycle: I stop recursing into `import` lines eagerly. Instead I collect them into a `NestedImports` vector first:
+The change that actually breaks the cycle: I stop recursing into `import` lines eagerly. Instead I collect them into a `NestedImports` vector during the scan, and only recurse into it after the whole file has been scanned:
 
 ```cpp
-SignatureFileStates[CanonPath] = SignatureScanState::InProgress;
-// ... open file, setup scanner state ...
 vector<string> NestedImports;
 
 while (CurrentToken != tok_eof) {
+  if (CurrentToken == tok_eol || CurrentToken == tok_indent ||
+      CurrentToken == tok_dedent || CurrentToken == tok_block_end) {
+    getNextToken();
+    continue;
+  }
   if (CurrentToken == tok_import) {
     getNextToken(); // eat 'import'
     string ImportName;
-    if (!ParseDottedModuleName(ImportName)) { OK = false; break; }
-    NestedImports.push_back(ImportName);   // Phase 1: defer, don't recurse
+    if (!ParseModulePath(ImportName)) {
+      Parsed = false;
+      break;
+    }
+    NestedImports.push_back(std::move(ImportName));
     continue;
   }
   if (CurrentToken == tok_export) {
-    if (!ParseExportSignatureOnly()) { OK = false; break; } // Phase 1: collect
+    if (!ParseExportedDeclarationSignature()) {
+      Parsed = false;
+      break;
+    }
     continue;
   }
-  SkipSignatureBody();
+  SkipExportedDefinitionBody();
 }
-```
 
-Only once the whole file has been scanned — every `export` collected, Phase 1 fully done — do I come back and recurse into the deferred imports:
-
-```cpp
-if (OK) {
-  for (const auto &ImportName : NestedImports) {
+// I collect this module's exports before following its imports. If an
+// imported module leads back here, those signatures are already available.
+if (Parsed) {
+  for (const string &ImportName : NestedImports) {
     string ImportPath;
-    if (!ResolveImportToPath(CanonPath, ImportName, ImportPath)) {
-      OK = false; break;
+    if (!ResolveImportToPath(CanonicalPath, ImportName, ImportPath)) {
+      LogErrorExpression(
+          ("Could not resolve import '" + ImportName + "'").c_str());
+      Parsed = false;
+      break;
     }
     if (!CollectSignaturesFromFile(ImportPath)) {
-      OK = false; break;
+      Parsed = false;
+      break;
     }
   }
 }
-// ... restore state ...
-SignatureFileStates[CanonPath] =
-    OK ? SignatureScanState::Done : SignatureScanState::InProgress;
-if (!OK)
-  SignatureFileStates.erase(CanonPath);
 ```
 
-I only set `Done` once both phases succeed.
+Everything up through the `while` loop is Phase 1 — every top-level `export` in this file gets registered, and every `import` line just gets its name saved for later. The `for` loop over `NestedImports` is Phase 2 — only now do I recurse into what this file imports. At the end, the same success/failure handling from Chapter 44 still applies:
+
+```cpp
+if (!Parsed) {
+  SignatureFileStates.erase(CanonicalPath);
+  return false;
+}
+SignatureFileStates[CanonicalPath] = SignatureScanState::Done;
+return true;
+```
+
+I only set `Done` once both phases succeed; a failure at any point erases the entry entirely rather than leaving it `InProgress`.
 
 ## Tracing the A→B→A Cycle
 
@@ -142,76 +157,37 @@ This is a depth-first walk of the import graph — imports are resolved depth-fi
 5. B: not present → set `InProgress`
 6. B Phase 1: collect `export def fb()`, defer `import cycle.a`
 7. B Phase 2: process `cycle.a` → `CollectSignaturesFromFile("a.pyxc")`
-8. A is `InProgress` → return true (cycle detected, `fa` already registered)
+8. A is `InProgress` → return true (`fa` was already registered in A's Phase 1, before A recursed into B)
 9. B Phase 2 complete → set B to `Done`
 10. A Phase 2 complete → set A to `Done`
 
 Both `fa` and `fb` end up in the symbol table, and `main.pyxc` compiles normally.
 
-## Directory Tree Walk and Caching
+## No Change to Path Resolution
 
-Chapter 44's resolver only checked one directory. I add two improvements: a search that walks up the directory tree, and a cache so I don't repeat that search.
-
-```cpp
-static bool ResolveImportToPath(const string &ImporterPath,
-                                const string &Import, string &OutPath) {
-  const string CanonImporter = CanonicalizePath(ImporterPath);
-  const string CacheKey = CanonImporter + "->" + Import;
-  auto CacheIt = ResolvedImportPathCache.find(CacheKey);
-  if (CacheIt != ResolvedImportPathCache.end()) {
-    if (CacheIt->second.empty())
-      return false; // negative cache
-    OutPath = CacheIt->second;
-    return true;
-  }
-
-  string Rel = Import;
-  std::replace(Rel.begin(), Rel.end(), '.', '/');
-  SmallString<256> Base(CanonImporter);
-  path::remove_filename(Base);
-  SmallString<256> Probe(Base);
-  while (true) {
-    SmallString<256> Candidate(Probe);
-    path::append(Candidate, Rel + ".pyxc");
-    if (fs::exists(Candidate)) {
-      OutPath = std::string(Candidate.str());
-      ResolvedImportPathCache[CacheKey] = OutPath;
-      return true;
-    }
-    SmallString<256> InputsCandidate(Probe);
-    path::append(InputsCandidate, "Inputs");
-    path::append(InputsCandidate, Rel + ".pyxc");
-    if (fs::exists(InputsCandidate)) {
-      OutPath = std::string(InputsCandidate.str());
-      ResolvedImportPathCache[CacheKey] = OutPath;
-      return true;
-    }
-    SmallString<256> Parent(Probe);
-    path::remove_filename(Parent);
-    if (Parent == Probe || Parent.empty())
-      break;
-    Probe = Parent;
-  }
-  ResolvedImportPathCache[CacheKey] = ""; // cache negative result
-  return false;
-}
-```
-
-I start the search in the importer's own directory and walk up toward the filesystem root, probing at each level (and its `Inputs/` fallback) until something matches or I run out of parents. `ResolvedImportPathCache` stores both hits and misses, keyed on `"canonicalImporterPath->importName"` — an empty cached value means "I already searched for this and it isn't there," so a repeated failed lookup doesn't repeat the whole directory walk.
+`ResolveImportToPath` itself is untouched this chapter — the directory-tree walk described in [Chapter 44](chapter-44.md) already handles everything the cyclic examples above need, since `cycle/a.pyxc` and `cycle/b.pyxc` sit in the same directory. Fixing cycles is purely a change to *when* `CollectSignaturesFromFile` recurses into imports, not to how a single import name gets turned into a path.
 
 ## State Reset
 
-`PreloadImportedSignatures` clears both the state machine and the path cache at the start of every top-level compilation, so nothing leaks between separate `pyxc` invocations:
+`PreloadImportedSignatures` still just clears `SignatureFileStates` at the start of every top-level compilation, exactly as in Chapter 44:
 
 ```cpp
 static bool PreloadImportedSignatures(const string &Path) {
   SignatureFileStates.clear();
-  ResolvedImportPathCache.clear();
-  // ... as before ...
+  for (const string &ImportName : ExtractTopLevelImports(Path)) {
+    string ImportPath;
+    if (!ResolveImportToPath(Path, ImportName, ImportPath))
+      return LogErrorExpression(
+                 ("Could not resolve import '" + ImportName + "'").c_str()),
+             false;
+    if (!CollectSignaturesFromFile(ImportPath))
+      return false;
+  }
+  return true;
 }
 ```
 
-If three files all import `app.math`, I still only scan it once per compilation — the second and third `import app.math` hit `Done` in `SignatureFileStates` and return immediately. But that cache doesn't survive past this one compilation; the next `pyxc` invocation starts clean.
+If three files all import `app.math`, I still only scan it once per compilation — the second and third `import app.math` hit `Done` in `SignatureFileStates` and return immediately. That state doesn't survive past this one compilation; the next `pyxc` invocation starts clean.
 
 ## What Cyclic Imports Cannot Solve
 
@@ -245,6 +221,14 @@ That's a gap, not a designed diagnostic. The fix, as always, is pointer-based mu
 export struct Node:
   value: int
   next: ptr[Node]   # ok — ptr is always 8 bytes
+```
+
+## Build and Run
+
+```bash
+cd code/chapter-45
+cmake -S . -B build && cmake --build build
+./build/pyxc
 ```
 
 ## Try It
@@ -284,7 +268,7 @@ pyxc --emit exe -o out main.pyxc
 
 ## What's Next
 
-Phase 6 — modules and multi-file builds — is complete: pyxc has K&R-compatible operators and types, a class and trait system, and a module system with automatic dependency resolution and cyclic import support. Closures are still ahead, and concurrency after that — this is as far as the tutorial goes for now, not the end of the language.
+Phase 9 — program structure — is complete: pyxc has K&R-compatible operators and types, a class and trait system, and a module system with automatic dependency resolution and cyclic import support. Closures are still ahead, and concurrency after that — this is as far as the tutorial goes for now, not the end of the language.
 
 ## Need Help?
 

@@ -5,7 +5,7 @@ description: "Add sizeof and pointer casts so pyxc can call malloc and free: hea
 
 ## What I Am Building
 
-[Chapter 26](chapter-26.md) gave me pointer arithmetic over fixed-size arrays, but those arrays have two limits I can't get around: their size has to be known at compile time, and they die the moment the function that declared them returns. Neither works for data whose size I only know at runtime, or that needs to outlive the function that created it. For that I need the heap, and the heap means calling `malloc` and `free`.
+[Chapter 27](chapter-27.md) gave me fixed-size arrays, but they have two limits I can't get around: their size has to be known at compile time, and they die the moment the function that declared them returns. Neither works for data whose size I only know at runtime, or that needs to outlive the function that created it. For that I need the heap, and the heap means calling `malloc` and `free`.
 
 After this chapter:
 
@@ -38,88 +38,157 @@ def main() -> int:
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-21
+cd pyxc-llvm-tutorial/code/chapter-28
 ```
 
 ## Grammar
 
-Two productions change this chapter: `primary` gains a `sizeof-expression` alternative, and `cast-type` gains `pointer-type`, since a pointer cast target is now legal where it wasn't before. Everything else is exactly what [Chapter 26](chapter-26.md) already had:
+Two productions change this chapter: `primary` gains a `sizeof-expression` alternative, and `cast-type` gains `pointer-type`, since a pointer cast target is now legal where it wasn't before. Everything else is exactly what [Chapter 27](chapter-27.md) already had:
 
 ```grammardiff
- program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
- end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = struct-definition | function-definition | external | top-level-expression ;
- struct-definition       = "struct" name ":" end-of-lines struct-block ;
- struct-block     = indent field-declaration { end-of-lines field-declaration } dedent ;
- field-declaration       = name ":" type ;
- function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- (* If the return type is omitted, it defaults to None. *)
- external        = "extern" "def" function-signature [ "->" type ] ;
- top-level-expression    = expression ;
- function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
- typed-parameter      = name ":" type ;
- if-statement          = "if" expression ":" suite
-                 [ end-of-lines "else" ":" suite ] ;
- for-statement         = "for"
-                   ( "var" name ":" type | name )
-                   "=" expression "," expression "," expression ":" suite ;
- variable-statement         = "var" variable-binding { "," variable-binding } ;
- assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
- simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
- compound-statement    = if-statement | for-statement ;
- statement       = simple-statement | compound-statement ;
- suite           = simple-statement | compound-statement | end-of-lines block ;
- return-statement      = "return" [ expression ] ;
- statement-separator = end-of-lines | BLOCK_END ;
- block = indent statement { statement-separator statement } dedent ;
- expression      = comparison ;
- comparison      = sum { comparison-operator sum } ;
- comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
- sum             = term { ("+" | "-") term } ;
- term            = unary-expression { ("*" | "/") unary-expression } ;
- lvalue          = name | field-access | index-expression ;
- variable-binding      = name ":" type [ "=" expression ] ;
- unary-expression       = "-" unary-expression | primary ;
--primary         = cast-expression | address-expression | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
-+primary         = cast-expression | sizeof-expression | address-expression | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
- cast-expression        = cast-type "(" expression ")" ;
-+sizeof-expression      = "sizeof" "(" type ")" ;
- address-expression        = "addr" "(" lvalue ")" ;
- name-expression  = name | call-expression ;
- call-expression        = name "(" [ expression { "," expression } ] ")" ;
- field-access     = name "." name { "." name } ;
- index-expression       = name "[" expression "]" ;
- number-expression      = number ;
- parenthesized-expression       = "(" expression ")" ;
- indent          = INDENT ;
- dedent          = DEDENT ;
- 
- name      = (letter | "_") { letter | digit | "_" } ;
- builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | "None" ;
- struct-type      = name ;
- pointer-type     = "ptr" "[" type "]" ;
- type            = builtin-type | struct-type | pointer-type ;
- cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
--                | "bool" ;
-+                | "bool" | pointer-type ;
- integer         = digit { digit } ;
- number          = ( digit { digit } [ "." { digit } ]
-                   | "." digit { digit } ) [ exponent ] ;
- exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
- boolean-literal    = "True" | "False" ;
- letter          = "A".."Z" | "a".."z" ;
- digit           = "0".."9" ;
- end-of-line             = "\r\n" | "\r" | "\n" ;
- comment = "#" { comment-character } ;
- comment-character = ? any character except "\r" and "\n" ? ;
- whitespace = " " | "\t" | "\v" | "\f" ;
- INDENT          = ? synthetic token emitted by lexer ? ;
- DEDENT          = ? synthetic token emitted by lexer ? ;
- 
- BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
+ program                           = [ end-of-lines ]
+                                     [ top-level-item
+                                       { end-of-lines top-level-item } ]
+                                     [ end-of-lines ] ;
+ end-of-lines                      = end-of-line { end-of-line } ;
+ top-level-item                    = function-definition
+                                     | struct-definition
+                                     | external
+                                     | top-level-statement ;
+ struct-definition                 = "struct" name ":" end-of-lines
+                                     struct-block ;
+ struct-block                      = indent field-declaration
+                                     { end-of-lines field-declaration } dedent ;
+ field-declaration                 = name ":" type ;
+ function-definition               = "def" function-signature [ "->" type ] ":"
+                                     ( simple-statement
+                                       | end-of-lines block ) ;
+ external                          = "extern" "def" function-signature [ "->" type ] ;
+ top-level-statement               = statement ;
+ function-signature                = name "(" [ parameters ] ")" ;
+ parameters                        = typed-parameter { "," typed-parameter } ;
+ typed-parameter                   = name ":" type ;
+ if-statement                      = "if" expression ":" suite
+                                     { [ end-of-lines ] "elif" expression ":" suite }
+                                     [ [ end-of-lines ] "else" ":" suite ] ;
+ for-statement                     = "for" ( "var" name ":" type | name )
+                                     "=" expression ","
+                                     expression "," expression ":" suite ;
+ while-statement                   = "while" expression ":" suite ;
+ do-while-statement                = "do" ":" suite [ end-of-lines ]
+                                     "while" expression ;
+ switch-statement                  = "switch" expression ":" end-of-lines
+                                     indent switch-body dedent ;
+ switch-body                       = switch-case
+                                     { end-of-lines switch-case }
+                                     [ end-of-lines default-case ] ;
+ switch-case                       = "case" switch-integer
+                                     { "," switch-integer } ":" suite ;
+ default-case                      = "default" ":" suite ;
+ variable-statement                = "var" variable-binding
+                                     { "," variable-binding } ;
+ assignment-statement              = lvalue "=" expression ;
+ simple-statement                  = return-statement
+                                     | break-statement
+                                     | continue-statement
+                                     | variable-statement
+                                     | assignment-statement
+                                     | expression ;
+ compound-statement                = if-statement
+                                     | for-statement
+                                     | while-statement
+                                     | do-while-statement
+                                     | switch-statement ;
+ statement                         = simple-statement | compound-statement ;
+ suite                             = simple-statement
+                                     | compound-statement
+                                     | end-of-lines block ;
+ return-statement                  = "return" [ expression ] ;
+ break-statement                   = "break" ;
+ continue-statement                = "continue" ;
+ statement-separator               = end-of-lines | BLOCK_END ;
+ block                             = indent statement
+                                     { statement-separator statement } dedent ;
+ expression                        = logical-or ;
+ logical-or                        = logical-and { "||" logical-and } ;
+ logical-and                       = bitwise-or { "&&" bitwise-or } ;
+ bitwise-or                        = bitwise-xor { "|" bitwise-xor } ;
+ bitwise-xor                       = bitwise-and { "^" bitwise-and } ;
+ bitwise-and                       = equality { "&" equality } ;
+ equality                          = relational { ("==" | "!=") relational } ;
+ relational                        = shift { ("<" | "<=" | ">" | ">=") shift } ;
+ shift                             = sum { ("<<" | ">>") sum } ;
+ sum                               = term { ("+" | "-") term } ;
+ term                              = factor { ("*" | "/" | "%") factor } ;
+ lvalue                            = name
+                                     { "." name | "[" expression "]" } ;
+ variable-binding                  = name ":" type [ "=" expression ] ;
+ factor                            = ("-" | "!" | "~") factor | primary ;
+ primary                           = cast-expression
++                                    | sizeof-expression
+                                     | address-expression
+                                     | array-literal
+                                     | name-expression
+                                     | number-expression
+                                     | boolean-literal
+                                     | parenthesized-expression ;
+ cast-expression                   = cast-type "(" expression ")" ;
++sizeof-expression                 = "sizeof" "(" type ")" ;
+ address-expression                = "addr" "(" lvalue ")" ;
+ array-literal                     = "[" [ expression
+                                       { "," expression } ] "]" ;
+ name-expression                   = lvalue | call-expression ;
+ call-expression                   = name "(" [ arguments ] ")" ;
+ arguments                         = expression { "," expression } ;
+ number-expression                 = number ;
+ parenthesized-expression          = "(" expression ")" ;
+ indent                            = INDENT ;
+ dedent                            = DEDENT ;
+ name                              = (letter | "_")
+                                     { letter | digit | "_" } ;
+ type                              = base-type [ array-suffix ] ;
+ base-type                         = builtin-type | struct-type | pointer-type ;
+ pointer-type                      = "ptr" "[" type "]" ;
+ array-suffix                      = "[" integer "]" ;
+ builtin-type                      = "int" | "int8" | "int16" | "int32"
+                                     | "int64" | "uint8" | "uint16"
+                                     | "uint32" | "uint64"
+                                     | "float" | "float32"
+                                     | "float64" | "bool" | "None" ;
+ struct-type                       = name ;
+-cast-type                         = "int" | "int8" | "int16" | "int32"
++cast-type                         = builtin-cast-type | pointer-type ;
++builtin-cast-type                 = "int" | "int8" | "int16" | "int32"
+                                     | "int64" | "uint8" | "uint16"
+                                     | "uint32" | "uint64"
+                                     | "float" | "float32"
+                                     | "float64" | "bool" ;
+ number                            = ( digit { digit } [ "." { digit } ]
+                                     | "." digit { digit } ) [ exponent ] ;
+ switch-integer                    = [ "-" ] digit { digit } ;
+ exponent                          = ( "e" | "E" ) [ "+" | "-" ]
+                                     digit { digit } ;
+ boolean-literal                   = "True" | "False" ;
+ integer                           = digit { digit } ;
+ letter                            = "A".."Z" | "a".."z" ;
+ digit                             = "0".."9" ;
+ end-of-line                       = "\r\n" | "\r" | "\n" ;
+ (*
+     A `comment` begins with "#" and continues to the end of the line. The lexer
+      ignores its text and returns an end-of-line token when one follows it.
+ *)
+ comment                           = "#" { comment-character } ;
+ comment-character                 = ? any character except "\r" and "\n" ? ;
+ (*
+     `whitespace` may appear before or between tokens
+      and is ignored by the lexer.
+ *)
+ whitespace                        = " " | "\t" | "\v" | "\f" ;
+ INDENT                            = ? synthetic token emitted by lexer when indentation increases ? ;
+ DEDENT                            = ? synthetic token emitted by lexer when indentation decreases ? ;
+ BLOCK_END                         = ? synthetic token injected into the stream by ParseBlock
+                                       immediately after it consumes DEDENT ? ;
+
 ```
 
 ## One New Keyword
@@ -127,7 +196,7 @@ Two productions change this chapter: `primary` gains a `sizeof-expression` alter
 `sizeof` needs a token like every other keyword I've added:
 
 ```cpp
-tok_sizeof = -37,
+tok_sizeof = -53,
 ```
 
 ```cpp
@@ -143,11 +212,12 @@ I could compute a struct's size by hand: add up its fields, account for padding,
 ```cpp
 class SizeofExpressionNode : public ExpressionNode {
   ValueType TargetType;
-  string TargetStructName;
+  string TargetTypeInfo;
 
 public:
-  SizeofExpressionNode(ValueType TargetType, const string &TargetStructName = "")
-      : TargetType(TargetType), TargetStructName(TargetStructName) {
+  SizeofExpressionNode(ValueType TargetType,
+                       const string &TargetTypeInfo = "")
+      : TargetType(TargetType), TargetTypeInfo(TargetTypeInfo) {
     setType(ValueType::Int64);
   }
   Value *codegen() override;
@@ -164,8 +234,8 @@ static unique_ptr<ExpressionNode> ParseSizeofExpression() {
   if (CurrentToken != tok_lparen)
     return LogErrorExpression("Expected '(' after sizeof");
   getNextToken(); // eat '('
-  string TargetStructName;
-  ValueType TargetType = ParseTypeToken(&TargetStructName);
+  string TargetTypeInfo;
+  ValueType TargetType = ParseTypeToken(&TargetTypeInfo);
   if (TargetType == ValueType::Error)
     return nullptr;
   if (TargetType == ValueType::None)
@@ -173,7 +243,7 @@ static unique_ptr<ExpressionNode> ParseSizeofExpression() {
   if (CurrentToken != tok_rparen)
     return LogErrorExpression("Expected ')' after sizeof type");
   getNextToken(); // eat ')'
-  return make_unique<SizeofExpressionNode>(TargetType, TargetStructName);
+  return make_unique<SizeofExpressionNode>(TargetType, TargetTypeInfo);
 }
 ```
 
@@ -188,11 +258,12 @@ Codegen doesn't emit an instruction, since there's nothing to compute at runtime
 
 ```cpp
 Value *SizeofExpressionNode::codegen() {
-  llvm::Type *Ty = LLVMTypeFor(TargetType, TargetStructName);
-  if (!Ty)
+  llvm::Type *TargetLLVMType = LLVMTypeFor(TargetType, TargetTypeInfo);
+  if (!TargetLLVMType)
     return LogErrorV("Invalid sizeof target type");
-  uint64_t Bytes =
-      TheModule->getDataLayout().getTypeAllocSize(Ty).getFixedValue();
+  uint64_t Bytes = TheModule->getDataLayout()
+                       .getTypeAllocSize(TargetLLVMType)
+                       .getFixedValue();
   return ConstantInt::get(Type::getInt64Ty(*TheContext), Bytes);
 }
 ```
@@ -222,7 +293,7 @@ Every pointer is 8 bytes here regardless of what it points to. LLVM's opaque poi
 
 ## `ptr[T](expr)`: Reinterpreting a Pointer
 
-Before this chapter, `ptr[int64](raw)` wasn't rejected by any type check, it was rejected by the parser before it got that far: `ParsePrimary` had no `case tok_ptr` at all, so a leading `ptr` in expression position was simply "unknown token when expecting an expression." I confirmed this against [Chapter 26](chapter-26.md)'s binary directly rather than guess at it.
+Before this chapter, `ptr[int64](raw)` wasn't rejected by any type check, it was rejected by the parser before it got that far: `ParsePrimary` had no `case tok_ptr` at all, so a leading `ptr` in expression position was simply "unknown token when expecting an expression." I confirmed this against [Chapter 27](chapter-27.md)'s binary directly rather than guess at it.
 
 So the fix isn't lifting a guard, it's adding a case, falling through to the exact same call every other cast target already uses:
 
@@ -239,25 +310,26 @@ Once `tok_ptr` is reachable, though, I do need one new guard, since `ParseCastEx
 ```cpp
 if (Type == ValueType::Pointer && Expr->getType() != ValueType::Pointer)
   return LogErrorExpression("Pointer casts require a pointer operand");
-return make_unique<CastExpressionNode>(Type, std::move(Expr), TargetStructName);
+return make_unique<CastExpressionNode>(Type, std::move(Expr),
+                                        TargetTypeInfo);
 ```
 
 I don't allow casting an integer to a pointer. There's no address I could hand it that pyxc could vouch for, and letting that through would just be a way to smuggle in undefined behavior with a friendlier syntax.
 
-`CastExpressionNode` needs a `TargetStructName` now, for the same reason `SizeofExpressionNode` does: `ptr[Point]` and `ptr[int64]` are both `ValueType::Pointer`, so the pointee type has to travel separately:
+`CastExpressionNode` needs a `TargetTypeInfo` now, for the same reason `SizeofExpressionNode` does: `ptr[Point]` and `ptr[int64]` are both `ValueType::Pointer`, so the pointee type has to travel separately:
 
 ```cpp
 class CastExpressionNode : public ExpressionNode {
   ValueType TargetType;
-  string TargetStructName;
+  string TargetTypeInfo;
   unique_ptr<ExpressionNode> Expr;
 
 public:
   CastExpressionNode(ValueType TargetType, unique_ptr<ExpressionNode> Expr,
-              const string &TargetStructName = "")
-      : TargetType(TargetType), TargetStructName(TargetStructName),
+                     const string &TargetTypeInfo = "")
+      : TargetType(TargetType), TargetTypeInfo(TargetTypeInfo),
         Expr(std::move(Expr)) {
-    setType(TargetType, TargetStructName);
+    setType(TargetType, TargetTypeInfo);
   }
   Value *codegen() override;
 };
@@ -265,15 +337,14 @@ public:
 
 Without it, a cast to `ptr[int64]` would carry no pointee information at all, and anything downstream that indexes or reads through the result wouldn't know what it's pointing at.
 
-Codegen for the pointer-to-pointer case is almost nothing, because at the LLVM level there's almost nothing to do:
+Codegen for the pointer-to-pointer case is nothing at all, because at the LLVM level there's nothing to do:
 
 ```cpp
 if (From == ValueType::Pointer && To == ValueType::Pointer)
-  return Builder->CreateBitCast(V, LLVMTypeFor(ValueType::Pointer),
-                                "ptrcast");
+  return V;
 ```
 
-With opaque pointers, every pointer is the same IR type regardless of what it points to, so `CreateBitCast` between two of them doesn't actually emit an instruction: the value just passes through. I confirmed this by compiling a cast and reading the IR:
+With opaque pointers, every pointer is the same IR type regardless of what it points to, so there's no instruction to emit between two of them: the value just passes through unchanged. I confirmed this by compiling a cast and reading the IR:
 
 ```llvm
 %calltmp = call ptr @malloc(i64 8)
@@ -291,20 +362,21 @@ extern def malloc(n: int64) -> ptr[int8]
 extern def free(p: ptr[int8])
 ```
 
-Nothing about these declarations is special; any C function with compatible types can be called the same way. But there's a gap I ran into the first time I tried this: even though `malloc` is declared to return exactly `ptr[int8]`, assigning its result straight to a `var raw: ptr[int8]` fails to compile:
+Nothing about these declarations is special; any C function with compatible types can be called the same way. `malloc` always hands back `ptr[int8]`, raw bytes with no notion of what they're eventually going to hold. Assigning that straight to a `var raw: ptr[int8]` works fine, since the declared pointee and the call's pointee already match. What doesn't work is going straight to the type I actually want:
 
 ```pyxc
-var raw: ptr[int8] = malloc(sizeof(Point))
+var p: ptr[Point] = malloc(sizeof(Point))
 ```
 
 ```text
-Error (Line 10, Column 45): Type mismatch in variable initialization
+Error: Type mismatch in variable initialization
 ```
 
-The pointee-type check I added in an earlier chapter compares the declared variable's pointee against the initializer's pointee, and a call to an `extern` function doesn't carry that pointee metadata through to its result the way a local expression does, even when the declared return type is the exact type I'm assigning to. I ran into the same error calling an extern function that returns `ptr[Point]`, so it isn't specific to `int8`; any pointer-returning `extern` call needs the same treatment. The fix is the cast I already have: wrap the call in an explicit same-type cast to set the pointee metadata myself.
+This is the same pointee-type check every other pointer assignment goes through: the declared variable's pointee (`Point`) doesn't match the initializer's pointee (`int8`), so it's rejected exactly like assigning a `ptr[int8]` local to a `ptr[Point]` variable would be. `sizeof(Point)` tells `malloc` how many bytes to hand back, but it doesn't change what type those bytes come back as. The fix is the cast I just added: `ptr[Point](expr)` reinterprets the `ptr[int8]` result as a `ptr[Point]`.
 
 ```pyxc
-var raw: ptr[int8] = ptr[int8](malloc(sizeof(Point)))
+var raw: ptr[int8] = malloc(sizeof(Point))
+var p: ptr[Point] = ptr[Point](raw)
 ```
 
 The full pattern for heap-allocating a single struct:
@@ -328,7 +400,7 @@ def main() -> int:
 ## Build and Run
 
 ```bash
-cd code/chapter-21
+cd code/chapter-28
 cmake -S . -B build && cmake --build build
 ```
 
@@ -432,7 +504,7 @@ ret i64 8
 
 **Manual ownership.** There's no destructor, no reference counting, no garbage collector. Forgetting to call `free` leaks memory; calling it twice or reading after `free` is undefined behavior: silently corrupted data, or a crash, with no diagnostic pointing at why.
 
-**Pointer casts are pointer-only.** `ptr[T](expr)` requires `expr` to already be a pointer; I don't let an integer become a pointer through a cast. And casting a pointer-returning `extern` call result to its own declared type, as shown above, isn't optional: I have to do it every time, since the call itself doesn't carry pointee metadata.
+**Pointer casts are pointer-only.** `ptr[T](expr)` requires `expr` to already be a pointer; I don't let an integer become a pointer through a cast. And the cast doesn't do anything at the LLVM level, since every pointer already has the same IR representation; its only job is telling pyxc what pointee type to track from here on.
 
 ## What's Next
 

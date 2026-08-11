@@ -46,7 +46,7 @@ Accessing `c.count` directly from outside the class is an error.
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-28
+cd pyxc-llvm-tutorial/code/chapter-39
 ```
 
 ## Grammar
@@ -54,100 +54,202 @@ cd pyxc-llvm-tutorial/code/chapter-28
 `class-member` gains an optional visibility prefix. `visibility` is a new production:
 
 ```grammardiff
- program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
- end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = type-alias | struct-definition | class-definition | function-definition | external | top-level-expression ;
- type-alias       = "type" name "=" type ;
- struct-definition       = "struct" name ":" end-of-lines struct-block ;
- class-definition        = "class" name ":" end-of-lines struct-block ;
- struct-block     = indent class-member { end-of-lines class-member } dedent ;
--class-member     = field-declaration | method-definition ;
-+class-member     = [ visibility ] ( field-declaration | method-definition ) ;
-+visibility      = "public" | "private" ;
- method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")"
-                   [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- field-declaration       = name ":" type ;
- function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- (* If the return type is omitted, it defaults to None. *)
- external        = "extern" "def" function-signature [ "->" type ] ;
- top-level-expression    = expression ;
- function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
- typed-parameter      = name ":" type ;
- if-statement          = "if" expression ":" suite
-                 [ end-of-lines "else" ":" suite ] ;
- for-statement         = "for"
-                   ( "var" name ":" type | name )
-                   "=" expression "," expression "," expression ":" suite ;
- variable-statement         = "var" variable-binding { "," variable-binding } ;
- assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
- simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
- compound-statement    = if-statement | for-statement ;
- statement       = simple-statement | compound-statement ;
- suite           = simple-statement | compound-statement | end-of-lines block ;
- return-statement      = "return" [ expression ] ;
- statement-separator = end-of-lines | BLOCK_END ;
- block = indent statement { statement-separator statement } dedent ;
- expression      = comparison ;
- comparison      = sum { comparison-operator sum } ;
- comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
- sum             = term { ("+" | "-") term } ;
- term            = unary-expression { ("*" | "/") unary-expression } ;
- lvalue          = name | field-access | index-expression ;
- variable-binding      = name ":" type [ "=" expression ] ;
- unary-expression       = "-" unary-expression | primary ;
- primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
- cast-expression        = cast-type "(" expression ")" ;
- sizeof-expression      = "sizeof" "(" type ")" ;
- address-expression        = "addr" "(" lvalue ")" ;
- name-expression  = name | call-expression | method-call-expression | constructor-call-expression ;
- call-expression        = name "(" [ expression { "," expression } ] ")" ;
- method-call-expression  = name "." name "(" [ expression { "," expression } ] ")" ;
- constructor-call-expression    = name "(" [ expression { "," expression } ] ")" ;
- field-access     = name "." name { "." name } ;
- index-expression       = name "[" expression "]" ;
- number-expression      = number ;
- array-literal    = "[" [ expression { "," expression } ] "]" ;
- string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
- escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
- parenthesized-expression       = "(" expression ")" ;
- indent          = INDENT ;
- dedent          = DEDENT ;
- 
- name      = (letter | "_") { letter | digit | "_" } ;
- builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | "None" ;
- alias-type       = name ;
- struct-type      = name ;
- pointer-type     = "ptr" "[" type "]" ;
- type            = base-type [ array-suffix ] ;
- base-type        = builtin-type | alias-type | struct-type | pointer-type ;
- array-suffix     = "[" integer "]" ;
- cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | pointer-type ;
- integer         = digit { digit } ;
- number          = ( digit { digit } [ "." { digit } ]
-                   | "." digit { digit } ) [ exponent ] ;
- exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
- boolean-literal    = "True" | "False" ;
- letter          = "A".."Z" | "a".."z" ;
- digit           = "0".."9" ;
- end-of-line             = "\r\n" | "\r" | "\n" ;
- comment = "#" { comment-character } ;
- comment-character = ? any character except "\r" and "\n" ? ;
- whitespace = " " | "\t" | "\v" | "\f" ;
- INDENT          = ? synthetic token emitted by lexer ? ;
- DEDENT          = ? synthetic token emitted by lexer ? ;
- 
- BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
+ program                           = [ end-of-lines ]
+                                     [ top-level-item
+                                       { end-of-lines top-level-item } ]
+                                     [ end-of-lines ] ;
+ end-of-lines                      = end-of-line { end-of-line } ;
+ top-level-item                    = function-definition
+                                     | type-alias
+                                     | struct-definition
+                                     | class-definition
+                                     | external
+                                     | top-level-statement ;
+ struct-definition                 = "struct" name ":" end-of-lines
+                                     struct-block ;
+ class-definition                  = "class" name ":" end-of-lines
+                                     class-block ;
+ type-alias                        = "type" name "=" type ;
+ struct-block                      = indent field-declaration
+                                     { end-of-lines field-declaration } dedent ;
+ class-block                       = indent class-member
+                                     { end-of-lines class-member } dedent ;
+-class-member                      = field-declaration | method-definition ;
++class-member                      = [ visibility ]
++                                    ( field-declaration | method-definition ) ;
++visibility                        = "public" | "private" ;
+ field-declaration                 = name ":" type ;
+ method-definition                 = "def" name "(" [ parameters ] ")"
+                                     [ "->" type ] ":"
+                                     ( simple-statement
+                                       | end-of-lines block ) ;
+ function-definition               = "def" function-signature [ "->" type ] ":"
+                                     ( simple-statement
+                                       | end-of-lines block ) ;
+ external                          = "extern" "def" external-function-signature
+                                     [ "->" type ] ;
+ top-level-statement               = statement ;
+ function-signature                = name "(" [ parameters ] ")" ;
+ external-function-signature       = name "(" [ parameters [ "," "..." ] | "..." ] ")" ;
+ parameters                        = typed-parameter { "," typed-parameter } ;
+ typed-parameter                   = name ":" type ;
+ if-statement                      = "if" expression ":" suite
+                                     { [ end-of-lines ] "elif" expression ":" suite }
+                                     [ [ end-of-lines ] "else" ":" suite ] ;
+ for-statement                     = "for" ( "var" name ":" type | name )
+                                     "=" expression ","
+                                     expression "," expression ":" suite ;
+ while-statement                   = "while" expression ":" suite ;
+ do-while-statement                = "do" ":" suite [ end-of-lines ]
+                                     "while" expression ;
+ switch-statement                  = "switch" expression ":" end-of-lines
+                                     indent switch-body dedent ;
+ switch-body                       = switch-case
+                                     { end-of-lines switch-case }
+                                     [ end-of-lines default-case ] ;
+ switch-case                       = "case" switch-integer
+                                     { "," switch-integer } ":" suite ;
+ default-case                      = "default" ":" suite ;
+ variable-statement                = "var" variable-binding
+                                     { "," variable-binding } ;
+ simple-statement                  = return-statement
+                                     | break-statement
+                                     | continue-statement
+                                     | variable-statement
+                                     | expression ;
+ compound-statement                = if-statement
+                                     | for-statement
+                                     | while-statement
+                                     | do-while-statement
+                                     | switch-statement ;
+ statement                         = simple-statement | compound-statement ;
+ suite                             = simple-statement
+                                     | compound-statement
+                                     | end-of-lines block ;
+ return-statement                  = "return" [ expression ] ;
+ break-statement                   = "break" ;
+ continue-statement                = "continue" ;
+ statement-separator               = end-of-lines | BLOCK_END ;
+ block                             = indent statement
+                                     { statement-separator statement } dedent ;
+ expression                        = assignment ;
+ assignment                        = logical-or [ assignment-operator assignment ] ;
+ logical-or                        = logical-and { "||" logical-and } ;
+ logical-and                       = bitwise-or { "&&" bitwise-or } ;
+ bitwise-or                        = bitwise-xor { "|" bitwise-xor } ;
+ bitwise-xor                       = bitwise-and { "^" bitwise-and } ;
+ bitwise-and                       = equality { "&" equality } ;
+ equality                          = relational { ("==" | "!=") relational } ;
+ relational                        = shift { ("<" | "<=" | ">" | ">=") shift } ;
+ shift                             = sum { ("<<" | ">>") sum } ;
+ sum                               = term { ("+" | "-") term } ;
+ term                              = unary-expression
+                                     { ("*" | "/" | "%") unary-expression } ;
+ lvalue                            = name
+                                     { "." name | "[" expression "]" } ;
+ variable-binding                  = name ":" type [ "=" expression ] ;
+ unary-expression                  = ("-" | "!" | "~" | "++" | "--")
+                                     unary-expression
+                                     | postfix-expression ;
+ postfix-expression                = primary [ "++" | "--" ] ;
+ primary                           = cast-expression
+                                     | sizeof-expression
+                                     | address-expression
+                                     | array-literal
+                                     | string-literal
+                                     | character-literal
+                                     | name-expression
+                                     | number-expression
+                                     | boolean-literal
+                                     | parenthesized-expression ;
+ cast-expression                   = cast-type "(" expression ")" ;
+ sizeof-expression                 = "sizeof" "(" type ")" ;
+ address-expression                = "addr" "(" lvalue ")" ;
+ array-literal                     = "[" [ expression
+                                       { "," expression } ] "]" ;
+ string-literal                    = '"' { string-character | escape } '"' ;
+ escape                            = literal-escape ;
+ string-character                  = ? any character except '"', "\\", "\r", and "\n" ? ;
+ character-literal                 = "'" ( character | character-escape ) "'" ;
+ character-escape                  = literal-escape ;
+ literal-escape                    = "\\" ( "\\" | "'" | '"' | "?"
+                                       | "a" | "b" | "f" | "n" | "r"
+                                       | "t" | "v"
+                                       | "x" hex-digit hex-digit
+                                       | octal-digit [ octal-digit
+                                         [ octal-digit ] ]
+                                       | "u" hex-digit hex-digit hex-digit hex-digit
+                                       | "U" hex-digit hex-digit hex-digit hex-digit
+                                         hex-digit hex-digit hex-digit hex-digit ) ;
+ character                         = ? any character except "'", "\\", "\r", and "\n" ? ;
+ hex-digit                         = digit | "A".."F" | "a".."f" ;
+ assignment-operator               = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
+ octal-digit                       = "0".."7" ;
+ name-expression                   = lvalue
+                                     | call-expression
+                                     | method-call-expression
+                                     | constructor-call-expression ;
+ call-expression                   = name "(" [ arguments ] ")" ;
+ method-call-expression            = lvalue "." name "(" [ arguments ] ")" ;
+ constructor-call-expression       = name "(" [ arguments ] ")" ;
+ arguments                         = expression { "," expression } ;
+ number-expression                 = number ;
+ parenthesized-expression          = "(" expression ")" ;
+ indent                            = INDENT ;
+ dedent                            = DEDENT ;
+ name                              = (letter | "_")
+                                     { letter | digit | "_" } ;
+ type                              = base-type [ array-suffix ] ;
+ base-type                         = builtin-type | alias-type | struct-type
+                                     | pointer-type ;
+ pointer-type                      = "ptr" "[" type "]" ;
+ array-suffix                      = "[" integer "]" ;
+ builtin-type                      = "int" | "int8" | "int16" | "int32"
+                                     | "int64" | "uint8" | "uint16"
+                                     | "uint32" | "uint64"
+                                     | "float" | "float32"
+                                     | "float64" | "bool" | "None" ;
+ struct-type                       = name ;
+ alias-type                        = name ;
+ cast-type                         = builtin-cast-type | pointer-type ;
+ builtin-cast-type                 = "int" | "int8" | "int16" | "int32"
+                                     | "int64" | "uint8" | "uint16"
+                                     | "uint32" | "uint64"
+                                     | "float" | "float32"
+                                     | "float64" | "bool" ;
+ number                            = ( digit { digit } [ "." { digit } ]
+                                     | "." digit { digit } ) [ exponent ] ;
+ switch-integer                    = [ "-" ] digit { digit } ;
+ exponent                          = ( "e" | "E" ) [ "+" | "-" ]
+                                     digit { digit } ;
+ boolean-literal                   = "True" | "False" ;
+ integer                           = digit { digit } ;
+ letter                            = "A".."Z" | "a".."z" ;
+ digit                             = "0".."9" ;
+ end-of-line                       = "\r\n" | "\r" | "\n" ;
+ (*
+     A `comment` begins with "#" and continues to the end of the line. The lexer
+      ignores its text and returns an end-of-line token when one follows it.
+ *)
+ comment                           = "#" { comment-character } ;
+ comment-character                 = ? any character except "\r" and "\n" ? ;
+ (*
+     `whitespace` may appear before or between tokens
+      and is ignored by the lexer.
+ *)
+ whitespace                        = " " | "\t" | "\v" | "\f" ;
+ INDENT                            = ? synthetic token emitted by lexer when indentation increases ? ;
+ DEDENT                            = ? synthetic token emitted by lexer when indentation decreases ? ;
+ BLOCK_END                         = ? synthetic token injected into the stream by ParseBlock
+                                       immediately after it consumes DEDENT ? ;
+
 ```
 
 ## New Tokens
 
 ```cpp
-tok_public = -41,
-tok_private = -42,
+tok_public = -65,
+tok_private = -66,
 ```
 
 Both are registered in the keyword table and in the token-name map, so error messages print `'public'` and `'private'`.
@@ -159,7 +261,7 @@ Visibility lands in two places on `StructTypeInfo`. Fields gain an `IsPublic` fl
 ```cpp
 struct StructFieldInfo {
   string Name;
-  ValueType Type = ValueType::Error;
+  ValueType Type;
   string StructName;
   bool IsPublic = true;
 };
@@ -169,11 +271,10 @@ Methods are tracked separately, in a map from method name to visibility:
 
 ```cpp
 struct StructTypeInfo {
-  string Name;
-  bool IsClass = false;
   vector<StructFieldInfo> Fields;
-  std::map<string, size_t> FieldIndex;
-  std::map<string, bool> MethodIsPublic;
+  map<string, size_t> FieldIndices;
+  map<string, bool> Methods;
+  bool IsClass = false;
 };
 ```
 
@@ -184,34 +285,34 @@ Methods need their own map rather than a flag next to the field, since a method'
 The body loop inside `ParseAggregateDefinition` now reads an optional visibility token before deciding whether the member is a field or a method:
 
 ```cpp
-bool MemberIsPublic = true;
-bool HasVisibilityModifier = false;
+bool IsPublic = true;
 if (CurrentToken == tok_public || CurrentToken == tok_private) {
-  HasVisibilityModifier = true;
-  MemberIsPublic = (CurrentToken == tok_public);
+  if (!Info.IsClass) {
+    LogErrorExpression(
+        "Visibility modifiers are only allowed inside class bodies");
+    return false;
+  }
+  IsPublic = CurrentToken == tok_public;
   getNextToken(); // eat visibility modifier
-}
-if (HasVisibilityModifier && !Info.IsClass) {
-  LogErrorExpression("Visibility modifiers are only allowed inside class bodies");
-  return false;
 }
 ```
 
-With no modifier, `MemberIsPublic` stays `true`: the default is public. A modifier inside a `struct` body is rejected immediately, before the parser even looks at what follows it.
+With no modifier, `IsPublic` stays `true`: the default is public. A modifier inside a `struct` body is rejected immediately, before the parser even eats the token, let alone looks at what follows it.
 
 A field's visibility rides along with everything else already pushed into `Info.Fields`:
 
 ```cpp
-Info.Fields.push_back({FieldName, FieldType, FieldStructName, MemberIsPublic});
+Info.Fields.push_back(
+    {FieldName, FieldType, FieldStructName, IsPublic});
 ```
 
-A method's visibility is passed as an extra argument into `ParseMethodDefinitionInClass`, which now takes `bool IsPublic` and records it directly:
+A method's visibility is passed as an extra argument into `ParseMethodDefinition`, which now takes `bool IsPublic` and records it directly:
 
 ```cpp
-StructTypes[ClassName].MethodIsPublic[MethodName] = IsPublic;
+StructTypes[ClassName].Methods[MethodName] = IsPublic;
 ```
 
-`Info.MethodIsPublic` is copied back out of `StructTypes[StructName]` after every field (`Info.MethodIsPublic = StructTypes[StructName].MethodIsPublic;`), for the same reason [Chapter 37](chapter-37.md) already re-registers `StructTypes[StructName] = Info` after every member: methods parsed earlier in the body need to stay visible while later members are parsed, and vice versa.
+`Info.Methods` is copied back out of `StructTypes[AggregateName]` after every method (`Info.Methods = StructTypes[AggregateName].Methods;`), for the same reason [Chapter 37](chapter-37.md) already re-registers `StructTypes[AggregateName] = Info` after every member: methods parsed earlier in the body need to stay visible while later members are parsed, and vice versa.
 
 ## Enforcing Private Access
 
@@ -230,55 +331,65 @@ A member is reachable if it's `public`, or if the code currently being parsed be
 
 ```cpp
 struct ClassScopeGuard {
-  string Saved;
-  ClassScopeGuard(const string &ClassName) : Saved(CurrentClassScopeName) {
+  string SavedClassName;
+  ClassScopeGuard(const string &ClassName)
+      : SavedClassName(CurrentClassScopeName) {
     CurrentClassScopeName = ClassName;
   }
-  ~ClassScopeGuard() { CurrentClassScopeName = Saved; }
+  ~ClassScopeGuard() { CurrentClassScopeName = SavedClassName; }
 };
 ```
 
-`ParseMethodDefinitionInClass` instantiates a `ClassScopeGuard` before parsing the method's body. When the method is done, the destructor restores whatever `CurrentClassScopeName` was before — empty at the top level, since pyxc has no nested classes to restore into instead.
+`ParseMethodDefinition` instantiates a `ClassScopeGuard` before parsing the method's body. When the method is done, the destructor restores whatever `CurrentClassScopeName` was before — empty at the top level, since pyxc has no nested classes to restore into instead.
 
 ## Access Checks at Every Use Site
 
 `CanAccessClassMember` is checked wherever the parser resolves a class member, which turns out to be four places, not one:
 
-**Field access, both existing field-chain parsers.** The auto-deref-capable `ParseFieldAccessFromFirstMember` from [Chapter 37](chapter-37.md) checks it inside its `ConsumeField` lambda:
+**Field access, in both places a `.field` chain gets resolved.** `ParseFieldExpressionWithBase` walks a chain that starts from an already-typed base (used for the auto-deref case, where `self` is `ptr[SomeStruct]` and the pointee is decoded before the walk begins):
 
 ```cpp
-const auto &FD = SI->second.Fields[FI->second];
-if (!CanAccessClassMember(CurStruct, FD.IsPublic)) {
-  LogErrorExpression(
-      ("Field '" + Field + "' is private on '" + CurStruct + "'").c_str());
-  return false;
-}
+const auto &Field = Struct->second.Fields[FieldIndex->second];
+if (!CanAccessClassMember(ResultStructName, Field.IsPublic))
+  return LogErrorExpression(
+      ("Field '" + FieldName + "' is private on '" +
+       ResultStructName + "'")
+          .c_str());
 ```
 
-The older `ParseFieldAccessExpression` from [Chapter 24](chapter-24.md) — still used for field chains where the whole `.field` sequence is parsed from scratch rather than continuing from an already-consumed first member — gets the identical check inline in its own loop. Both paths reject reading *and* writing a private field, since assignment and read both resolve the field chain through one of these two functions before anything else happens.
+`ParseNameExpressionWithName` has its own inline dot-dispatch loop for the ordinary `name.field` case, with the identical check inline:
+
+```cpp
+const auto &FieldInfo = Struct->second.Fields[Field->second];
+if (!CanAccessClassMember(BaseStructName, FieldInfo.IsPublic))
+  return LogErrorExpression(
+      ("Field '" + MemberName + "' is private on '" +
+       BaseStructName + "'")
+          .c_str());
+```
+
+Both paths reject reading *and* writing a private field, since assignment and read both resolve the field chain through one of these two places before anything else happens.
 
 **Method call**, in `ParseMethodCallExpression`, right after resolving `ClassName.MethodName`:
 
 ```cpp
-auto MI = CI->second.MethodIsPublic.find(MethodName);
-if (MI != CI->second.MethodIsPublic.end() &&
-    !CanAccessClassMember(ClassName, MI->second)) {
+auto Visibility = Class->second.Methods.find(MethodName);
+if (Visibility != Class->second.Methods.end() &&
+    !CanAccessClassMember(ClassName, Visibility->second))
   return LogErrorExpression(
       ("Method '" + MethodName + "' is private on '" + ClassName + "'")
           .c_str());
-}
 ```
 
 **Constructor call**, in `ParseNameExpressionWithName`, guarded by whether `__init__` exists at all:
 
 ```cpp
-if (InitSignature) {
-  auto MI = SI->second.MethodIsPublic.find("__init__");
-  if (MI != SI->second.MethodIsPublic.end() &&
-      !CanAccessClassMember(ParsedName, MI->second)) {
+if (Initializer) {
+  auto Visibility = Class->second.Methods.find("__init__");
+  if (Visibility != Class->second.Methods.end() &&
+      !CanAccessClassMember(ParsedName, Visibility->second))
     return LogErrorExpression(
         ("Method '__init__' is private on '" + ParsedName + "'").c_str());
-  }
 }
 ```
 
@@ -293,6 +404,14 @@ Visibility is enforced entirely while parsing. Nothing changes in the generated 
 **There is no `protected`.** Access is either class-private or world-public; there's no subclass-visible middle tier, since pyxc has no inheritance.
 
 **Visibility modifiers on structs are rejected outright.** `struct` members are always public. The parser errors the moment it sees `public` or `private` before a struct member, rather than silently ignoring the modifier.
+
+## Build and Run
+
+```bash
+cd code/chapter-39
+cmake -S . -B build && cmake --build build
+./build/pyxc
+```
 
 ## Try It
 
@@ -337,7 +456,7 @@ struct Foo:
 ```
 
 ```text
-Error (Line 2, Column 11): Visibility modifiers are only allowed inside class bodies
+Error (Line 2, Column 3): Visibility modifiers are only allowed inside class bodies
 ```
 
 ## What's Next

@@ -35,12 +35,12 @@ def main() -> int:
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-20
+cd pyxc-llvm-tutorial/code/chapter-26
 ```
 
 ## Grammar
 
-No grammar change this chapter — `code/chapter-20/pyxc.ebnf` is byte-identical to chapter 25's. `+`, `-`, and the comparison operators already existed as `sum`/`comparison` productions; nothing new needs to be parsed. What changes is purely semantic: `GetBinaryResultType` now accepts pointer operands and returns pointer or integer types accordingly, so the same syntax that already parsed `a + b` for two integers now also accepts one pointer and one integer operand.
+No grammar change this chapter — `code/chapter-26/pyxc.ebnf` is byte-identical to chapter 25's, aside from the header comment. `+`, `-`, and the comparison operators already existed as `sum`/`comparison` productions; nothing new needs to be parsed. What changes is purely semantic: `GetBinaryResultType` now accepts pointer operands and returns pointer or integer types accordingly, so the same syntax that already parsed `a + b` for two integers now also accepts one pointer and one integer operand.
 
 ## Semantic Rules
 
@@ -61,33 +61,36 @@ Multiplication by a pointer is blocked. There is no sensible meaning for `ptr[T]
 
 ## Extending Binary Result Type Resolution
 
-`GetBinaryResultType` is the central function that decides what type a binary expression produces. Its signature is extended to carry struct-name information for both operands and to write the result struct name back:
+`GetBinaryResultType` is the central function that decides what type a binary expression produces. Before this chapter its signature was `(int Operator, ValueType L, ValueType R)`, with no way to know what a pointer operand points to. It now takes `LTypeInfo` and `RTypeInfo`, the encoded struct-name string for each operand, so pointer operands can be told apart by pointee type:
 
 ```cpp
-if (IsArithmeticOp(Operator)) {
-  if (Operator != tok_star &&
-      ((L == ValueType::Pointer && IsIntType(R)) ||
-       (R == ValueType::Pointer && IsIntType(L)))) {
-    if (ResultStructName)
-      *ResultStructName = (L == ValueType::Pointer) ? LStruct : RStruct;
-    return ValueType::Pointer;
+static ValueType GetBinaryResultType(int Operator, ValueType L,
+                                     const string &LTypeInfo, ValueType R,
+                                     const string &RTypeInfo) {
+  if (IsArithmeticOp(Operator)) {
+    if (Operator == tok_plus &&
+        ((L == ValueType::Pointer && IsIntType(R)) ||
+         (R == ValueType::Pointer && IsIntType(L))))
+      return ValueType::Pointer;
+    if (Operator == tok_minus && L == ValueType::Pointer && IsIntType(R))
+      return ValueType::Pointer;
+    if (Operator == tok_minus && L == ValueType::Pointer &&
+        R == ValueType::Pointer && LTypeInfo == RTypeInfo)
+      return ValueType::Int64;
+    ...
   }
-  if (Operator == tok_minus && L == ValueType::Pointer && R == ValueType::Pointer &&
-      LStruct == RStruct)
-    return ValueType::Int64;
-  ...
-}
-if (IsComparisonOp(Operator)) {
-  if (L == ValueType::Pointer && R == ValueType::Pointer &&
-      LStruct == RStruct)
-    return ValueType::Bool;
-  ...
-}
+  if (IsComparisonOp(Operator)) {
+    if (L == ValueType::Pointer && R == ValueType::Pointer)
+      return LTypeInfo == RTypeInfo ? ValueType::Bool : ValueType::Error;
+    ...
+  }
 ```
 
-For `ptr + int` and `int + ptr`, the result inherits the struct name (which encodes the pointee type) from whichever operand is the pointer. For `ptr - ptr`, no struct name is needed because the result is a plain `int64`. For pointer comparisons, the result is `bool`.
+`GetBinaryResultType` itself only decides the *type* (`Pointer`, `Int64`, `Bool`, or `Error`); it doesn't hand back a struct name. Working out which struct name to attach to a pointer result happens one level up, in `MergeBinaryExpression` (below).
 
-Mismatched pointer types (`ptr[int] - ptr[float64]`) fall through to the default error path because `LStruct != RStruct`.
+`p + n` is handled by its own `tok_plus` check with the pointer/int pair in either order. `p - n` gets a separate `tok_minus` check for `Pointer`/int, and `p - q` gets a third check for `Pointer`/`Pointer` with matching `LTypeInfo`/`RTypeInfo`. `p * n` matches none of these arithmetic branches, so it falls through to the general numeric-operand checks later in the function and is rejected because a pointer is not `IsNumericType`.
+
+Mismatched pointer types (`ptr[int] - ptr[float64]`) fall through to the default error path because `LTypeInfo != RTypeInfo`. The same `LTypeInfo == RTypeInfo` check gates pointer comparisons.
 
 ## Extending the Binary Expression Constructor
 
@@ -102,67 +105,80 @@ The constructor calls `setType(Type, StructName)`. Before this chapter, `MergeBi
 
 ## One Merge Path for Every Operator
 
-I don't need a separate branch for pointer results. `MergeBinaryExpression` already existed from [Chapter 25](chapter-25.md) as the one place every binary-operator parser (`ParseTermRight`, and its counterparts for `sum` and `comparison`) funnels through. I just extend the two calls it makes, `GetBinaryResultType` and the `BinaryExpressionNode` constructor, to carry struct names in both directions:
+I don't need a separate branch for pointer results. `MergeBinaryExpression` already existed from [Chapter 25](chapter-25.md) as the one place every binary-operator parser (`ParseTermRight`, and its counterparts for `sum` and `comparison`) funnels through. I extend the call it makes to `GetBinaryResultType` to pass struct names in, and I add a small step after that call to work out what struct name (if any) the result carries, before passing it to the `BinaryExpressionNode` constructor:
 
 ```cpp
 static unique_ptr<ExpressionNode>
 MergeBinaryExpression(int Operator, unique_ptr<ExpressionNode> Left,
                       unique_ptr<ExpressionNode> Right) {
-  string ResultStructName;
   ValueType ResultType =
       GetBinaryResultType(Operator, Left->getType(), Left->getStructName(),
-                          Right->getType(), Right->getStructName(),
-                          &ResultStructName);
+                          Right->getType(), Right->getStructName());
   if (ResultType == ValueType::Error)
     return LogErrorExpression("Type mismatch in binary operator");
+  string ResultTypeInfo;
+  if (ResultType == ValueType::Pointer)
+    ResultTypeInfo = Left->getType() == ValueType::Pointer
+                         ? Left->getStructName()
+                         : Right->getStructName();
   return make_unique<BinaryExpressionNode>(
       Operator, std::move(Left), std::move(Right), ResultType,
-      ResultStructName);
+      ResultTypeInfo);
 }
 ```
 
-Every binary expression, pointer arithmetic or not, goes through this exact same function unchanged. `ResultStructName` is empty for anything that isn't a pointer result, so the extension is free for the common case: it costs one more argument to thread through, not a new code path.
+Every binary expression, pointer arithmetic or not, goes through this exact same function unchanged. `ResultTypeInfo` stays empty for anything that isn't a pointer result (`ResultType == ValueType::Pointer` is false), so the extension is free for the common case: it costs one more branch and one more constructor argument, not a new code path. When the result is a pointer, `MergeBinaryExpression` picks it up from whichever operand is the pointer, since for `ptr + int` and `int + ptr` exactly one side is.
 
 ## Codegen: `ptr + int` and `int + ptr`
 
-Advancing a pointer by an integer uses `CreateInBoundsGEP`. The integer index is widened to `i64` first:
+Advancing a pointer by an integer uses `CreateInBoundsGEP`. The integer index is cast to `i64` first with `CreateIntCast`:
 
 ```cpp
-if (getType() == ValueType::Pointer) {
-  Value *Ptr = nullptr;
-  Value *Idx = nullptr;
-  if (LType == ValueType::Pointer && IsIntType(RType) && Operator == tok_plus) {
-    Ptr = L; Idx = EmitImplicitCast(R, RType, ValueType::Int64);
-  } else if (RType == ValueType::Pointer && IsIntType(LType) && Operator == tok_plus) {
-    Ptr = R; Idx = EmitImplicitCast(L, LType, ValueType::Int64);
-  } else if (LType == ValueType::Pointer && IsIntType(RType) && Operator == tok_minus) {
-    Ptr = L; Idx = EmitImplicitCast(R, RType, ValueType::Int64);
-    if (Idx) Idx = Builder->CreateNeg(Idx, "negidx");
+if ((Operator == tok_plus || Operator == tok_minus) &&
+    getType() == ValueType::Pointer) {
+  Value *Pointer = nullptr;
+  Value *Index = nullptr;
+  if (LType == ValueType::Pointer && IsIntType(RType)) {
+    Pointer = L;
+    Index = R;
+  } else if (Operator == tok_plus && RType == ValueType::Pointer &&
+             IsIntType(LType)) {
+    Pointer = R;
+    Index = L;
   }
-  if (!Ptr || !Idx)
-    return LogErrorV("Type mismatch in arithmetic");
-  // ...
-  return Builder->CreateInBoundsGEP(ElemLLVM, Ptr, Idx, "ptrarith");
+  if (!Pointer || !Index)
+    return LogErrorV("Type mismatch in pointer arithmetic");
+  ValueType IndexType = LType == ValueType::Pointer ? RType : LType;
+  Index = Builder->CreateIntCast(Index, Type::getInt64Ty(*TheContext),
+                                 !IsUnsignedIntType(IndexType), "ptrindex");
+  if (Operator == tok_minus)
+    Index = Builder->CreateNeg(Index, "negindex");
+  ValueType ElementType = ValueType::Error;
+  string ElementStructName;
+  if (!DecodePointerType(getStructName(), ElementType, ElementStructName))
+    return LogErrorV("Invalid pointer type metadata");
+  return Builder->CreateInBoundsGEP(
+      LLVMTypeFor(ElementType, ElementStructName), Pointer, Index,
+      "ptrarith");
 }
 ```
 
-`DecodePointerType` extracts the element LLVM type from the result's encoded struct name. This is the type that GEP uses to compute its stride. I use the `inbounds` variant, `CreateInBoundsGEP`, which tells LLVM's optimizer the pointer arithmetic never leaves the bounds of the allocation it started in: that assumption enables optimizations a plain GEP can't get, at the cost of undefined behavior if the assumption is ever wrong. This chapter doesn't check that assumption at runtime (see Known Limitations).
+`DecodePointerType` decodes the result's encoded struct name back into a `ValueType` and, for struct pointees, a struct name. `LLVMTypeFor` then turns that pair into the actual LLVM element type GEP needs to compute its stride. I use the `inbounds` variant, `CreateInBoundsGEP`, which tells LLVM's optimizer the pointer arithmetic never leaves the bounds of the allocation it started in: that assumption enables optimizations a plain GEP can't get, at the cost of undefined behavior if the assumption is ever wrong. This chapter doesn't check that assumption at runtime (see Known Limitations).
 
 For `p + 1` where `p: ptr[int]`, compiled and read directly:
 
 ```llvm
-%p2 = load ptr, ptr %p1
-%ptrarith = getelementptr inbounds i64, ptr %p2, i64 1
+%p1 = load ptr, ptr %p, align 8
+%ptrarith = getelementptr inbounds i64, ptr %p1, i64 1
 ```
 
 ## Codegen: `ptr - int`
 
-Subtracting an integer is the same as adding its negation. The index is widened to `i64` and then negated with `CreateNeg` before being passed to GEP:
+Subtracting an integer is the same as adding its negation. The index is cast to `i64` and then negated with `CreateNeg` before being passed to GEP, using the same branch shown above:
 
 ```llvm
-%p2 = load ptr, ptr %p1
-%negidx = sub i64 0, 2
-%ptrarith = getelementptr inbounds i64, ptr %p2, i64 %negidx
+%negindex = sub i64 0, 2
+%ptrarith = getelementptr inbounds i64, ptr %p1, i64 %negindex
 ```
 
 For `p - 2`, GEP steps backward by two elements.
@@ -172,36 +188,51 @@ For `p - 2`, GEP steps backward by two elements.
 Pointer subtraction uses LLVM's `CreatePtrDiff`, which handles the ptrtoint / subtract / divide sequence internally:
 
 ```cpp
-if (Op == '-' && getType() == ValueType::Int64 &&
+if (Operator == tok_minus && getType() == ValueType::Int64 &&
     LType == ValueType::Pointer && RType == ValueType::Pointer) {
-  // ...
-  return Builder->CreatePtrDiff(ElemLLVM, L, R, "ptrdiff");
+  ValueType ElementType = ValueType::Error;
+  string ElementStructName;
+  if (!DecodePointerType(Left->getStructName(), ElementType,
+                         ElementStructName))
+    return LogErrorV("Invalid pointer type metadata");
+  return Builder->CreatePtrDiff(
+      LLVMTypeFor(ElementType, ElementStructName), L, R, "ptrdiff");
 }
 ```
 
 `CreatePtrDiff` takes the element type so it can divide the byte difference by `sizeof(T)` to produce an element count. For two `ptr[int]` values that are 24 bytes apart, the result is 3.
 
 ```llvm
-; q - p where p and q are both ptr[int]
-%ptrdiff = ...  ; ptrtoint both, subtract, sdiv by sizeof(i64) = 8
+; pc - pa where pa and pc are both ptr[int]
+%0 = ptrtoint ptr %pc2 to i64
+%1 = ptrtoint ptr %pa3 to i64
+%2 = sub i64 %0, %1
+%ptrdiff = sdiv exact i64 %2, ptrtoint (ptr getelementptr (i64, ptr null, i32 1) to i64)
 ```
 
 The element type is decoded from the left operand's struct name encoding using `DecodePointerType`.
 
 ## Codegen: Pointer Comparisons
 
-Pointer comparisons use unsigned integer comparison instructions. Addresses are non-negative, so unsigned comparison gives the correct ordering:
+Pointer comparisons use unsigned integer comparison instructions. Addresses are non-negative, so unsigned comparison gives the correct ordering. Codegen doesn't need to recheck that the two pointer types match: `GetBinaryResultType` already rejected mismatched pointer comparisons at parse time, so by the time this code runs, `LType == RType == Pointer` is enough:
 
 ```cpp
-if (LType == ValueType::Pointer && RType == ValueType::Pointer &&
-    Left->getStructName() == Right->getStructName()) {
+if (LType == ValueType::Pointer && RType == ValueType::Pointer) {
   switch (Operator) {
-  case tok_eq:      return Builder->CreateICmpEQ(L, R, "cmptmp");
-  case tok_neq:     return Builder->CreateICmpNE(L, R, "cmptmp");
-  case tok_less:    return Builder->CreateICmpULT(L, R, "cmptmp");
-  case tok_greater: return Builder->CreateICmpUGT(L, R, "cmptmp");
-  case tok_leq:     return Builder->CreateICmpULE(L, R, "cmptmp");
-  case tok_geq:     return Builder->CreateICmpUGE(L, R, "cmptmp");
+  case tok_less:
+    return Builder->CreateICmpULT(L, R, "cmptmp");
+  case tok_greater:
+    return Builder->CreateICmpUGT(L, R, "cmptmp");
+  case tok_eq:
+    return Builder->CreateICmpEQ(L, R, "cmptmp");
+  case tok_neq:
+    return Builder->CreateICmpNE(L, R, "cmptmp");
+  case tok_leq:
+    return Builder->CreateICmpULE(L, R, "cmptmp");
+  case tok_geq:
+    return Builder->CreateICmpUGE(L, R, "cmptmp");
+  default:
+    break;
   }
 }
 ```
@@ -211,7 +242,7 @@ Using `ICmpULT` (unsigned less-than) rather than `ICmpSLT` (signed) is correct h
 ## Build and Run
 
 ```bash
-cd code/chapter-20
+cd code/chapter-26
 cmake -S . -B build && cmake --build build
 ```
 
