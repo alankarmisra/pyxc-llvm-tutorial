@@ -3,7 +3,7 @@
 
 # Tests: the zero-argument constraint on main() is enforced in emit mode too.
 # Even when not JIT-executing, pyxc rejects a main() that takes parameters
-# because the synthesised call in file-mode would be invalid.
+# because the synthesized call in file-mode would be invalid.
 
 extern def printd(x)
 

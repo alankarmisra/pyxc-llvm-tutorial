@@ -3,8 +3,8 @@
 # CHECK: Evaluated to 42.000000
 
 
-# Tests: definition with a zero-argument function signature.
-# function signature = name "(" ")"
+# Tests: definition with a zero-argument function-signature.
+# function-signature = name "(" ")"
 
 def answer(): return 42.0
 

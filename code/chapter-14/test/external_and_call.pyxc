@@ -1,10 +1,11 @@
 # RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Parsed an extern.
 # CHECK: 1.000000
-# CHECK: 0.000000
+# CHECK: Evaluated to 0.000000
 
 
 # Tests: external declaration and call-expression with an argument.
-# external = "extern" "def" function signature
+# external = "extern" "def" function-signature
 # call-expression  = name "(" expression ")"
 #
 # printd(1.0) writes "1.000000\n" to stderr and returns 0.0,

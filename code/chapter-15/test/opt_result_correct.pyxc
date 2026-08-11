@@ -1,0 +1,7 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Evaluated to 25.000000" %t
+
+# Optimisation correctness: (1+2+x)*(x+(1+2)) with x=2 should be (3+2)*(2+3)
+# = 5*5 = 25. Confirms the optimiser does not change the computed result.
+def test(x): return (1+2+x)*(x+(1+2))
+test(2)

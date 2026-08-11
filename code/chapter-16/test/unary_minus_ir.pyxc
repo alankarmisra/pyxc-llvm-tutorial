@@ -1,0 +1,6 @@
+# RUN: %pyxc -v < %s > %t 2>&1
+# RUN: grep -q "fneg double" %t
+# RUN: not grep -q "Error (Line" %t
+
+# UnaryExpressionNode::codegen: unary minus emits fneg for a nonconstant value.
+def negate(x): return -x

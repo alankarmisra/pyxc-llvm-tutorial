@@ -5,7 +5,7 @@ description: "Introduce module declarations and export: name your compilation un
 
 ## What I Am Building
 
-[Chapter 42](chapter-42.md) completed Phase 5. pyxc can call any C library function and express everything in the first four chapters of *The C Programming Language*. What I haven't addressed is scale: every non-trivial program lives in more than one file. pyxc can already compile multiple files, but there's no way to say which functions are public and which are internal. I add `module` and `export` to fix that:
+[Chapter 33](chapter-33.md) completed Phase 5. pyxc can call any C library function and express everything in the first four chapters of *The C Programming Language*. What I haven't addressed is scale: every non-trivial program lives in more than one file. pyxc can already compile multiple files, but there's no way to say which functions are public and which are internal. I add `module` and `export` to fix that:
 
 ```pyxc
 module app.math
@@ -403,7 +403,7 @@ def main() -> int:
 
 ## What's Next
 
-[Chapter 44](chapter-44.md) implements the import resolver: the compiler finds the source file, scans its `export` declarations, and makes them available — no `extern def` needed for pyxc-to-pyxc calls.
+[Chapter 44](chapter-44.md) adds `import`.
 
 ## Need Help?
 

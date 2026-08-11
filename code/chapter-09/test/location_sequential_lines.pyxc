@@ -1,0 +1,10 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -c "Error (Line" %t | grep -q "3"
+
+# Diagnostics: line numbers increment across successive inputs.
+# Each bad 'def' is a separate line; exactly 3 errors must appear.
+# The # RUN/comment lines above are fed to pyxc as Pyxc comments and shift
+# the absolute line numbers — but there must be exactly 3 error lines total.
+def 1
+def 2
+def 3

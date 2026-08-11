@@ -1,0 +1,7 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed a top-level expression." %t
+# RUN: not grep -q "Error (Line" %t
+
+# call-expression: call with multiple arguments
+def foo(x, y, z): x + y + z
+foo(1, 2, 3)

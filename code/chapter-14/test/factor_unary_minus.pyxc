@@ -1,0 +1,10 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -c "Parsed a top-level expression." %t | grep -q "5"
+# RUN: not grep -q "Error (Line" %t
+
+# factor: unary minus applies to another factor, so it can chain
+-5
+-(1 + 2)
+--5
+2 * -3
+1 - -2

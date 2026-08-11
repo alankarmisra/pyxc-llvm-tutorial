@@ -1,0 +1,7 @@
+# RUN: %pyxc -v < %s > %t 2>&1
+# RUN: grep -q "Parsed a function definition" %t
+# RUN: grep -q "define double @f" %t
+
+# FunctionSignatureNode::codegen: return type is always double regardless of arity.
+# The 'define double' prefix must appear for every function definition.
+def f(x): x

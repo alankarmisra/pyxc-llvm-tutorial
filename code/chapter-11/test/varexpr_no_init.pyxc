@@ -2,9 +2,9 @@
 # CHECK: Evaluated to 0.000000
 
 # Tests: var without an initializer defaults to 0.0.
-# varbinding = name [ "=" expression ] ;
+# variable-binding = name [ "=" expression ] ;
 #
-# When no "=" follows the name, ParseVarStatement inserts NumberExprAST(0.0)
+# When no "=" follows the name, ParseVariableExpression inserts NumberExpressionNode(0.0)
 # as the initializer. The body "x" loads that 0.0 slot.
 
 var x: x

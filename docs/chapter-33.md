@@ -1,42 +1,53 @@
 ---
-description: "Add &&, ||, and ! — logical operators with short-circuit evaluation and a dedicated bool result type."
+description: "Add variadic extern declarations so pyxc code can call C functions like printf and scanf that take a variable number of arguments."
 ---
-# 33. pyxc: Logical Operators
+# 33. pyxc: Variadic Extern Functions
 
 ## What I Am Building
 
-[Chapter 32](chapter-32.md) completed arithmetic: division, remainder, compound assignment, and `++`/`--`. Conditions in `if` can already involve comparisons, but there's still no way to combine two boolean checks or negate one. After this chapter:
+[Chapter 34](chapter-34.md) completed the K&R toolbox. pyxc can call C functions via `extern def`, but only functions with a fixed number of typed parameters. `printf`, `scanf`, `sprintf`, and most other C I/O functions take a variable number of arguments — the `...` in their C signatures. Trying to declare them currently produces:
 
 ```pyxc
-extern def printd(x: float64)
+type string = ptr[int8]
+extern def printf(fmt: string, ...) -> int32
+```
+```
+Error (Line 2, Column 32): Expected parameter name in function signature
+extern def printf(fmt: string, ..
+                               ^~~~
+```
 
-def is_between(x: int, lo: int, hi: int) -> bool:
-  return x >= lo && x <= hi
+After this chapter, variadic `extern` declarations work:
+
+```pyxc
+type string = ptr[int8]
+extern def printf(fmt: string, ...) -> int32
 
 def main() -> int:
-  var a: bool = True
-  var b: bool = !a
-  if b || is_between(5, 1, 10):
-    printd(1.0)
+  printf("hello world\n")
+  printf("answer: %ld\n", 42)
   return 0
 ```
 
-```text
-1.000000
+```
+hello world
+answer: 42
 ```
 
-`&&` and `||` short-circuit: the right-hand side isn't evaluated if the result is already determined by the left. I confirmed this isn't just documentation-talk by giving the right-hand side a real side effect (a `printd` call) and checking it genuinely never runs when the left side already decides the outcome.
+`%ld`, not `%d` — pyxc's `int` is 64-bit, and `printf`'s `%d` expects a 32-bit `int`. `%d` only works once I've explicitly cast the argument down to `int32`.
 
 ## Source Code
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-33
+cd pyxc-llvm-tutorial/code/chapter-42
 ```
 
 ## Grammar
 
-`&&` and `||` don't join an existing operator list — pyxc's grammar since [Chapter 17](chapter-17.md) is a fixed-tier recursive-descent grammar, not a generic precedence table, so each new operator with its own precedence level needs its own tier. `logical-or` and `logical-and` become the two new outermost tiers, sitting above `comparison`. `!` joins `unary-expression`'s existing alternation:
+I add a separate signature production for `extern`, since only `extern` allows `...`:
+
+`code/chapter-42/pyxc.ebnf`
 
 ```grammardiff
  program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
@@ -60,39 +71,53 @@ cd pyxc-llvm-tutorial/code/chapter-33
  field-declaration       = name ":" type ;
  function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
  (* If the return type is omitted, it defaults to None. *)
- external        = "extern" "def" function-signature [ "->" type ] ;
+-external        = "extern" "def" function-signature [ "->" type ] ;
++external        = "extern" "def" external-function-signature [ "->" type ] ;
  top-level-expression    = expression ;
  function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
++external-function-signature = name "(" [ typed-parameter { "," typed-parameter } [ "," "..." ] | "..." ] ")" ;
  typed-parameter      = name ":" type ;
  if-statement          = "if" expression ":" suite
+                 { end-of-lines "elif" expression ":" suite }
                  [ end-of-lines "else" ":" suite ] ;
+ while-statement       = "while" expression ":" suite ;
+ do-while-statement     = "do" ":" suite end-of-lines "while" expression ;
+ switch-statement      = "switch" expression ":" end-of-lines indent switch-body dedent ;
+ switch-body      = switch-case { end-of-lines switch-case } [ end-of-lines default-case ] ;
+ switch-case      = "case" switch-integer { "," switch-integer } ":" suite ;
+ default-case     = "default" ":" suite ;
  for-statement         = "for"
                    ( "var" name ":" type | name )
                    "=" expression "," expression "," expression ":" suite ;
  variable-statement         = "var" variable-binding { "," variable-binding } ;
  assignment-statement      = lvalue assignment-operator expression ; (* assignment is a statement here *)
- simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
- compound-statement    = if-statement | for-statement ;
+ simple-statement      = return-statement | break-statement | continue-statement | variable-statement | assignment-statement | expression ;
+ compound-statement    = if-statement | for-statement | while-statement | do-while-statement | switch-statement ;
  statement       = simple-statement | compound-statement ;
  suite           = simple-statement | compound-statement | end-of-lines block ;
  return-statement      = "return" [ expression ] ;
+ break-statement       = "break" ;
+ continue-statement    = "continue" ;
  statement-separator = end-of-lines | BLOCK_END ;
  block = indent statement { statement-separator statement } dedent ;
--expression      = comparison ;
-+expression      = logical-or ;
-+logical-or      = logical-and { "||" logical-and } ;
-+logical-and     = comparison { "&&" comparison } ;
- comparison      = sum { comparison-operator sum } ;
- comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ expression      = assignment ;
+ assignment      = logical-or [ assignment-operator assignment ] ;
+ logical-or      = logical-and { "||" logical-and } ;
+ logical-and     = bitwise-or { "&&" bitwise-or } ;
+ bitwise-or      = bitwise-xor { "|" bitwise-xor } ;
+ bitwise-xor     = bitwise-and { "^" bitwise-and } ;
+ bitwise-and     = equality { "&" equality } ;
+ equality        = relational { ("==" | "!=") relational } ;
+ relational      = shift { ("<" | "<=" | ">" | ">=") shift } ;
+ shift           = sum { ("<<" | ">>") sum } ;
  sum             = term { ("+" | "-") term } ;
  term            = unary-expression { ("*" | "/" | "%") unary-expression } ;
  lvalue          = name | field-access | index-expression ;
  variable-binding      = name ":" type [ "=" expression ] ;
--unary-expression       = ("-" | "++" | "--") unary-expression | postfix-expression ;
-+unary-expression       = ("-" | "!" | "++" | "--") unary-expression | postfix-expression ;
+ unary-expression       = ("-" | "!" | "~" | "++" | "--") unary-expression | postfix-expression ;
  postfix-expression     = primary [ postfix-operator ] ;
  postfix-operator       = "++" | "--" ;
- primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
+ primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | character-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
  cast-expression        = cast-type "(" expression ")" ;
  sizeof-expression      = "sizeof" "(" type ")" ;
  address-expression        = "addr" "(" lvalue ")" ;
@@ -104,8 +129,15 @@ cd pyxc-llvm-tutorial/code/chapter-33
  index-expression       = name "[" expression "]" ;
  number-expression      = number ;
  array-literal    = "[" [ expression { "," expression } ] "]" ;
- string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
- escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
+ string-literal   = "\"" { ? valid Unicode scalar value except " and newline, encoded as UTF-8 ? | literal-escape } "\"" ;
+ character-literal     = "'" ( ? valid Unicode scalar value except ' and newline, encoded as UTF-8 ? | literal-escape ) "'" ;
+ literal-escape   = "\\" ( simple-escape | octal-escape | "x" hex-digit hex-digit
+                    | "u" hex-digit hex-digit hex-digit hex-digit
+                    | "U" hex-digit hex-digit hex-digit hex-digit
+                          hex-digit hex-digit hex-digit hex-digit ) ;
+ simple-escape    = "a" | "b" | "f" | "n" | "r" | "t" | "v"
+                  | "\\" | "'" | "\"" | "?" ;
+ octal-escape     = octal-digit [ octal-digit [ octal-digit ] ] ;
  parenthesized-expression       = "(" expression ")" ;
  indent          = INDENT ;
  dedent          = DEDENT ;
@@ -113,6 +145,7 @@ cd pyxc-llvm-tutorial/code/chapter-33
  assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
  name      = (letter | "_") { letter | digit | "_" } ;
  builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "uint8" | "uint16" | "uint32" | "uint64"
                  | "float" | "float32" | "float64"
                  | "bool" | "None" ;
  alias-type       = name ;
@@ -122,15 +155,19 @@ cd pyxc-llvm-tutorial/code/chapter-33
  base-type        = builtin-type | alias-type | struct-type | pointer-type ;
  array-suffix     = "[" integer "]" ;
  cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "uint8" | "uint16" | "uint32" | "uint64"
                  | "float" | "float32" | "float64"
                  | "bool" | pointer-type ;
  integer         = digit { digit } ;
+ switch-integer       = [ "-" ] integer ;
  number          = ( digit { digit } [ "." { digit } ]
                    | "." digit { digit } ) [ exponent ] ;
  exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
  boolean-literal    = "True" | "False" ;
  letter          = "A".."Z" | "a".."z" ;
  digit           = "0".."9" ;
+ hex-digit       = digit | "A".."F" | "a".."f" ;
+ octal-digit     = "0".."7" ;
  end-of-line             = "\r\n" | "\r" | "\n" ;
  comment = "#" { comment-character } ;
  comment-character = ? any character except "\r" and "\n" ? ;
@@ -141,260 +178,171 @@ cd pyxc-llvm-tutorial/code/chapter-33
  BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
-Putting `logical-and` below `logical-or` but above `comparison` is what makes `&&` bind tighter than `||`: `a || b && c` parses as `a || (b && c)`, since `logical-or` only ever sees whole `logical-and` results as its operands.
+Regular function signatures (used by `def`) are untouched — `...` isn't valid there.
 
-## New Tokens and Lexer Peek-Ahead
+## A New Field for Variadic Functions
 
-Two new token values:
-
-```cpp
-tok_and = -50, // &&
-tok_or  = -51, // ||
-```
-
-Single `&` and `|` remain their own ASCII-valued tokens; they're bitwise operators, added in a later chapter, and distinct from `&&`/`||`. The lexer peeks one character ahead to decide which to emit:
+The structural change is a new `bool IsVarArg` field on `FunctionSignatureNode`:
 
 ```cpp
-if (LexerLastChar == '&') {
-  int Tok = (peek() == '&') ? (advance(), tok_and) : '&';
-  LexerLastChar = advance();
-  return Tok;
-}
-
-if (LexerLastChar == '|') {
-  int Tok = (peek() == '|') ? (advance(), tok_or) : '|';
-  LexerLastChar = advance();
-  return Tok;
-}
-```
-
-If the next character is another `&` or `|`, `advance()` consumes it and the two-character token is returned. Otherwise the single-character token falls through unchanged.
-
-## Parsing `&&` and `||` as Their Own Grammar Tiers
-
-`ParseLogicalAnd` and `ParseLogicalOr` follow the exact same shape every other binary-operator tier has used since [Chapter 20](chapter-20.md): a base case that parses one level down, and a `*Right` helper that consumes a run of same-precedence operators, both funneling through `MergeBinaryExpression`:
-
-```cpp
-static unique_ptr<ExpressionNode>
-ParseLogicalAndRight(unique_ptr<ExpressionNode> Left) {
-  while (CurrentToken == tok_and) {
-    int Operator = CurrentToken;
-    getNextToken();
-    auto Right = ParseComparison();
-    if (!Right)
-      return nullptr;
-    Left = MergeBinaryExpression(Operator, std::move(Left), std::move(Right));
-    if (!Left)
-      return nullptr;
-  }
-  return Left;
-}
-
-static unique_ptr<ExpressionNode> ParseLogicalAnd() {
-  auto Left = ParseComparison();
-  if (!Left)
-    return nullptr;
-  return ParseLogicalAndRight(std::move(Left));
-}
-
-static unique_ptr<ExpressionNode>
-ParseLogicalOrRight(unique_ptr<ExpressionNode> Left) {
-  while (CurrentToken == tok_or) {
-    int Operator = CurrentToken;
-    getNextToken();
-    auto Right = ParseLogicalAnd();
-    if (!Right)
-      return nullptr;
-    Left = MergeBinaryExpression(Operator, std::move(Left), std::move(Right));
-    if (!Left)
-      return nullptr;
-  }
-  return Left;
-}
-
-static unique_ptr<ExpressionNode> ParseLogicalOr() {
-  auto Left = ParseLogicalAnd();
-  if (!Left)
-    return nullptr;
-  return ParseLogicalOrRight(std::move(Left));
-}
-```
-
-`ParseExpression` becomes a one-line call to `ParseLogicalOr`, the new outermost tier. `MergeBinaryExpression` is the same helper [Chapter 20](chapter-20.md) introduced for pointer arithmetic; it's what calls `GetBinaryResultType` for type checking and builds the `BinaryExpressionNode`, so `&&`/`||` don't need any parsing machinery of their own beyond these two tiers.
-
-## Type-Checking `&&` and `||`
-
-A predicate identifies the two logical operators:
-
-```cpp
-static bool IsLogicalOp(int Operator) { return Operator == tok_and || Operator == tok_or; }
-```
-
-`GetBinaryResultType` gains a branch for them: both operands must already be `bool`, with no implicit conversion from anything else:
-
-```cpp
-if (IsLogicalOp(Operator)) {
-  if (L == ValueType::Bool && R == ValueType::Bool)
-    return ValueType::Bool;
-  return ValueType::Error;
-}
-```
-
-An `int` on either side of `&&` fails here and reports the same generic "Type mismatch in binary operator" every other operator mismatch reports; there's nothing `&&`/`||`-specific about the error message.
-
-## Built-In `!` for Bool
-
-`!` gets its own AST node:
-
-```cpp
-class LogicalNotExpressionNode : public ExpressionNode {
-  unique_ptr<ExpressionNode> Operand;
-
+class FunctionSignatureNode {
+  ...
+  bool IsVarArg;
 public:
-  explicit LogicalNotExpressionNode(unique_ptr<ExpressionNode> Operand)
-      : Operand(std::move(Operand)) {
-    setType(ValueType::Bool);
-  }
-  Value *codegen() override;
+  FunctionSignatureNode(const string &Name, vector<ParameterInfo> Parameters,
+                        SourceLocation Loc,
+                        ValueType ReturnType = ValueType::Float64,
+                        bool IsVarArg = false,
+                        string ReturnStructName = "")
+      : ..., IsVarArg(IsVarArg), ... {}
+
+  bool isVarArg() const { return IsVarArg; }
 };
 ```
 
-The constructor sets the result type to `Bool` immediately; there's nothing to infer. Parsing happens in `ParseUnary`, right alongside unary minus and prefix `++`/`--`:
+`IsVarArg` defaults to `false`, so every existing call site that builds a `FunctionSignatureNode` keeps working unchanged. Only the `extern def` path ever sets it to `true`.
+
+## Allowing Variadic Arguments in Parsing
+
+`ParseFunctionSignature` gains an `AllowVarArgs` parameter that defaults to `false`. Inside the parameter loop, I check for `...` before I check for a parameter name:
 
 ```cpp
-if (CurrentToken == tok_exclamation) {
-  getNextToken(); // eat '!'
-  auto Operand = ParseUnary();
-  if (!Operand)
-    return nullptr;
-  if (Operand->getType() != ValueType::Bool)
-    return LogErrorExpression("Unary '!' requires a bool operand");
-  return make_unique<LogicalNotExpressionNode>(std::move(Operand));
-}
-```
-
-`!` only ever accepts a `bool` operand; anything else is a parse-time error right there, not a fallback to some other mechanism. Codegen is a single `CreateNot` on the `i1` value:
-
-```cpp
-Value *LogicalNotExpressionNode::codegen() {
-  Value *V = Operand->codegen();
-  if (!V)
-    return nullptr;
-  if (Operand->getType() != ValueType::Bool)
-    return LogErrorV("Type mismatch in unary operator");
-  return Builder->CreateNot(V, "nottmp");
-}
-```
-
-## Short-Circuit Codegen for `&&` and `||`
-
-`&&` and `||` skip the ordinary binary-operator codegen path entirely. At the top of `BinaryExpressionNode::codegen`, they're intercepted before the right operand is ever evaluated:
-
-```cpp
-Value *BinaryExpressionNode::codegen() {
-  if (Operator == tok_and || Operator == tok_or) {
-    Value *L = Left->codegen();
-    if (!L)
-      return nullptr;
-    if (Left->getType() != ValueType::Bool || Right->getType() != ValueType::Bool)
-      return LogErrorV("Type mismatch in binary operator");
-
-    Function *F = Builder->GetInsertBlock()->getParent();
-    BasicBlock *LHSBB = Builder->GetInsertBlock();
-    BasicBlock *RHSBB = BasicBlock::Create(*TheContext, "logic.rhs", F);
-    BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "logic.end");
-
-    if (Operator == tok_and)
-      Builder->CreateCondBr(L, RHSBB, MergeBB);
-    else
-      Builder->CreateCondBr(L, MergeBB, RHSBB);
-
-    Builder->SetInsertPoint(RHSBB);
-    Value *RHSVal = Right->codegen();
-    if (!RHSVal)
-      return nullptr;
-    if (Right->getType() != ValueType::Bool)
-      return LogErrorV("Type mismatch in binary operator");
-    Builder->CreateBr(MergeBB);
-    RHSBB = Builder->GetInsertBlock();
-
-    F->insert(F->end(), MergeBB);
-    Builder->SetInsertPoint(MergeBB);
-    PHINode *PN =
-        Builder->CreatePHI(Type::getInt1Ty(*TheContext), 2, "logictmp");
-    if (Operator == tok_and) {
-      PN->addIncoming(ConstantInt::getFalse(*TheContext), LHSBB);
-      PN->addIncoming(RHSVal, RHSBB);
-    } else {
-      PN->addIncoming(ConstantInt::getTrue(*TheContext), LHSBB);
-      PN->addIncoming(RHSVal, RHSBB);
+static unique_ptr<FunctionSignatureNode> ParseFunctionSignature(bool AllowVarArgs = false) {
+  ...
+  bool IsVarArg = false;
+  if (CurrentToken != tok_rparen) {
+    while (true) {
+      if (AllowVarArgs && CurrentToken == tok_dot) {
+        getNextToken();
+        if (CurrentToken != tok_dot)
+          return LogErrorSignature("Expected '...' in variadic function signature");
+        getNextToken();
+        if (CurrentToken != tok_dot)
+          return LogErrorSignature("Expected '...' in variadic function signature");
+        getNextToken();
+        IsVarArg = true;
+        if (CurrentToken != tok_rparen)
+          return LogErrorSignature("Variadic marker must be last in parameter list");
+        break;
+      }
+      ...
     }
-    return PN;
   }
-  // ...ordinary binary-operator path for everything else...
+  return make_unique<FunctionSignatureNode>(FnName, std::move(ParameterNames), SignatureLoc,
+                                   ValueType::Float64, IsVarArg);
 }
 ```
 
-For `a && b`: evaluate `a`. If false, branch straight to `logic.end` carrying a `false` constant. If true, fall into `logic.rhs`, evaluate `b`, then branch to `logic.end`. The `phi` node in `logic.end` picks between the `false` constant (the short-circuit path) and whatever `b` actually evaluated to.
+`...` isn't a single lexer token — the lexer just hands me three separate `tok_dot` tokens, and I consume them one at a time here. If any of the three is missing, `LogErrorSignature` fires immediately:
 
-For `a || b` the branch condition is inverted: if `a` is true, jump straight to `logic.end` carrying a `true` constant; otherwise fall into evaluating `b`. The `phi` node picks between `true` and `b`'s result the same way.
+```pyxc
+extern def bad(fmt: ptr[int8], ..) -> int32
+```
+```
+Error (Line 1, Column 34): Expected '...' in variadic function signature
+extern def bad(fmt: ptr[int8], ..) 
+                                 ^~~~
+```
 
-I confirmed the short-circuit is real, not just documentation, by giving `b` an observable side effect (a `printd` call) and checking it genuinely never runs when `a` alone already decides the result — see Try It.
+`...` also has to be the last thing before `)` — the `break` right after setting `IsVarArg` guarantees the loop can't come back around for another parameter. And since the `...` check runs before I even look for a parameter name, `extern def f(...)` with no fixed parameters at all works the same way — it just hits that branch on the very first iteration.
 
-## Known Limitations
+## Only `extern def` Allows Variadic Arguments
 
-**`&&` and `||` are strictly boolean, not bitwise.** There's no implicit `int`-to-`bool` conversion on either side, and no bitwise AND/OR on integers yet.
+`ParseFunctionDefinition` calls `ParseFunctionSignature()` with the implicit default `false`. Only `ParseExtern` passes `true`:
+
+```cpp
+static unique_ptr<FunctionSignatureNode> ParseExtern() {
+  getNextToken(); // eat extern.
+  ...
+  auto Signature = ParseFunctionSignature(true);
+  ...
+}
+```
+
+So `...` in a regular function definition fails, because `AllowVarArgs` is `false` there and the first `.` isn't a valid parameter name:
+
+```pyxc
+def bad(x: int, ...) -> int:
+  return x
+```
+```
+Error (Line 1, Column 17): Expected parameter name in function signature
+def bad(x: int, ..
+                ^~~~
+```
+
+There's no way around this — `...` only exists in `extern def`. pyxc has no `va_list`, `va_start`, or `va_arg`, so I can't write a variadic pyxc function myself, only declare and call variadic C ones.
+
+## Arity Check Updated at Call Sites
+
+The call-site arity check used to be an exact match. For a variadic signature it becomes "at least the fixed count," both at parse time and in codegen:
+
+```cpp
+// ParseNameExpressionWithName:
+if ((!Signature->isVarArg() && Signature->getNumParameters() != Arguments.size()) ||
+    (Signature->isVarArg() && Arguments.size() < Signature->getNumParameters()))
+  return LogErrorExpression("Incorrect # arguments passed");
+```
+
+```cpp
+// CallExpressionNode::codegen:
+if ((!CalleeF->isVarArg() && CalleeF->arg_size() != Arguments.size()) ||
+    (CalleeF->isVarArg() && Arguments.size() < CalleeF->arg_size()))
+  return LogErrorV("Incorrect # arguments passed");
+```
+
+```pyxc
+extern def printf(fmt: ptr[int8], ...) -> int32
+printf()
+```
+```
+Error (Line 2, Column 9): Incorrect # arguments passed
+printf()
+        ^~~~
+```
+
+Type-checking only walks the fixed parameters — `for (size_t i = 0; i < Arguments.size() && i < Signature->getNumParameters(); ++i)`. Anything past that is on me: I can pass whatever I want after the fixed parameters, and pyxc won't check it against anything, the same way C's own `printf` doesn't.
+
+## Codegen Passes the Variadic Flag Through
+
+`FunctionSignatureNode::codegen` passes `IsVarArg` to `FunctionType::get` instead of the hardcoded `false` it used before:
+
+```cpp
+FunctionType *FT = FunctionType::get(
+    LLVMTypeFor(ReturnType, ReturnStructName), ParameterTypes, IsVarArg);
+```
+
+That's the whole change on the codegen side. LLVM already knows how to emit a variadic declaration and handle the variadic calling convention at each call site — I just have to tell it `IsVarArg` is true:
+
+```
+declare i32 @printf(ptr, ...)
+```
 
 ## Try It
 
-**Non-bool operand is a type error**
-
 ```pyxc
-def main() -> int:
-  var x: int = 1
-  var y: bool = True
-  if x && y:
-    return 1
-  return 0
-```
-
-```text
-Error (Line 4, Column 12): Type mismatch in binary operator
-```
-
-**The right-hand side genuinely doesn't run**
-
-```pyxc
-extern def printd(x: float64)
-
-def sideeffect() -> bool:
-  printd(99.0)
-  return True
+extern def printf(fmt: ptr[int8], ...) -> int32
+extern def sqrt(x: float64) -> float64
 
 def main() -> int:
-  var f: bool = False
-  if f && sideeffect():
-    printd(1.0)
-  printd(2.0)
+  printf("sqrt(2) = %f\n", sqrt(2.0))
+  printf("%ld args after the format string, this time\n", 1)
   return 0
 ```
-
-```text
-2.000000
-```
-
-`sideeffect()` is never called: `f` is `False`, so `f && sideeffect()` never falls into `logic.rhs` at all, and `99.000000` never prints.
-
-## Build and Run
 
 ```bash
-cd code/chapter-33
-cmake -S . -B build && cmake --build build
+pyxc --emit exe -o vararg vararg.pyxc
+./vararg
+```
+
+```
+sqrt(2) = 1.414214
+1 args after the format string, this time
 ```
 
 ## What's Next
 
-[Chapter 34](chapter-34.md) adds `while`, `do`/`while`, `break`, and `continue`.
+[Chapter 34](chapter-34.md) allows assignment to appear inside an expression.
 
 ## Need Help?
 

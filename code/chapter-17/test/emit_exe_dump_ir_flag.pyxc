@@ -3,15 +3,14 @@
 
 # IR: define double @sq
 # IR: fmul double
-# IR: define void @{{__pyxc.user_main|main}}
+# IR: define double @{{__pyxc.user_main|main}}
 
 # Tests: --dump-ir works together with --emit exe. The IR is printed to stderr
 # during compilation and the executable is still produced at the output path.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-def sq(x: float64) -> float64:
-    return x * x
+def sq(x): return x * x
 
-def main() -> None:
+def main():
     printd(sq(4))

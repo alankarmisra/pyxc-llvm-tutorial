@@ -6,7 +6,7 @@
 
 # Tests: a program with multiple top-level forms separated by blank lines.
 # program = [ end-of-lines ] [ top { end-of-lines top } ] [ end-of-lines ]
-# top     = definition | external | top-level-expression
+# top-level-item = function-definition | external | top-level-expression
 
 extern def printd(x)
 

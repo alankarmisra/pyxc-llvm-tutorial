@@ -1,56 +1,67 @@
 ---
-description: "Add unsigned integer types uint8, uint16, uint32, and uint64 with correct unsigned arithmetic, comparisons, and casts throughout."
+description: "Add traits: named method-signature contracts that a class declares it satisfies. Conformance is verified at compile time with no runtime overhead."
 ---
-# 40. pyxc: Unsigned Integer Types
+# 40. pyxc: Traits
 
 ## What I Am Building
 
-[Chapter 39](chapter-39.md) added Unicode support to character and string literals. I've had signed integers since [Chapter 17](chapter-17.md), but all of them interpret their top bit as a sign. Sizes, counts, and bit masks are commonly stored as unsigned values in systems code, and without unsigned types I have no way to generate the right instructions for them. After this chapter, `uint8`, `uint16`, `uint32`, and `uint64` are available:
+[Chapter 39](chapter-39.md) added visibility. Classes can now hide implementation details. But there's no way to say "this class promises to have these methods": no interface contract, no way to write code that works against any class satisfying a given shape.
+
+After this chapter:
 
 ```pyxc
 extern def printd(x: float64)
 
-def main() -> int:
-  var flags: uint32 = 0
-  flags = flags | uint32(1) << uint32(3)   # set bit 3
-  flags = flags | uint32(1) << uint32(7)   # set bit 7
+trait Measurable:
+  def area() -> int
 
-  var mask: uint32 = uint32(255)
-  printd(float64(flags & mask))            # 136.000000
+class Rect(Measurable):
+  public w: int
+  public h: int
+
+  def __init__(w: int, h: int):
+    self.w = w
+    self.h = h
+
+  public def area() -> int:
+    return self.w * self.h
+
+
+def main() -> int:
+  var r: Rect = Rect(3, 4)
+  printd(float64(r.area()))
   return 0
 ```
 
+```text
+12.000000
 ```
-136.000000
-```
+
+If `Rect` doesn't implement `area`, or implements it with the wrong signature, the compiler reports an error before any code is generated.
 
 ## Source Code
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-40
+cd pyxc-llvm-tutorial/code/chapter-29
 ```
 
 ## Grammar
 
-I add `uint8`, `uint16`, `uint32`, and `uint64` to `builtin-type` and `cast-type`, the only two productions that name concrete integer types:
-
-`code/chapter-40/pyxc.ebnf`
+Three new productions (`trait-definition`, `trait-block`, `trait-method-signature`), and `class-definition` gains an optional parenthesized trait list. A `trait-method-signature` looks like a method definition but has no body and no `self` parameter:
 
 ```grammardiff
  program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
  end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | external | top-level-expression ;
+-top-level-item             = type-alias | struct-definition | class-definition | function-definition | external | top-level-expression ;
++top-level-item             = type-alias | trait-definition | struct-definition | class-definition | function-definition | external | top-level-expression ;
  type-alias       = "type" name "=" type ;
- trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
- trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
- trait-method-signature  = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ;
++trait-definition        = "trait" name ":" end-of-lines trait-block ;
++trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
++trait-method-signature  = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ;
  struct-definition       = "struct" name ":" end-of-lines struct-block ;
- class-definition        = "class" name [ "(" trait-reference { "," trait-reference } ")" ] ":" end-of-lines struct-block ;
- trait-reference        = name [ "[" type "]" ] ;
- implementation-definition         = "impl" trait-reference "for" name ":" end-of-lines implementation-block ;
- implementation-block       = indent implementation-method { end-of-lines implementation-method } dedent ;
- implementation-method      = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+-class-definition        = "class" name ":" end-of-lines struct-block ;
++class-definition        = "class" name [ "(" name { "," name } ")" ] ":" end-of-lines struct-block ;
  struct-block     = indent class-member { end-of-lines class-member } dedent ;
  class-member     = [ visibility ] ( field-declaration | method-definition ) ;
  visibility      = "public" | "private" ;
@@ -64,45 +75,28 @@ I add `uint8`, `uint16`, `uint32`, and `uint64` to `builtin-type` and `cast-type
  function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
  typed-parameter      = name ":" type ;
  if-statement          = "if" expression ":" suite
-                 { end-of-lines "elif" expression ":" suite }
                  [ end-of-lines "else" ":" suite ] ;
- while-statement       = "while" expression ":" suite ;
- do-while-statement     = "do" ":" suite end-of-lines "while" expression ;
- switch-statement      = "switch" expression ":" end-of-lines indent switch-body dedent ;
- switch-body      = switch-case { end-of-lines switch-case } [ end-of-lines default-case ] ;
- switch-case      = "case" switch-integer { "," switch-integer } ":" suite ;
- default-case     = "default" ":" suite ;
  for-statement         = "for"
                    ( "var" name ":" type | name )
                    "=" expression "," expression "," expression ":" suite ;
  variable-statement         = "var" variable-binding { "," variable-binding } ;
- assignment-statement      = lvalue assignment-operator expression ; (* assignment is a statement here *)
- simple-statement      = return-statement | break-statement | continue-statement | variable-statement | assignment-statement | expression ;
- compound-statement    = if-statement | for-statement | while-statement | do-while-statement | switch-statement ;
+ assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
+ simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
+ compound-statement    = if-statement | for-statement ;
  statement       = simple-statement | compound-statement ;
  suite           = simple-statement | compound-statement | end-of-lines block ;
  return-statement      = "return" [ expression ] ;
- break-statement       = "break" ;
- continue-statement    = "continue" ;
  statement-separator = end-of-lines | BLOCK_END ;
  block = indent statement { statement-separator statement } dedent ;
- expression      = logical-or ;
- logical-or      = logical-and { "||" logical-and } ;
- logical-and     = bitwise-or { "&&" bitwise-or } ;
- bitwise-or      = bitwise-xor { "|" bitwise-xor } ;
- bitwise-xor     = bitwise-and { "^" bitwise-and } ;
- bitwise-and     = equality { "&" equality } ;
- equality        = relational { ("==" | "!=") relational } ;
- relational      = shift { ("<" | "<=" | ">" | ">=") shift } ;
- shift           = sum { ("<<" | ">>") sum } ;
+ expression      = comparison ;
+ comparison      = sum { comparison-operator sum } ;
+ comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
  sum             = term { ("+" | "-") term } ;
- term            = unary-expression { ("*" | "/" | "%") unary-expression } ;
+ term            = unary-expression { ("*" | "/") unary-expression } ;
  lvalue          = name | field-access | index-expression ;
  variable-binding      = name ":" type [ "=" expression ] ;
- unary-expression       = ("-" | "!" | "~" | "++" | "--") unary-expression | postfix-expression ;
- postfix-expression     = primary [ postfix-operator ] ;
- postfix-operator       = "++" | "--" ;
- primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | character-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
+ unary-expression       = "-" unary-expression | primary ;
+ primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
  cast-expression        = cast-type "(" expression ")" ;
  sizeof-expression      = "sizeof" "(" type ")" ;
  address-expression        = "addr" "(" lvalue ")" ;
@@ -114,23 +108,14 @@ I add `uint8`, `uint16`, `uint32`, and `uint64` to `builtin-type` and `cast-type
  index-expression       = name "[" expression "]" ;
  number-expression      = number ;
  array-literal    = "[" [ expression { "," expression } ] "]" ;
- string-literal   = "\"" { ? valid Unicode scalar value except " and newline, encoded as UTF-8 ? | literal-escape } "\"" ;
- character-literal     = "'" ( ? valid Unicode scalar value except ' and newline, encoded as UTF-8 ? | literal-escape ) "'" ;
- literal-escape   = "\\" ( simple-escape | octal-escape | "x" hex-digit hex-digit
-                    | "u" hex-digit hex-digit hex-digit hex-digit
-                    | "U" hex-digit hex-digit hex-digit hex-digit
-                          hex-digit hex-digit hex-digit hex-digit ) ;
- simple-escape    = "a" | "b" | "f" | "n" | "r" | "t" | "v"
-                  | "\\" | "'" | "\"" | "?" ;
- octal-escape     = octal-digit [ octal-digit [ octal-digit ] ] ;
+ string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
+ escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
  parenthesized-expression       = "(" expression ")" ;
  indent          = INDENT ;
  dedent          = DEDENT ;
-
- assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
+ 
  name      = (letter | "_") { letter | digit | "_" } ;
  builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
-+                | "uint8" | "uint16" | "uint32" | "uint64"
                  | "float" | "float32" | "float64"
                  | "bool" | "None" ;
  alias-type       = name ;
@@ -140,264 +125,263 @@ I add `uint8`, `uint16`, `uint32`, and `uint64` to `builtin-type` and `cast-type
  base-type        = builtin-type | alias-type | struct-type | pointer-type ;
  array-suffix     = "[" integer "]" ;
  cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
-+                | "uint8" | "uint16" | "uint32" | "uint64"
                  | "float" | "float32" | "float64"
                  | "bool" | pointer-type ;
  integer         = digit { digit } ;
- switch-integer       = [ "-" ] integer ;
  number          = ( digit { digit } [ "." { digit } ]
                    | "." digit { digit } ) [ exponent ] ;
  exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
  boolean-literal    = "True" | "False" ;
  letter          = "A".."Z" | "a".."z" ;
  digit           = "0".."9" ;
- hex-digit       = digit | "A".."F" | "a".."f" ;
- octal-digit     = "0".."7" ;
  end-of-line             = "\r\n" | "\r" | "\n" ;
  comment = "#" { comment-character } ;
  comment-character = ? any character except "\r" and "\n" ? ;
  whitespace = " " | "\t" | "\v" | "\f" ;
  INDENT          = ? synthetic token emitted by lexer ? ;
  DEDENT          = ? synthetic token emitted by lexer ? ;
-
+ 
  BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
-## New Tokens, Keywords, and `ValueType` Enum Values
-
-Four new tokens and keywords:
+## New Token and Data Structures
 
 ```cpp
-tok_uint8  = -65,
-tok_uint16 = -66,
-tok_uint32 = -67,
-tok_uint64 = -68,
+tok_trait = -43,
 ```
 
+Registered in the keyword table like every other keyword. Trait data lives in two new structs and one new global map:
+
 ```cpp
-{"uint8", tok_uint8}, {"uint16", tok_uint16},
-{"uint32", tok_uint32}, {"uint64", tok_uint64},
+struct TraitMethodSig {
+  string Name;
+  vector<FunctionSignatureNode::ParameterInfo> Arguments;  // explicit params only — no self
+  ValueType ReturnType = ValueType::None;
+  string ReturnStructName;
+};
+
+struct TraitInfo {
+  string Name;
+  vector<TraitMethodSig> Methods;
+};
+
+static std::map<string, TraitInfo> Traits;
 ```
 
-Four new values in the `ValueType` enum:
+`TraitMethodSig::Arguments` holds explicit parameters only; `self` isn't included at all. When conformance is checked later, the compiler accounts for `self` sitting at index 0 of the implementing method's real signature by comparing `Req.Arguments[I]` against `P->getParameterType(I + 1)`.
+
+`StructTypeInfo` gains a list of trait names the class declares:
 
 ```cpp
-UInt8,
-UInt16,
-UInt32,
-UInt64,
+vector<string> ImplementedTraits;
 ```
 
-I give `ParseTypeToken` cases for all four so they work in type annotations and the `cast-type` production:
+`Traits` is cleared on every per-file parser reset alongside `FunctionSignatures`, `StructTypes`, and the rest, so REPL sessions and separate file compiles don't accumulate stale trait definitions.
+
+## Parsing Trait Bodies
+
+`ParseTraitDefinition` is structured like `ParseAggregateDefinition` but simpler: no fields, no method bodies, just signatures. It also checks for name collisions across all three top-level naming tables at once, since a trait name and a struct or alias name would otherwise be free to collide:
 
 ```cpp
-case tok_uint8:  getNextToken(); BaseType = ValueType::UInt8;  break;
-case tok_uint16: getNextToken(); BaseType = ValueType::UInt16; break;
-case tok_uint32: getNextToken(); BaseType = ValueType::UInt32; break;
-case tok_uint64: getNextToken(); BaseType = ValueType::UInt64; break;
-```
-
-## No New LLVM IR Types
-
-LLVM has no separate "unsigned integer" types. `uint32` and `int32` are both `i32` in the IR. I map the four new `ValueType` values to the same LLVM types as their signed counterparts, in `LLVMTypeFor`:
-
-```cpp
-case ValueType::UInt8:  return Type::getInt8Ty(*TheContext);
-case ValueType::UInt16: return Type::getInt16Ty(*TheContext);
-case ValueType::UInt32: return Type::getInt32Ty(*TheContext);
-case ValueType::UInt64: return Type::getInt64Ty(*TheContext);
-```
-
-The signedness lives entirely in which instruction I emit. This also matches C's representation: `size_t` maps to `uint64` on a 64-bit target, so that's what I declare when a parameter or return value on an `extern def` is a C `size_t`.
-
-## Signed and Unsigned Predicates
-
-I add two new predicate functions that drive all instruction selection:
-
-```cpp
-static bool IsUnsignedIntType(ValueType Type) {
-  return Type == ValueType::UInt8 || Type == ValueType::UInt16 ||
-         Type == ValueType::UInt32 || Type == ValueType::UInt64;
-}
-
-static bool IsSignedIntType(ValueType Type) {
-  return IsIntType(Type) && !IsUnsignedIntType(Type);
-}
-```
-
-I expand `IsIntType` to include all four unsigned types:
-
-```cpp
-return Type == ValueType::Int || Type == ValueType::Int8 || ... ||
-       Type == ValueType::UInt8 || Type == ValueType::UInt16 ||
-       Type == ValueType::UInt32 || Type == ValueType::UInt64;
-```
-
-## Implicit Widening Rule — Same Signedness Only
-
-I give `CanWidenInt` a signedness gate. `IsAssignable` itself is unchanged: it still just calls `CanWidenInt` for the integer-to-integer case, but that helper now rejects mixed signedness before comparing the bit widths it's been comparing since Chapter 17:
-
-```cpp
-static bool CanWidenInt(ValueType From, ValueType To) {
-  if (From == To)
-    return true;
-  if (IsIntType(From) && IsIntType(To)) {
-    if (IsUnsignedIntType(From) != IsUnsignedIntType(To))
-      return false;
-    unsigned FromBits = LLVMTypeFor(From)->getIntegerBitWidth();
-    unsigned ToBits = LLVMTypeFor(To)->getIntegerBitWidth();
-    return FromBits <= ToBits;
+static bool ParseTraitDefinition() {
+  // CurrentToken is 'trait'
+  getNextToken(); // eat 'trait'
+  if (CurrentToken != tok_name) {
+    LogErrorExpression("Expected trait name");
+    return false;
   }
-  return false;
+  string TraitName = Name;
+  if (Traits.count(TraitName) || StructTypes.count(TraitName) ||
+      TypeAliases.count(TraitName)) {
+    LogErrorExpression(("Name '" + TraitName + "' is already defined").c_str());
+    return false;
+  }
+  getNextToken(); // eat trait name
+  if (CurrentToken != tok_colon)
+    return LogErrorExpression("Expected ':' after trait name"), false;
+  getNextToken(); // eat ':'
+  if (CurrentToken == tok_eol)
+    consumeNewlines();
+  if (CurrentToken != tok_indent)
+    return LogErrorExpression("Expected an indented trait body"), false;
+  getNextToken(); // eat INDENT
+
+  TraitInfo TI;
+  TI.Name = TraitName;
+  while (CurrentToken != tok_dedent && CurrentToken != tok_block_end && CurrentToken != tok_eof) {
+    if (CurrentToken == tok_eol) {
+      consumeNewlines();
+      continue;
+    }
+    if (CurrentToken != tok_def)
+      return LogErrorExpression("Expected method signature in trait body"), false;
+    getNextToken(); // eat 'def'
+    string MethodName = Name;
+    getNextToken(); // eat method name
+    // ... parse '(' typed-parameter { ',' typed-parameter } ')' into Arguments ...
+    string RetStructName;
+    ValueType RetType =
+        ParseOptionalReturnTypeWithStruct(RetStructName, ValueType::None);
+    if (RetType == ValueType::Error)
+      return false;
+
+    for (const auto &M : TI.Methods) {
+      if (M.Name == MethodName)
+        return LogErrorExpression(("Duplicate trait method '" + MethodName + "'").c_str()), false;
+    }
+    TI.Methods.push_back({MethodName, std::move(Arguments), RetType, RetStructName});
+    if (CurrentToken == tok_colon)
+      return LogErrorExpression("Trait methods cannot have a body"), false;
+    if (CurrentToken == tok_eol)
+      consumeNewlines();
+  }
+  if (CurrentToken != tok_dedent)
+    return LogErrorExpression("Expected dedent after trait body"), false;
+  PendingTokens.push_front(tok_block_end);
+  getNextToken(); // eat DEDENT, then surface tok_block_end
+  Traits[TraitName] = std::move(TI);
+  return true;
 }
 ```
 
-`uint8 → uint64` widens without a cast. `int32 → uint32` or `uint32 → int64` requires an explicit cast. This matches my design intent: implicit signed/unsigned conversion is a common bug source in C, and I don't want pyxc doing it silently.
+Key points:
+- `self` is never parsed; it appears in no trait signature.
+- A `:` where a next signature or the dedent was expected means someone wrote a body, and that's rejected immediately: "Trait methods cannot have a body".
+- Duplicate method names within one trait are rejected before the duplicate is even added.
+- The name-clash check up front covers `Traits`, `StructTypes`, and `TypeAliases` together, so a trait name can't shadow any of them.
 
-```pyxc
-var a: uint32 = 1
-var b: int32  = 2
-a = a + b
-```
-```
-Error (Line 3, Column 10): Type mismatch in binary operator
-a = a + b
-         ^~~~
-```
+`HandleTraitDef` calls `ParseTraitDefinition` and handles error recovery the same way `HandleStructDef` and `HandleClassDef` do, and `tok_trait` is wired into the dispatch switch in both `MainLoop` and `FileModeLoop`.
 
-Cast explicitly to fix it: `a = a + uint32(b)`.
+## Declaring Trait Conformance in the Class Header
 
-## Instruction Selection — Seven Changed Sites
-
-### Integer Widening
+`ParseAggregateDefinition` now parses an optional trait list between the class name and the `:`. This only runs for classes (`IsClass == true`) — a `struct` never sees this branch at all, since `IsClass` gates it before the token is even inspected:
 
 ```cpp
-// Before: always sext
-return Builder->CreateSExt(V, LLVMTypeFor(To), "sext");
-
-// After:
-return IsUnsignedIntType(From)
-           ? Builder->CreateZExt(V, LLVMTypeFor(To), "zext")
-           : Builder->CreateSExt(V, LLVMTypeFor(To), "sext");
+vector<string> ImplementedTraits;
+bool IsClass = (strcmp(KindName, "class") == 0);
+if (IsClass && CurrentToken == tok_lparen) {
+  std::set<string> SeenTraits;
+  getNextToken(); // eat '('
+  if (CurrentToken != tok_rparen) {
+    while (true) {
+      if (CurrentToken != tok_name)
+        return LogErrorExpression("Expected trait name in class implements list"), false;
+      string TraitName = Name;
+      if (!Traits.count(TraitName))
+        return LogErrorExpression(("Unknown trait '" + TraitName + "'").c_str()), false;
+      if (SeenTraits.count(TraitName))
+        return LogErrorExpression(
+            ("Duplicate trait '" + TraitName + "' in class implements list").c_str()), false;
+      SeenTraits.insert(TraitName);
+      ImplementedTraits.push_back(TraitName);
+      getNextToken(); // eat trait name
+      if (CurrentToken == tok_rparen)
+        break;
+      if (CurrentToken != tok_comma)
+        return LogErrorExpression("Expected ')' or ',' in class implements list"), false;
+      getNextToken(); // eat ','
+    }
+  }
+  if (CurrentToken != tok_rparen)
+    return LogErrorExpression("Expected ')' after class implements list"), false;
+  getNextToken(); // eat ')'
+}
+// ...
+Info.IsClass = IsClass;
+Info.ImplementedTraits = ImplementedTraits;
 ```
 
-Unsigned types use `zext` (zero-extend) rather than `sext` (sign-extend).
+Each trait name has to already be in `Traits`; forward declarations aren't supported, so `trait` blocks have to appear before any class that implements them. Listing the same trait twice is caught by `SeenTraits`. Because `struct` never enters this branch, writing `struct S(Foo):` doesn't fail with an unknown-trait error — it fails one step later with "Expected ':' after struct name", since the parser is still expecting the colon it always expected there.
 
-### Integer → float
+## Checking Trait Conformance at Class Close
+
+Right after the class body's closing `DEDENT`, if `Info.IsClass` is true, the compiler walks every declared trait and checks three things for every method that trait requires:
 
 ```cpp
-return IsUnsignedIntType(From)
-           ? Builder->CreateUIToFP(V, LLVMTypeFor(To), "uitofp")
-           : Builder->CreateSIToFP(V, LLVMTypeFor(To), "sitofp");
+if (Info.IsClass) {
+  for (const auto &TraitName : Info.ImplementedTraits) {
+    const auto &TI = Traits.at(TraitName);
+    for (const auto &Req : TI.Methods) {
+      // 1. The method must exist.
+      auto PI = FunctionSignatures.find(StructName + "." + Req.Name);
+      if (PI == FunctionSignatures.end())
+        return LogErrorExpression(("Class '" + StructName + "' does not implement trait '" +
+                  TraitName + "' method '" + Req.Name + "'").c_str()), false;
+
+      // 2. The method must be public.
+      auto MI = Info.MethodIsPublic.find(Req.Name);
+      if (MI == Info.MethodIsPublic.end() || !MI->second)
+        return LogErrorExpression(("Trait method '" + Req.Name + "' on class '" + StructName +
+                  "' must be public").c_str()), false;
+
+      // 3. The signature must match exactly (the +1 skips self).
+      FunctionSignatureNode *P = PI->second.get();
+      if (P->getNumParameters() != Req.Arguments.size() + 1 ||
+          P->getReturnType() != Req.ReturnType ||
+          P->getReturnStructName() != Req.ReturnStructName)
+        return LogErrorExpression(("Method '" + Req.Name + "' on class '" + StructName +
+                  "' does not match trait signature").c_str()), false;
+      for (size_t I = 0; I < Req.Arguments.size(); ++I) {
+        if (P->getParameterType(I + 1) != Req.Arguments[I].Type ||
+            P->getParameterStructName(I + 1) != Req.Arguments[I].StructName)
+          return LogErrorExpression(("Method '" + Req.Name + "' on class '" + StructName +
+                    "' does not match trait signature").c_str()), false;
+      }
+    }
+  }
+}
 ```
 
-`uitofp` treats the bit pattern as an unsigned integer, producing the correct positive float for `uint32(-1)` = 4294967295.0. `uint64(-1)` is `18446744073709551615`; converting that to `float64` rounds, since `float64` only represents integers exactly up to `2^53`.
+`P->getNumParameters() != Req.Arguments.size() + 1` is the same `self`-at-index-0 offset showing up again: the implementing method's own signature always has one more parameter than the trait requires it to declare.
 
-### Float → integer
+## What Traits Are Not
 
-```cpp
-return IsUnsignedIntType(To)
-           ? Builder->CreateFPToUI(V, LLVMTypeFor(To), "fptoui")
-           : Builder->CreateFPToSI(V, LLVMTypeFor(To), "fptosi");
-```
+There's no dynamic dispatch and no vtable. The check is purely structural: it verifies a matching, public method exists, nothing more. The generated IR is identical to what a class without the trait declaration would produce — a trait method is just a regular LLVM function, mangled the same way every other method is.
 
-### Division and remainder
+There's also no way yet to pass a `Measurable` to a function without knowing the concrete class. Traits are a documentation-and-enforcement mechanism here, not a polymorphism mechanism.
 
-```cpp
-// / operator:
-return IsUnsignedIntType(ResultType) ? Builder->CreateUDiv(L, R, "divtmp")
-                                     : Builder->CreateSDiv(L, R, "divtmp");
-// % operator:
-return IsUnsignedIntType(ResultType) ? Builder->CreateURem(L, R, "modtmp")
-                                     : Builder->CreateSRem(L, R, "modtmp");
-```
+## Known Limitations
 
-### Right shift
+**Traits must be defined before the classes that implement them.** The trait-name lookup happens while parsing the class header; if the trait doesn't exist yet, `Unknown trait '...'` is reported right there.
 
-```cpp
-return IsUnsignedIntType(Ty) ? Builder->CreateLShr(L, R, "shrtmp")
-                              : Builder->CreateAShr(L, R, "shrtmp");
-```
+**A class can implement multiple traits.** List them comma-separated in the class header. Listing the same trait twice is rejected.
 
-`lshr` fills vacated high bits with zero, `ashr` fills with the sign bit, so right shift is always logical for unsigned types: `uint32(-1) >> 1` gives `2147483647`, not a sign-extended `4294967295`.
-
-### Comparisons (`<`, `<=`, `>`, `>=`)
-
-```cpp
-// '<':
-return IsUnsignedIntType(CompareType)
-           ? Builder->CreateICmpULT(L, R, "cmptmp")
-           : Builder->CreateICmpSLT(L, R, "cmptmp");
-// '>':
-return IsUnsignedIntType(CompareType)
-           ? Builder->CreateICmpUGT(L, R, "cmptmp")
-           : Builder->CreateICmpSGT(L, R, "cmptmp");
-// '<=':
-return IsUnsignedIntType(CompareType)
-           ? Builder->CreateICmpULE(L, R, "cmptmp")
-           : Builder->CreateICmpSLE(L, R, "cmptmp");
-// '>=':
-return IsUnsignedIntType(CompareType)
-           ? Builder->CreateICmpUGE(L, R, "cmptmp")
-           : Builder->CreateICmpSGE(L, R, "cmptmp");
-```
-
-`==` and `!=` are signedness-agnostic (`icmp eq` / `icmp ne`); they are unchanged.
-
-### Literal range check
-
-`ParseNumberExpression` already checks that a literal fits in the target type. I update the max-value calculation to use `APInt::getAllOnes(Bits)` for unsigned types:
-
-```cpp
-APInt Max = IsUnsignedIntType(Type) ? APInt::getAllOnes(Bits)
-                                    : APInt::getSignedMaxValue(Bits);
-```
-
-`getAllOnes` is the all-bits-set value (`0xFF`, `0xFFFF`, etc.), which is the maximum for an unsigned type. `getSignedMaxValue` is `0x7F`, `0x7FFF`, etc.
-
-## Explicit Casts
-
-I always allow explicit casts between signed and unsigned types. They reinterpret the bit pattern:
-
-```pyxc
-var x: int32  = -1
-var y: uint32 = uint32(x)   # 4294967295
-var z: int32  = int32(y)    # -1
-```
-
-Same bit width: bits are unchanged. Narrowing truncates to the low bits.
+**Structs cannot implement traits.** The `(Trait)` syntax is gated on `IsClass`, so it's only reachable after `class`; writing it after `struct` fails on the colon that would otherwise follow the name.
 
 ## Try It
 
+**Missing trait method**
+
 ```pyxc
-extern def printd(x: float64)
+trait Measurable:
+  def area() -> int
 
-def main() -> int:
-  var si: int32 = -1
-  var ui: uint32 = uint32(si)
-  if si < 0:
-    printd(1.0)
-  else:
-    printd(0.0)
-  if ui < uint32(0):
-    printd(1.0)
-  else:
-    printd(0.0)
-  printd(float64(ui >> uint32(1)))
-  return 0
+class Rect(Measurable):
+  w: int
 ```
 
-```
-1.000000
-0.000000
-2147483647.000000
+```text
+Error (Line 6, Column 0): Class 'Rect' does not implement trait 'Measurable' method 'area'
 ```
 
-Same 32 bits, `si` and `ui`. As `int32`, that bit pattern is negative. As `uint32`, it's not — `ui < uint32(0)` can never be true, since there's no such thing as a negative `uint32`. And shifting it right doesn't sign-extend: I get `2147483647`, not a value with the top bit still set.
+**Private implementation of a trait method**
+
+```pyxc
+trait Measurable:
+  def area() -> int
+class Rect(Measurable):
+  w: int
+  private def area() -> int:
+    return self.w
+```
+
+```text
+Error (Line 7, Column 0): Trait method 'area' on class 'Rect' must be public
+```
 
 ## What's Next
 
-[Chapter 41](chapter-41.md) allows assignment to appear inside an expression — enabling the `while (c = getchar()) != EOF` pattern from K&R.
+[Chapter 41](chapter-41.md) adds `impl` blocks.
 
 ## Need Help?
 

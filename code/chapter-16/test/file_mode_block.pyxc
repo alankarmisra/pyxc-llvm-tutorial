@@ -1,6 +1,7 @@
 # RUN: %pyxc %s 2>&1 | FileCheck %s
 # CHECK: 6.000000
 # CHECK-NOT: ready>
+# CHECK-NOT: Parsed
 
 
 # Tests: file mode with an indented block and a for loop.

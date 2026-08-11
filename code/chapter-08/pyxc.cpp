@@ -11,6 +11,7 @@
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/Passes/StandardInstrumentations.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
@@ -37,23 +38,9 @@ using namespace llvm::orc;
 //===----------------------------------------===//
 static cl::OptionCategory PyxcCategory("Pyxc options");
 
-// Optional positional input: 0 args => REPL, 1 arg => file mode.
-static cl::opt<std::string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
-                                      cl::init(""), cl::cat(PyxcCategory));
-
-// Verbose IR dump in both REPL and file mode.
-static cl::opt<bool> VerboseIR("v",
-                               cl::desc("Print generated LLVM IR to stderr"),
-                               cl::init(false), cl::cat(PyxcCategory));
-
-// Optimization level. For now Pyxc only distinguishes -O0 (no passes) from
-// any non-zero level (run the current fixed function pass pipeline).
 static cl::opt<unsigned> OptLevel("O", cl::desc("Optimization level"),
                                   cl::value_desc("0|1|2|3"), cl::Prefix,
                                   cl::init(2), cl::cat(PyxcCategory));
-
-static FILE *Input = stdin;
-static bool IsRepl = true;
 
 //===----------------------------------------===//
 // Lexer
@@ -83,6 +70,7 @@ enum Token {
   tok_minus = '-',
   tok_star = '*',
   tok_slash = '/',
+  tok_percent = '%',
   tok_less = '<',
 };
 
@@ -207,21 +195,21 @@ static SourceManager PyxcSourceMgr;
 static void PrintErrorSourceContext(SourceLocation Loc);
 static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation Loc);
 
-/// advance - Read one character from Input, update LexLoc and SourceManager.
+/// advance - Read one character from stdin, update LexLoc and SourceManager.
 ///
 /// This is the single point through which all character consumption flows.
-/// Every token branch in getToken() calls advance() rather than fgetc()
+/// Every token branch in getToken() calls advance() rather than getchar()
 /// directly, so LexLoc and the source buffer are always in sync.
 ///
 /// Windows line endings (\r\n) are coalesced to a single \n
 /// as are bare (old) Mac \r's (without a trailing \n)
 /// so the rest of the lexer never needs to handle \r.
 static int advance() {
-  int LastChar = fgetc(Input);
+  int LastChar = getchar();
   if (LastChar == '\r') {
-    int NextChar = fgetc(Input);
+    int NextChar = getchar();
     if (NextChar != '\n' && NextChar != EOF)
-      ungetc(NextChar, Input);
+      ungetc(NextChar, stdin);
     PyxcSourceMgr.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
@@ -347,6 +335,8 @@ static int getToken() {
     return tok_star;
   case '/':
     return tok_slash;
+  case '%':
+    return tok_percent;
   case '<':
     return tok_less;
   default:
@@ -451,8 +441,6 @@ public:
 };
 
 /// BinaryExpressionNode - Expression class for a binary operator.
-/// Operator is stored as an int token code. In chapter 7 all binary operators are
-/// named single-character tokens with their corresponding ASCII values.
 class BinaryExpressionNode : public ExpressionNode {
   char Operator;
   unique_ptr<ExpressionNode> Left, Right;
@@ -460,6 +448,17 @@ class BinaryExpressionNode : public ExpressionNode {
 public:
   BinaryExpressionNode(int Operator, unique_ptr<ExpressionNode> Left, unique_ptr<ExpressionNode> Right)
       : Operator(Operator), Left(std::move(Left)), Right(std::move(Right)) {}
+  Value *codegen() override;
+};
+
+/// UnaryExpressionNode - Expression class for applying a unary operator.
+class UnaryExpressionNode : public ExpressionNode {
+  char Operator;
+  unique_ptr<ExpressionNode> Operand;
+
+public:
+  UnaryExpressionNode(char Operator, unique_ptr<ExpressionNode> Operand)
+      : Operator(Operator), Operand(std::move(Operand)) {}
   Value *codegen() override;
 };
 
@@ -524,20 +523,11 @@ static void consumeNewlines() {
 }
 
 /// PrintReplPrompt - Print the interactive prompt to stderr.
-/// Only emits output in REPL mode; silent when running a script file.
-void PrintReplPrompt() {
-  if (IsRepl)
-    fprintf(stderr, "ready> ");
-}
+void PrintReplPrompt() { fprintf(stderr, "ready> "); }
 
-/// Log - Write a diagnostic message to stderr in REPL mode only.
-/// Used by the Handle* functions to confirm what was parsed ("Parsed a
-/// function function-definition.", etc.). Silent when processing a script file so
-/// that stdout/stderr output from the program itself is not cluttered.
-void Log(const string &message) {
-  if (IsRepl)
-    fprintf(stderr, "%s", message.c_str());
-}
+/// Log - Write a diagnostic message to stderr.
+/// Used by the Handle* functions to confirm what was parsed.
+void Log(const string &message) { fprintf(stderr, "%s", message.c_str()); }
 
 /// LogErrorExpression* - Error reporting helpers. Each returns nullptr for its respective
 /// type so parse functions can write: return LogErrorExpression("message");
@@ -640,16 +630,37 @@ static unique_ptr<ExpressionNode> ParsePrimary() {
   }
 }
 
+static unique_ptr<ExpressionNode> ParseFactor();
+
+/// I parse the unary-minus branch of factor.
+static unique_ptr<ExpressionNode> ParseUnaryMinus() {
+  getNextToken(); // I eat '-'.
+  auto Operand = ParseFactor();
+  if (!Operand)
+    return nullptr;
+  return make_unique<UnaryExpressionNode>(tok_minus, std::move(Operand));
+}
+
+/// factor
+///   = "-" factor
+///   | primary ;
+static unique_ptr<ExpressionNode> ParseFactor() {
+  if (CurrentToken == tok_minus)
+    return ParseUnaryMinus();
+  return ParsePrimary();
+}
+
 /// term
-///   = primary { ("*" | "/") primary } ;
+///   = factor { ("*" | "/" | "%") factor } ;
 static unique_ptr<ExpressionNode> ParseTerm() {
-  auto Left = ParsePrimary();
+  auto Left = ParseFactor();
   if (!Left)
     return nullptr;
-  while (CurrentToken == tok_star || CurrentToken == tok_slash) {
+  while (CurrentToken == tok_star || CurrentToken == tok_slash ||
+         CurrentToken == tok_percent) {
     int Operator = CurrentToken;
     getNextToken();
-    auto Right = ParsePrimary();
+    auto Right = ParseFactor();
     if (!Right)
       return nullptr;
     Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
@@ -752,7 +763,7 @@ static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
     return LogErrorFunction("Expected ':' in function definition");
   getNextToken(); // eat ':'
 
-  // Allow the body expression to start on the next line:
+  // Allow the function body to start on the next line:
   //   def foo(x):
   //     x + 1
   consumeNewlines();
@@ -817,7 +828,6 @@ static unique_ptr<FunctionSignatureNode> ParseExtern() {
 // analysis managers. TheFPM holds the optimisation pipeline; the analysis
 // managers cache analysis results and are cross-registered so passes that
 // need loop or CGSCC analyses can find them.
-//
 //
 // FunctionSignatures - Persistent function signature registry. Because each function
 // lands in its own module, a later module that calls 'foo' cannot find 'foo'
@@ -895,6 +905,17 @@ Value *NameExpressionNode::codegen() {
   return It->second;
 }
 
+/// UnaryExpressionNode::codegen - Generate the operand, then negate it.
+Value *UnaryExpressionNode::codegen() {
+  Value *OperandValue = Operand->codegen();
+  if (!OperandValue)
+    return nullptr;
+
+  if (Operator == tok_minus)
+    return Builder->CreateFNeg(OperandValue, "negtmp");
+  return LogErrorV("invalid unary operator");
+}
+
 /// BinaryExpressionNode::codegen - Recursively codegen both operands, then emit the
 /// operator-specific instruction.
 ///
@@ -921,6 +942,8 @@ Value *BinaryExpressionNode::codegen() {
     return Builder->CreateFMul(L, R, "multmp");
   case tok_slash:
     return Builder->CreateFDiv(L, R, "divtmp");
+  case tok_percent:
+    return Builder->CreateFRem(L, R, "remtmp");
   case tok_less:
     L = Builder->CreateFCmpULT(L, R, "cmptmp");
     return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
@@ -1059,7 +1082,8 @@ Function *FunctionDefinitionNode::codegen() {
 /// must be created for every subsequent function-definition or expression.
 ///
 /// The optimisation pipeline is also recreated each time because
-/// FunctionPassManager is tied to a specific LLVMContext.
+/// FunctionPassManager is tied to a specific LLVMContext (via
+/// StandardInstrumentations).
 ///
 /// Pipeline:
 ///   InstCombinePass  - Peephole rewrites: a+0->a, x*2->x<<1, etc.
@@ -1087,21 +1111,19 @@ static void InitializeModuleAndManagers() {
   TheCGAM = std::make_unique<CGSCCAnalysisManager>();
   TheMAM = std::make_unique<ModuleAnalysisManager>();
 
-  // Optimisation pipeline (applied per function after codegen). With -O0 the
-  // pass manager is left empty so the emitted IR stays close to the direct
-  // lowering performed by the code generator.
+  // Optimisation pipeline (applied per function after codegen).
   if (OptLevel != 0) {
     TheFPM->addPass(InstCombinePass()); // peephole rewrites
     TheFPM->addPass(ReassociatePass()); // canonicalise commutative ops
     TheFPM->addPass(GVNPass());         // eliminate common sub-expressions
   }
 
-  // Cross-register so passes can access any analysis tier they need.
   PassBuilder PB;
   PB.registerModuleAnalyses(*TheMAM);
   PB.registerCGSCCAnalyses(*TheCGAM);
   PB.registerFunctionAnalyses(*TheFAM);
   PB.registerLoopAnalyses(*TheLAM);
+  // Cross-register so passes can access any analysis tier they need.
   PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
 }
 
@@ -1126,17 +1148,16 @@ static void SynchronizeToLineBoundary() {
 /// accessible in the JIT's symbol table for the rest of the session.
 /// On parse failure or unexpected trailing tokens: discard the line.
 static void HandleFunctionDefinition() {
-  auto FnAST = ParseFunctionDefinition();
-  if (!FnAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
-    if (FnAST)
+  auto FunctionDefinition = ParseFunctionDefinition();
+  if (!FunctionDefinition || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
+    if (FunctionDefinition)
       LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
   }
-  if (auto *FnIR = FnAST->codegen()) {
+  if (auto *FunctionIR = FunctionDefinition->codegen()) {
     Log("Parsed a function definition.\n");
-    if (VerboseIR)
-      FnIR->print(errs());
+    FunctionIR->print(errs());
     // Transfer the module to the JIT. TheModule is now invalid; reinitialise.
     ExitOnErr(TheJIT->addModule(
         ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
@@ -1153,10 +1174,10 @@ static void HandleFunctionDefinition() {
 /// 'declare' in whichever module needs to call the extern.
 /// On parse failure or unexpected trailing tokens: discard the line.
 static void HandleExtern() {
-  auto ProtoAST = ParseExtern();
+  auto Signature = ParseExtern();
 
-  if (!ProtoAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
-    if (ProtoAST)
+  if (!Signature || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
+    if (Signature)
       LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
@@ -1164,22 +1185,21 @@ static void HandleExtern() {
 
   // Reject conflicting redeclarations: in Pyxc, function identity is just
   // name + arity, since all parameter and return types are double.
-  auto Existing = FunctionSignatures.find(ProtoAST->getName());
+  auto Existing = FunctionSignatures.find(Signature->getName());
   if (Existing != FunctionSignatures.end() &&
-      Existing->second->getNumParameters() != ProtoAST->getNumParameters()) {
+      Existing->second->getNumParameters() != Signature->getNumParameters()) {
     LogErrorExpression((string("Conflicting extern declaration for '") +
-              ProtoAST->getName() + "'")
+              Signature->getName() + "'")
                  .c_str());
     SynchronizeToLineBoundary();
     return;
   }
 
-  if (auto *FnIR = ProtoAST->codegen()) {
+  if (auto *FunctionIR = Signature->codegen()) {
     Log("Parsed an extern.\n");
-    if (VerboseIR)
-      FnIR->print(errs());
+    FunctionIR->print(errs());
     // Save the function signature so getFunction() can re-emit it in future modules.
-    FunctionSignatures[ProtoAST->getName()] = std::move(ProtoAST);
+    FunctionSignatures[Signature->getName()] = std::move(Signature);
   }
 }
 
@@ -1201,17 +1221,16 @@ static void HandleExtern() {
 ///   6. Call RT->remove() to free the compiled code. The module was already
 ///      transferred to the JIT in step 4, so eraseFromParent() is not needed.
 static void HandleTopLevelExpression() {
-  auto FnAST = ParseTopLevelExpression();
-  if (!FnAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
-    if (FnAST)
+  auto FunctionDefinition = ParseTopLevelExpression();
+  if (!FunctionDefinition || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
+    if (FunctionDefinition)
       LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
   }
-  if (auto *FnIR = FnAST->codegen()) {
+  if (auto *FunctionIR = FunctionDefinition->codegen()) {
     Log("Parsed a top-level expression.\n");
-    if (VerboseIR)
-      FnIR->print(errs());
+    FunctionIR->print(errs());
 
     // ResourceTracker scopes the JIT memory for this expression so we can
     // free it precisely after the call, without affecting other symbols.
@@ -1228,8 +1247,7 @@ static void HandleTopLevelExpression() {
     // Cast the symbol address to a callable function pointer and invoke it.
     double (*FP)() = ExprSymbol.toPtr<double (*)()>();
     double result = FP();
-    if (IsRepl)
-      fprintf(stderr, "Evaluated to %f\n", result);
+    fprintf(stderr, "Evaluated to %f\n", result);
 
     // Release the compiled code and JIT memory for this expression.
     ExitOnErr(RT->remove());
@@ -1314,8 +1332,7 @@ static void MainLoop() {
 
 /// ProcessCommandLine - Parse argv and configure the global Input/IsRepl state.
 ///
-/// Returns 0 on success, -1 on error (e.g. the file could not be opened). When
-/// no file is given, Input stays as stdin and IsRepl is set to true.
+/// Returns 0 on success, -1 on error if any.
 int ProcessCommandLine(int argc, const char **argv) {
   cl::HideUnrelatedOptions(PyxcCategory);
   cl::ParseCommandLineOptions(argc, argv, "pyxc\n");
@@ -1323,17 +1340,6 @@ int ProcessCommandLine(int argc, const char **argv) {
   if (OptLevel > 3) {
     fprintf(stderr, "Error: -O level must be 0, 1, 2, or 3\n");
     return -1;
-  }
-
-  if (!InputFile.empty()) {
-    Input = fopen(InputFile.c_str(), "r");
-    if (!Input) {
-      perror(InputFile.c_str());
-      return -1;
-    }
-    IsRepl = false;
-  } else {
-    IsRepl = true;
   }
 
   return 0;
@@ -1346,10 +1352,8 @@ int ProcessCommandLine(int argc, const char **argv) {
 /// main - Entry point for the Pyxc compiler/REPL.
 ///
 /// Initialises the LLVM native backend, creates the ORC JIT and an initial
-/// module, then hands control to MainLoop(). On exit, any open script file is
-/// closed.
+/// module, then hands control to MainLoop().
 int main(int argc, const char **argv) {
-
   int commandLineResult = ProcessCommandLine(argc, argv);
   if (commandLineResult != 0) {
     return commandLineResult;
@@ -1360,7 +1364,6 @@ int main(int argc, const char **argv) {
   // disassembler so the JIT can compile and link for the current CPU.
   InitializeNativeTarget();
   InitializeNativeTargetAsmPrinter();
-  InitializeNativeTargetAsmParser();
 
   // Prime the REPL: print the first prompt and load the first token.
   // Every parse function expects CurrentToken to be loaded before it is called.
@@ -1373,11 +1376,6 @@ int main(int argc, const char **argv) {
   InitializeModuleAndManagers();
 
   MainLoop();
-
-  if (Input && Input != stdin) {
-    fclose(Input);
-    Input = stdin;
-  }
 
   return 0;
 }

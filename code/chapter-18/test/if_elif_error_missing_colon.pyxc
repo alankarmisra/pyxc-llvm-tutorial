@@ -1,0 +1,11 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Error
+# CHECK: Expected ':' after if/elif condition
+
+def bad(x: int) -> int:
+    if x > 0:
+        return 1
+    elif x == 0
+        return 0
+    else:
+        return -1

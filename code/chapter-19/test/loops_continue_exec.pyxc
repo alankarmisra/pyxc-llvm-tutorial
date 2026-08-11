@@ -1,0 +1,14 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 4.000000
+
+def count_except_three() -> float64:
+  var i: float64 = 0
+  var sum: float64 = 0
+  while i < 5:
+    i = i + 1
+    if i == 3:
+      continue
+    sum = sum + 1
+  return sum
+
+count_except_three()

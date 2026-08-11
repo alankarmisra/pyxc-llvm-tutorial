@@ -1,6 +1,0 @@
-extern def printd(x: float64)
-def main() -> int:
-  var x: int = 42
-  var p: ptr[int] = addr(x)
-  printd(float64(p[0]))
-  return 0

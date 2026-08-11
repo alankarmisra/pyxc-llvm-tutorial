@@ -1,7 +1,8 @@
 # RUN: %pyxc < %s 2>&1 | FileCheck %s
-# CHECK: 0.000000
-# CHECK: 2.000000
-# CHECK: 10.000000
+# CHECK: Parsed a function definition.
+# CHECK: Evaluated to 0.000000
+# CHECK: Evaluated to 2.000000
+# CHECK: Evaluated to 10.000000
 
 
 # Tests: nested if/else — the else branch is itself an if/else statement.

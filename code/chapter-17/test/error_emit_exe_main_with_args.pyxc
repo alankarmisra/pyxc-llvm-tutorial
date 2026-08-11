@@ -4,5 +4,5 @@
 # Tests: --emit exe enforces the zero-argument constraint on main().
 # A main() with parameters is rejected before linking.
 
-def main(x: float64) -> float64:
+def main(x):
     return x

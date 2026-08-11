@@ -1,0 +1,13 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed a function definition" %t
+# RUN: grep -q "Evaluated to 1.000000" %t
+
+# JIT cross-module call: foo is compiled into one module (and added to the
+# JIT), then foo(4) is compiled into a new module and executed. Confirms that
+# getFunction() re-emits the declaration for 'foo' in the new module and the
+# JIT resolves it to the compiled body.
+# sin(x)^2 + cos(x)^2 = 1 for any x.
+extern def sin(x)
+extern def cos(x)
+def foo(x): return sin(x)*sin(x)+cos(x)*cos(x)
+foo(4)

@@ -1,11 +1,12 @@
 # RUN: %pyxc < %s 2>&1 | FileCheck %s
-# CHECK: 10.000000
+# CHECK: Parsed a function definition.
+# CHECK: Evaluated to 10.000000
 
 
 # Tests: inline if/else statement with both branches on one line.
-# ifstmt = "if" expression ":" suite [ end-of-lines "else" ":" suite ]
+# if-statement = "if" expression ":" suite [ [ end-of-lines ] "else" ":" suite ]
 
-def maxval(a: float64, b: float64) -> float64:
+def maxval(a, b):
     if a > b: return a else: return b
 
 maxval(10, 5)

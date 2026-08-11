@@ -1,0 +1,8 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -c "Parsed a top-level expression." %t | grep -q "3"
+# RUN: not grep -q "Error:" %t
+
+# term: remainder has the same precedence as multiplication and division
+8 % 3
+1 + 8 % 3
+8 % 3 * 2

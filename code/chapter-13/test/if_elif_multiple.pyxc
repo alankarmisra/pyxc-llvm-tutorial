@@ -1,0 +1,22 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 30.000000
+# CHECK: 40.000000
+# CHECK: 99.000000
+
+# Tests: multiple elif branches choose the first matching branch.
+
+def mapv(x):
+    if x == 1:
+        return 10.0
+    elif x == 2:
+        return 20.0
+    elif x == 3:
+        return 30.0
+    elif x == 4:
+        return 40.0
+    else:
+        return 99.0
+
+mapv(3)
+mapv(4)
+mapv(7)

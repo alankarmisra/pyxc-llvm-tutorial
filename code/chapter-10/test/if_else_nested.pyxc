@@ -10,7 +10,7 @@
 
 def clamp(x): if x < 0: 0 else: if x > 10: 10 else: x
 
-clamp(-5)
+clamp(0 - 5)
 
 clamp(2)
 

@@ -1,0 +1,8 @@
+# RUN: %pyxc -v < %s > %t 2>&1
+# RUN: grep -q "Parsed a top-level expression" %t
+# RUN: grep -c "define double @__pyxc.toplevel.0" %t | grep -q "^1$"
+
+# HandleTopLevelExpression gives each top-level statement a unique function
+# name and removes its temporary JIT module after execution. Its IR is printed
+# exactly once.
+1 + 2

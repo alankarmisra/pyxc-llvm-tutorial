@@ -6,9 +6,9 @@
 # No __pyxc.global_init is synthesized; the executable contains only
 # user-defined functions and the int main() wrapper.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-def sq(x: float64) -> float64: return x * x
+def sq(x): return x * x
 
-def main() -> None:
+def main():
     printd(sq(5))

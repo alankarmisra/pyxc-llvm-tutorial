@@ -1,71 +1,56 @@
 ---
-description: "Add public and private visibility modifiers to class fields and methods. Private members are only accessible from within the class's own method bodies."
+description: "Add sizeof and pointer casts so pyxc can call malloc and free: heap allocation with manual ownership."
 ---
-# 28. pyxc: Visibility
+# 28. pyxc: Heap Allocation
 
 ## What I Am Building
 
-[Chapter 27](chapter-27.md) added constructors. Classes can now be initialized, but every field and method is accessible from anywhere. After this chapter, a class can hide its internals:
+[Chapter 26](chapter-26.md) gave me pointer arithmetic over fixed-size arrays, but those arrays have two limits I can't get around: their size has to be known at compile time, and they die the moment the function that declared them returns. Neither works for data whose size I only know at runtime, or that needs to outlive the function that created it. For that I need the heap, and the heap means calling `malloc` and `free`.
+
+After this chapter:
 
 ```pyxc
+extern def malloc(n: int64) -> ptr[int8]
+extern def free(p: ptr[int8])
 extern def printd(x: float64)
 
-class BoundedCounter:
-  private count: int
-  private limit: int
-
-  def __init__(max: int):
-    self.count = 0
-    self.limit = max
-
-  public def increment():
-    if self.count < self.limit:
-      self.count = self.count + 1
-
-  public def get() -> int:
-    return self.count
-
-
 def main() -> int:
-  var c: BoundedCounter = BoundedCounter(3)
-  c.increment()
-  c.increment()
-  c.increment()
-  c.increment()    # no effect — limit reached
-  printd(float64(c.get()))
+  var n: int64 = 5
+  var raw: ptr[int8] = ptr[int8](malloc(n * sizeof(int64)))
+  var p: ptr[int64] = ptr[int64](raw)
+  p[0] = 5
+  p[1] = 7
+  p[2] = 9
+  p[3] = 6
+  p[4] = 8
+  var q: ptr[int64] = p + 2
+  printd(float64(q[0] + q[1] + q[2]))  # 23.000000
+  free(raw)
   return 0
 ```
 
-```text
-3.000000
-```
+`malloc` and `free` are just the C standard library functions. I don't need any new machinery to call them; `extern` already lets me call any C function. What I'm actually missing is two smaller things: a way to tell `malloc` how many bytes I want, and a way to tell pyxc what type the bytes it hands back should be treated as.
 
-Accessing `c.count` directly from outside the class is an error.
+- **`sizeof(T)`** gives me the byte size of type `T` as a compile-time constant, so I can compute the right argument to `malloc`.
+- **`ptr[T](expr)`** reinterprets a pointer of one type as a pointer of another, which I need because `malloc` only ever hands me `ptr[int8]` (raw bytes), and I want to treat them as, say, `ptr[int64]`.
 
 ## Source Code
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-28
+cd pyxc-llvm-tutorial/code/chapter-21
 ```
 
 ## Grammar
 
-`class-member` gains an optional visibility prefix. `visibility` is a new production:
+Two productions change this chapter: `primary` gains a `sizeof-expression` alternative, and `cast-type` gains `pointer-type`, since a pointer cast target is now legal where it wasn't before. Everything else is exactly what [Chapter 26](chapter-26.md) already had:
 
 ```grammardiff
  program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
  end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = type-alias | struct-definition | class-definition | function-definition | external | top-level-expression ;
- type-alias       = "type" name "=" type ;
+ top-level-item             = struct-definition | function-definition | external | top-level-expression ;
  struct-definition       = "struct" name ":" end-of-lines struct-block ;
- class-definition        = "class" name ":" end-of-lines struct-block ;
- struct-block     = indent class-member { end-of-lines class-member } dedent ;
--class-member     = field-declaration | method-definition ;
-+class-member     = [ visibility ] ( field-declaration | method-definition ) ;
-+visibility      = "public" | "private" ;
- method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")"
-                   [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ struct-block     = indent field-declaration { end-of-lines field-declaration } dedent ;
  field-declaration       = name ":" type ;
  function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
  (* If the return type is omitted, it defaults to None. *)
@@ -95,20 +80,16 @@ cd pyxc-llvm-tutorial/code/chapter-28
  lvalue          = name | field-access | index-expression ;
  variable-binding      = name ":" type [ "=" expression ] ;
  unary-expression       = "-" unary-expression | primary ;
- primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
+-primary         = cast-expression | address-expression | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
++primary         = cast-expression | sizeof-expression | address-expression | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
  cast-expression        = cast-type "(" expression ")" ;
- sizeof-expression      = "sizeof" "(" type ")" ;
++sizeof-expression      = "sizeof" "(" type ")" ;
  address-expression        = "addr" "(" lvalue ")" ;
- name-expression  = name | call-expression | method-call-expression | constructor-call-expression ;
+ name-expression  = name | call-expression ;
  call-expression        = name "(" [ expression { "," expression } ] ")" ;
- method-call-expression  = name "." name "(" [ expression { "," expression } ] ")" ;
- constructor-call-expression    = name "(" [ expression { "," expression } ] ")" ;
  field-access     = name "." name { "." name } ;
  index-expression       = name "[" expression "]" ;
  number-expression      = number ;
- array-literal    = "[" [ expression { "," expression } ] "]" ;
- string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
- escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
  parenthesized-expression       = "(" expression ")" ;
  indent          = INDENT ;
  dedent          = DEDENT ;
@@ -117,15 +98,13 @@ cd pyxc-llvm-tutorial/code/chapter-28
  builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
                  | "float" | "float32" | "float64"
                  | "bool" | "None" ;
- alias-type       = name ;
  struct-type      = name ;
  pointer-type     = "ptr" "[" type "]" ;
- type            = base-type [ array-suffix ] ;
- base-type        = builtin-type | alias-type | struct-type | pointer-type ;
- array-suffix     = "[" integer "]" ;
+ type            = builtin-type | struct-type | pointer-type ;
  cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
                  | "float" | "float32" | "float64"
-                 | "bool" | pointer-type ;
+-                | "bool" ;
++                | "bool" | pointer-type ;
  integer         = digit { digit } ;
  number          = ( digit { digit } [ "." { digit } ]
                    | "." digit { digit } ) [ exponent ] ;
@@ -143,206 +122,321 @@ cd pyxc-llvm-tutorial/code/chapter-28
  BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
-## New Tokens
+## One New Keyword
+
+`sizeof` needs a token like every other keyword I've added:
 
 ```cpp
-tok_public = -41,
-tok_private = -42,
+tok_sizeof = -37,
 ```
 
-Both are registered in the keyword table and in the token-name map, so error messages print `'public'` and `'private'`.
-
-## Storing Visibility Information
-
-Visibility lands in two places on `StructTypeInfo`. Fields gain an `IsPublic` flag directly on `StructFieldInfo`:
-
 ```cpp
-struct StructFieldInfo {
-  string Name;
-  ValueType Type = ValueType::Error;
-  string StructName;
-  bool IsPublic = true;
-};
+{"sizeof", tok_sizeof}
 ```
 
-Methods are tracked separately, in a map from method name to visibility:
+## `sizeof(T)`: a Size I Don't Have to Compute Myself
+
+I could compute a struct's size by hand: add up its fields, account for padding, remember that pointers are 8 bytes on a 64-bit target. But I already have all of that information, since I just built the LLVM type for every struct I've declared. Asking LLVM for the size directly is both less error-prone and correct across whatever target I eventually compile for.
+
+`sizeof(T)` always produces an `int64`, no matter what `T` is:
 
 ```cpp
-struct StructTypeInfo {
-  string Name;
-  bool IsClass = false;
-  vector<StructFieldInfo> Fields;
-  std::map<string, size_t> FieldIndex;
-  std::map<string, bool> MethodIsPublic;
-};
-```
+class SizeofExpressionNode : public ExpressionNode {
+  ValueType TargetType;
+  string TargetStructName;
 
-Methods need their own map rather than a flag next to the field, since a method's signature lives in `FunctionSignatures`, not in `StructTypeInfo::Fields` — there's no single struct visibility could hang off of the way `IsPublic` hangs off `StructFieldInfo`.
-
-## Parsing Visibility Modifiers
-
-The body loop inside `ParseAggregateDefinition` now reads an optional visibility token before deciding whether the member is a field or a method:
-
-```cpp
-bool MemberIsPublic = true;
-bool HasVisibilityModifier = false;
-if (CurrentToken == tok_public || CurrentToken == tok_private) {
-  HasVisibilityModifier = true;
-  MemberIsPublic = (CurrentToken == tok_public);
-  getNextToken(); // eat visibility modifier
-}
-if (HasVisibilityModifier && !Info.IsClass) {
-  LogErrorExpression("Visibility modifiers are only allowed inside class bodies");
-  return false;
-}
-```
-
-With no modifier, `MemberIsPublic` stays `true`: the default is public. A modifier inside a `struct` body is rejected immediately, before the parser even looks at what follows it.
-
-A field's visibility rides along with everything else already pushed into `Info.Fields`:
-
-```cpp
-Info.Fields.push_back({FieldName, FieldType, FieldStructName, MemberIsPublic});
-```
-
-A method's visibility is passed as an extra argument into `ParseMethodDefinitionInClass`, which now takes `bool IsPublic` and records it directly:
-
-```cpp
-StructTypes[ClassName].MethodIsPublic[MethodName] = IsPublic;
-```
-
-`Info.MethodIsPublic` is copied back out of `StructTypes[StructName]` after every field (`Info.MethodIsPublic = StructTypes[StructName].MethodIsPublic;`), for the same reason [Chapter 26](chapter-26.md) already re-registers `StructTypes[StructName] = Info` after every member: methods parsed earlier in the body need to stay visible while later members are parsed, and vice versa.
-
-## Enforcing Private Access
-
-Access is decided by one small function:
-
-```cpp
-static string CurrentClassScopeName;
-
-static bool CanAccessClassMember(const string &OwnerClass, bool IsPublic) {
-  return IsPublic || (!CurrentClassScopeName.empty() &&
-                      CurrentClassScopeName == OwnerClass);
-}
-```
-
-A member is reachable if it's `public`, or if the code currently being parsed belongs to the same class the member is on. "Currently being parsed" is `CurrentClassScopeName`, set and restored by an RAII guard:
-
-```cpp
-struct ClassScopeGuard {
-  string Saved;
-  ClassScopeGuard(const string &ClassName) : Saved(CurrentClassScopeName) {
-    CurrentClassScopeName = ClassName;
+public:
+  SizeofExpressionNode(ValueType TargetType, const string &TargetStructName = "")
+      : TargetType(TargetType), TargetStructName(TargetStructName) {
+    setType(ValueType::Int64);
   }
-  ~ClassScopeGuard() { CurrentClassScopeName = Saved; }
+  Value *codegen() override;
 };
 ```
 
-`ParseMethodDefinitionInClass` instantiates a `ClassScopeGuard` before parsing the method's body. When the method is done, the destructor restores whatever `CurrentClassScopeName` was before — empty at the top level, since pyxc has no nested classes to restore into instead.
+I call `setType(ValueType::Int64)` in the constructor rather than leaving it to be inferred later, since the result type never depends on `TargetType`: `sizeof(int8)` and `sizeof(Point)` are both `int64`.
 
-## Access Checks at Every Use Site
-
-`CanAccessClassMember` is checked wherever the parser resolves a class member, which turns out to be four places, not one:
-
-**Field access, both existing field-chain parsers.** The auto-deref-capable `ParseFieldAccessFromFirstMember` from [Chapter 26](chapter-26.md) checks it inside its `ConsumeField` lambda:
+Parsing it means reusing `ParseTypeToken`, the same function every other type annotation in pyxc goes through:
 
 ```cpp
-const auto &FD = SI->second.Fields[FI->second];
-if (!CanAccessClassMember(CurStruct, FD.IsPublic)) {
-  LogErrorExpression(
-      ("Field '" + Field + "' is private on '" + CurStruct + "'").c_str());
-  return false;
+static unique_ptr<ExpressionNode> ParseSizeofExpression() {
+  getNextToken(); // eat 'sizeof'
+  if (CurrentToken != tok_lparen)
+    return LogErrorExpression("Expected '(' after sizeof");
+  getNextToken(); // eat '('
+  string TargetStructName;
+  ValueType TargetType = ParseTypeToken(&TargetStructName);
+  if (TargetType == ValueType::Error)
+    return nullptr;
+  if (TargetType == ValueType::None)
+    return LogErrorExpression("Cannot take sizeof(None)");
+  if (CurrentToken != tok_rparen)
+    return LogErrorExpression("Expected ')' after sizeof type");
+  getNextToken(); // eat ')'
+  return make_unique<SizeofExpressionNode>(TargetType, TargetStructName);
 }
 ```
 
-The older `ParseFieldAccessExpression` from [Chapter 18](chapter-18.md) — still used for field chains where the whole `.field` sequence is parsed from scratch rather than continuing from an already-consumed first member — gets the identical check inline in its own loop. Both paths reject reading *and* writing a private field, since assignment and read both resolve the field chain through one of these two functions before anything else happens.
-
-**Method call**, in `ParseMethodCallExpression`, right after resolving `ClassName.MethodName`:
+`sizeof(None)` is the one type I reject outright: `None` isn't a value at all, so asking for its size is a question that shouldn't have been asked. `ParsePrimary` routes `tok_sizeof` here:
 
 ```cpp
-auto MI = CI->second.MethodIsPublic.find(MethodName);
-if (MI != CI->second.MethodIsPublic.end() &&
-    !CanAccessClassMember(ClassName, MI->second)) {
-  return LogErrorExpression(
-      ("Method '" + MethodName + "' is private on '" + ClassName + "'")
-          .c_str());
+case tok_sizeof:
+  return ParseSizeofExpression();
+```
+
+Codegen doesn't emit an instruction, since there's nothing to compute at runtime:
+
+```cpp
+Value *SizeofExpressionNode::codegen() {
+  llvm::Type *Ty = LLVMTypeFor(TargetType, TargetStructName);
+  if (!Ty)
+    return LogErrorV("Invalid sizeof target type");
+  uint64_t Bytes =
+      TheModule->getDataLayout().getTypeAllocSize(Ty).getFixedValue();
+  return ConstantInt::get(Type::getInt64Ty(*TheContext), Bytes);
 }
 ```
 
-**Constructor call**, in `ParseNameExpressionWithName`, guarded by whether `__init__` exists at all:
+`getTypeAllocSize` is LLVM's own answer to "how many bytes does one of these take up in an array," padding included, for whatever target I'm compiling for. I hand it a type and get back a number I fold directly into a constant. For a function that just returns `sizeof(int64)`, the generated IR is:
+
+```llvm
+define i64 @size_i64() {
+entry:
+  ret i64 8
+}
+```
+
+No call, no load: the size was already known once code generation started, so it's just a literal by the time IR exists.
+
+Sizes I get on a 64-bit target:
+
+| Type | `sizeof` |
+|------|---------|
+| `int8` | 1 |
+| `int32` | 4 |
+| `int64` | 8 |
+| `ptr[int8]` | 8 |
+| `Point` (two `int` fields) | 16 |
+
+Every pointer is 8 bytes here regardless of what it points to. LLVM's opaque pointer model means there's only one pointer representation at the IR level; pyxc is the one tracking what it points to, not LLVM.
+
+## `ptr[T](expr)`: Reinterpreting a Pointer
+
+Before this chapter, `ptr[int64](raw)` wasn't rejected by any type check, it was rejected by the parser before it got that far: `ParsePrimary` had no `case tok_ptr` at all, so a leading `ptr` in expression position was simply "unknown token when expecting an expression." I confirmed this against [Chapter 26](chapter-26.md)'s binary directly rather than guess at it.
+
+So the fix isn't lifting a guard, it's adding a case, falling through to the exact same call every other cast target already uses:
 
 ```cpp
-if (InitSignature) {
-  auto MI = SI->second.MethodIsPublic.find("__init__");
-  if (MI != SI->second.MethodIsPublic.end() &&
-      !CanAccessClassMember(ParsedName, MI->second)) {
-    return LogErrorExpression(
-        ("Method '__init__' is private on '" + ParsedName + "'").c_str());
+case tok_bool:
+case tok_ptr:
+  return ParseCastExpression();
+case tok_sizeof:
+  return ParseSizeofExpression();
+```
+
+Once `tok_ptr` is reachable, though, I do need one new guard, since `ParseCastExpression` will now happily see `Type == ValueType::Pointer` and I don't want to allow casting just anything to a pointer:
+
+```cpp
+if (Type == ValueType::Pointer && Expr->getType() != ValueType::Pointer)
+  return LogErrorExpression("Pointer casts require a pointer operand");
+return make_unique<CastExpressionNode>(Type, std::move(Expr), TargetStructName);
+```
+
+I don't allow casting an integer to a pointer. There's no address I could hand it that pyxc could vouch for, and letting that through would just be a way to smuggle in undefined behavior with a friendlier syntax.
+
+`CastExpressionNode` needs a `TargetStructName` now, for the same reason `SizeofExpressionNode` does: `ptr[Point]` and `ptr[int64]` are both `ValueType::Pointer`, so the pointee type has to travel separately:
+
+```cpp
+class CastExpressionNode : public ExpressionNode {
+  ValueType TargetType;
+  string TargetStructName;
+  unique_ptr<ExpressionNode> Expr;
+
+public:
+  CastExpressionNode(ValueType TargetType, unique_ptr<ExpressionNode> Expr,
+              const string &TargetStructName = "")
+      : TargetType(TargetType), TargetStructName(TargetStructName),
+        Expr(std::move(Expr)) {
+    setType(TargetType, TargetStructName);
   }
-}
+  Value *codegen() override;
+};
 ```
 
-A private `__init__` makes `ClassName(args)` fail from outside the class, the same way a private method or field would.
+Without it, a cast to `ptr[int64]` would carry no pointee information at all, and anything downstream that indexes or reads through the result wouldn't know what it's pointing at.
 
-## IR Is Unchanged
+Codegen for the pointer-to-pointer case is almost nothing, because at the LLVM level there's almost nothing to do:
 
-Visibility is enforced entirely while parsing. Nothing changes in the generated IR: `public` and `private` leave no trace in the output. A `private` field and a `public` field of the same type generate identical IR.
+```cpp
+if (From == ValueType::Pointer && To == ValueType::Pointer)
+  return Builder->CreateBitCast(V, LLVMTypeFor(ValueType::Pointer),
+                                "ptrcast");
+```
 
-## Known Limitations
+With opaque pointers, every pointer is the same IR type regardless of what it points to, so `CreateBitCast` between two of them doesn't actually emit an instruction: the value just passes through. I confirmed this by compiling a cast and reading the IR:
 
-**There is no `protected`.** Access is either class-private or world-public; there's no subclass-visible middle tier, since pyxc has no inheritance.
+```llvm
+%calltmp = call ptr @malloc(i64 8)
+store ptr %calltmp, ptr %raw, align 8
+%raw1 = load ptr, ptr %raw, align 8
+store ptr %raw1, ptr %p, align 8
+```
 
-**Visibility modifiers on structs are rejected outright.** `struct` members are always public. The parser errors the moment it sees `public` or `private` before a struct member, rather than silently ignoring the modifier.
+No `bitcast` anywhere. The cast's only real effect is at the pyxc level: the result is now typed `ptr[int64]` instead of `ptr[int8]`, so any GEP or load I generate from it afterward uses the right element type.
+
+## Calling `malloc` and `free`
+
+```pyxc
+extern def malloc(n: int64) -> ptr[int8]
+extern def free(p: ptr[int8])
+```
+
+Nothing about these declarations is special; any C function with compatible types can be called the same way. But there's a gap I ran into the first time I tried this: even though `malloc` is declared to return exactly `ptr[int8]`, assigning its result straight to a `var raw: ptr[int8]` fails to compile:
+
+```pyxc
+var raw: ptr[int8] = malloc(sizeof(Point))
+```
+
+```text
+Error (Line 10, Column 45): Type mismatch in variable initialization
+```
+
+The pointee-type check I added in an earlier chapter compares the declared variable's pointee against the initializer's pointee, and a call to an `extern` function doesn't carry that pointee metadata through to its result the way a local expression does, even when the declared return type is the exact type I'm assigning to. I ran into the same error calling an extern function that returns `ptr[Point]`, so it isn't specific to `int8`; any pointer-returning `extern` call needs the same treatment. The fix is the cast I already have: wrap the call in an explicit same-type cast to set the pointee metadata myself.
+
+```pyxc
+var raw: ptr[int8] = ptr[int8](malloc(sizeof(Point)))
+```
+
+The full pattern for heap-allocating a single struct:
+
+```pyxc
+struct Point:
+  x: int
+  y: int
+
+def main() -> int:
+  var raw: ptr[int8] = ptr[int8](malloc(sizeof(Point)))
+  var p: ptr[Point] = ptr[Point](raw)
+  p[0].x = 77
+  printd(float64(p[0].x))
+  free(raw)
+  return 0
+```
+
+`malloc` hands back raw bytes as `ptr[int8]`. `ptr[Point](raw)` tells pyxc to treat those same bytes as a `Point`, so `p[0].x` generates the right field offset. `free` gets the original `ptr[int8]` back. Passing `p` directly would be a type error, since `p` is `ptr[Point]`, not `ptr[int8]`.
+
+## Build and Run
+
+```bash
+cd code/chapter-21
+cmake -S . -B build && cmake --build build
+```
 
 ## Try It
 
-**Private field, accessed from outside**
+### `sizeof` of scalar types and a struct
 
 ```pyxc
-class Foo:
-  private x: int
+extern def printd(x: float64)
 
-def main() -> int:
-  var f: Foo
-  f.x = 3
-  return 0
-```
-
-```text
-Error (Line 6, Column 7): Field 'x' is private on 'Foo'
-```
-
-**Private constructor, called from outside**
-
-```pyxc
-class Foo:
+struct Point:
   x: int
-  private def __init__():
-    self.x = 0
+  y: int
 
 def main() -> int:
-  var f: Foo = Foo()
+  printd(float64(sizeof(int8)))
+  printd(float64(sizeof(int32)))
+  printd(float64(sizeof(int64)))
+  printd(float64(sizeof(ptr[int8])))
+  printd(float64(sizeof(Point)))
   return 0
 ```
 
 ```text
-Error (Line 7, Column 20): Method '__init__' is private on 'Foo'
+1.000000
+4.000000
+8.000000
+8.000000
+16.000000
 ```
 
-**Visibility modifier on a struct**
+### `malloc`, a pointer cast, and field access
 
 ```pyxc
-struct Foo:
-  private x: int
+extern def malloc(n: int64) -> ptr[int8]
+extern def free(p: ptr[int8])
+extern def printd(x: float64)
+
+struct Point:
+  x: int
+  y: int
+
+def main() -> int:
+  var raw: ptr[int8] = ptr[int8](malloc(sizeof(Point)))
+  var p: ptr[Point] = ptr[Point](raw)
+  p[0].x = 77
+  p[0].y = 33
+  printd(float64(p[0].x))
+  printd(float64(p[0].y))
+  free(raw)
+  return 0
 ```
 
 ```text
-Error (Line 2, Column 11): Visibility modifiers are only allowed inside class bodies
+77.000000
+33.000000
 ```
+
+### `malloc` and pointer arithmetic: a heap array
+
+```pyxc
+extern def malloc(n: int64) -> ptr[int8]
+extern def free(p: ptr[int8])
+extern def printd(x: float64)
+
+def main() -> int:
+  var n: int64 = 5
+  var raw: ptr[int8] = ptr[int8](malloc(n * sizeof(int64)))
+  var p: ptr[int64] = ptr[int64](raw)
+  p[0] = 5
+  p[1] = 7
+  p[2] = 9
+  p[3] = 6
+  p[4] = 8
+  var q: ptr[int64] = p + 2
+  printd(float64(q[0] + q[1] + q[2]))
+  free(raw)
+  return 0
+```
+
+```text
+23.000000
+```
+
+### Inspecting the IR: `sizeof` really is just a constant
+
+```bash
+pyxc --emit llvm-ir -o out.ll program.pyxc
+grep 'ret i64' out.ll
+```
+
+```llvm
+ret i64 8
+```
+
+## Known Limitations
+
+**No null check.** `malloc` can return null when the system is out of memory. I don't insert a null check; dereferencing a null pointer crashes silently.
+
+**No bounds checking.** Accessing `p[n]` on a heap buffer of size `n` is an out-of-bounds write. I don't track buffer sizes anywhere.
+
+**Manual ownership.** There's no destructor, no reference counting, no garbage collector. Forgetting to call `free` leaks memory; calling it twice or reading after `free` is undefined behavior: silently corrupted data, or a crash, with no diagnostic pointing at why.
+
+**Pointer casts are pointer-only.** `ptr[T](expr)` requires `expr` to already be a pointer; I don't let an integer become a pointer through a cast. And casting a pointer-returning `extern` call result to its own declared type, as shown above, isn't optional: I have to do it every time, since the call itself doesn't carry pointee metadata.
 
 ## What's Next
 
-[Chapter 29](chapter-29.md) adds traits: named contracts a class can declare it satisfies. Conformance is checked at compile time.
+[Chapter 29](chapter-29.md) adds type aliases.
 
 ## Need Help?
 

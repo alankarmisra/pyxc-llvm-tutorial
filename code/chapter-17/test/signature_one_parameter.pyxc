@@ -1,0 +1,5 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed a function definition." %t
+
+# function-signature: one parameter
+def square(x): x * x

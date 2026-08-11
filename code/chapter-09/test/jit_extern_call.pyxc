@@ -1,0 +1,9 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed an extern" %t
+# RUN: grep -q "Evaluated to" %t
+# RUN: grep -q "Evaluated to 0.841" %t
+
+# JIT + extern: sin(1.0) ≈ 0.841471. Confirms the JIT resolves the extern
+# 'sin' to the C library implementation and gets the right numeric result.
+extern def sin(x)
+sin(1.0)

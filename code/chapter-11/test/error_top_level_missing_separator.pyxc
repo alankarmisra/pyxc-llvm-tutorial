@@ -1,0 +1,6 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Unexpected number" %t
+# RUN: not grep -q "Parsed a top-level expression." %t
+
+# program: adjacent top-level expressions require an end-of-line separator
+1 2

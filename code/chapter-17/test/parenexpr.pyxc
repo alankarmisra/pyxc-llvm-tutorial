@@ -1,6 +1,6 @@
 # RUN: %pyxc < %s 2>&1 | FileCheck %s
-# CHECK: 10
-# CHECK: 8
+# CHECK: Evaluated to 10.000000
+# CHECK: Evaluated to 8.000000
 
 
 # Tests: parenthesized-expression overrides the default * > + precedence.

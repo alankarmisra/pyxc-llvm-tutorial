@@ -1,50 +1,34 @@
 ---
-description: "Complete pyxc's arithmetic: add / and %, five compound assignment operators, and prefix/postfix ++/-- for all lvalue shapes."
+description: "Decode Unicode escapes and raw UTF-8 in character and string literals while rejecting invalid Unicode values."
 ---
-# 32. pyxc: Arithmetic Completeness
+# 32. pyxc: Unicode Literals
 
 ## What I Am Building
 
-In [Chapter 31](chapter-31.md), I finished the object model. Before moving further, I want to close a gap: I've given pyxc `+`, `-`, and `*`, but not `/` or `%`. I haven't added compound assignment (`+=`, `*=`, etc.), and I haven't added `++` or `--` either. After this chapter, all of that works:
+[Chapter 31](chapter-31.md) added character literals and byte-sized hexadecimal escapes. I can write `'A'`, `'\n'`, and `'\x41'`, but I cannot write a character such as `Ω` or `🙂` yet. String literals copy non-ASCII bytes without checking whether those bytes form valid UTF-8.
+
+In this chapter, I make both literal forms understand Unicode:
 
 ```pyxc
-extern def printd(x: float64)
-
-def main() -> int:
-  var a: int = 17
-  var b: int = 4
-  var q: int = a / b
-  var r: int = a % b
-
-  var x: int = 10
-  x += 5
-  x -= 3
-  x *= 2
-  x /= 4
-  x %= 10
-
-  var i: int = 0
-  i++
-  ++i
-
-  printd(float64(q + r + x + i))
-  return 0
+var omega: int32 = 'Ω'
+var smile: int32 = '\U0001F642'
+puts("caf\u00E9 Ω 🙂")
 ```
 
-```
-13.000000
-```
+I'm only adding Unicode to character and string literals here. Unicode identifiers — `café` as a variable name — are a separate problem with their own rules; I'm leaving that for later.
 
 ## Source Code
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-32
+cd pyxc-llvm-tutorial/code/chapter-39
 ```
 
 ## Grammar
 
-I change three areas of the grammar. I replace the bare `=` in `assignment-statement` with `assignment-operator`, now accepting any of the six assignment operators. `term` and `unary-expression` both change to fold in `%` and `++`/`--`, and a new `postfix-expression` production captures postfix `++`/`--` between `unary-expression` and `primary`:
+I replace the separate string and character escape productions with one `literal-escape` production. I also add octal, `\u`, and `\U` forms:
+
+`code/chapter-39/pyxc.ebnf`
 
 ```grammardiff
  program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
@@ -73,33 +57,45 @@ I change three areas of the grammar. I replace the bare `=` in `assignment-state
  function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
  typed-parameter      = name ":" type ;
  if-statement          = "if" expression ":" suite
+                 { end-of-lines "elif" expression ":" suite }
                  [ end-of-lines "else" ":" suite ] ;
+ while-statement       = "while" expression ":" suite ;
+ do-while-statement     = "do" ":" suite end-of-lines "while" expression ;
+ switch-statement      = "switch" expression ":" end-of-lines indent switch-body dedent ;
+ switch-body      = switch-case { end-of-lines switch-case } [ end-of-lines default-case ] ;
+ switch-case      = "case" switch-integer { "," switch-integer } ":" suite ;
+ default-case     = "default" ":" suite ;
  for-statement         = "for"
                    ( "var" name ":" type | name )
                    "=" expression "," expression "," expression ":" suite ;
  variable-statement         = "var" variable-binding { "," variable-binding } ;
--assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
-+assignment-statement      = lvalue assignment-operator expression ; (* assignment is a statement here *)
- simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
- compound-statement    = if-statement | for-statement ;
+ assignment-statement      = lvalue assignment-operator expression ; (* assignment is a statement here *)
+ simple-statement      = return-statement | break-statement | continue-statement | variable-statement | assignment-statement | expression ;
+ compound-statement    = if-statement | for-statement | while-statement | do-while-statement | switch-statement ;
  statement       = simple-statement | compound-statement ;
  suite           = simple-statement | compound-statement | end-of-lines block ;
  return-statement      = "return" [ expression ] ;
+ break-statement       = "break" ;
+ continue-statement    = "continue" ;
  statement-separator = end-of-lines | BLOCK_END ;
  block = indent statement { statement-separator statement } dedent ;
- expression      = comparison ;
- comparison      = sum { comparison-operator sum } ;
- comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ expression      = logical-or ;
+ logical-or      = logical-and { "||" logical-and } ;
+ logical-and     = bitwise-or { "&&" bitwise-or } ;
+ bitwise-or      = bitwise-xor { "|" bitwise-xor } ;
+ bitwise-xor     = bitwise-and { "^" bitwise-and } ;
+ bitwise-and     = equality { "&" equality } ;
+ equality        = relational { ("==" | "!=") relational } ;
+ relational      = shift { ("<" | "<=" | ">" | ">=") shift } ;
+ shift           = sum { ("<<" | ">>") sum } ;
  sum             = term { ("+" | "-") term } ;
--term            = unary-expression { ("*" | "/") unary-expression } ;
-+term            = unary-expression { ("*" | "/" | "%") unary-expression } ;
+ term            = unary-expression { ("*" | "/" | "%") unary-expression } ;
  lvalue          = name | field-access | index-expression ;
  variable-binding      = name ":" type [ "=" expression ] ;
--unary-expression       = "-" unary-expression | primary ;
-+unary-expression       = ("-" | "++" | "--") unary-expression | postfix-expression ;
-+postfix-expression     = primary [ postfix-operator ] ;
-+postfix-operator       = "++" | "--" ;
- primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
+ unary-expression       = ("-" | "!" | "~" | "++" | "--") unary-expression | postfix-expression ;
+ postfix-expression     = primary [ postfix-operator ] ;
+ postfix-operator       = "++" | "--" ;
+ primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | character-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
  cast-expression        = cast-type "(" expression ")" ;
  sizeof-expression      = "sizeof" "(" type ")" ;
  address-expression        = "addr" "(" lvalue ")" ;
@@ -111,13 +107,25 @@ I change three areas of the grammar. I replace the bare `=` in `assignment-state
  index-expression       = name "[" expression "]" ;
  number-expression      = number ;
  array-literal    = "[" [ expression { "," expression } ] "]" ;
- string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
- escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
+-string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
+-character-literal     = "'" ( ? any char except ' and newline ? | character-escape ) "'" ;
+-escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
+-character-escape      = "\\" ( "a" | "b" | "f" | "n" | "r" | "t" | "v"
+-                        | "\\" | "'" | "\"" | "?" | "0" | "x" hex-digit hex-digit ) ;
++string-literal   = "\"" { ? valid Unicode scalar value except " and newline, encoded as UTF-8 ? | literal-escape } "\"" ;
++character-literal     = "'" ( ? valid Unicode scalar value except ' and newline, encoded as UTF-8 ? | literal-escape ) "'" ;
++literal-escape   = "\\" ( simple-escape | octal-escape | "x" hex-digit hex-digit
++                   | "u" hex-digit hex-digit hex-digit hex-digit
++                   | "U" hex-digit hex-digit hex-digit hex-digit
++                         hex-digit hex-digit hex-digit hex-digit ) ;
++simple-escape    = "a" | "b" | "f" | "n" | "r" | "t" | "v"
++                 | "\\" | "'" | "\"" | "?" ;
++octal-escape     = octal-digit [ octal-digit [ octal-digit ] ] ;
  parenthesized-expression       = "(" expression ")" ;
  indent          = INDENT ;
  dedent          = DEDENT ;
  
-+assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
+ assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
  name      = (letter | "_") { letter | digit | "_" } ;
  builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
                  | "float" | "float32" | "float64"
@@ -132,12 +140,15 @@ I change three areas of the grammar. I replace the bare `=` in `assignment-state
                  | "float" | "float32" | "float64"
                  | "bool" | pointer-type ;
  integer         = digit { digit } ;
+ switch-integer       = [ "-" ] integer ;
  number          = ( digit { digit } [ "." { digit } ]
                    | "." digit { digit } ) [ exponent ] ;
  exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
  boolean-literal    = "True" | "False" ;
  letter          = "A".."Z" | "a".."z" ;
  digit           = "0".."9" ;
+ hex-digit       = digit | "A".."F" | "a".."f" ;
++octal-digit     = "0".."7" ;
  end-of-line             = "\r\n" | "\r" | "\n" ;
  comment = "#" { comment-character } ;
  comment-character = ? any character except "\r" and "\n" ? ;
@@ -148,274 +159,222 @@ I change three areas of the grammar. I replace the bare `=` in `assignment-state
  BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
-## New Tokens and Lexer Peek-Ahead
+I keep `\xNN` at exactly two hexadecimal digits, as I defined it in Chapter 31. I let an octal escape consume one, two, or three digits. I give `\u` a fixed four hex digits and `\U` a fixed eight.
 
-I add seven new tokens to cover the compound assignment operators and the increment/decrement operators:
+## Code Points and UTF-8
 
-```cpp
-tok_pluseq     = -45,   // +=
-tok_minuseq    = -46,   // -=
-tok_muleq      = -47,   // *=
-tok_diveq      = -48,   // /=
-tok_modeq      = -49,   // %=
-tok_plusplus   = -56,   // ++
-tok_minusminus = -57,   // --
-```
+I decode either literal down to one code point. For a character literal, that code point is the value. For a string literal, I go one step further and encode it as UTF-8 bytes.
 
-I produce each with a one-character peek in the lexer. The `+` path illustrates the pattern: when I see `+`, I peek at the next character to decide between `+=`, `++`, and bare `+`:
+Unicode only defines code points through `U+10FFFF`. The range `U+D800` through `U+DFFF` is reserved for UTF-16 surrogate pairs, so those values are not standalone Unicode characters. I reject both cases with one check:
 
 ```cpp
-if (LexerLastChar == '+') {
-  int Next = peek();
-  int Tok = tok_plus;
-  if (Next == '=')
-    Tok = (advance(), tok_pluseq);
-  else if (Next == '+')
-    Tok = (advance(), tok_plusplus);
-  LexerLastChar = advance();
-  return Tok;
+static bool IsUnicodeScalarValue(uint32_t Value) {
+  return Value <= 0x10FFFF && !(Value >= 0xD800 && Value <= 0xDFFF);
 }
 ```
 
-I apply the same pattern to `-` (which must also handle `->` for the arrow token), `*`, `/`, and `%`. The `/` path is new — previously `/` was an unknown character. Now I return `'/'` bare, or `tok_diveq` if it's followed by `=`.
+The valid values are called Unicode scalar values.
 
-## Division and Remainder
+## Sharing One Decoder
 
-I add `/` and `%` to the precedence table at level 40 — the same level as `*`:
-
-```cpp
-{tok_slash, 40},   // /
-{tok_percent, 40}, // %
-```
-
-The LLVM instructions I emit from `EmitBuiltInArithmetic` differ by type:
-
-| Op | Integer | Float |
-|----|---------|-------|
-| `/` | `sdiv` | `fdiv` |
-| `%` | `srem` | error |
-
-`%` on float operands is a type error — I return `ValueType::Error` from `GetBinaryResultType` when either operand of `%` is not an integer:
+Strings and characters now accept the same escape forms and the same raw UTF-8. I use one result type for the failures that can occur along the way:
 
 ```cpp
-if (Operator == tok_percent && (!IsIntType(L) || !IsIntType(R)))
-  return ValueType::Error;
+enum class LiteralDecodeError {
+  None,
+  InvalidEscape,
+  InvalidUtf8,
+  InvalidCodePoint,
+};
 ```
 
-I report the resulting `ValueType::Error` as a type mismatch — the same generic error every binary operator falls back to, not something specific to `%`:
+I then send both literal paths through `DecodeLiteralCodePoint()`. The function reads either one escape or one raw UTF-8 sequence, returns its code point through `Value`, and leaves `LexerLastChar` at the first byte after it.
+
+### Decoding Escapes
+
+The existing simple escapes each become their corresponding code point. I parse `\xNN` as two hexadecimal digits. Anything else falls to a default case: if it's not an octal digit either, it's not a valid escape at all — `\q` or `\8` both land here and get rejected. Otherwise I consume up to three octal digits:
+
+```cpp
+default:
+  if (LexerLastChar < '0' || LexerLastChar > '7')
+    return LiteralDecodeError::InvalidEscape;
+
+  Value = 0;
+  for (int I = 0; I < 3; ++I) {
+    Value = (Value << 3) |
+            static_cast<uint32_t>(LexerLastChar - '0');
+    int Next = peek();
+    if (I == 2 || Next < '0' || Next > '7') {
+      LexerLastChar = advance();
+      break;
+    }
+    LexerLastChar = advance();
+  }
+  return LiteralDecodeError::None;
+```
+
+`'\101'` is octal for 65 — the letter `A`.
+
+For `\u` and `\U`, I read exactly four or eight hexadecimal digits and then validate the result:
+
+```cpp
+case 'u':
+case 'U': {
+  int Digits = LexerLastChar == 'u' ? 4 : 8;
+  Value = 0;
+  for (int I = 0; I < Digits; ++I) {
+    int Digit = HexDigitValue(advance());
+    if (Digit < 0)
+      return LiteralDecodeError::InvalidEscape;
+    Value = (Value << 4) | static_cast<uint32_t>(Digit);
+  }
+  LexerLastChar = advance();
+  if (!IsUnicodeScalarValue(Value))
+    return LiteralDecodeError::InvalidCodePoint;
+  return LiteralDecodeError::None;
+}
+```
+
+So `\u03A9` gives me `Ω`, and `\U0001F642` gives me `🙂`.
+
+**Incomplete escape:**
+```pyxc
+var x: int32 = '\u123'
+```
+```
+Error (Line 2, Column 18): invalid character escape
+  var x: int32 = '\u123'
+                 ^~~~
+```
+
+**Surrogate value:**
+```pyxc
+var x: int32 = '\uD800'
+```
+```
+Error (Line 2, Column 18): invalid Unicode code point in character literal
+  var x: int32 = '\uD800'
+                 ^~~~
+```
+
+### Decoding Raw UTF-8
+
+For a raw non-ASCII character, I inspect the leading byte to decide whether the sequence contains two, three, or four bytes. I then require every remaining byte to have the UTF-8 continuation-byte shape `10xxxxxx`:
+
+```cpp
+for (int I = 1; I < Length; ++I) {
+  int Next = advance();
+  if (Next == EOF || (Next & 0xC0) != 0x80)
+    return LiteralDecodeError::InvalidUtf8;
+  Value = (Value << 6) | static_cast<uint32_t>(Next & 0x3F);
+}
+LexerLastChar = advance();
+```
+
+I also reject invalid leading bytes, overlong encodings, surrogate values, and values above `U+10FFFF`. A stray continuation byte on its own — one that never follows a valid leading byte — hits that same rejection:
+```
+Error (Line 2, Column 18): invalid UTF-8 in character literal
+```
+
+Raw and escaped spellings reach the same validated code point:
 
 ```pyxc
-def main() -> int:
-  var a: float64 = 5.5
-  var b: float64 = 2.0
-  var r: float64 = a % b
-  return 0
-```
-```
-Error (Line 4, Column 25): Type mismatch in binary operator
-  var r: float64 = a % b
-                        ^~~~
+'Ω' == '\u03A9'
+'🙂' == '\U0001F642'
 ```
 
-I also tighten the pointer arithmetic guard: only `+` and `−` allow a pointer on one side. I now explicitly reject `/` and `%` with a pointer operand:
+## Producing Character Values
+
+The character-literal branch now asks the shared decoder for one code point:
 
 ```cpp
-if ((Operator == tok_plus || Operator == tok_minus) &&
-    ((L == ValueType::Pointer && IsIntType(R)) ||
-     (R == ValueType::Pointer && IsIntType(L)))) {
-  // pointer arithmetic
+uint32_t Value = 0;
+LiteralDecodeError Error = DecodeLiteralCodePoint(Value);
+if (Error != LiteralDecodeError::None)
+  return LogLiteralDecodeError(Error, "character");
+
+if (LexerLastChar != '\'') {
+  fprintf(stderr,
+          "Error (Line %d, Column %d): unterminated character literal\n",
+          CurLoc.Line, CurLoc.Col);
+  PrintErrorSourceContext(CurLoc);
+  return tok_error;
 }
 ```
 
-## Compound Assignment AST Nodes
+I still turn `CharLiteralValue` into a `NumberExpressionNode`, same as before. A Unicode character stays an integer, so it goes through the same range checks every other character literal already does.
 
-I add four AST node classes, one for each lvalue shape, all sharing the same structure: an lvalue, an operator token, and an RHS expression:
+## Producing UTF-8 Strings
+
+For a string, I decode one code point at a time and append its UTF-8 encoding:
 
 ```cpp
-class CompoundAssignmentExpressionNode : public ExpressionNode {  // plain variable
-  string Name; int Operator; unique_ptr<ExpressionNode> Right; ...
-};
-class FieldCompoundAssignmentExpressionNode : public ExpressionNode {  // p.x += 1
-  unique_ptr<FieldExpressionNode> Left; int Operator; unique_ptr<ExpressionNode> Right; ...
-};
-class IndexCompoundAssignmentExpressionNode : public ExpressionNode {  // arr[i] *= 2
-  unique_ptr<IndexExpressionNode> Left; int Operator; unique_ptr<ExpressionNode> Right; ...
-};
-class IndexedFieldCompoundAssignmentExpressionNode : public ExpressionNode {  // arr[i].x += 3
-  unique_ptr<IndexedFieldExpressionNode> Left; int Operator; unique_ptr<ExpressionNode> Right; ...
-};
+while (LexerLastChar != '"' && LexerLastChar != EOF &&
+       LexerLastChar != '\n') {
+  uint32_t Value = 0;
+  LiteralDecodeError Error = DecodeLiteralCodePoint(Value);
+  if (Error != LiteralDecodeError::None)
+    return LogLiteralDecodeError(Error, "string");
+  AppendUtf8(StringLiteralStr, Value);
+}
 ```
 
-I make all four override `shouldPrintValue()` to return `false` — compound assignment is a statement, not a value expression, so the REPL doesn't auto-print its result.
-
-I drive the parse dispatch with two helpers: I check whether the current token is one of the five compound assignment tokens (`IsCompoundAssignTok`), then convert it to the corresponding arithmetic operator character (`CompoundAssignToBinaryOp`) so codegen can call `EmitBuiltInArithmetic`:
+`AppendUtf8()` emits one byte for ASCII and two, three, or four bytes for larger code points:
 
 ```cpp
-static bool IsCompoundAssignTok(int Tok) {
-  return Tok == tok_pluseq || Tok == tok_minuseq || Tok == tok_muleq ||
-         Tok == tok_diveq  || Tok == tok_modeq;
-}
-static int CompoundAssignToBinaryOp(int Tok) {
-  switch (Tok) {
-  case tok_pluseq:
-    return tok_plus;
-  case tok_minuseq:
-    return tok_minus;
-  case tok_muleq:
-    return tok_star;
-  case tok_diveq:
-    return tok_slash;
-  case tok_modeq:
-    return tok_percent;
-  default:
-    return 0;
+static void AppendUtf8(string &Output, uint32_t Value) {
+  if (Value <= 0x7F) {
+    Output.push_back(static_cast<char>(Value));
+  } else if (Value <= 0x7FF) {
+    Output.push_back(static_cast<char>(0xC0 | (Value >> 6)));
+    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
+  } else if (Value <= 0xFFFF) {
+    Output.push_back(static_cast<char>(0xE0 | (Value >> 12)));
+    Output.push_back(static_cast<char>(0x80 | ((Value >> 6) & 0x3F)));
+    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
+  } else {
+    Output.push_back(static_cast<char>(0xF0 | (Value >> 18)));
+    Output.push_back(static_cast<char>(0x80 | ((Value >> 12) & 0x3F)));
+    Output.push_back(static_cast<char>(0x80 | ((Value >> 6) & 0x3F)));
+    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
   }
 }
 ```
 
-I handle the plain-variable case in `ParseCompoundAssignmentRight`: I look up the destination type, convert the token to a binary op, call `ParseExpression` for the right-hand side, type-check the result, and return a `CompoundAssignmentExpressionNode`. The field case follows the same pattern in its own helper, `ParseFieldCompoundAssignmentRight`. The index and indexed-field cases follow the identical pattern too, but inline inside `ParseLeadingNameSimpleStatement` rather than in their own helpers.
-
-I write codegen the same way for all four nodes: resolve the lvalue to a pointer, load the current value, call `EmitBuiltInArithmetic(Operator, old, right)`, and store the result back.
-
-## Prefix and Postfix `++`/`--`
-
-I handle all four combinations of prefix/postfix × increment/decrement with a single AST node:
-
-```cpp
-class IncDecExpressionNode : public ExpressionNode {
-  unique_ptr<ExpressionNode> Operand;
-  bool IsIncrement;
-  bool IsPrefix;
-
-public:
-  IncDecExpressionNode(unique_ptr<ExpressionNode> Operand, bool IsIncrement, bool IsPrefix,
-                ValueType Type, const string &StructName = "")
-      : Operand(std::move(Operand)), IsIncrement(IsIncrement),
-        IsPrefix(IsPrefix) {
-    setType(Type, StructName);
-  }
-  Value *codegen() override;
-};
-```
-
-I require the operand to pass `IsIncDecAssignableExpr` — it must be a variable, field, index, or indexed-field expression:
-
-```cpp
-static bool IsIncDecAssignableExpr(const ExpressionNode *E) {
-  return dynamic_cast<const NameExpressionNode *>(E) ||
-         dynamic_cast<const FieldExpressionNode *>(E) ||
-         dynamic_cast<const IndexExpressionNode *>(E) ||
-         dynamic_cast<const IndexedFieldExpressionNode *>(E);
-}
-```
-
-In codegen, I load the old value, compute `old ± 1` via `EmitBuiltInArithmetic`, store the new value, and return `IsPrefix ? new : old`. For postfix, I return the value that existed *before* the mutation, matching C semantics.
-
-Because I reuse `EmitBuiltInArithmetic` here — the same function `+` and `-` already go through — `p++` on a pointer automatically advances by one element through the pointer-arithmetic path from earlier in this chapter. I don't need to add anything pointer-specific here.
-
-## Parsing `++`/`--`
-
-**Postfix** I handle in `ParsePostfixIncDec`, which wraps the primary expression in an `IncDecExpressionNode` if it's followed by `++` or `--`. Both paths require the operand to be numeric or a pointer, in addition to being assignable. `ParseUnary` calls `ParsePostfixIncDec(ParsePrimary())` instead of calling `ParsePrimary` alone:
-
-```cpp
-static unique_ptr<ExpressionNode> ParsePostfixIncDec(unique_ptr<ExpressionNode> Base) {
-  while (CurrentToken == tok_plusplus || CurrentToken == tok_minusminus) {
-    bool IsIncrement = (CurrentToken == tok_plusplus);
-    if (!IsIncDecAssignableExpr(Base.get()))
-      return LogErrorExpression("Increment/decrement target must be assignable");
-    if (!IsNumericType(Base->getType()) &&
-        Base->getType() != ValueType::Pointer)
-      return LogErrorExpression("Increment/decrement requires numeric or pointer type");
-    ValueType T = Base->getType();
-    string S = Base->getStructName();
-    getNextToken(); // eat ++/--
-    Base = make_unique<IncDecExpressionNode>(std::move(Base), IsIncrement,
-                                      /*IsPrefix=*/false, T, S);
-  }
-  return Base;
-}
-```
-
-**Prefix** I handle at the top of `ParseUnary`, before the primary:
-
-```cpp
-if (CurrentToken == tok_plusplus || CurrentToken == tok_minusminus) {
-  bool IsIncrement = (CurrentToken == tok_plusplus);
-  getNextToken(); // eat ++/--
-  auto Operand = ParseUnary();
-  if (!Operand)
-    return nullptr;
-  if (!IsIncDecAssignableExpr(Operand.get()))
-    return LogErrorExpression("Increment/decrement target must be assignable");
-  if (!IsNumericType(Operand->getType()) &&
-      Operand->getType() != ValueType::Pointer)
-    return LogErrorExpression("Increment/decrement requires numeric or pointer type");
-  return make_unique<IncDecExpressionNode>(std::move(Operand), IsIncrement,
-                                    /*IsPrefix=*/true, Operand->getType(),
-                                    Operand->getStructName());
-}
-```
-
-Because `ParseUnary` recurses, `++++x` is syntactically valid (prefix applied twice), though I only accept it as meaningful if `x` is assignable at each level.
+Raw UTF-8 goes through this same decode-and-encode path — I validate it now instead of just copying it blindly.
 
 ## Try It
 
-**Compound assignment on a field**
-
 ```pyxc
-extern def printd(x: float64)
-struct Point:
-  x: int
+extern def puts(s: ptr[int8]) -> int
+
 def main() -> int:
-  var p: Point
-  p.x = 10
-  p.x += 5
-  printd(float64(p.x))
+  puts("caf\u00E9")
+  puts("Ω 🙂")
   return 0
 ```
 
-```text
-15.000000
+```
+café
+Ω 🙂
 ```
 
-**Compound assignment on an array element**
+## Known Limitations
 
-```pyxc
-extern def printd(x: float64)
-def main() -> int:
-  var arr: int[3] = [1, 2, 3]
-  arr[1] *= 10
-  printd(float64(arr[1]))
-  return 0
-```
+**Identifiers are still ASCII-only.** `var café: int` doesn't work; Unicode in variable, function, struct, or class names is a separate problem I'm leaving for later.
 
-```text
-20.000000
-```
+**No Unicode normalization.** Two visually identical strings that use different Unicode representations (e.g. precomposed vs. combining-character forms) are different byte sequences to pyxc; there's no NFC/NFD normalization step.
 
-**Prefix vs. postfix, as values**
+## Build and Run
 
-```pyxc
-extern def printd(x: float64)
-def main() -> int:
-  var i: int = 5
-  var a: int = i++   # a gets the old value, 5; i becomes 6
-  var b: int = ++i   # i becomes 7 first, b gets the new value, 7
-  printd(float64(a))
-  printd(float64(b))
-  printd(float64(i))
-  return 0
-```
-
-```text
-5.000000
-7.000000
-7.000000
+```bash
+cd code/chapter-39
+cmake -S . -B build && cmake --build build
 ```
 
 ## What's Next
 
-[Chapter 33](chapter-33.md) adds `&&`, `||`, and `!` — logical operators with short-circuit evaluation.
+[Chapter 33](chapter-33.md) adds variadic `extern` functions.
 
 ## Need Help?
 

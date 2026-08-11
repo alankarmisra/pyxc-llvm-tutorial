@@ -1,0 +1,54 @@
+(*
+   pyxc.ebnf
+   Baseline grammar for chapter 5.
+*)
+
+(*
+   { } = zero or more (any number of...)
+   [ ] = zero or one (optional)
+*)
+program                           = [ end-of-lines ]
+                                    [ top-level-item
+                                      { end-of-lines top-level-item } ]
+                                    [ end-of-lines ] ;
+end-of-lines                      = end-of-line { end-of-line } ;
+top-level-item                    = function-definition
+                                    | top-level-expression ;
+function-definition               = "def" function-signature ":"
+                                    [ end-of-lines ] expression ;
+top-level-expression              = expression ;
+function-signature                = name "(" [ parameters ] ")" ;
+parameters                        = parameter { "," parameter } ;
+parameter                         = name ;
+expression                        = comparison ;
+comparison                        = sum { "<" sum } ;
+sum                               = term { ("+" | "-") term } ;
+term                              = factor { ("*" | "/" | "%") factor } ;
+factor                            = "-" factor | primary ;
+primary                           = name-expression
+                                    | number-expression
+                                    | parenthesized-expression ;
+name-expression                   = name
+                                    | call-expression ;
+call-expression                   = name "(" [ arguments ] ")" ;
+arguments                         = expression { "," expression } ;
+number-expression                 = number ;
+parenthesized-expression          = "(" expression ")" ;
+name                              = (letter | "_")
+                                    { letter | digit | "_" } ;
+number                            = digit { digit } [ "." { digit } ]
+                                    | "." digit { digit } ;
+letter                            = "A".."Z" | "a".."z" ;
+digit                             = "0".."9" ;
+end-of-line                       = "\r\n" | "\r" | "\n" ;
+(*
+    A `comment` begins with "#" and continues to the end of the line. The lexer
+     ignores its text and returns an end-of-line token when one follows it.
+*)
+comment                           = "#" { comment-character } ;
+comment-character                 = ? any character except "\r" and "\n" ? ;
+(*
+    `whitespace` may appear before or between tokens
+     and is ignored by the lexer.
+*)
+whitespace                        = " " | "\t" | "\v" | "\f" ;

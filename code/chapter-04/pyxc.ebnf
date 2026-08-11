@@ -23,7 +23,8 @@ parameter                         = name ;
 expression                        = comparison ;
 comparison                        = sum { "<" sum } ;
 sum                               = term { ("+" | "-") term } ;
-term                              = primary { ("*" | "/") primary } ;
+term                              = factor { ("*" | "/" | "%") factor } ;
+factor                            = "-" factor | primary ;
 primary                           = name-expression
                                     | number-expression
                                     | parenthesized-expression ;

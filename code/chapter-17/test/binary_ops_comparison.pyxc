@@ -1,20 +1,20 @@
 # RUN: %pyxc < %s 2>&1 | FileCheck %s
-# CHECK: True
-# CHECK: True
-# CHECK: True
-# CHECK: True
-# CHECK: True
-# CHECK: True
-# CHECK: False
-# CHECK: False
-# CHECK: False
-# CHECK: False
-# CHECK: False
-# CHECK: False
+# CHECK: Evaluated to 1.000000
+# CHECK: Evaluated to 1.000000
+# CHECK: Evaluated to 1.000000
+# CHECK: Evaluated to 1.000000
+# CHECK: Evaluated to 1.000000
+# CHECK: Evaluated to 1.000000
+# CHECK: Evaluated to 0.000000
+# CHECK: Evaluated to 0.000000
+# CHECK: Evaluated to 0.000000
+# CHECK: Evaluated to 0.000000
+# CHECK: Evaluated to 0.000000
+# CHECK: Evaluated to 0.000000
 
 # Tests: all six builtin binary comparison operators.
-# Comparisons return True for true, False for false.
-# builtin-binary-operator = ... | "<" | "<=" | ">" | ">=" | "==" | "!="
+# Comparisons return 1.0 for true, 0.0 for false.
+# builtinbinaryop = ... | "<" | "<=" | ">" | ">=" | "==" | "!="
 
 1 < 2
 

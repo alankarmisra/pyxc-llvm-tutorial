@@ -2,7 +2,7 @@
 # CHECK: Expected ':' after var bindings
 
 # Tests: "var" without the mandatory ":" before the body is a parse error.
-# ParseVarStatement requires CurrentToken == ':' after all bindings are consumed.
-# varexpr = "var" varbinding { "," varbinding } ":" [ end-of-lines ] expression ;
+# ParseVariableExpression requires CurrentToken == ':' after all bindings are consumed.
+# variable-expression = "var" variable-binding { "," variable-binding } ":" [ end-of-lines ] expression ;
 
 var x = 1 x

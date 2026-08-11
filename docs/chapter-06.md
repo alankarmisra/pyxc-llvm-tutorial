@@ -1,567 +1,490 @@
 ---
-description: "Connect the AST to LLVM IR: add codegen() to every node and see real machine-level instructions for the first time."
+description: "Install LLVM with everything you need: clang, lld, lldb, clangd, and lit — via Homebrew (macOS/Linux), the official installer (Windows), or from source."
 ---
-# 6. pyxc: Code Generation
+# 6. pyxc: Installing LLVM
 
-## Where I Am
+## Where We Are
 
-In [Chapter 4](chapter-04.md), I wrote a parser that builds a syntax tree and reports errors. I now want to turn that tree into LLVM intermediate representation (IR). In a later chapter, I will ask LLVM to compile and run this IR. For now, I focus on generating and printing it.
+The compiler from [Chapter 5](chapter-05.md) can parse Pyxc and report errors with source locations. To turn the AST into machine code, I need LLVM — specifically with the following tools: `lld`, `clangd`, `lldb`, and `llvm-lit`. I'll get to using them in the following chapters. On macOS and Linux, Homebrew gets you there in two commands (as of today May 1, 2026). On Windows, the official LLVM installer does the same. Building compilers is hard enough. I don't need to torture myself needlessly. Unless I want to. Consequently, if you're feeling adventurous, you could build from source instead — I did that too just to make sure the instructions are legit. All paths end up in the same place. 
 
-If I enter a function definition:
 
-```pyxc
-ready> def sum(a, b): a + b
-```
+!!!note
+    I'm a bit concerned about the longevity of this chapter. Installation dynamics change quite frequently and things break occassionally, if not often. These forces are outside my control. Which is why if something breaks, PLEASE let me know so I can fix this chapter so it continues to work for others that follow you. I've been very close to giving up on tutorials because I couldn't get the base infrastructure to install and I'd hate for that to happen to you or to others. 
 
-I print the function as LLVM IR:
-
-<!-- code-merge:start -->
-```text
-Parsed a function definition.
-```
-```llvm
-define double @sum(double %a, double %b) {
-entry:
-  %addtmp = fadd double %a, %b
-  ret double %addtmp
-}
-```
-<!-- code-merge:end -->
-
-LLVM can later compile this IR for x86, ARM, or another supported target. I could write IR by hand, but I will generate it from the syntax tree with LLVM's C++ API.
-
-## Source Code
+## macOS / Linux — Homebrew
 
 ```bash
-git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-06
+brew install llvm
+brew install lld
 ```
 
-## The Three LLVM Objects
-
-I add the LLVM headers these codegen types come from, and pull in the `llvm` namespace alongside `std`:
-
-```cpp
-#include "llvm/ADT/APFloat.h"
-#include "llvm/IR/BasicBlock.h"
-#include "llvm/IR/Constants.h"
-#include "llvm/IR/DerivedTypes.h"
-#include "llvm/IR/Function.h"
-#include "llvm/IR/IRBuilder.h"
-#include "llvm/IR/LLVMContext.h"
-#include "llvm/IR/Module.h"
-#include "llvm/IR/Type.h"
-#include "llvm/IR/Verifier.h"
-
-using namespace llvm;
-```
-
-I use three LLVM objects during code generation and keep them as globals:
-
-```cpp
-static unique_ptr<LLVMContext> TheContext;
-static unique_ptr<Module> TheModule;
-static unique_ptr<IRBuilder<>> Builder;
-```
-
-LLVM assigns a specific role to each object. To generate IR, I use them as LLVM expects:
-
-- I keep shared LLVM state, such as types and constants, in `LLVMContext`.
-- I store the functions and global variables I generate in `Module`.
-- I use `IRBuilder` to create LLVM instructions inside those functions.
-
-```diagram
-                 ┌───────────────────────┐
-                 │      LLVMContext      │
-                 │-----------------------│
-                 │ Shared LLVM state     │
-                 │ Global Constants, etc.│
-                 └──────────┬────────────┘
-                            │
-          ┌─────────────────┴─────────────────┐
-          │                                   │
-          ▼                                   ▼
- ┌───────────────────┐               ┌───────────────────┐
- │      Module       │               │      Module       │
- │-------------------│               │-------------------│
- │ Source file IR    │               │ Source file IR    │
- │ Functions         │               │ Functions         │
- │ Globals           │               │ Globals           │
- └─────────▲─────────┘               └─────────▲─────────┘
-           │                                   │
-           │      emits instructions into      │
-           │                                   │
-           └──────────────┬────────────────────┘
-                          │
-                ┌─────────┴─────────┐
-                │     IRBuilder     │
-                │-------------------│
-                │ Generates LLVM IR │
-                └───────────────────┘
-```
-
-I create all three objects in one function:
-
-```cpp
-static void InitializeModuleAndManagers() {
-  TheContext = std::make_unique<LLVMContext>();
-  TheModule = std::make_unique<Module>("PyxcJIT", *TheContext);
-  Builder = std::make_unique<IRBuilder<>>(*TheContext);
-}
-```
-
-`"PyxcJIT"` is the module identifier. I can choose any name here. When I add file mode later, I will use the source filename instead.
-
-I call the function `InitializeModuleAndManagers` because I will also create optimization managers in [Chapter 7](chapter-07.md).
-
-## Adding codegen() to the AST
-
-In Chapters [2](chapter-02.md) and [3](chapter-03.md), I created the syntax tree without generating LLVM IR. I now add a pure virtual `codegen()` method to the base expression class:
-
-```cpp
-class ExpressionNode {
-public:
-  virtual ~ExpressionNode() = default;
-  virtual Value *codegen() = 0;
-};
-```
-
-I implement this method in every derived expression class. Each implementation returns an LLVM `Value*`. LLVM uses `Value` as the base class for values such as constants, instructions, and function arguments.
-
-A function signature and a function definition are not expressions, so they do not derive from `ExpressionNode`. I give them `codegen()` methods that return an LLVM `Function*` instead:
-
-```cpp
-class FunctionSignatureNode {
-  // ...
-  Function *codegen();
-};
-
-class FunctionDefinitionNode {
-  // ...
-  Function *codegen();
-};
-```
-
-## Generating Expressions
-
-### Number Literals
-
-For a number literal, I create an LLVM floating-point constant:
-
-```cpp
-Value *NumberExpressionNode::codegen() {
-  return ConstantFP::get(*TheContext, APFloat(Value));
-}
-```
-
-`APFloat` holds the floating-point value in LLVM's format. I pass it to `ConstantFP::get` to create a constant in `TheContext`. I do not need to emit an instruction because LLVM constants can be used directly as instruction operands.
-
-### Name References
-
-For a name, I need to find the LLVM value that the name represents. I keep those values in `NamedValues`:
-
-```cpp
-static map<std::string, Value *> NamedValues;
-
-Value *NameExpressionNode::codegen() {
-  auto It = NamedValues.find(Name);
-  if (It == NamedValues.end() || !It->second)
-    return LogErrorV("Unknown variable name");
-  return It->second;
-}
-```
-
-For now, I only add function parameters to this map. When I add local variables later, I will store them here too.
-
-Code generation needs an error helper with the same return type as an expression's `codegen()` method. I add `LogErrorV`, which reports the error and returns `nullptr`:
-
-```cpp
-Value *LogErrorV(const char *Str) {
-  LogErrorExpression(Str);
-  return nullptr;
-}
-```
-
-This lets me report an error directly from a `Value*` function:
-
-```cpp
-if (SomeErrorCondition)
-  return LogErrorV("Error specifics");
-```
-
-### Binary Expressions
-
-For a binary expression, I first generate the left and right values. I then use the operator to choose an LLVM instruction:
-
-```cpp
-Value *BinaryExpressionNode::codegen() {
-  Value *L = Left->codegen();
-  if (!L)
-    return nullptr;
-
-  Value *R = Right->codegen();
-  if (!R)
-    return nullptr;
-
-  switch (Operator) {
-  case tok_plus:
-    return Builder->CreateFAdd(L, R, "addtmp");
-  // ...
-  }
-}
-```
-
-If either operand fails, I return `nullptr` and stop generating this expression. Its parent will do the same, so an error can travel back through the tree.
-
-For `+`, I call `CreateFAdd`:
-
-```cpp
-case tok_plus:
-  return Builder->CreateFAdd(L, R, "addtmp");
-```
-
-That call can generate an instruction like this:
-
-```llvm
-%addtmp = fadd double %x, %y
-```
-
-`fadd` is LLVM's floating-point addition instruction. `double` is the type of both operands. `%x` and `%y` are the operands, and `%addtmp` names the result.
-
-I pass `"addtmp"` as a name hint. If I use the same hint again in the same function, LLVM adds a number to keep the names unique:
-
-```llvm
-%addtmp = fadd double %x, %y
-%addtmp1 = fadd double %a, %b
-```
-
-I add subtraction, multiplication, and division in the same way:
-
-```cpp
-case tok_minus:
-  return Builder->CreateFSub(L, R, "subtmp");
-case tok_star:
-  return Builder->CreateFMul(L, R, "multmp");
-case tok_slash:
-  return Builder->CreateFDiv(L, R, "divtmp");
-```
-
-These calls generate `fsub`, `fmul`, and `fdiv` instructions:
-
-```llvm
-%subtmp = fsub double %x, %y
-%multmp = fmul double %x, %y
-%divtmp = fdiv double %x, %y
-```
-
-I need two instructions for `<`:
-
-```cpp
-case tok_less:
-  L = Builder->CreateFCmpULT(L, R, "cmptmp");
-  return Builder->CreateUIToFP(
-      L, Type::getDoubleTy(*TheContext), "booltmp");
-```
-
-The first instruction compares the two doubles and produces an `i1`, LLVM's one-bit boolean type. `ult` means unordered or less than: the result is true if either operand is a NaN or the left operand is less than the right operand.
-
-```llvm
-%cmptmp = fcmp ult double %x, %y
-```
-
-pyxc currently represents every value as a `double`, so I cannot return the `i1` directly. I use `uitofp` to convert false to `0.0` and true to `1.0`:
-
-```llvm
-%booltmp = uitofp i1 %cmptmp to double
-```
-
-### Function Calls
-
-For a function call, I perform four actions:
-
-1. I find the function in the module.
-2. I check the number of arguments.
-3. I generate a value for each argument.
-4. I emit the call.
-
-The syntax tree node stores the function name and its arguments:
-
-```cpp
-class CallExpressionNode : public ExpressionNode {
-  string Callee;
-  vector<unique_ptr<ExpressionNode>> Arguments;
-  // ...
-};
-```
-
-I use those fields in `codegen()`:
-
-```cpp
-Value *CallExpressionNode::codegen() {
-  Function *CalleeF = TheModule->getFunction(Callee);
-  if (!CalleeF)
-    return LogErrorV("Unknown function referenced");
-
-  if (CalleeF->arg_size() != Arguments.size())
-    return LogErrorV("Incorrect # arguments passed");
-
-  std::vector<Value *> ArgsV;
-  for (unsigned i = 0, e = Arguments.size(); i != e; ++i) {
-    ArgsV.push_back(Arguments[i]->codegen());
-    if (!ArgsV.back())
-      return nullptr;
-  }
-
-  return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
-}
-```
-
-`TheModule->getFunction` finds a function that I already defined in this session. I reject an unknown function or the wrong number of arguments before emitting a call. I then generate each argument from left to right and store the resulting `Value*` objects in `ArgsV`.
-
-After I define `sum`, the call `sum(10, 20)` produces:
-
-```llvm
-%calltmp = call double @sum(double 1.000000e+01, double 2.000000e+01)
-```
-
-## Generating Functions
-
-### Function Signatures
-
-For a function signature, I add an LLVM function declaration to the module. I need the function name, its return type, and its parameter types and names.
-
-```cpp
-Function *FunctionSignatureNode::codegen() {
-  // I use double for every parameter and for the return value.
-  std::vector<Type *> Doubles(
-      Parameters.size(), Type::getDoubleTy(*TheContext));
-
-  FunctionType *FT = FunctionType::get(
-      Type::getDoubleTy(*TheContext), Doubles, false /* not variadic */);
-
-  Function *F = Function::Create(
-      FT, Function::ExternalLinkage, Name, TheModule.get());
-
-  // I name the arguments so the printed IR is easier to read.
-  unsigned Idx = 0;
-  for (auto &Arg : F->args())
-    Arg.setName(Parameters[Idx++]);
-
-  return F;
-}
-```
-
-I use `double` for every parameter and for the return value. I pass those types to `FunctionType::get`, along with `false` because pyxc functions are not variadic.
-
-I then call `Function::Create` to add the declaration to `TheModule`. I use `ExternalLinkage` so the function can be found outside this module. I will rely on that linkage when I add the JIT in [Chapter 7](chapter-07.md).
-
-I also copy each parameter name into the LLVM arguments. This step only makes the printed IR easier to read:
-
-```llvm
-define double @foo(double %x, double %y) {
-```
-
-Without those names, LLVM would print numbered values instead:
-
-```llvm
-define double @foo(double %0, double %1) {
-```
-
-The names do not change the function's behavior.
-
-### Function Definitions
-
-A function definition contains a signature and a body:
-
-```cpp
-class FunctionDefinitionNode {
-  unique_ptr<FunctionSignatureNode> Signature;
-  unique_ptr<ExpressionNode> Body;
-  // ...
-};
-```
-
-I generate the complete function in four steps:
-
-```cpp
-Function *FunctionDefinitionNode::codegen() {
-  // Step 1: I get an existing declaration or create a new one.
-  Function *TheFunction = TheModule->getFunction(Signature->getName());
-
-  if (TheFunction && !TheFunction->empty()) {
-    LogErrorExpression("Function cannot be redefined.");
-    return nullptr;
-  }
-
-  if (!TheFunction)
-    TheFunction = Signature->codegen();
-
-  if (!TheFunction)
-    return nullptr;
-
-  // Step 2: I create the entry block and insert new instructions there.
-  BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
-  Builder->SetInsertPoint(BB);
-
-  // Step 3: I make the parameters available to the body.
-  NamedValues.clear();
-  for (auto &Arg : TheFunction->args())
-    NamedValues[std::string(Arg.getName())] = &Arg;
-
-  // Step 4: I generate the body, return its value, and verify the function.
-  if (Value *RetVal = Body->codegen()) {
-    Builder->CreateRet(RetVal);
-    verifyFunction(*TheFunction);
-    return TheFunction;
-  }
-
-  // I remove an incomplete function after an error.
-  TheFunction->eraseFromParent();
-  return nullptr;
-}
-```
-
-First, I look for the function name in the module. If I find a function that already has a body, I report a redefinition. If I do not find a declaration, I generate one from the signature.
-
-Next, I create the function's `entry` basic block. A basic block is a straight-line sequence of instructions with one entry and one exit. `SetInsertPoint` tells `Builder` where I want to add the next instruction.
-
-```llvm
-define double @foo(double %x, double %y) {
-entry:
-  ; I insert the next instruction here.
-}
-```
-
-I then clear `NamedValues` and add the new function's parameters. This prevents names from the previous function from leaking into the new one. When I generate the body, each `NameExpressionNode` can now find its parameter.
-
-Finally, I generate the body and pass its result to `CreateRet`. Although pyxc source does not use a `return` keyword yet, every LLVM function needs a terminating instruction. I create an LLVM `ret` instruction because the body expression is the function's result.
-
-```llvm
-define double @foo(double %x, double %y) {
-entry:
-  %addtmp = fadd double %x, %y
-  ret double %addtmp
-}
-```
-
-I call `verifyFunction` to ask LLVM to check the structure of the function. If body generation fails, I remove the incomplete function from the module.
-
-## Printing IR as I Type
-
-After code generation succeeds, I print the IR for the current input:
-
-```cpp
-// In HandleFunctionDefinition:
-if (auto *FnIR = FnAST->codegen()) {
-  fprintf(stderr, "Parsed a function definition.\n");
-  FnIR->print(errs());
-  fprintf(stderr, "\n");
-}
-
-// In HandleTopLevelExpression:
-if (auto *FnIR = FnAST->codegen()) {
-  fprintf(stderr, "Parsed a top-level expression.\n");
-  FnIR->print(errs());
-  fprintf(stderr, "\n");
-  FnIR->eraseFromParent();
-}
-```
-
-`errs()` is LLVM's wrapper around `stderr`. I pass it to `FnIR->print` to print the function in LLVM's text format. The extra `fprintf(stderr, "\n")` afterward is just spacing, so the next `ready>` prompt doesn't run up against the last line of IR.
-
-For a top-level expression such as `1 + 2`, I create a temporary function named `__anon_expr`. LLVM instructions must belong to a function, so this wrapper gives me a place to generate the expression. After I print its IR, I remove it from the module. In the next chapter, I will execute it before removing it.
-
-## Printing the Module at Session End
-
-At the end of the session, I print the complete module:
-
-```cpp
-TheModule->print(errs(), nullptr);
-```
-
-This shows every function that remains in the module. It does not show the temporary `__anon_expr` functions because I already removed them.
-
-## Build and Run
+Homebrew installs LLVM as *keg-only* — it won't replace the system compiler, so you need to add it to your PATH explicitly. Add the following to your shell config (`~/.zshrc`, `~/.bashrc`, or `~/.bash_profile`):
 
 ```bash
-cd code/chapter-06
-cmake -S . -B build && cmake --build build
-./build/pyxc
+# LLVM & LLD Toolchain Setup
+# brew --prefix resolves the install path regardless of where Homebrew lives
+export LLVM_ROOT="$(brew --prefix llvm)"
+export LLD_ROOT="$(brew --prefix lld)"
+
+# Add both to PATH
+# This ensures clang, lld, lldb, and clangd are all found
+export PATH="$LLVM_ROOT/bin:$LLD_ROOT/bin:$PATH"
+
+# Compilation Flags
+export LDFLAGS="-L$LLVM_ROOT/lib -L$LLD_ROOT/lib"
+export CPPFLAGS="-I$LLVM_ROOT/include -I$LLD_ROOT/include"
+export CMAKE_PREFIX_PATH="$LLVM_ROOT;$LLD_ROOT"
 ```
 
-## Try It
+Then reload your shell:
 
-I can enter a bare expression:
-
-<!-- code-merge:start -->
-```pyxc
-ready> 4 + 5
+```bash
+source ~/.zshrc   # or ~/.bashrc
 ```
-```llvm
-Parsed a top-level expression.
-define double @__anon_expr() {
-entry:
-  ret double 9.000000e+00
-}
+
+#### Verify
+
+```bash
+clang --version
+clangd --version
+lldb --version
+lld --version
+llvm-lit --version
 ```
-<!-- code-merge:end -->
 
-`IRBuilder` sees that both operands are constants, so it calculates `4 + 5` while constructing the IR. It returns the constant `9.0` instead of emitting an `fadd` instruction. This is **constant folding**.
+The first four should report the same version and point into the Homebrew prefix — run `brew --prefix llvm` and `brew --prefix lld` to confirm the exact paths on your machine.
 
-I can also define and call a function:
+`llvm-lit` may not be bundled with the Homebrew formula. If the last command fails, install it separately:
 
-<!-- code-merge:start -->
-```pyxc
-ready> def sum(a, b): a + b
+```bash
+pip install lit
 ```
+
+After a pip install, the binary is `lit`, not `llvm-lit`. So `lit --version` is what you'd run to verify it.
+
+If that's working, you're done. Skip straight to [Chapter 7](chapter-07.md).
+
+## Windows — Official Installer
+
+Download the latest `LLVM-<version>-win64.exe` from the [LLVM releases page](https://github.com/llvm/llvm-project/releases). Run the installer and when prompted, select **"Add LLVM to the system PATH"**.
+
+Then set the remaining environment variables. Add to your PowerShell profile (`$PROFILE`):
+
+```powershell
+# LLVM Toolchain Setup
+$env:LLVM_ROOT = "C:\Program Files\LLVM"
+
+# Add to PATH (if the installer didn't already)
+$env:PATH = "$env:LLVM_ROOT\bin;$env:PATH"
+
+# Compilation Flags
+$env:LDFLAGS = "-L$env:LLVM_ROOT\lib"
+$env:CPPFLAGS = "-I$env:LLVM_ROOT\include"
+$env:CMAKE_PREFIX_PATH = "$env:LLVM_ROOT"
+```
+
+Or set them permanently via **System Properties → Environment Variables**.
+
+#### Verify
+
+```powershell
+clang --version
+clangd --version
+lldb --version
+lld --version
+llvm-lit --version
+```
+
+The first four should report the same version.
+
+`llvm-lit` may not be included in the official installer. If the last command fails, install it separately:
+
+```powershell
+pip install lit
+```
+
+After a pip install, the binary is `lit`, not `llvm-lit`. So `lit --version` is what you'd run to verify it.
+
+If that's working, you're done. Skip straight to [Chapter 7](chapter-07.md).
+
+## Build from Source
+
+If you'd rather build LLVM yourself — or Homebrew isn't an option for some reason — the result is identical: same tools, same capabilities, just more steps and a longer wait.
+
+### What You'll Install
+
+By the end of this chapter, you'll have:
+
 ```text
-Parsed a function definition.
+~/llvm-21-with-clang-lld-lldb/
+├── bin/
+│   ├── clang
+│   ├── clang++
+│   ├── clangd
+│   ├── lld
+│   ├── lldb
+│   └── llvm-config
+├── lib/
+└── include/
 ```
-```llvm
-define double @sum(double %a, double %b) {
-entry:
-  %addtmp = fadd double %a, %b
-  ret double %addtmp
+
+All the tools I need in one place. `llvm-lit` is the exception: it's a Python script generated in the build tree, and `ninja install` doesn't copy it out. I install it separately with `pip install lit` in Step 6 below.
+
+### Time and Space Requirements
+
+**Build time:** 30-60 minutes (depends on your machine)
+**Disk space:** ~15 GB for the build, ~3 GB for the install
+
+If that's too much, stick with [pre-built LLVM package](https://releases.llvm.org/download.html) for now. You can always build from source later when you need it.
+
+### Prerequisites
+
+You need:
+1. A C++ compiler
+2. [CMake](https://cmake.org/)
+3. [Ninja](https://ninja-build.org/)
+4. Python 3 (`llvm-lit` is a Python script)
+
+#### macOS
+
+```bash
+# Install Xcode Command Line Tools
+xcode-select --install
+
+# Install CMake and Ninja
+brew install cmake ninja
+```
+
+#### Ubuntu/Debian
+
+```bash
+sudo apt update
+sudo apt install build-essential cmake ninja-build
+```
+
+#### Fedora
+
+```bash
+sudo dnf install gcc-c++ cmake ninja-build
+```
+
+#### Windows
+
+Install:
+1. Visual Studio Build Tools (C++ workload)
+2. [CMake](https://cmake.org/)
+3. [Ninja](https://ninja-build.org/)
+
+Make sure all three are on your `PATH` — CMake and Ninja installers have an option to add themselves; Visual Studio Build Tools does it automatically.
+
+### Optional: Install zstd
+
+Some LLVM builds need the `zstd` compression library. If you see `library 'zstd' not found` errors later, install it:
+
+**macOS:**
+```bash
+brew install zstd
+```
+
+**Ubuntu/Debian:**
+```bash
+sudo apt install libzstd-dev
+```
+
+**Fedora:**
+```bash
+sudo dnf install libzstd-devel
+```
+
+You can skip this for now and come back if you hit errors.
+
+### Step 1: Clone LLVM
+
+I'll build LLVM 21.1.6 (stable release at time of writing — check the [LLVM releases page](https://github.com/llvm/llvm-project/releases) for newer tags):
+
+```bash
+git clone --depth 1 --branch llvmorg-21.1.6 https://github.com/llvm/llvm-project.git
+cd llvm-project
+```
+
+The `--depth 1` keeps the download small (I don't need full git history).
+
+### Step 2: Configure the Build
+
+Create a build directory:
+
+```bash
+mkdir build && cd build
+```
+
+Now configure. This tells CMake what to build and where to install it.
+
+#### Linux / macOS
+
+```bash
+cmake -G Ninja ../llvm \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld;lldb" \
+  -DCMAKE_INSTALL_PREFIX=$HOME/llvm-21-with-clang-lld-lldb \
+  -DLLVM_TARGETS_TO_BUILD="X86;AArch64" \
+  -DLLVM_INCLUDE_EXAMPLES=OFF \
+  -DLLVM_INCLUDE_TESTS=ON \
+  -DLLVM_INCLUDE_BENCHMARKS=OFF \
+  -DLLVM_ENABLE_ASSERTIONS=OFF
+```
+
+#### Windows (PowerShell)
+
+```powershell
+cmake -G Ninja ..\llvm `
+  -DCMAKE_BUILD_TYPE=Release `
+  -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld;lldb" `
+  -DCMAKE_INSTALL_PREFIX=$HOME\llvm-21-with-clang-lld-lldb `
+  -DLLVM_TARGETS_TO_BUILD="X86" `
+  -DLLVM_INCLUDE_EXAMPLES=OFF `
+  -DLLVM_INCLUDE_TESTS=ON `
+  -DLLVM_INCLUDE_BENCHMARKS=OFF `
+  -DLLVM_ENABLE_ASSERTIONS=OFF
+```
+
+**What these flags mean:**
+
+- **`-G Ninja`** - Use Ninja (faster than Make)
+- **`CMAKE_BUILD_TYPE=Release`** - Optimized build (not debug)
+- **`LLVM_ENABLE_PROJECTS`** - Build clang, clangd, lld, and lldb
+- **`CMAKE_INSTALL_PREFIX`** - Where to install (your home directory)
+- **`LLVM_TARGETS_TO_BUILD`** - Only build for x86 and ARM (speeds up build)
+- **`LLVM_INCLUDE_TESTS=ON`** - Build LLVM's own test suite (uses `llvm-lit`, which the build generates on its own regardless of this flag)
+
+If CMake complains about missing dependencies, install them and re-run.
+
+### Step 3: Build
+
+```bash
+ninja
+```
+
+This takes 30-60 minutes. Go grab coffee.
+
+**If it fails:** Check the error message. Common issues:
+- Out of memory → Close other programs, try again
+- Missing dependency → Install it (CMake will tell you what)
+- Corrupted download → Delete `llvm-project` and re-clone
+
+### Step 4: Install
+
+```bash
+ninja install
+```
+
+This copies everything to `~/llvm-21-with-clang-lld-lldb/`.
+
+Verify it worked:
+
+```bash
+ls ~/llvm-21-with-clang-lld-lldb/bin
+```
+
+You should see: `clang`, `clang++`, `lld`, `lldb`, `llvm-config`, and more. `llvm-lit` won't be there — see Step 6.
+
+Once the install is done, you can delete the `build/` directory to reclaim the ~15 GB of build artifacts:
+
+```bash
+cd .. && rm -rf build
+```
+
+### Step 5: Update Your PATH
+
+Add LLVM to your `PATH` so the system finds it first:
+
+#### macOS / Linux (Bash)
+
+Add to `~/.bashrc` or `~/.bash_profile`:
+
+```bash
+export PATH="$HOME/llvm-21-with-clang-lld-lldb/bin:$PATH"
+```
+
+Then reload:
+```bash
+source ~/.bashrc
+```
+
+#### macOS / Linux (Zsh)
+
+Add to `~/.zshrc`:
+
+```zsh
+export PATH="$HOME/llvm-21-with-clang-lld-lldb/bin:$PATH"
+```
+
+Then reload:
+```zsh
+source ~/.zshrc
+```
+
+#### Windows (PowerShell)
+
+Add to your PowerShell profile (`$PROFILE`):
+
+```powershell
+$env:PATH = "$HOME\llvm-21-with-clang-lld-lldb\bin;$env:PATH"
+```
+
+Or add it permanently via System Environment Variables.
+
+### Step 6: Verify
+
+Check that your shell finds the right LLVM:
+
+#### macOS / Linux
+
+```bash
+which clang
+# Should show: /Users/yourname/llvm-21-with-clang-lld-lldb/bin/clang
+
+clang --version
+llvm-config --version
+# Both should report the version you built
+```
+
+`ninja install` doesn't install `llvm-lit`; it only ever exists in the build tree. Install it separately:
+
+```bash
+pip install lit
+```
+
+After a pip install, the binary is `lit`, not `llvm-lit`. So `lit --version` is what you'd run to verify it.
+
+#### Windows (PowerShell)
+
+```powershell
+Get-Command clang | Select-Object -ExpandProperty Source
+# Should show: C:\Users\yourname\llvm-21-with-clang-lld-lldb\bin\clang.exe
+
+clang --version
+llvm-config --version
+# Both should report the version you built
+```
+
+`ninja install` doesn't install `llvm-lit`; it only ever exists in the build tree. Install it separately:
+
+```powershell
+pip install lit
+```
+
+After a pip install, the binary is `lit`, not `llvm-lit`. So `lit --version` is what you'd run to verify it.
+
+If the version shown doesn't match what you built, your `PATH` isn't set correctly. Fix that before continuing.
+
+### Step 7: Set LLVM_DIR (for CMake)
+
+When building the Pyxc compiler, CMake needs to find LLVM. Tell it where:
+
+#### macOS / Linux
+
+Add to `~/.bashrc` or `~/.zshrc`:
+
+```bash
+export LLVM_DIR="$HOME/llvm-21-with-clang-lld-lldb/lib/cmake/llvm"
+```
+
+Reload your shell.
+
+#### Windows
+
+Add to your PowerShell profile or Environment Variables:
+
+```powershell
+$env:LLVM_DIR = "$HOME\llvm-21-with-clang-lld-lldb\lib\cmake\llvm"
+```
+
+### Optional: Configure VS Code
+
+If you're using VS Code, point it to your new `clangd`:
+
+#### Install the clangd Extension
+
+1. Open VS Code
+2. Install the "clangd" extension (disable the C/C++ extension if you see conflicts)
+
+#### Configure clangd Path
+
+Add to `.vscode/settings.json` in your project:
+
+**macOS / Linux:**
+```json
+{
+  "clangd.path": "/Users/yourname/llvm-21-with-clang-lld-lldb/bin/clangd"
 }
 ```
-```pyxc
-ready> sum(10, 20)
-```
-```text
-Parsed a top-level expression.
-```
-```llvm
-define double @__anon_expr() {
-entry:
-  %calltmp = call double @sum(double 1.000000e+01, double 2.000000e+01)
-  ret double %calltmp
+
+**Windows:**
+```json
+{
+  "clangd.path": "C:\\Users\\yourname\\llvm-21-with-clang-lld-lldb\\bin\\clangd.exe"
 }
 ```
-<!-- code-merge:end -->
 
-When I press `Ctrl-D`, I print the full module:
+(Adjust the path for your username.)
 
-<!-- code-merge:start -->
-```text
-ready> ^D
+#### Generate compile_commands.json
+
+When you build Pyxc, CMake will generate `compile_commands.json`. This tells clangd how to compile your code.
+
+In your project's CMakeLists.txt, add:
+
+```cmake
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 ```
-```llvm
-; ModuleID = 'PyxcJIT'
-source_filename = "PyxcJIT"
 
-define double @sum(double %a, double %b) {
-entry:
-  %addtmp = fadd double %a, %b
-  ret double %addtmp
-}
+After building, you'll see `build/compile_commands.json`. clangd reads this automatically.
+
+## Troubleshooting
+
+### Build fails with "out of memory"
+
+Ninja uses all CPU cores by default. Limit it:
+
+```bash
+ninja -j4  # Use 4 cores instead of all
 ```
-<!-- code-merge:end -->
 
-Only `sum` remains. I removed each temporary `__anon_expr` after printing it.
+### Can't find zstd library
+
+Install zstd (see "Optional: Install zstd" above), then rebuild.
+
+Or tell CMake to skip it:
+
+```bash
+cmake -G Ninja ../llvm \
+  -DLLVM_ENABLE_ZSTD=OFF \
+  # ... other flags
+```
+
+### Wrong clang version still showing
+
+Check:
+
+```bash
+echo $PATH
+```
+
+Make sure your LLVM `bin` directory comes BEFORE `/usr/bin` or other system paths.
+
+### Windows: Ninja not found
+
+Make sure Ninja is on your `PATH`:
+
+```powershell
+ninja --version
+```
+
+If that fails, download Ninja and add its directory to `PATH` in System Environment Variables.
 
 ## What's Next
 
-I can now generate LLVM IR, but I do not execute it yet. In [Chapter 7](chapter-07.md), I add LLVM's On-Request Compilation (ORC) JIT so I can run top-level expressions and print their results. I also add optimization passes and restore `extern` so I can call C library functions.
+[Chapter 7](chapter-07.md) connects the AST to LLVM IR for the first time.
 
 ## Need Help?
 
@@ -571,9 +494,8 @@ Build issues? Questions?
 - **Discussions:** [Ask questions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
 
 Include:
-
 - Your OS and version
 - Full error message
-- Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
+- Output of `cmake --version` and `ninja --version`
 
 We'll figure it out.

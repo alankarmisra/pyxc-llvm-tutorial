@@ -1,0 +1,7 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -c "Error (Line" %t | grep -q "1"
+# RUN: grep -c "Parsed a top-level expression." %t | grep -q "1"
+
+# top: REPL recovers after a parse error and continues with the next line
+1 + +
+1 + 2 * 3

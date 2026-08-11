@@ -1,56 +1,65 @@
 ---
-description: "Add character literals so single characters can be written as 'a', '\n', '\t', and '\\' instead of their numeric ASCII values."
+description: "Add constructors: define __init__ to initialise a class instance, and call it with ClassName(args) syntax. Instances are always zero-initialised before __init__ runs."
 ---
-# 38. pyxc: Character Literals
+# 38. pyxc: Constructors
 
-## Where We Are
+## What I Am Building
 
-Since I don't support character literals in pyxc just yet, I'm forced to write code like so:
-
-```pyxc
-if c == 32:   # space
-if c == 10:   # newline — or was it 13?
-```
-
-But I want to write it like a sane person would:
+[Chapter 37](chapter-37.md) added methods. I can define behavior on a class and call it through `obj.method(args)`. But creating a class instance still means writing field assignments by hand:
 
 ```pyxc
-if c == ' ':
-if c == '\n':
+var c: Calc
+c.x = 3
+c.y = 4
 ```
 
-I'll introduce character literals into pyxc. 
+After this chapter, a class can define `__init__` to package that work up, and callers use `ClassName(args)` to create a ready-to-use instance in one expression:
+
+```pyxc
+extern def printd(x: float64)
+
+class Point:
+  x: int
+  y: int
+
+  def __init__(px: int, py: int):
+    self.x = px
+    self.y = py
+
+  def sum() -> int:
+    return self.x + self.y
+
+
+def main() -> int:
+  var p: Point = Point(3, 4)
+  printd(float64(p.sum()))
+  return 0
+```
+
+```text
+7.000000
+```
 
 ## Source Code
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-38
+cd pyxc-llvm-tutorial/code/chapter-27
 ```
 
 ## Grammar
 
-I add `character-literal` as a `primary` alternative, and two new productions for its content:
-
-`code/chapter-38/pyxc.ebnf`
+`constructor-call-expression` joins `name-expression`. It's syntactically identical to `call-expression`, an identifier followed by `(args)`; the parser tells them apart by checking whether the identifier names a known class:
 
 ```grammardiff
  program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
  end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | external | top-level-expression ;
+ top-level-item             = type-alias | struct-definition | class-definition | function-definition | external | top-level-expression ;
  type-alias       = "type" name "=" type ;
- trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
- trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
- trait-method-signature  = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ;
  struct-definition       = "struct" name ":" end-of-lines struct-block ;
- class-definition        = "class" name [ "(" trait-reference { "," trait-reference } ")" ] ":" end-of-lines struct-block ;
- trait-reference        = name [ "[" type "]" ] ;
- implementation-definition         = "impl" trait-reference "for" name ":" end-of-lines implementation-block ;
- implementation-block       = indent implementation-method { end-of-lines implementation-method } dedent ;
- implementation-method      = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ class-definition        = "class" name ":" end-of-lines struct-block ;
  struct-block     = indent class-member { end-of-lines class-member } dedent ;
- class-member     = [ visibility ] ( field-declaration | method-definition ) ;
- visibility      = "public" | "private" ;
+ class-member     = field-declaration | method-definition ;
  method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")"
                    [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
  field-declaration       = name ":" type ;
@@ -61,67 +70,46 @@ I add `character-literal` as a `primary` alternative, and two new productions fo
  function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
  typed-parameter      = name ":" type ;
  if-statement          = "if" expression ":" suite
-                 { end-of-lines "elif" expression ":" suite }
                  [ end-of-lines "else" ":" suite ] ;
- while-statement       = "while" expression ":" suite ;
- do-while-statement     = "do" ":" suite end-of-lines "while" expression ;
- switch-statement      = "switch" expression ":" end-of-lines indent switch-body dedent ;
- switch-body      = switch-case { end-of-lines switch-case } [ end-of-lines default-case ] ;
- switch-case      = "case" switch-integer { "," switch-integer } ":" suite ;
- default-case     = "default" ":" suite ;
  for-statement         = "for"
                    ( "var" name ":" type | name )
                    "=" expression "," expression "," expression ":" suite ;
  variable-statement         = "var" variable-binding { "," variable-binding } ;
- assignment-statement      = lvalue assignment-operator expression ; (* assignment is a statement here *)
- simple-statement      = return-statement | break-statement | continue-statement | variable-statement | assignment-statement | expression ;
- compound-statement    = if-statement | for-statement | while-statement | do-while-statement | switch-statement ;
+ assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
+ simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
+ compound-statement    = if-statement | for-statement ;
  statement       = simple-statement | compound-statement ;
  suite           = simple-statement | compound-statement | end-of-lines block ;
  return-statement      = "return" [ expression ] ;
- break-statement       = "break" ;
- continue-statement    = "continue" ;
  statement-separator = end-of-lines | BLOCK_END ;
  block = indent statement { statement-separator statement } dedent ;
- expression      = logical-or ;
- logical-or      = logical-and { "||" logical-and } ;
- logical-and     = bitwise-or { "&&" bitwise-or } ;
- bitwise-or      = bitwise-xor { "|" bitwise-xor } ;
- bitwise-xor     = bitwise-and { "^" bitwise-and } ;
- bitwise-and     = equality { "&" equality } ;
- equality        = relational { ("==" | "!=") relational } ;
- relational      = shift { ("<" | "<=" | ">" | ">=") shift } ;
- shift           = sum { ("<<" | ">>") sum } ;
+ expression      = comparison ;
+ comparison      = sum { comparison-operator sum } ;
+ comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
  sum             = term { ("+" | "-") term } ;
- term            = unary-expression { ("*" | "/" | "%") unary-expression } ;
+ term            = unary-expression { ("*" | "/") unary-expression } ;
  lvalue          = name | field-access | index-expression ;
  variable-binding      = name ":" type [ "=" expression ] ;
- unary-expression       = ("-" | "!" | "~" | "++" | "--") unary-expression | postfix-expression ;
- postfix-expression     = primary [ postfix-operator ] ;
- postfix-operator       = "++" | "--" ;
--primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
-+primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | character-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
+ unary-expression       = "-" unary-expression | primary ;
+ primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
  cast-expression        = cast-type "(" expression ")" ;
  sizeof-expression      = "sizeof" "(" type ")" ;
  address-expression        = "addr" "(" lvalue ")" ;
- name-expression  = name | call-expression | method-call-expression | constructor-call-expression ;
+-name-expression  = name | call-expression | method-call-expression ;
++name-expression  = name | call-expression | method-call-expression | constructor-call-expression ;
  call-expression        = name "(" [ expression { "," expression } ] ")" ;
  method-call-expression  = name "." name "(" [ expression { "," expression } ] ")" ;
- constructor-call-expression    = name "(" [ expression { "," expression } ] ")" ;
++constructor-call-expression    = name "(" [ expression { "," expression } ] ")" ;
  field-access     = name "." name { "." name } ;
  index-expression       = name "[" expression "]" ;
  number-expression      = number ;
  array-literal    = "[" [ expression { "," expression } ] "]" ;
  string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
-+character-literal     = "'" ( ? any char except ' and newline ? | character-escape ) "'" ;
  escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
-+character-escape      = "\\" ( "a" | "b" | "f" | "n" | "r" | "t" | "v"
-+                        | "\\" | "'" | "\"" | "?" | "0" | "x" hex-digit hex-digit ) ;
  parenthesized-expression       = "(" expression ")" ;
  indent          = INDENT ;
  dedent          = DEDENT ;
-
- assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
+ 
  name      = (letter | "_") { letter | digit | "_" } ;
  builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
                  | "float" | "float32" | "float64"
@@ -136,260 +124,219 @@ I add `character-literal` as a `primary` alternative, and two new productions fo
                  | "float" | "float32" | "float64"
                  | "bool" | pointer-type ;
  integer         = digit { digit } ;
- switch-integer       = [ "-" ] integer ;
  number          = ( digit { digit } [ "." { digit } ]
                    | "." digit { digit } ) [ exponent ] ;
  exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
  boolean-literal    = "True" | "False" ;
  letter          = "A".."Z" | "a".."z" ;
  digit           = "0".."9" ;
-+hex-digit       = digit | "A".."F" | "a".."f" ;
  end-of-line             = "\r\n" | "\r" | "\n" ;
  comment = "#" { comment-character } ;
  comment-character = ? any character except "\r" and "\n" ? ;
  whitespace = " " | "\t" | "\v" | "\f" ;
  INDENT          = ? synthetic token emitted by lexer ? ;
  DEDENT          = ? synthetic token emitted by lexer ? ;
-
+ 
  BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
-## New Token and Storage Global
+## A New AST Node for Constructor Calls
 
-I'll add one new character token:
-
-```cpp
-tok_char = -64,
-```
-
-I'll store the character's integer value in a new global before returning the token:
+A constructor call `Point(3, 4)` isn't the same as a function call `foo(3, 4)`: it allocates a temporary, zeroes it, may call `__init__`, and hands back a struct value rather than the result of an ordinary function. A dedicated AST node captures this:
 
 ```cpp
-static uint32_t CharLiteralValue = 0; // Filled in if tok_char
-```
+class ConstructorCallExpressionNode : public ExpressionNode {
+  string ClassName;
+  vector<unique_ptr<ExpressionNode>> Arguments;
 
-If you recall, this is similar to what I did for names and numbers. 
-
-## Lexer: Scanning the Character Literal
-
-When I see `'`, I'll read the character content, check for the closing `'`, and set `CharLiteralValue`:
-
-```cpp
-if (LexerLastChar == '\'') {
-  LexerLastChar = advance(); // eat opening quote
-  // Nothing between the quotes, e.g. var e: int32 = ''
-  if (LexerLastChar == '\'' || LexerLastChar == '\n' ||
-      LexerLastChar == EOF) {
-    fprintf(stderr, "Error (Line %d, Column %d): empty character literal\n",
-            CurLoc.Line, CurLoc.Col);
-    PrintErrorSourceContext(CurLoc);
-    return tok_error;
+public:
+  ConstructorCallExpressionNode(const string &ClassName,
+                         vector<unique_ptr<ExpressionNode>> Arguments)
+      : ClassName(ClassName), Arguments(std::move(Arguments)) {
+    setType(ValueType::Struct, ClassName);
   }
+  Value *codegen() override;
+};
+```
 
-  uint32_t Value = 0;
-    if (LexerLastChar == '\\') {
-      LexerLastChar = advance();
-      switch (LexerLastChar) {
-      case 'a':
-        Value = '\a';
-        break;
-      case 'b':
-        Value = '\b';
-        break;
-      case 'f':
-        Value = '\f';
-        break;
-      case 'n':
-        Value = '\n';
-        break;
-      case 'r':
-        Value = '\r';
-        break;
-      case 't':
-        Value = '\t';
-        break;
-      case 'v':
-        Value = '\v';
-        break;
-      case '\\':
-        Value = '\\';
-        break;
-      case '\'':
-        Value = '\'';
-        break;
-      case '"':
-        Value = '"';
-        break;
-      case '?':
-        Value = '?';
-        break;
-      case '0':
-        Value = '\0';
-        break;
-      case 'x': {
-        auto HexDigitValue = [](int Ch) -> int {
-          if (Ch >= '0' && Ch <= '9')
-            return Ch - '0';
-          if (Ch >= 'a' && Ch <= 'f')
-            return Ch - 'a' + 10;
-          if (Ch >= 'A' && Ch <= 'F')
-            return Ch - 'A' + 10;
-          return -1;
-        };
+The result type is `ValueType::Struct` with `ClassName` as the struct name: the same type `var p: Point` already carries.
 
-        int High = HexDigitValue(advance());
-        int Low = HexDigitValue(advance());
-        // Fewer than two hex digits after \x, e.g. var b: int32 = '\x'
-        if (High < 0 || Low < 0) {
-          fprintf(stderr,
-                  "Error (Line %d, Column %d): invalid character escape\n",
-                  CurLoc.Line, CurLoc.Col);
-          PrintErrorSourceContext(CurLoc);
-          return tok_error;
-        }
-        Value = static_cast<uint32_t>((High << 4) | Low);
-        break;
+## Disambiguating Constructor Calls at Parse Time
+
+`ParseNameExpressionWithName` is where every bare-name expression starting with `(` gets decided. When the parser sees `identifier(`, it checks whether the identifier is a known class before falling through to the existing function-call path:
+
+```cpp
+// Constructor call: ClassName(...)
+auto SI = StructTypes.find(ParsedName);
+if (SI != StructTypes.end() && SI->second.IsClass) {
+  getNextToken(); // eat '('
+  string InitName = ParsedName + ".__init__";
+  FunctionSignatureNode *InitSignature = GetFunctionSignature(InitName);
+  vector<unique_ptr<ExpressionNode>> Arguments;
+  if (CurrentToken != tok_rparen) {
+    size_t ArgIndex = 0;
+    while (true) {
+      ValueType Expected = ValueType::Error;
+      string ExpectedStructName;
+      if (InitSignature && ArgIndex + 1 < InitSignature->getNumParameters()) {
+        Expected = InitSignature->getParameterType(ArgIndex + 1);
+        ExpectedStructName = InitSignature->getParameterStructName(ArgIndex + 1);
       }
-    default:
-      // Backslash followed by a letter that isn't one of the escapes above,
-      // e.g. var q: int32 = '\q'
-      fprintf(stderr,
-              "Error (Line %d, Column %d): invalid character escape\n",
-              CurLoc.Line, CurLoc.Col);
-      PrintErrorSourceContext(CurLoc);
-      return tok_error;
+      ExpectedLiteralTypeGuard Guard(Expected, ExpectedStructName);
+      auto Arg = ParseExpression();
+      if (!Arg)
+        return nullptr;
+      Arguments.push_back(std::move(Arg));
+      if (CurrentToken == tok_rparen)
+        break;
+      if (CurrentToken != tok_comma)
+        return LogErrorExpression("Expected ')' or ',' in argument list");
+      getNextToken(); // eat ','
+      ++ArgIndex;
     }
-  } else {
-    Value = static_cast<unsigned char>(LexerLastChar);
   }
+  getNextToken(); // eat ')'
 
-  LexerLastChar = advance();
-  // No closing quote where one is expected, e.g. var u: int32 = 'a
-  if (LexerLastChar != '\'') {
-    fprintf(stderr,
-            "Error (Line %d, Column %d): unterminated character literal\n",
-            CurLoc.Line, CurLoc.Col);
-    PrintErrorSourceContext(CurLoc);
-    return tok_error;
+  if (InitSignature) {
+    size_t ExpectedArgs =
+        InitSignature->getNumParameters() > 0 ? InitSignature->getNumParameters() - 1 : 0;
+    if (Arguments.size() != ExpectedArgs)
+      return LogErrorExpression("Incorrect # arguments passed");
+    for (size_t I = 0; I < Arguments.size(); ++I) {
+      ValueType ArgType = Arguments[I]->getType();
+      ValueType ParamType = InitSignature->getParameterType(I + 1);
+      if (!IsAssignable(ParamType, ArgType))
+        return LogErrorExpression(("argument " + std::to_string(I + 1) + " expects " +
+                         TypeName(ParamType))
+                            .c_str());
+      // ...and the matching struct-name check for pointer/struct/array params...
+    }
+  } else if (!Arguments.empty()) {
+    return LogErrorExpression(
+        ("Class '" + ParsedName + "' has no constructor; expected zero arguments")
+            .c_str());
   }
-  LexerLastChar = advance(); // eat closing quote
-  CharLiteralValue = Value;
-  return tok_char;
+  return make_unique<ConstructorCallExpressionNode>(ParsedName, std::move(Arguments));
 }
+
+// Function call (falls through here if ParsedName isn't a class)
 ```
 
-I'll support all eleven of C's [simple escape sequences](https://en.cppreference.com/c/language/escape): `\a`, `\b`, `\f`, `\n`, `\r`, `\t`, `\v`, `\\`, `\'`, `\"`, and `\?`. I take two deliberate departures from that reference, though. C's numeric escapes are `\nnn` (an arbitrary-length octal value) and `\xn...` (an arbitrary-length hex value); I only keep `\0` as a fixed single-character case for the null byte, not general octal, and I require `\xNN` to be exactly two hex digits rather than an open-ended run. C's universal character names, `\unnnn` and `\Unnnnnnnn`, aren't supported at all yet, those arrive in [Chapter 39](chapter-39.md). Anything else is a `tok_error`.
+If the class has `__init__`, argument count and types are checked against its signature, skipping index 0 (`self`). If there's no `__init__`, any non-empty argument list is rejected by name, so `Foo(1)` on a constructor-less `Foo` reports `Class 'Foo' has no constructor; expected zero arguments` rather than a generic type error.
 
-## Building the AST Node
+## `__init__` Must Return None
 
-Whenever I see `CurrentToken == tok_char` in `ParsePrimary()`, I'll parse the character literal into a `NumberExpressionNode` because a character literal is just an integer. I'll call the parsing function `ParseCharExpression()`. 
+`ParseMethodDefinitionInClass` checks the method name against `"__init__"` right after parsing the optional `-> type` annotation, before parsing the body:
 
 ```cpp
-static unique_ptr<ExpressionNode> ParsePrimary() {
-  switch (CurrentToken) {
-  ...
-  case tok_char:
-    return ParseCharExpression();    
-  }
-  ...
-}
+string RetStructName;
+ValueType RetType =
+    ParseOptionalReturnTypeWithStruct(RetStructName, ValueType::None);
+if (RetType == ValueType::Error)
+  return nullptr;
+if (MethodName == "__init__" && RetType != ValueType::None)
+  return LogErrorFunction("Constructor '__init__' must return None");
 ```
 
-In the parsing function, I default to `Int32`, matching `getchar()`'s return type and C's `int`. If the surrounding context (from `ExpectedLiteralTypeGuard`, the same context-communicating global I introduced back in Chapter 17) expects a different integer type — say `var c: int8 = 'A'` — I adopt that type instead, with a range check against the target's maximum. A character value that doesn't fit in the target width is a parse error. 
+`__init__` always returns `None`; it cannot return a value. This is the only thing that makes `__init__` special at the parser level — it's still parsed and registered as an ordinary method otherwise, mangled to `ClassName.__init__` exactly like any other, which is also why defining it twice on the same class hits the ordinary "Method '...' is already defined" redefinition check, not a dedicated constructor error.
+
+## Constructor Codegen: Allocate, Zero, Call, Load
+
+`ConstructorCallExpressionNode::codegen` does the work in a fixed order — allocate a temporary in the entry block, zero it, call `__init__` against it if one exists, then load the finished value back out:
 
 ```cpp
-static unique_ptr<ExpressionNode> ParseCharExpression() {
-  ValueType Type = ValueType::Int32;
-  if (IsIntType(ExpectedLiteralType))
-    Type = ExpectedLiteralType;
-  unsigned Bits = LLVMTypeFor(Type)->getIntegerBitWidth();
-  APInt Max = APInt::getSignedMaxValue(Bits);
-  APInt Val(std::max(1u, Bits), CharLiteralValue, false);
-  // A bare character stores its raw byte value, so any byte from 128-255
-  // (outside ASCII) exceeds int8's signed maximum of 127. Trigger this with
-  // a hex escape, e.g. var c: int8 = '\x80'.
-  if (Val.ugt(Max))
-    return LogErrorExpression("Character literal out of range for type");
-  if (Val.getBitWidth() != Bits)
-    Val = Val.trunc(Bits);
-  auto Result = make_unique<NumberExpressionNode>(Val, Type);
-  getNextToken(); // consume the character literal
-  return Result;
+Value *ConstructorCallExpressionNode::codegen() {
+  auto SI = StructTypes.find(ClassName);
+  if (SI == StructTypes.end() || !SI->second.IsClass)
+    return LogErrorV("Unknown class in constructor call");
+
+  llvm::Type *ClassTy = LLVMTypeFor(ValueType::Struct, ClassName);
+  if (!ClassTy)
+    return LogErrorV("Unknown class type");
+  Function *CurFn = Builder->GetInsertBlock()
+                        ? Builder->GetInsertBlock()->getParent()
+                        : nullptr;
+  if (!CurFn)
+    return LogErrorV("Constructor call outside function context");
+  AllocaInst *Tmp =
+      CreateEntryBlockAlloca(CurFn, "ctor.tmp", ValueType::Struct, ClassName);
+  Builder->CreateStore(ZeroConstant(ValueType::Struct, ClassName), Tmp);
+
+  string InitName = ClassName + ".__init__";
+  if (FunctionSignatureNode *InitSignature = GetFunctionSignature(InitName)) {
+    Function *InitF = getFunction(InitName);
+    if (!InitF)
+      return LogErrorV("Unknown constructor function");
+    if (InitF->arg_size() != Arguments.size() + 1)
+      return LogErrorV("Incorrect # arguments passed");
+    vector<Value *> ArgsV;
+    ArgsV.push_back(Tmp);
+    for (unsigned I = 0, E = Arguments.size(); I != E; ++I) {
+      Value *ArgVal = Arguments[I]->codegen();
+      if (!ArgVal)
+        return nullptr;
+      ValueType ArgType = Arguments[I]->getType();
+      ValueType ParamType = InitSignature->getParameterType(I + 1);
+      if (ParamType == ValueType::Pointer && ArgType == ValueType::Array) {
+        if (!ArrayDecaysToPointerType(Arguments[I]->getStructName(),
+                                      InitSignature->getParameterStructName(I + 1)))
+          return LogErrorV("Argument type mismatch");
+      } else {
+        ArgVal = EmitImplicitCast(ArgVal, ArgType, ParamType);
+        if (!ArgVal)
+          return LogErrorV("Argument type mismatch");
+      }
+      ArgsV.push_back(ArgVal);
+    }
+    Builder->CreateCall(InitF, ArgsV);
+  } else if (!Arguments.empty()) {
+    return LogErrorV("Constructor argument mismatch");
+  }
+
+  return Builder->CreateLoad(ClassTy, Tmp, "ctor.obj");
 }
 ```
 
-## Try It
+**Why `CreateEntryBlockAlloca`?** LLVM's `mem2reg` pass, which turns stack slots into SSA values, only works on allocas that live in the function's entry block. If I allocated `Tmp` wherever the constructor call happened to appear textually, a constructor called inside a loop body would allocate deeper on every pass through the loop rather than reusing one fixed stack slot.
 
-<!-- code-merge:start -->
-```pyxc
-ready> 'a' == 97
-```
-```text
-True
-```
-```pyxc
-ready> '\n' == 10
-```
-```text
-True
-```
-```pyxc
-ready> var c: int8 = 'A'
-ready> c
-```
-```text
-65
-```
-```pyxc
-ready> var d: int8 = '\x80'
-```
-```text
-Error (Line 5, Column 15): Character literal out of range for type
-var d: int8 = '\x80'
-              ^~~~
-```
-```pyxc
-ready> var e: int32 = ''
-```
-```text
-Error (Line 6, Column 16): empty character literal
-var e: int32 = ''
-               ^~~~
-Error (Line 6, Column 16): unknown token when expecting an expression
-var e: int32 = ''
-               ^~~~
-Error (Line 6, Column 17): empty character literal
-var e: int32 = ''
-                ^~~~
-```
-```pyxc
-ready> var b: int32 = '\x'
-```
-```text
-Error (Line 7, Column 16): invalid character escape
-var b: int32 = '\x'
-               ^~~~
-Error (Line 7, Column 16): unknown token when expecting an expression
-var b: int32 = '\x'
-               ^~~~
-```
-```pyxc
-ready> var u: int32 = 'a
-```
-```text
-Error (Line 8, Column 16): unterminated character literal
-var u: int32 = 'a
-               ^~~~
-```
-<!-- code-merge:end -->
+**Why zero first?** Zero-initializing before calling `__init__` guarantees fields `__init__` doesn't touch hold a defined value, not stack garbage.
 
-`'a'` compares equal to its ASCII code without me writing the number out, `'\n'` resolves to `10` through the escape path, and `'A'` assigned into an `int8` carries its value through untruncated since 65 fits comfortably under `int8`'s signed max of 127.
+**The result is a value, not a pointer.** The final `CreateLoad` copies the struct out of `Tmp`. `Point(3, 4)` produces a `%struct.Point` aggregate, not a `ptr[Point]`. Assigning it to `var p: Point` stores that aggregate into `p`'s own, separate alloca.
 
-The remaining four lines trigger the error checks called out above: `'\x80'` trips the range check in `ParseCharExpression` since 128 exceeds `int8`'s signed max, `''` trips the empty-literal check, `'\x'` trips the bad-hex-digit check, and the unclosed `'a` trips the missing-closing-quote check. Each lexer-level error (the last three) is followed by a second "unknown token when expecting an expression" line: once the lexer returns `tok_error`, the parser reports its own failure to parse an expression from that token, and the REPL's line-recovery logic re-scans the remainder of the input, which is why the empty-literal case reports the same error twice more.
+## What Lands in the IR
+
+I compiled `var p: Point = Point(3, 4)` (with `Point.__init__` and `Point.sum` from the intro example) and read the real output:
+
+```llvm
+%struct.Point = type { i64, i64 }
+
+define i64 @__pyxc.user_main() {
+entry:
+  %p = alloca %struct.Point, align 8
+  %ctor.tmp = alloca %struct.Point, align 8
+  store %struct.Point zeroinitializer, ptr %ctor.tmp, align 8
+  call void @Point.__init__(ptr %ctor.tmp, i64 3, i64 4)
+  %ctor.obj = load %struct.Point, ptr %ctor.tmp, align 8
+  store %struct.Point %ctor.obj, ptr %p, align 8
+  ...
+}
+```
+
+`%struct.Point` uses the same `struct.`-prefixed naming every named aggregate gets since [Chapter 24](chapter-24.md), class or struct alike. `%ctor.tmp` and `%p` are two distinct allocas: the constructor builds its result into the first, then a plain `store` copies it into the second, exactly the same copy that would happen for `var p: Point = some_other_point_var`.
+
+## Known Limitations
+
+**`__init__` must return `None`.** Giving it a return type annotation is a parse-time error, checked before the body is even parsed.
+
+**`__init__` is a regular method otherwise.** It can call other methods through `self`, read and write any field, and use anything else a method can. Nothing about it is special beyond its name and the "must return None" rule.
+
+**No overloading.** Only one `__init__` per class; a second definition hits the ordinary method-redefinition error, not a dedicated one.
+
+**`ClassName()` with no `__init__` is always valid.** It produces a zero-initialized instance. `ClassName(args)` with arguments but no `__init__` is rejected by name: `Class 'Foo' has no constructor; expected zero arguments`.
 
 ## What's Next
 
-[Chapter 39](chapter-39.md) adds Unicode escapes and validated raw UTF-8 to character and string literals.
+[Chapter 39](chapter-39.md) adds `public`/`private` visibility.
 
 ## Need Help?
 
@@ -403,4 +350,4 @@ Include:
 - Full error message
 - Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
-We'll figure it out.
+I'll help you figure it out.

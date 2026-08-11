@@ -5,5 +5,5 @@
 # Tests: an input file with an unrecognized extension is rejected.
 # Valid extensions are .pyxc (compile) and .o (link as-is).
 
-def main() -> None:
-    return
+def main():
+    return 0

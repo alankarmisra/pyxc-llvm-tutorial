@@ -3,11 +3,11 @@
 # CHECK: 7.000000
 # CHECK-NOT: ready>
 
-# Tests: a single top-level var statement can declare multiple globals.: float64
-# var a: float64 = 1.0, b: float64 = 2 declares both in one statement; both are accessible.
+# Tests: a single top-level var statement can declare multiple globals.
+# var a = 1, b = 2 declares both in one statement; both are accessible.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-var a: float64 = 1.0, b: float64 = 2.0
+var a = 1, b = 2
 printd(a + b)
 printd(a + b + a + b + 1)

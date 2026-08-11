@@ -1,11 +1,18 @@
-# RUN: not %pyxc %s 2>&1 | FileCheck %s
-# CHECK: Non-None function must return a value
+# RUN: %pyxc %s 2>&1 | FileCheck %s
+# CHECK: 20.000000
+# CHECK: 0.000000
+# CHECK-NOT: ready>
 
-# Tests: a non-None function with a missing return on some path is an error.
-# definition = "def" function signature ":" ( simplestmt | end-of-lines block ) ;
-# ifstmt = "if" expression ":" suite [ end-of-lines "else" ":" suite ] ;  (no else here)
+# Tests: a function with no explicit return on all paths gets an implicit return 0.0.
+# When the block ends without a terminator, codegen inserts:
+#   Builder->CreateRet(ConstantFP::get(*TheContext, APFloat(0.0)))
+# function-definition = "def" function-signature ":" ( simple-statement | end-of-lines block ) ;
+# if-statement = "if" expression ":" suite [ [ end-of-lines ] "else" ":" suite ] ;  (no else here)
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-def threshold(x: float64) -> float64:
+def threshold(x):
     if x > 10: return x
+
+printd(threshold(20))
+printd(threshold(5))

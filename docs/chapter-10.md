@@ -1,42 +1,42 @@
 ---
-description: "Add built-in unary minus so -x parses directly, replacing the 0 - x workaround, and use it to shade the Mandelbrot renderer by density."
+description: "Add comparison operators, if/else expressions, and for loops — then use them to render the Mandelbrot set in ASCII."
 ---
-# 10. pyxc: Unary Minus
+# 10. pyxc: Control Flow: if, else, and for
 
 ## What I Am Building
 
-[Chapter 9](chapter-09.md) added comparisons, `if`/`else`, and `for`. pyxc still has no way to negate a value directly:
+[Chapter 9](chapter-09.md) added file input. The language still only supports arithmetic and function calls. I now add comparisons, conditional branches, and loops.
+
+I continue to represent every pyxc value as a `double`, so I make comparisons produce `1.0` for true and `0.0` for false. A comparison can then appear anywhere that another expression can appear.
 
 <!-- code-merge:start -->
 ```pyxc
-ready> -5
+ready> 1 < 2
 ```
 ```bash
-Error (Line 1, Column 1): unknown token when expecting an expression
--5
- ^~~~
+Parsed a top-level expression.
+Evaluated to 1.000000
+```
+```pyxc
+ready> 3 != 3
+```
+```bash
+Parsed a top-level expression.
+Evaluated to 0.000000
 ```
 <!-- code-merge:end -->
 
-`-` only exists as subtraction, so I've been writing `0 - 5` to get a negative number. I add unary minus:
+I first implement `if` as an expression. I require both branches because the complete `if` must produce a value. I will add statement-style control flow when I introduce multi-statement blocks later.
 
 <!-- code-merge:start -->
 ```pyxc
-ready> -5
+ready> def absdiff(a, b): if a > b: a - b else: b - a
 ```
 ```bash
-Parsed a top-level expression.
-Evaluated to -5.000000
+Parsed a function definition.
 ```
 ```pyxc
-ready> -2 * 3
-```
-```bash
-Parsed a top-level expression.
-Evaluated to -6.000000
-```
-```pyxc
-ready> --5
+ready> absdiff(10, 5)
 ```
 ```bash
 Parsed a top-level expression.
@@ -44,20 +44,39 @@ Evaluated to 5.000000
 ```
 <!-- code-merge:end -->
 
-`-2 * 3` is `-6`, not `-(2 * 3)` written differently — unary minus binds tighter than `*`, same as it does in every C-family language. `--5` is double negation, not decrement — pyxc has no `--` token yet, so this is just `-` applied twice.
+I also implement `for` as an expression. It repeats its body and produces `0.0` when it finishes. The value is only a placeholder until pyxc has statements and a way to represent no value.
+
+<!-- code-merge:start -->
+```pyxc
+ready> extern def printd(x)
+```
+```bash
+Parsed an extern.
+```
+```pyxc
+ready> for i = 1, i <= 3, 1: printd(i)
+```
+```bash
+Parsed a top-level expression.
+1.000000
+2.000000
+3.000000
+Evaluated to 0.000000
+```
+<!-- code-merge:end -->
 
 ## Source Code
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-10
+cd pyxc-llvm-tutorial/code/chapter-09
 ```
 
 ## Grammar
 
-I insert `unary-expression` between `term` and `primary`. Every operand slot that used to call `primary` directly now goes through `unary-expression` first:
+I add `ifexpr` and `forexpr` to `primary`, and replace the single `<` alternative in `comparison` with a `comparison-operator` rule containing six operators:
 
-`code/chapter-10/pyxc.ebnf`
+`code/chapter-09/pyxc.ebnf`
 
 ```grammardiff
  program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
@@ -69,17 +88,17 @@ I insert `unary-expression` between `term` and `primary`. Every operand slot tha
  function-signature       = name "(" [ parameters ] ")" ;
  parameters               = parameter { "," parameter } ;
  parameter                = name ;
- ifexpr          = "if" expression ":" [ end-of-lines ] expression [ end-of-lines ] "else" ":" [ end-of-lines ] expression ;
- forexpr         = "for" name "=" expression "," expression "," expression ":" [ end-of-lines ] expression ;
++ifexpr          = "if" expression ":" [ end-of-lines ] expression [ end-of-lines ] "else" ":" [ end-of-lines ] expression ;
++forexpr         = "for" name "=" expression "," expression "," expression ":" [ end-of-lines ] expression ;
  expression               = comparison ;
- comparison               = sum { comparison-operator sum } ;
- comparison-operator      = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+-comparison               = sum { "<" sum } ;
++comparison               = sum { comparison-operator sum } ;
++comparison-operator      = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
  sum                      = term { ("+" | "-") term } ;
--term                     = primary { ("*" | "/") primary } ;
-+term                     = unary-expression { ("*" | "/") unary-expression } ;
-+unary-expression       = "-" unary-expression | primary ;
- primary         = name-expression | number-expression | parenthesized-expression
-                 | ifexpr | forexpr ;
+ term                     = primary { ("*" | "/") primary } ;
+-primary         = name-expression | number-expression | parenthesized-expression ;
++primary         = name-expression | number-expression | parenthesized-expression
++                | ifexpr | forexpr ;
  name-expression  = name | call-expression ;
  call-expression         = name "(" [ arguments ] ")" ;
  arguments               = expression { "," expression } ;
@@ -96,231 +115,954 @@ I insert `unary-expression` between `term` and `primary`. Every operand slot tha
  whitespace = " " | "\t" | "\v" | "\f" ;
 ```
 
-I could have special-cased `-` inside `ParsePrimary` instead of adding a new tier, but then `--x` and `-(x + 1)` wouldn't fall out naturally — I'd need to handle chaining and recursion by hand at the call site instead of getting it for free from the grammar. Giving unary minus its own self-recursive tier means `-` in front of *anything* that can start a `unary-expression`, including another `-`, just works.
+## New Tokens
 
-## A New AST Node
-
-I add one node for unary operator application:
+I add tokens for control-flow keywords and multi-character comparisons:
 
 ```cpp
-/// UnaryExpressionNode - Expression class for a unary operator application.
-/// Built-in unary minus is represented with opcode '-' and lowered directly to
-/// LLVM `fneg`.
-class UnaryExpressionNode : public ExpressionNode {
-  char Opcode;
-  unique_ptr<ExpressionNode> Operand;
+enum Token {
+  // ...
+  tok_eq = -8,   // ==
+  tok_neq = -9,  // !=
+  tok_leq = -10, // <=
+  tok_geq = -11, // >=
 
-public:
-  UnaryExpressionNode(char Opcode, unique_ptr<ExpressionNode> Operand)
-      : Opcode(Opcode), Operand(std::move(Operand)) {}
-  Value *codegen() override;
+  tok_if = -12,
+  tok_else = -13,
+  tok_for = -15,
+
+  // I retain the source character as each single-character token's value.
+  tok_less = '<',
+  tok_greater = '>',
+  tok_equal = '=',
 };
 ```
 
-`Opcode` is a `char` because unary minus is the only unary operator I have — one character is all I need to distinguish it, and it leaves room to add more (`!`, `~`) later without changing the shape of the node.
+I add `if`, `else`, and `for` to `Keywords`. The lexer returns the four negative tokens when it recognizes two-character operators. I use named character tokens for `<`, `>`, and `=`.
 
-## Parsing Unary Minus
+## Comparison Operators
 
-`ParseTerm` now calls `ParseUnary` for each operand instead of `ParsePrimary`:
+### Lexer: Two-Character Tokens
+
+To distinguish `=` from `==`, I inspect the next character without consuming it permanently. I add `peek()` for that lookahead:
 
 ```cpp
-static unique_ptr<ExpressionNode>
-ParseUnary(); // forward declaration for ParseUnaryMinus
-
-/// unaryminus
-///   = "-" unaryexpr ;
-/// Parse built-in unary minus into a UnaryExpressionNode with opcode '-'.
-/// The operand is a full unaryexpr so unary chains work naturally
-/// (e.g. --x and -(x+1)).
-static unique_ptr<ExpressionNode> ParseUnaryMinus() {
-  getNextToken(); // eat '-'
-  auto Operand = ParseUnary();
-  if (!Operand)
-    return nullptr;
-  return make_unique<UnaryExpressionNode>(tok_minus, std::move(Operand));
-}
-
-/// unaryexpr
-///   = "-" unaryexpr
-///   | primary ;
-static unique_ptr<ExpressionNode> ParseUnary() {
-  if (CurrentToken == tok_minus)
-    return ParseUnaryMinus();
-  return ParsePrimary();
+static int peek() {
+  int c = fgetc(Input);
+  if (c != EOF)
+    ungetc(c, Input);
+  return c;
 }
 ```
 
-`ParseUnaryMinus` calls `ParseUnary` for its own operand, not `ParsePrimary` — that's what lets it recurse into itself. `--5` works because the first `-` calls `ParseUnary`, which sees the second `-` and calls `ParseUnaryMinus` again before either call has produced a value.
-
-`ParseUnary` needs a forward declaration above `ParseUnaryMinus` because the two functions call each other: `ParseUnaryMinus` needs `ParseUnary` to parse its operand, and `ParseUnary` needs `ParseUnaryMinus` to handle the `-` case. Whichever one I define first has to declare the other ahead of its own body.
+In `getToken()`, I consume the second `=` only when `peek()` finds one:
 
 ```cpp
-/// term
-///   = unary-expression { ("*" | "/") unary-expression } ;
-static unique_ptr<ExpressionNode> ParseTerm() {
-  auto Left = ParseUnary();
+if (LastChar == '=') {
+  int Tok = (peek() == '=') ? (advance(), tok_eq) : tok_equal;
+  LastChar = advance();
+  return Tok;
+}
+```
+
+The expression `(advance(), tok_eq)` consumes the second character and then produces `tok_eq`. Otherwise, I return `tok_equal`. I finish either path by loading the character after the operator into `LastChar`. I use the same pattern for `!=`, `<=`, and `>=`.
+
+### Parser: Extending the Comparison Layer
+
+The grammar already gives comparisons their own parser layer. I extend its loop to accept all six comparison tokens:
+
+```cpp
+static unique_ptr<ExpressionNode> ParseComparison() {
+  auto Left = ParseSum();
   if (!Left)
     return nullptr;
 
-  while (CurrentToken == tok_star || CurrentToken == tok_slash) {
+  while (CurrentToken == tok_eq || CurrentToken == tok_neq ||
+         CurrentToken == tok_leq || CurrentToken == tok_geq ||
+         CurrentToken == tok_less || CurrentToken == tok_greater) {
     int Operator = CurrentToken;
     getNextToken();
-    auto Right = ParseUnary();
+
+    auto Right = ParseSum();
     if (!Right)
       return nullptr;
-    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
-                                             std::move(Right));
+
+    Left = make_unique<BinaryExpressionNode>(
+        Operator, std::move(Left), std::move(Right));
   }
+
   return Left;
 }
 ```
 
-That single change — `ParsePrimary()` to `ParseUnary()`, twice, in `ParseTerm` — is what makes `-2 * 3` parse as `(-2) * 3` rather than failing or parsing as `-(2 * 3)`. `ParseUnary` grabs the `-2` as a complete unit before `ParseTerm`'s `while` loop ever sees the `*`.
+I parse every comparison at the same grammar tier and group repeated comparisons from left to right. Therefore, `a < b == c` becomes `(a < b) == c`. pyxc does not implement Python's special chained-comparison behavior yet.
 
-There's no new error path here — an invalid operand after `-` still fails with the same "unknown token when expecting an expression" `ParsePrimary` has always produced, since `ParseUnaryMinus` just propagates whatever `ParseUnary` returns:
+`BinaryExpressionNode` stores `Operator` as an `int`. I need that range because tokens such as `tok_eq` use negative values, while named single-character tokens use their character values.
 
-<!-- code-merge:start -->
-```pyxc
-ready> -)
-```
-```bash
-Error (Line 1, Column 2): unknown token when expecting an expression
--)
- ^~~~
-```
-<!-- code-merge:end -->
+### Comparison Codegen
 
-## Codegen
+I generate LLVM [`fcmp`](https://llvm.org/docs/LangRef.html#fcmp-instruction) instructions for pyxc comparisons.
 
-`UnaryExpressionNode::codegen` lowers `-` directly to LLVM's [`fneg`](https://llvm.org/docs/LangRef.html#fneg-instruction):
+For example, I implement `==` in `BinaryExpressionNode::codegen()` with an ordered equal comparison:
 
 ```cpp
-/// UnaryExpressionNode::codegen - Emit built-in unary minus directly.
-Value *UnaryExpressionNode::codegen() {
-  Value *Operator = Operand->codegen();
-  if (!Operator)
+case tok_eq:
+  L = Builder->CreateFCmpOEQ(L, R, "cmptmp");  
+```
+
+which produces:
+
+```llvm
+%cmptmp = fcmp oeq double %L, %R
+```
+
+LLVM provides ordered and unordered floating-point predicates. `oeq` returns false when either operand is `NaN`, while `ueq` returns true in that case. Other comparison pairs follow the same naming pattern, such as `olt`/`ult` and `one`/`une`.
+
+The distinction comes from numeric order. Regular numbers are ordered; `NaN` is unordered. I use ordered predicates for `==`, `<`, `<=`, `>`, and `>=`, and unordered not-equal for `!=`. This matches C and IEEE 754 behavior.
+
+My choices are:
+
+- I use ordered predicates for `==`, `<`, `<=`, `>`, and `>=`, so comparisons with `NaN` return false.
+- I use unordered not-equal (`une`) for `!=`, so `x != NaN` returns true.
+
+```cpp
+case tok_neq:
+  L = Builder->CreateFCmpUNE(L, R, "cmptmp");
+```
+
+which produces:
+
+```llvm
+%cmptmp = fcmp une double %L, %R
+```
+
+LLVM also provides `fcmp uno` for testing whether either operand is `NaN`:
+
+```cpp
+Builder->CreateFCmpUNO(L, R, "has_nan");
+```
+```llvm
+%has_nan = fcmp uno double %L, %R
+```
+
+#### Converting `i1` Back to `double`
+
+`fcmp` produces an `i1`, LLVM's one-bit Boolean type. pyxc does not have a separate Boolean type, so I convert that result to `double`:
+
+```cpp
+// CreateUIToFP (Unsigned Int -> Floating Point)
+return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+```
+
+which produces:
+
+```llvm
+%booltmp = uitofp i1 %cmptmp to double
+```
+
+This gives pyxc its usual comparison result convention: `false → 0.0`, `true → 1.0`. That value is what later flows into `if` conditions and arithmetic expressions. 
+
+## if/else Expressions
+
+I make `if` an expression, so I can use it inside another expression, as a function argument, as a loop body, or inside another `if`.
+
+```pyxc
+if condition: then_expr else: else_expr
+```
+
+I treat any nonzero value as true. The condition can be any expression; it does not need to be a comparison.
+
+### Parsing
+
+I parse the condition, the required `then` expression, and the required `else` expression. I accept newlines after each colon and before `else`, but I do not process indentation yet:
+
+```cpp
+static unique_ptr<ExpressionNode> ParseIfExpression() {
+  getNextToken(); // eat 'if'
+
+  auto Cond = ParseExpression();
+  if (!Cond)
     return nullptr;
 
-  if (Opcode == tok_minus)
-    return TheBuilder->CreateFNeg(Operator, "negtmp");
-  return LogErrorV("Unknown unary operator");
+  if (CurrentToken != tok_colon)
+    return LogErrorExpression("Expected ':' after if condition");
+  getNextToken(); // eat ':'
+
+  consumeNewlines(); // allow body on next line
+
+  auto Then = ParseExpression();
+  if (!Then)
+    return nullptr;
+
+  consumeNewlines(); // allow 'else' on next line
+
+  if (CurrentToken != tok_else)
+    return LogErrorExpression("Expected 'else' in if expression");
+  getNextToken(); // eat 'else'
+
+  if (CurrentToken != tok_colon)
+    return LogErrorExpression("Expected ':' after else");
+  getNextToken(); // eat ':'
+
+  consumeNewlines(); // allow body on next line
+
+  auto Else = ParseExpression();
+  if (!Else)
+    return nullptr;
+
+  return make_unique<IfExpressionNode>(
+      std::move(Cond), std::move(Then), std::move(Else));
 }
 ```
 
-For `-5`, this produces:
+`consumeNewlines()` consumes consecutive `tok_eol` tokens, so I accept both inline and multiline forms:
 
-```llvm
-%negtmp = fneg double 5.000000e+00
+```pyxc
+if a > b: a - b else: b - a            # all on one line
+
+if a > b:                              # multi-line
+    a - b
+else:
+    b - a
 ```
 
-The `Opcode == tok_minus` check and its `LogErrorV` fallback look unreachable right now — `Opcode` is only ever `'-'`, since that's the only unary operator that exists. It's there for the same reason the node stores a `char` instead of hardcoding `-`: it's the shape a second unary operator would need later, without pretending one exists yet.
+### Codegen: Building the then / else / join Blocks
 
-## The Payoff: Density-Shaded Mandelbrot
+To generate an `if`, I need to:
 
-[Chapter 9](chapter-09.md) rendered the Mandelbrot set with a hard edge — every point was either `*` or a space. With unary minus, I can drop the `0 - 2.3` workaround, and I replace the `mandelrow(...) + putchard(10)` sequencing hack with a small helper function. Both changes let me focus the renderer on shading by density instead of the workarounds:
+1. Evaluate the condition.
+2. Run exactly one of the two branches.
+3. Continue afterward with the value produced by the branch that ran.
+
+For an `if`, I need one block for the `then` path, one for
+the `else` path, and one final block where both paths meet again.
+
+I use the same example function:
+
+```pyxc
+def absdiff(a, b): if a > b: a - b else: b - a
+```
+
+Inside that function, the `if` expression is:
+
+```pyxc
+if a > b: a - b else: b - a
+```
+
+The generated block layout looks like this:
+
+```diagram
+                entry
+                  │
+             if (a > b)?
+          ┌───────┴────────┐
+     true ▼                ▼ false
+ then: %subtmp = a-b   else: %subtmp1 = b-a
+          └───────┬────────┘
+                  ▼
+                ifcont
+```
+
+LLVM requires every basic block to end with a terminator such as `br` or `ret`. I therefore create explicit branches from `entry` to `then` or `else`, and from each branch to `ifcont`.
+
+I build this shape in `IfExpressionNode::codegen()` and trace it through `absdiff`.
+
+At the LLVM level, I'm filling in this function body:
+
+```llvm
+define double @absdiff(double %a, double %b) {
+entry:
+  ...
+}
+```
+
+**Step 1 — Generate the condition in the current block.**
+
+First I generate code for the condition expression:
+
+```cpp
+Value *CondV = Cond->codegen();
+```
+
+For `absdiff`, `Cond->codegen()` generates code for `a > b`. 
+
+```cpp
+case tok_greater:
+  L = Builder->CreateFCmpOGT(L, R, "cmptmp");
+  return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+```
+
+That produces:
+
+```llvm
+define double @absdiff(double %a, double %b) {
+entry:
+  %cmptmp  = fcmp ogt double %a, %b
+  %booltmp = uitofp i1 %cmptmp to double
+}
+```
+
+`Cond->codegen()` gives me a `double`, because pyxc represents booleans as
+`0.0` or `1.0`. LLVM branches need an `i1`, so before I can branch I must
+turn that `double` back into an `i1`. 
+
+I do that by comparing the condition value against `0.0`:
+
+```cpp
+CondV = Builder->CreateFCmpONE(
+    CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "ifcond");
+```
+
+This means: treat the condition as true if it is not equal to `0.0`.
+
+A comparison condition makes an `i1 → double → i1` round trip. I first convert the comparison to `double` because every pyxc expression has that type. Here I must convert any condition—including a number such as `2.0`—back to the `i1` required by `CreateCondBr`. LLVM's optimizer removes the round trip when it can.
+
+The current block now looks like this:
+
+```llvm
+define double @absdiff(double %a, double %b) {
+entry:
+  %cmptmp  = fcmp ogt double %a, %b
+  %booltmp = uitofp i1 %cmptmp to double
+  %ifcond  = fcmp one double %booltmp, 0.0
+}
+```
+
+At this point the builder is still inserting instructions into the current
+block, which is the block that was already active before the `if`.
+
+**Step 2 — Create the `then`, `else`, and join blocks.**
+
+```cpp
+BasicBlock *ThenBB = BasicBlock::Create(*TheContext, "then", TheFunction);
+BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else", TheFunction);
+BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont", TheFunction);
+Builder->CreateCondBr(CondV, ThenBB, ElseBB);
+```
+
+I attach all three blocks to the function and finish the current block with `CreateCondBr`:
+
+```llvm
+br i1 %ifcond, label %then, label %else
+```
+
+Check `%ifcond`; jump to `%then` if true, `%else` if false.
+
+Now I have:
+
+```llvm
+define double @absdiff(double %a, double %b) {
+entry:
+  %cmptmp  = fcmp ogt double %a, %b
+  %booltmp = uitofp i1 %cmptmp to double
+  %ifcond  = fcmp one double %booltmp, 0.0
+  br i1 %ifcond, label %then, label %else
+
+then:    ; (empty)
+else:    ; (empty)
+ifcont:  ; (empty)
+}
+```
+
+**Step 3 — Move the builder cursor into `then` and generate that branch.**
+
+```cpp
+Builder->SetInsertPoint(ThenBB);
+Value *ThenV = Then->codegen();
+Builder->CreateBr(MergeBB);
+```
+
+I call `SetInsertPoint` so the builder appends subsequent instructions to the `then` block.
+
+After `Then->codegen()` finishes, I emit an unconditional branch to `ifcont` so execution continues in the join block after the then-branch completes.
+
+```llvm
+then:                           ; reached when the condition is true
+  %subtmp = fsub double %a, %b
+  br label %ifcont
+```
+
+Finally, I update `ThenBB` so it points to the block where the `then` path
+actually finished.
+
+```cpp
+// Update ThenBB to the block where the then-path actually ended.
+// This matters for nested control flow; explained just below.
+ThenBB = Builder->GetInsertBlock();
+```
+
+This matters because nested control flow can create more blocks and move the
+builder cursor. I want the block where the `then` path ended, not the block where it
+started. This only matters for nested `if` expressions; I'll look at that
+case a little later in this chapter.
+
+**Step 4 — Do the same for `else`.**
+
+```cpp
+Builder->SetInsertPoint(ElseBB);
+Value *ElseV = Else->codegen();
+Builder->CreateBr(MergeBB);
+ElseBB = Builder->GetInsertBlock();
+```
+
+Step 4 is the same idea for `else`: move the builder cursor into `else`, generate the
+expression, branch to `ifcont`, and update `ElseBB` to the block where that
+path ended.
+
+```llvm
+else:                           ; reached when the condition is false
+  %subtmp1 = fsub double %b, %a
+  br label %ifcont
+```
+
+**Step 5 — Fill the join block and choose the final value.**
+
+Both branches produce a value, but I need one value after they rejoin. LLVM requires me to represent that choice with a **PHI node**. Each incoming entry pairs a value with the block that produced it:
+
+```llvm
+%iftmp = phi double [ %subtmp, %then ], [ %subtmp1, %else ]
+```
+
+Read it as: "if execution arrived here from `then`, use `%subtmp`; if from `else`, use `%subtmp1`." The name **phi** comes from the φ-function notation in the SSA papers of the late 1980s — exactly the piecewise-function idea of "this value if condition A, that value if condition B."
+
+```cpp
+Builder->SetInsertPoint(MergeBB);
+PHINode *PN = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
+PN->addIncoming(ThenV, ThenBB);
+PN->addIncoming(ElseV, ElseBB);
+return PN;
+```
+
+> LLVM requires PHI nodes to appear before non-PHI instructions in a block. I create the PHI immediately after moving the insertion point to `MergeBB`.
+
+**Full unoptimized IR for `absdiff`:**
+
+```llvm
+define double @absdiff(double %a, double %b) {
+entry:
+  %cmptmp  = fcmp ogt double %a, %b
+  %booltmp = uitofp i1 %cmptmp to double
+  %ifcond  = fcmp one double %booltmp, 0.0
+  br i1 %ifcond, label %then, label %else
+
+then:                                         ; reached when the condition is true
+  %subtmp = fsub double %a, %b
+  br label %ifcont
+
+else:                                         ; reached when the condition is false
+  %subtmp1 = fsub double %b, %a
+  br label %ifcont
+
+ifcont:                                       ; both branches rejoin here
+  %iftmp = phi double [ %subtmp, %then ], [ %subtmp1, %else ]
+  ret double %iftmp
+}
+```
+
+Because execution jumps directly to either `then` or `else` and never enters the other block, `if`/`else` short-circuits — the branch not taken is never evaluated.
+
+### What `-v` Shows
+
+By default I print optimized IR. My pass pipeline is only three fixed passes — `InstCombinePass`, `ReassociatePass`, `GVNPass` — not LLVM's full `-O2`, so it cleans up redundant instructions but doesn't restructure control flow. The `then`/`else`/`ifcont` blocks and the `phi` stay exactly as I built them:
+
+```llvm
+define double @absdiff(double %a, double %b) {
+entry:
+  %cmptmp = fcmp ogt double %a, %b
+  br i1 %cmptmp, label %then, label %else
+
+then:                                             ; preds = %entry
+  %subtmp = fsub double %a, %b
+  br label %ifcont
+
+else:                                             ; preds = %entry
+  %subtmp1 = fsub double %b, %a
+  br label %ifcont
+
+ifcont:                                           ; preds = %else, %then
+  %iftmp = phi double [ %subtmp, %then ], [ %subtmp1, %else ]
+  ret double %iftmp
+}
+```
+
+The only thing that changes from the unoptimized IR is the condition: `InstCombinePass` recognizes `fcmp one (uitofp i1 %cmptmp to double), 0.0` as a round trip back to `%cmptmp` itself, and folds it away — so `br` branches on `%cmptmp` directly instead of the reconstructed `%ifcond`. I keep the simple all-`double` language model in the code I write; the optimizer is what notices the `i1` was there all along.
+
+Turning branches into a branchless `select` is a real LLVM transformation, but it needs passes I haven't added yet (`SimplifyCFGPass` in particular). Until I do, `if`/`else` always keeps its block structure, at every `-O` level pyxc accepts, including `-O0`. `-O0` skips even the three passes I do have, which is why the unoptimized IR above still shows the full `i1 → double → i1` round trip.
+
+### Why Nested ifs Change the End Block
+
+Consider this pyxc code:
+
+```pyxc
+def xor(a, b):
+    if a == 1:                # %a1
+        if b == 1: 0          # %a1_b1
+        else: 1               # %a1_b0
+        # these join at %a1_merge
+    else:                     # %a0
+        if b == 1: 1          # %a0_b1
+        else: 0               # %a0_b0
+        # these join at %a0_merge
+    
+    # the final result is chosen at %merge
+```    
+
+The IR for the `a == 1` branch:
+
+```llvm
+a1:                                      ; a == 1
+  ...
+
+a1_b1:                                   ; a == 1, b == 1 → 0
+  ...
+
+a1_b0:                                   ; a == 1, b == 0 → 1
+  ...
+
+a1_merge:
+  %a1_result = phi double [ 0.0, %a1_b1 ],
+                          [ 1.0, %a1_b0 ]
+  ...
+```
+
+Once execution enters `a1`, the nested `if` sends it through either `a1_b1` or
+`a1_b0`, and both of those rejoin at `a1_merge`.
+
+So if control later reaches the final PHI from the `a == 1` side, it is
+arriving from `a1_merge`, not from `a1`.
+
+The `a == 0` side works the same way:
+
+```llvm
+a0:                                      ; a == 0
+  ...
+
+a0_b1:                                   ; a == 0, b == 1 → 1
+  ...
+
+a0_b0:                                   ; a == 0, b == 0 → 0
+  ...
+
+a0_merge:
+  %a0_result = phi double [ 1.0, %a0_b1 ],
+                          [ 0.0, %a0_b0 ]
+  ...
+```
+
+Again, execution does not go straight from `a0` to the final PHI. Once it
+enters `a0`, the nested `if` sends it through `a0_b1` or `a0_b0`, and both of
+those rejoin at `a0_merge`.
+
+So if control reaches the final PHI from the `a == 0` side, it is arriving
+from `a0_merge`, not from `a0`.
+
+Now the final PHI makes sense:
+
+```llvm
+merge:
+  %xor_result = phi double [ %a1_result, %a1_merge ],
+                           [ %a0_result, %a0_merge ]
+  ret double %xor_result
+```
+
+The final PHI uses the exit points, not the entry points:
+
+- if execution arrives from `a1_merge`, use `%a1_result`
+- if execution arrives from `a0_merge`, use `%a0_result`
+
+That is why these updates matter in the code generator:
+
+```cpp
+ThenBB = Builder->GetInsertBlock();
+...
+ElseBB = Builder->GetInsertBlock();
+```
+
+In the actual emitted IR, LLVM names these blocks `then`, `else`, and `ifcont`. The XOR example uses descriptive names like `a1`, `a1_merge`, and `merge` for clarity of exposition.
+
+## for Loop Expressions
+
+I use a `for` expression to repeat one body expression while a condition remains nonzero:
+
+```pyxc
+for var = start, condition, step: body
+```
+
+I introduce `var` for the loop and make it available to the condition, step, and body. I discard the body's value on each iteration. I require the step expression explicitly.
+
+### Parsing
+
+I parse the variable name, start value, condition, step, and body in their grammar order. I allow newlines before the body:
+
+```cpp
+static unique_ptr<ExpressionNode> ParseForExpression() {
+  getNextToken(); // eat 'for'
+
+  if (CurrentToken != tok_name)
+    return LogErrorExpression("Expected name after 'for'");
+  string VarName = Name;
+  getNextToken(); // eat name
+
+  if (CurrentToken != tok_equal)
+    return LogErrorExpression("Expected '=' after for variable");
+  getNextToken();
+
+  auto Start = ParseExpression();
+  // ... eat ',', parse Cond, eat ',', parse Step, eat ':' ...
+  consumeNewlines();
+
+  auto Body = ParseExpression();
+  return make_unique<ForExpressionNode>(
+      VarName, std::move(Start), std::move(Cond),
+      std::move(Step), std::move(Body));
+}
+```
+
+### Codegen
+
+```diagram
+      entry
+        │
+        ▼
+    loop_cond ◄─────────────────┐
+        │                       │
+   ┌────┴────┐                  │
+   ▼         ▼                  │
+loop_body  after_loop           │
+   │        ret 0.0             │
+   └── (i = i + step) ──────────┘
+```
+
+I evaluate the parts in this order: `start → condition → body → step → condition → …`. Because I check the condition before the body, the body may run zero times. I trace `for i = 1, i <= 3, 1: printd(i)` through the blocks.
+
+**Step 1 — Evaluate start in the preheader and jump to the condition block.**
+
+```cpp
+Value *StartVal = Start->codegen();           // 1.0
+BasicBlock *PreheaderBB = Builder->GetInsertBlock();
+BasicBlock *CondBB  = BasicBlock::Create(*TheContext, "loop_cond", TheFunction);
+BasicBlock *BodyBB  = BasicBlock::Create(*TheContext, "loop_body", TheFunction);
+BasicBlock *AfterBB = BasicBlock::Create(*TheContext, "after_loop", TheFunction);
+Builder->CreateBr(CondBB);
+```
+
+All three loop blocks are attached to the function immediately. `CreateBr`
+finishes the preheader by jumping into the loop condition block.
+
+IR so far — the preheader is finished, and the other loop blocks exist but are
+still empty:
+
+```llvm
+define double @__anon_expr() {
+entry:
+  br label %loop_cond
+
+loop_cond:   ; (empty)
+loop_body:   ; (empty)
+after_loop:  ; (empty)
+}
+```
+
+**Step 2 — Build the condition block: PHI node + branch.**
+
+```cpp
+Builder->SetInsertPoint(CondBB);
+PHINode *Variable = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
+Variable->addIncoming(StartVal, PreheaderBB);   // first-iteration value
+```
+
+I create the PHI node with only one incoming value for now — the preheader. The
+back-edge from the loop body is added later, once I know where the body ends.
+
+The condition block starts to look like this:
+
+```llvm
+loop_cond:
+  %i = phi double [ 1.000000e+00, %entry ]
+```
+
+Next I generate the loop condition expression:
+
+```cpp
+Value *CondV = Cond->codegen();
+```
+
+For `i <= 3`, that adds:
+
+```llvm
+loop_cond:
+  %i = phi double [ 1.000000e+00, %entry ]
+  %cmptmp  = fcmp ole double %i, 3.000000e+00
+  %booltmp = uitofp i1 %cmptmp to double
+```
+
+Then convert that `double` condition into an `i1` for branching:
+
+```cpp
+Value *LoopCond = Builder->CreateFCmpONE(
+    CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "loopcond");
+```
+
+which adds:
+
+```llvm
+  %loopcond = fcmp one double %booltmp, 0.000000e+00
+```
+
+Finally, branch to the loop body or the after-loop block:
+
+```cpp
+Builder->CreateCondBr(LoopCond, BodyBB, AfterBB);
+```
+
+which completes the block:
+
+```llvm
+define double @__anon_expr() {
+entry:
+  br label %loop_cond
+
+loop_cond:
+  %i = phi double [ 1.000000e+00, %entry ]
+  %cmptmp  = fcmp ole double %i, 3.000000e+00
+  %booltmp = uitofp i1 %cmptmp to double
+  %loopcond = fcmp one double %booltmp, 0.000000e+00
+  br i1 %loopcond, label %loop_body, label %after_loop
+
+loop_body:   ; (empty)
+after_loop:  ; (empty)
+}
+```
+
+**Step 3 — Fill the body block.**
+
+```cpp
+Builder->SetInsertPoint(BodyBB);
+Body->codegen();                                // return value discarded
+```
+
+For `printd(i)`, that adds:
+
+```llvm
+loop_body:
+  %calltmp = call double @printd(double %i)
+```
+
+Next generate the step value and the next loop variable:
+
+```cpp
+Value *StepVal = Step->codegen();               // 1.0
+Value *NextVar  = Builder->CreateFAdd(Variable, StepVal, "nextvar");
+```
+
+which adds:
+
+```llvm
+  %nextvar = fadd double %i, 1.000000e+00
+```
+
+Finally, update the PHI with the back-edge value and branch back to
+`loop_cond`:
+
+```cpp
+BasicBlock *BodyEndBB = Builder->GetInsertBlock();
+Variable->addIncoming(NextVar, BodyEndBB);      // complete the PHI
+Builder->CreateBr(CondBB);
+```
+
+That completes the loop body and gives the PHI its second incoming value:
+
+```llvm
+define double @__anon_expr() {
+entry:
+  br label %loop_cond
+
+loop_cond:
+  %i = phi double [ 1.000000e+00, %entry ], [ %nextvar, %loop_body ]
+  %cmptmp  = fcmp ole double %i, 3.000000e+00
+  %booltmp = uitofp i1 %cmptmp to double
+  %loopcond = fcmp one double %booltmp, 0.000000e+00
+  br i1 %loopcond, label %loop_body, label %after_loop
+
+loop_body:
+  %calltmp = call double @printd(double %i)
+  %nextvar = fadd double %i, 1.000000e+00
+  br label %loop_cond
+
+after_loop:  ; (empty)
+}
+```
+
+**Step 4 — After-loop block returns `0.0`.**
+
+```cpp
+Builder->SetInsertPoint(AfterBB);
+return ConstantFP::get(*TheContext, APFloat(0.0));
+```
+
+The loop has no natural return value, so the after-loop block returns `0.0`.
+
+**Full unoptimized IR for `for i = 1, i <= 3, 1: printd(i)` as a top-level expression:**
+
+```llvm
+define double @__anon_expr() {
+entry:
+  br label %loop_cond
+
+loop_cond:                                    ; entered first from entry, later from loop_body
+  %i = phi double [ 1.000000e+00, %entry ], [ %nextvar, %loop_body ]
+  %cmptmp  = fcmp ole double %i, 3.000000e+00
+  %booltmp = uitofp i1 %cmptmp to double
+  %loopcond = fcmp one double %booltmp, 0.000000e+00
+  br i1 %loopcond, label %loop_body, label %after_loop
+
+loop_body:                                    ; runs while the loop condition is true
+  %calltmp = call double @printd(double %i)
+  %nextvar = fadd double %i, 1.000000e+00
+  br label %loop_cond
+
+after_loop:                                   ; reached when the loop condition becomes false
+  ret double 0.000000e+00
+}
+```
+
+### What `-v` Shows After Optimization
+
+As with `if/else`, the optimizer removes the `i1` → `double` → `i1` roundtrip:
+
+```llvm
+; unoptimized
+%cmptmp  = fcmp ole double %i, 3.000000e+00
+%booltmp = uitofp i1 %cmptmp to double
+%loopcond = fcmp one double %booltmp, 0.000000e+00
+br i1 %loopcond, label %loop_body, label %after_loop
+```
+
+```llvm
+; optimized
+%cmptmp = fcmp ugt double %i, 3.000000e+00
+br i1 %cmptmp, label %after_loop, label %loop_body
+```
+
+LLVM also rewrites `ole` (ordered less-than-or-equal) as its complement, `ugt` (unordered greater-than), and swaps the branch destinations. These two changes preserve the same control flow.
+
+The full optimized function:
+
+```llvm
+define double @__anon_expr() {
+entry:
+  br label %loop_cond
+loop_cond:
+  %i = phi double [ 1.000000e+00, %entry ], [ %nextvar, %loop_body ]
+  %cmptmp = fcmp ugt double %i, 3.000000e+00
+  br i1 %cmptmp, label %after_loop, label %loop_body
+loop_body:
+  %calltmp = call double @printd(double %i)
+  %nextvar = fadd double %i, 1.000000e+00
+  br label %loop_cond
+after_loop:
+  ret double 0.000000e+00
+}
+```
+
+### Variable Shadowing
+
+If an outer function parameter has the same name as the loop variable, the loop variable takes precedence inside the loop. The outer binding is saved before the loop and restored in `after_loop`:
+
+```cpp
+Value *OldVal = NamedValues[VarName];
+NamedValues[VarName] = Variable;
+// ... condition, step, body codegen ...
+if (OldVal)
+  NamedValues[VarName] = OldVal;
+else
+  NamedValues.erase(VarName);
+```
+
+## The Mandelbrot Set
+
+With comparisons, `if`/`else`, and `for`, I can render the Mandelbrot set. For each complex number `c`, I repeatedly calculate `z = z² + c`, beginning with `z = 0`, and test whether the result escapes. I use recursion in `mandelconverger` because pyxc does not have mutable variables yet; I pass the updated values as parameters instead.
 
 ```pyxc
 # test/mandel.pyxc
 extern def putchard(x)
 
-# Evaluate x before returning y.
-def sequence(x, y):
-    y
-
-# printdensity - map iteration count to an ASCII shade.
-def printdensity(d):
-    if d > 8: putchard(32) else: if d > 4: putchard(46) else: if d > 2: putchard(43) else: putchard(42)
-
-# Determine whether z = z^2 + c diverges for the given point.
 def mandelconverger(real, imag, iters, creal, cimag):
-    if iters > 255: iters else: if real * real + imag * imag > 4: iters else: mandelconverger(real * real - imag * imag + creal, 2 * real * imag + cimag, iters + 1, creal, cimag)
+    if iters > 255: iters
+    else: if (real * real + imag * imag) > 4: iters
+          else: mandelconverger(real * real - imag * imag + creal, 2 * real * imag + cimag, iters + 1, creal, cimag)
 
-# Return number of iterations required for escape.
 def mandelconverge(real, imag):
     mandelconverger(real, imag, 0, real, imag)
 
-# Render one row.
 def mandelrow(xmin, xmax, xstep, y):
     for x = xmin, x < xmax, xstep:
-               printdensity(mandelconverge(x, y))
+        putchard(if mandelconverge(x, y) > 255: 32 else: 42)
 
-# Render full 2D region.
 def mandelhelp(xmin, xmax, xstep, ymin, ymax, ystep):
     for y = ymin, y < ymax, ystep:
-               sequence(mandelrow(xmin, xmax, xstep, y), putchard(10))
+        mandelrow(xmin, xmax, xstep, y) + putchard(10)
 
-# Top-level helper.
 def mandel(realstart, imagstart, realmag, imagmag):
     mandelhelp(realstart, realstart + realmag * 78, realmag, imagstart, imagstart + imagmag * 40, imagmag)
 
-mandel(-2.3, -1.3, 0.05, 0.07)
-mandel(-2, -1, 0.02, 0.04)
-mandel(-0.9, -1.4, 0.02, 0.03)
+mandel(0 - 2.3, 0 - 1.3, 0.05, 0.07)
+
+# Try these too
+# mandel(0 - 2, 0 - 1, 0.02, 0.04)
+# mandel(0 - 0.9, 0 - 1.4, 0.02, 0.03)
 ```
 
-`sequence(x, y)` isn't a new language feature — function calls already evaluate their arguments left to right, so `sequence(mandelrow(...), putchard(10))` runs the row, then the newline, then returns whatever `putchard` returned. Chapter 9 got the same effect by adding two `0.0` return values together, which worked by accident; `sequence` says what I actually mean.
+**Line breaks.** I only consume newlines after `:` in `def`, `if`, and `for` forms, and before `else`. I reject a newline in an argument list or in the middle of another expression. The nested `if` can therefore span lines, while the long call in `mandel` must remain on one line.
 
-`printdensity` maps an iteration count to a shade instead of just inside/outside:
+**Sequencing with `+`.** I write `mandelrow(...) + putchard(10)` to perform two calls in one expression. Both return `0.0`, so the addition only gives me a way to sequence their side effects. In [Chapter 4](chapter-04.md), I replace this with a small `sequence(x, y)` helper function instead.
 
-| count | char | meaning |
-|-------|------|---------|
-| > 8   | ` ` (space) | deep inside — survived 9+ iterations |
-| > 4   | `.`  | boundary zone — survived 5–8 iterations |
-| > 2   | `+`  | near boundary — survived 3–4 iterations |
-| ≤ 2   | `*`  | fast escape — outside the set |
-
-Run it directly:
-
-```bash
-./build/pyxc test/mandel.pyxc
-```
-
-The same view as chapter 9 (`mandel(-2.3, -1.3, 0.05, 0.07)`) now produces:
+**Unary minus.** pyxc has no unary minus yet, so I write `0 - 2.3`. LLVM folds that subtraction to the negative constant. In [Chapter 4](chapter-04.md), I add unary expressions and built-in unary minus, so this becomes `-2.3` directly.
 
 ```
 ******************************************************************************
 ******************************************************************************
-****************************************++++++********************************
-************************************+++++...++++++****************************
-*********************************++++++++.. ...+++++**************************
-*******************************++++++++++..   ..+++++*************************
-******************************++++++++++.     ..++++++************************
-****************************+++++++++....      ..++++++***********************
-**************************++++++++.......      .....++++**********************
-*************************++++++++.   .            ... .++*********************
-***********************++++++++...                     ++*********************
-*********************+++++++++....                    .+++********************
-******************+++..+++++....                      ..+++*******************
-**************++++++. ..........                        +++*******************
-***********++++++++..        ..                         .++*******************
-*********++++++++++...                                 .++++******************
-********++++++++++..                                   .++++******************
-*******++++++.....                                    ..++++******************
-*******+........                                     ...++++******************
-*******+... ....                                     ...++++******************
-*******+++++......                                    ..++++******************
-*******++++++++++...                                   .++++******************
-*********++++++++++...                                  ++++******************
-**********+++++++++..        ..                        ..++*******************
-*************++++++.. ..........                        +++*******************
-******************+++...+++.....                      ..+++*******************
-*********************+++++++++....                    ..++********************
-***********************++++++++...                     +++********************
-*************************+++++++..   .            ... .++*********************
-**************************++++++++.......      ......+++**********************
-****************************+++++++++....      ..++++++***********************
-*****************************++++++++++..     ..++++++************************
-*******************************++++++++++..  ...+++++*************************
-*********************************++++++++.. ...+++++**************************
-***********************************++++++....+++++****************************
-***************************************++++++++*******************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************   *********************************
+******************************************    ********************************
+*******************************************  *********************************
+************************************ **          *****************************
+************************************                 *************************
+***********************************                 **************************
+**********************************                   *************************
+*********************************                     ************************
+*********************** *  *****                      ************************
+***********************       **                      ************************
+**********************         *                      ************************
+*******************  *         *                     *************************
+*******************  *         *                     *************************
+**********************         *                      ************************
+***********************       **                      ************************
+*********************** *   ****                      ************************
+*********************************                     ************************
+**********************************                   *************************
+***********************************                 **************************
+*************************************                *************************
+************************************ *           *****************************
+*******************************************  *********************************
+******************************************    ********************************
+******************************************    ********************************
+******************************************** *********************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
 ******************************************************************************
 ******************************************************************************
 ******************************************************************************
 ******************************************************************************
 ```
 
-The boundary is now a gradient instead of a hard edge. The file calls `mandel(...)` two more times, zooming into different regions of the complex plane.
+I write the iteration and branching in pyxc. The host only provides `putchard` for writing one character to `stderr`.
 
 ## Build and Run
 
@@ -340,7 +1082,7 @@ To run the Mandelbrot renderer directly:
 
 ## What's Next
 
-In [Chapter 11](chapter-11.md), I add mutable local variables and assignment using a temporary `var ... :` expression form. This keeps pyxc expression-oriented for one more chapter before real statement blocks arrive.
+[Chapter 11](chapter-11.md) adds mutable variables.
 
 ## Need Help?
 
@@ -354,4 +1096,4 @@ Include:
 - Full error message
 - Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
-I'll help you figure it out.
+We'll figure it out.

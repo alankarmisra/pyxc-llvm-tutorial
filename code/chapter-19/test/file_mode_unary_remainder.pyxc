@@ -1,0 +1,8 @@
+# RUN: %pyxc %s > %t 2>&1
+# RUN: grep -q -- "-2.000000" %t
+# RUN: not grep -q "ready>" %t
+# RUN: not grep -q "Error (Line" %t
+
+# File mode preserves unary minus and remainder from Chapter 4.
+extern def printd(x: float64) -> float64
+printd(float64(-(8 % 3)))

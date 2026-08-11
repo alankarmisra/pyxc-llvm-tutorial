@@ -1,0 +1,5 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed a top-level expression." %t
+
+# top: inline comment after an expression is skipped
+1 + 2 # this is a comment

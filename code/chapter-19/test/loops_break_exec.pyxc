@@ -1,0 +1,12 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 3.000000
+
+def stop_at_three() -> float64:
+  var i: float64 = 0
+  while True:
+    if i == 3:
+      break
+    i = i + 1
+  return i
+
+stop_at_three()

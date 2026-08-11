@@ -1,0 +1,13 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 8.000000
+
+# A continue in a for loop jumps to the step before testing the condition again.
+def skip_two():
+    var sum = 0
+    for var i = 0, i < 5, 1:
+        if i == 2:
+            continue
+        sum = sum + i
+    return sum
+
+skip_two()

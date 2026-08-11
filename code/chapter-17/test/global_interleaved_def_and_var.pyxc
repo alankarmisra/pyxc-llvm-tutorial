@@ -7,11 +7,11 @@
 # then assigned via f(). __pyxc.global_init runs all top-level statements
 # in source order, so f() is available when y = f(x) executes.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-var x: float64 = 1.0
+var x = 1
 
-def f(n: float64) -> float64: return n + 2
+def f(n): return n + 2
 
-var y: float64 = f(x)
+var y = f(x)
 printd(y)

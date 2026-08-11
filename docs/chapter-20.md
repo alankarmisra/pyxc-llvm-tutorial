@@ -1,339 +1,408 @@
 ---
-description: "Add pointer arithmetic: ptr + int, ptr - int, ptr - ptr, and pointer comparisons: so you can walk memory with a pointer."
+description: "Add DWARF debug info via DIBuilder and replace the fixed optimization pass list with LLVM's standard O0-O3 pipelines."
 ---
-# 20. pyxc: Pointer Arithmetic
+# 20. pyxc: Debug Info and the Optimization Pipeline
 
 ## What I Am Building
 
-[Chapter 19](chapter-19.md) gave me pointers: `addr` to take an address, `p[i]` to index, and pointer parameters so functions can modify the caller's data. What I couldn't do yet was walk a pointer forward or backward, or compare two pointers. The classic K&R summing-loop pattern, compute an end pointer, then advance `p` until it equals `end`, was out of reach.
+[Chapter 17](chapter-17.md) gave me `--emit exe`: I can compile a program to a native binary in one step. What I can't do yet is tell a debugger anything useful about it. I compile with `-g`, set a breakpoint in lldb, and the debugger sees only machine addresses. No source file name, no line numbers, no variable names.
 
-After this chapter, that pattern works:
+This chapter adds two things:
 
-```pyxc
-extern def printd(x: float64)
+1. **`-g`**: emits DWARF debug information: a compile unit, subprograms, source locations, local variables, parameters, and globals.
+2. **`-O0`/`-O1`/`-O2`/`-O3`**: replaces the fixed four-pass list I've been running with LLVM's standard per-level pipelines, which are far richer, inlining, interprocedural analyses, and the rest, at the higher levels.
 
-struct Triple:
-  a: int
-  b: int
-  c: int
-
-def main() -> int:
-  var t: Triple
-  t.a = 10
-  t.b = 20
-  t.c = 30
-  var p: ptr[int] = addr(t.a)
-  var end: ptr[int] = p + 3
-  var total: int = 0
-  for var i: int = 0, p + i != end, 1:
-    total = total + p[i]
-  printd(float64(total))  # 60.000000
-  return 0
-```
+The two are linked: `-g` without an explicit `-O` forces `-O0`, because optimized IR is much harder for a debugger to make sense of.
 
 ## Source Code
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-20
+cd pyxc-llvm-tutorial/code/chapter-16
 ```
 
 ## Grammar
 
-No grammar change this chapter — `code/chapter-20/pyxc.ebnf` is byte-identical to chapter 19's. `+`, `-`, and the comparison operators already existed as `sum`/`comparison` productions; nothing new needs to be parsed. What changes is purely semantic: `GetBinaryResultType` now accepts pointer operands and returns pointer or integer types accordingly, so the same syntax that already parsed `a + b` for two integers now also accepts one pointer and one integer operand.
+No grammar changes. Both additions are purely compiler-infrastructure concerns; nothing about the syntax of a pyxc program changes.
 
-## Semantic Rules
-
-| Expression | Operand types | Result type |
-|---|---|---|
-| `p + n` | `ptr[T]`, int | `ptr[T]` |
-| `n + p` | int, `ptr[T]` | `ptr[T]` |
-| `p - n` | `ptr[T]`, int | `ptr[T]` |
-| `p - q` | `ptr[T]`, `ptr[T]` (same T) | `int64` |
-| `p < q`, `p > q`, etc. | `ptr[T]`, `ptr[T]` (same T) | `bool` |
-| `p * n` | `ptr[T]`, int | **type error** |
-| `p + q` | `ptr[T]`, `ptr[U]` | **type error** |
-| `p - q` | `ptr[T]`, `ptr[U]` (T ≠ U) | **type error** |
-
-Pointer difference (`p - q`) yields an element count, not bytes. If `p` and `q` are both `ptr[int]` and they are 24 bytes apart, `p - q` is 3: the number of `int`-sized steps between them.
-
-Multiplication by a pointer is blocked. There is no sensible meaning for `ptr[T] * int` in terms of memory addresses.
-
-## Extending Binary Result Type Resolution
-
-`GetBinaryResultType` is the central function that decides what type a binary expression produces. Its signature is extended to carry struct-name information for both operands and to write the result struct name back:
+## New CLI Flags
 
 ```cpp
-if (IsArithmeticOp(Operator)) {
-  if (Operator != tok_star &&
-      ((L == ValueType::Pointer && IsIntType(R)) ||
-       (R == ValueType::Pointer && IsIntType(L)))) {
-    if (ResultStructName)
-      *ResultStructName = (L == ValueType::Pointer) ? LStruct : RStruct;
-    return ValueType::Pointer;
-  }
-  if (Operator == tok_minus && L == ValueType::Pointer && R == ValueType::Pointer &&
-      LStruct == RStruct)
-    return ValueType::Int64;
-  ...
-}
-if (IsComparisonOp(Operator)) {
-  if (L == ValueType::Pointer && R == ValueType::Pointer &&
-      LStruct == RStruct)
-    return ValueType::Bool;
-  ...
-}
+static cl::opt<bool> DebugInfo("g", cl::desc("Emit DWARF debug info"),
+                               cl::init(false), cl::cat(PyxcCategory));
 ```
 
-For `ptr + int` and `int + ptr`, the result inherits the struct name (which encodes the pointee type) from whichever operand is the pointer. For `ptr - ptr`, no struct name is needed because the result is a plain `int64`. For pointer comparisons, the result is `bool`.
+`-g` is a boolean. It has no effect in REPL mode, there's no object file to embed DWARF in there, but I accept it silently anyway so a script can pass `-g` unconditionally without special-casing the REPL.
 
-Mismatched pointer types (`ptr[int] - ptr[float64]`) fall through to the default error path because `LStruct != RStruct`.
-
-## Extending the Binary Expression Constructor
-
-`BinaryExpressionNode` gains an optional `StructName` parameter so the pointer type of an arithmetic result can be carried through the AST. `Type` itself stays required, only the new `StructName` gets a default:
+The opt-level flag itself already existed. What's new in `main`'s command-line handling is one guard, right after parsing:
 
 ```cpp
-BinaryExpressionNode(int Operator, unique_ptr<ExpressionNode> Left, unique_ptr<ExpressionNode> Right,
-              ValueType Type, const string &StructName = "")
+if (DebugInfo && OptLevel.getNumOccurrences() == 0)
+  OptLevel = 0;
 ```
 
-The constructor calls `setType(Type, StructName)`. Before this chapter, `MergeBinaryExpression` had no struct name to pass in, because no binary result could be a pointer. Now it does, whether or not the particular result happens to be one.
+`getNumOccurrences()` is 0 only if the flag was never supplied at all. So `-g` alone silently coerces to `-O0`, while `-g -O2` leaves the opt level at 2, letting me opt into debug-with-optimization explicitly while the common case, just `-g`, stays safe by default.
 
-## One Merge Path for Every Operator
+## Keeping the IR I Actually Wrote
 
-I don't need a separate branch for pointer results. `MergeBinaryExpression` already existed from [Chapter 19](chapter-19.md) as the one place every binary-operator parser (`ParseTermRight`, and its counterparts for `sum` and `comparison`) funnels through. I just extend the two calls it makes, `GetBinaryResultType` and the `BinaryExpressionNode` constructor, to carry struct names in both directions:
+The first change that touches every code path is the `Builder` declaration itself:
 
 ```cpp
-static unique_ptr<ExpressionNode>
-MergeBinaryExpression(int Operator, unique_ptr<ExpressionNode> Left,
-                      unique_ptr<ExpressionNode> Right) {
-  string ResultStructName;
-  ValueType ResultType =
-      GetBinaryResultType(Operator, Left->getType(), Left->getStructName(),
-                          Right->getType(), Right->getStructName(),
-                          &ResultStructName);
-  if (ResultType == ValueType::Error)
-    return LogErrorExpression("Type mismatch in binary operator");
-  return make_unique<BinaryExpressionNode>(
-      Operator, std::move(Left), std::move(Right), ResultType,
-      ResultStructName);
+static std::unique_ptr<IRBuilder<NoFolder>> Builder;
+```
+
+`IRBuilder<>` (what I'd been using) constant-folds arithmetic by default: `1.0 + 2.0` emits the literal `3.0` directly, no `fadd` instruction at all. That's harmless for execution, but it's fatal for debug info, there's no instruction left to attach a source location to. `IRBuilder<NoFolder>` disables that construction-time folding. Every arithmetic expression now emits its instruction, and it's the optimizer, not the builder, that decides what to fold and when. At `-O0` nothing gets folded; at `-O2` the same folding still happens, just later, as an optimization pass instead of a silent side effect of building the IR.
+
+This is also why the new default opt level matters: without `IRBuilder<NoFolder>`, `-O0` output would already be partially folded and unrepresentative of what I actually wrote.
+
+## Replacing the Fixed Pass List
+
+Up through [Chapter 17](chapter-17.md), I ran a hand-picked, fixed list of four passes on every function:
+
+```cpp
+if (OptLevel != 0) {
+  TheFPM->addPass(PromotePass());     // mem2reg: stack slots -> SSA regs
+  TheFPM->addPass(InstCombinePass()); // peephole rewrites
+  TheFPM->addPass(ReassociatePass()); // canonicalise commutative ops
+  TheFPM->addPass(GVNPass());         // eliminate common sub-expressions
 }
 ```
 
-Every binary expression, pointer arithmetic or not, goes through this exact same function unchanged. `ResultStructName` is empty for anything that isn't a pointer result, so the extension is free for the common case: it costs one more argument to thread through, not a new code path.
-
-## Codegen: `ptr + int` and `int + ptr`
-
-Advancing a pointer by an integer uses `CreateInBoundsGEP`. The integer index is widened to `i64` first:
+That was fine while pyxc had one type and no functions calling each other in interesting ways, but it has no inliner, no interprocedural analysis, and I chose the four passes and their order by hand rather than from any real pipeline. I replace it with `PassBuilder`, which knows LLVM's canonical pass ordering for each level, including interactions between passes I'd have gotten wrong by hand. Two new managers show up alongside the ones I already had:
 
 ```cpp
-if (getType() == ValueType::Pointer) {
-  Value *Ptr = nullptr;
-  Value *Idx = nullptr;
-  if (LType == ValueType::Pointer && IsIntType(RType) && Operator == tok_plus) {
-    Ptr = L; Idx = EmitImplicitCast(R, RType, ValueType::Int64);
-  } else if (RType == ValueType::Pointer && IsIntType(LType) && Operator == tok_plus) {
-    Ptr = R; Idx = EmitImplicitCast(L, LType, ValueType::Int64);
-  } else if (LType == ValueType::Pointer && IsIntType(RType) && Operator == tok_minus) {
-    Ptr = L; Idx = EmitImplicitCast(R, RType, ValueType::Int64);
-    if (Idx) Idx = Builder->CreateNeg(Idx, "negidx");
-  }
-  if (!Ptr || !Idx)
-    return LogErrorV("Type mismatch in arithmetic");
-  // ...
-  return Builder->CreateInBoundsGEP(ElemLLVM, Ptr, Idx, "ptrarith");
+static std::unique_ptr<ModulePassManager> TheMPM;
+static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
+static std::unique_ptr<ModuleAnalysisManager> TheMAM;
+```
+
+`InitializeModuleAndManagers` cross-registers all of them, then builds the actual pipelines:
+
+```cpp
+// Cross-register so passes can access any analysis tier they need.
+PassBuilder PB;
+PB.registerModuleAnalyses(*TheMAM);
+PB.registerCGSCCAnalyses(*TheCGAM);
+PB.registerFunctionAnalyses(*TheFAM);
+PB.registerLoopAnalyses(*TheLAM);
+PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
+
+// Optimisation pipelines. With -O0 the pass managers are left empty so the
+// emitted IR stays close to the direct lowering performed by the code
+// generator.
+if (OptLevel != 0) {
+  auto FPM = PB.buildFunctionSimplificationPipeline(GetOptLevel(),
+                                                    ThinOrFullLTOPhase::None);
+  TheFPM = std::make_unique<FunctionPassManager>(std::move(FPM));
+  auto MPM = PB.buildPerModuleDefaultPipeline(GetOptLevel());
+  TheMPM = std::make_unique<ModulePassManager>(std::move(MPM));
 }
+
+InitializeDebugInfo();
 ```
 
-`DecodePointerType` extracts the element LLVM type from the result's encoded struct name. This is the type that GEP uses to compute its stride. I use the `inbounds` variant, `CreateInBoundsGEP`, which tells LLVM's optimizer the pointer arithmetic never leaves the bounds of the allocation it started in: that assumption enables optimizations a plain GEP can't get, at the cost of undefined behavior if the assumption is ever wrong. This chapter doesn't check that assumption at runtime (see Known Limitations).
-
-For `p + 1` where `p: ptr[int]`, compiled and read directly:
-
-```llvm
-%p2 = load ptr, ptr %p1
-%ptrarith = getelementptr inbounds i64, ptr %p2, i64 1
-```
-
-## Codegen: `ptr - int`
-
-Subtracting an integer is the same as adding its negation. The index is widened to `i64` and then negated with `CreateNeg` before being passed to GEP:
-
-```llvm
-%p2 = load ptr, ptr %p1
-%negidx = sub i64 0, 2
-%ptrarith = getelementptr inbounds i64, ptr %p2, i64 %negidx
-```
-
-For `p - 2`, GEP steps backward by two elements.
-
-## Codegen: `ptr - ptr`
-
-Pointer subtraction uses LLVM's `CreatePtrDiff`, which handles the ptrtoint / subtract / divide sequence internally:
+`buildFunctionSimplificationPipeline` gives me the level-appropriate, correctly-ordered replacement for my old four-pass list. `buildPerModuleDefaultPipeline` adds passes that only make sense across the whole module, the inliner, in particular. I translate my own integer flag into LLVM's enum with a small helper:
 
 ```cpp
-if (Op == '-' && getType() == ValueType::Int64 &&
-    LType == ValueType::Pointer && RType == ValueType::Pointer) {
-  // ...
-  return Builder->CreatePtrDiff(ElemLLVM, L, R, "ptrdiff");
-}
-```
-
-`CreatePtrDiff` takes the element type so it can divide the byte difference by `sizeof(T)` to produce an element count. For two `ptr[int]` values that are 24 bytes apart, the result is 3.
-
-```llvm
-; q - p where p and q are both ptr[int]
-%ptrdiff = ...  ; ptrtoint both, subtract, sdiv by sizeof(i64) = 8
-```
-
-The element type is decoded from the left operand's struct name encoding using `DecodePointerType`.
-
-## Codegen: Pointer Comparisons
-
-Pointer comparisons use unsigned integer comparison instructions. Addresses are non-negative, so unsigned comparison gives the correct ordering:
-
-```cpp
-if (LType == ValueType::Pointer && RType == ValueType::Pointer &&
-    Left->getStructName() == Right->getStructName()) {
-  switch (Operator) {
-  case tok_eq:      return Builder->CreateICmpEQ(L, R, "cmptmp");
-  case tok_neq:     return Builder->CreateICmpNE(L, R, "cmptmp");
-  case tok_less:    return Builder->CreateICmpULT(L, R, "cmptmp");
-  case tok_greater: return Builder->CreateICmpUGT(L, R, "cmptmp");
-  case tok_leq:     return Builder->CreateICmpULE(L, R, "cmptmp");
-  case tok_geq:     return Builder->CreateICmpUGE(L, R, "cmptmp");
+static OptimizationLevel GetOptLevel() {
+  switch (OptLevel) {
+  case 0:
+    return OptimizationLevel::O0;
+  case 1:
+    return OptimizationLevel::O1;
+  case 2:
+    return OptimizationLevel::O2;
+  default:
+    return OptimizationLevel::O3;
   }
 }
 ```
 
-Using `ICmpULT` (unsigned less-than) rather than `ICmpSLT` (signed) is correct here. On 64-bit platforms, pointer values are 64-bit integers and addresses in the upper half of the address space would appear negative under signed comparison. Unsigned comparison treats all addresses as non-negative and orders them correctly.
+At `-O0` both managers stay empty, no passes run at all, and the literal IR `IRBuilder<NoFolder>` produced reaches the backend unchanged: every `alloca`, `store`, and `load` survives for the debugger to look at. Module-level optimization runs once, after codegen finishes, from a small helper I call in emit mode:
+
+```cpp
+static void RunModuleOptimizations(Module *M) {
+  if (!TheMPM || OptLevel == 0)
+    return;
+  TheMPM->run(*M, *TheMAM);
+}
+```
+
+## Debug Info: Where the State Lives
+
+Debug information in LLVM is metadata: side-channel nodes attached to the IR that don't affect codegen themselves but get preserved into the final object file as DWARF. `DIBuilder` is the API for constructing it. I add one new state variable for the source path, plus the handful `DIBuilder` itself needs:
+
+```cpp
+static std::string CurrentSourcePath = "<stdin>";
+static std::unique_ptr<DIBuilder> DIB;
+static DICompileUnit *TheCU = nullptr;
+static DIFile *TheDIFile = nullptr;
+static DIType *DblDIType = nullptr;
+static DIType *VoidDIType = nullptr;
+static DIScope *CurDIScope = nullptr;
+static unsigned CurFunctionLine = 1;
+```
+
+Every one of these is null, or `1` for the line, when `-g` is absent, and every helper that touches them checks for that up front, so the no-debug path is completely unaffected by any of this existing.
+
+## Setting Up Once Per Module
+
+```cpp
+static void InitializeDebugInfo() {
+  if (!DebugInfo) {
+    DIB.reset();
+    TheCU = nullptr;
+    TheDIFile = nullptr;
+    DblDIType = nullptr;
+    VoidDIType = nullptr;
+    return;
+  }
+
+  DIB = std::make_unique<DIBuilder>(*TheModule);
+
+  StringRef FullPath(CurrentSourcePath);
+  StringRef FileName = sys::path::filename(FullPath);
+  StringRef Dir = sys::path::parent_path(FullPath);
+  if (Dir.empty())
+    Dir = ".";
+
+  TheDIFile = DIB->createFile(FileName, Dir);
+  bool IsOptimized = OptLevel != 0;
+  TheCU = DIB->createCompileUnit(dwarf::DW_LANG_C, TheDIFile, "pyxc",
+                                 IsOptimized, "", 0);
+  DblDIType = DIB->createBasicType("double", 64, dwarf::DW_ATE_float);
+  VoidDIType = DIB->createUnspecifiedType("void");
+
+  TheModule->addModuleFlag(Module::Warning, "Dwarf Version",
+                           dwarf::DWARF_VERSION);
+  TheModule->addModuleFlag(Module::Warning, "Debug Info Version",
+                           DEBUG_METADATA_VERSION);
+}
+```
+
+I call it at the end of `InitializeModuleAndManagers`, so it runs exactly once per module. `DW_LANG_C` is the closest fit among the languages DWARF enumerates; pyxc doesn't have its own DWARF language code, and C's scoping and calling-convention assumptions are close enough. `DblDIType` is one shared basic-type descriptor, since pyxc still has exactly one type at this point in the tutorial: `double`. The two module flags are mandatory; without them a consumer like lldb or `llvm-dwarfdump` won't know how to interpret anything else I attach.
+
+`DIBuilder` accumulates work lazily and doesn't actually write it until `finalize()` runs:
+
+```cpp
+static void FinalizeDebugInfo() {
+  if (DIB)
+    DIB->finalize();
+}
+```
+
+I call this from `EmitModuleToFile`, right before I open the output file, the latest point I can call it and still be sure every function and variable has already been described.
+
+## One Debug Location Per Function
+
+```cpp
+static void SetCurrentDebugLocation(unsigned Line) {
+  if (!DIB || !CurDIScope)
+    return;
+  Builder->SetCurrentDebugLocation(
+      DILocation::get(*TheContext, Line, 1, CurDIScope));
+}
+```
+
+I call this once, right after creating each function's entry block, and every instruction I emit after that point picks up this location automatically until I change it again. I don't call it again per statement, which means every instruction in a function's body, no matter what line the actual statement is on, gets attributed to the function's own definition line. I verified this directly: compiling a two-line function with `-g` and reading the IR shows every instruction, the multiply and the return included, tagged with line 1, the `def` line, not line 2 where the `return` actually is. Line-per-statement tracking is a real gap this chapter leaves open, not just the column tracking I call out below. The second argument, `1`, is the column; I don't track columns at all yet, so it's always `1`.
+
+## Attaching Debug Info to Each Function
+
+`FunctionDefinitionNode::codegen` creates one for every function whose name isn't one of my own internal `__pyxc.`-prefixed helpers:
+
+```cpp
+DISubprogram *SP = nullptr;
+if (DIB && TheDIFile) {
+  bool IsInternal = P.getName().rfind("__pyxc.", 0) == 0;
+  if (!IsInternal) {
+    unsigned Line = P.getLocation().Line ? P.getLocation().Line : 1;
+    SmallVector<Metadata *, 8> EltTys;
+    EltTys.push_back(DblDIType);
+    for (size_t i = 0; i < P.getParameters().size(); ++i)
+      EltTys.push_back(DblDIType);
+    auto *SubTy =
+        DIB->createSubroutineType(DIB->getOrCreateTypeArray(EltTys));
+    SP = DIB->createFunction(TheDIFile, P.getName(), StringRef(), TheDIFile,
+                             Line, SubTy, Line, DINode::FlagZero,
+                             DISubprogram::SPFlagDefinition);
+    TheFunction->setSubprogram(SP);
+    CurDIScope = SP;
+    CurFunctionLine = Line;
+  }
+}
+```
+
+`createSubroutineType` wants a flat list, return type first, then each parameter's type in order. Since pyxc only has `double`, every entry is the same `DblDIType`. `setSubprogram` is the step that actually attaches this descriptor to the LLVM `Function*`, without it, even a correctly-built `DISubprogram` node wouldn't get connected to the function's machine code by the DWARF emitter. `CurDIScope` gets cleared back to `nullptr` after the body finishes, both on success and on the error path, so anything emitted outside a function, module-level init code, for instance, doesn't accidentally inherit whatever scope the previous function left behind.
+
+## Parameters and Locals
+
+```cpp
+static void EmitDebugDeclare(AllocaInst *Alloca, StringRef Name, unsigned Line,
+                             bool IsParam, unsigned ArgNo = 0) {
+  if (!DIB || !CurDIScope || !Alloca)
+    return;
+
+  DIType *Ty = DblDIType
+                   ? DblDIType
+                   : DIB->createBasicType("double", 64, dwarf::DW_ATE_float);
+  auto *Loc = DILocation::get(*TheContext, Line, 1, CurDIScope);
+  DILocalVariable *Var = nullptr;
+  if (IsParam) {
+    Var = DIB->createParameterVariable(CurDIScope, Name, ArgNo, TheDIFile, Line,
+                                       Ty, true);
+  } else {
+    Var = DIB->createAutoVariable(CurDIScope, Name, TheDIFile, Line, Ty, true);
+  }
+
+  DIB->insertDeclare(Alloca, Var, DIB->createExpression(), Loc,
+                     Builder->GetInsertBlock());
+}
+```
+
+I fall back to building a fresh `double` type descriptor if `DblDIType` somehow isn't set yet rather than assume it always is; cheap insurance against a call-ordering mistake I'd rather not debug later. `createParameterVariable` and `createAutoVariable` produce the same kind of node, `DILocalVariable`, differing only in the DWARF tag underneath (`DW_TAG_formal_parameter` versus `DW_TAG_variable`); `ArgNo`, 1-based, is what tells the parameter case its position. `insertDeclare` is what actually emits the debug-info record binding this `alloca` to that descriptor, so a debugger knows where in memory to find the variable's current value. I call this from three places: once per argument in `FunctionDefinitionNode::codegen`, once per declared variable in `VarStatementNode::codegen`, and once in `ForExpressionNode::codegen` when the loop introduces its own variable (`for var i = ...`, as opposed to reusing an existing one). All three land on the same `CurFunctionLine`, since that's the only line I'm tracking, so a `for`-loop variable's debug entry shows the function's `def` line rather than the line the `for` actually appears on.
+
+## Globals
+
+```cpp
+static void EmitDebugGlobal(GlobalVariable *GV, StringRef Name, unsigned Line) {
+  if (!DIB || !TheCU || !GV)
+    return;
+  DIType *Ty = DblDIType
+                   ? DblDIType
+                   : DIB->createBasicType("double", 64, dwarf::DW_ATE_float);
+  auto *GVE = DIB->createGlobalVariableExpression(TheCU, Name, Name, TheDIFile,
+                                                  Line, Ty, true);
+  GV->addDebugInfo(GVE);
+}
+```
+
+A global has no `alloca` to declare against, so this takes a different path: I build a `DIGlobalVariableExpression` and attach it directly to the `GlobalVariable` IR node with `addDebugInfo`. `VarStatementNode::codegen` calls this whenever it creates a brand-new module-level global, not on every assignment, just the one time the global itself comes into existence.
+
+## macOS Needs One More Step
+
+On macOS, the system linker doesn't copy DWARF into the final executable the way ELF linkers do. It writes debug-map stab entries that point back at the original `.o` files instead, so a debugger has to go find those object files to read any debug info at all. `dsymutil` resolves that indirection into a self-contained `.dSYM` bundle:
+
+```cpp
+static void MaybeEmitDsymBundle(const string &ExePath) {
+  if (!DebugInfo)
+    return;
+
+  Triple TT(sys::getDefaultTargetTriple());
+  if (!TT.isOSDarwin())
+    return;
+
+  auto Dsymutil = sys::findProgramByName("dsymutil");
+  if (!Dsymutil) {
+    fprintf(
+        stderr,
+        "Warning: dsymutil not found; debug info will remain in .o files\n");
+    return;
+  }
+
+  std::vector<StringRef> Arguments;
+  Arguments.push_back(*Dsymutil);
+  Arguments.push_back(ExePath);
+  if (sys::ExecuteAndWait(*Dsymutil, Arguments)) {
+    fprintf(stderr, "Warning: dsymutil failed; debug info may be missing\n");
+  }
+}
+```
+
+I run this right after linking, whenever `-g` and `--emit exe` are both active. On Linux, DWARF lands directly in the executable and none of this is necessary.
+
+## What the IR Actually Looks Like
+
+I compiled `def sq(x):\n  return x * x` under `-g -O0` and read the real output rather than write down what I expected:
+
+```llvm
+define double @sq(double %x) !dbg !4 {
+entry:
+  %x1 = alloca double, align 8
+  store double %x, ptr %x1, align 8, !dbg !10
+    #dbg_declare(ptr %x1, !9, !DIExpression(), !10)
+  %x2 = load double, ptr %x1, align 8, !dbg !10
+  %x3 = load double, ptr %x1, align 8, !dbg !10
+  %multmp = fmul double %x2, %x3, !dbg !10
+  ret double %multmp, !dbg !10
+}
+```
+
+`#dbg_declare` is LLVM's current record syntax for what used to be a `call void @llvm.dbg.declare(...)` intrinsic call; if you're reading IR from an older LLVM version you may still see the call form, they mean the same thing. Note every instruction shares `!dbg !10`, the line-1 location from `SetCurrentDebugLocation`, exactly the limitation described above.
+
+At `-O2`, the `alloca` is gone and `#dbg_declare` becomes `#dbg_value`, tracking the SSA value directly instead of a memory location:
+
+```llvm
+define double @sq(double %x) local_unnamed_addr #0 !dbg !4 {
+entry:
+    #dbg_value(double %x, !9, !DIExpression(), !10)
+  %multmp = fmul double %x, %x, !dbg !11
+  ret double %multmp, !dbg !11
+}
+```
+
+The debug info is still correct, the debugger knows `x` lives in whatever register or argument slot holds `%x`, but it can degrade if the value moves across multiple registers over the function's lifetime. That's the standard debug-at-`-O2` trade-off, and nothing pyxc-specific about it.
 
 ## Build and Run
 
 ```bash
-cd code/chapter-20
+cd code/chapter-16
 cmake -S . -B build && cmake --build build
+./build/pyxc -g --emit exe -o program program.pyxc
+lldb program
 ```
 
 ## Try It
 
-### Advance a pointer and read the next element
-
-```pyxc
-extern def printd(x: float64)
-
-def main() -> int:
-  var a: int = 10
-  var b: int = 20
-  var p: ptr[int] = addr(a)
-  printd(float64(p[0]))    # 10.000000
-  p = p + 1
-  printd(float64(p[0]))    # 20.000000 (b is next on the stack: layout-dependent)
-  return 0
-```
+### Inspecting the metadata directly
 
 ```bash
-10.000000
-20.000000
+pyxc -g --emit llvm-ir -o out.ll program.pyxc
+grep -A3 'DISubprogram\|DILocalVariable\|DILocation' out.ll
 ```
 
-### Walk backward with `p - 1`
-
-```pyxc
-extern def printd(x: float64)
-
-struct Pair:
-  first: int
-  second: int
-
-def main() -> int:
-  var pair: Pair
-  pair.first = 100
-  pair.second = 200
-  var p: ptr[int] = addr(pair.second)
-  printd(float64(p[0]))    # 200.000000
-  p = p - 1
-  printd(float64(p[0]))    # 100.000000
-  return 0
-```
+### Verifying DWARF actually landed in the object file
 
 ```bash
-200.000000
-100.000000
+pyxc -g --emit obj -o program.o program.pyxc
+llvm-dwarfdump program.o
 ```
 
-### Compute pointer difference between two fields
+I ran this myself; a real compile unit, `DW_TAG_subprogram` for `sq`, decl line and all, comes back:
 
-```pyxc
-extern def printd(x: float64)
-
-struct Triple:
-  a: int
-  b: int
-  c: int
-
-def main() -> int:
-  var t: Triple
-  var pa: ptr[int] = addr(t.a)
-  var pc: ptr[int] = addr(t.c)
-  printd(float64(pc - pa))  # 2.000000 (two int-sized steps from a to c)
-  return 0
+```text
+0x0000000b: DW_TAG_compile_unit
+              DW_AT_producer	("pyxc")
+              DW_AT_language	(DW_LANG_C)
+              DW_AT_name	("sq.pyxc")
+              ...
+0x0000002a:   DW_TAG_subprogram
+                DW_AT_name	("sq")
+                DW_AT_decl_file	("/tmp/sq.pyxc")
+                DW_AT_decl_line	(1)
+                ...
 ```
+
+### Comparing `-O0` and `-O2` IR for the same function
 
 ```bash
-2.000000
-```
-
-### An end-pointer loop with `!= end`
-
-```pyxc
-extern def printd(x: float64)
-
-struct Triple:
-  a: int
-  b: int
-  c: int
-
-def main() -> int:
-  var t: Triple
-  t.a = 10
-  t.b = 20
-  t.c = 30
-  var p: ptr[int] = addr(t.a)
-  var end: ptr[int] = p + 3
-  var total: int = 0
-  for var i: int = 0, p + i != end, 1:
-    total = total + p[i]
-  printd(float64(total))  # 60.000000
-  return 0
-```
-
-```bash
-60.000000
-```
-
-### Inspect the IR
-
-```bash
-pyxc --emit llvm-ir -o out.ll program.pyxc
-grep 'getelementptr\|ptrdiff\|icmp' out.ll
+pyxc -g -O0 --emit llvm-ir -o at_o0.ll program.pyxc
+pyxc -g -O2 --emit llvm-ir -o at_o2.ll program.pyxc
+diff at_o0.ll at_o2.ll
 ```
 
 ## Known Limitations
 
-**No bounds checking.** Out-of-bounds pointer arithmetic is silent undefined behavior. There is no runtime check and no compile-time warning.
+**Every instruction in a function shares one line.** `SetCurrentDebugLocation` is called once, at function entry, and never again. A multi-line function body still gets exactly one line number attached to all of it, the function's own `def` line, not wherever each statement actually is. I verified this directly rather than assume it from the code.
 
-**`ptr * int` is intentionally rejected.** Multiplying a pointer by an integer has no defined memory meaning. The type checker blocks it.
+**No column tracking at all.** Every `!DILocation` uses column `1`. A breakpoint set within a line lands at its start.
 
-**Mismatched pointer types are a type error.** `ptr[int] + ptr[float64]` and `ptr[int] - ptr[float64]` are both rejected. Only pointers with identical encoded struct names can interact.
+**`-g` in REPL/JIT mode does nothing.** The JIT never produces an object file, so there's nowhere for DWARF to live. The flag is accepted and silently ignored there.
 
-**`p - q` yields element count, not bytes.** If you need the byte distance, multiply by the element size manually. There is no `sizeof` operator yet: that comes in [Chapter 21](chapter-21.md).
-
-**No pointer-to-integer casts.** You cannot convert a pointer to an integer to inspect its numeric address.
+**`dsymutil` has to be installed on macOS.** I run it automatically, but if it's missing (non-Xcode installs sometimes lack it), debug info stays behind in temporary `.o` files that get cleaned up, and is effectively lost.
 
 ## What's Next
 
-[Chapter 21](chapter-21.md) adds `malloc`, `free`, and `sizeof`: heap allocation built directly on the pointer arithmetic from this chapter. With `p + n`, `p - q`, and a way to allocate arbitrary memory, dynamic data structures become possible.
+[Chapter 21](chapter-21.md) adds logical operators with short-circuit evaluation.
 
 ## Need Help?
 

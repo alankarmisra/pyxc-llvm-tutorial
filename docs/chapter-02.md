@@ -273,7 +273,7 @@ unique_ptr<FunctionDefinitionNode> LogErrorFunction(const char *Str) {
 
 I could implement this with a template, but I don't want to call `LogError<ExpressionNode>()`, `LogError<FunctionSignatureNode>()`, and so on. I prefer three explicitly named helpers here.
 
-In [Chapter 4](chapter-04.md), I add source locations—line and column—to these diagnostics.
+In [Chapter 5](chapter-05.md), I add source locations—line and column—to these diagnostics.
 
 ### Reading Ahead 
 
@@ -755,7 +755,7 @@ ready> ready>
 
 I print the first prompt from `LogErrorExpression()`'s baked-in `\nready> `. The recovery skip in `HandleFunctionDefinition()` then lands exactly on the line's trailing `tok_eol`. When I return to `MainLoop()`, I print a second `ready> ` immediately afterward.
 
-I'm not chasing this down here. In [Chapter 4](chapter-04.md), I send lexer errors (`tok_error`) and parser failures (`nullptr`) through `SynchronizeToLineBoundary()`, then print one prompt from the main loop.
+I'm not chasing this down here. In [Chapter 5](chapter-05.md), I send lexer errors (`tok_error`) and parser failures (`nullptr`) through `SynchronizeToLineBoundary()`, then print one prompt from the main loop.
 
 ## Build and Run
 
@@ -784,7 +784,7 @@ ready> 1 + 2 + 3
 Parsed a top-level expression.
 ready> sin(1.0) + cos(2.0) # sin/cos are never defined; I don't check that yet, that's a semantic check
 Parsed a top-level expression.
-ready> 1 2 # legal here; Chapter 4 disallows two things on one line
+ready> 1 2 # legal here; Chapter 5 disallows two things on one line
 Parsed a top-level expression.
 Parsed a top-level expression.
 ready> def a(): 1 def b(): 2 # same deal for function definitions
@@ -862,7 +862,7 @@ I wrote the grammar in two layers.
 
 ## What's Next
 
-I can now recognize the structure of pyxc code and build a tree of objects representing it. I support only one operator, `+`. In [Chapter 3](chapter-03.md), I add `-`, `*`, `/`, and `<`, then use grammar layers to group them with arithmetic precedence.
+[Chapter 3](chapter-03.md) encodes operator precedence into the grammar, adding `-`, `*`, `/`, and `<`.
 
 ## Need Help?
 

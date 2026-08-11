@@ -112,7 +112,7 @@ def f():
 
 **A side effect of this grammar change.** In [chapter 11](chapter-11.md), `var` was an expression with a body — `var x = 5: x + 1`. The variable and the code that used it were one syntactic unit, so its lifetime was self-contained. Now that `var` is a free-standing statement, a variable declared in one statement could in principle be referenced in any later statement — including one compiled in a completely separate module.
 
-That's the problem. In the REPL, each top-level input compiles into its own throw-away module, freed right after evaluation. A `var` at the top level would need its storage to survive across module boundaries, which the current JIT design doesn't support yet. [Chapter 13](chapter-13.md) fixes this properly, for both the REPL and compiled executables.
+That's the problem. In the REPL, each top-level input compiles into its own throw-away module, freed right after evaluation. A `var` at the top level would need its storage to survive across module boundaries, which the current JIT design doesn't support yet. [Chapter 15](chapter-15.md) fixes this properly, for both the REPL and compiled executables.
 
 ## Statements vs Expressions
 
@@ -192,7 +192,7 @@ public:
 };
 ```
 
-`IfStatementNode` — same class name as before, but its doc comment finally matches what it's always done since [chapter 10](chapter-10.md): no PHI node, and `else` is optional.
+`IfStatementNode` — same class name as before, but its doc comment finally matches what it's always done since [chapter 4](chapter-04.md): no PHI node, and `else` is optional.
 
 ## INDENT and DEDENT
 
@@ -759,7 +759,7 @@ Value *VarStatementNode::codegen() {
 
 ## `if` as a Statement
 
-[Chapter 10](chapter-10.md) had `if` producing a value through a PHI node, with both `then` and `else` required. This chapter's `IfStatementNode` doesn't need to produce a value, so it has no PHI node, and `else` is optional — if it's missing, the else block just falls through to the merge block:
+[Chapter 4](chapter-04.md) had `if` producing a value through a PHI node, with both `then` and `else` required. This chapter's `IfStatementNode` doesn't need to produce a value, so it has no PHI node, and `else` is optional — if it's missing, the else block just falls through to the merge block:
 
 ```cpp
 Value *IfStatementNode::codegen() {
@@ -860,7 +860,7 @@ def f():
 printd(f())   # prints 20.000000
 ```
 
-[Chapter 13](chapter-13.md) addresses this properly: for compiled programs, all top-level statements are collected into a synthesized `main()`, so `var` declarations and assignments at the top level work naturally. Full REPL support for global state needs additional runtime infrastructure, and is covered there too.
+[Chapter 15](chapter-15.md) addresses this properly: for compiled programs, all top-level statements are collected into a synthesized `main()`, so `var` declarations and assignments at the top level work naturally. Full REPL support for global state needs additional runtime infrastructure, and is covered there too.
 
 ## Try It
 
@@ -923,7 +923,7 @@ cmake -S . -B build && cmake --build build
 
 ## What's Next
 
-[Chapter 13](chapter-13.md) resolves the global-variable limitation above. For compiled programs, all top-level statements are collected into a synthesized `main()` so `var` declarations and assignments work naturally. For the REPL, a persistent variable store backed by a runtime helper lets state survive across JIT module boundaries. Once globals work in both modes, chapter 14 emits object files and chapter 15 links them into native executables — turning pyxc from a JIT toy into a real compiler.
+[Chapter 13](chapter-13.md) adds `elif` chains.
 
 ## Need Help?
 

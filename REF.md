@@ -4,13 +4,12 @@ This file is a working scratchpad of goals, roadmap items, and external referenc
 
 ## Purpose
 
-Pyxc is a tutorial language meant to stay close to C/Kaleidoscope semantics so it can teach language implementation step‑by‑step, K&R‑style. The immediate goal is a clean, teachable compiler path. More ambitious features can come later.
+Pyxc is a tutorial language meant to stay close to C semantics so it can teach language implementation step‑by‑step, K&R‑style. The immediate goal is a clean, teachable compiler path. More ambitious features can come later.
 
 Principle: Programmers are not here for a learning adventure. They just want to get things done.
 
 ## Direction
 
-- Keep semantics close to Kaleidoscope where it helps explain LLVM.
 - Favor incremental, teachable changes over big rewrites.
 - Push toward C‑like semantics first; expand toward Python later.
 - Consider MLIR only if it adds clear value.

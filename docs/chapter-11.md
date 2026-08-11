@@ -5,7 +5,7 @@ description: "Add mutable local variables and assignment using a temporary var .
 
 ## What I Am Building
 
-[Chapter 10](chapter-10.md) treated every variable as read-only. Function parameters were read-only. `for` loops introduced a variable and could update it internally, but I had no way to declare my own local variable and change it:
+[Chapter 4](chapter-04.md) treated every variable as read-only. Function parameters were read-only. `for` loops introduced a variable and could update it internally, but I had no way to declare my own local variable and change it:
 
 <!-- code-merge:start -->
 ```pyxc
@@ -257,7 +257,7 @@ static unique_ptr<ExpressionNode> ParseExpression() {
 
 ## Parsing Assignment
 
-Once `ParseComparison` returns — the same top-of-the-chain call chapter 9 already parses every expression through — `ParseExpression` checks whether `=` follows. If not, it hands back the expression unchanged. If so, the left-hand side has to be a plain variable name, or it's a parse error:
+Once `ParseComparison` returns — the same top-of-the-chain call chapter 10 already parses every expression through — `ParseExpression` checks whether `=` follows. If not, it hands back the expression unchanged. If so, the left-hand side has to be a plain variable name, or it's a parse error:
 
 ```cpp
   if (CurrentToken != tok_equal)
@@ -297,7 +297,7 @@ Error (Line 1, Column 9): Destination of '=' must be a variable
 
 ## Memory Slots: From Values to Storage
 
-Through chapter 10, `NamedValues` mapped variable names directly to LLVM `Value*` — the incoming argument value, fixed at the point the function was called. That worked only because variables were immutable: a parameter name could always refer to the same value forever.
+Through chapter 4, `NamedValues` mapped variable names directly to LLVM `Value*` — the incoming argument value, fixed at the point the function was called. That worked only because variables were immutable: a parameter name could always refer to the same value forever.
 
 ```cpp
 // Before: the name maps directly to the incoming argument — fixed, immutable.
@@ -557,7 +557,7 @@ loop_body:
   br label %loop_cond
 
 after_loop:
-  ret double 0.000000e+00  ; for always returns 0.0 (established in chapter 8)
+  ret double 0.000000e+00  ; for always returns 0.0 (established in chapter 9)
 }
 ```
 
@@ -638,7 +638,7 @@ Nine instructions down to two.
 
 ### A More Complex Example
 
-When control flow is involved, `mem2reg` has more work to do. I still don't have a way to sequence two side-effecting expressions cleanly — that's still chapters away — so I reuse the same `+`-as-sequencer trick chapter 9's Mandelbrot renderer used: `for` always returns `0.0`, and `0.0 + acc` is just `acc`.
+When control flow is involved, `mem2reg` has more work to do. I still don't have a way to sequence two side-effecting expressions cleanly — that's still chapters away — so I reuse the same `+`-as-sequencer trick chapter 10's Mandelbrot renderer used: `for` always returns `0.0`, and `0.0 + acc` is just `acc`.
 
 ```pyxc
 def acc_loop(n): var acc = 0: (for var i = 1, i < n, 1: acc = acc + i) + acc
@@ -797,7 +797,7 @@ Error (Line 1, Column 9): Destination of '=' must be a variable
 
 ## What's Next
 
-[Chapter 12](chapter-12.md) replaces the single-expression function body with real statement blocks. That makes mutable variables much more natural to use: assignment can stand on its own line, `return` can appear anywhere in a function body, and examples stop needing expression-level workarounds like `var acc = 0: (for ...) + acc`.
+[Chapter 12](chapter-12.md) adds real statement blocks with Python-style indentation.
 
 ## Need Help?
 

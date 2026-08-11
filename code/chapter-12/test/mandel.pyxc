@@ -5,11 +5,16 @@ def sequence(x, y):
 
 # printdensity - map iteration count to an ASCII shade.
 def printdensity(d):
-    return if d > 8: putchard(32) else: if d > 4: putchard(46) else: if d > 2: putchard(43) else: putchard(42)
+    if d > 8: return putchard(32)
+    if d > 4: return putchard(46)
+    if d > 2: return putchard(43)
+    return putchard(42)
 
 # Determine whether z = z^2 + c diverges for the given point.
 def mandelconverger(real, imag, iters, creal, cimag):
-    return if iters > 255: iters else: if real * real + imag * imag > 4: iters else: mandelconverger(real * real - imag * imag + creal, 2 * real * imag + cimag, iters + 1, creal, cimag)
+    if iters > 255: return iters
+    if real * real + imag * imag > 4: return iters
+    return mandelconverger(real * real - imag * imag + creal, 2 * real * imag + cimag, iters + 1, creal, cimag)
 
 # Return number of iterations required for escape.
 def mandelconverge(real, imag):
@@ -17,13 +22,13 @@ def mandelconverge(real, imag):
 
 # Render one row.
 def mandelrow(xmin, xmax, xstep, y):
-    return for var x = xmin, x < xmax, xstep:
-               printdensity(mandelconverge(x, y))
+    for var x = xmin, x < xmax, xstep:
+        printdensity(mandelconverge(x, y))
 
 # Render full 2D region.
 def mandelhelp(xmin, xmax, xstep, ymin, ymax, ystep):
-    return for var y = ymin, y < ymax, ystep:
-               sequence(mandelrow(xmin, xmax, xstep, y), putchard(10))
+    for var y = ymin, y < ymax, ystep:
+        sequence(mandelrow(xmin, xmax, xstep, y), putchard(10))
 
 # Top-level helper.
 def mandel(realstart, imagstart, realmag, imagmag):

@@ -231,9 +231,9 @@ Error (Line 2, Column 6): Unknown type 'B'
      ^~~~
 ```
 
-That's not a cycle detector — it's the ordinary "structs can't forward-reference a type that isn't declared yet" rule from Chapter 21, firing because `B` doesn't exist yet when `A`'s field tries to name it. It would fire the same way for any undeclared type, cycle or not.
+That's not a cycle detector — it's the ordinary "structs can't forward-reference a type that isn't declared yet" rule from Chapter 28, firing because `B` doesn't exist yet when `A`'s field tries to name it. It would fire the same way for any undeclared type, cycle or not.
 
-A struct referencing *itself* slips past that check, though, since a struct's own name is registered before its body is parsed (Chapter 26). Right now that means `struct A: a: A` doesn't get rejected with a clear error at all — struct-type construction notices it's already partway through building `A` and falls back to an incomplete LLVM type instead of a real one:
+A struct referencing *itself* slips past that check, though, since a struct's own name is registered before its body is parsed (Chapter 37). Right now that means `struct A: a: A` doesn't get rejected with a clear error at all — struct-type construction notices it's already partway through building `A` and falls back to an incomplete LLVM type instead of a real one:
 
 ```
 %struct.A = type opaque

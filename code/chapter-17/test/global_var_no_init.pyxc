@@ -2,11 +2,11 @@
 # CHECK: 0.000000
 # CHECK-NOT: ready>
 
-# Tests: top-level var with no initializer defaults to 0.0.: float64
+# Tests: top-level var with no initializer defaults to 0.0.
 # The GlobalVariable uses a constant zero initializer; __pyxc.global_init
 # stores nothing for it (no non-constant init to run).
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-var x: float64
+var x
 printd(x)

@@ -4,7 +4,7 @@
 
 # Tests: a top-level bare expression can read a global.
 # x = 1 is already set; the expression x == 1 evaluates to 1.0 (true).
-# This verifies that top-level expressions (compiled into __anon_expr)
+# This verifies that top-level expressions (compiled into __pyxc.toplevel.0)
 # correctly load from the globals module via the JIT symbol table.
 
 extern def printd(x)

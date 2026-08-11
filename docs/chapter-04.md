@@ -1,492 +1,346 @@
 ---
-description: "Give every token a readable name, track source locations through the lexer, and print caret-style diagnostics instead of a bare token description."
+description: "Add built-in unary minus so -x parses directly, replacing the 0 - x workaround, and use it to shade the Mandelbrot renderer by density."
 ---
-# 4. pyxc: Better Errors
+# 4. pyxc: Unary Minus
 
-## Where I Am
+## What I Am Building
 
-### The Missing Colon
-
-Right now, a missing `:` looks like this:
+[Chapter 10](chapter-10.md) added comparisons, `if`/`else`, and `for`. pyxc still has no way to negate a value directly:
 
 <!-- code-merge:start -->
 ```pyxc
-ready> def bad(x) return x
+ready> -5
 ```
-```text
-Error: Expected ':' in function definition (token: name)
+```bash
+Error (Line 1, Column 1): unknown token when expecting an expression
+-5
+ ^~~~
 ```
 <!-- code-merge:end -->
 
-`(token: name)` doesn't tell me which name, or where. I want this instead:
+`-` only exists as subtraction, so I've been writing `0 - 5` to get a negative number. I add unary minus:
 
 <!-- code-merge:start -->
 ```pyxc
-ready> def bad(x) return x
+ready> -5
 ```
-```text
-Error (Line 1, Column 12): Expected ':' in function definition
-def bad(x) return 
-           ^~~~
-```
-<!-- code-merge:end -->
-
-Line. Column. The actual source line. A caret pointing at the exact spot.
-
-### The Truncated Number
-
-There's a second bug I've been ignoring: `1.2.3` currently parses without complaint.
-
-```pyxc
-ready> 1.2.3
+```bash
 Parsed a top-level expression.
+Evaluated to -5.000000
 ```
-
-`strtod` reads as much of `"1.2.3"` as looks like a number (`1.2`) and silently ignores the rest.
-
-### The Unknown Character
-
-There's a third problem, for a character I never planned for at all. `@` isn't part of pyxc's grammar. In Chapter 3, I have no `case` for it, so I return `tok_error` from the generic `default` branch:
-
-<!-- code-merge:start -->
 ```pyxc
-ready> 1 @ 2
+ready> -2 * 3
 ```
-```text
+```bash
 Parsed a top-level expression.
-Error: unknown token when expecting an expression (token: error)
+Evaluated to -6.000000
+```
+```pyxc
+ready> --5
+```
+```bash
 Parsed a top-level expression.
+Evaluated to 5.000000
 ```
 <!-- code-merge:end -->
 
-`(token: error)` doesn't say what the character even was, and one bad character turns into three confusing REPL lines. I want this instead:
-
-<!-- code-merge:start -->
-```pyxc
-ready> 1 @ 2
-```
-```text
-Error (Line 1, Column 3): Unexpected '@'
-1 @ 
-  ^~~~
-```
-<!-- code-merge:end -->
-
-I fix all three problems in this chapter.
+`-2 * 3` is `-6`, not `-(2 * 3)` written differently — unary minus binds tighter than `*`, same as it does in every C-family language. `--5` is double negation, not decrement — pyxc has no `--` token yet, so this is just `-` applied twice.
 
 ## Source Code
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-04
+cd pyxc-llvm-tutorial/code/chapter-10
 ```
 
-## Naming Every Token
+## Grammar
 
-When I report an error, I want to show the token I saw. In my old `TokenNames` map, I added only the tokens I had declared by hand. If I encountered any other character, I had no readable name for it.
+I insert `unary-expression` between `term` and `primary`. Every operand slot that used to call `primary` directly now goes through `unary-expression` first:
 
-I fix this by giving every possible byte value a name. I build the map once, when the program starts:
+`code/chapter-10/pyxc.ebnf`
+
+```grammardiff
+ program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
+ end-of-lines            = end-of-line { end-of-line } ;
+ top-level-item             = function-definition | external | top-level-expression ;
+ function-definition      = "def" function-signature ":" [ end-of-lines ] expression ;
+ external        = "extern" "def" function-signature ;
+ top-level-expression    = expression ;
+ function-signature       = name "(" [ parameters ] ")" ;
+ parameters               = parameter { "," parameter } ;
+ parameter                = name ;
+ ifexpr          = "if" expression ":" [ end-of-lines ] expression [ end-of-lines ] "else" ":" [ end-of-lines ] expression ;
+ forexpr         = "for" name "=" expression "," expression "," expression ":" [ end-of-lines ] expression ;
+ expression               = comparison ;
+ comparison               = sum { comparison-operator sum } ;
+ comparison-operator      = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ sum                      = term { ("+" | "-") term } ;
+-term                     = primary { ("*" | "/") primary } ;
++term                     = unary-expression { ("*" | "/") unary-expression } ;
++unary-expression       = "-" unary-expression | primary ;
+ primary         = name-expression | number-expression | parenthesized-expression
+                 | ifexpr | forexpr ;
+ name-expression  = name | call-expression ;
+ call-expression         = name "(" [ arguments ] ")" ;
+ arguments               = expression { "," expression } ;
+ number-expression      = number ;
+ parenthesized-expression       = "(" expression ")" ;
+ name      = (letter | "_") { letter | digit | "_" } ;
+ number          = digit { digit } [ "." { digit } ]
+                 | "." digit { digit } ;
+ letter          = "A".."Z" | "a".."z" ;
+ digit           = "0".."9" ;
+ end-of-line             = "\r\n" | "\r" | "\n" ;
+ comment = "#" { comment-character } ;
+ comment-character = ? any character except "\r" and "\n" ? ;
+ whitespace = " " | "\t" | "\v" | "\f" ;
+```
+
+I could have special-cased `-` inside `ParsePrimary` instead of adding a new tier, but then `--x` and `-(x + 1)` wouldn't fall out naturally — I'd need to handle chaining and recursion by hand at the call site instead of getting it for free from the grammar. Giving unary minus its own self-recursive tier means `-` in front of *anything* that can start a `unary-expression`, including another `-`, just works.
+
+## A New AST Node
+
+I add one node for unary operator application:
 
 ```cpp
-static map<int, string> TokenNames = [] {
-  // I list tokens that are not single characters.
-  static map<int, string> Names = {
-      {tok_eof, "end of input"}, {tok_eol, "newline"},
-      {tok_error, "error"},      {tok_def, "'def'"},
-      {tok_name, "name"}, {tok_number, "number"},
-  };
-
-  // I add a readable name for every single-character value.
-  for (int ch = 0; ch <= 255; ++ch) {
-    if (isprint(static_cast<unsigned char>(ch)))
-      Names[ch] = "'" + string(1, static_cast<char>(ch)) + "'";
-    else if (ch == '\n')
-      Names[ch] = "'\\n'";
-    else if (ch == '\t')
-      Names[ch] = "'\\t'";
-    else if (ch == '\r')
-      Names[ch] = "'\\r'";
-    else if (ch == '\0')
-      Names[ch] = "'\\0'";
-    else {
-      ostringstream OS;
-      OS << "0x" << uppercase << hex << setw(2) << setfill('0') << ch;
-      Names[ch] = OS.str();
-    }
-  }
-
-  return Names;
-}();
-```
-
-I format each byte in one of three ways:
-
-- For a printable byte, I show the quoted character: `'('`, `'a'`, or `'!'`.
-- For common whitespace, I show an escape sequence: `'\n'` or `'\t'`.
-- For anything else, I show its hexadecimal value: `0x07`.
-
-I put this code in a lambda and call it immediately with the final `()`. This lets me construct `TokenNames` once at startup.
-
-I also assign every named punctuation token its actual character value. I keep the other tokens negative so they cannot collide with any byte value:
-
-```cppdiff
- enum Token {
--  tok_eof = 1,
--  tok_eol,
--  tok_error,
--  tok_def,
--  tok_name,
--  tok_number,
--  tok_lparen,
--  tok_rparen,
--  tok_comma,
--  tok_colon,
--  tok_plus,
--  tok_minus,
--  tok_star,
--  tok_slash,
--  tok_less,
-+  tok_eof = -1,
-+  tok_eol = -2,
-+  tok_error = -3,
-+  tok_def = -4,
-+  tok_name = -5,
-+  tok_number = -6,
-+  tok_lparen = '(',
-+  tok_rparen = ')',
-+  tok_comma = ',',
-+  tok_colon = ':',
-+  tok_plus = '+',
-+  tok_minus = '-',
-+  tok_star = '*',
-+  tok_slash = '/',
-+  tok_less = '<',
- };
-```
-
-Because I define `tok_lparen = '('`, `tok_lparen` and `'('` are the same map key. In the loop, I add `Names['(']`. Later, `Names[tok_lparen]` and `Names['(']` are equivalent lookups and find the same entry. This also works for `tok_plus`, `tok_star`, and every other named character token, so I do not list them separately in the map. I also use the loop to name characters I did not declare as tokens.
-
-For names and numbers, I want to include the actual text from the source rather than report only `name` or `number`:
-
-```cpp
-static string FormatTokenForMessage(int Tok) {
-  if (Tok == tok_name)
-    return "name '" + Name + "'";
-  if (Tok == tok_number)
-    return "number '" + NumberLiteral + "'";
-
-  auto It = TokenNames.find(Tok);
-  if (It != TokenNames.end())
-    return It->second;
-  return "unknown token";
-}
-```
-
-I read that text from the lexer's `Name` and `NumberLiteral` globals. For every other token, I use the name stored in `TokenNames`.
-
-## Tracking Where I Am
-
-To report `(Line 3, Column 8)`, I need to record the line and column as I read each character. I use two globals:
-
-```cpp
-struct SourceLocation {
-  int Line;
-  int Col;
-};
-static SourceLocation CurLoc;
-static SourceLocation LexLoc = {1, 0};
-```
-
-I use `LexLoc` to record how far I have read. I update it every time I read a character in `advance()`. I use `CurLoc` to record where the current token starts. I read `CurLoc` in the parser and in my diagnostics.
-
-I already use `advance()` to normalize line endings. I now update `LexLoc` there too:
-
-```cpp
-static int advance() {
-  int LastChar = getchar();
-  if (LastChar == '\r') {
-    int NextChar = getchar();
-    if (NextChar != '\n' && NextChar != EOF) {
-      // I read one character too far while checking for '\r\n', so I put it back.
-      ungetc(NextChar, stdin);
-    }
-    PyxcSourceMgr.onChar('\n');
-    LexLoc.Line++;
-    LexLoc.Col = 0;
-    return '\n';
-  }
-
-  if (LastChar == '\n') {
-    PyxcSourceMgr.onChar('\n');
-    LexLoc.Line++;
-    LexLoc.Col = 0;
-  } else {
-    PyxcSourceMgr.onChar(LastChar);
-    LexLoc.Col++;
-  }
-
-  return LastChar;
-}
-```
-
-When I read a newline, I increment `Line` and reset `Col` to `0`. For any other character, I increment only `Col`. I explain `PyxcSourceMgr.onChar()` in the next section.
-
-In `getToken()`, I copy `LexLoc` into `CurLoc` after I skip whitespace but before I read the token itself:
-
-```cpp
-while (isspace(LastChar) && LastChar != '\n')
-  LastChar = advance();
-
-CurLoc = LexLoc;
-```
-
-By copying the location here, I make `CurLoc` point at the token's first character rather than any whitespace before it.
-
-I need to copy the location again after a comment. At the start of `getToken()`, I set `CurLoc` to the position of `#`. I then consume the rest of the line and return `tok_eol`. If I leave `CurLoc` at `#`, an error on the next line can report a column from the comment line. I avoid that by copying `LexLoc` again after I consume the newline:
-
-```cpp
-if (LastChar == '#') {
-  do
-    LastChar = advance();
-  while (LastChar != EOF && LastChar != '\n');
-
-  if (LastChar != EOF) {
-    CurLoc = LexLoc;
-    LastChar = ' ';
-    return tok_eol;
-  }
-}
-```
-
-## Buffering Source Lines for the Caret
-
-Knowing *where* the error is isn't enough. I also need the text of that line. I use `SourceManager` to store each line as I read it:
-
-```cpp
-class SourceManager {
-  vector<string> CompletedLines;
-  string CurrentLine;
+/// UnaryExpressionNode - Expression class for a unary operator application.
+/// Built-in unary minus is represented with opcode '-' and lowered directly to
+/// LLVM `fneg`.
+class UnaryExpressionNode : public ExpressionNode {
+  char Opcode;
+  unique_ptr<ExpressionNode> Operand;
 
 public:
-  void reset() {
-    CompletedLines.clear();
-    CurrentLine.clear();
-  }
-
-  void onChar(int C) {
-    if (C == '\n') {
-      CompletedLines.push_back(CurrentLine);
-      CurrentLine.clear();
-      return;
-    }
-    if (C != EOF)
-      CurrentLine.push_back(static_cast<char>(C));
-  }
-
-  const string *getLine(int OneBasedLine) const {
-    if (OneBasedLine <= 0)
-      return nullptr;
-    size_t Index = static_cast<size_t>(OneBasedLine - 1);
-    if (Index < CompletedLines.size())
-      return &CompletedLines[Index];
-    // I may need the current line before I have consumed its newline.
-    if (Index == CompletedLines.size())
-      return &CurrentLine;
-    return nullptr;
-  }
+  UnaryExpressionNode(char Opcode, unique_ptr<ExpressionNode> Operand)
+      : Opcode(Opcode), Operand(std::move(Operand)) {}
+  Value *codegen() override;
 };
-
-static SourceManager PyxcSourceMgr;
 ```
 
-I call `onChar()` from `advance()` for every character I read. I add ordinary characters to `CurrentLine`. When I reach `\n`, I move the completed line into `CompletedLines` and clear `CurrentLine` for the next one.
+`Opcode` is a `char` because unary minus is the only unary operator I have — one character is all I need to distinguish it, and it leaves room to add more (`!`, `~`) later without changing the shape of the node.
 
-In `getLine()`, I convert the requested line number from 1-based to 0-based. This lets me retrieve a line both while I am reading it and after I have completed it.
+## Parsing Unary Minus
 
-## Printing the Caret
-
-Once I have the line text and column, I can print the caret:
+`ParseTerm` now calls `ParseUnary` for each operand instead of `ParsePrimary`:
 
 ```cpp
-static void PrintErrorSourceContext(SourceLocation Loc) {
-  const string *LineText = PyxcSourceMgr.getLine(Loc.Line);
-  if (!LineText)
-    return;
+static unique_ptr<ExpressionNode>
+ParseUnary(); // forward declaration for ParseUnaryMinus
 
-  fprintf(stderr, "%s\n", LineText->c_str());
-  int spaces = Loc.Col - 1;
-  // I guard against an invalid column before printing the spaces.
-  if (spaces < 0)
-    spaces = 0;
-  for (int i = 0; i < spaces; ++i)
-    fputc(' ', stderr);
-  fprintf(stderr, "^~~~\n");
+/// unaryminus
+///   = "-" unaryexpr ;
+/// Parse built-in unary minus into a UnaryExpressionNode with opcode '-'.
+/// The operand is a full unaryexpr so unary chains work naturally
+/// (e.g. --x and -(x+1)).
+static unique_ptr<ExpressionNode> ParseUnaryMinus() {
+  getNextToken(); // eat '-'
+  auto Operand = ParseUnary();
+  if (!Operand)
+    return nullptr;
+  return make_unique<UnaryExpressionNode>(tok_minus, std::move(Operand));
+}
+
+/// unaryexpr
+///   = "-" unaryexpr
+///   | primary ;
+static unique_ptr<ExpressionNode> ParseUnary() {
+  if (CurrentToken == tok_minus)
+    return ParseUnaryMinus();
+  return ParsePrimary();
 }
 ```
 
-I print the line, then `Col - 1` spaces, then `^~~~`. I subtract one because the column is 1-based but the offset into the line is 0-based.
+`ParseUnaryMinus` calls `ParseUnary` for its own operand, not `ParsePrimary` — that's what lets it recurse into itself. `--5` works because the first `-` calls `ParseUnary`, which sees the second `-` and calls `ParseUnaryMinus` again before either call has produced a value.
 
-## Pointing at the Right Place for a Newline
-
-For most errors, `CurLoc` already points where I need it. A missing `:` is different. I do not know it is missing until I ask for the next token and receive `tok_eol`.
-
-Before I return `tok_eol`, I have already consumed the `\n` and incremented `LexLoc.Line`. That leaves `CurLoc.Line` on the next line. I correct this in `GetDiagnosticAnchorLoc()`:
+`ParseUnary` needs a forward declaration above `ParseUnaryMinus` because the two functions call each other: `ParseUnaryMinus` needs `ParseUnary` to parse its operand, and `ParseUnary` needs `ParseUnaryMinus` to handle the `-` case. Whichever one I define first has to declare the other ahead of its own body.
 
 ```cpp
-static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
-  if (Tok != tok_eol)
-    return Loc;
+/// term
+///   = unary-expression { ("*" | "/") unary-expression } ;
+static unique_ptr<ExpressionNode> ParseTerm() {
+  auto Left = ParseUnary();
+  if (!Left)
+    return nullptr;
 
-  int PrevLine = Loc.Line - 1;
-  if (PrevLine <= 0)
-    return Loc;
-
-  const string *PrevLineText = PyxcSourceMgr.getLine(PrevLine);
-  if (!PrevLineText)
-    return Loc;
-
-  return {PrevLine, static_cast<int>(PrevLineText->size()) + 1};
-}
-```
-
-For any token other than `tok_eol`, I return `Loc` unchanged. For `tok_eol`, I step back one line and report the column just after that line's last character. That is where the missing `:` should have gone:
-
-```
-Error (Line 1, Column 12): Expected ':' in function definition
-def bad(x) return 
-           ^~~~
-```
-
-## Wiring It Into LogError
-
-I already report every parse error through `LogErrorExpression()`. I now use the location and source line there instead of printing only a token description:
-
-```cpp
-unique_ptr<ExpressionNode> LogErrorExpression(const char *Str) {
-  SourceLocation Anchor = GetDiagnosticAnchorLoc(CurLoc, CurrentToken);
-  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
-          Str);
-  PrintErrorSourceContext(Anchor);
-  return nullptr;
-}
-```
-
-I keep `LogErrorSignature()` and `LogErrorFunction()` as small wrappers around `LogErrorExpression()`. By doing this, I give every parse error the same location and caret output.
-
-## Catching Malformed Numbers
-
-I use `strtod` to convert a string to a `double`. I pass it an output parameter named `End` so I can see where the conversion stopped:
-
-```cpp
-char *End = nullptr;
-NumberValue = strtod(NumStr.c_str(), &End);
-```
-
-If `End` points at the string's null terminator, I know `strtod` consumed every character. If it points anywhere else, I know part of the input was invalid. In Chapter 3, I ignored `End` and accepted whatever prefix `strtod` could convert. That is how `1.2.3` quietly became `1.2`.
-
-```cpp
-NumberLiteral = NumStr;
-char *End = nullptr;
-NumberValue = strtod(NumStr.c_str(), &End);
-if (!End || *End != '\0') {
-  LogInvalidNumberLiteralAtLoc(NumStr, CurLoc);
-  return tok_error;
-}
-return tok_number;
-```
-
-For `"1.2.3"`, `strtod` stops at the second `.`, so `End` points at `.3` rather than the terminator. I report the invalid number and return `tok_error` instead of `tok_number`:
-
-```cpp
-static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation Loc) {
-  fprintf(stderr, "Error (Line %d, Column %d): invalid number literal '%s'\n",
-          Loc.Line, Loc.Col, Literal.c_str());
-  PrintErrorSourceContext(Loc);
-}
-```
-
-I do this in `getToken()`, which returns an `int`. I cannot return `nullptr` as I do from a parsing function. Instead, I call the error helper and return `tok_error`.
-
-## Recovering From Errors
-
-After I report a lexer error, I return `tok_error`. I do not want to parse it as a number, name, or operator because that would print a second, unrelated error. I check for it in `MainLoop()` before I call any parsing function:
-
-```cpp
-if (CurrentToken == tok_error) {
-  SynchronizeToLineBoundary();
-  continue;
-}
-```
-
-```cpp
-static void SynchronizeToLineBoundary() {
-  // I leave the boundary token for MainLoop() to handle.
-  while (CurrentToken != tok_eol && CurrentToken != tok_eof)
+  while (CurrentToken == tok_star || CurrentToken == tok_slash) {
+    int Operator = CurrentToken;
     getNextToken();
+    auto Right = ParseUnary();
+    if (!Right)
+      return nullptr;
+    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
+                                             std::move(Right));
+  }
+  return Left;
 }
 ```
 
-I call this **panic-mode recovery**. Once I can no longer trust the current parse, I stop interpreting the line. I skip tokens until I reach `tok_eol` or `tok_eof`. I discard the rest of the line, but I return to a state where I know how to continue.
+That single change — `ParsePrimary()` to `ParseUnary()`, twice, in `ParseTerm` — is what makes `-2 * 3` parse as `(-2) * 3` rather than failing or parsing as `-(2 * 3)`. `ParseUnary` grabs the `-2` as a complete unit before `ParseTerm`'s `while` loop ever sees the `*`.
 
-I use the same recovery when I parse a valid construct but find extra tokens after it. In both `HandleFunctionDefinition()` and `HandleTopLevelExpression()`, I check that parsing stopped at `tok_eol` or `tok_eof`:
+There's no new error path here — an invalid operand after `-` still fails with the same "unknown token when expecting an expression" `ParsePrimary` has always produced, since `ParseUnaryMinus` just propagates whatever `ParseUnary` returns:
+
+<!-- code-merge:start -->
+```pyxc
+ready> -)
+```
+```bash
+Error (Line 1, Column 2): unknown token when expecting an expression
+-)
+ ^~~~
+```
+<!-- code-merge:end -->
+
+## Codegen
+
+`UnaryExpressionNode::codegen` lowers `-` directly to LLVM's [`fneg`](https://llvm.org/docs/LangRef.html#fneg-instruction):
 
 ```cpp
-static void HandleTopLevelExpression() {
-  if (ParseTopLevelExpression()) {
-    if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-      SynchronizeToLineBoundary();
-      return;
-    }
-    fprintf(stderr, "Parsed a top-level expression.\n");
-  } else {
-    SynchronizeToLineBoundary();
-  }
+/// UnaryExpressionNode::codegen - Emit built-in unary minus directly.
+Value *UnaryExpressionNode::codegen() {
+  Value *Operator = Operand->codegen();
+  if (!Operator)
+    return nullptr;
+
+  if (Opcode == tok_minus)
+    return TheBuilder->CreateFNeg(Operator, "negtmp");
+  return LogErrorV("Unknown unary operator");
 }
 ```
 
-For example, when I parse `3 = 10`, I can accept `3` as a complete top-level expression and leave `= 10` unread. In Chapter 3, I printed `Parsed a top-level expression.` and ignored the rest. Now I check for unread tokens, report the unexpected `=`, and discard the rest of the line.
+For `-5`, this produces:
 
-I make `HandleFunctionDefinition()` perform the same check for function definitions. After any failure, including extra trailing tokens, I call `SynchronizeToLineBoundary()` before I print the next prompt.
+```llvm
+%negtmp = fneg double 5.000000e+00
+```
+
+The `Opcode == tok_minus` check and its `LogErrorV` fallback look unreachable right now — `Opcode` is only ever `'-'`, since that's the only unary operator that exists. It's there for the same reason the node stores a `char` instead of hardcoding `-`: it's the shape a second unary operator would need later, without pretending one exists yet.
+
+## The Payoff: Density-Shaded Mandelbrot
+
+[Chapter 10](chapter-10.md) rendered the Mandelbrot set with a hard edge — every point was either `*` or a space. With unary minus, I can drop the `0 - 2.3` workaround, and I replace the `mandelrow(...) + putchard(10)` sequencing hack with a small helper function. Both changes let me focus the renderer on shading by density instead of the workarounds:
+
+```pyxc
+# test/mandel.pyxc
+extern def putchard(x)
+
+# Evaluate x before returning y.
+def sequence(x, y):
+    y
+
+# printdensity - map iteration count to an ASCII shade.
+def printdensity(d):
+    if d > 8: putchard(32) else: if d > 4: putchard(46) else: if d > 2: putchard(43) else: putchard(42)
+
+# Determine whether z = z^2 + c diverges for the given point.
+def mandelconverger(real, imag, iters, creal, cimag):
+    if iters > 255: iters else: if real * real + imag * imag > 4: iters else: mandelconverger(real * real - imag * imag + creal, 2 * real * imag + cimag, iters + 1, creal, cimag)
+
+# Return number of iterations required for escape.
+def mandelconverge(real, imag):
+    mandelconverger(real, imag, 0, real, imag)
+
+# Render one row.
+def mandelrow(xmin, xmax, xstep, y):
+    for x = xmin, x < xmax, xstep:
+               printdensity(mandelconverge(x, y))
+
+# Render full 2D region.
+def mandelhelp(xmin, xmax, xstep, ymin, ymax, ystep):
+    for y = ymin, y < ymax, ystep:
+               sequence(mandelrow(xmin, xmax, xstep, y), putchard(10))
+
+# Top-level helper.
+def mandel(realstart, imagstart, realmag, imagmag):
+    mandelhelp(realstart, realstart + realmag * 78, realmag, imagstart, imagstart + imagmag * 40, imagmag)
+
+mandel(-2.3, -1.3, 0.05, 0.07)
+mandel(-2, -1, 0.02, 0.04)
+mandel(-0.9, -1.4, 0.02, 0.03)
+```
+
+`sequence(x, y)` isn't a new language feature — function calls already evaluate their arguments left to right, so `sequence(mandelrow(...), putchard(10))` runs the row, then the newline, then returns whatever `putchard` returned. Chapter 10 got the same effect by adding two `0.0` return values together, which worked by accident; `sequence` says what I actually mean.
+
+`printdensity` maps an iteration count to a shade instead of just inside/outside:
+
+| count | char | meaning |
+|-------|------|---------|
+| > 8   | ` ` (space) | deep inside — survived 9+ iterations |
+| > 4   | `.`  | boundary zone — survived 5–8 iterations |
+| > 2   | `+`  | near boundary — survived 3–4 iterations |
+| ≤ 2   | `*`  | fast escape — outside the set |
+
+Run it directly:
+
+```bash
+./build/pyxc test/mandel.pyxc
+```
+
+The same view as chapter 10 (`mandel(-2.3, -1.3, 0.05, 0.07)`) now produces:
+
+```
+******************************************************************************
+******************************************************************************
+****************************************++++++********************************
+************************************+++++...++++++****************************
+*********************************++++++++.. ...+++++**************************
+*******************************++++++++++..   ..+++++*************************
+******************************++++++++++.     ..++++++************************
+****************************+++++++++....      ..++++++***********************
+**************************++++++++.......      .....++++**********************
+*************************++++++++.   .            ... .++*********************
+***********************++++++++...                     ++*********************
+*********************+++++++++....                    .+++********************
+******************+++..+++++....                      ..+++*******************
+**************++++++. ..........                        +++*******************
+***********++++++++..        ..                         .++*******************
+*********++++++++++...                                 .++++******************
+********++++++++++..                                   .++++******************
+*******++++++.....                                    ..++++******************
+*******+........                                     ...++++******************
+*******+... ....                                     ...++++******************
+*******+++++......                                    ..++++******************
+*******++++++++++...                                   .++++******************
+*********++++++++++...                                  ++++******************
+**********+++++++++..        ..                        ..++*******************
+*************++++++.. ..........                        +++*******************
+******************+++...+++.....                      ..+++*******************
+*********************+++++++++....                    ..++********************
+***********************++++++++...                     +++********************
+*************************+++++++..   .            ... .++*********************
+**************************++++++++.......      ......+++**********************
+****************************+++++++++....      ..++++++***********************
+*****************************++++++++++..     ..++++++************************
+*******************************++++++++++..  ...+++++*************************
+*********************************++++++++.. ...+++++**************************
+***********************************++++++....+++++****************************
+***************************************++++++++*******************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+******************************************************************************
+```
+
+The boundary is now a gradient instead of a hard edge. The file calls `mandel(...)` two more times, zooming into different regions of the complex plane.
 
 ## Build and Run
 
 ```bash
-cd code/chapter-04
-cmake -S . -B build && cmake --build build
+cmake -S . -B build
+cmake --build build
 ./build/pyxc
 ```
 
+With no filename, I start the interactive REPL. I press `Ctrl-D` to exit.
+
+To run the Mandelbrot renderer directly:
+
 ```bash
-llvm-lit test/
-```
-
-## Try It
-
-```pyxc
-ready> def add(x, y):
-   x + y
-Parsed a function definition.
-ready> 1.2.3
-Error (Line 3, Column 1): invalid number literal '1.2.3'
-1.2.3
-^~~~
-ready> def bad(x) return x
-Error (Line 4, Column 12): Expected ':' in function definition
-def bad(x) return 
-           ^~~~
-ready> def missing_colon(x)
-Error (Line 5, Column 21): Expected ':' in function definition
-def missing_colon(x)
-                    ^~~~
-ready>
+./build/pyxc test/mandel.pyxc
 ```
 
 ## What's Next
 
-I now report a location, the source line, and a caret for lexer and parser errors. I did not change the grammar in this chapter; every rule from Chapter 3 still applies. I changed only how I report errors and recover from them.
-
-[Chapter 5](chapter-05.md) covers installing LLVM and setting up the build system — infrastructure I need before I can start turning this AST into real machine code.
+[Chapter 5](chapter-05.md) adds real source locations and caret-style error messages.
 
 ## Need Help?
 
@@ -496,9 +350,8 @@ Build issues? Questions?
 - **Discussions:** [Ask questions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
 
 Include:
-
 - Your OS and version
 - Full error message
-- Output of `cmake --version`
+- Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
 I'll help you figure it out.

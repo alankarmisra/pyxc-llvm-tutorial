@@ -1,7 +1,6 @@
 # RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Error (Line" %t
+# RUN: grep -q "Error:" %t
 # RUN: grep -q "Expected ')' or ',' in parameter list" %t
-# RUN: grep -q "def foo(x y)" %t
 
-# function signature: parameters separated by a space instead of a comma
+# function signature: parameters separated by space instead of comma
 def foo(x y): x

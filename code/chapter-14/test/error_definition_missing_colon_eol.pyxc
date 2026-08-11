@@ -1,0 +1,6 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error (Line" %t
+# RUN: grep -q "Expected ':' in function definition" %t
+
+# definition: line ends after function-signature with no ':' at all (tok_eol case).
+def foo(x)

@@ -7,13 +7,13 @@
 # Tests: multiple globals are initialized in source order before main().
 # Each initializer can read the already-initialized value of an earlier global.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-var a: float64 = 3.0
-var b: float64 = a * 2
-var c: float64 = b * 2
+var a = 3
+var b = a * 2
+var c = b * 2
 
-def main() -> None:
+def main():
     printd(a)
     printd(b)
     printd(c)

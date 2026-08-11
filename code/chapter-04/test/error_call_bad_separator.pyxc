@@ -1,7 +1,6 @@
 # RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Error (Line" %t
+# RUN: grep -q "Error:" %t
 # RUN: grep -q "Expected ')' or ',' in argument list" %t
-# RUN: grep -q "foo(1" %t
 
-# name-expression: arguments separated by space instead of comma
+# arguments: arguments separated by space instead of comma
 foo(1 2)

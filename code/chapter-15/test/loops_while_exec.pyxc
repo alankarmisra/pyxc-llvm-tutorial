@@ -1,0 +1,12 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 10.000000
+
+def sum_to_four():
+  var i = 0
+  var sum = 0
+  while i < 5:
+    sum = sum + i
+    i = i + 1
+  return sum
+
+sum_to_four()

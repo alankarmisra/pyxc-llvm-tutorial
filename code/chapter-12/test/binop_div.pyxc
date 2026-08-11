@@ -1,0 +1,6 @@
+# RUN: %pyxc -v < %s > %t 2>&1
+# RUN: grep -q "Parsed a function definition" %t
+# RUN: grep -q "fdiv double" %t
+
+# BinaryExpressionNode::codegen '/': CreateFDiv emits an fdiv instruction.
+def div(a, b): return a / b

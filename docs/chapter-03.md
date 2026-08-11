@@ -3,7 +3,7 @@ description: "Encode operator precedence in the grammar, then parse subtraction,
 ---
 # 3. pyxc: Encoding Precedence in the Grammar
 
-## Where I Am
+## What I Am Building
 
 In this chapter, I add `-`, `*`, `/`, and `<`. 
 
@@ -13,6 +13,56 @@ In this chapter, I add `-`, `*`, `/`, and `<`.
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-03
 ```
+
+## Grammar
+
+Here is the complete grammar as a diff against Chapter 2. I reflow Chapter 2’s rules to the same width so the leading `+` and `-` diff markers show only the grammar changes.
+
+[pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-03/pyxc.ebnf)
+
+```grammardiff
+ program                           = [ end-of-lines ]
+                                     [ top-level-item
+                                       { end-of-lines top-level-item } ]
+                                     [ end-of-lines ] ;
+ end-of-lines                      = end-of-line { end-of-line } ;
+ top-level-item                    = function-definition
+                                     | top-level-expression ;
+ function-definition               = "def" function-signature ":"
+                                     [ end-of-lines ] expression ;
+ top-level-expression              = expression ;
+ function-signature                = name "(" [ parameters ] ")" ;
+ parameters                        = parameter { "," parameter } ;
+ parameter                         = name ;
+-expression                        = sum ;
++expression                        = comparison ;
++comparison                        = sum { "<" sum } ;
+-sum                               = term { "+" term } ;
++sum                               = term { ("+" | "-") term } ;
+-term                              = primary ;
++term                              = primary { ("*" | "/") primary } ;
+ primary                           = name-expression
+                                     | number-expression
+                                     | parenthesized-expression ;
+ name-expression                   = name
+                                     | call-expression ;
+ call-expression                   = name "(" [ arguments ] ")" ;
+ arguments                         = expression { "," expression } ;
+ number-expression                 = number ;
+ parenthesized-expression          = "(" expression ")" ;
+ name                              = (letter | "_")
+                                     { letter | digit | "_" } ;
+ number                            = digit { digit } [ "." { digit } ]
+                                     | "." digit { digit } ;
+ letter                            = "A".."Z" | "a".."z" ;
+ digit                             = "0".."9" ;
+ end-of-line                       = "\r\n" | "\r" | "\n" ;
+ comment                           = "#" { comment-character } ;
+ comment-character                 = ? any character except "\r" and "\n" ? ;
+ whitespace                        = " " | "\t" | "\v" | "\f" ;
+```
+
+I changed only the expression hierarchy. I route `expression` through `comparison`, add `<` at the comparison tier, add `-` at the sum tier, and add `*` and `/` at the term tier. The grammar for functions, calls, names, numbers, comments, and whitespace stays the same.
 
 ## Encoding the Tiers in the Grammar
 
@@ -325,59 +375,9 @@ The final example shows two separate limitations. First, `-` works only as a bin
 
 Second, Chapter 3 has only crude error recovery. After the parse fails, I skip the bad `-` token and continue. That leaves `5` to be parsed as a separate top-level expression, which produces the second message.
 
-## Grammar
-
-Here is the complete grammar as a diff against Chapter 2. I reflow Chapter 2’s rules to the same width so the leading `+` and `-` diff markers show only the grammar changes.
-
-[pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-03/pyxc.ebnf)
-
-```grammardiff
- program                           = [ end-of-lines ]
-                                     [ top-level-item
-                                       { end-of-lines top-level-item } ]
-                                     [ end-of-lines ] ;
- end-of-lines                      = end-of-line { end-of-line } ;
- top-level-item                    = function-definition
-                                     | top-level-expression ;
- function-definition               = "def" function-signature ":"
-                                     [ end-of-lines ] expression ;
- top-level-expression              = expression ;
- function-signature                = name "(" [ parameters ] ")" ;
- parameters                        = parameter { "," parameter } ;
- parameter                         = name ;
--expression                        = sum ;
-+expression                        = comparison ;
-+comparison                        = sum { "<" sum } ;
--sum                               = term { "+" term } ;
-+sum                               = term { ("+" | "-") term } ;
--term                              = primary ;
-+term                              = primary { ("*" | "/") primary } ;
- primary                           = name-expression
-                                     | number-expression
-                                     | parenthesized-expression ;
- name-expression                   = name
-                                     | call-expression ;
- call-expression                   = name "(" [ arguments ] ")" ;
- arguments                         = expression { "," expression } ;
- number-expression                 = number ;
- parenthesized-expression          = "(" expression ")" ;
- name                              = (letter | "_")
-                                     { letter | digit | "_" } ;
- number                            = digit { digit } [ "." { digit } ]
-                                     | "." digit { digit } ;
- letter                            = "A".."Z" | "a".."z" ;
- digit                             = "0".."9" ;
- end-of-line                       = "\r\n" | "\r" | "\n" ;
- comment                           = "#" { comment-character } ;
- comment-character                 = ? any character except "\r" and "\n" ? ;
- whitespace                        = " " | "\t" | "\v" | "\f" ;
-```
-
-I changed only the expression hierarchy. I route `expression` through `comparison`, add `<` at the comparison tier, add `-` at the sum tier, and add `*` and `/` at the term tier. The grammar for functions, calls, names, numbers, comments, and whitespace stays the same.
-
 ## What's Next
 
-I now enforce operator precedence by structuring the parser around grammar layers. My error messages still show only a token name, without the source line or column. In [Chapter 4](chapter-04.md), I track source locations, print caret diagnostics, and recover from errors at line boundaries.
+I now enforce operator precedence by structuring the parser around grammar layers. `-5` still doesn't parse, since `ParsePrimary()` has no case for a leading `-`. In [Chapter 4](chapter-04.md), I close that gap and add `%` alongside it. My error messages still show only a token name, without the source line or column — [Chapter 5](chapter-05.md) fixes that with real source locations and caret-style diagnostics.
 
 ## Need Help?
 

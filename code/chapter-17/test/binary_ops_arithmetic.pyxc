@@ -1,11 +1,11 @@
 # RUN: %pyxc < %s 2>&1 | FileCheck %s
-# CHECK: 9
-# CHECK: 4
-# CHECK: 15
+# CHECK: Evaluated to 9.000000
+# CHECK: Evaluated to 4.000000
+# CHECK: Evaluated to 15.000000
 
 
 # Tests: builtin binary arithmetic operators +, -, *.
-# builtin-binary-operator = "+" | "-" | "*" | ...
+# builtinbinaryop = "+" | "-" | "*" | ...
 
 4 + 5
 

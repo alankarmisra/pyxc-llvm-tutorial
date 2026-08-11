@@ -1,0 +1,6 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Evaluated to 2.000000" %t
+# RUN: not grep -q "Error (Line" %t
+
+# JIT execution: remainder evaluates using frem.
+8 % 3

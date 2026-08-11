@@ -1,48 +1,64 @@
 ---
-description: "Add string literals and C interop: pyxc programs can call puts, printf, and other C standard library functions directly."
+description: "Add bitwise operators &, |, ^, <<, >> and unary ~ with C-standard precedence and integer-only type checking."
 ---
-# 22. pyxc: String Literals and C Interop
+# 22. pyxc: Bitwise Operators
 
 ## What I Am Building
 
-[Chapter 21](chapter-21.md) gave me the heap: `malloc`, `free`, `sizeof`, and pointer casts. But everything I've built so far only moves numbers and raw bytes around. I still have no way to write literal text in pyxc source at all. The C standard library is full of functions that want exactly that: `puts`, `printf`, `strlen`. What I'm missing is a way to write a string in pyxc and have it show up as the `ptr[int8]` those functions expect.
-
-After this chapter:
+I'm pretty much done with the loop story after [Chapter 14](chapter-14.md). The last major gap before K&R-style systems programming is bitwise manipulation. If I add that, I can use flags, masks, and bit-shifting in my code and crack more of the K&R-style problems. Here's what I'm aiming to get working:
 
 ```pyxc
-extern def puts(s: ptr[int8]) -> int
-
-def greeting() -> ptr[int8]:
-  return "hello, pyxc"
+extern def printd(x: float64)
 
 def main() -> int:
-  puts(greeting())
+  var flags: int = 0
+  flags = flags | 1        # set bit 0
+  flags = flags | 4        # set bit 2
+  flags = flags & ~2       # clear bit 1 (already clear, but pattern works)
+
+  var shifted: int = 1 << 3   # 8
+  var masked: int = shifted & 255
+
+  printd(float64(flags + masked))
   return 0
 ```
 
 ```text
-hello, pyxc
+13.000000
 ```
 
-String literals are `ptr[int8]`: a pointer to the first byte of a null-terminated buffer. That's exactly what C's `char *` is, so `puts`, `printf`, `strlen`, and every other C string function accept a pyxc string literal directly, with no adapter needed.
+I use `255` rather than `0xFF` here: pyxc doesn't have hexadecimal number literals yet, so `0xFF` doesn't parse. I confirmed this by trying it directly — it's not something this chapter adds either.
 
 ## Source Code
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-22
+cd pyxc-llvm-tutorial/code/chapter-35
 ```
 
 ## Grammar
 
-`primary` gains `string-literal` as an alternative. `string-literal` and `escape` are both new. Nothing else in the grammar changes; the `CallExpressionNode` fix later in this chapter is a codegen and type-checking change, not a grammar change, so it doesn't show up here:
+`&`, `|`, `^`, `<<`, and `>>` each get their own grammar tier, following C's precedence ordering. The old flat `comparison` production splits into `equality` and `relational`, and three new bitwise tiers slot in around them; `unary-expression` gains `~`:
 
 ```grammardiff
  program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
  end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = struct-definition | function-definition | external | top-level-expression ;
+ top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | external | top-level-expression ;
+ type-alias       = "type" name "=" type ;
+ trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
+ trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
+ trait-method-signature  = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ;
  struct-definition       = "struct" name ":" end-of-lines struct-block ;
- struct-block     = indent field-declaration { end-of-lines field-declaration } dedent ;
+ class-definition        = "class" name [ "(" trait-reference { "," trait-reference } ")" ] ":" end-of-lines struct-block ;
+ trait-reference        = name [ "[" type "]" ] ;
+ implementation-definition         = "impl" trait-reference "for" name ":" end-of-lines implementation-block ;
+ implementation-block       = indent implementation-method { end-of-lines implementation-method } dedent ;
+ implementation-method      = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ struct-block     = indent class-member { end-of-lines class-member } dedent ;
+ class-member     = [ visibility ] ( field-declaration | method-definition ) ;
+ visibility      = "public" | "private" ;
+ method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")"
+                   [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
  field-declaration       = name ":" type ;
  function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
  (* If the return type is omitted, it defaults to None. *)
@@ -55,46 +71,68 @@ cd pyxc-llvm-tutorial/code/chapter-22
  for-statement         = "for"
                    ( "var" name ":" type | name )
                    "=" expression "," expression "," expression ":" suite ;
+ while-statement       = "while" expression ":" suite ;
+ do-while-statement     = "do" ":" suite end-of-lines "while" expression ;
  variable-statement         = "var" variable-binding { "," variable-binding } ;
- assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
- simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
- compound-statement    = if-statement | for-statement ;
+ assignment-statement      = lvalue assignment-operator expression ; (* assignment is a statement here *)
+ simple-statement      = return-statement | break-statement | continue-statement | variable-statement | assignment-statement | expression ;
+ compound-statement    = if-statement | for-statement | while-statement | do-while-statement ;
  statement       = simple-statement | compound-statement ;
  suite           = simple-statement | compound-statement | end-of-lines block ;
  return-statement      = "return" [ expression ] ;
+ break-statement       = "break" ;
+ continue-statement    = "continue" ;
  statement-separator = end-of-lines | BLOCK_END ;
  block = indent statement { statement-separator statement } dedent ;
- expression      = comparison ;
- comparison      = sum { comparison-operator sum } ;
- comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ expression      = logical-or ;
+ logical-or      = logical-and { "||" logical-and } ;
+-logical-and     = comparison { "&&" comparison } ;
+-comparison      = sum { comparison-operator sum } ;
+-comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
++logical-and     = bitwise-or { "&&" bitwise-or } ;
++bitwise-or      = bitwise-xor { "|" bitwise-xor } ;
++bitwise-xor     = bitwise-and { "^" bitwise-and } ;
++bitwise-and     = equality { "&" equality } ;
++equality        = relational { ("==" | "!=") relational } ;
++relational      = shift { ("<" | "<=" | ">" | ">=") shift } ;
++shift           = sum { ("<<" | ">>") sum } ;
  sum             = term { ("+" | "-") term } ;
- term            = unary-expression { ("*" | "/") unary-expression } ;
+ term            = unary-expression { ("*" | "/" | "%") unary-expression } ;
  lvalue          = name | field-access | index-expression ;
  variable-binding      = name ":" type [ "=" expression ] ;
- unary-expression       = "-" unary-expression | primary ;
--primary         = cast-expression | sizeof-expression | address-expression | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
-+primary         = cast-expression | sizeof-expression | address-expression | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
+-unary-expression       = ("-" | "!" | "++" | "--") unary-expression | postfix-expression ;
++unary-expression       = ("-" | "!" | "~" | "++" | "--") unary-expression | postfix-expression ;
+ postfix-expression     = primary [ postfix-operator ] ;
+ postfix-operator       = "++" | "--" ;
+ primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
  cast-expression        = cast-type "(" expression ")" ;
  sizeof-expression      = "sizeof" "(" type ")" ;
  address-expression        = "addr" "(" lvalue ")" ;
- name-expression  = name | call-expression ;
+ name-expression  = name | call-expression | method-call-expression | constructor-call-expression ;
  call-expression        = name "(" [ expression { "," expression } ] ")" ;
+ method-call-expression  = name "." name "(" [ expression { "," expression } ] ")" ;
+ constructor-call-expression    = name "(" [ expression { "," expression } ] ")" ;
  field-access     = name "." name { "." name } ;
  index-expression       = name "[" expression "]" ;
  number-expression      = number ;
-+string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
-+escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
+ array-literal    = "[" [ expression { "," expression } ] "]" ;
+ string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
+ escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
  parenthesized-expression       = "(" expression ")" ;
  indent          = INDENT ;
  dedent          = DEDENT ;
  
+ assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
  name      = (letter | "_") { letter | digit | "_" } ;
  builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
                  | "float" | "float32" | "float64"
                  | "bool" | "None" ;
+ alias-type       = name ;
  struct-type      = name ;
  pointer-type     = "ptr" "[" type "]" ;
- type            = builtin-type | struct-type | pointer-type ;
+ type            = base-type [ array-suffix ] ;
+ base-type        = builtin-type | alias-type | struct-type | pointer-type ;
+ array-suffix     = "[" integer "]" ;
  cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
                  | "float" | "float32" | "float64"
                  | "bool" | pointer-type ;
@@ -115,262 +153,239 @@ cd pyxc-llvm-tutorial/code/chapter-22
  BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
-## A New Token for String Literals
+`bitwise-and` sits directly above `equality`, which is exactly what produces C's famous precedence gotcha: since each side of `&` is a full `equality` (which can itself contain `==`), `a & b == 0` parses as `a & (b == 0)`, not `(a & b) == 0`. I hit this myself while testing rather than just asserting it: `a & b == 0` for integer `a`, `b` is a real type error, "Type mismatch in binary operator", precisely because it parses as `a & (b == 0)` and `&` refuses a `bool` operand on the right. Getting `(a & b) == 0` requires the parentheses.
+
+## New Tokens for `<<` and `>>`
+
+Single-character operators like `&`, `|`, `^`, and `~` already fall through the lexer's catch-all ASCII path, returning their own character values as tokens. `<<` and `>>` are two-character, so they need real token values:
 
 ```cpp
-tok_string = -38,
+tok_shl = -58, // <<
+tok_shr = -59, // >>
 ```
 
-Unlike `def` or `sizeof`, a string literal doesn't have a fixed spelling I can put in the keyword map. The lexer has to recognize it structurally, by seeing an opening `"`. I still need somewhere to put the text once I've read it:
+## Lexer Peek-Ahead for Shifts
+
+The existing `<` and `>` paths already peeked one character ahead for `=` (to produce `<=`/`>=`). I extend them to also check for a second `<` or `>`:
 
 ```cpp
-static string StringLiteralStr;
+if (LexerLastChar == '<') {
+  int Next = peek();
+  int Tok = tok_less;
+  if (Next == '=')
+    Tok = (advance(), tok_leq);   // '<=' — comparison
+  else if (Next == '<')
+    Tok = (advance(), tok_shl);   // '<<' — left shift
+  LexerLastChar = advance();
+  return Tok;
+}
+
+if (LexerLastChar == '>') {
+  int Next = peek();
+  int Tok = tok_greater;
+  if (Next == '=')
+    Tok = (advance(), tok_geq);   // '>=' — comparison
+  else if (Next == '>')
+    Tok = (advance(), tok_shr);   // '>>' — right shift
+  LexerLastChar = advance();
+  return Tok;
+}
 ```
 
-This is the same pattern I already use for `Name` and `NumberLiteral`: the lexer fills a global, and whatever consumes the token copies it out before asking for another one.
+## Parsing the New Tiers
 
-## Reading a String Literal
+`ParseShift`, `ParseRelational`, `ParseEquality`, `ParseBitwiseAnd`, `ParseBitwiseXor`, and `ParseBitwiseOr` all follow the same shape every tier has used since [Chapter 26](chapter-26.md): a base case that descends one level, and a `*Right` helper consuming a run of same-tier operators through `MergeBinaryExpression`. `ParseShift`, the innermost new tier, is representative of all six:
 
 ```cpp
-if (LexerLastChar == '"') {
-  StringLiteralStr.clear();
-  LexerLastChar = advance(); // eat opening quote
-  while (LexerLastChar != '"' && LexerLastChar != EOF &&
-         LexerLastChar != '\n') {
-    if (LexerLastChar == '\\') {
-      LexerLastChar = advance();
-      switch (LexerLastChar) {
-      case '\\':
-        StringLiteralStr.push_back('\\');
-        break;
-      case '"':
-        StringLiteralStr.push_back('"');
-        break;
-      case 'n':
-        StringLiteralStr.push_back('\n');
-        break;
-      case 't':
-        StringLiteralStr.push_back('\t');
-        break;
-      case '0':
-        StringLiteralStr.push_back('\0');
-        break;
-      default:
-        fprintf(stderr, "Error (Line %d, Column %d): invalid string escape\n",
-                CurLoc.Line, CurLoc.Col);
-        PrintErrorSourceContext(CurLoc);
-        return tok_error;
-      }
-    } else {
-      StringLiteralStr.push_back(static_cast<char>(LexerLastChar));
-    }
-    LexerLastChar = advance();
+static unique_ptr<ExpressionNode>
+ParseShiftRight(unique_ptr<ExpressionNode> Left) {
+  while (CurrentToken == tok_shl || CurrentToken == tok_shr) {
+    int Operator = CurrentToken;
+    getNextToken();
+    auto Right = ParseSum();
+    if (!Right)
+      return nullptr;
+    Left = MergeBinaryExpression(Operator, std::move(Left), std::move(Right));
+    if (!Left)
+      return nullptr;
   }
+  return Left;
+}
 
-  if (LexerLastChar != '"') {
-    fprintf(stderr,
-            "Error (Line %d, Column %d): unterminated string literal\n",
-            CurLoc.Line, CurLoc.Col);
-    PrintErrorSourceContext(CurLoc);
-    return tok_error;
-  }
-  LexerLastChar = advance(); // eat closing quote
-  return tok_string;
+static unique_ptr<ExpressionNode> ParseShift() {
+  auto Left = ParseSum();
+  if (!Left)
+    return nullptr;
+  return ParseShiftRight(std::move(Left));
 }
 ```
 
-I resolve escapes as I go, one character at a time, rather than storing the raw text and resolving escapes later. There's no reason to make a second pass over something I'm already reading character by character.
+`ParseRelational` calls `ParseShift` for its base case and its operands; `ParseEquality` calls `ParseRelational`; `ParseBitwiseAnd` calls `ParseEquality`; and so on up through `ParseBitwiseOr`, which `ParseLogicalAnd` now calls instead of the old `ParseComparison`. Six new tiers, same recursive-descent pattern throughout — nothing here needed a general precedence-climbing mechanism, since pyxc doesn't have one.
 
-I deliberately stop the loop at `\n` as well as `"` and `EOF`. A string literal that runs off the end of a line without a closing quote is almost always a typo, a missing `"`, not an intentional multi-line string, so I catch it immediately rather than let it swallow the rest of the file looking for a `"` that was never going to come. Both failure paths use the same location-and-context error reporting every other lexer error in pyxc uses by this point.
+## Type-Checking Predicates for Bitwise and Shift Operators
 
-## The String Literal AST Node
+Two predicates identify the new operator families, built on the real token names the lexer produces:
 
 ```cpp
-class StringExpressionNode : public ExpressionNode {
-  string Text;
-
-public:
-  explicit StringExpressionNode(string Text, const string &PtrTypeInfo)
-      : Text(std::move(Text)) {
-    setType(ValueType::Pointer, PtrTypeInfo);
-  }
-  Value *codegen() override;
-};
+static bool IsBitwiseOp(int Operator) { return Operator == tok_ampersand || Operator == tok_pipe || Operator == tok_caret; }
+static bool IsShiftOp(int Operator) { return Operator == tok_shl || Operator == tok_shr; }
 ```
 
-`Text` holds the string with escapes already resolved to real bytes; there's nothing left to process by the time codegen runs. The type is always `ValueType::Pointer`, and `PtrTypeInfo` is the encoded pointee-type string I use everywhere else a pointer's pointee needs to travel alongside it, produced the same way `ptr[int8]` produces it anywhere else in the type checker:
+`GetBinaryResultType` gains two new branches. For bitwise ops, both operands must be integers; `IsAssignable` picks the wider of the two as the result type, same widening rule every other integer binary op already uses:
 
 ```cpp
-case tok_string: {
-  string S = StringLiteralStr;
-  getNextToken();
-  return make_unique<StringExpressionNode>(std::move(S),
-                                    EncodePointerType(ValueType::Int8, ""));
+if (IsBitwiseOp(Operator)) {
+  if (!IsIntType(L) || !IsIntType(R))
+    return ValueType::Error;
+  if (IsAssignable(L, R))
+    return L;
+  if (IsAssignable(R, L))
+    return R;
+  return ValueType::Error;
 }
 ```
 
-From the type checker's point of view, a string literal is just an ordinary `ptr[int8]` value. There's no separate string type hiding underneath, and no special case anywhere downstream needs to know it came from a literal rather than, say, a `malloc`'d buffer.
-
-## Codegen: One Global Per Literal
+For shifts, the result type is always the left operand's own type, regardless of the shift count's type:
 
 ```cpp
-Value *StringExpressionNode::codegen() {
-  auto *I8Ty = Type::getInt8Ty(*TheContext);
-  auto *ArrTy = ArrayType::get(I8Ty, Text.size() + 1);
-  auto *Init = ConstantDataArray::getString(*TheContext, Text, true);
-  string Name = ".str." + to_string(StringLiteralCounter++);
-  auto *GV = new GlobalVariable(*TheModule, ArrTy, true,
-                                GlobalValue::PrivateLinkage, Init, Name);
-  GV->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
-  GV->setAlignment(Align(1));
-  ModuleHasGlobals = true;
-
-  Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
-  return Builder->CreateInBoundsGEP(ArrTy, GV, {Zero, Zero}, "strptr");
+if (IsShiftOp(Operator)) {
+  if (!IsIntType(L) || !IsIntType(R))
+    return ValueType::Error;
+  return L;
 }
 ```
 
-Every string literal becomes its own private global constant, sized one byte longer than the text to hold the null terminator (`ConstantDataArray::getString`'s `true` argument appends it for me). I give each one a unique name off a counter (`.str.0`, `.str.1`, ...) since two literals in the same module can't share a global name.
+Both checks run inside `GetBinaryResultType`, the same function every binary operator's type checking has gone through since [Chapter 26](chapter-26.md), so type errors are caught before `MergeBinaryExpression` ever builds a node — codegen never sees a bad operand pair.
 
-A few choices here are deliberate, not defaults I happened to leave in place:
+## Parsing Unary `~`
 
-- **`PrivateLinkage`** keeps the global out of the module's external symbol table. Nothing outside this translation unit needs to see `.str.0` by name, and I don't want a `.str.0` in one file colliding with a `.str.0` in another.
-- **`UnnamedAddr::Global`** tells LLVM the *address* of this constant doesn't matter to my program, only its contents do. I never compare two string literals by pointer identity, so I'm free to let LLVM merge identical literals at higher optimization levels.
-- **`Align(1)`** is just honest about what a byte array needs. Nothing about a `char` buffer benefits from stricter alignment.
+`~` is parsed in `ParseUnary` alongside `-`, `!`, and prefix `++`/`--`. The operand must already be an integer type; the result type is the same as the operand's:
 
-The global itself has type `ptr` to a `[N x i8]` array, not a pointer to a single byte, so I still need a `getelementptr` to step into it and get a `ptr[int8]`-shaped value out: index `0` into the global, then index `0` into the array, landing on the first byte. That's the same array-to-pointer idiom C uses under the hood every time a string literal decays to a `char *`.
-
-I also set `ModuleHasGlobals = true` here. That flag controls whether pyxc emits the module-level initialization function it uses for global variables, and a string literal's backing storage is exactly that: a global, even though nothing in the source looks like a `var` declaration.
-
-For `puts("hello")`:
-
-```llvm
-@.str.0 = private unnamed_addr constant [6 x i8] c"hello\00", align 1
-
-define i64 @__pyxc.user_main() {
-entry:
-  %strptr = getelementptr inbounds [6 x i8], ptr @.str.0, i64 0, i64 0
-  %calltmp = call i64 @puts(ptr %strptr)
-  ret i64 0
+```cpp
+if (CurrentToken == tok_tilde) {
+  getNextToken(); // eat '~'
+  auto Operand = ParseUnary();
+  if (!Operand)
+    return nullptr;
+  if (!IsIntType(Operand->getType()))
+    return LogErrorExpression("Unary '~' requires an integer operand");
+  ValueType OperandType = Operand->getType();
+  return make_unique<UnaryExpressionNode>(tok_tilde, std::move(Operand),
+                                          OperandType);
 }
 ```
 
-`[6 x i8]` is "hello" plus its null terminator. LLVM is free to place a `constant` global like this in read-only memory.
+`~~x` (double complement) and `~(x + 1)` both parse naturally, since the operand is a full `ParseUnary()` call, letting the recursion handle any nesting.
 
-## The Second Fix This Chapter Needed
+## Codegen: Binary Bitwise and Shift Operators
 
-Writing the "return a string from a function" example surfaced a real gap I'd documented but not yet fixed. In [Chapter 21](chapter-21.md)'s Known Limitations, I noted that calling an `extern` function returning any pointer type required wrapping the call in an explicit same-type cast, because the call result didn't carry its pointee-type metadata even when the declared return type matched exactly. Returning a string literal from a pyxc-defined function hits the identical problem: `greeting()` is declared `-> ptr[int8]`, but without a fix, the call expression's own type comes back with no pointee information, and assigning it to anything typed `ptr[int8]` fails the same metadata check.
-
-The fix is to stop leaving that metadata behind at the call site:
+`BinaryExpressionNode::codegen`'s existing `switch (Operator)` gains cases for `tok_ampersand`, `tok_pipe`, `tok_caret`, and the two shift tokens. Both operands are coerced to the result type via `EmitImplicitCast` first — this is what handles the widening `GetBinaryResultType` already decided on (e.g. `int32 & int64` widens the `int32` side before the instruction):
 
 ```cpp
-return make_unique<CallExpressionNode>(ParsedName, std::move(Arguments),
-                                Signature->getReturnType(),
-                                Signature->getReturnStructName());
+case tok_ampersand:
+case tok_pipe:
+case tok_caret: {
+  ValueType Ty = getType();
+  L = EmitImplicitCast(L, LType, Ty);
+  R = EmitImplicitCast(R, RType, Ty);
+  if (!L || !R)
+    return LogErrorV("Type mismatch in binary operator");
+  if (Operator == tok_ampersand)
+    return Builder->CreateAnd(L, R, "bwand");
+  if (Operator == tok_pipe)
+    return Builder->CreateOr(L, R, "bwor");
+  return Builder->CreateXor(L, R, "bwxor");
+}
+case tok_shl:
+case tok_shr: {
+  ValueType Ty = getType();
+  L = EmitImplicitCast(L, LType, Ty);
+  R = EmitImplicitCast(R, RType, Ty);
+  if (!L || !R)
+    return LogErrorV("Type mismatch in binary operator");
+  if (Operator == tok_shl)
+    return Builder->CreateShl(L, R, "shltmp");
+  return Builder->CreateAShr(L, R, "shrtmp");
+}
 ```
 
-`CallExpressionNode` already had a `Type` it set from the callee's signature; it just never asked the signature for the matching `StructName`. Once it does, a function call carries exactly the same pointee metadata a local expression of the same type would, and I no longer need the workaround cast from Chapter 21 for either case.
+Each bitwise operator maps to a single LLVM instruction: `and`, `or`, or `xor`. These are integer-only instructions; LLVM has no floating-point equivalent, which is consistent with `GetBinaryResultType` already rejecting non-integer operands.
+
+`CreateShl` emits `shl`, shifting left and filling low bits with zero. `CreateAShr` emits `ashr`, an arithmetic (sign-extending) right shift: for a negative value, `x >> 1` stays negative because the vacated high bits fill with the sign bit rather than zero. LLVM also has `CreateLShr` for a logical (zero-filling) right shift, but pyxc doesn't expose it here — `ashr` is the correct choice as long as every integer type is signed, which is still true at this point in the tutorial.
+
+## Codegen: Unary `~`
+
+`UnaryExpressionNode::codegen` gains a case for `tok_tilde` alongside the existing `tok_minus` case:
+
+```cpp
+if (Opcode == tok_tilde) {
+  if (!IsIntType(getType()))
+    return LogErrorV("Unary '~' not supported for this type");
+  return Builder->CreateNot(Operator, "bnottmp");
+}
+```
+
+`CreateNot` lowers to `xor %val, -1`: XOR-ing every bit against a mask of all ones flips each one. The instruction name `bnottmp` (bitwise not) distinguishes it in the IR from `nottmp`, the name [Chapter 21](chapter-21.md)'s logical `!` uses for its `i1` negation.
+
+For a concrete example:
+
+```pyxc
+var x: int = 9     # binary: ...0001001
+var y: int = ~x    # binary: ...1110110 → -10 in two's complement
+var z: int = y & 7 # mask the low 3 bits → 6
+```
+
+`~9` is `-10` because in two's complement, flipping every bit and adding one negates a value: `~x` is always `-(x + 1)`.
+
+## Known Limitations
+
+**No hexadecimal, octal, or binary integer literals.** `0xFF`, `0o17`, and `0b101` all fail to parse; only decimal digits are recognized. I ran into this directly while writing the intro example — I'd originally written `0xFF` and had to switch to `255`.
+
+**No compound assignment for bitwise or shift operators.** `x &= mask`, `flags |= bit`, `x ^= pattern`, `x <<= 2`, and `x >>= 1` all fail to parse. [Chapter 35](chapter-35.md)'s compound-assignment mechanism is general — `IsCompoundAssignTok` and `CompoundAssignToBinaryOp` could, in principle, be extended to cover `&=`, `|=`, `^=`, `<<=`, and `>>=` the same way they cover `+=` through `%=` — but this chapter doesn't add the tokens or the table entries to do it. I confirmed this by trying `x &= mask` directly and getting a parse error, not a working compound assignment.
+
+**Right shift is always arithmetic (sign-extending).** There's no unsigned integer type yet for a logical right shift to make sense on; every integer type is signed through this chapter.
+
+## Try It
+
+**Bitwise operator on a float is a type error**
+
+```pyxc
+def main() -> int:
+  var x: float64 = 1.0
+  var y: float64 = 2.0
+  var z: float64 = x & y
+  return 0
+```
+
+```text
+Error (Line 4, Column 25): Type mismatch in binary operator
+```
+
+**`~` on a non-integer is a type error**
+
+```pyxc
+def main() -> int:
+  var x: float64 = 1.0
+  var y: float64 = ~x
+  return 0
+```
+
+```text
+Error (Line 3, Column 22): Unary '~' requires an integer operand
+```
+
+Both are caught while parsing and never reach codegen.
 
 ## Build and Run
 
 ```bash
-cd code/chapter-22
+cd code/chapter-35
 cmake -S . -B build && cmake --build build
 ```
 
-## Try It
-
-### Basic string literal
-
-```pyxc
-extern def puts(s: ptr[int8]) -> int
-
-def main() -> int:
-  puts("hello, pyxc")
-  return 0
-```
-
-```text
-hello, pyxc
-```
-
-### Escape sequences
-
-```pyxc
-extern def puts(s: ptr[int8]) -> int
-
-def main() -> int:
-  puts("line one\nline two")
-  return 0
-```
-
-```text
-line one
-line two
-```
-
-The `\n` is resolved by the lexer to a real newline byte before codegen ever sees it. `puts` adds its own trailing newline, which is why there's a blank line after "line two".
-
-### Returning a string from a function
-
-```pyxc
-extern def puts(s: ptr[int8]) -> int
-
-def greeting() -> ptr[int8]:
-  return "hello from a function"
-
-def main() -> int:
-  puts(greeting())
-  return 0
-```
-
-```text
-hello from a function
-```
-
-### Storing a string in a variable
-
-```pyxc
-extern def puts(s: ptr[int8]) -> int
-
-def main() -> int:
-  var msg: ptr[int8] = "stored string"
-  puts(msg)
-  return 0
-```
-
-```text
-stored string
-```
-
-### Inspecting the IR
-
-```bash
-pyxc --emit llvm-ir -o out.ll program.pyxc
-grep '\.str\.' out.ll
-```
-
-For the "stored string" example above:
-
-```llvm
-@.str.0 = private unnamed_addr constant [14 x i8] c"stored string\00", align 1
-```
-
-## Known Limitations
-
-**No length tracking.** A string literal is just a `ptr[int8]`; there's no stored length anywhere. Anything that needs the length has to call `strlen` or track it separately.
-
-**No built-in string operations.** Concatenation, comparison, copying: none of that is in the language. I reach for the C standard library (`strcat`, `strcmp`, `strcpy`) through `extern`, or allocate a buffer with `malloc` ([Chapter 21](chapter-21.md)) and write into it manually.
-
-**No deduplication at `-O0`.** Two identical string literals in the same file get two separate globals; `UnnamedAddr::Global` lets LLVM merge them at higher optimization levels, but at `-O0` they stay separate.
-
-**No `string` type alias yet.** Writing `ptr[int8]` everywhere works but reads oddly for something that's conceptually text. [Chapter 23](chapter-23.md) adds `type string = ptr[int8]`, purely as a name.
-
-**String buffers are read-only.** A string literal's backing global is a constant. Building or mutating text at runtime still needs a heap buffer from `malloc`.
-
 ## What's Next
 
-[Chapter 23](chapter-23.md) adds type aliases: `type string = ptr[int8]`, so I can write `string` wherever I currently write `ptr[int8]`. The underlying representation doesn't change at all; the alias is purely syntactic, resolved at parse time.
+[Chapter 23](chapter-23.md) adds `switch`.
 
 ## Need Help?
 

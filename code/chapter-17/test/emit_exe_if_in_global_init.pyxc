@@ -4,13 +4,13 @@
 
 # Tests: a top-level if statement executes inside __pyxc.global_init before main().
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-var result: float64 = 0.0
-var flag: bool = True
+var result = 0
+var flag = 1
 
 if flag:
     result = 99
 
-def main() -> None:
+def main():
     printd(result)

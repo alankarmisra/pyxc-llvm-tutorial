@@ -1,19 +1,21 @@
 # RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Parsed an extern.
+# CHECK: Parsed a function definition.
 # CHECK: 1.000000
 # CHECK: 2.000000
 # CHECK: 3.000000
 
 
 # Tests: for loop executes its body once per iteration.
-# forstmt = "for" name "=" expression "," expression "," expression ":" suite ;
+# for-statement = "for" name "=" expression "," expression "," expression ":" suite ;
 #
-# count(3) runs: i=1 (printd(1.0)), i=2 (printd(2.0)), i=3 (printd(3.0)), i=4 (4<=3 false, stop).
+# count(3) runs: i=1 (printd(1)), i=2 (printd(2)), i=3 (printd(3)), i=4 (4<=3 false, stop).
 # The for statement itself returns 0.0.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-def count(n: float64) -> None:
-    for var i: float64 = 1, i <= n, 1:
+def count(n):
+    for var i = 1, i <= n, 1:
         printd(i)
 
 count(3)

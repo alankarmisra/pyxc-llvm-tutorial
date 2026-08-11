@@ -1,0 +1,8 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Evaluated to -3.000000" %t
+# RUN: grep -q "Evaluated to 5.000000" %t
+# RUN: not grep -q "Error (Line" %t
+
+# JIT execution: unary minus works for grouped and recursively negated values.
+-(1 + 2)
+--5

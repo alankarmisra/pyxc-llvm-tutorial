@@ -1,0 +1,4 @@
+# RUN: %pyxc < %s 2>&1 | grep -q "Parsed a function definition"
+
+# definition: the body expression is the function's implicit result
+def foo(x): x + 1

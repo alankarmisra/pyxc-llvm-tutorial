@@ -6,7 +6,7 @@
 
 
 # Tests: for loop body on the next line after ':'.
-# forexpr = "for" name "=" expression "," expression "," expression ":" [ end-of-lines ] expression
+# for-expression = "for" [ "var" ] name "=" expression "," expression "," expression ":" [ end-of-lines ] expression
 
 extern def printd(x)
 

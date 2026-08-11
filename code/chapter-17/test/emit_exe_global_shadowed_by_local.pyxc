@@ -7,14 +7,14 @@
 # The global is unaffected by the local; after the function returns, the global
 # still holds its initialized value.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-var x: float64 = 10.0
+var x = 10
 
-def shadow() -> None:
-    var x: float64 = 50.0
+def shadow():
+    var x = 50
     printd(x)
 
-def main() -> None:
+def main():
     shadow()
     printd(x)

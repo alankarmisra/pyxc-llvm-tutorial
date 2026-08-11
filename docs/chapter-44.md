@@ -468,7 +468,7 @@ pyxc --emit exe -o out main.pyxc
 
 ## What's Next
 
-[Chapter 45](chapter-45.md) explains how the compiler handles cyclic imports without infinite recursion, and makes the current single-pass scan more robust for the case where B's exports are needed by A before B finishes scanning.
+[Chapter 45](chapter-45.md) handles cyclic imports correctly.
 
 ## Need Help?
 

@@ -1,408 +1,476 @@
 ---
-description: "Add DWARF debug info via DIBuilder and replace the fixed optimization pass list with LLVM's standard O0-O3 pipelines."
+description: "Add object-file emission so Pyxc can compile programs to standalone native binaries without the JIT."
 ---
-# 16. pyxc: Debug Info and the Optimization Pipeline
+# 16. pyxc: Emitting Native Code
 
 ## What I Am Building
 
-[Chapter 15](chapter-15.md) gave me `--emit exe`: I can compile a program to a native binary in one step. What I can't do yet is tell a debugger anything useful about it. I compile with `-g`, set a breakpoint in lldb, and the debugger sees only machine addresses. No source file name, no line numbers, no variable names.
+[Chapter 15](chapter-15.md) gave pyxc global variables and a proper file-mode entry point. By the end of that chapter, I could write a complete pyxc program — global state, helper functions, a `main` — and run it through the JIT:
 
-This chapter adds two things:
+```bash
+./build/pyxc program.pyxc
+```
 
-1. **`-g`**: emits DWARF debug information: a compile unit, subprograms, source locations, local variables, parameters, and globals.
-2. **`-O0`/`-O1`/`-O2`/`-O3`**: replaces the fixed four-pass list I've been running with LLVM's standard per-level pipelines, which are far richer, inlining, interprocedural analyses, and the rest, at the higher levels.
+But every run recompiled the program from source. There was no way to produce a `.o` file, link it with other objects, or ship a standalone binary. I want to fix that this chapter.
 
-The two are linked: `-g` without an explicit `-O` forces `-O0`, because optimized IR is much harder for a debugger to make sense of.
+After this chapter:
+
+```bash
+pyxc --emit obj -o program.o program.pyxc
+clang program.o test/runtime.c -o program
+./program
+```
 
 ## Source Code
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-16
+cd pyxc-llvm-tutorial/code/chapter-14
 ```
+
+## What Changes
+
+I'm adding four tightly-coupled pieces on top of chapter 12's codebase:
+
+1. **Command-line flags** — `--emit llvm-ir|asm|obj`, `-o <file>`, and `--dump-ir`.
+2. **`EmitModuleToFile`** — writes the compiled module to a file as LLVM IR, native assembly, or a native object file.
+3. **`EmitFileMode`** — orchestrates compilation for emit mode: builds `__pyxc.global_init`, wraps `main()`, then calls `EmitModuleToFile`.
+4. **`AddGlobalCtor`** — registers `__pyxc.global_init` in the `llvm.global_ctors` array so the linker wires it to run before `main()` in the emitted binary.
+
+No parser or codegen changes are needed — the chapter 12 IR is already correct. Everything new this chapter is about routing that IR to a file instead of a JIT.
 
 ## Grammar
 
-No grammar changes. Both additions are purely compiler-infrastructure concerns; nothing about the syntax of a pyxc program changes.
+No grammar changes in this chapter. The language itself is unchanged — this is purely a compiler-driver extension.
 
-## New CLI Flags
+## The Design
+
+The key insight I'm leaning on: the compilation pipeline doesn't need to change at all — source → tokens → AST → LLVM IR → optimised IR stays exactly as it was. What changes is the *sink*. In JIT mode the sink is the JIT's in-process linker. In emit mode the sink is a file on disk. Because the IR is the same either way, the entire parser and codegen carry over with no modification.
+
+## Command-Line Interface
+
+I declare three new options with LLVM's command-line library:
 
 ```cpp
-static cl::opt<bool> DebugInfo("g", cl::desc("Emit DWARF debug info"),
-                               cl::init(false), cl::cat(PyxcCategory));
+static cl::opt<std::string>
+    EmitKindOpt("emit",
+                cl::desc("Emit output: llvm-ir | asm | obj"),
+                cl::init(""), cl::cat(PyxcCategory));
+
+static cl::opt<std::string> OutputFile("o", cl::desc("Output filename"),
+                                       cl::value_desc("filename"),
+                                       cl::init(""), cl::cat(PyxcCategory));
+
+static cl::opt<bool>
+    DumpIR("dump-ir", cl::desc("Print generated LLVM IR to stderr"),
+           cl::init(false), cl::cat(PyxcCategory));
+// Backward-compat alias.
+static cl::opt<bool>
+    VerboseIR("v", cl::desc("Alias for --dump-ir"), cl::init(false),
+              cl::cat(PyxcCategory));
 ```
 
-`-g` is a boolean. It has no effect in REPL mode, there's no object file to embed DWARF in there, but I accept it silently anyway so a script can pass `-g` unconditionally without special-casing the REPL.
-
-The opt-level flag itself already existed. What's new in `main`'s command-line handling is one guard, right after parsing:
+`ProcessCommandLine` validates and resolves them before I do any parsing:
 
 ```cpp
-if (DebugInfo && OptLevel.getNumOccurrences() == 0)
-  OptLevel = 0;
-```
-
-`getNumOccurrences()` is 0 only if the flag was never supplied at all. So `-g` alone silently coerces to `-O0`, while `-g -O2` leaves the opt level at 2, letting me opt into debug-with-optimization explicitly while the common case, just `-g`, stays safe by default.
-
-## Keeping the IR I Actually Wrote
-
-The first change that touches every code path is the `Builder` declaration itself:
-
-```cpp
-static std::unique_ptr<IRBuilder<NoFolder>> Builder;
-```
-
-`IRBuilder<>` (what I'd been using) constant-folds arithmetic by default: `1.0 + 2.0` emits the literal `3.0` directly, no `fadd` instruction at all. That's harmless for execution, but it's fatal for debug info, there's no instruction left to attach a source location to. `IRBuilder<NoFolder>` disables that construction-time folding. Every arithmetic expression now emits its instruction, and it's the optimizer, not the builder, that decides what to fold and when. At `-O0` nothing gets folded; at `-O2` the same folding still happens, just later, as an optimization pass instead of a silent side effect of building the IR.
-
-This is also why the new default opt level matters: without `IRBuilder<NoFolder>`, `-O0` output would already be partially folded and unrepresentative of what I actually wrote.
-
-## Replacing the Fixed Pass List
-
-Up through [Chapter 15](chapter-15.md), I ran a hand-picked, fixed list of four passes on every function:
-
-```cpp
-if (OptLevel != 0) {
-  TheFPM->addPass(PromotePass());     // mem2reg: stack slots -> SSA regs
-  TheFPM->addPass(InstCombinePass()); // peephole rewrites
-  TheFPM->addPass(ReassociatePass()); // canonicalise commutative ops
-  TheFPM->addPass(GVNPass());         // eliminate common sub-expressions
-}
-```
-
-That was fine while pyxc had one type and no functions calling each other in interesting ways, but it has no inliner, no interprocedural analysis, and I chose the four passes and their order by hand rather than from any real pipeline. I replace it with `PassBuilder`, which knows LLVM's canonical pass ordering for each level, including interactions between passes I'd have gotten wrong by hand. Two new managers show up alongside the ones I already had:
-
-```cpp
-static std::unique_ptr<ModulePassManager> TheMPM;
-static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
-static std::unique_ptr<ModuleAnalysisManager> TheMAM;
-```
-
-`InitializeModuleAndManagers` cross-registers all of them, then builds the actual pipelines:
-
-```cpp
-// Cross-register so passes can access any analysis tier they need.
-PassBuilder PB;
-PB.registerModuleAnalyses(*TheMAM);
-PB.registerCGSCCAnalyses(*TheCGAM);
-PB.registerFunctionAnalyses(*TheFAM);
-PB.registerLoopAnalyses(*TheLAM);
-PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
-
-// Optimisation pipelines. With -O0 the pass managers are left empty so the
-// emitted IR stays close to the direct lowering performed by the code
-// generator.
-if (OptLevel != 0) {
-  auto FPM = PB.buildFunctionSimplificationPipeline(GetOptLevel(),
-                                                    ThinOrFullLTOPhase::None);
-  TheFPM = std::make_unique<FunctionPassManager>(std::move(FPM));
-  auto MPM = PB.buildPerModuleDefaultPipeline(GetOptLevel());
-  TheMPM = std::make_unique<ModulePassManager>(std::move(MPM));
-}
-
-InitializeDebugInfo();
-```
-
-`buildFunctionSimplificationPipeline` gives me the level-appropriate, correctly-ordered replacement for my old four-pass list. `buildPerModuleDefaultPipeline` adds passes that only make sense across the whole module, the inliner, in particular. I translate my own integer flag into LLVM's enum with a small helper:
-
-```cpp
-static OptimizationLevel GetOptLevel() {
-  switch (OptLevel) {
-  case 0:
-    return OptimizationLevel::O0;
-  case 1:
-    return OptimizationLevel::O1;
-  case 2:
-    return OptimizationLevel::O2;
-  default:
-    return OptimizationLevel::O3;
-  }
-}
-```
-
-At `-O0` both managers stay empty, no passes run at all, and the literal IR `IRBuilder<NoFolder>` produced reaches the backend unchanged: every `alloca`, `store`, and `load` survives for the debugger to look at. Module-level optimization runs once, after codegen finishes, from a small helper I call in emit mode:
-
-```cpp
-static void RunModuleOptimizations(Module *M) {
-  if (!TheMPM || OptLevel == 0)
-    return;
-  TheMPM->run(*M, *TheMAM);
-}
-```
-
-## Debug Info: Where the State Lives
-
-Debug information in LLVM is metadata: side-channel nodes attached to the IR that don't affect codegen themselves but get preserved into the final object file as DWARF. `DIBuilder` is the API for constructing it. I add one new state variable for the source path, plus the handful `DIBuilder` itself needs:
-
-```cpp
-static std::string CurrentSourcePath = "<stdin>";
-static std::unique_ptr<DIBuilder> DIB;
-static DICompileUnit *TheCU = nullptr;
-static DIFile *TheDIFile = nullptr;
-static DIType *DblDIType = nullptr;
-static DIType *VoidDIType = nullptr;
-static DIScope *CurDIScope = nullptr;
-static unsigned CurFunctionLine = 1;
-```
-
-Every one of these is null, or `1` for the line, when `-g` is absent, and every helper that touches them checks for that up front, so the no-debug path is completely unaffected by any of this existing.
-
-## Setting Up Once Per Module
-
-```cpp
-static void InitializeDebugInfo() {
-  if (!DebugInfo) {
-    DIB.reset();
-    TheCU = nullptr;
-    TheDIFile = nullptr;
-    DblDIType = nullptr;
-    VoidDIType = nullptr;
-    return;
+if (!EmitKindOpt.empty()) {
+  if (IsRepl) {
+    fprintf(stderr, "Error: --emit requires a file input\n");
+    return -1;
   }
 
-  DIB = std::make_unique<DIBuilder>(*TheModule);
-
-  StringRef FullPath(CurrentSourcePath);
-  StringRef FileName = sys::path::filename(FullPath);
-  StringRef Dir = sys::path::parent_path(FullPath);
-  if (Dir.empty())
-    Dir = ".";
-
-  TheDIFile = DIB->createFile(FileName, Dir);
-  bool IsOptimized = OptLevel != 0;
-  TheCU = DIB->createCompileUnit(dwarf::DW_LANG_C, TheDIFile, "pyxc",
-                                 IsOptimized, "", 0);
-  DblDIType = DIB->createBasicType("double", 64, dwarf::DW_ATE_float);
-  VoidDIType = DIB->createUnspecifiedType("void");
-
-  TheModule->addModuleFlag(Module::Warning, "Dwarf Version",
-                           dwarf::DWARF_VERSION);
-  TheModule->addModuleFlag(Module::Warning, "Debug Info Version",
-                           DEBUG_METADATA_VERSION);
-}
-```
-
-I call it at the end of `InitializeModuleAndManagers`, so it runs exactly once per module. `DW_LANG_C` is the closest fit among the languages DWARF enumerates; pyxc doesn't have its own DWARF language code, and C's scoping and calling-convention assumptions are close enough. `DblDIType` is one shared basic-type descriptor, since pyxc still has exactly one type at this point in the tutorial: `double`. The two module flags are mandatory; without them a consumer like lldb or `llvm-dwarfdump` won't know how to interpret anything else I attach.
-
-`DIBuilder` accumulates work lazily and doesn't actually write it until `finalize()` runs:
-
-```cpp
-static void FinalizeDebugInfo() {
-  if (DIB)
-    DIB->finalize();
-}
-```
-
-I call this from `EmitModuleToFile`, right before I open the output file, the latest point I can call it and still be sure every function and variable has already been described.
-
-## One Debug Location Per Function
-
-```cpp
-static void SetCurrentDebugLocation(unsigned Line) {
-  if (!DIB || !CurDIScope)
-    return;
-  Builder->SetCurrentDebugLocation(
-      DILocation::get(*TheContext, Line, 1, CurDIScope));
-}
-```
-
-I call this once, right after creating each function's entry block, and every instruction I emit after that point picks up this location automatically until I change it again. I don't call it again per statement, which means every instruction in a function's body, no matter what line the actual statement is on, gets attributed to the function's own definition line. I verified this directly: compiling a two-line function with `-g` and reading the IR shows every instruction, the multiply and the return included, tagged with line 1, the `def` line, not line 2 where the `return` actually is. Line-per-statement tracking is a real gap this chapter leaves open, not just the column tracking I call out below. The second argument, `1`, is the column; I don't track columns at all yet, so it's always `1`.
-
-## Attaching Debug Info to Each Function
-
-`FunctionDefinitionNode::codegen` creates one for every function whose name isn't one of my own internal `__pyxc.`-prefixed helpers:
-
-```cpp
-DISubprogram *SP = nullptr;
-if (DIB && TheDIFile) {
-  bool IsInternal = P.getName().rfind("__pyxc.", 0) == 0;
-  if (!IsInternal) {
-    unsigned Line = P.getLocation().Line ? P.getLocation().Line : 1;
-    SmallVector<Metadata *, 8> EltTys;
-    EltTys.push_back(DblDIType);
-    for (size_t i = 0; i < P.getParameters().size(); ++i)
-      EltTys.push_back(DblDIType);
-    auto *SubTy =
-        DIB->createSubroutineType(DIB->getOrCreateTypeArray(EltTys));
-    SP = DIB->createFunction(TheDIFile, P.getName(), StringRef(), TheDIFile,
-                             Line, SubTy, Line, DINode::FlagZero,
-                             DISubprogram::SPFlagDefinition);
-    TheFunction->setSubprogram(SP);
-    CurDIScope = SP;
-    CurFunctionLine = Line;
-  }
-}
-```
-
-`createSubroutineType` wants a flat list, return type first, then each parameter's type in order. Since pyxc only has `double`, every entry is the same `DblDIType`. `setSubprogram` is the step that actually attaches this descriptor to the LLVM `Function*`, without it, even a correctly-built `DISubprogram` node wouldn't get connected to the function's machine code by the DWARF emitter. `CurDIScope` gets cleared back to `nullptr` after the body finishes, both on success and on the error path, so anything emitted outside a function, module-level init code, for instance, doesn't accidentally inherit whatever scope the previous function left behind.
-
-## Parameters and Locals
-
-```cpp
-static void EmitDebugDeclare(AllocaInst *Alloca, StringRef Name, unsigned Line,
-                             bool IsParam, unsigned ArgNo = 0) {
-  if (!DIB || !CurDIScope || !Alloca)
-    return;
-
-  DIType *Ty = DblDIType
-                   ? DblDIType
-                   : DIB->createBasicType("double", 64, dwarf::DW_ATE_float);
-  auto *Loc = DILocation::get(*TheContext, Line, 1, CurDIScope);
-  DILocalVariable *Var = nullptr;
-  if (IsParam) {
-    Var = DIB->createParameterVariable(CurDIScope, Name, ArgNo, TheDIFile, Line,
-                                       Ty, true);
+  if (EmitKindOpt == "llvm-ir") {
+    EmitMode = EmitKind::LLVMIR;
+    EmitOutputPath = OutputFile.empty() ? "out.ll" : OutputFile.getValue();
+  } else if (EmitKindOpt == "asm") {
+    EmitMode = EmitKind::ASM;
+    EmitOutputPath = OutputFile.empty() ? "out.s" : OutputFile.getValue();
+  } else if (EmitKindOpt == "obj") {
+    EmitMode = EmitKind::OBJ;
+    EmitOutputPath = OutputFile.empty() ? "out.o" : OutputFile.getValue();
   } else {
-    Var = DIB->createAutoVariable(CurDIScope, Name, TheDIFile, Line, Ty, true);
+    fprintf(stderr, "Error: invalid --emit value '%s'\n",
+            EmitKindOpt.c_str());
+    return -1;
   }
-
-  DIB->insertDeclare(Alloca, Var, DIB->createExpression(), Loc,
-                     Builder->GetInsertBlock());
+} else if (!OutputFile.empty()) {
+  fprintf(stderr, "Error: -o requires --emit\n");
+  return -1;
 }
 ```
 
-I fall back to building a fresh `double` type descriptor if `DblDIType` somehow isn't set yet rather than assume it always is; cheap insurance against a call-ordering mistake I'd rather not debug later. `createParameterVariable` and `createAutoVariable` produce the same kind of node, `DILocalVariable`, differing only in the DWARF tag underneath (`DW_TAG_formal_parameter` versus `DW_TAG_variable`); `ArgNo`, 1-based, is what tells the parameter case its position. `insertDeclare` is what actually emits the debug-info record binding this `alloca` to that descriptor, so a debugger knows where in memory to find the variable's current value. I call this from three places: once per argument in `FunctionDefinitionNode::codegen`, once per declared variable in `VarStatementNode::codegen`, and once in `ForExpressionNode::codegen` when the loop introduces its own variable (`for var i = ...`, as opposed to reusing an existing one). All three land on the same `CurFunctionLine`, since that's the only line I'm tracking, so a `for`-loop variable's debug entry shows the function's `def` line rather than the line the `for` actually appears on.
+Key rules I'm enforcing here:
 
-## Globals
+- `--emit` without a source file is an error. The JIT REPL has no concept of an output file.
+- An unknown emit kind (`--emit wat`) is an error — the valid set is `llvm-ir`, `asm`, `obj`.
+- `-o` without `--emit` is also an error — there's nothing to route to the file.
+- If `-o` is omitted, the output path defaults to `out.ll`, `out.s`, or `out.o` in the current working directory.
+
+I declare the `EmitKind` enum and a global string for the resolved path alongside the other global state:
 
 ```cpp
-static void EmitDebugGlobal(GlobalVariable *GV, StringRef Name, unsigned Line) {
-  if (!DIB || !TheCU || !GV)
-    return;
-  DIType *Ty = DblDIType
-                   ? DblDIType
-                   : DIB->createBasicType("double", 64, dwarf::DW_ATE_float);
-  auto *GVE = DIB->createGlobalVariableExpression(TheCU, Name, Name, TheDIFile,
-                                                  Line, Ty, true);
-  GV->addDebugInfo(GVE);
-}
+enum class EmitKind { None, LLVMIR, ASM, OBJ };
+static EmitKind EmitMode = EmitKind::None;
+static string EmitOutputPath;
+
+static bool IsEmitMode() { return EmitMode != EmitKind::None; }
 ```
 
-A global has no `alloca` to declare against, so this takes a different path: I build a `DIGlobalVariableExpression` and attach it directly to the `GlobalVariable` IR node with `addDebugInfo`. `VarStatementNode::codegen` calls this whenever it creates a brand-new module-level global, not on every assignment, just the one time the global itself comes into existence.
-
-## macOS Needs One More Step
-
-On macOS, the system linker doesn't copy DWARF into the final executable the way ELF linkers do. It writes debug-map stab entries that point back at the original `.o` files instead, so a debugger has to go find those object files to read any debug info at all. `dsymutil` resolves that indirection into a self-contained `.dSYM` bundle:
+After `FileModeLoop` finishes parsing the source file, I dispatch on `IsEmitMode()` in `main`:
 
 ```cpp
-static void MaybeEmitDsymBundle(const string &ExePath) {
-  if (!DebugInfo)
-    return;
+FileModeLoop();
+if (IsEmitMode())
+  EmitFileMode();
+else
+  RunFileMode();
+```
 
-  Triple TT(sys::getDefaultTargetTriple());
-  if (!TT.isOSDarwin())
-    return;
+`IsEmitMode()` also gates the per-function JIT path inside `HandleFunctionDefinition`. In JIT mode, each compiled function is immediately transferred to the JIT and the module is replaced:
 
-  auto Dsymutil = sys::findProgramByName("dsymutil");
-  if (!Dsymutil) {
-    fprintf(
-        stderr,
-        "Warning: dsymutil not found; debug info will remain in .o files\n");
+```cpp
+// HandleFunctionDefinition — after codegen:
+if (!IsEmitMode()) {
+  ExitOnErr(TheJIT->addModule(
+      ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
+  InitializeModuleAndManagers();
+}
+```
+
+In emit mode this block is skipped entirely. All functions accumulate in the same `TheModule` until `EmitFileMode` writes it out. If I left the guard out, every `def` would hand the module to the JIT and reinitialise, leaving `EmitFileMode` with an empty module.
+
+## The Emit Pipeline
+
+`EmitModuleToFile` is the leaf that does the actual file writing. It opens the output path with `raw_fd_ostream` and then branches on the emit kind:
+
+```cpp
+static bool EmitModuleToFile() {
+  std::error_code EC;
+  raw_fd_ostream Dest(EmitOutputPath, EC, sys::fs::OF_None);
+  if (EC) {
+    fprintf(stderr, "Error: could not open output file '%s'\n",
+            EmitOutputPath.c_str());
+    return false;
+  }
+
+  if (EmitMode == EmitKind::LLVMIR) {
+    TheModule->print(Dest, nullptr);
+    return true;
+  }
+
+  string TargetTriple = sys::getDefaultTargetTriple();
+  Triple TT(TargetTriple);
+  TheModule->setTargetTriple(TT);
+
+  string Error;
+  const Target *Target = TargetRegistry::lookupTarget(TT, Error);
+  if (!Target) {
+    fprintf(stderr, "Error: %s\n", Error.c_str());
+    return false;
+  }
+
+  TargetOptions Options;
+  auto RM = std::optional<Reloc::Model>();
+  std::unique_ptr<TargetMachine> TM(
+      Target->createTargetMachine(TT, "generic", "", Options, RM));
+  TheModule->setDataLayout(TM->createDataLayout());
+
+  legacy::PassManager PM;
+  CodeGenFileType FileType = (EmitMode == EmitKind::ASM)
+                                 ? CodeGenFileType::AssemblyFile
+                                 : CodeGenFileType::ObjectFile;
+
+  if (TM->addPassesToEmitFile(PM, Dest, nullptr, FileType)) {
+    fprintf(stderr, "Error: target does not support file emission\n");
+    return false;
+  }
+
+  PM.run(*TheModule);
+  return true;
+}
+```
+
+I named that local variable `Target`, which shadows the `llvm::Target` type it's declared as — a little sloppy, but the compiler doesn't mind and it reads fine in context, so I've left it.
+
+**LLVM IR path.** `Module::print` writes the module's textual IR directly to the stream. No target information is needed — IR is portable.
+
+**ASM / OBJ path.** These need the full backend pipeline:
+
+- `sys::getDefaultTargetTriple()` returns the host's triple (e.g., `arm64-apple-macosx14.0.0`).
+- `TargetRegistry::lookupTarget` finds the backend registered for that triple. It fails if the target wasn't initialized at startup — that's why the three `InitializeNativeTarget*` calls in `main` matter.
+- `createTargetMachine` produces a `TargetMachine` that encapsulates the backend's code generator for the specific CPU and relocation model.
+- I update the module's data layout to match the target, so type sizes and alignments are correct.
+- I use `legacy::PassManager` here (not the new `PassManager`) because `addPassesToEmitFile` is part of the legacy pipeline API — it's the standard LLVM idiom for code generation to a file.
+- `addPassesToEmitFile` adds all the backend passes needed to lower IR to machine code and format it as assembly text or an ELF/Mach-O object file.
+- `PM.run(*TheModule)` runs the pipeline, writing the output into `Dest`.
+
+The new headers required for this path:
+
+```cpp
+#include "llvm/Support/FileSystem.h"       // raw_fd_ostream, OF_None
+#include "llvm/Support/CodeGen.h"          // CodeGenFileType
+#include "llvm/Target/TargetMachine.h"     // TargetMachine, TargetOptions
+#include "llvm/Target/TargetOptions.h"     // TargetOptions
+#include "llvm/MC/TargetRegistry.h"        // TargetRegistry
+#include "llvm/TargetParser/Host.h"        // getDefaultTargetTriple
+#include "llvm/TargetParser/Triple.h"      // Triple
+#include "llvm/IR/LegacyPassManager.h"     // legacy::PassManager
+```
+
+## The Orchestrator
+
+`EmitFileMode` is the emit-mode counterpart to `RunFileMode`. It does the same setup — build `__pyxc.global_init`, validate `main`, wrap `main` — but instead of JIT-executing the result, it calls `EmitModuleToFile`.
+
+```cpp
+static void EmitFileMode() {
+  // 1. Compile __pyxc.global_init from the collected top-level statements.
+  if (!FileTopLevelStmts.empty()) {
+    auto Block = make_unique<BlockExpressionNode>(std::move(FileTopLevelStmts));
+    auto Signature =
+        make_unique<FunctionSignatureNode>("__pyxc.global_init", vector<string>());
+    auto FnAST = make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(Block));
+
+    bool SavedInGlobalInit = InGlobalInit;
+    InGlobalInit = true;
+    if (auto *FnIR = FnAST->codegen()) {
+      InGlobalInit = SavedInGlobalInit;
+      if (ShouldDumpIR())
+        FnIR->print(errs());
+      AddGlobalCtor(FnIR);   // <-- differs from RunFileMode
+    } else {
+      InGlobalInit = SavedInGlobalInit;
+      return;
+    }
+  }
+
+  // 2. Validate main() arity.
+  auto MainIt = FunctionSignatures.find("main");
+  if (MainIt != FunctionSignatures.end() && MainIt->second->getNumParameters() != 0) {
+    fprintf(stderr, "Error: main() must take no arguments\n");
     return;
   }
 
-  std::vector<StringRef> Arguments;
-  Arguments.push_back(*Dsymutil);
-  Arguments.push_back(ExePath);
-  if (sys::ExecuteAndWait(*Dsymutil, Arguments)) {
-    fprintf(stderr, "Warning: dsymutil failed; debug info may be missing\n");
+  // 3. Wrap main() to return int.
+  if (auto *UserMain = TheModule->getFunction("main")) {
+    if (UserMain->getReturnType()->isDoubleTy()) {
+      UserMain->setName("__pyxc.user_main");
+      FunctionType *FT =
+          FunctionType::get(Type::getInt32Ty(*TheContext), false);
+      Function *Wrapper =
+          Function::Create(FT, Function::ExternalLinkage, "main",
+                           TheModule.get());
+      BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", Wrapper);
+      IRBuilder<> TmpB(BB);
+      TmpB.CreateCall(UserMain);
+      TmpB.CreateRet(ConstantInt::get(Type::getInt32Ty(*TheContext), 0));
+    }
   }
+
+  // 4. Write the output file.
+  EmitModuleToFile();
 }
 ```
 
-I run this right after linking, whenever `-g` and `--emit exe` are both active. On Linux, DWARF lands directly in the executable and none of this is necessary.
+Three things are meaningfully different from `RunFileMode`:
 
-## What the IR Actually Looks Like
+1. **`AddGlobalCtor` instead of JIT-calling `__pyxc.global_init`.** In JIT mode, `RunFileMode` looks up the symbol and calls it directly. In emit mode there is no JIT — the binary hasn't been linked yet. Instead, I register `__pyxc.global_init` in `llvm.global_ctors` so the linker wires it to run before `main()` automatically.
 
-I compiled `def sq(x):\n  return x * x` under `-g -O0` and read the real output rather than write down what I expected:
+2. **`main()` return-type wrapping.** pyxc's `main()` returns `double` (everything in pyxc is a double). But the C runtime expects `int main()`. `EmitFileMode` detects this mismatch, renames the user's function to `__pyxc.user_main`, and synthesises a new `int main()` that calls it and returns `0`.
 
-```llvm
-define double @sq(double %x) !dbg !4 {
+3. **`EmitModuleToFile()` as the final step** instead of looking up and calling symbols.
+
+## Wiring Globals into the Binary
+
+When a pyxc program declares global variables, `__pyxc.global_init` must run before `main()` — otherwise globals hold `0.0` when `main` starts. In JIT mode `RunFileMode` calls `__pyxc.global_init` explicitly before calling `main`. In a native binary, the C runtime manages startup: it calls everything in `llvm.global_ctors` before `main()`. `AddGlobalCtor` puts `__pyxc.global_init` into that list.
+
+```cpp
+static void AddGlobalCtor(Function *Fn, int Priority = 65535) {
+  auto *Int32Ty = Type::getInt32Ty(*TheContext);
+  auto *VoidPtrTy = PointerType::get(*TheContext, 0);
+  auto *StructTy = StructType::get(Int32Ty, Fn->getType(), VoidPtrTy);
+
+  Constant *CtorEntry = ConstantStruct::get(
+      StructTy, ConstantInt::get(Int32Ty, Priority), Fn,
+      ConstantPointerNull::get(cast<PointerType>(VoidPtrTy)));
+
+  GlobalVariable *GV = TheModule->getGlobalVariable("llvm.global_ctors");
+  if (GV)
+    return;
+
+  ArrayType *AT = ArrayType::get(StructTy, 1);
+  auto *Init = ConstantArray::get(AT, {CtorEntry});
+  new GlobalVariable(*TheModule, AT, false, GlobalValue::AppendingLinkage, Init,
+                     "llvm.global_ctors");
+}
+```
+
+Only one call site (`EmitFileMode`, for `__pyxc.global_init`) exists today, but the early `if (GV) return;` guards against a second `llvm.global_ctors` definition anyway. LLVM won't merge two globals with the same name for me — it'll just rename the second one — and that would silently break the linker's contract with this special symbol.
+
+`llvm.global_ctors` is a special LLVM global with `AppendingLinkage`. The linker concatenates all contributions from different objects into one array. Each element is a `{ i32 priority, ptr fn, ptr data }` struct; the lower the priority number, the earlier the function runs. I use `65535` (lowest priority), which is conventional for user-level constructors.
+
+The `data` field (third struct member) is a guard pointer: if non-null, the runtime skips the entry under certain conditions. I set it to null, meaning "always run."
+
+## `main()` Return-Type Wrapping
+
+pyxc's type system has only `double`. Every function — including `main` — returns `double`. But the C ABI that the linker and OS loader expect declares `main` as `int main()`.
+
+I bridge this automatically inside `EmitFileMode`. When it finds a user-defined `main` function with a `double` return type, it:
+
+1. Renames the original to `__pyxc.user_main`.
+2. Creates a new `int main()` that calls `__pyxc.user_main` (discarding its return value) and returns the integer `0`.
+
+```
+; Before wrapping:
+define double @main() { ... }
+
+; After wrapping:
+define double @__pyxc.user_main() { ... }
+
+define i32 @main() {
 entry:
-  %x1 = alloca double, align 8
-  store double %x, ptr %x1, align 8, !dbg !10
-    #dbg_declare(ptr %x1, !9, !DIExpression(), !10)
-  %x2 = load double, ptr %x1, align 8, !dbg !10
-  %x3 = load double, ptr %x1, align 8, !dbg !10
-  %multmp = fmul double %x2, %x3, !dbg !10
-  ret double %multmp, !dbg !10
+  call double @__pyxc.user_main()
+  ret i32 0
 }
 ```
 
-`#dbg_declare` is LLVM's current record syntax for what used to be a `call void @llvm.dbg.declare(...)` intrinsic call; if you're reading IR from an older LLVM version you may still see the call form, they mean the same thing. Note every instruction shares `!dbg !10`, the line-1 location from `SetCurrentDebugLocation`, exactly the limitation described above.
+This is transparent to the pyxc programmer. You write `def main(): ...` exactly as in file mode.
 
-At `-O2`, the `alloca` is gone and `#dbg_declare` becomes `#dbg_value`, tracking the SSA value directly instead of a memory location:
+## `--dump-ir` and `-v`
 
+I renamed the flag that prints generated IR to stderr from `-v` to `--dump-ir`, to make its purpose more explicit. I kept the old `-v` around as a backward-compatible alias:
+
+```cpp
+static cl::opt<bool>
+    DumpIR("dump-ir", cl::desc("Print generated LLVM IR to stderr"),
+           cl::init(false), cl::cat(PyxcCategory));
+
+static cl::opt<bool>
+    VerboseIR("v", cl::desc("Alias for --dump-ir"), cl::init(false),
+              cl::cat(PyxcCategory));
+
+static bool ShouldDumpIR() { return DumpIR || VerboseIR; }
+```
+
+I call `ShouldDumpIR()` wherever IR is printed — after each function in JIT mode, and after codegen in emit mode. Both flags trigger the same behaviour.
+
+## Target Initialization
+
+The three `InitializeNative*` calls in `main` were already present for the JIT. They stay sufficient for emit mode too, because pyxc always targets the host machine:
+
+```cpp
+InitializeNativeTarget();
+InitializeNativeTargetAsmPrinter();
+InitializeNativeTargetAsmParser();
+```
+
+`InitializeNativeTargetAsmPrinter` registers the backend that serializes machine instructions to assembly text or object file bytes — the part that `addPassesToEmitFile` depends on. Without it, `TargetRegistry::lookupTarget` would succeed but `addPassesToEmitFile` would fail.
+
+## Known Limitations
+
+**Emit mode does not run the program.** `--emit` compiles to a file and exits. If you want to both emit and run, compile, link, and execute the binary separately.
+
+**Single-file compilation only.** pyxc does not have a multi-file model. Each invocation compiles one source file to one output file. Linking multiple pyxc objects together is possible but requires manual `extern def` declarations at the moment.
+
+**No debug information.** The emitted object files contain no DWARF or other debug info. Debuggers cannot map machine instructions back to pyxc source lines.
+
+**Target is always the host.** There is no cross-compilation support. The output file targets the same CPU and OS as the machine running `pyxc`.
+
+**`main()` always returns 0.** The synthesised `int main()` wrapper ignores the double value returned by the user's `main()` and always returns `0`. There is no way to return a non-zero exit code from a pyxc program yet.
+
+## Try It
+
+**Emit LLVM IR and inspect it**
+
+```bash
+cat sq.pyxc
+```
+```pyxc
+extern def printd(x)
+def sq(x): return x * x
+def main():
+    printd(sq(3))
+```
+```bash
+pyxc --emit llvm-ir -o sq.ll sq.pyxc
+cat sq.ll
+```
 ```llvm
-define double @sq(double %x) local_unnamed_addr #0 !dbg !4 {
+declare double @printd(double)
+
+define double @sq(double %x) {
 entry:
-    #dbg_value(double %x, !9, !DIExpression(), !10)
-  %multmp = fmul double %x, %x, !dbg !11
-  ret double %multmp, !dbg !11
+  %multmp = fmul double %x, %x
+  ret double %multmp
+}
+
+define double @__pyxc.user_main() {
+entry:
+  %calltmp = call double @sq(double 3.000000e+00)
+  %calltmp1 = call double @printd(double %calltmp)
+  ret double 0.000000e+00
+}
+
+define i32 @main() {
+entry:
+  %0 = call double @__pyxc.user_main()
+  ret i32 0
 }
 ```
 
-The debug info is still correct, the debugger knows `x` lives in whatever register or argument slot holds `%x`, but it can degrade if the value moves across multiple registers over the function's lifetime. That's the standard debug-at-`-O2` trade-off, and nothing pyxc-specific about it.
+No `__pyxc.global_init` here — `sq.pyxc` has no top-level `var`, so `AddGlobalCtor` never runs. What you do see is the `main()` wrapping from earlier: `main` renamed to `__pyxc.user_main`, and a fresh `i32 @main()` calling it and returning `0`.
+
+**Emit assembly**
+
+```bash
+pyxc --emit asm -o sq.s sq.pyxc
+grep -A2 "sq:" sq.s
+```
+
+On macOS the label is actually `_sq:` — the platform's C ABI prepends an underscore — but `grep "sq:"` still matches it as a substring, so this works on both macOS and Linux as written.
+
+**Compile to a native binary**
+
+```bash
+# test/runtime.c provides printd/putchard for standalone binaries.
+pyxc --emit obj -o sq.o sq.pyxc
+file sq.o
+clang sq.o test/runtime.c -o sq
+./sq
+```
+```
+sq.o: Mach-O 64-bit object arm64
+9.000000
+```
+
+**Inspect IR while emitting**
+
+```bash
+pyxc --dump-ir --emit llvm-ir -o sq.ll sq.pyxc
+```
+
+The `--dump-ir` flag prints the IR to stderr as each function is compiled — before the file is written, so you see both the intermediate IR and the final output file.
+
+**Default output paths**
+
+```bash
+pyxc --emit llvm-ir sq.pyxc   # writes out.ll
+pyxc --emit asm    sq.pyxc   # writes out.s
+pyxc --emit obj    sq.pyxc   # writes out.o
+```
 
 ## Build and Run
 
 ```bash
-cd code/chapter-16
+cd code/chapter-14
 cmake -S . -B build && cmake --build build
-./build/pyxc -g --emit exe -o program program.pyxc
-lldb program
+./build/pyxc --emit obj -o program.o program.pyxc
+clang program.o test/runtime.c -o program
+./program
 ```
-
-## Try It
-
-### Inspecting the metadata directly
-
-```bash
-pyxc -g --emit llvm-ir -o out.ll program.pyxc
-grep -A3 'DISubprogram\|DILocalVariable\|DILocation' out.ll
-```
-
-### Verifying DWARF actually landed in the object file
-
-```bash
-pyxc -g --emit obj -o program.o program.pyxc
-llvm-dwarfdump program.o
-```
-
-I ran this myself; a real compile unit, `DW_TAG_subprogram` for `sq`, decl line and all, comes back:
-
-```text
-0x0000000b: DW_TAG_compile_unit
-              DW_AT_producer	("pyxc")
-              DW_AT_language	(DW_LANG_C)
-              DW_AT_name	("sq.pyxc")
-              ...
-0x0000002a:   DW_TAG_subprogram
-                DW_AT_name	("sq")
-                DW_AT_decl_file	("/tmp/sq.pyxc")
-                DW_AT_decl_line	(1)
-                ...
-```
-
-### Comparing `-O0` and `-O2` IR for the same function
-
-```bash
-pyxc -g -O0 --emit llvm-ir -o at_o0.ll program.pyxc
-pyxc -g -O2 --emit llvm-ir -o at_o2.ll program.pyxc
-diff at_o0.ll at_o2.ll
-```
-
-## Known Limitations
-
-**Every instruction in a function shares one line.** `SetCurrentDebugLocation` is called once, at function entry, and never again. A multi-line function body still gets exactly one line number attached to all of it, the function's own `def` line, not wherever each statement actually is. I verified this directly rather than assume it from the code.
-
-**No column tracking at all.** Every `!DILocation` uses column `1`. A breakpoint set within a line lands at its start.
-
-**`-g` in REPL/JIT mode does nothing.** The JIT never produces an object file, so there's nowhere for DWARF to live. The flag is accepted and silently ignored there.
-
-**`dsymutil` has to be installed on macOS.** I run it automatically, but if it's missing (non-Xcode installs sometimes lack it), debug info stays behind in temporary `.o` files that get cleaned up, and is effectively lost.
 
 ## What's Next
 
-pyxc can now produce debuggable, optimized native code. The language itself still has exactly one type, `double`, and no aggregate data at all. [Chapter 17](chapter-17.md) starts changing that, and once real types exist, the typed descriptors and source-location tracking built in this chapter finally have real work to do.
+[Chapter 17](chapter-17.md) adds `--emit exe` to compile and link a standalone executable in one step.
 
 ## Need Help?
 
@@ -410,10 +478,3 @@ Build issues? Questions?
 
 - **GitHub Issues:** [Report problems](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues)
 - **Discussions:** [Ask questions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
-
-Include:
-- Your OS and version
-- Full error message
-- Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
-
-I'll help you figure it out.

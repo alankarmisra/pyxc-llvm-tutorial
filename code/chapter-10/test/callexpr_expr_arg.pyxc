@@ -2,7 +2,6 @@
 # CHECK: Parsed a function definition.
 # CHECK: Evaluated to 9.000000
 
-
 # Tests: call-expression where an argument is itself a non-trivial expression.
 # call-expression = name "(" expression { "," expression } ")"
 

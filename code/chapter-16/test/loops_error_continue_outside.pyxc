@@ -1,0 +1,7 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: {{[Ee]rror}}
+# CHECK: continue
+
+def bad():
+  continue
+  return 0

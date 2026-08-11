@@ -1,6 +1,0 @@
-struct Point:
-  x: int
-  y: int
-def f(p: ptr[Point], v: int):
-  var r: int = p[0].x
-  p[0].x = v

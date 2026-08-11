@@ -1,5 +1,4 @@
 #include "../include/PyxcJIT.h"
-#include "lld/Common/Driver.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
@@ -8,23 +7,13 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
-#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Verifier.h"
-#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Passes/PassBuilder.h"
-#include "llvm/Support/CodeGen.h"
-#include "llvm/Support/FileSystem.h"
-#include "llvm/Support/Path.h"
 #include "llvm/Support/TargetSelect.h"
-#include "llvm/Support/VersionTuple.h"
-#include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
-#include "llvm/Target/TargetOptions.h"
-#include "llvm/TargetParser/Host.h"
-#include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Scalar/GVN.h"
@@ -37,11 +26,8 @@
 #include <iomanip>
 #include <map>
 #include <memory>
-#include <optional>
-#include <set>
 #include <sstream>
 #include <string>
-#include <unistd.h>
 #include <utility>
 #include <vector>
 
@@ -49,34 +35,19 @@ using namespace std;
 using namespace llvm;
 using namespace llvm::orc;
 
-LLD_HAS_DRIVER(elf)
-LLD_HAS_DRIVER(coff)
-LLD_HAS_DRIVER(macho)
-
 //===----------------------------------------===//
 // Command line
 //===----------------------------------------===//
 static cl::OptionCategory PyxcCategory("Pyxc options");
 
-// Optional positional inputs: 0 args => REPL, 1+ args => file mode.
-static cl::list<std::string> InputFiles(cl::Positional, cl::desc("[inputs]"),
-                                        cl::ZeroOrMore, cl::cat(PyxcCategory));
+// Optional positional input: 0 args => REPL, 1 arg => file mode.
+static cl::opt<std::string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
+                                      cl::init(""), cl::cat(PyxcCategory));
 
-// Dump IR to stderr in JIT modes.
-static cl::opt<bool> DumpIR("dump-ir",
-                            cl::desc("Print generated LLVM IR to stderr"),
-                            cl::init(false), cl::cat(PyxcCategory));
-// Alias for --dump-ir (kept for backwards compatibility).
-static cl::opt<bool> VerboseIR("v", cl::desc("Alias for --dump-ir"),
+// Verbose IR dump in both REPL and file mode.
+static cl::opt<bool> VerboseIR("v",
+                               cl::desc("Print generated LLVM IR to stderr"),
                                cl::init(false), cl::cat(PyxcCategory));
-
-// Emit output file in file mode.
-static cl::opt<std::string>
-    EmitKindOpt("emit", cl::desc("Emit output: llvm-ir | asm | obj | exe"),
-                cl::init(""), cl::cat(PyxcCategory));
-static cl::opt<std::string> OutputFile("o", cl::desc("Output filename"),
-                                       cl::value_desc("filename"), cl::init(""),
-                                       cl::cat(PyxcCategory));
 
 // Optimization level. For now Pyxc only distinguishes -O0 (no passes) from
 // any non-zero level (run the current fixed function pass pipeline).
@@ -86,13 +57,6 @@ static cl::opt<unsigned> OptLevel("O", cl::desc("Optimization level"),
 
 static FILE *Input = stdin;
 static bool IsRepl = true;
-
-enum class EmitKind { None, LLVMIR, ASM, OBJ, EXE };
-static EmitKind EmitMode = EmitKind::None;
-static string EmitOutputPath;
-
-static bool ShouldDumpIR() { return DumpIR || VerboseIR; }
-static bool IsEmitMode() { return EmitMode != EmitKind::None; }
 
 //===----------------------------------------===//
 // Lexer
@@ -123,18 +87,22 @@ enum Token {
   tok_if = -12,
   tok_else = -13,
   tok_return = -14,
+  tok_elif = -22,
 
   // loops
   tok_for = -15,
-
+  tok_while = -23,
+  tok_do = -24,
+  tok_break = -25,
+  tok_continue = -26,
 
   // mutable variables
   tok_var = -18,
 
   // indentation
-  tok_indent = -19,
-  tok_dedent = -20,
-  tok_block_end = -100, // synthetic: injected by ParseBlock after eating DEDENT
+  tok_indent    = -19,
+  tok_dedent    = -20,
+  tok_block_end = -21, // synthetic: injected by ParseBlock after eating DEDENT
 
   // punctuation and operators
   tok_lparen = '(',
@@ -145,6 +113,7 @@ enum Token {
   tok_minus = '-',
   tok_star = '*',
   tok_slash = '/',
+  tok_percent = '%',
   tok_less = '<',
   tok_greater = '>',
   tok_equal = '=',
@@ -153,7 +122,6 @@ enum Token {
 static string Name; // Filled in if tok_name
 static double NumberValue;        // Filled in if tok_number
 static string NumberLiteral; // Filled in if tok_number
-static int LexerLastChar = ' ';
 static vector<int> IndentStack = {0};
 static deque<int> PendingTokens;
 static bool AtLineStart = true;
@@ -163,7 +131,9 @@ static constexpr int IndentTabWidth = 8;
 // associated Token. Additional language keywords can easily be added here.
 static map<string, Token> Keywords = {
     {"def", tok_def},       {"extern", tok_extern}, {"return", tok_return},
-    {"if", tok_if},         {"else", tok_else},     {"for", tok_for},
+    {"if", tok_if},         {"elif", tok_elif},     {"else", tok_else},
+    {"for", tok_for},       {"while", tok_while},   {"do", tok_do},
+    {"break", tok_break},   {"continue", tok_continue},
     {"var", tok_var}};
 
 // Debug-only token names. Kept separate from Keywords because this map is
@@ -177,10 +147,13 @@ static map<int, string> TokenNames = [] {
       {tok_number, "number"},    {tok_return, "'return'"},
       {tok_eq, "'=='"},          {tok_neq, "'!='"},
       {tok_leq, "'<='"},         {tok_geq, "'>='"},
-      {tok_if, "'if'"},          {tok_else, "'else'"},
-      {tok_for, "'for'"},        {tok_var, "'var'"},
+      {tok_if, "'if'"},          {tok_elif, "'elif'"},
+      {tok_else, "'else'"},
+      {tok_for, "'for'"},        {tok_while, "'while'"},
+      {tok_do, "'do'"},          {tok_break, "'break'"},
+      {tok_continue, "'continue'"}, {tok_var, "'var'"},
       {tok_indent, "indent"},    {tok_dedent, "dedent"},
-                                   {tok_block_end, "block-end"}};
+      {tok_block_end, "block-end"}};
 
   // Single character tokens.
   for (int ch = 0; ch <= 255; ++ch) {
@@ -220,7 +193,8 @@ struct SourceLocation {
 static SourceLocation CurLoc;
 static SourceLocation LexLoc = {1, 0};
 static void LogErrorAtLoc(const char *Str, SourceLocation Loc);
-static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation Loc);
+static void LogInvalidNumberLiteralAtLoc(const string &Literal,
+                                         SourceLocation Loc);
 
 /// SourceManager - Buffers every source line as it is read so that error
 /// messages can reprint the offending line with a caret underneath it.
@@ -354,6 +328,8 @@ static int peek() {
 /// no tokens). It flips false as soon as indentation is settled and the line
 /// is known to contain a real token, even before that token is emitted.
 static int getToken() {
+  static int LastChar = ' ';
+
   // Drain tokens queued by a multi-level dedent on the previous line.
   if (!PendingTokens.empty()) {
     int Tok = PendingTokens.front();
@@ -363,40 +339,43 @@ static int getToken() {
   // ── Line-start: count indentation, emit INDENT / DEDENT ──────────────
   if (AtLineStart) {
     // Prime sentinel space once so indentation scans real input.
-    if (LexerLastChar == ' ')
-      LexerLastChar = advance();
+    if (LastChar == ' ')
+      LastChar = advance();
     int CurrentIndentRead = 0;
-    while (LexerLastChar == ' ' || LexerLastChar == '\t') {
-      CurrentIndentRead += (LexerLastChar == ' ') ? 1 : (IndentTabWidth - CurrentIndentRead % IndentTabWidth);
-      LexerLastChar = advance();
+    while (LastChar == ' ' || LastChar == '\t') {
+      CurrentIndentRead +=
+          (LastChar == ' ')
+              ? 1
+              : (IndentTabWidth - CurrentIndentRead % IndentTabWidth);
+      LastChar = advance();
     }
 
     // Blank line: ignore in file mode; close the block immediately in REPL.
-    if (LexerLastChar == '\n') {
+    if (LastChar == '\n') {
       if (IsRepl && IndentStack.size() > 1) {
         IndentStack.pop_back();
         return tok_dedent;
       }
       CurLoc = LexLoc;
-      LexerLastChar = ' ';
+      LastChar = ' ';
       return tok_eol;
     }
 
     // Comment-only line: consume and return a newline.
-    if (LexerLastChar == '#') {
+    if (LastChar == '#') {
       do
-        LexerLastChar = advance();
-      while (LexerLastChar != EOF && LexerLastChar != '\n');
-      if (LexerLastChar != EOF) {
+        LastChar = advance();
+      while (LastChar != EOF && LastChar != '\n');
+      if (LastChar != EOF) {
         CurLoc = LexLoc;
-        LexerLastChar = ' ';
+        LastChar = ' ';
         return tok_eol;
       }
       // else fall through to EOF handling below
     }
 
     // EOF (with or without trailing newline): flush open blocks one at a time.
-    if (LexerLastChar == EOF) {
+    if (LastChar == EOF) {
       if (IndentStack.size() > 1) {
         IndentStack.pop_back();
         return tok_dedent;
@@ -434,37 +413,37 @@ static int getToken() {
 
   // Not at line start anymore. Skip horizontal whitespace between tokens.
   // Stop at '\n' — it becomes tok_eol.
-  while (isspace(LexerLastChar) && LexerLastChar != '\n')
-    LexerLastChar = advance();
+  while (isspace(LastChar) && LastChar != '\n')
+    LastChar = advance();
 
   // Snapshot position for the upcoming token. See note above about tok_eol.
   CurLoc = LexLoc;
 
-  if (LexerLastChar == '\n') {
+  if (LastChar == '\n') {
     // Do not call advance() here.
     // We should return the newline token immediately. If we read one more
     // character first, REPL mode may wait for extra input before processing
     // the line the user just submitted.
-    LexerLastChar = ' ';
+    LastChar = ' ';
     AtLineStart = true;
     return tok_eol;
   }
 
-  if (isalpha(LexerLastChar) || LexerLastChar == '_') {
-    Name = LexerLastChar;
-    while (isalnum((LexerLastChar = advance())) || LexerLastChar == '_')
-      Name += LexerLastChar;
+  if (isalpha(LastChar) || LastChar == '_') {
+    Name = LastChar;
+    while (isalnum((LastChar = advance())) || LastChar == '_')
+      Name += LastChar;
 
     auto It = Keywords.find(Name);
     return (It == Keywords.end()) ? tok_name : It->second;
   }
 
-  if (isdigit(LexerLastChar) || LexerLastChar == '.') {
+  if (isdigit(LastChar) || LastChar == '.') {
     string NumStr;
     do {
-      NumStr += LexerLastChar;
-      LexerLastChar = advance();
-    } while (isdigit(LexerLastChar) || LexerLastChar == '.');
+      NumStr += LastChar;
+      LastChar = advance();
+    } while (isdigit(LastChar) || LastChar == '.');
 
     NumberLiteral = NumStr;
     char *End = nullptr;
@@ -477,19 +456,19 @@ static int getToken() {
     return tok_number;
   }
 
-  if (LexerLastChar == '#') {
+  if (LastChar == '#') {
     // Consume the rest of the line (comment). Stop at '\n' or EOF.
     do
-      LexerLastChar = advance();
-    while (LexerLastChar != EOF && LexerLastChar != '\n');
+      LastChar = advance();
+    while (LastChar != EOF && LastChar != '\n');
 
-    if (LexerLastChar != EOF) {
+    if (LastChar != EOF) {
       // Re-snapshot CurLoc now that the '\n' has been consumed and LexLoc
       // has advanced to the next line. Without this, CurLoc would point at
       // the '#' column, and GetDiagnosticAnchorLoc would look up the wrong
       // line (because it subtracts 1) when the next token triggers an error.
       CurLoc = LexLoc;
-      LexerLastChar = ' ';
+      LastChar = ' ';
       AtLineStart = true;
       return tok_eol;
     }
@@ -497,46 +476,44 @@ static int getToken() {
 
   // peek(), if the next one completes a recognized token, eat it, and return
   // token; otherwise, I return the named single-character token.
-  if (LexerLastChar == '=') {
+  if (LastChar == '=') {
     int Tok = (peek() == '=') ? (advance(), tok_eq) : tok_equal;
-    LexerLastChar = advance();
+    LastChar = advance();
     return Tok;
   }
 
-  if (LexerLastChar == '!') {
+  if (LastChar == '!') {
     int Tok = (peek() == '=') ? (advance(), tok_neq) : '!';
-    LexerLastChar = advance();
+    LastChar = advance();
     return Tok;
   }
 
-  if (LexerLastChar == '<') {
+  if (LastChar == '<') {
     int Tok = (peek() == '=') ? (advance(), tok_leq) : tok_less;
-    LexerLastChar = advance();
+    LastChar = advance();
     return Tok;
   }
 
-  if (LexerLastChar == '>') {
+  if (LastChar == '>') {
     int Tok = (peek() == '=') ? (advance(), tok_geq) : tok_greater;
-    LexerLastChar = advance();
+    LastChar = advance();
     return Tok;
   }
 
-  if (LexerLastChar == EOF) {
-    // If the final line has no trailing newline, synthesize one so the parser
-    // still sees a normal statement terminator before EOF.
-    if (!AtLineStart) {
-      LexerLastChar = ' ';
-      AtLineStart = true;
-      return tok_eol;
+  // EOF with no trailing newline: flush any remaining open blocks.
+  if (LastChar == EOF) {
+    if (IndentStack.size() > 1) {
+      IndentStack.pop_back();
+      return tok_dedent;
     }
     return tok_eof;
   }
 
   // I read a single-character token.
-  int ThisChar = LexerLastChar;
+  int ThisChar = LastChar;
 
   // Position the lexer at the next character so the next getToken() starts there.
-  LexerLastChar = advance();
+  LastChar = advance();
 
   // I return a named token for known punctuation and operators.
   switch (ThisChar) {
@@ -556,6 +533,8 @@ static int getToken() {
     return tok_star;
   case '/':
     return tok_slash;
+  case '%':
+    return tok_percent;
   case '<':
     return tok_less;
   case '>':
@@ -565,20 +544,6 @@ static int getToken() {
   default:
     return ThisChar;
   }
-}
-
-/// ResetLexerState - Restore lexer globals to their initial state.
-///
-/// Used when starting a new input file so indentation, source locations,
-/// and buffered source lines do not carry over between files.
-static void ResetLexerState() {
-  IndentStack = {0};
-  PendingTokens.clear();
-  AtLineStart = true;
-  LexLoc = {1, 0};
-  CurLoc = {1, 0};
-  LexerLastChar = ' ';
-  PyxcSourceMgr.reset();
 }
 
 //===----------------------------------------===//
@@ -641,13 +606,13 @@ static void PrintErrorSourceContext(SourceLocation Loc) {
   fprintf(stderr, "^~~~\n");
 }
 
-
 static void LogErrorAtLoc(const char *Str, SourceLocation Loc) {
   fprintf(stderr, "Error (Line %d, Column %d): %s\n", Loc.Line, Loc.Col, Str);
   PrintErrorSourceContext(Loc);
 }
 
-static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation Loc) {
+static void LogInvalidNumberLiteralAtLoc(const string &Literal,
+                                         SourceLocation Loc) {
   LogErrorAtLoc(("invalid number literal '" + Literal + "'").c_str(), Loc);
 }
 
@@ -663,10 +628,7 @@ public:
   // getLValueName - If this node is a plain assignable variable, return its
   // name; otherwise return nullptr.
   virtual const string *getLValueName() const { return nullptr; }
-  // isReturnExpr - True iff this node is a return statement.
-  virtual bool isReturnExpr() const { return false; }
-  // shouldPrintValue - Whether the REPL should print the value of this node
-  // when it appears as a top-level form.
+  virtual bool isReturnStatement() const { return false; }
   virtual bool shouldPrintValue() const { return true; }
   virtual Value *codegen() = 0;
 };
@@ -692,39 +654,38 @@ public:
   Value *codegen() override;
 };
 
-/// AssignmentExpressionNode - Expression class for assignment to an existing variable.
-/// The expression stores Right into the named variable and produces the assigned
-/// value.
-class AssignmentExpressionNode : public ExpressionNode {
+/// AssignmentStatementNode - Statement class for assignment to an existing
+/// variable. Code generation stores the right-hand value and returns it for the
+/// surrounding statement pipeline.
+class AssignmentStatementNode : public ExpressionNode {
   string Name;
   unique_ptr<ExpressionNode> Expr;
 
 public:
-  AssignmentExpressionNode(const string &Name, unique_ptr<ExpressionNode> Expr)
+  AssignmentStatementNode(const string &Name, unique_ptr<ExpressionNode> Expr)
       : Name(Name), Expr(std::move(Expr)) {}
   bool shouldPrintValue() const override { return false; }
   Value *codegen() override;
 };
 
-/// ReturnExpressionNode - Statement-like expression for return.
-/// Emits a function return and produces the returned value.
-class ReturnExpressionNode : public ExpressionNode {
+/// ReturnStatementNode - Statement class for returning an expression's value.
+class ReturnStatementNode : public ExpressionNode {
   unique_ptr<ExpressionNode> Expr;
 
 public:
-  ReturnExpressionNode(unique_ptr<ExpressionNode> Expr) : Expr(std::move(Expr)) {}
-  bool isReturnExpr() const override { return true; }
+  ReturnStatementNode(unique_ptr<ExpressionNode> Expr) : Expr(std::move(Expr)) {}
+  bool isReturnStatement() const override { return true; }
   bool shouldPrintValue() const override { return false; }
   Value *codegen() override;
 };
 
-/// BlockExpressionNode - A sequence of statements evaluated in order.
-/// The block's value is the value of the last statement executed.
-class BlockExpressionNode : public ExpressionNode {
+/// BlockStatementNode - A sequence of statements evaluated in order.
+class BlockStatementNode : public ExpressionNode {
   vector<unique_ptr<ExpressionNode>> Stmts;
 
 public:
-  BlockExpressionNode(vector<unique_ptr<ExpressionNode>> Stmts) : Stmts(std::move(Stmts)) {}
+  BlockStatementNode(vector<unique_ptr<ExpressionNode>> Stmts) : Stmts(std::move(Stmts)) {}
+  bool shouldPrintValue() const override { return false; }
   Value *codegen() override;
 };
 
@@ -752,18 +713,18 @@ public:
   Value *codegen() override;
 };
 
-/// ForExpressionNode - Expression class for for loops.
+/// ForStatementNode - Statement class for for loops.
 ///   for <var> = <start>, <cond>, <step>: <body>
 /// The loop variable is in scope for <cond>, <step>, and <body> (through
-/// NamedValues). The expression always produces 0.0 — the loop is used for side
-/// effects.
-class ForExpressionNode : public ExpressionNode {
+/// NamedValues). Code generation produces 0.0 internally because the loop is
+/// used for side effects.
+class ForStatementNode : public ExpressionNode {
   string VarName;
   bool IsVarDecl;
   unique_ptr<ExpressionNode> Start, Cond, Step, Body;
 
 public:
-  ForExpressionNode(const string &VarName, bool IsVarDecl, unique_ptr<ExpressionNode> Start,
+  ForStatementNode(const string &VarName, bool IsVarDecl, unique_ptr<ExpressionNode> Start,
              unique_ptr<ExpressionNode> Cond, unique_ptr<ExpressionNode> Step,
              unique_ptr<ExpressionNode> Body)
       : VarName(VarName), IsVarDecl(IsVarDecl), Start(std::move(Start)),
@@ -772,11 +733,32 @@ public:
   Value *codegen() override;
 };
 
-/// UnaryExpressionNode - Expression class for a unary operator application.
-/// The operator is identified by its ASCII character (e.g. '-' or '!').
-/// Built-in unary minus is represented here with opcode '-' and lowered
-/// directly to LLVM `fneg`. All other unary operators are resolved as regular
-/// functions named "unary<op>" (e.g. "unary!") and called with the operand.
+/// WhileStatementNode - Statement class for while and do/while loops.
+class WhileStatementNode : public ExpressionNode {
+  unique_ptr<ExpressionNode> Cond, Body;
+  bool IsDoWhile;
+
+public:
+  WhileStatementNode(unique_ptr<ExpressionNode> Cond,
+                     unique_ptr<ExpressionNode> Body, bool IsDoWhile)
+      : Cond(std::move(Cond)), Body(std::move(Body)), IsDoWhile(IsDoWhile) {}
+  bool shouldPrintValue() const override { return false; }
+  Value *codegen() override;
+};
+
+class BreakStatementNode : public ExpressionNode {
+public:
+  bool shouldPrintValue() const override { return false; }
+  Value *codegen() override;
+};
+
+class ContinueStatementNode : public ExpressionNode {
+public:
+  bool shouldPrintValue() const override { return false; }
+  Value *codegen() override;
+};
+
+/// UnaryExpressionNode - Expression class for unary minus.
 class UnaryExpressionNode : public ExpressionNode {
   char Opcode;
   unique_ptr<ExpressionNode> Operand;
@@ -815,8 +797,8 @@ public:
 };
 
 /// FunctionSignatureNode - This class represents the "function signature" for a function,
-/// which captures its name, and its argument names (thus implicitly the number
-/// of arguments the function takes).
+/// which captures its name and parameter names (thus implicitly the number of
+/// parameters the function takes).
 ///
 class FunctionSignatureNode {
   string Name;
@@ -834,7 +816,7 @@ public:
   Function *codegen();
 };
 
-/// FunctionDefinitionNode - This class represents a function function-definition itself.
+/// FunctionDefinitionNode - This class represents a function definition itself.
 class FunctionDefinitionNode {
   unique_ptr<FunctionSignatureNode> Signature;
   unique_ptr<ExpressionNode> Body;
@@ -876,10 +858,9 @@ static std::map<std::string, std::unique_ptr<FunctionSignatureNode>> FunctionSig
 // Scopes are stacked: function scope plus nested block scopes.
 // for-loop variables are scoped to the loop body only.
 static vector<set<string>> VarScopes;
-// Global variables declared at top level (persist across modules).
 static set<string> GlobalVarNames;
-// True while parsing a top-level statement (var binds globals, not locals).
 static bool ParsingTopLevel = false;
+static int ParseLoopDepth = 0;
 
 struct TopLevelParseGuard {
   TopLevelParseGuard() { ParsingTopLevel = true; }
@@ -913,39 +894,17 @@ static void EndBlockScope() {
     VarScopes.pop_back();
 }
 
-// Check only the innermost scope (used for redeclaration checks).
-
-// Ensure a function scope exists, then add a new scope for the loop variable.
 static void BeginLoopScope(const string &Name) {
   VarScopes.emplace_back();
   VarScopes.back().insert(Name);
 }
 
-// Size == 1 is only popped for top-level blocks (function scope is popped in
-// EndFunctionScope).
 static void EndLoopScope() {
   if (VarScopes.size() > 1)
     VarScopes.pop_back();
-  if (ParsingTopLevel && VarScopes.size() == 1)
+  else if (ParsingTopLevel && VarScopes.size() == 1)
     VarScopes.pop_back();
 }
-
-struct FunctionScopeGuard {
-  FunctionScopeGuard(const vector<string> &Parameters) { BeginFunctionScope(Parameters); }
-  ~FunctionScopeGuard() { EndFunctionScope(); }
-};
-
-struct BlockScopeGuard {
-  BlockScopeGuard() { BeginBlockScope(); }
-  ~BlockScopeGuard() { EndBlockScope(); }
-};
-
-struct LoopScopeGuard {
-  LoopScopeGuard(const string &Name) { BeginLoopScope(Name); }
-  ~LoopScopeGuard() { EndLoopScope(); }
-};
-
-
 
 // Check only the innermost scope (used for redeclaration checks).
 static bool IsDeclaredInCurrentScope(const string &Name) {
@@ -973,10 +932,10 @@ void PrintReplPrompt() {
 
 /// Log - Write a diagnostic message to stderr in REPL mode only.
 /// Used by the Handle* functions to confirm what was parsed ("Parsed a
-/// function function-definition.", etc.). Silent when processing a script file so
+/// function definition.", etc.). Silent when processing a script file so
 /// that stdout/stderr output from the program itself is not cluttered.
 void Log(const string &message) {
-  if (IsRepl && ShouldDumpIR())
+  if (IsRepl)
     fprintf(stderr, "%s", message.c_str());
 }
 
@@ -1005,11 +964,29 @@ static unique_ptr<ExpressionNode> ParseStatement();
 static unique_ptr<ExpressionNode> ParseSimpleStatement();
 static unique_ptr<ExpressionNode> ParseBlock();
 static unique_ptr<ExpressionNode> ParseFunctionBody();
-
-
-static unsigned TopLevelExprCounter = 0;
-static bool LastTopLevelShouldPrint = true;
 static unique_ptr<ExpressionNode> ParseSuite();
+static unsigned TopLevelStatementCounter = 0;
+static bool LastTopLevelShouldPrint = true;
+
+struct FunctionScopeGuard {
+  FunctionScopeGuard(const vector<string> &Parameters) { BeginFunctionScope(Parameters); }
+  ~FunctionScopeGuard() { EndFunctionScope(); }
+};
+
+struct BlockScopeGuard {
+  BlockScopeGuard() { BeginBlockScope(); }
+  ~BlockScopeGuard() { EndBlockScope(); }
+};
+
+struct LoopScopeGuard {
+  LoopScopeGuard(const string &Name) { BeginLoopScope(Name); }
+  ~LoopScopeGuard() { EndLoopScope(); }
+};
+
+struct ParseLoopGuard {
+  ParseLoopGuard() { ++ParseLoopDepth; }
+  ~ParseLoopGuard() { --ParseLoopDepth; }
+};
 
 /// number-expression
 ///   = number ;
@@ -1111,7 +1088,7 @@ static bool ParseForParts(unique_ptr<ExpressionNode> &Start, unique_ptr<Expressi
   return true;
 }
 
-/// forstmt
+/// for-statement
 ///   = "for" [ "var" ] name "=" expression "," expression "," expression
 ///     ":" suite ;
 ///
@@ -1139,6 +1116,7 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
   }
 
   unique_ptr<ExpressionNode> Start, Cond, Step, Body;
+  ParseLoopGuard ParseLoop;
 
   unique_ptr<LoopScopeGuard> LoopScope;
   if (IsVarDecl)
@@ -1146,21 +1124,70 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
 
   if (!ParseForParts(Start, Cond, Step, Body))
     return nullptr;
-  return make_unique<ForExpressionNode>(VarName, IsVarDecl, std::move(Start),
+
+  // CurrentToken is tok_block_end (body was a block) or tok_eol (body was inline).
+  // The enclosing ParseBlock loop handles both without any extra boolean.
+  return make_unique<ForStatementNode>(VarName, IsVarDecl, std::move(Start),
                                  std::move(Cond), std::move(Step),
                                  std::move(Body));
 }
 
-/// varstmt
-///   = "var" varbinding { "," varbinding } ;
+/// while-statement
+///   = "while" expression ":" suite ;
+static unique_ptr<ExpressionNode> ParseWhileStatement() {
+  getNextToken(); // eat 'while'
+  auto Cond = ParseExpression();
+  if (!Cond)
+    return nullptr;
+  if (CurrentToken != tok_colon)
+    return LogErrorExpression("Expected ':' after while condition");
+  getNextToken(); // eat ':'
+
+  ParseLoopGuard Loop;
+  auto Body = ParseSuite();
+  if (!Body)
+    return nullptr;
+  return make_unique<WhileStatementNode>(std::move(Cond), std::move(Body),
+                                         false);
+}
+
+/// do-while-statement
+///   = "do" ":" suite [ end-of-lines ] "while" expression ;
+static unique_ptr<ExpressionNode> ParseDoWhileStatement() {
+  getNextToken(); // eat 'do'
+  if (CurrentToken != tok_colon)
+    return LogErrorExpression("Expected ':' after 'do'");
+  getNextToken(); // eat ':'
+
+  ParseLoopGuard Loop;
+  auto Body = ParseSuite();
+  if (!Body)
+    return nullptr;
+
+  if (CurrentToken == tok_block_end)
+    getNextToken();
+  if (CurrentToken == tok_eol)
+    consumeNewlines();
+  if (CurrentToken != tok_while)
+    return LogErrorExpression("Expected 'while' after do body");
+  getNextToken(); // eat 'while'
+
+  auto Cond = ParseExpression();
+  if (!Cond)
+    return nullptr;
+  return make_unique<WhileStatementNode>(std::move(Cond), std::move(Body), true);
+}
+
+/// variable-statement
+///   = "var" variable-binding { "," variable-binding } ;
 ///
-/// varbinding
+/// variable-binding
 ///   = name [ "=" expression ] ;
 static unique_ptr<ExpressionNode> ParseVarStatement() {
   getNextToken(); // eat 'var'
 
   vector<pair<string, unique_ptr<ExpressionNode>>> VarNames;
-  bool IsGlobalDecl = ParsingTopLevel;
+  bool IsGlobalDeclaration = ParsingTopLevel;
 
   while (true) {
     if (CurrentToken != tok_name)
@@ -1169,14 +1196,15 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
     string ParsedName = Name;
     getNextToken(); // eat name
 
-    if (IsGlobalDecl) {
+    if (IsGlobalDeclaration) {
       if (GlobalVarNames.count(ParsedName))
         return LogErrorExpression(
-            ("Variable '" + ParsedName + "' already declared in this scope").c_str());
-    } else {
-      if (IsDeclaredInCurrentScope(ParsedName))
-        return LogErrorExpression(
-            ("Variable '" + ParsedName + "' already declared in this scope").c_str());
+            ("Variable '" + ParsedName + "' already declared in this scope")
+                .c_str());
+    } else if (IsDeclaredInCurrentScope(ParsedName)) {
+      return LogErrorExpression(
+          ("Variable '" + ParsedName + "' already declared in this scope")
+              .c_str());
     }
 
     unique_ptr<ExpressionNode> Init;
@@ -1190,7 +1218,7 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
     }
 
     VarNames.push_back({ParsedName, std::move(Init)});
-    if (IsGlobalDecl)
+    if (IsGlobalDeclaration)
       GlobalVarNames.insert(ParsedName);
     else
       DeclareVar(ParsedName);
@@ -1203,28 +1231,41 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
   return make_unique<VarStatementNode>(std::move(VarNames));
 }
 
-/// ifstmt
-///   = "if" expression ":" suite [ end-of-lines "else" ":" suite ] ;
+/// if-statement
+///   = "if" expression ":" suite
+///     { [ end-of-lines ] "elif" expression ":" suite }
+///     [ [ end-of-lines ] "else" ":" suite ] ;
 static unique_ptr<ExpressionNode> ParseIfStatement() {
   getNextToken(); // eat 'if'
-  auto Cond = ParseExpression();
-  if (!Cond)
-    return nullptr;
+  vector<pair<unique_ptr<ExpressionNode>, unique_ptr<ExpressionNode>>> Branches;
+  bool LastBranchWasBlock = false;
+  bool LastBranchHadTrailingEol = false;
 
-  if (CurrentToken != tok_colon)
-    return LogErrorExpression("Expected ':' after if condition");
-  getNextToken(); // eat ':'
+  while (true) {
+    auto Cond = ParseExpression();
+    if (!Cond)
+      return nullptr;
 
-  unique_ptr<ExpressionNode> Then = ParseSuite();
-  if (!Then)
-    return nullptr;
+    if (CurrentToken != tok_colon)
+      return LogErrorExpression("Expected ':' after if/elif condition");
+    getNextToken(); // eat ':'
 
-  bool ThenWasBlock = (CurrentToken == tok_block_end);
-  if (ThenWasBlock)
-    getNextToken();
+    auto Body = ParseSuite();
+    if (!Body)
+      return nullptr;
 
-  // Allow 'else' on next line.
-  consumeNewlines();
+    LastBranchWasBlock = (CurrentToken == tok_block_end);
+    if (LastBranchWasBlock)
+      getNextToken();
+    LastBranchHadTrailingEol = (CurrentToken == tok_eol);
+
+    Branches.push_back({std::move(Cond), std::move(Body)});
+    consumeNewlines();
+
+    if (CurrentToken != tok_elif)
+      break;
+    getNextToken(); // eat 'elif'
+  }
 
   unique_ptr<ExpressionNode> Else;
   if (CurrentToken == tok_else) {
@@ -1235,31 +1276,36 @@ static unique_ptr<ExpressionNode> ParseIfStatement() {
     Else = ParseSuite();
     if (!Else)
       return nullptr;
-  } else if (ThenWasBlock) {
-    // No else: restore the synthetic separator for the enclosing block/top level.
-    PendingTokens.push_front(CurrentToken);
-    CurrentToken = tok_block_end;
+    // CurrentToken is now tok_block_end (else was a block) or tok_eol (inline).
+    // Either is the right signal for the enclosing ParseBlock loop.
+  } else if (LastBranchWasBlock) {
+    // No else, but the last branch ended with a block. Re-inject tok_block_end so the
+    // enclosing ParseBlock loop knows no tok_eol separator is coming.
+    // Save the token we already advanced to so it is not lost.
+    PendingTokens.push_front(CurrentToken); // push back current lookahead
+    CurrentToken = tok_block_end;           // restore the block-end signal directly
+  } else if (LastBranchHadTrailingEol) {
+    // No else, and the last branch was an inline statement that ended at a newline.
+    // consumeNewlines() above swallowed that newline while probing for
+    // 'else' — restore one tok_eol so the enclosing ParseBlock loop still
+    // sees a valid separator before the next statement.
+    PendingTokens.push_front(CurrentToken); // push back current lookahead
+    CurrentToken = tok_eol;                 // restore the separator directly
   }
 
-  return make_unique<IfStatementNode>(std::move(Cond), std::move(Then),
-                                std::move(Else));
+  // I lower the chain to nested IfStatementNodes in the else branch.
+  unique_ptr<ExpressionNode> Tree = std::move(Else);
+  for (auto It = Branches.rbegin(); It != Branches.rend(); ++It) {
+    Tree = make_unique<IfStatementNode>(std::move(It->first),
+                                        std::move(It->second), std::move(Tree));
+  }
+  return Tree;
 }
 
-static unique_ptr<ExpressionNode>
-ParseUnary(); // forward declaration for ParseUnaryMinus
-
-/// unaryminus
-///   = "-" unaryexpr ;
-/// Parse built-in unary minus into a UnaryExpressionNode with opcode '-'.
-/// The operand is a full unaryexpr so unary chains work naturally
-/// (e.g. -!x, --x, -(x+1)).
-static unique_ptr<ExpressionNode> ParseUnaryMinus() {
-  getNextToken(); // eat '-'
-  auto Operand = ParseUnary();
-  if (!Operand)
-    return nullptr;
-  return make_unique<UnaryExpressionNode>(tok_minus, std::move(Operand));
-}
+/// factor
+///   = "-" factor
+///   | primary ;
+static unique_ptr<ExpressionNode> ParseFactor();
 
 /// primary
 ///   = name-expression
@@ -1278,25 +1324,31 @@ static unique_ptr<ExpressionNode> ParsePrimary() {
   }
 }
 
-/// unary-expression
-///   = "-" unary-expression
+/// factor
+///   = "-" factor
 ///   | primary ;
-static unique_ptr<ExpressionNode> ParseUnary() {
-  if (CurrentToken == tok_minus)
-    return ParseUnaryMinus();
+static unique_ptr<ExpressionNode> ParseFactor() {
+  if (CurrentToken == tok_minus) {
+    getNextToken(); // eat '-'
+    auto Operand = ParseFactor();
+    if (!Operand)
+      return nullptr;
+    return make_unique<UnaryExpressionNode>(tok_minus, std::move(Operand));
+  }
   return ParsePrimary();
 }
 
 /// term
-///   = unary-expression { ("*" | "/") unary-expression } ;
+///   = factor { ("*" | "/" | "%") factor } ;
 static unique_ptr<ExpressionNode> ParseTerm() {
-  auto Left = ParseUnary();
+  auto Left = ParseFactor();
   if (!Left)
     return nullptr;
-  while (CurrentToken == tok_star || CurrentToken == tok_slash) {
+  while (CurrentToken == tok_star || CurrentToken == tok_slash ||
+         CurrentToken == tok_percent) {
     int Operator = CurrentToken;
     getNextToken();
-    auto Right = ParseUnary();
+    auto Right = ParseFactor();
     if (!Right)
       return nullptr;
     Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
@@ -1349,16 +1401,36 @@ static unique_ptr<ExpressionNode> ParseExpression() {
   return ParseComparison();
 }
 
-/// returnstmt
+/// return-statement
 ///   = "return" expression ;
 static unique_ptr<ExpressionNode> ParseReturnStatement() {
   getNextToken(); // eat 'return'
   auto Expr = ParseExpression();
   if (!Expr)
     return nullptr;
-  return make_unique<ReturnExpressionNode>(std::move(Expr));
+  return make_unique<ReturnStatementNode>(std::move(Expr));
 }
 
+/// break-statement
+///   = "break" ;
+static unique_ptr<ExpressionNode> ParseBreakStatement() {
+  if (ParseLoopDepth <= 0)
+    return LogErrorExpression("'break' used outside of a loop");
+  getNextToken(); // eat 'break'
+  return make_unique<BreakStatementNode>();
+}
+
+/// continue-statement
+///   = "continue" ;
+static unique_ptr<ExpressionNode> ParseContinueStatement() {
+  if (ParseLoopDepth <= 0)
+    return LogErrorExpression("'continue' used outside of a loop");
+  getNextToken(); // eat 'continue'
+  return make_unique<ContinueStatementNode>();
+}
+
+/// assignment-statement
+///   = lvalue "=" expression ;
 static unique_ptr<ExpressionNode> ParseAssignmentRight(const string &Name) {
   if (!IsDeclaredVar(Name))
     return LogErrorExpression("Assignment to undeclared variable");
@@ -1367,7 +1439,7 @@ static unique_ptr<ExpressionNode> ParseAssignmentRight(const string &Name) {
   auto Right = ParseExpression();
   if (!Right)
     return nullptr;
-  return make_unique<AssignmentExpressionNode>(Name, std::move(Right));
+  return make_unique<AssignmentStatementNode>(Name, std::move(Right));
 }
 
 
@@ -1387,7 +1459,7 @@ static unique_ptr<ExpressionNode> ParseLeadingNameSimpleStatement() {
   return ParseAssignmentRight(*AssignedName);
 }
 
-// Parse non-name-leading expression forms for simplestmt and reject a
+// Parse non-name-leading expression forms for simple-statement and reject a
 // trailing '=' so assignment diagnostics stay local and specific.
 static unique_ptr<ExpressionNode> ParseNonLeadingNameSimpleStatement() {
   auto Expr = ParseExpression();
@@ -1401,12 +1473,16 @@ static unique_ptr<ExpressionNode> ParseNonLeadingNameSimpleStatement() {
 }
 
 
-/// simplestmt
-///   = returnstmt | varstmt | assignstmt | expression ;
+/// simple-statement
+///   = return-statement | break-statement | continue-statement
+///   | variable-statement | assignment-statement | expression ;
 static unique_ptr<ExpressionNode> ParseSimpleStatement() {
-  // simplestmt = returnstmt | varstmt | assignstmt | expression
   if (CurrentToken == tok_return)
     return ParseReturnStatement();
+  if (CurrentToken == tok_break)
+    return ParseBreakStatement();
+  if (CurrentToken == tok_continue)
+    return ParseContinueStatement();
   if (CurrentToken == tok_var)
     return ParseVarStatement();
   if (CurrentToken == tok_name)
@@ -1415,39 +1491,45 @@ static unique_ptr<ExpressionNode> ParseSimpleStatement() {
 }
 
 /// statement
-///   = simplestmt | compoundstmt ;
+///   = simple-statement | compound-statement ;
 static unique_ptr<ExpressionNode> ParseStatement() {
   if (CurrentToken == tok_if)
     return ParseIfStatement();
   if (CurrentToken == tok_for)
     return ParseForStatement();
+  if (CurrentToken == tok_while)
+    return ParseWhileStatement();
+  if (CurrentToken == tok_do)
+    return ParseDoWhileStatement();
   return ParseSimpleStatement();
 }
 
 /// suite
-///   = simplestmt | compoundstmt | end-of-lines block ;
+///   = simple-statement | compound-statement | end-of-lines block ;
 static unique_ptr<ExpressionNode> ParseSuite() {
   if (CurrentToken == tok_eol) {
     consumeNewlines();
     if (CurrentToken != tok_indent)
       return LogErrorExpression("Expected an indented block");
-    return ParseBlock();
+    return ParseBlock(); // CurrentToken = tok_block_end on return
   }
 
   if (CurrentToken == tok_indent)
-    return ParseBlock();
+    return ParseBlock(); // CurrentToken = tok_block_end on return
 
   return ParseStatement();
 }
 
 /// block
-///   = INDENT statement { stmtsep statement } DEDENT ;
+///   = indent statement { statement-separator statement } dedent ;
 static unique_ptr<ExpressionNode> ParseBlock() {
   if (CurrentToken != tok_indent)
     return LogErrorExpression("Expected an indented block");
   getNextToken(); // eat INDENT
 
   BlockScopeGuard Scope;
+
+  consumeNewlines();
 
   if (CurrentToken == tok_dedent)
     return LogErrorExpression("Expected at least one statement in block");
@@ -1468,13 +1550,15 @@ static unique_ptr<ExpressionNode> ParseBlock() {
       continue;
     }
 
+    if (CurrentToken == tok_dedent)
+      break;
+
     if (CurrentToken == tok_block_end) {
+      // A nested block just closed. No tok_eol separates it from the next
+      // statement; consume the marker and continue.
       getNextToken();
       continue;
     }
-
-    if (CurrentToken == tok_dedent)
-      break;
 
     return LogErrorExpression("Expected newline or end of block");
   }
@@ -1482,17 +1566,16 @@ static unique_ptr<ExpressionNode> ParseBlock() {
   if (CurrentToken != tok_dedent)
     return LogErrorExpression("Expected end of block");
 
-  // Consume DEDENT, but leave a synthetic separator visible to the enclosing
-  // parser so it can distinguish "a nested block just ended" from arbitrary
-  // trailing tokens without threading boolean state through every parser call.
+  // Inject tok_block_end before advancing past DEDENT so that callers see it
+  // as CurrentToken on return, removing the need for any BlockJustEnded boolean.
   PendingTokens.push_front(tok_block_end);
-  getNextToken(); // eat DEDENT, then surface tok_block_end
+  getNextToken(); // -> CurrentToken = tok_block_end
 
-  return make_unique<BlockExpressionNode>(std::move(Stmts));
+  return make_unique<BlockStatementNode>(std::move(Stmts));
 }
 
 /// function-signature
-///   = name "(" [ name { "," name } ] ")" ;
+///   = name "(" [ parameters ] ")" ;
 static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
   if (CurrentToken != tok_name)
     return LogErrorSignature("Expected function name in function signature");
@@ -1502,7 +1585,7 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
   if (CurrentToken != tok_lparen)
     return LogErrorSignature("Expected '(' in function signature");
 
-  // Parse argument names. The loop calls getNextToken() at the top to advance
+  // Parse parameter names. The loop calls getNextToken() at the top to advance
   // past '(' on the first iteration, and past ',' on subsequent ones.
   // Inside the body we call getNextToken() again to move past the name
   // we just stored, then check whether ')' or ',' follows.
@@ -1524,20 +1607,22 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
   return make_unique<FunctionSignatureNode>(FnName, std::move(ParameterNames));
 }
 
-/// functionbody
-///   = simplestmt | end-of-lines block ;
+/// I parse either an inline simple statement or an indented block as a
+/// function body.
 static unique_ptr<ExpressionNode> ParseFunctionBody() {
   if (CurrentToken == tok_eol) {
     consumeNewlines();
     if (CurrentToken != tok_indent)
       return LogErrorExpression("Expected an indented block");
-    return ParseBlock();
+    return ParseBlock(); // CurrentToken = tok_block_end on return
   }
 
   return ParseSimpleStatement();
 }
 
 /// function-definition
+///   = "def" function-signature ":"
+///     ( simple-statement | end-of-lines block ) ;
 static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
   getNextToken(); // eat 'def'
   auto Signature = ParseFunctionSignature();
@@ -1548,43 +1633,40 @@ static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
   if (CurrentToken != tok_colon)
     return LogErrorFunction("Expected ':' in function definition");
   getNextToken(); // eat ':'
-  unique_ptr<ExpressionNode> Body = ParseFunctionBody();
 
-  if (Body) {
+  unique_ptr<ExpressionNode> Body = ParseFunctionBody();
+  if (Body)
     return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(Body));
-  }
   return nullptr;
 }
 
-/// toplevelstmt
+/// top-level-statement
 ///   = statement ;
 static unique_ptr<ExpressionNode> ParseTopLevelStatement() {
   TopLevelParseGuard Guard;
-  auto Stmt = ParseStatement();
-  if (!Stmt)
+  auto Statement = ParseStatement();
+  if (!Statement)
     return nullptr;
-  LastTopLevelShouldPrint = Stmt->shouldPrintValue();
-  return Stmt;
+  LastTopLevelShouldPrint = Statement->shouldPrintValue();
+  return Statement;
 }
 
-
-/// top-level-expression
-///   = statement
-/// A top-level statement (e.g. "1 + 2", "var x = 1", "if ...") is wrapped in
-/// an anonymous function so it fits the same FunctionDefinitionNode shape as everything
-/// else. HandleTopLevelExpression compiles it into the JIT, calls it to get
-/// the numeric result, then removes it from the JIT via a ResourceTracker.
-static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
-  auto Stmt = ParseTopLevelStatement();
-  if (!Stmt)
+/// I wrap a top-level statement in a uniquely named zero-parameter function
+/// so I can compile and execute it through the same path as a definition.
+static unique_ptr<FunctionDefinitionNode> ParseTopLevelStatementFunction() {
+  auto Statement = ParseTopLevelStatement();
+  if (!Statement)
     return nullptr;
 
-  if (!Stmt->isReturnExpr())
-    Stmt = make_unique<ReturnExpressionNode>(std::move(Stmt));
+  if (!Statement->isReturnStatement())
+    Statement = make_unique<ReturnStatementNode>(std::move(Statement));
 
-  string FnName = "__pyxc.toplevel." + to_string(TopLevelExprCounter++);
-  auto Signature = make_unique<FunctionSignatureNode>(FnName, vector<string>());
-  return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(Stmt));
+  string FunctionName =
+      "__pyxc.toplevel." + to_string(TopLevelStatementCounter++);
+  auto Signature =
+      make_unique<FunctionSignatureNode>(FunctionName, vector<string>());
+  return make_unique<FunctionDefinitionNode>(std::move(Signature),
+                                             std::move(Statement));
 }
 
 /// external
@@ -1640,6 +1722,11 @@ static std::unique_ptr<IRBuilder<>> Builder;
 static std::map<std::string, AllocaInst *> NamedValues;
 static bool InGlobalInit = false;
 static bool ModuleHasGlobals = false;
+struct LoopControlTargets {
+  BasicBlock *BreakTarget = nullptr;
+  BasicBlock *ContinueTarget = nullptr;
+};
+static vector<LoopControlTargets> LoopControlStack;
 static std::unique_ptr<PyxcJIT> TheJIT;
 static std::unique_ptr<FunctionPassManager> TheFPM;
 static std::unique_ptr<LoopAnalysisManager> TheLAM;
@@ -1647,12 +1734,26 @@ static std::unique_ptr<FunctionAnalysisManager> TheFAM;
 static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
 static std::unique_ptr<ModuleAnalysisManager> TheMAM;
 static ExitOnError ExitOnErr;
+static vector<unique_ptr<ExpressionNode>> FileTopLevelStatements;
 
 /// LogErrorV - Codegen-level error helper. Delegates to LogErrorExpression for printing,
 /// then returns nullptr so codegen callers can write: return LogErrorV("msg");
 Value *LogErrorV(const char *Str) {
   LogErrorExpression(Str);
   return nullptr;
+}
+
+/// GetGlobalVariable - Return the definition or a module-local declaration for
+/// a known global variable.
+static GlobalVariable *GetGlobalVariable(const string &Name) {
+  if (auto *Global = TheModule->getNamedGlobal(Name))
+    return Global;
+
+  if (!GlobalVarNames.count(Name))
+    return nullptr;
+
+  return new GlobalVariable(*TheModule, Type::getDoubleTy(*TheContext), false,
+                            GlobalValue::ExternalLinkage, nullptr, Name);
 }
 
 /// CreateEntryBlockAlloca - Create a stack slot in the current function's
@@ -1662,23 +1763,6 @@ static AllocaInst *CreateEntryBlockAlloca(Function *TheFunction,
   IRBuilder<> TmpB(&TheFunction->getEntryBlock(),
                    TheFunction->getEntryBlock().begin());
   return TmpB.CreateAlloca(Type::getDoubleTy(*TheContext), nullptr, VarName);
-}
-
-/// GetGlobalVariable - Return a module-local GlobalVariable* for Name.
-///
-/// If the global is defined in this module, returns it. If the global exists
-/// in another module (tracked by GlobalVarNames), emit a declaration in the
-/// current module and return that. Returns nullptr if the name is unknown.
-static GlobalVariable *GetGlobalVariable(const string &Name) {
-  if (auto *GV = TheModule->getNamedGlobal(Name))
-    return GV;
-
-  if (!GlobalVarNames.count(Name))
-    return nullptr;
-
-  auto *Ty = Type::getDoubleTy(*TheContext);
-  return new GlobalVariable(*TheModule, Ty, false, GlobalValue::ExternalLinkage,
-                            nullptr, Name);
 }
 
 /// getFunction - Resolve a function name to an LLVM Function* in the current
@@ -1723,36 +1807,36 @@ Value *NameExpressionNode::codegen() {
     return Builder->CreateLoad(Type::getDoubleTy(*TheContext), It->second,
                                Name.c_str());
 
-  if (auto *GV = GetGlobalVariable(Name))
-    return Builder->CreateLoad(Type::getDoubleTy(*TheContext), GV,
+  if (auto *Global = GetGlobalVariable(Name))
+    return Builder->CreateLoad(Type::getDoubleTy(*TheContext), Global,
                                Name.c_str());
 
   return LogErrorV("Unknown variable name");
 }
 
-/// AssignmentExpressionNode::codegen - Evaluate the Right, store it into the variable's
+/// AssignmentStatementNode::codegen - Evaluate the Right, store it into the variable's
 /// stack slot, and produce the assigned value.
-Value *AssignmentExpressionNode::codegen() {
-  Value *Val = Expr->codegen();
-  if (!Val)
+Value *AssignmentStatementNode::codegen() {
+  Value *Value = Expr->codegen();
+  if (!Value)
     return nullptr;
 
   auto It = NamedValues.find(Name);
   if (It != NamedValues.end() && It->second) {
-    Builder->CreateStore(Val, It->second);
-    return Val;
+    Builder->CreateStore(Value, It->second);
+    return Value;
   }
 
-  if (auto *GV = GetGlobalVariable(Name)) {
-    Builder->CreateStore(Val, GV);
-    return Val;
+  if (auto *Global = GetGlobalVariable(Name)) {
+    Builder->CreateStore(Value, Global);
+    return Value;
   }
 
   return LogErrorV("Unknown variable name");
 }
 
-/// ReturnExpressionNode::codegen - Emit a return from the current function.
-Value *ReturnExpressionNode::codegen() {
+/// ReturnStatementNode::codegen - Emit a return from the current function.
+Value *ReturnStatementNode::codegen() {
   Value *RetVal = Expr->codegen();
   if (!RetVal)
     return nullptr;
@@ -1761,10 +1845,10 @@ Value *ReturnExpressionNode::codegen() {
   return RetVal;
 }
 
-/// BlockExpressionNode::codegen - Evaluate statements in order.
+/// BlockStatementNode::codegen - Evaluate statements in order.
 /// Saves and restores NamedValues to implement block scoping: variables
 /// declared inside the block are not visible after it exits.
-Value *BlockExpressionNode::codegen() {
+Value *BlockStatementNode::codegen() {
   auto SavedBindings = NamedValues;
 
   Value *Last = nullptr;
@@ -1823,6 +1907,8 @@ Value *BinaryExpressionNode::codegen() {
     return Builder->CreateFMul(L, R, "multmp");
   case tok_slash:
     return Builder->CreateFDiv(L, R, "divtmp");
+  case tok_percent:
+    return Builder->CreateFRem(L, R, "remtmp");
   case tok_less:
     L = Builder->CreateFCmpOLT(L, R, "cmptmp");
     // Widen the i1 boolean to double: false -> 0.0, true -> 1.0.
@@ -1925,26 +2011,26 @@ Value *IfStatementNode::codegen() {
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
-/// ForExpressionNode::codegen - Emit LLVM IR for a for-expression using a mutable
+/// ForStatementNode::codegen - Emit LLVM IR for a for statement using a mutable
 /// stack slot for the loop variable.
-Value *ForExpressionNode::codegen() {
+Value *ForStatementNode::codegen() {
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
 
-  Value *VarPtr = nullptr;
+  Value *VariablePointer = nullptr;
   AllocaInst *Alloca = nullptr;
   AllocaInst *OldVal = nullptr;
   if (IsVarDecl) {
     auto OldIt = NamedValues.find(VarName);
     OldVal = (OldIt != NamedValues.end()) ? OldIt->second : nullptr;
     Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
-    VarPtr = Alloca;
+    VariablePointer = Alloca;
     NamedValues[VarName] = Alloca;
   } else {
     auto It = NamedValues.find(VarName);
     if (It != NamedValues.end() && It->second)
-      VarPtr = It->second;
-    else if (auto *GV = GetGlobalVariable(VarName))
-      VarPtr = GV;
+      VariablePointer = It->second;
+    else if (auto *Global = GetGlobalVariable(VarName))
+      VariablePointer = Global;
     else
       return LogErrorV("Unknown variable name");
   }
@@ -1953,19 +2039,20 @@ Value *ForExpressionNode::codegen() {
   if (!StartVal)
     return nullptr;
 
-  Builder->CreateStore(StartVal, VarPtr);
+  Builder->CreateStore(StartVal, VariablePointer);
 
   BasicBlock *CondBB =
       BasicBlock::Create(*TheContext, "loop_cond", TheFunction);
   BasicBlock *BodyBB =
       BasicBlock::Create(*TheContext, "loop_body", TheFunction);
+  BasicBlock *StepBB =
+      BasicBlock::Create(*TheContext, "loop_step", TheFunction);
   BasicBlock *AfterBB =
       BasicBlock::Create(*TheContext, "after_loop", TheFunction);
 
   Builder->CreateBr(CondBB);
 
   Builder->SetInsertPoint(CondBB);
-
 
   Value *CondVal = Cond->codegen();
   if (!CondVal)
@@ -1975,17 +2062,29 @@ Value *ForExpressionNode::codegen() {
   Builder->CreateCondBr(CondVal, BodyBB, AfterBB);
 
   Builder->SetInsertPoint(BodyBB);
+  LoopControlStack.push_back({AfterBB, StepBB});
 
-  if (!Body->codegen())
+  if (!Body->codegen()) {
+    LoopControlStack.pop_back();
     return nullptr;
+  }
+  LoopControlStack.pop_back();
+  // BlockStatementNode restores NamedValues when the body finishes, but the loop
+  // variable's alloca remains valid. We use the alloca directly for the step.
+
+  if (!Builder->GetInsertBlock()->getTerminator())
+    Builder->CreateBr(StepBB);
+
+  Builder->SetInsertPoint(StepBB);
 
   Value *CurVar =
-      Builder->CreateLoad(Type::getDoubleTy(*TheContext), VarPtr, VarName);
+      Builder->CreateLoad(Type::getDoubleTy(*TheContext), VariablePointer,
+                          VarName);
   Value *StepVal = Step->codegen();
   if (!StepVal)
     return nullptr;
   Value *NextVar = Builder->CreateFAdd(CurVar, StepVal, "nextvar");
-  Builder->CreateStore(NextVar, VarPtr);
+  Builder->CreateStore(NextVar, VariablePointer);
   Builder->CreateBr(CondBB);
 
   Builder->SetInsertPoint(AfterBB);
@@ -2000,34 +2099,95 @@ Value *ForExpressionNode::codegen() {
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
+Value *WhileStatementNode::codegen() {
+  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+  BasicBlock *CondBB =
+      BasicBlock::Create(*TheContext, "while_cond", TheFunction);
+  BasicBlock *BodyBB =
+      BasicBlock::Create(*TheContext, "while_body", TheFunction);
+  BasicBlock *AfterBB =
+      BasicBlock::Create(*TheContext, "while_after", TheFunction);
+
+  Builder->CreateBr(IsDoWhile ? BodyBB : CondBB);
+
+  if (!IsDoWhile) {
+    Builder->SetInsertPoint(CondBB);
+    Value *ConditionValue = Cond->codegen();
+    if (!ConditionValue)
+      return nullptr;
+    ConditionValue = Builder->CreateFCmpONE(
+        ConditionValue, ConstantFP::get(*TheContext, APFloat(0.0)),
+        "whilecond");
+    Builder->CreateCondBr(ConditionValue, BodyBB, AfterBB);
+  }
+
+  Builder->SetInsertPoint(BodyBB);
+  LoopControlStack.push_back({AfterBB, CondBB});
+  if (!Body->codegen()) {
+    LoopControlStack.pop_back();
+    return nullptr;
+  }
+  LoopControlStack.pop_back();
+  if (!Builder->GetInsertBlock()->getTerminator())
+    Builder->CreateBr(CondBB);
+
+  Builder->SetInsertPoint(CondBB);
+  if (IsDoWhile) {
+    Value *ConditionValue = Cond->codegen();
+    if (!ConditionValue)
+      return nullptr;
+    ConditionValue = Builder->CreateFCmpONE(
+        ConditionValue, ConstantFP::get(*TheContext, APFloat(0.0)),
+        "dowhilecond");
+    Builder->CreateCondBr(ConditionValue, BodyBB, AfterBB);
+  }
+
+  Builder->SetInsertPoint(AfterBB);
+  return ConstantFP::get(*TheContext, APFloat(0.0));
+}
+
+Value *BreakStatementNode::codegen() {
+  if (LoopControlStack.empty())
+    return LogErrorV("'break' used outside of a loop");
+  Builder->CreateBr(LoopControlStack.back().BreakTarget);
+  return ConstantFP::get(*TheContext, APFloat(0.0));
+}
+
+Value *ContinueStatementNode::codegen() {
+  if (LoopControlStack.empty())
+    return LogErrorV("'continue' used outside of a loop");
+  Builder->CreateBr(LoopControlStack.back().ContinueTarget);
+  return ConstantFP::get(*TheContext, APFloat(0.0));
+}
+
 /// VarStatementNode::codegen - Allocate mutable local variables and initialize them.
 Value *VarStatementNode::codegen() {
   if (InGlobalInit) {
     for (auto &Var : VarNames) {
       const string &VarName = Var.first;
-      ExpressionNode *Init = Var.second.get();
+      ExpressionNode *Initializer = Var.second.get();
 
-      auto *GV = TheModule->getNamedGlobal(VarName);
-      if (GV && !GV->isDeclaration())
+      auto *Global = TheModule->getNamedGlobal(VarName);
+      if (Global && !Global->isDeclaration())
         return LogErrorV("Global variable already defined");
 
-      if (!GV) {
-        auto *Ty = Type::getDoubleTy(*TheContext);
-        GV = new GlobalVariable(
-            *TheModule, Ty, false, GlobalValue::ExternalLinkage,
+      if (!Global) {
+        Global = new GlobalVariable(
+            *TheModule, Type::getDoubleTy(*TheContext), false,
+            GlobalValue::ExternalLinkage,
             ConstantFP::get(*TheContext, APFloat(0.0)), VarName);
-      } else if (GV->isDeclaration()) {
-        GV->setInitializer(ConstantFP::get(*TheContext, APFloat(0.0)));
-        GV->setLinkage(GlobalValue::ExternalLinkage);
+      } else {
+        Global->setInitializer(
+            ConstantFP::get(*TheContext, APFloat(0.0)));
+        Global->setLinkage(GlobalValue::ExternalLinkage);
       }
 
       ModuleHasGlobals = true;
 
-      Value *InitVal = Init->codegen();
-      if (!InitVal)
+      Value *InitialValue = Initializer->codegen();
+      if (!InitialValue)
         return nullptr;
-
-      Builder->CreateStore(InitVal, GV);
+      Builder->CreateStore(InitialValue, Global);
     }
 
     return ConstantFP::get(*TheContext, APFloat(0.0));
@@ -2079,7 +2239,7 @@ Function *FunctionSignatureNode::codegen() {
   return F;
 }
 
-/// FunctionDefinitionNode::codegen - Generate IR for a complete function function-definition.
+/// FunctionDefinitionNode::codegen - Generate IR for a complete function definition.
 ///
 /// Four steps:
 ///
@@ -2125,6 +2285,7 @@ Function *FunctionDefinitionNode::codegen() {
 
   // Step 3: populate NamedValues with entry-block allocas for each argument.
   NamedValues.clear();
+  LoopControlStack.clear();
   for (auto &Arg : TheFunction->args()) {
     AllocaInst *Alloca =
         CreateEntryBlockAlloca(TheFunction, std::string(Arg.getName()));
@@ -2156,22 +2317,6 @@ Function *FunctionDefinitionNode::codegen() {
 // Top-Level parsing and JIT Driver
 //===----------------------------------------===//
 
-static vector<unique_ptr<ExpressionNode>> FileTopLevelStmts;
-
-/// ResetParserStateForFile - Clear parser/compiler state between input files.
-///
-/// Multi-file compilation emits each source into its own module, so symbols,
-/// globals, and top-level statements should not leak across files.
-static void ResetParserStateForFile() {
-  FunctionSignatures.clear();
-  GlobalVarNames.clear();
-  VarScopes.clear();
-  FileTopLevelStmts.clear();
-  LastTopLevelShouldPrint = true;
-  InGlobalInit = false;
-  ModuleHasGlobals = false;
-}
-
 /// InitializeModuleAndManagers - Create a fresh module, IR builder, and
 /// optimisation pipeline.
 ///
@@ -2193,10 +2338,9 @@ static void ResetParserStateForFile() {
 ///
 /// The analysis managers are cross-registered so that a function pass that
 /// needs loop information can reach TheLAM, and so on.
-static void InitializeModuleAndManagers(bool FreshContext = true) {
+static void InitializeModuleAndManagers() {
   // Fresh context and module for this compilation unit.
-  if (FreshContext || !TheContext)
-    TheContext = std::make_unique<LLVMContext>();
+  TheContext = std::make_unique<LLVMContext>();
   TheModule = std::make_unique<Module>("PyxcJIT", *TheContext);
   // Inform the module of the JIT's target data layout so codegen emits
   // correctly-sized types for the host machine.
@@ -2238,7 +2382,8 @@ static void InitializeModuleAndManagers(bool FreshContext = true) {
 /// and after any unexpected trailing token, ensuring the REPL always returns
 /// to a clean state before printing the next prompt.
 static void SynchronizeToLineBoundary() {
-  while (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_dedent)
+  while (CurrentToken != tok_eol && CurrentToken != tok_eof &&
+         CurrentToken != tok_dedent && CurrentToken != tok_block_end)
     getNextToken();
 }
 
@@ -2252,24 +2397,23 @@ static void SynchronizeToLineBoundary() {
 /// accessible in the JIT's symbol table for the rest of the session.
 /// On parse failure or unexpected trailing tokens: discard the line.
 static void HandleFunctionDefinition() {
-  auto FnAST = ParseFunctionDefinition();
-  bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
-  if (!FnAST || HasTrailing) {
-    if (FnAST)
+  auto FunctionDefinition = ParseFunctionDefinition();
+  bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof &&
+                      CurrentToken != tok_block_end);
+  if (!FunctionDefinition || HasTrailing) {
+    if (FunctionDefinition)
       LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
   }
-  if (auto *FnIR = FnAST->codegen()) {
+  if (auto *FunctionIR = FunctionDefinition->codegen()) {
     Log("Parsed a function definition.\n");
-    if (ShouldDumpIR())
-      FnIR->print(errs());
-    if (!IsEmitMode()) {
-      // Transfer the module to the JIT. TheModule is now invalid; reinitialise.
-      ExitOnErr(TheJIT->addModule(
-          ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
-      InitializeModuleAndManagers();
-    }
+    if (VerboseIR)
+      FunctionIR->print(errs());
+    // Transfer the module to the JIT. TheModule is now invalid; reinitialise.
+    ExitOnErr(TheJIT->addModule(
+        ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
+    InitializeModuleAndManagers();
   }
 }
 
@@ -2282,10 +2426,10 @@ static void HandleFunctionDefinition() {
 /// 'declare' in whichever module needs to call the extern.
 /// On parse failure or unexpected trailing tokens: discard the line.
 static void HandleExtern() {
-  auto ProtoAST = ParseExtern();
+  auto Signature = ParseExtern();
 
-  if (!ProtoAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
-    if (ProtoAST)
+  if (!Signature || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
+    if (Signature)
       LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
@@ -2293,117 +2437,96 @@ static void HandleExtern() {
 
   // Reject conflicting redeclarations: in Pyxc, function identity is just
   // name + arity, since all parameter and return types are double.
-  auto Existing = FunctionSignatures.find(ProtoAST->getName());
+  auto Existing = FunctionSignatures.find(Signature->getName());
   if (Existing != FunctionSignatures.end() &&
-      Existing->second->getNumParameters() != ProtoAST->getNumParameters()) {
+      Existing->second->getNumParameters() != Signature->getNumParameters()) {
     LogErrorExpression((string("Conflicting extern declaration for '") +
-              ProtoAST->getName() + "'")
+              Signature->getName() + "'")
                  .c_str());
     SynchronizeToLineBoundary();
     return;
   }
 
-  if (auto *FnIR = ProtoAST->codegen()) {
+  if (auto *FunctionIR = Signature->codegen()) {
     Log("Parsed an extern.\n");
-    if (ShouldDumpIR())
-      FnIR->print(errs());
+    if (VerboseIR)
+      FunctionIR->print(errs());
     // Save the function signature so getFunction() can re-emit it in future modules.
-    FunctionSignatures[ProtoAST->getName()] = std::move(ProtoAST);
+    FunctionSignatures[Signature->getName()] = std::move(Signature);
   }
 }
 
-/// HandleTopLevelExpression - Compile, execute, and discard a bare expression.
-///
-/// The expression is wrapped in '__anon_expr' (a zero-argument function that
-/// returns double) so it goes through the same codegen path as everything else.
-///
-/// Execution steps:
-///   1. Codegen + optimise the anonymous function.
-///   2. Print the optimised IR so the reader can inspect it.
-///   3. Create a ResourceTracker scoped to this expression. The RT lets us
-///      release the JIT-compiled code and its associated memory immediately
-///      after execution, without disturbing other compiled functions.
-///   4. Hand the module to the JIT (TheModule is now owned by the JIT).
-///      Reinitialise for the next input.
-///   5. Look up '__anon_expr' in the JIT, cast its address to a function
-///      pointer, call it, and print the result.
-///   6. Call RT->remove() to free the compiled code. The module was already
-///      transferred to the JIT in step 4, so eraseFromParent() is not needed.
-static void HandleTopLevelExpression() {
-  auto FnAST = ParseTopLevelExpression();
-  bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
-  if (!FnAST || HasTrailing) {
-    if (FnAST)
+/// HandleTopLevelStatement - Compile and execute one REPL statement.
+/// I keep a module when it defines global storage. Otherwise I attach a
+/// ResourceTracker and remove the temporary module after execution.
+static void HandleTopLevelStatement() {
+  auto FunctionDefinition = ParseTopLevelStatementFunction();
+  bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof &&
+                      CurrentToken != tok_block_end);
+  if (!FunctionDefinition || HasTrailing) {
+    if (FunctionDefinition)
       LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
   }
-  string FnName = FnAST->getName();
+
+  string FunctionName = FunctionDefinition->getName();
   bool SavedInGlobalInit = InGlobalInit;
   InGlobalInit = true;
-  if (auto *FnIR = FnAST->codegen()) {
+  if (auto *FunctionIR = FunctionDefinition->codegen()) {
     InGlobalInit = SavedInGlobalInit;
-    Log("Parsed a top-level expression.\n");
-    if (ShouldDumpIR())
-      FnIR->print(errs());
+    if (LastTopLevelShouldPrint)
+      Log("Parsed a top-level expression.\n");
+    if (VerboseIR)
+      FunctionIR->print(errs());
 
-    bool KeepModule = ModuleHasGlobals;
-
-    if (KeepModule) {
-      auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
-      ExitOnErr(TheJIT->addModule(std::move(TSM)));
-      InitializeModuleAndManagers();
-    } else {
-      // ResourceTracker scopes the JIT memory for this expression so we can
-      // free it precisely after the call, without affecting other symbols.
-      auto RT = TheJIT->getMainJITDylib().createResourceTracker();
-
-      // Transfer ownership of the module to the JIT; reinitialise for next
-      // input.
-      auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
-      ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
+    if (ModuleHasGlobals) {
+      ExitOnErr(TheJIT->addModule(
+          ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
       InitializeModuleAndManagers();
 
-      // Locate the compiled function in the JIT's symbol table.
-      auto ExprSymbol = ExitOnErr(TheJIT->lookup(FnName));
-
-      // Cast the symbol address to a callable function pointer and invoke it.
-      double (*FP)() = ExprSymbol.toPtr<double (*)()>();
-      double result = FP();
+      auto Symbol = ExitOnErr(TheJIT->lookup(FunctionName));
+      double (*FunctionPointer)() = Symbol.toPtr<double (*)()>();
+      double Result = FunctionPointer();
       if (IsRepl && LastTopLevelShouldPrint)
-        fprintf(stderr, "%f\n", result);
-
-      // Release the compiled code and JIT memory for this expression.
-      ExitOnErr(RT->remove());
+        fprintf(stderr, "Evaluated to %f\n", Result);
       return;
     }
 
-    // Keep-module path: call the compiled function after adding the module.
-    auto ExprSymbol = ExitOnErr(TheJIT->lookup(FnName));
-    double (*FP)() = ExprSymbol.toPtr<double (*)()>();
-    double result = FP();
+    auto ResourceTracker =
+        TheJIT->getMainJITDylib().createResourceTracker();
+    ExitOnErr(TheJIT->addModule(
+        ThreadSafeModule(std::move(TheModule), std::move(TheContext)),
+        ResourceTracker));
+    InitializeModuleAndManagers();
+
+    auto Symbol = ExitOnErr(TheJIT->lookup(FunctionName));
+    double (*FunctionPointer)() = Symbol.toPtr<double (*)()>();
+    double Result = FunctionPointer();
     if (IsRepl && LastTopLevelShouldPrint)
-      fprintf(stderr, "%f\n", result);
+      fprintf(stderr, "Evaluated to %f\n", Result);
+
+    ExitOnErr(ResourceTracker->remove());
   } else {
     InGlobalInit = SavedInGlobalInit;
   }
 }
 
-/// HandleTopLevelStatementFileMode - Parse and queue a top-level statement.
-///
-/// In file mode, top-level statements are collected and emitted into a single
-/// __pyxc.global_init function after the entire file is parsed.
+/// I queue top-level file statements so I can emit them together in source
+/// order after parsing the complete file.
 static void HandleTopLevelStatementFileMode() {
-  auto Stmt = ParseTopLevelStatement();
-  bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
-  if (!Stmt || HasTrailing) {
-    if (Stmt)
-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+  auto Statement = ParseTopLevelStatement();
+  bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof &&
+                      CurrentToken != tok_block_end);
+  if (!Statement || HasTrailing) {
+    if (Statement)
+      LogErrorExpression(
+          ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
   }
 
-  FileTopLevelStmts.push_back(std::move(Stmt));
+  FileTopLevelStatements.push_back(std::move(Statement));
 }
 
 //===----------------------------------------===//
@@ -2438,13 +2561,14 @@ extern "C" DLLEXPORT double printd(double X) {
 
 /// MainLoop - Dispatch loop for the REPL.
 ///
-/// top             = function-definition | external | toplevelstmt ;
+/// top-level-item
+///   = function-definition | external | top-level-statement ;
 ///
 /// Dispatches on the leading token of each top-level form:
 ///   tok_def    → HandleFunctionDefinition   (function-definition)
 ///   tok_extern → HandleExtern       (external)
 ///   tok_eol    → skip blank line
-///   anything else → HandleTopLevelExpression (toplevelstmt)
+///   anything else → HandleTopLevelStatement (top-level-statement)
 ///
 /// CurrentToken is primed before MainLoop() is called (see main()). After each
 /// successful parse the handler prints a confirmation; after a failed parse
@@ -2470,7 +2594,13 @@ static void MainLoop() {
     }
 
     // Stray dedent at top level (can occur in REPL mode): skip it.
-    if (CurrentToken == tok_dedent || CurrentToken == tok_block_end) {
+    if (CurrentToken == tok_dedent) {
+      getNextToken();
+      continue;
+    }
+
+    // Block-end marker left in the stream after a block-bodied definition.
+    if (CurrentToken == tok_block_end) {
       getNextToken();
       continue;
     }
@@ -2488,22 +2618,21 @@ static void MainLoop() {
       HandleExtern();
       break;
     default:
-      HandleTopLevelExpression();
+      HandleTopLevelStatement();
       break;
     }
   }
 }
 
-/// FileModeLoop - Parse a script file into top-level statements + definitions.
-///
-/// In file mode we do not execute top-level statements immediately. They are
-/// collected into FileTopLevelStmts and later emitted into __pyxc.global_init.
+/// I parse definitions immediately in file mode and queue top-level statements
+/// for the synthetic global-initialization function.
 static void FileModeLoop() {
   while (true) {
     if (CurrentToken == tok_eof)
       return;
 
-    if (CurrentToken == tok_eol) {
+    if (CurrentToken == tok_eol || CurrentToken == tok_dedent ||
+        CurrentToken == tok_block_end) {
       getNextToken();
       continue;
     }
@@ -2511,11 +2640,6 @@ static void FileModeLoop() {
     if (CurrentToken == tok_indent) {
       LogErrorExpression("Unexpected indentation");
       SynchronizeToLineBoundary();
-      continue;
-    }
-
-    if (CurrentToken == tok_dedent || CurrentToken == tok_block_end) {
-      getNextToken();
       continue;
     }
 
@@ -2538,511 +2662,49 @@ static void FileModeLoop() {
   }
 }
 
-/// RunFileMode - Emit and execute __pyxc.global_init, then call main() if any.
+/// I emit queued file statements into __pyxc.global_init, execute them in
+/// source order, and then call a zero-parameter main function when one exists.
 static void RunFileMode() {
-  if (!FileTopLevelStmts.empty()) {
-    auto Block = make_unique<BlockExpressionNode>(std::move(FileTopLevelStmts));
-    auto Signature =
-        make_unique<FunctionSignatureNode>("__pyxc.global_init", vector<string>());
-    auto FnAST = make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(Block));
+  if (!FileTopLevelStatements.empty()) {
+    auto Block =
+        make_unique<BlockStatementNode>(std::move(FileTopLevelStatements));
+    auto Signature = make_unique<FunctionSignatureNode>(
+        "__pyxc.global_init", vector<string>());
+    auto FunctionDefinition = make_unique<FunctionDefinitionNode>(
+        std::move(Signature), std::move(Block));
 
     bool SavedInGlobalInit = InGlobalInit;
     InGlobalInit = true;
-    if (auto *FnIR = FnAST->codegen()) {
+    if (auto *FunctionIR = FunctionDefinition->codegen()) {
       InGlobalInit = SavedInGlobalInit;
-      if (ShouldDumpIR())
-        FnIR->print(errs());
+      if (VerboseIR)
+        FunctionIR->print(errs());
 
-      auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
-      ExitOnErr(TheJIT->addModule(std::move(TSM)));
+      ExitOnErr(TheJIT->addModule(
+          ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
       InitializeModuleAndManagers();
 
       auto InitSymbol = ExitOnErr(TheJIT->lookup("__pyxc.global_init"));
-      double (*InitFn)() = InitSymbol.toPtr<double (*)()>();
-      InitFn();
+      double (*InitializeGlobals)() = InitSymbol.toPtr<double (*)()>();
+      InitializeGlobals();
     } else {
       InGlobalInit = SavedInGlobalInit;
       return;
     }
   }
 
-  auto MainIt = FunctionSignatures.find("main");
-  if (MainIt == FunctionSignatures.end())
+  auto Main = FunctionSignatures.find("main");
+  if (Main == FunctionSignatures.end())
     return;
 
-  if (MainIt->second->getNumParameters() != 0) {
+  if (Main->second->getNumParameters() != 0) {
     fprintf(stderr, "Error: main() must take no arguments\n");
     return;
   }
 
   auto MainSymbol = ExitOnErr(TheJIT->lookup("main"));
-  double (*MainFn)() = MainSymbol.toPtr<double (*)()>();
-  MainFn();
-}
-
-/// AddGlobalCtor - Register a function to run before main() via
-/// llvm.global_ctors.
-static void AddGlobalCtor(Function *Fn, int Priority = 65535) {
-  auto *Int32Ty = Type::getInt32Ty(*TheContext);
-  auto *VoidPtrTy = PointerType::get(*TheContext, 0);
-  auto *StructTy = StructType::get(Int32Ty, Fn->getType(), VoidPtrTy);
-
-  Constant *CtorEntry = ConstantStruct::get(
-      StructTy, ConstantInt::get(Int32Ty, Priority), Fn,
-      ConstantPointerNull::get(cast<PointerType>(VoidPtrTy)));
-
-  GlobalVariable *GV = TheModule->getGlobalVariable("llvm.global_ctors");
-  if (GV)
-    return;
-
-  ArrayType *AT = ArrayType::get(StructTy, 1);
-  auto *Init = ConstantArray::get(AT, {CtorEntry});
-  new GlobalVariable(*TheModule, AT, false, GlobalValue::AppendingLinkage, Init,
-                     "llvm.global_ctors");
-}
-
-/// CreateTargetMachine - Build a TargetMachine for the host triple.
-static std::unique_ptr<TargetMachine> CreateTargetMachine() {
-  string TargetTriple = sys::getDefaultTargetTriple();
-  Triple TT(TargetTriple);
-
-  string Error;
-  const Target *Target = TargetRegistry::lookupTarget(TT, Error);
-  if (!Target) {
-    fprintf(stderr, "Error: %s\n", Error.c_str());
-    return nullptr;
-  }
-
-  TargetOptions Options;
-  auto RM = std::optional<Reloc::Model>();
-  return std::unique_ptr<TargetMachine>(
-      Target->createTargetMachine(TT, "generic", "", Options, RM));
-}
-
-/// EmitModuleToFile - Write the module to the requested path in the given
-/// format.
-static bool EmitModuleToFile(Module *M, EmitKind Kind,
-                             const string &OutputPath) {
-  std::error_code EC;
-  raw_fd_ostream Dest(OutputPath, EC, sys::fs::OF_None);
-  if (EC) {
-    fprintf(stderr, "Error: could not open output file '%s'\n",
-            OutputPath.c_str());
-    return false;
-  }
-
-  if (Kind == EmitKind::LLVMIR) {
-    M->print(Dest, nullptr);
-    return true;
-  }
-
-  auto TM = CreateTargetMachine();
-  if (!TM)
-    return false;
-
-  M->setTargetTriple(TM->getTargetTriple());
-  M->setDataLayout(TM->createDataLayout());
-
-  legacy::PassManager PM;
-  CodeGenFileType FileType = (Kind == EmitKind::ASM)
-                                 ? CodeGenFileType::AssemblyFile
-                                 : CodeGenFileType::ObjectFile;
-
-  if (TM->addPassesToEmitFile(PM, Dest, nullptr, FileType)) {
-    fprintf(stderr, "Error: target does not support file emission\n");
-    return false;
-  }
-
-  PM.run(*M);
-  return true;
-}
-
-static bool PrepareFileModeModule();
-
-static bool OpenInputFile(const string &Path) {
-  Input = fopen(Path.c_str(), "r");
-  if (!Input) {
-    perror(Path.c_str());
-    return false;
-  }
-  return true;
-}
-
-static void CloseInputFile() {
-  if (Input && Input != stdin) {
-    fclose(Input);
-    Input = stdin;
-  }
-}
-
-static bool EndsWithInsensitive(StringRef Path, StringRef Suffix) {
-  if (Path.size() < Suffix.size())
-    return false;
-  return Path.take_back(Suffix.size()).equals_insensitive(Suffix);
-}
-
-static bool IsPyxcInput(StringRef Path) {
-  return EndsWithInsensitive(Path, ".pyxc");
-}
-
-static bool IsObjectInput(StringRef Path) {
-  return EndsWithInsensitive(Path, ".o") || EndsWithInsensitive(Path, ".obj");
-}
-
-static string DefaultExeOutputPath(StringRef InputPath) {
-  SmallString<256> Out(InputPath);
-  sys::path::replace_extension(Out, "");
-  string OutStr = Out.str().str();
-#ifdef _WIN32
-  OutStr += ".exe";
-#endif
-  return OutStr;
-}
-
-static bool EmitRuntimeObject(const string &ObjPath) {
-  LLVMContext Ctx;
-  auto M = std::make_unique<Module>("pyxc.runtime", Ctx);
-
-  auto *DoubleTy = Type::getDoubleTy(Ctx);
-  auto *Int32Ty = Type::getInt32Ty(Ctx);
-  auto *CharPtrTy = PointerType::get(Ctx, 0);
-
-  FunctionType *PrintfTy = FunctionType::get(Int32Ty, {CharPtrTy}, true);
-  Function *Printf =
-      Function::Create(PrintfTy, Function::ExternalLinkage, "printf", M.get());
-
-  FunctionType *PutcharTy = FunctionType::get(Int32Ty, {Int32Ty}, false);
-  Function *Putchar = Function::Create(PutcharTy, Function::ExternalLinkage,
-                                       "putchar", M.get());
-
-  FunctionType *PrintdTy = FunctionType::get(DoubleTy, {DoubleTy}, false);
-  Function *Printd =
-      Function::Create(PrintdTy, Function::ExternalLinkage, "printd", M.get());
-  {
-    BasicBlock *BB = BasicBlock::Create(Ctx, "entry", Printd);
-    IRBuilder<> B(BB);
-    auto *FmtGV = B.CreateGlobalString("%f\n", "fmt");
-    Value *Zero = ConstantInt::get(Int32Ty, 0);
-    Value *Fmt = B.CreateInBoundsGEP(FmtGV->getValueType(), FmtGV, {Zero, Zero},
-                                     "fmt_ptr");
-    Value *Arg = Printd->getArg(0);
-    B.CreateCall(Printf, {Fmt, Arg});
-    B.CreateRet(ConstantFP::get(Ctx, APFloat(0.0)));
-  }
-
-  FunctionType *PutchardTy = FunctionType::get(DoubleTy, {DoubleTy}, false);
-  Function *Putchard = Function::Create(PutchardTy, Function::ExternalLinkage,
-                                        "putchard", M.get());
-  {
-    BasicBlock *BB = BasicBlock::Create(Ctx, "entry", Putchard);
-    IRBuilder<> B(BB);
-    Value *Arg = Putchard->getArg(0);
-    Value *Ch = B.CreateFPToUI(Arg, Int32Ty, "ch");
-    B.CreateCall(Putchar, {Ch});
-    B.CreateRet(ConstantFP::get(Ctx, APFloat(0.0)));
-  }
-
-  return EmitModuleToFile(M.get(), EmitKind::OBJ, ObjPath);
-}
-
-static bool CompileFileToObject(const string &Path, const string &ObjPath,
-                                bool *HasMain) {
-  if (!OpenInputFile(Path))
-    return false;
-
-  ResetLexerState();
-  ResetParserStateForFile();
-  InitializeModuleAndManagers(false);
-
-  IsRepl = false;
-  PrintReplPrompt();
-  getNextToken();
-
-  FileModeLoop();
-  CloseInputFile();
-
-  if (HasMain)
-    *HasMain = FunctionSignatures.find("main") != FunctionSignatures.end();
-
-  if (!PrepareFileModeModule())
-    return false;
-
-  return EmitModuleToFile(TheModule.get(), EmitKind::OBJ, ObjPath);
-}
-
-/// RunXcrun - Shell out to xcrun and return trimmed stdout, or "" on failure.
-static string RunXcrun(const char *Arguments) {
-  string Cmd = string("xcrun ") + Arguments + " 2>/dev/null";
-  FILE *Pipe = popen(Cmd.c_str(), "r");
-  if (!Pipe)
-    return "";
-  char Buf[512];
-  string Result;
-  while (fgets(Buf, sizeof(Buf), Pipe))
-    Result += Buf;
-  pclose(Pipe);
-  while (!Result.empty() && (Result.back() == '\n' || Result.back() == '\r' ||
-                             Result.back() == ' '))
-    Result.pop_back();
-  return Result;
-}
-
-static string FindMacOSSDKRoot() {
-  if (const char *EnvSDK = getenv("SDKROOT"))
-    return string(EnvSDK);
-
-  // Ask xcrun — it resolves the active SDK for the current Xcode/CLT selection
-  // and returns the right path regardless of where Xcode is installed.
-  string XcrunPath = RunXcrun("--sdk macosx --show-sdk-path");
-  if (!XcrunPath.empty() && sys::fs::exists(XcrunPath))
-    return XcrunPath;
-
-  // Fallback: probe well-known paths.
-  const char *XcodeSDK = "/Applications/Xcode.app/Contents/Developer/Platforms/"
-                         "MacOSX.platform/Developer/SDKs/MacOSX.sdk";
-  if (sys::fs::exists(XcodeSDK))
-    return string(XcodeSDK);
-
-  const char *CLTSDK = "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk";
-  if (sys::fs::exists(CLTSDK))
-    return string(CLTSDK);
-
-  return "";
-}
-
-/// FindMacOSSDKVersion - Return the macOS SDK version string (e.g. "26.0").
-/// This matches the version LLVM encodes into object files at compile time,
-/// avoiding a version mismatch warning from ld64.lld.
-static string FindMacOSSDKVersion() {
-  string Ver = RunXcrun("--sdk macosx --show-sdk-version");
-  if (!Ver.empty())
-    return Ver;
-  // Fallback: extract from the triple (may be Darwin kernel version on older
-  // LLVM builds, so prefer xcrun when available).
-  Triple TT(sys::getDefaultTargetTriple());
-  VersionTuple V = TT.getOSVersion();
-  if (V.getMajor()) {
-    std::ostringstream OS;
-    OS << V.getMajor() << "." << V.getMinor().value_or(0);
-    return OS.str();
-  }
-  return "11.0";
-}
-
-static bool LinkExecutable(const vector<string> &Inputs,
-                           const string &OutputPath) {
-  Triple TT(sys::getDefaultTargetTriple());
-  vector<string> ArgStorage;
-  auto PushArg = [&](const string &Arg) { ArgStorage.push_back(Arg); };
-
-  if (TT.isOSDarwin()) {
-    PushArg("ld64.lld");
-    PushArg("-arch");
-    PushArg(TT.getArchName().str());
-    PushArg("-o");
-    PushArg(OutputPath);
-
-    string SDKRoot = FindMacOSSDKRoot();
-    if (!SDKRoot.empty()) {
-      PushArg("-syslibroot");
-      PushArg(SDKRoot);
-      PushArg("-L" + SDKRoot + "/usr/lib");
-      PushArg("-L" + SDKRoot + "/usr/lib/system");
-      string OSVer = FindMacOSSDKVersion();
-      PushArg("-platform_version");
-      PushArg("macos");
-      PushArg(OSVer);
-      PushArg(OSVer);
-    }
-    // macOS startup is handled by dyld + libSystem; crt1/crti/crtn are
-    // GNU ELF files that do not belong in a MachO link and cause warnings
-    // on arm64 (the SDK copy is x86_64-only legacy).
-    for (const auto &Input : Inputs)
-      PushArg(Input);
-    PushArg("-lSystem");
-
-    vector<const char *> Arguments;
-    Arguments.reserve(ArgStorage.size());
-    for (auto &Arg : ArgStorage)
-      Arguments.push_back(Arg.c_str());
-    return lld::macho::link(Arguments, llvm::outs(), llvm::errs(), false, false);
-  }
-
-  if (TT.isOSLinux()) {
-    PushArg("ld.lld");
-    PushArg("-o");
-    PushArg(OutputPath);
-    for (const auto &Input : Inputs)
-      PushArg(Input);
-    PushArg("-lc");
-    PushArg("-lm");
-    vector<const char *> Arguments;
-    Arguments.reserve(ArgStorage.size());
-    for (auto &Arg : ArgStorage)
-      Arguments.push_back(Arg.c_str());
-    return lld::elf::link(Arguments, llvm::outs(), llvm::errs(), false, false);
-  }
-
-  if (TT.isOSWindows()) {
-    PushArg("lld-link");
-    PushArg("/OUT:" + OutputPath);
-    for (const auto &Input : Inputs)
-      PushArg(Input);
-    vector<const char *> Arguments;
-    Arguments.reserve(ArgStorage.size());
-    for (auto &Arg : ArgStorage)
-      Arguments.push_back(Arg.c_str());
-    return lld::coff::link(Arguments, llvm::outs(), llvm::errs(), false, false);
-  }
-
-  fprintf(stderr, "Error: unsupported target for --emit exe\n");
-  return false;
-}
-
-/// PrepareFileModeModule - Build __pyxc.global_init and main wrapper.
-///
-/// Returns false on error (e.g., invalid main signature).
-static bool PrepareFileModeModule() {
-  if (!FileTopLevelStmts.empty()) {
-    auto Block = make_unique<BlockExpressionNode>(std::move(FileTopLevelStmts));
-    auto Signature =
-        make_unique<FunctionSignatureNode>("__pyxc.global_init", vector<string>());
-    auto FnAST = make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(Block));
-
-    bool SavedInGlobalInit = InGlobalInit;
-    InGlobalInit = true;
-    if (auto *FnIR = FnAST->codegen()) {
-      InGlobalInit = SavedInGlobalInit;
-      if (ShouldDumpIR())
-        FnIR->print(errs());
-      AddGlobalCtor(FnIR);
-    } else {
-      InGlobalInit = SavedInGlobalInit;
-      return false;
-    }
-  }
-
-  auto MainIt = FunctionSignatures.find("main");
-  if (MainIt != FunctionSignatures.end() && MainIt->second->getNumParameters() != 0) {
-    fprintf(stderr, "Error: main() must take no arguments\n");
-    return false;
-  }
-
-  if (auto *UserMain = TheModule->getFunction("main")) {
-    if (UserMain->getReturnType()->isDoubleTy()) {
-      UserMain->setName("__pyxc.user_main");
-      FunctionType *FT =
-          FunctionType::get(Type::getInt32Ty(*TheContext), false);
-      Function *Wrapper = Function::Create(FT, Function::ExternalLinkage,
-                                           "main", TheModule.get());
-      BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", Wrapper);
-      IRBuilder<> TmpB(BB);
-      TmpB.CreateCall(UserMain);
-      TmpB.CreateRet(ConstantInt::get(Type::getInt32Ty(*TheContext), 0));
-    }
-  }
-
-  return true;
-}
-
-/// EmitFileMode - Build __pyxc.global_init and emit the requested output file.
-static void EmitFileMode() {
-  if (!PrepareFileModeModule())
-    return;
-  EmitModuleToFile(TheModule.get(), EmitMode, EmitOutputPath);
-}
-
-/// EmitExecutable - Compile inputs to objects and link them into an executable.
-static bool EmitExecutable() {
-  vector<string> ObjectFiles;
-  vector<string> TempFiles;
-  bool SawMain = false;
-  bool SawObjectInput = false;
-
-  auto CleanupTemps = [&]() {
-    for (const auto &Path : TempFiles)
-      sys::fs::remove(Path);
-  };
-
-  for (const auto &InputPath : InputFiles) {
-    if (IsPyxcInput(InputPath)) {
-      int FD = -1;
-      SmallString<128> TmpPath;
-      if (auto EC = sys::fs::createTemporaryFile("pyxc", "o", FD, TmpPath)) {
-        fprintf(stderr, "Error: could not create temporary file: %s\n",
-                EC.message().c_str());
-        CleanupTemps();
-        return false;
-      }
-      if (FD != -1)
-        close(FD);
-
-      string ObjPath = TmpPath.str().str();
-      TempFiles.push_back(ObjPath);
-
-      bool FileHasMain = false;
-      if (!CompileFileToObject(InputPath, ObjPath, &FileHasMain)) {
-        CleanupTemps();
-        return false;
-      }
-      SawMain = SawMain || FileHasMain;
-      ObjectFiles.push_back(ObjPath);
-      continue;
-    }
-
-    if (IsObjectInput(InputPath)) {
-      ObjectFiles.push_back(InputPath);
-      SawObjectInput = true;
-      continue;
-    }
-
-    fprintf(stderr, "Error: unsupported input '%s'\n", InputPath.c_str());
-    CleanupTemps();
-    return false;
-  }
-
-  if (!SawMain && !SawObjectInput) {
-    fprintf(stderr, "Error: main() not found\n");
-    CleanupTemps();
-    return false;
-  }
-
-  int RuntimeFD = -1;
-  SmallString<128> RuntimeObj;
-  if (auto EC = sys::fs::createTemporaryFile("pyxc_runtime", "o", RuntimeFD,
-                                             RuntimeObj)) {
-    fprintf(stderr, "Error: could not create runtime object: %s\n",
-            EC.message().c_str());
-    CleanupTemps();
-    return false;
-  }
-  if (RuntimeFD != -1)
-    close(RuntimeFD);
-
-  string RuntimePath = RuntimeObj.str().str();
-  TempFiles.push_back(RuntimePath);
-  if (!EmitRuntimeObject(RuntimePath)) {
-    CleanupTemps();
-    return false;
-  }
-  ObjectFiles.push_back(RuntimePath);
-
-  if (EmitOutputPath.empty()) {
-    if (InputFiles.empty()) {
-      fprintf(stderr, "Error: --emit exe requires a file input\n");
-      CleanupTemps();
-      return false;
-    }
-    EmitOutputPath = DefaultExeOutputPath(InputFiles.front());
-  }
-
-  if (!LinkExecutable(ObjectFiles, EmitOutputPath)) {
-    CleanupTemps();
-    return false;
-  }
-
-  CleanupTemps();
-  return true;
+  double (*MainFunction)() = MainSymbol.toPtr<double (*)()>();
+  MainFunction();
 }
 
 /// ProcessCommandLine - Parse argv and configure the global Input/IsRepl state.
@@ -3058,54 +2720,15 @@ int ProcessCommandLine(int argc, const char **argv) {
     return -1;
   }
 
-  IsRepl = InputFiles.empty();
-
-  if (!EmitKindOpt.empty()) {
-    if (IsRepl) {
-      fprintf(stderr, "Error: --emit requires a file input\n");
+  if (!InputFile.empty()) {
+    Input = fopen(InputFile.c_str(), "r");
+    if (!Input) {
+      perror(InputFile.c_str());
       return -1;
     }
-
-    if (EmitKindOpt == "llvm-ir") {
-      EmitMode = EmitKind::LLVMIR;
-      if (InputFiles.size() != 1) {
-        fprintf(stderr, "Error: --emit requires a single input file\n");
-        return -1;
-      }
-      EmitOutputPath = OutputFile.empty() ? "out.ll" : OutputFile.getValue();
-    } else if (EmitKindOpt == "asm") {
-      EmitMode = EmitKind::ASM;
-      if (InputFiles.size() != 1) {
-        fprintf(stderr, "Error: --emit requires a single input file\n");
-        return -1;
-      }
-      EmitOutputPath = OutputFile.empty() ? "out.s" : OutputFile.getValue();
-    } else if (EmitKindOpt == "obj") {
-      EmitMode = EmitKind::OBJ;
-      if (InputFiles.size() != 1) {
-        fprintf(stderr, "Error: --emit requires a single input file\n");
-        return -1;
-      }
-      EmitOutputPath = OutputFile.empty() ? "out.o" : OutputFile.getValue();
-    } else if (EmitKindOpt == "exe") {
-      EmitMode = EmitKind::EXE;
-      if (OutputFile.empty() && InputFiles.size() > 1) {
-        fprintf(stderr, "Error: multiple inputs require -o\n");
-        return -1;
-      }
-      if (!OutputFile.empty())
-        EmitOutputPath = OutputFile.getValue();
-    } else {
-      fprintf(stderr, "Error: invalid --emit value '%s'\n",
-              EmitKindOpt.c_str());
-      return -1;
-    }
-  } else if (!OutputFile.empty()) {
-    fprintf(stderr, "Error: -o requires --emit\n");
-    return -1;
-  } else if (!IsRepl && InputFiles.size() > 1) {
-    fprintf(stderr, "Error: multiple inputs require --emit exe\n");
-    return -1;
+    IsRepl = false;
+  } else {
+    IsRepl = true;
   }
 
   return 0;
@@ -3128,11 +2751,15 @@ int main(int argc, const char **argv) {
   }
 
   // Initialise LLVM's backend for the host machine. These three calls
-  // register the native target's instruction set, assembler, and disassembler
-  // so both the JIT and the file-emission paths can generate code.
+  // together register the native target's instruction set, assembler, and
+  // disassembler so the JIT can compile and link for the current CPU.
   InitializeNativeTarget();
   InitializeNativeTargetAsmPrinter();
-  InitializeNativeTargetAsmParser();
+
+  // Prime the REPL: print the first prompt and load the first token.
+  // Every parse function expects CurrentToken to be loaded before it is called.
+  PrintReplPrompt();
+  getNextToken();
 
   // Create the JIT first — InitializeModuleAndManagers() needs TheJIT in
   // order to set the data layout on the new module.
@@ -3140,31 +2767,15 @@ int main(int argc, const char **argv) {
   InitializeModuleAndManagers();
 
   if (IsRepl) {
-    PrintReplPrompt();
-    getNextToken();
     MainLoop();
   } else {
-    if (EmitMode == EmitKind::EXE) {
-      if (!EmitExecutable())
-        return 1;
-    } else {
-      if (InputFiles.empty())
-        return 1;
-      if (!OpenInputFile(InputFiles.front()))
-        return 1;
-      ResetLexerState();
-      ResetParserStateForFile();
-      PrintReplPrompt();
-      getNextToken();
+    FileModeLoop();
+    RunFileMode();
+  }
 
-      FileModeLoop();
-      if (IsEmitMode())
-        EmitFileMode();
-      else
-        RunFileMode();
-
-      CloseInputFile();
-    }
+  if (Input && Input != stdin) {
+    fclose(Input);
+    Input = stdin;
   }
 
   return 0;

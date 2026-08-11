@@ -1,490 +1,490 @@
 ---
-description: "Install LLVM with everything you need: clang, lld, lldb, clangd, and lit — via Homebrew (macOS/Linux), the official installer (Windows), or from source."
+description: "Give every token a readable name, track source locations through the lexer, and print caret-style diagnostics instead of a bare token description."
 ---
-# 5. pyxc: Installing LLVM
+# 5. pyxc: Better Errors
 
-## Where We Are
+## Where I Am
 
-The compiler from [Chapter 4](chapter-04.md) can parse Pyxc and report errors with source locations. To turn the AST into machine code, I need LLVM — specifically with the following tools: `lld`, `clangd`, `lldb`, and `llvm-lit`. I'll get to using them in the following chapters. On macOS and Linux, Homebrew gets you there in two commands (as of today May 1, 2026). On Windows, the official LLVM installer does the same. Building compilers is hard enough. I don't need to torture myself needlessly. Unless I want to. Consequently, if you're feeling adventurous, you could build from source instead — I did that too just to make sure the instructions are legit. All paths end up in the same place. 
+### The Missing Colon
 
+Right now, a missing `:` looks like this:
 
-!!!note
-    I'm a bit concerned about the longevity of this chapter. Installation dynamics change quite frequently and things break occassionally, if not often. These forces are outside my control. Which is why if something breaks, PLEASE let me know so I can fix this chapter so it continues to work for others that follow you. I've been very close to giving up on tutorials because I couldn't get the base infrastructure to install and I'd hate for that to happen to you or to others. 
-
-## macOS / Linux — Homebrew
-
-```bash
-brew install llvm
-brew install lld
+<!-- code-merge:start -->
+```pyxc
+ready> def bad(x) return x
 ```
-
-Homebrew installs LLVM as *keg-only* — it won't replace the system compiler, so you need to add it to your PATH explicitly. Add the following to your shell config (`~/.zshrc`, `~/.bashrc`, or `~/.bash_profile`):
-
-```bash
-# LLVM & LLD Toolchain Setup
-# brew --prefix resolves the install path regardless of where Homebrew lives
-export LLVM_ROOT="$(brew --prefix llvm)"
-export LLD_ROOT="$(brew --prefix lld)"
-
-# Add both to PATH
-# This ensures clang, lld, lldb, and clangd are all found
-export PATH="$LLVM_ROOT/bin:$LLD_ROOT/bin:$PATH"
-
-# Compilation Flags
-export LDFLAGS="-L$LLVM_ROOT/lib -L$LLD_ROOT/lib"
-export CPPFLAGS="-I$LLVM_ROOT/include -I$LLD_ROOT/include"
-export CMAKE_PREFIX_PATH="$LLVM_ROOT;$LLD_ROOT"
-```
-
-Then reload your shell:
-
-```bash
-source ~/.zshrc   # or ~/.bashrc
-```
-
-#### Verify
-
-```bash
-clang --version
-clangd --version
-lldb --version
-lld --version
-llvm-lit --version
-```
-
-The first four should report the same version and point into the Homebrew prefix — run `brew --prefix llvm` and `brew --prefix lld` to confirm the exact paths on your machine.
-
-`llvm-lit` may not be bundled with the Homebrew formula. If the last command fails, install it separately:
-
-```bash
-pip install lit
-```
-
-After a pip install, the binary is `lit`, not `llvm-lit`. So `lit --version` is what you'd run to verify it.
-
-If that's working, you're done. Skip straight to [Chapter 6](chapter-06.md).
-
-## Windows — Official Installer
-
-Download the latest `LLVM-<version>-win64.exe` from the [LLVM releases page](https://github.com/llvm/llvm-project/releases). Run the installer and when prompted, select **"Add LLVM to the system PATH"**.
-
-Then set the remaining environment variables. Add to your PowerShell profile (`$PROFILE`):
-
-```powershell
-# LLVM Toolchain Setup
-$env:LLVM_ROOT = "C:\Program Files\LLVM"
-
-# Add to PATH (if the installer didn't already)
-$env:PATH = "$env:LLVM_ROOT\bin;$env:PATH"
-
-# Compilation Flags
-$env:LDFLAGS = "-L$env:LLVM_ROOT\lib"
-$env:CPPFLAGS = "-I$env:LLVM_ROOT\include"
-$env:CMAKE_PREFIX_PATH = "$env:LLVM_ROOT"
-```
-
-Or set them permanently via **System Properties → Environment Variables**.
-
-#### Verify
-
-```powershell
-clang --version
-clangd --version
-lldb --version
-lld --version
-llvm-lit --version
-```
-
-The first four should report the same version.
-
-`llvm-lit` may not be included in the official installer. If the last command fails, install it separately:
-
-```powershell
-pip install lit
-```
-
-After a pip install, the binary is `lit`, not `llvm-lit`. So `lit --version` is what you'd run to verify it.
-
-If that's working, you're done. Skip straight to [Chapter 6](chapter-06.md).
-
-## Build from Source
-
-If you'd rather build LLVM yourself — or Homebrew isn't an option for some reason — the result is identical: same tools, same capabilities, just more steps and a longer wait.
-
-### What You'll Install
-
-By the end of this chapter, you'll have:
-
 ```text
-~/llvm-21-with-clang-lld-lldb/
-├── bin/
-│   ├── clang
-│   ├── clang++
-│   ├── clangd
-│   ├── lld
-│   ├── lldb
-│   └── llvm-config
-├── lib/
-└── include/
+Error: Expected ':' in function definition (token: name)
+```
+<!-- code-merge:end -->
+
+`(token: name)` doesn't tell me which name, or where. I want this instead:
+
+<!-- code-merge:start -->
+```pyxc
+ready> def bad(x) return x
+```
+```text
+Error (Line 1, Column 12): Expected ':' in function definition
+def bad(x) return 
+           ^~~~
+```
+<!-- code-merge:end -->
+
+Line. Column. The actual source line. A caret pointing at the exact spot.
+
+### The Truncated Number
+
+There's a second bug I've been ignoring: `1.2.3` currently parses without complaint.
+
+```pyxc
+ready> 1.2.3
+Parsed a top-level expression.
 ```
 
-All the tools I need in one place. `llvm-lit` is the exception: it's a Python script generated in the build tree, and `ninja install` doesn't copy it out. I install it separately with `pip install lit` in Step 6 below.
+`strtod` reads as much of `"1.2.3"` as looks like a number (`1.2`) and silently ignores the rest.
 
-### Time and Space Requirements
+### The Unknown Character
 
-**Build time:** 30-60 minutes (depends on your machine)
-**Disk space:** ~15 GB for the build, ~3 GB for the install
+There's a third problem, for a character I never planned for at all. `@` isn't part of pyxc's grammar. In Chapter 3, I have no `case` for it, so I return `tok_error` from the generic `default` branch:
 
-If that's too much, stick with [pre-built LLVM package](https://releases.llvm.org/download.html) for now. You can always build from source later when you need it.
+<!-- code-merge:start -->
+```pyxc
+ready> 1 @ 2
+```
+```text
+Parsed a top-level expression.
+Error: unknown token when expecting an expression (token: error)
+Parsed a top-level expression.
+```
+<!-- code-merge:end -->
 
-### Prerequisites
+`(token: error)` doesn't say what the character even was, and one bad character turns into three confusing REPL lines. I want this instead:
 
-You need:
-1. A C++ compiler
-2. [CMake](https://cmake.org/)
-3. [Ninja](https://ninja-build.org/)
-4. Python 3 (`llvm-lit` is a Python script)
+<!-- code-merge:start -->
+```pyxc
+ready> 1 @ 2
+```
+```text
+Error (Line 1, Column 3): Unexpected '@'
+1 @ 
+  ^~~~
+```
+<!-- code-merge:end -->
 
-#### macOS
+I fix all three problems in this chapter.
+
+## Source Code
 
 ```bash
-# Install Xcode Command Line Tools
-xcode-select --install
-
-# Install CMake and Ninja
-brew install cmake ninja
+git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
+cd pyxc-llvm-tutorial/code/chapter-04
 ```
 
-#### Ubuntu/Debian
+## Naming Every Token
 
-```bash
-sudo apt update
-sudo apt install build-essential cmake ninja-build
+When I report an error, I want to show the token I saw. In my old `TokenNames` map, I added only the tokens I had declared by hand. If I encountered any other character, I had no readable name for it.
+
+I fix this by giving every possible byte value a name. I build the map once, when the program starts:
+
+```cpp
+static map<int, string> TokenNames = [] {
+  // I list tokens that are not single characters.
+  static map<int, string> Names = {
+      {tok_eof, "end of input"}, {tok_eol, "newline"},
+      {tok_error, "error"},      {tok_def, "'def'"},
+      {tok_name, "name"}, {tok_number, "number"},
+  };
+
+  // I add a readable name for every single-character value.
+  for (int ch = 0; ch <= 255; ++ch) {
+    if (isprint(static_cast<unsigned char>(ch)))
+      Names[ch] = "'" + string(1, static_cast<char>(ch)) + "'";
+    else if (ch == '\n')
+      Names[ch] = "'\\n'";
+    else if (ch == '\t')
+      Names[ch] = "'\\t'";
+    else if (ch == '\r')
+      Names[ch] = "'\\r'";
+    else if (ch == '\0')
+      Names[ch] = "'\\0'";
+    else {
+      ostringstream OS;
+      OS << "0x" << uppercase << hex << setw(2) << setfill('0') << ch;
+      Names[ch] = OS.str();
+    }
+  }
+
+  return Names;
+}();
 ```
 
-#### Fedora
+I format each byte in one of three ways:
 
-```bash
-sudo dnf install gcc-c++ cmake ninja-build
+- For a printable byte, I show the quoted character: `'('`, `'a'`, or `'!'`.
+- For common whitespace, I show an escape sequence: `'\n'` or `'\t'`.
+- For anything else, I show its hexadecimal value: `0x07`.
+
+I put this code in a lambda and call it immediately with the final `()`. This lets me construct `TokenNames` once at startup.
+
+I also assign every named punctuation token its actual character value. I keep the other tokens negative so they cannot collide with any byte value:
+
+```cppdiff
+ enum Token {
+-  tok_eof = 1,
+-  tok_eol,
+-  tok_error,
+-  tok_def,
+-  tok_name,
+-  tok_number,
+-  tok_lparen,
+-  tok_rparen,
+-  tok_comma,
+-  tok_colon,
+-  tok_plus,
+-  tok_minus,
+-  tok_star,
+-  tok_slash,
+-  tok_less,
++  tok_eof = -1,
++  tok_eol = -2,
++  tok_error = -3,
++  tok_def = -4,
++  tok_name = -5,
++  tok_number = -6,
++  tok_lparen = '(',
++  tok_rparen = ')',
++  tok_comma = ',',
++  tok_colon = ':',
++  tok_plus = '+',
++  tok_minus = '-',
++  tok_star = '*',
++  tok_slash = '/',
++  tok_less = '<',
+ };
 ```
 
-#### Windows
-
-Install:
-1. Visual Studio Build Tools (C++ workload)
-2. [CMake](https://cmake.org/)
-3. [Ninja](https://ninja-build.org/)
-
-Make sure all three are on your `PATH` — CMake and Ninja installers have an option to add themselves; Visual Studio Build Tools does it automatically.
-
-### Optional: Install zstd
-
-Some LLVM builds need the `zstd` compression library. If you see `library 'zstd' not found` errors later, install it:
-
-**macOS:**
-```bash
-brew install zstd
-```
-
-**Ubuntu/Debian:**
-```bash
-sudo apt install libzstd-dev
-```
-
-**Fedora:**
-```bash
-sudo dnf install libzstd-devel
-```
-
-You can skip this for now and come back if you hit errors.
-
-### Step 1: Clone LLVM
-
-I'll build LLVM 21.1.6 (stable release at time of writing — check the [LLVM releases page](https://github.com/llvm/llvm-project/releases) for newer tags):
-
-```bash
-git clone --depth 1 --branch llvmorg-21.1.6 https://github.com/llvm/llvm-project.git
-cd llvm-project
-```
-
-The `--depth 1` keeps the download small (I don't need full git history).
-
-### Step 2: Configure the Build
-
-Create a build directory:
-
-```bash
-mkdir build && cd build
-```
-
-Now configure. This tells CMake what to build and where to install it.
-
-#### Linux / macOS
-
-```bash
-cmake -G Ninja ../llvm \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld;lldb" \
-  -DCMAKE_INSTALL_PREFIX=$HOME/llvm-21-with-clang-lld-lldb \
-  -DLLVM_TARGETS_TO_BUILD="X86;AArch64" \
-  -DLLVM_INCLUDE_EXAMPLES=OFF \
-  -DLLVM_INCLUDE_TESTS=ON \
-  -DLLVM_INCLUDE_BENCHMARKS=OFF \
-  -DLLVM_ENABLE_ASSERTIONS=OFF
-```
-
-#### Windows (PowerShell)
-
-```powershell
-cmake -G Ninja ..\llvm `
-  -DCMAKE_BUILD_TYPE=Release `
-  -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld;lldb" `
-  -DCMAKE_INSTALL_PREFIX=$HOME\llvm-21-with-clang-lld-lldb `
-  -DLLVM_TARGETS_TO_BUILD="X86" `
-  -DLLVM_INCLUDE_EXAMPLES=OFF `
-  -DLLVM_INCLUDE_TESTS=ON `
-  -DLLVM_INCLUDE_BENCHMARKS=OFF `
-  -DLLVM_ENABLE_ASSERTIONS=OFF
-```
-
-**What these flags mean:**
-
-- **`-G Ninja`** - Use Ninja (faster than Make)
-- **`CMAKE_BUILD_TYPE=Release`** - Optimized build (not debug)
-- **`LLVM_ENABLE_PROJECTS`** - Build clang, clangd, lld, and lldb
-- **`CMAKE_INSTALL_PREFIX`** - Where to install (your home directory)
-- **`LLVM_TARGETS_TO_BUILD`** - Only build for x86 and ARM (speeds up build)
-- **`LLVM_INCLUDE_TESTS=ON`** - Build LLVM's own test suite (uses `llvm-lit`, which the build generates on its own regardless of this flag)
-
-If CMake complains about missing dependencies, install them and re-run.
-
-### Step 3: Build
-
-```bash
-ninja
-```
-
-This takes 30-60 minutes. Go grab coffee.
-
-**If it fails:** Check the error message. Common issues:
-- Out of memory → Close other programs, try again
-- Missing dependency → Install it (CMake will tell you what)
-- Corrupted download → Delete `llvm-project` and re-clone
-
-### Step 4: Install
-
-```bash
-ninja install
-```
-
-This copies everything to `~/llvm-21-with-clang-lld-lldb/`.
-
-Verify it worked:
-
-```bash
-ls ~/llvm-21-with-clang-lld-lldb/bin
-```
-
-You should see: `clang`, `clang++`, `lld`, `lldb`, `llvm-config`, and more. `llvm-lit` won't be there — see Step 6.
-
-Once the install is done, you can delete the `build/` directory to reclaim the ~15 GB of build artifacts:
-
-```bash
-cd .. && rm -rf build
-```
-
-### Step 5: Update Your PATH
-
-Add LLVM to your `PATH` so the system finds it first:
-
-#### macOS / Linux (Bash)
-
-Add to `~/.bashrc` or `~/.bash_profile`:
-
-```bash
-export PATH="$HOME/llvm-21-with-clang-lld-lldb/bin:$PATH"
-```
-
-Then reload:
-```bash
-source ~/.bashrc
-```
-
-#### macOS / Linux (Zsh)
-
-Add to `~/.zshrc`:
-
-```zsh
-export PATH="$HOME/llvm-21-with-clang-lld-lldb/bin:$PATH"
-```
-
-Then reload:
-```zsh
-source ~/.zshrc
-```
-
-#### Windows (PowerShell)
-
-Add to your PowerShell profile (`$PROFILE`):
-
-```powershell
-$env:PATH = "$HOME\llvm-21-with-clang-lld-lldb\bin;$env:PATH"
-```
-
-Or add it permanently via System Environment Variables.
-
-### Step 6: Verify
-
-Check that your shell finds the right LLVM:
-
-#### macOS / Linux
-
-```bash
-which clang
-# Should show: /Users/yourname/llvm-21-with-clang-lld-lldb/bin/clang
-
-clang --version
-llvm-config --version
-# Both should report the version you built
-```
-
-`ninja install` doesn't install `llvm-lit`; it only ever exists in the build tree. Install it separately:
-
-```bash
-pip install lit
-```
-
-After a pip install, the binary is `lit`, not `llvm-lit`. So `lit --version` is what you'd run to verify it.
-
-#### Windows (PowerShell)
-
-```powershell
-Get-Command clang | Select-Object -ExpandProperty Source
-# Should show: C:\Users\yourname\llvm-21-with-clang-lld-lldb\bin\clang.exe
-
-clang --version
-llvm-config --version
-# Both should report the version you built
-```
-
-`ninja install` doesn't install `llvm-lit`; it only ever exists in the build tree. Install it separately:
-
-```powershell
-pip install lit
-```
-
-After a pip install, the binary is `lit`, not `llvm-lit`. So `lit --version` is what you'd run to verify it.
-
-If the version shown doesn't match what you built, your `PATH` isn't set correctly. Fix that before continuing.
-
-### Step 7: Set LLVM_DIR (for CMake)
-
-When building the Pyxc compiler, CMake needs to find LLVM. Tell it where:
-
-#### macOS / Linux
-
-Add to `~/.bashrc` or `~/.zshrc`:
-
-```bash
-export LLVM_DIR="$HOME/llvm-21-with-clang-lld-lldb/lib/cmake/llvm"
-```
-
-Reload your shell.
-
-#### Windows
-
-Add to your PowerShell profile or Environment Variables:
-
-```powershell
-$env:LLVM_DIR = "$HOME\llvm-21-with-clang-lld-lldb\lib\cmake\llvm"
-```
-
-### Optional: Configure VS Code
-
-If you're using VS Code, point it to your new `clangd`:
-
-#### Install the clangd Extension
-
-1. Open VS Code
-2. Install the "clangd" extension (disable the C/C++ extension if you see conflicts)
-
-#### Configure clangd Path
-
-Add to `.vscode/settings.json` in your project:
-
-**macOS / Linux:**
-```json
-{
-  "clangd.path": "/Users/yourname/llvm-21-with-clang-lld-lldb/bin/clangd"
+Because I define `tok_lparen = '('`, `tok_lparen` and `'('` are the same map key. In the loop, I add `Names['(']`. Later, `Names[tok_lparen]` and `Names['(']` are equivalent lookups and find the same entry. This also works for `tok_plus`, `tok_star`, and every other named character token, so I do not list them separately in the map. I also use the loop to name characters I did not declare as tokens.
+
+For names and numbers, I want to include the actual text from the source rather than report only `name` or `number`:
+
+```cpp
+static string FormatTokenForMessage(int Tok) {
+  if (Tok == tok_name)
+    return "name '" + Name + "'";
+  if (Tok == tok_number)
+    return "number '" + NumberLiteral + "'";
+
+  auto It = TokenNames.find(Tok);
+  if (It != TokenNames.end())
+    return It->second;
+  return "unknown token";
 }
 ```
 
-**Windows:**
-```json
-{
-  "clangd.path": "C:\\Users\\yourname\\llvm-21-with-clang-lld-lldb\\bin\\clangd.exe"
+I read that text from the lexer's `Name` and `NumberLiteral` globals. For every other token, I use the name stored in `TokenNames`.
+
+## Tracking Where I Am
+
+To report `(Line 3, Column 8)`, I need to record the line and column as I read each character. I use two globals:
+
+```cpp
+struct SourceLocation {
+  int Line;
+  int Col;
+};
+static SourceLocation CurLoc;
+static SourceLocation LexLoc = {1, 0};
+```
+
+I use `LexLoc` to record how far I have read. I update it every time I read a character in `advance()`. I use `CurLoc` to record where the current token starts. I read `CurLoc` in the parser and in my diagnostics.
+
+I already use `advance()` to normalize line endings. I now update `LexLoc` there too:
+
+```cpp
+static int advance() {
+  int LastChar = getchar();
+  if (LastChar == '\r') {
+    int NextChar = getchar();
+    if (NextChar != '\n' && NextChar != EOF) {
+      // I read one character too far while checking for '\r\n', so I put it back.
+      ungetc(NextChar, stdin);
+    }
+    PyxcSourceMgr.onChar('\n');
+    LexLoc.Line++;
+    LexLoc.Col = 0;
+    return '\n';
+  }
+
+  if (LastChar == '\n') {
+    PyxcSourceMgr.onChar('\n');
+    LexLoc.Line++;
+    LexLoc.Col = 0;
+  } else {
+    PyxcSourceMgr.onChar(LastChar);
+    LexLoc.Col++;
+  }
+
+  return LastChar;
 }
 ```
 
-(Adjust the path for your username.)
+When I read a newline, I increment `Line` and reset `Col` to `0`. For any other character, I increment only `Col`. I explain `PyxcSourceMgr.onChar()` in the next section.
 
-#### Generate compile_commands.json
+In `getToken()`, I copy `LexLoc` into `CurLoc` after I skip whitespace but before I read the token itself:
 
-When you build Pyxc, CMake will generate `compile_commands.json`. This tells clangd how to compile your code.
+```cpp
+while (isspace(LastChar) && LastChar != '\n')
+  LastChar = advance();
 
-In your project's CMakeLists.txt, add:
-
-```cmake
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+CurLoc = LexLoc;
 ```
 
-After building, you'll see `build/compile_commands.json`. clangd reads this automatically.
+By copying the location here, I make `CurLoc` point at the token's first character rather than any whitespace before it.
 
-## Troubleshooting
+I need to copy the location again after a comment. At the start of `getToken()`, I set `CurLoc` to the position of `#`. I then consume the rest of the line and return `tok_eol`. If I leave `CurLoc` at `#`, an error on the next line can report a column from the comment line. I avoid that by copying `LexLoc` again after I consume the newline:
 
-### Build fails with "out of memory"
+```cpp
+if (LastChar == '#') {
+  do
+    LastChar = advance();
+  while (LastChar != EOF && LastChar != '\n');
 
-Ninja uses all CPU cores by default. Limit it:
+  if (LastChar != EOF) {
+    CurLoc = LexLoc;
+    LastChar = ' ';
+    return tok_eol;
+  }
+}
+```
+
+## Buffering Source Lines for the Caret
+
+Knowing *where* the error is isn't enough. I also need the text of that line. I use `SourceManager` to store each line as I read it:
+
+```cpp
+class SourceManager {
+  vector<string> CompletedLines;
+  string CurrentLine;
+
+public:
+  void reset() {
+    CompletedLines.clear();
+    CurrentLine.clear();
+  }
+
+  void onChar(int C) {
+    if (C == '\n') {
+      CompletedLines.push_back(CurrentLine);
+      CurrentLine.clear();
+      return;
+    }
+    if (C != EOF)
+      CurrentLine.push_back(static_cast<char>(C));
+  }
+
+  const string *getLine(int OneBasedLine) const {
+    if (OneBasedLine <= 0)
+      return nullptr;
+    size_t Index = static_cast<size_t>(OneBasedLine - 1);
+    if (Index < CompletedLines.size())
+      return &CompletedLines[Index];
+    // I may need the current line before I have consumed its newline.
+    if (Index == CompletedLines.size())
+      return &CurrentLine;
+    return nullptr;
+  }
+};
+
+static SourceManager PyxcSourceMgr;
+```
+
+I call `onChar()` from `advance()` for every character I read. I add ordinary characters to `CurrentLine`. When I reach `\n`, I move the completed line into `CompletedLines` and clear `CurrentLine` for the next one.
+
+In `getLine()`, I convert the requested line number from 1-based to 0-based. This lets me retrieve a line both while I am reading it and after I have completed it.
+
+## Printing the Caret
+
+Once I have the line text and column, I can print the caret:
+
+```cpp
+static void PrintErrorSourceContext(SourceLocation Loc) {
+  const string *LineText = PyxcSourceMgr.getLine(Loc.Line);
+  if (!LineText)
+    return;
+
+  fprintf(stderr, "%s\n", LineText->c_str());
+  int spaces = Loc.Col - 1;
+  // I guard against an invalid column before printing the spaces.
+  if (spaces < 0)
+    spaces = 0;
+  for (int i = 0; i < spaces; ++i)
+    fputc(' ', stderr);
+  fprintf(stderr, "^~~~\n");
+}
+```
+
+I print the line, then `Col - 1` spaces, then `^~~~`. I subtract one because the column is 1-based but the offset into the line is 0-based.
+
+## Pointing at the Right Place for a Newline
+
+For most errors, `CurLoc` already points where I need it. A missing `:` is different. I do not know it is missing until I ask for the next token and receive `tok_eol`.
+
+Before I return `tok_eol`, I have already consumed the `\n` and incremented `LexLoc.Line`. That leaves `CurLoc.Line` on the next line. I correct this in `GetDiagnosticAnchorLoc()`:
+
+```cpp
+static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
+  if (Tok != tok_eol)
+    return Loc;
+
+  int PrevLine = Loc.Line - 1;
+  if (PrevLine <= 0)
+    return Loc;
+
+  const string *PrevLineText = PyxcSourceMgr.getLine(PrevLine);
+  if (!PrevLineText)
+    return Loc;
+
+  return {PrevLine, static_cast<int>(PrevLineText->size()) + 1};
+}
+```
+
+For any token other than `tok_eol`, I return `Loc` unchanged. For `tok_eol`, I step back one line and report the column just after that line's last character. That is where the missing `:` should have gone:
+
+```
+Error (Line 1, Column 12): Expected ':' in function definition
+def bad(x) return 
+           ^~~~
+```
+
+## Wiring It Into LogError
+
+I already report every parse error through `LogErrorExpression()`. I now use the location and source line there instead of printing only a token description:
+
+```cpp
+unique_ptr<ExpressionNode> LogErrorExpression(const char *Str) {
+  SourceLocation Anchor = GetDiagnosticAnchorLoc(CurLoc, CurrentToken);
+  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
+          Str);
+  PrintErrorSourceContext(Anchor);
+  return nullptr;
+}
+```
+
+I keep `LogErrorSignature()` and `LogErrorFunction()` as small wrappers around `LogErrorExpression()`. By doing this, I give every parse error the same location and caret output.
+
+## Catching Malformed Numbers
+
+I use `strtod` to convert a string to a `double`. I pass it an output parameter named `End` so I can see where the conversion stopped:
+
+```cpp
+char *End = nullptr;
+NumberValue = strtod(NumStr.c_str(), &End);
+```
+
+If `End` points at the string's null terminator, I know `strtod` consumed every character. If it points anywhere else, I know part of the input was invalid. In Chapter 3, I ignored `End` and accepted whatever prefix `strtod` could convert. That is how `1.2.3` quietly became `1.2`.
+
+```cpp
+NumberLiteral = NumStr;
+char *End = nullptr;
+NumberValue = strtod(NumStr.c_str(), &End);
+if (!End || *End != '\0') {
+  LogInvalidNumberLiteralAtLoc(NumStr, CurLoc);
+  return tok_error;
+}
+return tok_number;
+```
+
+For `"1.2.3"`, `strtod` stops at the second `.`, so `End` points at `.3` rather than the terminator. I report the invalid number and return `tok_error` instead of `tok_number`:
+
+```cpp
+static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation Loc) {
+  fprintf(stderr, "Error (Line %d, Column %d): invalid number literal '%s'\n",
+          Loc.Line, Loc.Col, Literal.c_str());
+  PrintErrorSourceContext(Loc);
+}
+```
+
+I do this in `getToken()`, which returns an `int`. I cannot return `nullptr` as I do from a parsing function. Instead, I call the error helper and return `tok_error`.
+
+## Recovering From Errors
+
+After I report a lexer error, I return `tok_error`. I do not want to parse it as a number, name, or operator because that would print a second, unrelated error. I check for it in `MainLoop()` before I call any parsing function:
+
+```cpp
+if (CurrentToken == tok_error) {
+  SynchronizeToLineBoundary();
+  continue;
+}
+```
+
+```cpp
+static void SynchronizeToLineBoundary() {
+  // I leave the boundary token for MainLoop() to handle.
+  while (CurrentToken != tok_eol && CurrentToken != tok_eof)
+    getNextToken();
+}
+```
+
+I call this **panic-mode recovery**. Once I can no longer trust the current parse, I stop interpreting the line. I skip tokens until I reach `tok_eol` or `tok_eof`. I discard the rest of the line, but I return to a state where I know how to continue.
+
+I use the same recovery when I parse a valid construct but find extra tokens after it. In both `HandleFunctionDefinition()` and `HandleTopLevelExpression()`, I check that parsing stopped at `tok_eol` or `tok_eof`:
+
+```cpp
+static void HandleTopLevelExpression() {
+  if (ParseTopLevelExpression()) {
+    if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      SynchronizeToLineBoundary();
+      return;
+    }
+    fprintf(stderr, "Parsed a top-level expression.\n");
+  } else {
+    SynchronizeToLineBoundary();
+  }
+}
+```
+
+For example, when I parse `3 = 10`, I can accept `3` as a complete top-level expression and leave `= 10` unread. In Chapter 3, I printed `Parsed a top-level expression.` and ignored the rest. Now I check for unread tokens, report the unexpected `=`, and discard the rest of the line.
+
+I make `HandleFunctionDefinition()` perform the same check for function definitions. After any failure, including extra trailing tokens, I call `SynchronizeToLineBoundary()` before I print the next prompt.
+
+## Build and Run
 
 ```bash
-ninja -j4  # Use 4 cores instead of all
+cd code/chapter-04
+cmake -S . -B build && cmake --build build
+./build/pyxc
 ```
-
-### Can't find zstd library
-
-Install zstd (see "Optional: Install zstd" above), then rebuild.
-
-Or tell CMake to skip it:
 
 ```bash
-cmake -G Ninja ../llvm \
-  -DLLVM_ENABLE_ZSTD=OFF \
-  # ... other flags
+llvm-lit test/
 ```
 
-### Wrong clang version still showing
+## Try It
 
-Check:
-
-```bash
-echo $PATH
+```pyxc
+ready> def add(x, y):
+   x + y
+Parsed a function definition.
+ready> 1.2.3
+Error (Line 3, Column 1): invalid number literal '1.2.3'
+1.2.3
+^~~~
+ready> def bad(x) return x
+Error (Line 4, Column 12): Expected ':' in function definition
+def bad(x) return 
+           ^~~~
+ready> def missing_colon(x)
+Error (Line 5, Column 21): Expected ':' in function definition
+def missing_colon(x)
+                    ^~~~
+ready>
 ```
-
-Make sure your LLVM `bin` directory comes BEFORE `/usr/bin` or other system paths.
-
-### Windows: Ninja not found
-
-Make sure Ninja is on your `PATH`:
-
-```powershell
-ninja --version
-```
-
-If that fails, download Ninja and add its directory to `PATH` in System Environment Variables.
 
 ## What's Next
 
-LLVM is installed. In Chapter 6, I connect it to the parser: walk the AST and emit LLVM IR for the first time. A function definition becomes a real machine-code function.
+[Chapter 6](chapter-06.md) gets LLVM installed and ready.
 
 ## Need Help?
 
@@ -494,8 +494,9 @@ Build issues? Questions?
 - **Discussions:** [Ask questions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
 
 Include:
+
 - Your OS and version
 - Full error message
-- Output of `cmake --version` and `ninja --version`
+- Output of `cmake --version`
 
-We'll figure it out.
+I'll help you figure it out.

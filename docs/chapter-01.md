@@ -471,7 +471,7 @@ The test order and timing above are from one run; `lit` runs tests in parallel a
 
 ## What's Next
 
-In [Chapter 2](chapter-02.md) I'll read the token stream and work out the structure: that `def add(x, y)` is a function taking two parameters, that `x + y` is an addition.
+[Chapter 2](chapter-02.md) turns tokens into a syntax tree with a recursive-descent parser.
 
 ## Need Help?
 

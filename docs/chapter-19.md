@@ -1,48 +1,61 @@
 ---
-description: "Add pointer types, addr() for taking addresses, and p[i] indexing: so functions can modify the caller's data."
+description: "Add unsigned integer types uint8, uint16, uint32, and uint64 with correct unsigned arithmetic, comparisons, and casts throughout."
 ---
-# 19. pyxc: Pointers
+# 19. pyxc: Unsigned Integer Types
 
 ## What I Am Building
 
-[Chapter 18](chapter-18.md) gave me structs, but with a catch: structs are passed by value. If I hand a struct to a function and the function modifies a field, my copy back at the call site is unchanged. That's fine for pure computations, and it's a deliberate design choice, but sometimes I actually want to modify the caller's data.
-
-That's what pointers are for. After this chapter:
+[Chapter 32](chapter-32.md) added Unicode support to character and string literals. I've had signed integers since [Chapter 18](chapter-18.md), but all of them interpret their top bit as a sign. Sizes, counts, and bit masks are commonly stored as unsigned values in systems code, and without unsigned types I have no way to generate the right instructions for them. After this chapter, `uint8`, `uint16`, `uint32`, and `uint64` are available:
 
 ```pyxc
-struct Point:
-  x: int
-  y: int
-
-def translate(p: ptr[Point], dx: int, dy: int) -> None:
-  p[0].x = p[0].x + dx
-  p[0].y = p[0].y + dy
+extern def printd(x: float64)
 
 def main() -> int:
-  var pt: Point
-  pt.x = 3
-  pt.y = 4
-  translate(addr(pt), 10, 20)
-  printd(float64(pt.x))  # 13.000000
-  printd(float64(pt.y))  # 24.000000
+  var flags: uint32 = 0
+  flags = flags | uint32(1) << uint32(3)   # set bit 3
+  flags = flags | uint32(1) << uint32(7)   # set bit 7
+
+  var mask: uint32 = uint32(255)
+  printd(float64(flags & mask))            # 136.000000
   return 0
+```
+
+```
+136.000000
 ```
 
 ## Source Code
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-19
+cd pyxc-llvm-tutorial/code/chapter-40
 ```
 
 ## Grammar
 
+I add `uint8`, `uint16`, `uint32`, and `uint64` to `builtin-type` and `cast-type`, the only two productions that name concrete integer types:
+
+`code/chapter-40/pyxc.ebnf`
+
 ```grammardiff
  program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
  end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = struct-definition | function-definition | external | top-level-expression ;
+ top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | external | top-level-expression ;
+ type-alias       = "type" name "=" type ;
+ trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
+ trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
+ trait-method-signature  = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ;
  struct-definition       = "struct" name ":" end-of-lines struct-block ;
- struct-block     = indent field-declaration { end-of-lines field-declaration } dedent ;
+ class-definition        = "class" name [ "(" trait-reference { "," trait-reference } ")" ] ":" end-of-lines struct-block ;
+ trait-reference        = name [ "[" type "]" ] ;
+ implementation-definition         = "impl" trait-reference "for" name ":" end-of-lines implementation-block ;
+ implementation-block       = indent implementation-method { end-of-lines implementation-method } dedent ;
+ implementation-method      = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ struct-block     = indent class-member { end-of-lines class-member } dedent ;
+ class-member     = [ visibility ] ( field-declaration | method-definition ) ;
+ visibility      = "public" | "private" ;
+ method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")"
+                   [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
  field-declaration       = name ":" type ;
  function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
  (* If the return type is omitted, it defaults to None. *)
@@ -51,545 +64,340 @@ cd pyxc-llvm-tutorial/code/chapter-19
  function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
  typed-parameter      = name ":" type ;
  if-statement          = "if" expression ":" suite
+                 { end-of-lines "elif" expression ":" suite }
                  [ end-of-lines "else" ":" suite ] ;
+ while-statement       = "while" expression ":" suite ;
+ do-while-statement     = "do" ":" suite end-of-lines "while" expression ;
+ switch-statement      = "switch" expression ":" end-of-lines indent switch-body dedent ;
+ switch-body      = switch-case { end-of-lines switch-case } [ end-of-lines default-case ] ;
+ switch-case      = "case" switch-integer { "," switch-integer } ":" suite ;
+ default-case     = "default" ":" suite ;
  for-statement         = "for"
                    ( "var" name ":" type | name )
                    "=" expression "," expression "," expression ":" suite ;
  variable-statement         = "var" variable-binding { "," variable-binding } ;
- assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
- simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
- compound-statement    = if-statement | for-statement ;
+ assignment-statement      = lvalue assignment-operator expression ; (* assignment is a statement here *)
+ simple-statement      = return-statement | break-statement | continue-statement | variable-statement | assignment-statement | expression ;
+ compound-statement    = if-statement | for-statement | while-statement | do-while-statement | switch-statement ;
  statement       = simple-statement | compound-statement ;
  suite           = simple-statement | compound-statement | end-of-lines block ;
  return-statement      = "return" [ expression ] ;
+ break-statement       = "break" ;
+ continue-statement    = "continue" ;
  statement-separator = end-of-lines | BLOCK_END ;
  block = indent statement { statement-separator statement } dedent ;
- expression      = comparison ;
- comparison      = sum { comparison-operator sum } ;
- comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ expression      = logical-or ;
+ logical-or      = logical-and { "||" logical-and } ;
+ logical-and     = bitwise-or { "&&" bitwise-or } ;
+ bitwise-or      = bitwise-xor { "|" bitwise-xor } ;
+ bitwise-xor     = bitwise-and { "^" bitwise-and } ;
+ bitwise-and     = equality { "&" equality } ;
+ equality        = relational { ("==" | "!=") relational } ;
+ relational      = shift { ("<" | "<=" | ">" | ">=") shift } ;
+ shift           = sum { ("<<" | ">>") sum } ;
  sum             = term { ("+" | "-") term } ;
- term            = unary-expression { ("*" | "/") unary-expression } ;
--lvalue          = name | field-access ;
-+lvalue          = name | field-access | index-expression ;
+ term            = unary-expression { ("*" | "/" | "%") unary-expression } ;
+ lvalue          = name | field-access | index-expression ;
  variable-binding      = name ":" type [ "=" expression ] ;
- unary-expression       = "-" unary-expression | primary ;
--primary         = cast-expression | name-expression | field-access | number-expression | boolean-literal | parenthesized-expression ;
-+primary         = cast-expression | address-expression | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
+ unary-expression       = ("-" | "!" | "~" | "++" | "--") unary-expression | postfix-expression ;
+ postfix-expression     = primary [ postfix-operator ] ;
+ postfix-operator       = "++" | "--" ;
+ primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | character-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
  cast-expression        = cast-type "(" expression ")" ;
-+address-expression        = "addr" "(" lvalue ")" ;
- name-expression  = name | call-expression ;
+ sizeof-expression      = "sizeof" "(" type ")" ;
+ address-expression        = "addr" "(" lvalue ")" ;
+ name-expression  = name | call-expression | method-call-expression | constructor-call-expression ;
  call-expression        = name "(" [ expression { "," expression } ] ")" ;
+ method-call-expression  = name "." name "(" [ expression { "," expression } ] ")" ;
+ constructor-call-expression    = name "(" [ expression { "," expression } ] ")" ;
  field-access     = name "." name { "." name } ;
-+index-expression       = name "[" expression "]" ;
+ index-expression       = name "[" expression "]" ;
  number-expression      = number ;
+ array-literal    = "[" [ expression { "," expression } ] "]" ;
+ string-literal   = "\"" { ? valid Unicode scalar value except " and newline, encoded as UTF-8 ? | literal-escape } "\"" ;
+ character-literal     = "'" ( ? valid Unicode scalar value except ' and newline, encoded as UTF-8 ? | literal-escape ) "'" ;
+ literal-escape   = "\\" ( simple-escape | octal-escape | "x" hex-digit hex-digit
+                    | "u" hex-digit hex-digit hex-digit hex-digit
+                    | "U" hex-digit hex-digit hex-digit hex-digit
+                          hex-digit hex-digit hex-digit hex-digit ) ;
+ simple-escape    = "a" | "b" | "f" | "n" | "r" | "t" | "v"
+                  | "\\" | "'" | "\"" | "?" ;
+ octal-escape     = octal-digit [ octal-digit [ octal-digit ] ] ;
  parenthesized-expression       = "(" expression ")" ;
  indent          = INDENT ;
  dedent          = DEDENT ;
- 
+
+ assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
  name      = (letter | "_") { letter | digit | "_" } ;
  builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
++                | "uint8" | "uint16" | "uint32" | "uint64"
                  | "float" | "float32" | "float64"
                  | "bool" | "None" ;
+ alias-type       = name ;
  struct-type      = name ;
--type            = builtin-type | struct-type ;
-+pointer-type     = "ptr" "[" type "]" ;
-+type            = builtin-type | struct-type | pointer-type ;
+ pointer-type     = "ptr" "[" type "]" ;
+ type            = base-type [ array-suffix ] ;
+ base-type        = builtin-type | alias-type | struct-type | pointer-type ;
+ array-suffix     = "[" integer "]" ;
  cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
++                | "uint8" | "uint16" | "uint32" | "uint64"
                  | "float" | "float32" | "float64"
-                 | "bool" ;
+                 | "bool" | pointer-type ;
  integer         = digit { digit } ;
+ switch-integer       = [ "-" ] integer ;
  number          = ( digit { digit } [ "." { digit } ]
                    | "." digit { digit } ) [ exponent ] ;
  exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
  boolean-literal    = "True" | "False" ;
  letter          = "A".."Z" | "a".."z" ;
  digit           = "0".."9" ;
+ hex-digit       = digit | "A".."F" | "a".."f" ;
+ octal-digit     = "0".."7" ;
  end-of-line             = "\r\n" | "\r" | "\n" ;
  comment = "#" { comment-character } ;
  comment-character = ? any character except "\r" and "\n" ? ;
  whitespace = " " | "\t" | "\v" | "\f" ;
  INDENT          = ? synthetic token emitted by lexer ? ;
  DEDENT          = ? synthetic token emitted by lexer ? ;
- 
+
  BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
-`ptr[T]` is a type annotation only: I can't construct one without `addr`. `addr` takes an lvalue (a named variable, optionally followed by field access) and returns a pointer to it. `p[i]` reads or writes the value at offset `i` from the pointer. `p[i].field` chains field access after indexing, for pointers to structs.
+## New Tokens, Keywords, and `ValueType` Enum Values
 
-Nested pointer types (`ptr[ptr[int]]`) and pointers to `None` are rejected at parse time.
-
-One honest gap between this grammar and the real parser: `index-expression` above is written as `name "[" expression "]"`, a bare name only. But the parser's `ParseIndexExpression` is also called with a field chain as the base (`p.field[i]`, when `p.field` is itself a pointer) — the `.ebnf` file doesn't spell that out as its own alternative. I noticed the same kind of drift between the `.ebnf` file and the real parser back in [Chapter 13](chapter-13.md); this is the same category of thing, not a new problem.
-
-## Two New Keywords
+Four new tokens and keywords:
 
 ```cpp
-tok_ptr  = -35,
-tok_addr = -36,
+tok_uint8  = -65,
+tok_uint16 = -66,
+tok_uint32 = -67,
+tok_uint64 = -68,
 ```
 
-Registered in the keyword map:
-
 ```cpp
-{"ptr", tok_ptr}, {"addr", tok_addr}
+{"uint8", tok_uint8}, {"uint16", tok_uint16},
+{"uint32", tok_uint32}, {"uint64", tok_uint64},
 ```
 
-## Representing a Pointer's Type
-
-`Pointer` is a new entry in the `ValueType` enum, after `Struct`. Unlike scalar types, a pointer value isn't self-describing: `ValueType::Pointer` alone doesn't say what the pointer points to. I need the pointee type carried alongside it.
-
-For scalar types and structs, the pointee information is carried in the `StructName` string field that already exists on every `ExpressionNode` node. For pointers, that same field is reused to carry an encoded string describing the pointee:
+Four new values in the `ValueType` enum:
 
 ```cpp
-static string EncodePointerType(ValueType PointeeType,
-                                const string &PointeeStructName) {
-  return std::to_string(static_cast<int>(PointeeType)) + ":" + PointeeStructName;
+UInt8,
+UInt16,
+UInt32,
+UInt64,
+```
+
+I give `ParseTypeToken` cases for all four so they work in type annotations and the `cast-type` production:
+
+```cpp
+case tok_uint8:  getNextToken(); BaseType = ValueType::UInt8;  break;
+case tok_uint16: getNextToken(); BaseType = ValueType::UInt16; break;
+case tok_uint32: getNextToken(); BaseType = ValueType::UInt32; break;
+case tok_uint64: getNextToken(); BaseType = ValueType::UInt64; break;
+```
+
+## No New LLVM IR Types
+
+LLVM has no separate "unsigned integer" types. `uint32` and `int32` are both `i32` in the IR. I map the four new `ValueType` values to the same LLVM types as their signed counterparts, in `LLVMTypeFor`:
+
+```cpp
+case ValueType::UInt8:  return Type::getInt8Ty(*TheContext);
+case ValueType::UInt16: return Type::getInt16Ty(*TheContext);
+case ValueType::UInt32: return Type::getInt32Ty(*TheContext);
+case ValueType::UInt64: return Type::getInt64Ty(*TheContext);
+```
+
+The signedness lives entirely in which instruction I emit. This also matches C's representation: `size_t` maps to `uint64` on a 64-bit target, so that's what I declare when a parameter or return value on an `extern def` is a C `size_t`.
+
+## Signed and Unsigned Predicates
+
+I add two new predicate functions that drive all instruction selection:
+
+```cpp
+static bool IsUnsignedIntType(ValueType Type) {
+  return Type == ValueType::UInt8 || Type == ValueType::UInt16 ||
+         Type == ValueType::UInt32 || Type == ValueType::UInt64;
 }
 
-static bool DecodePointerType(const string &Encoded, ValueType &PointeeType,
-                              string &PointeeStructName) {
-  auto Pos = Encoded.find(':');
-  // split on ':', parse the int as ValueType, rest is struct name
-  ...
-}
-```
-
-Every type in the compiler is described by two fields: a `ValueType` enum and a `StructName` string. For most types `StructName` is empty. For structs it holds the struct name. For pointers it holds a serialized description of the pointee, because `ValueType::Pointer` alone does not say what the pointer points to:
-
-| Type | `ValueType` | `StructName` |
-|---|---|---|
-| `int`, `float64`, … | `Int`, `Float64`, … | `""` |
-| `Point` (struct) | `Struct` | `"Point"` |
-| `ptr[int]` | `Pointer` | `"1:"` |
-| `ptr[Point]` | `Pointer` | `"10:Point"` |
-
-The format is `"<ValueType int>:<struct name>"`. `ptr[int]` encodes as `"1:"` (`ValueType::Int` = 1, no struct name). `ptr[Point]` encodes as `"10:Point"` (`ValueType::Struct` = 10, struct name `"Point"`). The caller that created the pointer type is responsible for encoding; any site that needs the pointee type decodes it.
-
-This reuses the existing type-tracking infrastructure without adding a new field to the base class. It is a tradeoff: the encoding is not beautiful, but it works and the surface is small.
-
-## The LLVM Pointer Type
-
-In LLVM IR, all pointer types are the same opaque type:
-
-```cpp
-case ValueType::Pointer:
-  return PointerType::getUnqual(*TheContext);
-```
-
-`PointerType::getUnqual` produces the opaque `ptr` type: LLVM does not distinguish `ptr[int]` from `ptr[Point]` in the type system. The element type only appears in `getelementptr` and `load`/`store` instructions, not in the pointer type itself. This is LLVM's opaque pointer model, which has been the default since LLVM 15.
-
-The zero value for a pointer is null:
-
-```cpp
-case ValueType::Pointer:
-  return ConstantPointerNull::get(cast<PointerType>(LLVMTypeFor(ValueType::Pointer)));
-```
-
-`var p: ptr[int]` with no initializer starts as a null pointer.
-
-## Parsing `ptr[T]`
-
-`ParseTypeToken` handles the `tok_ptr` case:
-
-```cpp
-case tok_ptr: {
-  getNextToken(); // eat 'ptr'
-  // expect '['
-  getNextToken(); // eat '['
-  string PointeeStructName;
-  ValueType PointeeType = ParseTypeToken(&PointeeStructName);
-  // reject None and nested ptr
-  getNextToken(); // eat ']'
-  if (StructName)
-    *StructName = EncodePointerType(PointeeType, PointeeStructName);
-  return ValueType::Pointer;
+static bool IsSignedIntType(ValueType Type) {
+  return IsIntType(Type) && !IsUnsignedIntType(Type);
 }
 ```
 
-The parsed pointee type is immediately encoded and written into the `StructName` output parameter. From this point on, the pointer's pointee information travels with it as an opaque string through `VarScopes`, `FunctionSignatureNode::ParameterInfo`, `NameExpressionNode`, and every other place that stores a `ValueType` alongside a `StructName`.
-
-## `addr`: Taking the Address of an Lvalue
-
-`addr(x)` returns a pointer to `x`. `addr(p.x)` returns a pointer to the field `x` of struct `p`. `ParseAddrExpression` handles both:
+I expand `IsIntType` to include all four unsigned types:
 
 ```cpp
-static unique_ptr<ExpressionNode> ParseAddrExpression() {
-  getNextToken(); // eat 'addr'
-  // expect '('
-  getNextToken(); // eat '('
-  // expect identifier: addr requires an lvalue
-  string BaseName = Name;
-  getNextToken(); // eat identifier
-  ValueType CurType = LookupVarType(BaseName);
-  // walk optional field chain: addr(o.inner.value)
-  vector<string> Path;
-  while (CurrentToken == '.') {
-    // validate each field, advance CurType and CurStruct
-    Path.push_back(Field);
+return Type == ValueType::Int || Type == ValueType::Int8 || ... ||
+       Type == ValueType::UInt8 || Type == ValueType::UInt16 ||
+       Type == ValueType::UInt32 || Type == ValueType::UInt64;
+```
+
+## Implicit Widening Rule — Same Signedness Only
+
+I give `CanWidenInt` a signedness gate. `IsAssignable` itself is unchanged: it still just calls `CanWidenInt` for the integer-to-integer case, but that helper now rejects mixed signedness before comparing the bit widths it's been comparing since Chapter 18:
+
+```cpp
+static bool CanWidenInt(ValueType From, ValueType To) {
+  if (From == To)
+    return true;
+  if (IsIntType(From) && IsIntType(To)) {
+    if (IsUnsignedIntType(From) != IsUnsignedIntType(To))
+      return false;
+    unsigned FromBits = LLVMTypeFor(From)->getIntegerBitWidth();
+    unsigned ToBits = LLVMTypeFor(To)->getIntegerBitWidth();
+    return FromBits <= ToBits;
   }
-  // expect ')'
-  return make_unique<AddrExpressionNode>(BaseName, Path, CurType,
-                                  EncodePointerType(CurType, CurStruct));
+  return false;
 }
 ```
 
-The resulting `AddrExpressionNode` has type `ValueType::Pointer` and its `StructName` holds the encoded pointee type.
-
-`addr` only accepts a named variable, optionally with field access. Expressions like `addr(1 + 2)` are rejected immediately: the parser checks for `tok_name` right after the opening `(`.
-
-### Codegen for `addr`
-
-```cpp
-Value *AddrExpressionNode::codegen() {
-  if (FieldPath.empty()) {
-    // addr(x): return the alloca or global directly
-    auto It = NamedValues.find(BaseName);
-    if (It != NamedValues.end() && It->second)
-      return It->second;
-    if (auto *GV = GetGlobalVariable(BaseName))
-      return GV;
-    return LogErrorV("Unknown variable name");
-  }
-  // addr(p.x): return the field pointer from GetFieldAddress
-  Value *Ptr = GetFieldAddress(BaseName, FieldPath);
-  return Ptr;
-}
-```
-
-For a local variable, LLVM already represents it as an `alloca`: a pointer to its storage. `addr(x)` simply returns that pointer without any new instruction. For a struct field, `GetFieldAddress` (from chapter 17) computes and returns the GEP pointer for that field.
-
-```llvm
-; var x: int = 42
-; var p: ptr[int] = addr(x)
-%p = alloca ptr, align 8
-%x = alloca i64, align 8
-store i64 42, ptr %x, align 8
-store ptr %x, ptr %p, align 8   ; addr(x) is just %x: the alloca itself
-```
-
-```llvm
-; var pt: Point
-; var px: ptr[int] = addr(pt.x)
-%px = alloca ptr, align 8
-%pt = alloca %struct.Point, align 8
-store %struct.Point zeroinitializer, ptr %pt, align 8
-%fieldptr = getelementptr inbounds nuw %struct.Point, ptr %pt, i32 0, i32 0
-store ptr %fieldptr, ptr %px, align 8
-```
-
-`%p`/`%px` show up before `%x`/`%pt` in the IR even though they're declared second in the source: `CreateEntryBlockAlloca` inserts every new `alloca` at the very front of the entry block (`TheFunction->getEntryBlock().begin()`), not after whatever's already there, so each variable's `alloca` ends up ahead of every one declared before it.
-
-## `p[i]`: Pointer Indexing
-
-`p[i]` computes the address at offset `i` from the pointer and loads from it. `p[i] = v` stores to it.
-
-### Parsing
-
-`ParseIndexExpression` is called from `ParseNameExpression` whenever `[` follows a pointer-typed variable or field:
-
-```cpp
-static unique_ptr<ExpressionNode> ParseIndexExpression(string BaseName,
-                                          vector<string> FieldPath,
-                                          ValueType BaseType,
-                                          const string &BaseStructName) {
-  // reject if base is not a pointer
-  getNextToken(); // eat '['
-  auto Index = ParseExpression();
-  // reject if index is not an integer type
-  getNextToken(); // eat ']'
-  // decode pointee type from BaseStructName
-  return make_unique<IndexExpressionNode>(BaseName, FieldPath, Index, ElemType, ElemStruct);
-}
-```
-
-The element type (what the pointer points to) is decoded from the encoded string in `BaseStructName`.
-
-### The Shared Address Computation
-
-Both reads and writes need the element address. `BuildIndexElementPtr` computes it without loading:
-
-```cpp
-static Value *BuildIndexElementPtr(IndexExpressionNode *IdxExpr) {
-  // load the pointer value from the base variable or field
-  Value *BasePtr = LoadPointerValue(IdxExpr->getBaseName(),
-                                    IdxExpr->getFieldPath(), ...);
-  // widen index to i64 if needed
-  Value *IdxVal = ...;
-  // GEP: &base[i]
-  return Builder->CreateInBoundsGEP(
-      LLVMTypeFor(IdxExpr->getType(), IdxExpr->getStructName()),
-      BasePtr, IdxVal, "elemptr");
-}
-```
-
-The index is always widened to `i64` before the GEP: LLVM requires a consistent index type.
-
-### Read codegen
-
-```cpp
-Value *IndexExpressionNode::codegen() {
-  Value *ElemPtr = BuildIndexElementPtr(this);
-  return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()),
-                             ElemPtr, "elemload");
-}
-```
-
-For `p[0]` where `p: ptr[int]`:
-
-```llvm
-%ptrload = load ptr, ptr %p        ; load the pointer value
-%elemptr = getelementptr inbounds i64, ptr %ptrload, i64 0
-%elemload = load i64, ptr %elemptr
-```
-
-For `p[1]`:
-
-```llvm
-%ptrload = load ptr, ptr %p
-%elemptr = getelementptr inbounds i64, ptr %ptrload, i64 1
-%elemload = load i64, ptr %elemptr
-```
-
-### Write codegen
-
-```cpp
-Value *IndexAssignmentExpressionNode::codegen() {
-  Value *ElemPtr = BuildIndexElementPtr(LHS.get());
-  Value *Val = RHS->codegen();
-  Val = EmitImplicitCast(Val, RHS->getType(), getType());
-  Builder->CreateStore(Val, ElemPtr);
-  return Val;
-}
-```
-
-For `p[0] = 99` where `p: ptr[int]`:
-
-```llvm
-%ptrload = load ptr, ptr %p
-%elemptr = getelementptr inbounds i64, ptr %ptrload, i64 0
-store i64 99, ptr %elemptr
-```
-
-The implicit cast rules from chapter 16 apply: assigning an integer to a `ptr[float64]` is a type error; assigning `int8` to `ptr[int]` widens.
-
-## `p[i].field`: Field Access After Indexing
-
-For pointers to structs, I can chain field access after the index: `p[0].x`. This needs a separate AST node because the base is an index expression, not a named variable.
-
-### AST Node for Indexed Field Access
-
-```cpp
-class IndexedFieldExpressionNode : public ExpressionNode {
-  unique_ptr<IndexExpressionNode> BaseIndex;  // the p[i] part
-  vector<string> FieldPath;            // the field chain
-  ...
-};
-```
-
-`ParseIndexedFieldAccessExpression` is called when `ParseNameExpression` sees a `.` after parsing an index expression. It walks the field chain exactly like `ParseFieldAccessExpression` from chapter 17:
-
-```cpp
-static unique_ptr<ExpressionNode>
-ParseIndexedFieldAccessExpression(unique_ptr<IndexExpressionNode> BaseIndex) {
-  // walk '.field' chain, validating each step against StructTypes
-  return make_unique<IndexedFieldExpressionNode>(BaseIndex, Path, CurType, CurStruct);
-}
-```
-
-### Codegen
-
-```cpp
-Value *IndexedFieldExpressionNode::codegen() {
-  // get the element address without loading (BuildIndexElementPtr)
-  Value *Ptr = BuildIndexElementPtr(BaseIndex.get());
-  // walk field GEPs from that address
-  for (const auto &FieldName : FieldPath) {
-    Ptr = Builder->CreateStructGEP(BaseLLVM, Ptr, Idx, "fieldptr");
-    // advance type
-  }
-  return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), Ptr, "fieldload");
-}
-```
-
-`BuildIndexElementPtr` computes the element address without loading the struct value: so the struct GEPs can chain directly from the element pointer.
-
-For `p[0].x` where `p: ptr[Point]`:
-
-```llvm
-%ptrload = load ptr, ptr %p
-%elemptr  = getelementptr inbounds %struct.Point, ptr %ptrload, i64 0
-%fieldptr = getelementptr inbounds %struct.Point, ptr %elemptr, i32 0, i32 0
-%fieldload = load i64, ptr %fieldptr
-```
-
-For `p[0].x = v` (write):
-
-```llvm
-%ptrload = load ptr, ptr %p
-%elemptr  = getelementptr inbounds %struct.Point, ptr %ptrload, i64 0
-%fieldptr = getelementptr inbounds %struct.Point, ptr %elemptr, i32 0, i32 0
-store i64 %v, ptr %fieldptr
-```
-
-Two GEPs: one to reach element 0 of the array, one to reach field `x` of that element. No load between them: the pointer chains through.
-
-## Mutation Through a Pointer Parameter
-
-This is the payoff. A function that takes `ptr[T]` can modify the caller's data:
+`uint8 → uint64` widens without a cast. `int32 → uint32` or `uint32 → int64` requires an explicit cast. This matches my design intent: implicit signed/unsigned conversion is a common bug source in C, and I don't want pyxc doing it silently.
 
 ```pyxc
-def set_value(p: ptr[int], v: int) -> None:
-  p[0] = v
-
-def main() -> int:
-  var x: int = 5
-  set_value(addr(x), 100)
-  # x is now 100
-  return 0
+var a: uint32 = 1
+var b: int32  = 2
+a = a + b
+```
+```
+Error (Line 3, Column 10): Type mismatch in binary operator
+a = a + b
+         ^~~~
 ```
 
-```llvm
-define void @set_value(ptr %p, i64 %v) {
-entry:
-  %v2 = alloca i64, align 8
-  %p1 = alloca ptr, align 8
-  store ptr %p, ptr %p1, align 8
-  store i64 %v, ptr %v2, align 8
-  %ptrload = load ptr, ptr %p1, align 8
-  %elemptr = getelementptr inbounds i64, ptr %ptrload, i64 0
-  %v3 = load i64, ptr %v2, align 8
-  store i64 %v3, ptr %elemptr, align 8
-  ret void
-}
+Cast explicitly to fix it: `a = a + uint32(b)`.
+
+## Instruction Selection — Seven Changed Sites
+
+### Integer Widening
+
+```cpp
+// Before: always sext
+return Builder->CreateSExt(V, LLVMTypeFor(To), "sext");
+
+// After:
+return IsUnsignedIntType(From)
+           ? Builder->CreateZExt(V, LLVMTypeFor(To), "zext")
+           : Builder->CreateSExt(V, LLVMTypeFor(To), "sext");
 ```
 
-The pointer is passed by value (it's just an address), but the store through it writes to `x`'s alloca in the caller's stack frame. The caller sees the updated value.
+Unsigned types use `zext` (zero-extend) rather than `sext` (sign-extend).
 
-Pointer arguments are type-checked: passing `ptr[float64]` where `ptr[int]` is expected is a type error.
+### Integer → float
 
-## Parse Flow for Name Expressions
-
-The full sequence of what `ParseNameExpression` handles, in order:
-
-1. Parse the base identifier.
-2. If `.` follows → parse field chain (`FieldExpressionNode`).
-3. If `[` follows → parse index expression (`IndexExpressionNode`).
-4. If `.` follows after step 3 → parse field chain on the index result (`IndexedFieldExpressionNode`).
-
-This covers: `x`, `p.field`, `p[i]`, `p.field[i]`, `p[i].field`, `p[i].field.subfield`.
-
-The statement parser has the same sequence to handle the left side of assignments.
-
-## Build and Run
-
-```bash
-cd code/chapter-19
-cmake -S . -B build && cmake --build build
+```cpp
+return IsUnsignedIntType(From)
+           ? Builder->CreateUIToFP(V, LLVMTypeFor(To), "uitofp")
+           : Builder->CreateSIToFP(V, LLVMTypeFor(To), "sitofp");
 ```
+
+`uitofp` treats the bit pattern as an unsigned integer, producing the correct positive float for `uint32(-1)` = 4294967295.0. `uint64(-1)` is `18446744073709551615`; converting that to `float64` rounds, since `float64` only represents integers exactly up to `2^53`.
+
+### Float → integer
+
+```cpp
+return IsUnsignedIntType(To)
+           ? Builder->CreateFPToUI(V, LLVMTypeFor(To), "fptoui")
+           : Builder->CreateFPToSI(V, LLVMTypeFor(To), "fptosi");
+```
+
+### Division and remainder
+
+```cpp
+// / operator:
+return IsUnsignedIntType(ResultType) ? Builder->CreateUDiv(L, R, "divtmp")
+                                     : Builder->CreateSDiv(L, R, "divtmp");
+// % operator:
+return IsUnsignedIntType(ResultType) ? Builder->CreateURem(L, R, "modtmp")
+                                     : Builder->CreateSRem(L, R, "modtmp");
+```
+
+### Right shift
+
+```cpp
+return IsUnsignedIntType(Ty) ? Builder->CreateLShr(L, R, "shrtmp")
+                              : Builder->CreateAShr(L, R, "shrtmp");
+```
+
+`lshr` fills vacated high bits with zero, `ashr` fills with the sign bit, so right shift is always logical for unsigned types: `uint32(-1) >> 1` gives `2147483647`, not a sign-extended `4294967295`.
+
+### Comparisons (`<`, `<=`, `>`, `>=`)
+
+```cpp
+// '<':
+return IsUnsignedIntType(CompareType)
+           ? Builder->CreateICmpULT(L, R, "cmptmp")
+           : Builder->CreateICmpSLT(L, R, "cmptmp");
+// '>':
+return IsUnsignedIntType(CompareType)
+           ? Builder->CreateICmpUGT(L, R, "cmptmp")
+           : Builder->CreateICmpSGT(L, R, "cmptmp");
+// '<=':
+return IsUnsignedIntType(CompareType)
+           ? Builder->CreateICmpULE(L, R, "cmptmp")
+           : Builder->CreateICmpSLE(L, R, "cmptmp");
+// '>=':
+return IsUnsignedIntType(CompareType)
+           ? Builder->CreateICmpUGE(L, R, "cmptmp")
+           : Builder->CreateICmpSGE(L, R, "cmptmp");
+```
+
+`==` and `!=` are signedness-agnostic (`icmp eq` / `icmp ne`); they are unchanged.
+
+### Literal range check
+
+`ParseNumberExpression` already checks that a literal fits in the target type. I update the max-value calculation to use `APInt::getAllOnes(Bits)` for unsigned types:
+
+```cpp
+APInt Max = IsUnsignedIntType(Type) ? APInt::getAllOnes(Bits)
+                                    : APInt::getSignedMaxValue(Bits);
+```
+
+`getAllOnes` is the all-bits-set value (`0xFF`, `0xFFFF`, etc.), which is the maximum for an unsigned type. `getSignedMaxValue` is `0x7F`, `0x7FFF`, etc.
+
+## Explicit Casts
+
+I always allow explicit casts between signed and unsigned types. They reinterpret the bit pattern:
+
+```pyxc
+var x: int32  = -1
+var y: uint32 = uint32(x)   # 4294967295
+var z: int32  = int32(y)    # -1
+```
+
+Same bit width: bits are unchanged. Narrowing truncates to the low bits.
 
 ## Try It
 
-### Take an address, read through it
-
 ```pyxc
 extern def printd(x: float64)
 
 def main() -> int:
-  var x: int = 42
-  var p: ptr[int] = addr(x)
-  printd(float64(p[0]))
+  var si: int32 = -1
+  var ui: uint32 = uint32(si)
+  if si < 0:
+    printd(1.0)
+  else:
+    printd(0.0)
+  if ui < uint32(0):
+    printd(1.0)
+  else:
+    printd(0.0)
+  printd(float64(ui >> uint32(1)))
   return 0
 ```
 
-```bash
-42.000000
+```
+1.000000
+0.000000
+2147483647.000000
 ```
 
-### Write through a pointer, see it in the caller
-
-```pyxc
-extern def printd(x: float64)
-
-def main() -> int:
-  var x: int = 5
-  var p: ptr[int] = addr(x)
-  p[0] = 99
-  printd(float64(x))
-  return 0
-```
-
-```bash
-99.000000
-```
-
-### Pass a struct by pointer
-
-```pyxc
-extern def printd(x: float64)
-
-struct Point:
-  x: int
-  y: int
-
-def set_x(p: ptr[Point], v: int) -> None:
-  p[0].x = v
-
-def main() -> int:
-  var pt: Point
-  pt.x = 3
-  set_x(addr(pt), 7)
-  printd(float64(pt.x))
-  return 0
-```
-
-```bash
-7.000000
-```
-
-### Address of a struct field
-
-```pyxc
-extern def printd(x: float64)
-
-struct Point:
-  x: int
-  y: int
-
-def main() -> int:
-  var p: Point
-  p.x = 11
-  var px: ptr[int] = addr(p.x)
-  printd(float64(px[0]))
-  return 0
-```
-
-```bash
-11.000000
-```
-
-### Inspect the IR
-
-```bash
-pyxc --emit llvm-ir -o out.ll program.pyxc
-grep 'getelementptr\|load\|store' out.ll
-```
-
-## Known Limitations
-
-**No pointer arithmetic.** `p + 1` is not supported: use `p[1]` to access adjacent elements.
-
-**No nested pointers.** `ptr[ptr[int]]` is rejected at parse time.
-
-**No pointer comparisons.** `p == nullptr` is not supported.
-
-**No pointer-to-pointer casting.** You cannot reinterpret a `ptr[int]` as a `ptr[float64]`.
-
-**Null pointer is silent.** `var p: ptr[int]` with no initializer is a null pointer. Dereferencing it crashes at runtime with no helpful error. Bounds checking and null safety are not implemented.
-
-**Pointee type is encoded in a string.** The `StructName` field on `ExpressionNode` nodes doubles as pointer type metadata, stored as `"<ValueType int>:<struct name>"` (e.g. `"1:"` for `ptr[int]`, `"10:Point"` for `ptr[Point]`). It works but is not the cleanest representation: a dedicated field would be cleaner. This is a consequence of the single-AST-hierarchy design established in chapter 12.
+Same 32 bits, `si` and `ui`. As `int32`, that bit pattern is negative. As `uint32`, it's not — `ui < uint32(0)` can never be true, since there's no such thing as a negative `uint32`. And shifting it right doesn't sign-extend: I get `2147483647`, not a value with the top bit still set.
 
 ## What's Next
 
-[Chapter 20](chapter-20.md) adds pointer arithmetic: `p + n` and `p - n` to move a pointer by a number of elements, and pointer subtraction to measure the distance between two. With that and `addr` in place, I have the building blocks fixed-size arrays will need a few chapters later.
+[Chapter 20](chapter-20.md) adds `-g` debug info, now with real types to describe.
 
 ## Need Help?
 

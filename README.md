@@ -306,12 +306,6 @@ Chapters 1–45 are complete. Each one is a standalone, buildable snapshot of th
 
 Chapter 46 (Closures) and Chapters 47–53 (Concurrency Model and Safety Rules, Spawning Tasks and Threads, Shared State and Synchronization, Message Passing, Parallel Loops and Work Partitioning, Determinism/Races/Debugging, Parallel Compilation Pipeline) are planned but not yet written — see [ROADMAP.md](ROADMAP.md) for details and open design questions.
 
-## Credits
-
-This project builds on ideas from the LLVM Kaleidoscope tutorial and extends them into a Pythonic, systems-oriented learning track.
-
-Kaleidoscope: <https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html>
-
 ## License
 
 MIT

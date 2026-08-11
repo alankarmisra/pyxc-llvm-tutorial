@@ -1,44 +1,50 @@
 ---
-description: "Add bitwise operators &, |, ^, <<, >> and unary ~ with C-standard precedence and integer-only type checking."
+description: "Complete pyxc's arithmetic: add / and %, five compound assignment operators, and prefix/postfix ++/-- for all lvalue shapes."
 ---
-# 35. pyxc: Bitwise Operators
+# 35. pyxc: Arithmetic Completeness
 
 ## What I Am Building
 
-I'm pretty much done with the loop story after [Chapter 34](chapter-34.md). The last major gap before K&R-style systems programming is bitwise manipulation. If I add that, I can use flags, masks, and bit-shifting in my code and crack more of the K&R-style problems. Here's what I'm aiming to get working:
+In [Chapter 42](chapter-42.md), I finished the object model. Before moving further, I want to close a gap: I've given pyxc `+`, `-`, and `*`, but not `/` or `%`. I haven't added compound assignment (`+=`, `*=`, etc.), and I haven't added `++` or `--` either. After this chapter, all of that works:
 
 ```pyxc
 extern def printd(x: float64)
 
 def main() -> int:
-  var flags: int = 0
-  flags = flags | 1        # set bit 0
-  flags = flags | 4        # set bit 2
-  flags = flags & ~2       # clear bit 1 (already clear, but pattern works)
+  var a: int = 17
+  var b: int = 4
+  var q: int = a / b
+  var r: int = a % b
 
-  var shifted: int = 1 << 3   # 8
-  var masked: int = shifted & 255
+  var x: int = 10
+  x += 5
+  x -= 3
+  x *= 2
+  x /= 4
+  x %= 10
 
-  printd(float64(flags + masked))
+  var i: int = 0
+  i++
+  ++i
+
+  printd(float64(q + r + x + i))
   return 0
 ```
 
-```text
+```
 13.000000
 ```
-
-I use `255` rather than `0xFF` here: pyxc doesn't have hexadecimal number literals yet, so `0xFF` doesn't parse. I confirmed this by trying it directly — it's not something this chapter adds either.
 
 ## Source Code
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-35
+cd pyxc-llvm-tutorial/code/chapter-32
 ```
 
 ## Grammar
 
-`&`, `|`, `^`, `<<`, and `>>` each get their own grammar tier, following C's precedence ordering. The old flat `comparison` production splits into `equality` and `relational`, and three new bitwise tiers slot in around them; `unary-expression` gains `~`:
+I change three areas of the grammar. I replace the bare `=` in `assignment-statement` with `assignment-operator`, now accepting any of the six assignment operators. `term` and `unary-expression` both change to fold in `%` and `++`/`--`, and a new `postfix-expression` production captures postfix `++`/`--` between `unary-expression` and `primary`:
 
 ```grammardiff
  program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
@@ -71,39 +77,28 @@ cd pyxc-llvm-tutorial/code/chapter-35
  for-statement         = "for"
                    ( "var" name ":" type | name )
                    "=" expression "," expression "," expression ":" suite ;
- while-statement       = "while" expression ":" suite ;
- do-while-statement     = "do" ":" suite end-of-lines "while" expression ;
  variable-statement         = "var" variable-binding { "," variable-binding } ;
- assignment-statement      = lvalue assignment-operator expression ; (* assignment is a statement here *)
- simple-statement      = return-statement | break-statement | continue-statement | variable-statement | assignment-statement | expression ;
- compound-statement    = if-statement | for-statement | while-statement | do-while-statement ;
+-assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
++assignment-statement      = lvalue assignment-operator expression ; (* assignment is a statement here *)
+ simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
+ compound-statement    = if-statement | for-statement ;
  statement       = simple-statement | compound-statement ;
  suite           = simple-statement | compound-statement | end-of-lines block ;
  return-statement      = "return" [ expression ] ;
- break-statement       = "break" ;
- continue-statement    = "continue" ;
  statement-separator = end-of-lines | BLOCK_END ;
  block = indent statement { statement-separator statement } dedent ;
- expression      = logical-or ;
- logical-or      = logical-and { "||" logical-and } ;
--logical-and     = comparison { "&&" comparison } ;
--comparison      = sum { comparison-operator sum } ;
--comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
-+logical-and     = bitwise-or { "&&" bitwise-or } ;
-+bitwise-or      = bitwise-xor { "|" bitwise-xor } ;
-+bitwise-xor     = bitwise-and { "^" bitwise-and } ;
-+bitwise-and     = equality { "&" equality } ;
-+equality        = relational { ("==" | "!=") relational } ;
-+relational      = shift { ("<" | "<=" | ">" | ">=") shift } ;
-+shift           = sum { ("<<" | ">>") sum } ;
+ expression      = comparison ;
+ comparison      = sum { comparison-operator sum } ;
+ comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
  sum             = term { ("+" | "-") term } ;
- term            = unary-expression { ("*" | "/" | "%") unary-expression } ;
+-term            = unary-expression { ("*" | "/") unary-expression } ;
++term            = unary-expression { ("*" | "/" | "%") unary-expression } ;
  lvalue          = name | field-access | index-expression ;
  variable-binding      = name ":" type [ "=" expression ] ;
--unary-expression       = ("-" | "!" | "++" | "--") unary-expression | postfix-expression ;
-+unary-expression       = ("-" | "!" | "~" | "++" | "--") unary-expression | postfix-expression ;
- postfix-expression     = primary [ postfix-operator ] ;
- postfix-operator       = "++" | "--" ;
+-unary-expression       = "-" unary-expression | primary ;
++unary-expression       = ("-" | "++" | "--") unary-expression | postfix-expression ;
++postfix-expression     = primary [ postfix-operator ] ;
++postfix-operator       = "++" | "--" ;
  primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
  cast-expression        = cast-type "(" expression ")" ;
  sizeof-expression      = "sizeof" "(" type ")" ;
@@ -122,7 +117,7 @@ cd pyxc-llvm-tutorial/code/chapter-35
  indent          = INDENT ;
  dedent          = DEDENT ;
  
- assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
++assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
  name      = (letter | "_") { letter | digit | "_" } ;
  builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
                  | "float" | "float32" | "float64"
@@ -153,239 +148,274 @@ cd pyxc-llvm-tutorial/code/chapter-35
  BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
-`bitwise-and` sits directly above `equality`, which is exactly what produces C's famous precedence gotcha: since each side of `&` is a full `equality` (which can itself contain `==`), `a & b == 0` parses as `a & (b == 0)`, not `(a & b) == 0`. I hit this myself while testing rather than just asserting it: `a & b == 0` for integer `a`, `b` is a real type error, "Type mismatch in binary operator", precisely because it parses as `a & (b == 0)` and `&` refuses a `bool` operand on the right. Getting `(a & b) == 0` requires the parentheses.
+## New Tokens and Lexer Peek-Ahead
 
-## New Tokens for `<<` and `>>`
-
-Single-character operators like `&`, `|`, `^`, and `~` already fall through the lexer's catch-all ASCII path, returning their own character values as tokens. `<<` and `>>` are two-character, so they need real token values:
+I add seven new tokens to cover the compound assignment operators and the increment/decrement operators:
 
 ```cpp
-tok_shl = -58, // <<
-tok_shr = -59, // >>
+tok_pluseq     = -45,   // +=
+tok_minuseq    = -46,   // -=
+tok_muleq      = -47,   // *=
+tok_diveq      = -48,   // /=
+tok_modeq      = -49,   // %=
+tok_plusplus   = -56,   // ++
+tok_minusminus = -57,   // --
 ```
 
-## Lexer Peek-Ahead for Shifts
-
-The existing `<` and `>` paths already peeked one character ahead for `=` (to produce `<=`/`>=`). I extend them to also check for a second `<` or `>`:
+I produce each with a one-character peek in the lexer. The `+` path illustrates the pattern: when I see `+`, I peek at the next character to decide between `+=`, `++`, and bare `+`:
 
 ```cpp
-if (LexerLastChar == '<') {
+if (LexerLastChar == '+') {
   int Next = peek();
-  int Tok = tok_less;
+  int Tok = tok_plus;
   if (Next == '=')
-    Tok = (advance(), tok_leq);   // '<=' — comparison
-  else if (Next == '<')
-    Tok = (advance(), tok_shl);   // '<<' — left shift
-  LexerLastChar = advance();
-  return Tok;
-}
-
-if (LexerLastChar == '>') {
-  int Next = peek();
-  int Tok = tok_greater;
-  if (Next == '=')
-    Tok = (advance(), tok_geq);   // '>=' — comparison
-  else if (Next == '>')
-    Tok = (advance(), tok_shr);   // '>>' — right shift
+    Tok = (advance(), tok_pluseq);
+  else if (Next == '+')
+    Tok = (advance(), tok_plusplus);
   LexerLastChar = advance();
   return Tok;
 }
 ```
 
-## Parsing the New Tiers
+I apply the same pattern to `-` (which must also handle `->` for the arrow token), `*`, `/`, and `%`. The `/` path is new — previously `/` was an unknown character. Now I return `'/'` bare, or `tok_diveq` if it's followed by `=`.
 
-`ParseShift`, `ParseRelational`, `ParseEquality`, `ParseBitwiseAnd`, `ParseBitwiseXor`, and `ParseBitwiseOr` all follow the same shape every tier has used since [Chapter 20](chapter-20.md): a base case that descends one level, and a `*Right` helper consuming a run of same-tier operators through `MergeBinaryExpression`. `ParseShift`, the innermost new tier, is representative of all six:
+## Division and Remainder
+
+I add `/` and `%` to the precedence table at level 40 — the same level as `*`:
 
 ```cpp
-static unique_ptr<ExpressionNode>
-ParseShiftRight(unique_ptr<ExpressionNode> Left) {
-  while (CurrentToken == tok_shl || CurrentToken == tok_shr) {
-    int Operator = CurrentToken;
-    getNextToken();
-    auto Right = ParseSum();
-    if (!Right)
-      return nullptr;
-    Left = MergeBinaryExpression(Operator, std::move(Left), std::move(Right));
-    if (!Left)
-      return nullptr;
-  }
-  return Left;
-}
-
-static unique_ptr<ExpressionNode> ParseShift() {
-  auto Left = ParseSum();
-  if (!Left)
-    return nullptr;
-  return ParseShiftRight(std::move(Left));
-}
+{tok_slash, 40},   // /
+{tok_percent, 40}, // %
 ```
 
-`ParseRelational` calls `ParseShift` for its base case and its operands; `ParseEquality` calls `ParseRelational`; `ParseBitwiseAnd` calls `ParseEquality`; and so on up through `ParseBitwiseOr`, which `ParseLogicalAnd` now calls instead of the old `ParseComparison`. Six new tiers, same recursive-descent pattern throughout — nothing here needed a general precedence-climbing mechanism, since pyxc doesn't have one.
+The LLVM instructions I emit from `EmitBuiltInArithmetic` differ by type:
 
-## Type-Checking Predicates for Bitwise and Shift Operators
+| Op | Integer | Float |
+|----|---------|-------|
+| `/` | `sdiv` | `fdiv` |
+| `%` | `srem` | error |
 
-Two predicates identify the new operator families, built on the real token names the lexer produces:
-
-```cpp
-static bool IsBitwiseOp(int Operator) { return Operator == tok_ampersand || Operator == tok_pipe || Operator == tok_caret; }
-static bool IsShiftOp(int Operator) { return Operator == tok_shl || Operator == tok_shr; }
-```
-
-`GetBinaryResultType` gains two new branches. For bitwise ops, both operands must be integers; `IsAssignable` picks the wider of the two as the result type, same widening rule every other integer binary op already uses:
+`%` on float operands is a type error — I return `ValueType::Error` from `GetBinaryResultType` when either operand of `%` is not an integer:
 
 ```cpp
-if (IsBitwiseOp(Operator)) {
-  if (!IsIntType(L) || !IsIntType(R))
-    return ValueType::Error;
-  if (IsAssignable(L, R))
-    return L;
-  if (IsAssignable(R, L))
-    return R;
+if (Operator == tok_percent && (!IsIntType(L) || !IsIntType(R)))
   return ValueType::Error;
+```
+
+I report the resulting `ValueType::Error` as a type mismatch — the same generic error every binary operator falls back to, not something specific to `%`:
+
+```pyxc
+def main() -> int:
+  var a: float64 = 5.5
+  var b: float64 = 2.0
+  var r: float64 = a % b
+  return 0
+```
+```
+Error (Line 4, Column 25): Type mismatch in binary operator
+  var r: float64 = a % b
+                        ^~~~
+```
+
+I also tighten the pointer arithmetic guard: only `+` and `−` allow a pointer on one side. I now explicitly reject `/` and `%` with a pointer operand:
+
+```cpp
+if ((Operator == tok_plus || Operator == tok_minus) &&
+    ((L == ValueType::Pointer && IsIntType(R)) ||
+     (R == ValueType::Pointer && IsIntType(L)))) {
+  // pointer arithmetic
 }
 ```
 
-For shifts, the result type is always the left operand's own type, regardless of the shift count's type:
+## Compound Assignment AST Nodes
+
+I add four AST node classes, one for each lvalue shape, all sharing the same structure: an lvalue, an operator token, and an RHS expression:
 
 ```cpp
-if (IsShiftOp(Operator)) {
-  if (!IsIntType(L) || !IsIntType(R))
-    return ValueType::Error;
-  return L;
+class CompoundAssignmentExpressionNode : public ExpressionNode {  // plain variable
+  string Name; int Operator; unique_ptr<ExpressionNode> Right; ...
+};
+class FieldCompoundAssignmentExpressionNode : public ExpressionNode {  // p.x += 1
+  unique_ptr<FieldExpressionNode> Left; int Operator; unique_ptr<ExpressionNode> Right; ...
+};
+class IndexCompoundAssignmentExpressionNode : public ExpressionNode {  // arr[i] *= 2
+  unique_ptr<IndexExpressionNode> Left; int Operator; unique_ptr<ExpressionNode> Right; ...
+};
+class IndexedFieldCompoundAssignmentExpressionNode : public ExpressionNode {  // arr[i].x += 3
+  unique_ptr<IndexedFieldExpressionNode> Left; int Operator; unique_ptr<ExpressionNode> Right; ...
+};
+```
+
+I make all four override `shouldPrintValue()` to return `false` — compound assignment is a statement, not a value expression, so the REPL doesn't auto-print its result.
+
+I drive the parse dispatch with two helpers: I check whether the current token is one of the five compound assignment tokens (`IsCompoundAssignTok`), then convert it to the corresponding arithmetic operator character (`CompoundAssignToBinaryOp`) so codegen can call `EmitBuiltInArithmetic`:
+
+```cpp
+static bool IsCompoundAssignTok(int Tok) {
+  return Tok == tok_pluseq || Tok == tok_minuseq || Tok == tok_muleq ||
+         Tok == tok_diveq  || Tok == tok_modeq;
+}
+static int CompoundAssignToBinaryOp(int Tok) {
+  switch (Tok) {
+  case tok_pluseq:
+    return tok_plus;
+  case tok_minuseq:
+    return tok_minus;
+  case tok_muleq:
+    return tok_star;
+  case tok_diveq:
+    return tok_slash;
+  case tok_modeq:
+    return tok_percent;
+  default:
+    return 0;
+  }
 }
 ```
 
-Both checks run inside `GetBinaryResultType`, the same function every binary operator's type checking has gone through since [Chapter 20](chapter-20.md), so type errors are caught before `MergeBinaryExpression` ever builds a node — codegen never sees a bad operand pair.
+I handle the plain-variable case in `ParseCompoundAssignmentRight`: I look up the destination type, convert the token to a binary op, call `ParseExpression` for the right-hand side, type-check the result, and return a `CompoundAssignmentExpressionNode`. The field case follows the same pattern in its own helper, `ParseFieldCompoundAssignmentRight`. The index and indexed-field cases follow the identical pattern too, but inline inside `ParseLeadingNameSimpleStatement` rather than in their own helpers.
 
-## Parsing Unary `~`
+I write codegen the same way for all four nodes: resolve the lvalue to a pointer, load the current value, call `EmitBuiltInArithmetic(Operator, old, right)`, and store the result back.
 
-`~` is parsed in `ParseUnary` alongside `-`, `!`, and prefix `++`/`--`. The operand must already be an integer type; the result type is the same as the operand's:
+## Prefix and Postfix `++`/`--`
+
+I handle all four combinations of prefix/postfix × increment/decrement with a single AST node:
 
 ```cpp
-if (CurrentToken == tok_tilde) {
-  getNextToken(); // eat '~'
+class IncDecExpressionNode : public ExpressionNode {
+  unique_ptr<ExpressionNode> Operand;
+  bool IsIncrement;
+  bool IsPrefix;
+
+public:
+  IncDecExpressionNode(unique_ptr<ExpressionNode> Operand, bool IsIncrement, bool IsPrefix,
+                ValueType Type, const string &StructName = "")
+      : Operand(std::move(Operand)), IsIncrement(IsIncrement),
+        IsPrefix(IsPrefix) {
+    setType(Type, StructName);
+  }
+  Value *codegen() override;
+};
+```
+
+I require the operand to pass `IsIncDecAssignableExpr` — it must be a variable, field, index, or indexed-field expression:
+
+```cpp
+static bool IsIncDecAssignableExpr(const ExpressionNode *E) {
+  return dynamic_cast<const NameExpressionNode *>(E) ||
+         dynamic_cast<const FieldExpressionNode *>(E) ||
+         dynamic_cast<const IndexExpressionNode *>(E) ||
+         dynamic_cast<const IndexedFieldExpressionNode *>(E);
+}
+```
+
+In codegen, I load the old value, compute `old ± 1` via `EmitBuiltInArithmetic`, store the new value, and return `IsPrefix ? new : old`. For postfix, I return the value that existed *before* the mutation, matching C semantics.
+
+Because I reuse `EmitBuiltInArithmetic` here — the same function `+` and `-` already go through — `p++` on a pointer automatically advances by one element through the pointer-arithmetic path from earlier in this chapter. I don't need to add anything pointer-specific here.
+
+## Parsing `++`/`--`
+
+**Postfix** I handle in `ParsePostfixIncDec`, which wraps the primary expression in an `IncDecExpressionNode` if it's followed by `++` or `--`. Both paths require the operand to be numeric or a pointer, in addition to being assignable. `ParseUnary` calls `ParsePostfixIncDec(ParsePrimary())` instead of calling `ParsePrimary` alone:
+
+```cpp
+static unique_ptr<ExpressionNode> ParsePostfixIncDec(unique_ptr<ExpressionNode> Base) {
+  while (CurrentToken == tok_plusplus || CurrentToken == tok_minusminus) {
+    bool IsIncrement = (CurrentToken == tok_plusplus);
+    if (!IsIncDecAssignableExpr(Base.get()))
+      return LogErrorExpression("Increment/decrement target must be assignable");
+    if (!IsNumericType(Base->getType()) &&
+        Base->getType() != ValueType::Pointer)
+      return LogErrorExpression("Increment/decrement requires numeric or pointer type");
+    ValueType T = Base->getType();
+    string S = Base->getStructName();
+    getNextToken(); // eat ++/--
+    Base = make_unique<IncDecExpressionNode>(std::move(Base), IsIncrement,
+                                      /*IsPrefix=*/false, T, S);
+  }
+  return Base;
+}
+```
+
+**Prefix** I handle at the top of `ParseUnary`, before the primary:
+
+```cpp
+if (CurrentToken == tok_plusplus || CurrentToken == tok_minusminus) {
+  bool IsIncrement = (CurrentToken == tok_plusplus);
+  getNextToken(); // eat ++/--
   auto Operand = ParseUnary();
   if (!Operand)
     return nullptr;
-  if (!IsIntType(Operand->getType()))
-    return LogErrorExpression("Unary '~' requires an integer operand");
-  ValueType OperandType = Operand->getType();
-  return make_unique<UnaryExpressionNode>(tok_tilde, std::move(Operand),
-                                          OperandType);
+  if (!IsIncDecAssignableExpr(Operand.get()))
+    return LogErrorExpression("Increment/decrement target must be assignable");
+  if (!IsNumericType(Operand->getType()) &&
+      Operand->getType() != ValueType::Pointer)
+    return LogErrorExpression("Increment/decrement requires numeric or pointer type");
+  return make_unique<IncDecExpressionNode>(std::move(Operand), IsIncrement,
+                                    /*IsPrefix=*/true, Operand->getType(),
+                                    Operand->getStructName());
 }
 ```
 
-`~~x` (double complement) and `~(x + 1)` both parse naturally, since the operand is a full `ParseUnary()` call, letting the recursion handle any nesting.
-
-## Codegen: Binary Bitwise and Shift Operators
-
-`BinaryExpressionNode::codegen`'s existing `switch (Operator)` gains cases for `tok_ampersand`, `tok_pipe`, `tok_caret`, and the two shift tokens. Both operands are coerced to the result type via `EmitImplicitCast` first — this is what handles the widening `GetBinaryResultType` already decided on (e.g. `int32 & int64` widens the `int32` side before the instruction):
-
-```cpp
-case tok_ampersand:
-case tok_pipe:
-case tok_caret: {
-  ValueType Ty = getType();
-  L = EmitImplicitCast(L, LType, Ty);
-  R = EmitImplicitCast(R, RType, Ty);
-  if (!L || !R)
-    return LogErrorV("Type mismatch in binary operator");
-  if (Operator == tok_ampersand)
-    return Builder->CreateAnd(L, R, "bwand");
-  if (Operator == tok_pipe)
-    return Builder->CreateOr(L, R, "bwor");
-  return Builder->CreateXor(L, R, "bwxor");
-}
-case tok_shl:
-case tok_shr: {
-  ValueType Ty = getType();
-  L = EmitImplicitCast(L, LType, Ty);
-  R = EmitImplicitCast(R, RType, Ty);
-  if (!L || !R)
-    return LogErrorV("Type mismatch in binary operator");
-  if (Operator == tok_shl)
-    return Builder->CreateShl(L, R, "shltmp");
-  return Builder->CreateAShr(L, R, "shrtmp");
-}
-```
-
-Each bitwise operator maps to a single LLVM instruction: `and`, `or`, or `xor`. These are integer-only instructions; LLVM has no floating-point equivalent, which is consistent with `GetBinaryResultType` already rejecting non-integer operands.
-
-`CreateShl` emits `shl`, shifting left and filling low bits with zero. `CreateAShr` emits `ashr`, an arithmetic (sign-extending) right shift: for a negative value, `x >> 1` stays negative because the vacated high bits fill with the sign bit rather than zero. LLVM also has `CreateLShr` for a logical (zero-filling) right shift, but pyxc doesn't expose it here — `ashr` is the correct choice as long as every integer type is signed, which is still true at this point in the tutorial.
-
-## Codegen: Unary `~`
-
-`UnaryExpressionNode::codegen` gains a case for `tok_tilde` alongside the existing `tok_minus` case:
-
-```cpp
-if (Opcode == tok_tilde) {
-  if (!IsIntType(getType()))
-    return LogErrorV("Unary '~' not supported for this type");
-  return Builder->CreateNot(Operator, "bnottmp");
-}
-```
-
-`CreateNot` lowers to `xor %val, -1`: XOR-ing every bit against a mask of all ones flips each one. The instruction name `bnottmp` (bitwise not) distinguishes it in the IR from `nottmp`, the name [Chapter 33](chapter-33.md)'s logical `!` uses for its `i1` negation.
-
-For a concrete example:
-
-```pyxc
-var x: int = 9     # binary: ...0001001
-var y: int = ~x    # binary: ...1110110 → -10 in two's complement
-var z: int = y & 7 # mask the low 3 bits → 6
-```
-
-`~9` is `-10` because in two's complement, flipping every bit and adding one negates a value: `~x` is always `-(x + 1)`.
-
-## Known Limitations
-
-**No hexadecimal, octal, or binary integer literals.** `0xFF`, `0o17`, and `0b101` all fail to parse; only decimal digits are recognized. I ran into this directly while writing the intro example — I'd originally written `0xFF` and had to switch to `255`.
-
-**No compound assignment for bitwise or shift operators.** `x &= mask`, `flags |= bit`, `x ^= pattern`, `x <<= 2`, and `x >>= 1` all fail to parse. [Chapter 32](chapter-32.md)'s compound-assignment mechanism is general — `IsCompoundAssignTok` and `CompoundAssignToBinaryOp` could, in principle, be extended to cover `&=`, `|=`, `^=`, `<<=`, and `>>=` the same way they cover `+=` through `%=` — but this chapter doesn't add the tokens or the table entries to do it. I confirmed this by trying `x &= mask` directly and getting a parse error, not a working compound assignment.
-
-**Right shift is always arithmetic (sign-extending).** There's no unsigned integer type yet for a logical right shift to make sense on; every integer type is signed through this chapter.
+Because `ParseUnary` recurses, `++++x` is syntactically valid (prefix applied twice), though I only accept it as meaningful if `x` is assignable at each level.
 
 ## Try It
 
-**Bitwise operator on a float is a type error**
+**Compound assignment on a field**
 
 ```pyxc
+extern def printd(x: float64)
+struct Point:
+  x: int
 def main() -> int:
-  var x: float64 = 1.0
-  var y: float64 = 2.0
-  var z: float64 = x & y
+  var p: Point
+  p.x = 10
+  p.x += 5
+  printd(float64(p.x))
   return 0
 ```
 
 ```text
-Error (Line 4, Column 25): Type mismatch in binary operator
+15.000000
 ```
 
-**`~` on a non-integer is a type error**
+**Compound assignment on an array element**
 
 ```pyxc
+extern def printd(x: float64)
 def main() -> int:
-  var x: float64 = 1.0
-  var y: float64 = ~x
+  var arr: int[3] = [1, 2, 3]
+  arr[1] *= 10
+  printd(float64(arr[1]))
   return 0
 ```
 
 ```text
-Error (Line 3, Column 22): Unary '~' requires an integer operand
+20.000000
 ```
 
-Both are caught while parsing and never reach codegen.
+**Prefix vs. postfix, as values**
 
-## Build and Run
+```pyxc
+extern def printd(x: float64)
+def main() -> int:
+  var i: int = 5
+  var a: int = i++   # a gets the old value, 5; i becomes 6
+  var b: int = ++i   # i becomes 7 first, b gets the new value, 7
+  printd(float64(a))
+  printd(float64(b))
+  printd(float64(i))
+  return 0
+```
 
-```bash
-cd code/chapter-35
-cmake -S . -B build && cmake --build build
+```text
+5.000000
+7.000000
+7.000000
 ```
 
 ## What's Next
 
-[Chapter 36](chapter-36.md) adds `switch` statements.
+[Chapter 36](chapter-36.md) adds the `class` keyword.
 
 ## Need Help?
 

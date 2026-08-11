@@ -1,476 +1,490 @@
 ---
-description: "Add object-file emission so Pyxc can compile programs to standalone native binaries without the JIT."
+description: "Complete pyxc's loop story: while, do/while, break, and continue, with correct targets for nested loops and for loops."
 ---
-# 14. pyxc: Emitting Native Code
+# 14. pyxc: Loop Completeness
 
 ## What I Am Building
 
-[Chapter 13](chapter-13.md) gave pyxc global variables and a proper file-mode entry point. By the end of that chapter, I could write a complete pyxc program — global state, helper functions, a `main` — and run it through the JIT:
+[Chapter 21](chapter-21.md) added logical operators. pyxc has had `for` loops since [Chapter 10](chapter-10.md), but that's the only loop form. After this chapter, `while` and `do`/`while` join the language, and `break` and `continue` work correctly across nested loops:
 
-```bash
-./build/pyxc program.pyxc
+```pyxc
+extern def printd(x: float64)
+
+def collatz(n: int) -> int:
+  var x: int = n
+  var steps: int = 0
+  while x != 1:
+    if x % 2 == 0:
+      x /= 2
+    else:
+      x = x * 3 + 1
+    steps++
+  return steps
+
+def main() -> int:
+  printd(float64(collatz(27)))
+  return 0
 ```
 
-But every run recompiled the program from source. There was no way to produce a `.o` file, link it with other objects, or ship a standalone binary. I want to fix that this chapter.
-
-After this chapter:
-
-```bash
-pyxc --emit obj -o program.o program.pyxc
-clang program.o test/runtime.c -o program
-./program
+```text
+111.000000
 ```
 
 ## Source Code
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-14
+cd pyxc-llvm-tutorial/code/chapter-34
 ```
-
-## What Changes
-
-I'm adding four tightly-coupled pieces on top of chapter 12's codebase:
-
-1. **Command-line flags** — `--emit llvm-ir|asm|obj`, `-o <file>`, and `--dump-ir`.
-2. **`EmitModuleToFile`** — writes the compiled module to a file as LLVM IR, native assembly, or a native object file.
-3. **`EmitFileMode`** — orchestrates compilation for emit mode: builds `__pyxc.global_init`, wraps `main()`, then calls `EmitModuleToFile`.
-4. **`AddGlobalCtor`** — registers `__pyxc.global_init` in the `llvm.global_ctors` array so the linker wires it to run before `main()` in the emitted binary.
-
-No parser or codegen changes are needed — the chapter 12 IR is already correct. Everything new this chapter is about routing that IR to a file instead of a JIT.
 
 ## Grammar
 
-No grammar changes in this chapter. The language itself is unchanged — this is purely a compiler-driver extension.
+Four new productions: `while-statement`, `do-while-statement`, `break-statement`, and `continue-statement`. `compound-statement` gains the first two; `simple-statement` gains the last two:
 
-## The Design
-
-The key insight I'm leaning on: the compilation pipeline doesn't need to change at all — source → tokens → AST → LLVM IR → optimised IR stays exactly as it was. What changes is the *sink*. In JIT mode the sink is the JIT's in-process linker. In emit mode the sink is a file on disk. Because the IR is the same either way, the entire parser and codegen carry over with no modification.
-
-## Command-Line Interface
-
-I declare three new options with LLVM's command-line library:
-
-```cpp
-static cl::opt<std::string>
-    EmitKindOpt("emit",
-                cl::desc("Emit output: llvm-ir | asm | obj"),
-                cl::init(""), cl::cat(PyxcCategory));
-
-static cl::opt<std::string> OutputFile("o", cl::desc("Output filename"),
-                                       cl::value_desc("filename"),
-                                       cl::init(""), cl::cat(PyxcCategory));
-
-static cl::opt<bool>
-    DumpIR("dump-ir", cl::desc("Print generated LLVM IR to stderr"),
-           cl::init(false), cl::cat(PyxcCategory));
-// Backward-compat alias.
-static cl::opt<bool>
-    VerboseIR("v", cl::desc("Alias for --dump-ir"), cl::init(false),
-              cl::cat(PyxcCategory));
+```grammardiff
+ program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
+ end-of-lines            = end-of-line { end-of-line } ;
+ top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | external | top-level-expression ;
+ type-alias       = "type" name "=" type ;
+ trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
+ trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
+ trait-method-signature  = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ;
+ struct-definition       = "struct" name ":" end-of-lines struct-block ;
+ class-definition        = "class" name [ "(" trait-reference { "," trait-reference } ")" ] ":" end-of-lines struct-block ;
+ trait-reference        = name [ "[" type "]" ] ;
+ implementation-definition         = "impl" trait-reference "for" name ":" end-of-lines implementation-block ;
+ implementation-block       = indent implementation-method { end-of-lines implementation-method } dedent ;
+ implementation-method      = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ struct-block     = indent class-member { end-of-lines class-member } dedent ;
+ class-member     = [ visibility ] ( field-declaration | method-definition ) ;
+ visibility      = "public" | "private" ;
+ method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")"
+                   [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ field-declaration       = name ":" type ;
+ function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ (* If the return type is omitted, it defaults to None. *)
+ external        = "extern" "def" function-signature [ "->" type ] ;
+ top-level-expression    = expression ;
+ function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
+ typed-parameter      = name ":" type ;
+ if-statement          = "if" expression ":" suite
+                 [ end-of-lines "else" ":" suite ] ;
+ for-statement         = "for"
+                   ( "var" name ":" type | name )
+                   "=" expression "," expression "," expression ":" suite ;
++while-statement       = "while" expression ":" suite ;
++do-while-statement     = "do" ":" suite end-of-lines "while" expression ;
+ variable-statement         = "var" variable-binding { "," variable-binding } ;
+ assignment-statement      = lvalue assignment-operator expression ; (* assignment is a statement here *)
+-simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
+-compound-statement    = if-statement | for-statement ;
++simple-statement      = return-statement | break-statement | continue-statement | variable-statement | assignment-statement | expression ;
++compound-statement    = if-statement | for-statement | while-statement | do-while-statement ;
+ statement       = simple-statement | compound-statement ;
+ suite           = simple-statement | compound-statement | end-of-lines block ;
+ return-statement      = "return" [ expression ] ;
++break-statement       = "break" ;
++continue-statement    = "continue" ;
+ statement-separator = end-of-lines | BLOCK_END ;
+ block = indent statement { statement-separator statement } dedent ;
+ expression      = logical-or ;
+ logical-or      = logical-and { "||" logical-and } ;
+ logical-and     = comparison { "&&" comparison } ;
+ comparison      = sum { comparison-operator sum } ;
+ comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ sum             = term { ("+" | "-") term } ;
+ term            = unary-expression { ("*" | "/" | "%") unary-expression } ;
+ lvalue          = name | field-access | index-expression ;
+ variable-binding      = name ":" type [ "=" expression ] ;
+ unary-expression       = ("-" | "!" | "++" | "--") unary-expression | postfix-expression ;
+ postfix-expression     = primary [ postfix-operator ] ;
+ postfix-operator       = "++" | "--" ;
+ primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
+ cast-expression        = cast-type "(" expression ")" ;
+ sizeof-expression      = "sizeof" "(" type ")" ;
+ address-expression        = "addr" "(" lvalue ")" ;
+ name-expression  = name | call-expression | method-call-expression | constructor-call-expression ;
+ call-expression        = name "(" [ expression { "," expression } ] ")" ;
+ method-call-expression  = name "." name "(" [ expression { "," expression } ] ")" ;
+ constructor-call-expression    = name "(" [ expression { "," expression } ] ")" ;
+ field-access     = name "." name { "." name } ;
+ index-expression       = name "[" expression "]" ;
+ number-expression      = number ;
+ array-literal    = "[" [ expression { "," expression } ] "]" ;
+ string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
+ escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
+ parenthesized-expression       = "(" expression ")" ;
+ indent          = INDENT ;
+ dedent          = DEDENT ;
+ 
+ assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
+ name      = (letter | "_") { letter | digit | "_" } ;
+ builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+                 | "bool" | "None" ;
+ alias-type       = name ;
+ struct-type      = name ;
+ pointer-type     = "ptr" "[" type "]" ;
+ type            = base-type [ array-suffix ] ;
+ base-type        = builtin-type | alias-type | struct-type | pointer-type ;
+ array-suffix     = "[" integer "]" ;
+ cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
+                 | "float" | "float32" | "float64"
+                 | "bool" | pointer-type ;
+ integer         = digit { digit } ;
+ number          = ( digit { digit } [ "." { digit } ]
+                   | "." digit { digit } ) [ exponent ] ;
+ exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
+ boolean-literal    = "True" | "False" ;
+ letter          = "A".."Z" | "a".."z" ;
+ digit           = "0".."9" ;
+ end-of-line             = "\r\n" | "\r" | "\n" ;
+ comment = "#" { comment-character } ;
+ comment-character = ? any character except "\r" and "\n" ? ;
+ whitespace = " " | "\t" | "\v" | "\f" ;
+ INDENT          = ? synthetic token emitted by lexer ? ;
+ DEDENT          = ? synthetic token emitted by lexer ? ;
+ 
+ BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
-`ProcessCommandLine` validates and resolves them before I do any parsing:
+Note the `do`/`while` shape: the body comes first under `do:`, and the condition appears after `while` on its own line with no trailing colon — `do: ... while cond`, not `do: ... while cond:`.
+
+## New Tokens and Keywords
+
+Four new tokens:
 
 ```cpp
-if (!EmitKindOpt.empty()) {
-  if (IsRepl) {
-    fprintf(stderr, "Error: --emit requires a file input\n");
-    return -1;
-  }
+tok_while    = -52,
+tok_do       = -53,
+tok_break    = -54,
+tok_continue = -55,
+```
 
-  if (EmitKindOpt == "llvm-ir") {
-    EmitMode = EmitKind::LLVMIR;
-    EmitOutputPath = OutputFile.empty() ? "out.ll" : OutputFile.getValue();
-  } else if (EmitKindOpt == "asm") {
-    EmitMode = EmitKind::ASM;
-    EmitOutputPath = OutputFile.empty() ? "out.s" : OutputFile.getValue();
-  } else if (EmitKindOpt == "obj") {
-    EmitMode = EmitKind::OBJ;
-    EmitOutputPath = OutputFile.empty() ? "out.o" : OutputFile.getValue();
+Registered in the keyword table alongside every other keyword.
+
+## New AST Nodes
+
+Three nodes handle the new constructs. `WhileExpressionNode` covers both `while` and `do`/`while`; an `IsDoWhile` flag tells codegen which block to branch to first:
+
+```cpp
+class WhileExpressionNode : public ExpressionNode {
+  unique_ptr<ExpressionNode> Cond;
+  unique_ptr<ExpressionNode> Body;
+  bool IsDoWhile;
+
+public:
+  WhileExpressionNode(unique_ptr<ExpressionNode> Cond, unique_ptr<ExpressionNode> Body,
+               bool IsDoWhile)
+      : Cond(std::move(Cond)), Body(std::move(Body)), IsDoWhile(IsDoWhile) {
+    setType(ValueType::None);
+  }
+  bool shouldPrintValue() const override { return false; }
+  Value *codegen() override;
+};
+```
+
+`BreakExpressionNode` and `ContinueExpressionNode` carry no data at all; each just emits an unconditional branch at codegen time:
+
+```cpp
+class BreakExpressionNode : public ExpressionNode {
+public:
+  BreakExpressionNode() { setType(ValueType::None); }
+  bool shouldPrintValue() const override { return false; }
+  Value *codegen() override;
+};
+
+class ContinueExpressionNode : public ExpressionNode {
+public:
+  ContinueExpressionNode() { setType(ValueType::None); }
+  bool shouldPrintValue() const override { return false; }
+  Value *codegen() override;
+};
+```
+
+## Parse-Time Depth Tracking
+
+A counter gates `break` and `continue` outside any loop, guarded automatically by RAII:
+
+```cpp
+static int ParseLoopDepth = 0;
+
+struct ParseLoopGuard {
+  ParseLoopGuard()  { ++ParseLoopDepth; }
+  ~ParseLoopGuard() { --ParseLoopDepth; }
+};
+```
+
+`ParseBreakStatement` and `ParseContinueStatement` check the counter before accepting the keyword:
+
+```cpp
+static unique_ptr<ExpressionNode> ParseBreakStatement() {
+  if (ParseLoopDepth <= 0)
+    return LogErrorExpression("'break' used outside of a loop");
+  getNextToken(); // eat 'break'
+  return make_unique<BreakExpressionNode>();
+}
+
+static unique_ptr<ExpressionNode> ParseContinueStatement() {
+  if (ParseLoopDepth <= 0)
+    return LogErrorExpression("'continue' used outside of a loop");
+  getNextToken(); // eat 'continue'
+  return make_unique<ContinueExpressionNode>();
+}
+```
+
+## Parsing `while` and `do`/`while`
+
+`ParseWhileStatement` reads the condition first:
+
+```cpp
+static unique_ptr<ExpressionNode> ParseWhileStatement() {
+  getNextToken(); // eat 'while'
+  auto Cond = ParseExpression();
+  if (!Cond)
+    return nullptr;
+  if (Cond->getType() != ValueType::Bool)
+    return LogErrorExpression("While loop condition must be bool");
+  if (CurrentToken != tok_colon)
+    return LogErrorExpression("Expected ':' after while condition");
+  getNextToken(); // eat ':'
+  ParseLoopGuard LoopGuard;
+  auto Body = ParseSuite();
+  if (!Body)
+    return nullptr;
+  return make_unique<WhileExpressionNode>(std::move(Cond), std::move(Body),
+                                   /*IsDoWhile=*/false);
+}
+```
+
+`ParseDoWhileStatement` reads the body first, then the condition after `while`:
+
+```cpp
+static unique_ptr<ExpressionNode> ParseDoWhileStatement() {
+  getNextToken(); // eat 'do'
+  if (CurrentToken != tok_colon)
+    return LogErrorExpression("Expected ':' after 'do'");
+  getNextToken(); // eat ':'
+  ParseLoopGuard LoopGuard;
+  auto Body = ParseSuite();
+  if (!Body)
+    return nullptr;
+  if (CurrentToken == tok_block_end)
+    getNextToken();
+  if (CurrentToken == tok_eol)
+    consumeNewlines();
+  if (CurrentToken != tok_while)
+    return LogErrorExpression("Expected 'while' after do-body");
+  getNextToken(); // eat 'while'
+  auto Cond = ParseExpression();
+  if (!Cond)
+    return nullptr;
+  if (Cond->getType() != ValueType::Bool)
+    return LogErrorExpression("Do-while condition must be bool");
+  return make_unique<WhileExpressionNode>(std::move(Cond), std::move(Body),
+                                   /*IsDoWhile=*/true);
+}
+```
+
+Both parsers install a `ParseLoopGuard` around the body, so `break`/`continue` inside are accepted; the guard's destructor decrements `ParseLoopDepth` automatically when the function returns, whichever path it returns through. Both functions are wired into the compound-statement dispatcher alongside `tok_if` and `tok_for`.
+
+## Codegen Targets for Loop Control
+
+A single stack tracks break and continue targets for every loop type. Each entry holds two blocks:
+
+```cpp
+struct LoopControlTargets {
+  BasicBlock *BreakTarget = nullptr;
+  BasicBlock *ContinueTarget = nullptr;
+};
+static std::vector<LoopControlTargets> LoopControlStack;
+```
+
+Every loop's codegen pushes an entry on the way in and pops it on the way out, so the innermost active loop is always on top. `break` branches to `LoopControlStack.back().BreakTarget`; `continue` branches to `.ContinueTarget`. Nesting falls out of this for free: a `break` inside a nested loop only ever sees the innermost loop's targets, so it can only exit that loop.
+
+## While-Loop Codegen
+
+Three basic blocks: `while_cond`, `while_body`, `while_after`. Only the entry branch and where the first condition check happens differ between `while` and `do`/`while`:
+
+```cpp
+Value *WhileExpressionNode::codegen() {
+  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+  BasicBlock *CondBB =
+      BasicBlock::Create(*TheContext, "while_cond", TheFunction);
+  BasicBlock *BodyBB =
+      BasicBlock::Create(*TheContext, "while_body", TheFunction);
+  BasicBlock *AfterBB =
+      BasicBlock::Create(*TheContext, "while_after", TheFunction);
+
+  if (IsDoWhile) {
+    Builder->CreateBr(BodyBB);
   } else {
-    fprintf(stderr, "Error: invalid --emit value '%s'\n",
-            EmitKindOpt.c_str());
-    return -1;
+    Builder->CreateBr(CondBB);
   }
-} else if (!OutputFile.empty()) {
-  fprintf(stderr, "Error: -o requires --emit\n");
-  return -1;
+
+  if (!IsDoWhile) {
+    Builder->SetInsertPoint(CondBB);
+    Value *CondVal = Cond->codegen();
+    if (!CondVal)
+      return nullptr;
+    CondVal = ToBool(CondVal, Cond->getType());
+    if (!CondVal)
+      return LogErrorV("Invalid loop condition type");
+    Builder->CreateCondBr(CondVal, BodyBB, AfterBB);
+  }
+
+  Builder->SetInsertPoint(BodyBB);
+  LoopControlStack.push_back({AfterBB, CondBB});
+  if (!Body->codegen()) {
+    LoopControlStack.pop_back();
+    return nullptr;
+  }
+  LoopControlStack.pop_back();
+  if (!Builder->GetInsertBlock()->getTerminator())
+    Builder->CreateBr(CondBB);
+
+  Builder->SetInsertPoint(CondBB);
+  if (IsDoWhile || !CondBB->getTerminator()) {
+    Value *CondVal = Cond->codegen();
+    if (!CondVal)
+      return nullptr;
+    CondVal = ToBool(CondVal, Cond->getType());
+    if (!CondVal)
+      return LogErrorV("Invalid loop condition type");
+    Builder->CreateCondBr(CondVal, BodyBB, AfterBB);
+  }
+
+  Builder->SetInsertPoint(AfterBB);
+  return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 ```
 
-Key rules I'm enforcing here:
+For a plain `while`, the entry branch goes straight to `CondBB`, so the condition is checked before the body ever runs. For `do`/`while`, the entry branch goes to `BodyBB` directly, skipping `CondBB` entirely the first time through; `CondBB` still gets filled in afterward for every subsequent iteration, which is why the function only guards the *first* `CreateCondBr` on `!IsDoWhile` and lets the second one run unconditionally through `IsDoWhile || !CondBB->getTerminator()`.
 
-- `--emit` without a source file is an error. The JIT REPL has no concept of an output file.
-- An unknown emit kind (`--emit wat`) is an error — the valid set is `llvm-ir`, `asm`, `obj`.
-- `-o` without `--emit` is also an error — there's nothing to route to the file.
-- If `-o` is omitted, the output path defaults to `out.ll`, `out.s`, or `out.o` in the current working directory.
+The `ConstantFP::get(*TheContext, APFloat(0.0))` return at the end isn't special to `while`: it's the same "statements always return a dummy `0.0` at the LLVM level" convention every statement-shaped node has used since [Chapter 11](chapter-11.md), even now that the type system tracks `ValueType::None` separately for what the value actually *means* at the pyxc level.
 
-I declare the `EmitKind` enum and a global string for the resolved path alongside the other global state:
+## `for` Loops Get a Dedicated Step Block
+
+The existing `for`-loop codegen changes too. Before this chapter, the step expression ran inline at the end of the body block. Now it gets its own basic block, so `continue` has somewhere correct to jump to:
 
 ```cpp
-enum class EmitKind { None, LLVMIR, ASM, OBJ };
-static EmitKind EmitMode = EmitKind::None;
-static string EmitOutputPath;
-
-static bool IsEmitMode() { return EmitMode != EmitKind::None; }
+BasicBlock *StepBB = BasicBlock::Create(*TheContext, "loop_step", TheFunction);
 ```
 
-After `FileModeLoop` finishes parsing the source file, I dispatch on `IsEmitMode()` in `main`:
+The body's implicit fallthrough branch now targets `StepBB` instead of the condition block directly. `StepBB` evaluates the step expression and then branches to the condition block itself. The `LoopControlTargets` pushed for a `for` loop sets `ContinueTarget = StepBB`:
 
 ```cpp
-FileModeLoop();
-if (IsEmitMode())
-  EmitFileMode();
-else
-  RunFileMode();
+LoopControlStack.push_back({AfterBB, StepBB});
 ```
 
-`IsEmitMode()` also gates the per-function JIT path inside `HandleFunctionDefinition`. In JIT mode, each compiled function is immediately transferred to the JIT and the module is replaced:
+That's what makes `continue` inside a `for` loop run the step before re-checking the condition, matching C semantics, rather than skipping straight to the condition check the way `continue` in a `while` loop does. I confirmed this distinction is real by writing a `for` loop that sums every value except one skipped with `continue`, and checking the skipped iteration's contribution really is missing from the total (see Try It).
+
+## `break` and `continue` Codegen
+
+Both emit a single unconditional branch to whichever target is on top of `LoopControlStack`:
 
 ```cpp
-// HandleFunctionDefinition — after codegen:
-if (!IsEmitMode()) {
-  ExitOnErr(TheJIT->addModule(
-      ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
-  InitializeModuleAndManagers();
+Value *BreakExpressionNode::codegen() {
+  if (LoopControlStack.empty())
+    return LogErrorV("'break' used outside of a loop");
+  Builder->CreateBr(LoopControlStack.back().BreakTarget);
+  return ConstantFP::get(*TheContext, APFloat(0.0));
+}
+
+Value *ContinueExpressionNode::codegen() {
+  if (LoopControlStack.empty())
+    return LogErrorV("'continue' used outside of a loop");
+  Builder->CreateBr(LoopControlStack.back().ContinueTarget);
+  return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 ```
 
-In emit mode this block is skipped entirely. All functions accumulate in the same `TheModule` until `EmitFileMode` writes it out. If I left the guard out, every `def` would hand the module to the JIT and reinitialise, leaving `EmitFileMode` with an empty module.
-
-## The Emit Pipeline
-
-`EmitModuleToFile` is the leaf that does the actual file writing. It opens the output path with `raw_fd_ostream` and then branches on the emit kind:
-
-```cpp
-static bool EmitModuleToFile() {
-  std::error_code EC;
-  raw_fd_ostream Dest(EmitOutputPath, EC, sys::fs::OF_None);
-  if (EC) {
-    fprintf(stderr, "Error: could not open output file '%s'\n",
-            EmitOutputPath.c_str());
-    return false;
-  }
-
-  if (EmitMode == EmitKind::LLVMIR) {
-    TheModule->print(Dest, nullptr);
-    return true;
-  }
-
-  string TargetTriple = sys::getDefaultTargetTriple();
-  Triple TT(TargetTriple);
-  TheModule->setTargetTriple(TT);
-
-  string Error;
-  const Target *Target = TargetRegistry::lookupTarget(TT, Error);
-  if (!Target) {
-    fprintf(stderr, "Error: %s\n", Error.c_str());
-    return false;
-  }
-
-  TargetOptions Options;
-  auto RM = std::optional<Reloc::Model>();
-  std::unique_ptr<TargetMachine> TM(
-      Target->createTargetMachine(TT, "generic", "", Options, RM));
-  TheModule->setDataLayout(TM->createDataLayout());
-
-  legacy::PassManager PM;
-  CodeGenFileType FileType = (EmitMode == EmitKind::ASM)
-                                 ? CodeGenFileType::AssemblyFile
-                                 : CodeGenFileType::ObjectFile;
-
-  if (TM->addPassesToEmitFile(PM, Dest, nullptr, FileType)) {
-    fprintf(stderr, "Error: target does not support file emission\n");
-    return false;
-  }
-
-  PM.run(*TheModule);
-  return true;
-}
-```
-
-I named that local variable `Target`, which shadows the `llvm::Target` type it's declared as — a little sloppy, but the compiler doesn't mind and it reads fine in context, so I've left it.
-
-**LLVM IR path.** `Module::print` writes the module's textual IR directly to the stream. No target information is needed — IR is portable.
-
-**ASM / OBJ path.** These need the full backend pipeline:
-
-- `sys::getDefaultTargetTriple()` returns the host's triple (e.g., `arm64-apple-macosx14.0.0`).
-- `TargetRegistry::lookupTarget` finds the backend registered for that triple. It fails if the target wasn't initialized at startup — that's why the three `InitializeNativeTarget*` calls in `main` matter.
-- `createTargetMachine` produces a `TargetMachine` that encapsulates the backend's code generator for the specific CPU and relocation model.
-- I update the module's data layout to match the target, so type sizes and alignments are correct.
-- I use `legacy::PassManager` here (not the new `PassManager`) because `addPassesToEmitFile` is part of the legacy pipeline API — it's the standard LLVM idiom for code generation to a file.
-- `addPassesToEmitFile` adds all the backend passes needed to lower IR to machine code and format it as assembly text or an ELF/Mach-O object file.
-- `PM.run(*TheModule)` runs the pipeline, writing the output into `Dest`.
-
-The new headers required for this path:
-
-```cpp
-#include "llvm/Support/FileSystem.h"       // raw_fd_ostream, OF_None
-#include "llvm/Support/CodeGen.h"          // CodeGenFileType
-#include "llvm/Target/TargetMachine.h"     // TargetMachine, TargetOptions
-#include "llvm/Target/TargetOptions.h"     // TargetOptions
-#include "llvm/MC/TargetRegistry.h"        // TargetRegistry
-#include "llvm/TargetParser/Host.h"        // getDefaultTargetTriple
-#include "llvm/TargetParser/Triple.h"      // Triple
-#include "llvm/IR/LegacyPassManager.h"     // legacy::PassManager
-```
-
-## The Orchestrator
-
-`EmitFileMode` is the emit-mode counterpart to `RunFileMode`. It does the same setup — build `__pyxc.global_init`, validate `main`, wrap `main` — but instead of JIT-executing the result, it calls `EmitModuleToFile`.
-
-```cpp
-static void EmitFileMode() {
-  // 1. Compile __pyxc.global_init from the collected top-level statements.
-  if (!FileTopLevelStmts.empty()) {
-    auto Block = make_unique<BlockExpressionNode>(std::move(FileTopLevelStmts));
-    auto Signature =
-        make_unique<FunctionSignatureNode>("__pyxc.global_init", vector<string>());
-    auto FnAST = make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(Block));
-
-    bool SavedInGlobalInit = InGlobalInit;
-    InGlobalInit = true;
-    if (auto *FnIR = FnAST->codegen()) {
-      InGlobalInit = SavedInGlobalInit;
-      if (ShouldDumpIR())
-        FnIR->print(errs());
-      AddGlobalCtor(FnIR);   // <-- differs from RunFileMode
-    } else {
-      InGlobalInit = SavedInGlobalInit;
-      return;
-    }
-  }
-
-  // 2. Validate main() arity.
-  auto MainIt = FunctionSignatures.find("main");
-  if (MainIt != FunctionSignatures.end() && MainIt->second->getNumParameters() != 0) {
-    fprintf(stderr, "Error: main() must take no arguments\n");
-    return;
-  }
-
-  // 3. Wrap main() to return int.
-  if (auto *UserMain = TheModule->getFunction("main")) {
-    if (UserMain->getReturnType()->isDoubleTy()) {
-      UserMain->setName("__pyxc.user_main");
-      FunctionType *FT =
-          FunctionType::get(Type::getInt32Ty(*TheContext), false);
-      Function *Wrapper =
-          Function::Create(FT, Function::ExternalLinkage, "main",
-                           TheModule.get());
-      BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", Wrapper);
-      IRBuilder<> TmpB(BB);
-      TmpB.CreateCall(UserMain);
-      TmpB.CreateRet(ConstantInt::get(Type::getInt32Ty(*TheContext), 0));
-    }
-  }
-
-  // 4. Write the output file.
-  EmitModuleToFile();
-}
-```
-
-Three things are meaningfully different from `RunFileMode`:
-
-1. **`AddGlobalCtor` instead of JIT-calling `__pyxc.global_init`.** In JIT mode, `RunFileMode` looks up the symbol and calls it directly. In emit mode there is no JIT — the binary hasn't been linked yet. Instead, I register `__pyxc.global_init` in `llvm.global_ctors` so the linker wires it to run before `main()` automatically.
-
-2. **`main()` return-type wrapping.** pyxc's `main()` returns `double` (everything in pyxc is a double). But the C runtime expects `int main()`. `EmitFileMode` detects this mismatch, renames the user's function to `__pyxc.user_main`, and synthesises a new `int main()` that calls it and returns `0`.
-
-3. **`EmitModuleToFile()` as the final step** instead of looking up and calling symbols.
-
-## Wiring Globals into the Binary
-
-When a pyxc program declares global variables, `__pyxc.global_init` must run before `main()` — otherwise globals hold `0.0` when `main` starts. In JIT mode `RunFileMode` calls `__pyxc.global_init` explicitly before calling `main`. In a native binary, the C runtime manages startup: it calls everything in `llvm.global_ctors` before `main()`. `AddGlobalCtor` puts `__pyxc.global_init` into that list.
-
-```cpp
-static void AddGlobalCtor(Function *Fn, int Priority = 65535) {
-  auto *Int32Ty = Type::getInt32Ty(*TheContext);
-  auto *VoidPtrTy = PointerType::get(*TheContext, 0);
-  auto *StructTy = StructType::get(Int32Ty, Fn->getType(), VoidPtrTy);
-
-  Constant *CtorEntry = ConstantStruct::get(
-      StructTy, ConstantInt::get(Int32Ty, Priority), Fn,
-      ConstantPointerNull::get(cast<PointerType>(VoidPtrTy)));
-
-  GlobalVariable *GV = TheModule->getGlobalVariable("llvm.global_ctors");
-  if (GV)
-    return;
-
-  ArrayType *AT = ArrayType::get(StructTy, 1);
-  auto *Init = ConstantArray::get(AT, {CtorEntry});
-  new GlobalVariable(*TheModule, AT, false, GlobalValue::AppendingLinkage, Init,
-                     "llvm.global_ctors");
-}
-```
-
-Only one call site (`EmitFileMode`, for `__pyxc.global_init`) exists today, but the early `if (GV) return;` guards against a second `llvm.global_ctors` definition anyway. LLVM won't merge two globals with the same name for me — it'll just rename the second one — and that would silently break the linker's contract with this special symbol.
-
-`llvm.global_ctors` is a special LLVM global with `AppendingLinkage`. The linker concatenates all contributions from different objects into one array. Each element is a `{ i32 priority, ptr fn, ptr data }` struct; the lower the priority number, the earlier the function runs. I use `65535` (lowest priority), which is conventional for user-level constructors.
-
-The `data` field (third struct member) is a guard pointer: if non-null, the runtime skips the entry under certain conditions. I set it to null, meaning "always run."
-
-## `main()` Return-Type Wrapping
-
-pyxc's type system has only `double`. Every function — including `main` — returns `double`. But the C ABI that the linker and OS loader expect declares `main` as `int main()`.
-
-I bridge this automatically inside `EmitFileMode`. When it finds a user-defined `main` function with a `double` return type, it:
-
-1. Renames the original to `__pyxc.user_main`.
-2. Creates a new `int main()` that calls `__pyxc.user_main` (discarding its return value) and returns the integer `0`.
-
-```
-; Before wrapping:
-define double @main() { ... }
-
-; After wrapping:
-define double @__pyxc.user_main() { ... }
-
-define i32 @main() {
-entry:
-  call double @__pyxc.user_main()
-  ret i32 0
-}
-```
-
-This is transparent to the pyxc programmer. You write `def main(): ...` exactly as in file mode.
-
-## `--dump-ir` and `-v`
-
-I renamed the flag that prints generated IR to stderr from `-v` to `--dump-ir`, to make its purpose more explicit. I kept the old `-v` around as a backward-compatible alias:
-
-```cpp
-static cl::opt<bool>
-    DumpIR("dump-ir", cl::desc("Print generated LLVM IR to stderr"),
-           cl::init(false), cl::cat(PyxcCategory));
-
-static cl::opt<bool>
-    VerboseIR("v", cl::desc("Alias for --dump-ir"), cl::init(false),
-              cl::cat(PyxcCategory));
-
-static bool ShouldDumpIR() { return DumpIR || VerboseIR; }
-```
-
-I call `ShouldDumpIR()` wherever IR is printed — after each function in JIT mode, and after codegen in emit mode. Both flags trigger the same behaviour.
-
-## Target Initialization
-
-The three `InitializeNative*` calls in `main` were already present for the JIT. They stay sufficient for emit mode too, because pyxc always targets the host machine:
-
-```cpp
-InitializeNativeTarget();
-InitializeNativeTargetAsmPrinter();
-InitializeNativeTargetAsmParser();
-```
-
-`InitializeNativeTargetAsmPrinter` registers the backend that serializes machine instructions to assembly text or object file bytes — the part that `addPassesToEmitFile` depends on. Without it, `TargetRegistry::lookupTarget` would succeed but `addPassesToEmitFile` would fail.
+The `CreateBr` makes the current block terminated; any code that would otherwise follow `break` or `continue` in the same block never actually gets appended to it, since a well-formed basic block can only have one terminator.
 
 ## Known Limitations
 
-**Emit mode does not run the program.** `--emit` compiles to a file and exits. If you want to both emit and run, compile, link, and execute the binary separately.
+**The loop condition must be `bool`.** There's no implicit `int → bool` coercion. `while n:` doesn't work; `while n != 0:` does.
 
-**Single-file compilation only.** pyxc does not have a multi-file model. Each invocation compiles one source file to one output file. Linking multiple pyxc objects together is possible but requires manual `extern def` declarations at the moment.
-
-**No debug information.** The emitted object files contain no DWARF or other debug info. Debuggers cannot map machine instructions back to pyxc source lines.
-
-**Target is always the host.** There is no cross-compilation support. The output file targets the same CPU and OS as the machine running `pyxc`.
-
-**`main()` always returns 0.** The synthesised `int main()` wrapper ignores the double value returned by the user's `main()` and always returns `0`. There is no way to return a non-zero exit code from a pyxc program yet.
+**`break` and `continue` outside any loop are parse-time errors**, caught by `ParseLoopDepth` before codegen ever runs.
 
 ## Try It
 
-**Emit LLVM IR and inspect it**
+**`break` outside a loop**
 
-```bash
-cat sq.pyxc
-```
 ```pyxc
-extern def printd(x)
-def sq(x): return x * x
-def main():
-    printd(sq(3))
-```
-```bash
-pyxc --emit llvm-ir -o sq.ll sq.pyxc
-cat sq.ll
-```
-```llvm
-declare double @printd(double)
-
-define double @sq(double %x) {
-entry:
-  %multmp = fmul double %x, %x
-  ret double %multmp
-}
-
-define double @__pyxc.user_main() {
-entry:
-  %calltmp = call double @sq(double 3.000000e+00)
-  %calltmp1 = call double @printd(double %calltmp)
-  ret double 0.000000e+00
-}
-
-define i32 @main() {
-entry:
-  %0 = call double @__pyxc.user_main()
-  ret i32 0
-}
+def main() -> int:
+  break
+  return 0
 ```
 
-No `__pyxc.global_init` here — `sq.pyxc` has no top-level `var`, so `AddGlobalCtor` never runs. What you do see is the `main()` wrapping from earlier: `main` renamed to `__pyxc.user_main`, and a fresh `i32 @main()` calling it and returning `0`.
-
-**Emit assembly**
-
-```bash
-pyxc --emit asm -o sq.s sq.pyxc
-grep -A2 "sq:" sq.s
+```text
+Error (Line 2, Column 3): 'break' used outside of a loop
 ```
 
-On macOS the label is actually `_sq:` — the platform's C ABI prepends an underscore — but `grep "sq:"` still matches it as a substring, so this works on both macOS and Linux as written.
+**`while` condition must be `bool`**
 
-**Compile to a native binary**
-
-```bash
-# test/runtime.c provides printd/putchard for standalone binaries.
-pyxc --emit obj -o sq.o sq.pyxc
-file sq.o
-clang sq.o test/runtime.c -o sq
-./sq
-```
-```
-sq.o: Mach-O 64-bit object arm64
-9.000000
+```pyxc
+def main() -> int:
+  var n: int = 5
+  while n:
+    n -= 1
+  return 0
 ```
 
-**Inspect IR while emitting**
-
-```bash
-pyxc --dump-ir --emit llvm-ir -o sq.ll sq.pyxc
+```text
+Error (Line 3, Column 10): While loop condition must be bool
 ```
 
-The `--dump-ir` flag prints the IR to stderr as each function is compiled — before the file is written, so you see both the intermediate IR and the final output file.
+**`continue` in a `for` loop still runs the step**
 
-**Default output paths**
-
-```bash
-pyxc --emit llvm-ir sq.pyxc   # writes out.ll
-pyxc --emit asm    sq.pyxc   # writes out.s
-pyxc --emit obj    sq.pyxc   # writes out.o
+```pyxc
+extern def printd(x: float64)
+def main() -> int:
+  var sum: int = 0
+  for var i: int = 0, i < 5, 1:
+    if i == 2:
+      continue
+    sum += i
+  printd(float64(sum))
+  return 0
 ```
+
+```text
+8.000000
+```
+
+`sum` skips `i == 2` (0 + 1 + 3 + 4 = 8), and the loop still terminates normally: `continue` reaching `StepBB` means `i` keeps incrementing instead of looping forever on the same value.
+
+**`do`/`while` always runs the body once**
+
+```pyxc
+extern def printd(x: float64)
+def main() -> int:
+  var n: int = 10
+  var count: int = 0
+  do:
+    count++
+  while n < 5
+  printd(float64(count))
+  return 0
+```
+
+```text
+1.000000
+```
+
+The condition `n < 5` is false from the start, but the body still ran exactly once before it was ever checked.
 
 ## Build and Run
 
 ```bash
-cd code/chapter-14
+cd code/chapter-34
 cmake -S . -B build && cmake --build build
-./build/pyxc --emit obj -o program.o program.pyxc
-clang program.o test/runtime.c -o program
-./program
 ```
 
 ## What's Next
 
-At this point pyxc can parse, JIT-execute, and ahead-of-time compile programs with functions, control flow, and global variables. I'll build on this foundation in future chapters: a type system, aggregate data, and eventually a self-hosting compiler.
+[Chapter 15](chapter-15.md) adds global variables.
 
 ## Need Help?
 
@@ -478,3 +492,10 @@ Build issues? Questions?
 
 - **GitHub Issues:** [Report problems](https://github.com/alankarmisra/pyxc-llvm-tutorial/issues)
 - **Discussions:** [Ask questions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
+
+Include:
+- Your OS and version
+- Full error message
+- Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
+
+I'll help you figure it out.

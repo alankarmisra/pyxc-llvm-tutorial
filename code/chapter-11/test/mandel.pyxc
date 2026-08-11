@@ -1,3 +1,6 @@
+# RUN: %pyxc -v %s 2>&1 | FileCheck %s
+# CHECK: define double @mandel(
+
 extern def putchard(x)
 
 # Evaluate x before returning y.

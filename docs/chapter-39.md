@@ -1,52 +1,69 @@
 ---
-description: "Decode Unicode escapes and raw UTF-8 in character and string literals while rejecting invalid Unicode values."
+description: "Add public and private visibility modifiers to class fields and methods. Private members are only accessible from within the class's own method bodies."
 ---
-# 39. pyxc: Unicode Literals
+# 39. pyxc: Visibility
 
 ## What I Am Building
 
-[Chapter 38](chapter-38.md) added character literals and byte-sized hexadecimal escapes. I can write `'A'`, `'\n'`, and `'\x41'`, but I cannot write a character such as `Ω` or `🙂` yet. String literals copy non-ASCII bytes without checking whether those bytes form valid UTF-8.
-
-In this chapter, I make both literal forms understand Unicode:
+[Chapter 38](chapter-38.md) added constructors. Classes can now be initialized, but every field and method is accessible from anywhere. After this chapter, a class can hide its internals:
 
 ```pyxc
-var omega: int32 = 'Ω'
-var smile: int32 = '\U0001F642'
-puts("caf\u00E9 Ω 🙂")
+extern def printd(x: float64)
+
+class BoundedCounter:
+  private count: int
+  private limit: int
+
+  def __init__(max: int):
+    self.count = 0
+    self.limit = max
+
+  public def increment():
+    if self.count < self.limit:
+      self.count = self.count + 1
+
+  public def get() -> int:
+    return self.count
+
+
+def main() -> int:
+  var c: BoundedCounter = BoundedCounter(3)
+  c.increment()
+  c.increment()
+  c.increment()
+  c.increment()    # no effect — limit reached
+  printd(float64(c.get()))
+  return 0
 ```
 
-I'm only adding Unicode to character and string literals here. Unicode identifiers — `café` as a variable name — are a separate problem with their own rules; I'm leaving that for later.
+```text
+3.000000
+```
+
+Accessing `c.count` directly from outside the class is an error.
 
 ## Source Code
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-39
+cd pyxc-llvm-tutorial/code/chapter-28
 ```
 
 ## Grammar
 
-I replace the separate string and character escape productions with one `literal-escape` production. I also add octal, `\u`, and `\U` forms:
-
-`code/chapter-39/pyxc.ebnf`
+`class-member` gains an optional visibility prefix. `visibility` is a new production:
 
 ```grammardiff
  program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
  end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | external | top-level-expression ;
+ top-level-item             = type-alias | struct-definition | class-definition | function-definition | external | top-level-expression ;
  type-alias       = "type" name "=" type ;
- trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
- trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
- trait-method-signature  = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ;
  struct-definition       = "struct" name ":" end-of-lines struct-block ;
- class-definition        = "class" name [ "(" trait-reference { "," trait-reference } ")" ] ":" end-of-lines struct-block ;
- trait-reference        = name [ "[" type "]" ] ;
- implementation-definition         = "impl" trait-reference "for" name ":" end-of-lines implementation-block ;
- implementation-block       = indent implementation-method { end-of-lines implementation-method } dedent ;
- implementation-method      = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
+ class-definition        = "class" name ":" end-of-lines struct-block ;
  struct-block     = indent class-member { end-of-lines class-member } dedent ;
- class-member     = [ visibility ] ( field-declaration | method-definition ) ;
- visibility      = "public" | "private" ;
+-class-member     = field-declaration | method-definition ;
++class-member     = [ visibility ] ( field-declaration | method-definition ) ;
++visibility      = "public" | "private" ;
  method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")"
                    [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
  field-declaration       = name ":" type ;
@@ -57,45 +74,28 @@ I replace the separate string and character escape productions with one `literal
  function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
  typed-parameter      = name ":" type ;
  if-statement          = "if" expression ":" suite
-                 { end-of-lines "elif" expression ":" suite }
                  [ end-of-lines "else" ":" suite ] ;
- while-statement       = "while" expression ":" suite ;
- do-while-statement     = "do" ":" suite end-of-lines "while" expression ;
- switch-statement      = "switch" expression ":" end-of-lines indent switch-body dedent ;
- switch-body      = switch-case { end-of-lines switch-case } [ end-of-lines default-case ] ;
- switch-case      = "case" switch-integer { "," switch-integer } ":" suite ;
- default-case     = "default" ":" suite ;
  for-statement         = "for"
                    ( "var" name ":" type | name )
                    "=" expression "," expression "," expression ":" suite ;
  variable-statement         = "var" variable-binding { "," variable-binding } ;
- assignment-statement      = lvalue assignment-operator expression ; (* assignment is a statement here *)
- simple-statement      = return-statement | break-statement | continue-statement | variable-statement | assignment-statement | expression ;
- compound-statement    = if-statement | for-statement | while-statement | do-while-statement | switch-statement ;
+ assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
+ simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
+ compound-statement    = if-statement | for-statement ;
  statement       = simple-statement | compound-statement ;
  suite           = simple-statement | compound-statement | end-of-lines block ;
  return-statement      = "return" [ expression ] ;
- break-statement       = "break" ;
- continue-statement    = "continue" ;
  statement-separator = end-of-lines | BLOCK_END ;
  block = indent statement { statement-separator statement } dedent ;
- expression      = logical-or ;
- logical-or      = logical-and { "||" logical-and } ;
- logical-and     = bitwise-or { "&&" bitwise-or } ;
- bitwise-or      = bitwise-xor { "|" bitwise-xor } ;
- bitwise-xor     = bitwise-and { "^" bitwise-and } ;
- bitwise-and     = equality { "&" equality } ;
- equality        = relational { ("==" | "!=") relational } ;
- relational      = shift { ("<" | "<=" | ">" | ">=") shift } ;
- shift           = sum { ("<<" | ">>") sum } ;
+ expression      = comparison ;
+ comparison      = sum { comparison-operator sum } ;
+ comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
  sum             = term { ("+" | "-") term } ;
- term            = unary-expression { ("*" | "/" | "%") unary-expression } ;
+ term            = unary-expression { ("*" | "/") unary-expression } ;
  lvalue          = name | field-access | index-expression ;
  variable-binding      = name ":" type [ "=" expression ] ;
- unary-expression       = ("-" | "!" | "~" | "++" | "--") unary-expression | postfix-expression ;
- postfix-expression     = primary [ postfix-operator ] ;
- postfix-operator       = "++" | "--" ;
- primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | character-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
+ unary-expression       = "-" unary-expression | primary ;
+ primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
  cast-expression        = cast-type "(" expression ")" ;
  sizeof-expression      = "sizeof" "(" type ")" ;
  address-expression        = "addr" "(" lvalue ")" ;
@@ -107,25 +107,12 @@ I replace the separate string and character escape productions with one `literal
  index-expression       = name "[" expression "]" ;
  number-expression      = number ;
  array-literal    = "[" [ expression { "," expression } ] "]" ;
--string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
--character-literal     = "'" ( ? any char except ' and newline ? | character-escape ) "'" ;
--escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
--character-escape      = "\\" ( "a" | "b" | "f" | "n" | "r" | "t" | "v"
--                        | "\\" | "'" | "\"" | "?" | "0" | "x" hex-digit hex-digit ) ;
-+string-literal   = "\"" { ? valid Unicode scalar value except " and newline, encoded as UTF-8 ? | literal-escape } "\"" ;
-+character-literal     = "'" ( ? valid Unicode scalar value except ' and newline, encoded as UTF-8 ? | literal-escape ) "'" ;
-+literal-escape   = "\\" ( simple-escape | octal-escape | "x" hex-digit hex-digit
-+                   | "u" hex-digit hex-digit hex-digit hex-digit
-+                   | "U" hex-digit hex-digit hex-digit hex-digit
-+                         hex-digit hex-digit hex-digit hex-digit ) ;
-+simple-escape    = "a" | "b" | "f" | "n" | "r" | "t" | "v"
-+                 | "\\" | "'" | "\"" | "?" ;
-+octal-escape     = octal-digit [ octal-digit [ octal-digit ] ] ;
+ string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
+ escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
  parenthesized-expression       = "(" expression ")" ;
  indent          = INDENT ;
  dedent          = DEDENT ;
  
- assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
  name      = (letter | "_") { letter | digit | "_" } ;
  builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
                  | "float" | "float32" | "float64"
@@ -140,15 +127,12 @@ I replace the separate string and character escape productions with one `literal
                  | "float" | "float32" | "float64"
                  | "bool" | pointer-type ;
  integer         = digit { digit } ;
- switch-integer       = [ "-" ] integer ;
  number          = ( digit { digit } [ "." { digit } ]
                    | "." digit { digit } ) [ exponent ] ;
  exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
  boolean-literal    = "True" | "False" ;
  letter          = "A".."Z" | "a".."z" ;
  digit           = "0".."9" ;
- hex-digit       = digit | "A".."F" | "a".."f" ;
-+octal-digit     = "0".."7" ;
  end-of-line             = "\r\n" | "\r" | "\n" ;
  comment = "#" { comment-character } ;
  comment-character = ? any character except "\r" and "\n" ? ;
@@ -159,222 +143,206 @@ I replace the separate string and character escape productions with one `literal
  BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
-I keep `\xNN` at exactly two hexadecimal digits, as I defined it in Chapter 38. I let an octal escape consume one, two, or three digits. I give `\u` a fixed four hex digits and `\U` a fixed eight.
-
-## Code Points and UTF-8
-
-I decode either literal down to one code point. For a character literal, that code point is the value. For a string literal, I go one step further and encode it as UTF-8 bytes.
-
-Unicode only defines code points through `U+10FFFF`. The range `U+D800` through `U+DFFF` is reserved for UTF-16 surrogate pairs, so those values are not standalone Unicode characters. I reject both cases with one check:
+## New Tokens
 
 ```cpp
-static bool IsUnicodeScalarValue(uint32_t Value) {
-  return Value <= 0x10FFFF && !(Value >= 0xD800 && Value <= 0xDFFF);
-}
+tok_public = -41,
+tok_private = -42,
 ```
 
-The valid values are called Unicode scalar values.
+Both are registered in the keyword table and in the token-name map, so error messages print `'public'` and `'private'`.
 
-## Sharing One Decoder
+## Storing Visibility Information
 
-Strings and characters now accept the same escape forms and the same raw UTF-8. I use one result type for the failures that can occur along the way:
+Visibility lands in two places on `StructTypeInfo`. Fields gain an `IsPublic` flag directly on `StructFieldInfo`:
 
 ```cpp
-enum class LiteralDecodeError {
-  None,
-  InvalidEscape,
-  InvalidUtf8,
-  InvalidCodePoint,
+struct StructFieldInfo {
+  string Name;
+  ValueType Type = ValueType::Error;
+  string StructName;
+  bool IsPublic = true;
 };
 ```
 
-I then send both literal paths through `DecodeLiteralCodePoint()`. The function reads either one escape or one raw UTF-8 sequence, returns its code point through `Value`, and leaves `LexerLastChar` at the first byte after it.
-
-### Decoding Escapes
-
-The existing simple escapes each become their corresponding code point. I parse `\xNN` as two hexadecimal digits. Anything else falls to a default case: if it's not an octal digit either, it's not a valid escape at all — `\q` or `\8` both land here and get rejected. Otherwise I consume up to three octal digits:
+Methods are tracked separately, in a map from method name to visibility:
 
 ```cpp
-default:
-  if (LexerLastChar < '0' || LexerLastChar > '7')
-    return LiteralDecodeError::InvalidEscape;
+struct StructTypeInfo {
+  string Name;
+  bool IsClass = false;
+  vector<StructFieldInfo> Fields;
+  std::map<string, size_t> FieldIndex;
+  std::map<string, bool> MethodIsPublic;
+};
+```
 
-  Value = 0;
-  for (int I = 0; I < 3; ++I) {
-    Value = (Value << 3) |
-            static_cast<uint32_t>(LexerLastChar - '0');
-    int Next = peek();
-    if (I == 2 || Next < '0' || Next > '7') {
-      LexerLastChar = advance();
-      break;
-    }
-    LexerLastChar = advance();
+Methods need their own map rather than a flag next to the field, since a method's signature lives in `FunctionSignatures`, not in `StructTypeInfo::Fields` — there's no single struct visibility could hang off of the way `IsPublic` hangs off `StructFieldInfo`.
+
+## Parsing Visibility Modifiers
+
+The body loop inside `ParseAggregateDefinition` now reads an optional visibility token before deciding whether the member is a field or a method:
+
+```cpp
+bool MemberIsPublic = true;
+bool HasVisibilityModifier = false;
+if (CurrentToken == tok_public || CurrentToken == tok_private) {
+  HasVisibilityModifier = true;
+  MemberIsPublic = (CurrentToken == tok_public);
+  getNextToken(); // eat visibility modifier
+}
+if (HasVisibilityModifier && !Info.IsClass) {
+  LogErrorExpression("Visibility modifiers are only allowed inside class bodies");
+  return false;
+}
+```
+
+With no modifier, `MemberIsPublic` stays `true`: the default is public. A modifier inside a `struct` body is rejected immediately, before the parser even looks at what follows it.
+
+A field's visibility rides along with everything else already pushed into `Info.Fields`:
+
+```cpp
+Info.Fields.push_back({FieldName, FieldType, FieldStructName, MemberIsPublic});
+```
+
+A method's visibility is passed as an extra argument into `ParseMethodDefinitionInClass`, which now takes `bool IsPublic` and records it directly:
+
+```cpp
+StructTypes[ClassName].MethodIsPublic[MethodName] = IsPublic;
+```
+
+`Info.MethodIsPublic` is copied back out of `StructTypes[StructName]` after every field (`Info.MethodIsPublic = StructTypes[StructName].MethodIsPublic;`), for the same reason [Chapter 37](chapter-37.md) already re-registers `StructTypes[StructName] = Info` after every member: methods parsed earlier in the body need to stay visible while later members are parsed, and vice versa.
+
+## Enforcing Private Access
+
+Access is decided by one small function:
+
+```cpp
+static string CurrentClassScopeName;
+
+static bool CanAccessClassMember(const string &OwnerClass, bool IsPublic) {
+  return IsPublic || (!CurrentClassScopeName.empty() &&
+                      CurrentClassScopeName == OwnerClass);
+}
+```
+
+A member is reachable if it's `public`, or if the code currently being parsed belongs to the same class the member is on. "Currently being parsed" is `CurrentClassScopeName`, set and restored by an RAII guard:
+
+```cpp
+struct ClassScopeGuard {
+  string Saved;
+  ClassScopeGuard(const string &ClassName) : Saved(CurrentClassScopeName) {
+    CurrentClassScopeName = ClassName;
   }
-  return LiteralDecodeError::None;
+  ~ClassScopeGuard() { CurrentClassScopeName = Saved; }
+};
 ```
 
-`'\101'` is octal for 65 — the letter `A`.
+`ParseMethodDefinitionInClass` instantiates a `ClassScopeGuard` before parsing the method's body. When the method is done, the destructor restores whatever `CurrentClassScopeName` was before — empty at the top level, since pyxc has no nested classes to restore into instead.
 
-For `\u` and `\U`, I read exactly four or eight hexadecimal digits and then validate the result:
+## Access Checks at Every Use Site
+
+`CanAccessClassMember` is checked wherever the parser resolves a class member, which turns out to be four places, not one:
+
+**Field access, both existing field-chain parsers.** The auto-deref-capable `ParseFieldAccessFromFirstMember` from [Chapter 37](chapter-37.md) checks it inside its `ConsumeField` lambda:
 
 ```cpp
-case 'u':
-case 'U': {
-  int Digits = LexerLastChar == 'u' ? 4 : 8;
-  Value = 0;
-  for (int I = 0; I < Digits; ++I) {
-    int Digit = HexDigitValue(advance());
-    if (Digit < 0)
-      return LiteralDecodeError::InvalidEscape;
-    Value = (Value << 4) | static_cast<uint32_t>(Digit);
-  }
-  LexerLastChar = advance();
-  if (!IsUnicodeScalarValue(Value))
-    return LiteralDecodeError::InvalidCodePoint;
-  return LiteralDecodeError::None;
+const auto &FD = SI->second.Fields[FI->second];
+if (!CanAccessClassMember(CurStruct, FD.IsPublic)) {
+  LogErrorExpression(
+      ("Field '" + Field + "' is private on '" + CurStruct + "'").c_str());
+  return false;
 }
 ```
 
-So `\u03A9` gives me `Ω`, and `\U0001F642` gives me `🙂`.
+The older `ParseFieldAccessExpression` from [Chapter 24](chapter-24.md) — still used for field chains where the whole `.field` sequence is parsed from scratch rather than continuing from an already-consumed first member — gets the identical check inline in its own loop. Both paths reject reading *and* writing a private field, since assignment and read both resolve the field chain through one of these two functions before anything else happens.
 
-**Incomplete escape:**
-```pyxc
-var x: int32 = '\u123'
-```
-```
-Error (Line 2, Column 18): invalid character escape
-  var x: int32 = '\u123'
-                 ^~~~
-```
-
-**Surrogate value:**
-```pyxc
-var x: int32 = '\uD800'
-```
-```
-Error (Line 2, Column 18): invalid Unicode code point in character literal
-  var x: int32 = '\uD800'
-                 ^~~~
-```
-
-### Decoding Raw UTF-8
-
-For a raw non-ASCII character, I inspect the leading byte to decide whether the sequence contains two, three, or four bytes. I then require every remaining byte to have the UTF-8 continuation-byte shape `10xxxxxx`:
+**Method call**, in `ParseMethodCallExpression`, right after resolving `ClassName.MethodName`:
 
 ```cpp
-for (int I = 1; I < Length; ++I) {
-  int Next = advance();
-  if (Next == EOF || (Next & 0xC0) != 0x80)
-    return LiteralDecodeError::InvalidUtf8;
-  Value = (Value << 6) | static_cast<uint32_t>(Next & 0x3F);
-}
-LexerLastChar = advance();
-```
-
-I also reject invalid leading bytes, overlong encodings, surrogate values, and values above `U+10FFFF`. A stray continuation byte on its own — one that never follows a valid leading byte — hits that same rejection:
-```
-Error (Line 2, Column 18): invalid UTF-8 in character literal
-```
-
-Raw and escaped spellings reach the same validated code point:
-
-```pyxc
-'Ω' == '\u03A9'
-'🙂' == '\U0001F642'
-```
-
-## Producing Character Values
-
-The character-literal branch now asks the shared decoder for one code point:
-
-```cpp
-uint32_t Value = 0;
-LiteralDecodeError Error = DecodeLiteralCodePoint(Value);
-if (Error != LiteralDecodeError::None)
-  return LogLiteralDecodeError(Error, "character");
-
-if (LexerLastChar != '\'') {
-  fprintf(stderr,
-          "Error (Line %d, Column %d): unterminated character literal\n",
-          CurLoc.Line, CurLoc.Col);
-  PrintErrorSourceContext(CurLoc);
-  return tok_error;
+auto MI = CI->second.MethodIsPublic.find(MethodName);
+if (MI != CI->second.MethodIsPublic.end() &&
+    !CanAccessClassMember(ClassName, MI->second)) {
+  return LogErrorExpression(
+      ("Method '" + MethodName + "' is private on '" + ClassName + "'")
+          .c_str());
 }
 ```
 
-I still turn `CharLiteralValue` into a `NumberExpressionNode`, same as before. A Unicode character stays an integer, so it goes through the same range checks every other character literal already does.
-
-## Producing UTF-8 Strings
-
-For a string, I decode one code point at a time and append its UTF-8 encoding:
+**Constructor call**, in `ParseNameExpressionWithName`, guarded by whether `__init__` exists at all:
 
 ```cpp
-while (LexerLastChar != '"' && LexerLastChar != EOF &&
-       LexerLastChar != '\n') {
-  uint32_t Value = 0;
-  LiteralDecodeError Error = DecodeLiteralCodePoint(Value);
-  if (Error != LiteralDecodeError::None)
-    return LogLiteralDecodeError(Error, "string");
-  AppendUtf8(StringLiteralStr, Value);
-}
-```
-
-`AppendUtf8()` emits one byte for ASCII and two, three, or four bytes for larger code points:
-
-```cpp
-static void AppendUtf8(string &Output, uint32_t Value) {
-  if (Value <= 0x7F) {
-    Output.push_back(static_cast<char>(Value));
-  } else if (Value <= 0x7FF) {
-    Output.push_back(static_cast<char>(0xC0 | (Value >> 6)));
-    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
-  } else if (Value <= 0xFFFF) {
-    Output.push_back(static_cast<char>(0xE0 | (Value >> 12)));
-    Output.push_back(static_cast<char>(0x80 | ((Value >> 6) & 0x3F)));
-    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
-  } else {
-    Output.push_back(static_cast<char>(0xF0 | (Value >> 18)));
-    Output.push_back(static_cast<char>(0x80 | ((Value >> 12) & 0x3F)));
-    Output.push_back(static_cast<char>(0x80 | ((Value >> 6) & 0x3F)));
-    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
+if (InitSignature) {
+  auto MI = SI->second.MethodIsPublic.find("__init__");
+  if (MI != SI->second.MethodIsPublic.end() &&
+      !CanAccessClassMember(ParsedName, MI->second)) {
+    return LogErrorExpression(
+        ("Method '__init__' is private on '" + ParsedName + "'").c_str());
   }
 }
 ```
 
-Raw UTF-8 goes through this same decode-and-encode path — I validate it now instead of just copying it blindly.
+A private `__init__` makes `ClassName(args)` fail from outside the class, the same way a private method or field would.
 
-## Try It
+## IR Is Unchanged
 
-```pyxc
-extern def puts(s: ptr[int8]) -> int
-
-def main() -> int:
-  puts("caf\u00E9")
-  puts("Ω 🙂")
-  return 0
-```
-
-```
-café
-Ω 🙂
-```
+Visibility is enforced entirely while parsing. Nothing changes in the generated IR: `public` and `private` leave no trace in the output. A `private` field and a `public` field of the same type generate identical IR.
 
 ## Known Limitations
 
-**Identifiers are still ASCII-only.** `var café: int` doesn't work; Unicode in variable, function, struct, or class names is a separate problem I'm leaving for later.
+**There is no `protected`.** Access is either class-private or world-public; there's no subclass-visible middle tier, since pyxc has no inheritance.
 
-**No Unicode normalization.** Two visually identical strings that use different Unicode representations (e.g. precomposed vs. combining-character forms) are different byte sequences to pyxc; there's no NFC/NFD normalization step.
+**Visibility modifiers on structs are rejected outright.** `struct` members are always public. The parser errors the moment it sees `public` or `private` before a struct member, rather than silently ignoring the modifier.
 
-## Build and Run
+## Try It
 
-```bash
-cd code/chapter-39
-cmake -S . -B build && cmake --build build
+**Private field, accessed from outside**
+
+```pyxc
+class Foo:
+  private x: int
+
+def main() -> int:
+  var f: Foo
+  f.x = 3
+  return 0
+```
+
+```text
+Error (Line 6, Column 7): Field 'x' is private on 'Foo'
+```
+
+**Private constructor, called from outside**
+
+```pyxc
+class Foo:
+  x: int
+  private def __init__():
+    self.x = 0
+
+def main() -> int:
+  var f: Foo = Foo()
+  return 0
+```
+
+```text
+Error (Line 7, Column 20): Method '__init__' is private on 'Foo'
+```
+
+**Visibility modifier on a struct**
+
+```pyxc
+struct Foo:
+  private x: int
+```
+
+```text
+Error (Line 2, Column 11): Visibility modifiers are only allowed inside class bodies
 ```
 
 ## What's Next
 
-[Chapter 40](chapter-40.md) adds unsigned integer types: `uint8`, `uint16`, `uint32`, and `uint64`.
+[Chapter 40](chapter-40.md) adds traits.
 
 ## Need Help?
 

@@ -3,16 +3,16 @@
 # CHECK: 2.000000
 # CHECK-NOT: ready>
 
-# Tests: forstmt nested inside ifstmt block.
-# compoundstmt = ifstmt | forstmt ;
-# suite = simplestmt | compoundstmt | end-of-lines block ;
+# Tests: for-statement nested inside if-statement block.
+# compound-statement = if-statement | for-statement ;
+# suite = simple-statement | compound-statement | end-of-lines block ;
 # When n > 0, the if block runs the for loop. When n <= 0, nothing is printed.
 
-extern def printd(x: float64) -> float64
+extern def printd(x)
 
-def run(n: float64) -> None:
+def run(n):
     if n > 0:
-        for var i: float64 = 1, i <= n, 1:
+        for var i = 1, i <= n, 1:
             printd(i)
 
 run(2)

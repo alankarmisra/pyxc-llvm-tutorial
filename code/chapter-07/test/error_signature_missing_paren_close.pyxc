@@ -1,0 +1,6 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Error (Line" %t
+# RUN: grep -q "Expected ')' or ',' in parameter list" %t
+
+# function signature: missing closing ')' — tok_eol seen in parameter list
+def broken(x

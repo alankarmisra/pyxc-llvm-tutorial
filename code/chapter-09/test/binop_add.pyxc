@@ -1,0 +1,7 @@
+# RUN: %pyxc -v < %s > %t 2>&1
+# RUN: grep -q "Parsed a function definition" %t
+# RUN: grep -q "fadd double" %t
+
+# BinaryExpressionNode::codegen '+': CreateFAdd emits an fadd instruction.
+# Parameters are non-constant so folding does not apply.
+def add(a, b): a + b

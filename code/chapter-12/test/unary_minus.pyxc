@@ -4,8 +4,7 @@
 
 
 # Tests: builtin unary minus applied to a number literal and to an expression.
-# unaryop  = "-" | userdefunaryop
-# unaryexpr = unaryop unaryexpr | primary
+# factor = "-" factor | primary ;
 
 -5
 

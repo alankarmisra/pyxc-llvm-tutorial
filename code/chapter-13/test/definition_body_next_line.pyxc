@@ -4,7 +4,7 @@
 
 
 # Tests: definition body on the line after ':' using an indented block.
-# definition = "def" function signature ":" ( simplestmt | end-of-lines block ) ;
+# function-definition = "def" function-signature ":" ( simple-statement | end-of-lines block ) ;
 
 def inc(x):
     return x + 1

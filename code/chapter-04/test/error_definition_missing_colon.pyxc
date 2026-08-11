@@ -1,7 +1,6 @@
 # RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Error (Line" %t
+# RUN: grep -q "Error:" %t
 # RUN: grep -q "Expected ':' in function definition" %t
-# RUN: grep -q "def foo(x) x" %t
 
 # definition: ':' is absent; the body expression is seen where ':' is expected.
 def foo(x) x

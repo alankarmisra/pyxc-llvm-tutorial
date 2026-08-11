@@ -45,26 +45,39 @@ Every chapter follows this order, without deviation:
 
 | Section | Purpose |
 |---|---|
-| `## Where We Are` | Shows what's broken or missing *right now*. Includes a before/after code block so the reader can see exactly what changes. |
+| `## What I Am Building` | Shows what's broken or missing *right now*. Includes a before/after code block so the reader can see exactly what changes. |
 | `## Source Code` | A single `git clone + cd` code block. Nothing else. |
+| `## Grammar` | Present whenever the chapter changes the grammar. A `grammardiff` fenced block against the previous chapter's real `.ebnf` (see [§4.1](#41-grammar-section-in-the-chapter-doc)). Placed here, second section, before any implementation content — a tool the reader uses going forward, not an appendix. |
 | *(concept sections)* | One `##` per concept introduced in the chapter. |
 | `## Build and Run` | The exact commands to build and run the chapter binary. |
+| `## Try It` | Always present. A real, verified example — actual input, actual output from the built binary — demonstrating the chapter's payoff. Placed right before `## What's Next`. |
 | `## What's Next` | One short paragraph pointing at the next chapter. |
 | `## Need Help?` | Boilerplate: GitHub Issues and Discussions links, what to include in a bug report. |
 
-**`## Try It`** is omitted when the chapter has a substantial payoff example (e.g. Mandelbrot) that already exercises all introduced features. Include it only when the reader needs an explicit guided walkthrough that the concept sections don't already provide.
+**No `## Things Worth Knowing` section, ever.** Don't accumulate behavior notes, caveats, or gotchas into a trailing catch-all list. Each item belongs in prose right next to the code/section it actually originates from — a rounding caveat about a float conversion belongs in that conversion's codegen section, not bundled at the end of the chapter. If something is genuinely a surprising gotcha a reader would hit while experimenting, flag it inline at first encounter, not deferred.
 
-**`## Things Worth Knowing`** (optional) — a short bulleted list of behaviour that a reader experimenting with the chapter's features is likely to hit and be confused by, and where the error message alone doesn't explain why. Do not accumulate general language limitations here. Each bullet must pass the test: *would a reader trying this right now be surprised?*
+**No standalone `## Error Cases` section, ever.** Same principle as above, applied to errors specifically: move each error example to sit immediately after the code that actually raises it — lexer errors right after the lexer code, parse-time errors right after the parsing code, and so on. Never show an error before the reader has seen what produces it.
 
 ### 2.3 Writing Style
 
-**First-person, present-tense voice.** Every design decision is narrated as something *I* am doing right now, not as an established fact about the language. Write "I'll use an enum" or "I store precedences in a map," not "an enum is used" or "precedences are stored in a map." Passive voice and third-person description ("the parser handles X") are signs the sentence needs rewriting into what *I* decided and why. The one exception is `chapter-00.md`, which uses "we" for the shared capability the reader and author have as language users; every per-chapter body uses "I."
+**First-person, present-tense voice — "I" must be the grammatical actor, not just present somewhere in the sentence.** Every design decision is narrated as something *I* am doing right now, not as an established fact about the language. Write "I'll use an enum" or "I store precedences in a map," not "an enum is used" or "precedences are stored in a map." Passive voice and third-person description ("the parser handles X") are signs the sentence needs rewriting into what *I* decided and why. The one exception is `chapter-00.md`, which uses "we" for the shared capability the reader and author have as language users; every per-chapter body uses "I."
+
+This is stricter than swapping "we" for "I" or occasionally adding "I" to a sentence that's otherwise still describing the code as the actor. Every sentence describing an action should have *me* doing it, in the driver's seat — not the function, the code block, or an abstract "this chapter." Concrete before/after pairs:
+- "[Chapter 36] added `switch`. Multi-way conditionals ... are still written as nested `if`/`else` blocks, which stack up fast:" → "Since I haven't got an `elif` yet, I have to write everything as nested `if`s. I'm going to make my life easier by building in the `elif`."
+- "After this chapter, the same logic reads cleanly:" → "After this chapter, I can write the same logic as:"
+- "One new token:" → "I add one new token:"
+- "Added to the keyword table:" → "And I add it to the keyword table:"
+- "Previously `ParseIfStatement` parsed a single condition and body. Now I collect..." — this one's already right: even when describing what changed, *I* am the one who changed it, not the function that "now does" something different.
+
+Test for each sentence: does it read as something happening to/in the code, or as something *I did*? If a function, a class, or "this chapter" is the subject of the verb, rewrite it so "I" is.
+
+Don't over-correct into stiff or padded sentences trying to prove the "I" is there. "I already have `switch` from the last chapter for compile-time integer dispatch; I'll reach for `elif` for everything else — any `bool` expression, chained without nesting" reads like corporate self-narration, not a regular programmer talking. Prefer: "`switch` only works on fixed integer values. `elif` works on anything else — any expression that comes out `bool`." Keep sentences short and plain. Don't enumerate every clause from the original — cut things down, don't just relabel the subject. When in doubt, say less.
 
 **Justify a choice against a rejected alternative.** Don't just state what the code does — show what a reader would naturally try first, why it falls short, and what you do instead. For example: "For analysis, I could just pass around the strings 'def', 'add', '(', 'x', ... but then I have to do string comparisons at each analysis stage... Instead I'll use an enum." A decision presented without the alternative it beat reads like a spec handed down from nowhere, not like someone building something and making calls as they go.
 
 **Account for every code change from the previous chapter, not just the new concept.** Before writing a chapter, diff its `pyxc.cpp` against the prior chapter's in full, and account for every hunk somewhere in the prose, not only the part that motivated the chapter. A three-line lexer addition (new tokens) is just as much "what changed" as the headline algorithm; skipping it leaves the reader unable to find where new syntax entered the language at all. If a change is truly incidental (formatting, a rename already covered by [§3.5](#35-naming-conventions)), it's fine to leave unexplained, but that should be a deliberate judgment, not an oversight from only looking at the interesting diff.
 
-**Before/after in "Where We Are".** The opening section always shows a concrete problem in the current state and the improved output after the chapter. This frames every concept that follows.
+**Before/after in "What I Am Building".** The opening section always shows a concrete problem in the current state and the improved output after the chapter. This frames every concept that follows.
 
 ```
 ready> def bad(x) return x
@@ -180,7 +193,7 @@ Do not comment every line. A comment on every line is noise. Reserve inline comm
 
 ### 3.5 Naming Conventions
 
-Naming decisions are made for what's clearest to a reader learning compilers for the first time, not for compatibility with the original LLVM Kaleidoscope tutorial and not out of deference to "that's how compiler theory names things." If a name is foundational to a whole tradition of compiler writing but is abbreviated, ambiguous, or confusing without prior context, we rename it. Pyxc already does this: Kaleidoscope's `ExprAST`/`PrototypeAST` became `ExpressionNode`/`FunctionSignatureNode` because full words read clearer to newcomers than abbreviations. Don't reach for "but the reference tutorial/textbook does it this way" as a justification. Think from first principles about what a reader needs to follow along, every time, including for names that feel load-bearing or sacred elsewhere.
+Naming decisions are made for what's clearest to a reader learning compilers for the first time, not for compatibility with any other tutorial and not out of deference to "that's how compiler theory names things." If a name is foundational to a whole tradition of compiler writing but is abbreviated, ambiguous, or confusing without prior context, we rename it. Pyxc already does this: the original abbreviated `ExprAST`/`PrototypeAST` style became `ExpressionNode`/`FunctionSignatureNode` because full words read clearer to newcomers than abbreviations. Don't reach for "but the reference tutorial/textbook does it this way" as a justification. Think from first principles about what a reader needs to follow along, every time, including for names that feel load-bearing or sacred elsewhere.
 
 House style within pyxc, kept for internal consistency, not because any external tutorial uses it:
 
@@ -190,13 +203,13 @@ House style within pyxc, kept for internal consistency, not because any external
 - Loop indices: single lowercase letters are fine (`i`, `e`) but prefer descriptive names for outer loops
 - Globals: `PascalCase` prefixed with `The` for LLVM singletons (`TheContext`, `TheModule`, `TheBuilder`)
 
-We use lowercase `ch` and `idx` for loop variables in code we write ourselves, even where the original Kaleidoscope tutorial uses capital `C`/`I`. We don't "fix" LLVM API code we copy verbatim (e.g. IRBuilder call patterns), since that's third-party code, not a teaching choice we made.
+We use lowercase `ch` and `idx` for loop variables in code we write ourselves, preferring readability over the capitalized single-letter convention (`C`, `I`) some compiler tutorials use. We don't "fix" LLVM API code we copy verbatim (e.g. IRBuilder call patterns), since that's third-party code, not a teaching choice we made.
 
-**AST node suffix.** Node classes use the `Node` suffix (`ExpressionNode`, `BinaryExpressionNode`), not Kaleidoscope's `AST` suffix. Each class is one node in the tree, not the tree itself, so `Node` says what the class is more literally than `AST` does.
+**AST node suffix.** Node classes use the `Node` suffix (`ExpressionNode`, `BinaryExpressionNode`), not an `AST` suffix. Each class is one node in the tree, not the tree itself, so `Node` says what the class is more literally than `AST` does.
 
-**Full-word identifier migration.** The table below is the canonical spelling for identifiers inherited from Kaleidoscope in abbreviated form. Chapters 2 and 3 already use the right-hand column throughout. Chapters 4 and later still use the left-hand (Kaleidoscope-era) column as of this writing; migrate a chapter's identifiers to the right-hand column whenever that chapter is next substantially edited, rather than doing a mechanical repo-wide rename in one pass.
+**Full-word identifier migration.** The table below is the canonical spelling for identifiers that started out in abbreviated form. Chapters 2 and 3 already use the right-hand column throughout. Chapters 4 and later still use the left-hand (original abbreviated) column as of this writing; migrate a chapter's identifiers to the right-hand column whenever that chapter is next substantially edited, rather than doing a mechanical repo-wide rename in one pass.
 
-| Old (Kaleidoscope-derived) | New |
+| Old (abbreviated) | New |
 |---|---|
 | `...AST` suffix (`ExprAST`, `BinaryExprAST`) | `...Node` suffix (`ExpressionNode`, `BinaryExpressionNode`) |
 | `Op` | `Operator` |
@@ -215,7 +228,7 @@ When a chapter introduces a new abbreviated identifier not yet in this table, ad
 
 ---
 
-## 3.6 EBNF File
+### 3.6 EBNF File
 
 Every chapter directory contains a `pyxc.ebnf` that is the **single source of truth** for the grammar. It uses ISO EBNF notation with two conventions documented at the top:
 
@@ -257,34 +270,34 @@ General workflow reminder
 
 The `.ebnf` file, the `///` grammar banners in `.cpp`, and the `## Grammar` section in the chapter `.md` must all agree — same production names, same structure. When any one changes, update the other two in the same edit session.
 
-### Grammar Section in the Chapter Doc
+### 4.1 Grammar Section in the Chapter Doc
 
-Every chapter doc that introduces grammar changes has a `## Grammar` section placed immediately after `## The Design` (or `## Source Code` if there is no Design section).
+Every chapter doc that introduces grammar changes has a `## Grammar` section placed immediately after `## Source Code` — second section in the chapter, before any implementation content, framed as a tool the reader uses going forward, not an appendix.
 
 **Structure:**
-1. One paragraph naming what changed, with a before/after EBNF diff showing exactly what this chapter adds.
-2. A `### Full Grammar` subsection with the complete grammar as a fenced `ebnf` code block, copied verbatim from `pyxc.ebnf`, with `-- new` on changed or added lines.
-3. Brief prose below the full grammar explaining any non-obvious terminal symbols (e.g. `integer`, `customopchar`).
+1. A path line above the code block: `` `code/chapter-N/pyxc.ebnf` ``.
+2. A single fenced `grammardiff` code block: the complete grammar rendered as a unified diff against the previous chapter's real `.ebnf` file — unchanged lines get a leading space, added lines a leading `+`, removed lines a leading `-`. This is the whole grammar, not just the changed productions; the diff markers are what let a reader see at a glance what's new. Verify it by reconstructing both the "old" (context + `-` lines) and "new" (context + `+` lines) sides and diffing each against the real `code/chapter-(N-1)/pyxc.ebnf` and `code/chapter-N/pyxc.ebnf`.
+3. Brief prose below the block explaining any non-obvious terminal symbols or naming the specific productions that changed.
 
-The path to the `.ebnf` file (`code/chapter-N/pyxc.ebnf`) appears as a line above the code block.
+Unchanged, purely-explanatory `(* ... *)` comment banners (e.g. the `comment`/`whitespace` doc-comments) may be omitted from the diff entirely rather than shown as unchanged context — they don't affect the grammar and just add noise.
 
-### Production Name Consistency
+### 4.2 Production Name Consistency
 
 The name of a grammar production must be identical everywhere it appears: in `pyxc.ebnf`, in the `///` EBNF banner above the corresponding Parse* function in `.cpp`, in the `## Grammar` section of the `.md`, and in prose references within the `.md`.
 
-### Forward Declarations
+### 4.3 Forward Declarations
 
 When a Parse* function A calls another Parse* function B that is defined later in the file, add a forward declaration immediately above A's doc comment. Do not reorder functions — the file's top-to-bottom order reflects the grammar (lexer → parser → codegen → driver) and must be preserved.
 
-### lit.cfg.py
+### 4.4 lit.cfg.py
 
 `config.name` must be `"pyxc-chapterNN"` (zero-padded to two digits, e.g. `"pyxc-chapter09"`). If the test directory contains `.pyxc` files that are not lit tests (e.g. exploratory scripts with no `# RUN:` lines), list them explicitly in `config.excludes`.
 
 ---
 
-## 4. Tests
+## 5. Tests
 
-### 4.1 Framework
+### 5.1 Framework
 
 Tests use **LLVM lit** (LLVM Integrated Tester). Each chapter has:
 
@@ -302,7 +315,7 @@ Run the tests:
 llvm-lit code/chapter-N/test/
 ```
 
-### 4.2 Test File Format
+### 5.2 Test File Format
 
 Every test file is a valid Pyxc input that pyxc reads from stdin. Lines beginning with `#` are Pyxc comments (they are consumed by the lexer and ignored). `# RUN:` lines are lit directives — they are also Pyxc comments, so they do not alter the semantic content of the test input.
 
@@ -320,7 +333,7 @@ Header format:
 3. `#` comment explaining the grammar rule being exercised and *why* this specific input was chosen
 4. The actual Pyxc input
 
-### 4.3 Principled Test Design
+### 5.3 Principled Test Design
 
 Tests are derived from the grammar, not written ad hoc. For each grammar rule:
 
@@ -334,7 +347,7 @@ signature_multi_args.pyxc  — def foo(x, y, z): x
 **One test per error branch in the parser:** Every `LogError` or `return nullptr` in a Parse* function gets a test. The test checks:
 1. An error was emitted (grep for `"Error"` or `"Error (Line"` for chapter ≥ 3)
 2. The error message text (grep for a distinctive substring)
-3. The source context (grep for the input text that should appear on the error line — see §4.5)
+3. The source context (grep for the input text that should appear on the error line — see §5.5)
 
 **One test per boundary condition:**
 - Empty argument list vs. one arg vs. many args
@@ -343,7 +356,7 @@ signature_multi_args.pyxc  — def foo(x, y, z): x
 
 **One test per new lexer rule added in this chapter.**
 
-### 4.4 Test File Naming
+### 5.4 Test File Naming
 
 ```
 <grammar-rule>_<variant>.pyxc        — valid input tests
@@ -361,7 +374,7 @@ location_after_comment.pyxc
 location_sequential_lines.pyxc
 ```
 
-### 4.5 Source Context Test Caution
+### 5.5 Source Context Test Caution
 
 The source context in error messages (the `^~~~` caret line) shows `CurrentLine` **at the moment the error fires**, not the full input line. The error fires on the first unexpected token. Tokens after that point have not been consumed into `CurrentLine` yet.
 
@@ -378,7 +391,7 @@ Example — input `1 + + 2`:
 - At that point `CurrentLine` contains `"1 + +"` — it does NOT yet contain `" 2"`
 - Correct grep: `grep -q "1 + +" %t`
 
-### 4.6 Line Number Tests
+### 5.6 Line Number Tests
 
 Do **not** grep for absolute line numbers like `"Error (Line 3,"`. The `# RUN:` and `#` comment lines at the top of the test file are valid Pyxc input (they are Pyxc comments) and count as lines, shifting the absolute line numbers of the actual test input.
 
@@ -387,11 +400,11 @@ Instead:
 - Check that *an* error has a line header: `grep -q "Error (Line" %t`
 - Check the source context text (which is stable regardless of absolute line number)
 
-### 4.7 Chapter-Specific Test Additions
+### 5.7 Chapter-Specific Test Additions
 
 **Chapter 2** tests: grep for `"Error: "` (no location), the error message text, and (where safe) the source context.
 
-**Chapter 3** tests: grep for `"Error (Line"` (location present), the error message text, and the source context (with the §4.5 caution).
+**Chapter 3** tests: grep for `"Error (Line"` (location present), the error message text, and the source context (with the §5.5 caution).
 
 Chapter 3 also requires tests for the diagnostic infrastructure itself:
 - `location_sequential_lines.pyxc`: N errors on N successive lines → grep for count N
@@ -404,40 +417,28 @@ Chapter 3 also requires tests for the diagnostic infrastructure itself:
 
 ---
 
-## 5. Chapter Checklist
+## 6. Chapter Checklist
 
 Before marking a chapter ready to publish:
 
 - [ ] `chapter-N.md` exists in `docs/` with correct frontmatter
 - [ ] All required sections present in the required order (§2.2)
-- [ ] "Where We Are" has a before/after example using real output
+- [ ] "What I Am Building" has a before/after example using real output
 - [ ] Any REPL session output matches actual binary output
 - [ ] Counter-intuitive behaviour is flagged inline at first encounter, not deferred to a catch-all section
 - [ ] `code/chapter-N/pyxc.cpp` builds cleanly with CMake
 - [ ] All functions with non-trivial logic have `///` doc comments
 - [ ] All Parser functions have EBNF banners
-- [ ] `code/chapter-N/test/` has tests derived from the grammar (§4.3)
+- [ ] `code/chapter-N/test/` has tests derived from the grammar (§5.3)
 - [ ] All tests pass: `llvm-lit code/chapter-N/test/`
 - [ ] `code/chapter-N/pyxc.ebnf` exists and matches the grammar implemented in `.cpp`
-- [ ] `## Grammar` section in the `.md` matches `pyxc.ebnf` verbatim (with `-- new` annotations)
+- [ ] `## Grammar` section in the `.md` is a `grammardiff` fenced block (unified-diff style, leading `+`/`-`/space markers) against the previous chapter's real `pyxc.ebnf`, verified by reconstructing both the old and new sides and diffing each against the real files
 - [ ] All `///` EBNF banners in `.cpp` use the same production names as `pyxc.ebnf`
-- [ ] All code snippets in the `.md` match the actual source (spot-check with grep)
+- [ ] All code snippets in the `.md` are verified against the actual source byte-level where feasible (not just spot-checked), and every visible change/diff has prose explaining it — nothing added or changed silently
 - [ ] `lit.cfg.py` excludes any non-lit `.pyxc` files in the test directory
 
 ---
 
-## 6. What Each Chapter Covers (Summary)
+## 7. What Each Chapter Covers
 
-| Chapter | Title | Core addition |
-|---|---|---|
-| 0 | Overview | Table of contents and project description |
-| 1 | Lexer | `gettok()`, tokens, REPL skeleton |
-| 2 | Parser | Recursive descent, AST nodes, precedence climbing |
-| 3 | Better Errors | Keyword table, number validation, source locations, caret diagnostics |
-| 4 | Installation | LLVM install guide (macOS, Linux, Docker) |
-| 5 | Code Generation | LLVM IR, `LLVMContext`/`Module`/`IRBuilder`, `codegen()` on AST nodes |
-| 6 | JIT and Optimisation | ORC JIT execution of top-level expressions, FunctionPassManager pipeline, per-module lifetime, FunctionProtos cross-module registry |
-| 7 | File Input Mode | `FILE*` abstraction, positional filename argument, `-v` IR flag, REPL noise suppression |
-| 8 | Control Flow | Comparison operators, `if`/`else` expressions, `for` loops, PHI nodes, Mandelbrot payoff |
-| 9 | User-Defined Operators | `@binary(N)`/`@unary` decorators, `UnaryExprAST`, `ParseUnary`, operator-as-function encoding |
-| 10 | Mutable Variables | `var`/assignment, `alloca`/load/store, SSA with stack storage |
+For what each chapter covers, see [ROADMAP.md](../ROADMAP.md) — that's the single source of truth for chapter numbering and content, kept current as the sequence changes. Don't duplicate it here.

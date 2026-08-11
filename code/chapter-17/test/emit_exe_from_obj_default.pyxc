@@ -4,5 +4,5 @@
 # RUN: test -x %t
 # RUN: %t
 
-def main() -> None:
-    return
+def main():
+    return 0

@@ -1,0 +1,6 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Parsed a function definition" %t
+# RUN: not grep -q "Error (Line" %t
+
+# definition: the body expression is the function's implicit result
+def foo(x): x + 1

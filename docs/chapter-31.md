@@ -1,65 +1,51 @@
 ---
-description: "Add type parameters to traits: trait Addable[T] declares a contract over an abstract type, and classes instantiate it with a concrete type at the impl site."
+description: "Add character literals so single characters can be written as 'a', '\n', '\t', and '\\' instead of their numeric ASCII values."
 ---
-# 31. pyxc: Generic Traits
+# 31. pyxc: Character Literals
 
-## What I Am Building
+## Where We Are
 
-[Chapter 30](chapter-30.md) added `impl` blocks. A trait was still limited to concrete types: `trait Adder` had to spell out `int` parameters explicitly. After this chapter, a trait can name an abstract type parameter and leave the concrete type to be supplied by each implementor:
+Since I don't support character literals in pyxc just yet, I'm forced to write code like so:
 
 ```pyxc
-extern def printd(x: float64)
-
-trait Addable[T]:
-  def add(x: T, y: T) -> T
-
-class Calc:
-  public bias: int
-
-impl Addable[int] for Calc:
-  def add(x: int, y: int) -> int:
-    return x + y + self.bias
-
-
-def main() -> int:
-  var c: Calc = Calc()
-  c.bias = 2
-  printd(float64(c.add(4, 5)))
-  return 0
+if c == 32:   # space
+if c == 10:   # newline — or was it 13?
 ```
 
-```text
-11.000000
+But I want to write it like a sane person would:
+
+```pyxc
+if c == ' ':
+if c == '\n':
 ```
 
-`Addable[int]` and `Addable[float64]` are separate contracts. A class can satisfy either one, though — as I found out while testing this chapter — not both at once on the same class (see Known Limitations).
+I'll introduce character literals into pyxc. 
 
 ## Source Code
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-31
+cd pyxc-llvm-tutorial/code/chapter-38
 ```
 
 ## Grammar
 
-`trait-definition` gains an optional type parameter. `class-definition` and `implementation-definition` use a new `trait-reference` production wherever they previously used a bare trait name:
+I add `character-literal` as a `primary` alternative, and two new productions for its content:
+
+`code/chapter-38/pyxc.ebnf`
 
 ```grammardiff
  program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
  end-of-lines            = end-of-line { end-of-line } ;
  top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | external | top-level-expression ;
  type-alias       = "type" name "=" type ;
--trait-definition        = "trait" name ":" end-of-lines trait-block ;
-+trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
+ trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
  trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
  trait-method-signature  = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ;
  struct-definition       = "struct" name ":" end-of-lines struct-block ;
--class-definition        = "class" name [ "(" name { "," name } ")" ] ":" end-of-lines struct-block ;
--implementation-definition         = "impl" name "for" name ":" end-of-lines implementation-block ;
-+class-definition        = "class" name [ "(" trait-reference { "," trait-reference } ")" ] ":" end-of-lines struct-block ;
-+trait-reference        = name [ "[" type "]" ] ;
-+implementation-definition         = "impl" trait-reference "for" name ":" end-of-lines implementation-block ;
+ class-definition        = "class" name [ "(" trait-reference { "," trait-reference } ")" ] ":" end-of-lines struct-block ;
+ trait-reference        = name [ "[" type "]" ] ;
+ implementation-definition         = "impl" trait-reference "for" name ":" end-of-lines implementation-block ;
  implementation-block       = indent implementation-method { end-of-lines implementation-method } dedent ;
  implementation-method      = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
  struct-block     = indent class-member { end-of-lines class-member } dedent ;
@@ -75,28 +61,46 @@ cd pyxc-llvm-tutorial/code/chapter-31
  function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
  typed-parameter      = name ":" type ;
  if-statement          = "if" expression ":" suite
+                 { end-of-lines "elif" expression ":" suite }
                  [ end-of-lines "else" ":" suite ] ;
+ while-statement       = "while" expression ":" suite ;
+ do-while-statement     = "do" ":" suite end-of-lines "while" expression ;
+ switch-statement      = "switch" expression ":" end-of-lines indent switch-body dedent ;
+ switch-body      = switch-case { end-of-lines switch-case } [ end-of-lines default-case ] ;
+ switch-case      = "case" switch-integer { "," switch-integer } ":" suite ;
+ default-case     = "default" ":" suite ;
  for-statement         = "for"
                    ( "var" name ":" type | name )
                    "=" expression "," expression "," expression ":" suite ;
  variable-statement         = "var" variable-binding { "," variable-binding } ;
- assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
- simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
- compound-statement    = if-statement | for-statement ;
+ assignment-statement      = lvalue assignment-operator expression ; (* assignment is a statement here *)
+ simple-statement      = return-statement | break-statement | continue-statement | variable-statement | assignment-statement | expression ;
+ compound-statement    = if-statement | for-statement | while-statement | do-while-statement | switch-statement ;
  statement       = simple-statement | compound-statement ;
  suite           = simple-statement | compound-statement | end-of-lines block ;
  return-statement      = "return" [ expression ] ;
+ break-statement       = "break" ;
+ continue-statement    = "continue" ;
  statement-separator = end-of-lines | BLOCK_END ;
  block = indent statement { statement-separator statement } dedent ;
- expression      = comparison ;
- comparison      = sum { comparison-operator sum } ;
- comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ expression      = logical-or ;
+ logical-or      = logical-and { "||" logical-and } ;
+ logical-and     = bitwise-or { "&&" bitwise-or } ;
+ bitwise-or      = bitwise-xor { "|" bitwise-xor } ;
+ bitwise-xor     = bitwise-and { "^" bitwise-and } ;
+ bitwise-and     = equality { "&" equality } ;
+ equality        = relational { ("==" | "!=") relational } ;
+ relational      = shift { ("<" | "<=" | ">" | ">=") shift } ;
+ shift           = sum { ("<<" | ">>") sum } ;
  sum             = term { ("+" | "-") term } ;
- term            = unary-expression { ("*" | "/") unary-expression } ;
+ term            = unary-expression { ("*" | "/" | "%") unary-expression } ;
  lvalue          = name | field-access | index-expression ;
  variable-binding      = name ":" type [ "=" expression ] ;
- unary-expression       = "-" unary-expression | primary ;
- primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
+ unary-expression       = ("-" | "!" | "~" | "++" | "--") unary-expression | postfix-expression ;
+ postfix-expression     = primary [ postfix-operator ] ;
+ postfix-operator       = "++" | "--" ;
+-primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
++primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | character-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
  cast-expression        = cast-type "(" expression ")" ;
  sizeof-expression      = "sizeof" "(" type ")" ;
  address-expression        = "addr" "(" lvalue ")" ;
@@ -109,11 +113,15 @@ cd pyxc-llvm-tutorial/code/chapter-31
  number-expression      = number ;
  array-literal    = "[" [ expression { "," expression } ] "]" ;
  string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
++character-literal     = "'" ( ? any char except ' and newline ? | character-escape ) "'" ;
  escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
++character-escape      = "\\" ( "a" | "b" | "f" | "n" | "r" | "t" | "v"
++                        | "\\" | "'" | "\"" | "?" | "0" | "x" hex-digit hex-digit ) ;
  parenthesized-expression       = "(" expression ")" ;
  indent          = INDENT ;
  dedent          = DEDENT ;
- 
+
+ assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
  name      = (letter | "_") { letter | digit | "_" } ;
  builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
                  | "float" | "float32" | "float64"
@@ -128,262 +136,260 @@ cd pyxc-llvm-tutorial/code/chapter-31
                  | "float" | "float32" | "float64"
                  | "bool" | pointer-type ;
  integer         = digit { digit } ;
+ switch-integer       = [ "-" ] integer ;
  number          = ( digit { digit } [ "." { digit } ]
                    | "." digit { digit } ) [ exponent ] ;
  exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
  boolean-literal    = "True" | "False" ;
  letter          = "A".."Z" | "a".."z" ;
  digit           = "0".."9" ;
++hex-digit       = digit | "A".."F" | "a".."f" ;
  end-of-line             = "\r\n" | "\r" | "\n" ;
  comment = "#" { comment-character } ;
  comment-character = ? any character except "\r" and "\n" ? ;
  whitespace = " " | "\t" | "\v" | "\f" ;
  INDENT          = ? synthetic token emitted by lexer ? ;
  DEDENT          = ? synthetic token emitted by lexer ? ;
- 
+
  BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
 ```
 
-## Representing an Unresolved Type Parameter
+## New Token and Storage Global
 
-A new `ValueType` enum value represents an unresolved type parameter inside a trait body:
+I'll add one new character token:
 
 ```cpp
-enum class ValueType {
-  // ...existing values...
-  TypeVar,
-};
+tok_char = -64,
 ```
 
-The set of currently active type parameter names is tracked in a global:
+I'll store the character's integer value in a new global before returning the token:
 
 ```cpp
-static std::set<string> ActiveTypeParams;
+static uint32_t CharLiteralValue = 0; // Filled in if tok_char
 ```
 
-`ParseTypeToken` checks `ActiveTypeParams` before falling back to alias and struct lookup. If the name is active, it returns `ValueType::TypeVar` and stores the parameter name itself as the struct name:
+If you recall, this is similar to what I did for names and numbers. 
+
+## Lexer: Scanning the Character Literal
+
+When I see `'`, I'll read the character content, check for the closing `'`, and set `CharLiteralValue`:
 
 ```cpp
-case tok_name: {
-  string TyName = Name;
-  if (ActiveTypeParams.count(TyName)) {
-    getNextToken();
-    if (StructName)
-      *StructName = TyName;
-    return ValueType::TypeVar;
+if (LexerLastChar == '\'') {
+  LexerLastChar = advance(); // eat opening quote
+  // Nothing between the quotes, e.g. var e: int32 = ''
+  if (LexerLastChar == '\'' || LexerLastChar == '\n' ||
+      LexerLastChar == EOF) {
+    fprintf(stderr, "Error (Line %d, Column %d): empty character literal\n",
+            CurLoc.Line, CurLoc.Col);
+    PrintErrorSourceContext(CurLoc);
+    return tok_error;
   }
-  // ...alias lookup, then struct lookup, as before...
-}
-```
 
-This is why `T` in `def add(x: T, y: T) -> T` resolves to `(ValueType::TypeVar, "T")` instead of failing as an unknown type: the check runs first, before the alias and struct maps are even consulted. Outside a trait body `ActiveTypeParams` is empty, so `T` falls straight through to the ordinary unknown-type error.
+  uint32_t Value = 0;
+    if (LexerLastChar == '\\') {
+      LexerLastChar = advance();
+      switch (LexerLastChar) {
+      case 'a':
+        Value = '\a';
+        break;
+      case 'b':
+        Value = '\b';
+        break;
+      case 'f':
+        Value = '\f';
+        break;
+      case 'n':
+        Value = '\n';
+        break;
+      case 'r':
+        Value = '\r';
+        break;
+      case 't':
+        Value = '\t';
+        break;
+      case 'v':
+        Value = '\v';
+        break;
+      case '\\':
+        Value = '\\';
+        break;
+      case '\'':
+        Value = '\'';
+        break;
+      case '"':
+        Value = '"';
+        break;
+      case '?':
+        Value = '?';
+        break;
+      case '0':
+        Value = '\0';
+        break;
+      case 'x': {
+        auto HexDigitValue = [](int Ch) -> int {
+          if (Ch >= '0' && Ch <= '9')
+            return Ch - '0';
+          if (Ch >= 'a' && Ch <= 'f')
+            return Ch - 'a' + 10;
+          if (Ch >= 'A' && Ch <= 'F')
+            return Ch - 'A' + 10;
+          return -1;
+        };
 
-## Parsing the Trait's Type Parameter
-
-`ParseTraitDefinition` checks for an optional `[Param]` right after the trait name, before the `:`:
-
-```cpp
-getNextToken(); // eat trait name
-string TypeParamName;
-if (CurrentToken == tok_lbracket) {
-  getNextToken(); // eat '['
-  if (CurrentToken != tok_name)
-    return LogErrorExpression("Expected type parameter name in trait definition"), false;
-  TypeParamName = Name;
-  getNextToken(); // eat type parameter name
-  if (CurrentToken != tok_rbracket)
-    return LogErrorExpression("Expected ']' after trait type parameter"), false;
-  getNextToken(); // eat ']'
-}
-if (CurrentToken != tok_colon)
-  return LogErrorExpression("Expected ':' after trait name"), false;
-// ...eat ':', consume newlines, expect INDENT...
-
-TraitInfo TI;
-TI.Name = TraitName;
-TI.TypeParamName = TypeParamName;
-ActiveTypeParams.clear();
-if (!TypeParamName.empty())
-  ActiveTypeParams.insert(TypeParamName);
-```
-
-`TypeParamName` is stored on `TraitInfo`. An empty `TypeParamName` means the trait isn't generic, and `ActiveTypeParams` stays empty for the whole body — every `T`-like name in a non-generic trait is still just an ordinary, probably-unknown identifier.
-
-## Carrying the Type Argument
-
-In [Chapter 29](chapter-29.md), `StructTypeInfo::ImplementedTraits` was a `vector<string>`. This chapter replaces the element type with a nested struct, `StructTypeInfo::ImplTraitRef`, that carries both the trait name and the concrete type argument supplied at the class header or the `impl` header:
-
-```cpp
-struct StructTypeInfo {
-  // ...
-  struct ImplTraitRef {
-    string TraitName;
-    bool HasTypeArg = false;
-    ValueType TypeArg = ValueType::Error;
-    string TypeArgStructName;
-  };
-  vector<ImplTraitRef> ImplementedTraits;
-};
-```
-
-Both `ParseAggregateDefinition` (class header) and `ParseImplDefinition` (impl header) parse the optional `[type]` and fill one of these:
-
-```cpp
-StructTypeInfo::ImplTraitRef Ref;
-Ref.TraitName = TraitName;
-const auto &TI = Traits.at(TraitName);
-if (!TI.TypeParamName.empty()) {
-  // trait requires a type argument
-  if (CurrentToken != tok_lbracket)
-    return LogErrorExpression(("Trait '" + TraitName + "' requires a type argument").c_str()), false;
-  getNextToken(); // eat '['
-  string TypeArgStruct;
-  ValueType TypeArg = ParseTypeToken(&TypeArgStruct);
-  if (TypeArg == ValueType::Error || TypeArg == ValueType::None ||
-      TypeArg == ValueType::TypeVar)
-    return LogErrorExpression("Invalid trait type argument"), false;
-  if (CurrentToken != tok_rbracket)
-    return LogErrorExpression("Expected ']' after trait type argument"), false;
-  getNextToken(); // eat ']'
-  Ref.HasTypeArg = true;
-  Ref.TypeArg = TypeArg;
-  Ref.TypeArgStructName = TypeArgStruct;
-} else if (CurrentToken == tok_lbracket) {
-  return LogErrorExpression(("Trait '" + TraitName + "' does not take type arguments").c_str()), false;
-}
-```
-
-In the `impl`-header path, the duplicate-impl check from [Chapter 30](chapter-30.md) is upgraded from comparing trait names to comparing full `ImplTraitRef`s with a `SameImpl` lambda:
-
-```cpp
-auto SameImpl = [&](const StructTypeInfo::ImplTraitRef &R) {
-  return R.TraitName == ImplRef.TraitName &&
-         R.HasTypeArg == ImplRef.HasTypeArg && R.TypeArg == ImplRef.TypeArg &&
-         R.TypeArgStructName == ImplRef.TypeArgStructName;
-};
-```
-
-So two separate `impl` blocks, `impl Addable[int] for Calc:` and `impl Addable[float64] for Calc:`, are recognized as different implementations, not a duplicate of each other — at the `impl`-header level. The class-header trait list is a different story; see Known Limitations.
-
-## Conformance Checking with Type Substitution
-
-`VerifyTraitConformance` now takes an `ImplTraitRef` instead of a bare trait-name string, checks that the trait's own type-parameter-ness agrees with whether an argument was supplied, then substitutes the concrete type for every `TypeVar` occurrence before comparing signatures:
-
-```cpp
-static bool VerifyTraitConformance(const string &ClassName,
-                                   const StructTypeInfo::ImplTraitRef &ImplRef) {
-  const string &TraitName = ImplRef.TraitName;
-  auto CI = StructTypes.find(ClassName);
-  if (CI == StructTypes.end() || !CI->second.IsClass)
-    return LogErrorExpression(("Unknown class '" + ClassName + "'").c_str()), false;
-  if (!Traits.count(TraitName))
-    return LogErrorExpression(("Unknown trait '" + TraitName + "'").c_str()), false;
-  const auto &TI = Traits.at(TraitName);
-  if (!TI.TypeParamName.empty() && !ImplRef.HasTypeArg)
-    return LogErrorExpression(("Trait '" + TraitName + "' requires a type argument").c_str()), false;
-  if (TI.TypeParamName.empty() && ImplRef.HasTypeArg)
-    return LogErrorExpression(("Trait '" + TraitName + "' does not take type arguments").c_str()), false;
-
-  const auto &ClassInfo = CI->second;
-  auto ResolveReq = [&](ValueType T,
-                        const string &S) -> std::pair<ValueType, string> {
-    if (T == ValueType::TypeVar && S == TI.TypeParamName)
-      return {ImplRef.TypeArg, ImplRef.TypeArgStructName};
-    return {T, S};
-  };
-  for (const auto &Req : TI.Methods) {
-    // ...method exists, is public, same as chapter 30...
-    FunctionSignatureNode *P = /* ... */;
-    auto ReqRet = ResolveReq(Req.ReturnType, Req.ReturnStructName);
-    if (P->getNumParameters() != Req.Arguments.size() + 1 ||
-        P->getReturnType() != ReqRet.first ||
-        P->getReturnStructName() != ReqRet.second)
-      return LogErrorExpression("does not match trait signature"), false;
-    for (size_t I = 0; I < Req.Arguments.size(); ++I) {
-      auto ReqArg = ResolveReq(Req.Arguments[I].Type, Req.Arguments[I].StructName);
-      if (P->getParameterType(I + 1) != ReqArg.first ||
-          P->getParameterStructName(I + 1) != ReqArg.second)
-        return LogErrorExpression("does not match trait signature"), false;
+        int High = HexDigitValue(advance());
+        int Low = HexDigitValue(advance());
+        // Fewer than two hex digits after \x, e.g. var b: int32 = '\x'
+        if (High < 0 || Low < 0) {
+          fprintf(stderr,
+                  "Error (Line %d, Column %d): invalid character escape\n",
+                  CurLoc.Line, CurLoc.Col);
+          PrintErrorSourceContext(CurLoc);
+          return tok_error;
+        }
+        Value = static_cast<uint32_t>((High << 4) | Low);
+        break;
+      }
+    default:
+      // Backslash followed by a letter that isn't one of the escapes above,
+      // e.g. var q: int32 = '\q'
+      fprintf(stderr,
+              "Error (Line %d, Column %d): invalid character escape\n",
+              CurLoc.Line, CurLoc.Col);
+      PrintErrorSourceContext(CurLoc);
+      return tok_error;
     }
+  } else {
+    Value = static_cast<unsigned char>(LexerLastChar);
   }
-  return true;
+
+  LexerLastChar = advance();
+  // No closing quote where one is expected, e.g. var u: int32 = 'a
+  if (LexerLastChar != '\'') {
+    fprintf(stderr,
+            "Error (Line %d, Column %d): unterminated character literal\n",
+            CurLoc.Line, CurLoc.Col);
+    PrintErrorSourceContext(CurLoc);
+    return tok_error;
+  }
+  LexerLastChar = advance(); // eat closing quote
+  CharLiteralValue = Value;
+  return tok_char;
 }
 ```
 
-For a non-generic trait, every `Req` type is already concrete, so `ResolveReq` always returns its arguments unchanged: conformance works exactly as it did in [Chapter 30](chapter-30.md).
+I'll support all eleven of C's [simple escape sequences](https://en.cppreference.com/c/language/escape): `\a`, `\b`, `\f`, `\n`, `\r`, `\t`, `\v`, `\\`, `\'`, `\"`, and `\?`. I take two deliberate departures from that reference, though. C's numeric escapes are `\nnn` (an arbitrary-length octal value) and `\xn...` (an arbitrary-length hex value); I only keep `\0` as a fixed single-character case for the null byte, not general octal, and I require `\xNN` to be exactly two hex digits rather than an open-ended run. C's universal character names, `\unnnn` and `\Unnnnnnnn`, aren't supported at all yet, those arrive in [Chapter 32](chapter-32.md). Anything else is a `tok_error`.
 
-## What This Is Not
+## Building the AST Node
 
-Type parameters exist only on trait signatures. There are no generic functions, no generic structs, and no generic classes. `T` can't appear in a field declaration, a variable type, or a function return type outside a trait body — `ActiveTypeParams` is only ever populated while a trait body is being parsed.
+Whenever I see `CurrentToken == tok_char` in `ParsePrimary()`, I'll parse the character literal into a `NumberExpressionNode` because a character literal is just an integer. I'll call the parsing function `ParseCharExpression()`. 
 
-There's also no dynamic dispatch here, same as [Chapter 29](chapter-29.md): a generic trait is still a compile-time-checked contract, not a mechanism for writing code that's polymorphic over "anything implementing `Addable[T]`."
+```cpp
+static unique_ptr<ExpressionNode> ParsePrimary() {
+  switch (CurrentToken) {
+  ...
+  case tok_char:
+    return ParseCharExpression();    
+  }
+  ...
+}
+```
 
-## Known Limitations
+In the parsing function, I default to `Int32`, matching `getchar()`'s return type and C's `int`. If the surrounding context (from `ExpectedLiteralTypeGuard`, the same context-communicating global I introduced back in Chapter 18) expects a different integer type — say `var c: int8 = 'A'` — I adopt that type instead, with a range check against the target's maximum. A character value that doesn't fit in the target width is a parse error. 
 
-**A class cannot implement the same generic trait twice, even with different type arguments.** I initially assumed `class Calc(Addable[int], Addable[float64]):` would work, since `impl`'s own duplicate check (`SameImpl`) does account for the type argument. But I tried it and it doesn't: the class-header trait list's duplicate check, unchanged since [Chapter 29](chapter-29.md), only compares trait *names*, so it rejects `Addable[int], Addable[float64]` as a duplicate before type arguments ever enter into it. And even sidestepping the header by using two separate `impl` blocks instead, both implementations of `Addable[T]` need a method literally named `add` — there's no per-instantiation mangling, so the second `impl`'s `def add` collides with the first's under the ordinary "Method 'add' is already defined on 'Calc'" redefinition error. I confirmed both failure modes directly rather than assume either worked.
-
-**Type arguments must be concrete.** `ValueType::TypeVar` itself is rejected as a type argument, so a generic trait can't be implemented in terms of another trait's still-unresolved type parameter.
-
-**No forward references.** A trait must exist before any class or `impl` references it, same restriction [Chapter 29](chapter-29.md) already had.
+```cpp
+static unique_ptr<ExpressionNode> ParseCharExpression() {
+  ValueType Type = ValueType::Int32;
+  if (IsIntType(ExpectedLiteralType))
+    Type = ExpectedLiteralType;
+  unsigned Bits = LLVMTypeFor(Type)->getIntegerBitWidth();
+  APInt Max = APInt::getSignedMaxValue(Bits);
+  APInt Val(std::max(1u, Bits), CharLiteralValue, false);
+  // A bare character stores its raw byte value, so any byte from 128-255
+  // (outside ASCII) exceeds int8's signed maximum of 127. Trigger this with
+  // a hex escape, e.g. var c: int8 = '\x80'.
+  if (Val.ugt(Max))
+    return LogErrorExpression("Character literal out of range for type");
+  if (Val.getBitWidth() != Bits)
+    Val = Val.trunc(Bits);
+  auto Result = make_unique<NumberExpressionNode>(Val, Type);
+  getNextToken(); // consume the character literal
+  return Result;
+}
+```
 
 ## Try It
 
-**Missing type argument on a generic trait**
-
+<!-- code-merge:start -->
 ```pyxc
-trait Addable[T]:
-  def add(x: T, y: T) -> T
-
-class Bad(Addable):
-  x: int
+ready> 'a' == 97
 ```
-
 ```text
-Error (Line 4, Column 18): Trait 'Addable' requires a type argument
+True
 ```
-
-**Spurious type argument on a non-generic trait**
-
 ```pyxc
-trait Adder:
-  def add(x: int, y: int) -> int
-class Calc:
-  x: int
-impl Adder[int] for Calc:
-  def add(x: int, y: int) -> int:
-    return x
+ready> '\n' == 10
 ```
-
 ```text
-Error (Line 5, Column 11): Trait 'Adder' does not take type arguments
+True
 ```
-
-**Wrong concrete type in the method**
-
 ```pyxc
-trait Addable[T]:
-  def add(x: T, y: T) -> T
-class Bad:
-  x: int
-impl Addable[int] for Bad:
-  def add(x: int, y: float64) -> int:
-    return x
+ready> var c: int8 = 'A'
+ready> c
 ```
-
 ```text
-Error (Line 8, Column 0): Method 'add' on class 'Bad' does not match trait signature
+65
 ```
-
-## Build and Run
-
-```bash
-cd code/chapter-31
-cmake -S . -B build && cmake --build build
+```pyxc
+ready> var d: int8 = '\x80'
 ```
+```text
+Error (Line 5, Column 15): Character literal out of range for type
+var d: int8 = '\x80'
+              ^~~~
+```
+```pyxc
+ready> var e: int32 = ''
+```
+```text
+Error (Line 6, Column 16): empty character literal
+var e: int32 = ''
+               ^~~~
+Error (Line 6, Column 16): unknown token when expecting an expression
+var e: int32 = ''
+               ^~~~
+Error (Line 6, Column 17): empty character literal
+var e: int32 = ''
+                ^~~~
+```
+```pyxc
+ready> var b: int32 = '\x'
+```
+```text
+Error (Line 7, Column 16): invalid character escape
+var b: int32 = '\x'
+               ^~~~
+Error (Line 7, Column 16): unknown token when expecting an expression
+var b: int32 = '\x'
+               ^~~~
+```
+```pyxc
+ready> var u: int32 = 'a
+```
+```text
+Error (Line 8, Column 16): unterminated character literal
+var u: int32 = 'a
+               ^~~~
+```
+<!-- code-merge:end -->
+
+`'a'` compares equal to its ASCII code without me writing the number out, `'\n'` resolves to `10` through the escape path, and `'A'` assigned into an `int8` carries its value through untruncated since 65 fits comfortably under `int8`'s signed max of 127.
+
+The remaining four lines trigger the error checks called out above: `'\x80'` trips the range check in `ParseCharExpression` since 128 exceeds `int8`'s signed max, `''` trips the empty-literal check, `'\x'` trips the bad-hex-digit check, and the unclosed `'a` trips the missing-closing-quote check. Each lexer-level error (the last three) is followed by a second "unknown token when expecting an expression" line: once the lexer returns `tok_error`, the parser reports its own failure to parse an expression from that token, and the REPL's line-recovery logic re-scans the remainder of the input, which is why the empty-literal case reports the same error twice more.
 
 ## What's Next
 
-[Chapter 32](chapter-32.md) closes a long-standing gap in the arithmetic: `/` and `%`, five compound-assignment operators, and prefix/postfix `++`/`--`.
+[Chapter 32](chapter-32.md) adds Unicode escapes and validated UTF-8.
 
 ## Need Help?
 
@@ -397,4 +403,4 @@ Include:
 - Full error message
 - Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
-I'll help you figure it out.
+We'll figure it out.

@@ -1,0 +1,6 @@
+# RUN: %pyxc < %s > %t 2>&1
+# RUN: grep -q "Unexpected ';'" %t
+# RUN: not grep -q "Parsed a function definition." %t
+
+# program: a function definition must end at the line boundary
+def bad(x): x;

@@ -101,6 +101,7 @@ enum Token {
   tok_minus = '-',
   tok_star = '*',
   tok_slash = '/',
+  tok_percent = '%',
   tok_less = '<',
   tok_greater = '>',
   tok_equal = '=',
@@ -411,6 +412,8 @@ static int getToken() {
     return tok_star;
   case '/':
     return tok_slash;
+  case '%':
+    return tok_percent;
   case '<':
     return tok_less;
   case '>':
@@ -595,35 +598,35 @@ public:
 };
 
 /// IfExpressionNode - Expression class for if/else.
-class IfStatementNode : public ExpressionNode {
+class IfExpressionNode : public ExpressionNode {
   unique_ptr<ExpressionNode> Cond, Then, Else;
 
 public:
-  IfStatementNode(unique_ptr<ExpressionNode> Cond, unique_ptr<ExpressionNode> Then,
+  IfExpressionNode(unique_ptr<ExpressionNode> Cond, unique_ptr<ExpressionNode> Then,
             unique_ptr<ExpressionNode> Else)
       : Cond(std::move(Cond)), Then(std::move(Then)), Else(std::move(Else)) {}
   Value *codegen() override;
 };
 
-/// VarExpressionNode - Expression class for mutable local variable bindings.
+/// VariableExpressionNode - Expression class for mutable local variable bindings.
 ///   var a = <init>, b = <init> : <body>
 /// Each binding allocates stack storage in the current function's entry block,
 /// stores its initializer, shadows any outer binding of the same name for the
 /// duration of the body, then restores the old binding afterward.
-class VarStatementNode : public ExpressionNode {
+class VariableExpressionNode : public ExpressionNode {
   vector<pair<string, unique_ptr<ExpressionNode>>> VarNames;
   unique_ptr<ExpressionNode> Body;
 
 public:
-  VarStatementNode(vector<pair<string, unique_ptr<ExpressionNode>>> VarNames,
+  VariableExpressionNode(vector<pair<string, unique_ptr<ExpressionNode>>> VarNames,
              unique_ptr<ExpressionNode> Body)
       : VarNames(std::move(VarNames)), Body(std::move(Body)) {}
   Value *codegen() override;
 };
 
 /// FunctionSignatureNode - This class represents the "function signature" for a function,
-/// which captures its name, and its argument names (thus implicitly the number
-/// of arguments the function takes).
+/// which captures its name and parameter names (thus implicitly the number of
+/// parameters the function takes).
 class FunctionSignatureNode {
   string Name;
   vector<string> Parameters;
@@ -638,7 +641,7 @@ public:
   Function *codegen();
 };
 
-/// FunctionDefinitionNode - This class represents a function function-definition itself.
+/// FunctionDefinitionNode - This class represents a function definition itself.
 class FunctionDefinitionNode {
   unique_ptr<FunctionSignatureNode> Signature;
   unique_ptr<ExpressionNode> Body;
@@ -684,7 +687,7 @@ void PrintReplPrompt() {
 
 /// Log - Write a diagnostic message to stderr in REPL mode only.
 /// Used by the Handle* functions to confirm what was parsed ("Parsed a
-/// function function-definition.", etc.). Silent when processing a script file so
+/// function definition.", etc.). Silent when processing a script file so
 /// that stdout/stderr output from the program itself is not cluttered.
 void Log(const string &message) {
   if (IsRepl)
@@ -713,7 +716,7 @@ unique_ptr<FunctionDefinitionNode> LogErrorFunction(const char *Str) {
 
 static unique_ptr<ExpressionNode> ParseExpression();
 static unique_ptr<ExpressionNode> ParsePrimary();
-static unique_ptr<ExpressionNode> ParseVarStatement();
+static unique_ptr<ExpressionNode> ParseVariableExpression();
 
 /// number-expression
 ///   = number ;
@@ -775,13 +778,13 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
   return ParseNameExpressionWithName(ParsedName);
 }
 
-/// forexpr
+/// for-expression
 ///   = "for" [ "var" ] name "=" expression "," expression "," expression
 ///     ":" [end-of-lines] expression ;
 ///
 /// The loop variable is introduced by the "for" and is in scope for the
 /// condition, step, and body. It shadows any outer variable of the same name.
-static unique_ptr<ExpressionNode> ParseForStatement() {
+static unique_ptr<ExpressionNode> ParseForExpression() {
   getNextToken(); // eat 'for'
 
   bool IsVarDecl = false;
@@ -833,12 +836,13 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
                                  std::move(Body));
 }
 
-/// varexpr
-///   = "var" varbinding { "," varbinding } ":" [ end-of-lines ] expression ;
+/// variable-expression
+///   = "var" variable-binding { "," variable-binding } ":"
+///     [ end-of-lines ] expression ;
 ///
-/// varbinding
+/// variable-binding
 ///   = name [ "=" expression ] ;
-static unique_ptr<ExpressionNode> ParseVarStatement() {
+static unique_ptr<ExpressionNode> ParseVariableExpression() {
   getNextToken(); // eat 'var'
 
   vector<pair<string, unique_ptr<ExpressionNode>>> VarNames;
@@ -877,12 +881,12 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
   if (!Body)
     return nullptr;
 
-  return make_unique<VarStatementNode>(std::move(VarNames), std::move(Body));
+  return make_unique<VariableExpressionNode>(std::move(VarNames), std::move(Body));
 }
 
-/// ifexpr
+/// if-expression
 ///   = "if" expression ":" expression "else" ":" expression ;
-static unique_ptr<ExpressionNode> ParseIfStatement() {
+static unique_ptr<ExpressionNode> ParseIfExpression() {
   getNextToken(); // eat 'if'
 
   auto Cond = ParseExpression();
@@ -918,32 +922,21 @@ static unique_ptr<ExpressionNode> ParseIfStatement() {
   if (!Else)
     return nullptr;
 
-  return make_unique<IfStatementNode>(std::move(Cond), std::move(Then),
+  return make_unique<IfExpressionNode>(std::move(Cond), std::move(Then),
                                 std::move(Else));
 }
 
-static unique_ptr<ExpressionNode>
-ParseUnary(); // forward declaration for ParseUnaryMinus
-
-/// unaryminus
-///   = "-" unaryexpr ;
-/// Parse built-in unary minus into a UnaryExpressionNode with opcode '-'.
-/// The operand is a full unaryexpr so unary chains work naturally
-/// (e.g. -!x, --x, -(x+1)).
-static unique_ptr<ExpressionNode> ParseUnaryMinus() {
-  getNextToken(); // eat '-'
-  auto Operand = ParseUnary();
-  if (!Operand)
-    return nullptr;
-  return make_unique<UnaryExpressionNode>(tok_minus, std::move(Operand));
-}
+/// factor
+///   = "-" factor
+///   | primary ;
+static unique_ptr<ExpressionNode> ParseFactor();
 
 /// primary
 ///   = name-expression
 ///   | number-expression
 ///   | parenthesized-expression
-///   | ifexpr
-///   | forexpr ;
+///   | if-expression
+///   | for-expression ;
 static unique_ptr<ExpressionNode> ParsePrimary() {
   switch (CurrentToken) {
   default:
@@ -955,31 +948,37 @@ static unique_ptr<ExpressionNode> ParsePrimary() {
   case tok_lparen:
     return ParseParenthesizedExpression();
   case tok_if:
-    return ParseIfStatement();
+    return ParseIfExpression();
   case tok_for:
-    return ParseForStatement();
+    return ParseForExpression();
   }
 }
 
-/// unary-expression
-///   = "-" unary-expression
+/// factor
+///   = "-" factor
 ///   | primary ;
-static unique_ptr<ExpressionNode> ParseUnary() {
-  if (CurrentToken == tok_minus)
-    return ParseUnaryMinus();
+static unique_ptr<ExpressionNode> ParseFactor() {
+  if (CurrentToken == tok_minus) {
+    getNextToken(); // eat '-'
+    auto Operand = ParseFactor();
+    if (!Operand)
+      return nullptr;
+    return make_unique<UnaryExpressionNode>(tok_minus, std::move(Operand));
+  }
   return ParsePrimary();
 }
 
 /// term
-///   = unary-expression { ("*" | "/") unary-expression } ;
+///   = factor { ("*" | "/" | "%") factor } ;
 static unique_ptr<ExpressionNode> ParseTerm() {
-  auto Left = ParseUnary();
+  auto Left = ParseFactor();
   if (!Left)
     return nullptr;
-  while (CurrentToken == tok_star || CurrentToken == tok_slash) {
+  while (CurrentToken == tok_star || CurrentToken == tok_slash ||
+         CurrentToken == tok_percent) {
     int Operator = CurrentToken;
     getNextToken();
-    auto Right = ParseUnary();
+    auto Right = ParseFactor();
     if (!Right)
       return nullptr;
     Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
@@ -1027,10 +1026,10 @@ static unique_ptr<ExpressionNode> ParseComparison() {
 }
 
 /// expression
-///   = varexpr | comparison [ "=" expression ] ;
+///   = variable-expression | comparison [ "=" expression ] ;
 static unique_ptr<ExpressionNode> ParseExpression() {
   if (CurrentToken == tok_var)
-    return ParseVarStatement();
+    return ParseVariableExpression();
 
   auto Expr = ParseComparison();
   if (!Expr)
@@ -1064,7 +1063,7 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
   if (CurrentToken != tok_lparen)
     return LogErrorSignature("Expected '(' in function signature");
 
-  // Parse argument names. The loop calls getNextToken() at the top to advance
+  // Parse parameter names. The loop calls getNextToken() at the top to advance
   // past '(' on the first iteration, and past ',' on subsequent ones.
   // Inside the body we call getNextToken() again to move past the name
   // we just stored, then check whether ')' or ',' follows.
@@ -1244,16 +1243,16 @@ Value *NameExpressionNode::codegen() {
 /// AssignmentExpressionNode::codegen - Evaluate the Right, store it into the variable's
 /// memory slot, and produce the assigned value.
 Value *AssignmentExpressionNode::codegen() {
-  Value *Val = Expr->codegen();
-  if (!Val)
+  Value *Value = Expr->codegen();
+  if (!Value)
     return nullptr;
 
   auto It = NamedValues.find(Name);
   if (It == NamedValues.end() || !It->second)
     return LogErrorV("Unknown variable name");
 
-  TheBuilder->CreateStore(Val, It->second);
-  return Val;
+  TheBuilder->CreateStore(Value, It->second);
+  return Value;
 }
 
 /// BinaryExpressionNode::codegen - Recursively codegen both operands, then emit the
@@ -1291,6 +1290,8 @@ Value *BinaryExpressionNode::codegen() {
     return TheBuilder->CreateFMul(L, R, "multmp");
   case tok_slash:
     return TheBuilder->CreateFDiv(L, R, "divtmp");
+  case tok_percent:
+    return TheBuilder->CreateFRem(L, R, "remtmp");
   case tok_less:
     L = TheBuilder->CreateFCmpOLT(L, R, "cmptmp");
     // Widen the i1 boolean to double: false -> 0.0, true -> 1.0.
@@ -1382,7 +1383,7 @@ Value *CallExpressionNode::codegen() {
 /// We recapture `ThenBB` and `ElseBB` after branch codegen because nested
 /// control flow can move the Builder insertion point to a different block.
 /// PHI incoming edges must use the actual terminating blocks of each arm.
-Value *IfStatementNode::codegen() {
+Value *IfExpressionNode::codegen() {
   Value *CondV = Cond->codegen();
   if (!CondV)
     return nullptr;
@@ -1525,10 +1526,10 @@ Value *ForExpressionNode::codegen() {
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
-/// VarExpressionNode::codegen - Allocate mutable local variables, initialize them,
+/// VariableExpressionNode::codegen - Allocate mutable local variables, initialize them,
 /// codegen the body under the new bindings, then restore any shadowed outer
 /// bindings.
-Value *VarStatementNode::codegen() {
+Value *VariableExpressionNode::codegen() {
   vector<pair<string, AllocaInst *>> OldBindings;
   Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
 
@@ -1588,7 +1589,7 @@ Function *FunctionSignatureNode::codegen() {
   return F;
 }
 
-/// FunctionDefinitionNode::codegen - Generate IR for a complete function function-definition.
+/// FunctionDefinitionNode::codegen - Generate IR for a complete function definition.
 ///
 /// Four steps:
 ///
@@ -1740,17 +1741,17 @@ static void SynchronizeToLineBoundary() {
 /// accessible in the JIT's symbol table for the rest of the session.
 /// On parse failure or unexpected trailing tokens: discard the line.
 static void HandleFunctionDefinition() {
-  auto FnAST = ParseFunctionDefinition();
-  if (!FnAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
-    if (FnAST)
+  auto FunctionDefinition = ParseFunctionDefinition();
+  if (!FunctionDefinition || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
+    if (FunctionDefinition)
       LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
   }
-  if (auto *FnIR = FnAST->codegen()) {
+  if (auto *FunctionIR = FunctionDefinition->codegen()) {
     Log("Parsed a function definition.\n");
     if (VerboseIR)
-      FnIR->print(errs());
+      FunctionIR->print(errs());
     // Transfer the module to the JIT. TheModule is now invalid; reinitialise.
     ExitOnErr(TheJIT->addModule(
         ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
@@ -1767,10 +1768,10 @@ static void HandleFunctionDefinition() {
 /// 'declare' in whichever module needs to call the extern.
 /// On parse failure or unexpected trailing tokens: discard the line.
 static void HandleExtern() {
-  auto ProtoAST = ParseExtern();
+  auto Signature = ParseExtern();
 
-  if (!ProtoAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
-    if (ProtoAST)
+  if (!Signature || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
+    if (Signature)
       LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
@@ -1778,22 +1779,22 @@ static void HandleExtern() {
 
   // Reject conflicting redeclarations: in Pyxc, function identity is just
   // name + arity, since all parameter and return types are double.
-  auto Existing = FunctionSignatures.find(ProtoAST->getName());
+  auto Existing = FunctionSignatures.find(Signature->getName());
   if (Existing != FunctionSignatures.end() &&
-      Existing->second->getNumParameters() != ProtoAST->getNumParameters()) {
+      Existing->second->getNumParameters() != Signature->getNumParameters()) {
     LogErrorExpression((string("Conflicting extern declaration for '") +
-              ProtoAST->getName() + "'")
+              Signature->getName() + "'")
                  .c_str());
     SynchronizeToLineBoundary();
     return;
   }
 
-  if (auto *FnIR = ProtoAST->codegen()) {
+  if (auto *FunctionIR = Signature->codegen()) {
     Log("Parsed an extern.\n");
     if (VerboseIR)
-      FnIR->print(errs());
+      FunctionIR->print(errs());
     // Save the function signature so getFunction() can re-emit it in future modules.
-    FunctionSignatures[ProtoAST->getName()] = std::move(ProtoAST);
+    FunctionSignatures[Signature->getName()] = std::move(Signature);
   }
 }
 
@@ -1815,17 +1816,17 @@ static void HandleExtern() {
 ///   6. Call RT->remove() to free the compiled code. The module was already
 ///      transferred to the JIT in step 4, so eraseFromParent() is not needed.
 static void HandleTopLevelExpression() {
-  auto FnAST = ParseTopLevelExpression();
-  if (!FnAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
-    if (FnAST)
+  auto FunctionDefinition = ParseTopLevelExpression();
+  if (!FunctionDefinition || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
+    if (FunctionDefinition)
       LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
   }
-  if (auto *FnIR = FnAST->codegen()) {
+  if (auto *FunctionIR = FunctionDefinition->codegen()) {
     Log("Parsed a top-level expression.\n");
     if (VerboseIR)
-      FnIR->print(errs());
+      FunctionIR->print(errs());
 
     // ResourceTracker scopes the JIT memory for this expression so we can
     // free it precisely after the call, without affecting other symbols.
@@ -1882,7 +1883,8 @@ extern "C" DLLEXPORT double printd(double X) {
 
 /// MainLoop - Dispatch loop for the REPL.
 ///
-/// top             = function-definition | external | top-level-expression ;
+/// top-level-item
+///   = function-definition | external | top-level-expression ;
 ///
 /// Dispatches on the leading token of each top-level form:
 ///   tok_def    → HandleFunctionDefinition   (function-definition)
@@ -1974,7 +1976,6 @@ int main(int argc, const char **argv) {
   // disassembler so the JIT can compile and link for the current CPU.
   InitializeNativeTarget();
   InitializeNativeTargetAsmPrinter();
-  InitializeNativeTargetAsmParser();
 
   // Prime the REPL: print the first prompt and load the first token.
   // Every parse function expects CurrentToken to be loaded before it is called.
