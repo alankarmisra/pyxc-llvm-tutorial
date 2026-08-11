@@ -34,64 +34,94 @@ The central shift: `if`, `for`, `var`, and (new) `return` move out of the expres
 `code/chapter-12/pyxc.ebnf`
 
 ```grammardiff
- program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
- end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = function-definition | external | top-level-expression ;
--function-definition      = "def" function-signature ":" [ end-of-lines ] expression ;
-+function-definition      = "def" function-signature ":" ( simple-statement | end-of-lines block ) ;
- external        = "extern" "def" function-signature ;
- top-level-expression    = expression ;
- function-signature       = name "(" [ parameters ] ")" ;
- parameters               = parameter { "," parameter } ;
- parameter                = name ;
--ifexpr          = "if" expression ":" [ end-of-lines ] expression [ end-of-lines ] "else" ":" [ end-of-lines ] expression ;
--forexpr         = "for" [ "var" ] name "=" expression "," expression "," expression ":" [ end-of-lines ] expression ;
--expression      = varexpr | comparison [ "=" expression ] ;
--varexpr         = "var" variable-binding { "," variable-binding } ":" [ end-of-lines ] expression ;
--variable-binding      = name [ "=" expression ] ;
-+if-statement          = "if" expression ":" suite
-+                [ end-of-lines "else" ":" suite ] ;
-+for-statement         = "for" [ "var" ] name "=" expression "," expression "," expression ":" suite ;
-+variable-statement         = "var" variable-binding { "," variable-binding } ;
-+assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
-+simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
-+compound-statement    = if-statement | for-statement ;
-+statement       = simple-statement | compound-statement ;
-+suite           = simple-statement | compound-statement | end-of-lines block ;
-+return-statement      = "return" expression ;
-+statement-separator         = end-of-lines | BLOCK_END ;
-+block           = indent statement { statement-separator statement } dedent ;
-+expression      = comparison ;
- comparison               = sum { comparison-operator sum } ;
- comparison-operator      = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
- sum                      = term { ("+" | "-") term } ;
- term                     = unary-expression { ("*" | "/") unary-expression } ;
-+lvalue          = name ;
-+variable-binding      = name [ "=" expression ] ;
- unary-expression       = "-" unary-expression | primary ;
--primary         = name-expression | number-expression | parenthesized-expression
--                | ifexpr | forexpr ;
-+primary         = name-expression | number-expression | parenthesized-expression ;
- name-expression  = name | call-expression ;
- call-expression        = name "(" [ arguments ] ")" ;
- arguments              = expression { "," expression } ;
- number-expression      = number ;
- parenthesized-expression       = "(" expression ")" ;
-+indent          = INDENT ;
-+dedent          = DEDENT ;
- name      = (letter | "_") { letter | digit | "_" } ;
- number          = digit { digit } [ "." { digit } ]
-                 | "." digit { digit } ;
- letter          = "A".."Z" | "a".."z" ;
- digit           = "0".."9" ;
- end-of-line             = "\r\n" | "\r" | "\n" ;
- comment = "#" { comment-character } ;
- comment-character = ? any character except "\r" and "\n" ? ;
- whitespace = " " | "\t" | "\v" | "\f" ;
-+INDENT          = ? synthetic token emitted by lexer when indentation increases ? ;
-+DEDENT          = ? synthetic token emitted by lexer when indentation decreases ? ;
-+BLOCK_END       = ? synthetic token injected into the stream by ParseBlock
-+                    immediately after it consumes DEDENT ? ;
+ program                           = [ end-of-lines ]
+                                     [ top-level-item
+                                       { end-of-lines top-level-item } ]
+                                     [ end-of-lines ] ;
+ end-of-lines                      = end-of-line { end-of-line } ;
+ top-level-item                    = function-definition
+                                     | external
+                                     | top-level-expression ;
+-function-definition               = "def" function-signature ":"
+-                                    [ end-of-lines ] expression ;
++function-definition               = "def" function-signature ":"
++                                    ( simple-statement
++                                      | end-of-lines block ) ;
+ external                          = "extern" "def" function-signature ;
+ top-level-expression              = expression ;
+ function-signature                = name "(" [ parameters ] ")" ;
+ parameters                        = parameter { "," parameter } ;
+ parameter                         = name ;
+-expression                        = variable-expression
+-                                    | comparison [ "=" expression ] ;
+-variable-expression               = "var" variable-binding
+-                                    { "," variable-binding } ":"
+-                                    [ end-of-lines ] expression ;
+-variable-binding                  = name [ "=" expression ] ;
++if-statement                      = "if" expression ":" suite
++                                    [ [ end-of-lines ] "else" ":" suite ] ;
++for-statement                     = "for" [ "var" ] name "=" expression ","
++                                    expression "," expression ":" suite ;
++variable-statement                = "var" variable-binding
++                                    { "," variable-binding } ;
++assignment-statement              = lvalue "=" expression ;
++simple-statement                  = return-statement
++                                    | variable-statement
++                                    | assignment-statement
++                                    | expression ;
++compound-statement                = if-statement | for-statement ;
++statement                         = simple-statement | compound-statement ;
++suite                             = simple-statement
++                                    | compound-statement
++                                    | end-of-lines block ;
++return-statement                  = "return" expression ;
++statement-separator               = end-of-lines | BLOCK_END ;
++block                             = indent statement
++                                    { statement-separator statement } dedent ;
++expression                        = comparison ;
+ comparison                        = sum { comparison-operator sum } ;
+ comparison-operator               = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ sum                               = term { ("+" | "-") term } ;
+ term                              = factor { ("*" | "/" | "%") factor } ;
++lvalue                            = name ;
++variable-binding                  = name [ "=" expression ] ;
+ factor                            = "-" factor | primary ;
+ primary                           = name-expression
+                                     | number-expression
+-                                    | parenthesized-expression
+-                                    | if-expression
+-                                    | for-expression ;
+-if-expression                     = "if" expression ":"
+-                                    [ end-of-lines ] expression
+-                                    [ end-of-lines ] "else" ":"
+-                                    [ end-of-lines ] expression ;
+-for-expression                    = "for" [ "var" ] name "=" expression ","
+-                                    expression "," expression ":"
+-                                    [ end-of-lines ] expression ;
+-name-expression                   = name
+-                                    | call-expression ;
++                                    | parenthesized-expression ;
++name-expression                   = name | call-expression ;
+ call-expression                   = name "(" [ arguments ] ")" ;
+ arguments                         = expression { "," expression } ;
+ number-expression                 = number ;
+ parenthesized-expression          = "(" expression ")" ;
++indent                            = INDENT ;
++dedent                            = DEDENT ;
+ name                              = (letter | "_")
+                                     { letter | digit | "_" } ;
+ number                            = digit { digit } [ "." { digit } ]
+                                     | "." digit { digit } ;
+ letter                            = "A".."Z" | "a".."z" ;
+ digit                             = "0".."9" ;
+ end-of-line                       = "\r\n" | "\r" | "\n" ;
+ comment                           = "#" { comment-character } ;
+ comment-character                 = ? any character except "\r" and "\n" ? ;
+ whitespace                        = " " | "\t" | "\v" | "\f" ;
++INDENT                            = ? synthetic token emitted by lexer when indentation increases ? ;
++DEDENT                            = ? synthetic token emitted by lexer when indentation decreases ? ;
++BLOCK_END                         = ? synthetic token injected into the stream by ParseBlock
++                                      immediately after it consumes DEDENT ? ;
 ```
 
 - **`suite`** — what follows a `:`. Either a single statement on the same line, or a newline followed by an indented block.
@@ -138,8 +168,9 @@ return acc
 Three new token values:
 
 ```cpp
-tok_indent    = -19, // synthetic: emitted by lexer when indentation increases
-tok_dedent    = -20, // synthetic: emitted by lexer when indentation decreases
+// indentation
+tok_indent    = -19,
+tok_dedent    = -20,
 tok_block_end = -21, // synthetic: injected by ParseBlock after eating DEDENT
 ```
 
@@ -147,35 +178,35 @@ tok_block_end = -21, // synthetic: injected by ParseBlock after eating DEDENT
 
 Three new AST node classes:
 
-`ReturnExpressionNode` — a `return` statement:
+`ReturnStatementNode` — a `return` statement:
 
 ```cpp
-/// ReturnExpressionNode - Statement-like expression for return.
+/// ReturnStatementNode - Statement-like expression for return.
 /// Emits a function return and produces the returned value.
-class ReturnExpressionNode : public ExpressionNode {
+class ReturnStatementNode : public ExpressionNode {
   unique_ptr<ExpressionNode> Expr;
 
 public:
-  ReturnExpressionNode(unique_ptr<ExpressionNode> Expr) : Expr(std::move(Expr)) {}
+  ReturnStatementNode(unique_ptr<ExpressionNode> Expr) : Expr(std::move(Expr)) {}
   Value *codegen() override;
 };
 ```
 
-`BlockExpressionNode` — a sequence of statements evaluated in order:
+`BlockStatementNode` — a sequence of statements evaluated in order:
 
 ```cpp
-/// BlockExpressionNode - A sequence of statements evaluated in order.
+/// BlockStatementNode - A sequence of statements evaluated in order.
 /// The block's value is the value of the last statement executed.
-class BlockExpressionNode : public ExpressionNode {
+class BlockStatementNode : public ExpressionNode {
   vector<unique_ptr<ExpressionNode>> Stmts;
 
 public:
-  BlockExpressionNode(vector<unique_ptr<ExpressionNode>> Stmts) : Stmts(std::move(Stmts)) {}
+  BlockStatementNode(vector<unique_ptr<ExpressionNode>> Stmts) : Stmts(std::move(Stmts)) {}
   Value *codegen() override;
 };
 ```
 
-`VarStatementNode` gets a new shape — no body this time. Unlike [chapter 11](chapter-11.md)'s version of the same class name, variables declared here persist for the rest of the function, not just one expression:
+`VarStatementNode` replaces [chapter 11](chapter-11.md)'s `VariableExpressionNode` and drops the body entirely — no more `: expression` tail. Variables declared here persist for the rest of the function, not just one expression:
 
 ```cpp
 /// VarStatementNode - Statement form of mutable local variable bindings.
@@ -192,7 +223,7 @@ public:
 };
 ```
 
-`IfStatementNode` — same class name as before, but its doc comment finally matches what it's always done since [chapter 4](chapter-04.md): no PHI node, and `else` is optional.
+`IfStatementNode` replaces [chapter 10](chapter-10.md)'s `IfExpressionNode`. Since a statement doesn't need to produce a value, the new version drops the PHI node entirely, and `else` becomes optional — a real behavior change, not just a rename.
 
 ## INDENT and DEDENT
 
@@ -271,16 +302,28 @@ A tab always snaps forward to the next 8-column boundary, never backward and nev
 
 A single dedent can push multiple `DEDENT` tokens — one for each level that closed:
 
+<!-- code-merge:start -->
 ```pyxc
-def f():
+ready> def f():
     var x = 1
    var y = 2
 ```
-```
+```text
 Error (Line 3, Column 4): inconsistent indentation
+   v
+   ^~~~
+   v
+   ^~~~
+Error (Line 3, Column 4): unknown token when expecting an expression
+   v
+   ^~~~
+Error (Line 3, Column 4): unknown token when expecting an expression
+   var 
+   ^~~~
 ```
+<!-- code-merge:end -->
 
-Dedenting to column 3 has no match on the stack (`[0, 4]`) — it's neither the current indentation nor an outer one, so there's no consistent level to return to.
+Dedenting to column 3 has no match on the stack (`[0, 4]`) — it's neither the current indentation nor an outer one, so there's no consistent level to return to. `gettok()` reports it and returns `tok_error`, but the lexer state doesn't stop there — the parser keeps trying to recover from the malformed token stream, which is why one bad indent produces several cascading error lines instead of just the first one.
 
 **Step 3: Drain the queue — return the first pending token if any.**
 
@@ -324,14 +367,16 @@ Similar to Python's, with one difference: pyxc allows mixing tabs and spaces (Py
 
 Assignment to an undeclared variable is a parse-time error:
 
+<!-- code-merge:start -->
 ```pyxc
-x = 1
+ready> x = 1
 ```
-```
+```text
 Error (Line 1, Column 3): Assignment to undeclared variable
 x = 
   ^~~~
 ```
+<!-- code-merge:end -->
 
 To catch this, the parser keeps a scope stack of declared variable names — a function scope at the bottom, plus one nested scope per block:
 
@@ -386,14 +431,18 @@ static bool IsDeclaredVar(const string &Name) {
 
 `IsDeclaredInCurrentScope` and `IsDeclaredVar` answer two different questions: the first catches redeclaring the same name in the same block, the second catches referencing a name that was never declared anywhere visible. I use the first one for `var`'s own redeclaration check:
 
+<!-- code-merge:start -->
 ```pyxc
-def f():
+ready> def f():
     var x = 1
     var x = 2
 ```
-```
+```text
 Error (Line 3, Column 11): Variable 'x' already declared in this scope
+    var x = 
+          ^~~~
 ```
+<!-- code-merge:end -->
 
 Each scope guard is a small C++ struct. The constructor opens the scope; the destructor closes it. When the guard variable goes out of scope — at the end of a block, or when an early return is hit — the scope closes automatically, no explicit cleanup calls needed:
 
@@ -494,7 +543,7 @@ static unique_ptr<ExpressionNode> ParseBlock() {
   PendingTokens.push_front(tok_block_end);
   getNextToken(); // → CurrentToken = tok_block_end
 
-  return make_unique<BlockExpressionNode>(std::move(Stmts));
+  return make_unique<BlockStatementNode>(std::move(Stmts));
 }
 ```
 
@@ -624,7 +673,7 @@ static unique_ptr<ExpressionNode> ParseAssignmentRight(const string &Name) {
   auto Right = ParseExpression();
   if (!Right)
     return nullptr;
-  return make_unique<AssignmentExpressionNode>(Name, std::move(Right));
+  return make_unique<AssignmentStatementNode>(Name, std::move(Right));
 }
 ```
 
@@ -683,14 +732,14 @@ static unique_ptr<ExpressionNode> ParseReturnStatement() {
   auto Expr = ParseExpression();
   if (!Expr)
     return nullptr;
-  return make_unique<ReturnExpressionNode>(std::move(Expr));
+  return make_unique<ReturnStatementNode>(std::move(Expr));
 }
 ```
 
-`ReturnExpressionNode::codegen` emits a real LLVM terminator — a `ret` instruction that ends the current basic block:
+`ReturnStatementNode::codegen` emits a real LLVM terminator — a `ret` instruction that ends the current basic block:
 
 ```cpp
-Value *ReturnExpressionNode::codegen() {
+Value *ReturnStatementNode::codegen() {
   Value *RetVal = Expr->codegen();
   if (!RetVal)
     return nullptr;
@@ -702,10 +751,10 @@ Value *ReturnExpressionNode::codegen() {
 
 ## Block Codegen
 
-`BlockExpressionNode::codegen` evaluates statements in order. It stops early if a `return` already terminated the current block — statements after a `return` are unreachable. It also saves and restores `NamedValues` around the block body, so variables declared inside the block with `var` don't leak to the outer scope:
+`BlockStatementNode::codegen` evaluates statements in order. It stops early if a `return` already terminated the current block — statements after a `return` are unreachable. It also saves and restores `NamedValues` around the block body, so variables declared inside the block with `var` don't leak to the outer scope:
 
 ```cpp
-Value *BlockExpressionNode::codegen() {
+Value *BlockStatementNode::codegen() {
   auto SavedBindings = NamedValues;
 
   Value *Last = nullptr;
@@ -755,7 +804,7 @@ Value *VarStatementNode::codegen() {
 }
 ```
 
-`AssignmentExpressionNode::codegen` is unchanged from [chapter 11](chapter-11.md) — it loads the alloca from `NamedValues`, stores the new value, and returns it.
+Assignment codegen is unchanged in substance from [chapter 11](chapter-11.md) — it loads the alloca from `NamedValues`, stores the new value, and returns it. Only the class name changed, from `AssignmentExpressionNode` to `AssignmentStatementNode`, matching the grammar's new `assignment-statement` rule.
 
 ## `if` as a Statement
 

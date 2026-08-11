@@ -12,6 +12,6 @@ def main() -> int:
   var blanks: int
   while (c = getchar()) != EOF:
     if c == ' ':
-      blanks += 1
+      blanks = blanks + 1
   printd(float64(blanks))
   return 0

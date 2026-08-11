@@ -1,7 +1,6 @@
 # RUN: %pyxc --emit llvm-ir -o %t.ll %s
 
 module app.main
-import app.math
 
 export def add(x: int, y: int) -> int:
   return x + y

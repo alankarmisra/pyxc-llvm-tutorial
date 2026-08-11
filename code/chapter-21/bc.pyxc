@@ -1,4 +1,0 @@
-extern def malloc(n: int64) -> ptr[int8]
-def f():
-  var raw: ptr[int8] = ptr[int8](malloc(8))
-  var p: ptr[int64] = ptr[int64](raw)

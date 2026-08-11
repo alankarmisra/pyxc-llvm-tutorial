@@ -1,0 +1,10 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 255
+# CHECK: 65535
+# CHECK: 4294967295
+# CHECK: 18446744073709551615
+
+uint8(-1)
+uint16(-1)
+uint32(-1)
+uint64(-1)

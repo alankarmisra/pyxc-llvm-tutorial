@@ -1,4 +1,4 @@
-# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: %pyxc -O0 --emit llvm-ir -o %t.ll %s
 # RUN: FileCheck --input-file=%t.ll %s
 # CHECK: sitofp i{{32|64}}
 # CHECK: fptosi double

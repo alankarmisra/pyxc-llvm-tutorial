@@ -1,0 +1,3 @@
+def main() -> int:
+  var value: uint8 = 256
+  return 0

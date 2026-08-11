@@ -1,0 +1,11 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 6.000000
+
+extern def printd(x: float64)
+
+def main() -> int:
+  var x: int = 9
+  var y: int = ~x
+  printd(float64(y & 7))
+  return 0

@@ -3,7 +3,7 @@ description: "Build a recursive-descent parser and syntax-tree nodes: turn token
 ---
 # 2. pyxc: The Parser and Syntax Tree
 
-## Where I Am
+## What I Am Building
 
 I'll continue working with the `add` function example from [Chapter 1](chapter-01.md).
 
@@ -23,6 +23,69 @@ In the last chapter I stripped out all the comments and converted the code into 
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-02
 ```
+
+## Grammar
+
+I've collected all the grammar rules I write above each parsing function later in this chapter, and put them here up front. This makes up the complete grammar for pyxc at this stage — the tool I use going forward to check what I've built.
+
+[pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-02/pyxc.ebnf)
+
+```ebnf
+(*
+   pyxc.ebnf
+   Baseline grammar for chapter 2.
+*)
+
+(*
+   { } = zero or more (any number of...)
+   [ ] = zero or one (optional)
+*)
+program                    = [ end-of-lines ]
+                             [ top-level-item { end-of-lines top-level-item } ]
+                             [ end-of-lines ] ;
+end-of-lines               = end-of-line { end-of-line } ;
+top-level-item             = function-definition | top-level-expression ;
+function-definition        = "def" function-signature ":"
+                             [ end-of-lines ] expression ;
+top-level-expression       = expression ;
+function-signature         = name "(" [ parameters ] ")" ;
+parameters                 = parameter { "," parameter } ;
+parameter                  = name ;
+expression                 = sum ;
+sum                        = term { "+" term } ;
+term                       = primary ;
+primary                    = name-expression
+                             | number-expression
+                             | parenthesized-expression ;
+name-expression            = name
+                             | call-expression ;
+call-expression            = name "(" [ arguments ] ")" ;
+arguments                  = expression { "," expression } ;
+number-expression          = number ;
+parenthesized-expression   = "(" expression ")" ;
+name                       = (letter | "_") { letter | digit | "_" } ;
+number                     = digit { digit } [ "." { digit } ]
+                             | "." digit { digit } ;
+letter                     = "A".."Z" | "a".."z" ;
+digit                      = "0".."9" ;
+end-of-line                = "\r\n" | "\r" | "\n" ;
+(*
+    A `comment` begins with "#" and continues to the end of the line. The lexer
+     ignores its text and returns an end-of-line token when one follows it.
+*)
+comment                    = "#" { comment-character } ;
+comment-character          = ? any character except "\r" and "\n" ? ;
+(*
+    `whitespace` may appear before or between tokens
+     and is ignored by the lexer.
+*)
+whitespace                 = " " | "\t" | "\v" | "\f" ;
+```
+
+I wrote the grammar in two layers.
+
+- I use the bottom rules — `name`, `number`, `letter`, `digit`, `end-of-line`, `comment`, `comment-character`, and `whitespace` — to turn raw characters into tokens.
+- I use the top rules — `expression`, `function-definition`, `function-signature`, and so on — to arrange those tokens into syntax and specify which token may follow another.
 
 ## Representing Structure
 
@@ -625,18 +688,26 @@ I didn't catch the following bugs until I actually ran the REPL against `MainLoo
 
 I expect this:
 
+<!-- code-merge:start -->
 ```pyxc
 ready> 1 + 2
+```
+```text
 Parsed a top-level expression.
 ready> 
 ```
+<!-- code-merge:end -->
 
 But if I actually type `1 + 2` and press *enter*, it seems to wait for another keypress. 
 
+<!-- code-merge:start -->
 ```pyxc
 ready> 1 + 2
+```
+```text
 ...
 ```
+<!-- code-merge:end -->
 
 Here's why. When I read the `2`, I leave `LastChar` sitting on the `\n` right after it. At this point my `getToken()` code reaches this branch:
 
@@ -664,10 +735,14 @@ On the *next* call, I skip that space in `getToken()`'s whitespace loop and call
 
 I made the same mistake in the comment branch:
 
+<!-- code-merge:start -->
 ```pyxc
 ready> 1 + 2 # this comment will stall getToken() too
+```
+```text
 ... 
 ```
+<!-- code-merge:end -->
 
 Here's the offending code:
 
@@ -698,20 +773,28 @@ I similarly replace the offending snippet in comment parsing with:
 
 With that fix in place I now get the expected output:
 
+<!-- code-merge:start -->
 ```pyxc
 ready> 1 + 2
+```
+```text
 Parsed a top-level expression.
 ready> 
 ```
+<!-- code-merge:end -->
 
 ### Bug 2: The Prompt Disappears After an Error
 
 I found a second bug hiding behind the first one. I typed a broken function definition to check my error handling:
 
+<!-- code-merge:start -->
 ```pyxc
 ready> def add
+```
+```text
 Error: Expected '(' in function signature (token: newline)
 ```
+<!-- code-merge:end -->
 
 The error prints, but no fresh `ready> ` follows it. The REPL looks frozen again.
 
@@ -737,21 +820,29 @@ fprintf(stderr, "Error: %s (token: %s)\nready> ", Str,
 
 With both fixes in place:
 
+<!-- code-merge:start -->
 ```pyxc
 ready> def add
+```
+```text
 Error: Expected '(' in function signature (token: newline)
 ready> 
 ```
+<!-- code-merge:end -->
 
 ### Bug 3: Prompt Prints Twice
 
 By adding the prompt to `LogErrorExpression()`, I created a new issue.
 
+<!-- code-merge:start -->
 ```pyxc
 ready> def bad(x) x
+```
+```text
 Error: Expected ':' in function definition (token: name)
 ready> ready>
 ```
+<!-- code-merge:end -->
 
 I print the first prompt from `LogErrorExpression()`'s baked-in `\nready> `. The recovery skip in `HandleFunctionDefinition()` then lands exactly on the line's trailing `tok_eol`. When I return to `MainLoop()`, I print a second `ready> ` immediately afterward.
 
@@ -773,92 +864,69 @@ llvm-lit test/
 
 ## Try It
 
+<!-- code-merge:start -->
 ```pyxc
 ready> def add(x, y):
 x + y
+```
+```text
 Parsed a function definition.
+```
+<!-- code-merge:end -->
+<!-- code-merge:start -->
+```pyxc
 ready> def sumThree(a, b, c):
 add(a, b) + c
+```
+```text
 Parsed a function definition.
+```
+<!-- code-merge:end -->
+<!-- code-merge:start -->
+```pyxc
 ready> 1 + 2 + 3
+```
+```text
 Parsed a top-level expression.
+```
+<!-- code-merge:end -->
+<!-- code-merge:start -->
+```pyxc
 ready> sin(1.0) + cos(2.0) # sin/cos are never defined; I don't check that yet, that's a semantic check
+```
+```text
 Parsed a top-level expression.
+```
+<!-- code-merge:end -->
+<!-- code-merge:start -->
+```pyxc
 ready> 1 2 # legal here; Chapter 5 disallows two things on one line
+```
+```text
 Parsed a top-level expression.
 Parsed a top-level expression.
+```
+<!-- code-merge:end -->
+<!-- code-merge:start -->
+```pyxc
 ready> def a(): 1 def b(): 2 # same deal for function definitions
+```
+```text
 Parsed a function definition.
 Parsed a function definition.
+```
+<!-- code-merge:end -->
+<!-- code-merge:start -->
+```pyxc
 ready> def bad(x) x
+```
+```text
 Error: Expected ':' in function definition (token: name)
 ready> ready>
 ```
+<!-- code-merge:end -->
 
 With this parser, I accept valid syntax, report invalid syntax, and keep the REPL running after an error.
-
-## Grammar
-
-I've collected all the grammar rules I've been writing above each parsing function, and put them here. This makes up the complete grammar for pyxc at this stage:
-
-[pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-02/pyxc.ebnf)
-
-```ebnf
-(*
-   pyxc.ebnf
-   Baseline grammar for chapter 2.
-*)
-
-(*
-   { } = zero or more (any number of...)
-   [ ] = zero or one (optional)
-*)
-program                    = [ end-of-lines ]
-                             [ top-level-item { end-of-lines top-level-item } ]
-                             [ end-of-lines ] ;
-end-of-lines               = end-of-line { end-of-line } ;
-top-level-item             = function-definition | top-level-expression ;
-function-definition        = "def" function-signature ":"
-                             [ end-of-lines ] expression ;
-top-level-expression       = expression ;
-function-signature         = name "(" [ parameters ] ")" ;
-parameters                 = parameter { "," parameter } ;
-parameter                  = name ;
-expression                 = sum ;
-sum                        = term { "+" term } ;
-term                       = primary ;
-primary                    = name-expression
-                             | number-expression
-                             | parenthesized-expression ;
-name-expression            = name
-                             | call-expression ;
-call-expression            = name "(" [ arguments ] ")" ;
-arguments                  = expression { "," expression } ;
-number-expression          = number ;
-parenthesized-expression   = "(" expression ")" ;
-name                       = (letter | "_") { letter | digit | "_" } ;
-number                     = digit { digit } [ "." { digit } ]
-                             | "." digit { digit } ;
-letter                     = "A".."Z" | "a".."z" ;
-digit                      = "0".."9" ;
-end-of-line                = "\r\n" | "\r" | "\n" ;
-(*
-    A `comment` begins with "#" and continues to the end of the line. The lexer
-     ignores its text and returns an end-of-line token when one follows it.
-*)
-comment                    = "#" { comment-character } ;
-comment-character          = ? any character except "\r" and "\n" ? ;
-(*
-    `whitespace` may appear before or between tokens
-     and is ignored by the lexer.
-*)
-whitespace                 = " " | "\t" | "\v" | "\f" ;
-```
-
-I wrote the grammar in two layers.
-
-- I use the bottom rules — `name`, `number`, `letter`, `digit`, `end-of-line`, `comment`, `comment-character`, and `whitespace` — to turn raw characters into tokens.
-- I use the top rules — `expression`, `function-definition`, `function-signature`, and so on — to arrange those tokens into syntax and specify which token may follow another.
 
 ## What's Next
 

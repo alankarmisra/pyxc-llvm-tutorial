@@ -1,7 +1,8 @@
 extern def printd(x: float64) -> float64
 
-# ── Integer power ───────────────────────────────────────────────────────────
-def power(base: float64, exp: float64) -> float64:    var result: float64 = 1.0
+# ── Integer power ──────────────────────────────────────────────────────────
+def power(base: float64, exp: float64) -> float64:
+    var result: float64 = 1.0
     for var i: float64 = 1, i <= exp, 1:
         result = result * base
     return result

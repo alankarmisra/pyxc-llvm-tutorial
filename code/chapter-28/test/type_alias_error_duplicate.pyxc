@@ -1,5 +1,0 @@
-# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
-# CHECK: {{Type alias 'meters' is already defined}}
-
-type meters = int
-type meters = int64

@@ -1,12 +1,13 @@
 # RUN: %pyxc --emit exe -o %t %s
 # RUN: %t 2>&1 | FileCheck %s
-# CHECK: alias basic
+# CHECK: 42.000000
 
-extern def puts(s: ptr[int8]) -> int
+extern def printd(x: float64)
 
-type string = ptr[int8]
+type IntPointer = ptr[int]
 
 def main() -> int:
-  var s: string = "alias basic"
-  puts(s)
+  var value: int = 42
+  var pointer: IntPointer = addr(value)
+  printd(float64(pointer[0]))
   return 0

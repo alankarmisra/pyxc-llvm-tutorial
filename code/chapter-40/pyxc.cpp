@@ -33,21 +33,16 @@
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
-#include "llvm/Transforms/Scalar.h"
-#include "llvm/Transforms/Scalar/GVN.h"
-#include "llvm/Transforms/Scalar/Reassociate.h"
-#include "llvm/Transforms/Utils/Mem2Reg.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <deque>
 #include <iomanip>
-#include <limits>
 #include <map>
 #include <memory>
+#include <limits>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -82,7 +77,7 @@ static cl::opt<bool> DumpIR("dump-ir",
 static cl::opt<bool> VerboseIR("v", cl::desc("Alias for --dump-ir"),
                                cl::init(false), cl::cat(PyxcCategory));
 
-// Emit DWARF debug info.
+// Emit DWARF debug information in native output.
 static cl::opt<bool> DebugInfo("g", cl::desc("Emit DWARF debug info"),
                                cl::init(false), cl::cat(PyxcCategory));
 
@@ -102,7 +97,7 @@ static cl::opt<unsigned> OptLevel("O", cl::desc("Optimization level"),
 static FILE *Input = stdin;
 static bool IsRepl = true;
 
-enum class EmitKind { None, LLVMIR, ASM, OBJ, EXE };
+enum class EmitKind { None, LLVMIR, Assembly, Object, Executable };
 static EmitKind EmitMode = EmitKind::None;
 static string EmitOutputPath;
 
@@ -139,17 +134,9 @@ enum Token {
   tok_if = -13,
   tok_else = -14,
   tok_return = -15,
-  tok_elif = -63,
 
   // loops
   tok_for = -16,
-  tok_while = -52,
-  tok_do = -53,
-  tok_break = -54,
-  tok_continue = -55,
-  tok_switch = -60,
-  tok_case = -61,
-  tok_default = -62,
 
 
   // mutable variables
@@ -161,16 +148,13 @@ enum Token {
   // indentation
   tok_indent = -21,
   tok_dedent = -22,
+  tok_block_end = -100, // synthetic: injected by ParseBlock after eating DEDENT
 
   // new type keywords
   tok_int8 = -23,
   tok_int16 = -24,
   tok_int32 = -25,
   tok_int64 = -26,
-  tok_uint8 = -65,
-  tok_uint16 = -66,
-  tok_uint32 = -67,
-  tok_uint64 = -68,
   tok_float = -27,
   tok_float32 = -28,
   tok_float64 = -29,
@@ -178,30 +162,40 @@ enum Token {
   tok_none = -31,
   tok_true = -32,
   tok_false = -33,
-  tok_struct = -34,
-  tok_ptr = -35,
-  tok_addr = -36,
-  tok_sizeof = -37,
-  tok_string = -38,
-  tok_type = -39,
-  tok_class = -40,
-  tok_public = -41,
-  tok_private = -42,
-  tok_trait = -43,
-  tok_impl = -44,
-  tok_char = -64,
-  tok_pluseq = -45,
-  tok_minuseq = -46,
-  tok_muleq = -47,
-  tok_diveq = -48,
-  tok_modeq = -49,
-  tok_and = -50, // &&
-  tok_or = -51,  // ||
-  tok_plusplus = -56,
-  tok_minusminus = -57,
-  tok_shl = -58, // <<
-  tok_shr = -59, // >>
-  tok_block_end = -100, // synthetic: injected by ParseBlock after eating DEDENT
+  tok_elif = -34,
+  tok_while = -35,
+  tok_do = -36,
+  tok_break = -37,
+  tok_continue = -38,
+  tok_uint8 = -39,
+  tok_uint16 = -40,
+  tok_uint32 = -41,
+  tok_uint64 = -42,
+  tok_and = -43, // &&
+  tok_or = -44,  // ||
+  tok_shift_left = -45,  // <<
+  tok_shift_right = -46, // >>
+  tok_switch = -47,
+  tok_case = -48,
+  tok_default = -49,
+  tok_struct = -50,
+  tok_ptr = -51,
+  tok_addr = -52,
+  tok_sizeof = -53,
+  tok_type = -54,
+  tok_string = -55,
+  tok_character = -56,
+  tok_plus_equal = -57,
+  tok_minus_equal = -58,
+  tok_star_equal = -59,
+  tok_slash_equal = -60,
+  tok_percent_equal = -61,
+  tok_plus_plus = -62,
+  tok_minus_minus = -63,
+  tok_class = -64,
+  tok_public = -65,
+  tok_private = -66,
+  tok_trait = -67,
 
   // punctuation and operators
   tok_lparen = '(',
@@ -212,18 +206,18 @@ enum Token {
   tok_minus = '-',
   tok_star = '*',
   tok_slash = '/',
+  tok_percent = '%',
   tok_less = '<',
   tok_greater = '>',
   tok_equal = '=',
-  tok_dot = '.',
-  tok_lbracket = '[',
-  tok_rbracket = ']',
-  tok_percent = '%',
   tok_exclamation = '!',
   tok_ampersand = '&',
   tok_pipe = '|',
   tok_caret = '^',
   tok_tilde = '~',
+  tok_dot = '.',
+  tok_lbracket = '[',
+  tok_rbracket = ']',
 };
 
 enum class ValueType {
@@ -244,14 +238,13 @@ enum class ValueType {
   Struct,
   Array,
   Pointer,
-  TypeVar,
   Error
 };
 
-static string Name;          // Filled in if tok_name
-static string NumberLiteral;          // Raw number literal text (no sign)
-static string StringLiteralStr;       // Filled in if tok_string
-static uint32_t CharLiteralValue = 0; // Filled in if tok_char
+static string Name;    // Filled in if tok_name
+static string NumberLiteral;    // Raw number literal text (no sign)
+static string StringLiteralValue;
+static uint32_t CharacterLiteralValue = 0;
 static bool NumberIsFloat = false; // True if the literal contains '.' or e/E.
 static int LexerLastChar =
     ' '; // Last character read by the lexer (used for lookahead and whitespace
@@ -265,119 +258,71 @@ static bool AtLineStart =
 
 // Keywords like `def`, `extern` and `return`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
-static map<string, Token> Keywords = {{"def", tok_def},
-                                      {"extern", tok_extern},
-                                      {"return", tok_return},
-                                      {"if", tok_if},
-                                      {"elif", tok_elif},
-                                      {"else", tok_else},
-                                      {"for", tok_for},
-                                      {"while", tok_while},
-                                      {"do", tok_do},
-                                      {"break", tok_break},
-                                      {"continue", tok_continue},
-                                      {"switch", tok_switch},
-                                      {"case", tok_case},
-                                      {"default", tok_default},
-                                      {"var", tok_var},
-                                      {"int", tok_int},
-                                      {"int8", tok_int8},
-                                      {"int16", tok_int16},
-                                      {"int32", tok_int32},
-                                      {"int64", tok_int64},
-                                      {"uint8", tok_uint8},
-                                      {"uint16", tok_uint16},
-                                      {"uint32", tok_uint32},
-                                      {"uint64", tok_uint64},
-                                      {"float", tok_float},
-                                      {"float32", tok_float32},
-                                      {"float64", tok_float64},
-                                      {"bool", tok_bool},
-                                      {"None", tok_none},
-                                      {"True", tok_true},
-                                      {"False", tok_false},
-                                      {"struct", tok_struct},
-                                      {"class", tok_class},
-                                      {"public", tok_public},
-                                      {"private", tok_private},
-                                      {"ptr", tok_ptr},
-                                      {"addr", tok_addr},
-                                      {"sizeof", tok_sizeof},
-                                      {"type", tok_type},
-                                      {"trait", tok_trait},
-                                      {"impl", tok_impl}};
+static map<string, Token> Keywords = {
+    {"def", tok_def},         {"extern", tok_extern},   {"return", tok_return},
+    {"if", tok_if},           {"elif", tok_elif},       {"else", tok_else},
+    {"for", tok_for},         {"while", tok_while},     {"do", tok_do},
+    {"break", tok_break},     {"continue", tok_continue},
+    {"var", tok_var},
+    {"int", tok_int},         {"int8", tok_int8},       {"int16", tok_int16},
+    {"int32", tok_int32},     {"int64", tok_int64},
+    {"uint8", tok_uint8},     {"uint16", tok_uint16},
+    {"uint32", tok_uint32},   {"uint64", tok_uint64},
+    {"switch", tok_switch},   {"case", tok_case},
+    {"default", tok_default}, {"struct", tok_struct},     {"class", tok_class},
+    {"public", tok_public},   {"private", tok_private},
+    {"trait", tok_trait},
+    {"ptr", tok_ptr},         {"addr", tok_addr},
+    {"sizeof", tok_sizeof},
+    {"type", tok_type},
+    {"float", tok_float},
+    {"float32", tok_float32}, {"float64", tok_float64}, {"bool", tok_bool},
+    {"None", tok_none},       {"True", tok_true},       {"False", tok_false}};
 static constexpr int IndentTabWidth = 8;
 
 // Debug-only token names. Kept separate from Keywords because this map is
 // purely for printing token stream output.
 static map<int, string> TokenNames = [] {
   // Unprintable character tokens, and multi-character tokens.
-  static map<int, string> Names = {{tok_eof, "end of input"},
-                                   {tok_eol, "newline"},
-                                   {tok_error, "error"},
-                                   {tok_def, "'def'"},
-                                   {tok_extern, "'extern'"},
-                                   {tok_name, "name"},
-                                   {tok_number, "number"},
-                                   {tok_return, "'return'"},
-                                   {tok_eq, "'=='"},
-                                   {tok_neq, "'!='"},
-                                   {tok_leq, "'<='"},
-                                   {tok_geq, "'>='"},
-                                   {tok_arrow, "'->'"},
-                                   {tok_if, "'if'"},
-                                   {tok_elif, "'elif'"},
-                                   {tok_else, "'else'"},
-                                   {tok_for, "'for'"},
-                                   {tok_while, "'while'"},
-                                   {tok_do, "'do'"},
-                                   {tok_break, "'break'"},
-                                   {tok_continue, "'continue'"},
-                                   {tok_switch, "'switch'"},
-                                   {tok_case, "'case'"},
-                                   {tok_default, "'default'"},
-                                   {tok_var, "'var'"},
-                                   {tok_int, "'int'"},
-                                   {tok_int8, "'int8'"},
-                                   {tok_int16, "'int16'"},
-                                   {tok_int32, "'int32'"},
-                                   {tok_int64, "'int64'"},
-                                   {tok_uint8, "'uint8'"},
-                                   {tok_uint16, "'uint16'"},
-                                   {tok_uint32, "'uint32'"},
-                                   {tok_uint64, "'uint64'"},
-                                   {tok_float, "'float'"},
-                                   {tok_float32, "'float32'"},
-                                   {tok_float64, "'float64'"},
-                                   {tok_bool, "'bool'"},
-                                   {tok_none, "'None'"},
-                                   {tok_true, "'True'"},
-                                   {tok_false, "'False'"},
-                                   {tok_struct, "'struct'"},
-                                   {tok_class, "'class'"},
-                                   {tok_public, "'public'"},
-                                   {tok_private, "'private'"},
-                                   {tok_trait, "'trait'"},
-                                   {tok_impl, "'impl'"},
-                                   {tok_pluseq, "'+='"},
-                                   {tok_minuseq, "'-='"},
-                                   {tok_muleq, "'*='"},
-                                   {tok_diveq, "'/='"},
-                                   {tok_modeq, "'%='"},
-                                   {tok_and, "'&&'"},
-                                   {tok_or, "'||'"},
-                                   {tok_plusplus, "'++'"},
-                                   {tok_minusminus, "'--'"},
-                                   {tok_shl, "'<<'"},
-                                   {tok_shr, "'>>'"},
-                                   {tok_ptr, "'ptr'"},
-                                   {tok_addr, "'addr'"},
-                                   {tok_sizeof, "'sizeof'"},
-                                   {tok_string, "string literal"},
-                                   {tok_char, "character literal"},
-                                   {tok_type, "'type'"},
-                                   {tok_indent, "indent"},
-                                   {tok_dedent, "dedent"},
+  static map<int, string> Names = {
+      {tok_eof, "end of input"},  {tok_eol, "newline"},
+      {tok_error, "error"},       {tok_def, "'def'"},
+      {tok_extern, "'extern'"},   {tok_name, "name"},
+      {tok_number, "number"},     {tok_return, "'return'"},
+      {tok_eq, "'=='"},           {tok_neq, "'!='"},
+      {tok_leq, "'<='"},          {tok_geq, "'>='"},
+      {tok_arrow, "'->'"},        {tok_if, "'if'"},
+      {tok_else, "'else'"},       {tok_for, "'for'"},
+      {tok_var, "'var'"},         {tok_int, "'int'"},
+      {tok_int8, "'int8'"},       {tok_int16, "'int16'"},
+      {tok_int32, "'int32'"},     {tok_int64, "'int64'"},
+      {tok_uint8, "'uint8'"},     {tok_uint16, "'uint16'"},
+      {tok_uint32, "'uint32'"},   {tok_uint64, "'uint64'"},
+      {tok_and, "'&&'"},          {tok_or, "'||'"},
+      {tok_shift_left, "'<<'"},   {tok_shift_right, "'>>'"},
+      {tok_switch, "'switch'"},   {tok_case, "'case'"},
+      {tok_default, "'default'"},
+      {tok_struct, "'struct'"},
+      {tok_class, "'class'"},
+      {tok_public, "'public'"}, {tok_private, "'private'"},
+      {tok_trait, "'trait'"},
+      {tok_ptr, "'ptr'"},         {tok_addr, "'addr'"},
+      {tok_sizeof, "'sizeof'"},
+      {tok_type, "'type'"},
+      {tok_string, "string literal"},
+      {tok_character, "character literal"},
+      {tok_plus_equal, "'+='"},    {tok_minus_equal, "'-='"},
+      {tok_star_equal, "'*='"},    {tok_slash_equal, "'/='"},
+      {tok_percent_equal, "'%='"}, {tok_plus_plus, "'++'"},
+      {tok_minus_minus, "'--'"},
+      {tok_float, "'float'"},     {tok_float32, "'float32'"},
+      {tok_float64, "'float64'"}, {tok_bool, "'bool'"},
+      {tok_none, "'None'"},       {tok_true, "'True'"},
+      {tok_false, "'False'"},     {tok_indent, "indent"},
+      {tok_elif, "'elif'"},       {tok_while, "'while'"},
+      {tok_do, "'do'"},           {tok_break, "'break'"},
+      {tok_continue, "'continue'"},
+      {tok_dedent, "dedent"},
                                    {tok_block_end, "block-end"}};
 
   // Single character tokens.
@@ -528,202 +473,6 @@ static int peek() {
   return c;
 }
 
-enum class LiteralDecodeError {
-  None,
-  InvalidEscape,
-  InvalidUtf8,
-  InvalidCodePoint,
-};
-
-static int HexDigitValue(int Ch) {
-  if (Ch >= '0' && Ch <= '9')
-    return Ch - '0';
-  if (Ch >= 'a' && Ch <= 'f')
-    return Ch - 'a' + 10;
-  if (Ch >= 'A' && Ch <= 'F')
-    return Ch - 'A' + 10;
-  return -1;
-}
-
-static bool IsUnicodeScalarValue(uint32_t Value) {
-  return Value <= 0x10FFFF && !(Value >= 0xD800 && Value <= 0xDFFF);
-}
-
-// I decode one escaped or raw UTF-8 code point and leave LexerLastChar at the
-// first byte after it. I use this path for character and string literals.
-static LiteralDecodeError DecodeLiteralCodePoint(uint32_t &Value) {
-  if (LexerLastChar == '\\') {
-    LexerLastChar = advance(); // eat the backslash
-    switch (LexerLastChar) {
-    case 'a':
-      Value = '\a';
-      LexerLastChar = advance();
-      return LiteralDecodeError::None;
-    case 'b':
-      Value = '\b';
-      LexerLastChar = advance();
-      return LiteralDecodeError::None;
-    case 'f':
-      Value = '\f';
-      LexerLastChar = advance();
-      return LiteralDecodeError::None;
-    case 'n':
-      Value = '\n';
-      LexerLastChar = advance();
-      return LiteralDecodeError::None;
-    case 'r':
-      Value = '\r';
-      LexerLastChar = advance();
-      return LiteralDecodeError::None;
-    case 't':
-      Value = '\t';
-      LexerLastChar = advance();
-      return LiteralDecodeError::None;
-    case 'v':
-      Value = '\v';
-      LexerLastChar = advance();
-      return LiteralDecodeError::None;
-    case '\\':
-      Value = '\\';
-      LexerLastChar = advance();
-      return LiteralDecodeError::None;
-    case '\'':
-      Value = '\'';
-      LexerLastChar = advance();
-      return LiteralDecodeError::None;
-    case '"':
-      Value = '"';
-      LexerLastChar = advance();
-      return LiteralDecodeError::None;
-    case '?':
-      Value = '?';
-      LexerLastChar = advance();
-      return LiteralDecodeError::None;
-    case 'x': {
-      int High = HexDigitValue(advance());
-      int Low = HexDigitValue(advance());
-      if (High < 0 || Low < 0)
-        return LiteralDecodeError::InvalidEscape;
-      Value = static_cast<uint32_t>((High << 4) | Low);
-      LexerLastChar = advance();
-      return LiteralDecodeError::None;
-    }
-    case 'u':
-    case 'U': {
-      int Digits = LexerLastChar == 'u' ? 4 : 8;
-      Value = 0;
-      for (int I = 0; I < Digits; ++I) {
-        int Digit = HexDigitValue(advance());
-        if (Digit < 0)
-          return LiteralDecodeError::InvalidEscape;
-        Value = (Value << 4) | static_cast<uint32_t>(Digit);
-      }
-      LexerLastChar = advance();
-      if (!IsUnicodeScalarValue(Value))
-        return LiteralDecodeError::InvalidCodePoint;
-      return LiteralDecodeError::None;
-    }
-    default:
-      if (LexerLastChar < '0' || LexerLastChar > '7')
-        return LiteralDecodeError::InvalidEscape;
-
-      Value = 0;
-      for (int I = 0; I < 3; ++I) {
-        Value = (Value << 3) |
-                static_cast<uint32_t>(LexerLastChar - '0');
-        int Next = peek();
-        if (I == 2 || Next < '0' || Next > '7') {
-          LexerLastChar = advance();
-          break;
-        }
-        LexerLastChar = advance();
-      }
-      return LiteralDecodeError::None;
-    }
-  }
-
-  unsigned Lead = static_cast<unsigned char>(LexerLastChar);
-  if (Lead < 0x80) {
-    Value = Lead;
-    LexerLastChar = advance();
-    return LiteralDecodeError::None;
-  }
-
-  int Length = 0;
-  uint32_t Minimum = 0;
-  if (Lead >= 0xC2 && Lead <= 0xDF) {
-    Length = 2;
-    Value = Lead & 0x1F;
-    Minimum = 0x80;
-  } else if (Lead >= 0xE0 && Lead <= 0xEF) {
-    Length = 3;
-    Value = Lead & 0x0F;
-    Minimum = 0x800;
-  } else if (Lead >= 0xF0 && Lead <= 0xF4) {
-    Length = 4;
-    Value = Lead & 0x07;
-    Minimum = 0x10000;
-  } else {
-    return LiteralDecodeError::InvalidUtf8;
-  }
-
-  for (int I = 1; I < Length; ++I) {
-    int Next = advance();
-    if (Next == EOF || (Next & 0xC0) != 0x80)
-      return LiteralDecodeError::InvalidUtf8;
-    Value = (Value << 6) | static_cast<uint32_t>(Next & 0x3F);
-  }
-  LexerLastChar = advance();
-
-  if (Value < Minimum)
-    return LiteralDecodeError::InvalidUtf8;
-  if (!IsUnicodeScalarValue(Value))
-    return LiteralDecodeError::InvalidCodePoint;
-  return LiteralDecodeError::None;
-}
-
-static void AppendUtf8(string &Output, uint32_t Value) {
-  if (Value <= 0x7F) {
-    Output.push_back(static_cast<char>(Value));
-  } else if (Value <= 0x7FF) {
-    Output.push_back(static_cast<char>(0xC0 | (Value >> 6)));
-    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
-  } else if (Value <= 0xFFFF) {
-    Output.push_back(static_cast<char>(0xE0 | (Value >> 12)));
-    Output.push_back(static_cast<char>(0x80 | ((Value >> 6) & 0x3F)));
-    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
-  } else {
-    Output.push_back(static_cast<char>(0xF0 | (Value >> 18)));
-    Output.push_back(static_cast<char>(0x80 | ((Value >> 12) & 0x3F)));
-    Output.push_back(static_cast<char>(0x80 | ((Value >> 6) & 0x3F)));
-    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
-  }
-}
-
-static int LogLiteralDecodeError(LiteralDecodeError Error,
-                                 const char *LiteralKind) {
-  const char *Message = nullptr;
-  switch (Error) {
-  case LiteralDecodeError::InvalidEscape:
-    fprintf(stderr, "Error (Line %d, Column %d): invalid %s escape\n",
-            CurLoc.Line, CurLoc.Col, LiteralKind);
-    PrintErrorSourceContext(CurLoc);
-    return tok_error;
-  case LiteralDecodeError::InvalidUtf8:
-    Message = "invalid UTF-8";
-    break;
-  case LiteralDecodeError::InvalidCodePoint:
-    Message = "invalid Unicode code point";
-    break;
-  case LiteralDecodeError::None:
-    return tok_error;
-  }
-  fprintf(stderr, "Error (Line %d, Column %d): %s in %s literal\n",
-          CurLoc.Line, CurLoc.Col, Message, LiteralKind);
-  PrintErrorSourceContext(CurLoc);
-  return tok_error;
-}
-
 /// getToken - Return the next token from standard input.
 ///
 /// LastChar holds the last character read by advance() but not yet consumed
@@ -747,6 +496,152 @@ static int LogLiteralDecodeError(LiteralDecodeError Error,
 /// indentation for the new line (including full-line comments, which produce
 /// no tokens). It flips false as soon as indentation is settled and the line
 /// is known to contain a real token, even before that token is emitted.
+enum class LiteralDecodeError {
+  None,
+  InvalidEscape,
+  InvalidCodePoint,
+  InvalidUtf8,
+};
+
+static int HexDigitValue(int Character) {
+  if (Character >= '0' && Character <= '9')
+    return Character - '0';
+  if (Character >= 'a' && Character <= 'f')
+    return Character - 'a' + 10;
+  if (Character >= 'A' && Character <= 'F')
+    return Character - 'A' + 10;
+  return -1;
+}
+
+static bool IsUnicodeScalarValue(uint32_t Value) {
+  return Value <= 0x10FFFF && !(Value >= 0xD800 && Value <= 0xDFFF);
+}
+
+static LiteralDecodeError DecodeLiteralCodePoint(uint32_t &Value) {
+  if (LexerLastChar == '\\') {
+    LexerLastChar = advance(); // eat '\\'
+    switch (LexerLastChar) {
+    case '\\': Value = '\\'; LexerLastChar = advance(); return LiteralDecodeError::None;
+    case '\'': Value = '\''; LexerLastChar = advance(); return LiteralDecodeError::None;
+    case '"': Value = '"'; LexerLastChar = advance(); return LiteralDecodeError::None;
+    case '?': Value = '?'; LexerLastChar = advance(); return LiteralDecodeError::None;
+    case 'a': Value = 7; LexerLastChar = advance(); return LiteralDecodeError::None;
+    case 'b': Value = 8; LexerLastChar = advance(); return LiteralDecodeError::None;
+    case 'f': Value = 12; LexerLastChar = advance(); return LiteralDecodeError::None;
+    case 'n': Value = 10; LexerLastChar = advance(); return LiteralDecodeError::None;
+    case 'r': Value = 13; LexerLastChar = advance(); return LiteralDecodeError::None;
+    case 't': Value = 9; LexerLastChar = advance(); return LiteralDecodeError::None;
+    case 'v': Value = 11; LexerLastChar = advance(); return LiteralDecodeError::None;
+    case 'x': {
+      int High = HexDigitValue(advance());
+      int Low = HexDigitValue(advance());
+      if (High < 0 || Low < 0)
+        return LiteralDecodeError::InvalidEscape;
+      Value = static_cast<uint32_t>((High << 4) | Low);
+      LexerLastChar = advance();
+      return LiteralDecodeError::None;
+    }
+    case 'u':
+    case 'U': {
+      int DigitCount = LexerLastChar == 'u' ? 4 : 8;
+      Value = 0;
+      for (int Index = 0; Index < DigitCount; ++Index) {
+        int Digit = HexDigitValue(advance());
+        if (Digit < 0)
+          return LiteralDecodeError::InvalidEscape;
+        Value = (Value << 4) | static_cast<uint32_t>(Digit);
+      }
+      LexerLastChar = advance();
+      return IsUnicodeScalarValue(Value)
+                 ? LiteralDecodeError::None
+                 : LiteralDecodeError::InvalidCodePoint;
+    }
+    default:
+      if (LexerLastChar < '0' || LexerLastChar > '7')
+        return LiteralDecodeError::InvalidEscape;
+      Value = 0;
+      for (int Index = 0; Index < 3; ++Index) {
+        Value = (Value << 3) |
+                static_cast<uint32_t>(LexerLastChar - '0');
+        int Next = peek();
+        if (Index == 2 || Next < '0' || Next > '7') {
+          LexerLastChar = advance();
+          break;
+        }
+        LexerLastChar = advance();
+      }
+      return LiteralDecodeError::None;
+    }
+  }
+
+  unsigned Lead = static_cast<unsigned char>(LexerLastChar);
+  if (Lead < 0x80) {
+    Value = Lead;
+    LexerLastChar = advance();
+    return LiteralDecodeError::None;
+  }
+
+  int Length = 0;
+  uint32_t Minimum = 0;
+  if (Lead >= 0xC2 && Lead <= 0xDF) {
+    Length = 2; Value = Lead & 0x1F; Minimum = 0x80;
+  } else if (Lead >= 0xE0 && Lead <= 0xEF) {
+    Length = 3; Value = Lead & 0x0F; Minimum = 0x800;
+  } else if (Lead >= 0xF0 && Lead <= 0xF4) {
+    Length = 4; Value = Lead & 0x07; Minimum = 0x10000;
+  } else {
+    return LiteralDecodeError::InvalidUtf8;
+  }
+
+  for (int Index = 1; Index < Length; ++Index) {
+    int Next = advance();
+    if (Next == EOF || (Next & 0xC0) != 0x80) {
+      LexerLastChar = Next;
+      return LiteralDecodeError::InvalidUtf8;
+    }
+    Value = (Value << 6) | static_cast<uint32_t>(Next & 0x3F);
+  }
+  LexerLastChar = advance();
+  if (Value < Minimum)
+    return LiteralDecodeError::InvalidUtf8;
+  return IsUnicodeScalarValue(Value) ? LiteralDecodeError::None
+                                     : LiteralDecodeError::InvalidCodePoint;
+}
+
+static void AppendUtf8(string &Output, uint32_t Value) {
+  if (Value <= 0x7F) {
+    Output.push_back(static_cast<char>(Value));
+  } else if (Value <= 0x7FF) {
+    Output.push_back(static_cast<char>(0xC0 | (Value >> 6)));
+    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
+  } else if (Value <= 0xFFFF) {
+    Output.push_back(static_cast<char>(0xE0 | (Value >> 12)));
+    Output.push_back(static_cast<char>(0x80 | ((Value >> 6) & 0x3F)));
+    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
+  } else {
+    Output.push_back(static_cast<char>(0xF0 | (Value >> 18)));
+    Output.push_back(static_cast<char>(0x80 | ((Value >> 12) & 0x3F)));
+    Output.push_back(static_cast<char>(0x80 | ((Value >> 6) & 0x3F)));
+    Output.push_back(static_cast<char>(0x80 | (Value & 0x3F)));
+  }
+}
+
+static int ReportLiteralDecodeError(LiteralDecodeError Error,
+                                    const char *LiteralKind) {
+  if (Error == LiteralDecodeError::InvalidEscape)
+    fprintf(stderr, "Error (Line %d, Column %d): invalid %s escape\n",
+            CurLoc.Line, CurLoc.Col, LiteralKind);
+  else if (Error == LiteralDecodeError::InvalidCodePoint)
+    fprintf(stderr,
+            "Error (Line %d, Column %d): invalid Unicode code point in %s literal\n",
+            CurLoc.Line, CurLoc.Col, LiteralKind);
+  else
+    fprintf(stderr, "Error (Line %d, Column %d): invalid UTF-8 in %s literal\n",
+            CurLoc.Line, CurLoc.Col, LiteralKind);
+  PrintErrorSourceContext(CurLoc);
+  return tok_error;
+}
+
 static int getToken() {
   // Drain tokens queued by a multi-level dedent on the previous line.
   if (!PendingTokens.empty()) {
@@ -858,7 +753,8 @@ static int getToken() {
     return (It == Keywords.end()) ? tok_name : It->second;
   }
 
-  if (isdigit(LexerLastChar) || (LexerLastChar == '.' && isdigit(peek()))) {
+  if (isdigit(LexerLastChar) ||
+      (LexerLastChar == '.' && isdigit(peek()))) {
     string NumStr;
     bool SawDot = false;
     bool SawExp = false;
@@ -911,15 +807,15 @@ static int getToken() {
   }
 
   if (LexerLastChar == '"') {
-    StringLiteralStr.clear();
+    StringLiteralValue.clear();
     LexerLastChar = advance(); // eat opening quote
     while (LexerLastChar != '"' && LexerLastChar != EOF &&
            LexerLastChar != '\n') {
-      uint32_t Value = 0;
-      LiteralDecodeError Error = DecodeLiteralCodePoint(Value);
+      uint32_t CodePoint = 0;
+      LiteralDecodeError Error = DecodeLiteralCodePoint(CodePoint);
       if (Error != LiteralDecodeError::None)
-        return LogLiteralDecodeError(Error, "string");
-      AppendUtf8(StringLiteralStr, Value);
+        return ReportLiteralDecodeError(Error, "string");
+      AppendUtf8(StringLiteralValue, CodePoint);
     }
 
     if (LexerLastChar != '"') {
@@ -935,28 +831,37 @@ static int getToken() {
 
   if (LexerLastChar == '\'') {
     LexerLastChar = advance(); // eat opening quote
-    if (LexerLastChar == '\'' || LexerLastChar == '\n' ||
-        LexerLastChar == EOF) {
+    if (LexerLastChar == '\'') {
       fprintf(stderr, "Error (Line %d, Column %d): empty character literal\n",
               CurLoc.Line, CurLoc.Col);
       PrintErrorSourceContext(CurLoc);
       return tok_error;
     }
-
-    uint32_t Value = 0;
-    LiteralDecodeError Error = DecodeLiteralCodePoint(Value);
-    if (Error != LiteralDecodeError::None)
-      return LogLiteralDecodeError(Error, "character");
-    if (LexerLastChar != '\'') {
+    if (LexerLastChar == EOF || LexerLastChar == '\n') {
       fprintf(stderr,
               "Error (Line %d, Column %d): unterminated character literal\n",
               CurLoc.Line, CurLoc.Col);
       PrintErrorSourceContext(CurLoc);
       return tok_error;
     }
+
+    LiteralDecodeError Error =
+        DecodeLiteralCodePoint(CharacterLiteralValue);
+    if (Error != LiteralDecodeError::None)
+      return ReportLiteralDecodeError(Error, "character");
+
+    if (LexerLastChar != '\'') {
+      const char *Message =
+          (LexerLastChar == EOF || LexerLastChar == '\n')
+              ? "unterminated character literal"
+              : "character literal must contain one character";
+      fprintf(stderr, "Error (Line %d, Column %d): %s\n", CurLoc.Line,
+              CurLoc.Col, Message);
+      PrintErrorSourceContext(CurLoc);
+      return tok_error;
+    }
     LexerLastChar = advance(); // eat closing quote
-    CharLiteralValue = Value;
-    return tok_char;
+    return tok_character;
   }
 
   if (LexerLastChar == '#') {
@@ -977,46 +882,43 @@ static int getToken() {
     }
   }
 
+  // peek(), if the next one completes a recognized token, eat it, and return
+  // token; otherwise, I return the named single-character token.
   if (LexerLastChar == '+') {
     int Next = peek();
     int Tok = tok_plus;
     if (Next == '=')
-      Tok = (advance(), tok_pluseq);
+      Tok = (advance(), tok_plus_equal);
     else if (Next == '+')
-      Tok = (advance(), tok_plusplus);
+      Tok = (advance(), tok_plus_plus);
     LexerLastChar = advance();
     return Tok;
   }
 
-  // peek(), if the next one completes a recognized token, eat it, and return
-  // token; otherwise, I return the named single-character token.
   if (LexerLastChar == '-') {
     int Next = peek();
     int Tok = tok_minus;
     if (Next == '>')
       Tok = (advance(), tok_arrow);
     else if (Next == '=')
-      Tok = (advance(), tok_minuseq);
+      Tok = (advance(), tok_minus_equal);
     else if (Next == '-')
-      Tok = (advance(), tok_minusminus);
+      Tok = (advance(), tok_minus_minus);
     LexerLastChar = advance();
     return Tok;
   }
 
-  if (LexerLastChar == '*') {
-    int Tok = (peek() == '=') ? (advance(), tok_muleq) : tok_star;
-    LexerLastChar = advance();
-    return Tok;
-  }
-
-  if (LexerLastChar == '/') {
-    int Tok = (peek() == '=') ? (advance(), tok_diveq) : tok_slash;
-    LexerLastChar = advance();
-    return Tok;
-  }
-
-  if (LexerLastChar == '%') {
-    int Tok = (peek() == '=') ? (advance(), tok_modeq) : tok_percent;
+  if (LexerLastChar == '*' || LexerLastChar == '/' ||
+      LexerLastChar == '%') {
+    int ThisChar = LexerLastChar;
+    int Tok = ThisChar == '*' ? tok_star
+                              : ThisChar == '/' ? tok_slash : tok_percent;
+    if (peek() == '=') {
+      advance();
+      Tok = ThisChar == '*' ? tok_star_equal
+                            : ThisChar == '/' ? tok_slash_equal
+                                              : tok_percent_equal;
+    }
     LexerLastChar = advance();
     return Tok;
   }
@@ -1051,7 +953,7 @@ static int getToken() {
     if (Next == '=')
       Tok = (advance(), tok_leq);
     else if (Next == '<')
-      Tok = (advance(), tok_shl);
+      Tok = (advance(), tok_shift_left);
     LexerLastChar = advance();
     return Tok;
   }
@@ -1062,7 +964,7 @@ static int getToken() {
     if (Next == '=')
       Tok = (advance(), tok_geq);
     else if (Next == '>')
-      Tok = (advance(), tok_shr);
+      Tok = (advance(), tok_shift_right);
     LexerLastChar = advance();
     return Tok;
   }
@@ -1102,22 +1004,8 @@ static int getToken() {
     return tok_star;
   case '/':
     return tok_slash;
-  case '<':
-    return tok_less;
-  case '>':
-    return tok_greater;
-  case '=':
-    return tok_equal;
-  case '.':
-    return tok_dot;
-  case '[':
-    return tok_lbracket;
-  case ']':
-    return tok_rbracket;
   case '%':
     return tok_percent;
-  case '!':
-    return tok_exclamation;
   case '&':
     return tok_ampersand;
   case '|':
@@ -1126,6 +1014,14 @@ static int getToken() {
     return tok_caret;
   case '~':
     return tok_tilde;
+  case '.':
+    return tok_dot;
+  case '<':
+    return tok_less;
+  case '>':
+    return tok_greater;
+  case '=':
+    return tok_equal;
   default:
     return ThisChar;
   }
@@ -1232,6 +1128,9 @@ public:
   // getLValueName - If this node is a plain assignable variable, return its
   // name; otherwise return nullptr.
   virtual const string *getLValueName() const { return nullptr; }
+  virtual const vector<string> *getLValueFieldPath() const { return nullptr; }
+  virtual bool isLValue() const { return false; }
+  virtual Value *codegenAddress() { return nullptr; }
   // isReturnExpr - True iff this node is a return statement.
   virtual bool isReturnExpr() const { return false; }
   // shouldPrintValue - Whether the REPL should print the value of this node
@@ -1277,23 +1176,10 @@ class StringExpressionNode : public ExpressionNode {
   string Text;
 
 public:
-  explicit StringExpressionNode(string Text, const string &PtrTypeInfo)
+  StringExpressionNode(string Text, const string &PointerTypeInfo)
       : Text(std::move(Text)) {
-    setType(ValueType::Pointer, PtrTypeInfo);
+    setType(ValueType::Pointer, PointerTypeInfo);
   }
-  Value *codegen() override;
-};
-
-class ArrayLiteralExpressionNode : public ExpressionNode {
-  vector<unique_ptr<ExpressionNode>> Elements;
-
-public:
-  ArrayLiteralExpressionNode(vector<unique_ptr<ExpressionNode>> Elements,
-                      const string &ArrayTypeInfo)
-      : Elements(std::move(Elements)) {
-    setType(ValueType::Array, ArrayTypeInfo);
-  }
-  const vector<unique_ptr<ExpressionNode>> &getElements() const { return Elements; }
   Value *codegen() override;
 };
 
@@ -1303,215 +1189,151 @@ class NameExpressionNode : public ExpressionNode {
 
 public:
   NameExpressionNode(const string &Name, ValueType Type,
-                  const string &StructName = "")
+                     const string &StructName = "")
       : Name(Name) {
     setType(Type, StructName);
   }
   // convenience function
   const string &getName() const { return Name; }
   const string *getLValueName() const override { return &Name; }
+  bool isLValue() const override { return true; }
+  Value *codegenAddress() override;
   Value *codegen() override;
 };
 
-/// FieldExpressionNode - Nested field access, e.g. p.x or p.inner.value
 class FieldExpressionNode : public ExpressionNode {
   string BaseName;
   vector<string> FieldPath;
 
 public:
   FieldExpressionNode(string BaseName, vector<string> FieldPath, ValueType Type,
-               const string &StructName = "")
+                      const string &StructName = "")
       : BaseName(std::move(BaseName)), FieldPath(std::move(FieldPath)) {
     setType(Type, StructName);
   }
   const string *getLValueName() const override { return &BaseName; }
   const vector<string> &getFieldPath() const { return FieldPath; }
+  const vector<string> *getLValueFieldPath() const override {
+    return &FieldPath;
+  }
+  bool isLValue() const override { return true; }
+  Value *codegenAddress() override;
   Value *codegen() override;
 };
 
-/// AssignmentExpressionNode - Expression class for assignment to an existing variable.
-/// The expression stores Right into the named variable and produces the assigned
-/// value.
-class AssignmentExpressionNode : public ExpressionNode {
-  string Name;
-  unique_ptr<ExpressionNode> Expr;
+class MemberExpressionNode : public ExpressionNode {
+  unique_ptr<ExpressionNode> Base;
+  size_t FieldIndex;
 
 public:
-  AssignmentExpressionNode(const string &Name, unique_ptr<ExpressionNode> Expr,
-                    ValueType Type)
-      : Name(Name), Expr(std::move(Expr)) {
-    setType(Type);
+  MemberExpressionNode(unique_ptr<ExpressionNode> Base, size_t FieldIndex,
+                       ValueType Type, const string &StructName = "")
+      : Base(std::move(Base)), FieldIndex(FieldIndex) {
+    setType(Type, StructName);
+  }
+  bool isLValue() const override { return true; }
+  Value *codegenAddress() override;
+  Value *codegen() override;
+};
+
+class IndexExpressionNode : public ExpressionNode {
+  unique_ptr<ExpressionNode> Base;
+  unique_ptr<ExpressionNode> Index;
+
+public:
+  IndexExpressionNode(unique_ptr<ExpressionNode> Base,
+                      unique_ptr<ExpressionNode> Index, ValueType Type,
+                      const string &StructName = "")
+      : Base(std::move(Base)), Index(std::move(Index)) {
+    setType(Type, StructName);
+  }
+  bool isLValue() const override { return true; }
+  Value *codegenAddress() override;
+  Value *codegen() override;
+};
+
+class AddrExpressionNode : public ExpressionNode {
+  unique_ptr<ExpressionNode> Operand;
+
+public:
+  AddrExpressionNode(unique_ptr<ExpressionNode> Operand,
+                     const string &PointerTypeInfo)
+      : Operand(std::move(Operand)) {
+    setType(ValueType::Pointer, PointerTypeInfo);
+  }
+  Value *codegen() override;
+};
+
+class ArrayLiteralExpressionNode : public ExpressionNode {
+  vector<unique_ptr<ExpressionNode>> Elements;
+
+public:
+  ArrayLiteralExpressionNode(vector<unique_ptr<ExpressionNode>> Elements,
+                             const string &ArrayTypeInfo)
+      : Elements(std::move(Elements)) {
+    setType(ValueType::Array, ArrayTypeInfo);
+  }
+  Value *codegen() override;
+};
+
+/// AssignmentExpressionNode - Store a value through any assignable expression
+/// and produce the value that was stored.
+class AssignmentExpressionNode : public ExpressionNode {
+  unique_ptr<ExpressionNode> Left;
+  unique_ptr<ExpressionNode> Right;
+
+public:
+  AssignmentExpressionNode(unique_ptr<ExpressionNode> Left,
+                           unique_ptr<ExpressionNode> Right, ValueType Type,
+                           const string &StructName = "")
+      : Left(std::move(Left)), Right(std::move(Right)) {
+    setType(Type, StructName);
   }
   bool shouldPrintValue() const override { return false; }
   Value *codegen() override;
 };
 
 class CompoundAssignmentExpressionNode : public ExpressionNode {
-  string Name;
+  unique_ptr<ExpressionNode> Left;
+  unique_ptr<ExpressionNode> Right;
   int Operator;
-  unique_ptr<ExpressionNode> Right;
 
 public:
-  CompoundAssignmentExpressionNode(const string &Name, int Operator, unique_ptr<ExpressionNode> Right,
-                            ValueType Type, const string &StructName = "")
-      : Name(Name), Operator(Operator), Right(std::move(Right)) {
+  CompoundAssignmentExpressionNode(unique_ptr<ExpressionNode> Left,
+                                   unique_ptr<ExpressionNode> Right,
+                                   int Operator, ValueType Type,
+                                   const string &StructName = "")
+      : Left(std::move(Left)), Right(std::move(Right)), Operator(Operator) {
     setType(Type, StructName);
   }
   bool shouldPrintValue() const override { return false; }
   Value *codegen() override;
 };
 
-/// FieldAssignmentExpressionNode - Assignment to a field path, e.g. p.x = 1
-class FieldAssignmentExpressionNode : public ExpressionNode {
-  unique_ptr<FieldExpressionNode> Left;
-  unique_ptr<ExpressionNode> Right;
+class IncrementDecrementExpressionNode : public ExpressionNode {
+  unique_ptr<ExpressionNode> Operand;
+  bool IsIncrement;
+  bool IsPrefix;
 
 public:
-  FieldAssignmentExpressionNode(unique_ptr<FieldExpressionNode> Left, unique_ptr<ExpressionNode> Right,
-                         ValueType Type)
-      : Left(std::move(Left)), Right(std::move(Right)) {
-    setType(Type);
-  }
-  bool shouldPrintValue() const override { return false; }
-  Value *codegen() override;
-};
-
-class FieldCompoundAssignmentExpressionNode : public ExpressionNode {
-  unique_ptr<FieldExpressionNode> Left;
-  int Operator;
-  unique_ptr<ExpressionNode> Right;
-
-public:
-  FieldCompoundAssignmentExpressionNode(unique_ptr<FieldExpressionNode> Left, int Operator,
-                                 unique_ptr<ExpressionNode> Right, ValueType Type,
-                                 const string &StructName = "")
-      : Left(std::move(Left)), Operator(Operator), Right(std::move(Right)) {
+  IncrementDecrementExpressionNode(unique_ptr<ExpressionNode> Operand,
+                                   bool IsIncrement, bool IsPrefix,
+                                   ValueType Type,
+                                   const string &StructName = "")
+      : Operand(std::move(Operand)), IsIncrement(IsIncrement),
+        IsPrefix(IsPrefix) {
     setType(Type, StructName);
   }
-  bool shouldPrintValue() const override { return false; }
   Value *codegen() override;
 };
 
-/// AddrExpressionNode - address-of for lvalues: addr(x), addr(p.x)
-class AddrExpressionNode : public ExpressionNode {
-  string BaseName;
-  vector<string> FieldPath;
-
-public:
-  AddrExpressionNode(string BaseName, vector<string> FieldPath,
-              const string &PointerTypeInfo = "")
-      : BaseName(std::move(BaseName)), FieldPath(std::move(FieldPath)) {
-    setType(ValueType::Pointer, PointerTypeInfo);
-  }
-  Value *codegen() override;
-};
-
-/// IndexExpressionNode - pointer indexing and load: p[i]
-class IndexExpressionNode : public ExpressionNode {
-  string BaseName;
-  vector<string> FieldPath;
-  unique_ptr<ExpressionNode> Index;
-
-public:
-  IndexExpressionNode(string BaseName, vector<string> FieldPath,
-               unique_ptr<ExpressionNode> Index, ValueType ElemType,
-               const string &ElemStructName = "")
-      : BaseName(std::move(BaseName)), FieldPath(std::move(FieldPath)),
-        Index(std::move(Index)) {
-    setType(ElemType, ElemStructName);
-  }
-  ExpressionNode *getIndex() const { return Index.get(); }
-  const string &getBaseName() const { return BaseName; }
-  const vector<string> &getFieldPath() const { return FieldPath; }
-  Value *codegen() override;
-};
-
-class IndexAssignmentExpressionNode : public ExpressionNode {
-  unique_ptr<IndexExpressionNode> Left;
-  unique_ptr<ExpressionNode> Right;
-
-public:
-  IndexAssignmentExpressionNode(unique_ptr<IndexExpressionNode> Left, unique_ptr<ExpressionNode> Right,
-                         ValueType Type, const string &StructName = "")
-      : Left(std::move(Left)), Right(std::move(Right)) {
-    setType(Type, StructName);
-  }
-  bool shouldPrintValue() const override { return false; }
-  Value *codegen() override;
-};
-
-class IndexCompoundAssignmentExpressionNode : public ExpressionNode {
-  unique_ptr<IndexExpressionNode> Left;
-  int Operator;
-  unique_ptr<ExpressionNode> Right;
-
-public:
-  IndexCompoundAssignmentExpressionNode(unique_ptr<IndexExpressionNode> Left, int Operator,
-                                 unique_ptr<ExpressionNode> Right, ValueType Type,
-                                 const string &StructName = "")
-      : Left(std::move(Left)), Operator(Operator), Right(std::move(Right)) {
-    setType(Type, StructName);
-  }
-  bool shouldPrintValue() const override { return false; }
-  Value *codegen() override;
-};
-
-class IndexedFieldExpressionNode : public ExpressionNode {
-  unique_ptr<IndexExpressionNode> BaseIndex;
-  vector<string> FieldPath;
-
-public:
-  IndexedFieldExpressionNode(unique_ptr<IndexExpressionNode> BaseIndex,
-                      vector<string> FieldPath, ValueType Type,
-                      const string &StructName = "")
-      : BaseIndex(std::move(BaseIndex)), FieldPath(std::move(FieldPath)) {
-    setType(Type, StructName);
-  }
-  IndexExpressionNode *getBaseIndex() const { return BaseIndex.get(); }
-  const vector<string> &getFieldPath() const { return FieldPath; }
-  bool shouldPrintValue() const override { return true; }
-  Value *codegen() override;
-};
-
-class IndexedFieldAssignmentExpressionNode : public ExpressionNode {
-  unique_ptr<IndexedFieldExpressionNode> Left;
-  unique_ptr<ExpressionNode> Right;
-
-public:
-  IndexedFieldAssignmentExpressionNode(unique_ptr<IndexedFieldExpressionNode> Left,
-                                unique_ptr<ExpressionNode> Right, ValueType Type,
-                                const string &StructName = "")
-      : Left(std::move(Left)), Right(std::move(Right)) {
-    setType(Type, StructName);
-  }
-  bool shouldPrintValue() const override { return false; }
-  Value *codegen() override;
-};
-
-class IndexedFieldCompoundAssignmentExpressionNode : public ExpressionNode {
-  unique_ptr<IndexedFieldExpressionNode> Left;
-  int Operator;
-  unique_ptr<ExpressionNode> Right;
-
-public:
-  IndexedFieldCompoundAssignmentExpressionNode(unique_ptr<IndexedFieldExpressionNode> Left,
-                                        int Operator, unique_ptr<ExpressionNode> Right,
-                                        ValueType Type,
-                                        const string &StructName = "")
-      : Left(std::move(Left)), Operator(Operator), Right(std::move(Right)) {
-    setType(Type, StructName);
-  }
-  bool shouldPrintValue() const override { return false; }
-  Value *codegen() override;
-};
-
-/// ReturnExpressionNode - Statement-like expression for return.
+/// ReturnStatementNode - Statement-like expression for return.
 /// Emits a function return and produces the returned value.
-class ReturnExpressionNode : public ExpressionNode {
+class ReturnStatementNode : public ExpressionNode {
   unique_ptr<ExpressionNode> Expr;
 
 public:
-  ReturnExpressionNode(unique_ptr<ExpressionNode> Expr = nullptr) : Expr(std::move(Expr)) {
+  ReturnStatementNode(unique_ptr<ExpressionNode> Expr = nullptr) : Expr(std::move(Expr)) {
     setType(ValueType::None);
   }
   bool isReturnExpr() const override { return true; }
@@ -1519,13 +1341,13 @@ public:
   Value *codegen() override;
 };
 
-/// BlockExpressionNode - A sequence of statements evaluated in order.
+/// BlockStatementNode - A sequence of statements evaluated in order.
 /// The block's value is the value of the last statement executed.
-class BlockExpressionNode : public ExpressionNode {
+class BlockStatementNode : public ExpressionNode {
   vector<unique_ptr<ExpressionNode>> Stmts;
 
 public:
-  BlockExpressionNode(vector<unique_ptr<ExpressionNode>> Stmts) : Stmts(std::move(Stmts)) {
+  BlockStatementNode(vector<unique_ptr<ExpressionNode>> Stmts) : Stmts(std::move(Stmts)) {
     setType(ValueType::None);
   }
   Value *codegen() override;
@@ -1564,35 +1386,33 @@ public:
   Value *codegen() override;
 };
 
-/// ConstructorCallExpressionNode - Expression class for class construction:
-///   Point(1, 2)
-/// Lowers to stack-temp allocation + optional Point.__init__ call + load.
 class ConstructorCallExpressionNode : public ExpressionNode {
   string ClassName;
   vector<unique_ptr<ExpressionNode>> Arguments;
 
 public:
-  ConstructorCallExpressionNode(const string &ClassName,
-                         vector<unique_ptr<ExpressionNode>> Arguments)
+  ConstructorCallExpressionNode(
+      const string &ClassName,
+      vector<unique_ptr<ExpressionNode>> Arguments)
       : ClassName(ClassName), Arguments(std::move(Arguments)) {
     setType(ValueType::Struct, ClassName);
   }
   Value *codegen() override;
 };
 
-/// ForExpressionNode - Expression class for for loops.
+/// ForStatementNode - Statement class for for loops.
 ///   for <var> = <start>, <cond>, <step>: <body>
 /// The loop variable is in scope for <cond>, <step>, and <body> (through
 /// NamedValues). The expression always produces 0.0 — the loop is used for side
 /// effects.
-class ForExpressionNode : public ExpressionNode {
+class ForStatementNode : public ExpressionNode {
   string VarName;
   bool IsVarDecl;
   ValueType VarType;
   unique_ptr<ExpressionNode> Start, Cond, Step, Body;
 
 public:
-  ForExpressionNode(const string &VarName, bool IsVarDecl, ValueType VarType,
+  ForStatementNode(const string &VarName, bool IsVarDecl, ValueType VarType,
              unique_ptr<ExpressionNode> Start, unique_ptr<ExpressionNode> Cond,
              unique_ptr<ExpressionNode> Step, unique_ptr<ExpressionNode> Body)
       : VarName(VarName), IsVarDecl(IsVarDecl), VarType(VarType),
@@ -1605,14 +1425,14 @@ public:
   Value *codegen() override;
 };
 
-class WhileExpressionNode : public ExpressionNode {
-  unique_ptr<ExpressionNode> Cond;
-  unique_ptr<ExpressionNode> Body;
+/// WhileStatementNode - Statement class for while and do/while loops.
+class WhileStatementNode : public ExpressionNode {
+  unique_ptr<ExpressionNode> Cond, Body;
   bool IsDoWhile;
 
 public:
-  WhileExpressionNode(unique_ptr<ExpressionNode> Cond, unique_ptr<ExpressionNode> Body,
-               bool IsDoWhile)
+  WhileStatementNode(unique_ptr<ExpressionNode> Cond,
+                     unique_ptr<ExpressionNode> Body, bool IsDoWhile)
       : Cond(std::move(Cond)), Body(std::move(Body)), IsDoWhile(IsDoWhile) {
     setType(ValueType::None);
   }
@@ -1620,35 +1440,34 @@ public:
   Value *codegen() override;
 };
 
-class BreakExpressionNode : public ExpressionNode {
-public:
-  BreakExpressionNode() { setType(ValueType::None); }
-  bool shouldPrintValue() const override { return false; }
-  Value *codegen() override;
-};
-
-class ContinueExpressionNode : public ExpressionNode {
-public:
-  ContinueExpressionNode() { setType(ValueType::None); }
-  bool shouldPrintValue() const override { return false; }
-  Value *codegen() override;
-};
-
-class SwitchExpressionNode : public ExpressionNode {
-  unique_ptr<ExpressionNode> Cond;
-  // Each case may list more than one value (e.g. "case 'a', 'e':"); all
-  // values in the list share the same body.
+class SwitchStatementNode : public ExpressionNode {
+  unique_ptr<ExpressionNode> Condition;
   vector<pair<vector<int64_t>, unique_ptr<ExpressionNode>>> Cases;
   unique_ptr<ExpressionNode> DefaultCase;
 
 public:
-  SwitchExpressionNode(unique_ptr<ExpressionNode> Cond,
-                vector<pair<vector<int64_t>, unique_ptr<ExpressionNode>>> Cases,
-                unique_ptr<ExpressionNode> DefaultCase)
-      : Cond(std::move(Cond)), Cases(std::move(Cases)),
+  SwitchStatementNode(
+      unique_ptr<ExpressionNode> Condition,
+      vector<pair<vector<int64_t>, unique_ptr<ExpressionNode>>> Cases,
+      unique_ptr<ExpressionNode> DefaultCase)
+      : Condition(std::move(Condition)), Cases(std::move(Cases)),
         DefaultCase(std::move(DefaultCase)) {
     setType(ValueType::None);
   }
+  bool shouldPrintValue() const override { return false; }
+  Value *codegen() override;
+};
+
+class BreakStatementNode : public ExpressionNode {
+public:
+  BreakStatementNode() { setType(ValueType::None); }
+  bool shouldPrintValue() const override { return false; }
+  Value *codegen() override;
+};
+
+class ContinueStatementNode : public ExpressionNode {
+public:
+  ContinueStatementNode() { setType(ValueType::None); }
   bool shouldPrintValue() const override { return false; }
   Value *codegen() override;
 };
@@ -1670,55 +1489,30 @@ public:
   Value *codegen() override;
 };
 
-class IncDecExpressionNode : public ExpressionNode {
-  unique_ptr<ExpressionNode> Operand;
-  bool IsIncrement;
-  bool IsPrefix;
-
-public:
-  IncDecExpressionNode(unique_ptr<ExpressionNode> Operand, bool IsIncrement, bool IsPrefix,
-                ValueType Type, const string &StructName = "")
-      : Operand(std::move(Operand)), IsIncrement(IsIncrement),
-        IsPrefix(IsPrefix) {
-    setType(Type, StructName);
-  }
-  Value *codegen() override;
-};
-
-class LogicalNotExpressionNode : public ExpressionNode {
-  unique_ptr<ExpressionNode> Operand;
-
-public:
-  explicit LogicalNotExpressionNode(unique_ptr<ExpressionNode> Operand)
-      : Operand(std::move(Operand)) {
-    setType(ValueType::Bool);
-  }
-  Value *codegen() override;
-};
-
 /// CastExpressionNode - Expression class for explicit casts: int(expr), float64(expr).
 class CastExpressionNode : public ExpressionNode {
   ValueType TargetType;
-  string TargetStructName;
+  string TargetTypeInfo;
   unique_ptr<ExpressionNode> Expr;
 
 public:
   CastExpressionNode(ValueType TargetType, unique_ptr<ExpressionNode> Expr,
-              const string &TargetStructName = "")
-      : TargetType(TargetType), TargetStructName(TargetStructName),
+                     const string &TargetTypeInfo = "")
+      : TargetType(TargetType), TargetTypeInfo(TargetTypeInfo),
         Expr(std::move(Expr)) {
-    setType(TargetType, TargetStructName);
+    setType(TargetType, TargetTypeInfo);
   }
   Value *codegen() override;
 };
 
 class SizeofExpressionNode : public ExpressionNode {
   ValueType TargetType;
-  string TargetStructName;
+  string TargetTypeInfo;
 
 public:
-  SizeofExpressionNode(ValueType TargetType, const string &TargetStructName = "")
-      : TargetType(TargetType), TargetStructName(TargetStructName) {
+  SizeofExpressionNode(ValueType TargetType,
+                       const string &TargetTypeInfo = "")
+      : TargetType(TargetType), TargetTypeInfo(TargetTypeInfo) {
     setType(ValueType::Int64);
   }
   Value *codegen() override;
@@ -1767,52 +1561,58 @@ public:
 /// of arguments the function takes).
 ///
 class FunctionSignatureNode {
-public:
-  struct ParameterInfo {
-    string Name;
-    ValueType Type;
-    string StructName;
-  };
-
-private:
   string Name;
-  vector<ParameterInfo> Parameters;
+  vector<pair<string, ValueType>> Parameters;
+  vector<string> ParameterStructNames;
   ValueType ReturnType;
   string ReturnStructName;
+  bool IsVariadic;
   SourceLocation Loc;
 
 public:
-  FunctionSignatureNode(const string &Name, vector<ParameterInfo> Parameters,
+  FunctionSignatureNode(const string &Name,
+                        vector<pair<string, ValueType>> Parameters,
                         SourceLocation Loc,
                         ValueType ReturnType = ValueType::Float64,
-                        string ReturnStructName = "")
+                        vector<string> ParameterStructNames = {},
+                        string ReturnStructName = "",
+                        bool IsVariadic = false)
       : Name(Name), Parameters(std::move(Parameters)), ReturnType(ReturnType),
-        ReturnStructName(std::move(ReturnStructName)), Loc(Loc) {}
+        ReturnStructName(std::move(ReturnStructName)), IsVariadic(IsVariadic),
+        Loc(Loc) {
+    this->ParameterStructNames = std::move(ParameterStructNames);
+    this->ParameterStructNames.resize(this->Parameters.size());
+  }
 
   const string &getName() const { return Name; }
-  const vector<ParameterInfo> &getParameters() const { return Parameters; }
+  const vector<pair<string, ValueType>> &getParameters() const { return Parameters; }
+  const vector<string> &getParameterStructNames() const {
+    return ParameterStructNames;
+  }
   size_t getNumParameters() const { return Parameters.size(); }
   SourceLocation getLocation() const { return Loc; }
   ValueType getReturnType() const { return ReturnType; }
   const string &getReturnStructName() const { return ReturnStructName; }
   void setReturnType(ValueType Type) { ReturnType = Type; }
   void setReturnStructName(const string &Name) { ReturnStructName = Name; }
+  bool isVariadic() const { return IsVariadic; }
 
   ValueType getParameterType(size_t Index) const {
     if (Index >= Parameters.size())
       return ValueType::Error;
-    return Parameters[Index].Type;
+    return Parameters[Index].second;
   }
   const string &getParameterStructName(size_t Index) const {
-    static string Empty;
-    if (Index >= Parameters.size())
-      return Empty;
-    return Parameters[Index].StructName;
+    static const string Empty;
+    return Index < ParameterStructNames.size() ? ParameterStructNames[Index]
+                                                : Empty;
   }
+
 
   std::unique_ptr<FunctionSignatureNode> clone() const {
     return std::make_unique<FunctionSignatureNode>(
-        Name, Parameters, Loc, ReturnType, ReturnStructName);
+        Name, Parameters, Loc, ReturnType, ParameterStructNames,
+        ReturnStructName, IsVariadic);
   }
 
   Function *codegen();
@@ -1854,48 +1654,39 @@ static void consumeNewlines() {
 }
 
 // FunctionSignatures - Persistent function signature registry used by codegen
-// to re-emit declarations into fresh modules. Declared here so parser
-// functions can access it.
+// to re-emit declarations into fresh modules.
 static std::map<std::string, std::unique_ptr<FunctionSignatureNode>> FunctionSignatures;
 
 struct StructFieldInfo {
   string Name;
-  ValueType Type = ValueType::Error;
+  ValueType Type;
   string StructName;
   bool IsPublic = true;
 };
 
 struct StructTypeInfo {
-  string Name;
-  bool IsClass = false;
   vector<StructFieldInfo> Fields;
-  std::map<string, size_t> FieldIndex;
-  std::map<string, bool> MethodIsPublic;
-  struct ImplTraitRef {
-    string TraitName;
-    bool HasTypeArg = false;
-    ValueType TypeArg = ValueType::Error;
-    string TypeArgStructName;
-  };
-  vector<ImplTraitRef> ImplementedTraits;
+  map<string, size_t> FieldIndices;
+  map<string, bool> Methods;
+  vector<string> ImplementedTraits;
+  bool IsClass = false;
 };
 
-struct TraitMethodSig {
+struct TraitMethodSignature {
   string Name;
-  vector<FunctionSignatureNode::ParameterInfo> Arguments;
+  vector<pair<string, ValueType>> Parameters;
+  vector<string> ParameterTypeInfo;
   ValueType ReturnType = ValueType::None;
-  string ReturnStructName;
+  string ReturnTypeInfo;
 };
 
-struct TraitInfo {
-  string Name;
-  string TypeParamName;
-  vector<TraitMethodSig> Methods;
+struct TraitTypeInfo {
+  vector<TraitMethodSignature> Methods;
 };
 
-static std::map<string, StructTypeInfo> StructTypes;
-static std::map<string, TraitInfo> Traits;
-static std::map<string, std::pair<ValueType, string>> TypeAliases;
+static map<string, StructTypeInfo> StructTypes;
+static map<string, pair<ValueType, string>> TypeAliases;
+static map<string, TraitTypeInfo> TraitTypes;
 
 // Parse-time variable tracking for assignments and types.
 // Scopes are stacked: function scope plus nested block scopes.
@@ -1904,7 +1695,7 @@ static vector<std::map<string, ValueType>> VarScopes;
 static vector<std::map<string, string>> VarStructScopes;
 // Global variables declared at top level (persist across modules).
 static std::map<string, ValueType> GlobalVarTypes;
-static std::map<string, string> GlobalVarStructTypes;
+static std::map<string, string> GlobalVarStructNames;
 // Track which globals were declared in this translation unit (for redeclare
 // checks).
 static std::set<string> GlobalVarDecls;
@@ -1912,52 +1703,31 @@ static std::set<string> GlobalVarDecls;
 static bool ParsingTopLevel = false;
 static int ParseLoopDepth = 0;
 static int ParseSwitchDepth = 0;
+static string CurrentClassScopeName;
 // Set when we hit a parse/codegen error; used to abort further processing.
 static bool HadError = false;
 // Current function's declared return type during parsing/codegen.
 static ValueType CurrentFunctionReturnType = ValueType::None;
 static string CurrentFunctionReturnStructName;
-static string CurrentClassScopeName;
-static std::set<string> ActiveTypeParams;
-
-static bool CanAccessClassMember(const string &OwnerClass, bool IsPublic) {
-  return IsPublic || (!CurrentClassScopeName.empty() &&
-                      CurrentClassScopeName == OwnerClass);
-}
-
-struct ClassScopeGuard {
-  string Saved;
-  ClassScopeGuard(const string &ClassName) : Saved(CurrentClassScopeName) {
-    CurrentClassScopeName = ClassName;
-  }
-  ~ClassScopeGuard() { CurrentClassScopeName = Saved; }
-};
 
 struct TopLevelParseGuard {
   TopLevelParseGuard() { ParsingTopLevel = true; }
   ~TopLevelParseGuard() { ParsingTopLevel = false; }
 };
 
-struct ParseLoopGuard {
-  ParseLoopGuard() { ++ParseLoopDepth; }
-  ~ParseLoopGuard() { --ParseLoopDepth; }
-};
-
-struct ParseSwitchGuard {
-  ParseSwitchGuard() { ++ParseSwitchDepth; }
-  ~ParseSwitchGuard() { --ParseSwitchDepth; }
-};
-
-static void BeginFunctionScope(const vector<FunctionSignatureNode::ParameterInfo> &Parameters) {
+static void BeginFunctionScope(
+    const vector<pair<string, ValueType>> &Parameters,
+    const vector<string> &ParameterStructNames) {
   VarScopes.clear();
   VarStructScopes.clear();
   VarScopes.emplace_back();
   VarStructScopes.emplace_back();
-  for (const auto &Parameter : Parameters) {
-    VarScopes.front()[Parameter.Name] = Parameter.Type;
-    if (Parameter.Type == ValueType::Struct || Parameter.Type == ValueType::Pointer ||
-        Parameter.Type == ValueType::Array)
-      VarStructScopes.front()[Parameter.Name] = Parameter.StructName;
+  for (size_t Index = 0; Index < Parameters.size(); ++Index) {
+    const auto &Parameter = Parameters[Index];
+    VarScopes.front()[Parameter.first] = Parameter.second;
+    if (Index < ParameterStructNames.size() &&
+        !ParameterStructNames[Index].empty())
+      VarStructScopes.front()[Parameter.first] = ParameterStructNames[Index];
   }
 }
 
@@ -1972,8 +1742,7 @@ static void DeclareVar(const string &Name, ValueType Type,
   if (VarScopes.empty())
     return;
   VarScopes.back()[Name] = Type;
-  if (Type == ValueType::Struct || Type == ValueType::Pointer ||
-      Type == ValueType::Array)
+  if (!StructName.empty())
     VarStructScopes.back()[Name] = StructName;
 }
 
@@ -1987,10 +1756,9 @@ static void BeginBlockScope() {
 // here. Size == 1 is only popped for top-level blocks (function scope is popped
 // in EndFunctionScope).
 static void EndBlockScope() {
-  if (VarScopes.size() > 1) {
-    VarScopes.pop_back();
-    VarStructScopes.pop_back();
-  } else if (ParsingTopLevel && VarScopes.size() == 1) {
+  if (VarScopes.size() > 1)
+    VarScopes.pop_back(), VarStructScopes.pop_back();
+  else if (ParsingTopLevel && VarScopes.size() == 1) {
     VarScopes.pop_back();
     VarStructScopes.pop_back();
   }
@@ -1999,36 +1767,43 @@ static void EndBlockScope() {
 // Check only the innermost scope (used for redeclaration checks).
 
 // Ensure a function scope exists, then add a new scope for the loop variable.
-static void BeginLoopScope(const string &Name, ValueType Type,
-                           const string &StructName = "") {
+static void BeginLoopScope(const string &Name, ValueType Type) {
   VarScopes.emplace_back();
   VarStructScopes.emplace_back();
   VarScopes.back()[Name] = Type;
-  if (Type == ValueType::Struct || Type == ValueType::Pointer ||
-      Type == ValueType::Array)
-    VarStructScopes.back()[Name] = StructName;
 }
 
 // Size == 1 is only popped for top-level blocks (function scope is popped in
 // EndFunctionScope).
 static void EndLoopScope() {
-  if (VarScopes.size() > 1) {
-    VarScopes.pop_back();
-    if (!VarStructScopes.empty())
-      VarStructScopes.pop_back();
-  }
+  if (VarScopes.size() > 1)
+    VarScopes.pop_back(), VarStructScopes.pop_back();
   if (ParsingTopLevel && VarScopes.size() == 1) {
     VarScopes.pop_back();
-    if (!VarStructScopes.empty())
-      VarStructScopes.pop_back();
+    VarStructScopes.pop_back();
   }
 }
 
 struct FunctionScopeGuard {
-  FunctionScopeGuard(const vector<FunctionSignatureNode::ParameterInfo> &Parameters) {
-    BeginFunctionScope(Parameters);
+  FunctionScopeGuard(const vector<pair<string, ValueType>> &Parameters,
+                     const vector<string> &ParameterStructNames) {
+    BeginFunctionScope(Parameters, ParameterStructNames);
   }
   ~FunctionScopeGuard() { EndFunctionScope(); }
+};
+
+static bool CanAccessClassMember(const string &OwnerClass, bool IsPublic) {
+  return IsPublic || (!CurrentClassScopeName.empty() &&
+                      CurrentClassScopeName == OwnerClass);
+}
+
+struct ClassScopeGuard {
+  string SavedClassName;
+  ClassScopeGuard(const string &ClassName)
+      : SavedClassName(CurrentClassScopeName) {
+    CurrentClassScopeName = ClassName;
+  }
+  ~ClassScopeGuard() { CurrentClassScopeName = SavedClassName; }
 };
 
 struct BlockScopeGuard {
@@ -2037,27 +1812,36 @@ struct BlockScopeGuard {
 };
 
 struct LoopScopeGuard {
-  LoopScopeGuard(const string &Name, ValueType Type,
-                 const string &StructName = "") {
-    BeginLoopScope(Name, Type, StructName);
+  LoopScopeGuard(const string &Name, ValueType Type) {
+    BeginLoopScope(Name, Type);
   }
   ~LoopScopeGuard() { EndLoopScope(); }
+};
+
+struct ParseLoopGuard {
+  ParseLoopGuard() { ++ParseLoopDepth; }
+  ~ParseLoopGuard() { --ParseLoopDepth; }
+};
+
+struct ParseSwitchGuard {
+  ParseSwitchGuard() { ++ParseSwitchDepth; }
+  ~ParseSwitchGuard() { --ParseSwitchDepth; }
 };
 
 
 
 struct ReturnTypeGuard {
   ValueType Saved;
-  string SavedStruct;
+  string SavedStructName;
   ReturnTypeGuard(ValueType Type, const string &StructName = "")
       : Saved(CurrentFunctionReturnType),
-        SavedStruct(CurrentFunctionReturnStructName) {
+        SavedStructName(CurrentFunctionReturnStructName) {
     CurrentFunctionReturnType = Type;
     CurrentFunctionReturnStructName = StructName;
   }
   ~ReturnTypeGuard() {
     CurrentFunctionReturnType = Saved;
-    CurrentFunctionReturnStructName = SavedStruct;
+    CurrentFunctionReturnStructName = SavedStructName;
   }
 };
 
@@ -2098,10 +1882,8 @@ static string LookupVarStructName(const string &Name) {
     if (Found != It->end())
       return Found->second;
   }
-  auto GI = GlobalVarStructTypes.find(Name);
-  if (GI != GlobalVarStructTypes.end())
-    return GI->second;
-  return "";
+  auto Global = GlobalVarStructNames.find(Name);
+  return Global == GlobalVarStructNames.end() ? "" : Global->second;
 }
 
 /// PrintReplPrompt - Print the interactive prompt to stderr.
@@ -2141,12 +1923,23 @@ unique_ptr<FunctionDefinitionNode> LogErrorFunction(const char *Str) {
 
 static unique_ptr<ExpressionNode> ParseExpression();
 static unique_ptr<ExpressionNode> ParsePrimary();
+static unique_ptr<ExpressionNode>
+ParseNameExpressionWithName(const string &ParsedName);
+static unique_ptr<ExpressionNode>
+ParseMethodCallExpression(unique_ptr<ExpressionNode> Receiver,
+                          const string &MethodName);
+static unique_ptr<ExpressionNode> ParseAddrExpression();
 static unique_ptr<ExpressionNode> ParseSizeofExpression();
 static unique_ptr<ExpressionNode> ParseVarStatement();
 static unique_ptr<ExpressionNode> ParseStatement();
 static unique_ptr<ExpressionNode> ParseSimpleStatement();
 static unique_ptr<ExpressionNode> ParseBlock();
 static unique_ptr<ExpressionNode> ParseFunctionBody();
+static unique_ptr<FunctionDefinitionNode>
+ParseMethodDefinition(const string &ClassName, bool IsPublic);
+static bool ParseTraitDefinition();
+static bool VerifyTraitConformance(const string &ClassName,
+                                   const string &TraitName);
 
 
 // Counter to give each anonymous top-level expression a unique name.
@@ -2160,45 +1953,37 @@ static string EncodePointerType(ValueType PointeeType,
                                 const string &PointeeStructName = "");
 static bool DecodePointerType(const string &Encoded, ValueType &PointeeType,
                               string &PointeeStructName);
-static string EncodeArrayType(ValueType ElemType, const string &ElemStructName,
-                              uint64_t Count);
-static bool DecodeArrayType(const string &Encoded, ValueType &ElemType,
-                            string &ElemStructName, uint64_t &Count);
-static bool ArrayDecaysToPointerType(const string &ArrayInfo,
-                                     const string &PointerInfo);
-static bool ParseUnsignedDecimal(const string &Text, uint64_t &Out);
-static bool ParseAggregateDefinition(const char *KindName);
-static unique_ptr<FunctionDefinitionNode>
-ParseMethodDefinitionInClass(const string &ClassName, bool IsPublic);
-static bool ParseTraitDefinition();
-static bool VerifyTraitConformance(const string &ClassName,
-                                   const StructTypeInfo::ImplTraitRef &ImplRef);
-static bool ParseImplDefinition();
-static bool ParseTypeAliasDefinition();
+static string EncodeArrayType(ValueType ElementType,
+                              const string &ElementStructName,
+                              uint64_t ElementCount);
+static bool DecodeArrayType(const string &Encoded, ValueType &ElementType,
+                            string &ElementStructName,
+                            uint64_t &ElementCount);
+static bool ArrayDecaysToPointerType(const string &ArrayTypeInfo,
+                                     const string &PointerTypeInfo);
 static const char *TypeName(ValueType Type);
 static bool IsNumericType(ValueType Type);
 static bool IsIntType(ValueType Type);
 static bool IsUnsignedIntType(ValueType Type);
-static bool IsSignedIntType(ValueType Type);
 static bool IsFloatType(ValueType Type);
 static bool IsAssignable(ValueType Dest, ValueType Src);
 static Type *LLVMTypeFor(ValueType Type, const string &StructName = "");
 static FunctionSignatureNode *GetFunctionSignature(const string &Name);
 // Optional expected type for numeric literals (used for float/float32).
 static ValueType ExpectedLiteralType = ValueType::Error;
-static string ExpectedLiteralStructName;
+static string ExpectedLiteralTypeInfo;
 
 struct ExpectedLiteralTypeGuard {
   ValueType Saved;
-  string SavedStruct;
-  ExpectedLiteralTypeGuard(ValueType Type, const string &StructName = "")
-      : Saved(ExpectedLiteralType), SavedStruct(ExpectedLiteralStructName) {
+  string SavedTypeInfo;
+  ExpectedLiteralTypeGuard(ValueType Type, const string &TypeInfo = "")
+      : Saved(ExpectedLiteralType), SavedTypeInfo(ExpectedLiteralTypeInfo) {
     ExpectedLiteralType = Type;
-    ExpectedLiteralStructName = StructName;
+    ExpectedLiteralTypeInfo = TypeInfo;
   }
   ~ExpectedLiteralTypeGuard() {
     ExpectedLiteralType = Saved;
-    ExpectedLiteralStructName = SavedStruct;
+    ExpectedLiteralTypeInfo = SavedTypeInfo;
   }
 };
 
@@ -2252,15 +2037,13 @@ static unique_ptr<ExpressionNode> ParseNumberExpression() {
     if (IsIntType(ExpectedLiteralType))
       Type = ExpectedLiteralType;
 
-    // Parse with enough bits to hold the literal’s full magnitude, then
-    // range-check against the target *signed* width. This avoids cases like
-    // 128: it needs 8 bits unsigned, but doesn’t fit in signed int8 (max 127).
+    // Parse with enough bits to hold the literal's full magnitude, then
+    // range-check against the target width.
     unsigned Bits = LLVMTypeFor(Type)->getIntegerBitWidth();
     unsigned NeededBits = APInt::getBitsNeeded(NumberLiteral, 10);
     unsigned ParseBits = std::max(Bits, NeededBits);
     APInt Val(ParseBits, NumberLiteral, 10);
 
-    // Reject if the literal doesn't fit in the target width.
     APInt Max = IsUnsignedIntType(Type) ? APInt::getAllOnes(Bits)
                                         : APInt::getSignedMaxValue(Bits);
     if (Val.ugt(Max))
@@ -2277,78 +2060,38 @@ static unique_ptr<ExpressionNode> ParseNumberExpression() {
   }
 }
 
-/// charexpr
-///   = "'" <char> "'" ;
-static unique_ptr<ExpressionNode> ParseCharExpression() {
-  ValueType Type = ValueType::Int32;
-  if (IsIntType(ExpectedLiteralType))
-    Type = ExpectedLiteralType;
+static unique_ptr<ExpressionNode> ParseCharacterExpression() {
+  ValueType Type = IsIntType(ExpectedLiteralType)
+                       ? ExpectedLiteralType
+                       : ValueType::Int32;
   unsigned Bits = LLVMTypeFor(Type)->getIntegerBitWidth();
-  APInt Max = IsUnsignedIntType(Type) ? APInt::getAllOnes(Bits)
-                                      : APInt::getSignedMaxValue(Bits);
-  APInt Val(std::max(1u, Bits), CharLiteralValue, false);
-  if (Val.ugt(Max))
+  uint64_t Maximum = IsUnsignedIntType(Type)
+                         ? APInt::getMaxValue(Bits).getZExtValue()
+                         : APInt::getSignedMaxValue(Bits).getZExtValue();
+  if (CharacterLiteralValue > Maximum)
     return LogErrorExpression("Character literal out of range for type");
-  if (Val.getBitWidth() != Bits)
-    Val = Val.trunc(Bits);
-  auto Result = make_unique<NumberExpressionNode>(Val, Type);
-  getNextToken(); // consume the character literal
+  auto Result = make_unique<NumberExpressionNode>(
+      APInt(Bits, CharacterLiteralValue), Type);
+  getNextToken(); // eat character literal
   return Result;
-}
-
-static unique_ptr<ExpressionNode> ParseArrayLiteralExpression() {
-  if (ExpectedLiteralType != ValueType::Array)
-    return LogErrorExpression("Array literal requires an expected array type");
-  ValueType ElemType = ValueType::Error;
-  string ElemStructName;
-  uint64_t Count = 0;
-  if (!DecodeArrayType(ExpectedLiteralStructName, ElemType, ElemStructName,
-                       Count))
-    return LogErrorExpression("Invalid expected array type");
-
-  getNextToken(); // eat '['
-  vector<unique_ptr<ExpressionNode>> Elements;
-  if (CurrentToken != tok_rbracket) {
-    while (true) {
-      ExpectedLiteralTypeGuard Guard(ElemType, ElemStructName);
-      auto E = ParseExpression();
-      if (!E)
-        return nullptr;
-      if (!IsAssignable(ElemType, E->getType()))
-        return LogErrorExpression("Array literal element type mismatch");
-      if ((ElemType == ValueType::Pointer || ElemType == ValueType::Array ||
-           ElemType == ValueType::Struct) &&
-          ElemStructName != E->getStructName())
-        return LogErrorExpression("Array literal element type mismatch");
-      Elements.push_back(std::move(E));
-      if (CurrentToken == tok_rbracket)
-        break;
-      if (CurrentToken != tok_comma)
-        return LogErrorExpression("Expected ']' or ',' in array literal");
-      getNextToken();
-    }
-  }
-  getNextToken(); // eat ']'
-  if (Elements.size() != Count)
-    return LogErrorExpression("Array literal element count mismatch");
-  return make_unique<ArrayLiteralExpressionNode>(std::move(Elements),
-                                          ExpectedLiteralStructName);
 }
 
 /// type
 ///   = "int" | "int8" | "int16" | "int32" | "int64"
+///   | "uint8" | "uint16" | "uint32" | "uint64"
 ///   | "float" | "float32" | "float64"
 ///   | "bool" | "None" ;
 ///
-/// casttype
+/// cast-type
 ///   = "int" | "int8" | "int16" | "int32" | "int64"
+///   | "uint8" | "uint16" | "uint32" | "uint64"
 ///   | "float" | "float32" | "float64"
 ///   | "bool" ;
 static ValueType ParseTypeToken(string *StructName) {
   if (StructName)
     StructName->clear();
   ValueType BaseType = ValueType::Error;
-  string BaseStructName;
+  string BaseTypeInfo;
   switch (CurrentToken) {
   case tok_int:
     getNextToken();
@@ -2430,36 +2173,30 @@ static ValueType ParseTypeToken(string *StructName) {
       return ValueType::Error;
     }
     if (CurrentToken != tok_rbracket) {
-      LogErrorExpression("Expected ']' after pointer pointee type");
+      LogErrorExpression("Expected ']' after pointer type");
       return ValueType::Error;
     }
     getNextToken(); // eat ']'
     BaseType = ValueType::Pointer;
-    BaseStructName = EncodePointerType(PointeeType, PointeeStructName);
+    BaseTypeInfo = EncodePointerType(PointeeType, PointeeStructName);
     break;
   }
   case tok_name: {
-    string TyName = Name;
-    if (ActiveTypeParams.count(TyName)) {
+    auto Alias = TypeAliases.find(Name);
+    if (Alias != TypeAliases.end()) {
+      BaseType = Alias->second.first;
+      BaseTypeInfo = Alias->second.second;
       getNextToken();
-      if (StructName)
-        *StructName = TyName;
-      return ValueType::TypeVar;
+      break;
     }
-    auto AliasIt = TypeAliases.find(TyName);
-    if (AliasIt != TypeAliases.end()) {
-      getNextToken();
-      if (StructName)
-        *StructName = AliasIt->second.second;
-      return AliasIt->second.first;
-    }
-    if (!StructTypes.count(TyName)) {
-      LogErrorExpression(("Unknown type '" + TyName + "'").c_str());
+    auto Found = StructTypes.find(Name);
+    if (Found == StructTypes.end()) {
+      LogErrorExpression(("Unknown type '" + Name + "'").c_str());
       return ValueType::Error;
     }
+    BaseTypeInfo = Name;
     getNextToken();
     BaseType = ValueType::Struct;
-    BaseStructName = TyName;
     break;
   }
   default:
@@ -2468,48 +2205,256 @@ static ValueType ParseTypeToken(string *StructName) {
   }
 
   if (CurrentToken == tok_lbracket) {
-    if (BaseType == ValueType::None)
-      return LogErrorExpression("Arrays of None are not allowed"), ValueType::Error;
-    if (BaseType == ValueType::Array)
-      return LogErrorExpression("Nested array types are not supported"), ValueType::Error;
+    if (BaseType == ValueType::None) {
+      LogErrorExpression("Arrays of None are not allowed");
+      return ValueType::Error;
+    }
     getNextToken(); // eat '['
-    if (CurrentToken != tok_number || NumberIsFloat)
-      return LogErrorExpression("Array size must be an integer literal"),
-             ValueType::Error;
-    uint64_t Count = 0;
-    if (!ParseUnsignedDecimal(NumberLiteral, Count))
-      return LogErrorExpression("Invalid array size"), ValueType::Error;
-    if (Count == 0)
-      return LogErrorExpression("Array size must be > 0"), ValueType::Error;
-    getNextToken(); // eat number
-    if (CurrentToken != tok_rbracket)
-      return LogErrorExpression("Expected ']' after array size"), ValueType::Error;
+    if (CurrentToken != tok_number || NumberIsFloat) {
+      LogErrorExpression("Array size must be an integer literal");
+      return ValueType::Error;
+    }
+    uint64_t ElementCount = std::strtoull(NumberLiteral.c_str(), nullptr, 10);
+    if (ElementCount == 0) {
+      LogErrorExpression("Array size must be greater than zero");
+      return ValueType::Error;
+    }
+    getNextToken(); // eat array size
+    if (CurrentToken != tok_rbracket) {
+      LogErrorExpression("Expected ']' after array size");
+      return ValueType::Error;
+    }
     getNextToken(); // eat ']'
-    if (StructName)
-      *StructName = EncodeArrayType(BaseType, BaseStructName, Count);
-    if (CurrentToken == tok_lbracket)
-      return LogErrorExpression("Nested arrays are not supported"), ValueType::Error;
-    return ValueType::Array;
+    if (CurrentToken == tok_lbracket) {
+      LogErrorExpression("Nested arrays are not supported");
+      return ValueType::Error;
+    }
+    BaseTypeInfo = EncodeArrayType(BaseType, BaseTypeInfo, ElementCount);
+    BaseType = ValueType::Array;
   }
 
   if (StructName)
-    *StructName = BaseStructName;
+    *StructName = BaseTypeInfo;
   return BaseType;
 }
 
-/// castexpr
-///   = casttype "(" expression ")" ;
+static bool ParseTypeAliasDefinition() {
+  getNextToken(); // eat 'type'
+  if (CurrentToken != tok_name) {
+    LogErrorExpression("Expected name after 'type'");
+    return false;
+  }
+  string AliasName = Name;
+  if (TypeAliases.count(AliasName)) {
+    LogErrorExpression(("Type alias '" + AliasName + "' is already defined")
+                           .c_str());
+    return false;
+  }
+  if (StructTypes.count(AliasName)) {
+    LogErrorExpression(("Type '" + AliasName +
+                        "' is already defined as an aggregate type")
+                           .c_str());
+    return false;
+  }
+  getNextToken(); // eat alias name
+  if (CurrentToken != tok_equal) {
+    LogErrorExpression("Expected '=' in type alias");
+    return false;
+  }
+  getNextToken(); // eat '='
+  string AliasedTypeInfo;
+  ValueType AliasedType = ParseTypeToken(&AliasedTypeInfo);
+  if (AliasedType == ValueType::Error)
+    return false;
+  TypeAliases[AliasName] = {AliasedType, AliasedTypeInfo};
+  return true;
+}
+
+/// struct-definition = "struct" name ":" end-of-lines struct-block ;
+/// class-definition
+///   = "class" name [ "(" trait-reference { "," trait-reference } ")" ]
+///     ":" end-of-lines class-block ;
+static bool ParseAggregateDefinition(const char *KindName) {
+  getNextToken(); // eat 'struct' or 'class'
+  if (CurrentToken != tok_name) {
+    LogErrorExpression((string("Expected name after '") + KindName + "'").c_str());
+    return false;
+  }
+  string AggregateName = Name;
+  if (TypeAliases.count(AggregateName)) {
+    LogErrorExpression(("Type '" + AggregateName +
+                        "' is already defined as a type alias")
+                           .c_str());
+    return false;
+  }
+  if (StructTypes.count(AggregateName)) {
+    LogErrorExpression(("Aggregate '" + AggregateName + "' is already defined")
+                           .c_str());
+    return false;
+  }
+  if (TraitTypes.count(AggregateName)) {
+    LogErrorExpression(("Type '" + AggregateName +
+                        "' is already defined as a trait")
+                           .c_str());
+    return false;
+  }
+  getNextToken(); // eat name
+  bool IsClass = string(KindName) == "class";
+  vector<string> ImplementedTraits;
+  if (IsClass && CurrentToken == tok_lparen) {
+    set<string> SeenTraits;
+    getNextToken(); // eat '('
+    while (CurrentToken != tok_rparen) {
+      if (CurrentToken != tok_name) {
+        LogErrorExpression("Expected trait name in class implements list");
+        return false;
+      }
+      string TraitName = Name;
+      if (!TraitTypes.count(TraitName)) {
+        LogErrorExpression(("Unknown trait '" + TraitName + "'").c_str());
+        return false;
+      }
+      if (!SeenTraits.insert(TraitName).second) {
+        LogErrorExpression(
+            ("Duplicate trait '" + TraitName +
+             "' in class implements list")
+                .c_str());
+        return false;
+      }
+      ImplementedTraits.push_back(TraitName);
+      getNextToken(); // eat trait name
+      if (CurrentToken == tok_rparen)
+        break;
+      if (CurrentToken != tok_comma) {
+        LogErrorExpression("Expected ')' or ',' in class implements list");
+        return false;
+      }
+      getNextToken(); // eat ','
+    }
+    getNextToken(); // eat ')'
+  }
+  if (CurrentToken != tok_colon) {
+    LogErrorExpression((string("Expected ':' after ") + KindName + " name").c_str());
+    return false;
+  }
+  getNextToken(); // eat ':'
+  if (CurrentToken != tok_eol) {
+    LogErrorExpression((string("Expected newline after ") + KindName + " header").c_str());
+    return false;
+  }
+  consumeNewlines();
+  if (CurrentToken != tok_indent) {
+    LogErrorExpression((string("Expected an indented ") + KindName + " body").c_str());
+    return false;
+  }
+  getNextToken(); // eat INDENT
+
+  StructTypeInfo Info;
+  Info.IsClass = IsClass;
+  Info.ImplementedTraits = std::move(ImplementedTraits);
+  // Methods need the fields parsed before them, so keep the in-progress class
+  // metadata visible while I walk the body.
+  StructTypes[AggregateName] = Info;
+  vector<unique_ptr<FunctionDefinitionNode>> Methods;
+  while (CurrentToken != tok_dedent && CurrentToken != tok_eof) {
+    if (CurrentToken == tok_eol) {
+      consumeNewlines();
+      continue;
+    }
+    if (CurrentToken == tok_block_end) {
+      getNextToken();
+      continue;
+    }
+    bool IsPublic = true;
+    if (CurrentToken == tok_public || CurrentToken == tok_private) {
+      if (!Info.IsClass) {
+        LogErrorExpression(
+            "Visibility modifiers are only allowed inside class bodies");
+        return false;
+      }
+      IsPublic = CurrentToken == tok_public;
+      getNextToken(); // eat visibility modifier
+    }
+    if (CurrentToken == tok_def) {
+      if (!Info.IsClass) {
+        LogErrorExpression("Methods are only allowed inside classes");
+        return false;
+      }
+      auto Method = ParseMethodDefinition(AggregateName, IsPublic);
+      if (!Method)
+        return false;
+      Methods.push_back(std::move(Method));
+      Info.Methods = StructTypes[AggregateName].Methods;
+      StructTypes[AggregateName] = Info;
+      if (CurrentToken == tok_eol)
+        consumeNewlines();
+      else if (CurrentToken == tok_block_end)
+        getNextToken();
+      continue;
+    }
+    if (CurrentToken != tok_name) {
+      LogErrorExpression((string("Expected field name in ") + KindName + " body").c_str());
+      return false;
+    }
+    string FieldName = Name;
+    if (Info.FieldIndices.count(FieldName)) {
+      LogErrorExpression((string("Duplicate ") + KindName + " field").c_str());
+      return false;
+    }
+    getNextToken(); // eat field name
+    if (CurrentToken != tok_colon) {
+      LogErrorExpression("Expected ':' after field name");
+      return false;
+    }
+    getNextToken(); // eat ':'
+    string FieldStructName;
+    ValueType FieldType = ParseTypeToken(&FieldStructName);
+    if (FieldType == ValueType::Error)
+      return false;
+    if (FieldType == ValueType::None) {
+      LogErrorExpression((string(KindName) + " fields cannot have None type").c_str());
+      return false;
+    }
+    Info.FieldIndices[FieldName] = Info.Fields.size();
+    Info.Fields.push_back(
+        {FieldName, FieldType, FieldStructName, IsPublic});
+    StructTypes[AggregateName] = Info;
+    if (CurrentToken == tok_eol)
+      consumeNewlines();
+  }
+
+  if (Info.Fields.empty() && !Info.IsClass) {
+    LogErrorExpression((string(KindName) + " requires at least one field").c_str());
+    return false;
+  }
+  if (CurrentToken != tok_dedent) {
+    LogErrorExpression((string("Expected dedent after ") + KindName + " body").c_str());
+    return false;
+  }
+  StructTypes[AggregateName] = std::move(Info);
+  for (const string &TraitName :
+       StructTypes[AggregateName].ImplementedTraits) {
+    if (!VerifyTraitConformance(AggregateName, TraitName))
+      return false;
+  }
+  for (auto &Method : Methods) {
+    if (!Method->codegen())
+      return false;
+  }
+  PendingTokens.push_front(tok_block_end);
+  getNextToken(); // eat DEDENT, then surface block-end
+  return true;
+}
+
+/// cast-expression
+///   = cast-type "(" expression ")" ;
 static unique_ptr<ExpressionNode> ParseCastExpression() {
-  string TargetStructName;
-  ValueType Type = ParseTypeToken(&TargetStructName);
+  string TargetTypeInfo;
+  ValueType Type = ParseTypeToken(&TargetTypeInfo);
   if (Type == ValueType::Error)
     return nullptr;
   if (Type == ValueType::None)
     return LogErrorExpression("Cannot cast to None");
-  if (Type == ValueType::Struct)
-    return LogErrorExpression("Cannot cast to struct type");
-  if (Type == ValueType::Array)
-    return LogErrorExpression("Cannot cast to array type");
   if (CurrentToken != tok_lparen)
     return LogErrorExpression("Expected '(' after cast type");
   getNextToken(); // eat '('
@@ -2521,7 +2466,8 @@ static unique_ptr<ExpressionNode> ParseCastExpression() {
   getNextToken(); // eat ')'
   if (Type == ValueType::Pointer && Expr->getType() != ValueType::Pointer)
     return LogErrorExpression("Pointer casts require a pointer operand");
-  return make_unique<CastExpressionNode>(Type, std::move(Expr), TargetStructName);
+  return make_unique<CastExpressionNode>(Type, std::move(Expr),
+                                          TargetTypeInfo);
 }
 
 static unique_ptr<ExpressionNode> ParseSizeofExpression() {
@@ -2529,8 +2475,8 @@ static unique_ptr<ExpressionNode> ParseSizeofExpression() {
   if (CurrentToken != tok_lparen)
     return LogErrorExpression("Expected '(' after sizeof");
   getNextToken(); // eat '('
-  string TargetStructName;
-  ValueType TargetType = ParseTypeToken(&TargetStructName);
+  string TargetTypeInfo;
+  ValueType TargetType = ParseTypeToken(&TargetTypeInfo);
   if (TargetType == ValueType::Error)
     return nullptr;
   if (TargetType == ValueType::None)
@@ -2538,50 +2484,7 @@ static unique_ptr<ExpressionNode> ParseSizeofExpression() {
   if (CurrentToken != tok_rparen)
     return LogErrorExpression("Expected ')' after sizeof type");
   getNextToken(); // eat ')'
-  return make_unique<SizeofExpressionNode>(TargetType, TargetStructName);
-}
-
-static unique_ptr<ExpressionNode> ParseAddrExpression() {
-  getNextToken(); // eat 'addr'
-  if (CurrentToken != tok_lparen)
-    return LogErrorExpression("Expected '(' after addr");
-  getNextToken(); // eat '('
-  if (CurrentToken != tok_name)
-    return LogErrorExpression("addr expects an lvalue");
-  string BaseName = Name;
-  getNextToken(); // eat name
-  ValueType CurType = LookupVarType(BaseName);
-  if (CurType == ValueType::Error)
-    return LogErrorExpression("Unknown variable name");
-  string CurStruct = LookupVarStructName(BaseName);
-  vector<string> Path;
-  while (CurrentToken == tok_dot) {
-    getNextToken(); // eat '.'
-    if (CurrentToken != tok_name)
-      return LogErrorExpression("Expected field name after '.'");
-    string Field = Name;
-    getNextToken(); // eat field
-    if (CurType != ValueType::Struct || CurStruct.empty())
-      return LogErrorExpression("Field access requires a struct value");
-    auto SI = StructTypes.find(CurStruct);
-    if (SI == StructTypes.end())
-      return LogErrorExpression("Unknown struct type in field access");
-    auto FI = SI->second.FieldIndex.find(Field);
-    if (FI == SI->second.FieldIndex.end())
-      return LogErrorExpression("Unknown field on struct");
-    const auto &FD = SI->second.Fields[FI->second];
-    if (!CanAccessClassMember(CurStruct, FD.IsPublic))
-      return LogErrorExpression(
-          ("Field '" + Field + "' is private on '" + CurStruct + "'").c_str());
-    CurType = FD.Type;
-    CurStruct = FD.StructName;
-    Path.push_back(Field);
-  }
-  if (CurrentToken != tok_rparen)
-    return LogErrorExpression("Expected ')' after addr operand");
-  getNextToken(); // eat ')'
-  return make_unique<AddrExpressionNode>(std::move(BaseName), std::move(Path),
-                                  EncodePointerType(CurType, CurStruct));
+  return make_unique<SizeofExpressionNode>(TargetType, TargetTypeInfo);
 }
 
 /// parenthesized-expression
@@ -2599,85 +2502,210 @@ static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
 }
 
 /// name-expression
-///   = name
-///   | call-expression ;
+///   = lvalue
+///   | call-expression
+///   | method-call-expression
+///   | constructor-call-expression ;
 ///
 /// call-expression
-///   = name "(" [ expression { "," expression } ] ")" ;
+///   = name "(" [ arguments ] ")" ;
+///
+/// method-call-expression
+///   = lvalue "." name "(" [ arguments ] ")" ;
+///
+/// constructor-call-expression
+///   = name "(" [ arguments ] ")" ;
+static unique_ptr<ExpressionNode>
+ParseFieldExpressionWithBase(const string &BaseName, ValueType BaseType,
+                             string BaseStructName) {
+  if (BaseType != ValueType::Struct)
+    return LogErrorExpression("Field access requires a struct value");
+
+  vector<string> FieldPath;
+  ValueType ResultType = BaseType;
+  string ResultStructName = std::move(BaseStructName);
+  while (CurrentToken == tok_dot) {
+    getNextToken(); // eat '.'
+    if (CurrentToken != tok_name)
+      return LogErrorExpression("Expected field name after '.'");
+    string FieldName = Name;
+    auto Struct = StructTypes.find(ResultStructName);
+    if (Struct == StructTypes.end())
+      return LogErrorExpression("Unknown struct type in field access");
+    auto FieldIndex = Struct->second.FieldIndices.find(FieldName);
+    if (FieldIndex == Struct->second.FieldIndices.end())
+      return LogErrorExpression(
+          ("Unknown field '" + FieldName + "'").c_str());
+    const auto &Field = Struct->second.Fields[FieldIndex->second];
+    if (!CanAccessClassMember(ResultStructName, Field.IsPublic))
+      return LogErrorExpression(
+          ("Field '" + FieldName + "' is private on '" +
+           ResultStructName + "'")
+              .c_str());
+    ResultType = Field.Type;
+    ResultStructName = Field.StructName;
+    FieldPath.push_back(FieldName);
+    getNextToken(); // eat field name
+    if (CurrentToken == tok_dot && ResultType != ValueType::Struct)
+      return LogErrorExpression("Field access requires a struct value");
+  }
+
+  return make_unique<FieldExpressionNode>(BaseName, std::move(FieldPath),
+                                           ResultType, ResultStructName);
+}
+
 static unique_ptr<ExpressionNode> ParseNameExpressionWithName(const string &ParsedName) {
   if (CurrentToken != tok_lparen) { // Simple variable ref.
     ValueType Type = LookupVarType(ParsedName);
     if (Type == ValueType::Error) {
+      if (CurrentToken == tok_equal)
+        return LogErrorExpression("Assignment to undeclared variable");
       return LogErrorExpression("Unknown variable name");
     }
-    return make_unique<NameExpressionNode>(ParsedName, Type,
-                                        LookupVarStructName(ParsedName));
+    string StructName = LookupVarStructName(ParsedName);
+
+    // An implicit self parameter is a pointer to its class. Field access
+    // dereferences that pointer before walking the field path.
+    if (Type == ValueType::Pointer && CurrentToken == tok_dot) {
+      ValueType PointeeType = ValueType::Error;
+      string PointeeStructName;
+      if (DecodePointerType(StructName, PointeeType, PointeeStructName) &&
+          PointeeType == ValueType::Struct)
+        return ParseFieldExpressionWithBase(ParsedName, PointeeType,
+                                            PointeeStructName);
+    }
+
+    unique_ptr<ExpressionNode> Result =
+        make_unique<NameExpressionNode>(ParsedName, Type, StructName);
+
+    while (CurrentToken == tok_dot || CurrentToken == tok_lbracket) {
+      if (CurrentToken == tok_dot) {
+        if (Result->getType() != ValueType::Struct ||
+            Result->getStructName().empty())
+          return LogErrorExpression("Field access requires a struct value");
+        string BaseStructName = Result->getStructName();
+        getNextToken(); // eat '.'
+        if (CurrentToken != tok_name)
+          return LogErrorExpression("Expected field or method name after '.'");
+        string MemberName = Name;
+        getNextToken(); // eat member name
+        if (CurrentToken == tok_lparen) {
+          Result = ParseMethodCallExpression(std::move(Result), MemberName);
+          if (!Result)
+            return nullptr;
+          continue;
+        }
+        auto Struct = StructTypes.find(BaseStructName);
+        if (Struct == StructTypes.end())
+          return LogErrorExpression("Unknown struct type in field access");
+        auto Field = Struct->second.FieldIndices.find(MemberName);
+        if (Field == Struct->second.FieldIndices.end())
+          return LogErrorExpression(
+              ("Unknown field '" + MemberName + "'").c_str());
+        const auto &FieldInfo = Struct->second.Fields[Field->second];
+        if (!CanAccessClassMember(BaseStructName, FieldInfo.IsPublic))
+          return LogErrorExpression(
+              ("Field '" + MemberName + "' is private on '" +
+               BaseStructName + "'")
+                  .c_str());
+        Result = make_unique<MemberExpressionNode>(
+            std::move(Result), Field->second, FieldInfo.Type,
+            FieldInfo.StructName);
+        continue;
+      }
+
+      if (Result->getType() != ValueType::Pointer &&
+          Result->getType() != ValueType::Array)
+        return LogErrorExpression("Indexing requires a pointer or array value");
+      ValueType ElementType = ValueType::Error;
+      string ElementStructName;
+      uint64_t ElementCount = 0;
+      bool Decoded = Result->getType() == ValueType::Pointer
+                         ? DecodePointerType(Result->getStructName(),
+                                             ElementType, ElementStructName)
+                         : DecodeArrayType(Result->getStructName(), ElementType,
+                                           ElementStructName, ElementCount);
+      if (!Decoded)
+        return LogErrorExpression("Invalid indexed type metadata");
+      getNextToken(); // eat '['
+      auto Index = ParseExpression();
+      if (!Index)
+        return nullptr;
+      if (!IsIntType(Index->getType()))
+        return LogErrorExpression("Index must be an integer");
+      if (CurrentToken != tok_rbracket)
+        return LogErrorExpression("Expected ']' after index expression");
+      getNextToken(); // eat ']'
+      Result = make_unique<IndexExpressionNode>(
+          std::move(Result), std::move(Index), ElementType,
+          ElementStructName);
+    }
+    return Result;
   }
 
-  // Constructor call: ClassName(...)
-  auto SI = StructTypes.find(ParsedName);
-  if (SI != StructTypes.end() && SI->second.IsClass) {
+  // A class name in call position constructs a value of that class.
+  auto Class = StructTypes.find(ParsedName);
+  if (Class != StructTypes.end() && Class->second.IsClass) {
     getNextToken(); // eat '('
-    string InitName = ParsedName + ".__init__";
-    FunctionSignatureNode *InitSignature = GetFunctionSignature(InitName);
-    if (InitSignature) {
-      auto MI = SI->second.MethodIsPublic.find("__init__");
-      if (MI != SI->second.MethodIsPublic.end() &&
-          !CanAccessClassMember(ParsedName, MI->second)) {
+    string InitializerName = ParsedName + ".__init__";
+    FunctionSignatureNode *Initializer =
+        GetFunctionSignature(InitializerName);
+    if (Initializer) {
+      auto Visibility = Class->second.Methods.find("__init__");
+      if (Visibility != Class->second.Methods.end() &&
+          !CanAccessClassMember(ParsedName, Visibility->second))
         return LogErrorExpression(
             ("Method '__init__' is private on '" + ParsedName + "'").c_str());
-      }
     }
     vector<unique_ptr<ExpressionNode>> Arguments;
     if (CurrentToken != tok_rparen) {
-      size_t ArgIndex = 0;
+      size_t ParameterIndex = 1; // parameter zero is implicit self
       while (true) {
-        ValueType Expected = ValueType::Error;
-        string ExpectedStructName;
-        if (InitSignature && ArgIndex + 1 < InitSignature->getNumParameters()) {
-          Expected = InitSignature->getParameterType(ArgIndex + 1);
-          ExpectedStructName = InitSignature->getParameterStructName(ArgIndex + 1);
+        ValueType ExpectedType = ValueType::Error;
+        string ExpectedTypeInfo;
+        if (Initializer && ParameterIndex < Initializer->getNumParameters()) {
+          ExpectedType = Initializer->getParameterType(ParameterIndex);
+          ExpectedTypeInfo =
+              Initializer->getParameterStructName(ParameterIndex);
         }
-        ExpectedLiteralTypeGuard Guard(Expected, ExpectedStructName);
-        auto Arg = ParseExpression();
-        if (!Arg)
+        ExpectedLiteralTypeGuard Guard(ExpectedType, ExpectedTypeInfo);
+        auto Argument = ParseExpression();
+        if (!Argument)
           return nullptr;
-        Arguments.push_back(std::move(Arg));
+        Arguments.push_back(std::move(Argument));
         if (CurrentToken == tok_rparen)
           break;
         if (CurrentToken != tok_comma)
           return LogErrorExpression("Expected ')' or ',' in argument list");
         getNextToken(); // eat ','
-        ++ArgIndex;
+        ++ParameterIndex;
       }
     }
     getNextToken(); // eat ')'
 
-    if (InitSignature) {
-      size_t ExpectedArgs =
-          InitSignature->getNumParameters() > 0 ? InitSignature->getNumParameters() - 1 : 0;
-      if (Arguments.size() != ExpectedArgs)
+    if (!Initializer) {
+      if (!Arguments.empty())
+        return LogErrorExpression(
+            ("Class '" + ParsedName +
+             "' has no constructor; expected zero arguments")
+                .c_str());
+    } else {
+      if (Arguments.size() + 1 != Initializer->getNumParameters())
         return LogErrorExpression("Incorrect # arguments passed");
-      for (size_t I = 0; I < Arguments.size(); ++I) {
-        ValueType ArgType = Arguments[I]->getType();
-        ValueType ParamType = InitSignature->getParameterType(I + 1);
-        if (!IsAssignable(ParamType, ArgType))
-          return LogErrorExpression(("argument " + std::to_string(I + 1) + " expects " +
-                           TypeName(ParamType))
-                              .c_str());
-        if ((ParamType == ValueType::Pointer ||
-             ParamType == ValueType::Struct || ParamType == ValueType::Array) &&
-            InitSignature->getParameterStructName(I + 1) != Arguments[I]->getStructName())
-          return LogErrorExpression(("argument " + std::to_string(I + 1) + " expects " +
-                           TypeName(ParamType))
-                              .c_str());
+      for (size_t Index = 0; Index < Arguments.size(); ++Index) {
+        ValueType ParameterType =
+            Initializer->getParameterType(Index + 1);
+        if (!IsAssignable(ParameterType, Arguments[Index]->getType()))
+          return LogErrorExpression("Argument type mismatch");
+        if ((ParameterType == ValueType::Struct ||
+             ParameterType == ValueType::Pointer) &&
+            Initializer->getParameterStructName(Index + 1) !=
+                Arguments[Index]->getStructName())
+          return LogErrorExpression("Argument type mismatch");
       }
-    } else if (!Arguments.empty()) {
-      return LogErrorExpression(
-          ("Class '" + ParsedName + "' has no constructor; expected zero arguments")
-              .c_str());
     }
-    return make_unique<ConstructorCallExpressionNode>(ParsedName, std::move(Arguments));
+    return make_unique<ConstructorCallExpressionNode>(
+        ParsedName, std::move(Arguments));
   }
 
   // Function call.
@@ -2692,13 +2720,13 @@ static unique_ptr<ExpressionNode> ParseNameExpressionWithName(const string &Pars
     size_t ArgIndex = 0;
     while (true) {
       ValueType Expected = ValueType::Error;
-      string ExpectedStructName;
-      if (Signature && ArgIndex < Signature->getNumParameters())
+      string ExpectedTypeInfo;
+      if (Signature && ArgIndex < Signature->getNumParameters()) {
         Expected = Signature->getParameterType(ArgIndex);
-      if (Signature && ArgIndex < Signature->getNumParameters())
-        ExpectedStructName = Signature->getParameterStructName(ArgIndex);
+        ExpectedTypeInfo = Signature->getParameterStructName(ArgIndex);
+      }
       {
-        ExpectedLiteralTypeGuard Guard(Expected, ExpectedStructName);
+        ExpectedLiteralTypeGuard Guard(Expected, ExpectedTypeInfo);
         if (auto Arg = ParseExpression())
           Arguments.push_back(std::move(Arg));
         else
@@ -2720,19 +2748,20 @@ static unique_ptr<ExpressionNode> ParseNameExpressionWithName(const string &Pars
 
   if (!Signature)
     return LogErrorExpression("Unknown function referenced");
-  if (Signature->getNumParameters() != Arguments.size())
+  if ((!Signature->isVariadic() &&
+       Signature->getNumParameters() != Arguments.size()) ||
+      (Signature->isVariadic() &&
+       Arguments.size() < Signature->getNumParameters()))
     return LogErrorExpression("Incorrect # arguments passed");
 
-  for (size_t i = 0; i < Arguments.size(); ++i) {
+  for (size_t i = 0; i < Signature->getNumParameters(); ++i) {
     ValueType ArgType = Arguments[i]->getType();
     ValueType ParamType = Signature->getParameterType(i);
     if (ParamType == ValueType::Pointer && ArgType == ValueType::Array) {
-      if (!ArrayDecaysToPointerType(Arguments[i]->getStructName(),
-                                    Signature->getParameterStructName(i))) {
-        return LogErrorExpression(("argument " + std::to_string(i + 1) + " expects " +
-                         TypeName(ParamType))
-                            .c_str());
-      }
+      if (!ArrayDecaysToPointerType(
+              Arguments[i]->getStructName(),
+              Signature->getParameterStructName(i)))
+        return LogErrorExpression("Argument type mismatch");
       continue;
     }
     if (!IsAssignable(ParamType, ArgType)) {
@@ -2740,12 +2769,9 @@ static unique_ptr<ExpressionNode> ParseNameExpressionWithName(const string &Pars
                        TypeName(ParamType))
                           .c_str());
     }
-    if (ParamType == ValueType::Pointer &&
-        Signature->getParameterStructName(i) != Arguments[i]->getStructName()) {
-      return LogErrorExpression(("argument " + std::to_string(i + 1) + " expects " +
-                       TypeName(ParamType))
-                          .c_str());
-    }
+    if ((ParamType == ValueType::Struct || ParamType == ValueType::Pointer) &&
+        Signature->getParameterStructName(i) != Arguments[i]->getStructName())
+      return LogErrorExpression("Argument type mismatch");
   }
 
   return make_unique<CallExpressionNode>(ParsedName, std::move(Arguments),
@@ -2753,267 +2779,139 @@ static unique_ptr<ExpressionNode> ParseNameExpressionWithName(const string &Pars
                                   Signature->getReturnStructName());
 }
 
-static unique_ptr<ExpressionNode> ParseMethodCallExpression(unique_ptr<ExpressionNode> Receiver,
-                                               const string &MethodName) {
-  if (!Receiver || Receiver->getType() != ValueType::Struct)
-    return LogErrorExpression("Method call base must be a class/struct value");
+static unique_ptr<ExpressionNode>
+ParseMethodCallExpression(unique_ptr<ExpressionNode> Receiver,
+                          const string &MethodName) {
+  if (!Receiver || Receiver->getType() != ValueType::Struct ||
+      Receiver->getStructName().empty())
+    return LogErrorExpression("Method call base must be a class value");
+  if (!Receiver->isLValue())
+    return LogErrorExpression("Method call base must be assignable");
+
   string ClassName = Receiver->getStructName();
-  if (ClassName.empty())
-    return LogErrorExpression("Method call base must be a class/struct value");
-  auto CI = StructTypes.find(ClassName);
-  if (CI == StructTypes.end())
-    return LogErrorExpression("Unknown class/struct type in method call");
-  auto MI = CI->second.MethodIsPublic.find(MethodName);
-  if (MI != CI->second.MethodIsPublic.end() &&
-      !CanAccessClassMember(ClassName, MI->second)) {
+  auto Class = StructTypes.find(ClassName);
+  if (Class == StructTypes.end() || !Class->second.IsClass)
+    return LogErrorExpression("Method call base must be a class value");
+  auto Visibility = Class->second.Methods.find(MethodName);
+  if (Visibility != Class->second.Methods.end() &&
+      !CanAccessClassMember(ClassName, Visibility->second))
     return LogErrorExpression(
         ("Method '" + MethodName + "' is private on '" + ClassName + "'")
             .c_str());
-  }
+
   string CalleeName = ClassName + "." + MethodName;
   FunctionSignatureNode *Signature = GetFunctionSignature(CalleeName);
   if (!Signature)
     return LogErrorExpression(
         ("Unknown method '" + MethodName + "' on '" + ClassName + "'").c_str());
 
-  getNextToken(); // eat '('
   vector<unique_ptr<ExpressionNode>> Arguments;
-  // implicit self: pass receiver address
-  if (auto *Var = dynamic_cast<NameExpressionNode *>(Receiver.get())) {
-    Arguments.push_back(make_unique<AddrExpressionNode>(
-        Var->getName(), vector<string>{},
-        EncodePointerType(ValueType::Struct, Var->getStructName())));
-  } else if (auto *Field = dynamic_cast<FieldExpressionNode *>(Receiver.get())) {
-    // FieldExpressionNode always models an lvalue rooted at a base variable name.
-    const string *BaseName = Field->getLValueName();
-    if (!BaseName)
-      return LogErrorExpression("Method call base must be an lvalue");
-    Arguments.push_back(make_unique<AddrExpressionNode>(
-        *BaseName, Field->getFieldPath(),
-        EncodePointerType(ValueType::Struct, Field->getStructName())));
-  } else {
-    return LogErrorExpression("Method call base must be an lvalue");
-  }
+  Arguments.push_back(make_unique<AddrExpressionNode>(
+      std::move(Receiver), EncodePointerType(ValueType::Struct, ClassName)));
+
+  getNextToken(); // eat '('
   if (CurrentToken != tok_rparen) {
-    size_t ArgIndex = 1; // skip implicit self
+    size_t ParameterIndex = 1; // parameter zero is implicit self
     while (true) {
-      ValueType Expected = ValueType::Error;
-      string ExpectedStructName;
-      if (ArgIndex < Signature->getNumParameters()) {
-        Expected = Signature->getParameterType(ArgIndex);
-        ExpectedStructName = Signature->getParameterStructName(ArgIndex);
+      ValueType ExpectedType = ValueType::Error;
+      string ExpectedTypeInfo;
+      if (ParameterIndex < Signature->getNumParameters()) {
+        ExpectedType = Signature->getParameterType(ParameterIndex);
+        ExpectedTypeInfo =
+            Signature->getParameterStructName(ParameterIndex);
       }
-      ExpectedLiteralTypeGuard Guard(Expected, ExpectedStructName);
-      auto Arg = ParseExpression();
-      if (!Arg)
+      ExpectedLiteralTypeGuard Guard(ExpectedType, ExpectedTypeInfo);
+      auto Argument = ParseExpression();
+      if (!Argument)
         return nullptr;
-      Arguments.push_back(std::move(Arg));
+      Arguments.push_back(std::move(Argument));
       if (CurrentToken == tok_rparen)
         break;
       if (CurrentToken != tok_comma)
         return LogErrorExpression("Expected ')' or ',' in argument list");
       getNextToken(); // eat ','
-      ++ArgIndex;
+      ++ParameterIndex;
     }
   }
   getNextToken(); // eat ')'
 
   if (Arguments.size() != Signature->getNumParameters())
     return LogErrorExpression("Incorrect # arguments passed");
-  for (size_t I = 0; I < Arguments.size(); ++I) {
-    ValueType ArgType = Arguments[I]->getType();
-    ValueType ParamType = Signature->getParameterType(I);
-    if (ParamType == ValueType::Pointer && ArgType == ValueType::Array) {
-      if (!ArrayDecaysToPointerType(Arguments[I]->getStructName(),
-                                    Signature->getParameterStructName(I)))
-        return LogErrorExpression("Argument type mismatch");
-      continue;
-    }
-    if (!IsAssignable(ParamType, ArgType))
+  for (size_t Index = 0; Index < Arguments.size(); ++Index) {
+    ValueType ParameterType = Signature->getParameterType(Index);
+    if (!IsAssignable(ParameterType, Arguments[Index]->getType()))
       return LogErrorExpression("Argument type mismatch");
-    if ((ParamType == ValueType::Pointer || ParamType == ValueType::Struct ||
-         ParamType == ValueType::Array) &&
-        Signature->getParameterStructName(I) != Arguments[I]->getStructName())
+    if ((ParameterType == ValueType::Struct ||
+         ParameterType == ValueType::Pointer) &&
+        Signature->getParameterStructName(Index) !=
+            Arguments[Index]->getStructName())
       return LogErrorExpression("Argument type mismatch");
   }
 
-  return make_unique<CallExpressionNode>(CalleeName, std::move(Arguments),
-                                  Signature->getReturnType(),
-                                  Signature->getReturnStructName());
+  return make_unique<CallExpressionNode>(
+      CalleeName, std::move(Arguments), Signature->getReturnType(),
+      Signature->getReturnStructName());
 }
 
-static unique_ptr<FieldExpressionNode> ParseFieldAccessExpression(string BaseName,
-                                                     ValueType BaseType,
-                                                     string BaseStructName) {
-  vector<string> Path;
-  ValueType CurType = BaseType;
-  string CurStruct = std::move(BaseStructName);
-  while (CurrentToken == tok_dot) {
-    getNextToken(); // eat '.'
-    if (CurrentToken != tok_name) {
-      LogErrorExpression("Expected field name after '.'");
-      return nullptr;
-    }
-    string Field = Name;
-    getNextToken(); // eat field name
-    if (CurType == ValueType::Pointer) {
-      ValueType PointeeType = ValueType::Error;
-      string PointeeStruct;
-      if (!DecodePointerType(CurStruct, PointeeType, PointeeStruct) ||
-          PointeeType != ValueType::Struct)
-        return LogErrorExpression("Field access requires a struct value"), nullptr;
-      CurType = ValueType::Struct;
-      CurStruct = PointeeStruct;
-    }
-    if (CurType != ValueType::Struct || CurStruct.empty()) {
-      LogErrorExpression("Field access requires a struct value");
-      return nullptr;
-    }
-    auto SI = StructTypes.find(CurStruct);
-    if (SI == StructTypes.end()) {
-      LogErrorExpression("Unknown struct type in field access");
-      return nullptr;
-    }
-    auto FI = SI->second.FieldIndex.find(Field);
-    if (FI == SI->second.FieldIndex.end()) {
-      LogErrorExpression(("Unknown field '" + Field + "' on struct '" + CurStruct + "'")
-                   .c_str());
-      return nullptr;
-    }
-    const auto &FD = SI->second.Fields[FI->second];
-    if (!CanAccessClassMember(CurStruct, FD.IsPublic)) {
-      LogErrorExpression(
-          ("Field '" + Field + "' is private on '" + CurStruct + "'").c_str());
-      return nullptr;
-    }
-    CurType = FD.Type;
-    CurStruct = FD.StructName;
-    Path.push_back(Field);
-  }
-  return make_unique<FieldExpressionNode>(std::move(BaseName), std::move(Path),
-                                   CurType, CurStruct);
+static unique_ptr<ExpressionNode> ParseAddrExpression() {
+  getNextToken(); // eat 'addr'
+  if (CurrentToken != tok_lparen)
+    return LogErrorExpression("Expected '(' after addr");
+  getNextToken(); // eat '('
+  if (CurrentToken != tok_name)
+    return LogErrorExpression("addr expects an lvalue");
+
+  string ParsedName = Name;
+  getNextToken(); // eat name
+  auto Operand = ParseNameExpressionWithName(ParsedName);
+  if (!Operand || !Operand->isLValue())
+    return LogErrorExpression("addr expects an lvalue");
+  if (CurrentToken != tok_rparen)
+    return LogErrorExpression("Expected ')' after addr operand");
+  getNextToken(); // eat ')'
+
+  string PointerTypeInfo =
+      EncodePointerType(Operand->getType(), Operand->getStructName());
+  return make_unique<AddrExpressionNode>(std::move(Operand), PointerTypeInfo);
 }
 
-static unique_ptr<FieldExpressionNode>
-ParseFieldAccessFromFirstMember(string BaseName, ValueType BaseType,
-                                string BaseStructName,
-                                const string &FirstMember) {
-  vector<string> Path;
-  ValueType CurType = BaseType;
-  string CurStruct = std::move(BaseStructName);
-  auto ConsumeField = [&](const string &Field) -> bool {
-    if (CurType == ValueType::Pointer) {
-      ValueType PointeeType = ValueType::Error;
-      string PointeeStruct;
-      if (!DecodePointerType(CurStruct, PointeeType, PointeeStruct) ||
-          PointeeType != ValueType::Struct) {
-        LogErrorExpression("Field access requires a struct value");
-        return false;
-      }
-      CurType = ValueType::Struct;
-      CurStruct = PointeeStruct;
-    }
-    if (CurType != ValueType::Struct || CurStruct.empty()) {
-      LogErrorExpression("Field access requires a struct value");
-      return false;
-    }
-    auto SI = StructTypes.find(CurStruct);
-    if (SI == StructTypes.end()) {
-      LogErrorExpression("Unknown struct type in field access");
-      return false;
-    }
-    auto FI = SI->second.FieldIndex.find(Field);
-    if (FI == SI->second.FieldIndex.end()) {
-      LogErrorExpression(("Unknown field '" + Field + "' on struct '" + CurStruct + "'")
-                   .c_str());
-      return false;
-    }
-    const auto &FD = SI->second.Fields[FI->second];
-    if (!CanAccessClassMember(CurStruct, FD.IsPublic)) {
-      LogErrorExpression(
-          ("Field '" + Field + "' is private on '" + CurStruct + "'").c_str());
-      return false;
-    }
-    CurType = FD.Type;
-    CurStruct = FD.StructName;
-    Path.push_back(Field);
-    return true;
-  };
+static unique_ptr<ExpressionNode> ParseArrayLiteralExpression() {
+  if (ExpectedLiteralType != ValueType::Array)
+    return LogErrorExpression("Array literal requires an expected array type");
 
-  if (!ConsumeField(FirstMember))
-    return nullptr;
-  while (CurrentToken == tok_dot) {
-    getNextToken(); // eat '.'
-    if (CurrentToken != tok_name) {
-      LogErrorExpression("Expected field name after '.'");
-      return nullptr;
-    }
-    string Field = Name;
-    getNextToken(); // eat field
-    if (!ConsumeField(Field))
-      return nullptr;
-  }
-  return make_unique<FieldExpressionNode>(std::move(BaseName), std::move(Path),
-                                   CurType, CurStruct);
-}
+  ValueType ElementType = ValueType::Error;
+  string ElementStructName;
+  uint64_t ExpectedCount = 0;
+  if (!DecodeArrayType(ExpectedLiteralTypeInfo, ElementType,
+                       ElementStructName, ExpectedCount))
+    return LogErrorExpression("Invalid expected array type");
 
-static unique_ptr<ExpressionNode> ParseIndexExpression(string BaseName,
-                                          vector<string> FieldPath,
-                                          ValueType BaseType,
-                                          const string &BaseStructName) {
-  if (BaseType != ValueType::Pointer && BaseType != ValueType::Array)
-    return LogErrorExpression("Indexing requires a pointer or array value");
   getNextToken(); // eat '['
-  auto Index = ParseExpression();
-  if (!Index)
-    return nullptr;
-  if (!IsIntType(Index->getType()))
-    return LogErrorExpression("Index must be an integer");
+  vector<unique_ptr<ExpressionNode>> Elements;
+  if (CurrentToken != tok_rbracket) {
+    while (true) {
+      ExpectedLiteralTypeGuard Guard(ElementType, ElementStructName);
+      auto Element = ParseExpression();
+      if (!Element)
+        return nullptr;
+      if (!IsAssignable(ElementType, Element->getType()) ||
+          ((ElementType == ValueType::Struct ||
+            ElementType == ValueType::Pointer) &&
+           ElementStructName != Element->getStructName()))
+        return LogErrorExpression("Array literal element type mismatch");
+      Elements.push_back(std::move(Element));
+      if (CurrentToken != tok_comma)
+        break;
+      getNextToken(); // eat ','
+    }
+  }
   if (CurrentToken != tok_rbracket)
-    return LogErrorExpression("Expected ']' after index expression");
+    return LogErrorExpression("Expected ']' after array literal");
   getNextToken(); // eat ']'
-  ValueType ElemType = ValueType::Error;
-  string ElemStruct;
-  if (BaseType == ValueType::Pointer) {
-    if (!DecodePointerType(BaseStructName, ElemType, ElemStruct))
-      return LogErrorExpression("Invalid pointer type metadata");
-  } else {
-    uint64_t Count = 0;
-    if (!DecodeArrayType(BaseStructName, ElemType, ElemStruct, Count))
-      return LogErrorExpression("Invalid array type metadata");
-  }
-  return make_unique<IndexExpressionNode>(std::move(BaseName), std::move(FieldPath),
-                                   std::move(Index), ElemType, ElemStruct);
-}
-
-static unique_ptr<ExpressionNode>
-ParseIndexedFieldAccessExpression(unique_ptr<IndexExpressionNode> BaseIndex) {
-  ValueType CurType = BaseIndex->getType();
-  string CurStruct = BaseIndex->getStructName();
-  vector<string> Path;
-  while (CurrentToken == tok_dot) {
-    getNextToken(); // eat '.'
-    if (CurrentToken != tok_name)
-      return LogErrorExpression("Expected field name after '.'");
-    string Field = Name;
-    getNextToken(); // eat field
-    if (CurType != ValueType::Struct || CurStruct.empty())
-      return LogErrorExpression("Field access requires a struct value");
-    auto SI = StructTypes.find(CurStruct);
-    if (SI == StructTypes.end())
-      return LogErrorExpression("Unknown struct type in field access");
-    auto FI = SI->second.FieldIndex.find(Field);
-    if (FI == SI->second.FieldIndex.end())
-      return LogErrorExpression(
-          ("Unknown field '" + Field + "' on struct '" + CurStruct + "'")
-              .c_str());
-    const auto &FD = SI->second.Fields[FI->second];
-    CurType = FD.Type;
-    CurStruct = FD.StructName;
-    Path.push_back(Field);
-  }
-  return make_unique<IndexedFieldExpressionNode>(std::move(BaseIndex), std::move(Path),
-                                          CurType, CurStruct);
+  if (Elements.size() != ExpectedCount)
+    return LogErrorExpression("Array literal element count mismatch");
+  return make_unique<ArrayLiteralExpressionNode>(
+      std::move(Elements), ExpectedLiteralTypeInfo);
 }
 
 static unique_ptr<ExpressionNode> ParseNameExpression() {
@@ -3021,55 +2919,7 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
 
   getNextToken(); // eat name.
 
-  auto Base = ParseNameExpressionWithName(ParsedName);
-  if (!Base)
-    return nullptr;
-
-  if (CurrentToken == tok_dot) {
-    getNextToken(); // eat '.'
-    if (CurrentToken != tok_name)
-      return LogErrorExpression("Expected field or method name after '.'");
-    string MemberName = Name;
-    getNextToken(); // eat member name
-    if (CurrentToken == tok_lparen) {
-      Base = ParseMethodCallExpression(std::move(Base), MemberName);
-      if (!Base)
-        return nullptr;
-    } else {
-      auto *Var = dynamic_cast<NameExpressionNode *>(Base.get());
-      if (!Var)
-        return LogErrorExpression("Field access base must be a variable");
-      auto Field = ParseFieldAccessFromFirstMember(
-          Var->getName(), Var->getType(), Var->getStructName(), MemberName);
-      if (!Field)
-        return LogErrorExpression("Invalid field access");
-      Base = std::move(Field);
-    }
-  }
-  if (CurrentToken == tok_lbracket) {
-    if (auto *Var = dynamic_cast<NameExpressionNode *>(Base.get())) {
-      Base = ParseIndexExpression(Var->getName(), {}, Var->getType(),
-                            Var->getStructName());
-    } else if (auto *Field = dynamic_cast<FieldExpressionNode *>(Base.get())) {
-      Base = ParseIndexExpression(*Field->getLValueName(), Field->getFieldPath(),
-                            Field->getType(), Field->getStructName());
-    } else {
-      return LogErrorExpression("Indexing requires a pointer or array value");
-    }
-    if (!Base)
-      return nullptr;
-  }
-  if (CurrentToken == tok_dot) {
-    auto *Idx = dynamic_cast<IndexExpressionNode *>(Base.get());
-    if (!Idx)
-      return LogErrorExpression("Field access base must be a struct value");
-    auto Owned = std::unique_ptr<IndexExpressionNode>(Idx);
-    Base.release();
-    Base = ParseIndexedFieldAccessExpression(std::move(Owned));
-    if (!Base)
-      return nullptr;
-  }
-  return Base;
+  return ParseNameExpressionWithName(ParsedName);
 }
 
 // ParseForParts - Parse the "= start, cond, step : suite" tail of a for-loop.
@@ -3115,6 +2965,7 @@ static bool ParseForParts(ValueType VarType, unique_ptr<ExpressionNode> &Start,
   getNextToken(); // eat ':'
 
   // Parse the suite after ':' (inline statement or indented block).
+  ParseLoopGuard Loop;
   Body = ParseSuite();
   if (!Body)
     return false;
@@ -3122,7 +2973,8 @@ static bool ParseForParts(ValueType VarType, unique_ptr<ExpressionNode> &Start,
   return true;
 }
 
-/// forstmt  = "for"
+/// for-statement
+///   = "for"
 ///            ("var" name ":" type | name)
 ///            "=" expression "," expression "," expression ":" suite;
 ///
@@ -3166,7 +3018,6 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
   }
 
   unique_ptr<ExpressionNode> Start, Cond, Step, Body;
-  ParseLoopGuard LoopGuard;
 
   if (IsVarDecl) {
     LoopScopeGuard LoopScope(VarName, VarType);
@@ -3176,95 +3027,113 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
     if (!ParseForParts(VarType, Start, Cond, Step, Body))
       return nullptr;
   }
-  return make_unique<ForExpressionNode>(VarName, IsVarDecl, VarType, std::move(Start),
+  return make_unique<ForStatementNode>(VarName, IsVarDecl, VarType, std::move(Start),
                                  std::move(Cond), std::move(Step),
                                  std::move(Body));
 }
 
-/// whilestmt = "while" expression ":" suite ;
+/// while-statement
+///   = "while" expression ":" suite ;
 static unique_ptr<ExpressionNode> ParseWhileStatement() {
   getNextToken(); // eat 'while'
   auto Cond = ParseExpression();
   if (!Cond)
     return nullptr;
   if (Cond->getType() != ValueType::Bool)
-    return LogErrorExpression("While loop condition must be bool");
+    return LogErrorExpression("While condition must be bool");
   if (CurrentToken != tok_colon)
     return LogErrorExpression("Expected ':' after while condition");
   getNextToken(); // eat ':'
-  ParseLoopGuard LoopGuard;
+
+  ParseLoopGuard Loop;
   auto Body = ParseSuite();
   if (!Body)
     return nullptr;
-  return make_unique<WhileExpressionNode>(std::move(Cond), std::move(Body),
-                                   /*IsDoWhile=*/false);
+  return make_unique<WhileStatementNode>(std::move(Cond), std::move(Body),
+                                         false);
 }
 
-/// dowhilestmt = "do" ":" suite end-of-lines "while" expression ;
+/// do-while-statement
+///   = "do" ":" suite [ end-of-lines ] "while" expression ;
 static unique_ptr<ExpressionNode> ParseDoWhileStatement() {
   getNextToken(); // eat 'do'
   if (CurrentToken != tok_colon)
     return LogErrorExpression("Expected ':' after 'do'");
   getNextToken(); // eat ':'
-  ParseLoopGuard LoopGuard;
+
+  ParseLoopGuard Loop;
   auto Body = ParseSuite();
   if (!Body)
     return nullptr;
+
   if (CurrentToken == tok_block_end)
     getNextToken();
   if (CurrentToken == tok_eol)
     consumeNewlines();
   if (CurrentToken != tok_while)
-    return LogErrorExpression("Expected 'while' after do-body");
+    return LogErrorExpression("Expected 'while' after do body");
   getNextToken(); // eat 'while'
+
   auto Cond = ParseExpression();
   if (!Cond)
     return nullptr;
   if (Cond->getType() != ValueType::Bool)
-    return LogErrorExpression("Do-while condition must be bool");
-  return make_unique<WhileExpressionNode>(std::move(Cond), std::move(Body),
-                                   /*IsDoWhile=*/true);
+    return LogErrorExpression("Do/while condition must be bool");
+  return make_unique<WhileStatementNode>(std::move(Cond), std::move(Body), true);
 }
 
-static bool ParseSwitchCaseValue(int64_t &Out) {
-  bool Neg = false;
+static bool ParseSwitchCaseValue(int64_t &Value) {
+  bool Negative = false;
   if (CurrentToken == tok_minus) {
-    Neg = true;
+    Negative = true;
     getNextToken();
   }
-  uint64_t Raw = 0;
-  if (CurrentToken == tok_char) {
-    // Character literals ('a', '\n', ...) are valid case values too — they
-    // are just integer constants under the hood (see CharLiteralValue).
-    Raw = static_cast<uint64_t>(CharLiteralValue);
-    getNextToken(); // eat character literal
-  } else if (CurrentToken == tok_number && !NumberIsFloat) {
-    if (!ParseUnsignedDecimal(NumberLiteral, Raw))
-      return LogErrorExpression("Invalid switch case value"), false;
-    getNextToken(); // eat number
-  } else {
-    return LogErrorExpression(
-               "Switch case value must be an integer or character literal"),
-           false;
+  if (CurrentToken != tok_number || NumberIsFloat) {
+    LogErrorExpression("Switch case value must be an integer literal");
+    return false;
   }
-  if (Neg) {
-    if (Raw > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1ULL)
-      return LogErrorExpression("Switch case value out of range"), false;
-    Out = static_cast<int64_t>(0) - static_cast<int64_t>(Raw);
+
+  uint64_t Magnitude = 0;
+  for (char Digit : NumberLiteral) {
+    unsigned ValueOfDigit = static_cast<unsigned>(Digit - '0');
+    if (Magnitude >
+        (std::numeric_limits<uint64_t>::max() - ValueOfDigit) / 10) {
+      LogErrorExpression("Switch case value out of range");
+      return false;
+    }
+    Magnitude = Magnitude * 10 + ValueOfDigit;
+  }
+  getNextToken(); // eat integer
+
+  uint64_t NegativeLimit =
+      static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1;
+  if (Negative) {
+    if (Magnitude > NegativeLimit) {
+      LogErrorExpression("Switch case value out of range");
+      return false;
+    }
+    Value = Magnitude == NegativeLimit
+                ? std::numeric_limits<int64_t>::min()
+                : -static_cast<int64_t>(Magnitude);
   } else {
-    if (Raw > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return LogErrorExpression("Switch case value out of range"), false;
-    Out = static_cast<int64_t>(Raw);
+    if (Magnitude >
+        static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+      LogErrorExpression("Switch case value out of range");
+      return false;
+    }
+    Value = static_cast<int64_t>(Magnitude);
   }
   return true;
 }
 
+/// switch-statement
+///   = "switch" expression ":" end-of-lines indent switch-body dedent ;
 static unique_ptr<ExpressionNode> ParseSwitchStatement() {
   getNextToken(); // eat 'switch'
-  auto Cond = ParseExpression();
-  if (!Cond)
+  auto Condition = ParseExpression();
+  if (!Condition)
     return nullptr;
-  if (!IsIntType(Cond->getType()))
+  if (!IsIntType(Condition->getType()))
     return LogErrorExpression("Switch condition must be an integer type");
   if (CurrentToken != tok_colon)
     return LogErrorExpression("Expected ':' after switch expression");
@@ -3275,27 +3144,27 @@ static unique_ptr<ExpressionNode> ParseSwitchStatement() {
     return LogErrorExpression("Expected an indented switch body");
   getNextToken(); // eat INDENT
 
-  ParseSwitchGuard SwitchGuard;
+  ParseSwitchGuard Switch;
   vector<pair<vector<int64_t>, unique_ptr<ExpressionNode>>> Cases;
-  std::set<int64_t> SeenCaseValues;
+  set<int64_t> SeenValues;
   unique_ptr<ExpressionNode> DefaultCase;
 
   while (CurrentToken != tok_dedent && CurrentToken != tok_eof) {
     if (CurrentToken == tok_case) {
+      if (DefaultCase)
+        return LogErrorExpression("Case cannot follow default");
       getNextToken(); // eat 'case'
-      // A case may list several comma-separated values that all share the
-      // body that follows, e.g. "case 'a', 'e', 'i', 'o', 'u':".
-      vector<int64_t> CaseVals;
+      vector<int64_t> Values;
       while (true) {
-        int64_t CaseVal = 0;
-        if (!ParseSwitchCaseValue(CaseVal))
+        int64_t Value = 0;
+        if (!ParseSwitchCaseValue(Value))
           return nullptr;
-        if (!SeenCaseValues.insert(CaseVal).second)
+        if (!SeenValues.insert(Value).second)
           return LogErrorExpression("Duplicate switch case value");
-        CaseVals.push_back(CaseVal);
+        Values.push_back(Value);
         if (CurrentToken != tok_comma)
           break;
-        getNextToken(); // eat ',' and parse the next case value
+        getNextToken(); // eat ','
       }
       if (CurrentToken != tok_colon)
         return LogErrorExpression("Expected ':' after case value");
@@ -3303,7 +3172,7 @@ static unique_ptr<ExpressionNode> ParseSwitchStatement() {
       auto Body = ParseSuite();
       if (!Body)
         return nullptr;
-      Cases.emplace_back(std::move(CaseVals), std::move(Body));
+      Cases.emplace_back(std::move(Values), std::move(Body));
     } else if (CurrentToken == tok_default) {
       if (DefaultCase)
         return LogErrorExpression("Duplicate default case");
@@ -3317,23 +3186,25 @@ static unique_ptr<ExpressionNode> ParseSwitchStatement() {
     } else {
       return LogErrorExpression("Expected 'case' or 'default' in switch body");
     }
+
     if (CurrentToken == tok_block_end)
       getNextToken();
     if (CurrentToken == tok_eol)
       consumeNewlines();
   }
+
   if (CurrentToken != tok_dedent)
     return LogErrorExpression("Expected dedent after switch body");
   PendingTokens.push_front(tok_block_end);
-  getNextToken(); // eat DEDENT, then surface tok_block_end
-  return make_unique<SwitchExpressionNode>(std::move(Cond), std::move(Cases),
-                                    std::move(DefaultCase));
+  getNextToken(); // eat DEDENT, then surface block-end
+  return make_unique<SwitchStatementNode>(
+      std::move(Condition), std::move(Cases), std::move(DefaultCase));
 }
 
-/// varstmt
-///   = "var" varbinding { "," varbinding } ;
+/// variable-statement
+///   = "var" variable-binding { "," variable-binding } ;
 ///
-/// varbinding
+/// variable-binding
 ///   = name ":" type [ "=" expression ] ;
 static unique_ptr<ExpressionNode> ParseVarStatement() {
   getNextToken(); // eat 'var'
@@ -3378,31 +3249,32 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
       Init = ParseExpression();
       if (!Init)
         return nullptr;
-      bool ExactArrayInit =
-          (DeclType == ValueType::Array &&
-           Init->getType() == ValueType::Array &&
-           DeclStructName == Init->getStructName() &&
-           dynamic_cast<ArrayLiteralExpressionNode *>(Init.get()) != nullptr);
-      if (!ExactArrayInit && !IsAssignable(DeclType, Init->getType()))
+      bool DecaysToPointer =
+          DeclType == ValueType::Pointer &&
+          Init->getType() == ValueType::Array &&
+          ArrayDecaysToPointerType(Init->getStructName(), DeclStructName);
+      if (!IsAssignable(DeclType, Init->getType()) && !DecaysToPointer)
         return LogErrorExpression("Type mismatch in variable initialization");
-      if ((DeclType == ValueType::Pointer || DeclType == ValueType::Array) &&
-          DeclStructName != Init->getStructName() && !ExactArrayInit)
+      if ((DeclType == ValueType::Struct || DeclType == ValueType::Pointer ||
+           DeclType == ValueType::Array) &&
+          !DecaysToPointer && DeclStructName != Init->getStructName())
         return LogErrorExpression("Type mismatch in variable initialization");
     } else {
-      if (DeclType != ValueType::Struct && DeclType != ValueType::Array) {
+      if (DeclType != ValueType::Struct && DeclType != ValueType::Pointer &&
+          DeclType != ValueType::Array) {
         Init = MakeZeroLiteral(DeclType);
         if (!Init)
           return nullptr;
       }
     }
 
-    VarNames.push_back({ParsedName, DeclType, DeclStructName, std::move(Init)});
+    VarNames.push_back(
+        {ParsedName, DeclType, DeclStructName, std::move(Init)});
     if (IsGlobalDecl) {
       GlobalVarTypes[ParsedName] = DeclType;
+      if (!DeclStructName.empty())
+        GlobalVarStructNames[ParsedName] = DeclStructName;
       GlobalVarDecls.insert(ParsedName);
-      if (DeclType == ValueType::Struct || DeclType == ValueType::Pointer ||
-          DeclType == ValueType::Array)
-        GlobalVarStructTypes[ParsedName] = DeclStructName;
     } else {
       DeclareVar(ParsedName, DeclType, DeclStructName);
     }
@@ -3415,22 +3287,22 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
   return make_unique<VarStatementNode>(std::move(VarNames));
 }
 
-/// ifstmt
+/// if-statement
 ///   = "if" expression ":" suite
-///     { end-of-lines "elif" expression ":" suite }
-///     [ end-of-lines "else" ":" suite ] ;
+///     { [ end-of-lines ] "elif" expression ":" suite }
+///     [ [ end-of-lines ] "else" ":" suite ] ;
 static unique_ptr<ExpressionNode> ParseIfStatement() {
   getNextToken(); // eat 'if'
   vector<pair<unique_ptr<ExpressionNode>, unique_ptr<ExpressionNode>>> Branches;
   bool LastBranchWasBlock = false;
+  bool LastBranchHadTrailingEndOfLine = false;
 
   while (true) {
-    auto Cond = ParseExpression();
-    if (!Cond)
+    auto Condition = ParseExpression();
+    if (!Condition)
       return nullptr;
-    if (Cond->getType() != ValueType::Bool)
+    if (Condition->getType() != ValueType::Bool)
       return LogErrorExpression("If condition must be bool");
-
     if (CurrentToken != tok_colon)
       return LogErrorExpression("Expected ':' after if/elif condition");
     getNextToken(); // eat ':'
@@ -3438,12 +3310,13 @@ static unique_ptr<ExpressionNode> ParseIfStatement() {
     auto Body = ParseSuite();
     if (!Body)
       return nullptr;
-    LastBranchWasBlock = (CurrentToken == tok_block_end);
+    LastBranchWasBlock = CurrentToken == tok_block_end;
     if (LastBranchWasBlock)
       getNextToken();
-    Branches.push_back({std::move(Cond), std::move(Body)});
-
+    LastBranchHadTrailingEndOfLine = CurrentToken == tok_eol;
+    Branches.push_back({std::move(Condition), std::move(Body)});
     consumeNewlines();
+
     if (CurrentToken != tok_elif)
       break;
     getNextToken(); // eat 'elif'
@@ -3459,22 +3332,23 @@ static unique_ptr<ExpressionNode> ParseIfStatement() {
     if (!Else)
       return nullptr;
   } else if (LastBranchWasBlock) {
-    // No else: restore the synthetic separator for the enclosing block/top level.
     PendingTokens.push_front(CurrentToken);
     CurrentToken = tok_block_end;
+  } else if (LastBranchHadTrailingEndOfLine) {
+    PendingTokens.push_front(CurrentToken);
+    CurrentToken = tok_eol;
   }
 
-  // Lower if/elif chain to nested IfStatementNode in else branch.
   unique_ptr<ExpressionNode> Tree = std::move(Else);
   for (auto It = Branches.rbegin(); It != Branches.rend(); ++It) {
-    Tree = make_unique<IfStatementNode>(std::move(It->first), std::move(It->second),
-                                  std::move(Tree));
+    Tree = make_unique<IfStatementNode>(std::move(It->first),
+                                        std::move(It->second), std::move(Tree));
   }
   return Tree;
 }
 
 static unique_ptr<ExpressionNode>
-ParseUnary(); // forward declaration for ParseUnaryMinus
+ParseUnaryExpression(); // forward declaration for ParseUnaryMinus
 
 static bool IsIntType(ValueType Type);
 static bool IsUnsignedIntType(ValueType Type);
@@ -3499,13 +3373,23 @@ static bool IsComparisonOp(int Operator) {
          Operator == tok_leq || Operator == tok_geq;
 }
 
-static bool IsLogicalOp(int Operator) { return Operator == tok_and || Operator == tok_or; }
+static bool IsLogicalOp(int Operator) {
+  return Operator == tok_and || Operator == tok_or;
+}
 
-static bool IsBitwiseOp(int Operator) { return Operator == tok_ampersand || Operator == tok_pipe || Operator == tok_caret; }
-static bool IsShiftOp(int Operator) { return Operator == tok_shl || Operator == tok_shr; }
+static bool IsBitwiseOp(int Operator) {
+  return Operator == tok_ampersand || Operator == tok_pipe ||
+         Operator == tok_caret;
+}
+
+static bool IsShiftOp(int Operator) {
+  return Operator == tok_shift_left || Operator == tok_shift_right;
+}
 
 static bool IsArithmeticOp(int Operator) {
-  return Operator == tok_plus || Operator == tok_minus || Operator == tok_star || Operator == tok_slash || Operator == tok_percent;
+  return Operator == tok_plus || Operator == tok_minus ||
+         Operator == tok_star || Operator == tok_slash ||
+         Operator == tok_percent;
 }
 
 // GetBinaryResultType decision table (Operator, L, R -> result)
@@ -3528,27 +3412,19 @@ static bool IsArithmeticOp(int Operator) {
 // allowed)
 // - otherwise                                  -> Error
 //
-// User-defined binary ops:
-// - float64 op float64                         -> float64
-// - otherwise                                  -> Error
-static ValueType GetBinaryResultType(int Operator, ValueType L, const string &LStruct,
-                                     ValueType R, const string &RStruct,
-                                     string *ResultStructName = nullptr) {
-  if (ResultStructName)
-    ResultStructName->clear();
+static ValueType GetBinaryResultType(int Operator, ValueType L,
+                                     const string &LTypeInfo, ValueType R,
+                                     const string &RTypeInfo) {
   if (IsArithmeticOp(Operator)) {
-    if ((Operator == tok_plus || Operator == tok_minus) &&
+    if (Operator == tok_plus &&
         ((L == ValueType::Pointer && IsIntType(R)) ||
-         (R == ValueType::Pointer && IsIntType(L)))) {
-      if (ResultStructName)
-        *ResultStructName = (L == ValueType::Pointer) ? LStruct : RStruct;
+         (R == ValueType::Pointer && IsIntType(L))))
       return ValueType::Pointer;
-    }
-    if (Operator == tok_minus && L == ValueType::Pointer && R == ValueType::Pointer &&
-        LStruct == RStruct)
+    if (Operator == tok_minus && L == ValueType::Pointer && IsIntType(R))
+      return ValueType::Pointer;
+    if (Operator == tok_minus && L == ValueType::Pointer &&
+        R == ValueType::Pointer && LTypeInfo == RTypeInfo)
       return ValueType::Int64;
-    if (Operator == tok_percent && (!IsIntType(L) || !IsIntType(R)))
-      return ValueType::Error;
     if (!IsNumericType(L) || !IsNumericType(R))
       return ValueType::Error;
     // float + float (float32/float64): widen to float64 if mixed.
@@ -3569,9 +3445,8 @@ static ValueType GetBinaryResultType(int Operator, ValueType L, const string &LS
     return ValueType::Error;
   }
   if (IsComparisonOp(Operator)) {
-    if (L == ValueType::Pointer && R == ValueType::Pointer &&
-        LStruct == RStruct)
-      return ValueType::Bool;
+    if (L == ValueType::Pointer && R == ValueType::Pointer)
+      return LTypeInfo == RTypeInfo ? ValueType::Bool : ValueType::Error;
     // bool ==/!= bool: allowed; other comparisons on bool are rejected.
     if (L == ValueType::Bool && R == ValueType::Bool) {
       if (Operator == tok_eq || Operator == tok_neq)
@@ -3615,14 +3490,15 @@ static ValueType GetBinaryResultType(int Operator, ValueType L, const string &LS
   return ValueType::Error;
 }
 
-/// unaryminus
-///   = "-" unaryexpr ;
+/// unary-expression
+///   = ("-" | "!" | "~" | "++" | "--") unary-expression
+///   | postfix-expression ;
 /// Parse built-in unary minus into a UnaryExpressionNode with opcode '-'.
-/// The operand is a full unaryexpr so unary chains work naturally
+/// The operand is a full unary expression so unary chains work naturally
 /// (e.g. -!x, --x, -(x+1)).
 static unique_ptr<ExpressionNode> ParseUnaryMinus() {
   getNextToken(); // eat '-'
-  auto Operand = ParseUnary();
+  auto Operand = ParseUnaryExpression();
   if (!Operand)
     return nullptr;
   if (!IsNumericType(Operand->getType()))
@@ -3630,40 +3506,9 @@ static unique_ptr<ExpressionNode> ParseUnaryMinus() {
   return make_unique<UnaryExpressionNode>(tok_minus, std::move(Operand), Operand->getType());
 }
 
-static bool IsIncDecAssignableExpr(const ExpressionNode *E) {
-  return dynamic_cast<const NameExpressionNode *>(E) ||
-         dynamic_cast<const FieldExpressionNode *>(E) ||
-         dynamic_cast<const IndexExpressionNode *>(E) ||
-         dynamic_cast<const IndexedFieldExpressionNode *>(E);
-}
-
-static unique_ptr<ExpressionNode> ParsePostfixIncDec(unique_ptr<ExpressionNode> Base) {
-  while (CurrentToken == tok_plusplus || CurrentToken == tok_minusminus) {
-    bool IsIncrement = (CurrentToken == tok_plusplus);
-    if (!IsIncDecAssignableExpr(Base.get()))
-      return LogErrorExpression("Increment/decrement target must be assignable");
-    if (!IsNumericType(Base->getType()) &&
-        Base->getType() != ValueType::Pointer)
-      return LogErrorExpression("Increment/decrement requires numeric or pointer type");
-    ValueType T = Base->getType();
-    string S = Base->getStructName();
-    getNextToken(); // eat ++/--
-    Base = make_unique<IncDecExpressionNode>(std::move(Base), IsIncrement,
-                                      /*IsPrefix=*/false, T, S);
-  }
-  return Base;
-}
-
 /// primary
 ///   = cast-expression
-///   | sizeof-expression
-///   | address-expression
-///   | array-literal
-///   | string-literal
-///   | character-literal
 ///   | name-expression
-///   | field-access
-///   | index-expression
 ///   | number-expression
 ///   | boolean-literal
 ///   | parenthesized-expression ;
@@ -3675,14 +3520,14 @@ static unique_ptr<ExpressionNode> ParsePrimary() {
     return ParseNameExpression();
   case tok_number:
     return ParseNumberExpression();
-  case tok_char:
-    return ParseCharExpression();
   case tok_string: {
-    string S = StringLiteralStr;
+    string Text = StringLiteralValue;
     getNextToken();
-    return make_unique<StringExpressionNode>(std::move(S),
-                                      EncodePointerType(ValueType::Int8, ""));
+    return make_unique<StringExpressionNode>(
+        std::move(Text), EncodePointerType(ValueType::Int8));
   }
+  case tok_character:
+    return ParseCharacterExpression();
   case tok_true:
     getNextToken();
     return make_unique<BoolExpressionNode>(true);
@@ -3706,78 +3551,102 @@ static unique_ptr<ExpressionNode> ParsePrimary() {
     return ParseCastExpression();
   case tok_sizeof:
     return ParseSizeofExpression();
-  case tok_lbracket:
-    return ParseArrayLiteralExpression();
   case tok_addr:
     return ParseAddrExpression();
+  case tok_lbracket:
+    return ParseArrayLiteralExpression();
   case tok_lparen:
     return ParseParenthesizedExpression();
   }
 }
 
+static unique_ptr<ExpressionNode> ParsePostfixExpression() {
+  auto Operand = ParsePrimary();
+  if (!Operand)
+    return nullptr;
+  if (CurrentToken != tok_plus_plus && CurrentToken != tok_minus_minus)
+    return Operand;
+  if (!Operand->isLValue())
+    return LogErrorExpression(
+        "Increment/decrement target must be assignable");
+  if (!IsNumericType(Operand->getType()) &&
+      Operand->getType() != ValueType::Pointer)
+    return LogErrorExpression(
+        "Increment/decrement requires numeric or pointer type");
+
+  bool IsIncrement = CurrentToken == tok_plus_plus;
+  ValueType Type = Operand->getType();
+  string TypeInfo = Operand->getStructName();
+  getNextToken(); // eat '++' or '--'
+  return make_unique<IncrementDecrementExpressionNode>(
+      std::move(Operand), IsIncrement, false, Type, TypeInfo);
+}
+
 /// unary-expression
-///   = built-in-unary-operator unary-expression | postfix-expression ;
-static unique_ptr<ExpressionNode> ParseUnary() {
-  if (CurrentToken == tok_plusplus || CurrentToken == tok_minusminus) {
-    bool IsIncrement = (CurrentToken == tok_plusplus);
-    getNextToken(); // eat ++/--
-    auto Operand = ParseUnary();
+///   = ("-" | "!" | "~" | "++" | "--") unary-expression
+///   | postfix-expression ;
+static unique_ptr<ExpressionNode> ParseUnaryExpression() {
+  if (CurrentToken == tok_plus_plus || CurrentToken == tok_minus_minus) {
+    bool IsIncrement = CurrentToken == tok_plus_plus;
+    getNextToken(); // eat '++' or '--'
+    auto Operand = ParseUnaryExpression();
     if (!Operand)
       return nullptr;
-    if (!IsIncDecAssignableExpr(Operand.get()))
-      return LogErrorExpression("Increment/decrement target must be assignable");
+    if (!Operand->isLValue())
+      return LogErrorExpression(
+          "Increment/decrement target must be assignable");
     if (!IsNumericType(Operand->getType()) &&
         Operand->getType() != ValueType::Pointer)
       return LogErrorExpression(
           "Increment/decrement requires numeric or pointer type");
-    ValueType OperandType = Operand->getType();
-    string OperandStructName = Operand->getStructName();
-    return make_unique<IncDecExpressionNode>(
-        std::move(Operand), IsIncrement, /*IsPrefix=*/true, OperandType,
-        OperandStructName);
+    ValueType Type = Operand->getType();
+    string TypeInfo = Operand->getStructName();
+    return make_unique<IncrementDecrementExpressionNode>(
+        std::move(Operand), IsIncrement, true, Type, TypeInfo);
   }
-
   if (CurrentToken == tok_minus)
     return ParseUnaryMinus();
-
+  if (CurrentToken == tok_exclamation) {
+    getNextToken(); // eat '!'
+    auto Operand = ParseUnaryExpression();
+    if (!Operand)
+      return nullptr;
+    if (Operand->getType() != ValueType::Bool)
+      return LogErrorExpression("Unary '!' requires a bool operand");
+    return make_unique<UnaryExpressionNode>(tok_exclamation,
+                                             std::move(Operand),
+                                             ValueType::Bool);
+  }
   if (CurrentToken == tok_tilde) {
     getNextToken(); // eat '~'
-    auto Operand = ParseUnary();
+    auto Operand = ParseUnaryExpression();
     if (!Operand)
       return nullptr;
     if (!IsIntType(Operand->getType()))
       return LogErrorExpression("Unary '~' requires an integer operand");
     ValueType OperandType = Operand->getType();
     return make_unique<UnaryExpressionNode>(tok_tilde, std::move(Operand),
-                                            OperandType);
+                                             OperandType);
   }
-
-  if (CurrentToken == tok_exclamation) {
-    getNextToken(); // eat '!'
-    auto Operand = ParseUnary();
-    if (!Operand)
-      return nullptr;
-    if (Operand->getType() != ValueType::Bool)
-      return LogErrorExpression("Unary '!' requires a bool operand");
-    return make_unique<LogicalNotExpressionNode>(std::move(Operand));
-  }
-
-  return ParsePostfixIncDec(ParsePrimary());
+  return ParsePostfixExpression();
 }
 
 static unique_ptr<ExpressionNode>
 MergeBinaryExpression(int Operator, unique_ptr<ExpressionNode> Left,
                       unique_ptr<ExpressionNode> Right) {
-  string ResultStructName;
   ValueType ResultType =
       GetBinaryResultType(Operator, Left->getType(), Left->getStructName(),
-                          Right->getType(), Right->getStructName(),
-                          &ResultStructName);
+                          Right->getType(), Right->getStructName());
   if (ResultType == ValueType::Error)
     return LogErrorExpression("Type mismatch in binary operator");
+  string ResultTypeInfo;
+  if (ResultType == ValueType::Pointer)
+    ResultTypeInfo = Left->getType() == ValueType::Pointer
+                         ? Left->getStructName()
+                         : Right->getStructName();
   return make_unique<BinaryExpressionNode>(
       Operator, std::move(Left), std::move(Right), ResultType,
-      ResultStructName);
+      ResultTypeInfo);
 }
 
 static unique_ptr<ExpressionNode>
@@ -3786,7 +3655,7 @@ ParseTermRight(unique_ptr<ExpressionNode> Left) {
          CurrentToken == tok_percent) {
     int Operator = CurrentToken;
     getNextToken();
-    auto Right = ParseUnary();
+    auto Right = ParseUnaryExpression();
     if (!Right)
       return nullptr;
     Left = MergeBinaryExpression(Operator, std::move(Left), std::move(Right));
@@ -3797,7 +3666,7 @@ ParseTermRight(unique_ptr<ExpressionNode> Left) {
 }
 
 static unique_ptr<ExpressionNode> ParseTerm() {
-  auto Left = ParseUnary();
+  auto Left = ParseUnaryExpression();
   if (!Left)
     return nullptr;
   return ParseTermRight(std::move(Left));
@@ -3827,7 +3696,7 @@ static unique_ptr<ExpressionNode> ParseSum() {
 
 static unique_ptr<ExpressionNode>
 ParseShiftRight(unique_ptr<ExpressionNode> Left) {
-  while (CurrentToken == tok_shl || CurrentToken == tok_shr) {
+  while (CurrentToken == tok_shift_left || CurrentToken == tok_shift_right) {
     int Operator = CurrentToken;
     getNextToken();
     auto Right = ParseSum();
@@ -4031,30 +3900,104 @@ ParseBinaryExpressionRight(unique_ptr<ExpressionNode> Left) {
   Left = ParseLogicalAndRight(std::move(Left));
   if (!Left)
     return nullptr;
-  Left = ParseLogicalOrRight(std::move(Left));
+  return ParseLogicalOrRight(std::move(Left));
+}
+
+static bool IsAssignmentOperator(int Token) {
+  return Token == tok_equal || Token == tok_plus_equal ||
+         Token == tok_minus_equal || Token == tok_star_equal ||
+         Token == tok_slash_equal || Token == tok_percent_equal;
+}
+
+static int AssignmentBinaryOperator(int Token) {
+  switch (Token) {
+  case tok_plus_equal:
+    return tok_plus;
+  case tok_minus_equal:
+    return tok_minus;
+  case tok_star_equal:
+    return tok_star;
+  case tok_slash_equal:
+    return tok_slash;
+  case tok_percent_equal:
+    return tok_percent;
+  default:
+    return 0;
+  }
+}
+
+/// assignment
+///   = logical-or [ assignment-operator assignment ] ;
+static unique_ptr<ExpressionNode> ParseAssignment() {
+  auto Left = ParseLogicalOr();
   if (!Left)
     return nullptr;
-  return Left;
+  if (!IsAssignmentOperator(CurrentToken))
+    return Left;
+  if (!Left->isLValue())
+    return LogErrorExpression("Assignment target must be assignable");
+
+  ValueType LeftType = Left->getType();
+  string LeftTypeInfo = Left->getStructName();
+  int AssignmentOperator = CurrentToken;
+  getNextToken(); // eat the assignment operator
+
+  ExpectedLiteralTypeGuard Guard(LeftType, LeftTypeInfo);
+  auto Right = ParseAssignment();
+  if (!Right)
+    return nullptr;
+
+  if (LeftType == ValueType::Array)
+    return LogErrorExpression("Type mismatch in assignment");
+
+  if (AssignmentOperator != tok_equal) {
+    int BinaryOperator = AssignmentBinaryOperator(AssignmentOperator);
+    ValueType ResultType =
+        GetBinaryResultType(BinaryOperator, LeftType, LeftTypeInfo,
+                            Right->getType(), Right->getStructName());
+    if (ResultType == ValueType::Error || !IsAssignable(LeftType, ResultType))
+      return LogErrorExpression("Type mismatch in assignment");
+    if (LeftType == ValueType::Pointer && ResultType != ValueType::Pointer)
+      return LogErrorExpression("Type mismatch in assignment");
+    return make_unique<CompoundAssignmentExpressionNode>(
+        std::move(Left), std::move(Right), BinaryOperator, LeftType,
+        LeftTypeInfo);
+  }
+
+  if (LeftType == ValueType::Pointer &&
+      Right->getType() == ValueType::Array) {
+    if (!ArrayDecaysToPointerType(Right->getStructName(), LeftTypeInfo))
+      return LogErrorExpression("Type mismatch in assignment");
+  } else {
+    if (!IsAssignable(LeftType, Right->getType()))
+      return LogErrorExpression("Type mismatch in assignment");
+    if ((LeftType == ValueType::Struct || LeftType == ValueType::Pointer) &&
+        LeftTypeInfo != Right->getStructName())
+      return LogErrorExpression("Type mismatch in assignment");
+  }
+
+  return make_unique<AssignmentExpressionNode>(
+      std::move(Left), std::move(Right), LeftType, LeftTypeInfo);
 }
 
 /// expression
-///   = logicalor ;
+///   = assignment ;
 static unique_ptr<ExpressionNode> ParseExpression() {
-  return ParseLogicalOr();
+  return ParseAssignment();
 }
 
-/// returnstmt
+/// return-statement
 ///   = "return" [ expression ] ;
 static unique_ptr<ExpressionNode> ParseReturnStatement() {
   getNextToken(); // eat 'return'
   if (CurrentToken == tok_eol || CurrentToken == tok_dedent || CurrentToken == tok_eof) {
     if (CurrentFunctionReturnType != ValueType::None)
       return LogErrorExpression("Return value required");
-    return make_unique<ReturnExpressionNode>(nullptr);
+    return make_unique<ReturnStatementNode>(nullptr);
   }
 
   ExpectedLiteralTypeGuard Guard(CurrentFunctionReturnType,
-                                 CurrentFunctionReturnStructName);
+                                  CurrentFunctionReturnStructName);
   auto Expr = ParseExpression();
   if (!Expr)
     return nullptr;
@@ -4066,311 +4009,30 @@ static unique_ptr<ExpressionNode> ParseReturnStatement() {
                      string(TypeName(CurrentFunctionReturnType)))
                         .c_str());
   }
-  return make_unique<ReturnExpressionNode>(std::move(Expr));
+  if ((CurrentFunctionReturnType == ValueType::Struct ||
+       CurrentFunctionReturnType == ValueType::Pointer) &&
+      CurrentFunctionReturnStructName != Expr->getStructName())
+    return LogErrorExpression("Return type mismatch");
+  return make_unique<ReturnStatementNode>(std::move(Expr));
 }
 
 static unique_ptr<ExpressionNode> ParseBreakStatement() {
   if (ParseLoopDepth <= 0 && ParseSwitchDepth <= 0)
     return LogErrorExpression("'break' used outside of a loop or switch");
-  getNextToken(); // eat 'break'
-  return make_unique<BreakExpressionNode>();
+  getNextToken();
+  return make_unique<BreakStatementNode>();
 }
 
 static unique_ptr<ExpressionNode> ParseContinueStatement() {
   if (ParseLoopDepth <= 0)
     return LogErrorExpression("'continue' used outside of a loop");
-  getNextToken(); // eat 'continue'
-  return make_unique<ContinueExpressionNode>();
+  getNextToken();
+  return make_unique<ContinueStatementNode>();
 }
 
-static unique_ptr<ExpressionNode> ParseAssignmentRight(const string &Name) {
-  if (!IsDeclaredVar(Name))
-    return LogErrorExpression("Assignment to undeclared variable");
-  ValueType VarType = LookupVarType(Name);
-  getNextToken(); // eat '='
-
-  ExpectedLiteralTypeGuard Guard(VarType, LookupVarStructName(Name));
-  auto Right = ParseExpression();
-  if (!Right)
-    return nullptr;
-  if (!IsAssignable(VarType, Right->getType()))
-    return LogErrorExpression("Type mismatch in assignment");
-  if (VarType == ValueType::Pointer &&
-      LookupVarStructName(Name) != Right->getStructName())
-    return LogErrorExpression("Type mismatch in assignment");
-  return make_unique<AssignmentExpressionNode>(Name, std::move(Right), VarType);
-}
-
-static bool IsCompoundAssignTok(int Tok) {
-  return Tok == tok_pluseq || Tok == tok_minuseq || Tok == tok_muleq ||
-         Tok == tok_diveq || Tok == tok_modeq;
-}
-
-static int CompoundAssignToBinaryOp(int Tok) {
-  switch (Tok) {
-  case tok_pluseq:
-    return tok_plus;
-  case tok_minuseq:
-    return tok_minus;
-  case tok_muleq:
-    return tok_star;
-  case tok_diveq:
-    return tok_slash;
-  case tok_modeq:
-    return tok_percent;
-  default:
-    return 0;
-  }
-}
-
-static unique_ptr<ExpressionNode> ParseCompoundAssignmentRight(const string &Name,
-                                                      int AssignTok) {
-  if (!IsDeclaredVar(Name))
-    return LogErrorExpression("Assignment to undeclared variable");
-  ValueType DestType = LookupVarType(Name);
-  string DestStruct = LookupVarStructName(Name);
-  int Operator = CompoundAssignToBinaryOp(AssignTok);
-  if (!Operator)
-    return LogErrorExpression("Unknown compound assignment operator");
-  getNextToken(); // eat compound assignment token
-  ExpectedLiteralTypeGuard Guard(DestType, DestStruct);
-  auto Right = ParseExpression();
-  if (!Right)
-    return nullptr;
-  string ResultStructName;
-  ValueType ResultType =
-      GetBinaryResultType(Operator, DestType, DestStruct, Right->getType(),
-                          Right->getStructName(), &ResultStructName);
-  if (ResultType == ValueType::Error)
-    return LogErrorExpression("Type mismatch in assignment");
-  if (!IsAssignable(DestType, ResultType))
-    return LogErrorExpression("Type mismatch in assignment");
-  if (DestType == ValueType::Pointer && DestStruct != ResultStructName)
-    return LogErrorExpression("Type mismatch in assignment");
-  return make_unique<CompoundAssignmentExpressionNode>(Name, Operator, std::move(Right),
-                                                DestType, DestStruct);
-}
-
-static unique_ptr<ExpressionNode>
-ParseFieldAssignmentRight(unique_ptr<FieldExpressionNode> Left) {
-  ValueType DestType = Left->getType();
-  getNextToken(); // eat '='
-  ExpectedLiteralTypeGuard Guard(DestType, Left->getStructName());
-  auto Right = ParseExpression();
-  if (!Right)
-    return nullptr;
-  if (!IsAssignable(DestType, Right->getType()))
-    return LogErrorExpression("Type mismatch in assignment");
-  if (DestType == ValueType::Pointer &&
-      Left->getStructName() != Right->getStructName())
-    return LogErrorExpression("Type mismatch in assignment");
-  return make_unique<FieldAssignmentExpressionNode>(std::move(Left), std::move(Right),
-                                             DestType);
-}
-
-static unique_ptr<ExpressionNode>
-ParseFieldCompoundAssignmentRight(unique_ptr<FieldExpressionNode> Left, int AssignTok) {
-  ValueType DestType = Left->getType();
-  string DestStruct = Left->getStructName();
-  int Operator = CompoundAssignToBinaryOp(AssignTok);
-  if (!Operator)
-    return LogErrorExpression("Unknown compound assignment operator");
-  getNextToken(); // eat compound assignment token
-  ExpectedLiteralTypeGuard Guard(DestType, DestStruct);
-  auto Right = ParseExpression();
-  if (!Right)
-    return nullptr;
-  string ResultStructName;
-  ValueType ResultType =
-      GetBinaryResultType(Operator, DestType, DestStruct, Right->getType(),
-                          Right->getStructName(), &ResultStructName);
-  if (ResultType == ValueType::Error)
-    return LogErrorExpression("Type mismatch in assignment");
-  if (!IsAssignable(DestType, ResultType))
-    return LogErrorExpression("Type mismatch in assignment");
-  if (DestType == ValueType::Pointer && DestStruct != ResultStructName)
-    return LogErrorExpression("Type mismatch in assignment");
-  return make_unique<FieldCompoundAssignmentExpressionNode>(
-      std::move(Left), Operator, std::move(Right), DestType, DestStruct);
-}
-
-/// simplestmt
-///   = returnstmt | varstmt | assignstmt | expression ;
-// Parse name-led forms in simplestmt:
-//   assignstmt   : name "=" expression
-//   expression   : name ...
-// and reject trailing assignment when the parsed Left is not assignable.
-static unique_ptr<ExpressionNode> ParseLeadingNameSimpleStatement() {
-  unique_ptr<ExpressionNode> Expr;
-    string ParsedName = Name;
-    getNextToken(); // eat name.
-
-    if (CurrentToken == tok_equal) {
-      return ParseAssignmentRight(ParsedName);
-    }
-    if (IsCompoundAssignTok(CurrentToken)) {
-      return ParseCompoundAssignmentRight(ParsedName, CurrentToken);
-    }
-
-    Expr = ParseNameExpressionWithName(std::move(ParsedName));
-    if (!Expr)
-      return nullptr;
-    if (CurrentToken == tok_dot) {
-      getNextToken(); // eat '.'
-      if (CurrentToken != tok_name)
-        return LogErrorExpression("Expected field or method name after '.'");
-      string MemberName = Name;
-      getNextToken(); // eat member name
-      if (CurrentToken == tok_lparen) {
-        Expr = ParseMethodCallExpression(std::move(Expr), MemberName);
-        if (!Expr)
-          return nullptr;
-      } else {
-        auto *Var = dynamic_cast<NameExpressionNode *>(Expr.get());
-        if (!Var)
-          return LogErrorExpression("Field access base must be a variable");
-        auto Field = ParseFieldAccessFromFirstMember(
-            Var->getName(), Var->getType(), Var->getStructName(), MemberName);
-        if (!Field)
-          return LogErrorExpression("Invalid field access");
-        Expr = std::move(Field);
-      }
-    }
-    if (CurrentToken == tok_lbracket) {
-      if (auto *Var = dynamic_cast<NameExpressionNode *>(Expr.get())) {
-        Expr = ParseIndexExpression(Var->getName(), {}, Var->getType(),
-                              Var->getStructName());
-      } else if (auto *Field = dynamic_cast<FieldExpressionNode *>(Expr.get())) {
-        Expr = ParseIndexExpression(*Field->getLValueName(), Field->getFieldPath(),
-                              Field->getType(), Field->getStructName());
-      } else {
-        return LogErrorExpression("Indexing requires a pointer or array value");
-      }
-      if (!Expr)
-        return nullptr;
-    }
-    if (CurrentToken == tok_dot) {
-      if (auto *Idx = dynamic_cast<IndexExpressionNode *>(Expr.get())) {
-        auto Owned = std::unique_ptr<IndexExpressionNode>(Idx);
-        Expr.release();
-        Expr = ParseIndexedFieldAccessExpression(std::move(Owned));
-      } else {
-        return LogErrorExpression("Field access base must be a struct value");
-      }
-      if (!Expr)
-        return nullptr;
-    }
-    Expr = ParsePostfixIncDec(std::move(Expr));
-    if (!Expr)
-      return nullptr;
-    Expr = ParseBinaryExpressionRight(std::move(Expr));
-    if (!Expr)
-      return nullptr;
-
-    if (CurrentToken != tok_equal && !IsCompoundAssignTok(CurrentToken))
-      return Expr;
-
-    if (auto *Field = dynamic_cast<FieldExpressionNode *>(Expr.get())) {
-      auto Owned = std::unique_ptr<FieldExpressionNode>(Field);
-      Expr.release();
-      if (CurrentToken == tok_equal)
-        return ParseFieldAssignmentRight(std::move(Owned));
-      return ParseFieldCompoundAssignmentRight(std::move(Owned), CurrentToken);
-    }
-    if (auto *Idx = dynamic_cast<IndexExpressionNode *>(Expr.get())) {
-      int AssignTok = CurrentToken;
-      getNextToken(); // eat '='
-      ExpectedLiteralTypeGuard Guard(Idx->getType(), Idx->getStructName());
-      auto Right = ParseExpression();
-      if (!Right)
-        return nullptr;
-      if (AssignTok == tok_equal) {
-        if (!IsAssignable(Idx->getType(), Right->getType()))
-          return LogErrorExpression("Type mismatch in assignment");
-      } else {
-        string ResultStructName;
-        ValueType ResultType = GetBinaryResultType(
-            CompoundAssignToBinaryOp(AssignTok), Idx->getType(),
-            Idx->getStructName(), Right->getType(), Right->getStructName(),
-            &ResultStructName);
-        if (ResultType == ValueType::Error ||
-            !IsAssignable(Idx->getType(), ResultType) ||
-            (Idx->getType() == ValueType::Pointer &&
-             Idx->getStructName() != ResultStructName))
-          return LogErrorExpression("Type mismatch in assignment");
-      }
-      ValueType ElemType = Idx->getType();
-      string ElemStructName = Idx->getStructName();
-      auto Owned = std::unique_ptr<IndexExpressionNode>(Idx);
-      Expr.release();
-      if (AssignTok == tok_equal) {
-        return std::make_unique<IndexAssignmentExpressionNode>(
-            std::move(Owned), std::move(Right), ElemType, ElemStructName);
-      }
-      return std::make_unique<IndexCompoundAssignmentExpressionNode>(
-          std::move(Owned), CompoundAssignToBinaryOp(AssignTok), std::move(Right),
-          ElemType, ElemStructName);
-    }
-    if (auto *IdxField = dynamic_cast<IndexedFieldExpressionNode *>(Expr.get())) {
-      int AssignTok = CurrentToken;
-      getNextToken(); // eat assignment token
-      ExpectedLiteralTypeGuard Guard(IdxField->getType(),
-                                     IdxField->getStructName());
-      auto Right = ParseExpression();
-      if (!Right)
-        return nullptr;
-      if (AssignTok == tok_equal) {
-        if (!IsAssignable(IdxField->getType(), Right->getType()))
-          return LogErrorExpression("Type mismatch in assignment");
-      } else {
-        string ResultStructName;
-        ValueType ResultType = GetBinaryResultType(
-            CompoundAssignToBinaryOp(AssignTok), IdxField->getType(),
-            IdxField->getStructName(), Right->getType(), Right->getStructName(),
-            &ResultStructName);
-        if (ResultType == ValueType::Error ||
-            !IsAssignable(IdxField->getType(), ResultType) ||
-            (IdxField->getType() == ValueType::Pointer &&
-             IdxField->getStructName() != ResultStructName))
-          return LogErrorExpression("Type mismatch in assignment");
-      }
-      ValueType ElemType = IdxField->getType();
-      string ElemStructName = IdxField->getStructName();
-      auto Owned = std::unique_ptr<IndexedFieldExpressionNode>(IdxField);
-      Expr.release();
-      if (AssignTok == tok_equal) {
-        return std::make_unique<IndexedFieldAssignmentExpressionNode>(
-            std::move(Owned), std::move(Right), ElemType, ElemStructName);
-      }
-      return std::make_unique<IndexedFieldCompoundAssignmentExpressionNode>(
-          std::move(Owned), CompoundAssignToBinaryOp(AssignTok), std::move(Right),
-          ElemType, ElemStructName);
-    }
-    if (CurrentToken != tok_equal)
-      return LogErrorExpression("Destination of compound assignment must be assignable");
-
-    const string *AssignedName = Expr->getLValueName();
-    if (!AssignedName)
-      return LogErrorExpression("Destination of '=' must be a variable");
-    return ParseAssignmentRight(*AssignedName);
-  }
-
-// Parse non-name-leading expression forms for simplestmt and reject
-// trailing assignment so diagnostics stay local and specific.
-static unique_ptr<ExpressionNode> ParseNonLeadingNameSimpleStatement() {
-  unique_ptr<ExpressionNode> Expr;
-  Expr = ParseExpression();
-  if (!Expr)
-    return nullptr;
-
-  if (CurrentToken != tok_equal && !IsCompoundAssignTok(CurrentToken))
-    return Expr;
-
-  if (IsCompoundAssignTok(CurrentToken))
-    return LogErrorExpression("Destination of compound assignment must be assignable");
-  return LogErrorExpression("Destination of '=' must be a variable");
-}
-
+/// simple-statement
+///   = return-statement | break-statement | continue-statement
+///   | variable-statement | expression ;
 static unique_ptr<ExpressionNode> ParseSimpleStatement() {
   if (CurrentToken == tok_return)
     return ParseReturnStatement();
@@ -4380,13 +4042,11 @@ static unique_ptr<ExpressionNode> ParseSimpleStatement() {
     return ParseContinueStatement();
   if (CurrentToken == tok_var)
     return ParseVarStatement();
-  if (CurrentToken == tok_name)
-    return ParseLeadingNameSimpleStatement();
-  return ParseNonLeadingNameSimpleStatement();
+  return ParseExpression();
 }
 
 /// statement
-///   = simplestmt | compoundstmt ;
+///   = simple-statement | compound-statement ;
 static unique_ptr<ExpressionNode> ParseStatement() {
   if (CurrentToken == tok_if)
     return ParseIfStatement();
@@ -4402,7 +4062,7 @@ static unique_ptr<ExpressionNode> ParseStatement() {
 }
 
 /// suite
-///   = simplestmt | compoundstmt | end-of-lines block ;
+///   = simple-statement | compound-statement | end-of-lines block ;
 static unique_ptr<ExpressionNode> ParseSuite() {
   if (CurrentToken == tok_eol) {
     consumeNewlines();
@@ -4418,7 +4078,7 @@ static unique_ptr<ExpressionNode> ParseSuite() {
 }
 
 /// block
-///   = INDENT statement { stmtsep statement } DEDENT ;
+///   = indent statement { statement-separator statement } dedent ;
 static unique_ptr<ExpressionNode> ParseBlock() {
   if (CurrentToken != tok_indent)
     return LogErrorExpression("Expected an indented block");
@@ -4465,41 +4125,51 @@ static unique_ptr<ExpressionNode> ParseBlock() {
   PendingTokens.push_front(tok_block_end);
   getNextToken(); // eat DEDENT, then surface tok_block_end
 
-  return make_unique<BlockExpressionNode>(std::move(Stmts));
+  return make_unique<BlockStatementNode>(std::move(Stmts));
 }
 
 /// function-signature
-///   = name "(" [ typedparam { "," typedparam } ] ")" ;
+///   = name "(" [ parameters ] ")" ;
+/// external-function-signature
+///   = name "(" [ parameters [ "," "..." ] | "..." ] ")" ;
 ///
-/// typedparam
+/// typed-parameter
 ///   = name ":" type ;
-static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
+static unique_ptr<FunctionSignatureNode>
+ParseFunctionSignature(bool AllowVariadic = false) {
   SourceLocation SignatureLoc = CurLoc;
 
   if (CurrentToken != tok_name)
     return LogErrorSignature("Expected function name in function signature");
   string FnName = Name;
-  if ((FnName.size() == 7 && FnName.rfind("binary", 0) == 0 &&
-       isascii(static_cast<unsigned char>(FnName[6])) &&
-       ispunct(static_cast<unsigned char>(FnName[6]))) ||
-      (FnName.size() == 6 && FnName.rfind("unary", 0) == 0 &&
-       isascii(static_cast<unsigned char>(FnName[5])) &&
-       ispunct(static_cast<unsigned char>(FnName[5])))) {
-    fprintf(stderr,
-            "Warning: Function name '%s' may conflict with "
-            "operator-reserved naming\n",
-            FnName.c_str());
-  }
   getNextToken(); // eat function name
 
   if (CurrentToken != tok_lparen)
     return LogErrorSignature("Expected '(' in function signature");
 
-  vector<FunctionSignatureNode::ParameterInfo> ParameterNames;
+  vector<pair<string, ValueType>> ParameterNames;
+  vector<string> ParameterStructNames;
+  bool IsVariadic = false;
   getNextToken(); // eat '('
 
   if (CurrentToken != tok_rparen) {
     while (true) {
+      if (AllowVariadic && CurrentToken == tok_dot) {
+        getNextToken(); // eat the first '.'
+        if (CurrentToken != tok_dot)
+          return LogErrorSignature(
+              "Expected '...' in variadic function signature");
+        getNextToken(); // eat the second '.'
+        if (CurrentToken != tok_dot)
+          return LogErrorSignature(
+              "Expected '...' in variadic function signature");
+        getNextToken(); // eat the third '.'
+        IsVariadic = true;
+        if (CurrentToken != tok_rparen)
+          return LogErrorSignature(
+              "Variadic marker must be last in parameter list");
+        break;
+      }
       if (CurrentToken != tok_name)
         return LogErrorSignature("Expected parameter name in function signature");
       string ArgName = Name;
@@ -4515,7 +4185,8 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
         return nullptr;
       if (ArgType == ValueType::None)
         return LogErrorSignature("Parameters cannot have None type");
-      ParameterNames.push_back({ArgName, ArgType, ArgStructName});
+      ParameterNames.push_back({ArgName, ArgType});
+      ParameterStructNames.push_back(ArgStructName);
 
       if (CurrentToken == tok_rparen)
         break;
@@ -4526,32 +4197,173 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
   }
 
   getNextToken(); // eat ')'
-  return make_unique<FunctionSignatureNode>(FnName, std::move(ParameterNames), SignatureLoc);
+  return make_unique<FunctionSignatureNode>(
+      FnName, std::move(ParameterNames), SignatureLoc, ValueType::Float64,
+      std::move(ParameterStructNames), "", IsVariadic);
 }
 
 // DefaultType controls what return type is assumed when no '->' is present.
 // In chapter 16, missing return types default to None.
 static ValueType
-ParseOptionalReturnType(ValueType DefaultType = ValueType::None) {
+ParseOptionalReturnType(string *StructName,
+                        ValueType DefaultType = ValueType::None) {
+  if (StructName)
+    StructName->clear();
   if (CurrentToken != tok_arrow)
     return DefaultType;
   getNextToken(); // eat '->'
-  ValueType Type = ParseTypeToken();
+  ValueType Type = ParseTypeToken(StructName);
   return Type;
 }
 
-static ValueType
-ParseOptionalReturnTypeWithStruct(string &StructName,
-                                  ValueType DefaultType = ValueType::None) {
-  StructName.clear();
-  if (CurrentToken != tok_arrow)
-    return DefaultType;
-  getNextToken();
-  return ParseTypeToken(&StructName);
+/// trait-definition
+///   = "trait" name ":" end-of-lines trait-block ;
+static bool ParseTraitDefinition() {
+  getNextToken(); // eat 'trait'
+  if (CurrentToken != tok_name)
+    return LogErrorExpression("Expected trait name"), false;
+  string TraitName = Name;
+  if (TraitTypes.count(TraitName) || StructTypes.count(TraitName) ||
+      TypeAliases.count(TraitName))
+    return LogErrorExpression(
+               ("Type '" + TraitName + "' is already defined").c_str()),
+           false;
+  getNextToken(); // eat trait name
+  if (CurrentToken != tok_colon)
+    return LogErrorExpression("Expected ':' after trait name"), false;
+  getNextToken(); // eat ':'
+  if (CurrentToken != tok_eol)
+    return LogErrorExpression("Expected newline after trait header"), false;
+  consumeNewlines();
+  if (CurrentToken != tok_indent)
+    return LogErrorExpression("Expected an indented trait body"), false;
+  getNextToken(); // eat INDENT
+
+  TraitTypeInfo Trait;
+  set<string> MethodNames;
+  while (CurrentToken != tok_dedent && CurrentToken != tok_eof) {
+    if (CurrentToken == tok_eol) {
+      consumeNewlines();
+      continue;
+    }
+    if (CurrentToken != tok_def)
+      return LogErrorExpression("Expected method signature in trait body"),
+             false;
+    getNextToken(); // eat 'def'
+    if (CurrentToken != tok_name)
+      return LogErrorExpression("Expected trait method name"), false;
+    TraitMethodSignature Method;
+    Method.Name = Name;
+    if (!MethodNames.insert(Method.Name).second)
+      return LogErrorExpression("Duplicate trait method"), false;
+    getNextToken(); // eat method name
+    if (CurrentToken != tok_lparen)
+      return LogErrorExpression("Expected '(' in trait method signature"),
+             false;
+    getNextToken(); // eat '('
+    if (CurrentToken != tok_rparen) {
+      while (true) {
+        if (CurrentToken != tok_name)
+          return LogErrorExpression(
+                     "Expected parameter name in trait method signature"),
+                 false;
+        string ParameterName = Name;
+        if (ParameterName == "self")
+          return LogErrorExpression(
+                     "Method parameters cannot be named 'self'"),
+                 false;
+        getNextToken(); // eat parameter name
+        if (CurrentToken != tok_colon)
+          return LogErrorExpression(
+                     "Trait method parameters require a type annotation"),
+                 false;
+        getNextToken(); // eat ':'
+        string TypeInfo;
+        ValueType Type = ParseTypeToken(&TypeInfo);
+        if (Type == ValueType::Error || Type == ValueType::None)
+          return false;
+        Method.Parameters.push_back({ParameterName, Type});
+        Method.ParameterTypeInfo.push_back(TypeInfo);
+        if (CurrentToken == tok_rparen)
+          break;
+        if (CurrentToken != tok_comma)
+          return LogErrorExpression("Expected ')' or ',' in parameter list"),
+                 false;
+        getNextToken(); // eat ','
+      }
+    }
+    getNextToken(); // eat ')'
+    Method.ReturnType =
+        ParseOptionalReturnType(&Method.ReturnTypeInfo, ValueType::None);
+    if (Method.ReturnType == ValueType::Error)
+      return false;
+    if (CurrentToken == tok_colon)
+      return LogErrorExpression("Trait methods cannot have a body"), false;
+    Trait.Methods.push_back(std::move(Method));
+    if (CurrentToken == tok_eol)
+      consumeNewlines();
+  }
+
+  if (Trait.Methods.empty())
+    return LogErrorExpression("Trait requires at least one method"), false;
+  if (CurrentToken != tok_dedent)
+    return LogErrorExpression("Expected dedent after trait body"), false;
+  TraitTypes[TraitName] = std::move(Trait);
+  PendingTokens.push_front(tok_block_end);
+  getNextToken(); // eat DEDENT, then surface block-end
+  return true;
 }
 
-/// functionbody
-///   = simplestmt | end-of-lines block ;
+static bool VerifyTraitConformance(const string &ClassName,
+                                   const string &TraitName) {
+  const auto &Trait = TraitTypes.at(TraitName);
+  const auto &Class = StructTypes.at(ClassName);
+  for (const auto &Requirement : Trait.Methods) {
+    string MethodName = ClassName + "." + Requirement.Name;
+    FunctionSignatureNode *Implementation =
+        GetFunctionSignature(MethodName);
+    if (!Implementation) {
+      LogErrorExpression(
+          ("Class '" + ClassName + "' does not implement trait '" + TraitName +
+           "' method '" + Requirement.Name + "'")
+              .c_str());
+      return false;
+    }
+    auto Visibility = Class.Methods.find(Requirement.Name);
+    if (Visibility == Class.Methods.end() || !Visibility->second) {
+      LogErrorExpression(
+          ("Trait method '" + Requirement.Name + "' on class '" + ClassName +
+           "' must be public")
+              .c_str());
+      return false;
+    }
+
+    bool Matches =
+        Implementation->getNumParameters() ==
+            Requirement.Parameters.size() + 1 &&
+        Implementation->getReturnType() == Requirement.ReturnType &&
+        Implementation->getReturnStructName() == Requirement.ReturnTypeInfo;
+    for (size_t Index = 0; Matches && Index < Requirement.Parameters.size();
+         ++Index) {
+      Matches =
+          Implementation->getParameterType(Index + 1) ==
+              Requirement.Parameters[Index].second &&
+          Implementation->getParameterStructName(Index + 1) ==
+              Requirement.ParameterTypeInfo[Index];
+    }
+    if (!Matches) {
+      LogErrorExpression(
+          ("Method '" + Requirement.Name + "' on class '" + ClassName +
+           "' does not match trait signature")
+              .c_str());
+      return false;
+    }
+  }
+  return true;
+}
+
+/// I parse the inline simple-statement or indented block portion of a
+/// function-definition.
 static unique_ptr<ExpressionNode> ParseFunctionBody() {
   if (CurrentToken == tok_eol) {
     consumeNewlines();
@@ -4564,21 +4376,24 @@ static unique_ptr<ExpressionNode> ParseFunctionBody() {
 }
 
 /// function-definition
+///   = "def" function-signature [ "->" type ] ":"
+///     ( simple-statement | end-of-lines block ) ;
 static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
   getNextToken(); // eat 'def'
   auto Signature = ParseFunctionSignature();
   if (!Signature)
     return nullptr;
-  string RetStructName;
+  string ReturnStructName;
   ValueType RetType =
-      ParseOptionalReturnTypeWithStruct(RetStructName, ValueType::None);
+      ParseOptionalReturnType(&ReturnStructName, ValueType::None);
   if (RetType == ValueType::Error)
     return nullptr;
   Signature->setReturnType(RetType);
-  Signature->setReturnStructName(RetStructName);
+  Signature->setReturnStructName(ReturnStructName);
   FunctionSignatures[Signature->getName()] = Signature->clone();
-  ReturnTypeGuard RetGuard(RetType, RetStructName);
-  FunctionScopeGuard Scope(Signature->getParameters());
+  ReturnTypeGuard RetGuard(RetType, ReturnStructName);
+  FunctionScopeGuard Scope(Signature->getParameters(),
+                           Signature->getParameterStructNames());
 
   if (CurrentToken != tok_colon)
     return LogErrorFunction("Expected ':' in function definition");
@@ -4593,43 +4408,43 @@ static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
 }
 
 static unique_ptr<FunctionDefinitionNode>
-ParseMethodDefinitionInClass(const string &ClassName, bool IsPublic) {
-  // CurrentToken is 'def'
+ParseMethodDefinition(const string &ClassName, bool IsPublic) {
   getNextToken(); // eat 'def'
   if (CurrentToken != tok_name)
     return LogErrorFunction("Expected method name in class definition");
   string MethodName = Name;
-  SourceLocation SignatureLoc = CurLoc;
+  SourceLocation SignatureLocation = CurLoc;
   getNextToken(); // eat method name
+
   if (CurrentToken != tok_lparen)
-    return LogErrorFunction("Expected '(' in method function signature");
+    return LogErrorFunction("Expected '(' in method signature");
   getNextToken(); // eat '('
 
-  vector<FunctionSignatureNode::ParameterInfo> ParameterNames;
-  // Implicit self parameter is a pointer so methods can mutate receiver state.
-  ParameterNames.push_back({"self", ValueType::Pointer,
-                      EncodePointerType(ValueType::Struct, ClassName)});
+  vector<pair<string, ValueType>> Parameters;
+  vector<string> ParameterTypeInfo;
+  Parameters.push_back({"self", ValueType::Pointer});
+  ParameterTypeInfo.push_back(
+      EncodePointerType(ValueType::Struct, ClassName));
 
   if (CurrentToken != tok_rparen) {
     while (true) {
       if (CurrentToken != tok_name)
-        return LogErrorFunction("Expected parameter name in method function signature");
-      string ArgName = Name;
-      if (ArgName == "self")
+        return LogErrorFunction("Expected parameter name in method signature");
+      string ParameterName = Name;
+      if (ParameterName == "self")
         return LogErrorFunction("Method parameters cannot be named 'self'");
-      getNextToken(); // eat name
+      getNextToken(); // eat parameter name
       if (CurrentToken != tok_colon)
-        return LogErrorFunction(
-            "Method parameters require a type annotation (e.g., ': int')");
+        return LogErrorFunction("Method parameters require a type annotation");
       getNextToken(); // eat ':'
-      string ArgStructName;
-      ValueType ArgType = ParseTypeToken(&ArgStructName);
-      if (ArgType == ValueType::Error)
+      string TypeInfo;
+      ValueType Type = ParseTypeToken(&TypeInfo);
+      if (Type == ValueType::Error)
         return nullptr;
-      if (ArgType == ValueType::None)
+      if (Type == ValueType::None)
         return LogErrorFunction("Parameters cannot have None type");
-      ParameterNames.push_back({ArgName, ArgType, ArgStructName});
-
+      Parameters.push_back({ParameterName, Type});
+      ParameterTypeInfo.push_back(TypeInfo);
       if (CurrentToken == tok_rparen)
         break;
       if (CurrentToken != tok_comma)
@@ -4637,47 +4452,47 @@ ParseMethodDefinitionInClass(const string &ClassName, bool IsPublic) {
       getNextToken(); // eat ','
     }
   }
-
-  if (CurrentToken != tok_rparen)
-    return LogErrorFunction("Expected ')' in method function signature");
   getNextToken(); // eat ')'
 
-  string RetStructName;
-  ValueType RetType =
-      ParseOptionalReturnTypeWithStruct(RetStructName, ValueType::None);
-  if (RetType == ValueType::Error)
+  string ReturnTypeInfo;
+  ValueType ReturnType =
+      ParseOptionalReturnType(&ReturnTypeInfo, ValueType::None);
+  if (ReturnType == ValueType::Error)
     return nullptr;
-  if (MethodName == "__init__" && RetType != ValueType::None)
+  if (MethodName == "__init__" && ReturnType != ValueType::None)
     return LogErrorFunction("Constructor '__init__' must return None");
 
   string MangledName = ClassName + "." + MethodName;
   if (FunctionSignatures.count(MangledName))
-    return LogErrorFunction(("Method '" + MethodName + "' is already defined on '" +
-                      ClassName + "'")
-                         .c_str());
+    return LogErrorFunction(
+        ("Method '" + MethodName + "' is already defined on '" + ClassName +
+         "'")
+            .c_str());
 
-  auto Signature = make_unique<FunctionSignatureNode>(MangledName, std::move(ParameterNames),
-                                         SignatureLoc, RetType);
-  Signature->setReturnStructName(RetStructName);
-  FunctionSignatures[Signature->getName()] = Signature->clone();
-  StructTypes[ClassName].MethodIsPublic[MethodName] = IsPublic;
+  auto Signature = make_unique<FunctionSignatureNode>(
+      MangledName, std::move(Parameters), SignatureLocation, ReturnType,
+      std::move(ParameterTypeInfo), ReturnTypeInfo);
+  FunctionSignatures[MangledName] = Signature->clone();
+  StructTypes[ClassName].Methods[MethodName] = IsPublic;
 
-  ReturnTypeGuard RetGuard(RetType, RetStructName);
-  FunctionScopeGuard Scope(Signature->getParameters());
+  ReturnTypeGuard ReturnGuard(ReturnType, ReturnTypeInfo);
+  FunctionScopeGuard Scope(Signature->getParameters(),
+                           Signature->getParameterStructNames());
   ClassScopeGuard ClassScope(ClassName);
-
   if (CurrentToken != tok_colon)
     return LogErrorFunction("Expected ':' in method definition");
   getNextToken(); // eat ':'
-  unique_ptr<ExpressionNode> Body = ParseFunctionBody();
-  if (Body) {
-    return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(Body));
+  auto Body = ParseFunctionBody();
+  if (!Body) {
+    FunctionSignatures.erase(MangledName);
+    StructTypes[ClassName].Methods.erase(MethodName);
+    return nullptr;
   }
-  FunctionSignatures.erase(MangledName);
-  return nullptr;
+  return make_unique<FunctionDefinitionNode>(std::move(Signature),
+                                              std::move(Body));
 }
 
-/// toplevelstmt
+/// top-level-statement
 ///   = statement ;
 static unique_ptr<ExpressionNode> ParseTopLevelStatement() {
   TopLevelParseGuard Guard;
@@ -4689,638 +4504,42 @@ static unique_ptr<ExpressionNode> ParseTopLevelStatement() {
   return Stmt;
 }
 
-/// top-level-expression
-///   = statement
 /// A top-level statement (e.g. "1 + 2", "var x = 1", "if ...") is wrapped in
 /// an anonymous function so it fits the same FunctionDefinitionNode shape as everything
-/// else. HandleTopLevelExpression compiles it into the JIT, calls it to get
+/// else. HandleTopLevelStatement compiles it into the JIT, calls it to get
 /// the numeric result, then removes it from the JIT via a ResourceTracker.
-static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
+static unique_ptr<FunctionDefinitionNode> ParseTopLevelStatementFunction() {
   auto Stmt = ParseTopLevelStatement();
   if (!Stmt)
     return nullptr;
 
   ValueType RetType = Stmt->getType();
   if (!Stmt->isReturnExpr() && RetType != ValueType::None)
-    Stmt = make_unique<ReturnExpressionNode>(std::move(Stmt));
+    Stmt = make_unique<ReturnStatementNode>(std::move(Stmt));
 
   string FnName = "__pyxc.toplevel." + to_string(TopLevelExprCounter++);
   auto Signature = make_unique<FunctionSignatureNode>(
-      FnName, vector<FunctionSignatureNode::ParameterInfo>(), CurLoc, RetType);
+      FnName, vector<pair<string, ValueType>>(), CurLoc, RetType);
   return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(Stmt));
 }
 
 /// external
-///   = "extern" "def" function signature [ "->" type ] ;
+///   = "extern" "def" external-function-signature [ "->" type ] ;
 static unique_ptr<FunctionSignatureNode> ParseExtern() {
   getNextToken(); // eat extern.
   if (CurrentToken != tok_def)
     return LogErrorSignature("Expected `def` after extern.");
   getNextToken(); // eat def
-  auto Signature = ParseFunctionSignature();
+  auto Signature = ParseFunctionSignature(true);
   if (!Signature)
     return nullptr;
-  string RetStructName;
-  ValueType RetType = ParseOptionalReturnTypeWithStruct(RetStructName);
+  string ReturnStructName;
+  ValueType RetType = ParseOptionalReturnType(&ReturnStructName);
   if (RetType == ValueType::Error)
     return nullptr;
   Signature->setReturnType(RetType);
-  Signature->setReturnStructName(RetStructName);
+  Signature->setReturnStructName(ReturnStructName);
   return Signature;
-}
-
-static bool ParseAggregateDefinition(const char *KindName) {
-  // CurrentToken is 'struct' or 'class'
-  getNextToken(); // eat keyword
-  if (CurrentToken != tok_name) {
-    LogErrorExpression((string("Expected ") + KindName + " name").c_str());
-    return false;
-  }
-  string StructName = Name;
-  if (TypeAliases.count(StructName)) {
-    LogErrorExpression(("Name '" + StructName + "' is already defined as a type alias")
-                 .c_str());
-    return false;
-  }
-  if (StructTypes.count(StructName)) {
-    LogErrorExpression(("Aggregate '" + StructName + "' is already defined").c_str());
-    return false;
-  }
-  getNextToken(); // eat aggregate name
-  vector<StructTypeInfo::ImplTraitRef> ImplementedTraits;
-  bool IsClass = (strcmp(KindName, "class") == 0);
-  if (IsClass && CurrentToken == tok_lparen) {
-    std::set<string> SeenTraits;
-    getNextToken(); // eat '('
-    if (CurrentToken != tok_rparen) {
-      while (true) {
-        if (CurrentToken != tok_name) {
-          LogErrorExpression("Expected trait name in class implements list");
-          return false;
-        }
-        StructTypeInfo::ImplTraitRef Ref;
-        Ref.TraitName = Name;
-        string TraitName = Ref.TraitName;
-        if (!Traits.count(TraitName)) {
-          LogErrorExpression(("Unknown trait '" + TraitName + "'").c_str());
-          return false;
-        }
-        if (SeenTraits.count(TraitName)) {
-          LogErrorExpression(
-              ("Duplicate trait '" + TraitName + "' in class implements list")
-                  .c_str());
-          return false;
-        }
-        SeenTraits.insert(TraitName);
-        getNextToken(); // eat trait name
-        const auto &TI = Traits.at(TraitName);
-        if (!TI.TypeParamName.empty()) {
-          if (CurrentToken != tok_lbracket) {
-            LogErrorExpression(
-                ("Trait '" + TraitName + "' requires a type argument").c_str());
-            return false;
-          }
-          getNextToken(); // eat '['
-          string TypeArgStruct;
-          ValueType TypeArg = ParseTypeToken(&TypeArgStruct);
-          if (TypeArg == ValueType::Error || TypeArg == ValueType::None ||
-              TypeArg == ValueType::TypeVar) {
-            LogErrorExpression("Invalid trait type argument");
-            return false;
-          }
-          if (CurrentToken != tok_rbracket) {
-            LogErrorExpression("Expected ']' after trait type argument");
-            return false;
-          }
-          getNextToken(); // eat ']'
-          Ref.HasTypeArg = true;
-          Ref.TypeArg = TypeArg;
-          Ref.TypeArgStructName = TypeArgStruct;
-        } else if (CurrentToken == tok_lbracket) {
-          LogErrorExpression(("Trait '" + TraitName + "' does not take type arguments")
-                       .c_str());
-          return false;
-        }
-        ImplementedTraits.push_back(Ref);
-        if (CurrentToken == tok_rparen)
-          break;
-        if (CurrentToken != tok_comma) {
-          LogErrorExpression("Expected ')' or ',' in class implements list");
-          return false;
-        }
-        getNextToken(); // eat ','
-      }
-    }
-    if (CurrentToken != tok_rparen) {
-      LogErrorExpression("Expected ')' after class implements list");
-      return false;
-    }
-    getNextToken(); // eat ')'
-  }
-  if (CurrentToken != tok_colon) {
-    LogErrorExpression((string("Expected ':' after ") + KindName + " name").c_str());
-    return false;
-  }
-  getNextToken(); // eat ':'
-  if (CurrentToken == tok_eol)
-    consumeNewlines();
-  if (CurrentToken != tok_indent) {
-    LogErrorExpression((string("Expected an indented ") + KindName + " body").c_str());
-    return false;
-  }
-  getNextToken(); // eat INDENT
-
-  StructTypeInfo Info;
-  Info.Name = StructName;
-  Info.IsClass = IsClass;
-  Info.ImplementedTraits = ImplementedTraits;
-  // Register early so method signatures can reference the enclosing class.
-  StructTypes[StructName] = Info;
-  while (CurrentToken != tok_dedent && CurrentToken != tok_eof) {
-    if (CurrentToken == tok_eol) {
-      consumeNewlines();
-      continue;
-    }
-    if (CurrentToken == tok_block_end) {
-      getNextToken();
-      continue;
-    }
-    bool MemberIsPublic = true;
-    bool HasVisibilityModifier = false;
-    if (CurrentToken == tok_public || CurrentToken == tok_private) {
-      HasVisibilityModifier = true;
-      MemberIsPublic = (CurrentToken == tok_public);
-      getNextToken(); // eat visibility modifier
-    }
-    if (HasVisibilityModifier && !Info.IsClass) {
-      LogErrorExpression("Visibility modifiers are only allowed inside class bodies");
-      return false;
-    }
-    if (CurrentToken == tok_def) {
-      if (!Info.IsClass) {
-        LogErrorExpression("Methods are only allowed inside classes");
-        return false;
-      }
-      auto FnAST = ParseMethodDefinitionInClass(StructName, MemberIsPublic);
-      if (!FnAST)
-        return false;
-      if (auto *FnIR = FnAST->codegen()) {
-        if (ShouldDumpIR())
-          FnIR->print(errs());
-      }
-      if (CurrentToken == tok_eol)
-        consumeNewlines();
-      else if (CurrentToken == tok_block_end)
-        // The method body was itself an indented block; ParseFunctionBody
-        // (via ParseBlock) left its own block-end marker in CurrentToken. Consume
-        // it here so the loop condition below sees the real next token
-        // (another class member, or the class's own DEDENT) instead of
-        // mistaking the method's block-end for the class body's.
-        getNextToken();
-      continue;
-    }
-    if (CurrentToken != tok_name) {
-      LogErrorExpression(
-          (string("Expected field name in ") + KindName + " body").c_str());
-      return false;
-    }
-    string FieldName = Name;
-    getNextToken();
-    if (CurrentToken != tok_colon) {
-      LogErrorExpression("Expected ':' after field name");
-      return false;
-    }
-    getNextToken();
-    string FieldStructName;
-    ValueType FieldType = ParseTypeToken(&FieldStructName);
-    if (FieldType == ValueType::Error || FieldType == ValueType::None) {
-      LogErrorExpression((string("Invalid ") + KindName + " field type").c_str());
-      return false;
-    }
-    if (Info.FieldIndex.count(FieldName)) {
-      LogErrorExpression((string("Duplicate ") + KindName + " field '" + FieldName + "'")
-                   .c_str());
-      return false;
-    }
-    Info.FieldIndex[FieldName] = Info.Fields.size();
-    Info.Fields.push_back(
-        {FieldName, FieldType, FieldStructName, MemberIsPublic});
-    // Keep aggregate metadata visible while parsing subsequent methods.
-    Info.MethodIsPublic = StructTypes[StructName].MethodIsPublic;
-    StructTypes[StructName] = Info;
-    if (CurrentToken == tok_eol)
-      consumeNewlines();
-  }
-  if (CurrentToken != tok_dedent) {
-    LogErrorExpression((string("Expected dedent after ") + KindName + " body").c_str());
-    return false;
-  }
-  PendingTokens.push_front(tok_block_end);
-  getNextToken(); // eat DEDENT, then surface tok_block_end
-  Info.MethodIsPublic = StructTypes[StructName].MethodIsPublic;
-  if (Info.IsClass) {
-    for (const auto &ImplRef : Info.ImplementedTraits) {
-      if (!VerifyTraitConformance(StructName, ImplRef))
-        return false;
-    }
-  }
-  StructTypes[StructName] = std::move(Info);
-  return true;
-}
-
-static bool
-VerifyTraitConformance(const string &ClassName,
-                       const StructTypeInfo::ImplTraitRef &ImplRef) {
-  const string &TraitName = ImplRef.TraitName;
-  auto CI = StructTypes.find(ClassName);
-  if (CI == StructTypes.end() || !CI->second.IsClass) {
-    LogErrorExpression(("Unknown class '" + ClassName + "'").c_str());
-    return false;
-  }
-  if (!Traits.count(TraitName)) {
-    LogErrorExpression(("Unknown trait '" + TraitName + "'").c_str());
-    return false;
-  }
-  const auto &TI = Traits.at(TraitName);
-  if (!TI.TypeParamName.empty() && !ImplRef.HasTypeArg) {
-    LogErrorExpression(("Trait '" + TraitName + "' requires a type argument").c_str());
-    return false;
-  }
-  if (TI.TypeParamName.empty() && ImplRef.HasTypeArg) {
-    LogErrorExpression(
-        ("Trait '" + TraitName + "' does not take type arguments").c_str());
-    return false;
-  }
-  const auto &ClassInfo = CI->second;
-  auto ResolveReq = [&](ValueType T,
-                        const string &S) -> std::pair<ValueType, string> {
-    if (T == ValueType::TypeVar && S == TI.TypeParamName) {
-      return {ImplRef.TypeArg, ImplRef.TypeArgStructName};
-    }
-    return {T, S};
-  };
-  for (const auto &Req : TI.Methods) {
-    auto PI = FunctionSignatures.find(ClassName + "." + Req.Name);
-    if (PI == FunctionSignatures.end()) {
-      LogErrorExpression(("Class '" + ClassName + "' does not implement trait '" +
-                TraitName + "' method '" + Req.Name + "'")
-                   .c_str());
-      return false;
-    }
-    auto MI = ClassInfo.MethodIsPublic.find(Req.Name);
-    if (MI == ClassInfo.MethodIsPublic.end() || !MI->second) {
-      LogErrorExpression(("Trait method '" + Req.Name + "' on class '" + ClassName +
-                "' must be public")
-                   .c_str());
-      return false;
-    }
-    FunctionSignatureNode *P = PI->second.get();
-    auto ReqRet = ResolveReq(Req.ReturnType, Req.ReturnStructName);
-    if (P->getNumParameters() != Req.Arguments.size() + 1 ||
-        P->getReturnType() != ReqRet.first ||
-        P->getReturnStructName() != ReqRet.second) {
-      LogErrorExpression(("Method '" + Req.Name + "' on class '" + ClassName +
-                "' does not match trait signature")
-                   .c_str());
-      return false;
-    }
-    for (size_t I = 0; I < Req.Arguments.size(); ++I) {
-      auto ReqArg = ResolveReq(Req.Arguments[I].Type, Req.Arguments[I].StructName);
-      if (P->getParameterType(I + 1) != ReqArg.first ||
-          P->getParameterStructName(I + 1) != ReqArg.second) {
-        LogErrorExpression(("Method '" + Req.Name + "' on class '" + ClassName +
-                  "' does not match trait signature")
-                     .c_str());
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
-static bool ParseTypeAliasDefinition() {
-  // CurrentToken is 'type'
-  getNextToken(); // eat 'type'
-  if (CurrentToken != tok_name) {
-    LogErrorExpression("Expected alias name after 'type'");
-    return false;
-  }
-  string AliasName = Name;
-  if (TypeAliases.count(AliasName)) {
-    LogErrorExpression(("Type alias '" + AliasName + "' is already defined").c_str());
-    return false;
-  }
-  if (StructTypes.count(AliasName)) {
-    LogErrorExpression(
-        ("Name '" + AliasName + "' is already defined as an aggregate type")
-            .c_str());
-    return false;
-  }
-  getNextToken(); // eat alias name
-  if (CurrentToken != tok_equal) {
-    LogErrorExpression("Expected '=' in type alias");
-    return false;
-  }
-  getNextToken(); // eat '='
-  string AliasStructName;
-  ValueType AliasType = ParseTypeToken(&AliasStructName);
-  if (AliasType == ValueType::Error)
-    return false;
-  TypeAliases[AliasName] = {AliasType, AliasStructName};
-  return true;
-}
-
-static bool ParseTraitDefinition() {
-  // CurrentToken is 'trait'
-  getNextToken(); // eat 'trait'
-  if (CurrentToken != tok_name) {
-    LogErrorExpression("Expected trait name");
-    return false;
-  }
-  string TraitName = Name;
-  if (Traits.count(TraitName) || StructTypes.count(TraitName) ||
-      TypeAliases.count(TraitName)) {
-    LogErrorExpression(("Name '" + TraitName + "' is already defined").c_str());
-    return false;
-  }
-  getNextToken(); // eat trait name
-  string TypeParamName;
-  if (CurrentToken == tok_lbracket) {
-    getNextToken(); // eat '['
-    if (CurrentToken != tok_name) {
-      LogErrorExpression("Expected type parameter name in trait definition");
-      return false;
-    }
-    TypeParamName = Name;
-    getNextToken(); // eat type parameter name
-    if (CurrentToken != tok_rbracket) {
-      LogErrorExpression("Expected ']' after trait type parameter");
-      return false;
-    }
-    getNextToken(); // eat ']'
-  }
-  if (CurrentToken != tok_colon) {
-    LogErrorExpression("Expected ':' after trait name");
-    return false;
-  }
-  getNextToken(); // eat ':'
-  if (CurrentToken == tok_eol)
-    consumeNewlines();
-  if (CurrentToken != tok_indent) {
-    LogErrorExpression("Expected an indented trait body");
-    return false;
-  }
-  getNextToken(); // eat INDENT
-
-  TraitInfo TI;
-  TI.Name = TraitName;
-  TI.TypeParamName = TypeParamName;
-  ActiveTypeParams.clear();
-  if (!TypeParamName.empty())
-    ActiveTypeParams.insert(TypeParamName);
-  while (CurrentToken != tok_dedent && CurrentToken != tok_eof) {
-    if (CurrentToken == tok_eol) {
-      consumeNewlines();
-      continue;
-    }
-    if (CurrentToken == tok_block_end) {
-      getNextToken();
-      continue;
-    }
-    if (CurrentToken != tok_def) {
-      LogErrorExpression("Expected method signature in trait body");
-      return false;
-    }
-    getNextToken(); // eat 'def'
-    if (CurrentToken != tok_name) {
-      LogErrorExpression("Expected method name in trait");
-      return false;
-    }
-    string MethodName = Name;
-    getNextToken(); // eat method name
-    if (CurrentToken != tok_lparen) {
-      LogErrorExpression("Expected '(' in trait method signature");
-      return false;
-    }
-    getNextToken(); // eat '('
-    vector<FunctionSignatureNode::ParameterInfo> Arguments;
-    if (CurrentToken != tok_rparen) {
-      while (true) {
-        if (CurrentToken != tok_name) {
-          LogErrorExpression("Expected parameter name in trait method");
-          return false;
-        }
-        string ArgName = Name;
-        getNextToken();
-        if (CurrentToken != tok_colon) {
-          LogErrorExpression("Trait method parameters require a type annotation");
-          return false;
-        }
-        getNextToken(); // eat ':'
-        string ArgStructName;
-        ValueType ArgType = ParseTypeToken(&ArgStructName);
-        if (ArgType == ValueType::Error || ArgType == ValueType::None) {
-          LogErrorExpression("Invalid trait method parameter type");
-          return false;
-        }
-        Arguments.push_back({ArgName, ArgType, ArgStructName});
-        if (CurrentToken == tok_rparen)
-          break;
-        if (CurrentToken != tok_comma) {
-          LogErrorExpression("Expected ')' or ',' in parameter list");
-          return false;
-        }
-        getNextToken(); // eat ','
-      }
-    }
-    if (CurrentToken != tok_rparen) {
-      LogErrorExpression("Expected ')' in trait method signature");
-      return false;
-    }
-    getNextToken(); // eat ')'
-
-    string RetStructName;
-    ValueType RetType =
-        ParseOptionalReturnTypeWithStruct(RetStructName, ValueType::None);
-    if (RetType == ValueType::Error)
-      return false;
-    bool Duplicate = false;
-    for (const auto &M : TI.Methods) {
-      if (M.Name == MethodName) {
-        Duplicate = true;
-        break;
-      }
-    }
-    if (Duplicate) {
-      LogErrorExpression(("Duplicate trait method '" + MethodName + "'").c_str());
-      return false;
-    }
-    TI.Methods.push_back({MethodName, std::move(Arguments), RetType, RetStructName});
-    if (CurrentToken == tok_colon) {
-      LogErrorExpression("Trait methods cannot have a body");
-      return false;
-    }
-    if (CurrentToken == tok_eol)
-      consumeNewlines();
-  }
-  if (CurrentToken != tok_dedent) {
-    LogErrorExpression("Expected dedent after trait body");
-    return false;
-  }
-  ActiveTypeParams.clear();
-  PendingTokens.push_front(tok_block_end);
-  getNextToken(); // eat DEDENT, then surface tok_block_end
-  Traits[TraitName] = std::move(TI);
-  return true;
-}
-
-static bool ParseImplDefinition() {
-  // CurrentToken is 'impl'
-  getNextToken(); // eat 'impl'
-  if (CurrentToken != tok_name) {
-    LogErrorExpression("Expected trait name after 'impl'");
-    return false;
-  }
-  string TraitName = Name;
-  if (!Traits.count(TraitName)) {
-    LogErrorExpression(("Unknown trait '" + TraitName + "'").c_str());
-    return false;
-  }
-  StructTypeInfo::ImplTraitRef ImplRef;
-  ImplRef.TraitName = TraitName;
-  getNextToken(); // eat trait name
-  const auto &TraitDef = Traits.at(TraitName);
-  if (!TraitDef.TypeParamName.empty()) {
-    if (CurrentToken != tok_lbracket) {
-      LogErrorExpression(("Trait '" + TraitName + "' requires a type argument").c_str());
-      return false;
-    }
-    getNextToken(); // eat '['
-    string TypeArgStruct;
-    ValueType TypeArg = ParseTypeToken(&TypeArgStruct);
-    if (TypeArg == ValueType::Error || TypeArg == ValueType::None ||
-        TypeArg == ValueType::TypeVar) {
-      LogErrorExpression("Invalid trait type argument");
-      return false;
-    }
-    if (CurrentToken != tok_rbracket) {
-      LogErrorExpression("Expected ']' after trait type argument");
-      return false;
-    }
-    getNextToken(); // eat ']'
-    ImplRef.HasTypeArg = true;
-    ImplRef.TypeArg = TypeArg;
-    ImplRef.TypeArgStructName = TypeArgStruct;
-  } else if (CurrentToken == tok_lbracket) {
-    LogErrorExpression(
-        ("Trait '" + TraitName + "' does not take type arguments").c_str());
-    return false;
-  }
-  if (CurrentToken != tok_for) {
-    LogErrorExpression("Expected 'for' in impl definition");
-    return false;
-  }
-  getNextToken(); // eat 'for'
-  if (CurrentToken != tok_name) {
-    LogErrorExpression("Expected class name after 'for'");
-    return false;
-  }
-  string ClassName = Name;
-  auto CI = StructTypes.find(ClassName);
-  if (CI == StructTypes.end()) {
-    LogErrorExpression(("Unknown class '" + ClassName + "'").c_str());
-    return false;
-  }
-  if (!CI->second.IsClass) {
-    LogErrorExpression(("'" + ClassName +
-              "' is a struct, not a class; traits can only be implemented on "
-              "classes")
-                 .c_str());
-    return false;
-  }
-  getNextToken(); // eat class name
-  if (CurrentToken != tok_colon) {
-    LogErrorExpression("Expected ':' in impl definition");
-    return false;
-  }
-  getNextToken(); // eat ':'
-  if (CurrentToken == tok_eol)
-    consumeNewlines();
-  if (CurrentToken != tok_indent) {
-    LogErrorExpression("Expected an indented impl body");
-    return false;
-  }
-  getNextToken(); // eat INDENT
-
-  auto SameImpl = [&](const StructTypeInfo::ImplTraitRef &R) {
-    return R.TraitName == ImplRef.TraitName &&
-           R.HasTypeArg == ImplRef.HasTypeArg && R.TypeArg == ImplRef.TypeArg &&
-           R.TypeArgStructName == ImplRef.TypeArgStructName;
-  };
-  bool AlreadyImplemented = false;
-  for (const auto &R : CI->second.ImplementedTraits) {
-    if (SameImpl(R)) {
-      AlreadyImplemented = true;
-      break;
-    }
-  }
-  if (AlreadyImplemented) {
-    LogErrorExpression(("Trait '" + TraitName + "' is already implemented for class '" +
-              ClassName + "'")
-                 .c_str());
-    return false;
-  }
-
-  while (CurrentToken != tok_dedent && CurrentToken != tok_eof) {
-    if (CurrentToken == tok_eol) {
-      consumeNewlines();
-      continue;
-    }
-    if (CurrentToken == tok_block_end) {
-      getNextToken();
-      continue;
-    }
-    if (CurrentToken != tok_def) {
-      LogErrorExpression("Expected method definition in impl body");
-      return false;
-    }
-    auto FnAST = ParseMethodDefinitionInClass(ClassName, /*IsPublic=*/true);
-    if (!FnAST)
-      return false;
-    if (auto *FnIR = FnAST->codegen()) {
-      if (ShouldDumpIR())
-        FnIR->print(errs());
-    }
-    if (CurrentToken == tok_eol)
-      consumeNewlines();
-    else if (CurrentToken == tok_block_end)
-      // The method body was itself an indented block; ParseFunctionBody
-      // (via ParseBlock) left its own block-end marker in CurrentToken. Consume it
-      // here so the loop condition above sees the real next token (another
-      // method, or the impl body's own DEDENT) instead of mistaking the
-      // method's block-end for the impl body's.
-      getNextToken();
-  }
-  if (CurrentToken != tok_dedent) {
-    LogErrorExpression("Expected dedent after impl body");
-    return false;
-  }
-  PendingTokens.push_front(tok_block_end);
-  getNextToken(); // eat DEDENT, then surface tok_block_end
-
-  bool Present = false;
-  for (const auto &R : CI->second.ImplementedTraits) {
-    if (SameImpl(R)) {
-      Present = true;
-      break;
-    }
-  }
-  if (!Present) {
-    CI->second.ImplementedTraits.push_back(ImplRef);
-  }
-  if (!VerifyTraitConformance(ClassName, ImplRef))
-    return false;
-  return true;
 }
 
 //===----------------------------------------===//
@@ -5338,57 +4557,44 @@ static std::unique_ptr<Module> TheModule;
 static std::unique_ptr<IRBuilder<NoFolder>> Builder;
 // NamedValues - Maps variable names to allocas in the current function.
 static std::map<std::string, AllocaInst *> NamedValues;
-static std::map<std::string, ValueType> NamedValueTypes;
 static std::map<std::string, string> NamedValueStructNames;
 static std::map<std::string, StructType *> LLVMStructTypes;
-struct LoopControlTargets {
-  BasicBlock *BreakTarget = nullptr;
-  BasicBlock *ContinueTarget = nullptr;
-};
-static std::vector<LoopControlTargets> LoopControlStack;
-static std::vector<BasicBlock *> BreakTargetStack;
 static unsigned StringLiteralCounter = 0;
 // InGlobalInit - True while emitting the synthetic global init function.
 static bool InGlobalInit = false;
 // ModuleHasGlobals - Tracks whether this module defines any globals.
 static bool ModuleHasGlobals = false;
-// CurrentSourcePath - Path used in debug info and diagnostics.
+// Source path and metadata state used while emitting debug information.
 static std::string CurrentSourcePath = "<stdin>";
-// DIB - DIBuilder used to emit DWARF metadata into the module.
 static std::unique_ptr<DIBuilder> DIB;
-// TheCU - Compile unit metadata node (one per module).
 static DICompileUnit *TheCU = nullptr;
-// TheDIFile - Current source file metadata node.
 static DIFile *TheDIFile = nullptr;
-// IntDIType - Debug info type for platform int.
 static DIType *IntDIType = nullptr;
-// Float64DIType - Debug info type for float64.
-static DIType *Float64DIType = nullptr;
-// VoidDIType - Debug info type for None/void.
-static DIType *VoidDIType = nullptr;
-// Int8DIType - Debug info type for int8.
 static DIType *Int8DIType = nullptr;
-// Int16DIType - Debug info type for int16.
 static DIType *Int16DIType = nullptr;
-// Int32DIType - Debug info type for int32.
 static DIType *Int32DIType = nullptr;
-// Int64DIType - Debug info type for int64.
 static DIType *Int64DIType = nullptr;
-// Float32DIType - Debug info type for float32.
+static DIType *UInt8DIType = nullptr;
+static DIType *UInt16DIType = nullptr;
+static DIType *UInt32DIType = nullptr;
+static DIType *UInt64DIType = nullptr;
 static DIType *Float32DIType = nullptr;
-// BoolDIType - Debug info type for bool.
+static DIType *Float64DIType = nullptr;
 static DIType *BoolDIType = nullptr;
-// PtrDIType - Debug info type for pointers.
-static DIType *PtrDIType = nullptr;
-// CurDIScope - Current debug scope (function or block).
+static DIType *VoidDIType = nullptr;
 static DIScope *CurDIScope = nullptr;
-// CurFunctionLine - Line number for current function definition.
 static unsigned CurFunctionLine = 1;
+struct LoopControlTargets {
+  BasicBlock *BreakTarget = nullptr;
+  BasicBlock *ContinueTarget = nullptr;
+};
+static vector<LoopControlTargets> LoopControlStack;
+static vector<BasicBlock *> BreakTargetStack;
 // TheJIT - ORC JIT instance for REPL execution.
 static std::unique_ptr<PyxcJIT> TheJIT;
 // TheFPM - Per-function optimization pipeline (JIT).
 static std::unique_ptr<FunctionPassManager> TheFPM;
-// TheMPM - Per-module optimization pipeline (emit mode).
+// TheMPM - Per-module optimization pipeline used by file emission.
 static std::unique_ptr<ModulePassManager> TheMPM;
 // TheLAM - Loop analysis manager (new PM).
 static std::unique_ptr<LoopAnalysisManager> TheLAM;
@@ -5437,90 +4643,9 @@ static const char *TypeName(ValueType Type) {
     return "array";
   case ValueType::Pointer:
     return "ptr";
-  case ValueType::TypeVar:
-    return "typevar";
   default:
     return "<error>";
   }
-}
-
-static string EncodePointerType(ValueType PointeeType,
-                                const string &PointeeStructName) {
-  return std::to_string(static_cast<int>(PointeeType)) + ":" +
-         PointeeStructName;
-}
-
-static bool DecodePointerType(const string &Encoded, ValueType &PointeeType,
-                              string &PointeeStructName) {
-  auto Pos = Encoded.find(':');
-  if (Pos == string::npos)
-    return false;
-  int Raw = std::atoi(Encoded.substr(0, Pos).c_str());
-  if (Raw < static_cast<int>(ValueType::None) ||
-      Raw > static_cast<int>(ValueType::Pointer))
-    return false;
-  PointeeType = static_cast<ValueType>(Raw);
-  PointeeStructName = Encoded.substr(Pos + 1);
-  return true;
-}
-
-static string EncodeArrayType(ValueType ElemType, const string &ElemStructName,
-                              uint64_t Count) {
-  return std::to_string(static_cast<int>(ElemType)) + ":" + ElemStructName +
-         ":" + std::to_string(Count);
-}
-
-static bool DecodeArrayType(const string &Encoded, ValueType &ElemType,
-                            string &ElemStructName, uint64_t &Count) {
-  auto Last = Encoded.rfind(':');
-  if (Last == string::npos)
-    return false;
-  auto First = Encoded.find(':');
-  if (First == string::npos || First == Last)
-    return false;
-  int Raw = std::atoi(Encoded.substr(0, First).c_str());
-  if (Raw < static_cast<int>(ValueType::None) ||
-      Raw > static_cast<int>(ValueType::Pointer))
-    return false;
-  // ParseTypeToken rejects nested arrays, so array-of-array metadata should
-  // never appear in valid source.
-  if (Raw == static_cast<int>(ValueType::Array))
-    return false;
-  ElemType = static_cast<ValueType>(Raw);
-  ElemStructName = Encoded.substr(First + 1, Last - First - 1);
-  if (!ParseUnsignedDecimal(Encoded.substr(Last + 1), Count))
-    return false;
-  return Count > 0;
-}
-
-static bool ArrayDecaysToPointerType(const string &ArrayInfo,
-                                     const string &PointerInfo) {
-  ValueType ElemType = ValueType::Error;
-  string ElemStructName;
-  uint64_t Count = 0;
-  ValueType PointeeType = ValueType::Error;
-  string PointeeStructName;
-  if (!DecodeArrayType(ArrayInfo, ElemType, ElemStructName, Count))
-    return false;
-  if (!DecodePointerType(PointerInfo, PointeeType, PointeeStructName))
-    return false;
-  return ElemType == PointeeType && ElemStructName == PointeeStructName;
-}
-
-static bool ParseUnsignedDecimal(const string &Text, uint64_t &Out) {
-  if (Text.empty())
-    return false;
-  uint64_t V = 0;
-  for (char C : Text) {
-    if (C < '0' || C > '9')
-      return false;
-    uint64_t D = static_cast<uint64_t>(C - '0');
-    if (V > (std::numeric_limits<uint64_t>::max() - D) / 10)
-      return false;
-    V = V * 10 + D;
-  }
-  Out = V;
-  return true;
 }
 
 static bool IsIntType(ValueType Type) {
@@ -5536,10 +4661,6 @@ static bool IsUnsignedIntType(ValueType Type) {
          Type == ValueType::UInt32 || Type == ValueType::UInt64;
 }
 
-static bool IsSignedIntType(ValueType Type) {
-  return IsIntType(Type) && !IsUnsignedIntType(Type);
-}
-
 static bool IsFloatType(ValueType Type) {
   return Type == ValueType::Float || Type == ValueType::Float32 ||
          Type == ValueType::Float64;
@@ -5549,28 +4670,89 @@ static bool IsNumericType(ValueType Type) {
   return IsIntType(Type) || IsFloatType(Type);
 }
 
+static string EncodePointerType(ValueType PointeeType,
+                                const string &PointeeStructName) {
+  return std::to_string(static_cast<int>(PointeeType)) + ":" +
+         PointeeStructName;
+}
+
+static bool DecodePointerType(const string &Encoded, ValueType &PointeeType,
+                              string &PointeeStructName) {
+  size_t Separator = Encoded.find(':');
+  if (Separator == string::npos)
+    return false;
+  int RawType = std::atoi(Encoded.substr(0, Separator).c_str());
+  if (RawType < static_cast<int>(ValueType::None) ||
+      RawType >= static_cast<int>(ValueType::Error))
+    return false;
+  PointeeType = static_cast<ValueType>(RawType);
+  PointeeStructName = Encoded.substr(Separator + 1);
+  return PointeeType != ValueType::None &&
+         PointeeType != ValueType::Pointer;
+}
+
+static string EncodeArrayType(ValueType ElementType,
+                              const string &ElementStructName,
+                              uint64_t ElementCount) {
+  return std::to_string(static_cast<int>(ElementType)) + ":" +
+         ElementStructName + ":" + std::to_string(ElementCount);
+}
+
+static bool DecodeArrayType(const string &Encoded, ValueType &ElementType,
+                            string &ElementStructName,
+                            uint64_t &ElementCount) {
+  size_t FirstSeparator = Encoded.find(':');
+  size_t LastSeparator = Encoded.rfind(':');
+  if (FirstSeparator == string::npos || LastSeparator == FirstSeparator)
+    return false;
+  int RawType = std::atoi(Encoded.substr(0, FirstSeparator).c_str());
+  if (RawType < static_cast<int>(ValueType::None) ||
+      RawType >= static_cast<int>(ValueType::Error) ||
+      RawType == static_cast<int>(ValueType::Array))
+    return false;
+  ElementType = static_cast<ValueType>(RawType);
+  ElementStructName = Encoded.substr(
+      FirstSeparator + 1, LastSeparator - FirstSeparator - 1);
+  ElementCount =
+      std::strtoull(Encoded.substr(LastSeparator + 1).c_str(), nullptr, 10);
+  return ElementCount > 0;
+}
+
+static bool ArrayDecaysToPointerType(const string &ArrayTypeInfo,
+                                     const string &PointerTypeInfo) {
+  ValueType ArrayElementType = ValueType::Error;
+  string ArrayElementStructName;
+  uint64_t ElementCount = 0;
+  ValueType PointerElementType = ValueType::Error;
+  string PointerElementStructName;
+  return DecodeArrayType(ArrayTypeInfo, ArrayElementType,
+                         ArrayElementStructName, ElementCount) &&
+         DecodePointerType(PointerTypeInfo, PointerElementType,
+                           PointerElementStructName) &&
+         ArrayElementType == PointerElementType &&
+         ArrayElementStructName == PointerElementStructName;
+}
+
 static Type *GetOrCreateLLVMStructType(const string &StructName) {
-  auto It = LLVMStructTypes.find(StructName);
-  if (It != LLVMStructTypes.end())
-    return It->second;
-  auto DefIt = StructTypes.find(StructName);
-  if (DefIt == StructTypes.end())
+  auto Existing = LLVMStructTypes.find(StructName);
+  if (Existing != LLVMStructTypes.end())
+    return Existing->second;
+
+  auto Definition = StructTypes.find(StructName);
+  if (Definition == StructTypes.end())
     return nullptr;
-  // LLVM named aggregate types use a conventional "struct." prefix here for
-  // both source-level 'struct' and 'class' in chapter 24. They are layout-
-  // equivalent at this stage; chapter 25 can layer semantic distinctions.
-  auto *ST = StructType::create(*TheContext, "struct." + StructName);
-  LLVMStructTypes[StructName] = ST;
-  std::vector<Type *> FieldTys;
-  FieldTys.reserve(DefIt->second.Fields.size());
-  for (const auto &Field : DefIt->second.Fields) {
-    Type *FT = LLVMTypeFor(Field.Type, Field.StructName);
-    if (!FT)
+
+  auto *LLVMStruct = StructType::create(*TheContext, "struct." + StructName);
+  LLVMStructTypes[StructName] = LLVMStruct;
+  vector<Type *> FieldTypes;
+  for (const auto &Field : Definition->second.Fields) {
+    Type *FieldType = LLVMTypeFor(Field.Type, Field.StructName);
+    if (!FieldType)
       return nullptr;
-    FieldTys.push_back(FT);
+    FieldTypes.push_back(FieldType);
   }
-  ST->setBody(FieldTys, false);
-  return ST;
+  LLVMStruct->setBody(FieldTypes, false);
+  return LLVMStruct;
 }
 
 static Type *LLVMTypeFor(ValueType Type, const string &StructName) {
@@ -5606,18 +4788,17 @@ static Type *LLVMTypeFor(ValueType Type, const string &StructName) {
   case ValueType::Struct:
     return GetOrCreateLLVMStructType(StructName);
   case ValueType::Array: {
-    ValueType ElemType = ValueType::Error;
-    string ElemStructName;
-    uint64_t Count = 0;
-    if (!DecodeArrayType(StructName, ElemType, ElemStructName, Count))
+    ValueType ElementType = ValueType::Error;
+    string ElementStructName;
+    uint64_t ElementCount = 0;
+    if (!DecodeArrayType(StructName, ElementType, ElementStructName,
+                         ElementCount))
       return nullptr;
-    llvm::Type *ElemLLVM = LLVMTypeFor(ElemType, ElemStructName);
-    if (!ElemLLVM)
-      return nullptr;
-    return ArrayType::get(ElemLLVM, Count);
+    return ArrayType::get(LLVMTypeFor(ElementType, ElementStructName),
+                          ElementCount);
   }
   case ValueType::Pointer:
-    return PointerType::getUnqual(*TheContext);
+    return PointerType::get(*TheContext, 0);
   case ValueType::None:
     return Type::getVoidTy(*TheContext);
   default:
@@ -5629,12 +4810,6 @@ static DIType *DITypeFor(ValueType Type) {
   switch (Type) {
   case ValueType::Int:
     return IntDIType;
-  case ValueType::Float:
-    return Float64DIType;
-  case ValueType::Float64:
-    return Float64DIType;
-  case ValueType::None:
-    return VoidDIType;
   case ValueType::Int8:
     return Int8DIType;
   case ValueType::Int16:
@@ -5643,22 +4818,131 @@ static DIType *DITypeFor(ValueType Type) {
     return Int32DIType;
   case ValueType::Int64:
     return Int64DIType;
+  case ValueType::UInt8:
+    return UInt8DIType;
+  case ValueType::UInt16:
+    return UInt16DIType;
+  case ValueType::UInt32:
+    return UInt32DIType;
+  case ValueType::UInt64:
+    return UInt64DIType;
+  case ValueType::Float:
+  case ValueType::Float64:
+    return Float64DIType;
   case ValueType::Float32:
     return Float32DIType;
   case ValueType::Bool:
     return BoolDIType;
-  case ValueType::Pointer:
-    return PtrDIType;
+  case ValueType::None:
+    return VoidDIType;
+  case ValueType::Struct:
+    return DIB ? DIB->createUnspecifiedType("struct") : nullptr;
   case ValueType::Array:
-    return nullptr;
+    return DIB ? DIB->createUnspecifiedType("array") : nullptr;
+  case ValueType::Pointer:
+    return DIB ? DIB->createUnspecifiedType("ptr") : nullptr;
   default:
     return nullptr;
   }
 }
 
+static OptimizationLevel GetOptLevel() {
+  switch (OptLevel) {
+  case 0:
+    return OptimizationLevel::O0;
+  case 1:
+    return OptimizationLevel::O1;
+  case 2:
+    return OptimizationLevel::O2;
+  default:
+    return OptimizationLevel::O3;
+  }
+}
+
+static void InitializeDebugInfo() {
+  if (!DebugInfo || !IsEmitMode()) {
+    DIB.reset();
+    TheCU = nullptr;
+    TheDIFile = nullptr;
+    return;
+  }
+
+  DIB = std::make_unique<DIBuilder>(*TheModule);
+
+  StringRef FullPath(CurrentSourcePath);
+  StringRef FileName = sys::path::filename(FullPath);
+  StringRef Directory = sys::path::parent_path(FullPath);
+  if (Directory.empty())
+    Directory = ".";
+
+  TheDIFile = DIB->createFile(FileName, Directory);
+  TheCU = DIB->createCompileUnit(dwarf::DW_LANG_C, TheDIFile, "pyxc",
+                                 OptLevel != 0, "", 0);
+
+  unsigned IntBits = TheModule->getDataLayout().getPointerSizeInBits();
+  IntDIType = DIB->createBasicType("int", IntBits, dwarf::DW_ATE_signed);
+  Int8DIType = DIB->createBasicType("int8", 8, dwarf::DW_ATE_signed);
+  Int16DIType = DIB->createBasicType("int16", 16, dwarf::DW_ATE_signed);
+  Int32DIType = DIB->createBasicType("int32", 32, dwarf::DW_ATE_signed);
+  Int64DIType = DIB->createBasicType("int64", 64, dwarf::DW_ATE_signed);
+  UInt8DIType = DIB->createBasicType("uint8", 8, dwarf::DW_ATE_unsigned);
+  UInt16DIType = DIB->createBasicType("uint16", 16, dwarf::DW_ATE_unsigned);
+  UInt32DIType = DIB->createBasicType("uint32", 32, dwarf::DW_ATE_unsigned);
+  UInt64DIType = DIB->createBasicType("uint64", 64, dwarf::DW_ATE_unsigned);
+  Float32DIType = DIB->createBasicType("float32", 32, dwarf::DW_ATE_float);
+  Float64DIType = DIB->createBasicType("float64", 64, dwarf::DW_ATE_float);
+  BoolDIType = DIB->createBasicType("bool", 1, dwarf::DW_ATE_boolean);
+  VoidDIType = DIB->createUnspecifiedType("None");
+
+  TheModule->addModuleFlag(Module::Warning, "Dwarf Version",
+                           dwarf::DWARF_VERSION);
+  TheModule->addModuleFlag(Module::Warning, "Debug Info Version",
+                           DEBUG_METADATA_VERSION);
+}
+
+static void FinalizeDebugInfo() {
+  if (DIB)
+    DIB->finalize();
+}
+
+static void SetCurrentDebugLocation(unsigned Line) {
+  if (!DIB || !CurDIScope)
+    return;
+  Builder->SetCurrentDebugLocation(
+      DILocation::get(*TheContext, Line, 1, CurDIScope));
+}
+
+static void EmitDebugDeclare(AllocaInst *Alloca, StringRef Name, unsigned Line,
+                             bool IsParameter, unsigned ArgumentNumber,
+                             ValueType Type) {
+  if (!DIB || !CurDIScope || !Alloca)
+    return;
+
+  DIType *DebugType = DITypeFor(Type);
+  auto *Location = DILocation::get(*TheContext, Line, 1, CurDIScope);
+  DILocalVariable *Variable = nullptr;
+  if (IsParameter) {
+    Variable = DIB->createParameterVariable(
+        CurDIScope, Name, ArgumentNumber, TheDIFile, Line, DebugType, true);
+  } else {
+    Variable = DIB->createAutoVariable(CurDIScope, Name, TheDIFile, Line,
+                                       DebugType, true);
+  }
+
+  DIB->insertDeclare(Alloca, Variable, DIB->createExpression(), Location,
+                     Builder->GetInsertBlock());
+}
+
+static void EmitDebugGlobal(GlobalVariable *Global, StringRef Name,
+                            unsigned Line, ValueType Type) {
+  if (!DIB || !TheCU || !Global)
+    return;
+  auto *Expression = DIB->createGlobalVariableExpression(
+      TheCU, Name, Name, TheDIFile, Line, DITypeFor(Type), true);
+  Global->addDebugInfo(Expression);
+}
+
 static bool IsAssignable(ValueType Dest, ValueType Src) {
-  if (Dest == ValueType::Array || Src == ValueType::Array)
-    return false;
   if (Dest == Src)
     return true;
   if ((Dest == ValueType::Float && Src == ValueType::Float64) ||
@@ -5687,7 +4971,8 @@ Value *LogErrorV(const char *Str) {
 /// CreateEntryBlockAlloca - Create a stack slot in the current function's
 /// entry block for a mutable variable.
 static AllocaInst *CreateEntryBlockAlloca(Function *TheFunction,
-                                          const string &VarName, ValueType Type,
+                                          const string &VarName,
+                                          ValueType Type,
                                           const string &StructName = "") {
   IRBuilder<> TmpB(&TheFunction->getEntryBlock(),
                    TheFunction->getEntryBlock().begin());
@@ -5697,14 +4982,18 @@ static AllocaInst *CreateEntryBlockAlloca(Function *TheFunction,
 static Constant *ZeroConstant(ValueType Type, const string &StructName = "") {
   switch (Type) {
   case ValueType::Int8:
+  case ValueType::UInt8:
     return ConstantInt::get(Type::getInt8Ty(*TheContext), 0);
   case ValueType::Int16:
+  case ValueType::UInt16:
     return ConstantInt::get(Type::getInt16Ty(*TheContext), 0);
   case ValueType::Int32:
+  case ValueType::UInt32:
     return ConstantInt::get(Type::getInt32Ty(*TheContext), 0);
   case ValueType::Int:
     return ConstantInt::get(LLVMTypeFor(Type), 0);
   case ValueType::Int64:
+  case ValueType::UInt64:
     return ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
   case ValueType::Float:
     return ConstantFP::get(*TheContext, APFloat(0.0));
@@ -5717,10 +5006,10 @@ static Constant *ZeroConstant(ValueType Type, const string &StructName = "") {
   case ValueType::Struct:
     return Constant::getNullValue(LLVMTypeFor(Type, StructName));
   case ValueType::Array:
-    return ConstantAggregateZero::get(LLVMTypeFor(Type, StructName));
+    return Constant::getNullValue(LLVMTypeFor(Type, StructName));
   case ValueType::Pointer:
     return ConstantPointerNull::get(
-        cast<PointerType>(LLVMTypeFor(ValueType::Pointer)));
+        cast<PointerType>(LLVMTypeFor(Type, StructName)));
   default:
     return nullptr;
   }
@@ -5730,6 +5019,8 @@ static Value *EmitCast(Value *V, ValueType From, ValueType To) {
   if (!V)
     return nullptr;
   if (From == To)
+    return V;
+  if (From == ValueType::Pointer && To == ValueType::Pointer)
     return V;
   // Integer ↔ float conversions.
   if (IsIntType(From) && IsFloatType(To))
@@ -5767,14 +5058,13 @@ static Value *EmitCast(Value *V, ValueType From, ValueType To) {
       return Builder->CreateFCmpONE(V, ConstantFP::get(LLVMTypeFor(From), 0.0),
                                     "tobool");
   }
-  if (From == ValueType::Pointer && To == ValueType::Pointer)
-    return Builder->CreateBitCast(V, LLVMTypeFor(ValueType::Pointer),
-                                  "ptrcast");
   return nullptr;
 }
 
 static Value *EmitImplicitCast(Value *V, ValueType From, ValueType To) {
   if (From == To)
+    return V;
+  if (From == ValueType::Array && To == ValueType::Pointer)
     return V;
   if (IsFloatType(From) && IsFloatType(To)) {
     unsigned FromBits = LLVMTypeFor(From)->getScalarSizeInBits();
@@ -5809,118 +5099,6 @@ static Value *ToBool(Value *V, ValueType Type) {
   return nullptr;
 }
 
-static OptimizationLevel GetOptLevel() {
-  switch (OptLevel) {
-  case 0:
-    return OptimizationLevel::O0;
-  case 1:
-    return OptimizationLevel::O1;
-  case 2:
-    return OptimizationLevel::O2;
-  default:
-    return OptimizationLevel::O3;
-  }
-}
-
-static void InitializeDebugInfo() {
-  if (!DebugInfo) {
-    DIB.reset();
-    TheCU = nullptr;
-    TheDIFile = nullptr;
-    IntDIType = nullptr;
-    Float64DIType = nullptr;
-    VoidDIType = nullptr;
-    Int8DIType = nullptr;
-    Int16DIType = nullptr;
-    Int32DIType = nullptr;
-    Int64DIType = nullptr;
-    Float32DIType = nullptr;
-    BoolDIType = nullptr;
-    PtrDIType = nullptr;
-    return;
-  }
-
-  DIB = std::make_unique<DIBuilder>(*TheModule);
-
-  StringRef FullPath(CurrentSourcePath);
-  StringRef FileName = sys::path::filename(FullPath);
-  StringRef Dir = sys::path::parent_path(FullPath);
-  if (Dir.empty())
-    Dir = ".";
-
-  TheDIFile = DIB->createFile(FileName, Dir);
-  bool IsOptimized = OptLevel != 0;
-  TheCU = DIB->createCompileUnit(dwarf::DW_LANG_C, TheDIFile, "pyxc",
-                                 IsOptimized, "", 0);
-  unsigned bits = TheModule->getDataLayout().getPointerSizeInBits();
-  IntDIType = DIB->createBasicType("int", bits, dwarf::DW_ATE_signed);
-  Float64DIType = DIB->createBasicType("float64", 64, dwarf::DW_ATE_float);
-  VoidDIType = DIB->createUnspecifiedType("None");
-  Int8DIType = DIB->createBasicType("int8", 8, dwarf::DW_ATE_signed);
-  Int16DIType = DIB->createBasicType("int16", 16, dwarf::DW_ATE_signed);
-  Int32DIType = DIB->createBasicType("int32", 32, dwarf::DW_ATE_signed);
-  Int64DIType = DIB->createBasicType("int64", 64, dwarf::DW_ATE_signed);
-  Float32DIType = DIB->createBasicType("float32", 32, dwarf::DW_ATE_float);
-  BoolDIType = DIB->createBasicType("bool", 1, dwarf::DW_ATE_boolean);
-  PtrDIType = DIB->createPointerType(Int8DIType, bits);
-
-  TheModule->addModuleFlag(Module::Warning, "Dwarf Version",
-                           dwarf::DWARF_VERSION);
-  TheModule->addModuleFlag(Module::Warning, "Debug Info Version",
-                           DEBUG_METADATA_VERSION);
-}
-
-static void FinalizeDebugInfo() {
-  if (DIB)
-    DIB->finalize();
-}
-
-static void SetCurrentDebugLocation(unsigned Line) {
-  if (!DIB || !CurDIScope)
-    return;
-  Builder->SetCurrentDebugLocation(
-      DILocation::get(*TheContext, Line, 1, CurDIScope));
-}
-
-static void EmitDebugDeclare(AllocaInst *Alloca, StringRef Name, unsigned Line,
-                             bool IsParam, unsigned ArgNo = 0,
-                             ValueType Type = ValueType::Float64) {
-  if (!DIB || !CurDIScope || !Alloca)
-    return;
-
-  DIType *DIType = DITypeFor(Type);
-  if (!DIType)
-    DIType = Float64DIType
-                 ? Float64DIType
-                 : DIB->createBasicType("float64", 64, dwarf::DW_ATE_float);
-  auto *Loc = DILocation::get(*TheContext, Line, 1, CurDIScope);
-  DILocalVariable *Var = nullptr;
-  if (IsParam) {
-    Var = DIB->createParameterVariable(CurDIScope, Name, ArgNo, TheDIFile, Line,
-                                       DIType, true);
-  } else {
-    Var = DIB->createAutoVariable(CurDIScope, Name, TheDIFile, Line, DIType,
-                                  true);
-  }
-
-  DIB->insertDeclare(Alloca, Var, DIB->createExpression(), Loc,
-                     Builder->GetInsertBlock());
-}
-
-static void EmitDebugGlobal(GlobalVariable *GV, StringRef Name, unsigned Line,
-                            ValueType Type) {
-  if (!DIB || !TheCU || !GV)
-    return;
-  DIType *DIType = DITypeFor(Type);
-  if (!DIType)
-    DIType = Float64DIType
-                 ? Float64DIType
-                 : DIB->createBasicType("float64", 64, dwarf::DW_ATE_float);
-  auto *GVE = DIB->createGlobalVariableExpression(TheCU, Name, Name, TheDIFile,
-                                                  Line, DIType, true);
-  GV->addDebugInfo(GVE);
-}
-
 /// GetGlobalVariable - Return a module-local GlobalVariable* for Name.
 ///
 /// If the global is defined in this module, returns it. If the global exists
@@ -5932,7 +5110,7 @@ static GlobalVariable *GetGlobalVariable(const string &Name) {
 
   if (!GlobalVarTypes.count(Name))
     return nullptr;
-  auto *Type = LLVMTypeFor(GlobalVarTypes[Name], GlobalVarStructTypes[Name]);
+  auto *Type = LLVMTypeFor(GlobalVarTypes[Name], GlobalVarStructNames[Name]);
   return new GlobalVariable(*TheModule, Type, false,
                             GlobalValue::ExternalLinkage, nullptr, Name);
 }
@@ -5980,625 +5158,319 @@ Value *BoolExpressionNode::codegen() {
 }
 
 Value *StringExpressionNode::codegen() {
-  auto *I8Ty = Type::getInt8Ty(*TheContext);
-  auto *ArrTy = ArrayType::get(I8Ty, Text.size() + 1);
-  auto *Init = ConstantDataArray::getString(*TheContext, Text, true);
-  string Name = ".str." + to_string(StringLiteralCounter++);
-  auto *GV = new GlobalVariable(*TheModule, ArrTy, true,
-                                GlobalValue::PrivateLinkage, Init, Name);
-  GV->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
-  GV->setAlignment(Align(1));
+  auto *ByteType = Type::getInt8Ty(*TheContext);
+  auto *StorageType = ArrayType::get(ByteType, Text.size() + 1);
+  auto *Initializer = ConstantDataArray::getString(*TheContext, Text, true);
+  string GlobalName = ".str." + to_string(StringLiteralCounter++);
+  auto *Global = new GlobalVariable(
+      *TheModule, StorageType, true, GlobalValue::PrivateLinkage, Initializer,
+      GlobalName);
+  Global->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
+  Global->setAlignment(Align(1));
   ModuleHasGlobals = true;
 
   Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
-  return Builder->CreateInBoundsGEP(ArrTy, GV, {Zero, Zero}, "strptr");
-}
-
-Value *ArrayLiteralExpressionNode::codegen() {
-  ValueType ElemType = ValueType::Error;
-  string ElemStructName;
-  uint64_t Count = 0;
-  if (!DecodeArrayType(getStructName(), ElemType, ElemStructName, Count))
-    return LogErrorV("Invalid array literal type");
-  if (Elements.size() != Count)
-    return LogErrorV("Array literal element count mismatch");
-
-  auto *ArrTy = dyn_cast<ArrayType>(LLVMTypeFor(getType(), getStructName()));
-  if (!ArrTy)
-    return LogErrorV("Invalid array LLVM type");
-
-  Value *Agg = UndefValue::get(ArrTy);
-  for (size_t I = 0; I < Elements.size(); ++I) {
-    Value *Elem = Elements[I]->codegen();
-    if (!Elem)
-      return nullptr;
-    Elem = EmitImplicitCast(Elem, Elements[I]->getType(), ElemType);
-    if (!Elem)
-      return nullptr;
-    Agg = Builder->CreateInsertValue(Agg, Elem, {static_cast<unsigned>(I)},
-                                     "arr.ins");
-  }
-  return Agg;
+  return Builder->CreateInBoundsGEP(StorageType, Global, {Zero, Zero},
+                                    "strptr");
 }
 
 /// NameExpressionNode::codegen - A variable reference loads the current value
 /// from the variable's stack slot.
+Value *NameExpressionNode::codegenAddress() {
+  auto Local = NamedValues.find(Name);
+  if (Local != NamedValues.end() && Local->second)
+    return Local->second;
+  return GetGlobalVariable(Name);
+}
+
 Value *NameExpressionNode::codegen() {
-  auto DecayArray = [&](Value *BasePtr) -> Value * {
-    if (getType() != ValueType::Array)
-      return BasePtr;
-    auto *ArrTy = LLVMTypeFor(getType(), getStructName());
+  if (getType() == ValueType::Array) {
+    Value *ArrayAddress = codegenAddress();
+    if (!ArrayAddress)
+      return LogErrorV("Unknown variable name");
     Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
-    return Builder->CreateInBoundsGEP(ArrTy, BasePtr, {Zero, Zero},
-                                      "arraydecay");
-  };
+    return Builder->CreateInBoundsGEP(
+        LLVMTypeFor(getType(), getStructName()), ArrayAddress, {Zero, Zero},
+        "arraydecay");
+  }
 
   auto It = NamedValues.find(Name);
   if (It != NamedValues.end() && It->second)
-    return (getType() == ValueType::Array)
-               ? DecayArray(It->second)
-               : Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()),
-                                     It->second, Name.c_str());
+    return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), It->second,
+                               Name.c_str());
 
   if (auto *GV = GetGlobalVariable(Name))
-    return (getType() == ValueType::Array)
-               ? DecayArray(GV)
-               : Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()),
-                                     GV, Name.c_str());
+    return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), GV,
+                               Name.c_str());
 
   return LogErrorV("Unknown variable name");
 }
-
-static Value *LoadPointerValue(const string &BaseName,
-                               const vector<string> &FieldPath,
-                               ValueType BaseType,
-                               const string &BaseStructName);
 
 static Value *GetFieldAddress(const string &BaseName,
                               const vector<string> &FieldPath,
                               ValueType *OutType = nullptr,
                               string *OutStructName = nullptr) {
-  Value *BasePtr = nullptr;
-  ValueType BaseType = ValueType::Error;
-  string BaseStruct;
-  auto It = NamedValues.find(BaseName);
-  if (It != NamedValues.end() && It->second) {
-    BasePtr = It->second;
-    auto TI = NamedValueTypes.find(BaseName);
-    if (TI != NamedValueTypes.end())
-      BaseType = TI->second;
-    auto SI = NamedValueStructNames.find(BaseName);
-    if (SI != NamedValueStructNames.end())
-      BaseStruct = SI->second;
-  } else if (auto *GV = GetGlobalVariable(BaseName)) {
-    BasePtr = GV;
-    auto TI = GlobalVarTypes.find(BaseName);
-    if (TI != GlobalVarTypes.end())
-      BaseType = TI->second;
-    auto SI = GlobalVarStructTypes.find(BaseName);
-    if (SI != GlobalVarStructTypes.end())
-      BaseStruct = SI->second;
+  Value *Pointer = nullptr;
+  string CurrentStructName;
+
+  auto Local = NamedValues.find(BaseName);
+  if (Local != NamedValues.end() && Local->second) {
+    Pointer = Local->second;
+    auto Struct = NamedValueStructNames.find(BaseName);
+    if (Struct != NamedValueStructNames.end())
+      CurrentStructName = Struct->second;
+  } else if (auto *Global = GetGlobalVariable(BaseName)) {
+    Pointer = Global;
+    auto Struct = GlobalVarStructNames.find(BaseName);
+    if (Struct != GlobalVarStructNames.end())
+      CurrentStructName = Struct->second;
   }
-  if (!BasePtr)
-    return nullptr;
-  if (BaseType == ValueType::Pointer) {
-    ValueType PointeeType = ValueType::Error;
-    string PointeeStruct;
-    if (!DecodePointerType(BaseStruct, PointeeType, PointeeStruct) ||
-        PointeeType != ValueType::Struct)
-      return nullptr;
-    BasePtr = Builder->CreateLoad(LLVMTypeFor(BaseType, BaseStruct), BasePtr,
-                                  (BaseName + ".ptr").c_str());
-    if (!BasePtr)
-      return nullptr;
-    BaseType = ValueType::Struct;
-    BaseStruct = PointeeStruct;
-  }
-  if (BaseType != ValueType::Struct || BaseStruct.empty())
+
+  if (!Pointer || CurrentStructName.empty())
     return nullptr;
 
-  Value *Ptr = BasePtr;
-  ValueType CurType = BaseType;
-  string CurStruct = BaseStruct;
-  for (const auto &FieldName : FieldPath) {
-    auto SI = StructTypes.find(CurStruct);
-    if (SI == StructTypes.end())
+  ValueType CurrentType = ValueType::Struct;
+  ValueType PointeeType = ValueType::Error;
+  string PointeeStructName;
+  if (DecodePointerType(CurrentStructName, PointeeType, PointeeStructName)) {
+    if (PointeeType != ValueType::Struct)
       return nullptr;
-    auto FI = SI->second.FieldIndex.find(FieldName);
-    if (FI == SI->second.FieldIndex.end())
-      return nullptr;
-    const auto &FD = SI->second.Fields[FI->second];
-    llvm::Type *BaseLLVM = LLVMTypeFor(CurType, CurStruct);
-    Ptr = Builder->CreateStructGEP(BaseLLVM, Ptr, FI->second, "fieldptr");
-    CurType = FD.Type;
-    CurStruct = FD.StructName;
+    Pointer = Builder->CreateLoad(
+        LLVMTypeFor(ValueType::Pointer, CurrentStructName), Pointer, "self");
+    CurrentType = PointeeType;
+    CurrentStructName = PointeeStructName;
   }
+
+  for (const auto &FieldName : FieldPath) {
+    auto Struct = StructTypes.find(CurrentStructName);
+    if (Struct == StructTypes.end())
+      return nullptr;
+    auto Field = Struct->second.FieldIndices.find(FieldName);
+    if (Field == Struct->second.FieldIndices.end())
+      return nullptr;
+
+    const auto &FieldInfo = Struct->second.Fields[Field->second];
+    Pointer = Builder->CreateStructGEP(
+        LLVMTypeFor(CurrentType, CurrentStructName), Pointer, Field->second,
+        "fieldptr");
+    CurrentType = FieldInfo.Type;
+    CurrentStructName = FieldInfo.StructName;
+  }
+
   if (OutType)
-    *OutType = CurType;
+    *OutType = CurrentType;
   if (OutStructName)
-    *OutStructName = CurStruct;
-  return Ptr;
+    *OutStructName = CurrentStructName;
+  return Pointer;
 }
 
 Value *FieldExpressionNode::codegen() {
-  ValueType LeafType = ValueType::Error;
-  string LeafStruct;
-  Value *Ptr =
-      GetFieldAddress(*getLValueName(), FieldPath, &LeafType, &LeafStruct);
-  if (!Ptr)
+  ValueType FieldType = ValueType::Error;
+  string FieldStructName;
+  Value *Pointer = GetFieldAddress(*getLValueName(), FieldPath, &FieldType,
+                                   &FieldStructName);
+  if (!Pointer)
     return LogErrorV("Unknown field access");
-  return Builder->CreateLoad(LLVMTypeFor(LeafType, LeafStruct), Ptr,
+  return Builder->CreateLoad(LLVMTypeFor(FieldType, FieldStructName), Pointer,
                              "fieldload");
 }
 
-Value *AddrExpressionNode::codegen() {
-  if (FieldPath.empty()) {
-    auto It = NamedValues.find(BaseName);
-    if (It != NamedValues.end() && It->second)
-      return It->second;
-    if (auto *GV = GetGlobalVariable(BaseName))
-      return GV;
-    return LogErrorV("Unknown variable name");
-  }
-  Value *Ptr = GetFieldAddress(BaseName, FieldPath);
-  if (!Ptr)
+Value *FieldExpressionNode::codegenAddress() {
+  Value *Pointer = GetFieldAddress(*getLValueName(), FieldPath);
+  if (!Pointer)
     return LogErrorV("Unknown field access");
-  return Ptr;
+  return Pointer;
 }
 
-static Value *LoadPointerValue(const string &BaseName,
-                               const vector<string> &FieldPath,
-                               ValueType &PtrType, string &PtrStructName) {
-  if (FieldPath.empty()) {
-    auto It = NamedValues.find(BaseName);
-    if (It != NamedValues.end() && It->second) {
-      PtrType = NamedValueTypes[BaseName];
-      PtrStructName = NamedValueStructNames[BaseName];
-      if (PtrType != ValueType::Pointer)
-        return nullptr;
-      return Builder->CreateLoad(LLVMTypeFor(ValueType::Pointer), It->second,
-                                 "ptrload");
-    }
-    if (auto *GV = GetGlobalVariable(BaseName)) {
-      PtrType = GlobalVarTypes[BaseName];
-      PtrStructName = GlobalVarStructTypes[BaseName];
-      if (PtrType != ValueType::Pointer)
-        return nullptr;
-      return Builder->CreateLoad(LLVMTypeFor(ValueType::Pointer), GV,
-                                 "ptrload");
-    }
-    return nullptr;
-  }
-  Value *PtrAddr =
-      GetFieldAddress(BaseName, FieldPath, &PtrType, &PtrStructName);
-  if (!PtrAddr || PtrType != ValueType::Pointer)
-    return nullptr;
-  return Builder->CreateLoad(LLVMTypeFor(ValueType::Pointer), PtrAddr,
-                             "ptrload");
+Value *MemberExpressionNode::codegenAddress() {
+  Value *BaseAddress = Base->codegenAddress();
+  if (!BaseAddress)
+    return LogErrorV("Field access requires an lvalue");
+  return Builder->CreateStructGEP(
+      LLVMTypeFor(ValueType::Struct, Base->getStructName()), BaseAddress,
+      FieldIndex, "fieldptr");
 }
 
-static Value *BuildIndexElementPtr(IndexExpressionNode *IdxExpr) {
-  ValueType PtrType = ValueType::Error;
-  string PtrStructName;
-  Value *BasePtr = nullptr;
-  if (IdxExpr->getFieldPath().empty()) {
-    auto It = NamedValues.find(IdxExpr->getBaseName());
-    if (It != NamedValues.end() && It->second) {
-      PtrType = NamedValueTypes[IdxExpr->getBaseName()];
-      PtrStructName = NamedValueStructNames[IdxExpr->getBaseName()];
-      if (PtrType == ValueType::Pointer) {
-        BasePtr = Builder->CreateLoad(LLVMTypeFor(ValueType::Pointer),
-                                      It->second, "ptrload");
-      } else if (PtrType == ValueType::Array) {
-        Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
-        auto *ArrTy = LLVMTypeFor(PtrType, PtrStructName);
-        BasePtr = Builder->CreateInBoundsGEP(ArrTy, It->second, {Zero, Zero},
-                                             "arraydecay");
-      }
-    } else if (auto *GV = GetGlobalVariable(IdxExpr->getBaseName())) {
-      PtrType = GlobalVarTypes[IdxExpr->getBaseName()];
-      PtrStructName = GlobalVarStructTypes[IdxExpr->getBaseName()];
-      if (PtrType == ValueType::Pointer) {
-        BasePtr =
-            Builder->CreateLoad(LLVMTypeFor(ValueType::Pointer), GV, "ptrload");
-      } else if (PtrType == ValueType::Array) {
-        Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
-        auto *ArrTy = LLVMTypeFor(PtrType, PtrStructName);
-        BasePtr =
-            Builder->CreateInBoundsGEP(ArrTy, GV, {Zero, Zero}, "arraydecay");
-      }
-    }
-  } else {
-    BasePtr = LoadPointerValue(IdxExpr->getBaseName(), IdxExpr->getFieldPath(),
-                               PtrType, PtrStructName);
-  }
-  if (!BasePtr)
-    return LogErrorV("Indexing requires a pointer or array value");
-  Value *IdxVal = IdxExpr->getIndex()->codegen();
-  if (!IdxVal)
+Value *MemberExpressionNode::codegen() {
+  Value *Address = codegenAddress();
+  if (!Address)
     return nullptr;
-  if (!IsIntType(IdxExpr->getIndex()->getType()))
-    return LogErrorV("Pointer index must be an integer");
-  if (IdxExpr->getIndex()->getType() != ValueType::Int64) {
-    IdxVal = EmitImplicitCast(IdxVal, IdxExpr->getIndex()->getType(),
-                              ValueType::Int64);
-    if (!IdxVal)
-      return LogErrorV("Index must be an integer");
+  return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), Address,
+                             "fieldload");
+}
+
+Value *IndexExpressionNode::codegenAddress() {
+  Value *IndexValue = Index->codegen();
+  if (!IndexValue)
+    return nullptr;
+  IndexValue = Builder->CreateIntCast(
+      IndexValue, Type::getInt64Ty(*TheContext),
+      !IsUnsignedIntType(Index->getType()), "index");
+
+  if (Base->getType() == ValueType::Array) {
+    Value *ArrayAddress = Base->codegenAddress();
+    if (!ArrayAddress)
+      return nullptr;
+    Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
+    return Builder->CreateInBoundsGEP(
+        LLVMTypeFor(Base->getType(), Base->getStructName()), ArrayAddress,
+        {Zero, IndexValue}, "elemptr");
   }
+
+  Value *BasePointer = Base->codegen();
+  if (!BasePointer)
+    return nullptr;
   return Builder->CreateInBoundsGEP(
-      LLVMTypeFor(IdxExpr->getType(), IdxExpr->getStructName()), BasePtr,
-      IdxVal, "elemptr");
-}
-
-static Value *BuildIndexedFieldPtr(IndexedFieldExpressionNode *Expr,
-                                   ValueType *LeafType,
-                                   string *LeafStructName) {
-  Value *BaseElemPtr = BuildIndexElementPtr(Expr->getBaseIndex());
-  if (!BaseElemPtr)
-    return nullptr;
-  Value *Ptr = BaseElemPtr;
-  ValueType CurType = Expr->getBaseIndex()->getType();
-  string CurStruct = Expr->getBaseIndex()->getStructName();
-  for (const auto &FieldName : Expr->getFieldPath()) {
-    if (CurType != ValueType::Struct || CurStruct.empty())
-      return nullptr;
-    auto SI = StructTypes.find(CurStruct);
-    if (SI == StructTypes.end())
-      return nullptr;
-    auto FI = SI->second.FieldIndex.find(FieldName);
-    if (FI == SI->second.FieldIndex.end())
-      return nullptr;
-    const auto &FD = SI->second.Fields[FI->second];
-    llvm::Type *BaseLLVM = LLVMTypeFor(CurType, CurStruct);
-    Ptr = Builder->CreateStructGEP(BaseLLVM, Ptr, FI->second, "fieldptr");
-    CurType = FD.Type;
-    CurStruct = FD.StructName;
-  }
-  if (LeafType)
-    *LeafType = CurType;
-  if (LeafStructName)
-    *LeafStructName = CurStruct;
-  return Ptr;
-}
-
-static Value *ResolveIncDecLValuePtr(ExpressionNode *Operand, ValueType *Ty,
-                                     string *StructName) {
-  if (auto *Var = dynamic_cast<NameExpressionNode *>(Operand)) {
-    const string &Name = Var->getName();
-    auto It = NamedValues.find(Name);
-    if (It != NamedValues.end() && It->second) {
-      if (Ty)
-        *Ty = Var->getType();
-      if (StructName)
-        *StructName = Var->getStructName();
-      return It->second;
-    }
-    if (auto *GV = GetGlobalVariable(Name)) {
-      if (Ty)
-        *Ty = Var->getType();
-      if (StructName)
-        *StructName = Var->getStructName();
-      return GV;
-    }
-    return nullptr;
-  }
-  if (auto *Field = dynamic_cast<FieldExpressionNode *>(Operand))
-    return GetFieldAddress(*Field->getLValueName(), Field->getFieldPath(), Ty,
-                           StructName);
-  if (auto *Idx = dynamic_cast<IndexExpressionNode *>(Operand)) {
-    if (Ty)
-      *Ty = Idx->getType();
-    if (StructName)
-      *StructName = Idx->getStructName();
-    return BuildIndexElementPtr(Idx);
-  }
-  if (auto *IdxField = dynamic_cast<IndexedFieldExpressionNode *>(Operand))
-    return BuildIndexedFieldPtr(IdxField, Ty, StructName);
-  return nullptr;
-}
-
-static Value *EmitBuiltInArithmetic(int Operator, Value *L, ValueType LType,
-                                    const string &LStruct, Value *R,
-                                    ValueType RType, const string &RStruct,
-                                    ValueType ResultType,
-                                    const string &ResultStruct) {
-  if ((Operator == tok_plus || Operator == tok_minus) &&
-      ((LType == ValueType::Pointer && IsIntType(RType)) ||
-       (RType == ValueType::Pointer && IsIntType(LType)))) {
-    Value *Ptr = nullptr;
-    Value *Idx = nullptr;
-    if (LType == ValueType::Pointer && IsIntType(RType) && Operator == tok_plus) {
-      Ptr = L;
-      Idx = EmitImplicitCast(R, RType, ValueType::Int64);
-    } else if (RType == ValueType::Pointer && IsIntType(LType) && Operator == tok_plus) {
-      Ptr = R;
-      Idx = EmitImplicitCast(L, LType, ValueType::Int64);
-    } else if (LType == ValueType::Pointer && IsIntType(RType) && Operator == tok_minus) {
-      Ptr = L;
-      Idx = EmitImplicitCast(R, RType, ValueType::Int64);
-      if (Idx)
-        Idx = Builder->CreateNeg(Idx, "negidx");
-    }
-    if (!Ptr || !Idx)
-      return LogErrorV("Type mismatch in assignment");
-    ValueType ElemType = ValueType::Error;
-    string ElemStruct;
-    if (!DecodePointerType(ResultStruct, ElemType, ElemStruct))
-      return LogErrorV("Invalid pointer type metadata");
-    llvm::Type *ElemLLVM = LLVMTypeFor(ElemType, ElemStruct);
-    if (!ElemLLVM)
-      return LogErrorV("Invalid pointer element type");
-    return Builder->CreateInBoundsGEP(ElemLLVM, Ptr, Idx, "ptrarith");
-  }
-
-  if (Operator == tok_minus && ResultType == ValueType::Int64 &&
-      LType == ValueType::Pointer && RType == ValueType::Pointer &&
-      LStruct == RStruct) {
-    ValueType ElemType = ValueType::Error;
-    string ElemStruct;
-    if (!DecodePointerType(LStruct, ElemType, ElemStruct))
-      return LogErrorV("Invalid pointer type metadata");
-    llvm::Type *ElemLLVM = LLVMTypeFor(ElemType, ElemStruct);
-    if (!ElemLLVM)
-      return LogErrorV("Invalid pointer element type");
-    return Builder->CreatePtrDiff(ElemLLVM, L, R, "ptrdiff");
-  }
-
-  L = EmitImplicitCast(L, LType, ResultType);
-  R = EmitImplicitCast(R, RType, ResultType);
-  if (!L || !R)
-    return LogErrorV("Type mismatch in assignment");
-  if (IsFloatType(ResultType)) {
-    if (Operator == tok_plus)
-      return Builder->CreateFAdd(L, R, "addtmp");
-    if (Operator == tok_minus)
-      return Builder->CreateFSub(L, R, "subtmp");
-    if (Operator == tok_star)
-      return Builder->CreateFMul(L, R, "multmp");
-    return Builder->CreateFDiv(L, R, "divtmp");
-  }
-  if (Operator == tok_plus)
-    return Builder->CreateAdd(L, R, "addtmp");
-  if (Operator == tok_minus)
-    return Builder->CreateSub(L, R, "subtmp");
-  if (Operator == tok_star)
-    return Builder->CreateMul(L, R, "multmp");
-  if (Operator == tok_slash)
-    return IsUnsignedIntType(ResultType) ? Builder->CreateUDiv(L, R, "divtmp")
-                                         : Builder->CreateSDiv(L, R, "divtmp");
-  return IsUnsignedIntType(ResultType) ? Builder->CreateURem(L, R, "modtmp")
-                                       : Builder->CreateSRem(L, R, "modtmp");
+      LLVMTypeFor(getType(), getStructName()), BasePointer, IndexValue,
+      "elemptr");
 }
 
 Value *IndexExpressionNode::codegen() {
-  Value *ElemPtr = BuildIndexElementPtr(this);
-  if (!ElemPtr)
+  Value *Address = codegenAddress();
+  if (!Address)
     return nullptr;
-  return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), ElemPtr,
+  return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), Address,
                              "elemload");
 }
 
-Value *IndexAssignmentExpressionNode::codegen() {
-  Value *ElemPtr = BuildIndexElementPtr(Left.get());
-  if (!ElemPtr)
-    return nullptr;
-  Value *Val = Right->codegen();
-  if (!Val)
-    return nullptr;
-  Val = EmitImplicitCast(Val, Right->getType(), getType());
-  if (!Val)
-    return LogErrorV("Type mismatch in assignment");
-  Builder->CreateStore(Val, ElemPtr);
-  return Val;
+Value *AddrExpressionNode::codegen() {
+  Value *Address = Operand->codegenAddress();
+  if (!Address)
+    return LogErrorV("addr expects an lvalue");
+  return Address;
 }
 
-Value *IndexCompoundAssignmentExpressionNode::codegen() {
-  Value *ElemPtr = BuildIndexElementPtr(Left.get());
-  if (!ElemPtr)
-    return nullptr;
-  Value *L = Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()),
-                                 ElemPtr, "elemload");
-  Value *R = Right->codegen();
-  if (!R)
-    return nullptr;
-  Value *Combined = EmitBuiltInArithmetic(Operator, L, getType(), getStructName(), R,
-                                          Right->getType(), Right->getStructName(),
-                                          getType(), getStructName());
-  if (!Combined)
-    return nullptr;
-  Builder->CreateStore(Combined, ElemPtr);
-  return Combined;
-}
+Value *ArrayLiteralExpressionNode::codegen() {
+  ValueType ElementType = ValueType::Error;
+  string ElementStructName;
+  uint64_t ElementCount = 0;
+  if (!DecodeArrayType(getStructName(), ElementType, ElementStructName,
+                       ElementCount))
+    return LogErrorV("Invalid array literal type");
 
-Value *IndexedFieldExpressionNode::codegen() {
-  Value *BaseElemPtr = BuildIndexElementPtr(BaseIndex.get());
-  if (!BaseElemPtr)
-    return nullptr;
-  Value *Ptr = BaseElemPtr;
-  ValueType CurType = BaseIndex->getType();
-  string CurStruct = BaseIndex->getStructName();
-  for (const auto &FieldName : FieldPath) {
-    if (CurType != ValueType::Struct || CurStruct.empty())
-      return LogErrorV("Field access requires a struct value");
-    auto SI = StructTypes.find(CurStruct);
-    if (SI == StructTypes.end())
-      return LogErrorV("Unknown struct type in field access");
-    auto FI = SI->second.FieldIndex.find(FieldName);
-    if (FI == SI->second.FieldIndex.end())
-      return LogErrorV("Unknown field access");
-    const auto &FD = SI->second.Fields[FI->second];
-    llvm::Type *BaseLLVM = LLVMTypeFor(CurType, CurStruct);
-    Ptr = Builder->CreateStructGEP(BaseLLVM, Ptr, FI->second, "fieldptr");
-    CurType = FD.Type;
-    CurStruct = FD.StructName;
+  Value *Aggregate = UndefValue::get(LLVMTypeFor(getType(), getStructName()));
+  for (size_t Index = 0; Index < Elements.size(); ++Index) {
+    Value *Element = Elements[Index]->codegen();
+    if (!Element)
+      return nullptr;
+    Element = EmitImplicitCast(Element, Elements[Index]->getType(), ElementType);
+    if (!Element)
+      return LogErrorV("Array literal element type mismatch");
+    Aggregate = Builder->CreateInsertValue(Aggregate, Element,
+                                           {static_cast<unsigned>(Index)},
+                                           "arrayinit");
   }
-  return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), Ptr,
-                             "fieldload");
+  return Aggregate;
 }
 
-Value *IndexedFieldAssignmentExpressionNode::codegen() {
-  Value *BaseElemPtr = BuildIndexElementPtr(Left->getBaseIndex());
-  if (!BaseElemPtr)
-    return nullptr;
-  Value *Ptr = BaseElemPtr;
-  ValueType CurType = Left->getBaseIndex()->getType();
-  string CurStruct = Left->getBaseIndex()->getStructName();
-  for (const auto &FieldName : Left->getFieldPath()) {
-    if (CurType != ValueType::Struct || CurStruct.empty())
-      return LogErrorV("Field access requires a struct value");
-    auto SI = StructTypes.find(CurStruct);
-    if (SI == StructTypes.end())
-      return LogErrorV("Unknown struct type in field access");
-    auto FI = SI->second.FieldIndex.find(FieldName);
-    if (FI == SI->second.FieldIndex.end())
-      return LogErrorV("Unknown field access");
-    const auto &FD = SI->second.Fields[FI->second];
-    llvm::Type *BaseLLVM = LLVMTypeFor(CurType, CurStruct);
-    Ptr = Builder->CreateStructGEP(BaseLLVM, Ptr, FI->second, "fieldptr");
-    CurType = FD.Type;
-    CurStruct = FD.StructName;
-  }
-  Value *Val = Right->codegen();
-  if (!Val)
-    return nullptr;
-  Val = EmitImplicitCast(Val, Right->getType(), getType());
-  if (!Val)
-    return LogErrorV("Type mismatch in assignment");
-  Builder->CreateStore(Val, Ptr);
-  return Val;
-}
-
-Value *IndexedFieldCompoundAssignmentExpressionNode::codegen() {
-  Value *BaseElemPtr = BuildIndexElementPtr(Left->getBaseIndex());
-  if (!BaseElemPtr)
-    return nullptr;
-  Value *Ptr = BaseElemPtr;
-  ValueType CurType = Left->getBaseIndex()->getType();
-  string CurStruct = Left->getBaseIndex()->getStructName();
-  for (const auto &FieldName : Left->getFieldPath()) {
-    if (CurType != ValueType::Struct || CurStruct.empty())
-      return LogErrorV("Field access requires a struct value");
-    auto SI = StructTypes.find(CurStruct);
-    if (SI == StructTypes.end())
-      return LogErrorV("Unknown struct type in field access");
-    auto FI = SI->second.FieldIndex.find(FieldName);
-    if (FI == SI->second.FieldIndex.end())
-      return LogErrorV("Unknown field access");
-    const auto &FD = SI->second.Fields[FI->second];
-    llvm::Type *BaseLLVM = LLVMTypeFor(CurType, CurStruct);
-    Ptr = Builder->CreateStructGEP(BaseLLVM, Ptr, FI->second, "fieldptr");
-    CurType = FD.Type;
-    CurStruct = FD.StructName;
-  }
-  Value *L = Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), Ptr,
-                                 "fieldload");
-  Value *R = Right->codegen();
-  if (!R)
-    return nullptr;
-  Value *Combined = EmitBuiltInArithmetic(Operator, L, getType(), getStructName(), R,
-                                          Right->getType(), Right->getStructName(),
-                                          getType(), getStructName());
-  if (!Combined)
-    return nullptr;
-  Builder->CreateStore(Combined, Ptr);
-  return Combined;
-}
-
-/// AssignmentExpressionNode::codegen - Evaluate the Right, store it into the variable's
-/// stack slot, and produce the assigned value.
 Value *AssignmentExpressionNode::codegen() {
-  Value *Val = Expr->codegen();
-  if (!Val)
+  Value *Address = Left->codegenAddress();
+  if (!Address)
+    return LogErrorV("Assignment target must be assignable");
+  Value *AssignedValue = Right->codegen();
+  if (!AssignedValue)
     return nullptr;
-  Val = EmitImplicitCast(Val, Expr->getType(), getType());
-  if (!Val)
+  AssignedValue = EmitImplicitCast(AssignedValue, Right->getType(), getType());
+  if (!AssignedValue)
     return LogErrorV("Type mismatch in assignment");
+  Builder->CreateStore(AssignedValue, Address);
+  return AssignedValue;
+}
 
-  auto It = NamedValues.find(Name);
-  if (It != NamedValues.end() && It->second) {
-    Builder->CreateStore(Val, It->second);
-    return Val;
+static Value *EmitReadModifyWriteValue(int Operator, Value *LeftValue,
+                                       ValueType LeftType,
+                                       const string &LeftTypeInfo,
+                                       Value *RightValue,
+                                       ValueType RightType) {
+  if (LeftType == ValueType::Pointer) {
+    RightValue = EmitImplicitCast(RightValue, RightType, ValueType::Int64);
+    if (!RightValue)
+      return LogErrorV("Type mismatch in assignment");
+    if (Operator == tok_minus)
+      RightValue = Builder->CreateNeg(RightValue, "negindex");
+    ValueType ElementType = ValueType::Error;
+    string ElementTypeInfo;
+    if (!DecodePointerType(LeftTypeInfo, ElementType, ElementTypeInfo))
+      return LogErrorV("Invalid pointer type metadata");
+    return Builder->CreateInBoundsGEP(
+        LLVMTypeFor(ElementType, ElementTypeInfo), LeftValue, RightValue,
+        "ptrarith");
   }
 
-  if (auto *GV = GetGlobalVariable(Name)) {
-    Builder->CreateStore(Val, GV);
-    return Val;
+  RightValue = EmitImplicitCast(RightValue, RightType, LeftType);
+  if (!RightValue)
+    return LogErrorV("Type mismatch in assignment");
+  if (IsFloatType(LeftType)) {
+    if (Operator == tok_plus)
+      return Builder->CreateFAdd(LeftValue, RightValue, "addtmp");
+    if (Operator == tok_minus)
+      return Builder->CreateFSub(LeftValue, RightValue, "subtmp");
+    if (Operator == tok_star)
+      return Builder->CreateFMul(LeftValue, RightValue, "multmp");
+    if (Operator == tok_slash)
+      return Builder->CreateFDiv(LeftValue, RightValue, "divtmp");
+    return Builder->CreateFRem(LeftValue, RightValue, "remtmp");
   }
-
-  return LogErrorV("Unknown variable name");
+  if (Operator == tok_plus)
+    return Builder->CreateAdd(LeftValue, RightValue, "addtmp");
+  if (Operator == tok_minus)
+    return Builder->CreateSub(LeftValue, RightValue, "subtmp");
+  if (Operator == tok_star)
+    return Builder->CreateMul(LeftValue, RightValue, "multmp");
+  if (Operator == tok_slash)
+    return IsUnsignedIntType(LeftType)
+               ? Builder->CreateUDiv(LeftValue, RightValue, "divtmp")
+               : Builder->CreateSDiv(LeftValue, RightValue, "divtmp");
+  return IsUnsignedIntType(LeftType)
+             ? Builder->CreateURem(LeftValue, RightValue, "remtmp")
+             : Builder->CreateSRem(LeftValue, RightValue, "remtmp");
 }
 
 Value *CompoundAssignmentExpressionNode::codegen() {
-  Value *R = Right->codegen();
-  if (!R)
+  Value *Address = Left->codegenAddress();
+  if (!Address)
+    return LogErrorV("Assignment target must be assignable");
+  Value *LeftValue = Builder->CreateLoad(
+      LLVMTypeFor(getType(), getStructName()), Address, "rmw.old");
+  Value *RightValue = Right->codegen();
+  if (!RightValue)
     return nullptr;
+  Value *Result = EmitReadModifyWriteValue(
+      Operator, LeftValue, getType(), getStructName(), RightValue,
+      Right->getType());
+  if (!Result)
+    return nullptr;
+  Builder->CreateStore(Result, Address);
+  return Result;
+}
 
-  auto It = NamedValues.find(Name);
-  if (It != NamedValues.end() && It->second) {
-    Value *L = Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()),
-                                   It->second, Name);
-    Value *Combined = EmitBuiltInArithmetic(
-        Operator, L, getType(), getStructName(), R, Right->getType(),
-        Right->getStructName(), getType(), getStructName());
-    if (!Combined)
-      return nullptr;
-    Builder->CreateStore(Combined, It->second);
-    return Combined;
+Value *IncrementDecrementExpressionNode::codegen() {
+  Value *Address = Operand->codegenAddress();
+  if (!Address)
+    return LogErrorV("Increment/decrement target must be assignable");
+  Value *OldValue = Builder->CreateLoad(
+      LLVMTypeFor(getType(), getStructName()), Address, "incdec.old");
+  Value *One = nullptr;
+  ValueType OneType = getType();
+  if (getType() == ValueType::Pointer) {
+    One = ConstantInt::get(Type::getInt64Ty(*TheContext), 1);
+    OneType = ValueType::Int64;
+  } else if (IsIntType(getType())) {
+    One = ConstantInt::get(LLVMTypeFor(getType()), 1);
+  } else {
+    One = ConstantFP::get(LLVMTypeFor(getType()), 1.0);
   }
-  if (auto *GV = GetGlobalVariable(Name)) {
-    Value *L =
-        Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), GV, Name);
-    Value *Combined = EmitBuiltInArithmetic(
-        Operator, L, getType(), getStructName(), R, Right->getType(),
-        Right->getStructName(), getType(), getStructName());
-    if (!Combined)
-      return nullptr;
-    Builder->CreateStore(Combined, GV);
-    return Combined;
-  }
-  return LogErrorV("Unknown variable name");
+  Value *NewValue = EmitReadModifyWriteValue(
+      IsIncrement ? tok_plus : tok_minus, OldValue, getType(),
+      getStructName(), One, OneType);
+  if (!NewValue)
+    return nullptr;
+  Builder->CreateStore(NewValue, Address);
+  return IsPrefix ? NewValue : OldValue;
 }
 
-Value *FieldAssignmentExpressionNode::codegen() {
-  ValueType DestType = ValueType::Error;
-  string DestStruct;
-  Value *Ptr = GetFieldAddress(*Left->getLValueName(), Left->getFieldPath(),
-                               &DestType, &DestStruct);
-  if (!Ptr)
-    return LogErrorV("Unknown field access");
-  Value *Val = Right->codegen();
-  if (!Val)
-    return nullptr;
-  Val = EmitImplicitCast(Val, Right->getType(), DestType);
-  if (!Val)
-    return LogErrorV("Type mismatch in assignment");
-  Builder->CreateStore(Val, Ptr);
-  return Val;
-}
-
-Value *FieldCompoundAssignmentExpressionNode::codegen() {
-  ValueType DestType = ValueType::Error;
-  string DestStruct;
-  Value *Ptr = GetFieldAddress(*Left->getLValueName(), Left->getFieldPath(),
-                               &DestType, &DestStruct);
-  if (!Ptr)
-    return LogErrorV("Unknown field access");
-  Value *L =
-      Builder->CreateLoad(LLVMTypeFor(DestType, DestStruct), Ptr, "fieldload");
-  Value *R = Right->codegen();
-  if (!R)
-    return nullptr;
-  Value *Combined =
-      EmitBuiltInArithmetic(Operator, L, DestType, DestStruct, R, Right->getType(),
-                            Right->getStructName(), getType(), getStructName());
-  if (!Combined)
-    return nullptr;
-  Builder->CreateStore(Combined, Ptr);
-  return Combined;
-}
-
-/// ReturnExpressionNode::codegen - Emit a return from the current function.
-Value *ReturnExpressionNode::codegen() {
+/// ReturnStatementNode::codegen - Emit a return from the current function.
+Value *ReturnStatementNode::codegen() {
   if (!Expr) {
     Builder->CreateRetVoid();
     return ConstantFP::get(*TheContext, APFloat(0.0));
@@ -6614,13 +5486,12 @@ Value *ReturnExpressionNode::codegen() {
   return RetVal;
 }
 
-/// BlockExpressionNode::codegen - Evaluate statements in order.
+/// BlockStatementNode::codegen - Evaluate statements in order.
 /// Saves and restores NamedValues to implement block scoping: variables
 /// declared inside the block are not visible after it exits.
-Value *BlockExpressionNode::codegen() {
+Value *BlockStatementNode::codegen() {
   auto SavedBindings = NamedValues;
-  auto SavedTypes = NamedValueTypes;
-  auto SavedStructs = NamedValueStructNames;
+  auto SavedStructNames = NamedValueStructNames;
 
   Value *Last = nullptr;
   for (auto &Stmt : Stmts) {
@@ -6629,15 +5500,13 @@ Value *BlockExpressionNode::codegen() {
     Last = Stmt->codegen();
     if (!Last) {
       NamedValues = SavedBindings;
-      NamedValueTypes = SavedTypes;
-      NamedValueStructNames = SavedStructs;
+      NamedValueStructNames = SavedStructNames;
       return nullptr;
     }
   }
 
   NamedValues = SavedBindings;
-  NamedValueTypes = SavedTypes;
-  NamedValueStructNames = SavedStructs;
+  NamedValueStructNames = SavedStructNames;
 
   if (!Last)
     return LogErrorV("Empty block");
@@ -6666,43 +5535,40 @@ Value *BlockExpressionNode::codegen() {
 /// comparison, so x != NaN evaluates true.
 Value *BinaryExpressionNode::codegen() {
   if (Operator == tok_and || Operator == tok_or) {
-    Value *L = Left->codegen();
-    if (!L)
+    Value *LeftValue = Left->codegen();
+    if (!LeftValue)
       return nullptr;
-    if (Left->getType() != ValueType::Bool || Right->getType() != ValueType::Bool)
-      return LogErrorV("Type mismatch in binary operator");
 
-    Function *F = Builder->GetInsertBlock()->getParent();
-    BasicBlock *LHSBB = Builder->GetInsertBlock();
-    BasicBlock *RHSBB = BasicBlock::Create(*TheContext, "logic.rhs", F);
-    BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "logic.end");
+    Function *FunctionIR = Builder->GetInsertBlock()->getParent();
+    BasicBlock *LeftBlock = Builder->GetInsertBlock();
+    BasicBlock *RightBlock =
+        BasicBlock::Create(*TheContext, "logic.rhs", FunctionIR);
+    BasicBlock *MergeBlock = BasicBlock::Create(*TheContext, "logic.end");
 
     if (Operator == tok_and)
-      Builder->CreateCondBr(L, RHSBB, MergeBB);
+      Builder->CreateCondBr(LeftValue, RightBlock, MergeBlock);
     else
-      Builder->CreateCondBr(L, MergeBB, RHSBB);
+      Builder->CreateCondBr(LeftValue, MergeBlock, RightBlock);
 
-    Builder->SetInsertPoint(RHSBB);
-    Value *RHSVal = Right->codegen();
-    if (!RHSVal)
+    Builder->SetInsertPoint(RightBlock);
+    Value *RightValue = Right->codegen();
+    if (!RightValue)
       return nullptr;
-    if (Right->getType() != ValueType::Bool)
-      return LogErrorV("Type mismatch in binary operator");
-    Builder->CreateBr(MergeBB);
-    RHSBB = Builder->GetInsertBlock();
+    Builder->CreateBr(MergeBlock);
+    RightBlock = Builder->GetInsertBlock();
 
-    F->insert(F->end(), MergeBB);
-    Builder->SetInsertPoint(MergeBB);
-    PHINode *PN =
+    FunctionIR->insert(FunctionIR->end(), MergeBlock);
+    Builder->SetInsertPoint(MergeBlock);
+    PHINode *Result =
         Builder->CreatePHI(Type::getInt1Ty(*TheContext), 2, "logictmp");
     if (Operator == tok_and) {
-      PN->addIncoming(ConstantInt::getFalse(*TheContext), LHSBB);
-      PN->addIncoming(RHSVal, RHSBB);
+      Result->addIncoming(ConstantInt::getFalse(*TheContext), LeftBlock);
+      Result->addIncoming(RightValue, RightBlock);
     } else {
-      PN->addIncoming(ConstantInt::getTrue(*TheContext), LHSBB);
-      PN->addIncoming(RHSVal, RHSBB);
+      Result->addIncoming(ConstantInt::getTrue(*TheContext), LeftBlock);
+      Result->addIncoming(RightValue, RightBlock);
     }
-    return PN;
+    return Result;
   }
 
   Value *L = Left->codegen();
@@ -6721,16 +5587,80 @@ Value *BinaryExpressionNode::codegen() {
   case tok_star:
   case tok_slash:
   case tok_percent: {
-    return EmitBuiltInArithmetic(Operator, L, LType, Left->getStructName(), R, RType,
-                                 Right->getStructName(), getType(),
-                                 getStructName());
+    if ((Operator == tok_plus || Operator == tok_minus) &&
+        getType() == ValueType::Pointer) {
+      Value *Pointer = nullptr;
+      Value *Index = nullptr;
+      if (LType == ValueType::Pointer && IsIntType(RType)) {
+        Pointer = L;
+        Index = R;
+      } else if (Operator == tok_plus && RType == ValueType::Pointer &&
+                 IsIntType(LType)) {
+        Pointer = R;
+        Index = L;
+      }
+      if (!Pointer || !Index)
+        return LogErrorV("Type mismatch in pointer arithmetic");
+      ValueType IndexType = LType == ValueType::Pointer ? RType : LType;
+      Index = Builder->CreateIntCast(Index, Type::getInt64Ty(*TheContext),
+                                     !IsUnsignedIntType(IndexType), "ptrindex");
+      if (Operator == tok_minus)
+        Index = Builder->CreateNeg(Index, "negindex");
+      ValueType ElementType = ValueType::Error;
+      string ElementStructName;
+      if (!DecodePointerType(getStructName(), ElementType, ElementStructName))
+        return LogErrorV("Invalid pointer type metadata");
+      return Builder->CreateInBoundsGEP(
+          LLVMTypeFor(ElementType, ElementStructName), Pointer, Index,
+          "ptrarith");
+    }
+
+    if (Operator == tok_minus && getType() == ValueType::Int64 &&
+        LType == ValueType::Pointer && RType == ValueType::Pointer) {
+      ValueType ElementType = ValueType::Error;
+      string ElementStructName;
+      if (!DecodePointerType(Left->getStructName(), ElementType,
+                             ElementStructName))
+        return LogErrorV("Invalid pointer type metadata");
+      return Builder->CreatePtrDiff(
+          LLVMTypeFor(ElementType, ElementStructName), L, R, "ptrdiff");
+    }
+
+    L = EmitImplicitCast(L, LType, getType());
+    R = EmitImplicitCast(R, RType, getType());
+    if (!L || !R)
+      return LogErrorV("Type mismatch in arithmetic");
+    if (IsFloatType(getType())) {
+      if (Operator == tok_plus)
+        return Builder->CreateFAdd(L, R, "addtmp");
+      if (Operator == tok_minus)
+        return Builder->CreateFSub(L, R, "subtmp");
+      if (Operator == tok_slash)
+        return Builder->CreateFDiv(L, R, "divtmp");
+      if (Operator == tok_percent)
+        return Builder->CreateFRem(L, R, "remtmp");
+      return Builder->CreateFMul(L, R, "multmp");
+    }
+    if (Operator == tok_plus)
+      return Builder->CreateAdd(L, R, "addtmp");
+    if (Operator == tok_minus)
+      return Builder->CreateSub(L, R, "subtmp");
+    if (Operator == tok_slash)
+      return IsUnsignedIntType(getType())
+                 ? Builder->CreateUDiv(L, R, "divtmp")
+                 : Builder->CreateSDiv(L, R, "divtmp");
+    if (Operator == tok_percent)
+      return IsUnsignedIntType(getType())
+                 ? Builder->CreateURem(L, R, "remtmp")
+                 : Builder->CreateSRem(L, R, "remtmp");
+    return Builder->CreateMul(L, R, "multmp");
   }
   case tok_ampersand:
   case tok_pipe:
   case tok_caret: {
-    ValueType Ty = getType();
-    L = EmitImplicitCast(L, LType, Ty);
-    R = EmitImplicitCast(R, RType, Ty);
+    ValueType ResultType = getType();
+    L = EmitImplicitCast(L, LType, ResultType);
+    R = EmitImplicitCast(R, RType, ResultType);
     if (!L || !R)
       return LogErrorV("Type mismatch in binary operator");
     if (Operator == tok_ampersand)
@@ -6739,17 +5669,16 @@ Value *BinaryExpressionNode::codegen() {
       return Builder->CreateOr(L, R, "bwor");
     return Builder->CreateXor(L, R, "bwxor");
   }
-  case tok_shl:
-  case tok_shr: {
-    ValueType Ty = getType();
-    L = EmitImplicitCast(L, LType, Ty);
-    R = EmitImplicitCast(R, RType, Ty);
-    if (!L || !R)
-      return LogErrorV("Type mismatch in binary operator");
-    if (Operator == tok_shl)
+  case tok_shift_left:
+  case tok_shift_right: {
+    R = EmitCast(R, RType, LType);
+    if (!R)
+      return LogErrorV("Type mismatch in shift operator");
+    if (Operator == tok_shift_left)
       return Builder->CreateShl(L, R, "shltmp");
-    return IsUnsignedIntType(Ty) ? Builder->CreateLShr(L, R, "shrtmp")
-                                 : Builder->CreateAShr(L, R, "shrtmp");
+    return IsUnsignedIntType(LType)
+               ? Builder->CreateLShr(L, R, "shrtmp")
+               : Builder->CreateAShr(L, R, "shrtmp");
   }
   case tok_less:
   case tok_greater:
@@ -6757,17 +5686,16 @@ Value *BinaryExpressionNode::codegen() {
   case tok_neq:
   case tok_leq:
   case tok_geq: {
-    if (LType == ValueType::Pointer && RType == ValueType::Pointer &&
-        Left->getStructName() == Right->getStructName()) {
+    if (LType == ValueType::Pointer && RType == ValueType::Pointer) {
       switch (Operator) {
-      case tok_eq:
-        return Builder->CreateICmpEQ(L, R, "cmptmp");
-      case tok_neq:
-        return Builder->CreateICmpNE(L, R, "cmptmp");
       case tok_less:
         return Builder->CreateICmpULT(L, R, "cmptmp");
       case tok_greater:
         return Builder->CreateICmpUGT(L, R, "cmptmp");
+      case tok_eq:
+        return Builder->CreateICmpEQ(L, R, "cmptmp");
+      case tok_neq:
+        return Builder->CreateICmpNE(L, R, "cmptmp");
       case tok_leq:
         return Builder->CreateICmpULE(L, R, "cmptmp");
       case tok_geq:
@@ -6776,6 +5704,7 @@ Value *BinaryExpressionNode::codegen() {
         break;
       }
     }
+
     ValueType CompareType = ValueType::Error;
     if (LType == ValueType::Bool && RType == ValueType::Bool) {
       if (Operator != tok_eq && Operator != tok_neq)
@@ -6866,7 +5795,7 @@ Value *BinaryExpressionNode::codegen() {
   return LogErrorV("invalid binary operator");
 }
 
-/// UnaryExpressionNode::codegen - Emit a built-in unary operator.
+/// UnaryExpressionNode::codegen - Emit built-in unary minus directly.
 Value *UnaryExpressionNode::codegen() {
   Value *Operator = Operand->codegen();
   if (!Operator)
@@ -6880,54 +5809,14 @@ Value *UnaryExpressionNode::codegen() {
       return Builder->CreateFNeg(Operator, "negtmp");
     return LogErrorV("Unary '-' not supported for this type");
   }
-  if (Opcode == tok_tilde) {
-    if (!IsIntType(getType()))
-      return LogErrorV("Unary '~' not supported for this type");
+
+  if (Opcode == tok_exclamation)
+    return Builder->CreateNot(Operator, "nottmp");
+
+  if (Opcode == tok_tilde)
     return Builder->CreateNot(Operator, "bnottmp");
-  }
 
   return LogErrorV("Unknown unary operator");
-}
-
-Value *IncDecExpressionNode::codegen() {
-  ValueType TargetType = getType();
-  string TargetStruct = getStructName();
-  Value *Ptr =
-      ResolveIncDecLValuePtr(Operand.get(), &TargetType, &TargetStruct);
-  if (!Ptr)
-    return LogErrorV("Increment/decrement target must be assignable");
-
-  Value *OldVal = Builder->CreateLoad(LLVMTypeFor(TargetType, TargetStruct),
-                                      Ptr, "incdec.old");
-  Value *One = nullptr;
-  if (TargetType == ValueType::Pointer) {
-    One = ConstantInt::get(Type::getInt64Ty(*TheContext), 1);
-  } else if (IsIntType(TargetType)) {
-    One = ConstantInt::get(LLVMTypeFor(TargetType), 1, true);
-  } else if (IsFloatType(TargetType)) {
-    One = ConstantFP::get(LLVMTypeFor(TargetType), 1.0);
-  } else {
-    return LogErrorV("Increment/decrement requires numeric or pointer type");
-  }
-
-  int Operator = IsIncrement ? tok_plus : tok_minus;
-  Value *NewVal = EmitBuiltInArithmetic(
-      Operator, OldVal, TargetType, TargetStruct, One,
-      TargetType == ValueType::Pointer ? ValueType::Int64 : TargetType, "",
-      TargetType, TargetStruct);
-  if (!NewVal)
-    return nullptr;
-  Builder->CreateStore(NewVal, Ptr);
-  return IsPrefix ? NewVal : OldVal;
-}
-
-Value *LogicalNotExpressionNode::codegen() {
-  Value *V = Operand->codegen();
-  if (!V)
-    return nullptr;
-  if (Operand->getType() != ValueType::Bool)
-    return LogErrorV("Type mismatch in unary operator");
-  return Builder->CreateNot(V, "nottmp");
 }
 
 /// CastExpressionNode::codegen - Emit explicit int/double casts.
@@ -6942,11 +5831,12 @@ Value *CastExpressionNode::codegen() {
 }
 
 Value *SizeofExpressionNode::codegen() {
-  llvm::Type *Ty = LLVMTypeFor(TargetType, TargetStructName);
-  if (!Ty)
+  llvm::Type *TargetLLVMType = LLVMTypeFor(TargetType, TargetTypeInfo);
+  if (!TargetLLVMType)
     return LogErrorV("Invalid sizeof target type");
-  uint64_t Bytes =
-      TheModule->getDataLayout().getTypeAllocSize(Ty).getFixedValue();
+  uint64_t Bytes = TheModule->getDataLayout()
+                       .getTypeAllocSize(TargetLLVMType)
+                       .getFixedValue();
   return ConstantInt::get(Type::getInt64Ty(*TheContext), Bytes);
 }
 
@@ -6962,7 +5852,8 @@ Value *CallExpressionNode::codegen() {
   if (!CalleeF)
     return LogErrorV("Unknown function referenced");
 
-  if (CalleeF->arg_size() != Arguments.size())
+  if ((!CalleeF->isVarArg() && CalleeF->arg_size() != Arguments.size()) ||
+      (CalleeF->isVarArg() && Arguments.size() < CalleeF->arg_size()))
     return LogErrorV("Incorrect # arguments passed");
 
   FunctionSignatureNode *Signature = GetFunctionSignature(Callee);
@@ -6971,18 +5862,11 @@ Value *CallExpressionNode::codegen() {
     Value *ArgVal = Arguments[i]->codegen();
     if (!ArgVal)
       return nullptr;
-    if (Signature) {
-      ValueType ArgType = Arguments[i]->getType();
-      ValueType ParamType = Signature->getParameterType(i);
-      if (ParamType == ValueType::Pointer && ArgType == ValueType::Array) {
-        if (!ArrayDecaysToPointerType(Arguments[i]->getStructName(),
-                                      Signature->getParameterStructName(i)))
-          return LogErrorV("Argument type mismatch");
-      } else {
-        ArgVal = EmitImplicitCast(ArgVal, ArgType, ParamType);
-        if (!ArgVal)
-          return LogErrorV("Argument type mismatch");
-      }
+    if (Signature && i < Signature->getNumParameters()) {
+      ArgVal =
+          EmitImplicitCast(ArgVal, Arguments[i]->getType(), Signature->getParameterType(i));
+      if (!ArgVal)
+        return LogErrorV("Argument type mismatch");
     }
     ArgsV.push_back(ArgVal);
   }
@@ -6993,54 +5877,40 @@ Value *CallExpressionNode::codegen() {
 }
 
 Value *ConstructorCallExpressionNode::codegen() {
-  auto SI = StructTypes.find(ClassName);
-  if (SI == StructTypes.end() || !SI->second.IsClass)
-    return LogErrorV("Unknown class in constructor call");
-
-  llvm::Type *ClassTy = LLVMTypeFor(ValueType::Struct, ClassName);
-  if (!ClassTy)
-    return LogErrorV("Unknown class type");
-  Function *CurFn = Builder->GetInsertBlock()
-                        ? Builder->GetInsertBlock()->getParent()
-                        : nullptr;
-  if (!CurFn)
+  Function *CurrentFunction = Builder->GetInsertBlock()
+                                  ? Builder->GetInsertBlock()->getParent()
+                                  : nullptr;
+  if (!CurrentFunction)
     return LogErrorV("Constructor call outside function context");
-  AllocaInst *Tmp =
-      CreateEntryBlockAlloca(CurFn, "ctor.tmp", ValueType::Struct, ClassName);
-  Builder->CreateStore(ZeroConstant(ValueType::Struct, ClassName), Tmp);
 
-  string InitName = ClassName + ".__init__";
-  if (FunctionSignatureNode *InitSignature = GetFunctionSignature(InitName)) {
-    Function *InitF = getFunction(InitName);
-    if (!InitF)
+  AllocaInst *Storage = CreateEntryBlockAlloca(
+      CurrentFunction, "constructor.value", ValueType::Struct, ClassName);
+  Builder->CreateStore(ZeroConstant(ValueType::Struct, ClassName), Storage);
+
+  string InitializerName = ClassName + ".__init__";
+  if (FunctionSignatureNode *Initializer =
+          GetFunctionSignature(InitializerName)) {
+    Function *InitializerFunction = getFunction(InitializerName);
+    if (!InitializerFunction)
       return LogErrorV("Unknown constructor function");
-    if (InitF->arg_size() != Arguments.size() + 1)
-      return LogErrorV("Incorrect # arguments passed");
-    vector<Value *> ArgsV;
-    ArgsV.push_back(Tmp);
-    for (unsigned I = 0, E = Arguments.size(); I != E; ++I) {
-      Value *ArgVal = Arguments[I]->codegen();
-      if (!ArgVal)
+    vector<Value *> ArgumentValues;
+    ArgumentValues.push_back(Storage);
+    for (size_t Index = 0; Index < Arguments.size(); ++Index) {
+      Value *ArgumentValue = Arguments[Index]->codegen();
+      if (!ArgumentValue)
         return nullptr;
-      ValueType ArgType = Arguments[I]->getType();
-      ValueType ParamType = InitSignature->getParameterType(I + 1);
-      if (ParamType == ValueType::Pointer && ArgType == ValueType::Array) {
-        if (!ArrayDecaysToPointerType(Arguments[I]->getStructName(),
-                                      InitSignature->getParameterStructName(I + 1)))
-          return LogErrorV("Argument type mismatch");
-      } else {
-        ArgVal = EmitImplicitCast(ArgVal, ArgType, ParamType);
-        if (!ArgVal)
-          return LogErrorV("Argument type mismatch");
-      }
-      ArgsV.push_back(ArgVal);
+      ArgumentValue = EmitImplicitCast(
+          ArgumentValue, Arguments[Index]->getType(),
+          Initializer->getParameterType(Index + 1));
+      if (!ArgumentValue)
+        return LogErrorV("Constructor argument mismatch");
+      ArgumentValues.push_back(ArgumentValue);
     }
-    Builder->CreateCall(InitF, ArgsV);
-  } else if (!Arguments.empty()) {
-    return LogErrorV("Constructor argument mismatch");
+    Builder->CreateCall(InitializerFunction, ArgumentValues);
   }
 
-  return Builder->CreateLoad(ClassTy, Tmp, "ctor.obj");
+  return Builder->CreateLoad(LLVMTypeFor(ValueType::Struct, ClassName), Storage,
+                             "constructor.result");
 }
 
 /// IfStatementNode::codegen - Emit LLVM IR for a statement-style if.
@@ -7090,9 +5960,9 @@ Value *IfStatementNode::codegen() {
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
-/// ForExpressionNode::codegen - Emit LLVM IR for a for-expression using a mutable
+/// ForStatementNode::codegen - Emit LLVM IR for a for statement using a mutable
 /// stack slot for the loop variable.
-Value *ForExpressionNode::codegen() {
+Value *ForStatementNode::codegen() {
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
 
   Value *VarPtr = nullptr;
@@ -7105,8 +5975,6 @@ Value *ForExpressionNode::codegen() {
     EmitDebugDeclare(Alloca, VarName, CurFunctionLine, false, 0, VarType);
     VarPtr = Alloca;
     NamedValues[VarName] = Alloca;
-    NamedValueTypes[VarName] = VarType;
-    NamedValueStructNames.erase(VarName);
   } else {
     auto It = NamedValues.find(VarName);
     if (It != NamedValues.end() && It->second)
@@ -7149,9 +6017,9 @@ Value *ForExpressionNode::codegen() {
   Builder->CreateCondBr(CondVal, BodyBB, AfterBB);
 
   Builder->SetInsertPoint(BodyBB);
+
   LoopControlStack.push_back({AfterBB, StepBB});
   BreakTargetStack.push_back(AfterBB);
-
   if (!Body->codegen()) {
     BreakTargetStack.pop_back();
     LoopControlStack.pop_back();
@@ -7159,11 +6027,11 @@ Value *ForExpressionNode::codegen() {
   }
   BreakTargetStack.pop_back();
   LoopControlStack.pop_back();
-
   if (!Builder->GetInsertBlock()->getTerminator())
     Builder->CreateBr(StepBB);
 
   Builder->SetInsertPoint(StepBB);
+
   Value *CurVar = Builder->CreateLoad(LLVMTypeFor(VarType), VarPtr, VarName);
   Value *StepVal = Step->codegen();
   if (!StepVal)
@@ -7186,42 +6054,36 @@ Value *ForExpressionNode::codegen() {
       NamedValues[VarName] = OldVal;
     else
       NamedValues.erase(VarName);
-    NamedValueTypes.erase(VarName);
-    NamedValueStructNames.erase(VarName);
   }
 
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
-Value *WhileExpressionNode::codegen() {
+Value *WhileStatementNode::codegen() {
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
-  BasicBlock *CondBB =
-      BasicBlock::Create(*TheContext, "while_cond", TheFunction);
-  BasicBlock *BodyBB =
-      BasicBlock::Create(*TheContext, "while_body", TheFunction);
-  BasicBlock *AfterBB =
-      BasicBlock::Create(*TheContext, "while_after", TheFunction);
+  BasicBlock *ConditionBlock =
+      BasicBlock::Create(*TheContext, "while.condition", TheFunction);
+  BasicBlock *BodyBlock =
+      BasicBlock::Create(*TheContext, "while.body", TheFunction);
+  BasicBlock *AfterBlock =
+      BasicBlock::Create(*TheContext, "while.after", TheFunction);
 
-  if (IsDoWhile) {
-    Builder->CreateBr(BodyBB);
-  } else {
-    Builder->CreateBr(CondBB);
-  }
+  Builder->CreateBr(IsDoWhile ? BodyBlock : ConditionBlock);
 
   if (!IsDoWhile) {
-    Builder->SetInsertPoint(CondBB);
-    Value *CondVal = Cond->codegen();
-    if (!CondVal)
+    Builder->SetInsertPoint(ConditionBlock);
+    Value *ConditionValue = Cond->codegen();
+    if (!ConditionValue)
       return nullptr;
-    CondVal = ToBool(CondVal, Cond->getType());
-    if (!CondVal)
+    ConditionValue = ToBool(ConditionValue, Cond->getType());
+    if (!ConditionValue)
       return LogErrorV("Invalid loop condition type");
-    Builder->CreateCondBr(CondVal, BodyBB, AfterBB);
+    Builder->CreateCondBr(ConditionValue, BodyBlock, AfterBlock);
   }
 
-  Builder->SetInsertPoint(BodyBB);
-  LoopControlStack.push_back({AfterBB, CondBB});
-  BreakTargetStack.push_back(AfterBB);
+  Builder->SetInsertPoint(BodyBlock);
+  LoopControlStack.push_back({AfterBlock, ConditionBlock});
+  BreakTargetStack.push_back(AfterBlock);
   if (!Body->codegen()) {
     BreakTargetStack.pop_back();
     LoopControlStack.pop_back();
@@ -7230,93 +6092,92 @@ Value *WhileExpressionNode::codegen() {
   BreakTargetStack.pop_back();
   LoopControlStack.pop_back();
   if (!Builder->GetInsertBlock()->getTerminator())
-    Builder->CreateBr(CondBB);
+    Builder->CreateBr(ConditionBlock);
 
-  Builder->SetInsertPoint(CondBB);
-  if (IsDoWhile || !CondBB->getTerminator()) {
-    Value *CondVal = Cond->codegen();
-    if (!CondVal)
+  Builder->SetInsertPoint(ConditionBlock);
+  if (IsDoWhile) {
+    Value *ConditionValue = Cond->codegen();
+    if (!ConditionValue)
       return nullptr;
-    CondVal = ToBool(CondVal, Cond->getType());
-    if (!CondVal)
+    ConditionValue = ToBool(ConditionValue, Cond->getType());
+    if (!ConditionValue)
       return LogErrorV("Invalid loop condition type");
-    Builder->CreateCondBr(CondVal, BodyBB, AfterBB);
+    Builder->CreateCondBr(ConditionValue, BodyBlock, AfterBlock);
   }
 
-  Builder->SetInsertPoint(AfterBB);
+  Builder->SetInsertPoint(AfterBlock);
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
-Value *SwitchExpressionNode::codegen() {
-  Value *CondVal = Cond->codegen();
-  if (!CondVal)
+Value *SwitchStatementNode::codegen() {
+  Value *ConditionValue = Condition->codegen();
+  if (!ConditionValue)
     return nullptr;
 
-  ValueType CondType = Cond->getType();
-  llvm::Type *CondLLVMType = LLVMTypeFor(CondType);
-  if (!CondLLVMType || !CondLLVMType->isIntegerTy())
+  auto *ConditionType = dyn_cast<IntegerType>(LLVMTypeFor(Condition->getType()));
+  if (!ConditionType)
     return LogErrorV("Switch condition must be an integer type");
-  CondVal = EmitImplicitCast(CondVal, CondType, CondType);
-  if (!CondVal)
-    return LogErrorV("Invalid switch condition type");
 
-  Function *F = Builder->GetInsertBlock()->getParent();
-  BasicBlock *AfterBB = BasicBlock::Create(*TheContext, "switch.after", F);
-  BasicBlock *DefaultBB =
-      DefaultCase ? BasicBlock::Create(*TheContext, "switch.default", F)
-                  : AfterBB;
-  auto *SwitchI = Builder->CreateSwitch(CondVal, DefaultBB, Cases.size());
+  Function *FunctionIR = Builder->GetInsertBlock()->getParent();
+  BasicBlock *AfterBlock =
+      BasicBlock::Create(*TheContext, "switch.after", FunctionIR);
+  BasicBlock *DefaultBlock =
+      DefaultCase
+          ? BasicBlock::Create(*TheContext, "switch.default", FunctionIR)
+          : AfterBlock;
 
-  vector<BasicBlock *> CaseBBs;
-  CaseBBs.reserve(Cases.size());
-  for (const auto &C : Cases) {
-    BasicBlock *CaseBB = BasicBlock::Create(*TheContext, "switch.case", F);
-    CaseBBs.push_back(CaseBB);
-    // Every value in this case's list branches to the same block — LLVM's
-    // switch instruction natively supports many values mapping to one
-    // destination, so this is just one addCase() call per value.
-    for (int64_t Val : C.first) {
-      auto *CaseConst = ConstantInt::get(cast<IntegerType>(CondLLVMType),
-                                         static_cast<uint64_t>(Val),
-                                         /*isSigned=*/true);
-      SwitchI->addCase(CaseConst, CaseBB);
+  unsigned CaseCount = 0;
+  for (const auto &Case : Cases)
+    CaseCount += Case.first.size();
+  auto *SwitchIR =
+      Builder->CreateSwitch(ConditionValue, DefaultBlock, CaseCount);
+
+  vector<BasicBlock *> CaseBlocks;
+  for (const auto &Case : Cases) {
+    BasicBlock *CaseBlock =
+        BasicBlock::Create(*TheContext, "switch.case", FunctionIR);
+    CaseBlocks.push_back(CaseBlock);
+    for (int64_t Value : Case.first) {
+      auto *Constant = ConstantInt::get(ConditionType,
+                                        static_cast<uint64_t>(Value), true);
+      SwitchIR->addCase(Constant, CaseBlock);
     }
   }
 
-  BreakTargetStack.push_back(AfterBB);
-  for (size_t I = 0; I < Cases.size(); ++I) {
-    Builder->SetInsertPoint(CaseBBs[I]);
-    if (!Cases[I].second->codegen()) {
+  BreakTargetStack.push_back(AfterBlock);
+  for (size_t Index = 0; Index < Cases.size(); ++Index) {
+    Builder->SetInsertPoint(CaseBlocks[Index]);
+    if (!Cases[Index].second->codegen()) {
       BreakTargetStack.pop_back();
       return nullptr;
     }
     if (!Builder->GetInsertBlock()->getTerminator())
-      Builder->CreateBr(AfterBB);
+      Builder->CreateBr(AfterBlock);
   }
 
   if (DefaultCase) {
-    Builder->SetInsertPoint(DefaultBB);
+    Builder->SetInsertPoint(DefaultBlock);
     if (!DefaultCase->codegen()) {
       BreakTargetStack.pop_back();
       return nullptr;
     }
     if (!Builder->GetInsertBlock()->getTerminator())
-      Builder->CreateBr(AfterBB);
+      Builder->CreateBr(AfterBlock);
   }
   BreakTargetStack.pop_back();
 
-  Builder->SetInsertPoint(AfterBB);
+  Builder->SetInsertPoint(AfterBlock);
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
-Value *BreakExpressionNode::codegen() {
+Value *BreakStatementNode::codegen() {
   if (BreakTargetStack.empty())
     return LogErrorV("'break' used outside of a loop or switch");
   Builder->CreateBr(BreakTargetStack.back());
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
-Value *ContinueExpressionNode::codegen() {
+Value *ContinueStatementNode::codegen() {
   if (LoopControlStack.empty())
     return LogErrorV("'continue' used outside of a loop");
   Builder->CreateBr(LoopControlStack.back().ContinueTarget);
@@ -7352,16 +6213,14 @@ Value *VarStatementNode::codegen() {
 
       ModuleHasGlobals = true;
 
-      Value *InitVal = nullptr;
+      Value *InitVal = Init ? Init->codegen()
+                            : ZeroConstant(VarType, VarStructName);
+      if (!InitVal)
+        return nullptr;
       if (Init) {
-        InitVal = Init->codegen();
-        if (!InitVal)
-          return nullptr;
         InitVal = EmitImplicitCast(InitVal, Init->getType(), VarType);
         if (!InitVal)
           return LogErrorV("Type mismatch in variable initialization");
-      } else {
-        InitVal = ZeroConstant(VarType, VarStructName);
       }
 
       Builder->CreateStore(InitVal, GV);
@@ -7378,27 +6237,22 @@ Value *VarStatementNode::codegen() {
     const string &VarStructName = Var.StructName;
     ExpressionNode *Init = Var.Init.get();
 
-    Value *InitVal = nullptr;
+    Value *InitVal = Init ? Init->codegen()
+                          : ZeroConstant(VarType, VarStructName);
+    if (!InitVal)
+      return nullptr;
     if (Init) {
-      InitVal = Init->codegen();
-      if (!InitVal)
-        return nullptr;
       InitVal = EmitImplicitCast(InitVal, Init->getType(), VarType);
       if (!InitVal)
         return LogErrorV("Type mismatch in variable initialization");
-    } else {
-      InitVal = ZeroConstant(VarType, VarStructName);
     }
 
-    AllocaInst *Alloca =
-        CreateEntryBlockAlloca(TheFunction, VarName, VarType, VarStructName);
+    AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName, VarType,
+                                                VarStructName);
     Builder->CreateStore(InitVal, Alloca);
     NamedValues[VarName] = Alloca;
-    NamedValueTypes[VarName] = VarType;
     if (!VarStructName.empty())
       NamedValueStructNames[VarName] = VarStructName;
-    else
-      NamedValueStructNames.erase(VarName);
     EmitDebugDeclare(Alloca, VarName, CurFunctionLine, false, 0, VarType);
   }
 
@@ -7418,11 +6272,12 @@ Value *VarStatementNode::codegen() {
 Function *FunctionSignatureNode::codegen() {
   std::vector<Type *> ParameterTypes;
   ParameterTypes.reserve(Parameters.size());
-  for (const auto &Parameter : Parameters)
-    ParameterTypes.push_back(LLVMTypeFor(Parameter.Type, Parameter.StructName));
-  FunctionType *FT =
-      FunctionType::get(LLVMTypeFor(ReturnType, ReturnStructName), ParameterTypes,
-                        false /* not variadic */);
+  for (size_t Index = 0; Index < Parameters.size(); ++Index)
+    ParameterTypes.push_back(
+        LLVMTypeFor(Parameters[Index].second, getParameterStructName(Index)));
+  FunctionType *FT = FunctionType::get(
+      LLVMTypeFor(ReturnType, ReturnStructName), ParameterTypes,
+      IsVariadic);
 
   Function *F =
       Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
@@ -7430,7 +6285,8 @@ Function *FunctionSignatureNode::codegen() {
   // Name arguments so the printed IR is readable.
   unsigned Idx = 0;
   for (auto &Arg : F->args())
-    Arg.setName(Parameters[Idx++].Name);
+    Arg.setName(Parameters[Idx++].first);
+
 
   return F;
 }
@@ -7476,26 +6332,24 @@ Function *FunctionDefinitionNode::codegen() {
     return nullptr;
 
   ValueType SavedRetType = CurrentFunctionReturnType;
+  string SavedRetStructName = CurrentFunctionReturnStructName;
   CurrentFunctionReturnType = P.getReturnType();
+  CurrentFunctionReturnStructName = P.getReturnStructName();
 
-  DISubprogram *SP = nullptr;
-  if (DIB && TheDIFile) {
-    bool IsInternal = P.getName().rfind("__pyxc.", 0) == 0;
-    if (!IsInternal) {
-      unsigned Line = P.getLocation().Line ? P.getLocation().Line : 1;
-      SmallVector<Metadata *, 8> EltTys;
-      EltTys.push_back(DITypeFor(P.getReturnType()));
-      for (size_t i = 0; i < P.getParameters().size(); ++i)
-        EltTys.push_back(DITypeFor(P.getParameterType(i)));
-      auto *SubType =
-          DIB->createSubroutineType(DIB->getOrCreateTypeArray(EltTys));
-      SP = DIB->createFunction(TheDIFile, P.getName(), StringRef(), TheDIFile,
-                               Line, SubType, Line, DINode::FlagZero,
-                               DISubprogram::SPFlagDefinition);
-      TheFunction->setSubprogram(SP);
-      CurDIScope = SP;
-      CurFunctionLine = Line;
-    }
+  if (DIB && TheDIFile && P.getName().rfind("__pyxc.", 0) != 0) {
+    unsigned Line = P.getLocation().Line ? P.getLocation().Line : 1;
+    SmallVector<Metadata *, 8> Types;
+    Types.push_back(DITypeFor(P.getReturnType()));
+    for (size_t Index = 0; Index < P.getParameters().size(); ++Index)
+      Types.push_back(DITypeFor(P.getParameterType(Index)));
+    auto *SubroutineType =
+        DIB->createSubroutineType(DIB->getOrCreateTypeArray(Types));
+    auto *Subprogram = DIB->createFunction(
+        TheDIFile, P.getName(), StringRef(), TheDIFile, Line, SubroutineType,
+        Line, DINode::FlagZero, DISubprogram::SPFlagDefinition);
+    TheFunction->setSubprogram(Subprogram);
+    CurDIScope = Subprogram;
+    CurFunctionLine = Line;
   }
 
   // Step 2: create the entry block and point the builder at it.
@@ -7505,25 +6359,22 @@ Function *FunctionDefinitionNode::codegen() {
 
   // Step 3: populate NamedValues with entry-block allocas for each argument.
   NamedValues.clear();
-  NamedValueTypes.clear();
   NamedValueStructNames.clear();
   LoopControlStack.clear();
   BreakTargetStack.clear();
-  unsigned ArgIndex = 1;
+  unsigned ArgumentNumber = 1;
   size_t ArgTypeIndex = 0;
   for (auto &Arg : TheFunction->args()) {
     ValueType ArgType = P.getParameterType(ArgTypeIndex);
-    string ArgStructName = P.getParameterStructName(ArgTypeIndex);
-    ++ArgTypeIndex;
+    const string &ArgStructName = P.getParameterStructName(ArgTypeIndex++);
     AllocaInst *Alloca = CreateEntryBlockAlloca(
         TheFunction, std::string(Arg.getName()), ArgType, ArgStructName);
     Builder->CreateStore(&Arg, Alloca);
     NamedValues[std::string(Arg.getName())] = Alloca;
-    NamedValueTypes[std::string(Arg.getName())] = ArgType;
     if (!ArgStructName.empty())
       NamedValueStructNames[std::string(Arg.getName())] = ArgStructName;
-    EmitDebugDeclare(Alloca, Arg.getName(), CurFunctionLine, true, ArgIndex++,
-                     ArgType);
+    EmitDebugDeclare(Alloca, Arg.getName(), CurFunctionLine, true,
+                     ArgumentNumber++, ArgType);
   }
 
   // Step 4: codegen the body, optimise, verify, or erase on failure.
@@ -7544,6 +6395,7 @@ Function *FunctionDefinitionNode::codegen() {
           TheFunction->eraseFromParent();
           CurDIScope = nullptr;
           CurrentFunctionReturnType = SavedRetType;
+          CurrentFunctionReturnStructName = SavedRetStructName;
           return nullptr;
         }
       }
@@ -7555,6 +6407,7 @@ Function *FunctionDefinitionNode::codegen() {
     TheFPM->run(*TheFunction, *TheFAM);
     CurDIScope = nullptr;
     CurrentFunctionReturnType = SavedRetType;
+    CurrentFunctionReturnStructName = SavedRetStructName;
     return TheFunction;
   }
 
@@ -7563,6 +6416,7 @@ Function *FunctionDefinitionNode::codegen() {
   TheFunction->eraseFromParent();
   CurDIScope = nullptr;
   CurrentFunctionReturnType = SavedRetType;
+  CurrentFunctionReturnStructName = SavedRetStructName;
   return nullptr;
 }
 
@@ -7570,7 +6424,7 @@ Function *FunctionDefinitionNode::codegen() {
 // Top-Level parsing and JIT Driver
 //===----------------------------------------===//
 
-static vector<unique_ptr<ExpressionNode>> FileTopLevelStmts;
+static vector<unique_ptr<ExpressionNode>> FileTopLevelStatements;
 
 /// ResetParserStateForFile - Clear parser/compiler state between input files.
 ///
@@ -7579,15 +6433,16 @@ static vector<unique_ptr<ExpressionNode>> FileTopLevelStmts;
 static void ResetParserStateForFile() {
   FunctionSignatures.clear();
   StructTypes.clear();
-  Traits.clear();
-  ActiveTypeParams.clear();
   TypeAliases.clear();
+  TraitTypes.clear();
+  StringLiteralCounter = 0;
   GlobalVarTypes.clear();
-  GlobalVarStructTypes.clear();
+  GlobalVarStructNames.clear();
   GlobalVarDecls.clear();
   VarScopes.clear();
   VarStructScopes.clear();
-  FileTopLevelStmts.clear();
+  NamedValueStructNames.clear();
+  FileTopLevelStatements.clear();
   LastTopLevelShouldPrint = true;
   InGlobalInit = false;
   ModuleHasGlobals = false;
@@ -7605,16 +6460,9 @@ static void ResetParserStateForFile() {
 /// The optimisation pipeline is also recreated each time because
 /// FunctionPassManager is tied to a specific LLVMContext.
 ///
-/// Pipeline:
-///   PromotePass     - Mem2Reg: promote stack slots to SSA registers.
-///   InstCombinePass  - Peephole rewrites: a+0->a, x*2->x<<1, etc.
-///   ReassociatePass  - Reorder commutative ops to expose more folding:
-///                      (x+2)+3 -> x+(2+3) -> x+5.
-///   GVNPass          - Global Value Numbering: eliminate redundant loads and
-///                      common sub-expressions across basic blocks.
-///
 /// The analysis managers are cross-registered so that a function pass that
-/// needs loop information can reach TheLAM, and so on.
+/// needs loop information can reach TheLAM, and so on. PassBuilder then creates
+/// LLVM's standard function and module pipelines for the selected level.
 static void InitializeModuleAndManagers(bool FreshContext = true) {
   // Fresh context and module for this compilation unit.
   if (FreshContext || !TheContext)
@@ -7627,7 +6475,6 @@ static void InitializeModuleAndManagers(bool FreshContext = true) {
 
   Builder = std::make_unique<IRBuilder<NoFolder>>(*TheContext);
   ModuleHasGlobals = false;
-  StringLiteralCounter = 0;
   CurDIScope = nullptr;
   CurFunctionLine = 1;
 
@@ -7647,24 +6494,23 @@ static void InitializeModuleAndManagers(bool FreshContext = true) {
   PB.registerLoopAnalyses(*TheLAM);
   PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
 
-  // Optimisation pipelines. With -O0 the pass managers are left empty so the
-  // emitted IR stays close to the direct lowering performed by the code
-  // generator.
+  // I ask LLVM to build its standard pipelines for the selected level.
   if (OptLevel != 0) {
-    auto FPM = PB.buildFunctionSimplificationPipeline(GetOptLevel(),
-                                                      ThinOrFullLTOPhase::None);
-    TheFPM = std::make_unique<FunctionPassManager>(std::move(FPM));
-    auto MPM = PB.buildPerModuleDefaultPipeline(GetOptLevel());
-    TheMPM = std::make_unique<ModulePassManager>(std::move(MPM));
+    auto FunctionPipeline = PB.buildFunctionSimplificationPipeline(
+        GetOptLevel(), ThinOrFullLTOPhase::None);
+    TheFPM = std::make_unique<FunctionPassManager>(
+        std::move(FunctionPipeline));
+    auto ModulePipeline = PB.buildPerModuleDefaultPipeline(GetOptLevel());
+    TheMPM =
+        std::make_unique<ModulePassManager>(std::move(ModulePipeline));
   }
 
   InitializeDebugInfo();
 }
 
-static void RunModuleOptimizations(Module *M) {
-  if (!TheMPM || OptLevel == 0)
-    return;
-  TheMPM->run(*M, *TheMAM);
+static void RunModuleOptimizations(Module *Module) {
+  if (TheMPM && OptLevel != 0)
+    TheMPM->run(*Module, *TheMAM);
 }
 
 /// SynchronizeToLineBoundary - Panic-mode error recovery.
@@ -7676,6 +6522,47 @@ static void RunModuleOptimizations(Module *M) {
 static void SynchronizeToLineBoundary() {
   while (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_dedent)
     getNextToken();
+}
+
+static void HandleAggregateDefinition(const char *KindName) {
+  bool Parsed = ParseAggregateDefinition(KindName);
+  bool HasTrailing = CurrentToken != tok_eol && CurrentToken != tok_eof &&
+                     CurrentToken != tok_block_end;
+  if (!Parsed || HasTrailing) {
+    if (Parsed)
+      LogErrorExpression(
+          ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+    SynchronizeToLineBoundary();
+    return;
+  }
+  Log((string("Parsed a ") + KindName + " definition.\n").c_str());
+}
+
+static void HandleTraitDefinition() {
+  bool Parsed = ParseTraitDefinition();
+  bool HasTrailing = CurrentToken != tok_eol && CurrentToken != tok_eof &&
+                     CurrentToken != tok_block_end;
+  if (!Parsed || HasTrailing) {
+    if (Parsed)
+      LogErrorExpression(
+          ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+    SynchronizeToLineBoundary();
+    return;
+  }
+  Log("Parsed a trait definition.\n");
+}
+
+static void HandleTypeAliasDefinition() {
+  bool Parsed = ParseTypeAliasDefinition();
+  bool HasTrailing = CurrentToken != tok_eol && CurrentToken != tok_eof;
+  if (!Parsed || HasTrailing) {
+    if (Parsed)
+      LogErrorExpression(
+          ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+    SynchronizeToLineBoundary();
+    return;
+  }
+  Log("Parsed a type alias.\n");
 }
 
 /// HandleFunctionDefinition - Parse, optimise, and JIT-compile a 'def' function-definition.
@@ -7731,7 +6618,8 @@ static void HandleExtern() {
   // name + arity. We validate types separately in the parser.
   auto Existing = FunctionSignatures.find(ProtoAST->getName());
   if (Existing != FunctionSignatures.end() &&
-      Existing->second->getNumParameters() != ProtoAST->getNumParameters()) {
+      (Existing->second->getNumParameters() != ProtoAST->getNumParameters() ||
+       Existing->second->isVariadic() != ProtoAST->isVariadic())) {
     LogErrorExpression((string("Conflicting extern declaration for '") +
               ProtoAST->getName() + "'")
                  .c_str());
@@ -7748,77 +6636,7 @@ static void HandleExtern() {
   }
 }
 
-static void HandleStructDef() {
-  bool Ok = ParseAggregateDefinition("struct");
-  if (!Ok) {
-    SynchronizeToLineBoundary();
-    return;
-  }
-  bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
-  if (HasTrailing) {
-    LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
-    return;
-  }
-}
-
-static void HandleClassDef() {
-  bool Ok = ParseAggregateDefinition("class");
-  if (!Ok) {
-    SynchronizeToLineBoundary();
-    return;
-  }
-  bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
-  if (HasTrailing) {
-    LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
-    return;
-  }
-}
-
-static void HandleTypeAliasDef() {
-  bool Ok = ParseTypeAliasDefinition();
-  if (!Ok) {
-    SynchronizeToLineBoundary();
-    return;
-  }
-  bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
-  if (HasTrailing) {
-    LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
-    return;
-  }
-}
-
-static void HandleTraitDef() {
-  bool Ok = ParseTraitDefinition();
-  if (!Ok) {
-    SynchronizeToLineBoundary();
-    return;
-  }
-  bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
-  if (HasTrailing) {
-    LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
-    return;
-  }
-}
-
-static void HandleImplDef() {
-  bool Ok = ParseImplDefinition();
-  if (!Ok) {
-    SynchronizeToLineBoundary();
-    return;
-  }
-  bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
-  if (HasTrailing) {
-    LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
-    return;
-  }
-}
-
-/// HandleTopLevelExpression - Compile, execute, and discard a bare expression.
+/// HandleTopLevelStatement - Compile, execute, and discard a bare expression.
 ///
 /// The expression is wrapped in '__anon_expr' (a zero-argument function that
 /// returns float64) so it goes through the same codegen path as everything
@@ -7836,8 +6654,8 @@ static void HandleImplDef() {
 ///      pointer, call it, and print the result.
 ///   6. Call RT->remove() to free the compiled code. The module was already
 ///      transferred to the JIT in step 4, so eraseFromParent() is not needed.
-static void HandleTopLevelExpression() {
-  auto FnAST = ParseTopLevelExpression();
+static void HandleTopLevelStatement() {
+  auto FnAST = ParseTopLevelStatementFunction();
   bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
   if (!FnAST || HasTrailing) {
     if (FnAST)
@@ -7929,6 +6747,34 @@ static void HandleTopLevelExpression() {
             fprintf(stderr, "%lld\n", result);
           break;
         }
+        case ValueType::UInt8: {
+          uint8_t (*FP)() = ExprSymbol.toPtr<uint8_t (*)()>();
+          unsigned long long result = static_cast<unsigned long long>(FP());
+          if (IsRepl && LastTopLevelShouldPrint)
+            fprintf(stderr, "%llu\n", result);
+          break;
+        }
+        case ValueType::UInt16: {
+          uint16_t (*FP)() = ExprSymbol.toPtr<uint16_t (*)()>();
+          unsigned long long result = static_cast<unsigned long long>(FP());
+          if (IsRepl && LastTopLevelShouldPrint)
+            fprintf(stderr, "%llu\n", result);
+          break;
+        }
+        case ValueType::UInt32: {
+          uint32_t (*FP)() = ExprSymbol.toPtr<uint32_t (*)()>();
+          unsigned long long result = static_cast<unsigned long long>(FP());
+          if (IsRepl && LastTopLevelShouldPrint)
+            fprintf(stderr, "%llu\n", result);
+          break;
+        }
+        case ValueType::UInt64: {
+          uint64_t (*FP)() = ExprSymbol.toPtr<uint64_t (*)()>();
+          unsigned long long result = static_cast<unsigned long long>(FP());
+          if (IsRepl && LastTopLevelShouldPrint)
+            fprintf(stderr, "%llu\n", result);
+          break;
+        }
         case ValueType::Bool: {
           bool (*FP)() = ExprSymbol.toPtr<bool (*)()>();
           bool result = FP();
@@ -8002,6 +6848,34 @@ static void HandleTopLevelExpression() {
           fprintf(stderr, "%lld\n", result);
         break;
       }
+      case ValueType::UInt8: {
+        uint8_t (*FP)() = ExprSymbol.toPtr<uint8_t (*)()>();
+        unsigned long long result = static_cast<unsigned long long>(FP());
+        if (IsRepl && LastTopLevelShouldPrint)
+          fprintf(stderr, "%llu\n", result);
+        break;
+      }
+      case ValueType::UInt16: {
+        uint16_t (*FP)() = ExprSymbol.toPtr<uint16_t (*)()>();
+        unsigned long long result = static_cast<unsigned long long>(FP());
+        if (IsRepl && LastTopLevelShouldPrint)
+          fprintf(stderr, "%llu\n", result);
+        break;
+      }
+      case ValueType::UInt32: {
+        uint32_t (*FP)() = ExprSymbol.toPtr<uint32_t (*)()>();
+        unsigned long long result = static_cast<unsigned long long>(FP());
+        if (IsRepl && LastTopLevelShouldPrint)
+          fprintf(stderr, "%llu\n", result);
+        break;
+      }
+      case ValueType::UInt64: {
+        uint64_t (*FP)() = ExprSymbol.toPtr<uint64_t (*)()>();
+        unsigned long long result = static_cast<unsigned long long>(FP());
+        if (IsRepl && LastTopLevelShouldPrint)
+          fprintf(stderr, "%llu\n", result);
+        break;
+      }
       case ValueType::Bool: {
         bool (*FP)() = ExprSymbol.toPtr<bool (*)()>();
         bool result = FP();
@@ -8032,7 +6906,7 @@ static void HandleTopLevelStatementFileMode() {
     return;
   }
 
-  FileTopLevelStmts.push_back(std::move(Stmt));
+  FileTopLevelStatements.push_back(std::move(Stmt));
 }
 
 //===----------------------------------------===//
@@ -8067,13 +6941,14 @@ extern "C" DLLEXPORT double printd(double X) {
 
 /// MainLoop - Dispatch loop for the REPL.
 ///
-/// top             = function-definition | external | toplevelstmt ;
+/// top-level-item
+///   = function-definition | external | top-level-statement ;
 ///
 /// Dispatches on the leading token of each top-level form:
 ///   tok_def    → HandleFunctionDefinition   (function-definition)
 ///   tok_extern → HandleExtern       (external)
 ///   tok_eol    → skip blank line
-///   anything else → HandleTopLevelExpression (toplevelstmt)
+///   anything else → HandleTopLevelStatement (top-level-statement)
 ///
 /// CurrentToken is primed before MainLoop() is called (see main()). After each
 /// successful parse the handler prints a confirmation; after a failed parse
@@ -8110,20 +6985,17 @@ static void MainLoop() {
     }
 
     switch (CurrentToken) {
+    case tok_type:
+      HandleTypeAliasDefinition();
+      break;
     case tok_struct:
-      HandleStructDef();
+      HandleAggregateDefinition("struct");
       break;
     case tok_class:
-      HandleClassDef();
-      break;
-    case tok_type:
-      HandleTypeAliasDef();
+      HandleAggregateDefinition("class");
       break;
     case tok_trait:
-      HandleTraitDef();
-      break;
-    case tok_impl:
-      HandleImplDef();
+      HandleTraitDefinition();
       break;
     case tok_def:
       HandleFunctionDefinition();
@@ -8132,7 +7004,7 @@ static void MainLoop() {
       HandleExtern();
       break;
     default:
-      HandleTopLevelExpression();
+      HandleTopLevelStatement();
       break;
     }
   }
@@ -8141,7 +7013,7 @@ static void MainLoop() {
 /// FileModeLoop - Parse a script file into top-level statements + definitions.
 ///
 /// In file mode we do not execute top-level statements immediately. They are
-/// collected into FileTopLevelStmts and later emitted into __pyxc.global_init.
+/// collected into FileTopLevelStatements and later emitted into __pyxc.global_init.
 static void FileModeLoop() {
   while (true) {
     if (CurrentToken == tok_eof)
@@ -8169,20 +7041,17 @@ static void FileModeLoop() {
     }
 
     switch (CurrentToken) {
+    case tok_type:
+      HandleTypeAliasDefinition();
+      break;
     case tok_struct:
-      HandleStructDef();
+      HandleAggregateDefinition("struct");
       break;
     case tok_class:
-      HandleClassDef();
-      break;
-    case tok_type:
-      HandleTypeAliasDef();
+      HandleAggregateDefinition("class");
       break;
     case tok_trait:
-      HandleTraitDef();
-      break;
-    case tok_impl:
-      HandleImplDef();
+      HandleTraitDefinition();
       break;
     case tok_def:
       HandleFunctionDefinition();
@@ -8199,10 +7068,10 @@ static void FileModeLoop() {
 
 /// RunFileMode - Emit and execute __pyxc.global_init, then call main() if any.
 static void RunFileMode() {
-  if (!FileTopLevelStmts.empty()) {
-    auto Block = make_unique<BlockExpressionNode>(std::move(FileTopLevelStmts));
+  if (!FileTopLevelStatements.empty()) {
+    auto Block = make_unique<BlockStatementNode>(std::move(FileTopLevelStatements));
     auto Signature = make_unique<FunctionSignatureNode>(
-        "__pyxc.global_init", vector<FunctionSignatureNode::ParameterInfo>(),
+        "__pyxc.global_init", vector<pair<string, ValueType>>(),
         SourceLocation{1, 1}, ValueType::None);
     auto FnAST = make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(Block));
 
@@ -8296,7 +7165,9 @@ static std::unique_ptr<TargetMachine> CreateTargetMachine() {
 /// format.
 static bool EmitModuleToFile(Module *M, EmitKind Kind,
                              const string &OutputPath) {
-  FinalizeDebugInfo();
+  if (M == TheModule.get())
+    FinalizeDebugInfo();
+
   std::error_code EC;
   raw_fd_ostream Dest(OutputPath, EC, sys::fs::OF_None);
   if (EC) {
@@ -8318,7 +7189,7 @@ static bool EmitModuleToFile(Module *M, EmitKind Kind,
   M->setDataLayout(TM->createDataLayout());
 
   legacy::PassManager PM;
-  CodeGenFileType FileType = (Kind == EmitKind::ASM)
+  CodeGenFileType FileType = (Kind == EmitKind::Assembly)
                                  ? CodeGenFileType::AssemblyFile
                                  : CodeGenFileType::ObjectFile;
 
@@ -8418,7 +7289,7 @@ static bool EmitRuntimeObject(const string &ObjPath) {
     B.CreateRet(ConstantFP::get(Ctx, APFloat(0.0)));
   }
 
-  return EmitModuleToFile(M.get(), EmitKind::OBJ, ObjPath);
+  return EmitModuleToFile(M.get(), EmitKind::Object, ObjPath);
 }
 
 static bool CompileFileToObject(const string &Path, const string &ObjPath,
@@ -8446,7 +7317,7 @@ static bool CompileFileToObject(const string &Path, const string &ObjPath,
     return false;
 
   RunModuleOptimizations(TheModule.get());
-  return EmitModuleToFile(TheModule.get(), EmitKind::OBJ, ObjPath);
+  return EmitModuleToFile(TheModule.get(), EmitKind::Object, ObjPath);
 }
 
 /// RunXcrun - Shell out to xcrun and return trimmed stdout, or "" on failure.
@@ -8508,37 +7379,29 @@ static string FindMacOSSDKVersion() {
   return "11.0";
 }
 
-static void MaybeEmitDsymBundle(const string &ExePath) {
+static void MaybeEmitDsymBundle(const string &ExecutablePath) {
   if (!DebugInfo)
     return;
 
-  Triple TT(sys::getDefaultTargetTriple());
-  if (!TT.isOSDarwin())
+  Triple TargetTriple(sys::getDefaultTargetTriple());
+  if (!TargetTriple.isOSDarwin())
     return;
 
   auto Dsymutil = sys::findProgramByName("dsymutil");
   if (!Dsymutil) {
-    fprintf(
-        stderr,
-        "Warning: dsymutil not found; debug info will remain in .o files\n");
+    fprintf(stderr,
+            "Warning: dsymutil not found; debug info will remain in .o files\n");
     return;
   }
 
-  std::vector<StringRef> Arguments;
-  Arguments.push_back(*Dsymutil);
-  Arguments.push_back(ExePath);
-  if (sys::ExecuteAndWait(*Dsymutil, Arguments)) {
+  std::vector<StringRef> Arguments{*Dsymutil, ExecutablePath};
+  if (sys::ExecuteAndWait(*Dsymutil, Arguments))
     fprintf(stderr, "Warning: dsymutil failed; debug info may be missing\n");
-  }
 }
 
 static bool LinkExecutable(const vector<string> &Inputs,
                            const string &OutputPath) {
-  // Use the TargetMachine's normalized triple so the linker's -platform_version
-  // matches exactly what was baked into the object files during compilation.
-  auto TM = CreateTargetMachine();
-  Triple TT =
-      TM ? TM->getTargetTriple() : Triple(sys::getDefaultTargetTriple());
+  Triple TT(sys::getDefaultTargetTriple());
   vector<string> ArgStorage;
   auto PushArg = [&](const string &Arg) { ArgStorage.push_back(Arg); };
 
@@ -8610,10 +7473,10 @@ static bool LinkExecutable(const vector<string> &Inputs,
 ///
 /// Returns false on error (e.g., invalid main signature).
 static bool PrepareFileModeModule() {
-  if (!FileTopLevelStmts.empty()) {
-    auto Block = make_unique<BlockExpressionNode>(std::move(FileTopLevelStmts));
+  if (!FileTopLevelStatements.empty()) {
+    auto Block = make_unique<BlockStatementNode>(std::move(FileTopLevelStatements));
     auto Signature = make_unique<FunctionSignatureNode>(
-        "__pyxc.global_init", vector<FunctionSignatureNode::ParameterInfo>(),
+        "__pyxc.global_init", vector<pair<string, ValueType>>(),
         SourceLocation{1, 1}, ValueType::None);
     auto FnAST = make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(Block));
 
@@ -8768,7 +7631,6 @@ static bool EmitExecutable() {
     return false;
   }
   MaybeEmitDsymBundle(EmitOutputPath);
-
   CleanupTemps();
   return true;
 }
@@ -8805,21 +7667,21 @@ int ProcessCommandLine(int argc, const char **argv) {
       }
       EmitOutputPath = OutputFile.empty() ? "out.ll" : OutputFile.getValue();
     } else if (EmitKindOpt == "asm") {
-      EmitMode = EmitKind::ASM;
+      EmitMode = EmitKind::Assembly;
       if (InputFiles.size() != 1) {
         fprintf(stderr, "Error: --emit requires a single input file\n");
         return -1;
       }
       EmitOutputPath = OutputFile.empty() ? "out.s" : OutputFile.getValue();
     } else if (EmitKindOpt == "obj") {
-      EmitMode = EmitKind::OBJ;
+      EmitMode = EmitKind::Object;
       if (InputFiles.size() != 1) {
         fprintf(stderr, "Error: --emit requires a single input file\n");
         return -1;
       }
       EmitOutputPath = OutputFile.empty() ? "out.o" : OutputFile.getValue();
     } else if (EmitKindOpt == "exe") {
-      EmitMode = EmitKind::EXE;
+      EmitMode = EmitKind::Executable;
       if (OutputFile.empty() && InputFiles.size() > 1) {
         fprintf(stderr, "Error: multiple inputs require -o\n");
         return -1;
@@ -8865,10 +7727,7 @@ int main(int argc, const char **argv) {
   InitializeNativeTargetAsmPrinter();
   InitializeNativeTargetAsmParser();
 
-  if (IsRepl || InputFiles.empty())
-    CurrentSourcePath = "<stdin>";
-  else
-    CurrentSourcePath = InputFiles.front();
+  CurrentSourcePath = IsRepl ? "<stdin>" : InputFiles.front();
 
   // Create the JIT first — InitializeModuleAndManagers() needs TheJIT in
   // order to set the data layout on the new module.
@@ -8880,7 +7739,7 @@ int main(int argc, const char **argv) {
     getNextToken();
     MainLoop();
   } else {
-    if (EmitMode == EmitKind::EXE) {
+    if (EmitMode == EmitKind::Executable) {
       if (!EmitExecutable())
         return 1;
     } else {

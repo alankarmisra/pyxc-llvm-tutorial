@@ -1,5 +1,0 @@
-extern def puts(s: ptr[int8]) -> int
-def main() -> int:
-  var msg: ptr[int8] = "stored string"
-  puts(msg)
-  return 0

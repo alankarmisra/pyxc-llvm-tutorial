@@ -1,0 +1,10 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck %s < %t.ll
+# CHECK: declare i64 @logf(...)
+# CHECK: call i64 (...) @logf
+
+extern def logf(...) -> int64
+
+def main() -> int:
+  logf(1, 2, 3)
+  return 0

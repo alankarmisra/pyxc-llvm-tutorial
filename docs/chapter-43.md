@@ -1,4 +1,5 @@
 ---
+section: "Program Structure"
 description: "Introduce module declarations and export: name your compilation unit, mark your public API, and split a pyxc project across multiple files."
 ---
 # 43. pyxc: Module Declarations and Export

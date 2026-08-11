@@ -1,7 +1,0 @@
-# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
-# CHECK: {{[Ee]rror}}
-# CHECK: Pointers to array types are not supported
-
-def bad() -> int:
-  var p: ptr[int[4]]
-  return 0

@@ -1,0 +1,18 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 99.000000
+
+extern def printd(x: float64)
+
+def main() -> int:
+  var x: int = 7
+  var out: int = 0
+  switch x:
+    case 1:
+      out = 10
+    case 2:
+      out = 20
+    default:
+      out = 99
+  printd(float64(out))
+  return 0

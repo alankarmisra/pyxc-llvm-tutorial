@@ -1,6 +1,6 @@
 # RUN: %pyxc < %s 2>&1 | FileCheck %s
 # CHECK: Assignment target must be assignable
 
-# Tests: non-lvalue assignment target is rejected.
+# Tests: the left-hand side of "=" must be assignable.
 
 (1 + 2) = 3

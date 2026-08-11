@@ -1,0 +1,9 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: 2
+# CHECK: 3
+# CHECK: 4
+
+# term: remainder has the same precedence as multiplication and division
+8 % 3
+1 + 8 % 3
+8 % 3 * 2

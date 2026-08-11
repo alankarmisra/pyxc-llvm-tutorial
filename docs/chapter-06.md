@@ -1,15 +1,38 @@
 ---
+section: "LLVM and Execution"
 description: "Install LLVM with everything you need: clang, lld, lldb, clangd, and lit — via Homebrew (macOS/Linux), the official installer (Windows), or from source."
 ---
 # 6. pyxc: Installing LLVM
 
-## Where We Are
+## What I Am Building
 
-The compiler from [Chapter 5](chapter-05.md) can parse Pyxc and report errors with source locations. To turn the AST into machine code, I need LLVM — specifically with the following tools: `lld`, `clangd`, `lldb`, and `llvm-lit`. I'll get to using them in the following chapters. On macOS and Linux, Homebrew gets you there in two commands (as of today May 1, 2026). On Windows, the official LLVM installer does the same. Building compilers is hard enough. I don't need to torture myself needlessly. Unless I want to. Consequently, if you're feeling adventurous, you could build from source instead — I did that too just to make sure the instructions are legit. All paths end up in the same place. 
+The compiler from [Chapter 5](chapter-05.md) can parse Pyxc and report errors with source locations. To turn the AST into machine code, I need LLVM — specifically with the following tools: `lld`, `clangd`, `lldb`, and `llvm-lit`. I'll get to using them in the following chapters. On macOS and Linux, Homebrew gets you there in two commands. On Windows, the official LLVM installer does the same. Building compilers is hard enough. I don't need to torture myself needlessly. Unless I want to. Consequently, if you're feeling adventurous, you could build from source instead — I did that too just to make sure the instructions are legit. All paths end up in the same place. 
 
 
 !!!note
     I'm a bit concerned about the longevity of this chapter. Installation dynamics change quite frequently and things break occassionally, if not often. These forces are outside my control. Which is why if something breaks, PLEASE let me know so I can fix this chapter so it continues to work for others that follow you. I've been very close to giving up on tutorials because I couldn't get the base infrastructure to install and I'd hate for that to happen to you or to others. 
+
+## Source Code
+
+```bash
+git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
+cd pyxc-llvm-tutorial/code/chapter-06
+```
+
+pyxc itself doesn't change in this chapter — the source file is identical to Chapter 5. What changes is `CMakeLists.txt`: it now asks CMake to actually find the LLVM I'm about to install.
+
+```cmake
+# I verify that CMake can find the LLVM installation prepared in this chapter.
+find_package(LLVM REQUIRED CONFIG)
+
+message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
+message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
+
+include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
+add_definitions(${LLVM_DEFINITIONS})
+```
+
+I don't call any LLVM API yet — that's Chapter 7. This chapter's entire job is making sure `find_package(LLVM REQUIRED CONFIG)` succeeds, since every chapter from here on depends on it.
 
 ## macOS / Linux — Homebrew
 
@@ -482,6 +505,23 @@ ninja --version
 
 If that fails, download Ninja and add its directory to `PATH` in System Environment Variables.
 
+## Try It
+
+With LLVM installed and on my `PATH`, I configure the chapter and watch CMake find it:
+
+```bash
+cd code/chapter-06
+cmake -S . -B build
+```
+
+```text
+-- Found LLVM 21.1.6
+-- Using LLVMConfig.cmake in: /path/to/llvm/lib/cmake/llvm
+-- Configuring done
+```
+
+The exact version and path depend on how I installed LLVM, but seeing `Found LLVM` at all is the real payoff of this chapter — everything from Chapter 7 onward assumes this line succeeds.
+
 ## What's Next
 
 [Chapter 7](chapter-07.md) connects the AST to LLVM IR for the first time.
@@ -498,4 +538,4 @@ Include:
 - Full error message
 - Output of `cmake --version` and `ninja --version`
 
-We'll figure it out.
+I'll help you figure it out.

@@ -1,4 +1,5 @@
 ---
+section: "Statements and Control Flow"
 description: "Add comparison operators, if/else expressions, and for loops — then use them to render the Mandelbrot set in ASCII."
 ---
 # 10. pyxc: Control Flow: if, else, and for
@@ -69,50 +70,67 @@ Evaluated to 0.000000
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-09
+cd pyxc-llvm-tutorial/code/chapter-10
 ```
 
 ## Grammar
 
-I add `ifexpr` and `forexpr` to `primary`, and replace the single `<` alternative in `comparison` with a `comparison-operator` rule containing six operators:
+I add `if-expression` and `for-expression` to `primary`, and replace the single `<` alternative in `comparison` with a `comparison-operator` rule containing six operators:
 
-`code/chapter-09/pyxc.ebnf`
+`code/chapter-10/pyxc.ebnf`
 
 ```grammardiff
- program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
- end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = function-definition | external | top-level-expression ;
- function-definition      = "def" function-signature ":" [ end-of-lines ] expression ;
- external        = "extern" "def" function-signature ;
- top-level-expression    = expression ;
- function-signature       = name "(" [ parameters ] ")" ;
- parameters               = parameter { "," parameter } ;
- parameter                = name ;
-+ifexpr          = "if" expression ":" [ end-of-lines ] expression [ end-of-lines ] "else" ":" [ end-of-lines ] expression ;
-+forexpr         = "for" name "=" expression "," expression "," expression ":" [ end-of-lines ] expression ;
- expression               = comparison ;
--comparison               = sum { "<" sum } ;
-+comparison               = sum { comparison-operator sum } ;
-+comparison-operator      = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
- sum                      = term { ("+" | "-") term } ;
- term                     = primary { ("*" | "/") primary } ;
--primary         = name-expression | number-expression | parenthesized-expression ;
-+primary         = name-expression | number-expression | parenthesized-expression
-+                | ifexpr | forexpr ;
- name-expression  = name | call-expression ;
- call-expression         = name "(" [ arguments ] ")" ;
- arguments               = expression { "," expression } ;
- number-expression      = number ;
- parenthesized-expression       = "(" expression ")" ;
- name      = (letter | "_") { letter | digit | "_" } ;
- number          = digit { digit } [ "." { digit } ]
-                 | "." digit { digit } ;
- letter          = "A".."Z" | "a".."z" ;
- digit           = "0".."9" ;
- end-of-line             = "\r\n" | "\r" | "\n" ;
- comment = "#" { comment-character } ;
- comment-character = ? any character except "\r" and "\n" ? ;
- whitespace = " " | "\t" | "\v" | "\f" ;
+ program                           = [ end-of-lines ]
+                                     [ top-level-item
+                                       { end-of-lines top-level-item } ]
+                                     [ end-of-lines ] ;
+ end-of-lines                      = end-of-line { end-of-line } ;
+ top-level-item                    = function-definition
+                                     | external
+                                     | top-level-expression ;
+ function-definition               = "def" function-signature ":"
+                                     [ end-of-lines ] expression ;
+ external                          = "extern" "def" function-signature ;
+ top-level-expression              = expression ;
+ function-signature                = name "(" [ parameters ] ")" ;
+ parameters                        = parameter { "," parameter } ;
+ parameter                         = name ;
+ expression                        = comparison ;
+-comparison                        = sum { "<" sum } ;
++comparison                        = sum { comparison-operator sum } ;
++comparison-operator               = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ sum                               = term { ("+" | "-") term } ;
+ term                              = factor { ("*" | "/" | "%") factor } ;
+ factor                            = "-" factor | primary ;
+ primary                           = name-expression
+                                     | number-expression
+-                                    | parenthesized-expression ;
++                                    | parenthesized-expression
++                                    | if-expression
++                                    | for-expression ;
++if-expression                     = "if" expression ":"
++                                    [ end-of-lines ] expression
++                                    [ end-of-lines ] "else" ":"
++                                    [ end-of-lines ] expression ;
++for-expression                    = "for" name "=" expression ","
++                                    expression "," expression ":"
++                                    [ end-of-lines ] expression ;
+ name-expression                   = name
+                                     | call-expression ;
+ call-expression                   = name "(" [ arguments ] ")" ;
+ arguments                         = expression { "," expression } ;
+ number-expression                 = number ;
+ parenthesized-expression          = "(" expression ")" ;
+ name                              = (letter | "_")
+                                     { letter | digit | "_" } ;
+ number                            = digit { digit } [ "." { digit } ]
+                                     | "." digit { digit } ;
+ letter                            = "A".."Z" | "a".."z" ;
+ digit                             = "0".."9" ;
+ end-of-line                       = "\r\n" | "\r" | "\n" ;
+ comment                           = "#" { comment-character } ;
+ comment-character                 = ? any character except "\r" and "\n" ? ;
+ whitespace                        = " " | "\t" | "\v" | "\f" ;
 ```
 
 ## New Tokens
@@ -469,6 +487,8 @@ ifcont:  ; (empty)
 ```cpp
 Builder->SetInsertPoint(ThenBB);
 Value *ThenV = Then->codegen();
+if (!ThenV)
+  return nullptr;
 Builder->CreateBr(MergeBB);
 ```
 
@@ -501,6 +521,8 @@ case a little later in this chapter.
 ```cpp
 Builder->SetInsertPoint(ElseBB);
 Value *ElseV = Else->codegen();
+if (!ElseV)
+  return nullptr;
 Builder->CreateBr(MergeBB);
 ElseBB = Builder->GetInsertBlock();
 ```
@@ -774,6 +796,14 @@ Variable->addIncoming(StartVal, PreheaderBB);   // first-iteration value
 I create the PHI node with only one incoming value for now — the preheader. The
 back-edge from the loop body is added later, once I know where the body ends.
 
+Right after creating the PHI, I bind `VarName` to it in `NamedValues`, shadowing any outer variable of the same name (I cover the shadow/restore mechanics in full further down):
+
+```cpp
+NamedValues[VarName] = Variable;
+```
+
+I do this before generating the condition, not just before the body, because the condition can reference the loop variable too — `i <= 3` needs to find `i`.
+
 The condition block starts to look like this:
 
 ```llvm
@@ -1015,9 +1045,9 @@ mandel(0 - 2.3, 0 - 1.3, 0.05, 0.07)
 
 **Line breaks.** I only consume newlines after `:` in `def`, `if`, and `for` forms, and before `else`. I reject a newline in an argument list or in the middle of another expression. The nested `if` can therefore span lines, while the long call in `mandel` must remain on one line.
 
-**Sequencing with `+`.** I write `mandelrow(...) + putchard(10)` to perform two calls in one expression. Both return `0.0`, so the addition only gives me a way to sequence their side effects. In [Chapter 4](chapter-04.md), I replace this with a small `sequence(x, y)` helper function instead.
+**Sequencing with `+`.** I write `mandelrow(...) + putchard(10)` to perform two calls in one expression. Both return `0.0`, so the addition only gives me a way to sequence their side effects. Starting in Chapter 11's version of this file, I wrap this same pattern in a small `sequence(x, y)` helper for readability — the trick itself doesn't go away until pyxc's function bodies can hold more than one expression.
 
-**Unary minus.** pyxc has no unary minus yet, so I write `0 - 2.3`. LLVM folds that subtraction to the negative constant. In [Chapter 4](chapter-04.md), I add unary expressions and built-in unary minus, so this becomes `-2.3` directly.
+**Unary minus.** I write `0 - 2.3` instead of `-2.3`, even though Chapter 4 already added unary minus by this point. Either form compiles to the same negative constant; I keep the subtraction form here because it's how this file has always been written, and rewriting it isn't the point of this section.
 
 ```
 ******************************************************************************
@@ -1067,8 +1097,8 @@ I write the iteration and branching in pyxc. The host only provides `putchard` f
 ## Build and Run
 
 ```bash
-cmake -S . -B build
-cmake --build build
+cd code/chapter-10
+cmake -S . -B build && cmake --build build
 ./build/pyxc
 ```
 
@@ -1079,6 +1109,22 @@ To run the Mandelbrot renderer directly:
 ```bash
 ./build/pyxc test/mandel.pyxc
 ```
+
+## Try It
+
+Since I parse every comparison at the same tier and group left to right, `a < b == c` becomes `(a < b) == c`, not Python-style chained comparison:
+
+<!-- code-merge:start -->
+```pyxc
+ready> 1 < 2 == 1
+```
+```text
+Parsed a top-level expression.
+Evaluated to 1.000000
+```
+<!-- code-merge:end -->
+
+`1 < 2` evaluates to `1.0`, then `1.0 == 1` evaluates to `1.0` — true. It isn't testing whether `1 < 2 < 1` in the mathematical sense.
 
 ## What's Next
 
@@ -1096,4 +1142,4 @@ Include:
 - Full error message
 - Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
-We'll figure it out.
+I'll help you figure it out.

@@ -196,9 +196,196 @@ def main() -> int:
 pyxc --emit exe -o out main.pyxc
 ```
 
-## Future Concurrency Track
+## Future (Potential) Track
 
-Closures (**Chapter 46**) and a concurrency track (**Chapters 47–53**: ownership rules for shared state, spawning tasks and threads, synchronization, message passing, parallel loops, determinism and race debugging, and eventually parallelizing the compiler itself) are still ahead. There's so much more I want to do beyond these features but I'm evaluating the current chapters for clarity, correctness and consistency before moving further. Once pyxc is stable, feature-rich and reasonably optimized, I might even be able to rewrite the entire tutorial using pyxc as the language to write itself. 
+None of what follows is committed. Chapter numbers, grouping, and order can all change — this is a first-pass sketch of real, already-written-down design intent, not a promise. I'm giving it a rough sequence anyway, just so the full potential shape of the language is visible in one place, not scattered across a backlog with no order to it. There's so much more I want to do beyond current chapters, but I'm evaluating them for clarity, correctness and consistency before moving further. Once pyxc is stable, feature-rich and reasonably optimized, I might even be able to rewrite the entire tutorial using pyxc as the language to write itself.
+
+## Closures
+
+Lambda syntax and captured variables. The one open question that actually blocks starting: capture semantics. Capture by value is safe under my no-GC model with no extra work; capture by reference means a closed-over variable has to outlive the closure, which is a real lifetime problem I have no borrow-checker to enforce yet. I need to decide this before I write a line of implementation, not while I'm halfway through it.
+
+```pyxc
+def make_adder(n: int) -> ptr[def(int) -> int]:
+  return \(x: int) -> int: x + n   # captures n — capture semantics still undecided
+
+var add5: ptr[def(int) -> int] = make_adder(5)
+printd(float64(add5(10)))  # 15.000000
+```
+
+## Concurrency
+
+Ownership rules for shared state, spawning tasks and threads, synchronization primitives, message passing, parallel loops and work partitioning, determinism and race debugging, and eventually parallelizing the compiler itself. The real blocker is the same shape as closures: I need to decide the safety model before I can design any of the rest concretely, not discover it chapter by chapter.
+
+```pyxc
+def worker(ch: Channel[int]):
+  ch.send(compute())
+
+def main() -> int:
+  var ch: Channel[int] = Channel[int]()
+  spawn worker(ch)
+  printd(float64(ch.recv()))
+  return 0
+```
+
+## Enums and Function Pointers
+
+Enums (`enum Color: Red, Green, Blue`) close a real, obvious gap — no implicit int conversion, `switch`-friendly, and a natural place to add exhaustiveness checking so an unhandled variant is a compile error, not a runtime surprise. Function pointers (`ptr[def(int, int) -> int]`) follow right after: callbacks, `qsort`, dispatch tables, and a real prerequisite if I ever get serious about the self-hosting bootstrap plan.
+
+```pyxc
+enum Direction:
+  North, South, East, West
+
+def opposite(d: Direction) -> Direction:
+  switch d:
+    case Direction.North: return Direction.South
+    case Direction.South: return Direction.North
+    case Direction.East:  return Direction.West
+    case Direction.West:  return Direction.East
+    # no default needed once exhaustiveness checking exists —
+    # the compiler already knows every Direction is handled
+
+var callback: ptr[def(int) -> int] = square
+```
+
+## Generics Completion
+
+Generic Traits already exist (**Chapter 42**); this extends the same idea to ordinary functions and structs — `def max[T](a: T, b: T) -> T`, `struct Stack[T]` — monomorphised at each instantiation the way C++ templates work, not type-erased the way Java's are. Everything downstream that wants a generic container needs this first.
+
+```pyxc
+def max[T](a: T, b: T) -> T:
+  return a if a > b else b
+
+struct Stack[T]:
+  items: T[64]
+  count: int
+```
+
+## Standard Library
+
+No new language features here, just wrapping what `extern` already lets me do into real modules — `stdio`, `stdlib`, `string`, `math`, and a built-in `print` so I stop hand-declaring `printf` in every single program. Cheap to build, high payoff for anyone actually writing pyxc programs instead of reading about how the compiler works.
+
+```pyxc
+import stdlib.stdio
+import stdlib.math
+
+def main() -> int:
+  print("sqrt(2) =", sqrt(2.0))
+  return 0
+```
+
+## Language Ergonomics I — Expressions, Bindings, and Calls
+
+A run of small, independent conveniences on the expression side: ternary expressions, `const` bindings, default parameters, named arguments, multiple return values, a real `NULL`, and `len()`/`in`. None of these change what's *possible* to write in pyxc — I could already express all of it, just more awkwardly. They're worth doing because they're cheap and because a reader coming from Python or C++ will reach for every one of them by instinct.
+
+```pyxc
+def clamp(x: int, lo: int = 0, hi: int = 100) -> int:
+  return lo if x < lo else (hi if x > hi else x)
+
+var quotient, remainder = divmod(17, 5)
+```
+
+## Language Ergonomics II — Statements and Diagnostics
+
+The statement-side equivalent: `assert`, `defer`, `static` locals, `goto`, command-line arguments to `main`, and a lint for accidental assignment in a condition. Same reasoning as above — convenience, not new expressive power.
+
+```pyxc
+def read_first_line(path: ptr[int8]) -> int:
+  var f: ptr[int8] = fopen(path, "r")
+  assert f != NULL, "could not open file"
+  defer fclose(f)
+  return 0
+```
+
+## Unicode Identifiers and String Interpolation
+
+The two heaviest items in the whole ergonomics list, which is why they get their own slot instead of hiding inside the run above. Unicode identifiers (`café`, `变量` as names, not just literal content) need real `XID_Start`/`XID_Continue` tables, a normalization decision, and a homoglyph policy — an actual security question, not just an implementation detail. String interpolation (`f"result: {x}"`) is simpler, but the buffer-size strategy for the `sprintf` it lowers to still needs deciding first.
+
+```pyxc
+var café_total: float64 = 4.50
+printf(f"Total: {café_total}\n")
+```
+
+## Type System Completion
+
+The rest of the type system I've been deferring: optional/nullable types, union types, bit-fields, `const` pointers, multidimensional arrays, pointer-to-array, and a real `void` pointer. Systems-programming completeness — the stuff C gives you that pyxc still makes you work around.
+
+```pyxc
+def find(arr: int[10], target: int) -> Option[int]:
+  for i in range(10):
+    if arr[i] == target: return i
+  return None
+```
+
+## OOP Refinements
+
+Static class members, operator overloading, a `__str__`/`print` hook, abstract methods on traits, and — the one that actually needs a real decision, not just an afternoon of coding — whether pyxc gets inheritance at all, given that the trait model I already built deliberately has no vtable.
+
+```pyxc
+class Vec2:
+  public x: float64
+  public y: float64
+
+  static def zero() -> Vec2:
+    return Vec2(0.0, 0.0)
+
+  def __add__(other: Vec2) -> Vec2:
+    return Vec2(self.x + other.x, self.y + other.y)
+```
+
+## Import and Module Refinements
+
+Selective imports, import aliasing, and directory-style modules (`__init__.pyxc`) — the ergonomics layer on top of the module system I already built in Chapters 43–45.
+
+```pyxc
+from stdlib.io import printf, getchar
+import stdlib.math as m
+
+printf("sqrt(2) = %f\n", m.sqrt(2.0))
+```
+
+## Generics-Enabled Ecosystem
+
+Once generic structs exist, generators/iterators and real generic collections (`List[T]`, `Dict[K,V]`, `Set[T]`) become possible. This is where pyxc stops making me reimplement a dynamic array by hand every time I need one.
+
+```pyxc
+var names: List[ptr[int8]] = List[ptr[int8]]()
+names.append("Ada")
+names.append("Grace")
+for name in names:
+  printf("%s\n", name)
+```
+
+## Compile-Time Execution
+
+I want Zig-style `comptime` rather than a separate macro language like Rust's `macro_rules!` — arbitrary pyxc code that runs at compile time and produces pyxc values or types, with no second language to learn and no opaque macro-expansion errors. I already have a JIT; running pyxc code at compile time isn't far from what the JIT already does.
+
+```pyxc
+comptime def storage_type(n: int) -> type:
+  if n <= 32: return int32
+  return int64
+
+var x: comptime storage_type(16) = 0   # x: int32 at compile time
+```
+
+## Verification
+
+A two-phase program verifier: sequential first (`requires`/`ensures`/`assert`/loop `invariant`, SMT-backed, needs enums to exist first), then a concurrency-aware phase once the concurrency track above actually lands — thread interleavings, synchronization primitives, memory-order rules, real race-freedom checks.
+
+```pyxc
+def divide(a: int, b: int) -> int:
+  requires b != 0
+  ensures result * b == a
+  return a / b
+```
+
+## Tooling and Quality
+
+Closing the stale source-location bug properly (every codegen error, not just parse errors, pointing at the right line and column), function attributes, escape analysis to promote heap allocations to the stack automatically, REPL quality-of-life improvements, incremental compilation, real packaging, and — if I want pyxc programs to double as MCP servers — a tool-export mechanism. A language server belongs somewhere in here too, though it's IDE tooling built around the compiler, not a compiler feature itself.
+
+```bash
+pyxc build          # reads a project manifest, compiles + links
+pyxc run main.pyxc  # incremental: only recompiles what changed
+```
 
 ## Need Help?
 

@@ -1,0 +1,12 @@
+# RUN: %pyxc -g --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck --input-file=%t.ll %s
+# CHECK: !DIBasicType(name: "uint32"
+# CHECK: encoding: DW_ATE_unsigned
+
+# Tests: unsigned integer types retain their unsigned encoding in debug info.
+
+def identity(value: uint32) -> uint32:
+  return value
+
+def main() -> None:
+  return

@@ -1,20 +1,18 @@
-# RUN: %pyxc --emit exe -o %t %s
-# RUN: %t 2>&1 | FileCheck %s
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
 # CHECK: 1.000000
 
-extern def printd(x: float64)
-
-def main() -> int:
-  var i: int = 0
-  var sum: int = 0
+def count_middle() -> float64:
+  var i: float64 = 0
+  var sum: float64 = 0
   while i < 3:
-    i += 1
+    i = i + 1
     if i == 1:
       continue
-      sum += 100  # unreachable
+      sum = sum + 100  # unreachable
     if i == 3:
       break
-      sum += 100  # unreachable
-    sum += 1
-  printd(float64(sum))
-  return 0
+      sum = sum + 100  # unreachable
+    sum = sum + 1
+  return sum
+
+count_middle()

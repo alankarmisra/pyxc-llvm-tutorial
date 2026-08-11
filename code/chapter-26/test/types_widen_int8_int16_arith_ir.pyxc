@@ -1,4 +1,4 @@
-# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: %pyxc -O0 --emit llvm-ir -o %t.ll %s
 # RUN: FileCheck --input-file=%t.ll %s
 # CHECK: sext i8
 # CHECK: add i16

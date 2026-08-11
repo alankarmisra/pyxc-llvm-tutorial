@@ -1,2 +1,0 @@
-def f(p: ptr[int], q: ptr[float64]):
-  var d: int64 = p - q

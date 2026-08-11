@@ -1,341 +1,247 @@
 ---
-description: "Add built-in unary minus so -x parses directly, replacing the 0 - x workaround, and use it to shade the Mandelbrot renderer by density."
+description: "Add unary minus and the remainder operator, closing the gap left by Chapter 3, by giving multiplication and division a new operand tier."
 ---
-# 4. pyxc: Unary Minus
+# 4. pyxc: Completing Basic Arithmetic
 
 ## What I Am Building
 
-[Chapter 10](chapter-10.md) added comparisons, `if`/`else`, and `for`. pyxc still has no way to negate a value directly:
+In Chapter 3, `-` only ever showed up as subtraction. A leading `-` doesn't parse at all:
 
 <!-- code-merge:start -->
 ```pyxc
 ready> -5
 ```
-```bash
-Error (Line 1, Column 1): unknown token when expecting an expression
--5
- ^~~~
+```text
+Error: unknown token when expecting an expression (token: '-')
 ```
 <!-- code-merge:end -->
 
-`-` only exists as subtraction, so I've been writing `0 - 5` to get a negative number. I add unary minus:
-
-<!-- code-merge:start -->
-```pyxc
-ready> -5
-```
-```bash
-Parsed a top-level expression.
-Evaluated to -5.000000
-```
-```pyxc
-ready> -2 * 3
-```
-```bash
-Parsed a top-level expression.
-Evaluated to -6.000000
-```
-```pyxc
-ready> --5
-```
-```bash
-Parsed a top-level expression.
-Evaluated to 5.000000
-```
-<!-- code-merge:end -->
-
-`-2 * 3` is `-6`, not `-(2 * 3)` written differently — unary minus binds tighter than `*`, same as it does in every C-family language. `--5` is double negation, not decrement — pyxc has no `--` token yet, so this is just `-` applied twice.
+`%` doesn't exist either — there's no way to ask for a remainder. I close both gaps in this chapter.
 
 ## Source Code
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-10
+cd pyxc-llvm-tutorial/code/chapter-04
 ```
 
 ## Grammar
 
-I insert `unary-expression` between `term` and `primary`. Every operand slot that used to call `primary` directly now goes through `unary-expression` first:
+I insert `factor` between `term` and `primary`. `term` now loops over `factor` instead of `primary` directly, and `factor` is where `-` and `%` both live:
 
-`code/chapter-10/pyxc.ebnf`
+`code/chapter-04/pyxc.ebnf`
 
 ```grammardiff
- program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
- end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = function-definition | external | top-level-expression ;
- function-definition      = "def" function-signature ":" [ end-of-lines ] expression ;
- external        = "extern" "def" function-signature ;
- top-level-expression    = expression ;
- function-signature       = name "(" [ parameters ] ")" ;
- parameters               = parameter { "," parameter } ;
- parameter                = name ;
- ifexpr          = "if" expression ":" [ end-of-lines ] expression [ end-of-lines ] "else" ":" [ end-of-lines ] expression ;
- forexpr         = "for" name "=" expression "," expression "," expression ":" [ end-of-lines ] expression ;
- expression               = comparison ;
- comparison               = sum { comparison-operator sum } ;
- comparison-operator      = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
- sum                      = term { ("+" | "-") term } ;
--term                     = primary { ("*" | "/") primary } ;
-+term                     = unary-expression { ("*" | "/") unary-expression } ;
-+unary-expression       = "-" unary-expression | primary ;
- primary         = name-expression | number-expression | parenthesized-expression
-                 | ifexpr | forexpr ;
- name-expression  = name | call-expression ;
- call-expression         = name "(" [ arguments ] ")" ;
- arguments               = expression { "," expression } ;
- number-expression      = number ;
- parenthesized-expression       = "(" expression ")" ;
- name      = (letter | "_") { letter | digit | "_" } ;
- number          = digit { digit } [ "." { digit } ]
-                 | "." digit { digit } ;
- letter          = "A".."Z" | "a".."z" ;
- digit           = "0".."9" ;
- end-of-line             = "\r\n" | "\r" | "\n" ;
- comment = "#" { comment-character } ;
- comment-character = ? any character except "\r" and "\n" ? ;
- whitespace = " " | "\t" | "\v" | "\f" ;
+ program                           = [ end-of-lines ]
+                                     [ top-level-item
+                                       { end-of-lines top-level-item } ]
+                                     [ end-of-lines ] ;
+ end-of-lines                      = end-of-line { end-of-line } ;
+ top-level-item                    = function-definition
+                                     | top-level-expression ;
+ function-definition               = "def" function-signature ":"
+                                     [ end-of-lines ] expression ;
+ top-level-expression              = expression ;
+ function-signature                = name "(" [ parameters ] ")" ;
+ parameters                        = parameter { "," parameter } ;
+ parameter                         = name ;
+ expression                        = comparison ;
+ comparison                        = sum { "<" sum } ;
+ sum                               = term { ("+" | "-") term } ;
+-term                              = primary { ("*" | "/") primary } ;
++term                              = factor { ("*" | "/" | "%") factor } ;
++factor                            = "-" factor
++                                    | primary ;
+ primary                           = name-expression
+                                     | number-expression
+                                     | parenthesized-expression ;
+ name-expression                   = name
+                                     | call-expression ;
+ call-expression                   = name "(" [ arguments ] ")" ;
+ arguments                         = expression { "," expression } ;
+ number-expression                 = number ;
+ parenthesized-expression          = "(" expression ")" ;
+ name                              = (letter | "_")
+                                     { letter | digit | "_" } ;
+ number                            = digit { digit } [ "." { digit } ]
+                                     | "." digit { digit } ;
+ letter                            = "A".."Z" | "a".."z" ;
+ digit                             = "0".."9" ;
+ end-of-line                       = "\r\n" | "\r" | "\n" ;
+ comment                           = "#" { comment-character } ;
+ comment-character                 = ? any character except "\r" and "\n" ? ;
+ whitespace                        = " " | "\t" | "\v" | "\f" ;
 ```
 
-I could have special-cased `-` inside `ParsePrimary` instead of adding a new tier, but then `--x` and `-(x + 1)` wouldn't fall out naturally — I'd need to handle chaining and recursion by hand at the call site instead of getting it for free from the grammar. Giving unary minus its own self-recursive tier means `-` in front of *anything* that can start a `unary-expression`, including another `-`, just works.
+I could have special-cased `-` inside `ParsePrimary` instead of giving it its own tier, but then `--5` and `-(x + 1)` wouldn't fall out naturally — I'd have to handle chaining by hand at the call site. Giving `factor` its own self-recursive rule means `-` in front of *anything* that can start a `factor`, including another `-`, just works. `%` doesn't need any of that; it's a plain sibling of `*` and `/` at the same tier.
+
+## A New Token
+
+I add one token for `%`:
+
+```cpp
+tok_percent,
+```
+
+And give it a readable name for error messages, right alongside `%`'s siblings:
+
+```cpp
+{tok_percent, "'%'"},
+```
+
+And return it from the lexer:
+
+```cpp
+case '%':
+  return tok_percent;
+```
 
 ## A New AST Node
 
-I add one node for unary operator application:
+Unary minus needs a node shaped differently from `BinaryExpressionNode` — one operand, not two:
 
 ```cpp
-/// UnaryExpressionNode - Expression class for a unary operator application.
-/// Built-in unary minus is represented with opcode '-' and lowered directly to
-/// LLVM `fneg`.
+/// UnaryExpressionNode - Expression class for applying a unary operator.
 class UnaryExpressionNode : public ExpressionNode {
-  char Opcode;
+  int Operator;
   unique_ptr<ExpressionNode> Operand;
 
 public:
-  UnaryExpressionNode(char Opcode, unique_ptr<ExpressionNode> Operand)
-      : Opcode(Opcode), Operand(std::move(Operand)) {}
-  Value *codegen() override;
+  UnaryExpressionNode(int Operator, unique_ptr<ExpressionNode> Operand)
+      : Operator(Operator), Operand(std::move(Operand)) {}
 };
 ```
 
-`Opcode` is a `char` because unary minus is the only unary operator I have — one character is all I need to distinguish it, and it leaves room to add more (`!`, `~`) later without changing the shape of the node.
+I store `Operator` as an `int`, the same type `CurrentToken` already is, even though `-` is the only unary operator I have right now. That leaves room to add `!` or `~` later without changing the node's shape.
 
-## Parsing Unary Minus
+## Parsing `factor`
 
-`ParseTerm` now calls `ParseUnary` for each operand instead of `ParsePrimary`:
+`ParseTerm` calls `ParseFactor` for each operand instead of `ParsePrimary`:
 
 ```cpp
-static unique_ptr<ExpressionNode>
-ParseUnary(); // forward declaration for ParseUnaryMinus
+static unique_ptr<ExpressionNode> ParseFactor();
 
-/// unaryminus
-///   = "-" unaryexpr ;
-/// Parse built-in unary minus into a UnaryExpressionNode with opcode '-'.
-/// The operand is a full unaryexpr so unary chains work naturally
-/// (e.g. --x and -(x+1)).
+/// I parse the unary-minus branch of factor.
 static unique_ptr<ExpressionNode> ParseUnaryMinus() {
-  getNextToken(); // eat '-'
-  auto Operand = ParseUnary();
+  getNextToken(); // I eat '-'.
+  auto Operand = ParseFactor();
   if (!Operand)
     return nullptr;
   return make_unique<UnaryExpressionNode>(tok_minus, std::move(Operand));
 }
 
-/// unaryexpr
-///   = "-" unaryexpr
+/// factor
+///   = "-" factor
 ///   | primary ;
-static unique_ptr<ExpressionNode> ParseUnary() {
+static unique_ptr<ExpressionNode> ParseFactor() {
   if (CurrentToken == tok_minus)
     return ParseUnaryMinus();
   return ParsePrimary();
 }
 ```
 
-`ParseUnaryMinus` calls `ParseUnary` for its own operand, not `ParsePrimary` — that's what lets it recurse into itself. `--5` works because the first `-` calls `ParseUnary`, which sees the second `-` and calls `ParseUnaryMinus` again before either call has produced a value.
+`ParseUnaryMinus` calls `ParseFactor` for its own operand, not `ParsePrimary` — that's what lets it recurse into itself. `--5` works because the first `-` calls `ParseFactor`, which sees the second `-` and calls `ParseUnaryMinus` again before either call has produced a value.
 
-`ParseUnary` needs a forward declaration above `ParseUnaryMinus` because the two functions call each other: `ParseUnaryMinus` needs `ParseUnary` to parse its operand, and `ParseUnary` needs `ParseUnaryMinus` to handle the `-` case. Whichever one I define first has to declare the other ahead of its own body.
+`ParseFactor` needs a forward declaration above `ParseUnaryMinus` because the two functions call each other: `ParseUnaryMinus` needs `ParseFactor` to parse its operand, and `ParseFactor` needs `ParseUnaryMinus` to handle the `-` case. Whichever one I define first has to declare the other ahead of its own body.
 
 ```cpp
 /// term
-///   = unary-expression { ("*" | "/") unary-expression } ;
+///   = factor { ("*" | "/" | "%") factor } ;
 static unique_ptr<ExpressionNode> ParseTerm() {
-  auto Left = ParseUnary();
+  // I start the term by parsing one factor.
+  auto Left = ParseFactor();
   if (!Left)
     return nullptr;
 
-  while (CurrentToken == tok_star || CurrentToken == tok_slash) {
+  // I consume only the operators that belong to this tier.
+  while (CurrentToken == tok_star || CurrentToken == tok_slash ||
+         CurrentToken == tok_percent) {
     int Operator = CurrentToken;
-    getNextToken();
-    auto Right = ParseUnary();
+    getNextToken(); // I eat '*', '/', or '%'.
+    auto Right = ParseFactor();
     if (!Right)
       return nullptr;
+
+    // I fold each new operation into the tree on my left.
     Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
                                              std::move(Right));
   }
+
   return Left;
 }
 ```
 
-That single change — `ParsePrimary()` to `ParseUnary()`, twice, in `ParseTerm` — is what makes `-2 * 3` parse as `(-2) * 3` rather than failing or parsing as `-(2 * 3)`. `ParseUnary` grabs the `-2` as a complete unit before `ParseTerm`'s `while` loop ever sees the `*`.
+That single change — `ParsePrimary()` to `ParseFactor()`, twice, in `ParseTerm` — is what makes `-2 * 3` parse as `(-2) * 3` rather than `-(2 * 3)`. `ParseFactor` grabs the `-2` as a complete unit before `ParseTerm`'s `while` loop ever sees the `*`. `%` needed no equivalent change anywhere else — it just joins `*` and `/` in the same `while` condition, since it belongs at exactly their precedence.
 
-There's no new error path here — an invalid operand after `-` still fails with the same "unknown token when expecting an expression" `ParsePrimary` has always produced, since `ParseUnaryMinus` just propagates whatever `ParseUnary` returns:
+There's no new error path for a bad operand after `-`: it still fails with the same "unknown token when expecting an expression" that `ParsePrimary` has always produced, since `ParseUnaryMinus` just propagates whatever `ParseFactor` returns:
 
 <!-- code-merge:start -->
 ```pyxc
 ready> -)
 ```
-```bash
-Error (Line 1, Column 2): unknown token when expecting an expression
--)
- ^~~~
+```text
+Error: unknown token when expecting an expression (token: ')')
 ```
 <!-- code-merge:end -->
 
-## Codegen
+## Try It
 
-`UnaryExpressionNode::codegen` lowers `-` directly to LLVM's [`fneg`](https://llvm.org/docs/LangRef.html#fneg-instruction):
-
-```cpp
-/// UnaryExpressionNode::codegen - Emit built-in unary minus directly.
-Value *UnaryExpressionNode::codegen() {
-  Value *Operator = Operand->codegen();
-  if (!Operator)
-    return nullptr;
-
-  if (Opcode == tok_minus)
-    return TheBuilder->CreateFNeg(Operator, "negtmp");
-  return LogErrorV("Unknown unary operator");
-}
-```
-
-For `-5`, this produces:
-
-```llvm
-%negtmp = fneg double 5.000000e+00
-```
-
-The `Opcode == tok_minus` check and its `LogErrorV` fallback look unreachable right now — `Opcode` is only ever `'-'`, since that's the only unary operator that exists. It's there for the same reason the node stores a `char` instead of hardcoding `-`: it's the shape a second unary operator would need later, without pretending one exists yet.
-
-## The Payoff: Density-Shaded Mandelbrot
-
-[Chapter 10](chapter-10.md) rendered the Mandelbrot set with a hard edge — every point was either `*` or a space. With unary minus, I can drop the `0 - 2.3` workaround, and I replace the `mandelrow(...) + putchard(10)` sequencing hack with a small helper function. Both changes let me focus the renderer on shading by density instead of the workarounds:
-
+<!-- code-merge:start -->
 ```pyxc
-# test/mandel.pyxc
-extern def putchard(x)
-
-# Evaluate x before returning y.
-def sequence(x, y):
-    y
-
-# printdensity - map iteration count to an ASCII shade.
-def printdensity(d):
-    if d > 8: putchard(32) else: if d > 4: putchard(46) else: if d > 2: putchard(43) else: putchard(42)
-
-# Determine whether z = z^2 + c diverges for the given point.
-def mandelconverger(real, imag, iters, creal, cimag):
-    if iters > 255: iters else: if real * real + imag * imag > 4: iters else: mandelconverger(real * real - imag * imag + creal, 2 * real * imag + cimag, iters + 1, creal, cimag)
-
-# Return number of iterations required for escape.
-def mandelconverge(real, imag):
-    mandelconverger(real, imag, 0, real, imag)
-
-# Render one row.
-def mandelrow(xmin, xmax, xstep, y):
-    for x = xmin, x < xmax, xstep:
-               printdensity(mandelconverge(x, y))
-
-# Render full 2D region.
-def mandelhelp(xmin, xmax, xstep, ymin, ymax, ystep):
-    for y = ymin, y < ymax, ystep:
-               sequence(mandelrow(xmin, xmax, xstep, y), putchard(10))
-
-# Top-level helper.
-def mandel(realstart, imagstart, realmag, imagmag):
-    mandelhelp(realstart, realstart + realmag * 78, realmag, imagstart, imagstart + imagmag * 40, imagmag)
-
-mandel(-2.3, -1.3, 0.05, 0.07)
-mandel(-2, -1, 0.02, 0.04)
-mandel(-0.9, -1.4, 0.02, 0.03)
+ready> def add(x, y):
+x + y
 ```
-
-`sequence(x, y)` isn't a new language feature — function calls already evaluate their arguments left to right, so `sequence(mandelrow(...), putchard(10))` runs the row, then the newline, then returns whatever `putchard` returned. Chapter 10 got the same effect by adding two `0.0` return values together, which worked by accident; `sequence` says what I actually mean.
-
-`printdensity` maps an iteration count to a shade instead of just inside/outside:
-
-| count | char | meaning |
-|-------|------|---------|
-| > 8   | ` ` (space) | deep inside — survived 9+ iterations |
-| > 4   | `.`  | boundary zone — survived 5–8 iterations |
-| > 2   | `+`  | near boundary — survived 3–4 iterations |
-| ≤ 2   | `*`  | fast escape — outside the set |
-
-Run it directly:
-
-```bash
-./build/pyxc test/mandel.pyxc
+```text
+Parsed a function definition.
 ```
-
-The same view as chapter 10 (`mandel(-2.3, -1.3, 0.05, 0.07)`) now produces:
-
+<!-- code-merge:end -->
+<!-- code-merge:start -->
+```pyxc
+ready> -5
 ```
-******************************************************************************
-******************************************************************************
-****************************************++++++********************************
-************************************+++++...++++++****************************
-*********************************++++++++.. ...+++++**************************
-*******************************++++++++++..   ..+++++*************************
-******************************++++++++++.     ..++++++************************
-****************************+++++++++....      ..++++++***********************
-**************************++++++++.......      .....++++**********************
-*************************++++++++.   .            ... .++*********************
-***********************++++++++...                     ++*********************
-*********************+++++++++....                    .+++********************
-******************+++..+++++....                      ..+++*******************
-**************++++++. ..........                        +++*******************
-***********++++++++..        ..                         .++*******************
-*********++++++++++...                                 .++++******************
-********++++++++++..                                   .++++******************
-*******++++++.....                                    ..++++******************
-*******+........                                     ...++++******************
-*******+... ....                                     ...++++******************
-*******+++++......                                    ..++++******************
-*******++++++++++...                                   .++++******************
-*********++++++++++...                                  ++++******************
-**********+++++++++..        ..                        ..++*******************
-*************++++++.. ..........                        +++*******************
-******************+++...+++.....                      ..+++*******************
-*********************+++++++++....                    ..++********************
-***********************++++++++...                     +++********************
-*************************+++++++..   .            ... .++*********************
-**************************++++++++.......      ......+++**********************
-****************************+++++++++....      ..++++++***********************
-*****************************++++++++++..     ..++++++************************
-*******************************++++++++++..  ...+++++*************************
-*********************************++++++++.. ...+++++**************************
-***********************************++++++....+++++****************************
-***************************************++++++++*******************************
-******************************************************************************
-******************************************************************************
-******************************************************************************
-******************************************************************************
+```text
+Parsed a top-level expression.
 ```
+<!-- code-merge:end -->
+<!-- code-merge:start -->
+```pyxc
+ready> 7 % 3
+```
+```text
+Parsed a top-level expression.
+```
+<!-- code-merge:end -->
+<!-- code-merge:start -->
+```pyxc
+ready> -2 * 3
+```
+```text
+Parsed a top-level expression.
+```
+<!-- code-merge:end -->
+<!-- code-merge:start -->
+```pyxc
+ready> --5
+```
+```text
+Parsed a top-level expression.
+```
+<!-- code-merge:end -->
 
-The boundary is now a gradient instead of a hard edge. The file calls `mandel(...)` two more times, zooming into different regions of the complex plane.
+`-2 * 3` is `(-2) * 3`, not `-(2 * 3)` written differently — unary minus binds tighter than `*`, same as it does in every C-family language. `--5` is double negation, not decrement — pyxc has no `--` token yet, so this is just `-` applied twice, and `ParseFactor` handles both `-` characters through the same recursive call. There's still no codegen at this stage, so every valid line just reports that it parsed; I don't see real arithmetic results until I connect the AST to LLVM IR.
 
 ## Build and Run
 
 ```bash
-cmake -S . -B build
-cmake --build build
+cd code/chapter-04
+cmake -S . -B build && cmake --build build
 ./build/pyxc
 ```
 
-With no filename, I start the interactive REPL. I press `Ctrl-D` to exit.
-
-To run the Mandelbrot renderer directly:
+I run the chapter tests with:
 
 ```bash
-./build/pyxc test/mandel.pyxc
+llvm-lit test/
 ```
 
 ## What's Next
@@ -350,8 +256,9 @@ Build issues? Questions?
 - **Discussions:** [Ask questions](https://github.com/alankarmisra/pyxc-llvm-tutorial/discussions)
 
 Include:
+
 - Your OS and version
 - Full error message
-- Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
+- Output of `cmake --version`
 
 I'll help you figure it out.

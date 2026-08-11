@@ -1,9 +1,0 @@
-# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
-# CHECK: {{[Ee]rror}}
-# CHECK: Constructor '__init__' must return None
-
-class Point:
-  x: int
-
-  def __init__() -> int:
-    return 0

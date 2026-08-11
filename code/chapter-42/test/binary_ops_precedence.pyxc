@@ -4,7 +4,8 @@
 
 
 # Tests: operator precedence (* > +) and left-associativity of -.
-# term handles multiplication before sum handles addition and subtraction.
+# comparison = sum { comparison-operator sum }
+# sum = term { ("+" | "-") term }
 #
 # 2 + 3 * 4 = 2 + 12 = 14  (not (2+3)*4 = 20)
 # 10 - 2 - 1 = (10-2) - 1 = 7  (not 10 - (2-1) = 9, confirming left-assoc)

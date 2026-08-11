@@ -1,7 +1,0 @@
-# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
-# CHECK: {{[Ee]rror}}
-# CHECK: assignable
-
-def main() -> int:
-  ++(1 + 2)
-  return 0

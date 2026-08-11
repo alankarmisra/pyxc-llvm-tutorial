@@ -1,4 +1,5 @@
 ---
+section: "Data and Memory"
 description: "Add struct types with field declarations, field read/write, and nested field access."
 ---
 # 24. pyxc: Structs

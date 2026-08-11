@@ -5,197 +5,157 @@ description: "Add Python-style elif chains so multi-way conditionals don't nest 
 
 ## What I Am Building
 
-In [Chapter 12](chapter-12.md), I added an `if` statement without an `elif`. For multiple conditions, I'm forced to write multiple nested if statements:
+[Chapter 12](chapter-12.md) added `if`/`else` as a statement, but nothing between them. For more than two branches, I'm forced to nest:
 
 ```pyxc
-def classify(x: int) -> int:
-  if x < 0:
-    return -1
-  else:
-    if x == 0:
-      return 0
+def sign(x):
+    if x > 0:
+        return 1.0
     else:
-      return 1
+        if x == 0:
+            return 0.0
+        else:
+            return -1.0
 ```
 
-This isn't great. After this chapter, I can write the same logic as:
+After this chapter, I can write the same logic flat:
 
+<!-- code-merge:start -->
 ```pyxc
-def classify(x: int) -> int:
-  if x < 0:
-    return -1
-  elif x == 0:
-    return 0
-  else:
-    return 1
+ready> def sign(x):
+    if x > 0:
+        return 1.0
+    elif x == 0:
+        return 0.0
+    else:
+        return -1.0
 ```
+```text
+Parsed a function definition.
+```
+<!-- code-merge:end -->
 
 ## Source Code
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-37
+cd pyxc-llvm-tutorial/code/chapter-13
 ```
 
 ## Grammar
 
 I add one alternative to `if-statement`: zero or more `elif` clauses between the `if` clause and the optional `else`:
 
-`code/chapter-37/pyxc.ebnf`
+`code/chapter-13/pyxc.ebnf`
 
 ```grammardiff
- program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
- end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | external | top-level-expression ;
- type-alias       = "type" name "=" type ;
- trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
- trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
- trait-method-signature  = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ;
- struct-definition       = "struct" name ":" end-of-lines struct-block ;
- class-definition        = "class" name [ "(" trait-reference { "," trait-reference } ")" ] ":" end-of-lines struct-block ;
- trait-reference        = name [ "[" type "]" ] ;
- implementation-definition         = "impl" trait-reference "for" name ":" end-of-lines implementation-block ;
- implementation-block       = indent implementation-method { end-of-lines implementation-method } dedent ;
- implementation-method      = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- struct-block     = indent class-member { end-of-lines class-member } dedent ;
- class-member     = [ visibility ] ( field-declaration | method-definition ) ;
- visibility      = "public" | "private" ;
- method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")"
-                   [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- field-declaration       = name ":" type ;
- function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- (* If the return type is omitted, it defaults to None. *)
- external        = "extern" "def" function-signature [ "->" type ] ;
- top-level-expression    = expression ;
- function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
- typed-parameter      = name ":" type ;
-- if-statement          = "if" expression ":" suite
--                [ end-of-lines "else" ":" suite ] ;
-+ if-statement          = "if" expression ":" suite
-+                { end-of-lines "elif" expression ":" suite }
-+                [ end-of-lines "else" ":" suite ] ;
- while-statement       = "while" expression ":" suite ;
- do-while-statement     = "do" ":" suite end-of-lines "while" expression ;
- switch-statement      = "switch" expression ":" end-of-lines indent switch-body dedent ;
- switch-body      = switch-case { end-of-lines switch-case } [ end-of-lines default-case ] ;
- switch-case      = "case" switch-integer { "," switch-integer } ":" suite ;
- default-case     = "default" ":" suite ;
- for-statement         = "for"
-                   ( "var" name ":" type | name )
-                   "=" expression "," expression "," expression ":" suite ;
- variable-statement         = "var" variable-binding { "," variable-binding } ;
- assignment-statement      = lvalue assignment-operator expression ; (* assignment is a statement here *)
- simple-statement      = return-statement | break-statement | continue-statement | variable-statement | assignment-statement | expression ;
- compound-statement    = if-statement | for-statement | while-statement | do-while-statement | switch-statement ;
- statement       = simple-statement | compound-statement ;
- suite           = simple-statement | compound-statement | end-of-lines block ;
- return-statement      = "return" [ expression ] ;
- break-statement       = "break" ;
- continue-statement    = "continue" ;
- statement-separator = end-of-lines | BLOCK_END ;
- block = indent statement { statement-separator statement } dedent ;
- expression      = logical-or ;
- logical-or      = logical-and { "||" logical-and } ;
- logical-and     = bitwise-or { "&&" bitwise-or } ;
- bitwise-or      = bitwise-xor { "|" bitwise-xor } ;
- bitwise-xor     = bitwise-and { "^" bitwise-and } ;
- bitwise-and     = equality { "&" equality } ;
- equality        = relational { ("==" | "!=") relational } ;
- relational      = shift { ("<" | "<=" | ">" | ">=") shift } ;
- shift           = sum { ("<<" | ">>") sum } ;
- sum             = term { ("+" | "-") term } ;
- term            = unary-expression { ("*" | "/" | "%") unary-expression } ;
- lvalue          = name | field-access | index-expression ;
- variable-binding      = name ":" type [ "=" expression ] ;
- unary-expression       = ("-" | "!" | "~" | "++" | "--") unary-expression | postfix-expression ;
- postfix-expression     = primary [ postfix-operator ] ;
- postfix-operator       = "++" | "--" ;
- primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
- cast-expression        = cast-type "(" expression ")" ;
- sizeof-expression      = "sizeof" "(" type ")" ;
- address-expression        = "addr" "(" lvalue ")" ;
- name-expression  = name | call-expression | method-call-expression | constructor-call-expression ;
- call-expression        = name "(" [ expression { "," expression } ] ")" ;
- method-call-expression  = name "." name "(" [ expression { "," expression } ] ")" ;
- constructor-call-expression    = name "(" [ expression { "," expression } ] ")" ;
- field-access     = name "." name { "." name } ;
- index-expression       = name "[" expression "]" ;
- number-expression      = number ;
- array-literal    = "[" [ expression { "," expression } ] "]" ;
- string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
- escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
- parenthesized-expression       = "(" expression ")" ;
- indent          = INDENT ;
- dedent          = DEDENT ;
-
- assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
- name      = (letter | "_") { letter | digit | "_" } ;
- builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | "None" ;
- alias-type       = name ;
- struct-type      = name ;
- pointer-type     = "ptr" "[" type "]" ;
- type            = base-type [ array-suffix ] ;
- base-type        = builtin-type | alias-type | struct-type | pointer-type ;
- array-suffix     = "[" integer "]" ;
- cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | pointer-type ;
- integer         = digit { digit } ;
- switch-integer       = [ "-" ] integer ;
- number          = ( digit { digit } [ "." { digit } ]
-                   | "." digit { digit } ) [ exponent ] ;
- exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
- boolean-literal    = "True" | "False" ;
- letter          = "A".."Z" | "a".."z" ;
- digit           = "0".."9" ;
- end-of-line             = "\r\n" | "\r" | "\n" ;
- comment = "#" { comment-character } ;
- comment-character = ? any character except "\r" and "\n" ? ;
- whitespace = " " | "\t" | "\v" | "\f" ;
- INDENT          = ? synthetic token emitted by lexer ? ;
- DEDENT          = ? synthetic token emitted by lexer ? ;
-
- BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
+ program                           = [ end-of-lines ]
+                                     [ top-level-item
+                                       { end-of-lines top-level-item } ]
+                                     [ end-of-lines ] ;
+ end-of-lines                      = end-of-line { end-of-line } ;
+ top-level-item                    = function-definition
+                                     | external
+                                     | top-level-expression ;
+ function-definition               = "def" function-signature ":"
+                                     ( simple-statement
+                                       | end-of-lines block ) ;
+ external                          = "extern" "def" function-signature ;
+ top-level-expression              = expression ;
+ function-signature                = name "(" [ parameters ] ")" ;
+ parameters                        = parameter { "," parameter } ;
+ parameter                         = name ;
+ if-statement                      = "if" expression ":" suite
++                                    { [ end-of-lines ] "elif" expression ":" suite }
+                                     [ [ end-of-lines ] "else" ":" suite ] ;
+ for-statement                     = "for" [ "var" ] name "=" expression ","
+                                     expression "," expression ":" suite ;
+ variable-statement                = "var" variable-binding
+                                     { "," variable-binding } ;
+ assignment-statement              = lvalue "=" expression ;
+ simple-statement                  = return-statement
+                                     | variable-statement
+                                     | assignment-statement
+                                     | expression ;
+ compound-statement                = if-statement | for-statement ;
+ statement                         = simple-statement | compound-statement ;
+ suite                             = simple-statement
+                                     | compound-statement
+                                     | end-of-lines block ;
+ return-statement                  = "return" expression ;
+ statement-separator               = end-of-lines | BLOCK_END ;
+ block                             = indent statement
+                                     { statement-separator statement } dedent ;
+ expression                        = comparison ;
+ comparison                        = sum { comparison-operator sum } ;
+ comparison-operator               = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ sum                               = term { ("+" | "-") term } ;
+ term                              = factor { ("*" | "/" | "%") factor } ;
+ lvalue                            = name ;
+ variable-binding                  = name [ "=" expression ] ;
+ factor                            = "-" factor | primary ;
+ primary                           = name-expression
+                                     | number-expression
+                                     | parenthesized-expression ;
+ name-expression                   = name | call-expression ;
+ call-expression                   = name "(" [ arguments ] ")" ;
+ arguments                         = expression { "," expression } ;
+ number-expression                 = number ;
+ parenthesized-expression          = "(" expression ")" ;
+ indent                            = INDENT ;
+ dedent                            = DEDENT ;
+ name                              = (letter | "_")
+                                     { letter | digit | "_" } ;
+ number                            = digit { digit } [ "." { digit } ]
+                                     | "." digit { digit } ;
+ letter                            = "A".."Z" | "a".."z" ;
+ digit                             = "0".."9" ;
+ end-of-line                       = "\r\n" | "\r" | "\n" ;
+ comment                           = "#" { comment-character } ;
+ comment-character                 = ? any character except "\r" and "\n" ? ;
+ whitespace                        = " " | "\t" | "\v" | "\f" ;
+ INDENT                            = ? synthetic token emitted by lexer when indentation increases ? ;
+ DEDENT                            = ? synthetic token emitted by lexer when indentation decreases ? ;
+ BLOCK_END                         = ? synthetic token injected into the stream by ParseBlock
+                                       immediately after it consumes DEDENT ? ;
 ```
 
 ## New Token and Keyword
 
-I add one new token:
+One new token:
 
 ```cpp
-tok_elif = -63,
+tok_elif = -22,
 ```
 
-I add it to the keyword table:
+Added to the keyword table, right alongside `if` and `else`:
 
 ```cpp
-{"elif", tok_elif},
+{"if", tok_if},         {"elif", tok_elif},     {"else", tok_else},
 ```
 
-And I add it to the token name map for error messages:
+And to the token-name map used in error messages:
 
 ```cpp
-{tok_elif, "'elif'"},
+{tok_if, "'if'"},          {tok_elif, "'elif'"},
+{tok_else, "'else'"},
 ```
 
 ## Refactoring If/Elif Parsing to Collect Branches
 
-Previously, I parsed a single condition and body in `ParseIfStatement`. Now I collect an arbitrary number of `(condition, body)` pairs in a loop before I know whether an `else` follows:
+Before this chapter, `ParseIfStatement` parsed exactly one condition and one body. Now I collect an arbitrary number of `(condition, body)` pairs in a loop before I even know whether an `else` follows:
 
 ```cpp
 static unique_ptr<ExpressionNode> ParseIfStatement() {
   getNextToken(); // eat 'if'
   vector<pair<unique_ptr<ExpressionNode>, unique_ptr<ExpressionNode>>> Branches;
   bool LastBranchWasBlock = false;
+  bool LastBranchHadTrailingEol = false;
 
   while (true) {
     auto Cond = ParseExpression();
     if (!Cond)
       return nullptr;
-    if (Cond->getType() != ValueType::Bool)
-      return LogErrorExpression("If condition must be bool");
 
     if (CurrentToken != tok_colon)
       return LogErrorExpression("Expected ':' after if/elif condition");
@@ -204,12 +164,15 @@ static unique_ptr<ExpressionNode> ParseIfStatement() {
     auto Body = ParseSuite();
     if (!Body)
       return nullptr;
+
     LastBranchWasBlock = (CurrentToken == tok_block_end);
     if (LastBranchWasBlock)
       getNextToken();
-    Branches.push_back({std::move(Cond), std::move(Body)});
+    LastBranchHadTrailingEol = (CurrentToken == tok_eol);
 
+    Branches.push_back({std::move(Cond), std::move(Body)});
     consumeNewlines();
+
     if (CurrentToken != tok_elif)
       break;
     getNextToken(); // eat 'elif'
@@ -218,35 +181,43 @@ static unique_ptr<ExpressionNode> ParseIfStatement() {
 }
 ```
 
-After each body, I call `consumeNewlines()` to skip the line ending. If the next token is `tok_elif`, I continue the loop — eating `elif` and parsing another condition and body. On any other token, including `tok_else`, I break out of the loop.
+Each pass through the loop parses one `if` or `elif` branch — I don't distinguish between them; the first iteration happens to follow `if`, and every iteration after that follows `elif`. After each body, I call `consumeNewlines()` and check whether `elif` comes next. If it does, I eat it and loop again. Anything else — `else`, a dedent, end of file — and I break out.
 
-I run every condition, `if` or `elif`, through the same `Cond->getType() != ValueType::Bool` check. I don't need a separate rule for `elif`; it's the same branch of the same loop.
+`LastBranchWasBlock` and `LastBranchHadTrailingEol` are the same bookkeeping [Chapter 12](chapter-12.md) already needed for a bare `if`/`else`, just tracked per-branch now instead of once.
 
 **Missing colon after an `elif` condition:**
-```pyxc
-elif x == 0
-    return 0
-```
-```
-Error (Line 4, Column 14): Expected ':' after if/elif condition
-  elif x == 0
-             ^~~~
-```
 
-**Non-bool `elif` condition:**
+<!-- code-merge:start -->
 ```pyxc
-elif x + 1:
-    return 0
+ready> def bad(x):
+    if x > 0:
+        return 1
+    elif x == 0
+        return 0
+    else:
+        return -1
 ```
+```text
+Error (Line 4, Column 16): Expected ':' after if/elif condition
+    elif x == 0
+               ^~~~
+Error (Line 5, Column 9): Unexpected indentation
+        r
+        ^~~~
+Error (Line 6, Column 5): unknown token when expecting an expression
+    else:
+    ^~~~
+Error (Line 7, Column 9): Unexpected indentation
+        r
+        ^~~~
 ```
-Error (Line 4, Column 13): If condition must be bool
-  elif x + 1:
-            ^~~~
-```
+<!-- code-merge:end -->
+
+The first line is the real error — the parser bails out of `ParseIfStatement` the moment the colon check fails. Everything after that is the parser trying to recover from a token stream that no longer makes sense, the same cascading-error behavior [Chapter 12](chapter-12.md) already showed for bad indentation.
 
 ## Lowering to a Nested If Tree
 
-I don't introduce a new AST node for this. Once the loop above exits, I check for a trailing `else`:
+I don't introduce a new AST node for `elif`. Once the loop above exits, I check for a trailing `else` — this part is unchanged from Chapter 12, just renamed from `Then`/`ThenWasBlock` to `LastBranchWasBlock` since there can now be more than one branch before it:
 
 ```cpp
 unique_ptr<ExpressionNode> Else;
@@ -259,27 +230,28 @@ if (CurrentToken == tok_else) {
   if (!Else)
     return nullptr;
 } else if (LastBranchWasBlock) {
-  // No else: restore the synthetic separator for the enclosing block/top level.
   PendingTokens.push_front(CurrentToken);
   CurrentToken = tok_block_end;
+} else if (LastBranchHadTrailingEol) {
+  PendingTokens.push_front(CurrentToken);
+  CurrentToken = tok_eol;
 }
 ```
 
-If there's no `else`, I leave `Else` null — but if the last branch's body ended a block (consuming a `tok_block_end`), that separator was meant for whatever encloses this `if`, not for the `if` itself, so I push the current token back and re-inject `tok_block_end` so the enclosing block still sees its separator.
-
-I then lower the `elif` chain directly to a right-nested `IfStatementNode` tree: the (possibly null) `else` body becomes the initial innermost node, and I walk `Branches` in reverse:
+Then I lower the whole chain to a right-nested `IfStatementNode` tree: the (possibly null) `else` body becomes the initial innermost node, and I walk `Branches` in reverse, wrapping one more `IfStatementNode` around it per branch:
 
 ```cpp
-// Lower if/elif chain to nested IfStatementNode in else branch.
+// I lower the chain to nested IfStatementNodes in the else branch.
 unique_ptr<ExpressionNode> Tree = std::move(Else);
 for (auto It = Branches.rbegin(); It != Branches.rend(); ++It) {
-  Tree = make_unique<IfStatementNode>(std::move(It->first), std::move(It->second),
-                                std::move(Tree));
+  Tree = make_unique<IfStatementNode>(std::move(It->first),
+                                      std::move(It->second), std::move(Tree));
 }
 return Tree;
 ```
 
 Given:
+
 ```pyxc
 if a:    body_a
 elif b:  body_b
@@ -296,36 +268,137 @@ IfStatementNode(a, body_a,
       body_d)))
 ```
 
-If there's no `else` at all, I leave the innermost node's `Else` null, and my `IfStatementNode` codegen already treats a null `Else` as "fall through" — the same thing a bare `if` without `else` has always done. I don't change anything about that path for `elif`.
+If there's no `else` at all, `Else` starts as `nullptr`, so the innermost `IfStatementNode`'s `Else` is null too — exactly what a bare `if` without `else` already produces. `IfStatementNode::codegen()` doesn't change at all; it has no idea whether it came from a literal `if`/`else` or from one link in an `elif` chain.
 
-My codegen sees exactly what it would see for hand-written nested `if`/`else` blocks, so at `-O0` the IR evaluates conditions top to bottom, same as nested `if`/`else` would. At higher optimization levels LLVM may turn the chain into a `switch` or lookup table on its own. I still reach for `switch` from Chapter 23 when dispatching on compile-time integer constants; I use `elif` for everything else.
+My codegen sees exactly what it would see for hand-written nested `if`/`else` blocks, so conditions are evaluated top to bottom, one at a time, same as nested `if`/`else` would be. `elif` buys me flatter source, not a different runtime shape — `switch`, which dispatches on a value directly instead of testing a chain of conditions, comes in [Chapter 23](chapter-23.md).
 
 ## Build and Run
 
 ```bash
-cd code/chapter-37
+cd code/chapter-13
 cmake -S . -B build && cmake --build build
+./build/pyxc
 ```
 
 ## Try It
 
+<!-- code-merge:start -->
 ```pyxc
-ready> def classify(x: int) -> int:
-   if x < 0:
-     return -1
-   elif x == 0:
-     return 0
-   else:
-     return 1
-
-ready> classify(-5)
--1
-ready> classify(0)
-0
-ready> classify(9)
-1
-ready>
+ready> def sign(x):
+    if x > 0:
+        return 1.0
+    elif x == 0:
+        return 0.0
+    else:
+        return -1.0
 ```
+```text
+Parsed a function definition.
+```
+```pyxc
+ready> sign(5)
+```
+```text
+Parsed a top-level expression.
+Evaluated to 1.000000
+```
+```pyxc
+ready> sign(0)
+```
+```text
+Parsed a top-level expression.
+Evaluated to 0.000000
+```
+```pyxc
+ready> sign(-2)
+```
+```text
+Parsed a top-level expression.
+Evaluated to -1.000000
+```
+<!-- code-merge:end -->
+
+More than one `elif` — the first matching branch wins, and later ones are never even evaluated:
+
+<!-- code-merge:start -->
+```pyxc
+ready> def mapv(x):
+    if x == 1:
+        return 10.0
+    elif x == 2:
+        return 20.0
+    elif x == 3:
+        return 30.0
+    elif x == 4:
+        return 40.0
+    else:
+        return 99.0
+```
+```text
+Parsed a function definition.
+```
+```pyxc
+ready> mapv(3)
+```
+```text
+Parsed a top-level expression.
+Evaluated to 30.000000
+```
+```pyxc
+ready> mapv(4)
+```
+```text
+Parsed a top-level expression.
+Evaluated to 40.000000
+```
+```pyxc
+ready> mapv(7)
+```
+```text
+Parsed a top-level expression.
+Evaluated to 99.000000
+```
+<!-- code-merge:end -->
+
+An `elif` chain with no `else` at all — same fall-through behavior a bare `if` has always had:
+
+<!-- code-merge:start -->
+```pyxc
+ready> def classify(x):
+    var result = 0
+    if x == 1:
+        result = 1
+    elif x == 2:
+        result = 2
+    return result
+```
+```text
+Parsed a function definition.
+```
+```pyxc
+ready> classify(1)
+```
+```text
+Parsed a top-level expression.
+Evaluated to 1.000000
+```
+```pyxc
+ready> classify(2)
+```
+```text
+Parsed a top-level expression.
+Evaluated to 2.000000
+```
+```pyxc
+ready> classify(99)
+```
+```text
+Parsed a top-level expression.
+Evaluated to 0.000000
+```
+<!-- code-merge:end -->
+
+`classify(99)` matches neither `x == 1` nor `x == 2`, so the `if` falls through without touching `result` — it stays `0`.
 
 ## What's Next
 

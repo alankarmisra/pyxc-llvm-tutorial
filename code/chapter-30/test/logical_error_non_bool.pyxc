@@ -1,0 +1,10 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: {{[Ee]rror}}
+# CHECK: Type mismatch in binary operator
+
+def main() -> int:
+  var x: int = 1
+  var y: bool = True
+  if x && y:
+    return 1
+  return 0

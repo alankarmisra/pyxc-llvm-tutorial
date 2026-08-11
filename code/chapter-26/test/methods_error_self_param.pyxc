@@ -1,9 +1,0 @@
-# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
-# CHECK: {{[Ee]rror}}
-# CHECK: {{cannot be named 'self'}}
-
-class Point:
-  x: int
-
-  def bad(self: int) -> int:
-    return self

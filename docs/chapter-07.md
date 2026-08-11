@@ -3,7 +3,7 @@ description: "Connect the AST to LLVM IR: add codegen() to every node and see re
 ---
 # 7. pyxc: Code Generation
 
-## Where I Am
+## What I Am Building
 
 In [Chapter 5](chapter-05.md), I wrote a parser that builds a syntax tree and reports errors. I now want to turn that tree into LLVM intermediate representation (IR). In a later chapter, I will ask LLVM to compile and run this IR. For now, I focus on generating and printing it.
 
@@ -34,7 +34,7 @@ LLVM can later compile this IR for x86, ARM, or another supported target. I coul
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-06
+cd pyxc-llvm-tutorial/code/chapter-07
 ```
 
 ## The Three LLVM Objects
@@ -114,7 +114,7 @@ static void InitializeModuleAndManagers() {
 
 I call the function `InitializeModuleAndManagers` because I will also create optimization managers in [Chapter 8](chapter-08.md).
 
-## Adding codegen() to the AST
+## Adding Code Generation to the AST
 
 In Chapters [2](chapter-02.md) and [3](chapter-03.md), I created the syntax tree without generating LLVM IR. I now add a pure virtual `codegen()` method to the base expression class:
 
@@ -189,6 +189,30 @@ if (SomeErrorCondition)
   return LogErrorV("Error specifics");
 ```
 
+### Unary Minus
+
+Chapter 4 added `-` as a prefix operator to the grammar and the parser, but there was no codegen for it yet — every valid line just reported that it parsed. I close that gap now:
+
+```cpp
+Value *UnaryExpressionNode::codegen() {
+  Value *OperandValue = Operand->codegen();
+  if (!OperandValue)
+    return nullptr;
+
+  if (Operator == tok_minus)
+    return Builder->CreateFNeg(OperandValue, "negtmp");
+  return LogErrorV("invalid unary operator");
+}
+```
+
+I generate the operand first, then negate it with `CreateFNeg`. For a variable operand, that produces an `fneg` instruction:
+
+```llvm
+%negtmp = fneg double %x
+```
+
+For a constant operand, `IRBuilder` folds the negation into the constant itself instead of emitting an instruction, the same constant folding I see with binary operators below. `-5` becomes the constant `-5.0` directly, with no `fneg` in the IR at all.
+
 ### Binary Expressions
 
 For a binary expression, I first generate the left and right values. I then use the operator to choose an LLVM instruction:
@@ -252,6 +276,17 @@ These calls generate `fsub`, `fmul`, and `fdiv` instructions:
 %subtmp = fsub double %x, %y
 %multmp = fmul double %x, %y
 %divtmp = fdiv double %x, %y
+```
+
+`%` gets the same treatment, joining the `switch` as a sibling of `*` and `/`:
+
+```cpp
+case tok_percent:
+  return Builder->CreateFRem(L, R, "remtmp");
+```
+
+```llvm
+%remtmp = frem double %x, %y
 ```
 
 I need two instructions for `<`:
@@ -484,7 +519,7 @@ This shows every function that remains in the module. It does not show the tempo
 ## Build and Run
 
 ```bash
-cd code/chapter-06
+cd code/chapter-07
 cmake -S . -B build && cmake --build build
 ./build/pyxc
 ```
@@ -539,6 +574,37 @@ entry:
 ```
 <!-- code-merge:end -->
 
+Unlike `4 + 5`, a variable operand can't be folded to a constant, so I see the actual `fneg` and `frem` instructions:
+
+<!-- code-merge:start -->
+```pyxc
+ready> def neg(x): -x
+```
+```text
+Parsed a function definition.
+```
+```llvm
+define double @neg(double %x) {
+entry:
+  %negtmp = fneg double %x
+  ret double %negtmp
+}
+```
+```pyxc
+ready> def rem(x, y): x % y
+```
+```text
+Parsed a function definition.
+```
+```llvm
+define double @rem(double %x, double %y) {
+entry:
+  %remtmp = frem double %x, %y
+  ret double %remtmp
+}
+```
+<!-- code-merge:end -->
+
 When I press `Ctrl-D`, I print the full module:
 
 <!-- code-merge:start -->
@@ -554,10 +620,22 @@ entry:
   %addtmp = fadd double %a, %b
   ret double %addtmp
 }
+
+define double @neg(double %x) {
+entry:
+  %negtmp = fneg double %x
+  ret double %negtmp
+}
+
+define double @rem(double %x, double %y) {
+entry:
+  %remtmp = frem double %x, %y
+  ret double %remtmp
+}
 ```
 <!-- code-merge:end -->
 
-Only `sum` remains. I removed each temporary `__anon_expr` after printing it.
+`sum`, `neg`, and `rem` all remain. I removed each temporary `__anon_expr` after printing it.
 
 ## What's Next
 
@@ -576,4 +654,4 @@ Include:
 - Full error message
 - Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
-We'll figure it out.
+I'll help you figure it out.

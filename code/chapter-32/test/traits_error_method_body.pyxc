@@ -1,7 +1,0 @@
-# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
-# CHECK: {{[Ee]rror}}
-# CHECK: Trait methods cannot have a body
-
-trait Foo:
-  def bar(x: int) -> int:
-    return x

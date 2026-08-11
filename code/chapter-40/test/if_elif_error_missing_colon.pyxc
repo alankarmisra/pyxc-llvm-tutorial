@@ -1,4 +1,4 @@
-# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
 # CHECK: Error
 # CHECK: Expected ':' after if/elif condition
 

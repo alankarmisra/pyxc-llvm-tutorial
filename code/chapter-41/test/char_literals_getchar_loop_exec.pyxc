@@ -13,7 +13,7 @@ def main() -> int:
   c = getchar()
   while c != EOF:
     if c == ' ':
-      blanks += 1
+      blanks = blanks + 1
     c = getchar()
   printd(float64(blanks))
   return 0

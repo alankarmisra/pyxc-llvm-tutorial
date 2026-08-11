@@ -1,0 +1,6 @@
+# RUN: %pyxc --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck %s --input-file=%t.ll
+# CHECK: zext i8 %{{.*}} to i16
+
+def widen(value: uint8) -> uint16:
+  return value

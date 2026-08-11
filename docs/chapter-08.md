@@ -3,7 +3,7 @@ description: "Add ORC JIT and an optimization pass pipeline: top-level expressio
 ---
 # 8. pyxc: JIT and Optimization
 
-## Where I Am
+## What I Am Building
 
 In [Chapter 7](chapter-07.md), I generated LLVM IR but did not execute it. For example:
 
@@ -84,14 +84,62 @@ The generated function now contains two instructions instead of three. LLVM's op
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-07
+cd pyxc-llvm-tutorial/code/chapter-08
+```
+
+## Grammar
+
+`extern` needs a rule of its own. It reuses `function-signature` but never reaches a body:
+
+`code/chapter-08/pyxc.ebnf`
+
+```grammardiff
+ program                           = [ end-of-lines ]
+                                     [ top-level-item
+                                       { end-of-lines top-level-item } ]
+                                     [ end-of-lines ] ;
+ end-of-lines                      = end-of-line { end-of-line } ;
+ top-level-item                    = function-definition
++                                    | external
+                                     | top-level-expression ;
+ function-definition               = "def" function-signature ":"
+                                     [ end-of-lines ] expression ;
++external                          = "extern" "def" function-signature ;
+ top-level-expression              = expression ;
+ function-signature                = name "(" [ parameters ] ")" ;
+ parameters                        = parameter { "," parameter } ;
+ parameter                         = name ;
+ expression                        = comparison ;
+ comparison                        = sum { "<" sum } ;
+ sum                               = term { ("+" | "-") term } ;
+ term                              = factor { ("*" | "/" | "%") factor } ;
+ factor                            = "-" factor | primary ;
+ primary                           = name-expression
+                                     | number-expression
+                                     | parenthesized-expression ;
+ name-expression                   = name
+                                     | call-expression ;
+ call-expression                   = name "(" [ arguments ] ")" ;
+ arguments                         = expression { "," expression } ;
+ number-expression                 = number ;
+ parenthesized-expression          = "(" expression ")" ;
+ name                              = (letter | "_")
+                                     { letter | digit | "_" } ;
+ number                            = digit { digit } [ "." { digit } ]
+                                     | "." digit { digit } ;
+ letter                            = "A".."Z" | "a".."z" ;
+ digit                             = "0".."9" ;
+ end-of-line                       = "\r\n" | "\r" | "\n" ;
+ comment                           = "#" { comment-character } ;
+ comment-character                 = ? any character except "\r" and "\n" ? ;
+ whitespace                        = " " | "\t" | "\v" | "\f" ;
 ```
 
 ## Creating the ORC JIT
 
 ORC stands for **On-Request Compilation**. LLVM provides it as a framework for building JIT compilers. ([ORCv2 docs](https://llvm.org/docs/ORCv2.html))
 
-ORC accepts LLVM modules and makes their symbols available to compiled code. When I look up a symbol such as `__anon_expr`, ORC gives me the address of its machine code. I use LLVM's `LLJIT` through the small `PyxcJIT` wrapper. *LL* stands for low-level.
+ORC accepts LLVM modules and makes their symbols available to compiled code. When I look up a symbol such as `__anon_expr`, ORC gives me the address of its machine code. I wrap ORC's building blocks in a small `PyxcJIT` class, defined in `code/include/PyxcJIT.h` and shared by every chapter from here on, so I don't repeat the same JIT boilerplate in each chapter's `pyxc.cpp`.
 
 I create one `PyxcJIT` instance in `main()`. Before I create it, LLVM requires me to initialize support for the host machine:
 
@@ -99,10 +147,10 @@ I create one `PyxcJIT` instance in `main()`. Before I create it, LLVM requires m
 static unique_ptr<PyxcJIT> TheJIT;
 static ExitOnError ExitOnErr;
 
-// I initialize LLVM for the host target.
+// I initialize LLVM's backend for the host machine: its instruction set and
+// assembler, so the JIT can compile and link for the current CPU.
 InitializeNativeTarget();
 InitializeNativeTargetAsmPrinter();
-InitializeNativeTargetAsmParser();
 
 TheJIT = ExitOnErr(PyxcJIT::Create());
 InitializeModuleAndManagers();
@@ -199,27 +247,27 @@ This optimizes each function before I print or compile it.
 For a top-level expression, I generate and optimize `__anon_expr` as before. I then hand its module to the JIT and execute the compiled function:
 
 ```cpp
-if (auto *FnIR = FnAST->codegen()) {
-  FnIR->print(errs());
+if (auto *FunctionIR = FunctionDefinition->codegen()) {
+  FunctionIR->print(errs());
 
-  // I track this module so I can remove it after execution.
+  // ResourceTracker scopes the JIT memory for this expression so I can
+  // free it precisely after the call, without affecting other symbols.
   auto RT = TheJIT->getMainJITDylib().createResourceTracker();
 
-  // I transfer ownership of the module and context to the JIT.
-  auto TSM = ThreadSafeModule(move(TheModule), move(TheContext));
-  ExitOnErr(TheJIT->addModule(move(TSM), RT));
-
-  // I create a fresh module for the next input.
+  // Transfer ownership of the module to the JIT; reinitialise for next input.
+  auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
+  ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
   InitializeModuleAndManagers();
 
-  // I turn the compiled symbol address into a callable function pointer.
+  // Locate the compiled function in the JIT's symbol table.
   auto ExprSymbol = ExitOnErr(TheJIT->lookup("__anon_expr"));
+
+  // Cast the symbol address to a callable function pointer and invoke it.
   double (*FP)() = ExprSymbol.toPtr<double (*)()>();
+  double result = FP();
+  fprintf(stderr, "Evaluated to %f\n", result);
 
-  // I call the compiled function and print its result.
-  fprintf(stderr, "Evaluated to %f\n", FP());
-
-  // I release the code and memory for this temporary expression.
+  // Release the compiled code and JIT memory for this expression.
   ExitOnErr(RT->remove());
 }
 ```
@@ -256,14 +304,7 @@ static map<string, Token> Keywords = {
 };
 ```
 
-I add an `external` grammar rule containing the same function signature used by `def`:
-
-```ebnf
-external       = "extern" "def" function-signature ;
-top-level-item = function-definition | external | top-level-expression ;
-```
-
-I reuse `ParseFunctionSignature()` after consuming `extern def`:
+`external` reuses the same `function-signature` rule `def` uses. I reuse `ParseFunctionSignature()` after consuming `extern def`:
 
 ```cpp
 /// external
@@ -291,10 +332,10 @@ I connect parsing and code generation in `HandleExtern()`:
 
 ```cpp
 static void HandleExtern() {
-  auto ProtoAST = ParseExtern();
+  auto Signature = ParseExtern();
 
-  if (!ProtoAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
-    if (ProtoAST)
+  if (!Signature || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
+    if (Signature)
       LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
@@ -302,20 +343,21 @@ static void HandleExtern() {
 
   // Reject conflicting redeclarations: in Pyxc, function identity is just
   // name + arity, since all parameter and return types are double.
-  auto Existing = FunctionSignatures.find(ProtoAST->getName());
+  auto Existing = FunctionSignatures.find(Signature->getName());
   if (Existing != FunctionSignatures.end() &&
-      Existing->second->getNumParameters() != ProtoAST->getNumParameters()) {
+      Existing->second->getNumParameters() != Signature->getNumParameters()) {
     LogErrorExpression((string("Conflicting extern declaration for '") +
-              ProtoAST->getName() + "'")
+              Signature->getName() + "'")
                  .c_str());
     SynchronizeToLineBoundary();
     return;
   }
 
-  if (auto *FnIR = ProtoAST->codegen()) {
+  if (auto *FunctionIR = Signature->codegen()) {
     Log("Parsed an extern.\n");
-    FnIR->print(errs());
-    FunctionSignatures[ProtoAST->getName()] = std::move(ProtoAST);
+    FunctionIR->print(errs());
+    // Save the function signature so getFunction() can re-emit it in future modules.
+    FunctionSignatures[Signature->getName()] = std::move(Signature);
   }
 }
 ```
@@ -375,7 +417,7 @@ I solve this by keeping a persistent registry of `FunctionSignatureNode` objects
 ```cpp
 static map<string, unique_ptr<FunctionSignatureNode>> FunctionSignatures;
 
-Function *getFunction(const string &Name) {
+Function *getFunction(const std::string &Name) {
   // I first search the current module.
   if (auto *F = TheModule->getFunction(Name))
     return F;
@@ -387,6 +429,16 @@ Function *getFunction(const string &Name) {
 
   return nullptr;
 }
+```
+
+I also update `CallExpressionNode::codegen()` from Chapter 7 to call `getFunction(Callee)` instead of `TheModule->getFunction(Callee)`, so a call to a function from an earlier module resolves the same way:
+
+```cpp
+Value *CallExpressionNode::codegen() {
+  Function *CalleeF = getFunction(Callee);
+  if (!CalleeF)
+    return LogErrorV("Unknown function referenced");
+  // ...
 ```
 
 The sequence is:
@@ -422,15 +474,18 @@ entry:
 I save an `extern def` signature after generating its declaration:
 
 ```cpp
-// I save the signature so getFunction() can re-emit it later.
-FunctionSignatures[ProtoAST->getName()] = std::move(ProtoAST);
+// Save the function signature so getFunction() can re-emit it in future modules.
+FunctionSignatures[Signature->getName()] = std::move(Signature);
 ```
 
 I also save the signature of every function definition before generating its body:
 
 ```cpp
+// Step 1: register the function signature and resolve the Function*.
 auto &P = *Signature;
 FunctionSignatures[Signature->getName()] = std::move(Signature);
+
+// Step 1: reuse an existing `extern` declaration if one exists.
 Function *TheFunction = getFunction(P.getName());
 ```
 
@@ -488,7 +543,7 @@ For now, `-O1`, `-O2`, and `-O3` all enable the same three passes. I do not conn
 ## Build and Run
 
 ```bash
-cd code/chapter-07
+cd code/chapter-08
 cmake -S . -B build && cmake --build build
 ./build/pyxc
 ```
@@ -699,4 +754,4 @@ Include:
 - Full error message
 - Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
-We'll figure it out.
+I'll help you figure it out.

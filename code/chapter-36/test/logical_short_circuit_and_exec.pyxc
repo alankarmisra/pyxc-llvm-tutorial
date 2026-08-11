@@ -7,7 +7,7 @@ extern def printd(x: float64)
 var hits: int = 0
 
 def touch() -> bool:
-  hits += 1
+  hits = hits + 1
   return True
 
 def main() -> int:

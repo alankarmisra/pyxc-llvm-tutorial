@@ -3,7 +3,7 @@ description: "Give every token a readable name, track source locations through t
 ---
 # 5. pyxc: Better Errors
 
-## Where I Am
+## What I Am Building
 
 ### The Missing Colon
 
@@ -37,10 +37,14 @@ Line. Column. The actual source line. A caret pointing at the exact spot.
 
 There's a second bug I've been ignoring: `1.2.3` currently parses without complaint.
 
+<!-- code-merge:start -->
 ```pyxc
 ready> 1.2.3
+```
+```text
 Parsed a top-level expression.
 ```
+<!-- code-merge:end -->
 
 `strtod` reads as much of `"1.2.3"` as looks like a number (`1.2`) and silently ignores the rest.
 
@@ -78,7 +82,7 @@ I fix all three problems in this chapter.
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-04
+cd pyxc-llvm-tutorial/code/chapter-05
 ```
 
 ## Naming Every Token
@@ -145,6 +149,7 @@ I also assign every named punctuation token its actual character value. I keep t
 -  tok_minus,
 -  tok_star,
 -  tok_slash,
+-  tok_percent,
 -  tok_less,
 +  tok_eof = -1,
 +  tok_eol = -2,
@@ -160,6 +165,7 @@ I also assign every named punctuation token its actual character value. I keep t
 +  tok_minus = '-',
 +  tok_star = '*',
 +  tok_slash = '/',
++  tok_percent = '%',
 +  tok_less = '<',
  };
 ```
@@ -357,7 +363,7 @@ def bad(x) return
            ^~~~
 ```
 
-## Wiring It Into LogError
+## Wiring Diagnostics Into Error Reporting
 
 I already report every parse error through `LogErrorExpression()`. I now use the location and source line there instead of printing only a token description:
 
@@ -452,7 +458,7 @@ I make `HandleFunctionDefinition()` perform the same check for function definiti
 ## Build and Run
 
 ```bash
-cd code/chapter-04
+cd code/chapter-05
 cmake -S . -B build && cmake --build build
 ./build/pyxc
 ```
@@ -463,24 +469,45 @@ llvm-lit test/
 
 ## Try It
 
+<!-- code-merge:start -->
 ```pyxc
 ready> def add(x, y):
    x + y
+```
+```text
 Parsed a function definition.
+```
+<!-- code-merge:end -->
+<!-- code-merge:start -->
+```pyxc
 ready> 1.2.3
+```
+```text
 Error (Line 3, Column 1): invalid number literal '1.2.3'
 1.2.3
 ^~~~
+```
+<!-- code-merge:end -->
+<!-- code-merge:start -->
+```pyxc
 ready> def bad(x) return x
+```
+```text
 Error (Line 4, Column 12): Expected ':' in function definition
 def bad(x) return 
            ^~~~
+```
+<!-- code-merge:end -->
+<!-- code-merge:start -->
+```pyxc
 ready> def missing_colon(x)
+```
+```text
 Error (Line 5, Column 21): Expected ':' in function definition
 def missing_colon(x)
                     ^~~~
-ready>
 ```
+<!-- code-merge:end -->
 
 ## What's Next
 

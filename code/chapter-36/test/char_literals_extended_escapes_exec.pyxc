@@ -1,0 +1,55 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK-COUNT-9: 1.000000
+
+# Tests: the remaining simple C character escapes and two-digit hex escapes.
+
+extern def printd(x: float64)
+
+def main() -> int:
+  if '\a' == 7 && '\b' == 8 && '\f' == 12 && '\r' == 13:
+    printd(1.0)
+  else:
+    printd(0.0)
+
+  if '\v' == 11:
+    printd(1.0)
+  else:
+    printd(0.0)
+
+  if '\"' == 34:
+    printd(1.0)
+  else:
+    printd(0.0)
+
+  if '\?' == 63:
+    printd(1.0)
+  else:
+    printd(0.0)
+
+  if '\x00' == 0:
+    printd(1.0)
+  else:
+    printd(0.0)
+
+  if '\x41' == 65:
+    printd(1.0)
+  else:
+    printd(0.0)
+
+  if '\x7f' == 127:
+    printd(1.0)
+  else:
+    printd(0.0)
+
+  if '\xAf' == 175:
+    printd(1.0)
+  else:
+    printd(0.0)
+
+  if '\n' == 10 && '\t' == 9 && '\\' == 92 && '\'' == 39 && '\0' == 0:
+    printd(1.0)
+  else:
+    printd(0.0)
+
+  return 0

@@ -1,4 +1,5 @@
 ---
+section: "Object-Oriented Features"
 description: "Add the class keyword as a second way to declare an aggregate type, sharing every bit of struct's parsing and layout machinery."
 ---
 # 36. pyxc: Classes

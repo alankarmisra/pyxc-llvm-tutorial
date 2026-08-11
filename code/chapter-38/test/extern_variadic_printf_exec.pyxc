@@ -1,0 +1,15 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: hello world
+# CHECK: answer: 42
+
+# Tests: extern variadic printf actually runs and produces correct output.
+# Use %s and %ld: %s takes ptr[int8], %ld takes int (64-bit on this target).
+
+type string = ptr[int8]
+extern def printf(fmt: string, ...) -> int32
+
+def main() -> int:
+  printf("hello world\n")
+  printf("answer: %ld\n", 42)
+  return 0

@@ -1,2 +1,0 @@
-def f(p: ptr[int]):
-  var q: ptr[int] = p + 1

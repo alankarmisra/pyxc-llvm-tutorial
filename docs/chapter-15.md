@@ -1,4 +1,5 @@
 ---
+section: "Native Toolchain"
 description: "Add global variables so top-level var declarations and assignments persist across REPL inputs and work naturally in compiled files."
 ---
 # 15. pyxc: Global Variables
@@ -20,10 +21,17 @@ I fix that this chapter. Once I do, the REPL works the way you'd expect, and fil
 ready> var x = 10
 ready> x = x + 7
 ready> extern def printd(n)
+```
+```text
+Parsed an extern.
+```
+```pyxc
 ready> printd(x)
 ```
-```bash
+```text
+Parsed a top-level expression.
 17.000000
+Evaluated to 0.000000
 ```
 <!-- code-merge:end -->
 
@@ -31,7 +39,7 @@ ready> printd(x)
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-13
+cd pyxc-llvm-tutorial/code/chapter-15
 ```
 
 ## The Problem in Detail
@@ -48,7 +56,30 @@ I solve this in two parts:
 
 ## Grammar
 
-There's no grammar change this chapter — `code/chapter-13/pyxc.ebnf` is identical to chapter 12's, aside from the header comment. `top-level-expression = expression` still reads exactly the same in the `.ebnf` file. What actually changes is which function the parser calls at the top level: `ParseTopLevelStatement` now routes through `ParseStatement`, the same entry point a function body uses, instead of `ParseExpression` directly — so `var`, assignment, `if`, `for`, and `return` are all valid at the top level, even though the grammar file's own `top-level-expression` production doesn't spell that out explicitly. The real work this chapter is entirely in the parser and codegen, not the grammar.
+One production changes: `top-level-item` used to accept a bare `expression` at the top level. Now it accepts a full `statement` — the same production a function body already uses — so `var`, assignment, `if`, `for`, `while`, `return`, and everything else `ParseStatement` understands are all valid at the top level too, not just expressions:
+
+`code/chapter-15/pyxc.ebnf`
+
+```grammardiff
+ program                           = [ end-of-lines ]
+                                     [ top-level-item
+                                       { end-of-lines top-level-item } ]
+                                     [ end-of-lines ] ;
+ end-of-lines                      = end-of-line { end-of-line } ;
+ top-level-item                    = function-definition
+                                     | external
+-                                    | top-level-expression ;
++                                    | top-level-statement ;
+ function-definition               = "def" function-signature ":"
+                                     ( simple-statement
+                                       | end-of-lines block ) ;
+ external                          = "extern" "def" function-signature ;
+-top-level-expression              = expression ;
++top-level-statement               = statement ;
+ function-signature                = name "(" [ parameters ] ")" ;
+```
+
+Everything past `function-signature` is unchanged from [Chapter 14](chapter-14.md). The real work this chapter is in the parser and codegen — deciding *which* statements get global storage and which get an ordinary stack slot — not in the grammar itself.
 
 ## A Side Effect Worth Noting
 
@@ -79,11 +110,11 @@ struct TopLevelParseGuard {
 static unique_ptr<ExpressionNode> ParseVarStatement() {
   getNextToken(); // eat 'var'
   vector<pair<string, unique_ptr<ExpressionNode>>> VarNames;
-  bool IsGlobalDecl = ParsingTopLevel;
+  bool IsGlobalDeclaration = ParsingTopLevel;
 
   while (true) {
     // ... parse name ...
-    if (IsGlobalDecl) {
+    if (IsGlobalDeclaration) {
       if (GlobalVarNames.count(ParsedName))
         return LogErrorExpression(
             ("Variable '" + ParsedName + "' already declared in this scope").c_str());
@@ -94,7 +125,7 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
     }
     // ... parse optional initializer ...
     VarNames.push_back({ParsedName, std::move(Init)});
-    if (IsGlobalDecl)
+    if (IsGlobalDeclaration)
       GlobalVarNames.insert(ParsedName);
     else
       DeclareVar(ParsedName);
@@ -133,36 +164,39 @@ static void EndBlockScope() {
 ```cpp
 static unique_ptr<ExpressionNode> ParseTopLevelStatement() {
   TopLevelParseGuard Guard;
-  auto Stmt = ParseStatement();
-  if (!Stmt)
+  auto Statement = ParseStatement();
+  if (!Statement)
     return nullptr;
-  LastTopLevelShouldPrint = Stmt->shouldPrintValue();
-  return Stmt;
+  LastTopLevelShouldPrint = Statement->shouldPrintValue();
+  return Statement;
 }
 ```
 
-`shouldPrintValue()` is a virtual method on `ExpressionNode`, defaulting to `true`. Statement nodes — `var`, `if`, `for`, `return` — override it to return `false`; their result (always `0.0`) is noise, not a value the user asked to see. Plain expressions keep the default `true`. This is how the REPL suppresses the unwanted `0.000000` that would otherwise appear after every `var` declaration.
+`shouldPrintValue()` is a virtual method on `ExpressionNode`, defaulting to `true`. Statement nodes — `var`, assignment, a `{...}` block, `if`, `for`, `while`, `return`, `break`, `continue` — override it to return `false`; their result (always `0.0`) is noise, not a value the user asked to see. Plain expressions keep the default `true`. This is how the REPL suppresses the unwanted `Parsed a top-level expression.` / `Evaluated to 0.000000` noise that would otherwise appear after every `var` declaration or assignment.
 
 I need this flag because the AST still has a single `ExpressionNode` hierarchy for both statements and expressions. If I'd split the two into separate base classes — one producing no value, one producing one — the distinction would be structural and `shouldPrintValue()` wouldn't be needed at all. For now, a virtual boolean is the least-invasive fix, without a full AST refactor.
 
-`ParseTopLevelExpression` wraps the parsed statement in a uniquely-named function so it goes through the same `FunctionDefinitionNode` codegen path as everything else:
+`ParseTopLevelStatementFunction` wraps the parsed statement in a uniquely-named zero-parameter function so it goes through the same `FunctionDefinitionNode` codegen path as everything else:
 
 ```cpp
-static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
-  auto Stmt = ParseTopLevelStatement();
-  if (!Stmt)
+static unique_ptr<FunctionDefinitionNode> ParseTopLevelStatementFunction() {
+  auto Statement = ParseTopLevelStatement();
+  if (!Statement)
     return nullptr;
 
-  if (!Stmt->isReturnExpr())
-    Stmt = make_unique<ReturnExpressionNode>(std::move(Stmt));
+  if (!Statement->isReturnStatement())
+    Statement = make_unique<ReturnStatementNode>(std::move(Statement));
 
-  string FnName = "__pyxc.toplevel." + to_string(TopLevelExprCounter++);
-  auto Signature = make_unique<FunctionSignatureNode>(FnName, vector<string>());
-  return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(Stmt));
+  string FunctionName =
+      "__pyxc.toplevel." + to_string(TopLevelStatementCounter++);
+  auto Signature =
+      make_unique<FunctionSignatureNode>(FunctionName, vector<string>());
+  return make_unique<FunctionDefinitionNode>(std::move(Signature),
+                                             std::move(Statement));
 }
 ```
 
-Each top-level input gets a unique name (`__pyxc.toplevel.0`, `__pyxc.toplevel.1`, …) so the JIT can look them up individually after adding the module. Wrapping in `ReturnExpressionNode` when the statement isn't already a `return` is what lets `FunctionDefinitionNode::codegen`'s ordinary path emit a real `ret` for it.
+Each top-level input gets a unique name (`__pyxc.toplevel.0`, `__pyxc.toplevel.1`, …) so the JIT can look them up individually after adding the module. Wrapping in `ReturnStatementNode` when the statement isn't already a `return` is what lets `FunctionDefinitionNode::codegen`'s ordinary path emit a real `ret` for it.
 
 ## Codegen: Emitting a Global Instead of an Alloca
 
@@ -173,33 +207,35 @@ Value *VarStatementNode::codegen() {
   if (InGlobalInit) {
     for (auto &Var : VarNames) {
       const string &VarName = Var.first;
-      ExpressionNode *Init = Var.second.get();
+      ExpressionNode *Initializer = Var.second.get();
 
-      auto *GV = TheModule->getNamedGlobal(VarName);
-      if (GV && !GV->isDeclaration())
+      auto *Global = TheModule->getNamedGlobal(VarName);
+      if (Global && !Global->isDeclaration())
         return LogErrorV("Global variable already defined");
 
-      if (!GV) {
+      if (!Global) {
         // No global by this name yet in this module — create one with a
         // constant zero initializer.
-        auto *Ty = Type::getDoubleTy(*TheContext);
-        GV = new GlobalVariable(
-            *TheModule, Ty, false, GlobalValue::ExternalLinkage,
+        Global = new GlobalVariable(
+            *TheModule, Type::getDoubleTy(*TheContext), false,
+            GlobalValue::ExternalLinkage,
             ConstantFP::get(*TheContext, APFloat(0.0)), VarName);
-      } else if (GV->isDeclaration()) {
+      } else {
         // A bare 'extern'-style declaration already exists for this name —
         // turn it into a real definition instead of creating a duplicate.
-        GV->setInitializer(ConstantFP::get(*TheContext, APFloat(0.0)));
-        GV->setLinkage(GlobalValue::ExternalLinkage);
+        Global->setInitializer(
+            ConstantFP::get(*TheContext, APFloat(0.0)));
+        Global->setLinkage(GlobalValue::ExternalLinkage);
       }
 
       ModuleHasGlobals = true;
 
-      Value *InitVal = Init->codegen();
-      if (!InitVal)
+      Value *InitialValue = Initializer->codegen();
+      if (!InitialValue)
         return nullptr;
-      Builder->CreateStore(InitVal, GV);
+      Builder->CreateStore(InitialValue, Global);
     }
+
     return ConstantFP::get(*TheContext, APFloat(0.0));
   }
 
@@ -218,56 +254,55 @@ A few things worth noting:
 
 - **`ExternalLinkage`.** This makes the symbol visible across module boundaries. Any later module that declares `@x` as `extern` will have its reference resolved by the JIT to the same storage.
 
-- **Reusing an existing declaration.** Without the `GV->isDeclaration()` branch, defining a global whose name was already declared elsewhere in this same module would leave two distinct `GlobalVariable` objects fighting over one name — LLVM would silently rename the second one rather than error, and the two objects would no longer refer to the same storage. Checking first and promoting the existing declaration in place avoids that.
+- **Reusing an existing declaration.** The `if (Global && !Global->isDeclaration())` guard above already rules out the case where a real definition exists; by the time execution reaches the `else` branch, any `Global` that exists must be a bare declaration. Promoting it in place, instead of creating a second `GlobalVariable` with the same name, avoids LLVM silently renaming the newcomer — which would leave two distinct objects that no longer refer to the same storage.
 
 `GetGlobalVariable` is what creates those bare declarations, and handles cross-module visibility generally. When a later module references a global that was defined in an earlier one, it emits a declaration in the current module and lets the JIT resolve it:
 
 ```cpp
 static GlobalVariable *GetGlobalVariable(const string &Name) {
-  // Fast path: already defined or declared in this module.
-  if (auto *GV = TheModule->getNamedGlobal(Name))
-    return GV;
+  if (auto *Global = TheModule->getNamedGlobal(Name))
+    return Global;
 
-  // Not in this module — emit an extern declaration so the JIT can link it.
   if (!GlobalVarNames.count(Name))
     return nullptr;
 
-  auto *Ty = Type::getDoubleTy(*TheContext);
-  return new GlobalVariable(*TheModule, Ty, false, GlobalValue::ExternalLinkage,
-                            nullptr, Name); // nullptr initializer = declaration, not definition
+  return new GlobalVariable(*TheModule, Type::getDoubleTy(*TheContext), false,
+                            GlobalValue::ExternalLinkage, nullptr, Name);
 }
 ```
 
 A `GlobalVariable` with a null initializer is a *declaration* — it says "this symbol exists somewhere, find it at link time." The JIT resolves declarations to their definitions when the module is added.
 
-`NameExpressionNode::codegen` and `AssignmentExpressionNode::codegen` both try the local `NamedValues` table first, then fall back to `GetGlobalVariable`:
+`NameExpressionNode::codegen` and `AssignmentStatementNode::codegen` both try the local `NamedValues` table first, then fall back to `GetGlobalVariable`:
 
 ```cpp
 Value *NameExpressionNode::codegen() {
   auto It = NamedValues.find(Name);
   if (It != NamedValues.end() && It->second)
-    return Builder->CreateLoad(Type::getDoubleTy(*TheContext), It->second, Name.c_str());
+    return Builder->CreateLoad(Type::getDoubleTy(*TheContext), It->second,
+                               Name.c_str());
 
-  if (auto *GV = GetGlobalVariable(Name))
-    return Builder->CreateLoad(Type::getDoubleTy(*TheContext), GV, Name.c_str());
+  if (auto *Global = GetGlobalVariable(Name))
+    return Builder->CreateLoad(Type::getDoubleTy(*TheContext), Global,
+                               Name.c_str());
 
   return LogErrorV("Unknown variable name");
 }
 
-Value *AssignmentExpressionNode::codegen() {
-  Value *Val = Expr->codegen();
-  if (!Val)
+Value *AssignmentStatementNode::codegen() {
+  Value *Value = Expr->codegen();
+  if (!Value)
     return nullptr;
 
   auto It = NamedValues.find(Name);
   if (It != NamedValues.end() && It->second) {
-    Builder->CreateStore(Val, It->second);
-    return Val;
+    Builder->CreateStore(Value, It->second);
+    return Value;
   }
 
-  if (auto *GV = GetGlobalVariable(Name)) {
-    Builder->CreateStore(Val, GV);
-    return Val;
+  if (auto *Global = GetGlobalVariable(Name)) {
+    Builder->CreateStore(Value, Global);
+    return Value;
   }
 
   return LogErrorV("Unknown variable name");
@@ -281,65 +316,70 @@ A local variable always shadows a global of the same name. Inside a function, if
 In the REPL, each top-level input still compiles into its own fresh module. The presence of globals changes what happens after codegen:
 
 ```cpp
-static void HandleTopLevelExpression() {
-  auto FnAST = ParseTopLevelExpression();
+/// HandleTopLevelStatement - Compile and execute one REPL statement.
+/// I keep a module when it defines global storage. Otherwise I attach a
+/// ResourceTracker and remove the temporary module after execution.
+static void HandleTopLevelStatement() {
+  auto FunctionDefinition = ParseTopLevelStatementFunction();
   // ... error handling ...
 
-  string FnName = FnAST->getName();
+  string FunctionName = FunctionDefinition->getName();
   bool SavedInGlobalInit = InGlobalInit;
   InGlobalInit = true;
-  if (auto *FnIR = FnAST->codegen()) {
+  if (auto *FunctionIR = FunctionDefinition->codegen()) {
     InGlobalInit = SavedInGlobalInit;
-    Log("Parsed a top-level expression.\n");
+    if (LastTopLevelShouldPrint)
+      Log("Parsed a top-level expression.\n");
     if (VerboseIR)
-      FnIR->print(errs());
+      FunctionIR->print(errs());
 
-    bool KeepModule = ModuleHasGlobals;
-
-    if (KeepModule) {
+    if (ModuleHasGlobals) {
       // Module contains GlobalVariable definitions — add it permanently.
-      auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
-      ExitOnErr(TheJIT->addModule(std::move(TSM)));
+      ExitOnErr(TheJIT->addModule(
+          ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
       InitializeModuleAndManagers();
 
-      auto ExprSymbol = ExitOnErr(TheJIT->lookup(FnName));
-      double (*FP)() = ExprSymbol.toPtr<double (*)()>();
-      double result = FP();
+      auto Symbol = ExitOnErr(TheJIT->lookup(FunctionName));
+      double (*FunctionPointer)() = Symbol.toPtr<double (*)()>();
+      double Result = FunctionPointer();
       if (IsRepl && LastTopLevelShouldPrint)
-        fprintf(stderr, "%f\n", result);
-    } else {
-      // No globals — use a ResourceTracker to free the module after the call.
-      auto RT = TheJIT->getMainJITDylib().createResourceTracker();
-      auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
-      ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
-      InitializeModuleAndManagers();
-
-      auto ExprSymbol = ExitOnErr(TheJIT->lookup(FnName));
-      double (*FP)() = ExprSymbol.toPtr<double (*)()>();
-      double result = FP();
-      if (IsRepl && LastTopLevelShouldPrint)
-        fprintf(stderr, "Evaluated to %f\n", result);
-
-      ExitOnErr(RT->remove());
+        fprintf(stderr, "Evaluated to %f\n", Result);
+      return;
     }
+
+    // No globals — use a ResourceTracker to free the module after the call.
+    auto ResourceTracker =
+        TheJIT->getMainJITDylib().createResourceTracker();
+    ExitOnErr(TheJIT->addModule(
+        ThreadSafeModule(std::move(TheModule), std::move(TheContext)),
+        ResourceTracker));
+    InitializeModuleAndManagers();
+
+    auto Symbol = ExitOnErr(TheJIT->lookup(FunctionName));
+    double (*FunctionPointer)() = Symbol.toPtr<double (*)()>();
+    double Result = FunctionPointer();
+    if (IsRepl && LastTopLevelShouldPrint)
+      fprintf(stderr, "Evaluated to %f\n", Result);
+
+    ExitOnErr(ResourceTracker->remove());
   } else {
     InGlobalInit = SavedInGlobalInit;
   }
 }
 ```
 
-`ModuleHasGlobals` is set by `VarStatementNode::codegen` when it emits a `GlobalVariable`. If it's set, I keep the module permanently — freeing it would destroy the global's storage. If not, the old ResourceTracker path from chapter 7 applies and the module is freed after execution.
+`ModuleHasGlobals` is set by `VarStatementNode::codegen` when it emits a `GlobalVariable`. If it's set, I keep the module permanently — freeing it would destroy the global's storage. If not, the old ResourceTracker path from chapter 8 applies and the module is freed after execution. Both branches print `"Evaluated to %f\n"` — keeping a module doesn't change how its result gets reported, only what happens to the module afterward.
 
-The two branches print with different formats — `"%f\n"` when the module sticks around, `"Evaluated to %f\n"` when it gets freed. That's not a deliberate stylistic choice, it's just what falls out of keeping each branch's own `printf` call where chapter 7 originally put it. I'm noting it here because it's the kind of small inconsistency I'd otherwise forget I introduced, and a reader diffing REPL output against expectations deserves to know it's real, not a typo.
+`LastTopLevelShouldPrint` gates both the `"Parsed a top-level expression."` line and the final result print. That's why `var count = 0` produces no REPL output at all: `VarStatementNode::shouldPrintValue()` returns `false`, so neither message fires.
 
-I save and restore `InGlobalInit` rather than hard-resetting it to `false` after codegen, in case `HandleTopLevelExpression` is ever called while something else already has it set. It isn't today, but restoring the old value instead of assuming what it was is a habit worth keeping. Setting it to `true` before codegen is what tells `VarStatementNode::codegen` to emit globals rather than allocas for top-level `var` statements.
+I save and restore `InGlobalInit` rather than hard-resetting it to `false` after codegen, in case `HandleTopLevelStatement` is ever called while something else already has it set. It isn't today, but restoring the old value instead of assuming what it was is a habit worth keeping. Setting it to `true` before codegen is what tells `VarStatementNode::codegen` to emit globals rather than allocas for top-level `var` statements.
 
 ## File Mode: Collecting Statements, Then Running Them
 
 File mode needs to handle globals differently. Rather than compiling and executing each statement as it's parsed, I collect all top-level statements first:
 
 ```cpp
-static vector<unique_ptr<ExpressionNode>> FileTopLevelStmts;
+static vector<unique_ptr<ExpressionNode>> FileTopLevelStatements;
 
 static void FileModeLoop() {
   while (true) {
@@ -355,44 +395,52 @@ static void FileModeLoop() {
 }
 ```
 
-`HandleTopLevelStatementFileMode` just parses and appends to `FileTopLevelStmts`. Once the entire file is parsed, `RunFileMode` wraps the collected statements into `__pyxc.global_init` and runs it:
+`HandleTopLevelStatementFileMode` just parses and appends to `FileTopLevelStatements`. Once the entire file is parsed, `RunFileMode` wraps the collected statements into `__pyxc.global_init` and runs it:
 
 ```cpp
+/// I emit queued file statements into __pyxc.global_init, execute them in
+/// source order, and then call a zero-parameter main function when one exists.
 static void RunFileMode() {
-  if (!FileTopLevelStmts.empty()) {
-    auto Block = make_unique<BlockExpressionNode>(std::move(FileTopLevelStmts));
-    auto Signature =
-        make_unique<FunctionSignatureNode>("__pyxc.global_init", vector<string>());
-    auto FnAST = make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(Block));
+  if (!FileTopLevelStatements.empty()) {
+    auto Block =
+        make_unique<BlockStatementNode>(std::move(FileTopLevelStatements));
+    auto Signature = make_unique<FunctionSignatureNode>(
+        "__pyxc.global_init", vector<string>());
+    auto FunctionDefinition = make_unique<FunctionDefinitionNode>(
+        std::move(Signature), std::move(Block));
 
+    bool SavedInGlobalInit = InGlobalInit;
     InGlobalInit = true;
-    if (auto *FnIR = FnAST->codegen()) {
-      InGlobalInit = false;
-      auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
-      ExitOnErr(TheJIT->addModule(std::move(TSM)));
+    if (auto *FunctionIR = FunctionDefinition->codegen()) {
+      InGlobalInit = SavedInGlobalInit;
+      if (VerboseIR)
+        FunctionIR->print(errs());
+
+      ExitOnErr(TheJIT->addModule(
+          ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
       InitializeModuleAndManagers();
 
       auto InitSymbol = ExitOnErr(TheJIT->lookup("__pyxc.global_init"));
-      double (*InitFn)() = InitSymbol.toPtr<double (*)()>();
-      InitFn();
+      double (*InitializeGlobals)() = InitSymbol.toPtr<double (*)()>();
+      InitializeGlobals();
     } else {
-      InGlobalInit = false;
+      InGlobalInit = SavedInGlobalInit;
       return;
     }
   }
 
-  auto MainIt = FunctionSignatures.find("main");
-  if (MainIt == FunctionSignatures.end())
+  auto Main = FunctionSignatures.find("main");
+  if (Main == FunctionSignatures.end())
     return;
 
-  if (MainIt->second->getNumParameters() != 0) {
+  if (Main->second->getNumParameters() != 0) {
     fprintf(stderr, "Error: main() must take no arguments\n");
     return;
   }
 
   auto MainSymbol = ExitOnErr(TheJIT->lookup("main"));
-  double (*MainFn)() = MainSymbol.toPtr<double (*)()>();
-  MainFn();
+  double (*MainFunction)() = MainSymbol.toPtr<double (*)()>();
+  MainFunction();
 }
 ```
 
@@ -412,11 +460,9 @@ With globals in place, pyxc now has three scopes:
 
 Lookup always goes inner-to-outer: block → function → global. A `var x` inside a function shadows a global `x` for the duration of that function call. The global is unaffected.
 
-## A Quiet Change: Implicit Return Is Always `0.0`
+## A Reminder: Implicit Return Is Always `0.0`
 
-While working on this chapter I ran into something that isn't really *about* globals, but that I ended up fixing at the same time because I hit it directly while wiring up `tick()`-style examples. In [chapter 12](chapter-12.md), a function with no explicit `return` implicitly returned whatever its last statement's `codegen()` happened to produce. For something like `def tick(): count = count + 1`, that meant the function's return value was the newly-assigned value — a side effect of how `AssignmentExpressionNode::codegen` happens to be written, not something I ever deliberately decided a function's "result" should be.
-
-Once `var`, assignment, `if`, and `for` are all first-class statements that can be the last thing in a body, I don't want a function's implicit return value to quietly depend on which kind of statement happened to be last. So `FunctionDefinitionNode::codegen` ignores the body's codegen result for the purposes of the implicit return, and always returns `0.0` when a function falls off the end without hitting a `return`:
+`def tick(): count = count + 1` calls out a rule that's easy to forget once globals are in the picture, even though it isn't new here — [Chapter 12](chapter-12.md) already made `FunctionDefinitionNode::codegen` ignore the body's own codegen result for the purposes of an implicit return, and emit a plain `0.0` whenever a function falls off the end without hitting `return`:
 
 ```cpp
 if (Value *BodyVal = Body->codegen()) {
@@ -428,7 +474,7 @@ if (Value *BodyVal = Body->codegen()) {
 }
 ```
 
-Concretely: `def tick(): count = count + 1` now always returns `0.0` when called, no matter what `count` becomes. The global still updates correctly — I verified that separately — it's only the *return value* of a body-with-no-`return` function that's now fixed at `0.0`. If I want a function to hand back a value, I write `return` explicitly. This is why the REPL transcript below prints `Evaluated to 0.000000` after every `tick()` call rather than the incrementing count.
+`tick()` never writes `return`, so it always evaluates to `0.0`, no matter what `count` becomes — the assignment inside it isn't the function's "result" just because it happened to be the last statement. The global still updates correctly; only the *return value* of a body-with-no-`return` function is fixed at `0.0`. This is why the REPL transcript below prints `Evaluated to 0.000000` after every `tick()` call rather than the incrementing count.
 
 ## Known Limitations
 
@@ -444,56 +490,52 @@ Concretely: `def tick(): count = count + 1` now always returns `0.0` when called
 ```pyxc
 ready> extern def printd(x)
 ```
-```bash
+```text
 Parsed an extern.
 ```
 ```pyxc
 ready> var count = 0
-```
-```bash
-Parsed a top-level expression.
-```
-```pyxc
 ready> def tick(): count = count + 1
 ```
-```bash
+```text
 Parsed a function definition.
 ```
 ```pyxc
 ready> tick()
 ```
-```bash
+```text
 Parsed a top-level expression.
 Evaluated to 0.000000
 ```
 ```pyxc
 ready> tick()
 ```
-```bash
+```text
 Parsed a top-level expression.
 Evaluated to 0.000000
 ```
 ```pyxc
 ready> tick()
 ```
-```bash
+```text
 Parsed a top-level expression.
 Evaluated to 0.000000
 ```
 ```pyxc
 ready> printd(count)
 ```
-```bash
+```text
 Parsed a top-level expression.
 3.000000
 Evaluated to 0.000000
 ```
 <!-- code-merge:end -->
 
-The `Evaluated to 0.000000` after each `tick()` is the JIT reporting the return value of that line's own top-level wrapper function. `ParseTopLevelExpression` always wraps a bare expression in an explicit `return`, so for `tick()` the wrapper is really `return tick();` — and `tick`'s own body (`count = count + 1`) has no explicit `return`, so `tick()` itself always evaluates to `0.0` now, by the implicit-return rule above. `count` is updating correctly underneath the whole time — `printd(count)` prints the real `3.000000`; the `Evaluated to 0.000000` right after it is a separate thing entirely, just `printd`'s own C-level return value.
+The `Evaluated to 0.000000` after each `tick()` is the JIT reporting the return value of that line's own top-level wrapper function. `ParseTopLevelStatementFunction` always wraps a bare expression in an explicit `return`, so for `tick()` the wrapper is really `return tick();` — and `tick`'s own body (`count = count + 1`) has no explicit `return`, so `tick()` itself always evaluates to `0.0`, by the implicit-return rule above. `count` is updating correctly underneath the whole time — `printd(count)` prints the real `3.000000`; the `Evaluated to 0.000000` right after it is a separate thing entirely, just `printd`'s own C-level return value.
 
 **File mode: globals + `main`**
 
+<!-- code-merge:start -->
 ```pyxc
 extern def printd(x)
 
@@ -507,13 +549,15 @@ def main():
     add(5)
     printd(total)
 ```
-
-```
+```text
+$ ./build/pyxc program.pyxc
 15.000000
 ```
+<!-- code-merge:end -->
 
 **Initialization order**
 
+<!-- code-merge:start -->
 ```pyxc
 extern def printd(x)
 
@@ -521,11 +565,16 @@ var a = 3
 var b = a * 4   # sees a = 3, not 0
 printd(b)       # 12.000000
 ```
+```text
+$ ./build/pyxc program.pyxc
+12.000000
+```
+<!-- code-merge:end -->
 
 ## Build and Run
 
 ```bash
-cd code/chapter-13
+cd code/chapter-15
 cmake -S . -B build && cmake --build build
 ./build/pyxc
 ```

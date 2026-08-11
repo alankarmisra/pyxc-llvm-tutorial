@@ -1,4 +1,0 @@
-extern def puts(s: ptr[int8]) -> int
-def main() -> int:
-  puts("hello")
-  return 0

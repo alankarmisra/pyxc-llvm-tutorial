@@ -1,7 +1,0 @@
-extern def malloc(n: int64) -> ptr[int8]
-struct Point:
-  x: int
-  y: int
-def main() -> int:
-  var raw: ptr[int8] = malloc(sizeof(Point))
-  return 0

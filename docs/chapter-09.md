@@ -3,7 +3,7 @@ description: "Add file input mode and a -v IR flag so pyxc can execute source fi
 ---
 # 9. pyxc: File Input Mode
 
-## Where I Am
+## What I Am Building
 
 In [Chapter 8](chapter-08.md), I added a JIT that evaluates expressions immediately. I can still only provide source through the REPL, so I now add file input.
 
@@ -65,7 +65,7 @@ entry:
 
 ```bash
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
-cd pyxc-llvm-tutorial/code/chapter-08
+cd pyxc-llvm-tutorial/code/chapter-09
 ```
 
 ## One `FILE*` for Both Modes
@@ -121,12 +121,7 @@ int ProcessCommandLine(int argc, const char **argv) {
 
 If I have a filename, I open it, point `Input` at the resulting handle, and disable REPL output. Otherwise, I keep reading from `stdin`.
 
-When `fopen` fails, it sets `errno`. I use `perror` to print the filename followed by the operating system's error description:
-
-```bash
-$ build/pyxc nosuchfile.pyxc
-nosuchfile.pyxc: No such file or directory
-```
+When `fopen` fails, it sets `errno`. I use `perror` to print the filename followed by the operating system's error description.
 
 ### Selecting IR Output
 
@@ -202,8 +197,8 @@ I check `Input != stdin` because I do not own standard input and must not close 
 ## Build and Run
 
 ```bash
-cmake -S . -B build
-cmake --build build
+cd code/chapter-09
+cmake -S . -B build && cmake --build build
 ```
 
 ```bash
@@ -215,6 +210,21 @@ or
 ```bash
 ./build/pyxc filename.pyxc -v
 ```
+
+## Try It
+
+If the filename I pass doesn't exist, `fopen` fails and `perror` reports it using the operating system's own error text:
+
+<!-- code-merge:start -->
+```bash
+$ build/pyxc nosuchfile.pyxc
+```
+```text
+nosuchfile.pyxc: No such file or directory
+```
+<!-- code-merge:end -->
+
+`ProcessCommandLine` returns `-1` in this case, so `main` never reaches `MainLoop()` at all.
 
 ## What's Next
 
@@ -232,4 +242,4 @@ Include:
 - Full error message
 - Output of `cmake --version`, `ninja --version`, and `llvm-config --version`
 
-We'll figure it out.
+I'll help you figure it out.

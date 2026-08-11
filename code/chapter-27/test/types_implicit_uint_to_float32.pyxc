@@ -1,0 +1,14 @@
+# RUN: %pyxc --emit exe -o %t %s
+# RUN: %t 2>&1 | FileCheck %s
+# CHECK: 4294967296.000000
+
+# Tests: unsigned integers use an unsigned conversion when implicitly widened
+# to float32.
+
+extern def printd(x: float64) -> float64
+
+def main() -> None:
+    var n: uint32 = uint32(-1)
+    var value: float32 = n
+    printd(float64(value))
+    return

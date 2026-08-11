@@ -1,0 +1,12 @@
+# RUN: %pyxc -O2 --emit llvm-ir -o %t.ll %s
+# RUN: FileCheck %s --input-file=%t.ll
+# CHECK: @__pyxc.user_main()
+# CHECK: ret i64 255
+
+def main() -> int:
+  var value: uint8 = 255
+  return int(value)
+
+# RUN: not %pyxc --emit llvm-ir -o %t.bad.ll %S/Inputs/unsigned_literal_out_of_range.pyxc 2>&1 | FileCheck %s --check-prefix=ERROR
+# ERROR: Error
+# ERROR: Integer literal out of range for type

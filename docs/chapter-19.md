@@ -1,4 +1,5 @@
 ---
+section: "Types and Typed Operations"
 description: "Add unsigned integer types uint8, uint16, uint32, and uint64 with correct unsigned arithmetic, comparisons, and casts throughout."
 ---
 # 19. pyxc: Unsigned Integer Types

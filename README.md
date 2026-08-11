@@ -228,7 +228,7 @@ llvm-lit code/chapter-11/test/
 
 ## Chapters
 
-Chapters 1–45 are complete. Each one is a standalone, buildable snapshot of the compiler at that stage — see [Project Layout](#project-layout). Chapter 46 (Closures) and the Concurrency track (47–53) are still ahead — see [ROADMAP.md](ROADMAP.md).
+Chapters 1–45 are complete. Each one is a standalone, buildable snapshot of the compiler at that stage — see [Project Layout](#project-layout). That's the only committed sequence — Closures, Concurrency, and everything past it are still ahead but not committed to fixed chapter numbers; see [ROADMAP.md](ROADMAP.md).
 
 ### Foundations
 
@@ -302,9 +302,199 @@ Chapters 1–45 are complete. Each one is a standalone, buildable snapshot of th
 - [Chapter 44: Imports](docs/chapter-44.md) — `import` pulls in another file's exported functions and types by name.
 - [Chapter 45: Cyclic Imports](docs/chapter-45.md) — Two files that import each other compile correctly, without infinite recursion.
 
-### Future Concurrency Track
+### Future (Potential) Track
 
-Chapter 46 (Closures) and Chapters 47–53 (Concurrency Model and Safety Rules, Spawning Tasks and Threads, Shared State and Synchronization, Message Passing, Parallel Loops and Work Partitioning, Determinism/Races/Debugging, Parallel Compilation Pipeline) are planned but not yet written — see [ROADMAP.md](ROADMAP.md) for details and open design questions.
+None of this is committed — chapter numbers, grouping, and order can all change. It's a first-pass sequencing of real, already-written-down design intent, not a promise. Given here so the tutorial's full potential scope is visible in one place; see [ROADMAP.md](ROADMAP.md#future-potential-track) for full notes on each item, including dependencies between them.
+
+#### Closures
+
+- Lambda syntax and captured variables. Open question that blocks starting: capture semantics — by value is safe under the no-GC model; by reference means a closed-over variable has to outlive the closure, a real lifetime problem with no borrow-checker yet to enforce it.
+
+```pyxc
+def make_adder(n: int) -> ptr[def(int) -> int]:
+  return \(x: int) -> int: x + n   # captures n — capture semantics still undecided
+
+var add5: ptr[def(int) -> int] = make_adder(5)
+printd(float64(add5(10)))  # 15.000000
+```
+
+#### Concurrency
+
+- Ownership rules for shared state, spawning tasks and threads, synchronization primitives, message passing, parallel loops and work partitioning, determinism/race debugging, and eventually parallelizing the compiler itself. The safety model needs deciding before the rest can be designed concretely.
+
+```pyxc
+def worker(ch: Channel[int]):
+  ch.send(compute())
+
+def main() -> int:
+  var ch: Channel[int] = Channel[int]()
+  spawn worker(ch)
+  printd(float64(ch.recv()))
+  return 0
+```
+
+#### Phase 11: Enums and Function Pointers
+
+- Enums — `enum Color: Red, Green, Blue`; `switch`-friendly, no implicit int conversion; bundles `switch` exhaustiveness checking
+- Function Pointers — `ptr[def(int, int) -> int]`; callbacks, `qsort`, dispatch tables
+
+```pyxc
+enum Direction:
+  North, South, East, West
+
+def opposite(d: Direction) -> Direction:
+  switch d:
+    case Direction.North: return Direction.South
+    case Direction.South: return Direction.North
+    case Direction.East:  return Direction.West
+    case Direction.West:  return Direction.East
+```
+
+#### Phase 12: Generics Completion
+
+- Generic Functions and Structs — `def max[T](a: T, b: T) -> T` and `struct Stack[T]`, monomorphised like C++ templates
+
+```pyxc
+def max[T](a: T, b: T) -> T:
+  return a if a > b else b
+
+struct Stack[T]:
+  items: T[64]
+  count: int
+```
+
+#### Phase 13: Standard Library
+
+- `stdlib/stdio.pyxc`, `stdlib/stdlib.pyxc`, `stdlib/string.pyxc`, `stdlib/math.pyxc` — wraps existing `extern` capability, no new language features
+- Built-in `print` — variadic, no `extern def` needed
+
+```pyxc
+import stdlib.stdio
+import stdlib.math
+
+def main() -> int:
+  print("sqrt(2) =", sqrt(2.0))
+  return 0
+```
+
+#### Phase 14: Language Ergonomics I — Expressions, Bindings, and Calls
+
+- Ternary / Conditional Expression, `const` Bindings, Default Parameter Values, Named Arguments at Call Site, Multiple Return Values, `NULL` / Null Pointer Literal, `len()` and `in`
+
+```pyxc
+def clamp(x: int, lo: int = 0, hi: int = 100) -> int:
+  return lo if x < lo else (hi if x > hi else x)
+
+var quotient, remainder = divmod(17, 5)
+```
+
+#### Phase 15: Language Ergonomics II — Statements and Diagnostics
+
+- `assert` Statement, `defer` Statement, `static` Local Variables, `goto` and Labels, Command-Line Arguments to `main`, Warn on Assignment in Condition
+
+```pyxc
+def read_first_line(path: ptr[int8]) -> int:
+  var f: ptr[int8] = fopen(path, "r")
+  assert f != NULL, "could not open file"
+  defer fclose(f)
+  return 0
+```
+
+#### Phase 16: Unicode Identifiers and String Interpolation
+
+- Unicode Identifiers — non-ASCII names in `name`; needs XID tables, normalization policy, and a homoglyph/security decision
+- String Interpolation — `f"result: {x}"` lowering to `sprintf`
+
+```pyxc
+var café_total: float64 = 4.50
+printf(f"Total: {café_total}\n")
+```
+
+#### Phase 17: Type System Completion
+
+- Optional / Nullable Types, Union Types, Bit-Fields, `const` Pointers, Multidimensional Arrays, Pointer to Array, `void` Pointer
+
+```pyxc
+def find(arr: int[10], target: int) -> Option[int]:
+  for i in range(10):
+    if arr[i] == target: return i
+  return None
+```
+
+#### Phase 18: OOP Refinements
+
+- Static Class Properties and Methods, Operator Overloading, `__str__` and Abstract Methods, Inheritance (pending an explicit design decision)
+
+```pyxc
+class Vec2:
+  public x: float64
+  public y: float64
+
+  static def zero() -> Vec2:
+    return Vec2(0.0, 0.0)
+
+  def __add__(other: Vec2) -> Vec2:
+    return Vec2(self.x + other.x, self.y + other.y)
+```
+
+#### Phase 19: Import and Module Refinements
+
+- Selective Imports and Import Aliases, Directory Modules
+
+```pyxc
+from stdlib.io import printf, getchar
+import stdlib.math as m
+
+printf("sqrt(2) = %f\n", m.sqrt(2.0))
+```
+
+#### Phase 20: Generics-Enabled Ecosystem
+
+- Generators and Iterators, Generic Collections (`List[T]`, `Dict[K,V]`, `Set[T]`)
+
+```pyxc
+var names: List[ptr[int8]] = List[ptr[int8]]()
+names.append("Ada")
+names.append("Grace")
+for name in names:
+  printf("%s\n", name)
+```
+
+#### Phase 21: Compile-Time Execution
+
+- `comptime` Basics, `comptime` and Generics — Zig-style compile-time execution instead of a separate macro language
+
+```pyxc
+comptime def storage_type(n: int) -> type:
+  if n <= 32: return int32
+  return int64
+
+var x: comptime storage_type(16) = 0   # x: int32 at compile time
+```
+
+#### Phase 22: Verification
+
+- Verifier Phase 1 (Sequential, SMT-backed) — `requires`/`ensures`/`assert`/loop `invariant`, needs Enums
+- Verifier Phase 2 (Concurrency-Aware) — thread interleavings, synchronization, memory-order rules, needs Concurrency
+
+```pyxc
+def divide(a: int, b: int) -> int:
+  requires b != 0
+  ensures result * b == a
+  return a / b
+```
+
+#### Phase 23: Tooling and Quality
+
+- Real Source Locations in Codegen Diagnostics — properly closes the stale-`CurLoc` known bug
+- Function Attributes, Escape Analysis and Stack Promotion, REPL Improvements, Incremental Compilation and Packaging, MCP Tool Export
+
+```bash
+pyxc build          # reads a project manifest, compiles + links
+pyxc run main.pyxc  # incremental: only recompiles what changed
+```
+
+Also real but not chapter-shaped: a **Language Server (LSP)** — IDE tooling built around the compiler rather than a compiler feature itself.
 
 ## License
 

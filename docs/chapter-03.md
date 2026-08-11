@@ -352,24 +352,57 @@ llvm-lit test/
 
 ## Try It
 
+<!-- code-merge:start -->
 ```pyxc
 ready> def add(x, y):
 x + y
+```
+```text
 Parsed a function definition.
+```
+<!-- code-merge:end -->
+<!-- code-merge:start -->
+```pyxc
 ready> def fib(n):
 fib(n-1) + fib(n-2)
+```
+```text
 Parsed a function definition.
+```
+<!-- code-merge:end -->
+<!-- code-merge:start -->
+```pyxc
 ready> 1 + 2 * 3
+```
+```text
 Parsed a top-level expression.
+```
+<!-- code-merge:end -->
+<!-- code-merge:start -->
+```pyxc
 ready> 8 / 2 + 1
+```
+```text
 Parsed a top-level expression.
+```
+<!-- code-merge:end -->
+<!-- code-merge:start -->
+```pyxc
 ready> 1 < 2 + 3 * 4
+```
+```text
 Parsed a top-level expression.
+```
+<!-- code-merge:end -->
+<!-- code-merge:start -->
+```pyxc
 ready> -5
+```
+```text
 Error: unknown token when expecting an expression (token: '-')
 ready> Parsed a top-level expression.
-ready>
 ```
+<!-- code-merge:end -->
 
 The final example shows two separate limitations. First, `-` works only as a binary operator. I put `tok_minus` in `ParseSum()`, but `ParsePrimary()` still has no case for a leading `-`. That means `-5` and `x - -3` both fail. I will add unary operators later.
 

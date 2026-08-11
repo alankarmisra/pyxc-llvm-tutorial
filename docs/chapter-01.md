@@ -1,4 +1,5 @@
 ---
+section: "Foundations"
 description: "Analyzing program words"
 ---
 # 1. pyxc: Analyzing program words
@@ -136,7 +137,7 @@ int advance() {
 ```
 
 
-## getToken(): Generating One Token At A Time
+## Generating One Token At A Time
 
 `getToken()` is where I read characters and turn them into tokens, one per call. 
 
@@ -468,6 +469,21 @@ Total Discovered Tests: 11
 ```
 
 The test order and timing above are from one run; `lit` runs tests in parallel across several workers, so both vary from run to run.
+
+## Try It
+
+Earlier I mentioned that `1.23.45.67` lexes as a single number and silently drops the rest. Here it is for real:
+
+```bash
+printf '1.23.45.67\n' | ./build/pyxc
+```
+
+```text
+number: 1.23
+newline
+```
+
+`strtod` stops at the second `.`, and I've already consumed the rest of the characters from the input stream reading `NumStr`, so `.45.67` never gets a chance to become its own token or trigger an error. It just disappears.
 
 ## What's Next
 

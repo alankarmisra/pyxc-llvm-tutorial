@@ -56,50 +56,67 @@ cd pyxc-llvm-tutorial/code/chapter-11
 
 ## Grammar
 
-I add `varexpr` as a second alternative for `expression`, and give `comparison` an optional `"=" expression` tail. `forexpr` gains an optional leading `"var"`:
+I add `variable-expression` as a second alternative for `expression`, and give `comparison` an optional `"=" expression` tail. `for-expression` gains an optional leading `"var"`:
 
 `code/chapter-11/pyxc.ebnf`
 
 ```grammardiff
- program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
- end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = function-definition | external | top-level-expression ;
- function-definition      = "def" function-signature ":" [ end-of-lines ] expression ;
- external        = "extern" "def" function-signature ;
- top-level-expression    = expression ;
- function-signature       = name "(" [ parameters ] ")" ;
- parameters               = parameter { "," parameter } ;
- parameter                = name ;
- ifexpr          = "if" expression ":" [ end-of-lines ] expression [ end-of-lines ] "else" ":" [ end-of-lines ] expression ;
--forexpr         = "for" name "=" expression "," expression "," expression ":" [ end-of-lines ] expression ;
--expression               = comparison ;
-+forexpr         = "for" [ "var" ] name "=" expression "," expression "," expression ":" [ end-of-lines ] expression ;
-+expression      = varexpr | comparison [ "=" expression ] ;
-+varexpr         = "var" variable-binding { "," variable-binding } ":" [ end-of-lines ] expression ;
-+variable-binding      = name [ "=" expression ] ;
- comparison               = sum { comparison-operator sum } ;
- comparison-operator      = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
- sum                      = term { ("+" | "-") term } ;
- term                     = unary-expression { ("*" | "/") unary-expression } ;
- unary-expression       = "-" unary-expression | primary ;
- primary         = name-expression | number-expression | parenthesized-expression
-                 | ifexpr | forexpr ;
- name-expression  = name | call-expression ;
--call-expression         = name "(" [ arguments ] ")" ;
--arguments               = expression { "," expression } ;
-+call-expression        = name "(" [ arguments ] ")" ;
-+arguments              = expression { "," expression } ;
- number-expression      = number ;
- parenthesized-expression       = "(" expression ")" ;
- name      = (letter | "_") { letter | digit | "_" } ;
- number          = digit { digit } [ "." { digit } ]
-                 | "." digit { digit } ;
- letter          = "A".."Z" | "a".."z" ;
- digit           = "0".."9" ;
- end-of-line             = "\r\n" | "\r" | "\n" ;
- comment = "#" { comment-character } ;
- comment-character = ? any character except "\r" and "\n" ? ;
- whitespace = " " | "\t" | "\v" | "\f" ;
+ program                           = [ end-of-lines ]
+                                     [ top-level-item
+                                       { end-of-lines top-level-item } ]
+                                     [ end-of-lines ] ;
+ end-of-lines                      = end-of-line { end-of-line } ;
+ top-level-item                    = function-definition
+                                     | external
+                                     | top-level-expression ;
+ function-definition               = "def" function-signature ":"
+                                     [ end-of-lines ] expression ;
+ external                          = "extern" "def" function-signature ;
+ top-level-expression              = expression ;
+ function-signature                = name "(" [ parameters ] ")" ;
+ parameters                        = parameter { "," parameter } ;
+ parameter                         = name ;
+-expression                        = comparison ;
++expression                        = variable-expression
++                                    | comparison [ "=" expression ] ;
++variable-expression               = "var" variable-binding
++                                    { "," variable-binding } ":"
++                                    [ end-of-lines ] expression ;
++variable-binding                  = name [ "=" expression ] ;
+ comparison                        = sum { comparison-operator sum } ;
+ comparison-operator               = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+ sum                               = term { ("+" | "-") term } ;
+ term                              = factor { ("*" | "/" | "%") factor } ;
+ factor                            = "-" factor | primary ;
+ primary                           = name-expression
+                                     | number-expression
+                                     | parenthesized-expression
+                                     | if-expression
+                                     | for-expression ;
+ if-expression                     = "if" expression ":"
+                                     [ end-of-lines ] expression
+                                     [ end-of-lines ] "else" ":"
+                                     [ end-of-lines ] expression ;
+-for-expression                    = "for" name "=" expression ","
++for-expression                    = "for" [ "var" ] name "=" expression ","
+                                     expression "," expression ":"
+                                     [ end-of-lines ] expression ;
+ name-expression                   = name
+                                     | call-expression ;
+ call-expression                   = name "(" [ arguments ] ")" ;
+ arguments                         = expression { "," expression } ;
+ number-expression                 = number ;
+ parenthesized-expression          = "(" expression ")" ;
+ name                              = (letter | "_")
+                                     { letter | digit | "_" } ;
+ number                            = digit { digit } [ "." { digit } ]
+                                     | "." digit { digit } ;
+ letter                            = "A".."Z" | "a".."z" ;
+ digit                             = "0".."9" ;
+ end-of-line                       = "\r\n" | "\r" | "\n" ;
+ comment                           = "#" { comment-character } ;
+ comment-character                 = ? any character except "\r" and "\n" ? ;
+ whitespace                        = " " | "\t" | "\v" | "\f" ;
 ```
 
 Assignment needs a destination — somewhere in memory to write a value to. Using the two sides of `=`, I'll borrow a couple of terms:
@@ -151,20 +168,20 @@ public:
 };
 ```
 
-`VarStatementNode` represents `var a = 1, b = 2: body`. It stores the list of bindings plus the body:
+`VariableExpressionNode` represents `var a = 1, b = 2: body`. It stores the list of bindings plus the body:
 
 ```cpp
-/// VarExpressionNode - Expression class for mutable local variable bindings.
+/// VariableExpressionNode - Expression class for mutable local variable bindings.
 ///   var a = <init>, b = <init> : <body>
 /// Each binding allocates stack storage in the current function's entry block,
 /// stores its initializer, shadows any outer binding of the same name for the
 /// duration of the body, then restores the old binding afterward.
-class VarStatementNode : public ExpressionNode {
+class VariableExpressionNode : public ExpressionNode {
   vector<pair<string, unique_ptr<ExpressionNode>>> VarNames;
   unique_ptr<ExpressionNode> Body;
 
 public:
-  VarStatementNode(vector<pair<string, unique_ptr<ExpressionNode>>> VarNames,
+  VariableExpressionNode(vector<pair<string, unique_ptr<ExpressionNode>>> VarNames,
              unique_ptr<ExpressionNode> Body)
       : VarNames(std::move(VarNames)), Body(std::move(Body)) {}
   Value *codegen() override;
@@ -181,12 +198,12 @@ virtual const string *getLValueName() const { return nullptr; }
 
 ## Parsing `var`
 
-`ParseVarStatement` reads four things in sequence: the `var` keyword, one or more `name [= initializer]` bindings, a mandatory `:`, and then the body expression.
+`ParseVariableExpression` reads four things in sequence: the `var` keyword, one or more `name [= initializer]` bindings, a mandatory `:`, and then the body expression.
 
 **Step 1: Eat `var` and prepare the binding list.**
 
 ```cpp
-static unique_ptr<ExpressionNode> ParseVarStatement() {
+static unique_ptr<ExpressionNode> ParseVariableExpression() {
   getNextToken(); // eat 'var'
 
   vector<pair<string, unique_ptr<ExpressionNode>>> VarNames;
@@ -239,16 +256,16 @@ If there's no `=`, the variable defaults to `0.0`. The binding always produces a
   if (!Body)
     return nullptr;
 
-  return make_unique<VarStatementNode>(std::move(VarNames), std::move(Body));
+  return make_unique<VariableExpressionNode>(std::move(VarNames), std::move(Body));
 }
 ```
 
-`ParseExpression` routes to `ParseVarStatement` before anything else, if the current token is `var`:
+`ParseExpression` routes to `ParseVariableExpression` before anything else, if the current token is `var`:
 
 ```cpp
 static unique_ptr<ExpressionNode> ParseExpression() {
   if (CurrentToken == tok_var)
-    return ParseVarStatement();
+    return ParseVariableExpression();
 
   auto Expr = ParseComparison();
   // ...
@@ -381,19 +398,19 @@ Value *NameExpressionNode::codegen() {
 An assignment evaluates the right-hand side, stores it into the memory slot, and returns the assigned value — that return is what makes `a = b = 1` work, since the inner `b = 1` has to produce `1.0` for the outer `a = ...` to store:
 
 ```cpp
-/// AssignmentExpressionNode::codegen - Evaluate the Expr, store it into the variable's
+/// AssignmentExpressionNode::codegen - Evaluate the Right, store it into the variable's
 /// memory slot, and produce the assigned value.
 Value *AssignmentExpressionNode::codegen() {
-  Value *Val = Expr->codegen();
-  if (!Val)
+  Value *Value = Expr->codegen();
+  if (!Value)
     return nullptr;
 
   auto It = NamedValues.find(Name);
   if (It == NamedValues.end() || !It->second)
     return LogErrorV("Unknown variable name");
 
-  TheBuilder->CreateStore(Val, It->second);
-  return Val;
+  TheBuilder->CreateStore(Value, It->second);
+  return Value;
 }
 ```
 
@@ -406,7 +423,7 @@ store double %addtmp, ptr %x, align 8
 **Step 1: Evaluate initializers and allocate memory slots.**
 
 ```cpp
-Value *VarStatementNode::codegen() {
+Value *VariableExpressionNode::codegen() {
   vector<pair<string, AllocaInst *>> OldBindings;
   Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
 

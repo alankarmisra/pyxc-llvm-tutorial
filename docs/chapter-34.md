@@ -1,4 +1,5 @@
 ---
+section: "Expression and Mutation Conveniences"
 description: "Allow assignment inside an expression so patterns like while (c = getchar()) != EOF work without a separate priming read."
 ---
 # 34. pyxc: Assignment as Expression

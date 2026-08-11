@@ -1,0 +1,9 @@
+# RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
+# CHECK: Incorrect # arguments passed
+
+type string = ptr[int8]
+extern def printf(fmt: string, ...) -> int64
+
+def main() -> int:
+  printf()
+  return 0
