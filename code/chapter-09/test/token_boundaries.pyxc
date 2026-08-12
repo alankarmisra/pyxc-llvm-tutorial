@@ -1,0 +1,12 @@
+# RUN: printf 'def foo2(x2): x2\n' | %pyxc > %t.name 2>&1
+# RUN: grep -Fq "Parsed a function definition." %t.name
+# RUN: printf '42' | %pyxc > %t.number 2>&1
+# RUN: grep -Fq "Parsed a top-level expression." %t.number
+# RUN: printf '1 + 2\n' | %pyxc > %t.spaces 2>&1
+# RUN: printf '1\t+\t2\n' | %pyxc > %t.tabs 2>&1
+# RUN: diff -u %t.spaces %t.tabs
+# RUN: %pyxc < /dev/null > %t.empty 2>&1
+# RUN: not grep -Fq "Error:" %t.empty
+
+# token boundaries: digits may continue names, a number may end directly at
+# EOF, tabs separate tokens like spaces, and empty input terminates cleanly.

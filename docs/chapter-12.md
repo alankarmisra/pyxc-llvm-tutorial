@@ -256,22 +256,28 @@ static deque<int>  PendingTokens;     // buffered tokens the parser hasn't seen 
 static bool AtLineStart = true;       // true right after a newline
 ```
 
-Inside `gettok()`, before any normal token logic, indentation is processed in three steps.
+Inside `getToken()`, before any normal token logic, indentation is processed at the start of every line.
 
 **Step 1: Find the indentation level of the current line.**
 
 ```cpp
 if (AtLineStart) {
-  int IndentCol = 0;
+  // Prime sentinel space once so indentation scans real input.
+  if (LastChar == ' ')
+    LastChar = advance();
+  int CurrentIndentRead = 0;
   while (LastChar == ' ' || LastChar == '\t') {
-    IndentCol += (LastChar == ' ') ? 1 : (8 - IndentCol % 8); // tabs → columns
+    CurrentIndentRead +=
+        (LastChar == ' ')
+            ? 1
+            : (IndentTabWidth - CurrentIndentRead % IndentTabWidth);
     LastChar = advance();
   }
 ```
 
-Spaces contribute 1 column each. Tabs advance to the next multiple of 8 — the delta is `8 - (IndentCol % 8)`:
+`IndentTabWidth` is `8`. Spaces contribute 1 column each. Tabs advance to the next multiple of `IndentTabWidth` — the delta is `IndentTabWidth - (CurrentIndentRead % IndentTabWidth)`:
 
-| IndentCol before tab | IndentCol % 8 | delta | IndentCol after tab |
+| column before tab | column % 8 | delta | column after tab |
 |---|---|---|---|
 | 0 | 0 | 8 | 8 |
 | 1 | 1 | 7 | 8 |
@@ -281,26 +287,38 @@ Spaces contribute 1 column each. Tabs advance to the next multiple of 8 — the 
 
 A tab always snaps forward to the next 8-column boundary, never backward and never past it.
 
-**Step 2: Compare to the top of the stack and queue INDENT or DEDENT tokens.**
+Blank lines and comment-only lines return `tok_eol` here without touching the indent stack (a blank line closes the current block immediately in the REPL instead), and EOF falls through to the flush logic further below. Real source content instead falls through to Step 2.
+
+**Step 2: Compare to the top of the stack and either return `tok_indent` directly or queue `DEDENT` tokens.**
 
 ```cpp
-  if (IndentCol > IndentStack.back()) {
-    IndentStack.push_back(IndentCol);
-    PendingTokens.push_back(tok_indent);
-  } else if (IndentCol < IndentStack.back()) {
-    while (IndentStack.size() > 1 && IndentCol < IndentStack.back()) {
+  CurLoc = LexLoc;
+  int CurrentIndentOnStack = IndentStack.back();
+  if (CurrentIndentRead > CurrentIndentOnStack) {
+    IndentStack.push_back(CurrentIndentRead);
+    AtLineStart = false;
+    return tok_indent;
+  }
+  if (CurrentIndentRead < CurrentIndentOnStack) {
+    while (IndentStack.size() > 1 && CurrentIndentRead < IndentStack.back()) {
       IndentStack.pop_back();
       PendingTokens.push_back(tok_dedent);
     }
-    if (IndentCol != IndentStack.back()) {
-      fprintf(stderr, "Error (Line %d, Column %d): inconsistent indentation\n",
-              CurLoc.Line, CurLoc.Col);
+    if (CurrentIndentRead != IndentStack.back()) {
+      LogErrorAtLoc("inconsistent indentation", CurLoc);
+      PrintErrorSourceContext(CurLoc);
       return tok_error;
     }
+    AtLineStart = false;
+    int Tok = PendingTokens.front();
+    PendingTokens.pop_front();
+    return Tok;
   }
+  // Same indentation level — no indent/dedent token needed.
+  AtLineStart = false;
 ```
 
-A single dedent can push multiple `DEDENT` tokens — one for each level that closed:
+An increased indentation never goes through `PendingTokens` at all — it returns `tok_indent` immediately. A decreased indentation can close several levels at once; each closed level pushes one `tok_dedent` onto `PendingTokens`, and this call returns the first one. The rest drain on later calls to `getToken()`, through the check at the very top of the function (see Step 3 below). A single dedent can therefore produce multiple `DEDENT` tokens — one for each level that closed:
 
 <!-- code-merge:start -->
 ```pyxc
@@ -323,29 +341,33 @@ Error (Line 3, Column 4): unknown token when expecting an expression
 ```
 <!-- code-merge:end -->
 
-Dedenting to column 3 has no match on the stack (`[0, 4]`) — it's neither the current indentation nor an outer one, so there's no consistent level to return to. `gettok()` reports it and returns `tok_error`, but the lexer state doesn't stop there — the parser keeps trying to recover from the malformed token stream, which is why one bad indent produces several cascading error lines instead of just the first one.
+Dedenting to column 3 has no match on the stack (`[0, 4]`) — it's neither the current indentation nor an outer one, so there's no consistent level to return to. `getToken()` reports it and returns `tok_error`, but the lexer state doesn't stop there — the parser keeps trying to recover from the malformed token stream, which is why one bad indent produces several cascading error lines instead of just the first one.
 
-**Step 3: Drain the queue — return the first pending token if any.**
+**Step 3: On the next call, drain the rest of the queue before doing anything else.**
+
+Any `DEDENT` tokens left over from a multi-level dedent, or from Step 2's queuing, sit in `PendingTokens` for the next call to consume — a check right at the top of `getToken()`, before the line-start logic even runs:
 
 ```cpp
-  AtLineStart = false;
+static int getToken() {
+  static int LastChar = ' ';
+
+  // Drain tokens queued by a multi-level dedent on the previous line.
   if (!PendingTokens.empty()) {
     int Tok = PendingTokens.front();
     PendingTokens.pop_front();
     return Tok;
   }
-}
 ```
 
-`gettok()` is called again for each subsequent token, draining the queue one entry at a time before returning to normal lexing.
+`getToken()` is called again for each subsequent token, draining the queue one entry at a time before returning to normal lexing.
 
-At EOF, the lexer flushes one `DEDENT` per still-open block:
+At EOF, the lexer flushes one `DEDENT` per still-open block (still inside the `if (AtLineStart)` block from Step 1):
 
 ```cpp
 if (LastChar == EOF) {
   if (IndentStack.size() > 1) {
     IndentStack.pop_back();
-    return tok_dedent; // gettok is called again for the next one
+    return tok_dedent;
   }
   return tok_eof;
 }

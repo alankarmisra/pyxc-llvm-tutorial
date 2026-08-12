@@ -105,14 +105,14 @@ The `--emit exe` path also enforces the multi-input rule:
 When `-o` is omitted and there's exactly one input, I want the output to be the input with its extension stripped — and `.exe` appended on Windows:
 
 ```cpp
-static string DefaultExeOutputPath(StringRef InputPath) {
-  SmallString<256> Out(InputPath);
-  sys::path::replace_extension(Out, "");
-  string OutStr = Out.str().str();
+static string DefaultExecutablePath(StringRef InputPath) {
+  SmallString<256> OutputPath(InputPath);
+  sys::path::replace_extension(OutputPath, "");
+  string Result = OutputPath.str().str();
 #ifdef _WIN32
-  OutStr += ".exe";
+  Result += ".exe";
 #endif
-  return OutStr;
+  return Result;
 }
 ```
 
@@ -183,7 +183,7 @@ The key points:
 I want each `.pyxc` input to go through its own full parse-codegen-emit cycle:
 
 ```cpp
-static bool CompileFileToObject(const string &Path, const string &ObjPath,
+static bool CompileFileToObject(const string &Path, const string &ObjectPath,
                                 bool *HasMain) {
   if (!OpenInputFile(Path))
     return false;
@@ -191,21 +191,16 @@ static bool CompileFileToObject(const string &Path, const string &ObjPath,
   ResetLexerState();
   ResetParserStateForFile();
   InitializeModuleAndManagers(false);
-
   IsRepl = false;
-  PrintReplPrompt();
   getNextToken();
-
   FileModeLoop();
   CloseInputFile();
 
   if (HasMain)
     *HasMain = FunctionSignatures.find("main") != FunctionSignatures.end();
-
   if (!PrepareFileModeModule())
     return false;
-
-  return EmitModuleToFile(TheModule.get(), EmitKind::Object, ObjPath);
+  return EmitModuleToFile(TheModule.get(), EmitKind::Object, ObjectPath);
 }
 ```
 
@@ -275,68 +270,63 @@ static bool PrepareFileModeModule() {
 ```cpp
 static bool LinkExecutable(const vector<string> &Inputs,
                            const string &OutputPath) {
-  Triple TT(sys::getDefaultTargetTriple());
-  vector<string> ArgStorage;
-  auto PushArg = [&](const string &Arg) { ArgStorage.push_back(Arg); };
+  Triple TargetTriple(sys::getDefaultTargetTriple());
+  vector<string> ArgumentStorage;
+  auto AddArgument = [&](const string &Argument) {
+    ArgumentStorage.push_back(Argument);
+  };
 
-  if (TT.isOSDarwin()) {
-    PushArg("ld64.lld");
-    PushArg("-arch");
-    PushArg(TT.getArchName().str());
-    PushArg("-o");
-    PushArg(OutputPath);
-
+  if (TargetTriple.isOSDarwin()) {
+    AddArgument("ld64.lld");
+    AddArgument("-arch");
+    AddArgument(TargetTriple.getArchName().str());
+    AddArgument("-o");
+    AddArgument(OutputPath);
     string SDKRoot = FindMacOSSDKRoot();
     if (!SDKRoot.empty()) {
-      PushArg("-syslibroot");
-      PushArg(SDKRoot);
-      PushArg("-L" + SDKRoot + "/usr/lib");
-      PushArg("-L" + SDKRoot + "/usr/lib/system");
-      string OSVer = FindMacOSSDKVersion();
-      PushArg("-platform_version");
-      PushArg("macos");
-      PushArg(OSVer);
-      PushArg(OSVer);
+      AddArgument("-syslibroot");
+      AddArgument(SDKRoot);
+      AddArgument("-L" + SDKRoot + "/usr/lib");
+      AddArgument("-L" + SDKRoot + "/usr/lib/system");
+      string SDKVersion = FindMacOSSDKVersion();
+      AddArgument("-platform_version");
+      AddArgument("macos");
+      AddArgument(SDKVersion);
+      AddArgument(SDKVersion);
     }
-    // macOS startup is handled by dyld + libSystem; crt1/crti/crtn are
-    // GNU ELF files that do not belong in a MachO link and cause warnings
-    // on arm64 (the SDK copy is x86_64-only legacy).
-    for (const auto &Input : Inputs)
-      PushArg(Input);
-    PushArg("-lSystem");
+    for (const auto &InputPath : Inputs)
+      AddArgument(InputPath);
+    AddArgument("-lSystem");
 
     vector<const char *> Arguments;
-    Arguments.reserve(ArgStorage.size());
-    for (auto &Arg : ArgStorage)
-      Arguments.push_back(Arg.c_str());
-    return lld::macho::link(Arguments, llvm::outs(), llvm::errs(), false, false);
+    for (auto &Argument : ArgumentStorage)
+      Arguments.push_back(Argument.c_str());
+    return lld::macho::link(Arguments, outs(), errs(), false, false);
   }
 
-  if (TT.isOSLinux()) {
-    PushArg("ld.lld");
-    PushArg("-o");
-    PushArg(OutputPath);
-    for (const auto &Input : Inputs)
-      PushArg(Input);
-    PushArg("-lc");
-    PushArg("-lm");
+  if (TargetTriple.isOSLinux()) {
+    AddArgument("ld.lld");
+    AddArgument("-o");
+    AddArgument(OutputPath);
+    for (const auto &InputPath : Inputs)
+      AddArgument(InputPath);
+    AddArgument("-lc");
+    AddArgument("-lm");
     vector<const char *> Arguments;
-    Arguments.reserve(ArgStorage.size());
-    for (auto &Arg : ArgStorage)
-      Arguments.push_back(Arg.c_str());
-    return lld::elf::link(Arguments, llvm::outs(), llvm::errs(), false, false);
+    for (auto &Argument : ArgumentStorage)
+      Arguments.push_back(Argument.c_str());
+    return lld::elf::link(Arguments, outs(), errs(), false, false);
   }
 
-  if (TT.isOSWindows()) {
-    PushArg("lld-link");
-    PushArg("/OUT:" + OutputPath);
-    for (const auto &Input : Inputs)
-      PushArg(Input);
+  if (TargetTriple.isOSWindows()) {
+    AddArgument("lld-link");
+    AddArgument("/OUT:" + OutputPath);
+    for (const auto &InputPath : Inputs)
+      AddArgument(InputPath);
     vector<const char *> Arguments;
-    Arguments.reserve(ArgStorage.size());
-    for (auto &Arg : ArgStorage)
-      Arguments.push_back(Arg.c_str());
-    return lld::coff::link(Arguments, llvm::outs(), llvm::errs(), false, false);
+    for (auto &Argument : ArgumentStorage)
+      Arguments.push_back(Argument.c_str());
+    return lld::coff::link(Arguments, outs(), errs(), false, false);
   }
 
   fprintf(stderr, "Error: unsupported target for --emit exe\n");
@@ -344,7 +334,7 @@ static bool LinkExecutable(const vector<string> &Inputs,
 }
 ```
 
-That comment above the `-lSystem` line is there because I actually tried pushing `crt1.o`/`crti.o` first, the way a traditional Unix linker invocation does it. It seemed like the obviously-correct thing to include. It was wrong — those are GNU/ELF startup objects, this is a Mach-O link, and including them produced link warnings on arm64 (the SDK's copies are x86_64-only legacy files anyway). macOS doesn't need them: `dyld` and `libSystem` handle process startup on their own. I'm leaving the comment in because "the obvious thing" being wrong here is exactly the kind of trap I'd fall into again without it.
+I don't pass `crt1.o`/`crti.o`/`crtn.o` the way a traditional Unix linker invocation would. Those are ELF startup objects; on macOS, `dyld` and `libSystem` handle process startup on their own, and a Mach-O link has no use for them.
 
 The LLD API is the same on every platform: an array of `const char*` arguments (identical to what you'd pass on the command line), plus output/error streams and two flags — `exitEarly` (stop on first error) and `disableOutput` (dry-run). The return value is `true` on success.
 
@@ -355,72 +345,54 @@ This is a key architectural choice: **LLD is called as a library, not as a subpr
 LLD's Mach-O linker needs a sysroot to find system headers and `libSystem`, plus a version string for the `-platform_version` flag. Both of these are things Xcode's own `xcrun` tool already knows how to answer correctly, so I lean on it rather than re-deriving the logic myself:
 
 ```cpp
-static string RunXcrun(const char *Args) {
-  string Cmd = string("xcrun ") + Args + " 2>/dev/null";
-  FILE *Pipe = popen(Cmd.c_str(), "r");
+static string RunXcrun(const char *Arguments) {
+  string Command = string("xcrun ") + Arguments + " 2>/dev/null";
+  FILE *Pipe = popen(Command.c_str(), "r");
   if (!Pipe)
     return "";
-  char Buf[512];
+  char Buffer[512];
   string Result;
-  while (fgets(Buf, sizeof(Buf), Pipe))
-    Result += Buf;
+  while (fgets(Buffer, sizeof(Buffer), Pipe))
+    Result += Buffer;
   pclose(Pipe);
-  while (!Result.empty() && (Result.back() == '\n' || Result.back() == '\r' ||
-                             Result.back() == ' '))
+  while (!Result.empty() &&
+         (Result.back() == '\n' || Result.back() == '\r' ||
+          Result.back() == ' '))
     Result.pop_back();
   return Result;
 }
 ```
 
-`FindMacOSSDKRoot` tries an explicit override first, then `xcrun`, then falls back to probing well-known install paths if `xcrun` itself isn't available for some reason:
+`FindMacOSSDKRoot` tries an explicit override first, then asks `xcrun`:
 
 ```cpp
 static string FindMacOSSDKRoot() {
-  if (const char *EnvSDK = getenv("SDKROOT"))
-    return string(EnvSDK);
-
-  // Ask xcrun — it resolves the active SDK for the current Xcode/CLT selection
-  // and returns the right path regardless of where Xcode is installed.
-  string XcrunPath = RunXcrun("--sdk macosx --show-sdk-path");
-  if (!XcrunPath.empty() && sys::fs::exists(XcrunPath))
-    return XcrunPath;
-
-  // Fallback: probe well-known paths.
-  const char *XcodeSDK = "/Applications/Xcode.app/Contents/Developer/Platforms/"
-                         "MacOSX.platform/Developer/SDKs/MacOSX.sdk";
-  if (sys::fs::exists(XcodeSDK))
-    return string(XcodeSDK);
-
-  const char *CLTSDK = "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk";
-  if (sys::fs::exists(CLTSDK))
-    return string(CLTSDK);
-
+  if (const char *SDKRoot = getenv("SDKROOT"))
+    return string(SDKRoot);
+  string Result = RunXcrun("--sdk macosx --show-sdk-path");
+  if (!Result.empty() && sys::fs::exists(Result))
+    return Result;
   return "";
 }
 ```
 
-I initially wrote this without `xcrun` at all — just the two hardcoded fallback paths, plus the `SDKROOT` override. It worked, but it meant `pyxc` could report a different SDK version than the one Xcode itself considers active, which showed up as a version-mismatch warning from `ld64.lld`. Asking `xcrun` directly is what the rest of Apple's own toolchain does, so I match it instead of maintaining my own guess:
-
 ```cpp
-/// FindMacOSSDKVersion - Return the macOS SDK version string (e.g. "26.0").
-/// This matches the version LLVM encodes into object files at compile time,
-/// avoiding a version mismatch warning from ld64.lld.
 static string FindMacOSSDKVersion() {
-  string Ver = RunXcrun("--sdk macosx --show-sdk-version");
-  if (!Ver.empty())
-    return Ver;
-  // Fallback: extract from the triple (may be Darwin kernel version on older
-  // LLVM builds, so prefer xcrun when available).
-  Triple TT(sys::getDefaultTargetTriple());
-  VersionTuple V = TT.getOSVersion();
-  if (V.getMajor()) {
-    std::ostringstream OS;
-    OS << V.getMajor() << "." << V.getMinor().value_or(0);
-    return OS.str();
+  string Result = RunXcrun("--sdk macosx --show-sdk-version");
+  if (!Result.empty())
+    return Result;
+  Triple TargetTriple(sys::getDefaultTargetTriple());
+  VersionTuple Version = TargetTriple.getOSVersion();
+  if (Version.getMajor()) {
+    ostringstream Stream;
+    Stream << Version.getMajor() << "." << Version.getMinor().value_or(0);
+    return Stream.str();
   }
   return "11.0";
 }
 ```
+
+If `xcrun` doesn't resolve a version, I fall back to the OS version encoded in the host triple. Either way, the goal is the same: match whatever SDK version LLVM itself considers active, so `ld64.lld`'s `-platform_version` check doesn't warn about a mismatch.
 
 The `-platform_version macos <min> <sdk>` flag is required by the Mach-O linker to set the LC_BUILD_VERSION load command. Without it, the linker produces a warning or errors depending on the LLD version.
 
@@ -429,38 +401,38 @@ The `-platform_version macos <min> <sdk>` flag is required by the Mach-O linker 
 ```cpp
 static bool EmitExecutable() {
   vector<string> ObjectFiles;
-  vector<string> TempFiles;
+  vector<string> TemporaryFiles;
   bool SawMain = false;
   bool SawObjectInput = false;
 
-  auto CleanupTemps = [&]() {
-    for (const auto &Path : TempFiles)
+  auto RemoveTemporaryFiles = [&]() {
+    for (const auto &Path : TemporaryFiles)
       sys::fs::remove(Path);
   };
 
   for (const auto &InputPath : InputFiles) {
     if (IsPyxcInput(InputPath)) {
-      int FD = -1;
-      SmallString<128> TmpPath;
-      if (auto EC = sys::fs::createTemporaryFile("pyxc", "o", FD, TmpPath)) {
+      int FileDescriptor = -1;
+      SmallString<128> TemporaryPath;
+      if (auto ErrorCode = sys::fs::createTemporaryFile(
+              "pyxc", "o", FileDescriptor, TemporaryPath)) {
         fprintf(stderr, "Error: could not create temporary file: %s\n",
-                EC.message().c_str());
-        CleanupTemps();
+                ErrorCode.message().c_str());
+        RemoveTemporaryFiles();
         return false;
       }
-      if (FD != -1)
-        close(FD);
+      if (FileDescriptor != -1)
+        close(FileDescriptor);
 
-      string ObjPath = TmpPath.str().str();
-      TempFiles.push_back(ObjPath);
-
+      string ObjectPath = TemporaryPath.str().str();
+      TemporaryFiles.push_back(ObjectPath);
       bool FileHasMain = false;
-      if (!CompileFileToObject(InputPath, ObjPath, &FileHasMain)) {
-        CleanupTemps();
+      if (!CompileFileToObject(InputPath, ObjectPath, &FileHasMain)) {
+        RemoveTemporaryFiles();
         return false;
       }
       SawMain = SawMain || FileHasMain;
-      ObjectFiles.push_back(ObjPath);
+      ObjectFiles.push_back(ObjectPath);
       continue;
     }
 
@@ -471,63 +443,50 @@ static bool EmitExecutable() {
     }
 
     fprintf(stderr, "Error: unsupported input '%s'\n", InputPath.c_str());
-    CleanupTemps();
+    RemoveTemporaryFiles();
     return false;
   }
 
-  // If nothing I compiled defines main(), and nothing else was passed in
-  // that might — a pre-built .o could define it — there's no entry point
-  // for the linker to build an executable around.
   if (!SawMain && !SawObjectInput) {
     fprintf(stderr, "Error: main() not found\n");
-    CleanupTemps();
+    RemoveTemporaryFiles();
     return false;
   }
 
-  int RuntimeFD = -1;
-  SmallString<128> RuntimeObj;
-  if (auto EC = sys::fs::createTemporaryFile("pyxc_runtime", "o", RuntimeFD,
-                                             RuntimeObj)) {
+  int RuntimeDescriptor = -1;
+  SmallString<128> RuntimePath;
+  if (auto ErrorCode = sys::fs::createTemporaryFile(
+          "pyxc_runtime", "o", RuntimeDescriptor, RuntimePath)) {
     fprintf(stderr, "Error: could not create runtime object: %s\n",
-            EC.message().c_str());
-    CleanupTemps();
+            ErrorCode.message().c_str());
+    RemoveTemporaryFiles();
     return false;
   }
-  if (RuntimeFD != -1)
-    close(RuntimeFD);
+  if (RuntimeDescriptor != -1)
+    close(RuntimeDescriptor);
 
-  string RuntimePath = RuntimeObj.str().str();
-  TempFiles.push_back(RuntimePath);
-  if (!EmitRuntimeObject(RuntimePath)) {
-    CleanupTemps();
+  string RuntimeObjectPath = RuntimePath.str().str();
+  TemporaryFiles.push_back(RuntimeObjectPath);
+  if (!EmitRuntimeObject(RuntimeObjectPath)) {
+    RemoveTemporaryFiles();
     return false;
   }
-  ObjectFiles.push_back(RuntimePath);
+  ObjectFiles.push_back(RuntimeObjectPath);
 
-  if (EmitOutputPath.empty()) {
-    if (InputFiles.empty()) {
-      fprintf(stderr, "Error: --emit exe requires a file input\n");
-      CleanupTemps();
-      return false;
-    }
-    EmitOutputPath = DefaultExeOutputPath(InputFiles.front());
-  }
-
-  if (!LinkExecutable(ObjectFiles, EmitOutputPath)) {
-    CleanupTemps();
-    return false;
-  }
-
-  CleanupTemps();
-  return true;
+  if (EmitOutputPath.empty())
+    EmitOutputPath = DefaultExecutablePath(InputFiles.front());
+  bool Linked = LinkExecutable(ObjectFiles, EmitOutputPath);
+  RemoveTemporaryFiles();
+  return Linked;
 }
 ```
 
 A few things I want to call out here:
 
 - **`sys::fs::createTemporaryFile` takes a file descriptor out-param in this overload.** It actually creates and opens the file (so the name is guaranteed unique and reserved), and I have to `close()` that descriptor myself once I'm done needing it open — I only wanted the path, not a live handle.
-- **`CleanupTemps` is a local lambda, not a separate function.** Every error path in this function needs to remove whatever temp files exist so far before returning `false`. I considered pulling it out into its own named function, but it only ever gets used inside `EmitExecutable`, and the lambda already captures exactly the state it needs by reference — a separate function would just mean passing `TempFiles` in explicitly every time for no real benefit.
-- **The `main()` check.** I hadn't thought about this until I tried linking two plain `.o` files together with no `.pyxc` input at all — nothing in that path was checking whether an entry point existed anywhere, so a missing `main` would silently make it all the way to the linker and fail there with a much less clear error. `SawObjectInput` exists so that "a `.o` might define `main`, I can't inspect it without disassembling it" doesn't turn into a false rejection.
+- **`RemoveTemporaryFiles` is a local lambda, not a separate function.** Every error path in this function needs to remove whatever temp files exist so far before returning `false`. It only ever gets used inside `EmitExecutable`, and the lambda already captures exactly the state it needs by reference.
+- **The `main()` check.** Nothing upstream of this function checks whether an entry point exists anywhere, so a missing `main` would otherwise silently make it all the way to the linker and fail there with a much less clear error. `SawObjectInput` exists so that "a `.o` might define `main`, I can't inspect it without disassembling it" doesn't turn into a false rejection — if any input is a pre-built object, I let the linker be the judge.
+- **`EmitOutputPath.empty()` uses `InputFiles.front()` directly.** By the time `EmitExecutable` runs, `ProcessCommandLine` has already guaranteed `InputFiles` is non-empty (it's how `IsRepl` gets set), so there's no need to re-check emptiness here.
 
 ## New Headers and Build Changes
 
@@ -546,11 +505,13 @@ LLD_HAS_DRIVER(coff)
 LLD_HAS_DRIVER(macho)
 ```
 
-`CMakeLists.txt` links the LLD libraries explicitly — `llvm-config --libs all` doesn't include them:
+`CMakeLists.txt` finds LLD as its own CMake package alongside LLVM, and links its libraries explicitly — `llvm_map_components_to_libnames` only resolves LLVM's own components, not LLD's:
 
 ```cmake
-set(LLD_FLAGS "-llldCommon -llldELF -llldMachO -llldCOFF")
-set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${LLD_FLAGS}")
+find_package(LLD REQUIRED CONFIG HINTS "${LLVM_DIR}/../lld" NO_DEFAULT_PATH)
+include_directories(SYSTEM ${LLD_INCLUDE_DIRS})
+...
+target_link_libraries(pyxc PRIVATE ${LLVM_LIBS} lldCommon lldELF lldMachO lldCOFF)
 ```
 
 ## Known Limitations
@@ -561,7 +522,7 @@ set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${LLD_FLAGS}")
 
 **Runtime is always linked in.** Even if a program never calls `printd` or `putchard`, the runtime object is included in every `--emit exe` link. A future chapter could strip unreferenced symbols with LTO.
 
-**SDK detection depends on `xcrun` being on `PATH`.** `FindMacOSSDKRoot` and `FindMacOSSDKVersion` shell out to `xcrun` first and only fall back to probing fixed filesystem paths if that fails. If you have a non-standard Xcode installation and `xcrun` isn't resolving correctly, set the `SDKROOT` environment variable to the SDK path before running `pyxc` — that override is checked before `xcrun` is ever invoked.
+**SDK detection depends on `xcrun` being on `PATH`.** `FindMacOSSDKRoot` shells out to `xcrun` and returns an empty string if that fails, in which case `LinkExecutable` skips the `-syslibroot` and `-platform_version` arguments entirely. If you have a non-standard Xcode installation and `xcrun` isn't resolving correctly, set the `SDKROOT` environment variable to the SDK path before running `pyxc` — that override is checked before `xcrun` is ever invoked.
 
 **No debug information.** The emitted executables contain no DWARF. Debuggers cannot map instructions back to pyxc source lines.
 

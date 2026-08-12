@@ -1,0 +1,11 @@
+# RUN: printf '1\n2\n' | %pyxc > %t.lf 2>&1
+# RUN: printf '1\r\n2\r\n' | %pyxc > %t.crlf 2>&1
+# RUN: diff -u %t.lf %t.crlf
+# RUN: printf '1\r2\r' | %pyxc > %t.cr 2>&1
+# RUN: diff -u %t.lf %t.cr
+# RUN: printf '1\n' | %pyxc > %t.one-lf 2>&1
+# RUN: printf '1\r' | %pyxc > %t.one-cr 2>&1
+# RUN: diff -u %t.one-lf %t.one-cr
+
+# newline normalization: CRLF and bare CR must behave exactly like LF. The
+# final comparison also covers bare CR at EOF.

@@ -231,19 +231,22 @@ static SourceManager PyxcSourceMgr;
 static void PrintErrorSourceContext(SourceLocation Loc);
 static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation Loc);
 
-/// advance - Read one character from Input, update LexLoc and SourceManager.
+/// advance - I return the next character, normalizing `\r\n` (Windows)
+/// and bare `\r` (Old Macs) into `\n`.
 ///
 /// This is the single point through which all character consumption flows.
 /// Every token branch in getToken() calls advance() rather than fgetc()
 /// directly, so LexLoc and the source buffer are always in sync.
-///
-/// Windows line endings (\r\n) are coalesced to a single \n
-/// as are bare (old) Mac \r's (without a trailing \n)
-/// so the rest of the lexer never needs to handle \r.
 static int advance() {
   int LastChar = fgetc(Input);
+
+  // case: '\r' or '\r\n'
   if (LastChar == '\r') {
     int NextChar = fgetc(Input);
+
+    // A following '\n' is part of the same line ending; eat it.
+    // Anything else belongs to the next token; put it back.
+    // (EOF can't be put back at all, so it's excluded from that check.)
     if (NextChar != '\n' && NextChar != EOF)
       ungetc(NextChar, Input);
     PyxcSourceMgr.onChar('\n');
@@ -261,6 +264,7 @@ static int advance() {
     LexLoc.Col++;
   }
 
+  // case '\n' or any other non-newline character
   return LastChar;
 }
 
@@ -675,7 +679,7 @@ static unique_ptr<ExpressionNode> ParsePrimary();
 static unique_ptr<ExpressionNode> ParseNumberExpression() {
   auto Result = make_unique<NumberExpressionNode>(NumberValue);
   getNextToken(); // consume the number
-  return std::move(Result);
+  return Result;
 }
 
 /// parenthesized-expression
@@ -838,10 +842,10 @@ static unique_ptr<ExpressionNode> ParsePrimary() {
   switch (CurrentToken) {
   default:
     return LogErrorExpression("unknown token when expecting an expression");
-  case tok_name:
-    return ParseNameExpression();
   case tok_number:
     return ParseNumberExpression();
+  case tok_name:
+    return ParseNameExpression();
   case tok_lparen:
     return ParseParenthesizedExpression();
   case tok_if:

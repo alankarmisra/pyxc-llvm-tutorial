@@ -53,17 +53,25 @@ static map<int, string> TokenNames = {
     {tok_colon, "':'"},        {tok_plus, "'+'"},
 };
 
-/// advance - I return the next character, coalescing `\r\n` (Windows) into `\n`
-/// and converting bare `\r` (Old Macs) into `\n`.
+/// advance - I return the next character, normalizing `\r\n` (Windows)
+/// and bare `\r` (Old Macs) into `\n`.
 int advance() {
   int LastChar = getchar();
+
+  // case: '\r' or '\r\n'
   if (LastChar == '\r') {
     int NextChar = getchar();
+
+    // A following '\n' is part of the same line ending; eat it.
+    // Anything else belongs to the next token; put it back.
+    // (EOF can't be put back at all, so it's excluded from that check.)
     if (NextChar != '\n' && NextChar != EOF) {
       ungetc(NextChar, stdin);
     }
     return '\n';
   }
+
+  // case '\n' or any other non-newline character
   return LastChar;
 }
 
@@ -100,7 +108,7 @@ int getToken() {
     } while (isdigit(LastChar) || LastChar == '.');
     // I leave the first character that is not part of this number in LastChar.
 
-    // TODO: I incorrectly lex 1.23.45.67 as 1.23.
+    // TODO: I consume all of 1.23.45.67 but parse it as 1.23.
     NumberValue = strtod(NumStr.c_str(), 0);
     return tok_number;
   }
@@ -208,7 +216,6 @@ public:
   FunctionSignatureNode(const string &Name, vector<string> Parameters)
       : Name(Name), Parameters(std::move(Parameters)) {}
 
-  const string &getName() const { return Name; }
 };
 
 /// FunctionDefinitionNode - This class represents a function definition itself.
@@ -270,7 +277,7 @@ static unique_ptr<ExpressionNode> ParseExpression();
 static unique_ptr<ExpressionNode> ParseNumberExpression() {
   auto Result = make_unique<NumberExpressionNode>(NumberValue);
   getNextToken(); // I consume the number.
-  return std::move(Result);
+  return Result;
 }
 
 /// parenthesized-expression
@@ -333,10 +340,10 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
 ///   | parenthesized-expression ;
 static unique_ptr<ExpressionNode> ParsePrimary() {
   switch (CurrentToken) {
-  case tok_name:
-    return ParseNameExpression(); // I parse `a` or `add(...)`.
   case tok_number:
     return ParseNumberExpression(); // I parse a number such as 3.14.
+  case tok_name:
+    return ParseNameExpression(); // I parse `a` or `add(...)`.
   case tok_lparen:
     return ParseParenthesizedExpression(); // I parse `( ... )`.
   default:
@@ -369,9 +376,7 @@ static unique_ptr<ExpressionNode> ParseSum() {
 
 /// expression
 ///   = sum ;
-static unique_ptr<ExpressionNode> ParseExpression() {
-  return ParseSum();
-}
+static unique_ptr<ExpressionNode> ParseExpression() { return ParseSum(); }
 
 /// function-signature
 ///   = name "(" [ parameters ] ")" ;

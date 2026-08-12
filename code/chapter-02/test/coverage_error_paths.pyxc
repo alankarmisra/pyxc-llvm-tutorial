@@ -1,0 +1,17 @@
+# RUN: printf '$\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=LEXER
+# RUN: printf '# comment' | %pyxc 2>&1 | FileCheck %s --check-prefix=COMMENT --implicit-check-not=Error
+# RUN: printf '(+)\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=PAREN
+# RUN: printf 'foo(+)\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=CALL
+# RUN: printf 'def bad(,): 1\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=SIGNATURE
+# RUN: printf 'def bad(): +\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=BODY
+
+# LEXER: Error: unknown token when expecting an expression (token: error)
+# COMMENT: ready>
+# PAREN: Error: unknown token when expecting an expression (token: '+')
+# CALL: Error: unknown token when expecting an expression (token: '+')
+# SIGNATURE: Error: Expected ')' in function signature (token: ',')
+# BODY: Error: unknown token when expecting an expression (token: '+')
+
+# coverage error paths: exercise lexer errors, comments ending at EOF, failed
+# expressions inside parentheses and calls, malformed empty parameter lists,
+# and failed function bodies.

@@ -1,0 +1,18 @@
+# RUN: printf '$\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=LEXER
+# RUN: printf '# comment' | %pyxc 2>&1 | FileCheck %s --check-prefix=COMMENT --implicit-check-not=Error
+# RUN: printf '(+)\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=PAREN
+# RUN: printf 'foo(+)\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=CALL
+# RUN: printf 'def bad(,) -> int:\n  return 1\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=SIGNATURE
+# RUN: printf 'def bad() -> int:\n  return +\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=BODY
+
+# LEXER: unknown token when expecting an expression
+# COMMENT: ready>
+# PAREN: unknown token when expecting an expression
+# CALL: unknown token when expecting an expression
+# SIGNATURE: Expected parameter name in function signature
+# BODY: unknown token when expecting an expression
+
+# coverage error paths: exercise lexer errors, comments ending at EOF, failed
+# expressions inside parentheses and calls, malformed empty parameter lists,
+# and failed function bodies.
+

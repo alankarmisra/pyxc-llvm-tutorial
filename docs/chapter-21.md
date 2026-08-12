@@ -150,8 +150,8 @@ Putting `logical-and` below `logical-or` but above `comparison` is what makes `&
 Two new token values:
 
 ```cpp
-tok_and = -50, // &&
-tok_or  = -51, // ||
+tok_and = -43, // &&
+tok_or = -44,  // ||
 ```
 
 Single `&` and `|` remain their own ASCII-valued tokens; they're bitwise operators, added in a later chapter, and distinct from `&&`/`||`. The lexer peeks one character ahead to decide which to emit:
@@ -229,7 +229,9 @@ static unique_ptr<ExpressionNode> ParseLogicalOr() {
 A predicate identifies the two logical operators:
 
 ```cpp
-static bool IsLogicalOp(int Operator) { return Operator == tok_and || Operator == tok_or; }
+static bool IsLogicalOp(int Operator) {
+  return Operator == tok_and || Operator == tok_or;
+}
 ```
 
 `GetBinaryResultType` gains a branch for them: both operands must already be `bool`, with no implicit conversion from anything else:

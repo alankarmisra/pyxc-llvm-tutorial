@@ -22,7 +22,7 @@ def main() -> int:
   return 0
 ```
 
-I ran this; it compiles and exits cleanly. Right now, `class` behaves exactly like `struct`, same field layout, same field access, same everything. The distinction is nowhere yet, not even as a hidden flag; that's deliberate. This chapter is only about parsing the keyword and sharing the existing struct machinery. Whatever a future chapter needs to tell classes and structs apart, once methods show up, isn't here yet.
+I ran this; it compiles and exits cleanly. Right now, `class` behaves exactly like `struct` in every observable way: same field layout, same field access, same generated IR. There's an `IsClass` bit set on the type's info the moment it's parsed, but nothing reads it yet, so it changes nothing about how the program compiles or runs. This chapter is only about parsing the keyword, sharing the existing struct machinery, and leaving that one bit in place for a later chapter to check.
 
 ## Source Code
 
@@ -33,7 +33,7 @@ cd pyxc-llvm-tutorial/code/chapter-36
 
 ## Grammar
 
-`top-level-item` gains `class-definition`, and `class-definition` itself is new. It shares `struct-block` with `struct-definition` entirely; there's no separate body grammar for a class. Everything else is unchanged from [Chapter 27](chapter-27.md):
+`top-level-item` gains `class-definition`, and `class-definition` itself is new. It shares `struct-block` with `struct-definition` entirely; there's no separate body grammar for a class. Everything else is unchanged from [Chapter 35](chapter-35.md):
 
 ```grammardiff
  program                           = [ end-of-lines ]
@@ -217,44 +217,50 @@ cd pyxc-llvm-tutorial/code/chapter-36
 ## One New Token
 
 ```cpp
-tok_class = -40,
+tok_class = -64,
 ```
 
 ```cpp
-{"struct", tok_struct},   {"class", tok_class},     {"ptr", tok_ptr},
-{"addr", tok_addr},       {"sizeof", tok_sizeof},   {"type", tok_type}
+{"default", tok_default}, {"struct", tok_struct},     {"class", tok_class},
+{"ptr", tok_ptr},         {"addr", tok_addr},
+{"sizeof", tok_sizeof},
+{"type", tok_type},
 ```
 
 ## One Parser, Two Keywords
 
-Before this chapter, struct parsing lived in a function that only knew about `struct`. Rather than write a second, nearly identical function for `class`, I parameterize the existing one on which keyword actually introduced this definition, using that only to build readable error messages:
+Before this chapter, struct parsing lived in a function that only knew about `struct`. Rather than write a second, nearly identical function for `class`, I parameterize the existing one on which keyword actually introduced this definition, using that to build readable error messages:
 
 ```cpp
 static bool ParseAggregateDefinition(const char *KindName) {
-  // CurrentToken is 'struct' or 'class'
-  getNextToken(); // eat keyword
+  getNextToken(); // eat 'struct' or 'class'
   if (CurrentToken != tok_name) {
-    LogErrorExpression((string("Expected ") + KindName + " name").c_str());
+    LogErrorExpression((string("Expected name after '") + KindName + "'").c_str());
     return false;
   }
-  string StructName = Name;
-  if (TypeAliases.count(StructName)) {
-    LogErrorExpression(("Name '" + StructName + "' is already defined as a type alias")
-                 .c_str());
+  string AggregateName = Name;
+  if (TypeAliases.count(AggregateName)) {
+    LogErrorExpression(("Type '" + AggregateName +
+                        "' is already defined as a type alias")
+                           .c_str());
     return false;
   }
-  if (StructTypes.count(StructName)) {
-    LogErrorExpression(("Aggregate '" + StructName + "' is already defined").c_str());
+  if (StructTypes.count(AggregateName)) {
+    LogErrorExpression(("Aggregate '" + AggregateName + "' is already defined")
+                           .c_str());
     return false;
   }
-  getNextToken(); // eat aggregate name
+  getNextToken(); // eat name
   if (CurrentToken != tok_colon) {
     LogErrorExpression((string("Expected ':' after ") + KindName + " name").c_str());
     return false;
   }
   getNextToken(); // eat ':'
-  if (CurrentToken == tok_eol)
-    consumeNewlines();
+  if (CurrentToken != tok_eol) {
+    LogErrorExpression((string("Expected newline after ") + KindName + " header").c_str());
+    return false;
+  }
+  consumeNewlines();
   if (CurrentToken != tok_indent) {
     LogErrorExpression((string("Expected an indented ") + KindName + " body").c_str());
     return false;
@@ -262,86 +268,92 @@ static bool ParseAggregateDefinition(const char *KindName) {
   getNextToken(); // eat INDENT
 
   StructTypeInfo Info;
-  Info.Name = StructName;
-  while (CurrentToken != tok_dedent && CurrentToken != tok_block_end && CurrentToken != tok_eof) {
-    if (CurrentToken == tok_eol) {
-      consumeNewlines();
-      continue;
-    }
+  Info.IsClass = string(KindName) == "class";
+  while (CurrentToken != tok_dedent && CurrentToken != tok_eof) {
     if (CurrentToken != tok_name) {
-      LogErrorExpression(
-          (string("Expected field name in ") + KindName + " body").c_str());
+      LogErrorExpression((string("Expected field name in ") + KindName + " body").c_str());
       return false;
     }
     string FieldName = Name;
-    getNextToken();
+    if (Info.FieldIndices.count(FieldName)) {
+      LogErrorExpression((string("Duplicate ") + KindName + " field").c_str());
+      return false;
+    }
+    getNextToken(); // eat field name
     if (CurrentToken != tok_colon) {
       LogErrorExpression("Expected ':' after field name");
       return false;
     }
-    getNextToken();
+    getNextToken(); // eat ':'
     string FieldStructName;
     ValueType FieldType = ParseTypeToken(&FieldStructName);
-    if (FieldType == ValueType::Error || FieldType == ValueType::None) {
-      LogErrorExpression((string("Invalid ") + KindName + " field type").c_str());
+    if (FieldType == ValueType::Error)
+      return false;
+    if (FieldType == ValueType::None) {
+      LogErrorExpression((string(KindName) + " fields cannot have None type").c_str());
       return false;
     }
-    if (Info.FieldIndex.count(FieldName)) {
-      LogErrorExpression((string("Duplicate ") + KindName + " field '" + FieldName + "'")
-                   .c_str());
-      return false;
-    }
-    Info.FieldIndex[FieldName] = Info.Fields.size();
+    Info.FieldIndices[FieldName] = Info.Fields.size();
     Info.Fields.push_back({FieldName, FieldType, FieldStructName});
     if (CurrentToken == tok_eol)
       consumeNewlines();
+  }
+
+  if (Info.Fields.empty()) {
+    LogErrorExpression((string(KindName) + " requires at least one field").c_str());
+    return false;
   }
   if (CurrentToken != tok_dedent) {
     LogErrorExpression((string("Expected dedent after ") + KindName + " body").c_str());
     return false;
   }
+  StructTypes[AggregateName] = std::move(Info);
   PendingTokens.push_front(tok_block_end);
-  getNextToken(); // eat DEDENT, then surface tok_block_end
-  StructTypes[StructName] = std::move(Info);
+  getNextToken(); // eat DEDENT, then surface block-end
   return true;
 }
 ```
 
-`KindName` shows up in every error message this function produces, "Expected class name," "Duplicate class field 'x'," and so on, but that's the entire extent of what distinguishes the two keywords here. By the time `Info` lands in `StructTypes`, there's nothing left in it that remembers whether the source said `struct` or `class`. `StructTypeInfo` itself has no flag for it:
+`KindName` shows up in most of the error messages this function produces, "Expected name after 'class'," "Duplicate class field," and so on. It also sets one real, permanent bit of state: `Info.IsClass = string(KindName) == "class"`. `StructTypeInfo` already carries that flag before this chapter is even done:
 
 ```cpp
 struct StructTypeInfo {
-  string Name;
   vector<StructFieldInfo> Fields;
-  std::map<string, size_t> FieldIndex;
+  map<string, size_t> FieldIndices;
+  bool IsClass = false;
 };
 ```
 
-`HandleStructDef` and the new `HandleClassDef` just call this with the matching string:
+So the distinction isn't nowhere: `IsClass` is set correctly for every `class` definition from this chapter on. What's true is that nothing yet *reads* it — I grepped the rest of the compiler and `IsClass` has exactly one write and no reads at this point. `class` and `struct` produce identical parsing, layout, and codegen today only because no code branches on the flag yet; the flag itself already exists so that a later chapter (methods, constructors, visibility) has something to check.
+
+Both `MainLoop` and `FileModeLoop` route `tok_struct` and `tok_class` through the same wrapper, `HandleAggregateDefinition`, passing the matching keyword string:
 
 ```cpp
-static void HandleClassDef() {
-  bool Ok = ParseAggregateDefinition("class");
-  if (!Ok) {
+static void HandleAggregateDefinition(const char *KindName) {
+  bool Parsed = ParseAggregateDefinition(KindName);
+  bool HasTrailing = CurrentToken != tok_eol && CurrentToken != tok_eof &&
+                     CurrentToken != tok_block_end;
+  if (!Parsed || HasTrailing) {
+    if (Parsed)
+      LogErrorExpression(
+          ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
     SynchronizeToLineBoundary();
     return;
   }
-  bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
-  if (HasTrailing) {
-    LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
-    return;
-  }
+  Log((string("Parsed a ") + KindName + " definition.\n").c_str());
 }
 ```
 
-And both `MainLoop` and `FileModeLoop` get a matching case:
-
 ```cpp
+case tok_struct:
+  HandleAggregateDefinition("struct");
+  break;
 case tok_class:
-  HandleClassDef();
+  HandleAggregateDefinition("class");
   break;
 ```
+
+There's no separate `HandleStructDef` or `HandleClassDef`: one handler, called with a different literal depending on which keyword the switch matched.
 
 ## The IR Doesn't Know Either
 
@@ -380,7 +392,7 @@ class Foo:
 Error (Line 4, Column 7): Aggregate 'Foo' is already defined
 ```
 
-The type-alias namespace is shared too. A class name colliding with an existing alias is rejected the same way a struct name colliding with an alias already was, both routed through the same `TypeAliases.count(StructName)` check near the top of `ParseAggregateDefinition`.
+The type-alias namespace is shared too. A class name colliding with an existing alias is rejected the same way a struct name colliding with an alias already was, both routed through the same `TypeAliases.count(AggregateName)` check near the top of `ParseAggregateDefinition`.
 
 ## Build and Run
 
@@ -415,7 +427,7 @@ Same field layout, same field access, same everything `struct Point` would give 
 
 ## Known Limitations
 
-**No distinction exists yet, anywhere.** Not a flag, not a naming difference, nothing. If a later chapter needs to treat classes differently from structs, giving them methods, for instance, it has to introduce that tracking itself; this chapter deliberately doesn't.
+**No behavioral distinction yet.** `IsClass` is recorded but nothing reads it. Parsing, layout, and codegen treat `class` and `struct` identically. If a later chapter needs to treat classes differently, methods, for instance, it still has to add the code that checks the flag; this chapter only sets it.
 
 **Same body grammar as struct.** A class body is field declarations only, exactly like a struct. Nothing method-shaped parses yet.
 

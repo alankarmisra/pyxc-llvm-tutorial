@@ -14,6 +14,8 @@ struct Point:
   x: int
   y: int
 
+extern def printd(x: float64)
+
 # passing a structure by value and accessing different elements of the structure
 def distance_sq(p: Point) -> float64:
   return float64(p.x * p.x + p.y * p.y)
@@ -250,7 +252,7 @@ I'll start extending the lexer/parser. First I need a token for the `struct` key
 ```cpp
 enum Token {
     ...
-    tok_struct = -34,
+    tok_struct = -50,
     ...
 }
 ```
@@ -291,7 +293,7 @@ struct StructTypeInfo {
 };
 ```
 
-I kept `Fields` as an ordered `vector` and *also* added `FieldIndex`, a map from field name to its position in that vector. I need the vector because field order matters: it's the order LLVM will lay the fields out in memory, and I'll need to walk them in order for codegen. But I also need fast lookup by name for two things: checking for a duplicate field while parsing, and later, resolving `p.x` to "field 0" when I generate code for it. A map alongside the vector gets me both: ordered storage, and O(log n) lookup by name.
+I kept `Fields` as an ordered `vector` and *also* added `FieldIndices`, a map from field name to its position in that vector. I need the vector because field order matters: it's the order LLVM will lay the fields out in memory, and I'll need to walk them in order for codegen. But I also need fast lookup by name for two things: checking for a duplicate field while parsing, and later, resolving `p.x` to "field 0" when I generate code for it. A map alongside the vector gets me both: ordered storage, and O(log n) lookup by name.
 
 And then the registry that ties struct names to this info, so I can look up any struct I've seen so far:
 
@@ -405,7 +407,6 @@ if (CurrentToken != tok_dedent) {
 StructTypes[StructName] = std::move(Info);
 PendingTokens.push_front(tok_block_end);
 getNextToken(); // eat DEDENT, then surface block-end
-StructTypes[StructName] = std::move(Info);
 return true;
 ```
 
@@ -453,14 +454,14 @@ Before I can write `x: int` *or* `p: Point` in the same field/parameter/variable
 
 ```cpp
 case tok_name: {
-  string TyName = Name;
-  if (!StructTypes.count(TyName)) {
-    LogErrorExpression(("Unknown type '" + TyName + "'").c_str());
+  auto Found = StructTypes.find(Name);
+  if (Found == StructTypes.end()) {
+    LogErrorExpression(("Unknown struct type '" + Name + "'").c_str());
     return ValueType::Error;
   }
-  getNextToken();
   if (StructName)
-    *StructName = TyName;
+    *StructName = Name;
+  getNextToken();
   return ValueType::Struct;
 }
 ```
@@ -490,102 +491,104 @@ The type of the whole expression is whatever the *last* field in the path resolv
 A field write: `p.x = 5`. This one just needs the field expression on the left (so it knows *where* to write) and an expression on the right (what to write):
 
 ```cpp
-class FieldAssignmentExpressionNode : public ExpressionNode {
-  unique_ptr<FieldExpressionNode> LHS;
-  unique_ptr<ExpressionNode> RHS;
+class FieldAssignmentStatementNode : public ExpressionNode {
+  unique_ptr<FieldExpressionNode> Left;
+  unique_ptr<ExpressionNode> Right;
   ...
 };
 ```
 
-Like the plain `AssignmentExpressionNode` I already have, `shouldPrintValue()` returns `false`: an assignment shouldn't print anything at the REPL.
+Like the plain `AssignmentStatementNode` I already have, `shouldPrintValue()` returns `false`: an assignment shouldn't print anything at the REPL.
 
 ## Parsing Field Access
 
-Now the actual parsing. `ParseFieldAccessExpression` gets called once the parser has already seen an identifier and then a `.` after it. What I need to do is walk the chain of `.field` steps, and at each step, check that what I'm accessing *is* a struct field and figure out what type it produces: so I can validate the *next* step in the chain, and so the final node knows its own type.
+Now the actual parsing. `ParseFieldExpressionWithBase` gets called once the parser already has the base identifier's name, type, and struct name in hand: it walks the chain of `.field` steps, and at each step, looks the field up in `StructTypes` to figure out what type it produces, so it can validate the *next* step in the chain and so the final node knows its own type.
 
-```cpp
-static unique_ptr<FieldExpressionNode> ParseFieldAccessExpression(string BaseName,
-                                                     ValueType BaseType,
-                                                     string BaseStructName) {
-  vector<string> Path;
-  ValueType CurType = BaseType;
-  string CurStruct = std::move(BaseStructName);
-  while (CurrentToken == '.') {
-    getNextToken(); // eat '.'
-    if (CurrentToken != tok_name) {
-      LogErrorExpression("Expected field name after '.'");
-      return nullptr;
-    }
-    string Field = Name;
-    getNextToken(); // eat field name
-```
-
-Before I look the field up, I have to make sure I'm actually looking at a struct: if `CurType` isn't `ValueType::Struct`, there's nothing to access a field *of*:
-
-```cpp
-    if (CurType != ValueType::Struct || CurStruct.empty()) {
-      LogErrorExpression("Field access requires a struct value");
-      return nullptr;
-    }
-    auto SI = StructTypes.find(CurStruct);
-    if (SI == StructTypes.end()) {
-      LogErrorExpression("Unknown struct type in field access");
-      return nullptr;
-    }
-    auto FI = SI->second.FieldIndex.find(Field);
-    if (FI == SI->second.FieldIndex.end()) {
-      LogErrorExpression(("Unknown field '" + Field + "' on struct '" + CurStruct + "'")
-                   .c_str());
-      return nullptr;
-    }
-```
-
-And here's exactly where `FieldIndex` earns its keep again: I use it to find the field's entry in `Fields`, then advance `CurType`/`CurStruct` to that field's type before the next loop iteration:
-
-```cpp
-    const auto &FD = SI->second.Fields[FI->second];
-    CurType = FD.Type;
-    CurStruct = FD.StructName;
-    Path.push_back(Field);
-  }
-  return make_unique<FieldExpressionNode>(std::move(BaseName), std::move(Path),
-                                   CurType, CurStruct);
-}
-```
-
-By the time the loop ends, `CurType`/`CurStruct` describe the *leaf* field: that's what the whole `p.x` or `o.inner.value` expression evaluates to. This is why `route.destination.x` from the grammar section just falls out for free: each `.` step is the same lookup, chained.
-
-I call this from `ParseNameExpression`, where I already know the base identifier resolved to a variable. If it's a struct variable and I see a `.` next, hand off to `ParseFieldAccessExpression`:
-
-```cpp
-auto *Var = dynamic_cast<NameExpressionNode *>(Base.get());
-if (!Var)
-  return LogErrorExpression("Field access base must be a variable");
-auto Field =
-    ParseFieldAccessExpression(IdName, Var->getType(), Var->getStructName());
-```
-
-That `dynamic_cast` check is me enforcing the "field access must start with a named variable" limitation I noted in the grammar section: `make_point().x` isn't a `NameExpressionNode`, so it's rejected here rather than crashing somewhere in codegen.
-
-Field access on the *left* of `=` reuses the exact same `ParseFieldAccessExpression`: I don't want two copies of that chain-walking logic. It just gets handed off to a different continuation, `ParseFieldAssignmentRight`, once I see the `=`:
+I check up front that the base is even a struct; there's nothing to access a field *of* otherwise:
 
 ```cpp
 static unique_ptr<ExpressionNode>
-ParseFieldAssignmentRight(unique_ptr<FieldExpressionNode> LHS) {
-  ValueType DestType = LHS->getType();
-  getNextToken(); // eat '='
-  ExpectedLiteralTypeGuard Guard(DestType);
-  auto RHS = ParseExpression();
-  if (!RHS)
-    return nullptr;
-  if (!IsAssignable(DestType, RHS->getType()))
-    return LogErrorExpression("Type mismatch in assignment");
-  return make_unique<FieldAssignmentExpressionNode>(std::move(LHS), std::move(RHS),
-                                             DestType);
+ParseFieldExpressionWithBase(const string &BaseName, ValueType BaseType,
+                             string BaseStructName) {
+  if (BaseType != ValueType::Struct)
+    return LogErrorExpression("Field access requires a struct value");
+
+  vector<string> FieldPath;
+  ValueType ResultType = BaseType;
+  string ResultStructName = std::move(BaseStructName);
+  while (CurrentToken == tok_dot) {
+    getNextToken(); // eat '.'
+    if (CurrentToken != tok_name)
+      return LogErrorExpression("Expected field name after '.'");
+    string FieldName = Name;
+    auto Struct = StructTypes.find(ResultStructName);
+    if (Struct == StructTypes.end())
+      return LogErrorExpression("Unknown struct type in field access");
+    auto FieldIndex = Struct->second.FieldIndices.find(FieldName);
+    if (FieldIndex == Struct->second.FieldIndices.end())
+      return LogErrorExpression(
+          ("Unknown field '" + FieldName + "'").c_str());
+    const auto &Field = Struct->second.Fields[FieldIndex->second];
+    ResultType = Field.Type;
+    ResultStructName = Field.StructName;
+    FieldPath.push_back(FieldName);
+    getNextToken(); // eat field name
+    if (CurrentToken == tok_dot && ResultType != ValueType::Struct)
+      return LogErrorExpression("Field access requires a struct value");
+  }
+
+  return make_unique<FieldExpressionNode>(BaseName, std::move(FieldPath),
+                                           ResultType, ResultStructName);
 }
 ```
 
-Same `IsAssignable` check I already use for plain variable assignment: a struct field is just an assignable location with a type, same rules apply.
+`FieldIndices` earns its keep here: I use it to find the field's entry in `Fields`, then advance `ResultType`/`ResultStructName` to that field's type before the next loop iteration. By the time the loop ends, they describe the *leaf* field: that's what the whole `p.x` or `o.inner.value` expression evaluates to. This is why `route.destination.x` from the grammar section just falls out for free: each `.` step is the same lookup, chained. The check after each field is what stops the chain from continuing past a non-struct field: `p.x.y` fails there once `x` resolves to a plain `int`.
+
+I call this from `ParseNameExpressionWithName`, right after I've looked up the base identifier's type. If it's a struct variable and the next token is `.`, I hand off to `ParseFieldExpressionWithBase`:
+
+```cpp
+string StructName = LookupVarStructName(ParsedName);
+if (CurrentToken == tok_dot)
+  return ParseFieldExpressionWithBase(ParsedName, Type, StructName);
+return make_unique<NameExpressionNode>(ParsedName, Type, StructName);
+```
+
+Since this only ever fires from a bare name that's already resolved to a variable, `make_point().x` never reaches `ParseFieldExpressionWithBase` at all: there's no name to look up, so it's rejected earlier, before field access parsing is even in the picture. That's what enforces the "field access must start with a named variable" limitation I noted in the grammar section.
+
+Field access on the *left* of `=` doesn't get special-cased at the point of the `.`: `p.x = 5` first parses as an ordinary expression, the same `p.x` any read would produce, and only after that's done does `ParseLeadingNameSimpleStatement` check whether a trailing `=` follows and whether what it just parsed has a field path:
+
+```cpp
+if (const auto *FieldPath = Expr->getLValueFieldPath()) {
+  const string *BaseName = Expr->getLValueName();
+  auto Field = make_unique<FieldExpressionNode>(
+      *BaseName, *FieldPath, Expr->getType(), Expr->getStructName());
+  return ParseFieldAssignmentRight(std::move(Field));
+}
+```
+
+`getLValueFieldPath()` is what a plain variable reference always returns `nullptr` for; only a `FieldExpressionNode` overrides it to return its actual path. Once that's confirmed, a fresh `FieldExpressionNode` is rebuilt from the pieces and handed to `ParseFieldAssignmentRight`:
+
+```cpp
+static unique_ptr<ExpressionNode>
+ParseFieldAssignmentRight(unique_ptr<FieldExpressionNode> Left) {
+  ValueType FieldType = Left->getType();
+  string FieldStructName = Left->getStructName();
+  getNextToken(); // eat '='
+  ExpectedLiteralTypeGuard Guard(FieldType);
+  auto Right = ParseExpression();
+  if (!Right)
+    return nullptr;
+  if (!IsAssignable(FieldType, Right->getType()))
+    return LogErrorExpression("Type mismatch in field assignment");
+  if (FieldType == ValueType::Struct &&
+      FieldStructName != Right->getStructName())
+    return LogErrorExpression("Struct type mismatch in field assignment");
+  return make_unique<FieldAssignmentStatementNode>(
+      std::move(Left), std::move(Right), FieldType, FieldStructName);
+}
+```
+
+Same `IsAssignable` check I already use for plain variable assignment: a struct field is just an assignable location with a type, same rules apply. The extra struct-name check only fires when the field itself is struct-typed: an `int` field doesn't have a struct name to mismatch on.
 
 ## A Lurking Lexer Bug
 
@@ -616,13 +619,16 @@ Field access parsing needs to know a variable's struct name, not just that it's 
 static vector<std::map<string, string>> VarStructScopes;
 ```
 
-I kept it separate instead of, say, changing `VarScopes` to hold a `(ValueType, string)` pair, because most variables aren't structs and I don't want every scope lookup paying for a string that's usually empty. Every place that pushes or pops a scope for `VarScopes` now does the same for `VarStructScopes` right alongside it: `BeginFunctionScope`, `BeginBlockScope`, `BeginLoopScope`, and their `End*` counterparts. And `DeclareVar` records into both when the variable being declared is a struct:
+I kept it separate instead of, say, changing `VarScopes` to hold a `(ValueType, string)` pair, because most variables aren't structs and I don't want every scope lookup paying for a string that's usually empty. Every place that pushes or pops a scope for `VarScopes` now does the same for `VarStructScopes` right alongside it: `BeginFunctionScope`, `BeginBlockScope`, `BeginLoopScope`, and their `End*` counterparts. And `DeclareVar` records into both when the variable being declared has a struct name:
 
 ```cpp
 static void DeclareVar(const string &Name, ValueType Type,
                        const string &StructName = "") {
+  // Only declare into an active local scope; at top level VarScopes is empty.
+  if (VarScopes.empty())
+    return;
   VarScopes.back()[Name] = Type;
-  if (Type == ValueType::Struct)
+  if (!StructName.empty())
     VarStructScopes.back()[Name] = StructName;
 }
 ```
@@ -636,57 +642,54 @@ static string LookupVarStructName(const string &Name) {
     if (Found != It->end())
       return Found->second;
   }
-  auto GI = GlobalVarStructTypes.find(Name);
-  if (GI != GlobalVarStructTypes.end())
-    return GI->second;
-  return "";
+  auto Global = GlobalVarStructNames.find(Name);
+  return Global == GlobalVarStructNames.end() ? "" : Global->second;
 }
 ```
 
-Function parameters need the same treatment for the same reason: a parameter's `ValueType::Struct` alone doesn't say which struct. So the old `pair<string, ValueType>` per argument in `FunctionSignatureNode` isn't enough anymore; I turn it into a small nested struct with room for the struct name too:
+Function parameters need the same treatment for the same reason: a parameter's `ValueType::Struct` alone doesn't say which struct. `FunctionSignatureNode` already stored `Parameters` as `vector<pair<string, ValueType>>`; rather than restructure that, I add a parallel vector alongside it, the same "keep it separate" choice I made for `VarStructScopes`:
 
 ```cpp
 class FunctionSignatureNode {
-public:
-  struct ParameterInfo {
-    string Name;
-    ValueType Type;
-    string StructName;
-  };
+  string Name;
+  vector<pair<string, ValueType>> Parameters;
+  vector<string> ParameterStructNames;
+  ValueType ReturnType;
+  string ReturnStructName;
+  SourceLocation Loc;
   ...
 };
 ```
 
-And `FunctionSignatureNode` grows a matching `ReturnStructName` field for the same reason: a function returning a struct needs to say which one. Same mechanics as everywhere else in this chapter; just more places to carry the extra string.
+`ParameterStructNames` is resized to match `Parameters` in the constructor, so `getParameterStructName(Index)` can always index it safely; an ordinary scalar parameter just carries an empty string at its slot. `ReturnStructName` gets the same treatment for the same reason: a function returning a struct needs to say which one. Same mechanics as everywhere else in this chapter; just more places to carry the extra string.
 
 ## From Struct Name to LLVM Type
 
 Everything so far has been the parser's view of a struct: I know the fields, I know the types, I've validated field accesses. Now I actually need to generate code, which means I need a real `StructType*` LLVM object, not just my own `StructTypeInfo`.
 
 ```cpp
-static std::map<string, StructType *> LLVMStructTypes;
+static std::map<std::string, StructType *> LLVMStructTypes;
 
 static Type *GetOrCreateLLVMStructType(const string &StructName) {
-  auto It = LLVMStructTypes.find(StructName);
-  if (It != LLVMStructTypes.end())
-    return It->second;
-  auto DefIt = StructTypes.find(StructName);
-  if (DefIt == StructTypes.end())
+  auto Existing = LLVMStructTypes.find(StructName);
+  if (Existing != LLVMStructTypes.end())
+    return Existing->second;
+
+  auto Definition = StructTypes.find(StructName);
+  if (Definition == StructTypes.end())
     return nullptr;
 
-  auto *ST = StructType::create(*TheContext, "struct." + StructName);
-  LLVMStructTypes[StructName] = ST;  // register before filling the body
-
-  std::vector<Type *> FieldTys;
-  FieldTys.reserve(DefIt->second.Fields.size());
-  for (const auto &Field : DefIt->second.Fields) {
-    Type *FT = LLVMTypeFor(Field.Type, Field.StructName);
-    if (!FT)
+  auto *LLVMStruct = StructType::create(*TheContext, "struct." + StructName);
+  LLVMStructTypes[StructName] = LLVMStruct;
+  vector<Type *> FieldTypes;
+  for (const auto &Field : Definition->second.Fields) {
+    Type *FieldType = LLVMTypeFor(Field.Type, Field.StructName);
+    if (!FieldType)
       return nullptr;
-    FieldTys.push_back(FT);
+    FieldTypes.push_back(FieldType);
   }
-  ST->setBody(FieldTys, false);
-  return ST;
+  LLVMStruct->setBody(FieldTypes, false);
+  return LLVMStruct;
 }
 ```
 
@@ -736,26 +739,60 @@ Fields show up in declaration order, which matches what I said `Fields` needed t
 
 ## Codegen: Getting a Field's Address
 
-Both reading and writing a field come down to the same first step: compute a pointer to the field, then either load from it or store to it. So I want one function that does the pointer arithmetic, shared by both. `GetFieldAddress` walks `FieldPath` one step at a time, the same way `ParseFieldAccessExpression` did at parse time: except now I need an actual base pointer, not just a type.
+Both reading and writing a field come down to the same first step: compute a pointer to the field, then either load from it or store to it. So I want one function that does the pointer arithmetic, shared by both. `GetFieldAddress` walks `FieldPath` one step at a time, the same way `ParseFieldExpressionWithBase` did at parse time: except now I need an actual base pointer, not just a type.
 
-I look the base variable up in `NamedValues` first (a local), and fall back to a global if it's not local:
+I look the base variable up in `NamedValues` first (a local), and fall back to a global if it's not local. Each side has its own struct-name lookup table, `NamedValueStructNames` for locals and `GlobalVarStructNames` for globals, the codegen-time counterpart of `VarStructScopes`:
 
 ```cpp
 static Value *GetFieldAddress(const string &BaseName,
-                              const vector<string> &FieldPath, ...) {
-  // find the base pointer: local alloca or global variable
-  Value *Ptr = BasePtr;
-  for (const auto &FieldName : FieldPath) {
-    size_t Idx = StructTypes[CurStruct].FieldIndex[FieldName];
-    Type *BaseLLVM = LLVMTypeFor(CurType, CurStruct);
-    Ptr = Builder->CreateStructGEP(BaseLLVM, Ptr, Idx, "fieldptr");
-    // advance CurType and CurStruct to this field's type
+                              const vector<string> &FieldPath,
+                              ValueType *OutType = nullptr,
+                              string *OutStructName = nullptr) {
+  Value *Pointer = nullptr;
+  string CurrentStructName;
+
+  auto Local = NamedValues.find(BaseName);
+  if (Local != NamedValues.end() && Local->second) {
+    Pointer = Local->second;
+    auto Struct = NamedValueStructNames.find(BaseName);
+    if (Struct != NamedValueStructNames.end())
+      CurrentStructName = Struct->second;
+  } else if (auto *Global = GetGlobalVariable(BaseName)) {
+    Pointer = Global;
+    auto Struct = GlobalVarStructNames.find(BaseName);
+    if (Struct != GlobalVarStructNames.end())
+      CurrentStructName = Struct->second;
   }
-  return Ptr;
+
+  if (!Pointer || CurrentStructName.empty())
+    return nullptr;
+
+  ValueType CurrentType = ValueType::Struct;
+  for (const auto &FieldName : FieldPath) {
+    auto Struct = StructTypes.find(CurrentStructName);
+    if (Struct == StructTypes.end())
+      return nullptr;
+    auto Field = Struct->second.FieldIndices.find(FieldName);
+    if (Field == Struct->second.FieldIndices.end())
+      return nullptr;
+
+    const auto &FieldInfo = Struct->second.Fields[Field->second];
+    Pointer = Builder->CreateStructGEP(
+        LLVMTypeFor(CurrentType, CurrentStructName), Pointer, Field->second,
+        "fieldptr");
+    CurrentType = FieldInfo.Type;
+    CurrentStructName = FieldInfo.StructName;
+  }
+
+  if (OutType)
+    *OutType = CurrentType;
+  if (OutStructName)
+    *OutStructName = CurrentStructName;
+  return Pointer;
 }
 ```
 
-`FieldIndex` again: same map, now doing its third job: turning a field name into the integer index `CreateStructGEP` actually wants. `CreateStructGEP` emits a `getelementptr inbounds` for struct field access; one GEP per step in the path. For `p.x` on a `Point`:
+`FieldIndices` again: same map, now doing its third job: turning a field name into the integer index `CreateStructGEP` actually wants. `CreateStructGEP` emits a `getelementptr inbounds` for struct field access; one GEP per step in the path. For `p.x` on a `Point`:
 
 ```llvm
 %fieldptr = getelementptr inbounds %struct.Point, ptr %p, i32 0, i32 0
@@ -776,8 +813,14 @@ With `GetFieldAddress` written, the two AST nodes' `codegen()` methods are almos
 
 ```cpp
 Value *FieldExpressionNode::codegen() {
-  Value *Ptr = GetFieldAddress(*getLValueName(), FieldPath, ...);
-  return Builder->CreateLoad(LLVMTypeFor(LeafType, LeafStruct), Ptr, "fieldload");
+  ValueType FieldType = ValueType::Error;
+  string FieldStructName;
+  Value *Pointer = GetFieldAddress(*getLValueName(), FieldPath, &FieldType,
+                                   &FieldStructName);
+  if (!Pointer)
+    return LogErrorV("Unknown field access");
+  return Builder->CreateLoad(LLVMTypeFor(FieldType, FieldStructName), Pointer,
+                             "fieldload");
 }
 ```
 
@@ -788,15 +831,25 @@ For `p.x` where `x: int`:
 %fieldload = load i64, ptr %fieldptr
 ```
 
-**Write**: get the pointer, codegen the RHS, cast if the types don't line up exactly, then store:
+**Write**: get the pointer, codegen the right side, cast if the types don't line up exactly, then store:
 
 ```cpp
-Value *FieldAssignmentExpressionNode::codegen() {
-  Value *Ptr = GetFieldAddress(*LHS->getLValueName(), LHS->getFieldPath(), ...);
-  Value *Val = RHS->codegen();
-  Val = EmitImplicitCast(Val, RHS->getType(), DestType);
-  Builder->CreateStore(Val, Ptr);
-  return Val;
+Value *FieldAssignmentStatementNode::codegen() {
+  ValueType FieldType = ValueType::Error;
+  string FieldStructName;
+  Value *Pointer = GetFieldAddress(*Left->getLValueName(), Left->getFieldPath(),
+                                   &FieldType, &FieldStructName);
+  if (!Pointer)
+    return LogErrorV("Unknown field access");
+
+  Value *AssignedValue = Right->codegen();
+  if (!AssignedValue)
+    return nullptr;
+  AssignedValue = EmitImplicitCast(AssignedValue, Right->getType(), FieldType);
+  if (!AssignedValue)
+    return LogErrorV("Type mismatch in assignment");
+  Builder->CreateStore(AssignedValue, Pointer);
+  return AssignedValue;
 }
 ```
 
@@ -807,7 +860,7 @@ For `p.x = 5` where `x: int`:
 store i64 5, ptr %fieldptr
 ```
 
-I didn't need to write any new casting logic here: the implicit cast rules from chapter 20 apply exactly as-is. Assigning a `float64` into an `int` field is still a type error; assigning an `int8` into an `int` field still widens silently. A struct field is just another typed storage location as far as casting is concerned.
+I didn't need to write any new casting logic here: `EmitImplicitCast` is the same helper every other assignment already goes through. Assigning a `float64` into an `int` field is still a type error; assigning an `int8` into an `int` field still widens silently. A struct field is just another typed storage location as far as casting is concerned.
 
 ## Struct Variables and Zero Initialization
 

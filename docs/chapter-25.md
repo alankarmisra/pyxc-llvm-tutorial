@@ -215,9 +215,9 @@ Every type in the compiler is described by two fields: a `ValueType` enum and a 
 | `int`, `float64`, … | `Int`, `Float64`, … | `""` |
 | `Point` (struct) | `Struct` | `"Point"` |
 | `ptr[int]` | `Pointer` | `"1:"` |
-| `ptr[Point]` | `Pointer` | `"10:Point"` |
+| `ptr[Point]` | `Pointer` | `"14:Point"` |
 
-The format is `"<ValueType int>:<struct name>"`. `ptr[int]` encodes as `"1:"` (`ValueType::Int` = 1, no struct name). `ptr[Point]` encodes as `"10:Point"` (`ValueType::Struct` = 10, struct name `"Point"`). The caller that created the pointer type is responsible for encoding; any site that needs the pointee type decodes it.
+The format is `"<ValueType int>:<struct name>"`. `ptr[int]` encodes as `"1:"` (`ValueType::Int` = 1, no struct name). `ptr[Point]` encodes as `"14:Point"` (`ValueType::Struct` = 14, struct name `"Point"`). The caller that created the pointer type is responsible for encoding; any site that needs the pointee type decodes it.
 
 This reuses the existing type-tracking infrastructure without adding a new field to the base class. It is a tradeoff: the encoding is not beautiful, but it works and the surface is small.
 
@@ -227,16 +227,17 @@ In LLVM IR, all pointer types are the same opaque type:
 
 ```cpp
 case ValueType::Pointer:
-  return PointerType::getUnqual(*TheContext);
+  return PointerType::get(*TheContext, 0);
 ```
 
-`PointerType::getUnqual` produces the opaque `ptr` type: LLVM does not distinguish `ptr[int]` from `ptr[Point]` in the type system. The element type only appears in `getelementptr` and `load`/`store` instructions, not in the pointer type itself. This is LLVM's opaque pointer model, which has been the default since LLVM 15.
+`PointerType::get` with address space 0 produces the opaque `ptr` type: LLVM does not distinguish `ptr[int]` from `ptr[Point]` in the type system. The element type only appears in `getelementptr` and `load`/`store` instructions, not in the pointer type itself. This is LLVM's opaque pointer model, which has been the default since LLVM 15.
 
 The zero value for a pointer is null:
 
 ```cpp
 case ValueType::Pointer:
-  return ConstantPointerNull::get(cast<PointerType>(LLVMTypeFor(ValueType::Pointer)));
+  return ConstantPointerNull::get(
+      cast<PointerType>(LLVMTypeFor(Type, StructName)));
 ```
 
 `var p: ptr[int]` with no initializer starts as a null pointer.
@@ -264,53 +265,48 @@ The parsed pointee type is immediately encoded and written into the `StructName`
 
 ## `addr`: Taking the Address of an Lvalue
 
-`addr(x)` returns a pointer to `x`. `addr(p.x)` returns a pointer to the field `x` of struct `p`. `ParseAddrExpression` handles both:
+`addr(x)` returns a pointer to `x`. `addr(p.x)` returns a pointer to the field `x` of struct `p`. `ParseAddrExpression` handles both by parsing the operand as a full name expression and requiring the result to be an lvalue:
 
 ```cpp
 static unique_ptr<ExpressionNode> ParseAddrExpression() {
   getNextToken(); // eat 'addr'
-  // expect '('
+  if (CurrentToken != tok_lparen)
+    return LogErrorExpression("Expected '(' after addr");
   getNextToken(); // eat '('
-  // expect identifier: addr requires an lvalue
-  string BaseName = Name;
-  getNextToken(); // eat identifier
-  ValueType CurType = LookupVarType(BaseName);
-  // walk optional field chain: addr(o.inner.value)
-  vector<string> Path;
-  while (CurrentToken == '.') {
-    // validate each field, advance CurType and CurStruct
-    Path.push_back(Field);
-  }
-  // expect ')'
-  return make_unique<AddrExpressionNode>(BaseName, Path, CurType,
-                                  EncodePointerType(CurType, CurStruct));
+  if (CurrentToken != tok_name)
+    return LogErrorExpression("addr expects an lvalue");
+
+  string ParsedName = Name;
+  getNextToken(); // eat name
+  auto Operand = ParseNameExpressionWithName(ParsedName);
+  if (!Operand || !Operand->isLValue())
+    return LogErrorExpression("addr expects an lvalue");
+  if (CurrentToken != tok_rparen)
+    return LogErrorExpression("Expected ')' after addr operand");
+  getNextToken(); // eat ')'
+
+  string PointerTypeInfo =
+      EncodePointerType(Operand->getType(), Operand->getStructName());
+  return make_unique<AddrExpressionNode>(std::move(Operand), PointerTypeInfo);
 }
 ```
 
-The resulting `AddrExpressionNode` has type `ValueType::Pointer` and its `StructName` holds the encoded pointee type.
+Because `ParseNameExpressionWithName` (below) already walks `.field` and `[index]` chains, `addr` gets `addr(p.x)` and even `addr(p[i].x)` for free: it doesn't need its own field-walking logic. It only has to check `isLValue()` on the result.
 
-`addr` only accepts a named variable, optionally with field access. Expressions like `addr(1 + 2)` are rejected immediately: the parser checks for `tok_name` right after the opening `(`.
+`addr` only accepts a named variable, optionally followed by field access or indexing. Expressions like `addr(1 + 2)` are rejected immediately: the parser checks for `tok_name` right after the opening `(`, and a non-lvalue expression fails the `isLValue()` check.
 
 ### Codegen for `addr`
 
 ```cpp
 Value *AddrExpressionNode::codegen() {
-  if (FieldPath.empty()) {
-    // addr(x): return the alloca or global directly
-    auto It = NamedValues.find(BaseName);
-    if (It != NamedValues.end() && It->second)
-      return It->second;
-    if (auto *GV = GetGlobalVariable(BaseName))
-      return GV;
-    return LogErrorV("Unknown variable name");
-  }
-  // addr(p.x): return the field pointer from GetFieldAddress
-  Value *Ptr = GetFieldAddress(BaseName, FieldPath);
-  return Ptr;
+  Value *Address = Operand->codegenAddress();
+  if (!Address)
+    return LogErrorV("addr expects an lvalue");
+  return Address;
 }
 ```
 
-For a local variable, LLVM already represents it as an `alloca`: a pointer to its storage. `addr(x)` simply returns that pointer without any new instruction. For a struct field, `GetFieldAddress` (from chapter 18) computes and returns the GEP pointer for that field.
+`codegenAddress()` is a virtual method every lvalue node overrides. For a plain variable it's the `alloca` already sitting in `NamedValues`; for a field it's a `getelementptr` off the base's address; for an index it's a `getelementptr` off the loaded pointer value. `addr` just asks its operand for that address and returns it unchanged; it doesn't need to know which kind of lvalue it's holding.
 
 ```llvm
 ; var x: int = 42
@@ -335,44 +331,50 @@ store ptr %fieldptr, ptr %px, align 8
 
 ## `p[i]`: Pointer Indexing
 
-`p[i]` computes the address at offset `i` from the pointer and loads from it. `p[i] = v` stores to it.
-
-### Parsing
-
-`ParseIndexExpression` is called from `ParseNameExpression` whenever `[` follows a pointer-typed variable or field:
+`p[i]` computes the address at offset `i` from the pointer and loads from it. `p[i] = v` stores to it. Both go through the same `ParseNameExpressionWithName` loop that also handles `.field`: after parsing the base name into a `NameExpressionNode`, the parser loops while it sees `.` or `[`, wrapping the result in one more node each time:
 
 ```cpp
-static unique_ptr<ExpressionNode> ParseIndexExpression(string BaseName,
-                                          vector<string> FieldPath,
-                                          ValueType BaseType,
-                                          const string &BaseStructName) {
-  // reject if base is not a pointer
-  getNextToken(); // eat '['
-  auto Index = ParseExpression();
-  // reject if index is not an integer type
-  getNextToken(); // eat ']'
-  // decode pointee type from BaseStructName
-  return make_unique<IndexExpressionNode>(BaseName, FieldPath, Index, ElemType, ElemStruct);
-}
+if (Result->getType() != ValueType::Pointer)
+  return LogErrorExpression("Indexing requires a pointer value");
+ValueType ElementType = ValueType::Error;
+string ElementStructName;
+if (!DecodePointerType(Result->getStructName(), ElementType,
+                       ElementStructName))
+  return LogErrorExpression("Invalid pointer type metadata");
+getNextToken(); // eat '['
+auto Index = ParseExpression();
+if (!Index)
+  return nullptr;
+if (!IsIntType(Index->getType()))
+  return LogErrorExpression("Pointer index must be an integer");
+if (CurrentToken != tok_rbracket)
+  return LogErrorExpression("Expected ']' after index expression");
+getNextToken(); // eat ']'
+Result = make_unique<IndexExpressionNode>(
+    std::move(Result), std::move(Index), ElementType,
+    ElementStructName);
 ```
 
-The element type (what the pointer points to) is decoded from the encoded string in `BaseStructName`.
+`IndexExpressionNode` wraps whatever came before it as its `Base`, so `p[i]` and (later) `p.field[i]` fall out of the same loop without a separate parsing path. The element type is decoded from the pointer's encoded `StructName`.
 
 ### The Shared Address Computation
 
-Both reads and writes need the element address. `BuildIndexElementPtr` computes it without loading:
+Every lvalue node in the compiler implements `codegenAddress()`, which computes the storage address without loading. `IndexExpressionNode`'s version evaluates the base (loading the pointer value), widens the index to `i64`, and GEPs:
 
 ```cpp
-static Value *BuildIndexElementPtr(IndexExpressionNode *IdxExpr) {
-  // load the pointer value from the base variable or field
-  Value *BasePtr = LoadPointerValue(IdxExpr->getBaseName(),
-                                    IdxExpr->getFieldPath(), ...);
-  // widen index to i64 if needed
-  Value *IdxVal = ...;
-  // GEP: &base[i]
+Value *IndexExpressionNode::codegenAddress() {
+  Value *BasePointer = Base->codegen();
+  if (!BasePointer)
+    return nullptr;
+  Value *IndexValue = Index->codegen();
+  if (!IndexValue)
+    return nullptr;
+  IndexValue = Builder->CreateIntCast(
+      IndexValue, Type::getInt64Ty(*TheContext),
+      !IsUnsignedIntType(Index->getType()), "index");
   return Builder->CreateInBoundsGEP(
-      LLVMTypeFor(IdxExpr->getType(), IdxExpr->getStructName()),
-      BasePtr, IdxVal, "elemptr");
+      LLVMTypeFor(getType(), getStructName()), BasePointer, IndexValue,
+      "elemptr");
 }
 ```
 
@@ -382,110 +384,90 @@ The index is always widened to `i64` before the GEP: LLVM requires a consistent 
 
 ```cpp
 Value *IndexExpressionNode::codegen() {
-  Value *ElemPtr = BuildIndexElementPtr(this);
-  return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()),
-                             ElemPtr, "elemload");
+  Value *Address = codegenAddress();
+  if (!Address)
+    return nullptr;
+  return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), Address,
+                             "elemload");
 }
 ```
 
 For `p[0]` where `p: ptr[int]`:
 
 ```llvm
-%ptrload = load ptr, ptr %p        ; load the pointer value
-%elemptr = getelementptr inbounds i64, ptr %ptrload, i64 0
-%elemload = load i64, ptr %elemptr
-```
-
-For `p[1]`:
-
-```llvm
-%ptrload = load ptr, ptr %p
-%elemptr = getelementptr inbounds i64, ptr %ptrload, i64 1
-%elemload = load i64, ptr %elemptr
+%p1 = load ptr, ptr %p            ; load the pointer value
+%elemptr = getelementptr inbounds i64, ptr %p1, i64 0
+%elemload = load i64, ptr %elemptr, align 8
 ```
 
 ### Write codegen
 
+An assignment whose left side is an lvalue, `p[0] = 99`, goes through `LValueAssignmentStatementNode`, which asks the left side for its address the same way `addr` does:
+
 ```cpp
-Value *IndexAssignmentExpressionNode::codegen() {
-  Value *ElemPtr = BuildIndexElementPtr(LHS.get());
-  Value *Val = RHS->codegen();
-  Val = EmitImplicitCast(Val, RHS->getType(), getType());
-  Builder->CreateStore(Val, ElemPtr);
-  return Val;
+Value *LValueAssignmentStatementNode::codegen() {
+  Value *Address = Left->codegenAddress();
+  if (!Address)
+    return LogErrorV("Destination of '=' must be an lvalue");
+  Value *AssignedValue = Right->codegen();
+  if (!AssignedValue)
+    return nullptr;
+  AssignedValue = EmitImplicitCast(AssignedValue, Right->getType(), getType());
+  if (!AssignedValue)
+    return LogErrorV("Type mismatch in assignment");
+  Builder->CreateStore(AssignedValue, Address);
+  return AssignedValue;
 }
 ```
 
 For `p[0] = 99` where `p: ptr[int]`:
 
 ```llvm
-%ptrload = load ptr, ptr %p
-%elemptr = getelementptr inbounds i64, ptr %ptrload, i64 0
-store i64 99, ptr %elemptr
+%p1 = load ptr, ptr %p
+%elemptr = getelementptr inbounds i64, ptr %p1, i64 0
+%v2 = load i64, ptr %v, align 8
+store i64 %v2, ptr %elemptr, align 8
 ```
 
 The implicit cast rules from chapter 20 apply: assigning an integer to a `ptr[float64]` is a type error; assigning `int8` to `ptr[int]` widens.
 
 ## `p[i].field`: Field Access After Indexing
 
-For pointers to structs, I can chain field access after the index: `p[0].x`. This needs a separate AST node because the base is an index expression, not a named variable.
-
-### AST Node for Indexed Field Access
-
-```cpp
-class IndexedFieldExpressionNode : public ExpressionNode {
-  unique_ptr<IndexExpressionNode> BaseIndex;  // the p[i] part
-  vector<string> FieldPath;            // the field chain
-  ...
-};
-```
-
-`ParseIndexedFieldAccessExpression` is called when `ParseNameExpression` sees a `.` after parsing an index expression. It walks the field chain exactly like `ParseFieldAccessExpression` from chapter 18:
-
-```cpp
-static unique_ptr<ExpressionNode>
-ParseIndexedFieldAccessExpression(unique_ptr<IndexExpressionNode> BaseIndex) {
-  // walk '.field' chain, validating each step against StructTypes
-  return make_unique<IndexedFieldExpressionNode>(BaseIndex, Path, CurType, CurStruct);
-}
-```
+For pointers to structs, I can chain field access after the index: `p[0].x`. Because `.field` and `[index]` both go through the same loop in `ParseNameExpressionWithName`, this needs no separate AST node: `p[0].x` is a `MemberExpressionNode` whose `Base` happens to be an `IndexExpressionNode` instead of a `NameExpressionNode`. The same field-access branch of the loop handles it, since it only checks that the current result's type is `Struct`.
 
 ### Codegen
 
+`MemberExpressionNode::codegenAddress()` asks its base for its address first, then GEPs to the field. When the base is an `IndexExpressionNode`, that recursive call runs the pointer-indexing GEP from the section above:
+
 ```cpp
-Value *IndexedFieldExpressionNode::codegen() {
-  // get the element address without loading (BuildIndexElementPtr)
-  Value *Ptr = BuildIndexElementPtr(BaseIndex.get());
-  // walk field GEPs from that address
-  for (const auto &FieldName : FieldPath) {
-    Ptr = Builder->CreateStructGEP(BaseLLVM, Ptr, Idx, "fieldptr");
-    // advance type
-  }
-  return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), Ptr, "fieldload");
+Value *MemberExpressionNode::codegenAddress() {
+  Value *BaseAddress = Base->codegenAddress();
+  if (!BaseAddress)
+    return LogErrorV("Field access requires an lvalue");
+  return Builder->CreateStructGEP(
+      LLVMTypeFor(ValueType::Struct, Base->getStructName()), BaseAddress,
+      FieldIndex, "fieldptr");
+}
+
+Value *MemberExpressionNode::codegen() {
+  Value *Address = codegenAddress();
+  if (!Address)
+    return nullptr;
+  return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), Address,
+                             "fieldload");
 }
 ```
-
-`BuildIndexElementPtr` computes the element address without loading the struct value: so the struct GEPs can chain directly from the element pointer.
 
 For `p[0].x` where `p: ptr[Point]`:
 
 ```llvm
-%ptrload = load ptr, ptr %p
-%elemptr  = getelementptr inbounds %struct.Point, ptr %ptrload, i64 0
-%fieldptr = getelementptr inbounds %struct.Point, ptr %elemptr, i32 0, i32 0
+%p3 = load ptr, ptr %p1, align 8
+%elemptr = getelementptr inbounds %struct.Point, ptr %p3, i64 0
+%fieldptr = getelementptr inbounds nuw %struct.Point, ptr %elemptr, i32 0, i32 0
 %fieldload = load i64, ptr %fieldptr
 ```
 
-For `p[0].x = v` (write):
-
-```llvm
-%ptrload = load ptr, ptr %p
-%elemptr  = getelementptr inbounds %struct.Point, ptr %ptrload, i64 0
-%fieldptr = getelementptr inbounds %struct.Point, ptr %elemptr, i32 0, i32 0
-store i64 %v, ptr %fieldptr
-```
-
-Two GEPs: one to reach element 0 of the array, one to reach field `x` of that element. No load between them: the pointer chains through.
+Two GEPs: one to reach element 0 of the array, one to reach field `x` of that element. No load between them: `codegenAddress()` chains straight from the index's address into the field's GEP.
 
 ## Mutation Through a Pointer Parameter
 
@@ -509,8 +491,8 @@ entry:
   %p1 = alloca ptr, align 8
   store ptr %p, ptr %p1, align 8
   store i64 %v, ptr %v2, align 8
-  %ptrload = load ptr, ptr %p1, align 8
-  %elemptr = getelementptr inbounds i64, ptr %ptrload, i64 0
+  %p3 = load ptr, ptr %p1, align 8
+  %elemptr = getelementptr inbounds i64, ptr %p3, i64 0
   %v3 = load i64, ptr %v2, align 8
   store i64 %v3, ptr %elemptr, align 8
   ret void
@@ -523,16 +505,14 @@ Pointer arguments are type-checked: passing `ptr[float64]` where `ptr[int]` is e
 
 ## Parse Flow for Name Expressions
 
-The full sequence of what `ParseNameExpression` handles, in order:
+`ParseNameExpressionWithName` parses the base identifier into a `NameExpressionNode`, then loops while it sees `.` or `[`, rewrapping the result at each step:
 
-1. Parse the base identifier.
-2. If `.` follows → parse field chain (`FieldExpressionNode`).
-3. If `[` follows → parse index expression (`IndexExpressionNode`).
-4. If `.` follows after step 3 → parse field chain on the index result (`IndexedFieldExpressionNode`).
+1. Parse the base identifier into a `NameExpressionNode`.
+2. While `.` or `[` follows: if `.`, require the current result to be a `Struct` and wrap it in a `MemberExpressionNode`; if `[`, require the current result to be a `Pointer` and wrap it in an `IndexExpressionNode`.
 
-This covers: `x`, `p.field`, `p[i]`, `p.field[i]`, `p[i].field`, `p[i].field.subfield`.
+Because the loop rewraps whatever came before, this one function covers `x`, `p.field`, `p[i]`, `p.field[i]`, `p[i].field`, and `p[i].field.subfield` without separate parsing paths for each combination.
 
-The statement parser has the same sequence to handle the left side of assignments.
+`ParseLeadingNameSimpleStatement` calls the same function to parse the left side of an assignment, then checks `isLValue()` on the result before accepting a trailing `=`.
 
 ## Build and Run
 
@@ -640,7 +620,7 @@ grep 'getelementptr\|load\|store' out.ll
 
 **Null pointer is silent.** `var p: ptr[int]` with no initializer is a null pointer. Dereferencing it crashes at runtime with no helpful error. Bounds checking and null safety are not implemented.
 
-**Pointee type is encoded in a string.** The `StructName` field on `ExpressionNode` nodes doubles as pointer type metadata, stored as `"<ValueType int>:<struct name>"` (e.g. `"1:"` for `ptr[int]`, `"10:Point"` for `ptr[Point]`). It works but is not the cleanest representation: a dedicated field would be cleaner. This is a consequence of the single-AST-hierarchy design established in chapter 12.
+**Pointee type is encoded in a string.** The `StructName` field on `ExpressionNode` nodes doubles as pointer type metadata, stored as `"<ValueType int>:<struct name>"` (e.g. `"1:"` for `ptr[int]`, `"14:Point"` for `ptr[Point]`). It works but is not the cleanest representation: a dedicated field would be cleaner. This is a consequence of the single-AST-hierarchy design established in chapter 12.
 
 ## What's Next
 

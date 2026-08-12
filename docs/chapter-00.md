@@ -8,7 +8,7 @@ description: "Learn compilers by building a real programming language from scrat
 
 You should know some C++. You really don't need to be a master craftsman, though. I'll use basic C++. If I do venture into something complex-y, I'll explain it in simple terms. You don't need to know any compiler theory. You will learn by doing. A fair bit of the compiler theory you learn elsewhere will automagically make sense to you once you build a compiler on your own. When you do learn the theory, it can then help you structure and expand your thinking to problems we have not considered here, or more excitingly, not considered anywhere else in the world. 
 
-You definitely do not need to know anything about `LLVM`, except that it will help you write compilers faster. LLVM has been used to write Rust, Swift, Kotlin/Native, C/C++ compilers (Clang), among others. Using the `IIGEFTIGEFU` principle (*if it's good enough for them, it's good enough for us*), we will use LLVM. 
+You definitely do not need to know anything about `LLVM`, except that it will help you write compilers faster. Compilers for Rust, Swift, Kotlin/Native, C/C++ compilers (Clang), among others use LLVM under the hood. Using the `IIGEFTIGEFU` principle (*if it's good enough for them, it's good enough for us*), we will use LLVM. 
 
 You should know that there are alternatives to LLVM. Regardless of what tool you use, the fundamentals won't change. LLVM works, and works well for our purposes. 
 
@@ -49,6 +49,8 @@ In **Chapters 10–14**, I add control flow (`if`, `elif`), mutable variables, *
 In **Chapters 15–17**, I add the missing bells and whistles to make the pyxc compiler feel like a production compiler: global variables, native object-file emission, and one-step executable linking. If some of these terms make no sense to you, don't worry about it. You will soon.
 
 ## Types and Typed Operations
+
+In **Chapter 18**, I add a real static type system: `int`, `int8`, `int16`, `int32`, `int64`, `float`, `float32`, `float64`, `bool`, and `void`. Every variable, parameter, and return type carries an explicit annotation from here on, replacing the single implicit `double` I've used up to this point.
 
 In **Chapters 19–23**, I round things out: unsigned integer types (`uint8` through `uint64`), debugger support for new types, logical operators (`&&`, `||`, `!`), bitwise operators (`&`, `|`, `^`, `<<`, `>>`, `~`), and `switch`.
 

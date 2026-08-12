@@ -1,5 +1,7 @@
-# RUN: %pyxc < %s | grep -q "name: _foo"
-# RUN: %pyxc < %s | grep -q "name: foo_bar"
+# RUN: %pyxc < %s | FileCheck %s --match-full-lines
+
+# CHECK: name: _foo
+# CHECK: name: foo_bar
 
 # name: leading underscore and embedded underscore are both valid
 _foo

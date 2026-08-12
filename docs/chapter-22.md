@@ -38,119 +38,115 @@ cd pyxc-llvm-tutorial/code/chapter-22
 
 ## Grammar
 
-`&`, `|`, `^`, `<<`, and `>>` each get their own grammar tier, following C's precedence ordering. The old flat `comparison` production splits into `equality` and `relational`, and three new bitwise tiers slot in around them; `unary-expression` gains `~`:
+`&`, `|`, `^`, `<<`, and `>>` each get their own grammar tier, following C's precedence ordering. The old flat `comparison` production splits into `equality` and `relational`, with `shift` and the three new bitwise tiers slotting in around them; `factor` gains `~`:
 
 ```grammardiff
- program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
- end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = type-alias | trait-definition | struct-definition | class-definition | implementation-definition | function-definition | external | top-level-expression ;
- type-alias       = "type" name "=" type ;
- trait-definition        = "trait" name [ "[" name "]" ] ":" end-of-lines trait-block ;
- trait-block      = indent trait-method-signature { end-of-lines trait-method-signature } dedent ;
- trait-method-signature  = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ;
- struct-definition       = "struct" name ":" end-of-lines struct-block ;
- class-definition        = "class" name [ "(" trait-reference { "," trait-reference } ")" ] ":" end-of-lines struct-block ;
- trait-reference        = name [ "[" type "]" ] ;
- implementation-definition         = "impl" trait-reference "for" name ":" end-of-lines implementation-block ;
- implementation-block       = indent implementation-method { end-of-lines implementation-method } dedent ;
- implementation-method      = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")" [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- struct-block     = indent class-member { end-of-lines class-member } dedent ;
- class-member     = [ visibility ] ( field-declaration | method-definition ) ;
- visibility      = "public" | "private" ;
- method-definition       = "def" name "(" [ typed-parameter { "," typed-parameter } ] ")"
-                   [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- field-declaration       = name ":" type ;
- function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
- (* If the return type is omitted, it defaults to None. *)
- external        = "extern" "def" function-signature [ "->" type ] ;
- top-level-expression    = expression ;
- function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
- typed-parameter      = name ":" type ;
- if-statement          = "if" expression ":" suite
-                 [ end-of-lines "else" ":" suite ] ;
- for-statement         = "for"
-                   ( "var" name ":" type | name )
-                   "=" expression "," expression "," expression ":" suite ;
- while-statement       = "while" expression ":" suite ;
- do-while-statement     = "do" ":" suite end-of-lines "while" expression ;
- variable-statement         = "var" variable-binding { "," variable-binding } ;
- assignment-statement      = lvalue assignment-operator expression ; (* assignment is a statement here *)
- simple-statement      = return-statement | break-statement | continue-statement | variable-statement | assignment-statement | expression ;
- compound-statement    = if-statement | for-statement | while-statement | do-while-statement ;
- statement       = simple-statement | compound-statement ;
- suite           = simple-statement | compound-statement | end-of-lines block ;
- return-statement      = "return" [ expression ] ;
- break-statement       = "break" ;
- continue-statement    = "continue" ;
- statement-separator = end-of-lines | BLOCK_END ;
- block = indent statement { statement-separator statement } dedent ;
- expression      = logical-or ;
- logical-or      = logical-and { "||" logical-and } ;
--logical-and     = comparison { "&&" comparison } ;
--comparison      = sum { comparison-operator sum } ;
--comparison-operator = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
-+logical-and     = bitwise-or { "&&" bitwise-or } ;
-+bitwise-or      = bitwise-xor { "|" bitwise-xor } ;
-+bitwise-xor     = bitwise-and { "^" bitwise-and } ;
-+bitwise-and     = equality { "&" equality } ;
-+equality        = relational { ("==" | "!=") relational } ;
-+relational      = shift { ("<" | "<=" | ">" | ">=") shift } ;
-+shift           = sum { ("<<" | ">>") sum } ;
- sum             = term { ("+" | "-") term } ;
- term            = unary-expression { ("*" | "/" | "%") unary-expression } ;
- lvalue          = name | field-access | index-expression ;
- variable-binding      = name ":" type [ "=" expression ] ;
--unary-expression       = ("-" | "!" | "++" | "--") unary-expression | postfix-expression ;
-+unary-expression       = ("-" | "!" | "~" | "++" | "--") unary-expression | postfix-expression ;
- postfix-expression     = primary [ postfix-operator ] ;
- postfix-operator       = "++" | "--" ;
- primary         = cast-expression | sizeof-expression | address-expression | array-literal | string-literal | name-expression | field-access | index-expression | number-expression | boolean-literal | parenthesized-expression ;
- cast-expression        = cast-type "(" expression ")" ;
- sizeof-expression      = "sizeof" "(" type ")" ;
- address-expression        = "addr" "(" lvalue ")" ;
- name-expression  = name | call-expression | method-call-expression | constructor-call-expression ;
- call-expression        = name "(" [ expression { "," expression } ] ")" ;
- method-call-expression  = name "." name "(" [ expression { "," expression } ] ")" ;
- constructor-call-expression    = name "(" [ expression { "," expression } ] ")" ;
- field-access     = name "." name { "." name } ;
- index-expression       = name "[" expression "]" ;
- number-expression      = number ;
- array-literal    = "[" [ expression { "," expression } ] "]" ;
- string-literal   = "\"" { ? any char except " and newline ? | escape } "\"" ;
- escape          = "\\" ( "\\" | "\"" | "n" | "t" | "0" ) ;
- parenthesized-expression       = "(" expression ")" ;
- indent          = INDENT ;
- dedent          = DEDENT ;
- 
- assignment-operator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
- name      = (letter | "_") { letter | digit | "_" } ;
- builtin-type     = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | "None" ;
- alias-type       = name ;
- struct-type      = name ;
- pointer-type     = "ptr" "[" type "]" ;
- type            = base-type [ array-suffix ] ;
- base-type        = builtin-type | alias-type | struct-type | pointer-type ;
- array-suffix     = "[" integer "]" ;
- cast-type        = "int" | "int8" | "int16" | "int32" | "int64"
-                 | "float" | "float32" | "float64"
-                 | "bool" | pointer-type ;
- integer         = digit { digit } ;
- number          = ( digit { digit } [ "." { digit } ]
-                   | "." digit { digit } ) [ exponent ] ;
- exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
- boolean-literal    = "True" | "False" ;
- letter          = "A".."Z" | "a".."z" ;
- digit           = "0".."9" ;
- end-of-line             = "\r\n" | "\r" | "\n" ;
- comment = "#" { comment-character } ;
- comment-character = ? any character except "\r" and "\n" ? ;
- whitespace = " " | "\t" | "\v" | "\f" ;
- INDENT          = ? synthetic token emitted by lexer ? ;
- DEDENT          = ? synthetic token emitted by lexer ? ;
- 
- BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
+ program                           = [ end-of-lines ]
+                                     [ top-level-item
+                                       { end-of-lines top-level-item } ]
+                                     [ end-of-lines ] ;
+ end-of-lines                      = end-of-line { end-of-line } ;
+ top-level-item                    = function-definition
+                                     | external
+                                     | top-level-statement ;
+ function-definition               = "def" function-signature [ "->" type ] ":"
+                                     ( simple-statement
+                                       | end-of-lines block ) ;
+ external                          = "extern" "def" function-signature [ "->" type ] ;
+ top-level-statement               = statement ;
+ function-signature                = name "(" [ parameters ] ")" ;
+ parameters                        = typed-parameter { "," typed-parameter } ;
+ typed-parameter                   = name ":" type ;
+ if-statement                      = "if" expression ":" suite
+                                     { [ end-of-lines ] "elif" expression ":" suite }
+                                     [ [ end-of-lines ] "else" ":" suite ] ;
+ for-statement                     = "for" ( "var" name ":" type | name )
+                                     "=" expression ","
+                                     expression "," expression ":" suite ;
+ while-statement                   = "while" expression ":" suite ;
+ do-while-statement                = "do" ":" suite [ end-of-lines ]
+                                     "while" expression ;
+ variable-statement                = "var" variable-binding
+                                     { "," variable-binding } ;
+ assignment-statement              = lvalue "=" expression ;
+ simple-statement                  = return-statement
+                                     | break-statement
+                                     | continue-statement
+                                     | variable-statement
+                                     | assignment-statement
+                                     | expression ;
+ compound-statement                = if-statement
+                                     | for-statement
+                                     | while-statement
+                                     | do-while-statement ;
+ statement                         = simple-statement | compound-statement ;
+ suite                             = simple-statement
+                                     | compound-statement
+                                     | end-of-lines block ;
+ return-statement                  = "return" [ expression ] ;
+ break-statement                   = "break" ;
+ continue-statement                = "continue" ;
+ statement-separator               = end-of-lines | BLOCK_END ;
+ block                             = indent statement
+                                     { statement-separator statement } dedent ;
+ expression                        = logical-or ;
+ logical-or                        = logical-and { "||" logical-and } ;
+-logical-and                       = comparison { "&&" comparison } ;
+-comparison                        = sum { comparison-operator sum } ;
+-comparison-operator               = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
++logical-and                       = bitwise-or { "&&" bitwise-or } ;
++bitwise-or                        = bitwise-xor { "|" bitwise-xor } ;
++bitwise-xor                       = bitwise-and { "^" bitwise-and } ;
++bitwise-and                       = equality { "&" equality } ;
++equality                          = relational { ("==" | "!=") relational } ;
++relational                        = shift { ("<" | "<=" | ">" | ">=") shift } ;
++shift                             = sum { ("<<" | ">>") sum } ;
+ sum                               = term { ("+" | "-") term } ;
+ term                              = factor { ("*" | "/" | "%") factor } ;
+ lvalue                            = name ;
+ variable-binding                  = name ":" type [ "=" expression ] ;
+-factor                            = ("-" | "!") factor | primary ;
++factor                            = ("-" | "!" | "~") factor | primary ;
+ primary                           = cast-expression
+                                     | name-expression
+                                     | number-expression
+                                     | boolean-literal
+                                     | parenthesized-expression ;
+ cast-expression                   = cast-type "(" expression ")" ;
+ name-expression                   = name | call-expression ;
+ call-expression                   = name "(" [ arguments ] ")" ;
+ arguments                         = expression { "," expression } ;
+ number-expression                 = number ;
+ parenthesized-expression          = "(" expression ")" ;
+ indent                            = INDENT ;
+ dedent                            = DEDENT ;
+ name                              = (letter | "_")
+                                     { letter | digit | "_" } ;
+ type                              = "int" | "int8" | "int16" | "int32"
+                                     | "int64" | "uint8" | "uint16"
+                                     | "uint32" | "uint64"
+                                     | "float" | "float32"
+                                     | "float64" | "bool" | "None" ;
+ cast-type                         = "int" | "int8" | "int16" | "int32"
+                                     | "int64" | "uint8" | "uint16"
+                                     | "uint32" | "uint64"
+                                     | "float" | "float32"
+                                     | "float64" | "bool" ;
+ number                            = ( digit { digit } [ "." { digit } ]
+                                     | "." digit { digit } ) [ exponent ] ;
+ exponent                          = ( "e" | "E" ) [ "+" | "-" ]
+                                     digit { digit } ;
+ boolean-literal                   = "True" | "False" ;
+ letter                            = "A".."Z" | "a".."z" ;
+ digit                             = "0".."9" ;
+ end-of-line                       = "\r\n" | "\r" | "\n" ;
+ comment                           = "#" { comment-character } ;
+ comment-character                 = ? any character except "\r" and "\n" ? ;
+ whitespace                        = " " | "\t" | "\v" | "\f" ;
+ INDENT                            = ? synthetic token emitted by lexer when indentation increases ? ;
+ DEDENT                            = ? synthetic token emitted by lexer when indentation decreases ? ;
+ BLOCK_END                         = ? synthetic token injected into the stream by ParseBlock
+                                       immediately after it consumes DEDENT ? ;
 ```
 
 `bitwise-and` sits directly above `equality`, which is exactly what produces C's famous precedence gotcha: since each side of `&` is a full `equality` (which can itself contain `==`), `a & b == 0` parses as `a & (b == 0)`, not `(a & b) == 0`. I hit this myself while testing rather than just asserting it: `a & b == 0` for integer `a`, `b` is a real type error, "Type mismatch in binary operator", precisely because it parses as `a & (b == 0)` and `&` refuses a `bool` operand on the right. Getting `(a & b) == 0` requires the parentheses.
@@ -173,9 +169,9 @@ if (LexerLastChar == '<') {
   int Next = peek();
   int Tok = tok_less;
   if (Next == '=')
-    Tok = (advance(), tok_leq);   // '<=' — comparison
+    Tok = (advance(), tok_leq);
   else if (Next == '<')
-    Tok = (advance(), tok_shift_left);   // '<<' — left shift
+    Tok = (advance(), tok_shift_left);
   LexerLastChar = advance();
   return Tok;
 }
@@ -184,9 +180,9 @@ if (LexerLastChar == '>') {
   int Next = peek();
   int Tok = tok_greater;
   if (Next == '=')
-    Tok = (advance(), tok_geq);   // '>=' — comparison
+    Tok = (advance(), tok_geq);
   else if (Next == '>')
-    Tok = (advance(), tok_shift_right);   // '>>' — right shift
+    Tok = (advance(), tok_shift_right);
   LexerLastChar = advance();
   return Tok;
 }
@@ -227,8 +223,14 @@ static unique_ptr<ExpressionNode> ParseShift() {
 Two predicates identify the new operator families, built on the real token names the lexer produces:
 
 ```cpp
-static bool IsBitwiseOp(int Operator) { return Operator == tok_ampersand || Operator == tok_pipe || Operator == tok_caret; }
-static bool IsShiftOp(int Operator) { return Operator == tok_shift_left || Operator == tok_shift_right; }
+static bool IsBitwiseOp(int Operator) {
+  return Operator == tok_ampersand || Operator == tok_pipe ||
+         Operator == tok_caret;
+}
+
+static bool IsShiftOp(int Operator) {
+  return Operator == tok_shift_left || Operator == tok_shift_right;
+}
 ```
 
 `GetBinaryResultType` gains two new branches. For bitwise ops, both operands must be integers; `IsAssignable` picks the wider of the two as the result type, same widening rule every other integer binary op already uses:
@@ -259,23 +261,23 @@ Both checks run inside `GetBinaryResultType`, the same function every binary ope
 
 ## Parsing Unary `~`
 
-`~` is parsed in `ParseUnary` alongside `-`, `!`, and prefix `++`/`--`. The operand must already be an integer type; the result type is the same as the operand's:
+`~` is parsed in `ParseFactor` alongside `-` and `!`, the same tier [Chapter 21](chapter-21.md) added `!` to. The operand must already be an integer type; the result type is the same as the operand's:
 
 ```cpp
 if (CurrentToken == tok_tilde) {
   getNextToken(); // eat '~'
-  auto Operand = ParseUnary();
+  auto Operand = ParseFactor();
   if (!Operand)
     return nullptr;
   if (!IsIntType(Operand->getType()))
     return LogErrorExpression("Unary '~' requires an integer operand");
   ValueType OperandType = Operand->getType();
   return make_unique<UnaryExpressionNode>(tok_tilde, std::move(Operand),
-                                          OperandType);
+                                           OperandType);
 }
 ```
 
-`~~x` (double complement) and `~(x + 1)` both parse naturally, since the operand is a full `ParseUnary()` call, letting the recursion handle any nesting.
+`~~x` (double complement) and `~(x + 1)` both parse naturally, since the operand is a full `ParseFactor()` call, letting the recursion handle any nesting.
 
 ## Codegen: Binary Bitwise and Shift Operators
 
@@ -285,9 +287,9 @@ if (CurrentToken == tok_tilde) {
 case tok_ampersand:
 case tok_pipe:
 case tok_caret: {
-  ValueType Ty = getType();
-  L = EmitImplicitCast(L, LType, Ty);
-  R = EmitImplicitCast(R, RType, Ty);
+  ValueType ResultType = getType();
+  L = EmitImplicitCast(L, LType, ResultType);
+  R = EmitImplicitCast(R, RType, ResultType);
   if (!L || !R)
     return LogErrorV("Type mismatch in binary operator");
   if (Operator == tok_ampersand)
@@ -318,11 +320,8 @@ Each bitwise operator maps to a single LLVM instruction: `and`, `or`, or `xor`. 
 `UnaryExpressionNode::codegen` gains a case for `tok_tilde` alongside the existing `tok_minus` case:
 
 ```cpp
-if (Opcode == tok_tilde) {
-  if (!IsIntType(getType()))
-    return LogErrorV("Unary '~' not supported for this type");
+if (Opcode == tok_tilde)
   return Builder->CreateNot(Operator, "bnottmp");
-}
 ```
 
 `CreateNot` lowers to `xor %val, -1`: XOR-ing every bit against a mask of all ones flips each one. The instruction name `bnottmp` (bitwise not) distinguishes it in the IR from `nottmp`, the name [Chapter 21](chapter-21.md)'s logical `!` uses for its `i1` negation.
@@ -341,7 +340,7 @@ var z: int = y & 7 # mask the low 3 bits → 6
 
 **No hexadecimal, octal, or binary integer literals.** `0xFF`, `0o17`, and `0b101` all fail to parse; only decimal digits are recognized. I ran into this directly while writing the intro example — I'd originally written `0xFF` and had to switch to `255`.
 
-**No compound assignment for bitwise or shift operators.** `x &= mask`, `flags |= bit`, `x ^= pattern`, `x <<= 2`, and `x >>= 1` all fail to parse. [Chapter 35](chapter-35.md)'s compound-assignment mechanism is general — `IsCompoundAssignTok` and `CompoundAssignToBinaryOp` could, in principle, be extended to cover `&=`, `|=`, `^=`, `<<=`, and `>>=` the same way they cover `+=` through `%=` — but this chapter doesn't add the tokens or the table entries to do it. I confirmed this by trying `x &= mask` directly and getting a parse error, not a working compound assignment.
+**No compound assignment for bitwise or shift operators.** `x &= mask`, `flags |= bit`, `x ^= pattern`, `x <<= 2`, and `x >>= 1` all fail to parse. [Chapter 35](chapter-35.md)'s compound-assignment mechanism is general — `IsAssignmentOperator` and `AssignmentBinaryOperator` could, in principle, be extended to cover `&=`, `|=`, `^=`, `<<=`, and `>>=` the same way they cover `+=` through `%=` — but this chapter doesn't add the tokens or the table entries to do it. I confirmed this by trying `x &= mask` directly and getting a parse error, not a working compound assignment.
 
 ## Try It
 

@@ -224,7 +224,7 @@ I update `ParseBreakStatement` to accept `break` inside a switch as well as a lo
 static unique_ptr<ExpressionNode> ParseBreakStatement() {
   if (ParseLoopDepth <= 0 && ParseSwitchDepth <= 0)
     return LogErrorExpression("'break' used outside of a loop or switch");
-  getNextToken(); // eat 'break'
+  getNextToken();
   return make_unique<BreakStatementNode>();
 }
 ```
@@ -390,7 +390,7 @@ Error (Line 5, Column 11): Duplicate switch case value
 Chapter 14's `LoopControlStack` carries `BreakTarget` and `ContinueTarget` together. A switch needs to push a break target without disturbing `continue`, which still has to reach the enclosing loop — so I add a separate stack just for break:
 
 ```cpp
-static std::vector<BasicBlock *> BreakTargetStack;
+static vector<BasicBlock *> BreakTargetStack;
 ```
 
 I update the `for` and `while` codegens to push and pop `BreakTargetStack` alongside `LoopControlStack`:

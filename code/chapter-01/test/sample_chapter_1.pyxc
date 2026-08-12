@@ -1,7 +1,9 @@
-# RUN: %pyxc < %s | grep -Fxq "'def'"
-# RUN: %pyxc < %s | grep -Fxq "name: print"
-# RUN: %pyxc < %s | grep -Fxq "number: 1"
-# RUN: %pyxc < %s | grep -Fxq "number: 2"
+# RUN: %pyxc < %s | FileCheck %s --match-full-lines
+
+# CHECK: 'def'
+# CHECK: name: print
+# CHECK: number: 1
+# CHECK: number: 2
 
 # sample: the add.pyxc example from the doc, run end-to-end through the lexer.
 # add.pyxc

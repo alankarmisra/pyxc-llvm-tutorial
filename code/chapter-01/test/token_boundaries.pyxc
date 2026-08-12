@@ -1,0 +1,17 @@
+# RUN: printf 'foo2' | %pyxc | FileCheck %s --check-prefix=NAME --match-full-lines
+# RUN: printf '42' | %pyxc | FileCheck %s --check-prefix=NUMBER --match-full-lines
+# RUN: printf '+' | %pyxc | FileCheck %s --check-prefix=PUNCTUATION --match-full-lines
+# RUN: printf 'foo\tbar\n' | %pyxc | FileCheck %s --check-prefix=TAB --match-full-lines
+# RUN: test -z "$(printf '' | %pyxc)"
+
+# NAME: name: foo2
+# NUMBER: number: 42
+# PUNCTUATION: '+'
+
+# TAB: name: foo
+# TAB-NEXT: name: bar
+# TAB-NEXT: newline
+
+# token boundaries: names, numbers, and punctuation can end directly at EOF;
+# digits may continue a name; tabs separate tokens; empty input produces no
+# tokens.

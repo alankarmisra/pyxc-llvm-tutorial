@@ -52,22 +52,18 @@ The key insight I'm leaning on: the compilation pipeline doesn't need to change 
 I declare three new options with LLVM's command-line library:
 
 ```cpp
+static cl::opt<bool> DumpIR("dump-ir",
+                            cl::desc("Print generated LLVM IR to stderr"),
+                            cl::init(false), cl::cat(PyxcCategory));
+static cl::opt<bool> VerboseIR("v", cl::desc("Alias for --dump-ir"),
+                               cl::init(false), cl::cat(PyxcCategory));
+
 static cl::opt<std::string>
-    EmitKindOption("emit",
-                cl::desc("Emit output: llvm-ir | asm | obj"),
-                cl::init(""), cl::cat(PyxcCategory));
-
+    EmitKindOption("emit", cl::desc("Emit output: llvm-ir | asm | obj"),
+                   cl::init(""), cl::cat(PyxcCategory));
 static cl::opt<std::string> OutputFile("o", cl::desc("Output filename"),
-                                       cl::value_desc("filename"),
-                                       cl::init(""), cl::cat(PyxcCategory));
-
-static cl::opt<bool>
-    DumpIR("dump-ir", cl::desc("Print generated LLVM IR to stderr"),
-           cl::init(false), cl::cat(PyxcCategory));
-// Backward-compat alias.
-static cl::opt<bool>
-    VerboseIR("v", cl::desc("Alias for --dump-ir"), cl::init(false),
-              cl::cat(PyxcCategory));
+                                       cl::value_desc("filename"), cl::init(""),
+                                       cl::cat(PyxcCategory));
 ```
 
 `ProcessCommandLine` validates and resolves them before I do any parsing:
@@ -355,12 +351,11 @@ I call `ShouldDumpIR()` wherever IR is printed — after each function in JIT mo
 
 ## Target Initialization
 
-The three `InitializeNative*` calls in `main` were already present for the JIT. They stay sufficient for emit mode too, because pyxc always targets the host machine:
+The two `InitializeNative*` calls in `main` were already present for the JIT. They stay sufficient for emit mode too, because pyxc always targets the host machine:
 
 ```cpp
 InitializeNativeTarget();
 InitializeNativeTargetAsmPrinter();
-InitializeNativeTargetAsmParser();
 ```
 
 `InitializeNativeTargetAsmPrinter` registers the backend that serializes machine instructions to assembly text or object file bytes — the part that `addPassesToEmitFile` depends on. Without it, `TargetRegistry::lookupTarget` would succeed but `addPassesToEmitFile` would fail.

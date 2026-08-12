@@ -68,12 +68,10 @@ if (OptLevel != 0) {
 }
 ```
 
-That was fine while pyxc had one type and no functions calling each other in interesting ways, but it has no inliner, no interprocedural analysis, and I chose the four passes and their order by hand rather than from any real pipeline. I replace it with `PassBuilder`, which knows LLVM's canonical pass ordering for each level, including interactions between passes I'd have gotten wrong by hand. Two new managers show up alongside the ones I already had:
+That was fine while pyxc had one type and no functions calling each other in interesting ways, but it has no inliner, no interprocedural analysis, and I chose the four passes and their order by hand rather than from any real pipeline. I replace it with `PassBuilder`, which knows LLVM's canonical pass ordering for each level, including interactions between passes I'd have gotten wrong by hand. `TheCGAM` and `TheMAM` were already there, cross-registered but otherwise unused since I never fed the module tier any real passes; the one genuinely new manager is `TheMPM`, since only now do I have a module-level pipeline to run:
 
 ```cpp
 static std::unique_ptr<ModulePassManager> TheMPM;
-static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
-static std::unique_ptr<ModuleAnalysisManager> TheMAM;
 ```
 
 `InitializeModuleAndManagers` cross-registers all of them, then builds the actual pipelines:
@@ -87,15 +85,15 @@ PB.registerFunctionAnalyses(*TheFAM);
 PB.registerLoopAnalyses(*TheLAM);
 PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
 
-// Optimisation pipelines. With -O0 the pass managers are left empty so the
-// emitted IR stays close to the direct lowering performed by the code
-// generator.
+// I ask LLVM to build its standard pipelines for the selected level.
 if (OptLevel != 0) {
-  auto FPM = PB.buildFunctionSimplificationPipeline(GetOptLevel(),
-                                                    ThinOrFullLTOPhase::None);
-  TheFPM = std::make_unique<FunctionPassManager>(std::move(FPM));
-  auto MPM = PB.buildPerModuleDefaultPipeline(GetOptLevel());
-  TheMPM = std::make_unique<ModulePassManager>(std::move(MPM));
+  auto FunctionPipeline = PB.buildFunctionSimplificationPipeline(
+      GetOptLevel(), ThinOrFullLTOPhase::None);
+  TheFPM = std::make_unique<FunctionPassManager>(
+      std::move(FunctionPipeline));
+  auto ModulePipeline = PB.buildPerModuleDefaultPipeline(GetOptLevel());
+  TheMPM =
+      std::make_unique<ModulePassManager>(std::move(ModulePipeline));
 }
 
 InitializeDebugInfo();
@@ -121,10 +119,9 @@ static OptimizationLevel GetOptLevel() {
 At `-O0` both managers stay empty, no passes run at all, and the literal IR `IRBuilder<NoFolder>` produced reaches the backend unchanged: every `alloca`, `store`, and `load` survives for the debugger to look at. Module-level optimization runs once, after codegen finishes, from a small helper I call in emit mode:
 
 ```cpp
-static void RunModuleOptimizations(Module *M) {
-  if (!TheMPM || OptLevel == 0)
-    return;
-  TheMPM->run(*M, *TheMAM);
+static void RunModuleOptimizations(Module *Module) {
+  if (TheMPM && OptLevel != 0)
+    TheMPM->run(*Module, *TheMAM);
 }
 ```
 
@@ -336,28 +333,24 @@ A global has no `alloca` to declare against, so this takes a different path: I b
 On macOS, the system linker doesn't copy DWARF into the final executable the way ELF linkers do. It writes debug-map stab entries that point back at the original `.o` files instead, so a debugger has to go find those object files to read any debug info at all. `dsymutil` resolves that indirection into a self-contained `.dSYM` bundle:
 
 ```cpp
-static void MaybeEmitDsymBundle(const string &ExePath) {
+static void MaybeEmitDsymBundle(const string &ExecutablePath) {
   if (!DebugInfo)
     return;
 
-  Triple TT(sys::getDefaultTargetTriple());
-  if (!TT.isOSDarwin())
+  Triple TargetTriple(sys::getDefaultTargetTriple());
+  if (!TargetTriple.isOSDarwin())
     return;
 
   auto Dsymutil = sys::findProgramByName("dsymutil");
   if (!Dsymutil) {
-    fprintf(
-        stderr,
-        "Warning: dsymutil not found; debug info will remain in .o files\n");
+    fprintf(stderr,
+            "Warning: dsymutil not found; debug info will remain in .o files\n");
     return;
   }
 
-  std::vector<StringRef> Arguments;
-  Arguments.push_back(*Dsymutil);
-  Arguments.push_back(ExePath);
-  if (sys::ExecuteAndWait(*Dsymutil, Arguments)) {
+  std::vector<StringRef> Arguments{*Dsymutil, ExecutablePath};
+  if (sys::ExecuteAndWait(*Dsymutil, Arguments))
     fprintf(stderr, "Warning: dsymutil failed; debug info may be missing\n");
-  }
 }
 ```
 

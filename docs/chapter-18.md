@@ -297,7 +297,7 @@ static unique_ptr<ExpressionNode> ParseNumberExpression() {
       return LogErrorExpression("Floating-point literal out of range for type");
     auto Result = make_unique<NumberExpressionNode>(Val, Type);
     getNextToken(); // consume the number
-    return std::move(Result);
+    return Result;
   } else {
     // If the surrounding context expects an int type, honor it.
     if (IsIntType(ExpectedLiteralType))
@@ -317,7 +317,7 @@ static unique_ptr<ExpressionNode> ParseNumberExpression() {
 
     auto Result = make_unique<NumberExpressionNode>(Val, Type);
     getNextToken(); // consume the number
-    return std::move(Result);
+    return Result;
   }
 }
 ```
@@ -685,7 +685,7 @@ else
 
 For an integer loop variable the alloca and step use the declared integer type:
 
-This is the real output for `for var i: int = 1, i <= 10, 1:`, compiled and read directly:
+This is the real output at `-O0` for `for var i: int = 1, i <= 10, 1:`, compiled and read directly (at the default `-O2`, `mem2reg` and loop canonicalization replace the `alloca`/`load`/`store` sequence below with a `phi` node instead):
 
 ```llvm
 %i = alloca i64, align 8
@@ -774,43 +774,65 @@ Two helpers translate `ValueType` to LLVM IR constructs.
 `LLVMTypeFor` maps each type to its LLVM `Type*`:
 
 ```cpp
-static Type *LLVMTypeFor(ValueType Ty) {
-  switch (Ty) {
+static Type *LLVMTypeFor(ValueType Type) {
+  switch (Type) {
   case ValueType::Int: {
     unsigned bits = TheModule->getDataLayout().getPointerSizeInBits();
-    return IntegerType::get(*TheContext, bits);
+    return llvm::IntegerType::get(*TheContext, bits);
   }
-  case ValueType::Int8:    return Type::getInt8Ty(*TheContext);
-  case ValueType::Int16:   return Type::getInt16Ty(*TheContext);
-  case ValueType::Int32:   return Type::getInt32Ty(*TheContext);
-  case ValueType::Int64:   return Type::getInt64Ty(*TheContext);
-  case ValueType::Float:   return Type::getDoubleTy(*TheContext);  // same as Float64
-  case ValueType::Float32: return Type::getFloatTy(*TheContext);
-  case ValueType::Float64: return Type::getDoubleTy(*TheContext);
-  case ValueType::Bool:    return Type::getInt1Ty(*TheContext);
-  case ValueType::None:    return Type::getVoidTy(*TheContext);
-  default:                 return nullptr;
+  case ValueType::Int8:
+    return Type::getInt8Ty(*TheContext);
+  case ValueType::Int16:
+    return Type::getInt16Ty(*TheContext);
+  case ValueType::Int32:
+    return Type::getInt32Ty(*TheContext);
+  case ValueType::Int64:
+    return Type::getInt64Ty(*TheContext);
+  case ValueType::Float:
+    return Type::getDoubleTy(*TheContext);
+  case ValueType::Float32:
+    return Type::getFloatTy(*TheContext);
+  case ValueType::Float64:
+    return Type::getDoubleTy(*TheContext);
+  case ValueType::Bool:
+    return Type::getInt1Ty(*TheContext);
+  case ValueType::None:
+    return Type::getVoidTy(*TheContext);
+  default:
+    return nullptr;
   }
 }
 ```
+
+(The parameter is named `Type`, shadowing the LLVM `Type` class inside the function body — that's why the pointer-width case spells out `llvm::IntegerType::get` instead of the bare name.)
 
 `Float` and `Float64` both return `getDoubleTy`. In the IR they are indistinguishable.
 
 `ZeroConstant` produces the IR zero initializer for each type, used for uninitialised `var` declarations and global variable default values:
 
 ```cpp
-static Constant *ZeroConstant(ValueType Ty) {
-  switch (Ty) {
-  case ValueType::Int8:    return ConstantInt::get(Type::getInt8Ty(*TheContext), 0);
-  case ValueType::Int16:   return ConstantInt::get(Type::getInt16Ty(*TheContext), 0);
-  case ValueType::Int32:   return ConstantInt::get(Type::getInt32Ty(*TheContext), 0);
-  case ValueType::Int:     return ConstantInt::get(LLVMTypeFor(Ty), 0);
-  case ValueType::Int64:   return ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
-  case ValueType::Float:   return ConstantFP::get(*TheContext, APFloat(0.0));
-  case ValueType::Float32: return ConstantFP::get(Type::getFloatTy(*TheContext), 0.0);
-  case ValueType::Float64: return ConstantFP::get(*TheContext, APFloat(0.0));
-  case ValueType::Bool:    return ConstantInt::get(Type::getInt1Ty(*TheContext), 0);
-  default:                 return nullptr;
+static Constant *ZeroConstant(ValueType Type) {
+  switch (Type) {
+  case ValueType::Int8:
+    return ConstantInt::get(Type::getInt8Ty(*TheContext), 0);
+  case ValueType::Int16:
+    return ConstantInt::get(Type::getInt16Ty(*TheContext), 0);
+  case ValueType::Int32:
+    return ConstantInt::get(Type::getInt32Ty(*TheContext), 0);
+  case ValueType::Int:
+    return ConstantInt::get(LLVMTypeFor(Type), 0);
+  case ValueType::Int64:
+    return ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
+  case ValueType::Float:
+    return ConstantFP::get(*TheContext, APFloat(0.0));
+  case ValueType::Float32:
+    return ConstantFP::get(Type::getFloatTy(*TheContext), 0.0);
+  case ValueType::Float64:
+    return ConstantFP::get(*TheContext, APFloat(0.0));
+  case ValueType::Bool:
+    return ConstantInt::get(Type::getInt1Ty(*TheContext), 0);
+  default:
+    return nullptr;
   }
 }
 ```
@@ -920,31 +942,41 @@ The final branch handles every integer-to-float conversion accepted by `IsAssign
 `GetBinaryResultType` decides the type of a binary expression at parse time:
 
 ```cpp
-static ValueType GetBinaryResultType(int Op, ValueType L, ValueType R) {
-  if (IsArithmeticOp(Op)) {
+static ValueType GetBinaryResultType(int Operator, ValueType L, ValueType R) {
+  if (IsArithmeticOp(Operator)) {
     if (!IsNumericType(L) || !IsNumericType(R))
       return ValueType::Error;
-    // Float and Float64 can be mixed: result is Float64
+    // float + float (float32/float64): widen to float64 if mixed.
     if (IsFloatType(L) && IsFloatType(R)) {
-      if (L == R) return L;
+      if (L == R)
+        return L;
       if ((L == ValueType::Float && R == ValueType::Float64) ||
           (L == ValueType::Float64 && R == ValueType::Float))
         return ValueType::Float64;
       return ValueType::Error;
     }
-    if (IsAssignable(L, R)) return L;  // R widens into L
-    if (IsAssignable(R, L)) return R;  // L widens into R
+    // int + int: widen to the larger integer type (e.g., int16 + int32 ->
+    // int32).
+    if (IsAssignable(L, R))
+      return L;
+    if (IsAssignable(R, L))
+      return R;
     return ValueType::Error;
   }
-  if (IsComparisonOp(Op)) {
+  if (IsComparisonOp(Operator)) {
+    // bool ==/!= bool: allowed; other comparisons on bool are rejected.
     if (L == ValueType::Bool && R == ValueType::Bool) {
-      if (Op == tok_eq || Op == tok_neq) return ValueType::Bool;
+      if (Operator == tok_eq || Operator == tok_neq)
+        return ValueType::Bool;
       return ValueType::Error;
     }
     if (!IsNumericType(L) || !IsNumericType(R))
       return ValueType::Error;
+    // numeric comparisons: allow mixed float32/float64 and mixed ints.
     if (IsFloatType(L) && IsFloatType(R)) {
-      if (L == R || (L == ValueType::Float && R == ValueType::Float64) ||
+      if (L == R)
+        return ValueType::Bool;
+      if ((L == ValueType::Float && R == ValueType::Float64) ||
           (L == ValueType::Float64 && R == ValueType::Float))
         return ValueType::Bool;
       return ValueType::Error;
@@ -1296,40 +1328,6 @@ Key points:
 - `Bool` prints as `True` or `False`: matching the keyword spelling.
 - `None` (void) produces no output.
 
-## Debug Info: Per-Type DWARF Descriptors
-
-In Chapter 17 I had one `DblDIType` for everything. Now I need a descriptor per type:
-
-```cpp
-static DIType *IntDIType     = nullptr;
-static DIType *Float64DIType = nullptr;
-static DIType *Int8DIType    = nullptr;
-static DIType *Int16DIType   = nullptr;
-static DIType *Int32DIType   = nullptr;
-static DIType *Int64DIType   = nullptr;
-static DIType *Float32DIType = nullptr;
-static DIType *BoolDIType    = nullptr;
-```
-
-Initialized in `InitializeDebugInfo`:
-
-```cpp
-unsigned bits = TheModule->getDataLayout().getPointerSizeInBits();
-IntDIType     = DIB->createBasicType("int",     bits, dwarf::DW_ATE_signed);
-Float64DIType = DIB->createBasicType("float64",   64, dwarf::DW_ATE_float);
-VoidDIType    = DIB->createUnspecifiedType("None");
-Int8DIType    = DIB->createBasicType("int8",       8, dwarf::DW_ATE_signed);
-Int16DIType   = DIB->createBasicType("int16",     16, dwarf::DW_ATE_signed);
-Int32DIType   = DIB->createBasicType("int32",     32, dwarf::DW_ATE_signed);
-Int64DIType   = DIB->createBasicType("int64",     64, dwarf::DW_ATE_signed);
-Float32DIType = DIB->createBasicType("float32",   32, dwarf::DW_ATE_float);
-BoolDIType    = DIB->createBasicType("bool",       1, dwarf::DW_ATE_boolean);
-```
-
-Both `ValueType::Float` and `ValueType::Float64` return `Float64DIType`. In the DWARF output, a debugger sees `int32`, `float64`, `bool`, etc. as distinct named types rather than everything as `double`.
-
-The void type uses `createUnspecifiedType("None")`: the correct DWARF tag `DW_TAG_unspecified_type` for a type with no representation.
-
 ## HadError and Exit Codes
 
 Chapter 17 always returned `0`. File-mode programs with type errors would print to stderr but exit cleanly, making shell scripts and test harnesses oblivious to failures.
@@ -1355,7 +1353,7 @@ The REPL keeps running after a type error; file mode aborts with exit code 1.
 
 ## Putting It Together: A Full Typed Program
 
-Here's a small program that exercises the type system, and the real IR it produces, compiled and read directly rather than written from memory:
+Here's a small program that exercises the type system, and the real IR it produces at `-O0`, compiled and read directly rather than written from memory. `pyxc` defaults to `-O2`, which runs `mem2reg` and promotes the allocas below straight to SSA registers, so the version below needs `pyxc -O0 --emit llvm-ir ...` to reproduce exactly:
 
 ```pyxc
 extern def printd(x: float64) -> float64
@@ -1407,7 +1405,7 @@ entry:
 }
 ```
 
-Two things worth noticing that I wouldn't have guessed without actually compiling this. First, `add`'s parameters get their own `alloca`s and are loaded back before the addition, even though nothing about the source needs that indirection, that's `IRBuilder<NoFolder>` plus the empty `-O0` pass list from earlier in this chapter: nothing is promoting those stack slots to registers yet, so every parameter round-trips through memory exactly like a `var` would. Second, `__pyxc.user_main` itself returns `i64`, not `i32`, because `int` resolved to the platform's 64-bit width on the machine I compiled this on; the `trunc` in `main` is doing real work here, not just defensive code.
+Two things worth noticing that I wouldn't have guessed without actually compiling this. First, at `-O0`, `add`'s parameters get their own `alloca`s and are loaded back before the addition, even though nothing about the source needs that indirection: with no optimization passes running, nothing is promoting those stack slots to registers, so every parameter round-trips through memory exactly like a `var` would. At the default `-O2`, `mem2reg` removes all of that and `add` collapses to a single `add i32 %b, %a` plus a `ret`. Second, `__pyxc.user_main` itself returns `i64`, not `i32`, because `int` resolved to the platform's 64-bit width on the machine I compiled this on; the `trunc` in `main` is doing real work here, not just defensive code.
 
 Before Chapter 17, every value in this program would have been `double`, with no `alloca`/`load` distinction to speak of. Now `add` uses `i32` throughout, the `sitofp` appears exactly once and only where the source explicitly asked for it with `float64(x)`, and the path from a typed `main` down to the OS-facing `i32 @main` is fully explicit instead of assumed.
 

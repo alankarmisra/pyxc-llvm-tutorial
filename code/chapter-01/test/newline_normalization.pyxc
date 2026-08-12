@@ -1,0 +1,20 @@
+# RUN: printf 'a\r\nb\n' | %pyxc | FileCheck %s --check-prefix=CRLF --match-full-lines
+# RUN: printf 'a\rb\n' | %pyxc | FileCheck %s --check-prefix=CR --match-full-lines
+# RUN: printf 'a\r' | %pyxc | FileCheck %s --check-prefix=CREOF --match-full-lines
+
+# CRLF: name: a
+# CRLF-NEXT: newline
+# CRLF-NEXT: name: b
+# CRLF-NEXT: newline
+
+# CR: name: a
+# CR-NEXT: newline
+# CR-NEXT: name: b
+# CR-NEXT: newline
+
+# CREOF: name: a
+# CREOF-NEXT: newline
+
+# newline normalization: CRLF and bare CR both become one newline; a bare CR
+# before another character must not consume that character, and a bare CR at
+# EOF must not try to put EOF back into the input stream.

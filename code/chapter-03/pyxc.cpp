@@ -51,34 +51,32 @@ static map<string, Token> Keywords = {
 // I map each named token to a readable string for debug output and error
 // reporting.
 static map<int, string> TokenNames = {
-    {tok_eof, "end of input"},
-    {tok_eol, "newline"},
-    {tok_error, "error"},
-    {tok_def, "'def'"},
-    {tok_name, "name"},
-    {tok_number, "number"},
-    {tok_lparen, "'('"},
-    {tok_rparen, "')'"},
-    {tok_comma, "','"},
-    {tok_colon, "':'"},
-    {tok_plus, "'+'"},
-    {tok_minus, "'-'"},
-    {tok_star, "'*'"},
-    {tok_slash, "'/'"},
-    {tok_less, "'<'"},
+    {tok_eof, "end of input"}, {tok_eol, "newline"}, {tok_error, "error"},
+    {tok_def, "'def'"},        {tok_name, "name"},   {tok_number, "number"},
+    {tok_lparen, "'('"},       {tok_rparen, "')'"},  {tok_comma, "','"},
+    {tok_colon, "':'"},        {tok_plus, "'+'"},    {tok_minus, "'-'"},
+    {tok_star, "'*'"},         {tok_slash, "'/'"},   {tok_less, "'<'"},
 };
 
-/// advance - I return the next character, coalescing `\r\n` (Windows) into `\n`
-/// and converting bare `\r` (Old Macs) into `\n`.
+/// advance - I return the next character, normalizing `\r\n` (Windows)
+/// and bare `\r` (Old Macs) into `\n`.
 int advance() {
   int LastChar = getchar();
+
+  // case: '\r' or '\r\n'
   if (LastChar == '\r') {
     int NextChar = getchar();
+
+    // A following '\n' is part of the same line ending; eat it.
+    // Anything else belongs to the next token; put it back.
+    // (EOF can't be put back at all, so it's excluded from that check.)
     if (NextChar != '\n' && NextChar != EOF) {
       ungetc(NextChar, stdin);
     }
     return '\n';
   }
+
+  // case '\n' or any other non-newline character
   return LastChar;
 }
 
@@ -115,7 +113,7 @@ int getToken() {
     } while (isdigit(LastChar) || LastChar == '.');
     // I leave the first character that is not part of this number in LastChar.
 
-    // TODO: I incorrectly lex 1.23.45.67 as 1.23.
+    // TODO: I consume all of 1.23.45.67 but parse it as 1.23.
     NumberValue = strtod(NumStr.c_str(), 0);
     return tok_number;
   }
@@ -220,9 +218,9 @@ public:
       : Callee(Callee), Arguments(std::move(Arguments)) {}
 };
 
-/// FunctionSignatureNode - This class represents the "function signature" for a function,
-/// which captures its name, and its parameter names (thus implicitly the number
-/// of parameters the function takes).
+/// FunctionSignatureNode - This class represents the "function signature" for a
+/// function, which captures its name, and its parameter names (thus implicitly
+/// the number of parameters the function takes).
 class FunctionSignatureNode {
   string Name;
   vector<string> Parameters;
@@ -231,7 +229,6 @@ public:
   FunctionSignatureNode(const string &Name, vector<string> Parameters)
       : Name(Name), Parameters(std::move(Parameters)) {}
 
-  const string &getName() const { return Name; }
 };
 
 /// FunctionDefinitionNode - This class represents a function definition itself.
@@ -252,9 +249,10 @@ public:
 //===----------------------------------------===//
 
 /// CurrentToken is the current token the parser is looking at.
-/// getNextToken reads the next token from the lexer and stores it in CurrentToken.
-/// Every parse function assumes CurrentToken is already loaded before it is called,
-/// and leaves CurrentToken pointing at the first token it did not consume.
+/// getNextToken reads the next token from the lexer and stores it in
+/// CurrentToken. Every parse function assumes CurrentToken is already loaded
+/// before it is called, and leaves CurrentToken pointing at the first token it
+/// did not consume.
 static int CurrentToken;
 static int getNextToken() { return CurrentToken = getToken(); }
 
@@ -292,7 +290,7 @@ static unique_ptr<ExpressionNode> ParseExpression();
 static unique_ptr<ExpressionNode> ParseNumberExpression() {
   auto Result = make_unique<NumberExpressionNode>(NumberValue);
   getNextToken(); // I consume the number.
-  return std::move(Result);
+  return Result;
 }
 
 /// parenthesized-expression
@@ -355,10 +353,10 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
 ///   | parenthesized-expression ;
 static unique_ptr<ExpressionNode> ParsePrimary() {
   switch (CurrentToken) {
-  case tok_name:
-    return ParseNameExpression(); // I parse `a` or `add(...)`.
   case tok_number:
     return ParseNumberExpression(); // I parse a number such as 3.14.
+  case tok_name:
+    return ParseNameExpression(); // I parse `a` or `add(...)`.
   case tok_lparen:
     return ParseParenthesizedExpression(); // I parse `( ... )`.
   default:
@@ -498,19 +496,23 @@ static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
   consumeNewlines();
 
   if (auto E = ParseExpression())
-    return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(E));
+    return make_unique<FunctionDefinitionNode>(std::move(Signature),
+                                               std::move(E));
   return nullptr;
 }
 
 /// top-level-expression
 ///   = expression ;
 /// A top-level expression (e.g. "1 + 2") is wrapped in an anonymous function
-/// so it fits the same FunctionDefinitionNode shape as everything else. When I add JIT
-/// execution later, I'll look up "__anon_expr" and call it to get the result.
+/// so it fits the same FunctionDefinitionNode shape as everything else. When I
+/// add JIT execution later, I'll look up "__anon_expr" and call it to get the
+/// result.
 static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
   if (auto E = ParseExpression()) {
-    auto Signature = make_unique<FunctionSignatureNode>("__anon_expr", vector<string>());
-    return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(E));
+    auto Signature =
+        make_unique<FunctionSignatureNode>("__anon_expr", vector<string>());
+    return make_unique<FunctionDefinitionNode>(std::move(Signature),
+                                               std::move(E));
   }
   return nullptr;
 }
@@ -519,10 +521,11 @@ static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
 // Top-Level parsing
 //===----------------------------------------===//
 
-/// HandleFunctionDefinition/TopLevelExpression - Called by MainLoop when it sees
-/// the appropriate leading token. On success, print a confirmation. On failure,
-/// skip one token and continue: crude error recovery that keeps the REPL alive
-/// after a bad input without getting stuck on the same bad token forever.
+/// HandleFunctionDefinition/TopLevelExpression - Called by MainLoop when it
+/// sees the appropriate leading token. On success, print a confirmation. On
+/// failure, skip one token and continue: crude error recovery that keeps the
+/// REPL alive after a bad input without getting stuck on the same bad token
+/// forever.
 
 static void HandleFunctionDefinition() {
   if (ParseFunctionDefinition())

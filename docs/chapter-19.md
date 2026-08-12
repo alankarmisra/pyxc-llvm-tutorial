@@ -149,10 +149,10 @@ I add `uint8`, `uint16`, `uint32`, and `uint64` to `type` and `cast-type`, the o
 Four new tokens and keywords:
 
 ```cpp
-tok_uint8  = -65,
-tok_uint16 = -66,
-tok_uint32 = -67,
-tok_uint64 = -68,
+tok_uint8 = -39,
+tok_uint16 = -40,
+tok_uint32 = -41,
+tok_uint64 = -42,
 ```
 
 ```cpp
@@ -172,10 +172,18 @@ UInt64,
 I give `ParseTypeToken` cases for all four so they work in type annotations and the `cast-type` production:
 
 ```cpp
-case tok_uint8:  getNextToken(); BaseType = ValueType::UInt8;  break;
-case tok_uint16: getNextToken(); BaseType = ValueType::UInt16; break;
-case tok_uint32: getNextToken(); BaseType = ValueType::UInt32; break;
-case tok_uint64: getNextToken(); BaseType = ValueType::UInt64; break;
+case tok_uint8:
+  getNextToken();
+  return ValueType::UInt8;
+case tok_uint16:
+  getNextToken();
+  return ValueType::UInt16;
+case tok_uint32:
+  getNextToken();
+  return ValueType::UInt32;
+case tok_uint64:
+  getNextToken();
+  return ValueType::UInt64;
 ```
 
 ## No New LLVM IR Types
@@ -193,25 +201,27 @@ The signedness lives entirely in which instruction I emit. This also matches C's
 
 ## Signed and Unsigned Predicates
 
-I add two new predicate functions that drive all instruction selection:
+I add a new predicate function that drives all instruction selection:
 
 ```cpp
 static bool IsUnsignedIntType(ValueType Type) {
   return Type == ValueType::UInt8 || Type == ValueType::UInt16 ||
          Type == ValueType::UInt32 || Type == ValueType::UInt64;
 }
-
-static bool IsSignedIntType(ValueType Type) {
-  return IsIntType(Type) && !IsUnsignedIntType(Type);
-}
 ```
+
+Every signed/unsigned branch in codegen is a call to `IsUnsignedIntType`; there is no separate `IsSignedIntType` helper, since everywhere that needs "signed" just means "not unsigned" in context.
 
 I expand `IsIntType` to include all four unsigned types:
 
 ```cpp
-return Type == ValueType::Int || Type == ValueType::Int8 || ... ||
-       Type == ValueType::UInt8 || Type == ValueType::UInt16 ||
-       Type == ValueType::UInt32 || Type == ValueType::UInt64;
+static bool IsIntType(ValueType Type) {
+  return Type == ValueType::Int8 || Type == ValueType::Int16 ||
+         Type == ValueType::Int32 || Type == ValueType::Int ||
+         Type == ValueType::Int64 || Type == ValueType::UInt8 ||
+         Type == ValueType::UInt16 || Type == ValueType::UInt32 ||
+         Type == ValueType::UInt64;
+}
 ```
 
 ## Implicit Widening Rule — Same Signedness Only

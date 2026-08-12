@@ -5,7 +5,7 @@ description: "Encode operator precedence in the grammar, then parse subtraction,
 
 ## What I Am Building
 
-In this chapter, I add `-`, `*`, `/`, and `<`. 
+In this chapter, I introduce the `-`, `*`, `/`, and `<` operators.  
 
 ## Source Code
 
@@ -16,7 +16,8 @@ cd pyxc-llvm-tutorial/code/chapter-03
 
 ## Grammar
 
-Here is the complete grammar as a diff against Chapter 2. I reflow Chapter 2’s rules to the same width so the leading `+` and `-` diff markers show only the grammar changes.
+Here is the complete grammar as a diff against Chapter 2. Look for the <i class="fa-solid fa-code"></i>
+<i class="fa-solid fa-code-branch"></i>.
 
 [pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-03/pyxc.ebnf)
 

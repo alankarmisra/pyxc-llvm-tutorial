@@ -172,15 +172,15 @@ Each handler checks `VerboseIR` before printing generated IR:
 ```cpp
 // In HandleFunctionDefinition():
 if (VerboseIR)
-  FnIR->print(errs());
+  FunctionIR->print(errs());
 
 // In HandleExtern:
 if (VerboseIR)
-  FnIR->print(errs());
+  FunctionIR->print(errs());
 
 // In HandleTopLevelExpression:
 if (VerboseIR)
-  FnIR->print(errs());
+  FunctionIR->print(errs());
 ```
 
 After `MainLoop()` finishes, I close an input file that I opened:

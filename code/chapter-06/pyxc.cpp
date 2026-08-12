@@ -148,20 +148,23 @@ static SourceManager PyxcSourceMgr;
 static void PrintErrorSourceContext(SourceLocation Loc);
 static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation Loc);
 
-/// advance - Read one character from stdin, update LexLoc and SourceManager.
+/// advance - I return the next character, normalizing `\r\n` (Windows)
+/// and bare `\r` (Old Macs) into `\n`.
 ///
 /// This is the single point through which all character consumption flows.
 /// Every token branch in getToken() calls advance() rather than getchar()
 /// directly, so LexLoc and the source buffer are always in sync.
-///
-/// Windows line endings (\r\n) are coalesced to a single \n so the rest of
-/// the lexer never needs to handle \r.
 static int advance() {
   int LastChar = getchar();
+
+  // case: '\r' or '\r\n'
   if (LastChar == '\r') {
     int NextChar = getchar();
+
+    // A following '\n' is part of the same line ending; eat it.
+    // Anything else belongs to the next token; put it back.
+    // (EOF can't be put back at all, so it's excluded from that check.)
     if (NextChar != '\n' && NextChar != EOF) {
-      // I read one character too far while checking for '\r\n', so I put it back.
       ungetc(NextChar, stdin);
     }
     PyxcSourceMgr.onChar('\n');
@@ -179,6 +182,7 @@ static int advance() {
     LexLoc.Col++;
   }
 
+  // case '\n' or any other non-newline character
   return LastChar;
 }
 
@@ -427,7 +431,6 @@ public:
   FunctionSignatureNode(const string &Name, vector<string> Parameters)
       : Name(Name), Parameters(std::move(Parameters)) {}
 
-  const string &getName() const { return Name; }
 };
 
 /// FunctionDefinitionNode - This class represents a function definition itself.
@@ -489,7 +492,7 @@ static unique_ptr<ExpressionNode> ParseExpression();
 static unique_ptr<ExpressionNode> ParseNumberExpression() {
   auto Result = make_unique<NumberExpressionNode>(NumberValue);
   getNextToken(); // I consume the number.
-  return std::move(Result);
+  return Result;
 }
 
 /// parenthesized-expression
@@ -554,10 +557,10 @@ static unique_ptr<ExpressionNode> ParsePrimary() {
   switch (CurrentToken) {
   default:
     return LogErrorExpression("unknown token when expecting an expression");
-  case tok_name:
-    return ParseNameExpression(); // I parse `a` or `add(...)`.
   case tok_number:
     return ParseNumberExpression(); // I parse a number such as 3.14.
+  case tok_name:
+    return ParseNameExpression(); // I parse `a` or `add(...)`.
   case tok_lparen:
     return ParseParenthesizedExpression(); // I parse `( ... )`.
   }

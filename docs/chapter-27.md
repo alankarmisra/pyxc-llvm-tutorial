@@ -31,7 +31,7 @@ cd pyxc-llvm-tutorial/code/chapter-27
 
 ## Grammar
 
-`type` now splits into `base-type` plus an optional `array-suffix`, both new productions; `primary` gains `array-literal`, also new. Everything else is unchanged from [Chapter 29](chapter-29.md):
+`type` now splits into `base-type` plus an optional `array-suffix`, both new productions; `primary` gains `array-literal`, also new. Everything else is unchanged from [Chapter 26](chapter-26.md):
 
 ```grammardiff
  program                           = [ end-of-lines ]
@@ -196,11 +196,10 @@ class ArrayLiteralExpressionNode : public ExpressionNode {
 
 public:
   ArrayLiteralExpressionNode(vector<unique_ptr<ExpressionNode>> Elements,
-                      const string &ArrayTypeInfo)
+                             const string &ArrayTypeInfo)
       : Elements(std::move(Elements)) {
     setType(ValueType::Array, ArrayTypeInfo);
   }
-  const vector<unique_ptr<ExpressionNode>> &getElements() const { return Elements; }
   Value *codegen() override;
 };
 ```
@@ -216,8 +215,8 @@ Every pointer in pyxc already carries its pointee type through the struct-name s
 | Type | Encoding |
 |------|----------|
 | `int[4]` | `"1::4"` |
-| `float64[3]` | `"8::3"` |
-| `Point[2]` | `"10:Point:2"` |
+| `float64[3]` | `"12::3"` |
+| `Point[2]` | `"14:Point:2"` |
 
 ```cpp
 static string EncodeArrayType(ValueType ElemType, const string &ElemStructName,
@@ -241,64 +240,48 @@ static bool ArrayDecaysToPointerType(const string &ArrayInfo,
                                      const string &PointerInfo);
 ```
 
-And since an array size is a plain decimal literal I read out of `NumberLiteral` (a string) rather than something the lexer already parsed as a number, I need a small, careful integer parser rather than reusing the float-tolerant number path:
-
-```cpp
-static bool ParseUnsignedDecimal(const string &Text, uint64_t &Out) {
-  if (Text.empty())
-    return false;
-  uint64_t V = 0;
-  for (char C : Text) {
-    if (C < '0' || C > '9')
-      return false;
-    uint64_t D = static_cast<uint64_t>(C - '0');
-    if (V > (std::numeric_limits<uint64_t>::max() - D) / 10)
-      return false;
-    V = V * 10 + D;
-  }
-  Out = V;
-  return true;
-}
-```
-
-The overflow check matters here specifically because array size feeds directly into `ArrayType::get`; I'd rather reject `int[99999999999999999999]` at parse time with a clear error than let it wrap around into something silently wrong.
+The array size itself is read with `std::strtoull`, the same as any other unsigned literal parse in the compiler; there's no dedicated overflow-checked parser for it.
 
 ## Extending Type Parsing for Array Suffixes
 
-Before this chapter, `ParseTypeToken` returned the moment it recognized a base type; there was nowhere left to check for a trailing `[4]`. I have it collect the base type into a local instead of returning immediately, so I can look at what follows before deciding what to return:
+Before this chapter, `ParseTypeToken` returned the moment it recognized a base type; there was nowhere left to check for a trailing `[4]`. I have it collect the base type into a local (`BaseType`/`BaseTypeInfo`) instead of returning immediately, so I can look at what follows before deciding what to return:
 
 ```cpp
 if (CurrentToken == tok_lbracket) {
-  if (BaseType == ValueType::None)
-    return LogErrorExpression("Arrays of None are not allowed"), ValueType::Error;
-  if (BaseType == ValueType::Array)
-    return LogErrorExpression("Nested array types are not supported"), ValueType::Error;
+  if (BaseType == ValueType::None) {
+    LogErrorExpression("Arrays of None are not allowed");
+    return ValueType::Error;
+  }
   getNextToken(); // eat '['
-  if (CurrentToken != tok_number || NumberIsFloat)
-    return LogErrorExpression("Array size must be an integer literal"),
-           ValueType::Error;
-  uint64_t Count = 0;
-  if (!ParseUnsignedDecimal(NumberLiteral, Count))
-    return LogErrorExpression("Invalid array size"), ValueType::Error;
-  if (Count == 0)
-    return LogErrorExpression("Array size must be > 0"), ValueType::Error;
-  getNextToken(); // eat number
-  if (CurrentToken != tok_rbracket)
-    return LogErrorExpression("Expected ']' after array size"), ValueType::Error;
+  if (CurrentToken != tok_number || NumberIsFloat) {
+    LogErrorExpression("Array size must be an integer literal");
+    return ValueType::Error;
+  }
+  uint64_t ElementCount = std::strtoull(NumberLiteral.c_str(), nullptr, 10);
+  if (ElementCount == 0) {
+    LogErrorExpression("Array size must be greater than zero");
+    return ValueType::Error;
+  }
+  getNextToken(); // eat array size
+  if (CurrentToken != tok_rbracket) {
+    LogErrorExpression("Expected ']' after array size");
+    return ValueType::Error;
+  }
   getNextToken(); // eat ']'
-  if (StructName)
-    *StructName = EncodeArrayType(BaseType, BaseStructName, Count);
-  if (CurrentToken == tok_lbracket)
-    return LogErrorExpression("Nested arrays are not supported"), ValueType::Error;
-  return ValueType::Array;
+  if (CurrentToken == tok_lbracket) {
+    LogErrorExpression("Nested arrays are not supported");
+    return ValueType::Error;
+  }
+  BaseTypeInfo = EncodeArrayType(BaseType, BaseTypeInfo, ElementCount);
+  BaseType = ValueType::Array;
 }
 
 if (StructName)
-  *StructName = BaseStructName;
+  *StructName = BaseTypeInfo;
 return BaseType;
 ```
 
-Two different situations both count as "nested array," and I reject both: an alias whose *own* underlying type is already an array (`BaseType == ValueType::Array`), and a literal double suffix like `int[4][2]` (the trailing check after the closing `]`). I verified both:
+The only nested-array case this rejects is a literal double suffix like `int[4][2]`: the check right after the closing `]` catches a second `[` immediately following. pyxc has no type-alias mechanism yet at this chapter, so there's no other route to a hidden array-of-array. I verified the rejection, and separately that a non-literal size is rejected too:
 
 ```pyxc
 var m: int[4][2]
@@ -324,15 +307,15 @@ Error (Line 2, Column 16): Array size must be an integer literal
 ```cpp
 struct ExpectedLiteralTypeGuard {
   ValueType Saved;
-  string SavedStruct;
-  ExpectedLiteralTypeGuard(ValueType Type, const string &StructName = "")
-      : Saved(ExpectedLiteralType), SavedStruct(ExpectedLiteralStructName) {
+  string SavedTypeInfo;
+  ExpectedLiteralTypeGuard(ValueType Type, const string &TypeInfo = "")
+      : Saved(ExpectedLiteralType), SavedTypeInfo(ExpectedLiteralTypeInfo) {
     ExpectedLiteralType = Type;
-    ExpectedLiteralStructName = StructName;
+    ExpectedLiteralTypeInfo = TypeInfo;
   }
   ~ExpectedLiteralTypeGuard() {
     ExpectedLiteralType = Saved;
-    ExpectedLiteralStructName = SavedStruct;
+    ExpectedLiteralTypeInfo = SavedTypeInfo;
   }
 };
 ```
@@ -345,40 +328,40 @@ With that in place, parsing the literal itself is straightforward: read the expe
 static unique_ptr<ExpressionNode> ParseArrayLiteralExpression() {
   if (ExpectedLiteralType != ValueType::Array)
     return LogErrorExpression("Array literal requires an expected array type");
-  ValueType ElemType = ValueType::Error;
-  string ElemStructName;
-  uint64_t Count = 0;
-  if (!DecodeArrayType(ExpectedLiteralStructName, ElemType, ElemStructName,
-                       Count))
+
+  ValueType ElementType = ValueType::Error;
+  string ElementStructName;
+  uint64_t ExpectedCount = 0;
+  if (!DecodeArrayType(ExpectedLiteralTypeInfo, ElementType,
+                       ElementStructName, ExpectedCount))
     return LogErrorExpression("Invalid expected array type");
 
   getNextToken(); // eat '['
   vector<unique_ptr<ExpressionNode>> Elements;
   if (CurrentToken != tok_rbracket) {
     while (true) {
-      ExpectedLiteralTypeGuard Guard(ElemType, ElemStructName);
-      auto E = ParseExpression();
-      if (!E)
+      ExpectedLiteralTypeGuard Guard(ElementType, ElementStructName);
+      auto Element = ParseExpression();
+      if (!Element)
         return nullptr;
-      if (!IsAssignable(ElemType, E->getType()))
+      if (!IsAssignable(ElementType, Element->getType()) ||
+          ((ElementType == ValueType::Struct ||
+            ElementType == ValueType::Pointer) &&
+           ElementStructName != Element->getStructName()))
         return LogErrorExpression("Array literal element type mismatch");
-      if ((ElemType == ValueType::Pointer || ElemType == ValueType::Array ||
-           ElemType == ValueType::Struct) &&
-          ElemStructName != E->getStructName())
-        return LogErrorExpression("Array literal element type mismatch");
-      Elements.push_back(std::move(E));
-      if (CurrentToken == tok_rbracket)
-        break;
+      Elements.push_back(std::move(Element));
       if (CurrentToken != tok_comma)
-        return LogErrorExpression("Expected ']' or ',' in array literal");
-      getNextToken();
+        break;
+      getNextToken(); // eat ','
     }
   }
+  if (CurrentToken != tok_rbracket)
+    return LogErrorExpression("Expected ']' after array literal");
   getNextToken(); // eat ']'
-  if (Elements.size() != Count)
+  if (Elements.size() != ExpectedCount)
     return LogErrorExpression("Array literal element count mismatch");
-  return make_unique<ArrayLiteralExpressionNode>(std::move(Elements),
-                                          ExpectedLiteralStructName);
+  return make_unique<ArrayLiteralExpressionNode>(
+      std::move(Elements), ExpectedLiteralTypeInfo);
 }
 ```
 
@@ -398,115 +381,91 @@ An array literal isn't stored anywhere until something assigns it, so its own co
 
 ```cpp
 Value *ArrayLiteralExpressionNode::codegen() {
-  ValueType ElemType = ValueType::Error;
-  string ElemStructName;
-  uint64_t Count = 0;
-  if (!DecodeArrayType(getStructName(), ElemType, ElemStructName, Count))
+  ValueType ElementType = ValueType::Error;
+  string ElementStructName;
+  uint64_t ElementCount = 0;
+  if (!DecodeArrayType(getStructName(), ElementType, ElementStructName,
+                       ElementCount))
     return LogErrorV("Invalid array literal type");
-  if (Elements.size() != Count)
-    return LogErrorV("Array literal element count mismatch");
 
-  auto *ArrTy = dyn_cast<ArrayType>(LLVMTypeFor(getType(), getStructName()));
-  if (!ArrTy)
-    return LogErrorV("Invalid array LLVM type");
-
-  Value *Agg = UndefValue::get(ArrTy);
-  for (size_t I = 0; I < Elements.size(); ++I) {
-    Value *Elem = Elements[I]->codegen();
-    if (!Elem)
+  Value *Aggregate = UndefValue::get(LLVMTypeFor(getType(), getStructName()));
+  for (size_t Index = 0; Index < Elements.size(); ++Index) {
+    Value *Element = Elements[Index]->codegen();
+    if (!Element)
       return nullptr;
-    Elem = EmitImplicitCast(Elem, Elements[I]->getType(), ElemType);
-    if (!Elem)
-      return nullptr;
-    Agg = Builder->CreateInsertValue(Agg, Elem, {static_cast<unsigned>(I)},
-                                     "arr.ins");
+    Element = EmitImplicitCast(Element, Elements[Index]->getType(), ElementType);
+    if (!Element)
+      return LogErrorV("Array literal element type mismatch");
+    Aggregate = Builder->CreateInsertValue(Aggregate, Element,
+                                           {static_cast<unsigned>(Index)},
+                                           "arrayinit");
   }
-  return Agg;
+  return Aggregate;
 }
 ```
+
+The element-count check (`Elements.size() != Count`) doesn't need to be repeated here: `ParseArrayLiteralExpression` already rejected a mismatched count before this node was ever constructed, so by the time codegen runs the counts are guaranteed to agree.
 
 Whatever consumes this value, a `var` initializer, is what actually stores it into stack memory; this function never allocates anything itself.
 
-## Indexing: Reusing Pointer Arithmetic Instead of Duplicating It
+## Indexing: One Address Node, Two Kinds of Base
 
-I already had a helper, `BuildIndexElementPtr`, that computes the address `arr[i]` should read from or write to for pointer values. Rather than write a second, parallel version for arrays, I teach the *first step* of that helper to also accept an array, producing an equivalent starting pointer, then let everything after that step stay exactly as it was:
+`arr[i]` and `p[i]` both parse into the same `IndexExpressionNode` from chapter 26 (`Base`, an `Index`, plus the element type), because `ParseNameExpressionWithName`'s chaining loop only checks that the current result is a `Pointer` before wrapping it. An array variable's type is `Array`, not `Pointer`, at parse time, so I widen that check to also accept `Array` and decode the element type from `DecodeArrayType` instead of `DecodePointerType` when the base is one.
+
+The real branching happens in codegen, where `IndexExpressionNode::codegenAddress()` decides how to reach the base address depending on whether the base is a pointer or an array:
 
 ```cpp
-static Value *BuildIndexElementPtr(IndexExpressionNode *IdxExpr) {
-  ValueType PtrType = ValueType::Error;
-  string PtrStructName;
-  Value *BasePtr = nullptr;
-  if (IdxExpr->getFieldPath().empty()) {
-    auto It = NamedValues.find(IdxExpr->getBaseName());
-    if (It != NamedValues.end() && It->second) {
-      PtrType = NamedValueTypes[IdxExpr->getBaseName()];
-      PtrStructName = NamedValueStructNames[IdxExpr->getBaseName()];
-      if (PtrType == ValueType::Pointer) {
-        BasePtr = Builder->CreateLoad(LLVMTypeFor(ValueType::Pointer),
-                                      It->second, "ptrload");
-      } else if (PtrType == ValueType::Array) {
-        Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
-        auto *ArrTy = LLVMTypeFor(PtrType, PtrStructName);
-        BasePtr = Builder->CreateInBoundsGEP(ArrTy, It->second, {Zero, Zero},
-                                             "arraydecay");
-      }
-    } else if (auto *GV = GetGlobalVariable(IdxExpr->getBaseName())) {
-      PtrType = GlobalVarTypes[IdxExpr->getBaseName()];
-      PtrStructName = GlobalVarStructTypes[IdxExpr->getBaseName()];
-      if (PtrType == ValueType::Pointer) {
-        BasePtr =
-            Builder->CreateLoad(LLVMTypeFor(ValueType::Pointer), GV, "ptrload");
-      } else if (PtrType == ValueType::Array) {
-        Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
-        auto *ArrTy = LLVMTypeFor(PtrType, PtrStructName);
-        BasePtr =
-            Builder->CreateInBoundsGEP(ArrTy, GV, {Zero, Zero}, "arraydecay");
-      }
-    }
-  } else {
-    BasePtr = LoadPointerValue(IdxExpr->getBaseName(), IdxExpr->getFieldPath(),
-                               PtrType, PtrStructName);
-  }
-  if (!BasePtr)
-    return LogErrorV("Indexing requires a pointer or array value");
-  Value *IdxVal = IdxExpr->getIndex()->codegen();
-  if (!IdxVal)
+Value *IndexExpressionNode::codegenAddress() {
+  Value *IndexValue = Index->codegen();
+  if (!IndexValue)
     return nullptr;
-  if (!IsIntType(IdxExpr->getIndex()->getType()))
-    return LogErrorV("Pointer index must be an integer");
-  if (IdxExpr->getIndex()->getType() != ValueType::Int64) {
-    IdxVal = EmitImplicitCast(IdxVal, IdxExpr->getIndex()->getType(),
-                              ValueType::Int64);
-    if (!IdxVal)
-      return LogErrorV("Index must be an integer");
+  IndexValue = Builder->CreateIntCast(
+      IndexValue, Type::getInt64Ty(*TheContext),
+      !IsUnsignedIntType(Index->getType()), "index");
+
+  if (Base->getType() == ValueType::Array) {
+    Value *ArrayAddress = Base->codegenAddress();
+    if (!ArrayAddress)
+      return nullptr;
+    Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
+    return Builder->CreateInBoundsGEP(
+        LLVMTypeFor(Base->getType(), Base->getStructName()), ArrayAddress,
+        {Zero, IndexValue}, "elemptr");
   }
+
+  Value *BasePointer = Base->codegen();
+  if (!BasePointer)
+    return nullptr;
   return Builder->CreateInBoundsGEP(
-      LLVMTypeFor(IdxExpr->getType(), IdxExpr->getStructName()), BasePtr,
-      IdxVal, "elemptr");
+      LLVMTypeFor(getType(), getStructName()), BasePointer, IndexValue,
+      "elemptr");
 }
 ```
 
-For a pointer, `BasePtr` is just whatever address it holds, loaded normally. For an array, there's no pointer stored anywhere to load; the array's storage *is* the value. So I get an equivalent pointer the same way C does, a GEP with two zero indices that steps through the alloca to the array, then through the array to its first element. Once `BasePtr` exists, both cases fall through to the exact same final `getelementptr`, offset by the index. I confirmed this produces two separate GEP instructions, not one combined one, by compiling and reading the IR myself rather than assuming:
+For a pointer, `Base->codegen()` loads whatever address it holds, and a single-index GEP steps by `IndexValue` elements from there. For an array, there's no pointer stored anywhere to load: the array's storage *is* the value, so I take `Base->codegenAddress()` (the alloca or global itself) and GEP through it with two indices, a zero to step into the array and `IndexValue` to reach the element, the same shape LLVM expects for indexing directly into an aggregate. I compiled `scores[2]` and read the IR rather than assuming, and it's a single `getelementptr` with two indices, not two chained GEPs:
 
 ```llvm
-%arraydecay = getelementptr inbounds [4 x i64], ptr %a1, i64 0, i64 0
-%elemptr = getelementptr inbounds i64, ptr %arraydecay, i64 0
+%elemptr = getelementptr inbounds [4 x i64], ptr %scores, i64 0, i64 2
 %elemload = load i64, ptr %elemptr, align 8
 ```
 
 ## Using an Array Where a Pointer Is Expected
 
-Indexing isn't the only place an array needs to become a pointer. Passing an array variable as a whole, to a function expecting `ptr[T]`, needs the same decay. `NameExpressionNode::codegen` gets a small local lambda for exactly this:
+Indexing isn't the only place an array needs to become a pointer. Passing an array variable as a whole, to a function expecting `ptr[T]`, needs the same decay. `NameExpressionNode::codegen` checks for an `Array` type before it does its normal load, and GEPs to the first element instead:
 
 ```cpp
-auto DecayArray = [&](Value *BasePtr) -> Value * {
-  if (getType() != ValueType::Array)
-    return BasePtr;
-  auto *ArrTy = LLVMTypeFor(getType(), getStructName());
-  Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
-  return Builder->CreateInBoundsGEP(ArrTy, BasePtr, {Zero, Zero},
-                                    "arraydecay");
-};
+Value *NameExpressionNode::codegen() {
+  if (getType() == ValueType::Array) {
+    Value *ArrayAddress = codegenAddress();
+    if (!ArrayAddress)
+      return LogErrorV("Unknown variable name");
+    Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
+    return Builder->CreateInBoundsGEP(
+        LLVMTypeFor(getType(), getStructName()), ArrayAddress, {Zero, Zero},
+        "arraydecay");
+  }
+  // ...normal load path for non-array variables...
+}
 ```
 
 Loading an array by name would otherwise hand back the entire aggregate, which is only meaningful as something to `store`, not something to pass around as a value. Function-call argument checking uses `ArrayDecaysToPointerType` to allow this specific case through even though `ptr[int]` and `int[4]` aren't the same `ValueType`:

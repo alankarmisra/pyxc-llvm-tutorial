@@ -45,30 +45,31 @@ static map<string, Token> Keywords = {
 // I map each named token to a readable string for debug output and error
 // reporting.
 static map<int, string> TokenNames = {
-    {tok_eof, "end of input"},
-    {tok_eol, "newline"},
-    {tok_error, "error"},
-    {tok_def, "'def'"},
-    {tok_name, "name"},
-    {tok_number, "number"},
-    {tok_lparen, "'('"},
-    {tok_rparen, "')'"},
-    {tok_comma, "','"},
-    {tok_colon, "':'"},
-    {tok_plus, "'+'"},
+    {tok_eof, "end of input"}, {tok_eol, "newline"}, {tok_error, "error"},
+    {tok_def, "'def'"},        {tok_name, "name"},   {tok_number, "number"},
+    {tok_lparen, "'('"},       {tok_rparen, "')'"},  {tok_comma, "','"},
+    {tok_colon, "':'"},        {tok_plus, "'+'"},
 };
 
-/// advance - I return the next character, coalescing `\r\n` (Windows) into
-/// `\n` and converting bare `\r` (Old Macs) into `\n`.
+/// advance - I return the next character, normalizing `\r\n` (Windows)
+/// and bare `\r` (Old Macs) into `\n`.
 int advance() {
   int LastChar = getchar();
+
+  // case: '\r' or '\r\n'
   if (LastChar == '\r') {
     int NextChar = getchar();
+
+    // A following '\n' is part of the same line ending; eat it.
+    // Anything else belongs to the next token; put it back.
+    // (EOF can't be put back at all, so it's excluded from that check.)
     if (NextChar != '\n' && NextChar != EOF) {
       ungetc(NextChar, stdin);
     }
     return '\n';
   }
+
+  // case '\n' or any other non-newline character
   return LastChar;
 }
 
@@ -104,7 +105,7 @@ int getToken() {
     } while (isdigit(LastChar) || LastChar == '.');
     // I leave the first character that is not part of this number in LastChar.
 
-    // TODO: I incorrectly lex 1.23.45.67 as 1.23.
+    // TODO: I consume all of 1.23.45.67 but parse it as 1.23.
     NumberValue = strtod(NumStr.c_str(), 0);
     return tok_number;
   }
@@ -156,15 +157,14 @@ int getToken() {
 //===----------------------------------------===//
 
 int main() {
-  int tok;
-  while ((tok = getToken()) != tok_eof) {
-    if (tok == tok_name)
-      fprintf(stdout, "%s: %s\n", TokenNames.at(tok).c_str(),
-              Name.c_str());
-    else if (tok == tok_number)
-      fprintf(stdout, "%s: %g\n", TokenNames.at(tok).c_str(), NumberValue);
+  int Token;
+  while ((Token = getToken()) != tok_eof) {
+    if (Token == tok_name)
+      fprintf(stdout, "%s: %s\n", TokenNames.at(Token).c_str(), Name.c_str());
+    else if (Token == tok_number)
+      fprintf(stdout, "%s: %g\n", TokenNames.at(Token).c_str(), NumberValue);
     else
-      fprintf(stdout, "%s\n", TokenNames.at(tok).c_str());
+      fprintf(stdout, "%s\n", TokenNames.at(Token).c_str());
   }
   return 0;
 }

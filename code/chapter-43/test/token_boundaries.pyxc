@@ -1,0 +1,16 @@
+# RUN: printf 'def foo2(x2: int) -> int:\n  return x2' > %t.name.pyxc
+# RUN: %pyxc --emit llvm-ir -o %t.name.ll %t.name.pyxc
+# RUN: grep -Fq '@foo2' %t.name.ll
+# RUN: printf 'def main() -> int:\n  return 42' > %t.number.pyxc
+# RUN: %pyxc --emit llvm-ir -o %t.number.ll %t.number.pyxc
+# RUN: grep -Fq 'ret i64 42' %t.number.ll
+# RUN: printf 'def main() -> int:\n  return 1 + 2\n' > %t.spaces.pyxc
+# RUN: printf 'def main() -> int:\n  return 1\t+\t2\n' > %t.tabs.pyxc
+# RUN: %pyxc --emit llvm-ir -o %t.spaces.ll %t.spaces.pyxc
+# RUN: %pyxc --emit llvm-ir -o %t.tabs.ll %t.tabs.pyxc
+# RUN: diff -u %t.spaces.ll %t.tabs.ll
+# RUN: %pyxc < /dev/null > %t.empty 2>&1
+# RUN: not grep -Fq "Error:" %t.empty
+
+# token boundaries: digits may continue names, a number may end directly at
+# EOF, tabs separate tokens like spaces, and empty input terminates cleanly.

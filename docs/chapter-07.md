@@ -487,18 +487,21 @@ After code generation succeeds, I print the IR for the current input:
 
 ```cpp
 // In HandleFunctionDefinition:
-if (auto *FnIR = FnAST->codegen()) {
+if (auto *FunctionIR = FunctionDefinition->codegen()) {
   fprintf(stderr, "Parsed a function definition.\n");
-  FnIR->print(errs());
+  FunctionIR->print(errs());
   fprintf(stderr, "\n");
 }
 
 // In HandleTopLevelExpression:
-if (auto *FnIR = FnAST->codegen()) {
+if (auto *FunctionIR = FunctionDefinition->codegen()) {
   fprintf(stderr, "Parsed a top-level expression.\n");
-  FnIR->print(errs());
+  FunctionIR->print(errs());
   fprintf(stderr, "\n");
-  FnIR->eraseFromParent();
+
+  // Erase after printing — anonymous expressions don't belong in the final
+  // module dump.
+  FunctionIR->eraseFromParent();
 }
 ```
 

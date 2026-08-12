@@ -15,7 +15,7 @@ def add(x, y):
 print(add(1, 2)) # call the add function and print its value    
 ```
 
-In the last chapter I stripped out all the comments and converted the code into a stream of tokens. I now want to arrange these tokens into a hierarchical structure so I can make the relationships between different items clear.
+In the last chapter, I stripped out all the comments and converted the code into a stream of tokens. I now want to arrange these tokens into a hierarchical structure so I can make the relationships between different items clear.
 
 ## Source Code
 
@@ -24,72 +24,12 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-02
 ```
 
-## Grammar
-
-I've collected all the grammar rules I write above each parsing function later in this chapter, and put them here up front. This makes up the complete grammar for pyxc at this stage — the tool I use going forward to check what I've built.
-
-[pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-02/pyxc.ebnf)
-
-```ebnf
-(*
-   pyxc.ebnf
-   Baseline grammar for chapter 2.
-*)
-
-(*
-   { } = zero or more (any number of...)
-   [ ] = zero or one (optional)
-*)
-program                    = [ end-of-lines ]
-                             [ top-level-item { end-of-lines top-level-item } ]
-                             [ end-of-lines ] ;
-end-of-lines               = end-of-line { end-of-line } ;
-top-level-item             = function-definition | top-level-expression ;
-function-definition        = "def" function-signature ":"
-                             [ end-of-lines ] expression ;
-top-level-expression       = expression ;
-function-signature         = name "(" [ parameters ] ")" ;
-parameters                 = parameter { "," parameter } ;
-parameter                  = name ;
-expression                 = sum ;
-sum                        = term { "+" term } ;
-term                       = primary ;
-primary                    = name-expression
-                             | number-expression
-                             | parenthesized-expression ;
-name-expression            = name
-                             | call-expression ;
-call-expression            = name "(" [ arguments ] ")" ;
-arguments                  = expression { "," expression } ;
-number-expression          = number ;
-parenthesized-expression   = "(" expression ")" ;
-name                       = (letter | "_") { letter | digit | "_" } ;
-number                     = digit { digit } [ "." { digit } ]
-                             | "." digit { digit } ;
-letter                     = "A".."Z" | "a".."z" ;
-digit                      = "0".."9" ;
-end-of-line                = "\r\n" | "\r" | "\n" ;
-(*
-    A `comment` begins with "#" and continues to the end of the line. The lexer
-     ignores its text and returns an end-of-line token when one follows it.
-*)
-comment                    = "#" { comment-character } ;
-comment-character          = ? any character except "\r" and "\n" ? ;
-(*
-    `whitespace` may appear before or between tokens
-     and is ignored by the lexer.
-*)
-whitespace                 = " " | "\t" | "\v" | "\f" ;
-```
-
-I wrote the grammar in two layers.
-
-- I use the bottom rules — `name`, `number`, `letter`, `digit`, `end-of-line`, `comment`, `comment-character`, and `whitespace` — to turn raw characters into tokens.
-- I use the top rules — `expression`, `function-definition`, `function-signature`, and so on — to arrange those tokens into syntax and specify which token may follow another.
+!!!note
+    For a beginner compiler writer, the following can be a lot of information to grok. Take your time with it. And don't be disheartened if it seems slow going. Once you have your fundamentals down, the later chapters get much easier to wrap your head around. I'm not saying this merely to encourage you. It has been true in my own experience.
 
 ## Representing Structure
 
-I went through several iterations before I arrived at the structures in the following sections. I made omissions, mistakes, sub-optimal decisions, and some lasting good decisions too (beginner's luck). I would not be surprised if I find better ways to do this later.
+I went through several iterations before I arrived at the structures in the following sections. I made omissions, mistakes, sub-optimal decisions, and some lasting good decisions (beginner's luck). 
 
 ### Function definitions 
 
@@ -276,7 +216,6 @@ class FunctionSignatureNode {
 public:
   FunctionSignatureNode(const string &Name, vector<string> Parameters)
       : Name(Name), Parameters(std::move(Parameters)) {}
-  const string &getName() const { return Name; }
 };
 ```
 
@@ -312,7 +251,18 @@ FunctionDefinitionNode
 
 ## The Parser
 
-Now I get to turn the token stream into trees, a process compiler writers call **parsing**. Before I write the parsing functions themselves, I need two supporting pieces in place: error reporting, since every parsing function will call into it, and a way to read one token at a time. I'll set both up first, then move on to parsing itself.
+Before I write the parsing functions themselves, I need two supporting pieces in place: a way to read one token at a time and a way to report errors. I'll set both up first, then move on to parsing itself.
+
+### Reading Ahead 
+
+I read one token at a time and store it in `CurrentToken`, a global variable:
+
+```cpp
+static int CurrentToken;
+static int getNextToken() { return CurrentToken = getToken(); }
+```
+
+Looking ahead one token turns out to be enough: I can always tell what I'm parsing from the next token. A number is just a number, nothing more comes after it. A name is either a variable or the start of a function call, and whether a `(` follows right after is all I need to tell which. A `(` that wasn't preceded by a name is a parenthesized expression.
 
 ### Error Reporting
 
@@ -338,17 +288,6 @@ I could implement this with a template, but I don't want to call `LogError<Expre
 
 In [Chapter 5](chapter-05.md), I add source locations—line and column—to these diagnostics.
 
-### Reading Ahead 
-
-Next, I read one token at a time and store it in `CurrentToken`, a global variable:
-
-```cpp
-static int CurrentToken;
-static int getNextToken() { return CurrentToken = getToken(); }
-```
-
-Looking ahead one token turns out to be enough: I can always tell what I'm parsing from the next token. A number is just a number, nothing more comes after it. A name is either a variable or the start of a function call, and whether a `(` follows right after is all I need to tell which. A `(` that wasn't preceded by a name is a parenthesized expression.
-
 ## Parsing Expressions
 
 Above each parsing function below, I write a short comment describing the construct it parses. Compiler writers call a rule like this a **grammar** rule, written in a compact notation:
@@ -369,7 +308,7 @@ When I receive `tok_number` from the lexer, I already have its value in the glob
 static unique_ptr<ExpressionNode> ParseNumberExpression() {
   auto Result = make_unique<NumberExpressionNode>(NumberValue);
   getNextToken(); // I consume the number.
-  return std::move(Result);
+  return Result;
 }
 ```
 
@@ -382,9 +321,17 @@ After reading a name, I peek at the next token. No `(` means it's a plain variab
 ```pyxc
 a     # variable
 add() # function call
+add(p1) # function call with a parameter
+add(p1, p2) # function call with parameters
 ```
 
-This is how I parse both forms.
+For function calls, I need to parse arguments, if any, which are expressions. The expression parser will come later, so let me forward-declare it. 
+
+```cpp
+static unique_ptr<ExpressionNode> ParseExpression();
+```
+
+And now I parse both forms.
 
 ```cpp
 /// name-expression
@@ -461,9 +408,12 @@ I now have parsing functions for three basic building blocks: numbers, names, an
 ///   | parenthesized-expression ;
 static unique_ptr<ExpressionNode> ParsePrimary() {
   switch (CurrentToken) {
-  case tok_name:       return ParseNameExpression(); // I parse `a` or `add(...)`.
-  case tok_number:     return ParseNumberExpression(); // I parse a number such as 3.14.
-  case tok_lparen:     return ParseParenthesizedExpression(); // I parse `( ... )`.
+  case tok_number:
+    return ParseNumberExpression(); // I parse a number such as 3.14.
+  case tok_name:
+    return ParseNameExpression(); // I parse `a` or `add(...)`.
+  case tok_lparen:
+    return ParseParenthesizedExpression(); // I parse `( ... )`.
   default:
     return LogErrorExpression("unknown token when expecting an expression");
   }
@@ -556,8 +506,6 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
 }
 ```
 
-I could generate parser code from these grammar rules, but I want to write one by hand first.
-
 ### Function Definition
 
 I'll read function definitions now.
@@ -621,6 +569,10 @@ static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
 
 I invented the placeholder name `__anon_expr`, but I could use any valid name. When I add JIT execution in a later chapter, I look up this function by name and call it to evaluate the expression immediately. I then discard it and reuse the same name for the next top-level expression, so I do not need to keep inventing unique names.
 
+!!!note
+    Tools such as GNU Bison, ANTLR, and JavaCC can generate a parser from a grammar. They can save a lot of work, especially as a language grows. I want to write this parser by hand first because it will help me understand how the grammar becomes code. A hand-written parser also gives me direct control over how I build the syntax tree, report errors, and handle the unusual parts of my language. Once I understand those decisions, I can judge whether a parser generator would help me later.
+
+
 ## Mini Driver
 
 I write two handler functions, one for each top-level construct, that call the appropriate parser and either print a success message or skip one bad token to keep the REPL alive:
@@ -657,8 +609,12 @@ static void MainLoop() {
     }
 
     switch (CurrentToken) {
-    case tok_def:    HandleFunctionDefinition();  break;
-    default:         HandleTopLevelExpression(); break;
+    case tok_def:
+      HandleFunctionDefinition();
+      break;
+    default:
+      HandleTopLevelExpression();
+      break;
     }
   }
 }
@@ -927,6 +883,69 @@ ready> ready>
 <!-- code-merge:end -->
 
 With this parser, I accept valid syntax, report invalid syntax, and keep the REPL running after an error.
+
+## Grammar
+
+I've collected all the grammar rules I write above each parsing function in this chapter, and put them here. This makes up the complete grammar for pyxc at this stage.
+
+[pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-02/pyxc.ebnf)
+
+```ebnf
+(*
+   pyxc.ebnf
+   Baseline grammar for chapter 2.
+*)
+
+(*
+   { } = zero or more (any number of...)
+   [ ] = zero or one (optional)
+*)
+program                    = [ end-of-lines ]
+                             [ top-level-item { end-of-lines top-level-item } ]
+                             [ end-of-lines ] ;
+end-of-lines               = end-of-line { end-of-line } ;
+top-level-item             = function-definition | top-level-expression ;
+function-definition        = "def" function-signature ":"
+                             [ end-of-lines ] expression ;
+top-level-expression       = expression ;
+function-signature         = name "(" [ parameters ] ")" ;
+parameters                 = parameter { "," parameter } ;
+parameter                  = name ;
+expression                 = sum ;
+sum                        = term { "+" term } ;
+term                       = primary ;
+primary                    = name-expression
+                             | number-expression
+                             | parenthesized-expression ;
+name-expression            = name
+                             | call-expression ;
+call-expression            = name "(" [ arguments ] ")" ;
+arguments                  = expression { "," expression } ;
+number-expression          = number ;
+parenthesized-expression   = "(" expression ")" ;
+name                       = (letter | "_") { letter | digit | "_" } ;
+number                     = digit { digit } [ "." { digit } ]
+                             | "." digit { digit } ;
+letter                     = "A".."Z" | "a".."z" ;
+digit                      = "0".."9" ;
+end-of-line                = "\r\n" | "\r" | "\n" ;
+(*
+    A `comment` begins with "#" and continues to the end of the line. The lexer
+     ignores its text and returns an end-of-line token when one follows it.
+*)
+comment                    = "#" { comment-character } ;
+comment-character          = ? any character except "\r" and "\n" ? ;
+(*
+    `whitespace` may appear before or between tokens
+     and is ignored by the lexer.
+*)
+whitespace                 = " " | "\t" | "\v" | "\f" ;
+```
+
+I wrote the grammar in two layers.
+
+- I use the bottom rules — `name`, `number`, `letter`, `digit`, `end-of-line`, `comment`, `comment-character`, and `whitespace` — to turn raw characters into tokens.
+- I use the top rules — `expression`, `function-definition`, `function-signature`, and so on — to arrange those tokens into syntax and specify which token may follow another.
 
 ## What's Next
 

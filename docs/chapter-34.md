@@ -32,7 +32,7 @@ def main() -> int:
   var blanks: int
   while (c = getchar()) != EOF:
     if c == ' ':
-      blanks += 1
+      blanks = blanks + 1
   printd(float64(blanks))
   return 0
 ```
@@ -226,24 +226,49 @@ Assignment sits at the loosest level, below every operator tier. `assignment-sta
 
 ## Tail Assignment Check
 
-`ParseExpression` already parses one full `logical-or` — the top of the operator-precedence chain from Chapter 22. I add a check after it returns: if an assignment operator follows, treat what I just parsed as an lvalue and parse the right-hand side by recursing into `ParseExpression` again:
+I add a new grammar tier, `ParseAssignment`, that sits below `ParseExpression` and above `ParseLogicalOr` — the top of the fixed-tier chain from Chapter 22. It parses one full `logical-or`, then checks whether an assignment operator follows; if so, it treats what it just parsed as an lvalue and parses the right-hand side by recursing into itself:
 
 ```cpp
-static unique_ptr<ExpressionNode> ParseExpression() {
+static unique_ptr<ExpressionNode> ParseAssignment() {
   auto Left = ParseLogicalOr();
   if (!Left)
     return nullptr;
-
-  if (CurrentToken != tok_equal && !IsCompoundAssignTok(CurrentToken))
+  if (CurrentToken != tok_equal)
     return Left;
+  if (!Left->isLValue())
+    return LogErrorExpression("Assignment target must be assignable");
 
-  int AssignTok = CurrentToken;
-  getNextToken(); // eat assignment operator
-  ExpectedLiteralTypeGuard Guard(Left->getType(), Left->getStructName());
-  auto Right = ParseExpression(); // right-associative assignment
+  ValueType LeftType = Left->getType();
+  string LeftTypeInfo = Left->getStructName();
+  getNextToken(); // eat '='
+
+  ExpectedLiteralTypeGuard Guard(LeftType, LeftTypeInfo);
+  auto Right = ParseAssignment();
   if (!Right)
     return nullptr;
-  return BuildAssignmentExpr(AssignTok, std::move(Left), std::move(Right));
+
+  if (LeftType == ValueType::Array)
+    return LogErrorExpression("Type mismatch in assignment");
+  if (LeftType == ValueType::Pointer &&
+      Right->getType() == ValueType::Array) {
+    if (!ArrayDecaysToPointerType(Right->getStructName(), LeftTypeInfo))
+      return LogErrorExpression("Type mismatch in assignment");
+  } else {
+    if (!IsAssignable(LeftType, Right->getType()))
+      return LogErrorExpression("Type mismatch in assignment");
+    if ((LeftType == ValueType::Struct || LeftType == ValueType::Pointer) &&
+        LeftTypeInfo != Right->getStructName())
+      return LogErrorExpression("Type mismatch in assignment");
+  }
+
+  return make_unique<AssignmentExpressionNode>(
+      std::move(Left), std::move(Right), LeftType, LeftTypeInfo);
+}
+
+/// expression
+///   = assignment ;
+static unique_ptr<ExpressionNode> ParseExpression() {
+  return ParseAssignment();
 }
 ```
 
@@ -264,37 +289,14 @@ Error (Line 5, Column 29): Type mismatch in assignment
 
 ## Lvalue Validation and Node Construction
 
-All lvalue validation happens in `BuildAssignmentExpr`, a new helper extracted from the old statement-level assignment parser. It pattern-matches on the node type of `Left`:
+Lvalue validation is a single check: `Left->isLValue()`. `isLValue()` is a virtual method on the base `ExpressionNode`, defaulting to `false`; `NameExpressionNode`, `FieldExpressionNode`, `MemberExpressionNode`, and `IndexExpressionNode` each override it to return `true`. `ParseAssignment` doesn't need to know which kind of lvalue it's looking at — it just asks:
 
 ```cpp
-static unique_ptr<ExpressionNode> BuildAssignmentExpr(int AssignTok,
-                                               unique_ptr<ExpressionNode> Left,
-                                               unique_ptr<ExpressionNode> Right) {
-  if (!Left || !Right)
-    return nullptr;
-
-  if (auto *Var = dynamic_cast<NameExpressionNode *>(Left.get())) {
-    // plain variable: produce AssignmentExpressionNode or CompoundAssignmentExpressionNode
-    ...
-  }
-  if (auto *Field = dynamic_cast<FieldExpressionNode *>(Left.get())) {
-    // field access: produce FieldAssignmentExpressionNode or its compound variant
-    ...
-  }
-  if (auto *Idx = dynamic_cast<IndexExpressionNode *>(Left.get())) {
-    // array index: produce IndexAssignmentExpressionNode or its compound variant
-    ...
-  }
-  if (auto *IdxField = dynamic_cast<IndexedFieldExpressionNode *>(Left.get())) {
-    // indexed field: produce IndexedFieldAssignmentExpressionNode or its compound variant
-    ...
-  }
-
+if (!Left->isLValue())
   return LogErrorExpression("Assignment target must be assignable");
-}
 ```
 
-I recognize four lvalue kinds: variable, field, array index, and indexed field. Everything else — `x + 1`, a function call, anything that isn't one of those four node types — falls through to the final `LogErrorExpression`:
+Everything else — `x + 1`, a function call, anything whose `isLValue()` stays `false` — falls straight into that error:
 
 ```pyxc
 (x + 1) = 3
@@ -305,7 +307,7 @@ Error (Line 3, Column 14): Assignment target must be assignable
              ^~~~
 ```
 
-The type-checking inside each branch (`IsAssignable`, struct-name matching) isn't new — I reuse the existing `AssignmentExpressionNode`, `CompoundAssignmentExpressionNode`, and their field/index variants unchanged. `BuildAssignmentExpr` is the only new code; it just decides which one to build.
+Whichever lvalue kind `Left` turned out to be, the result is the same single `AssignmentExpressionNode`. Its `codegen` doesn't pattern-match on node type either: it just calls `Left->codegenAddress()`, and each lvalue class overrides `codegenAddress()` to compute its own storage address, a plain alloca for a name, a `getelementptr` for a field or index. One assignment node covers every lvalue kind because the address computation is already virtual, not because the parser branches on node type.
 
 ## The Value of an Assignment Expression
 
@@ -315,13 +317,11 @@ The type-checking inside each branch (`IsAssignable`, struct-name matching) isn'
 var result: int = (c = 5) + 1   # result is 6; c is 5
 ```
 
-Compound assignment works the same way: `(n -= 1)` produces the new value of `n`, so `while (n -= 1) > 0:` works too.
-
 I don't print this value at the top level, though — a bare `c = 5` typed at the REPL still sets `c` silently, exactly like before this chapter.
 
 ## Right Associativity
 
-The recursive call is to `ParseExpression`, not back into the tighter precedence tiers — so `=` chains right:
+The recursive call is to `ParseAssignment` itself, not back into the tighter precedence tiers — so `=` chains right:
 
 ```pyxc
 a = b = 4   # parsed as: a = (b = 4)
@@ -347,7 +347,7 @@ static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
 }
 ```
 
-So `(x)` and `x` produce the identical AST node — parentheses never wrap anything, they just group. That means `BuildAssignmentExpr` never even sees that parens were there; assignment through them works for free:
+So `(x)` and `x` produce the identical AST node — parentheses never wrap anything, they just group. That means `ParseAssignment` never even sees that parens were there; assignment through them works for free:
 
 ```pyxc
 (x) = 2     # valid: same as x = 2
@@ -373,7 +373,7 @@ ready> a
 ready> b
 4
 ready> var n: int = 5
-ready> (n -= 1)
+ready> n = n - 1
 ready> n
 4
 ready>

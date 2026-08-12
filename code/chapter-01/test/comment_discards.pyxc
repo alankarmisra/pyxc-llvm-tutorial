@@ -1,4 +1,6 @@
-# RUN: %pyxc < %s | grep -qv "name: secret"
+# RUN: %pyxc < %s | FileCheck %s --match-full-lines --implicit-check-not="name: secret"
+
+# CHECK: newline
 
 # comment: text after '#' must not appear as tok_name
 # secret
