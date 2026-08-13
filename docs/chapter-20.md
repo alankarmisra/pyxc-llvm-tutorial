@@ -45,10 +45,10 @@ if (DebugInfo && OptLevel.getNumOccurrences() == 0)
 
 ## Keeping the IR I Actually Wrote
 
-The first change that touches every code path is the `Builder` declaration itself:
+The first change that touches every code path is the `TheBuilder` declaration itself:
 
 ```cpp
-static std::unique_ptr<IRBuilder<NoFolder>> Builder;
+static std::unique_ptr<IRBuilder<NoFolder>> TheBuilder;
 ```
 
 `IRBuilder<>` (what I'd been using) constant-folds arithmetic by default: `1.0 + 2.0` emits the literal `3.0` directly, no `fadd` instruction at all. That's harmless for execution, but it's fatal for debug info, there's no instruction left to attach a source location to. `IRBuilder<NoFolder>` disables that construction-time folding. Every arithmetic expression now emits its instruction, and it's the optimizer, not the builder, that decides what to fold and when. At `-O0` nothing gets folded; at `-O2` the same folding still happens, just later, as an optimization pass instead of a silent side effect of building the IR.
@@ -255,7 +255,7 @@ I call this from `EmitModuleToFile`, right before I open the output file, the la
 static void SetCurrentDebugLocation(unsigned Line) {
   if (!DIB || !CurDIScope)
     return;
-  Builder->SetCurrentDebugLocation(
+  TheBuilder->SetCurrentDebugLocation(
       DILocation::get(*TheContext, Line, 1, CurDIScope));
 }
 ```
@@ -307,7 +307,7 @@ static void EmitDebugDeclare(AllocaInst *Alloca, StringRef Name, unsigned Line,
   }
 
   DIB->insertDeclare(Alloca, Variable, DIB->createExpression(), Location,
-                     Builder->GetInsertBlock());
+                     TheBuilder->GetInsertBlock());
 }
 ```
 

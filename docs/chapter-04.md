@@ -188,8 +188,8 @@ Error: unknown token when expecting an expression (token: ')')
 
 <!-- code-merge:start -->
 ```pyxc
-ready> def add(x, y):
-x + y
+ready> def wrap(x):
+-x % 10
 ```
 ```text
 Parsed a function definition.

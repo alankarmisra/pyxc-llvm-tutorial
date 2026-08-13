@@ -296,14 +296,14 @@ Value *UnaryExpressionNode::codegen() {
   // Built-in unary minus.
   if (Opcode == tok_minus) {
     if (IsIntType(getType()))
-      return Builder->CreateNeg(Operator, "negtmp");
+      return TheBuilder->CreateNeg(Operator, "negtmp");
     if (IsFloatType(getType()))
-      return Builder->CreateFNeg(Operator, "negtmp");
+      return TheBuilder->CreateFNeg(Operator, "negtmp");
     return LogErrorV("Unary '-' not supported for this type");
   }
 
   if (Opcode == tok_exclamation)
-    return Builder->CreateNot(Operator, "nottmp");
+    return TheBuilder->CreateNot(Operator, "nottmp");
 
   return LogErrorV("Unknown unary operator");
 }
@@ -320,28 +320,28 @@ Value *BinaryExpressionNode::codegen() {
     if (!LeftValue)
       return nullptr;
 
-    Function *FunctionIR = Builder->GetInsertBlock()->getParent();
-    BasicBlock *LeftBlock = Builder->GetInsertBlock();
+    Function *FunctionIR = TheBuilder->GetInsertBlock()->getParent();
+    BasicBlock *LeftBlock = TheBuilder->GetInsertBlock();
     BasicBlock *RightBlock =
         BasicBlock::Create(*TheContext, "logic.rhs", FunctionIR);
     BasicBlock *MergeBlock = BasicBlock::Create(*TheContext, "logic.end");
 
     if (Operator == tok_and)
-      Builder->CreateCondBr(LeftValue, RightBlock, MergeBlock);
+      TheBuilder->CreateCondBr(LeftValue, RightBlock, MergeBlock);
     else
-      Builder->CreateCondBr(LeftValue, MergeBlock, RightBlock);
+      TheBuilder->CreateCondBr(LeftValue, MergeBlock, RightBlock);
 
-    Builder->SetInsertPoint(RightBlock);
+    TheBuilder->SetInsertPoint(RightBlock);
     Value *RightValue = Right->codegen();
     if (!RightValue)
       return nullptr;
-    Builder->CreateBr(MergeBlock);
-    RightBlock = Builder->GetInsertBlock();
+    TheBuilder->CreateBr(MergeBlock);
+    RightBlock = TheBuilder->GetInsertBlock();
 
     FunctionIR->insert(FunctionIR->end(), MergeBlock);
-    Builder->SetInsertPoint(MergeBlock);
+    TheBuilder->SetInsertPoint(MergeBlock);
     PHINode *Result =
-        Builder->CreatePHI(Type::getInt1Ty(*TheContext), 2, "logictmp");
+        TheBuilder->CreatePHI(Type::getInt1Ty(*TheContext), 2, "logictmp");
     if (Operator == tok_and) {
       Result->addIncoming(ConstantInt::getFalse(*TheContext), LeftBlock);
       Result->addIncoming(RightValue, RightBlock);

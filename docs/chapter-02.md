@@ -818,6 +818,9 @@ The `test/` directory has lit tests covering the grammar rules. I run the suite 
 llvm-lit test/
 ```
 
+!!!note
+    Until [Chapter 7](chapter-07.md) adds code generation, these tests can only confirm that parsing succeeds, not which operator or value actually ended up in the tree. A parser bug that silently swapped `-` for `+`, for example, would still print `Parsed a top-level expression.` and pass every test here. That gap closes once there's IR to inspect.
+
 ## Try It
 
 <!-- code-merge:start -->

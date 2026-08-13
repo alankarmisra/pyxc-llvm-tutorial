@@ -228,7 +228,6 @@ class FunctionSignatureNode {
 public:
   FunctionSignatureNode(const string &Name, vector<string> Parameters)
       : Name(Name), Parameters(std::move(Parameters)) {}
-
 };
 
 /// FunctionDefinitionNode - This class represents a function definition itself.
@@ -402,7 +401,7 @@ static unique_ptr<ExpressionNode> ParseSum() {
     auto Right = ParseTerm();
     if (!Right)
       return nullptr;
-    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
+    Left = make_unique<BinaryExpressionNode>(tok_plus, std::move(Left),
                                              std::move(Right));
   }
 

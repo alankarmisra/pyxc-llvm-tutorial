@@ -219,6 +219,8 @@ static int advance() {
     return '\n';
   }
 
+  // '\n' resets Col and starts a new buffered line; anything else
+  // just advances Col within the current line.
   if (LastChar == '\n') {
     PyxcSourceMgr.onChar('\n');
     LexLoc.Line++;
@@ -243,7 +245,7 @@ static int advance() {
 /// before any token branch. For most tokens this points at the first
 /// character of the token. For tok_eol the '\n' was already consumed by
 /// advance() on a previous call, so LexLoc is already on the next line;
-/// GetDiagnosticAnchorLoc compensates by subtracting one when building error
+/// GetCaretAnchorLoc compensates by subtracting one when building error
 /// locations for tok_eol.
 ///
 /// The comment path ('#' branch) re-snapshots CurLoc just before returning
@@ -304,7 +306,7 @@ static int getToken() {
     if (LastChar != EOF) {
       // Re-snapshot CurLoc now that the '\n' has been consumed and LexLoc
       // has advanced to the next line. Without this, CurLoc would point at
-      // the '#' column, and GetDiagnosticAnchorLoc would look up the wrong
+      // the '#' column, and GetCaretAnchorLoc would look up the wrong
       // line (because it subtracts 1) when the next token triggers an error.
       CurLoc = LexLoc;
       LastChar = ' ';
@@ -352,7 +354,7 @@ static int getToken() {
 // Diagnostics helpers
 //===----------------------------------------===//
 
-/// GetDiagnosticAnchorLoc - Resolve the source location to attach to an error.
+/// GetCaretAnchorLoc - Resolve the source location to attach to an error.
 ///
 /// For most tokens, CurLoc already points at the right place and is returned
 /// unchanged. The special case is tok_eol: CurLoc for a newline token is
@@ -361,7 +363,7 @@ static int getToken() {
 /// gives the line that just ended, and we report a column one past its last
 /// character — pointing just after the final token on the line, which is
 /// where the missing token (e.g. ':') should have appeared.
-static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
+static SourceLocation GetCaretAnchorLoc(SourceLocation Loc, int Tok) {
   if (Tok != tok_eol || Loc.Line <= 1)
     return Loc;
 
@@ -370,6 +372,10 @@ static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
   const string *PrevLineText = PyxcSourceMgr.getLine(PrevLine);
 
   // guard
+  // PrevLineText is null only if PrevLine hasn't been buffered yet —
+  // it shouldn't happen, since I only get here after consuming that
+  // line's trailing newline, but I fall back to the original Loc
+  // rather than trust an out-of-range read.
   if (!PrevLineText)
     return Loc;
 
@@ -399,6 +405,9 @@ static string FormatTokenForMessage(int Tok) {
 /// spaces before the caret.
 static void PrintErrorSourceContext(SourceLocation Loc) {
   const string *LineText = PyxcSourceMgr.getLine(Loc.Line);
+  // LineText is null only if Loc points past everything buffered so
+  // far (e.g. an uninitialized Loc.Line == 0). Skip printing rather
+  // than dereference it below.
   if (!LineText)
     return;
 
@@ -536,7 +545,7 @@ void Log(const string &message) { fprintf(stderr, "%s", message.c_str()); }
 /// LogErrorExpression* - Error reporting helpers. Each returns nullptr for its respective
 /// type so parse functions can write: return LogErrorExpression("message");
 unique_ptr<ExpressionNode> LogErrorExpression(const char *Str) {
-  SourceLocation Anchor = GetDiagnosticAnchorLoc(CurLoc, CurrentToken);
+  SourceLocation Anchor = GetCaretAnchorLoc(CurLoc, CurrentToken);
   fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
           Str);
   PrintErrorSourceContext(Anchor);
@@ -805,7 +814,7 @@ static unique_ptr<FunctionSignatureNode> ParseExtern() {
 // Code Generation
 //===----------------------------------------===//
 
-// TheContext/TheModule/Builder/NamedValues - Core IR construction globals.
+// TheContext/TheModule/TheBuilder/NamedValues - Core IR construction globals.
 // Recreated fresh for each new module (see InitializeModuleAndManagers).
 //
 // TheContext - Owns all LLVM data structures: types, constants, and the
@@ -817,7 +826,7 @@ static unique_ptr<FunctionSignatureNode> ParseExtern() {
 // new module for every top-level input. Functions defined in earlier modules
 // remain callable via the JIT's symbol table.
 //
-// Builder - A cursor into the IR being built. Point it at a BasicBlock with
+// TheBuilder - A cursor into the IR being built. Point it at a BasicBlock with
 // SetInsertPoint(), then call Create* methods to append instructions.
 //
 // NamedValues - Symbol table for the current function's parameters. Cleared
@@ -844,7 +853,7 @@ static unique_ptr<FunctionSignatureNode> ParseExtern() {
 // in a correct implementation.
 static std::unique_ptr<LLVMContext> TheContext;
 static std::unique_ptr<Module> TheModule;
-static std::unique_ptr<IRBuilder<>> Builder;
+static std::unique_ptr<IRBuilder<>> TheBuilder;
 static std::map<std::string, Value *> NamedValues;
 static std::unique_ptr<PyxcJIT> TheJIT;
 static std::unique_ptr<FunctionPassManager> TheFPM;
@@ -916,7 +925,7 @@ Value *UnaryExpressionNode::codegen() {
     return nullptr;
 
   if (Operator == tok_minus)
-    return Builder->CreateFNeg(OperandValue, "negtmp");
+    return TheBuilder->CreateFNeg(OperandValue, "negtmp");
   return LogErrorV("invalid unary operator");
 }
 
@@ -939,18 +948,18 @@ Value *BinaryExpressionNode::codegen() {
 
   switch (Operator) {
   case tok_plus:
-    return Builder->CreateFAdd(L, R, "addtmp");
+    return TheBuilder->CreateFAdd(L, R, "addtmp");
   case tok_minus:
-    return Builder->CreateFSub(L, R, "subtmp");
+    return TheBuilder->CreateFSub(L, R, "subtmp");
   case tok_star:
-    return Builder->CreateFMul(L, R, "multmp");
+    return TheBuilder->CreateFMul(L, R, "multmp");
   case tok_slash:
-    return Builder->CreateFDiv(L, R, "divtmp");
+    return TheBuilder->CreateFDiv(L, R, "divtmp");
   case tok_percent:
-    return Builder->CreateFRem(L, R, "remtmp");
+    return TheBuilder->CreateFRem(L, R, "remtmp");
   case tok_less:
-    L = Builder->CreateFCmpULT(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+    L = TheBuilder->CreateFCmpULT(L, R, "cmptmp");
+    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   default:
     return LogErrorV("invalid binary operator");
   }
@@ -978,7 +987,7 @@ Value *CallExpressionNode::codegen() {
       return nullptr;
   }
 
-  return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
+  return TheBuilder->CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
 /// FunctionSignatureNode::codegen - Create a function declaration in TheModule: name,
@@ -1018,7 +1027,7 @@ Function *FunctionSignatureNode::codegen() {
 ///    getFunction() either finds an existing declaration in the current module
 ///    (e.g. from a prior 'extern def') or calls Signature->codegen() to create one.
 ///
-/// 2. Create the entry BasicBlock and point the Builder at it. A basic block
+/// 2. Create the entry BasicBlock and point the TheBuilder at it. A basic block
 ///    is a straight-line sequence of instructions with one entry and one exit.
 ///    Every function starts with exactly one entry block.
 ///
@@ -1049,7 +1058,7 @@ Function *FunctionDefinitionNode::codegen() {
 
   // Step 2: create the entry block and point the builder at it.
   BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
-  Builder->SetInsertPoint(BB);
+  TheBuilder->SetInsertPoint(BB);
 
   // Step 3: populate NamedValues with this function's arguments.
   NamedValues.clear();
@@ -1058,7 +1067,7 @@ Function *FunctionDefinitionNode::codegen() {
 
   // Step 4: codegen the body, optimise, verify, or erase on failure.
   if (Value *RetVal = Body->codegen()) {
-    Builder->CreateRet(RetVal);
+    TheBuilder->CreateRet(RetVal);
     verifyFunction(*TheFunction);
 
     // Run the optimisation pipeline: InstCombine, Reassociate, GVN,
@@ -1106,7 +1115,7 @@ static void InitializeModuleAndManagers() {
   // correctly-sized types for the host machine.
   TheModule->setDataLayout(TheJIT->getDataLayout());
 
-  Builder = std::make_unique<IRBuilder<>>(*TheContext);
+  TheBuilder = std::make_unique<IRBuilder<>>(*TheContext);
 
   // Pass and analysis managers.
   TheFPM = std::make_unique<FunctionPassManager>();

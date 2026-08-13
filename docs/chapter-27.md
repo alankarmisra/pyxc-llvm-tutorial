@@ -396,7 +396,7 @@ Value *ArrayLiteralExpressionNode::codegen() {
     Element = EmitImplicitCast(Element, Elements[Index]->getType(), ElementType);
     if (!Element)
       return LogErrorV("Array literal element type mismatch");
-    Aggregate = Builder->CreateInsertValue(Aggregate, Element,
+    Aggregate = TheBuilder->CreateInsertValue(Aggregate, Element,
                                            {static_cast<unsigned>(Index)},
                                            "arrayinit");
   }
@@ -419,7 +419,7 @@ Value *IndexExpressionNode::codegenAddress() {
   Value *IndexValue = Index->codegen();
   if (!IndexValue)
     return nullptr;
-  IndexValue = Builder->CreateIntCast(
+  IndexValue = TheBuilder->CreateIntCast(
       IndexValue, Type::getInt64Ty(*TheContext),
       !IsUnsignedIntType(Index->getType()), "index");
 
@@ -428,7 +428,7 @@ Value *IndexExpressionNode::codegenAddress() {
     if (!ArrayAddress)
       return nullptr;
     Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
-    return Builder->CreateInBoundsGEP(
+    return TheBuilder->CreateInBoundsGEP(
         LLVMTypeFor(Base->getType(), Base->getStructName()), ArrayAddress,
         {Zero, IndexValue}, "elemptr");
   }
@@ -436,7 +436,7 @@ Value *IndexExpressionNode::codegenAddress() {
   Value *BasePointer = Base->codegen();
   if (!BasePointer)
     return nullptr;
-  return Builder->CreateInBoundsGEP(
+  return TheBuilder->CreateInBoundsGEP(
       LLVMTypeFor(getType(), getStructName()), BasePointer, IndexValue,
       "elemptr");
 }
@@ -460,7 +460,7 @@ Value *NameExpressionNode::codegen() {
     if (!ArrayAddress)
       return LogErrorV("Unknown variable name");
     Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
-    return Builder->CreateInBoundsGEP(
+    return TheBuilder->CreateInBoundsGEP(
         LLVMTypeFor(getType(), getStructName()), ArrayAddress, {Zero, Zero},
         "arraydecay");
   }

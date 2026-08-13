@@ -416,7 +416,7 @@ And I switch `BreakStatementNode::codegen` from `LoopControlStack.back().BreakTa
 Value *BreakStatementNode::codegen() {
   if (BreakTargetStack.empty())
     return LogErrorV("'break' used outside of a loop or switch");
-  Builder->CreateBr(BreakTargetStack.back());
+  TheBuilder->CreateBr(BreakTargetStack.back());
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 ```
@@ -437,7 +437,7 @@ Value *SwitchStatementNode::codegen() {
   if (!ConditionType)
     return LogErrorV("Switch condition must be an integer type");
 
-  Function *FunctionIR = Builder->GetInsertBlock()->getParent();
+  Function *FunctionIR = TheBuilder->GetInsertBlock()->getParent();
   BasicBlock *AfterBlock =
       BasicBlock::Create(*TheContext, "switch.after", FunctionIR);
   BasicBlock *DefaultBlock =
@@ -449,7 +449,7 @@ Value *SwitchStatementNode::codegen() {
   for (const auto &Case : Cases)
     CaseCount += Case.first.size();
   auto *SwitchIR =
-      Builder->CreateSwitch(ConditionValue, DefaultBlock, CaseCount);
+      TheBuilder->CreateSwitch(ConditionValue, DefaultBlock, CaseCount);
 
   vector<BasicBlock *> CaseBlocks;
   for (const auto &Case : Cases) {
@@ -465,32 +465,32 @@ Value *SwitchStatementNode::codegen() {
 
   BreakTargetStack.push_back(AfterBlock);
   for (size_t Index = 0; Index < Cases.size(); ++Index) {
-    Builder->SetInsertPoint(CaseBlocks[Index]);
+    TheBuilder->SetInsertPoint(CaseBlocks[Index]);
     if (!Cases[Index].second->codegen()) {
       BreakTargetStack.pop_back();
       return nullptr;
     }
-    if (!Builder->GetInsertBlock()->getTerminator())
-      Builder->CreateBr(AfterBlock);
+    if (!TheBuilder->GetInsertBlock()->getTerminator())
+      TheBuilder->CreateBr(AfterBlock);
   }
 
   if (DefaultCase) {
-    Builder->SetInsertPoint(DefaultBlock);
+    TheBuilder->SetInsertPoint(DefaultBlock);
     if (!DefaultCase->codegen()) {
       BreakTargetStack.pop_back();
       return nullptr;
     }
-    if (!Builder->GetInsertBlock()->getTerminator())
-      Builder->CreateBr(AfterBlock);
+    if (!TheBuilder->GetInsertBlock()->getTerminator())
+      TheBuilder->CreateBr(AfterBlock);
   }
   BreakTargetStack.pop_back();
 
-  Builder->SetInsertPoint(AfterBlock);
+  TheBuilder->SetInsertPoint(AfterBlock);
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 ```
 
-`Builder->CreateSwitch(ConditionValue, DefaultBlock, CaseCount)` emits the `switch` instruction itself, with the default destination and a hint for how many cases to expect — `CaseCount` counts individual values, not `case` clauses, so `case 0, 6:` contributes two to the hint even though it's one clause with one body. When there's no `default` in the source, `DefaultBlock` is just `AfterBlock` — no matching value falls straight through to after the switch, same as a real `default` that does nothing. `SwitchIR->addCase(Constant, CaseBlock)` registers each value.
+`TheBuilder->CreateSwitch(ConditionValue, DefaultBlock, CaseCount)` emits the `switch` instruction itself, with the default destination and a hint for how many cases to expect — `CaseCount` counts individual values, not `case` clauses, so `case 0, 6:` contributes two to the hint even though it's one clause with one body. When there's no `default` in the source, `DefaultBlock` is just `AfterBlock` — no matching value falls straight through to after the switch, same as a real `default` that does nothing. `SwitchIR->addCase(Constant, CaseBlock)` registers each value.
 
 If a case body doesn't end in a terminator, I add an unconditional branch to `switch.after` myself. That's the whole no-fallthrough guarantee — every case exits to `switch.after` unless it already returned or broke somewhere else. There's no way to stack empty `case`s to share a body the way C does; if two values need the same code, list them on one `case` line instead.
 

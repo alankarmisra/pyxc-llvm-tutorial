@@ -293,10 +293,10 @@ case tok_caret: {
   if (!L || !R)
     return LogErrorV("Type mismatch in binary operator");
   if (Operator == tok_ampersand)
-    return Builder->CreateAnd(L, R, "bwand");
+    return TheBuilder->CreateAnd(L, R, "bwand");
   if (Operator == tok_pipe)
-    return Builder->CreateOr(L, R, "bwor");
-  return Builder->CreateXor(L, R, "bwxor");
+    return TheBuilder->CreateOr(L, R, "bwor");
+  return TheBuilder->CreateXor(L, R, "bwxor");
 }
 case tok_shift_left:
 case tok_shift_right: {
@@ -304,10 +304,10 @@ case tok_shift_right: {
   if (!R)
     return LogErrorV("Type mismatch in shift operator");
   if (Operator == tok_shift_left)
-    return Builder->CreateShl(L, R, "shltmp");
+    return TheBuilder->CreateShl(L, R, "shltmp");
   return IsUnsignedIntType(LType)
-             ? Builder->CreateLShr(L, R, "shrtmp")
-             : Builder->CreateAShr(L, R, "shrtmp");
+             ? TheBuilder->CreateLShr(L, R, "shrtmp")
+             : TheBuilder->CreateAShr(L, R, "shrtmp");
 }
 ```
 
@@ -321,7 +321,7 @@ Each bitwise operator maps to a single LLVM instruction: `and`, `or`, or `xor`. 
 
 ```cpp
 if (Opcode == tok_tilde)
-  return Builder->CreateNot(Operator, "bnottmp");
+  return TheBuilder->CreateNot(Operator, "bnottmp");
 ```
 
 `CreateNot` lowers to `xor %val, -1`: XOR-ing every bit against a mask of all ones flips each one. The instruction name `bnottmp` (bitwise not) distinguishes it in the IR from `nottmp`, the name [Chapter 21](chapter-21.md)'s logical `!` uses for its `i1` negation.

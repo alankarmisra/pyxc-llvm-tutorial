@@ -184,7 +184,7 @@ I create a new context, module, and builder. I also copy the JIT's target data l
 TheContext = std::make_unique<LLVMContext>();
 TheModule = std::make_unique<Module>("PyxcJIT", *TheContext);
 TheModule->setDataLayout(TheJIT->getDataLayout());
-Builder = std::make_unique<IRBuilder<>>(*TheContext);
+TheBuilder = std::make_unique<IRBuilder<>>(*TheContext);
 ```
 
 LLVM requires the module's data layout to match the JIT target. It describes details such as pointer widths and type alignment.

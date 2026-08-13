@@ -277,6 +277,8 @@ static int advance() {
     return '\n';
   }
 
+  // '\n' resets Col and starts a new buffered line; anything else
+  // just advances Col within the current line.
   if (LastChar == '\n') {
     PyxcSourceMgr.onChar('\n');
     LexLoc.Line++;
@@ -313,7 +315,7 @@ static int peek() {
 /// before any token branch. For most tokens this points at the first
 /// character of the token. For tok_eol the '\n' was already consumed by
 /// advance() on a previous call, so LexLoc is already on the next line;
-/// GetDiagnosticAnchorLoc compensates by subtracting one when building error
+/// GetCaretAnchorLoc compensates by subtracting one when building error
 /// locations for tok_eol.
 ///
 /// The comment path ('#' branch) re-snapshots CurLoc just before returning
@@ -463,7 +465,7 @@ static int getToken() {
     if (LastChar != EOF) {
       // Re-snapshot CurLoc now that the '\n' has been consumed and LexLoc
       // has advanced to the next line. Without this, CurLoc would point at
-      // the '#' column, and GetDiagnosticAnchorLoc would look up the wrong
+      // the '#' column, and GetCaretAnchorLoc would look up the wrong
       // line (because it subtracts 1) when the next token triggers an error.
       CurLoc = LexLoc;
       LastChar = ' ';
@@ -548,7 +550,7 @@ static int getToken() {
 // Diagnostics helpers
 //===----------------------------------------===//
 
-/// GetDiagnosticAnchorLoc - Resolve the source location to attach to an error.
+/// GetCaretAnchorLoc - Resolve the source location to attach to an error.
 ///
 /// For most tokens, CurLoc already points at the right place and is returned
 /// unchanged. The special case is tok_eol: CurLoc for a newline token is
@@ -557,7 +559,7 @@ static int getToken() {
 /// gives the line that just ended, and we report a column one past its last
 /// character — pointing just after the final token on the line, which is
 /// where the missing token (e.g. ':') should have appeared.
-static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
+static SourceLocation GetCaretAnchorLoc(SourceLocation Loc, int Tok) {
   if (Tok != tok_eol || Loc.Line <= 1)
     return Loc;
 
@@ -566,6 +568,10 @@ static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
   const string *PrevLineText = PyxcSourceMgr.getLine(PrevLine);
 
   // guard
+  // PrevLineText is null only if PrevLine hasn't been buffered yet —
+  // it shouldn't happen, since I only get here after consuming that
+  // line's trailing newline, but I fall back to the original Loc
+  // rather than trust an out-of-range read.
   if (!PrevLineText)
     return Loc;
 
@@ -595,6 +601,9 @@ static string FormatTokenForMessage(int Tok) {
 /// spaces before the caret.
 static void PrintErrorSourceContext(SourceLocation Loc) {
   const string *LineText = PyxcSourceMgr.getLine(Loc.Line);
+  // LineText is null only if Loc points past everything buffered so
+  // far (e.g. an uninitialized Loc.Line == 0). Skip printing rather
+  // than dereference it below.
   if (!LineText)
     return;
 
@@ -893,7 +902,7 @@ void Log(const string &message) {
 /// LogErrorExpression* - Error reporting helpers. Each returns nullptr for its respective
 /// type so parse functions can write: return LogErrorExpression("message");
 unique_ptr<ExpressionNode> LogErrorExpression(const char *Str) {
-  SourceLocation Anchor = GetDiagnosticAnchorLoc(CurLoc, CurrentToken);
+  SourceLocation Anchor = GetCaretAnchorLoc(CurLoc, CurrentToken);
   LogErrorAtLoc(Str, Anchor);
   return nullptr;
 }
@@ -1547,7 +1556,7 @@ static unique_ptr<FunctionSignatureNode> ParseExtern() {
 // Code Generation
 //===----------------------------------------===//
 
-// TheContext/TheModule/Builder/NamedValues - Core IR construction globals.
+// TheContext/TheModule/TheBuilder/NamedValues - Core IR construction globals.
 // Recreated fresh for each new module (see InitializeModuleAndManagers).
 //
 // TheContext - Owns all LLVM data structures: types, constants, and the
@@ -1559,7 +1568,7 @@ static unique_ptr<FunctionSignatureNode> ParseExtern() {
 // new module for every top-level input. Functions defined in earlier modules
 // remain callable via the JIT's symbol table.
 //
-// Builder - A cursor into the IR being built. Point it at a BasicBlock with
+// TheBuilder - A cursor into the IR being built. Point it at a BasicBlock with
 // SetInsertPoint(), then call Create* methods to append instructions.
 //
 // NamedValues - Symbol table mapping variable names to stack slots (allocas)
@@ -1582,7 +1591,7 @@ static unique_ptr<FunctionSignatureNode> ParseExtern() {
 // in a correct implementation.
 static std::unique_ptr<LLVMContext> TheContext;
 static std::unique_ptr<Module> TheModule;
-static std::unique_ptr<IRBuilder<>> Builder;
+static std::unique_ptr<IRBuilder<>> TheBuilder;
 static std::map<std::string, AllocaInst *> NamedValues;
 static std::unique_ptr<PyxcJIT> TheJIT;
 static std::unique_ptr<FunctionPassManager> TheFPM;
@@ -1648,7 +1657,7 @@ Value *NameExpressionNode::codegen() {
   auto It = NamedValues.find(Name);
   if (It == NamedValues.end() || !It->second)
     return LogErrorV("Unknown variable name");
-  return Builder->CreateLoad(Type::getDoubleTy(*TheContext), It->second,
+  return TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), It->second,
                              Name.c_str());
 }
 
@@ -1663,7 +1672,7 @@ Value *AssignmentStatementNode::codegen() {
   if (It == NamedValues.end() || !It->second)
     return LogErrorV("Unknown variable name");
 
-  Builder->CreateStore(Value, It->second);
+  TheBuilder->CreateStore(Value, It->second);
   return Value;
 }
 
@@ -1673,7 +1682,7 @@ Value *ReturnStatementNode::codegen() {
   if (!RetVal)
     return nullptr;
 
-  Builder->CreateRet(RetVal);
+  TheBuilder->CreateRet(RetVal);
   return RetVal;
 }
 
@@ -1685,7 +1694,7 @@ Value *BlockStatementNode::codegen() {
 
   Value *Last = nullptr;
   for (auto &Stmt : Stmts) {
-    if (Builder->GetInsertBlock()->getTerminator())
+    if (TheBuilder->GetInsertBlock()->getTerminator())
       break;
     Last = Stmt->codegen();
     if (!Last) {
@@ -1732,34 +1741,34 @@ Value *BinaryExpressionNode::codegen() {
 
   switch (Operator) {
   case tok_plus:
-    return Builder->CreateFAdd(L, R, "addtmp");
+    return TheBuilder->CreateFAdd(L, R, "addtmp");
   case tok_minus:
-    return Builder->CreateFSub(L, R, "subtmp");
+    return TheBuilder->CreateFSub(L, R, "subtmp");
   case tok_star:
-    return Builder->CreateFMul(L, R, "multmp");
+    return TheBuilder->CreateFMul(L, R, "multmp");
   case tok_slash:
-    return Builder->CreateFDiv(L, R, "divtmp");
+    return TheBuilder->CreateFDiv(L, R, "divtmp");
   case tok_percent:
-    return Builder->CreateFRem(L, R, "remtmp");
+    return TheBuilder->CreateFRem(L, R, "remtmp");
   case tok_less:
-    L = Builder->CreateFCmpOLT(L, R, "cmptmp");
+    L = TheBuilder->CreateFCmpOLT(L, R, "cmptmp");
     // Widen the i1 boolean to double: false -> 0.0, true -> 1.0.
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case tok_greater:
-    L = Builder->CreateFCmpOGT(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+    L = TheBuilder->CreateFCmpOGT(L, R, "cmptmp");
+    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case tok_eq:
-    L = Builder->CreateFCmpOEQ(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+    L = TheBuilder->CreateFCmpOEQ(L, R, "cmptmp");
+    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case tok_neq:
-    L = Builder->CreateFCmpUNE(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+    L = TheBuilder->CreateFCmpUNE(L, R, "cmptmp");
+    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case tok_leq:
-    L = Builder->CreateFCmpOLE(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+    L = TheBuilder->CreateFCmpOLE(L, R, "cmptmp");
+    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case tok_geq:
-    L = Builder->CreateFCmpOGE(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+    L = TheBuilder->CreateFCmpOGE(L, R, "cmptmp");
+    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   default:
     break;
   }
@@ -1775,7 +1784,7 @@ Value *UnaryExpressionNode::codegen() {
 
   // Built-in unary minus.
   if (Opcode == tok_minus)
-    return Builder->CreateFNeg(Operator, "negtmp");
+    return TheBuilder->CreateFNeg(Operator, "negtmp");
 
   return LogErrorV("Unknown unary operator");
 }
@@ -1802,7 +1811,7 @@ Value *CallExpressionNode::codegen() {
       return nullptr;
   }
 
-  return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
+  return TheBuilder->CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
 /// IfStatementNode::codegen - Emit LLVM IR for a statement-style if.
@@ -1814,39 +1823,39 @@ Value *IfStatementNode::codegen() {
   if (!CondV)
     return nullptr;
 
-  CondV = Builder->CreateFCmpONE(
+  CondV = TheBuilder->CreateFCmpONE(
       CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "ifcond");
 
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
 
   BasicBlock *ThenBB = BasicBlock::Create(*TheContext, "then", TheFunction);
   BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else", TheFunction);
   BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont", TheFunction);
 
-  Builder->CreateCondBr(CondV, ThenBB, ElseBB);
+  TheBuilder->CreateCondBr(CondV, ThenBB, ElseBB);
 
-  Builder->SetInsertPoint(ThenBB);
+  TheBuilder->SetInsertPoint(ThenBB);
   if (!Then->codegen())
     return nullptr;
-  if (!Builder->GetInsertBlock()->getTerminator())
-    Builder->CreateBr(MergeBB);
+  if (!TheBuilder->GetInsertBlock()->getTerminator())
+    TheBuilder->CreateBr(MergeBB);
 
-  Builder->SetInsertPoint(ElseBB);
+  TheBuilder->SetInsertPoint(ElseBB);
   if (Else) {
     if (!Else->codegen())
       return nullptr;
   }
-  if (!Builder->GetInsertBlock()->getTerminator())
-    Builder->CreateBr(MergeBB);
+  if (!TheBuilder->GetInsertBlock()->getTerminator())
+    TheBuilder->CreateBr(MergeBB);
 
-  Builder->SetInsertPoint(MergeBB);
+  TheBuilder->SetInsertPoint(MergeBB);
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
 /// ForStatementNode::codegen - Emit LLVM IR for a for statement using a mutable
 /// stack slot for the loop variable.
 Value *ForStatementNode::codegen() {
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
 
   AllocaInst *Alloca = nullptr;
   AllocaInst *OldVal = nullptr;
@@ -1865,7 +1874,7 @@ Value *ForStatementNode::codegen() {
   if (!StartVal)
     return nullptr;
 
-  Builder->CreateStore(StartVal, Alloca);
+  TheBuilder->CreateStore(StartVal, Alloca);
 
   if (IsVarDecl)
     NamedValues[VarName] = Alloca;
@@ -1877,18 +1886,18 @@ Value *ForStatementNode::codegen() {
   BasicBlock *AfterBB =
       BasicBlock::Create(*TheContext, "after_loop", TheFunction);
 
-  Builder->CreateBr(CondBB);
+  TheBuilder->CreateBr(CondBB);
 
-  Builder->SetInsertPoint(CondBB);
+  TheBuilder->SetInsertPoint(CondBB);
 
   Value *CondVal = Cond->codegen();
   if (!CondVal)
     return nullptr;
-  CondVal = Builder->CreateFCmpONE(
+  CondVal = TheBuilder->CreateFCmpONE(
       CondVal, ConstantFP::get(*TheContext, APFloat(0.0)), "loopcond");
-  Builder->CreateCondBr(CondVal, BodyBB, AfterBB);
+  TheBuilder->CreateCondBr(CondVal, BodyBB, AfterBB);
 
-  Builder->SetInsertPoint(BodyBB);
+  TheBuilder->SetInsertPoint(BodyBB);
 
   if (!Body->codegen())
     return nullptr;
@@ -1896,15 +1905,15 @@ Value *ForStatementNode::codegen() {
   // variable's alloca remains valid. We use the alloca directly for the step.
 
   Value *CurVar =
-      Builder->CreateLoad(Type::getDoubleTy(*TheContext), Alloca, VarName);
+      TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), Alloca, VarName);
   Value *StepVal = Step->codegen();
   if (!StepVal)
     return nullptr;
-  Value *NextVar = Builder->CreateFAdd(CurVar, StepVal, "nextvar");
-  Builder->CreateStore(NextVar, Alloca);
-  Builder->CreateBr(CondBB);
+  Value *NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
+  TheBuilder->CreateStore(NextVar, Alloca);
+  TheBuilder->CreateBr(CondBB);
 
-  Builder->SetInsertPoint(AfterBB);
+  TheBuilder->SetInsertPoint(AfterBB);
 
   if (IsVarDecl) {
     if (OldVal)
@@ -1918,7 +1927,7 @@ Value *ForStatementNode::codegen() {
 
 /// VarStatementNode::codegen - Allocate mutable local variables and initialize them.
 Value *VarStatementNode::codegen() {
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
 
   for (auto &Var : VarNames) {
     const string &VarName = Var.first;
@@ -1929,7 +1938,7 @@ Value *VarStatementNode::codegen() {
       return nullptr;
 
     AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
-    Builder->CreateStore(InitVal, Alloca);
+    TheBuilder->CreateStore(InitVal, Alloca);
     NamedValues[VarName] = Alloca;
   }
 
@@ -1974,7 +1983,7 @@ Function *FunctionSignatureNode::codegen() {
 ///    getFunction() either finds an existing declaration in the current module
 ///    (e.g. from a prior 'extern def') or calls Signature->codegen() to create one.
 ///
-/// 2. Create the entry BasicBlock and point the Builder at it. A basic block
+/// 2. Create the entry BasicBlock and point the TheBuilder at it. A basic block
 ///    is a straight-line sequence of instructions with one entry and one exit.
 ///    Every function starts with exactly one entry block.
 ///
@@ -2006,14 +2015,14 @@ Function *FunctionDefinitionNode::codegen() {
 
   // Step 2: create the entry block and point the builder at it.
   BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
-  Builder->SetInsertPoint(BB);
+  TheBuilder->SetInsertPoint(BB);
 
   // Step 3: populate NamedValues with entry-block allocas for each argument.
   NamedValues.clear();
   for (auto &Arg : TheFunction->args()) {
     AllocaInst *Alloca =
         CreateEntryBlockAlloca(TheFunction, std::string(Arg.getName()));
-    Builder->CreateStore(&Arg, Alloca);
+    TheBuilder->CreateStore(&Arg, Alloca);
     NamedValues[std::string(Arg.getName())] = Alloca;
   }
 
@@ -2021,8 +2030,8 @@ Function *FunctionDefinitionNode::codegen() {
   if (Value *BodyVal = Body->codegen()) {
     // If the body didn't already terminate the current block (e.g. via
     // return), return 0.0. Implicit returns never use the last expression.
-    if (!Builder->GetInsertBlock()->getTerminator())
-      Builder->CreateRet(ConstantFP::get(*TheContext, APFloat(0.0)));
+    if (!TheBuilder->GetInsertBlock()->getTerminator())
+      TheBuilder->CreateRet(ConstantFP::get(*TheContext, APFloat(0.0)));
     verifyFunction(*TheFunction);
 
     // Run the optimisation pipeline: InstCombine, Reassociate, GVN,
@@ -2070,7 +2079,7 @@ static void InitializeModuleAndManagers() {
   // correctly-sized types for the host machine.
   TheModule->setDataLayout(TheJIT->getDataLayout());
 
-  Builder = std::make_unique<IRBuilder<>>(*TheContext);
+  TheBuilder = std::make_unique<IRBuilder<>>(*TheContext);
 
   // Pass and analysis managers.
   TheFPM = std::make_unique<FunctionPassManager>();

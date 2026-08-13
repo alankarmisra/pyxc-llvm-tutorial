@@ -233,14 +233,14 @@ Value *VarStatementNode::codegen() {
       Value *InitialValue = Initializer->codegen();
       if (!InitialValue)
         return nullptr;
-      Builder->CreateStore(InitialValue, Global);
+      TheBuilder->CreateStore(InitialValue, Global);
     }
 
     return ConstantFP::get(*TheContext, APFloat(0.0));
   }
 
   // Inside a function: alloca path, unchanged from chapter 12.
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
   for (auto &Var : VarNames) {
     // ...
   }
@@ -279,11 +279,11 @@ A `GlobalVariable` with a null initializer is a *declaration* — it says "this 
 Value *NameExpressionNode::codegen() {
   auto It = NamedValues.find(Name);
   if (It != NamedValues.end() && It->second)
-    return Builder->CreateLoad(Type::getDoubleTy(*TheContext), It->second,
+    return TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), It->second,
                                Name.c_str());
 
   if (auto *Global = GetGlobalVariable(Name))
-    return Builder->CreateLoad(Type::getDoubleTy(*TheContext), Global,
+    return TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), Global,
                                Name.c_str());
 
   return LogErrorV("Unknown variable name");
@@ -296,12 +296,12 @@ Value *AssignmentStatementNode::codegen() {
 
   auto It = NamedValues.find(Name);
   if (It != NamedValues.end() && It->second) {
-    Builder->CreateStore(Value, It->second);
+    TheBuilder->CreateStore(Value, It->second);
     return Value;
   }
 
   if (auto *Global = GetGlobalVariable(Name)) {
-    Builder->CreateStore(Value, Global);
+    TheBuilder->CreateStore(Value, Global);
     return Value;
   }
 
@@ -466,8 +466,8 @@ Lookup always goes inner-to-outer: block → function → global. A `var x` insi
 
 ```cpp
 if (Value *BodyVal = Body->codegen()) {
-  if (!Builder->GetInsertBlock()->getTerminator())
-    Builder->CreateRet(ConstantFP::get(*TheContext, APFloat(0.0)));
+  if (!TheBuilder->GetInsertBlock()->getTerminator())
+    TheBuilder->CreateRet(ConstantFP::get(*TheContext, APFloat(0.0)));
   verifyFunction(*TheFunction);
   TheFPM->run(*TheFunction, *TheFAM);
   return TheFunction;

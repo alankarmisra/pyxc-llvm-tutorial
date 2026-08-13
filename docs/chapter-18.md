@@ -678,9 +678,9 @@ the loop declares a fresh variable with `var`. The type is validated:
 
 ```cpp
 if (IsFloatType(VarType))
-  NextVar = Builder->CreateFAdd(CurVar, StepVal, "nextvar");
+  NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
 else
-  NextVar = Builder->CreateAdd(CurVar, StepVal, "nextvar");
+  NextVar = TheBuilder->CreateAdd(CurVar, StepVal, "nextvar");
 ```
 
 For an integer loop variable the alloca and step use the declared integer type:
@@ -919,7 +919,7 @@ static Value *EmitImplicitCast(Value *V, ValueType From, ValueType To) {
     if (FromBits == ToBits)
       return V;
     if (FromBits < ToBits)
-      return Builder->CreateFPExt(V, LLVMTypeFor(To), "fpext");
+      return TheBuilder->CreateFPExt(V, LLVMTypeFor(To), "fpext");
     return nullptr;
   }
   if (IsIntType(From) && IsIntType(To) && CanWidenInt(From, To)) {
@@ -927,10 +927,10 @@ static Value *EmitImplicitCast(Value *V, ValueType From, ValueType To) {
     unsigned ToBits = LLVMTypeFor(To)->getIntegerBitWidth();
     if (FromBits == ToBits)
       return V;
-    return Builder->CreateSExt(V, LLVMTypeFor(To), "sext");
+    return TheBuilder->CreateSExt(V, LLVMTypeFor(To), "sext");
   }
   if (IsIntType(From) && IsFloatType(To))
-    return Builder->CreateSIToFP(V, LLVMTypeFor(To), "sitofp");
+    return TheBuilder->CreateSIToFP(V, LLVMTypeFor(To), "sitofp");
   return nullptr;
 }
 ```
@@ -1001,16 +1001,16 @@ case '*': {
     return LogErrorV("Type mismatch in arithmetic");
   if (IsFloatType(getType())) {
     if (Operator == '+')
-      return Builder->CreateFAdd(L, R, "addtmp");
+      return TheBuilder->CreateFAdd(L, R, "addtmp");
     if (Operator == '-')
-      return Builder->CreateFSub(L, R, "subtmp");
-    return Builder->CreateFMul(L, R, "multmp");
+      return TheBuilder->CreateFSub(L, R, "subtmp");
+    return TheBuilder->CreateFMul(L, R, "multmp");
   }
   if (Operator == '+')
-    return Builder->CreateAdd(L, R, "addtmp");
+    return TheBuilder->CreateAdd(L, R, "addtmp");
   if (Operator == '-')
-    return Builder->CreateSub(L, R, "subtmp");
-  return Builder->CreateMul(L, R, "multmp");
+    return TheBuilder->CreateSub(L, R, "subtmp");
+  return TheBuilder->CreateMul(L, R, "multmp");
 }
 ```
 
@@ -1143,12 +1143,12 @@ ret i32 %sext
 At the end of a function body, if no terminator was emitted:
 
 ```cpp
-if (!Builder->GetInsertBlock()->getTerminator()) {
+if (!TheBuilder->GetInsertBlock()->getTerminator()) {
   if (P.getReturnType() == ValueType::None) {
-    Builder->CreateRetVoid();
+    TheBuilder->CreateRetVoid();
   } else {
     if (!IsEntry && pred_empty(CurBB)) {
-      Builder->CreateUnreachable();
+      TheBuilder->CreateUnreachable();
     } else {
       LogErrorV("Non-None function must return a value");
       TheFunction->eraseFromParent();

@@ -16,8 +16,7 @@ cd pyxc-llvm-tutorial/code/chapter-03
 
 ## Grammar
 
-Here is the complete grammar as a diff against Chapter 2. Look for the <i class="fa-solid fa-code"></i>
-<i class="fa-solid fa-code-branch"></i>.
+Here is the grammar as a diff against [Chapter 2](chapter-02.md). 
 
 [pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-03/pyxc.ebnf)
 
@@ -147,7 +146,6 @@ Before I can use these grammar rules, I have to teach the lexer to recognize the
 ```cpp
 enum Token {
   // ...
-  tok_plus,
   tok_minus,
   tok_star,
   tok_slash,
@@ -160,7 +158,6 @@ I give each token a readable name for error messages:
 ```cpp
 static map<int, string> TokenNames = {
     // ...
-    {tok_plus, "'+'"},
     {tok_minus, "'-'"},
     {tok_star, "'*'"},
     {tok_slash, "'/'"},
@@ -173,8 +170,6 @@ Finally, I return the corresponding token when the lexer reads each character:
 ```cpp
   switch (ThisChar) {
   // ...
-  case '+':
-    return tok_plus;
   case '-':
     return tok_minus;
   case '*':
@@ -191,7 +186,7 @@ These are all single-character operators. Multi-character operators such as `==`
 
 ## Writing One Parser for Each Grammar Layer
 
-I already have `ParsePrimary()` from Chapter 2. I now translate the three new grammar rules into `ParseTerm()`, `ParseSum()`, and `ParseComparison()`.
+I already have `ParsePrimary()`, `ParseTerm()`, and `ParseSum()` from [Chapter 2](chapter-02.md). I update `ParseTerm()` and `ParseSum()` to match their expanded grammar rules, then add `ParseComparison()` for the new comparison layer.
 
 ```cpp
 /// term
@@ -355,8 +350,8 @@ llvm-lit test/
 
 <!-- code-merge:start -->
 ```pyxc
-ready> def add(x, y):
-x + y
+ready> def scale_and_add(x, y, scale):
+x + y * scale
 ```
 ```text
 Parsed a function definition.

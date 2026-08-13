@@ -777,7 +777,7 @@ static Value *GetFieldAddress(const string &BaseName,
       return nullptr;
 
     const auto &FieldInfo = Struct->second.Fields[Field->second];
-    Pointer = Builder->CreateStructGEP(
+    Pointer = TheBuilder->CreateStructGEP(
         LLVMTypeFor(CurrentType, CurrentStructName), Pointer, Field->second,
         "fieldptr");
     CurrentType = FieldInfo.Type;
@@ -819,7 +819,7 @@ Value *FieldExpressionNode::codegen() {
                                    &FieldStructName);
   if (!Pointer)
     return LogErrorV("Unknown field access");
-  return Builder->CreateLoad(LLVMTypeFor(FieldType, FieldStructName), Pointer,
+  return TheBuilder->CreateLoad(LLVMTypeFor(FieldType, FieldStructName), Pointer,
                              "fieldload");
 }
 ```
@@ -848,7 +848,7 @@ Value *FieldAssignmentStatementNode::codegen() {
   AssignedValue = EmitImplicitCast(AssignedValue, Right->getType(), FieldType);
   if (!AssignedValue)
     return LogErrorV("Type mismatch in assignment");
-  Builder->CreateStore(AssignedValue, Pointer);
+  TheBuilder->CreateStore(AssignedValue, Pointer);
   return AssignedValue;
 }
 ```
@@ -869,7 +869,7 @@ I already have zero-initialization for scalar `var` declarations with no initial
 ```cpp
 InitVal = ZeroConstant(VarType, VarStructName);
 // ...
-Builder->CreateStore(InitVal, Alloca);
+TheBuilder->CreateStore(InitVal, Alloca);
 ```
 
 `ZeroConstant` for a struct doesn't need to build up a `{0, 0}` aggregate field by field: LLVM has a shortcut, `Constant::getNullValue`, that produces an all-zero constant of whatever type I hand it:

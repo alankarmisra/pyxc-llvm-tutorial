@@ -172,7 +172,71 @@ I also assign every named punctuation token its actual character value. I keep t
 
 Because I define `tok_lparen = '('`, `tok_lparen` and `'('` are the same map key. In the loop, I add `Names['(']`. Later, `Names[tok_lparen]` and `Names['(']` are equivalent lookups and find the same entry. This also works for `tok_plus`, `tok_star`, and every other named character token, so I do not list them separately in the map. I also use the loop to name characters I did not declare as tokens.
 
-For names and numbers, I want to include the actual text from the source rather than report only `name` or `number`:
+## Naming Unknown Characters Too
+
+Naming every byte value only helps if the lexer actually hands one of those values downstream. `@` isn't punctuation I recognize. In Chapter 3, any character my `switch` in `getToken()` had no `case` for fell through to a single shared `default`, which threw the character away and returned the generic `tok_error`:
+
+```cppdiff
+   switch (ThisChar) {
+   ...
+-  default:
+-    return tok_error;
++  default:
++    return ThisChar;
+   }
+```
+
+Every unrecognized character used to collapse into that one `tok_error` value, so downstream code never saw which character it actually was; `TokenNames.at(tok_error)` could only ever print the word `error`. Now the default case returns `ThisChar` itself. Since I already gave every byte 0–255 a name in `TokenNames`, an unrecognized character is no longer a dead end; it's just another token value, one I can look up and describe by name.
+
+This doesn't change what `ParsePrimary()` does when a stray character shows up where it expects an expression to start. Its `default` case doesn't inspect which character it received, so a bare `@` at the start of a line still reports without naming it:
+
+<!-- code-merge:start -->
+```pyxc
+ready> @
+```
+```text
+Error (Line 1, Column 1): unknown token when expecting an expression
+@
+^~~~
+```
+<!-- code-merge:end -->
+
+What changes is what happens once a character shows up as an unexpected *trailing* token, after an otherwise complete expression, a case `ParsePrimary()` never even runs for. I cover that check later in this chapter, in [Printing the Prompt Exactly Once](#printing-the-prompt-exactly-once); it's what turns this chapter's opening `1 @ 2` example into a message that names the character:
+
+<!-- code-merge:start -->
+```pyxc
+ready> 1 @ 2
+```
+```text
+Error (Line 1, Column 3): Unexpected '@'
+1 @ 
+  ^~~~
+```
+<!-- code-merge:end -->
+
+Same character, two different messages, depending only on where in parsing I encounter it.
+
+For names and numbers, I want to include the actual text from the source rather than report only `name` or `number`. I already have `Name` from Chapter 1 for the name case. For numbers, I add a matching global:
+
+```cpp
+static string NumberLiteral; // Filled in if tok_number, used in error messages
+```
+
+I set it in `getToken()`'s number-reading branch, right alongside `NumberValue`, from the same `NumStr` I've accumulated digits into since Chapter 1:
+
+```cpp
+int getToken() {
+...
+  if (isdigit(LastChar) || LastChar == '.') {
+    string NumStr;
+...
+    NumberLiteral = NumStr;
+    char *End = nullptr;
+    NumberValue = strtod(NumStr.c_str(), &End);
+...
+  }
+}
+```
 
 ```cpp
 static string FormatTokenForMessage(int Tok) {
@@ -190,83 +254,9 @@ static string FormatTokenForMessage(int Tok) {
 
 I read that text from the lexer's `Name` and `NumberLiteral` globals. For every other token, I use the name stored in `TokenNames`.
 
-## Tracking Where I Am
+## Buffering Source Lines
 
-To report `(Line 3, Column 8)`, I need to record the line and column as I read each character. I use two globals:
-
-```cpp
-struct SourceLocation {
-  int Line;
-  int Col;
-};
-static SourceLocation CurLoc;
-static SourceLocation LexLoc = {1, 0};
-```
-
-I use `LexLoc` to record how far I have read. I update it every time I read a character in `advance()`. I use `CurLoc` to record where the current token starts. I read `CurLoc` in the parser and in my diagnostics.
-
-I already use `advance()` to normalize line endings. I now update `LexLoc` there too:
-
-```cpp
-static int advance() {
-  int LastChar = getchar();
-  if (LastChar == '\r') {
-    int NextChar = getchar();
-    if (NextChar != '\n' && NextChar != EOF) {
-      // I read one character too far while checking for '\r\n', so I put it back.
-      ungetc(NextChar, stdin);
-    }
-    PyxcSourceMgr.onChar('\n');
-    LexLoc.Line++;
-    LexLoc.Col = 0;
-    return '\n';
-  }
-
-  if (LastChar == '\n') {
-    PyxcSourceMgr.onChar('\n');
-    LexLoc.Line++;
-    LexLoc.Col = 0;
-  } else {
-    PyxcSourceMgr.onChar(LastChar);
-    LexLoc.Col++;
-  }
-
-  return LastChar;
-}
-```
-
-When I read a newline, I increment `Line` and reset `Col` to `0`. For any other character, I increment only `Col`. I explain `PyxcSourceMgr.onChar()` in the next section.
-
-In `getToken()`, I copy `LexLoc` into `CurLoc` after I skip whitespace but before I read the token itself:
-
-```cpp
-while (isspace(LastChar) && LastChar != '\n')
-  LastChar = advance();
-
-CurLoc = LexLoc;
-```
-
-By copying the location here, I make `CurLoc` point at the token's first character rather than any whitespace before it.
-
-I need to copy the location again after a comment. At the start of `getToken()`, I set `CurLoc` to the position of `#`. I then consume the rest of the line and return `tok_eol`. If I leave `CurLoc` at `#`, an error on the next line can report a column from the comment line. I avoid that by copying `LexLoc` again after I consume the newline:
-
-```cpp
-if (LastChar == '#') {
-  do
-    LastChar = advance();
-  while (LastChar != EOF && LastChar != '\n');
-
-  if (LastChar != EOF) {
-    CurLoc = LexLoc;
-    LastChar = ' ';
-    return tok_eol;
-  }
-}
-```
-
-## Buffering Source Lines for the Caret
-
-Knowing *where* the error is isn't enough. I also need the text of that line. I use `SourceManager` to store each line as I read it:
+To print the line where the error occurred, I need the text of that line. I use `SourceManager` to store each line as I read it:
 
 ```cpp
 class SourceManager {
@@ -309,6 +299,88 @@ I call `onChar()` from `advance()` for every character I read. I add ordinary ch
 
 In `getLine()`, I convert the requested line number from 1-based to 0-based. This lets me retrieve a line both while I am reading it and after I have completed it.
 
+## Tracking Where I Am
+
+To report `(Line 3, Column 8)`, I need to record the line and column as I read each character. I use two globals:
+
+```cpp
+struct SourceLocation {
+  int Line;
+  int Col;
+};
+static SourceLocation CurLoc;
+static SourceLocation LexLoc = {1, 0};
+```
+
+I use `LexLoc` to record how far I have read. I update it every time I read a character in `advance()`. I use `CurLoc` to record where the current token starts. I read `CurLoc` in the parser and in my diagnostics.
+
+I already use `advance()` to normalize line endings. I now update `LexLoc` there too, and feed every character to `PyxcSourceMgr.onChar()` from the previous section, so it can buffer the line I'm currently on:
+
+```cpp
+static int advance() {
+  int LastChar = getchar();
+
+  // case: '\r' or '\r\n'
+  if (LastChar == '\r') {
+    int NextChar = getchar();
+
+    // A following '\n' is part of the same line ending; eat it.
+    // Anything else belongs to the next token; put it back.
+    // (EOF can't be put back at all, so it's excluded from that check.)
+    if (NextChar != '\n' && NextChar != EOF) {
+      ungetc(NextChar, stdin);
+    }
+    PyxcSourceMgr.onChar('\n');
+    LexLoc.Line++;
+    LexLoc.Col = 0;
+    return '\n';
+  }
+
+  // '\n' resets Col and starts a new buffered line; anything else
+  // just advances Col within the current line.
+  if (LastChar == '\n') {
+    PyxcSourceMgr.onChar('\n');
+    LexLoc.Line++;
+    LexLoc.Col = 0;
+  } else {
+    PyxcSourceMgr.onChar(LastChar);
+    LexLoc.Col++;
+  }
+
+  // case '\n' or any other non-newline character
+  return LastChar;
+}
+```
+
+When I read a newline, I increment `Line` and reset `Col` to `0`. For any other character, I increment only `Col`.
+
+In `getToken()`, I copy `LexLoc` into `CurLoc` after I skip whitespace but before I read the token itself:
+
+```cpp
+while (isspace(LastChar) && LastChar != '\n')
+  LastChar = advance();
+
+CurLoc = LexLoc;
+```
+
+By copying the location here, I make `CurLoc` point at the token's first character rather than any whitespace before it.
+
+I need to copy the location again after a comment. At the start of `getToken()`, I set `CurLoc` to the position of `#`. I then consume the rest of the line and return `tok_eol`. If I leave `CurLoc` at `#`, an error on the next line can report a column from the comment line. I avoid that by copying `LexLoc` again after I consume the newline:
+
+```cpp
+if (LastChar == '#') {
+  do
+    LastChar = advance();
+  while (LastChar != EOF && LastChar != '\n');
+
+  if (LastChar != EOF) {
+    CurLoc = LexLoc;
+    LastChar = ' ';
+    return tok_eol;
+  }
+}
+```
+
 ## Printing the Caret
 
 Once I have the line text and column, I can print the caret:
@@ -316,6 +388,9 @@ Once I have the line text and column, I can print the caret:
 ```cpp
 static void PrintErrorSourceContext(SourceLocation Loc) {
   const string *LineText = PyxcSourceMgr.getLine(Loc.Line);
+  // LineText is null only if Loc points past everything buffered so
+  // far (e.g. an uninitialized Loc.Line == 0). Skip printing rather
+  // than dereference it below.
   if (!LineText)
     return;
 
@@ -336,10 +411,10 @@ I print the line, then `Col - 1` spaces, then `^~~~`. I subtract one because the
 
 For most errors, `CurLoc` already points where I need it. A missing `:` is different. I do not know it is missing until I ask for the next token and receive `tok_eol`.
 
-Before I return `tok_eol`, I have already consumed the `\n` and incremented `LexLoc.Line`. That leaves `CurLoc.Line` on the next line. I correct this in `GetDiagnosticAnchorLoc()`:
+Before I return `tok_eol`, I have already consumed the `\n` and incremented `LexLoc.Line`. That leaves `CurLoc.Line` on the next line. I correct this in `GetCaretAnchorLoc()`:
 
 ```cpp
-static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
+static SourceLocation GetCaretAnchorLoc(SourceLocation Loc, int Tok) {
   if (Tok != tok_eol)
     return Loc;
 
@@ -348,6 +423,10 @@ static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
     return Loc;
 
   const string *PrevLineText = PyxcSourceMgr.getLine(PrevLine);
+  // PrevLineText is null only if PrevLine hasn't been buffered yet —
+  // it shouldn't happen, since I only get here after consuming that
+  // line's trailing newline, but I fall back to the original Loc
+  // rather than trust an out-of-range read.
   if (!PrevLineText)
     return Loc;
 
@@ -355,74 +434,22 @@ static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
 }
 ```
 
-For any token other than `tok_eol`, I return `Loc` unchanged. For `tok_eol`, I step back one line and report the column just after that line's last character. That is where the missing `:` should have gone:
+For any token other than `tok_eol`, I return `Loc` unchanged. For `tok_eol`, I step back one line and report the column just after that line's last character. 
 
+<!-- code-merge:start -->
+```pyxc
+ready> def missing_colon(x)
 ```
-Error (Line 1, Column 12): Expected ':' in function definition
-def bad(x) return 
-           ^~~~
+```text
+Error (Line 5, Column 21): Expected ':' in function definition
+def missing_colon(x)
+                    ^~~~
 ```
-
-## Wiring Diagnostics Into Error Reporting
-
-I already report every parse error through `LogErrorExpression()`. I now use the location and source line there instead of printing only a token description:
-
-```cpp
-unique_ptr<ExpressionNode> LogErrorExpression(const char *Str) {
-  SourceLocation Anchor = GetDiagnosticAnchorLoc(CurLoc, CurrentToken);
-  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
-          Str);
-  PrintErrorSourceContext(Anchor);
-  return nullptr;
-}
-```
-
-I keep `LogErrorSignature()` and `LogErrorFunction()` as small wrappers around `LogErrorExpression()`. By doing this, I give every parse error the same location and caret output.
-
-## Catching Malformed Numbers
-
-I use `strtod` to convert a string to a `double`. I pass it an output parameter named `End` so I can see where the conversion stopped:
-
-```cpp
-char *End = nullptr;
-NumberValue = strtod(NumStr.c_str(), &End);
-```
-
-If `End` points at the string's null terminator, I know `strtod` consumed every character. If it points anywhere else, I know part of the input was invalid. In Chapter 3, I ignored `End` and accepted whatever prefix `strtod` could convert. That is how `1.2.3` quietly became `1.2`.
-
-```cpp
-NumberLiteral = NumStr;
-char *End = nullptr;
-NumberValue = strtod(NumStr.c_str(), &End);
-if (!End || *End != '\0') {
-  LogInvalidNumberLiteralAtLoc(NumStr, CurLoc);
-  return tok_error;
-}
-return tok_number;
-```
-
-For `"1.2.3"`, `strtod` stops at the second `.`, so `End` points at `.3` rather than the terminator. I report the invalid number and return `tok_error` instead of `tok_number`:
-
-```cpp
-static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation Loc) {
-  fprintf(stderr, "Error (Line %d, Column %d): invalid number literal '%s'\n",
-          Loc.Line, Loc.Col, Literal.c_str());
-  PrintErrorSourceContext(Loc);
-}
-```
-
-I do this in `getToken()`, which returns an `int`. I cannot return `nullptr` as I do from a parsing function. Instead, I call the error helper and return `tok_error`.
+<!-- code-merge:end -->
 
 ## Recovering From Errors
 
-After I report a lexer error, I return `tok_error`. I do not want to parse it as a number, name, or operator because that would print a second, unrelated error. I check for it in `MainLoop()` before I call any parsing function:
-
-```cpp
-if (CurrentToken == tok_error) {
-  SynchronizeToLineBoundary();
-  continue;
-}
-```
+After I report a lexer error, I return `tok_error`. I do not want to parse it as a number, name, or operator because that would print a second, unrelated error. I call this **panic-mode recovery**: once I can no longer trust the current parse, I stop interpreting the line. I skip tokens until I reach `tok_eol` or `tok_eof`. I discard the rest of the line, but I return to a state where I know how to continue.
 
 ```cpp
 static void SynchronizeToLineBoundary() {
@@ -432,7 +459,71 @@ static void SynchronizeToLineBoundary() {
 }
 ```
 
-I call this **panic-mode recovery**. Once I can no longer trust the current parse, I stop interpreting the line. I skip tokens until I reach `tok_eol` or `tok_eof`. I discard the rest of the line, but I return to a state where I know how to continue.
+## Wiring Diagnostics Into Error Reporting
+
+I already report every parse error through `LogErrorExpression()`. I now use the location and source line there instead of printing only a token description:
+
+```cpp
+unique_ptr<ExpressionNode> LogErrorExpression(const char *Str) {
+  SourceLocation Anchor = GetCaretAnchorLoc(CurLoc, CurrentToken);
+  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
+          Str);
+  PrintErrorSourceContext(Anchor);
+  return nullptr;
+}
+```
+
+I also drop the `\nready> ` this function used to print right after the message. In Chapters 2 and 4, `LogErrorExpression()` printed the next prompt itself, and if the error happened to land just before a bare newline, `MainLoop()`'s own newline handling printed a second one, so I'd see `ready> ready> `. Now every error path calls `SynchronizeToLineBoundary()` before returning, so `MainLoop()` always sees the boundary token itself and prints the prompt exactly once.
+
+I keep `LogErrorSignature()` and `LogErrorFunction()` as small wrappers around `LogErrorExpression()`. By doing this, I give every parse error the same location and caret output.
+
+## Catching Malformed Numbers
+
+I use `strtod` to convert a string to a `double`. I pass it an output parameter named `End` so I can see where the conversion stopped. In Chapter 3, I ignored `End` and accepted whatever prefix `strtod` could convert. That is how `1.2.3` quietly became `1.2`.
+
+When part of the input is invalid, I need to report it. I add a small helper for that:
+
+```cpp
+static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation Loc) {
+  fprintf(stderr, "Error (Line %d, Column %d): invalid number literal '%s'\n",
+          Loc.Line, Loc.Col, Literal.c_str());
+  PrintErrorSourceContext(Loc);
+}
+```
+
+I call it from `getToken()`'s number-reading branch:
+
+```cpp
+char *End = nullptr;
+NumberValue = strtod(NumStr.c_str(), &End);
+if (!End || *End != '\0') {
+  LogInvalidNumberLiteralAtLoc(NumStr, CurLoc);
+  return tok_error;
+}
+return tok_number;
+```
+
+If `End` points at the string's null terminator, I know `strtod` consumed every character. If it points anywhere else, part of the input was invalid: for `"1.2.3"`, `strtod` stops at the second `.`, so `End` points at `.3` rather than the terminator. I report the invalid number and return `tok_error` instead of `tok_number`. I do this in `getToken()`, which returns an `int`. I cannot return `nullptr` as I do from a parsing function. Instead, I call the error helper and return `tok_error`.
+
+## Printing the Prompt Exactly Once
+
+I check for `tok_error` in `MainLoop()` before I call any parsing function, and call `SynchronizeToLineBoundary()`:
+
+```cpp
+static void MainLoop() {
+  while (true) {
+...
+    if (CurrentToken == tok_error) {
+      SynchronizeToLineBoundary();
+      continue;
+    }
+
+    switch (CurrentToken) {
+...
+    }
+  }
+}
+```
 
 I use the same recovery when I parse a valid construct but find extra tokens after it. In both `HandleFunctionDefinition()` and `HandleTopLevelExpression()`, I check that parsing stopped at `tok_eol` or `tok_eof`:
 
@@ -506,6 +597,26 @@ ready> def missing_colon(x)
 Error (Line 5, Column 21): Expected ':' in function definition
 def missing_colon(x)
                     ^~~~
+```
+<!-- code-merge:end -->
+<!-- code-merge:start -->
+```pyxc
+ready> @
+```
+```text
+Error (Line 6, Column 1): unknown token when expecting an expression
+@
+^~~~
+```
+<!-- code-merge:end -->
+<!-- code-merge:start -->
+```pyxc
+ready> 1 @ 2
+```
+```text
+Error (Line 7, Column 3): Unexpected '@'
+1 @ 
+  ^~~~
 ```
 <!-- code-merge:end -->
 

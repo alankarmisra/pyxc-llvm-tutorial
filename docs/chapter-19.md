@@ -264,12 +264,12 @@ Cast explicitly to fix it: `a = a + uint32(b)`.
 
 ```cpp
 // Before: always sext
-return Builder->CreateSExt(V, LLVMTypeFor(To), "sext");
+return TheBuilder->CreateSExt(V, LLVMTypeFor(To), "sext");
 
 // After:
 return IsUnsignedIntType(From)
-           ? Builder->CreateZExt(V, LLVMTypeFor(To), "zext")
-           : Builder->CreateSExt(V, LLVMTypeFor(To), "sext");
+           ? TheBuilder->CreateZExt(V, LLVMTypeFor(To), "zext")
+           : TheBuilder->CreateSExt(V, LLVMTypeFor(To), "sext");
 ```
 
 Unsigned types use `zext` (zero-extend) rather than `sext` (sign-extend).
@@ -278,8 +278,8 @@ Unsigned types use `zext` (zero-extend) rather than `sext` (sign-extend).
 
 ```cpp
 return IsUnsignedIntType(From)
-           ? Builder->CreateUIToFP(V, LLVMTypeFor(To), "uitofp")
-           : Builder->CreateSIToFP(V, LLVMTypeFor(To), "sitofp");
+           ? TheBuilder->CreateUIToFP(V, LLVMTypeFor(To), "uitofp")
+           : TheBuilder->CreateSIToFP(V, LLVMTypeFor(To), "sitofp");
 ```
 
 `uitofp` treats the bit pattern as an unsigned integer, producing the correct positive float for `uint32(-1)` = 4294967295.0. `uint64(-1)` is `18446744073709551615`; converting that to `float64` rounds, since `float64` only represents integers exactly up to `2^53`.
@@ -288,8 +288,8 @@ return IsUnsignedIntType(From)
 
 ```cpp
 return IsUnsignedIntType(To)
-           ? Builder->CreateFPToUI(V, LLVMTypeFor(To), "fptoui")
-           : Builder->CreateFPToSI(V, LLVMTypeFor(To), "fptosi");
+           ? TheBuilder->CreateFPToUI(V, LLVMTypeFor(To), "fptoui")
+           : TheBuilder->CreateFPToSI(V, LLVMTypeFor(To), "fptosi");
 ```
 
 ### Division and remainder
@@ -297,12 +297,12 @@ return IsUnsignedIntType(To)
 ```cpp
 // / operator:
 return IsUnsignedIntType(getType())
-           ? Builder->CreateUDiv(L, R, "divtmp")
-           : Builder->CreateSDiv(L, R, "divtmp");
+           ? TheBuilder->CreateUDiv(L, R, "divtmp")
+           : TheBuilder->CreateSDiv(L, R, "divtmp");
 // % operator:
 return IsUnsignedIntType(getType())
-           ? Builder->CreateURem(L, R, "remtmp")
-           : Builder->CreateSRem(L, R, "remtmp");
+           ? TheBuilder->CreateURem(L, R, "remtmp")
+           : TheBuilder->CreateSRem(L, R, "remtmp");
 ```
 
 ### Comparisons (`<`, `<=`, `>`, `>=`)
@@ -310,20 +310,20 @@ return IsUnsignedIntType(getType())
 ```cpp
 // '<':
 return IsUnsignedIntType(CompareType)
-           ? Builder->CreateICmpULT(L, R, "cmptmp")
-           : Builder->CreateICmpSLT(L, R, "cmptmp");
+           ? TheBuilder->CreateICmpULT(L, R, "cmptmp")
+           : TheBuilder->CreateICmpSLT(L, R, "cmptmp");
 // '>':
 return IsUnsignedIntType(CompareType)
-           ? Builder->CreateICmpUGT(L, R, "cmptmp")
-           : Builder->CreateICmpSGT(L, R, "cmptmp");
+           ? TheBuilder->CreateICmpUGT(L, R, "cmptmp")
+           : TheBuilder->CreateICmpSGT(L, R, "cmptmp");
 // '<=':
 return IsUnsignedIntType(CompareType)
-           ? Builder->CreateICmpULE(L, R, "cmptmp")
-           : Builder->CreateICmpSLE(L, R, "cmptmp");
+           ? TheBuilder->CreateICmpULE(L, R, "cmptmp")
+           : TheBuilder->CreateICmpSLE(L, R, "cmptmp");
 // '>=':
 return IsUnsignedIntType(CompareType)
-           ? Builder->CreateICmpUGE(L, R, "cmptmp")
-           : Builder->CreateICmpSGE(L, R, "cmptmp");
+           ? TheBuilder->CreateICmpUGE(L, R, "cmptmp")
+           : TheBuilder->CreateICmpSGE(L, R, "cmptmp");
 ```
 
 `==` and `!=` are signedness-agnostic (`icmp eq` / `icmp ne`); they are unchanged.

@@ -303,7 +303,7 @@ Value *StringExpressionNode::codegen() {
   ModuleHasGlobals = true;
 
   Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
-  return Builder->CreateInBoundsGEP(StorageType, Global, {Zero, Zero},
+  return TheBuilder->CreateInBoundsGEP(StorageType, Global, {Zero, Zero},
                                     "strptr");
 }
 ```

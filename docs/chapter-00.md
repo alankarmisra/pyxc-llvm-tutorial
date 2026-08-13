@@ -214,6 +214,12 @@ var add5: ptr[def(int) -> int] = make_adder(5)
 printd(float64(add5(10)))  # 15.000000
 ```
 
+## Self-Hosted Testing and Coverage
+
+Two ideas here, different sizes. The small one: a `test/assert.pyxc` module other `.pyxc` test files can `import`, giving me helpers like `assert.eq_int(actual, expected, label)` that print a `FAIL: ...` line and call `exit(1)` on mismatch. Nothing new needed from the compiler for this — `export`/`import` and variadic `extern def` are already enough — it just replaces the copy-pasted printf-and-compare boilerplate every hand-written test of mine currently repeats.
+
+The bigger one: pyxc-level code coverage, i.e. knowing which lines of a `.pyxc` program actually executed, the same thing `llvm-cov` already does for `pyxc.cpp` itself. This is a real compiler feature, not a library — my own codegen would need to emit profiling counter bumps tied to pyxc source locations, plus a coverage-mapping section. I'm not starting from nothing, though: I already track source locations for diagnostics, so the raw material is half there. I'd want this in place before Concurrency below lands, not after: once concurrent pyxc programs exist, knowing which lines ran and in what order stops being a nice-to-have and becomes the main tool for debugging races and nondeterministic failures.
+
 ## Concurrency
 
 Ownership rules for shared state, spawning tasks and threads, synchronization primitives, message passing, parallel loops and work partitioning, determinism and race debugging, and eventually parallelizing the compiler itself. The real blocker is the same shape as closures: I need to decide the safety model before I can design any of the rest concretely, not discover it chapter by chapter.

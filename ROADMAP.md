@@ -167,6 +167,12 @@ var add5: ptr[def(int) -> int] = make_adder(5)
 printd(float64(add5(10)))  # 15.000000
 ```
 
+### Self-Hosted Testing and Coverage
+
+Two related ideas, different sizes. The small one: a `test/assert.pyxc` module (`assert.eq_int(actual, expected, label)` and friends) that other `.pyxc` test files `import`, printing a `FAIL: ...` line via variadic `printf` and calling `extern def exit(code: int)` (not declared anywhere yet, trivial to add) on mismatch. This needs nothing new from the compiler — `export`/`import` (Chapters 43–45) and variadic `extern def` (Chapter 33) are already enough — it just replaces the copy-pasted printf-and-compare boilerplate every hand-written test currently repeats.
+
+The bigger one: pyxc-level code coverage, i.e. "which lines of *this* `.pyxc` program executed," the same thing `llvm-cov`/Clang's source-based coverage already does for `pyxc.cpp` itself (see the tutorial's own testing docs). This is a real compiler feature, not a library — pyxc's codegen would need to emit `llvm.instrprof.increment` calls tied to pyxc source locations, plus a coverage-mapping section. Not from scratch, though: `SourceLoc`/`CurLoc` tracking already exists for diagnostics, so the raw material — "what source location is this AST node at" — is already half there. Worth sequencing ahead of Concurrency below: once concurrent pyxc programs exist, "which lines ran, in what order" turns from a nice-to-have into the main tool for debugging race conditions and nondeterministic failures, so having the instrumentation groundwork in place first pays off the moment concurrency lands.
+
 ### Concurrency
 
 Ownership rules for shared state, spawning tasks and threads, synchronization primitives, message passing, parallel loops and work partitioning, determinism/race debugging, and eventually parallelizing the compiler itself. The real blocker is the same shape as closures: the safety model has to be decided before any of the rest can be designed concretely, not discovered chapter by chapter.

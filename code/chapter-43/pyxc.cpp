@@ -460,6 +460,8 @@ static int advance() {
     return '\n';
   }
 
+  // '\n' resets Col and starts a new buffered line; anything else
+  // just advances Col within the current line.
   if (LastChar == '\n') {
     PyxcSourceMgr.onChar('\n');
     LexLoc.Line++;
@@ -496,7 +498,7 @@ static int peek() {
 /// before any token branch. For most tokens this points at the first
 /// character of the token. For tok_eol the '\n' was already consumed by
 /// advance() on a previous call, so LexLoc is already on the next line;
-/// GetDiagnosticAnchorLoc compensates by subtracting one when building error
+/// GetCaretAnchorLoc compensates by subtracting one when building error
 /// locations for tok_eol.
 ///
 /// The comment path ('#' branch) re-snapshots CurLoc just before returning
@@ -885,7 +887,7 @@ static int getToken() {
     if (LexerLastChar != EOF) {
       // Re-snapshot CurLoc now that the '\n' has been consumed and LexLoc
       // has advanced to the next line. Without this, CurLoc would point at
-      // the '#' column, and GetDiagnosticAnchorLoc would look up the wrong
+      // the '#' column, and GetCaretAnchorLoc would look up the wrong
       // line (because it subtracts 1) when the next token triggers an error.
       CurLoc = LexLoc;
       LexerLastChar = ' ';
@@ -1057,7 +1059,7 @@ static void ResetLexerState() {
 // Diagnostics helpers
 //===----------------------------------------===//
 
-/// GetDiagnosticAnchorLoc - Resolve the source location to attach to an error.
+/// GetCaretAnchorLoc - Resolve the source location to attach to an error.
 ///
 /// For most tokens, CurLoc already points at the right place and is returned
 /// unchanged. The special case is tok_eol: CurLoc for a newline token is
@@ -1066,7 +1068,7 @@ static void ResetLexerState() {
 /// gives the line that just ended, and we report a column one past its last
 /// character — pointing just after the final token on the line, which is
 /// where the missing token (e.g. ':') should have appeared.
-static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
+static SourceLocation GetCaretAnchorLoc(SourceLocation Loc, int Tok) {
   if (Tok != tok_eol || Loc.Line <= 1)
     return Loc;
 
@@ -1075,6 +1077,10 @@ static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
   const string *PrevLineText = PyxcSourceMgr.getLine(PrevLine);
 
   // guard
+  // PrevLineText is null only if PrevLine hasn't been buffered yet —
+  // it shouldn't happen, since I only get here after consuming that
+  // line's trailing newline, but I fall back to the original Loc
+  // rather than trust an out-of-range read.
   if (!PrevLineText)
     return Loc;
 
@@ -1104,6 +1110,9 @@ static string FormatTokenForMessage(int Tok) {
 /// spaces before the caret.
 static void PrintErrorSourceContext(SourceLocation Loc) {
   const string *LineText = PyxcSourceMgr.getLine(Loc.Line);
+  // LineText is null only if Loc points past everything buffered so
+  // far (e.g. an uninitialized Loc.Line == 0). Skip printing rather
+  // than dereference it below.
   if (!LineText)
     return;
 
@@ -1926,7 +1935,7 @@ void Log(const string &message) {
 /// type so parse functions can write: return LogErrorExpression("message");
 unique_ptr<ExpressionNode> LogErrorExpression(const char *Str) {
   HadError = true;
-  SourceLocation Anchor = GetDiagnosticAnchorLoc(CurLoc, CurrentToken);
+  SourceLocation Anchor = GetCaretAnchorLoc(CurLoc, CurrentToken);
   LogErrorAtLoc(Str, Anchor);
   return nullptr;
 }
@@ -4789,8 +4798,8 @@ static unique_ptr<FunctionSignatureNode> ParseExtern() {
 static std::unique_ptr<LLVMContext> TheContext;
 // TheModule - Current compilation unit handed to the JIT/emit path.
 static std::unique_ptr<Module> TheModule;
-// Builder - Cursor used to append instructions into the current block.
-static std::unique_ptr<IRBuilder<NoFolder>> Builder;
+// TheBuilder - Cursor used to append instructions into the current block.
+static std::unique_ptr<IRBuilder<NoFolder>> TheBuilder;
 // NamedValues - Maps variable names to allocas in the current function.
 static std::map<std::string, AllocaInst *> NamedValues;
 static std::map<std::string, string> NamedValueStructNames;
@@ -5144,7 +5153,7 @@ static void FinalizeDebugInfo() {
 static void SetCurrentDebugLocation(unsigned Line) {
   if (!DIB || !CurDIScope)
     return;
-  Builder->SetCurrentDebugLocation(
+  TheBuilder->SetCurrentDebugLocation(
       DILocation::get(*TheContext, Line, 1, CurDIScope));
 }
 
@@ -5166,7 +5175,7 @@ static void EmitDebugDeclare(AllocaInst *Alloca, StringRef Name, unsigned Line,
   }
 
   DIB->insertDeclare(Alloca, Variable, DIB->createExpression(), Location,
-                     Builder->GetInsertBlock());
+                     TheBuilder->GetInsertBlock());
 }
 
 static void EmitDebugGlobal(GlobalVariable *Global, StringRef Name,
@@ -5261,12 +5270,12 @@ static Value *EmitCast(Value *V, ValueType From, ValueType To) {
   // Integer ↔ float conversions.
   if (IsIntType(From) && IsFloatType(To))
     return IsUnsignedIntType(From)
-               ? Builder->CreateUIToFP(V, LLVMTypeFor(To), "uitofp")
-               : Builder->CreateSIToFP(V, LLVMTypeFor(To), "sitofp");
+               ? TheBuilder->CreateUIToFP(V, LLVMTypeFor(To), "uitofp")
+               : TheBuilder->CreateSIToFP(V, LLVMTypeFor(To), "sitofp");
   if (IsFloatType(From) && IsIntType(To))
     return IsUnsignedIntType(To)
-               ? Builder->CreateFPToUI(V, LLVMTypeFor(To), "fptoui")
-               : Builder->CreateFPToSI(V, LLVMTypeFor(To), "fptosi");
+               ? TheBuilder->CreateFPToUI(V, LLVMTypeFor(To), "fptoui")
+               : TheBuilder->CreateFPToSI(V, LLVMTypeFor(To), "fptosi");
   // Integer resize (trunc or sign-extend).
   if (IsIntType(From) && IsIntType(To)) {
     unsigned FromBits = LLVMTypeFor(From)->getIntegerBitWidth();
@@ -5274,24 +5283,24 @@ static Value *EmitCast(Value *V, ValueType From, ValueType To) {
     if (FromBits == ToBits)
       return V;
     if (ToBits < FromBits)
-      return Builder->CreateTrunc(V, LLVMTypeFor(To), "trunc");
+      return TheBuilder->CreateTrunc(V, LLVMTypeFor(To), "trunc");
     return IsUnsignedIntType(From)
-               ? Builder->CreateZExt(V, LLVMTypeFor(To), "zext")
-               : Builder->CreateSExt(V, LLVMTypeFor(To), "sext");
+               ? TheBuilder->CreateZExt(V, LLVMTypeFor(To), "zext")
+               : TheBuilder->CreateSExt(V, LLVMTypeFor(To), "sext");
   }
   // Float resize.
   if (IsFloatType(From) && IsFloatType(To)) {
     if (From == ValueType::Float32 && To == ValueType::Float64)
-      return Builder->CreateFPExt(V, LLVMTypeFor(To), "fpext");
-    return Builder->CreateFPTrunc(V, LLVMTypeFor(To), "fptrunc");
+      return TheBuilder->CreateFPExt(V, LLVMTypeFor(To), "fpext");
+    return TheBuilder->CreateFPTrunc(V, LLVMTypeFor(To), "fptrunc");
   }
   // Cast to bool: any nonzero value is true.
   if (To == ValueType::Bool) {
     if (IsIntType(From) || From == ValueType::Bool)
-      return Builder->CreateICmpNE(V, ConstantInt::get(LLVMTypeFor(From), 0),
+      return TheBuilder->CreateICmpNE(V, ConstantInt::get(LLVMTypeFor(From), 0),
                                    "tobool");
     if (IsFloatType(From))
-      return Builder->CreateFCmpONE(V, ConstantFP::get(LLVMTypeFor(From), 0.0),
+      return TheBuilder->CreateFCmpONE(V, ConstantFP::get(LLVMTypeFor(From), 0.0),
                                     "tobool");
   }
   return nullptr;
@@ -5308,7 +5317,7 @@ static Value *EmitImplicitCast(Value *V, ValueType From, ValueType To) {
     if (FromBits == ToBits)
       return V;
     if (FromBits < ToBits)
-      return Builder->CreateFPExt(V, LLVMTypeFor(To), "fpext");
+      return TheBuilder->CreateFPExt(V, LLVMTypeFor(To), "fpext");
     return nullptr;
   }
   if (IsIntType(From) && IsIntType(To) && CanWidenInt(From, To)) {
@@ -5317,13 +5326,13 @@ static Value *EmitImplicitCast(Value *V, ValueType From, ValueType To) {
     if (FromBits == ToBits)
       return V;
     return IsUnsignedIntType(From)
-               ? Builder->CreateZExt(V, LLVMTypeFor(To), "zext")
-               : Builder->CreateSExt(V, LLVMTypeFor(To), "sext");
+               ? TheBuilder->CreateZExt(V, LLVMTypeFor(To), "zext")
+               : TheBuilder->CreateSExt(V, LLVMTypeFor(To), "sext");
   }
   if (IsIntType(From) && IsFloatType(To))
     return IsUnsignedIntType(From)
-               ? Builder->CreateUIToFP(V, LLVMTypeFor(To), "uitofp")
-               : Builder->CreateSIToFP(V, LLVMTypeFor(To), "sitofp");
+               ? TheBuilder->CreateUIToFP(V, LLVMTypeFor(To), "uitofp")
+               : TheBuilder->CreateSIToFP(V, LLVMTypeFor(To), "sitofp");
   return nullptr;
 }
 
@@ -5406,7 +5415,7 @@ Value *StringExpressionNode::codegen() {
   ModuleHasGlobals = true;
 
   Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
-  return Builder->CreateInBoundsGEP(StorageType, Global, {Zero, Zero},
+  return TheBuilder->CreateInBoundsGEP(StorageType, Global, {Zero, Zero},
                                     "strptr");
 }
 
@@ -5425,18 +5434,18 @@ Value *NameExpressionNode::codegen() {
     if (!ArrayAddress)
       return LogErrorV("Unknown variable name");
     Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
-    return Builder->CreateInBoundsGEP(
+    return TheBuilder->CreateInBoundsGEP(
         LLVMTypeFor(getType(), getStructName()), ArrayAddress, {Zero, Zero},
         "arraydecay");
   }
 
   auto It = NamedValues.find(Name);
   if (It != NamedValues.end() && It->second)
-    return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), It->second,
+    return TheBuilder->CreateLoad(LLVMTypeFor(getType(), getStructName()), It->second,
                                Name.c_str());
 
   if (auto *GV = GetGlobalVariable(Name))
-    return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), GV,
+    return TheBuilder->CreateLoad(LLVMTypeFor(getType(), getStructName()), GV,
                                Name.c_str());
 
   return LogErrorV("Unknown variable name");
@@ -5471,7 +5480,7 @@ static Value *GetFieldAddress(const string &BaseName,
   if (DecodePointerType(CurrentStructName, PointeeType, PointeeStructName)) {
     if (PointeeType != ValueType::Struct)
       return nullptr;
-    Pointer = Builder->CreateLoad(
+    Pointer = TheBuilder->CreateLoad(
         LLVMTypeFor(ValueType::Pointer, CurrentStructName), Pointer, "self");
     CurrentType = PointeeType;
     CurrentStructName = PointeeStructName;
@@ -5486,7 +5495,7 @@ static Value *GetFieldAddress(const string &BaseName,
       return nullptr;
 
     const auto &FieldInfo = Struct->second.Fields[Field->second];
-    Pointer = Builder->CreateStructGEP(
+    Pointer = TheBuilder->CreateStructGEP(
         LLVMTypeFor(CurrentType, CurrentStructName), Pointer, Field->second,
         "fieldptr");
     CurrentType = FieldInfo.Type;
@@ -5507,7 +5516,7 @@ Value *FieldExpressionNode::codegen() {
                                    &FieldStructName);
   if (!Pointer)
     return LogErrorV("Unknown field access");
-  return Builder->CreateLoad(LLVMTypeFor(FieldType, FieldStructName), Pointer,
+  return TheBuilder->CreateLoad(LLVMTypeFor(FieldType, FieldStructName), Pointer,
                              "fieldload");
 }
 
@@ -5522,7 +5531,7 @@ Value *MemberExpressionNode::codegenAddress() {
   Value *BaseAddress = Base->codegenAddress();
   if (!BaseAddress)
     return LogErrorV("Field access requires an lvalue");
-  return Builder->CreateStructGEP(
+  return TheBuilder->CreateStructGEP(
       LLVMTypeFor(ValueType::Struct, Base->getStructName()), BaseAddress,
       FieldIndex, "fieldptr");
 }
@@ -5531,7 +5540,7 @@ Value *MemberExpressionNode::codegen() {
   Value *Address = codegenAddress();
   if (!Address)
     return nullptr;
-  return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), Address,
+  return TheBuilder->CreateLoad(LLVMTypeFor(getType(), getStructName()), Address,
                              "fieldload");
 }
 
@@ -5539,7 +5548,7 @@ Value *IndexExpressionNode::codegenAddress() {
   Value *IndexValue = Index->codegen();
   if (!IndexValue)
     return nullptr;
-  IndexValue = Builder->CreateIntCast(
+  IndexValue = TheBuilder->CreateIntCast(
       IndexValue, Type::getInt64Ty(*TheContext),
       !IsUnsignedIntType(Index->getType()), "index");
 
@@ -5548,7 +5557,7 @@ Value *IndexExpressionNode::codegenAddress() {
     if (!ArrayAddress)
       return nullptr;
     Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
-    return Builder->CreateInBoundsGEP(
+    return TheBuilder->CreateInBoundsGEP(
         LLVMTypeFor(Base->getType(), Base->getStructName()), ArrayAddress,
         {Zero, IndexValue}, "elemptr");
   }
@@ -5556,7 +5565,7 @@ Value *IndexExpressionNode::codegenAddress() {
   Value *BasePointer = Base->codegen();
   if (!BasePointer)
     return nullptr;
-  return Builder->CreateInBoundsGEP(
+  return TheBuilder->CreateInBoundsGEP(
       LLVMTypeFor(getType(), getStructName()), BasePointer, IndexValue,
       "elemptr");
 }
@@ -5565,7 +5574,7 @@ Value *IndexExpressionNode::codegen() {
   Value *Address = codegenAddress();
   if (!Address)
     return nullptr;
-  return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), Address,
+  return TheBuilder->CreateLoad(LLVMTypeFor(getType(), getStructName()), Address,
                              "elemload");
 }
 
@@ -5592,7 +5601,7 @@ Value *ArrayLiteralExpressionNode::codegen() {
     Element = EmitImplicitCast(Element, Elements[Index]->getType(), ElementType);
     if (!Element)
       return LogErrorV("Array literal element type mismatch");
-    Aggregate = Builder->CreateInsertValue(Aggregate, Element,
+    Aggregate = TheBuilder->CreateInsertValue(Aggregate, Element,
                                            {static_cast<unsigned>(Index)},
                                            "arrayinit");
   }
@@ -5609,7 +5618,7 @@ Value *AssignmentExpressionNode::codegen() {
   AssignedValue = EmitImplicitCast(AssignedValue, Right->getType(), getType());
   if (!AssignedValue)
     return LogErrorV("Type mismatch in assignment");
-  Builder->CreateStore(AssignedValue, Address);
+  TheBuilder->CreateStore(AssignedValue, Address);
   return AssignedValue;
 }
 
@@ -5623,12 +5632,12 @@ static Value *EmitReadModifyWriteValue(int Operator, Value *LeftValue,
     if (!RightValue)
       return LogErrorV("Type mismatch in assignment");
     if (Operator == tok_minus)
-      RightValue = Builder->CreateNeg(RightValue, "negindex");
+      RightValue = TheBuilder->CreateNeg(RightValue, "negindex");
     ValueType ElementType = ValueType::Error;
     string ElementTypeInfo;
     if (!DecodePointerType(LeftTypeInfo, ElementType, ElementTypeInfo))
       return LogErrorV("Invalid pointer type metadata");
-    return Builder->CreateInBoundsGEP(
+    return TheBuilder->CreateInBoundsGEP(
         LLVMTypeFor(ElementType, ElementTypeInfo), LeftValue, RightValue,
         "ptrarith");
   }
@@ -5638,35 +5647,35 @@ static Value *EmitReadModifyWriteValue(int Operator, Value *LeftValue,
     return LogErrorV("Type mismatch in assignment");
   if (IsFloatType(LeftType)) {
     if (Operator == tok_plus)
-      return Builder->CreateFAdd(LeftValue, RightValue, "addtmp");
+      return TheBuilder->CreateFAdd(LeftValue, RightValue, "addtmp");
     if (Operator == tok_minus)
-      return Builder->CreateFSub(LeftValue, RightValue, "subtmp");
+      return TheBuilder->CreateFSub(LeftValue, RightValue, "subtmp");
     if (Operator == tok_star)
-      return Builder->CreateFMul(LeftValue, RightValue, "multmp");
+      return TheBuilder->CreateFMul(LeftValue, RightValue, "multmp");
     if (Operator == tok_slash)
-      return Builder->CreateFDiv(LeftValue, RightValue, "divtmp");
-    return Builder->CreateFRem(LeftValue, RightValue, "remtmp");
+      return TheBuilder->CreateFDiv(LeftValue, RightValue, "divtmp");
+    return TheBuilder->CreateFRem(LeftValue, RightValue, "remtmp");
   }
   if (Operator == tok_plus)
-    return Builder->CreateAdd(LeftValue, RightValue, "addtmp");
+    return TheBuilder->CreateAdd(LeftValue, RightValue, "addtmp");
   if (Operator == tok_minus)
-    return Builder->CreateSub(LeftValue, RightValue, "subtmp");
+    return TheBuilder->CreateSub(LeftValue, RightValue, "subtmp");
   if (Operator == tok_star)
-    return Builder->CreateMul(LeftValue, RightValue, "multmp");
+    return TheBuilder->CreateMul(LeftValue, RightValue, "multmp");
   if (Operator == tok_slash)
     return IsUnsignedIntType(LeftType)
-               ? Builder->CreateUDiv(LeftValue, RightValue, "divtmp")
-               : Builder->CreateSDiv(LeftValue, RightValue, "divtmp");
+               ? TheBuilder->CreateUDiv(LeftValue, RightValue, "divtmp")
+               : TheBuilder->CreateSDiv(LeftValue, RightValue, "divtmp");
   return IsUnsignedIntType(LeftType)
-             ? Builder->CreateURem(LeftValue, RightValue, "remtmp")
-             : Builder->CreateSRem(LeftValue, RightValue, "remtmp");
+             ? TheBuilder->CreateURem(LeftValue, RightValue, "remtmp")
+             : TheBuilder->CreateSRem(LeftValue, RightValue, "remtmp");
 }
 
 Value *CompoundAssignmentExpressionNode::codegen() {
   Value *Address = Left->codegenAddress();
   if (!Address)
     return LogErrorV("Assignment target must be assignable");
-  Value *LeftValue = Builder->CreateLoad(
+  Value *LeftValue = TheBuilder->CreateLoad(
       LLVMTypeFor(getType(), getStructName()), Address, "rmw.old");
   Value *RightValue = Right->codegen();
   if (!RightValue)
@@ -5676,7 +5685,7 @@ Value *CompoundAssignmentExpressionNode::codegen() {
       Right->getType());
   if (!Result)
     return nullptr;
-  Builder->CreateStore(Result, Address);
+  TheBuilder->CreateStore(Result, Address);
   return Result;
 }
 
@@ -5684,7 +5693,7 @@ Value *IncrementDecrementExpressionNode::codegen() {
   Value *Address = Operand->codegenAddress();
   if (!Address)
     return LogErrorV("Increment/decrement target must be assignable");
-  Value *OldValue = Builder->CreateLoad(
+  Value *OldValue = TheBuilder->CreateLoad(
       LLVMTypeFor(getType(), getStructName()), Address, "incdec.old");
   Value *One = nullptr;
   ValueType OneType = getType();
@@ -5701,14 +5710,14 @@ Value *IncrementDecrementExpressionNode::codegen() {
       getStructName(), One, OneType);
   if (!NewValue)
     return nullptr;
-  Builder->CreateStore(NewValue, Address);
+  TheBuilder->CreateStore(NewValue, Address);
   return IsPrefix ? NewValue : OldValue;
 }
 
 /// ReturnStatementNode::codegen - Emit a return from the current function.
 Value *ReturnStatementNode::codegen() {
   if (!Expr) {
-    Builder->CreateRetVoid();
+    TheBuilder->CreateRetVoid();
     return ConstantFP::get(*TheContext, APFloat(0.0));
   }
 
@@ -5718,7 +5727,7 @@ Value *ReturnStatementNode::codegen() {
   RetVal = EmitImplicitCast(RetVal, Expr->getType(), CurrentFunctionReturnType);
   if (!RetVal)
     return LogErrorV("Type mismatch in return");
-  Builder->CreateRet(RetVal);
+  TheBuilder->CreateRet(RetVal);
   return RetVal;
 }
 
@@ -5731,7 +5740,7 @@ Value *BlockStatementNode::codegen() {
 
   Value *Last = nullptr;
   for (auto &Stmt : Stmts) {
-    if (Builder->GetInsertBlock()->getTerminator())
+    if (TheBuilder->GetInsertBlock()->getTerminator())
       break;
     Last = Stmt->codegen();
     if (!Last) {
@@ -5775,28 +5784,28 @@ Value *BinaryExpressionNode::codegen() {
     if (!LeftValue)
       return nullptr;
 
-    Function *FunctionIR = Builder->GetInsertBlock()->getParent();
-    BasicBlock *LeftBlock = Builder->GetInsertBlock();
+    Function *FunctionIR = TheBuilder->GetInsertBlock()->getParent();
+    BasicBlock *LeftBlock = TheBuilder->GetInsertBlock();
     BasicBlock *RightBlock =
         BasicBlock::Create(*TheContext, "logic.rhs", FunctionIR);
     BasicBlock *MergeBlock = BasicBlock::Create(*TheContext, "logic.end");
 
     if (Operator == tok_and)
-      Builder->CreateCondBr(LeftValue, RightBlock, MergeBlock);
+      TheBuilder->CreateCondBr(LeftValue, RightBlock, MergeBlock);
     else
-      Builder->CreateCondBr(LeftValue, MergeBlock, RightBlock);
+      TheBuilder->CreateCondBr(LeftValue, MergeBlock, RightBlock);
 
-    Builder->SetInsertPoint(RightBlock);
+    TheBuilder->SetInsertPoint(RightBlock);
     Value *RightValue = Right->codegen();
     if (!RightValue)
       return nullptr;
-    Builder->CreateBr(MergeBlock);
-    RightBlock = Builder->GetInsertBlock();
+    TheBuilder->CreateBr(MergeBlock);
+    RightBlock = TheBuilder->GetInsertBlock();
 
     FunctionIR->insert(FunctionIR->end(), MergeBlock);
-    Builder->SetInsertPoint(MergeBlock);
+    TheBuilder->SetInsertPoint(MergeBlock);
     PHINode *Result =
-        Builder->CreatePHI(Type::getInt1Ty(*TheContext), 2, "logictmp");
+        TheBuilder->CreatePHI(Type::getInt1Ty(*TheContext), 2, "logictmp");
     if (Operator == tok_and) {
       Result->addIncoming(ConstantInt::getFalse(*TheContext), LeftBlock);
       Result->addIncoming(RightValue, RightBlock);
@@ -5838,15 +5847,15 @@ Value *BinaryExpressionNode::codegen() {
       if (!Pointer || !Index)
         return LogErrorV("Type mismatch in pointer arithmetic");
       ValueType IndexType = LType == ValueType::Pointer ? RType : LType;
-      Index = Builder->CreateIntCast(Index, Type::getInt64Ty(*TheContext),
+      Index = TheBuilder->CreateIntCast(Index, Type::getInt64Ty(*TheContext),
                                      !IsUnsignedIntType(IndexType), "ptrindex");
       if (Operator == tok_minus)
-        Index = Builder->CreateNeg(Index, "negindex");
+        Index = TheBuilder->CreateNeg(Index, "negindex");
       ValueType ElementType = ValueType::Error;
       string ElementStructName;
       if (!DecodePointerType(getStructName(), ElementType, ElementStructName))
         return LogErrorV("Invalid pointer type metadata");
-      return Builder->CreateInBoundsGEP(
+      return TheBuilder->CreateInBoundsGEP(
           LLVMTypeFor(ElementType, ElementStructName), Pointer, Index,
           "ptrarith");
     }
@@ -5858,7 +5867,7 @@ Value *BinaryExpressionNode::codegen() {
       if (!DecodePointerType(Left->getStructName(), ElementType,
                              ElementStructName))
         return LogErrorV("Invalid pointer type metadata");
-      return Builder->CreatePtrDiff(
+      return TheBuilder->CreatePtrDiff(
           LLVMTypeFor(ElementType, ElementStructName), L, R, "ptrdiff");
     }
 
@@ -5868,28 +5877,28 @@ Value *BinaryExpressionNode::codegen() {
       return LogErrorV("Type mismatch in arithmetic");
     if (IsFloatType(getType())) {
       if (Operator == tok_plus)
-        return Builder->CreateFAdd(L, R, "addtmp");
+        return TheBuilder->CreateFAdd(L, R, "addtmp");
       if (Operator == tok_minus)
-        return Builder->CreateFSub(L, R, "subtmp");
+        return TheBuilder->CreateFSub(L, R, "subtmp");
       if (Operator == tok_slash)
-        return Builder->CreateFDiv(L, R, "divtmp");
+        return TheBuilder->CreateFDiv(L, R, "divtmp");
       if (Operator == tok_percent)
-        return Builder->CreateFRem(L, R, "remtmp");
-      return Builder->CreateFMul(L, R, "multmp");
+        return TheBuilder->CreateFRem(L, R, "remtmp");
+      return TheBuilder->CreateFMul(L, R, "multmp");
     }
     if (Operator == tok_plus)
-      return Builder->CreateAdd(L, R, "addtmp");
+      return TheBuilder->CreateAdd(L, R, "addtmp");
     if (Operator == tok_minus)
-      return Builder->CreateSub(L, R, "subtmp");
+      return TheBuilder->CreateSub(L, R, "subtmp");
     if (Operator == tok_slash)
       return IsUnsignedIntType(getType())
-                 ? Builder->CreateUDiv(L, R, "divtmp")
-                 : Builder->CreateSDiv(L, R, "divtmp");
+                 ? TheBuilder->CreateUDiv(L, R, "divtmp")
+                 : TheBuilder->CreateSDiv(L, R, "divtmp");
     if (Operator == tok_percent)
       return IsUnsignedIntType(getType())
-                 ? Builder->CreateURem(L, R, "remtmp")
-                 : Builder->CreateSRem(L, R, "remtmp");
-    return Builder->CreateMul(L, R, "multmp");
+                 ? TheBuilder->CreateURem(L, R, "remtmp")
+                 : TheBuilder->CreateSRem(L, R, "remtmp");
+    return TheBuilder->CreateMul(L, R, "multmp");
   }
   case tok_ampersand:
   case tok_pipe:
@@ -5900,10 +5909,10 @@ Value *BinaryExpressionNode::codegen() {
     if (!L || !R)
       return LogErrorV("Type mismatch in binary operator");
     if (Operator == tok_ampersand)
-      return Builder->CreateAnd(L, R, "bwand");
+      return TheBuilder->CreateAnd(L, R, "bwand");
     if (Operator == tok_pipe)
-      return Builder->CreateOr(L, R, "bwor");
-    return Builder->CreateXor(L, R, "bwxor");
+      return TheBuilder->CreateOr(L, R, "bwor");
+    return TheBuilder->CreateXor(L, R, "bwxor");
   }
   case tok_shift_left:
   case tok_shift_right: {
@@ -5911,10 +5920,10 @@ Value *BinaryExpressionNode::codegen() {
     if (!R)
       return LogErrorV("Type mismatch in shift operator");
     if (Operator == tok_shift_left)
-      return Builder->CreateShl(L, R, "shltmp");
+      return TheBuilder->CreateShl(L, R, "shltmp");
     return IsUnsignedIntType(LType)
-               ? Builder->CreateLShr(L, R, "shrtmp")
-               : Builder->CreateAShr(L, R, "shrtmp");
+               ? TheBuilder->CreateLShr(L, R, "shrtmp")
+               : TheBuilder->CreateAShr(L, R, "shrtmp");
   }
   case tok_less:
   case tok_greater:
@@ -5925,17 +5934,17 @@ Value *BinaryExpressionNode::codegen() {
     if (LType == ValueType::Pointer && RType == ValueType::Pointer) {
       switch (Operator) {
       case tok_less:
-        return Builder->CreateICmpULT(L, R, "cmptmp");
+        return TheBuilder->CreateICmpULT(L, R, "cmptmp");
       case tok_greater:
-        return Builder->CreateICmpUGT(L, R, "cmptmp");
+        return TheBuilder->CreateICmpUGT(L, R, "cmptmp");
       case tok_eq:
-        return Builder->CreateICmpEQ(L, R, "cmptmp");
+        return TheBuilder->CreateICmpEQ(L, R, "cmptmp");
       case tok_neq:
-        return Builder->CreateICmpNE(L, R, "cmptmp");
+        return TheBuilder->CreateICmpNE(L, R, "cmptmp");
       case tok_leq:
-        return Builder->CreateICmpULE(L, R, "cmptmp");
+        return TheBuilder->CreateICmpULE(L, R, "cmptmp");
       case tok_geq:
-        return Builder->CreateICmpUGE(L, R, "cmptmp");
+        return TheBuilder->CreateICmpUGE(L, R, "cmptmp");
       default:
         break;
       }
@@ -5970,8 +5979,8 @@ Value *BinaryExpressionNode::codegen() {
 
     if (CompareType == ValueType::Bool) {
       if (Operator == tok_eq)
-        return Builder->CreateICmpEQ(L, R, "cmptmp");
-      return Builder->CreateICmpNE(L, R, "cmptmp");
+        return TheBuilder->CreateICmpEQ(L, R, "cmptmp");
+      return TheBuilder->CreateICmpNE(L, R, "cmptmp");
     }
 
     L = EmitImplicitCast(L, LType, CompareType);
@@ -5982,17 +5991,17 @@ Value *BinaryExpressionNode::codegen() {
     if (IsFloatType(CompareType)) {
       switch (Operator) {
       case tok_less:
-        return Builder->CreateFCmpOLT(L, R, "cmptmp");
+        return TheBuilder->CreateFCmpOLT(L, R, "cmptmp");
       case tok_greater:
-        return Builder->CreateFCmpOGT(L, R, "cmptmp");
+        return TheBuilder->CreateFCmpOGT(L, R, "cmptmp");
       case tok_eq:
-        return Builder->CreateFCmpOEQ(L, R, "cmptmp");
+        return TheBuilder->CreateFCmpOEQ(L, R, "cmptmp");
       case tok_neq:
-        return Builder->CreateFCmpUNE(L, R, "cmptmp");
+        return TheBuilder->CreateFCmpUNE(L, R, "cmptmp");
       case tok_leq:
-        return Builder->CreateFCmpOLE(L, R, "cmptmp");
+        return TheBuilder->CreateFCmpOLE(L, R, "cmptmp");
       case tok_geq:
-        return Builder->CreateFCmpOGE(L, R, "cmptmp");
+        return TheBuilder->CreateFCmpOGE(L, R, "cmptmp");
       default:
         break;
       }
@@ -6000,24 +6009,24 @@ Value *BinaryExpressionNode::codegen() {
       switch (Operator) {
       case tok_less:
         return IsUnsignedIntType(CompareType)
-                   ? Builder->CreateICmpULT(L, R, "cmptmp")
-                   : Builder->CreateICmpSLT(L, R, "cmptmp");
+                   ? TheBuilder->CreateICmpULT(L, R, "cmptmp")
+                   : TheBuilder->CreateICmpSLT(L, R, "cmptmp");
       case tok_greater:
         return IsUnsignedIntType(CompareType)
-                   ? Builder->CreateICmpUGT(L, R, "cmptmp")
-                   : Builder->CreateICmpSGT(L, R, "cmptmp");
+                   ? TheBuilder->CreateICmpUGT(L, R, "cmptmp")
+                   : TheBuilder->CreateICmpSGT(L, R, "cmptmp");
       case tok_eq:
-        return Builder->CreateICmpEQ(L, R, "cmptmp");
+        return TheBuilder->CreateICmpEQ(L, R, "cmptmp");
       case tok_neq:
-        return Builder->CreateICmpNE(L, R, "cmptmp");
+        return TheBuilder->CreateICmpNE(L, R, "cmptmp");
       case tok_leq:
         return IsUnsignedIntType(CompareType)
-                   ? Builder->CreateICmpULE(L, R, "cmptmp")
-                   : Builder->CreateICmpSLE(L, R, "cmptmp");
+                   ? TheBuilder->CreateICmpULE(L, R, "cmptmp")
+                   : TheBuilder->CreateICmpSLE(L, R, "cmptmp");
       case tok_geq:
         return IsUnsignedIntType(CompareType)
-                   ? Builder->CreateICmpUGE(L, R, "cmptmp")
-                   : Builder->CreateICmpSGE(L, R, "cmptmp");
+                   ? TheBuilder->CreateICmpUGE(L, R, "cmptmp")
+                   : TheBuilder->CreateICmpSGE(L, R, "cmptmp");
       default:
         break;
       }
@@ -6040,17 +6049,17 @@ Value *UnaryExpressionNode::codegen() {
   // Built-in unary minus.
   if (Opcode == tok_minus) {
     if (IsIntType(getType()))
-      return Builder->CreateNeg(Operator, "negtmp");
+      return TheBuilder->CreateNeg(Operator, "negtmp");
     if (IsFloatType(getType()))
-      return Builder->CreateFNeg(Operator, "negtmp");
+      return TheBuilder->CreateFNeg(Operator, "negtmp");
     return LogErrorV("Unary '-' not supported for this type");
   }
 
   if (Opcode == tok_exclamation)
-    return Builder->CreateNot(Operator, "nottmp");
+    return TheBuilder->CreateNot(Operator, "nottmp");
 
   if (Opcode == tok_tilde)
-    return Builder->CreateNot(Operator, "bnottmp");
+    return TheBuilder->CreateNot(Operator, "bnottmp");
 
   return LogErrorV("Unknown unary operator");
 }
@@ -6108,20 +6117,20 @@ Value *CallExpressionNode::codegen() {
   }
 
   if (getType() == ValueType::None)
-    return Builder->CreateCall(CalleeF, ArgsV);
-  return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
+    return TheBuilder->CreateCall(CalleeF, ArgsV);
+  return TheBuilder->CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
 Value *ConstructorCallExpressionNode::codegen() {
-  Function *CurrentFunction = Builder->GetInsertBlock()
-                                  ? Builder->GetInsertBlock()->getParent()
+  Function *CurrentFunction = TheBuilder->GetInsertBlock()
+                                  ? TheBuilder->GetInsertBlock()->getParent()
                                   : nullptr;
   if (!CurrentFunction)
     return LogErrorV("Constructor call outside function context");
 
   AllocaInst *Storage = CreateEntryBlockAlloca(
       CurrentFunction, "constructor.value", ValueType::Struct, ClassName);
-  Builder->CreateStore(ZeroConstant(ValueType::Struct, ClassName), Storage);
+  TheBuilder->CreateStore(ZeroConstant(ValueType::Struct, ClassName), Storage);
 
   string InitializerName = ClassName + ".__init__";
   if (FunctionSignatureNode *Initializer =
@@ -6142,10 +6151,10 @@ Value *ConstructorCallExpressionNode::codegen() {
         return LogErrorV("Constructor argument mismatch");
       ArgumentValues.push_back(ArgumentValue);
     }
-    Builder->CreateCall(InitializerFunction, ArgumentValues);
+    TheBuilder->CreateCall(InitializerFunction, ArgumentValues);
   }
 
-  return Builder->CreateLoad(LLVMTypeFor(ValueType::Struct, ClassName), Storage,
+  return TheBuilder->CreateLoad(LLVMTypeFor(ValueType::Struct, ClassName), Storage,
                              "constructor.result");
 }
 
@@ -6162,44 +6171,44 @@ Value *IfStatementNode::codegen() {
   if (!CondV)
     return LogErrorV("Invalid condition type");
 
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
 
   BasicBlock *ThenBB = BasicBlock::Create(*TheContext, "then", TheFunction);
   BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else", TheFunction);
   BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont", TheFunction);
 
-  Builder->CreateCondBr(CondV, ThenBB, ElseBB);
+  TheBuilder->CreateCondBr(CondV, ThenBB, ElseBB);
 
-  Builder->SetInsertPoint(ThenBB);
+  TheBuilder->SetInsertPoint(ThenBB);
   if (!Then->codegen())
     return nullptr;
-  bool ThenTerminated = Builder->GetInsertBlock()->getTerminator();
+  bool ThenTerminated = TheBuilder->GetInsertBlock()->getTerminator();
   if (!ThenTerminated)
-    Builder->CreateBr(MergeBB);
+    TheBuilder->CreateBr(MergeBB);
 
-  Builder->SetInsertPoint(ElseBB);
+  TheBuilder->SetInsertPoint(ElseBB);
   if (Else) {
     if (!Else->codegen())
       return nullptr;
   }
-  bool ElseTerminated = Builder->GetInsertBlock()->getTerminator();
+  bool ElseTerminated = TheBuilder->GetInsertBlock()->getTerminator();
   if (!ElseTerminated)
-    Builder->CreateBr(MergeBB);
+    TheBuilder->CreateBr(MergeBB);
 
   if (Else && ThenTerminated && ElseTerminated) {
-    Builder->SetInsertPoint(MergeBB);
-    Builder->CreateUnreachable();
+    TheBuilder->SetInsertPoint(MergeBB);
+    TheBuilder->CreateUnreachable();
     return ConstantFP::get(*TheContext, APFloat(0.0));
   }
 
-  Builder->SetInsertPoint(MergeBB);
+  TheBuilder->SetInsertPoint(MergeBB);
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
 /// ForStatementNode::codegen - Emit LLVM IR for a for statement using a mutable
 /// stack slot for the loop variable.
 Value *ForStatementNode::codegen() {
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
 
   Value *VarPtr = nullptr;
   AllocaInst *Alloca = nullptr;
@@ -6228,7 +6237,7 @@ Value *ForStatementNode::codegen() {
   if (!StartVal)
     return LogErrorV("Type mismatch in for loop start");
 
-  Builder->CreateStore(StartVal, VarPtr);
+  TheBuilder->CreateStore(StartVal, VarPtr);
 
   BasicBlock *CondBB =
       BasicBlock::Create(*TheContext, "loop_cond", TheFunction);
@@ -6239,9 +6248,9 @@ Value *ForStatementNode::codegen() {
   BasicBlock *AfterBB =
       BasicBlock::Create(*TheContext, "after_loop", TheFunction);
 
-  Builder->CreateBr(CondBB);
+  TheBuilder->CreateBr(CondBB);
 
-  Builder->SetInsertPoint(CondBB);
+  TheBuilder->SetInsertPoint(CondBB);
 
 
   Value *CondVal = Cond->codegen();
@@ -6250,9 +6259,9 @@ Value *ForStatementNode::codegen() {
   CondVal = ToBool(CondVal, Cond->getType());
   if (!CondVal)
     return LogErrorV("Invalid loop condition type");
-  Builder->CreateCondBr(CondVal, BodyBB, AfterBB);
+  TheBuilder->CreateCondBr(CondVal, BodyBB, AfterBB);
 
-  Builder->SetInsertPoint(BodyBB);
+  TheBuilder->SetInsertPoint(BodyBB);
 
   LoopControlStack.push_back({AfterBB, StepBB});
   BreakTargetStack.push_back(AfterBB);
@@ -6263,12 +6272,12 @@ Value *ForStatementNode::codegen() {
   }
   BreakTargetStack.pop_back();
   LoopControlStack.pop_back();
-  if (!Builder->GetInsertBlock()->getTerminator())
-    Builder->CreateBr(StepBB);
+  if (!TheBuilder->GetInsertBlock()->getTerminator())
+    TheBuilder->CreateBr(StepBB);
 
-  Builder->SetInsertPoint(StepBB);
+  TheBuilder->SetInsertPoint(StepBB);
 
-  Value *CurVar = Builder->CreateLoad(LLVMTypeFor(VarType), VarPtr, VarName);
+  Value *CurVar = TheBuilder->CreateLoad(LLVMTypeFor(VarType), VarPtr, VarName);
   Value *StepVal = Step->codegen();
   if (!StepVal)
     return nullptr;
@@ -6277,13 +6286,13 @@ Value *ForStatementNode::codegen() {
     return LogErrorV("Type mismatch in for loop step");
   Value *NextVar = nullptr;
   if (VarType == ValueType::Float64)
-    NextVar = Builder->CreateFAdd(CurVar, StepVal, "nextvar");
+    NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
   else
-    NextVar = Builder->CreateAdd(CurVar, StepVal, "nextvar");
-  Builder->CreateStore(NextVar, VarPtr);
-  Builder->CreateBr(CondBB);
+    NextVar = TheBuilder->CreateAdd(CurVar, StepVal, "nextvar");
+  TheBuilder->CreateStore(NextVar, VarPtr);
+  TheBuilder->CreateBr(CondBB);
 
-  Builder->SetInsertPoint(AfterBB);
+  TheBuilder->SetInsertPoint(AfterBB);
 
   if (IsVarDecl) {
     if (OldVal)
@@ -6296,7 +6305,7 @@ Value *ForStatementNode::codegen() {
 }
 
 Value *WhileStatementNode::codegen() {
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
   BasicBlock *ConditionBlock =
       BasicBlock::Create(*TheContext, "while.condition", TheFunction);
   BasicBlock *BodyBlock =
@@ -6304,20 +6313,20 @@ Value *WhileStatementNode::codegen() {
   BasicBlock *AfterBlock =
       BasicBlock::Create(*TheContext, "while.after", TheFunction);
 
-  Builder->CreateBr(IsDoWhile ? BodyBlock : ConditionBlock);
+  TheBuilder->CreateBr(IsDoWhile ? BodyBlock : ConditionBlock);
 
   if (!IsDoWhile) {
-    Builder->SetInsertPoint(ConditionBlock);
+    TheBuilder->SetInsertPoint(ConditionBlock);
     Value *ConditionValue = Cond->codegen();
     if (!ConditionValue)
       return nullptr;
     ConditionValue = ToBool(ConditionValue, Cond->getType());
     if (!ConditionValue)
       return LogErrorV("Invalid loop condition type");
-    Builder->CreateCondBr(ConditionValue, BodyBlock, AfterBlock);
+    TheBuilder->CreateCondBr(ConditionValue, BodyBlock, AfterBlock);
   }
 
-  Builder->SetInsertPoint(BodyBlock);
+  TheBuilder->SetInsertPoint(BodyBlock);
   LoopControlStack.push_back({AfterBlock, ConditionBlock});
   BreakTargetStack.push_back(AfterBlock);
   if (!Body->codegen()) {
@@ -6327,10 +6336,10 @@ Value *WhileStatementNode::codegen() {
   }
   BreakTargetStack.pop_back();
   LoopControlStack.pop_back();
-  if (!Builder->GetInsertBlock()->getTerminator())
-    Builder->CreateBr(ConditionBlock);
+  if (!TheBuilder->GetInsertBlock()->getTerminator())
+    TheBuilder->CreateBr(ConditionBlock);
 
-  Builder->SetInsertPoint(ConditionBlock);
+  TheBuilder->SetInsertPoint(ConditionBlock);
   if (IsDoWhile) {
     Value *ConditionValue = Cond->codegen();
     if (!ConditionValue)
@@ -6338,10 +6347,10 @@ Value *WhileStatementNode::codegen() {
     ConditionValue = ToBool(ConditionValue, Cond->getType());
     if (!ConditionValue)
       return LogErrorV("Invalid loop condition type");
-    Builder->CreateCondBr(ConditionValue, BodyBlock, AfterBlock);
+    TheBuilder->CreateCondBr(ConditionValue, BodyBlock, AfterBlock);
   }
 
-  Builder->SetInsertPoint(AfterBlock);
+  TheBuilder->SetInsertPoint(AfterBlock);
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
@@ -6354,7 +6363,7 @@ Value *SwitchStatementNode::codegen() {
   if (!ConditionType)
     return LogErrorV("Switch condition must be an integer type");
 
-  Function *FunctionIR = Builder->GetInsertBlock()->getParent();
+  Function *FunctionIR = TheBuilder->GetInsertBlock()->getParent();
   BasicBlock *AfterBlock =
       BasicBlock::Create(*TheContext, "switch.after", FunctionIR);
   BasicBlock *DefaultBlock =
@@ -6366,7 +6375,7 @@ Value *SwitchStatementNode::codegen() {
   for (const auto &Case : Cases)
     CaseCount += Case.first.size();
   auto *SwitchIR =
-      Builder->CreateSwitch(ConditionValue, DefaultBlock, CaseCount);
+      TheBuilder->CreateSwitch(ConditionValue, DefaultBlock, CaseCount);
 
   vector<BasicBlock *> CaseBlocks;
   for (const auto &Case : Cases) {
@@ -6382,41 +6391,41 @@ Value *SwitchStatementNode::codegen() {
 
   BreakTargetStack.push_back(AfterBlock);
   for (size_t Index = 0; Index < Cases.size(); ++Index) {
-    Builder->SetInsertPoint(CaseBlocks[Index]);
+    TheBuilder->SetInsertPoint(CaseBlocks[Index]);
     if (!Cases[Index].second->codegen()) {
       BreakTargetStack.pop_back();
       return nullptr;
     }
-    if (!Builder->GetInsertBlock()->getTerminator())
-      Builder->CreateBr(AfterBlock);
+    if (!TheBuilder->GetInsertBlock()->getTerminator())
+      TheBuilder->CreateBr(AfterBlock);
   }
 
   if (DefaultCase) {
-    Builder->SetInsertPoint(DefaultBlock);
+    TheBuilder->SetInsertPoint(DefaultBlock);
     if (!DefaultCase->codegen()) {
       BreakTargetStack.pop_back();
       return nullptr;
     }
-    if (!Builder->GetInsertBlock()->getTerminator())
-      Builder->CreateBr(AfterBlock);
+    if (!TheBuilder->GetInsertBlock()->getTerminator())
+      TheBuilder->CreateBr(AfterBlock);
   }
   BreakTargetStack.pop_back();
 
-  Builder->SetInsertPoint(AfterBlock);
+  TheBuilder->SetInsertPoint(AfterBlock);
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
 Value *BreakStatementNode::codegen() {
   if (BreakTargetStack.empty())
     return LogErrorV("'break' used outside of a loop or switch");
-  Builder->CreateBr(BreakTargetStack.back());
+  TheBuilder->CreateBr(BreakTargetStack.back());
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
 Value *ContinueStatementNode::codegen() {
   if (LoopControlStack.empty())
     return LogErrorV("'continue' used outside of a loop");
-  Builder->CreateBr(LoopControlStack.back().ContinueTarget);
+  TheBuilder->CreateBr(LoopControlStack.back().ContinueTarget);
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
@@ -6459,13 +6468,13 @@ Value *VarStatementNode::codegen() {
           return LogErrorV("Type mismatch in variable initialization");
       }
 
-      Builder->CreateStore(InitVal, GV);
+      TheBuilder->CreateStore(InitVal, GV);
     }
 
     return ConstantFP::get(*TheContext, APFloat(0.0));
   }
 
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
 
   for (auto &Var : VarNames) {
     const string &VarName = Var.Name;
@@ -6485,7 +6494,7 @@ Value *VarStatementNode::codegen() {
 
     AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName, VarType,
                                                 VarStructName);
-    Builder->CreateStore(InitVal, Alloca);
+    TheBuilder->CreateStore(InitVal, Alloca);
     NamedValues[VarName] = Alloca;
     if (!VarStructName.empty())
       NamedValueStructNames[VarName] = VarStructName;
@@ -6537,7 +6546,7 @@ Function *FunctionSignatureNode::codegen() {
 ///    getFunction() either finds an existing declaration in the current module
 ///    (e.g. from a prior 'extern def') or calls Signature->codegen() to create one.
 ///
-/// 2. Create the entry BasicBlock and point the Builder at it. A basic block
+/// 2. Create the entry BasicBlock and point the TheBuilder at it. A basic block
 ///    is a straight-line sequence of instructions with one entry and one exit.
 ///    Every function starts with exactly one entry block.
 ///
@@ -6590,7 +6599,7 @@ Function *FunctionDefinitionNode::codegen() {
 
   // Step 2: create the entry block and point the builder at it.
   BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
-  Builder->SetInsertPoint(BB);
+  TheBuilder->SetInsertPoint(BB);
   SetCurrentDebugLocation(CurFunctionLine);
 
   // Step 3: populate NamedValues with entry-block allocas for each argument.
@@ -6605,7 +6614,7 @@ Function *FunctionDefinitionNode::codegen() {
     const string &ArgStructName = P.getParameterStructName(ArgTypeIndex++);
     AllocaInst *Alloca = CreateEntryBlockAlloca(
         TheFunction, std::string(Arg.getName()), ArgType, ArgStructName);
-    Builder->CreateStore(&Arg, Alloca);
+    TheBuilder->CreateStore(&Arg, Alloca);
     NamedValues[std::string(Arg.getName())] = Alloca;
     if (!ArgStructName.empty())
       NamedValueStructNames[std::string(Arg.getName())] = ArgStructName;
@@ -6618,14 +6627,14 @@ Function *FunctionDefinitionNode::codegen() {
     // If the body didn't already terminate the current block (e.g. via
     // return), only void/None functions may fall through. Non-None functions
     // must return explicitly.
-    if (!Builder->GetInsertBlock()->getTerminator()) {
+    if (!TheBuilder->GetInsertBlock()->getTerminator()) {
       if (P.getReturnType() == ValueType::None) {
-        Builder->CreateRetVoid();
+        TheBuilder->CreateRetVoid();
       } else {
-        BasicBlock *CurBB = Builder->GetInsertBlock();
+        BasicBlock *CurBB = TheBuilder->GetInsertBlock();
         bool IsEntry = CurBB == &TheFunction->getEntryBlock();
         if (!IsEntry && pred_empty(CurBB)) {
-          Builder->CreateUnreachable();
+          TheBuilder->CreateUnreachable();
         } else {
           LogErrorV("Non-None function must return a value");
           TheFunction->eraseFromParent();
@@ -6713,7 +6722,7 @@ static void InitializeModuleAndManagers(bool FreshContext = true) {
   // correctly-sized types for the host machine.
   TheModule->setDataLayout(TheJIT->getDataLayout());
 
-  Builder = std::make_unique<IRBuilder<NoFolder>>(*TheContext);
+  TheBuilder = std::make_unique<IRBuilder<NoFolder>>(*TheContext);
   ModuleHasGlobals = false;
   CurDIScope = nullptr;
   CurFunctionLine = 1;

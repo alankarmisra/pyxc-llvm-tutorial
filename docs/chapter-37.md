@@ -535,7 +535,7 @@ string PointeeStructName;
 if (DecodePointerType(CurrentStructName, PointeeType, PointeeStructName)) {
   if (PointeeType != ValueType::Struct)
     return nullptr;
-  Pointer = Builder->CreateLoad(
+  Pointer = TheBuilder->CreateLoad(
       LLVMTypeFor(ValueType::Pointer, CurrentStructName), Pointer, "self");
   CurrentType = PointeeType;
   CurrentStructName = PointeeStructName;

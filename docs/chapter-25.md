@@ -369,10 +369,10 @@ Value *IndexExpressionNode::codegenAddress() {
   Value *IndexValue = Index->codegen();
   if (!IndexValue)
     return nullptr;
-  IndexValue = Builder->CreateIntCast(
+  IndexValue = TheBuilder->CreateIntCast(
       IndexValue, Type::getInt64Ty(*TheContext),
       !IsUnsignedIntType(Index->getType()), "index");
-  return Builder->CreateInBoundsGEP(
+  return TheBuilder->CreateInBoundsGEP(
       LLVMTypeFor(getType(), getStructName()), BasePointer, IndexValue,
       "elemptr");
 }
@@ -387,7 +387,7 @@ Value *IndexExpressionNode::codegen() {
   Value *Address = codegenAddress();
   if (!Address)
     return nullptr;
-  return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), Address,
+  return TheBuilder->CreateLoad(LLVMTypeFor(getType(), getStructName()), Address,
                              "elemload");
 }
 ```
@@ -415,7 +415,7 @@ Value *LValueAssignmentStatementNode::codegen() {
   AssignedValue = EmitImplicitCast(AssignedValue, Right->getType(), getType());
   if (!AssignedValue)
     return LogErrorV("Type mismatch in assignment");
-  Builder->CreateStore(AssignedValue, Address);
+  TheBuilder->CreateStore(AssignedValue, Address);
   return AssignedValue;
 }
 ```
@@ -444,7 +444,7 @@ Value *MemberExpressionNode::codegenAddress() {
   Value *BaseAddress = Base->codegenAddress();
   if (!BaseAddress)
     return LogErrorV("Field access requires an lvalue");
-  return Builder->CreateStructGEP(
+  return TheBuilder->CreateStructGEP(
       LLVMTypeFor(ValueType::Struct, Base->getStructName()), BaseAddress,
       FieldIndex, "fieldptr");
 }
@@ -453,7 +453,7 @@ Value *MemberExpressionNode::codegen() {
   Value *Address = codegenAddress();
   if (!Address)
     return nullptr;
-  return Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()), Address,
+  return TheBuilder->CreateLoad(LLVMTypeFor(getType(), getStructName()), Address,
                              "fieldload");
 }
 ```

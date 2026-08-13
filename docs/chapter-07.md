@@ -61,7 +61,7 @@ I use three LLVM objects during code generation and keep them as globals:
 ```cpp
 static unique_ptr<LLVMContext> TheContext;
 static unique_ptr<Module> TheModule;
-static unique_ptr<IRBuilder<>> Builder;
+static unique_ptr<IRBuilder<>> TheBuilder;
 ```
 
 LLVM assigns a specific role to each object. To generate IR, I use them as LLVM expects:
@@ -106,7 +106,7 @@ I create all three objects in one function:
 static void InitializeModuleAndManagers() {
   TheContext = std::make_unique<LLVMContext>();
   TheModule = std::make_unique<Module>("PyxcJIT", *TheContext);
-  Builder = std::make_unique<IRBuilder<>>(*TheContext);
+  TheBuilder = std::make_unique<IRBuilder<>>(*TheContext);
 }
 ```
 
@@ -158,21 +158,6 @@ Value *NumberExpressionNode::codegen() {
 
 ### Name References
 
-For a name, I need to find the LLVM value that the name represents. I keep those values in `NamedValues`:
-
-```cpp
-static map<std::string, Value *> NamedValues;
-
-Value *NameExpressionNode::codegen() {
-  auto It = NamedValues.find(Name);
-  if (It == NamedValues.end() || !It->second)
-    return LogErrorV("Unknown variable name");
-  return It->second;
-}
-```
-
-For now, I only add function parameters to this map. When I add local variables later, I will store them here too.
-
 Code generation needs an error helper with the same return type as an expression's `codegen()` method. I add `LogErrorV`, which reports the error and returns `nullptr`:
 
 ```cpp
@@ -189,6 +174,21 @@ if (SomeErrorCondition)
   return LogErrorV("Error specifics");
 ```
 
+For a name, I need to find the LLVM value that the name represents. I keep those values in `NamedValues`:
+
+```cpp
+static map<std::string, Value *> NamedValues;
+
+Value *NameExpressionNode::codegen() {
+  auto It = NamedValues.find(Name);
+  if (It == NamedValues.end() || !It->second)
+    return LogErrorV("Unknown variable name");
+  return It->second;
+}
+```
+
+For now, I only add function parameters to this map. When I add local variables later, I will store them here too.
+
 ### Unary Minus
 
 Chapter 4 added `-` as a prefix operator to the grammar and the parser, but there was no codegen for it yet — every valid line just reported that it parsed. I close that gap now:
@@ -200,7 +200,7 @@ Value *UnaryExpressionNode::codegen() {
     return nullptr;
 
   if (Operator == tok_minus)
-    return Builder->CreateFNeg(OperandValue, "negtmp");
+    return TheBuilder->CreateFNeg(OperandValue, "negtmp");
   return LogErrorV("invalid unary operator");
 }
 ```
@@ -229,8 +229,10 @@ Value *BinaryExpressionNode::codegen() {
 
   switch (Operator) {
   case tok_plus:
-    return Builder->CreateFAdd(L, R, "addtmp");
+    return TheBuilder->CreateFAdd(L, R, "addtmp");
   // ...
+  default:
+    return LogErrorV("invalid binary operator");
   }
 }
 ```
@@ -241,7 +243,7 @@ For `+`, I call `CreateFAdd`:
 
 ```cpp
 case tok_plus:
-  return Builder->CreateFAdd(L, R, "addtmp");
+  return TheBuilder->CreateFAdd(L, R, "addtmp");
 ```
 
 That call can generate an instruction like this:
@@ -263,11 +265,11 @@ I add subtraction, multiplication, and division in the same way:
 
 ```cpp
 case tok_minus:
-  return Builder->CreateFSub(L, R, "subtmp");
+  return TheBuilder->CreateFSub(L, R, "subtmp");
 case tok_star:
-  return Builder->CreateFMul(L, R, "multmp");
+  return TheBuilder->CreateFMul(L, R, "multmp");
 case tok_slash:
-  return Builder->CreateFDiv(L, R, "divtmp");
+  return TheBuilder->CreateFDiv(L, R, "divtmp");
 ```
 
 These calls generate `fsub`, `fmul`, and `fdiv` instructions:
@@ -282,7 +284,7 @@ These calls generate `fsub`, `fmul`, and `fdiv` instructions:
 
 ```cpp
 case tok_percent:
-  return Builder->CreateFRem(L, R, "remtmp");
+  return TheBuilder->CreateFRem(L, R, "remtmp");
 ```
 
 ```llvm
@@ -293,8 +295,8 @@ I need two instructions for `<`:
 
 ```cpp
 case tok_less:
-  L = Builder->CreateFCmpULT(L, R, "cmptmp");
-  return Builder->CreateUIToFP(
+  L = TheBuilder->CreateFCmpULT(L, R, "cmptmp");
+  return TheBuilder->CreateUIToFP(
       L, Type::getDoubleTy(*TheContext), "booltmp");
 ```
 
@@ -309,6 +311,8 @@ pyxc currently represents every value as a `double`, so I cannot return the `i1`
 ```llvm
 %booltmp = uitofp i1 %cmptmp to double
 ```
+
+The `default` case is a safety net, not a reachable path: the parser only ever builds a `BinaryExpressionNode` from an operator this `switch` already handles, so `LogErrorV("invalid binary operator")` never actually fires right now.
 
 ### Function Calls
 
@@ -347,7 +351,7 @@ Value *CallExpressionNode::codegen() {
       return nullptr;
   }
 
-  return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
+  return TheBuilder->CreateCall(CalleeF, ArgsV, "calltmp");
 }
 ```
 
@@ -436,7 +440,7 @@ Function *FunctionDefinitionNode::codegen() {
 
   // Step 2: I create the entry block and insert new instructions there.
   BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
-  Builder->SetInsertPoint(BB);
+  TheBuilder->SetInsertPoint(BB);
 
   // Step 3: I make the parameters available to the body.
   NamedValues.clear();
@@ -445,12 +449,13 @@ Function *FunctionDefinitionNode::codegen() {
 
   // Step 4: I generate the body, return its value, and verify the function.
   if (Value *RetVal = Body->codegen()) {
-    Builder->CreateRet(RetVal);
+    TheBuilder->CreateRet(RetVal);
     verifyFunction(*TheFunction);
     return TheFunction;
   }
 
-  // I remove an incomplete function after an error.
+  // Reaching here means Body->codegen() failed. I remove the incomplete
+  // function so no broken declaration is left in the module.
   TheFunction->eraseFromParent();
   return nullptr;
 }
@@ -458,7 +463,7 @@ Function *FunctionDefinitionNode::codegen() {
 
 First, I look for the function name in the module. If I find a function that already has a body, I report a redefinition. If I do not find a declaration, I generate one from the signature.
 
-Next, I create the function's `entry` basic block. A basic block is a straight-line sequence of instructions with one entry and one exit. `SetInsertPoint` tells `Builder` where I want to add the next instruction.
+Next, I create the function's `entry` basic block. A basic block is a straight-line sequence of instructions with one entry and one exit. `SetInsertPoint` tells `TheBuilder` where I want to add the next instruction.
 
 ```llvm
 define double @foo(double %x, double %y) {
@@ -486,26 +491,48 @@ I call `verifyFunction` to ask LLVM to check the structure of the function. If b
 After code generation succeeds, I print the IR for the current input:
 
 ```cpp
-// In HandleFunctionDefinition:
-if (auto *FunctionIR = FunctionDefinition->codegen()) {
-  fprintf(stderr, "Parsed a function definition.\n");
-  FunctionIR->print(errs());
-  fprintf(stderr, "\n");
-}
-
-// In HandleTopLevelExpression:
-if (auto *FunctionIR = FunctionDefinition->codegen()) {
-  fprintf(stderr, "Parsed a top-level expression.\n");
-  FunctionIR->print(errs());
-  fprintf(stderr, "\n");
-
-  // Erase after printing — anonymous expressions don't belong in the final
-  // module dump.
-  FunctionIR->eraseFromParent();
+static void HandleFunctionDefinition() {
+  auto FunctionDefinition = ParseFunctionDefinition();
+  if (!FunctionDefinition ||
+      (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
+    if (FunctionDefinition)
+      LogErrorExpression(
+          ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+    SynchronizeToLineBoundary();
+    return;
+  }
+  if (auto *FunctionIR = FunctionDefinition->codegen()) {
+    fprintf(stderr, "Parsed a function definition.\n");
+    FunctionIR->print(errs());
+    fprintf(stderr, "\n");
+  }
 }
 ```
 
-`errs()` is LLVM's wrapper around `stderr`. I pass it to `FnIR->print` to print the function in LLVM's text format. The extra `fprintf(stderr, "\n")` afterward is just spacing, so the next `ready>` prompt doesn't run up against the last line of IR.
+```cpp
+static void HandleTopLevelExpression() {
+  auto FunctionDefinition = ParseTopLevelExpression();
+  if (!FunctionDefinition ||
+      (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
+    if (FunctionDefinition)
+      LogErrorExpression(
+          ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+    SynchronizeToLineBoundary();
+    return;
+  }
+  if (auto *FunctionIR = FunctionDefinition->codegen()) {
+    fprintf(stderr, "Parsed a top-level expression.\n");
+    FunctionIR->print(errs());
+    fprintf(stderr, "\n");
+
+    // Erase after printing — anonymous expressions don't belong in the final
+    // module dump.
+    FunctionIR->eraseFromParent();
+  }
+}
+```
+
+`errs()` is LLVM's wrapper around `stderr`. I pass it to `FunctionIR->print` to print the function in LLVM's text format. The extra `fprintf(stderr, "\n")` afterward is just spacing, so the next `ready>` prompt doesn't run up against the last line of IR.
 
 For a top-level expression such as `1 + 2`, I create a temporary function named `__anon_expr`. LLVM instructions must belong to a function, so this wrapper gives me a place to generate the expression. After I print its IR, I remove it from the module. In the next chapter, I will execute it before removing it.
 
@@ -514,7 +541,12 @@ For a top-level expression such as `1 + 2`, I create a temporary function named 
 At the end of the session, I print the complete module:
 
 ```cpp
-TheModule->print(errs(), nullptr);
+int main() {
+  ...
+  MainLoop();
+  TheModule->print(errs(), nullptr);
+  return 0;
+}
 ```
 
 This shows every function that remains in the module. It does not show the temporary `__anon_expr` functions because I already removed them.

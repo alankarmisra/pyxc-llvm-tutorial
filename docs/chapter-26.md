@@ -149,15 +149,15 @@ if ((Operator == tok_plus || Operator == tok_minus) &&
   if (!Pointer || !Index)
     return LogErrorV("Type mismatch in pointer arithmetic");
   ValueType IndexType = LType == ValueType::Pointer ? RType : LType;
-  Index = Builder->CreateIntCast(Index, Type::getInt64Ty(*TheContext),
+  Index = TheBuilder->CreateIntCast(Index, Type::getInt64Ty(*TheContext),
                                  !IsUnsignedIntType(IndexType), "ptrindex");
   if (Operator == tok_minus)
-    Index = Builder->CreateNeg(Index, "negindex");
+    Index = TheBuilder->CreateNeg(Index, "negindex");
   ValueType ElementType = ValueType::Error;
   string ElementStructName;
   if (!DecodePointerType(getStructName(), ElementType, ElementStructName))
     return LogErrorV("Invalid pointer type metadata");
-  return Builder->CreateInBoundsGEP(
+  return TheBuilder->CreateInBoundsGEP(
       LLVMTypeFor(ElementType, ElementStructName), Pointer, Index,
       "ptrarith");
 }
@@ -195,7 +195,7 @@ if (Operator == tok_minus && getType() == ValueType::Int64 &&
   if (!DecodePointerType(Left->getStructName(), ElementType,
                          ElementStructName))
     return LogErrorV("Invalid pointer type metadata");
-  return Builder->CreatePtrDiff(
+  return TheBuilder->CreatePtrDiff(
       LLVMTypeFor(ElementType, ElementStructName), L, R, "ptrdiff");
 }
 ```
@@ -220,17 +220,17 @@ Pointer comparisons use unsigned integer comparison instructions. Addresses are 
 if (LType == ValueType::Pointer && RType == ValueType::Pointer) {
   switch (Operator) {
   case tok_less:
-    return Builder->CreateICmpULT(L, R, "cmptmp");
+    return TheBuilder->CreateICmpULT(L, R, "cmptmp");
   case tok_greater:
-    return Builder->CreateICmpUGT(L, R, "cmptmp");
+    return TheBuilder->CreateICmpUGT(L, R, "cmptmp");
   case tok_eq:
-    return Builder->CreateICmpEQ(L, R, "cmptmp");
+    return TheBuilder->CreateICmpEQ(L, R, "cmptmp");
   case tok_neq:
-    return Builder->CreateICmpNE(L, R, "cmptmp");
+    return TheBuilder->CreateICmpNE(L, R, "cmptmp");
   case tok_leq:
-    return Builder->CreateICmpULE(L, R, "cmptmp");
+    return TheBuilder->CreateICmpULE(L, R, "cmptmp");
   case tok_geq:
-    return Builder->CreateICmpUGE(L, R, "cmptmp");
+    return TheBuilder->CreateICmpUGE(L, R, "cmptmp");
   default:
     break;
   }

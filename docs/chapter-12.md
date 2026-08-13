@@ -766,7 +766,7 @@ Value *ReturnStatementNode::codegen() {
   if (!RetVal)
     return nullptr;
 
-  Builder->CreateRet(RetVal);
+  TheBuilder->CreateRet(RetVal);
   return RetVal;
 }
 ```
@@ -781,7 +781,7 @@ Value *BlockStatementNode::codegen() {
 
   Value *Last = nullptr;
   for (auto &Stmt : Stmts) {
-    if (Builder->GetInsertBlock()->getTerminator())
+    if (TheBuilder->GetInsertBlock()->getTerminator())
       break;
     Last = Stmt->codegen();
     if (!Last) {
@@ -807,7 +807,7 @@ Value *BlockStatementNode::codegen() {
 
 ```cpp
 Value *VarStatementNode::codegen() {
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
 
   for (auto &Var : VarNames) {
     const string &VarName = Var.first;
@@ -818,7 +818,7 @@ Value *VarStatementNode::codegen() {
       return nullptr;
 
     AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
-    Builder->CreateStore(InitVal, Alloca);
+    TheBuilder->CreateStore(InitVal, Alloca);
     NamedValues[VarName] = Alloca;
   }
 
@@ -838,32 +838,32 @@ Value *IfStatementNode::codegen() {
   if (!CondV)
     return nullptr;
 
-  CondV = Builder->CreateFCmpONE(
+  CondV = TheBuilder->CreateFCmpONE(
       CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "ifcond");
 
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
 
   BasicBlock *ThenBB = BasicBlock::Create(*TheContext, "then", TheFunction);
   BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else", TheFunction);
   BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont", TheFunction);
 
-  Builder->CreateCondBr(CondV, ThenBB, ElseBB);
+  TheBuilder->CreateCondBr(CondV, ThenBB, ElseBB);
 
-  Builder->SetInsertPoint(ThenBB);
+  TheBuilder->SetInsertPoint(ThenBB);
   if (!Then->codegen())
     return nullptr;
-  if (!Builder->GetInsertBlock()->getTerminator())
-    Builder->CreateBr(MergeBB);
+  if (!TheBuilder->GetInsertBlock()->getTerminator())
+    TheBuilder->CreateBr(MergeBB);
 
-  Builder->SetInsertPoint(ElseBB);
+  TheBuilder->SetInsertPoint(ElseBB);
   if (Else) {
     if (!Else->codegen())
       return nullptr;
   }
-  if (!Builder->GetInsertBlock()->getTerminator())
-    Builder->CreateBr(MergeBB);
+  if (!TheBuilder->GetInsertBlock()->getTerminator())
+    TheBuilder->CreateBr(MergeBB);
 
-  Builder->SetInsertPoint(MergeBB);
+  TheBuilder->SetInsertPoint(MergeBB);
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 ```
@@ -880,8 +880,8 @@ I check whether the current block already has a terminator before adding one, an
 if (Value *BodyVal = Body->codegen()) {
   // If the body didn't already terminate the current block (e.g. via
   // return), return 0.0. Implicit returns never use the last expression.
-  if (!Builder->GetInsertBlock()->getTerminator())
-    Builder->CreateRet(ConstantFP::get(*TheContext, APFloat(0.0)));
+  if (!TheBuilder->GetInsertBlock()->getTerminator())
+    TheBuilder->CreateRet(ConstantFP::get(*TheContext, APFloat(0.0)));
   verifyFunction(*TheFunction);
   TheFPM->run(*TheFunction, *TheFAM);
   return TheFunction;

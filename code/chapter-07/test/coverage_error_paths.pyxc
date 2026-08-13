@@ -4,6 +4,15 @@
 # RUN: printf 'foo(+)\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=CALL
 # RUN: printf 'def bad(,): 1\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=SIGNATURE
 # RUN: printf 'def bad(): +\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=BODY
+# RUN: printf '1 * +\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=TERM_RHS
+# RUN: printf '1 < +\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=COMPARISON_RHS
+# RUN: printf -- '-+\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=UNARY_MINUS_RHS
+# RUN: printf '3 foo\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=NAME_TRAILING
+# RUN: printf -- '-undefined\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=UNARY_UNDEFINED
+# RUN: printf 'x + 1\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=BINARY_UNDEFINED
+# RUN: printf '1 + undefined\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=BINARY_RHS_UNDEFINED
+# RUN: printf 'def foo(x): x\nfoo(undefined)\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=CALL_ARG_UNDEFINED
+# RUN: printf 'def foo(x): x\ndef foo(x): x + 1\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=REDEFINITION
 
 # LEXER: unknown token when expecting an expression
 # COMMENT: ready>
@@ -11,8 +20,25 @@
 # CALL: unknown token when expecting an expression
 # SIGNATURE: Expected ')' in function signature
 # BODY: unknown token when expecting an expression
+# TERM_RHS: unknown token when expecting an expression
+# COMPARISON_RHS: unknown token when expecting an expression
+# UNARY_MINUS_RHS: unknown token when expecting an expression
+# NAME_TRAILING: Unexpected name 'foo'
+# UNARY_UNDEFINED: Unknown variable name
+# BINARY_UNDEFINED: Unknown variable name
+# BINARY_RHS_UNDEFINED: Unknown variable name
+# CALL_ARG_UNDEFINED: Unknown variable name
+# REDEFINITION: Function cannot be redefined.
 
 # coverage error paths: exercise lexer errors, comments ending at EOF, failed
 # expressions inside parentheses and calls, malformed empty parameter lists,
-# and failed function bodies.
+# failed function bodies, a failed right operand for '*'/'/'/'%' (ParseTerm),
+# '<' (ParseComparison), and unary '-' (ParseUnaryMinus), a trailing name
+# token after a complete top-level expression (FormatTokenForMessage's
+# tok_name branch), and codegen-level failures new in this chapter: an
+# undefined name used as a unary operand, as a binary operand on both the
+# left and right side (BinaryExpressionNode::codegen checks L and R
+# separately, so both need their own case), and as a call argument (each is
+# a distinct codegen() null-propagation branch even though the printed
+# message is the same), plus redefining an already-defined function.
 

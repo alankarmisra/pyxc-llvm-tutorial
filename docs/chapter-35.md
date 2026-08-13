@@ -404,12 +404,12 @@ static Value *EmitReadModifyWriteValue(int Operator, Value *LeftValue,
     if (!RightValue)
       return LogErrorV("Type mismatch in assignment");
     if (Operator == tok_minus)
-      RightValue = Builder->CreateNeg(RightValue, "negindex");
+      RightValue = TheBuilder->CreateNeg(RightValue, "negindex");
     ValueType ElementType = ValueType::Error;
     string ElementTypeInfo;
     if (!DecodePointerType(LeftTypeInfo, ElementType, ElementTypeInfo))
       return LogErrorV("Invalid pointer type metadata");
-    return Builder->CreateInBoundsGEP(
+    return TheBuilder->CreateInBoundsGEP(
         LLVMTypeFor(ElementType, ElementTypeInfo), LeftValue, RightValue,
         "ptrarith");
   }
@@ -419,35 +419,35 @@ static Value *EmitReadModifyWriteValue(int Operator, Value *LeftValue,
     return LogErrorV("Type mismatch in assignment");
   if (IsFloatType(LeftType)) {
     if (Operator == tok_plus)
-      return Builder->CreateFAdd(LeftValue, RightValue, "addtmp");
+      return TheBuilder->CreateFAdd(LeftValue, RightValue, "addtmp");
     if (Operator == tok_minus)
-      return Builder->CreateFSub(LeftValue, RightValue, "subtmp");
+      return TheBuilder->CreateFSub(LeftValue, RightValue, "subtmp");
     if (Operator == tok_star)
-      return Builder->CreateFMul(LeftValue, RightValue, "multmp");
+      return TheBuilder->CreateFMul(LeftValue, RightValue, "multmp");
     if (Operator == tok_slash)
-      return Builder->CreateFDiv(LeftValue, RightValue, "divtmp");
-    return Builder->CreateFRem(LeftValue, RightValue, "remtmp");
+      return TheBuilder->CreateFDiv(LeftValue, RightValue, "divtmp");
+    return TheBuilder->CreateFRem(LeftValue, RightValue, "remtmp");
   }
   if (Operator == tok_plus)
-    return Builder->CreateAdd(LeftValue, RightValue, "addtmp");
+    return TheBuilder->CreateAdd(LeftValue, RightValue, "addtmp");
   if (Operator == tok_minus)
-    return Builder->CreateSub(LeftValue, RightValue, "subtmp");
+    return TheBuilder->CreateSub(LeftValue, RightValue, "subtmp");
   if (Operator == tok_star)
-    return Builder->CreateMul(LeftValue, RightValue, "multmp");
+    return TheBuilder->CreateMul(LeftValue, RightValue, "multmp");
   if (Operator == tok_slash)
     return IsUnsignedIntType(LeftType)
-               ? Builder->CreateUDiv(LeftValue, RightValue, "divtmp")
-               : Builder->CreateSDiv(LeftValue, RightValue, "divtmp");
+               ? TheBuilder->CreateUDiv(LeftValue, RightValue, "divtmp")
+               : TheBuilder->CreateSDiv(LeftValue, RightValue, "divtmp");
   return IsUnsignedIntType(LeftType)
-             ? Builder->CreateURem(LeftValue, RightValue, "remtmp")
-             : Builder->CreateSRem(LeftValue, RightValue, "remtmp");
+             ? TheBuilder->CreateURem(LeftValue, RightValue, "remtmp")
+             : TheBuilder->CreateSRem(LeftValue, RightValue, "remtmp");
 }
 
 Value *CompoundAssignmentExpressionNode::codegen() {
   Value *Address = Left->codegenAddress();
   if (!Address)
     return LogErrorV("Assignment target must be assignable");
-  Value *LeftValue = Builder->CreateLoad(
+  Value *LeftValue = TheBuilder->CreateLoad(
       LLVMTypeFor(getType(), getStructName()), Address, "rmw.old");
   Value *RightValue = Right->codegen();
   if (!RightValue)
@@ -457,7 +457,7 @@ Value *CompoundAssignmentExpressionNode::codegen() {
       Right->getType());
   if (!Result)
     return nullptr;
-  Builder->CreateStore(Result, Address);
+  TheBuilder->CreateStore(Result, Address);
   return Result;
 }
 ```
@@ -494,7 +494,7 @@ Value *IncrementDecrementExpressionNode::codegen() {
   Value *Address = Operand->codegenAddress();
   if (!Address)
     return LogErrorV("Increment/decrement target must be assignable");
-  Value *OldValue = Builder->CreateLoad(
+  Value *OldValue = TheBuilder->CreateLoad(
       LLVMTypeFor(getType(), getStructName()), Address, "incdec.old");
   Value *One = nullptr;
   ValueType OneType = getType();
@@ -511,7 +511,7 @@ Value *IncrementDecrementExpressionNode::codegen() {
       getStructName(), One, OneType);
   if (!NewValue)
     return nullptr;
-  Builder->CreateStore(NewValue, Address);
+  TheBuilder->CreateStore(NewValue, Address);
   return IsPrefix ? NewValue : OldValue;
 }
 ```

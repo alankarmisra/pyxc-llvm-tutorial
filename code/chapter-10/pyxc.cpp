@@ -255,6 +255,8 @@ static int advance() {
     return '\n';
   }
 
+  // '\n' resets Col and starts a new buffered line; anything else
+  // just advances Col within the current line.
   if (LastChar == '\n') {
     PyxcSourceMgr.onChar('\n');
     LexLoc.Line++;
@@ -291,7 +293,7 @@ static int peek() {
 /// before any token branch. For most tokens this points at the first
 /// character of the token. For tok_eol the '\n' was already consumed by
 /// advance() on a previous call, so LexLoc is already on the next line;
-/// GetDiagnosticAnchorLoc compensates by subtracting one when building error
+/// GetCaretAnchorLoc compensates by subtracting one when building error
 /// locations for tok_eol.
 ///
 /// The comment path ('#' branch) re-snapshots CurLoc just before returning
@@ -352,7 +354,7 @@ static int getToken() {
     if (LastChar != EOF) {
       // Re-snapshot CurLoc now that the '\n' has been consumed and LexLoc
       // has advanced to the next line. Without this, CurLoc would point at
-      // the '#' column, and GetDiagnosticAnchorLoc would look up the wrong
+      // the '#' column, and GetCaretAnchorLoc would look up the wrong
       // line (because it subtracts 1) when the next token triggers an error.
       CurLoc = LexLoc;
       LastChar = ' ';
@@ -430,7 +432,7 @@ static int getToken() {
 // Diagnostics helpers
 //===----------------------------------------===//
 
-/// GetDiagnosticAnchorLoc - Resolve the source location to attach to an error.
+/// GetCaretAnchorLoc - Resolve the source location to attach to an error.
 ///
 /// For most tokens, CurLoc already points at the right place and is returned
 /// unchanged. The special case is tok_eol: CurLoc for a newline token is
@@ -439,7 +441,7 @@ static int getToken() {
 /// gives the line that just ended, and we report a column one past its last
 /// character — pointing just after the final token on the line, which is
 /// where the missing token (e.g. ':') should have appeared.
-static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
+static SourceLocation GetCaretAnchorLoc(SourceLocation Loc, int Tok) {
   if (Tok != tok_eol || Loc.Line <= 1)
     return Loc;
 
@@ -448,6 +450,10 @@ static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
   const string *PrevLineText = PyxcSourceMgr.getLine(PrevLine);
 
   // guard
+  // PrevLineText is null only if PrevLine hasn't been buffered yet —
+  // it shouldn't happen, since I only get here after consuming that
+  // line's trailing newline, but I fall back to the original Loc
+  // rather than trust an out-of-range read.
   if (!PrevLineText)
     return Loc;
 
@@ -477,6 +483,9 @@ static string FormatTokenForMessage(int Tok) {
 /// spaces before the caret.
 static void PrintErrorSourceContext(SourceLocation Loc) {
   const string *LineText = PyxcSourceMgr.getLine(Loc.Line);
+  // LineText is null only if Loc points past everything buffered so
+  // far (e.g. an uninitialized Loc.Line == 0). Skip printing rather
+  // than dereference it below.
   if (!LineText)
     return;
 
@@ -654,7 +663,7 @@ void Log(const string &message) {
 /// LogErrorExpression* - Error reporting helpers. Each returns nullptr for its respective
 /// type so parse functions can write: return LogErrorExpression("message");
 unique_ptr<ExpressionNode> LogErrorExpression(const char *Str) {
-  SourceLocation Anchor = GetDiagnosticAnchorLoc(CurLoc, CurrentToken);
+  SourceLocation Anchor = GetCaretAnchorLoc(CurLoc, CurrentToken);
   fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
           Str);
   PrintErrorSourceContext(Anchor);
@@ -1041,7 +1050,7 @@ static unique_ptr<FunctionSignatureNode> ParseExtern() {
 // Code Generation
 //===----------------------------------------===//
 
-// TheContext/TheModule/Builder/NamedValues - Core IR construction globals.
+// TheContext/TheModule/TheBuilder/NamedValues - Core IR construction globals.
 // Recreated fresh for each new module (see InitializeModuleAndManagers).
 //
 // TheContext - Owns all LLVM data structures: types, constants, and the
@@ -1053,7 +1062,7 @@ static unique_ptr<FunctionSignatureNode> ParseExtern() {
 // new module for every top-level input. Functions defined in earlier modules
 // remain callable via the JIT's symbol table.
 //
-// Builder - A cursor into the IR being built. Point it at a BasicBlock with
+// TheBuilder - A cursor into the IR being built. Point it at a BasicBlock with
 // SetInsertPoint(), then call Create* methods to append instructions.
 //
 // NamedValues - Symbol table for the current function's parameters. Cleared
@@ -1081,7 +1090,7 @@ static unique_ptr<FunctionSignatureNode> ParseExtern() {
 // in a correct implementation.
 static std::unique_ptr<LLVMContext> TheContext;
 static std::unique_ptr<Module> TheModule;
-static std::unique_ptr<IRBuilder<>> Builder;
+static std::unique_ptr<IRBuilder<>> TheBuilder;
 static std::map<std::string, Value *> NamedValues;
 static std::unique_ptr<PyxcJIT> TheJIT;
 static std::unique_ptr<FunctionPassManager> TheFPM;
@@ -1153,7 +1162,7 @@ Value *UnaryExpressionNode::codegen() {
     return nullptr;
 
   if (Operator == tok_minus)
-    return Builder->CreateFNeg(OperandValue, "negtmp");
+    return TheBuilder->CreateFNeg(OperandValue, "negtmp");
   return LogErrorV("invalid unary operator");
 }
 
@@ -1185,35 +1194,35 @@ Value *BinaryExpressionNode::codegen() {
 
   switch (Operator) {
   case tok_plus:
-    return Builder->CreateFAdd(L, R, "addtmp");
+    return TheBuilder->CreateFAdd(L, R, "addtmp");
   case tok_minus:
-    return Builder->CreateFSub(L, R, "subtmp");
+    return TheBuilder->CreateFSub(L, R, "subtmp");
   case tok_star:
-    return Builder->CreateFMul(L, R, "multmp");
+    return TheBuilder->CreateFMul(L, R, "multmp");
   case tok_slash:
-    return Builder->CreateFDiv(L, R, "divtmp");
+    return TheBuilder->CreateFDiv(L, R, "divtmp");
   case tok_percent:
-    return Builder->CreateFRem(L, R, "remtmp");
+    return TheBuilder->CreateFRem(L, R, "remtmp");
   case tok_less:
-    L = Builder->CreateFCmpOLT(L, R, "cmptmp");
+    L = TheBuilder->CreateFCmpOLT(L, R, "cmptmp");
     // Widen the i1 boolean to double: false -> 0.0, true -> 1.0.
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case tok_greater:
-    L = Builder->CreateFCmpOGT(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+    L = TheBuilder->CreateFCmpOGT(L, R, "cmptmp");
+    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case tok_eq:
-    L = Builder->CreateFCmpOEQ(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+    L = TheBuilder->CreateFCmpOEQ(L, R, "cmptmp");
+    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case tok_neq:
     // I use an unordered comparison so that 1 != NaN returns true.
-    L = Builder->CreateFCmpUNE(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+    L = TheBuilder->CreateFCmpUNE(L, R, "cmptmp");
+    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case tok_leq:
-    L = Builder->CreateFCmpOLE(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+    L = TheBuilder->CreateFCmpOLE(L, R, "cmptmp");
+    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   case tok_geq:
-    L = Builder->CreateFCmpOGE(L, R, "cmptmp");
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+    L = TheBuilder->CreateFCmpOGE(L, R, "cmptmp");
+    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   default:
     return LogErrorV("invalid binary operator");
   }
@@ -1241,7 +1250,7 @@ Value *CallExpressionNode::codegen() {
       return nullptr;
   }
 
-  return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
+  return TheBuilder->CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
 /// IfExpressionNode::codegen - Emit LLVM IR for an if/else expression.
@@ -1267,7 +1276,7 @@ Value *CallExpressionNode::codegen() {
 /// `%iftmp` is the value of the whole if-expression.
 ///
 /// We recapture `ThenBB` and `ElseBB` after branch codegen because nested
-/// control flow can move the Builder insertion point to a different block.
+/// control flow can move the TheBuilder insertion point to a different block.
 /// PHI incoming edges must use the actual terminating blocks of each arm.
 Value *IfExpressionNode::codegen() {
   Value *CondV = Cond->codegen();
@@ -1275,39 +1284,39 @@ Value *IfExpressionNode::codegen() {
     return nullptr;
 
   // Convert condition to bool by comparing != 0.0
-  CondV = Builder->CreateFCmpONE(
+  CondV = TheBuilder->CreateFCmpONE(
       CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "ifcond");
 
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
 
   // Create blocks for then, else, and merge.
   BasicBlock *ThenBB = BasicBlock::Create(*TheContext, "then", TheFunction);
   BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else", TheFunction);
   BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont", TheFunction);
 
-  Builder->CreateCondBr(CondV, ThenBB, ElseBB);
+  TheBuilder->CreateCondBr(CondV, ThenBB, ElseBB);
 
   // Emit then block.
-  Builder->SetInsertPoint(ThenBB);
+  TheBuilder->SetInsertPoint(ThenBB);
   Value *ThenV = Then->codegen();
   if (!ThenV)
     return nullptr;
-  Builder->CreateBr(MergeBB);
+  TheBuilder->CreateBr(MergeBB);
 
   // Codegen can change the current block — capture where then ended.
-  ThenBB = Builder->GetInsertBlock();
+  ThenBB = TheBuilder->GetInsertBlock();
 
   // Emit else block.
-  Builder->SetInsertPoint(ElseBB);
+  TheBuilder->SetInsertPoint(ElseBB);
   Value *ElseV = Else->codegen();
   if (!ElseV)
     return nullptr;
-  Builder->CreateBr(MergeBB);
-  ElseBB = Builder->GetInsertBlock();
+  TheBuilder->CreateBr(MergeBB);
+  ElseBB = TheBuilder->GetInsertBlock();
 
   // Emit merge block with phi node.
-  Builder->SetInsertPoint(MergeBB);
-  PHINode *PN = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
+  TheBuilder->SetInsertPoint(MergeBB);
+  PHINode *PN = TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
   PN->addIncoming(ThenV, ThenBB);
   PN->addIncoming(ElseV, ElseBB);
 
@@ -1342,14 +1351,14 @@ Value *IfExpressionNode::codegen() {
 /// The loop variable name is rebound to `%i` while generating Cond/Step/Body,
 /// then restored after the loop.
 Value *ForExpressionNode::codegen() {
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
 
   // Emit start value in the preheader (current block before the loop).
   Value *StartVal = Start->codegen();
   if (!StartVal)
     return nullptr;
 
-  BasicBlock *PreheaderBB = Builder->GetInsertBlock();
+  BasicBlock *PreheaderBB = TheBuilder->GetInsertBlock();
 
   // Create all three blocks up front so we can reference them in branches.
   BasicBlock *CondBB =
@@ -1360,15 +1369,15 @@ Value *ForExpressionNode::codegen() {
       BasicBlock::Create(*TheContext, "after_loop", TheFunction);
 
   // Unconditional jump from preheader into the condition check.
-  Builder->CreateBr(CondBB);
+  TheBuilder->CreateBr(CondBB);
 
   // ---- loop_cond ----
-  Builder->SetInsertPoint(CondBB);
+  TheBuilder->SetInsertPoint(CondBB);
 
   // PHI picks start_val on the first iteration, next_i on subsequent ones.
   // The back-edge incoming value is added below once we know BodyEndBB.
   PHINode *Variable =
-      Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
+      TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
   Variable->addIncoming(StartVal, PreheaderBB);
 
   // Shadow any outer variable of the same name so the body sees the loop var.
@@ -1379,12 +1388,12 @@ Value *ForExpressionNode::codegen() {
   Value *CondVal = Cond->codegen();
   if (!CondVal)
     return nullptr;
-  CondVal = Builder->CreateFCmpONE(
+  CondVal = TheBuilder->CreateFCmpONE(
       CondVal, ConstantFP::get(*TheContext, APFloat(0.0)), "loopcond");
-  Builder->CreateCondBr(CondVal, BodyBB, AfterBB);
+  TheBuilder->CreateCondBr(CondVal, BodyBB, AfterBB);
 
   // ---- loop_body ----
-  Builder->SetInsertPoint(BodyBB);
+  TheBuilder->SetInsertPoint(BodyBB);
 
   // Body is evaluated for side effects; its value is discarded.
   if (!Body->codegen())
@@ -1394,16 +1403,16 @@ Value *ForExpressionNode::codegen() {
   Value *StepVal = Step->codegen();
   if (!StepVal)
     return nullptr;
-  Value *NextVar = Builder->CreateFAdd(Variable, StepVal, "nextvar");
+  Value *NextVar = TheBuilder->CreateFAdd(Variable, StepVal, "nextvar");
 
   // Body codegen may have changed the insert block (e.g. nested ifs added
   // blocks). Capture where the body actually ended for the PHI back-edge.
-  BasicBlock *BodyEndBB = Builder->GetInsertBlock();
+  BasicBlock *BodyEndBB = TheBuilder->GetInsertBlock();
   Variable->addIncoming(NextVar, BodyEndBB);
-  Builder->CreateBr(CondBB);
+  TheBuilder->CreateBr(CondBB);
 
   // ---- after_loop ----
-  Builder->SetInsertPoint(AfterBB);
+  TheBuilder->SetInsertPoint(AfterBB);
 
   // Restore the shadowed variable (if any) now that the loop is done.
   if (OldVal)
@@ -1452,7 +1461,7 @@ Function *FunctionSignatureNode::codegen() {
 ///    getFunction() either finds an existing declaration in the current module
 ///    (e.g. from a prior 'extern def') or calls Signature->codegen() to create one.
 ///
-/// 2. Create the entry BasicBlock and point the Builder at it. A basic block
+/// 2. Create the entry BasicBlock and point the TheBuilder at it. A basic block
 ///    is a straight-line sequence of instructions with one entry and one exit.
 ///    Every function starts with exactly one entry block.
 ///
@@ -1483,7 +1492,7 @@ Function *FunctionDefinitionNode::codegen() {
 
   // Step 2: create the entry block and point the builder at it.
   BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
-  Builder->SetInsertPoint(BB);
+  TheBuilder->SetInsertPoint(BB);
 
   // Step 3: populate NamedValues with this function's arguments.
   NamedValues.clear();
@@ -1492,7 +1501,7 @@ Function *FunctionDefinitionNode::codegen() {
 
   // Step 4: codegen the body, optimise, verify, or erase on failure.
   if (Value *RetVal = Body->codegen()) {
-    Builder->CreateRet(RetVal);
+    TheBuilder->CreateRet(RetVal);
     verifyFunction(*TheFunction);
 
     // Run the optimisation pipeline: InstCombine, Reassociate, GVN,
@@ -1539,7 +1548,7 @@ static void InitializeModuleAndManagers() {
   // correctly-sized types for the host machine.
   TheModule->setDataLayout(TheJIT->getDataLayout());
 
-  Builder = std::make_unique<IRBuilder<>>(*TheContext);
+  TheBuilder = std::make_unique<IRBuilder<>>(*TheContext);
 
   // Pass and analysis managers.
   TheFPM = std::make_unique<FunctionPassManager>();

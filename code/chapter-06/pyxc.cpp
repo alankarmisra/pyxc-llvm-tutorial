@@ -173,6 +173,8 @@ static int advance() {
     return '\n';
   }
 
+  // '\n' resets Col and starts a new buffered line; anything else
+  // just advances Col within the current line.
   if (LastChar == '\n') {
     PyxcSourceMgr.onChar('\n');
     LexLoc.Line++;
@@ -197,7 +199,7 @@ static int advance() {
 /// before any token branch. For most tokens this points at the first
 /// character of the token. For tok_eol the '\n' was already consumed by
 /// advance() on a previous call, so LexLoc is already on the next line;
-/// GetDiagnosticAnchorLoc compensates by subtracting one when building error
+/// GetCaretAnchorLoc compensates by subtracting one when building error
 /// locations for tok_eol.
 ///
 /// The comment path ('#' branch) re-snapshots CurLoc just before returning
@@ -253,7 +255,7 @@ static int getToken() {
     if (LastChar != EOF) {
       // Re-snapshot CurLoc now that the '\n' has been consumed and LexLoc
       // has advanced to the next line. Without this, CurLoc would point at
-      // the '#' column, and GetDiagnosticAnchorLoc would look up the wrong
+      // the '#' column, and GetCaretAnchorLoc would look up the wrong
       // line when the next token triggers an error.
       CurLoc = LexLoc;
       LastChar = ' ';
@@ -297,7 +299,7 @@ static int getToken() {
 // Diagnostics helpers
 //===----------------------------------------===//
 
-/// GetDiagnosticAnchorLoc - Resolve the source location to attach to an error.
+/// GetCaretAnchorLoc - Resolve the source location to attach to an error.
 ///
 /// For most tokens, CurLoc already points at the right place and is returned
 /// unchanged. The special case is tok_eol: CurLoc for a newline token is
@@ -306,7 +308,7 @@ static int getToken() {
 /// gives the line that just ended, and I report a column one past its last
 /// character — pointing just after the final token on the line, which is
 /// where the missing token (e.g. ':') should have appeared.
-static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
+static SourceLocation GetCaretAnchorLoc(SourceLocation Loc, int Tok) {
   if (Tok != tok_eol)
     return Loc;
 
@@ -315,6 +317,10 @@ static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
     return Loc;
 
   const string *PrevLineText = PyxcSourceMgr.getLine(PrevLine);
+  // PrevLineText is null only if PrevLine hasn't been buffered yet —
+  // it shouldn't happen, since I only get here after consuming that
+  // line's trailing newline, but I fall back to the original Loc
+  // rather than trust an out-of-range read.
   if (!PrevLineText)
     return Loc;
 
@@ -343,6 +349,9 @@ static string FormatTokenForMessage(int Tok) {
 /// spaces before the caret.
 static void PrintErrorSourceContext(SourceLocation Loc) {
   const string *LineText = PyxcSourceMgr.getLine(Loc.Line);
+  // LineText is null only if Loc points past everything buffered so
+  // far (e.g. an uninitialized Loc.Line == 0). Skip printing rather
+  // than dereference it below.
   if (!LineText)
     return;
 
@@ -468,7 +477,7 @@ static void consumeNewlines() {
 /// LogError* - Error reporting helpers. Each returns nullptr for its respective
 /// type so parse functions can write: return LogErrorExpression("message");
 unique_ptr<ExpressionNode> LogErrorExpression(const char *Str) {
-  SourceLocation Anchor = GetDiagnosticAnchorLoc(CurLoc, CurrentToken);
+  SourceLocation Anchor = GetCaretAnchorLoc(CurLoc, CurrentToken);
   fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
           Str);
   PrintErrorSourceContext(Anchor);

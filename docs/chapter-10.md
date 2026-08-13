@@ -225,7 +225,7 @@ For example, I implement `==` in `BinaryExpressionNode::codegen()` with an order
 
 ```cpp
 case tok_eq:
-  L = Builder->CreateFCmpOEQ(L, R, "cmptmp");  
+  L = TheBuilder->CreateFCmpOEQ(L, R, "cmptmp");  
 ```
 
 which produces:
@@ -245,7 +245,7 @@ My choices are:
 
 ```cpp
 case tok_neq:
-  L = Builder->CreateFCmpUNE(L, R, "cmptmp");
+  L = TheBuilder->CreateFCmpUNE(L, R, "cmptmp");
 ```
 
 which produces:
@@ -257,7 +257,7 @@ which produces:
 LLVM also provides `fcmp uno` for testing whether either operand is `NaN`:
 
 ```cpp
-Builder->CreateFCmpUNO(L, R, "has_nan");
+TheBuilder->CreateFCmpUNO(L, R, "has_nan");
 ```
 ```llvm
 %has_nan = fcmp uno double %L, %R
@@ -269,7 +269,7 @@ Builder->CreateFCmpUNO(L, R, "has_nan");
 
 ```cpp
 // CreateUIToFP (Unsigned Int -> Floating Point)
-return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
 ```
 
 which produces:
@@ -406,8 +406,8 @@ For `absdiff`, `Cond->codegen()` generates code for `a > b`.
 
 ```cpp
 case tok_greater:
-  L = Builder->CreateFCmpOGT(L, R, "cmptmp");
-  return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+  L = TheBuilder->CreateFCmpOGT(L, R, "cmptmp");
+  return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
 ```
 
 That produces:
@@ -427,7 +427,7 @@ turn that `double` back into an `i1`.
 I do that by comparing the condition value against `0.0`:
 
 ```cpp
-CondV = Builder->CreateFCmpONE(
+CondV = TheBuilder->CreateFCmpONE(
     CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "ifcond");
 ```
 
@@ -455,7 +455,7 @@ block, which is the block that was already active before the `if`.
 BasicBlock *ThenBB = BasicBlock::Create(*TheContext, "then", TheFunction);
 BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else", TheFunction);
 BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont", TheFunction);
-Builder->CreateCondBr(CondV, ThenBB, ElseBB);
+TheBuilder->CreateCondBr(CondV, ThenBB, ElseBB);
 ```
 
 I attach all three blocks to the function and finish the current block with `CreateCondBr`:
@@ -485,11 +485,11 @@ ifcont:  ; (empty)
 **Step 3 — Move the builder cursor into `then` and generate that branch.**
 
 ```cpp
-Builder->SetInsertPoint(ThenBB);
+TheBuilder->SetInsertPoint(ThenBB);
 Value *ThenV = Then->codegen();
 if (!ThenV)
   return nullptr;
-Builder->CreateBr(MergeBB);
+TheBuilder->CreateBr(MergeBB);
 ```
 
 I call `SetInsertPoint` so the builder appends subsequent instructions to the `then` block.
@@ -508,7 +508,7 @@ actually finished.
 ```cpp
 // Update ThenBB to the block where the then-path actually ended.
 // This matters for nested control flow; explained just below.
-ThenBB = Builder->GetInsertBlock();
+ThenBB = TheBuilder->GetInsertBlock();
 ```
 
 This matters because nested control flow can create more blocks and move the
@@ -519,12 +519,12 @@ case a little later in this chapter.
 **Step 4 — Do the same for `else`.**
 
 ```cpp
-Builder->SetInsertPoint(ElseBB);
+TheBuilder->SetInsertPoint(ElseBB);
 Value *ElseV = Else->codegen();
 if (!ElseV)
   return nullptr;
-Builder->CreateBr(MergeBB);
-ElseBB = Builder->GetInsertBlock();
+TheBuilder->CreateBr(MergeBB);
+ElseBB = TheBuilder->GetInsertBlock();
 ```
 
 Step 4 is the same idea for `else`: move the builder cursor into `else`, generate the
@@ -548,8 +548,8 @@ Both branches produce a value, but I need one value after they rejoin. LLVM requ
 Read it as: "if execution arrived here from `then`, use `%subtmp`; if from `else`, use `%subtmp1`." The name **phi** comes from the φ-function notation in the SSA papers of the late 1980s — exactly the piecewise-function idea of "this value if condition A, that value if condition B."
 
 ```cpp
-Builder->SetInsertPoint(MergeBB);
-PHINode *PN = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
+TheBuilder->SetInsertPoint(MergeBB);
+PHINode *PN = TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
 PN->addIncoming(ThenV, ThenBB);
 PN->addIncoming(ElseV, ElseBB);
 return PN;
@@ -695,9 +695,9 @@ The final PHI uses the exit points, not the entry points:
 That is why these updates matter in the code generator:
 
 ```cpp
-ThenBB = Builder->GetInsertBlock();
+ThenBB = TheBuilder->GetInsertBlock();
 ...
-ElseBB = Builder->GetInsertBlock();
+ElseBB = TheBuilder->GetInsertBlock();
 ```
 
 In the actual emitted IR, LLVM names these blocks `then`, `else`, and `ifcont`. The XOR example uses descriptive names like `a1`, `a1_merge`, and `merge` for clarity of exposition.
@@ -761,11 +761,11 @@ I evaluate the parts in this order: `start → condition → body → step → c
 
 ```cpp
 Value *StartVal = Start->codegen();           // 1.0
-BasicBlock *PreheaderBB = Builder->GetInsertBlock();
+BasicBlock *PreheaderBB = TheBuilder->GetInsertBlock();
 BasicBlock *CondBB  = BasicBlock::Create(*TheContext, "loop_cond", TheFunction);
 BasicBlock *BodyBB  = BasicBlock::Create(*TheContext, "loop_body", TheFunction);
 BasicBlock *AfterBB = BasicBlock::Create(*TheContext, "after_loop", TheFunction);
-Builder->CreateBr(CondBB);
+TheBuilder->CreateBr(CondBB);
 ```
 
 All three loop blocks are attached to the function immediately. `CreateBr`
@@ -788,8 +788,8 @@ after_loop:  ; (empty)
 **Step 2 — Build the condition block: PHI node + branch.**
 
 ```cpp
-Builder->SetInsertPoint(CondBB);
-PHINode *Variable = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
+TheBuilder->SetInsertPoint(CondBB);
+PHINode *Variable = TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
 Variable->addIncoming(StartVal, PreheaderBB);   // first-iteration value
 ```
 
@@ -829,7 +829,7 @@ loop_cond:
 Then convert that `double` condition into an `i1` for branching:
 
 ```cpp
-Value *LoopCond = Builder->CreateFCmpONE(
+Value *LoopCond = TheBuilder->CreateFCmpONE(
     CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "loopcond");
 ```
 
@@ -842,7 +842,7 @@ which adds:
 Finally, branch to the loop body or the after-loop block:
 
 ```cpp
-Builder->CreateCondBr(LoopCond, BodyBB, AfterBB);
+TheBuilder->CreateCondBr(LoopCond, BodyBB, AfterBB);
 ```
 
 which completes the block:
@@ -867,7 +867,7 @@ after_loop:  ; (empty)
 **Step 3 — Fill the body block.**
 
 ```cpp
-Builder->SetInsertPoint(BodyBB);
+TheBuilder->SetInsertPoint(BodyBB);
 Body->codegen();                                // return value discarded
 ```
 
@@ -882,7 +882,7 @@ Next generate the step value and the next loop variable:
 
 ```cpp
 Value *StepVal = Step->codegen();               // 1.0
-Value *NextVar  = Builder->CreateFAdd(Variable, StepVal, "nextvar");
+Value *NextVar  = TheBuilder->CreateFAdd(Variable, StepVal, "nextvar");
 ```
 
 which adds:
@@ -895,9 +895,9 @@ Finally, update the PHI with the back-edge value and branch back to
 `loop_cond`:
 
 ```cpp
-BasicBlock *BodyEndBB = Builder->GetInsertBlock();
+BasicBlock *BodyEndBB = TheBuilder->GetInsertBlock();
 Variable->addIncoming(NextVar, BodyEndBB);      // complete the PHI
-Builder->CreateBr(CondBB);
+TheBuilder->CreateBr(CondBB);
 ```
 
 That completes the loop body and gives the PHI its second incoming value:
@@ -926,7 +926,7 @@ after_loop:  ; (empty)
 **Step 4 — After-loop block returns `0.0`.**
 
 ```cpp
-Builder->SetInsertPoint(AfterBB);
+TheBuilder->SetInsertPoint(AfterBB);
 return ConstantFP::get(*TheContext, APFloat(0.0));
 ```
 

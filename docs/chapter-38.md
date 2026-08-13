@@ -352,15 +352,15 @@ if (MethodName == "__init__" && ReturnType != ValueType::None)
 
 ```cpp
 Value *ConstructorCallExpressionNode::codegen() {
-  Function *CurrentFunction = Builder->GetInsertBlock()
-                                  ? Builder->GetInsertBlock()->getParent()
+  Function *CurrentFunction = TheBuilder->GetInsertBlock()
+                                  ? TheBuilder->GetInsertBlock()->getParent()
                                   : nullptr;
   if (!CurrentFunction)
     return LogErrorV("Constructor call outside function context");
 
   AllocaInst *Storage = CreateEntryBlockAlloca(
       CurrentFunction, "constructor.value", ValueType::Struct, ClassName);
-  Builder->CreateStore(ZeroConstant(ValueType::Struct, ClassName), Storage);
+  TheBuilder->CreateStore(ZeroConstant(ValueType::Struct, ClassName), Storage);
 
   string InitializerName = ClassName + ".__init__";
   if (FunctionSignatureNode *Initializer =
@@ -381,10 +381,10 @@ Value *ConstructorCallExpressionNode::codegen() {
         return LogErrorV("Constructor argument mismatch");
       ArgumentValues.push_back(ArgumentValue);
     }
-    Builder->CreateCall(InitializerFunction, ArgumentValues);
+    TheBuilder->CreateCall(InitializerFunction, ArgumentValues);
   }
 
-  return Builder->CreateLoad(LLVMTypeFor(ValueType::Struct, ClassName), Storage,
+  return TheBuilder->CreateLoad(LLVMTypeFor(ValueType::Struct, ClassName), Storage,
                              "constructor.result");
 }
 ```

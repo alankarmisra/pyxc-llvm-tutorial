@@ -318,6 +318,11 @@ var add5: ptr[def(int) -> int] = make_adder(5)
 printd(float64(add5(10)))  # 15.000000
 ```
 
+#### Self-Hosted Testing and Coverage
+
+- A `test/assert.pyxc` module other `.pyxc` tests can `import` (`assert.eq_int(actual, expected, label)` and friends), replacing hand-rolled printf-and-compare boilerplate. Needs nothing new — `export`/`import` and variadic `extern def` already cover it.
+- pyxc-level code coverage — which lines of a `.pyxc` program executed, mirroring what `llvm-cov` does for `pyxc.cpp` itself. A real compiler feature (codegen would emit profiling counters tied to pyxc source locations), sequenced ahead of Concurrency since race/nondeterminism debugging is where it pays off first.
+
 #### Concurrency
 
 - Ownership rules for shared state, spawning tasks and threads, synchronization primitives, message passing, parallel loops and work partitioning, determinism/race debugging, and eventually parallelizing the compiler itself. The safety model needs deciding before the rest can be designed concretely.

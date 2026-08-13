@@ -4,6 +4,8 @@
 # RUN: printf 'foo(+)\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=CALL
 # RUN: printf 'def bad(,): 1\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=SIGNATURE
 # RUN: printf 'def bad(): +\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=BODY
+# RUN: printf '1 * +\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=TERM_RHS
+# RUN: printf '1 < +\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=COMPARISON_RHS
 
 # LEXER: unknown token when expecting an expression
 # COMMENT: ready>
@@ -11,8 +13,13 @@
 # CALL: unknown token when expecting an expression
 # SIGNATURE: Expected ')' in function signature
 # BODY: unknown token when expecting an expression
+# TERM_RHS: unknown token when expecting an expression
+# COMPARISON_RHS: unknown token when expecting an expression
 
 # coverage error paths: exercise lexer errors, comments ending at EOF, failed
 # expressions inside parentheses and calls, malformed empty parameter lists,
-# and failed function bodies.
+# failed function bodies, and a failed right operand for '*'/'/' (ParseTerm)
+# and '<' (ParseComparison) — the same missing-right-operand shape
+# recovery_after_error.pyxc already covers for '+'/'-' (ParseSum), but not
+# for the other two binary-operator tiers.
 

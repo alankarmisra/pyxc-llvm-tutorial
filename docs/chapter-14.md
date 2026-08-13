@@ -313,7 +313,7 @@ Three basic blocks: `while_cond`, `while_body`, `while_after`. Only the entry br
 
 ```cpp
 Value *WhileStatementNode::codegen() {
-  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
   BasicBlock *CondBB =
       BasicBlock::Create(*TheContext, "while_cond", TheFunction);
   BasicBlock *BodyBB =
@@ -321,41 +321,41 @@ Value *WhileStatementNode::codegen() {
   BasicBlock *AfterBB =
       BasicBlock::Create(*TheContext, "while_after", TheFunction);
 
-  Builder->CreateBr(IsDoWhile ? BodyBB : CondBB);
+  TheBuilder->CreateBr(IsDoWhile ? BodyBB : CondBB);
 
   if (!IsDoWhile) {
-    Builder->SetInsertPoint(CondBB);
+    TheBuilder->SetInsertPoint(CondBB);
     Value *ConditionValue = Cond->codegen();
     if (!ConditionValue)
       return nullptr;
-    ConditionValue = Builder->CreateFCmpONE(
+    ConditionValue = TheBuilder->CreateFCmpONE(
         ConditionValue, ConstantFP::get(*TheContext, APFloat(0.0)),
         "whilecond");
-    Builder->CreateCondBr(ConditionValue, BodyBB, AfterBB);
+    TheBuilder->CreateCondBr(ConditionValue, BodyBB, AfterBB);
   }
 
-  Builder->SetInsertPoint(BodyBB);
+  TheBuilder->SetInsertPoint(BodyBB);
   LoopControlStack.push_back({AfterBB, CondBB});
   if (!Body->codegen()) {
     LoopControlStack.pop_back();
     return nullptr;
   }
   LoopControlStack.pop_back();
-  if (!Builder->GetInsertBlock()->getTerminator())
-    Builder->CreateBr(CondBB);
+  if (!TheBuilder->GetInsertBlock()->getTerminator())
+    TheBuilder->CreateBr(CondBB);
 
-  Builder->SetInsertPoint(CondBB);
+  TheBuilder->SetInsertPoint(CondBB);
   if (IsDoWhile) {
     Value *ConditionValue = Cond->codegen();
     if (!ConditionValue)
       return nullptr;
-    ConditionValue = Builder->CreateFCmpONE(
+    ConditionValue = TheBuilder->CreateFCmpONE(
         ConditionValue, ConstantFP::get(*TheContext, APFloat(0.0)),
         "dowhilecond");
-    Builder->CreateCondBr(ConditionValue, BodyBB, AfterBB);
+    TheBuilder->CreateCondBr(ConditionValue, BodyBB, AfterBB);
   }
 
-  Builder->SetInsertPoint(AfterBB);
+  TheBuilder->SetInsertPoint(AfterBB);
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 ```
@@ -376,7 +376,7 @@ BasicBlock *StepBB =
 The body's implicit fallthrough branch now targets `StepBB` instead of the condition block directly, and `StepBB` itself evaluates the step expression, stores the updated loop variable, and only then branches to the condition block:
 
 ```cpp
-Builder->SetInsertPoint(BodyBB);
+TheBuilder->SetInsertPoint(BodyBB);
 LoopControlStack.push_back({AfterBB, StepBB});
 
 if (!Body->codegen()) {
@@ -385,19 +385,19 @@ if (!Body->codegen()) {
 }
 LoopControlStack.pop_back();
 
-if (!Builder->GetInsertBlock()->getTerminator())
-  Builder->CreateBr(StepBB);
+if (!TheBuilder->GetInsertBlock()->getTerminator())
+  TheBuilder->CreateBr(StepBB);
 
-Builder->SetInsertPoint(StepBB);
+TheBuilder->SetInsertPoint(StepBB);
 
 Value *CurVar =
-    Builder->CreateLoad(Type::getDoubleTy(*TheContext), Alloca, VarName);
+    TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), Alloca, VarName);
 Value *StepVal = Step->codegen();
 if (!StepVal)
   return nullptr;
-Value *NextVar = Builder->CreateFAdd(CurVar, StepVal, "nextvar");
-Builder->CreateStore(NextVar, Alloca);
-Builder->CreateBr(CondBB);
+Value *NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
+TheBuilder->CreateStore(NextVar, Alloca);
+TheBuilder->CreateBr(CondBB);
 ```
 
 The `LoopControlTargets` pushed for a `for` loop sets `ContinueTarget = StepBB`, not the condition block. That's what makes `continue` inside a `for` loop run the step before re-checking the condition, matching C semantics, rather than skipping straight to the condition check the way `continue` in a `while` loop does — a `while` loop has no step to run, so its `ContinueTarget` is `CondBB` directly.
@@ -410,14 +410,14 @@ Both emit a single unconditional branch to whichever target is on top of `LoopCo
 Value *BreakStatementNode::codegen() {
   if (LoopControlStack.empty())
     return LogErrorV("'break' used outside of a loop");
-  Builder->CreateBr(LoopControlStack.back().BreakTarget);
+  TheBuilder->CreateBr(LoopControlStack.back().BreakTarget);
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
 Value *ContinueStatementNode::codegen() {
   if (LoopControlStack.empty())
     return LogErrorV("'continue' used outside of a loop");
-  Builder->CreateBr(LoopControlStack.back().ContinueTarget);
+  TheBuilder->CreateBr(LoopControlStack.back().ContinueTarget);
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 ```
