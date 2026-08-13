@@ -64,7 +64,8 @@ int advance() {
 
     // A following '\n' is part of the same line ending; eat it.
     // Anything else belongs to the next token; put it back.
-    // (EOF can't be put back at all, so it's excluded from that check.)
+    // (EOF can't be put back at all, so it's excluded from that check.
+    // The next getchar() will still return EOF, so we don't lose it.)
     if (NextChar != '\n' && NextChar != EOF) {
       ungetc(NextChar, stdin);
     }

@@ -64,7 +64,7 @@ Later, I can ask whether something is `tok_def` with one integer comparison inst
 !!!note
     Breaking up the source into words is called *lexing*. The word comes from the Greek *lexis*, meaning “word” or “speech.”
 
-I call each resulting piece a *token*. A token represents something in the original source, much like a token on a board game represents a player. Here, `tok_def` represents the characters `def`.
+I call each resulting piece a *token* which represents something in the original source. Here, `tok_def` represents the characters `def`.
 
 How do I represent function and variable names when each programmer can invent new ones? I cannot create an enum value for every possible name. Instead, I create a catch-all `tok_name` to signal that I have read a name, then keep the name itself in a separate variable.
 
@@ -151,7 +151,8 @@ int advance() {
 
     // A following '\n' is part of the same line ending; eat it.
     // Anything else belongs to the next token; put it back.
-    // (EOF can't be put back at all, so it's excluded from that check.)
+    // (EOF can't be put back at all, so it's excluded from that check.
+    // The next getchar() will still return EOF, so we don't lose it.)
     if (NextChar != '\n' && NextChar != EOF) {
       ungetc(NextChar, stdin);
     }
@@ -171,6 +172,10 @@ int advance() {
 /// getToken - I return the next token from standard input.
 int getToken() {
   static int LastChar = ' ';
+
+  // I skip whitespace except newlines.
+  while (isspace(LastChar) && LastChar != '\n')
+    LastChar = advance();
 ```
 
 I initialize the static `LastChar` to a *space* so the loop runs the first time I call `getToken()`. This space is only a starting value; it did not come from the source file.
@@ -178,15 +183,12 @@ I initialize the static `LastChar` to a *space* so the loop runs the first time 
 - On the first call, `advance()` reads the first input character, and the loop continues past any whitespace at the start of the file.
 - On later calls, the loop skips whitespace between tokens the same way.
 
-I stop this loop at a newline, a non-whitespace character, or end of file:
+I stop the loop at a newline, a non-whitespace character, or end of file:
 
-```cpp
-  // I skip whitespace except newlines.
-  while (isspace(LastChar) && LastChar != '\n')
-    LastChar = advance();
-```
-
-After this loop, `LastChar` holds the next input value to process: the first character of the next token, a newline, or `EOF`.
+After this loop, `LastChar` holds the next input value to process which could be one of these: 
+- the first character of the next token
+- a newline, or 
+- `EOF`.
 
 ### Names and Keywords
 
