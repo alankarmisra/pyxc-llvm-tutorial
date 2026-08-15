@@ -215,8 +215,16 @@ Three groups of tokens are added.
 
 ### The `->` Arrow
 
-```cpp
-tok_arrow = -12, // ->
+```cppdiff
+*enum Token {
+*  ...
+*  tok_eq = -8,     // ==
+*  tok_neq = -9,    // !=
+*  tok_leq = -10,   // <=
+*  tok_geq = -11,   // >=
++  tok_arrow = -12, // ->
+*  ...
+*};
 ```
 
 The lexer detects `->` as a single token:
@@ -234,21 +242,44 @@ This must appear before the generic `-` path so that `->` is never split into tw
 ### Type Keywords
 
 ```cpp
-tok_int = -20,
-tok_int8 = -23,  tok_int16 = -24, tok_int32 = -25, tok_int64 = -26,
-tok_float = -27, tok_float32 = -28, tok_float64 = -29,
-tok_bool = -30,
-tok_none = -31,
+// enum Token (excerpt)
+  // mutable variables
+  tok_var = -19,
+
+  // types
+  tok_int = -20,
+
+  // indentation
+  tok_indent = -21,
+  tok_dedent = -22,
+  tok_block_end = -100, // synthetic: injected by ParseBlock after eating DEDENT
+
+  // new type keywords
+  tok_int8 = -23,
+  tok_int16 = -24,
+  tok_int32 = -25,
+  tok_int64 = -26,
+  tok_float = -27,
+  tok_float32 = -28,
+  tok_float64 = -29,
+  tok_bool = -30,
+  tok_none = -31,
 ```
 
 Registered in the keyword map:
 
-```cpp
-{"int", tok_int},         {"int8", tok_int8},       {"int16", tok_int16},
-{"int32", tok_int32},     {"int64", tok_int64},
-{"float", tok_float},     {"float32", tok_float32},  {"float64", tok_float64},
-{"bool", tok_bool},
-{"None", tok_none}
+```cppdiff
+*static map<string, Token> Keywords = {
+*    {"def", tok_def},         {"extern", tok_extern},   {"return", tok_return},
+*    {"if", tok_if},           {"elif", tok_elif},       {"else", tok_else},
+*    {"for", tok_for},         {"while", tok_while},     {"do", tok_do},
+*    {"break", tok_break},     {"continue", tok_continue},
+-    {"var", tok_var}};
++    {"var", tok_var},
++    {"int", tok_int},         {"int8", tok_int8},       {"int16", tok_int16},
++    {"int32", tok_int32},     {"int64", tok_int64},     {"float", tok_float},
++    {"float32", tok_float32}, {"float64", tok_float64}, {"bool", tok_bool},
++    {"None", tok_none}};
 ```
 
 `float` and `float64` are **separate tokens**: `tok_float = -27` and `tok_float64 = -29`. `ParseTypeToken` maps `tok_float → ValueType::Float` and `tok_float64 → ValueType::Float64`. Both compile to `double`, but the distinction is preserved through the entire pipeline until IR emission.
@@ -256,12 +287,18 @@ Registered in the keyword map:
 ### Boolean Literal Keywords
 
 ```cpp
-tok_true = -32,
-tok_false = -33,
+// enum Token (excerpt, continued)
+  tok_none = -31,
+  tok_true = -32,
+  tok_false = -33,
+  tok_elif = -34,
 ```
 
-```cpp
-{"True", tok_true}, {"False", tok_false}
+```cppdiff
+*static map<string, Token> Keywords = {
+*    ...
+-    {"None", tok_none}};
++    {"None", tok_none},       {"True", tok_true},       {"False", tok_false}};
 ```
 
 `True` and `False` (capital first letter, matching Python) are lexed as keywords, not identifiers.
@@ -271,7 +308,28 @@ tok_false = -33,
 Before chapter 17, every number literal stored a `double`. Now literals have proper types. The lexer sets a flag:
 
 ```cpp
-NumberIsFloat = NumberLiteral.find('.') != string::npos;
+    if (LexerLastChar == 'e' || LexerLastChar == 'E') {
+      SawExp = true;
+      NumberLiteral += LexerLastChar;
+      LexerLastChar = advance();
+      if (LexerLastChar == '+' || LexerLastChar == '-') {
+        NumberLiteral += LexerLastChar;
+        LexerLastChar = advance();
+      }
+      if (!isdigit(LexerLastChar)) {
+        LogInvalidNumberLiteralAtLoc(NumberLiteral, CurLoc);
+        return tok_error;
+      }
+      ConsumeDigits();
+    }
+
+    if (NumberLiteral == ".") {
+      LogInvalidNumberLiteralAtLoc(NumberLiteral, CurLoc);
+      return tok_error;
+    }
+
+    NumberIsFloat = SawDot || SawExp;
+    return tok_number;
 ```
 
 `ParseNumberExpression` uses `APInt` or `APFloat` depending on this flag:
@@ -408,13 +466,25 @@ The guard is a scoped RAII object: when it goes out of scope, `ExpectedLiteralTy
 
 `True` and `False` are parsed in `ParsePrimary`:
 
-```cpp
-case tok_true:
-  getNextToken();
-  return make_unique<BoolExpressionNode>(true);
-case tok_false:
-  getNextToken();
-  return make_unique<BoolExpressionNode>(false);
+```cppdiff
+*static unique_ptr<ExpressionNode> ParsePrimary() {
+*  switch (CurrentToken) {
+*  default:
+*    return LogErrorExpression("unknown token when expecting an expression");
+*  case tok_number:
+*    return ParseNumberExpression();
+*  case tok_name:
+*    return ParseNameExpression();
++  case tok_true:
++    getNextToken();
++    return make_unique<BoolExpressionNode>(true);
++  case tok_false:
++    getNextToken();
++    return make_unique<BoolExpressionNode>(false);
+*  case tok_lparen:
+*    return ParseParenthesizedExpression();
+*  }
+*}
 ```
 
 `BoolExpressionNode` is a new AST class:
@@ -676,11 +746,21 @@ the loop declares a fresh variable with `var`. The type is validated:
 
 `ForExpressionNode` stores `VarType`, and `ForExpressionNode::codegen` uses `LLVMTypeFor(VarType)` for the `alloca` and the increment:
 
-```cpp
-if (IsFloatType(VarType))
-  NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
-else
-  NextVar = TheBuilder->CreateAdd(CurVar, StepVal, "nextvar");
+```cppdiff
+*  Value *StepVal = Step->codegen();
+*  if (!StepVal)
+*    return nullptr;
+-  Value *NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
++  StepVal = EmitImplicitCast(StepVal, Step->getType(), VarType);
++  if (!StepVal)
++    return LogErrorV("Type mismatch in for loop step");
++  Value *NextVar = nullptr;
++  if (VarType == ValueType::Float64)
++    NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
++  else
++    NextVar = TheBuilder->CreateAdd(CurVar, StepVal, "nextvar");
+*  TheBuilder->CreateStore(NextVar, VarPtr);
+*  TheBuilder->CreateBr(CondBB);
 ```
 
 For an integer loop variable the alloca and step use the declared integer type:
@@ -723,11 +803,27 @@ float32(n)      # int → float32
 
 `ParseCastExpression` is invoked from `ParsePrimary` when the current token is a type keyword:
 
-```cpp
-case tok_int:    case tok_int8:   case tok_int16:  case tok_int32:
-case tok_int64:  case tok_float:  case tok_float32: case tok_float64:
-case tok_bool:
-  return ParseCastExpression();
+```cppdiff
+*static unique_ptr<ExpressionNode> ParsePrimary() {
+*  switch (CurrentToken) {
+*  ...
+*  case tok_false:
+*    getNextToken();
+*    return make_unique<BoolExpressionNode>(false);
++  case tok_int:
++  case tok_int8:
++  case tok_int16:
++  case tok_int32:
++  case tok_int64:
++  case tok_float:
++  case tok_float32:
++  case tok_float64:
++  case tok_bool:
++    return ParseCastExpression();
+*  case tok_lparen:
+*    return ParseParenthesizedExpression();
+*  }
+*}
 ```
 
 `CastExpressionNode::codegen` delegates to `EmitCast`, which emits one of these instructions depending on the type pair:
@@ -992,24 +1088,35 @@ static ValueType GetBinaryResultType(int Operator, ValueType L, ValueType R) {
 `BinaryExpressionNode::codegen` implicitly casts both operands to the result type then selects float vs integer instructions. This is the arithmetic case of its `switch (Operator)`; comparisons are a separate case with their own type-resolution logic, described below:
 
 ```cpp
-case '+':
-case '-':
-case '*': {
+switch (Operator) {
+case tok_plus:
+case tok_minus:
+case tok_star:
+case tok_slash:
+case tok_percent: {
   L = EmitImplicitCast(L, LType, getType());
   R = EmitImplicitCast(R, RType, getType());
   if (!L || !R)
     return LogErrorV("Type mismatch in arithmetic");
   if (IsFloatType(getType())) {
-    if (Operator == '+')
+    if (Operator == tok_plus)
       return TheBuilder->CreateFAdd(L, R, "addtmp");
-    if (Operator == '-')
+    if (Operator == tok_minus)
       return TheBuilder->CreateFSub(L, R, "subtmp");
+    if (Operator == tok_slash)
+      return TheBuilder->CreateFDiv(L, R, "divtmp");
+    if (Operator == tok_percent)
+      return TheBuilder->CreateFRem(L, R, "remtmp");
     return TheBuilder->CreateFMul(L, R, "multmp");
   }
-  if (Operator == '+')
+  if (Operator == tok_plus)
     return TheBuilder->CreateAdd(L, R, "addtmp");
-  if (Operator == '-')
+  if (Operator == tok_minus)
     return TheBuilder->CreateSub(L, R, "subtmp");
+  if (Operator == tok_slash)
+    return TheBuilder->CreateSDiv(L, R, "divtmp");
+  if (Operator == tok_percent)
+    return TheBuilder->CreateSRem(L, R, "remtmp");
   return TheBuilder->CreateMul(L, R, "multmp");
 }
 ```
@@ -1111,17 +1218,28 @@ struct ReturnTypeGuard {
 `ParseFunctionDefinition` instantiates a `ReturnTypeGuard` before parsing the body. `ParseReturnStatement` also installs an `ExpectedLiteralTypeGuard(CurrentFunctionReturnType)` before parsing the return value, so bare integer or float literals in `return` statements are given the function's return type directly. Then it validates:
 
 ```cpp
-// bare 'return' (no value)
-if (CurrentToken == tok_eol || CurrentToken == tok_dedent || CurrentToken == tok_eof) {
-  if (CurrentFunctionReturnType != ValueType::None)
-    return LogErrorExpression("Return value required");
-  return make_unique<ReturnExpressionNode>(nullptr);
+static unique_ptr<ExpressionNode> ParseReturnStatement() {
+  getNextToken(); // eat 'return'
+  if (CurrentToken == tok_eol || CurrentToken == tok_dedent || CurrentToken == tok_eof) {
+    if (CurrentFunctionReturnType != ValueType::None)
+      return LogErrorExpression("Return value required");
+    return make_unique<ReturnStatementNode>(nullptr);
+  }
+
+  ExpectedLiteralTypeGuard Guard(CurrentFunctionReturnType);
+  auto Expr = ParseExpression();
+  if (!Expr)
+    return nullptr;
+  if (CurrentFunctionReturnType == ValueType::None)
+    return LogErrorExpression("cannot return a value from a None function");
+  if (!IsAssignable(CurrentFunctionReturnType, Expr->getType())) {
+    return LogErrorExpression(("cannot return " + string(TypeName(Expr->getType())) +
+                     " from function returning " +
+                     string(TypeName(CurrentFunctionReturnType)))
+                        .c_str());
+  }
+  return make_unique<ReturnStatementNode>(std::move(Expr));
 }
-// return with value
-if (CurrentFunctionReturnType == ValueType::None)
-  return LogErrorExpression("cannot return a value from a None function");
-if (!IsAssignable(CurrentFunctionReturnType, Expr->getType()))
-  return LogErrorExpression("cannot return X from function returning Y");
 ```
 
 The IR for a typed return with an implicit widening:
@@ -1179,12 +1297,20 @@ unreachable         ; inserted for pred-empty dead blocks
 In the REPL and file-run mode, every top-level expression is wrapped in an anonymous function. If the expression is void (e.g., a call to a void function), the anonymous wrapper must still be correctly typed:
 
 ```cpp
-ValueType RetTy = Stmt->getType();
-if (!Stmt->isReturnExpr() && RetTy != ValueType::None)
-  Stmt = make_unique<ReturnExpressionNode>(std::move(Stmt));
+static unique_ptr<FunctionDefinitionNode> ParseTopLevelStatementFunction() {
+  auto Stmt = ParseTopLevelStatement();
+  if (!Stmt)
+    return nullptr;
 
-auto Proto = make_unique<FunctionSignatureNode>(
-    FnName, vector<pair<string, ValueType>>(), CurLoc, RetTy);
+  ValueType RetType = Stmt->getType();
+  if (!Stmt->isReturnExpr() && RetType != ValueType::None)
+    Stmt = make_unique<ReturnStatementNode>(std::move(Stmt));
+
+  string FunctionName = "__pyxc.toplevel." + to_string(TopLevelExprCounter++);
+  auto Signature = make_unique<FunctionSignatureNode>(
+      FunctionName, vector<pair<string, ValueType>>(), CurLoc, RetType);
+  return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(Stmt));
+}
 ```
 
 ```llvm
@@ -1335,6 +1461,8 @@ Chapter 17 always returned `0`. File-mode programs with type errors would print 
 Chapter 18 adds a global `HadError` flag set by every `LogErrorExpression` call. File-mode loops check it after parsing:
 
 ```cpp
+// in main(), after FileModeLoop() runs:
+FileModeLoop();
 if (HadError) {
   CloseInputFile();
   return 1;
@@ -1344,6 +1472,7 @@ if (HadError) {
 The final return:
 
 ```cpp
+// the final two lines of main():
 if (IsRepl)
   return 0;        // REPL: errors are per-expression and non-fatal
 return HadError ? 1 : 0;

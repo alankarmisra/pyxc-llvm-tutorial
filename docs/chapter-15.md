@@ -107,19 +107,19 @@ struct TopLevelParseGuard {
 `ParseVarStatement` checks this flag and routes to the right tracking set:
 
 ```cppdiff
- static unique_ptr<ExpressionNode> ParseVarStatement() {
-   getNextToken(); // eat 'var'
-
-   vector<pair<string, unique_ptr<ExpressionNode>>> VarNames;
+*static unique_ptr<ExpressionNode> ParseVarStatement() {
+*  getNextToken(); // eat 'var'
+*
+*  vector<pair<string, unique_ptr<ExpressionNode>>> VarNames;
 +  bool IsGlobalDeclaration = ParsingTopLevel;
-
-   while (true) {
-     if (CurrentToken != tok_name)
-       return LogErrorExpression("Expected name after 'var'");
-
-     string ParsedName = Name;
-     getNextToken(); // eat name
-
+*
+*  while (true) {
+*    if (CurrentToken != tok_name)
+*      return LogErrorExpression("Expected name after 'var'");
+*
+*    string ParsedName = Name;
+*    getNextToken(); // eat name
+*
 -    if (IsDeclaredInCurrentScope(ParsedName))
 -      return LogErrorExpression(
 -          ("Variable '" + ParsedName + "' already declared in this scope").c_str());
@@ -133,31 +133,31 @@ struct TopLevelParseGuard {
 +          ("Variable '" + ParsedName + "' already declared in this scope")
 +              .c_str());
 +    }
-
-     unique_ptr<ExpressionNode> Init;
-     if (CurrentToken == tok_equal) {
-       getNextToken(); // eat '='
-       Init = ParseExpression();
-       if (!Init)
-         return nullptr;
-     } else {
-       Init = make_unique<NumberExpressionNode>(0.0);
-     }
-
-     VarNames.push_back({ParsedName, std::move(Init)});
+*
+*    unique_ptr<ExpressionNode> Init;
+*    if (CurrentToken == tok_equal) {
+*      getNextToken(); // eat '='
+*      Init = ParseExpression();
+*      if (!Init)
+*        return nullptr;
+*    } else {
+*      Init = make_unique<NumberExpressionNode>(0.0);
+*    }
+*
+*    VarNames.push_back({ParsedName, std::move(Init)});
 -    DeclareVar(ParsedName);
 +    if (IsGlobalDeclaration)
 +      GlobalVarNames.insert(ParsedName);
 +    else
 +      DeclareVar(ParsedName);
-
-     if (CurrentToken != tok_comma)
-       break;
-     getNextToken(); // eat ','
-   }
-
-   return make_unique<VarStatementNode>(std::move(VarNames));
- }
+*
+*    if (CurrentToken != tok_comma)
+*      break;
+*    getNextToken(); // eat ','
+*  }
+*
+*  return make_unique<VarStatementNode>(std::move(VarNames));
+*}
 ```
 
 `IsDeclaredVar` checks both sets now — inside a function body, a name resolves as declared if it was declared locally or globally:

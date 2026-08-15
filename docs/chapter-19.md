@@ -148,53 +148,117 @@ I add `uint8`, `uint16`, `uint32`, and `uint64` to `type` and `cast-type`, the o
 
 Four new tokens and keywords:
 
-```cpp
-tok_uint8 = -39,
-tok_uint16 = -40,
-tok_uint32 = -41,
-tok_uint64 = -42,
+```cppdiff
+*enum Token {
+*  ...
+*  tok_break = -37,
+*  tok_continue = -38,
++  tok_uint8 = -39,
++  tok_uint16 = -40,
++  tok_uint32 = -41,
++  tok_uint64 = -42,
+*
+*  // punctuation and operators
+*  tok_lparen = '(',
+*  ...
+*};
 ```
 
-```cpp
-{"uint8", tok_uint8}, {"uint16", tok_uint16},
-{"uint32", tok_uint32}, {"uint64", tok_uint64},
+```cppdiff
+*static map<string, Token> Keywords = {
+*    ...
+*    {"int", tok_int},         {"int8", tok_int8},       {"int16", tok_int16},
+-    {"int32", tok_int32},     {"int64", tok_int64},     {"float", tok_float},
++    {"int32", tok_int32},     {"int64", tok_int64},
++    {"uint8", tok_uint8},     {"uint16", tok_uint16},
++    {"uint32", tok_uint32},   {"uint64", tok_uint64},
++    {"float", tok_float},
+*    {"float32", tok_float32}, {"float64", tok_float64}, {"bool", tok_bool},
+*    {"None", tok_none},       {"True", tok_true},       {"False", tok_false}};
 ```
 
 Four new values in the `ValueType` enum:
 
-```cpp
-UInt8,
-UInt16,
-UInt32,
-UInt64,
+```cppdiff
+*enum class ValueType {
+*  None,
+*  Int, /* depends on system default for int */
+*  Int8,
+*  Int16,
+*  Int32,
+*  Int64,
++  UInt8,
++  UInt16,
++  UInt32,
++  UInt64,
+*  Float,
+*  Float32,
+*  Float64,
+*  Bool,
+*  Error
+*};
 ```
 
 I give `ParseTypeToken` cases for all four so they work in type annotations and the `cast-type` production:
 
-```cpp
-case tok_uint8:
-  getNextToken();
-  return ValueType::UInt8;
-case tok_uint16:
-  getNextToken();
-  return ValueType::UInt16;
-case tok_uint32:
-  getNextToken();
-  return ValueType::UInt32;
-case tok_uint64:
-  getNextToken();
-  return ValueType::UInt64;
+```cppdiff
+*static ValueType ParseTypeToken() {
+*  switch (CurrentToken) {
+*  case tok_int:
+*    getNextToken();
+*    return ValueType::Int;
+*  ...
+*  case tok_int64:
+*    getNextToken();
+*    return ValueType::Int64;
++  case tok_uint8:
++    getNextToken();
++    return ValueType::UInt8;
++  case tok_uint16:
++    getNextToken();
++    return ValueType::UInt16;
++  case tok_uint32:
++    getNextToken();
++    return ValueType::UInt32;
++  case tok_uint64:
++    getNextToken();
++    return ValueType::UInt64;
+*  case tok_float:
+*    ...
+*  }
+*}
 ```
 
 ## No New LLVM IR Types
 
 LLVM has no separate "unsigned integer" types. `uint32` and `int32` are both `i32` in the IR. I map the four new `ValueType` values to the same LLVM types as their signed counterparts, in `LLVMTypeFor`:
 
-```cpp
-case ValueType::UInt8:  return Type::getInt8Ty(*TheContext);
-case ValueType::UInt16: return Type::getInt16Ty(*TheContext);
-case ValueType::UInt32: return Type::getInt32Ty(*TheContext);
-case ValueType::UInt64: return Type::getInt64Ty(*TheContext);
+```cppdiff
+*static Type *LLVMTypeFor(ValueType Type) {
+*  switch (Type) {
+*  case ValueType::Int: {
+*    ...
+*  }
+*  case ValueType::Int8:
+*    return Type::getInt8Ty(*TheContext);
+*  case ValueType::Int16:
+*    return Type::getInt16Ty(*TheContext);
+*  case ValueType::Int32:
+*    return Type::getInt32Ty(*TheContext);
+*  case ValueType::Int64:
+*    return Type::getInt64Ty(*TheContext);
++  case ValueType::UInt8:
++    return Type::getInt8Ty(*TheContext);
++  case ValueType::UInt16:
++    return Type::getInt16Ty(*TheContext);
++  case ValueType::UInt32:
++    return Type::getInt32Ty(*TheContext);
++  case ValueType::UInt64:
++    return Type::getInt64Ty(*TheContext);
+*  case ValueType::Float:
+*    ...
+*  }
+*}
 ```
 
 The signedness lives entirely in which instruction I emit. This also matches C's representation: `size_t` maps to `uint64` on a 64-bit target, so that's what I declare when a parameter or return value on an `extern def` is a C `size_t`.
@@ -276,54 +340,92 @@ Unsigned types use `zext` (zero-extend) rather than `sext` (sign-extend).
 
 ### Integer → Float
 
-```cpp
-return IsUnsignedIntType(From)
-           ? TheBuilder->CreateUIToFP(V, LLVMTypeFor(To), "uitofp")
-           : TheBuilder->CreateSIToFP(V, LLVMTypeFor(To), "sitofp");
+```cppdiff
+*static Value *EmitCast(Value *V, ValueType From, ValueType To) {
+*  ...
+*  // Integer ↔ float conversions.
+-  if (IsIntType(From) && IsFloatType(To))
+-    return TheBuilder->CreateSIToFP(V, LLVMTypeFor(To), "sitofp");
++  if (IsIntType(From) && IsFloatType(To))
++    return IsUnsignedIntType(From)
++               ? TheBuilder->CreateUIToFP(V, LLVMTypeFor(To), "uitofp")
++               : TheBuilder->CreateSIToFP(V, LLVMTypeFor(To), "sitofp");
+*  ...
+*}
 ```
 
 `uitofp` treats the bit pattern as an unsigned integer, producing the correct positive float for `uint32(-1)` = 4294967295.0. `uint64(-1)` is `18446744073709551615`; converting that to `float64` rounds, since `float64` only represents integers exactly up to `2^53`.
 
 ### Float → Integer
 
-```cpp
-return IsUnsignedIntType(To)
-           ? TheBuilder->CreateFPToUI(V, LLVMTypeFor(To), "fptoui")
-           : TheBuilder->CreateFPToSI(V, LLVMTypeFor(To), "fptosi");
+```cppdiff
+*static Value *EmitCast(Value *V, ValueType From, ValueType To) {
+*  ...
+-  if (IsFloatType(From) && IsIntType(To))
+-    return TheBuilder->CreateFPToSI(V, LLVMTypeFor(To), "fptosi");
++  if (IsFloatType(From) && IsIntType(To))
++    return IsUnsignedIntType(To)
++               ? TheBuilder->CreateFPToUI(V, LLVMTypeFor(To), "fptoui")
++               : TheBuilder->CreateFPToSI(V, LLVMTypeFor(To), "fptosi");
+*  ...
+*}
 ```
 
 ### Division and Remainder
 
-```cpp
-// / operator:
-return IsUnsignedIntType(getType())
-           ? TheBuilder->CreateUDiv(L, R, "divtmp")
-           : TheBuilder->CreateSDiv(L, R, "divtmp");
-// % operator:
-return IsUnsignedIntType(getType())
-           ? TheBuilder->CreateURem(L, R, "remtmp")
-           : TheBuilder->CreateSRem(L, R, "remtmp");
+```cppdiff
+*    if (Operator == tok_plus)
+*      return TheBuilder->CreateAdd(L, R, "addtmp");
+*    if (Operator == tok_minus)
+*      return TheBuilder->CreateSub(L, R, "subtmp");
+-    if (Operator == tok_slash)
+-      return TheBuilder->CreateSDiv(L, R, "divtmp");
+-    if (Operator == tok_percent)
+-      return TheBuilder->CreateSRem(L, R, "remtmp");
++    if (Operator == tok_slash)
++      return IsUnsignedIntType(getType())
++                 ? TheBuilder->CreateUDiv(L, R, "divtmp")
++                 : TheBuilder->CreateSDiv(L, R, "divtmp");
++    if (Operator == tok_percent)
++      return IsUnsignedIntType(getType())
++                 ? TheBuilder->CreateURem(L, R, "remtmp")
++                 : TheBuilder->CreateSRem(L, R, "remtmp");
+*    return TheBuilder->CreateMul(L, R, "multmp");
 ```
 
 ### Comparisons (`<`, `<=`, `>`, `>=`)
 
-```cpp
-// '<':
-return IsUnsignedIntType(CompareType)
-           ? TheBuilder->CreateICmpULT(L, R, "cmptmp")
-           : TheBuilder->CreateICmpSLT(L, R, "cmptmp");
-// '>':
-return IsUnsignedIntType(CompareType)
-           ? TheBuilder->CreateICmpUGT(L, R, "cmptmp")
-           : TheBuilder->CreateICmpSGT(L, R, "cmptmp");
-// '<=':
-return IsUnsignedIntType(CompareType)
-           ? TheBuilder->CreateICmpULE(L, R, "cmptmp")
-           : TheBuilder->CreateICmpSLE(L, R, "cmptmp");
-// '>=':
-return IsUnsignedIntType(CompareType)
-           ? TheBuilder->CreateICmpUGE(L, R, "cmptmp")
-           : TheBuilder->CreateICmpSGE(L, R, "cmptmp");
+```cppdiff
+*    } else {
+*      switch (Operator) {
+*      case tok_less:
+-        return TheBuilder->CreateICmpSLT(L, R, "cmptmp");
++        return IsUnsignedIntType(CompareType)
++                   ? TheBuilder->CreateICmpULT(L, R, "cmptmp")
++                   : TheBuilder->CreateICmpSLT(L, R, "cmptmp");
+*      case tok_greater:
+-        return TheBuilder->CreateICmpSGT(L, R, "cmptmp");
++        return IsUnsignedIntType(CompareType)
++                   ? TheBuilder->CreateICmpUGT(L, R, "cmptmp")
++                   : TheBuilder->CreateICmpSGT(L, R, "cmptmp");
+*      case tok_eq:
+*        return TheBuilder->CreateICmpEQ(L, R, "cmptmp");
+*      case tok_neq:
+*        return TheBuilder->CreateICmpNE(L, R, "cmptmp");
+*      case tok_leq:
+-        return TheBuilder->CreateICmpSLE(L, R, "cmptmp");
++        return IsUnsignedIntType(CompareType)
++                   ? TheBuilder->CreateICmpULE(L, R, "cmptmp")
++                   : TheBuilder->CreateICmpSLE(L, R, "cmptmp");
+*      case tok_geq:
+-        return TheBuilder->CreateICmpSGE(L, R, "cmptmp");
++        return IsUnsignedIntType(CompareType)
++                   ? TheBuilder->CreateICmpUGE(L, R, "cmptmp")
++                   : TheBuilder->CreateICmpSGE(L, R, "cmptmp");
+*      default:
+*        break;
+*      }
+*    }
 ```
 
 `==` and `!=` are signedness-agnostic (`icmp eq` / `icmp ne`); they are unchanged.
@@ -332,9 +434,14 @@ return IsUnsignedIntType(CompareType)
 
 `ParseNumberExpression` already checks that a literal fits in the target type. I update the max-value calculation to use `APInt::getAllOnes(Bits)` for unsigned types:
 
-```cpp
-APInt Max = IsUnsignedIntType(Type) ? APInt::getAllOnes(Bits)
-                                    : APInt::getSignedMaxValue(Bits);
+```cppdiff
+*    APInt Val(ParseBits, NumberLiteral, 10);
+*
+-    APInt Max = APInt::getSignedMaxValue(Bits);
++    APInt Max = IsUnsignedIntType(Type) ? APInt::getAllOnes(Bits)
++                                        : APInt::getSignedMaxValue(Bits);
+*    if (Val.ugt(Max))
+*      return LogErrorExpression("Integer literal out of range for type");
 ```
 
 `getAllOnes` is the all-bits-set value (`0xFF`, `0xFFFF`, etc.), which is the maximum for an unsigned type. `getSignedMaxValue` is `0x7F`, `0x7FFF`, etc.
