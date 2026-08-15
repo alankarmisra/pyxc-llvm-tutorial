@@ -247,9 +247,13 @@ cd pyxc-llvm-tutorial/code/chapter-39
 
 ## New Tokens
 
-```cpp
-tok_public = -65,
-tok_private = -66,
+```cppdiff
+*  tok_minus_minus = -63,
+*  tok_class = -64,
++  tok_public = -65,
++  tok_private = -66,
+*
+*  // punctuation and operators
 ```
 
 Both are registered in the keyword table and in the token-name map, so error messages print `'public'` and `'private'`.
@@ -284,32 +288,62 @@ Methods need their own map rather than a flag next to the field, since a method'
 
 The body loop inside `ParseAggregateDefinition` now reads an optional visibility token before deciding whether the member is a field or a method:
 
-```cpp
-bool IsPublic = true;
-if (CurrentToken == tok_public || CurrentToken == tok_private) {
-  if (!Info.IsClass) {
-    LogErrorExpression(
-        "Visibility modifiers are only allowed inside class bodies");
-    return false;
-  }
-  IsPublic = CurrentToken == tok_public;
-  getNextToken(); // eat visibility modifier
-}
+```cppdiff
+*    if (CurrentToken == tok_block_end) {
+*      getNextToken();
+*      continue;
+*    }
++    bool IsPublic = true;
++    if (CurrentToken == tok_public || CurrentToken == tok_private) {
++      if (!Info.IsClass) {
++        LogErrorExpression(
++            "Visibility modifiers are only allowed inside class bodies");
++        return false;
++      }
++      IsPublic = CurrentToken == tok_public;
++      getNextToken(); // eat visibility modifier
++    }
+*    if (CurrentToken == tok_def) {
+*      if (!Info.IsClass) {
+*        LogErrorExpression("Methods are only allowed inside classes");
+*        return false;
+*      }
+-      auto Method = ParseMethodDefinition(AggregateName);
++      auto Method = ParseMethodDefinition(AggregateName, IsPublic);
+*      if (!Method)
+*        return false;
 ```
 
 With no modifier, `IsPublic` stays `true`: the default is public. A modifier inside a `struct` body is rejected immediately, before the parser even eats the token, let alone looks at what follows it.
 
 A field's visibility rides along with everything else already pushed into `Info.Fields`:
 
-```cpp
-Info.Fields.push_back(
-    {FieldName, FieldType, FieldStructName, IsPublic});
+```cppdiff
+*    Info.FieldIndices[FieldName] = Info.Fields.size();
+-    Info.Fields.push_back({FieldName, FieldType, FieldStructName});
++    Info.Fields.push_back(
++        {FieldName, FieldType, FieldStructName, IsPublic});
+*    StructTypes[AggregateName] = Info;
 ```
 
 A method's visibility is passed as an extra argument into `ParseMethodDefinition`, which now takes `bool IsPublic` and records it directly:
 
-```cpp
-StructTypes[ClassName].Methods[MethodName] = IsPublic;
+```cppdiff
+-static unique_ptr<FunctionDefinitionNode>
+-ParseMethodDefinition(const string &ClassName) {
++static unique_ptr<FunctionDefinitionNode>
++ParseMethodDefinition(const string &ClassName, bool IsPublic) {
+*  ...
+*  auto Signature = make_unique<FunctionSignatureNode>(
+*      MangledName, std::move(Parameters), SignatureLocation, ReturnType,
+*      std::move(ParameterTypeInfo), ReturnTypeInfo);
+*  FunctionSignatures[MangledName] = Signature->clone();
+-  StructTypes[ClassName].Methods[MethodName] = true;
++  StructTypes[ClassName].Methods[MethodName] = IsPublic;
+*
+*  ReturnTypeGuard ReturnGuard(ReturnType, ReturnTypeInfo);
+*  ...
+*}
 ```
 
 `Info.Methods` is copied back out of `StructTypes[AggregateName]` after every method (`Info.Methods = StructTypes[AggregateName].Methods;`), for the same reason [Chapter 37](chapter-37.md) already re-registers `StructTypes[AggregateName] = Info` after every member: methods parsed earlier in the body need to stay visible while later members are parsed, and vice versa.
@@ -348,49 +382,103 @@ struct ClassScopeGuard {
 
 **Field access, in both places a `.field` chain gets resolved.** `ParseFieldExpressionWithBase` walks a chain that starts from an already-typed base (used for the auto-deref case, where `self` is `ptr[SomeStruct]` and the pointee is decoded before the walk begins):
 
-```cpp
-const auto &Field = Struct->second.Fields[FieldIndex->second];
-if (!CanAccessClassMember(ResultStructName, Field.IsPublic))
-  return LogErrorExpression(
-      ("Field '" + FieldName + "' is private on '" +
-       ResultStructName + "'")
-          .c_str());
+```cppdiff
+*static unique_ptr<ExpressionNode>
+*ParseFieldExpressionWithBase(const string &BaseName, ValueType BaseType,
+*                             string BaseStructName) {
+*  ...
+*  while (CurrentToken == tok_dot) {
+*    getNextToken(); // eat '.'
+*    ...
+*    const auto &Field = Struct->second.Fields[FieldIndex->second];
++    if (!CanAccessClassMember(ResultStructName, Field.IsPublic))
++      return LogErrorExpression(
++          ("Field '" + FieldName + "' is private on '" +
++           ResultStructName + "'")
++              .c_str());
+*    ResultType = Field.Type;
+*    ResultStructName = Field.StructName;
+*    FieldPath.push_back(FieldName);
+*    ...
+*  }
+*  ...
+*}
 ```
 
 `ParseNameExpressionWithName` has its own inline dot-dispatch loop for the ordinary `name.field` case, with the identical check inline:
 
-```cpp
-const auto &FieldInfo = Struct->second.Fields[Field->second];
-if (!CanAccessClassMember(BaseStructName, FieldInfo.IsPublic))
-  return LogErrorExpression(
-      ("Field '" + MemberName + "' is private on '" +
-       BaseStructName + "'")
-          .c_str());
+```cppdiff
+*    while (CurrentToken == tok_dot || CurrentToken == tok_lbracket) {
+*      if (CurrentToken == tok_dot) {
+*        ...
+*        string MemberName = Name;
+*        getNextToken(); // eat member name
+*        if (CurrentToken == tok_lparen) {
+*          Result = ParseMethodCallExpression(std::move(Result), MemberName);
+*          ...
+*        }
+*        auto Struct = StructTypes.find(BaseStructName);
+*        ...
+*        const auto &FieldInfo = Struct->second.Fields[Field->second];
++        if (!CanAccessClassMember(BaseStructName, FieldInfo.IsPublic))
++          return LogErrorExpression(
++              ("Field '" + MemberName + "' is private on '" +
++               BaseStructName + "'")
++                  .c_str());
+*        Result = make_unique<MemberExpressionNode>(
+*            std::move(Result), Field->second, FieldInfo.Type,
+*            FieldInfo.StructName);
+*        continue;
+*      }
+*      ...
+*    }
 ```
 
 Both paths reject reading *and* writing a private field, since assignment and read both resolve the field chain through one of these two places before anything else happens.
 
 **Method call**, in `ParseMethodCallExpression`, right after resolving `ClassName.MethodName`:
 
-```cpp
-auto Visibility = Class->second.Methods.find(MethodName);
-if (Visibility != Class->second.Methods.end() &&
-    !CanAccessClassMember(ClassName, Visibility->second))
-  return LogErrorExpression(
-      ("Method '" + MethodName + "' is private on '" + ClassName + "'")
-          .c_str());
+```cppdiff
+*static unique_ptr<ExpressionNode>
+*ParseMethodCallExpression(unique_ptr<ExpressionNode> Receiver,
+*                          const string &MethodName) {
+*  ...
+*  string ClassName = Receiver->getStructName();
+*  auto Class = StructTypes.find(ClassName);
+*  if (Class == StructTypes.end() || !Class->second.IsClass)
+*    return LogErrorExpression("Method call base must be a class value");
++  auto Visibility = Class->second.Methods.find(MethodName);
++  if (Visibility != Class->second.Methods.end() &&
++      !CanAccessClassMember(ClassName, Visibility->second))
++    return LogErrorExpression(
++        ("Method '" + MethodName + "' is private on '" + ClassName + "'")
++            .c_str());
+*
+*  string CalleeName = ClassName + "." + MethodName;
+*  ...
+*}
 ```
 
 **Constructor call**, in `ParseNameExpressionWithName`, guarded by whether `__init__` exists at all:
 
-```cpp
-if (Initializer) {
-  auto Visibility = Class->second.Methods.find("__init__");
-  if (Visibility != Class->second.Methods.end() &&
-      !CanAccessClassMember(ParsedName, Visibility->second))
-    return LogErrorExpression(
-        ("Method '__init__' is private on '" + ParsedName + "'").c_str());
-}
+```cppdiff
+*  // A class name in call position constructs a value of that class.
+*  auto Class = StructTypes.find(ParsedName);
+*  if (Class != StructTypes.end() && Class->second.IsClass) {
+*    getNextToken(); // eat '('
+*    string InitializerName = ParsedName + ".__init__";
+*    FunctionSignatureNode *Initializer =
+*        GetFunctionSignature(InitializerName);
++    if (Initializer) {
++      auto Visibility = Class->second.Methods.find("__init__");
++      if (Visibility != Class->second.Methods.end() &&
++          !CanAccessClassMember(ParsedName, Visibility->second))
++        return LogErrorExpression(
++            ("Method '__init__' is private on '" + ParsedName + "'").c_str());
++    }
+*    vector<unique_ptr<ExpressionNode>> Arguments;
+*    ...
+*  }
 ```
 
 A private `__init__` makes `ClassName(args)` fail from outside the class, the same way a private method or field would.

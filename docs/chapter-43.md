@@ -253,15 +253,20 @@ I add two new top-level forms — `module` and `export` — and a `module-path` 
 
 Two new tokens:
 
-```cpp
-tok_module = -69,
-tok_export = -70,
+```cppdiff
+*  tok_trait = -67,
+*  tok_impl = -68,
++  tok_module = -69,
++  tok_export = -70,
 ```
 
 Added to the keyword table and token name map:
 
-```cpp
-{"module", tok_module},   {"export", tok_export},
+```cppdiff
+*    {"trait", tok_trait},
+*    {"impl", tok_impl},
++    {"module", tok_module},   {"export", tok_export},
+*    {"ptr", tok_ptr},         {"addr", tok_addr},
 ```
 
 ## File-Level State Globals
@@ -353,9 +358,26 @@ module app.
 
 `FileModeLoop` sets the flag itself, right before it dispatches on the current token, for anything that isn't `module`:
 
-```cpp
-if (CurrentToken != tok_module)
-  SeenNonModuleTopLevel = true;
+```cppdiff
+*static void FileModeLoop() {
+*  while (true) {
+*    ...
+*    if (CurrentToken == tok_error) {
+*      SynchronizeToLineBoundary();
+*      continue;
+*    }
+*
++    if (CurrentToken != tok_module)
++      SeenNonModuleTopLevel = true;
+*
+*    switch (CurrentToken) {
+*    case tok_module:
+*      HandleModuleDeclaration();
+*      break;
+*    ...
+*    }
+*  }
+*}
 ```
 
 This one line is what lets `ParseModuleDeclaration` detect that `module` showed up too late — by the time a second top-level form starts parsing, the flag is already set.
@@ -447,13 +469,29 @@ In this chapter `export` only marks a declaration; it doesn't yet restrict which
 
 Both `MainLoop` and `FileModeLoop` gain two new cases:
 
-```cpp
-case tok_module:
-  HandleModuleDeclaration();
-  break;
-case tok_export:
-  HandleExportDeclaration();
-  break;
+```cppdiff
+*static void MainLoop() {
+*  while (CurrentToken != tok_eof) {
+*    switch (CurrentToken) {
+*    ...
+*    case tok_eol:
+*      // A bare newline: just print a fresh prompt and read the next token.
+*      PrintReplPrompt();
+*      getNextToken();
+*      break;
++    case tok_module:
++      HandleModuleDeclaration();
++      break;
++    case tok_export:
++      HandleExportDeclaration();
++      break;
+*    case tok_type:
+*      HandleTypeAliasDefinition();
+*      break;
+*    ...
+*    }
+*  }
+*}
 ```
 
 ## Build and Run

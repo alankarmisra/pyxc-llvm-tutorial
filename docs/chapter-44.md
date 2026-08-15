@@ -59,19 +59,30 @@ A file with no entry in `SignatureFileStates` hasn't been scanned yet. `InProgre
 
 When `SignatureScanMode` is true, `ParseAggregateDefinition` skips method-body codegen and calls a leaner helper instead:
 
-```cpp
-if (SignatureScanMode) {
-  if (!ParseMethodSignatureOnly(AggregateName, IsPublic))
-    return false;
-  Info.Methods = StructTypes[AggregateName].Methods;
-  StructTypes[AggregateName] = Info;
-  if (CurrentToken == tok_eol)
-    consumeNewlines();
-  else if (CurrentToken == tok_block_end)
-    getNextToken();
-  continue;
-}
-auto Method = ParseMethodDefinition(AggregateName, IsPublic);
+```cppdiff
+*  while (CurrentToken != tok_dedent && CurrentToken != tok_eof) {
+*    ...
+*    if (CurrentToken == tok_def) {
+*      if (!Info.IsClass) {
+*        LogErrorExpression("Methods are only allowed inside classes");
+*        return false;
+*      }
++      if (SignatureScanMode) {
++        if (!ParseMethodSignatureOnly(AggregateName, IsPublic))
++          return false;
++        Info.Methods = StructTypes[AggregateName].Methods;
++        StructTypes[AggregateName] = Info;
++        if (CurrentToken == tok_eol)
++          consumeNewlines();
++        else if (CurrentToken == tok_block_end)
++          getNextToken();
++        continue;
++      }
+*      auto Method = ParseMethodDefinition(AggregateName, IsPublic);
+*      ...
+*    }
+*    ...
+*  }
 ```
 
 ## Discarding Function Bodies
@@ -147,7 +158,34 @@ static bool ParseMethodSignatureOnly(const string &ClassName, bool IsPublic) {
   vector<pair<string, ValueType>> Parameters = {{"self", ValueType::Pointer}};
   vector<string> ParameterTypeInfo = {
       EncodePointerType(ValueType::Struct, ClassName)};
-  // ... parse remaining parameters (same shape as ParseMethodDefinition) ...
+  if (CurrentToken != tok_rparen) {
+    while (true) {
+      if (CurrentToken != tok_name)
+        return LogErrorExpression(
+                   "Expected parameter name in method function signature"),
+               false;
+      string ParameterName = Name;
+      if (ParameterName == "self")
+        return LogErrorExpression("Method parameters cannot be named 'self'"), false;
+      getNextToken();
+      if (CurrentToken != tok_colon)
+        return LogErrorExpression(
+                   "Method parameters require a type annotation"),
+               false;
+      getNextToken();
+      string TypeInfo;
+      ValueType Type = ParseTypeToken(&TypeInfo);
+      if (Type == ValueType::Error || Type == ValueType::None)
+        return false;
+      Parameters.push_back({ParameterName, Type});
+      ParameterTypeInfo.push_back(TypeInfo);
+      if (CurrentToken == tok_rparen)
+        break;
+      if (CurrentToken != tok_comma)
+        return LogErrorExpression("Expected ')' or ',' in parameter list"), false;
+      getNextToken();
+    }
+  }
   getNextToken(); // eat ')'
 
   string ReturnTypeInfo;
@@ -155,6 +193,8 @@ static bool ParseMethodSignatureOnly(const string &ClassName, bool IsPublic) {
       ParseOptionalReturnType(&ReturnTypeInfo, ValueType::None);
   if (ReturnType == ValueType::Error)
     return false;
+  if (MethodName == "__init__" && ReturnType != ValueType::None)
+    return LogErrorExpression("Constructor '__init__' must return None"), false;
   string MangledName = ClassName + "." + MethodName;
   auto Signature = make_unique<FunctionSignatureNode>(
       MangledName, std::move(Parameters), SignatureLocation, ReturnType,
@@ -473,20 +513,37 @@ static bool CollectImportClosure(const string &Path, set<string> &Visited,
 
 I use it to replace the driver's explicit input list with the expanded closure:
 
-```cpp
-vector<string> ExpandedInputs;
-std::set<string> SeenPyxcInputs;
-for (const auto &InputPath : InputFiles) {
-  if (IsPyxcInput(InputPath)) {
-    if (!CollectImportClosure(InputPath, SeenPyxcInputs, ExpandedInputs)) {
-      CleanupTemps();
-      return false;
-    }
-  } else {
-    ExpandedInputs.push_back(InputPath);
-  }
-}
-// ... compile everything in ExpandedInputs
+```cppdiff
+*static bool EmitExecutable() {
+*  vector<string> ObjectFiles;
+*  vector<string> TempFiles;
+*  bool SawMain = false;
+*  bool SawObjectInput = false;
++  vector<string> ExpandedInputs;
++  set<string> SeenPyxcInputs;
+*
+*  auto CleanupTemps = [&]() {
+*    for (const auto &Path : TempFiles)
+*      sys::fs::remove(Path);
+*  };
+*
+-  for (const auto &InputPath : InputFiles) {
++  for (const auto &InputPath : InputFiles) {
++    if (IsPyxcInput(InputPath)) {
++      if (!CollectImportClosure(InputPath, SeenPyxcInputs, ExpandedInputs)) {
++        CleanupTemps();
++        return false;
++      }
++    } else {
++      ExpandedInputs.push_back(InputPath);
++    }
++  }
++
++  for (const auto &InputPath : ExpandedInputs) {
+*    // ... compile everything in ExpandedInputs ...
+*  }
+*  ...
+*}
 ```
 
 `--emit llvm-ir` doesn't get any of this — closure expansion is specific to `--emit exe`. IR output stays one-file-in, one-file-out.

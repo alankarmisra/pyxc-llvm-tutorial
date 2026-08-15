@@ -69,14 +69,19 @@ static map<string, SignatureScanState> SignatureFileStates;
 
 `CollectSignaturesFromFile` checks this map at entry. Chapter 44's version treated an `InProgress` hit as an error; I change that one line to a plain success:
 
-```cpp
-auto ExistingState = SignatureFileStates.find(CanonicalPath);
-if (ExistingState != SignatureFileStates.end()) {
-  if (ExistingState->second == SignatureScanState::Done)
-    return true;
-  return true;
-}
-SignatureFileStates[CanonicalPath] = SignatureScanState::InProgress;
+```cppdiff
+*static bool CollectSignaturesFromFile(const string &Path) {
+*  string CanonicalPath = CanonicalizePath(Path);
+*  auto ExistingState = SignatureFileStates.find(CanonicalPath);
+*  if (ExistingState != SignatureFileStates.end()) {
+*    if (ExistingState->second == SignatureScanState::Done)
+*      return true;
+-    return LogErrorExpression("Cyclic imports are not supported"), false;
++    return true;
+*  }
+*  SignatureFileStates[CanonicalPath] = SignatureScanState::InProgress;
+*  ...
+*}
 ```
 
 Both `Done` and `InProgress` now return `true` immediately — an `InProgress` hit isn't an error, it's "OK, use what's already there." That's only safe because of the second change this chapter makes, described next: without it, an `InProgress` hit could land before the in-progress file's own exports have even been collected.
@@ -85,63 +90,86 @@ Both `Done` and `InProgress` now return `true` immediately — an `InProgress` h
 
 The change that actually breaks the cycle: I stop recursing into `import` lines eagerly. Instead I collect them into a `NestedImports` vector during the scan, and only recurse into it after the whole file has been scanned:
 
-```cpp
-vector<string> NestedImports;
-
-while (CurrentToken != tok_eof) {
-  if (CurrentToken == tok_eol || CurrentToken == tok_indent ||
-      CurrentToken == tok_dedent || CurrentToken == tok_block_end) {
-    getNextToken();
-    continue;
-  }
-  if (CurrentToken == tok_import) {
-    getNextToken(); // eat 'import'
-    string ImportName;
-    if (!ParseModulePath(ImportName)) {
-      Parsed = false;
-      break;
-    }
-    NestedImports.push_back(std::move(ImportName));
-    continue;
-  }
-  if (CurrentToken == tok_export) {
-    if (!ParseExportedDeclarationSignature()) {
-      Parsed = false;
-      break;
-    }
-    continue;
-  }
-  SkipExportedDefinitionBody();
-}
-
-// I collect this module's exports before following its imports. If an
-// imported module leads back here, those signatures are already available.
-if (Parsed) {
-  for (const string &ImportName : NestedImports) {
-    string ImportPath;
-    if (!ResolveImportToPath(CanonicalPath, ImportName, ImportPath)) {
-      LogErrorExpression(
-          ("Could not resolve import '" + ImportName + "'").c_str());
-      Parsed = false;
-      break;
-    }
-    if (!CollectSignaturesFromFile(ImportPath)) {
-      Parsed = false;
-      break;
-    }
-  }
-}
+```cppdiff
+*static bool CollectSignaturesFromFile(const string &Path) {
+*  ...
+*  bool Parsed = true;
++  vector<string> NestedImports;
+*
+*  ...
+*  getNextToken();
+*
+*  while (CurrentToken != tok_eof) {
+*    if (CurrentToken == tok_eol || CurrentToken == tok_indent ||
+*        CurrentToken == tok_dedent || CurrentToken == tok_block_end) {
+*      getNextToken();
+*      continue;
+*    }
+*    if (CurrentToken == tok_import) {
+*      getNextToken(); // eat 'import'
+*      string ImportName;
+*      if (!ParseModulePath(ImportName)) {
+*        Parsed = false;
+*        break;
+*      }
+-      string ImportPath;
+-      if (!ResolveImportToPath(CanonicalPath, ImportName, ImportPath)) {
+-        LogErrorExpression(
+-            ("Could not resolve import '" + ImportName + "'").c_str());
+-        Parsed = false;
+-        break;
+-      }
+-      if (!CollectSignaturesFromFile(ImportPath)) {
+-        Parsed = false;
+-        break;
+-      }
++      NestedImports.push_back(std::move(ImportName));
+*      continue;
+*    }
+*    if (CurrentToken == tok_export) {
+*      if (!ParseExportedDeclarationSignature()) {
+*        Parsed = false;
+*        break;
+*      }
+*      continue;
+*    }
+*    SkipExportedDefinitionBody();
+*  }
+*
++  // I collect this module's exports before following its imports. If an
++  // imported module leads back here, those signatures are already available.
++  if (Parsed) {
++    for (const string &ImportName : NestedImports) {
++      string ImportPath;
++      if (!ResolveImportToPath(CanonicalPath, ImportName, ImportPath)) {
++        LogErrorExpression(
++            ("Could not resolve import '" + ImportName + "'").c_str());
++        Parsed = false;
++        break;
++      }
++      if (!CollectSignaturesFromFile(ImportPath)) {
++        Parsed = false;
++        break;
++      }
++    }
++  }
+*
+*  ...
+*}
 ```
 
 Everything up through the `while` loop is Phase 1 — every top-level `export` in this file gets registered, and every `import` line just gets its name saved for later. The `for` loop over `NestedImports` is Phase 2 — only now do I recurse into what this file imports. At the end, the same success/failure handling from Chapter 44 still applies:
 
-```cpp
-if (!Parsed) {
-  SignatureFileStates.erase(CanonicalPath);
-  return false;
-}
-SignatureFileStates[CanonicalPath] = SignatureScanState::Done;
-return true;
+```cppdiff
+*static bool CollectSignaturesFromFile(const string &Path) {
+*  ...
+*  if (!Parsed) {
+*    SignatureFileStates.erase(CanonicalPath);
+*    return false;
+*  }
+*  SignatureFileStates[CanonicalPath] = SignatureScanState::Done;
+*  return true;
+*}
 ```
 
 I only set `Done` once both phases succeed; a failure at any point erases the entry entirely rather than leaving it `InProgress`.

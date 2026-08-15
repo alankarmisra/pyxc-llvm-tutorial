@@ -192,8 +192,17 @@ cd pyxc-llvm-tutorial/code/chapter-30
 
 ## A New Token for String Literals
 
-```cpp
-tok_string = -55,
+```cppdiff
+ enum Token {
+*  ...
+*  tok_sizeof = -53,
+*  tok_type = -54,
++  tok_string = -55,
+*
+*  // punctuation and operators
+*  tok_lparen = '(',
+*  ...
+*};
 ```
 
 Unlike `def` or `sizeof`, a string literal doesn't have a fixed spelling I can put in the keyword map. The lexer has to recognize it structurally, by seeing an opening `"`. I still need somewhere to put the text once I've read it:
@@ -276,13 +285,25 @@ public:
 
 `Text` holds the string with escapes already resolved to real bytes; there's nothing left to process by the time codegen runs. The type is always `ValueType::Pointer`, and `PointerTypeInfo` is the encoded pointee-type string I use everywhere else a pointer's pointee needs to travel alongside it, produced the same way `ptr[int8]` produces it anywhere else in the type checker:
 
-```cpp
-case tok_string: {
-  string Text = StringLiteralValue;
-  getNextToken();
-  return make_unique<StringExpressionNode>(
-      std::move(Text), EncodePointerType(ValueType::Int8));
-}
+```cppdiff
+ static unique_ptr<ExpressionNode> ParsePrimary() {
+*  switch (CurrentToken) {
+*  case tok_number:
+*    return ParseNumberExpression();
+*  case tok_name:
+*    return ParseNameExpression();
++  case tok_string: {
++    string Text = StringLiteralValue;
++    getNextToken();
++    return make_unique<StringExpressionNode>(
++        std::move(Text), EncodePointerType(ValueType::Int8));
++  }
+*  case tok_true:
+*    getNextToken();
+*    return make_unique<BoolExpressionNode>(true);
+*  ...
+*  }
+*}
 ```
 
 From the type checker's point of view, a string literal is just an ordinary `ptr[int8]` value. There's no separate string type hiding underneath, and no special case anywhere downstream needs to know it came from a literal rather than, say, a `malloc`'d buffer.
@@ -342,9 +363,21 @@ Writing the "return a string from a function" example surfaced a real gap I'd do
 The fix is to stop leaving that metadata behind at the call site:
 
 ```cpp
-return make_unique<CallExpressionNode>(ParsedName, std::move(Arguments),
-                                Signature->getReturnType(),
-                                Signature->getReturnStructName());
+static unique_ptr<ExpressionNode> ParseNameExpressionWithName(const string &ParsedName) {
+  // ...
+  if (!Signature)
+    return LogErrorExpression("Unknown function referenced");
+  if (Signature->getNumParameters() != Arguments.size())
+    return LogErrorExpression("Incorrect # arguments passed");
+
+  for (size_t i = 0; i < Arguments.size(); ++i) {
+    // ...
+  }
+
+  return make_unique<CallExpressionNode>(ParsedName, std::move(Arguments),
+                                  Signature->getReturnType(),
+                                  Signature->getReturnStructName());
+}
 ```
 
 `CallExpressionNode` already had a `Type` it set from the callee's signature; it just never asked the signature for the matching `StructName`. Once it does, a function call carries exactly the same pointee metadata a local expression of the same type would, and I no longer need the workaround cast from Chapter 28 for either case.

@@ -174,7 +174,7 @@ Because I define `tok_lparen = '('`, `tok_lparen` and `'('` are the same map key
 
 ## Naming Unknown Characters Too
 
-Naming every byte value only helps if the lexer actually hands one of those values downstream. `@` isn't punctuation I recognize. In Chapter 3, any character my `switch` in `getToken()` had no `case` for fell through to a single shared `default`, which threw the character away and returned the generic `tok_error`:
+`@` isn't punctuation I recognize. Previously, the lexer's `default` case discarded the character and returned the generic `tok_error`:
 
 ```cppdiff
 *  switch (ThisChar) {
@@ -186,7 +186,7 @@ Naming every byte value only helps if the lexer actually hands one of those valu
 *  }
 ```
 
-Every unrecognized character used to collapse into that one `tok_error` value, so downstream code never saw which character it actually was; `TokenNames.at(tok_error)` could only ever print the word `error`. Now the default case returns `ThisChar` itself. Since I already gave every byte 0–255 a name in `TokenNames`, an unrecognized character is no longer a dead end; it's just another token value, one I can look up and describe by name.
+I return `ThisChar` instead so I can name the character that caused the error.
 
 For names and numbers, I want to include the actual text from the source rather than report only `name` or `number`. I already have `Name` from Chapter 1 for the name case. For numbers, I add a matching global:
 

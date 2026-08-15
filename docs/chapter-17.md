@@ -217,6 +217,68 @@ static bool CompileFileToObject(const string &Path, const string &ObjectPath,
 
 `ResetLexerState` and `ResetParserStateForFile` clear the persistent lexer and parser state between files, so each `.pyxc` compiles independently. This is what makes multi-file compilation safe — a global declared in `a.pyxc` doesn't silently bleed into `b.pyxc`.
 
+Getting there needs one lexer change first. Through chapter 16, `getToken()`'s current input character (`LastChar`) was a variable local to the function, declared `static` so it survived between calls:
+
+```cpp
+static int getToken() {
+  static int LastChar = ' ';
+  // ...
+}
+```
+
+A function-local `static` has no way to be reset from outside the function. To compile a second `.pyxc` file cleanly, the lexer needs to forget where it left off in the first one. So I lift `LastChar` out to file scope and rename it `LexerLastChar`, leaving every use inside `getToken()` otherwise unchanged:
+
+```cpp
+static int LexerLastChar = ' ';
+// ...
+static int getToken() {
+  // ... every use of LastChar in this function becomes LexerLastChar ...
+}
+```
+
+With `LexerLastChar` reachable from outside `getToken()`, `ResetLexerState` can put the whole lexer back to its startup condition before I open the next file:
+
+```cpp
+static void ResetLexerState() {
+  IndentStack = {0};
+  PendingTokens.clear();
+  AtLineStart = true;
+  LexLoc = {1, 0};
+  CurLoc = {1, 0};
+  LexerLastChar = ' ';
+  PyxcSourceMgr.reset();
+}
+```
+
+`ResetParserStateForFile` does the equivalent for the parser and codegen-adjacent globals — the tables that would otherwise carry declarations from one file's compilation into the next:
+
+```cpp
+static void ResetParserStateForFile() {
+  FunctionSignatures.clear();
+  GlobalVarNames.clear();
+  VarScopes.clear();
+  FileTopLevelStatements.clear();
+  LastTopLevelShouldPrint = true;
+  ParsingTopLevel = false;
+  InGlobalInit = false;
+  ModuleHasGlobals = false;
+}
+```
+
+`InitializeModuleAndManagers` also picks up a parameter this chapter, `FreshContext`, defaulting to `true` so every existing call site keeps behaving exactly as before:
+
+```cpp
+static void InitializeModuleAndManagers(bool FreshContext = true) {
+  // Fresh context and module for this compilation unit.
+  if (FreshContext || !TheContext)
+    TheContext = std::make_unique<LLVMContext>();
+  TheModule = std::make_unique<Module>("PyxcJIT", *TheContext);
+  // ...
+}
+```
+
+`CompileFileToObject` calls it with `false`. Each `.pyxc` file still gets a brand-new `Module`, but they all share the one `LLVMContext` created at startup, rather than allocating a fresh `LLVMContext` per file. `LLVMContext` owns type and constant uniquing tables; there's no correctness reason a second file needs its own, and reusing it avoids that allocation on every file in a multi-file `--emit exe` build.
+
 ## Shared Codegen Finishing
 
 In chapter 16, `EmitFileMode` contained all the logic for building `__pyxc.global_init`, validating `main`, and wrapping it. I want both the `--emit obj` path and the new per-file `--emit exe` path to share that, so I refactor it out into `PrepareFileModeModule`:
@@ -407,6 +469,28 @@ If `xcrun` doesn't resolve a version, I fall back to the OS version encoded in t
 
 The `-platform_version macos <min> <sdk>` flag is required by the Mach-O linker to set the LC_BUILD_VERSION load command. Without it, the linker produces a warning or errors depending on the LLD version.
 
+## Telling Inputs Apart
+
+`EmitExecutable` walks `InputFiles` and needs to know, per entry, whether it's pyxc source to compile or an already-built object to pass straight through to the linker. I decide by extension, checked case-insensitively so `Foo.PYXC` and `foo.pyxc` are treated the same:
+
+```cpp
+static bool EndsWithInsensitive(StringRef Path, StringRef Suffix) {
+  return Path.size() >= Suffix.size() &&
+         Path.take_back(Suffix.size()).equals_insensitive(Suffix);
+}
+
+static bool IsPyxcInput(StringRef Path) {
+  return EndsWithInsensitive(Path, ".pyxc");
+}
+
+static bool IsObjectInput(StringRef Path) {
+  return EndsWithInsensitive(Path, ".o") ||
+         EndsWithInsensitive(Path, ".obj");
+}
+```
+
+Anything that matches neither is rejected with an "unsupported input" error rather than silently ignored or guessed at.
+
 ## The Orchestrator
 
 ```cpp
@@ -499,13 +583,70 @@ A few things I want to call out here:
 - **The `main()` check.** Nothing upstream of this function checks whether an entry point exists anywhere, so a missing `main` would otherwise silently make it all the way to the linker and fail there with a much less clear error. `SawObjectInput` exists so that "a `.o` might define `main`, I can't inspect it without disassembling it" doesn't turn into a false rejection — if any input is a pre-built object, I let the linker be the judge.
 - **`EmitOutputPath.empty()` uses `InputFiles.front()` directly.** By the time `EmitExecutable` runs, `ProcessCommandLine` has already guaranteed `InputFiles` is non-empty (it's how `IsRepl` gets set), so there's no need to re-check emptiness here.
 
+## Wiring It Into main
+
+`main` itself changes shape to route to the right one of these paths. Through chapter 16 it primed the REPL (`PrintReplPrompt(); getNextToken();`) unconditionally before checking `IsRepl`, since file mode needed `getNextToken()` too and there was only ever one file to open. Now that opening a file is a repeatable, resettable operation, I move the REPL priming inside the `IsRepl` branch and give the non-REPL branch its own two-way split: `--emit exe` goes to `EmitExecutable`, which owns opening and closing each of its own input files internally, while every other case (JIT execution or `--emit llvm-ir`/`asm`/`obj`) still opens exactly one file the way chapter 16 did, just now through the shared `OpenInputFile`/`CloseInputFile` helpers and with `ResetLexerState`/`ResetParserStateForFile` called explicitly instead of relying on process startup defaults:
+
+```cpp
+if (IsRepl) {
+  PrintReplPrompt();
+  getNextToken();
+  MainLoop();
+} else {
+  if (EmitMode == EmitKind::Executable) {
+    if (!EmitExecutable())
+      return 1;
+  } else {
+    if (!OpenInputFile(InputFiles.front()))
+      return 1;
+    ResetLexerState();
+    ResetParserStateForFile();
+    getNextToken();
+    FileModeLoop();
+    if (IsEmitMode())
+      EmitFileMode();
+    else
+      RunFileMode();
+    CloseInputFile();
+  }
+}
+```
+
+`OpenInputFile` and `CloseInputFile` are thin wrappers around `fopen`/`fclose` on the global `Input` handle — the same logic `ProcessCommandLine` used to inline for its single `InputFile` in chapter 16, now factored out so `CompileFileToObject` can reuse it per file inside `EmitExecutable`.
+
+## Splitting Out the Target Machine
+
+`EmitModuleToFile` in chapter 16 built its `TargetMachine` inline, once, because it only ever ran against `TheModule`. This chapter calls it three times against three different modules, so I pull the target-machine construction into its own function:
+
+```cpp
+static unique_ptr<TargetMachine> CreateTargetMachine() {
+  Triple TargetTriple(sys::getDefaultTargetTriple());
+  string Error;
+  const Target *NativeTarget = TargetRegistry::lookupTarget(TargetTriple, Error);
+  if (!NativeTarget) {
+    fprintf(stderr, "Error: %s\n", Error.c_str());
+    return nullptr;
+  }
+
+  TargetOptions Options;
+  auto RelocationModel = std::optional<Reloc::Model>();
+  return unique_ptr<TargetMachine>(NativeTarget->createTargetMachine(
+      TargetTriple, "generic", "", Options, RelocationModel));
+}
+```
+
+`EmitModuleToFile` calls it and, on success, reads the triple back off the resulting `Machine` rather than the `Triple` object built earlier: `ModuleIR->setTargetTriple(Machine->getTargetTriple())`. That's a small change from chapter 16, where the module's triple was set directly from `sys::getDefaultTargetTriple()` before the `TargetMachine` existed; going through `Machine->getTargetTriple()` keeps the module's recorded triple in exact agreement with whatever the backend actually resolved and normalized it to.
+
 ## New Headers and Build Changes
 
 The new headers this chapter:
 
 ```cpp
-#include "lld/Common/Driver.h"       // lld::macho::link, lld::elf::link, lld::coff::link
+#include "lld/Common/Driver.h"          // lld::macho::link, lld::elf::link, lld::coff::link
+#include "llvm/Support/Path.h"          // sys::path::replace_extension
 #include "llvm/Support/VersionTuple.h"  // VersionTuple for OS version extraction
+#include <unistd.h>                     // close(), for the file descriptors
+                                         // sys::fs::createTemporaryFile hands back
 ```
 
 The three LLD driver macros need to appear at file scope to register the drivers:

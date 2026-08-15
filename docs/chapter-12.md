@@ -918,13 +918,20 @@ def threshold(x):
 
 ## After a Top-Level Block
 
-When a `def` body ends with an indented block, parsing it returns with `CurrentToken = tok_block_end`. `MainLoop` handles it explicitly in its switch, so two definitions back to back with no blank line between them still work:
+When a `def` body ends with an indented block, parsing it returns with `CurrentToken = tok_block_end`. `MainLoop` handles it explicitly in its switch, so two definitions back to back with no blank line between them still work. Two more cases sit alongside it: a stray `tok_indent` at the top level (indentation where none was expected) is reported and skipped, and a stray `tok_dedent` (an unmatched close, which can happen in REPL mode when a block is torn down early) is silently consumed:
 
 ```cpp
 static void MainLoop() {
   while (CurrentToken != tok_eof) {
     switch (CurrentToken) {
-    // ... handle tok_indent and tok_dedent ...
+    case tok_indent:
+      LogErrorExpression("Unexpected indentation");
+      SynchronizeToLineBoundary();
+      break;
+    // Stray dedent at top level (can occur in REPL mode): skip it.
+    case tok_dedent:
+      getNextToken();
+      break;
     // Block-end marker left in the stream after a block-bodied definition.
     case tok_block_end:
       getNextToken();
@@ -934,6 +941,68 @@ static void MainLoop() {
   }
 }
 ```
+
+`SynchronizeToLineBoundary` and `HandleFunctionDefinition` both need to know about these new tokens too. `SynchronizeToLineBoundary` used to stop only at `tok_eol` or `tok_eof`; now it also stops at `tok_dedent` and `tok_block_end`, since those tokens mark the true end of a malformed block, not just a line:
+
+```cpp
+static void SynchronizeToLineBoundary() {
+  while (CurrentToken != tok_eol && CurrentToken != tok_eof &&
+         CurrentToken != tok_dedent && CurrentToken != tok_block_end)
+    getNextToken();
+}
+```
+
+And `HandleFunctionDefinition`'s trailing-token check now accepts `tok_block_end` as a valid way for a definition to end, alongside `tok_eol` and `tok_eof` — a block-bodied `def` doesn't leave a newline behind, it leaves `tok_block_end`:
+
+```cpp
+static void HandleFunctionDefinition() {
+  auto FunctionDefinition = ParseFunctionDefinition();
+  bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof &&
+                      CurrentToken != tok_block_end);
+  if (!FunctionDefinition || HasTrailing) {
+    if (FunctionDefinition)
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+    SynchronizeToLineBoundary();
+    return;
+  }
+  // ...
+}
+```
+
+## Top-Level Assignment
+
+`ParseExpression` no longer understands `=` at all — assignment moved to `ParseSimpleStatement` this chapter. But a top-level REPL line still goes through `ParseExpression`, by way of `ParseTopLevelExpression`, so it needs its own handling to recognize `x = 1` and produce the right error instead of a generic parse failure. `ParseTopLevelExpression` opens a fresh, empty function scope (top-level input has no parameters), and checks for a trailing `=` itself:
+
+```cpp
+static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
+  FunctionScopeGuard Scope({});
+  auto Expression = ParseExpression();
+  if (!Expression)
+    return nullptr;
+
+  if (CurrentToken == tok_equal) {
+    const string *AssignedName = Expression->getLValueName();
+    if (!AssignedName)
+      return LogErrorFunction("Destination of '=' must be a variable");
+
+    string Name = *AssignedName;
+    if (!IsDeclaredVar(Name))
+      return LogErrorFunction("Assignment to undeclared variable");
+
+    getNextToken(); // eat '='
+    auto Right = ParseExpression();
+    if (!Right)
+      return nullptr;
+    Expression = make_unique<AssignmentStatementNode>(Name, std::move(Right));
+  }
+
+  auto Signature = make_unique<FunctionSignatureNode>("__anon_expr", vector<string>());
+  auto Body = make_unique<ReturnStatementNode>(std::move(Expression));
+  return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(Body));
+}
+```
+
+Since the scope is fresh and empty every time, `IsDeclaredVar` can never succeed for a top-level assignment — that's exactly the "Assignment to undeclared variable" limitation shown below, and this is the code path that produces it. The whole expression, assignment or not, gets wrapped in a `ReturnStatementNode` before it's handed to `FunctionDefinitionNode`, so a top-level expression's value now reaches the caller through an explicit `return` rather than the old unconditional `CreateRet` at the end of `FunctionDefinitionNode::codegen`.
 
 ## Known Limitations
 
