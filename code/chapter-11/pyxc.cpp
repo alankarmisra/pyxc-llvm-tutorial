@@ -754,7 +754,7 @@ static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
     return nullptr;
 
   if (CurrentToken != tok_rparen)
-    return LogErrorExpression("expected ')'");
+    return LogErrorExpression("Expected ')'");
   getNextToken(); // eat ).
   return Expression;
 }
@@ -812,8 +812,8 @@ static unique_ptr<ExpressionNode> ParseForExpression() {
   if (CurrentToken == tok_var)
     IsVarDecl = true, getNextToken(); // optional 'var'
 
-    return LogErrorExpression("Expected name after 'for'");
   if (CurrentToken != tok_name)
+    return LogErrorExpression("Expected name after 'for'");
   string VarName = Name;
   getNextToken(); // eat name
 
@@ -853,8 +853,8 @@ static unique_ptr<ExpressionNode> ParseForExpression() {
     return nullptr;
 
   return make_unique<ForExpressionNode>(VarName, IsVarDecl, std::move(Start),
-                                 std::move(Cond), std::move(Step),
-                                 std::move(Body));
+                                        std::move(Cond), std::move(Step),
+                                        std::move(Body));
 }
 
 /// variable-expression
@@ -960,8 +960,6 @@ static unique_ptr<ExpressionNode> ParseFactor();
 ///   | for-expression ;
 static unique_ptr<ExpressionNode> ParsePrimary() {
   switch (CurrentToken) {
-  default:
-    return LogErrorExpression("unknown token when expecting an expression");
   case tok_number:
     return ParseNumberExpression();
   case tok_name:
@@ -972,6 +970,9 @@ static unique_ptr<ExpressionNode> ParsePrimary() {
     return ParseIfExpression();
   case tok_for:
     return ParseForExpression();
+  default:
+    return LogErrorExpression(
+        ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
   }
 }
 
@@ -1930,12 +1931,10 @@ extern "C" DLLEXPORT double printd(double X) {
 /// next CurrentToken.
 static void MainLoop() {
   while (CurrentToken != tok_eof) {
-    if (CurrentToken == tok_error) {
-      SynchronizeToLineBoundary();
-      continue;
-    }
-
     switch (CurrentToken) {
+    case tok_error:
+      SynchronizeToLineBoundary();
+      break;
     case tok_eol:
       // A bare newline: just print a fresh prompt and read the next token.
       PrintReplPrompt();

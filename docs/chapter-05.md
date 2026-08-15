@@ -188,34 +188,6 @@ Naming every byte value only helps if the lexer actually hands one of those valu
 
 Every unrecognized character used to collapse into that one `tok_error` value, so downstream code never saw which character it actually was; `TokenNames.at(tok_error)` could only ever print the word `error`. Now the default case returns `ThisChar` itself. Since I already gave every byte 0–255 a name in `TokenNames`, an unrecognized character is no longer a dead end; it's just another token value, one I can look up and describe by name.
 
-This doesn't change what `ParsePrimary()` does when a stray character shows up where it expects an expression to start. Its `default` case doesn't inspect which character it received, so a bare `@` at the start of a line still reports without naming it:
-
-<!-- code-merge:start -->
-```pyxc
-ready> @
-```
-```text
-Error (Line 1, Column 1): unknown token when expecting an expression
-@
-^~~~
-```
-<!-- code-merge:end -->
-
-What changes is what happens once a character shows up as an unexpected *trailing* token, after an otherwise complete expression, a case `ParsePrimary()` never even runs for. I cover that check later in this chapter, in [Printing the Prompt Exactly Once](#printing-the-prompt-exactly-once); it's what turns this chapter's opening `1 @ 2` example into a message that names the character:
-
-<!-- code-merge:start -->
-```pyxc
-ready> 1 @ 2
-```
-```text
-Error (Line 1, Column 3): Unexpected '@'
-1 @ 
-  ^~~~
-```
-<!-- code-merge:end -->
-
-Same character, two different messages, depending only on where in parsing I encounter it.
-
 For names and numbers, I want to include the actual text from the source rather than report only `name` or `number`. I already have `Name` from Chapter 1 for the name case. For numbers, I add a matching global:
 
 ```cpp
@@ -245,6 +217,8 @@ I clear and fill it in `getToken()`'s number-reading branch, right alongside `Nu
 *  }
 ```
 
+With those source spellings available, I define one helper for every diagnostic that needs to name a token:
+
 ```cpp
 static string FormatTokenForMessage(int Tok) {
   if (Tok == tok_name)
@@ -259,7 +233,42 @@ static string FormatTokenForMessage(int Tok) {
 }
 ```
 
-I read that text from the lexer's `Name` and `NumberLiteral` globals. For every other token, I use the name stored in `TokenNames`.
+Names and numbers use their lexer globals so the message includes the original text. Every other token uses its `TokenNames` entry, including an unknown character such as `@` that the lexer now returns directly.
+
+Chapter 4 already made `ParsePrimary()` name an unexpected token through `TokenNames`. I now route that same `default` case through `FormatTokenForMessage()` so it uses the richer formatting for every token kind:
+
+```cppdiff
+*  default:
+*    return LogErrorExpression(
+-        ("Unexpected " + TokenNames.at(CurrentToken)).c_str());
++        ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+```
+
+A bare `@` at the start of a line now reports:
+
+<!-- code-merge:start -->
+```pyxc
+ready> @
+```
+```text
+Error (Line 1, Column 1): Unexpected '@'
+@
+^~~~
+```
+<!-- code-merge:end -->
+
+I use that formatter again when a character appears as an unexpected *trailing* token after an otherwise complete expression, a case `ParsePrimary()` never runs for. I cover that check later in this chapter, in [Printing the Prompt Exactly Once](#printing-the-prompt-exactly-once); it turns this chapter's opening `1 @ 2` example into the same kind of message:
+
+<!-- code-merge:start -->
+```pyxc
+ready> 1 @ 2
+```
+```text
+Error (Line 1, Column 3): Unexpected '@'
+1 @ 
+  ^~~~
+```
+<!-- code-merge:end -->
 
 ## Buffering Source Lines
 
@@ -515,26 +524,22 @@ If `End` points at the string's null terminator, I know `strtod` consumed every 
 
 ## Printing the Prompt Exactly Once
 
-I check for `tok_error` in `MainLoop()` before I call any parsing function, and call `SynchronizeToLineBoundary()`:
+I handle `tok_error` directly in `MainLoop()`'s switch before it can fall through to a parsing function, and call `SynchronizeToLineBoundary()`:
 
 ```cppdiff
 *static void MainLoop() {
 *  while (CurrentToken != tok_eof) {
-+    if (CurrentToken == tok_error) {
-+      SynchronizeToLineBoundary();
-+      continue;
-+    }
-+
 *    switch (CurrentToken) {
 *    case tok_eol:
 *      // For a bare newline, I print a fresh prompt and read the next token.
 *      fprintf(stderr, "ready> ");
 *      getNextToken();
 *      break;
--    case tok_error:
+*    case tok_error:
 -      LogErrorExpression("invalid character");
 -      getNextToken();
--      break;
++      SynchronizeToLineBoundary();
+*      break;
 *    case tok_def:
 *      HandleFunctionDefinition();
 *      break;
@@ -625,7 +630,7 @@ def missing_colon(x)
 ready> @
 ```
 ```text
-Error (Line 6, Column 1): unknown token when expecting an expression
+Error (Line 6, Column 1): Unexpected '@'
 @
 ^~~~
 ```

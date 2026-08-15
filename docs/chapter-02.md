@@ -399,7 +399,7 @@ static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
     return nullptr;
 
   if (CurrentToken != tok_rparen)
-    return LogErrorExpression("expected ')'");
+    return LogErrorExpression("Expected ')'");
   getNextToken(); // I eat ')'.
   return Expression;
 }
@@ -423,7 +423,8 @@ static unique_ptr<ExpressionNode> ParsePrimary() {
   case tok_lparen:
     return ParseParenthesizedExpression(); // I parse `( ... )`.
   default:
-    return LogErrorExpression("unknown token when expecting an expression");
+    return LogErrorExpression(
+        ("Unexpected " + TokenNames.at(CurrentToken)).c_str());
   }
 }
 ```

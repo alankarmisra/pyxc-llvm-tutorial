@@ -246,7 +246,6 @@ class FunctionSignatureNode {
 public:
   FunctionSignatureNode(const string &Name, vector<string> Parameters)
       : Name(Name), Parameters(std::move(Parameters)) {}
-
 };
 
 /// FunctionDefinitionNode - This class represents a function definition itself.
@@ -320,7 +319,7 @@ static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
     return nullptr;
 
   if (CurrentToken != tok_rparen)
-    return LogErrorExpression("expected ')'");
+    return LogErrorExpression("Expected ')'");
   getNextToken(); // I eat ')'.
   return Expression;
 }
@@ -380,7 +379,8 @@ static unique_ptr<ExpressionNode> ParsePrimary() {
   case tok_lparen:
     return ParseParenthesizedExpression(); // I parse `( ... )`.
   default:
-    return LogErrorExpression("unknown token when expecting an expression");
+    return LogErrorExpression(
+        ("Unexpected " + TokenNames.at(CurrentToken)).c_str());
   }
 }
 
@@ -518,7 +518,8 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
 
   getNextToken(); // I eat ')'.
 
-  return make_unique<FunctionSignatureNode>(FunctionName, std::move(ParameterNames));
+  return make_unique<FunctionSignatureNode>(FunctionName,
+                                            std::move(ParameterNames));
 }
 
 /// function-definition

@@ -5,12 +5,12 @@
 # RUN: printf 'def bad(,) -> int:\n  return 1\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=SIGNATURE
 # RUN: printf 'def bad() -> int:\n  return +\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=BODY
 
-# LEXER: unknown token when expecting an expression
+# LEXER: Unexpected '$'
 # COMMENT: ready>
-# PAREN: unknown token when expecting an expression
-# CALL: unknown token when expecting an expression
+# PAREN: Unexpected '+'
+# CALL: Unexpected '+'
 # SIGNATURE: Expected parameter name in function signature
-# BODY: unknown token when expecting an expression
+# BODY: Unexpected '+'
 
 # coverage error paths: exercise lexer errors, comments ending at EOF, failed
 # expressions inside parentheses and calls, malformed empty parameter lists,

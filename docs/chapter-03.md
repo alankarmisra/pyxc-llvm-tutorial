@@ -404,7 +404,7 @@ Parsed a top-level expression.
 ready> -5
 ```
 ```text
-Error: unknown token when expecting an expression (token: '-')
+Error: Unexpected '-' (token: '-')
 ready> Parsed a top-level expression.
 ```
 <!-- code-merge:end -->

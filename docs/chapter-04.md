@@ -12,7 +12,7 @@ In Chapter 3, `-` only ever showed up as subtraction. A leading `-` doesn't pars
 ready> -5
 ```
 ```text
-Error: unknown token when expecting an expression (token: '-')
+Error: Unexpected '-' (token: '-')
 ```
 <!-- code-merge:end -->
 
@@ -164,43 +164,49 @@ static unique_ptr<ExpressionNode> ParseFactor() {
 
 `ParseUnaryMinus` calls `ParseFactor` for its own operand, not `ParsePrimary` — that's what lets it recurse into itself. `--5` works because the first `-` calls `ParseFactor`, which sees the second `-` and calls `ParseUnaryMinus` again before either call has produced a value.
 
-```cpp
-/// term
-///   = factor { ("*" | "/" | "%") factor } ;
-static unique_ptr<ExpressionNode> ParseTerm() {
-  // I start the term by parsing one factor.
-  auto Left = ParseFactor();
-  if (!Left)
-    return nullptr;
-
-  // I consume only the operators that belong to this tier.
-  while (CurrentToken == tok_star || CurrentToken == tok_slash ||
-         CurrentToken == tok_percent) {
-    int Operator = CurrentToken;
-    getNextToken(); // I eat '*', '/', or '%'.
-    auto Right = ParseFactor();
-    if (!Right)
-      return nullptr;
-
-    // I fold each new operation into the tree on my left.
-    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
-                                             std::move(Right));
-  }
-
-  return Left;
-}
+```cppdiff
+*/// term
+-///   = primary { ("*" | "/") primary } ;
++///   = factor { ("*" | "/" | "%") factor } ;
+*static unique_ptr<ExpressionNode> ParseTerm() {
+-  // I start the term by parsing one primary.
+-  auto Left = ParsePrimary();
++  // I start the term by parsing one factor.
++  auto Left = ParseFactor();
+*  if (!Left)
+*    return nullptr;
+*
+*  // I consume only the operators that belong to this tier.
+-  while (CurrentToken == tok_star || CurrentToken == tok_slash) {
++  while (CurrentToken == tok_star || CurrentToken == tok_slash ||
++         CurrentToken == tok_percent) {
+*    int Operator = CurrentToken;
+-    getNextToken(); // I eat '*' or '/'.
+-    auto Right = ParsePrimary();
++    getNextToken(); // I eat '*', '/', or '%'.
++    auto Right = ParseFactor();
+*    if (!Right)
+*      return nullptr;
+*
+*    // I fold each new operation into the tree on my left.
+*    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
+*                                             std::move(Right));
+*  }
+*
+*  return Left;
+*}
 ```
 
 That single change — `ParsePrimary()` to `ParseFactor()`, twice, in `ParseTerm` — is what makes `-2 * 3` parse as `(-2) * 3` rather than `-(2 * 3)`. `ParseFactor` grabs the `-2` as a complete unit before `ParseTerm`'s `while` loop ever sees the `*`. `%` needed no equivalent change anywhere else — it just joins `*` and `/` in the same `while` condition, since it belongs at exactly their precedence.
 
-There's no new error path for a bad operand after `-`: it still fails with the same "unknown token when expecting an expression" that `ParsePrimary` has always produced, since `ParseUnaryMinus` just propagates whatever `ParseFactor` returns:
+There's no new error path for a bad operand after `-`: `ParseUnaryMinus` just propagates the `Unexpected ...` diagnostic produced by `ParsePrimary()`:
 
 <!-- code-merge:start -->
 ```pyxc
 ready> -)
 ```
 ```text
-Error: unknown token when expecting an expression (token: ')')
+Error: Unexpected ')' (token: ')')
 ```
 <!-- code-merge:end -->
 

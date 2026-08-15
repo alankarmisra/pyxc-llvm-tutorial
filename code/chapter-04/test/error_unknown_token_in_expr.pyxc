@@ -1,6 +1,6 @@
 # RUN: %pyxc < %s > %t 2>&1
 # RUN: grep -q "Error:" %t
-# RUN: grep -q "unknown token when expecting an expression" %t
+# RUN: grep -q "Unexpected '+'" %t
 
 # primary: default branch — token that is not identifier, number, or '('
 1 + + 2

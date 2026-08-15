@@ -9,15 +9,15 @@
 # RUN: printf -- '-+\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=UNARY_MINUS_RHS
 # RUN: printf '3 foo\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=NAME_TRAILING
 
-# LEXER: unknown token when expecting an expression
+# LEXER: Unexpected '@'
 # COMMENT: ready>
-# PAREN: unknown token when expecting an expression
-# CALL: unknown token when expecting an expression
+# PAREN: Unexpected '+'
+# CALL: Unexpected '+'
 # SIGNATURE: Expected ')' in function signature
-# BODY: unknown token when expecting an expression
-# TERM_RHS: unknown token when expecting an expression
-# COMPARISON_RHS: unknown token when expecting an expression
-# UNARY_MINUS_RHS: unknown token when expecting an expression
+# BODY: Unexpected '+'
+# TERM_RHS: Unexpected '+'
+# COMPARISON_RHS: Unexpected '+'
+# UNARY_MINUS_RHS: Unexpected '+'
 # NAME_TRAILING: Unexpected name 'foo'
 
 # coverage error paths: exercise lexer errors, comments ending at EOF, failed
@@ -26,4 +26,3 @@
 # '<' (ParseComparison), and unary '-' (ParseUnaryMinus), and a trailing name
 # token after a complete top-level expression (exercises
 # FormatTokenForMessage's tok_name branch, which nothing else here reaches).
-
