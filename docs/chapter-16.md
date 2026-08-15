@@ -354,8 +354,17 @@ I call `ShouldDumpIR()` wherever IR is printed — after each function in JIT mo
 The two `InitializeNative*` calls in `main` were already present for the JIT. They stay sufficient for emit mode too, because pyxc always targets the host machine:
 
 ```cpp
-InitializeNativeTarget();
-InitializeNativeTargetAsmPrinter();
+int main(int argc, const char **argv) {
+  int commandLineResult = ProcessCommandLine(argc, argv);
+  if (commandLineResult != 0) {
+    return commandLineResult;
+  }
+
+  // Initialise LLVM's backend for the host machine.
+  InitializeNativeTarget();
+  InitializeNativeTargetAsmPrinter();
+  // ...
+}
 ```
 
 `InitializeNativeTargetAsmPrinter` registers the backend that serializes machine instructions to assembly text or object file bytes — the part that `addPassesToEmitFile` depends on. Without it, `TargetRegistry::lookupTarget` would succeed but `addPassesToEmitFile` would fail.

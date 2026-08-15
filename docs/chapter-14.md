@@ -135,8 +135,7 @@ Four new tokens:
 *enum Token {
 *  ...
 *  // loops
--  tok_for = -15,
-+  tok_for = -15,
+*  tok_for = -15,
 +  tok_while = -23,
 +  tok_do = -24,
 +  tok_break = -25,

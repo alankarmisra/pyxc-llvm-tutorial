@@ -65,23 +65,34 @@ One more change ties these together but isn't new behavior on its own: `EmitModu
 Through chapter 16, the positional argument was a single optional `cl::opt`:
 
 ```cpp
-// Chapter 16
-static cl::opt<std::string> InputFile(cl::Positional, ...);
+static cl::opt<std::string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
+                                      cl::init(""), cl::cat(PyxcCategory));
 ```
 
 I need it to be a list instead, so the driver can accept any number of `.pyxc` and `.o` files:
 
-```cpp
-// Chapter 17
-static cl::list<std::string>
-    InputFiles(cl::Positional, cl::desc("[inputs]"), cl::ZeroOrMore,
-               cl::cat(PyxcCategory));
+```cppdiff
+-static cl::opt<std::string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
+-                                      cl::init(""), cl::cat(PyxcCategory));
++static cl::list<std::string> InputFiles(cl::Positional, cl::desc("[inputs]"),
++                                        cl::ZeroOrMore, cl::cat(PyxcCategory));
 ```
 
 I derive `IsRepl` from whether the list is empty now:
 
 ```cpp
-IsRepl = InputFiles.empty();
+int ProcessCommandLine(int argc, const char **argv) {
+  cl::HideUnrelatedOptions(PyxcCategory);
+  cl::ParseCommandLineOptions(argc, argv, "pyxc\n");
+
+  if (OptLevel > 3) {
+    fprintf(stderr, "Error: -O level must be 0, 1, 2, or 3\n");
+    return -1;
+  }
+
+  IsRepl = InputFiles.empty();
+  // ...
+}
 ```
 
 The `--emit exe` path also enforces the multi-input rule:
