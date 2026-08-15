@@ -516,6 +516,34 @@ i1 false
 
 `Bool` is a distinct type. It is not the result of a comparison widened to an integer: it stays `i1` throughout. Every comparison operator now returns `Bool` / `i1` directly.
 
+### Conditions Must Be Bool
+
+Chapter 17 had only `double`, so `if`, `while`, `do`/`while`, and `for` conditions worked by comparing the condition value against `0.0`. Now that `Bool` exists as its own type, I require the condition expression itself to already be `Bool`. Each parser checks this right after parsing the condition:
+
+```cpp
+auto Condition = ParseExpression();
+if (!Condition)
+  return nullptr;
+if (Condition->getType() != ValueType::Bool)
+  return LogErrorExpression("If condition must be bool");
+```
+
+`ParseWhileStatement` (which also parses `do`/`while`) and `ParseForStatement`'s condition clause run the equivalent check with their own messages ("While condition must be bool", "Do/while condition must be bool", "For loop condition must be bool"). A condition like `if x:` where `x: int32` is now a parse-time type error; the old implicit "any nonzero value is true" convenience is gone. Writing `if x != 0:` (or `if bool(x):`) is required instead.
+
+At codegen time, a small helper enforces the same rule as a safety net:
+
+```cpp
+static Value *ToBool(Value *V, ValueType Type) {
+  if (!V)
+    return nullptr;
+  if (Type == ValueType::Bool)
+    return V;
+  return nullptr;
+}
+```
+
+`IfStatementNode`, `WhileStatementNode` (both `while` and `do`/`while` branches), and `ForStatementNode` each call `ToBool(CondV, Cond->getType())` on the condition value before branching, and treat a `nullptr` result as a codegen error ("Invalid condition type" for `if`, "Invalid loop condition type" for loops). Since the parser already rejects non-`Bool` conditions, `ToBool` never actually fails in practice, but it keeps codegen from silently trusting the parser.
+
 ## Parsing Type Annotations and Optional Return Types
 
 `ParseTypeToken` consumes the current token if it is a type keyword and returns the corresponding `ValueType`:
@@ -682,7 +710,29 @@ if (DeclTy == ValueType::None)
   return LogErrorExpression("Variables cannot have None type");
 ```
 
-If there's no initializer, I generate a zero constant of the declared type. If there is one, I install an `ExpectedLiteralTypeGuard(DeclTy)` before parsing the initializer expression, then check assignability:
+If there's no initializer, I generate a zero constant of the declared type. For a local `var`, that means synthesizing a literal AST node directly, with `MakeZeroLiteral`:
+
+```cpp
+static unique_ptr<ExpressionNode> MakeZeroLiteral(ValueType Type) {
+  if (IsIntType(Type)) {
+    unsigned Bits = LLVMTypeFor(Type)->getIntegerBitWidth();
+    return make_unique<NumberExpressionNode>(APInt(Bits, 0), Type);
+  }
+  if (IsFloatType(Type)) {
+    const fltSemantics &Semantics = (Type == ValueType::Float32)
+                                        ? APFloat::IEEEsingle()
+                                        : APFloat::IEEEdouble();
+    return make_unique<NumberExpressionNode>(APFloat(Semantics, "0"), Type);
+  }
+  if (Type == ValueType::Bool)
+    return make_unique<BoolExpressionNode>(false);
+  return LogErrorExpression("Cannot default-initialize this type");
+}
+```
+
+This builds an ordinary `NumberExpressionNode` or `BoolExpressionNode` of the right type and lets it flow through the same `Init` field an explicit initializer would use, so a `var y: int32` with no `= expression` codegens identically to a hand-written `var y: int32 = 0`. `ZeroConstant` (described below) is the separate helper actually used for global variable initializers, where the module needs an LLVM `Constant*` directly rather than an AST node to parse.
+
+If there is one, I install an `ExpectedLiteralTypeGuard(DeclTy)` before parsing the initializer expression, then check assignability:
 
 ```cpp
 {
@@ -1154,6 +1204,28 @@ Each case and its IR:
 ```
 
 Comparisons return `i1` directly: there is no `UIToFP` widening to `double` as there was in chapter 17. The old pattern emerged from having only `double`; now each comparison produces a proper `Bool`.
+
+Unary minus becomes type-aware too. Chapter 17 always emitted `CreateFNeg` since `double` was the only type. `UnaryExpressionNode::codegen` now picks the instruction based on the operand's type:
+
+```cpp
+if (Opcode == tok_minus) {
+  if (IsIntType(getType()))
+    return TheBuilder->CreateNeg(Operator, "negtmp");
+  if (IsFloatType(getType()))
+    return TheBuilder->CreateFNeg(Operator, "negtmp");
+  return LogErrorV("Unary '-' not supported for this type");
+}
+```
+
+`ParseUnaryMinus` rejects a non-numeric operand (`Bool`, `None`) at parse time with `"Unary '-' requires a numeric operand"`, so `CreateNeg`/`CreateFNeg` never has to handle anything but `Int*` or `Float*`:
+
+```llvm
+; -x where x: int32
+%negtmp = sub i32 0, %x   ; CreateNeg lowers to this form
+
+; -x where x: float64
+%negtmp = fneg double %x
+```
 
 ## Explicit Conversions: The Full Table
 

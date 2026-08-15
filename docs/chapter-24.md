@@ -489,6 +489,37 @@ This is why I keep needing that "struct name alongside the type" pattern: `Value
 
 Now for the parts of the grammar I haven't touched yet: reading a field and writing to one. Each needs its own AST node, because they compile to different code (a load vs. a `getelementptr` + store), even though they share a lot of the same "walk the field path" logic.
 
+Both of these new nodes need to carry a struct name alongside their `ValueType`, and `ExpressionNode` couldn't do that before this chapter: it only tracked a bare `ValueType`. I extend the base class with a `StructName` member and widen `setType` to take it as a second, defaulted argument, so every existing call site that only ever set a `ValueType` keeps compiling unchanged:
+
+```cppdiff
+ class ExpressionNode {
+   ValueType Type = ValueType::Error;
++  string StructName;
+ 
+ public:
+   virtual ~ExpressionNode() = default;
+   ValueType getType() const { return Type; }
++  const string &getStructName() const { return StructName; }
+   // getLValueName - If this node is a plain assignable variable, return its
+   // name; otherwise return nullptr.
+   virtual const string *getLValueName() const { return nullptr; }
++  virtual const vector<string> *getLValueFieldPath() const { return nullptr; }
+   // isReturnExpr - True iff this node is a return statement.
+   virtual bool isReturnExpr() const { return false; }
+*  ...
+   virtual Value *codegen() = 0;
+ 
+ protected:
+-  void setType(ValueType NewType) { Type = NewType; }
++  void setType(ValueType NewType, const string &NewStructName = "") {
++    Type = NewType;
++    StructName = NewStructName;
++  }
+ };
+```
+
+I also add `getLValueFieldPath()` here, defaulting to `nullptr` the same way `getLValueName()` already does. Only `FieldExpressionNode` will override it below; it's what lets `ParseLeadingNameSimpleStatement` tell a plain variable reference apart from a field chain when it decides how to parse the right side of `=`.
+
 ### Field Read
 
 A field read: `p.x`, `o.inner.value`. What does this node actually need to remember? Not the whole chain as one string: I want the pieces separately so codegen can walk them one GEP at a time. So: the name of the variable at the root, and the list of field names after it.
@@ -653,6 +684,42 @@ ParseFieldAssignmentRight(unique_ptr<FieldExpressionNode> Left) {
 ```
 
 Same `IsAssignable` check I already use for plain variable assignment: a struct field is just an assignable location with a type, same rules apply. The extra struct-name check only fires when the field itself is struct-typed: an `int` field doesn't have a struct name to mismatch on.
+
+That extra struct-name check isn't unique to field assignment: anywhere a struct-typed value flows from one place to another, `ValueType::Struct` alone doesn't catch a mismatch, since two unrelated structs both report the same `ValueType`. I add the same comparison at the other three places a struct value crosses a boundary.
+
+Passing an argument to a function, in the call-parsing branch of `ParseNameExpressionWithName`:
+
+```cpp
+if (ParamType == ValueType::Struct &&
+    Signature->getParameterStructName(i) != Arguments[i]->getStructName())
+  return LogErrorExpression("Struct argument type mismatch");
+```
+
+Returning a value, in `ParseReturnStatement`:
+
+```cpp
+if (CurrentFunctionReturnType == ValueType::Struct &&
+    CurrentFunctionReturnStructName != Expr->getStructName())
+  return LogErrorExpression("Struct return type mismatch");
+```
+
+Plain variable assignment, in `ParseAssignmentRight`:
+
+```cpp
+if (VarType == ValueType::Struct &&
+    LookupVarStructName(Name) != Right->getStructName())
+  return LogErrorExpression("Struct type mismatch in assignment");
+```
+
+And variable declaration with an initializer, in `ParseVarStatement`:
+
+```cpp
+if (DeclType == ValueType::Struct &&
+    DeclStructName != Init->getStructName())
+  return LogErrorExpression("Struct type mismatch in variable initialization");
+```
+
+Same shape every time: the ordinary `IsAssignable` check already passes, because both sides report `ValueType::Struct`, so I add one more comparison on the struct name itself, gated so it only runs when the type actually is `Struct`.
 
 ## A Lurking Lexer Bug
 

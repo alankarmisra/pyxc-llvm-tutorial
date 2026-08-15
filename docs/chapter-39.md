@@ -348,6 +348,20 @@ A method's visibility is passed as an extra argument into `ParseMethodDefinition
 
 `Info.Methods` is copied back out of `StructTypes[AggregateName]` after every method (`Info.Methods = StructTypes[AggregateName].Methods;`), for the same reason [Chapter 37](chapter-37.md) already re-registers `StructTypes[AggregateName] = Info` after every member: methods parsed earlier in the body need to stay visible while later members are parsed, and vice versa.
 
+## Classes Can Have Zero Fields
+
+This chapter also loosens a rule from [Chapter 36](chapter-36.md): the "at least one field" check now excludes classes.
+
+```cppdiff
+-  if (Info.Fields.empty()) {
++  if (Info.Fields.empty() && !Info.IsClass) {
+     LogErrorExpression((string(KindName) + " requires at least one field").c_str());
+     return false;
+   }
+```
+
+A `struct` still needs at least one field, since a `struct` with none would have no reason to exist. A `class` can now consist entirely of methods with no fields at all, since methods, not fields, are what visibility and this chapter's access checks are really about. I compiled a class with a single method and no fields to confirm: it produces `%struct.Empty = type {}` in the IR, and calls to its method still work normally.
+
 ## Enforcing Private Access
 
 Access is decided by one small function:

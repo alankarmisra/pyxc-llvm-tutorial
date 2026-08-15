@@ -94,9 +94,13 @@ Now I need to turn these trees into code. Compiler writers call each piece of a 
 
 ### The Base Class
 
+I wrap every node class in an anonymous namespace. That gives each class internal linkage, so only code inside `pyxc.cpp` can reference them by name. Since pyxc is a single-file compiler, that's every line I write, but the anonymous namespace keeps these classes from accidentally colliding with an identically named class if I ever split the compiler across multiple files.
+
 Most of my nodes reduce to a single value, so I derive them from a common expression class:
 
 ```cpp
+namespace {
+
 class ExpressionNode {
 public:
   virtual ~ExpressionNode() = default;
@@ -238,6 +242,8 @@ public:
                  unique_ptr<ExpressionNode> Body)
       : Signature(std::move(Signature)), Body(std::move(Body)) {}
 };
+
+} // end anonymous namespace
 ```
 
 With this structure in place, for a function definition like `def add(x, y): x + y`, I will build something like:

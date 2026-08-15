@@ -569,7 +569,22 @@ entry:
 
 The pointer is passed by value (it's just an address), but the store through it writes to `x`'s alloca in the caller's stack frame. The caller sees the updated value.
 
-Pointer arguments are type-checked: passing `ptr[float64]` where `ptr[int]` is expected is a type error.
+Pointer arguments are type-checked: passing `ptr[float64]` where `ptr[int]` is expected is a type error. Chapter 24 already had a struct-name comparison guarding every place a struct value crosses a boundary: call arguments, return values, plain assignment, field assignment, and variable initialization. Since a pointer's `StructName` is the same kind of opaque string a struct's is, just carrying an encoded pointee instead of a struct name, those five checks all widen to cover `ValueType::Pointer` too, and the error messages drop the word "Struct" since they no longer only fire for structs. Here's the call-argument site as an example, the rest follow the same shape:
+
+```cppdiff
+*    if (!IsAssignable(ParamType, ArgType)) {
+*      return LogErrorExpression(("argument " + std::to_string(i + 1) + " expects " +
+*                       TypeName(ParamType))
+*                          .c_str());
+*    }
+-    if (ParamType == ValueType::Struct &&
++    if ((ParamType == ValueType::Struct || ParamType == ValueType::Pointer) &&
+         Signature->getParameterStructName(i) != Arguments[i]->getStructName())
+-      return LogErrorExpression("Struct argument type mismatch");
++      return LogErrorExpression("Argument type mismatch");
+```
+
+The comparison itself doesn't need to know whether it's comparing two struct names or two encoded pointer types: it's just a string equality check either way, so widening the condition is the only change each site needs.
 
 ## Parse Flow for Name Expressions
 

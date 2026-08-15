@@ -307,6 +307,28 @@ Error (Line 3, Column 14): Assignment target must be assignable
              ^~~~
 ```
 
+That `isLValue()` check only fires once `Left` has already parsed successfully. A name that was never declared at all fails earlier, inside `ParseNameExpressionWithName`, before `ParseAssignment` ever sees an `ExpressionNode` to ask. I special-case that spot so the error names the actual problem instead of falling back to the generic "unknown variable" message:
+
+```cppdiff
+*  if (CurrentToken != tok_lparen) { // Simple variable ref.
+*    ValueType Type = LookupVarType(ParsedName);
+*    if (Type == ValueType::Error) {
++      if (CurrentToken == tok_equal)
++        return LogErrorExpression("Assignment to undeclared variable");
+*      return LogErrorExpression("Unknown variable name");
+*    }
+*    ...
+```
+
+```pyxc
+undeclared = 5
+```
+```
+Error (Line 1, Column 12): Assignment to undeclared variable
+undeclared = 
+           ^~~~
+```
+
 Whichever lvalue kind `Left` turned out to be, the result is the same single `AssignmentExpressionNode`. Its `codegen` doesn't pattern-match on node type either: it just calls `Left->codegenAddress()`, and each lvalue class overrides `codegenAddress()` to compute its own storage address, a plain alloca for a name, a `getelementptr` for a field or index. One assignment node covers every lvalue kind because the address computation is already virtual, not because the parser branches on node type.
 
 ## The Value of an Assignment Expression

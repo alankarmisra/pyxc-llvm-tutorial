@@ -481,7 +481,44 @@ Indexing isn't the only place an array needs to become a pointer. Passing an arr
 *}
 ```
 
-Loading an array by name would otherwise hand back the entire aggregate, which is only meaningful as something to `store`, not something to pass around as a value. Function-call argument checking uses `ArrayDecaysToPointerType` to allow this specific case through even though `ptr[int]` and `int[4]` aren't the same `ValueType`:
+Loading an array by name would otherwise hand back the entire aggregate, which is only meaningful as something to `store`, not something to pass around as a value. Function-call argument checking uses `ArrayDecaysToPointerType` to allow this specific case through even though `ptr[int]` and `int[4]` aren't the same `ValueType`. It's a separate branch ahead of the normal `IsAssignable` check, since `IsAssignable` still has no idea an array and a pointer can ever mix, and `continue`s past the ordinary struct/pointer-name comparison below it once it's satisfied:
+
+```cpp
+for (size_t i = 0; i < Arguments.size(); ++i) {
+  ValueType ArgType = Arguments[i]->getType();
+  ValueType ParamType = Signature->getParameterType(i);
+  if (ParamType == ValueType::Pointer && ArgType == ValueType::Array) {
+    if (!ArrayDecaysToPointerType(
+            Arguments[i]->getStructName(),
+            Signature->getParameterStructName(i)))
+      return LogErrorExpression("Argument type mismatch");
+    continue;
+  }
+  if (!IsAssignable(ParamType, ArgType)) {
+    return LogErrorExpression(("argument " + std::to_string(i + 1) + " expects " +
+                     TypeName(ParamType))
+                        .c_str());
+  }
+  ...
+}
+```
+
+By the time the argument reaches codegen, `NameExpressionNode::codegen` has already turned it into a pointer-typed LLVM value through the `arraydecay` GEP shown above, so no further cast is needed there; but the same array-to-pointer decay is also legal in a `var` initializer and a plain assignment (`var p: ptr[int] = scores`, `p = scores`), which route the value through `EmitImplicitCast` instead. I add the same permissive case there, right at the top before any of the existing numeric or float casting rules:
+
+```cppdiff
+*static Value *EmitImplicitCast(Value *V, ValueType From, ValueType To) {
+*  if (From == To)
+*    return V;
++  if (From == ValueType::Array && To == ValueType::Pointer)
++    return V;
+*  if (IsFloatType(From) && IsFloatType(To)) {
+*    ...
+*  }
+*  ...
+*}
+```
+
+It returns `V` unchanged for the same reason: whatever produced `V` (a `NameExpressionNode` reference to an array) has already done the GEP that turns the aggregate into an element pointer, so by the time `EmitImplicitCast` sees it, it's already the right kind of LLVM value; the function just has to stop rejecting the combination instead of doing any actual conversion work.
 
 ```pyxc
 def sum4(p: ptr[int]) -> int:
