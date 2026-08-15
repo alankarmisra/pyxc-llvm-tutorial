@@ -554,6 +554,10 @@ cd code/chapter-42
 cmake -S . -B build && cmake --build build
 ```
 
+```bash
+llvm-lit -v test/
+```
+
 ## What's Next
 
 [Chapter 43](chapter-43.md) adds `module` and `export`.

@@ -149,9 +149,17 @@ Putting `logical-and` below `logical-or` but above `comparison` is what makes `&
 
 Two new token values:
 
-```cpp
-tok_and = -43, // &&
-tok_or = -44,  // ||
+```cppdiff
+*enum Token {
+*  ...
+*  tok_uint64 = -42,
++  tok_and = -43, // &&
++  tok_or = -44,  // ||
+*
+*  // punctuation and operators
+*  tok_lparen = '(',
+*  ...
+*};
 ```
 
 Single `&` and `|` remain their own ASCII-valued tokens; they're bitwise operators, added in a later chapter, and distinct from `&&`/`||`. The lexer peeks one character ahead to decide which to emit:
@@ -236,17 +244,26 @@ static bool IsLogicalOp(int Operator) {
 
 `GetBinaryResultType` gains a branch for them: both operands must already be `bool`, with no implicit conversion from anything else:
 
-```cpp
-if (IsLogicalOp(Operator)) {
-  if (L == ValueType::Bool && R == ValueType::Bool)
-    return ValueType::Bool;
-  return ValueType::Error;
-}
+```cppdiff
+*static ValueType GetBinaryResultType(int Operator, ValueType L, ValueType R) {
+*  if (IsArithmeticOp(Operator)) {
+*    ...
+*  }
+*  if (IsComparisonOp(Operator)) {
+*    ...
+*  }
++  if (IsLogicalOp(Operator)) {
++    if (L == ValueType::Bool && R == ValueType::Bool)
++      return ValueType::Bool;
++    return ValueType::Error;
++  }
+*  return ValueType::Error;
+*}
 ```
 
 An `int` on either side of `&&` fails here and reports the same generic "Type mismatch in binary operator" every other operator mismatch reports; there's nothing `&&`/`||`-specific about the error message.
 
-## Built-In `!` for Bool
+## Built-in `!` for Bool
 
 `!` doesn't get a dedicated AST node — it reuses [Chapter 10](chapter-10.md)'s `UnaryExpressionNode`, the same class unary minus already uses, tagged with its own opcode and result type:
 
@@ -313,46 +330,48 @@ Value *UnaryExpressionNode::codegen() {
 
 `&&` and `||` skip the ordinary binary-operator codegen path entirely. At the top of `BinaryExpressionNode::codegen`, they're intercepted before the right operand is ever evaluated:
 
-```cpp
-Value *BinaryExpressionNode::codegen() {
-  if (Operator == tok_and || Operator == tok_or) {
-    Value *LeftValue = Left->codegen();
-    if (!LeftValue)
-      return nullptr;
-
-    Function *FunctionIR = TheBuilder->GetInsertBlock()->getParent();
-    BasicBlock *LeftBlock = TheBuilder->GetInsertBlock();
-    BasicBlock *RightBlock =
-        BasicBlock::Create(*TheContext, "logic.rhs", FunctionIR);
-    BasicBlock *MergeBlock = BasicBlock::Create(*TheContext, "logic.end");
-
-    if (Operator == tok_and)
-      TheBuilder->CreateCondBr(LeftValue, RightBlock, MergeBlock);
-    else
-      TheBuilder->CreateCondBr(LeftValue, MergeBlock, RightBlock);
-
-    TheBuilder->SetInsertPoint(RightBlock);
-    Value *RightValue = Right->codegen();
-    if (!RightValue)
-      return nullptr;
-    TheBuilder->CreateBr(MergeBlock);
-    RightBlock = TheBuilder->GetInsertBlock();
-
-    FunctionIR->insert(FunctionIR->end(), MergeBlock);
-    TheBuilder->SetInsertPoint(MergeBlock);
-    PHINode *Result =
-        TheBuilder->CreatePHI(Type::getInt1Ty(*TheContext), 2, "logictmp");
-    if (Operator == tok_and) {
-      Result->addIncoming(ConstantInt::getFalse(*TheContext), LeftBlock);
-      Result->addIncoming(RightValue, RightBlock);
-    } else {
-      Result->addIncoming(ConstantInt::getTrue(*TheContext), LeftBlock);
-      Result->addIncoming(RightValue, RightBlock);
-    }
-    return Result;
-  }
-  // ...ordinary binary-operator path for everything else...
-}
+```cppdiff
+*Value *BinaryExpressionNode::codegen() {
++  if (Operator == tok_and || Operator == tok_or) {
++    Value *LeftValue = Left->codegen();
++    if (!LeftValue)
++      return nullptr;
++
++    Function *FunctionIR = TheBuilder->GetInsertBlock()->getParent();
++    BasicBlock *LeftBlock = TheBuilder->GetInsertBlock();
++    BasicBlock *RightBlock =
++        BasicBlock::Create(*TheContext, "logic.rhs", FunctionIR);
++    BasicBlock *MergeBlock = BasicBlock::Create(*TheContext, "logic.end");
++
++    if (Operator == tok_and)
++      TheBuilder->CreateCondBr(LeftValue, RightBlock, MergeBlock);
++    else
++      TheBuilder->CreateCondBr(LeftValue, MergeBlock, RightBlock);
++
++    TheBuilder->SetInsertPoint(RightBlock);
++    Value *RightValue = Right->codegen();
++    if (!RightValue)
++      return nullptr;
++    TheBuilder->CreateBr(MergeBlock);
++    RightBlock = TheBuilder->GetInsertBlock();
++
++    FunctionIR->insert(FunctionIR->end(), MergeBlock);
++    TheBuilder->SetInsertPoint(MergeBlock);
++    PHINode *Result =
++        TheBuilder->CreatePHI(Type::getInt1Ty(*TheContext), 2, "logictmp");
++    if (Operator == tok_and) {
++      Result->addIncoming(ConstantInt::getFalse(*TheContext), LeftBlock);
++      Result->addIncoming(RightValue, RightBlock);
++    } else {
++      Result->addIncoming(ConstantInt::getTrue(*TheContext), LeftBlock);
++      Result->addIncoming(RightValue, RightBlock);
++    }
++    return Result;
++  }
++
+*  Value *L = Left->codegen();
+*  ...
+*}
 ```
 
 There's no runtime type check here — `Left->getType() != ValueType::Bool` never gets asked at codegen time, because it's already been settled at parse time. `MergeBinaryExpression` calls `GetBinaryResultType` before it ever builds this `BinaryExpressionNode`, and that's where a non-`bool` operand to `&&`/`||` gets rejected — codegen only ever runs on a tree that already type-checked.
@@ -422,6 +441,10 @@ def main() -> int:
 ```bash
 cd code/chapter-21
 cmake -S . -B build && cmake --build build
+```
+
+```bash
+llvm-lit -v test/
 ```
 
 ## What's Next

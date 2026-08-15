@@ -1,0 +1,17 @@
+# RUN: %pyxc < %s > %t.stdout 2> %t.stderr
+# RUN: grep -Fxq "AEvaluated to 0.000000" %t.stdout
+# RUN: grep -Fxq "7.000000" %t.stdout
+# RUN: grep -Fxq "Evaluated to 42.000000" %t.stdout
+# RUN: not grep -q "ready>" %t.stdout
+# RUN: not grep -q "Parsed" %t.stdout
+# RUN: not grep -q "Evaluated to" %t.stderr
+# RUN: grep -q "ready>" %t.stderr
+# RUN: grep -q "Parsed an extern" %t.stderr
+
+# Successful REPL and program output goes to stdout. Prompts, parse messages,
+# and IR dumps remain on stderr.
+extern def putchard(x)
+extern def printd(x)
+putchard(65)
+printd(7)
+42

@@ -312,7 +312,7 @@ The `lit.cfg.py` registers the chapter's binary as `%pyxc` and runs all `.pyxc` 
 Run the tests:
 
 ```bash
-llvm-lit code/chapter-N/test/
+llvm-lit -v code/chapter-N/test/
 ```
 
 ### 5.2 Test File Format
@@ -430,7 +430,7 @@ Before marking a chapter ready to publish:
 - [ ] All functions with non-trivial logic have `///` doc comments
 - [ ] All Parser functions have EBNF banners
 - [ ] `code/chapter-N/test/` has tests derived from the grammar (§5.3)
-- [ ] All tests pass: `llvm-lit code/chapter-N/test/`
+- [ ] All tests pass: `llvm-lit -v code/chapter-N/test/`
 - [ ] `code/chapter-N/pyxc.ebnf` exists and matches the grammar implemented in `.cpp`
 - [ ] `## Grammar` section in the `.md` is a `grammardiff` fenced block (unified-diff style, leading `+`/`-`/space markers) against the previous chapter's real `pyxc.ebnf`, verified by reconstructing both the old and new sides and diffing each against the real files
 - [ ] All `///` EBNF banners in `.cpp` use the same production names as `pyxc.ebnf`

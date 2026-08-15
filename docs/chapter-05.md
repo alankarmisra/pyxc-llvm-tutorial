@@ -134,7 +134,7 @@ I put this code in a lambda and call it immediately with the final `()`. This le
 I also assign every named punctuation token its actual character value. I keep the other tokens negative so they cannot collide with any byte value:
 
 ```cppdiff
- enum Token {
+*enum Token {
 -  tok_eof = 1,
 -  tok_eol,
 -  tok_error,
@@ -167,7 +167,7 @@ I also assign every named punctuation token its actual character value. I keep t
 +  tok_slash = '/',
 +  tok_percent = '%',
 +  tok_less = '<',
- };
+*};
 ```
 
 Because I define `tok_lparen = '('`, `tok_lparen` and `'('` are the same map key. In the loop, I add `Names['(']`. Later, `Names[tok_lparen]` and `Names['(']` are equivalent lookups and find the same entry. This also works for `tok_plus`, `tok_star`, and every other named character token, so I do not list them separately in the map. I also use the loop to name characters I did not declare as tokens.
@@ -177,13 +177,13 @@ Because I define `tok_lparen = '('`, `tok_lparen` and `'('` are the same map key
 Naming every byte value only helps if the lexer actually hands one of those values downstream. `@` isn't punctuation I recognize. In Chapter 3, any character my `switch` in `getToken()` had no `case` for fell through to a single shared `default`, which threw the character away and returned the generic `tok_error`:
 
 ```cppdiff
-   switch (ThisChar) {
-   ...
+*  switch (ThisChar) {
+*  ...
 -  default:
 -    return tok_error;
 +  default:
 +    return ThisChar;
-   }
+*  }
 ```
 
 Every unrecognized character used to collapse into that one `tok_error` value, so downstream code never saw which character it actually was; `TokenNames.at(tok_error)` could only ever print the word `error`. Now the default case returns `ThisChar` itself. Since I already gave every byte 0–255 a name in `TokenNames`, an unrecognized character is no longer a dead end; it's just another token value, one I can look up and describe by name.
@@ -222,20 +222,27 @@ For names and numbers, I want to include the actual text from the source rather 
 static string NumberLiteral; // Filled in if tok_number, used in error messages
 ```
 
-I set it in `getToken()`'s number-reading branch, right alongside `NumberValue`, from the same `NumStr` I've accumulated digits into since Chapter 1:
+I clear and fill it in `getToken()`'s number-reading branch, right alongside `NumberValue`:
 
-```cpp
-int getToken() {
-...
-  if (isdigit(LastChar) || LastChar == '.') {
-    string NumStr;
-...
-    NumberLiteral = NumStr;
-    char *End = nullptr;
-    NumberValue = strtod(NumStr.c_str(), &End);
-...
-  }
-}
+```cppdiff
+*  if (isdigit(LastChar) || LastChar == '.') {
+-    string NumberLiteral;
++    NumberLiteral.clear();
+*    do {
+*      NumberLiteral += LastChar;
+*      LastChar = advance();
+*    } while (isdigit(LastChar) || LastChar == '.');
+*
+-    // TODO: I consume all of 1.23.45.67 but parse it as 1.23.
+-    NumberValue = strtod(NumberLiteral.c_str(), 0);
++    char *End = nullptr;
++    NumberValue = strtod(NumberLiteral.c_str(), &End);
++    if (!End || *End != '\0') {
++      LogInvalidNumberLiteralAtLoc(NumberLiteral, CurLoc);
++      return tok_error;
++    }
+*    return tok_number;
+*  }
 ```
 
 ```cpp
@@ -374,7 +381,7 @@ if (LastChar == '#') {
     LastChar = advance();
   while (LastChar != EOF && LastChar != '\n');
 
-  if (LastChar != EOF) {
+    if (LastChar == '\n') {
     CurLoc = LexLoc;
     LastChar = ' ';
     return tok_eol;
@@ -448,7 +455,7 @@ def missing_colon(x)
 ```
 <!-- code-merge:end -->
 
-## Recovering From Errors
+## Recovering from Errors
 
 After I report a lexer error, I return `tok_error`. I do not want to parse it as a number, name, or operator because that would print a second, unrelated error. I call this **panic-mode recovery**: once I can no longer trust the current parse, I stop interpreting the line. I skip tokens until I reach `tok_eol` or `tok_eof`. I discard the rest of the line, but I return to a state where I know how to continue.
 
@@ -460,7 +467,7 @@ static void SynchronizeToLineBoundary() {
 }
 ```
 
-## Wiring Diagnostics Into Error Reporting
+## Wiring Diagnostics into Error Reporting
 
 I already report every parse error through `LogErrorExpression()`. I now use the location and source line there instead of printing only a token description:
 
@@ -496,9 +503,9 @@ I call it from `getToken()`'s number-reading branch:
 
 ```cpp
 char *End = nullptr;
-NumberValue = strtod(NumStr.c_str(), &End);
+NumberValue = strtod(NumberLiteral.c_str(), &End);
 if (!End || *End != '\0') {
-  LogInvalidNumberLiteralAtLoc(NumStr, CurLoc);
+  LogInvalidNumberLiteralAtLoc(NumberLiteral, CurLoc);
   return tok_error;
 }
 return tok_number;
@@ -510,20 +517,33 @@ If `End` points at the string's null terminator, I know `strtod` consumed every 
 
 I check for `tok_error` in `MainLoop()` before I call any parsing function, and call `SynchronizeToLineBoundary()`:
 
-```cpp
-static void MainLoop() {
-  while (true) {
-...
-    if (CurrentToken == tok_error) {
-      SynchronizeToLineBoundary();
-      continue;
-    }
-
-    switch (CurrentToken) {
-...
-    }
-  }
-}
+```cppdiff
+*static void MainLoop() {
+*  while (CurrentToken != tok_eof) {
++    if (CurrentToken == tok_error) {
++      SynchronizeToLineBoundary();
++      continue;
++    }
++
+*    switch (CurrentToken) {
+*    case tok_eol:
+*      // For a bare newline, I print a fresh prompt and read the next token.
+*      fprintf(stderr, "ready> ");
+*      getNextToken();
+*      break;
+-    case tok_error:
+-      LogErrorExpression("invalid character");
+-      getNextToken();
+-      break;
+*    case tok_def:
+*      HandleFunctionDefinition();
+*      break;
+*    default:
+*      HandleTopLevelExpression();
+*      break;
+*    }
+*  }
+*}
 ```
 
 I use the same recovery when I parse a valid construct but find extra tokens after it. In both `HandleFunctionDefinition()` and `HandleTopLevelExpression()`, I check that parsing stopped at `tok_eol` or `tok_eof`:
@@ -556,7 +576,7 @@ cmake -S . -B build && cmake --build build
 ```
 
 ```bash
-llvm-lit test/
+llvm-lit -v test/
 ```
 
 ## Try It

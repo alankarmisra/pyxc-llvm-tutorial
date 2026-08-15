@@ -63,27 +63,36 @@ Multiplication by a pointer is blocked. There is no sensible meaning for `ptr[T]
 
 `GetBinaryResultType` is the central function that decides what type a binary expression produces. Before this chapter its signature was `(int Operator, ValueType L, ValueType R)`, with no way to know what a pointer operand points to. It now takes `LTypeInfo` and `RTypeInfo`, the encoded struct-name string for each operand, so pointer operands can be told apart by pointee type:
 
-```cpp
-static ValueType GetBinaryResultType(int Operator, ValueType L,
-                                     const string &LTypeInfo, ValueType R,
-                                     const string &RTypeInfo) {
-  if (IsArithmeticOp(Operator)) {
-    if (Operator == tok_plus &&
-        ((L == ValueType::Pointer && IsIntType(R)) ||
-         (R == ValueType::Pointer && IsIntType(L))))
-      return ValueType::Pointer;
-    if (Operator == tok_minus && L == ValueType::Pointer && IsIntType(R))
-      return ValueType::Pointer;
-    if (Operator == tok_minus && L == ValueType::Pointer &&
-        R == ValueType::Pointer && LTypeInfo == RTypeInfo)
-      return ValueType::Int64;
-    ...
-  }
-  if (IsComparisonOp(Operator)) {
-    if (L == ValueType::Pointer && R == ValueType::Pointer)
-      return LTypeInfo == RTypeInfo ? ValueType::Bool : ValueType::Error;
-    ...
-  }
+```cppdiff
+*static ValueType GetBinaryResultType(int Operator, ValueType L,
+-                                     ValueType R) {
++                                     const string &LTypeInfo, ValueType R,
++                                     const string &RTypeInfo) {
+*  if (IsArithmeticOp(Operator)) {
++    if (Operator == tok_plus &&
++        ((L == ValueType::Pointer && IsIntType(R)) ||
++         (R == ValueType::Pointer && IsIntType(L))))
++      return ValueType::Pointer;
++    if (Operator == tok_minus && L == ValueType::Pointer && IsIntType(R))
++      return ValueType::Pointer;
++    if (Operator == tok_minus && L == ValueType::Pointer &&
++        R == ValueType::Pointer && LTypeInfo == RTypeInfo)
++      return ValueType::Int64;
+*    if (!IsNumericType(L) || !IsNumericType(R))
+*      return ValueType::Error;
+*    ...
+*  }
+*  if (IsComparisonOp(Operator)) {
++    if (L == ValueType::Pointer && R == ValueType::Pointer)
++      return LTypeInfo == RTypeInfo ? ValueType::Bool : ValueType::Error;
+*    // bool ==/!= bool: allowed; other comparisons on bool are rejected.
+*    if (L == ValueType::Bool && R == ValueType::Bool) {
+*      ...
+*    }
+*    ...
+*  }
+*  ...
+*}
 ```
 
 `GetBinaryResultType` itself only decides the *type* (`Pointer`, `Int64`, `Bool`, or `Error`); it doesn't hand back a struct name. Working out which struct name to attach to a pointer result happens one level up, in `MergeBinaryExpression` (below).
@@ -96,9 +105,21 @@ Mismatched pointer types (`ptr[int] - ptr[float64]`) fall through to the default
 
 `BinaryExpressionNode` gains an optional `StructName` parameter so the pointer type of an arithmetic result can be carried through the AST. `Type` itself stays required, only the new `StructName` gets a default:
 
-```cpp
-BinaryExpressionNode(int Operator, unique_ptr<ExpressionNode> Left, unique_ptr<ExpressionNode> Right,
-              ValueType Type, const string &StructName = "")
+```cppdiff
+*class BinaryExpressionNode : public ExpressionNode {
+*  int Operator;
+*  unique_ptr<ExpressionNode> Left, Right;
+*
+*public:
+*  BinaryExpressionNode(int Operator, unique_ptr<ExpressionNode> Left, unique_ptr<ExpressionNode> Right,
+-                ValueType Type)
++                ValueType Type, const string &StructName = "")
+*      : Operator(Operator), Left(std::move(Left)), Right(std::move(Right)) {
+-    setType(Type);
++    setType(Type, StructName);
+*  }
+*  Value *codegen() override;
+*};
 ```
 
 The constructor calls `setType(Type, StructName)`. Before this chapter, `MergeBinaryExpression` had no struct name to pass in, because no binary result could be a pointer. Now it does, whether or not the particular result happens to be one.
@@ -246,9 +267,13 @@ cd code/chapter-26
 cmake -S . -B build && cmake --build build
 ```
 
+```bash
+llvm-lit -v test/
+```
+
 ## Try It
 
-### Advance a pointer and read the next element
+### Advance a Pointer and Read the Next Element
 
 ```pyxc
 extern def printd(x: float64)
@@ -268,7 +293,7 @@ def main() -> int:
 20.000000
 ```
 
-### Walk backward with `p - 1`
+### Walk Backward with `p - 1`
 
 ```pyxc
 extern def printd(x: float64)
@@ -293,7 +318,7 @@ def main() -> int:
 100.000000
 ```
 
-### Compute pointer difference between two fields
+### Compute Pointer Difference between Two Fields
 
 ```pyxc
 extern def printd(x: float64)
@@ -315,7 +340,7 @@ def main() -> int:
 2.000000
 ```
 
-### An end-pointer loop with `!= end`
+### An End-Pointer Loop with `!= end`
 
 ```pyxc
 extern def printd(x: float64)

@@ -413,6 +413,10 @@ cmake -S . -B build && cmake --build build
 ./build/pyxc
 ```
 
+```bash
+llvm-lit -v test/
+```
+
 ## Try It
 
 **Private field, accessed from outside**

@@ -265,7 +265,7 @@ if (auto *FunctionIR = FunctionDefinition->codegen()) {
   // Cast the symbol address to a callable function pointer and invoke it.
   double (*FP)() = ExprSymbol.toPtr<double (*)()>();
   double result = FP();
-  fprintf(stderr, "Evaluated to %f\n", result);
+  fprintf(stdout, "Evaluated to %f\n", result);
 
   // Release the compiled code and JIT memory for this expression.
   ExitOnErr(RT->remove());
@@ -273,6 +273,8 @@ if (auto *FunctionIR = FunctionDefinition->codegen()) {
 ```
 
 `lookup("__anon_expr")` asks the JIT for the compiled symbol. I use `toPtr<double (*)()>` to treat its address as a C function that takes no arguments and returns a `double`. Calling `FP()` executes that machine code.
+
+I now separate successful output from compiler diagnostics. I write the value produced by the REPL and anything printed by pyxc code to `stdout`. I keep prompts, errors, parse messages, and IR dumps on `stderr`. Before I print the next prompt, I flush `stdout` so output from the expression appears first.
 
 I create a `ResourceTracker` before adding the module. After the call, `RT->remove()` frees the object file and executable memory associated with `__anon_expr`. This replaces the `eraseFromParent()` call from Chapter 7: I now compile and execute the expression before I remove it.
 
@@ -286,13 +288,19 @@ Now that I can execute code, I want to call functions whose implementations live
 
 A new token:
 
-```cpp
-enum Token {
-  // ...
-  tok_def = -4,
-  tok_extern = -5,
-  // ...
-};
+```cppdiff
+*enum Token {
+*  ...
+*  tok_def = -4,
++  tok_extern = -5,
+*
+*  // primary
+-  tok_name = -5,
+-  tok_number = -6,
++  tok_name = -6,
++  tok_number = -7,
+*  ...
+*};
 ```
 
 I add both keywords to the keyword table:
@@ -386,7 +394,7 @@ default:
 }
 ```
 
-## One Module Per Compilation Unit
+## One Module per Compilation Unit
 
 When I parse `foo(2)`, I wrap it in a zero-argument function named `__anon_expr`. I compile it, call it, and then free it. ORC tracks resources at the module level, so I must keep this temporary function separate from named functions that need to remain available.
 
@@ -433,12 +441,25 @@ Function *getFunction(const std::string &Name) {
 
 I also update `CallExpressionNode::codegen()` from Chapter 7 to call `getFunction(Callee)` instead of `TheModule->getFunction(Callee)`, so a call to a function from an earlier module resolves the same way:
 
-```cpp
-Value *CallExpressionNode::codegen() {
-  Function *CalleeF = getFunction(Callee);
-  if (!CalleeF)
-    return LogErrorV("Unknown function referenced");
-  // ...
+```cppdiff
+*Value *CallExpressionNode::codegen() {
+-  Function *CalleeF = TheModule->getFunction(Callee);
++  Function *CalleeF = getFunction(Callee);
+*  if (!CalleeF)
+*    return LogErrorV("Unknown function referenced");
+*
+*  if (CalleeF->arg_size() != Arguments.size())
+*    return LogErrorV("Incorrect # arguments passed");
+*
+*  std::vector<Value *> ArgsV;
+*  for (unsigned i = 0, e = Arguments.size(); i != e; ++i) {
+*    ArgsV.push_back(Arguments[i]->codegen());
+*    if (!ArgsV.back())
+*      return nullptr;
+*  }
+*
+*  return TheBuilder->CreateCall(CalleeF, ArgsV, "calltmp");
+*}
 ```
 
 The sequence is:
@@ -480,13 +501,37 @@ FunctionSignatures[Signature->getName()] = std::move(Signature);
 
 I also save the signature of every function definition before generating its body:
 
-```cpp
-// Step 1: register the function signature and resolve the Function*.
-auto &P = *Signature;
-FunctionSignatures[Signature->getName()] = std::move(Signature);
-
-// Step 1: reuse an existing `extern` declaration if one exists.
-Function *TheFunction = getFunction(P.getName());
+```cppdiff
+*Function *FunctionDefinitionNode::codegen() {
+-  // Step 1: I get an existing declaration or create a new one.
+-  Function *TheFunction = TheModule->getFunction(Signature->getName());
+-
+-  if (TheFunction && !TheFunction->empty()) {
+-    LogErrorExpression("Function cannot be redefined.");
+-    return nullptr;
+-  }
+-
+-  if (!TheFunction)
+-    TheFunction = Signature->codegen();
++  // Step 1: register the function signature and resolve the Function*.
++  auto &P = *Signature;
++  FunctionSignatures[Signature->getName()] = std::move(Signature);
++
++  // Step 1: reuse an existing `extern` declaration if one exists.
++  Function *TheFunction = getFunction(P.getName());
++
++  // Bail if the function is already fully defined — redefinition is an error.
++  if (TheFunction && !TheFunction->empty()) {
++    LogErrorExpression("Function cannot be redefined.");
++    return nullptr;
++  }
+*
+*  if (!TheFunction)
+*    return nullptr;
+*
+*  // Step 2: create the entry block and point the builder at it.
+*  ...
+*}
 ```
 
 ## The Runtime Library
@@ -495,12 +540,12 @@ I add two C++ functions that pyxc can call through `extern def`:
 
 ```cpp
 extern "C" DLLEXPORT double putchard(double X) {
-  fputc((char)X, stderr);
+  fputc((char)X, stdout);
   return 0;
 }
 
 extern "C" DLLEXPORT double printd(double X) {
-  fprintf(stderr, "%f\n", X);
+  fprintf(stdout, "%f\n", X);
   return 0;
 }
 ```
@@ -548,9 +593,13 @@ cmake -S . -B build && cmake --build build
 ./build/pyxc
 ```
 
+```bash
+llvm-lit -v test/
+```
+
 ## Try It
 
-### `extern` resolves from the process
+### `extern` Resolves from the Process
 
 <!-- code-merge:start -->
 ```pyxc
@@ -590,7 +639,7 @@ Because I declare `sin` as external, ORC searches the symbols available to the `
 
 The IR returns the constant encoding of approximately `0.841471`, but it still contains the call. My declaration does not mark `sin` as free of side effects, so LLVM must preserve that call even when it can fold the returned value.
 
-### The Pythagorean identity
+### The Pythagorean Identity
 
 <!-- code-merge:start -->
 ```pyxc
@@ -638,7 +687,7 @@ Evaluated to 1.000000
 
 The expression uses the identity `sin²(x) + cos²(x) = 1`. I compile `foo`, ORC resolves the native `sin` and `cos` functions, and I execute the result. LLVM retains both calls to each external function because their declarations do not describe them as pure.
 
-### The optimizer at work
+### The Optimizer at Work
 
 <!-- code-merge:start -->
 ```pyxc
@@ -669,7 +718,7 @@ Evaluated to 25.000000
 
 `IRBuilder` folds each `1 + 2` to `3.0` while I generate the IR. `ReassociatePass` puts the remaining additions into a common form, and `GVNPass` removes the repeated `fadd`. I am left with two IR instructions.
 
-### The runtime library
+### The Runtime Library
 
 <!-- code-merge:start -->
 ```pyxc

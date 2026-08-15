@@ -130,16 +130,30 @@ I implement this method in every derived expression class. Each implementation r
 
 A function signature and a function definition are not expressions, so they do not derive from `ExpressionNode`. I give them `codegen()` methods that return an LLVM `Function*` instead:
 
-```cpp
-class FunctionSignatureNode {
-  // ...
-  Function *codegen();
-};
-
-class FunctionDefinitionNode {
-  // ...
-  Function *codegen();
-};
+```cppdiff
+*class FunctionSignatureNode {
+*  string Name;
+*  vector<string> Parameters;
+*
+*public:
+*  FunctionSignatureNode(const string &Name, vector<string> Parameters)
+*      : Name(Name), Parameters(std::move(Parameters)) {}
+*
++  const string &getName() const { return Name; }
++  Function *codegen();
+*};
+*
+*class FunctionDefinitionNode {
+*  unique_ptr<FunctionSignatureNode> Signature;
+*  unique_ptr<ExpressionNode> Body;
+*
+*public:
+-  FunctionDefinitionNode(unique_ptr<FunctionSignatureNode> Signature, unique_ptr<ExpressionNode> Body)
++  FunctionDefinitionNode(unique_ptr<FunctionSignatureNode> Signature,
++                         unique_ptr<ExpressionNode> Body)
+*      : Signature(std::move(Signature)), Body(std::move(Body)) {}
++  Function *codegen();
+*};
 ```
 
 ## Generating Expressions
@@ -230,7 +244,18 @@ Value *BinaryExpressionNode::codegen() {
   switch (Operator) {
   case tok_plus:
     return TheBuilder->CreateFAdd(L, R, "addtmp");
-  // ...
+  case tok_minus:
+    return TheBuilder->CreateFSub(L, R, "subtmp");
+  case tok_star:
+    return TheBuilder->CreateFMul(L, R, "multmp");
+  case tok_slash:
+    return TheBuilder->CreateFDiv(L, R, "divtmp");
+  case tok_percent:
+    return TheBuilder->CreateFRem(L, R, "remtmp");
+  case tok_less:
+    L = TheBuilder->CreateFCmpULT(L, R, "cmptmp");
+    return TheBuilder->CreateUIToFP(
+        L, Type::getDoubleTy(*TheContext), "booltmp");
   default:
     return LogErrorV("invalid binary operator");
   }
@@ -325,12 +350,18 @@ For a function call, I perform four actions:
 
 The syntax tree node stores the function name and its arguments:
 
-```cpp
-class CallExpressionNode : public ExpressionNode {
-  string Callee;
-  vector<unique_ptr<ExpressionNode>> Arguments;
-  // ...
-};
+```cppdiff
+*class CallExpressionNode : public ExpressionNode {
+*  string Callee;
+*  vector<unique_ptr<ExpressionNode>> Arguments;
+*
+*public:
+-  CallExpressionNode(const string &Callee, vector<unique_ptr<ExpressionNode>> Arguments)
++  CallExpressionNode(const string &Callee,
++                     vector<unique_ptr<ExpressionNode>> Arguments)
+*      : Callee(Callee), Arguments(std::move(Arguments)) {}
++  Value *codegen() override;
+*};
 ```
 
 I use those fields in `codegen()`:
@@ -412,12 +443,18 @@ The names do not change the function's behavior.
 
 A function definition contains a signature and a body:
 
-```cpp
-class FunctionDefinitionNode {
-  unique_ptr<FunctionSignatureNode> Signature;
-  unique_ptr<ExpressionNode> Body;
-  // ...
-};
+```cppdiff
+*class FunctionDefinitionNode {
+*  unique_ptr<FunctionSignatureNode> Signature;
+*  unique_ptr<ExpressionNode> Body;
+*
+*public:
+-  FunctionDefinitionNode(unique_ptr<FunctionSignatureNode> Signature, unique_ptr<ExpressionNode> Body)
++  FunctionDefinitionNode(unique_ptr<FunctionSignatureNode> Signature,
++                         unique_ptr<ExpressionNode> Body)
+*      : Signature(std::move(Signature)), Body(std::move(Body)) {}
++  Function *codegen();
+*};
 ```
 
 I generate the complete function in four steps:
@@ -540,13 +577,23 @@ For a top-level expression such as `1 + 2`, I create a temporary function named 
 
 At the end of the session, I print the complete module:
 
-```cpp
-int main() {
-  ...
-  MainLoop();
-  TheModule->print(errs(), nullptr);
-  return 0;
-}
+```cppdiff
+*int main() {
+*  // I print the first prompt and load the first token before entering the loop.
+*  // I load CurrentToken before I call any parse function.
+*  fprintf(stderr, "ready> ");
+*  getNextToken();
+*
++  // Make the module, which holds all the code.
++  InitializeModuleAndManagers();
+*
+*  MainLoop();
+*
++  // Print out all of the generated code.
++  TheModule->print(errs(), nullptr);
+*
+*  return 0;
+*}
 ```
 
 This shows every function that remains in the module. It does not show the temporary `__anon_expr` functions because I already removed them.
@@ -557,6 +604,10 @@ This shows every function that remains in the module. It does not show the tempo
 cd code/chapter-07
 cmake -S . -B build && cmake --build build
 ./build/pyxc
+```
+
+```bash
+llvm-lit -v test/
 ```
 
 ## Try It

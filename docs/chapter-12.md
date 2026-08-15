@@ -167,11 +167,20 @@ return acc
 
 Three new token values:
 
-```cpp
-// indentation
-tok_indent    = -19,
-tok_dedent    = -20,
-tok_block_end = -21, // synthetic: injected by ParseBlock after eating DEDENT
+```cppdiff
+*enum Token {
+*  ...
+*  // mutable variables
+*  tok_var = -18,
+*
++  // indentation
++  tok_indent    = -19,
++  tok_dedent    = -20,
++  tok_block_end = -21, // synthetic: injected by ParseBlock after eating DEDENT
+*
+*  // punctuation and operators
+*  ...
+*};
 ```
 
 `tok_indent` and `tok_dedent` come from the lexer — I push them into `PendingTokens` when I detect a change in indentation. `tok_block_end` never comes from the lexer; `ParseBlock` injects it into `PendingTokens` just before returning, so the calling parser sees it as `CurrentToken`. It's a signal in the token stream, not a character in the source.
@@ -488,9 +497,20 @@ struct LoopScopeGuard {
 I create a `FunctionScopeGuard` right after parsing the signature, before the body — parameters enter scope there. `ParseForStatement` only creates a `LoopScopeGuard` when the loop introduces a new variable with `var`; without `var`, the loop reuses an existing variable and errors if it isn't declared:
 
 ```cpp
-unique_ptr<LoopScopeGuard> LoopScope;
-if (IsVarDecl)
-  LoopScope = make_unique<LoopScopeGuard>(VarName);
+static unique_ptr<ExpressionNode> ParseForStatement() {
+  getNextToken(); // eat 'for'
+  // ... parse optional 'var', the loop variable name, and its scope check ...
+
+  unique_ptr<ExpressionNode> Start, Cond, Step, Body;
+
+  unique_ptr<LoopScopeGuard> LoopScope;
+  if (IsVarDecl)
+    LoopScope = make_unique<LoopScopeGuard>(VarName);
+
+  if (!ParseForParts(Start, Cond, Step, Body))
+    return nullptr;
+  // ...
+}
 ```
 
 ## Parsing a Suite
@@ -901,9 +921,20 @@ def threshold(x):
 When a `def` body ends with an indented block, parsing it returns with `CurrentToken = tok_block_end`. `MainLoop` checks for it explicitly, so two definitions back to back with no blank line between them still work:
 
 ```cpp
-if (CurrentToken == tok_block_end) {
-  getNextToken(); // consume the marker; next token starts the next definition
-  continue;
+static void MainLoop() {
+  while (CurrentToken != tok_eof) {
+    // ... handle stray tok_indent, tok_dedent, tok_error ...
+
+    // Block-end marker left in the stream after a block-bodied definition.
+    if (CurrentToken == tok_block_end) {
+      getNextToken();
+      continue;
+    }
+
+    switch (CurrentToken) {
+    // ...
+    }
+  }
 }
 ```
 

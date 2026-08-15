@@ -465,7 +465,7 @@ After building, you'll see `build/compile_commands.json`. clangd reads this auto
 
 ## Troubleshooting
 
-### Build fails with "out of memory"
+### Build Fails with "out of memory"
 
 Ninja uses all CPU cores by default. Limit it:
 
@@ -473,7 +473,7 @@ Ninja uses all CPU cores by default. Limit it:
 ninja -j4  # Use 4 cores instead of all
 ```
 
-### Can't find zstd library
+### Can't Find zstd Library
 
 Install zstd (see "Optional: Install zstd" above), then rebuild.
 
@@ -485,7 +485,7 @@ cmake -G Ninja ../llvm \
   # ... other flags
 ```
 
-### Wrong clang version still showing
+### Wrong Clang Version Still Showing
 
 Check:
 
@@ -495,7 +495,7 @@ echo $PATH
 
 Make sure your LLVM `bin` directory comes BEFORE `/usr/bin` or other system paths.
 
-### Windows: Ninja not found
+### Windows: Ninja Not Found
 
 Make sure Ninja is on your `PATH`:
 

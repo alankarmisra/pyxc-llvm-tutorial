@@ -155,9 +155,17 @@ cd pyxc-llvm-tutorial/code/chapter-22
 
 Single-character operators like `&`, `|`, `^`, and `~` already fall through the lexer's catch-all ASCII path, returning their own character values as tokens. `<<` and `>>` are two-character, so they need real token values:
 
-```cpp
-tok_shift_left = -45, // <<
-tok_shift_right = -46, // >>
+```cppdiff
+*enum Token {
+*  ...
+*  tok_and = -43, // &&
+*  tok_or = -44,  // ||
++  tok_shift_left = -45,  // <<
++  tok_shift_right = -46, // >>
+*
+*  // punctuation and operators
+*  ...
+*};
 ```
 
 ## Lexer Peek-Ahead for Shifts
@@ -235,26 +243,42 @@ static bool IsShiftOp(int Operator) {
 
 `GetBinaryResultType` gains two new branches. For bitwise ops, both operands must be integers; `IsAssignable` picks the wider of the two as the result type, same widening rule every other integer binary op already uses:
 
-```cpp
-if (IsBitwiseOp(Operator)) {
-  if (!IsIntType(L) || !IsIntType(R))
-    return ValueType::Error;
-  if (IsAssignable(L, R))
-    return L;
-  if (IsAssignable(R, L))
-    return R;
-  return ValueType::Error;
-}
+```cppdiff
+*static ValueType GetBinaryResultType(int Operator, ValueType L, ValueType R) {
+*  ...
+*  if (IsLogicalOp(Operator)) {
+*    if (L == ValueType::Bool && R == ValueType::Bool)
+*      return ValueType::Bool;
+*    return ValueType::Error;
+*  }
++  if (IsBitwiseOp(Operator)) {
++    if (!IsIntType(L) || !IsIntType(R))
++      return ValueType::Error;
++    if (IsAssignable(L, R))
++      return L;
++    if (IsAssignable(R, L))
++      return R;
++    return ValueType::Error;
++  }
+*  return ValueType::Error;
+*}
 ```
 
 For shifts, the result type is always the left operand's own type, regardless of the shift count's type:
 
-```cpp
-if (IsShiftOp(Operator)) {
-  if (!IsIntType(L) || !IsIntType(R))
-    return ValueType::Error;
-  return L;
-}
+```cppdiff
+*static ValueType GetBinaryResultType(int Operator, ValueType L, ValueType R) {
+*  ...
+*  if (IsBitwiseOp(Operator)) {
+*    ...
+*  }
++  if (IsShiftOp(Operator)) {
++    if (!IsIntType(L) || !IsIntType(R))
++      return ValueType::Error;
++    return L;
++  }
+*  return ValueType::Error;
+*}
 ```
 
 Both checks run inside `GetBinaryResultType`, the same function every binary operator's type checking has gone through since [Chapter 18](chapter-18.md), so type errors are caught before `MergeBinaryExpression` ever builds a node — codegen never sees a bad operand pair.
@@ -263,18 +287,26 @@ Both checks run inside `GetBinaryResultType`, the same function every binary ope
 
 `~` is parsed in `ParseFactor` alongside `-` and `!`, the same tier [Chapter 21](chapter-21.md) added `!` to. The operand must already be an integer type; the result type is the same as the operand's:
 
-```cpp
-if (CurrentToken == tok_tilde) {
-  getNextToken(); // eat '~'
-  auto Operand = ParseFactor();
-  if (!Operand)
-    return nullptr;
-  if (!IsIntType(Operand->getType()))
-    return LogErrorExpression("Unary '~' requires an integer operand");
-  ValueType OperandType = Operand->getType();
-  return make_unique<UnaryExpressionNode>(tok_tilde, std::move(Operand),
-                                           OperandType);
-}
+```cppdiff
+*static unique_ptr<ExpressionNode> ParseFactor() {
+*  if (CurrentToken == tok_minus)
+*    return ParseUnaryMinus();
+*  if (CurrentToken == tok_exclamation) {
+*    ...
+*  }
++  if (CurrentToken == tok_tilde) {
++    getNextToken(); // eat '~'
++    auto Operand = ParseFactor();
++    if (!Operand)
++      return nullptr;
++    if (!IsIntType(Operand->getType()))
++      return LogErrorExpression("Unary '~' requires an integer operand");
++    ValueType OperandType = Operand->getType();
++    return make_unique<UnaryExpressionNode>(tok_tilde, std::move(Operand),
++                                             OperandType);
++  }
+*  return ParsePrimary();
+*}
 ```
 
 `~~x` (double complement) and `~(x + 1)` both parse naturally, since the operand is a full `ParseFactor()` call, letting the recursion handle any nesting.
@@ -319,9 +351,17 @@ Each bitwise operator maps to a single LLVM instruction: `and`, `or`, or `xor`. 
 
 `UnaryExpressionNode::codegen` gains a case for `tok_tilde` alongside the existing `tok_minus` case:
 
-```cpp
-if (Opcode == tok_tilde)
-  return TheBuilder->CreateNot(Operator, "bnottmp");
+```cppdiff
+*Value *UnaryExpressionNode::codegen() {
+*  ...
+*  if (Opcode == tok_exclamation)
+*    return TheBuilder->CreateNot(Operator, "nottmp");
+*
++  if (Opcode == tok_tilde)
++    return TheBuilder->CreateNot(Operator, "bnottmp");
+*
+*  return LogErrorV("Unknown unary operator");
+*}
 ```
 
 `CreateNot` lowers to `xor %val, -1`: XOR-ing every bit against a mask of all ones flips each one. The instruction name `bnottmp` (bitwise not) distinguishes it in the IR from `nottmp`, the name [Chapter 21](chapter-21.md)'s logical `!` uses for its `i1` negation.
@@ -388,6 +428,10 @@ Both are caught while parsing and never reach codegen.
 ```bash
 cd code/chapter-22
 cmake -S . -B build && cmake --build build
+```
+
+```bash
+llvm-lit -v test/
 ```
 
 ## What's Next

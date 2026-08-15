@@ -2,20 +2,20 @@
 section: "Foundations"
 description: "Analyzing program words"
 ---
-# 1. pyxc: Analyzing program words
+# 1. pyxc: Analyzing Program Words
 
-## Starting small
+## Starting Small
 
-I've been told writing compilers is hard. The more I think about it, the harder it seems. So I'm going to stop thinking about it too much, start small, and build from there.
+They tell me writing compilers is hard. The more I think about it, the harder it seems. So I'm going to stop thinking about it—not completely, just enough to start small and build from there.
 
-I'll begin by writing a few small programs to get an idea of the syntax I want. I've built plenty of calculators while learning new programming languages, so I'll start with an `add` function:
+I'll begin by writing a small program to get an idea of the syntax I want. I've built plenty of calculators while learning new programming languages, so I'll start with an `add` function:
 
 ```pyxc
 # add.pyxc
 def add(x, y): # define a function
-    x + y # return the sum
+    x + y      # the function's result
 
-print(add(1, 2)) # call the add function and print its value
+print(add(1, 2)) # call add and print its result
 ```
 
 I want this to print:
@@ -24,9 +24,9 @@ I want this to print:
 3
 ```
 
-I will eventually add data types to pyxc. For now, I'll assume that every function parameter and return value is a `double`. In this example, `x`, `y`, and the value returned by `add` are all implicitly `double`.
+I'll eventually add data types such as `int` and `float`. For now, though, I'll assume that every function parameter and return value is a `double`. In this example, `x`, `y`, and the value returned by `add` are all implicitly `double`s.
 
-I'll also restrict each function body to a single **expression**, i.e., something that evaluates to, or *expresses*, a value. The value of that expression becomes the result of the function, so I don't need a `return` keyword just yet. Once I support multiple statements inside a function, I'll introduce `return` so I can say explicitly which value the function returns.
+I'll also restrict each function body to a single **expression**—a piece of code that produces a value. The value of that expression becomes the result of the function, so I don't need a `return` keyword just yet. Once I support multiple statements inside a function, I'll introduce `return` so I can say explicitly which value the function returns.
 
 For now, I think this is enough to begin experimenting.
 
@@ -47,11 +47,11 @@ def add(x, y):
     x + y
 ```
 
-I can already recognize some meaning in the characters. `def` defines a function, `add` is the *function name*, `x` and `y` are *parameters*, and a *comment* follows the `#` character.
+I can already recognize some meaning in the characters. `def` defines a function, `add` is the *name* of said function, `x` and `y` are *parameters*, and a *comment* follows the `#` character.
 
-pyxc initially sees only a flat stream of characters. I need to separate those characters into meaningful pieces before I can organize them into a structured, perhaps hierarchical form. I can then check that structure for syntax errors and work out what the program means.
+pyxc initially sees only a flat stream of characters. I need to combine those characters into meaningful words and symbols before I can organize them into a hierarchy. I can then check the hierarchy for syntax errors and work out what the program means.
 
-I could pass strings such as `"def"`, `"add"`, `"("`, and `"x"` through every stage of the compiler. But then every stage would need to know which spellings have special meaning and repeatedly compare strings to recognize them. Instead, I will recognize each fixed piece of syntax once and represent its kind with an enum:
+I could pass strings such as `"def"`, `"add"`, `"("`, and `"x"` through every stage of the compiler. But then, every stage would need to repeatedly compare strings to recognize them. Instead, I'll just assign each of them an enum value:
 
 ```cpp
 enum Token {
@@ -62,13 +62,13 @@ enum Token {
 Later, I can ask whether something is `tok_def` with one integer comparison instead of comparing its characters with `def` again.
 
 !!!note
-    Breaking up the source into words is called *lexing*. The word comes from the Greek *lexis*, meaning “word” or “speech.”
+    Combining characters into meaningful words and symbols is called *lexing*. The word comes from the Greek *lexis*, meaning "word" or "speech."
 
-I call each resulting piece a *token* which represents something in the original source. Here, `tok_def` represents the characters `def`.
+I call each resulting word or symbol a *token*. Each token represents something in the original source. Here, `tok_def` represents the characters `def`.
 
-How do I represent function and variable names when each programmer can invent new ones? I cannot create an enum value for every possible name. Instead, I create a catch-all `tok_name` to signal that I have read a name, then keep the name itself in a separate variable.
+How do I represent function and variable names when each programmer can invent new ones? I cannot create an enum value for every possible name. Instead, I create a catch-all `tok_name` to signal that I have read a name, and keep the name itself in a separate variable.
 
-### Reading names
+### Reading Names
 
 I need somewhere to store the actual name that `tok_name` represents:
 
@@ -78,9 +78,9 @@ static string Name; // I store the name I just read.
 
 When I read the name `foo`, I return `tok_name` and set `Name` to `"foo"`.
 
-One variable is enough because I always use `Name` before calling `getToken()` again. The next call may overwrite it with another name. In this chapter, I only print `Name` immediately. I will start copying it into longer-lived structures in the next chapter.
+One variable is enough because I always use `Name` before reading another name. In this chapter, I only print `Name` immediately. I will start copying it into longer-lived structures in the next chapter.
 
-### Reading numbers
+### Reading Numbers
 
 I'll use the same approach for numbers. `tok_number` tells me that I read a number, while `NumberValue` stores its value:
 
@@ -90,17 +90,17 @@ static double NumberValue; // I store the number I just read.
 
 When I read `3.14`, I return `tok_number` and set `NumberValue` to `3.14`.
 
-### Newlines matter
+### Newlines Matter
 
 pyxc doesn't use `;` to end a statement. A newline does that job instead. So I need to recognize newlines as tokens. I'll add a `tok_eol`.
 
-### The end-of-file (EOF) marker
+### The End-of-File (EOF) Marker
 
 Finally, I need to indicate that I've reached the end of input. I'll add `tok_eof` to represent the end-of-file marker.
 
-### Punctuation and all the rest
+### Punctuation and All the Rest
 
-Adding the punctuation from the sample to the token kinds I've identified so far, I end up with:
+Adding the punctuation from the sample to the tokens I've identified so far, I end up with:
 
 ```cpp
 //===----------------------------------------===//
@@ -164,9 +164,17 @@ int advance() {
 }
 ```
 
-## Generating One Token At A Time
+## Generating One Token at a Time
 
 `getToken()` is where I read characters and turn them into tokens, one per call.
+
+I'll put all my keywords in a map so I can look up a keyword's spelling and get its token.
+
+```cpp
+static map<string, Token> Keywords = {
+    {"def", tok_def},
+};
+```
 
 ```cpp
 /// getToken - I return the next token from standard input.
@@ -183,8 +191,6 @@ I initialize the static `LastChar` to a *space* so the loop runs the first time 
 - On the first call, `advance()` reads the first input character, and the loop continues past any whitespace at the start of the file.
 - On later calls, the loop skips whitespace between tokens the same way.
 
-I stop the loop at a newline, a non-whitespace character, or end of file:
-
 After this loop, `LastChar` holds the next input value to process which could be one of these: 
 - the first character of the next token
 - a newline, or 
@@ -192,36 +198,27 @@ After this loop, `LastChar` holds the next input value to process which could be
 
 ### Names and Keywords
 
-I recognize a name when it begins with a letter or underscore. I then accumulate letters, digits, and underscores into `Name` and check whether it matches one of my keywords (only one for now). If it does, I return that keyword's token. Otherwise, I return `tok_name`.
-
-I'll put all my keywords in a map so I can look up a name and get its token.
-
-```cpp
-static map<string, Token> Keywords = {
-    {"def", tok_def},
-};
-```
-
-I can now collect the characters in a name and return either its keyword token or `tok_name`.
+I recognize a name when it begins with a letter or underscore. I then accumulate letters, digits, and underscores into a local `NameLiteral` and check whether it matches one of my keywords (only one for now). If it does, I return that keyword's token. Otherwise, I copy `NameLiteral` into `Name` and return `tok_name`. 
 
 ```cpp
   // I read a name or keyword.
   if (isalpha(LastChar) || LastChar == '_') {
-    Name = LastChar;
+    string NameLiteral;
+    NameLiteral = LastChar;
     while (isalnum(LastChar = advance()) || LastChar == '_')
-      Name += LastChar;
+      NameLiteral += LastChar;
     // I leave the first character that is not part of this name or keyword in
     // LastChar.
 
     // I check whether the name is a keyword.
-    auto KeywordIt = Keywords.find(Name);
+    auto KeywordIt = Keywords.find(NameLiteral);
     if (KeywordIt != Keywords.end())
       return KeywordIt->second;
+    // Only a real name updates Name; a keyword never touches it.
+    Name = NameLiteral;
     return tok_name;
   }
 ```
-
-`LastChar` now acts as one-character lookahead. It holds the first character that is not part of the name, which could be whitespace, punctuation, or `EOF`. Because `LastChar` is static, the next call to `getToken()` starts with that same character instead of reading past it.
 
 Examples:
 
@@ -229,22 +226,29 @@ Examples:
 - `foo` → `tok_name`, `Name = "foo"`
 - `my_var` → `tok_name`, `Name = "my_var"`
 
+After this code runs, `LastChar`  holds the first character that is not part of the name, which could be:
+- Whitespace
+- Punctuation, or 
+- `EOF`. 
+
+Because `LastChar` is static, it keeps this value between calls to `getToken()`. The next call processes it before reading another character.
+
 ### Numbers
 
-I handle numbers similarly. I collect everything that looks like part of a number in `NumStr`, then give the complete string to [strtod](https://en.cppreference.com/w/cpp/string/byte/strtof), which converts it to a double. I put this double into `NumberValue`.
+I handle numbers similarly. I collect everything that looks like part of a number in `NumberLiteral`, then give the complete string to [strtod](https://en.cppreference.com/w/cpp/string/byte/strtof), which converts it to a double. I put this double into `NumberValue`.
 
 ```cpp
   // I read a number.
   if (isdigit(LastChar) || LastChar == '.') {
-    string NumStr;
+    string NumberLiteral;
     do {
-      NumStr += LastChar;
+      NumberLiteral += LastChar;
       LastChar = advance();
     } while (isdigit(LastChar) || LastChar == '.');
     // I leave the first character that is not part of this number in LastChar.
 
     // TODO: I consume all of 1.23.45.67 but parse it as 1.23.
-    NumberValue = strtod(NumStr.c_str(), 0);
+    NumberValue = strtod(NumberLiteral.c_str(), 0);
     return tok_number;
   }
 ```
@@ -255,7 +259,7 @@ This works for the inputs I actually care about right now:
 - `3.14` → `tok_number`, `NumberValue = 3.14`
 - `.5` → `tok_number`, `NumberValue = 0.5`
 
-There is a bug here, but I'll leave it for now. I collect an invalid number such as `1.23.45.67` into a single `NumStr`. `strtod` converts the valid `1.23` prefix and ignores the rest. Because I have already consumed `.45.67` from the input stream, those characters disappear instead of producing an error. A lone `.` is also accepted and becomes `0.0`. I'll leave a *TODO* to fix this later. For now, valid numbers work, and I want to keep this proof of concept small.
+There is a bug here, but I'll leave it for now. I collect an invalid number such as `1.23.45.67` into a single `NumberLiteral`. `strtod` converts the valid `1.23` prefix and ignores the rest. Because I have already consumed `.45.67` from the input stream, those characters disappear instead of producing an error. A lone `.` is also accepted and becomes `0.0`. I'll leave a *TODO* to fix this later. For now, valid numbers work, and I want to keep this proof of concept small.
 
 ### Comments
 
@@ -269,7 +273,7 @@ Comments run from `#` to the end of the line. I don't keep the comment text. I r
       LastChar = advance();
     } while (LastChar != '\n' && LastChar != EOF);
 
-    if (LastChar != EOF) {
+    if (LastChar == '\n') {
       LastChar = advance();
       return tok_eol;
     }
@@ -288,7 +292,7 @@ When `LastChar` holds a normalized newline, I call `advance()` so `LastChar` hol
   }
 ```
 
-### End Of File
+### End of File
 
 When `LastChar` equals `EOF`, the input stream has no more data, so I return `tok_eof`.
 
@@ -407,117 +411,13 @@ newline
 
 Comments do not produce tokens of their own, but the newline at the end of a comment-only line still produces `tok_eol`. Blank lines produce `tok_eol` for the same reason. I'm okay with this behavior.
 
-## `lit` or `llvm-lit` Quickstart
 
-I use LLVM's `lit` test runner for all my tests. Let me walk through one test.
+### Running the Full Test Suite
 
-`test/sample_chapter_1.pyxc` contains the same `add.pyxc` program from earlier in this chapter. I add `RUN` and `CHECK` instructions at the top:
-
-```pyxc
-# RUN: %pyxc < %s | FileCheck %s --match-full-lines
-
-# CHECK: 'def'
-# CHECK: name: print
-# CHECK: number: 1
-# CHECK: number: 2
-
-# sample: the add.pyxc example from the doc, run end-to-end through the lexer.
-# add.pyxc
-def add(x, y): # define a function
-    x + y # return the sum
-
-print(add(1, 2)) # call the add function and print its value
-```
-
-These instructions begin with `#`, so pyxc ignores their text as comments. Their line endings still produce newline tokens. `lit` and `FileCheck`, however, know how to read the comment instructions.
-
-I start with the `RUN` instruction:
-
-```pyxc
-# RUN: %pyxc < %s | FileCheck %s --match-full-lines
-```
-
-It tells `lit` which command to run for this test.
-
-Before running the command, `lit` replaces two placeholders:
-
-- `%pyxc` becomes the path to the pyxc executable, such as `build/pyxc`. I define that substitution in `test/lit.cfg.py`:
-
-  ```python
-  config.substitutions.append(
-      ("%pyxc", os.path.join(chapter_dir, "build", "pyxc"))
-  )
-  ```
-
-- `%s` becomes the path to the current test file, such as `test/sample_chapter_1.pyxc`.
-
-After those replacements, the command is roughly:
+The `test/` directory has lit tests covering the lexer behavior I have implemented so far. If the `# RUN:`/`# CHECK:` lines inside those test files don't make sense yet, [Appendix 1](appendix-01.md) walks through exactly how `lit` reads and runs them. I run the suite with:
 
 ```bash
-build/pyxc < test/sample_chapter_1.pyxc |
-    FileCheck test/sample_chapter_1.pyxc --match-full-lines
-```
-
-The command uses the test file in two different ways.
-
-First, `< test/sample_chapter_1.pyxc` sends the entire file to pyxc as input. Pyxc ignores the comment lines and tokenizes the sample program.
-
-Second, the pipe sends pyxc's output to `FileCheck`. The filename after `FileCheck` tells it where to find the `CHECK` instructions. In this case, those instructions are in the same test file:
-
-```pyxc
-# CHECK: 'def'
-# CHECK: name: print
-# CHECK: number: 1
-# CHECK: number: 2
-```
-
-`FileCheck` looks for these lines in the lexer output in the order I wrote them:
-
-1. It looks for a complete line matching `'def'`.
-2. From that point onward, it looks for a complete line matching `name: print`.
-3. It then looks for a complete line matching `number: 1`.
-4. Finally, it looks for a complete line matching `number: 2`.
-
-The lines do not have to be next to one another. The lexer can print other tokens between them. They only need to appear in the specified order.
-
-I use `--match-full-lines` because I want each `CHECK` pattern to match a whole output line. For example, `number: 1` should match this:
-
-```text
-number: 1
-```
-
-It should not pass merely because those characters appear inside a longer line.
-
-Each check corresponds to part of the sample program:
-
-- `'def'` is the line printed for the `def` keyword. `TokenNames` maps `tok_def` to the string `'def'`.
-- `name: print` is the line printed for the `print` name.
-- `number: 1` and `number: 2` are printed for the numeric literals in `add(1, 2)`.
-
-If `FileCheck` finds all four lines in order, it exits with `0`, and the `RUN` instruction passes. If a line is missing or appears in the wrong order, `FileCheck` exits with a nonzero value. `lit` then reports the test as failed and points me to the `CHECK` instruction it could not satisfy.
-
-Running this on my sample test file:
-
-```bash
-llvm-lit test/sample_chapter_1.pyxc -v
-```
-
-I get:
-
-```text
--- Testing: 1 tests, 1 workers --
-PASS: pyxc-chapter01 :: sample_chapter_1.pyxc (1 of 1)
-
-Testing Time: 0.12s
-
-Total Discovered Tests: 1
-  Passed: 1 (100.00%)
-```
-
-The `test/` directory has lit tests covering the lexer behavior I have implemented so far. I run the suite with:
-
-```bash
-llvm-lit test/
+llvm-lit -v test/
 ```
 
 ```text
@@ -544,6 +444,8 @@ Total Discovered Tests: 13
 
 The test order and timing above are from one run; `lit` runs tests in parallel across several workers, so both vary from run to run.
 
+13 passing tests tells me those 13 tests pass, not that I've tested everything worth testing. [Appendix 2](appendix-02.md) covers how I check that with LLVM's own coverage tooling.
+
 ## Try It
 
 Earlier I mentioned that the lexer consumes all of `1.23.45.67` but reports only the valid `1.23` prefix. Here it is for real:
@@ -557,7 +459,7 @@ number: 1.23
 newline
 ```
 
-`strtod` stops at the second `.`, and I've already consumed the rest of the characters from the input stream reading `NumStr`, so `.45.67` never gets a chance to become its own token or trigger an error. It just disappears.
+`strtod` stops at the second `.`, and I've already consumed the rest of the characters from the input stream reading `NumberLiteral`, so `.45.67` never gets a chance to become its own token or trigger an error. It just disappears.
 
 ## What's Next
 

@@ -177,15 +177,30 @@ Nested pointer types (`ptr[ptr[int]]`) and pointers to `None` are rejected at pa
 
 ## Two New Keywords
 
-```cpp
-tok_ptr = -51,
-tok_addr = -52,
+```cppdiff
+*enum Token {
+*  ...
+*  tok_case = -48,
+*  tok_default = -49,
+*  tok_struct = -50,
++  tok_ptr = -51,
++  tok_addr = -52,
+*
+*  // punctuation and operators
+*  ...
+*};
 ```
 
 Registered in the keyword map:
 
-```cpp
-{"ptr", tok_ptr}, {"addr", tok_addr}
+```cppdiff
+*static map<string, Token> Keywords = {
+*    ...
+*    {"default", tok_default}, {"struct", tok_struct},
++    {"ptr", tok_ptr},         {"addr", tok_addr},
+*    {"float", tok_float},
+*    ...
+*};
 ```
 
 ## Representing a Pointer's Type
@@ -197,14 +212,23 @@ For scalar types and structs, the pointee information is carried in the `StructN
 ```cpp
 static string EncodePointerType(ValueType PointeeType,
                                 const string &PointeeStructName) {
-  return std::to_string(static_cast<int>(PointeeType)) + ":" + PointeeStructName;
+  return std::to_string(static_cast<int>(PointeeType)) + ":" +
+         PointeeStructName;
 }
 
 static bool DecodePointerType(const string &Encoded, ValueType &PointeeType,
                               string &PointeeStructName) {
-  auto Pos = Encoded.find(':');
-  // split on ':', parse the int as ValueType, rest is struct name
-  ...
+  size_t Separator = Encoded.find(':');
+  if (Separator == string::npos)
+    return false;
+  int RawType = std::atoi(Encoded.substr(0, Separator).c_str());
+  if (RawType < static_cast<int>(ValueType::None) ||
+      RawType >= static_cast<int>(ValueType::Error))
+    return false;
+  PointeeType = static_cast<ValueType>(RawType);
+  PointeeStructName = Encoded.substr(Separator + 1);
+  return PointeeType != ValueType::None &&
+         PointeeType != ValueType::Pointer;
 }
 ```
 
@@ -225,19 +249,39 @@ This reuses the existing type-tracking infrastructure without adding a new field
 
 In LLVM IR, all pointer types are the same opaque type:
 
-```cpp
-case ValueType::Pointer:
-  return PointerType::get(*TheContext, 0);
+```cppdiff
+*static Type *LLVMTypeFor(ValueType Type, const string &StructName) {
+*  switch (Type) {
+*  ...
+*  case ValueType::Struct:
+*    return GetOrCreateLLVMStructType(StructName);
++  case ValueType::Pointer:
++    return PointerType::get(*TheContext, 0);
+*  case ValueType::None:
+*    return Type::getVoidTy(*TheContext);
+*  default:
+*    return nullptr;
+*  }
+*}
 ```
 
 `PointerType::get` with address space 0 produces the opaque `ptr` type: LLVM does not distinguish `ptr[int]` from `ptr[Point]` in the type system. The element type only appears in `getelementptr` and `load`/`store` instructions, not in the pointer type itself. This is LLVM's opaque pointer model, which has been the default since LLVM 15.
 
 The zero value for a pointer is null:
 
-```cpp
-case ValueType::Pointer:
-  return ConstantPointerNull::get(
-      cast<PointerType>(LLVMTypeFor(Type, StructName)));
+```cppdiff
+*static Constant *ZeroConstant(ValueType Type, const string &StructName = "") {
+*  switch (Type) {
+*  ...
+*  case ValueType::Struct:
+*    return Constant::getNullValue(LLVMTypeFor(Type, StructName));
++  case ValueType::Pointer:
++    return ConstantPointerNull::get(
++        cast<PointerType>(LLVMTypeFor(Type, StructName)));
+*  default:
+*    return nullptr;
+*  }
+*}
 ```
 
 `var p: ptr[int]` with no initializer starts as a null pointer.
@@ -334,25 +378,49 @@ store ptr %fieldptr, ptr %px, align 8
 `p[i]` computes the address at offset `i` from the pointer and loads from it. `p[i] = v` stores to it. Both go through the same `ParseNameExpressionWithName` loop that also handles `.field`: after parsing the base name into a `NameExpressionNode`, the parser loops while it sees `.` or `[`, wrapping the result in one more node each time:
 
 ```cpp
-if (Result->getType() != ValueType::Pointer)
-  return LogErrorExpression("Indexing requires a pointer value");
-ValueType ElementType = ValueType::Error;
-string ElementStructName;
-if (!DecodePointerType(Result->getStructName(), ElementType,
-                       ElementStructName))
-  return LogErrorExpression("Invalid pointer type metadata");
-getNextToken(); // eat '['
-auto Index = ParseExpression();
-if (!Index)
-  return nullptr;
-if (!IsIntType(Index->getType()))
-  return LogErrorExpression("Pointer index must be an integer");
-if (CurrentToken != tok_rbracket)
-  return LogErrorExpression("Expected ']' after index expression");
-getNextToken(); // eat ']'
-Result = make_unique<IndexExpressionNode>(
-    std::move(Result), std::move(Index), ElementType,
-    ElementStructName);
+while (CurrentToken == tok_dot || CurrentToken == tok_lbracket) {
+  if (CurrentToken == tok_dot) {
+    if (Result->getType() != ValueType::Struct ||
+        Result->getStructName().empty())
+      return LogErrorExpression("Field access requires a struct value");
+    string BaseStructName = Result->getStructName();
+    getNextToken(); // eat '.'
+    if (CurrentToken != tok_name)
+      return LogErrorExpression("Expected field name after '.'");
+    auto Struct = StructTypes.find(BaseStructName);
+    if (Struct == StructTypes.end())
+      return LogErrorExpression("Unknown struct type in field access");
+    auto Field = Struct->second.FieldIndices.find(Name);
+    if (Field == Struct->second.FieldIndices.end())
+      return LogErrorExpression(("Unknown field '" + Name + "'").c_str());
+    const auto &FieldInfo = Struct->second.Fields[Field->second];
+    Result = make_unique<MemberExpressionNode>(
+        std::move(Result), Field->second, FieldInfo.Type,
+        FieldInfo.StructName);
+    getNextToken(); // eat field name
+    continue;
+  }
+
+  if (Result->getType() != ValueType::Pointer)
+    return LogErrorExpression("Indexing requires a pointer value");
+  ValueType ElementType = ValueType::Error;
+  string ElementStructName;
+  if (!DecodePointerType(Result->getStructName(), ElementType,
+                         ElementStructName))
+    return LogErrorExpression("Invalid pointer type metadata");
+  getNextToken(); // eat '['
+  auto Index = ParseExpression();
+  if (!Index)
+    return nullptr;
+  if (!IsIntType(Index->getType()))
+    return LogErrorExpression("Pointer index must be an integer");
+  if (CurrentToken != tok_rbracket)
+    return LogErrorExpression("Expected ']' after index expression");
+  getNextToken(); // eat ']'
+  Result = make_unique<IndexExpressionNode>(
+      std::move(Result), std::move(Index), ElementType,
+      ElementStructName);
+}
 ```
 
 `IndexExpressionNode` wraps whatever came before it as its `Base`, so `p[i]` and (later) `p.field[i]` fall out of the same loop without a separate parsing path. The element type is decoded from the pointer's encoded `StructName`.
@@ -380,7 +448,7 @@ Value *IndexExpressionNode::codegenAddress() {
 
 The index is always widened to `i64` before the GEP: LLVM requires a consistent index type.
 
-### Read codegen
+### Read Codegen
 
 ```cpp
 Value *IndexExpressionNode::codegen() {
@@ -400,7 +468,7 @@ For `p[0]` where `p: ptr[int]`:
 %elemload = load i64, ptr %elemptr, align 8
 ```
 
-### Write codegen
+### Write Codegen
 
 An assignment whose left side is an lvalue, `p[0] = 99`, goes through `LValueAssignmentStatementNode`, which asks the left side for its address the same way `addr` does:
 
@@ -431,7 +499,7 @@ store i64 %v2, ptr %elemptr, align 8
 
 The implicit cast rules from chapter 20 apply: assigning an integer to a `ptr[float64]` is a type error; assigning `int8` to `ptr[int]` widens.
 
-## `p[i].field`: Field Access After Indexing
+## `p[i].field`: Field Access after Indexing
 
 For pointers to structs, I can chain field access after the index: `p[0].x`. Because `.field` and `[index]` both go through the same loop in `ParseNameExpressionWithName`, this needs no separate AST node: `p[0].x` is a `MemberExpressionNode` whose `Base` happens to be an `IndexExpressionNode` instead of a `NameExpressionNode`. The same field-access branch of the loop handles it, since it only checks that the current result's type is `Struct`.
 
@@ -469,7 +537,7 @@ For `p[0].x` where `p: ptr[Point]`:
 
 Two GEPs: one to reach element 0 of the array, one to reach field `x` of that element. No load between them: `codegenAddress()` chains straight from the index's address into the field's GEP.
 
-## Mutation Through a Pointer Parameter
+## Mutation through a Pointer Parameter
 
 This is the payoff. A function that takes `ptr[T]` can modify the caller's data:
 
@@ -521,9 +589,13 @@ cd code/chapter-25
 cmake -S . -B build && cmake --build build
 ```
 
+```bash
+llvm-lit -v test/
+```
+
 ## Try It
 
-### Take an address, read through it
+### Take an Address, Read through It
 
 ```pyxc
 extern def printd(x: float64)
@@ -539,7 +611,7 @@ def main() -> int:
 42.000000
 ```
 
-### Write through a pointer, see it in the caller
+### Write through a Pointer, See It in the Caller
 
 ```pyxc
 extern def printd(x: float64)
@@ -556,7 +628,7 @@ def main() -> int:
 99.000000
 ```
 
-### Pass a struct by pointer
+### Pass a Struct by Pointer
 
 ```pyxc
 extern def printd(x: float64)
@@ -580,7 +652,7 @@ def main() -> int:
 7.000000
 ```
 
-### Address of a struct field
+### Address of a Struct Field
 
 ```pyxc
 extern def printd(x: float64)

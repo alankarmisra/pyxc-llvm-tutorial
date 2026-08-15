@@ -3,7 +3,7 @@
 # CHECK: A
 
 # Tests: putchard is provided as a built-in by the compiler (no external runtime
-# object needed). putchard(65) prints ASCII 'A' to stderr.
+# object needed). putchard(65) prints ASCII 'A' to stdout.
 
 extern def putchard(x)
 

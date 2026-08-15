@@ -287,7 +287,7 @@ case tok_string: {
 
 From the type checker's point of view, a string literal is just an ordinary `ptr[int8]` value. There's no separate string type hiding underneath, and no special case anywhere downstream needs to know it came from a literal rather than, say, a `malloc`'d buffer.
 
-## Codegen: One Global Per Literal
+## Codegen: One Global per Literal
 
 ```cpp
 Value *StringExpressionNode::codegen() {
@@ -356,9 +356,13 @@ cd code/chapter-30
 cmake -S . -B build && cmake --build build
 ```
 
+```bash
+llvm-lit -v test/
+```
+
 ## Try It
 
-### Basic string literal
+### Basic String Literal
 
 ```pyxc
 extern def puts(s: ptr[int8]) -> int
@@ -372,7 +376,7 @@ def main() -> int:
 hello, pyxc
 ```
 
-### Escape sequences
+### Escape Sequences
 
 ```pyxc
 extern def puts(s: ptr[int8]) -> int
@@ -389,7 +393,7 @@ line two
 
 The `\n` is resolved by the lexer to a real newline byte before codegen ever sees it. `puts` adds its own trailing newline, which is why there's a blank line after "line two".
 
-### Returning a string from a function
+### Returning a String from a Function
 
 ```pyxc
 extern def puts(s: ptr[int8]) -> int
@@ -406,7 +410,7 @@ def main() -> int:
 hello from a function
 ```
 
-### Storing a string in a variable
+### Storing a String in a Variable
 
 ```pyxc
 extern def puts(s: ptr[int8]) -> int

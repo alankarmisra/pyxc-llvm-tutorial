@@ -31,24 +31,24 @@ cd pyxc-llvm-tutorial/code/chapter-02
 
 I went through several iterations before I arrived at the structures in the following sections. I made omissions, mistakes, sub-optimal decisions, and some lasting good decisions (beginner's luck). 
 
-### Function definitions 
+### Function Definitions
 
-For something like `def add(x, y): x + y`, I start with a function definition as the outermost node, and store the signature and body underneath it. I isolate the signature into its own structure since it's the function's interface, separate from its body — something I'll want on its own later, for instance to check a call's argument count against it. The following shows instances of the classes and subclasses I'll define soon, built in response to the tokens I see for the function definition.
+For something like `def add(x, y): x + y`, I start by representing the whole definition with an instance of a class I call `FunctionDefinition`. I store the signature and body within it. I will write these classes shortly. For now, I'm just working on the structure I want.
 
 ```ast
 FunctionDefinition
 ├──  Signature -> FunctionSignature
-│                 ├──  Name      = "add"
+│                 ├──  Name       = "add"
 │                 └──  Parameters = ["x", "y"]
 └──  Body -> BinaryExpression
              ├──  Operator='+'
-             ├──  Left  -> NameExpression  Name="x"
-             └──  Right -> NameExpression  Name="y"
+             ├──  Left  -> NameExpression  Name = "x"
+             └──  Right -> NameExpression  Name = "y"
 ```
 
-### Function calls 
+### Function Calls
 
-I follow a similar approach for function calls. The call expression is the parent, with its callee name and arguments as two branches beneath it. 
+I follow a similar approach for function calls. The call expression is the parent, with the callee name and arguments as two branches beneath it. 
 
 `add(1, 2)` becomes:
 
@@ -56,8 +56,8 @@ I follow a similar approach for function calls. The call expression is the paren
 CallExpression
 ├──  Callee = "add"
 └──  Arguments
-     ├──  NumberExpression  Value=1
-     └──  NumberExpression  Value=2
+     ├──  NumberExpression  Value = 1
+     └──  NumberExpression  Value = 2
 ```
 
 and `print(...)` becomes:
@@ -78,19 +78,23 @@ CallExpression
      └──  CallExpression
           ├──  Callee = "add"
           └──  Arguments
-               ├──  NumberExpression  Value=1
-               └──  NumberExpression  Value=2
+               ├──  NumberExpression  Value = 1
+               └──  NumberExpression  Value = 2
 ```
 
-Compiler writers call this an **Abstract Syntax Tree**, or **AST**. *Abstract*, because I leave out punctuation a hierarchical structure doesn't need, like the parentheses in `add(1, 2)`; I already record which arguments belong to which call without them. *Syntax tree*, because I capture only how the pieces fit together, not whether they make sense together. At this stage, I can attach three arguments to `add` even though it accepts only two because I am not checking that relationship yet. Checking whether the pieces actually make sense is called a **semantic** check, as opposed to a syntax check, and it's a separate pass I'll add later. For now, I'm just focusing on building the nodes.
+Compiler writers call this an **Abstract Syntax Tree**, or **AST**. It is *abstract* because I keep the structure expressed by the source while leaving out details I no longer need. For example, the parentheses and commas in `add(1, 2)` tell me how to group the call and its arguments, but once I record that structure in a `CallExpression`, I do not need the punctuation itself and throw it away.
+
+It is a *syntax tree* because it represents how the program's grammatical pieces fit together. The word **syntax** comes from the Greek *sýntaxis*, meaning “arrangement.” Successfully creating a syntax tree doesn't guarantee those pieces necessarily make sense together. At this stage, I can attach three arguments to `add` even though it accepts only two because I have not checked that relationship yet.
+
+Checking whether the pieces make sense is called **semantic analysis**. The word **semantic** comes from the Greek *sēmantikós*, meaning “significant” or “having meaning.” I add semantic analysis later.
 
 ## Coding Trees
 
-Now I need to turn these trees into code. Compiler writers call each piece of the tree a **node**, so I'll use that name too.
+Now I need to turn these trees into code. Compiler writers call each piece of a tree a **node**. The word comes from the Latin *nodus*, meaning “knot,” which fits because a node is a point where parts of the tree connect.
 
 ### The Base Class
 
-Most of my nodes derive from a base expression class. Any node in pyxc that reduces to a single value derives from this base class:
+Most of my nodes reduce to a single value, so I derive them from a common expression class:
 
 ```cpp
 class ExpressionNode {
@@ -99,11 +103,11 @@ public:
 };
 ```
 
-I'll create a virtual destructor for the base. Without it, deleting a derived class node through a `unique_ptr<ExpressionNode>` is undefined behavior. 
+I give the base class a virtual destructor. Without it, deleting a derived object through a `unique_ptr<ExpressionNode>` is undefined behavior.
 
 ### Numbers
 
-Next, I'll deal with data types. pyxc's only data type is a number, represented by a `double`. That's easy to model with a number expression that stores a double value:
+For now, pyxc represents every number as a `double`, so I create a number expression that stores one:
 
 ```cpp
 class NumberExpressionNode : public ExpressionNode {
@@ -115,7 +119,7 @@ public:
 
 ### Names
 
-Right now a **name expression** can hold any identifier I see — a function parameter, or just a bare name with nothing behind it yet. I use it to store whichever name appears. I haven't figured out how to bind values to a name in function calls just yet. That's a later problem.
+Right now, I use a **name expression** to store to store any name used as a value, such as a function parameter or a bare name. I will figure out how to bind values to these names in function calls later.
 
 ```cpp
 class NameExpressionNode : public ExpressionNode {
@@ -140,23 +144,21 @@ public:
 };
 ```
 
-How will I handle `1 + 2 + 3`? I'll build the tree iteratively and group it as `((1 + 2) + 3)`. Compiler writers call this *left associativity*, so I'll use that name too.
+How will I handle `1 + 2 + 3`? I'll build the tree iteratively and group it as `((1 + 2) + 3)`. Compiler writers call this left-to-right grouping **left associativity**, which sounds reasonable enough, so I will too.
 
 ```ast
-BinaryExpressionNode
-├──  Operator='+'
-├──  Left  -> BinaryExpressionNode
-│             ├──  Operator='+'
-│             ├──  Left  -> NumberExpressionNode  Value=1
-│             └──  Right -> NumberExpressionNode  Value=2
-└──  Right -> NumberExpressionNode  Value=3
+BinaryExpression
+├──  Operator = '+'
+├──  Left  -> BinaryExpression
+│             ├──  Operator = '+'
+│             ├──  Left  -> NumberExpression  Value = 1
+│             └──  Right -> NumberExpression  Value = 2
+└──  Right -> NumberExpression  Value = 3
 ```
-
-In the [next chapter](chapter-03.md), I add more operators and use grammar layers to decide how I group an expression such as `1 + 2 * 3 + 4`.
 
 ### Function Calls
 
-A function call stores the name of the function to call and a list of argument expressions being passed in. I model each argument as an expression node so I can model different kinds of function calls like `add(x, y)`, `add(1, 2)`, `add(1+2, 3+4)`:
+A function call stores the name of the function to call and a list of arguments. I store each argument as an expression node so it can be a name, a number, or a larger expression, as in `add(x, y)`, `add(1, 2)`, `add(1 + 2, 3 + 4)`:
 
 ```cpp
 class CallExpressionNode : public ExpressionNode {
@@ -172,42 +174,42 @@ public:
 `add(x, y)`:
 
 ```ast
-CallExpressionNode
+CallExpression
 ├──  Callee = "add"
 └──  Arguments
-     ├──  NameExpressionNode  Name="x"
-     └──  NameExpressionNode  Name="y"
+     ├──  NameExpression  Name = "x"
+     └──  NameExpression  Name = "y"
 ```
 
 `add(1, 2)`:
 
 ```ast
-CallExpressionNode
+CallExpression
 ├──  Callee = "add"
 └──  Arguments
-     ├──  NumberExpressionNode  Value=1
-     └──  NumberExpressionNode  Value=2
+     ├──  NumberExpression  Value = 1
+     └──  NumberExpression  Value = 2
 ```
 
 `add(1+2, 3+4)`:
 
 ```ast
-CallExpressionNode
+CallExpression
 ├──  Callee = "add"
 └──  Arguments
-     ├──  BinaryExpressionNode
-     │    ├──  Operator='+'
-     │    ├──  Left  -> NumberExpressionNode  Value=1
-     │    └──  Right -> NumberExpressionNode  Value=2
-     └──  BinaryExpressionNode
-          ├──  Operator='+'
-          ├──  Left  -> NumberExpressionNode  Value=3
-          └──  Right -> NumberExpressionNode  Value=4
+     ├──  BinaryExpression
+     │    ├──  Operator = '+'
+     │    ├──  Left  -> NumberExpression  Value = 1
+     │    └──  Right -> NumberExpression  Value = 2
+     └──  BinaryExpression
+          ├──  Operator = '+'
+          ├──  Left  -> NumberExpression  Value = 3
+          └──  Right -> NumberExpression  Value = 4
 ```
 
 ### Function Signatures
 
-As I mentioned earlier, I split functions into two classes. The first is the function signature where I capture the function name and parameter names. Since a function signature is not an expression, I don't derive it from `ExpressionNode`.
+As I mentioned earlier, I keep a function's signature separate from its body. The signature stores the function name and parameter names. Since a signature does not produce a value, it is not an *expression*, so I don't derive `FunctionSignatureNode` from `ExpressionNode`.
 
 ```cpp
 class FunctionSignatureNode {
@@ -219,11 +221,13 @@ public:
 };
 ```
 
-The second is the body, which I can model with an existing `ExpressionNode`.
+### Function Bodies
+
+Since I currently restrict each function body to one expression, I can represent the body with an `ExpressionNode`.
 
 ### Function Definitions
 
-I create a function definition class where I pair the function signature with the body expression. Again, since a function *definition* is not an expression (as opposed to a function *call*), I don't derive it from `ExpressionNode`.
+I create a function definition class where I pair the function signature with the body expression. Again, since a function *definition* is not an expression, I don't derive it from `ExpressionNode`.
 
 ```cpp
 class FunctionDefinitionNode {
@@ -239,21 +243,23 @@ public:
 With this structure in place, for a function definition like `def add(x, y): x + y`, I will build something like:
 
 ```ast
-FunctionDefinitionNode
-├──  Signature -> FunctionSignatureNode
-│                 ├──  Name      = "add"
+FunctionDefinition
+├──  Signature -> FunctionSignature
+│                 ├──  Name       = "add"
 │                 └──  Parameters = ["x", "y"]
-└──  Body -> BinaryExpressionNode
-             ├──  Operator='+'
-             ├──  Left  -> NameExpressionNode  Name="x"
-             └──  Right -> NameExpressionNode  Name="y"
+└──  Body -> BinaryExpression
+             ├──  Operator = '+'
+             ├──  Left  -> NameExpression  Name = "x"
+             └──  Right -> NameExpression  Name = "y"
 ```
 
 ## The Parser
 
+The word *parse* ultimately comes from the Latin *pars*, meaning “part.” I use a parser to work out which parts of the program the tokens represent and how those parts fit together.
+
 Before I write the parsing functions themselves, I need two supporting pieces in place: a way to read one token at a time and a way to report errors. I'll set both up first, then move on to parsing itself.
 
-### Reading Ahead 
+### Reading Ahead
 
 I read one token at a time and store it in `CurrentToken`, a global variable:
 
@@ -269,17 +275,17 @@ Looking ahead one token turns out to be enough: I can always tell what I'm parsi
 I make every parsing function return a `unique_ptr` to one of three node types, `ExpressionNode` (or a subclass of it), `FunctionSignatureNode`, or `FunctionDefinitionNode`, depending on the node I am parsing. If parsing fails, I return `nullptr` instead and print an error message. Since C++ can't overload on return type, I need three separate helpers to do that:
 
 ```cpp
-unique_ptr<ExpressionNode> LogErrorExpression(const char *Str) {
-  fprintf(stderr, "Error: %s (token: %s)\n", Str,
+unique_ptr<ExpressionNode> LogErrorExpression(const char *ErrorMessage) {
+  fprintf(stderr, "Error: %s (token: %s)\n", ErrorMessage,
           TokenNames.at(CurrentToken).c_str());
   return nullptr;
 }
-unique_ptr<FunctionSignatureNode> LogErrorSignature(const char *Str) {
-  LogErrorExpression(Str);
+unique_ptr<FunctionSignatureNode> LogErrorSignature(const char *ErrorMessage) {
+  LogErrorExpression(ErrorMessage);
   return nullptr;
 }
-unique_ptr<FunctionDefinitionNode> LogErrorFunction(const char *Str) {
-  LogErrorExpression(Str);
+unique_ptr<FunctionDefinitionNode> LogErrorFunction(const char *ErrorMessage) {
+  LogErrorExpression(ErrorMessage);
   return nullptr;
 }
 ```
@@ -354,21 +360,23 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
   vector<unique_ptr<ExpressionNode>> Arguments;
   if (CurrentToken != tok_rparen) {
     while (true) {
-      if (auto Arg = ParseExpression())
-        Arguments.push_back(std::move(Arg));
+      if (auto Argument = ParseExpression())
+        Arguments.push_back(std::move(Argument));
       else
         return nullptr;
 
+      // ParseExpression() has already consumed the argument and left
+      // CurrentToken at the token after it.
       if (CurrentToken == tok_rparen)
         break;
 
       if (CurrentToken != tok_comma)
         return LogErrorExpression("Expected ')' or ',' in argument list");
-      getNextToken();
+      getNextToken(); // I eat ','.
     }
   }
 
-  // I eat ')'.
+  // I only reach here after parsing `a()` or `a(<arguments>)`, so I eat ')'.
   getNextToken();
 
   return make_unique<CallExpressionNode>(ParsedName, std::move(Arguments));
@@ -386,14 +394,14 @@ I skip over the `(`, parse whatever is inside the parentheses, verify the closin
 ///   = "(" expression ")" ;
 static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
   getNextToken(); // I eat '('.
-  auto V = ParseExpression();
-  if (!V)
+  auto Expression = ParseExpression();
+  if (!Expression)
     return nullptr;
 
   if (CurrentToken != tok_rparen)
     return LogErrorExpression("expected ')'");
   getNextToken(); // I eat ')'.
-  return V;
+  return Expression;
 }
 ```
 
@@ -423,6 +431,8 @@ static unique_ptr<ExpressionNode> ParsePrimary() {
 ### Binary Expressions
 
 If I call `ParsePrimary()` alone, I stop after one name, number, or parenthesized group. To parse `x + y`, I add one more layer. In `ParseSum()`, I parse a term, then loop: as long as `CurrentToken` is `+`, I eat the `+` and parse another term, folding the result into a `BinaryExpressionNode`. I define a term as a primary for now, and I make `ParseExpression()` return the sum.
+
+The separate `term` layer may look redundant here, but it is a placeholder for a grammar rule that expands later. In Chapter 3, a term will include multiplication and division, which I want to group together and process before addition. Keeping the layer now lets me extend its rule without restructuring `ParseSum()`.
 
 ```cpp
 /// term
@@ -461,7 +471,7 @@ static unique_ptr<ExpressionNode> ParseExpression() {
 
 ### Function Signature
 
-I represent a function signature with a name and parameter names (no types yet, everything is `double` for now).
+I represent a function signature with a name and parameter names (no types yet, everything is `double` for now). `ParseFunctionDefinition()` is dispatched only when `CurrentToken` is `tok_def`, so it can consume `def` immediately. It then calls `ParseFunctionSignature()` without first checking the next token; the signature parser itself must verify that this token is the required function name.
 
 ```cpp
 /// function-signature
@@ -471,10 +481,12 @@ I represent a function signature with a name and parameter names (no types yet, 
 /// parameter
 ///   = name ;
 static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
+  // Callers consume the leading 'def', so the current token must be the
+  // function name.
   if (CurrentToken != tok_name)
     return LogErrorSignature("Expected function name in function signature");
 
-  string FnName = Name;
+  string FunctionName = Name;
   getNextToken(); // I eat the function name.
 
   if (CurrentToken != tok_lparen)
@@ -502,13 +514,24 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
 
   getNextToken(); // I eat ')'.
 
-  return make_unique<FunctionSignatureNode>(FnName, std::move(ParameterNames));
+  return make_unique<FunctionSignatureNode>(FunctionName, std::move(ParameterNames));
 }
 ```
 
 ### Function Definition
 
 I'll read function definitions now.
+
+I want to let the function body start on the next line, so I need a small helper that skips over any newlines sitting between the `:` and the body expression. I implement `consumeNewlines()` with a short loop:
+
+```cpp
+static void consumeNewlines() {
+  while (CurrentToken == tok_eol)
+    getNextToken();
+}
+```
+
+After I read the signature and the following `:`, I call `consumeNewlines()` so I can put the body on the next line. Then I read the expression.
 
 ```cpp
 /// function-definition
@@ -522,32 +545,18 @@ static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
   if (CurrentToken != tok_colon)
     return LogErrorFunction("Expected ':' in function definition");
   getNextToken(); // I eat ':'.
-```
 
-After I read the signature and the following `:`, I call `consumeNewlines()` so I can put the body on the next line.
-
-```cpp
   // I allow the body expression to start on the next line:
   //   def foo(x):
   //     x + 1
   consumeNewlines();
-```
 
-Now I read the expression.
+  auto Body = ParseExpression();
+  if (!Body)
+    return nullptr;
 
-```cpp
-  if (auto E = ParseExpression())
-    return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(E));
-  return nullptr;
-}
-```
-
-I implement `consumeNewlines()` with a short loop:
-
-```cpp
-static void consumeNewlines() {
-  while (CurrentToken == tok_eol)
-    getNextToken();
+  return std::make_unique<FunctionDefinitionNode>(std::move(Signature),
+                                                  std::move(Body));
 }
 ```
 
@@ -559,11 +568,16 @@ So far I can parse function definitions and function-call expressions. I also ne
 /// top-level-expression
 ///   = expression ;
 static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
-  if (auto E = ParseExpression()) {
-    auto Signature = make_unique<FunctionSignatureNode>("__anon_expr", vector<string>());
-    return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(E));
-  }
-  return nullptr;
+  auto Body = ParseExpression();
+  if (!Body)
+    return nullptr;
+
+  // I invent a function signature with an internal name and no parameters
+  auto Signature =
+      make_unique<FunctionSignatureNode>("__anon_expr", vector<string>());
+
+  return std::make_unique<FunctionDefinitionNode>(std::move(Signature),
+                                                  std::move(Body));
 }
 ```
 
@@ -597,18 +611,17 @@ I'll then write `MainLoop` to call a function based on the leading token, simila
 
 ```cpp
 static void MainLoop() {
-  while (true) {
-    if (CurrentToken == tok_eof)
-      return;
-
-    // For a bare newline, I print a fresh prompt and read the next token.
-    if (CurrentToken == tok_eol) {
+  while (CurrentToken != tok_eof) {
+    switch (CurrentToken) {
+    case tok_eol:
+      // For a bare newline, I print a fresh prompt and read the next token.
       fprintf(stderr, "ready> ");
       getNextToken();
-      continue;
-    }
-
-    switch (CurrentToken) {
+      break;
+    case tok_error:
+      LogErrorExpression("invalid character");
+      getNextToken();
+      break;
     case tok_def:
       HandleFunctionDefinition();
       break;
@@ -640,7 +653,7 @@ int main() {
 
 I didn't catch the following bugs until I actually ran the REPL against `MainLoop`.
 
-### Bug 1: The REPL Doesn't Respond Until I Type More
+### Bug 1: The REPL Doesn't Respond until I Type More
 
 I expect this:
 
@@ -667,27 +680,22 @@ ready> 1 + 2
 
 Here's why. When I read the `2`, I leave `LastChar` sitting on the `\n` right after it. At this point my `getToken()` code reaches this branch:
 
-```cpp
-// Newline
-if (LastChar == '\n') {
-  LastChar = advance(); // <-- BUG
-  return tok_eol;
-}
+```cppdiff
+*int getToken() {
+*  ...
+*  // I recognize a newline.
+*  if (LastChar == '\n') {
+-    LastChar = advance(); // <-- BUG
++    LastChar = ' ';
+*    return tok_eol;
+*  }
+*  ...
+*}
 ```
 
 That `LastChar = advance()` is the bug. Since I haven't typed anything past that newline yet, `advance()` blocks right there, before `tok_eol` is ever returned. I'm expecting output, but the REPL just looks frozen. If I hit *enter* again, it unblocks, and I finally see the expected `Parsed a top-level expression.`
 
-I fix this by not trying to read another character once I see a newline. I set `LastChar` to a space instead:
-
-```cpp
-// Newline
-if (LastChar == '\n') {
-  LastChar = ' ';
-  return tok_eol;
-}
-```
-
-On the *next* call, I skip that space in `getToken()`'s whitespace loop and call `advance()` to read the next token. This is the one place I deliberately break my own `LastChar` rule: right after this code snippet, `LastChar` does *not* hold the next input value to process.
+I fix this by not trying to read another character once I see a newline. I set `LastChar` to a space instead, as shown above. On the *next* call, I skip that space in `getToken()`'s whitespace loop and call `advance()` to read the next token. This is the one place I deliberately break my own `LastChar` rule: right after this code snippet, `LastChar` does *not* hold the next input value to process.
 
 I made the same mistake in the comment branch:
 
@@ -700,31 +708,22 @@ ready> 1 + 2 # this comment will stall getToken() too
 ```
 <!-- code-merge:end -->
 
-Here's the offending code:
+Here's the offending code, and the same fix:
 
-```cpp
-// Comment
-  if (LastChar == '#') {
-    // I consume the comment through the end of the line.
-    do {
-      LastChar = advance();
-    } while (LastChar != '\n' && LastChar != EOF);
-
-    if (LastChar != EOF) {
-      LastChar = advance(); // <-- BUG
-      return tok_eol;
-    }
-  }
-```
-
-I similarly replace the offending snippet in comment parsing with:
-```cpp
-// ...
-    if (LastChar != EOF) {
-        LastChar = ' '; // <-- FIX
-        return tok_eol;
-    }
-// ...
+```cppdiff
+*  // I discard a comment.
+*  if (LastChar == '#') {
+*    // I consume the comment through the end of the line.
+*    do {
+*      LastChar = advance();
+*    } while (LastChar != '\n' && LastChar != EOF);
+*
+*    if (LastChar == '\n') {
+-      LastChar = advance(); // <-- BUG
++      LastChar = ' ';
+*      return tok_eol;
+*    }
+*  }
 ```
 
 With that fix in place I now get the expected output:
@@ -739,9 +738,9 @@ ready>
 ```
 <!-- code-merge:end -->
 
-### Bug 2: The Prompt Disappears After an Error
+### Bug 2: The Prompt Disappears after an Error
 
-I found a second bug hiding behind the first one. I typed a broken function definition to check my error handling:
+After I fixed the first bug and rebuilt `pyxc`, a second bug showed up in the form below. I typed a broken function definition to check my error handling:
 
 <!-- code-merge:start -->
 ```pyxc
@@ -754,7 +753,9 @@ Error: Expected '(' in function signature (token: newline)
 
 The error prints, but no fresh `ready> ` follows it. The REPL looks frozen again.
 
-Here's why. Once I report the error in `ParseFunctionSignature()`, I return `nullptr`. In `HandleFunctionDefinition()`'s recovery path, I then try to skip the bad token so I do not retry it forever:
+This bug already existed before the first fix, but the broken newline handling masked it with different behavior: the REPL printed a fresh `ready> ` without first acknowledging the error, then reported the error without printing another prompt. Fixing the newline handling made the missing prompt appear directly after the diagnostic, exposing the second bug clearly.
+
+Here's why. `ParseFunctionSignature()` reports the missing `(` through `LogErrorSignature()`, which delegates to `LogErrorExpression()`. `LogErrorExpression()` prints the diagnostic, then the parser returns `nullptr` through `ParseFunctionDefinition()` to `HandleFunctionDefinition()`. The handler then enters its recovery path and tries to skip the bad token so I do not retry it forever:
 
 ```cpp
 static void HandleFunctionDefinition() {
@@ -765,13 +766,17 @@ static void HandleFunctionDefinition() {
 }
 ```
 
-I stall in that `getNextToken()` call. I never return to `MainLoop()`, so I never print a fresh `ready> `.
+By the time I reach `getNextToken()`, the error has already been printed by `LogErrorExpression()`; this call is only trying to recover. I stall while attempting that skip. I never return to `MainLoop()`, so I never print a fresh `ready> `.
 
 I fix this by printing the prompt from inside `LogErrorExpression()` immediately after the error message, before I reach the blocking `getNextToken()` call:
 
-```cpp
-fprintf(stderr, "Error: %s (token: %s)\nready> ", Str,
-        TokenNames.at(CurrentToken).c_str());
+```cppdiff
+*unique_ptr<ExpressionNode> LogErrorExpression(const char *ErrorMessage) {
+-  fprintf(stderr, "Error: %s (token: %s)\n", ErrorMessage,
++  fprintf(stderr, "Error: %s (token: %s)\nready> ", ErrorMessage,
+*          TokenNames.at(CurrentToken).c_str());
+*  return nullptr;
+*}
 ```
 
 With both fixes in place:
@@ -815,7 +820,7 @@ cmake -S . -B build && cmake --build build
 The `test/` directory has lit tests covering the grammar rules. I run the suite with:
 
 ```bash
-llvm-lit test/
+llvm-lit -v test/
 ```
 
 !!!note

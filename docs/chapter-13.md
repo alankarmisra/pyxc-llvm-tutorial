@@ -124,21 +124,49 @@ I add one alternative to `if-statement`: zero or more `elif` clauses between the
 
 One new token:
 
-```cpp
-tok_elif = -22,
+```cppdiff
+*enum Token {
+*  ...
+*  // control
+*  tok_if = -12,
+*  tok_else = -13,
+*  tok_return = -14,
++  tok_elif = -22,
+*
+*  // loops
+*  ...
+*};
 ```
 
 Added to the keyword table, right alongside `if` and `else`:
 
-```cpp
-{"if", tok_if},         {"elif", tok_elif},     {"else", tok_else},
+```cppdiff
+*static map<string, Token> Keywords = {
+-    {"def", tok_def},       {"extern", tok_extern}, {"return", tok_return},
+-    {"if", tok_if},         {"else", tok_else},     {"for", tok_for},
+-    {"var", tok_var}};
++    {"def", tok_def},       {"extern", tok_extern}, {"return", tok_return},
++    {"if", tok_if},         {"elif", tok_elif},     {"else", tok_else},
++    {"for", tok_for},
++    {"var", tok_var}};
 ```
 
 And to the token-name map used in error messages:
 
-```cpp
-{tok_if, "'if'"},          {tok_elif, "'elif'"},
-{tok_else, "'else'"},
+```cppdiff
+*static map<int, string> TokenNames = [] {
+*  // Unprintable character tokens, and multi-character tokens.
+*  static map<int, string> Names = {
+*      ...
+-      {tok_if, "'if'"},          {tok_else, "'else'"},
+-      {tok_for, "'for'"},        {tok_var, "'var'"},
++      {tok_if, "'if'"},          {tok_elif, "'elif'"},
++      {tok_else, "'else'"},
++      {tok_for, "'for'"},        {tok_var, "'var'"},
+*      {tok_indent, "indent"},    {tok_dedent, "dedent"},
+*      {tok_block_end, "block-end"}};
+*  ...
+*};
 ```
 
 ## Refactoring If/Elif Parsing to Collect Branches

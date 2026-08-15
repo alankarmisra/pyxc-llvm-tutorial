@@ -143,43 +143,46 @@ I place the loosest-binding rule at the top and the tightest-binding rule at the
 
 Before I can use these grammar rules, I have to teach the lexer to recognize the new operators. Chapter 2 already had `+`. I add named tokens for `-`, `*`, `/`, and `<` beside it:
 
-```cpp
-enum Token {
-  // ...
-  tok_minus,
-  tok_star,
-  tok_slash,
-  tok_less,
-};
+```cppdiff
+*enum Token {
+*  ...
+*  tok_plus,
++  tok_minus,
++  tok_star,
++  tok_slash,
++  tok_less,
+*};
 ```
 
 I give each token a readable name for error messages:
 
-```cpp
-static map<int, string> TokenNames = {
-    // ...
-    {tok_minus, "'-'"},
-    {tok_star, "'*'"},
-    {tok_slash, "'/'"},
-    {tok_less, "'<'"},
-};
+```cppdiff
+*static map<int, string> TokenNames = {
+*    ...
+-    {tok_colon, "':'"},        {tok_plus, "'+'"},
++    {tok_colon, "':'"},        {tok_plus, "'+'"},    {tok_minus, "'-'"},
++    {tok_star, "'*'"},         {tok_slash, "'/'"},   {tok_less, "'<'"},
+*};
 ```
 
 Finally, I return the corresponding token when the lexer reads each character:
 
-```cpp
-  switch (ThisChar) {
-  // ...
-  case '-':
-    return tok_minus;
-  case '*':
-    return tok_star;
-  case '/':
-    return tok_slash;
-  case '<':
-    return tok_less;
-  // ...
-  }
+```cppdiff
+*  switch (ThisChar) {
+*  ...
+*  case '+':
+*    return tok_plus;
++  case '-':
++    return tok_minus;
++  case '*':
++    return tok_star;
++  case '/':
++    return tok_slash;
++  case '<':
++    return tok_less;
+*  default:
+*    return tok_error;
+*  }
 ```
 
 These are all single-character operators. Multi-character operators such as `==` and `<=` need a little more lexer logic, so I leave those for a later chapter.
@@ -214,27 +217,33 @@ static unique_ptr<ExpressionNode> ParseTerm() {
 }
 ```
 
-```cpp
-/// sum
-///   = term { ("+" | "-") term } ;
-static unique_ptr<ExpressionNode> ParseSum() {
-  // I call ParseTerm() so I finish every tighter * or / operation first.
-  auto Left = ParseTerm();
-  if (!Left)
-    return nullptr;
+And here's how I changed `ParseSum()`.
 
-  while (CurrentToken == tok_plus || CurrentToken == tok_minus) {
-    int Operator = CurrentToken;
-    getNextToken(); // I eat '+' or '-'.
-    auto Right = ParseTerm();
-    if (!Right)
-      return nullptr;
-    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
-                                             std::move(Right));
-  }
-
-  return Left;
-}
+```cppdiff
+*/// sum
+-///   = term { "+" term } ;
++///   = term { ("+" | "-") term } ;
+*static unique_ptr<ExpressionNode> ParseSum() {
++  // I call ParseTerm() so I finish every tighter * or / operation first.
+*  auto Left = ParseTerm();
+*  if (!Left)
+*    return nullptr;
+*
+-  while (CurrentToken == tok_plus) {
+-    getNextToken(); // I eat '+'.
++  while (CurrentToken == tok_plus || CurrentToken == tok_minus) {
++    int Operator = CurrentToken;
++    getNextToken(); // I eat '+' or '-'.
+*    auto Right = ParseTerm();
+*    if (!Right)
+*      return nullptr;
+-    Left = make_unique<BinaryExpressionNode>(tok_plus, std::move(Left),
++    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
+*                                             std::move(Right));
+*  }
+*
+*  return Left;
+*}
 ```
 
 ```cpp
@@ -343,7 +352,7 @@ cmake -S . -B build && cmake --build build
 I run the chapter tests with:
 
 ```bash
-llvm-lit test/
+llvm-lit -v test/
 ```
 
 ## Try It

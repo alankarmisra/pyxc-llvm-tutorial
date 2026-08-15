@@ -79,11 +79,30 @@ static bool IsRepl = true;
 
 I start with `Input` pointing to `stdin`. If I receive a filename, I open it and replace that pointer. The lexer always reads from `Input`, so I do not need separate lexer logic for the two modes.
 
-```cpp
-static int advance() {
-  int LastChar = fgetc(Input);
-  // ...
-}
+```cppdiff
+*static int advance() {
+-  int LastChar = getchar();
++  int LastChar = fgetc(Input);
+*
+*  // case: '\r' or '\r\n'
+*  if (LastChar == '\r') {
+-    int NextChar = getchar();
++    int NextChar = fgetc(Input);
+*
+*    // A following '\n' is part of the same line ending; eat it.
+*    // Anything else belongs to the next token; put it back.
+*    // (EOF can't be put back at all, so it's excluded from that check.
+*    // The next getchar() will still return EOF, so we don't lose it.)
+*    if (NextChar != '\n' && NextChar != EOF)
+-      ungetc(NextChar, stdin);
++      ungetc(NextChar, Input);
+*    PyxcSourceMgr.onChar('\n');
+*    LexLoc.Line++;
+*    LexLoc.Col = 0;
+*    return '\n';
+*  }
+*  ...
+*}
 ```
 
 Changing the pointer changes the source of every later character read.
@@ -101,22 +120,29 @@ static cl::opt<std::string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
 
 I mark `InputFile` as positional so a bare argument such as `program.pyxc` fills it. I use an empty string as the default, which means no filename was provided.
 
-```cpp
-int ProcessCommandLine(int argc, const char **argv) {
-  // ... parse LLVM's cl::opt flags, including -O ...
-  if (!InputFile.empty()) {
-    Input = fopen(InputFile.c_str(), "r");
-    if (!Input) {
-      perror(InputFile.c_str());
-      return -1;
-    }
-    IsRepl = false;
-  } else {
-    IsRepl = true;
-  }
-
-  return 0;
-}
+```cppdiff
+*int ProcessCommandLine(int argc, const char **argv) {
+*  cl::HideUnrelatedOptions(PyxcCategory);
+*  cl::ParseCommandLineOptions(argc, argv, "pyxc\n");
+*
+*  if (OptLevel > 3) {
+*    fprintf(stderr, "Error: -O level must be 0, 1, 2, or 3\n");
+*    return -1;
+*  }
+*
++  if (!InputFile.empty()) {
++    Input = fopen(InputFile.c_str(), "r");
++    if (!Input) {
++      perror(InputFile.c_str());
++      return -1;
++    }
++    IsRepl = false;
++  } else {
++    IsRepl = true;
++  }
++
+*  return 0;
+*}
 ```
 
 If I have a filename, I open it, point `Input` at the resulting handle, and disable REPL output. Otherwise, I keep reading from `stdin`.
@@ -160,7 +186,7 @@ I apply the same check to the automatic result in `HandleTopLevelExpression()`:
 ```cpp
 double result = FP();
 if (IsRepl)
-  fprintf(stderr, "Evaluated to %f\n", result);
+  fprintf(stdout, "Evaluated to %f\n", result);
 ```
 
 In file mode, the program only produces output that the pyxc source requests through functions such as `printd` and `putchard`.
@@ -209,6 +235,10 @@ or
 
 ```bash
 ./build/pyxc filename.pyxc -v
+```
+
+```bash
+llvm-lit -v test/
 ```
 
 ## Try It

@@ -91,31 +91,34 @@ int getToken() {
 
   // I read a name or keyword.
   if (isalpha(LastChar) || LastChar == '_') {
-    Name = LastChar;
+    string NameLiteral;
+    NameLiteral = LastChar;
     while (isalnum(LastChar = advance()) || LastChar == '_')
-      Name += LastChar;
+      NameLiteral += LastChar;
 
     // I leave the first character that is not part of this name or keyword in
     // LastChar.
 
     // I check whether the name is a keyword.
-    auto KeywordIt = Keywords.find(Name);
+    auto KeywordIt = Keywords.find(NameLiteral);
     if (KeywordIt != Keywords.end())
       return KeywordIt->second;
+    // Only a real name updates Name; a keyword never touches it.
+    Name = NameLiteral;
     return tok_name;
   }
 
   // I read a number.
   if (isdigit(LastChar) || LastChar == '.') {
-    string NumStr;
+    string NumberLiteral;
     do {
-      NumStr += LastChar;
+      NumberLiteral += LastChar;
       LastChar = advance();
     } while (isdigit(LastChar) || LastChar == '.');
     // I leave the first character that is not part of this number in LastChar.
 
     // TODO: I consume all of 1.23.45.67 but parse it as 1.23.
-    NumberValue = strtod(NumStr.c_str(), 0);
+    NumberValue = strtod(NumberLiteral.c_str(), 0);
     return tok_number;
   }
 
@@ -126,7 +129,7 @@ int getToken() {
       LastChar = advance();
     } while (LastChar != '\n' && LastChar != EOF);
 
-    if (LastChar != EOF) {
+    if (LastChar == '\n') {
       LastChar = ' ';
       return tok_eol;
     }
@@ -269,17 +272,17 @@ static void consumeNewlines() {
 /// node type, allowing parse functions to return an error directly.
 /// TokenNames provides a readable token description. Chapter 5 will add source
 /// location (line/column) to these diagnostics.
-unique_ptr<ExpressionNode> LogErrorExpression(const char *Str) {
-  fprintf(stderr, "Error: %s (token: %s)\nready> ", Str,
+unique_ptr<ExpressionNode> LogErrorExpression(const char *ErrorMessage) {
+  fprintf(stderr, "Error: %s (token: %s)\nready> ", ErrorMessage,
           TokenNames.at(CurrentToken).c_str());
   return nullptr;
 }
-unique_ptr<FunctionSignatureNode> LogErrorSignature(const char *Str) {
-  LogErrorExpression(Str);
+unique_ptr<FunctionSignatureNode> LogErrorSignature(const char *ErrorMessage) {
+  LogErrorExpression(ErrorMessage);
   return nullptr;
 }
-unique_ptr<FunctionDefinitionNode> LogErrorFunction(const char *Str) {
-  LogErrorExpression(Str);
+unique_ptr<FunctionDefinitionNode> LogErrorFunction(const char *ErrorMessage) {
+  LogErrorExpression(ErrorMessage);
   return nullptr;
 }
 
@@ -297,14 +300,14 @@ static unique_ptr<ExpressionNode> ParseNumberExpression() {
 ///   = "(" expression ")" ;
 static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
   getNextToken(); // I eat '('.
-  auto V = ParseExpression();
-  if (!V)
+  auto Expression = ParseExpression();
+  if (!Expression)
     return nullptr;
 
   if (CurrentToken != tok_rparen)
     return LogErrorExpression("expected ')'");
   getNextToken(); // I eat ')'.
-  return V;
+  return Expression;
 }
 
 /// name-expression
@@ -327,21 +330,23 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
   vector<unique_ptr<ExpressionNode>> Arguments;
   if (CurrentToken != tok_rparen) {
     while (true) {
-      if (auto Arg = ParseExpression())
-        Arguments.push_back(std::move(Arg));
+      if (auto Argument = ParseExpression())
+        Arguments.push_back(std::move(Argument));
       else
         return nullptr;
 
+      // ParseExpression() has already consumed the argument and left
+      // CurrentToken at the token after it.
       if (CurrentToken == tok_rparen)
         break;
 
       if (CurrentToken != tok_comma)
         return LogErrorExpression("Expected ')' or ',' in argument list");
-      getNextToken();
+      getNextToken(); // I eat ','.
     }
   }
 
-  // I eat ')'.
+  // I only reach here after parsing `a()` or `a(<arguments>)`, so I eat ')'.
   getNextToken();
 
   return make_unique<CallExpressionNode>(ParsedName, std::move(Arguments));
@@ -444,10 +449,12 @@ static unique_ptr<ExpressionNode> ParseExpression() {
 /// parameter
 ///   = name ;
 static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
+  // Callers consume the leading 'def', so the current token must be the
+  // function name.
   if (CurrentToken != tok_name)
     return LogErrorSignature("Expected function name in function signature");
 
-  string FnName = Name;
+  string FunctionName = Name;
   getNextToken(); // I eat the function name.
 
   if (CurrentToken != tok_lparen)
@@ -475,7 +482,7 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
 
   getNextToken(); // I eat ')'.
 
-  return make_unique<FunctionSignatureNode>(FnName, std::move(ParameterNames));
+  return make_unique<FunctionSignatureNode>(FunctionName, std::move(ParameterNames));
 }
 
 /// function-definition
@@ -495,10 +502,12 @@ static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
   //     x + 1
   consumeNewlines();
 
-  if (auto E = ParseExpression())
-    return make_unique<FunctionDefinitionNode>(std::move(Signature),
-                                               std::move(E));
-  return nullptr;
+  auto Body = ParseExpression();
+  if (!Body)
+    return nullptr;
+
+  return std::make_unique<FunctionDefinitionNode>(std::move(Signature),
+                                                  std::move(Body));
 }
 
 /// top-level-expression
@@ -508,13 +517,16 @@ static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
 /// add JIT execution later, I'll look up "__anon_expr" and call it to get the
 /// result.
 static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
-  if (auto E = ParseExpression()) {
-    auto Signature =
-        make_unique<FunctionSignatureNode>("__anon_expr", vector<string>());
-    return make_unique<FunctionDefinitionNode>(std::move(Signature),
-                                               std::move(E));
-  }
-  return nullptr;
+  auto Body = ParseExpression();
+  if (!Body)
+    return nullptr;
+
+  // I invent a function signature with an internal name and no parameters
+  auto Signature =
+      make_unique<FunctionSignatureNode>("__anon_expr", vector<string>());
+
+  return std::make_unique<FunctionDefinitionNode>(std::move(Signature),
+                                                  std::move(Body));
 }
 
 //===----------------------------------------===//
@@ -552,18 +564,17 @@ static void HandleTopLevelExpression() {
 /// skips one token. Either way execution returns here and looks at the new
 /// CurrentToken.
 static void MainLoop() {
-  while (true) {
-    if (CurrentToken == tok_eof)
-      return;
-
-    // For a bare newline, I print a fresh prompt and read the next token.
-    if (CurrentToken == tok_eol) {
+  while (CurrentToken != tok_eof) {
+    switch (CurrentToken) {
+    case tok_eol:
+      // For a bare newline, I print a fresh prompt and read the next token.
       fprintf(stderr, "ready> ");
       getNextToken();
-      continue;
-    }
-
-    switch (CurrentToken) {
+      break;
+    case tok_error:
+      LogErrorExpression("invalid character");
+      getNextToken();
+      break;
     case tok_def:
       HandleFunctionDefinition();
       break;

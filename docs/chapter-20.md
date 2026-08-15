@@ -36,9 +36,16 @@ static cl::opt<bool> DebugInfo("g", cl::desc("Emit DWARF debug info"),
 
 The opt-level flag itself already existed. What's new in `main`'s command-line handling is one guard, right after parsing:
 
-```cpp
-if (DebugInfo && OptLevel.getNumOccurrences() == 0)
-  OptLevel = 0;
+```cppdiff
+*int ProcessCommandLine(int argc, const char **argv) {
+*  cl::HideUnrelatedOptions(PyxcCategory);
+*  cl::ParseCommandLineOptions(argc, argv, "pyxc\n");
+*
++  if (DebugInfo && OptLevel.getNumOccurrences() == 0)
++    OptLevel = 0;
+*
+*  ...
+*}
 ```
 
 `getNumOccurrences()` is 0 only if the flag was never supplied at all. So `-g` alone silently coerces to `-O0`, while `-g -O2` leaves the opt level at 2, letting me opt into debug-with-optimization explicitly while the common case, just `-g`, stays safe by default.
@@ -76,27 +83,38 @@ static std::unique_ptr<ModulePassManager> TheMPM;
 
 `InitializeModuleAndManagers` cross-registers all of them, then builds the actual pipelines:
 
-```cpp
-// Cross-register so passes can access any analysis tier they need.
-PassBuilder PB;
-PB.registerModuleAnalyses(*TheMAM);
-PB.registerCGSCCAnalyses(*TheCGAM);
-PB.registerFunctionAnalyses(*TheFAM);
-PB.registerLoopAnalyses(*TheLAM);
-PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
-
-// I ask LLVM to build its standard pipelines for the selected level.
-if (OptLevel != 0) {
-  auto FunctionPipeline = PB.buildFunctionSimplificationPipeline(
-      GetOptLevel(), ThinOrFullLTOPhase::None);
-  TheFPM = std::make_unique<FunctionPassManager>(
-      std::move(FunctionPipeline));
-  auto ModulePipeline = PB.buildPerModuleDefaultPipeline(GetOptLevel());
-  TheMPM =
-      std::make_unique<ModulePassManager>(std::move(ModulePipeline));
-}
-
-InitializeDebugInfo();
+```cppdiff
+*static void InitializeModuleAndManagers(bool FreshContext = true) {
+*  ...
+*  // Cross-register so passes can access any analysis tier they need.
+*  PassBuilder PB;
+*  PB.registerModuleAnalyses(*TheMAM);
+*  PB.registerCGSCCAnalyses(*TheCGAM);
+*  PB.registerFunctionAnalyses(*TheFAM);
+*  PB.registerLoopAnalyses(*TheLAM);
+*  PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
+*
+-  // With -O0 the pass manager stays empty. Any non-zero level uses the
+-  // optimization pipeline introduced earlier in the tutorial.
+-  if (OptLevel != 0) {
+-    TheFPM->addPass(PromotePass());
+-    TheFPM->addPass(InstCombinePass());
+-    TheFPM->addPass(ReassociatePass());
+-    TheFPM->addPass(GVNPass());
+-  }
++  // I ask LLVM to build its standard pipelines for the selected level.
++  if (OptLevel != 0) {
++    auto FunctionPipeline = PB.buildFunctionSimplificationPipeline(
++        GetOptLevel(), ThinOrFullLTOPhase::None);
++    TheFPM = std::make_unique<FunctionPassManager>(
++        std::move(FunctionPipeline));
++    auto ModulePipeline = PB.buildPerModuleDefaultPipeline(GetOptLevel());
++    TheMPM =
++        std::make_unique<ModulePassManager>(std::move(ModulePipeline));
++  }
++
++  InitializeDebugInfo();
+*}
 ```
 
 `buildFunctionSimplificationPipeline` gives me the level-appropriate, correctly-ordered replacement for my old four-pass list. `buildPerModuleDefaultPipeline` adds passes that only make sense across the whole module, the inliner, in particular. I translate my own integer flag into LLVM's enum with a small helper:
@@ -191,7 +209,7 @@ static DIType *DITypeFor(ValueType Type) {
 
 `Float` and `Float64` both resolve to `Float64DIType`, the same collapse [Chapter 18](chapter-18.md) already does for the two 64-bit float spellings everywhere else in the type system.
 
-## Setting Up Once Per Module
+## Setting Up Once per Module
 
 ```cpp
 static void InitializeDebugInfo() {
@@ -249,7 +267,7 @@ static void FinalizeDebugInfo() {
 
 I call this from `EmitModuleToFile`, right before I open the output file, the latest point I can call it and still be sure every function and variable has already been described.
 
-## One Debug Location Per Function
+## One Debug Location per Function
 
 ```cpp
 static void SetCurrentDebugLocation(unsigned Line) {
@@ -266,22 +284,32 @@ I call this once, right after creating each function's entry block, and every in
 
 `FunctionDefinitionNode::codegen` creates one for every function whose name isn't one of my own internal `__pyxc.`-prefixed helpers:
 
-```cpp
-if (DIB && TheDIFile && P.getName().rfind("__pyxc.", 0) != 0) {
-  unsigned Line = P.getLocation().Line ? P.getLocation().Line : 1;
-  SmallVector<Metadata *, 8> Types;
-  Types.push_back(DITypeFor(P.getReturnType()));
-  for (size_t Index = 0; Index < P.getParameters().size(); ++Index)
-    Types.push_back(DITypeFor(P.getParameterType(Index)));
-  auto *SubroutineType =
-      DIB->createSubroutineType(DIB->getOrCreateTypeArray(Types));
-  auto *Subprogram = DIB->createFunction(
-      TheDIFile, P.getName(), StringRef(), TheDIFile, Line, SubroutineType,
-      Line, DINode::FlagZero, DISubprogram::SPFlagDefinition);
-  TheFunction->setSubprogram(Subprogram);
-  CurDIScope = Subprogram;
-  CurFunctionLine = Line;
-}
+```cppdiff
+*Function *FunctionDefinitionNode::codegen() {
+*  ...
+*  ValueType SavedRetType = CurrentFunctionReturnType;
+*  CurrentFunctionReturnType = P.getReturnType();
+*
++  if (DIB && TheDIFile && P.getName().rfind("__pyxc.", 0) != 0) {
++    unsigned Line = P.getLocation().Line ? P.getLocation().Line : 1;
++    SmallVector<Metadata *, 8> Types;
++    Types.push_back(DITypeFor(P.getReturnType()));
++    for (size_t Index = 0; Index < P.getParameters().size(); ++Index)
++      Types.push_back(DITypeFor(P.getParameterType(Index)));
++    auto *SubroutineType =
++        DIB->createSubroutineType(DIB->getOrCreateTypeArray(Types));
++    auto *Subprogram = DIB->createFunction(
++        TheDIFile, P.getName(), StringRef(), TheDIFile, Line, SubroutineType,
++        Line, DINode::FlagZero, DISubprogram::SPFlagDefinition);
++    TheFunction->setSubprogram(Subprogram);
++    CurDIScope = Subprogram;
++    CurFunctionLine = Line;
++  }
+*
+*  // Step 2: create the entry block and point the builder at it.
+*  BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
+*  ...
+*}
 ```
 
 `createSubroutineType` wants a flat list, return type first, then each parameter's type in order — `DITypeFor` resolves each one to its real descriptor, so a function like `def add(a: int32, b: int32) -> int32` gets three `Int32DIType` entries, not three interchangeable `double`s. `setSubprogram` is the step that actually attaches this descriptor to the LLVM `Function*`, without it, even a correctly-built `DISubprogram` node wouldn't get connected to the function's machine code by the DWARF emitter. `CurDIScope` gets cleared back to `nullptr` after the body finishes, both on success and on the error path, so anything emitted outside a function, module-level init code, for instance, doesn't accidentally inherit whatever scope the previous function left behind.
@@ -400,16 +428,20 @@ cmake -S . -B build && cmake --build build
 lldb program
 ```
 
+```bash
+llvm-lit -v test/
+```
+
 ## Try It
 
-### Inspecting the metadata directly
+### Inspecting the Metadata Directly
 
 ```bash
 pyxc -g --emit llvm-ir -o out.ll program.pyxc
 grep -A3 'DISubprogram\|DILocalVariable\|DILocation' out.ll
 ```
 
-### Verifying DWARF actually landed in the object file
+### Verifying DWARF Actually Landed in the Object File
 
 ```bash
 pyxc -g --emit obj -o program.o program.pyxc
@@ -431,7 +463,7 @@ I ran this myself; a real compile unit, `DW_TAG_subprogram` for `sq`, decl line 
                 ...
 ```
 
-### Comparing `-O0` and `-O2` IR for the same function
+### Comparing `-O0` and `-O2` IR for the Same Function
 
 ```bash
 pyxc -g -O0 --emit llvm-ir -o at_o0.ll program.pyxc

@@ -582,6 +582,10 @@ cmake -S . -B build && cmake --build build
 ./build/pyxc
 ```
 
+```bash
+llvm-lit -v test/
+```
+
 ## Try It
 
 **Compound assignment on a field**

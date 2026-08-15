@@ -84,30 +84,33 @@ int getToken() {
 
   // I read a name or keyword.
   if (isalpha(LastChar) || LastChar == '_') {
-    Name = LastChar;
+    string NameLiteral;
+    NameLiteral = LastChar;
     while (isalnum(LastChar = advance()) || LastChar == '_')
-      Name += LastChar;
+      NameLiteral += LastChar;
     // I leave the first character that is not part of this name or keyword in
     // LastChar.
 
     // I check whether the name is a keyword.
-    auto KeywordIt = Keywords.find(Name);
+    auto KeywordIt = Keywords.find(NameLiteral);
     if (KeywordIt != Keywords.end())
       return KeywordIt->second;
+    // Only a real name updates Name; a keyword never touches it.
+    Name = NameLiteral;
     return tok_name;
   }
 
   // I read a number.
   if (isdigit(LastChar) || LastChar == '.') {
-    string NumStr;
+    string NumberLiteral;
     do {
-      NumStr += LastChar;
+      NumberLiteral += LastChar;
       LastChar = advance();
     } while (isdigit(LastChar) || LastChar == '.');
     // I leave the first character that is not part of this number in LastChar.
 
     // TODO: I consume all of 1.23.45.67 but parse it as 1.23.
-    NumberValue = strtod(NumStr.c_str(), 0);
+    NumberValue = strtod(NumberLiteral.c_str(), 0);
     return tok_number;
   }
 
@@ -118,7 +121,7 @@ int getToken() {
       LastChar = advance();
     } while (LastChar != '\n' && LastChar != EOF);
 
-    if (LastChar != EOF) {
+    if (LastChar == '\n') {
       LastChar = advance();
       return tok_eol;
     }

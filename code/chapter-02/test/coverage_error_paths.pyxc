@@ -5,7 +5,7 @@
 # RUN: printf 'def bad(,): 1\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=SIGNATURE
 # RUN: printf 'def bad(): +\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=BODY
 
-# LEXER: Error: unknown token when expecting an expression (token: error)
+# LEXER: Error: invalid character (token: error)
 # COMMENT: ready>
 # PAREN: Error: unknown token when expecting an expression (token: '+')
 # CALL: Error: unknown token when expecting an expression (token: '+')

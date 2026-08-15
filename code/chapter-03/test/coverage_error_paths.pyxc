@@ -7,7 +7,7 @@
 # RUN: printf '1 * +\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=TERM_RHS
 # RUN: printf '1 < +\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=COMPARISON_RHS
 
-# LEXER: unknown token when expecting an expression
+# LEXER: invalid character
 # COMMENT: ready>
 # PAREN: unknown token when expecting an expression
 # CALL: unknown token when expecting an expression
@@ -22,4 +22,3 @@
 # and '<' (ParseComparison) — the same missing-right-operand shape
 # recovery_after_error.pyxc already covers for '+'/'-' (ParseSum), but not
 # for the other two binary-operator tiers.
-

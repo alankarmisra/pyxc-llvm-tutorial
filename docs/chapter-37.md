@@ -234,7 +234,7 @@ cd pyxc-llvm-tutorial/code/chapter-37
 
 ```
 
-## Registering the Aggregate Before Its Body Is Parsed
+## Registering the Aggregate before Its Body Is Parsed
 
 Before this chapter, `ParseAggregateDefinition` filled in `StructTypes[AggregateName]` only once, after the whole body was parsed. That doesn't work anymore: a method signature can reference the enclosing class (a method returning `ptr[Counter]` on `Counter` itself, say), so `Counter` needs to already be in `StructTypes` while its own methods are being parsed. I register early instead, then keep the entry updated as each field or method is added:
 
@@ -602,6 +602,10 @@ entry:
 cd code/chapter-37
 cmake -S . -B build && cmake --build build
 ./build/pyxc
+```
+
+```bash
+llvm-lit -v test/
 ```
 
 ## Try It

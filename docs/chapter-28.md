@@ -195,15 +195,30 @@ Two productions change this chapter: `primary` gains a `sizeof-expression` alter
 
 `sizeof` needs a token like every other keyword I've added:
 
-```cpp
-tok_sizeof = -53,
+```cppdiff
+*enum Token {
+*  ...
+*  tok_struct = -50,
+*  tok_ptr = -51,
+*  tok_addr = -52,
++  tok_sizeof = -53,
+*
+*  // punctuation and operators
+*  ...
+*};
 ```
 
-```cpp
-{"sizeof", tok_sizeof}
+```cppdiff
+*static map<string, Token> Keywords = {
+*    ...
+*    {"ptr", tok_ptr},         {"addr", tok_addr},
++    {"sizeof", tok_sizeof},
+*    {"float", tok_float},
+*    ...
+*};
 ```
 
-## `sizeof(T)`: a Size I Don't Have to Compute Myself
+## `sizeof(T)`: A Size I Don't Have to Compute Myself
 
 I could compute a struct's size by hand: add up its fields, account for padding, remember that pointers are 8 bytes on a 64-bit target. But I already have all of that information, since I just built the LLVM type for every struct I've declared. Asking LLVM for the size directly is both less error-prone and correct across whatever target I eventually compile for.
 
@@ -249,9 +264,17 @@ static unique_ptr<ExpressionNode> ParseSizeofExpression() {
 
 `sizeof(None)` is the one type I reject outright: `None` isn't a value at all, so asking for its size is a question that shouldn't have been asked. `ParsePrimary` routes `tok_sizeof` here:
 
-```cpp
-case tok_sizeof:
-  return ParseSizeofExpression();
+```cppdiff
+*  switch (CurrentToken) {
+*  ...
+*  case tok_bool:
+*    return ParseCastExpression();
++  case tok_sizeof:
++    return ParseSizeofExpression();
+*  case tok_addr:
+*    return ParseAddrExpression();
+*  ...
+*  }
 ```
 
 Codegen doesn't emit an instruction, since there's nothing to compute at runtime:
@@ -297,51 +320,81 @@ Before this chapter, `ptr[int64](raw)` wasn't rejected by any type check, it was
 
 So the fix isn't lifting a guard, it's adding a case, falling through to the exact same call every other cast target already uses:
 
-```cpp
-case tok_bool:
-case tok_ptr:
-  return ParseCastExpression();
-case tok_sizeof:
-  return ParseSizeofExpression();
+```cppdiff
+*  case tok_bool:
++  case tok_ptr:
+*    return ParseCastExpression();
+*  case tok_sizeof:
+*    return ParseSizeofExpression();
 ```
 
 Once `tok_ptr` is reachable, though, I do need one new guard, since `ParseCastExpression` will now happily see `Type == ValueType::Pointer` and I don't want to allow casting just anything to a pointer:
 
-```cpp
-if (Type == ValueType::Pointer && Expr->getType() != ValueType::Pointer)
-  return LogErrorExpression("Pointer casts require a pointer operand");
-return make_unique<CastExpressionNode>(Type, std::move(Expr),
-                                        TargetTypeInfo);
+```cppdiff
+*static unique_ptr<ExpressionNode> ParseCastExpression() {
+-  ValueType Type = ParseTypeToken();
++  string TargetTypeInfo;
++  ValueType Type = ParseTypeToken(&TargetTypeInfo);
+*  if (Type == ValueType::Error)
+*    return nullptr;
+*  if (Type == ValueType::None)
+*    return LogErrorExpression("Cannot cast to None");
+*  if (CurrentToken != tok_lparen)
+*    return LogErrorExpression("Expected '(' after cast type");
+*  getNextToken(); // eat '('
+*  auto Expr = ParseExpression();
+*  if (!Expr)
+*    return nullptr;
+*  if (CurrentToken != tok_rparen)
+*    return LogErrorExpression("Expected ')' after cast expression");
+*  getNextToken(); // eat ')'
++  if (Type == ValueType::Pointer && Expr->getType() != ValueType::Pointer)
++    return LogErrorExpression("Pointer casts require a pointer operand");
+-  return make_unique<CastExpressionNode>(Type, std::move(Expr));
++  return make_unique<CastExpressionNode>(Type, std::move(Expr),
++                                          TargetTypeInfo);
+*}
 ```
 
 I don't allow casting an integer to a pointer. There's no address I could hand it that pyxc could vouch for, and letting that through would just be a way to smuggle in undefined behavior with a friendlier syntax.
 
 `CastExpressionNode` needs a `TargetTypeInfo` now, for the same reason `SizeofExpressionNode` does: `ptr[Point]` and `ptr[int64]` are both `ValueType::Pointer`, so the pointee type has to travel separately:
 
-```cpp
-class CastExpressionNode : public ExpressionNode {
-  ValueType TargetType;
-  string TargetTypeInfo;
-  unique_ptr<ExpressionNode> Expr;
-
-public:
-  CastExpressionNode(ValueType TargetType, unique_ptr<ExpressionNode> Expr,
-                     const string &TargetTypeInfo = "")
-      : TargetType(TargetType), TargetTypeInfo(TargetTypeInfo),
-        Expr(std::move(Expr)) {
-    setType(TargetType, TargetTypeInfo);
-  }
-  Value *codegen() override;
-};
+```cppdiff
+*class CastExpressionNode : public ExpressionNode {
+*  ValueType TargetType;
++  string TargetTypeInfo;
+*  unique_ptr<ExpressionNode> Expr;
+*
+*public:
+-  CastExpressionNode(ValueType TargetType, unique_ptr<ExpressionNode> Expr)
+-      : TargetType(TargetType), Expr(std::move(Expr)) {
+-    setType(TargetType);
++  CastExpressionNode(ValueType TargetType, unique_ptr<ExpressionNode> Expr,
++                     const string &TargetTypeInfo = "")
++      : TargetType(TargetType), TargetTypeInfo(TargetTypeInfo),
++        Expr(std::move(Expr)) {
++    setType(TargetType, TargetTypeInfo);
+*  }
+*  Value *codegen() override;
+*};
 ```
 
 Without it, a cast to `ptr[int64]` would carry no pointee information at all, and anything downstream that indexes or reads through the result wouldn't know what it's pointing at.
 
 Codegen for the pointer-to-pointer case is nothing at all, because at the LLVM level there's nothing to do:
 
-```cpp
-if (From == ValueType::Pointer && To == ValueType::Pointer)
-  return V;
+```cppdiff
+*static Value *EmitCast(Value *V, ValueType From, ValueType To) {
+*  if (!V)
+*    return nullptr;
+*  if (From == To)
+*    return V;
++  if (From == ValueType::Pointer && To == ValueType::Pointer)
++    return V;
+*  // Integer ↔ float conversions.
+*  ...
+*}
 ```
 
 With opaque pointers, every pointer is the same IR type regardless of what it points to, so there's no instruction to emit between two of them: the value just passes through unchanged. I confirmed this by compiling a cast and reading the IR:
@@ -404,9 +457,13 @@ cd code/chapter-28
 cmake -S . -B build && cmake --build build
 ```
 
+```bash
+llvm-lit -v test/
+```
+
 ## Try It
 
-### `sizeof` of scalar types and a struct
+### `sizeof` of Scalar Types and a Struct
 
 ```pyxc
 extern def printd(x: float64)
@@ -432,7 +489,7 @@ def main() -> int:
 16.000000
 ```
 
-### `malloc`, a pointer cast, and field access
+### `malloc`, a Pointer Cast, and Field Access
 
 ```pyxc
 extern def malloc(n: int64) -> ptr[int8]
@@ -459,7 +516,7 @@ def main() -> int:
 33.000000
 ```
 
-### `malloc` and pointer arithmetic: a heap array
+### `malloc` and Pointer Arithmetic: A Heap Array
 
 ```pyxc
 extern def malloc(n: int64) -> ptr[int8]
@@ -485,7 +542,7 @@ def main() -> int:
 23.000000
 ```
 
-### Inspecting the IR: `sizeof` really is just a constant
+### Inspecting the IR: `sizeof` Really Is Just a Constant
 
 ```bash
 pyxc --emit llvm-ir -o out.ll program.pyxc

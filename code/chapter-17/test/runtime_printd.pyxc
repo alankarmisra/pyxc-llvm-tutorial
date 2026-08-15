@@ -3,7 +3,7 @@
 # RUN: grep -q "Evaluated to 0.000000" %t
 # RUN: grep -q "^7.000000" %t
 
-# Runtime library: printd prints its argument to stderr as "%f\n" and returns
+# Runtime library: printd prints its argument to stdout as "%f\n" and returns
 # 0.0. The '7.000000' line comes from printd's own fprintf; the 'Evaluated to
 # 0.000000' line comes from the JIT calling the __pyxc.toplevel.0 wrapper.
 extern def printd(x)

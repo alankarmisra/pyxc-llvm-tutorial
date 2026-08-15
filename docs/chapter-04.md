@@ -79,21 +79,41 @@ I could have special-cased `-` inside `ParsePrimary` instead of giving it its ow
 
 I add one token for `%`:
 
-```cpp
-tok_percent,
+```cppdiff
+*enum Token {
+*  ...
+*  tok_star,
+*  tok_slash,
++  tok_percent,
+*  tok_less,
+*};
 ```
 
 And give it a readable name for error messages, right alongside `%`'s siblings:
 
-```cpp
-{tok_percent, "'%'"},
+```cppdiff
+*static map<int, string> TokenNames = {
+*    ...
+-    {tok_star, "'*'"},         {tok_slash, "'/'"},   {tok_less, "'<'"},
++    {tok_star, "'*'"},         {tok_slash, "'/'"},   {tok_percent, "'%'"},
++    {tok_less, "'<'"},
+*};
 ```
 
 And return it from the lexer:
 
-```cpp
-case '%':
-  return tok_percent;
+```cppdiff
+*  switch (ThisChar) {
+*  ...
+*  case '/':
+*    return tok_slash;
++  case '%':
++    return tok_percent;
+*  case '<':
+*    return tok_less;
+*  default:
+*    return tok_error;
+*  }
 ```
 
 ## A New AST Node
@@ -241,7 +261,7 @@ cmake -S . -B build && cmake --build build
 I run the chapter tests with:
 
 ```bash
-llvm-lit test/
+llvm-lit -v test/
 ```
 
 ## What's Next

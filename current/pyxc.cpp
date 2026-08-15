@@ -2585,8 +2585,8 @@ static unique_ptr<ExpressionNode> ParseAddrExpression() {
   if (CurrentToken != tok_lparen)
     return LogErrorExpression("Expected '(' after addr");
   getNextToken(); // eat '('
-  if (CurrentToken != tok_name)
     return LogErrorExpression("addr expects an lvalue");
+  if (CurrentToken != tok_name)
   string BaseName = Name;
   getNextToken(); // eat name
   ValueType CurType = LookupVarType(BaseName);
@@ -3177,8 +3177,8 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
     getNextToken(); // optional 'var'
   }
 
-  if (CurrentToken != tok_name)
     return LogErrorExpression("Expected name after 'for'");
+  if (CurrentToken != tok_name)
   string VarName = Name;
   getNextToken(); // eat name
 
@@ -4663,6 +4663,8 @@ static unique_ptr<ExpressionNode> ParseBlock() {
 static unique_ptr<FunctionSignatureNode> ParseFunctionSignature(bool AllowVarArgs = false) {
   SourceLocation SignatureLoc = CurLoc;
 
+  // Callers consume the leading 'def', so the current token must be the
+  // function name.
   if (CurrentToken != tok_name)
     return LogErrorSignature("Expected function name in function signature");
   string FnName = Name;
@@ -4753,6 +4755,9 @@ ParseOptionalReturnTypeWithStruct(string &StructName,
 /// functionbody
 ///   = simplestmt | end-of-lines block ;
 static unique_ptr<ExpressionNode> ParseFunctionBody() {
+  // Allow the function body to start on the next line:
+  //   def foo(x):
+  //     x + 1
   if (CurrentToken == tok_eol) {
     consumeNewlines();
     if (CurrentToken != tok_indent)
@@ -4796,8 +4801,8 @@ static unique_ptr<FunctionDefinitionNode>
 ParseMethodDefinitionInClass(const string &ClassName, bool IsPublic) {
   // CurrentToken is 'def'
   getNextToken(); // eat 'def'
-  if (CurrentToken != tok_name)
     return LogErrorFunction("Expected method name in class definition");
+  if (CurrentToken != tok_name)
   string MethodName = Name;
   SourceLocation SignatureLoc = CurLoc;
   getNextToken(); // eat method name
@@ -5332,8 +5337,8 @@ static bool ParseMethodSignatureOnlyInClass(const string &ClassName,
                                             bool IsPublic) {
   // CurrentToken is 'def'
   getNextToken(); // eat def
-  if (CurrentToken != tok_name)
     return LogErrorExpression("Expected method name in class definition"), false;
+  if (CurrentToken != tok_name)
   string MethodName = Name;
   SourceLocation SignatureLoc = CurLoc;
   getNextToken(); // eat method name
@@ -8569,17 +8574,7 @@ extern "C" DLLEXPORT double printd(double X) {
 /// tokens on the current line. Either way we return here to look at the
 /// next CurrentToken.
 static void MainLoop() {
-  while (true) {
-    if (CurrentToken == tok_eof)
-      return;
-
-    // A bare newline: just print a fresh prompt and read the next token.
-    if (CurrentToken == tok_eol) {
-      PrintReplPrompt();
-      getNextToken();
-      continue;
-    }
-
+  while (CurrentToken != tok_eof) {
     if (CurrentToken == tok_indent) {
       LogErrorExpression("Unexpected indentation");
       SynchronizeToLineBoundary();
@@ -8598,6 +8593,11 @@ static void MainLoop() {
     }
 
     switch (CurrentToken) {
+    case tok_eol:
+      // A bare newline: just print a fresh prompt and read the next token.
+      PrintReplPrompt();
+      getNextToken();
+      break;
     case tok_module:
       HandleModuleDef();
       break;

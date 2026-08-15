@@ -199,12 +199,28 @@ cd pyxc-llvm-tutorial/code/chapter-29
 
 ## New Keyword: `type`
 
-```cpp
-tok_type = -39,
+```cppdiff
+*enum Token {
+*  ...
+*  tok_ptr = -51,
+*  tok_addr = -52,
+*  tok_sizeof = -53,
++  tok_type = -54,
+*
+*  // punctuation and operators
+*  ...
+*};
 ```
 
-```cpp
-{"type", tok_type}
+```cppdiff
+*static map<string, Token> Keywords = {
+*    ...
+*    {"ptr", tok_ptr},         {"addr", tok_addr},
+*    {"sizeof", tok_sizeof},
++    {"type", tok_type},
+*    {"float", tok_float},
+*    ...
+*};
 ```
 
 ## The Type-Alias Table
@@ -215,16 +231,18 @@ static std::map<string, std::pair<ValueType, string>> TypeAliases;
 
 An alias maps a name to a fully-resolved type: the same `(ValueType, StructName)` pair I already use everywhere a type needs a pointee or struct name attached, going back to [Chapter 24](chapter-24.md)'s structs. `TypeAliases` gets cleared alongside every other per-file symbol table in `ResetParserStateForFile`, so aliases don't leak from one compiled file into the next:
 
-```cpp
-static void ResetParserStateForFile() {
-  FunctionSignatures.clear();
-  StructTypes.clear();
-  TypeAliases.clear();
-  GlobalVarTypes.clear();
-  GlobalVarStructTypes.clear();
-  GlobalVarDecls.clear();
-  VarScopes.clear();
-  VarStructScopes.clear();
+```cppdiff
+*static void ResetParserStateForFile() {
+*  FunctionSignatures.clear();
+*  StructTypes.clear();
++  TypeAliases.clear();
+*  GlobalVarTypes.clear();
+*  GlobalVarStructNames.clear();
+*  GlobalVarDecls.clear();
+*  VarScopes.clear();
+*  VarStructScopes.clear();
+*  ...
+*}
 ```
 
 ## Extending Type Parsing for Aliases
@@ -233,28 +251,39 @@ Every type annotation in pyxc, parameter types, return types, `var` declarations
 
 Before this chapter, an unrecognized name here was just an error. Now I check `TypeAliases` first:
 
-```cpp
-case tok_name: {
-  string TyName = Name;
-  auto AliasIt = TypeAliases.find(TyName);
-  if (AliasIt != TypeAliases.end()) {
-    getNextToken();
-    if (StructName)
-      *StructName = AliasIt->second.second;
-    return AliasIt->second.first;
-  }
-  if (!StructTypes.count(TyName)) {
-    LogErrorExpression(("Unknown type '" + TyName + "'").c_str());
-    return ValueType::Error;
-  }
-  getNextToken();
-  if (StructName)
-    *StructName = TyName;
-  return ValueType::Struct;
-}
+```cppdiff
+*static ValueType ParseTypeToken(string *StructName) {
+*  ...
+*  switch (CurrentToken) {
+*  ...
+*  case tok_name: {
++    auto Alias = TypeAliases.find(Name);
++    if (Alias != TypeAliases.end()) {
++      BaseType = Alias->second.first;
++      BaseTypeInfo = Alias->second.second;
++      getNextToken();
++      break;
++    }
+*    auto Found = StructTypes.find(Name);
+*    if (Found == StructTypes.end()) {
+-      LogErrorExpression(("Unknown struct type '" + Name + "'").c_str());
++      LogErrorExpression(("Unknown type '" + Name + "'").c_str());
+*      return ValueType::Error;
+*    }
+*    BaseTypeInfo = Name;
+*    getNextToken();
+*    BaseType = ValueType::Struct;
+*    break;
+*  }
+*  default:
+*    LogErrorExpression("Expected a type");
+*    return ValueType::Error;
+*  }
+*  ...
+*}
 ```
 
-If the name is a known alias, I return whatever it resolves to and I'm done; nothing downstream can even tell an alias was involved. If it isn't an alias, the old struct-name check runs exactly as before.
+If the name is a known alias, I set `BaseType`/`BaseTypeInfo` to whatever it resolves to and break out of the case; nothing downstream can even tell an alias was involved. If it isn't an alias, the old struct-name check runs exactly as before.
 
 ## Parsing the Definition Itself
 
@@ -328,12 +357,26 @@ type Foo
 
 And the reverse, a struct colliding with an existing alias, checked inside `ParseStructDefinition` itself:
 
-```cpp
-if (TypeAliases.count(StructName)) {
-  LogErrorExpression(("Name '" + StructName + "' is already defined as a type alias")
-               .c_str());
-  return false;
-}
+```cppdiff
+*static bool ParseStructDefinition() {
+*  getNextToken(); // eat 'struct'
+*  if (CurrentToken != tok_name) {
+*    LogErrorExpression("Expected name after 'struct'");
+*    return false;
+*  }
+*  string StructName = Name;
++  if (TypeAliases.count(StructName)) {
++    LogErrorExpression(("Type '" + StructName +
++                        "' is already defined as a type alias")
++                           .c_str());
++    return false;
++  }
+*  if (StructTypes.count(StructName)) {
+*    LogErrorExpression("Struct already defined");
+*    return false;
+*  }
+*  ...
+*}
 ```
 
 ```pyxc
@@ -400,9 +443,13 @@ cd code/chapter-29
 cmake -S . -B build && cmake --build build
 ```
 
+```bash
+llvm-lit -v test/
+```
+
 ## Try It
 
-### `string` as a parameter type
+### `string` as a Parameter Type
 
 ```pyxc
 extern def puts(s: ptr[int8]) -> int
@@ -421,7 +468,7 @@ def main() -> int:
 world
 ```
 
-### Aliasing a struct
+### Aliasing a Struct
 
 ```pyxc
 extern def printd(x: float64)

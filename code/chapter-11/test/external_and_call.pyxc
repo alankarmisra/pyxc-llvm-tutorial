@@ -8,7 +8,7 @@
 # external = "extern" "def" function signature
 # call-expression  = name "(" expression ")"
 #
-# printd(1.0) writes "1.000000\n" to stderr and returns 0.0,
+# printd(1.0) writes "1.000000\n" to stdout and returns 0.0,
 # so the top-level expression evaluates to 0.000000.
 
 extern def printd(x)

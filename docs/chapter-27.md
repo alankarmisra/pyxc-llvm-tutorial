@@ -180,12 +180,15 @@ cd pyxc-llvm-tutorial/code/chapter-27
 
 A single enum value covers every array regardless of element type:
 
-```cpp
-enum class ValueType {
-  // ...existing values...
-  Array,
-  // ...
-};
+```cppdiff
+*enum class ValueType {
+*  ...
+*  Bool,
+*  Struct,
++  Array,
+*  Pointer,
+*  Error
+*};
 ```
 
 An array literal needs its own node, since it's not a name, a number, or anything else I already have a class for:
@@ -453,19 +456,29 @@ For a pointer, `Base->codegen()` loads whatever address it holds, and a single-i
 
 Indexing isn't the only place an array needs to become a pointer. Passing an array variable as a whole, to a function expecting `ptr[T]`, needs the same decay. `NameExpressionNode::codegen` checks for an `Array` type before it does its normal load, and GEPs to the first element instead:
 
-```cpp
-Value *NameExpressionNode::codegen() {
-  if (getType() == ValueType::Array) {
-    Value *ArrayAddress = codegenAddress();
-    if (!ArrayAddress)
-      return LogErrorV("Unknown variable name");
-    Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
-    return TheBuilder->CreateInBoundsGEP(
-        LLVMTypeFor(getType(), getStructName()), ArrayAddress, {Zero, Zero},
-        "arraydecay");
-  }
-  // ...normal load path for non-array variables...
-}
+```cppdiff
+*Value *NameExpressionNode::codegen() {
++  if (getType() == ValueType::Array) {
++    Value *ArrayAddress = codegenAddress();
++    if (!ArrayAddress)
++      return LogErrorV("Unknown variable name");
++    Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
++    return TheBuilder->CreateInBoundsGEP(
++        LLVMTypeFor(getType(), getStructName()), ArrayAddress, {Zero, Zero},
++        "arraydecay");
++  }
++
+*  auto It = NamedValues.find(Name);
+*  if (It != NamedValues.end() && It->second)
+*    return TheBuilder->CreateLoad(LLVMTypeFor(getType(), getStructName()), It->second,
+*                               Name.c_str());
+*
+*  if (auto *GV = GetGlobalVariable(Name))
+*    return TheBuilder->CreateLoad(LLVMTypeFor(getType(), getStructName()), GV,
+*                               Name.c_str());
+*
+*  return LogErrorV("Unknown variable name");
+*}
 ```
 
 Loading an array by name would otherwise hand back the entire aggregate, which is only meaningful as something to `store`, not something to pass around as a value. Function-call argument checking uses `ArrayDecaysToPointerType` to allow this specific case through even though `ptr[int]` and `int[4]` aren't the same `ValueType`:
@@ -488,9 +501,13 @@ cd code/chapter-27
 cmake -S . -B build && cmake --build build
 ```
 
+```bash
+llvm-lit -v test/
+```
+
 ## Try It
 
-### Declare, initialize, index
+### Declare, Initialize, Index
 
 ```pyxc
 extern def printd(x: float64)
@@ -505,7 +522,7 @@ def main() -> int:
 30.000000
 ```
 
-### An array parameter, indexed in the body
+### An Array Parameter, Indexed in the Body
 
 ```pyxc
 def sum4(a: int[4]) -> int:
@@ -524,7 +541,7 @@ entry:
   store [4 x i64] %a, ptr %a1, align 8
 ```
 
-### An array decaying to a pointer argument
+### An Array Decaying to a Pointer Argument
 
 ```pyxc
 extern def printd(x: float64)
@@ -542,7 +559,7 @@ def main() -> int:
 100.000000
 ```
 
-### Element count mismatch
+### Element Count Mismatch
 
 ```pyxc
 def main() -> int:

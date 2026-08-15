@@ -45,7 +45,7 @@ git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-44
 ```
 
-## Parsing Without Codegen
+## Parsing without Codegen
 
 I add a global flag that suppresses codegen during an import scan, plus a map that tracks which files have been scanned:
 
@@ -263,7 +263,7 @@ static string CanonicalizePath(const string &Path) {
 }
 ```
 
-## Collecting Signatures From a File
+## Collecting Signatures from a File
 
 This is the core of the import system. I open the file, switch into `SignatureScanMode`, scan for `export` declarations, and save and restore all the global parser state I touch along the way. I check `SignatureFileStates` first: a `Done` file is reused as-is, and — this chapter — a file that's still `InProgress` (meaning I'm already in the middle of scanning it further up the call stack) is a cycle, which I reject outright:
 
@@ -497,6 +497,10 @@ for (const auto &InputPath : InputFiles) {
 cd code/chapter-44
 cmake -S . -B build && cmake --build build
 ./build/pyxc
+```
+
+```bash
+llvm-lit -v test/
 ```
 
 ## Try It

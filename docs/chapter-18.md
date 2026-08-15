@@ -271,7 +271,7 @@ tok_false = -33,
 Before chapter 17, every number literal stored a `double`. Now literals have proper types. The lexer sets a flag:
 
 ```cpp
-NumberIsFloat = NumStr.find('.') != string::npos;
+NumberIsFloat = NumberLiteral.find('.') != string::npos;
 ```
 
 `ParseNumberExpression` uses `APInt` or `APFloat` depending on this flag:
@@ -583,7 +583,7 @@ Every `NameExpressionNode` carries its resolved type at parse time. When codegen
 %r_val = load float, ptr %r
 ```
 
-## var Declarations: Required Type Annotation
+## Var Declarations: Required Type Annotation
 
 Before:
 
@@ -655,7 +655,7 @@ store i16 0, ptr %b
 store double 3.140000e+00, ptr %ratio
 ```
 
-## for Loops: Typed Loop Variable
+## For Loops: Typed Loop Variable
 
 ```pyxc
 # Chapter 17
@@ -1204,7 +1204,7 @@ entry:
 
 `CallExpressionNode` overrides `shouldPrintValue()`: void calls are silently discarded in the REPL without printing anything.
 
-## Wrapping main for the Native ABI
+## Wrapping Main for the Native ABI
 
 When `--emit exe` is used, the OS needs a C-ABI `int main()` entry point, but I don't want to force the user to write `def main() -> int32` specifically; `int` (the platform default) or plain `def main()` (void) should both work. So before wrapping anything, I validate the return type explicitly and reject anything else:
 
@@ -1292,21 +1292,21 @@ if (RetTy == ValueType::None) {
     double (*FP)() = ExprSymbol.toPtr<double (*)()>();
     double result = FP();
     if (IsRepl && LastTopLevelShouldPrint)
-      fprintf(stderr, "%f\n", result);
+      fprintf(stdout, "%f\n", result);
     break;
   }
   case ValueType::Float32: {
     float (*FP)() = ExprSymbol.toPtr<float (*)()>();
     double result = static_cast<double>(FP());
     if (IsRepl && LastTopLevelShouldPrint)
-      fprintf(stderr, "%f\n", result);
+      fprintf(stdout, "%f\n", result);
     break;
   }
   case ValueType::Int: {
     intptr_t (*FP)() = ExprSymbol.toPtr<intptr_t (*)()>();
     long long result = static_cast<long long>(FP());
     if (IsRepl && LastTopLevelShouldPrint)
-      fprintf(stderr, "%lld\n", result);
+      fprintf(stdout, "%lld\n", result);
     break;
   }
   // Int8, Int16, Int32, Int64 all use int*_t pointers and %lld
@@ -1314,7 +1314,7 @@ if (RetTy == ValueType::None) {
     bool (*FP)() = ExprSymbol.toPtr<bool (*)()>();
     bool result = FP();
     if (IsRepl && LastTopLevelShouldPrint)
-      fprintf(stderr, "%s\n", result ? "True" : "False");
+      fprintf(stdout, "%s\n", result ? "True" : "False");
     break;
   }
   default: break;
@@ -1485,6 +1485,10 @@ grep 'define\|alloca\|fptosi\|sitofp\|sext\|fadd\|add ' out.ll
 cd code/chapter-18
 cmake -S . -B build && cmake --build build
 echo "var x: int32 = 7" | ./build/pyxc
+```
+
+```bash
+llvm-lit -v test/
 ```
 
 ## What's Next

@@ -2,7 +2,7 @@
 section: "Statements and Control Flow"
 description: "Add comparison operators, if/else expressions, and for loops — then use them to render the Mandelbrot set in ASCII."
 ---
-# 10. pyxc: Control Flow: if, else, and for
+# 10. pyxc: Control Flow: If, Else, and For
 
 ## What I Am Building
 
@@ -137,23 +137,50 @@ I add `if-expression` and `for-expression` to `primary`, and replace the single 
 
 I add tokens for control-flow keywords and multi-character comparisons:
 
-```cpp
-enum Token {
-  // ...
-  tok_eq = -8,   // ==
-  tok_neq = -9,  // !=
-  tok_leq = -10, // <=
-  tok_geq = -11, // >=
-
-  tok_if = -12,
-  tok_else = -13,
-  tok_for = -15,
-
-  // I retain the source character as each single-character token's value.
-  tok_less = '<',
-  tok_greater = '>',
-  tok_equal = '=',
-};
+```cppdiff
+*enum Token {
+*  tok_eof = -1,
+*  tok_eol = -2,
+*  tok_error = -3,
+*
+*  // commands
+*  tok_def = -4,
+*  tok_extern = -5,
+*
+*  // primary
+*  tok_name = -6,
+*  tok_number = -7,
+*
++  // comparison operators
++  // Only multi-character operators use explicit tokens;
++  // I give single-character operators named tokens whose values match their
++  // corresponding characters.
++  tok_eq = -8,   // ==
++  tok_neq = -9,  // !=
++  tok_leq = -10, // <=
++  tok_geq = -11, // >=
++
++  // control
++  tok_if = -12,
++  tok_else = -13,
++
++  // loops
++  tok_for = -15,
++
+*  // punctuation and operators
+*  tok_lparen = '(',
+*  tok_rparen = ')',
+*  tok_comma = ',',
+*  tok_colon = ':',
+*  tok_plus = '+',
+*  tok_minus = '-',
+*  tok_star = '*',
+*  tok_slash = '/',
+*  tok_percent = '%',
+*  tok_less = '<',
++  tok_greater = '>',
++  tok_equal = '=',
+*};
 ```
 
 I add `if`, `else`, and `for` to `Keywords`. The lexer returns the four negative tokens when it recognizes two-character operators. I use named character tokens for `<`, `>`, and `=`.
@@ -223,9 +250,50 @@ I generate LLVM [`fcmp`](https://llvm.org/docs/LangRef.html#fcmp-instruction) in
 
 For example, I implement `==` in `BinaryExpressionNode::codegen()` with an ordered equal comparison:
 
-```cpp
-case tok_eq:
-  L = TheBuilder->CreateFCmpOEQ(L, R, "cmptmp");  
+```cppdiff
+*Value *BinaryExpressionNode::codegen() {
+*  Value *L = Left->codegen();
+*  if (!L)
+*    return nullptr;
+*
+*  Value *R = Right->codegen();
+*  if (!R)
+*    return nullptr;
+*
+*  switch (Operator) {
+*  case tok_plus:
+*    return TheBuilder->CreateFAdd(L, R, "addtmp");
+*  case tok_minus:
+*    return TheBuilder->CreateFSub(L, R, "subtmp");
+*  case tok_star:
+*    return TheBuilder->CreateFMul(L, R, "multmp");
+*  case tok_slash:
+*    return TheBuilder->CreateFDiv(L, R, "divtmp");
+*  case tok_percent:
+*    return TheBuilder->CreateFRem(L, R, "remtmp");
+*  case tok_less:
+-    L = TheBuilder->CreateFCmpULT(L, R, "cmptmp");
++    L = TheBuilder->CreateFCmpOLT(L, R, "cmptmp");
+*    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
++  case tok_greater:
++    L = TheBuilder->CreateFCmpOGT(L, R, "cmptmp");
++    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
++  case tok_eq:
++    L = TheBuilder->CreateFCmpOEQ(L, R, "cmptmp");
++    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
++  case tok_neq:
++    L = TheBuilder->CreateFCmpUNE(L, R, "cmptmp");
++    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
++  case tok_leq:
++    L = TheBuilder->CreateFCmpOLE(L, R, "cmptmp");
++    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
++  case tok_geq:
++    L = TheBuilder->CreateFCmpOGE(L, R, "cmptmp");
++    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+*  default:
+*    return LogErrorV("invalid binary operator");
+*  }
+*}
 ```
 
 which produces:
@@ -280,7 +348,7 @@ which produces:
 
 This gives pyxc its usual comparison result convention: `false → 0.0`, `true → 1.0`. That value is what later flows into `if` conditions and arithmetic expressions. 
 
-## if/else Expressions
+## If/Else Expressions
 
 I make `if` an expression, so I can use it inside another expression, as a function argument, as a loop body, or inside another `if`.
 
@@ -344,7 +412,7 @@ else:
     b - a
 ```
 
-### Codegen: Building the then / else / join Blocks
+### Codegen: Building the Then / Else / Join Blocks
 
 To generate an `if`, I need to:
 
@@ -611,7 +679,7 @@ The only thing that changes from the unoptimized IR is the condition: `InstCombi
 
 Turning branches into a branchless `select` is a real LLVM transformation, but it needs passes I haven't added yet (`SimplifyCFGPass` in particular). Until I do, `if`/`else` always keeps its block structure, at every `-O` level pyxc accepts, including `-O0`. `-O0` skips even the three passes I do have, which is why the unoptimized IR above still shows the full `i1 → double → i1` round trip.
 
-### Why Nested ifs Change the End Block
+### Why Nested Ifs Change the End Block
 
 Consider this pyxc code:
 
@@ -702,7 +770,7 @@ ElseBB = TheBuilder->GetInsertBlock();
 
 In the actual emitted IR, LLVM names these blocks `then`, `else`, and `ifcont`. The XOR example uses descriptive names like `a1`, `a1_merge`, and `merge` for clarity of exposition.
 
-## for Loop Expressions
+## For Loop Expressions
 
 I use a `for` expression to repeat one body expression while a condition remains nonzero:
 
@@ -727,13 +795,39 @@ static unique_ptr<ExpressionNode> ParseForExpression() {
 
   if (CurrentToken != tok_equal)
     return LogErrorExpression("Expected '=' after for variable");
-  getNextToken();
+  getNextToken(); // eat '='
 
   auto Start = ParseExpression();
-  // ... eat ',', parse Cond, eat ',', parse Step, eat ':' ...
+  if (!Start)
+    return nullptr;
+
+  if (CurrentToken != tok_comma)
+    return LogErrorExpression("Expected ',' after for start value");
+  getNextToken(); // eat ','
+
+  auto Cond = ParseExpression();
+  if (!Cond)
+    return nullptr;
+
+  if (CurrentToken != tok_comma)
+    return LogErrorExpression("Expected ',' after for condition");
+  getNextToken(); // eat ','
+
+  auto Step = ParseExpression();
+  if (!Step)
+    return nullptr;
+
+  if (CurrentToken != tok_colon)
+    return LogErrorExpression("Expected ':' after for step");
+  getNextToken(); // eat ':'
+
+  // Allow body on next line.
   consumeNewlines();
 
   auto Body = ParseExpression();
+  if (!Body)
+    return nullptr;
+
   return make_unique<ForExpressionNode>(
       VarName, std::move(Start), std::move(Cond),
       std::move(Step), std::move(Body));
@@ -956,7 +1050,7 @@ after_loop:                                   ; reached when the loop condition 
 }
 ```
 
-### What `-v` Shows After Optimization
+### What `-v` Shows after Optimization
 
 As with `if/else`, the optimizer removes the `i1` → `double` → `i1` roundtrip:
 
@@ -1092,7 +1186,7 @@ mandel(0 - 2.3, 0 - 1.3, 0.05, 0.07)
 ******************************************************************************
 ```
 
-I write the iteration and branching in pyxc. The host only provides `putchard` for writing one character to `stderr`.
+I write the iteration and branching in pyxc. The host only provides `putchard` for writing one character to `stdout`.
 
 ## Build and Run
 
@@ -1108,6 +1202,10 @@ To run the Mandelbrot renderer directly:
 
 ```bash
 ./build/pyxc test/mandel.pyxc
+```
+
+```bash
+llvm-lit -v test/
 ```
 
 ## Try It

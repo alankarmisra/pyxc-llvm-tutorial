@@ -249,26 +249,35 @@ I think for now, this is ok.
 
 I'll start extending the lexer/parser. First I need a token for the `struct` keyword.  
 
-```cpp
-enum Token {
-    ...
-    tok_struct = -50,
-    ...
-}
+```cppdiff
+*enum Token {
+*  ...
+*  tok_switch = -47,
+*  tok_case = -48,
+*  tok_default = -49,
++  tok_struct = -50,
+*
+*  // punctuation and operators
+*  ...
+*};
 ```
 
 I will also need to add the `struct` string to my keywords map
 
-```cpp
-static map<string, Token> Keywords = {
-    ...
-    {"struct", tok_struct}
-}
+```cppdiff
+*static map<string, Token> Keywords = {
+*    ...
+*    {"switch", tok_switch},   {"case", tok_case},
+-    {"default", tok_default},
++    {"default", tok_default}, {"struct", tok_struct},
+*    {"float", tok_float},
+*    ...
+*};
 ```
 
 Great, now I can read the struct definitions and emit the tokens.
 
-## Where do I keep track of struct definitions?
+## Where Do I Keep Track of Struct Definitions?
 
 Now that the lexer hands me a `tok_struct`, I need somewhere to actually record what a struct looks like once I've parsed it. What do I need to know about a struct? Its name, and its list of fields: each with a name and a type.
 
@@ -412,7 +421,7 @@ return true;
 
 That `PendingTokens.push_front(tok_block_end)` trick isn't new to this chapter: I'm reusing the same synthetic-token mechanism I used for function bodies, so whatever calls `ParseStructDefinition` sees a clean `tok_block_end` marker after the DEDENT instead of having to special-case struct endings.
 
-## The `struct` handler
+## The `struct` Handler
 
 I need a top-level handler like I have for `def` and `extern`. It just calls the parser and recovers from errors the same way the others do:
 
@@ -434,21 +443,29 @@ static void HandleStructDefinition() {
 
 And wire it into both loops that dispatch on the current token: the REPL's `MainLoop` and the file-mode `FileModeLoop`:
 
-```cpp
-switch (CurrentToken) {
-case tok_struct:
-  HandleStructDefinition();
-  break;
-case tok_def:
-  HandleFunctionDefinition();
-  break;
-  ...
-}
+```cppdiff
+*    switch (CurrentToken) {
+*    case tok_eol:
+*      ...
+*      break;
++    case tok_struct:
++      HandleStructDefinition();
++      break;
+*    case tok_def:
+*      HandleFunctionDefinition();
+*      break;
+*    case tok_extern:
+*      HandleExtern();
+*      break;
+*    default:
+*      HandleTopLevelStatement();
+*      break;
+*    }
 ```
 
 Let's handle field access now.
 
-## `struct` as a type
+## `struct` as a Type
 
 Before I can write `x: int` *or* `p: Point` in the same field/parameter/variable declaration, `ParseTypeToken` needs to accept a struct name where it currently only accepts the scalar keywords. An identifier that isn't a keyword and shows up where a type is expected: that's a struct name, if it's one I know about:
 
@@ -480,7 +497,19 @@ A field read: `p.x`, `o.inner.value`. What does this node actually need to remem
 class FieldExpressionNode : public ExpressionNode {
   string BaseName;           // the variable at the root: "p" or "o"
   vector<string> FieldPath;  // the chain of field names: ["x"] or ["inner", "value"]
-  ...
+
+public:
+  FieldExpressionNode(string BaseName, vector<string> FieldPath, ValueType Type,
+                      const string &StructName = "")
+      : BaseName(std::move(BaseName)), FieldPath(std::move(FieldPath)) {
+    setType(Type, StructName);
+  }
+  const string *getLValueName() const override { return &BaseName; }
+  const vector<string> &getFieldPath() const { return FieldPath; }
+  const vector<string> *getLValueFieldPath() const override {
+    return &FieldPath;
+  }
+  Value *codegen() override;
 };
 ```
 
@@ -494,7 +523,17 @@ A field write: `p.x = 5`. This one just needs the field expression on the left (
 class FieldAssignmentStatementNode : public ExpressionNode {
   unique_ptr<FieldExpressionNode> Left;
   unique_ptr<ExpressionNode> Right;
-  ...
+
+public:
+  FieldAssignmentStatementNode(unique_ptr<FieldExpressionNode> Left,
+                               unique_ptr<ExpressionNode> Right,
+                               ValueType Type,
+                               const string &StructName = "")
+      : Left(std::move(Left)), Right(std::move(Right)) {
+    setType(Type, StructName);
+  }
+  bool shouldPrintValue() const override { return false; }
+  Value *codegen() override;
 };
 ```
 
@@ -546,24 +585,49 @@ ParseFieldExpressionWithBase(const string &BaseName, ValueType BaseType,
 
 I call this from `ParseNameExpressionWithName`, right after I've looked up the base identifier's type. If it's a struct variable and the next token is `.`, I hand off to `ParseFieldExpressionWithBase`:
 
-```cpp
-string StructName = LookupVarStructName(ParsedName);
-if (CurrentToken == tok_dot)
-  return ParseFieldExpressionWithBase(ParsedName, Type, StructName);
-return make_unique<NameExpressionNode>(ParsedName, Type, StructName);
+```cppdiff
+*static unique_ptr<ExpressionNode> ParseNameExpressionWithName(const string &ParsedName) {
+*  if (CurrentToken != tok_lparen) { // Simple variable ref.
+*    ValueType Type = LookupVarType(ParsedName);
+*    if (Type == ValueType::Error) {
+*      return LogErrorExpression("Unknown variable name");
+*    }
++    string StructName = LookupVarStructName(ParsedName);
++    if (CurrentToken == tok_dot)
++      return ParseFieldExpressionWithBase(ParsedName, Type, StructName);
+-    return make_unique<NameExpressionNode>(ParsedName, Type);
++    return make_unique<NameExpressionNode>(ParsedName, Type, StructName);
+*  }
+*
+*  // Call.
+*  ...
+*}
 ```
 
 Since this only ever fires from a bare name that's already resolved to a variable, `make_point().x` never reaches `ParseFieldExpressionWithBase` at all: there's no name to look up, so it's rejected earlier, before field access parsing is even in the picture. That's what enforces the "field access must start with a named variable" limitation I noted in the grammar section.
 
 Field access on the *left* of `=` doesn't get special-cased at the point of the `.`: `p.x = 5` first parses as an ordinary expression, the same `p.x` any read would produce, and only after that's done does `ParseLeadingNameSimpleStatement` check whether a trailing `=` follows and whether what it just parsed has a field path:
 
-```cpp
-if (const auto *FieldPath = Expr->getLValueFieldPath()) {
-  const string *BaseName = Expr->getLValueName();
-  auto Field = make_unique<FieldExpressionNode>(
-      *BaseName, *FieldPath, Expr->getType(), Expr->getStructName());
-  return ParseFieldAssignmentRight(std::move(Field));
-}
+```cppdiff
+*static unique_ptr<ExpressionNode> ParseLeadingNameSimpleStatement() {
+*  ...
+*  // Optional assignment tail: (<expr>) = ...
+*  if (CurrentToken != tok_equal)
+*    return Expr;
+*
++  if (const auto *FieldPath = Expr->getLValueFieldPath()) {
++    const string *BaseName = Expr->getLValueName();
++    auto Field = make_unique<FieldExpressionNode>(
++        *BaseName, *FieldPath, Expr->getType(), Expr->getStructName());
++    return ParseFieldAssignmentRight(std::move(Field));
++  }
++
+*  const string *AssignedName = Expr->getLValueName();
+*  if (!AssignedName)
+*    return LogErrorExpression("Destination of '=' must be a variable");
+*
+*  return ParseAssignmentRight(*AssignedName);
+*}
 ```
 
 `getLValueFieldPath()` is what a plain variable reference always returns `nullptr` for; only a `FieldExpressionNode` overrides it to return its actual path. Once that's confirmed, a fresh `FieldExpressionNode` is rebuilt from the pieces and handed to `ParseFieldAssignmentRight`:
@@ -649,16 +713,18 @@ static string LookupVarStructName(const string &Name) {
 
 Function parameters need the same treatment for the same reason: a parameter's `ValueType::Struct` alone doesn't say which struct. `FunctionSignatureNode` already stored `Parameters` as `vector<pair<string, ValueType>>`; rather than restructure that, I add a parallel vector alongside it, the same "keep it separate" choice I made for `VarStructScopes`:
 
-```cpp
-class FunctionSignatureNode {
-  string Name;
-  vector<pair<string, ValueType>> Parameters;
-  vector<string> ParameterStructNames;
-  ValueType ReturnType;
-  string ReturnStructName;
-  SourceLocation Loc;
-  ...
-};
+```cppdiff
+*class FunctionSignatureNode {
+*  string Name;
+*  vector<pair<string, ValueType>> Parameters;
++  vector<string> ParameterStructNames;
+*  ValueType ReturnType;
++  string ReturnStructName;
+*  SourceLocation Loc;
+*
+*public:
+*  ...
+*};
 ```
 
 `ParameterStructNames` is resized to match `Parameters` in the constructor, so `getParameterStructName(Index)` can always index it safely; an ordinary scalar parameter just carries an empty string at its slot. `ReturnStructName` gets the same treatment for the same reason: a function returning a struct needs to say which one. Same mechanics as everywhere else in this chapter; just more places to carry the extra string.
@@ -703,9 +769,20 @@ I also deliberately register the type in the cache *before* I fill in its body. 
 
 And I wire it into `LLVMTypeFor`, the function everything else in codegen already goes through to turn a `ValueType` into an LLVM `Type*`:
 
-```cpp
-case ValueType::Struct:
-  return GetOrCreateLLVMStructType(StructName);
+```cppdiff
+*static Type *LLVMTypeFor(ValueType Type, const string &StructName) {
+*  switch (Type) {
+*  ...
+*  case ValueType::Bool:
+*    return Type::getInt1Ty(*TheContext);
++  case ValueType::Struct:
++    return GetOrCreateLLVMStructType(StructName);
+*  case ValueType::None:
+*    return Type::getVoidTy(*TheContext);
+*  default:
+*    return nullptr;
+*  }
+*}
 ```
 
 ## The IR Layout
@@ -867,8 +944,18 @@ I didn't need to write any new casting logic here: `EmitImplicitCast` is the sam
 I already have zero-initialization for scalar `var` declarations with no initializer. Structs should work the same way, just with a struct-shaped zero value instead of a scalar one. `var p: Point` with no initializer allocates stack space and zero-fills it:
 
 ```cpp
-InitVal = ZeroConstant(VarType, VarStructName);
-// ...
+Value *InitVal = Init ? Init->codegen()
+                      : ZeroConstant(VarType, VarStructName);
+if (!InitVal)
+  return nullptr;
+if (Init) {
+  InitVal = EmitImplicitCast(InitVal, Init->getType(), VarType);
+  if (!InitVal)
+    return LogErrorV("Type mismatch in variable initialization");
+}
+
+AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName, VarType,
+                                            VarStructName);
 TheBuilder->CreateStore(InitVal, Alloca);
 ```
 
@@ -939,9 +1026,13 @@ cd code/chapter-24
 cmake -S . -B build && cmake --build build
 ```
 
+```bash
+llvm-lit -v test/
+```
+
 ## Try It
 
-### Basic field access
+### Basic Field Access
 
 ```pyxc
 struct Point:
@@ -962,7 +1053,7 @@ def main() -> int:
 7.000000
 ```
 
-### Passing a struct to a function
+### Passing a Struct to a Function
 
 ```pyxc
 struct Point:
@@ -986,7 +1077,7 @@ def main() -> int:
 12.000000
 ```
 
-### Nested field access
+### Nested Field Access
 
 ```pyxc
 struct Inner:

@@ -131,18 +131,32 @@ Note the `do`/`while` shape: the body comes first under `do:`, and the condition
 
 Four new tokens:
 
-```cpp
-tok_while = -23,
-tok_do = -24,
-tok_break = -25,
-tok_continue = -26,
+```cppdiff
+*enum Token {
+*  ...
+*  // loops
+-  tok_for = -15,
++  tok_for = -15,
++  tok_while = -23,
++  tok_do = -24,
++  tok_break = -25,
++  tok_continue = -26,
+*
+*  // mutable variables
+*  ...
+*};
 ```
 
 Added to the keyword table alongside `for`:
 
-```cpp
-{"for", tok_for},       {"while", tok_while},   {"do", tok_do},
-{"break", tok_break},   {"continue", tok_continue},
+```cppdiff
+*static map<string, Token> Keywords = {
+*    {"def", tok_def},       {"extern", tok_extern}, {"return", tok_return},
+*    {"if", tok_if},         {"elif", tok_elif},     {"else", tok_else},
+-    {"for", tok_for},
++    {"for", tok_for},       {"while", tok_while},   {"do", tok_do},
++    {"break", tok_break},   {"continue", tok_continue},
+*    {"var", tok_var}};
 ```
 
 ## New AST Nodes
@@ -368,9 +382,15 @@ The `ConstantFP::get(*TheContext, APFloat(0.0))` return at the end isn't special
 
 `ForStatementNode`'s codegen changes too. Before this chapter, the step expression ran inline at the end of the body block. Now it gets its own basic block, so `continue` has somewhere correct to jump to:
 
-```cpp
-BasicBlock *StepBB =
-    BasicBlock::Create(*TheContext, "loop_step", TheFunction);
+```cppdiff
+*  BasicBlock *CondBB =
+*      BasicBlock::Create(*TheContext, "loop_cond", TheFunction);
+*  BasicBlock *BodyBB =
+*      BasicBlock::Create(*TheContext, "loop_body", TheFunction);
++  BasicBlock *StepBB =
++      BasicBlock::Create(*TheContext, "loop_step", TheFunction);
+*  BasicBlock *AfterBB =
+*      BasicBlock::Create(*TheContext, "after_loop", TheFunction);
 ```
 
 The body's implicit fallthrough branch now targets `StepBB` instead of the condition block directly, and `StepBB` itself evaluates the step expression, stores the updated loop variable, and only then branches to the condition block:

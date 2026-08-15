@@ -419,6 +419,10 @@ cd code/chapter-32
 cmake -S . -B build && cmake --build build
 ```
 
+```bash
+llvm-lit -v test/
+```
+
 ## What's Next
 
 [Chapter 33](chapter-33.md) adds variadic `extern` functions.

@@ -5,7 +5,7 @@
 
 # Tests: --emit obj produces a native object file that can be linked with clang
 # and executed.  The emitted binary must produce the same observable output as
-# JIT mode would (printd writes to stderr).
+# JIT mode would (printd writes to stdout).
 
 extern def printd(x)
 

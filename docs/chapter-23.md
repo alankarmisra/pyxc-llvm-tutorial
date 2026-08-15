@@ -166,17 +166,31 @@ I add `switch-statement` and its three sub-productions, and add it as a `compoun
 
 I add three new tokens:
 
-```cpp
-tok_switch = -47,
-tok_case = -48,
-tok_default = -49,
+```cppdiff
+*enum Token {
+*  ...
+*  tok_shift_left = -45,  // <<
+*  tok_shift_right = -46, // >>
++  tok_switch = -47,
++  tok_case = -48,
++  tok_default = -49,
+*
+*  // punctuation and operators
+*  ...
+*};
 ```
 
 And add them to the keyword table:
 
-```cpp
-{"switch", tok_switch},   {"case", tok_case},
-{"default", tok_default},
+```cppdiff
+*static map<string, Token> Keywords = {
+*    ...
+*    {"uint32", tok_uint32},   {"uint64", tok_uint64},
++    {"switch", tok_switch},   {"case", tok_case},
++    {"default", tok_default},
+*    {"float", tok_float},
+*    ...
+*};
 ```
 
 ## Representing `switch` in the AST
@@ -395,19 +409,37 @@ static vector<BasicBlock *> BreakTargetStack;
 
 I update the `for` and `while` codegens to push and pop `BreakTargetStack` alongside `LoopControlStack`:
 
-```cpp
-// for loop:
-BreakTargetStack.push_back(AfterBB);
-if (!Body->codegen()) {
-  BreakTargetStack.pop_back();
-  return nullptr;
-}
-BreakTargetStack.pop_back();
+```cppdiff
+*Value *ForStatementNode::codegen() {
+*  ...
+*  TheBuilder->SetInsertPoint(BodyBB);
+*
+*  LoopControlStack.push_back({AfterBB, StepBB});
++  BreakTargetStack.push_back(AfterBB);
+*  if (!Body->codegen()) {
++    BreakTargetStack.pop_back();
+*    LoopControlStack.pop_back();
+*    return nullptr;
+*  }
++  BreakTargetStack.pop_back();
+*  LoopControlStack.pop_back();
+*  ...
+*}
 
-// while loop:
-BreakTargetStack.push_back(AfterBB);
-// ...
-BreakTargetStack.pop_back();
+*Value *WhileStatementNode::codegen() {
+*  ...
+*  TheBuilder->SetInsertPoint(BodyBlock);
+*  LoopControlStack.push_back({AfterBlock, ConditionBlock});
++  BreakTargetStack.push_back(AfterBlock);
+*  if (!Body->codegen()) {
++    BreakTargetStack.pop_back();
+*    LoopControlStack.pop_back();
+*    return nullptr;
+*  }
++  BreakTargetStack.pop_back();
+*  LoopControlStack.pop_back();
+*  ...
+*}
 ```
 
 And I switch `BreakStatementNode::codegen` from `LoopControlStack.back().BreakTarget` to `BreakTargetStack`:
@@ -509,6 +541,10 @@ I only allow compile-time integer literals as case values, not variables or expr
 ```bash
 cd code/chapter-23
 cmake -S . -B build && cmake --build build
+```
+
+```bash
+llvm-lit -v test/
 ```
 
 ## Try It

@@ -139,14 +139,32 @@ var x = 1, y = x + 1: y   # evaluates to 2
 
 The lexer gains one new keyword token:
 
-```cpp
-tok_var = -18,
+```cppdiff
+*enum Token {
+*  ...
+*  // control
+*  tok_if = -12,
+*  tok_else = -13,
+*
+*  // loops
+*  tok_for = -15,
+*
++  // mutable variables
++  tok_var = -18,
+*
+*  // punctuation and operators
+*  ...
+*};
 ```
 
 Added to the keyword table like every other reserved word:
 
-```cpp
-{"if", tok_if}, {"else", tok_else}, {"for", tok_for}, {"var", tok_var}
+```cppdiff
+*static map<string, Token> Keywords = {
+-    {"def", tok_def}, {"extern", tok_extern}, {"if", tok_if},
+-    {"else", tok_else}, {"for", tok_for}};
++    {"def", tok_def},       {"extern", tok_extern}, {"if", tok_if},
++    {"else", tok_else},     {"for", tok_for},       {"var", tok_var}};
 ```
 
 Two new AST nodes do the real work.
@@ -190,10 +208,15 @@ public:
 
 `getLValueName` is a new virtual on `ExpressionNode` itself, defaulting to `nullptr`. Only a plain variable reference overrides it to return its own name — that's how the assignment parser below decides whether the left-hand side of `=` is a legal destination:
 
-```cpp
-// getLValueName - If this node is a plain assignable variable, return its
-// name. Every other expression kind returns nullptr.
-virtual const string *getLValueName() const { return nullptr; }
+```cppdiff
+*class ExpressionNode {
+*public:
+*  virtual ~ExpressionNode() = default;
++  // getLValueName - If this node is a plain assignable variable, return its
++  // name; otherwise return nullptr.
++  virtual const string *getLValueName() const { return nullptr; }
+*  virtual Value *codegen() = 0;
+*};
 ```
 
 ## Parsing `var`
@@ -262,14 +285,16 @@ If there's no `=`, the variable defaults to `0.0`. The binding always produces a
 
 `ParseExpression` routes to `ParseVariableExpression` before anything else, if the current token is `var`:
 
-```cpp
-static unique_ptr<ExpressionNode> ParseExpression() {
-  if (CurrentToken == tok_var)
-    return ParseVariableExpression();
-
-  auto Expr = ParseComparison();
-  // ...
-}
+```cppdiff
+*static unique_ptr<ExpressionNode> ParseExpression() {
+-  return ParseComparison();
+-}
++  if (CurrentToken == tok_var)
++    return ParseVariableExpression();
++
++  auto Expr = ParseComparison();
++  // ... assignment handling, shown in "Parsing Assignment" below ...
++}
 ```
 
 ## Parsing Assignment
@@ -504,28 +529,69 @@ This unifies the whole language: parameters, `var` locals, and loop variables al
 
 ## `for` Loops Switch to the Same Model
 
-The old `for` codegen bound the loop variable directly to the incoming `Value*`. That no longer fits now that every mutable local uses an alloca, so `ForExpressionNode::codegen` switches to a memory slot for the loop variable too:
+The old `for` codegen bound the loop variable directly to the incoming `Value*`, using a PHI node to merge the start value with each iteration's next value. That no longer fits now that every mutable local uses an alloca, so `ForExpressionNode::codegen` switches to a memory slot for the loop variable too:
 
-```cpp
-// Allocate a memory slot for the loop variable and store the start value.
-AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
-TheBuilder->CreateStore(StartVal, Alloca);
-
-// ...
-
-// In the loop body, load the current value, add the step, store back.
-Value *CurVar =
-    TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), Alloca, VarName);
-Value *NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
-TheBuilder->CreateStore(NextVar, Alloca);
+```cppdiff
+*Value *ForExpressionNode::codegen() {
+*  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
+*
+*  Value *StartVal = Start->codegen();
+*  if (!StartVal)
+*    return nullptr;
+*
+-  BasicBlock *PreheaderBB = TheBuilder->GetInsertBlock();
+-
+-  ...
+-
+-  // PHI picks start_val on the first iteration, next_i on subsequent ones.
+-  PHINode *Variable =
+-      TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
+-  Variable->addIncoming(StartVal, PreheaderBB);
+-
+-  Value *OldVal = NamedValues[VarName];
+-  NamedValues[VarName] = Variable;
++  // Allocate a memory slot for the loop variable and store the start value.
++  AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
++  TheBuilder->CreateStore(StartVal, Alloca);
+*  ...
+*
+*  TheBuilder->SetInsertPoint(BodyBB);
+*
+*  if (!Body->codegen())
+*    return nullptr;
+*
+-  Value *StepVal = Step->codegen();
+-  if (!StepVal)
+-    return nullptr;
+-  Value *NextVar = TheBuilder->CreateFAdd(Variable, StepVal, "nextvar");
++  // In the loop body, load the current value, add the step, store back.
++  Value *CurVar =
++      TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), Alloca, VarName);
++  Value *StepVal = Step->codegen();
++  if (!StepVal)
++    return nullptr;
++  Value *NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
++  TheBuilder->CreateStore(NextVar, Alloca);
+*  ...
+*}
 ```
 
 The parser records whether `var` was present by setting an `IsVarDecl` flag on `ForExpressionNode`:
 
-```cpp
-bool IsVarDecl = false;
-if (CurrentToken == tok_var)
-  IsVarDecl = true, getNextToken(); // optional 'var'
+```cppdiff
+*static unique_ptr<ExpressionNode> ParseForExpression() {
+*  getNextToken(); // eat 'for'
+*
++  bool IsVarDecl = false;
++  if (CurrentToken == tok_var)
++    IsVarDecl = true, getNextToken(); // optional 'var'
+*
+*  if (CurrentToken != tok_name)
+*    return LogErrorExpression("Expected name after 'for'");
+*  string VarName = Name;
+*  getNextToken(); // eat name
+*  ...
+*}
 ```
 
 Codegen uses that flag to decide whether to allocate a fresh slot or reuse an existing one:
@@ -615,11 +681,13 @@ Until then, `var` in `for` is the safe default.
 
 This chapter adds `PromotePass` — commonly called `mem2reg` — to the optimization pipeline, ahead of the three passes I already had:
 
-```cpp
-TheFPM->addPass(PromotePass());     // mem2reg: memory slots -> SSA registers
-TheFPM->addPass(InstCombinePass()); // peephole rewrites
-TheFPM->addPass(ReassociatePass()); // canonicalise commutative ops
-TheFPM->addPass(GVNPass());         // eliminate common sub-expressions
+```cppdiff
+*  if (OptLevel != 0) {
++    TheFPM->addPass(PromotePass());     // mem2reg: memory slots -> SSA regs
+*    TheFPM->addPass(InstCombinePass()); // peephole rewrites
+*    TheFPM->addPass(ReassociatePass()); // canonicalise commutative ops
+*    TheFPM->addPass(GVNPass());         // eliminate common sub-expressions
+*  }
 ```
 
 Every parameter and local variable now gets a memory slot. Without optimizations, `def bump(n): var x = n: x = x + 1` produces:

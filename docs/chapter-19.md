@@ -274,7 +274,7 @@ return IsUnsignedIntType(From)
 
 Unsigned types use `zext` (zero-extend) rather than `sext` (sign-extend).
 
-### Integer → float
+### Integer → Float
 
 ```cpp
 return IsUnsignedIntType(From)
@@ -284,7 +284,7 @@ return IsUnsignedIntType(From)
 
 `uitofp` treats the bit pattern as an unsigned integer, producing the correct positive float for `uint32(-1)` = 4294967295.0. `uint64(-1)` is `18446744073709551615`; converting that to `float64` rounds, since `float64` only represents integers exactly up to `2^53`.
 
-### Float → integer
+### Float → Integer
 
 ```cpp
 return IsUnsignedIntType(To)
@@ -292,7 +292,7 @@ return IsUnsignedIntType(To)
            : TheBuilder->CreateFPToSI(V, LLVMTypeFor(To), "fptosi");
 ```
 
-### Division and remainder
+### Division and Remainder
 
 ```cpp
 // / operator:
@@ -328,7 +328,7 @@ return IsUnsignedIntType(CompareType)
 
 `==` and `!=` are signedness-agnostic (`icmp eq` / `icmp ne`); they are unchanged.
 
-### Literal range check
+### Literal Range Check
 
 `ParseNumberExpression` already checks that a literal fits in the target type. I update the max-value calculation to use `APInt::getAllOnes(Bits)` for unsigned types:
 
@@ -357,6 +357,10 @@ Same bit width: bits are unchanged. Narrowing truncates to the low bits.
 cd code/chapter-19
 cmake -S . -B build && cmake --build build
 ./build/pyxc
+```
+
+```bash
+llvm-lit -v test/
 ```
 
 ## Try It

@@ -436,6 +436,10 @@ cd code/chapter-38
 cmake -S . -B build && cmake --build build
 ```
 
+```bash
+llvm-lit -v test/
+```
+
 ## Try It
 
 <!-- code-merge:start -->

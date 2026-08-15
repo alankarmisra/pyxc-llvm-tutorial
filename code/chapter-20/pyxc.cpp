@@ -299,7 +299,7 @@ struct SourceLocation {
 };
 static SourceLocation CurLoc;
 static SourceLocation LexLoc = {1, 0};
-static void LogErrorAtLoc(const char *Str, SourceLocation Loc);
+static void LogErrorAtLoc(const char *ErrorMessage, SourceLocation Loc);
 static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation Loc);
 
 /// SourceManager - Buffers every source line as it is read so that error
@@ -475,7 +475,7 @@ static int getToken() {
       do
         LexerLastChar = advance();
       while (LexerLastChar != EOF && LexerLastChar != '\n');
-      if (LexerLastChar != EOF) {
+      if (LexerLastChar == '\n') {
         CurLoc = LexLoc;
         LexerLastChar = ' '; // AtLineStart is still true so the lexer reads
                              // past the sentinel in the next call
@@ -543,36 +543,40 @@ static int getToken() {
   }
 
   if (isalpha(LexerLastChar) || LexerLastChar == '_') {
-    Name = LexerLastChar;
+    string NameLiteral;
+    NameLiteral = LexerLastChar;
     while (isalnum((LexerLastChar = advance())) || LexerLastChar == '_')
-      Name += LexerLastChar;
+      NameLiteral += LexerLastChar;
 
-    auto It = Keywords.find(Name);
-    return (It == Keywords.end()) ? tok_name : It->second;
+    auto It = Keywords.find(NameLiteral);
+    if (It != Keywords.end())
+      return It->second;
+    Name = NameLiteral;
+    return tok_name;
   }
 
   if (isdigit(LexerLastChar) || LexerLastChar == '.') {
-    string NumStr;
+    NumberLiteral.clear();
     bool SawDot = false;
     bool SawExp = false;
 
     auto ConsumeDigits = [&]() {
       while (isdigit(LexerLastChar)) {
-        NumStr += LexerLastChar;
+        NumberLiteral += LexerLastChar;
         LexerLastChar = advance();
       }
     };
 
     if (LexerLastChar == '.') {
       SawDot = true;
-      NumStr += LexerLastChar;
+      NumberLiteral += LexerLastChar;
       LexerLastChar = advance();
       ConsumeDigits();
     } else {
       ConsumeDigits();
       if (LexerLastChar == '.') {
         SawDot = true;
-        NumStr += LexerLastChar;
+        NumberLiteral += LexerLastChar;
         LexerLastChar = advance();
         ConsumeDigits();
       }
@@ -580,25 +584,24 @@ static int getToken() {
 
     if (LexerLastChar == 'e' || LexerLastChar == 'E') {
       SawExp = true;
-      NumStr += LexerLastChar;
+      NumberLiteral += LexerLastChar;
       LexerLastChar = advance();
       if (LexerLastChar == '+' || LexerLastChar == '-') {
-        NumStr += LexerLastChar;
+        NumberLiteral += LexerLastChar;
         LexerLastChar = advance();
       }
       if (!isdigit(LexerLastChar)) {
-      LogInvalidNumberLiteralAtLoc(NumStr, CurLoc);
+      LogInvalidNumberLiteralAtLoc(NumberLiteral, CurLoc);
       return tok_error;
       }
       ConsumeDigits();
     }
 
-    if (NumStr == ".") {
-      LogInvalidNumberLiteralAtLoc(NumStr, CurLoc);
+    if (NumberLiteral == ".") {
+      LogInvalidNumberLiteralAtLoc(NumberLiteral, CurLoc);
       return tok_error;
     }
 
-    NumberLiteral = NumStr;
     NumberIsFloat = SawDot || SawExp;
     return tok_number;
   }
@@ -609,7 +612,7 @@ static int getToken() {
       LexerLastChar = advance();
     while (LexerLastChar != EOF && LexerLastChar != '\n');
 
-    if (LexerLastChar != EOF) {
+    if (LexerLastChar == '\n') {
       // Re-snapshot CurLoc now that the '\n' has been consumed and LexLoc
       // has advanced to the next line. Without this, CurLoc would point at
       // the '#' column, and GetCaretAnchorLoc would look up the wrong
@@ -783,8 +786,8 @@ static void PrintErrorSourceContext(SourceLocation Loc) {
 }
 
 
-static void LogErrorAtLoc(const char *Str, SourceLocation Loc) {
-  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Loc.Line, Loc.Col, Str);
+static void LogErrorAtLoc(const char *ErrorMessage, SourceLocation Loc) {
+  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Loc.Line, Loc.Col, ErrorMessage);
   PrintErrorSourceContext(Loc);
 }
 
@@ -1271,8 +1274,10 @@ static ValueType LookupVarType(const string &Name) {
 /// PrintReplPrompt - Print the interactive prompt to stderr.
 /// Only emits output in REPL mode; silent when running a script file.
 void PrintReplPrompt() {
-  if (IsRepl)
+  if (IsRepl) {
+    fflush(stdout);
     fprintf(stderr, "ready> ");
+  }
 }
 
 /// Log - Write a diagnostic message to stderr in REPL mode only.
@@ -1286,20 +1291,20 @@ void Log(const string &message) {
 
 /// LogErrorExpression* - Error reporting helpers. Each returns nullptr for its respective
 /// type so parse functions can write: return LogErrorExpression("message");
-unique_ptr<ExpressionNode> LogErrorExpression(const char *Str) {
+unique_ptr<ExpressionNode> LogErrorExpression(const char *ErrorMessage) {
   HadError = true;
   SourceLocation Anchor = GetCaretAnchorLoc(CurLoc, CurrentToken);
-  LogErrorAtLoc(Str, Anchor);
+  LogErrorAtLoc(ErrorMessage, Anchor);
   return nullptr;
 }
 
-unique_ptr<FunctionSignatureNode> LogErrorSignature(const char *Str) {
-  LogErrorExpression(Str);
+unique_ptr<FunctionSignatureNode> LogErrorSignature(const char *ErrorMessage) {
+  LogErrorExpression(ErrorMessage);
   return nullptr;
 }
 
-unique_ptr<FunctionDefinitionNode> LogErrorFunction(const char *Str) {
-  LogErrorExpression(Str);
+unique_ptr<FunctionDefinitionNode> LogErrorFunction(const char *ErrorMessage) {
+  LogErrorExpression(ErrorMessage);
   return nullptr;
 }
 
@@ -1496,14 +1501,14 @@ static unique_ptr<ExpressionNode> ParseCastExpression() {
 ///   = "(" expression ")" ;
 static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
   getNextToken(); // eat (.
-  auto V = ParseExpression();
-  if (!V)
+  auto Expression = ParseExpression();
+  if (!Expression)
     return nullptr;
 
   if (CurrentToken != tok_rparen)
     return LogErrorExpression("expected ')'");
   getNextToken(); // eat ).
-  return V;
+  return Expression;
 }
 
 /// name-expression
@@ -1537,23 +1542,25 @@ static unique_ptr<ExpressionNode> ParseNameExpressionWithName(const string &Pars
         Expected = Signature->getParameterType(ArgIndex);
       {
         ExpectedLiteralTypeGuard Guard(Expected);
-        if (auto Arg = ParseExpression())
-          Arguments.push_back(std::move(Arg));
+        if (auto Argument = ParseExpression())
+          Arguments.push_back(std::move(Argument));
         else
           return nullptr;
       }
 
+      // ParseExpression() has already consumed the argument and left
+      // CurrentToken at the token after it.
       if (CurrentToken == tok_rparen)
         break;
 
       if (CurrentToken != tok_comma)
         return LogErrorExpression("Expected ')' or ',' in argument list");
-      getNextToken();
+      getNextToken(); // I eat ','.
       ++ArgIndex;
     }
   }
 
-  // Eat the ')'.
+  // I only reach here after parsing `a()` or `a(<arguments>)`, so I eat ')'.
   getNextToken();
 
   if (!Signature)
@@ -1650,8 +1657,8 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
     getNextToken(); // optional 'var'
   }
 
-  if (CurrentToken != tok_name)
     return LogErrorExpression("Expected name after 'for'");
+  if (CurrentToken != tok_name)
   string VarName = Name;
   getNextToken(); // eat name
 
@@ -2335,9 +2342,11 @@ static unique_ptr<ExpressionNode> ParseBlock() {
 static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
   SourceLocation SignatureLoc = CurLoc;
 
+  // Callers consume the leading 'def', so the current token must be the
+  // function name.
   if (CurrentToken != tok_name)
     return LogErrorSignature("Expected function name in function signature");
-  string FnName = Name;
+  string FunctionName = Name;
   getNextToken(); // eat function name
 
   if (CurrentToken != tok_lparen)
@@ -2373,7 +2382,7 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
   }
 
   getNextToken(); // eat ')'
-  return make_unique<FunctionSignatureNode>(FnName, std::move(ParameterNames), SignatureLoc);
+  return make_unique<FunctionSignatureNode>(FunctionName, std::move(ParameterNames), SignatureLoc);
 }
 
 // DefaultType controls what return type is assumed when no '->' is present.
@@ -2390,6 +2399,9 @@ ParseOptionalReturnType(ValueType DefaultType = ValueType::None) {
 /// I parse the inline simple-statement or indented block portion of a
 /// function-definition.
 static unique_ptr<ExpressionNode> ParseFunctionBody() {
+  // Allow the function body to start on the next line:
+  //   def foo(x):
+  //     x + 1
   if (CurrentToken == tok_eol) {
     consumeNewlines();
     if (CurrentToken != tok_indent)
@@ -2453,9 +2465,9 @@ static unique_ptr<FunctionDefinitionNode> ParseTopLevelStatementFunction() {
   if (!Stmt->isReturnExpr() && RetType != ValueType::None)
     Stmt = make_unique<ReturnStatementNode>(std::move(Stmt));
 
-  string FnName = "__pyxc.toplevel." + to_string(TopLevelExprCounter++);
+  string FunctionName = "__pyxc.toplevel." + to_string(TopLevelExprCounter++);
   auto Signature = make_unique<FunctionSignatureNode>(
-      FnName, vector<pair<string, ValueType>>(), CurLoc, RetType);
+      FunctionName, vector<pair<string, ValueType>>(), CurLoc, RetType);
   return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(Stmt));
 }
 
@@ -2782,8 +2794,8 @@ static bool IsAssignable(ValueType Dest, ValueType Src) {
 
 /// LogErrorV - Codegen-level error helper. Delegates to LogErrorExpression for printing,
 /// then returns nullptr so codegen callers can write: return LogErrorV("msg");
-Value *LogErrorV(const char *Str) {
-  LogErrorExpression(Str);
+Value *LogErrorV(const char *ErrorMessage) {
+  LogErrorExpression(ErrorMessage);
   return nullptr;
 }
 
@@ -3879,7 +3891,7 @@ static void HandleTopLevelStatement() {
     SynchronizeToLineBoundary();
     return;
   }
-  string FnName = FnAST->getName();
+  string FunctionName = FnAST->getName();
   ValueType RetType = FnAST->getReturnType();
   bool SavedInGlobalInit = InGlobalInit;
   InGlobalInit = true;
@@ -3907,7 +3919,7 @@ static void HandleTopLevelStatement() {
       InitializeModuleAndManagers();
 
       // Locate the compiled function in the JIT's symbol table.
-      auto ExprSymbol = ExitOnErr(TheJIT->lookup(FnName));
+      auto ExprSymbol = ExitOnErr(TheJIT->lookup(FunctionName));
 
       if (RetType == ValueType::None) {
         void (*FP)() = ExprSymbol.toPtr<void (*)()>();
@@ -3918,84 +3930,84 @@ static void HandleTopLevelStatement() {
           double (*FP)() = ExprSymbol.toPtr<double (*)()>();
           double result = FP();
           if (IsRepl && LastTopLevelShouldPrint)
-            fprintf(stderr, "%f\n", result);
+            fprintf(stdout, "%f\n", result);
           break;
         }
         case ValueType::Float32: {
           float (*FP)() = ExprSymbol.toPtr<float (*)()>();
           double result = static_cast<double>(FP());
           if (IsRepl && LastTopLevelShouldPrint)
-            fprintf(stderr, "%f\n", result);
+            fprintf(stdout, "%f\n", result);
           break;
         }
         case ValueType::Int: {
           intptr_t (*FP)() = ExprSymbol.toPtr<intptr_t (*)()>();
           long long result = static_cast<long long>(FP());
           if (IsRepl && LastTopLevelShouldPrint)
-            fprintf(stderr, "%lld\n", result);
+            fprintf(stdout, "%lld\n", result);
           break;
         }
         case ValueType::Int8: {
           int8_t (*FP)() = ExprSymbol.toPtr<int8_t (*)()>();
           long long result = static_cast<long long>(FP());
           if (IsRepl && LastTopLevelShouldPrint)
-            fprintf(stderr, "%lld\n", result);
+            fprintf(stdout, "%lld\n", result);
           break;
         }
         case ValueType::Int16: {
           int16_t (*FP)() = ExprSymbol.toPtr<int16_t (*)()>();
           long long result = static_cast<long long>(FP());
           if (IsRepl && LastTopLevelShouldPrint)
-            fprintf(stderr, "%lld\n", result);
+            fprintf(stdout, "%lld\n", result);
           break;
         }
         case ValueType::Int32: {
           int32_t (*FP)() = ExprSymbol.toPtr<int32_t (*)()>();
           long long result = static_cast<long long>(FP());
           if (IsRepl && LastTopLevelShouldPrint)
-            fprintf(stderr, "%lld\n", result);
+            fprintf(stdout, "%lld\n", result);
           break;
         }
         case ValueType::Int64: {
           int64_t (*FP)() = ExprSymbol.toPtr<int64_t (*)()>();
           long long result = static_cast<long long>(FP());
           if (IsRepl && LastTopLevelShouldPrint)
-            fprintf(stderr, "%lld\n", result);
+            fprintf(stdout, "%lld\n", result);
           break;
         }
         case ValueType::UInt8: {
           uint8_t (*FP)() = ExprSymbol.toPtr<uint8_t (*)()>();
           unsigned long long result = static_cast<unsigned long long>(FP());
           if (IsRepl && LastTopLevelShouldPrint)
-            fprintf(stderr, "%llu\n", result);
+            fprintf(stdout, "%llu\n", result);
           break;
         }
         case ValueType::UInt16: {
           uint16_t (*FP)() = ExprSymbol.toPtr<uint16_t (*)()>();
           unsigned long long result = static_cast<unsigned long long>(FP());
           if (IsRepl && LastTopLevelShouldPrint)
-            fprintf(stderr, "%llu\n", result);
+            fprintf(stdout, "%llu\n", result);
           break;
         }
         case ValueType::UInt32: {
           uint32_t (*FP)() = ExprSymbol.toPtr<uint32_t (*)()>();
           unsigned long long result = static_cast<unsigned long long>(FP());
           if (IsRepl && LastTopLevelShouldPrint)
-            fprintf(stderr, "%llu\n", result);
+            fprintf(stdout, "%llu\n", result);
           break;
         }
         case ValueType::UInt64: {
           uint64_t (*FP)() = ExprSymbol.toPtr<uint64_t (*)()>();
           unsigned long long result = static_cast<unsigned long long>(FP());
           if (IsRepl && LastTopLevelShouldPrint)
-            fprintf(stderr, "%llu\n", result);
+            fprintf(stdout, "%llu\n", result);
           break;
         }
         case ValueType::Bool: {
           bool (*FP)() = ExprSymbol.toPtr<bool (*)()>();
           bool result = FP();
           if (IsRepl && LastTopLevelShouldPrint)
-            fprintf(stderr, "%s\n", result ? "True" : "False");
+            fprintf(stdout, "%s\n", result ? "True" : "False");
           break;
         }
         default:
@@ -4009,7 +4021,7 @@ static void HandleTopLevelStatement() {
     }
 
     // Keep-module path: call the compiled function after adding the module.
-    auto ExprSymbol = ExitOnErr(TheJIT->lookup(FnName));
+    auto ExprSymbol = ExitOnErr(TheJIT->lookup(FunctionName));
     if (RetType == ValueType::None) {
       void (*FP)() = ExprSymbol.toPtr<void (*)()>();
       FP();
@@ -4019,84 +4031,84 @@ static void HandleTopLevelStatement() {
         double (*FP)() = ExprSymbol.toPtr<double (*)()>();
         double result = FP();
         if (IsRepl && LastTopLevelShouldPrint)
-          fprintf(stderr, "%f\n", result);
+          fprintf(stdout, "%f\n", result);
         break;
       }
       case ValueType::Float32: {
         float (*FP)() = ExprSymbol.toPtr<float (*)()>();
         double result = static_cast<double>(FP());
         if (IsRepl && LastTopLevelShouldPrint)
-          fprintf(stderr, "%f\n", result);
+          fprintf(stdout, "%f\n", result);
         break;
       }
       case ValueType::Int: {
         intptr_t (*FP)() = ExprSymbol.toPtr<intptr_t (*)()>();
         long long result = static_cast<long long>(FP());
         if (IsRepl && LastTopLevelShouldPrint)
-          fprintf(stderr, "%lld\n", result);
+          fprintf(stdout, "%lld\n", result);
         break;
       }
       case ValueType::Int8: {
         int8_t (*FP)() = ExprSymbol.toPtr<int8_t (*)()>();
         long long result = static_cast<long long>(FP());
         if (IsRepl && LastTopLevelShouldPrint)
-          fprintf(stderr, "%lld\n", result);
+          fprintf(stdout, "%lld\n", result);
         break;
       }
       case ValueType::Int16: {
         int16_t (*FP)() = ExprSymbol.toPtr<int16_t (*)()>();
         long long result = static_cast<long long>(FP());
         if (IsRepl && LastTopLevelShouldPrint)
-          fprintf(stderr, "%lld\n", result);
+          fprintf(stdout, "%lld\n", result);
         break;
       }
       case ValueType::Int32: {
         int32_t (*FP)() = ExprSymbol.toPtr<int32_t (*)()>();
         long long result = static_cast<long long>(FP());
         if (IsRepl && LastTopLevelShouldPrint)
-          fprintf(stderr, "%lld\n", result);
+          fprintf(stdout, "%lld\n", result);
         break;
       }
       case ValueType::Int64: {
         int64_t (*FP)() = ExprSymbol.toPtr<int64_t (*)()>();
         long long result = static_cast<long long>(FP());
         if (IsRepl && LastTopLevelShouldPrint)
-          fprintf(stderr, "%lld\n", result);
+          fprintf(stdout, "%lld\n", result);
         break;
       }
       case ValueType::UInt8: {
         uint8_t (*FP)() = ExprSymbol.toPtr<uint8_t (*)()>();
         unsigned long long result = static_cast<unsigned long long>(FP());
         if (IsRepl && LastTopLevelShouldPrint)
-          fprintf(stderr, "%llu\n", result);
+          fprintf(stdout, "%llu\n", result);
         break;
       }
       case ValueType::UInt16: {
         uint16_t (*FP)() = ExprSymbol.toPtr<uint16_t (*)()>();
         unsigned long long result = static_cast<unsigned long long>(FP());
         if (IsRepl && LastTopLevelShouldPrint)
-          fprintf(stderr, "%llu\n", result);
+          fprintf(stdout, "%llu\n", result);
         break;
       }
       case ValueType::UInt32: {
         uint32_t (*FP)() = ExprSymbol.toPtr<uint32_t (*)()>();
         unsigned long long result = static_cast<unsigned long long>(FP());
         if (IsRepl && LastTopLevelShouldPrint)
-          fprintf(stderr, "%llu\n", result);
+          fprintf(stdout, "%llu\n", result);
         break;
       }
       case ValueType::UInt64: {
         uint64_t (*FP)() = ExprSymbol.toPtr<uint64_t (*)()>();
         unsigned long long result = static_cast<unsigned long long>(FP());
         if (IsRepl && LastTopLevelShouldPrint)
-          fprintf(stderr, "%llu\n", result);
+          fprintf(stdout, "%llu\n", result);
         break;
       }
       case ValueType::Bool: {
         bool (*FP)() = ExprSymbol.toPtr<bool (*)()>();
         bool result = FP();
         if (IsRepl && LastTopLevelShouldPrint)
-          fprintf(stderr, "%s\n", result ? "True" : "False");
+          fprintf(stdout, "%s\n", result ? "True" : "False");
         break;
       }
       default:
@@ -4142,16 +4154,16 @@ static void HandleTopLevelStatementFileMode() {
 #define DLLEXPORT
 #endif
 
-/// putchard - Write a single ASCII character to stderr. The double argument
+/// putchard - Write a single ASCII character to stdout. The double argument
 /// is truncated to char. Returns 0.0 so it can be used as an expression.
 extern "C" DLLEXPORT double putchard(double X) {
-  fputc((char)X, stderr);
+  fputc((char)X, stdout);
   return 0;
 }
 
-/// printd - Print a double to stderr as "%f\n". Returns 0.0.
+/// printd - Print a double to stdout as "%f\n". Returns 0.0.
 extern "C" DLLEXPORT double printd(double X) {
-  fprintf(stderr, "%f\n", X);
+  fprintf(stdout, "%f\n", X);
   return 0;
 }
 
@@ -4172,17 +4184,7 @@ extern "C" DLLEXPORT double printd(double X) {
 /// tokens on the current line. Either way we return here to look at the
 /// next CurrentToken.
 static void MainLoop() {
-  while (true) {
-    if (CurrentToken == tok_eof)
-      return;
-
-    // A bare newline: just print a fresh prompt and read the next token.
-    if (CurrentToken == tok_eol) {
-      PrintReplPrompt();
-      getNextToken();
-      continue;
-    }
-
+  while (CurrentToken != tok_eof) {
     if (CurrentToken == tok_indent) {
       LogErrorExpression("Unexpected indentation");
       SynchronizeToLineBoundary();
@@ -4201,6 +4203,11 @@ static void MainLoop() {
     }
 
     switch (CurrentToken) {
+    case tok_eol:
+      // A bare newline: just print a fresh prompt and read the next token.
+      PrintReplPrompt();
+      getNextToken();
+      break;
     case tok_def:
       HandleFunctionDefinition();
       break;
