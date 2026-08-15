@@ -238,46 +238,70 @@ cd pyxc-llvm-tutorial/code/chapter-37
 
 Before this chapter, `ParseAggregateDefinition` filled in `StructTypes[AggregateName]` only once, after the whole body was parsed. That doesn't work anymore: a method signature can reference the enclosing class (a method returning `ptr[Counter]` on `Counter` itself, say), so `Counter` needs to already be in `StructTypes` while its own methods are being parsed. I register early instead, then keep the entry updated as each field or method is added:
 
-```cpp
-StructTypeInfo Info;
-Info.IsClass = string(KindName) == "class";
-// Methods need the fields parsed before them, so keep the in-progress class
-// metadata visible while I walk the body.
-StructTypes[AggregateName] = Info;
-vector<unique_ptr<FunctionDefinitionNode>> Methods;
-while (CurrentToken != tok_dedent && CurrentToken != tok_eof) {
-  if (CurrentToken == tok_eol) {
-    consumeNewlines();
-    continue;
-  }
-  if (CurrentToken == tok_block_end) {
-    getNextToken();
-    continue;
-  }
-  if (CurrentToken == tok_def) {
-    if (!Info.IsClass) {
-      LogErrorExpression("Methods are only allowed inside classes");
-      return false;
-    }
-    auto Method = ParseMethodDefinition(AggregateName);
-    if (!Method)
-      return false;
-    Methods.push_back(std::move(Method));
-    Info.Methods = StructTypes[AggregateName].Methods;
-    StructTypes[AggregateName] = Info;
-    if (CurrentToken == tok_eol)
-      consumeNewlines();
-    else if (CurrentToken == tok_block_end)
-      getNextToken();
-    continue;
-  }
-  // ... parse a field-declaration as before ...
-  Info.FieldIndices[FieldName] = Info.Fields.size();
-  Info.Fields.push_back({FieldName, FieldType, FieldStructName});
-  StructTypes[AggregateName] = Info;
-  if (CurrentToken == tok_eol)
-    consumeNewlines();
-}
+```cppdiff
+*static bool ParseAggregateDefinition(const char *KindName) {
+*  ...
+*  getNextToken(); // eat INDENT
+*
+*  StructTypeInfo Info;
+*  Info.IsClass = string(KindName) == "class";
++  // Methods need the fields parsed before them, so keep the in-progress class
++  // metadata visible while I walk the body.
++  StructTypes[AggregateName] = Info;
++  vector<unique_ptr<FunctionDefinitionNode>> Methods;
+*  while (CurrentToken != tok_dedent && CurrentToken != tok_eof) {
++    if (CurrentToken == tok_eol) {
++      consumeNewlines();
++      continue;
++    }
++    if (CurrentToken == tok_block_end) {
++      getNextToken();
++      continue;
++    }
++    if (CurrentToken == tok_def) {
++      if (!Info.IsClass) {
++        LogErrorExpression("Methods are only allowed inside classes");
++        return false;
++      }
++      auto Method = ParseMethodDefinition(AggregateName);
++      if (!Method)
++        return false;
++      Methods.push_back(std::move(Method));
++      Info.Methods = StructTypes[AggregateName].Methods;
++      StructTypes[AggregateName] = Info;
++      if (CurrentToken == tok_eol)
++        consumeNewlines();
++      else if (CurrentToken == tok_block_end)
++        getNextToken();
++      continue;
++    }
+*    if (CurrentToken != tok_name) {
+*      LogErrorExpression((string("Expected field name in ") + KindName + " body").c_str());
+*      return false;
+*    }
+*    ...
+*    Info.FieldIndices[FieldName] = Info.Fields.size();
+*    Info.Fields.push_back({FieldName, FieldType, FieldStructName});
++    StructTypes[AggregateName] = Info;
+*    if (CurrentToken == tok_eol)
+*      consumeNewlines();
+*  }
+*
+*  if (Info.Fields.empty()) {
+*    ...
+*  }
+*  if (CurrentToken != tok_dedent) {
+*    ...
+*  }
+*  StructTypes[AggregateName] = std::move(Info);
++  for (auto &Method : Methods) {
++    if (!Method->codegen())
++      return false;
++  }
+*  PendingTokens.push_front(tok_block_end);
+*  getNextToken(); // eat DEDENT, then surface block-end
+*  return true;
+*}
 ```
 
 `Info.IsClass` is the one bit of state this chapter adds to `StructTypeInfo` itself, and it's what the `tok_def` branch checks: a `def` inside a `struct` body is rejected immediately, before I even try to parse it as a method. `StructTypes[AggregateName] = Info` runs again after every field and every method for the same reason it ran once early: a method later in the same body needs to see the fields (and sibling methods) declared before it, not just what the class looked like when it was first registered.
@@ -468,39 +492,50 @@ The receiver must be an lvalue (`Receiver->isLValue()`), which is true for a pla
 
 Before this chapter, seeing `name.` always meant a field access. Now `.` can mean either a field access or a method call, and the parser can't tell which until it looks past the member name. This lives inside `ParseNameExpressionWithName`, in the loop that walks `.` and `[` suffixes after a variable reference. It reads the member name first, then checks whether `(` follows:
 
-```cpp
-while (CurrentToken == tok_dot || CurrentToken == tok_lbracket) {
-  if (CurrentToken == tok_dot) {
-    if (Result->getType() != ValueType::Struct ||
-        Result->getStructName().empty())
-      return LogErrorExpression("Field access requires a struct value");
-    string BaseStructName = Result->getStructName();
-    getNextToken(); // eat '.'
-    if (CurrentToken != tok_name)
-      return LogErrorExpression("Expected field or method name after '.'");
-    string MemberName = Name;
-    getNextToken(); // eat member name
-    if (CurrentToken == tok_lparen) {
-      Result = ParseMethodCallExpression(std::move(Result), MemberName);
-      if (!Result)
-        return nullptr;
-      continue;
-    }
-    auto Struct = StructTypes.find(BaseStructName);
-    if (Struct == StructTypes.end())
-      return LogErrorExpression("Unknown struct type in field access");
-    auto Field = Struct->second.FieldIndices.find(MemberName);
-    if (Field == Struct->second.FieldIndices.end())
-      return LogErrorExpression(
-          ("Unknown field '" + MemberName + "'").c_str());
-    const auto &FieldInfo = Struct->second.Fields[Field->second];
-    Result = make_unique<MemberExpressionNode>(
-        std::move(Result), Field->second, FieldInfo.Type,
-        FieldInfo.StructName);
-    continue;
-  }
-  // ... '[' indexing branch, unchanged from earlier chapters ...
-}
+```cppdiff
+*    while (CurrentToken == tok_dot || CurrentToken == tok_lbracket) {
+*      if (CurrentToken == tok_dot) {
+*        if (Result->getType() != ValueType::Struct ||
+*            Result->getStructName().empty())
+*          return LogErrorExpression("Field access requires a struct value");
+*        string BaseStructName = Result->getStructName();
+*        getNextToken(); // eat '.'
+*        if (CurrentToken != tok_name)
+-          return LogErrorExpression("Expected field name after '.'");
+-        auto Struct = StructTypes.find(BaseStructName);
++          return LogErrorExpression("Expected field or method name after '.'");
++        string MemberName = Name;
++        getNextToken(); // eat member name
++        if (CurrentToken == tok_lparen) {
++          Result = ParseMethodCallExpression(std::move(Result), MemberName);
++          if (!Result)
++            return nullptr;
++          continue;
++        }
++        auto Struct = StructTypes.find(BaseStructName);
+*        if (Struct == StructTypes.end())
+*          return LogErrorExpression("Unknown struct type in field access");
+-        auto Field = Struct->second.FieldIndices.find(Name);
+-        if (Field == Struct->second.FieldIndices.end())
+-          return LogErrorExpression(("Unknown field '" + Name + "'").c_str());
++        auto Field = Struct->second.FieldIndices.find(MemberName);
++        if (Field == Struct->second.FieldIndices.end())
++          return LogErrorExpression(
++              ("Unknown field '" + MemberName + "'").c_str());
+*        const auto &FieldInfo = Struct->second.Fields[Field->second];
+*        Result = make_unique<MemberExpressionNode>(
+*            std::move(Result), Field->second, FieldInfo.Type,
+*            FieldInfo.StructName);
+-        getNextToken(); // eat field name
+*        continue;
+*      }
+*
+*      // '[' indexing branch, unchanged from earlier chapters.
+*      if (Result->getType() != ValueType::Pointer &&
+*          Result->getType() != ValueType::Array)
+*        return LogErrorExpression("Indexing requires a pointer or array value");
+*      ...
+*    }
 ```
 
 One token of lookahead at `(` is enough to tell the two apart unambiguously. When it's a field, not a method call, the field access builds a `MemberExpressionNode` wrapping the previous `Result` and the field's index, rather than a flat name-plus-path the way the pre-chapter-37 field parser did; each `.field` step wraps the one before it, so a chain like `a.b.c` nests three levels deep.
@@ -509,17 +544,32 @@ One token of lookahead at `(` is enough to tell the two apart unambiguously. Whe
 
 `self` needs one more thing that an ordinary struct variable doesn't: it's typed `ptr[ClassName]`, not `ClassName` directly, so `self.value` has to look through the pointer before it can find `value`. That case is handled earlier in `ParseNameExpressionWithName`, right after a plain variable reference is looked up and before the general dot/bracket loop above ever runs:
 
-```cpp
-// An implicit self parameter is a pointer to its class. Field access
-// dereferences that pointer before walking the field path.
-if (Type == ValueType::Pointer && CurrentToken == tok_dot) {
-  ValueType PointeeType = ValueType::Error;
-  string PointeeStructName;
-  if (DecodePointerType(StructName, PointeeType, PointeeStructName) &&
-      PointeeType == ValueType::Struct)
-    return ParseFieldExpressionWithBase(ParsedName, PointeeType,
-                                        PointeeStructName);
-}
+```cppdiff
+*static unique_ptr<ExpressionNode> ParseNameExpressionWithName(const string &ParsedName) {
+*  if (CurrentToken != tok_lparen) { // Simple variable ref.
+*    ValueType Type = LookupVarType(ParsedName);
+*    if (Type == ValueType::Error) {
+*      ...
+*    }
+*    string StructName = LookupVarStructName(ParsedName);
+*
++    // An implicit self parameter is a pointer to its class. Field access
++    // dereferences that pointer before walking the field path.
++    if (Type == ValueType::Pointer && CurrentToken == tok_dot) {
++      ValueType PointeeType = ValueType::Error;
++      string PointeeStructName;
++      if (DecodePointerType(StructName, PointeeType, PointeeStructName) &&
++          PointeeType == ValueType::Struct)
++        return ParseFieldExpressionWithBase(ParsedName, PointeeType,
++                                            PointeeStructName);
++    }
+*
+*    unique_ptr<ExpressionNode> Result =
+*        make_unique<NameExpressionNode>(ParsedName, Type, StructName);
+*    ...
+*  }
+*  ...
+*}
 ```
 
 `ParseFieldExpressionWithBase` is the field-chain parser this codebase has had since it first gained struct field access: it starts from `.` and walks the whole `.field.field...` chain itself, building a `FieldExpressionNode` keyed by a base name and a flat field path. Any pointer-typed variable followed by `.` goes through this path, not just `self`, but in practice `self` is the only pointer-to-struct variable a method body has, so this is what makes `self.value = self.value + 1` resolve `value` without the programmer writing `(*self).value`.
@@ -528,18 +578,32 @@ if (Type == ValueType::Pointer && CurrentToken == tok_dot) {
 
 The parser's auto-deref needs a matching codegen path, and it lives in `GetFieldAddress`, the function `FieldExpressionNode::codegen` and `codegenAddress` both call to compute a field's address. Before walking the field path with GEPs, `GetFieldAddress` checks whether the base it resolved is itself a pointer, and if so, loads through it first to get the actual struct address:
 
-```cpp
-ValueType CurrentType = ValueType::Struct;
-ValueType PointeeType = ValueType::Error;
-string PointeeStructName;
-if (DecodePointerType(CurrentStructName, PointeeType, PointeeStructName)) {
-  if (PointeeType != ValueType::Struct)
-    return nullptr;
-  Pointer = TheBuilder->CreateLoad(
-      LLVMTypeFor(ValueType::Pointer, CurrentStructName), Pointer, "self");
-  CurrentType = PointeeType;
-  CurrentStructName = PointeeStructName;
-}
+```cppdiff
+*static Value *GetFieldAddress(const string &BaseName,
+*                              const vector<string> &FieldPath,
+*                              ValueType *OutType = nullptr,
+*                              string *OutStructName = nullptr) {
+*  ...
+*  if (!Pointer || CurrentStructName.empty())
+*    return nullptr;
+*
+*  ValueType CurrentType = ValueType::Struct;
++  ValueType PointeeType = ValueType::Error;
++  string PointeeStructName;
++  if (DecodePointerType(CurrentStructName, PointeeType, PointeeStructName)) {
++    if (PointeeType != ValueType::Struct)
++      return nullptr;
++    Pointer = TheBuilder->CreateLoad(
++        LLVMTypeFor(ValueType::Pointer, CurrentStructName), Pointer, "self");
++    CurrentType = PointeeType;
++    CurrentStructName = PointeeStructName;
++  }
+*  for (const auto &FieldName : FieldPath) {
+*    auto Struct = StructTypes.find(CurrentStructName);
+*    ...
+*  }
+*  ...
+*}
 ```
 
 This is what makes `self.value = self.value + 1` work: `self` is a `ptr[Counter]` alloca, `GetFieldAddress` loads the pointer value out of it (into an instruction literally named `%self` in the IR, regardless of what the source variable was called), and the rest of the function walks the struct-GEP chain exactly as it always has over `FieldPath`, just starting from the loaded address instead of the alloca itself.

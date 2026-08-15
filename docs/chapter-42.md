@@ -259,11 +259,16 @@ cd pyxc-llvm-tutorial/code/chapter-42
 
 A new `ValueType` enum value represents an unresolved type parameter inside a trait body:
 
-```cpp
-enum class ValueType {
-  // ...existing values...
-  TypeVariable,
-};
+```cppdiff
+*enum class ValueType {
+*  None,
+*  ...
+*  Struct,
+*  Array,
+*  Pointer,
++  TypeVariable,
+*  Error
+*};
 ```
 
 Because only one trait body is ever being parsed at a time, there's no need for a set of active names — a single global string holds the type parameter name currently in scope:
@@ -274,31 +279,44 @@ static string ActiveTraitTypeParameter;
 
 `ParseTypeToken` checks `ActiveTraitTypeParameter` before falling back to alias and struct lookup. If the current name matches it, it returns `ValueType::TypeVariable` and stores the parameter name itself as the struct name:
 
-```cpp
-case tok_name: {
-  if (!ActiveTraitTypeParameter.empty() && Name == ActiveTraitTypeParameter) {
-    BaseTypeInfo = Name;
-    getNextToken();
-    BaseType = ValueType::TypeVariable;
-    break;
-  }
-  auto Alias = TypeAliases.find(Name);
-  if (Alias != TypeAliases.end()) {
-    BaseType = Alias->second.first;
-    BaseTypeInfo = Alias->second.second;
-    getNextToken();
-    break;
-  }
-  auto Found = StructTypes.find(Name);
-  if (Found == StructTypes.end()) {
-    LogErrorExpression(("Unknown type '" + Name + "'").c_str());
-    return ValueType::Error;
-  }
-  BaseTypeInfo = Name;
-  getNextToken();
-  BaseType = ValueType::Struct;
-  break;
-}
+```cppdiff
+*static ValueType ParseTypeToken(string *StructName) {
+*  if (StructName)
+*    StructName->clear();
+*  ValueType BaseType = ValueType::Error;
+*  string BaseTypeInfo;
+*  switch (CurrentToken) {
+*  ...
+*  case tok_name: {
++    if (!ActiveTraitTypeParameter.empty() && Name == ActiveTraitTypeParameter) {
++      BaseTypeInfo = Name;
++      getNextToken();
++      BaseType = ValueType::TypeVariable;
++      break;
++    }
+*    auto Alias = TypeAliases.find(Name);
+*    if (Alias != TypeAliases.end()) {
+*      BaseType = Alias->second.first;
+*      BaseTypeInfo = Alias->second.second;
+*      getNextToken();
+*      break;
+*    }
+*    auto Found = StructTypes.find(Name);
+*    if (Found == StructTypes.end()) {
+*      LogErrorExpression(("Unknown type '" + Name + "'").c_str());
+*      return ValueType::Error;
+*    }
+*    BaseTypeInfo = Name;
+*    getNextToken();
+*    BaseType = ValueType::Struct;
+*    break;
+*  }
+*  default:
+*    LogErrorExpression("Expected a type");
+*    return ValueType::Error;
+*  }
+*  ...
+*}
 ```
 
 This is why `T` in `def add(x: T, y: T) -> T` resolves to `(ValueType::TypeVariable, "T")` instead of failing as an unknown type: the check runs first, before the alias and struct maps are even consulted. Outside a trait body `ActiveTraitTypeParameter` is empty, so `T` falls straight through to the ordinary unknown-type error.
@@ -308,29 +326,45 @@ This is why `T` in `def add(x: T, y: T) -> T` resolves to `(ValueType::TypeVaria
 `ParseTraitDefinition` checks for an optional `[Param]` right after the trait name, before the `:`:
 
 ```cpp
-getNextToken(); // eat trait name
-string TypeParameterName;
-if (CurrentToken == tok_lbracket) {
-  getNextToken(); // eat '['
+static bool ParseTraitDefinition() {
+  getNextToken(); // eat 'trait'
   if (CurrentToken != tok_name)
+    return LogErrorExpression("Expected trait name"), false;
+  string TraitName = Name;
+  if (TraitTypes.count(TraitName) || StructTypes.count(TraitName) ||
+      TypeAliases.count(TraitName))
     return LogErrorExpression(
-               "Expected type parameter name in trait definition"),
+               ("Type '" + TraitName + "' is already defined").c_str()),
            false;
-  TypeParameterName = Name;
-  getNextToken(); // eat type parameter name
-  if (CurrentToken != tok_rbracket)
-    return LogErrorExpression(
-               "Expected ']' after trait type parameter"),
-           false;
-  getNextToken(); // eat ']'
-}
-if (CurrentToken != tok_colon)
-  return LogErrorExpression("Expected ':' after trait name"), false;
-// ...eat ':', consume newlines, expect INDENT...
+  getNextToken(); // eat trait name
+  string TypeParameterName;
+  if (CurrentToken == tok_lbracket) {
+    getNextToken(); // eat '['
+    if (CurrentToken != tok_name)
+      return LogErrorExpression(
+                 "Expected type parameter name in trait definition"),
+             false;
+    TypeParameterName = Name;
+    getNextToken(); // eat type parameter name
+    if (CurrentToken != tok_rbracket)
+      return LogErrorExpression(
+                 "Expected ']' after trait type parameter"),
+             false;
+    getNextToken(); // eat ']'
+  }
+  if (CurrentToken != tok_colon)
+    return LogErrorExpression("Expected ':' after trait name"), false;
+  getNextToken(); // eat ':'
+  if (CurrentToken != tok_eol)
+    return LogErrorExpression("Expected newline after trait header"), false;
+  consumeNewlines();
+  if (CurrentToken != tok_indent)
+    return LogErrorExpression("Expected an indented trait body"), false;
+  getNextToken(); // eat INDENT
 
-TraitTypeInfo Trait;
-Trait.TypeParameterName = TypeParameterName;
-ActiveTraitTypeParameter = TypeParameterName;
+  TraitTypeInfo Trait;
+  Trait.TypeParameterName = TypeParameterName;
+  ActiveTraitTypeParameter = TypeParameterName;
 ```
 
 `TypeParameterName` is stored on `TraitTypeInfo`, the struct held in the `TraitTypes` map. An empty `TypeParameterName` means the trait isn't generic, and `ActiveTraitTypeParameter` stays empty for the whole body — every `T`-like name in a non-generic trait is still just an ordinary, probably-unknown identifier. `ActiveTraitTypeParameter` is cleared again once the trait body's `DEDENT` is consumed, at the end of `ParseTraitDefinition`.

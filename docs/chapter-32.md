@@ -238,22 +238,99 @@ I then send both literal paths through `DecodeLiteralCodePoint()`. The function 
 The existing simple escapes each become their corresponding code point. I parse `\xNN` as two hexadecimal digits. Anything else falls to a default case: if it's not an octal digit either, it's not a valid escape at all — `\q` or `\8` both land here and get rejected. Otherwise I consume up to three octal digits:
 
 ```cpp
-default:
-  if (LexerLastChar < '0' || LexerLastChar > '7')
-    return LiteralDecodeError::InvalidEscape;
-  Value = 0;
-  for (int Index = 0; Index < 3; ++Index) {
-    Value = (Value << 3) |
-            static_cast<uint32_t>(LexerLastChar - '0');
-    int Next = peek();
-    if (Index == 2 || Next < '0' || Next > '7') {
+static LiteralDecodeError DecodeLiteralCodePoint(uint32_t &Value) {
+  if (LexerLastChar == '\\') {
+    LexerLastChar = advance(); // eat '\\'
+    switch (LexerLastChar) {
+    case '\\': Value = '\\'; LexerLastChar = advance(); return LiteralDecodeError::None;
+    case '\'': Value = '\''; LexerLastChar = advance(); return LiteralDecodeError::None;
+    case '"': Value = '"'; LexerLastChar = advance(); return LiteralDecodeError::None;
+    case '?': Value = '?'; LexerLastChar = advance(); return LiteralDecodeError::None;
+    case 'a': Value = 7; LexerLastChar = advance(); return LiteralDecodeError::None;
+    case 'b': Value = 8; LexerLastChar = advance(); return LiteralDecodeError::None;
+    case 'f': Value = 12; LexerLastChar = advance(); return LiteralDecodeError::None;
+    case 'n': Value = 10; LexerLastChar = advance(); return LiteralDecodeError::None;
+    case 'r': Value = 13; LexerLastChar = advance(); return LiteralDecodeError::None;
+    case 't': Value = 9; LexerLastChar = advance(); return LiteralDecodeError::None;
+    case 'v': Value = 11; LexerLastChar = advance(); return LiteralDecodeError::None;
+    case 'x': {
+      int High = HexDigitValue(advance());
+      int Low = HexDigitValue(advance());
+      if (High < 0 || Low < 0)
+        return LiteralDecodeError::InvalidEscape;
+      Value = static_cast<uint32_t>((High << 4) | Low);
       LexerLastChar = advance();
-      break;
+      return LiteralDecodeError::None;
     }
-    LexerLastChar = advance();
+    case 'u':
+    case 'U': {
+      int DigitCount = LexerLastChar == 'u' ? 4 : 8;
+      Value = 0;
+      for (int Index = 0; Index < DigitCount; ++Index) {
+        int Digit = HexDigitValue(advance());
+        if (Digit < 0)
+          return LiteralDecodeError::InvalidEscape;
+        Value = (Value << 4) | static_cast<uint32_t>(Digit);
+      }
+      LexerLastChar = advance();
+      return IsUnicodeScalarValue(Value)
+                 ? LiteralDecodeError::None
+                 : LiteralDecodeError::InvalidCodePoint;
+    }
+    default:
+      if (LexerLastChar < '0' || LexerLastChar > '7')
+        return LiteralDecodeError::InvalidEscape;
+      Value = 0;
+      for (int Index = 0; Index < 3; ++Index) {
+        Value = (Value << 3) |
+                static_cast<uint32_t>(LexerLastChar - '0');
+        int Next = peek();
+        if (Index == 2 || Next < '0' || Next > '7') {
+          LexerLastChar = advance();
+          break;
+        }
+        LexerLastChar = advance();
+      }
+      return LiteralDecodeError::None;
+    }
   }
-  return LiteralDecodeError::None;
+
+  unsigned Lead = static_cast<unsigned char>(LexerLastChar);
+  if (Lead < 0x80) {
+    Value = Lead;
+    LexerLastChar = advance();
+    return LiteralDecodeError::None;
+  }
+
+  int Length = 0;
+  uint32_t Minimum = 0;
+  if (Lead >= 0xC2 && Lead <= 0xDF) {
+    Length = 2; Value = Lead & 0x1F; Minimum = 0x80;
+  } else if (Lead >= 0xE0 && Lead <= 0xEF) {
+    Length = 3; Value = Lead & 0x0F; Minimum = 0x800;
+  } else if (Lead >= 0xF0 && Lead <= 0xF4) {
+    Length = 4; Value = Lead & 0x07; Minimum = 0x10000;
+  } else {
+    return LiteralDecodeError::InvalidUtf8;
+  }
+
+  for (int Index = 1; Index < Length; ++Index) {
+    int Next = advance();
+    if (Next == EOF || (Next & 0xC0) != 0x80) {
+      LexerLastChar = Next;
+      return LiteralDecodeError::InvalidUtf8;
+    }
+    Value = (Value << 6) | static_cast<uint32_t>(Next & 0x3F);
+  }
+  LexerLastChar = advance();
+  if (Value < Minimum)
+    return LiteralDecodeError::InvalidUtf8;
+  return IsUnicodeScalarValue(Value) ? LiteralDecodeError::None
+                                     : LiteralDecodeError::InvalidCodePoint;
+}
 ```
+
+This is the full function; the sections below walk through each part of it in turn.
 
 `'\101'` is octal for 65 — the letter `A`.
 
@@ -332,20 +409,39 @@ Raw and escaped spellings reach the same validated code point:
 The character-literal branch now asks the shared decoder for one code point, writing it straight into the existing `CharacterLiteralValue` global:
 
 ```cpp
-LiteralDecodeError Error =
-    DecodeLiteralCodePoint(CharacterLiteralValue);
-if (Error != LiteralDecodeError::None)
-  return ReportLiteralDecodeError(Error, "character");
+if (LexerLastChar == '\'') {
+  LexerLastChar = advance(); // eat opening quote
+  if (LexerLastChar == '\'') {
+    fprintf(stderr, "Error (Line %d, Column %d): empty character literal\n",
+            CurLoc.Line, CurLoc.Col);
+    PrintErrorSourceContext(CurLoc);
+    return tok_error;
+  }
+  if (LexerLastChar == EOF || LexerLastChar == '\n') {
+    fprintf(stderr,
+            "Error (Line %d, Column %d): unterminated character literal\n",
+            CurLoc.Line, CurLoc.Col);
+    PrintErrorSourceContext(CurLoc);
+    return tok_error;
+  }
 
-if (LexerLastChar != '\'') {
-  const char *Message =
-      (LexerLastChar == EOF || LexerLastChar == '\n')
-          ? "unterminated character literal"
-          : "character literal must contain one character";
-  fprintf(stderr, "Error (Line %d, Column %d): %s\n", CurLoc.Line,
-          CurLoc.Col, Message);
-  PrintErrorSourceContext(CurLoc);
-  return tok_error;
+  LiteralDecodeError Error =
+      DecodeLiteralCodePoint(CharacterLiteralValue);
+  if (Error != LiteralDecodeError::None)
+    return ReportLiteralDecodeError(Error, "character");
+
+  if (LexerLastChar != '\'') {
+    const char *Message =
+        (LexerLastChar == EOF || LexerLastChar == '\n')
+            ? "unterminated character literal"
+            : "character literal must contain one character";
+    fprintf(stderr, "Error (Line %d, Column %d): %s\n", CurLoc.Line,
+            CurLoc.Col, Message);
+    PrintErrorSourceContext(CurLoc);
+    return tok_error;
+  }
+  LexerLastChar = advance(); // eat closing quote
+  return tok_character;
 }
 ```
 
@@ -356,13 +452,27 @@ I still turn `CharacterLiteralValue` into a `NumberExpressionNode`, same as befo
 For a string, I decode one code point at a time and append its UTF-8 encoding:
 
 ```cpp
-while (LexerLastChar != '"' && LexerLastChar != EOF &&
-       LexerLastChar != '\n') {
-  uint32_t CodePoint = 0;
-  LiteralDecodeError Error = DecodeLiteralCodePoint(CodePoint);
-  if (Error != LiteralDecodeError::None)
-    return ReportLiteralDecodeError(Error, "string");
-  AppendUtf8(StringLiteralValue, CodePoint);
+if (LexerLastChar == '"') {
+  StringLiteralValue.clear();
+  LexerLastChar = advance(); // eat opening quote
+  while (LexerLastChar != '"' && LexerLastChar != EOF &&
+         LexerLastChar != '\n') {
+    uint32_t CodePoint = 0;
+    LiteralDecodeError Error = DecodeLiteralCodePoint(CodePoint);
+    if (Error != LiteralDecodeError::None)
+      return ReportLiteralDecodeError(Error, "string");
+    AppendUtf8(StringLiteralValue, CodePoint);
+  }
+
+  if (LexerLastChar != '"') {
+    fprintf(stderr,
+            "Error (Line %d, Column %d): unterminated string literal\n",
+            CurLoc.Line, CurLoc.Col);
+    PrintErrorSourceContext(CurLoc);
+    return tok_error;
+  }
+  LexerLastChar = advance(); // eat closing quote
+  return tok_string;
 }
 ```
 

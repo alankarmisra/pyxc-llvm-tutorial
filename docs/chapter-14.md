@@ -320,6 +320,8 @@ static vector<LoopControlTargets> LoopControlStack;
 
 Every loop's codegen pushes an entry on the way in and pops it on the way out, so the innermost active loop is always on top. `break` branches to `LoopControlStack.back().BreakTarget`; `continue` branches to `.ContinueTarget`. Nesting falls out of this for free: a `break` inside a nested loop only ever sees the innermost loop's targets, so it can only exit that loop.
 
+`FunctionDefinitionNode::codegen` clears `LoopControlStack` alongside `NamedValues` at the start of every function, the same way it already reset `NamedValues` in [Chapter 11](chapter-11.md). Without it, a stack left non-empty by a codegen failure partway through a loop (e.g. in the REPL, after one bad top-level input) could leak stale targets into the next function compiled.
+
 ## While-Loop Codegen
 
 Three basic blocks: `while_cond`, `while_body`, `while_after`. Only the entry branch and where the first condition check happens differ between `while` and `do`/`while`:

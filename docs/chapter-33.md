@@ -226,33 +226,43 @@ Regular function signatures (used by `def`) are untouched — `...` isn't valid 
 
 The structural change is a new `bool IsVariadic` field on `FunctionSignatureNode`:
 
-```cpp
-class FunctionSignatureNode {
-  string Name;
-  vector<pair<string, ValueType>> Parameters;
-  vector<string> ParameterStructNames;
-  ValueType ReturnType;
-  string ReturnStructName;
-  bool IsVariadic;
-  SourceLocation Loc;
-
-public:
-  FunctionSignatureNode(const string &Name,
-                        vector<pair<string, ValueType>> Parameters,
-                        SourceLocation Loc,
-                        ValueType ReturnType = ValueType::Float64,
-                        vector<string> ParameterStructNames = {},
-                        string ReturnStructName = "",
-                        bool IsVariadic = false)
-      : Name(Name), Parameters(std::move(Parameters)), ReturnType(ReturnType),
-        ReturnStructName(std::move(ReturnStructName)), IsVariadic(IsVariadic),
-        Loc(Loc) {
-    this->ParameterStructNames = std::move(ParameterStructNames);
-    this->ParameterStructNames.resize(this->Parameters.size());
-  }
-  ...
-  bool isVariadic() const { return IsVariadic; }
-};
+```cppdiff
+ class FunctionSignatureNode {
+*  string Name;
+*  vector<pair<string, ValueType>> Parameters;
+*  vector<string> ParameterStructNames;
+*  ValueType ReturnType;
+*  string ReturnStructName;
++  bool IsVariadic;
+*  SourceLocation Loc;
+*
+*public:
+*  FunctionSignatureNode(const string &Name,
+*                        vector<pair<string, ValueType>> Parameters,
+*                        SourceLocation Loc,
+*                        ValueType ReturnType = ValueType::Float64,
+*                        vector<string> ParameterStructNames = {},
+-                        string ReturnStructName = "")
+-      : Name(Name), Parameters(std::move(Parameters)), ReturnType(ReturnType),
+-        ReturnStructName(std::move(ReturnStructName)), Loc(Loc) {
++                        string ReturnStructName = "",
++                        bool IsVariadic = false)
++      : Name(Name), Parameters(std::move(Parameters)), ReturnType(ReturnType),
++        ReturnStructName(std::move(ReturnStructName)), IsVariadic(IsVariadic),
++        Loc(Loc) {
+*    this->ParameterStructNames = std::move(ParameterStructNames);
+*    this->ParameterStructNames.resize(this->Parameters.size());
+*  }
+*
+*  const string &getName() const { return Name; }
+*  ...
+*  void setReturnType(ValueType Type) { ReturnType = Type; }
+*  void setReturnStructName(const string &Name) { ReturnStructName = Name; }
++  bool isVariadic() const { return IsVariadic; }
+*
+*  ValueType getParameterType(size_t Index) const {
+*  ...
+*};
 ```
 
 `IsVariadic` defaults to `false`, so every existing call site that builds a `FunctionSignatureNode` keeps working unchanged. Only the `extern def` path ever sets it to `true`.
@@ -261,38 +271,79 @@ public:
 
 `ParseFunctionSignature` gains an `AllowVariadic` parameter that defaults to `false`. Inside the parameter loop, I check for `...` before I check for a parameter name:
 
-```cpp
-static unique_ptr<FunctionSignatureNode>
-ParseFunctionSignature(bool AllowVariadic = false) {
-  ...
-  bool IsVariadic = false;
-  if (CurrentToken != tok_rparen) {
-    while (true) {
-      if (AllowVariadic && CurrentToken == tok_dot) {
-        getNextToken(); // eat the first '.'
-        if (CurrentToken != tok_dot)
-          return LogErrorSignature(
-              "Expected '...' in variadic function signature");
-        getNextToken(); // eat the second '.'
-        if (CurrentToken != tok_dot)
-          return LogErrorSignature(
-              "Expected '...' in variadic function signature");
-        getNextToken(); // eat the third '.'
-        IsVariadic = true;
-        if (CurrentToken != tok_rparen)
-          return LogErrorSignature(
-              "Variadic marker must be last in parameter list");
-        break;
-      }
-      ...
-    }
-  }
-
-  getNextToken(); // eat ')'
-  return make_unique<FunctionSignatureNode>(
-      FnName, std::move(ParameterNames), SignatureLoc, ValueType::Float64,
-      std::move(ParameterStructNames), "", IsVariadic);
-}
+```cppdiff
+-static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
++static unique_ptr<FunctionSignatureNode>
++ParseFunctionSignature(bool AllowVariadic = false) {
+*  SourceLocation SignatureLoc = CurLoc;
+*
+*  // Callers consume the leading 'def', so the current token must be the
+*  // function name.
+*  if (CurrentToken != tok_name)
+*    return LogErrorSignature("Expected function name in function signature");
+*  string FunctionName = Name;
+*  getNextToken(); // eat function name
+*
+*  if (CurrentToken != tok_lparen)
+*    return LogErrorSignature("Expected '(' in function signature");
+*
+*  vector<pair<string, ValueType>> ParameterNames;
+*  vector<string> ParameterStructNames;
++  bool IsVariadic = false;
+*  getNextToken(); // eat '('
+*
+*  if (CurrentToken != tok_rparen) {
+*    while (true) {
++      if (AllowVariadic && CurrentToken == tok_dot) {
++        getNextToken(); // eat the first '.'
++        if (CurrentToken != tok_dot)
++          return LogErrorSignature(
++              "Expected '...' in variadic function signature");
++        getNextToken(); // eat the second '.'
++        if (CurrentToken != tok_dot)
++          return LogErrorSignature(
++              "Expected '...' in variadic function signature");
++        getNextToken(); // eat the third '.'
++        IsVariadic = true;
++        if (CurrentToken != tok_rparen)
++          return LogErrorSignature(
++              "Variadic marker must be last in parameter list");
++        break;
++      }
+*      if (CurrentToken != tok_name)
+*        return LogErrorSignature("Expected parameter name in function signature");
+*      string ArgName = Name;
+*      getNextToken(); // eat name
+*
+*      if (CurrentToken != tok_colon)
+*        return LogErrorSignature(
+*            "Parameter requires a type annotation (e.g., ': int32')");
+*      getNextToken(); // eat ':'
+*      string ArgStructName;
+*      ValueType ArgType = ParseTypeToken(&ArgStructName);
+*      if (ArgType == ValueType::Error)
+*        return nullptr;
+*      if (ArgType == ValueType::None)
+*        return LogErrorSignature("Parameters cannot have None type");
+*      ParameterNames.push_back({ArgName, ArgType});
+*      ParameterStructNames.push_back(ArgStructName);
+*
+*      if (CurrentToken == tok_rparen)
+*        break;
+*      if (CurrentToken != tok_comma)
+*        return LogErrorSignature("Expected ')' or ',' in parameter list");
+*      getNextToken(); // eat ','
+*    }
+*  }
+*
+*  getNextToken(); // eat ')'
+-  return make_unique<FunctionSignatureNode>(
+-      FunctionName, std::move(ParameterNames), SignatureLoc, ValueType::Float64,
+-      std::move(ParameterStructNames));
++  return make_unique<FunctionSignatureNode>(
++      FunctionName, std::move(ParameterNames), SignatureLoc, ValueType::Float64,
++      std::move(ParameterStructNames), "", IsVariadic);
+ }
 ```
 
 `...` isn't a single lexer token — the lexer just hands me three separate `tok_dot` tokens, and I consume them one at a time here. If any of the three is missing, `LogErrorSignature` fires immediately:
@@ -312,13 +363,26 @@ extern def bad(fmt: ptr[int8], ..)
 
 `ParseFunctionDefinition` calls `ParseFunctionSignature()` with the implicit default `false`. Only `ParseExtern` passes `true`:
 
-```cpp
-static unique_ptr<FunctionSignatureNode> ParseExtern() {
-  getNextToken(); // eat extern.
-  ...
-  auto Signature = ParseFunctionSignature(true);
-  ...
-}
+```cppdiff
++/// external
++///   = "extern" "def" external-function-signature [ "->" type ] ;
+ static unique_ptr<FunctionSignatureNode> ParseExtern() {
+   getNextToken(); // eat extern.
+*  if (CurrentToken != tok_def)
+*    return LogErrorSignature("Expected `def` after extern.");
+*  getNextToken(); // eat def
+-  auto Signature = ParseFunctionSignature();
++  auto Signature = ParseFunctionSignature(true);
+*  if (!Signature)
+*    return nullptr;
+*  string ReturnStructName;
+*  ValueType RetType = ParseOptionalReturnType(&ReturnStructName);
+*  if (RetType == ValueType::Error)
+*    return nullptr;
+*  Signature->setReturnType(RetType);
+*  Signature->setReturnStructName(ReturnStructName);
+*  return Signature;
+*}
 ```
 
 So `...` in a regular function definition fails, because `AllowVariadic` is `false` there and the first `.` isn't a valid parameter name:
@@ -339,22 +403,48 @@ There's no way around this — `...` only exists in `extern def`. pyxc has no `v
 
 The call-site arity check used to be an exact match. For a variadic signature it becomes "at least the fixed count," both at parse time and in codegen:
 
-```cpp
-// ParseNameExpressionWithName:
-if ((!Signature->isVariadic() &&
-     Signature->getNumParameters() != Arguments.size()) ||
-    (Signature->isVariadic() &&
-     Arguments.size() < Signature->getNumParameters()))
-  return LogErrorExpression("Incorrect # arguments passed");
+```cppdiff
+ // Inside ParseNameExpressionWithName, right after the ')' that closes the
+ // argument list:
+*  // I only reach here after parsing `a()` or `a(<arguments>)`, so I eat ')'.
+*  getNextToken();
+*
+*  if (!Signature)
+*    return LogErrorExpression("Unknown function referenced");
+-  if (Signature->getNumParameters() != Arguments.size())
+-    return LogErrorExpression("Incorrect # arguments passed");
++  if ((!Signature->isVariadic() &&
++       Signature->getNumParameters() != Arguments.size()) ||
++      (Signature->isVariadic() &&
++       Arguments.size() < Signature->getNumParameters()))
++    return LogErrorExpression("Incorrect # arguments passed");
+*
+-  for (size_t i = 0; i < Arguments.size(); ++i) {
++  for (size_t i = 0; i < Signature->getNumParameters(); ++i) {
+*    ValueType ArgType = Arguments[i]->getType();
+*    ValueType ParamType = Signature->getParameterType(i);
+*    ...
+*  }
 ```
 
 The codegen-side check runs the same logic, but against the LLVM `Function` object rather than my own `FunctionSignatureNode`. LLVM's `Function` class already has an `isVarArg()` method built in, so I use that directly:
 
-```cpp
-// CallExpressionNode::codegen:
-if ((!CalleeF->isVarArg() && CalleeF->arg_size() != Arguments.size()) ||
-    (CalleeF->isVarArg() && Arguments.size() < CalleeF->arg_size()))
-  return LogErrorV("Incorrect # arguments passed");
+```cppdiff
+ Value *CallExpressionNode::codegen() {
+*  Function *CalleeF = getFunction(Callee);
+*  if (!CalleeF)
+*    return LogErrorV("Unknown function referenced");
+*
+-  if (CalleeF->arg_size() != Arguments.size())
+-    return LogErrorV("Incorrect # arguments passed");
++  if ((!CalleeF->isVarArg() && CalleeF->arg_size() != Arguments.size()) ||
++      (CalleeF->isVarArg() && Arguments.size() < CalleeF->arg_size()))
++    return LogErrorV("Incorrect # arguments passed");
+*
+*  FunctionSignatureNode *Signature = GetFunctionSignature(Callee);
+*  std::vector<Value *> ArgsV;
+*  ...
+*}
 ```
 
 ```pyxc
@@ -373,10 +463,21 @@ Type-checking only walks the fixed parameters — `for (size_t i = 0; i < Signat
 
 `FunctionSignatureNode::codegen` passes `IsVariadic` to `FunctionType::get` instead of the hardcoded `false` it used before:
 
-```cpp
-FunctionType *FT = FunctionType::get(
-    LLVMTypeFor(ReturnType, ReturnStructName), ParameterTypes,
-    IsVariadic);
+```cppdiff
+ Function *FunctionSignatureNode::codegen() {
+*  std::vector<Type *> ParameterTypes;
+*  ParameterTypes.reserve(Parameters.size());
+*  for (size_t Index = 0; Index < Parameters.size(); ++Index)
+*    ParameterTypes.push_back(
+*        LLVMTypeFor(Parameters[Index].second, getParameterStructName(Index)));
+-  FunctionType *FT = FunctionType::get(
+-      LLVMTypeFor(ReturnType, ReturnStructName), ParameterTypes,
+-      false /* not variadic */);
++  FunctionType *FT = FunctionType::get(
++      LLVMTypeFor(ReturnType, ReturnStructName), ParameterTypes,
++      IsVariadic);
+*  ...
+*}
 ```
 
 That's the whole change on the codegen side. LLVM already knows how to emit a variadic declaration and handle the variadic calling convention at each call site — I just have to tell it `IsVariadic` is true:

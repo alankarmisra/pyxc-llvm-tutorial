@@ -256,8 +256,12 @@ Three new productions (`trait-definition`, `trait-block`, `trait-method-signatur
 
 ## New Token and Data Structures
 
-```cpp
-tok_trait = -67,
+```cppdiff
+*  tok_public = -65,
+*  tok_private = -66,
++  tok_trait = -67,
+*
+*  // punctuation and operators
 ```
 
 Registered in the keyword table like every other keyword. Trait data lives in two new structs and one new global map:
@@ -282,8 +286,14 @@ static map<string, TraitTypeInfo> TraitTypes;
 
 `StructTypeInfo` gains a list of trait names the class declares:
 
-```cpp
-vector<string> ImplementedTraits;
+```cppdiff
+*struct StructTypeInfo {
+*  vector<StructFieldInfo> Fields;
+*  map<string, size_t> FieldIndices;
+*  map<string, bool> Methods;
++  vector<string> ImplementedTraits;
+*  bool IsClass = false;
+*};
 ```
 
 `TraitTypes` is cleared on every per-file parser reset (`ResetParserStateForFile`) alongside `FunctionSignatures`, `StructTypes`, and the rest, so REPL sessions and separate file compiles don't accumulate stale trait definitions.
@@ -403,45 +413,78 @@ Key points:
 
 `ParseAggregateDefinition` now parses an optional trait list between the class name and the `:`. This only runs for classes (`IsClass == true`) — a `struct` never sees this branch at all, since `IsClass` gates it before the token is even inspected:
 
-```cpp
-bool IsClass = string(KindName) == "class";
-vector<string> ImplementedTraits;
-if (IsClass && CurrentToken == tok_lparen) {
-  set<string> SeenTraits;
-  getNextToken(); // eat '('
-  while (CurrentToken != tok_rparen) {
-    if (CurrentToken != tok_name) {
-      LogErrorExpression("Expected trait name in class implements list");
-      return false;
-    }
-    string TraitName = Name;
-    if (!TraitTypes.count(TraitName)) {
-      LogErrorExpression(("Unknown trait '" + TraitName + "'").c_str());
-      return false;
-    }
-    if (!SeenTraits.insert(TraitName).second) {
-      LogErrorExpression(
-          ("Duplicate trait '" + TraitName +
-           "' in class implements list")
-              .c_str());
-      return false;
-    }
-    ImplementedTraits.push_back(TraitName);
-    getNextToken(); // eat trait name
-    if (CurrentToken == tok_rparen)
-      break;
-    if (CurrentToken != tok_comma) {
-      LogErrorExpression("Expected ')' or ',' in class implements list");
-      return false;
-    }
-    getNextToken(); // eat ','
-  }
-  getNextToken(); // eat ')'
-}
-// ...
-StructTypeInfo Info;
-Info.IsClass = IsClass;
-Info.ImplementedTraits = std::move(ImplementedTraits);
+```cppdiff
+*static bool ParseAggregateDefinition(const char *KindName) {
+*  getNextToken(); // eat 'struct' or 'class'
+*  if (CurrentToken != tok_name) {
+*    ...
+*  }
+*  string AggregateName = Name;
+*  if (TypeAliases.count(AggregateName)) {
+*    ...
+*  }
+*  if (StructTypes.count(AggregateName)) {
+*    ...
+*  }
++  if (TraitTypes.count(AggregateName)) {
++    LogErrorExpression(("Type '" + AggregateName +
++                        "' is already defined as a trait")
++                           .c_str());
++    return false;
++  }
+*  getNextToken(); // eat name
+-  if (CurrentToken != tok_colon) {
++  bool IsClass = string(KindName) == "class";
++  vector<string> ImplementedTraits;
++  if (IsClass && CurrentToken == tok_lparen) {
++    set<string> SeenTraits;
++    getNextToken(); // eat '('
++    while (CurrentToken != tok_rparen) {
++      if (CurrentToken != tok_name) {
++        LogErrorExpression("Expected trait name in class implements list");
++        return false;
++      }
++      string TraitName = Name;
++      if (!TraitTypes.count(TraitName)) {
++        LogErrorExpression(("Unknown trait '" + TraitName + "'").c_str());
++        return false;
++      }
++      if (!SeenTraits.insert(TraitName).second) {
++        LogErrorExpression(
++            ("Duplicate trait '" + TraitName +
++             "' in class implements list")
++                .c_str());
++        return false;
++      }
++      ImplementedTraits.push_back(TraitName);
++      getNextToken(); // eat trait name
++      if (CurrentToken == tok_rparen)
++        break;
++      if (CurrentToken != tok_comma) {
++        LogErrorExpression("Expected ')' or ',' in class implements list");
++        return false;
++      }
++      getNextToken(); // eat ','
++    }
++    getNextToken(); // eat ')'
++  }
++  if (CurrentToken != tok_colon) {
+*    LogErrorExpression((string("Expected ':' after ") + KindName + " name").c_str());
+*    return false;
+*  }
+*  getNextToken(); // eat ':'
+*  ...
+*  getNextToken(); // eat INDENT
+*
+*  StructTypeInfo Info;
+-  Info.IsClass = string(KindName) == "class";
++  Info.IsClass = IsClass;
++  Info.ImplementedTraits = std::move(ImplementedTraits);
+*  // Methods need the fields parsed before them, so keep the in-progress class
+*  // metadata visible while I walk the body.
+*  StructTypes[AggregateName] = Info;
+*  ...
+*}
 ```
 
 Each trait name has to already be in `TraitTypes`; forward declarations aren't supported, so `trait` blocks have to appear before any class that implements them. Listing the same trait twice is caught by `SeenTraits`. Because `struct` never enters this branch, writing `struct S(Foo):` doesn't fail with an unknown-trait error — it fails one step later with "Expected ':' after struct name", since the parser is still expecting the colon it always expected there.
@@ -450,13 +493,21 @@ Each trait name has to already be in `TraitTypes`; forward declarations aren't s
 
 Right after the class body's closing `DEDENT`, if the class declared any traits, `ParseAggregateDefinition` hands each one to `VerifyTraitConformance`:
 
-```cpp
-StructTypes[AggregateName] = std::move(Info);
-for (const string &TraitName :
-     StructTypes[AggregateName].ImplementedTraits) {
-  if (!VerifyTraitConformance(AggregateName, TraitName))
-    return false;
-}
+```cppdiff
+*  if (CurrentToken != tok_dedent) {
+*    LogErrorExpression((string("Expected dedent after ") + KindName + " body").c_str());
+*    return false;
+*  }
+*  StructTypes[AggregateName] = std::move(Info);
++  for (const string &TraitName :
++       StructTypes[AggregateName].ImplementedTraits) {
++    if (!VerifyTraitConformance(AggregateName, TraitName))
++      return false;
++  }
+*  for (auto &Method : Methods) {
+*    if (!Method->codegen())
+*      return false;
+*  }
 ```
 
 `VerifyTraitConformance` checks three things for every method the trait requires:

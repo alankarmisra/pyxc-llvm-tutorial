@@ -216,15 +216,26 @@ cd pyxc-llvm-tutorial/code/chapter-36
 
 ## One New Token
 
-```cpp
-tok_class = -64,
+```cppdiff
+*  tok_plus_plus = -62,
+*  tok_minus_minus = -63,
++  tok_class = -64,
+*
+*  // punctuation and operators
+*  tok_lparen = '(',
 ```
 
-```cpp
-{"default", tok_default}, {"struct", tok_struct},     {"class", tok_class},
-{"ptr", tok_ptr},         {"addr", tok_addr},
-{"sizeof", tok_sizeof},
-{"type", tok_type},
+```cppdiff
+*static map<string, Token> Keywords = {
+*    ...
+*    {"switch", tok_switch},   {"case", tok_case},
+-    {"default", tok_default}, {"struct", tok_struct},
++    {"default", tok_default}, {"struct", tok_struct},     {"class", tok_class},
+*    {"ptr", tok_ptr},         {"addr", tok_addr},
+*    {"sizeof", tok_sizeof},
+*    {"type", tok_type},
+*    ...
+*};
 ```
 
 ## One Parser, Two Keywords
@@ -344,13 +355,22 @@ static void HandleAggregateDefinition(const char *KindName) {
 }
 ```
 
-```cpp
-case tok_struct:
-  HandleAggregateDefinition("struct");
-  break;
-case tok_class:
-  HandleAggregateDefinition("class");
-  break;
+```cppdiff
+*    case tok_type:
+*      HandleTypeAliasDefinition();
+*      break;
+-    case tok_struct:
+-      HandleStructDefinition();
+-      break;
++    case tok_struct:
++      HandleAggregateDefinition("struct");
++      break;
++    case tok_class:
++      HandleAggregateDefinition("class");
++      break;
+*    case tok_def:
+*      HandleFunctionDefinition();
+*      break;
 ```
 
 There's no separate `HandleStructDef` or `HandleClassDef`: one handler, called with a different literal depending on which keyword the switch matched.

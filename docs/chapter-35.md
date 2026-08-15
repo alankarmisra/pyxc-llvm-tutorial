@@ -227,14 +227,23 @@ I change three areas of the grammar. I replace the bare `=` in `assignment-state
 
 I add seven new tokens to cover the compound assignment operators and the increment/decrement operators:
 
-```cpp
-tok_plus_equal = -57,
-tok_minus_equal = -58,
-tok_star_equal = -59,
-tok_slash_equal = -60,
-tok_percent_equal = -61,
-tok_plus_plus = -62,
-tok_minus_minus = -63,
+```cppdiff
+ enum Token {
+*  ...
+*  tok_string = -55,
+*  tok_character = -56,
++  tok_plus_equal = -57,
++  tok_minus_equal = -58,
++  tok_star_equal = -59,
++  tok_slash_equal = -60,
++  tok_percent_equal = -61,
++  tok_plus_plus = -62,
++  tok_minus_minus = -63,
+*
+*  // punctuation and operators
+*  tok_lparen = '(',
+*  ...
+*};
 ```
 
 I produce each with a one-character peek in the lexer. The `+` path illustrates the pattern: when I see `+`, I peek at the next character to decide between `+=`, `++`, and bare `+`:
@@ -369,6 +378,9 @@ static unique_ptr<ExpressionNode> ParseAssignment() {
   if (!Right)
     return nullptr;
 
+  if (LeftType == ValueType::Array)
+    return LogErrorExpression("Type mismatch in assignment");
+
   if (AssignmentOperator != tok_equal) {
     int BinaryOperator = AssignmentBinaryOperator(AssignmentOperator);
     ValueType ResultType =
@@ -383,7 +395,19 @@ static unique_ptr<ExpressionNode> ParseAssignment() {
         LeftTypeInfo);
   }
 
-  // ... plain '=' path, unchanged from Chapter 34 ...
+  // Plain '=' path, unchanged from Chapter 34.
+  if (LeftType == ValueType::Pointer &&
+      Right->getType() == ValueType::Array) {
+    if (!ArrayDecaysToPointerType(Right->getStructName(), LeftTypeInfo))
+      return LogErrorExpression("Type mismatch in assignment");
+  } else {
+    if (!IsAssignable(LeftType, Right->getType()))
+      return LogErrorExpression("Type mismatch in assignment");
+    if ((LeftType == ValueType::Struct || LeftType == ValueType::Pointer) &&
+        LeftTypeInfo != Right->getStructName())
+      return LogErrorExpression("Type mismatch in assignment");
+  }
+
   return make_unique<AssignmentExpressionNode>(
       std::move(Left), std::move(Right), LeftType, LeftTypeInfo);
 }
@@ -568,7 +592,31 @@ static unique_ptr<ExpressionNode> ParseUnaryExpression() {
     return make_unique<IncrementDecrementExpressionNode>(
         std::move(Operand), IsIncrement, true, Type, TypeInfo);
   }
-  // ... '-', '!', '~' unchanged, falling through to ParsePostfixExpression ...
+  if (CurrentToken == tok_minus)
+    return ParseUnaryMinus();
+  if (CurrentToken == tok_exclamation) {
+    getNextToken(); // eat '!'
+    auto Operand = ParseUnaryExpression();
+    if (!Operand)
+      return nullptr;
+    if (Operand->getType() != ValueType::Bool)
+      return LogErrorExpression("Unary '!' requires a bool operand");
+    return make_unique<UnaryExpressionNode>(tok_exclamation,
+                                             std::move(Operand),
+                                             ValueType::Bool);
+  }
+  if (CurrentToken == tok_tilde) {
+    getNextToken(); // eat '~'
+    auto Operand = ParseUnaryExpression();
+    if (!Operand)
+      return nullptr;
+    if (!IsIntType(Operand->getType()))
+      return LogErrorExpression("Unary '~' requires an integer operand");
+    ValueType OperandType = Operand->getType();
+    return make_unique<UnaryExpressionNode>(tok_tilde, std::move(Operand),
+                                             OperandType);
+  }
+  return ParsePostfixExpression();
 }
 ```
 

@@ -199,8 +199,17 @@ I add `character-literal` as a `primary` alternative, and two new productions fo
 
 I'll add one new character token:
 
-```cpp
-tok_character = -56,
+```cppdiff
+ enum Token {
+*  ...
+*  tok_type = -54,
+*  tok_string = -55,
++  tok_character = -56,
+*
+*  // punctuation and operators
+*  tok_lparen = '(',
+*  ...
+*};
 ```
 
 I'll store the character's integer value in a new global before returning the token:
@@ -313,15 +322,27 @@ I'll support all eleven of C's [simple escape sequences](https://en.cppreference
 
 Whenever I see `CurrentToken == tok_character` in `ParsePrimary()`, I'll parse the character literal into a `NumberExpressionNode` because a character literal is just an integer. I'll call the parsing function `ParseCharacterExpression()`. 
 
-```cpp
-static unique_ptr<ExpressionNode> ParsePrimary() {
-  switch (CurrentToken) {
-  ...
-  case tok_character:
-    return ParseCharacterExpression();
-  }
-  ...
-}
+```cppdiff
+ static unique_ptr<ExpressionNode> ParsePrimary() {
+*  switch (CurrentToken) {
+*  case tok_number:
+*    return ParseNumberExpression();
+*  case tok_name:
+*    return ParseNameExpression();
+*  case tok_string: {
+*    string Text = StringLiteralValue;
+*    getNextToken();
+*    return make_unique<StringExpressionNode>(
+*        std::move(Text), EncodePointerType(ValueType::Int8));
+*  }
++  case tok_character:
++    return ParseCharacterExpression();
+*  case tok_true:
+*    getNextToken();
+*    return make_unique<BoolExpressionNode>(true);
+*  ...
+*  }
+*}
 ```
 
 In the parsing function, I default to `Int32`, matching `getchar()`'s return type and C's `int`. If the surrounding context (from `ExpectedLiteralTypeGuard`, the same context-communicating global I introduced back in Chapter 18) expects a different integer type — say `var c: int8 = 'A'` — I adopt that type instead, with a range check against the target's maximum. A character value that doesn't fit in the target width is a parse error. 

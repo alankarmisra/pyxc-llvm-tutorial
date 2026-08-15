@@ -266,66 +266,75 @@ The result type is `ValueType::Struct` with `ClassName` as the struct name: the 
 
 `ParseNameExpressionWithName` is where every bare-name expression starting with `(` gets decided. When the parser sees `identifier(`, it checks whether the identifier is a known class before falling through to the existing function-call path:
 
-```cpp
-// A class name in call position constructs a value of that class.
-auto Class = StructTypes.find(ParsedName);
-if (Class != StructTypes.end() && Class->second.IsClass) {
-  getNextToken(); // eat '('
-  string InitializerName = ParsedName + ".__init__";
-  FunctionSignatureNode *Initializer =
-      GetFunctionSignature(InitializerName);
-  vector<unique_ptr<ExpressionNode>> Arguments;
-  if (CurrentToken != tok_rparen) {
-    size_t ParameterIndex = 1; // parameter zero is implicit self
-    while (true) {
-      ValueType ExpectedType = ValueType::Error;
-      string ExpectedTypeInfo;
-      if (Initializer && ParameterIndex < Initializer->getNumParameters()) {
-        ExpectedType = Initializer->getParameterType(ParameterIndex);
-        ExpectedTypeInfo =
-            Initializer->getParameterStructName(ParameterIndex);
-      }
-      ExpectedLiteralTypeGuard Guard(ExpectedType, ExpectedTypeInfo);
-      auto Argument = ParseExpression();
-      if (!Argument)
-        return nullptr;
-      Arguments.push_back(std::move(Argument));
-      if (CurrentToken == tok_rparen)
-        break;
-      if (CurrentToken != tok_comma)
-        return LogErrorExpression("Expected ')' or ',' in argument list");
-      getNextToken(); // eat ','
-      ++ParameterIndex;
-    }
-  }
-  getNextToken(); // eat ')'
-
-  if (!Initializer) {
-    if (!Arguments.empty())
-      return LogErrorExpression(
-          ("Class '" + ParsedName +
-           "' has no constructor; expected zero arguments")
-              .c_str());
-  } else {
-    if (Arguments.size() + 1 != Initializer->getNumParameters())
-      return LogErrorExpression("Incorrect # arguments passed");
-    for (size_t Index = 0; Index < Arguments.size(); ++Index) {
-      ValueType ParameterType =
-          Initializer->getParameterType(Index + 1);
-      if (!IsAssignable(ParameterType, Arguments[Index]->getType()))
-        return LogErrorExpression("Argument type mismatch");
-      if ((ParameterType == ValueType::Struct ||
-           ParameterType == ValueType::Pointer) &&
-          Initializer->getParameterStructName(Index + 1) !=
-              Arguments[Index]->getStructName())
-        return LogErrorExpression("Argument type mismatch");
-    }
-  }
-  return make_unique<ConstructorCallExpressionNode>(
-      ParsedName, std::move(Arguments));
-}
-
-// Function call.
+```cppdiff
+*static unique_ptr<ExpressionNode> ParseNameExpressionWithName(const string &ParsedName) {
+*  if (CurrentToken != tok_lparen) { // Simple variable ref.
+*    ...
+*    return Result;
+*  }
+*
++  // A class name in call position constructs a value of that class.
++  auto Class = StructTypes.find(ParsedName);
++  if (Class != StructTypes.end() && Class->second.IsClass) {
++    getNextToken(); // eat '('
++    string InitializerName = ParsedName + ".__init__";
++    FunctionSignatureNode *Initializer =
++        GetFunctionSignature(InitializerName);
++    vector<unique_ptr<ExpressionNode>> Arguments;
++    if (CurrentToken != tok_rparen) {
++      size_t ParameterIndex = 1; // parameter zero is implicit self
++      while (true) {
++        ValueType ExpectedType = ValueType::Error;
++        string ExpectedTypeInfo;
++        if (Initializer && ParameterIndex < Initializer->getNumParameters()) {
++          ExpectedType = Initializer->getParameterType(ParameterIndex);
++          ExpectedTypeInfo =
++              Initializer->getParameterStructName(ParameterIndex);
++        }
++        ExpectedLiteralTypeGuard Guard(ExpectedType, ExpectedTypeInfo);
++        auto Argument = ParseExpression();
++        if (!Argument)
++          return nullptr;
++        Arguments.push_back(std::move(Argument));
++        if (CurrentToken == tok_rparen)
++          break;
++        if (CurrentToken != tok_comma)
++          return LogErrorExpression("Expected ')' or ',' in argument list");
++        getNextToken(); // eat ','
++        ++ParameterIndex;
++      }
++    }
++    getNextToken(); // eat ')'
++
++    if (!Initializer) {
++      if (!Arguments.empty())
++        return LogErrorExpression(
++            ("Class '" + ParsedName +
++             "' has no constructor; expected zero arguments")
++                .c_str());
++    } else {
++      if (Arguments.size() + 1 != Initializer->getNumParameters())
++        return LogErrorExpression("Incorrect # arguments passed");
++      for (size_t Index = 0; Index < Arguments.size(); ++Index) {
++        ValueType ParameterType =
++            Initializer->getParameterType(Index + 1);
++        if (!IsAssignable(ParameterType, Arguments[Index]->getType()))
++          return LogErrorExpression("Argument type mismatch");
++        if ((ParameterType == ValueType::Struct ||
++             ParameterType == ValueType::Pointer) &&
++            Initializer->getParameterStructName(Index + 1) !=
++                Arguments[Index]->getStructName())
++          return LogErrorExpression("Argument type mismatch");
++      }
++    }
++    return make_unique<ConstructorCallExpressionNode>(
++        ParsedName, std::move(Arguments));
++  }
++
+*  // Function call.
+*  getNextToken(); // eat (
+*  ...
+*}
 ```
 
 If the class has `__init__`, argument count and types are checked against its signature, skipping index 0 (`self`). If there's no `__init__`, any non-empty argument list is rejected by name, so `Foo(1)` on a constructor-less `Foo` reports `Class 'Foo' has no constructor; expected zero arguments` rather than a generic type error.
@@ -334,14 +343,23 @@ If the class has `__init__`, argument count and types are checked against its si
 
 `ParseMethodDefinition` checks the method name against `"__init__"` right after parsing the optional `-> type` annotation, before registering the signature or parsing the body:
 
-```cpp
-string ReturnTypeInfo;
-ValueType ReturnType =
-    ParseOptionalReturnType(&ReturnTypeInfo, ValueType::None);
-if (ReturnType == ValueType::Error)
-  return nullptr;
-if (MethodName == "__init__" && ReturnType != ValueType::None)
-  return LogErrorFunction("Constructor '__init__' must return None");
+```cppdiff
+*static unique_ptr<FunctionDefinitionNode>
+*ParseMethodDefinition(const string &ClassName) {
+*  ...
+*  getNextToken(); // eat ')'
+*
+*  string ReturnTypeInfo;
+*  ValueType ReturnType =
+*      ParseOptionalReturnType(&ReturnTypeInfo, ValueType::None);
+*  if (ReturnType == ValueType::Error)
+*    return nullptr;
++  if (MethodName == "__init__" && ReturnType != ValueType::None)
++    return LogErrorFunction("Constructor '__init__' must return None");
+*
+*  string MangledName = ClassName + "." + MethodName;
+*  ...
+*}
 ```
 
 `__init__` always returns `None`; it cannot return a value. This is the only thing that makes `__init__` special at the parser level — it's still parsed and registered as an ordinary method otherwise, mangled to `ClassName.__init__` exactly like any other, which is also why defining it twice on the same class hits the ordinary "Method '...' is already defined" redefinition check, not a dedicated constructor error.
