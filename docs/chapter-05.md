@@ -172,104 +172,6 @@ I also assign every named punctuation token its actual character value. I keep t
 
 Because I define `tok_lparen = '('`, `tok_lparen` and `'('` are the same map key. In the loop, I add `Names['(']`. Later, `Names[tok_lparen]` and `Names['(']` are equivalent lookups and find the same entry. This also works for `tok_plus`, `tok_star`, and every other named character token, so I do not list them separately in the map. I also use the loop to name characters I did not declare as tokens.
 
-## Naming Unknown Characters Too
-
-`@` isn't punctuation I recognize. Previously, the lexer's `default` case discarded the character and returned the generic `tok_error`:
-
-```cppdiff
-*  switch (ThisChar) {
-*  ...
--  default:
--    return tok_error;
-+  default:
-+    return ThisChar;
-*  }
-```
-
-I return `ThisChar` instead so I can name the character that caused the error.
-
-For names and numbers, I want to include the actual text from the source rather than report only `name` or `number`. I already have `Name` from Chapter 1 for the name case. For numbers, I add a matching global:
-
-```cpp
-static string NumberLiteral; // Filled in if tok_number, used in error messages
-```
-
-I clear and fill it in `getToken()`'s number-reading branch, right alongside `NumberValue`:
-
-```cppdiff
-*  if (isdigit(LastChar) || LastChar == '.') {
--    string NumberLiteral;
-+    NumberLiteral.clear();
-*    do {
-*      NumberLiteral += LastChar;
-*      LastChar = advance();
-*    } while (isdigit(LastChar) || LastChar == '.');
-*
--    // TODO: I consume all of 1.23.45.67 but parse it as 1.23.
--    NumberValue = strtod(NumberLiteral.c_str(), 0);
-+    char *End = nullptr;
-+    NumberValue = strtod(NumberLiteral.c_str(), &End);
-+    if (!End || *End != '\0') {
-+      LogInvalidNumberLiteralAtLoc(NumberLiteral, CurLoc);
-+      return tok_error;
-+    }
-*    return tok_number;
-*  }
-```
-
-With those source spellings available, I define one helper for every diagnostic that needs to name a token:
-
-```cpp
-static string FormatTokenForMessage(int Tok) {
-  if (Tok == tok_name)
-    return "name '" + Name + "'";
-  if (Tok == tok_number)
-    return "number '" + NumberLiteral + "'";
-
-  auto It = TokenNames.find(Tok);
-  if (It != TokenNames.end())
-    return It->second;
-  return "unknown token";
-}
-```
-
-Names and numbers use their lexer globals so the message includes the original text. Every other token uses its `TokenNames` entry, including an unknown character such as `@` that the lexer now returns directly.
-
-Chapter 4 already made `ParsePrimary()` name an unexpected token through `TokenNames`. I now route that same `default` case through `FormatTokenForMessage()` so it uses the richer formatting for every token kind:
-
-```cppdiff
-*  default:
-*    return LogErrorExpression(
--        ("Unexpected " + TokenNames.at(CurrentToken)).c_str());
-+        ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-```
-
-A bare `@` at the start of a line now reports:
-
-<!-- code-merge:start -->
-```pyxc
-ready> @
-```
-```text
-Error (Line 1, Column 1): Unexpected '@'
-@
-^~~~
-```
-<!-- code-merge:end -->
-
-I use that formatter again when a character appears as an unexpected *trailing* token after an otherwise complete expression, a case `ParsePrimary()` never runs for. I cover that check later in this chapter, in [Printing the Prompt Exactly Once](#printing-the-prompt-exactly-once); it turns this chapter's opening `1 @ 2` example into the same kind of message:
-
-<!-- code-merge:start -->
-```pyxc
-ready> 1 @ 2
-```
-```text
-Error (Line 1, Column 3): Unexpected '@'
-1 @ 
-  ^~~~
-```
-<!-- code-merge:end -->
-
 ## Buffering Source Lines
 
 To print the line where the error occurred, I need the text of that line. I use `SourceManager` to store each line as I read it:
@@ -521,6 +423,104 @@ return tok_number;
 ```
 
 If `End` points at the string's null terminator, I know `strtod` consumed every character. If it points anywhere else, part of the input was invalid: for `"1.2.3"`, `strtod` stops at the second `.`, so `End` points at `.3` rather than the terminator. I report the invalid number and return `tok_error` instead of `tok_number`. I do this in `getToken()`, which returns an `int`. I cannot return `nullptr` as I do from a parsing function. Instead, I call the error helper and return `tok_error`.
+
+## Naming Unknown Characters Too
+
+`@` isn't punctuation I recognize. Previously, the lexer's `default` case discarded the character and returned the generic `tok_error`:
+
+```cppdiff
+*  switch (ThisChar) {
+*  ...
+-  default:
+-    return tok_error;
++  default:
++    return ThisChar;
+*  }
+```
+
+I return `ThisChar` instead so I can name the character that caused the error.
+
+For names and numbers, I want to include the actual text from the source rather than report only `name` or `number`. I already have `Name` from Chapter 1 for the name case. For numbers, I add a matching global:
+
+```cpp
+static string NumberLiteral; // Filled in if tok_number, used in error messages
+```
+
+I clear and fill it in `getToken()`'s number-reading branch, right alongside `NumberValue`:
+
+```cppdiff
+*  if (isdigit(LastChar) || LastChar == '.') {
+-    string NumberLiteral;
++    NumberLiteral.clear();
+*    do {
+*      NumberLiteral += LastChar;
+*      LastChar = advance();
+*    } while (isdigit(LastChar) || LastChar == '.');
+*
+-    // TODO: I consume all of 1.23.45.67 but parse it as 1.23.
+-    NumberValue = strtod(NumberLiteral.c_str(), 0);
++    char *End = nullptr;
++    NumberValue = strtod(NumberLiteral.c_str(), &End);
++    if (!End || *End != '\0') {
++      LogInvalidNumberLiteralAtLoc(NumberLiteral, CurLoc);
++      return tok_error;
++    }
+*    return tok_number;
+*  }
+```
+
+With those source spellings available, I define one helper for every diagnostic that needs to name a token:
+
+```cpp
+static string FormatTokenForMessage(int Tok) {
+  if (Tok == tok_name)
+    return "name '" + Name + "'";
+  if (Tok == tok_number)
+    return "number '" + NumberLiteral + "'";
+
+  auto It = TokenNames.find(Tok);
+  if (It != TokenNames.end())
+    return It->second;
+  return "unknown token";
+}
+```
+
+Names and numbers use their lexer globals so the message includes the original text. Every other token uses its `TokenNames` entry, including an unknown character such as `@` that the lexer now returns directly.
+
+Chapter 4 already made `ParsePrimary()` name an unexpected token through `TokenNames`. I now route that same `default` case through `FormatTokenForMessage()` so it uses the richer formatting for every token kind:
+
+```cppdiff
+*  default:
+*    return LogErrorExpression(
+-        ("Unexpected " + TokenNames.at(CurrentToken)).c_str());
++        ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+```
+
+A bare `@` at the start of a line now reports:
+
+<!-- code-merge:start -->
+```pyxc
+ready> @
+```
+```text
+Error (Line 1, Column 1): Unexpected '@'
+@
+^~~~
+```
+<!-- code-merge:end -->
+
+I use that formatter again when a character appears as an unexpected *trailing* token after an otherwise complete expression, a case `ParsePrimary()` never runs for. I cover that check next, in [Printing the Prompt Exactly Once](#printing-the-prompt-exactly-once); it turns this chapter's opening `1 @ 2` example into the same kind of message:
+
+<!-- code-merge:start -->
+```pyxc
+ready> 1 @ 2
+```
+```text
+Error (Line 1, Column 3): Unexpected '@'
+1 @ 
+  ^~~~
+```
+<!-- code-merge:end -->
 
 ## Printing the Prompt Exactly Once
 

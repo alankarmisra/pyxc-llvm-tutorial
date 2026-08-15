@@ -267,6 +267,20 @@ The structural change is a new `bool IsVariadic` field on `FunctionSignatureNode
 
 `IsVariadic` defaults to `false`, so every existing call site that builds a `FunctionSignatureNode` keeps working unchanged. Only the `extern def` path ever sets it to `true`.
 
+The redeclaration check for `extern def` already compared parameter counts to catch a second, conflicting declaration of the same name; it now also compares `isVariadic()`, so declaring `printf` once as variadic and again as fixed-arity is rejected the same way a plain arity mismatch always was:
+
+```cppdiff
+*  auto Existing = FunctionSignatures.find(ProtoAST->getName());
+*  if (Existing != FunctionSignatures.end() &&
+-      Existing->second->getNumParameters() != ProtoAST->getNumParameters()) {
++      (Existing->second->getNumParameters() != ProtoAST->getNumParameters() ||
++       Existing->second->isVariadic() != ProtoAST->isVariadic())) {
+*    LogErrorExpression((string("Conflicting extern declaration for '") +
+*              ProtoAST->getName() + "'")
+*                 .c_str());
+*  }
+```
+
 ## Allowing Variadic Arguments in Parsing
 
 `ParseFunctionSignature` gains an `AllowVariadic` parameter that defaults to `false`. Inside the parameter loop, I check for `...` before I check for a parameter name:
@@ -458,6 +472,27 @@ printf()
 ```
 
 Type-checking only walks the fixed parameters — `for (size_t i = 0; i < Signature->getNumParameters(); ++i)`. Anything past that is on me: I can pass whatever I want after the fixed parameters, and pyxc won't check it against anything, the same way C's own `printf` doesn't.
+
+The argument-building loop in `CallExpressionNode::codegen` needs the same guard, for the same reason: implicit casting only makes sense against a declared parameter type, and variadic arguments don't have one.
+
+```cppdiff
+*  FunctionSignatureNode *Signature = GetFunctionSignature(Callee);
+*  std::vector<Value *> ArgsV;
+*  for (unsigned i = 0, e = Arguments.size(); i != e; ++i) {
+*    Value *ArgVal = Arguments[i]->codegen();
+*    if (!ArgVal)
+*      return nullptr;
+-    if (Signature) {
++    if (Signature && i < Signature->getNumParameters()) {
+*      ArgVal =
+*          EmitImplicitCast(ArgVal, Arguments[i]->getType(), Signature->getParameterType(i));
+*      if (!ArgVal)
+*        return LogErrorV("Argument type mismatch");
+*    }
+*  }
+```
+
+Without the `i < Signature->getNumParameters()` check, a variadic argument past the fixed ones would fall through to `Signature->getParameterType(i)` with an out-of-range index. With the check, variadic arguments are emitted as-is, unconverted, exactly what `printf`'s calling convention expects.
 
 ## Codegen Passes the Variadic Flag Through
 

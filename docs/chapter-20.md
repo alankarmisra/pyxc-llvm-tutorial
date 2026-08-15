@@ -169,7 +169,7 @@ static DIScope *CurDIScope = nullptr;
 static unsigned CurFunctionLine = 1;
 ```
 
-Every one of these is null, or `1` for the line, when `-g` is absent, and every helper that touches them checks for that up front, so the no-debug path is completely unaffected by any of this existing. A small helper maps each `ValueType` to its descriptor:
+Every one of these is null, or `1` for the line, when `-g` is absent, and every helper that touches them checks for that up front, so the no-debug path is completely unaffected by any of this existing. `CurrentSourcePath` starts as the placeholder `"<stdin>"` and gets overwritten in two places: once in `main`, right before the JIT is created (`CurrentSourcePath = IsRepl ? "<stdin>" : InputFiles.front();`), and again in `OpenInputFile`, which sets it to whichever path it just opened. That second assignment is what makes `InitializeDebugInfo` see the right file name for each input when `--emit exe` compiles multiple `.pyxc` files in sequence, since `OpenInputFile` runs again for every file in the closure. A small helper maps each `ValueType` to its descriptor:
 
 ```cpp
 static DIType *DITypeFor(ValueType Type) {

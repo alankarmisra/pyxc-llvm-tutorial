@@ -36,7 +36,7 @@ pyxc --emit exe -o out main.pyxc
 
 No `extern def add`. I find `app/math.pyxc`, read its `export` declarations, and inject the prototype. In `--emit exe` mode, I compile `app/math.pyxc` automatically too.
 
-There's no grammar change this chapter — `import` syntax already exists from Chapter 43. This chapter is entirely about what happens once I see one.
+`module` and `export` already existed from [Chapter 43](chapter-43.md), but `import` itself is new this chapter. This chapter is entirely about what happens once I see one.
 
 ## Source Code
 
@@ -44,6 +44,77 @@ There's no grammar change this chapter — `import` syntax already exists from C
 git clone --depth 1 https://github.com/alankarmisra/pyxc-llvm-tutorial
 cd pyxc-llvm-tutorial/code/chapter-44
 ```
+
+## The `import` Token and Declaration
+
+One new token:
+
+```cppdiff
+*  tok_module = -69,
+*  tok_export = -70,
++  tok_import = -71,
+```
+
+added to the keyword table and token name map the same way `module` and `export` were:
+
+```cppdiff
+*    {"module", tok_module},   {"export", tok_export},
++    {"import", tok_import},
+```
+
+Parsing an `import` declaration reuses `ParseModulePath` from Chapter 43 and just records the dotted name:
+
+```cpp
+/// import-declaration = "import" module-path ;
+static bool ParseImportDeclaration() {
+  getNextToken(); // eat 'import'
+  string ImportName;
+  if (!ParseModulePath(ImportName))
+    return false;
+  ImportedModules.push_back(std::move(ImportName));
+  return true;
+}
+```
+
+`ImportedModules` is a new global, cleared at the start of each file compilation along with the other module-tracking state:
+
+```cpp
+static vector<string> ImportedModules;
+```
+
+`HandleImportDeclaration` follows the same shape as `HandleModuleDeclaration`: reject `import` in the REPL, parse, then check nothing unexpected follows on the same line:
+
+```cpp
+static void HandleImportDeclaration() {
+  if (IsRepl) {
+    LogErrorExpression("'import' is only supported in file mode");
+    SynchronizeToLineBoundary();
+    return;
+  }
+  bool Parsed = ParseImportDeclaration();
+  bool HasTrailing = CurrentToken != tok_eol && CurrentToken != tok_eof &&
+                     CurrentToken != tok_block_end;
+  if (!Parsed || HasTrailing) {
+    if (Parsed)
+      LogErrorExpression(
+          ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+    SynchronizeToLineBoundary();
+  }
+}
+```
+
+`FileModeLoop` (and `MainLoop`, for the REPL-rejection path) dispatch to it the same way they dispatch to `tok_module`:
+
+```cppdiff
+*    case tok_module:
+*      HandleModuleDeclaration();
+*      break;
++    case tok_import:
++      HandleImportDeclaration();
++      break;
+```
+
+This is the ordinary top-level-statement path: it runs when the file is being fully parsed and compiled, and its only real job is bookkeeping in `ImportedModules` plus the same syntax checks every other declaration gets. The actual work of following an import, resolving it to a file, and pulling in its exported signatures happens separately, before this parse ever starts, in `CollectSignaturesFromFile` below.
 
 ## Parsing without Codegen
 
