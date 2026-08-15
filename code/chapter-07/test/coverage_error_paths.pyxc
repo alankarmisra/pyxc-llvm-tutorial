@@ -14,15 +14,15 @@
 # RUN: printf 'def foo(x): x\nfoo(undefined)\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=CALL_ARG_UNDEFINED
 # RUN: printf 'def foo(x): x\ndef foo(x): x + 1\n' | %pyxc 2>&1 | FileCheck %s --check-prefix=REDEFINITION
 
-# LEXER: unknown token when expecting an expression
+# LEXER: Unexpected '$'
 # COMMENT: ready>
-# PAREN: unknown token when expecting an expression
-# CALL: unknown token when expecting an expression
+# PAREN: Unexpected '+'
+# CALL: Unexpected '+'
 # SIGNATURE: Expected ')' in function signature
-# BODY: unknown token when expecting an expression
-# TERM_RHS: unknown token when expecting an expression
-# COMPARISON_RHS: unknown token when expecting an expression
-# UNARY_MINUS_RHS: unknown token when expecting an expression
+# BODY: Unexpected '+'
+# TERM_RHS: Unexpected '+'
+# COMPARISON_RHS: Unexpected '+'
+# UNARY_MINUS_RHS: Unexpected '+'
 # NAME_TRAILING: Unexpected name 'foo'
 # UNARY_UNDEFINED: Unknown variable name
 # BINARY_UNDEFINED: Unknown variable name

@@ -341,7 +341,7 @@ static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
     return nullptr;
 
   if (CurrentToken != tok_rparen)
-    return LogErrorExpression("expected ')'");
+    return LogErrorExpression("Expected ')'");
   getNextToken(); // eat ).
   return V;
 }

@@ -517,7 +517,7 @@ static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
     return nullptr;
 
   if (CurrentToken != tok_rparen)
-    return LogErrorExpression("expected ')'");
+    return LogErrorExpression("Expected ')'");
   getNextToken(); // I eat ')'.
   return Expression;
 }
@@ -570,14 +570,15 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
 ///   | parenthesized-expression ;
 static unique_ptr<ExpressionNode> ParsePrimary() {
   switch (CurrentToken) {
-  default:
-    return LogErrorExpression("unknown token when expecting an expression");
   case tok_number:
     return ParseNumberExpression(); // I parse a number such as 3.14.
   case tok_name:
     return ParseNameExpression(); // I parse `a` or `add(...)`.
   case tok_lparen:
     return ParseParenthesizedExpression(); // I parse `( ... )`.
+  default:
+    return LogErrorExpression(
+        ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
   }
 }
 
@@ -825,12 +826,10 @@ static void HandleTopLevelExpression() {
 /// new CurrentToken.
 static void MainLoop() {
   while (CurrentToken != tok_eof) {
-    if (CurrentToken == tok_error) {
-      SynchronizeToLineBoundary();
-      continue;
-    }
-
     switch (CurrentToken) {
+    case tok_error:
+      SynchronizeToLineBoundary();
+      break;
     case tok_eol:
       // For a bare newline, I print a fresh prompt and read the next token.
       fprintf(stderr, "ready> ");

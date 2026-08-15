@@ -918,20 +918,17 @@ def threshold(x):
 
 ## After a Top-Level Block
 
-When a `def` body ends with an indented block, parsing it returns with `CurrentToken = tok_block_end`. `MainLoop` checks for it explicitly, so two definitions back to back with no blank line between them still work:
+When a `def` body ends with an indented block, parsing it returns with `CurrentToken = tok_block_end`. `MainLoop` handles it explicitly in its switch, so two definitions back to back with no blank line between them still work:
 
 ```cpp
 static void MainLoop() {
   while (CurrentToken != tok_eof) {
-    // ... handle stray tok_indent, tok_dedent, tok_error ...
-
-    // Block-end marker left in the stream after a block-bodied definition.
-    if (CurrentToken == tok_block_end) {
-      getNextToken();
-      continue;
-    }
-
     switch (CurrentToken) {
+    // ... handle tok_indent and tok_dedent ...
+    // Block-end marker left in the stream after a block-bodied definition.
+    case tok_block_end:
+      getNextToken();
+      break;
     // ...
     }
   }

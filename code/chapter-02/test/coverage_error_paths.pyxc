@@ -7,10 +7,10 @@
 
 # LEXER: Error: invalid character (token: error)
 # COMMENT: ready>
-# PAREN: Error: unknown token when expecting an expression (token: '+')
-# CALL: Error: unknown token when expecting an expression (token: '+')
+# PAREN: Error: Unexpected '+' (token: '+')
+# CALL: Error: Unexpected '+' (token: '+')
 # SIGNATURE: Error: Expected ')' in function signature (token: ',')
-# BODY: Error: unknown token when expecting an expression (token: '+')
+# BODY: Error: Unexpected '+' (token: '+')
 
 # coverage error paths: exercise lexer errors, comments ending at EOF, failed
 # expressions inside parentheses and calls, malformed empty parameter lists,

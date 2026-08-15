@@ -2402,7 +2402,7 @@ static unique_ptr<ExpressionNode> ParseParenthesizedExpression() {
     return nullptr;
 
   if (CurrentToken != tok_rparen)
-    return LogErrorExpression("expected ')'");
+    return LogErrorExpression("Expected ')'");
   getNextToken(); // eat ).
   return Expression;
 }
@@ -2681,8 +2681,8 @@ static unique_ptr<ExpressionNode> ParseAddrExpression() {
   if (CurrentToken != tok_lparen)
     return LogErrorExpression("Expected '(' after addr");
   getNextToken(); // eat '('
-    return LogErrorExpression("addr expects an lvalue");
   if (CurrentToken != tok_name)
+    return LogErrorExpression("addr expects an lvalue");
 
   string ParsedName = Name;
   getNextToken(); // eat name
@@ -2812,8 +2812,8 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
     getNextToken(); // optional 'var'
   }
 
-    return LogErrorExpression("Expected name after 'for'");
   if (CurrentToken != tok_name)
+    return LogErrorExpression("Expected name after 'for'");
   string VarName = Name;
   getNextToken(); // eat name
 
@@ -3337,8 +3337,6 @@ static unique_ptr<ExpressionNode> ParseUnaryMinus() {
 ///   | parenthesized-expression ;
 static unique_ptr<ExpressionNode> ParsePrimary() {
   switch (CurrentToken) {
-  default:
-    return LogErrorExpression("unknown token when expecting an expression");
   case tok_number:
     return ParseNumberExpression();
   case tok_name:
@@ -3380,6 +3378,9 @@ static unique_ptr<ExpressionNode> ParsePrimary() {
     return ParseArrayLiteralExpression();
   case tok_lparen:
     return ParseParenthesizedExpression();
+  default:
+    return LogErrorExpression(
+        ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
   }
 }
 
@@ -4092,8 +4093,8 @@ static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
 static unique_ptr<FunctionDefinitionNode>
 ParseMethodDefinition(const string &ClassName) {
   getNextToken(); // eat 'def'
-    return LogErrorFunction("Expected method name in class definition");
   if (CurrentToken != tok_name)
+    return LogErrorFunction("Expected method name in class definition");
   string MethodName = Name;
   SourceLocation SignatureLocation = CurLoc;
   getNextToken(); // eat method name
@@ -6584,24 +6585,19 @@ extern "C" DLLEXPORT double printd(double X) {
 /// next CurrentToken.
 static void MainLoop() {
   while (CurrentToken != tok_eof) {
-    if (CurrentToken == tok_indent) {
+    switch (CurrentToken) {
+    case tok_indent:
       LogErrorExpression("Unexpected indentation");
       SynchronizeToLineBoundary();
-      continue;
-    }
-
+      break;
     // Stray dedent at top level (can occur in REPL mode): skip it.
-    if (CurrentToken == tok_dedent || CurrentToken == tok_block_end) {
+    case tok_dedent:
+    case tok_block_end:
       getNextToken();
-      continue;
-    }
-
-    if (CurrentToken == tok_error) {
+      break;
+    case tok_error:
       SynchronizeToLineBoundary();
-      continue;
-    }
-
-    switch (CurrentToken) {
+      break;
     case tok_eol:
       // A bare newline: just print a fresh prompt and read the next token.
       PrintReplPrompt();

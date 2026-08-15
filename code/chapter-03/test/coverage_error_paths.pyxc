@@ -9,12 +9,12 @@
 
 # LEXER: invalid character
 # COMMENT: ready>
-# PAREN: unknown token when expecting an expression
-# CALL: unknown token when expecting an expression
+# PAREN: Unexpected '+'
+# CALL: Unexpected '+'
 # SIGNATURE: Expected ')' in function signature
-# BODY: unknown token when expecting an expression
-# TERM_RHS: unknown token when expecting an expression
-# COMPARISON_RHS: unknown token when expecting an expression
+# BODY: Unexpected '+'
+# TERM_RHS: Unexpected '+'
+# COMPARISON_RHS: Unexpected '+'
 
 # coverage error paths: exercise lexer errors, comments ending at EOF, failed
 # expressions inside parentheses and calls, malformed empty parameter lists,
