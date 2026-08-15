@@ -138,6 +138,8 @@ I store `Operator` as an `int`, the same type `CurrentToken` already is, even th
 
 `ParseTerm` calls `ParseFactor` for each operand instead of `ParsePrimary`:
 
+`ParseFactor` needs a forward declaration above `ParseUnaryMinus` because the two functions call each other: `ParseUnaryMinus` needs `ParseFactor` to parse its operand, and `ParseFactor` needs `ParseUnaryMinus` to handle the `-` case. Whichever one I define first has to declare the other ahead of its own body.
+
 ```cpp
 static unique_ptr<ExpressionNode> ParseFactor();
 
@@ -161,8 +163,6 @@ static unique_ptr<ExpressionNode> ParseFactor() {
 ```
 
 `ParseUnaryMinus` calls `ParseFactor` for its own operand, not `ParsePrimary` — that's what lets it recurse into itself. `--5` works because the first `-` calls `ParseFactor`, which sees the second `-` and calls `ParseUnaryMinus` again before either call has produced a value.
-
-`ParseFactor` needs a forward declaration above `ParseUnaryMinus` because the two functions call each other: `ParseUnaryMinus` needs `ParseFactor` to parse its operand, and `ParseFactor` needs `ParseUnaryMinus` to handle the `-` case. Whichever one I define first has to declare the other ahead of its own body.
 
 ```cpp
 /// term
