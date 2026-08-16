@@ -141,22 +141,36 @@ ORC stands for **On-Request Compilation**. LLVM provides it as a framework for b
 
 ORC accepts LLVM modules and makes their symbols available to compiled code. When I look up a symbol such as `__anon_expr`, ORC gives me the address of its machine code. I wrap ORC's building blocks in a small `PyxcJIT` class, defined in `code/include/PyxcJIT.h` and shared by every chapter from here on, so I don't repeat the same JIT boilerplate in each chapter's `pyxc.cpp`.
 
-I create one `PyxcJIT` instance in `main()`. Before I create it, LLVM requires me to initialize support for the host machine:
+I create one `PyxcJIT` instance in `main()`. I hold it, and the helper LLVM uses to unwrap recoverable errors, as globals:
 
 ```cpp
 static unique_ptr<PyxcJIT> TheJIT;
 static ExitOnError ExitOnErr;
-
-// I initialize LLVM's backend for the host machine: its instruction set and
-// assembler, so the JIT can compile and link for the current CPU.
-InitializeNativeTarget();
-InitializeNativeTargetAsmPrinter();
-
-TheJIT = ExitOnErr(PyxcJIT::Create());
-InitializeModuleAndManagers();
 ```
 
 LLVM returns recoverable errors from many JIT operations. I use `ExitOnErr` to unwrap a successful result or stop the program when one of those operations fails.
+
+Before I create the JIT, LLVM requires me to initialize support for the host machine:
+
+```cpp
+int main(int argc, const char **argv) {
+  ...
+  // Initialise LLVM's backend for the host machine. These three calls
+  // together register the native target's instruction set, assembler, and
+  // disassembler so the JIT can compile and link for the current CPU.
+  InitializeNativeTarget();
+  InitializeNativeTargetAsmPrinter();
+
+  ...
+
+  // Create the JIT first — InitializeModuleAndManagers() needs TheJIT in
+  // order to set the data layout on the new module.
+  TheJIT = ExitOnErr(PyxcJIT::Create());
+  InitializeModuleAndManagers();
+
+  ...
+}
+```
 
 ## The Optimization Pipeline
 
