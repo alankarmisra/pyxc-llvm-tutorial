@@ -210,7 +210,7 @@ public:
   }
 };
 
-static SourceManager PyxcSourceMgr;
+static SourceManager PyxcSourceManager;
 ```
 
 I call `onChar()` from `advance()` for every character I read. I add ordinary characters to `CurrentLine`. When I reach `\n`, I move the completed line into `CompletedLines` and clear `CurrentLine` for the next one.
@@ -232,7 +232,7 @@ static SourceLocation LexLoc = {1, 0};
 
 I use `LexLoc` to record how far I have read. I update it every time I read a character in `advance()`. I use `CurLoc` to record where the current token starts. I read `CurLoc` in the parser and in my diagnostics.
 
-I already use `advance()` to normalize line endings. I now update `LexLoc` there too, and feed every character to `PyxcSourceMgr.onChar()` from the previous section, so it can buffer the line I'm currently on:
+I already use `advance()` to normalize line endings. I now update `LexLoc` there too, and feed every character to `PyxcSourceManager.onChar()` from the previous section, so it can buffer the line I'm currently on:
 
 ```cpp
 static int advance() {
@@ -249,7 +249,7 @@ static int advance() {
     if (NextChar != '\n' && NextChar != EOF) {
       ungetc(NextChar, stdin);
     }
-    PyxcSourceMgr.onChar('\n');
+    PyxcSourceManager.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
     return '\n';
@@ -258,11 +258,11 @@ static int advance() {
   // '\n' resets Col and starts a new buffered line; anything else
   // just advances Col within the current line.
   if (LastChar == '\n') {
-    PyxcSourceMgr.onChar('\n');
+    PyxcSourceManager.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
   } else {
-    PyxcSourceMgr.onChar(LastChar);
+    PyxcSourceManager.onChar(LastChar);
     LexLoc.Col++;
   }
 
@@ -322,7 +322,7 @@ Once I have the line text and column, I can print the caret:
 
 ```cpp
 static void PrintErrorSourceContext(SourceLocation Loc) {
-  const string *LineText = PyxcSourceMgr.getLine(Loc.Line);
+  const string *LineText = PyxcSourceManager.getLine(Loc.Line);
   // LineText is null only if Loc points past everything buffered so
   // far (e.g. an uninitialized Loc.Line == 0). Skip printing rather
   // than dereference it below.
@@ -357,7 +357,7 @@ static SourceLocation GetCaretAnchorLoc(SourceLocation Loc, int Tok) {
   if (PrevLine <= 0)
     return Loc;
 
-  const string *PrevLineText = PyxcSourceMgr.getLine(PrevLine);
+  const string *PrevLineText = PyxcSourceManager.getLine(PrevLine);
   // PrevLineText is null only if PrevLine hasn't been buffered yet —
   // it shouldn't happen, since I only get here after consuming that
   // line's trailing newline, but I fall back to the original Loc

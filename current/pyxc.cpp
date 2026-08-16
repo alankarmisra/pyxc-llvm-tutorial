@@ -490,7 +490,7 @@ public:
   }
 };
 
-static SourceManager PyxcSourceMgr;
+static SourceManager PyxcSourceManager;
 static void PrintErrorSourceContext(SourceLocation Loc);
 
 /// advance - I return the next character, normalizing `\r\n` (Windows)
@@ -511,18 +511,18 @@ static int advance() {
     // (EOF can't be put back at all, so it's excluded from that check.)
     if (NextChar != '\n' && NextChar != EOF)
       ungetc(NextChar, Input);
-    PyxcSourceMgr.onChar('\n');
+    PyxcSourceManager.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
     return '\n';
   }
 
   if (LastChar == '\n') {
-    PyxcSourceMgr.onChar('\n');
+    PyxcSourceManager.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
   } else {
-    PyxcSourceMgr.onChar(LastChar);
+    PyxcSourceManager.onChar(LastChar);
     LexLoc.Col++;
   }
 
@@ -1157,7 +1157,7 @@ static void ResetLexerState() {
   LexLoc = {1, 0};
   CurLoc = {1, 0};
   LexerLastChar = ' ';
-  PyxcSourceMgr.reset();
+  PyxcSourceManager.reset();
 }
 
 //===----------------------------------------===//
@@ -1179,7 +1179,7 @@ static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
 
   // Tok == tok_eol && Loc.Line > 1
   int PrevLine = Loc.Line - 1;
-  const string *PrevLineText = PyxcSourceMgr.getLine(PrevLine);
+  const string *PrevLineText = PyxcSourceManager.getLine(PrevLine);
 
   // guard
   if (!PrevLineText)
@@ -1210,7 +1210,7 @@ static string FormatTokenForMessage(int Tok) {
 /// '^~~~' caret under column Loc.Col. Col is 1-based, so we print Col-1
 /// spaces before the caret.
 static void PrintErrorSourceContext(SourceLocation Loc) {
-  const string *LineText = PyxcSourceMgr.getLine(Loc.Line);
+  const string *LineText = PyxcSourceManager.getLine(Loc.Line);
   if (!LineText)
     return;
 

@@ -246,7 +246,7 @@ static void ResetLexerState() {
   LexLoc = {1, 0};
   CurLoc = {1, 0};
   LexerLastChar = ' ';
-  PyxcSourceMgr.reset();
+  PyxcSourceManager.reset();
 }
 ```
 
