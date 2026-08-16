@@ -400,14 +400,16 @@ static void DiscardRestOfLine() {
 
 I already report every parse error through `LogErrorExpression()`. I now use the location and source line there instead of printing only a token description:
 
-```cpp
-unique_ptr<ExpressionNode> LogErrorExpression(const char *Str) {
-  SourceLocation Anchor = GetCaretAnchorLocation(CurrentTokenLocation, CurrentToken);
-  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Column,
-          Str);
-  PrintErrorSourceContext(Anchor);
-  return nullptr;
-}
+```cppdiff
+*unique_ptr<ExpressionNode> LogErrorExpression(const char *ErrorMessage) {
++  SourceLocation Anchor = GetCaretAnchorLocation(CurrentTokenLocation, CurrentToken);
+-  fprintf(stderr, "Error: %s (token: %s)\nready> ", ErrorMessage,
+-          TokenNames.at(CurrentToken).c_str());
++  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Column,
++          ErrorMessage);
++  PrintErrorSourceContext(Anchor);
+*  return nullptr;
+*}
 ```
 
 I also drop the `\nready> ` this function used to print right after the message. In Chapters 2 and 4, `LogErrorExpression()` printed the next prompt itself, and if the error happened to land just before a bare newline, `MainLoop()`'s own newline handling printed a second one, so I'd see `ready> ready> `. Now every error path calls `DiscardRestOfLine()` before returning, so `MainLoop()` sees `tok_eol` or `tok_eof` itself and prints the prompt exactly once.
@@ -421,7 +423,7 @@ I use `strtod` to convert a string to a `double`. I pass it an output parameter 
 When part of the input is invalid, I need to report it. I add a small helper for that:
 
 ```cpp
-static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation Loc) {
+static void LogInvalidNumberLiteralAtLocation(const string &Literal, SourceLocation Loc) {
   fprintf(stderr, "Error (Line %d, Column %d): invalid number literal '%s'\n",
           Loc.Line, Loc.Column, Literal.c_str());
   PrintErrorSourceContext(Loc);
@@ -444,7 +446,7 @@ I call it from `getToken()`'s number-reading branch. While I'm there, I also pro
 +    char *End = nullptr;
 +    NumberValue = strtod(NumberLiteral.c_str(), &End);
 +    if (!End || *End != '\0') {
-+      LogInvalidNumberLiteralAtLoc(NumberLiteral, CurrentTokenLocation);
++      LogInvalidNumberLiteralAtLocation(NumberLiteral, CurrentTokenLocation);
 +      return tok_error;
 +    }
 *    return tok_number;

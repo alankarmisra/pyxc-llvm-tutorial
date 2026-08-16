@@ -184,7 +184,7 @@ struct SourceLocation {
 static SourceLocation CurrentTokenLocation;
 static SourceLocation LexerLocation = {1, 0};
 static void LogErrorAtLoc(const char *ErrorMessage, SourceLocation Loc);
-static void LogInvalidNumberLiteralAtLoc(const string &Literal,
+static void LogInvalidNumberLiteralAtLocation(const string &Literal,
                                          SourceLocation Loc);
 
 /// SourceManager - Buffers every source line as it is read so that error
@@ -451,7 +451,7 @@ static int getToken() {
     NumberValue = strtod(NumberLiteral.c_str(), &End);
     if (End == NumberLiteral.c_str() /* no conversion */
         || *End != '\0' /* trailing unparsed characters */) {
-      LogInvalidNumberLiteralAtLoc(NumberLiteral, CurrentTokenLocation);
+      LogInvalidNumberLiteralAtLocation(NumberLiteral, CurrentTokenLocation);
       return tok_error;
     }
     return tok_number;
@@ -621,7 +621,7 @@ static void LogErrorAtLoc(const char *ErrorMessage, SourceLocation Loc) {
   PrintErrorSourceContext(Loc);
 }
 
-static void LogInvalidNumberLiteralAtLoc(const string &Literal,
+static void LogInvalidNumberLiteralAtLocation(const string &Literal,
                                          SourceLocation Loc) {
   LogErrorAtLoc(("invalid number literal '" + Literal + "'").c_str(), Loc);
 }

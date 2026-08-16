@@ -337,7 +337,7 @@ struct SourceLocation {
 static SourceLocation CurrentTokenLocation;
 static SourceLocation LexerLocation = {1, 0};
 static void LogErrorAtLoc(const char *ErrorMessage, SourceLocation Loc);
-static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation Loc);
+static void LogInvalidNumberLiteralAtLocation(const string &Literal, SourceLocation Loc);
 
 /// SourceManager - Buffers every source line as it is read so that error
 /// messages can reprint the offending line with a caret underneath it.
@@ -629,14 +629,14 @@ static int getToken() {
         LexerLastChar = advance();
       }
       if (!isdigit(LexerLastChar)) {
-      LogInvalidNumberLiteralAtLoc(NumberLiteral, CurrentTokenLocation);
+      LogInvalidNumberLiteralAtLocation(NumberLiteral, CurrentTokenLocation);
       return tok_error;
       }
       ConsumeDigits();
     }
 
     if (NumberLiteral == ".") {
-      LogInvalidNumberLiteralAtLoc(NumberLiteral, CurrentTokenLocation);
+      LogInvalidNumberLiteralAtLocation(NumberLiteral, CurrentTokenLocation);
       return tok_error;
     }
 
@@ -863,7 +863,7 @@ static void LogErrorAtLoc(const char *ErrorMessage, SourceLocation Loc) {
   PrintErrorSourceContext(Loc);
 }
 
-static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation Loc) {
+static void LogInvalidNumberLiteralAtLocation(const string &Literal, SourceLocation Loc) {
   LogErrorAtLoc(("invalid number literal '" + Literal + "'").c_str(), Loc);
 }
 
