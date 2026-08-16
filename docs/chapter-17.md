@@ -243,8 +243,8 @@ static void ResetLexerState() {
   IndentStack = {0};
   PendingTokens.clear();
   AtLineStart = true;
-  LexLoc = {1, 0};
-  CurLoc = {1, 0};
+  LexerLocation = {1, 0};
+  CurrentTokenLocation = {1, 0};
   LexerLastChar = ' ';
   PyxcSourceManager.reset();
 }

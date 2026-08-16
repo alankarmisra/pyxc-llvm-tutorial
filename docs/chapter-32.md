@@ -413,15 +413,15 @@ if (LexerLastChar == '\'') {
   LexerLastChar = advance(); // eat opening quote
   if (LexerLastChar == '\'') {
     fprintf(stderr, "Error (Line %d, Column %d): empty character literal\n",
-            CurLoc.Line, CurLoc.Col);
-    PrintErrorSourceContext(CurLoc);
+            CurrentTokenLocation.Line, CurrentTokenLocation.Column);
+    PrintErrorSourceContext(CurrentTokenLocation);
     return tok_error;
   }
   if (LexerLastChar == EOF || LexerLastChar == '\n') {
     fprintf(stderr,
             "Error (Line %d, Column %d): unterminated character literal\n",
-            CurLoc.Line, CurLoc.Col);
-    PrintErrorSourceContext(CurLoc);
+            CurrentTokenLocation.Line, CurrentTokenLocation.Column);
+    PrintErrorSourceContext(CurrentTokenLocation);
     return tok_error;
   }
 
@@ -435,9 +435,9 @@ if (LexerLastChar == '\'') {
         (LexerLastChar == EOF || LexerLastChar == '\n')
             ? "unterminated character literal"
             : "character literal must contain one character";
-    fprintf(stderr, "Error (Line %d, Column %d): %s\n", CurLoc.Line,
-            CurLoc.Col, Message);
-    PrintErrorSourceContext(CurLoc);
+    fprintf(stderr, "Error (Line %d, Column %d): %s\n", CurrentTokenLocation.Line,
+            CurrentTokenLocation.Column, Message);
+    PrintErrorSourceContext(CurrentTokenLocation);
     return tok_error;
   }
   LexerLastChar = advance(); // eat closing quote
@@ -467,8 +467,8 @@ if (LexerLastChar == '"') {
   if (LexerLastChar != '"') {
     fprintf(stderr,
             "Error (Line %d, Column %d): unterminated string literal\n",
-            CurLoc.Line, CurLoc.Col);
-    PrintErrorSourceContext(CurLoc);
+            CurrentTokenLocation.Line, CurrentTokenLocation.Column);
+    PrintErrorSourceContext(CurrentTokenLocation);
     return tok_error;
   }
   LexerLastChar = advance(); // eat closing quote

@@ -224,15 +224,15 @@ To report `(Line 3, Column 8)`, I need to record the line and column as I read e
 ```cpp
 struct SourceLocation {
   int Line;
-  int Col;
+  int Column;
 };
-static SourceLocation CurLoc;
-static SourceLocation LexLoc = {1, 0};
+static SourceLocation CurrentTokenLocation;
+static SourceLocation LexerLocation = {1, 0};
 ```
 
-I use `LexLoc` to record how far I have read. I update it every time I read a character in `advance()`. I use `CurLoc` to record where the current token starts. I read `CurLoc` in the parser and in my diagnostics.
+I use `LexerLocation` to record how far I have read. I update it every time I read a character in `advance()`. I use `CurrentTokenLocation` to record where the current token starts. I read `CurrentTokenLocation` in the parser and in my diagnostics.
 
-I already use `advance()` to normalize line endings. I now update `LexLoc` there too, and feed every character to `PyxcSourceManager.onChar()` from the previous section, so it can buffer the line I'm currently on:
+I already use `advance()` to normalize line endings. I now update `LexerLocation` there too, and feed every character to `PyxcSourceManager.onChar()` from the previous section, so it can buffer the line I'm currently on:
 
 ```cpp
 static int advance() {
@@ -250,20 +250,20 @@ static int advance() {
       ungetc(NextChar, stdin);
     }
     PyxcSourceManager.onChar('\n');
-    LexLoc.Line++;
-    LexLoc.Col = 0;
+    LexerLocation.Line++;
+    LexerLocation.Column = 0;
     return '\n';
   }
 
-  // '\n' resets Col and starts a new buffered line; anything else
-  // just advances Col within the current line.
+  // '\n' resets Column and starts a new buffered line; anything else
+  // just advances Column within the current line.
   if (LastChar == '\n') {
     PyxcSourceManager.onChar('\n');
-    LexLoc.Line++;
-    LexLoc.Col = 0;
+    LexerLocation.Line++;
+    LexerLocation.Column = 0;
   } else {
     PyxcSourceManager.onChar(LastChar);
-    LexLoc.Col++;
+    LexerLocation.Column++;
   }
 
   // case '\n' or any other non-newline character
@@ -271,9 +271,9 @@ static int advance() {
 }
 ```
 
-When I read a newline, I increment `Line` and reset `Col` to `0`. For any other character, I increment only `Col`.
+When I read a newline, I increment `Line` and reset `Column` to `0`. For any other character, I increment only `Column`.
 
-In `getToken()`, I copy `LexLoc` into `CurLoc` after I skip whitespace but before I read the token itself:
+In `getToken()`, I copy `LexerLocation` into `CurrentTokenLocation` after I skip whitespace but before I read the token itself:
 
 ```cppdiff
 *static int getToken() {
@@ -282,7 +282,7 @@ In `getToken()`, I copy `LexLoc` into `CurLoc` after I skip whitespace but befor
 *  while (isspace(LastChar) && LastChar != '\n')
 *    LastChar = advance();
 *
-+  CurLoc = LexLoc;
++  CurrentTokenLocation = LexerLocation;
 +
 *  if (LastChar == '\n') {
 *    LastChar = ' ';
@@ -292,9 +292,9 @@ In `getToken()`, I copy `LexLoc` into `CurLoc` after I skip whitespace but befor
 *}
 ```
 
-By copying the location here, I make `CurLoc` point at the token's first character rather than any whitespace before it.
+By copying the location here, I make `CurrentTokenLocation` point at the token's first character rather than any whitespace before it.
 
-I need to copy the location again after a comment. At the start of `getToken()`, I set `CurLoc` to the position of `#`. I then consume the rest of the line and return `tok_eol`. If I leave `CurLoc` at `#`, an error on the next line can report a column from the comment line. I avoid that by copying `LexLoc` again after I consume the newline:
+I need to copy the location again after a comment. At the start of `getToken()`, I set `CurrentTokenLocation` to the position of `#`. I then consume the rest of the line and return `tok_eol`. If I leave `CurrentTokenLocation` at `#`, an error on the next line can report a column from the comment line. I avoid that by copying `LexerLocation` again after I consume the newline:
 
 ```cppdiff
 *static int getToken() {
@@ -307,7 +307,7 @@ I need to copy the location again after a comment. At the start of `getToken()`,
 *    } while (LastChar != '\n' && LastChar != EOF);
 *
 *    if (LastChar == '\n') {
-+      CurLoc = LexLoc;
++      CurrentTokenLocation = LexerLocation;
 *      LastChar = ' ';
 *      return tok_eol;
 *    }
@@ -330,7 +330,7 @@ static void PrintErrorSourceContext(SourceLocation Loc) {
     return;
 
   fprintf(stderr, "%s\n", LineText->c_str());
-  int spaces = Loc.Col - 1;
+  int spaces = Loc.Column - 1;
   // I guard against an invalid column before printing the spaces.
   if (spaces < 0)
     spaces = 0;
@@ -340,13 +340,13 @@ static void PrintErrorSourceContext(SourceLocation Loc) {
 }
 ```
 
-I print the line, then `Col - 1` spaces, then `^~~~`. I subtract one because the column is 1-based but the offset into the line is 0-based.
+I print the line, then `Column - 1` spaces, then `^~~~`. I subtract one because the column is 1-based but the offset into the line is 0-based.
 
 ## Pointing at the Right Place for a Newline
 
-For most errors, `CurLoc` already points where I need it. A missing `:` is different. I do not know it is missing until I ask for the next token and receive `tok_eol`.
+For most errors, `CurrentTokenLocation` already points where I need it. A missing `:` is different. I do not know it is missing until I ask for the next token and receive `tok_eol`.
 
-Before I return `tok_eol`, I have already consumed the `\n` and incremented `LexLoc.Line`. That leaves `CurLoc.Line` on the next line. I correct this in `GetCaretAnchorLoc()`:
+Before I return `tok_eol`, I have already consumed the `\n` and incremented `LexerLocation.Line`. That leaves `CurrentTokenLocation.Line` on the next line. I correct this in `GetCaretAnchorLoc()`:
 
 ```cpp
 static SourceLocation GetCaretAnchorLoc(SourceLocation Loc, int Tok) {
@@ -400,8 +400,8 @@ I already report every parse error through `LogErrorExpression()`. I now use the
 
 ```cpp
 unique_ptr<ExpressionNode> LogErrorExpression(const char *Str) {
-  SourceLocation Anchor = GetCaretAnchorLoc(CurLoc, CurrentToken);
-  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
+  SourceLocation Anchor = GetCaretAnchorLoc(CurrentTokenLocation, CurrentToken);
+  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Column,
           Str);
   PrintErrorSourceContext(Anchor);
   return nullptr;
@@ -421,7 +421,7 @@ When part of the input is invalid, I need to report it. I add a small helper for
 ```cpp
 static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation Loc) {
   fprintf(stderr, "Error (Line %d, Column %d): invalid number literal '%s'\n",
-          Loc.Line, Loc.Col, Literal.c_str());
+          Loc.Line, Loc.Column, Literal.c_str());
   PrintErrorSourceContext(Loc);
 }
 ```
@@ -442,7 +442,7 @@ I call it from `getToken()`'s number-reading branch. While I'm there, I also pro
 +    char *End = nullptr;
 +    NumberValue = strtod(NumberLiteral.c_str(), &End);
 +    if (!End || *End != '\0') {
-+      LogInvalidNumberLiteralAtLoc(NumberLiteral, CurLoc);
++      LogInvalidNumberLiteralAtLoc(NumberLiteral, CurrentTokenLocation);
 +      return tok_error;
 +    }
 *    return tok_number;

@@ -151,21 +151,21 @@ static map<int, string> TokenNames = [] {
   return Names;
 }();
 
-/// SourceLocation - A {Line, Col} pair. Line and Col are 1-based.
+/// SourceLocation - A {Line, Column} pair. Line and Column are 1-based.
 ///
 /// Two globals track position as characters are consumed:
-///   LexLoc  - where the character-read head (advance()) currently is.
+///   LexerLocation  - where the character-read head (advance()) currently is.
 ///             Updated on every advance() call. After a '\n', Line increments
-///             and Col resets to 0 so the next character will be Col 1.
-///   CurLoc  - snapshotted at the start of each token in getToken(), before
+///             and Column resets to 0 so the next character will be Column 1.
+///   CurrentTokenLocation  - snapshotted at the start of each token in getToken(), before
 ///             consuming any of the token's characters. This is the position
 ///             the parser and diagnostics see.
 struct SourceLocation {
   int Line;
-  int Col;
+  int Column;
 };
-static SourceLocation CurLoc;
-static SourceLocation LexLoc = {1, 0};
+static SourceLocation CurrentTokenLocation;
+static SourceLocation LexerLocation = {1, 0};
 
 /// SourceManager - Buffers every source line as it is read so that error
 /// messages can reprint the offending line with a caret underneath it.
@@ -236,7 +236,7 @@ static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation L
 ///
 /// This is the single point through which all character consumption flows.
 /// Every token branch in getToken() calls advance() rather than fgetc()
-/// directly, so LexLoc and the source buffer are always in sync.
+/// directly, so LexerLocation and the source buffer are always in sync.
 static int advance() {
   int LastChar = fgetc(Input);
 
@@ -251,20 +251,20 @@ static int advance() {
     if (NextChar != '\n' && NextChar != EOF)
       ungetc(NextChar, Input);
     PyxcSourceManager.onChar('\n');
-    LexLoc.Line++;
-    LexLoc.Col = 0;
+    LexerLocation.Line++;
+    LexerLocation.Column = 0;
     return '\n';
   }
 
-  // '\n' resets Col and starts a new buffered line; anything else
-  // just advances Col within the current line.
+  // '\n' resets Column and starts a new buffered line; anything else
+  // just advances Column within the current line.
   if (LastChar == '\n') {
     PyxcSourceManager.onChar('\n');
-    LexLoc.Line++;
-    LexLoc.Col = 0;
+    LexerLocation.Line++;
+    LexerLocation.Column = 0;
   } else {
     PyxcSourceManager.onChar(LastChar);
-    LexLoc.Col++;
+    LexerLocation.Column++;
   }
 
   // case '\n' or any other non-newline character
@@ -275,7 +275,7 @@ static int advance() {
 ///
 /// Used by the two-character operator branches in getToken() to decide whether
 /// '=' should become '==' (tok_eq), '!' should become '!=' (tok_neq), etc.,
-/// without advancing LexLoc or notifying SourceManager.
+/// without advancing LexerLocation or notifying SourceManager.
 static int peek() {
   int c = fgetc(Input);
   if (c != EOF)
@@ -290,16 +290,16 @@ static int peek() {
 /// the whitespace loop without reading a character, and the loop's first
 /// advance() call picks up the real first character.
 ///
-/// CurLoc is snapshotted from LexLoc after the whitespace-skip loop and
+/// CurrentTokenLocation is snapshotted from LexerLocation after the whitespace-skip loop and
 /// before any token branch. For most tokens this points at the first
 /// character of the token. For tok_eol the '\n' was already consumed by
-/// advance() on a previous call, so LexLoc is already on the next line;
+/// advance() on a previous call, so LexerLocation is already on the next line;
 /// GetCaretAnchorLoc compensates by subtracting one when building error
 /// locations for tok_eol.
 ///
-/// The comment path ('#' branch) re-snapshots CurLoc just before returning
+/// The comment path ('#' branch) re-snapshots CurrentTokenLocation just before returning
 /// tok_eol because it consumes many characters (the whole comment) after the
-/// initial snapshot, leaving LexLoc well past the '#' position.
+/// initial snapshot, leaving LexerLocation well past the '#' position.
 static int getToken() {
   static int LastChar = ' ';
 
@@ -308,7 +308,7 @@ static int getToken() {
     LastChar = advance();
 
   // Snapshot position for the upcoming token. See note above about tok_eol.
-  CurLoc = LexLoc;
+  CurrentTokenLocation = LexerLocation;
 
   if (LastChar == '\n') {
     // Do not call advance() here.
@@ -343,7 +343,7 @@ static int getToken() {
     NumberValue = strtod(NumberLiteral.c_str(), &End);
     if (End == NumberLiteral.c_str() /* no conversion */
         || *End != '\0' /* trailing unparsed characters */) {
-      LogInvalidNumberLiteralAtLoc(NumberLiteral, CurLoc);
+      LogInvalidNumberLiteralAtLoc(NumberLiteral, CurrentTokenLocation);
       return tok_error;
     }
     return tok_number;
@@ -357,11 +357,11 @@ static int getToken() {
     } while (LastChar != '\n' && LastChar != EOF);
 
     if (LastChar == '\n') {
-      // Re-snapshot CurLoc now that the '\n' has been consumed and LexLoc
-      // has advanced to the next line. Without this, CurLoc would point at
+      // Re-snapshot CurrentTokenLocation now that the '\n' has been consumed and LexerLocation
+      // has advanced to the next line. Without this, CurrentTokenLocation would point at
       // the '#' column, and GetCaretAnchorLoc would look up the wrong
       // line (because it subtracts 1) when the next token triggers an error.
-      CurLoc = LexLoc;
+      CurrentTokenLocation = LexerLocation;
       LastChar = ' ';
       return tok_eol;
     }
@@ -439,10 +439,10 @@ static int getToken() {
 
 /// GetCaretAnchorLoc - Resolve the source location to attach to an error.
 ///
-/// For most tokens, CurLoc already points at the right place and is returned
-/// unchanged. The special case is tok_eol: CurLoc for a newline token is
+/// For most tokens, CurrentTokenLocation already points at the right place and is returned
+/// unchanged. The special case is tok_eol: CurrentTokenLocation for a newline token is
 /// snapshotted after advance() has consumed the '\n' and incremented
-/// LexLoc.Line, so CurLoc.Line is already the *next* line. Subtracting one
+/// LexerLocation.Line, so CurrentTokenLocation.Line is already the *next* line. Subtracting one
 /// gives the line that just ended, and we report a column one past its last
 /// character — pointing just after the final token on the line, which is
 /// where the missing token (e.g. ':') should have appeared.
@@ -484,7 +484,7 @@ static string FormatTokenForMessage(int Tok) {
 }
 
 /// PrintErrorSourceContext - Reprint the source line at Loc and place a
-/// '^~~~' caret under column Loc.Col. Col is 1-based, so we print Col-1
+/// '^~~~' caret under column Loc.Column. Column is 1-based, so we print Column-1
 /// spaces before the caret.
 static void PrintErrorSourceContext(SourceLocation Loc) {
   const string *LineText = PyxcSourceManager.getLine(Loc.Line);
@@ -495,14 +495,14 @@ static void PrintErrorSourceContext(SourceLocation Loc) {
     return;
 
   fprintf(stderr, "%s\n", LineText->c_str());
-  int spaces = max(0, Loc.Col - 1);
+  int spaces = max(0, Loc.Column - 1);
   fprintf(stderr, "%*s", spaces, " ");
   fprintf(stderr, "^~~~\n");
 }
 
 static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation Loc) {
   fprintf(stderr, "Error (Line %d, Column %d): invalid number literal '%s'\n",
-          Loc.Line, Loc.Col, Literal.c_str());
+          Loc.Line, Loc.Column, Literal.c_str());
   PrintErrorSourceContext(Loc);
 }
 
@@ -670,8 +670,8 @@ void Log(const string &message) {
 /// LogErrorExpression* - Error reporting helpers. Each returns nullptr for its respective
 /// type so parse functions can write: return LogErrorExpression("message");
 unique_ptr<ExpressionNode> LogErrorExpression(const char *ErrorMessage) {
-  SourceLocation Anchor = GetCaretAnchorLoc(CurLoc, CurrentToken);
-  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
+  SourceLocation Anchor = GetCaretAnchorLoc(CurrentTokenLocation, CurrentToken);
+  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Column,
           ErrorMessage);
   PrintErrorSourceContext(Anchor);
   return nullptr;

@@ -289,7 +289,7 @@ The redeclaration check for `extern def` already compared parameter counts to ca
 -static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
 +static unique_ptr<FunctionSignatureNode>
 +ParseFunctionSignature(bool AllowVariadic = false) {
-*  SourceLocation SignatureLoc = CurLoc;
+*  SourceLocation SignatureLoc = CurrentTokenLocation;
 *
 *  // Callers consume the leading 'def', so the current token must be the
 *  // function name.

@@ -394,21 +394,21 @@ static map<int, string> TokenNames = [] {
   return Names;
 }();
 
-/// SourceLocation - A {Line, Col} pair. Line and Col are 1-based.
+/// SourceLocation - A {Line, Column} pair. Line and Column are 1-based.
 ///
 /// Two globals track position as characters are consumed:
-///   LexLoc  - where the character-read head (advance()) currently is.
+///   LexerLocation  - where the character-read head (advance()) currently is.
 ///             Updated on every advance() call. After a '\n', Line increments
-///             and Col resets to 0 so the next character will be Col 1.
-///   CurLoc  - snapshotted at the start of each token in gettok(), before
+///             and Column resets to 0 so the next character will be Column 1.
+///   CurrentTokenLocation  - snapshotted at the start of each token in gettok(), before
 ///             consuming any of the token's characters. This is the position
 ///             the parser and diagnostics see.
 struct SourceLocation {
   int Line;
-  int Col;
+  int Column;
 };
-static SourceLocation CurLoc;
-static SourceLocation LexLoc = {1, 0};
+static SourceLocation CurrentTokenLocation;
+static SourceLocation LexerLocation = {1, 0};
 
 /// SourceManager - Buffers every source line as it is read so that error
 /// messages can reprint the offending line with a caret underneath it.
@@ -473,11 +473,11 @@ public:
 static SourceManager PyxcSourceManager;
 static void PrintErrorSourceContext(SourceLocation Loc);
 
-/// advance - Read one character from Input, update LexLoc and SourceManager.
+/// advance - Read one character from Input, update LexerLocation and SourceManager.
 ///
 /// This is the single point through which all character consumption flows.
 /// Every token branch in gettok() calls advance() rather than fgetc()
-/// directly, so LexLoc and the source buffer are always in sync.
+/// directly, so LexerLocation and the source buffer are always in sync.
 ///
 /// Windows line endings (\r\n) are coalesced to a single \n
 /// as are bare (old) Mac \r's (without a trailing \n)
@@ -489,18 +489,18 @@ static int advance() {
     if (NextChar != '\n' && NextChar != EOF)
       ungetc(NextChar, Input);
     PyxcSourceManager.onChar('\n');
-    LexLoc.Line++;
-    LexLoc.Col = 0;
+    LexerLocation.Line++;
+    LexerLocation.Column = 0;
     return '\n';
   }
 
   if (LastChar == '\n') {
     PyxcSourceManager.onChar('\n');
-    LexLoc.Line++;
-    LexLoc.Col = 0;
+    LexerLocation.Line++;
+    LexerLocation.Column = 0;
   } else {
     PyxcSourceManager.onChar(LastChar);
-    LexLoc.Col++;
+    LexerLocation.Column++;
   }
 
   return LastChar;
@@ -510,7 +510,7 @@ static int advance() {
 ///
 /// Used by the two-character operator branches in gettok() to decide whether
 /// '=' should become '==' (tok_eq), '!' should become '!=' (tok_neq), etc.,
-/// without advancing LexLoc or notifying SourceManager.
+/// without advancing LexerLocation or notifying SourceManager.
 static int peek() {
   int c = fgetc(Input);
   if (c != EOF)
@@ -525,16 +525,16 @@ static int peek() {
 /// the whitespace loop without reading a character, and the loop's first
 /// advance() call picks up the real first character.
 ///
-/// CurLoc is snapshotted from LexLoc after the whitespace-skip loop and
+/// CurrentTokenLocation is snapshotted from LexerLocation after the whitespace-skip loop and
 /// before any token branch. For most tokens this points at the first
 /// character of the token. For tok_eol the '\n' was already consumed by
-/// advance() on a previous call, so LexLoc is already on the next line;
+/// advance() on a previous call, so LexerLocation is already on the next line;
 /// GetDiagnosticAnchorLoc compensates by subtracting one when building error
 /// locations for tok_eol.
 ///
-/// The comment path ('#' branch) re-snapshots CurLoc just before returning
+/// The comment path ('#' branch) re-snapshots CurrentTokenLocation just before returning
 /// tok_eol because it consumes many characters (the whole comment) after the
-/// initial snapshot, leaving LexLoc well past the '#' position.
+/// initial snapshot, leaving LexerLocation well past the '#' position.
 ///
 /// AtLineStart is true (1) at startup, (2) right after consuming '\n', and
 /// (3) right after emitting tok_eol. It stays true while we are still resolving
@@ -568,7 +568,7 @@ static int gettok() {
         IndentStack.pop_back();
         return tok_dedent;
       }
-      CurLoc = LexLoc;
+      CurrentTokenLocation = LexerLocation;
       LexerLastChar = ' '; // AtLineStart is still true so the lexer reads past
                            // the sentinel in the next call
       return tok_eol;
@@ -580,7 +580,7 @@ static int gettok() {
         LexerLastChar = advance();
       while (LexerLastChar != EOF && LexerLastChar != '\n');
       if (LexerLastChar != EOF) {
-        CurLoc = LexLoc;
+        CurrentTokenLocation = LexerLocation;
         LexerLastChar = ' '; // AtLineStart is still true so the lexer reads
                              // past the sentinel in the next call
         return tok_eol;
@@ -598,7 +598,7 @@ static int gettok() {
     }
 
     // Real content: compare column to the indent stack.
-    CurLoc = LexLoc;
+    CurrentTokenLocation = LexerLocation;
     int CurrentIndent = IndentStack.back();
     if (IndentCol > CurrentIndent) {
       IndentStack.push_back(IndentCol);
@@ -614,8 +614,8 @@ static int gettok() {
       if (IndentCol != IndentStack.back()) {
         fprintf(stderr,
                 "Error (Line %d, Column %d): inconsistent indentation\n",
-                CurLoc.Line, CurLoc.Col);
-        PrintErrorSourceContext(CurLoc);
+                CurrentTokenLocation.Line, CurrentTokenLocation.Column);
+        PrintErrorSourceContext(CurrentTokenLocation);
         return tok_error;
       }
       // We have at least one pending dedent token. Instead of looping, we just
@@ -636,7 +636,7 @@ static int gettok() {
     LexerLastChar = advance();
 
   // Snapshot position for the upcoming token. See note above about tok_eol.
-  CurLoc = LexLoc;
+  CurrentTokenLocation = LexerLocation;
 
   if (LexerLastChar == '\n') {
     // Do not call advance() here.
@@ -695,8 +695,8 @@ static int gettok() {
       if (!isdigit(LexerLastChar)) {
         fprintf(stderr,
                 "Error (Line %d, Column %d): invalid number literal '%s'\n",
-                CurLoc.Line, CurLoc.Col, NumStr.c_str());
-        PrintErrorSourceContext(CurLoc);
+                CurrentTokenLocation.Line, CurrentTokenLocation.Column, NumStr.c_str());
+        PrintErrorSourceContext(CurrentTokenLocation);
         return tok_error;
       }
       ConsumeDigits();
@@ -705,8 +705,8 @@ static int gettok() {
     if (NumStr == ".") {
       fprintf(stderr,
               "Error (Line %d, Column %d): invalid number literal '%s'\n",
-              CurLoc.Line, CurLoc.Col, NumStr.c_str());
-      PrintErrorSourceContext(CurLoc);
+              CurrentTokenLocation.Line, CurrentTokenLocation.Column, NumStr.c_str());
+      PrintErrorSourceContext(CurrentTokenLocation);
       return tok_error;
     }
 
@@ -740,8 +740,8 @@ static int gettok() {
           break;
         default:
           fprintf(stderr, "Error (Line %d, Column %d): invalid string escape\n",
-                  CurLoc.Line, CurLoc.Col);
-          PrintErrorSourceContext(CurLoc);
+                  CurrentTokenLocation.Line, CurrentTokenLocation.Column);
+          PrintErrorSourceContext(CurrentTokenLocation);
           return tok_error;
         }
       } else {
@@ -753,8 +753,8 @@ static int gettok() {
     if (LexerLastChar != '"') {
       fprintf(stderr,
               "Error (Line %d, Column %d): unterminated string literal\n",
-              CurLoc.Line, CurLoc.Col);
-      PrintErrorSourceContext(CurLoc);
+              CurrentTokenLocation.Line, CurrentTokenLocation.Column);
+      PrintErrorSourceContext(CurrentTokenLocation);
       return tok_error;
     }
     LexerLastChar = advance(); // eat closing quote
@@ -766,8 +766,8 @@ static int gettok() {
     if (LexerLastChar == '\'' || LexerLastChar == '\n' ||
         LexerLastChar == EOF) {
       fprintf(stderr, "Error (Line %d, Column %d): empty character literal\n",
-              CurLoc.Line, CurLoc.Col);
-      PrintErrorSourceContext(CurLoc);
+              CurrentTokenLocation.Line, CurrentTokenLocation.Column);
+      PrintErrorSourceContext(CurrentTokenLocation);
       return tok_error;
     }
 
@@ -793,8 +793,8 @@ static int gettok() {
       default:
         fprintf(stderr,
                 "Error (Line %d, Column %d): invalid character escape\n",
-                CurLoc.Line, CurLoc.Col);
-        PrintErrorSourceContext(CurLoc);
+                CurrentTokenLocation.Line, CurrentTokenLocation.Column);
+        PrintErrorSourceContext(CurrentTokenLocation);
         return tok_error;
       }
     } else {
@@ -805,8 +805,8 @@ static int gettok() {
     if (LexerLastChar != '\'') {
       fprintf(stderr,
               "Error (Line %d, Column %d): unterminated character literal\n",
-              CurLoc.Line, CurLoc.Col);
-      PrintErrorSourceContext(CurLoc);
+              CurrentTokenLocation.Line, CurrentTokenLocation.Column);
+      PrintErrorSourceContext(CurrentTokenLocation);
       return tok_error;
     }
     LexerLastChar = advance(); // eat closing quote
@@ -821,11 +821,11 @@ static int gettok() {
     while (LexerLastChar != EOF && LexerLastChar != '\n');
 
     if (LexerLastChar != EOF) {
-      // Re-snapshot CurLoc now that the '\n' has been consumed and LexLoc
-      // has advanced to the next line. Without this, CurLoc would point at
+      // Re-snapshot CurrentTokenLocation now that the '\n' has been consumed and LexerLocation
+      // has advanced to the next line. Without this, CurrentTokenLocation would point at
       // the '#' column, and GetDiagnosticAnchorLoc would look up the wrong
       // line (because it subtracts 1) when the next token triggers an error.
-      CurLoc = LexLoc;
+      CurrentTokenLocation = LexerLocation;
       LexerLastChar = ' ';
       AtLineStart = true;
       return tok_eol;
@@ -951,8 +951,8 @@ static void ResetLexerState() {
   IndentStack = {0};
   PendingTokens.clear();
   AtLineStart = true;
-  LexLoc = {1, 0};
-  CurLoc = {1, 0};
+  LexerLocation = {1, 0};
+  CurrentTokenLocation = {1, 0};
   LexerLastChar = ' ';
   PyxcSourceManager.reset();
 }
@@ -963,10 +963,10 @@ static void ResetLexerState() {
 
 /// GetDiagnosticAnchorLoc - Resolve the source location to attach to an error.
 ///
-/// For most tokens, CurLoc already points at the right place and is returned
-/// unchanged. The special case is tok_eol: CurLoc for a newline token is
+/// For most tokens, CurrentTokenLocation already points at the right place and is returned
+/// unchanged. The special case is tok_eol: CurrentTokenLocation for a newline token is
 /// snapshotted after advance() has consumed the '\n' and incremented
-/// LexLoc.Line, so CurLoc.Line is already the *next* line. Subtracting one
+/// LexerLocation.Line, so CurrentTokenLocation.Line is already the *next* line. Subtracting one
 /// gives the line that just ended, and we report a column one past its last
 /// character — pointing just after the final token on the line, which is
 /// where the missing token (e.g. ':') should have appeared.
@@ -1004,7 +1004,7 @@ static string FormatTokenForMessage(int Tok) {
 }
 
 /// PrintErrorSourceContext - Reprint the source line at Loc and place a
-/// '^~~~' caret under column Loc.Col. Col is 1-based, so we print Col-1
+/// '^~~~' caret under column Loc.Column. Column is 1-based, so we print Column-1
 /// spaces before the caret.
 static void PrintErrorSourceContext(SourceLocation Loc) {
   const string *LineText = PyxcSourceManager.getLine(Loc.Line);
@@ -1012,7 +1012,7 @@ static void PrintErrorSourceContext(SourceLocation Loc) {
     return;
 
   fprintf(stderr, "%s\n", LineText->c_str());
-  int spaces = max(0, Loc.Col - 1);
+  int spaces = max(0, Loc.Column - 1);
   fprintf(stderr, "%*s", spaces, " ");
   fprintf(stderr, "^~~~\n");
 }
@@ -2003,8 +2003,8 @@ void Log(const string &message) {
 /// type so parse functions can write: return LogError("message");
 unique_ptr<ExprAST> LogError(const char *Str) {
   HadError = true;
-  SourceLocation Anchor = GetDiagnosticAnchorLoc(CurLoc, CurTok);
-  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Col,
+  SourceLocation Anchor = GetDiagnosticAnchorLoc(CurrentTokenLocation, CurTok);
+  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Column,
           Str);
   PrintErrorSourceContext(Anchor);
   return nullptr;
@@ -4353,7 +4353,7 @@ static unique_ptr<ExprAST> ParseBlock() {
 /// typedparam
 ///   = identifier ":" type ;
 static unique_ptr<PrototypeAST> ParsePrototype(bool AllowVarArgs = false) {
-  SourceLocation ProtoLoc = CurLoc;
+  SourceLocation ProtoLoc = CurrentTokenLocation;
 
   if (CurTok != tok_identifier)
     return LogErrorP("Expected function name in prototype");
@@ -4488,7 +4488,7 @@ ParseMethodDefinitionInClass(const string &ClassName, bool IsPublic) {
   if (CurTok != tok_identifier)
     return LogErrorF("Expected method name in class definition");
   string MethodName = IdentifierStr;
-  SourceLocation ProtoLoc = CurLoc;
+  SourceLocation ProtoLoc = CurrentTokenLocation;
   getNextToken(); // eat method name
   if (CurTok != '(')
     return LogErrorF("Expected '(' in method prototype");
@@ -4663,7 +4663,7 @@ static bool IsKnownUnaryOperatorToken(int Tok) {
 /// The function is stored internally as "binary<opchar>" (e.g. "binary%"),
 /// which is how BinaryExprAST::codegen() looks it up at call sites.
 static unique_ptr<PrototypeAST> ParseBinaryOpPrototype(unsigned Precedence) {
-  SourceLocation ProtoLoc = CurLoc;
+  SourceLocation ProtoLoc = CurrentTokenLocation;
   if (!IsCustomOpChar(CurTok))
     return LogErrorP(
         "Expected operator character in binary operator prototype");
@@ -4749,7 +4749,7 @@ static unique_ptr<PrototypeAST> ParseBinaryOpPrototype(unsigned Precedence) {
 /// The function is stored internally as "unary<opchar>" (e.g. "unary&"),
 /// which is how ParseUnary() looks it up at call sites.
 static unique_ptr<PrototypeAST> ParseUnaryOpPrototype() {
-  SourceLocation ProtoLoc = CurLoc;
+  SourceLocation ProtoLoc = CurrentTokenLocation;
   if (!IsCustomOpChar(CurTok))
     return LogErrorP("Expected operator character in unary operator prototype");
 
@@ -4920,7 +4920,7 @@ static unique_ptr<FunctionAST> ParseTopLevelExpr() {
 
   string FnName = "__pyxc.toplevel." + to_string(TopLevelExprCounter++);
   auto Proto = make_unique<PrototypeAST>(
-      FnName, vector<PrototypeAST::ArgInfo>(), CurLoc, RetType);
+      FnName, vector<PrototypeAST::ArgInfo>(), CurrentTokenLocation, RetType);
   return make_unique<FunctionAST>(std::move(Proto), std::move(Stmt));
 }
 
@@ -5340,7 +5340,7 @@ static bool ParseMethodSignatureOnlyInClass(const string &ClassName,
   if (CurTok != tok_identifier)
     return LogError("Expected method name in class definition"), false;
   string MethodName = IdentifierStr;
-  SourceLocation ProtoLoc = CurLoc;
+  SourceLocation ProtoLoc = CurrentTokenLocation;
   getNextToken(); // eat method name
   if (CurTok != '(')
     return LogError("Expected '(' in method prototype"), false;

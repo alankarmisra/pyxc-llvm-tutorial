@@ -491,7 +491,7 @@ def divide(a: int, b: int) -> int:
 
 #### Phase 23: Tooling and Quality
 
-- Real Source Locations in Codegen Diagnostics — properly closes the stale-`CurLoc` known bug
+- Real Source Locations in Codegen Diagnostics — properly closes the stale-`CurrentTokenLocation` known bug
 - Function Attributes, Escape Analysis and Stack Promotion, REPL Improvements, Incremental Compilation and Packaging, MCP Tool Export
 
 ```bash

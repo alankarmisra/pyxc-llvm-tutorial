@@ -242,8 +242,8 @@ if (LexerLastChar == '"') {
       default:
         fprintf(stderr,
                 "Error (Line %d, Column %d): invalid string escape\n",
-                CurLoc.Line, CurLoc.Col);
-        PrintErrorSourceContext(CurLoc);
+                CurrentTokenLocation.Line, CurrentTokenLocation.Column);
+        PrintErrorSourceContext(CurrentTokenLocation);
         return tok_error;
       }
     } else {
@@ -255,8 +255,8 @@ if (LexerLastChar == '"') {
   if (LexerLastChar != '"') {
     fprintf(stderr,
             "Error (Line %d, Column %d): unterminated string literal\n",
-            CurLoc.Line, CurLoc.Col);
-    PrintErrorSourceContext(CurLoc);
+            CurrentTokenLocation.Line, CurrentTokenLocation.Column);
+    PrintErrorSourceContext(CurrentTokenLocation);
     return tok_error;
   }
   LexerLastChar = advance(); // eat closing quote

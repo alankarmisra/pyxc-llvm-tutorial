@@ -149,11 +149,11 @@ Do not document every method inline unless the method has non-obvious behavior. 
 Functions that are part of the public interface of a section use `///` triple-slash doc comments:
 
 ```cpp
-/// advance - Read one character from stdin, update LexLoc and SourceManager.
+/// advance - Read one character from stdin, update LexerLocation and SourceManager.
 ///
 /// This is the single point through which all character consumption flows.
 /// Every token branch in gettok() calls advance() rather than getchar()
-/// directly, so LexLoc and the source buffer are always in sync.
+/// directly, so LexerLocation and the source buffer are always in sync.
 ///
 /// Windows line endings (\r\n) are coalesced to a single \n so the rest of
 /// the lexer never needs to handle \r.
@@ -183,11 +183,11 @@ while (isspace(LastChar) && LastChar != '\n')
   LastChar = advance();
 
 // Snapshot position for the upcoming token. See note above about tok_eol.
-CurLoc = LexLoc;
+CurrentTokenLocation = LexerLocation;
 ```
 
 Do not comment every line. A comment on every line is noise. Reserve inline comments for:
-- Subtle invariants (`// LexLoc.Line is already on the next line here`)
+- Subtle invariants (`// LexerLocation.Line is already on the next line here`)
 - Cross-references to related non-obvious code (`// re-snapshot after consuming comment + '\n'`)
 - Deliberate non-obvious choices (`// false = not variadic`)
 
