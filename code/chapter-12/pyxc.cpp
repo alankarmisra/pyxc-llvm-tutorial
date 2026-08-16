@@ -361,9 +361,9 @@ static int getToken() {
 
     // Comment-only line: consume and return a newline.
     if (LastChar == '#') {
-      do
+      do {
         LastChar = advance();
-      while (LastChar != EOF && LastChar != '\n');
+      } while (LastChar != '\n' && LastChar != EOF);
       if (LastChar == '\n') {
         CurLoc = LexLoc;
         LastChar = ' ';
@@ -457,11 +457,12 @@ static int getToken() {
     return tok_number;
   }
 
+  // I discard a comment.
   if (LastChar == '#') {
-    // Consume the rest of the line (comment). Stop at '\n' or EOF.
-    do
+    // I consume characters through the end of the line.
+    do {
       LastChar = advance();
-    while (LastChar != EOF && LastChar != '\n');
+    } while (LastChar != '\n' && LastChar != EOF);
 
     if (LastChar == '\n') {
       // Re-snapshot CurLoc now that the '\n' has been consumed and LexLoc

@@ -275,29 +275,45 @@ When I read a newline, I increment `Line` and reset `Col` to `0`. For any other 
 
 In `getToken()`, I copy `LexLoc` into `CurLoc` after I skip whitespace but before I read the token itself:
 
-```cpp
-while (isspace(LastChar) && LastChar != '\n')
-  LastChar = advance();
-
-CurLoc = LexLoc;
+```cppdiff
+*static int getToken() {
+*  static int LastChar = ' ';
+*
+*  while (isspace(LastChar) && LastChar != '\n')
+*    LastChar = advance();
+*
++  CurLoc = LexLoc;
++
+*  if (LastChar == '\n') {
+*    LastChar = ' ';
+*    return tok_eol;
+*  }
+*  ...
+*}
 ```
 
 By copying the location here, I make `CurLoc` point at the token's first character rather than any whitespace before it.
 
 I need to copy the location again after a comment. At the start of `getToken()`, I set `CurLoc` to the position of `#`. I then consume the rest of the line and return `tok_eol`. If I leave `CurLoc` at `#`, an error on the next line can report a column from the comment line. I avoid that by copying `LexLoc` again after I consume the newline:
 
-```cpp
-if (LastChar == '#') {
-  do
-    LastChar = advance();
-  while (LastChar != EOF && LastChar != '\n');
-
-    if (LastChar == '\n') {
-    CurLoc = LexLoc;
-    LastChar = ' ';
-    return tok_eol;
-  }
-}
+```cppdiff
+*static int getToken() {
+*  ...
+*  // I discard a comment.
+*  if (LastChar == '#') {
+*    // I consume characters through the end of the line.
+*    do {
+*      LastChar = advance();
+*    } while (LastChar != '\n' && LastChar != EOF);
+*
+*    if (LastChar == '\n') {
++      CurLoc = LexLoc;
+*      LastChar = ' ';
+*      return tok_eol;
+*    }
+*  }
+*  ...
+*}
 ```
 
 ## Printing the Caret
@@ -410,43 +426,7 @@ static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation L
 }
 ```
 
-I call it from `getToken()`'s number-reading branch:
-
-```cpp
-char *End = nullptr;
-NumberValue = strtod(NumberLiteral.c_str(), &End);
-if (!End || *End != '\0') {
-  LogInvalidNumberLiteralAtLoc(NumberLiteral, CurLoc);
-  return tok_error;
-}
-return tok_number;
-```
-
-If `End` points at the string's null terminator, I know `strtod` consumed every character. If it points anywhere else, part of the input was invalid: for `"1.2.3"`, `strtod` stops at the second `.`, so `End` points at `.3` rather than the terminator. I report the invalid number and return `tok_error` instead of `tok_number`. I do this in `getToken()`, which returns an `int`. I cannot return `nullptr` as I do from a parsing function. Instead, I call the error helper and return `tok_error`.
-
-## Naming Unknown Characters Too
-
-`@` isn't punctuation I recognize. Previously, the lexer's `default` case discarded the character and returned the generic `tok_error`:
-
-```cppdiff
-*  switch (ThisChar) {
-*  ...
--  default:
--    return tok_error;
-+  default:
-+    return ThisChar;
-*  }
-```
-
-I return `ThisChar` instead so I can name the character that caused the error.
-
-For names and numbers, I want to include the actual text from the source rather than report only `name` or `number`. I already have `Name` from Chapter 1 for the name case. For numbers, I add a matching global:
-
-```cpp
-static string NumberLiteral; // Filled in if tok_number, used in error messages
-```
-
-I clear and fill it in `getToken()`'s number-reading branch, right alongside `NumberValue`:
+I call it from `getToken()`'s number-reading branch. While I'm there, I also promote `NumberLiteral` from a local variable to a file-scope global (declared alongside `NumberValue`), so I can still read the exact source text after `getToken()` returns, for diagnostics elsewhere in this chapter:
 
 ```cppdiff
 *  if (isdigit(LastChar) || LastChar == '.') {
@@ -468,6 +448,26 @@ I clear and fill it in `getToken()`'s number-reading branch, right alongside `Nu
 *    return tok_number;
 *  }
 ```
+
+If `End` points at the string's null terminator, I know `strtod` consumed every character. If it points anywhere else, part of the input was invalid: for `"1.2.3"`, `strtod` stops at the second `.`, so `End` points at `.3` rather than the terminator. I report the invalid number and return `tok_error` instead of `tok_number`. I do this in `getToken()`, which returns an `int`. I cannot return `nullptr` as I do from a parsing function. Instead, I call the error helper and return `tok_error`.
+
+## Naming Unknown Characters Too
+
+`@` isn't punctuation I recognize. Previously, the lexer's `default` case discarded the character and returned the generic `tok_error`:
+
+```cppdiff
+*  switch (ThisChar) {
+*  ...
+-  default:
+-    return tok_error;
++  default:
++    return ThisChar;
+*  }
+```
+
+I return `ThisChar` instead so I can name the character that caused the error.
+
+For names and numbers, I want to include the actual text from the source rather than report only `name` or `number`. I already have `Name` from Chapter 1 for the name case, and I just promoted `NumberLiteral` to a file-scope global above, in [Catching Malformed Numbers](#catching-malformed-numbers), for exactly this reason.
 
 With those source spellings available, I define one helper for every diagnostic that needs to name a token:
 

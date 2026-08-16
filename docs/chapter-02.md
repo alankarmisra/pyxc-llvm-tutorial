@@ -720,7 +720,7 @@ Here's the offending code, and the same fix:
 ```cppdiff
 *  // I discard a comment.
 *  if (LastChar == '#') {
-*    // I consume the comment through the end of the line.
+*    // I consume characters through the end of the line.
 *    do {
 *      LastChar = advance();
 *    } while (LastChar != '\n' && LastChar != EOF);
