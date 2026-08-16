@@ -97,8 +97,8 @@ I start with `Input` pointing to `stdin`. If I receive a filename, I open it and
 -      ungetc(NextChar, stdin);
 +      ungetc(NextChar, Input);
 *    PyxcSourceManager.onChar('\n');
-*    LexLoc.Line++;
-*    LexLoc.Col = 0;
+*    LexerLocation.Line++;
+*    LexerLocation.Column = 0;
 *    return '\n';
 *  }
 *  ...

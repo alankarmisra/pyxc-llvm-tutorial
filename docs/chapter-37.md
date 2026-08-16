@@ -319,7 +319,7 @@ ParseMethodDefinition(const string &ClassName) {
   if (CurrentToken != tok_name)
     return LogErrorFunction("Expected method name in class definition");
   string MethodName = Name;
-  SourceLocation SignatureLocation = CurLoc;
+  SourceLocation SignatureLocation = CurrentTokenLocation;
   getNextToken(); // eat method name
 
   if (CurrentToken != tok_lparen)

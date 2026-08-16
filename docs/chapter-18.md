@@ -317,14 +317,14 @@ Before chapter 17, every number literal stored a `double`. Now literals have pro
         LexerLastChar = advance();
       }
       if (!isdigit(LexerLastChar)) {
-        LogInvalidNumberLiteralAtLoc(NumberLiteral, CurLoc);
+        LogInvalidNumberLiteralAtLoc(NumberLiteral, CurrentTokenLocation);
         return tok_error;
       }
       ConsumeDigits();
     }
 
     if (NumberLiteral == ".") {
-      LogInvalidNumberLiteralAtLoc(NumberLiteral, CurLoc);
+      LogInvalidNumberLiteralAtLoc(NumberLiteral, CurrentTokenLocation);
       return tok_error;
     }
 
@@ -1380,7 +1380,7 @@ static unique_ptr<FunctionDefinitionNode> ParseTopLevelStatementFunction() {
 
   string FunctionName = "__pyxc.toplevel." + to_string(TopLevelExprCounter++);
   auto Signature = make_unique<FunctionSignatureNode>(
-      FunctionName, vector<pair<string, ValueType>>(), CurLoc, RetType);
+      FunctionName, vector<pair<string, ValueType>>(), CurrentTokenLocation, RetType);
   return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(Stmt));
 }
 ```

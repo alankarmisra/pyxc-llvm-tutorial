@@ -4,7 +4,7 @@
 # RUN: grep -q "def 1" %t
 
 # Diagnostics: error after a comment line shows the correct source context.
-# The '#' branch in getToken re-snapshots CurLoc after consuming the '\n', so
+# The '#' branch in getToken re-snapshots CurrentTokenLocation after consuming the '\n', so
 # the error on the line after the comment must show "def 1" — not the comment.
 # this is a comment
 def 1

@@ -220,7 +220,7 @@ static bool ParseMethodSignatureOnly(const string &ClassName, bool IsPublic) {
   if (CurrentToken != tok_name)
     return LogErrorExpression("Expected method name in class definition"), false;
   string MethodName = Name;
-  SourceLocation SignatureLocation = CurLoc;
+  SourceLocation SignatureLocation = CurrentTokenLocation;
   getNextToken(); // eat method name
   if (CurrentToken != tok_lparen)
     return LogErrorExpression("Expected '(' in method function signature"), false;

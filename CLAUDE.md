@@ -137,5 +137,5 @@ The lexer emits synthetic `tok_indent` / `tok_dedent` tokens using `IndentStack`
 
 ## Known Bugs
 
-- **Stale `CurLoc` in codegen diagnostics:** Most AST nodes use the global `CurLoc` at error time, which has already advanced past the node. `CallExprAST` is fixed (captures location at parse time). Full fix requires a `SourceLoc` field on `ExprAST` and propagation through every node constructor.
+- **Stale `CurrentTokenLocation` in codegen diagnostics:** Most AST nodes use the global `CurrentTokenLocation` at error time, which has already advanced past the node. `CallExprAST` is fixed (captures location at parse time). Full fix requires a `SourceLoc` field on `ExprAST` and propagation through every node constructor.
 - **`extern def` ABI is trusted:** Mismatched declared vs actual C symbol signatures are not detected and cause silent ABI bugs at runtime.

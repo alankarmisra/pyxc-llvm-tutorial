@@ -301,7 +301,7 @@ Blank lines and comment-only lines return `tok_eol` here without touching the in
 **Step 2: Compare to the top of the stack and either return `tok_indent` directly or queue `DEDENT` tokens.**
 
 ```cpp
-  CurLoc = LexLoc;
+  CurrentTokenLocation = LexerLocation;
   int CurrentIndentOnStack = IndentStack.back();
   if (CurrentIndentRead > CurrentIndentOnStack) {
     IndentStack.push_back(CurrentIndentRead);
@@ -314,8 +314,8 @@ Blank lines and comment-only lines return `tok_eol` here without touching the in
       PendingTokens.push_back(tok_dedent);
     }
     if (CurrentIndentRead != IndentStack.back()) {
-      LogErrorAtLoc("inconsistent indentation", CurLoc);
-      PrintErrorSourceContext(CurLoc);
+      LogErrorAtLoc("inconsistent indentation", CurrentTokenLocation);
+      PrintErrorSourceContext(CurrentTokenLocation);
       return tok_error;
     }
     AtLineStart = false;
