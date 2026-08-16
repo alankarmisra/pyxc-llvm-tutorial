@@ -145,7 +145,7 @@ public:
 
 static SourceManager PyxcSourceManager;
 static void PrintErrorSourceContext(SourceLocation Location);
-static void LogInvalidNumberLiteralAtLoc(const string &Literal,
+static void LogInvalidNumberLiteralAtLocation(const string &Literal,
                                          SourceLocation Loc);
 
 /// advance - I return the next character, normalizing `\r\n` (Windows)
@@ -244,7 +244,7 @@ static int getToken() {
     char *End = nullptr;
     NumberValue = strtod(NumberLiteral.c_str(), &End);
     if (!End || *End != '\0') {
-      LogInvalidNumberLiteralAtLoc(NumberLiteral, CurrentTokenLocation);
+      LogInvalidNumberLiteralAtLocation(NumberLiteral, CurrentTokenLocation);
       return tok_error;
     }
     return tok_number;
@@ -369,7 +369,7 @@ static void PrintErrorSourceContext(SourceLocation Location) {
   fprintf(stderr, "^~~~\n");
 }
 
-static void LogInvalidNumberLiteralAtLoc(const string &Literal,
+static void LogInvalidNumberLiteralAtLocation(const string &Literal,
                                          SourceLocation Loc) {
   fprintf(stderr, "Error (Line %d, Column %d): invalid number literal '%s'\n",
           Loc.Line, Loc.Column, Literal.c_str());

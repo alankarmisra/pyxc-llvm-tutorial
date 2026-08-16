@@ -317,14 +317,14 @@ Before chapter 17, every number literal stored a `double`. Now literals have pro
         LexerLastChar = advance();
       }
       if (!isdigit(LexerLastChar)) {
-        LogInvalidNumberLiteralAtLoc(NumberLiteral, CurrentTokenLocation);
+        LogInvalidNumberLiteralAtLocation(NumberLiteral, CurrentTokenLocation);
         return tok_error;
       }
       ConsumeDigits();
     }
 
     if (NumberLiteral == ".") {
-      LogInvalidNumberLiteralAtLoc(NumberLiteral, CurrentTokenLocation);
+      LogInvalidNumberLiteralAtLocation(NumberLiteral, CurrentTokenLocation);
       return tok_error;
     }
 
