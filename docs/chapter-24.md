@@ -434,7 +434,7 @@ static void HandleStructDefinition() {
     if (Parsed)
       LogErrorExpression(
           ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   Log("Parsed a struct definition.\n");

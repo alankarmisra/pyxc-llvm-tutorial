@@ -535,7 +535,7 @@ static void HandleFunctionDefinition() {
     if (FunctionDefinition)
       LogErrorExpression(
           ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   if (auto *FunctionIR = FunctionDefinition->codegen()) {
@@ -554,7 +554,7 @@ static void HandleTopLevelExpression() {
     if (FunctionDefinition)
       LogErrorExpression(
           ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   if (auto *FunctionIR = FunctionDefinition->codegen()) {

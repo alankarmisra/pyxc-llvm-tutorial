@@ -814,7 +814,7 @@ ready> ready>
 
 I print the first prompt from `LogErrorExpression()`'s baked-in `\nready> `. The recovery skip in `HandleFunctionDefinition()` then lands exactly on the line's trailing `tok_eol`. When I return to `MainLoop()`, I print a second `ready> ` immediately afterward.
 
-I'm not chasing this down here. In [Chapter 5](chapter-05.md), I send lexer errors (`tok_error`) and parser failures (`nullptr`) through `SynchronizeToLineBoundary()`, then print one prompt from the main loop.
+I'm not chasing this down here. In [Chapter 5](chapter-05.md), I send lexer errors (`tok_error`) and parser failures (`nullptr`) through `DiscardRestOfLine()`, then print one prompt from the main loop.
 
 ## Build and Run
 

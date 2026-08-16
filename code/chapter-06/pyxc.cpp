@@ -145,7 +145,7 @@ public:
 };
 
 static SourceManager PyxcSourceManager;
-static void PrintErrorSourceContext(SourceLocation Loc);
+static void PrintErrorSourceContext(SourceLocation Location);
 static void LogInvalidNumberLiteralAtLoc(const string &Literal, SourceLocation Loc);
 
 /// advance - I return the next character, normalizing `\r\n` (Windows)
@@ -200,7 +200,7 @@ static int advance() {
 /// before any token branch. For most tokens this points at the first
 /// character of the token. For tok_eol the '\n' was already consumed by
 /// advance() on a previous call, so LexerLocation is already on the next line;
-/// GetCaretAnchorLoc compensates by subtracting one when building error
+/// GetCaretAnchorLocation compensates by subtracting one when building error
 /// locations for tok_eol.
 ///
 /// The comment path ('#' branch) re-snapshots CurrentTokenLocation just before returning
@@ -260,7 +260,7 @@ static int getToken() {
     if (LastChar == '\n') {
       // Re-snapshot CurrentTokenLocation now that the '\n' has been consumed and LexerLocation
       // has advanced to the next line. Without this, CurrentTokenLocation would point at
-      // the '#' column, and GetCaretAnchorLoc would look up the wrong
+      // the '#' column, and GetCaretAnchorLocation would look up the wrong
       // line when the next token triggers an error.
       CurrentTokenLocation = LexerLocation;
       LastChar = ' ';
@@ -304,7 +304,7 @@ static int getToken() {
 // Diagnostics helpers
 //===----------------------------------------===//
 
-/// GetCaretAnchorLoc - Resolve the source location to attach to an error.
+/// GetCaretAnchorLocation - Resolve the source location to attach to an error.
 ///
 /// For most tokens, CurrentTokenLocation already points at the right place and is returned
 /// unchanged. The special case is tok_eol: CurrentTokenLocation for a newline token is
@@ -313,21 +313,20 @@ static int getToken() {
 /// gives the line that just ended, and I report a column one past its last
 /// character — pointing just after the final token on the line, which is
 /// where the missing token (e.g. ':') should have appeared.
-static SourceLocation GetCaretAnchorLoc(SourceLocation Loc, int Tok) {
-  if (Tok != tok_eol)
-    return Loc;
+static SourceLocation GetCaretAnchorLocation(SourceLocation Location, int Token) {
+  if (Token != tok_eol || Location.Line <= 1)
+    return Location;
 
-  int PrevLine = Loc.Line - 1;
-  if (PrevLine <= 0)
-    return Loc;
-
+  // Token == tok_eol && Location.Line > 1. I need to return a location just
+  // past the end of the previous line.
+  int PrevLine = Location.Line - 1;
   const string *PrevLineText = PyxcSourceManager.getLine(PrevLine);
   // PrevLineText is null only if PrevLine hasn't been buffered yet —
   // it shouldn't happen, since I only get here after consuming that
-  // line's trailing newline, but I fall back to the original Loc
+  // line's trailing newline, but I fall back to the original Location
   // rather than trust an out-of-range read.
   if (!PrevLineText)
-    return Loc;
+    return Location;
 
   return {PrevLine, static_cast<int>(PrevLineText->size()) + 1};
 }
@@ -350,18 +349,18 @@ static string FormatTokenForMessage(int Tok) {
 }
 
 /// PrintErrorSourceContext - Reprint the source line at Loc and place a
-/// '^~~~' caret under column Loc.Column. Column is 1-based, so I print Column-1
+/// '^~~~' caret under column Location.Column. Column is 1-based, so I print Column-1
 /// spaces before the caret.
-static void PrintErrorSourceContext(SourceLocation Loc) {
-  const string *LineText = PyxcSourceManager.getLine(Loc.Line);
-  // LineText is null only if Loc points past everything buffered so
-  // far (e.g. an uninitialized Loc.Line == 0). Skip printing rather
+static void PrintErrorSourceContext(SourceLocation Location) {
+  const string *LineText = PyxcSourceManager.getLine(Location.Line);
+  // LineText is null only if Location points past everything buffered so
+  // far (e.g. an uninitialized Location.Line == 0). Skip printing rather
   // than dereference it below.
   if (!LineText)
     return;
 
   fprintf(stderr, "%s\n", LineText->c_str());
-  int spaces = Loc.Column - 1;
+  int spaces = Location.Column - 1;
   // I guard against an invalid column before printing the spaces.
   if (spaces < 0)
     spaces = 0;
@@ -482,7 +481,7 @@ static void consumeNewlines() {
 /// LogError* - Error reporting helpers. Each returns nullptr for its respective
 /// type so parse functions can write: return LogErrorExpression("message");
 unique_ptr<ExpressionNode> LogErrorExpression(const char *ErrorMessage) {
-  SourceLocation Anchor = GetCaretAnchorLoc(CurrentTokenLocation, CurrentToken);
+  SourceLocation Anchor = GetCaretAnchorLocation(CurrentTokenLocation, CurrentToken);
   fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Column,
           ErrorMessage);
   PrintErrorSourceContext(Anchor);
@@ -771,7 +770,7 @@ static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
 // Top-Level parsing
 //===----------------------------------------===//
 
-/// SynchronizeToLineBoundary - Panic-mode error recovery. Advance past all
+/// DiscardRestOfLine - Panic-mode error recovery. Advance past all
 /// remaining tokens on the current line so that the next thing MainLoop sees
 /// is tok_eol or tok_eof. Called after any parse failure and after any
 /// unexpected trailing token, ensuring the REPL always returns to a known
@@ -780,10 +779,11 @@ static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
 /// HandleFunctionDefinition/HandleTopLevelExpression - Called by MainLoop
 /// when it sees the appropriate leading token. On success, print a
 /// confirmation. On failure or unexpected trailing tokens, call
-/// SynchronizeToLineBoundary() to discard the rest of the input line.
+/// DiscardRestOfLine() to discard the rest of the input line.
 
-static void SynchronizeToLineBoundary() {
-  // I leave the boundary token for MainLoop() to handle.
+static void DiscardRestOfLine() {
+  // I stop at tok_eol or tok_eof without consuming it, so MainLoop()
+  // can handle it.
   while (CurrentToken != tok_eol && CurrentToken != tok_eof)
     getNextToken();
 }
@@ -792,12 +792,12 @@ static void HandleFunctionDefinition() {
   if (ParseFunctionDefinition()) {
     if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
       LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-      SynchronizeToLineBoundary();
+      DiscardRestOfLine();
       return;
     }
     fprintf(stderr, "Parsed a function definition.\n");
   } else {
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
   }
 }
 
@@ -805,12 +805,12 @@ static void HandleTopLevelExpression() {
   if (ParseTopLevelExpression()) {
     if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
       LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-      SynchronizeToLineBoundary();
+      DiscardRestOfLine();
       return;
     }
     fprintf(stderr, "Parsed a top-level expression.\n");
   } else {
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
   }
 }
 
@@ -829,7 +829,7 @@ static void MainLoop() {
   while (CurrentToken != tok_eof) {
     switch (CurrentToken) {
     case tok_error:
-      SynchronizeToLineBoundary();
+      DiscardRestOfLine();
       break;
     case tok_eol:
       // For a bare newline, I print a fresh prompt and read the next token.

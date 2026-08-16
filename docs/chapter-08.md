@@ -345,7 +345,7 @@ static void HandleExtern() {
   if (!Signature || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (Signature)
       LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
 
@@ -357,7 +357,7 @@ static void HandleExtern() {
     LogErrorExpression((string("Conflicting extern declaration for '") +
               Signature->getName() + "'")
                  .c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
 

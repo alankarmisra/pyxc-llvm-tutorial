@@ -926,7 +926,7 @@ static void MainLoop() {
     switch (CurrentToken) {
     case tok_indent:
       LogErrorExpression("Unexpected indentation");
-      SynchronizeToLineBoundary();
+      DiscardRestOfLine();
       break;
     // Stray dedent at top level (can occur in REPL mode): skip it.
     case tok_dedent:
@@ -942,10 +942,12 @@ static void MainLoop() {
 }
 ```
 
-`SynchronizeToLineBoundary` and `HandleFunctionDefinition` both need to know about these new tokens too. `SynchronizeToLineBoundary` used to stop only at `tok_eol` or `tok_eof`; now it also stops at `tok_dedent` and `tok_block_end`, since those tokens mark the true end of a malformed block, not just a line:
+`DiscardRestOfLine` and `HandleFunctionDefinition` both need to know about these new tokens too. `DiscardRestOfLine` used to stop only at `tok_eol` or `tok_eof`; now it also stops at `tok_dedent` and `tok_block_end`, since those tokens mark the true end of a malformed block, not just a line:
 
 ```cpp
-static void SynchronizeToLineBoundary() {
+static void DiscardRestOfLine() {
+  // I stop before consuming tok_eol, tok_eof, tok_dedent, or
+  // tok_block_end so MainLoop() can handle it.
   while (CurrentToken != tok_eol && CurrentToken != tok_eof &&
          CurrentToken != tok_dedent && CurrentToken != tok_block_end)
     getNextToken();
@@ -962,7 +964,7 @@ static void HandleFunctionDefinition() {
   if (!FunctionDefinition || HasTrailing) {
     if (FunctionDefinition)
       LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   // ...

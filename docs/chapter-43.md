@@ -363,7 +363,7 @@ module app.
 *  while (true) {
 *    ...
 *    if (CurrentToken == tok_error) {
-*      SynchronizeToLineBoundary();
+*      DiscardRestOfLine();
 *      continue;
 *    }
 *
@@ -390,7 +390,7 @@ This one line is what lets `ParseModuleDeclaration` detect that `module` showed 
 static void HandleModuleDeclaration() {
   if (IsRepl) {
     LogErrorExpression("'module' is only supported in file mode");
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   bool Parsed = ParseModuleDeclaration();
@@ -400,7 +400,7 @@ static void HandleModuleDeclaration() {
     if (Parsed)
       LogErrorExpression(
           ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
   }
 }
 ```
@@ -411,7 +411,7 @@ static void HandleModuleDeclaration() {
 static void HandleExportDeclaration() {
   if (IsRepl) {
     LogErrorExpression("'export' is only supported in file mode");
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   getNextToken(); // eat 'export'
@@ -440,7 +440,7 @@ static void HandleExportDeclaration() {
   default:
     LogErrorExpression(
         "'export' must be followed by a top-level declaration");
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
 }
