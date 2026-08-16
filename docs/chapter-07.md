@@ -148,9 +148,8 @@ A function signature and a function definition are not expressions, so they do n
 *  unique_ptr<ExpressionNode> Body;
 *
 *public:
--  FunctionDefinitionNode(unique_ptr<FunctionSignatureNode> Signature, unique_ptr<ExpressionNode> Body)
-+  FunctionDefinitionNode(unique_ptr<FunctionSignatureNode> Signature,
-+                         unique_ptr<ExpressionNode> Body)
+*  FunctionDefinitionNode(unique_ptr<FunctionSignatureNode> Signature,
+*                         unique_ptr<ExpressionNode> Body)
 *      : Signature(std::move(Signature)), Body(std::move(Body)) {}
 +  Function *codegen();
 *};
@@ -449,9 +448,8 @@ A function definition contains a signature and a body:
 *  unique_ptr<ExpressionNode> Body;
 *
 *public:
--  FunctionDefinitionNode(unique_ptr<FunctionSignatureNode> Signature, unique_ptr<ExpressionNode> Body)
-+  FunctionDefinitionNode(unique_ptr<FunctionSignatureNode> Signature,
-+                         unique_ptr<ExpressionNode> Body)
+*  FunctionDefinitionNode(unique_ptr<FunctionSignatureNode> Signature,
+*                         unique_ptr<ExpressionNode> Body)
 *      : Signature(std::move(Signature)), Body(std::move(Body)) {}
 +  Function *codegen();
 *};
@@ -527,46 +525,66 @@ I call `verifyFunction` to ask LLVM to check the structure of the function. If b
 
 After code generation succeeds, I print the IR for the current input:
 
-```cpp
-static void HandleFunctionDefinition() {
-  auto FunctionDefinition = ParseFunctionDefinition();
-  if (!FunctionDefinition ||
-      (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
-    if (FunctionDefinition)
-      LogErrorExpression(
-          ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    DiscardRestOfLine();
-    return;
-  }
-  if (auto *FunctionIR = FunctionDefinition->codegen()) {
-    fprintf(stderr, "Parsed a function definition.\n");
-    FunctionIR->print(errs());
-    fprintf(stderr, "\n");
-  }
-}
+```cppdiff
+*static void HandleFunctionDefinition() {
+-  if (ParseFunctionDefinition()) {
+-    if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
+-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+-      DiscardRestOfLine();
+-      return;
+-    }
+-    fprintf(stderr, "Parsed a function definition.\n");
+-  } else {
+-    DiscardRestOfLine();
+-  }
++  auto FunctionDefinition = ParseFunctionDefinition();
++  if (!FunctionDefinition ||
++      (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
++    if (FunctionDefinition)
++      LogErrorExpression(
++          ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
++    DiscardRestOfLine();
++    return;
++  }
++  if (auto *FunctionIR = FunctionDefinition->codegen()) {
++    fprintf(stderr, "Parsed a function definition.\n");
++    FunctionIR->print(errs());
++    fprintf(stderr, "\n");
++  }
+*}
 ```
 
-```cpp
-static void HandleTopLevelExpression() {
-  auto FunctionDefinition = ParseTopLevelExpression();
-  if (!FunctionDefinition ||
-      (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
-    if (FunctionDefinition)
-      LogErrorExpression(
-          ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    DiscardRestOfLine();
-    return;
-  }
-  if (auto *FunctionIR = FunctionDefinition->codegen()) {
-    fprintf(stderr, "Parsed a top-level expression.\n");
-    FunctionIR->print(errs());
-    fprintf(stderr, "\n");
-
-    // Erase after printing — anonymous expressions don't belong in the final
-    // module dump.
-    FunctionIR->eraseFromParent();
-  }
-}
+```cppdiff
+*static void HandleTopLevelExpression() {
+-  if (ParseTopLevelExpression()) {
+-    if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
+-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+-      DiscardRestOfLine();
+-      return;
+-    }
+-    fprintf(stderr, "Parsed a top-level expression.\n");
+-  } else {
+-    DiscardRestOfLine();
+-  }
++  auto FunctionDefinition = ParseTopLevelExpression();
++  if (!FunctionDefinition ||
++      (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
++    if (FunctionDefinition)
++      LogErrorExpression(
++          ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
++    DiscardRestOfLine();
++    return;
++  }
++  if (auto *FunctionIR = FunctionDefinition->codegen()) {
++    fprintf(stderr, "Parsed a top-level expression.\n");
++    FunctionIR->print(errs());
++    fprintf(stderr, "\n");
++
++    // Erase after printing — anonymous expressions don't belong in the final
++    // module dump.
++    FunctionIR->eraseFromParent();
++  }
+*}
 ```
 
 `errs()` is LLVM's wrapper around `stderr`. I pass it to `FunctionIR->print` to print the function in LLVM's text format. The extra `fprintf(stderr, "\n")` afterward is just spacing, so the next `ready>` prompt doesn't run up against the last line of IR.

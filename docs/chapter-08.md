@@ -178,55 +178,65 @@ I extend `InitializeModuleAndManagers()` from [Chapter 7](chapter-07.md). I call
 
 ### Creating a Fresh Module
 
-I create a new context, module, and builder. I also copy the JIT's target data layout into the module:
+I create a new context, module, and builder. I also copy the JIT's target data layout into the module. `InitializeModuleAndManagers()` already existed in [Chapter 7](chapter-07.md) with the first, third, and fourth of these lines; I add the `setDataLayout()` call:
 
-```cpp
-TheContext = std::make_unique<LLVMContext>();
-TheModule = std::make_unique<Module>("PyxcJIT", *TheContext);
-TheModule->setDataLayout(TheJIT->getDataLayout());
-TheBuilder = std::make_unique<IRBuilder<>>(*TheContext);
+```cppdiff
+*static void InitializeModuleAndManagers() {
+*  TheContext = std::make_unique<LLVMContext>();
+*  TheModule = std::make_unique<Module>("PyxcJIT", *TheContext);
++  TheModule->setDataLayout(TheJIT->getDataLayout());
+*  TheBuilder = std::make_unique<IRBuilder<>>(*TheContext);
+*  ...
 ```
 
 LLVM requires the module's data layout to match the JIT target. It describes details such as pointer widths and type alignment.
 
 ### Creating the Analysis Managers
 
-LLVM's pass framework requires analysis managers for loops, functions, call graphs, and modules. I create and register all four, even though my current pipeline only runs function passes:
+LLVM's pass framework requires analysis managers for loops, functions, call graphs, and modules. I add file-scope globals for all four, plus the function pass manager itself, alongside `TheContext`, `TheModule`, and `TheBuilder`:
 
 ```cpp
+static unique_ptr<FunctionPassManager> TheFPM;
 static unique_ptr<LoopAnalysisManager> TheLAM;
 static unique_ptr<FunctionAnalysisManager> TheFAM;
 static unique_ptr<CGSCCAnalysisManager> TheCGAM;
 static unique_ptr<ModuleAnalysisManager> TheMAM;
+```
 
-TheLAM = make_unique<LoopAnalysisManager>();
-TheFAM = make_unique<FunctionAnalysisManager>();
-TheCGAM = make_unique<CGSCCAnalysisManager>();
-TheMAM = make_unique<ModuleAnalysisManager>();
+Back in `InitializeModuleAndManagers()`, right after building `TheBuilder`, I create and register all four, even though my current pipeline only runs function passes:
 
-PassBuilder PB;
-PB.registerModuleAnalyses(*TheMAM);
-PB.registerCGSCCAnalyses(*TheCGAM);
-PB.registerFunctionAnalyses(*TheFAM);
-PB.registerLoopAnalyses(*TheLAM);
-// I let a pass request analysis results managed at another level.
-PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
+```cppdiff
+*  ...
+*  TheBuilder = std::make_unique<IRBuilder<>>(*TheContext);
+*
++  TheFPM = std::make_unique<FunctionPassManager>();
++  TheLAM = std::make_unique<LoopAnalysisManager>();
++  TheFAM = std::make_unique<FunctionAnalysisManager>();
++  TheCGAM = std::make_unique<CGSCCAnalysisManager>();
++  TheMAM = std::make_unique<ModuleAnalysisManager>();
++
++  PassBuilder PB;
++  PB.registerModuleAnalyses(*TheMAM);
++  PB.registerCGSCCAnalyses(*TheCGAM);
++  PB.registerFunctionAnalyses(*TheFAM);
++  PB.registerLoopAnalyses(*TheLAM);
++  // I let a pass request analysis results managed at another level.
++  PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
+*  ...
 ```
 
 ### Building the Function Pipeline
 
-I add the optimization passes to `TheFPM` when optimization is enabled:
+I add the optimization passes to `TheFPM` when optimization is enabled, closing out `InitializeModuleAndManagers()`:
 
-```cpp
-static unique_ptr<FunctionPassManager> TheFPM;
-
-TheFPM = make_unique<FunctionPassManager>();
-
-if (OptLevel != 0) {
-  TheFPM->addPass(InstCombinePass());
-  TheFPM->addPass(ReassociatePass());
-  TheFPM->addPass(GVNPass());
-}
+```cppdiff
+*  ...
++  if (OptLevel != 0) {
++    TheFPM->addPass(InstCombinePass());
++    TheFPM->addPass(ReassociatePass());
++    TheFPM->addPass(GVNPass());
++  }
+*}
 ```
 
 I define `OptLevel` from the `-O` command-line option later in this chapter. At `-O0`, I leave the pipeline empty.
@@ -404,14 +414,28 @@ I could group named functions into larger modules while keeping anonymous expres
 
 I still reject a second definition of the same function. Supporting redefinition in the REPL would require me to replace the previously compiled symbol safely, which I leave for later.
 
-Because the JIT takes ownership of each module and its context, I create replacements immediately after every transfer:
+Because the JIT takes ownership of each module and its context, I create replacements immediately after every transfer, at the end of `HandleFunctionDefinition()`:
 
 ```cpp
-// Hand the module to the JIT.
-ExitOnErr(TheJIT->addModule(ThreadSafeModule(move(TheModule), move(TheContext))));
-
-// Start fresh for the next input.
-InitializeModuleAndManagers();
+static void HandleFunctionDefinition() {
+  auto FunctionDefinition = ParseFunctionDefinition();
+  if (!FunctionDefinition ||
+      (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
+    if (FunctionDefinition)
+      LogErrorExpression(
+          ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+    DiscardRestOfLine();
+    return;
+  }
+  if (auto *FunctionIR = FunctionDefinition->codegen()) {
+    Log("Parsed a function definition.\n");
+    FunctionIR->print(errs());
+    // Transfer the module to the JIT. TheModule is now invalid; reinitialise.
+    ExitOnErr(TheJIT->addModule(
+        ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
+    InitializeModuleAndManagers();
+  }
+}
 ```
 
 ORC requires me to transfer the `Module` together with its `LLVMContext`, so I package them in a `ThreadSafeModule`.
