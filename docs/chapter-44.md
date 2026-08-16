@@ -88,7 +88,7 @@ static vector<string> ImportedModules;
 static void HandleImportDeclaration() {
   if (IsRepl) {
     LogErrorExpression("'import' is only supported in file mode");
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   bool Parsed = ParseImportDeclaration();
@@ -98,7 +98,7 @@ static void HandleImportDeclaration() {
     if (Parsed)
       LogErrorExpression(
           ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
   }
 }
 ```

@@ -348,7 +348,7 @@ static void HandleAggregateDefinition(const char *KindName) {
     if (Parsed)
       LogErrorExpression(
           ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   Log((string("Parsed a ") + KindName + " definition.\n").c_str());

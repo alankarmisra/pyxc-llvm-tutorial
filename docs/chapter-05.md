@@ -234,41 +234,41 @@ I use `LexerLocation` to record how far I have read. I update it every time I re
 
 I already use `advance()` to normalize line endings. I now update `LexerLocation` there too, and feed every character to `PyxcSourceManager.onChar()` from the previous section, so it can buffer the line I'm currently on:
 
-```cpp
-static int advance() {
-  int LastChar = getchar();
-
-  // case: '\r' or '\r\n'
-  if (LastChar == '\r') {
-    int NextChar = getchar();
-
-    // A following '\n' is part of the same line ending; eat it.
-    // Anything else belongs to the next token; put it back.
-    // (EOF can't be put back at all, so it's excluded from that check.
-    // The next getchar() will still return EOF, so we don't lose it.)
-    if (NextChar != '\n' && NextChar != EOF) {
-      ungetc(NextChar, stdin);
-    }
-    PyxcSourceManager.onChar('\n');
-    LexerLocation.Line++;
-    LexerLocation.Column = 0;
-    return '\n';
-  }
-
-  // '\n' resets Column and starts a new buffered line; anything else
-  // just advances Column within the current line.
-  if (LastChar == '\n') {
-    PyxcSourceManager.onChar('\n');
-    LexerLocation.Line++;
-    LexerLocation.Column = 0;
-  } else {
-    PyxcSourceManager.onChar(LastChar);
-    LexerLocation.Column++;
-  }
-
-  // case '\n' or any other non-newline character
-  return LastChar;
-}
+```cppdiff
+*static int advance() {
+*  int LastChar = getchar();
+*
+*  // case: '\r' or '\r\n'
+*  if (LastChar == '\r') {
+*    int NextChar = getchar();
+*
+*    // A following '\n' is part of the same line ending; eat it.
+*    // Anything else belongs to the next token; put it back.
+*    // (EOF can't be put back at all, so it's excluded from that check.
+*    // The next getchar() will still return EOF, so we don't lose it.)
+*    if (NextChar != '\n' && NextChar != EOF) {
+*      ungetc(NextChar, stdin);
+*    }
++    PyxcSourceManager.onChar('\n');
++    LexerLocation.Line++;
++    LexerLocation.Column = 0;
+*    return '\n';
+*  }
+*
++  // '\n' resets Column and starts a new buffered line; anything else
++  // just advances Column within the current line.
++  if (LastChar == '\n') {
++    PyxcSourceManager.onChar('\n');
++    LexerLocation.Line++;
++    LexerLocation.Column = 0;
++  } else {
++    PyxcSourceManager.onChar(LastChar);
++    LexerLocation.Column++;
++  }
++
+*  // case '\n' or any other non-newline character
+*  return LastChar;
+*}
 ```
 
 When I read a newline, I increment `Line` and reset `Column` to `0`. For any other character, I increment only `Column`.
@@ -321,16 +321,16 @@ I need to copy the location again after a comment. At the start of `getToken()`,
 Once I have the line text and column, I can print the caret:
 
 ```cpp
-static void PrintErrorSourceContext(SourceLocation Loc) {
-  const string *LineText = PyxcSourceManager.getLine(Loc.Line);
-  // LineText is null only if Loc points past everything buffered so
-  // far (e.g. an uninitialized Loc.Line == 0). Skip printing rather
+static void PrintErrorSourceContext(SourceLocation Location) {
+  const string *LineText = PyxcSourceManager.getLine(Location.Line);
+  // LineText is null only if Location points past everything buffered so
+  // far (e.g. an uninitialized Location.Line == 0). Skip printing rather
   // than dereference it below.
   if (!LineText)
     return;
 
   fprintf(stderr, "%s\n", LineText->c_str());
-  int spaces = Loc.Column - 1;
+  int spaces = Location.Column - 1;
   // I guard against an invalid column before printing the spaces.
   if (spaces < 0)
     spaces = 0;
@@ -346,30 +346,31 @@ I print the line, then `Column - 1` spaces, then `^~~~`. I subtract one because 
 
 For most errors, `CurrentTokenLocation` already points where I need it. A missing `:` is different. I do not know it is missing until I ask for the next token and receive `tok_eol`.
 
-Before I return `tok_eol`, I have already consumed the `\n` and incremented `LexerLocation.Line`. That leaves `CurrentTokenLocation.Line` on the next line. I correct this in `GetCaretAnchorLoc()`:
+Before I return `tok_eol`, I have already consumed the `\n` and incremented `LexerLocation.Line`. That leaves `CurrentTokenLocation.Line` on the next line. I correct this in `GetCaretAnchorLocation()`:
 
 ```cpp
-static SourceLocation GetCaretAnchorLoc(SourceLocation Loc, int Tok) {
-  if (Tok != tok_eol)
-    return Loc;
+static SourceLocation GetCaretAnchorLocation(SourceLocation Location, int Token) {
+  if (Token != tok_eol || Location.Line <= 1)
+    return Location;
 
-  int PrevLine = Loc.Line - 1;
-  if (PrevLine <= 0)
-    return Loc;
-
+  // Token == tok_eol && Location.Line > 1. I need to return a location just
+  // past the end of the previous line.
+  int PrevLine = Location.Line - 1;
   const string *PrevLineText = PyxcSourceManager.getLine(PrevLine);
   // PrevLineText is null only if PrevLine hasn't been buffered yet —
   // it shouldn't happen, since I only get here after consuming that
-  // line's trailing newline, but I fall back to the original Loc
+  // line's trailing newline, but I fall back to the original Location
   // rather than trust an out-of-range read.
   if (!PrevLineText)
-    return Loc;
+    return Location;
 
   return {PrevLine, static_cast<int>(PrevLineText->size()) + 1};
 }
 ```
 
-For any token other than `tok_eol`, I return `Loc` unchanged. For `tok_eol`, I step back one line and report the column just after that line's last character. 
+For any token other than `tok_eol`, or if there is no previous line, I return
+`Location` unchanged. Otherwise, I step back one line and report the column
+just after that line's last character.
 
 <!-- code-merge:start -->
 ```pyxc
@@ -387,8 +388,9 @@ def missing_colon(x)
 After I report a lexer error, I return `tok_error`. I do not want to parse it as a number, name, or operator because that would print a second, unrelated error. I call this **panic-mode recovery**: once I can no longer trust the current parse, I stop interpreting the line. I skip tokens until I reach `tok_eol` or `tok_eof`. I discard the rest of the line, but I return to a state where I know how to continue.
 
 ```cpp
-static void SynchronizeToLineBoundary() {
-  // I leave the boundary token for MainLoop() to handle.
+static void DiscardRestOfLine() {
+  // I stop at tok_eol or tok_eof without consuming it, so MainLoop()
+  // can handle it.
   while (CurrentToken != tok_eol && CurrentToken != tok_eof)
     getNextToken();
 }
@@ -400,7 +402,7 @@ I already report every parse error through `LogErrorExpression()`. I now use the
 
 ```cpp
 unique_ptr<ExpressionNode> LogErrorExpression(const char *Str) {
-  SourceLocation Anchor = GetCaretAnchorLoc(CurrentTokenLocation, CurrentToken);
+  SourceLocation Anchor = GetCaretAnchorLocation(CurrentTokenLocation, CurrentToken);
   fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Column,
           Str);
   PrintErrorSourceContext(Anchor);
@@ -408,7 +410,7 @@ unique_ptr<ExpressionNode> LogErrorExpression(const char *Str) {
 }
 ```
 
-I also drop the `\nready> ` this function used to print right after the message. In Chapters 2 and 4, `LogErrorExpression()` printed the next prompt itself, and if the error happened to land just before a bare newline, `MainLoop()`'s own newline handling printed a second one, so I'd see `ready> ready> `. Now every error path calls `SynchronizeToLineBoundary()` before returning, so `MainLoop()` always sees the boundary token itself and prints the prompt exactly once.
+I also drop the `\nready> ` this function used to print right after the message. In Chapters 2 and 4, `LogErrorExpression()` printed the next prompt itself, and if the error happened to land just before a bare newline, `MainLoop()`'s own newline handling printed a second one, so I'd see `ready> ready> `. Now every error path calls `DiscardRestOfLine()` before returning, so `MainLoop()` sees `tok_eol` or `tok_eof` itself and prints the prompt exactly once.
 
 I keep `LogErrorSignature()` and `LogErrorFunction()` as small wrappers around `LogErrorExpression()`. By doing this, I give every parse error the same location and caret output.
 
@@ -524,7 +526,7 @@ Error (Line 1, Column 3): Unexpected '@'
 
 ## Printing the Prompt Exactly Once
 
-I handle `tok_error` directly in `MainLoop()`'s switch before it can fall through to a parsing function, and call `SynchronizeToLineBoundary()`:
+I handle `tok_error` directly in `MainLoop()`'s switch before it can fall through to a parsing function, and call `DiscardRestOfLine()`:
 
 ```cppdiff
 *static void MainLoop() {
@@ -538,7 +540,7 @@ I handle `tok_error` directly in `MainLoop()`'s switch before it can fall throug
 *    case tok_error:
 -      LogErrorExpression("invalid character");
 -      getNextToken();
-+      SynchronizeToLineBoundary();
++      DiscardRestOfLine();
 *      break;
 *    case tok_def:
 *      HandleFunctionDefinition();
@@ -558,19 +560,19 @@ static void HandleTopLevelExpression() {
   if (ParseTopLevelExpression()) {
     if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
       LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-      SynchronizeToLineBoundary();
+      DiscardRestOfLine();
       return;
     }
     fprintf(stderr, "Parsed a top-level expression.\n");
   } else {
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
   }
 }
 ```
 
 For example, when I parse `3 = 10`, I can accept `3` as a complete top-level expression and leave `= 10` unread. In Chapter 3, I printed `Parsed a top-level expression.` and ignored the rest. Now I check for unread tokens, report the unexpected `=`, and discard the rest of the line.
 
-I make `HandleFunctionDefinition()` perform the same check for function definitions. After any failure, including extra trailing tokens, I call `SynchronizeToLineBoundary()` before I print the next prompt.
+I make `HandleFunctionDefinition()` perform the same check for function definitions. After any failure, including extra trailing tokens, I call `DiscardRestOfLine()` before I print the next prompt.
 
 ## Build and Run
 

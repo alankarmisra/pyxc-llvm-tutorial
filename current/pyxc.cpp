@@ -491,7 +491,7 @@ public:
 };
 
 static SourceManager PyxcSourceManager;
-static void PrintErrorSourceContext(SourceLocation Loc);
+static void PrintErrorSourceContext(SourceLocation Location);
 
 /// advance - I return the next character, normalizing `\r\n` (Windows)
 /// and bare `\r` (Old Macs) into `\n`.
@@ -1207,15 +1207,15 @@ static string FormatTokenForMessage(int Tok) {
 }
 
 /// PrintErrorSourceContext - Reprint the source line at Loc and place a
-/// '^~~~' caret under column Loc.Column. Column is 1-based, so we print Column-1
+/// '^~~~' caret under column Location.Column. Column is 1-based, so we print Column-1
 /// spaces before the caret.
-static void PrintErrorSourceContext(SourceLocation Loc) {
-  const string *LineText = PyxcSourceManager.getLine(Loc.Line);
+static void PrintErrorSourceContext(SourceLocation Location) {
+  const string *LineText = PyxcSourceManager.getLine(Location.Line);
   if (!LineText)
     return;
 
   fprintf(stderr, "%s\n", LineText->c_str());
-  int spaces = max(0, Loc.Column - 1);
+  int spaces = max(0, Location.Column - 1);
   fprintf(stderr, "%*s", spaces, " ");
   fprintf(stderr, "^~~~\n");
 }
@@ -8077,13 +8077,16 @@ static void RunModuleOptimizations(Module *M) {
   TheMPM->run(*M, *TheMAM);
 }
 
-/// SynchronizeToLineBoundary - Panic-mode error recovery.
+/// DiscardRestOfLine - Panic-mode error recovery.
 ///
-/// Advance past all remaining tokens on the current line so that MainLoop
-/// sees tok_eol or tok_eof next. Called after any parse or codegen failure
+/// Advance past all remaining tokens on the current line, stopping before
+/// tok_eol, tok_eof, or tok_dedent so MainLoop can handle it. Called after
+/// any parse or codegen failure
 /// and after any unexpected trailing token, ensuring the REPL always returns
 /// to a clean state before printing the next prompt.
-static void SynchronizeToLineBoundary() {
+static void DiscardRestOfLine() {
+  // I stop before consuming tok_eol, tok_eof, or tok_dedent so MainLoop()
+  // can handle it.
   while (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_dedent)
     getNextToken();
 }
@@ -8104,7 +8107,7 @@ static void HandleFunctionDefinition() {
   if (!FnAST || HasTrailing) {
     if (FnAST)
       LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   if (auto *FnIR = FnAST->codegen()) {
@@ -8135,7 +8138,7 @@ static void HandleExtern() {
   if (!ProtoAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (ProtoAST)
       LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
 
@@ -8147,7 +8150,7 @@ static void HandleExtern() {
     LogErrorExpression((string("Conflicting extern declaration for '") +
               ProtoAST->getName() + "'")
                  .c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
 
@@ -8164,13 +8167,13 @@ static void HandleStructDef() {
   SeenNonModuleTopLevel = true;
   bool Ok = ParseAggregateDefinition("struct");
   if (!Ok) {
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
   if (HasTrailing) {
     LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
 }
@@ -8179,13 +8182,13 @@ static void HandleClassDef() {
   SeenNonModuleTopLevel = true;
   bool Ok = ParseAggregateDefinition("class");
   if (!Ok) {
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
   if (HasTrailing) {
     LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
 }
@@ -8194,13 +8197,13 @@ static void HandleTypeAliasDef() {
   SeenNonModuleTopLevel = true;
   bool Ok = ParseTypeAliasDefinition();
   if (!Ok) {
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
   if (HasTrailing) {
     LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
 }
@@ -8209,13 +8212,13 @@ static void HandleTraitDef() {
   SeenNonModuleTopLevel = true;
   bool Ok = ParseTraitDefinition();
   if (!Ok) {
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
   if (HasTrailing) {
     LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
 }
@@ -8224,13 +8227,13 @@ static void HandleImplDef() {
   SeenNonModuleTopLevel = true;
   bool Ok = ParseImplDefinition();
   if (!Ok) {
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
   if (HasTrailing) {
     LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
 }
@@ -8260,7 +8263,7 @@ static void HandleTopLevelExpression() {
   if (!FnAST || HasTrailing) {
     if (FnAST)
       LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   string FnName = FnAST->getName();
@@ -8447,7 +8450,7 @@ static void HandleTopLevelStatementFileMode() {
   if (!Stmt || HasTrailing) {
     if (Stmt)
       LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
 
@@ -8457,18 +8460,18 @@ static void HandleTopLevelStatementFileMode() {
 static void HandleModuleDef() {
   if (IsRepl) {
     LogErrorExpression("'module' is only supported in file mode");
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   bool Ok = ParseModuleDefinition();
   if (!Ok) {
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
   if (HasTrailing) {
     LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
 }
@@ -8476,18 +8479,18 @@ static void HandleModuleDef() {
 static void HandleImportDef() {
   if (IsRepl) {
     LogErrorExpression("'import' is only supported in file mode");
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   bool Ok = ParseImportDefinition();
   if (!Ok) {
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
   if (HasTrailing) {
     LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
 }
@@ -8495,7 +8498,7 @@ static void HandleImportDef() {
 static void HandleExportDef() {
   if (IsRepl) {
     LogErrorExpression("'export' is only supported in file mode");
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   // 'export' is a visibility marker in chapter 41's single-file happy path.
@@ -8525,7 +8528,7 @@ static void HandleExportDef() {
     return;
   default:
     LogErrorExpression("'export' must be followed by a top-level declaration");
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
 }
@@ -8572,7 +8575,7 @@ extern "C" DLLEXPORT double printd(double X) {
 ///
 /// CurrentToken is primed before MainLoop() is called (see main()). After each
 /// successful parse the handler prints a confirmation; after a failed parse
-/// the handler calls SynchronizeToLineBoundary() to discard all remaining
+/// the handler calls DiscardRestOfLine() to discard all remaining
 /// tokens on the current line. Either way we return here to look at the
 /// next CurrentToken.
 static void MainLoop() {
@@ -8580,7 +8583,7 @@ static void MainLoop() {
     switch (CurrentToken) {
     case tok_indent:
       LogErrorExpression("Unexpected indentation");
-      SynchronizeToLineBoundary();
+      DiscardRestOfLine();
       break;
     // Stray dedent at top level (can occur in REPL mode): skip it.
     case tok_dedent:
@@ -8588,7 +8591,7 @@ static void MainLoop() {
       getNextToken();
       break;
     case tok_error:
-      SynchronizeToLineBoundary();
+      DiscardRestOfLine();
       break;
     case tok_eol:
       // A bare newline: just print a fresh prompt and read the next token.
@@ -8648,7 +8651,7 @@ static void FileModeLoop() {
 
     if (CurrentToken == tok_indent) {
       LogErrorExpression("Unexpected indentation");
-      SynchronizeToLineBoundary();
+      DiscardRestOfLine();
       continue;
     }
 
@@ -8658,7 +8661,7 @@ static void FileModeLoop() {
     }
 
     if (CurrentToken == tok_error) {
-      SynchronizeToLineBoundary();
+      DiscardRestOfLine();
       continue;
     }
 

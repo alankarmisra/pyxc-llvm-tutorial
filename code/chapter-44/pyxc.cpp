@@ -438,7 +438,7 @@ public:
 };
 
 static SourceManager PyxcSourceManager;
-static void PrintErrorSourceContext(SourceLocation Loc);
+static void PrintErrorSourceContext(SourceLocation Location);
 
 /// advance - I return the next character, normalizing `\r\n` (Windows)
 /// and bare `\r` (Old Macs) into `\n`.
@@ -503,7 +503,7 @@ static int peek() {
 /// before any token branch. For most tokens this points at the first
 /// character of the token. For tok_eol the '\n' was already consumed by
 /// advance() on a previous call, so LexerLocation is already on the next line;
-/// GetCaretAnchorLoc compensates by subtracting one when building error
+/// GetCaretAnchorLocation compensates by subtracting one when building error
 /// locations for tok_eol.
 ///
 /// The comment path ('#' branch) re-snapshots CurrentTokenLocation just before returning
@@ -896,7 +896,7 @@ static int getToken() {
     if (LexerLastChar == '\n') {
       // Re-snapshot CurrentTokenLocation now that the '\n' has been consumed and LexerLocation
       // has advanced to the next line. Without this, CurrentTokenLocation would point at
-      // the '#' column, and GetCaretAnchorLoc would look up the wrong
+      // the '#' column, and GetCaretAnchorLocation would look up the wrong
       // line (because it subtracts 1) when the next token triggers an error.
       CurrentTokenLocation = LexerLocation;
       LexerLastChar = ' ';
@@ -1068,7 +1068,7 @@ static void ResetLexerState() {
 // Diagnostics helpers
 //===----------------------------------------===//
 
-/// GetCaretAnchorLoc - Resolve the source location to attach to an error.
+/// GetCaretAnchorLocation - Resolve the source location to attach to an error.
 ///
 /// For most tokens, CurrentTokenLocation already points at the right place and is returned
 /// unchanged. The special case is tok_eol: CurrentTokenLocation for a newline token is
@@ -1077,21 +1077,22 @@ static void ResetLexerState() {
 /// gives the line that just ended, and we report a column one past its last
 /// character — pointing just after the final token on the line, which is
 /// where the missing token (e.g. ':') should have appeared.
-static SourceLocation GetCaretAnchorLoc(SourceLocation Loc, int Tok) {
-  if (Tok != tok_eol || Loc.Line <= 1)
-    return Loc;
+static SourceLocation GetCaretAnchorLocation(SourceLocation Location, int Token) {
+  if (Token != tok_eol || Location.Line <= 1)
+    return Location;
 
-  // Tok == tok_eol && Loc.Line > 1
-  int PrevLine = Loc.Line - 1;
+  // Token == tok_eol && Location.Line > 1. I need to return a location just
+  // past the end of the previous line.
+  int PrevLine = Location.Line - 1;
   const string *PrevLineText = PyxcSourceManager.getLine(PrevLine);
 
   // guard
   // PrevLineText is null only if PrevLine hasn't been buffered yet —
   // it shouldn't happen, since I only get here after consuming that
-  // line's trailing newline, but I fall back to the original Loc
+  // line's trailing newline, but I fall back to the original Location
   // rather than trust an out-of-range read.
   if (!PrevLineText)
-    return Loc;
+    return Location;
 
   // return a pointer just past the end of the previous line.
   return {PrevLine, static_cast<int>(PrevLineText->size()) + 1};
@@ -1115,18 +1116,18 @@ static string FormatTokenForMessage(int Tok) {
 }
 
 /// PrintErrorSourceContext - Reprint the source line at Loc and place a
-/// '^~~~' caret under column Loc.Column. Column is 1-based, so we print Column-1
+/// '^~~~' caret under column Location.Column. Column is 1-based, so we print Column-1
 /// spaces before the caret.
-static void PrintErrorSourceContext(SourceLocation Loc) {
-  const string *LineText = PyxcSourceManager.getLine(Loc.Line);
-  // LineText is null only if Loc points past everything buffered so
-  // far (e.g. an uninitialized Loc.Line == 0). Skip printing rather
+static void PrintErrorSourceContext(SourceLocation Location) {
+  const string *LineText = PyxcSourceManager.getLine(Location.Line);
+  // LineText is null only if Location points past everything buffered so
+  // far (e.g. an uninitialized Location.Line == 0). Skip printing rather
   // than dereference it below.
   if (!LineText)
     return;
 
   fprintf(stderr, "%s\n", LineText->c_str());
-  int spaces = max(0, Loc.Column - 1);
+  int spaces = max(0, Location.Column - 1);
   fprintf(stderr, "%*s", spaces, " ");
   fprintf(stderr, "^~~~\n");
 }
@@ -1946,7 +1947,7 @@ void Log(const string &message) {
 /// type so parse functions can write: return LogErrorExpression("message");
 unique_ptr<ExpressionNode> LogErrorExpression(const char *ErrorMessage) {
   HadError = true;
-  SourceLocation Anchor = GetCaretAnchorLoc(CurrentTokenLocation, CurrentToken);
+  SourceLocation Anchor = GetCaretAnchorLocation(CurrentTokenLocation, CurrentToken);
   LogErrorAtLoc(ErrorMessage, Anchor);
   return nullptr;
 }
@@ -6935,13 +6936,16 @@ static void RunModuleOptimizations(Module *Module) {
     TheMPM->run(*Module, *TheMAM);
 }
 
-/// SynchronizeToLineBoundary - Panic-mode error recovery.
+/// DiscardRestOfLine - Panic-mode error recovery.
 ///
-/// Advance past all remaining tokens on the current line so that MainLoop
-/// sees tok_eol or tok_eof next. Called after any parse or codegen failure
+/// Advance past all remaining tokens on the current line, stopping before
+/// tok_eol, tok_eof, or tok_dedent so MainLoop can handle it. Called after
+/// any parse or codegen failure
 /// and after any unexpected trailing token, ensuring the REPL always returns
 /// to a clean state before printing the next prompt.
-static void SynchronizeToLineBoundary() {
+static void DiscardRestOfLine() {
+  // I stop before consuming tok_eol, tok_eof, or tok_dedent so MainLoop()
+  // can handle it.
   while (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_dedent)
     getNextToken();
 }
@@ -6954,7 +6958,7 @@ static void HandleAggregateDefinition(const char *KindName) {
     if (Parsed)
       LogErrorExpression(
           ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   Log((string("Parsed a ") + KindName + " definition.\n").c_str());
@@ -6968,7 +6972,7 @@ static void HandleTraitDefinition() {
     if (Parsed)
       LogErrorExpression(
           ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   Log("Parsed a trait definition.\n");
@@ -6982,7 +6986,7 @@ static void HandleImplementationDefinition() {
     if (Parsed)
       LogErrorExpression(
           ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   Log("Parsed an implementation definition.\n");
@@ -6995,7 +6999,7 @@ static void HandleTypeAliasDefinition() {
     if (Parsed)
       LogErrorExpression(
           ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   Log("Parsed a type alias.\n");
@@ -7016,7 +7020,7 @@ static void HandleFunctionDefinition() {
   if (!FnAST || HasTrailing) {
     if (FnAST)
       LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   if (auto *FnIR = FnAST->codegen()) {
@@ -7046,7 +7050,7 @@ static void HandleExtern() {
   if (!ProtoAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (ProtoAST)
       LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
 
@@ -7059,7 +7063,7 @@ static void HandleExtern() {
     LogErrorExpression((string("Conflicting extern declaration for '") +
               ProtoAST->getName() + "'")
                  .c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
 
@@ -7096,7 +7100,7 @@ static void HandleTopLevelStatement() {
   if (!FnAST || HasTrailing) {
     if (FnAST)
       LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   string FunctionName = FnAST->getName();
@@ -7338,7 +7342,7 @@ static void HandleTopLevelStatementFileMode() {
   if (!Stmt || HasTrailing) {
     if (Stmt)
       LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
 
@@ -7348,7 +7352,7 @@ static void HandleTopLevelStatementFileMode() {
 static void HandleModuleDeclaration() {
   if (IsRepl) {
     LogErrorExpression("'module' is only supported in file mode");
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   bool Parsed = ParseModuleDeclaration();
@@ -7358,14 +7362,14 @@ static void HandleModuleDeclaration() {
     if (Parsed)
       LogErrorExpression(
           ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
   }
 }
 
 static void HandleImportDeclaration() {
   if (IsRepl) {
     LogErrorExpression("'import' is only supported in file mode");
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   bool Parsed = ParseImportDeclaration();
@@ -7375,14 +7379,14 @@ static void HandleImportDeclaration() {
     if (Parsed)
       LogErrorExpression(
           ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
   }
 }
 
 static void HandleExportDeclaration() {
   if (IsRepl) {
     LogErrorExpression("'export' is only supported in file mode");
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
   getNextToken(); // eat 'export'
@@ -7411,7 +7415,7 @@ static void HandleExportDeclaration() {
   default:
     LogErrorExpression(
         "'export' must be followed by a top-level declaration");
-    SynchronizeToLineBoundary();
+    DiscardRestOfLine();
     return;
   }
 }
@@ -7459,7 +7463,7 @@ extern "C" DLLEXPORT double printd(double X) {
 ///
 /// CurrentToken is primed before MainLoop() is called (see main()). After each
 /// successful parse the handler prints a confirmation; after a failed parse
-/// the handler calls SynchronizeToLineBoundary() to discard all remaining
+/// the handler calls DiscardRestOfLine() to discard all remaining
 /// tokens on the current line. Either way we return here to look at the
 /// next CurrentToken.
 static void MainLoop() {
@@ -7467,7 +7471,7 @@ static void MainLoop() {
     switch (CurrentToken) {
     case tok_indent:
       LogErrorExpression("Unexpected indentation");
-      SynchronizeToLineBoundary();
+      DiscardRestOfLine();
       break;
     // Stray dedent at top level (can occur in REPL mode): skip it.
     case tok_dedent:
@@ -7475,7 +7479,7 @@ static void MainLoop() {
       getNextToken();
       break;
     case tok_error:
-      SynchronizeToLineBoundary();
+      DiscardRestOfLine();
       break;
     case tok_eol:
       // A bare newline: just print a fresh prompt and read the next token.
@@ -7535,7 +7539,7 @@ static void FileModeLoop() {
 
     if (CurrentToken == tok_indent) {
       LogErrorExpression("Unexpected indentation");
-      SynchronizeToLineBoundary();
+      DiscardRestOfLine();
       continue;
     }
 
@@ -7545,7 +7549,7 @@ static void FileModeLoop() {
     }
 
     if (CurrentToken == tok_error) {
-      SynchronizeToLineBoundary();
+      DiscardRestOfLine();
       continue;
     }
 
