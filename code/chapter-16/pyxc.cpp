@@ -219,7 +219,7 @@ static SourceLocation CurrentTokenLocation;
 static SourceLocation LexerLocation = {1, 0};
 static void LogErrorAtLoc(const char *ErrorMessage, SourceLocation Loc);
 static void LogInvalidNumberLiteralAtLocation(const string &Literal,
-                                         SourceLocation Loc);
+                                         SourceLocation Location);
 
 /// SourceManager - Buffers every source line as it is read so that error
 /// messages can reprint the offending line with a caret underneath it.
@@ -621,13 +621,13 @@ static SourceLocation GetCaretAnchorLocation(SourceLocation Location, int Token)
 /// (e.g. "name 'foo'", "number '3.14'") since the name alone is not
 /// enough to diagnose the problem. Everything else uses the static TokenNames
 /// entry.
-static string FormatTokenForMessage(int Tok) {
-  if (Tok == tok_name)
+static string FormatTokenForMessage(int Token) {
+  if (Token == tok_name)
     return "name '" + Name + "'";
-  if (Tok == tok_number)
+  if (Token == tok_number)
     return "number '" + NumberLiteral + "'";
 
-  auto It = TokenNames.find(Tok);
+  auto It = TokenNames.find(Token);
   if (It != TokenNames.end())
     return It->second;
   return "unknown token";
@@ -656,8 +656,8 @@ static void LogErrorAtLoc(const char *ErrorMessage, SourceLocation Loc) {
 }
 
 static void LogInvalidNumberLiteralAtLocation(const string &Literal,
-                                         SourceLocation Loc) {
-  LogErrorAtLoc(("invalid number literal '" + Literal + "'").c_str(), Loc);
+                                              SourceLocation Location) {
+  LogErrorAtLoc(("invalid number literal '" + Literal + "'").c_str(), Location);
 }
 
 //===----------------------------------------===//

@@ -991,13 +991,13 @@ static SourceLocation GetDiagnosticAnchorLoc(SourceLocation Loc, int Tok) {
 /// (e.g. "identifier 'foo'", "number '3.14'") since the name alone is not
 /// enough to diagnose the problem. Everything else uses the static TokenNames
 /// entry.
-static string FormatTokenForMessage(int Tok) {
+static string FormatTokenForMessage(int Token) {
   if (Tok == tok_identifier)
     return "identifier '" + IdentifierStr + "'";
-  if (Tok == tok_number)
+  if (Token == tok_number)
     return "number '" + NumLiteralStr + "'";
 
-  auto It = TokenNames.find(Tok);
+  auto It = TokenNames.find(Token);
   if (It != TokenNames.end())
     return It->second;
   return "unknown token";

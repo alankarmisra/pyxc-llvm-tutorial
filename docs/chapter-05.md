@@ -423,16 +423,19 @@ I use `strtod` to convert a string to a `double`. I pass it an output parameter 
 When part of the input is invalid, I need to report it. I add a small helper for that:
 
 ```cpp
-static void LogInvalidNumberLiteralAtLocation(const string &Literal, SourceLocation Loc) {
+static void LogInvalidNumberLiteralAtLocation(const string &Literal,
+                                              SourceLocation Location) {
   fprintf(stderr, "Error (Line %d, Column %d): invalid number literal '%s'\n",
-          Loc.Line, Loc.Column, Literal.c_str());
-  PrintErrorSourceContext(Loc);
+          Location.Line, Location.Column, Literal.c_str());
+  PrintErrorSourceContext(Location);
 }
 ```
 
 I call it from `getToken()`'s number-reading branch. While I'm there, I also promote `NumberLiteral` from a local variable to a file-scope global (declared alongside `NumberValue`), so I can still read the exact source text after `getToken()` returns, for diagnostics elsewhere in this chapter:
 
 ```cppdiff
+*static int getToken() {
+*  ...
 *  if (isdigit(LastChar) || LastChar == '.') {
 -    string NumberLiteral;
 +    NumberLiteral.clear();
@@ -451,6 +454,8 @@ I call it from `getToken()`'s number-reading branch. While I'm there, I also pro
 +    }
 *    return tok_number;
 *  }
+*  ...
+*}
 ```
 
 If `End` points at the string's null terminator, I know `strtod` consumed every character. If it points anywhere else, part of the input was invalid: for `"1.2.3"`, `strtod` stops at the second `.`, so `End` points at `.3` rather than the terminator. I report the invalid number and return `tok_error` instead of `tok_number`. I do this in `getToken()`, which returns an `int`. I cannot return `nullptr` as I do from a parsing function. Instead, I call the error helper and return `tok_error`.
@@ -460,6 +465,11 @@ If `End` points at the string's null terminator, I know `strtod` consumed every 
 `@` isn't punctuation I recognize. Previously, the lexer's `default` case discarded the character and returned the generic `tok_error`:
 
 ```cppdiff
+*static int getToken() {
+*  ...
+*  int ThisChar = LastChar;
+*  LastChar = advance();
+*  // I return a named token for known punctuation and operators.
 *  switch (ThisChar) {
 *  ...
 -  default:
@@ -467,6 +477,7 @@ If `End` points at the string's null terminator, I know `strtod` consumed every 
 +  default:
 +    return ThisChar;
 *  }
+*}
 ```
 
 I return `ThisChar` instead so I can name the character that caused the error.
@@ -476,13 +487,13 @@ For names and numbers, I want to include the actual text from the source rather 
 With those source spellings available, I define one helper for every diagnostic that needs to name a token:
 
 ```cpp
-static string FormatTokenForMessage(int Tok) {
-  if (Tok == tok_name)
+static string FormatTokenForMessage(int Token) {
+  if (Token == tok_name)
     return "name '" + Name + "'";
-  if (Tok == tok_number)
+  if (Token == tok_number)
     return "number '" + NumberLiteral + "'";
 
-  auto It = TokenNames.find(Tok);
+  auto It = TokenNames.find(Token);
   if (It != TokenNames.end())
     return It->second;
   return "unknown token";
@@ -494,10 +505,15 @@ Names and numbers use their lexer globals so the message includes the original t
 Chapter 4 already made `ParsePrimary()` name an unexpected token through `TokenNames`. I now route that same `default` case through `FormatTokenForMessage()` so it uses the richer formatting for every token kind:
 
 ```cppdiff
+*static unique_ptr<ExpressionNode> ParsePrimary() {
+*  switch (CurrentToken) {
+*  ...
 *  default:
 *    return LogErrorExpression(
 -        ("Unexpected " + TokenNames.at(CurrentToken)).c_str());
 +        ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+*  }
+*}
 ```
 
 A bare `@` at the start of a line now reports:
@@ -557,24 +573,47 @@ I handle `tok_error` directly in `MainLoop()`'s switch before it can fall throug
 
 I use the same recovery when I parse a valid construct but find extra tokens after it. In both `HandleFunctionDefinition()` and `HandleTopLevelExpression()`, I check that parsing stopped at `tok_eol` or `tok_eof`:
 
-```cpp
-static void HandleTopLevelExpression() {
-  if (ParseTopLevelExpression()) {
-    if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-      DiscardRestOfLine();
-      return;
-    }
-    fprintf(stderr, "Parsed a top-level expression.\n");
-  } else {
-    DiscardRestOfLine();
-  }
-}
+```cppdiff
+*static void HandleFunctionDefinition() {
+-  if (ParseFunctionDefinition())
+-    fprintf(stderr, "Parsed a function definition.\n");
+-  else
+-    getNextToken(); // I skip the bad token.
++  if (ParseFunctionDefinition()) {
++    if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
++      LogErrorExpression(
++          ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
++      DiscardRestOfLine();
++      return;
++    }
++    fprintf(stderr, "Parsed a function definition.\n");
++  } else {
++    DiscardRestOfLine();
++  }
+*}
 ```
 
-For example, when I parse `3 = 10`, I can accept `3` as a complete top-level expression and leave `= 10` unread. In Chapter 3, I printed `Parsed a top-level expression.` and ignored the rest. Now I check for unread tokens, report the unexpected `=`, and discard the rest of the line.
+```cppdiff
+*static void HandleTopLevelExpression() {
+-  if (ParseTopLevelExpression())
+-    fprintf(stderr, "Parsed a top-level expression.\n");
+-  else
+-    getNextToken(); // I skip the bad token.
++  if (ParseTopLevelExpression()) {
++    if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
++      LogErrorExpression(
++          ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
++      DiscardRestOfLine();
++      return;
++    }
++    fprintf(stderr, "Parsed a top-level expression.\n");
++  } else {
++    DiscardRestOfLine();
++  }
+*}
+```
 
-I make `HandleFunctionDefinition()` perform the same check for function definitions. After any failure, including extra trailing tokens, I call `DiscardRestOfLine()` before I print the next prompt.
+For example, when I parse `3 = 10`, I can accept `3` as a complete top-level expression and leave `= 10` unread. In Chapter 3, I printed `Parsed a top-level expression.` and ignored the rest. Now I check for unread tokens, report the unexpected `=`, and discard the rest of the line. Both handlers follow the same shape: after any failure, including extra trailing tokens, I call `DiscardRestOfLine()` before I print the next prompt.
 
 ## Build and Run
 
