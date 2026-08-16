@@ -154,7 +154,7 @@ public:
   }
 };
 
-static SourceManager PyxcSourceMgr;
+static SourceManager PyxcSourceManager;
 static void PrintErrorSourceContext(SourceLocation Loc);
 static void LogInvalidNumberLiteralAtLoc(const string &Literal,
                                          SourceLocation Loc);
@@ -179,7 +179,7 @@ static int advance() {
     if (NextChar != '\n' && NextChar != EOF) {
       ungetc(NextChar, stdin);
     }
-    PyxcSourceMgr.onChar('\n');
+    PyxcSourceManager.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
     return '\n';
@@ -188,11 +188,11 @@ static int advance() {
   // '\n' resets Col and starts a new buffered line; anything else
   // just advances Col within the current line.
   if (LastChar == '\n') {
-    PyxcSourceMgr.onChar('\n');
+    PyxcSourceManager.onChar('\n');
     LexLoc.Line++;
     LexLoc.Col = 0;
   } else {
-    PyxcSourceMgr.onChar(LastChar);
+    PyxcSourceManager.onChar(LastChar);
     LexLoc.Col++;
   }
 
@@ -332,7 +332,7 @@ static SourceLocation GetCaretAnchorLoc(SourceLocation Loc, int Tok) {
   if (PrevLine <= 0)
     return Loc;
 
-  const string *PrevLineText = PyxcSourceMgr.getLine(PrevLine);
+  const string *PrevLineText = PyxcSourceManager.getLine(PrevLine);
   // PrevLineText is null only if PrevLine hasn't been buffered yet —
   // it shouldn't happen, since I only get here after consuming that
   // line's trailing newline, but I fall back to the original Loc
@@ -364,7 +364,7 @@ static string FormatTokenForMessage(int Tok) {
 /// '^~~~' caret under column Loc.Col. Col is 1-based, so I print Col-1
 /// spaces before the caret.
 static void PrintErrorSourceContext(SourceLocation Loc) {
-  const string *LineText = PyxcSourceMgr.getLine(Loc.Line);
+  const string *LineText = PyxcSourceManager.getLine(Loc.Line);
   // LineText is null only if Loc points past everything buffered so
   // far (e.g. an uninitialized Loc.Line == 0). Skip printing rather
   // than dereference it below.

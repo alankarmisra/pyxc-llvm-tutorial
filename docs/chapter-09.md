@@ -96,7 +96,7 @@ I start with `Input` pointing to `stdin`. If I receive a filename, I open it and
 *    if (NextChar != '\n' && NextChar != EOF)
 -      ungetc(NextChar, stdin);
 +      ungetc(NextChar, Input);
-*    PyxcSourceMgr.onChar('\n');
+*    PyxcSourceManager.onChar('\n');
 *    LexLoc.Line++;
 *    LexLoc.Col = 0;
 *    return '\n';
