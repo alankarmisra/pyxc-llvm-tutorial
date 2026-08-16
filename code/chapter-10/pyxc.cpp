@@ -229,7 +229,7 @@ public:
 
 static SourceManager PyxcSourceManager;
 static void PrintErrorSourceContext(SourceLocation Location);
-static void LogInvalidNumberLiteralAtLocation(const string &Literal, SourceLocation Loc);
+static void LogInvalidNumberLiteralAtLocation(const string &Literal, SourceLocation Location);
 
 /// advance - I return the next character, normalizing `\r\n` (Windows)
 /// and bare `\r` (Old Macs) into `\n`.
@@ -472,13 +472,13 @@ static SourceLocation GetCaretAnchorLocation(SourceLocation Location, int Token)
 /// (e.g. "name 'foo'", "number '3.14'") since the name alone is not
 /// enough to diagnose the problem. Everything else uses the static TokenNames
 /// entry.
-static string FormatTokenForMessage(int Tok) {
-  if (Tok == tok_name)
+static string FormatTokenForMessage(int Token) {
+  if (Token == tok_name)
     return "name '" + Name + "'";
-  if (Tok == tok_number)
+  if (Token == tok_number)
     return "number '" + NumberLiteral + "'";
 
-  auto It = TokenNames.find(Tok);
+  auto It = TokenNames.find(Token);
   if (It != TokenNames.end())
     return It->second;
   return "unknown token";
@@ -501,10 +501,11 @@ static void PrintErrorSourceContext(SourceLocation Location) {
   fprintf(stderr, "^~~~\n");
 }
 
-static void LogInvalidNumberLiteralAtLocation(const string &Literal, SourceLocation Loc) {
+static void LogInvalidNumberLiteralAtLocation(const string &Literal,
+                                              SourceLocation Location) {
   fprintf(stderr, "Error (Line %d, Column %d): invalid number literal '%s'\n",
-          Loc.Line, Loc.Column, Literal.c_str());
-  PrintErrorSourceContext(Loc);
+          Location.Line, Location.Column, Literal.c_str());
+  PrintErrorSourceContext(Location);
 }
 
 //===----------------------------------------===//
