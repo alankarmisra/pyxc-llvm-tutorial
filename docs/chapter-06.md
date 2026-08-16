@@ -6,7 +6,7 @@ description: "Install LLVM with everything you need: clang, lld, lldb, clangd, a
 
 ## What I Am Building
 
-The compiler from [Chapter 5](chapter-05.md) can parse Pyxc and report errors with source locations. To turn the AST into machine code, I need LLVM — specifically with the following tools: `lld`, `clangd`, `lldb`, and `llvm-lit`. I'll get to using them in the following chapters. On macOS and Linux, Homebrew gets you there in two commands. On Windows, the official LLVM installer does the same. Building compilers is hard enough. I don't need to torture myself needlessly. Unless I want to. Consequently, if you're feeling adventurous, you could build from source instead — I did that too just to make sure the instructions are legit. All paths end up in the same place. 
+The compiler from [Chapter 5](chapter-05.md) can parse pyxc and report errors with source locations. To turn the AST into machine code, I need LLVM — specifically with the following tools: `lld`, `clangd`, `lldb`, and `llvm-lit`. I'll get to using them in the following chapters. On macOS and Linux, Homebrew gets you there in two commands. On Windows, the official LLVM installer does the same. Building compilers is hard enough. I don't need to torture myself needlessly. Unless I want to. Consequently, if you're feeling adventurous, you could build from source instead — I did that too just to make sure the instructions are legit. All paths end up in the same place. 
 
 
 !!!note
@@ -402,7 +402,7 @@ If the version shown doesn't match what you built, your `PATH` isn't set correct
 
 ### Step 7: Set LLVM_DIR (for CMake)
 
-When building the Pyxc compiler, CMake needs to find LLVM. Tell it where:
+When building the pyxc compiler, CMake needs to find LLVM. Tell it where:
 
 #### macOS / Linux
 
@@ -453,7 +453,7 @@ Add to `.vscode/settings.json` in your project:
 
 #### Generate compile_commands.json
 
-When you build Pyxc, CMake will generate `compile_commands.json`. This tells clangd how to compile your code.
+When you build pyxc, CMake will generate `compile_commands.json`. This tells clangd how to compile your code.
 
 In your project's CMakeLists.txt, add:
 

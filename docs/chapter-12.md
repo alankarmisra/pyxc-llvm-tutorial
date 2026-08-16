@@ -384,7 +384,7 @@ if (LastChar == EOF) {
 
 In REPL mode, a blank line ends the current indented block immediately — the same behavior as the Python REPL.
 
-## Pyxc Indentation Rules
+## pyxc Indentation Rules
 
 Similar to Python's, with one difference: pyxc allows mixing tabs and spaces (Python 3 disallows it).
 

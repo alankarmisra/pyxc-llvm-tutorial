@@ -1,5 +1,5 @@
 ---
-description: "Add --emit exe so Pyxc compiles and links a standalone executable in one command, using LLD as a library with no external tools."
+description: "Add --emit exe so pyxc compiles and links a standalone executable in one command, using LLD as a library with no external tools."
 ---
 # 17. pyxc: One-Step Executables
 

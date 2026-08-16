@@ -39,7 +39,7 @@ Evaluated to 6.000000
 ```
 <!-- code-merge:end -->
 
-**A note on style:** `var x = n: x = x + 1` isn't code I'd choose to write. Pyxc still only supports single-expression bodies — everything after `:` has to be one expression — so multi-step mutation feels forced because it *is* forced right now. This chapter isn't about that syntax; it's about what happens underneath it. [Chapter 12](chapter-12.md) replaces expression bodies with real statement blocks, and the same machinery starts looking natural:
+**A note on style:** `var x = n: x = x + 1` isn't code I'd choose to write. pyxc still only supports single-expression bodies — everything after `:` has to be one expression — so multi-step mutation feels forced because it *is* forced right now. This chapter isn't about that syntax; it's about what happens underneath it. [Chapter 12](chapter-12.md) replaces expression bodies with real statement blocks, and the same machinery starts looking natural:
 
 ```pyxc
 var x = n

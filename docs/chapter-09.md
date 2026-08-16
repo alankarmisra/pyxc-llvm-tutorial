@@ -181,12 +181,21 @@ void Log(const string &message) {
 }
 ```
 
-I apply the same check to the automatic result in `HandleTopLevelExpression()`:
+I apply the same check to the automatic result, at the end of `HandleTopLevelExpression()`:
 
-```cpp
-double result = FP();
-if (IsRepl)
-  fprintf(stdout, "Evaluated to %f\n", result);
+```cppdiff
+*static void HandleTopLevelExpression() {
+*  ...
+*  if (auto *FunctionIR = FunctionDefinition->codegen()) {
+*    ...
+*    double (*FP)() = ExprSymbol.toPtr<double (*)()>();
+*    double result = FP();
+-    fprintf(stdout, "Evaluated to %f\n", result);
++    if (IsRepl)
++      fprintf(stdout, "Evaluated to %f\n", result);
+*    ...
+*  }
+*}
 ```
 
 In file mode, the program only produces output that the pyxc source requests through functions such as `printd` and `putchard`.
@@ -195,27 +204,40 @@ In file mode, the program only produces output that the pyxc source requests thr
 
 Each handler checks `VerboseIR` before printing generated IR:
 
-```cpp
-// In HandleFunctionDefinition():
-if (VerboseIR)
-  FunctionIR->print(errs());
-
-// In HandleExtern:
-if (VerboseIR)
-  FunctionIR->print(errs());
-
-// In HandleTopLevelExpression:
-if (VerboseIR)
-  FunctionIR->print(errs());
+```cppdiff
+*  // In HandleFunctionDefinition():
+*  Log("Parsed a function definition.\n");
+-  FunctionIR->print(errs());
++  if (VerboseIR)
++    FunctionIR->print(errs());
+*
+*  // In HandleExtern():
+*  Log("Parsed an extern.\n");
+-  FunctionIR->print(errs());
++  if (VerboseIR)
++    FunctionIR->print(errs());
+*
+*  // In HandleTopLevelExpression():
+*  Log("Parsed a top-level expression.\n");
+-  FunctionIR->print(errs());
++  if (VerboseIR)
++    FunctionIR->print(errs());
 ```
 
-After `MainLoop()` finishes, I close an input file that I opened:
+After `MainLoop()` finishes, I close an input file that I opened, at the end of `main()`:
 
-```cpp
-if (Input && Input != stdin) {
-  fclose(Input);
-  Input = stdin;
-}
+```cppdiff
+*int main(int argc, const char **argv) {
+*  ...
+*  MainLoop();
+*
++  if (Input && Input != stdin) {
++    fclose(Input);
++    Input = stdin;
++  }
++
+*  return 0;
+*}
 ```
 
 I check `Input != stdin` because I do not own standard input and must not close it. I reset the pointer after closing the file so it no longer refers to a closed handle.
