@@ -32,45 +32,16 @@ I insert `factor` between `term` and `primary`. `term` now loops over `factor` i
 `code/chapter-04/pyxc.ebnf`
 
 ```grammardiff
- program                           = [ end-of-lines ]
-                                     [ top-level-item
-                                       { end-of-lines top-level-item } ]
-                                     [ end-of-lines ] ;
- end-of-lines                      = end-of-line { end-of-line } ;
- top-level-item                    = function-definition
-                                     | top-level-expression ;
- function-definition               = "def" function-signature ":"
-                                     [ end-of-lines ] expression ;
- top-level-expression              = expression ;
- function-signature                = name "(" [ parameters ] ")" ;
- parameters                        = parameter { "," parameter } ;
- parameter                         = name ;
- expression                        = comparison ;
- comparison                        = sum { "<" sum } ;
- sum                               = term { ("+" | "-") term } ;
+*...
+*comparison                        = sum { "<" sum } ;
+*sum                               = term { ("+" | "-") term } ;
 -term                              = primary { ("*" | "/") primary } ;
 +term                              = factor { ("*" | "/" | "%") factor } ;
 +factor                            = "-" factor
 +                                    | primary ;
- primary                           = name-expression
-                                     | number-expression
-                                     | parenthesized-expression ;
- name-expression                   = name
-                                     | call-expression ;
- call-expression                   = name "(" [ arguments ] ")" ;
- arguments                         = expression { "," expression } ;
- number-expression                 = number ;
- parenthesized-expression          = "(" expression ")" ;
- name                              = (letter | "_")
-                                     { letter | digit | "_" } ;
- number                            = digit { digit } [ "." { digit } ]
-                                     | "." digit { digit } ;
- letter                            = "A".."Z" | "a".."z" ;
- digit                             = "0".."9" ;
- end-of-line                       = "\r\n" | "\r" | "\n" ;
- comment                           = "#" { comment-character } ;
- comment-character                 = ? any character except "\r" and "\n" ? ;
- whitespace                        = " " | "\t" | "\v" | "\f" ;
+*primary                           = name-expression
+*                                    | number-expression
+*...
 ```
 
 I could have special-cased `-` inside `ParsePrimary` instead of giving it its own tier, but then `--5` and `-(x + 1)` wouldn't fall out naturally — I'd have to handle chaining by hand at the call site. Giving `factor` its own self-recursive rule means `-` in front of *anything* that can start a `factor`, including another `-`, just works. `%` doesn't need any of that; it's a plain sibling of `*` and `/` at the same tier.

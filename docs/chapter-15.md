@@ -61,22 +61,18 @@ One production changes: `top-level-item` used to accept a bare `expression` at t
 `code/chapter-15/pyxc.ebnf`
 
 ```grammardiff
- program                           = [ end-of-lines ]
-                                     [ top-level-item
-                                       { end-of-lines top-level-item } ]
-                                     [ end-of-lines ] ;
- end-of-lines                      = end-of-line { end-of-line } ;
- top-level-item                    = function-definition
-                                     | external
+*...
+*top-level-item                    = function-definition
+*                                    | external
 -                                    | top-level-expression ;
 +                                    | top-level-statement ;
- function-definition               = "def" function-signature ":"
-                                     ( simple-statement
-                                       | end-of-lines block ) ;
- external                          = "extern" "def" function-signature ;
+*function-definition               = "def" function-signature ":"
+*                                    ( simple-statement
+*                                      | end-of-lines block ) ;
+*external                          = "extern" "def" function-signature ;
 -top-level-expression              = expression ;
 +top-level-statement               = statement ;
- function-signature                = name "(" [ parameters ] ")" ;
+*function-signature                = name "(" [ parameters ] ")" ;
 ```
 
 Everything past `function-signature` is unchanged from [Chapter 14](chapter-14.md). The real work this chapter is in the parser and codegen — deciding *which* statements get global storage and which get an ordinary stack slot — not in the grammar itself.
