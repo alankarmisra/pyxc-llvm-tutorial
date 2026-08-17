@@ -579,17 +579,18 @@ I use the same recovery when I parse a valid construct but find extra tokens aft
 -    fprintf(stderr, "Parsed a function definition.\n");
 -  else
 -    getNextToken(); // I skip the bad token.
-+  if (ParseFunctionDefinition()) {
-+    if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
-+      LogErrorExpression(
-+          ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-+      DiscardRestOfLine();
-+      return;
-+    }
-+    fprintf(stderr, "Parsed a function definition.\n");
-+  } else {
++  if (!ParseFunctionDefinition()) {
 +    DiscardRestOfLine();
++    return;
 +  }
++
++  if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
++    LogErrorExpression("Unexpected " + FormatTokenForMessage(CurrentToken));
++    DiscardRestOfLine();
++    return;
++  }
++
++  fprintf(stderr, "Parsed a function definition.\n");
 *}
 ```
 
@@ -599,17 +600,18 @@ I use the same recovery when I parse a valid construct but find extra tokens aft
 -    fprintf(stderr, "Parsed a top-level expression.\n");
 -  else
 -    getNextToken(); // I skip the bad token.
-+  if (ParseTopLevelExpression()) {
-+    if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
-+      LogErrorExpression(
-+          ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
-+      DiscardRestOfLine();
-+      return;
-+    }
-+    fprintf(stderr, "Parsed a top-level expression.\n");
-+  } else {
++  if (!ParseTopLevelExpression()) {
 +    DiscardRestOfLine();
++    return;
 +  }
++
++  if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
++    LogErrorExpression("Unexpected " + FormatTokenForMessage(CurrentToken));
++    DiscardRestOfLine();
++    return;
++  }
++
++  fprintf(stderr, "Parsed a top-level expression.\n");
 *}
 ```
 
