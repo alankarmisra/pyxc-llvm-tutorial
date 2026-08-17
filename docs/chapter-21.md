@@ -316,13 +316,13 @@ Value *UnaryExpressionNode::codegen() {
       return TheBuilder->CreateNeg(Operator, "negtmp");
     if (IsFloatType(getType()))
       return TheBuilder->CreateFNeg(Operator, "negtmp");
-    return LogErrorV("Unary '-' not supported for this type");
+    return LogErrorValue("Unary '-' not supported for this type");
   }
 
   if (Opcode == tok_exclamation)
     return TheBuilder->CreateNot(Operator, "nottmp");
 
-  return LogErrorV("Unknown unary operator");
+  return LogErrorValue("Invalid unary operator: " + FormatTokenForMessage(Opcode));
 }
 ```
 

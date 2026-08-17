@@ -272,8 +272,7 @@ For example, I implement `==` in `BinaryExpressionNode::codegen()` with an order
 *  case tok_percent:
 *    return TheBuilder->CreateFRem(L, R, "remtmp");
 *  case tok_less:
--    L = TheBuilder->CreateFCmpULT(L, R, "cmptmp");
-+    L = TheBuilder->CreateFCmpOLT(L, R, "cmptmp");
+*    L = TheBuilder->CreateFCmpOLT(L, R, "cmptmp");
 *    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
 +  case tok_greater:
 +    L = TheBuilder->CreateFCmpOGT(L, R, "cmptmp");
@@ -291,7 +290,7 @@ For example, I implement `==` in `BinaryExpressionNode::codegen()` with an order
 +    L = TheBuilder->CreateFCmpOGE(L, R, "cmptmp");
 +    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
 *  default:
-*    return LogErrorV("invalid binary operator");
+*    return LogErrorValue("Invalid binary operator: " + FormatTokenForMessage(Operator));
 *  }
 *}
 ```
@@ -302,7 +301,7 @@ which produces:
 %cmptmp = fcmp oeq double %L, %R
 ```
 
-LLVM provides ordered and unordered floating-point predicates. `oeq` returns false when either operand is `NaN`, while `ueq` returns true in that case. Other comparison pairs follow the same naming pattern, such as `olt`/`ult` and `one`/`une`.
+LLVM provides ordered and unordered floating-point predicates. `oeq` returns false when either operand is `NaN`, while `ueq` returns true in that case. Other comparison pairs follow the same naming pattern, such as `olt`/`olt` and `one`/`une`.
 
 The distinction comes from numeric order. Regular numbers are ordered; `NaN` is unordered. I use ordered predicates for `==`, `<`, `<=`, `>`, and `>=`, and unordered not-equal for `!=`. This matches C and IEEE 754 behavior.
 

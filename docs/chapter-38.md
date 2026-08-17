@@ -314,7 +314,11 @@ The result type is `ValueType::Struct` with `ClassName` as the struct name: the 
 +                .c_str());
 +    } else {
 +      if (Arguments.size() + 1 != Initializer->getNumParameters())
-+        return LogErrorExpression("Incorrect # arguments passed");
++        return LogErrorExpression(
++            "Incorrect number of arguments in construction of '" +
++            ParsedName + "': expected " +
++            to_string(Initializer->getNumParameters() - 1) + ", got " +
++            to_string(Arguments.size()));
 +      for (size_t Index = 0; Index < Arguments.size(); ++Index) {
 +        ValueType ParameterType =
 +            Initializer->getParameterType(Index + 1);
@@ -374,7 +378,7 @@ Value *ConstructorCallExpressionNode::codegen() {
                                   ? TheBuilder->GetInsertBlock()->getParent()
                                   : nullptr;
   if (!CurrentFunction)
-    return LogErrorV("Constructor call outside function context");
+    return LogErrorValue("Constructor call outside function context");
 
   AllocaInst *Storage = CreateEntryBlockAlloca(
       CurrentFunction, "constructor.value", ValueType::Struct, ClassName);
@@ -385,7 +389,7 @@ Value *ConstructorCallExpressionNode::codegen() {
           GetFunctionSignature(InitializerName)) {
     Function *InitializerFunction = getFunction(InitializerName);
     if (!InitializerFunction)
-      return LogErrorV("Unknown constructor function");
+      return LogErrorValue("Unknown constructor function");
     vector<Value *> ArgumentValues;
     ArgumentValues.push_back(Storage);
     for (size_t Index = 0; Index < Arguments.size(); ++Index) {
@@ -396,7 +400,7 @@ Value *ConstructorCallExpressionNode::codegen() {
           ArgumentValue, Arguments[Index]->getType(),
           Initializer->getParameterType(Index + 1));
       if (!ArgumentValue)
-        return LogErrorV("Constructor argument mismatch");
+        return LogErrorValue("Constructor argument mismatch");
       ArgumentValues.push_back(ArgumentValue);
     }
     TheBuilder->CreateCall(InitializerFunction, ArgumentValues);

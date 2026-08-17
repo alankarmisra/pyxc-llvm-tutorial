@@ -276,7 +276,7 @@ Before this chapter, `ParseAggregateDefinition` filled in `StructTypes[Aggregate
 +      continue;
 +    }
 *    if (CurrentToken != tok_name) {
-*      LogErrorExpression((string("Expected field name in ") + KindName + " body").c_str());
+*      LogErrorExpression((string("Expected field name in ") + KindName + " body"));
 *      return false;
 *    }
 *    ...
@@ -468,7 +468,10 @@ ParseMethodCallExpression(unique_ptr<ExpressionNode> Receiver,
   getNextToken(); // eat ')'
 
   if (Arguments.size() != Signature->getNumParameters())
-    return LogErrorExpression("Incorrect # arguments passed");
+    return LogErrorExpression(
+        "Incorrect number of arguments in call to '" + CalleeName +
+        "': expected " + to_string(Signature->getNumParameters() - 1) +
+        ", got " + to_string(Arguments.size() - 1));
   for (size_t Index = 0; Index < Arguments.size(); ++Index) {
     ValueType ParameterType = Signature->getParameterType(Index);
     if (!IsAssignable(ParameterType, Arguments[Index]->getType()))
@@ -517,7 +520,7 @@ Before this chapter, seeing `name.` always meant a field access. Now `.` can mea
 *          return LogErrorExpression("Unknown struct type in field access");
 -        auto Field = Struct->second.FieldIndices.find(Name);
 -        if (Field == Struct->second.FieldIndices.end())
--          return LogErrorExpression(("Unknown field '" + Name + "'").c_str());
+-          return LogErrorExpression(("Unknown field '" + Name + "'"));
 +        auto Field = Struct->second.FieldIndices.find(MemberName);
 +        if (Field == Struct->second.FieldIndices.end())
 +          return LogErrorExpression(

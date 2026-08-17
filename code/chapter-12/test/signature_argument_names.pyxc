@@ -3,6 +3,6 @@
 # RUN: grep -q "double %a" %t
 # RUN: grep -q "double %b" %t
 
-# FunctionSignatureNode::codegen: Arg.setName() makes parameter names appear in the IR.
+# FunctionSignatureNode::codegen: Argument.setName() makes parameter names appear in the IR.
 # Without setName the IR would show %0 and %1 instead of %a and %b.
 def f(a, b): a + b

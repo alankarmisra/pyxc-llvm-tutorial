@@ -1,5 +1,5 @@
 # RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
-# CHECK: Incorrect # arguments passed
+# CHECK: Incorrect number of arguments in call to 'printf': expected 1 or more, got 0
 
 type string = ptr[int8]
 extern def printf(fmt: string, ...) -> int64

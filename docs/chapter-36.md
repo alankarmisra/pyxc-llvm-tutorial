@@ -246,7 +246,7 @@ Before this chapter, struct parsing lived in a function that only knew about `st
 static bool ParseAggregateDefinition(const char *KindName) {
   getNextToken(); // eat 'struct' or 'class'
   if (CurrentToken != tok_name) {
-    LogErrorExpression((string("Expected name after '") + KindName + "'").c_str());
+    LogErrorExpression((string("Expected name after '") + KindName + "'"));
     return false;
   }
   string AggregateName = Name;
@@ -263,17 +263,17 @@ static bool ParseAggregateDefinition(const char *KindName) {
   }
   getNextToken(); // eat name
   if (CurrentToken != tok_colon) {
-    LogErrorExpression((string("Expected ':' after ") + KindName + " name").c_str());
+    LogErrorExpression((string("Expected ':' after ") + KindName + " name"));
     return false;
   }
   getNextToken(); // eat ':'
   if (CurrentToken != tok_eol) {
-    LogErrorExpression((string("Expected newline after ") + KindName + " header").c_str());
+    LogErrorExpression((string("Expected newline after ") + KindName + " header"));
     return false;
   }
   consumeNewlines();
   if (CurrentToken != tok_indent) {
-    LogErrorExpression((string("Expected an indented ") + KindName + " body").c_str());
+    LogErrorExpression((string("Expected an indented ") + KindName + " body"));
     return false;
   }
   getNextToken(); // eat INDENT
@@ -282,12 +282,12 @@ static bool ParseAggregateDefinition(const char *KindName) {
   Info.IsClass = string(KindName) == "class";
   while (CurrentToken != tok_dedent && CurrentToken != tok_eof) {
     if (CurrentToken != tok_name) {
-      LogErrorExpression((string("Expected field name in ") + KindName + " body").c_str());
+      LogErrorExpression((string("Expected field name in ") + KindName + " body"));
       return false;
     }
     string FieldName = Name;
     if (Info.FieldIndices.count(FieldName)) {
-      LogErrorExpression((string("Duplicate ") + KindName + " field").c_str());
+      LogErrorExpression((string("Duplicate ") + KindName + " field"));
       return false;
     }
     getNextToken(); // eat field name
@@ -301,7 +301,7 @@ static bool ParseAggregateDefinition(const char *KindName) {
     if (FieldType == ValueType::Error)
       return false;
     if (FieldType == ValueType::None) {
-      LogErrorExpression((string(KindName) + " fields cannot have None type").c_str());
+      LogErrorExpression((string(KindName) + " fields cannot have None type"));
       return false;
     }
     Info.FieldIndices[FieldName] = Info.Fields.size();
@@ -311,11 +311,11 @@ static bool ParseAggregateDefinition(const char *KindName) {
   }
 
   if (Info.Fields.empty()) {
-    LogErrorExpression((string(KindName) + " requires at least one field").c_str());
+    LogErrorExpression((string(KindName) + " requires at least one field"));
     return false;
   }
   if (CurrentToken != tok_dedent) {
-    LogErrorExpression((string("Expected dedent after ") + KindName + " body").c_str());
+    LogErrorExpression((string("Expected dedent after ") + KindName + " body"));
     return false;
   }
   StructTypes[AggregateName] = std::move(Info);

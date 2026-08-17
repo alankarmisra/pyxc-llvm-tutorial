@@ -430,14 +430,14 @@ Both emit a single unconditional branch to whichever target is on top of `LoopCo
 ```cpp
 Value *BreakStatementNode::codegen() {
   if (LoopControlStack.empty())
-    return LogErrorV("'break' used outside of a loop");
+    return LogErrorValue("'break' used outside of a loop");
   TheBuilder->CreateBr(LoopControlStack.back().BreakTarget);
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
 Value *ContinueStatementNode::codegen() {
   if (LoopControlStack.empty())
-    return LogErrorV("'continue' used outside of a loop");
+    return LogErrorValue("'continue' used outside of a loop");
   TheBuilder->CreateBr(LoopControlStack.back().ContinueTarget);
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }

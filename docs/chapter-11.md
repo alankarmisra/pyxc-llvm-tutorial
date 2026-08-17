@@ -343,16 +343,16 @@ Through chapter 4, `NamedValues` mapped variable names directly to LLVM `Value*`
 
 ```cpp
 // Before: the name maps directly to the incoming argument — fixed, immutable.
-NamedValues[Arg.getName()] = &Arg;
+NamedValues[Argument.getName()] = &Argument;
 ```
 
 Mutable variables break that model. Once `x` can be reassigned, the name `x` can't mean "this one fixed value" anymore. It has to mean "the place where the current value of `x` lives":
 
 ```cpp
 // After: the name maps to a memory slot that holds the current value.
-AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, Arg.getName()); // reserve a slot
-TheBuilder->CreateStore(&Arg, Alloca);       // copy the incoming value into it
-NamedValues[Arg.getName()] = Alloca;         // name now points to the slot, not the value
+AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, Argument.getName()); // reserve a slot
+TheBuilder->CreateStore(&Argument, Alloca);       // copy the incoming value into it
+NamedValues[Argument.getName()] = Alloca;         // name now points to the slot, not the value
 ```
 
 So `NamedValues` changes type, from:
@@ -410,7 +410,7 @@ A variable reference loads the current value:
 Value *NameExpressionNode::codegen() {
   auto It = NamedValues.find(Name);
   if (It == NamedValues.end() || !It->second)
-    return LogErrorV("Unknown variable name");
+    return LogErrorValue("Unknown variable name");
   return TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), It->second,
                                 Name.c_str());
 }
@@ -432,7 +432,7 @@ Value *AssignmentExpressionNode::codegen() {
 
   auto It = NamedValues.find(Name);
   if (It == NamedValues.end() || !It->second)
-    return LogErrorV("Unknown variable name");
+    return LogErrorValue("Unknown variable name");
 
   TheBuilder->CreateStore(Value, It->second);
   return Value;
@@ -517,11 +517,11 @@ Once `NamedValues` holds allocas, function parameters have to use the same repre
 
 ```cpp
 NamedValues.clear();
-for (auto &Arg : TheFunction->args()) {
+for (auto &Argument : TheFunction->args()) {
   AllocaInst *Alloca =
-      CreateEntryBlockAlloca(TheFunction, std::string(Arg.getName()));
-  TheBuilder->CreateStore(&Arg, Alloca);
-  NamedValues[std::string(Arg.getName())] = Alloca;
+      CreateEntryBlockAlloca(TheFunction, std::string(Argument.getName()));
+  TheBuilder->CreateStore(&Argument, Alloca);
+  NamedValues[std::string(Argument.getName())] = Alloca;
 }
 ```
 
@@ -605,7 +605,7 @@ if (IsVarDecl) {
   // 'for i': look up the existing alloca — error if i is not in scope.
   auto It = NamedValues.find(VarName);
   if (It == NamedValues.end() || !It->second)
-    return LogErrorV("Unknown variable name");
+    return LogErrorValue("Unknown variable name");
   Alloca = It->second;
   TheBuilder->CreateStore(StartVal, Alloca);
 }

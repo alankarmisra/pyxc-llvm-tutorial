@@ -803,7 +803,7 @@ the loop declares a fresh variable with `var`. The type is validated:
 -  Value *NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
 +  StepVal = EmitImplicitCast(StepVal, Step->getType(), VarType);
 +  if (!StepVal)
-+    return LogErrorV("Type mismatch in for loop step");
++    return LogErrorValue("Type mismatch in for loop step");
 +  Value *NextVar = nullptr;
 +  if (VarType == ValueType::Float64)
 +    NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
@@ -1147,7 +1147,7 @@ case tok_percent: {
   L = EmitImplicitCast(L, LType, getType());
   R = EmitImplicitCast(R, RType, getType());
   if (!L || !R)
-    return LogErrorV("Type mismatch in arithmetic");
+    return LogErrorValue("Type mismatch in arithmetic");
   if (IsFloatType(getType())) {
     if (Operator == tok_plus)
       return TheBuilder->CreateFAdd(L, R, "addtmp");
@@ -1213,7 +1213,7 @@ if (Opcode == tok_minus) {
     return TheBuilder->CreateNeg(Operator, "negtmp");
   if (IsFloatType(getType()))
     return TheBuilder->CreateFNeg(Operator, "negtmp");
-  return LogErrorV("Unary '-' not supported for this type");
+  return LogErrorValue("Unary '-' not supported for this type");
 }
 ```
 
@@ -1340,7 +1340,7 @@ if (!TheBuilder->GetInsertBlock()->getTerminator()) {
     if (!IsEntry && pred_empty(CurBB)) {
       TheBuilder->CreateUnreachable();
     } else {
-      LogErrorV("Non-None function must return a value");
+      LogErrorValue("Non-None function must return a value");
       TheFunction->eraseFromParent();
       return nullptr;
     }

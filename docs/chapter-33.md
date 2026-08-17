@@ -424,14 +424,21 @@ The call-site arity check used to be an exact match. For a variadic signature it
 *  getNextToken();
 *
 *  if (!Signature)
-*    return LogErrorExpression("Unknown function referenced");
+*    return LogErrorExpression("Unknown function: '" + ParsedName + "'");
 -  if (Signature->getNumParameters() != Arguments.size())
--    return LogErrorExpression("Incorrect # arguments passed");
+-    return LogErrorExpression(
+-        "Incorrect number of arguments in call to '" + ParsedName +
+-        "': expected " + to_string(Signature->getNumParameters()) +
+-        ", got " + to_string(Arguments.size()));
 +  if ((!Signature->isVariadic() &&
 +       Signature->getNumParameters() != Arguments.size()) ||
 +      (Signature->isVariadic() &&
 +       Arguments.size() < Signature->getNumParameters()))
-+    return LogErrorExpression("Incorrect # arguments passed");
++    return LogErrorExpression(
++        "Incorrect number of arguments in call to '" + ParsedName +
++        "': expected " + to_string(Signature->getNumParameters()) +
++        (Signature->isVariadic() ? " or more, got " : ", got ") +
++        to_string(Arguments.size()));
 *
 -  for (size_t i = 0; i < Arguments.size(); ++i) {
 +  for (size_t i = 0; i < Signature->getNumParameters(); ++i) {
@@ -447,13 +454,20 @@ The codegen-side check runs the same logic, but against the LLVM `Function` obje
  Value *CallExpressionNode::codegen() {
 *  Function *CalleeF = getFunction(Callee);
 *  if (!CalleeF)
-*    return LogErrorV("Unknown function referenced");
+*    return LogErrorValue("Unknown function: '" + Callee + "'");
 *
 -  if (CalleeF->arg_size() != Arguments.size())
--    return LogErrorV("Incorrect # arguments passed");
+-    return LogErrorValue(
+-        "Incorrect number of arguments in call to '" + Callee +
+-        "': expected " + to_string(CalleeF->arg_size()) + ", got " +
+-        to_string(Arguments.size()));
 +  if ((!CalleeF->isVarArg() && CalleeF->arg_size() != Arguments.size()) ||
 +      (CalleeF->isVarArg() && Arguments.size() < CalleeF->arg_size()))
-+    return LogErrorV("Incorrect # arguments passed");
++    return LogErrorValue(
++        "Incorrect number of arguments in call to '" + Callee +
++        "': expected " + to_string(CalleeF->arg_size()) +
++        (CalleeF->isVarArg() ? " or more, got " : ", got ") +
++        to_string(Arguments.size()));
 *
 *  FunctionSignatureNode *Signature = GetFunctionSignature(Callee);
 *  std::vector<Value *> ArgsV;
@@ -466,7 +480,7 @@ extern def printf(fmt: ptr[int8], ...) -> int32
 printf()
 ```
 ```
-Error (Line 2, Column 9): Incorrect # arguments passed
+Error (Line 2, Column 9): Incorrect number of arguments in call to 'printf': expected 1 or more, got 0
 printf()
         ^~~~
 ```
@@ -487,7 +501,7 @@ The argument-building loop in `CallExpressionNode::codegen` needs the same guard
 *      ArgVal =
 *          EmitImplicitCast(ArgVal, Arguments[i]->getType(), Signature->getParameterType(i));
 *      if (!ArgVal)
-*        return LogErrorV("Argument type mismatch");
+*        return LogErrorValue("Argument type mismatch");
 *    }
 *  }
 ```
@@ -505,10 +519,10 @@ Without the `i < Signature->getNumParameters()` check, a variadic argument past 
 *  for (size_t Index = 0; Index < Parameters.size(); ++Index)
 *    ParameterTypes.push_back(
 *        LLVMTypeFor(Parameters[Index].second, getParameterStructName(Index)));
--  FunctionType *FT = FunctionType::get(
+-  FunctionType *LLVMFunctionType = FunctionType::get(
 -      LLVMTypeFor(ReturnType, ReturnStructName), ParameterTypes,
 -      false /* not variadic */);
-+  FunctionType *FT = FunctionType::get(
++  FunctionType *LLVMFunctionType = FunctionType::get(
 +      LLVMTypeFor(ReturnType, ReturnStructName), ParameterTypes,
 +      IsVariadic);
 *  ...

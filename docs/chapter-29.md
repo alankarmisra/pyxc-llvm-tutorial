@@ -266,8 +266,8 @@ Before this chapter, an unrecognized name here was just an error. Now I check `T
 +    }
 *    auto Found = StructTypes.find(Name);
 *    if (Found == StructTypes.end()) {
--      LogErrorExpression(("Unknown struct type '" + Name + "'").c_str());
-+      LogErrorExpression(("Unknown type '" + Name + "'").c_str());
+-      LogErrorExpression(("Unknown struct type '" + Name + "'"));
++      LogErrorExpression(("Unknown type '" + Name + "'"));
 *      return ValueType::Error;
 *    }
 *    BaseTypeInfo = Name;
@@ -297,7 +297,7 @@ static bool ParseTypeAliasDefinition() {
   }
   string AliasName = Name;
   if (TypeAliases.count(AliasName)) {
-    LogErrorExpression(("Type alias '" + AliasName + "' is already defined").c_str());
+    LogErrorExpression(("Type alias '" + AliasName + "' is already defined"));
     return false;
   }
   if (StructTypes.count(AliasName)) {

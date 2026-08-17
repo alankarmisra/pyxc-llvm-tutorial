@@ -401,9 +401,9 @@ static void DiscardRestOfLine() {
 I already report every parse error through `LogErrorExpression()`. I now use the location and source line there instead of printing only a token description:
 
 ```cppdiff
-*unique_ptr<ExpressionNode> LogErrorExpression(const char *ErrorMessage) {
+*unique_ptr<ExpressionNode> LogErrorExpression(const string &ErrorMessage) {
 +  SourceLocation Anchor = GetCaretAnchorLocation(CurrentTokenLocation, CurrentToken);
--  fprintf(stderr, "Error: %s (token: %s)\nready> ", ErrorMessage,
+-  fprintf(stderr, "Error: %s (token: %s)\nready> ", ErrorMessage.c_str(),
 -          TokenNames.at(CurrentToken).c_str());
 +  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Column,
 +          ErrorMessage);

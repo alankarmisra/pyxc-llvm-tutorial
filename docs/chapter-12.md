@@ -813,7 +813,7 @@ Value *BlockStatementNode::codegen() {
   NamedValues = SavedBindings;
 
   if (!Last)
-    return LogErrorV("Empty block");
+    return LogErrorValue("Empty block");
 
   // Blocks are statement sequences. If control reaches the end without an
   // explicit return, the block's implicit value is always 0.0.
@@ -963,7 +963,7 @@ static void HandleFunctionDefinition() {
                       CurrentToken != tok_block_end);
   if (!FunctionDefinition || HasTrailing) {
     if (FunctionDefinition)
-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)));
     DiscardRestOfLine();
     return;
   }

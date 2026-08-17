@@ -2001,22 +2001,22 @@ void Log(const string &message) {
 
 /// LogError* - Error reporting helpers. Each returns nullptr for its respective
 /// type so parse functions can write: return LogError("message");
-unique_ptr<ExprAST> LogError(const char *Str) {
+unique_ptr<ExprAST> LogError(const string &ErrorMessage) {
   HadError = true;
   SourceLocation Anchor = GetDiagnosticAnchorLoc(CurrentTokenLocation, CurTok);
   fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Column,
-          Str);
+          ErrorMessage.c_str());
   PrintErrorSourceContext(Anchor);
   return nullptr;
 }
 
-unique_ptr<PrototypeAST> LogErrorP(const char *Str) {
-  LogError(Str);
+unique_ptr<PrototypeAST> LogErrorP(const string &ErrorMessage) {
+  LogError(ErrorMessage);
   return nullptr;
 }
 
-unique_ptr<FunctionAST> LogErrorF(const char *Str) {
-  LogError(Str);
+unique_ptr<FunctionAST> LogErrorF(const string &ErrorMessage) {
+  LogError(ErrorMessage);
   return nullptr;
 }
 
@@ -2362,7 +2362,7 @@ static ValueType ParseTypeToken(string *StructName) {
       return AliasIt->second.first;
     }
     if (!StructTypes.count(TyName)) {
-      LogError(("Unknown type '" + TyName + "'").c_str());
+      LogError(("Unknown type '" + TyName + "'"));
       return ValueType::Error;
     }
     getNextToken();
@@ -2565,7 +2565,10 @@ static unique_ptr<ExprAST> ParseIdentifierExprWithName(string IdName) {
       size_t ExpectedArgs =
           InitProto->getNumArgs() > 0 ? InitProto->getNumArgs() - 1 : 0;
       if (Args.size() != ExpectedArgs)
-        return LogError("Incorrect # arguments passed");
+        return LogError(
+            "Incorrect number of arguments in construction of '" + IdName +
+            "': expected " + to_string(ExpectedArgs) + ", got " +
+            to_string(Args.size()));
       for (size_t I = 0; I < Args.size(); ++I) {
         ValueType ArgType = Args[I]->getType();
         ValueType ParamType = InitProto->getArgType(I + 1);
@@ -2627,10 +2630,14 @@ static unique_ptr<ExprAST> ParseIdentifierExprWithName(string IdName) {
   getNextToken();
 
   if (!Proto)
-    return LogError("Unknown function referenced");
+    return LogError("Unknown function: '" + IdName + "'");
   if ((!Proto->isVarArg() && Proto->getNumArgs() != Args.size()) ||
       (Proto->isVarArg() && Args.size() < Proto->getNumArgs()))
-    return LogError("Incorrect # arguments passed");
+    return LogError(
+        "Incorrect number of arguments in call to '" + IdName +
+        "': expected " + to_string(Proto->getNumArgs()) +
+        (Proto->isVarArg() ? " or more, got " : ", got ") +
+        to_string(Args.size()));
 
   for (size_t i = 0; i < Args.size() && i < Proto->getNumArgs(); ++i) {
     ValueType ArgType = Args[i]->getType();
@@ -2728,7 +2735,10 @@ static unique_ptr<ExprAST> ParseMethodCallExpr(unique_ptr<ExprAST> Receiver,
   getNextToken(); // eat ')'
 
   if (Args.size() != Proto->getNumArgs())
-    return LogError("Incorrect # arguments passed");
+    return LogError(
+        "Incorrect number of arguments in call to '" + CalleeName +
+        "': expected " + to_string(Proto->getNumArgs() - 1) + ", got " +
+        to_string(Args.size() - 1));
   for (size_t I = 0; I < Args.size(); ++I) {
     ValueType ArgType = Args[I]->getType();
     ValueType ParamType = Proto->getArgType(I);
@@ -4948,7 +4958,7 @@ static bool ParseAggregateDefinition(const char *KindName) {
   // CurTok is 'struct' or 'class'
   getNextToken(); // eat keyword
   if (CurTok != tok_identifier) {
-    LogError((string("Expected ") + KindName + " name").c_str());
+    LogError((string("Expected ") + KindName + " name"));
     return false;
   }
   string StructName = IdentifierStr;
@@ -4958,7 +4968,7 @@ static bool ParseAggregateDefinition(const char *KindName) {
     return false;
   }
   if (StructTypes.count(StructName)) {
-    LogError(("Aggregate '" + StructName + "' is already defined").c_str());
+    LogError(("Aggregate '" + StructName + "' is already defined"));
     return false;
   }
   getNextToken(); // eat aggregate name
@@ -4977,7 +4987,7 @@ static bool ParseAggregateDefinition(const char *KindName) {
         Ref.TraitName = IdentifierStr;
         string TraitName = Ref.TraitName;
         if (!Traits.count(TraitName)) {
-          LogError(("Unknown trait '" + TraitName + "'").c_str());
+          LogError(("Unknown trait '" + TraitName + "'"));
           return false;
         }
         if (SeenTraits.count(TraitName)) {
@@ -5033,14 +5043,14 @@ static bool ParseAggregateDefinition(const char *KindName) {
     getNextToken(); // eat ')'
   }
   if (CurTok != ':') {
-    LogError((string("Expected ':' after ") + KindName + " name").c_str());
+    LogError((string("Expected ':' after ") + KindName + " name"));
     return false;
   }
   getNextToken(); // eat ':'
   if (CurTok == tok_eol)
     consumeNewlines();
   if (CurTok != tok_indent) {
-    LogError((string("Expected an indented ") + KindName + " body").c_str());
+    LogError((string("Expected an indented ") + KindName + " body"));
     return false;
   }
   getNextToken(); // eat INDENT
@@ -5103,7 +5113,7 @@ static bool ParseAggregateDefinition(const char *KindName) {
     string FieldStructName;
     ValueType FieldType = ParseTypeToken(&FieldStructName);
     if (FieldType == ValueType::Error || FieldType == ValueType::None) {
-      LogError((string("Invalid ") + KindName + " field type").c_str());
+      LogError((string("Invalid ") + KindName + " field type"));
       return false;
     }
     if (Info.FieldIndex.count(FieldName)) {
@@ -5121,7 +5131,7 @@ static bool ParseAggregateDefinition(const char *KindName) {
       consumeNewlines();
   }
   if (CurTok != tok_dedent) {
-    LogError((string("Expected dedent after ") + KindName + " body").c_str());
+    LogError((string("Expected dedent after ") + KindName + " body"));
     return false;
   }
   getNextToken(); // eat DEDENT
@@ -5143,16 +5153,16 @@ VerifyTraitConformance(const string &ClassName,
   const string &TraitName = ImplRef.TraitName;
   auto CI = StructTypes.find(ClassName);
   if (CI == StructTypes.end() || !CI->second.IsClass) {
-    LogError(("Unknown class '" + ClassName + "'").c_str());
+    LogError(("Unknown class '" + ClassName + "'"));
     return false;
   }
   if (!Traits.count(TraitName)) {
-    LogError(("Unknown trait '" + TraitName + "'").c_str());
+    LogError(("Unknown trait '" + TraitName + "'"));
     return false;
   }
   const auto &TI = Traits.at(TraitName);
   if (!TI.TypeParamName.empty() && !ImplRef.HasTypeArg) {
-    LogError(("Trait '" + TraitName + "' requires a type argument").c_str());
+    LogError(("Trait '" + TraitName + "' requires a type argument"));
     return false;
   }
   if (TI.TypeParamName.empty() && ImplRef.HasTypeArg) {
@@ -5216,7 +5226,7 @@ static bool ParseTypeAliasDefinition() {
   }
   string AliasName = IdentifierStr;
   if (TypeAliases.count(AliasName)) {
-    LogError(("Type alias '" + AliasName + "' is already defined").c_str());
+    LogError(("Type alias '" + AliasName + "' is already defined"));
     return false;
   }
   if (StructTypes.count(AliasName)) {
@@ -5444,7 +5454,7 @@ static bool ParseTraitDefinition() {
   string TraitName = IdentifierStr;
   if (Traits.count(TraitName) || StructTypes.count(TraitName) ||
       TypeAliases.count(TraitName)) {
-    LogError(("Name '" + TraitName + "' is already defined").c_str());
+    LogError(("Name '" + TraitName + "' is already defined"));
     return false;
   }
   getNextToken(); // eat trait name
@@ -5552,7 +5562,7 @@ static bool ParseTraitDefinition() {
       }
     }
     if (Duplicate) {
-      LogError(("Duplicate trait method '" + MethodName + "'").c_str());
+      LogError(("Duplicate trait method '" + MethodName + "'"));
       return false;
     }
     TI.Methods.push_back({MethodName, std::move(Args), RetType, RetStructName});
@@ -5583,7 +5593,7 @@ static bool ParseImplDefinition() {
   }
   string TraitName = IdentifierStr;
   if (!Traits.count(TraitName)) {
-    LogError(("Unknown trait '" + TraitName + "'").c_str());
+    LogError(("Unknown trait '" + TraitName + "'"));
     return false;
   }
   StructTypeInfo::ImplTraitRef ImplRef;
@@ -5592,7 +5602,7 @@ static bool ParseImplDefinition() {
   const auto &TraitDef = Traits.at(TraitName);
   if (!TraitDef.TypeParamName.empty()) {
     if (CurTok != '[') {
-      LogError(("Trait '" + TraitName + "' requires a type argument").c_str());
+      LogError(("Trait '" + TraitName + "' requires a type argument"));
       return false;
     }
     getNextToken(); // eat '['
@@ -5628,7 +5638,7 @@ static bool ParseImplDefinition() {
   string ClassName = IdentifierStr;
   auto CI = StructTypes.find(ClassName);
   if (CI == StructTypes.end()) {
-    LogError(("Unknown class '" + ClassName + "'").c_str());
+    LogError(("Unknown class '" + ClassName + "'"));
     return false;
   }
   if (!CI->second.IsClass) {
@@ -6066,10 +6076,10 @@ static bool IsAssignable(ValueType Dest, ValueType Src) {
   return false;
 }
 
-/// LogErrorV - Codegen-level error helper. Delegates to LogError for printing,
-/// then returns nullptr so codegen callers can write: return LogErrorV("msg");
-Value *LogErrorV(const char *Str) {
-  LogError(Str);
+/// LogErrorValue - Codegen-level error helper. Delegates to LogError for printing,
+/// then returns nullptr so codegen callers can write: return LogErrorValue("msg");
+Value *LogErrorValue(const string &ErrorMessage) {
+  LogError(ErrorMessage);
   return nullptr;
 }
 
@@ -6361,7 +6371,7 @@ Value *NumberExprAST::codegen() {
     return ConstantInt::get(*TheContext, IntVal);
   if (IsFloatType(getType()))
     return ConstantFP::get(*TheContext, FloatVal);
-  return LogErrorV("Unknown numeric literal type");
+  return LogErrorValue("Unknown numeric literal type");
 }
 
 Value *BoolExprAST::codegen() {
@@ -6388,13 +6398,13 @@ Value *ArrayLiteralExprAST::codegen() {
   string ElemStructName;
   uint64_t Count = 0;
   if (!DecodeArrayType(getStructName(), ElemType, ElemStructName, Count))
-    return LogErrorV("Invalid array literal type");
+    return LogErrorValue("Invalid array literal type");
   if (Elements.size() != Count)
-    return LogErrorV("Array literal element count mismatch");
+    return LogErrorValue("Array literal element count mismatch");
 
   auto *ArrTy = dyn_cast<ArrayType>(LLVMTypeFor(getType(), getStructName()));
   if (!ArrTy)
-    return LogErrorV("Invalid array LLVM type");
+    return LogErrorValue("Invalid array LLVM type");
 
   Value *Agg = UndefValue::get(ArrTy);
   for (size_t I = 0; I < Elements.size(); ++I) {
@@ -6435,7 +6445,7 @@ Value *VariableExprAST::codegen() {
                : Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()),
                                      GV, Name.c_str());
 
-  return LogErrorV("Unknown variable name");
+  return LogErrorValue("Unknown variable name");
 }
 
 static Value *LoadPointerValue(const string &BaseName,
@@ -6515,7 +6525,7 @@ Value *FieldExprAST::codegen() {
   Value *Ptr =
       GetFieldAddress(*getLValueName(), FieldPath, &LeafType, &LeafStruct);
   if (!Ptr)
-    return LogErrorV("Unknown field access");
+    return LogErrorValue("Unknown field access");
   return Builder->CreateLoad(LLVMTypeFor(LeafType, LeafStruct), Ptr,
                              "fieldload");
 }
@@ -6527,11 +6537,11 @@ Value *AddrExprAST::codegen() {
       return It->second;
     if (auto *GV = GetGlobalVariable(BaseName))
       return GV;
-    return LogErrorV("Unknown variable name");
+    return LogErrorValue("Unknown variable name");
   }
   Value *Ptr = GetFieldAddress(BaseName, FieldPath);
   if (!Ptr)
-    return LogErrorV("Unknown field access");
+    return LogErrorValue("Unknown field access");
   return Ptr;
 }
 
@@ -6602,17 +6612,17 @@ static Value *BuildIndexElementPtr(IndexExprAST *IdxExpr) {
                                PtrType, PtrStructName);
   }
   if (!BasePtr)
-    return LogErrorV("Indexing requires a pointer or array value");
+    return LogErrorValue("Indexing requires a pointer or array value");
   Value *IdxVal = IdxExpr->getIndex()->codegen();
   if (!IdxVal)
     return nullptr;
   if (!IsIntType(IdxExpr->getIndex()->getType()))
-    return LogErrorV("Pointer index must be an integer");
+    return LogErrorValue("Pointer index must be an integer");
   if (IdxExpr->getIndex()->getType() != ValueType::Int64) {
     IdxVal = EmitImplicitCast(IdxVal, IdxExpr->getIndex()->getType(),
                               ValueType::Int64);
     if (!IdxVal)
-      return LogErrorV("Index must be an integer");
+      return LogErrorValue("Index must be an integer");
   }
   return Builder->CreateInBoundsGEP(
       LLVMTypeFor(IdxExpr->getType(), IdxExpr->getStructName()), BasePtr,
@@ -6709,14 +6719,14 @@ static Value *EmitBuiltInArithmetic(int Op, Value *L, ValueType LType,
         Idx = Builder->CreateNeg(Idx, "negidx");
     }
     if (!Ptr || !Idx)
-      return LogErrorV("Type mismatch in assignment");
+      return LogErrorValue("Type mismatch in assignment");
     ValueType ElemType = ValueType::Error;
     string ElemStruct;
     if (!DecodePointerType(ResultStruct, ElemType, ElemStruct))
-      return LogErrorV("Invalid pointer type metadata");
+      return LogErrorValue("Invalid pointer type metadata");
     llvm::Type *ElemLLVM = LLVMTypeFor(ElemType, ElemStruct);
     if (!ElemLLVM)
-      return LogErrorV("Invalid pointer element type");
+      return LogErrorValue("Invalid pointer element type");
     return Builder->CreateInBoundsGEP(ElemLLVM, Ptr, Idx, "ptrarith");
   }
 
@@ -6726,17 +6736,17 @@ static Value *EmitBuiltInArithmetic(int Op, Value *L, ValueType LType,
     ValueType ElemType = ValueType::Error;
     string ElemStruct;
     if (!DecodePointerType(LStruct, ElemType, ElemStruct))
-      return LogErrorV("Invalid pointer type metadata");
+      return LogErrorValue("Invalid pointer type metadata");
     llvm::Type *ElemLLVM = LLVMTypeFor(ElemType, ElemStruct);
     if (!ElemLLVM)
-      return LogErrorV("Invalid pointer element type");
+      return LogErrorValue("Invalid pointer element type");
     return Builder->CreatePtrDiff(ElemLLVM, L, R, "ptrdiff");
   }
 
   L = EmitImplicitCast(L, LType, ResultType);
   R = EmitImplicitCast(R, RType, ResultType);
   if (!L || !R)
-    return LogErrorV("Type mismatch in assignment");
+    return LogErrorValue("Type mismatch in assignment");
   if (IsFloatType(ResultType)) {
     if (Op == '+')
       return Builder->CreateFAdd(L, R, "addtmp");
@@ -6776,7 +6786,7 @@ Value *IndexAssignmentExprAST::codegen() {
     return nullptr;
   Val = EmitImplicitCast(Val, RHS->getType(), getType());
   if (!Val)
-    return LogErrorV("Type mismatch in assignment");
+    return LogErrorValue("Type mismatch in assignment");
   Builder->CreateStore(Val, ElemPtr);
   return Val;
 }
@@ -6808,13 +6818,13 @@ Value *IndexedFieldExprAST::codegen() {
   string CurStruct = BaseIndex->getStructName();
   for (const auto &FieldName : FieldPath) {
     if (CurType != ValueType::Struct || CurStruct.empty())
-      return LogErrorV("Field access requires a struct value");
+      return LogErrorValue("Field access requires a struct value");
     auto SI = StructTypes.find(CurStruct);
     if (SI == StructTypes.end())
-      return LogErrorV("Unknown struct type in field access");
+      return LogErrorValue("Unknown struct type in field access");
     auto FI = SI->second.FieldIndex.find(FieldName);
     if (FI == SI->second.FieldIndex.end())
-      return LogErrorV("Unknown field access");
+      return LogErrorValue("Unknown field access");
     const auto &FD = SI->second.Fields[FI->second];
     llvm::Type *BaseLLVM = LLVMTypeFor(CurType, CurStruct);
     Ptr = Builder->CreateStructGEP(BaseLLVM, Ptr, FI->second, "fieldptr");
@@ -6834,13 +6844,13 @@ Value *IndexedFieldAssignmentExprAST::codegen() {
   string CurStruct = LHS->getBaseIndex()->getStructName();
   for (const auto &FieldName : LHS->getFieldPath()) {
     if (CurType != ValueType::Struct || CurStruct.empty())
-      return LogErrorV("Field access requires a struct value");
+      return LogErrorValue("Field access requires a struct value");
     auto SI = StructTypes.find(CurStruct);
     if (SI == StructTypes.end())
-      return LogErrorV("Unknown struct type in field access");
+      return LogErrorValue("Unknown struct type in field access");
     auto FI = SI->second.FieldIndex.find(FieldName);
     if (FI == SI->second.FieldIndex.end())
-      return LogErrorV("Unknown field access");
+      return LogErrorValue("Unknown field access");
     const auto &FD = SI->second.Fields[FI->second];
     llvm::Type *BaseLLVM = LLVMTypeFor(CurType, CurStruct);
     Ptr = Builder->CreateStructGEP(BaseLLVM, Ptr, FI->second, "fieldptr");
@@ -6852,7 +6862,7 @@ Value *IndexedFieldAssignmentExprAST::codegen() {
     return nullptr;
   Val = EmitImplicitCast(Val, RHS->getType(), getType());
   if (!Val)
-    return LogErrorV("Type mismatch in assignment");
+    return LogErrorValue("Type mismatch in assignment");
   Builder->CreateStore(Val, Ptr);
   return Val;
 }
@@ -6866,13 +6876,13 @@ Value *IndexedFieldCompoundAssignmentExprAST::codegen() {
   string CurStruct = LHS->getBaseIndex()->getStructName();
   for (const auto &FieldName : LHS->getFieldPath()) {
     if (CurType != ValueType::Struct || CurStruct.empty())
-      return LogErrorV("Field access requires a struct value");
+      return LogErrorValue("Field access requires a struct value");
     auto SI = StructTypes.find(CurStruct);
     if (SI == StructTypes.end())
-      return LogErrorV("Unknown struct type in field access");
+      return LogErrorValue("Unknown struct type in field access");
     auto FI = SI->second.FieldIndex.find(FieldName);
     if (FI == SI->second.FieldIndex.end())
-      return LogErrorV("Unknown field access");
+      return LogErrorValue("Unknown field access");
     const auto &FD = SI->second.Fields[FI->second];
     llvm::Type *BaseLLVM = LLVMTypeFor(CurType, CurStruct);
     Ptr = Builder->CreateStructGEP(BaseLLVM, Ptr, FI->second, "fieldptr");
@@ -6901,7 +6911,7 @@ Value *AssignmentExprAST::codegen() {
     return nullptr;
   Val = EmitImplicitCast(Val, Expr->getType(), getType());
   if (!Val)
-    return LogErrorV("Type mismatch in assignment");
+    return LogErrorValue("Type mismatch in assignment");
 
   auto It = NamedValues.find(Name);
   if (It != NamedValues.end() && It->second) {
@@ -6914,7 +6924,7 @@ Value *AssignmentExprAST::codegen() {
     return Val;
   }
 
-  return LogErrorV("Unknown variable name");
+  return LogErrorValue("Unknown variable name");
 }
 
 Value *CompoundAssignmentExprAST::codegen() {
@@ -6945,7 +6955,7 @@ Value *CompoundAssignmentExprAST::codegen() {
     Builder->CreateStore(Combined, GV);
     return Combined;
   }
-  return LogErrorV("Unknown variable name");
+  return LogErrorValue("Unknown variable name");
 }
 
 Value *FieldAssignmentExprAST::codegen() {
@@ -6954,13 +6964,13 @@ Value *FieldAssignmentExprAST::codegen() {
   Value *Ptr = GetFieldAddress(*LHS->getLValueName(), LHS->getFieldPath(),
                                &DestType, &DestStruct);
   if (!Ptr)
-    return LogErrorV("Unknown field access");
+    return LogErrorValue("Unknown field access");
   Value *Val = RHS->codegen();
   if (!Val)
     return nullptr;
   Val = EmitImplicitCast(Val, RHS->getType(), DestType);
   if (!Val)
-    return LogErrorV("Type mismatch in assignment");
+    return LogErrorValue("Type mismatch in assignment");
   Builder->CreateStore(Val, Ptr);
   return Val;
 }
@@ -6971,7 +6981,7 @@ Value *FieldCompoundAssignmentExprAST::codegen() {
   Value *Ptr = GetFieldAddress(*LHS->getLValueName(), LHS->getFieldPath(),
                                &DestType, &DestStruct);
   if (!Ptr)
-    return LogErrorV("Unknown field access");
+    return LogErrorValue("Unknown field access");
   Value *L =
       Builder->CreateLoad(LLVMTypeFor(DestType, DestStruct), Ptr, "fieldload");
   Value *R = RHS->codegen();
@@ -6998,7 +7008,7 @@ Value *ReturnExprAST::codegen() {
     return nullptr;
   RetVal = EmitImplicitCast(RetVal, Expr->getType(), CurrentFunctionReturnType);
   if (!RetVal)
-    return LogErrorV("Type mismatch in return");
+    return LogErrorValue("Type mismatch in return");
   Builder->CreateRet(RetVal);
   return RetVal;
 }
@@ -7029,7 +7039,7 @@ Value *BlockExprAST::codegen() {
   NamedValueStructNames = SavedStructs;
 
   if (!Last)
-    return LogErrorV("Empty block");
+    return LogErrorValue("Empty block");
 
   // Blocks are statement sequences. If control reaches the end without an
   // explicit return, the block's implicit value is always 0.0.
@@ -7059,7 +7069,7 @@ Value *BinaryExprAST::codegen() {
     if (!L)
       return nullptr;
     if (LHS->getType() != ValueType::Bool || RHS->getType() != ValueType::Bool)
-      return LogErrorV("Type mismatch in binary operator");
+      return LogErrorValue("Type mismatch in binary operator");
 
     Function *F = Builder->GetInsertBlock()->getParent();
     BasicBlock *LHSBB = Builder->GetInsertBlock();
@@ -7076,7 +7086,7 @@ Value *BinaryExprAST::codegen() {
     if (!RHSVal)
       return nullptr;
     if (RHS->getType() != ValueType::Bool)
-      return LogErrorV("Type mismatch in binary operator");
+      return LogErrorValue("Type mismatch in binary operator");
     Builder->CreateBr(MergeBB);
     RHSBB = Builder->GetInsertBlock();
 
@@ -7118,7 +7128,7 @@ Value *BinaryExprAST::codegen() {
     L = EmitImplicitCast(L, LType, Ty);
     R = EmitImplicitCast(R, RType, Ty);
     if (!L || !R)
-      return LogErrorV("Type mismatch in binary operator");
+      return LogErrorValue("Type mismatch in binary operator");
     if (Op == '&')
       return Builder->CreateAnd(L, R, "bwand");
     if (Op == '|')
@@ -7131,7 +7141,7 @@ Value *BinaryExprAST::codegen() {
     L = EmitImplicitCast(L, LType, Ty);
     R = EmitImplicitCast(R, RType, Ty);
     if (!L || !R)
-      return LogErrorV("Type mismatch in binary operator");
+      return LogErrorValue("Type mismatch in binary operator");
     if (Op == tok_shl)
       return Builder->CreateShl(L, R, "shltmp");
     return IsUnsignedIntType(Ty) ? Builder->CreateLShr(L, R, "shrtmp")
@@ -7165,7 +7175,7 @@ Value *BinaryExprAST::codegen() {
     ValueType CompareType = ValueType::Error;
     if (LType == ValueType::Bool && RType == ValueType::Bool) {
       if (Op != tok_eq && Op != tok_neq)
-        return LogErrorV("Type mismatch in comparison");
+        return LogErrorValue("Type mismatch in comparison");
       CompareType = ValueType::Bool;
     } else if (IsFloatType(LType) && IsFloatType(RType)) {
       if (LType == RType)
@@ -7187,7 +7197,7 @@ Value *BinaryExprAST::codegen() {
     }
 
     if (CompareType == ValueType::Error)
-      return LogErrorV("Type mismatch in comparison");
+      return LogErrorValue("Type mismatch in comparison");
 
     if (CompareType == ValueType::Bool) {
       if (Op == tok_eq)
@@ -7198,7 +7208,7 @@ Value *BinaryExprAST::codegen() {
     L = EmitImplicitCast(L, LType, CompareType);
     R = EmitImplicitCast(R, RType, CompareType);
     if (!L || !R)
-      return LogErrorV("Type mismatch in comparison");
+      return LogErrorValue("Type mismatch in comparison");
 
     if (IsFloatType(CompareType)) {
       switch (Op) {
@@ -7243,7 +7253,7 @@ Value *BinaryExprAST::codegen() {
         break;
       }
     }
-    return LogErrorV("Type mismatch in comparison");
+    return LogErrorValue("Type mismatch in comparison");
   }
   default:
     break;
@@ -7254,7 +7264,7 @@ Value *BinaryExprAST::codegen() {
   // "binary" + opchar.  We call that function with L and R as arguments.
   Function *F = getFunction(std::string("binary") + (char)Op);
   if (!F)
-    return LogErrorV("invalid binary operator");
+    return LogErrorValue("Invalid binary operator: " + FormatTokenForMessage(Operator));
 
   Value *Ops[] = {L, R};
   return Builder->CreateCall(F, Ops, "binop");
@@ -7273,18 +7283,18 @@ Value *UnaryExprAST::codegen() {
       return Builder->CreateNeg(Op, "negtmp");
     if (IsFloatType(getType()))
       return Builder->CreateFNeg(Op, "negtmp");
-    return LogErrorV("Unary '-' not supported for this type");
+    return LogErrorValue("Unary '-' not supported for this type");
   }
   if (Opcode == '~') {
     if (!IsIntType(getType()))
-      return LogErrorV("Unary '~' not supported for this type");
+      return LogErrorValue("Unary '~' not supported for this type");
     return Builder->CreateNot(Op, "bnottmp");
   }
 
   // User-defined unary operator.
   Function *F = getFunction(std::string("unary") + Opcode);
   if (!F)
-    return LogErrorV("Unknown unary operator");
+    return LogErrorValue("Invalid unary operator: " + FormatTokenForMessage(Opcode));
 
   return Builder->CreateCall(F, Op, "unop");
 }
@@ -7295,7 +7305,7 @@ Value *IncDecExprAST::codegen() {
   Value *Ptr =
       ResolveIncDecLValuePtr(Operand.get(), &TargetType, &TargetStruct);
   if (!Ptr)
-    return LogErrorV("Increment/decrement target must be assignable");
+    return LogErrorValue("Increment/decrement target must be assignable");
 
   Value *OldVal = Builder->CreateLoad(LLVMTypeFor(TargetType, TargetStruct),
                                       Ptr, "incdec.old");
@@ -7307,7 +7317,7 @@ Value *IncDecExprAST::codegen() {
   } else if (IsFloatType(TargetType)) {
     One = ConstantFP::get(LLVMTypeFor(TargetType), 1.0);
   } else {
-    return LogErrorV("Increment/decrement requires numeric or pointer type");
+    return LogErrorValue("Increment/decrement requires numeric or pointer type");
   }
 
   int Op = IsIncrement ? '+' : '-';
@@ -7326,7 +7336,7 @@ Value *LogicalNotExprAST::codegen() {
   if (!V)
     return nullptr;
   if (Operand->getType() != ValueType::Bool)
-    return LogErrorV("Type mismatch in unary operator");
+    return LogErrorValue("Type mismatch in unary operator");
   return Builder->CreateNot(V, "nottmp");
 }
 
@@ -7337,14 +7347,14 @@ Value *CastExprAST::codegen() {
     return nullptr;
   Value *Cast = EmitCast(V, Expr->getType(), TargetType);
   if (!Cast)
-    return LogErrorV("Invalid cast");
+    return LogErrorValue("Invalid cast");
   return Cast;
 }
 
 Value *SizeofExprAST::codegen() {
   llvm::Type *Ty = LLVMTypeFor(TargetType, TargetStructName);
   if (!Ty)
-    return LogErrorV("Invalid sizeof target type");
+    return LogErrorValue("Invalid sizeof target type");
   uint64_t Bytes =
       TheModule->getDataLayout().getTypeAllocSize(Ty).getFixedValue();
   return ConstantInt::get(Type::getInt64Ty(*TheContext), Bytes);
@@ -7360,11 +7370,15 @@ Value *SizeofExprAST::codegen() {
 Value *CallExprAST::codegen() {
   Function *CalleeF = getFunction(Callee);
   if (!CalleeF)
-    return LogErrorV("Unknown function referenced");
+    return LogErrorValue("Unknown function: '" + Callee + "'");
 
   if ((!CalleeF->isVarArg() && CalleeF->arg_size() != Args.size()) ||
       (CalleeF->isVarArg() && Args.size() < CalleeF->arg_size()))
-    return LogErrorV("Incorrect # arguments passed");
+    return LogErrorValue(
+        "Incorrect number of arguments in call to '" + Callee +
+        "': expected " + to_string(CalleeF->arg_size()) +
+        (CalleeF->isVarArg() ? " or more, got " : ", got ") +
+        to_string(Args.size()));
 
   PrototypeAST *Proto = GetFunctionProto(Callee);
   std::vector<Value *> ArgsV;
@@ -7378,11 +7392,11 @@ Value *CallExprAST::codegen() {
       if (ParamType == ValueType::Pointer && ArgType == ValueType::Array) {
         if (!ArrayDecaysToPointerType(Args[i]->getStructName(),
                                       Proto->getArgStructName(i)))
-          return LogErrorV("Argument type mismatch");
+          return LogErrorValue("Argument type mismatch");
       } else {
         ArgVal = EmitImplicitCast(ArgVal, ArgType, ParamType);
         if (!ArgVal)
-          return LogErrorV("Argument type mismatch");
+          return LogErrorValue("Argument type mismatch");
       }
     }
     ArgsV.push_back(ArgVal);
@@ -7396,16 +7410,16 @@ Value *CallExprAST::codegen() {
 Value *ConstructorCallExprAST::codegen() {
   auto SI = StructTypes.find(ClassName);
   if (SI == StructTypes.end() || !SI->second.IsClass)
-    return LogErrorV("Unknown class in constructor call");
+    return LogErrorValue("Unknown class in constructor call");
 
   llvm::Type *ClassTy = LLVMTypeFor(ValueType::Struct, ClassName);
   if (!ClassTy)
-    return LogErrorV("Unknown class type");
+    return LogErrorValue("Unknown class type");
   Function *CurFn = Builder->GetInsertBlock()
                         ? Builder->GetInsertBlock()->getParent()
                         : nullptr;
   if (!CurFn)
-    return LogErrorV("Constructor call outside function context");
+    return LogErrorValue("Constructor call outside function context");
   AllocaInst *Tmp =
       CreateEntryBlockAlloca(CurFn, "ctor.tmp", ValueType::Struct, ClassName);
   Builder->CreateStore(ZeroConstant(ValueType::Struct, ClassName), Tmp);
@@ -7414,9 +7428,12 @@ Value *ConstructorCallExprAST::codegen() {
   if (PrototypeAST *InitProto = GetFunctionProto(InitName)) {
     Function *InitF = getFunction(InitName);
     if (!InitF)
-      return LogErrorV("Unknown constructor function");
+      return LogErrorValue("Unknown constructor function");
     if (InitF->arg_size() != Args.size() + 1)
-      return LogErrorV("Incorrect # arguments passed");
+      return LogErrorValue(
+          "Incorrect number of arguments in construction of '" + ClassName +
+          "': expected " + to_string(InitF->arg_size() - 1) + ", got " +
+          to_string(Args.size()));
     vector<Value *> ArgsV;
     ArgsV.push_back(Tmp);
     for (unsigned I = 0, E = Args.size(); I != E; ++I) {
@@ -7428,17 +7445,17 @@ Value *ConstructorCallExprAST::codegen() {
       if (ParamType == ValueType::Pointer && ArgType == ValueType::Array) {
         if (!ArrayDecaysToPointerType(Args[I]->getStructName(),
                                       InitProto->getArgStructName(I + 1)))
-          return LogErrorV("Argument type mismatch");
+          return LogErrorValue("Argument type mismatch");
       } else {
         ArgVal = EmitImplicitCast(ArgVal, ArgType, ParamType);
         if (!ArgVal)
-          return LogErrorV("Argument type mismatch");
+          return LogErrorValue("Argument type mismatch");
       }
       ArgsV.push_back(ArgVal);
     }
     Builder->CreateCall(InitF, ArgsV);
   } else if (!Args.empty()) {
-    return LogErrorV("Constructor argument mismatch");
+    return LogErrorValue("Constructor argument mismatch");
   }
 
   return Builder->CreateLoad(ClassTy, Tmp, "ctor.obj");
@@ -7455,7 +7472,7 @@ Value *IfStmtAST::codegen() {
 
   CondV = ToBool(CondV, Cond->getType());
   if (!CondV)
-    return LogErrorV("Invalid condition type");
+    return LogErrorValue("Invalid condition type");
 
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
 
@@ -7512,7 +7529,7 @@ Value *ForExprAST::codegen() {
     else if (auto *GV = GetGlobalVariable(VarName))
       VarPtr = GV;
     else
-      return LogErrorV("Unknown variable name");
+      return LogErrorValue("Unknown variable name");
   }
 
   Value *StartVal = Start->codegen();
@@ -7520,7 +7537,7 @@ Value *ForExprAST::codegen() {
     return nullptr;
   StartVal = EmitImplicitCast(StartVal, Start->getType(), VarType);
   if (!StartVal)
-    return LogErrorV("Type mismatch in for loop start");
+    return LogErrorValue("Type mismatch in for loop start");
 
   Builder->CreateStore(StartVal, VarPtr);
 
@@ -7547,7 +7564,7 @@ Value *ForExprAST::codegen() {
     return nullptr;
   CondVal = ToBool(CondVal, Cond->getType());
   if (!CondVal)
-    return LogErrorV("Invalid loop condition type");
+    return LogErrorValue("Invalid loop condition type");
   Builder->CreateCondBr(CondVal, BodyBB, AfterBB);
 
   Builder->SetInsertPoint(BodyBB);
@@ -7572,7 +7589,7 @@ Value *ForExprAST::codegen() {
     return nullptr;
   StepVal = EmitImplicitCast(StepVal, Step->getType(), VarType);
   if (!StepVal)
-    return LogErrorV("Type mismatch in for loop step");
+    return LogErrorValue("Type mismatch in for loop step");
   Value *NextVar = nullptr;
   if (VarType == ValueType::Float64)
     NextVar = Builder->CreateFAdd(CurVar, StepVal, "nextvar");
@@ -7617,7 +7634,7 @@ Value *WhileExprAST::codegen() {
       return nullptr;
     CondVal = ToBool(CondVal, Cond->getType());
     if (!CondVal)
-      return LogErrorV("Invalid loop condition type");
+      return LogErrorValue("Invalid loop condition type");
     Builder->CreateCondBr(CondVal, BodyBB, AfterBB);
   }
 
@@ -7641,7 +7658,7 @@ Value *WhileExprAST::codegen() {
       return nullptr;
     CondVal = ToBool(CondVal, Cond->getType());
     if (!CondVal)
-      return LogErrorV("Invalid loop condition type");
+      return LogErrorValue("Invalid loop condition type");
     Builder->CreateCondBr(CondVal, BodyBB, AfterBB);
   }
 
@@ -7657,10 +7674,10 @@ Value *SwitchExprAST::codegen() {
   ValueType CondType = Cond->getType();
   llvm::Type *CondLLVMType = LLVMTypeFor(CondType);
   if (!CondLLVMType || !CondLLVMType->isIntegerTy())
-    return LogErrorV("Switch condition must be an integer type");
+    return LogErrorValue("Switch condition must be an integer type");
   CondVal = EmitImplicitCast(CondVal, CondType, CondType);
   if (!CondVal)
-    return LogErrorV("Invalid switch condition type");
+    return LogErrorValue("Invalid switch condition type");
 
   Function *F = Builder->GetInsertBlock()->getParent();
   BasicBlock *AfterBB = BasicBlock::Create(*TheContext, "switch.after", F);
@@ -7708,14 +7725,14 @@ Value *SwitchExprAST::codegen() {
 
 Value *BreakExprAST::codegen() {
   if (BreakTargetStack.empty())
-    return LogErrorV("'break' used outside of a loop or switch");
+    return LogErrorValue("'break' used outside of a loop or switch");
   Builder->CreateBr(BreakTargetStack.back());
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
 Value *ContinueExprAST::codegen() {
   if (LoopControlStack.empty())
-    return LogErrorV("'continue' used outside of a loop");
+    return LogErrorValue("'continue' used outside of a loop");
   Builder->CreateBr(LoopControlStack.back().ContinueTarget);
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
@@ -7731,9 +7748,9 @@ Value *VarStmtAST::codegen() {
 
       auto *GV = TheModule->getNamedGlobal(VarName);
       if (GV && !GV->isDeclaration())
-        return LogErrorV("Global variable already defined");
+        return LogErrorValue("Global variable already defined");
       if (GV && GV->getValueType() != LLVMTypeFor(VarType, VarStructName))
-        return LogErrorV("Global variable type mismatch");
+        return LogErrorValue("Global variable type mismatch");
 
       if (!GV) {
         auto *Type = LLVMTypeFor(VarType, VarStructName);
@@ -7756,7 +7773,7 @@ Value *VarStmtAST::codegen() {
           return nullptr;
         InitVal = EmitImplicitCast(InitVal, Init->getType(), VarType);
         if (!InitVal)
-          return LogErrorV("Type mismatch in variable initialization");
+          return LogErrorValue("Type mismatch in variable initialization");
       } else {
         InitVal = ZeroConstant(VarType, VarStructName);
       }
@@ -7782,7 +7799,7 @@ Value *VarStmtAST::codegen() {
         return nullptr;
       InitVal = EmitImplicitCast(InitVal, Init->getType(), VarType);
       if (!InitVal)
-        return LogErrorV("Type mismatch in variable initialization");
+        return LogErrorValue("Type mismatch in variable initialization");
     } else {
       InitVal = ZeroConstant(VarType, VarStructName);
     }
@@ -7810,23 +7827,24 @@ Value *VarStmtAST::codegen() {
 /// runtime, and what lets 'def foo(...)' be called from later expressions in
 /// the same session.
 ///
-/// Arg.setName() is optional — it only affects the printed IR, making output
+/// Argument.setName() is optional — it only affects the printed IR, making output
 /// read as 'double %a, double %b' rather than 'double %0, double %1'.
 Function *PrototypeAST::codegen() {
-  std::vector<Type *> ArgTys;
-  ArgTys.reserve(Args.size());
-  for (const auto &Arg : Args)
-    ArgTys.push_back(LLVMTypeFor(Arg.Type, Arg.StructName));
-  FunctionType *FT = FunctionType::get(
-      LLVMTypeFor(ReturnType, ReturnStructName), ArgTys, IsVarArg);
+  std::vector<Type *> ParameterTypes;
+  ParameterTypes.reserve(Args.size());
+  for (const auto &Argument : Args)
+    ParameterTypes.push_back(LLVMTypeFor(Argument.Type, Argument.StructName));
+  FunctionType *LLVMFunctionType = FunctionType::get(
+      LLVMTypeFor(ReturnType, ReturnStructName), ParameterTypes, IsVarArg);
 
-  Function *F =
-      Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
+  Function *TheFunction =
+      Function::Create(LLVMFunctionType, Function::ExternalLinkage, Name,
+                       TheModule.get());
 
   // Name arguments so the printed IR is readable.
-  unsigned Idx = 0;
-  for (auto &Arg : F->args())
-    Arg.setName(Args[Idx++].Name);
+  unsigned ParameterIndex = 0;
+  for (auto &Argument : TheFunction->args())
+    Argument.setName(Args[ParameterIndex++].Name);
 
   // For user-defined binary operators, register the precedence in the global
   // table so the parser knows how tightly the new operator binds.  This happens
@@ -7840,7 +7858,7 @@ Function *PrototypeAST::codegen() {
   if (isUnaryOp())
     KnownUnaryOperators.insert(getOperatorName());
 
-  return F;
+  return TheFunction;
 }
 
 /// FunctionAST::codegen - Generate IR for a complete function definition.
@@ -7867,16 +7885,19 @@ Function *PrototypeAST::codegen() {
 ///    optimisation pipeline. On failure, eraseFromParent() removes the
 ///    partially-built function so no broken declaration is left in the module.
 Function *FunctionAST::codegen() {
+  const string FunctionName = Proto->getName();
+
   // Step 1: register the prototype and resolve the Function*.
   auto &P = *Proto;
-  FunctionProtos[Proto->getName()] = std::move(Proto);
+  FunctionProtos[FunctionName] = std::move(Proto);
 
   // Step 1: reuse an existing `extern` declaration if one exists.
-  Function *TheFunction = getFunction(P.getName());
+  Function *TheFunction = getFunction(FunctionName);
 
   // Bail if the function is already fully defined — redefinition is an error.
   if (TheFunction && !TheFunction->empty()) {
-    LogError("Function cannot be redefined.");
+    LogError(
+        "Function '" + FunctionName + "' cannot be redefined");
     return nullptr;
   }
 
@@ -7919,18 +7940,18 @@ Function *FunctionAST::codegen() {
   BreakTargetStack.clear();
   unsigned ArgIndex = 1;
   size_t ArgTypeIndex = 0;
-  for (auto &Arg : TheFunction->args()) {
+  for (auto &Argument : TheFunction->args()) {
     ValueType ArgType = P.getArgType(ArgTypeIndex);
     string ArgStructName = P.getArgStructName(ArgTypeIndex);
     ++ArgTypeIndex;
     AllocaInst *Alloca = CreateEntryBlockAlloca(
-        TheFunction, std::string(Arg.getName()), ArgType, ArgStructName);
-    Builder->CreateStore(&Arg, Alloca);
-    NamedValues[std::string(Arg.getName())] = Alloca;
-    NamedValueTypes[std::string(Arg.getName())] = ArgType;
+        TheFunction, std::string(Argument.getName()), ArgType, ArgStructName);
+    Builder->CreateStore(&Argument, Alloca);
+    NamedValues[std::string(Argument.getName())] = Alloca;
+    NamedValueTypes[std::string(Argument.getName())] = ArgType;
     if (!ArgStructName.empty())
-      NamedValueStructNames[std::string(Arg.getName())] = ArgStructName;
-    EmitDebugDeclare(Alloca, Arg.getName(), CurFunctionLine, true, ArgIndex++,
+      NamedValueStructNames[std::string(Argument.getName())] = ArgStructName;
+    EmitDebugDeclare(Alloca, Argument.getName(), CurFunctionLine, true, ArgIndex++,
                      ArgType);
   }
 
@@ -7948,7 +7969,7 @@ Function *FunctionAST::codegen() {
         if (!IsEntry && pred_empty(CurBB)) {
           Builder->CreateUnreachable();
         } else {
-          LogErrorV("Non-None function must return a value");
+          LogErrorValue("Non-None function must return a value");
           TheFunction->eraseFromParent();
           CurDIScope = nullptr;
           CurrentFunctionReturnType = SavedRetType;
@@ -8112,7 +8133,7 @@ static void HandleDecorator() {
   bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof);
   if (!FnAST || (HasTrailing && !LastTopLevelEndedWithBlock)) {
     if (FnAST)
-      LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+      LogError(("Unexpected " + FormatTokenForMessage(CurTok)));
     DiscardRestOfLine();
     return;
   }
@@ -8143,7 +8164,7 @@ static void HandleDefinition() {
   bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof);
   if (!FnAST || (HasTrailing && !LastTopLevelEndedWithBlock)) {
     if (FnAST)
-      LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+      LogError(("Unexpected " + FormatTokenForMessage(CurTok)));
     DiscardRestOfLine();
     return;
   }
@@ -8189,7 +8210,7 @@ static void HandleExtern() {
 
   if (CurTok != tok_eol && CurTok != tok_eof) {
     if (CurTok)
-      LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+      LogError(("Unexpected " + FormatTokenForMessage(CurTok)));
     DiscardRestOfLine();
     return;
   }
@@ -8212,7 +8233,7 @@ static void HandleStructDef() {
   }
   bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof);
   if (HasTrailing && !LastTopLevelEndedWithBlock) {
-    LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+    LogError(("Unexpected " + FormatTokenForMessage(CurTok)));
     DiscardRestOfLine();
     return;
   }
@@ -8227,7 +8248,7 @@ static void HandleClassDef() {
   }
   bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof);
   if (HasTrailing && !LastTopLevelEndedWithBlock) {
-    LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+    LogError(("Unexpected " + FormatTokenForMessage(CurTok)));
     DiscardRestOfLine();
     return;
   }
@@ -8242,7 +8263,7 @@ static void HandleTypeAliasDef() {
   }
   bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof);
   if (HasTrailing && !LastTopLevelEndedWithBlock) {
-    LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+    LogError(("Unexpected " + FormatTokenForMessage(CurTok)));
     DiscardRestOfLine();
     return;
   }
@@ -8257,7 +8278,7 @@ static void HandleTraitDef() {
   }
   bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof);
   if (HasTrailing && !LastTopLevelEndedWithBlock) {
-    LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+    LogError(("Unexpected " + FormatTokenForMessage(CurTok)));
     DiscardRestOfLine();
     return;
   }
@@ -8272,7 +8293,7 @@ static void HandleImplDef() {
   }
   bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof);
   if (HasTrailing && !LastTopLevelEndedWithBlock) {
-    LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+    LogError(("Unexpected " + FormatTokenForMessage(CurTok)));
     DiscardRestOfLine();
     return;
   }
@@ -8302,7 +8323,7 @@ static void HandleTopLevelExpression() {
   bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof);
   if (!FnAST || (HasTrailing && !LastTopLevelEndedWithBlock)) {
     if (FnAST)
-      LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+      LogError(("Unexpected " + FormatTokenForMessage(CurTok)));
     DiscardRestOfLine();
     return;
   }
@@ -8489,7 +8510,7 @@ static void HandleTopLevelStatementFileMode() {
   bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof);
   if (!Stmt || (HasTrailing && !LastTopLevelEndedWithBlock)) {
     if (Stmt)
-      LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+      LogError(("Unexpected " + FormatTokenForMessage(CurTok)));
     DiscardRestOfLine();
     return;
   }
@@ -8510,7 +8531,7 @@ static void HandleModuleDef() {
   }
   bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof);
   if (HasTrailing) {
-    LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+    LogError(("Unexpected " + FormatTokenForMessage(CurTok)));
     DiscardRestOfLine();
     return;
   }
@@ -8529,7 +8550,7 @@ static void HandleImportDef() {
   }
   bool HasTrailing = (CurTok != tok_eol && CurTok != tok_eof);
   if (HasTrailing) {
-    LogError(("Unexpected " + FormatTokenForMessage(CurTok)).c_str());
+    LogError(("Unexpected " + FormatTokenForMessage(CurTok)));
     DiscardRestOfLine();
     return;
   }

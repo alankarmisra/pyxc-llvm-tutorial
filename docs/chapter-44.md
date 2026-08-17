@@ -475,7 +475,7 @@ def main() -> int:
   return validate(5)
 ```
 ```
-Error (Line 4, Column 21): Unknown function referenced
+Error (Line 4, Column 21): Unknown function: 'validate'
   return validate(5)
                     ^~~~
 ```

@@ -286,16 +286,16 @@ static void consumeNewlines() {
 /// node type, allowing parse functions to return an error directly.
 /// TokenNames provides a readable token description. Chapter 5 will add source
 /// location (line/column) to these diagnostics.
-unique_ptr<ExpressionNode> LogErrorExpression(const char *ErrorMessage) {
-  fprintf(stderr, "Error: %s (token: %s)\nready> ", ErrorMessage,
+unique_ptr<ExpressionNode> LogErrorExpression(const string &ErrorMessage) {
+  fprintf(stderr, "Error: %s (token: %s)\nready> ", ErrorMessage.c_str(),
           TokenNames.at(CurrentToken).c_str());
   return nullptr;
 }
-unique_ptr<FunctionSignatureNode> LogErrorSignature(const char *ErrorMessage) {
+unique_ptr<FunctionSignatureNode> LogErrorSignature(const string &ErrorMessage) {
   LogErrorExpression(ErrorMessage);
   return nullptr;
 }
-unique_ptr<FunctionDefinitionNode> LogErrorFunction(const char *ErrorMessage) {
+unique_ptr<FunctionDefinitionNode> LogErrorFunction(const string &ErrorMessage) {
   LogErrorExpression(ErrorMessage);
   return nullptr;
 }

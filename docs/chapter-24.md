@@ -473,7 +473,7 @@ Before I can write `x: int` *or* `p: Point` in the same field/parameter/variable
 case tok_name: {
   auto Found = StructTypes.find(Name);
   if (Found == StructTypes.end()) {
-    LogErrorExpression(("Unknown struct type '" + Name + "'").c_str());
+    LogErrorExpression(("Unknown struct type '" + Name + "'"));
     return ValueType::Error;
   }
   if (StructName)
@@ -962,7 +962,7 @@ Value *FieldExpressionNode::codegen() {
   Value *Pointer = GetFieldAddress(*getLValueName(), FieldPath, &FieldType,
                                    &FieldStructName);
   if (!Pointer)
-    return LogErrorV("Unknown field access");
+    return LogErrorValue("Unknown field access");
   return TheBuilder->CreateLoad(LLVMTypeFor(FieldType, FieldStructName), Pointer,
                              "fieldload");
 }
@@ -984,14 +984,14 @@ Value *FieldAssignmentStatementNode::codegen() {
   Value *Pointer = GetFieldAddress(*Left->getLValueName(), Left->getFieldPath(),
                                    &FieldType, &FieldStructName);
   if (!Pointer)
-    return LogErrorV("Unknown field access");
+    return LogErrorValue("Unknown field access");
 
   Value *AssignedValue = Right->codegen();
   if (!AssignedValue)
     return nullptr;
   AssignedValue = EmitImplicitCast(AssignedValue, Right->getType(), FieldType);
   if (!AssignedValue)
-    return LogErrorV("Type mismatch in assignment");
+    return LogErrorValue("Type mismatch in assignment");
   TheBuilder->CreateStore(AssignedValue, Pointer);
   return AssignedValue;
 }
@@ -1018,7 +1018,7 @@ if (!InitVal)
 if (Init) {
   InitVal = EmitImplicitCast(InitVal, Init->getType(), VarType);
   if (!InitVal)
-    return LogErrorV("Type mismatch in variable initialization");
+    return LogErrorValue("Type mismatch in variable initialization");
 }
 
 AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName, VarType,

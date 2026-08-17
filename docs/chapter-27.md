@@ -389,7 +389,7 @@ Value *ArrayLiteralExpressionNode::codegen() {
   uint64_t ElementCount = 0;
   if (!DecodeArrayType(getStructName(), ElementType, ElementStructName,
                        ElementCount))
-    return LogErrorV("Invalid array literal type");
+    return LogErrorValue("Invalid array literal type");
 
   Value *Aggregate = UndefValue::get(LLVMTypeFor(getType(), getStructName()));
   for (size_t Index = 0; Index < Elements.size(); ++Index) {
@@ -398,7 +398,7 @@ Value *ArrayLiteralExpressionNode::codegen() {
       return nullptr;
     Element = EmitImplicitCast(Element, Elements[Index]->getType(), ElementType);
     if (!Element)
-      return LogErrorV("Array literal element type mismatch");
+      return LogErrorValue("Array literal element type mismatch");
     Aggregate = TheBuilder->CreateInsertValue(Aggregate, Element,
                                            {static_cast<unsigned>(Index)},
                                            "arrayinit");
@@ -461,7 +461,7 @@ Indexing isn't the only place an array needs to become a pointer. Passing an arr
 +  if (getType() == ValueType::Array) {
 +    Value *ArrayAddress = codegenAddress();
 +    if (!ArrayAddress)
-+      return LogErrorV("Unknown variable name");
++      return LogErrorValue("Unknown variable name");
 +    Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
 +    return TheBuilder->CreateInBoundsGEP(
 +        LLVMTypeFor(getType(), getStructName()), ArrayAddress, {Zero, Zero},
@@ -477,7 +477,7 @@ Indexing isn't the only place an array needs to become a pointer. Passing an arr
 *    return TheBuilder->CreateLoad(LLVMTypeFor(getType(), getStructName()), GV,
 *                               Name.c_str());
 *
-*  return LogErrorV("Unknown variable name");
+*  return LogErrorValue("Unknown variable name");
 *}
 ```
 

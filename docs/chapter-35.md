@@ -426,13 +426,13 @@ static Value *EmitReadModifyWriteValue(int Operator, Value *LeftValue,
   if (LeftType == ValueType::Pointer) {
     RightValue = EmitImplicitCast(RightValue, RightType, ValueType::Int64);
     if (!RightValue)
-      return LogErrorV("Type mismatch in assignment");
+      return LogErrorValue("Type mismatch in assignment");
     if (Operator == tok_minus)
       RightValue = TheBuilder->CreateNeg(RightValue, "negindex");
     ValueType ElementType = ValueType::Error;
     string ElementTypeInfo;
     if (!DecodePointerType(LeftTypeInfo, ElementType, ElementTypeInfo))
-      return LogErrorV("Invalid pointer type metadata");
+      return LogErrorValue("Invalid pointer type metadata");
     return TheBuilder->CreateInBoundsGEP(
         LLVMTypeFor(ElementType, ElementTypeInfo), LeftValue, RightValue,
         "ptrarith");
@@ -440,7 +440,7 @@ static Value *EmitReadModifyWriteValue(int Operator, Value *LeftValue,
 
   RightValue = EmitImplicitCast(RightValue, RightType, LeftType);
   if (!RightValue)
-    return LogErrorV("Type mismatch in assignment");
+    return LogErrorValue("Type mismatch in assignment");
   if (IsFloatType(LeftType)) {
     if (Operator == tok_plus)
       return TheBuilder->CreateFAdd(LeftValue, RightValue, "addtmp");
@@ -470,7 +470,7 @@ static Value *EmitReadModifyWriteValue(int Operator, Value *LeftValue,
 Value *CompoundAssignmentExpressionNode::codegen() {
   Value *Address = Left->codegenAddress();
   if (!Address)
-    return LogErrorV("Assignment target must be assignable");
+    return LogErrorValue("Assignment target must be assignable");
   Value *LeftValue = TheBuilder->CreateLoad(
       LLVMTypeFor(getType(), getStructName()), Address, "rmw.old");
   Value *RightValue = Right->codegen();
@@ -517,7 +517,7 @@ Codegen loads the old value through `Operand->codegenAddress()`, computes `old Â
 Value *IncrementDecrementExpressionNode::codegen() {
   Value *Address = Operand->codegenAddress();
   if (!Address)
-    return LogErrorV("Increment/decrement target must be assignable");
+    return LogErrorValue("Increment/decrement target must be assignable");
   Value *OldValue = TheBuilder->CreateLoad(
       LLVMTypeFor(getType(), getStructName()), Address, "incdec.old");
   Value *One = nullptr;
