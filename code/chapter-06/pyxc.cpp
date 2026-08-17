@@ -42,8 +42,8 @@ enum Token {
   tok_less = '<',
 };
 
-static string Name; // Filled in if tok_name
-static double NumberValue;        // Filled in if tok_number
+static string Name;          // Filled in if tok_name
+static double NumberValue;   // Filled in if tok_number
 static string NumberLiteral; // Filled in if tok_number, used in error messages
 
 // Keywords like `def`. The lexer will return the
@@ -55,9 +55,8 @@ static map<string, Token> Keywords = {{"def", tok_def}};
 static map<int, string> TokenNames = [] {
   // I list tokens that are not single characters.
   static map<int, string> Names = {
-      {tok_eof, "end of input"}, {tok_eol, "newline"},
-      {tok_error, "error"},      {tok_def, "'def'"},
-      {tok_name, "name"}, {tok_number, "number"},
+      {tok_eof, "end of input"}, {tok_eol, "newline"}, {tok_error, "error"},
+      {tok_def, "'def'"},        {tok_name, "name"},   {tok_number, "number"},
   };
 
   // I add a readable name for every single-character value.
@@ -146,7 +145,8 @@ public:
 
 static SourceManager PyxcSourceManager;
 static void PrintErrorSourceContext(SourceLocation Location);
-static void LogInvalidNumberLiteralAtLocation(const string &Literal, SourceLocation Location);
+static void LogInvalidNumberLiteralAtLocation(const string &Literal,
+                                         SourceLocation Location);
 
 /// advance - I return the next character, normalizing `\r\n` (Windows)
 /// and bare `\r` (Old Macs) into `\n`.
@@ -410,7 +410,8 @@ class BinaryExpressionNode : public ExpressionNode {
   unique_ptr<ExpressionNode> Left, Right;
 
 public:
-  BinaryExpressionNode(char Operator, unique_ptr<ExpressionNode> Left, unique_ptr<ExpressionNode> Right)
+  BinaryExpressionNode(char Operator, unique_ptr<ExpressionNode> Left,
+                       unique_ptr<ExpressionNode> Right)
       : Operator(Operator), Left(std::move(Left)), Right(std::move(Right)) {}
 };
 
@@ -430,13 +431,14 @@ class CallExpressionNode : public ExpressionNode {
   vector<unique_ptr<ExpressionNode>> Arguments;
 
 public:
-  CallExpressionNode(const string &Callee, vector<unique_ptr<ExpressionNode>> Arguments)
+  CallExpressionNode(const string &Callee,
+                     vector<unique_ptr<ExpressionNode>> Arguments)
       : Callee(Callee), Arguments(std::move(Arguments)) {}
 };
 
-/// FunctionSignatureNode - This class represents the "function signature" for a function,
-/// which captures its name, and its parameter names (thus implicitly the number
-/// of parameters the function takes).
+/// FunctionSignatureNode - This class represents the "function signature" for a
+/// function, which captures its name, and its parameter names (thus implicitly
+/// the number of parameters the function takes).
 class FunctionSignatureNode {
   string Name;
   vector<string> Parameters;
@@ -444,7 +446,6 @@ class FunctionSignatureNode {
 public:
   FunctionSignatureNode(const string &Name, vector<string> Parameters)
       : Name(Name), Parameters(std::move(Parameters)) {}
-
 };
 
 /// FunctionDefinitionNode - This class represents a function definition itself.
@@ -453,7 +454,8 @@ class FunctionDefinitionNode {
   unique_ptr<ExpressionNode> Body;
 
 public:
-  FunctionDefinitionNode(unique_ptr<FunctionSignatureNode> Signature, unique_ptr<ExpressionNode> Body)
+  FunctionDefinitionNode(unique_ptr<FunctionSignatureNode> Signature,
+                         unique_ptr<ExpressionNode> Body)
       : Signature(std::move(Signature)), Body(std::move(Body)) {}
 };
 
@@ -464,9 +466,10 @@ public:
 //===----------------------------------------===//
 
 /// CurrentToken is the current token the parser is looking at.
-/// getNextToken reads the next token from the lexer and stores it in CurrentToken.
-/// Every parse function assumes CurrentToken is already loaded before it is called,
-/// and leaves CurrentToken pointing at the first token it did not consume.
+/// getNextToken reads the next token from the lexer and stores it in
+/// CurrentToken. Every parse function assumes CurrentToken is already loaded
+/// before it is called, and leaves CurrentToken pointing at the first token it
+/// did not consume.
 static int CurrentToken;
 static int getNextToken() { return CurrentToken = getToken(); }
 
@@ -752,8 +755,9 @@ static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
 /// top-level-expression
 ///   = expression ;
 /// A top-level expression (e.g. "1 + 2") is wrapped in an anonymous function
-/// so it fits the same FunctionDefinitionNode shape as everything else. When I add JIT
-/// execution later, I'll look up "__anon_expr" and call it to get the result.
+/// so it fits the same FunctionDefinitionNode shape as everything else. When I
+/// add JIT execution later, I'll look up "__anon_expr" and call it to get the
+/// result.
 static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
   auto Body = ParseExpression();
   if (!Body)
@@ -790,29 +794,33 @@ static void DiscardRestOfLine() {
 }
 
 static void HandleFunctionDefinition() {
-  if (ParseFunctionDefinition()) {
-    if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)));
-      DiscardRestOfLine();
-      return;
-    }
-    fprintf(stderr, "Parsed a function definition.\n");
-  } else {
+  if (!ParseFunctionDefinition()) {
     DiscardRestOfLine();
+    return;
   }
+
+  if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
+    LogErrorExpression("Unexpected " + FormatTokenForMessage(CurrentToken));
+    DiscardRestOfLine();
+    return;
+  }
+
+  fprintf(stderr, "Parsed a function definition.\n");
 }
 
 static void HandleTopLevelExpression() {
-  if (ParseTopLevelExpression()) {
-    if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)));
-      DiscardRestOfLine();
-      return;
-    }
-    fprintf(stderr, "Parsed a top-level expression.\n");
-  } else {
+  if (!ParseTopLevelExpression()) {
     DiscardRestOfLine();
+    return;
   }
+
+  if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
+    LogErrorExpression("Unexpected " + FormatTokenForMessage(CurrentToken));
+    DiscardRestOfLine();
+    return;
+  }
+
+  fprintf(stderr, "Parsed a top-level expression.\n");
 }
 
 /// MainLoop - Dispatch loop for the REPL.
@@ -829,13 +837,13 @@ static void HandleTopLevelExpression() {
 static void MainLoop() {
   while (CurrentToken != tok_eof) {
     switch (CurrentToken) {
-    case tok_error:
-      DiscardRestOfLine();
-      break;
     case tok_eol:
       // For a bare newline, I print a fresh prompt and read the next token.
       fprintf(stderr, "ready> ");
       getNextToken();
+      break;
+    case tok_error:
+      DiscardRestOfLine();
       break;
     case tok_def:
       HandleFunctionDefinition();

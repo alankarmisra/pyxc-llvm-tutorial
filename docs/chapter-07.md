@@ -574,28 +574,20 @@ After code generation succeeds, I print the IR for the current input:
 
 ```cppdiff
 *static void HandleFunctionDefinition() {
--  if (ParseFunctionDefinition()) {
--    if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
--      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)));
--      DiscardRestOfLine();
--      return;
--    }
--    fprintf(stderr, "Parsed a function definition.\n");
--  } else {
--    DiscardRestOfLine();
--  }
+-  if (!ParseFunctionDefinition()) {
 +  auto FunctionDefinition = ParseFunctionDefinition();
 +  if (!FunctionDefinition) {
-+    DiscardRestOfLine();
-+    return;
-+  }
-+
-+  if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
-+    LogErrorExpression("Unexpected " + FormatTokenForMessage(CurrentToken));
-+    DiscardRestOfLine();
-+    return;
-+  }
-+
+*    DiscardRestOfLine();
+*    return;
+*  }
+*
+*  if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
+*    LogErrorExpression("Unexpected " + FormatTokenForMessage(CurrentToken));
+*    DiscardRestOfLine();
+*    return;
+*  }
+*
+-  fprintf(stderr, "Parsed a function definition.\n");
 +  if (auto *FunctionIR = FunctionDefinition->codegen()) {
 +    fprintf(stderr, "Parsed a function definition.\n");
 +    FunctionIR->print(errs());
@@ -606,28 +598,20 @@ After code generation succeeds, I print the IR for the current input:
 
 ```cppdiff
 *static void HandleTopLevelExpression() {
--  if (ParseTopLevelExpression()) {
--    if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
--      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)));
--      DiscardRestOfLine();
--      return;
--    }
--    fprintf(stderr, "Parsed a top-level expression.\n");
--  } else {
--    DiscardRestOfLine();
--  }
+-  if (!ParseTopLevelExpression()) {
 +  auto FunctionDefinition = ParseTopLevelExpression();
 +  if (!FunctionDefinition) {
-+    DiscardRestOfLine();
-+    return;
-+  }
-+
-+  if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
-+    LogErrorExpression("Unexpected " + FormatTokenForMessage(CurrentToken));
-+    DiscardRestOfLine();
-+    return;
-+  }
-+
+*    DiscardRestOfLine();
+*    return;
+*  }
+*
+*  if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
+*    LogErrorExpression("Unexpected " + FormatTokenForMessage(CurrentToken));
+*    DiscardRestOfLine();
+*    return;
+*  }
+*
+-  fprintf(stderr, "Parsed a top-level expression.\n");
 +  if (auto *FunctionIR = FunctionDefinition->codegen()) {
 +    fprintf(stderr, "Parsed a top-level expression.\n");
 +    FunctionIR->print(errs());
