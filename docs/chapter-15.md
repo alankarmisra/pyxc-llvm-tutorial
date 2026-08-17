@@ -236,7 +236,7 @@ Value *VarStatementNode::codegen() {
 
       auto *Global = TheModule->getNamedGlobal(VarName);
       if (Global && !Global->isDeclaration())
-        return LogErrorV("Global variable already defined");
+        return LogErrorValue("Global variable already defined");
 
       if (!Global) {
         // No global by this name yet in this module — create one with a
@@ -311,7 +311,7 @@ Value *NameExpressionNode::codegen() {
     return TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), Global,
                                Name.c_str());
 
-  return LogErrorV("Unknown variable name");
+  return LogErrorValue("Unknown variable name");
 }
 
 Value *AssignmentStatementNode::codegen() {
@@ -330,7 +330,7 @@ Value *AssignmentStatementNode::codegen() {
     return Value;
   }
 
-  return LogErrorV("Unknown variable name");
+  return LogErrorValue("Unknown variable name");
 }
 ```
 
@@ -355,7 +355,7 @@ if (IsVarDecl) {
   else if (auto *Global = GetGlobalVariable(VarName))
     VariablePointer = Global;
   else
-    return LogErrorV("Unknown variable name");
+    return LogErrorValue("Unknown variable name");
 }
 ```
 

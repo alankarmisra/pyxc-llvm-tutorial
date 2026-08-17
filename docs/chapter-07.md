@@ -70,7 +70,7 @@ LLVM assigns a specific role to each object. To generate IR, I use them as LLVM 
 - I store the functions and global variables I generate in `Module`.
 - I use `IRBuilder` to create LLVM instructions inside those functions.
 
-```diagram
+```ast
                  ┌───────────────────────┐
                  │      LLVMContext      │
                  │-----------------------│
@@ -100,6 +100,22 @@ LLVM assigns a specific role to each object. To generate IR, I use them as LLVM 
                 └───────────────────┘
 ```
 
+<!-- ```ast
+LLVMContext
+├──-> State = "Shared LLVM state, Global Constants, etc."
+├──-> Module
+│       ├──  Holds = "Source file IR"
+│       ├──  Functions
+│       └──  Globals
+├──-> Module
+│       ├──  Holds = "Source file IR"
+│       ├──  Functions
+│       └──  Globals
+└──-> IRBuilder
+        ├──  Role         = "Generates LLVM IR"
+        └──  WritesIRInto -> Module, Module
+``` -->
+
 I create all three objects in one function:
 
 ```cpp
@@ -112,11 +128,9 @@ static void InitializeModuleAndManagers() {
 
 `"PyxcJIT"` is the module identifier. I can choose any name here. When I add file mode later, I will use the source filename instead.
 
-I call the function `InitializeModuleAndManagers` because I will also create optimization managers in [Chapter 8](chapter-08.md).
-
 ## Adding Code Generation to the AST
 
-In Chapters [2](chapter-02.md) and [3](chapter-03.md), I created the syntax tree without generating LLVM IR. I now add a pure virtual `codegen()` method to the base expression class:
+I'm going to add a pure virtual `codegen()` method to the base expression class:
 
 ```cpp
 class ExpressionNode {
@@ -126,7 +140,29 @@ public:
 };
 ```
 
-I implement this method in every derived expression class. Each implementation returns an LLVM `Value*`. LLVM uses `Value` as the base class for values such as constants, instructions, and function arguments.
+I implement this method in every derived expression class. Each implementation returns an LLVM `Value*`. LLVM uses `Value` as the base class for values such as constants, instructions, and function arguments. That means declaring an override in every expression node, for example in `NumberExpressionNode` and `NameExpressionNode`:
+
+```cppdiff
+*class NumberExpressionNode : public ExpressionNode {
+*  double Value;
+*
+*public:
+*  NumberExpressionNode(double Value) : Value(Value) {}
++  llvm::Value *codegen() override;
+*};
+```
+
+```cppdiff
+*class NameExpressionNode : public ExpressionNode {
+*  string Name;
+*
+*public:
+*  NameExpressionNode(const string &Name) : Name(Name) {}
++  Value *codegen() override;
+*};
+```
+
+I add the same `Value *codegen() override;` declaration to `BinaryExpressionNode`, `UnaryExpressionNode`, and `CallExpressionNode`, the remaining classes that derive from `ExpressionNode`.
 
 A function signature and a function definition are not expressions, so they do not derive from `ExpressionNode`. I give them `codegen()` methods that return an LLVM `Function*` instead:
 
@@ -171,21 +207,17 @@ Value *NumberExpressionNode::codegen() {
 
 ### Name References
 
-Code generation needs an error helper with the same return type as an expression's `codegen()` method. I add `LogErrorV`, which reports the error and returns `nullptr`:
+Code generation needs an error helper with the same return type as an expression's `codegen()` method. I add `LogErrorValue`, which reports the error and returns `nullptr`:
 
 ```cpp
-Value *LogErrorV(const char *Str) {
-  LogErrorExpression(Str);
+Value *LogErrorValue(const string &ErrorMessage) {
+  LogErrorExpression(ErrorMessage);
   return nullptr;
 }
 ```
 
-This lets me report an error directly from a `Value*` function:
-
-```cpp
-if (SomeErrorCondition)
-  return LogErrorV("Error specifics");
-```
+I pass error messages as strings so I can include details such as the name that
+failed without converting a temporary string to a C string first.
 
 For a name, I need to find the LLVM value that the name represents. I keep those values in `NamedValues`:
 
@@ -195,7 +227,7 @@ static map<std::string, Value *> NamedValues;
 Value *NameExpressionNode::codegen() {
   auto It = NamedValues.find(Name);
   if (It == NamedValues.end() || !It->second)
-    return LogErrorV("Unknown variable name");
+    return LogErrorValue("Unknown variable name: " + Name);
   return It->second;
 }
 ```
@@ -204,7 +236,7 @@ For now, I only add function parameters to this map. When I add local variables 
 
 ### Unary Minus
 
-Chapter 4 added `-` as a prefix operator to the grammar and the parser, but there was no codegen for it yet — every valid line just reported that it parsed. I close that gap now:
+And here's the implementation for a unary minus:
 
 ```cpp
 Value *UnaryExpressionNode::codegen() {
@@ -212,9 +244,11 @@ Value *UnaryExpressionNode::codegen() {
   if (!OperandValue)
     return nullptr;
 
-  if (Operator == tok_minus)
-    return TheBuilder->CreateFNeg(OperandValue, "negtmp");
-  return LogErrorV("invalid unary operator");
+  if (Operator != tok_minus)
+    return LogErrorValue("Invalid unary operator: " +
+                         FormatTokenForMessage(Operator));
+
+  return TheBuilder->CreateFNeg(OperandValue, "negtmp");
 }
 ```
 
@@ -225,6 +259,12 @@ I generate the operand first, then negate it with `CreateFNeg`. For a variable o
 ```
 
 For a constant operand, `IRBuilder` folds the negation into the constant itself instead of emitting an instruction, the same constant folding I see with binary operators below. `-5` becomes the constant `-5.0` directly, with no `fneg` in the IR at all.
+
+The operator check is a safety net: the parser only builds this node for unary
+minus today. I reject anything else first, which leaves the successful
+`CreateFNeg` call as the final return. If that invariant changes accidentally,
+I include the operator in the diagnostic so I can see which token reached code
+generation.
 
 ### Binary Expressions
 
@@ -252,11 +292,11 @@ Value *BinaryExpressionNode::codegen() {
   case tok_percent:
     return TheBuilder->CreateFRem(L, R, "remtmp");
   case tok_less:
-    L = TheBuilder->CreateFCmpULT(L, R, "cmptmp");
+    L = TheBuilder->CreateFCmpOLT(L, R, "cmptmp");
     return TheBuilder->CreateUIToFP(
         L, Type::getDoubleTy(*TheContext), "booltmp");
   default:
-    return LogErrorV("invalid binary operator");
+    return LogErrorValue("Invalid binary operator: " + FormatTokenForMessage(Operator));
   }
 }
 ```
@@ -319,15 +359,15 @@ I need two instructions for `<`:
 
 ```cpp
 case tok_less:
-  L = TheBuilder->CreateFCmpULT(L, R, "cmptmp");
+  L = TheBuilder->CreateFCmpOLT(L, R, "cmptmp");
   return TheBuilder->CreateUIToFP(
       L, Type::getDoubleTy(*TheContext), "booltmp");
 ```
 
-The first instruction compares the two doubles and produces an `i1`, LLVM's one-bit boolean type. `ult` means unordered or less than: the result is true if either operand is a NaN or the left operand is less than the right operand.
+The first instruction compares the two doubles and produces an `i1`, LLVM's one-bit boolean type. `olt` means ordered and less than: the result is true only when neither operand is a NaN and the left operand is less than the right operand. If either operand is a NaN, the comparison is false.
 
 ```llvm
-%cmptmp = fcmp ult double %x, %y
+%cmptmp = fcmp olt double %x, %y
 ```
 
 pyxc currently represents every value as a `double`, so I cannot return the `i1` directly. I use `uitofp` to convert false to `0.0` and true to `1.0`:
@@ -336,7 +376,7 @@ pyxc currently represents every value as a `double`, so I cannot return the `i1`
 %booltmp = uitofp i1 %cmptmp to double
 ```
 
-The `default` case is a safety net, not a reachable path: the parser only ever builds a `BinaryExpressionNode` from an operator this `switch` already handles, so `LogErrorV("invalid binary operator")` never actually fires right now.
+The `default` case is a safety net, not a reachable path: the parser only ever builds a `BinaryExpressionNode` from an operator this `switch` already handles, so `LogErrorValue("Invalid binary operator: " + FormatTokenForMessage(Operator))` never actually fires right now.
 
 ### Function Calls
 
@@ -355,9 +395,8 @@ The syntax tree node stores the function name and its arguments:
 *  vector<unique_ptr<ExpressionNode>> Arguments;
 *
 *public:
--  CallExpressionNode(const string &Callee, vector<unique_ptr<ExpressionNode>> Arguments)
-+  CallExpressionNode(const string &Callee,
-+                     vector<unique_ptr<ExpressionNode>> Arguments)
+*  CallExpressionNode(const string &Callee,
+*                     vector<unique_ptr<ExpressionNode>> Arguments)
 *      : Callee(Callee), Arguments(std::move(Arguments)) {}
 +  Value *codegen() override;
 *};
@@ -369,10 +408,13 @@ I use those fields in `codegen()`:
 Value *CallExpressionNode::codegen() {
   Function *CalleeF = TheModule->getFunction(Callee);
   if (!CalleeF)
-    return LogErrorV("Unknown function referenced");
+    return LogErrorValue("Unknown function: '" + Callee + "'");
 
   if (CalleeF->arg_size() != Arguments.size())
-    return LogErrorV("Incorrect # arguments passed");
+    return LogErrorValue(
+        "Incorrect number of arguments in call to '" + Callee +
+        "': expected " + to_string(CalleeF->arg_size()) + ", got " +
+        to_string(Arguments.size()));
 
   std::vector<Value *> ArgsV;
   for (unsigned i = 0, e = Arguments.size(); i != e; ++i) {
@@ -402,21 +444,21 @@ For a function signature, I add an LLVM function declaration to the module. I ne
 ```cpp
 Function *FunctionSignatureNode::codegen() {
   // I use double for every parameter and for the return value.
-  std::vector<Type *> Doubles(
+  std::vector<Type *> ParameterTypes(
       Parameters.size(), Type::getDoubleTy(*TheContext));
 
-  FunctionType *FT = FunctionType::get(
-      Type::getDoubleTy(*TheContext), Doubles, false /* not variadic */);
+  FunctionType *LLVMFunctionType = FunctionType::get(
+      Type::getDoubleTy(*TheContext), ParameterTypes, false /* not variadic */);
 
-  Function *F = Function::Create(
-      FT, Function::ExternalLinkage, Name, TheModule.get());
+  Function *TheFunction = Function::Create(
+      LLVMFunctionType, Function::ExternalLinkage, Name, TheModule.get());
 
   // I name the arguments so the printed IR is easier to read.
-  unsigned Idx = 0;
-  for (auto &Arg : F->args())
-    Arg.setName(Parameters[Idx++]);
+  unsigned ParameterIndex = 0;
+  for (auto &Argument : TheFunction->args())
+    Argument.setName(Parameters[ParameterIndex++]);
 
-  return F;
+  return TheFunction;
 }
 ```
 
@@ -459,11 +501,14 @@ I generate the complete function in four steps:
 
 ```cpp
 Function *FunctionDefinitionNode::codegen() {
+  const string FunctionName = Signature->getName();
+
   // Step 1: I get an existing declaration or create a new one.
-  Function *TheFunction = TheModule->getFunction(Signature->getName());
+  Function *TheFunction = TheModule->getFunction(FunctionName);
 
   if (TheFunction && !TheFunction->empty()) {
-    LogErrorExpression("Function cannot be redefined.");
+    LogErrorExpression(
+        "Function '" + FunctionName + "' cannot be redefined");
     return nullptr;
   }
 
@@ -477,10 +522,12 @@ Function *FunctionDefinitionNode::codegen() {
   BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
   TheBuilder->SetInsertPoint(BB);
 
-  // Step 3: I make the parameters available to the body.
+  // Step 3: I map each parameter name to its LLVM value. When I generate the
+  // body, I resolve each parameter reference through this table in
+  // NameExpressionNode::codegen().
   NamedValues.clear();
-  for (auto &Arg : TheFunction->args())
-    NamedValues[std::string(Arg.getName())] = &Arg;
+  for (auto &Argument : TheFunction->args())
+    NamedValues[std::string(Argument.getName())] = &Argument;
 
   // Step 4: I generate the body, return its value, and verify the function.
   if (Value *RetVal = Body->codegen()) {
@@ -529,7 +576,7 @@ After code generation succeeds, I print the IR for the current input:
 *static void HandleFunctionDefinition() {
 -  if (ParseFunctionDefinition()) {
 -    if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
--      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)));
 -      DiscardRestOfLine();
 -      return;
 -    }
@@ -558,7 +605,7 @@ After code generation succeeds, I print the IR for the current input:
 *static void HandleTopLevelExpression() {
 -  if (ParseTopLevelExpression()) {
 -    if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
--      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)));
 -      DiscardRestOfLine();
 -      return;
 -    }

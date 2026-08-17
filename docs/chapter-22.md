@@ -323,7 +323,7 @@ case tok_caret: {
   L = EmitImplicitCast(L, LType, ResultType);
   R = EmitImplicitCast(R, RType, ResultType);
   if (!L || !R)
-    return LogErrorV("Type mismatch in binary operator");
+    return LogErrorValue("Type mismatch in binary operator");
   if (Operator == tok_ampersand)
     return TheBuilder->CreateAnd(L, R, "bwand");
   if (Operator == tok_pipe)
@@ -334,7 +334,7 @@ case tok_shift_left:
 case tok_shift_right: {
   R = EmitCast(R, RType, LType);
   if (!R)
-    return LogErrorV("Type mismatch in shift operator");
+    return LogErrorValue("Type mismatch in shift operator");
   if (Operator == tok_shift_left)
     return TheBuilder->CreateShl(L, R, "shltmp");
   return IsUnsignedIntType(LType)
@@ -360,7 +360,7 @@ Each bitwise operator maps to a single LLVM instruction: `and`, `or`, or `xor`. 
 +  if (Opcode == tok_tilde)
 +    return TheBuilder->CreateNot(Operator, "bnottmp");
 *
-*  return LogErrorV("Unknown unary operator");
+*  return LogErrorValue("Invalid unary operator: " + FormatTokenForMessage(Opcode));
 *}
 ```
 

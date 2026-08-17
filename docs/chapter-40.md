@@ -446,7 +446,7 @@ Key points:
 +      }
 +      string TraitName = Name;
 +      if (!TraitTypes.count(TraitName)) {
-+        LogErrorExpression(("Unknown trait '" + TraitName + "'").c_str());
++        LogErrorExpression(("Unknown trait '" + TraitName + "'"));
 +        return false;
 +      }
 +      if (!SeenTraits.insert(TraitName).second) {
@@ -469,7 +469,7 @@ Key points:
 +    getNextToken(); // eat ')'
 +  }
 +  if (CurrentToken != tok_colon) {
-*    LogErrorExpression((string("Expected ':' after ") + KindName + " name").c_str());
+*    LogErrorExpression((string("Expected ':' after ") + KindName + " name"));
 *    return false;
 *  }
 *  getNextToken(); // eat ':'
@@ -495,7 +495,7 @@ Right after the class body's closing `DEDENT`, if the class declared any traits,
 
 ```cppdiff
 *  if (CurrentToken != tok_dedent) {
-*    LogErrorExpression((string("Expected dedent after ") + KindName + " body").c_str());
+*    LogErrorExpression((string("Expected dedent after ") + KindName + " body"));
 *    return false;
 *  }
 *  StructTypes[AggregateName] = std::move(Info);

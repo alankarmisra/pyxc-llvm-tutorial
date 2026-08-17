@@ -339,7 +339,7 @@ static bool ParseImplementationDefinition() {
     return LogErrorExpression("Expected trait name after 'impl'"), false;
   string TraitName = Name;
   if (!TraitTypes.count(TraitName))
-    return LogErrorExpression(("Unknown trait '" + TraitName + "'").c_str()),
+    return LogErrorExpression(("Unknown trait '" + TraitName + "'")),
            false;
   getNextToken(); // eat trait name
   if (CurrentToken != tok_for)
@@ -350,7 +350,7 @@ static bool ParseImplementationDefinition() {
   string ClassName = Name;
   auto Class = StructTypes.find(ClassName);
   if (Class == StructTypes.end())
-    return LogErrorExpression(("Unknown class '" + ClassName + "'").c_str()),
+    return LogErrorExpression(("Unknown class '" + ClassName + "'")),
            false;
   if (!Class->second.IsClass)
     return LogErrorExpression("traits can only be implemented on classes"),

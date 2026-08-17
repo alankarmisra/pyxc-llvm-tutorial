@@ -345,7 +345,7 @@ Because `ParseNameExpressionWithName` (below) already walks `.field` and `[index
 Value *AddrExpressionNode::codegen() {
   Value *Address = Operand->codegenAddress();
   if (!Address)
-    return LogErrorV("addr expects an lvalue");
+    return LogErrorValue("addr expects an lvalue");
   return Address;
 }
 ```
@@ -392,7 +392,7 @@ while (CurrentToken == tok_dot || CurrentToken == tok_lbracket) {
       return LogErrorExpression("Unknown struct type in field access");
     auto Field = Struct->second.FieldIndices.find(Name);
     if (Field == Struct->second.FieldIndices.end())
-      return LogErrorExpression(("Unknown field '" + Name + "'").c_str());
+      return LogErrorExpression(("Unknown field '" + Name + "'"));
     const auto &FieldInfo = Struct->second.Fields[Field->second];
     Result = make_unique<MemberExpressionNode>(
         std::move(Result), Field->second, FieldInfo.Type,
@@ -476,13 +476,13 @@ An assignment whose left side is an lvalue, `p[0] = 99`, goes through `LValueAss
 Value *LValueAssignmentStatementNode::codegen() {
   Value *Address = Left->codegenAddress();
   if (!Address)
-    return LogErrorV("Destination of '=' must be an lvalue");
+    return LogErrorValue("Destination of '=' must be an lvalue");
   Value *AssignedValue = Right->codegen();
   if (!AssignedValue)
     return nullptr;
   AssignedValue = EmitImplicitCast(AssignedValue, Right->getType(), getType());
   if (!AssignedValue)
-    return LogErrorV("Type mismatch in assignment");
+    return LogErrorValue("Type mismatch in assignment");
   TheBuilder->CreateStore(AssignedValue, Address);
   return AssignedValue;
 }
@@ -511,7 +511,7 @@ For pointers to structs, I can chain field access after the index: `p[0].x`. Bec
 Value *MemberExpressionNode::codegenAddress() {
   Value *BaseAddress = Base->codegenAddress();
   if (!BaseAddress)
-    return LogErrorV("Field access requires an lvalue");
+    return LogErrorValue("Field access requires an lvalue");
   return TheBuilder->CreateStructGEP(
       LLVMTypeFor(ValueType::Struct, Base->getStructName()), BaseAddress,
       FieldIndex, "fieldptr");

@@ -355,7 +355,7 @@ This chapter also loosens a rule from [Chapter 36](chapter-36.md): the "at least
 ```cppdiff
 -  if (Info.Fields.empty()) {
 +  if (Info.Fields.empty() && !Info.IsClass) {
-     LogErrorExpression((string(KindName) + " requires at least one field").c_str());
+     LogErrorExpression((string(KindName) + " requires at least one field"));
      return false;
    }
 ```

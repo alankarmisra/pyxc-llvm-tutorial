@@ -671,20 +671,20 @@ void Log(const string &message) {
 
 /// LogErrorExpression* - Error reporting helpers. Each returns nullptr for its respective
 /// type so parse functions can write: return LogErrorExpression("message");
-unique_ptr<ExpressionNode> LogErrorExpression(const char *ErrorMessage) {
+unique_ptr<ExpressionNode> LogErrorExpression(const string &ErrorMessage) {
   SourceLocation Anchor = GetCaretAnchorLocation(CurrentTokenLocation, CurrentToken);
   fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Column,
-          ErrorMessage);
+          ErrorMessage.c_str());
   PrintErrorSourceContext(Anchor);
   return nullptr;
 }
 
-unique_ptr<FunctionSignatureNode> LogErrorSignature(const char *ErrorMessage) {
+unique_ptr<FunctionSignatureNode> LogErrorSignature(const string &ErrorMessage) {
   LogErrorExpression(ErrorMessage);
   return nullptr;
 }
 
-unique_ptr<FunctionDefinitionNode> LogErrorFunction(const char *ErrorMessage) {
+unique_ptr<FunctionDefinitionNode> LogErrorFunction(const string &ErrorMessage) {
   LogErrorExpression(ErrorMessage);
   return nullptr;
 }
@@ -1124,9 +1124,9 @@ static std::unique_ptr<ModuleAnalysisManager> TheMAM;
 static std::map<std::string, std::unique_ptr<FunctionSignatureNode>> FunctionSignatures;
 static ExitOnError ExitOnErr;
 
-/// LogErrorV - Codegen-level error helper. Delegates to LogErrorExpression for printing,
-/// then returns nullptr so codegen callers can write: return LogErrorV("msg");
-Value *LogErrorV(const char *ErrorMessage) {
+/// LogErrorValue - Codegen-level error helper. Delegates to LogErrorExpression for printing,
+/// then returns nullptr so codegen callers can write: return LogErrorValue("msg");
+Value *LogErrorValue(const string &ErrorMessage) {
   LogErrorExpression(ErrorMessage);
   return nullptr;
 }
@@ -1174,7 +1174,7 @@ Value *NumberExpressionNode::codegen() {
 Value *NameExpressionNode::codegen() {
   auto It = NamedValues.find(Name);
   if (It == NamedValues.end() || !It->second)
-    return LogErrorV("Unknown variable name");
+    return LogErrorValue("Unknown variable name: " + Name);
   return It->second;
 }
 
@@ -1184,9 +1184,11 @@ Value *UnaryExpressionNode::codegen() {
   if (!OperandValue)
     return nullptr;
 
-  if (Operator == tok_minus)
-    return TheBuilder->CreateFNeg(OperandValue, "negtmp");
-  return LogErrorV("invalid unary operator");
+  if (Operator != tok_minus)
+    return LogErrorValue("Invalid unary operator: " +
+                         FormatTokenForMessage(Operator));
+
+  return TheBuilder->CreateFNeg(OperandValue, "negtmp");
 }
 
 /// BinaryExpressionNode::codegen - Recursively codegen both operands, then emit the
@@ -1247,7 +1249,7 @@ Value *BinaryExpressionNode::codegen() {
     L = TheBuilder->CreateFCmpOGE(L, R, "cmptmp");
     return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
   default:
-    return LogErrorV("invalid binary operator");
+    return LogErrorValue("Invalid binary operator: " + FormatTokenForMessage(Operator));
   }
 }
 
@@ -1261,10 +1263,13 @@ Value *BinaryExpressionNode::codegen() {
 Value *CallExpressionNode::codegen() {
   Function *CalleeF = getFunction(Callee);
   if (!CalleeF)
-    return LogErrorV("Unknown function referenced");
+    return LogErrorValue("Unknown function: '" + Callee + "'");
 
   if (CalleeF->arg_size() != Arguments.size())
-    return LogErrorV("Incorrect # arguments passed");
+    return LogErrorValue(
+        "Incorrect number of arguments in call to '" + Callee +
+        "': expected " + to_string(CalleeF->arg_size()) + ", got " +
+        to_string(Arguments.size()));
 
   std::vector<Value *> ArgsV;
   for (unsigned i = 0, e = Arguments.size(); i != e; ++i) {
@@ -1455,23 +1460,25 @@ Value *ForExpressionNode::codegen() {
 /// runtime, and what lets 'def foo(...)' be called from later expressions in
 /// the same session.
 ///
-/// Arg.setName() is optional — it only affects the printed IR, making output
+/// Argument.setName() is optional — it only affects the printed IR, making output
 /// read as 'double %a, double %b' rather than 'double %0, double %1'.
 Function *FunctionSignatureNode::codegen() {
   // All parameters and the return value are double.
-  std::vector<Type *> Doubles(Parameters.size(), Type::getDoubleTy(*TheContext));
-  FunctionType *FT = FunctionType::get(Type::getDoubleTy(*TheContext), Doubles,
-                                       false /* not variadic */);
+  std::vector<Type *> ParameterTypes(Parameters.size(), Type::getDoubleTy(*TheContext));
+  FunctionType *LLVMFunctionType = FunctionType::get(
+      Type::getDoubleTy(*TheContext), ParameterTypes,
+      false /* not variadic */);
 
-  Function *F =
-      Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
+  Function *TheFunction =
+      Function::Create(LLVMFunctionType, Function::ExternalLinkage, Name,
+                       TheModule.get());
 
   // Name arguments so the printed IR is readable.
-  unsigned Idx = 0;
-  for (auto &Arg : F->args())
-    Arg.setName(Parameters[Idx++]);
+  unsigned ParameterIndex = 0;
+  for (auto &Argument : TheFunction->args())
+    Argument.setName(Parameters[ParameterIndex++]);
 
-  return F;
+  return TheFunction;
 }
 
 /// FunctionDefinitionNode::codegen - Generate IR for a complete function definition.
@@ -1497,16 +1504,19 @@ Function *FunctionSignatureNode::codegen() {
 ///    optimisation pipeline. On failure, eraseFromParent() removes the
 ///    partially-built function so no broken declaration is left in the module.
 Function *FunctionDefinitionNode::codegen() {
+  const string FunctionName = Signature->getName();
+
   // Step 1: register the function signature and resolve the Function*.
   auto &P = *Signature;
-  FunctionSignatures[Signature->getName()] = std::move(Signature);
+  FunctionSignatures[FunctionName] = std::move(Signature);
 
   // Step 1: reuse an existing `extern` declaration if one exists.
-  Function *TheFunction = getFunction(P.getName());
+  Function *TheFunction = getFunction(FunctionName);
 
   // Bail if the function is already fully defined — redefinition is an error.
   if (TheFunction && !TheFunction->empty()) {
-    LogErrorExpression("Function cannot be redefined.");
+    LogErrorExpression(
+        "Function '" + FunctionName + "' cannot be redefined");
     return nullptr;
   }
 
@@ -1517,10 +1527,12 @@ Function *FunctionDefinitionNode::codegen() {
   BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
   TheBuilder->SetInsertPoint(BB);
 
-  // Step 3: populate NamedValues with this function's arguments.
+  // Step 3: I map each parameter name to its LLVM value. When I generate the
+  // body, I resolve each parameter reference through this table in
+  // NameExpressionNode::codegen().
   NamedValues.clear();
-  for (auto &Arg : TheFunction->args())
-    NamedValues[std::string(Arg.getName())] = &Arg;
+  for (auto &Argument : TheFunction->args())
+    NamedValues[std::string(Argument.getName())] = &Argument;
 
   // Step 4: codegen the body, optimise, verify, or erase on failure.
   if (Value *RetVal = Body->codegen()) {
@@ -1624,7 +1636,7 @@ static void HandleFunctionDefinition() {
   auto FunctionDefinition = ParseFunctionDefinition();
   if (!FunctionDefinition || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (FunctionDefinition)
-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)));
     DiscardRestOfLine();
     return;
   }
@@ -1652,7 +1664,7 @@ static void HandleExtern() {
 
   if (!Signature || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (Signature)
-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)));
     DiscardRestOfLine();
     return;
   }
@@ -1699,7 +1711,7 @@ static void HandleTopLevelExpression() {
   auto FunctionDefinition = ParseTopLevelExpression();
   if (!FunctionDefinition || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (FunctionDefinition)
-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)));
     DiscardRestOfLine();
     return;
   }

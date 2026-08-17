@@ -1,6 +1,6 @@
 # RUN: not %pyxc --emit llvm-ir -o %t.ll %s 2>&1 | FileCheck %s
 # CHECK: {{[Ee]rror}}
-# CHECK: Incorrect # arguments passed
+# CHECK: Incorrect number of arguments in construction of 'Point': expected 2, got 1
 
 class Point:
   x: int

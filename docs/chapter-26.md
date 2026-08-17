@@ -168,7 +168,7 @@ if ((Operator == tok_plus || Operator == tok_minus) &&
     Index = L;
   }
   if (!Pointer || !Index)
-    return LogErrorV("Type mismatch in pointer arithmetic");
+    return LogErrorValue("Type mismatch in pointer arithmetic");
   ValueType IndexType = LType == ValueType::Pointer ? RType : LType;
   Index = TheBuilder->CreateIntCast(Index, Type::getInt64Ty(*TheContext),
                                  !IsUnsignedIntType(IndexType), "ptrindex");
@@ -177,7 +177,7 @@ if ((Operator == tok_plus || Operator == tok_minus) &&
   ValueType ElementType = ValueType::Error;
   string ElementStructName;
   if (!DecodePointerType(getStructName(), ElementType, ElementStructName))
-    return LogErrorV("Invalid pointer type metadata");
+    return LogErrorValue("Invalid pointer type metadata");
   return TheBuilder->CreateInBoundsGEP(
       LLVMTypeFor(ElementType, ElementStructName), Pointer, Index,
       "ptrarith");
@@ -215,7 +215,7 @@ if (Operator == tok_minus && getType() == ValueType::Int64 &&
   string ElementStructName;
   if (!DecodePointerType(Left->getStructName(), ElementType,
                          ElementStructName))
-    return LogErrorV("Invalid pointer type metadata");
+    return LogErrorValue("Invalid pointer type metadata");
   return TheBuilder->CreatePtrDiff(
       LLVMTypeFor(ElementType, ElementStructName), L, R, "ptrdiff");
 }

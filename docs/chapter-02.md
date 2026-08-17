@@ -281,16 +281,16 @@ Looking ahead one token turns out to be enough: I can always tell what I'm parsi
 I make every parsing function return a `unique_ptr` to one of three node types, `ExpressionNode` (or a subclass of it), `FunctionSignatureNode`, or `FunctionDefinitionNode`, depending on the node I am parsing. If parsing fails, I return `nullptr` instead and print an error message. Since C++ can't overload on return type, I need three separate helpers to do that:
 
 ```cpp
-unique_ptr<ExpressionNode> LogErrorExpression(const char *ErrorMessage) {
-  fprintf(stderr, "Error: %s (token: %s)\n", ErrorMessage,
+unique_ptr<ExpressionNode> LogErrorExpression(const string &ErrorMessage) {
+  fprintf(stderr, "Error: %s (token: %s)\n", ErrorMessage.c_str(),
           TokenNames.at(CurrentToken).c_str());
   return nullptr;
 }
-unique_ptr<FunctionSignatureNode> LogErrorSignature(const char *ErrorMessage) {
+unique_ptr<FunctionSignatureNode> LogErrorSignature(const string &ErrorMessage) {
   LogErrorExpression(ErrorMessage);
   return nullptr;
 }
-unique_ptr<FunctionDefinitionNode> LogErrorFunction(const char *ErrorMessage) {
+unique_ptr<FunctionDefinitionNode> LogErrorFunction(const string &ErrorMessage) {
   LogErrorExpression(ErrorMessage);
   return nullptr;
 }
@@ -778,9 +778,9 @@ By the time I reach `getNextToken()`, the error has already been printed by `Log
 I fix this by printing the prompt from inside `LogErrorExpression()` immediately after the error message, before I reach the blocking `getNextToken()` call:
 
 ```cppdiff
-*unique_ptr<ExpressionNode> LogErrorExpression(const char *ErrorMessage) {
--  fprintf(stderr, "Error: %s (token: %s)\n", ErrorMessage,
-+  fprintf(stderr, "Error: %s (token: %s)\nready> ", ErrorMessage,
+*unique_ptr<ExpressionNode> LogErrorExpression(const string &ErrorMessage) {
+-  fprintf(stderr, "Error: %s (token: %s)\n", ErrorMessage.c_str(),
++  fprintf(stderr, "Error: %s (token: %s)\nready> ", ErrorMessage.c_str(),
 *          TokenNames.at(CurrentToken).c_str());
 *  return nullptr;
 *}

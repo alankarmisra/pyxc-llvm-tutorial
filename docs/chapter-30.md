@@ -366,9 +366,12 @@ The fix is to stop leaving that metadata behind at the call site:
 static unique_ptr<ExpressionNode> ParseNameExpressionWithName(const string &ParsedName) {
   // ...
   if (!Signature)
-    return LogErrorExpression("Unknown function referenced");
+    return LogErrorExpression("Unknown function: '" + ParsedName + "'");
   if (Signature->getNumParameters() != Arguments.size())
-    return LogErrorExpression("Incorrect # arguments passed");
+    return LogErrorExpression(
+        "Incorrect number of arguments in call to '" + ParsedName +
+        "': expected " + to_string(Signature->getNumParameters()) +
+        ", got " + to_string(Arguments.size()));
 
   for (size_t i = 0; i < Arguments.size(); ++i) {
     // ...

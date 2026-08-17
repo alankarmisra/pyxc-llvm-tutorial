@@ -283,7 +283,7 @@ Codegen doesn't emit an instruction, since there's nothing to compute at runtime
 Value *SizeofExpressionNode::codegen() {
   llvm::Type *TargetLLVMType = LLVMTypeFor(TargetType, TargetTypeInfo);
   if (!TargetLLVMType)
-    return LogErrorV("Invalid sizeof target type");
+    return LogErrorValue("Invalid sizeof target type");
   uint64_t Bytes = TheModule->getDataLayout()
                        .getTypeAllocSize(TargetLLVMType)
                        .getFixedValue();

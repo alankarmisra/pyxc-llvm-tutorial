@@ -28,7 +28,7 @@
 # BINARY_UNDEFINED: Unknown variable name
 # BINARY_RHS_UNDEFINED: Unknown variable name
 # CALL_ARG_UNDEFINED: Unknown variable name
-# REDEFINITION: Function cannot be redefined.
+# REDEFINITION: Function 'foo' cannot be redefined
 
 # coverage error paths: exercise lexer errors, comments ending at EOF, failed
 # expressions inside parentheses and calls, malformed empty parameter lists,

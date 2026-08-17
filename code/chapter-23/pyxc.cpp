@@ -318,7 +318,7 @@ struct SourceLocation {
 };
 static SourceLocation CurrentTokenLocation;
 static SourceLocation LexerLocation = {1, 0};
-static void LogErrorAtLoc(const char *ErrorMessage, SourceLocation Loc);
+static void LogErrorAtLoc(const string &ErrorMessage, SourceLocation Loc);
 static void LogInvalidNumberLiteralAtLocation(const string &Literal, SourceLocation Location);
 
 /// SourceManager - Buffers every source line as it is read so that error
@@ -837,14 +837,14 @@ static void PrintErrorSourceContext(SourceLocation Location) {
 }
 
 
-static void LogErrorAtLoc(const char *ErrorMessage, SourceLocation Loc) {
-  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Loc.Line, Loc.Column, ErrorMessage);
+static void LogErrorAtLoc(const string &ErrorMessage, SourceLocation Loc) {
+  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Loc.Line, Loc.Column, ErrorMessage.c_str());
   PrintErrorSourceContext(Loc);
 }
 
 static void LogInvalidNumberLiteralAtLocation(const string &Literal,
                                               SourceLocation Location) {
-  LogErrorAtLoc(("invalid number literal '" + Literal + "'").c_str(), Location);
+  LogErrorAtLoc(("invalid number literal '" + Literal + "'"), Location);
 }
 
 //===----------------------------------------===//
@@ -1367,19 +1367,19 @@ void Log(const string &message) {
 
 /// LogErrorExpression* - Error reporting helpers. Each returns nullptr for its respective
 /// type so parse functions can write: return LogErrorExpression("message");
-unique_ptr<ExpressionNode> LogErrorExpression(const char *ErrorMessage) {
+unique_ptr<ExpressionNode> LogErrorExpression(const string &ErrorMessage) {
   HadError = true;
   SourceLocation Anchor = GetCaretAnchorLocation(CurrentTokenLocation, CurrentToken);
   LogErrorAtLoc(ErrorMessage, Anchor);
   return nullptr;
 }
 
-unique_ptr<FunctionSignatureNode> LogErrorSignature(const char *ErrorMessage) {
+unique_ptr<FunctionSignatureNode> LogErrorSignature(const string &ErrorMessage) {
   LogErrorExpression(ErrorMessage);
   return nullptr;
 }
 
-unique_ptr<FunctionDefinitionNode> LogErrorFunction(const char *ErrorMessage) {
+unique_ptr<FunctionDefinitionNode> LogErrorFunction(const string &ErrorMessage) {
   LogErrorExpression(ErrorMessage);
   return nullptr;
 }
@@ -1640,9 +1640,12 @@ static unique_ptr<ExpressionNode> ParseNameExpressionWithName(const string &Pars
   getNextToken();
 
   if (!Signature)
-    return LogErrorExpression("Unknown function referenced");
+    return LogErrorExpression("Unknown function: '" + ParsedName + "'");
   if (Signature->getNumParameters() != Arguments.size())
-    return LogErrorExpression("Incorrect # arguments passed");
+    return LogErrorExpression(
+        "Incorrect number of arguments in call to '" + ParsedName +
+        "': expected " + to_string(Signature->getNumParameters()) +
+        ", got " + to_string(Arguments.size()));
 
   for (size_t i = 0; i < Arguments.size(); ++i) {
     ValueType ArgType = Arguments[i]->getType();
@@ -3219,9 +3222,9 @@ static bool IsAssignable(ValueType Dest, ValueType Src) {
   return false;
 }
 
-/// LogErrorV - Codegen-level error helper. Delegates to LogErrorExpression for printing,
-/// then returns nullptr so codegen callers can write: return LogErrorV("msg");
-Value *LogErrorV(const char *ErrorMessage) {
+/// LogErrorValue - Codegen-level error helper. Delegates to LogErrorExpression for printing,
+/// then returns nullptr so codegen callers can write: return LogErrorValue("msg");
+Value *LogErrorValue(const string &ErrorMessage) {
   LogErrorExpression(ErrorMessage);
   return nullptr;
 }
@@ -3396,7 +3399,7 @@ Value *NumberExpressionNode::codegen() {
     return ConstantInt::get(*TheContext, IntegerValue);
   if (IsFloatType(getType()))
     return ConstantFP::get(*TheContext, FloatValue);
-  return LogErrorV("Unknown numeric literal type");
+  return LogErrorValue("Unknown numeric literal type");
 }
 
 Value *BoolExpressionNode::codegen() {
@@ -3414,7 +3417,7 @@ Value *NameExpressionNode::codegen() {
   if (auto *GV = GetGlobalVariable(Name))
     return TheBuilder->CreateLoad(LLVMTypeFor(getType()), GV, Name.c_str());
 
-  return LogErrorV("Unknown variable name");
+  return LogErrorValue("Unknown variable name: " + Name);
 }
 
 /// AssignmentStatementNode::codegen - Evaluate the Right, store it into the variable's
@@ -3425,7 +3428,7 @@ Value *AssignmentStatementNode::codegen() {
     return nullptr;
   Val = EmitImplicitCast(Val, Expr->getType(), getType());
   if (!Val)
-    return LogErrorV("Type mismatch in assignment");
+    return LogErrorValue("Type mismatch in assignment");
 
   auto It = NamedValues.find(Name);
   if (It != NamedValues.end() && It->second) {
@@ -3438,7 +3441,7 @@ Value *AssignmentStatementNode::codegen() {
     return Val;
   }
 
-  return LogErrorV("Unknown variable name");
+  return LogErrorValue("Unknown variable name");
 }
 
 /// ReturnStatementNode::codegen - Emit a return from the current function.
@@ -3453,7 +3456,7 @@ Value *ReturnStatementNode::codegen() {
     return nullptr;
   RetVal = EmitImplicitCast(RetVal, Expr->getType(), CurrentFunctionReturnType);
   if (!RetVal)
-    return LogErrorV("Type mismatch in return");
+    return LogErrorValue("Type mismatch in return");
   TheBuilder->CreateRet(RetVal);
   return RetVal;
 }
@@ -3478,7 +3481,7 @@ Value *BlockStatementNode::codegen() {
   NamedValues = SavedBindings;
 
   if (!Last)
-    return LogErrorV("Empty block");
+    return LogErrorValue("Empty block");
 
   // Blocks are statement sequences. If control reaches the end without an
   // explicit return, the block's implicit value is always 0.0.
@@ -3559,7 +3562,7 @@ Value *BinaryExpressionNode::codegen() {
     L = EmitImplicitCast(L, LType, getType());
     R = EmitImplicitCast(R, RType, getType());
     if (!L || !R)
-      return LogErrorV("Type mismatch in arithmetic");
+      return LogErrorValue("Type mismatch in arithmetic");
     if (IsFloatType(getType())) {
       if (Operator == tok_plus)
         return TheBuilder->CreateFAdd(L, R, "addtmp");
@@ -3592,7 +3595,7 @@ Value *BinaryExpressionNode::codegen() {
     L = EmitImplicitCast(L, LType, ResultType);
     R = EmitImplicitCast(R, RType, ResultType);
     if (!L || !R)
-      return LogErrorV("Type mismatch in binary operator");
+      return LogErrorValue("Type mismatch in binary operator");
     if (Operator == tok_ampersand)
       return TheBuilder->CreateAnd(L, R, "bwand");
     if (Operator == tok_pipe)
@@ -3603,7 +3606,7 @@ Value *BinaryExpressionNode::codegen() {
   case tok_shift_right: {
     R = EmitCast(R, RType, LType);
     if (!R)
-      return LogErrorV("Type mismatch in shift operator");
+      return LogErrorValue("Type mismatch in shift operator");
     if (Operator == tok_shift_left)
       return TheBuilder->CreateShl(L, R, "shltmp");
     return IsUnsignedIntType(LType)
@@ -3619,7 +3622,7 @@ Value *BinaryExpressionNode::codegen() {
     ValueType CompareType = ValueType::Error;
     if (LType == ValueType::Bool && RType == ValueType::Bool) {
       if (Operator != tok_eq && Operator != tok_neq)
-        return LogErrorV("Type mismatch in comparison");
+        return LogErrorValue("Type mismatch in comparison");
       CompareType = ValueType::Bool;
     } else if (IsFloatType(LType) && IsFloatType(RType)) {
       if (LType == RType)
@@ -3641,7 +3644,7 @@ Value *BinaryExpressionNode::codegen() {
     }
 
     if (CompareType == ValueType::Error)
-      return LogErrorV("Type mismatch in comparison");
+      return LogErrorValue("Type mismatch in comparison");
 
     if (CompareType == ValueType::Bool) {
       if (Operator == tok_eq)
@@ -3652,7 +3655,7 @@ Value *BinaryExpressionNode::codegen() {
     L = EmitImplicitCast(L, LType, CompareType);
     R = EmitImplicitCast(R, RType, CompareType);
     if (!L || !R)
-      return LogErrorV("Type mismatch in comparison");
+      return LogErrorValue("Type mismatch in comparison");
 
     if (IsFloatType(CompareType)) {
       switch (Operator) {
@@ -3697,13 +3700,13 @@ Value *BinaryExpressionNode::codegen() {
         break;
       }
     }
-    return LogErrorV("Type mismatch in comparison");
+    return LogErrorValue("Type mismatch in comparison");
   }
   default:
     break;
   }
 
-  return LogErrorV("invalid binary operator");
+  return LogErrorValue("Invalid binary operator: " + FormatTokenForMessage(Operator));
 }
 
 /// UnaryExpressionNode::codegen - Emit built-in unary minus directly.
@@ -3718,7 +3721,7 @@ Value *UnaryExpressionNode::codegen() {
       return TheBuilder->CreateNeg(Operator, "negtmp");
     if (IsFloatType(getType()))
       return TheBuilder->CreateFNeg(Operator, "negtmp");
-    return LogErrorV("Unary '-' not supported for this type");
+    return LogErrorValue("Unary '-' not supported for this type");
   }
 
   if (Opcode == tok_exclamation)
@@ -3727,7 +3730,7 @@ Value *UnaryExpressionNode::codegen() {
   if (Opcode == tok_tilde)
     return TheBuilder->CreateNot(Operator, "bnottmp");
 
-  return LogErrorV("Unknown unary operator");
+  return LogErrorValue("Invalid unary operator: " + FormatTokenForMessage(Opcode));
 }
 
 /// CastExpressionNode::codegen - Emit explicit int/double casts.
@@ -3737,7 +3740,7 @@ Value *CastExpressionNode::codegen() {
     return nullptr;
   Value *Cast = EmitCast(V, Expr->getType(), TargetType);
   if (!Cast)
-    return LogErrorV("Invalid cast");
+    return LogErrorValue("Invalid cast");
   return Cast;
 }
 
@@ -3751,10 +3754,13 @@ Value *CastExpressionNode::codegen() {
 Value *CallExpressionNode::codegen() {
   Function *CalleeF = getFunction(Callee);
   if (!CalleeF)
-    return LogErrorV("Unknown function referenced");
+    return LogErrorValue("Unknown function: '" + Callee + "'");
 
   if (CalleeF->arg_size() != Arguments.size())
-    return LogErrorV("Incorrect # arguments passed");
+    return LogErrorValue(
+        "Incorrect number of arguments in call to '" + Callee +
+        "': expected " + to_string(CalleeF->arg_size()) + ", got " +
+        to_string(Arguments.size()));
 
   FunctionSignatureNode *Signature = GetFunctionSignature(Callee);
   std::vector<Value *> ArgsV;
@@ -3766,7 +3772,7 @@ Value *CallExpressionNode::codegen() {
       ArgVal =
           EmitImplicitCast(ArgVal, Arguments[i]->getType(), Signature->getParameterType(i));
       if (!ArgVal)
-        return LogErrorV("Argument type mismatch");
+        return LogErrorValue("Argument type mismatch");
     }
     ArgsV.push_back(ArgVal);
   }
@@ -3787,7 +3793,7 @@ Value *IfStatementNode::codegen() {
 
   CondV = ToBool(CondV, Cond->getType());
   if (!CondV)
-    return LogErrorV("Invalid condition type");
+    return LogErrorValue("Invalid condition type");
 
   Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
 
@@ -3845,7 +3851,7 @@ Value *ForStatementNode::codegen() {
     else if (auto *GV = GetGlobalVariable(VarName))
       VarPtr = GV;
     else
-      return LogErrorV("Unknown variable name");
+      return LogErrorValue("Unknown variable name");
   }
 
   Value *StartVal = Start->codegen();
@@ -3853,7 +3859,7 @@ Value *ForStatementNode::codegen() {
     return nullptr;
   StartVal = EmitImplicitCast(StartVal, Start->getType(), VarType);
   if (!StartVal)
-    return LogErrorV("Type mismatch in for loop start");
+    return LogErrorValue("Type mismatch in for loop start");
 
   TheBuilder->CreateStore(StartVal, VarPtr);
 
@@ -3876,7 +3882,7 @@ Value *ForStatementNode::codegen() {
     return nullptr;
   CondVal = ToBool(CondVal, Cond->getType());
   if (!CondVal)
-    return LogErrorV("Invalid loop condition type");
+    return LogErrorValue("Invalid loop condition type");
   TheBuilder->CreateCondBr(CondVal, BodyBB, AfterBB);
 
   TheBuilder->SetInsertPoint(BodyBB);
@@ -3901,7 +3907,7 @@ Value *ForStatementNode::codegen() {
     return nullptr;
   StepVal = EmitImplicitCast(StepVal, Step->getType(), VarType);
   if (!StepVal)
-    return LogErrorV("Type mismatch in for loop step");
+    return LogErrorValue("Type mismatch in for loop step");
   Value *NextVar = nullptr;
   if (VarType == ValueType::Float64)
     NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
@@ -3940,7 +3946,7 @@ Value *WhileStatementNode::codegen() {
       return nullptr;
     ConditionValue = ToBool(ConditionValue, Cond->getType());
     if (!ConditionValue)
-      return LogErrorV("Invalid loop condition type");
+      return LogErrorValue("Invalid loop condition type");
     TheBuilder->CreateCondBr(ConditionValue, BodyBlock, AfterBlock);
   }
 
@@ -3964,7 +3970,7 @@ Value *WhileStatementNode::codegen() {
       return nullptr;
     ConditionValue = ToBool(ConditionValue, Cond->getType());
     if (!ConditionValue)
-      return LogErrorV("Invalid loop condition type");
+      return LogErrorValue("Invalid loop condition type");
     TheBuilder->CreateCondBr(ConditionValue, BodyBlock, AfterBlock);
   }
 
@@ -3979,7 +3985,7 @@ Value *SwitchStatementNode::codegen() {
 
   auto *ConditionType = dyn_cast<IntegerType>(LLVMTypeFor(Condition->getType()));
   if (!ConditionType)
-    return LogErrorV("Switch condition must be an integer type");
+    return LogErrorValue("Switch condition must be an integer type");
 
   Function *FunctionIR = TheBuilder->GetInsertBlock()->getParent();
   BasicBlock *AfterBlock =
@@ -4035,14 +4041,14 @@ Value *SwitchStatementNode::codegen() {
 
 Value *BreakStatementNode::codegen() {
   if (BreakTargetStack.empty())
-    return LogErrorV("'break' used outside of a loop or switch");
+    return LogErrorValue("'break' used outside of a loop or switch");
   TheBuilder->CreateBr(BreakTargetStack.back());
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
 Value *ContinueStatementNode::codegen() {
   if (LoopControlStack.empty())
-    return LogErrorV("'continue' used outside of a loop");
+    return LogErrorValue("'continue' used outside of a loop");
   TheBuilder->CreateBr(LoopControlStack.back().ContinueTarget);
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
@@ -4057,9 +4063,9 @@ Value *VarStatementNode::codegen() {
 
       auto *GV = TheModule->getNamedGlobal(VarName);
       if (GV && !GV->isDeclaration())
-        return LogErrorV("Global variable already defined");
+        return LogErrorValue("Global variable already defined");
       if (GV && GV->getValueType() != LLVMTypeFor(VarType))
-        return LogErrorV("Global variable type mismatch");
+        return LogErrorValue("Global variable type mismatch");
 
       if (!GV) {
         auto *Type = LLVMTypeFor(VarType);
@@ -4080,7 +4086,7 @@ Value *VarStatementNode::codegen() {
         return nullptr;
       InitVal = EmitImplicitCast(InitVal, Init->getType(), VarType);
       if (!InitVal)
-        return LogErrorV("Type mismatch in variable initialization");
+        return LogErrorValue("Type mismatch in variable initialization");
 
       TheBuilder->CreateStore(InitVal, GV);
     }
@@ -4100,7 +4106,7 @@ Value *VarStatementNode::codegen() {
       return nullptr;
     InitVal = EmitImplicitCast(InitVal, Init->getType(), VarType);
     if (!InitVal)
-      return LogErrorV("Type mismatch in variable initialization");
+      return LogErrorValue("Type mismatch in variable initialization");
 
     AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName, VarType);
     TheBuilder->CreateStore(InitVal, Alloca);
@@ -4119,26 +4125,27 @@ Value *VarStatementNode::codegen() {
 /// runtime, and what lets 'def foo(...)' be called from later expressions in
 /// the same session.
 ///
-/// Arg.setName() is optional — it only affects the printed IR, making output
+/// Argument.setName() is optional — it only affects the printed IR, making output
 /// read as 'double %a, double %b' rather than 'double %0, double %1'.
 Function *FunctionSignatureNode::codegen() {
   std::vector<Type *> ParameterTypes;
   ParameterTypes.reserve(Parameters.size());
   for (const auto &Parameter : Parameters)
     ParameterTypes.push_back(LLVMTypeFor(Parameter.second));
-  FunctionType *FT = FunctionType::get(LLVMTypeFor(ReturnType), ParameterTypes,
+  FunctionType *LLVMFunctionType = FunctionType::get(LLVMTypeFor(ReturnType), ParameterTypes,
                                        false /* not variadic */);
 
-  Function *F =
-      Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
+  Function *TheFunction =
+      Function::Create(LLVMFunctionType, Function::ExternalLinkage, Name,
+                       TheModule.get());
 
   // Name arguments so the printed IR is readable.
-  unsigned Idx = 0;
-  for (auto &Arg : F->args())
-    Arg.setName(Parameters[Idx++].first);
+  unsigned ParameterIndex = 0;
+  for (auto &Argument : TheFunction->args())
+    Argument.setName(Parameters[ParameterIndex++].first);
 
 
-  return F;
+  return TheFunction;
 }
 
 /// FunctionDefinitionNode::codegen - Generate IR for a complete function function-definition.
@@ -4165,16 +4172,19 @@ Function *FunctionSignatureNode::codegen() {
 ///    optimisation pipeline. On failure, eraseFromParent() removes the
 ///    partially-built function so no broken declaration is left in the module.
 Function *FunctionDefinitionNode::codegen() {
+  const string FunctionName = Signature->getName();
+
   // Step 1: register the function signature and resolve the Function*.
   auto &P = *Signature;
-  FunctionSignatures[Signature->getName()] = std::move(Signature);
+  FunctionSignatures[FunctionName] = std::move(Signature);
 
   // Step 1: reuse an existing `extern` declaration if one exists.
-  Function *TheFunction = getFunction(P.getName());
+  Function *TheFunction = getFunction(FunctionName);
 
   // Bail if the function is already fully defined — redefinition is an error.
   if (TheFunction && !TheFunction->empty()) {
-    LogErrorExpression("Function cannot be redefined.");
+    LogErrorExpression(
+        "Function '" + FunctionName + "' cannot be redefined");
     return nullptr;
   }
 
@@ -4205,19 +4215,21 @@ Function *FunctionDefinitionNode::codegen() {
   TheBuilder->SetInsertPoint(BB);
   SetCurrentDebugLocation(CurFunctionLine);
 
-  // Step 3: populate NamedValues with entry-block allocas for each argument.
+  // Step 3: I store each argument in an entry-block stack slot and map its
+  // parameter name to that slot. When I generate the body, I resolve each
+  // parameter reference through this table in NameExpressionNode::codegen().
   NamedValues.clear();
   LoopControlStack.clear();
   BreakTargetStack.clear();
   unsigned ArgumentNumber = 1;
   size_t ArgTypeIndex = 0;
-  for (auto &Arg : TheFunction->args()) {
+  for (auto &Argument : TheFunction->args()) {
     ValueType ArgType = P.getParameterType(ArgTypeIndex++);
     AllocaInst *Alloca = CreateEntryBlockAlloca(
-        TheFunction, std::string(Arg.getName()), ArgType);
-    TheBuilder->CreateStore(&Arg, Alloca);
-    NamedValues[std::string(Arg.getName())] = Alloca;
-    EmitDebugDeclare(Alloca, Arg.getName(), CurFunctionLine, true,
+        TheFunction, std::string(Argument.getName()), ArgType);
+    TheBuilder->CreateStore(&Argument, Alloca);
+    NamedValues[std::string(Argument.getName())] = Alloca;
+    EmitDebugDeclare(Alloca, Argument.getName(), CurFunctionLine, true,
                      ArgumentNumber++, ArgType);
   }
 
@@ -4235,7 +4247,7 @@ Function *FunctionDefinitionNode::codegen() {
         if (!IsEntry && pred_empty(CurBB)) {
           TheBuilder->CreateUnreachable();
         } else {
-          LogErrorV("Non-None function must return a value");
+          LogErrorValue("Non-None function must return a value");
           TheFunction->eraseFromParent();
           CurDIScope = nullptr;
           CurrentFunctionReturnType = SavedRetType;
@@ -4374,7 +4386,7 @@ static void HandleFunctionDefinition() {
   bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
   if (!FnAST || HasTrailing) {
     if (FnAST)
-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)));
     DiscardRestOfLine();
     return;
   }
@@ -4404,7 +4416,7 @@ static void HandleExtern() {
 
   if (!ProtoAST || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (ProtoAST)
-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)));
     DiscardRestOfLine();
     return;
   }
@@ -4453,7 +4465,7 @@ static void HandleTopLevelStatement() {
   bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
   if (!FnAST || HasTrailing) {
     if (FnAST)
-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)));
     DiscardRestOfLine();
     return;
   }
@@ -4695,7 +4707,7 @@ static void HandleTopLevelStatementFileMode() {
   bool HasTrailing = (CurrentToken != tok_eol && CurrentToken != tok_eof && CurrentToken != tok_block_end);
   if (!Stmt || HasTrailing) {
     if (Stmt)
-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)));
     DiscardRestOfLine();
     return;
   }

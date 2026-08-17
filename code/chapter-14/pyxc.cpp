@@ -192,7 +192,7 @@ struct SourceLocation {
 };
 static SourceLocation CurrentTokenLocation;
 static SourceLocation LexerLocation = {1, 0};
-static void LogErrorAtLoc(const char *ErrorMessage, SourceLocation Loc);
+static void LogErrorAtLoc(const string &ErrorMessage, SourceLocation Loc);
 static void LogInvalidNumberLiteralAtLocation(const string &Literal,
                                          SourceLocation Location);
 
@@ -625,14 +625,14 @@ static void PrintErrorSourceContext(SourceLocation Location) {
   fprintf(stderr, "^~~~\n");
 }
 
-static void LogErrorAtLoc(const char *ErrorMessage, SourceLocation Loc) {
-  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Loc.Line, Loc.Column, ErrorMessage);
+static void LogErrorAtLoc(const string &ErrorMessage, SourceLocation Loc) {
+  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Loc.Line, Loc.Column, ErrorMessage.c_str());
   PrintErrorSourceContext(Loc);
 }
 
 static void LogInvalidNumberLiteralAtLocation(const string &Literal,
                                               SourceLocation Location) {
-  LogErrorAtLoc(("invalid number literal '" + Literal + "'").c_str(), Location);
+  LogErrorAtLoc(("invalid number literal '" + Literal + "'"), Location);
 }
 
 //===----------------------------------------===//
@@ -938,18 +938,18 @@ void Log(const string &message) {
 
 /// LogErrorExpression* - Error reporting helpers. Each returns nullptr for its respective
 /// type so parse functions can write: return LogErrorExpression("message");
-unique_ptr<ExpressionNode> LogErrorExpression(const char *ErrorMessage) {
+unique_ptr<ExpressionNode> LogErrorExpression(const string &ErrorMessage) {
   SourceLocation Anchor = GetCaretAnchorLocation(CurrentTokenLocation, CurrentToken);
   LogErrorAtLoc(ErrorMessage, Anchor);
   return nullptr;
 }
 
-unique_ptr<FunctionSignatureNode> LogErrorSignature(const char *ErrorMessage) {
+unique_ptr<FunctionSignatureNode> LogErrorSignature(const string &ErrorMessage) {
   LogErrorExpression(ErrorMessage);
   return nullptr;
 }
 
-unique_ptr<FunctionDefinitionNode> LogErrorFunction(const char *ErrorMessage) {
+unique_ptr<FunctionDefinitionNode> LogErrorFunction(const string &ErrorMessage) {
   LogErrorExpression(ErrorMessage);
   return nullptr;
 }
@@ -1729,9 +1729,9 @@ static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
 static std::unique_ptr<ModuleAnalysisManager> TheMAM;
 static ExitOnError ExitOnErr;
 
-/// LogErrorV - Codegen-level error helper. Delegates to LogErrorExpression for printing,
-/// then returns nullptr so codegen callers can write: return LogErrorV("msg");
-Value *LogErrorV(const char *ErrorMessage) {
+/// LogErrorValue - Codegen-level error helper. Delegates to LogErrorExpression for printing,
+/// then returns nullptr so codegen callers can write: return LogErrorValue("msg");
+Value *LogErrorValue(const string &ErrorMessage) {
   LogErrorExpression(ErrorMessage);
   return nullptr;
 }
@@ -1784,7 +1784,7 @@ Value *NumberExpressionNode::codegen() {
 Value *NameExpressionNode::codegen() {
   auto It = NamedValues.find(Name);
   if (It == NamedValues.end() || !It->second)
-    return LogErrorV("Unknown variable name");
+    return LogErrorValue("Unknown variable name: " + Name);
   return TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), It->second,
                              Name.c_str());
 }
@@ -1798,7 +1798,7 @@ Value *AssignmentStatementNode::codegen() {
 
   auto It = NamedValues.find(Name);
   if (It == NamedValues.end() || !It->second)
-    return LogErrorV("Unknown variable name");
+    return LogErrorValue("Unknown variable name");
 
   TheBuilder->CreateStore(Value, It->second);
   return Value;
@@ -1834,7 +1834,7 @@ Value *BlockStatementNode::codegen() {
   NamedValues = SavedBindings;
 
   if (!Last)
-    return LogErrorV("Empty block");
+    return LogErrorValue("Empty block");
 
   // Blocks are statement sequences. If control reaches the end without an
   // explicit return, the block's implicit value is always 0.0.
@@ -1901,7 +1901,7 @@ Value *BinaryExpressionNode::codegen() {
     break;
   }
 
-  return LogErrorV("invalid binary operator");
+  return LogErrorValue("Invalid binary operator: " + FormatTokenForMessage(Operator));
 }
 
 /// UnaryExpressionNode::codegen - Emit built-in unary minus directly.
@@ -1911,10 +1911,11 @@ Value *UnaryExpressionNode::codegen() {
     return nullptr;
 
   // Built-in unary minus.
-  if (Opcode == tok_minus)
-    return TheBuilder->CreateFNeg(Operator, "negtmp");
+  if (Opcode != tok_minus)
+    return LogErrorValue("Invalid unary operator: " +
+                         FormatTokenForMessage(Opcode));
 
-  return LogErrorV("Unknown unary operator");
+  return TheBuilder->CreateFNeg(Operator, "negtmp");
 }
 
 /// CallExpressionNode::codegen - Look up the callee by name in TheModule, verify the
@@ -1927,10 +1928,13 @@ Value *UnaryExpressionNode::codegen() {
 Value *CallExpressionNode::codegen() {
   Function *CalleeF = getFunction(Callee);
   if (!CalleeF)
-    return LogErrorV("Unknown function referenced");
+    return LogErrorValue("Unknown function: '" + Callee + "'");
 
   if (CalleeF->arg_size() != Arguments.size())
-    return LogErrorV("Incorrect # arguments passed");
+    return LogErrorValue(
+        "Incorrect number of arguments in call to '" + Callee +
+        "': expected " + to_string(CalleeF->arg_size()) + ", got " +
+        to_string(Arguments.size()));
 
   std::vector<Value *> ArgsV;
   for (unsigned i = 0, e = Arguments.size(); i != e; ++i) {
@@ -1994,7 +1998,7 @@ Value *ForStatementNode::codegen() {
   } else {
     auto It = NamedValues.find(VarName);
     if (It == NamedValues.end() || !It->second)
-      return LogErrorV("Unknown variable name");
+      return LogErrorValue("Unknown variable name");
     Alloca = It->second;
   }
 
@@ -2113,14 +2117,14 @@ Value *WhileStatementNode::codegen() {
 
 Value *BreakStatementNode::codegen() {
   if (LoopControlStack.empty())
-    return LogErrorV("'break' used outside of a loop");
+    return LogErrorValue("'break' used outside of a loop");
   TheBuilder->CreateBr(LoopControlStack.back().BreakTarget);
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
 
 Value *ContinueStatementNode::codegen() {
   if (LoopControlStack.empty())
-    return LogErrorV("'continue' used outside of a loop");
+    return LogErrorValue("'continue' used outside of a loop");
   TheBuilder->CreateBr(LoopControlStack.back().ContinueTarget);
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
@@ -2153,24 +2157,26 @@ Value *VarStatementNode::codegen() {
 /// runtime, and what lets 'def foo(...)' be called from later expressions in
 /// the same session.
 ///
-/// Arg.setName() is optional — it only affects the printed IR, making output
+/// Argument.setName() is optional — it only affects the printed IR, making output
 /// read as 'double %a, double %b' rather than 'double %0, double %1'.
 Function *FunctionSignatureNode::codegen() {
   // All parameters and the return value are double.
-  std::vector<Type *> Doubles(Parameters.size(), Type::getDoubleTy(*TheContext));
-  FunctionType *FT = FunctionType::get(Type::getDoubleTy(*TheContext), Doubles,
-                                       false /* not variadic */);
+  std::vector<Type *> ParameterTypes(Parameters.size(), Type::getDoubleTy(*TheContext));
+  FunctionType *LLVMFunctionType = FunctionType::get(
+      Type::getDoubleTy(*TheContext), ParameterTypes,
+      false /* not variadic */);
 
-  Function *F =
-      Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
+  Function *TheFunction =
+      Function::Create(LLVMFunctionType, Function::ExternalLinkage, Name,
+                       TheModule.get());
 
   // Name arguments so the printed IR is readable.
-  unsigned Idx = 0;
-  for (auto &Arg : F->args())
-    Arg.setName(Parameters[Idx++]);
+  unsigned ParameterIndex = 0;
+  for (auto &Argument : TheFunction->args())
+    Argument.setName(Parameters[ParameterIndex++]);
 
 
-  return F;
+  return TheFunction;
 }
 
 /// FunctionDefinitionNode::codegen - Generate IR for a complete function definition.
@@ -2197,16 +2203,19 @@ Function *FunctionSignatureNode::codegen() {
 ///    optimisation pipeline. On failure, eraseFromParent() removes the
 ///    partially-built function so no broken declaration is left in the module.
 Function *FunctionDefinitionNode::codegen() {
+  const string FunctionName = Signature->getName();
+
   // Step 1: register the function signature and resolve the Function*.
   auto &P = *Signature;
-  FunctionSignatures[Signature->getName()] = std::move(Signature);
+  FunctionSignatures[FunctionName] = std::move(Signature);
 
   // Step 1: reuse an existing `extern` declaration if one exists.
-  Function *TheFunction = getFunction(P.getName());
+  Function *TheFunction = getFunction(FunctionName);
 
   // Bail if the function is already fully defined — redefinition is an error.
   if (TheFunction && !TheFunction->empty()) {
-    LogErrorExpression("Function cannot be redefined.");
+    LogErrorExpression(
+        "Function '" + FunctionName + "' cannot be redefined");
     return nullptr;
   }
 
@@ -2217,14 +2226,16 @@ Function *FunctionDefinitionNode::codegen() {
   BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
   TheBuilder->SetInsertPoint(BB);
 
-  // Step 3: populate NamedValues with entry-block allocas for each argument.
+  // Step 3: I store each argument in an entry-block stack slot and map its
+  // parameter name to that slot. When I generate the body, I resolve each
+  // parameter reference through this table in NameExpressionNode::codegen().
   NamedValues.clear();
   LoopControlStack.clear();
-  for (auto &Arg : TheFunction->args()) {
+  for (auto &Argument : TheFunction->args()) {
     AllocaInst *Alloca =
-        CreateEntryBlockAlloca(TheFunction, std::string(Arg.getName()));
-    TheBuilder->CreateStore(&Arg, Alloca);
-    NamedValues[std::string(Arg.getName())] = Alloca;
+        CreateEntryBlockAlloca(TheFunction, std::string(Argument.getName()));
+    TheBuilder->CreateStore(&Argument, Alloca);
+    NamedValues[std::string(Argument.getName())] = Alloca;
   }
 
   // Step 4: codegen the body, optimise, verify, or erase on failure.
@@ -2338,7 +2349,7 @@ static void HandleFunctionDefinition() {
                       CurrentToken != tok_block_end);
   if (!FunctionDefinition || HasTrailing) {
     if (FunctionDefinition)
-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)));
     DiscardRestOfLine();
     return;
   }
@@ -2366,7 +2377,7 @@ static void HandleExtern() {
 
   if (!Signature || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (Signature)
-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)));
     DiscardRestOfLine();
     return;
   }
@@ -2413,7 +2424,7 @@ static void HandleTopLevelExpression() {
   auto FunctionDefinition = ParseTopLevelExpression();
   if (!FunctionDefinition || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (FunctionDefinition)
-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)));
     DiscardRestOfLine();
     return;
   }

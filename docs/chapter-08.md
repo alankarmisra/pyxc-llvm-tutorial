@@ -368,7 +368,7 @@ static void HandleExtern() {
 
   if (!Signature || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (Signature)
-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)));
     DiscardRestOfLine();
     return;
   }
@@ -484,10 +484,13 @@ I also update `CallExpressionNode::codegen()` from Chapter 7 to call `getFunctio
 -  Function *CalleeF = TheModule->getFunction(Callee);
 +  Function *CalleeF = getFunction(Callee);
 *  if (!CalleeF)
-*    return LogErrorV("Unknown function referenced");
+*    return LogErrorValue("Unknown function: '" + Callee + "'");
 *
 *  if (CalleeF->arg_size() != Arguments.size())
-*    return LogErrorV("Incorrect # arguments passed");
+*    return LogErrorValue(
+*        "Incorrect number of arguments in call to '" + Callee +
+*        "': expected " + to_string(CalleeF->arg_size()) + ", got " +
+*        to_string(Arguments.size()));
 *
 *  std::vector<Value *> ArgsV;
 *  for (unsigned i = 0, e = Arguments.size(); i != e; ++i) {
@@ -541,11 +544,14 @@ I also save the signature of every function definition before generating its bod
 
 ```cppdiff
 *Function *FunctionDefinitionNode::codegen() {
+*  const string FunctionName = Signature->getName();
+*
 -  // Step 1: I get an existing declaration or create a new one.
--  Function *TheFunction = TheModule->getFunction(Signature->getName());
+-  Function *TheFunction = TheModule->getFunction(FunctionName);
 -
 -  if (TheFunction && !TheFunction->empty()) {
--    LogErrorExpression("Function cannot be redefined.");
+-    LogErrorExpression(
+-        "Function '" + FunctionName + "' cannot be redefined");
 -    return nullptr;
 -  }
 -
@@ -553,14 +559,15 @@ I also save the signature of every function definition before generating its bod
 -    TheFunction = Signature->codegen();
 +  // Step 1: register the function signature and resolve the Function*.
 +  auto &P = *Signature;
-+  FunctionSignatures[Signature->getName()] = std::move(Signature);
++  FunctionSignatures[FunctionName] = std::move(Signature);
 +
 +  // Step 1: reuse an existing `extern` declaration if one exists.
-+  Function *TheFunction = getFunction(P.getName());
++  Function *TheFunction = getFunction(FunctionName);
 +
 +  // Bail if the function is already fully defined — redefinition is an error.
 +  if (TheFunction && !TheFunction->empty()) {
-+    LogErrorExpression("Function cannot be redefined.");
++    LogErrorExpression(
++        "Function '" + FunctionName + "' cannot be redefined");
 +    return nullptr;
 +  }
 *

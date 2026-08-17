@@ -506,20 +506,20 @@ static void consumeNewlines() {
 /// LogErrorExpression* - Error reporting helpers. Each returns nullptr for its
 /// respective type so parse functions can write: return
 /// LogErrorExpression("message");
-unique_ptr<ExpressionNode> LogErrorExpression(const char *ErrorMessage) {
+unique_ptr<ExpressionNode> LogErrorExpression(const string &ErrorMessage) {
   SourceLocation Anchor = GetCaretAnchorLocation(CurrentTokenLocation, CurrentToken);
   fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Column,
-          ErrorMessage);
+          ErrorMessage.c_str());
   PrintErrorSourceContext(Anchor);
   return nullptr;
 }
 
-unique_ptr<FunctionSignatureNode> LogErrorSignature(const char *ErrorMessage) {
+unique_ptr<FunctionSignatureNode> LogErrorSignature(const string &ErrorMessage) {
   LogErrorExpression(ErrorMessage);
   return nullptr;
 }
 
-unique_ptr<FunctionDefinitionNode> LogErrorFunction(const char *ErrorMessage) {
+unique_ptr<FunctionDefinitionNode> LogErrorFunction(const string &ErrorMessage) {
   LogErrorExpression(ErrorMessage);
   return nullptr;
 }
@@ -808,10 +808,10 @@ static unique_ptr<Module> TheModule;
 static unique_ptr<IRBuilder<>> TheBuilder;
 static map<std::string, Value *> NamedValues;
 
-// LogErrorV - Codegen-level error helper. Delegates to LogErrorExpression for
+// LogErrorValue - Codegen-level error helper. Delegates to LogErrorExpression for
 // printing, then returns nullptr so codegen callers can write: return
-// LogErrorV("msg");
-Value *LogErrorV(const char *ErrorMessage) {
+// LogErrorValue("msg");
+Value *LogErrorValue(const string &ErrorMessage) {
   LogErrorExpression(ErrorMessage);
   return nullptr;
 }
@@ -838,7 +838,7 @@ Value *NumberExpressionNode::codegen() {
 Value *NameExpressionNode::codegen() {
   auto It = NamedValues.find(Name);
   if (It == NamedValues.end() || !It->second)
-    return LogErrorV("Unknown variable name");
+    return LogErrorValue("Unknown variable name: " + Name);
   return It->second;
 }
 
@@ -848,9 +848,11 @@ Value *UnaryExpressionNode::codegen() {
   if (!OperandValue)
     return nullptr;
 
-  if (Operator == tok_minus)
-    return TheBuilder->CreateFNeg(OperandValue, "negtmp");
-  return LogErrorV("invalid unary operator");
+  if (Operator != tok_minus)
+    return LogErrorValue("Invalid unary operator: " +
+                         FormatTokenForMessage(Operator));
+
+  return TheBuilder->CreateFNeg(OperandValue, "negtmp");
 }
 
 /// BinaryExpressionNode::codegen - Recursively codegen both operands, then emit
@@ -861,7 +863,7 @@ Value *UnaryExpressionNode::codegen() {
 /// numeric suffix when the same hint would otherwise repeat. They have no
 /// effect on correctness.
 ///
-/// '<' requires two steps: CreateFCmpULT produces a 1-bit integer (i1) —
+/// '<' requires two steps: CreateFCmpOLT produces a 1-bit integer (i1) —
 /// LLVM's boolean type. Since Pyxc treats everything as double, CreateUIToFP
 /// widens it: false -> 0.0, true -> 1.0.
 Value *BinaryExpressionNode::codegen() {
@@ -885,12 +887,12 @@ Value *BinaryExpressionNode::codegen() {
   case tok_percent:
     return TheBuilder->CreateFRem(L, R, "remtmp");
   case tok_less:
-    L = TheBuilder->CreateFCmpULT(L, R, "cmptmp");
+    L = TheBuilder->CreateFCmpOLT(L, R, "cmptmp");
     // Widen the i1 boolean to double: false -> 0.0, true -> 1.0.
     return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext),
                                     "booltmp");
   default:
-    return LogErrorV("invalid binary operator");
+    return LogErrorValue("Invalid binary operator: " + FormatTokenForMessage(Operator));
   }
 }
 
@@ -905,10 +907,13 @@ Value *BinaryExpressionNode::codegen() {
 Value *CallExpressionNode::codegen() {
   Function *CalleeF = TheModule->getFunction(Callee);
   if (!CalleeF)
-    return LogErrorV("Unknown function referenced");
+    return LogErrorValue("Unknown function: '" + Callee + "'");
 
   if (CalleeF->arg_size() != Arguments.size())
-    return LogErrorV("Incorrect # arguments passed");
+    return LogErrorValue(
+        "Incorrect number of arguments in call to '" + Callee +
+        "': expected " + to_string(CalleeF->arg_size()) + ", got " +
+        to_string(Arguments.size()));
 
   std::vector<Value *> ArgsV;
   for (unsigned i = 0, e = Arguments.size(); i != e; ++i) {
@@ -929,24 +934,26 @@ Value *CallExpressionNode::codegen() {
 /// declarations use it to resolve against real C library functions at
 /// runtime.
 ///
-/// Arg.setName() is optional — it only affects the printed IR, making output
+/// Argument.setName() is optional — it only affects the printed IR, making output
 /// read as 'double %a, double %b' rather than 'double %0, double %1'.
 Function *FunctionSignatureNode::codegen() {
   // I use double for every parameter and for the return value.
-  std::vector<Type *> Doubles(Parameters.size(),
-                              Type::getDoubleTy(*TheContext));
-  FunctionType *FT = FunctionType::get(Type::getDoubleTy(*TheContext), Doubles,
-                                       false /* not variadic */);
+  std::vector<Type *> ParameterTypes(Parameters.size(),
+                                     Type::getDoubleTy(*TheContext));
+  FunctionType *LLVMFunctionType = FunctionType::get(
+      Type::getDoubleTy(*TheContext), ParameterTypes,
+      false /* not variadic */);
 
-  Function *F =
-      Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
+  Function *TheFunction =
+      Function::Create(LLVMFunctionType, Function::ExternalLinkage, Name,
+                       TheModule.get());
 
   // I name the arguments so the printed IR is easier to read.
-  unsigned Idx = 0;
-  for (auto &Arg : F->args())
-    Arg.setName(Parameters[Idx++]);
+  unsigned ParameterIndex = 0;
+  for (auto &Argument : TheFunction->args())
+    Argument.setName(Parameters[ParameterIndex++]);
 
-  return F;
+  return TheFunction;
 }
 
 /// FunctionDefinitionNode::codegen - Generate IR for a complete function
@@ -974,11 +981,14 @@ Function *FunctionSignatureNode::codegen() {
 ///    block without a terminator. On failure, eraseFromParent() removes the
 ///    partially-built function so no broken declaration is left in the module.
 Function *FunctionDefinitionNode::codegen() {
+  const string FunctionName = Signature->getName();
+
   // Step 1: I get an existing declaration or create a new one.
-  Function *TheFunction = TheModule->getFunction(Signature->getName());
+  Function *TheFunction = TheModule->getFunction(FunctionName);
 
   if (TheFunction && !TheFunction->empty()) {
-    LogErrorExpression("Function cannot be redefined.");
+    LogErrorExpression(
+        "Function '" + FunctionName + "' cannot be redefined");
     return nullptr;
   }
 
@@ -992,10 +1002,12 @@ Function *FunctionDefinitionNode::codegen() {
   BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
   TheBuilder->SetInsertPoint(BB);
 
-  // Step 3: I make the parameters available to the body.
+  // Step 3: I map each parameter name to its LLVM value. When I generate the
+  // body, I resolve each parameter reference through this table in
+  // NameExpressionNode::codegen().
   NamedValues.clear();
-  for (auto &Arg : TheFunction->args())
-    NamedValues[std::string(Arg.getName())] = &Arg;
+  for (auto &Argument : TheFunction->args())
+    NamedValues[std::string(Argument.getName())] = &Argument;
 
   // Step 4: I generate the body, return its value, and verify the function.
   if (Value *RetVal = Body->codegen()) {

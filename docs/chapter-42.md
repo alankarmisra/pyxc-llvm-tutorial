@@ -303,7 +303,7 @@ static string ActiveTraitTypeParameter;
 *    }
 *    auto Found = StructTypes.find(Name);
 *    if (Found == StructTypes.end()) {
-*      LogErrorExpression(("Unknown type '" + Name + "'").c_str());
+*      LogErrorExpression(("Unknown type '" + Name + "'"));
 *      return ValueType::Error;
 *    }
 *    BaseTypeInfo = Name;

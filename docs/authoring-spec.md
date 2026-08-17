@@ -223,6 +223,12 @@ We use lowercase `ch` and `idx` for loop variables in code we write ourselves, p
 | `TokPrec` (precedence of the current token) | `TokenPrecedence` |
 | `NextPrec` (precedence after parsing the right operand) | `NextTokenPrecedence` |
 | `ParseBinOpRHS()` | `ParseBinaryOperatorRight()` |
+| `LogErrorV()` | `LogErrorValue()` |
+| `Doubles` (function parameter-type vector) | `ParameterTypes` |
+| `FT` | `LLVMFunctionType` |
+| `F` (generated LLVM function) | `TheFunction` |
+| `Idx` (parameter-name loop) | `ParameterIndex` |
+| `Arg` (LLVM argument loop variable) | `Argument` |
 
 When a chapter introduces a new abbreviated identifier not yet in this table, add it here rather than leaving it as a one-off.
 

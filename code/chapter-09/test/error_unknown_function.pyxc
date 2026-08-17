@@ -1,6 +1,6 @@
 # RUN: %pyxc < %s > %t 2>&1
 # RUN: grep -q "Error" %t
-# RUN: grep -q "Unknown function referenced" %t
+# RUN: grep -Fq "Unknown function: 'notdeclared'" %t
 
 # Error paths still work with JIT: calling a function that was never declared
 # or defined must produce an error via getFunction() returning nullptr.

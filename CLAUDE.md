@@ -63,7 +63,7 @@ The entire compiler is one file with these sections in order:
 |---|---|
 | 1–111 | Command-line options (`cl::opt`) and `EmitKind` enum |
 | 112–909 | **Lexer** — `gettok()`, `getNextToken()`, indent/dedent synthetic tokens, `SourceManager` |
-| 910–969 | **Diagnostics** — `LogError`, `LogErrorV`, caret printing |
+| 910–969 | **Diagnostics** — `LogError`, `LogErrorValue`, caret printing |
 | 970–1,605 | **AST node classes** — one class per expression/statement form |
 | 1,606–5,648 | **Parser** — recursive descent; one `Parse*` function per grammar rule |
 | 5,649–7,896 | **Code generation** — `codegen()` methods on AST nodes; LLVM IR construction globals |

@@ -447,7 +447,7 @@ And I switch `BreakStatementNode::codegen` from `LoopControlStack.back().BreakTa
 ```cpp
 Value *BreakStatementNode::codegen() {
   if (BreakTargetStack.empty())
-    return LogErrorV("'break' used outside of a loop or switch");
+    return LogErrorValue("'break' used outside of a loop or switch");
   TheBuilder->CreateBr(BreakTargetStack.back());
   return ConstantFP::get(*TheContext, APFloat(0.0));
 }
@@ -467,7 +467,7 @@ Value *SwitchStatementNode::codegen() {
 
   auto *ConditionType = dyn_cast<IntegerType>(LLVMTypeFor(Condition->getType()));
   if (!ConditionType)
-    return LogErrorV("Switch condition must be an integer type");
+    return LogErrorValue("Switch condition must be an integer type");
 
   Function *FunctionIR = TheBuilder->GetInsertBlock()->getParent();
   BasicBlock *AfterBlock =
