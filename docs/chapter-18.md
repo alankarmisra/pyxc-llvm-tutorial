@@ -35,58 +35,55 @@ cd pyxc-llvm-tutorial/code/chapter-18
 The grammar gains type annotations throughout, diffing directly against chapter 17's:
 
 ```grammardiff
- program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
- end-of-lines            = end-of-line { end-of-line } ;
- top-level-item             = function-definition | external | top-level-expression ;
+*program         = [ end-of-lines ] [ top-level-item { end-of-lines top-level-item } ] [ end-of-lines ] ;
+*end-of-lines            = end-of-line { end-of-line } ;
+*top-level-item             = function-definition | external | top-level-expression ;
 -function-definition      = "def" function-signature ":" ( simple-statement | end-of-lines block ) ;
 -external        = "extern" "def" function-signature ;
 +function-definition      = "def" function-signature [ "->" type ] ":" ( simple-statement | end-of-lines block ) ;
 +(* If the return type is omitted, it defaults to None. *)
 +external        = "extern" "def" function-signature [ "->" type ] ;
- top-level-expression    = expression ;
+*top-level-expression    = expression ;
 -function-signature       = name "(" [ parameters ] ")" ;
 -parameters               = parameter { "," parameter } ;
 -parameter                = name ;
 +function-signature       = name "(" [ typed-parameter { "," typed-parameter } ] ")" ;
 +typed-parameter      = name ":" type ;
- if-statement          = "if" expression ":" suite
-                 [ end-of-lines "else" ":" suite ] ;
+*if-statement          = "if" expression ":" suite
+*                [ end-of-lines "else" ":" suite ] ;
 -for-statement         = "for" [ "var" ] name "=" expression "," expression "," expression ":" suite ;
 +for-statement         = "for"
 +                  ( "var" name ":" type | name )
 +                  "=" expression "," expression "," expression ":" suite ;
- variable-statement         = "var" variable-binding { "," variable-binding } ;
- assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
- simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
- compound-statement    = if-statement | for-statement ;
- statement       = simple-statement | compound-statement ;
- suite           = simple-statement | compound-statement | end-of-lines block ;
+*variable-statement         = "var" variable-binding { "," variable-binding } ;
+*assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
+*simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
+*compound-statement    = if-statement | for-statement ;
+*statement       = simple-statement | compound-statement ;
+*suite           = simple-statement | compound-statement | end-of-lines block ;
 -return-statement      = "return" expression ;
 +return-statement      = "return" [ expression ] ;
- statement-separator = end-of-lines | BLOCK_END ;
- block = indent statement { statement-separator statement } dedent ;
- expression      = comparison ;
- comparison               = sum { comparison-operator sum } ;
- comparison-operator      = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
- sum                      = term { ("+" | "-") term } ;
- term                     = unary-expression { ("*" | "/") unary-expression } ;
- lvalue          = name ;
+*statement-separator = end-of-lines | BLOCK_END ;
+*block = indent statement { statement-separator statement } dedent ;
+*...
+*term                     = unary-expression { ("*" | "/") unary-expression } ;
+*lvalue          = name ;
 -variable-binding      = name [ "=" expression ] ;
 +variable-binding      = name ":" type [ "=" expression ] ;
- unary-expression       = "-" unary-expression | primary ;
+*unary-expression       = "-" unary-expression | primary ;
 -primary         = name-expression | number-expression | parenthesized-expression ;
 +primary         = cast-expression | name-expression | number-expression | boolean-literal | parenthesized-expression ;
 +cast-expression        = cast-type "(" expression ")" ;
- name-expression  = name | call-expression ;
+*name-expression  = name | call-expression ;
 -call-expression        = name "(" [ arguments ] ")" ;
 -arguments              = expression { "," expression } ;
 +call-expression        = name "(" [ expression { "," expression } ] ")" ;
- number-expression      = number ;
- parenthesized-expression       = "(" expression ")" ;
- indent          = INDENT ;
- dedent          = DEDENT ;
- 
- name      = (letter | "_") { letter | digit | "_" } ;
+*number-expression      = number ;
+*parenthesized-expression       = "(" expression ")" ;
+*indent          = INDENT ;
+*dedent          = DEDENT ;
+*
+*name      = (letter | "_") { letter | digit | "_" } ;
 -number          = digit { digit } [ "." { digit } ]
 -                | "." digit { digit } ;
 +type            = "int" | "int8" | "int16" | "int32" | "int64"
@@ -100,16 +97,9 @@ The grammar gains type annotations throughout, diffing directly against chapter 
 +                  | "." digit { digit } ) [ exponent ] ;
 +exponent        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;
 +boolean-literal    = "True" | "False" ;
- letter          = "A".."Z" | "a".."z" ;
- digit           = "0".."9" ;
- end-of-line             = "\r\n" | "\r" | "\n" ;
- comment = "#" { comment-character } ;
- comment-character = ? any character except "\r" and "\n" ? ;
- whitespace = " " | "\t" | "\v" | "\f" ;
- INDENT          = ? synthetic token emitted by lexer ? ;
- DEDENT          = ? synthetic token emitted by lexer ? ;
- 
- BLOCK_END = ? synthetic token injected into the stream by ParseBlock immediately after it consumes DEDENT ? ;
+*letter          = "A".."Z" | "a".."z" ;
+*digit           = "0".."9" ;
+*...
 ```
 
 Summary of what changed:

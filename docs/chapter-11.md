@@ -61,21 +61,9 @@ I add `variable-expression` as a second alternative for `expression`, and give `
 `code/chapter-11/pyxc.ebnf`
 
 ```grammardiff
- program                           = [ end-of-lines ]
-                                     [ top-level-item
-                                       { end-of-lines top-level-item } ]
-                                     [ end-of-lines ] ;
- end-of-lines                      = end-of-line { end-of-line } ;
- top-level-item                    = function-definition
-                                     | external
-                                     | top-level-expression ;
- function-definition               = "def" function-signature ":"
-                                     [ end-of-lines ] expression ;
- external                          = "extern" "def" function-signature ;
- top-level-expression              = expression ;
- function-signature                = name "(" [ parameters ] ")" ;
- parameters                        = parameter { "," parameter } ;
- parameter                         = name ;
+*...
+*parameters                        = parameter { "," parameter } ;
+*parameter                         = name ;
 -expression                        = comparison ;
 +expression                        = variable-expression
 +                                    | comparison [ "=" expression ] ;
@@ -83,40 +71,16 @@ I add `variable-expression` as a second alternative for `expression`, and give `
 +                                    { "," variable-binding } ":"
 +                                    [ end-of-lines ] expression ;
 +variable-binding                  = name [ "=" expression ] ;
- comparison                        = sum { comparison-operator sum } ;
- comparison-operator               = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
- sum                               = term { ("+" | "-") term } ;
- term                              = factor { ("*" | "/" | "%") factor } ;
- factor                            = "-" factor | primary ;
- primary                           = name-expression
-                                     | number-expression
-                                     | parenthesized-expression
-                                     | if-expression
-                                     | for-expression ;
- if-expression                     = "if" expression ":"
-                                     [ end-of-lines ] expression
-                                     [ end-of-lines ] "else" ":"
-                                     [ end-of-lines ] expression ;
+*comparison                        = sum { comparison-operator sum } ;
+*comparison-operator               = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
+*...
+*                                    [ end-of-lines ] "else" ":"
+*                                    [ end-of-lines ] expression ;
 -for-expression                    = "for" name "=" expression ","
 +for-expression                    = "for" [ "var" ] name "=" expression ","
-                                     expression "," expression ":"
-                                     [ end-of-lines ] expression ;
- name-expression                   = name
-                                     | call-expression ;
- call-expression                   = name "(" [ arguments ] ")" ;
- arguments                         = expression { "," expression } ;
- number-expression                 = number ;
- parenthesized-expression          = "(" expression ")" ;
- name                              = (letter | "_")
-                                     { letter | digit | "_" } ;
- number                            = digit { digit } [ "." { digit } ]
-                                     | "." digit { digit } ;
- letter                            = "A".."Z" | "a".."z" ;
- digit                             = "0".."9" ;
- end-of-line                       = "\r\n" | "\r" | "\n" ;
- comment                           = "#" { comment-character } ;
- comment-character                 = ? any character except "\r" and "\n" ? ;
- whitespace                        = " " | "\t" | "\v" | "\f" ;
+*                                    expression "," expression ":"
+*                                    [ end-of-lines ] expression ;
+*...
 ```
 
 Assignment needs a destination — somewhere in memory to write a value to. Using the two sides of `=`, I'll borrow a couple of terms:

@@ -44,28 +44,9 @@ I add `switch-statement` and its three sub-productions, and add it as a `compoun
 `code/chapter-23/pyxc.ebnf`
 
 ```grammardiff
- program                           = [ end-of-lines ]
-                                     [ top-level-item
-                                       { end-of-lines top-level-item } ]
-                                     [ end-of-lines ] ;
- end-of-lines                      = end-of-line { end-of-line } ;
- top-level-item                    = function-definition
-                                     | external
-                                     | top-level-statement ;
- function-definition               = "def" function-signature [ "->" type ] ":"
-                                     ( simple-statement
-                                       | end-of-lines block ) ;
- external                          = "extern" "def" function-signature [ "->" type ] ;
- top-level-statement               = statement ;
- function-signature                = name "(" [ parameters ] ")" ;
- parameters                        = typed-parameter { "," typed-parameter } ;
- typed-parameter                   = name ":" type ;
- if-statement                      = "if" expression ":" suite
-                                     { [ end-of-lines ] "elif" expression ":" suite }
-                                     [ [ end-of-lines ] "else" ":" suite ] ;
- while-statement                   = "while" expression ":" suite ;
- do-while-statement                = "do" ":" suite [ end-of-lines ]
-                                     "while" expression ;
+*...
+*do-while-statement                = "do" ":" suite [ end-of-lines ]
+*                                    "while" expression ;
 +switch-statement                  = "switch" expression ":" end-of-lines
 +                                    indent switch-body dedent ;
 +switch-body                       = switch-case
@@ -74,18 +55,11 @@ I add `switch-statement` and its three sub-productions, and add it as a `compoun
 +switch-case                       = "case" switch-integer
 +                                    { "," switch-integer } ":" suite ;
 +default-case                      = "default" ":" suite ;
- for-statement                     = "for" ( "var" name ":" type | name )
-                                     "=" expression ","
-                                     expression "," expression ":" suite ;
- variable-statement                = "var" variable-binding
-                                     { "," variable-binding } ;
- assignment-statement              = lvalue "=" expression ;
- simple-statement                  = return-statement
-                                     | break-statement
-                                     | continue-statement
-                                     | variable-statement
-                                     | assignment-statement
-                                     | expression ;
+*for-statement                     = "for" ( "var" name ":" type | name )
+*                                    "=" expression ","
+*...
+*                                    | assignment-statement
+*                                    | expression ;
 -compound-statement                = if-statement
 -                                    | for-statement
 -                                    | while-statement
@@ -95,71 +69,15 @@ I add `switch-statement` and its three sub-productions, and add it as a `compoun
 +                                    | while-statement
 +                                    | do-while-statement
 +                                    | switch-statement ;
- statement                         = simple-statement | compound-statement ;
- suite                             = simple-statement
-                                     | compound-statement
-                                     | end-of-lines block ;
- return-statement                  = "return" [ expression ] ;
- break-statement                   = "break" ;
- continue-statement                = "continue" ;
- statement-separator               = end-of-lines | BLOCK_END ;
- block                             = indent statement
-                                     { statement-separator statement } dedent ;
- expression                        = logical-or ;
- logical-or                        = logical-and { "||" logical-and } ;
- logical-and                       = bitwise-or { "&&" bitwise-or } ;
- bitwise-or                        = bitwise-xor { "|" bitwise-xor } ;
- bitwise-xor                       = bitwise-and { "^" bitwise-and } ;
- bitwise-and                       = equality { "&" equality } ;
- equality                          = relational { ("==" | "!=") relational } ;
- relational                        = shift { ("<" | "<=" | ">" | ">=") shift } ;
- shift                             = sum { ("<<" | ">>") sum } ;
- sum                               = term { ("+" | "-") term } ;
- term                              = factor { ("*" | "/" | "%") factor } ;
- lvalue                            = name ;
- variable-binding                  = name ":" type [ "=" expression ] ;
- factor                            = ("-" | "!" | "~") factor | primary ;
- primary                           = cast-expression
-                                     | name-expression
-                                     | number-expression
-                                     | boolean-literal
-                                     | parenthesized-expression ;
- cast-expression                   = cast-type "(" expression ")" ;
- name-expression                   = name | call-expression ;
- call-expression                   = name "(" [ arguments ] ")" ;
- arguments                         = expression { "," expression } ;
- number-expression                 = number ;
- parenthesized-expression          = "(" expression ")" ;
- indent                            = INDENT ;
- dedent                            = DEDENT ;
- name                              = (letter | "_")
-                                     { letter | digit | "_" } ;
- type                              = "int" | "int8" | "int16" | "int32"
-                                     | "int64" | "uint8" | "uint16"
-                                     | "uint32" | "uint64"
-                                     | "float" | "float32"
-                                     | "float64" | "bool" | "None" ;
- cast-type                         = "int" | "int8" | "int16" | "int32"
-                                     | "int64" | "uint8" | "uint16"
-                                     | "uint32" | "uint64"
-                                     | "float" | "float32"
-                                     | "float64" | "bool" ;
+*statement                         = simple-statement | compound-statement ;
+*suite                             = simple-statement
+*...
+*                                    | "float" | "float32"
+*                                    | "float64" | "bool" ;
 +switch-integer                    = [ "-" ] digit { digit } ;
- number                            = ( digit { digit } [ "." { digit } ]
-                                     | "." digit { digit } ) [ exponent ] ;
- exponent                          = ( "e" | "E" ) [ "+" | "-" ]
-                                     digit { digit } ;
- boolean-literal                   = "True" | "False" ;
- letter                            = "A".."Z" | "a".."z" ;
- digit                             = "0".."9" ;
- end-of-line                       = "\r\n" | "\r" | "\n" ;
- comment                           = "#" { comment-character } ;
- comment-character                 = ? any character except "\r" and "\n" ? ;
- whitespace                        = " " | "\t" | "\v" | "\f" ;
- INDENT                            = ? synthetic token emitted by lexer when indentation increases ? ;
- DEDENT                            = ? synthetic token emitted by lexer when indentation decreases ? ;
- BLOCK_END                         = ? synthetic token injected into the stream by ParseBlock
-                                       immediately after it consumes DEDENT ? ;
+*number                            = ( digit { digit } [ "." { digit } ]
+*                                    | "." digit { digit } ) [ exponent ] ;
+*...
 ```
 
 ## New Tokens and Keywords

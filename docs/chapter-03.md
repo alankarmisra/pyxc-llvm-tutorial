@@ -21,19 +21,9 @@ Here is the grammar as a diff against [Chapter 2](chapter-02.md).
 [pyxc.ebnf](https://github.com/alankarmisra/pyxc-llvm-tutorial/blob/main/code/chapter-03/pyxc.ebnf)
 
 ```grammardiff
- program                           = [ end-of-lines ]
-                                     [ top-level-item
-                                       { end-of-lines top-level-item } ]
-                                     [ end-of-lines ] ;
- end-of-lines                      = end-of-line { end-of-line } ;
- top-level-item                    = function-definition
-                                     | top-level-expression ;
- function-definition               = "def" function-signature ":"
-                                     [ end-of-lines ] expression ;
- top-level-expression              = expression ;
- function-signature                = name "(" [ parameters ] ")" ;
- parameters                        = parameter { "," parameter } ;
- parameter                         = name ;
+*...
+*parameters                        = parameter { "," parameter } ;
+*parameter                         = name ;
 -expression                        = sum ;
 +expression                        = comparison ;
 +comparison                        = sum { "<" sum } ;
@@ -41,25 +31,9 @@ Here is the grammar as a diff against [Chapter 2](chapter-02.md).
 +sum                               = term { ("+" | "-") term } ;
 -term                              = primary ;
 +term                              = primary { ("*" | "/") primary } ;
- primary                           = name-expression
-                                     | number-expression
-                                     | parenthesized-expression ;
- name-expression                   = name
-                                     | call-expression ;
- call-expression                   = name "(" [ arguments ] ")" ;
- arguments                         = expression { "," expression } ;
- number-expression                 = number ;
- parenthesized-expression          = "(" expression ")" ;
- name                              = (letter | "_")
-                                     { letter | digit | "_" } ;
- number                            = digit { digit } [ "." { digit } ]
-                                     | "." digit { digit } ;
- letter                            = "A".."Z" | "a".."z" ;
- digit                             = "0".."9" ;
- end-of-line                       = "\r\n" | "\r" | "\n" ;
- comment                           = "#" { comment-character } ;
- comment-character                 = ? any character except "\r" and "\n" ? ;
- whitespace                        = " " | "\t" | "\v" | "\f" ;
+*primary                           = name-expression
+*                                    | number-expression
+*...
 ```
 
 I changed only the expression hierarchy. I route `expression` through `comparison`, add `<` at the comparison tier, add `-` at the sum tier, and add `*` and `/` at the term tier. The grammar for functions, calls, names, numbers, comments, and whitespace stays the same.

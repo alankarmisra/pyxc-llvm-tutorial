@@ -38,135 +38,38 @@ cd pyxc-llvm-tutorial/code/chapter-25
 ## Grammar
 
 ```grammardiff
- program                           = [ end-of-lines ]
-                                     [ top-level-item
-                                       { end-of-lines top-level-item } ]
-                                     [ end-of-lines ] ;
- end-of-lines                      = end-of-line { end-of-line } ;
- top-level-item                    = function-definition
-                                     | struct-definition
-                                     | external
-                                     | top-level-statement ;
- struct-definition                 = "struct" name ":" end-of-lines
-                                     struct-block ;
- struct-block                      = indent field-declaration
-                                     { end-of-lines field-declaration } dedent ;
- field-declaration                 = name ":" type ;
- function-definition               = "def" function-signature [ "->" type ] ":"
-                                     ( simple-statement
-                                       | end-of-lines block ) ;
- external                          = "extern" "def" function-signature [ "->" type ] ;
- top-level-statement               = statement ;
- function-signature                = name "(" [ parameters ] ")" ;
- parameters                        = typed-parameter { "," typed-parameter } ;
- typed-parameter                   = name ":" type ;
- if-statement                      = "if" expression ":" suite
-                                     { [ end-of-lines ] "elif" expression ":" suite }
-                                     [ [ end-of-lines ] "else" ":" suite ] ;
- for-statement                     = "for" ( "var" name ":" type | name )
-                                     "=" expression ","
-                                     expression "," expression ":" suite ;
- while-statement                   = "while" expression ":" suite ;
- do-while-statement                = "do" ":" suite [ end-of-lines ]
-                                     "while" expression ;
- switch-statement                  = "switch" expression ":" end-of-lines
-                                     indent switch-body dedent ;
- switch-body                       = switch-case
-                                     { end-of-lines switch-case }
-                                     [ end-of-lines default-case ] ;
- switch-case                       = "case" switch-integer
-                                     { "," switch-integer } ":" suite ;
- default-case                      = "default" ":" suite ;
- variable-statement                = "var" variable-binding
-                                     { "," variable-binding } ;
- assignment-statement              = lvalue "=" expression ;
- simple-statement                  = return-statement
-                                     | break-statement
-                                     | continue-statement
-                                     | variable-statement
-                                     | assignment-statement
-                                     | expression ;
- compound-statement                = if-statement
-                                     | for-statement
-                                     | while-statement
-                                     | do-while-statement
-                                     | switch-statement ;
- statement                         = simple-statement | compound-statement ;
- suite                             = simple-statement
-                                     | compound-statement
-                                     | end-of-lines block ;
- return-statement                  = "return" [ expression ] ;
- break-statement                   = "break" ;
- continue-statement                = "continue" ;
- statement-separator               = end-of-lines | BLOCK_END ;
- block                             = indent statement
-                                     { statement-separator statement } dedent ;
- expression                        = logical-or ;
- logical-or                        = logical-and { "||" logical-and } ;
- logical-and                       = bitwise-or { "&&" bitwise-or } ;
- bitwise-or                        = bitwise-xor { "|" bitwise-xor } ;
- bitwise-xor                       = bitwise-and { "^" bitwise-and } ;
- bitwise-and                       = equality { "&" equality } ;
- equality                          = relational { ("==" | "!=") relational } ;
- relational                        = shift { ("<" | "<=" | ">" | ">=") shift } ;
- shift                             = sum { ("<<" | ">>") sum } ;
- sum                               = term { ("+" | "-") term } ;
- term                              = factor { ("*" | "/" | "%") factor } ;
+*...
+*sum                               = term { ("+" | "-") term } ;
+*term                              = factor { ("*" | "/" | "%") factor } ;
 -lvalue                            = name | field-access ;
 +lvalue                            = name
 +                                    { "." name | "[" expression "]" } ;
- variable-binding                  = name ":" type [ "=" expression ] ;
- factor                            = ("-" | "!" | "~") factor | primary ;
- primary                           = cast-expression
+*variable-binding                  = name ":" type [ "=" expression ] ;
+*factor                            = ("-" | "!" | "~") factor | primary ;
+*primary                           = cast-expression
 +                                    | address-expression
-                                     | name-expression
+*                                    | name-expression
 -                                    | field-access
-                                     | number-expression
-                                     | boolean-literal
-                                     | parenthesized-expression ;
- cast-expression                   = cast-type "(" expression ")" ;
+*                                    | number-expression
+*                                    | boolean-literal
+*                                    | parenthesized-expression ;
+*cast-expression                   = cast-type "(" expression ")" ;
 -name-expression                   = name | call-expression ;
 +address-expression                = "addr" "(" lvalue ")" ;
 +name-expression                   = lvalue | call-expression ;
- call-expression                   = name "(" [ arguments ] ")" ;
+*call-expression                   = name "(" [ arguments ] ")" ;
 -field-access                      = name "." name { "." name } ;
- arguments                         = expression { "," expression } ;
- number-expression                 = number ;
- parenthesized-expression          = "(" expression ")" ;
- indent                            = INDENT ;
- dedent                            = DEDENT ;
- name                              = (letter | "_")
-                                     { letter | digit | "_" } ;
+*arguments                         = expression { "," expression } ;
+*number-expression                 = number ;
+*...
+*name                              = (letter | "_")
+*                                    { letter | digit | "_" } ;
 -type                              = builtin-type | struct-type ;
 +type                              = builtin-type | struct-type | pointer-type ;
 +pointer-type                      = "ptr" "[" type "]" ;
- builtin-type                      = "int" | "int8" | "int16" | "int32"
-                                     | "int64" | "uint8" | "uint16"
-                                     | "uint32" | "uint64"
-                                     | "float" | "float32"
-                                     | "float64" | "bool" | "None" ;
- struct-type                       = name ;
- cast-type                         = "int" | "int8" | "int16" | "int32"
-                                     | "int64" | "uint8" | "uint16"
-                                     | "uint32" | "uint64"
-                                     | "float" | "float32"
-                                     | "float64" | "bool" ;
- number                            = ( digit { digit } [ "." { digit } ]
-                                     | "." digit { digit } ) [ exponent ] ;
- switch-integer                    = [ "-" ] digit { digit } ;
- exponent                          = ( "e" | "E" ) [ "+" | "-" ]
-                                     digit { digit } ;
- boolean-literal                   = "True" | "False" ;
- letter                            = "A".."Z" | "a".."z" ;
- digit                             = "0".."9" ;
- end-of-line                       = "\r\n" | "\r" | "\n" ;
- comment                           = "#" { comment-character } ;
- comment-character                 = ? any character except "\r" and "\n" ? ;
- whitespace                        = " " | "\t" | "\v" | "\f" ;
- INDENT                            = ? synthetic token emitted by lexer when indentation increases ? ;
- DEDENT                            = ? synthetic token emitted by lexer when indentation decreases ? ;
- BLOCK_END                         = ? synthetic token injected into the stream by ParseBlock
-                                       immediately after it consumes DEDENT ? ;
+*builtin-type                      = "int" | "int8" | "int16" | "int32"
+*                                    | "int64" | "uint8" | "uint16"
+*...
 ```
 
 `ptr[T]` is a type annotation only: I can't construct one without `addr`. `addr` takes an lvalue (a named variable, optionally followed by field access) and returns a pointer to it. `p[i]` reads or writes the value at offset `i` from the pointer. `p[i].field` chains field access after indexing, for pointers to structs.

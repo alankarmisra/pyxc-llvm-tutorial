@@ -94,46 +94,20 @@ cd pyxc-llvm-tutorial/code/chapter-08
 `code/chapter-08/pyxc.ebnf`
 
 ```grammardiff
- program                           = [ end-of-lines ]
-                                     [ top-level-item
-                                       { end-of-lines top-level-item } ]
-                                     [ end-of-lines ] ;
- end-of-lines                      = end-of-line { end-of-line } ;
- top-level-item                    = function-definition
+*...
+*end-of-lines                      = end-of-line { end-of-line } ;
+*top-level-item                    = function-definition
 +                                    | external
-                                     | top-level-expression ;
- function-definition               = "def" function-signature ":"
-                                     [ end-of-lines ] expression ;
+*                                    | top-level-expression ;
+*function-definition               = "def" function-signature ":"
+*                                    [ end-of-lines ] expression ;
 +external                          = "extern" "def" function-signature ;
- top-level-expression              = expression ;
- function-signature                = name "(" [ parameters ] ")" ;
- parameters                        = parameter { "," parameter } ;
- parameter                         = name ;
- expression                        = comparison ;
- comparison                        = sum { "<" sum } ;
- sum                               = term { ("+" | "-") term } ;
- term                              = factor { ("*" | "/" | "%") factor } ;
- factor                            = "-" factor | primary ;
- primary                           = name-expression
-                                     | number-expression
-                                     | parenthesized-expression ;
- name-expression                   = name
-                                     | call-expression ;
- call-expression                   = name "(" [ arguments ] ")" ;
- arguments                         = expression { "," expression } ;
- number-expression                 = number ;
- parenthesized-expression          = "(" expression ")" ;
- name                              = (letter | "_")
-                                     { letter | digit | "_" } ;
- number                            = digit { digit } [ "." { digit } ]
-                                     | "." digit { digit } ;
- letter                            = "A".."Z" | "a".."z" ;
- digit                             = "0".."9" ;
- end-of-line                       = "\r\n" | "\r" | "\n" ;
- comment                           = "#" { comment-character } ;
- comment-character                 = ? any character except "\r" and "\n" ? ;
- whitespace                        = " " | "\t" | "\v" | "\f" ;
+*top-level-expression              = expression ;
+*function-signature                = name "(" [ parameters ] ")" ;
+*...
 ```
+
+`extern` declares a function signature with no body, for calling into code that isn't written in pyxc, such as the C library's `sin` and `cos`. I cover parsing and resolving `extern` declarations in [Calling Functions I Didn't Write](#calling-functions-i-didnt-write) later in this chapter. The JIT and optimization pipeline come first, since resolving an `extern` declaration against real code is the JIT's job.
 
 ## Creating the ORC JIT
 

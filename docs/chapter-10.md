@@ -80,30 +80,17 @@ I add `if-expression` and `for-expression` to `primary`, and replace the single 
 `code/chapter-10/pyxc.ebnf`
 
 ```grammardiff
- program                           = [ end-of-lines ]
-                                     [ top-level-item
-                                       { end-of-lines top-level-item } ]
-                                     [ end-of-lines ] ;
- end-of-lines                      = end-of-line { end-of-line } ;
- top-level-item                    = function-definition
-                                     | external
-                                     | top-level-expression ;
- function-definition               = "def" function-signature ":"
-                                     [ end-of-lines ] expression ;
- external                          = "extern" "def" function-signature ;
- top-level-expression              = expression ;
- function-signature                = name "(" [ parameters ] ")" ;
- parameters                        = parameter { "," parameter } ;
- parameter                         = name ;
- expression                        = comparison ;
+*...
+*parameter                         = name ;
+*expression                        = comparison ;
 -comparison                        = sum { "<" sum } ;
 +comparison                        = sum { comparison-operator sum } ;
 +comparison-operator               = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
- sum                               = term { ("+" | "-") term } ;
- term                              = factor { ("*" | "/" | "%") factor } ;
- factor                            = "-" factor | primary ;
- primary                           = name-expression
-                                     | number-expression
+*sum                               = term { ("+" | "-") term } ;
+*term                              = factor { ("*" | "/" | "%") factor } ;
+*factor                            = "-" factor | primary ;
+*primary                           = name-expression
+*                                    | number-expression
 -                                    | parenthesized-expression ;
 +                                    | parenthesized-expression
 +                                    | if-expression
@@ -115,22 +102,9 @@ I add `if-expression` and `for-expression` to `primary`, and replace the single 
 +for-expression                    = "for" name "=" expression ","
 +                                    expression "," expression ":"
 +                                    [ end-of-lines ] expression ;
- name-expression                   = name
-                                     | call-expression ;
- call-expression                   = name "(" [ arguments ] ")" ;
- arguments                         = expression { "," expression } ;
- number-expression                 = number ;
- parenthesized-expression          = "(" expression ")" ;
- name                              = (letter | "_")
-                                     { letter | digit | "_" } ;
- number                            = digit { digit } [ "." { digit } ]
-                                     | "." digit { digit } ;
- letter                            = "A".."Z" | "a".."z" ;
- digit                             = "0".."9" ;
- end-of-line                       = "\r\n" | "\r" | "\n" ;
- comment                           = "#" { comment-character } ;
- comment-character                 = ? any character except "\r" and "\n" ? ;
- whitespace                        = " " | "\t" | "\v" | "\f" ;
+*name-expression                   = name
+*                                    | call-expression ;
+*...
 ```
 
 ## New Tokens
