@@ -433,14 +433,17 @@ Because the JIT takes ownership of each module and its context, I create replace
 ```cpp
 static void HandleFunctionDefinition() {
   auto FunctionDefinition = ParseFunctionDefinition();
-  if (!FunctionDefinition ||
-      (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
-    if (FunctionDefinition)
-      LogErrorExpression(
-          ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+  if (!FunctionDefinition) {
     DiscardRestOfLine();
     return;
   }
+
+  if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
+    LogErrorExpression("Unexpected " + FormatTokenForMessage(CurrentToken));
+    DiscardRestOfLine();
+    return;
+  }
+
   if (auto *FunctionIR = FunctionDefinition->codegen()) {
     Log("Parsed a function definition.\n");
     FunctionIR->print(errs());
