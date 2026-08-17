@@ -1069,11 +1069,13 @@ static void HandleFunctionDefinition() {
     return;
   }
 
-  if (auto *FunctionIR = FunctionDefinition->codegen()) {
-    fprintf(stderr, "Parsed a function definition.\n");
-    FunctionIR->print(errs());
-    fprintf(stderr, "\n");
-  }
+  auto *FunctionIR = FunctionDefinition->codegen();
+  if (!FunctionIR)
+    return;
+
+  fprintf(stderr, "Parsed a function definition.\n");
+  FunctionIR->print(errs());
+  fprintf(stderr, "\n");
 }
 
 /// HandleTopLevelExpression - Parse and codegen a bare expression.
@@ -1097,15 +1099,17 @@ static void HandleTopLevelExpression() {
     return;
   }
 
-  if (auto *FunctionIR = FunctionDefinition->codegen()) {
-    fprintf(stderr, "Parsed a top-level expression.\n");
-    FunctionIR->print(errs());
-    fprintf(stderr, "\n");
+  auto *FunctionIR = FunctionDefinition->codegen();
+  if (!FunctionIR)
+    return;
 
-    // Erase after printing — anonymous expressions don't belong in the final
-    // module dump.
-    FunctionIR->eraseFromParent();
-  }
+  fprintf(stderr, "Parsed a top-level expression.\n");
+  FunctionIR->print(errs());
+  fprintf(stderr, "\n");
+
+  // Erase after printing — anonymous expressions don't belong in the final
+  // module dump.
+  FunctionIR->eraseFromParent();
 }
 
 /// MainLoop - Dispatch loop for the REPL.

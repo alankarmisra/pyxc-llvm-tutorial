@@ -588,11 +588,13 @@ After code generation succeeds, I print the IR for the current input:
 *  }
 *
 -  fprintf(stderr, "Parsed a function definition.\n");
-+  if (auto *FunctionIR = FunctionDefinition->codegen()) {
-+    fprintf(stderr, "Parsed a function definition.\n");
-+    FunctionIR->print(errs());
-+    fprintf(stderr, "\n");
-+  }
++  auto *FunctionIR = FunctionDefinition->codegen();
++  if (!FunctionIR)
++    return;
++
++  fprintf(stderr, "Parsed a function definition.\n");
++  FunctionIR->print(errs());
++  fprintf(stderr, "\n");
 *}
 ```
 
@@ -612,15 +614,17 @@ After code generation succeeds, I print the IR for the current input:
 *  }
 *
 -  fprintf(stderr, "Parsed a top-level expression.\n");
-+  if (auto *FunctionIR = FunctionDefinition->codegen()) {
-+    fprintf(stderr, "Parsed a top-level expression.\n");
-+    FunctionIR->print(errs());
-+    fprintf(stderr, "\n");
++  auto *FunctionIR = FunctionDefinition->codegen();
++  if (!FunctionIR)
++    return;
 +
-+    // Erase after printing — anonymous expressions don't belong in the final
-+    // module dump.
-+    FunctionIR->eraseFromParent();
-+  }
++  fprintf(stderr, "Parsed a top-level expression.\n");
++  FunctionIR->print(errs());
++  fprintf(stderr, "\n");
++
++  // Erase after printing — anonymous expressions don't belong in the final
++  // module dump.
++  FunctionIR->eraseFromParent();
 *}
 ```
 
