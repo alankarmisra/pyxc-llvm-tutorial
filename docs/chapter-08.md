@@ -113,13 +113,25 @@ cd pyxc-llvm-tutorial/code/chapter-08
 
 ORC stands for **On-Request Compilation**. LLVM provides it as a framework for building JIT compilers. ([ORCv2 docs](https://llvm.org/docs/ORCv2.html))
 
-ORC accepts LLVM modules and makes their symbols available to compiled code. When I look up a symbol such as `__anon_expr`, ORC gives me the address of its machine code. I wrap ORC's building blocks in a small `PyxcJIT` class, defined in `code/include/PyxcJIT.h` and shared by every chapter from here on, so I don't repeat the same JIT boilerplate in each chapter's `pyxc.cpp`.
+ORC accepts LLVM modules and makes their symbols available to compiled code. When I look up a symbol such as `__anon_expr`, ORC gives me the address of its machine code. I wrap ORC's building blocks in a small `PyxcJIT` class, defined in `code/include/PyxcJIT.h` and shared by every chapter from here on, so I don't repeat the same JIT boilerplate in each chapter's `pyxc.cpp`. I include it before the LLVM headers, at the very top of the file:
 
-I create one `PyxcJIT` instance in `main()`. I hold it, and the helper LLVM uses to unwrap recoverable errors, as globals:
+```cppdiff
++#include "../include/PyxcJIT.h"
+*#include "llvm/ADT/APFloat.h"
+*#include "llvm/IR/BasicBlock.h"
+*...
+```
 
-```cpp
-static unique_ptr<PyxcJIT> TheJIT;
-static ExitOnError ExitOnErr;
+I create one `PyxcJIT` instance in `main()`. I hold it, and the helper LLVM uses to unwrap recoverable errors, as globals. `TheJIT` goes right after `NamedValues`, in the same block of file-scope state; `ExitOnErr` goes at the very end of that block, after the pass-manager globals I add later in this chapter:
+
+```cppdiff
+*static unique_ptr<LLVMContext> TheContext;
+*static unique_ptr<Module> TheModule;
+*static unique_ptr<IRBuilder<>> TheBuilder;
+*static map<std::string, Value *> NamedValues;
++static unique_ptr<PyxcJIT> TheJIT;
+*...
++static ExitOnError ExitOnErr;
 ```
 
 LLVM returns recoverable errors from many JIT operations. I use `ExitOnErr` to unwrap a successful result or stop the program when one of those operations fails.
@@ -127,8 +139,11 @@ LLVM returns recoverable errors from many JIT operations. I use `ExitOnErr` to u
 Before I create the JIT, LLVM requires me to initialize support for the host machine:
 
 ```cpp
+#include "llvm/Support/TargetSelect.h"
+
 int main(int argc, const char **argv) {
-  ...
+  ...  
+
   // Initialise LLVM's backend for the host machine. These three calls
   // together register the native target's instruction set, assembler, and
   // disassembler so the JIT can compile and link for the current CPU.
@@ -137,12 +152,6 @@ int main(int argc, const char **argv) {
 
   ...
 
-  // Create the JIT first — InitializeModuleAndManagers() needs TheJIT in
-  // order to set the data layout on the new module.
-  TheJIT = ExitOnErr(PyxcJIT::Create());
-  InitializeModuleAndManagers();
-
-  ...
 }
 ```
 
@@ -181,14 +190,19 @@ LLVM requires the module's data layout to match the JIT target. It describes det
 
 ### Creating the Analysis Managers
 
-LLVM's pass framework requires analysis managers for loops, functions, call graphs, and modules. I add file-scope globals for all four, plus the function pass manager itself, alongside `TheContext`, `TheModule`, and `TheBuilder`:
+LLVM's pass framework requires analysis managers for loops, functions, call graphs, and modules. I add file-scope globals for all four, plus the function pass manager itself, right after `TheJIT` in that same block:
 
-```cpp
-static unique_ptr<FunctionPassManager> FunctionPasses;
-static unique_ptr<LoopAnalysisManager> LoopAnalyses;
-static unique_ptr<FunctionAnalysisManager> FunctionAnalyses;
-static unique_ptr<CGSCCAnalysisManager> CallGraphAnalyses;
-static unique_ptr<ModuleAnalysisManager> ModuleAnalyses;
+```cppdiff
++#include "llvm/Passes/PassBuilder.h"
+*static unique_ptr<PyxcJIT> TheJIT;
++// New Analysis passes
+~static unique_ptr<FunctionPassManager> FunctionPasses;
+~static unique_ptr<LoopAnalysisManager> LoopAnalyses;
+~static unique_ptr<FunctionAnalysisManager> FunctionAnalyses;
+~static unique_ptr<CGSCCAnalysisManager> CallGraphAnalyses;
+~static unique_ptr<ModuleAnalysisManager> ModuleAnalyses;
+*...
+*static ExitOnError ExitOnErr;
 ```
 
 Back in `InitializeModuleAndManagers()`, right after building `TheBuilder`, I create and register all four, even though my current pipeline only runs function passes:
@@ -197,19 +211,19 @@ Back in `InitializeModuleAndManagers()`, right after building `TheBuilder`, I cr
 *  ...
 *  TheBuilder = std::make_unique<IRBuilder<>>(*TheContext);
 *
-+  FunctionPasses = std::make_unique<FunctionPassManager>();
-+  LoopAnalyses = std::make_unique<LoopAnalysisManager>();
-+  FunctionAnalyses = std::make_unique<FunctionAnalysisManager>();
-+  CallGraphAnalyses = std::make_unique<CGSCCAnalysisManager>();
-+  ModuleAnalyses = std::make_unique<ModuleAnalysisManager>();
-+
-+  PassBuilder PB;
-+  PB.registerModuleAnalyses(*ModuleAnalyses);
-+  PB.registerCGSCCAnalyses(*CallGraphAnalyses);
-+  PB.registerFunctionAnalyses(*FunctionAnalyses);
-+  PB.registerLoopAnalyses(*LoopAnalyses);
-+  // I let a pass request analysis results managed at another level.
-+  PB.crossRegisterProxies(*LoopAnalyses, *FunctionAnalyses, *CallGraphAnalyses, *ModuleAnalyses);
+~  FunctionPasses = std::make_unique<FunctionPassManager>();
+~  LoopAnalyses = std::make_unique<LoopAnalysisManager>();
+~  FunctionAnalyses = std::make_unique<FunctionAnalysisManager>();
+~  CallGraphAnalyses = std::make_unique<CGSCCAnalysisManager>();
+~  ModuleAnalyses = std::make_unique<ModuleAnalysisManager>();
+~
+~  PassBuilder PB;
+~  PB.registerModuleAnalyses(*ModuleAnalyses);
+~  PB.registerCGSCCAnalyses(*CallGraphAnalyses);
+~  PB.registerFunctionAnalyses(*FunctionAnalyses);
+~  PB.registerLoopAnalyses(*LoopAnalyses);
+~  // I let a pass request analysis results managed at another level.
+~  PB.crossRegisterProxies(*LoopAnalyses, *FunctionAnalyses, *CallGraphAnalyses, *ModuleAnalyses);
 *  ...
 ```
 
@@ -219,11 +233,11 @@ I add the optimization passes to `FunctionPasses` when optimization is enabled, 
 
 ```cppdiff
 *  ...
-+  if (OptLevel != 0) {
-+    FunctionPasses->addPass(InstCombinePass());
-+    FunctionPasses->addPass(ReassociatePass());
-+    FunctionPasses->addPass(GVNPass());
-+  }
+~  if (OptLevel != 0) {
+~    FunctionPasses->addPass(InstCombinePass());
+~    FunctionPasses->addPass(ReassociatePass());
+~    FunctionPasses->addPass(GVNPass());
+~  }
 *}
 ```
 
