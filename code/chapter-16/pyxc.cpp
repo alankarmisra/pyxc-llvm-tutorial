@@ -2509,9 +2509,16 @@ static void HandleExtern() {
   auto Existing = FunctionSignatures.find(Signature->getName());
   if (Existing != FunctionSignatures.end() &&
       Existing->second->getNumParameters() != Signature->getNumParameters()) {
-    LogErrorExpression((string("Conflicting declaration for function '") +
-              Signature->getName() + "'")
-                 .c_str());
+    const size_t PreviousParameterCount =
+        Existing->second->getNumParameters();
+    const size_t NewParameterCount = Signature->getNumParameters();
+    LogErrorExpression(
+        "Conflicting declaration for function '" + Signature->getName() +
+        "': previous declaration has " +
+        to_string(PreviousParameterCount) +
+        (PreviousParameterCount == 1 ? " parameter" : " parameters") +
+        ", but this declaration has " + to_string(NewParameterCount) +
+        (NewParameterCount == 1 ? " parameter" : " parameters"));
     DiscardRestOfLine();
     return;
   }
