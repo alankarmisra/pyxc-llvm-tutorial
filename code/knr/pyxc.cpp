@@ -8198,12 +8198,12 @@ static void HandleExtern() {
   if (!ProtoAST)
     return;
 
-  // Reject conflicting redeclarations: in Pyxc, function identity is just
+  // Reject conflicting redeclarations: in pyxc, function identity is just
   // name + arity. We validate types separately in the parser.
   auto Existing = FunctionProtos.find(ProtoAST->getName());
   if (Existing != FunctionProtos.end() &&
       Existing->second->getNumArgs() != ProtoAST->getNumArgs()) {
-    LogError((string("Conflicting extern declaration for '") +
+    LogError((string("Conflicting declaration for function '") +
               ProtoAST->getName() + "'")
                  .c_str());
     DiscardRestOfLine();
