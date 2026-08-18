@@ -196,11 +196,11 @@ LLVM's pass framework requires analysis managers for loops, functions, call grap
 +#include "llvm/Passes/PassBuilder.h"
 *static unique_ptr<PyxcJIT> JIT;
 +// New Analysis passes
-~static unique_ptr<FunctionPassManager> FunctionPasses;
-~static unique_ptr<LoopAnalysisManager> LoopAnalyses;
-~static unique_ptr<FunctionAnalysisManager> FunctionAnalyses;
-~static unique_ptr<CGSCCAnalysisManager> CallGraphAnalyses;
-~static unique_ptr<ModuleAnalysisManager> ModuleAnalyses;
++static unique_ptr<FunctionPassManager> FunctionPasses;
++static unique_ptr<LoopAnalysisManager> LoopAnalyses;
++static unique_ptr<FunctionAnalysisManager> FunctionAnalyses;
++static unique_ptr<CGSCCAnalysisManager> CallGraphAnalyses;
++static unique_ptr<ModuleAnalysisManager> ModuleAnalyses;
 *...
 *static ExitOnError ExitOnErr;
 ```
@@ -211,19 +211,19 @@ Back in `InitializeModuleAndManagers()`, right after building `TheBuilder`, I cr
 *  ...
 *  TheBuilder = std::make_unique<IRBuilder<>>(*TheContext);
 *
-~  FunctionPasses = std::make_unique<FunctionPassManager>();
-~  LoopAnalyses = std::make_unique<LoopAnalysisManager>();
-~  FunctionAnalyses = std::make_unique<FunctionAnalysisManager>();
-~  CallGraphAnalyses = std::make_unique<CGSCCAnalysisManager>();
-~  ModuleAnalyses = std::make_unique<ModuleAnalysisManager>();
-~
-~  PassBuilder PB;
-~  PB.registerModuleAnalyses(*ModuleAnalyses);
-~  PB.registerCGSCCAnalyses(*CallGraphAnalyses);
-~  PB.registerFunctionAnalyses(*FunctionAnalyses);
-~  PB.registerLoopAnalyses(*LoopAnalyses);
-~  // I let a pass request analysis results managed at another level.
-~  PB.crossRegisterProxies(*LoopAnalyses, *FunctionAnalyses, *CallGraphAnalyses, *ModuleAnalyses);
++  FunctionPasses = std::make_unique<FunctionPassManager>();
++  LoopAnalyses = std::make_unique<LoopAnalysisManager>();
++  FunctionAnalyses = std::make_unique<FunctionAnalysisManager>();
++  CallGraphAnalyses = std::make_unique<CGSCCAnalysisManager>();
++  ModuleAnalyses = std::make_unique<ModuleAnalysisManager>();
++
++  PassBuilder PB;
++  PB.registerModuleAnalyses(*ModuleAnalyses);
++  PB.registerCGSCCAnalyses(*CallGraphAnalyses);
++  PB.registerFunctionAnalyses(*FunctionAnalyses);
++  PB.registerLoopAnalyses(*LoopAnalyses);
++  // I let a pass request analysis results managed at another level.
++  PB.crossRegisterProxies(*LoopAnalyses, *FunctionAnalyses, *CallGraphAnalyses, *ModuleAnalyses);
 *  ...
 ```
 
@@ -233,11 +233,11 @@ I add the optimization passes to `FunctionPasses` when optimization is enabled, 
 
 ```cppdiff
 *  ...
-~  if (OptLevel != 0) {
-~    FunctionPasses->addPass(InstCombinePass());
-~    FunctionPasses->addPass(ReassociatePass());
-~    FunctionPasses->addPass(GVNPass());
-~  }
++  if (OptLevel != 0) {
++    FunctionPasses->addPass(InstCombinePass());
++    FunctionPasses->addPass(ReassociatePass());
++    FunctionPasses->addPass(GVNPass());
++  }
 *}
 ```
 
