@@ -7888,7 +7888,7 @@ Function *FunctionDefinitionNode::codegen() {
   const string FunctionName = Signature->getName();
 
   // Step 1: register the function signature and resolve the Function*.
-  auto &P = *Signature;
+  auto &FunctionSignature = *Signature;
   FunctionSignatures[FunctionName] = std::move(Signature);
 
   // Step 1: reuse an existing `extern` declaration if one exists.
@@ -7905,20 +7905,22 @@ Function *FunctionDefinitionNode::codegen() {
     return nullptr;
 
   ValueType SavedRetType = CurrentFunctionReturnType;
-  CurrentFunctionReturnType = P.getReturnType();
+  CurrentFunctionReturnType = FunctionSignature.getReturnType();
 
   DISubprogram *SP = nullptr;
   if (DIB && TheDIFile) {
-    bool IsInternal = P.getName().rfind("__pyxc.", 0) == 0;
+    bool IsInternal = FunctionSignature.getName().rfind("__pyxc.", 0) == 0;
     if (!IsInternal) {
-      unsigned Line = P.getLocation().Line ? P.getLocation().Line : 1;
+      unsigned Line = FunctionSignature.getLocation().Line
+                          ? FunctionSignature.getLocation().Line
+                          : 1;
       SmallVector<Metadata *, 8> EltTys;
-      EltTys.push_back(DITypeFor(P.getReturnType()));
-      for (size_t i = 0; i < P.getParameters().size(); ++i)
-        EltTys.push_back(DITypeFor(P.getParameterType(i)));
+      EltTys.push_back(DITypeFor(FunctionSignature.getReturnType()));
+      for (size_t i = 0; i < FunctionSignature.getParameters().size(); ++i)
+        EltTys.push_back(DITypeFor(FunctionSignature.getParameterType(i)));
       auto *SubType =
           DIB->createSubroutineType(DIB->getOrCreateTypeArray(EltTys));
-      SP = DIB->createFunction(TheDIFile, P.getName(), StringRef(), TheDIFile,
+      SP = DIB->createFunction(TheDIFile, FunctionSignature.getName(), StringRef(), TheDIFile,
                                Line, SubType, Line, DINode::FlagZero,
                                DISubprogram::SPFlagDefinition);
       TheFunction->setSubprogram(SP);
@@ -7943,8 +7945,8 @@ Function *FunctionDefinitionNode::codegen() {
   unsigned ArgIndex = 1;
   size_t ArgTypeIndex = 0;
   for (auto &Argument : TheFunction->args()) {
-    ValueType ArgType = P.getParameterType(ArgTypeIndex);
-    string ArgStructName = P.getParameterStructName(ArgTypeIndex);
+    ValueType ArgType = FunctionSignature.getParameterType(ArgTypeIndex);
+    string ArgStructName = FunctionSignature.getParameterStructName(ArgTypeIndex);
     ++ArgTypeIndex;
     AllocaInst *Alloca = CreateEntryBlockAlloca(
         TheFunction, std::string(Argument.getName()), ArgType, ArgStructName);
@@ -7963,7 +7965,7 @@ Function *FunctionDefinitionNode::codegen() {
     // return), only void/None functions may fall through. Non-None functions
     // must return explicitly.
     if (!Builder->GetInsertBlock()->getTerminator()) {
-      if (P.getReturnType() == ValueType::None) {
+      if (FunctionSignature.getReturnType() == ValueType::None) {
         Builder->CreateRetVoid();
       } else {
         BasicBlock *CurBB = Builder->GetInsertBlock();

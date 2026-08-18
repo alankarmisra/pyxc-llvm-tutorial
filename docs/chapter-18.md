@@ -1325,7 +1325,7 @@ At the end of a function body, if no terminator was emitted:
 
 ```cpp
 if (!TheBuilder->GetInsertBlock()->getTerminator()) {
-  if (P.getReturnType() == ValueType::None) {
+  if (FunctionSignature.getReturnType() == ValueType::None) {
     TheBuilder->CreateRetVoid();
   } else {
     if (!IsEntry && pred_empty(CurBB)) {

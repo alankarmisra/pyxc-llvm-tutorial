@@ -7888,7 +7888,7 @@ Function *FunctionAST::codegen() {
   const string FunctionName = Proto->getName();
 
   // Step 1: register the prototype and resolve the Function*.
-  auto &P = *Proto;
+  auto &FunctionPrototype = *Proto;
   FunctionProtos[FunctionName] = std::move(Proto);
 
   // Step 1: reuse an existing `extern` declaration if one exists.
@@ -7905,20 +7905,22 @@ Function *FunctionAST::codegen() {
     return nullptr;
 
   ValueType SavedRetType = CurrentFunctionReturnType;
-  CurrentFunctionReturnType = P.getReturnType();
+  CurrentFunctionReturnType = FunctionPrototype.getReturnType();
 
   DISubprogram *SP = nullptr;
   if (DIB && TheDIFile) {
-    bool IsInternal = P.getName().rfind("__pyxc.", 0) == 0;
+    bool IsInternal = FunctionPrototype.getName().rfind("__pyxc.", 0) == 0;
     if (!IsInternal) {
-      unsigned Line = P.getLocation().Line ? P.getLocation().Line : 1;
+      unsigned Line = FunctionPrototype.getLocation().Line
+                          ? FunctionPrototype.getLocation().Line
+                          : 1;
       SmallVector<Metadata *, 8> EltTys;
-      EltTys.push_back(DITypeFor(P.getReturnType()));
-      for (size_t i = 0; i < P.getArgs().size(); ++i)
-        EltTys.push_back(DITypeFor(P.getArgType(i)));
+      EltTys.push_back(DITypeFor(FunctionPrototype.getReturnType()));
+      for (size_t i = 0; i < FunctionPrototype.getArgs().size(); ++i)
+        EltTys.push_back(DITypeFor(FunctionPrototype.getArgType(i)));
       auto *SubType =
           DIB->createSubroutineType(DIB->getOrCreateTypeArray(EltTys));
-      SP = DIB->createFunction(TheDIFile, P.getName(), StringRef(), TheDIFile,
+      SP = DIB->createFunction(TheDIFile, FunctionPrototype.getName(), StringRef(), TheDIFile,
                                Line, SubType, Line, DINode::FlagZero,
                                DISubprogram::SPFlagDefinition);
       TheFunction->setSubprogram(SP);
@@ -7941,8 +7943,8 @@ Function *FunctionAST::codegen() {
   unsigned ArgIndex = 1;
   size_t ArgTypeIndex = 0;
   for (auto &Argument : TheFunction->args()) {
-    ValueType ArgType = P.getArgType(ArgTypeIndex);
-    string ArgStructName = P.getArgStructName(ArgTypeIndex);
+    ValueType ArgType = FunctionPrototype.getArgType(ArgTypeIndex);
+    string ArgStructName = FunctionPrototype.getArgStructName(ArgTypeIndex);
     ++ArgTypeIndex;
     AllocaInst *Alloca = CreateEntryBlockAlloca(
         TheFunction, std::string(Argument.getName()), ArgType, ArgStructName);
@@ -7961,7 +7963,7 @@ Function *FunctionAST::codegen() {
     // return), only void/None functions may fall through. Non-None functions
     // must return explicitly.
     if (!Builder->GetInsertBlock()->getTerminator()) {
-      if (P.getReturnType() == ValueType::None) {
+      if (FunctionPrototype.getReturnType() == ValueType::None) {
         Builder->CreateRetVoid();
       } else {
         BasicBlock *CurBB = Builder->GetInsertBlock();
