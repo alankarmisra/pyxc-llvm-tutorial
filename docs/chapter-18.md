@@ -1468,7 +1468,7 @@ The wrapper is what the OS and C runtime actually call. The user-visible `main` 
 
 ## JIT Dispatch: Type-Switched Invocation
 
-Before chapter 17, the JIT always called the anonymous top-level function as `double (*)()`. Now the return type determines both the function pointer type and the print format:
+Before chapter 17, the JIT always called the anonymous top-level function as `double (*)()`. Now the return type determines the function pointer type. Overloads of `PrintEvaluationResult()` keep the corresponding floating-point, integer, and Boolean formatting out of the dispatch logic:
 
 ```cpp
 if (RetTy == ValueType::None) {
@@ -1481,21 +1481,21 @@ if (RetTy == ValueType::None) {
     double (*FP)() = ExprSymbol.toPtr<double (*)()>();
     double result = FP();
     if (IsRepl && LastTopLevelShouldPrint)
-      fprintf(stdout, "%f\n", result);
+      PrintEvaluationResult(result);
     break;
   }
   case ValueType::Float32: {
     float (*FP)() = ExprSymbol.toPtr<float (*)()>();
     double result = static_cast<double>(FP());
     if (IsRepl && LastTopLevelShouldPrint)
-      fprintf(stdout, "%f\n", result);
+      PrintEvaluationResult(result);
     break;
   }
   case ValueType::Int: {
     intptr_t (*FP)() = ExprSymbol.toPtr<intptr_t (*)()>();
     long long result = static_cast<long long>(FP());
     if (IsRepl && LastTopLevelShouldPrint)
-      fprintf(stdout, "%lld\n", result);
+      PrintEvaluationResult(result);
     break;
   }
   // Int8, Int16, Int32, Int64 all use int*_t pointers and %lld
@@ -1503,7 +1503,7 @@ if (RetTy == ValueType::None) {
     bool (*FP)() = ExprSymbol.toPtr<bool (*)()>();
     bool result = FP();
     if (IsRepl && LastTopLevelShouldPrint)
-      fprintf(stdout, "%s\n", result ? "True" : "False");
+      PrintEvaluationResult(result);
     break;
   }
   default: break;

@@ -271,7 +271,15 @@ Every `Handle*` function below confirms what it parsed through one small helper,
 
 ```cpp
 void Log(const string &message) { fprintf(stderr, "%s", message.c_str()); }
+
+void PrintEvaluationResult(double Result) {
+  fprintf(stdout, "Evaluated to %f\n", Result);
+}
 ```
+
+`Log()` is for compiler progress on `stderr`. `PrintEvaluationResult()` keeps
+the REPL's user-facing result on `stdout` and gives that formatting one clear
+home.
 
 For a top-level expression, I generate and optimize `__anon_expr` as before. I then hand its module to the JIT and execute the compiled function:
 
@@ -309,7 +317,7 @@ For a top-level expression, I generate and optimize `__anon_expr` as before. I t
 +  // Cast the symbol address to a callable function pointer and invoke it.
 +  double (*FP)() = ExprSymbol.toPtr<double (*)()>();
 +  double result = FP();
-+  fprintf(stdout, "Evaluated to %f\n", result);
++  PrintEvaluationResult(result);
 +
 +  // Release the compiled code and JIT memory for this expression.
 +  ExitOnErr(RT->remove());
@@ -335,11 +343,51 @@ For named functions, I add the module without this temporary tracker, so their c
 
 ## One Module per Compilation Unit
 
-When I parse `foo(2)`, I wrap it in a zero-argument function named `__anon_expr`. I compile it, call it, and then free it. ORC tracks resources at the module level, so I must keep this temporary function separate from named functions that need to remain available.
+`foo` and `bar` need to stay compiled and callable for the rest of the session. `__anon_expr`, the wrapper I generate for a bare top-level expression like `foo(1) + bar(2)`, needs the opposite: it runs exactly once and then has no reason to exist. ORC tracks resources at the level of a whole module, so I can't free just one function out of a module I've already handed over; I can only free (or keep) an entire module. That's the reason every `def`, every `extern`, and every top-level expression each gets its own fresh module: it lets me remove the module built for `__anon_expr` without touching the modules `foo` and `bar` live in.
 
-For simplicity, I place every external declaration, function definition, and top-level expression in a fresh module. Removing the module for `__anon_expr` therefore removes only that temporary function.
+```text
+STAGE 1 — Steady state: foo and bar are already compiled and living in the JIT
 
-I could group named functions into larger modules while keeping anonymous expressions separate, but I defer that module-management policy.
+  JIT symbol table
+  ┌────────────────┐  ┌────────────────┐
+  │ foo (compiled) │  │ bar (compiled) │
+  └────────────────┘  └────────────────┘
+
+  (waiting for the next top-level input...)
+
+
+STAGE 2 — A top-level expression arrives: foo(1) + bar(2)
+
+  I wrap it in a throwaway function and compile that too:
+
+    double __anon_expr() { return foo(1) + bar(2); }
+
+  JIT symbol table
+  ┌────────────────┐  ┌────────────────┐  ┌───────────────────────┐
+  │ foo (compiled) │  │ bar (compiled) │  │ __anon_expr (compiled)│
+  └────────────────┘  └────────────────┘  └───────────────────────┘
+
+
+STAGE 3 — I look up and call __anon_expr(); it calls the other two
+
+                    ┌───────────────────────┐
+                    │ __anon_expr (compiled)│
+                    └───────────────────────┘
+                         │              │
+                    calls│              │calls
+                         ▼              ▼
+              ┌────────────────┐  ┌────────────────┐
+              │ foo (compiled) │  │ bar (compiled) │
+              └────────────────┘  └────────────────┘
+                    result=1            result=4
+                         └──────┬───────┘
+                                ▼
+                   __anon_expr() returns 5
+```
+
+`foo` and `bar` resolve normally here because they're still in the JIT from Stage 1, even though `__anon_expr` lives in a completely different module compiled moments later. I cover exactly how that cross-module lookup works next. Once `__anon_expr()` returns, `RT->remove()` frees just its module, and the JIT is back to Stage 1: `foo` and `bar` untouched, ready for the next input.
+
+This has a real cost: since each function compiles alone in its own module, LLVM never sees more than one function at a time. There's no cross-function optimization, no inlining `foo` into a caller, for as long as pyxc compiles this way. Grouping functions into shared modules isn't a small addition on top of this design either: it would mean not handing a module to the JIT the moment I finish compiling it, which conflicts with how a REPL works. I don't know what the next input will be, and once a module is transferred, ORC owns it; I can't add to it after the fact.
 
 I still reject a second definition of the same function. Supporting redefinition in the REPL would require me to replace the previously compiled symbol safely, which I leave for later.
 
@@ -590,24 +638,40 @@ I save the signature in `FunctionSignatures`, the registry I introduced in [The 
 
 ```pyxc
 ready> extern def sin(x)
+```
+```text
 Parsed an extern.
 declare double @sin(double)
 ```
 
 I also dispatch `tok_extern` from `MainLoop()`:
 
-```cpp
-switch (CurrentToken) {
-case tok_def:
-  HandleFunctionDefinition();
-  break;
-case tok_extern:
-  HandleExtern();
-  break;
-default:
-  HandleTopLevelExpression();
-  break;
-}
+```cppdiff
+*static void MainLoop() {
+*  while (CurrentToken != tok_eof) {
+*    switch (CurrentToken) {
+*    case tok_error:
+*      DiscardRestOfLine();
+*      break;
+*    case tok_eol:
+-      // For a bare newline, I print a fresh prompt and read the next token.
+-      fprintf(stderr, "ready> ");
++      // A bare newline: just print a fresh prompt and read the next token.
++      PrintReplPrompt();
+*      getNextToken();
+*      break;
+*    case tok_def:
+*      HandleFunctionDefinition();
+*      break;
++    case tok_extern:
++      HandleExtern();
++      break;
+*    default:
+*      HandleTopLevelExpression();
+*      break;
+*    }
+*  }
+*}
 ```
 
 ## The Runtime Library
