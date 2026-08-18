@@ -6384,15 +6384,31 @@ static void HandleExtern() {
     return;
   }
 
-  // Reject conflicting redeclarations: in pyxc, function identity is just
-  // name + arity. We validate types separately in the parser.
+  // Reject redeclarations with a different arity or variadic shape.
+  // We validate parameter and return types separately in the parser.
   auto Existing = FunctionSignatures.find(ProtoAST->getName());
   if (Existing != FunctionSignatures.end() &&
       (Existing->second->getNumParameters() != ProtoAST->getNumParameters() ||
        Existing->second->isVariadic() != ProtoAST->isVariadic())) {
-    LogErrorExpression((string("Conflicting declaration for function '") +
-              ProtoAST->getName() + "'")
-                 .c_str());
+    string ConflictReason;
+    const size_t PreviousParameterCount =
+        Existing->second->getNumParameters();
+    const size_t NewParameterCount = ProtoAST->getNumParameters();
+    if (PreviousParameterCount != NewParameterCount) {
+      ConflictReason =
+          "previous declaration has " + to_string(PreviousParameterCount) +
+          (PreviousParameterCount == 1 ? " parameter" : " parameters") +
+          ", but this declaration has " + to_string(NewParameterCount) +
+          (NewParameterCount == 1 ? " parameter" : " parameters");
+    } else {
+      ConflictReason = string("previous declaration is ") +
+                       (Existing->second->isVariadic() ? "variadic"
+                                                       : "not variadic") +
+                       ", but this declaration is " +
+                       (ProtoAST->isVariadic() ? "variadic" : "not variadic");
+    }
+    LogErrorExpression("Conflicting declaration for function '" +
+                       ProtoAST->getName() + "': " + ConflictReason);
     DiscardRestOfLine();
     return;
   }

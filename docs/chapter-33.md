@@ -119,11 +119,16 @@ The redeclaration check for `extern def` already compared parameter counts to ca
 -      Existing->second->getNumParameters() != ProtoAST->getNumParameters()) {
 +      (Existing->second->getNumParameters() != ProtoAST->getNumParameters() ||
 +       Existing->second->isVariadic() != ProtoAST->isVariadic())) {
-*    LogErrorExpression((string("Conflicting declaration for function '") +
-*              ProtoAST->getName() + "'")
-*                 .c_str());
+*    string ConflictReason;
+*    ...
+*    LogErrorExpression("Conflicting declaration for function '" +
+*                       ProtoAST->getName() + "': " + ConflictReason);
 *  }
 ```
+
+`ConflictReason` gives both parameter counts when the arity differs. When the
+counts match, it says whether the previous and new declarations are variadic or
+non-variadic.
 
 ## Allowing Variadic Arguments in Parsing
 

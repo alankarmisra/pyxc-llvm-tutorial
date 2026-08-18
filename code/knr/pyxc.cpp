@@ -8203,9 +8203,15 @@ static void HandleExtern() {
   auto Existing = FunctionProtos.find(ProtoAST->getName());
   if (Existing != FunctionProtos.end() &&
       Existing->second->getNumArgs() != ProtoAST->getNumArgs()) {
-    LogError((string("Conflicting declaration for function '") +
-              ProtoAST->getName() + "'")
-                 .c_str());
+    const size_t PreviousParameterCount = Existing->second->getNumArgs();
+    const size_t NewParameterCount = ProtoAST->getNumArgs();
+    LogError(
+        "Conflicting declaration for function '" + ProtoAST->getName() +
+        "': previous declaration has " +
+        to_string(PreviousParameterCount) +
+        (PreviousParameterCount == 1 ? " parameter" : " parameters") +
+        ", but this declaration has " + to_string(NewParameterCount) +
+        (NewParameterCount == 1 ? " parameter" : " parameters"));
     DiscardRestOfLine();
     return;
   }
