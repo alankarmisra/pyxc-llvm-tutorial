@@ -9,6 +9,8 @@
 
 using namespace std;
 
+static constexpr char AnonymousExpressionFunctionName[] = "__anon_expr";
+
 //===----------------------------------------===//
 // Lexer
 //===----------------------------------------===//
@@ -523,8 +525,8 @@ static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
     return nullptr;
 
   // I invent a function signature with an internal name and no parameters
-  auto Signature =
-      make_unique<FunctionSignatureNode>("__anon_expr", vector<string>());
+  auto Signature = make_unique<FunctionSignatureNode>(
+      AnonymousExpressionFunctionName, vector<string>());
 
   return std::make_unique<FunctionDefinitionNode>(std::move(Signature),
                                                   std::move(Body));

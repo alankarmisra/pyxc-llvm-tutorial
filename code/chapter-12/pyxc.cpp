@@ -35,6 +35,8 @@ using namespace std;
 using namespace llvm;
 using namespace llvm::orc;
 
+static constexpr char AnonymousExpressionFunctionName[] = "__anon_expr";
+
 //===----------------------------------------===//
 // Command line
 //===----------------------------------------===//
@@ -1542,7 +1544,8 @@ static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
     Expression = make_unique<AssignmentStatementNode>(Name, std::move(Right));
   }
 
-  auto Signature = make_unique<FunctionSignatureNode>("__anon_expr", vector<string>());
+  auto Signature = make_unique<FunctionSignatureNode>(
+      AnonymousExpressionFunctionName, vector<string>());
   auto Body = make_unique<ReturnStatementNode>(std::move(Expression));
   return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(Body));
 }
@@ -2247,7 +2250,7 @@ static void HandleTopLevelExpression() {
     InitializeModuleAndManagers();
 
     // Locate the compiled function in the JIT's symbol table.
-    auto ExprSymbol = ExitOnErr(JIT->lookup("__anon_expr"));
+    auto ExprSymbol = ExitOnErr(JIT->lookup(AnonymousExpressionFunctionName));
 
     // Cast the symbol address to a callable function pointer and invoke it.
     double (*FP)() = ExprSymbol.toPtr<double (*)()>();

@@ -569,7 +569,15 @@ static unique_ptr<FunctionDefinitionNode> ParseFunctionDefinition() {
 
 ## Parsing Top-Level Expressions
 
-So far I can parse function definitions and function-call expressions. I also need to parse expressions outside a function, such as `1 + 2 + 3`, because I will often enter them directly in the REPL. In LLVM, I cannot represent an instruction outside a function. I therefore wrap each top-level expression in a function with an internal name, letting me reuse the same representation as a regular function definition:
+So far I can parse function definitions and function-call expressions. I also need to parse expressions outside a function, such as `1 + 2 + 3`, because I will often enter them directly in the REPL. In LLVM, I cannot represent an instruction outside a function. I therefore wrap each top-level expression in a function with an internal name, letting me reuse the same representation as a regular function definition.
+
+I define that internal name once near the top of the file so creating and, later, looking up the temporary function cannot drift onto different strings:
+
+```cpp
+static constexpr char AnonymousExpressionFunctionName[] = "__anon_expr";
+```
+
+I use the constant when I create the wrapper:
 
 ```cpp
 /// top-level-expression
@@ -580,15 +588,15 @@ static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
     return nullptr;
 
   // I invent a function signature with an internal name and no parameters
-  auto Signature =
-      make_unique<FunctionSignatureNode>("__anon_expr", vector<string>());
+  auto Signature = make_unique<FunctionSignatureNode>(
+      AnonymousExpressionFunctionName, vector<string>());
 
   return std::make_unique<FunctionDefinitionNode>(std::move(Signature),
                                                   std::move(Body));
 }
 ```
 
-I invented the placeholder name `__anon_expr`, but I could use any valid name. When I add JIT execution in a later chapter, I look up this function by name and call it to evaluate the expression immediately. I then discard it and reuse the same name for the next top-level expression, so I do not need to keep inventing unique names.
+The constant's value, `__anon_expr`, is a placeholder; I could use any valid name. When I add JIT execution in a later chapter, I use the same constant to look up the function and call it to evaluate the expression immediately. I then discard it and reuse the name for the next top-level expression, so I do not need to keep inventing unique names.
 
 !!!note
     Tools such as GNU Bison, ANTLR, and JavaCC can generate a parser from a grammar. They can save a lot of work, especially as a language grows. I want to write this parser by hand first because it will help me understand how the grammar becomes code. A hand-written parser also gives me direct control over how I build the syntax tree, report errors, and handle the unusual parts of my language. Once I understand those decisions, I can judge whether a parser generator would help me later.
