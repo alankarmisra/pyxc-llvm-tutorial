@@ -522,7 +522,24 @@ declare double @sin(double)
 
 Because I do not call `FunctionDefinitionNode::codegen()`, I never add a body.
 
-I connect parsing and code generation in `HandleExtern()`:
+I add one method to `FunctionSignatureNode` itself, `getNumParameters()`, so I can compare arity between two signatures without exposing the raw `Parameters` vector:
+
+```cppdiff
+*class FunctionSignatureNode {
+*  string Name;
+*  vector<string> Parameters;
+*
+*public:
+*  FunctionSignatureNode(const string &Name, vector<string> Parameters)
+*      : Name(Name), Parameters(std::move(Parameters)) {}
+*
+*  const string &getName() const { return Name; }
++  size_t getNumParameters() const { return Parameters.size(); }
+*  Function *codegen();
+*};
+```
+
+I use it in `HandleExtern()`, next, to detect a redeclaration with a different arity. I connect parsing and code generation there:
 
 ```cpp
 static void HandleExtern() {
