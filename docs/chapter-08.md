@@ -232,6 +232,10 @@ Back in `InitializeModuleAndManagers()`, right after building `TheBuilder`, I cr
 I add the optimization passes to `FunctionPasses` when optimization is enabled, closing out `InitializeModuleAndManagers()`:
 
 ```cppdiff
++#include "llvm/Transforms/InstCombine/InstCombine.h"
++#include "llvm/Transforms/Scalar/GVN.h"
++#include "llvm/Transforms/Scalar/Reassociate.h"
++
 *  ...
 +  if (OptLevel != 0) {
 +    FunctionPasses->addPass(InstCombinePass());
@@ -247,9 +251,20 @@ I define `OptLevel` from the `-O` command-line option later in this chapter. At 
 
 After I generate and verify a function, I run the pipeline:
 
-```cpp
-// In FunctionDefinitionNode::codegen(), after verifyFunction():
-FunctionPasses->run(*TheFunction, *FunctionAnalyses);
+```cppdiff
+*Function *FunctionDefinitionNode::codegen() {
+*  ...
+*  if (Value *RetVal = Body->codegen()) {
+*    TheBuilder->CreateRet(RetVal);
+*    verifyFunction(*TheFunction);
+*
++    // Run the optimisation pipeline: InstCombine, Reassociate, GVN,
++    // SimplifyCFG.
++    FunctionPasses->run(*TheFunction, *FunctionAnalyses);
+*    return TheFunction;
+*  }
+*  ...
+*}
 ```
 
 This optimizes each function before I print or compile it.
@@ -620,6 +635,64 @@ I use `cl::Prefix` to accept `-O2` instead of requiring `-O=2`. LLVM also uses t
 At `-O0`, I leave the pass pipeline empty so I can inspect the IR before optimization.
 
 For now, `-O1`, `-O2`, and `-O3` all enable the same three passes. I do not connect these values to LLVM's full optimization presets yet.
+
+I parse and validate the flag in `ProcessCommandLine()`, which `main()` now calls before doing anything else:
+
+```cpp
+int ProcessCommandLine(int argc, const char **argv) {
+  cl::HideUnrelatedOptions(PyxcCategory);
+  cl::ParseCommandLineOptions(argc, argv, "pyxc\n");
+
+  if (OptLevel > 3) {
+    fprintf(stderr, "Error: -O level must be 0, 1, 2, or 3\n");
+    return -1;
+  }
+
+  return 0;
+}
+```
+
+`cl::HideUnrelatedOptions` hides LLVM's own long list of built-in flags from `--help`, showing only the options I registered under `PyxcCategory`. `cl::ParseCommandLineOptions` does the actual parsing and populates every `cl::opt` global from `argv`. An out-of-range `-O` returns early with an error; `main()` propagates that return value straight out as the process exit code.
+
+Here's `main()` in full. I already covered the `InitializeNativeTarget*` calls in [Creating the ORC JIT](#creating-the-orc-jit), so I gray those out below. The new piece is the `ProcessCommandLine()` call at the very top, which has to run before anything else since it configures `Input` and `IsRepl`. Two more lines I haven't called out yet: `PrintReplPrompt()` prints `ready> ` (it replaces the raw `fprintf(stderr, "ready> ")` from Chapter 7):
+
+```cpp
+void PrintReplPrompt() {
+  fflush(stdout);
+  fprintf(stderr, "ready> ");
+}
+```
+
+I flush `stdout` first so any output already produced by the program (through `printd` or `putchard`, once I add `extern` calls to those below) appears before the next prompt rather than getting buffered behind it. And `JIT = ExitOnErr(PyxcJIT::Create())` is the JIT instantiation I introduced in [Creating the ORC JIT](#creating-the-orc-jit) but hadn't shown in its actual calling context until now:
+
+```cppdiff
+*int main(int argc, const char **argv) {
++  int commandLineResult = ProcessCommandLine(argc, argv);
++  if (commandLineResult != 0) {
++    return commandLineResult;
++  }
++
+*  // Initialise LLVM's backend for the host machine. These three calls
+*  // together register the native target's instruction set, assembler, and
+*  // disassembler so the JIT can compile and link for the current CPU.
+*  InitializeNativeTarget();
+*  InitializeNativeTargetAsmPrinter();
+*
++  // Prime the REPL: print the first prompt and load the first token.
++  // Every parse function expects CurrentToken to be loaded before it is called.
++  PrintReplPrompt();
++  getNextToken();
++
++  // Create the JIT first — InitializeModuleAndManagers() needs JIT in
++  // order to set the data layout on the new module.
++  JIT = ExitOnErr(PyxcJIT::Create());
+*  InitializeModuleAndManagers();
+*
+*  MainLoop();
+*
+*  return 0;
+*}
+```
 
 ## Build and Run
 
