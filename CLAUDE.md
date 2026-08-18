@@ -85,7 +85,7 @@ The entire compiler is one file with these sections in order:
 
 **LLVM IR globals** (recreated per module via `InitializeModuleAndManagers`):
 - `TheContext`, `TheModule`, `Builder` — standard LLVM IR construction triple.
-- `TheJIT` — ORC LLJIT instance (created once at startup).
+- `JIT` — ORC LLJIT instance (created once at startup).
 - `DIB`, `TheCU` — debug info builder and compile unit (only with `-g`).
 
 **Driver state:**

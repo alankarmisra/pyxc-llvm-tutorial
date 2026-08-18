@@ -381,11 +381,11 @@ static void HandleTopLevelStatement() {
 
     if (ModuleHasGlobals) {
       // Module contains GlobalVariable definitions — add it permanently.
-      ExitOnErr(TheJIT->addModule(
+      ExitOnErr(JIT->addModule(
           ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
       InitializeModuleAndManagers();
 
-      auto Symbol = ExitOnErr(TheJIT->lookup(FunctionName));
+      auto Symbol = ExitOnErr(JIT->lookup(FunctionName));
       double (*FunctionPointer)() = Symbol.toPtr<double (*)()>();
       double Result = FunctionPointer();
       if (IsRepl && LastTopLevelShouldPrint)
@@ -395,13 +395,13 @@ static void HandleTopLevelStatement() {
 
     // No globals — use a ResourceTracker to free the module after the call.
     auto ResourceTracker =
-        TheJIT->getMainJITDylib().createResourceTracker();
-    ExitOnErr(TheJIT->addModule(
+        JIT->getMainJITDylib().createResourceTracker();
+    ExitOnErr(JIT->addModule(
         ThreadSafeModule(std::move(TheModule), std::move(TheContext)),
         ResourceTracker));
     InitializeModuleAndManagers();
 
-    auto Symbol = ExitOnErr(TheJIT->lookup(FunctionName));
+    auto Symbol = ExitOnErr(JIT->lookup(FunctionName));
     double (*FunctionPointer)() = Symbol.toPtr<double (*)()>();
     double Result = FunctionPointer();
     if (IsRepl && LastTopLevelShouldPrint)
@@ -462,11 +462,11 @@ static void RunFileMode() {
       if (VerboseIR)
         FunctionIR->print(errs());
 
-      ExitOnErr(TheJIT->addModule(
+      ExitOnErr(JIT->addModule(
           ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
       InitializeModuleAndManagers();
 
-      auto InitSymbol = ExitOnErr(TheJIT->lookup("__pyxc.global_init"));
+      auto InitSymbol = ExitOnErr(JIT->lookup("__pyxc.global_init"));
       double (*InitializeGlobals)() = InitSymbol.toPtr<double (*)()>();
       InitializeGlobals();
     } else {
@@ -484,7 +484,7 @@ static void RunFileMode() {
     return;
   }
 
-  auto MainSymbol = ExitOnErr(TheJIT->lookup("main"));
+  auto MainSymbol = ExitOnErr(JIT->lookup("main"));
   double (*MainFunction)() = MainSymbol.toPtr<double (*)()>();
   MainFunction();
 }
