@@ -1,4 +1,5 @@
 ---
+section: "Types and Typed Operations"
 description: "Add a static type system: int, int8, int16, int32, int64, float, float32, float64, bool, and void (None). Parameters, variables, and return types are all explicitly annotated."
 ---
 # 18. pyxc: A Static Type System
