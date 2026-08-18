@@ -194,6 +194,10 @@ LLVM's pass framework requires analysis managers for loops, functions, call grap
 
 ```cppdiff
 +#include "llvm/Passes/PassBuilder.h"
++#include "llvm/Transforms/InstCombine/InstCombine.h"
++#include "llvm/Transforms/Scalar/GVN.h"
++#include "llvm/Transforms/Scalar/Reassociate.h"
+*
 *static unique_ptr<PyxcJIT> JIT;
 +// New Analysis passes
 +static unique_ptr<FunctionPassManager> FunctionPasses;
@@ -232,10 +236,6 @@ Back in `InitializeModuleAndManagers()`, right after building `TheBuilder`, I cr
 I add the optimization passes to `FunctionPasses` when optimization is enabled, closing out `InitializeModuleAndManagers()`:
 
 ```cppdiff
-+#include "llvm/Transforms/InstCombine/InstCombine.h"
-+#include "llvm/Transforms/Scalar/GVN.h"
-+#include "llvm/Transforms/Scalar/Reassociate.h"
-+
 *  ...
 +  if (OptLevel != 0) {
 +    FunctionPasses->addPass(InstCombinePass());
@@ -273,30 +273,58 @@ This optimizes each function before I print or compile it.
 
 For a top-level expression, I generate and optimize `__anon_expr` as before. I then hand its module to the JIT and execute the compiled function:
 
-```cpp
-if (auto *FunctionIR = FunctionDefinition->codegen()) {
-  FunctionIR->print(errs());
-
-  // ResourceTracker scopes the JIT memory for this expression so I can
-  // free it precisely after the call, without affecting other symbols.
-  auto RT = JIT->getMainJITDylib().createResourceTracker();
-
-  // Transfer ownership of the module to the JIT; reinitialise for next input.
-  auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
-  ExitOnErr(JIT->addModule(std::move(TSM), RT));
-  InitializeModuleAndManagers();
-
-  // Locate the compiled function in the JIT's symbol table.
-  auto ExprSymbol = ExitOnErr(JIT->lookup("__anon_expr"));
-
-  // Cast the symbol address to a callable function pointer and invoke it.
-  double (*FP)() = ExprSymbol.toPtr<double (*)()>();
-  double result = FP();
-  fprintf(stdout, "Evaluated to %f\n", result);
-
-  // Release the compiled code and JIT memory for this expression.
-  ExitOnErr(RT->remove());
-}
+```cppdiff
+*static void HandleTopLevelExpression() {
+*  auto FunctionDefinition = ParseTopLevelExpression();
+*  if (!FunctionDefinition) {
+*    DiscardRestOfLine();
+*    return;
+*  }
+*
+*  if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
+*    LogErrorExpression("Unexpected " + FormatTokenForMessage(CurrentToken));
+*    DiscardRestOfLine();
+*    return;
+*  }
+*
+-  auto *FunctionIR = FunctionDefinition->codegen();
+-  if (!FunctionIR)
+-    return;
+-
+-  fprintf(stderr, "Parsed a top-level expression.\n");
+-  FunctionIR->print(errs());
+-  fprintf(stderr, "\n");
+-
+-  // Erase after printing — anonymous expressions don't belong in the final
+-  // module dump.
+-  FunctionIR->eraseFromParent();
++  auto *FunctionIR = FunctionDefinition->codegen();
++  if (!FunctionIR)
++    return;
++
++  Log("Parsed a top-level expression.\n");
++  FunctionIR->print(errs());
++
++  // ResourceTracker scopes the JIT memory for this expression so I can
++  // free it precisely after the call, without affecting other symbols.
++  auto RT = JIT->getMainJITDylib().createResourceTracker();
++
++  // Transfer ownership of the module to the JIT; reinitialise for next input.
++  auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
++  ExitOnErr(JIT->addModule(std::move(TSM), RT));
++  InitializeModuleAndManagers();
++
++  // Locate the compiled function in the JIT's symbol table.
++  auto ExprSymbol = ExitOnErr(JIT->lookup("__anon_expr"));
++
++  // Cast the symbol address to a callable function pointer and invoke it.
++  double (*FP)() = ExprSymbol.toPtr<double (*)()>();
++  double result = FP();
++  fprintf(stdout, "Evaluated to %f\n", result);
++
++  // Release the compiled code and JIT memory for this expression.
++  ExitOnErr(RT->remove());
+*}
 ```
 
 `lookup("__anon_expr")` asks the JIT for the compiled symbol. I use `toPtr<double (*)()>` to treat its address as a C function that takes no arguments and returns a `double`. Calling `FP()` executes that machine code.
@@ -369,9 +397,13 @@ I connect parsing and code generation in `HandleExtern()`:
 static void HandleExtern() {
   auto Signature = ParseExtern();
 
-  if (!Signature || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
-    if (Signature)
-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)));
+  if (!Signature) {
+    DiscardRestOfLine();
+    return;
+  }
+
+  if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
+    LogErrorExpression("Unexpected " + FormatTokenForMessage(CurrentToken));
     DiscardRestOfLine();
     return;
   }
@@ -381,19 +413,20 @@ static void HandleExtern() {
   auto Existing = FunctionSignatures.find(Signature->getName());
   if (Existing != FunctionSignatures.end() &&
       Existing->second->getNumParameters() != Signature->getNumParameters()) {
-    LogErrorExpression((string("Conflicting extern declaration for '") +
-              Signature->getName() + "'")
-                 .c_str());
+    LogErrorExpression("Conflicting extern declaration for '" +
+                       Signature->getName() + "'");
     DiscardRestOfLine();
     return;
   }
 
-  if (auto *FunctionIR = Signature->codegen()) {
-    Log("Parsed an extern.\n");
-    FunctionIR->print(errs());
-    // Save the function signature so getFunction() can re-emit it in future modules.
-    FunctionSignatures[Signature->getName()] = std::move(Signature);
-  }
+  auto *FunctionIR = Signature->codegen();
+  if (!FunctionIR)
+    return;
+
+  Log("Parsed an extern.\n");
+  FunctionIR->print(errs());
+  // Save the function signature so getFunction() can re-emit it in future modules.
+  FunctionSignatures[Signature->getName()] = std::move(Signature);
 }
 ```
 
@@ -447,14 +480,16 @@ static void HandleFunctionDefinition() {
     return;
   }
 
-  if (auto *FunctionIR = FunctionDefinition->codegen()) {
-    Log("Parsed a function definition.\n");
-    FunctionIR->print(errs());
-    // Transfer the module to the JIT. TheModule is now invalid; reinitialise.
-    ExitOnErr(JIT->addModule(
-        ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
-    InitializeModuleAndManagers();
-  }
+  auto *FunctionIR = FunctionDefinition->codegen();
+  if (!FunctionIR)
+    return;
+
+  Log("Parsed a function definition.\n");
+  FunctionIR->print(errs());
+  // Transfer the module to the JIT. TheModule is now invalid; reinitialise.
+  ExitOnErr(JIT->addModule(
+      ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
+  InitializeModuleAndManagers();
 }
 ```
 
