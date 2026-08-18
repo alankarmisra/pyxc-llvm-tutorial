@@ -1,6 +1,6 @@
-# RUN: %pyxc -v < %s > %t 2>&1
-# RUN: grep -q "Parsed a function definition" %t
-# RUN: grep -q "call double @double_it" %t
+# RUN: %pyxc -v < %s 2>&1 | FileCheck %s --check-prefix=CHECK
+# CHECK-DAG: {{Parsed a function definition}}
+# CHECK-DAG: {{call double @double_it}}
 
 # CallExpressionNode::codegen: callee looked up by name in TheModule; emits a call
 # instruction against it. Both the callee definition and the caller must appear.

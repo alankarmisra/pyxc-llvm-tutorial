@@ -77,6 +77,8 @@ Don't over-correct into stiff or padded sentences trying to prove the "I" is the
 
 **Account for every code change from the previous chapter, not just the new concept.** Before writing a chapter, diff its `pyxc.cpp` against the prior chapter's in full, and account for every hunk somewhere in the prose, not only the part that motivated the chapter. A three-line lexer addition (new tokens) is just as much "what changed" as the headline algorithm; skipping it leaves the reader unable to find where new syntax entered the language at all. If a change is truly incidental (formatting, a rename already covered by [§3.5](#35-naming-conventions)), it's fine to leave unexplained, but that should be a deliberate judgment, not an oversight from only looking at the interesting diff.
 
+**Every `+` line must be pasteable, in order, with nothing missing.** A reader should be able to copy every `+`-marked line from every `cppdiff`/`grammardiff` code block in the chapter, paste them in the order they appear into the previous chapter's code, and end up with exactly this chapter's code — no gaps, nothing left implicit. Concretely: if an added line references a symbol (`OptLevel`, a new field, a helper function), that symbol must already exist by that point — either it was already in the previous chapter's code, or an earlier `+` line in this same chapter already introduced it. A forward reference (using something before any shown diff defines it) or a missing hunk (using something that never gets added anywhere in the chapter's code blocks) both break this. This is §78's full-diff accounting applied in the other direction: it's not enough that every hunk is explained somewhere in prose — the `+` lines specifically, read strictly in sequence, must form a complete, self-contained patch. Verify this by literally extracting the `+` lines from the chapter's code blocks in order and checking each one's dependencies land earlier in that same sequence (or in the prior chapter).
+
 **Before/after in "What I Am Building".** The opening section always shows a concrete problem in the current state and the improved output after the chapter. This frames every concept that follows.
 
 ```
@@ -449,6 +451,7 @@ Before marking a chapter ready to publish:
 - [ ] `## Grammar` section in the `.md` is a `grammardiff` fenced block (unified-diff style, leading `+`/`-`/space markers) against the previous chapter's real `pyxc.ebnf`, verified by reconstructing both the old and new sides and diffing each against the real files
 - [ ] All `///` EBNF banners in `.cpp` use the same production names as `pyxc.ebnf`
 - [ ] All code snippets in the `.md` are verified against the actual source byte-level where feasible (not just spot-checked), and every visible change/diff has prose explaining it — nothing added or changed silently
+- [ ] Every `+` line across the chapter's code blocks, extracted and concatenated in order, applies cleanly to the previous chapter's code with no forward references and no missing hunks (§2.3)
 - [ ] `lit.cfg.py` excludes any non-lit `.pyxc` files in the test directory
 
 ---

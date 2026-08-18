@@ -1,6 +1,7 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Parsed a top-level expression" %t
-# RUN: grep -c "define double @__anon_expr" %t | grep -q "^1$"
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK
+# CHECK-DAG: {{Parsed a top-level expression}}
+# CHECK-DAG: {{define double @__anon_expr}}
+# CHECK-NOT: {{define double @__anon_expr}}
 
 # HandleTopLevelExpression: after printing the IR for a top-level expression,
 # eraseFromParent() removes the __anon_expr function. The IR is printed once

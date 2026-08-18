@@ -1,7 +1,5 @@
-# RUN: %pyxc %s > %t 2>&1
-# RUN: grep -q -- "-2.000000" %t
-# RUN: not grep -q "ready>" %t
-# RUN: not grep -q "Error (Line" %t
+# RUN: %pyxc %s 2>&1 | FileCheck %s --check-prefix=CHECK --implicit-check-not="{{ready>}}" --implicit-check-not="{{Error \\(Line}}"
+# CHECK-DAG: {{-2.000000}}
 
 # File mode preserves unary minus and remainder from Chapter 4.
 extern def printd(x)

@@ -1,7 +1,7 @@
-# RUN: %pyxc -v < %s > %t 2>&1
-# RUN: grep -q "Parsed a function definition" %t
-# RUN: grep -q "fcmp olt" %t
-# RUN: grep -q "uitofp" %t
+# RUN: %pyxc -v < %s 2>&1 | FileCheck %s --check-prefix=CHECK
+# CHECK-DAG: {{Parsed a function definition}}
+# CHECK-DAG: {{fcmp olt}}
+# CHECK-DAG: {{uitofp}}
 
 # BinaryExpressionNode::codegen '<': two-step codegen — CreateFCmpOLT produces an i1,
 # then CreateUIToFP widens it to double (false->0.0, true->1.0).

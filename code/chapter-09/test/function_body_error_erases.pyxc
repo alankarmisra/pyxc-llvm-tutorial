@@ -1,7 +1,6 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Error" %t
-# RUN: grep -q "Unknown variable name" %t
-# RUN: (grep -c "define double @bad" %t || true) | grep -q "^0$"
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK --implicit-check-not="{{define double @bad}}"
+# CHECK-DAG: {{Error}}
+# CHECK-DAG: {{Unknown variable name}}
 
 # FunctionDefinitionNode::codegen: when Body->codegen() fails, eraseFromParent() removes
 # the partially-built function. The final module dump must not contain a

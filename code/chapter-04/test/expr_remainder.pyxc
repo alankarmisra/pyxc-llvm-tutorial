@@ -1,6 +1,8 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -c "Parsed a top-level expression." %t | grep -q "3"
-# RUN: not grep -q "Error:" %t
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK --implicit-check-not="{{Error:}}"
+# CHECK-DAG: {{Parsed a top-level expression.}}
+# CHECK-DAG: {{Parsed a top-level expression.}}
+# CHECK-DAG: {{Parsed a top-level expression.}}
+# CHECK-NOT: {{Parsed a top-level expression.}}
 
 # term: remainder has the same precedence as multiplication and division
 8 % 3

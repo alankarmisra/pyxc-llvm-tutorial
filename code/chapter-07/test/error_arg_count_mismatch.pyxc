@@ -1,6 +1,6 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Error" %t
-# RUN: grep -Fq "Incorrect number of arguments in call to 'pair': expected 2, got 1" %t
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK
+# CHECK-DAG: {{Error}}
+# CHECK-DAG: Incorrect number of arguments in call to 'pair': expected 2, got 1
 
 # CallExpressionNode::codegen error path: arg_size() != Args.size() triggers LogErrorValue.
 # 'pair' takes 2 arguments; calling it with 1 must fail at codegen time.

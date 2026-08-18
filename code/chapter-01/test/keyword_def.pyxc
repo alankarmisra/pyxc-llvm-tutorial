@@ -1,4 +1,5 @@
-# RUN: %pyxc < %s | grep -Fxq "'def'"
+# RUN: %pyxc < %s | FileCheck %s
+# CHECK: {{^}}'def'{{$}}
 
 # keyword: 'def' must be recognised as a keyword, not a name
 def

@@ -1,6 +1,7 @@
 # RUN: %pyxc < %s > %t.stdout 2> %t.stderr
-# RUN: not grep -q . %t.stdout
-# RUN: grep -q "Error" %t.stderr
+# RUN: test ! -s %t.stdout
+# RUN: FileCheck %s --check-prefix=STDERR < %t.stderr
+# STDERR-DAG: {{Error}}
 
 # Diagnostics go to stderr without producing successful output on stdout.
 unknown_name

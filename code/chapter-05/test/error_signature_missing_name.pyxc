@@ -1,6 +1,6 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Error (Line" %t
-# RUN: grep -q "Expected function name in function signature" %t
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK
+# CHECK-DAG: {{Error \(Line}}
+# CHECK-DAG: {{Expected function name in function signature}}
 
 # function signature: first token after 'def' is not an identifier
 def 1(x): x

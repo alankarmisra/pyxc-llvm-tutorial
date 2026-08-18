@@ -1,6 +1,5 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Evaluated to 2.000000" %t
-# RUN: not grep -q "Error (Line" %t
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK --implicit-check-not="{{Error \\(Line}}"
+# CHECK-DAG: {{Evaluated to 2.000000}}
 
 # JIT execution: remainder evaluates using frem.
 8 % 3

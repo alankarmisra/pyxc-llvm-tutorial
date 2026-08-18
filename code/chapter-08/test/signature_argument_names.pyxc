@@ -1,7 +1,7 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Parsed a function definition" %t
-# RUN: grep -q "double %a" %t
-# RUN: grep -q "double %b" %t
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK
+# CHECK-DAG: {{Parsed a function definition}}
+# CHECK-DAG: {{double %a}}
+# CHECK-DAG: {{double %b}}
 
 # FunctionSignatureNode::codegen: Argument.setName() makes parameter names appear in the IR.
 # Without setName the IR would show %0 and %1 instead of %a and %b.

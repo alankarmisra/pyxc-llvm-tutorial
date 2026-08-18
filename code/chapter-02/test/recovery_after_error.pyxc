@@ -1,6 +1,8 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -c "Error: " %t | grep -q "1"
-# RUN: grep -c "Parsed a top-level expression." %t | grep -q "1"
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK
+# CHECK-DAG: {{Error: }}
+# CHECK-DAG: {{Parsed a top-level expression.}}
+# CHECK-NOT: {{Error: }}
+# CHECK-NOT: {{Parsed a top-level expression.}}
 
 # top: REPL recovers after a parse error and continues with the next line
 1 + +

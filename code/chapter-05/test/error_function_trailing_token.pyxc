@@ -1,6 +1,5 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Unexpected ';'" %t
-# RUN: not grep -q "Parsed a function definition." %t
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK --implicit-check-not="{{Parsed a function definition.}}"
+# CHECK-DAG: {{Unexpected ';'}}
 
 # program: a function definition must end at the line boundary
 def bad(x): x;
