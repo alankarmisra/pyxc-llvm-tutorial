@@ -1,4 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
+
+# CMake 3.29+ can avoid repeating static libraries when the linker does not
+# require it. The Apple linker resolves archives without repetition and warns
+# when the same library appears more than once.
+if(POLICY CMP0156)
+  cmake_policy(SET CMP0156 NEW)
+endif()
 project(pyxc-chapter-29)
 
 set(CMAKE_CXX_STANDARD 17)
