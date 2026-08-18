@@ -1659,7 +1659,6 @@ Function *FunctionDefinitionNode::codegen() {
   const string FunctionName = Signature->getName();
 
   // Step 1: register the function signature and resolve the Function*.
-  auto &P = *Signature;
   FunctionSignatures[FunctionName] = std::move(Signature);
 
   // Step 1: reuse an existing `extern` declaration if one exists.

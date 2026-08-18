@@ -3456,7 +3456,7 @@ Function *FunctionDefinitionNode::codegen() {
   const string FunctionName = Signature->getName();
 
   // Step 1: register the function signature and resolve the Function*.
-  auto &P = *Signature;
+  auto &FunctionSignature = *Signature;
   FunctionSignatures[FunctionName] = std::move(Signature);
 
   // Step 1: reuse an existing `extern` declaration if one exists.
@@ -3473,7 +3473,7 @@ Function *FunctionDefinitionNode::codegen() {
     return nullptr;
 
   ValueType SavedRetType = CurrentFunctionReturnType;
-  CurrentFunctionReturnType = P.getReturnType();
+  CurrentFunctionReturnType = FunctionSignature.getReturnType();
 
   // Step 2: create the entry block and point the builder at it.
   BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
@@ -3486,7 +3486,7 @@ Function *FunctionDefinitionNode::codegen() {
   LoopControlStack.clear();
   size_t ArgTypeIndex = 0;
   for (auto &Argument : TheFunction->args()) {
-    ValueType ArgType = P.getParameterType(ArgTypeIndex++);
+    ValueType ArgType = FunctionSignature.getParameterType(ArgTypeIndex++);
     AllocaInst *Alloca = CreateEntryBlockAlloca(
         TheFunction, std::string(Argument.getName()), ArgType);
     TheBuilder->CreateStore(&Argument, Alloca);
@@ -3499,7 +3499,7 @@ Function *FunctionDefinitionNode::codegen() {
     // return), only void/None functions may fall through. Non-None functions
     // must return explicitly.
     if (!TheBuilder->GetInsertBlock()->getTerminator()) {
-      if (P.getReturnType() == ValueType::None) {
+      if (FunctionSignature.getReturnType() == ValueType::None) {
         TheBuilder->CreateRetVoid();
       } else {
         BasicBlock *CurBB = TheBuilder->GetInsertBlock();

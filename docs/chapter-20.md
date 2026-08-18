@@ -288,18 +288,18 @@ I call this once, right after creating each function's entry block, and every in
 *Function *FunctionDefinitionNode::codegen() {
 *  ...
 *  ValueType SavedRetType = CurrentFunctionReturnType;
-*  CurrentFunctionReturnType = P.getReturnType();
+*  CurrentFunctionReturnType = FunctionSignature.getReturnType();
 *
-+  if (DIB && TheDIFile && P.getName().rfind("__pyxc.", 0) != 0) {
-+    unsigned Line = P.getLocation().Line ? P.getLocation().Line : 1;
++  if (DIB && TheDIFile && FunctionSignature.getName().rfind("__pyxc.", 0) != 0) {
++    unsigned Line = FunctionSignature.getLocation().Line ? FunctionSignature.getLocation().Line : 1;
 +    SmallVector<Metadata *, 8> Types;
-+    Types.push_back(DITypeFor(P.getReturnType()));
-+    for (size_t Index = 0; Index < P.getParameters().size(); ++Index)
-+      Types.push_back(DITypeFor(P.getParameterType(Index)));
++    Types.push_back(DITypeFor(FunctionSignature.getReturnType()));
++    for (size_t Index = 0; Index < FunctionSignature.getParameters().size(); ++Index)
++      Types.push_back(DITypeFor(FunctionSignature.getParameterType(Index)));
 +    auto *SubroutineType =
 +        DIB->createSubroutineType(DIB->getOrCreateTypeArray(Types));
 +    auto *Subprogram = DIB->createFunction(
-+        TheDIFile, P.getName(), StringRef(), TheDIFile, Line, SubroutineType,
++        TheDIFile, FunctionSignature.getName(), StringRef(), TheDIFile, Line, SubroutineType,
 +        Line, DINode::FlagZero, DISubprogram::SPFlagDefinition);
 +    TheFunction->setSubprogram(Subprogram);
 +    CurDIScope = Subprogram;

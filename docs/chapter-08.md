@@ -277,17 +277,7 @@ For a top-level expression, I generate and optimize `__anon_expr` as before. I t
 
 ```cppdiff
 *static void HandleTopLevelExpression() {
-*  auto FunctionDefinition = ParseTopLevelExpression();
-*  if (!FunctionDefinition) {
-*    DiscardRestOfLine();
-*    return;
-*  }
-*
-*  if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
-*    LogErrorExpression("Unexpected " + FormatTokenForMessage(CurrentToken));
-*    DiscardRestOfLine();
-*    return;
-*  }
+*  ...
 *
 *  auto *FunctionIR = FunctionDefinition->codegen();
 *  if (!FunctionIR)
@@ -335,9 +325,148 @@ I now separate successful output from compiler diagnostics. I write the value pr
 
 I create a `ResourceTracker` before adding the module. After the call, `RT->remove()` frees the object file and executable memory associated with `__anon_expr`. This replaces the `eraseFromParent()` call from Chapter 7: I now compile and execute the expression before I remove it.
 
-> LLVM uses `Expected<T>` for operations that may fail. I pass those results to `ExitOnErr`, which unwraps a successful value or terminates with the error.
+`ExitOnErr` and `RT` solve two unrelated problems, even though they sit next to each other on the page. `RT` is a handle: I create it before `addModule`, hand it to `addModule` so ORC associates `__anon_expr`'s compiled code with it, then later call `RT->remove()` to free that code once I'm done with it. It has nothing to do with error handling.
+
+`ExitOnErr` is purely about error handling. Many LLVM APIs, including `addModule`, `RT->remove()`, and `JIT->lookup()`, don't throw exceptions or return null on failure; they return an `Error` (or `Expected<T>` if there's also a value to hand back on success) that the caller must check. `ExitOnErr` is a small callable I keep as a global: I pass it the `Error` or `Expected<T>` a call produced, and it does one of two things. If that value represents failure, it prints the error and terminates the process right there. If it represents success, it unwraps it and lets execution continue: for a plain `Error` there's no payload, so this is just "check and discard"; for `Expected<T>`, like `JIT->lookup()` returns, it hands back the wrapped value.
+
+So `ExitOnErr(JIT->addModule(std::move(TSM), RT))` isn't releasing anything through `RT`. `addModule` returns `Error`, a pass/fail signal with no payload; `ExitOnErr` checks that signal and crashes with a message if it's a failure, or does nothing further if it's a success. `ExitOnErr(RT->remove())` a few lines later is the same pattern applied to a different call: `RT->remove()` also returns `Error`, so it also gets checked and unwrapped the same way, but the two calls are doing unrelated jobs, one adding a module, the other freeing one.
 
 For named functions, I add the module without this temporary tracker, so their compiled code remains available for the rest of the session.
+
+## One Module per Compilation Unit
+
+When I parse `foo(2)`, I wrap it in a zero-argument function named `__anon_expr`. I compile it, call it, and then free it. ORC tracks resources at the module level, so I must keep this temporary function separate from named functions that need to remain available.
+
+For simplicity, I place every external declaration, function definition, and top-level expression in a fresh module. Removing the module for `__anon_expr` therefore removes only that temporary function.
+
+I could group named functions into larger modules while keeping anonymous expressions separate, but I defer that module-management policy.
+
+I still reject a second definition of the same function. Supporting redefinition in the REPL would require me to replace the previously compiled symbol safely, which I leave for later.
+
+Because the JIT takes ownership of each module and its context, I create replacements immediately after every transfer, at the end of `HandleFunctionDefinition()`:
+
+```cppdiff
+*static void HandleFunctionDefinition() {
+*  ...
+*
+*  auto *FunctionIR = FunctionDefinition->codegen();
+*  if (!FunctionIR)
+*    return;
+*
+-  fprintf(stderr, "Parsed a function definition.\n");
+-  FunctionIR->print(errs());
+-  fprintf(stderr, "\n");
+*
++  Log("Parsed a function definition.\n");
++  FunctionIR->print(errs());
++  // Transfer the module to the JIT. TheModule is now invalid; reinitialise.
++  ExitOnErr(JIT->addModule(
++      ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
++  InitializeModuleAndManagers();
+*}
+```
+
+ORC requires me to transfer the `Module` together with its `LLVMContext`, so I package them in a `ThreadSafeModule`.
+
+## The Cross-Module Function Lookup Problem
+
+In Chapter 7, I found a called function with `TheModule->getFunction(Callee)`. That only searches the current module. After I hand `foo`'s module to the JIT and create a new module, that lookup can no longer find `foo`.
+
+I solve this by keeping a persistent registry of `FunctionSignatureNode` objects. My `getFunction()` helper first searches the current module and then uses the saved signature to recreate a declaration when necessary:
+
+```cpp
+static map<string, unique_ptr<FunctionSignatureNode>> FunctionSignatures;
+
+Function *getFunction(const std::string &Name) {
+  // I first search the current module.
+  if (auto *F = TheModule->getFunction(Name))
+    return F;
+
+  // Otherwise, I recreate a declaration from the saved signature.
+  auto FI = FunctionSignatures.find(Name);
+  if (FI != FunctionSignatures.end())
+    return FI->second->codegen();
+
+  return nullptr;
+}
+```
+
+I also update `CallExpressionNode::codegen()` from Chapter 7 to call `getFunction(Callee)` instead of `TheModule->getFunction(Callee)`, so a call to a function from an earlier module resolves the same way:
+
+```cppdiff
+*Value *CallExpressionNode::codegen() {
+-  Function *CalleeF = TheModule->getFunction(Callee);
++  Function *CalleeF = getFunction(Callee);
+*  if (!CalleeF)
+*    return LogErrorValue("Unknown function: '" + Callee + "'");
+*
+*  ...
+*
+*  return TheBuilder->CreateCall(CalleeF, ArgsV, "calltmp");
+*}
+```
+
+The sequence is:
+
+1. I compile `def foo` into module `m1` and save its signature.
+2. I hand `m1` to the JIT and create module `m2`.
+3. While generating `foo(2)` in `m2`, I cannot find `foo` in the current module.
+4. I use the saved signature to emit `declare double @foo(double)` in `m2`.
+5. When ORC links `m2`, it resolves that declaration to the body already compiled from `m1`.
+
+In IR, the two modules look like this:
+
+```llvm
+; m1 — compiled from: def foo(x): x * x
+define double @foo(double %x) {
+entry:
+  %multmp = fmul double %x, %x
+  ret double %multmp
+}
+```
+
+```llvm
+; m2 — compiled from: foo(2)
+declare double @foo(double) ; ORC resolves this to @foo in m1
+
+define double @__anon_expr() {
+entry:
+  %calltmp = call double @foo(double 2.000000e+00)
+  ret double %calltmp
+}
+```
+
+I also save the signature of every function definition before generating its body:
+
+```cppdiff
+*Function *FunctionDefinitionNode::codegen() {
+*  const string FunctionName = Signature->getName();
+*
+-  // Step 1: I get an existing declaration or create a new one.
+-  Function *TheFunction = TheModule->getFunction(FunctionName);
++  // Step 1: register the function signature and resolve the Function*.
++  FunctionSignatures[FunctionName] = std::move(Signature);
++
++  // Step 1: reuse an existing declaration if one exists.
++  Function *TheFunction = getFunction(FunctionName);
+*
++  // Bail if the function is already fully defined — redefinition is an error.
+*  if (TheFunction && !TheFunction->empty()) {
+*    LogErrorExpression(
+*        "Function '" + FunctionName + "' cannot be redefined");
+*    return nullptr;
+*  }
+*
+-  if (!TheFunction)
+-    TheFunction = Signature->codegen();
+-
+*  if (!TheFunction)
+*    return nullptr;
+*
+*  // Step 2: create the entry block and point the builder at it.
+*  ...
+*}
+```
 
 ## Calling Functions I Didn't Write
 
@@ -362,11 +491,11 @@ A new token:
 
 I add both keywords to the keyword table:
 
-```cpp
-static map<string, Token> Keywords = {
-    {"def", tok_def},
-    {"extern", tok_extern},
-};
+```cppdiff
+*static map<string, Token> Keywords = {
+*    {"def", tok_def},
++    {"extern", tok_extern},
+*};
 ```
 
 `external` reuses the same `function-signature` rule `def` uses. I reuse `ParseFunctionSignature()` after consuming `extern def`:
@@ -432,7 +561,7 @@ static void HandleExtern() {
 }
 ```
 
-I save the signature in `FunctionSignatures` so I can use it again after I replace the current module. I explain that registry shortly. The immediate result is:
+I save the signature in `FunctionSignatures`, the registry I introduced in [The Cross-Module Function Lookup Problem](#the-cross-module-function-lookup-problem), so I can use it again after I replace the current module. The immediate result is:
 
 ```pyxc
 ready> extern def sin(x)
@@ -454,175 +583,6 @@ default:
   HandleTopLevelExpression();
   break;
 }
-```
-
-## One Module per Compilation Unit
-
-When I parse `foo(2)`, I wrap it in a zero-argument function named `__anon_expr`. I compile it, call it, and then free it. ORC tracks resources at the module level, so I must keep this temporary function separate from named functions that need to remain available.
-
-For simplicity, I place every external declaration, function definition, and top-level expression in a fresh module. Removing the module for `__anon_expr` therefore removes only that temporary function.
-
-I could group named functions into larger modules while keeping anonymous expressions separate, but I defer that module-management policy.
-
-I still reject a second definition of the same function. Supporting redefinition in the REPL would require me to replace the previously compiled symbol safely, which I leave for later.
-
-Because the JIT takes ownership of each module and its context, I create replacements immediately after every transfer, at the end of `HandleFunctionDefinition()`:
-
-```cppdiff
-*static void HandleFunctionDefinition() {
-*  auto FunctionDefinition = ParseFunctionDefinition();
-*  if (!FunctionDefinition) {
-*    DiscardRestOfLine();
-*    return;
-*  }
-*
-*  if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
-*    LogErrorExpression("Unexpected " + FormatTokenForMessage(CurrentToken));
-*    DiscardRestOfLine();
-*    return;
-*  }
-*
-*  auto *FunctionIR = FunctionDefinition->codegen();
-*  if (!FunctionIR)
-*    return;
-*
--  fprintf(stderr, "Parsed a function definition.\n");
--  FunctionIR->print(errs());
--  fprintf(stderr, "\n");
-+  Log("Parsed a function definition.\n");
-+  FunctionIR->print(errs());
-+  // Transfer the module to the JIT. TheModule is now invalid; reinitialise.
-+  ExitOnErr(JIT->addModule(
-+      ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
-+  InitializeModuleAndManagers();
-*}
-```
-
-ORC requires me to transfer the `Module` together with its `LLVMContext`, so I package them in a `ThreadSafeModule`.
-
-## The Cross-Module Function Lookup Problem
-
-In Chapter 7, I found a called function with `TheModule->getFunction(Callee)`. That only searches the current module. After I hand `foo`'s module to the JIT and create a new module, that lookup can no longer find `foo`.
-
-I solve this by keeping a persistent registry of `FunctionSignatureNode` objects. My `getFunction()` helper first searches the current module and then uses the saved signature to recreate a declaration when necessary:
-
-```cpp
-static map<string, unique_ptr<FunctionSignatureNode>> FunctionSignatures;
-
-Function *getFunction(const std::string &Name) {
-  // I first search the current module.
-  if (auto *F = TheModule->getFunction(Name))
-    return F;
-
-  // Otherwise, I recreate a declaration from the saved signature.
-  auto FI = FunctionSignatures.find(Name);
-  if (FI != FunctionSignatures.end())
-    return FI->second->codegen();
-
-  return nullptr;
-}
-```
-
-I also update `CallExpressionNode::codegen()` from Chapter 7 to call `getFunction(Callee)` instead of `TheModule->getFunction(Callee)`, so a call to a function from an earlier module resolves the same way:
-
-```cppdiff
-*Value *CallExpressionNode::codegen() {
--  Function *CalleeF = TheModule->getFunction(Callee);
-+  Function *CalleeF = getFunction(Callee);
-*  if (!CalleeF)
-*    return LogErrorValue("Unknown function: '" + Callee + "'");
-*
-*  if (CalleeF->arg_size() != Arguments.size())
-*    return LogErrorValue(
-*        "Incorrect number of arguments in call to '" + Callee +
-*        "': expected " + to_string(CalleeF->arg_size()) + ", got " +
-*        to_string(Arguments.size()));
-*
-*  std::vector<Value *> ArgsV;
-*  for (unsigned i = 0, e = Arguments.size(); i != e; ++i) {
-*    ArgsV.push_back(Arguments[i]->codegen());
-*    if (!ArgsV.back())
-*      return nullptr;
-*  }
-*
-*  return TheBuilder->CreateCall(CalleeF, ArgsV, "calltmp");
-*}
-```
-
-The sequence is:
-
-1. I compile `def foo` into module `m1` and save its signature.
-2. I hand `m1` to the JIT and create module `m2`.
-3. While generating `foo(2)` in `m2`, I cannot find `foo` in the current module.
-4. I use the saved signature to emit `declare double @foo(double)` in `m2`.
-5. When ORC links `m2`, it resolves that declaration to the body already compiled from `m1`.
-
-In IR, the two modules look like this:
-
-```llvm
-; m1 — compiled from: def foo(x): x * x
-define double @foo(double %x) {
-entry:
-  %multmp = fmul double %x, %x
-  ret double %multmp
-}
-```
-
-```llvm
-; m2 — compiled from: foo(2)
-declare double @foo(double) ; ORC resolves this to @foo in m1
-
-define double @__anon_expr() {
-entry:
-  %calltmp = call double @foo(double 2.000000e+00)
-  ret double %calltmp
-}
-```
-
-I save an `extern def` signature after generating its declaration:
-
-```cpp
-// Save the function signature so getFunction() can re-emit it in future modules.
-FunctionSignatures[Signature->getName()] = std::move(Signature);
-```
-
-I also save the signature of every function definition before generating its body:
-
-```cppdiff
-*Function *FunctionDefinitionNode::codegen() {
-*  const string FunctionName = Signature->getName();
-*
--  // Step 1: I get an existing declaration or create a new one.
--  Function *TheFunction = TheModule->getFunction(FunctionName);
--
--  if (TheFunction && !TheFunction->empty()) {
--    LogErrorExpression(
--        "Function '" + FunctionName + "' cannot be redefined");
--    return nullptr;
--  }
--
--  if (!TheFunction)
--    TheFunction = Signature->codegen();
-+  // Step 1: register the function signature and resolve the Function*.
-+  auto &P = *Signature;
-+  FunctionSignatures[FunctionName] = std::move(Signature);
-+
-+  // Step 1: reuse an existing `extern` declaration if one exists.
-+  Function *TheFunction = getFunction(FunctionName);
-+
-+  // Bail if the function is already fully defined — redefinition is an error.
-+  if (TheFunction && !TheFunction->empty()) {
-+    LogErrorExpression(
-+        "Function '" + FunctionName + "' cannot be redefined");
-+    return nullptr;
-+  }
-*
-*  if (!TheFunction)
-*    return nullptr;
-*
-*  // Step 2: create the entry block and point the builder at it.
-*  ...
-*}
 ```
 
 ## The Runtime Library
