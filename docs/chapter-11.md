@@ -647,10 +647,10 @@ This chapter adds `PromotePass` — commonly called `mem2reg` — to the optimiz
 
 ```cppdiff
 *  if (OptLevel != 0) {
-+    TheFPM->addPass(PromotePass());     // mem2reg: memory slots -> SSA regs
-*    TheFPM->addPass(InstCombinePass()); // peephole rewrites
-*    TheFPM->addPass(ReassociatePass()); // canonicalise commutative ops
-*    TheFPM->addPass(GVNPass());         // eliminate common sub-expressions
++    FunctionPasses->addPass(PromotePass());     // mem2reg: memory slots -> SSA regs
+*    FunctionPasses->addPass(InstCombinePass()); // peephole rewrites
+*    FunctionPasses->addPass(ReassociatePass()); // canonicalise commutative ops
+*    FunctionPasses->addPass(GVNPass());         // eliminate common sub-expressions
 *  }
 ```
 

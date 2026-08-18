@@ -184,11 +184,11 @@ LLVM requires the module's data layout to match the JIT target. It describes det
 LLVM's pass framework requires analysis managers for loops, functions, call graphs, and modules. I add file-scope globals for all four, plus the function pass manager itself, alongside `TheContext`, `TheModule`, and `TheBuilder`:
 
 ```cpp
-static unique_ptr<FunctionPassManager> TheFPM;
-static unique_ptr<LoopAnalysisManager> TheLAM;
-static unique_ptr<FunctionAnalysisManager> TheFAM;
-static unique_ptr<CGSCCAnalysisManager> TheCGAM;
-static unique_ptr<ModuleAnalysisManager> TheMAM;
+static unique_ptr<FunctionPassManager> FunctionPasses;
+static unique_ptr<LoopAnalysisManager> LoopAnalyses;
+static unique_ptr<FunctionAnalysisManager> FunctionAnalyses;
+static unique_ptr<CGSCCAnalysisManager> CallGraphAnalyses;
+static unique_ptr<ModuleAnalysisManager> ModuleAnalyses;
 ```
 
 Back in `InitializeModuleAndManagers()`, right after building `TheBuilder`, I create and register all four, even though my current pipeline only runs function passes:
@@ -197,32 +197,32 @@ Back in `InitializeModuleAndManagers()`, right after building `TheBuilder`, I cr
 *  ...
 *  TheBuilder = std::make_unique<IRBuilder<>>(*TheContext);
 *
-+  TheFPM = std::make_unique<FunctionPassManager>();
-+  TheLAM = std::make_unique<LoopAnalysisManager>();
-+  TheFAM = std::make_unique<FunctionAnalysisManager>();
-+  TheCGAM = std::make_unique<CGSCCAnalysisManager>();
-+  TheMAM = std::make_unique<ModuleAnalysisManager>();
++  FunctionPasses = std::make_unique<FunctionPassManager>();
++  LoopAnalyses = std::make_unique<LoopAnalysisManager>();
++  FunctionAnalyses = std::make_unique<FunctionAnalysisManager>();
++  CallGraphAnalyses = std::make_unique<CGSCCAnalysisManager>();
++  ModuleAnalyses = std::make_unique<ModuleAnalysisManager>();
 +
 +  PassBuilder PB;
-+  PB.registerModuleAnalyses(*TheMAM);
-+  PB.registerCGSCCAnalyses(*TheCGAM);
-+  PB.registerFunctionAnalyses(*TheFAM);
-+  PB.registerLoopAnalyses(*TheLAM);
++  PB.registerModuleAnalyses(*ModuleAnalyses);
++  PB.registerCGSCCAnalyses(*CallGraphAnalyses);
++  PB.registerFunctionAnalyses(*FunctionAnalyses);
++  PB.registerLoopAnalyses(*LoopAnalyses);
 +  // I let a pass request analysis results managed at another level.
-+  PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
++  PB.crossRegisterProxies(*LoopAnalyses, *FunctionAnalyses, *CallGraphAnalyses, *ModuleAnalyses);
 *  ...
 ```
 
 ### Building the Function Pipeline
 
-I add the optimization passes to `TheFPM` when optimization is enabled, closing out `InitializeModuleAndManagers()`:
+I add the optimization passes to `FunctionPasses` when optimization is enabled, closing out `InitializeModuleAndManagers()`:
 
 ```cppdiff
 *  ...
 +  if (OptLevel != 0) {
-+    TheFPM->addPass(InstCombinePass());
-+    TheFPM->addPass(ReassociatePass());
-+    TheFPM->addPass(GVNPass());
++    FunctionPasses->addPass(InstCombinePass());
++    FunctionPasses->addPass(ReassociatePass());
++    FunctionPasses->addPass(GVNPass());
 +  }
 *}
 ```
@@ -235,7 +235,7 @@ After I generate and verify a function, I run the pipeline:
 
 ```cpp
 // In FunctionDefinitionNode::codegen(), after verifyFunction():
-TheFPM->run(*TheFunction, *TheFAM);
+FunctionPasses->run(*TheFunction, *FunctionAnalyses);
 ```
 
 This optimizes each function before I print or compile it.

@@ -68,17 +68,17 @@ Up through [Chapter 17](chapter-17.md), I ran a hand-picked, fixed list of four 
 
 ```cpp
 if (OptLevel != 0) {
-  TheFPM->addPass(PromotePass());     // mem2reg: stack slots -> SSA regs
-  TheFPM->addPass(InstCombinePass()); // peephole rewrites
-  TheFPM->addPass(ReassociatePass()); // canonicalise commutative ops
-  TheFPM->addPass(GVNPass());         // eliminate common sub-expressions
+  FunctionPasses->addPass(PromotePass());     // mem2reg: stack slots -> SSA regs
+  FunctionPasses->addPass(InstCombinePass()); // peephole rewrites
+  FunctionPasses->addPass(ReassociatePass()); // canonicalise commutative ops
+  FunctionPasses->addPass(GVNPass());         // eliminate common sub-expressions
 }
 ```
 
-That was fine while pyxc had one type and no functions calling each other in interesting ways, but it has no inliner, no interprocedural analysis, and I chose the four passes and their order by hand rather than from any real pipeline. I replace it with `PassBuilder`, which knows LLVM's canonical pass ordering for each level, including interactions between passes I'd have gotten wrong by hand. `TheCGAM` and `TheMAM` were already there, cross-registered but otherwise unused since I never fed the module tier any real passes; the one genuinely new manager is `TheMPM`, since only now do I have a module-level pipeline to run:
+That was fine while pyxc had one type and no functions calling each other in interesting ways, but it has no inliner, no interprocedural analysis, and I chose the four passes and their order by hand rather than from any real pipeline. I replace it with `PassBuilder`, which knows LLVM's canonical pass ordering for each level, including interactions between passes I'd have gotten wrong by hand. `CallGraphAnalyses` and `ModuleAnalyses` were already there, cross-registered but otherwise unused since I never fed the module tier any real passes; the one genuinely new manager is `ModulePasses`, since only now do I have a module-level pipeline to run:
 
 ```cpp
-static std::unique_ptr<ModulePassManager> TheMPM;
+static std::unique_ptr<ModulePassManager> ModulePasses;
 ```
 
 `InitializeModuleAndManagers` cross-registers all of them, then builds the actual pipelines:
@@ -88,28 +88,28 @@ static std::unique_ptr<ModulePassManager> TheMPM;
 *  ...
 *  // Cross-register so passes can access any analysis tier they need.
 *  PassBuilder PB;
-*  PB.registerModuleAnalyses(*TheMAM);
-*  PB.registerCGSCCAnalyses(*TheCGAM);
-*  PB.registerFunctionAnalyses(*TheFAM);
-*  PB.registerLoopAnalyses(*TheLAM);
-*  PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
+*  PB.registerModuleAnalyses(*ModuleAnalyses);
+*  PB.registerCGSCCAnalyses(*CallGraphAnalyses);
+*  PB.registerFunctionAnalyses(*FunctionAnalyses);
+*  PB.registerLoopAnalyses(*LoopAnalyses);
+*  PB.crossRegisterProxies(*LoopAnalyses, *FunctionAnalyses, *CallGraphAnalyses, *ModuleAnalyses);
 *
 -  // With -O0 the pass manager stays empty. Any non-zero level uses the
 -  // optimization pipeline introduced earlier in the tutorial.
 -  if (OptLevel != 0) {
--    TheFPM->addPass(PromotePass());
--    TheFPM->addPass(InstCombinePass());
--    TheFPM->addPass(ReassociatePass());
--    TheFPM->addPass(GVNPass());
+-    FunctionPasses->addPass(PromotePass());
+-    FunctionPasses->addPass(InstCombinePass());
+-    FunctionPasses->addPass(ReassociatePass());
+-    FunctionPasses->addPass(GVNPass());
 -  }
 +  // I ask LLVM to build its standard pipelines for the selected level.
 +  if (OptLevel != 0) {
 +    auto FunctionPipeline = PB.buildFunctionSimplificationPipeline(
 +        GetOptLevel(), ThinOrFullLTOPhase::None);
-+    TheFPM = std::make_unique<FunctionPassManager>(
++    FunctionPasses = std::make_unique<FunctionPassManager>(
 +        std::move(FunctionPipeline));
 +    auto ModulePipeline = PB.buildPerModuleDefaultPipeline(GetOptLevel());
-+    TheMPM =
++    ModulePasses =
 +        std::make_unique<ModulePassManager>(std::move(ModulePipeline));
 +  }
 +
@@ -138,8 +138,8 @@ At `-O0` both managers stay empty, no passes run at all, and the literal IR `IRB
 
 ```cpp
 static void RunModuleOptimizations(Module *Module) {
-  if (TheMPM && OptLevel != 0)
-    TheMPM->run(*Module, *TheMAM);
+  if (ModulePasses && OptLevel != 0)
+    ModulePasses->run(*Module, *ModuleAnalyses);
 }
 ```
 
