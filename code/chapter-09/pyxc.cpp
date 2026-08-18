@@ -881,10 +881,10 @@ static unique_ptr<FunctionSignatureNode> ParseExtern() {
 // whole session. Compiled modules are added to it; symbols from C libraries
 // (e.g. sin, cos) are resolved through the process's dynamic symbol table.
 //
-// TheFPM / TheLAM / TheFAM / TheCGAM / TheMAM - The new-PM pass and
-// analysis managers. TheFPM holds the optimisation pipeline; the analysis
-// managers cache analysis results and are cross-registered so passes that
-// need loop or CGSCC analyses can find them.
+// FunctionPasses - The per-function optimisation pipeline.
+// LoopAnalyses / FunctionAnalyses / CallGraphAnalyses / ModuleAnalyses - Cache
+// analysis results at each level. They are cross-registered so a pass can find
+// the loop, function, call-graph, or module information it needs.
 //
 //
 // FunctionSignatures - Persistent function signature registry. Because each function
@@ -901,11 +901,11 @@ static std::unique_ptr<Module> TheModule;
 static std::unique_ptr<IRBuilder<>> TheBuilder;
 static std::map<std::string, Value *> NamedValues;
 static std::unique_ptr<PyxcJIT> TheJIT;
-static std::unique_ptr<FunctionPassManager> TheFPM;
-static std::unique_ptr<LoopAnalysisManager> TheLAM;
-static std::unique_ptr<FunctionAnalysisManager> TheFAM;
-static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
-static std::unique_ptr<ModuleAnalysisManager> TheMAM;
+static std::unique_ptr<FunctionPassManager> FunctionPasses;
+static std::unique_ptr<LoopAnalysisManager> LoopAnalyses;
+static std::unique_ptr<FunctionAnalysisManager> FunctionAnalyses;
+static std::unique_ptr<CGSCCAnalysisManager> CallGraphAnalyses;
+static std::unique_ptr<ModuleAnalysisManager> ModuleAnalyses;
 static std::map<std::string, std::unique_ptr<FunctionSignatureNode>> FunctionSignatures;
 static ExitOnError ExitOnErr;
 
@@ -1088,7 +1088,7 @@ Function *FunctionSignatureNode::codegen() {
 ///    body look names up here.
 ///
 /// 4. Codegen the body expression. On success, emit 'ret', run verifyFunction
-///    (LLVM's internal consistency checker), then run TheFPM to apply the
+///    (LLVM's internal consistency checker), then run FunctionPasses to apply the
 ///    optimisation pipeline. On failure, eraseFromParent() removes the
 ///    partially-built function so no broken declaration is left in the module.
 Function *FunctionDefinitionNode::codegen() {
@@ -1129,7 +1129,7 @@ Function *FunctionDefinitionNode::codegen() {
 
     // Run the optimisation pipeline: InstCombine, Reassociate, GVN,
     // SimplifyCFG.
-    TheFPM->run(*TheFunction, *TheFAM);
+    FunctionPasses->run(*TheFunction, *FunctionAnalyses);
     return TheFunction;
   }
 
@@ -1162,7 +1162,7 @@ Function *FunctionDefinitionNode::codegen() {
 ///                      common sub-expressions across basic blocks.
 ///
 /// The analysis managers are cross-registered so that a function pass that
-/// needs loop information can reach TheLAM, and so on.
+/// needs loop information can reach LoopAnalyses, and so on.
 static void InitializeModuleAndManagers() {
   // Fresh context and module for this compilation unit.
   TheContext = std::make_unique<LLVMContext>();
@@ -1174,28 +1174,28 @@ static void InitializeModuleAndManagers() {
   TheBuilder = std::make_unique<IRBuilder<>>(*TheContext);
 
   // Pass and analysis managers.
-  TheFPM = std::make_unique<FunctionPassManager>();
-  TheLAM = std::make_unique<LoopAnalysisManager>();
-  TheFAM = std::make_unique<FunctionAnalysisManager>();
-  TheCGAM = std::make_unique<CGSCCAnalysisManager>();
-  TheMAM = std::make_unique<ModuleAnalysisManager>();
+  FunctionPasses = std::make_unique<FunctionPassManager>();
+  LoopAnalyses = std::make_unique<LoopAnalysisManager>();
+  FunctionAnalyses = std::make_unique<FunctionAnalysisManager>();
+  CallGraphAnalyses = std::make_unique<CGSCCAnalysisManager>();
+  ModuleAnalyses = std::make_unique<ModuleAnalysisManager>();
 
   // Optimisation pipeline (applied per function after codegen). With -O0 the
   // pass manager is left empty so the emitted IR stays close to the direct
   // lowering performed by the code generator.
   if (OptLevel != 0) {
-    TheFPM->addPass(InstCombinePass()); // peephole rewrites
-    TheFPM->addPass(ReassociatePass()); // canonicalise commutative ops
-    TheFPM->addPass(GVNPass());         // eliminate common sub-expressions
+    FunctionPasses->addPass(InstCombinePass()); // peephole rewrites
+    FunctionPasses->addPass(ReassociatePass()); // canonicalise commutative ops
+    FunctionPasses->addPass(GVNPass());         // eliminate common sub-expressions
   }
 
   // Cross-register so passes can access any analysis tier they need.
   PassBuilder PB;
-  PB.registerModuleAnalyses(*TheMAM);
-  PB.registerCGSCCAnalyses(*TheCGAM);
-  PB.registerFunctionAnalyses(*TheFAM);
-  PB.registerLoopAnalyses(*TheLAM);
-  PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
+  PB.registerModuleAnalyses(*ModuleAnalyses);
+  PB.registerCGSCCAnalyses(*CallGraphAnalyses);
+  PB.registerFunctionAnalyses(*FunctionAnalyses);
+  PB.registerLoopAnalyses(*LoopAnalyses);
+  PB.crossRegisterProxies(*LoopAnalyses, *FunctionAnalyses, *CallGraphAnalyses, *ModuleAnalyses);
 }
 
 /// DiscardRestOfLine - Panic-mode error recovery.
@@ -1213,7 +1213,7 @@ static void DiscardRestOfLine() {
 
 /// HandleFunctionDefinition - Parse, optimise, and JIT-compile a 'def' function-definition.
 ///
-/// On success: codegen + optimise the function (TheFPM runs inside
+/// On success: codegen + optimise the function (FunctionPasses runs inside
 /// FunctionDefinitionNode::codegen), print the optimised IR, then hand the entire
 /// module to the JIT via addModule. The JIT takes ownership of TheModule and
 /// TheContext, so InitializeModuleAndManagers() is called immediately after

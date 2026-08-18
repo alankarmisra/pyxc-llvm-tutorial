@@ -515,7 +515,7 @@ if (Value *BodyVal = Body->codegen()) {
   if (!TheBuilder->GetInsertBlock()->getTerminator())
     TheBuilder->CreateRet(ConstantFP::get(*TheContext, APFloat(0.0)));
   verifyFunction(*TheFunction);
-  TheFPM->run(*TheFunction, *TheFAM);
+  FunctionPasses->run(*TheFunction, *FunctionAnalyses);
   return TheFunction;
 }
 ```

@@ -3916,18 +3916,18 @@ static vector<LoopControlTargets> LoopControlStack;
 static vector<BasicBlock *> BreakTargetStack;
 // TheJIT - ORC JIT instance for REPL execution.
 static std::unique_ptr<PyxcJIT> TheJIT;
-// TheFPM - Per-function optimization pipeline (JIT).
-static std::unique_ptr<FunctionPassManager> TheFPM;
-// TheMPM - Per-module optimization pipeline used by file emission.
-static std::unique_ptr<ModulePassManager> TheMPM;
-// TheLAM - Loop analysis manager (new PM).
-static std::unique_ptr<LoopAnalysisManager> TheLAM;
-// TheFAM - Function analysis manager (new PM).
-static std::unique_ptr<FunctionAnalysisManager> TheFAM;
-// TheCGAM - CGSCC analysis manager (new PM).
-static std::unique_ptr<CGSCCAnalysisManager> TheCGAM;
-// TheMAM - Module analysis manager (new PM).
-static std::unique_ptr<ModuleAnalysisManager> TheMAM;
+// FunctionPasses - Per-function optimization pipeline (JIT).
+static std::unique_ptr<FunctionPassManager> FunctionPasses;
+// ModulePasses - Per-module optimization pipeline used by file emission.
+static std::unique_ptr<ModulePassManager> ModulePasses;
+// LoopAnalyses - Loop analysis manager (new PM).
+static std::unique_ptr<LoopAnalysisManager> LoopAnalyses;
+// FunctionAnalyses - Function analysis manager (new PM).
+static std::unique_ptr<FunctionAnalysisManager> FunctionAnalyses;
+// CallGraphAnalyses - CGSCC analysis manager (new PM).
+static std::unique_ptr<CGSCCAnalysisManager> CallGraphAnalyses;
+// ModuleAnalyses - Module analysis manager (new PM).
+static std::unique_ptr<ModuleAnalysisManager> ModuleAnalyses;
 // ExitOnErr - Crash-on-error wrapper for LLVM Error results.
 static ExitOnError ExitOnErr;
 
@@ -5540,7 +5540,7 @@ Function *FunctionSignatureNode::codegen() {
 ///    variables the same load/store representation.
 ///
 /// 4. Codegen the body expression. On success, emit 'ret', run verifyFunction
-///    (LLVM's internal consistency checker), then run TheFPM to apply the
+///    (LLVM's internal consistency checker), then run FunctionPasses to apply the
 ///    optimisation pipeline. On failure, eraseFromParent() removes the
 ///    partially-built function so no broken declaration is left in the module.
 Function *FunctionDefinitionNode::codegen() {
@@ -5638,7 +5638,7 @@ Function *FunctionDefinitionNode::codegen() {
 
     // Run the optimisation pipeline: InstCombine, Reassociate, GVN,
     // SimplifyCFG.
-    TheFPM->run(*TheFunction, *TheFAM);
+    FunctionPasses->run(*TheFunction, *FunctionAnalyses);
     CurDIScope = nullptr;
     CurrentFunctionReturnType = SavedRetType;
     CurrentFunctionReturnStructName = SavedRetStructName;
@@ -5694,7 +5694,7 @@ static void ResetParserStateForFile() {
 /// FunctionPassManager is tied to a specific LLVMContext.
 ///
 /// The analysis managers are cross-registered so that a function pass that
-/// needs loop information can reach TheLAM, and so on. PassBuilder then creates
+/// needs loop information can reach LoopAnalyses, and so on. PassBuilder then creates
 /// LLVM's standard function and module pipelines for the selected level.
 static void InitializeModuleAndManagers(bool FreshContext = true) {
   // Fresh context and module for this compilation unit.
@@ -5712,29 +5712,29 @@ static void InitializeModuleAndManagers(bool FreshContext = true) {
   CurFunctionLine = 1;
 
   // Pass and analysis managers.
-  TheFPM = std::make_unique<FunctionPassManager>();
-  TheMPM = std::make_unique<ModulePassManager>();
-  TheLAM = std::make_unique<LoopAnalysisManager>();
-  TheFAM = std::make_unique<FunctionAnalysisManager>();
-  TheCGAM = std::make_unique<CGSCCAnalysisManager>();
-  TheMAM = std::make_unique<ModuleAnalysisManager>();
+  FunctionPasses = std::make_unique<FunctionPassManager>();
+  ModulePasses = std::make_unique<ModulePassManager>();
+  LoopAnalyses = std::make_unique<LoopAnalysisManager>();
+  FunctionAnalyses = std::make_unique<FunctionAnalysisManager>();
+  CallGraphAnalyses = std::make_unique<CGSCCAnalysisManager>();
+  ModuleAnalyses = std::make_unique<ModuleAnalysisManager>();
 
   // Cross-register so passes can access any analysis tier they need.
   PassBuilder PB;
-  PB.registerModuleAnalyses(*TheMAM);
-  PB.registerCGSCCAnalyses(*TheCGAM);
-  PB.registerFunctionAnalyses(*TheFAM);
-  PB.registerLoopAnalyses(*TheLAM);
-  PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
+  PB.registerModuleAnalyses(*ModuleAnalyses);
+  PB.registerCGSCCAnalyses(*CallGraphAnalyses);
+  PB.registerFunctionAnalyses(*FunctionAnalyses);
+  PB.registerLoopAnalyses(*LoopAnalyses);
+  PB.crossRegisterProxies(*LoopAnalyses, *FunctionAnalyses, *CallGraphAnalyses, *ModuleAnalyses);
 
   // I ask LLVM to build its standard pipelines for the selected level.
   if (OptLevel != 0) {
     auto FunctionPipeline = PB.buildFunctionSimplificationPipeline(
         GetOptLevel(), ThinOrFullLTOPhase::None);
-    TheFPM = std::make_unique<FunctionPassManager>(
+    FunctionPasses = std::make_unique<FunctionPassManager>(
         std::move(FunctionPipeline));
     auto ModulePipeline = PB.buildPerModuleDefaultPipeline(GetOptLevel());
-    TheMPM =
+    ModulePasses =
         std::make_unique<ModulePassManager>(std::move(ModulePipeline));
   }
 
@@ -5742,8 +5742,8 @@ static void InitializeModuleAndManagers(bool FreshContext = true) {
 }
 
 static void RunModuleOptimizations(Module *Module) {
-  if (TheMPM && OptLevel != 0)
-    TheMPM->run(*Module, *TheMAM);
+  if (ModulePasses && OptLevel != 0)
+    ModulePasses->run(*Module, *ModuleAnalyses);
 }
 
 /// DiscardRestOfLine - Panic-mode error recovery.
@@ -5789,7 +5789,7 @@ static void HandleTypeAliasDefinition() {
 
 /// HandleFunctionDefinition - Parse, optimise, and JIT-compile a 'def' function-definition.
 ///
-/// On success: codegen + optimise the function (TheFPM runs inside
+/// On success: codegen + optimise the function (FunctionPasses runs inside
 /// FunctionDefinitionNode::codegen), print the optimised IR, then hand the entire module
 /// to the JIT via addModule. The JIT takes ownership of TheModule and
 /// TheContext, so InitializeModuleAndManagers() is called immediately after to
