@@ -2477,12 +2477,12 @@ static void HandleExtern() {
     return;
   }
 
-  // Reject conflicting redeclarations: in Pyxc, function identity is just
+  // Reject conflicting redeclarations: in pyxc, function identity is just
   // name + arity, since all parameter and return types are double.
   auto Existing = FunctionSignatures.find(Signature->getName());
   if (Existing != FunctionSignatures.end() &&
       Existing->second->getNumParameters() != Signature->getNumParameters()) {
-    LogErrorExpression((string("Conflicting extern declaration for '") +
+    LogErrorExpression((string("Conflicting declaration for function '") +
               Signature->getName() + "'")
                  .c_str());
     DiscardRestOfLine();

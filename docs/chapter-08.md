@@ -450,7 +450,7 @@ I also save the signature of every function definition before generating its bod
 +  // Step 1: reuse an existing declaration if one exists.
 +  Function *TheFunction = getFunction(FunctionName);
 *
-+  // Bail if the function is already fully defined — redefinition is an error.
+*  // Bail if the function is already fully defined — redefinition is an error.
 *  if (TheFunction && !TheFunction->empty()) {
 *    LogErrorExpression(
 *        "Function '" + FunctionName + "' cannot be redefined");
@@ -539,12 +539,12 @@ static void HandleExtern() {
     return;
   }
 
-  // Reject conflicting redeclarations: in Pyxc, function identity is just
+  // Reject conflicting redeclarations: in pyxc, function identity is just
   // name + arity, since all parameter and return types are double.
   auto Existing = FunctionSignatures.find(Signature->getName());
   if (Existing != FunctionSignatures.end() &&
       Existing->second->getNumParameters() != Signature->getNumParameters()) {
-    LogErrorExpression("Conflicting extern declaration for '" +
+    LogErrorExpression("Conflicting declaration for function '" +
                        Signature->getName() + "'");
     DiscardRestOfLine();
     return;

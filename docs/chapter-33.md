@@ -119,7 +119,7 @@ The redeclaration check for `extern def` already compared parameter counts to ca
 -      Existing->second->getNumParameters() != ProtoAST->getNumParameters()) {
 +      (Existing->second->getNumParameters() != ProtoAST->getNumParameters() ||
 +       Existing->second->isVariadic() != ProtoAST->isVariadic())) {
-*    LogErrorExpression((string("Conflicting extern declaration for '") +
+*    LogErrorExpression((string("Conflicting declaration for function '") +
 *              ProtoAST->getName() + "'")
 *                 .c_str());
 *  }

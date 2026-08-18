@@ -6918,13 +6918,13 @@ static void HandleExtern() {
     return;
   }
 
-  // Reject conflicting redeclarations: in Pyxc, function identity is just
+  // Reject conflicting redeclarations: in pyxc, function identity is just
   // name + arity. We validate types separately in the parser.
   auto Existing = FunctionSignatures.find(ProtoAST->getName());
   if (Existing != FunctionSignatures.end() &&
       (Existing->second->getNumParameters() != ProtoAST->getNumParameters() ||
        Existing->second->isVariadic() != ProtoAST->isVariadic())) {
-    LogErrorExpression((string("Conflicting extern declaration for '") +
+    LogErrorExpression((string("Conflicting declaration for function '") +
               ProtoAST->getName() + "'")
                  .c_str());
     DiscardRestOfLine();
