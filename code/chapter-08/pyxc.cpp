@@ -1221,21 +1221,27 @@ static void DiscardRestOfLine() {
 /// On parse failure or unexpected trailing tokens: discard the line.
 static void HandleFunctionDefinition() {
   auto FunctionDefinition = ParseFunctionDefinition();
-  if (!FunctionDefinition ||
-      (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
-    if (FunctionDefinition)
-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)));
+  if (!FunctionDefinition) {
     DiscardRestOfLine();
     return;
   }
-  if (auto *FunctionIR = FunctionDefinition->codegen()) {
-    Log("Parsed a function definition.\n");
-    FunctionIR->print(errs());
-    // Transfer the module to the JIT. TheModule is now invalid; reinitialise.
-    ExitOnErr(JIT->addModule(
-        ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
-    InitializeModuleAndManagers();
+
+  if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
+    LogErrorExpression("Unexpected " + FormatTokenForMessage(CurrentToken));
+    DiscardRestOfLine();
+    return;
   }
+
+  auto *FunctionIR = FunctionDefinition->codegen();
+  if (!FunctionIR)
+    return;
+
+  Log("Parsed a function definition.\n");
+  FunctionIR->print(errs());
+  // Transfer the module to the JIT. TheModule is now invalid; reinitialise.
+  ExitOnErr(JIT->addModule(
+      ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
+  InitializeModuleAndManagers();
 }
 
 /// HandleExtern - Parse and register an 'extern def' declaration.
@@ -1250,9 +1256,13 @@ static void HandleFunctionDefinition() {
 static void HandleExtern() {
   auto Signature = ParseExtern();
 
-  if (!Signature || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
-    if (Signature)
-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)));
+  if (!Signature) {
+    DiscardRestOfLine();
+    return;
+  }
+
+  if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
+    LogErrorExpression("Unexpected " + FormatTokenForMessage(CurrentToken));
     DiscardRestOfLine();
     return;
   }
@@ -1262,20 +1272,21 @@ static void HandleExtern() {
   auto Existing = FunctionSignatures.find(Signature->getName());
   if (Existing != FunctionSignatures.end() &&
       Existing->second->getNumParameters() != Signature->getNumParameters()) {
-    LogErrorExpression((string("Conflicting extern declaration for '") +
-                        Signature->getName() + "'")
-                           .c_str());
+    LogErrorExpression("Conflicting extern declaration for '" +
+                       Signature->getName() + "'");
     DiscardRestOfLine();
     return;
   }
 
-  if (auto *FunctionIR = Signature->codegen()) {
-    Log("Parsed an extern.\n");
-    FunctionIR->print(errs());
-    // Save the function signature so getFunction() can re-emit it in future
-    // modules.
-    FunctionSignatures[Signature->getName()] = std::move(Signature);
-  }
+  auto *FunctionIR = Signature->codegen();
+  if (!FunctionIR)
+    return;
+
+  Log("Parsed an extern.\n");
+  FunctionIR->print(errs());
+  // Save the function signature so getFunction() can re-emit it in future
+  // modules.
+  FunctionSignatures[Signature->getName()] = std::move(Signature);
 }
 
 /// HandleTopLevelExpression - Compile, execute, and discard a bare expression.
@@ -1297,37 +1308,43 @@ static void HandleExtern() {
 ///      transferred to the JIT in step 4, so eraseFromParent() is not needed.
 static void HandleTopLevelExpression() {
   auto FunctionDefinition = ParseTopLevelExpression();
-  if (!FunctionDefinition ||
-      (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
-    if (FunctionDefinition)
-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)));
+  if (!FunctionDefinition) {
     DiscardRestOfLine();
     return;
   }
-  if (auto *FunctionIR = FunctionDefinition->codegen()) {
-    Log("Parsed a top-level expression.\n");
-    FunctionIR->print(errs());
 
-    // ResourceTracker scopes the JIT memory for this expression so we can
-    // free it precisely after the call, without affecting other symbols.
-    auto RT = JIT->getMainJITDylib().createResourceTracker();
-
-    // Transfer ownership of the module to the JIT; reinitialise for next input.
-    auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
-    ExitOnErr(JIT->addModule(std::move(TSM), RT));
-    InitializeModuleAndManagers();
-
-    // Locate the compiled function in the JIT's symbol table.
-    auto ExprSymbol = ExitOnErr(JIT->lookup("__anon_expr"));
-
-    // Cast the symbol address to a callable function pointer and invoke it.
-    double (*FP)() = ExprSymbol.toPtr<double (*)()>();
-    double result = FP();
-    fprintf(stdout, "Evaluated to %f\n", result);
-
-    // Release the compiled code and JIT memory for this expression.
-    ExitOnErr(RT->remove());
+  if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
+    LogErrorExpression("Unexpected " + FormatTokenForMessage(CurrentToken));
+    DiscardRestOfLine();
+    return;
   }
+
+  auto *FunctionIR = FunctionDefinition->codegen();
+  if (!FunctionIR)
+    return;
+
+  Log("Parsed a top-level expression.\n");
+  FunctionIR->print(errs());
+
+  // ResourceTracker scopes the JIT memory for this expression so we can
+  // free it precisely after the call, without affecting other symbols.
+  auto RT = JIT->getMainJITDylib().createResourceTracker();
+
+  // Transfer ownership of the module to the JIT; reinitialise for next input.
+  auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
+  ExitOnErr(JIT->addModule(std::move(TSM), RT));
+  InitializeModuleAndManagers();
+
+  // Locate the compiled function in the JIT's symbol table.
+  auto ExprSymbol = ExitOnErr(JIT->lookup("__anon_expr"));
+
+  // Cast the symbol address to a callable function pointer and invoke it.
+  double (*FP)() = ExprSymbol.toPtr<double (*)()>();
+  double result = FP();
+  fprintf(stdout, "Evaluated to %f\n", result);
+
+  // Release the compiled code and JIT memory for this expression.
+  ExitOnErr(RT->remove());
 }
 
 //===----------------------------------------===//
