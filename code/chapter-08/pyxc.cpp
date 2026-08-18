@@ -563,6 +563,11 @@ void PrintReplPrompt() {
 /// Used by the Handle* functions to confirm what was parsed.
 void Log(const string &message) { fprintf(stderr, "%s", message.c_str()); }
 
+/// PrintEvaluationResult - Print a floating-point REPL result to stdout.
+void PrintEvaluationResult(double Result) {
+  fprintf(stdout, "Evaluated to %f\n", Result);
+}
+
 /// LogErrorExpression* - Error reporting helpers. Each returns nullptr for its
 /// respective type so parse functions can write: return
 /// LogErrorExpression("message");
@@ -1351,7 +1356,7 @@ static void HandleTopLevelExpression() {
   // Cast the symbol address to a callable function pointer and invoke it.
   double (*FP)() = ExprSymbol.toPtr<double (*)()>();
   double result = FP();
-  fprintf(stdout, "Evaluated to %f\n", result);
+  PrintEvaluationResult(result);
 
   // Release the compiled code and JIT memory for this expression.
   ExitOnErr(RT->remove());

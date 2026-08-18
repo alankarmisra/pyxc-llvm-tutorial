@@ -1003,6 +1003,11 @@ void Log(const string &message) {
     fprintf(stderr, "%s", message.c_str());
 }
 
+/// PrintEvaluationResult - Print a floating-point REPL result to stdout.
+void PrintEvaluationResult(double Result) {
+  fprintf(stdout, "Evaluated to %f\n", Result);
+}
+
 /// LogErrorExpression* - Error reporting helpers. Each returns nullptr for its respective
 /// type so parse functions can write: return LogErrorExpression("message");
 unique_ptr<ExpressionNode> LogErrorExpression(const string &ErrorMessage) {
@@ -2596,7 +2601,7 @@ static void HandleTopLevelStatement() {
       double (*FunctionPointer)() = Symbol.toPtr<double (*)()>();
       double Result = FunctionPointer();
       if (IsRepl && LastTopLevelShouldPrint)
-        fprintf(stdout, "Evaluated to %f\n", Result);
+        PrintEvaluationResult(Result);
       return;
     }
 
@@ -2611,7 +2616,7 @@ static void HandleTopLevelStatement() {
     double (*FunctionPointer)() = Symbol.toPtr<double (*)()>();
     double Result = FunctionPointer();
     if (IsRepl && LastTopLevelShouldPrint)
-      fprintf(stdout, "Evaluated to %f\n", Result);
+      PrintEvaluationResult(Result);
 
     ExitOnErr(ResourceTracker->remove());
   } else {

@@ -190,9 +190,9 @@ I apply the same check to the automatic result, at the end of `HandleTopLevelExp
 *    ...
 *    double (*FP)() = ExprSymbol.toPtr<double (*)()>();
 *    double result = FP();
--    fprintf(stdout, "Evaluated to %f\n", result);
+-    PrintEvaluationResult(result);
 +    if (IsRepl)
-+      fprintf(stdout, "Evaluated to %f\n", result);
++      PrintEvaluationResult(result);
 *    ...
 *  }
 *}

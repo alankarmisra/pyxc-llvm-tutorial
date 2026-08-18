@@ -367,19 +367,19 @@ Unsigned types use `zext` (zero-extend) rather than `sext` (sign-extend).
 
 ## REPL Printing: Unsigned Results Print as `%llu`
 
-Chapter 18's JIT dispatch switch picks a function pointer type and a `printf` format per `ValueType`. I add a case for each of the four unsigned types, alongside the existing signed ones:
+Chapter 18's JIT dispatch switch picks a function pointer type per `ValueType`. I add a case for each of the four unsigned types, alongside the existing signed ones:
 
 ```cpp
 case ValueType::UInt32: {
   uint32_t (*FP)() = ExprSymbol.toPtr<uint32_t (*)()>();
   unsigned long long result = static_cast<unsigned long long>(FP());
   if (IsRepl && LastTopLevelShouldPrint)
-    fprintf(stdout, "%llu\n", result);
+    PrintEvaluationResult(result);
   break;
 }
 ```
 
-`UInt8`, `UInt16`, and `UInt64` follow the identical pattern with their own `toPtr` type. The cast to `unsigned long long` and the `%llu` format specifier mean a top-level `uint32(-1)` in the REPL prints `4294967295`, not a negative number: the same distinction that drives every other signed/unsigned instruction choice in this chapter applies here too, just at the print boundary instead of in generated IR.
+`UInt8`, `UInt16`, and `UInt64` follow the identical pattern with their own `toPtr` type. The cast selects the `PrintEvaluationResult(unsigned long long)` overload, which uses `%llu`. A top-level `uint32(-1)` in the REPL therefore prints `4294967295`, not a negative number: the same distinction that drives every other signed/unsigned instruction choice in this chapter applies here too, just at the print boundary instead of in generated IR.
 
 ## Explicit Casts
 

@@ -1747,6 +1747,18 @@ void Log(const string &message) {
     fprintf(stderr, "%s", message.c_str());
 }
 
+/// PrintEvaluationResult - Print a typed REPL result to stdout.
+void PrintEvaluationResult(double Result) { fprintf(stdout, "%f\n", Result); }
+void PrintEvaluationResult(long long Result) {
+  fprintf(stdout, "%lld\n", Result);
+}
+void PrintEvaluationResult(unsigned long long Result) {
+  fprintf(stdout, "%llu\n", Result);
+}
+void PrintEvaluationResult(bool Result) {
+  fprintf(stdout, "%s\n", Result ? "True" : "False");
+}
+
 /// LogErrorExpression* - Error reporting helpers. Each returns nullptr for its respective
 /// type so parse functions can write: return LogErrorExpression("message");
 unique_ptr<ExpressionNode> LogErrorExpression(const string &ErrorMessage) {
@@ -5930,84 +5942,84 @@ static void HandleTopLevelStatement() {
           double (*FP)() = ExprSymbol.toPtr<double (*)()>();
           double result = FP();
           if (IsRepl && LastTopLevelShouldPrint)
-            fprintf(stdout, "%f\n", result);
+            PrintEvaluationResult(result);
           break;
         }
         case ValueType::Float32: {
           float (*FP)() = ExprSymbol.toPtr<float (*)()>();
           double result = static_cast<double>(FP());
           if (IsRepl && LastTopLevelShouldPrint)
-            fprintf(stdout, "%f\n", result);
+            PrintEvaluationResult(result);
           break;
         }
         case ValueType::Int: {
           intptr_t (*FP)() = ExprSymbol.toPtr<intptr_t (*)()>();
           long long result = static_cast<long long>(FP());
           if (IsRepl && LastTopLevelShouldPrint)
-            fprintf(stdout, "%lld\n", result);
+            PrintEvaluationResult(result);
           break;
         }
         case ValueType::Int8: {
           int8_t (*FP)() = ExprSymbol.toPtr<int8_t (*)()>();
           long long result = static_cast<long long>(FP());
           if (IsRepl && LastTopLevelShouldPrint)
-            fprintf(stdout, "%lld\n", result);
+            PrintEvaluationResult(result);
           break;
         }
         case ValueType::Int16: {
           int16_t (*FP)() = ExprSymbol.toPtr<int16_t (*)()>();
           long long result = static_cast<long long>(FP());
           if (IsRepl && LastTopLevelShouldPrint)
-            fprintf(stdout, "%lld\n", result);
+            PrintEvaluationResult(result);
           break;
         }
         case ValueType::Int32: {
           int32_t (*FP)() = ExprSymbol.toPtr<int32_t (*)()>();
           long long result = static_cast<long long>(FP());
           if (IsRepl && LastTopLevelShouldPrint)
-            fprintf(stdout, "%lld\n", result);
+            PrintEvaluationResult(result);
           break;
         }
         case ValueType::Int64: {
           int64_t (*FP)() = ExprSymbol.toPtr<int64_t (*)()>();
           long long result = static_cast<long long>(FP());
           if (IsRepl && LastTopLevelShouldPrint)
-            fprintf(stdout, "%lld\n", result);
+            PrintEvaluationResult(result);
           break;
         }
         case ValueType::UInt8: {
           uint8_t (*FP)() = ExprSymbol.toPtr<uint8_t (*)()>();
           unsigned long long result = static_cast<unsigned long long>(FP());
           if (IsRepl && LastTopLevelShouldPrint)
-            fprintf(stdout, "%llu\n", result);
+            PrintEvaluationResult(result);
           break;
         }
         case ValueType::UInt16: {
           uint16_t (*FP)() = ExprSymbol.toPtr<uint16_t (*)()>();
           unsigned long long result = static_cast<unsigned long long>(FP());
           if (IsRepl && LastTopLevelShouldPrint)
-            fprintf(stdout, "%llu\n", result);
+            PrintEvaluationResult(result);
           break;
         }
         case ValueType::UInt32: {
           uint32_t (*FP)() = ExprSymbol.toPtr<uint32_t (*)()>();
           unsigned long long result = static_cast<unsigned long long>(FP());
           if (IsRepl && LastTopLevelShouldPrint)
-            fprintf(stdout, "%llu\n", result);
+            PrintEvaluationResult(result);
           break;
         }
         case ValueType::UInt64: {
           uint64_t (*FP)() = ExprSymbol.toPtr<uint64_t (*)()>();
           unsigned long long result = static_cast<unsigned long long>(FP());
           if (IsRepl && LastTopLevelShouldPrint)
-            fprintf(stdout, "%llu\n", result);
+            PrintEvaluationResult(result);
           break;
         }
         case ValueType::Bool: {
           bool (*FP)() = ExprSymbol.toPtr<bool (*)()>();
           bool result = FP();
           if (IsRepl && LastTopLevelShouldPrint)
-            fprintf(stdout, "%s\n", result ? "True" : "False");
+            PrintEvaluationResult(result);
           break;
         }
         default:
@@ -6031,84 +6043,84 @@ static void HandleTopLevelStatement() {
         double (*FP)() = ExprSymbol.toPtr<double (*)()>();
         double result = FP();
         if (IsRepl && LastTopLevelShouldPrint)
-          fprintf(stdout, "%f\n", result);
+          PrintEvaluationResult(result);
         break;
       }
       case ValueType::Float32: {
         float (*FP)() = ExprSymbol.toPtr<float (*)()>();
         double result = static_cast<double>(FP());
         if (IsRepl && LastTopLevelShouldPrint)
-          fprintf(stdout, "%f\n", result);
+          PrintEvaluationResult(result);
         break;
       }
       case ValueType::Int: {
         intptr_t (*FP)() = ExprSymbol.toPtr<intptr_t (*)()>();
         long long result = static_cast<long long>(FP());
         if (IsRepl && LastTopLevelShouldPrint)
-          fprintf(stdout, "%lld\n", result);
+          PrintEvaluationResult(result);
         break;
       }
       case ValueType::Int8: {
         int8_t (*FP)() = ExprSymbol.toPtr<int8_t (*)()>();
         long long result = static_cast<long long>(FP());
         if (IsRepl && LastTopLevelShouldPrint)
-          fprintf(stdout, "%lld\n", result);
+          PrintEvaluationResult(result);
         break;
       }
       case ValueType::Int16: {
         int16_t (*FP)() = ExprSymbol.toPtr<int16_t (*)()>();
         long long result = static_cast<long long>(FP());
         if (IsRepl && LastTopLevelShouldPrint)
-          fprintf(stdout, "%lld\n", result);
+          PrintEvaluationResult(result);
         break;
       }
       case ValueType::Int32: {
         int32_t (*FP)() = ExprSymbol.toPtr<int32_t (*)()>();
         long long result = static_cast<long long>(FP());
         if (IsRepl && LastTopLevelShouldPrint)
-          fprintf(stdout, "%lld\n", result);
+          PrintEvaluationResult(result);
         break;
       }
       case ValueType::Int64: {
         int64_t (*FP)() = ExprSymbol.toPtr<int64_t (*)()>();
         long long result = static_cast<long long>(FP());
         if (IsRepl && LastTopLevelShouldPrint)
-          fprintf(stdout, "%lld\n", result);
+          PrintEvaluationResult(result);
         break;
       }
       case ValueType::UInt8: {
         uint8_t (*FP)() = ExprSymbol.toPtr<uint8_t (*)()>();
         unsigned long long result = static_cast<unsigned long long>(FP());
         if (IsRepl && LastTopLevelShouldPrint)
-          fprintf(stdout, "%llu\n", result);
+          PrintEvaluationResult(result);
         break;
       }
       case ValueType::UInt16: {
         uint16_t (*FP)() = ExprSymbol.toPtr<uint16_t (*)()>();
         unsigned long long result = static_cast<unsigned long long>(FP());
         if (IsRepl && LastTopLevelShouldPrint)
-          fprintf(stdout, "%llu\n", result);
+          PrintEvaluationResult(result);
         break;
       }
       case ValueType::UInt32: {
         uint32_t (*FP)() = ExprSymbol.toPtr<uint32_t (*)()>();
         unsigned long long result = static_cast<unsigned long long>(FP());
         if (IsRepl && LastTopLevelShouldPrint)
-          fprintf(stdout, "%llu\n", result);
+          PrintEvaluationResult(result);
         break;
       }
       case ValueType::UInt64: {
         uint64_t (*FP)() = ExprSymbol.toPtr<uint64_t (*)()>();
         unsigned long long result = static_cast<unsigned long long>(FP());
         if (IsRepl && LastTopLevelShouldPrint)
-          fprintf(stdout, "%llu\n", result);
+          PrintEvaluationResult(result);
         break;
       }
       case ValueType::Bool: {
         bool (*FP)() = ExprSymbol.toPtr<bool (*)()>();
         bool result = FP();
         if (IsRepl && LastTopLevelShouldPrint)
-          fprintf(stdout, "%s\n", result ? "True" : "False");
+          PrintEvaluationResult(result);
         break;
       }
       default:

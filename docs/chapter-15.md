@@ -389,7 +389,7 @@ static void HandleTopLevelStatement() {
       double (*FunctionPointer)() = Symbol.toPtr<double (*)()>();
       double Result = FunctionPointer();
       if (IsRepl && LastTopLevelShouldPrint)
-        fprintf(stderr, "Evaluated to %f\n", Result);
+        PrintEvaluationResult(Result);
       return;
     }
 
@@ -405,7 +405,7 @@ static void HandleTopLevelStatement() {
     double (*FunctionPointer)() = Symbol.toPtr<double (*)()>();
     double Result = FunctionPointer();
     if (IsRepl && LastTopLevelShouldPrint)
-      fprintf(stderr, "Evaluated to %f\n", Result);
+      PrintEvaluationResult(Result);
 
     ExitOnErr(ResourceTracker->remove());
   } else {
@@ -414,7 +414,7 @@ static void HandleTopLevelStatement() {
 }
 ```
 
-`ModuleHasGlobals` is set by `VarStatementNode::codegen` when it emits a `GlobalVariable`. If it's set, I keep the module permanently — freeing it would destroy the global's storage. If not, the old ResourceTracker path from chapter 8 applies and the module is freed after execution. Both branches print `"Evaluated to %f\n"` — keeping a module doesn't change how its result gets reported, only what happens to the module afterward.
+`ModuleHasGlobals` is set by `VarStatementNode::codegen` when it emits a `GlobalVariable`. If it's set, I keep the module permanently — freeing it would destroy the global's storage. If not, the old ResourceTracker path from chapter 8 applies and the module is freed after execution. Both branches call `PrintEvaluationResult()` — keeping a module doesn't change how its result gets reported, only what happens to the module afterward.
 
 `LastTopLevelShouldPrint` gates both the `"Parsed a top-level expression."` line and the final result print. That's why `var count = 0` produces no REPL output at all: `VarStatementNode::shouldPrintValue()` returns `false`, so neither message fires.
 
