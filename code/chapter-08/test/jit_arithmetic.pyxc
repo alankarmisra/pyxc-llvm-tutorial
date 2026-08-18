@@ -1,5 +1,5 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Evaluated to 9" %t
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK
+# CHECK-DAG: {{Evaluated to 9}}
 
 # JIT execution: constant arithmetic must evaluate to the correct number.
 # 4 + 5 = 9. Checks that the JIT runs the compiled code, not just prints IR.

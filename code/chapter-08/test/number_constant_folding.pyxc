@@ -1,7 +1,6 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Parsed a top-level expression" %t
-# RUN: grep -q "ret double 9" %t
-# RUN: grep -v "fadd" %t
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK --implicit-check-not="{{fadd}}"
+# CHECK-DAG: {{Parsed a top-level expression}}
+# CHECK-DAG: {{ret double 9}}
 
 # NumberExpressionNode::codegen: two constants folded at IR construction time.
 # IRBuilder recognises both operands are ConstantFP and returns a single

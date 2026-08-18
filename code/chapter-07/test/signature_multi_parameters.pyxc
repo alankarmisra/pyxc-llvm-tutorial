@@ -1,5 +1,7 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -c "Parsed a function definition." %t | grep -q "2"
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK
+# CHECK-DAG: {{Parsed a function definition.}}
+# CHECK-DAG: {{Parsed a function definition.}}
+# CHECK-NOT: {{Parsed a function definition.}}
 
 # function signature: multiple parameters (the { } repeating)
 def add(x, y): x + y

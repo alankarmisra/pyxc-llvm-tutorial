@@ -345,31 +345,30 @@ For named functions, I add the module without this temporary tracker, so their c
 
 `foo` and `bar` need to stay compiled and callable for the rest of the session. `__anon_expr`, the wrapper I generate for a bare top-level expression like `foo(1) + bar(2)`, needs the opposite: it runs exactly once and then has no reason to exist. ORC tracks resources at the level of a whole module, so I can't free just one function out of a module I've already handed over; I can only free (or keep) an entire module. That's the reason every `def`, every `extern`, and every top-level expression each gets its own fresh module: it lets me remove the module built for `__anon_expr` without touching the modules `foo` and `bar` live in.
 
-```text
 STAGE 1 — Steady state: foo and bar are already compiled and living in the JIT
 
+```diagram
   JIT symbol table
   ┌────────────────┐  ┌────────────────┐
   │ foo (compiled) │  │ bar (compiled) │
   └────────────────┘  └────────────────┘
-
   (waiting for the next top-level input...)
-
+```
 
 STAGE 2 — A top-level expression arrives: foo(1) + bar(2)
+I wrap it in a throwaway function and compile that too:
 
-  I wrap it in a throwaway function and compile that too:
-
-    double __anon_expr() { return foo(1) + bar(2); }
+```diagram
+  double __anon_expr() { return foo(1) + bar(2); }
 
   JIT symbol table
   ┌────────────────┐  ┌────────────────┐  ┌───────────────────────┐
   │ foo (compiled) │  │ bar (compiled) │  │ __anon_expr (compiled)│
   └────────────────┘  └────────────────┘  └───────────────────────┘
-
+```
 
 STAGE 3 — I look up and call __anon_expr(); it calls the other two
-
+```diagram
                     ┌───────────────────────┐
                     │ __anon_expr (compiled)│
                     └───────────────────────┘
@@ -644,7 +643,18 @@ Parsed an extern.
 declare double @sin(double)
 ```
 
-I also dispatch `tok_extern` from `MainLoop()`:
+`PrintReplPrompt()` prints `ready> ` and replaces the raw `fprintf(stderr, "ready> ")` from Chapter 7:
+
+```cpp
+void PrintReplPrompt() {
+  fflush(stdout);
+  fprintf(stderr, "ready> ");
+}
+```
+
+I flush `stdout` first so any output already produced by the program (through `printd` or `putchard`, once I add `extern` calls to those below) appears before the next prompt rather than getting buffered behind it.
+
+I also dispatch `tok_extern` from `MainLoop()`, which now calls `PrintReplPrompt()` in its `tok_eol` case:
 
 ```cppdiff
 *static void MainLoop() {
@@ -676,9 +686,15 @@ I also dispatch `tok_extern` from `MainLoop()`:
 
 ## The Runtime Library
 
-I add two C++ functions that pyxc can call through `extern def`:
+I add two C++ functions that pyxc can call through `extern def`. On Windows, executable symbols are not exported by default, so I define `DLLEXPORT` to expand to `__declspec(dllexport)`; the macro is empty on macOS and Linux, where `extern "C"` symbols are already visible:
 
 ```cpp
+#ifdef _WIN32
+#define DLLEXPORT __declspec(dllexport)
+#else
+#define DLLEXPORT
+#endif
+
 extern "C" DLLEXPORT double putchard(double X) {
   fputc((char)X, stdout);
   return 0;
@@ -690,7 +706,7 @@ extern "C" DLLEXPORT double printd(double X) {
 }
 ```
 
-I give the functions C linkage so their symbol names remain `putchard` and `printd`. `DLLEXPORT` makes those symbols visible from the executable on Windows. The JIT can then resolve an external declaration against them:
+I give the functions C linkage so their symbol names remain `putchard` and `printd`. The JIT can then resolve an external declaration against them:
 
 ```pyxc
 extern def putchard(x)
@@ -700,8 +716,6 @@ putchard(65)
 ```
 
 I will move these functions into a separate runtime-library file in a later chapter.
-
-On Windows, executable symbols are not exported by default, so `DLLEXPORT` expands to `__declspec(dllexport)`. The macro is empty on macOS and Linux in this project.
 
 ## Command-Line Parsing
 
@@ -756,16 +770,7 @@ With `OptLevel` in scope, I go back and gate the three passes I added in [Buildi
 *}
 ```
 
-Here's `main()` in full. I already covered the `InitializeNativeTarget*` calls in [Creating the ORC JIT](#creating-the-orc-jit), so I gray those out below. The new piece is the `ProcessCommandLine()` call at the very top, which has to run before anything else since it configures `Input` and `IsRepl`. Two more lines I haven't called out yet: `PrintReplPrompt()` prints `ready> ` (it replaces the raw `fprintf(stderr, "ready> ")` from Chapter 7):
-
-```cpp
-void PrintReplPrompt() {
-  fflush(stdout);
-  fprintf(stderr, "ready> ");
-}
-```
-
-I flush `stdout` first so any output already produced by the program (through `printd` or `putchard`, once I add `extern` calls to those below) appears before the next prompt rather than getting buffered behind it. `JIT = ExitOnErr(PyxcJIT::Create())` is the JIT instantiation I introduced in [Creating the ORC JIT](#creating-the-orc-jit) but hadn't shown in its actual calling context until now:
+Here's `main()` in full. I already covered the `InitializeNativeTarget*` calls in [Creating the ORC JIT](#creating-the-orc-jit), so I gray those out below. The new piece is the `ProcessCommandLine()` call at the very top, which has to run before anything else since it configures `Input` and `IsRepl`. Two more additions: this is a second call site for `PrintReplPrompt()`, which I explained in [Calling Functions I Didn't Write](#calling-functions-i-didnt-write) (this one replaces Chapter 7's raw `fprintf(stderr, "ready> ")` in `main()` itself, priming the very first prompt); and `JIT = ExitOnErr(PyxcJIT::Create())` is the JIT instantiation I introduced in [Creating the ORC JIT](#creating-the-orc-jit) but hadn't shown in its actual calling context until now. And I remove one thing: Chapter 7's `TheModule->print(errs(), nullptr);` at the end of `main()`. Every function now prints its own IR the moment I compile it, and by the time `MainLoop()` returns, `TheModule` only holds whatever fresh, empty module `InitializeModuleAndManagers()` created after the last transfer, not the code I actually just ran, so dumping it here would either print nothing useful or, if I forgot to reinitialize somewhere, reprint a function I already printed once:
 
 ```cppdiff
 *int main(int argc, const char **argv) {
@@ -792,6 +797,9 @@ I flush `stdout` first so any output already produced by the program (through `p
 *
 *  MainLoop();
 *
+-  // Print out all of the generated code.
+-  TheModule->print(errs(), nullptr);
+-
 *  return 0;
 *}
 ```

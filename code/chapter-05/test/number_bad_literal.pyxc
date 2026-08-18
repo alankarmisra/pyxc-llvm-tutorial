@@ -1,7 +1,7 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Error (Line" %t
-# RUN: grep -q "invalid number literal" %t
-# RUN: grep -q "1.2.3" %t
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK
+# CHECK-DAG: {{Error \(Line}}
+# CHECK-DAG: {{invalid number literal}}
+# CHECK-DAG: {{1.2.3}}
 
 # number-expression: strtod check catches multiple decimal points; tok_error is returned
 # so the parser never sees the token and does not produce a cascade error.

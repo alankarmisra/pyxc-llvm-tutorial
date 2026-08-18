@@ -1,4 +1,5 @@
-# RUN: %pyxc < %s | grep -Fxq "number: 42"
+# RUN: %pyxc < %s | FileCheck %s
+# CHECK: {{^}}number: 42{{$}}
 
 # number: integer input is stored as double, printed without trailing zeros
 42

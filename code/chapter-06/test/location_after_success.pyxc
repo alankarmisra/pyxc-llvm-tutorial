@@ -1,7 +1,8 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -c "Error (Line" %t | grep -q "1"
-# RUN: grep -q "Expected ':' in function definition" %t
-# RUN: grep -q "def foo(x) x" %t
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK
+# CHECK-DAG: {{Error \(Line}}
+# CHECK-DAG: {{Expected ':' in function definition}}
+# CHECK-DAG: {{def foo\(x\) x}}
+# CHECK-NOT: {{Error \(Line}}
 
 # Diagnostics: exactly one error fires; a preceding successful parse does not
 # contribute an error line. Source context shows the failing line, not the

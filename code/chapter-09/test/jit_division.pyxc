@@ -1,5 +1,5 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Evaluated to 4" %t
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK
+# CHECK-DAG: {{Evaluated to 4}}
 
 # JIT execution: division evaluates to the correct number.
 8 / 2

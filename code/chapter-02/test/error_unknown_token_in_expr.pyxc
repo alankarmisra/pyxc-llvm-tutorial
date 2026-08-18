@@ -1,6 +1,6 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Error: " %t
-# RUN: grep -q "Unexpected '+'" %t
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK
+# CHECK-DAG: {{Error: }}
+# CHECK-DAG: {{Unexpected '\+'}}
 
 # primary: default branch — token that is not name, number, or '('
 1 + + 2

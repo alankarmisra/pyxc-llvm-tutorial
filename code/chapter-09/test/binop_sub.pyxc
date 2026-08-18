@@ -1,6 +1,6 @@
-# RUN: %pyxc -v < %s > %t 2>&1
-# RUN: grep -q "Parsed a function definition" %t
-# RUN: grep -q "fsub double" %t
+# RUN: %pyxc -v < %s 2>&1 | FileCheck %s --check-prefix=CHECK
+# CHECK-DAG: {{Parsed a function definition}}
+# CHECK-DAG: {{fsub double}}
 
 # BinaryExpressionNode::codegen '-': CreateFSub emits an fsub instruction.
 def sub(a, b): a - b

@@ -1,6 +1,5 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Parsed a function definition" %t
-# RUN: not grep -q "Error (Line" %t
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK --implicit-check-not="{{Error \\(Line}}"
+# CHECK-DAG: {{Parsed a function definition}}
 
 # definition: the body expression is the function's implicit result
 def foo(x): x + 1

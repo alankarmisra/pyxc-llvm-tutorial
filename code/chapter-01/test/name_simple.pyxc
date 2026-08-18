@@ -1,4 +1,5 @@
-# RUN: %pyxc < %s | grep -Fxq "name: foo"
+# RUN: %pyxc < %s | FileCheck %s
+# CHECK: {{^}}name: foo{{$}}
 
 # name: plain name with no underscore
 foo

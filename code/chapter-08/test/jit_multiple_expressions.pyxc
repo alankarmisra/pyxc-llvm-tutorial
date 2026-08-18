@@ -1,5 +1,8 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -c "Evaluated to" %t | grep -q "^3$"
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK
+# CHECK-DAG: {{Evaluated to}}
+# CHECK-DAG: {{Evaluated to}}
+# CHECK-DAG: {{Evaluated to}}
+# CHECK-NOT: {{Evaluated to}}
 
 # JIT execution across multiple top-level expressions: each expression gets
 # its own module, is compiled, executed, and freed. Three expressions must

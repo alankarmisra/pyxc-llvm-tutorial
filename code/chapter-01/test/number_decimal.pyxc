@@ -1,4 +1,5 @@
-# RUN: %pyxc < %s | grep -Fxq "number: 3.14"
+# RUN: %pyxc < %s | FileCheck %s
+# CHECK: {{^}}number: 3.14{{$}}
 
 # number: decimal input round-trips correctly through strtod/%g
 3.14

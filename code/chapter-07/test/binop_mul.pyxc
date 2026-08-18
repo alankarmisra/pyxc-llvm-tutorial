@@ -1,6 +1,6 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Parsed a function definition" %t
-# RUN: grep -q "fmul double" %t
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK
+# CHECK-DAG: {{Parsed a function definition}}
+# CHECK-DAG: {{fmul double}}
 
 # BinaryExpressionNode::codegen '*': CreateFMul emits an fmul instruction.
 def mul(a, b): a * b

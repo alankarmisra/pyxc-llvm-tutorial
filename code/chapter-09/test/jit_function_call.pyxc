@@ -1,6 +1,6 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Parsed a function definition" %t
-# RUN: grep -q "Evaluated to 1.000000" %t
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK
+# CHECK-DAG: {{Parsed a function definition}}
+# CHECK-DAG: {{Evaluated to 1.000000}}
 
 # JIT cross-module call: foo is compiled into one module (and added to the
 # JIT), then foo(4) is compiled into a new module and executed. Confirms that

@@ -1,4 +1,5 @@
-# RUN: %pyxc < %s | grep -Fxq "number: 0.5"
+# RUN: %pyxc < %s | FileCheck %s
+# CHECK: {{^}}number: 0.5{{$}}
 
 # number: leading-dot form (.5) is accepted and normalised to 0.5
 .5

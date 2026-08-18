@@ -1,6 +1,6 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Error" %t
-# RUN: grep -q "Evaluated to 1.000000" %t
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK
+# CHECK-DAG: {{Error}}
+# CHECK-DAG: {{Evaluated to 1.000000}}
 
 # Error recovery + JIT: a parse error on one line must not prevent subsequent
 # inputs from compiling and executing. The REPL must recover and evaluate the

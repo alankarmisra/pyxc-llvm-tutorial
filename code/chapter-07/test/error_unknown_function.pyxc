@@ -1,6 +1,6 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Error" %t
-# RUN: grep -Fq "Unknown function: 'notdeclared'" %t
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK
+# CHECK-DAG: {{Error}}
+# CHECK-DAG: Unknown function: 'notdeclared'
 
 # CallExpressionNode::codegen error path: TheModule->getFunction returns nullptr when
 # the callee has never been declared or defined.

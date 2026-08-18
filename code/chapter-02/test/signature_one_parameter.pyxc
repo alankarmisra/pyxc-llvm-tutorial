@@ -1,6 +1,5 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Parsed a function definition." %t
-# RUN: not grep -q "Error:" %t
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK --implicit-check-not="{{Error:}}"
+# CHECK-DAG: {{Parsed a function definition.}}
 
 # function signature: one parameter
 def double(x): x + x

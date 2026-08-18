@@ -1,5 +1,5 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Parsed a top-level expression." %t
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK
+# CHECK-DAG: {{Parsed a top-level expression.}}
 
 # call-expression: call result used inside a larger expression
 foo(1) + bar(2, 3) * baz()

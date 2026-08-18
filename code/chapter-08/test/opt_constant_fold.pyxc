@@ -1,9 +1,8 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Parsed a function definition" %t
-# RUN: grep -q "3.000000e+00" %t
-# RUN: grep -q "fadd double %x, 3.000000e+00" %t
-# RUN: grep -q "fmul double %addtmp, %addtmp" %t
-# RUN: grep -c "fadd" %t | grep -q "^1$"
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK
+# CHECK-DAG: {{Parsed a function definition}}
+# CHECK-DAG: {{fadd double %x, 3.000000e\+00}}
+# CHECK-DAG: {{fmul double %addtmp, %addtmp}}
+# CHECK-NOT: {{fadd}}
 
 # Optimisation — ReassociatePass + constant folding: (1+2+x)*(x+(1+2)).
 # After optimisation:

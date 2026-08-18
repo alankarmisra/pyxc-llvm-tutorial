@@ -1,6 +1,6 @@
-# RUN: %pyxc < %s > %t 2>&1
-# RUN: grep -q "Error: " %t
-# RUN: grep -q "Expected ')' or ',' in parameter list" %t
+# RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK
+# CHECK-DAG: {{Error: }}
+# CHECK-DAG: {{Expected '\)' or ',' in parameter list}}
 
 # function signature: parameters separated by space instead of comma
 def foo(x y): x
