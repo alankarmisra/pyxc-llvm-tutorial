@@ -988,7 +988,8 @@ static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
     Expression = make_unique<AssignmentStatementNode>(Name, std::move(Right));
   }
 
-  auto Signature = make_unique<FunctionSignatureNode>("__anon_expr", vector<string>());
+  auto Signature = make_unique<FunctionSignatureNode>(
+      AnonymousExpressionFunctionName, vector<string>());
   auto Body = make_unique<ReturnStatementNode>(std::move(Expression));
   return make_unique<FunctionDefinitionNode>(std::move(Signature), std::move(Body));
 }

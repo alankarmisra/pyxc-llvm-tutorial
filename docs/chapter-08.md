@@ -233,19 +233,15 @@ Back in `InitializeModuleAndManagers()`, right after building `TheBuilder`, I cr
 
 ### Building the Function Pipeline
 
-I add the optimization passes to `FunctionPasses` when optimization is enabled, closing out `InitializeModuleAndManagers()`:
+I add the optimization passes to `FunctionPasses`, closing out `InitializeModuleAndManagers()`:
 
 ```cppdiff
 *  ...
-+  if (OptLevel != 0) {
-+    FunctionPasses->addPass(InstCombinePass());
-+    FunctionPasses->addPass(ReassociatePass());
-+    FunctionPasses->addPass(GVNPass());
-+  }
++  FunctionPasses->addPass(InstCombinePass());
++  FunctionPasses->addPass(ReassociatePass());
++  FunctionPasses->addPass(GVNPass());
 *}
 ```
-
-I define `OptLevel` from the `-O` command-line option later in this chapter. At `-O0`, I leave the pipeline empty.
 
 ### Running the Pipeline
 
@@ -271,6 +267,12 @@ This optimizes each function before I print or compile it.
 
 ## Executing Top-Level Expressions
 
+Every `Handle*` function below confirms what it parsed through one small helper, `Log()`, instead of calling `fprintf(stderr, ...)` directly as it did in Chapter 7. That gives the pattern one place to change later, if I ever want it to go somewhere other than `stderr`:
+
+```cpp
+void Log(const string &message) { fprintf(stderr, "%s", message.c_str()); }
+```
+
 For a top-level expression, I generate and optimize `__anon_expr` as before. I then hand its module to the JIT and execute the compiled function:
 
 ```cppdiff
@@ -287,10 +289,10 @@ For a top-level expression, I generate and optimize `__anon_expr` as before. I t
 *    return;
 *  }
 *
--  auto *FunctionIR = FunctionDefinition->codegen();
--  if (!FunctionIR)
--    return;
--
+*  auto *FunctionIR = FunctionDefinition->codegen();
+*  if (!FunctionIR)
+*    return;
+*
 -  fprintf(stderr, "Parsed a top-level expression.\n");
 -  FunctionIR->print(errs());
 -  fprintf(stderr, "\n");
@@ -298,14 +300,11 @@ For a top-level expression, I generate and optimize `__anon_expr` as before. I t
 -  // Erase after printing — anonymous expressions don't belong in the final
 -  // module dump.
 -  FunctionIR->eraseFromParent();
-+  auto *FunctionIR = FunctionDefinition->codegen();
-+  if (!FunctionIR)
-+    return;
-+
+*
 +  Log("Parsed a top-level expression.\n");
 +  FunctionIR->print(errs());
 +
-+  // ResourceTracker scopes the JIT memory for this expression so I can
++  // ResourceTracker scopes the JIT memory for this expression so we can
 +  // free it precisely after the call, without affecting other symbols.
 +  auto RT = JIT->getMainJITDylib().createResourceTracker();
 +
@@ -315,7 +314,7 @@ For a top-level expression, I generate and optimize `__anon_expr` as before. I t
 +  InitializeModuleAndManagers();
 +
 +  // Locate the compiled function in the JIT's symbol table.
-+  auto ExprSymbol = ExitOnErr(JIT->lookup("__anon_expr"));
++  auto ExprSymbol = ExitOnErr(JIT->lookup(AnonymousExpressionFunctionName));
 +
 +  // Cast the symbol address to a callable function pointer and invoke it.
 +  double (*FP)() = ExprSymbol.toPtr<double (*)()>();
@@ -327,7 +326,10 @@ For a top-level expression, I generate and optimize `__anon_expr` as before. I t
 *}
 ```
 
-`lookup("__anon_expr")` asks the JIT for the compiled symbol. I use `toPtr<double (*)()>` to treat its address as a C function that takes no arguments and returns a `double`. Calling `FP()` executes that machine code.
+`JIT->lookup(AnonymousExpressionFunctionName)` asks the JIT for the compiled
+symbol named `__anon_expr`. I use `toPtr<double (*)()>` to treat its address as
+a C function that takes no arguments and returns a `double`. Calling `FP()`
+executes that machine code.
 
 I now separate successful output from compiler diagnostics. I write the value produced by the REPL and anything printed by pyxc code to `stdout`. I keep prompts, errors, parse messages, and IR dumps on `stderr`. Before I print the next prompt, I flush `stdout` so output from the expression appears first.
 
@@ -466,31 +468,34 @@ I still reject a second definition of the same function. Supporting redefinition
 
 Because the JIT takes ownership of each module and its context, I create replacements immediately after every transfer, at the end of `HandleFunctionDefinition()`:
 
-```cpp
-static void HandleFunctionDefinition() {
-  auto FunctionDefinition = ParseFunctionDefinition();
-  if (!FunctionDefinition) {
-    DiscardRestOfLine();
-    return;
-  }
-
-  if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
-    LogErrorExpression("Unexpected " + FormatTokenForMessage(CurrentToken));
-    DiscardRestOfLine();
-    return;
-  }
-
-  auto *FunctionIR = FunctionDefinition->codegen();
-  if (!FunctionIR)
-    return;
-
-  Log("Parsed a function definition.\n");
-  FunctionIR->print(errs());
-  // Transfer the module to the JIT. TheModule is now invalid; reinitialise.
-  ExitOnErr(JIT->addModule(
-      ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
-  InitializeModuleAndManagers();
-}
+```cppdiff
+*static void HandleFunctionDefinition() {
+*  auto FunctionDefinition = ParseFunctionDefinition();
+*  if (!FunctionDefinition) {
+*    DiscardRestOfLine();
+*    return;
+*  }
+*
+*  if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
+*    LogErrorExpression("Unexpected " + FormatTokenForMessage(CurrentToken));
+*    DiscardRestOfLine();
+*    return;
+*  }
+*
+*  auto *FunctionIR = FunctionDefinition->codegen();
+*  if (!FunctionIR)
+*    return;
+*
+-  fprintf(stderr, "Parsed a function definition.\n");
+-  FunctionIR->print(errs());
+-  fprintf(stderr, "\n");
++  Log("Parsed a function definition.\n");
++  FunctionIR->print(errs());
++  // Transfer the module to the JIT. TheModule is now invalid; reinitialise.
++  ExitOnErr(JIT->addModule(
++      ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
++  InitializeModuleAndManagers();
+*}
 ```
 
 ORC requires me to transfer the `Module` together with its `LLVMContext`, so I package them in a `ThreadSafeModule`.
@@ -689,6 +694,19 @@ int ProcessCommandLine(int argc, const char **argv) {
 
 `cl::HideUnrelatedOptions` hides LLVM's own long list of built-in flags from `--help`, showing only the options I registered under `PyxcCategory`. `cl::ParseCommandLineOptions` does the actual parsing and populates every `cl::opt` global from `argv`. An out-of-range `-O` returns early with an error; `main()` propagates that return value straight out as the process exit code.
 
+With `OptLevel` in scope, I go back and gate the three passes I added in [Building the Function Pipeline](#building-the-function-pipeline) behind it:
+
+```cppdiff
+*static void InitializeModuleAndManagers() {
+*  ...
++  if (OptLevel != 0) {
+*    FunctionPasses->addPass(InstCombinePass());
+*    FunctionPasses->addPass(ReassociatePass());
+*    FunctionPasses->addPass(GVNPass());
++  }
+*}
+```
+
 Here's `main()` in full. I already covered the `InitializeNativeTarget*` calls in [Creating the ORC JIT](#creating-the-orc-jit), so I gray those out below. The new piece is the `ProcessCommandLine()` call at the very top, which has to run before anything else since it configures `Input` and `IsRepl`. Two more lines I haven't called out yet: `PrintReplPrompt()` prints `ready> ` (it replaces the raw `fprintf(stderr, "ready> ")` from Chapter 7):
 
 ```cpp
@@ -698,7 +716,7 @@ void PrintReplPrompt() {
 }
 ```
 
-I flush `stdout` first so any output already produced by the program (through `printd` or `putchard`, once I add `extern` calls to those below) appears before the next prompt rather than getting buffered behind it. And `JIT = ExitOnErr(PyxcJIT::Create())` is the JIT instantiation I introduced in [Creating the ORC JIT](#creating-the-orc-jit) but hadn't shown in its actual calling context until now:
+I flush `stdout` first so any output already produced by the program (through `printd` or `putchard`, once I add `extern` calls to those below) appears before the next prompt rather than getting buffered behind it. `JIT = ExitOnErr(PyxcJIT::Create())` is the JIT instantiation I introduced in [Creating the ORC JIT](#creating-the-orc-jit) but hadn't shown in its actual calling context until now:
 
 ```cppdiff
 *int main(int argc, const char **argv) {
