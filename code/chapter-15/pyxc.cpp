@@ -1732,7 +1732,7 @@ static unique_ptr<FunctionSignatureNode> ParseExtern() {
 // block allocas so parameters, loop variables, and mutable locals all share
 // the same load/store path.
 //
-// TheJIT - The ORC JIT instance. Created once in main() and lives for the
+// JIT - The ORC JIT instance. Created once in main() and lives for the
 // whole session. Compiled modules are added to it; symbols from C libraries
 // (e.g. sin, cos) are resolved through the process's dynamic symbol table.
 //
@@ -1756,7 +1756,7 @@ struct LoopControlTargets {
   BasicBlock *ContinueTarget = nullptr;
 };
 static vector<LoopControlTargets> LoopControlStack;
-static std::unique_ptr<PyxcJIT> TheJIT;
+static std::unique_ptr<PyxcJIT> JIT;
 static std::unique_ptr<FunctionPassManager> FunctionPasses;
 static std::unique_ptr<LoopAnalysisManager> LoopAnalyses;
 static std::unique_ptr<FunctionAnalysisManager> FunctionAnalyses;
@@ -2384,7 +2384,7 @@ static void InitializeModuleAndManagers() {
   TheModule = std::make_unique<Module>("PyxcJIT", *TheContext);
   // Inform the module of the JIT's target data layout so codegen emits
   // correctly-sized types for the host machine.
-  TheModule->setDataLayout(TheJIT->getDataLayout());
+  TheModule->setDataLayout(JIT->getDataLayout());
 
   TheBuilder = std::make_unique<IRBuilder<>>(*TheContext);
   ModuleHasGlobals = false;
@@ -2454,7 +2454,7 @@ static void HandleFunctionDefinition() {
     if (VerboseIR)
       FunctionIR->print(errs());
     // Transfer the module to the JIT. TheModule is now invalid; reinitialise.
-    ExitOnErr(TheJIT->addModule(
+    ExitOnErr(JIT->addModule(
         ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
     InitializeModuleAndManagers();
   }
@@ -2524,11 +2524,11 @@ static void HandleTopLevelStatement() {
       FunctionIR->print(errs());
 
     if (ModuleHasGlobals) {
-      ExitOnErr(TheJIT->addModule(
+      ExitOnErr(JIT->addModule(
           ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
       InitializeModuleAndManagers();
 
-      auto Symbol = ExitOnErr(TheJIT->lookup(FunctionName));
+      auto Symbol = ExitOnErr(JIT->lookup(FunctionName));
       double (*FunctionPointer)() = Symbol.toPtr<double (*)()>();
       double Result = FunctionPointer();
       if (IsRepl && LastTopLevelShouldPrint)
@@ -2537,13 +2537,13 @@ static void HandleTopLevelStatement() {
     }
 
     auto ResourceTracker =
-        TheJIT->getMainJITDylib().createResourceTracker();
-    ExitOnErr(TheJIT->addModule(
+        JIT->getMainJITDylib().createResourceTracker();
+    ExitOnErr(JIT->addModule(
         ThreadSafeModule(std::move(TheModule), std::move(TheContext)),
         ResourceTracker));
     InitializeModuleAndManagers();
 
-    auto Symbol = ExitOnErr(TheJIT->lookup(FunctionName));
+    auto Symbol = ExitOnErr(JIT->lookup(FunctionName));
     double (*FunctionPointer)() = Symbol.toPtr<double (*)()>();
     double Result = FunctionPointer();
     if (IsRepl && LastTopLevelShouldPrint)
@@ -2710,11 +2710,11 @@ static void RunFileMode() {
       if (VerboseIR)
         FunctionIR->print(errs());
 
-      ExitOnErr(TheJIT->addModule(
+      ExitOnErr(JIT->addModule(
           ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
       InitializeModuleAndManagers();
 
-      auto InitSymbol = ExitOnErr(TheJIT->lookup("__pyxc.global_init"));
+      auto InitSymbol = ExitOnErr(JIT->lookup("__pyxc.global_init"));
       double (*InitializeGlobals)() = InitSymbol.toPtr<double (*)()>();
       InitializeGlobals();
     } else {
@@ -2732,7 +2732,7 @@ static void RunFileMode() {
     return;
   }
 
-  auto MainSymbol = ExitOnErr(TheJIT->lookup("main"));
+  auto MainSymbol = ExitOnErr(JIT->lookup("main"));
   double (*MainFunction)() = MainSymbol.toPtr<double (*)()>();
   MainFunction();
 }
@@ -2791,9 +2791,9 @@ int main(int argc, const char **argv) {
   PrintReplPrompt();
   getNextToken();
 
-  // Create the JIT first — InitializeModuleAndManagers() needs TheJIT in
+  // Create the JIT first — InitializeModuleAndManagers() needs JIT in
   // order to set the data layout on the new module.
-  TheJIT = ExitOnErr(PyxcJIT::Create());
+  JIT = ExitOnErr(PyxcJIT::Create());
   InitializeModuleAndManagers();
 
   if (IsRepl) {

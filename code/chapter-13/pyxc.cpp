@@ -1592,7 +1592,7 @@ static unique_ptr<FunctionSignatureNode> ParseExtern() {
 // block allocas so parameters, loop variables, and mutable locals all share
 // the same load/store path.
 //
-// TheJIT - The ORC JIT instance. Created once in main() and lives for the
+// JIT - The ORC JIT instance. Created once in main() and lives for the
 // whole session. Compiled modules are added to it; symbols from C libraries
 // (e.g. sin, cos) are resolved through the process's dynamic symbol table.
 //
@@ -1609,7 +1609,7 @@ static std::unique_ptr<LLVMContext> TheContext;
 static std::unique_ptr<Module> TheModule;
 static std::unique_ptr<IRBuilder<>> TheBuilder;
 static std::map<std::string, AllocaInst *> NamedValues;
-static std::unique_ptr<PyxcJIT> TheJIT;
+static std::unique_ptr<PyxcJIT> JIT;
 static std::unique_ptr<FunctionPassManager> FunctionPasses;
 static std::unique_ptr<LoopAnalysisManager> LoopAnalyses;
 static std::unique_ptr<FunctionAnalysisManager> FunctionAnalyses;
@@ -2104,7 +2104,7 @@ static void InitializeModuleAndManagers() {
   TheModule = std::make_unique<Module>("PyxcJIT", *TheContext);
   // Inform the module of the JIT's target data layout so codegen emits
   // correctly-sized types for the host machine.
-  TheModule->setDataLayout(TheJIT->getDataLayout());
+  TheModule->setDataLayout(JIT->getDataLayout());
 
   TheBuilder = std::make_unique<IRBuilder<>>(*TheContext);
 
@@ -2173,7 +2173,7 @@ static void HandleFunctionDefinition() {
     if (VerboseIR)
       FunctionIR->print(errs());
     // Transfer the module to the JIT. TheModule is now invalid; reinitialise.
-    ExitOnErr(TheJIT->addModule(
+    ExitOnErr(JIT->addModule(
         ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
     InitializeModuleAndManagers();
   }
@@ -2250,15 +2250,15 @@ static void HandleTopLevelExpression() {
 
     // ResourceTracker scopes the JIT memory for this expression so we can
     // free it precisely after the call, without affecting other symbols.
-    auto RT = TheJIT->getMainJITDylib().createResourceTracker();
+    auto RT = JIT->getMainJITDylib().createResourceTracker();
 
     // Transfer ownership of the module to the JIT; reinitialise for next input.
     auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
-    ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
+    ExitOnErr(JIT->addModule(std::move(TSM), RT));
     InitializeModuleAndManagers();
 
     // Locate the compiled function in the JIT's symbol table.
-    auto ExprSymbol = ExitOnErr(TheJIT->lookup("__anon_expr"));
+    auto ExprSymbol = ExitOnErr(JIT->lookup("__anon_expr"));
 
     // Cast the symbol address to a callable function pointer and invoke it.
     double (*FP)() = ExprSymbol.toPtr<double (*)()>();
@@ -2407,9 +2407,9 @@ int main(int argc, const char **argv) {
   PrintReplPrompt();
   getNextToken();
 
-  // Create the JIT first — InitializeModuleAndManagers() needs TheJIT in
+  // Create the JIT first — InitializeModuleAndManagers() needs JIT in
   // order to set the data layout on the new module.
-  TheJIT = ExitOnErr(PyxcJIT::Create());
+  JIT = ExitOnErr(PyxcJIT::Create());
   InitializeModuleAndManagers();
 
   MainLoop();

@@ -235,6 +235,7 @@ We use lowercase `ch` and `idx` for loop variables in code we write ourselves, p
 | `TheFAM` | `FunctionAnalyses` |
 | `TheCGAM` | `CallGraphAnalyses` |
 | `TheMAM` | `ModuleAnalyses` |
+| `TheJIT` | `JIT` |
 
 When a chapter introduces a new abbreviated identifier not yet in this table, add it here rather than leaving it as a one-off.
 

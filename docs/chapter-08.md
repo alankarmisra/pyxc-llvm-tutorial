@@ -122,14 +122,14 @@ ORC accepts LLVM modules and makes their symbols available to compiled code. Whe
 *...
 ```
 
-I create one `PyxcJIT` instance in `main()`. I hold it, and the helper LLVM uses to unwrap recoverable errors, as globals. `TheJIT` goes right after `NamedValues`, in the same block of file-scope state; `ExitOnErr` goes at the very end of that block, after the pass-manager globals I add later in this chapter:
+I create one `PyxcJIT` instance in `main()`. I hold it, and the helper LLVM uses to unwrap recoverable errors, as globals. `JIT` goes right after `NamedValues`, in the same block of file-scope state; `ExitOnErr` goes at the very end of that block, after the pass-manager globals I add later in this chapter:
 
 ```cppdiff
 *static unique_ptr<LLVMContext> TheContext;
 *static unique_ptr<Module> TheModule;
 *static unique_ptr<IRBuilder<>> TheBuilder;
 *static map<std::string, Value *> NamedValues;
-+static unique_ptr<PyxcJIT> TheJIT;
++static unique_ptr<PyxcJIT> JIT;
 *...
 +static ExitOnError ExitOnErr;
 ```
@@ -181,7 +181,7 @@ I create a new context, module, and builder. I also copy the JIT's target data l
 *static void InitializeModuleAndManagers() {
 *  TheContext = std::make_unique<LLVMContext>();
 *  TheModule = std::make_unique<Module>("PyxcJIT", *TheContext);
-+  TheModule->setDataLayout(TheJIT->getDataLayout());
++  TheModule->setDataLayout(JIT->getDataLayout());
 *  TheBuilder = std::make_unique<IRBuilder<>>(*TheContext);
 *  ...
 ```
@@ -190,11 +190,11 @@ LLVM requires the module's data layout to match the JIT target. It describes det
 
 ### Creating the Analysis Managers
 
-LLVM's pass framework requires analysis managers for loops, functions, call graphs, and modules. I add file-scope globals for all four, plus the function pass manager itself, right after `TheJIT` in that same block:
+LLVM's pass framework requires analysis managers for loops, functions, call graphs, and modules. I add file-scope globals for all four, plus the function pass manager itself, right after `JIT` in that same block:
 
 ```cppdiff
 +#include "llvm/Passes/PassBuilder.h"
-*static unique_ptr<PyxcJIT> TheJIT;
+*static unique_ptr<PyxcJIT> JIT;
 +// New Analysis passes
 ~static unique_ptr<FunctionPassManager> FunctionPasses;
 ~static unique_ptr<LoopAnalysisManager> LoopAnalyses;
@@ -264,15 +264,15 @@ if (auto *FunctionIR = FunctionDefinition->codegen()) {
 
   // ResourceTracker scopes the JIT memory for this expression so I can
   // free it precisely after the call, without affecting other symbols.
-  auto RT = TheJIT->getMainJITDylib().createResourceTracker();
+  auto RT = JIT->getMainJITDylib().createResourceTracker();
 
   // Transfer ownership of the module to the JIT; reinitialise for next input.
   auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
-  ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
+  ExitOnErr(JIT->addModule(std::move(TSM), RT));
   InitializeModuleAndManagers();
 
   // Locate the compiled function in the JIT's symbol table.
-  auto ExprSymbol = ExitOnErr(TheJIT->lookup("__anon_expr"));
+  auto ExprSymbol = ExitOnErr(JIT->lookup("__anon_expr"));
 
   // Cast the symbol address to a callable function pointer and invoke it.
   double (*FP)() = ExprSymbol.toPtr<double (*)()>();
@@ -436,7 +436,7 @@ static void HandleFunctionDefinition() {
     Log("Parsed a function definition.\n");
     FunctionIR->print(errs());
     // Transfer the module to the JIT. TheModule is now invalid; reinitialise.
-    ExitOnErr(TheJIT->addModule(
+    ExitOnErr(JIT->addModule(
         ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
     InitializeModuleAndManagers();
   }

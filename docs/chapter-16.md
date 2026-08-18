@@ -127,7 +127,7 @@ else
 ```cpp
 // HandleFunctionDefinition — after codegen:
 if (!IsEmitMode()) {
-  ExitOnErr(TheJIT->addModule(
+  ExitOnErr(JIT->addModule(
       ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
   InitializeModuleAndManagers();
 }
