@@ -232,7 +232,7 @@ extern def bad(fmt: ptr[int8], ..)
  static unique_ptr<FunctionSignatureNode> ParseExtern() {
    getNextToken(); // eat extern.
 *  if (CurrentToken != tok_def)
-*    return LogErrorSignature("Expected `def` after extern.");
+*    return LogErrorSignature("Expected 'def' after 'extern'");
 *  getNextToken(); // eat def
 -  auto Signature = ParseFunctionSignature();
 +  auto Signature = ParseFunctionSignature(true);

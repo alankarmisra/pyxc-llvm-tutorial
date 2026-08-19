@@ -1,6 +1,6 @@
 # RUN: %pyxc < %s 2>&1 | FileCheck %s --check-prefix=CHECK
 # CHECK-DAG: {{Error}}
-# CHECK-DAG: {{Unknown variable name: z}}
+# CHECK-DAG: {{Unknown variable name: 'z'}}
 
 # NameExpressionNode::codegen error path: a name not in NamedValues triggers
 # LogErrorValue. NamedValues only holds the current function's parameters, so

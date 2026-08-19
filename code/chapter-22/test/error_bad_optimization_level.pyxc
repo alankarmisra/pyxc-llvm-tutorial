@@ -1,0 +1,8 @@
+# RUN: not %pyxc -O4 < %s > %t 2>&1
+# RUN: FileCheck %s < %t
+
+# CHECK: Error: -O level must be 0, 1, 2, or 3
+
+# An out-of-range -O value is rejected in ProcessCommandLine() before any
+# input is read; pyxc exits with a nonzero status and never reaches MainLoop().
+def noop(): 0

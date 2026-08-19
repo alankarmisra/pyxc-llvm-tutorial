@@ -610,7 +610,7 @@ unique_ptr<ExpressionNode> Else;
 if (CurrentToken == tok_else) {
   getNextToken(); // eat 'else'
   if (CurrentToken != tok_colon)
-    return LogErrorExpression("Expected ':' after else");
+    return LogErrorExpression("Expected ':' after 'else'");
   getNextToken(); // eat ':'
   Else = ParseSuite();
   if (!Else)

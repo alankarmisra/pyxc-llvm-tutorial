@@ -558,35 +558,10 @@ static int getToken() {
   // Position the lexer at the next character so the next getToken() starts there.
   LexerLastChar = advance();
 
-  // I return a named token for known punctuation and operators.
-  switch (ThisChar) {
-  case '(':
-    return tok_lparen;
-  case ')':
-    return tok_rparen;
-  case ',':
-    return tok_comma;
-  case ':':
-    return tok_colon;
-  case '+':
-    return tok_plus;
-  case '-':
-    return tok_minus;
-  case '*':
-    return tok_star;
-  case '/':
-    return tok_slash;
-  case '%':
-    return tok_percent;
-  case '<':
-    return tok_less;
-  case '>':
-    return tok_greater;
-  case '=':
-    return tok_assign;
-  default:
-    return ThisChar;
-  }
+  // Single-character tokens (operators and punctuation) are all defined
+  // as their own char value (e.g. tok_lparen = '('), so the raw character
+  // returned here already IS the right token.
+  return ThisChar;
 }
 
 /// I reset lexer state before I start reading another source file.
@@ -1120,7 +1095,7 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
 static bool ParseForParts(unique_ptr<ExpressionNode> &Start, unique_ptr<ExpressionNode> &Condition,
                           unique_ptr<ExpressionNode> &Step, unique_ptr<ExpressionNode> &Body) {
   if (CurrentToken != tok_assign)
-    return LogErrorExpression("Expected '=' after for variable"), false;
+    return LogErrorExpression("Expected '=' after 'for' variable"), false;
   getNextToken(); // eat '='
 
   Start = ParseExpression();
@@ -1128,7 +1103,7 @@ static bool ParseForParts(unique_ptr<ExpressionNode> &Start, unique_ptr<Expressi
     return false;
 
   if (CurrentToken != tok_comma)
-    return LogErrorExpression("Expected ',' after for start value"), false;
+    return LogErrorExpression("Expected ',' after 'for' start value"), false;
   getNextToken(); // eat ','
 
   Condition = ParseExpression();
@@ -1136,7 +1111,7 @@ static bool ParseForParts(unique_ptr<ExpressionNode> &Start, unique_ptr<Expressi
     return false;
 
   if (CurrentToken != tok_comma)
-    return LogErrorExpression("Expected ',' after for condition"), false;
+    return LogErrorExpression("Expected ',' after 'for' condition"), false;
   getNextToken(); // eat ','
 
   Step = ParseExpression();
@@ -1144,7 +1119,7 @@ static bool ParseForParts(unique_ptr<ExpressionNode> &Start, unique_ptr<Expressi
     return false;
 
   if (CurrentToken != tok_colon)
-    return LogErrorExpression("Expected ':' after for step"), false;
+    return LogErrorExpression("Expected ':' after 'for' step"), false;
   getNextToken(); // eat ':'
 
   // Parse the suite after ':' (inline statement or indented block).
@@ -1169,7 +1144,7 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
     IsVarDecl = true, getNextToken(); // optional 'var'
 
   if (CurrentToken != tok_name)
-    return LogErrorExpression("Expected name after 'for'");
+    return LogErrorExpression("Expected variable name after 'for'");
   string VarName = Name;
   getNextToken(); // eat name
 
@@ -1338,7 +1313,7 @@ static unique_ptr<ExpressionNode> ParseIfStatement() {
   if (CurrentToken == tok_else) {
     getNextToken(); // eat 'else'
     if (CurrentToken != tok_colon)
-      return LogErrorExpression("Expected ':' after else");
+      return LogErrorExpression("Expected ':' after 'else'");
     getNextToken(); // eat ':'
     Else = ParseSuite();
     if (!Else)
@@ -1747,7 +1722,7 @@ static unique_ptr<FunctionDefinitionNode> ParseTopLevelStatementFunction() {
 static unique_ptr<FunctionSignatureNode> ParseExtern() {
   getNextToken(); // eat extern.
   if (CurrentToken != tok_def)
-    return LogErrorSignature("Expected `def` after extern.");
+    return LogErrorSignature("Expected 'def' after 'extern'");
   getNextToken(); // eat def
   return ParseFunctionSignature();
 }
@@ -1896,7 +1871,7 @@ Value *NameExpressionNode::codegen() {
     return TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), Global,
                                Name.c_str());
 
-  return LogErrorValue("Unknown variable name: " + Name);
+  return LogErrorValue("Unknown variable name: '" + Name + "'");
 }
 
 /// AssignmentStatementNode::codegen - Evaluate the Right, store it into the variable's

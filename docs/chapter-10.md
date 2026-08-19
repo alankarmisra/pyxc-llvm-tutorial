@@ -144,7 +144,7 @@ I add tokens for control-flow keywords and multi-character comparisons:
 *};
 ```
 
-I add `if`, `else`, and `for` to `Keywords`. The lexer returns the four negative tokens when it recognizes two-character operators. I use named character tokens for `<`, `>`, and `=` — and I name the `=` token `tok_assign` rather than `tok_equal`, so it can't be misread as a synonym for `tok_eq` (`==`).
+I add `if`, `else`, and `for` to `Keywords`. The lexer returns the four negative tokens when it recognizes two-character operators. I use named character tokens for `<`, `>`, and `=`, naming the `=` token `tok_assign` so it can't be misread as a synonym for `tok_eq` (`==`).
 
 ## Comparison Operators
 
@@ -183,23 +183,36 @@ In `getToken()`, I consume the second `=` only when `peek()` finds one:
 +    LastChar = advance();
 +    return Tok;
 +  }
++
++  if (LastChar == '!') {
++    int Tok = (peek() == '=') ? (advance(), tok_neq) : '!';
++    LastChar = advance();
++    return Tok;
++  }
++
++  if (LastChar == '<') {
++    int Tok = (peek() == '=') ? (advance(), tok_leq) : tok_less;
++    LastChar = advance();
++    return Tok;
++  }
++
++  if (LastChar == '>') {
++    int Tok = (peek() == '=') ? (advance(), tok_geq) : tok_greater;
++    LastChar = advance();
++    return Tok;
++  }
 *
 *  if (LastChar == EOF)
 *    return tok_eof;
 *
 *  ...
-*  // I return a named token for known punctuation and operators.
-*  switch (ThisChar) {
-*  case '(':
-*    return tok_lparen;
-*  ...
-*  }
+*  return ThisChar;
 *}
 ```
 
-This new branch goes right after the comment-discard block, before the `EOF` check and the single-character `switch` — it has to run first so `=` and `==` never fall through to the `switch`'s own (now dead) `case '=': return tok_assign;`.
+All four branches go right after the comment-discard block, before the `EOF` check and the final `return ThisChar;` fallback — they have to run first so `=`, `!`, `<`, and `>` never reach that fallback with only one character consumed. For `=`, `<`, and `>`, that fallback already returns the right token on its own (`tok_assign`, `tok_less`, and `tok_greater` are defined as `'='`, `'<'`, and `'>'`, [Chapter 5](chapter-05.md)), so these branches only change behavior when a second `=` follows; `!` has no named token either way, so an unmatched `!` still falls through to the same `return ThisChar;` it always would have.
 
-The expression `(advance(), tok_eq)` consumes the second character and then produces `tok_eq`. Otherwise, I return `tok_assign`. I finish either path by loading the character after the operator into `LastChar`. I use the same pattern for `!=`, `<=`, and `>=`.
+The expression `(advance(), tok_eq)` consumes the second character and then produces `tok_eq`. Otherwise, I return the single-character token. `!` has no named one-character token of its own yet — pyxc has no unary `!` — so the fallback is just the raw `'!'` character; `<` and `>` fall back to `tok_less` and `tok_greater`. Each branch finishes by loading the character after the operator into `LastChar`.
 
 ### Parser: Extending the Comparison Layer
 
@@ -353,7 +366,7 @@ static unique_ptr<ExpressionNode> ParseIfExpression() {
     return nullptr;
 
   if (CurrentToken != tok_colon)
-    return LogErrorExpression("Expected ':' after if condition");
+    return LogErrorExpression("Expected ':' after 'if' condition");
   getNextToken(); // eat ':'
 
   consumeNewlines(); // allow body on next line
@@ -365,11 +378,11 @@ static unique_ptr<ExpressionNode> ParseIfExpression() {
   consumeNewlines(); // allow 'else' on next line
 
   if (CurrentToken != tok_else)
-    return LogErrorExpression("Expected 'else' in if expression");
+    return LogErrorExpression("Expected 'else' in 'if' expression");
   getNextToken(); // eat 'else'
 
   if (CurrentToken != tok_colon)
-    return LogErrorExpression("Expected ':' after else");
+    return LogErrorExpression("Expected ':' after 'else'");
   getNextToken(); // eat ':'
 
   consumeNewlines(); // allow body on next line
@@ -838,64 +851,10 @@ In the actual emitted IR, LLVM names these blocks `then`, `else`, and `ifcont`. 
 I use a `for` expression to repeat one body expression while a condition remains nonzero:
 
 ```pyxc
-for var = start, condition, step: body
+for var_name = start, condition, step: body
 ```
 
-I introduce `var` for the loop and make it available to the condition, step, and body. I discard the body's value on each iteration. I require the step expression explicitly.
-
-### Parsing
-
-I parse the variable name, start value, condition, step, and body in their grammar order. I allow newlines before the body:
-
-```cpp
-static unique_ptr<ExpressionNode> ParseForExpression() {
-  getNextToken(); // eat 'for'
-
-  if (CurrentToken != tok_name)
-    return LogErrorExpression("Expected name after 'for'");
-  string VarName = Name;
-  getNextToken(); // eat name
-
-  if (CurrentToken != tok_assign)
-    return LogErrorExpression("Expected '=' after for variable");
-  getNextToken(); // eat '='
-
-  auto Start = ParseExpression();
-  if (!Start)
-    return nullptr;
-
-  if (CurrentToken != tok_comma)
-    return LogErrorExpression("Expected ',' after for start value");
-  getNextToken(); // eat ','
-
-  auto Condition = ParseExpression();
-  if (!Condition)
-    return nullptr;
-
-  if (CurrentToken != tok_comma)
-    return LogErrorExpression("Expected ',' after for condition");
-  getNextToken(); // eat ','
-
-  auto Step = ParseExpression();
-  if (!Step)
-    return nullptr;
-
-  if (CurrentToken != tok_colon)
-    return LogErrorExpression("Expected ':' after for step");
-  getNextToken(); // eat ':'
-
-  // Allow body on next line.
-  consumeNewlines();
-
-  auto Body = ParseExpression();
-  if (!Body)
-    return nullptr;
-
-  return make_unique<ForExpressionNode>(
-      VarName, std::move(Start), std::move(Condition),
-      std::move(Step), std::move(Body));
-}
-```
+I introduce `var_name` for the loop and make it available to the condition, step, and body. I discard the body's value on each iteration. I require the step expression explicitly.
 
 `ForExpressionNode` holds the loop variable's name alongside the four expressions:
 
@@ -912,6 +871,60 @@ public:
         Step(std::move(Step)), Body(std::move(Body)) {}
   Value *codegen() override;
 };
+```
+
+### Parsing
+
+I parse the variable name, start value, condition, step, and body in their grammar order. I allow newlines before the body:
+
+```cpp
+static unique_ptr<ExpressionNode> ParseForExpression() {
+  getNextToken(); // eat 'for'
+
+  if (CurrentToken != tok_name)
+    return LogErrorExpression("Expected variable name after 'for'");
+  string VarName = Name;
+  getNextToken(); // eat name
+
+  if (CurrentToken != tok_assign)
+    return LogErrorExpression("Expected '=' after 'for' variable");
+  getNextToken(); // eat '='
+
+  auto Start = ParseExpression();
+  if (!Start)
+    return nullptr;
+
+  if (CurrentToken != tok_comma)
+    return LogErrorExpression("Expected ',' after 'for' start value");
+  getNextToken(); // eat ','
+
+  auto Condition = ParseExpression();
+  if (!Condition)
+    return nullptr;
+
+  if (CurrentToken != tok_comma)
+    return LogErrorExpression("Expected ',' after 'for' condition");
+  getNextToken(); // eat ','
+
+  auto Step = ParseExpression();
+  if (!Step)
+    return nullptr;
+
+  if (CurrentToken != tok_colon)
+    return LogErrorExpression("Expected ':' after 'for' step");
+  getNextToken(); // eat ':'
+
+  // Allow body on next line.
+  consumeNewlines();
+
+  auto Body = ParseExpression();
+  if (!Body)
+    return nullptr;
+
+  return make_unique<ForExpressionNode>(
+      VarName, std::move(Start), std::move(Condition),
+      std::move(Step), std::move(Body));
+}
 ```
 
 ### Codegen
@@ -1307,6 +1320,38 @@ if (OldVal)
 else
   NamedValues.erase(VarName);
 ```
+
+### Wiring If and For into Primary
+
+`if` and `for` are both new alternatives of `primary`, so `ParsePrimary` needs a case for each, dispatching on the token that starts them:
+
+```cppdiff
+*/// primary
+*///   = name-expression
+*///   | number-expression
+*///   | parenthesized-expression
++///   | if-expression
++///   | for-expression ;
+*static unique_ptr<ExpressionNode> ParsePrimary() {
+*  switch (CurrentToken) {
+*  case tok_number:
+*    return ParseNumberExpression();
+*  case tok_name:
+*    return ParseNameExpression();
+*  case tok_lparen:
+*    return ParseParenthesizedExpression();
++  case tok_if:
++    return ParseIfExpression();
++  case tok_for:
++    return ParseForExpression();
+*  default:
+*    return LogErrorExpression(
+*        ("Unexpected " + FormatTokenForMessage(CurrentToken)).c_str());
+*  }
+*}
+```
+
+Without these two cases, `tok_if` and `tok_for` would just fall to `default` and report "Unexpected 'if'" or "Unexpected 'for'" — the parser would never reach `ParseIfExpression` or `ParseForExpression` at all, no matter how correct their own bodies are.
 
 ## The Mandelbrot Set
 

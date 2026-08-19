@@ -471,18 +471,39 @@ If `End` points at the string's null terminator, I know `strtod` consumed every 
 *  ...
 *  int ThisChar = LastChar;
 *  LastChar = advance();
-*  // I return a named token for known punctuation and operators.
-*  switch (ThisChar) {
-*  ...
+-  // I return a named token for known punctuation and operators.
+-  switch (ThisChar) {
+-  case '(':
+-    return tok_lparen;
+-  case ')':
+-    return tok_rparen;
+-  case ',':
+-    return tok_comma;
+-  case ':':
+-    return tok_colon;
+-  case '+':
+-    return tok_plus;
+-  case '-':
+-    return tok_minus;
+-  case '*':
+-    return tok_star;
+-  case '/':
+-    return tok_slash;
+-  case '%':
+-    return tok_percent;
+-  case '<':
+-    return tok_less;
 -  default:
 -    return tok_error;
-+  default:
-+    return ThisChar;
-*  }
+-  }
++  // Single-character tokens (operators and punctuation) are all defined
++  // as their own char value (e.g. tok_lparen = '('), so the raw character
++  // returned here already IS the right token.
++  return ThisChar;
 *}
 ```
 
-I return `ThisChar` instead so I can name the character that caused the error.
+I return `ThisChar` instead so I can name the character that caused the error — but that one change also removes the whole `switch`. Every named case existed only to return its own token, and `tok_lparen`, `tok_plus`, and the rest are all defined as `= 'char'` (see [Chapter 1](chapter-01.md)), so `return tok_lparen;` and `return '('` were already the same value. The `switch` mattered only because its `default` used to diverge from that pattern and return the unrelated sentinel `tok_error`. Once `default` returns `ThisChar` too, every case in the `switch` agrees with what `default` already does, so the whole dispatch collapses to a single `return ThisChar;` — nothing downstream changes, since `CurrentToken == tok_lparen` is still comparing against the same numeric value it always was.
 
 For names and numbers, I want to include the actual text from the source rather than report only `name` or `number`. I already have `Name` from Chapter 1 for the name case, and I just promoted `NumberLiteral` to a file-scope global above, in [Catching Malformed Numbers](#catching-malformed-numbers), for exactly this reason.
 

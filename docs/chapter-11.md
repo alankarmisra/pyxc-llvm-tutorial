@@ -551,7 +551,7 @@ The parser records whether `var` was present by setting an `IsVarDecl` flag on `
 +    IsVarDecl = true, getNextToken(); // optional 'var'
 *
 *  if (CurrentToken != tok_name)
-*    return LogErrorExpression("Expected name after 'for'");
+*    return LogErrorExpression("Expected variable name after 'for'");
 *  string VarName = Name;
 *  getNextToken(); // eat name
 *  ...
