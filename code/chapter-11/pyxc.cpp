@@ -407,35 +407,10 @@ static int getToken() {
   // Position the lexer at the next character so the next getToken() starts there.
   LastChar = advance();
 
-  // I return a named token for known punctuation and operators.
-  switch (ThisChar) {
-  case '(':
-    return tok_lparen;
-  case ')':
-    return tok_rparen;
-  case ',':
-    return tok_comma;
-  case ':':
-    return tok_colon;
-  case '+':
-    return tok_plus;
-  case '-':
-    return tok_minus;
-  case '*':
-    return tok_star;
-  case '/':
-    return tok_slash;
-  case '%':
-    return tok_percent;
-  case '<':
-    return tok_less;
-  case '>':
-    return tok_greater;
-  case '=':
-    return tok_assign;
-  default:
-    return ThisChar;
-  }
+  // Single-character tokens (operators and punctuation) are all defined
+  // as their own char value (e.g. tok_lparen = '('), so the raw character
+  // returned here already IS the right token.
+  return ThisChar;
 }
 
 //===----------------------------------------===//
@@ -818,12 +793,12 @@ static unique_ptr<ExpressionNode> ParseForExpression() {
     IsVarDecl = true, getNextToken(); // optional 'var'
 
   if (CurrentToken != tok_name)
-    return LogErrorExpression("Expected name after 'for'");
+    return LogErrorExpression("Expected variable name after 'for'");
   string VarName = Name;
   getNextToken(); // eat name
 
   if (CurrentToken != tok_assign)
-    return LogErrorExpression("Expected '=' after for variable");
+    return LogErrorExpression("Expected '=' after 'for' variable");
   getNextToken(); // eat '='
 
   auto Start = ParseExpression();
@@ -831,7 +806,7 @@ static unique_ptr<ExpressionNode> ParseForExpression() {
     return nullptr;
 
   if (CurrentToken != tok_comma)
-    return LogErrorExpression("Expected ',' after for start value");
+    return LogErrorExpression("Expected ',' after 'for' start value");
   getNextToken(); // eat ','
 
   auto Condition = ParseExpression();
@@ -839,7 +814,7 @@ static unique_ptr<ExpressionNode> ParseForExpression() {
     return nullptr;
 
   if (CurrentToken != tok_comma)
-    return LogErrorExpression("Expected ',' after for condition");
+    return LogErrorExpression("Expected ',' after 'for' condition");
   getNextToken(); // eat ','
 
   auto Step = ParseExpression();
@@ -847,7 +822,7 @@ static unique_ptr<ExpressionNode> ParseForExpression() {
     return nullptr;
 
   if (CurrentToken != tok_colon)
-    return LogErrorExpression("Expected ':' after for step");
+    return LogErrorExpression("Expected ':' after 'for' step");
   getNextToken(); // eat ':'
 
   // Allow body on next line.
@@ -920,7 +895,7 @@ static unique_ptr<ExpressionNode> ParseIfExpression() {
     return nullptr;
 
   if (CurrentToken != tok_colon)
-    return LogErrorExpression("Expected ':' after if condition");
+    return LogErrorExpression("Expected ':' after 'if' condition");
   getNextToken(); // eat ':'
 
   // Allow body on next line
@@ -934,11 +909,11 @@ static unique_ptr<ExpressionNode> ParseIfExpression() {
   consumeNewlines();
 
   if (CurrentToken != tok_else)
-    return LogErrorExpression("Expected 'else' in if expression");
+    return LogErrorExpression("Expected 'else' in 'if' expression");
   getNextToken(); // eat 'else'
 
   if (CurrentToken != tok_colon)
-    return LogErrorExpression("Expected ':' after else");
+    return LogErrorExpression("Expected ':' after 'else'");
   getNextToken(); // eat ':'
 
   // Allow body on next line
@@ -1163,7 +1138,7 @@ static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
 static unique_ptr<FunctionSignatureNode> ParseExtern() {
   getNextToken(); // eat extern.
   if (CurrentToken != tok_def)
-    return LogErrorSignature("Expected `def` after extern.");
+    return LogErrorSignature("Expected 'def' after 'extern'");
   getNextToken(); // eat def
   return ParseFunctionSignature();
 }
@@ -1272,7 +1247,7 @@ Value *NumberExpressionNode::codegen() {
 Value *NameExpressionNode::codegen() {
   auto It = NamedValues.find(Name);
   if (It == NamedValues.end() || !It->second)
-    return LogErrorValue("Unknown variable name: " + Name);
+    return LogErrorValue("Unknown variable name: '" + Name + "'");
   return TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), It->second,
                                 Name.c_str());
 }

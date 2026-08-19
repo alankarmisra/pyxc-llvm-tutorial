@@ -238,8 +238,6 @@ public:
                  unique_ptr<ExpressionNode> Body)
       : Signature(std::move(Signature)), Body(std::move(Body)) {}
 };
-
-} // end anonymous namespace
 ```
 
 With this structure in place, for a function definition like `def add(x, y): x + y`, I will build something like:

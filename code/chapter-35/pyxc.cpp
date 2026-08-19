@@ -988,45 +988,10 @@ static int getToken() {
   // Position the lexer at the next character so the next getToken() starts there.
   LexerLastChar = advance();
 
-  // I return a named token for known punctuation and operators.
-  switch (ThisChar) {
-  case '(':
-    return tok_lparen;
-  case ')':
-    return tok_rparen;
-  case ',':
-    return tok_comma;
-  case ':':
-    return tok_colon;
-  case '+':
-    return tok_plus;
-  case '-':
-    return tok_minus;
-  case '*':
-    return tok_star;
-  case '/':
-    return tok_slash;
-  case '%':
-    return tok_percent;
-  case '&':
-    return tok_ampersand;
-  case '|':
-    return tok_pipe;
-  case '^':
-    return tok_caret;
-  case '~':
-    return tok_tilde;
-  case '.':
-    return tok_dot;
-  case '<':
-    return tok_less;
-  case '>':
-    return tok_greater;
-  case '=':
-    return tok_assign;
-  default:
-    return ThisChar;
-  }
+  // Single-character tokens (operators and punctuation) are all defined
+  // as their own char value (e.g. tok_lparen = '('), so the raw character
+  // returned here already IS the right token.
+  return ThisChar;
 }
 
 /// ResetLexerState - Restore lexer globals to their initial state.
@@ -2630,7 +2595,7 @@ static bool ParseForParts(ValueType VarType, unique_ptr<ExpressionNode> &Start,
                           unique_ptr<ExpressionNode> &Condition, unique_ptr<ExpressionNode> &Step,
                           unique_ptr<ExpressionNode> &Body) {
   if (CurrentToken != tok_assign)
-    return LogErrorExpression("Expected '=' after for variable"), false;
+    return LogErrorExpression("Expected '=' after 'for' variable"), false;
   getNextToken(); // eat '='
 
   Start = ParseExpression();
@@ -2642,7 +2607,7 @@ static bool ParseForParts(ValueType VarType, unique_ptr<ExpressionNode> &Start,
     return LogErrorExpression("For loop variable must be numeric"), false;
 
   if (CurrentToken != tok_comma)
-    return LogErrorExpression("Expected ',' after for start value"), false;
+    return LogErrorExpression("Expected ',' after 'for' start value"), false;
   getNextToken(); // eat ','
 
   Condition = ParseExpression();
@@ -2652,7 +2617,7 @@ static bool ParseForParts(ValueType VarType, unique_ptr<ExpressionNode> &Start,
     return LogErrorExpression("For loop condition must be bool"), false;
 
   if (CurrentToken != tok_comma)
-    return LogErrorExpression("Expected ',' after for condition"), false;
+    return LogErrorExpression("Expected ',' after 'for' condition"), false;
   getNextToken(); // eat ','
 
   Step = ParseExpression();
@@ -2662,7 +2627,7 @@ static bool ParseForParts(ValueType VarType, unique_ptr<ExpressionNode> &Start,
     return LogErrorExpression("For loop step must match loop variable type"), false;
 
   if (CurrentToken != tok_colon)
-    return LogErrorExpression("Expected ':' after for step"), false;
+    return LogErrorExpression("Expected ':' after 'for' step"), false;
   getNextToken(); // eat ':'
 
   // Parse the suite after ':' (inline statement or indented block).
@@ -2691,7 +2656,7 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
   }
 
   if (CurrentToken != tok_name)
-    return LogErrorExpression("Expected name after 'for'");
+    return LogErrorExpression("Expected variable name after 'for'");
   string VarName = Name;
   getNextToken(); // eat name
 
@@ -3027,7 +2992,7 @@ static unique_ptr<ExpressionNode> ParseIfStatement() {
   if (CurrentToken == tok_else) {
     getNextToken(); // eat 'else'
     if (CurrentToken != tok_colon)
-      return LogErrorExpression("Expected ':' after else");
+      return LogErrorExpression("Expected ':' after 'else'");
     getNextToken(); // eat ':'
     Else = ParseSuite();
     if (!Else)
@@ -4004,7 +3969,7 @@ static unique_ptr<FunctionDefinitionNode> ParseTopLevelStatementFunction() {
 static unique_ptr<FunctionSignatureNode> ParseExtern() {
   getNextToken(); // eat extern.
   if (CurrentToken != tok_def)
-    return LogErrorSignature("Expected `def` after extern.");
+    return LogErrorSignature("Expected 'def' after 'extern'");
   getNextToken(); // eat def
   auto Signature = ParseFunctionSignature(true);
   if (!Signature)
@@ -4663,7 +4628,7 @@ Value *NameExpressionNode::codegen() {
   if (getType() == ValueType::Array) {
     Value *ArrayAddress = codegenAddress();
     if (!ArrayAddress)
-      return LogErrorValue("Unknown variable name: " + Name);
+      return LogErrorValue("Unknown variable name: '" + Name + "'");
     Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
     return TheBuilder->CreateInBoundsGEP(
         LLVMTypeFor(getType(), getStructName()), ArrayAddress, {Zero, Zero},

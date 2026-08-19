@@ -555,7 +555,7 @@ I add both keywords to the keyword table:
 static unique_ptr<FunctionSignatureNode> ParseExtern() {
   getNextToken(); // eat extern.
   if (CurrentToken != tok_def)
-    return LogErrorSignature("Expected `def` after extern.");
+    return LogErrorSignature("Expected 'def' after 'extern'");
   getNextToken(); // eat def
   return ParseFunctionSignature();
 }

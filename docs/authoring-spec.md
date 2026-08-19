@@ -255,6 +255,16 @@ Every chapter directory contains a `pyxc.ebnf` that is the **single source of tr
 
 ---
 
+### 3.7 Error Message Quoting
+
+`LogError*` message strings single-quote (`'...'`) any literal piece of pyxc source syntax the message refers to — a keyword (`'for'`, `'if'`, `'else'`, `'def'`, `'extern'`), punctuation or an operator (`':'`, `'='`, `','`), or a dynamic identifier substituted at runtime (`"Unknown variable name: '" + Name + "'"`). This is the same convention Clang, GCC, and rustc diagnostics use, and it holds whether the quoted keyword is the token the parser expected (`"Expected 'else' in 'if' expression"`) or a keyword the parser already consumed and is using to locate the error (`"Expected variable name after 'for'"`).
+
+Plain English words that describe *where* the parser is, rather than naming a literal token, stay unquoted: `"Expected ')' or ',' in argument list"`, `"Expected variable name after 'for'"` (`variable name` is a description, `'for'` is the token). When in doubt: if it's spelled exactly as it appears in pyxc source, quote it; if it's an English description of a grammar role, don't.
+
+Never use backtick characters inside an actual runtime error string — backticks are markdown/prose formatting, not a diagnostic convention any compiler uses in its own output. Use single quotes there too.
+
+---
+
 ## 4. Thread Memory (for new sessions)
 
 Use this as a quick orientation checklist when starting a new thread.

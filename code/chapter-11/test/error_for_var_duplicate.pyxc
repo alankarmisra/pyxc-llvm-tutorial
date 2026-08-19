@@ -1,5 +1,5 @@
 # RUN: %pyxc < %s 2>&1 | FileCheck %s
-# CHECK: Expected name after 'for'
+# CHECK: Expected variable name after 'for'
 
 # Tests: 'for var var i = ...' is rejected.
 

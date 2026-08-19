@@ -1,0 +1,7 @@
+# RUN: not %pyxc /tmp/pyxc-test-nosuchfile-does-not-exist.pyxc > %t 2>&1
+# RUN: FileCheck %s < %t
+
+# CHECK: No such file or directory
+
+# A nonexistent input file makes fopen() fail in ProcessCommandLine(); perror()
+# reports the OS error text and pyxc exits before reaching MainLoop().

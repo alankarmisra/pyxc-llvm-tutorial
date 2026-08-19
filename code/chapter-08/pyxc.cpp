@@ -333,31 +333,10 @@ static int getToken() {
   // there.
   LastChar = advance();
 
-  // I return a named token for known punctuation and operators.
-  switch (ThisChar) {
-  case '(':
-    return tok_lparen;
-  case ')':
-    return tok_rparen;
-  case ',':
-    return tok_comma;
-  case ':':
-    return tok_colon;
-  case '+':
-    return tok_plus;
-  case '-':
-    return tok_minus;
-  case '*':
-    return tok_star;
-  case '/':
-    return tok_slash;
-  case '%':
-    return tok_percent;
-  case '<':
-    return tok_less;
-  default:
-    return ThisChar;
-  }
+  // Single-character tokens (operators and punctuation) are all defined
+  // as their own char value (e.g. tok_lparen = '('), so the raw character
+  // returned here already IS the right token.
+  return ThisChar;
 }
 
 //===----------------------------------------===//
@@ -845,7 +824,7 @@ static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
 static unique_ptr<FunctionSignatureNode> ParseExtern() {
   getNextToken(); // eat extern.
   if (CurrentToken != tok_def)
-    return LogErrorSignature("Expected `def` after extern.");
+    return LogErrorSignature("Expected 'def' after 'extern'");
   getNextToken(); // eat def
   return ParseFunctionSignature();
 }
@@ -958,7 +937,7 @@ Value *NumberExpressionNode::codegen() {
 Value *NameExpressionNode::codegen() {
   auto It = NamedValues.find(Name);
   if (It == NamedValues.end() || !It->second)
-    return LogErrorValue("Unknown variable name: " + Name);
+    return LogErrorValue("Unknown variable name: '" + Name + "'");
   return It->second;
 }
 

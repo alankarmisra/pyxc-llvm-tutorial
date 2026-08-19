@@ -229,7 +229,7 @@ static map<std::string, Value *> NamedValues;
 Value *NameExpressionNode::codegen() {
   auto It = NamedValues.find(Name);
   if (It == NamedValues.end() || !It->second)
-    return LogErrorValue("Unknown variable name: " + Name);
+    return LogErrorValue("Unknown variable name: '" + Name + "'");
   return It->second;
 }
 ```
