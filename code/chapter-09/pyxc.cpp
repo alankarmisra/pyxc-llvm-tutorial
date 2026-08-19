@@ -89,23 +89,21 @@ enum Token {
   tok_less = '<',
 };
 
-static string Name; // Filled in if tok_name
-static double NumberValue;        // Filled in if tok_number
+static string Name;          // Filled in if tok_name
+static double NumberValue;   // Filled in if tok_number
 static string NumberLiteral; // Filled in if tok_number
 
 // Keywords like `def` and `extern`. The lexer will return the
 // associated Token. Additional language keywords can easily be added here.
-static map<string, Token> Keywords = {{"def", tok_def},
-                                      {"extern", tok_extern}};
+static map<string, Token> Keywords = {{"def", tok_def}, {"extern", tok_extern}};
 
 // Debug-only token names. Kept separate from Keywords because this map is
 // purely for printing token stream output.
 static map<int, string> TokenNames = [] {
   // Unprintable character tokens, and multi-character tokens.
   static map<int, string> Names = {
-      {tok_eof, "end of input"}, {tok_eol, "newline"},
-      {tok_error, "error"},      {tok_def, "'def'"},
-      {tok_extern, "'extern'"},  {tok_name, "name"},
+      {tok_eof, "end of input"}, {tok_eol, "newline"},     {tok_error, "error"},
+      {tok_def, "'def'"},        {tok_extern, "'extern'"}, {tok_name, "name"},
       {tok_number, "number"}};
 
   // Single character tokens.
@@ -136,7 +134,8 @@ static map<int, string> TokenNames = [] {
 ///   LexerLocation  - where the character-read head (advance()) currently is.
 ///             Updated on every advance() call. After a '\n', Line increments
 ///             and Column resets to 0 so the next character will be Column 1.
-///   CurrentTokenLocation  - snapshotted at the start of each token in getToken(), before
+///   CurrentTokenLocation  - snapshotted at the start of each token in
+///   getToken(), before
 ///             consuming any of the token's characters. This is the position
 ///             the parser and diagnostics see.
 struct SourceLocation {
@@ -208,7 +207,8 @@ public:
 
 static SourceManager PyxcSourceManager;
 static void PrintErrorSourceContext(SourceLocation Location);
-static void LogInvalidNumberLiteralAtLocation(const string &Literal, SourceLocation Location);
+static void LogInvalidNumberLiteralAtLocation(const string &Literal,
+                                              SourceLocation Location);
 
 /// advance - I return the next character, normalizing `\r\n` (Windows)
 /// and bare `\r` (Old Macs) into `\n`.
@@ -257,16 +257,17 @@ static int advance() {
 /// the whitespace loop without reading a character, and the loop's first
 /// advance() call picks up the real first character.
 ///
-/// CurrentTokenLocation is snapshotted from LexerLocation after the whitespace-skip loop and
-/// before any token branch. For most tokens this points at the first
-/// character of the token. For tok_eol the '\n' was already consumed by
-/// advance() on a previous call, so LexerLocation is already on the next line;
-/// GetCaretAnchorLocation compensates by subtracting one when building error
-/// locations for tok_eol.
+/// CurrentTokenLocation is snapshotted from LexerLocation after the
+/// whitespace-skip loop and before any token branch. For most tokens this
+/// points at the first character of the token. For tok_eol the '\n' was already
+/// consumed by advance() on a previous call, so LexerLocation is already on the
+/// next line; GetCaretAnchorLocation compensates by subtracting one when
+/// building error locations for tok_eol.
 ///
-/// The comment path ('#' branch) re-snapshots CurrentTokenLocation just before returning
-/// tok_eol because it consumes many characters (the whole comment) after the
-/// initial snapshot, leaving LexerLocation well past the '#' position.
+/// The comment path ('#' branch) re-snapshots CurrentTokenLocation just before
+/// returning tok_eol because it consumes many characters (the whole comment)
+/// after the initial snapshot, leaving LexerLocation well past the '#'
+/// position.
 static int getToken() {
   static int LastChar = ' ';
 
@@ -324,10 +325,11 @@ static int getToken() {
     } while (LastChar != '\n' && LastChar != EOF);
 
     if (LastChar == '\n') {
-      // Re-snapshot CurrentTokenLocation now that the '\n' has been consumed and LexerLocation
-      // has advanced to the next line. Without this, CurrentTokenLocation would point at
-      // the '#' column, and GetCaretAnchorLocation would look up the wrong
-      // line (because it subtracts 1) when the next token triggers an error.
+      // Re-snapshot CurrentTokenLocation now that the '\n' has been consumed
+      // and LexerLocation has advanced to the next line. Without this,
+      // CurrentTokenLocation would point at the '#' column, and
+      // GetCaretAnchorLocation would look up the wrong line (because it
+      // subtracts 1) when the next token triggers an error.
       CurrentTokenLocation = LexerLocation;
       LastChar = ' ';
       return tok_eol;
@@ -340,7 +342,8 @@ static int getToken() {
   // I read a single-character token.
   int ThisChar = LastChar;
 
-  // Position the lexer at the next character so the next getToken() starts there.
+  // Position the lexer at the next character so the next getToken() starts
+  // there.
   LastChar = advance();
 
   // I return a named token for known punctuation and operators.
@@ -376,14 +379,15 @@ static int getToken() {
 
 /// GetCaretAnchorLocation - Resolve the source location to attach to an error.
 ///
-/// For most tokens, CurrentTokenLocation already points at the right place and is returned
-/// unchanged. The special case is tok_eol: CurrentTokenLocation for a newline token is
-/// snapshotted after advance() has consumed the '\n' and incremented
-/// LexerLocation.Line, so CurrentTokenLocation.Line is already the *next* line. Subtracting one
-/// gives the line that just ended, and we report a column one past its last
-/// character — pointing just after the final token on the line, which is
-/// where the missing token (e.g. ':') should have appeared.
-static SourceLocation GetCaretAnchorLocation(SourceLocation Location, int Token) {
+/// For most tokens, CurrentTokenLocation already points at the right place and
+/// is returned unchanged. The special case is tok_eol: CurrentTokenLocation for
+/// a newline token is snapshotted after advance() has consumed the '\n' and
+/// incremented LexerLocation.Line, so CurrentTokenLocation.Line is already the
+/// *next* line. Subtracting one gives the line that just ended, and we report a
+/// column one past its last character — pointing just after the final token on
+/// the line, which is where the missing token (e.g. ':') should have appeared.
+static SourceLocation GetCaretAnchorLocation(SourceLocation Location,
+                                             int Token) {
   if (Token != tok_eol || Location.Line <= 1)
     return Location;
 
@@ -422,8 +426,8 @@ static string FormatTokenForMessage(int Token) {
 }
 
 /// PrintErrorSourceContext - Reprint the source line at Loc and place a
-/// '^~~~' caret under column Location.Column. Column is 1-based, so we print Column-1
-/// spaces before the caret.
+/// '^~~~' caret under column Location.Column. Column is 1-based, so we print
+/// Column-1 spaces before the caret.
 static void PrintErrorSourceContext(SourceLocation Location) {
   const string *LineText = PyxcSourceManager.getLine(Location.Line);
   // LineText is null only if Location points past everything buffered so
@@ -448,8 +452,6 @@ static void LogInvalidNumberLiteralAtLocation(const string &Literal,
 //===----------------------------------------===//
 // Abstract Syntax Tree (aka Parse Tree)
 //===----------------------------------------===//
-namespace {
-
 /// ExpressionNode - Base class for all expression nodes.
 class ExpressionNode {
 public:
@@ -481,7 +483,8 @@ class BinaryExpressionNode : public ExpressionNode {
   unique_ptr<ExpressionNode> Left, Right;
 
 public:
-  BinaryExpressionNode(int Operator, unique_ptr<ExpressionNode> Left, unique_ptr<ExpressionNode> Right)
+  BinaryExpressionNode(int Operator, unique_ptr<ExpressionNode> Left,
+                       unique_ptr<ExpressionNode> Right)
       : Operator(Operator), Left(std::move(Left)), Right(std::move(Right)) {}
   Value *codegen() override;
 };
@@ -503,14 +506,15 @@ class CallExpressionNode : public ExpressionNode {
   vector<unique_ptr<ExpressionNode>> Arguments;
 
 public:
-  CallExpressionNode(const string &Callee, vector<unique_ptr<ExpressionNode>> Arguments)
+  CallExpressionNode(const string &Callee,
+                     vector<unique_ptr<ExpressionNode>> Arguments)
       : Callee(Callee), Arguments(std::move(Arguments)) {}
   Value *codegen() override;
 };
 
-/// FunctionSignatureNode - This class represents the "function signature" for a function,
-/// which captures its name, and its parameter names (thus implicitly the number
-/// of parameters the function takes).
+/// FunctionSignatureNode - This class represents the "function signature" for a
+/// function, which captures its name, and its parameter names (thus implicitly
+/// the number of parameters the function takes).
 class FunctionSignatureNode {
   string Name;
   vector<string> Parameters;
@@ -524,27 +528,28 @@ public:
   Function *codegen();
 };
 
-/// FunctionDefinitionNode - This class represents a function function-definition itself.
+/// FunctionDefinitionNode - This class represents a function
+/// function-definition itself.
 class FunctionDefinitionNode {
   unique_ptr<FunctionSignatureNode> Signature;
   unique_ptr<ExpressionNode> Body;
 
 public:
-  FunctionDefinitionNode(unique_ptr<FunctionSignatureNode> Signature, unique_ptr<ExpressionNode> Body)
+  FunctionDefinitionNode(unique_ptr<FunctionSignatureNode> Signature,
+                         unique_ptr<ExpressionNode> Body)
       : Signature(std::move(Signature)), Body(std::move(Body)) {}
   Function *codegen();
 };
-
-} // end anonymous namespace
 
 //===----------------------------------------===//
 // Parser
 //===----------------------------------------===//
 
 /// CurrentToken is the current token the parser is looking at.
-/// getNextToken reads the next token from the lexer and stores it in CurrentToken.
-/// Every parse function assumes CurrentToken is already loaded before it is called,
-/// and leaves CurrentToken pointing at the first token it did not consume.
+/// getNextToken reads the next token from the lexer and stores it in
+/// CurrentToken. Every parse function assumes CurrentToken is already loaded
+/// before it is called, and leaves CurrentToken pointing at the first token it
+/// did not consume.
 static int CurrentToken;
 static int getNextToken() { return CurrentToken = getToken(); }
 
@@ -568,8 +573,8 @@ void PrintReplPrompt() {
 
 /// Log - Write a diagnostic message to stderr in REPL mode only.
 /// Used by the Handle* functions to confirm what was parsed ("Parsed a
-/// function function-definition.", etc.). Silent when processing a script file so
-/// that stdout/stderr output from the program itself is not cluttered.
+/// function function-definition.", etc.). Silent when processing a script file
+/// so that stdout/stderr output from the program itself is not cluttered.
 void Log(const string &message) {
   if (IsRepl)
     fprintf(stderr, "%s", message.c_str());
@@ -580,22 +585,26 @@ void PrintEvaluationResult(double Result) {
   fprintf(stdout, "Evaluated to %f\n", Result);
 }
 
-/// LogErrorExpression* - Error reporting helpers. Each returns nullptr for its respective
-/// type so parse functions can write: return LogErrorExpression("message");
+/// LogErrorExpression* - Error reporting helpers. Each returns nullptr for its
+/// respective type so parse functions can write: return
+/// LogErrorExpression("message");
 unique_ptr<ExpressionNode> LogErrorExpression(const string &ErrorMessage) {
-  SourceLocation Anchor = GetCaretAnchorLocation(CurrentTokenLocation, CurrentToken);
-  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line, Anchor.Column,
-          ErrorMessage.c_str());
+  SourceLocation Anchor =
+      GetCaretAnchorLocation(CurrentTokenLocation, CurrentToken);
+  fprintf(stderr, "Error (Line %d, Column %d): %s\n", Anchor.Line,
+          Anchor.Column, ErrorMessage.c_str());
   PrintErrorSourceContext(Anchor);
   return nullptr;
 }
 
-unique_ptr<FunctionSignatureNode> LogErrorSignature(const string &ErrorMessage) {
+unique_ptr<FunctionSignatureNode>
+LogErrorSignature(const string &ErrorMessage) {
   LogErrorExpression(ErrorMessage);
   return nullptr;
 }
 
-unique_ptr<FunctionDefinitionNode> LogErrorFunction(const string &ErrorMessage) {
+unique_ptr<FunctionDefinitionNode>
+LogErrorFunction(const string &ErrorMessage) {
   LogErrorExpression(ErrorMessage);
   return nullptr;
 }
@@ -804,7 +813,8 @@ static unique_ptr<FunctionSignatureNode> ParseFunctionSignature() {
 
   getNextToken(); // eat ')'
 
-  return make_unique<FunctionSignatureNode>(FunctionName, std::move(ParameterNames));
+  return make_unique<FunctionSignatureNode>(FunctionName,
+                                            std::move(ParameterNames));
 }
 
 /// function-definition
@@ -894,11 +904,11 @@ static unique_ptr<FunctionSignatureNode> ParseExtern() {
 // the loop, function, call-graph, or module information it needs.
 //
 //
-// FunctionSignatures - Persistent function signature registry. Because each function
-// lands in its own module, a later module that calls 'foo' cannot find 'foo'
-// in TheModule->getFunction(). FunctionSignatures stores the FunctionSignatureNode for
-// every declared or defined function so getFunction() can re-emit a
-// declaration into the current module on demand.
+// FunctionSignatures - Persistent function signature registry. Because each
+// function lands in its own module, a later module that calls 'foo' cannot find
+// 'foo' in TheModule->getFunction(). FunctionSignatures stores the
+// FunctionSignatureNode for every declared or defined function so getFunction()
+// can re-emit a declaration into the current module on demand.
 //
 // ExitOnErr - Convenience wrapper that terminates the process on a
 // recoverable LLVM error. Used for JIT operations that should never fail
@@ -913,11 +923,13 @@ static std::unique_ptr<LoopAnalysisManager> LoopAnalyses;
 static std::unique_ptr<FunctionAnalysisManager> FunctionAnalyses;
 static std::unique_ptr<CGSCCAnalysisManager> CallGraphAnalyses;
 static std::unique_ptr<ModuleAnalysisManager> ModuleAnalyses;
-static std::map<std::string, std::unique_ptr<FunctionSignatureNode>> FunctionSignatures;
+static std::map<std::string, std::unique_ptr<FunctionSignatureNode>>
+    FunctionSignatures;
 static ExitOnError ExitOnErr;
 
-/// LogErrorValue - Codegen-level error helper. Delegates to LogErrorExpression for printing,
-/// then returns nullptr so codegen callers can write: return LogErrorValue("msg");
+/// LogErrorValue - Codegen-level error helper. Delegates to LogErrorExpression
+/// for printing, then returns nullptr so codegen callers can write: return
+/// LogErrorValue("msg");
 Value *LogErrorValue(const string &ErrorMessage) {
   LogErrorExpression(ErrorMessage);
   return nullptr;
@@ -928,9 +940,10 @@ Value *LogErrorValue(const string &ErrorMessage) {
 ///
 /// Because each top-level input gets its own Module, a function defined in an
 /// earlier module is no longer in TheModule->getFunction(). When that happens
-/// we look up its FunctionSignatureNode in FunctionSignatures and call codegen() on it,
-/// which emits a fresh 'declare' with ExternalLinkage in the current module.
-/// The JIT resolves that extern to the already-compiled body at link time.
+/// we look up its FunctionSignatureNode in FunctionSignatures and call
+/// codegen() on it, which emits a fresh 'declare' with ExternalLinkage in the
+/// current module. The JIT resolves that extern to the already-compiled body at
+/// link time.
 Function *getFunction(const std::string &Name) {
   // Fast path: declaration or definition already in the current module.
   if (auto *F = TheModule->getFunction(Name))
@@ -983,8 +996,8 @@ Value *UnaryExpressionNode::codegen() {
   return TheBuilder->CreateFNeg(OperandValue, "negtmp");
 }
 
-/// BinaryExpressionNode::codegen - Recursively codegen both operands, then emit the
-/// operator-specific instruction.
+/// BinaryExpressionNode::codegen - Recursively codegen both operands, then emit
+/// the operator-specific instruction.
 ///
 /// The string arguments to each Create* call ("addtmp", "multmp", etc.) are
 /// hint names for the SSA value. LLVM uses them when printing IR, appending a
@@ -1013,29 +1026,31 @@ Value *BinaryExpressionNode::codegen() {
     return TheBuilder->CreateFRem(L, R, "remtmp");
   case tok_less:
     L = TheBuilder->CreateFCmpOLT(L, R, "cmptmp");
-    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext),
+                                    "booltmp");
   default:
-    return LogErrorValue("Invalid binary operator: " + FormatTokenForMessage(Operator));
+    return LogErrorValue("Invalid binary operator: " +
+                         FormatTokenForMessage(Operator));
   }
 }
 
-/// CallExpressionNode::codegen - Look up the callee by name in TheModule, verify the
-/// argument count, codegen each argument, then emit a call instruction.
+/// CallExpressionNode::codegen - Look up the callee by name in TheModule,
+/// verify the argument count, codegen each argument, then emit a call
+/// instruction.
 ///
-/// getFunction searches the module for a declaration or function-definition with the
-/// given name. This covers both previous 'extern' declarations and previously
-/// defined functions. The argument count check catches mismatches that a typed
-/// language would catch statically.
+/// getFunction searches the module for a declaration or function-definition
+/// with the given name. This covers both previous 'extern' declarations and
+/// previously defined functions. The argument count check catches mismatches
+/// that a typed language would catch statically.
 Value *CallExpressionNode::codegen() {
   Function *CalleeF = getFunction(Callee);
   if (!CalleeF)
     return LogErrorValue("Unknown function: '" + Callee + "'");
 
   if (CalleeF->arg_size() != Arguments.size())
-    return LogErrorValue(
-        "Incorrect number of arguments in call to '" + Callee +
-        "': expected " + to_string(CalleeF->arg_size()) + ", got " +
-        to_string(Arguments.size()));
+    return LogErrorValue("Incorrect number of arguments in call to '" + Callee +
+                         "': expected " + to_string(CalleeF->arg_size()) +
+                         ", got " + to_string(Arguments.size()));
 
   std::vector<Value *> ArgsV;
   for (unsigned i = 0, e = Arguments.size(); i != e; ++i) {
@@ -1047,26 +1062,25 @@ Value *CallExpressionNode::codegen() {
   return TheBuilder->CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
-/// FunctionSignatureNode::codegen - Create a function declaration in TheModule: name,
-/// return type (always double), and parameter types (all double).
+/// FunctionSignatureNode::codegen - Create a function declaration in TheModule:
+/// name, return type (always double), and parameter types (all double).
 ///
 /// ExternalLinkage makes the function visible outside this module. That is
 /// what allows 'extern def sin(x)' to link against the C library's sin at
 /// runtime, and what lets 'def foo(...)' be called from later expressions in
 /// the same session.
 ///
-/// Argument.setName() is optional — it only affects the printed IR, making output
-/// read as 'double %a, double %b' rather than 'double %0, double %1'.
+/// Argument.setName() is optional — it only affects the printed IR, making
+/// output read as 'double %a, double %b' rather than 'double %0, double %1'.
 Function *FunctionSignatureNode::codegen() {
   // All parameters and the return value are double.
-  std::vector<Type *> ParameterTypes(Parameters.size(), Type::getDoubleTy(*TheContext));
+  std::vector<Type *> ParameterTypes(Parameters.size(),
+                                     Type::getDoubleTy(*TheContext));
   FunctionType *LLVMFunctionType = FunctionType::get(
-      Type::getDoubleTy(*TheContext), ParameterTypes,
-      false /* not variadic */);
+      Type::getDoubleTy(*TheContext), ParameterTypes, false /* not variadic */);
 
-  Function *TheFunction =
-      Function::Create(LLVMFunctionType, Function::ExternalLinkage, Name,
-                       TheModule.get());
+  Function *TheFunction = Function::Create(
+      LLVMFunctionType, Function::ExternalLinkage, Name, TheModule.get());
 
   // Name arguments so the printed IR is readable.
   unsigned ParameterIndex = 0;
@@ -1076,15 +1090,18 @@ Function *FunctionSignatureNode::codegen() {
   return TheFunction;
 }
 
-/// FunctionDefinitionNode::codegen - Generate IR for a complete function function-definition.
+/// FunctionDefinitionNode::codegen - Generate IR for a complete function
+/// function-definition.
 ///
 /// Four steps:
 ///
-/// 1. Register the function signature. The FunctionSignatureNode is moved into FunctionSignatures
+/// 1. Register the function signature. The FunctionSignatureNode is moved into
+/// FunctionSignatures
 ///    so that future modules can re-emit a declaration for this function via
 ///    getFunction(). A reference is kept for the getFunction() call below.
 ///    getFunction() either finds an existing declaration in the current module
-///    (e.g. from a prior 'extern def') or calls Signature->codegen() to create one.
+///    (e.g. from a prior 'extern def') or calls Signature->codegen() to create
+///    one.
 ///
 /// 2. Create the entry BasicBlock and point the TheBuilder at it. A basic block
 ///    is a straight-line sequence of instructions with one entry and one exit.
@@ -1095,8 +1112,8 @@ Function *FunctionSignatureNode::codegen() {
 ///    body look names up here.
 ///
 /// 4. Codegen the body expression. On success, emit 'ret', run verifyFunction
-///    (LLVM's internal consistency checker), then run FunctionPasses to apply the
-///    optimisation pipeline. On failure, eraseFromParent() removes the
+///    (LLVM's internal consistency checker), then run FunctionPasses to apply
+///    the optimisation pipeline. On failure, eraseFromParent() removes the
 ///    partially-built function so no broken declaration is left in the module.
 Function *FunctionDefinitionNode::codegen() {
   const string FunctionName = Signature->getName();
@@ -1109,8 +1126,7 @@ Function *FunctionDefinitionNode::codegen() {
 
   // Bail if the function is already fully defined — redefinition is an error.
   if (TheFunction && !TheFunction->empty()) {
-    LogErrorExpression(
-        "Function '" + FunctionName + "' cannot be redefined");
+    LogErrorExpression("Function '" + FunctionName + "' cannot be redefined");
     return nullptr;
   }
 
@@ -1192,7 +1208,7 @@ static void InitializeModuleAndManagers() {
   if (OptLevel != 0) {
     FunctionPasses->addPass(InstCombinePass()); // peephole rewrites
     FunctionPasses->addPass(ReassociatePass()); // canonicalise commutative ops
-    FunctionPasses->addPass(GVNPass());         // eliminate common sub-expressions
+    FunctionPasses->addPass(GVNPass()); // eliminate common sub-expressions
   }
 
   // Cross-register so passes can access any analysis tier they need.
@@ -1201,7 +1217,8 @@ static void InitializeModuleAndManagers() {
   PB.registerCGSCCAnalyses(*CallGraphAnalyses);
   PB.registerFunctionAnalyses(*FunctionAnalyses);
   PB.registerLoopAnalyses(*LoopAnalyses);
-  PB.crossRegisterProxies(*LoopAnalyses, *FunctionAnalyses, *CallGraphAnalyses, *ModuleAnalyses);
+  PB.crossRegisterProxies(*LoopAnalyses, *FunctionAnalyses, *CallGraphAnalyses,
+                          *ModuleAnalyses);
 }
 
 /// DiscardRestOfLine - Panic-mode error recovery.
@@ -1217,42 +1234,51 @@ static void DiscardRestOfLine() {
     getNextToken();
 }
 
-/// HandleFunctionDefinition - Parse, optimise, and JIT-compile a 'def' function-definition.
+/// HandleFunctionDefinition - Parse, optimise, and JIT-compile a 'def'
+/// function-definition.
 ///
 /// On success: codegen + optimise the function (FunctionPasses runs inside
-/// FunctionDefinitionNode::codegen), print the optimised IR, then hand the entire
-/// module to the JIT via addModule. The JIT takes ownership of TheModule and
-/// TheContext, so InitializeModuleAndManagers() is called immediately after
+/// FunctionDefinitionNode::codegen), print the optimised IR, then hand the
+/// entire module to the JIT via addModule. The JIT takes ownership of TheModule
+/// and TheContext, so InitializeModuleAndManagers() is called immediately after
 /// to create a fresh module for the next input. The compiled function remains
 /// accessible in the JIT's symbol table for the rest of the session.
 /// On parse failure or unexpected trailing tokens: discard the line.
 static void HandleFunctionDefinition() {
   auto FunctionDefinition = ParseFunctionDefinition();
-  if (!FunctionDefinition || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
-    if (FunctionDefinition)
-      LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)));
+  if (!FunctionDefinition) {
     DiscardRestOfLine();
     return;
   }
-  if (auto *FunctionIR = FunctionDefinition->codegen()) {
-    Log("Parsed a function definition.\n");
-    if (VerboseIR)
-      FunctionIR->print(errs());
-    // Transfer the module to the JIT. TheModule is now invalid; reinitialise.
-    ExitOnErr(JIT->addModule(
-        ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
-    InitializeModuleAndManagers();
+
+  if (CurrentToken != tok_eol && CurrentToken != tok_eof) {
+    LogErrorExpression("Unexpected " + FormatTokenForMessage(CurrentToken));
+    DiscardRestOfLine();
+    return;
   }
+
+  auto *FunctionIR = FunctionDefinition->codegen();
+  if (!FunctionIR)
+    return;
+
+  Log("Parsed a function definition.\n");
+  if (VerboseIR)
+    FunctionIR->print(errs());
+  // Transfer the module to the JIT. TheModule is now invalid; reinitialise.
+  ExitOnErr(JIT->addModule(
+      ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
+  InitializeModuleAndManagers();
 }
 
 /// HandleExtern - Parse and register an 'extern def' declaration.
 ///
-/// On success: codegen the function signature (emits a 'declare' in the current module),
-/// print it, then save the FunctionSignatureNode into FunctionSignatures. Saving into
-/// FunctionSignatures is the critical step — when this module is handed to the JIT
-/// and a new one is created, getFunction() uses FunctionSignatures to re-emit the
-/// 'declare' in whichever module needs to call the extern.
-/// On parse failure or unexpected trailing tokens: discard the line.
+/// On success: codegen the function signature (emits a 'declare' in the current
+/// module), print it, then save the FunctionSignatureNode into
+/// FunctionSignatures. Saving into FunctionSignatures is the critical step —
+/// when this module is handed to the JIT and a new one is created,
+/// getFunction() uses FunctionSignatures to re-emit the 'declare' in whichever
+/// module needs to call the extern. On parse failure or unexpected trailing
+/// tokens: discard the line.
 static void HandleExtern() {
   auto Signature = ParseExtern();
 
@@ -1268,13 +1294,11 @@ static void HandleExtern() {
   auto Existing = FunctionSignatures.find(Signature->getName());
   if (Existing != FunctionSignatures.end() &&
       Existing->second->getNumParameters() != Signature->getNumParameters()) {
-    const size_t PreviousParameterCount =
-        Existing->second->getNumParameters();
+    const size_t PreviousParameterCount = Existing->second->getNumParameters();
     const size_t NewParameterCount = Signature->getNumParameters();
     LogErrorExpression(
         "Conflicting declaration for function '" + Signature->getName() +
-        "': previous declaration has " +
-        to_string(PreviousParameterCount) +
+        "': previous declaration has " + to_string(PreviousParameterCount) +
         (PreviousParameterCount == 1 ? " parameter" : " parameters") +
         ", but this declaration has " + to_string(NewParameterCount) +
         (NewParameterCount == 1 ? " parameter" : " parameters"));
@@ -1286,7 +1310,8 @@ static void HandleExtern() {
     Log("Parsed an extern.\n");
     if (VerboseIR)
       FunctionIR->print(errs());
-    // Save the function signature so getFunction() can re-emit it in future modules.
+    // Save the function signature so getFunction() can re-emit it in future
+    // modules.
     FunctionSignatures[Signature->getName()] = std::move(Signature);
   }
 }
@@ -1310,7 +1335,8 @@ static void HandleExtern() {
 ///      transferred to the JIT in step 4, so eraseFromParent() is not needed.
 static void HandleTopLevelExpression() {
   auto FunctionDefinition = ParseTopLevelExpression();
-  if (!FunctionDefinition || (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
+  if (!FunctionDefinition ||
+      (CurrentToken != tok_eol && CurrentToken != tok_eof)) {
     if (FunctionDefinition)
       LogErrorExpression(("Unexpected " + FormatTokenForMessage(CurrentToken)));
     DiscardRestOfLine();

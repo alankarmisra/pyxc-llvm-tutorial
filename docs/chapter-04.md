@@ -5,6 +5,8 @@ description: "Add unary minus and the remainder operator, closing the gap left b
 
 ## What I Am Building
 
+My compiler will happily compute `x - 5`, but ask it for `-5` on its own and it simply refuses, as if subtraction is respectable but a number showing up alone and negative is somehow suspicious. It has also never heard of a remainder. I fix both today.
+
 In Chapter 3, `-` only ever showed up as subtraction. A leading `-` doesn't parse at all:
 
 <!-- code-merge:start -->

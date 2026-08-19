@@ -165,8 +165,6 @@ int getToken() {
 // Syntax Tree Nodes
 //===----------------------------------------===//
 
-namespace {
-
 /// ExpressionNode - Base class for all expression nodes.
 class ExpressionNode {
 public:
@@ -234,8 +232,6 @@ public:
                          unique_ptr<ExpressionNode> Body)
       : Signature(std::move(Signature)), Body(std::move(Body)) {}
 };
-
-} // end anonymous namespace
 
 //===----------------------------------------===//
 // Parser

@@ -113,14 +113,7 @@ I add tokens for control-flow keywords and multi-character comparisons:
 
 ```cppdiff
 *enum Token {
-*  tok_eof = -1,
-*  tok_eol = -2,
-*  tok_error = -3,
-*
-*  // commands
-*  tok_def = -4,
-*  tok_extern = -5,
-*
+*  ...
 *  // primary
 *  tok_name = -6,
 *  tok_number = -7,
@@ -144,28 +137,27 @@ I add tokens for control-flow keywords and multi-character comparisons:
 *  // punctuation and operators
 *  tok_lparen = '(',
 *  tok_rparen = ')',
-*  tok_comma = ',',
-*  tok_colon = ':',
-*  tok_plus = '+',
-*  tok_minus = '-',
-*  tok_star = '*',
-*  tok_slash = '/',
-*  tok_percent = '%',
+*  ...
 *  tok_less = '<',
 +  tok_greater = '>',
-+  tok_equal = '=',
++  tok_assign = '=',
 *};
 ```
 
-I add `if`, `else`, and `for` to `Keywords`. The lexer returns the four negative tokens when it recognizes two-character operators. I use named character tokens for `<`, `>`, and `=`.
+I add `if`, `else`, and `for` to `Keywords`. The lexer returns the four negative tokens when it recognizes two-character operators. I use named character tokens for `<`, `>`, and `=` — and I name the `=` token `tok_assign` rather than `tok_equal`, so it can't be misread as a synonym for `tok_eq` (`==`).
 
 ## Comparison Operators
 
 ### Lexer: Two-Character Tokens
 
-To distinguish `=` from `==`, I inspect the next character without consuming it permanently. I add `peek()` for that lookahead:
+To distinguish `=` from `==`, I inspect the next character without consuming it permanently. I add `peek()` for that lookahead, right between `advance()` and `getToken()`:
 
 ```cpp
+/// peek - Return the next character from the input stream without consuming it.
+///
+/// Used by the two-character operator branches in getToken() to decide whether
+/// '=' should become '==' (tok_eq), '!' should become '!=' (tok_neq), etc.,
+/// without advancing LexerLocation or notifying SourceManager.
 static int peek() {
   int c = fgetc(Input);
   if (c != EOF)
@@ -176,42 +168,62 @@ static int peek() {
 
 In `getToken()`, I consume the second `=` only when `peek()` finds one:
 
-```cpp
-if (LastChar == '=') {
-  int Tok = (peek() == '=') ? (advance(), tok_eq) : tok_equal;
-  LastChar = advance();
-  return Tok;
-}
+```cppdiff
+*static int getToken() {
+*  ...
+*  // I discard a comment.
+*  if (LastChar == '#') {
+*    ...
+*  }
+*
++  // peek(), if the next one completes a recognized token, eat it, and return
++  // token; otherwise, I return the named single-character token.
++  if (LastChar == '=') {
++    int Tok = (peek() == '=') ? (advance(), tok_eq) : tok_assign;
++    LastChar = advance();
++    return Tok;
++  }
+*
+*  if (LastChar == EOF)
+*    return tok_eof;
+*
+*  ...
+*  // I return a named token for known punctuation and operators.
+*  switch (ThisChar) {
+*  case '(':
+*    return tok_lparen;
+*  ...
+*  }
+*}
 ```
 
-The expression `(advance(), tok_eq)` consumes the second character and then produces `tok_eq`. Otherwise, I return `tok_equal`. I finish either path by loading the character after the operator into `LastChar`. I use the same pattern for `!=`, `<=`, and `>=`.
+This new branch goes right after the comment-discard block, before the `EOF` check and the single-character `switch` — it has to run first so `=` and `==` never fall through to the `switch`'s own (now dead) `case '=': return tok_assign;`.
+
+The expression `(advance(), tok_eq)` consumes the second character and then produces `tok_eq`. Otherwise, I return `tok_assign`. I finish either path by loading the character after the operator into `LastChar`. I use the same pattern for `!=`, `<=`, and `>=`.
 
 ### Parser: Extending the Comparison Layer
 
 The grammar already gives comparisons their own parser layer. I extend its loop to accept all six comparison tokens:
 
-```cpp
-static unique_ptr<ExpressionNode> ParseComparison() {
-  auto Left = ParseSum();
-  if (!Left)
-    return nullptr;
-
-  while (CurrentToken == tok_eq || CurrentToken == tok_neq ||
-         CurrentToken == tok_leq || CurrentToken == tok_geq ||
-         CurrentToken == tok_less || CurrentToken == tok_greater) {
-    int Operator = CurrentToken;
-    getNextToken();
-
-    auto Right = ParseSum();
-    if (!Right)
-      return nullptr;
-
-    Left = make_unique<BinaryExpressionNode>(
-        Operator, std::move(Left), std::move(Right));
-  }
-
-  return Left;
-}
+```cppdiff
+*static unique_ptr<ExpressionNode> ParseComparison() {
+*  auto Left = ParseSum();
+*  if (!Left)
+*    return nullptr;
+-  while (CurrentToken == tok_less) {
++  while (CurrentToken == tok_eq || CurrentToken == tok_neq ||
++         CurrentToken == tok_leq || CurrentToken == tok_geq ||
++         CurrentToken == tok_less || CurrentToken == tok_greater) {
+*    int Operator = CurrentToken;
+*    getNextToken();
+*    auto Right = ParseSum();
+*    if (!Right)
+*      return nullptr;
+*    Left = make_unique<BinaryExpressionNode>(Operator, std::move(Left),
+*                                             std::move(Right));
+*  }
+*  return Left;
+*}
 ```
 
 I parse every comparison at the same grammar tier and group repeated comparisons from left to right. Therefore, `a < b == c` becomes `(a < b) == c`. pyxc does not implement Python's special chained-comparison behavior yet.
@@ -226,25 +238,7 @@ For example, I implement `==` in `BinaryExpressionNode::codegen()` with an order
 
 ```cppdiff
 *Value *BinaryExpressionNode::codegen() {
-*  Value *L = Left->codegen();
-*  if (!L)
-*    return nullptr;
-*
-*  Value *R = Right->codegen();
-*  if (!R)
-*    return nullptr;
-*
-*  switch (Operator) {
-*  case tok_plus:
-*    return TheBuilder->CreateFAdd(L, R, "addtmp");
-*  case tok_minus:
-*    return TheBuilder->CreateFSub(L, R, "subtmp");
-*  case tok_star:
-*    return TheBuilder->CreateFMul(L, R, "multmp");
-*  case tok_slash:
-*    return TheBuilder->CreateFDiv(L, R, "divtmp");
-*  case tok_percent:
-*    return TheBuilder->CreateFRem(L, R, "remtmp");
+*  ...
 *  case tok_less:
 *    L = TheBuilder->CreateFCmpOLT(L, R, "cmptmp");
 *    return TheBuilder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
@@ -331,6 +325,21 @@ if condition: then_expr else: else_expr
 
 I treat any nonzero value as true. The condition can be any expression; it does not need to be a comparison.
 
+`IfExpressionNode` holds all three: the condition and both required branches.
+
+```cpp
+/// IfExpressionNode - Expression class for if/else.
+class IfExpressionNode : public ExpressionNode {
+  unique_ptr<ExpressionNode> Condition, Then, Else;
+
+public:
+  IfExpressionNode(unique_ptr<ExpressionNode> Condition, unique_ptr<ExpressionNode> Then,
+            unique_ptr<ExpressionNode> Else)
+      : Condition(std::move(Condition)), Then(std::move(Then)), Else(std::move(Else)) {}
+  Value *codegen() override;
+};
+```
+
 ### Parsing
 
 I parse the condition, the required `then` expression, and the required `else` expression. I accept newlines after each colon and before `else`, but I do not process indentation yet:
@@ -339,8 +348,8 @@ I parse the condition, the required `then` expression, and the required `else` e
 static unique_ptr<ExpressionNode> ParseIfExpression() {
   getNextToken(); // eat 'if'
 
-  auto Cond = ParseExpression();
-  if (!Cond)
+  auto Condition = ParseExpression();
+  if (!Condition)
     return nullptr;
 
   if (CurrentToken != tok_colon)
@@ -370,7 +379,7 @@ static unique_ptr<ExpressionNode> ParseIfExpression() {
     return nullptr;
 
   return make_unique<IfExpressionNode>(
-      std::move(Cond), std::move(Then), std::move(Else));
+      std::move(Condition), std::move(Then), std::move(Else));
 }
 ```
 
@@ -437,13 +446,14 @@ entry:
 
 **Step 1 — Generate the condition in the current block.**
 
-First I generate code for the condition expression:
+Here is the function I'm building, starting with its signature and its first line — generating code for the condition expression:
 
-```cpp
-Value *CondV = Cond->codegen();
+```cppdiff
++Value *IfExpressionNode::codegen() {
++  Value *CondV = Condition->codegen();
 ```
 
-For `absdiff`, `Cond->codegen()` generates code for `a > b`. 
+For `absdiff`, `Condition->codegen()` generates code for `a > b`. 
 
 ```cpp
 case tok_greater:
@@ -461,15 +471,20 @@ entry:
 }
 ```
 
-`Cond->codegen()` gives me a `double`, because pyxc represents booleans as
+`Condition->codegen()` gives me a `double`, because pyxc represents booleans as
 `0.0` or `1.0`. LLVM branches need an `i1`, so before I can branch I must
 turn that `double` back into an `i1`. 
 
-I do that by comparing the condition value against `0.0`:
+I do that by comparing the condition value against `0.0` — but first, as with every other `codegen()` call, I propagate a null result immediately:
 
-```cpp
-CondV = TheBuilder->CreateFCmpONE(
-    CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "ifcond");
+```cppdiff
+*Value *IfExpressionNode::codegen() {
+*  Value *CondV = Condition->codegen();
++  if (!CondV)
++    return nullptr;
++
++  CondV = TheBuilder->CreateFCmpONE(
++      CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "ifcond");
 ```
 
 This means: treat the condition as true if it is not equal to `0.0`.
@@ -492,14 +507,23 @@ block, which is the block that was already active before the `if`.
 
 **Step 2 — Create the `then`, `else`, and join blocks.**
 
-```cpp
-BasicBlock *ThenBB = BasicBlock::Create(*TheContext, "then", TheFunction);
-BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else", TheFunction);
-BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont", TheFunction);
-TheBuilder->CreateCondBr(CondV, ThenBB, ElseBB);
+I first recover the function I'm generating into, then attach three new blocks to it:
+
+```cppdiff
+*  CondV = TheBuilder->CreateFCmpONE(
+*      CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "ifcond");
++
++  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
++
++  // Create blocks for then, else, and merge.
++  BasicBlock *ThenBB = BasicBlock::Create(*TheContext, "then", TheFunction);
++  BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else", TheFunction);
++  BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont", TheFunction);
++
++  TheBuilder->CreateCondBr(CondV, ThenBB, ElseBB);
 ```
 
-I attach all three blocks to the function and finish the current block with `CreateCondBr`:
+`TheBuilder->GetInsertBlock()->getParent()` recovers the function currently being generated — the same lookup every codegen path that needs `TheFunction` uses. I attach all three new blocks to it and finish the current block with `CreateCondBr`:
 
 ```llvm
 br i1 %ifcond, label %then, label %else
@@ -525,12 +549,16 @@ ifcont:  ; (empty)
 
 **Step 3 — Move the builder cursor into `then` and generate that branch.**
 
-```cpp
-TheBuilder->SetInsertPoint(ThenBB);
-Value *ThenV = Then->codegen();
-if (!ThenV)
-  return nullptr;
-TheBuilder->CreateBr(MergeBB);
+```cppdiff
+*  BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont", TheFunction);
+*  TheBuilder->CreateCondBr(CondV, ThenBB, ElseBB);
++
++  // Emit then block.
++  TheBuilder->SetInsertPoint(ThenBB);
++  Value *ThenV = Then->codegen();
++  if (!ThenV)
++    return nullptr;
++  TheBuilder->CreateBr(MergeBB);
 ```
 
 I call `SetInsertPoint` so the builder appends subsequent instructions to the `then` block.
@@ -546,10 +574,13 @@ then:                           ; reached when the condition is true
 Finally, I update `ThenBB` so it points to the block where the `then` path
 actually finished.
 
-```cpp
-// Update ThenBB to the block where the then-path actually ended.
-// This matters for nested control flow; explained just below.
-ThenBB = TheBuilder->GetInsertBlock();
+```cppdiff
+*    return nullptr;
+*  TheBuilder->CreateBr(MergeBB);
++
++  // Update ThenBB to the block where the then-path actually ended.
++  // This matters for nested control flow; explained just below.
++  ThenBB = TheBuilder->GetInsertBlock();
 ```
 
 This matters because nested control flow can create more blocks and move the
@@ -559,13 +590,17 @@ case a little later in this chapter.
 
 **Step 4 — Do the same for `else`.**
 
-```cpp
-TheBuilder->SetInsertPoint(ElseBB);
-Value *ElseV = Else->codegen();
-if (!ElseV)
-  return nullptr;
-TheBuilder->CreateBr(MergeBB);
-ElseBB = TheBuilder->GetInsertBlock();
+```cppdiff
+*  // This matters for nested control flow; explained just below.
+*  ThenBB = TheBuilder->GetInsertBlock();
++
++  // Emit else block.
++  TheBuilder->SetInsertPoint(ElseBB);
++  Value *ElseV = Else->codegen();
++  if (!ElseV)
++    return nullptr;
++  TheBuilder->CreateBr(MergeBB);
++  ElseBB = TheBuilder->GetInsertBlock();
 ```
 
 Step 4 is the same idea for `else`: move the builder cursor into `else`, generate the
@@ -588,15 +623,70 @@ Both branches produce a value, but I need one value after they rejoin. LLVM requ
 
 Read it as: "if execution arrived here from `then`, use `%subtmp`; if from `else`, use `%subtmp1`." The name **phi** comes from the φ-function notation in the SSA papers of the late 1980s — exactly the piecewise-function idea of "this value if condition A, that value if condition B."
 
-```cpp
-TheBuilder->SetInsertPoint(MergeBB);
-PHINode *PN = TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
-PN->addIncoming(ThenV, ThenBB);
-PN->addIncoming(ElseV, ElseBB);
-return PN;
+```cppdiff
+*  TheBuilder->CreateBr(MergeBB);
+*  ElseBB = TheBuilder->GetInsertBlock();
++
++  // Emit merge block with phi node.
++  TheBuilder->SetInsertPoint(MergeBB);
++  PHINode *PN = TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
++  PN->addIncoming(ThenV, ThenBB);
++  PN->addIncoming(ElseV, ElseBB);
++
++  return PN;
++}
 ```
 
 > LLVM requires PHI nodes to appear before non-PHI instructions in a block. I create the PHI immediately after moving the insertion point to `MergeBB`.
+
+**Full `IfExpressionNode::codegen()`, for reference:**
+
+```cpp
+Value *IfExpressionNode::codegen() {
+  Value *CondV = Condition->codegen();
+  if (!CondV)
+    return nullptr;
+
+  // Convert condition to bool by comparing != 0.0
+  CondV = TheBuilder->CreateFCmpONE(
+      CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "ifcond");
+
+  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
+
+  // Create blocks for then, else, and merge.
+  BasicBlock *ThenBB = BasicBlock::Create(*TheContext, "then", TheFunction);
+  BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else", TheFunction);
+  BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont", TheFunction);
+
+  TheBuilder->CreateCondBr(CondV, ThenBB, ElseBB);
+
+  // Emit then block.
+  TheBuilder->SetInsertPoint(ThenBB);
+  Value *ThenV = Then->codegen();
+  if (!ThenV)
+    return nullptr;
+  TheBuilder->CreateBr(MergeBB);
+
+  // Codegen can change the current block — capture where then ended.
+  ThenBB = TheBuilder->GetInsertBlock();
+
+  // Emit else block.
+  TheBuilder->SetInsertPoint(ElseBB);
+  Value *ElseV = Else->codegen();
+  if (!ElseV)
+    return nullptr;
+  TheBuilder->CreateBr(MergeBB);
+  ElseBB = TheBuilder->GetInsertBlock();
+
+  // Emit merge block with phi node.
+  TheBuilder->SetInsertPoint(MergeBB);
+  PHINode *PN = TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
+  PN->addIncoming(ThenV, ThenBB);
+  PN->addIncoming(ElseV, ElseBB);
+
+  return PN;
+}
+```
 
 **Full unoptimized IR for `absdiff`:**
 
@@ -766,7 +856,7 @@ static unique_ptr<ExpressionNode> ParseForExpression() {
   string VarName = Name;
   getNextToken(); // eat name
 
-  if (CurrentToken != tok_equal)
+  if (CurrentToken != tok_assign)
     return LogErrorExpression("Expected '=' after for variable");
   getNextToken(); // eat '='
 
@@ -778,8 +868,8 @@ static unique_ptr<ExpressionNode> ParseForExpression() {
     return LogErrorExpression("Expected ',' after for start value");
   getNextToken(); // eat ','
 
-  auto Cond = ParseExpression();
-  if (!Cond)
+  auto Condition = ParseExpression();
+  if (!Condition)
     return nullptr;
 
   if (CurrentToken != tok_comma)
@@ -802,9 +892,26 @@ static unique_ptr<ExpressionNode> ParseForExpression() {
     return nullptr;
 
   return make_unique<ForExpressionNode>(
-      VarName, std::move(Start), std::move(Cond),
+      VarName, std::move(Start), std::move(Condition),
       std::move(Step), std::move(Body));
 }
+```
+
+`ForExpressionNode` holds the loop variable's name alongside the four expressions:
+
+```cpp
+class ForExpressionNode : public ExpressionNode {
+  string VarName;
+  unique_ptr<ExpressionNode> Start, Condition, Step, Body;
+
+public:
+  ForExpressionNode(const string &VarName, unique_ptr<ExpressionNode> Start,
+             unique_ptr<ExpressionNode> Condition, unique_ptr<ExpressionNode> Step,
+             unique_ptr<ExpressionNode> Body)
+      : VarName(VarName), Start(std::move(Start)), Condition(std::move(Condition)),
+        Step(std::move(Step)), Body(std::move(Body)) {}
+  Value *codegen() override;
+};
 ```
 
 ### Codegen
@@ -824,15 +931,37 @@ loop_body  after_loop           │
 
 I evaluate the parts in this order: `start → condition → body → step → condition → …`. Because I check the condition before the body, the body may run zero times. I trace `for i = 1, i <= 3, 1: printd(i)` through the blocks.
 
-**Step 1 — Evaluate start in the preheader and jump to the condition block.**
+**Step 1 — Recover the function, evaluate `start` in the preheader, and create the loop's blocks.**
 
-```cpp
-Value *StartVal = Start->codegen();           // 1.0
-BasicBlock *PreheaderBB = TheBuilder->GetInsertBlock();
-BasicBlock *CondBB  = BasicBlock::Create(*TheContext, "loop_cond", TheFunction);
-BasicBlock *BodyBB  = BasicBlock::Create(*TheContext, "loop_body", TheFunction);
-BasicBlock *AfterBB = BasicBlock::Create(*TheContext, "after_loop", TheFunction);
-TheBuilder->CreateBr(CondBB);
+```cppdiff
++Value *ForExpressionNode::codegen() {
++  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
++
++  // Emit start value in the preheader (current block before the loop).
++  Value *StartVal = Start->codegen();
++  if (!StartVal)
++    return nullptr;
+```
+
+`TheFunction` is the same recovery `IfExpressionNode::codegen()` uses. As with every `codegen()` call, I check `Start->codegen()` for null before continuing.
+
+```cppdiff
+*  Value *StartVal = Start->codegen();
+*  if (!StartVal)
+*    return nullptr;
++
++  BasicBlock *PreheaderBB = TheBuilder->GetInsertBlock();
++
++  // Create all three blocks up front so we can reference them in branches.
++  BasicBlock *CondBB =
++      BasicBlock::Create(*TheContext, "loop_cond", TheFunction);
++  BasicBlock *BodyBB =
++      BasicBlock::Create(*TheContext, "loop_body", TheFunction);
++  BasicBlock *AfterBB =
++      BasicBlock::Create(*TheContext, "after_loop", TheFunction);
++
++  // Unconditional jump from preheader into the condition check.
++  TheBuilder->CreateBr(CondBB);
 ```
 
 All three loop blocks are attached to the function immediately. `CreateBr`
@@ -852,24 +981,24 @@ after_loop:  ; (empty)
 }
 ```
 
-**Step 2 — Build the condition block: PHI node + branch.**
+**Step 2 — Build the condition block: PHI node, variable shadowing, condition, and branch.**
 
-```cpp
-TheBuilder->SetInsertPoint(CondBB);
-PHINode *Variable = TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
-Variable->addIncoming(StartVal, PreheaderBB);   // first-iteration value
+```cppdiff
+*  // Unconditional jump from preheader into the condition check.
+*  TheBuilder->CreateBr(CondBB);
++
++  // ---- loop_cond ----
++  TheBuilder->SetInsertPoint(CondBB);
++
++  // PHI picks start_val on the first iteration, next_i on subsequent ones.
++  // The back-edge incoming value is added below once we know BodyEndBB.
++  PHINode *Variable =
++      TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
++  Variable->addIncoming(StartVal, PreheaderBB);
 ```
 
 I create the PHI node with only one incoming value for now — the preheader. The
 back-edge from the loop body is added later, once I know where the body ends.
-
-Right after creating the PHI, I bind `VarName` to it in `NamedValues`, shadowing any outer variable of the same name (I cover the shadow/restore mechanics in full further down):
-
-```cpp
-NamedValues[VarName] = Variable;
-```
-
-I do this before generating the condition, not just before the body, because the condition can reference the loop variable too — `i <= 3` needs to find `i`.
 
 The condition block starts to look like this:
 
@@ -878,41 +1007,36 @@ loop_cond:
   %i = phi double [ 1.000000e+00, %entry ]
 ```
 
-Next I generate the loop condition expression:
+Right after creating the PHI, I bind `VarName` to it in `NamedValues`, saving whatever it was bound to before so I can restore it once the loop ends (I cover the shadow/restore mechanics in full further down):
 
-```cpp
-Value *CondV = Cond->codegen();
+```cppdiff
+*  PHINode *Variable =
+*      TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
+*  Variable->addIncoming(StartVal, PreheaderBB);
++
++  // Shadow any outer variable of the same name so the body sees the loop var.
++  Value *OldVal = NamedValues[VarName];
++  NamedValues[VarName] = Variable;
 ```
 
-For `i <= 3`, that adds:
+I do this before generating the condition, not just before the body, because the condition can reference the loop variable too — `i <= 3` needs to find `i`.
 
-```llvm
-loop_cond:
-  %i = phi double [ 1.000000e+00, %entry ]
-  %cmptmp  = fcmp ole double %i, 3.000000e+00
-  %booltmp = uitofp i1 %cmptmp to double
+Next I generate the loop condition expression, check it for null, and convert it to the `i1` `CreateCondBr` needs — the same round trip `IfExpressionNode::codegen()` does:
+
+```cppdiff
+*  Value *OldVal = NamedValues[VarName];
+*  NamedValues[VarName] = Variable;
++
++  // Evaluate the condition; treat 0.0 as false, anything else as true.
++  Value *CondVal = Condition->codegen();
++  if (!CondVal)
++    return nullptr;
++  CondVal = TheBuilder->CreateFCmpONE(
++      CondVal, ConstantFP::get(*TheContext, APFloat(0.0)), "loopcond");
++  TheBuilder->CreateCondBr(CondVal, BodyBB, AfterBB);
 ```
 
-Then convert that `double` condition into an `i1` for branching:
-
-```cpp
-Value *LoopCond = TheBuilder->CreateFCmpONE(
-    CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "loopcond");
-```
-
-which adds:
-
-```llvm
-  %loopcond = fcmp one double %booltmp, 0.000000e+00
-```
-
-Finally, branch to the loop body or the after-loop block:
-
-```cpp
-TheBuilder->CreateCondBr(LoopCond, BodyBB, AfterBB);
-```
-
-which completes the block:
+For `i <= 3`, that completes the block:
 
 ```llvm
 define double @__anon_expr() {
@@ -931,11 +1055,18 @@ after_loop:  ; (empty)
 }
 ```
 
-**Step 3 — Fill the body block.**
+**Step 3 — Fill the body block: run the body, advance the loop variable, and branch back.**
 
-```cpp
-TheBuilder->SetInsertPoint(BodyBB);
-Body->codegen();                                // return value discarded
+```cppdiff
+*  CondVal = TheBuilder->CreateFCmpONE(
+*      CondVal, ConstantFP::get(*TheContext, APFloat(0.0)), "loopcond");
++
++  // ---- loop_body ----
++  TheBuilder->SetInsertPoint(BodyBB);
++
++  // Body is evaluated for side effects; its value is discarded.
++  if (!Body->codegen())
++    return nullptr;
 ```
 
 For `printd(i)`, that adds:
@@ -947,9 +1078,16 @@ loop_body:
 
 Next generate the step value and the next loop variable:
 
-```cpp
-Value *StepVal = Step->codegen();               // 1.0
-Value *NextVar  = TheBuilder->CreateFAdd(Variable, StepVal, "nextvar");
+```cppdiff
+*  // Body is evaluated for side effects; its value is discarded.
+*  if (!Body->codegen())
+*    return nullptr;
++
++  // Step: advance the loop variable.
++  Value *StepVal = Step->codegen();
++  if (!StepVal)
++    return nullptr;
++  Value *NextVar = TheBuilder->CreateFAdd(Variable, StepVal, "nextvar");
 ```
 
 which adds:
@@ -958,13 +1096,16 @@ which adds:
   %nextvar = fadd double %i, 1.000000e+00
 ```
 
-Finally, update the PHI with the back-edge value and branch back to
-`loop_cond`:
+Finally, update the PHI with the back-edge value and branch back to `loop_cond`. As in `IfExpressionNode::codegen()`, I recapture the insert block first, in case the body's own codegen moved it:
 
-```cpp
-BasicBlock *BodyEndBB = TheBuilder->GetInsertBlock();
-Variable->addIncoming(NextVar, BodyEndBB);      // complete the PHI
-TheBuilder->CreateBr(CondBB);
+```cppdiff
+*  Value *NextVar = TheBuilder->CreateFAdd(Variable, StepVal, "nextvar");
++
++  // Body codegen may have changed the insert block (e.g. nested ifs added
++  // blocks). Capture where the body actually ended for the PHI back-edge.
++  BasicBlock *BodyEndBB = TheBuilder->GetInsertBlock();
++  Variable->addIncoming(NextVar, BodyEndBB);
++  TheBuilder->CreateBr(CondBB);
 ```
 
 That completes the loop body and gives the PHI its second incoming value:
@@ -990,14 +1131,105 @@ after_loop:  ; (empty)
 }
 ```
 
-**Step 4 — After-loop block returns `0.0`.**
+**Step 4 — After-loop block: restore the shadowed variable and return `0.0`.**
 
-```cpp
-TheBuilder->SetInsertPoint(AfterBB);
-return ConstantFP::get(*TheContext, APFloat(0.0));
+```cppdiff
+*  Variable->addIncoming(NextVar, BodyEndBB);
+*  TheBuilder->CreateBr(CondBB);
++
++  // ---- after_loop ----
++  TheBuilder->SetInsertPoint(AfterBB);
++
++  // Restore the shadowed variable (if any) now that the loop is done.
++  if (OldVal)
++    NamedValues[VarName] = OldVal;
++  else
++    NamedValues.erase(VarName);
++
++  // The for expression always produces 0.0.
++  return ConstantFP::get(*TheContext, APFloat(0.0));
++}
 ```
 
-The loop has no natural return value, so the after-loop block returns `0.0`.
+The loop has no natural return value, so the after-loop block returns `0.0`. Restoring `OldVal` — or erasing the binding if there wasn't one — is what lets a variable named `i` outside the loop keep meaning what it meant before; I cover this in full in the next section.
+
+**Full `ForExpressionNode::codegen()`, for reference:**
+
+```cpp
+Value *ForExpressionNode::codegen() {
+  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
+
+  // Emit start value in the preheader (current block before the loop).
+  Value *StartVal = Start->codegen();
+  if (!StartVal)
+    return nullptr;
+
+  BasicBlock *PreheaderBB = TheBuilder->GetInsertBlock();
+
+  // Create all three blocks up front so we can reference them in branches.
+  BasicBlock *CondBB =
+      BasicBlock::Create(*TheContext, "loop_cond", TheFunction);
+  BasicBlock *BodyBB =
+      BasicBlock::Create(*TheContext, "loop_body", TheFunction);
+  BasicBlock *AfterBB =
+      BasicBlock::Create(*TheContext, "after_loop", TheFunction);
+
+  // Unconditional jump from preheader into the condition check.
+  TheBuilder->CreateBr(CondBB);
+
+  // ---- loop_cond ----
+  TheBuilder->SetInsertPoint(CondBB);
+
+  // PHI picks start_val on the first iteration, next_i on subsequent ones.
+  // The back-edge incoming value is added below once we know BodyEndBB.
+  PHINode *Variable =
+      TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
+  Variable->addIncoming(StartVal, PreheaderBB);
+
+  // Shadow any outer variable of the same name so the body sees the loop var.
+  Value *OldVal = NamedValues[VarName];
+  NamedValues[VarName] = Variable;
+
+  // Evaluate the condition; treat 0.0 as false, anything else as true.
+  Value *CondVal = Condition->codegen();
+  if (!CondVal)
+    return nullptr;
+  CondVal = TheBuilder->CreateFCmpONE(
+      CondVal, ConstantFP::get(*TheContext, APFloat(0.0)), "loopcond");
+  TheBuilder->CreateCondBr(CondVal, BodyBB, AfterBB);
+
+  // ---- loop_body ----
+  TheBuilder->SetInsertPoint(BodyBB);
+
+  // Body is evaluated for side effects; its value is discarded.
+  if (!Body->codegen())
+    return nullptr;
+
+  // Step: advance the loop variable.
+  Value *StepVal = Step->codegen();
+  if (!StepVal)
+    return nullptr;
+  Value *NextVar = TheBuilder->CreateFAdd(Variable, StepVal, "nextvar");
+
+  // Body codegen may have changed the insert block (e.g. nested ifs added
+  // blocks). Capture where the body actually ended for the PHI back-edge.
+  BasicBlock *BodyEndBB = TheBuilder->GetInsertBlock();
+  Variable->addIncoming(NextVar, BodyEndBB);
+  TheBuilder->CreateBr(CondBB);
+
+  // ---- after_loop ----
+  TheBuilder->SetInsertPoint(AfterBB);
+
+  // Restore the shadowed variable (if any) now that the loop is done.
+  if (OldVal)
+    NamedValues[VarName] = OldVal;
+  else
+    NamedValues.erase(VarName);
+
+  // The for expression always produces 0.0.
+  return ConstantFP::get(*TheContext, APFloat(0.0));
+}
+```
 
 **Full unoptimized IR for `for i = 1, i <= 3, 1: printd(i)` as a top-level expression:**
 

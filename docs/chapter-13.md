@@ -119,8 +119,8 @@ static unique_ptr<ExpressionNode> ParseIfStatement() {
   bool LastBranchHadTrailingEol = false;
 
   while (true) {
-    auto Cond = ParseExpression();
-    if (!Cond)
+    auto Condition = ParseExpression();
+    if (!Condition)
       return nullptr;
 
     if (CurrentToken != tok_colon)
@@ -136,7 +136,7 @@ static unique_ptr<ExpressionNode> ParseIfStatement() {
       getNextToken();
     LastBranchHadTrailingEol = (CurrentToken == tok_eol);
 
-    Branches.push_back({std::move(Cond), std::move(Body)});
+    Branches.push_back({std::move(Condition), std::move(Body)});
     consumeNewlines();
 
     if (CurrentToken != tok_elif)

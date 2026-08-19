@@ -106,7 +106,7 @@ enum Token {
   tok_percent = '%',
   tok_less = '<',
   tok_greater = '>',
-  tok_equal = '=',
+  tok_assign = '=',
 };
 
 static string Name; // Filled in if tok_name
@@ -375,7 +375,7 @@ static int getToken() {
   // peek(), if the next one completes a recognized token, eat it, and return
   // token; otherwise, I return the named single-character token.
   if (LastChar == '=') {
-    int Tok = (peek() == '=') ? (advance(), tok_eq) : tok_equal;
+    int Tok = (peek() == '=') ? (advance(), tok_eq) : tok_assign;
     LastChar = advance();
     return Tok;
   }
@@ -432,7 +432,7 @@ static int getToken() {
   case '>':
     return tok_greater;
   case '=':
-    return tok_equal;
+    return tok_assign;
   default:
     return ThisChar;
   }
@@ -516,8 +516,6 @@ static void LogInvalidNumberLiteralAtLocation(const string &Literal,
 //===----------------------------------------===//
 // Abstract Syntax Tree (aka Parse Tree)
 //===----------------------------------------===//
-namespace {
-
 /// ExpressionNode - Base class for all expression nodes.
 class ExpressionNode {
 public:
@@ -594,14 +592,14 @@ public:
 class ForExpressionNode : public ExpressionNode {
   string VarName;
   bool IsVarDecl;
-  unique_ptr<ExpressionNode> Start, Cond, Step, Body;
+  unique_ptr<ExpressionNode> Start, Condition, Step, Body;
 
 public:
   ForExpressionNode(const string &VarName, bool IsVarDecl, unique_ptr<ExpressionNode> Start,
-             unique_ptr<ExpressionNode> Cond, unique_ptr<ExpressionNode> Step,
+             unique_ptr<ExpressionNode> Condition, unique_ptr<ExpressionNode> Step,
              unique_ptr<ExpressionNode> Body)
       : VarName(VarName), IsVarDecl(IsVarDecl), Start(std::move(Start)),
-        Cond(std::move(Cond)), Step(std::move(Step)), Body(std::move(Body)) {}
+        Condition(std::move(Condition)), Step(std::move(Step)), Body(std::move(Body)) {}
   Value *codegen() override;
 };
 
@@ -620,12 +618,12 @@ public:
 
 /// IfExpressionNode - Expression class for if/else.
 class IfExpressionNode : public ExpressionNode {
-  unique_ptr<ExpressionNode> Cond, Then, Else;
+  unique_ptr<ExpressionNode> Condition, Then, Else;
 
 public:
-  IfExpressionNode(unique_ptr<ExpressionNode> Cond, unique_ptr<ExpressionNode> Then,
+  IfExpressionNode(unique_ptr<ExpressionNode> Condition, unique_ptr<ExpressionNode> Then,
             unique_ptr<ExpressionNode> Else)
-      : Cond(std::move(Cond)), Then(std::move(Then)), Else(std::move(Else)) {}
+      : Condition(std::move(Condition)), Then(std::move(Then)), Else(std::move(Else)) {}
   Value *codegen() override;
 };
 
@@ -672,8 +670,6 @@ public:
       : Signature(std::move(Signature)), Body(std::move(Body)) {}
   Function *codegen();
 };
-
-} // end anonymous namespace
 
 //===----------------------------------------===//
 // Parser
@@ -826,7 +822,7 @@ static unique_ptr<ExpressionNode> ParseForExpression() {
   string VarName = Name;
   getNextToken(); // eat name
 
-  if (CurrentToken != tok_equal)
+  if (CurrentToken != tok_assign)
     return LogErrorExpression("Expected '=' after for variable");
   getNextToken(); // eat '='
 
@@ -838,8 +834,8 @@ static unique_ptr<ExpressionNode> ParseForExpression() {
     return LogErrorExpression("Expected ',' after for start value");
   getNextToken(); // eat ','
 
-  auto Cond = ParseExpression();
-  if (!Cond)
+  auto Condition = ParseExpression();
+  if (!Condition)
     return nullptr;
 
   if (CurrentToken != tok_comma)
@@ -862,7 +858,7 @@ static unique_ptr<ExpressionNode> ParseForExpression() {
     return nullptr;
 
   return make_unique<ForExpressionNode>(VarName, IsVarDecl, std::move(Start),
-                                        std::move(Cond), std::move(Step),
+                                        std::move(Condition), std::move(Step),
                                         std::move(Body));
 }
 
@@ -885,7 +881,7 @@ static unique_ptr<ExpressionNode> ParseVariableExpression() {
     getNextToken(); // eat name
 
     unique_ptr<ExpressionNode> Init;
-    if (CurrentToken == tok_equal) {
+    if (CurrentToken == tok_assign) {
       getNextToken(); // eat '='
       Init = ParseExpression();
       if (!Init)
@@ -919,8 +915,8 @@ static unique_ptr<ExpressionNode> ParseVariableExpression() {
 static unique_ptr<ExpressionNode> ParseIfExpression() {
   getNextToken(); // eat 'if'
 
-  auto Cond = ParseExpression();
-  if (!Cond)
+  auto Condition = ParseExpression();
+  if (!Condition)
     return nullptr;
 
   if (CurrentToken != tok_colon)
@@ -952,7 +948,7 @@ static unique_ptr<ExpressionNode> ParseIfExpression() {
   if (!Else)
     return nullptr;
 
-  return make_unique<IfExpressionNode>(std::move(Cond), std::move(Then),
+  return make_unique<IfExpressionNode>(std::move(Condition), std::move(Then),
                                 std::move(Else));
 }
 
@@ -1066,7 +1062,7 @@ static unique_ptr<ExpressionNode> ParseExpression() {
   if (!Expr)
     return nullptr;
 
-  if (CurrentToken != tok_equal)
+  if (CurrentToken != tok_assign)
     return Expr;
 
   const string *AssignedName = Expr->getLValueName();
@@ -1409,7 +1405,7 @@ Value *CallExpressionNode::codegen() {
 /// Emitted control flow:
 ///
 ///   <current>:
-///     ; Cond codegen emits a double value %condv
+///     ; Condition codegen emits a double value %condv
 ///     %ifcond = fcmp one double %condv, 0.0 ; convert the double to i1
 ///     br i1 %ifcond, label %then, label %else
 ///
@@ -1430,7 +1426,7 @@ Value *CallExpressionNode::codegen() {
 /// control flow can move the TheBuilder insertion point to a different block.
 /// PHI incoming edges must use the actual terminating blocks of each arm.
 Value *IfExpressionNode::codegen() {
-  Value *CondV = Cond->codegen();
+  Value *CondV = Condition->codegen();
   if (!CondV)
     return nullptr;
 
@@ -1486,7 +1482,7 @@ Value *IfExpressionNode::codegen() {
 ///     br label %loop_cond
 ///
 ///   loop_cond:
-///     %condv = <Cond codegen>
+///     %condv = <Condition codegen>
 ///     %loopcond = fcmp one double %condv, 0.0
 ///     br i1 %loopcond, label %loop_body, label %after_loop
 ///
@@ -1503,7 +1499,7 @@ Value *IfExpressionNode::codegen() {
 ///     ; for-expression result:
 ///     ret-like value = 0.0
 ///
-/// The loop variable name is rebound to the alloca for Cond/Step/Body, then
+/// The loop variable name is rebound to the alloca for Condition/Step/Body, then
 /// restored after the loop.
 Value *ForExpressionNode::codegen() {
   Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
@@ -1539,7 +1535,7 @@ Value *ForExpressionNode::codegen() {
 
   TheBuilder->SetInsertPoint(CondBB);
 
-  Value *CondVal = Cond->codegen();
+  Value *CondVal = Condition->codegen();
   if (!CondVal)
     return nullptr;
   CondVal = TheBuilder->CreateFCmpONE(

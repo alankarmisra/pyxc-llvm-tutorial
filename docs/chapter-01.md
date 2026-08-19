@@ -6,7 +6,7 @@ description: "Analyzing program words"
 
 ## Starting Small
 
-They tell me writing compilers is hard. The more I think about it, the harder it seems. So I'm going to stop thinking about it—not completely, just enough to start small and build from there.
+Everyone I asked said writing a compiler was hard, which is the sort of thing people say right before you find out it's actually much worse. Rather than dwell on that, I'm going to do what I always do when a task looks insurmountable: pretend it's small, and start anyway.
 
 I'll begin by writing a small program to get an idea of the syntax I want. I've built plenty of calculators while learning new programming languages, so I'll start with an `add` function:
 

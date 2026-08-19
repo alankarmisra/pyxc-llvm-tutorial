@@ -84,7 +84,7 @@ static unique_ptr<ExpressionNode> ParseAssignment() {
   auto Left = ParseLogicalOr();
   if (!Left)
     return nullptr;
-  if (CurrentToken != tok_equal)
+  if (CurrentToken != tok_assign)
     return Left;
   if (!Left->isLValue())
     return LogErrorExpression("Assignment target must be assignable");
@@ -164,7 +164,7 @@ That `isLValue()` check only fires once `Left` has already parsed successfully. 
 *  if (CurrentToken != tok_lparen) { // Simple variable ref.
 *    ValueType Type = LookupVarType(ParsedName);
 *    if (Type == ValueType::Error) {
-+      if (CurrentToken == tok_equal)
++      if (CurrentToken == tok_assign)
 +        return LogErrorExpression("Assignment to undeclared variable");
 *      return LogErrorExpression("Unknown variable name");
 *    }

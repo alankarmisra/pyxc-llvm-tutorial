@@ -210,7 +210,7 @@ enum Token {
   tok_percent = '%',
   tok_less = '<',
   tok_greater = '>',
-  tok_equal = '=',
+  tok_assign = '=',
   tok_exclamation = '!',
   tok_ampersand = '&',
   tok_pipe = '|',
@@ -950,7 +950,7 @@ static int getToken() {
   }
 
   if (LexerLastChar == '=') {
-    int Tok = (peek() == '=') ? (advance(), tok_eq) : tok_equal;
+    int Tok = (peek() == '=') ? (advance(), tok_eq) : tok_assign;
     LexerLastChar = advance();
     return Tok;
   }
@@ -1035,7 +1035,7 @@ static int getToken() {
   case '>':
     return tok_greater;
   case '=':
-    return tok_equal;
+    return tok_assign;
   default:
     return ThisChar;
   }
@@ -1137,8 +1137,6 @@ static void LogInvalidNumberLiteralAtLocation(const string &Literal,
 //===----------------------------------------===//
 // Abstract Syntax Tree (aka Parse Tree)
 //===----------------------------------------===//
-namespace {
-
 /// ExpressionNode - Base class for all expression nodes.
 class ExpressionNode {
   ValueType Type = ValueType::Error;
@@ -1432,14 +1430,14 @@ class ForStatementNode : public ExpressionNode {
   string VarName;
   bool IsVarDecl;
   ValueType VarType;
-  unique_ptr<ExpressionNode> Start, Cond, Step, Body;
+  unique_ptr<ExpressionNode> Start, Condition, Step, Body;
 
 public:
   ForStatementNode(const string &VarName, bool IsVarDecl, ValueType VarType,
-             unique_ptr<ExpressionNode> Start, unique_ptr<ExpressionNode> Cond,
+             unique_ptr<ExpressionNode> Start, unique_ptr<ExpressionNode> Condition,
              unique_ptr<ExpressionNode> Step, unique_ptr<ExpressionNode> Body)
       : VarName(VarName), IsVarDecl(IsVarDecl), VarType(VarType),
-        Start(std::move(Start)), Cond(std::move(Cond)), Step(std::move(Step)),
+        Start(std::move(Start)), Condition(std::move(Condition)), Step(std::move(Step)),
         Body(std::move(Body)) {
     setType(ValueType::None);
   }
@@ -1450,13 +1448,13 @@ public:
 
 /// WhileStatementNode - Statement class for while and do/while loops.
 class WhileStatementNode : public ExpressionNode {
-  unique_ptr<ExpressionNode> Cond, Body;
+  unique_ptr<ExpressionNode> Condition, Body;
   bool IsDoWhile;
 
 public:
-  WhileStatementNode(unique_ptr<ExpressionNode> Cond,
+  WhileStatementNode(unique_ptr<ExpressionNode> Condition,
                      unique_ptr<ExpressionNode> Body, bool IsDoWhile)
-      : Cond(std::move(Cond)), Body(std::move(Body)), IsDoWhile(IsDoWhile) {
+      : Condition(std::move(Condition)), Body(std::move(Body)), IsDoWhile(IsDoWhile) {
     setType(ValueType::None);
   }
   bool shouldPrintValue() const override { return false; }
@@ -1544,12 +1542,12 @@ public:
 /// IfStatementNode - Statement form of if/else.
 /// Produces 0.0 and does not return a value.
 class IfStatementNode : public ExpressionNode {
-  unique_ptr<ExpressionNode> Cond, Then, Else;
+  unique_ptr<ExpressionNode> Condition, Then, Else;
 
 public:
-  IfStatementNode(unique_ptr<ExpressionNode> Cond, unique_ptr<ExpressionNode> Then,
+  IfStatementNode(unique_ptr<ExpressionNode> Condition, unique_ptr<ExpressionNode> Then,
             unique_ptr<ExpressionNode> Else)
-      : Cond(std::move(Cond)), Then(std::move(Then)), Else(std::move(Else)) {
+      : Condition(std::move(Condition)), Then(std::move(Then)), Else(std::move(Else)) {
     setType(ValueType::None);
   }
   bool shouldPrintValue() const override { return false; }
@@ -1653,8 +1651,6 @@ public:
   ValueType getReturnType() const { return Signature->getReturnType(); }
   Function *codegen();
 };
-
-} // end anonymous namespace
 
 //===----------------------------------------===//
 // Parser
@@ -2295,7 +2291,7 @@ static bool ParseTypeAliasDefinition() {
     return false;
   }
   getNextToken(); // eat alias name
-  if (CurrentToken != tok_equal) {
+  if (CurrentToken != tok_assign) {
     LogErrorExpression("Expected '=' in type alias");
     return false;
   }
@@ -2596,7 +2592,7 @@ static unique_ptr<ExpressionNode> ParseNameExpressionWithName(const string &Pars
   if (CurrentToken != tok_lparen) { // Simple variable ref.
     ValueType Type = LookupVarType(ParsedName);
     if (Type == ValueType::Error) {
-      if (CurrentToken == tok_equal)
+      if (CurrentToken == tok_assign)
         return LogErrorExpression("Assignment to undeclared variable");
       return LogErrorExpression("Unknown variable name");
     }
@@ -2975,11 +2971,11 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
 
 // ParseForParts - Parse the "= start, cond, step : suite" tail of a for-loop.
 // Also validates the parts against VarType (start/step assignable, cond bool).
-// Returns true on success and fills Start/Cond/Step/Body.
+// Returns true on success and fills Start/Condition/Step/Body.
 static bool ParseForParts(ValueType VarType, unique_ptr<ExpressionNode> &Start,
-                          unique_ptr<ExpressionNode> &Cond, unique_ptr<ExpressionNode> &Step,
+                          unique_ptr<ExpressionNode> &Condition, unique_ptr<ExpressionNode> &Step,
                           unique_ptr<ExpressionNode> &Body) {
-  if (CurrentToken != tok_equal)
+  if (CurrentToken != tok_assign)
     return LogErrorExpression("Expected '=' after for variable"), false;
   getNextToken(); // eat '='
 
@@ -2995,10 +2991,10 @@ static bool ParseForParts(ValueType VarType, unique_ptr<ExpressionNode> &Start,
     return LogErrorExpression("Expected ',' after for start value"), false;
   getNextToken(); // eat ','
 
-  Cond = ParseExpression();
-  if (!Cond)
+  Condition = ParseExpression();
+  if (!Condition)
     return false;
-  if (Cond->getType() != ValueType::Bool)
+  if (Condition->getType() != ValueType::Bool)
     return LogErrorExpression("For loop condition must be bool"), false;
 
   if (CurrentToken != tok_comma)
@@ -3068,18 +3064,18 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
       return LogErrorExpression("Assignment to undeclared variable");
   }
 
-  unique_ptr<ExpressionNode> Start, Cond, Step, Body;
+  unique_ptr<ExpressionNode> Start, Condition, Step, Body;
 
   if (IsVarDecl) {
     LoopScopeGuard LoopScope(VarName, VarType);
-    if (!ParseForParts(VarType, Start, Cond, Step, Body))
+    if (!ParseForParts(VarType, Start, Condition, Step, Body))
       return nullptr;
   } else {
-    if (!ParseForParts(VarType, Start, Cond, Step, Body))
+    if (!ParseForParts(VarType, Start, Condition, Step, Body))
       return nullptr;
   }
   return make_unique<ForStatementNode>(VarName, IsVarDecl, VarType, std::move(Start),
-                                 std::move(Cond), std::move(Step),
+                                 std::move(Condition), std::move(Step),
                                  std::move(Body));
 }
 
@@ -3087,10 +3083,10 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
 ///   = "while" expression ":" suite ;
 static unique_ptr<ExpressionNode> ParseWhileStatement() {
   getNextToken(); // eat 'while'
-  auto Cond = ParseExpression();
-  if (!Cond)
+  auto Condition = ParseExpression();
+  if (!Condition)
     return nullptr;
-  if (Cond->getType() != ValueType::Bool)
+  if (Condition->getType() != ValueType::Bool)
     return LogErrorExpression("While condition must be bool");
   if (CurrentToken != tok_colon)
     return LogErrorExpression("Expected ':' after while condition");
@@ -3100,7 +3096,7 @@ static unique_ptr<ExpressionNode> ParseWhileStatement() {
   auto Body = ParseSuite();
   if (!Body)
     return nullptr;
-  return make_unique<WhileStatementNode>(std::move(Cond), std::move(Body),
+  return make_unique<WhileStatementNode>(std::move(Condition), std::move(Body),
                                          false);
 }
 
@@ -3125,12 +3121,12 @@ static unique_ptr<ExpressionNode> ParseDoWhileStatement() {
     return LogErrorExpression("Expected 'while' after do body");
   getNextToken(); // eat 'while'
 
-  auto Cond = ParseExpression();
-  if (!Cond)
+  auto Condition = ParseExpression();
+  if (!Condition)
     return nullptr;
-  if (Cond->getType() != ValueType::Bool)
+  if (Condition->getType() != ValueType::Bool)
     return LogErrorExpression("Do/while condition must be bool");
-  return make_unique<WhileStatementNode>(std::move(Cond), std::move(Body), true);
+  return make_unique<WhileStatementNode>(std::move(Condition), std::move(Body), true);
 }
 
 static bool ParseSwitchCaseValue(int64_t &Value) {
@@ -3294,7 +3290,7 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
 
     unique_ptr<ExpressionNode> Init;
     // [ "=" expression ]
-    if (CurrentToken == tok_equal) {
+    if (CurrentToken == tok_assign) {
       getNextToken(); // eat '='
       ExpectedLiteralTypeGuard Guard(DeclType, DeclStructName);
       Init = ParseExpression();
@@ -3956,7 +3952,7 @@ ParseBinaryExpressionRight(unique_ptr<ExpressionNode> Left) {
 }
 
 static bool IsAssignmentOperator(int Token) {
-  return Token == tok_equal || Token == tok_plus_equal ||
+  return Token == tok_assign || Token == tok_plus_equal ||
          Token == tok_minus_equal || Token == tok_star_equal ||
          Token == tok_slash_equal || Token == tok_percent_equal;
 }
@@ -4002,7 +3998,7 @@ static unique_ptr<ExpressionNode> ParseAssignment() {
   if (LeftType == ValueType::Array)
     return LogErrorExpression("Type mismatch in assignment");
 
-  if (AssignmentOperator != tok_equal) {
+  if (AssignmentOperator != tok_assign) {
     int BinaryOperator = AssignmentBinaryOperator(AssignmentOperator);
     ValueType ResultType =
         GetBinaryResultType(BinaryOperator, LeftType, LeftTypeInfo,
@@ -6060,11 +6056,11 @@ Value *ConstructorCallExpressionNode::codegen() {
 /// If there is no else branch, control falls through to the merge block.
 /// The statement evaluates to 0.0.
 Value *IfStatementNode::codegen() {
-  Value *CondV = Cond->codegen();
+  Value *CondV = Condition->codegen();
   if (!CondV)
     return nullptr;
 
-  CondV = ToBool(CondV, Cond->getType());
+  CondV = ToBool(CondV, Condition->getType());
   if (!CondV)
     return LogErrorValue("Invalid condition type");
 
@@ -6150,10 +6146,10 @@ Value *ForStatementNode::codegen() {
   TheBuilder->SetInsertPoint(CondBB);
 
 
-  Value *CondVal = Cond->codegen();
+  Value *CondVal = Condition->codegen();
   if (!CondVal)
     return nullptr;
-  CondVal = ToBool(CondVal, Cond->getType());
+  CondVal = ToBool(CondVal, Condition->getType());
   if (!CondVal)
     return LogErrorValue("Invalid loop condition type");
   TheBuilder->CreateCondBr(CondVal, BodyBB, AfterBB);
@@ -6214,10 +6210,10 @@ Value *WhileStatementNode::codegen() {
 
   if (!IsDoWhile) {
     TheBuilder->SetInsertPoint(ConditionBlock);
-    Value *ConditionValue = Cond->codegen();
+    Value *ConditionValue = Condition->codegen();
     if (!ConditionValue)
       return nullptr;
-    ConditionValue = ToBool(ConditionValue, Cond->getType());
+    ConditionValue = ToBool(ConditionValue, Condition->getType());
     if (!ConditionValue)
       return LogErrorValue("Invalid loop condition type");
     TheBuilder->CreateCondBr(ConditionValue, BodyBlock, AfterBlock);
@@ -6238,10 +6234,10 @@ Value *WhileStatementNode::codegen() {
 
   TheBuilder->SetInsertPoint(ConditionBlock);
   if (IsDoWhile) {
-    Value *ConditionValue = Cond->codegen();
+    Value *ConditionValue = Condition->codegen();
     if (!ConditionValue)
       return nullptr;
-    ConditionValue = ToBool(ConditionValue, Cond->getType());
+    ConditionValue = ToBool(ConditionValue, Condition->getType());
     if (!ConditionValue)
       return LogErrorValue("Invalid loop condition type");
     TheBuilder->CreateCondBr(ConditionValue, BodyBlock, AfterBlock);

@@ -5,7 +5,7 @@ description: "Encode operator precedence in the grammar, then parse subtraction,
 
 ## What I Am Building
 
-In this chapter, I introduce the `-`, `*`, `/`, and `<` operators.  
+It has come to my attention that `2 + 3 * 4` is supposed to equal `14`, and not, as my parser currently believes, `20`. This is apparently not optional. Grade-school arithmetic has opinions about which operations happen first, and in this chapter I teach my grammar to share them, adding `-`, `*`, `/`, and `<` along the way.
 
 ## Source Code
 

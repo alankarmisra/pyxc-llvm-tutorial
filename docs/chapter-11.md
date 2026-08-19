@@ -207,7 +207,7 @@ static unique_ptr<ExpressionNode> ParseVariableExpression() {
     getNextToken(); // eat name
 
     unique_ptr<ExpressionNode> Init;
-    if (CurrentToken == tok_equal) {
+    if (CurrentToken == tok_assign) {
       getNextToken(); // eat '='
       Init = ParseExpression();
       if (!Init)
@@ -266,7 +266,7 @@ If there's no `=`, the variable defaults to `0.0`. The binding always produces a
 Once `ParseComparison` returns — the same top-of-the-chain call chapter 10 already parses every expression through — `ParseExpression` checks whether `=` follows. If not, it hands back the expression unchanged. If so, the left-hand side has to be a plain variable name, or it's a parse error:
 
 ```cpp
-  if (CurrentToken != tok_equal)
+  if (CurrentToken != tok_assign)
     return Expr; // no assignment — return the expression as-is
 
   // The left-hand side must be a plain variable name (an lvalue).
