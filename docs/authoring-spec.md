@@ -292,7 +292,7 @@ Every chapter doc that introduces grammar changes has a `## Grammar` section pla
 
 **Structure:**
 1. A path line above the code block: `` `code/chapter-N/pyxc.ebnf` ``.
-2. A single fenced `grammardiff` code block: the complete grammar rendered as a unified diff against the previous chapter's real `.ebnf` file — unchanged lines get a leading space, added lines a leading `+`, removed lines a leading `-`. This is the whole grammar, not just the changed productions; the diff markers are what let a reader see at a glance what's new. Verify it by reconstructing both the "old" (context + `-` lines) and "new" (context + `+` lines) sides and diffing each against the real `code/chapter-(N-1)/pyxc.ebnf` and `code/chapter-N/pyxc.ebnf`.
+2. A single fenced `grammardiff` code block against the previous chapter's real `.ebnf` file — added lines get a leading `+`, removed lines a leading `-`, unchanged context lines get a leading `*` (not a plain space — see §4.5). Trim to the changed production(s) plus a couple of neighboring lines for orientation, eliding longer unchanged stretches with `*...`; don't reproduce the entire grammar file every time. Verify it by reconstructing both the "old" (context + `-` lines) and "new" (context + `+` lines) sides and diffing each against the real `code/chapter-(N-1)/pyxc.ebnf` and `code/chapter-N/pyxc.ebnf`.
 3. Brief prose below the block explaining any non-obvious terminal symbols or naming the specific productions that changed.
 
 Unchanged, purely-explanatory `(* ... *)` comment banners (e.g. the `comment`/`whitespace` doc-comments) may be omitted from the diff entirely rather than shown as unchanged context — they don't affect the grammar and just add noise.
@@ -308,6 +308,34 @@ When a Parse* function A calls another Parse* function B that is defined later i
 ### 4.4 lit.cfg.py
 
 `config.name` must be `"pyxc-chapterNN"` (zero-padded to two digits, e.g. `"pyxc-chapter09"`). If the test directory contains `.pyxc` files that are not lit tests (e.g. exploratory scripts with no `# RUN:` lines), list them explicitly in `config.excludes`.
+
+### 4.5 Code Diff Conventions (`cppdiff` / `grammardiff`)
+
+This is the single most common type of edit request in this project — "needs context," "needs a diff," "put some context here." Understand what to do on sight, from the code block alone, without needing the chapter or file named first: the fragment itself tells you what's missing and how to fix it.
+
+**The purpose of "context" is copy-paste applicability, nothing else.** A reader is meant to take a block's `+`/`~` lines and paste them into their own copy of the previous chapter's code. The `*` lines around them exist so the reader knows exactly *where* to paste — not to explain what the code does, why it exists, or how it works. Don't answer "needs context" with a functional walkthrough; that's a separate request if the user wants it separately.
+
+**What a bare/context-free code block looks like, and how to fix it:**
+0. **Find which chapter first, if not stated — search `docs/chapter-*.md`, not `code/chapter-*/pyxc.cpp`.** Most functions are introduced once and then persist unchanged in every later chapter's *source*, so grepping the source for an exact snippet routinely returns 10, 20, even 36 matches — useless for disambiguation (e.g. `static int peek() {` exists verbatim in 36 chapters' `pyxc.cpp`, but appears as a bare block in exactly one chapter's *doc*, `chapter-10.md`, where it's introduced). Grep `docs/chapter-*.md` for the exact snippet text first: it should match exactly one file, since a given block is normally shown bare only in the chapter that introduces it. If the docs grep gives zero or multiple hits, then fall back to asking, or to context already active in the conversation (files recently discussed/modified) — don't guess from a source-only match.
+1. Once the chapter is known, read that chapter's real `pyxc.cpp` (grep/Read — never reconstruct from memory) and find where the fragment actually sits.
+2. **If the edit lands inside an existing function, always show that function's real signature line**, even if everything between the signature and the edit point is elided with `*...`. The signature is the anchor a reader searches their own file for; without it, "where do I paste this" has no answer. Keep enough of the surrounding body that the exact insertion point is unambiguous — don't elide so aggressively that two different spots in the function would look interchangeable.
+3. **If the edit is outside any function** (a global, an `#include`, an enum member, a map entry, a top-level declaration), show the real line(s) immediately above and below the insertion point, taken verbatim from the actual source — not a fabricated wrapper. That pair of real neighboring lines is the anchor.
+4. Decide whether it's an **incremental change** from the previous chapter (the surrounding structure already existed there) or **brand new** (nothing to diff against).
+5. Incremental → rewrite as a ` ```cppdiff ` block (markers below), diffed against the real previous chapter's source, anchored per steps 2–3.
+6. Brand new → rewrite as a plain ` ```cpp ` block with the real, complete enclosing context — not invented. Check whether the doc already stripped a real `///` doc comment that sits above the function in source (a common way context goes missing); restore it verbatim rather than paraphrasing.
+7. Verify every written line against the actual source before finalizing.
+
+**`cppdiff` markers** (a project-specific fence type — not literal `diff` output):
+- `+` — added line, diff-add styling.
+- `-` — removed line, diff-remove styling.
+- `*` — unchanged context line, included only to orient the reader. **Not a plain leading space** (unlike a standard unified diff) — the site's custom renderer grays out `*`-prefixed lines. Elide long unchanged stretches with a single `*...` line rather than reproducing everything.
+- `~` — added line shown with full syntax highlighting instead of diff-add styling. Use in place of `+` when most of the block is new and marking every line as an addition would be noise; `~` still signals "new in this diff" but reads like normal code. Reserve plain `+` for a genuinely small, incremental slice next to substantial unchanged (`*`) context.
+
+**Don't force a diff onto a total rewrite.** If the change is a structural rewrite (a static map replaced by a lambda-built one, a function body reorganized top to bottom), a line-by-line diff is nearly all `-`/`+` with no real unchanged core — that's less readable than a plain, complete `cpp` block. Use `cppdiff` only when there's a meaningful unchanged anchor to show it against.
+
+**Don't duplicate identical lines across `-` and `+`.** A byte-identical line before and after is unchanged — mark it `*` once. Don't show it as removed and immediately re-added just because it sits between real changes.
+
+**`grammardiff`** uses the same `+`/`-`/`*` markers, applied to the chapter's `.ebnf`. Trim to the changed production(s) plus a couple of neighboring lines for orientation, eliding the rest with `*...` — not the entire grammar every time (this supersedes §4.1's "whole grammar" wording below, which predates this convention).
 
 ---
 
@@ -431,6 +459,51 @@ Chapter 3 also requires tests for the diagnostic infrastructure itself:
 
 **Chapter 6** tests: verify JIT execution (`grep -q "Evaluated to"`), numeric correctness (grep for exact value), cross-module function calls, optimisation IR shape (grep for specific instruction patterns like `fmul double %addtmp, %addtmp`), and runtime library callability. No double-print: each module is handed to the JIT so the IR appears only once per function.
 
+### 5.8 Test Coverage Audits (`llvm-cov`)
+
+When asked to "ensure test suite completeness" or "check test coverage" for a chapter, don't eyeball the test list — instrument the binary and measure. Procedure:
+
+1. **Build a coverage-instrumented copy in a separate directory,** never touching the chapter's normal `build/`:
+   ```bash
+   cd code/chapter-NN
+   cmake -S . -B build-cov -DCMAKE_CXX_COMPILER=/opt/homebrew/Cellar/llvm/22.1.4/bin/clang++ \
+     -DCMAKE_CXX_FLAGS="-fprofile-instr-generate -fcoverage-mapping" \
+     -DCMAKE_EXE_LINKER_FLAGS="-fprofile-instr-generate" \
+     -DCMAKE_BUILD_TYPE=Debug
+   cmake --build build-cov -j8
+   ```
+   Use the Homebrew clang++, not the self-built one at `/Users/alankar/Documents/opensource/llvm-project/build` — the self-built tree is missing compiler-rt's profile runtime (`libclang_rt.profile_osx.a`), so linking with `-fprofile-instr-generate` fails there. `cmake`'s `find_package(LLVM)` will still resolve headers/libs from whichever LLVM tree it finds first; that mismatch hasn't caused problems in practice.
+
+2. **Run the full suite against the instrumented binary**, capturing one profile per process. Temporarily repoint `test/lit.cfg.py`'s `%pyxc` substitution from `build` to `build-cov` (check `git status` on it first and after — revert immediately once the run finishes, before doing anything else):
+   ```bash
+   sed -i.bak 's/"build", "pyxc"/"build-cov", "pyxc"/' test/lit.cfg.py
+   LLVM_PROFILE_FILE="/tmp/pyxcNN-cov/%p.profraw" llvm-lit test/ -j1
+   mv test/lit.cfg.py.bak test/lit.cfg.py
+   ```
+
+3. **Merge and report:**
+   ```bash
+   llvm-profdata merge -sparse /tmp/pyxcNN-cov/*.profraw -o /tmp/pyxcNN-cov/merged.profdata
+   llvm-cov report ./build-cov/pyxc pyxc.cpp -instr-profile=/tmp/pyxcNN-cov/merged.profdata -show-functions
+   ```
+   Filter out rows already at 100%/100%/100%. Drill into a specific function's line-by-line hit counts with:
+   ```bash
+   llvm-cov show ./build-cov/pyxc pyxc.cpp -instr-profile=/tmp/pyxcNN-cov/merged.profdata --name=<function-name>
+   ```
+
+4. **Triage every uncovered spot before writing a test.** Two categories:
+   - **Genuine gap** — a real, reachable scenario a reader could actually hit that no test exercises (an out-of-range CLI flag value, a missing input file, an untested error branch). Write a test for it.
+   - **Defensive/unreachable code** — a guard the grammar or lexer makes structurally impossible to trigger (e.g. `UnaryExpressionNode` only ever constructed with `tok_minus`, so its "invalid operator" branch is dead; `FormatTokenForMessage`'s "unknown token" fallback is dead once every byte 0–255 has a name). These are often explicitly commented as defensive in the source itself ("shouldn't happen", "just in case"). **Do not write a test that contrives an invalid internal state just to hit one of these** — that tests nothing a real user would do. Note it and move on. A 0%-covered method with no call sites anywhere in the file (e.g. an unused `SourceManager::reset()`) is dead code, not a missing test — flag it as such, don't fabricate a caller for it.
+
+5. **New tests follow the existing conventions** (§5.2–§5.4): `# RUN:` directives, a `#` comment explaining what's exercised and why, FileCheck or grep assertions. For an expected-failure scenario, prefix with `not` so lit checks for a nonzero exit code: `# RUN: not %pyxc -O4 < %s > %t 2>&1`.
+
+6. **Roll new tests forward.** A gap found in chapter N almost always still exists in every later chapter, since the test suite is meant to be an incremental superset across chapters (§7). Once a new test closes a real gap:
+   - Verify the underlying behavior (exact error text, which function it lives in) is still present and unchanged in later chapters before copying verbatim — grep for the message text across the later chapters' `pyxc.cpp` files. A changed exit code alone (e.g. `-1` becoming a different value at the OS level in different chapters) doesn't block a verbatim copy as long as it stays nonzero and the test only checks for `not`/failure.
+   - Copy the test file into every later chapter's `test/` directory.
+   - Spot-check a representative sample (e.g. every 5th chapter plus the last) by building that chapter's normal `build/` (no coverage instrumentation needed for a spot check) and running `llvm-lit test/<new-test>.pyxc` directly.
+
+7. **Clean up afterward:** remove the `build-cov/` directory and the temp `/tmp/pyxcNN-cov/` profile data. Confirm `git status` on `test/lit.cfg.py` is clean (no leftover pointer to `build-cov`).
+
 ---
 
 ## 6. Chapter Checklist
@@ -448,7 +521,8 @@ Before marking a chapter ready to publish:
 - [ ] `code/chapter-N/test/` has tests derived from the grammar (§5.3)
 - [ ] All tests pass: `llvm-lit -v code/chapter-N/test/`
 - [ ] `code/chapter-N/pyxc.ebnf` exists and matches the grammar implemented in `.cpp`
-- [ ] `## Grammar` section in the `.md` is a `grammardiff` fenced block (unified-diff style, leading `+`/`-`/space markers) against the previous chapter's real `pyxc.ebnf`, verified by reconstructing both the old and new sides and diffing each against the real files
+- [ ] `## Grammar` section in the `.md` is a `grammardiff` fenced block (leading `+`/`-`/`*` markers, trimmed to changed productions plus orienting context, per §4.5) against the previous chapter's real `pyxc.ebnf`, verified by reconstructing both the old and new sides and diffing each against the real files
+- [ ] Any bare/context-free `cppdiff` or `cpp` block follows §4.5: incremental changes are diffed against the real previous-chapter source with `+`/`-`/`*`/`~` markers; brand-new code gets real, verified enclosing context instead of an invented wrapper
 - [ ] All `///` EBNF banners in `.cpp` use the same production names as `pyxc.ebnf`
 - [ ] All code snippets in the `.md` are verified against the actual source byte-level where feasible (not just spot-checked), and every visible change/diff has prose explaining it — nothing added or changed silently
 - [ ] Every `+` line across the chapter's code blocks, extracted and concatenated in order, applies cleanly to the previous chapter's code with no forward references and no missing hunks (§2.3)

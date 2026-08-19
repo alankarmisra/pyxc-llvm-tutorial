@@ -131,7 +131,7 @@ struct TopLevelParseGuard {
 +    }
 *
 *    unique_ptr<ExpressionNode> Init;
-*    if (CurrentToken == tok_equal) {
+*    if (CurrentToken == tok_assign) {
 *      getNextToken(); // eat '='
 *      Init = ParseExpression();
 *      if (!Init)

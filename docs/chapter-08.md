@@ -5,6 +5,8 @@ description: "Add ORC JIT and an optimization pass pipeline: top-level expressio
 
 ## What I Am Building
 
+So far my compiler has been an excellent typist: it can turn `foo(2)` into a perfectly formed page of LLVM IR and then just sit there, IR in hand, doing nothing else with it, which is a bit like ordering dinner and receiving a very detailed recipe instead. This chapter finally executes the thing. While I'm in there I also notice my compiler has been computing `1 + 2` twice for no reason, so I fix that too.
+
 In [Chapter 7](chapter-07.md), I generated LLVM IR but did not execute it. For example:
 
 <!-- code-merge:start -->

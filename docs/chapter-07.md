@@ -5,6 +5,8 @@ description: "Connect the AST to LLVM IR: add codegen() to every node and see re
 
 ## What I Am Building
 
+My syntax tree has spent six chapters learning to describe a program in reasonable detail, and none of that will do LLVM any good whatsoever, because LLVM does not speak pyxc and has shown no interest in learning. So this chapter is translation duty: I take everything my tree already knows and say it again, this time in a language the machine understands.
+
 In [Chapter 5](chapter-05.md), I wrote a parser that builds a syntax tree and reports errors. I now want to turn that tree into LLVM intermediate representation (IR). In a later chapter, I will ask LLVM to compile and run this IR. For now, I focus on generating and printing it.
 
 If I enter a function definition:

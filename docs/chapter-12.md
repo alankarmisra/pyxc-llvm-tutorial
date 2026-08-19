@@ -491,13 +491,13 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
   getNextToken(); // eat 'for'
   // ... parse optional 'var', the loop variable name, and its scope check ...
 
-  unique_ptr<ExpressionNode> Start, Cond, Step, Body;
+  unique_ptr<ExpressionNode> Start, Condition, Step, Body;
 
   unique_ptr<LoopScopeGuard> LoopScope;
   if (IsVarDecl)
     LoopScope = make_unique<LoopScopeGuard>(VarName);
 
-  if (!ParseForParts(Start, Cond, Step, Body))
+  if (!ParseForParts(Start, Condition, Step, Body))
     return nullptr;
   // ...
 }
@@ -670,7 +670,7 @@ static unique_ptr<ExpressionNode> ParseLeadingNameSimpleStatement() {
   if (!Expr)
     return nullptr;
 
-  if (CurrentToken != tok_equal)
+  if (CurrentToken != tok_assign)
     return Expr;
 
   const string *AssignedName = Expr->getLValueName();
@@ -687,7 +687,7 @@ static unique_ptr<ExpressionNode> ParseNonLeadingNameSimpleStatement() {
   if (!Expr)
     return nullptr;
 
-  if (CurrentToken != tok_equal)
+  if (CurrentToken != tok_assign)
     return Expr;
 
   return LogErrorExpression("Destination of '=' must be a variable");
@@ -733,7 +733,7 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
           ("Variable '" + ParsedName + "' already declared in this scope").c_str());
 
     unique_ptr<ExpressionNode> Init;
-    if (CurrentToken == tok_equal) {
+    if (CurrentToken == tok_assign) {
       getNextToken(); // eat '='
       Init = ParseExpression();
       if (!Init)
@@ -844,7 +844,7 @@ Assignment codegen is unchanged in substance from [chapter 11](chapter-11.md) â€
 
 ```cpp
 Value *IfStatementNode::codegen() {
-  Value *CondV = Cond->codegen();
+  Value *CondV = Condition->codegen();
   if (!CondV)
     return nullptr;
 
@@ -972,7 +972,7 @@ static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
   if (!Expression)
     return nullptr;
 
-  if (CurrentToken == tok_equal) {
+  if (CurrentToken == tok_assign) {
     const string *AssignedName = Expression->getLValueName();
     if (!AssignedName)
       return LogErrorFunction("Destination of '=' must be a variable");

@@ -5,9 +5,7 @@ description: "Add file input mode and a -v IR flag so pyxc can execute source fi
 
 ## What I Am Building
 
-In [Chapter 8](chapter-08.md), I added a JIT that evaluates expressions immediately. I can still only provide source through the REPL, so I now add file input.
-
-After this change, I can pass a filename to `pyxc`:
+There comes a point in any command-line existence when you realize you have typed `def add(a, b): a + b` into a terminal for the fortieth time, by hand, like some kind of medieval scribe, and that this is not a life. Real programming languages have long since worked out that you can simply put your code in a file and hand it to the computer all at once, an innovation apparently overlooked by whoever designed the REPL I've been living in since Chapter 2. This chapter fixes that oversight, and not a moment too soon.
 
 ```bash
 $ build/pyxc test/file_mode.pyxc

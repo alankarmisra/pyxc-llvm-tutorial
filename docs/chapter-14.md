@@ -115,13 +115,13 @@ Added to the keyword table alongside `for`:
 ```cpp
 /// WhileStatementNode - Statement class for while and do/while loops.
 class WhileStatementNode : public ExpressionNode {
-  unique_ptr<ExpressionNode> Cond, Body;
+  unique_ptr<ExpressionNode> Condition, Body;
   bool IsDoWhile;
 
 public:
-  WhileStatementNode(unique_ptr<ExpressionNode> Cond,
+  WhileStatementNode(unique_ptr<ExpressionNode> Condition,
                      unique_ptr<ExpressionNode> Body, bool IsDoWhile)
-      : Cond(std::move(Cond)), Body(std::move(Body)), IsDoWhile(IsDoWhile) {}
+      : Condition(std::move(Condition)), Body(std::move(Body)), IsDoWhile(IsDoWhile) {}
   Value *codegen() override;
 };
 ```
@@ -174,7 +174,7 @@ static unique_ptr<ExpressionNode> ParseContinueStatement() {
 `ParseForStatement` now installs a `ParseLoopGuard` too, right alongside the scope guard it already had:
 
 ```cpp
-unique_ptr<ExpressionNode> Start, Cond, Step, Body;
+unique_ptr<ExpressionNode> Start, Condition, Step, Body;
 ParseLoopGuard ParseLoop;
 
 unique_ptr<LoopScopeGuard> LoopScope;
@@ -191,8 +191,8 @@ if (IsVarDecl)
 ///   = "while" expression ":" suite ;
 static unique_ptr<ExpressionNode> ParseWhileStatement() {
   getNextToken(); // eat 'while'
-  auto Cond = ParseExpression();
-  if (!Cond)
+  auto Condition = ParseExpression();
+  if (!Condition)
     return nullptr;
   if (CurrentToken != tok_colon)
     return LogErrorExpression("Expected ':' after while condition");
@@ -202,7 +202,7 @@ static unique_ptr<ExpressionNode> ParseWhileStatement() {
   auto Body = ParseSuite();
   if (!Body)
     return nullptr;
-  return make_unique<WhileStatementNode>(std::move(Cond), std::move(Body),
+  return make_unique<WhileStatementNode>(std::move(Condition), std::move(Body),
                                          false);
 }
 ```
@@ -231,10 +231,10 @@ static unique_ptr<ExpressionNode> ParseDoWhileStatement() {
     return LogErrorExpression("Expected 'while' after do body");
   getNextToken(); // eat 'while'
 
-  auto Cond = ParseExpression();
-  if (!Cond)
+  auto Condition = ParseExpression();
+  if (!Condition)
     return nullptr;
-  return make_unique<WhileStatementNode>(std::move(Cond), std::move(Body), true);
+  return make_unique<WhileStatementNode>(std::move(Condition), std::move(Body), true);
 }
 ```
 
@@ -290,7 +290,7 @@ Value *WhileStatementNode::codegen() {
 
   if (!IsDoWhile) {
     TheBuilder->SetInsertPoint(CondBB);
-    Value *ConditionValue = Cond->codegen();
+    Value *ConditionValue = Condition->codegen();
     if (!ConditionValue)
       return nullptr;
     ConditionValue = TheBuilder->CreateFCmpONE(
@@ -311,7 +311,7 @@ Value *WhileStatementNode::codegen() {
 
   TheBuilder->SetInsertPoint(CondBB);
   if (IsDoWhile) {
-    Value *ConditionValue = Cond->codegen();
+    Value *ConditionValue = Condition->codegen();
     if (!ConditionValue)
       return nullptr;
     ConditionValue = TheBuilder->CreateFCmpONE(

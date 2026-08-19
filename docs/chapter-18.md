@@ -533,7 +533,7 @@ static Value *ToBool(Value *V, ValueType Type) {
 }
 ```
 
-`IfStatementNode`, `WhileStatementNode` (both `while` and `do`/`while` branches), and `ForStatementNode` each call `ToBool(CondV, Cond->getType())` on the condition value before branching, and treat a `nullptr` result as a codegen error ("Invalid condition type" for `if`, "Invalid loop condition type" for loops). Since the parser already rejects non-`Bool` conditions, `ToBool` never actually fails in practice, but it keeps codegen from silently trusting the parser.
+`IfStatementNode`, `WhileStatementNode` (both `while` and `do`/`while` branches), and `ForStatementNode` each call `ToBool(CondV, Condition->getType())` on the condition value before branching, and treat a `nullptr` result as a codegen error ("Invalid condition type" for `if`, "Invalid loop condition type" for loops). Since the parser already rejects non-`Bool` conditions, `ToBool` never actually fails in practice, but it keeps codegen from silently trusting the parser.
 
 ## Parsing Type Annotations and Optional Return Types
 

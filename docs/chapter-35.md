@@ -191,7 +191,7 @@ public:
 
 ```cpp
 static bool IsAssignmentOperator(int Token) {
-  return Token == tok_equal || Token == tok_plus_equal ||
+  return Token == tok_assign || Token == tok_plus_equal ||
          Token == tok_minus_equal || Token == tok_star_equal ||
          Token == tok_slash_equal || Token == tok_percent_equal;
 }
@@ -237,7 +237,7 @@ static unique_ptr<ExpressionNode> ParseAssignment() {
   if (LeftType == ValueType::Array)
     return LogErrorExpression("Type mismatch in assignment");
 
-  if (AssignmentOperator != tok_equal) {
+  if (AssignmentOperator != tok_assign) {
     int BinaryOperator = AssignmentBinaryOperator(AssignmentOperator);
     ValueType ResultType =
         GetBinaryResultType(BinaryOperator, LeftType, LeftTypeInfo,

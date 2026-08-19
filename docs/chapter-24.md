@@ -564,7 +564,7 @@ Field access on the *left* of `=` doesn't get special-cased at the point of the 
 *static unique_ptr<ExpressionNode> ParseLeadingNameSimpleStatement() {
 *  ...
 *  // Optional assignment tail: (<expr>) = ...
-*  if (CurrentToken != tok_equal)
+*  if (CurrentToken != tok_assign)
 *    return Expr;
 *
 +  if (const auto *FieldPath = Expr->getLValueFieldPath()) {

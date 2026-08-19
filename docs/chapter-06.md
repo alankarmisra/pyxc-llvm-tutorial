@@ -6,6 +6,8 @@ description: "Install LLVM with everything you need: clang, lld, lldb, clangd, a
 
 ## What I Am Building
 
+LLVM is enormous, in the way a cathedral is enormous: deeply impressive, requires scaffolding to approach, and you will be waiting a while before anyone lets you inside. The good news is someone else already built it, so mostly what this chapter requires of me is patience and about a gigabyte of hard drive space I hadn't planned on giving up.
+
 The compiler from [Chapter 5](chapter-05.md) can parse pyxc and report errors with source locations. To turn the AST into machine code, I need LLVM — specifically with the following tools: `lld`, `clangd`, `lldb`, and `llvm-lit`. I'll get to using them in the following chapters. On macOS and Linux, Homebrew gets you there in two commands. On Windows, the official LLVM installer does the same. Building compilers is hard enough. I don't need to torture myself needlessly. Unless I want to. Consequently, if you're feeling adventurous, you could build from source instead — I did that too just to make sure the instructions are legit. All paths end up in the same place. 
 
 

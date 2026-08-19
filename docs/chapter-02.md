@@ -5,7 +5,7 @@ description: "Build a recursive-descent parser and syntax-tree nodes: turn token
 
 ## What I Am Building
 
-I'll continue working with the `add` function example from [Chapter 1](chapter-01.md).
+A stream of tokens is a fine thing to have, in the way a box of Ikea parts is a fine thing to have: technically everything you need is right there, and yet you would not want to sit on it. What I actually need is structure, some sense of which piece bolts to which. I'll continue working with the `add` function example from [Chapter 1](chapter-01.md).
 
 ```pyxc
 # adds two numbers
@@ -94,13 +94,9 @@ Now I need to turn these trees into code. Compiler writers call each piece of a 
 
 ### The Base Class
 
-I wrap every node class in an anonymous namespace. That gives each class internal linkage, so only code inside `pyxc.cpp` can reference them by name. Since pyxc is a single-file compiler, that's every line I write, but the anonymous namespace keeps these classes from accidentally colliding with an identically named class if I ever split the compiler across multiple files.
-
 Most of my nodes reduce to a single value, so I derive them from a common expression class:
 
 ```cpp
-namespace {
-
 class ExpressionNode {
 public:
   virtual ~ExpressionNode() = default;

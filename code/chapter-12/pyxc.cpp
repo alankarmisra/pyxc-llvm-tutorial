@@ -114,7 +114,7 @@ enum Token {
   tok_percent = '%',
   tok_less = '<',
   tok_greater = '>',
-  tok_equal = '=',
+  tok_assign = '=',
 };
 
 static string Name; // Filled in if tok_name
@@ -481,7 +481,7 @@ static int getToken() {
   // peek(), if the next one completes a recognized token, eat it, and return
   // token; otherwise, I return the named single-character token.
   if (LastChar == '=') {
-    int Tok = (peek() == '=') ? (advance(), tok_eq) : tok_equal;
+    int Tok = (peek() == '=') ? (advance(), tok_eq) : tok_assign;
     LastChar = advance();
     return Tok;
   }
@@ -544,7 +544,7 @@ static int getToken() {
   case '>':
     return tok_greater;
   case '=':
-    return tok_equal;
+    return tok_assign;
   default:
     return ThisChar;
   }
@@ -631,8 +631,6 @@ static void LogInvalidNumberLiteralAtLocation(const string &Literal,
 //===----------------------------------------===//
 // Abstract Syntax Tree (aka Parse Tree)
 //===----------------------------------------===//
-namespace {
-
 /// ExpressionNode - Base class for all expression nodes.
 class ExpressionNode {
 public:
@@ -727,14 +725,14 @@ public:
 class ForStatementNode : public ExpressionNode {
   string VarName;
   bool IsVarDecl;
-  unique_ptr<ExpressionNode> Start, Cond, Step, Body;
+  unique_ptr<ExpressionNode> Start, Condition, Step, Body;
 
 public:
   ForStatementNode(const string &VarName, bool IsVarDecl, unique_ptr<ExpressionNode> Start,
-             unique_ptr<ExpressionNode> Cond, unique_ptr<ExpressionNode> Step,
+             unique_ptr<ExpressionNode> Condition, unique_ptr<ExpressionNode> Step,
              unique_ptr<ExpressionNode> Body)
       : VarName(VarName), IsVarDecl(IsVarDecl), Start(std::move(Start)),
-        Cond(std::move(Cond)), Step(std::move(Step)), Body(std::move(Body)) {}
+        Condition(std::move(Condition)), Step(std::move(Step)), Body(std::move(Body)) {}
   Value *codegen() override;
 };
 
@@ -752,12 +750,12 @@ public:
 /// IfStatementNode - Statement form of if/else.
 /// Produces 0.0 and does not return a value.
 class IfStatementNode : public ExpressionNode {
-  unique_ptr<ExpressionNode> Cond, Then, Else;
+  unique_ptr<ExpressionNode> Condition, Then, Else;
 
 public:
-  IfStatementNode(unique_ptr<ExpressionNode> Cond, unique_ptr<ExpressionNode> Then,
+  IfStatementNode(unique_ptr<ExpressionNode> Condition, unique_ptr<ExpressionNode> Then,
             unique_ptr<ExpressionNode> Else)
-      : Cond(std::move(Cond)), Then(std::move(Then)), Else(std::move(Else)) {}
+      : Condition(std::move(Condition)), Then(std::move(Then)), Else(std::move(Else)) {}
   Value *codegen() override;
 };
 
@@ -804,8 +802,6 @@ public:
       : Signature(std::move(Signature)), Body(std::move(Body)) {}
   Function *codegen();
 };
-
-} // end anonymous namespace
 
 //===----------------------------------------===//
 // Parser
@@ -1017,9 +1013,9 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
   return ParseNameExpressionWithName(ParsedName);
 }
 
-static bool ParseForParts(unique_ptr<ExpressionNode> &Start, unique_ptr<ExpressionNode> &Cond,
+static bool ParseForParts(unique_ptr<ExpressionNode> &Start, unique_ptr<ExpressionNode> &Condition,
                           unique_ptr<ExpressionNode> &Step, unique_ptr<ExpressionNode> &Body) {
-  if (CurrentToken != tok_equal)
+  if (CurrentToken != tok_assign)
     return LogErrorExpression("Expected '=' after for variable"), false;
   getNextToken(); // eat '='
 
@@ -1031,8 +1027,8 @@ static bool ParseForParts(unique_ptr<ExpressionNode> &Start, unique_ptr<Expressi
     return LogErrorExpression("Expected ',' after for start value"), false;
   getNextToken(); // eat ','
 
-  Cond = ParseExpression();
-  if (!Cond)
+  Condition = ParseExpression();
+  if (!Condition)
     return false;
 
   if (CurrentToken != tok_comma)
@@ -1082,19 +1078,19 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
     return LogErrorExpression("Assignment to undeclared variable");
   }
 
-  unique_ptr<ExpressionNode> Start, Cond, Step, Body;
+  unique_ptr<ExpressionNode> Start, Condition, Step, Body;
 
   unique_ptr<LoopScopeGuard> LoopScope;
   if (IsVarDecl)
     LoopScope = make_unique<LoopScopeGuard>(VarName);
 
-  if (!ParseForParts(Start, Cond, Step, Body))
+  if (!ParseForParts(Start, Condition, Step, Body))
     return nullptr;
 
   // CurrentToken is tok_block_end (body was a block) or tok_eol (body was inline).
   // The enclosing ParseBlock loop handles both without any extra boolean.
   return make_unique<ForStatementNode>(VarName, IsVarDecl, std::move(Start),
-                                 std::move(Cond), std::move(Step),
+                                 std::move(Condition), std::move(Step),
                                  std::move(Body));
 }
 
@@ -1120,7 +1116,7 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
           ("Variable '" + ParsedName + "' already declared in this scope").c_str());
 
     unique_ptr<ExpressionNode> Init;
-    if (CurrentToken == tok_equal) {
+    if (CurrentToken == tok_assign) {
       getNextToken(); // eat '='
       Init = ParseExpression();
       if (!Init)
@@ -1146,8 +1142,8 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
 static unique_ptr<ExpressionNode> ParseIfStatement() {
   getNextToken(); // eat 'if'
 
-  auto Cond = ParseExpression();
-  if (!Cond)
+  auto Condition = ParseExpression();
+  if (!Condition)
     return nullptr;
 
   if (CurrentToken != tok_colon)
@@ -1199,7 +1195,7 @@ static unique_ptr<ExpressionNode> ParseIfStatement() {
     CurrentToken = tok_eol;                 // restore the separator directly
   }
 
-  return make_unique<IfStatementNode>(std::move(Cond), std::move(Then),
+  return make_unique<IfStatementNode>(std::move(Condition), std::move(Then),
                                 std::move(Else));
 }
 
@@ -1333,7 +1329,7 @@ static unique_ptr<ExpressionNode> ParseLeadingNameSimpleStatement() {
   if (!Expr)
     return nullptr;
 
-  if (CurrentToken != tok_equal)
+  if (CurrentToken != tok_assign)
     return Expr;
 
   const string *AssignedName = Expr->getLValueName();
@@ -1350,7 +1346,7 @@ static unique_ptr<ExpressionNode> ParseNonLeadingNameSimpleStatement() {
   if (!Expr)
     return nullptr;
 
-  if (CurrentToken != tok_equal)
+  if (CurrentToken != tok_assign)
     return Expr;
 
   return LogErrorExpression("Destination of '=' must be a variable");
@@ -1533,7 +1529,7 @@ static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
   if (!Expression)
     return nullptr;
 
-  if (CurrentToken == tok_equal) {
+  if (CurrentToken == tok_assign) {
     const string *AssignedName = Expression->getLValueName();
     if (!AssignedName)
       return LogErrorFunction("Destination of '=' must be a variable");
@@ -1836,7 +1832,7 @@ Value *CallExpressionNode::codegen() {
 /// If there is no else branch, control falls through to the merge block.
 /// The statement evaluates to 0.0.
 Value *IfStatementNode::codegen() {
-  Value *CondV = Cond->codegen();
+  Value *CondV = Condition->codegen();
   if (!CondV)
     return nullptr;
 
@@ -1907,7 +1903,7 @@ Value *ForStatementNode::codegen() {
 
   TheBuilder->SetInsertPoint(CondBB);
 
-  Value *CondVal = Cond->codegen();
+  Value *CondVal = Condition->codegen();
   if (!CondVal)
     return nullptr;
   CondVal = TheBuilder->CreateFCmpONE(

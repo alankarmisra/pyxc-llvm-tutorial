@@ -149,7 +149,7 @@ enum Token {
   tok_percent = '%',
   tok_less = '<',
   tok_greater = '>',
-  tok_equal = '=',
+  tok_assign = '=',
 };
 
 static string Name; // Filled in if tok_name
@@ -520,7 +520,7 @@ static int getToken() {
   // peek(), if the next one completes a recognized token, eat it, and return
   // token; otherwise, I return the named single-character token.
   if (LexerLastChar == '=') {
-    int Tok = (peek() == '=') ? (advance(), tok_eq) : tok_equal;
+    int Tok = (peek() == '=') ? (advance(), tok_eq) : tok_assign;
     LexerLastChar = advance();
     return Tok;
   }
@@ -583,7 +583,7 @@ static int getToken() {
   case '>':
     return tok_greater;
   case '=':
-    return tok_equal;
+    return tok_assign;
   default:
     return ThisChar;
   }
@@ -681,8 +681,6 @@ static void LogInvalidNumberLiteralAtLocation(const string &Literal,
 //===----------------------------------------===//
 // Abstract Syntax Tree (aka Parse Tree)
 //===----------------------------------------===//
-namespace {
-
 /// ExpressionNode - Base class for all expression nodes.
 class ExpressionNode {
 public:
@@ -783,27 +781,27 @@ public:
 class ForStatementNode : public ExpressionNode {
   string VarName;
   bool IsVarDecl;
-  unique_ptr<ExpressionNode> Start, Cond, Step, Body;
+  unique_ptr<ExpressionNode> Start, Condition, Step, Body;
 
 public:
   ForStatementNode(const string &VarName, bool IsVarDecl, unique_ptr<ExpressionNode> Start,
-             unique_ptr<ExpressionNode> Cond, unique_ptr<ExpressionNode> Step,
+             unique_ptr<ExpressionNode> Condition, unique_ptr<ExpressionNode> Step,
              unique_ptr<ExpressionNode> Body)
       : VarName(VarName), IsVarDecl(IsVarDecl), Start(std::move(Start)),
-        Cond(std::move(Cond)), Step(std::move(Step)), Body(std::move(Body)) {}
+        Condition(std::move(Condition)), Step(std::move(Step)), Body(std::move(Body)) {}
   bool shouldPrintValue() const override { return false; }
   Value *codegen() override;
 };
 
 /// WhileStatementNode - Statement class for while and do/while loops.
 class WhileStatementNode : public ExpressionNode {
-  unique_ptr<ExpressionNode> Cond, Body;
+  unique_ptr<ExpressionNode> Condition, Body;
   bool IsDoWhile;
 
 public:
-  WhileStatementNode(unique_ptr<ExpressionNode> Cond,
+  WhileStatementNode(unique_ptr<ExpressionNode> Condition,
                      unique_ptr<ExpressionNode> Body, bool IsDoWhile)
-      : Cond(std::move(Cond)), Body(std::move(Body)), IsDoWhile(IsDoWhile) {}
+      : Condition(std::move(Condition)), Body(std::move(Body)), IsDoWhile(IsDoWhile) {}
   bool shouldPrintValue() const override { return false; }
   Value *codegen() override;
 };
@@ -834,12 +832,12 @@ public:
 /// IfStatementNode - Statement form of if/else.
 /// Produces 0.0 and does not return a value.
 class IfStatementNode : public ExpressionNode {
-  unique_ptr<ExpressionNode> Cond, Then, Else;
+  unique_ptr<ExpressionNode> Condition, Then, Else;
 
 public:
-  IfStatementNode(unique_ptr<ExpressionNode> Cond, unique_ptr<ExpressionNode> Then,
+  IfStatementNode(unique_ptr<ExpressionNode> Condition, unique_ptr<ExpressionNode> Then,
             unique_ptr<ExpressionNode> Else)
-      : Cond(std::move(Cond)), Then(std::move(Then)), Else(std::move(Else)) {}
+      : Condition(std::move(Condition)), Then(std::move(Then)), Else(std::move(Else)) {}
   bool shouldPrintValue() const override { return false; }
   Value *codegen() override;
 };
@@ -889,8 +887,6 @@ public:
   const string &getName() const { return Signature->getName(); }
   Function *codegen();
 };
-
-} // end anonymous namespace
 
 //===----------------------------------------===//
 // Parser
@@ -1121,9 +1117,9 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
   return ParseNameExpressionWithName(ParsedName);
 }
 
-static bool ParseForParts(unique_ptr<ExpressionNode> &Start, unique_ptr<ExpressionNode> &Cond,
+static bool ParseForParts(unique_ptr<ExpressionNode> &Start, unique_ptr<ExpressionNode> &Condition,
                           unique_ptr<ExpressionNode> &Step, unique_ptr<ExpressionNode> &Body) {
-  if (CurrentToken != tok_equal)
+  if (CurrentToken != tok_assign)
     return LogErrorExpression("Expected '=' after for variable"), false;
   getNextToken(); // eat '='
 
@@ -1135,8 +1131,8 @@ static bool ParseForParts(unique_ptr<ExpressionNode> &Start, unique_ptr<Expressi
     return LogErrorExpression("Expected ',' after for start value"), false;
   getNextToken(); // eat ','
 
-  Cond = ParseExpression();
-  if (!Cond)
+  Condition = ParseExpression();
+  if (!Condition)
     return false;
 
   if (CurrentToken != tok_comma)
@@ -1186,20 +1182,20 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
     return LogErrorExpression("Assignment to undeclared variable");
   }
 
-  unique_ptr<ExpressionNode> Start, Cond, Step, Body;
+  unique_ptr<ExpressionNode> Start, Condition, Step, Body;
   ParseLoopGuard ParseLoop;
 
   unique_ptr<LoopScopeGuard> LoopScope;
   if (IsVarDecl)
     LoopScope = make_unique<LoopScopeGuard>(VarName);
 
-  if (!ParseForParts(Start, Cond, Step, Body))
+  if (!ParseForParts(Start, Condition, Step, Body))
     return nullptr;
 
   // CurrentToken is tok_block_end (body was a block) or tok_eol (body was inline).
   // The enclosing ParseBlock loop handles both without any extra boolean.
   return make_unique<ForStatementNode>(VarName, IsVarDecl, std::move(Start),
-                                 std::move(Cond), std::move(Step),
+                                 std::move(Condition), std::move(Step),
                                  std::move(Body));
 }
 
@@ -1207,8 +1203,8 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
 ///   = "while" expression ":" suite ;
 static unique_ptr<ExpressionNode> ParseWhileStatement() {
   getNextToken(); // eat 'while'
-  auto Cond = ParseExpression();
-  if (!Cond)
+  auto Condition = ParseExpression();
+  if (!Condition)
     return nullptr;
   if (CurrentToken != tok_colon)
     return LogErrorExpression("Expected ':' after while condition");
@@ -1218,7 +1214,7 @@ static unique_ptr<ExpressionNode> ParseWhileStatement() {
   auto Body = ParseSuite();
   if (!Body)
     return nullptr;
-  return make_unique<WhileStatementNode>(std::move(Cond), std::move(Body),
+  return make_unique<WhileStatementNode>(std::move(Condition), std::move(Body),
                                          false);
 }
 
@@ -1243,10 +1239,10 @@ static unique_ptr<ExpressionNode> ParseDoWhileStatement() {
     return LogErrorExpression("Expected 'while' after do body");
   getNextToken(); // eat 'while'
 
-  auto Cond = ParseExpression();
-  if (!Cond)
+  auto Condition = ParseExpression();
+  if (!Condition)
     return nullptr;
-  return make_unique<WhileStatementNode>(std::move(Cond), std::move(Body), true);
+  return make_unique<WhileStatementNode>(std::move(Condition), std::move(Body), true);
 }
 
 /// variable-statement
@@ -1279,7 +1275,7 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
     }
 
     unique_ptr<ExpressionNode> Init;
-    if (CurrentToken == tok_equal) {
+    if (CurrentToken == tok_assign) {
       getNextToken(); // eat '='
       Init = ParseExpression();
       if (!Init)
@@ -1313,8 +1309,8 @@ static unique_ptr<ExpressionNode> ParseIfStatement() {
   bool LastBranchHadTrailingEol = false;
 
   while (true) {
-    auto Cond = ParseExpression();
-    if (!Cond)
+    auto Condition = ParseExpression();
+    if (!Condition)
       return nullptr;
 
     if (CurrentToken != tok_colon)
@@ -1330,7 +1326,7 @@ static unique_ptr<ExpressionNode> ParseIfStatement() {
       getNextToken();
     LastBranchHadTrailingEol = (CurrentToken == tok_eol);
 
-    Branches.push_back({std::move(Cond), std::move(Body)});
+    Branches.push_back({std::move(Condition), std::move(Body)});
     consumeNewlines();
 
     if (CurrentToken != tok_elif)
@@ -1521,7 +1517,7 @@ static unique_ptr<ExpressionNode> ParseLeadingNameSimpleStatement() {
   if (!Expr)
     return nullptr;
 
-  if (CurrentToken != tok_equal)
+  if (CurrentToken != tok_assign)
     return Expr;
 
   const string *AssignedName = Expr->getLValueName();
@@ -1538,7 +1534,7 @@ static unique_ptr<ExpressionNode> ParseNonLeadingNameSimpleStatement() {
   if (!Expr)
     return nullptr;
 
-  if (CurrentToken != tok_equal)
+  if (CurrentToken != tok_assign)
     return Expr;
 
   return LogErrorExpression("Destination of '=' must be a variable");
@@ -2071,7 +2067,7 @@ Value *CallExpressionNode::codegen() {
 /// If there is no else branch, control falls through to the merge block.
 /// The statement evaluates to 0.0.
 Value *IfStatementNode::codegen() {
-  Value *CondV = Cond->codegen();
+  Value *CondV = Condition->codegen();
   if (!CondV)
     return nullptr;
 
@@ -2147,7 +2143,7 @@ Value *ForStatementNode::codegen() {
 
   TheBuilder->SetInsertPoint(CondBB);
 
-  Value *CondVal = Cond->codegen();
+  Value *CondVal = Condition->codegen();
   if (!CondVal)
     return nullptr;
   CondVal = TheBuilder->CreateFCmpONE(
@@ -2205,7 +2201,7 @@ Value *WhileStatementNode::codegen() {
 
   if (!IsDoWhile) {
     TheBuilder->SetInsertPoint(CondBB);
-    Value *ConditionValue = Cond->codegen();
+    Value *ConditionValue = Condition->codegen();
     if (!ConditionValue)
       return nullptr;
     ConditionValue = TheBuilder->CreateFCmpONE(
@@ -2226,7 +2222,7 @@ Value *WhileStatementNode::codegen() {
 
   TheBuilder->SetInsertPoint(CondBB);
   if (IsDoWhile) {
-    Value *ConditionValue = Cond->codegen();
+    Value *ConditionValue = Condition->codegen();
     if (!ConditionValue)
       return nullptr;
     ConditionValue = TheBuilder->CreateFCmpONE(

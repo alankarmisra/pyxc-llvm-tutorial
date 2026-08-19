@@ -186,7 +186,7 @@ static bool ParseTypeAliasDefinition() {
     return false;
   }
   getNextToken(); // eat alias name
-  if (CurrentToken != tok_equal) {
+  if (CurrentToken != tok_assign) {
     LogErrorExpression("Expected '=' in type alias");
     return false;
   }

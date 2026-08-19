@@ -439,8 +439,6 @@ static void LogInvalidNumberLiteralAtLocation(const string &Literal,
 //===----------------------------------------===//
 // Abstract Syntax Tree (aka Parse Tree)
 //===----------------------------------------===//
-namespace {
-
 /// ExpressionNode - Base class for all expression nodes.
 class ExpressionNode {
 public:
@@ -529,8 +527,6 @@ public:
       : Signature(std::move(Signature)), Body(std::move(Body)) {}
   Function *codegen();
 };
-
-} // end anonymous namespace
 
 //===----------------------------------------===//
 // Parser

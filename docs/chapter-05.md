@@ -5,6 +5,8 @@ description: "Give every token a readable name, track source locations through t
 
 ## What I Am Building
 
+This chapter is dedicated to three separate ways my compiler has been quietly lying to me, none of them caught by careful design review. All three were found the same way everything gets found around here: typing things into it and wincing.
+
 ### The Missing Colon
 
 Right now, a missing `:` looks like this:
