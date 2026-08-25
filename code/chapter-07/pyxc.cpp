@@ -573,10 +573,10 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
 ///   | parenthesized-expression ;
 static unique_ptr<ExpressionNode> ParsePrimary() {
   switch (CurrentToken) {
-  case tok_number:
-    return ParseNumberExpression(); // I parse a number such as 3.14.
   case tok_name:
     return ParseNameExpression(); // I parse `a` or `add(...)`.
+  case tok_number:
+    return ParseNumberExpression(); // I parse a number such as 3.14.
   case tok_lparen:
     return ParseParenthesizedExpression(); // I parse `( ... )`.
   default:
@@ -783,7 +783,7 @@ static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
 static unique_ptr<LLVMContext> TheContext;
 static unique_ptr<Module> TheModule;
 static unique_ptr<IRBuilder<>> TheBuilder;
-static map<std::string, Value *> NamedValues;
+static map<string, Value *> NamedValues;
 
 // LogErrorValue - Codegen-level error helper. Delegates to LogErrorExpression for
 // printing, then returns nullptr so codegen callers can write: return
@@ -984,7 +984,7 @@ Function *FunctionDefinitionNode::codegen() {
   // NameExpressionNode::codegen().
   NamedValues.clear();
   for (auto &Argument : TheFunction->args())
-    NamedValues[std::string(Argument.getName())] = &Argument;
+    NamedValues[string(Argument.getName())] = &Argument;
 
   // Step 4: I generate the body, return its value, and verify the function.
   if (Value *RetVal = Body->codegen()) {

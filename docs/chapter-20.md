@@ -148,7 +148,7 @@ static void RunModuleOptimizations(Module *Module) {
 Debug information in LLVM is metadata: side-channel nodes attached to the IR that don't affect codegen themselves but get preserved into the final object file as DWARF. `DIBuilder` is the API for constructing it. Since [Chapter 18](chapter-18.md) gave pyxc a real type system, I need a DWARF basic-type descriptor for every `ValueType`, not just one shared `double` descriptor:
 
 ```cpp
-static std::string CurrentSourcePath = "<stdin>";
+static string CurrentSourcePath = "<stdin>";
 static std::unique_ptr<DIBuilder> DIB;
 static DICompileUnit *TheCU = nullptr;
 static DIFile *TheDIFile = nullptr;

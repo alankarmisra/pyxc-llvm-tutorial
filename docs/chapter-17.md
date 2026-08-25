@@ -65,16 +65,16 @@ One more change ties these together but isn't new behavior on its own: `EmitModu
 Through chapter 16, the positional argument was a single optional `cl::opt`:
 
 ```cpp
-static cl::opt<std::string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
+static cl::opt<string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
                                       cl::init(""), cl::cat(PyxcCategory));
 ```
 
 I need it to be a list instead, so the driver can accept any number of `.pyxc` and `.o` files:
 
 ```cppdiff
--static cl::opt<std::string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
+-static cl::opt<string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
 -                                      cl::init(""), cl::cat(PyxcCategory));
-+static cl::list<std::string> InputFiles(cl::Positional, cl::desc("[inputs]"),
++static cl::list<string> InputFiles(cl::Positional, cl::desc("[inputs]"),
 +                                        cl::ZeroOrMore, cl::cat(PyxcCategory));
 ```
 

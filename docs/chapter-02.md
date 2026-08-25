@@ -416,10 +416,10 @@ I now have parsing functions for three basic building blocks: numbers, names, an
 ///   | parenthesized-expression ;
 static unique_ptr<ExpressionNode> ParsePrimary() {
   switch (CurrentToken) {
-  case tok_number:
-    return ParseNumberExpression(); // I parse a number such as 3.14.
   case tok_name:
     return ParseNameExpression(); // I parse `a` or `add(...)`.
+  case tok_number:
+    return ParseNumberExpression(); // I parse a number such as 3.14.
   case tok_lparen:
     return ParseParenthesizedExpression(); // I parse `( ... )`.
   default:

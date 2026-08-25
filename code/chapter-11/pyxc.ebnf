@@ -24,6 +24,7 @@ parameters                        = parameter { "," parameter } ;
 parameter                         = name ;
 expression                        = variable-expression
                                     | comparison [ "=" expression ] ;
+(* Constraint: If "=" is present, comparison must resolve to a variable lvalue.*)
 variable-expression               = "var" variable-binding
                                     { "," variable-binding } ":"
                                     [ end-of-lines ] expression ;

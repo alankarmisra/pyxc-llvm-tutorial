@@ -67,6 +67,7 @@ I add `variable-expression` as a second alternative for `expression`, and give `
 -expression                        = comparison ;
 +expression                        = variable-expression
 +                                    | comparison [ "=" expression ] ;
++(* Constraint: If "=" is present, comparison must resolve to a variable lvalue.*)
 +variable-expression               = "var" variable-binding
 +                                    { "," variable-binding } ":"
 +                                    [ end-of-lines ] expression ;
@@ -91,7 +92,7 @@ lvalue = rvalue
 
 **lvalue** — a memory location (like a variable). **rvalue** — a value (like `5`, `x`, `x + y`, or a function result).
 
-`x` could be either, depending on which side of `=` it's on: the left side names a destination to write into, the right side is read to produce the value being written. `=` sits at the loosest level in the grammar — it's not part of `comparison`, `sum`, or `term`, it's a tail on the whole `expression` production — so `a + b = c` parses as `(a + b) = c`. That fails, because `a + b` isn't a variable name, and the parser only accepts a plain name as the left side of `=`.
+`x` could be either, depending on which side of `=` it's on: I write into the left side, I read the right side to produce the value being written. I put `=` at the loosest level in the grammar — not part of `comparison`, `sum`, or `term`, but a tail on the whole `expression` production — so `a + b = c` parses as `(a + b) = c`. That fails, because `a + b` isn't a variable name, and I only accept a plain name as the left side of `=`.
 
 `var` introduces one or more mutable locals and evaluates to the body's value. Later bindings can see earlier ones:
 
@@ -114,7 +115,7 @@ The lexer gains one new keyword token:
 *  tok_for = -15,
 *
 +  // mutable variables
-+  tok_var = -18,
++  tok_var = -16,
 *
 *  // punctuation and operators
 *  ...
@@ -125,10 +126,10 @@ Added to the keyword table like every other reserved word:
 
 ```cppdiff
 *static map<string, Token> Keywords = {
--    {"def", tok_def}, {"extern", tok_extern}, {"if", tok_if},
--    {"else", tok_else}, {"for", tok_for}};
-+    {"def", tok_def},       {"extern", tok_extern}, {"if", tok_if},
-+    {"else", tok_else},     {"for", tok_for},       {"var", tok_var}};
+*    {"def", tok_def}, {"extern", tok_extern}, {"if", tok_if},
+*    {"else", tok_else}, {"for", tok_for},
++    {"var", tok_var},
+*};
 ```
 
 Two new AST nodes do the real work.
@@ -163,8 +164,9 @@ class VariableExpressionNode : public ExpressionNode {
   unique_ptr<ExpressionNode> Body;
 
 public:
-  VariableExpressionNode(vector<pair<string, unique_ptr<ExpressionNode>>> VarNames,
-             unique_ptr<ExpressionNode> Body)
+  VariableExpressionNode(
+    vector<pair<string, unique_ptr<ExpressionNode>>> VarNames,
+    unique_ptr<ExpressionNode> Body)
       : VarNames(std::move(VarNames)), Body(std::move(Body)) {}
   Value *codegen() override;
 };
@@ -198,53 +200,63 @@ static unique_ptr<ExpressionNode> ParseVariableExpression() {
 
 **Step 2: Parse each binding — a name, then an optional initializer.**
 
-```cpp
-  while (true) {
-    if (CurrentToken != tok_name)
-      return LogErrorExpression("Expected name after 'var'");
-
-    string ParsedName = Name;
-    getNextToken(); // eat name
-
-    unique_ptr<ExpressionNode> Init;
-    if (CurrentToken == tok_assign) {
-      getNextToken(); // eat '='
-      Init = ParseExpression();
-      if (!Init)
-        return nullptr;
-    } else {
-      Init = make_unique<NumberExpressionNode>(0.0);
-    }
-
-    VarNames.push_back({ParsedName, std::move(Init)});
+```cppdiff
+*  getNextToken(); // eat 'var'
+*  vector<pair<string, unique_ptr<ExpressionNode>>> VarNames;
++
++  while (true) {
++    if (CurrentToken != tok_name)
++      return LogErrorExpression("Expected name after 'var'");
++
++    string ParsedName = Name;
++    getNextToken(); // eat name
++
++    unique_ptr<ExpressionNode> Init;
++    if (CurrentToken == tok_assign) {
++      getNextToken(); // eat '='
++      Init = ParseExpression();
++      if (!Init)
++        return nullptr;
++    } else {
++      // No '=': default the variable to 0.0.
++      Init = make_unique<NumberExpressionNode>(0.0);
++    }
++
++    VarNames.push_back({ParsedName, std::move(Init)});
 ```
 
 If there's no `=`, the variable defaults to `0.0`. The binding always produces a value, so what follows never has to special-case a missing initializer.
 
 **Step 3: `,` means another binding; anything else ends the list.**
 
-```cpp
-    if (CurrentToken != tok_comma)
-      break;
-    getNextToken(); // eat ','
-  }
+```cppdiff
+*    }
+*    VarNames.push_back({ParsedName, std::move(Init)});
++
++    if (CurrentToken != tok_comma)
++      break;
++    getNextToken(); // eat ','
++  }
 ```
 
 **Step 4: Expect `:`, allow the body on the next line, parse the body.**
 
-```cpp
-  if (CurrentToken != tok_colon)
-    return LogErrorExpression("Expected ':' after var bindings");
-  getNextToken(); // eat ':'
-
-  consumeNewlines();
-
-  auto Body = ParseExpression();
-  if (!Body)
-    return nullptr;
-
-  return make_unique<VariableExpressionNode>(std::move(VarNames), std::move(Body));
-}
+```cppdiff
+*    getNextToken(); // eat ','
+*  }
++
++  if (CurrentToken != tok_colon)
++    return LogErrorExpression("Expected ':' after var bindings");
++  getNextToken(); // eat ':'
++
++  consumeNewlines();
++
++  auto Body = ParseExpression();
++  if (!Body)
++    return nullptr;
++
++  return make_unique<VariableExpressionNode>(std::move(VarNames), std::move(Body));
++}
 ```
 
 `ParseExpression` routes to `ParseVariableExpression` before anything else, if the current token is `var`:
@@ -258,31 +270,34 @@ If there's no `=`, the variable defaults to `0.0`. The binding always produces a
 +
 +  auto Expr = ParseComparison();
 +  // ... assignment handling, shown in "Parsing Assignment" below ...
-+}
 ```
 
 ## Parsing Assignment
 
-Once `ParseComparison` returns — the same top-of-the-chain call chapter 10 already parses every expression through — `ParseExpression` checks whether `=` follows. If not, it hands back the expression unchanged. If so, the left-hand side has to be a plain variable name, or it's a parse error:
+I deliberately let the grammar allow any `comparison` before the optional `=`, so it mirrors how I structure the parser: I parse a complete comparison first, then check whether `=` follows. That broad syntactic shape needs a constraint: when `=` is present, I require the parsed comparison to resolve to a variable lvalue. So an input like `1 < 2 = 10` matches the production, but I reject it in the lvalue check below.
 
-```cpp
-  if (CurrentToken != tok_assign)
-    return Expr; // no assignment — return the expression as-is
+Once `ParseComparison` returns — the same top-of-the-chain call chapter 10 already parses every expression through — I check whether `=` follows. If not, I hand back the expression unchanged. If so, I require the left-hand side to be a plain variable name, or I report a parse error:
 
-  // The left-hand side must be a plain variable name (an lvalue).
-  const string *AssignedName = Expr->getLValueName();
-  if (!AssignedName)
-    return LogErrorExpression("Destination of '=' must be a variable");
-
-  string Name = *AssignedName;
-  getNextToken(); // eat '='
-
-  auto Right = ParseExpression(); // right-recursive, so a = b = 1 parses as a = (b = 1)
-  if (!Right)
-    return nullptr;
-
-  return make_unique<AssignmentExpressionNode>(Name, std::move(Right));
-}
+```cppdiff
+*  auto Expr = ParseComparison();
+*
++  if (CurrentToken != tok_assign)
++    return Expr; // no assignment — return the expression as-is
++
++  // The left-hand side must be a plain variable name (an lvalue).
++  const string *AssignedName = Expr->getLValueName();
++  if (!AssignedName)
++    return LogErrorExpression("Destination of '=' must be a variable");
++
++  string Name = *AssignedName;
++  getNextToken(); // eat '='
++
++  auto Right = ParseExpression(); // right-recursive, so a = b = 1 parses as a = (b = 1)
++  if (!Right)
++    return nullptr;
++
++  return make_unique<AssignmentExpressionNode>(Name, std::move(Right));
++}
 ```
 
 This makes assignment:
@@ -299,41 +314,71 @@ Error (Line 1, Column 9): Destination of '=' must be a variable
         ^~~~
 ```
 
-`(1 + 2)` parses fine as an expression, but its `getLValueName()` returns `nullptr` — only a bare name overrides that — so the assignment is rejected before I ever look at the right-hand side.
+`(1 + 2)` parses fine as an expression, but its `getLValueName()` returns `nullptr` — only a bare name overrides that — so I reject the assignment before I ever look at the right-hand side.
 
 ## Memory Slots: From Values to Storage
 
-Through chapter 4, `NamedValues` mapped variable names directly to LLVM `Value*` — the incoming argument value, fixed at the point the function was called. That worked only because variables were immutable: a parameter name could always refer to the same value forever.
+Until this chapter, every name in pyxc referred to a value that could never change. `n` in `def bump(n): n + 1` means the same double for the entire call — I can think of `n` as shorthand for whatever got passed in, and nothing later in the function can invalidate that substitution.
+
+That's exactly how `NamedValues` worked through chapter 4: it mapped a name straight to the LLVM value it stood for.
 
 ```cpp
 // Before: the name maps directly to the incoming argument — fixed, immutable.
-NamedValues[Argument.getName()] = &Argument;
+NamedValues[string(Argument.getName())] = &Argument;
 ```
 
-Mutable variables break that model. Once `x` can be reassigned, the name `x` can't mean "this one fixed value" anymore. It has to mean "the place where the current value of `x` lives":
+Looking up `n` handed codegen the value to use wherever `n` appeared. Done — no further bookkeeping needed, because the value behind the name never moves.
+
+Mutable variables break that. Take `def bump(n): var x = n: x = x + 1`. If `x` started out just *meaning* the value `5`, then `x = x + 1` would have to mean `5 = 5 + 1` — which isn't even a sentence. `5` can't become `6`; a value simply is what it is. For `x = x + 1` to mean anything, `x` can't stand for one fixed value. It has to stand for a *place*: somewhere a value lives that can hold something different a moment later.
+
+```diagram
+x ──▶ memory slot [ 5 ]
+```
+
+Reading `x` becomes "go get whatever's in the slot right now":
+
+```diagram
+x + 1
+  │
+  ▼
+load(slot) + 1
+  │
+  ▼
+5 + 1
+```
+
+Assigning to `x` becomes "put a new value in the slot" — the name itself doesn't move, only what it points at changes:
+
+```diagram
+x = x + 1
+  │
+  ▼
+store(6, slot)
+
+x ──▶ memory slot [ 6 ]
+```
+
+So `NamedValues` has to stop mapping names to values and start mapping names to slots:
+
+```cppdiff
+-static std::map<string, Value *> NamedValues;
++static std::map<string, AllocaInst *> NamedValues;
+```
+
+`AllocaInst` is LLVM's slot: a chunk of stack memory reserved in the current function. If I reach for a C++ analogy, `alloca` is `&x` — the address of a local variable — and `NamedValues` becomes something close to `map<string, double*>` instead of `map<string, double>`:
 
 ```cpp
-// After: the name maps to a memory slot that holds the current value.
-AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, Argument.getName()); // reserve a slot
-TheBuilder->CreateStore(&Argument, Alloca);       // copy the incoming value into it
-NamedValues[Argument.getName()] = Alloca;         // name now points to the slot, not the value
+double x = 5.0;    // reserve a slot, initialize it — CreateEntryBlockAlloca + CreateStore
+double *slot = &x; // slot is what AllocaInst* is: the address of that slot
+
+*slot = *slot + 1; // read through the pointer, write through the pointer — load and store
 ```
 
-So `NamedValues` changes type, from:
+One difference: in C++, `&x` assumes `x` already exists as a variable, and you're just asking for its address. LLVM has no separate "declare `x`, then take its address" step — `alloca` itself is what creates the memory, and it hands back the pointer to it in one motion. The picture still holds: a name really does mean "a pointer to a slot" — there's just no earlier step where `x` existed on its own.
 
-```cpp
-static map<string, Value *> NamedValues;
-```
+### Creating a Slot
 
-to:
-
-```cpp
-static map<string, AllocaInst *> NamedValues;
-```
-
-Every variable name now maps to an `AllocaInst` — a memory slot in the current function's entry block. That's the entire core implementation change; everything else in this chapter follows from it.
-
-## Creating the Memory Slots
+`CreateEntryBlockAlloca` is the helper that actually reserves one:
 
 ```cpp
 /// CreateEntryBlockAlloca - Create a memory slot in the current function's
@@ -360,24 +405,86 @@ entry:
   %x = alloca double, align 8   ; inserted first, lands last
 ```
 
-The reversal is harmless — allocas are just slot reservations with no ordering dependency between them. The stores that write the initial values happen afterward, in declaration order, and `mem2reg` doesn't care about alloca order either.
+The reversal is harmless — allocas are just slot reservations with no ordering dependency between them. But it's worth checking that claim rather than trusting it, because a later binding can reference an earlier one: `var a = 1, b = a + 1` needs `b`'s initializer to read the value already stored in `a`. Here's the actual IR for `def foo(): var a = 1, b = a + 1: b`:
+
+```llvm
+define double @foo() {
+entry:
+  %b = alloca double, align 8
+  %a = alloca double, align 8
+  store double 1.000000e+00, ptr %a, align 8
+  %a1 = load double, ptr %a, align 8
+  %addtmp = fadd double %a1, 1.000000e+00
+  store double %addtmp, ptr %b, align 8
+  %b2 = load double, ptr %b, align 8
+  ret double %b2
+}
+```
+
+The allocas are still reversed (`%b` before `%a`), but the store/load/compute sequence underneath is in the right order: store `1.0` into `%a`, then load `%a` and add `1.0` for `b`'s initializer, then store into `%b`. `a + 1` reads correctly.
+
+The reason is that two different builders are doing two different jobs. `TmpB` — reset to `begin()` on every call — only ever places the `alloca` instructions themselves, always at the very front of the block. Every store, load, and computation goes through the main `TheBuilder`, whose cursor only moves forward, in the order codegen actually runs: `a`'s initializer, then `a`'s alloca and store, then `b`'s initializer (which reads `a`), then `b`'s alloca and store. The two builders never interleave in a way that matters, because `alloca` doesn't read or compute anything — it has no dependency on other instructions for reordering to break. It only needs to exist *before its first use*, and `TmpB` guarantees that unconditionally by always inserting at the very top of the block, ahead of everything real work `TheBuilder` has emitted or will emit.
+
+`mem2reg` doesn't care about alloca order either, for the same underlying reason — it's a pure stack reservation with no state to get out of sync.
+
+With `CreateEntryBlockAlloca` in hand, creating a slot, storing into it, and recording it in `NamedValues` looks like this for a parameter entering a function:
+
+```cppdiff
+*Function *FunctionDefinitionNode::codegen() {
+*  const string FunctionName = Signature->getName();
+*  ...
+*  // Step 2: create the entry block and point the builder at it.
+*  BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
+*  TheBuilder->SetInsertPoint(BB);
+*
+-  // Step 3: I map each parameter name to its LLVM value. When I generate the
+-  // body, I resolve each parameter reference through this table in
+-  // NameExpressionNode::codegen().
+-  NamedValues.clear();
+-  for (auto &Argument : TheFunction->args())
+-    NamedValues[string(Argument.getName())] = &Argument;
++  // Step 3: I store each argument in an entry-block stack slot and map its
++  // parameter name to that slot. When I generate the body, I resolve each
++  // parameter reference through this table in NameExpressionNode::codegen().
++  NamedValues.clear();
++  for (auto &Argument : TheFunction->args()) {
++    // After: the name maps to a memory slot that holds the current value.
++    AllocaInst *Alloca =
++        CreateEntryBlockAlloca(TheFunction, string(Argument.getName()));
++    TheBuilder->CreateStore(&Argument, Alloca);            // copy the incoming value into the slot
++    NamedValues[string(Argument.getName())] = Alloca; // the name now points at the slot
++  }
+*
+*  // Step 4: codegen the body, optimise, verify, or erase on failure.
+*  ...
+*}
+```
+
+From here on, every variable reference is a load from its slot, and every assignment is a store into it. That's the entire core implementation change — everything else in this chapter is wiring load/store into the right places.
 
 ## Loading and Storing Variables
 
-Once names map to memory slots, reading and writing a variable becomes an explicit load and store.
+Once names map to memory slots, I turn reading and writing a variable into an explicit load and store.
 
 A variable reference loads the current value:
 
-```cpp
-/// NameExpressionNode::codegen - A variable reference loads the current value
-/// from the variable's memory slot.
-Value *NameExpressionNode::codegen() {
-  auto It = NamedValues.find(Name);
-  if (It == NamedValues.end() || !It->second)
-    return LogErrorValue("Unknown variable name");
-  return TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), It->second,
-                                Name.c_str());
-}
+```cppdiff
+-/// NameExpressionNode::codegen - A variable reference looks up the name in
+-/// NamedValues and returns the Value* for the corresponding function argument.
+-///
+-/// For now NamedValues only contains the current function's parameters; any
+-/// other name is an error. Mutable local variables (alloca/store/load) come
+-/// in a later chapter.
++/// NameExpressionNode::codegen - A variable reference loads the current value
++/// from the variable's memory slot.
+*Value *NameExpressionNode::codegen() {
+*  auto It = NamedValues.find(Name);
+*  if (It == NamedValues.end() || !It->second)
+*    return LogErrorValue("Unknown variable name: '" + Name + "'");
+-  return It->second;
++  return TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), It->second,
++                                Name.c_str());
+*}
 ```
 
 ```llvm
@@ -396,7 +503,7 @@ Value *AssignmentExpressionNode::codegen() {
 
   auto It = NamedValues.find(Name);
   if (It == NamedValues.end() || !It->second)
-    return LogErrorValue("Unknown variable name");
+    return LogErrorValue("Unknown variable name: '" + Name + "'");
 
   TheBuilder->CreateStore(Value, It->second);
   return Value;
@@ -477,23 +584,13 @@ If an outer variable had the same name, it's visible again after the `var` body 
 
 ## Parameters Become Mutable Too
 
-Once `NamedValues` holds allocas, function parameters have to use the same representation. `FunctionDefinitionNode::codegen` now creates an entry-block alloca for each argument and stores the incoming LLVM argument value into it:
-
-```cpp
-NamedValues.clear();
-for (auto &Argument : TheFunction->args()) {
-  AllocaInst *Alloca =
-      CreateEntryBlockAlloca(TheFunction, std::string(Argument.getName()));
-  TheBuilder->CreateStore(&Argument, Alloca);
-  NamedValues[std::string(Argument.getName())] = Alloca;
-}
-```
+Once `NamedValues` holds allocas, function parameters have to use the same representation. That's the `FunctionDefinitionNode::codegen` loop I already walked through above, in [Memory Slots: From Values to Storage](#memory-slots-from-values-to-storage) — parameters go through the exact same alloca-and-store as any other variable, nothing extra to add here.
 
 This unifies the whole language: parameters, `var` locals, and loop variables all live in memory slots. Variable references always load; assignments always store. One model everywhere.
 
 ## `for` Loops Switch to the Same Model
 
-The old `for` codegen bound the loop variable directly to the incoming `Value*`, using a PHI node to merge the start value with each iteration's next value. That no longer fits now that every mutable local uses an alloca, so `ForExpressionNode::codegen` switches to a memory slot for the loop variable too:
+The old `for` codegen bound the loop variable directly to the incoming `Value*`, using a PHI node to merge the start value with each iteration's next value. That no longer fits now that every mutable local uses an alloca, so I switch `ForExpressionNode::codegen` to a memory slot for the loop variable too:
 
 ```cppdiff
 *Value *ForExpressionNode::codegen() {
@@ -540,7 +637,7 @@ The old `for` codegen bound the loop variable directly to the incoming `Value*`,
 *}
 ```
 
-The parser records whether `var` was present by setting an `IsVarDecl` flag on `ForExpressionNode`:
+I record whether `var` was present by setting an `IsVarDecl` flag on `ForExpressionNode`:
 
 ```cppdiff
 *static unique_ptr<ExpressionNode> ParseForExpression() {
@@ -558,7 +655,7 @@ The parser records whether `var` was present by setting an `IsVarDecl` flag on `
 *}
 ```
 
-Codegen uses that flag to decide whether to allocate a fresh slot or reuse an existing one:
+I use that flag in codegen to decide whether to allocate a fresh slot or reuse an existing one:
 
 ```cpp
 if (IsVarDecl) {
@@ -569,13 +666,13 @@ if (IsVarDecl) {
   // 'for i': look up the existing alloca — error if i is not in scope.
   auto It = NamedValues.find(VarName);
   if (It == NamedValues.end() || !It->second)
-    return LogErrorValue("Unknown variable name");
+    return LogErrorValue("Unknown variable name: '" + VarName + "'");
   Alloca = It->second;
   TheBuilder->CreateStore(StartVal, Alloca);
 }
 ```
 
-`IsVarDecl` also controls teardown: when `var` was used, the loop variable is removed from `NamedValues` (or the shadowed outer binding is restored) after the loop exits; when it wasn't, the existing slot is left untouched.
+`IsVarDecl` also controls teardown: when `var` was used, I remove the loop variable from `NamedValues` (or restore the shadowed outer binding) after the loop exits; when it wasn't, I leave the existing slot untouched.
 
 Here is `def count(n): for var i = 1, i < n, 1: i` with `-O0 -v`:
 
@@ -616,10 +713,10 @@ after_loop:
 for [var] name = start, condition, step: body
 ```
 
-`var` is optional and follows C++ semantics:
+`var` is optional, and I give the two forms different meanings:
 
-- **`for var i = ...`** — declares a new alloca slot named `i` in the current scope. If `i` already exists in the enclosing scope, this shadows it.
-- **`for i = ...`** — reuses an existing variable `i` that must already be in scope. If it doesn't exist, this is an error.
+- **`for var i = ...`** — I declare a new alloca slot named `i` in the current scope. If `i` already exists in the enclosing scope, this shadows it.
+- **`for i = ...`** — I reuse an existing variable `i` that must already be in scope. If it doesn't exist, I report an error.
 
 The distinction is mostly academic right now, because a function body is still a single expression, not a sequence of statements. The one place it surfaces is a nested loop reusing the outer loop variable:
 
@@ -629,7 +726,7 @@ for var i = 0, i < 10, 1:
     printd(i)
 ```
 
-The outer `for var i` introduces `i` into scope. The inner `for i` finds that same slot and reuses it — the inner loop overwrites `i` on every outer iteration, then the outer condition re-evaluates with whatever `i` was left at once the inner loop finished. That's almost never useful deliberately; it's here to make the semantics concrete.
+The outer `for var i` introduces `i` into scope. The inner `for i` finds that same slot and reuses it — the inner loop overwrites `i` on every outer iteration, then the outer condition re-evaluates with whatever `i` was left at once the inner loop finished. That's almost never useful deliberately; I include it here to make the semantics concrete.
 
 The more natural use of `for i = ...` (without `var`) becomes clear once `var` statements exist independently of expressions, next chapter:
 
@@ -643,7 +740,7 @@ Until then, `var` in `for` is the safe default.
 
 ## mem2reg: Cleaning Up the Memory Slots
 
-This chapter adds `PromotePass` — commonly called `mem2reg` — to the optimization pipeline, ahead of the three passes I already had:
+I add `PromotePass` — commonly called `mem2reg` — to the optimization pipeline, ahead of the three passes I already had:
 
 ```cppdiff
 *  if (OptLevel != 0) {

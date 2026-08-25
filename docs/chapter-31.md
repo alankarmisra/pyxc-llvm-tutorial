@@ -63,9 +63,9 @@ I'll add one new character token:
 ```cppdiff
  enum Token {
 *  ...
-*  tok_type = -54,
-*  tok_string = -55,
-+  tok_character = -56,
+*  tok_type = -52,
+*  tok_string = -53,
++  tok_character = -54,
 *
 *  // punctuation and operators
 *  tok_lparen = '(',

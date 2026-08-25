@@ -130,7 +130,7 @@ I create one `PyxcJIT` instance in `main()`. I hold it, and the helper LLVM uses
 *static unique_ptr<LLVMContext> TheContext;
 *static unique_ptr<Module> TheModule;
 *static unique_ptr<IRBuilder<>> TheBuilder;
-*static map<std::string, Value *> NamedValues;
+*static map<string, Value *> NamedValues;
 +static unique_ptr<PyxcJIT> JIT;
 *...
 +static ExitOnError ExitOnErr;
@@ -426,7 +426,7 @@ I solve this by keeping a persistent registry of `FunctionSignatureNode` objects
 ```cpp
 static map<string, unique_ptr<FunctionSignatureNode>> FunctionSignatures;
 
-Function *getFunction(const std::string &Name) {
+Function *getFunction(const string &Name) {
   // I first search the current module.
   if (auto *F = TheModule->getFunction(Name))
     return F;

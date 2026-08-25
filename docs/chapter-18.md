@@ -235,26 +235,26 @@ This must appear before the generic `-` path so that `->` is never split into tw
 ```cpp
 // enum Token (excerpt)
   // mutable variables
-  tok_var = -19,
+  tok_var = -17,
 
   // types
-  tok_int = -20,
+  tok_int = -18,
 
   // indentation
-  tok_indent = -21,
-  tok_dedent = -22,
+  tok_indent = -19,
+  tok_dedent = -20,
   tok_block_end = -100, // synthetic: injected by ParseBlock after eating DEDENT
 
   // new type keywords
-  tok_int8 = -23,
-  tok_int16 = -24,
-  tok_int32 = -25,
-  tok_int64 = -26,
-  tok_float = -27,
-  tok_float32 = -28,
-  tok_float64 = -29,
-  tok_bool = -30,
-  tok_none = -31,
+  tok_int8 = -21,
+  tok_int16 = -22,
+  tok_int32 = -23,
+  tok_int64 = -24,
+  tok_float = -25,
+  tok_float32 = -26,
+  tok_float64 = -27,
+  tok_bool = -28,
+  tok_none = -29,
 ```
 
 Registered in the keyword map:
@@ -273,16 +273,16 @@ Registered in the keyword map:
 +    {"None", tok_none}};
 ```
 
-`float` and `float64` are **separate tokens**: `tok_float = -27` and `tok_float64 = -29`. `ParseTypeToken` maps `tok_float → ValueType::Float` and `tok_float64 → ValueType::Float64`. Both compile to `double`, but the distinction is preserved through the entire pipeline until IR emission.
+`float` and `float64` are **separate tokens**: `tok_float = -25` and `tok_float64 = -29`. `ParseTypeToken` maps `tok_float → ValueType::Float` and `tok_float64 → ValueType::Float64`. Both compile to `double`, but the distinction is preserved through the entire pipeline until IR emission.
 
 ### Boolean Literal Keywords
 
 ```cpp
 // enum Token (excerpt, continued)
-  tok_none = -31,
-  tok_true = -32,
-  tok_false = -33,
-  tok_elif = -34,
+  tok_none = -29,
+  tok_true = -30,
+  tok_false = -31,
+  tok_elif = -32,
 ```
 
 ```cppdiff

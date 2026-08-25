@@ -58,10 +58,10 @@ static cl::opt<bool> DumpIR("dump-ir",
 static cl::opt<bool> VerboseIR("v", cl::desc("Alias for --dump-ir"),
                                cl::init(false), cl::cat(PyxcCategory));
 
-static cl::opt<std::string>
+static cl::opt<string>
     EmitKindOption("emit", cl::desc("Emit output: llvm-ir | asm | obj"),
                    cl::init(""), cl::cat(PyxcCategory));
-static cl::opt<std::string> OutputFile("o", cl::desc("Output filename"),
+static cl::opt<string> OutputFile("o", cl::desc("Output filename"),
                                        cl::value_desc("filename"), cl::init(""),
                                        cl::cat(PyxcCategory));
 ```

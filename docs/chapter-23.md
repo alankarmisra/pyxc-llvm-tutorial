@@ -87,11 +87,11 @@ I add three new tokens:
 ```cppdiff
 *enum Token {
 *  ...
-*  tok_shift_left = -45,  // <<
-*  tok_shift_right = -46, // >>
-+  tok_switch = -47,
-+  tok_case = -48,
-+  tok_default = -49,
+*  tok_shift_left = -43,  // <<
+*  tok_shift_right = -44, // >>
++  tok_switch = -45,
++  tok_case = -46,
++  tok_default = -47,
 *
 *  // punctuation and operators
 *  ...

@@ -86,15 +86,15 @@ I add seven new tokens to cover the compound assignment operators and the increm
 ```cppdiff
  enum Token {
 *  ...
-*  tok_string = -55,
-*  tok_character = -56,
-+  tok_plus_equal = -57,
-+  tok_minus_equal = -58,
-+  tok_star_equal = -59,
-+  tok_slash_equal = -60,
-+  tok_percent_equal = -61,
-+  tok_plus_plus = -62,
-+  tok_minus_minus = -63,
+*  tok_string = -53,
+*  tok_character = -54,
++  tok_plus_equal = -55,
++  tok_minus_equal = -56,
++  tok_star_equal = -57,
++  tok_slash_equal = -58,
++  tok_percent_equal = -59,
++  tok_plus_plus = -60,
++  tok_minus_minus = -61,
 *
 *  // punctuation and operators
 *  tok_lparen = '(',

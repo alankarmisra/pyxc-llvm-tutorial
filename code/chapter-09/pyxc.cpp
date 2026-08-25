@@ -40,7 +40,7 @@ static constexpr char AnonymousExpressionFunctionName[] = "__anon_expr";
 static cl::OptionCategory PyxcCategory("Pyxc options");
 
 // Optional positional input: 0 args => REPL, 1 arg => file mode.
-static cl::opt<std::string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
+static cl::opt<string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
                                       cl::init(""), cl::cat(PyxcCategory));
 
 // Verbose IR dump in both REPL and file mode.
@@ -660,10 +660,10 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
 ///   | parenthesized-expression ;
 static unique_ptr<ExpressionNode> ParsePrimary() {
   switch (CurrentToken) {
-  case tok_number:
-    return ParseNumberExpression();
   case tok_name:
     return ParseNameExpression();
+  case tok_number:
+    return ParseNumberExpression();
   case tok_lparen:
     return ParseParenthesizedExpression();
   default:
@@ -895,14 +895,14 @@ static unique_ptr<FunctionSignatureNode> ParseExtern() {
 static std::unique_ptr<LLVMContext> TheContext;
 static std::unique_ptr<Module> TheModule;
 static std::unique_ptr<IRBuilder<>> TheBuilder;
-static std::map<std::string, Value *> NamedValues;
+static std::map<string, Value *> NamedValues;
 static std::unique_ptr<PyxcJIT> JIT;
 static std::unique_ptr<FunctionPassManager> FunctionPasses;
 static std::unique_ptr<LoopAnalysisManager> LoopAnalyses;
 static std::unique_ptr<FunctionAnalysisManager> FunctionAnalyses;
 static std::unique_ptr<CGSCCAnalysisManager> CallGraphAnalyses;
 static std::unique_ptr<ModuleAnalysisManager> ModuleAnalyses;
-static std::map<std::string, std::unique_ptr<FunctionSignatureNode>>
+static std::map<string, std::unique_ptr<FunctionSignatureNode>>
     FunctionSignatures;
 static ExitOnError ExitOnErr;
 
@@ -923,7 +923,7 @@ Value *LogErrorValue(const string &ErrorMessage) {
 /// codegen() on it, which emits a fresh 'declare' with ExternalLinkage in the
 /// current module. The JIT resolves that extern to the already-compiled body at
 /// link time.
-Function *getFunction(const std::string &Name) {
+Function *getFunction(const string &Name) {
   // Fast path: declaration or definition already in the current module.
   if (auto *F = TheModule->getFunction(Name))
     return F;
@@ -1121,7 +1121,7 @@ Function *FunctionDefinitionNode::codegen() {
   // NameExpressionNode::codegen().
   NamedValues.clear();
   for (auto &Argument : TheFunction->args())
-    NamedValues[std::string(Argument.getName())] = &Argument;
+    NamedValues[string(Argument.getName())] = &Argument;
 
   // Step 4: codegen the body, optimise, verify, or erase on failure.
   if (Value *RetVal = Body->codegen()) {

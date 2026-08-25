@@ -50,9 +50,9 @@ cd pyxc-llvm-tutorial/code/chapter-44
 One new token:
 
 ```cppdiff
-*  tok_module = -69,
-*  tok_export = -70,
-+  tok_import = -71,
+*  tok_module = -67,
+*  tok_export = -68,
++  tok_import = -69,
 ```
 
 added to the keyword table and token name map the same way `module` and `export` were:

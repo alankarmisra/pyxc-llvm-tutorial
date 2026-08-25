@@ -68,9 +68,9 @@ Two new token values:
 ```cppdiff
 *enum Token {
 *  ...
-*  tok_uint64 = -42,
-+  tok_and = -43, // &&
-+  tok_or = -44,  // ||
+*  tok_uint64 = -40,
++  tok_and = -41, // &&
++  tok_or = -42,  // ||
 *
 *  // punctuation and operators
 *  tok_lparen = '(',

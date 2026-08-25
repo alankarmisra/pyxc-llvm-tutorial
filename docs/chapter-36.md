@@ -58,9 +58,9 @@ cd pyxc-llvm-tutorial/code/chapter-36
 ## One New Token
 
 ```cppdiff
-*  tok_plus_plus = -62,
-*  tok_minus_minus = -63,
-+  tok_class = -64,
+*  tok_plus_plus = -60,
+*  tok_minus_minus = -61,
++  tok_class = -62,
 *
 *  // punctuation and operators
 *  tok_lparen = '(',

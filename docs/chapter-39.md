@@ -69,10 +69,10 @@ cd pyxc-llvm-tutorial/code/chapter-39
 ## New Tokens
 
 ```cppdiff
-*  tok_minus_minus = -63,
-*  tok_class = -64,
-+  tok_public = -65,
-+  tok_private = -66,
+*  tok_minus_minus = -61,
+*  tok_class = -62,
++  tok_public = -63,
++  tok_private = -64,
 *
 *  // punctuation and operators
 ```

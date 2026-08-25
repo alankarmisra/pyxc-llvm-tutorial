@@ -43,7 +43,7 @@ static constexpr char AnonymousExpressionFunctionName[] = "__anon_expr";
 static cl::OptionCategory PyxcCategory("Pyxc options");
 
 // Optional positional input: 0 args => REPL, 1 arg => file mode.
-static cl::opt<std::string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
+static cl::opt<string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
                                       cl::init(""), cl::cat(PyxcCategory));
 
 // Verbose IR dump in both REPL and file mode.
@@ -95,12 +95,12 @@ enum Token {
 
 
   // mutable variables
-  tok_var = -18,
+  tok_var = -16,
 
   // indentation
-  tok_indent    = -19,
-  tok_dedent    = -20,
-  tok_block_end = -21, // synthetic: injected by ParseBlock after eating DEDENT
+  tok_indent    = -17,
+  tok_dedent    = -18,
+  tok_block_end = -19, // synthetic: injected by ParseBlock after eating DEDENT
 
   // punctuation and operators
   tok_lparen = '(',
@@ -800,7 +800,7 @@ static void consumeNewlines() {
 
 // FunctionSignatures - Persistent function signature registry used by codegen
 // to re-emit declarations into fresh modules.
-static std::map<std::string, std::unique_ptr<FunctionSignatureNode>> FunctionSignatures;
+static std::map<string, std::unique_ptr<FunctionSignatureNode>> FunctionSignatures;
 
 // Parse-time variable tracking for assignments.
 // Scopes are stacked: function scope plus nested block scopes.
@@ -1097,6 +1097,7 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
       if (!Init)
         return nullptr;
     } else {
+      // No '=': default the variable to 0.0.
       Init = make_unique<NumberExpressionNode>(0.0);
     }
 
@@ -1185,10 +1186,10 @@ static unique_ptr<ExpressionNode> ParseFactor();
 ///   | parenthesized-expression ;
 static unique_ptr<ExpressionNode> ParsePrimary() {
   switch (CurrentToken) {
-  case tok_number:
-    return ParseNumberExpression();
   case tok_name:
     return ParseNameExpression();
+  case tok_number:
+    return ParseNumberExpression();
   case tok_lparen:
     return ParseParenthesizedExpression();
   default:
@@ -1576,7 +1577,7 @@ static unique_ptr<FunctionSignatureNode> ParseExtern() {
 static std::unique_ptr<LLVMContext> TheContext;
 static std::unique_ptr<Module> TheModule;
 static std::unique_ptr<IRBuilder<>> TheBuilder;
-static std::map<std::string, AllocaInst *> NamedValues;
+static std::map<string, AllocaInst *> NamedValues;
 static std::unique_ptr<PyxcJIT> JIT;
 static std::unique_ptr<FunctionPassManager> FunctionPasses;
 static std::unique_ptr<LoopAnalysisManager> LoopAnalyses;
@@ -1609,7 +1610,7 @@ static AllocaInst *CreateEntryBlockAlloca(Function *TheFunction,
 /// we look up its FunctionSignatureNode in FunctionSignatures and call codegen() on it,
 /// which emits a fresh 'declare' with ExternalLinkage in the current module.
 /// The JIT resolves that extern to the already-compiled body at link time.
-Function *getFunction(const std::string &Name) {
+Function *getFunction(const string &Name) {
   // Fast path: declaration or definition already in the current module.
   if (auto *F = TheModule->getFunction(Name))
     return F;
@@ -1654,7 +1655,7 @@ Value *AssignmentStatementNode::codegen() {
 
   auto It = NamedValues.find(Name);
   if (It == NamedValues.end() || !It->second)
-    return LogErrorValue("Unknown variable name");
+    return LogErrorValue("Unknown variable name: '" + Name + "'");
 
   TheBuilder->CreateStore(Value, It->second);
   return Value;
@@ -1854,7 +1855,7 @@ Value *ForStatementNode::codegen() {
   } else {
     auto It = NamedValues.find(VarName);
     if (It == NamedValues.end() || !It->second)
-      return LogErrorValue("Unknown variable name");
+      return LogErrorValue("Unknown variable name: '" + VarName + "'");
     Alloca = It->second;
   }
 
@@ -2015,9 +2016,9 @@ Function *FunctionDefinitionNode::codegen() {
   NamedValues.clear();
   for (auto &Argument : TheFunction->args()) {
     AllocaInst *Alloca =
-        CreateEntryBlockAlloca(TheFunction, std::string(Argument.getName()));
+        CreateEntryBlockAlloca(TheFunction, string(Argument.getName()));
     TheBuilder->CreateStore(&Argument, Alloca);
-    NamedValues[std::string(Argument.getName())] = Alloca;
+    NamedValues[string(Argument.getName())] = Alloca;
   }
 
   // Step 4: codegen the body, optimise, verify, or erase on failure.

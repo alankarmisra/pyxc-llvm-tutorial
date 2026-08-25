@@ -224,7 +224,7 @@ failed without converting a temporary string to a C string first.
 For a name, I need to find the LLVM value that the name represents. I keep those values in `NamedValues`:
 
 ```cpp
-static map<std::string, Value *> NamedValues;
+static map<string, Value *> NamedValues;
 
 Value *NameExpressionNode::codegen() {
   auto It = NamedValues.find(Name);
@@ -529,7 +529,7 @@ Function *FunctionDefinitionNode::codegen() {
   // NameExpressionNode::codegen().
   NamedValues.clear();
   for (auto &Argument : TheFunction->args())
-    NamedValues[std::string(Argument.getName())] = &Argument;
+    NamedValues[string(Argument.getName())] = &Argument;
 
   // Step 4: I generate the body, return its value, and verify the function.
   if (Value *RetVal = Body->codegen()) {

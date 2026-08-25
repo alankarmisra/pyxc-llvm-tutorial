@@ -70,12 +70,12 @@ Four new tokens and keywords:
 ```cppdiff
 *enum Token {
 *  ...
-*  tok_break = -37,
-*  tok_continue = -38,
-+  tok_uint8 = -39,
-+  tok_uint16 = -40,
-+  tok_uint32 = -41,
-+  tok_uint64 = -42,
+*  tok_break = -35,
+*  tok_continue = -36,
++  tok_uint8 = -37,
++  tok_uint16 = -38,
++  tok_uint32 = -39,
++  tok_uint64 = -40,
 *
 *  // punctuation and operators
 *  tok_lparen = '(',

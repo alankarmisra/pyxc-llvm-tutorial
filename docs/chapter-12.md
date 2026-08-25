@@ -29,7 +29,7 @@ cd pyxc-llvm-tutorial/code/chapter-12
 
 ## Grammar
 
-The central shift: `if`, `for`, `var`, and (new) `return` move out of the expression grammar and become statements. Expressions go back to being purely value-producing — I add `statement`, `simple-statement`, `compound-statement`, `suite`, and `block` to hold them, plus `indent`/`dedent`/`INDENT`/`DEDENT`/`BLOCK_END` for the indentation machinery:
+The central shift: I move `if`, `for`, `var`, and (new) `return` out of the expression grammar and make them statements. Expressions go back to being purely value-producing — I add `statement`, `simple-statement`, `compound-statement`, `suite`, and `block` to hold them, plus `indent`/`dedent`/`INDENT`/`DEDENT`/`BLOCK_END` for the indentation machinery:
 
 `code/chapter-12/pyxc.ebnf`
 
@@ -49,6 +49,7 @@ The central shift: `if`, `for`, `var`, and (new) `return` move out of the expres
 *parameter                         = name ;
 -expression                        = variable-expression
 -                                    | comparison [ "=" expression ] ;
+-(* Constraint: If "=" is present, comparison must resolve to a variable lvalue.*)
 -variable-expression               = "var" variable-binding
 -                                    { "," variable-binding } ":"
 -                                    [ end-of-lines ] expression ;
@@ -161,12 +162,12 @@ Three new token values:
 *enum Token {
 *  ...
 *  // mutable variables
-*  tok_var = -18,
+*  tok_var = -16,
 *
 +  // indentation
-+  tok_indent    = -19,
-+  tok_dedent    = -20,
-+  tok_block_end = -21, // synthetic: injected by ParseBlock after eating DEDENT
++  tok_indent    = -17,
++  tok_dedent    = -18,
++  tok_block_end = -19, // synthetic: injected by ParseBlock after eating DEDENT
 *
 *  // punctuation and operators
 *  ...
@@ -222,7 +223,7 @@ public:
 };
 ```
 
-`IfStatementNode` replaces [chapter 10](chapter-10.md)'s `IfExpressionNode`. Since a statement doesn't need to produce a value, the new version drops the PHI node entirely, and `else` becomes optional — a real behavior change, not just a rename.
+`IfStatementNode` replaces [chapter 10](chapter-10.md)'s `IfExpressionNode`. Since a statement doesn't need to produce a value, I drop the PHI node entirely and make `else` optional — a real behavior change, not just a rename.
 
 ## INDENT and DEDENT
 

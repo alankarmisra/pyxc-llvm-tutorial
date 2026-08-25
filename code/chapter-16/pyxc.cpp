@@ -50,7 +50,7 @@ using namespace llvm::orc;
 static cl::OptionCategory PyxcCategory("Pyxc options");
 
 // Optional positional input: 0 args => REPL, 1 arg => file mode.
-static cl::opt<std::string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
+static cl::opt<string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
                                       cl::init(""), cl::cat(PyxcCategory));
 
 // Dump generated IR in both JIT and emission modes.
@@ -60,10 +60,10 @@ static cl::opt<bool> DumpIR("dump-ir",
 static cl::opt<bool> VerboseIR("v", cl::desc("Alias for --dump-ir"),
                                cl::init(false), cl::cat(PyxcCategory));
 
-static cl::opt<std::string>
+static cl::opt<string>
     EmitKindOption("emit", cl::desc("Emit output: llvm-ir | asm | obj"),
                    cl::init(""), cl::cat(PyxcCategory));
-static cl::opt<std::string> OutputFile("o", cl::desc("Output filename"),
+static cl::opt<string> OutputFile("o", cl::desc("Output filename"),
                                        cl::value_desc("filename"), cl::init(""),
                                        cl::cat(PyxcCategory));
 
@@ -112,22 +112,22 @@ enum Token {
   tok_if = -12,
   tok_else = -13,
   tok_return = -14,
-  tok_elif = -22,
+  tok_elif = -20,
 
   // loops
   tok_for = -15,
-  tok_while = -23,
-  tok_do = -24,
-  tok_break = -25,
-  tok_continue = -26,
+  tok_while = -21,
+  tok_do = -22,
+  tok_break = -23,
+  tok_continue = -24,
 
   // mutable variables
-  tok_var = -18,
+  tok_var = -16,
 
   // indentation
-  tok_indent    = -19,
-  tok_dedent    = -20,
-  tok_block_end = -21, // synthetic: injected by ParseBlock after eating DEDENT
+  tok_indent    = -17,
+  tok_dedent    = -18,
+  tok_block_end = -19, // synthetic: injected by ParseBlock after eating DEDENT
 
   // punctuation and operators
   tok_lparen = '(',
@@ -867,7 +867,7 @@ static void consumeNewlines() {
 
 // FunctionSignatures - Persistent function signature registry used by codegen
 // to re-emit declarations into fresh modules.
-static std::map<std::string, std::unique_ptr<FunctionSignatureNode>> FunctionSignatures;
+static std::map<string, std::unique_ptr<FunctionSignatureNode>> FunctionSignatures;
 
 // Parse-time variable tracking for assignments.
 // Scopes are stacked: function scope plus nested block scopes.
@@ -1238,6 +1238,7 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
       if (!Init)
         return nullptr;
     } else {
+      // No '=': default the variable to 0.0.
       Init = make_unique<NumberExpressionNode>(0.0);
     }
 
@@ -1337,10 +1338,10 @@ static unique_ptr<ExpressionNode> ParseFactor();
 ///   | parenthesized-expression ;
 static unique_ptr<ExpressionNode> ParsePrimary() {
   switch (CurrentToken) {
-  case tok_number:
-    return ParseNumberExpression();
   case tok_name:
     return ParseNameExpression();
+  case tok_number:
+    return ParseNumberExpression();
   case tok_lparen:
     return ParseParenthesizedExpression();
   default:
@@ -1749,7 +1750,7 @@ static unique_ptr<FunctionSignatureNode> ParseExtern() {
 static std::unique_ptr<LLVMContext> TheContext;
 static std::unique_ptr<Module> TheModule;
 static std::unique_ptr<IRBuilder<>> TheBuilder;
-static std::map<std::string, AllocaInst *> NamedValues;
+static std::map<string, AllocaInst *> NamedValues;
 static bool InGlobalInit = false;
 static bool ModuleHasGlobals = false;
 struct LoopControlTargets {
@@ -1803,7 +1804,7 @@ static AllocaInst *CreateEntryBlockAlloca(Function *TheFunction,
 /// we look up its FunctionSignatureNode in FunctionSignatures and call codegen() on it,
 /// which emits a fresh 'declare' with ExternalLinkage in the current module.
 /// The JIT resolves that extern to the already-compiled body at link time.
-Function *getFunction(const std::string &Name) {
+Function *getFunction(const string &Name) {
   // Fast path: declaration or definition already in the current module.
   if (auto *F = TheModule->getFunction(Name))
     return F;
@@ -1862,7 +1863,7 @@ Value *AssignmentStatementNode::codegen() {
     return Value;
   }
 
-  return LogErrorValue("Unknown variable name");
+  return LogErrorValue("Unknown variable name: '" + Name + "'");
 }
 
 /// ReturnStatementNode::codegen - Emit a return from the current function.
@@ -2066,7 +2067,7 @@ Value *ForStatementNode::codegen() {
     else if (auto *Global = GetGlobalVariable(VarName))
       VariablePointer = Global;
     else
-      return LogErrorValue("Unknown variable name");
+      return LogErrorValue("Unknown variable name: '" + VarName + "'");
   }
 
   Value *StartVal = Start->codegen();
@@ -2328,9 +2329,9 @@ Function *FunctionDefinitionNode::codegen() {
   LoopControlStack.clear();
   for (auto &Argument : TheFunction->args()) {
     AllocaInst *Alloca =
-        CreateEntryBlockAlloca(TheFunction, std::string(Argument.getName()));
+        CreateEntryBlockAlloca(TheFunction, string(Argument.getName()));
     TheBuilder->CreateStore(&Argument, Alloca);
-    NamedValues[std::string(Argument.getName())] = Alloca;
+    NamedValues[string(Argument.getName())] = Alloca;
   }
 
   // Step 4: codegen the body, optimise, verify, or erase on failure.

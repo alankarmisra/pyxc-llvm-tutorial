@@ -83,9 +83,9 @@ Three new productions (`trait-definition`, `trait-block`, `trait-method-signatur
 ## New Token and Data Structures
 
 ```cppdiff
-*  tok_public = -65,
-*  tok_private = -66,
-+  tok_trait = -67,
+*  tok_public = -63,
+*  tok_private = -64,
++  tok_trait = -65,
 *
 *  // punctuation and operators
 ```

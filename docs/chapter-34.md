@@ -166,7 +166,7 @@ That `isLValue()` check only fires once `Left` has already parsed successfully. 
 *    if (Type == ValueType::Error) {
 +      if (CurrentToken == tok_assign)
 +        return LogErrorExpression("Assignment to undeclared variable");
-*      return LogErrorExpression("Unknown variable name");
+*      return LogErrorExpression("Unknown variable name: '" + ParsedName + "'");
 *    }
 *    ...
 ```

@@ -74,10 +74,10 @@ Single-character operators like `&`, `|`, `^`, and `~` already fall through the 
 ```cppdiff
 *enum Token {
 *  ...
-*  tok_and = -43, // &&
-*  tok_or = -44,  // ||
-+  tok_shift_left = -45,  // <<
-+  tok_shift_right = -46, // >>
+*  tok_and = -41, // &&
+*  tok_or = -42,  // ||
++  tok_shift_left = -43,  // <<
++  tok_shift_right = -44, // >>
 *
 *  // punctuation and operators
 *  ...

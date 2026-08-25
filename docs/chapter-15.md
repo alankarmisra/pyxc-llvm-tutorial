@@ -307,7 +307,7 @@ Value *NameExpressionNode::codegen() {
     return TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), Global,
                                Name.c_str());
 
-  return LogErrorValue("Unknown variable name");
+  return LogErrorValue("Unknown variable name: '" + Name + "'");
 }
 
 Value *AssignmentStatementNode::codegen() {
@@ -326,7 +326,7 @@ Value *AssignmentStatementNode::codegen() {
     return Value;
   }
 
-  return LogErrorValue("Unknown variable name");
+  return LogErrorValue("Unknown variable name: '" + Name + "'");
 }
 ```
 
@@ -351,7 +351,7 @@ if (IsVarDecl) {
   else if (auto *Global = GetGlobalVariable(VarName))
     VariablePointer = Global;
   else
-    return LogErrorValue("Unknown variable name");
+    return LogErrorValue("Unknown variable name: '" + VarName + "'");
 }
 ```
 

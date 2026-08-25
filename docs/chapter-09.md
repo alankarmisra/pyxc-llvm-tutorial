@@ -125,7 +125,7 @@ LLVM already requires me to process `-O` through its command-line library. I add
 *static cl::OptionCategory PyxcCategory("Pyxc options");
 *
 +// Optional positional input: 0 args => REPL, 1 arg => file mode.
-+static cl::opt<std::string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
++static cl::opt<string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
 +                                      cl::init(""), cl::cat(PyxcCategory));
 *...
 *static cl::opt<unsigned> OptLevel("O", cl::desc("Optimization level"),
@@ -169,7 +169,7 @@ When `fopen` fails, it sets `errno`. I use `perror` to print the filename follow
 `VerboseIR` goes right after `InputFile`, before `OptLevel`:
 
 ```cppdiff
-*static cl::opt<std::string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
+*static cl::opt<string> InputFile(cl::Positional, cl::desc("[script.pyxc]"),
 *                                      cl::init(""), cl::cat(PyxcCategory));
 *
 +// Verbose IR dump in both REPL and file mode.

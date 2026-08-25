@@ -503,7 +503,7 @@ If `End` points at the string's null terminator, I know `strtod` consumed every 
 *}
 ```
 
-I return `ThisChar` instead so I can name the character that caused the error — but that one change also removes the whole `switch`. Every named case existed only to return its own token, and `tok_lparen`, `tok_plus`, and the rest are all defined as `= 'char'` (see [Chapter 1](chapter-01.md)), so `return tok_lparen;` and `return '('` were already the same value. The `switch` mattered only because its `default` used to diverge from that pattern and return the unrelated sentinel `tok_error`. Once `default` returns `ThisChar` too, every case in the `switch` agrees with what `default` already does, so the whole dispatch collapses to a single `return ThisChar;` — nothing downstream changes, since `CurrentToken == tok_lparen` is still comparing against the same numeric value it always was.
+I return `ThisChar` instead so I can name the character that caused the error — but that one change also removes the whole `switch`. The switch's only real job was routing unknown characters to `tok_error` — every named case already just returned its own char value. Now that unknowns return themselves too, `return ThisChar` covers every case on its own.
 
 For names and numbers, I want to include the actual text from the source rather than report only `name` or `number`. I already have `Name` from Chapter 1 for the name case, and I just promoted `NumberLiteral` to a file-scope global above, in [Catching Malformed Numbers](#catching-malformed-numbers), for exactly this reason.
 

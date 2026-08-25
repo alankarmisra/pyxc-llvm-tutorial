@@ -344,10 +344,10 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
 ///   | parenthesized-expression ;
 static unique_ptr<ExpressionNode> ParsePrimary() {
   switch (CurrentToken) {
-  case tok_number:
-    return ParseNumberExpression(); // I parse a number such as 3.14.
   case tok_name:
     return ParseNameExpression(); // I parse `a` or `add(...)`.
+  case tok_number:
+    return ParseNumberExpression(); // I parse a number such as 3.14.
   case tok_lparen:
     return ParseParenthesizedExpression(); // I parse `( ... )`.
   default:

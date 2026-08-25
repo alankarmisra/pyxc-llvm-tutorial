@@ -140,71 +140,71 @@ enum Token {
   tok_if = -13,
   tok_else = -14,
   tok_return = -15,
-  tok_elif = -63,
+  tok_elif = -61,
 
   // loops
   tok_for = -16,
-  tok_while = -52,
-  tok_do = -53,
-  tok_break = -54,
-  tok_continue = -55,
-  tok_switch = -60,
-  tok_case = -61,
-  tok_default = -62,
+  tok_while = -50,
+  tok_do = -51,
+  tok_break = -52,
+  tok_continue = -53,
+  tok_switch = -58,
+  tok_case = -59,
+  tok_default = -60,
 
 
   // mutable variables
-  tok_var = -19,
+  tok_var = -17,
 
   // types
-  tok_int = -20,
+  tok_int = -18,
 
   // indentation
-  tok_indent = -21,
-  tok_dedent = -22,
+  tok_indent = -19,
+  tok_dedent = -20,
 
   // new type keywords
-  tok_int8 = -23,
-  tok_int16 = -24,
-  tok_int32 = -25,
-  tok_int64 = -26,
-  tok_uint8 = -65,
-  tok_uint16 = -66,
-  tok_uint32 = -67,
-  tok_uint64 = -68,
-  tok_module = -69,
-  tok_import = -70,
-  tok_export = -71,
-  tok_float = -27,
-  tok_float32 = -28,
-  tok_float64 = -29,
-  tok_bool = -30,
-  tok_none = -31,
-  tok_true = -32,
-  tok_false = -33,
-  tok_struct = -34,
-  tok_ptr = -35,
-  tok_addr = -36,
-  tok_sizeof = -37,
-  tok_string = -38,
-  tok_type = -39,
-  tok_class = -40,
-  tok_public = -41,
-  tok_private = -42,
-  tok_trait = -43,
-  tok_impl = -44,
-  tok_char = -64,
-  tok_pluseq = -45,
-  tok_minuseq = -46,
-  tok_muleq = -47,
-  tok_diveq = -48,
-  tok_modeq = -49,
-  tok_and = -50, // &&
-  tok_or = -51,  // ||
-  tok_plusplus = -56,
-  tok_minusminus = -57,
-  tok_shl = -58, // <<
-  tok_shr = -59, // >>
+  tok_int8 = -21,
+  tok_int16 = -22,
+  tok_int32 = -23,
+  tok_int64 = -24,
+  tok_uint8 = -63,
+  tok_uint16 = -64,
+  tok_uint32 = -65,
+  tok_uint64 = -66,
+  tok_module = -67,
+  tok_import = -68,
+  tok_export = -69,
+  tok_float = -25,
+  tok_float32 = -26,
+  tok_float64 = -27,
+  tok_bool = -28,
+  tok_none = -29,
+  tok_true = -30,
+  tok_false = -31,
+  tok_struct = -32,
+  tok_ptr = -33,
+  tok_addr = -34,
+  tok_sizeof = -35,
+  tok_string = -36,
+  tok_type = -37,
+  tok_class = -38,
+  tok_public = -39,
+  tok_private = -40,
+  tok_trait = -41,
+  tok_impl = -42,
+  tok_char = -62,
+  tok_pluseq = -43,
+  tok_minuseq = -44,
+  tok_muleq = -45,
+  tok_diveq = -46,
+  tok_modeq = -47,
+  tok_and = -48, // &&
+  tok_or = -49,  // ||
+  tok_plusplus = -54,
+  tok_minusminus = -55,
+  tok_shl = -56, // <<
+  tok_shr = -57, // >>
   tok_block_end = -100, // synthetic: injected by ParseBlock after eating DEDENT
 
   // punctuation and operators
@@ -3452,6 +3452,7 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
         return LogErrorExpression("Type mismatch in variable initialization");
     } else {
       if (DeclType != ValueType::Struct && DeclType != ValueType::Array) {
+        // No '=': use the declared type's zero value.
         Init = MakeZeroLiteral(DeclType);
         if (!Init)
           return nullptr;

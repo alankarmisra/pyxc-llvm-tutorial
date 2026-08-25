@@ -60,9 +60,9 @@ cd pyxc-llvm-tutorial/code/chapter-30
 ```cppdiff
  enum Token {
 *  ...
-*  tok_sizeof = -53,
-*  tok_type = -54,
-+  tok_string = -55,
+*  tok_sizeof = -51,
+*  tok_type = -52,
++  tok_string = -53,
 *
 *  // punctuation and operators
 *  tok_lparen = '(',

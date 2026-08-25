@@ -173,10 +173,10 @@ I'll start extending the lexer/parser. First I need a token for the `struct` key
 ```cppdiff
 *enum Token {
 *  ...
-*  tok_switch = -47,
-*  tok_case = -48,
-*  tok_default = -49,
-+  tok_struct = -50,
+*  tok_switch = -45,
+*  tok_case = -46,
+*  tok_default = -47,
++  tok_struct = -48,
 *
 *  // punctuation and operators
 *  ...
@@ -542,7 +542,7 @@ I call this from `ParseNameExpressionWithName`, right after I've looked up the b
 *  if (CurrentToken != tok_lparen) { // Simple variable ref.
 *    ValueType Type = LookupVarType(ParsedName);
 *    if (Type == ValueType::Error) {
-*      return LogErrorExpression("Unknown variable name");
+*      return LogErrorExpression("Unknown variable name: '" + ParsedName + "'");
 *    }
 +    string StructName = LookupVarStructName(ParsedName);
 +    if (CurrentToken == tok_dot)
@@ -722,7 +722,7 @@ Function parameters need the same treatment for the same reason: a parameter's `
 Everything so far has been the parser's view of a struct: I know the fields, I know the types, I've validated field accesses. Now I actually need to generate code, which means I need a real `StructType*` LLVM object, not just my own `StructTypeInfo`.
 
 ```cpp
-static std::map<std::string, StructType *> LLVMStructTypes;
+static std::map<string, StructType *> LLVMStructTypes;
 
 static Type *GetOrCreateLLVMStructType(const string &StructName) {
   auto Existing = LLVMStructTypes.find(StructName);

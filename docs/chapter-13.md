@@ -69,7 +69,7 @@ One new token:
 *  tok_if = -12,
 *  tok_else = -13,
 *  tok_return = -14,
-+  tok_elif = -22,
++  tok_elif = -20,
 *
 *  // loops
 *  ...

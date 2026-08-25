@@ -82,10 +82,10 @@ cd pyxc-llvm-tutorial/code/chapter-29
 ```cppdiff
 *enum Token {
 *  ...
-*  tok_ptr = -51,
-*  tok_addr = -52,
-*  tok_sizeof = -53,
-+  tok_type = -54,
+*  tok_ptr = -49,
+*  tok_addr = -50,
+*  tok_sizeof = -51,
++  tok_type = -52,
 *
 *  // punctuation and operators
 *  ...

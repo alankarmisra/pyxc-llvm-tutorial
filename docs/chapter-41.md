@@ -69,16 +69,16 @@ One new production, `implementation-definition`, plus its own block and method p
 ## New Token and Keyword
 
 ```cppdiff
-*  tok_star_equal = -59,
-*  tok_slash_equal = -60,
-*  tok_percent_equal = -61,
-*  tok_plus_plus = -62,
-*  tok_minus_minus = -63,
-*  tok_class = -64,
-*  tok_public = -65,
-*  tok_private = -66,
-*  tok_trait = -67,
-+  tok_impl = -68,
+*  tok_star_equal = -57,
+*  tok_slash_equal = -58,
+*  tok_percent_equal = -59,
+*  tok_plus_plus = -60,
+*  tok_minus_minus = -61,
+*  tok_class = -62,
+*  tok_public = -63,
+*  tok_private = -64,
+*  tok_trait = -65,
++  tok_impl = -66,
 ```
 
 Registered in the keyword table like every other keyword. The `for` in `impl TraitName for ClassName` reuses the existing `tok_for` token, the same one `for` loop statements produce. There's no ambiguity: `impl` always precedes it, and the parser already knows it's reading an impl header at that point, not a loop.

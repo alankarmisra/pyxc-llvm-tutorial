@@ -352,7 +352,7 @@ Indexing isn't the only place an array needs to become a pointer. Passing an arr
 +  if (getType() == ValueType::Array) {
 +    Value *ArrayAddress = codegenAddress();
 +    if (!ArrayAddress)
-+      return LogErrorValue("Unknown variable name");
++      return LogErrorValue("Unknown variable name: '" + Name + "'");
 +    Value *Zero = ConstantInt::get(Type::getInt64Ty(*TheContext), 0);
 +    return TheBuilder->CreateInBoundsGEP(
 +        LLVMTypeFor(getType(), getStructName()), ArrayAddress, {Zero, Zero},
@@ -368,7 +368,7 @@ Indexing isn't the only place an array needs to become a pointer. Passing an arr
 *    return TheBuilder->CreateLoad(LLVMTypeFor(getType(), getStructName()), GV,
 *                               Name.c_str());
 *
-*  return LogErrorValue("Unknown variable name");
+*  return LogErrorValue("Unknown variable name: '" + Name + "'");
 *}
 ```
 

@@ -76,10 +76,10 @@ Two productions change this chapter: `primary` gains a `sizeof-expression` alter
 ```cppdiff
 *enum Token {
 *  ...
-*  tok_struct = -50,
-*  tok_ptr = -51,
-*  tok_addr = -52,
-+  tok_sizeof = -53,
+*  tok_struct = -48,
+*  tok_ptr = -49,
+*  tok_addr = -50,
++  tok_sizeof = -51,
 *
 *  // punctuation and operators
 *  ...

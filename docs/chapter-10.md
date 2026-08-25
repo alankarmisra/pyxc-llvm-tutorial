@@ -219,6 +219,11 @@ The expression `(advance(), tok_eq)` consumes the second character and then prod
 The grammar already gives comparisons their own parser layer. I extend its loop to accept all six comparison tokens:
 
 ```cppdiff
+*/// comparison
+-///   = sum { "<" sum } ;
++///   = sum { comparison-operator sum } ;
++/// comparison-operator
++///   = "==" | "!=" | "<=" | ">=" | "<" | ">" ;
 *static unique_ptr<ExpressionNode> ParseComparison() {
 *  auto Left = ParseSum();
 *  if (!Left)
@@ -358,6 +363,9 @@ public:
 I parse the condition, the required `then` expression, and the required `else` expression. I accept newlines after each colon and before `else`, but I do not process indentation yet:
 
 ```cpp
+/// if-expression
+///   = "if" expression ":" [ end-of-lines ] expression
+///     [ end-of-lines ] "else" ":" [ end-of-lines ] expression ;
 static unique_ptr<ExpressionNode> ParseIfExpression() {
   getNextToken(); // eat 'if'
 
@@ -456,6 +464,19 @@ entry:
   ...
 }
 ```
+
+`entry` itself isn't `IfExpressionNode::codegen()`'s doing — `FunctionDefinitionNode::codegen()` already created it and pointed the builder at it before generating the body at all:
+
+```cpp
+Function *FunctionDefinitionNode::codegen() {
+  ...
+  BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
+  TheBuilder->SetInsertPoint(BB);
+  ...
+}
+```
+
+That happens once per function, then `Body->codegen()` runs. For `absdiff`, `Body` is the `if` expression, so that call is what lands us in `IfExpressionNode::codegen()`, already inserting into `entry`. Everything from here on is that one call unwinding.
 
 **Step 1 — Generate the condition in the current block.**
 
@@ -878,6 +899,12 @@ public:
 I parse the variable name, start value, condition, step, and body in their grammar order. I allow newlines before the body:
 
 ```cpp
+/// for-expression
+///   = "for" name "=" expression "," expression "," expression
+///     ":" [ end-of-lines ] expression ;
+///
+/// The loop variable is introduced by the "for" and is in scope for the
+/// condition, step, and body. It shadows any outer variable of the same name.
 static unique_ptr<ExpressionNode> ParseForExpression() {
   getNextToken(); // eat 'for'
 

@@ -83,11 +83,11 @@ Nested pointer types (`ptr[ptr[int]]`) and pointers to `None` are rejected at pa
 ```cppdiff
 *enum Token {
 *  ...
-*  tok_case = -48,
-*  tok_default = -49,
-*  tok_struct = -50,
-+  tok_ptr = -51,
-+  tok_addr = -52,
+*  tok_case = -46,
+*  tok_default = -47,
+*  tok_struct = -48,
++  tok_ptr = -49,
++  tok_addr = -50,
 *
 *  // punctuation and operators
 *  ...

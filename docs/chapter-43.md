@@ -62,10 +62,10 @@ I add two new top-level forms — `module` and `export` — and a `module-path` 
 Two new tokens:
 
 ```cppdiff
-*  tok_trait = -67,
-*  tok_impl = -68,
-+  tok_module = -69,
-+  tok_export = -70,
+*  tok_trait = -65,
+*  tok_impl = -66,
++  tok_module = -67,
++  tok_export = -68,
 ```
 
 Added to the keyword table and token name map:

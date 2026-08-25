@@ -65,7 +65,7 @@ LLD_HAS_DRIVER(macho)
 static cl::OptionCategory PyxcCategory("Pyxc options");
 
 // Optional positional inputs: 0 args => REPL, 1+ args => file mode.
-static cl::list<std::string> InputFiles(cl::Positional, cl::desc("[inputs]"),
+static cl::list<string> InputFiles(cl::Positional, cl::desc("[inputs]"),
                                         cl::ZeroOrMore, cl::cat(PyxcCategory));
 
 // Dump IR to stderr in JIT modes.
@@ -81,10 +81,10 @@ static cl::opt<bool> DebugInfo("g", cl::desc("Emit DWARF debug info"),
                                cl::init(false), cl::cat(PyxcCategory));
 
 // Emit output file in file mode.
-static cl::opt<std::string>
+static cl::opt<string>
     EmitKindOpt("emit", cl::desc("Emit output: llvm-ir | asm | obj | exe"),
                 cl::init(""), cl::cat(PyxcCategory));
-static cl::opt<std::string> OutputFile("o", cl::desc("Output filename"),
+static cl::opt<string> OutputFile("o", cl::desc("Output filename"),
                                        cl::value_desc("filename"), cl::init(""),
                                        cl::cat(PyxcCategory));
 
@@ -139,41 +139,41 @@ enum Token {
 
 
   // mutable variables
-  tok_var = -19,
+  tok_var = -17,
 
   // types
-  tok_int = -20,
+  tok_int = -18,
 
   // indentation
-  tok_indent = -21,
-  tok_dedent = -22,
+  tok_indent = -19,
+  tok_dedent = -20,
   tok_block_end = -100, // synthetic: injected by ParseBlock after eating DEDENT
 
   // new type keywords
-  tok_int8 = -23,
-  tok_int16 = -24,
-  tok_int32 = -25,
-  tok_int64 = -26,
-  tok_float = -27,
-  tok_float32 = -28,
-  tok_float64 = -29,
-  tok_bool = -30,
-  tok_none = -31,
-  tok_true = -32,
-  tok_false = -33,
-  tok_elif = -34,
-  tok_while = -35,
-  tok_do = -36,
-  tok_break = -37,
-  tok_continue = -38,
-  tok_uint8 = -39,
-  tok_uint16 = -40,
-  tok_uint32 = -41,
-  tok_uint64 = -42,
-  tok_and = -43, // &&
-  tok_or = -44,  // ||
-  tok_shift_left = -45,  // <<
-  tok_shift_right = -46, // >>
+  tok_int8 = -21,
+  tok_int16 = -22,
+  tok_int32 = -23,
+  tok_int64 = -24,
+  tok_float = -25,
+  tok_float32 = -26,
+  tok_float64 = -27,
+  tok_bool = -28,
+  tok_none = -29,
+  tok_true = -30,
+  tok_false = -31,
+  tok_elif = -32,
+  tok_while = -33,
+  tok_do = -34,
+  tok_break = -35,
+  tok_continue = -36,
+  tok_uint8 = -37,
+  tok_uint16 = -38,
+  tok_uint32 = -39,
+  tok_uint64 = -40,
+  tok_and = -41, // &&
+  tok_or = -42,  // ||
+  tok_shift_left = -43,  // <<
+  tok_shift_right = -44, // >>
 
   // punctuation and operators
   tok_lparen = '(',
@@ -1143,7 +1143,7 @@ static void consumeNewlines() {
 
 // FunctionSignatures - Persistent function signature registry used by codegen
 // to re-emit declarations into fresh modules.
-static std::map<std::string, std::unique_ptr<FunctionSignatureNode>> FunctionSignatures;
+static std::map<string, std::unique_ptr<FunctionSignatureNode>> FunctionSignatures;
 
 // Parse-time variable tracking for assignments and types.
 // Scopes are stacked: function scope plus nested block scopes.
@@ -1540,7 +1540,7 @@ static unique_ptr<ExpressionNode> ParseNameExpressionWithName(const string &Pars
   if (CurrentToken != tok_lparen) { // Simple variable ref.
     ValueType Type = LookupVarType(ParsedName);
     if (Type == ValueType::Error) {
-      return LogErrorExpression("Unknown variable name");
+      return LogErrorExpression("Unknown variable name: '" + ParsedName + "'");
     }
     return make_unique<NameExpressionNode>(ParsedName, Type);
   }
@@ -1822,6 +1822,7 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
       if (!IsAssignable(DeclType, Init->getType()))
         return LogErrorExpression("Type mismatch in variable initialization");
     } else {
+      // No '=': use the declared type's zero value.
       Init = MakeZeroLiteral(DeclType);
       if (!Init)
         return nullptr;
@@ -2054,10 +2055,10 @@ static unique_ptr<ExpressionNode> ParseUnaryMinus() {
 ///   | parenthesized-expression ;
 static unique_ptr<ExpressionNode> ParsePrimary() {
   switch (CurrentToken) {
-  case tok_number:
-    return ParseNumberExpression();
   case tok_name:
     return ParseNameExpression();
+  case tok_number:
+    return ParseNumberExpression();
   case tok_true:
     getNextToken();
     return make_unique<BoolExpressionNode>(true);
@@ -2753,13 +2754,13 @@ static std::unique_ptr<Module> TheModule;
 // TheBuilder - Cursor used to append instructions into the current block.
 static std::unique_ptr<IRBuilder<NoFolder>> TheBuilder;
 // NamedValues - Maps variable names to allocas in the current function.
-static std::map<std::string, AllocaInst *> NamedValues;
+static std::map<string, AllocaInst *> NamedValues;
 // InGlobalInit - True while emitting the synthetic global init function.
 static bool InGlobalInit = false;
 // ModuleHasGlobals - Tracks whether this module defines any globals.
 static bool ModuleHasGlobals = false;
 // Source path and metadata state used while emitting debug information.
-static std::string CurrentSourcePath = "<stdin>";
+static string CurrentSourcePath = "<stdin>";
 static std::unique_ptr<DIBuilder> DIB;
 static DICompileUnit *TheCU = nullptr;
 static DIFile *TheDIFile = nullptr;
@@ -3200,7 +3201,7 @@ static FunctionSignatureNode *GetFunctionSignature(const string &Name) {
 /// we look up its FunctionSignatureNode in FunctionSignatures and call codegen() on it,
 /// which emits a fresh 'declare' with ExternalLinkage in the current module.
 /// The JIT resolves that extern to the already-compiled body at link time.
-Function *getFunction(const std::string &Name) {
+Function *getFunction(const string &Name) {
   // Fast path: declaration or definition already in the current module.
   if (auto *F = TheModule->getFunction(Name))
     return F;
@@ -3262,7 +3263,7 @@ Value *AssignmentStatementNode::codegen() {
     return Val;
   }
 
-  return LogErrorValue("Unknown variable name");
+  return LogErrorValue("Unknown variable name: '" + Name + "'");
 }
 
 /// ReturnStatementNode::codegen - Emit a return from the current function.
@@ -3672,7 +3673,7 @@ Value *ForStatementNode::codegen() {
     else if (auto *GV = GetGlobalVariable(VarName))
       VarPtr = GV;
     else
-      return LogErrorValue("Unknown variable name");
+      return LogErrorValue("Unknown variable name: '" + VarName + "'");
   }
 
   Value *StartVal = Start->codegen();
@@ -3979,9 +3980,9 @@ Function *FunctionDefinitionNode::codegen() {
   for (auto &Argument : TheFunction->args()) {
     ValueType ArgType = FunctionSignature.getParameterType(ArgTypeIndex++);
     AllocaInst *Alloca = CreateEntryBlockAlloca(
-        TheFunction, std::string(Argument.getName()), ArgType);
+        TheFunction, string(Argument.getName()), ArgType);
     TheBuilder->CreateStore(&Argument, Alloca);
-    NamedValues[std::string(Argument.getName())] = Alloca;
+    NamedValues[string(Argument.getName())] = Alloca;
     EmitDebugDeclare(Alloca, Argument.getName(), CurFunctionLine, true,
                      ArgumentNumber++, ArgType);
   }

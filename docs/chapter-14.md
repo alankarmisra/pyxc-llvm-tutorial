@@ -86,10 +86,10 @@ Four new tokens:
 *  ...
 *  // loops
 *  tok_for = -15,
-+  tok_while = -23,
-+  tok_do = -24,
-+  tok_break = -25,
-+  tok_continue = -26,
++  tok_while = -21,
++  tok_do = -22,
++  tok_break = -23,
++  tok_continue = -24,
 *
 *  // mutable variables
 *  ...
