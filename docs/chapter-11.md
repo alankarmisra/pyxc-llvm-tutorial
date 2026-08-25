@@ -545,10 +545,13 @@ Value *VariableExpressionNode::codegen() {
 
 **Step 2: Install the new binding, saving any shadowed outer binding.**
 
-```cpp
-    OldBindings.push_back({VarName, NamedValues[VarName]});
-    NamedValues[VarName] = Alloca; // shadow any outer binding
-  }
+```cppdiff
+*    AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
+*    TheBuilder->CreateStore(InitVal, Alloca);
++
++    OldBindings.push_back({VarName, NamedValues[VarName]});
++    NamedValues[VarName] = Alloca; // shadow any outer binding
++  }
 ```
 
 After steps 1 and 2, `var x = 1: x = x + 1` has emitted:
@@ -568,24 +571,30 @@ The body `x = x + 1` loads `x`, adds 1, stores back, and returns the result:
 store double %addtmp, ptr %x, align 8
 ```
 
-```cpp
-  Value *BodyVal = Body->codegen();
-  if (!BodyVal)
-    return nullptr;
+```cppdiff
+*    NamedValues[VarName] = Alloca; // shadow any outer binding
+*  }
++
++  Value *BodyVal = Body->codegen();
++  if (!BodyVal)
++    return nullptr;
 ```
 
 **Step 4: Restore outer bindings after the body.**
 
-```cpp
-  for (auto I = OldBindings.rbegin(), E = OldBindings.rend(); I != E; ++I) {
-    if (I->second)
-      NamedValues[I->first] = I->second; // restore saved binding
-    else
-      NamedValues.erase(I->first);        // name was not in scope before — remove it
-  }
-
-  return BodyVal;
-}
+```cppdiff
+*  if (!BodyVal)
+*    return nullptr;
++
++  for (auto I = OldBindings.rbegin(), E = OldBindings.rend(); I != E; ++I) {
++    if (I->second)
++      NamedValues[I->first] = I->second; // restore saved binding
++    else
++      NamedValues.erase(I->first);        // name was not in scope before — remove it
++  }
++
++  return BodyVal;
++}
 ```
 
 If an outer variable had the same name, it's visible again after the `var` body exits — normal lexical shadowing.
