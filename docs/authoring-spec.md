@@ -71,6 +71,17 @@ This is stricter than swapping "we" for "I" or occasionally adding "I" to a sent
 
 Test for each sentence: does it read as something happening to/in the code, or as something *I did*? If a function, a class, or "this chapter" is the subject of the verb, rewrite it so "I" is.
 
+**The most common source of violations isn't the chapter intro — it's routine code-walkthrough prose.** The examples above are all "why I made this decision" sentences, which are rare to get wrong because the passive/third-person version already sounds like a sentence fragment. The much more frequent failure mode is explaining what an already-named function does, because `FunctionName does X` is completely normal, default technical-writing style — it doesn't sound obviously wrong the way a narrative fragment does, so it slips through even in an otherwise careful redraft. Rule: when explaining what a specific function, method, or subsystem does, that function can never be the grammatical subject. Rewrite `FunctionName verb-s X` as `In FunctionName, I verb X` (or `I verb X in FunctionName`). More before/after pairs, from a real redraft:
+- "`ParseExpression` no longer handles `var`, `if`, `for`, or assignment. Those all live in `ParseStatement` and `ParseSimpleStatement` now." → "I no longer handle `var`, `if`, `for`, or assignment in `ParseExpression`. I moved them all into `ParseStatement` and `ParseSimpleStatement`."
+- "The lexer needs to know which level it's returning to, and how many blocks it's closing at once. That's why the lexer keeps an `IndentStack`..." → "I need to know which level I'm returning to, and how many blocks I'm closing at once. That's why I keep an `IndentStack`..."
+- "`ParseBlock` consumes `INDENT`, requires at least one statement, ... and returns:" → "In `ParseBlock`, I consume `INDENT`, require at least one statement, ... and return:"
+- "`ReturnStatementNode::codegen` emits a real LLVM terminator..." → "In `ReturnStatementNode::codegen`, I emit a real LLVM terminator..."
+
+Three related sub-patterns fail the same test but are easy to miss because none of them look like "the function is the subject" at a glance:
+- **Passive voice**, which hides the actor instead of misassigning it: "`getToken()` is called again for each subsequent token" → "I call `getToken()` again for each subsequent token."
+- **Personifying code or tokens as autonomous actors**: "a real token landed in `CurrentToken`" → "a real token ends up in `CurrentToken`" (or, better, describe what *I* did to put it there); "`consumeNewlines()` doesn't know or care whether..." → "when I call `consumeNewlines()` to probe for `else`, I can't tell whether..."
+- **Second person**: "You can't write `def f(x): if x > 0: return 1` on one line." → "I don't accept `def f(x): if x > 0: return 1` on one line."
+
 Don't over-correct into stiff or padded sentences trying to prove the "I" is there. "I already have `switch` from the last chapter for compile-time integer dispatch; I'll reach for `elif` for everything else — any `bool` expression, chained without nesting" reads like corporate self-narration, not a regular programmer talking. Prefer: "`switch` only works on fixed integer values. `elif` works on anything else — any expression that comes out `bool`." Keep sentences short and plain. Don't enumerate every clause from the original — cut things down, don't just relabel the subject. When in doubt, say less.
 
 **Justify a choice against a rejected alternative.** Don't just state what the code does — show what a reader would naturally try first, why it falls short, and what you do instead. For example: "For analysis, I could just pass around the strings 'def', 'add', '(', 'x', ... but then I have to do string comparisons at each analysis stage... Instead I'll use an enum." A decision presented without the alternative it beat reads like a spec handed down from nowhere, not like someone building something and making calls as they go.
@@ -108,11 +119,35 @@ This applies throughout: `lexer`, `parser`, `AST`, `codegen`, `IR`, `JIT` — ev
 
 **Real output only in REPL sessions.** Every line in a REPL session must be actual output from the binary, not invented. If the output would be too long, use `...` on a line by itself inside the code block and note that it was truncated.
 
+**Always lowercase `pyxc`.** Never capitalize it, even at the start of a sentence or heading — "pyxc parses..." not "Pyxc parses...". This doesn't apply to PascalCase C++ identifiers that happen to start with the letters (those follow [§3.5](#35-naming-conventions) instead).
+
+**No punchy trailer sentences.** Don't end an explanation with a dramatic one-line summary for effect ("...and that's the whole story"). Explain the thing plainly and stop.
+
+**Sub-headings over a run of parallel examples.** When a section walks through several similar-shaped examples or bugs in a row, give each its own short `###` sub-heading naming what's distinct about it (e.g. "The Missing Colon," "The Off-By-One"), instead of running them together as unlabeled prose the reader has to track by position.
+
+**Headings never contain backtick-wrapped identifiers.** A section heading describes what something does in plain language, not the function or class name that implements it — same principle as "clarity before terminology" above, applied to headings specifically.
+
+**"Known Limitations" lists only surprising gaps.** Don't note a limitation no reader would ever expect to work in the first place (e.g. "no `elif` inside `switch`" in a chapter written before `elif` exists). Only include gaps a reader might plausibly try and be surprised to see fail.
+
 ### 2.4 chapter-00.md
 
 `chapter-00.md` is the tutorial's front page — tone, motivation, and a narrative "Where We're Headed" tour grouped by phase (e.g. "Chapters 1–3," "Chapters 17–22"). It is not a per-chapter index: there is no exhaustive list of all chapters with individual links. Per-chapter navigation is handled by the site's HTML sidebar (generated outside this repo) once the site is built; a reader working from the raw Markdown only has an explicit link to Chapter 1.
 
 When a new chapter is ready to publish, add or extend its phase's paragraph in "Where We're Headed" if it isn't covered yet. Do not add a new per-chapter bullet or link.
+
+### 2.5 Redrafting an Existing Chapter
+
+When asked to "redraft" a chapter that's already written (not a new chapter), it means a fixed sequence, not an open-ended rewrite:
+
+1. Diff the grammar (`pyxc.ebnf`) against the previous chapter's and check it's shown accurately in the doc's `## Grammar` section.
+2. Confirm the grammar section appears where [§4.1](#41-grammar-section-in-the-chapter-doc) says it should, immediately after "Source Code."
+3. Remove any "Things Worth Knowing"-style trailing miscellany section — fold anything genuinely load-bearing into the main narrative instead.
+4. Add or verify a "Try It" section with real REPL transcripts (see §2.3's "Real output only in REPL sessions").
+5. Remove a separate "Error Cases" dumping-ground section — error handling belongs inline, next to the code that produces the error.
+6. Re-check every `cppdiff`/`grammardiff` block against the actual source in `code/chapter-NN/` for accuracy.
+7. Convert the whole chapter to first-person "I" voice per §2.3.
+
+Do all seven steps without re-confirming scope first — "redraft chapter N" is itself the complete instruction.
 
 ---
 

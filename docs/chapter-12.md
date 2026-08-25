@@ -118,10 +118,10 @@ The central shift: I move `if`, `for`, `var`, and (new) `return` out of the expr
 - **`suite`** — what follows a `:`. Either a single statement on the same line, or a newline followed by an indented block.
 - **`simple-statement`** — statements that fit on one line: `return`, `var`, assignment, or a bare expression.
 - **`compound-statement`** — statements that introduce a new suite: `if` and `for`.
-- **`statement-separator`** — what separates two statements inside a block. Normally that's one or more newlines. But when the first statement was itself a block (an `if` or `for` with an indented body), no newline follows — the `DEDENT` already consumed the line break. `BLOCK_END` covers that case; see below.
+- **`statement-separator`** — what separates two statements inside a block. Normally that's one or more newlines. But when the first statement was itself a block (an `if` or `for` with an indented body), no newline follows — I already consumed the line break as part of the `DEDENT`. I use `BLOCK_END` to cover that case; see below.
 - **`block`** — an `INDENT` token, one or more statements separated by `statement-separator`, a `DEDENT` token.
-- **`INDENT` / `DEDENT`** — tokens emitted by the lexer when indentation increases or decreases. One `INDENT` is emitted when a block opens, one `DEDENT` when it closes — not one per line.
-- **`BLOCK_END`** — a synthetic token `ParseBlock` injects into the token stream just before it returns. It signals "a nested block just closed here." The enclosing `ParseBlock` loop consumes it instead of expecting a newline, and any outer caller can check for it too.
+- **`INDENT` / `DEDENT`** — tokens I emit from the lexer when indentation increases or decreases. I emit one `INDENT` when a block opens, one `DEDENT` when it closes — not one per line.
+- **`BLOCK_END`** — a synthetic token I have `ParseBlock` inject into the token stream just before it returns. It signals "a nested block just closed here." The enclosing `ParseBlock` loop consumes it instead of expecting a newline, and any outer caller can check for it too.
 
 ```pyxc
 def f():
@@ -152,7 +152,7 @@ for var i = 1, ...:
 return acc
 ```
 
-`ParseExpression` no longer handles `var`, `if`, `for`, or assignment. Those all live in `ParseStatement` and `ParseSimpleStatement` now. Expressions are purely value-producing again — operators, calls, variable reads.
+I no longer handle `var`, `if`, `for`, or assignment in `ParseExpression`. I moved them all into `ParseStatement` and `ParseSimpleStatement`. Expressions are purely value-producing again — operators, calls, variable reads.
 
 ## New Tokens and AST Nodes
 
@@ -174,7 +174,7 @@ Three new token values:
 *};
 ```
 
-`tok_indent` and `tok_dedent` come from the lexer — I push them into `PendingTokens` when I detect a change in indentation. `tok_block_end` never comes from the lexer; `ParseBlock` injects it into `PendingTokens` just before returning, so the calling parser sees it as `CurrentToken`. It's a signal in the token stream, not a character in the source.
+`tok_indent` and `tok_dedent` come from the lexer — I push them into `PendingTokens` when I detect a change in indentation. I never produce `tok_block_end` from the lexer; I have `ParseBlock` inject it into `PendingTokens` just before returning, so the calling parser sees it as `CurrentToken`. It's a signal I add to the token stream, not a character in the source.
 
 Three new AST node classes:
 
@@ -227,7 +227,7 @@ public:
 
 ## INDENT and DEDENT
 
-A single counter isn't enough to track indentation — nested blocks need to remember every level that was opened. When indentation drops, the lexer needs to know which level it's returning to, and how many blocks it's closing at once. That's why the lexer keeps an `IndentStack` and a pending-token queue.
+A single counter isn't enough to track indentation — I need to remember every level I opened, for nested blocks. When indentation drops, I need to know which level I'm returning to, and how many blocks I'm closing at once. That's why I keep an `IndentStack` and a pending-token queue.
 
 At the start of each line, I find the indentation level, compare it to the top of the stack, and push `INDENT` or `DEDENT` tokens into the queue. When indentation drops by multiple levels in one step, I queue one `DEDENT` per level closed, and the parser drains them one at a time:
 
@@ -287,7 +287,7 @@ if (AtLineStart) {
 
 A tab always snaps forward to the next 8-column boundary, never backward and never past it.
 
-Blank lines and comment-only lines return `tok_eol` here without touching the indent stack (a blank line closes the current block immediately in the REPL instead), and EOF falls through to the flush logic further below. Real source content instead falls through to Step 2.
+For a blank line or a comment-only line, I return `tok_eol` here without touching the indent stack (in the REPL, I close the current block immediately on a blank line instead). For EOF, I fall through to the flush logic further below. For real source content, I fall through to Step 2.
 
 **Step 2: Compare to the top of the stack and either return `tok_indent` directly or queue `DEDENT` tokens.**
 
@@ -318,7 +318,7 @@ Blank lines and comment-only lines return `tok_eol` here without touching the in
   AtLineStart = false;
 ```
 
-An increased indentation never goes through `PendingTokens` at all — it returns `tok_indent` immediately. A decreased indentation can close several levels at once; each closed level pushes one `tok_dedent` onto `PendingTokens`, and this call returns the first one. The rest drain on later calls to `getToken()`, through the check at the very top of the function (see Step 3 below). A single dedent can therefore produce multiple `DEDENT` tokens — one for each level that closed:
+When indentation increases, I never go through `PendingTokens` at all — I return `tok_indent` immediately. When it decreases, I can close several levels at once: for each closed level, I push one `tok_dedent` onto `PendingTokens`, and I return the first one from this call. I drain the rest on later calls to `getToken()`, through the check at the very top of the function (see Step 3 below). A single dedent can therefore produce multiple `DEDENT` tokens — one for each level I close:
 
 <!-- code-merge:start -->
 ```pyxc
@@ -341,11 +341,11 @@ Error (Line 3, Column 4): unknown token when expecting an expression
 ```
 <!-- code-merge:end -->
 
-Dedenting to column 3 has no match on the stack (`[0, 4]`) — it's neither the current indentation nor an outer one, so there's no consistent level to return to. `getToken()` reports it and returns `tok_error`, but the lexer state doesn't stop there — the parser keeps trying to recover from the malformed token stream, which is why one bad indent produces several cascading error lines instead of just the first one.
+Dedenting to column 3 has no match on the stack (`[0, 4]`) — it's neither the current indentation nor an outer one, so there's no consistent level to return to. I report it and return `tok_error`, but I don't stop there — I let the parser keep trying to recover from the malformed token stream, which is why one bad indent produces several cascading error lines instead of just the first one.
 
 **Step 3: On the next call, drain the rest of the queue before doing anything else.**
 
-Any `DEDENT` tokens left over from a multi-level dedent, or from Step 2's queuing, sit in `PendingTokens` for the next call to consume — a check right at the top of `getToken()`, before the line-start logic even runs:
+I leave any `DEDENT` tokens from a multi-level dedent, or from Step 2's queuing, sitting in `PendingTokens` for the next call to consume. I check for them right at the top of `getToken()`, before the line-start logic even runs:
 
 ```cpp
 static int getToken() {
@@ -359,7 +359,7 @@ static int getToken() {
   }
 ```
 
-`getToken()` is called again for each subsequent token, draining the queue one entry at a time before returning to normal lexing.
+I call `getToken()` again for each subsequent token, and each call drains one more entry from the queue before I return to normal lexing.
 
 At EOF, the lexer flushes one `DEDENT` per still-open block (still inside the `if (AtLineStart)` block from Step 1):
 
@@ -373,7 +373,7 @@ if (LastChar == EOF) {
 }
 ```
 
-In REPL mode, a blank line ends the current indented block immediately — the same behavior as the Python REPL.
+In REPL mode, I end the current indented block immediately on a blank line — the same behavior as the Python REPL.
 
 ## pyxc Indentation Rules
 
@@ -400,7 +400,7 @@ x =
 ```
 <!-- code-merge:end -->
 
-To catch this, the parser keeps a scope stack of declared variable names — a function scope at the bottom, plus one nested scope per block:
+To catch this, I keep a scope stack of declared variable names — a function scope at the bottom, plus one nested scope per block:
 
 ```cpp
 static vector<set<string>> VarScopes;
@@ -451,7 +451,7 @@ static bool IsDeclaredVar(const string &Name) {
 }
 ```
 
-`IsDeclaredInCurrentScope` and `IsDeclaredVar` answer two different questions: the first catches redeclaring the same name in the same block, the second catches referencing a name that was never declared anywhere visible. I use the first one for `var`'s own redeclaration check:
+I use `IsDeclaredInCurrentScope` and `IsDeclaredVar` to answer two different questions: whether I'm redeclaring the same name in the same block, and whether I'm referencing a name that was never declared anywhere visible. I use the first one for `var`'s own redeclaration check:
 
 <!-- code-merge:start -->
 ```pyxc
@@ -466,7 +466,7 @@ Error (Line 3, Column 11): Variable 'x' already declared in this scope
 ```
 <!-- code-merge:end -->
 
-Each scope guard is a small C++ struct. The constructor opens the scope; the destructor closes it. When the guard variable goes out of scope — at the end of a block, or when an early return is hit — the scope closes automatically, no explicit cleanup calls needed:
+I write each scope guard as a small C++ struct: the constructor opens the scope, the destructor closes it. When the guard variable goes out of scope — at the end of a block, or when an early return is hit — the scope closes automatically, no explicit cleanup calls needed:
 
 ```cpp
 struct FunctionScopeGuard {
@@ -485,7 +485,7 @@ struct LoopScopeGuard {
 };
 ```
 
-I create a `FunctionScopeGuard` right after parsing the signature, before the body — parameters enter scope there. `ParseForStatement` only creates a `LoopScopeGuard` when the loop introduces a new variable with `var`; without `var`, the loop reuses an existing variable and errors if it isn't declared:
+I create a `FunctionScopeGuard` right after parsing the signature, before the body — parameters enter scope there. In `ParseForStatement`, I only create a `LoopScopeGuard` when the loop introduces a new variable with `var`. Without `var`, I reuse an existing variable instead, and I error if it isn't declared:
 
 ```cpp
 static unique_ptr<ExpressionNode> ParseForStatement() {
@@ -522,13 +522,13 @@ static unique_ptr<ExpressionNode> ParseSuite() {
 }
 ```
 
-When `ParseSuite` delegates to `ParseBlock`, it returns exactly what `ParseBlock` returns, with `CurrentToken = tok_block_end`. The caller can inspect `CurrentToken` to know whether the suite ended with a block.
+When I delegate from `ParseSuite` to `ParseBlock`, I return exactly what `ParseBlock` returns, with `CurrentToken = tok_block_end`. Any caller can inspect `CurrentToken` to know whether the suite ended with a block.
 
-`ParseIfStatement` and `ParseForStatement` both call `ParseSuite` after eating `:`. A `def` body is slightly different — its inline form only accepts a `simple-statement`, not a compound one. You can't write `def f(x): if x > 0: return 1` on one line.
+I call `ParseSuite` from both `ParseIfStatement` and `ParseForStatement`, after eating `:`. I handle a `def` body slightly differently — its inline form only accepts a `simple-statement`, not a compound one, so I don't accept `def f(x): if x > 0: return 1` on one line.
 
 ## Parsing a Block
 
-`ParseBlock` consumes `INDENT`, requires at least one statement, reads more statements separated by `statement-separator` until `DEDENT`, injects `tok_block_end`, and returns:
+In `ParseBlock`, I consume `INDENT`, require at least one statement, read more statements separated by `statement-separator` until `DEDENT`, inject `tok_block_end`, and return:
 
 ```cpp
 static unique_ptr<ExpressionNode> ParseBlock() {
@@ -580,15 +580,15 @@ static unique_ptr<ExpressionNode> ParseBlock() {
 }
 ```
 
-The last two lines are the key. When the loop breaks on `tok_dedent`, `CurrentToken` holds the DEDENT token. I push `tok_block_end` to the front of `PendingTokens` and call `getNextToken()`. That pops `tok_block_end` back out and overwrites `CurrentToken` — the DEDENT is quietly consumed in the process, and `ParseBlock` returns with `CurrentToken = tok_block_end`.
+The last two lines are the key. When the loop breaks on `tok_dedent`, `CurrentToken` holds the DEDENT token. I push `tok_block_end` to the front of `PendingTokens` and call `getNextToken()`. That pops `tok_block_end` back out and overwrites `CurrentToken` — I quietly consume the DEDENT in the process, and I return from `ParseBlock` with `CurrentToken = tok_block_end`.
 
-Every caller that previously needed a boolean "did this suite end with a block?" can now just check `CurrentToken == tok_block_end`.
+I no longer need any caller to track a boolean "did this suite end with a block?" — I just check `CurrentToken == tok_block_end`.
 
 ## `BLOCK_END` and the `else` Problem
 
-`tok_block_end` flows cleanly through most of the parser — `ParseBlock`'s own loop consumes it and keeps going. One case is trickier: `if` with an optional `else`.
+`tok_block_end` flows cleanly through most of the parser — I consume it in `ParseBlock`'s own loop and keep going. One case is trickier: `if` with an optional `else`.
 
-After `ParseSuite` returns the then-branch, `CurrentToken` might be `tok_block_end` (if the then was a block) or `tok_eol` (if the then was inline, e.g. `if cond: return 1`). Either way, `else` — if present — lives on the very next line at the same indentation level, right where that separator token is sitting. `ParseIfStatement` needs to look past it to check.
+After `ParseSuite` returns the then-branch, `CurrentToken` might be `tok_block_end` (if the then was a block) or `tok_eol` (if the then was inline, e.g. `if cond: return 1`). Either way, `else` — if present — lives on the very next line at the same indentation level, right where that separator token is sitting. In `ParseIfStatement`, I need to look past that separator to check for `else`.
 
 My approach: I consume the separator temporarily to peek at what follows. If it's `else`, I parse the else branch normally. If it's not, I re-inject the separator so the enclosing `ParseBlock` loop still sees it.
 
@@ -628,15 +628,15 @@ if (CurrentToken == tok_else) {
 }
 ```
 
-The critical detail is the last two lines of each `else if` branch. After `getNextToken()` consumed `tok_block_end` (or `consumeNewlines()` consumed a real `tok_eol`), a real token — say `tok_return`, or the next `tok_dedent` — landed in `CurrentToken`. If I naively pushed the separator to `PendingTokens` and called `getNextToken()` again, that call would pop the separator right back out, and the token already sitting in `CurrentToken` would be **overwritten and lost**. The statement after the `if` would parse incorrectly, or the outer block would close at the wrong point.
+The critical detail is the last two lines of each `else if` branch. After I call `getNextToken()` to consume `tok_block_end` (or `consumeNewlines()` to consume a real `tok_eol`), a real token — say `tok_return`, or the next `tok_dedent` — ends up in `CurrentToken`. If I naively pushed the separator to `PendingTokens` and called `getNextToken()` again, that call would pop the separator right back out, and I'd **overwrite and lose** the token already sitting in `CurrentToken`. The statement after the `if` would then parse incorrectly, or the outer block would close at the wrong point.
 
 Instead, I push the current `CurrentToken` to `PendingTokens`, then set `CurrentToken` to the separator directly, without calling `getNextToken()`. The saved token is now first in `PendingTokens`; the next `getNextToken()` call anywhere upstream retrieves it correctly.
 
-I found this the hard way: my first pass only handled the `ThenWasBlock` case, on the assumption that an inline `then` always ends cleanly at a `tok_eol` nothing downstream would touch. That's true in isolation — but `consumeNewlines()` a few lines later doesn't know or care whether it's looking at a "real" separator or one it's about to strand a statement without. It consumes any `tok_eol` in front of it while probing for `else`, block or no block. Miss the inline case, and `if x > 10: return 20` parses fine as the *last* statement in a block, but breaks the moment another statement follows it at the same indentation — the newline `ParseBlock`'s loop needed as a separator is gone. `ThenHadTrailingEol` closes that gap the same way `ThenWasBlock` already did for the block case.
+I found this the hard way: my first pass only handled the `ThenWasBlock` case, on the assumption that an inline `then` always ends cleanly at a `tok_eol` nothing downstream would touch. That's true in isolation — but a few lines later, when I call `consumeNewlines()` to probe for `else`, I can't tell there whether I'm looking at a "real" separator or one I'm about to strand a statement without — it consumes any `tok_eol` in front of it regardless, block or no block. Miss the inline case, and `if x > 10: return 20` parses fine as the *last* statement in a block, but breaks the moment another statement follows it at the same indentation — the newline `ParseBlock`'s loop needed as a separator is gone. `ThenHadTrailingEol` closes that gap the same way `ThenWasBlock` already did for the block case.
 
 ## Parsing Statements
 
-`ParseStatement` dispatches to compound or simple statement parsers:
+In `ParseStatement`, I dispatch to compound or simple statement parsers:
 
 ```cpp
 static unique_ptr<ExpressionNode> ParseStatement() {
@@ -648,7 +648,7 @@ static unique_ptr<ExpressionNode> ParseStatement() {
 }
 ```
 
-`ParseSimpleStatement` handles `return`, `var`, and everything else — assignment and bare expressions both start by parsing a full expression, then check whether `=` follows:
+In `ParseSimpleStatement`, I handle `return`, `var`, and everything else. For assignment and bare expressions, I start by parsing a full expression, then check whether `=` follows:
 
 ```cpp
 static unique_ptr<ExpressionNode> ParseSimpleStatement() {
@@ -695,7 +695,7 @@ static unique_ptr<ExpressionNode> ParseNonLeadingNameSimpleStatement() {
 }
 ```
 
-`ParseAssignmentRight` is where the undeclared-variable check actually happens:
+In `ParseAssignmentRight`, I actually run the undeclared-variable check:
 
 ```cpp
 static unique_ptr<ExpressionNode> ParseAssignmentRight(const string &Name) {
@@ -755,7 +755,7 @@ static unique_ptr<ExpressionNode> ParseVarStatement() {
 }
 ```
 
-The critical difference from [chapter 11](chapter-11.md): no `:` and no body. `DeclareVar` registers each name in the current block scope, so later assignments to it pass `IsDeclaredVar`. If the `var` is inside an `if` or `for` block, that name is only visible inside that block.
+The critical difference from [chapter 11](chapter-11.md): no `:` and no body. I register each name in the current block scope via `DeclareVar`, so later assignments to it pass `IsDeclaredVar`. If the `var` is inside an `if` or `for` block, that name is only visible inside that block.
 
 ## Return
 
@@ -769,7 +769,7 @@ static unique_ptr<ExpressionNode> ParseReturnStatement() {
 }
 ```
 
-`ReturnStatementNode::codegen` emits a real LLVM terminator — a `ret` instruction that ends the current basic block:
+In `ReturnStatementNode::codegen`, I emit a real LLVM terminator — a `ret` instruction that ends the current basic block:
 
 ```cpp
 Value *ReturnStatementNode::codegen() {
@@ -784,7 +784,7 @@ Value *ReturnStatementNode::codegen() {
 
 ## Block Codegen
 
-`BlockStatementNode::codegen` evaluates statements in order. It stops early if a `return` already terminated the current block — statements after a `return` are unreachable. It also saves and restores `NamedValues` around the block body, so variables declared inside the block with `var` don't leak to the outer scope:
+In `BlockStatementNode::codegen`, I evaluate statements in order. I stop early if a `return` already terminated the current block, since statements after a `return` are unreachable. I also save and restore `NamedValues` around the block body, so variables declared inside the block with `var` don't leak to the outer scope:
 
 ```cpp
 Value *BlockStatementNode::codegen() {
@@ -814,7 +814,7 @@ Value *BlockStatementNode::codegen() {
 
 ## `var` and Assignment Codegen
 
-`VarStatementNode::codegen` allocates stack slots and initializes them. Duplicate declarations in the same scope are already caught at parse time, so codegen just sets up the alloca and records the binding:
+In `VarStatementNode::codegen`, I allocate stack slots and initialize them. Since I already catch duplicate declarations in the same scope at parse time, codegen here just sets up the alloca and records the binding:
 
 ```cpp
 Value *VarStatementNode::codegen() {
@@ -837,7 +837,7 @@ Value *VarStatementNode::codegen() {
 }
 ```
 
-Assignment codegen is unchanged in substance from [chapter 11](chapter-11.md) — it loads the alloca from `NamedValues`, stores the new value, and returns it. I only changed the class name, from `AssignmentExpressionNode` to `AssignmentStatementNode`, to match the grammar's new `assignment-statement` rule.
+Assignment codegen is unchanged in substance from [chapter 11](chapter-11.md) — I load the alloca from `NamedValues`, store the new value, and return it. I only changed the class name, from `AssignmentExpressionNode` to `AssignmentStatementNode`, to match the grammar's new `assignment-statement` rule.
 
 ## `if` as a Statement
 
@@ -909,7 +909,7 @@ def threshold(x):
 
 ## After a Top-Level Block
 
-When a `def` body ends with an indented block, parsing it returns with `CurrentToken = tok_block_end`. `MainLoop` handles it explicitly in its switch, so two definitions back to back with no blank line between them still work. Two more cases sit alongside it: a stray `tok_indent` at the top level (indentation where none was expected), which I report and skip, and a stray `tok_dedent` (an unmatched close, which can happen in REPL mode when a block is torn down early), which I silently consume:
+When a `def` body ends with an indented block, I return from parsing it with `CurrentToken = tok_block_end`. I handle that explicitly in `MainLoop`'s switch, so two definitions back to back with no blank line between them still work. I handle two more cases alongside it: a stray `tok_indent` at the top level (indentation where none was expected), which I report and skip, and a stray `tok_dedent` (an unmatched close, which can happen in REPL mode when a block is torn down early), which I silently consume:
 
 ```cpp
 static void MainLoop() {
@@ -933,7 +933,7 @@ static void MainLoop() {
 }
 ```
 
-`DiscardRestOfLine` and `HandleFunctionDefinition` both need to know about these new tokens too. `DiscardRestOfLine` used to stop only at `tok_eol` or `tok_eof`; now it also stops at `tok_dedent` and `tok_block_end`, since those tokens mark the true end of a malformed block, not just a line:
+I need `DiscardRestOfLine` and `HandleFunctionDefinition` to know about these new tokens too. `DiscardRestOfLine` used to stop only at `tok_eol` or `tok_eof`; I make it also stop at `tok_dedent` and `tok_block_end` now, since those tokens mark the true end of a malformed block, not just a line:
 
 ```cpp
 static void DiscardRestOfLine() {
@@ -945,7 +945,7 @@ static void DiscardRestOfLine() {
 }
 ```
 
-And `HandleFunctionDefinition`'s trailing-token check now accepts `tok_block_end` as a valid way for a definition to end, alongside `tok_eol` and `tok_eof` — a block-bodied `def` doesn't leave a newline behind, it leaves `tok_block_end`:
+And in `HandleFunctionDefinition`'s trailing-token check, I now accept `tok_block_end` as a valid way for a definition to end, alongside `tok_eol` and `tok_eof` — a block-bodied `def` doesn't leave a newline behind, it leaves `tok_block_end`:
 
 ```cpp
 static void HandleFunctionDefinition() {
@@ -964,7 +964,7 @@ static void HandleFunctionDefinition() {
 
 ## Top-Level Assignment
 
-`ParseExpression` no longer understands `=` at all — I moved assignment to `ParseSimpleStatement` this chapter. But a top-level REPL line still goes through `ParseExpression`, by way of `ParseTopLevelExpression`, so it needs its own handling to recognize `x = 1` and produce the right error instead of a generic parse failure. `ParseTopLevelExpression` opens a fresh, empty function scope (top-level input has no parameters), and checks for a trailing `=` itself:
+I no longer let `ParseExpression` understand `=` at all — I moved assignment to `ParseSimpleStatement` this chapter. But a top-level REPL line still goes through `ParseExpression`, by way of `ParseTopLevelExpression`, so I need that function to have its own handling to recognize `x = 1` and produce the right error instead of a generic parse failure. In `ParseTopLevelExpression`, I open a fresh, empty function scope (top-level input has no parameters), and check for a trailing `=` myself:
 
 ```cpp
 static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
@@ -1009,7 +1009,7 @@ x = x + 10      # x is undeclared in this expression's scope
 printd(x)
 ```
 
-For now, keep mutable state inside a function:
+For now, I keep mutable state inside a function:
 
 ```pyxc
 extern def printd(x)

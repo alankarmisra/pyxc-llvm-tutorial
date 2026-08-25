@@ -487,9 +487,13 @@ A variable reference loads the current value:
 *}
 ```
 
+For `def f(x): x`, that produces:
+
 ```llvm
-%x2 = load double, ptr %x, align 8
+%x2 = load double, ptr %x1, align 8
 ```
+
+(`%x1` is the parameter's own alloca from Step 3 above; `%x2` is this load's result — LLVM numbers both off the hint `"x"` since the incoming argument itself is already called `%x`.)
 
 An assignment evaluates the right-hand side, stores it into the memory slot, and returns the assigned value — that return is what makes `a = b = 1` work, since the inner `b = 1` has to produce `1.0` for the outer `a = ...` to store:
 
@@ -510,9 +514,13 @@ Value *AssignmentExpressionNode::codegen() {
 }
 ```
 
+For `x = x + 1`, where `x` is a `var` local rather than a parameter (so its own alloca is just `%x`, with no `%x1`-style renumbering), that produces:
+
 ```llvm
 store double %addtmp, ptr %x, align 8
 ```
+
+`%addtmp` is the `fadd` I'm storing — the same name hint `BinaryExpressionNode::codegen` already passes to `CreateFAdd` since [Chapter 7](chapter-07.md). `AssignmentExpressionNode::codegen` doesn't create that name; it just stores whatever `Value*` `Expr->codegen()` handed back. I'll show the full instruction sequence for this exact program, `def bump(n): var x = n: x = x + 1`, further below.
 
 ## Codegen for `var`
 
