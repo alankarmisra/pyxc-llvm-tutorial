@@ -229,7 +229,7 @@ public:
 
 A single counter isn't enough to track indentation — nested blocks need to remember every level that was opened. When indentation drops, the lexer needs to know which level it's returning to, and how many blocks it's closing at once. That's why the lexer keeps an `IndentStack` and a pending-token queue.
 
-At the start of each line, I find the indentation level, compare it to the top of the stack, and push `INDENT` or `DEDENT` tokens into the queue. When indentation drops by multiple levels in one step, one `DEDENT` is queued per level closed and the parser drains them one at a time:
+At the start of each line, I find the indentation level, compare it to the top of the stack, and push `INDENT` or `DEDENT` tokens into the queue. When indentation drops by multiple levels in one step, I queue one `DEDENT` per level closed, and the parser drains them one at a time:
 
 ```pyxc
 def f(x):            # stack: [0]
@@ -256,7 +256,7 @@ static deque<int>  PendingTokens;     // buffered tokens the parser hasn't seen 
 static bool AtLineStart = true;       // true right after a newline
 ```
 
-Inside `getToken()`, before any normal token logic, indentation is processed at the start of every line.
+Inside `getToken()`, I process indentation at the start of every line, before any normal token logic.
 
 **Step 1: Find the indentation level of the current line.**
 
@@ -506,7 +506,7 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
 
 ## Parsing a Suite
 
-After every `:`, the parser calls `ParseSuite`. A suite is either an inline statement or an indented block:
+After every `:`, I call `ParseSuite`. A suite is either an inline statement or an indented block:
 
 ```cpp
 static unique_ptr<ExpressionNode> ParseSuite() {
@@ -590,7 +590,7 @@ Every caller that previously needed a boolean "did this suite end with a block?"
 
 After `ParseSuite` returns the then-branch, `CurrentToken` might be `tok_block_end` (if the then was a block) or `tok_eol` (if the then was inline, e.g. `if cond: return 1`). Either way, `else` — if present — lives on the very next line at the same indentation level, right where that separator token is sitting. `ParseIfStatement` needs to look past it to check.
 
-The approach: consume the separator temporarily to peek at what follows. If it's `else`, parse the else branch normally. If it's not, re-inject the separator so the enclosing `ParseBlock` loop still sees it.
+My approach: I consume the separator temporarily to peek at what follows. If it's `else`, I parse the else branch normally. If it's not, I re-inject the separator so the enclosing `ParseBlock` loop still sees it.
 
 ```cpp
 unique_ptr<ExpressionNode> Then = ParseSuite();
@@ -630,7 +630,7 @@ if (CurrentToken == tok_else) {
 
 The critical detail is the last two lines of each `else if` branch. After `getNextToken()` consumed `tok_block_end` (or `consumeNewlines()` consumed a real `tok_eol`), a real token — say `tok_return`, or the next `tok_dedent` — landed in `CurrentToken`. If I naively pushed the separator to `PendingTokens` and called `getNextToken()` again, that call would pop the separator right back out, and the token already sitting in `CurrentToken` would be **overwritten and lost**. The statement after the `if` would parse incorrectly, or the outer block would close at the wrong point.
 
-Instead: push the current `CurrentToken` to `PendingTokens`, then set `CurrentToken` to the separator directly, without calling `getNextToken()`. The saved token is now first in `PendingTokens`; the next `getNextToken()` call anywhere upstream retrieves it correctly.
+Instead, I push the current `CurrentToken` to `PendingTokens`, then set `CurrentToken` to the separator directly, without calling `getNextToken()`. The saved token is now first in `PendingTokens`; the next `getNextToken()` call anywhere upstream retrieves it correctly.
 
 I found this the hard way: my first pass only handled the `ThenWasBlock` case, on the assumption that an inline `then` always ends cleanly at a `tok_eol` nothing downstream would touch. That's true in isolation — but `consumeNewlines()` a few lines later doesn't know or care whether it's looking at a "real" separator or one it's about to strand a statement without. It consumes any `tok_eol` in front of it while probing for `else`, block or no block. Miss the inline case, and `if x > 10: return 20` parses fine as the *last* statement in a block, but breaks the moment another statement follows it at the same indentation — the newline `ParseBlock`'s loop needed as a separator is gone. `ThenHadTrailingEol` closes that gap the same way `ThenWasBlock` already did for the block case.
 
@@ -710,7 +710,7 @@ static unique_ptr<ExpressionNode> ParseAssignmentRight(const string &Name) {
 }
 ```
 
-Assignment to an undeclared variable is rejected here, at parse time — no codegen needed to catch it.
+I reject assignment to an undeclared variable right here, at parse time — no codegen needed to catch it.
 
 ## Parsing `var` as a Statement
 
@@ -837,11 +837,11 @@ Value *VarStatementNode::codegen() {
 }
 ```
 
-Assignment codegen is unchanged in substance from [chapter 11](chapter-11.md) — it loads the alloca from `NamedValues`, stores the new value, and returns it. Only the class name changed, from `AssignmentExpressionNode` to `AssignmentStatementNode`, matching the grammar's new `assignment-statement` rule.
+Assignment codegen is unchanged in substance from [chapter 11](chapter-11.md) — it loads the alloca from `NamedValues`, stores the new value, and returns it. I only changed the class name, from `AssignmentExpressionNode` to `AssignmentStatementNode`, to match the grammar's new `assignment-statement` rule.
 
 ## `if` as a Statement
 
-[Chapter 4](chapter-04.md) had `if` producing a value through a PHI node, with both `then` and `else` required. This chapter's `IfStatementNode` doesn't need to produce a value, so it has no PHI node, and `else` is optional — if it's missing, the else block just falls through to the merge block:
+[Chapter 4](chapter-04.md) had `if` producing a value through a PHI node, with both `then` and `else` required. `IfStatementNode` doesn't need to produce a value, so I drop the PHI node and make `else` optional — if it's missing, the else block just falls through to the merge block:
 
 ```cpp
 Value *IfStatementNode::codegen() {
@@ -909,7 +909,7 @@ def threshold(x):
 
 ## After a Top-Level Block
 
-When a `def` body ends with an indented block, parsing it returns with `CurrentToken = tok_block_end`. `MainLoop` handles it explicitly in its switch, so two definitions back to back with no blank line between them still work. Two more cases sit alongside it: a stray `tok_indent` at the top level (indentation where none was expected) is reported and skipped, and a stray `tok_dedent` (an unmatched close, which can happen in REPL mode when a block is torn down early) is silently consumed:
+When a `def` body ends with an indented block, parsing it returns with `CurrentToken = tok_block_end`. `MainLoop` handles it explicitly in its switch, so two definitions back to back with no blank line between them still work. Two more cases sit alongside it: a stray `tok_indent` at the top level (indentation where none was expected), which I report and skip, and a stray `tok_dedent` (an unmatched close, which can happen in REPL mode when a block is torn down early), which I silently consume:
 
 ```cpp
 static void MainLoop() {
@@ -964,7 +964,7 @@ static void HandleFunctionDefinition() {
 
 ## Top-Level Assignment
 
-`ParseExpression` no longer understands `=` at all — assignment moved to `ParseSimpleStatement` this chapter. But a top-level REPL line still goes through `ParseExpression`, by way of `ParseTopLevelExpression`, so it needs its own handling to recognize `x = 1` and produce the right error instead of a generic parse failure. `ParseTopLevelExpression` opens a fresh, empty function scope (top-level input has no parameters), and checks for a trailing `=` itself:
+`ParseExpression` no longer understands `=` at all — I moved assignment to `ParseSimpleStatement` this chapter. But a top-level REPL line still goes through `ParseExpression`, by way of `ParseTopLevelExpression`, so it needs its own handling to recognize `x = 1` and produce the right error instead of a generic parse failure. `ParseTopLevelExpression` opens a fresh, empty function scope (top-level input has no parameters), and checks for a trailing `=` itself:
 
 ```cpp
 static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
@@ -996,7 +996,7 @@ static unique_ptr<FunctionDefinitionNode> ParseTopLevelExpression() {
 }
 ```
 
-Since the scope is fresh and empty every time, `IsDeclaredVar` can never succeed for a top-level assignment — that's exactly the "Assignment to undeclared variable" limitation shown below, and this is the code path that produces it. The whole expression, assignment or not, gets wrapped in a `ReturnStatementNode` before it's handed to `FunctionDefinitionNode`, so a top-level expression's value now reaches the caller through an explicit `return` rather than the old unconditional `CreateRet` at the end of `FunctionDefinitionNode::codegen`.
+Since the scope is fresh and empty every time, `IsDeclaredVar` can never succeed for a top-level assignment — that's exactly the "Assignment to undeclared variable" limitation shown below, and this is the code path that produces it. I wrap the whole expression, assignment or not, in a `ReturnStatementNode` before handing it to `FunctionDefinitionNode`, so a top-level expression's value now reaches the caller through an explicit `return` rather than the old unconditional `CreateRet` at the end of `FunctionDefinitionNode::codegen`.
 
 ## Known Limitations
 
