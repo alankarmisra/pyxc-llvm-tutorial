@@ -640,8 +640,6 @@ class NameExpressionNode : public ExpressionNode {
 
 public:
   NameExpressionNode(const string &Name) : Name(Name) {}
-  // convenience function
-  const string &getName() const { return Name; }
   const string *getLValueName() const override { return &Name; }
   Value *codegen() override;
 };
@@ -1073,8 +1071,10 @@ static unique_ptr<ExpressionNode> ParseForStatement() {
   getNextToken(); // eat 'for'
 
   bool IsVarDecl = false;
-  if (CurrentToken == tok_var)
-    IsVarDecl = true, getNextToken(); // optional 'var'
+  if (CurrentToken == tok_var) {
+    IsVarDecl = true;
+    getNextToken(); // optional 'var'
+  }
 
   if (CurrentToken != tok_name)
     return LogErrorExpression("Expected variable name after 'for'");
@@ -1762,10 +1762,10 @@ Value *NumberExpressionNode::codegen() {
 /// NameExpressionNode::codegen - A variable reference loads the current value
 /// from the variable's stack slot.
 Value *NameExpressionNode::codegen() {
-  auto It = NamedValues.find(Name);
-  if (It == NamedValues.end() || !It->second)
+  auto VariableBinding = NamedValues.find(Name);
+  if (VariableBinding == NamedValues.end() || !VariableBinding->second)
     return LogErrorValue("Unknown variable name: '" + Name + "'");
-  return TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), It->second,
+  return TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), VariableBinding->second,
                              Name.c_str());
 }
 
@@ -1776,11 +1776,11 @@ Value *AssignmentStatementNode::codegen() {
   if (!Value)
     return nullptr;
 
-  auto It = NamedValues.find(Name);
-  if (It == NamedValues.end() || !It->second)
+  auto VariableBinding = NamedValues.find(Name);
+  if (VariableBinding == NamedValues.end() || !VariableBinding->second)
     return LogErrorValue("Unknown variable name: '" + Name + "'");
 
-  TheBuilder->CreateStore(Value, It->second);
+  TheBuilder->CreateStore(Value, VariableBinding->second);
   return Value;
 }
 
@@ -1969,27 +1969,33 @@ Value *IfStatementNode::codegen() {
 Value *ForStatementNode::codegen() {
   Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
 
-  AllocaInst *Alloca = nullptr;
-  AllocaInst *OldVal = nullptr;
+  AllocaInst *LoopVariableSlot = nullptr;
+  AllocaInst *PreviousVariableSlot = nullptr;
   if (IsVarDecl) {
-    auto OldIt = NamedValues.find(VarName);
-    OldVal = (OldIt != NamedValues.end()) ? OldIt->second : nullptr;
-    Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
+    // With `for var`, I declare a new loop variable. I save any binding it
+    // shadows so I can restore that binding after the loop, then I create the
+    // new slot.
+    auto PreviousBinding = NamedValues.find(VarName);
+    if (PreviousBinding != NamedValues.end())
+      PreviousVariableSlot = PreviousBinding->second;
+    LoopVariableSlot = CreateEntryBlockAlloca(TheFunction, VarName);
   } else {
-    auto It = NamedValues.find(VarName);
-    if (It == NamedValues.end() || !It->second)
+    // Without `var`, I reuse a variable that already exists. If the lookup
+    // fails, I report an unknown-variable error.
+    auto ExistingBinding = NamedValues.find(VarName);
+    if (ExistingBinding == NamedValues.end() || !ExistingBinding->second)
       return LogErrorValue("Unknown variable name: '" + VarName + "'");
-    Alloca = It->second;
+    LoopVariableSlot = ExistingBinding->second;
   }
 
   Value *StartVal = Start->codegen();
   if (!StartVal)
     return nullptr;
 
-  TheBuilder->CreateStore(StartVal, Alloca);
+  TheBuilder->CreateStore(StartVal, LoopVariableSlot);
 
   if (IsVarDecl)
-    NamedValues[VarName] = Alloca;
+    NamedValues[VarName] = LoopVariableSlot;
 
   BasicBlock *CondBB =
       BasicBlock::Create(*TheContext, "loop_cond", TheFunction);
@@ -2027,20 +2033,21 @@ Value *ForStatementNode::codegen() {
 
   TheBuilder->SetInsertPoint(StepBB);
 
-  Value *CurVar =
-      TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), Alloca, VarName);
   Value *StepVal = Step->codegen();
   if (!StepVal)
     return nullptr;
+  Value *CurVar =
+      TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), LoopVariableSlot,
+                             VarName);
   Value *NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
-  TheBuilder->CreateStore(NextVar, Alloca);
+  TheBuilder->CreateStore(NextVar, LoopVariableSlot);
   TheBuilder->CreateBr(CondBB);
 
   TheBuilder->SetInsertPoint(AfterBB);
 
   if (IsVarDecl) {
-    if (OldVal)
-      NamedValues[VarName] = OldVal;
+    if (PreviousVariableSlot)
+      NamedValues[VarName] = PreviousVariableSlot;
     else
       NamedValues.erase(VarName);
   }

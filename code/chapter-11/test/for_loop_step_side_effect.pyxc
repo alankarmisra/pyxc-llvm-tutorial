@@ -1,0 +1,15 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Parsed an extern.
+# CHECK: Parsed a function definition.
+# CHECK: 0.000000
+# CHECK: 2.000000
+# CHECK: Evaluated to 6.000000
+
+# The step assigns to i before the implicit increment. The increment must load
+# i after that assignment, so the loop visits 0, then 2, and leaves i as 6.
+
+extern def printd(x)
+
+def side_step(): var i = 0: (for i = 0, i < 5, i = i + 1: printd(i)) + i
+
+side_step()

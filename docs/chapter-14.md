@@ -361,13 +361,14 @@ if (!TheBuilder->GetInsertBlock()->getTerminator())
 
 TheBuilder->SetInsertPoint(StepBB);
 
-Value *CurVar =
-    TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), Alloca, VarName);
 Value *StepVal = Step->codegen();
 if (!StepVal)
   return nullptr;
+Value *CurVar =
+    TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), LoopVariableSlot,
+                           VarName);
 Value *NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
-TheBuilder->CreateStore(NextVar, Alloca);
+TheBuilder->CreateStore(NextVar, LoopVariableSlot);
 TheBuilder->CreateBr(CondBB);
 ```
 

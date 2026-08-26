@@ -832,8 +832,6 @@ public:
   NameExpressionNode(const string &Name, ValueType Type) : Name(Name) {
     setType(Type);
   }
-  // convenience function
-  const string &getName() const { return Name; }
   const string *getLValueName() const override { return &Name; }
   Value *codegen() override;
 };
@@ -2970,9 +2968,9 @@ Value *BoolExpressionNode::codegen() {
 /// NameExpressionNode::codegen - A variable reference loads the current value
 /// from the variable's stack slot.
 Value *NameExpressionNode::codegen() {
-  auto It = NamedValues.find(Name);
-  if (It != NamedValues.end() && It->second)
-    return TheBuilder->CreateLoad(LLVMTypeFor(getType()), It->second,
+  auto VariableBinding = NamedValues.find(Name);
+  if (VariableBinding != NamedValues.end() && VariableBinding->second)
+    return TheBuilder->CreateLoad(LLVMTypeFor(getType()), VariableBinding->second,
                                Name.c_str());
 
   if (auto *GV = GetGlobalVariable(Name))
@@ -2991,9 +2989,9 @@ Value *AssignmentStatementNode::codegen() {
   if (!Val)
     return LogErrorValue("Type mismatch in assignment");
 
-  auto It = NamedValues.find(Name);
-  if (It != NamedValues.end() && It->second) {
-    TheBuilder->CreateStore(Val, It->second);
+  auto VariableBinding = NamedValues.find(Name);
+  if (VariableBinding != NamedValues.end() && VariableBinding->second) {
+    TheBuilder->CreateStore(Val, VariableBinding->second);
     return Val;
   }
 
@@ -3390,10 +3388,10 @@ Value *ForStatementNode::codegen() {
 
   TheBuilder->SetInsertPoint(StepBB);
 
-  Value *CurVar = TheBuilder->CreateLoad(LLVMTypeFor(VarType), VarPtr, VarName);
   Value *StepVal = Step->codegen();
   if (!StepVal)
     return nullptr;
+  Value *CurVar = TheBuilder->CreateLoad(LLVMTypeFor(VarType), VarPtr, VarName);
   StepVal = EmitImplicitCast(StepVal, Step->getType(), VarType);
   if (!StepVal)
     return LogErrorValue("Type mismatch in for loop step");

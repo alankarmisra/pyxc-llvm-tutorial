@@ -185,6 +185,19 @@ public:
 *};
 ```
 
+`NameExpressionNode` is the only override — a plain name is the only expression shape that's ever a legal assignment target:
+
+```cppdiff
+*class NameExpressionNode : public ExpressionNode {
+*  string Name;
+*
+*public:
+*  NameExpressionNode(const string &Name) : Name(Name) {}
++  const string *getLValueName() const override { return &Name; }
+*  Value *codegen() override;
+*};
+```
+
 ## Parsing `var`
 
 `ParseVariableExpression` reads four things in sequence: the `var` keyword, one or more `name [= initializer]` bindings, a mandatory `:`, and then the body expression.
@@ -269,6 +282,8 @@ If there's no `=`, the variable defaults to `0.0`. The binding always produces a
 +    return ParseVariableExpression();
 +
 +  auto Expr = ParseComparison();
++   if (!Expr)
++    return nullptr;
 +  // ... assignment handling, shown in "Parsing Assignment" below ...
 ```
 
@@ -279,7 +294,8 @@ I deliberately let the grammar allow any `comparison` before the optional `=`, s
 Once `ParseComparison` returns — the same top-of-the-chain call chapter 10 already parses every expression through — I check whether `=` follows. If not, I hand back the expression unchanged. If so, I require the left-hand side to be a plain variable name, or I report a parse error:
 
 ```cppdiff
-*  auto Expr = ParseComparison();
+~  if (!Expr)
+~   return nullptr;
 *
 +  if (CurrentToken != tok_assign)
 +    return Expr; // no assignment — return the expression as-is
@@ -478,11 +494,11 @@ A variable reference loads the current value:
 +/// NameExpressionNode::codegen - A variable reference loads the current value
 +/// from the variable's memory slot.
 *Value *NameExpressionNode::codegen() {
-*  auto It = NamedValues.find(Name);
-*  if (It == NamedValues.end() || !It->second)
+*  auto VariableBinding = NamedValues.find(Name);
+*  if (VariableBinding == NamedValues.end() || !VariableBinding->second)
 *    return LogErrorValue("Unknown variable name: '" + Name + "'");
--  return It->second;
-+  return TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), It->second,
+-  return VariableBinding->second;
++  return TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), VariableBinding->second,
 +                                Name.c_str());
 *}
 ```
@@ -505,11 +521,11 @@ Value *AssignmentExpressionNode::codegen() {
   if (!Value)
     return nullptr;
 
-  auto It = NamedValues.find(Name);
-  if (It == NamedValues.end() || !It->second)
+  auto VariableBinding = NamedValues.find(Name);
+  if (VariableBinding == NamedValues.end() || !VariableBinding->second)
     return LogErrorValue("Unknown variable name: '" + Name + "'");
 
-  TheBuilder->CreateStore(Value, It->second);
+  TheBuilder->CreateStore(Value, VariableBinding->second);
   return Value;
 }
 ```
@@ -610,21 +626,63 @@ This unifies the whole language: parameters, `var` locals, and loop variables al
 
 ## `for` Loops Switch to the Same Model
 
-The old `for` codegen bound the loop variable directly to the incoming `Value*`, using a PHI node to merge the start value with each iteration's next value. That no longer fits now that every mutable local uses an alloca. `for var i` needs a fresh slot; plain `for i` needs to reuse the slot of an `i` already in scope — so I first record which case I'm in by setting an `IsVarDecl` flag on `ForExpressionNode` during parsing:
+The old `for` codegen bound the loop variable directly to the incoming `Value*`, using a PHI node to merge the start value with each iteration's next value. That no longer fits now that every mutable local uses an alloca. `for var i` needs a fresh slot; plain `for i` needs to reuse the slot of an `i` already in scope — so I first record which case I'm in with a new `IsVarDecl` field on `ForExpressionNode` itself:
+
+The constructor's parameter list and initializer list are reflowed below, one entry per line, so the one real addition to each is easy to spot — the real source wraps these lines differently:
+
+```cppdiff
+*class ForExpressionNode : public ExpressionNode {
+*  string VarName;
++  bool IsVarDecl;
+*  unique_ptr<ExpressionNode> Start, Condition, Step, Body;
+*
+*public:
+*  ForExpressionNode(const string &VarName,
++                    bool IsVarDecl,
+*                    unique_ptr<ExpressionNode> Start,
+*                    unique_ptr<ExpressionNode> Condition,
+*                    unique_ptr<ExpressionNode> Step,
+*                    unique_ptr<ExpressionNode> Body)
+*      : VarName(VarName),
++        IsVarDecl(IsVarDecl),
+*        Start(std::move(Start)),
+*        Condition(std::move(Condition)),
+*        Step(std::move(Step)),
+*        Body(std::move(Body)) {}
+-
+*  Value *codegen() override;
+*};
+```
+
+`ParseForExpression` sets that field through the updated constructor:
 
 ```cppdiff
 *static unique_ptr<ExpressionNode> ParseForExpression() {
 *  getNextToken(); // eat 'for'
 *
 +  bool IsVarDecl = false;
-+  if (CurrentToken == tok_var)
-+    IsVarDecl = true, getNextToken(); // optional 'var'
-*
++  if (CurrentToken == tok_var) {
++    IsVarDecl = true;
++    getNextToken(); // optional 'var'
++  }
++
 *  if (CurrentToken != tok_name)
 *    return LogErrorExpression("Expected variable name after 'for'");
 *  string VarName = Name;
 *  getNextToken(); // eat name
-*  ...
+*
+* ...
+*
+*  auto Body = ParseExpression();
+*  if (!Body)
+*    return nullptr;
+*
+-  return make_unique<ForExpressionNode>(VarName, std::move(Start),
+-                                        std::move(Condition), std::move(Step),
+-                                        std::move(Body));
++  return make_unique<ForExpressionNode>(VarName, IsVarDecl, std::move(Start),
++                                        std::move(Condition), std::move(Step),
++                                        std::move(Body));
 *}
 ```
 
@@ -634,29 +692,35 @@ Then I switch `ForExpressionNode::codegen` to a memory slot for the loop variabl
 *Value *ForExpressionNode::codegen() {
 *  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
 *
--  // Emit start value in the preheader (current block before the loop).
+*  // Emit start value in the preheader (current block before the loop).
 *  Value *StartVal = Start->codegen();
 *  if (!StartVal)
 *    return nullptr;
 *
 -  BasicBlock *PreheaderBB = TheBuilder->GetInsertBlock();
-+  AllocaInst *Alloca = nullptr;
-+  AllocaInst *OldVal = nullptr;
++  AllocaInst *LoopVariableSlot = nullptr;
++  AllocaInst *PreviousVariableSlot = nullptr;
 +  if (IsVarDecl) {
-+    auto OldIt = NamedValues.find(VarName);
-+    OldVal = (OldIt != NamedValues.end()) ? OldIt->second : nullptr;
-+    Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
-+    TheBuilder->CreateStore(StartVal, Alloca);
-+    NamedValues[VarName] = Alloca;
++    // With `for var`, I declare a new loop variable. I save any binding it
++    // shadows so I can restore that binding after the loop, then I create the
++    // new slot.
++    auto PreviousBinding = NamedValues.find(VarName);
++    if (PreviousBinding != NamedValues.end())
++      PreviousVariableSlot = PreviousBinding->second;
++    LoopVariableSlot = CreateEntryBlockAlloca(TheFunction, VarName);
++    TheBuilder->CreateStore(StartVal, LoopVariableSlot);
++    NamedValues[VarName] = LoopVariableSlot;
 +  } else {
-+    auto It = NamedValues.find(VarName);
-+    if (It == NamedValues.end() || !It->second)
++    // Without `var`, I reuse a variable that already exists. If the lookup
++    // fails, I report an unknown-variable error.
++    auto ExistingBinding = NamedValues.find(VarName);
++    if (ExistingBinding == NamedValues.end() || !ExistingBinding->second)
 +      return LogErrorValue("Unknown variable name: '" + VarName + "'");
-+    Alloca = It->second;
-+    TheBuilder->CreateStore(StartVal, Alloca);
++    LoopVariableSlot = ExistingBinding->second;
++    TheBuilder->CreateStore(StartVal, LoopVariableSlot);
 +  }
 *
--  // Create all three blocks up front so we can reference them in branches.
+*  // Create all three blocks up front so we can reference them in branches.
 *  BasicBlock *CondBB =
 *      BasicBlock::Create(*TheContext, "loop_cond", TheFunction);
 *  BasicBlock *BodyBB =
@@ -664,10 +728,10 @@ Then I switch `ForExpressionNode::codegen` to a memory slot for the loop variabl
 *  BasicBlock *AfterBB =
 *      BasicBlock::Create(*TheContext, "after_loop", TheFunction);
 *
--  // Unconditional jump from preheader into the condition check.
+*  // Unconditional jump from preheader into the condition check.
 *  TheBuilder->CreateBr(CondBB);
 *
--  // ---- loop_cond ----
+*  // ---- loop_cond ----
 *  TheBuilder->SetInsertPoint(CondBB);
 *
 -  // PHI picks start_val on the first iteration, next_i on subsequent ones.
@@ -680,7 +744,7 @@ Then I switch `ForExpressionNode::codegen` to a memory slot for the loop variabl
 -  Value *OldVal = NamedValues[VarName];
 -  NamedValues[VarName] = Variable;
 -
--  // Evaluate the condition; treat 0.0 as false, anything else as true.
+*  // Evaluate the condition; treat 0.0 as false, anything else as true.
 *  Value *CondVal = Condition->codegen();
 *  if (!CondVal)
 *    return nullptr;
@@ -688,19 +752,20 @@ Then I switch `ForExpressionNode::codegen` to a memory slot for the loop variabl
 *      CondVal, ConstantFP::get(*TheContext, APFloat(0.0)), "loopcond");
 *  TheBuilder->CreateCondBr(CondVal, BodyBB, AfterBB);
 *
--  // ---- loop_body ----
+*  // ---- loop_body ----
 *  TheBuilder->SetInsertPoint(BodyBB);
 *
--  // Body is evaluated for side effects; its value is discarded.
+*  // Body is evaluated for side effects; its value is discarded.
 *  if (!Body->codegen())
 *    return nullptr;
 *
--  // Step: advance the loop variable.
-+  Value *CurVar =
-+      TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), Alloca, VarName);
+*  // Step: advance the loop variable.
 *  Value *StepVal = Step->codegen();
 *  if (!StepVal)
 *    return nullptr;
++  Value *CurVar =
++      TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), LoopVariableSlot,
++                             VarName);
 -  Value *NextVar = TheBuilder->CreateFAdd(Variable, StepVal, "nextvar");
 -
 -  // Body codegen may have changed the insert block (e.g. nested ifs added
@@ -708,28 +773,33 @@ Then I switch `ForExpressionNode::codegen` to a memory slot for the loop variabl
 -  BasicBlock *BodyEndBB = TheBuilder->GetInsertBlock();
 -  Variable->addIncoming(NextVar, BodyEndBB);
 +  Value *NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
-+  TheBuilder->CreateStore(NextVar, Alloca);
++  TheBuilder->CreateStore(NextVar, LoopVariableSlot);
 *  TheBuilder->CreateBr(CondBB);
 *
--  // ---- after_loop ----
+*  // ---- after_loop ----
 *  TheBuilder->SetInsertPoint(AfterBB);
 *
--  // Restore the shadowed variable (if any) now that the loop is done.
+*  // Restore the shadowed variable (if any) now that the loop is done.
 -  if (OldVal)
 -    NamedValues[VarName] = OldVal;
 -  else
 -    NamedValues.erase(VarName);
 +  if (IsVarDecl) {
-+    if (OldVal)
-+      NamedValues[VarName] = OldVal;
++    if (PreviousVariableSlot)
++      NamedValues[VarName] = PreviousVariableSlot;
 +    else
 +      NamedValues.erase(VarName);
 +  }
 *
--  // The for expression always produces 0.0.
+*  // The for expression always produces 0.0.
 *  return ConstantFP::get(*TheContext, APFloat(0.0));
 *}
 ```
+
+I evaluate `Step` before loading the loop variable on purpose. The step is a
+general expression, so it may assign to the loop variable or perform other side
+effects. Loading afterward makes the increment use the variable's current value
+after those effects.
 
 `IsVarDecl` also controls teardown: when `var` was used, I remove the loop variable from `NamedValues` (or restore the shadowed outer binding) after the loop exits; when it wasn't, I leave the existing slot untouched.
 
@@ -802,12 +872,19 @@ Until then, `var` in `for` is the safe default.
 I add `PromotePass` — commonly called `mem2reg` — to the optimization pipeline, ahead of the three passes I already had:
 
 ```cppdiff
++#include "llvm/Transforms/Utils/Mem2Reg.h"
+*...
+*
+* static void InitializeModuleAndManagers() {
+*  ...
 *  if (OptLevel != 0) {
 +    FunctionPasses->addPass(PromotePass());     // mem2reg: memory slots -> SSA regs
 *    FunctionPasses->addPass(InstCombinePass()); // peephole rewrites
 *    FunctionPasses->addPass(ReassociatePass()); // canonicalise commutative ops
 *    FunctionPasses->addPass(GVNPass());         // eliminate common sub-expressions
 *  }
+* ...
+*}
 ```
 
 Every parameter and local variable now gets a memory slot. Without optimizations, `def bump(n): var x = n: x = x + 1` produces:

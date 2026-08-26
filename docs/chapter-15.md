@@ -298,9 +298,9 @@ A `GlobalVariable` with a null initializer is a *declaration* — it says "this 
 
 ```cpp
 Value *NameExpressionNode::codegen() {
-  auto It = NamedValues.find(Name);
-  if (It != NamedValues.end() && It->second)
-    return TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), It->second,
+  auto VariableBinding = NamedValues.find(Name);
+  if (VariableBinding != NamedValues.end() && VariableBinding->second)
+    return TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), VariableBinding->second,
                                Name.c_str());
 
   if (auto *Global = GetGlobalVariable(Name))
@@ -315,9 +315,9 @@ Value *AssignmentStatementNode::codegen() {
   if (!Value)
     return nullptr;
 
-  auto It = NamedValues.find(Name);
-  if (It != NamedValues.end() && It->second) {
-    TheBuilder->CreateStore(Value, It->second);
+  auto VariableBinding = NamedValues.find(Name);
+  if (VariableBinding != NamedValues.end() && VariableBinding->second) {
+    TheBuilder->CreateStore(Value, VariableBinding->second);
     return Value;
   }
 
@@ -332,22 +332,23 @@ Value *AssignmentStatementNode::codegen() {
 
 A local variable always shadows a global of the same name. Inside a function, if you declare `var x`, the alloca goes into `NamedValues` and that check wins. After the function returns and `NamedValues` is cleared, the global is visible again.
 
-`ForStatementNode::codegen` gets the same fallback. A `for x = start, cond, step: ...` loop that reuses an already-declared name (no `var`) used to look `VarName` up in `NamedValues` only, and fail if it wasn't a local. Now it tries `NamedValues` first and falls back to `GetGlobalVariable`, storing whichever pointer it finds in a new `VariablePointer` local that the rest of the function (the initial store, the per-iteration load, and the step store) uses in place of the old `Alloca`:
+`ForStatementNode::codegen` gets the same fallback. A `for x = start, cond, step: ...` loop that reuses an already-declared name (no `var`) used to look `VarName` up in `NamedValues` only, and fail if it wasn't a local. Now it tries `NamedValues` first and falls back to `GetGlobalVariable`, storing whichever pointer it finds in a new `VariablePointer` local that the rest of the function (the initial store, the per-iteration load, and the step store) uses in place of `LoopVariableSlot`:
 
 ```cpp
 Value *VariablePointer = nullptr;
-AllocaInst *Alloca = nullptr;
-AllocaInst *OldVal = nullptr;
+AllocaInst *LoopVariableSlot = nullptr;
+AllocaInst *PreviousVariableSlot = nullptr;
 if (IsVarDecl) {
-  auto OldIt = NamedValues.find(VarName);
-  OldVal = (OldIt != NamedValues.end()) ? OldIt->second : nullptr;
-  Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
-  VariablePointer = Alloca;
-  NamedValues[VarName] = Alloca;
+  auto PreviousBinding = NamedValues.find(VarName);
+  if (PreviousBinding != NamedValues.end())
+    PreviousVariableSlot = PreviousBinding->second;
+  LoopVariableSlot = CreateEntryBlockAlloca(TheFunction, VarName);
+  VariablePointer = LoopVariableSlot;
+  NamedValues[VarName] = LoopVariableSlot;
 } else {
-  auto It = NamedValues.find(VarName);
-  if (It != NamedValues.end() && It->second)
-    VariablePointer = It->second;
+  auto ExistingBinding = NamedValues.find(VarName);
+  if (ExistingBinding != NamedValues.end() && ExistingBinding->second)
+    VariablePointer = ExistingBinding->second;
   else if (auto *Global = GetGlobalVariable(VarName))
     VariablePointer = Global;
   else

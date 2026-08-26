@@ -6442,12 +6442,12 @@ Value *VariableExprAST::codegen() {
                                       "arraydecay");
   };
 
-  auto It = NamedValues.find(Name);
-  if (It != NamedValues.end() && It->second)
+  auto VariableBinding = NamedValues.find(Name);
+  if (VariableBinding != NamedValues.end() && VariableBinding->second)
     return (getType() == ValueType::Array)
-               ? DecayArray(It->second)
+               ? DecayArray(VariableBinding->second)
                : Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()),
-                                     It->second, Name.c_str());
+                                     VariableBinding->second, Name.c_str());
 
   if (auto *GV = GetGlobalVariable(Name))
     return (getType() == ValueType::Array)
@@ -6674,13 +6674,13 @@ static Value *ResolveIncDecLValuePtr(ExprAST *Operand, ValueType *Ty,
                                      string *StructName) {
   if (auto *Var = dynamic_cast<VariableExprAST *>(Operand)) {
     const string &Name = Var->getName();
-    auto It = NamedValues.find(Name);
-    if (It != NamedValues.end() && It->second) {
+    auto VariableBinding = NamedValues.find(Name);
+    if (VariableBinding != NamedValues.end() && VariableBinding->second) {
       if (Ty)
         *Ty = Var->getType();
       if (StructName)
         *StructName = Var->getStructName();
-      return It->second;
+      return VariableBinding->second;
     }
     if (auto *GV = GetGlobalVariable(Name)) {
       if (Ty)
@@ -6923,9 +6923,9 @@ Value *AssignmentExprAST::codegen() {
   if (!Val)
     return LogErrorValue("Type mismatch in assignment");
 
-  auto It = NamedValues.find(Name);
-  if (It != NamedValues.end() && It->second) {
-    Builder->CreateStore(Val, It->second);
+  auto VariableBinding = NamedValues.find(Name);
+  if (VariableBinding != NamedValues.end() && VariableBinding->second) {
+    Builder->CreateStore(Val, VariableBinding->second);
     return Val;
   }
 
@@ -6942,16 +6942,16 @@ Value *CompoundAssignmentExprAST::codegen() {
   if (!R)
     return nullptr;
 
-  auto It = NamedValues.find(Name);
-  if (It != NamedValues.end() && It->second) {
+  auto VariableBinding = NamedValues.find(Name);
+  if (VariableBinding != NamedValues.end() && VariableBinding->second) {
     Value *L = Builder->CreateLoad(LLVMTypeFor(getType(), getStructName()),
-                                   It->second, Name);
+                                   VariableBinding->second, Name);
     Value *Combined = EmitBuiltInArithmetic(
         Op, L, getType(), getStructName(), R, RHS->getType(),
         RHS->getStructName(), getType(), getStructName());
     if (!Combined)
       return nullptr;
-    Builder->CreateStore(Combined, It->second);
+    Builder->CreateStore(Combined, VariableBinding->second);
     return Combined;
   }
   if (auto *GV = GetGlobalVariable(Name)) {
@@ -7593,10 +7593,10 @@ Value *ForExprAST::codegen() {
     Builder->CreateBr(StepBB);
 
   Builder->SetInsertPoint(StepBB);
-  Value *CurVar = Builder->CreateLoad(LLVMTypeFor(VarType), VarPtr, VarName);
   Value *StepVal = Step->codegen();
   if (!StepVal)
     return nullptr;
+  Value *CurVar = Builder->CreateLoad(LLVMTypeFor(VarType), VarPtr, VarName);
   StepVal = EmitImplicitCast(StepVal, Step->getType(), VarType);
   if (!StepVal)
     return LogErrorValue("Type mismatch in for loop step");

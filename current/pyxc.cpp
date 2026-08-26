@@ -7600,10 +7600,10 @@ Value *ForExpressionNode::codegen() {
     Builder->CreateBr(StepBB);
 
   Builder->SetInsertPoint(StepBB);
-  Value *CurVar = Builder->CreateLoad(LLVMTypeFor(VarType), VarPtr, VarName);
   Value *StepVal = Step->codegen();
   if (!StepVal)
     return nullptr;
+  Value *CurVar = Builder->CreateLoad(LLVMTypeFor(VarType), VarPtr, VarName);
   StepVal = EmitImplicitCast(StepVal, Step->getType(), VarType);
   if (!StepVal)
     return LogErrorValue("Type mismatch in for loop step");
