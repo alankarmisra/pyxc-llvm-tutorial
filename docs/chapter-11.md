@@ -607,54 +607,7 @@ This unifies the whole language: parameters, `var` locals, and loop variables al
 
 ## `for` Loops Switch to the Same Model
 
-The old `for` codegen bound the loop variable directly to the incoming `Value*`, using a PHI node to merge the start value with each iteration's next value. That no longer fits now that every mutable local uses an alloca, so I switch `ForExpressionNode::codegen` to a memory slot for the loop variable too:
-
-```cppdiff
-*Value *ForExpressionNode::codegen() {
-*  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
-*
-*  Value *StartVal = Start->codegen();
-*  if (!StartVal)
-*    return nullptr;
-*
--  BasicBlock *PreheaderBB = TheBuilder->GetInsertBlock();
--
--  ...
--
--  // PHI picks start_val on the first iteration, next_i on subsequent ones.
--  PHINode *Variable =
--      TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
--  Variable->addIncoming(StartVal, PreheaderBB);
--
--  Value *OldVal = NamedValues[VarName];
--  NamedValues[VarName] = Variable;
-+  // Allocate a memory slot for the loop variable and store the start value.
-+  AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
-+  TheBuilder->CreateStore(StartVal, Alloca);
-*  ...
-*
-*  TheBuilder->SetInsertPoint(BodyBB);
-*
-*  if (!Body->codegen())
-*    return nullptr;
-*
--  Value *StepVal = Step->codegen();
--  if (!StepVal)
--    return nullptr;
--  Value *NextVar = TheBuilder->CreateFAdd(Variable, StepVal, "nextvar");
-+  // In the loop body, load the current value, add the step, store back.
-+  Value *CurVar =
-+      TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), Alloca, VarName);
-+  Value *StepVal = Step->codegen();
-+  if (!StepVal)
-+    return nullptr;
-+  Value *NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
-+  TheBuilder->CreateStore(NextVar, Alloca);
-*  ...
-*}
-```
-
-I record whether `var` was present by setting an `IsVarDecl` flag on `ForExpressionNode`:
+The old `for` codegen bound the loop variable directly to the incoming `Value*`, using a PHI node to merge the start value with each iteration's next value. That no longer fits now that every mutable local uses an alloca. `for var i` needs a fresh slot; plain `for i` needs to reuse the slot of an `i` already in scope — so I first record which case I'm in by setting an `IsVarDecl` flag on `ForExpressionNode` during parsing:
 
 ```cppdiff
 *static unique_ptr<ExpressionNode> ParseForExpression() {
@@ -672,21 +625,107 @@ I record whether `var` was present by setting an `IsVarDecl` flag on `ForExpress
 *}
 ```
 
-I use that flag in codegen to decide whether to allocate a fresh slot or reuse an existing one:
+Then I switch `ForExpressionNode::codegen` to a memory slot for the loop variable, using `IsVarDecl` to decide whether to allocate a fresh slot or reuse an existing one:
 
-```cpp
-if (IsVarDecl) {
-  // 'for var i': allocate a new slot and store the start value.
-  Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
-  TheBuilder->CreateStore(StartVal, Alloca);
-} else {
-  // 'for i': look up the existing alloca — error if i is not in scope.
-  auto It = NamedValues.find(VarName);
-  if (It == NamedValues.end() || !It->second)
-    return LogErrorValue("Unknown variable name: '" + VarName + "'");
-  Alloca = It->second;
-  TheBuilder->CreateStore(StartVal, Alloca);
-}
+```cppdiff
+*Value *ForExpressionNode::codegen() {
+*  Function *TheFunction = TheBuilder->GetInsertBlock()->getParent();
+*
+-  // Emit start value in the preheader (current block before the loop).
+*  Value *StartVal = Start->codegen();
+*  if (!StartVal)
+*    return nullptr;
+*
+-  BasicBlock *PreheaderBB = TheBuilder->GetInsertBlock();
++  AllocaInst *Alloca = nullptr;
++  AllocaInst *OldVal = nullptr;
++  if (IsVarDecl) {
++    auto OldIt = NamedValues.find(VarName);
++    OldVal = (OldIt != NamedValues.end()) ? OldIt->second : nullptr;
++    Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
++    TheBuilder->CreateStore(StartVal, Alloca);
++    NamedValues[VarName] = Alloca;
++  } else {
++    auto It = NamedValues.find(VarName);
++    if (It == NamedValues.end() || !It->second)
++      return LogErrorValue("Unknown variable name: '" + VarName + "'");
++    Alloca = It->second;
++    TheBuilder->CreateStore(StartVal, Alloca);
++  }
+*
+-  // Create all three blocks up front so we can reference them in branches.
+*  BasicBlock *CondBB =
+*      BasicBlock::Create(*TheContext, "loop_cond", TheFunction);
+*  BasicBlock *BodyBB =
+*      BasicBlock::Create(*TheContext, "loop_body", TheFunction);
+*  BasicBlock *AfterBB =
+*      BasicBlock::Create(*TheContext, "after_loop", TheFunction);
+*
+-  // Unconditional jump from preheader into the condition check.
+*  TheBuilder->CreateBr(CondBB);
+*
+-  // ---- loop_cond ----
+*  TheBuilder->SetInsertPoint(CondBB);
+*
+-  // PHI picks start_val on the first iteration, next_i on subsequent ones.
+-  // The back-edge incoming value is added below once we know BodyEndBB.
+-  PHINode *Variable =
+-      TheBuilder->CreatePHI(Type::getDoubleTy(*TheContext), 2, VarName);
+-  Variable->addIncoming(StartVal, PreheaderBB);
+-
+-  // Shadow any outer variable of the same name so the body sees the loop var.
+-  Value *OldVal = NamedValues[VarName];
+-  NamedValues[VarName] = Variable;
+-
+-  // Evaluate the condition; treat 0.0 as false, anything else as true.
+*  Value *CondVal = Condition->codegen();
+*  if (!CondVal)
+*    return nullptr;
+*  CondVal = TheBuilder->CreateFCmpONE(
+*      CondVal, ConstantFP::get(*TheContext, APFloat(0.0)), "loopcond");
+*  TheBuilder->CreateCondBr(CondVal, BodyBB, AfterBB);
+*
+-  // ---- loop_body ----
+*  TheBuilder->SetInsertPoint(BodyBB);
+*
+-  // Body is evaluated for side effects; its value is discarded.
+*  if (!Body->codegen())
+*    return nullptr;
+*
+-  // Step: advance the loop variable.
++  Value *CurVar =
++      TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), Alloca, VarName);
+*  Value *StepVal = Step->codegen();
+*  if (!StepVal)
+*    return nullptr;
+-  Value *NextVar = TheBuilder->CreateFAdd(Variable, StepVal, "nextvar");
+-
+-  // Body codegen may have changed the insert block (e.g. nested ifs added
+-  // blocks). Capture where the body actually ended for the PHI back-edge.
+-  BasicBlock *BodyEndBB = TheBuilder->GetInsertBlock();
+-  Variable->addIncoming(NextVar, BodyEndBB);
++  Value *NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
++  TheBuilder->CreateStore(NextVar, Alloca);
+*  TheBuilder->CreateBr(CondBB);
+*
+-  // ---- after_loop ----
+*  TheBuilder->SetInsertPoint(AfterBB);
+*
+-  // Restore the shadowed variable (if any) now that the loop is done.
+-  if (OldVal)
+-    NamedValues[VarName] = OldVal;
+-  else
+-    NamedValues.erase(VarName);
++  if (IsVarDecl) {
++    if (OldVal)
++      NamedValues[VarName] = OldVal;
++    else
++      NamedValues.erase(VarName);
++  }
+*
+-  // The for expression always produces 0.0.
+*  return ConstantFP::get(*TheContext, APFloat(0.0));
+*}
 ```
 
 `IsVarDecl` also controls teardown: when `var` was used, I remove the loop variable from `NamedValues` (or restore the shadowed outer binding) after the loop exits; when it wasn't, I leave the existing slot untouched.
