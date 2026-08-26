@@ -586,11 +586,14 @@ store double %addtmp, ptr %x, align 8
 *  if (!BodyVal)
 *    return nullptr;
 +
-+  for (auto I = OldBindings.rbegin(), E = OldBindings.rend(); I != E; ++I) {
-+    if (I->second)
-+      NamedValues[I->first] = I->second; // restore saved binding
++  for (auto SavedBinding = OldBindings.rbegin();
++       SavedBinding != OldBindings.rend(); ++SavedBinding) {
++    const string &Name = SavedBinding->first;
++    AllocaInst *PreviousValue = SavedBinding->second;
++    if (PreviousValue)
++      NamedValues[Name] = PreviousValue; // restore saved binding
 +    else
-+      NamedValues.erase(I->first);        // name was not in scope before — remove it
++      NamedValues.erase(Name); // name was not in scope before — remove it
 +  }
 +
 +  return BodyVal;

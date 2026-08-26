@@ -1571,11 +1571,14 @@ Value *VariableExpressionNode::codegen() {
   if (!BodyVal)
     return nullptr;
 
-  for (auto I = OldBindings.rbegin(), E = OldBindings.rend(); I != E; ++I) {
-    if (I->second)
-      NamedValues[I->first] = I->second;
+  for (auto SavedBinding = OldBindings.rbegin();
+       SavedBinding != OldBindings.rend(); ++SavedBinding) {
+    const string &Name = SavedBinding->first;
+    AllocaInst *PreviousValue = SavedBinding->second;
+    if (PreviousValue)
+      NamedValues[Name] = PreviousValue;
     else
-      NamedValues.erase(I->first);
+      NamedValues.erase(Name);
   }
 
   return BodyVal;
