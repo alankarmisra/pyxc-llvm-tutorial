@@ -935,6 +935,8 @@ static unique_ptr<ExpressionNode> ParsePrimary();
 static unique_ptr<ExpressionNode> ParseVarStatement();
 static unique_ptr<ExpressionNode> ParseStatement();
 static unique_ptr<ExpressionNode> ParseSimpleStatement();
+static unique_ptr<ExpressionNode> ParseLeadingNameSimpleStatement();
+static unique_ptr<ExpressionNode> ParseNonLeadingNameSimpleStatement();
 static unique_ptr<ExpressionNode> ParseBlock();
 static unique_ptr<ExpressionNode> ParseFunctionBody();
 static unique_ptr<ExpressionNode> ParseSuite();
@@ -1045,7 +1047,8 @@ static bool ParseForParts(unique_ptr<ExpressionNode> &Start, unique_ptr<Expressi
     return LogErrorExpression("Expected ',' after 'for' condition"), false;
   getNextToken(); // eat ','
 
-  Step = ParseExpression();
+  Step = CurrentToken == tok_name ? ParseLeadingNameSimpleStatement()
+                                  : ParseNonLeadingNameSimpleStatement();
   if (!Step)
     return false;
 
@@ -1062,8 +1065,10 @@ static bool ParseForParts(unique_ptr<ExpressionNode> &Start, unique_ptr<Expressi
 }
 
 /// for-statement
-///   = "for" [ "var" ] name "=" expression "," expression "," expression
+///   = "for" [ "var" ] name "=" expression "," expression "," for-update
 ///     ":" suite ;
+/// The final expression performs the complete loop update; its value is discarded.
+/// for-update = assignment-statement | expression ;
 ///
 /// The loop variable is introduced by the "for" and is in scope for the
 /// condition, step, and body. It shadows any outer variable of the same name.
@@ -2033,14 +2038,9 @@ Value *ForStatementNode::codegen() {
 
   TheBuilder->SetInsertPoint(StepBB);
 
-  Value *StepVal = Step->codegen();
-  if (!StepVal)
+  // Execute the complete update expression; its value is discarded.
+  if (!Step->codegen())
     return nullptr;
-  Value *CurVar =
-      TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), LoopVariableSlot,
-                             VarName);
-  Value *NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
-  TheBuilder->CreateStore(NextVar, LoopVariableSlot);
   TheBuilder->CreateBr(CondBB);
 
   TheBuilder->SetInsertPoint(AfterBB);

@@ -1,0 +1,16 @@
+# RUN: %pyxc < %s 2>&1 | FileCheck %s
+# CHECK: Parsed an extern.
+# CHECK: Parsed a function definition.
+# CHECK: 1.000000
+# CHECK: 2.000000
+# CHECK: 4.000000
+# CHECK: 8.000000
+# CHECK: Evaluated to 16.000000
+
+# The update is an arbitrary expression that is responsible for mutating i.
+
+extern def printd(x)
+
+def powers_of_two(): var i = 1: (for i = 1, i <= 8, i = i * 2: printd(i)) + i
+
+powers_of_two()

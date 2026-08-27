@@ -39,7 +39,9 @@ if-statement                      = "if" expression ":" suite
                                     [ [ end-of-lines ] "else" ":" suite ] ;
 for-statement                     = "for" ( "var" name ":" type | name )
                                     "=" expression ","
-                                    expression "," expression ":" suite ;
+                                    expression "," for-update ":" suite ;
+(* The final expression performs the complete loop update; its value is discarded. *)
+for-update                         = assignment-statement | expression ;
 while-statement                   = "while" expression ":" suite ;
 do-while-statement                = "do" ":" suite [ end-of-lines ]
                                     "while" expression ;

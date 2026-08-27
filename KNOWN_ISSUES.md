@@ -100,6 +100,11 @@ Chapter 20's two unsupported `while` examples now use a valid end-pointer
 `for` loop with a constant step. A regression test verifies that the example
 visits all three values and produces `60.000000`.
 
+(Note: chapter 11 onward later replaced this auto-add step mechanism with a
+full update expression — `for var i: int = 0, i < 5, i = i + 1:` — so this
+specific bug no longer reproduces past chapter 10. This entry is left as
+written to accurately record the audit at the time it was performed.)
+
 ---
 
 ## Undocumented (but real) language features found

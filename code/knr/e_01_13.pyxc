@@ -12,7 +12,7 @@ def main() -> None:
     var MAX_HIST:int = 15 # max length of a histogram - in case there are many words with length 10 for example
     var wl: int[80]
 
-    for var i:int = 0, i < MAX_WORD, 1:
+    for var i:int = 0, i < MAX_WORD, i = i + 1:
         wl[i] = 0
 
     var c:int32, nc:int, overflow:int
@@ -34,12 +34,12 @@ def main() -> None:
             ++nc
 
     var max_value:int = 0
-    for var i:int = 0, i < MAX_WORD, 1:
+    for var i:int = 0, i < MAX_WORD, i = i + 1:
         if wl[i] > max_value:
             max_value = wl[i]
 
     
-    for var i:int = 0, i < MAX_WORD, 1:
+    for var i:int = 0, i < MAX_WORD, i = i + 1:
         var len:int
         printf("%5d - %5d : ", i, wl[i])
         if wl[i] > 0:

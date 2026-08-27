@@ -1,7 +1,7 @@
 extern def printd(x: float64)
 def main() -> int:
   var sum: int = 0
-  for var i: int = 0, i < 5, 1:
+  for var i: int = 0, i < 5, i = i + 1:
     if i == 2:
       continue
     sum += i

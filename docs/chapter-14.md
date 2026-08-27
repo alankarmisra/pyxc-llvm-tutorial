@@ -45,7 +45,9 @@ Four new productions: `while-statement`, `do-while-statement`, `break-statement`
 ```grammardiff
 *...
 *for-statement                     = "for" [ "var" ] name "=" expression ","
-*                                    expression "," expression ":" suite ;
+*                                    expression "," for-update ":" suite ;
+*(* The final expression performs the complete loop update; its value is discarded. *)
+*for-update                         = assignment-statement | expression ;
 +while-statement                   = "while" expression ":" suite ;
 +do-while-statement                = "do" ":" suite [ end-of-lines ]
 +                                    "while" expression ;
@@ -344,7 +346,7 @@ The `ConstantFP::get(*TheContext, APFloat(0.0))` return at the end isn't special
 *      BasicBlock::Create(*TheContext, "after_loop", TheFunction);
 ```
 
-The body's implicit fallthrough branch now targets `StepBB` instead of the condition block directly, and `StepBB` itself evaluates the step expression, stores the updated loop variable, and only then branches to the condition block:
+The body's implicit fallthrough branch now targets `StepBB` instead of the condition block directly. `StepBB` evaluates the complete update expression and then branches to the condition block:
 
 ```cpp
 TheBuilder->SetInsertPoint(BodyBB);
@@ -361,14 +363,9 @@ if (!TheBuilder->GetInsertBlock()->getTerminator())
 
 TheBuilder->SetInsertPoint(StepBB);
 
-Value *StepVal = Step->codegen();
-if (!StepVal)
+// Execute the complete update expression; its value is discarded.
+if (!Step->codegen())
   return nullptr;
-Value *CurVar =
-    TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), LoopVariableSlot,
-                           VarName);
-Value *NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
-TheBuilder->CreateStore(NextVar, LoopVariableSlot);
 TheBuilder->CreateBr(CondBB);
 ```
 
@@ -461,7 +458,7 @@ Evaluated to 1.000000
 ```pyxc
 ready> def skip_two():
     var sum = 0
-    for var i = 0, i < 5, 1:
+    for var i = 0, i < 5, i = i + 1:
         if i == 2:
             continue
         sum = sum + i
@@ -487,8 +484,8 @@ Evaluated to 8.000000
 ```pyxc
 ready> def nested_break():
     var count = 0
-    for var i = 0, i < 3, 1:
-        for var j = 0, j < 3, 1:
+    for var i = 0, i < 3, i = i + 1:
+        for var j = 0, j < 3, j = j + 1:
             if j == 1:
                 break
             count = count + 1

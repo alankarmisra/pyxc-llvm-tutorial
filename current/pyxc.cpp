@@ -3169,8 +3169,6 @@ static bool ParseForParts(ValueType VarType, unique_ptr<ExpressionNode> &Start,
   Step = ParseExpression();
   if (!Step)
     return false;
-  if (!IsAssignable(VarType, Step->getType()))
-    return LogErrorExpression("For loop step must match loop variable type"), false;
 
   if (CurrentToken != tok_colon)
     return LogErrorExpression("Expected ':' after for step"), false;
@@ -7600,19 +7598,9 @@ Value *ForExpressionNode::codegen() {
     Builder->CreateBr(StepBB);
 
   Builder->SetInsertPoint(StepBB);
-  Value *StepVal = Step->codegen();
-  if (!StepVal)
+  // Execute the complete update expression; its value is discarded.
+  if (!Step->codegen())
     return nullptr;
-  Value *CurVar = Builder->CreateLoad(LLVMTypeFor(VarType), VarPtr, VarName);
-  StepVal = EmitImplicitCast(StepVal, Step->getType(), VarType);
-  if (!StepVal)
-    return LogErrorValue("Type mismatch in for loop step");
-  Value *NextVar = nullptr;
-  if (VarType == ValueType::Float64)
-    NextVar = Builder->CreateFAdd(CurVar, StepVal, "nextvar");
-  else
-    NextVar = Builder->CreateAdd(CurVar, StepVal, "nextvar");
-  Builder->CreateStore(NextVar, VarPtr);
   Builder->CreateBr(CondBB);
 
   Builder->SetInsertPoint(AfterBB);

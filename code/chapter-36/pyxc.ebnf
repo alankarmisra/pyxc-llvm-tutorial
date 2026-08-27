@@ -45,6 +45,7 @@ if-statement                      = "if" expression ":" suite
 for-statement                     = "for" ( "var" name ":" type | name )
                                     "=" expression ","
                                     expression "," expression ":" suite ;
+(* The final expression performs the complete loop update; its value is discarded. *)
 while-statement                   = "while" expression ":" suite ;
 do-while-statement                = "do" ":" suite [ end-of-lines ]
                                     "while" expression ;

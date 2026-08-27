@@ -2,11 +2,14 @@
 # CHECK: Parsed an extern.
 # CHECK: Parsed a function definition.
 # CHECK: 0.000000
+# CHECK: 1.000000
 # CHECK: 2.000000
-# CHECK: Evaluated to 6.000000
+# CHECK: 3.000000
+# CHECK: 4.000000
+# CHECK: Evaluated to 5.000000
 
-# The step assigns to i before the implicit increment. The increment must load
-# i after that assignment, so the loop visits 0, then 2, and leaves i as 6.
+# The third field is the complete update expression. The loop executes the
+# assignment once and does not add its result to i a second time.
 
 extern def printd(x)
 

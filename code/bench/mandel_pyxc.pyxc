@@ -9,9 +9,9 @@ def mandel_checksum(width: int, height: int, max_iter: int) -> int:
     var inv_w: float64 = 0.001
     var inv_h: float64 = 0.001
 
-    for y: int = 0, y < height, 1:
+    for y: int = 0, y < height, y = y + 1:
         var x: int = 0
-        for x: int = 0, x < width, 1:
+        for x: int = 0, x < width, x = x + 1:
             var fx: float64 = float64(x) * inv_w
             var fy: float64 = float64(y) * inv_h
             var cr: float64 = fx * 3.5 - 2.5
@@ -21,7 +21,7 @@ def mandel_checksum(width: int, height: int, max_iter: int) -> int:
             var escaped: bool = False
             var iter: int = 0
 
-            for i: int = 0, i < max_iter, 1:
+            for i: int = 0, i < max_iter, i = i + 1:
                 if escaped:
                     0
                 else:

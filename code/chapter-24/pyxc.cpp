@@ -1485,6 +1485,8 @@ static unique_ptr<ExpressionNode> ParsePrimary();
 static unique_ptr<ExpressionNode> ParseVarStatement();
 static unique_ptr<ExpressionNode> ParseStatement();
 static unique_ptr<ExpressionNode> ParseSimpleStatement();
+static unique_ptr<ExpressionNode> ParseLeadingNameSimpleStatement();
+static unique_ptr<ExpressionNode> ParseNonLeadingNameSimpleStatement();
 static unique_ptr<ExpressionNode> ParseBlock();
 static unique_ptr<ExpressionNode> ParseFunctionBody();
 
@@ -1926,11 +1928,10 @@ static bool ParseForParts(ValueType VarType, unique_ptr<ExpressionNode> &Start,
     return LogErrorExpression("Expected ',' after 'for' condition"), false;
   getNextToken(); // eat ','
 
-  Step = ParseExpression();
+  Step = CurrentToken == tok_name ? ParseLeadingNameSimpleStatement()
+                                  : ParseNonLeadingNameSimpleStatement();
   if (!Step)
     return false;
-  if (!IsAssignable(VarType, Step->getType()))
-    return LogErrorExpression("For loop step must match loop variable type"), false;
 
   if (CurrentToken != tok_colon)
     return LogErrorExpression("Expected ':' after 'for' step"), false;
@@ -1948,7 +1949,9 @@ static bool ParseForParts(ValueType VarType, unique_ptr<ExpressionNode> &Start,
 /// for-statement
 ///   = "for"
 ///            ("var" name ":" type | name)
-///            "=" expression "," expression "," expression ":" suite;
+///            "=" expression "," expression "," for-update ":" suite;
+/// The final expression performs the complete loop update; its value is discarded.
+/// for-update = assignment-statement | expression ;
 ///
 /// "for var" introduces a new loop variable scoped to the loop statement.
 /// A plain "for i = ..." reuses an existing variable (error if undeclared).
@@ -4296,19 +4299,9 @@ Value *ForStatementNode::codegen() {
 
   TheBuilder->SetInsertPoint(StepBB);
 
-  Value *StepVal = Step->codegen();
-  if (!StepVal)
+  // Execute the complete update expression; its value is discarded.
+  if (!Step->codegen())
     return nullptr;
-  Value *CurVar = TheBuilder->CreateLoad(LLVMTypeFor(VarType), VarPtr, VarName);
-  StepVal = EmitImplicitCast(StepVal, Step->getType(), VarType);
-  if (!StepVal)
-    return LogErrorValue("Type mismatch in for loop step");
-  Value *NextVar = nullptr;
-  if (VarType == ValueType::Float64)
-    NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
-  else
-    NextVar = TheBuilder->CreateAdd(CurVar, StepVal, "nextvar");
-  TheBuilder->CreateStore(NextVar, VarPtr);
   TheBuilder->CreateBr(CondBB);
 
   TheBuilder->SetInsertPoint(AfterBB);

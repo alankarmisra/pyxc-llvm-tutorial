@@ -25,7 +25,7 @@ def main() -> int:
   var p: ptr[int] = addr(t.a)
   var end: ptr[int] = p + 3
   var total: int = 0
-  for var i: int = 0, p + i != end, 1:
+  for var i: int = 0, p + i != end, i = i + 1:
     total = total + p[i]
   printd(float64(total))  # 60.000000
   return 0
@@ -358,7 +358,7 @@ def main() -> int:
   var p: ptr[int] = addr(t.a)
   var end: ptr[int] = p + 3
   var total: int = 0
-  for var i: int = 0, p + i != end, 1:
+  for var i: int = 0, p + i != end, i = i + 1:
     total = total + p[i]
   printd(float64(total))  # 60.000000
   return 0

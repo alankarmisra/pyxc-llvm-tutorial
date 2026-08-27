@@ -799,6 +799,7 @@ static unique_ptr<ExpressionNode> ParseNameExpression() {
 /// for-expression
 ///   = "for" [ "var" ] name "=" expression "," expression "," expression
 ///     ":" [end-of-lines] expression ;
+/// The final expression performs the complete loop update; its value is discarded.
 ///
 /// The loop variable is introduced by the "for" and is in scope for the
 /// condition, step, and body. It shadows any outer variable of the same name.
@@ -1489,10 +1490,7 @@ Value *IfExpressionNode::codegen() {
 ///
 ///   loop_body:
 ///     ; <Body codegen> (value ignored)
-///     %curvar = load %i
-///     %step = <Step codegen>
-///     %nextvar = fadd double %curvar, %step
-///     store %nextvar, %i
+///     ; <Step codegen> (complete update expression; value ignored)
 ///     br label %loop_cond
 ///
 ///   after_loop:
@@ -1562,13 +1560,9 @@ Value *ForExpressionNode::codegen() {
     return nullptr;
 
   // Step: advance the loop variable.
-  Value *StepVal = Step->codegen();
-  if (!StepVal)
+  // Execute the complete update expression; its value is discarded.
+  if (!Step->codegen())
     return nullptr;
-  Value *CurVar = TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext),
-                                         LoopVariableSlot, VarName);
-  Value *NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
-  TheBuilder->CreateStore(NextVar, LoopVariableSlot);
   TheBuilder->CreateBr(CondBB);
 
   // ---- after_loop ----

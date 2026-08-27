@@ -4,8 +4,8 @@
 # A break targets only the innermost loop.
 def nested_break() -> float64:
     var count: float64 = 0
-    for var i: float64 = 0, i < 3, 1:
-        for var j: float64 = 0, j < 3, 1:
+    for var i: float64 = 0, i < 3, i = i + 1:
+        for var j: float64 = 0, j < 3, j = j + 1:
             if j == 1:
                 break
             count = count + 1

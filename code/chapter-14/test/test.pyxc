@@ -2,7 +2,7 @@ extern def printd(d)
 
 def sum_to(n):
     var acc = 0
-    for var i = 1, i <= n, 1:
+    for var i = 1, i <= n, i = i + 1:
         acc = acc + i
     return acc
 

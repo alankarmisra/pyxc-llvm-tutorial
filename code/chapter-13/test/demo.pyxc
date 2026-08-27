@@ -3,7 +3,7 @@ extern def printd(x)
 # ── Integer power ──────────────────────────────────────────────────────────
 def power(base, exp):
     var result = 1
-    for var i = 1, i <= exp, 1:
+    for var i = 1, i <= exp, i = i + 1:
         result = result * base
     return result
 
@@ -15,7 +15,7 @@ def fib(n):
 # ── Sum of squares: 1² + 2² + … + n² ──────────────────────────────────────
 def sum_of_squares(n):
     var total = 0
-    for var i = 1, i <= n, 1:
+    for var i = 1, i <= n, i = i + 1:
         total = total + power(i, 2)
     return total
 
@@ -28,7 +28,7 @@ def clamp(x, lo, hi):
 # ── Newton's method: square root ────────────────────────────────────────────
 def sqrt_newton(n):
     var guess = n * 0.5
-    for var i = 1, i <= 20, 1:
+    for var i = 1, i <= 20, i = i + 1:
         guess = (guess + n / guess) * 0.5
     return guess
 
@@ -36,7 +36,7 @@ def sqrt_newton(n):
 def collatz(n):
     var steps = 0
     var x = n
-    for var i = 1, x != 1, 1:
+    for var i = 1, x != 1, i = i + 1:
         if x % 2 == 0:
             x = x / 2
         else:
@@ -48,7 +48,7 @@ def collatz(n):
 # Fibonacci sequence: fib(0) … fib(9)
 # ═══════════════════════════════════════════════════════════════════════════
 def print_fibonacci_sequence():
-    for var i = 0, i < 10, 1:
+    for var i = 0, i < 10, i = i + 1:
         printd(fib(i))
 
 print_fibonacci_sequence()
@@ -62,7 +62,7 @@ printd(sum_of_squares(10))
 # Powers: 2^0 … 2^9
 # ═══════════════════════════════════════════════════════════════════════════
 def print_powers_of_two():
-    for var i = 0, i < 10, 1:
+    for var i = 0, i < 10, i = i + 1:
         printd(power(2, i))
 
 print_powers_of_two()

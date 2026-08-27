@@ -4,7 +4,7 @@
 # A continue in a for loop jumps to the step before testing the condition again.
 def skip_two():
     var sum = 0
-    for var i = 0, i < 5, 1:
+    for var i = 0, i < 5, i = i + 1:
         if i == 2:
             continue
         sum = sum + i

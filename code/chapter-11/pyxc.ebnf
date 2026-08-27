@@ -46,6 +46,7 @@ if-expression                     = "if" expression ":"
 for-expression                    = "for" [ "var" ] name "=" expression ","
                                     expression "," expression ":"
                                     [ end-of-lines ] expression ;
+(* The final expression performs the complete loop update; its value is discarded. *)
 name-expression                   = name
                                     | call-expression ;
 call-expression                   = name "(" [ arguments ] ")" ;

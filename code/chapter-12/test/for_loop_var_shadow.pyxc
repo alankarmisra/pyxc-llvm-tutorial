@@ -15,7 +15,7 @@
 extern def printd(x)
 
 def shadow_test(i):
-    for i = 1, i <= 2, 1:
+    for i = 1, i <= 2, i = i + 1:
                printd(i)
 
 shadow_test(99)

@@ -22,12 +22,12 @@ def mandelconverge(real, imag):
 
 # Render one row.
 def mandelrow(xmin, xmax, xstep, y):
-    for var x = xmin, x < xmax, xstep:
+    for var x = xmin, x < xmax, x = x + xstep:
         printdensity(mandelconverge(x, y))
 
 # Render full 2D region.
 def mandelhelp(xmin, xmax, xstep, ymin, ymax, ystep):
-    for var y = ymin, y < ymax, ystep:
+    for var y = ymin, y < ymax, y = y + ystep:
         sequence(mandelrow(xmin, xmax, xstep, y), putchard(10))
 
 # Top-level helper.

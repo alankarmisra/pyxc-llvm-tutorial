@@ -332,7 +332,7 @@ Value *AssignmentStatementNode::codegen() {
 
 A local variable always shadows a global of the same name. Inside a function, if you declare `var x`, the alloca goes into `NamedValues` and that check wins. After the function returns and `NamedValues` is cleared, the global is visible again.
 
-`ForStatementNode::codegen` gets the same fallback. A `for x = start, cond, step: ...` loop that reuses an already-declared name (no `var`) used to look `VarName` up in `NamedValues` only, and fail if it wasn't a local. Now it tries `NamedValues` first and falls back to `GetGlobalVariable`, storing whichever pointer it finds in a new `VariablePointer` local that the rest of the function (the initial store, the per-iteration load, and the step store) uses in place of `LoopVariableSlot`:
+`ForStatementNode::codegen` gets the same fallback. A `for x = start, cond, x = x + step: ...` loop that reuses an already-declared name (no `var`) used to look `VarName` up in `NamedValues` only, and fail if it wasn't a local. Now it tries `NamedValues` first and falls back to `GetGlobalVariable`, storing whichever pointer it finds in a new `VariablePointer` local that the rest of the function (the initial store, the per-iteration load, and the step store) uses in place of `LoopVariableSlot`:
 
 ```cpp
 Value *VariablePointer = nullptr;
@@ -356,7 +356,7 @@ if (IsVarDecl) {
 }
 ```
 
-This means `for count = 0, count < 10, count + 1: ...` can now drive a global counter directly, without a local shadow, as long as `count` was declared with a top-level `var` first.
+This means `for count = 0, count < 10, count = count + count + 1: ...` can now drive a global counter directly, without a local shadow, as long as `count` was declared with a top-level `var` first.
 
 ## REPL Mode: Deciding Whether to Keep the Module
 

@@ -5,47 +5,66 @@ description: "Add mutable local variables and assignment using a temporary var .
 
 ## What I Am Building
 
-[Chapter 4](chapter-04.md) treated every variable as read-only. Function parameters were read-only. `for` loops introduced a variable and could update it internally, but I had no way to declare my own local variable and change it:
+Until now, names in pyxc haven't really been variables. I could give something a
+name and use it later, but I couldn't change it. This chapter adds the missing
+pieces: `var` declares mutable storage, and `=` writes a new value into it.
+
+The `for` syntax changes along with it. Its last field used to be a number that
+the loop added automatically. Now it's the whole update expression:
+
+```pyxc
+for i = 1, i <= 3, i = i + 1: ...
+```
+
+Eventually I want to write an accumulator like this:
+
+```pyxc
+def sum_to(n):
+    var acc = 0
+    for var i = 1, i <= n, i = i + 1:
+        acc = acc + i
+    return acc
+```
+
+That version has to wait for statement blocks in [Chapter 12](chapter-12.md).
+Right now a function body is still one expression, so the Chapter 11 version is
+a little cramped:
 
 <!-- code-merge:start -->
 ```pyxc
-ready> def bump(n): var x = n: x = x + 1
-```
-```bash
-Error (Line 1, Column 18): Unexpected name 'x'
-def bump(n): var x 
-                 ^~~~
-```
-<!-- code-merge:end -->
-
-I add two things:
-
-- `var` — creates a new variable I can modify
-- `=` — updates an existing variable
-
-<!-- code-merge:start -->
-```pyxc
-ready> def bump(n): var x = n: x = x + 1
+ready> def sum_to(n): var acc = 0: (for var i = 1, i <= n, i = i + 1: acc = acc + i) + acc
 ```
 ```bash
 Parsed a function definition.
 ```
 ```pyxc
-ready> bump(5)
+ready> sum_to(5)
 ```
 ```bash
 Parsed a top-level expression.
-Evaluated to 6.000000
+Evaluated to 15.000000
 ```
 <!-- code-merge:end -->
 
-**A note on style:** `var x = n: x = x + 1` isn't code I'd choose to write. pyxc still only supports single-expression bodies — everything after `:` has to be one expression — so multi-step mutation feels forced because it *is* forced right now. This chapter isn't about that syntax; it's about what happens underneath it. [Chapter 12](chapter-12.md) replaces expression bodies with real statement blocks, and the same machinery starts looking natural:
+The odd-looking `(for ...) + acc` is just temporary glue. `for` evaluates to
+`0.0`, so the loop runs for its side effects and the final `+ acc` gives me the
+accumulated value. I still can't put two statements next to each other, which is
+why this needs a trick at all.
+
+If I need this more than once, I can at least give the trick a name:
 
 ```pyxc
-var x = n
-...
-x = x + 1
+def sequence(x, y): y
 ```
+
+```pyxc
+sequence(for var i = 1, i <= n, i = i + 1: acc = acc + i, acc)
+```
+
+pyxc evaluates the arguments from left to right, so the loop runs first and
+`sequence` returns the updated `acc`. It isn't pretty language design; it's a
+bridge to the next chapter. The useful part here is the machinery underneath:
+names now point to storage, reads load from it, and assignments store into it.
 
 ## Source Code
 
@@ -81,6 +100,7 @@ I add `variable-expression` as a second alternative for `expression`, and give `
 +for-expression                    = "for" [ "var" ] name "=" expression ","
 *                                    expression "," expression ":"
 *                                    [ end-of-lines ] expression ;
++(* The final expression performs the complete loop update; its value is discarded. *)
 *...
 ```
 
@@ -334,7 +354,7 @@ Error (Line 1, Column 9): Destination of '=' must be a variable
 
 ## Memory Slots: From Values to Storage
 
-Until this chapter, every name in pyxc referred to a value that could never change. `n` in `def bump(n): n + 1` means the same double for the entire call — I can think of `n` as shorthand for whatever got passed in, and nothing later in the function can invalidate that substitution.
+Until this chapter, every name in pyxc referred to a value that could never change. `n` in `def increment(n): n + 1` means the same double for the entire call — I can think of `n` as shorthand for whatever got passed in, and nothing later in the function can invalidate that substitution.
 
 That's exactly how `NamedValues` worked through chapter 4: it mapped a name straight to the LLVM value it stood for.
 
@@ -345,7 +365,7 @@ NamedValues[string(Argument.getName())] = &Argument;
 
 Looking up `n` handed codegen the value to use wherever `n` appeared. Done — no further bookkeeping needed, because the value behind the name never moves.
 
-Mutable variables break that. Take `def bump(n): var x = n: x = x + 1`. If `x` started out just *meaning* the value `5`, then `x = x + 1` would have to mean `5 = 5 + 1` — which isn't even a sentence. `5` can't become `6`; a value simply is what it is. For `x = x + 1` to mean anything, `x` can't stand for one fixed value. It has to stand for a *place*: somewhere a value lives that can hold something different a moment later.
+Mutable variables break that. Take `def increment(n): var x = n: x = x + 1`. If `x` started out just *meaning* the value `5`, then `x = x + 1` would have to mean `5 = 5 + 1` — which isn't even a sentence. `5` can't become `6`; a value simply is what it is. For `x = x + 1` to mean anything, `x` can't stand for one fixed value. It has to stand for a *place*: somewhere a value lives that can hold something different a moment later.
 
 ```diagram
 x ──▶ memory slot [ 5 ]
@@ -536,7 +556,7 @@ For `x = x + 1`, where `x` is a `var` local rather than a parameter (so its own 
 store double %addtmp, ptr %x, align 8
 ```
 
-`%addtmp` is the `fadd` I'm storing — the same name hint `BinaryExpressionNode::codegen` already passes to `CreateFAdd` since [Chapter 7](chapter-07.md). `AssignmentExpressionNode::codegen` doesn't create that name; it just stores whatever `Value*` `Expr->codegen()` handed back. I'll show the full instruction sequence for this exact program, `def bump(n): var x = n: x = x + 1`, further below.
+`%addtmp` is the `fadd` I'm storing — the same name hint `BinaryExpressionNode::codegen` already passes to `CreateFAdd` since [Chapter 7](chapter-07.md). `AssignmentExpressionNode::codegen` doesn't create that name; it just stores whatever `Value*` `Expr->codegen()` handed back. I'll show the full instruction sequence for this exact program, `def increment(n): var x = n: x = x + 1`, further below.
 
 ## Codegen for `var`
 
@@ -759,21 +779,19 @@ Then I switch `ForExpressionNode::codegen` to a memory slot for the loop variabl
 *  if (!Body->codegen())
 *    return nullptr;
 *
-*  // Step: advance the loop variable.
-*  Value *StepVal = Step->codegen();
-*  if (!StepVal)
-*    return nullptr;
-+  Value *CurVar =
-+      TheBuilder->CreateLoad(Type::getDoubleTy(*TheContext), LoopVariableSlot,
-+                             VarName);
+-  // Step: advance the loop variable automatically.
+-  Value *StepVal = Step->codegen();
+-  if (!StepVal)
+-    return nullptr;
 -  Value *NextVar = TheBuilder->CreateFAdd(Variable, StepVal, "nextvar");
 -
 -  // Body codegen may have changed the insert block (e.g. nested ifs added
 -  // blocks). Capture where the body actually ended for the PHI back-edge.
 -  BasicBlock *BodyEndBB = TheBuilder->GetInsertBlock();
 -  Variable->addIncoming(NextVar, BodyEndBB);
-+  Value *NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
-+  TheBuilder->CreateStore(NextVar, LoopVariableSlot);
++  // Execute the complete update expression; its value is discarded.
++  if (!Step->codegen())
++    return nullptr;
 *  TheBuilder->CreateBr(CondBB);
 *
 *  // ---- after_loop ----
@@ -796,14 +814,15 @@ Then I switch `ForExpressionNode::codegen` to a memory slot for the loop variabl
 *}
 ```
 
-I evaluate `Step` before loading the loop variable on purpose. The step is a
-general expression, so it may assign to the loop variable or perform other side
-effects. Loading afterward makes the increment use the variable's current value
-after those effects.
+`Step` is now the complete update operation. For `i = i + 1`, assignment codegen
+loads `i`, adds `1`, and stores the result. The loop itself only evaluates that
+expression and branches back to the condition. This also permits updates such as
+`i = i * 2` or function calls with side effects. An update that never changes
+anything is legal, but may naturally leave the loop running forever.
 
 `IsVarDecl` also controls teardown: when `var` was used, I remove the loop variable from `NamedValues` (or restore the shadowed outer binding) after the loop exits; when it wasn't, I leave the existing slot untouched.
 
-Here is `def count(n): for var i = 1, i < n, 1: i` with `-O0 -v`:
+Here is `def count(n): for var i = 1, i < n, i = i + 1: i` with `-O0 -v`:
 
 ```llvm
 define double @count(double %n) {
@@ -825,8 +844,8 @@ loop_cond:
 loop_body:
   %i4 = load double, ptr %i, align 8         ; body: i (result unused)
   %i5 = load double, ptr %i, align 8         ; load i for step computation
-  %nextvar = fadd double %i5, 1.000000e+00   ; i + step (1.0)
-  store double %nextvar, ptr %i, align 8     ; write new i back
+  %addtmp = fadd double %i5, 1.000000e+00    ; assignment RHS: i + 1
+  store double %addtmp, ptr %i, align 8      ; assignment stores into i
   br label %loop_cond
 
 after_loop:
@@ -839,7 +858,7 @@ after_loop:
 ### The Optional `var` in `for`
 
 ```
-for [var] name = start, condition, step: body
+for [var] name = start, condition, update: body
 ```
 
 `var` is optional, and I give the two forms different meanings:
@@ -850,8 +869,8 @@ for [var] name = start, condition, step: body
 The distinction is mostly academic right now, because a function body is still a single expression, not a sequence of statements. The one place it surfaces is a nested loop reusing the outer loop variable:
 
 ```pyxc
-for var i = 0, i < 10, 1:
-   for i = 5, i < 11, 1:
+for var i = 0, i < 10, i = i + 1:
+   for i = 5, i < 11, i = i + 1:
     printd(i)
 ```
 
@@ -861,7 +880,7 @@ The more natural use of `for i = ...` (without `var`) becomes clear once `var` s
 
 ```pyxc
 var x = 0.0
-for x = 1, x < 10, 1:   # reuses x declared above
+for x = 1, x < 10, x = x + 1:   # reuses x declared above
     printd(x)
 ```
 
@@ -887,10 +906,10 @@ I add `PromotePass` — commonly called `mem2reg` — to the optimization pipeli
 *}
 ```
 
-Every parameter and local variable now gets a memory slot. Without optimizations, `def bump(n): var x = n: x = x + 1` produces:
+Every parameter and local variable now gets a memory slot. Without optimizations, `def increment(n): var x = n: x = x + 1` produces:
 
 ```llvm
-define double @bump(double %n) {
+define double @increment(double %n) {
 entry:
   %x = alloca double, align 8         ; slot for local x
   %n1 = alloca double, align 8        ; slot for parameter n
@@ -907,7 +926,7 @@ entry:
 Two slots, four loads, three stores — just to add 1 to a parameter. `mem2reg` looks at each `alloca`, traces every store and load, and replaces the whole pattern with plain values. With optimizations on:
 
 ```llvm
-define double @bump(double %n) {
+define double @increment(double %n) {
 entry:
   %addtmp = fadd double %n, 1.000000e+00
   ret double %addtmp
@@ -920,16 +939,16 @@ Nine instructions down to two.
 
 ### A More Complex Example
 
-When control flow is involved, `mem2reg` has more work to do. I still don't have a way to sequence two side-effecting expressions cleanly — that's still chapters away — so I reuse the same `+`-as-sequencer trick chapter 10's Mandelbrot renderer used: `for` always returns `0.0`, and `0.0 + acc` is just `acc`.
+When control flow is involved, `mem2reg` has more work to do. Here's the raw form of `sum_to` from the top of this chapter — the `+`-as-sequencer trick that `sequence` wraps for readability:
 
 ```pyxc
-def acc_loop(n): var acc = 0: (for var i = 1, i < n, 1: acc = acc + i) + acc
+def sum_to(n): var acc = 0: (for var i = 1, i <= n, i = i + 1: acc = acc + i) + acc
 ```
 
 Without optimizations (`-O0 -v`), three slots and repeated loads/stores on every iteration:
 
 ```llvm
-define double @acc_loop(double %n) {
+define double @sum_to(double %n) {
 entry:
   %i = alloca double, align 8            ; slot for loop variable i
   %acc = alloca double, align 8          ; slot for accumulator
@@ -942,7 +961,7 @@ entry:
 loop_cond:
   %i2 = load double, ptr %i, align 8    ; load i
   %n3 = load double, ptr %n1, align 8   ; load n
-  %cmptmp = fcmp olt double %i2, %n3    ; i < n
+  %cmptmp = fcmp ole double %i2, %n3    ; i <= n
   %booltmp = uitofp i1 %cmptmp to double
   %loopcond = fcmp one double %booltmp, 0.000000e+00
   br i1 %loopcond, label %loop_body, label %after_loop
@@ -953,21 +972,21 @@ loop_body:
   %addtmp = fadd double %acc4, %i5       ; acc + i
   store double %addtmp, ptr %acc, align 8 ; acc = acc + i
   %i6 = load double, ptr %i, align 8     ; load i for step
-  %nextvar = fadd double %i6, 1.000000e+00 ; i + 1
-  store double %nextvar, ptr %i, align 8   ; i = i + 1
+  %addtmp7 = fadd double %i6, 1.000000e+00 ; i + 1
+  store double %addtmp7, ptr %i, align 8   ; i = i + 1
   br label %loop_cond
 
 after_loop:
-  %acc7 = load double, ptr %acc, align 8   ; load final acc
-  %addtmp8 = fadd double 0.000000e+00, %acc7 ; 0.0 + acc — the sequencing trick
-  ret double %addtmp8
+  %acc8 = load double, ptr %acc, align 8   ; load final acc
+  %addtmp9 = fadd double 0.000000e+00, %acc8 ; 0.0 + acc — the sequencing trick
+  ret double %addtmp9
 }
 ```
 
 With optimizations on, all three slots and every load/store disappear. In their place, two PHI nodes at the top of `loop_cond` — one per mutable variable:
 
 ```llvm
-define double @acc_loop(double %n) {
+define double @sum_to(double %n) {
 entry:
   br label %loop_cond  ; jump straight to condition
 
@@ -975,22 +994,24 @@ loop_cond:
   ; acc: 0.0 on first iteration, acc+i on subsequent ones
   %acc.0 = phi double [ 0.000000e+00, %entry ], [ %addtmp, %loop_body ]
   ; i: 1.0 on first iteration, i+1 on subsequent ones
-  %i.0 = phi double [ 1.000000e+00, %entry ], [ %nextvar, %loop_body ]
-  %cmptmp = fcmp olt double %i.0, %n  ; i < n
-  br i1 %cmptmp, label %loop_body, label %after_loop
+  %i.0 = phi double [ 1.000000e+00, %entry ], [ %addtmp7, %loop_body ]
+  %cmptmp = fcmp ugt double %i.0, %n  ; i > n — the exit test, inverted
+  br i1 %cmptmp, label %after_loop, label %loop_body
 
 loop_body:
   %addtmp = fadd double %acc.0, %i.0       ; acc + i
-  %nextvar = fadd double %i.0, 1.000000e+00 ; i + 1
+  %addtmp7 = fadd double %i.0, 1.000000e+00 ; i + 1
   br label %loop_cond
 
 after_loop:
-  %addtmp8 = fadd double %acc.0, 0.000000e+00 ; the sequencing add survives — no fast-math
-  ret double %addtmp8
+  %addtmp9 = fadd double %acc.0, 0.000000e+00 ; the sequencing add survives — no fast-math
+  ret double %addtmp9
 }
 ```
 
-The trailing `fadd ... 0.0` doesn't disappear, even after optimization. None of my three passes fold "add zero" away, and without `-ffast-math` LLVM wouldn't do it unconditionally anyway — `x + 0.0` isn't always exactly `x` in IEEE 754 (`-0.0 + 0.0` is `0.0`, not `-0.0`), so removing it is only safe if LLVM knows the sign of zero never matters here. It doesn't know that, so the instruction stays.
+Two things are worth noticing here. First, the optimizer canonicalized `i <= n` (branch to the body when true) into its negation, `i > n` (branch to `after_loop` when true), with the two branch targets swapped to match — same loop, an inverted way of asking the same question.
+
+Second, the trailing `fadd ... 0.0` doesn't disappear, even after optimization. None of my three passes fold "add zero" away, and without `-ffast-math` LLVM wouldn't do it unconditionally anyway — `x + 0.0` isn't always exactly `x` in IEEE 754 (`-0.0 + 0.0` is `0.0`, not `-0.0`), so removing it is only safe if LLVM knows the sign of zero never matters here. It doesn't know that, so the instruction stays.
 
 Each PHI node says: "on the first iteration, take the initial value (from `%entry`); on every subsequent iteration, take the updated value (from `%loop_body`)." Two mutable variables, two PHI nodes — one per slot that `mem2reg` promoted.
 
@@ -1032,13 +1053,13 @@ Local variable inside a function:
 
 <!-- code-merge:start -->
 ```pyxc
-ready> def bump(n): var x = n: x = x + 1
+ready> def increment(n): var x = n: x = x + 1
 ```
 ```bash
 Parsed a function definition.
 ```
 ```pyxc
-ready> bump(5)
+ready> increment(5)
 ```
 ```bash
 Parsed a top-level expression.
@@ -1050,7 +1071,7 @@ Accumulator with a loop, using the `+`-as-sequencer trick:
 
 <!-- code-merge:start -->
 ```pyxc
-ready> def sum_to(n): var acc = 0: (for var i = 1, i < n + 1, 1: acc = acc + i) + acc
+ready> def sum_to(n): var acc = 0: (for var i = 1, i <= n, i = i + 1: acc = acc + i) + acc
 ```
 ```bash
 Parsed a function definition.

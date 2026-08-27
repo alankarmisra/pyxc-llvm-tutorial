@@ -52,10 +52,12 @@ The grammar gains type annotations throughout, diffing directly against chapter 
 +typed-parameter      = name ":" type ;
 *if-statement          = "if" expression ":" suite
 *                [ end-of-lines "else" ":" suite ] ;
--for-statement         = "for" [ "var" ] name "=" expression "," expression "," expression ":" suite ;
+-for-statement         = "for" [ "var" ] name "=" expression "," expression "," for-update ":" suite ;
 +for-statement         = "for"
 +                  ( "var" name ":" type | name )
-+                  "=" expression "," expression "," expression ":" suite ;
++                  "=" expression "," expression "," for-update ":" suite ;
+*(* The final expression performs the complete loop update; its value is discarded. *)
+*for-update            = assignment-statement | expression ;
 *variable-statement         = "var" variable-binding { "," variable-binding } ;
 *assignment-statement      = lvalue "=" expression ; (* assignment is a statement here *)
 *simple-statement      = return-statement | variable-statement | assignment-statement | expression ;
@@ -770,11 +772,11 @@ store double 3.140000e+00, ptr %ratio
 
 ```pyxc
 # Chapter 17
-for var i = 1, i <= n, 1:
+for var i = 1, i <= n, i = i + 1:
     body
 
 # Chapter 18
-for var i: int = 1, i <= n, 1:
+for var i: int = 1, i <= n, i = i + 1:
     body
 ```
 
@@ -783,30 +785,23 @@ the loop declares a fresh variable with `var`. The type is validated:
 
 - Must be numeric (`IsNumericType`).
 - The start expression must be assignable to it.
-- The step expression must be assignable to it.
 
-`ForExpressionNode` stores `VarType`, and `ForExpressionNode::codegen` uses `LLVMTypeFor(VarType)` for the `alloca` and the increment:
+`ForStatementNode` stores `VarType`, and its codegen uses
+`LLVMTypeFor(VarType)` for the loop variable's slot. The update remains a
+complete expression, so assignment codegen handles the appropriate numeric
+operation and store:
 
-```cppdiff
-*  Value *StepVal = Step->codegen();
-*  if (!StepVal)
-*    return nullptr;
--  Value *NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
-+  StepVal = EmitImplicitCast(StepVal, Step->getType(), VarType);
-+  if (!StepVal)
-+    return LogErrorValue("Type mismatch in for loop step");
-+  Value *NextVar = nullptr;
-+  if (VarType == ValueType::Float64)
-+    NextVar = TheBuilder->CreateFAdd(CurVar, StepVal, "nextvar");
-+  else
-+    NextVar = TheBuilder->CreateAdd(CurVar, StepVal, "nextvar");
-*  TheBuilder->CreateStore(NextVar, VarPtr);
-*  TheBuilder->CreateBr(CondBB);
+```cpp
+// Execute the complete update expression; its value is discarded.
+if (!Step->codegen())
+  return nullptr;
+TheBuilder->CreateBr(CondBB);
 ```
 
-For an integer loop variable the alloca and step use the declared integer type:
+For an integer loop variable, the alloca and the explicit assignment use the
+declared integer type:
 
-This is the real output at `-O0` for `for var i: int = 1, i <= 10, 1:`, compiled and read directly (at the default `-O2`, `mem2reg` and loop canonicalization replace the `alloca`/`load`/`store` sequence below with a `phi` node instead):
+This is the real output at `-O0` for `for var i: int = 1, i <= 10, i = i + 1:`, compiled and read directly (at the default `-O2`, `mem2reg` and loop canonicalization replace the `alloca`/`load`/`store` sequence below with a `phi` node instead):
 
 ```llvm
 %i = alloca i64, align 8
@@ -821,14 +816,14 @@ loop_cond:
 loop_body:
   ; ... body ...
   %i3 = load i64, ptr %i, align 8
-  %nextvar = add i64 %i3, 1
-  store i64 %nextvar, ptr %i, align 8
+  %addtmp = add i64 %i3, 1
+  store i64 %addtmp, ptr %i, align 8
   br label %loop_cond
 ```
 
 `%i` gets renumbered (`%i1`, `%i3`, ...) each time it's reloaded, since LLVM's textual IR gives every value in a function a unique name and `%i` itself is already taken by the `alloca`.
 
-Compare with chapter 17 where `i` would have been `alloca double` and used `fadd` for the increment.
+Compare with chapter 17 where `i` would have been `alloca double` and the assignment would use `fadd`.
 
 ## Explicit Casts
 

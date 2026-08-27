@@ -11,7 +11,7 @@ description: "Switch from expression-only bodies to statement blocks with indent
 ```pyxc
 ready> def sum_to(n):
     var acc = 0
-    for var i = 1, i <= n, 1:
+    for var i = 1, i <= n, i = i + 1:
         acc = acc + i
     return acc
 ```
@@ -57,7 +57,9 @@ The central shift: I move `if`, `for`, `var`, and (new) `return` out of the expr
 +if-statement                      = "if" expression ":" suite
 +                                    [ [ end-of-lines ] "else" ":" suite ] ;
 +for-statement                     = "for" [ "var" ] name "=" expression ","
-+                                    expression "," expression ":" suite ;
++                                    expression "," for-update ":" suite ;
++(* The final expression performs the complete loop update; its value is discarded. *)
++for-update                         = assignment-statement | expression ;
 +variable-statement                = "var" variable-binding
 +                                    { "," variable-binding } ;
 +assignment-statement              = lvalue "=" expression ;
@@ -114,6 +116,12 @@ The central shift: I move `if`, `for`, `var`, and (new) `return` out of the expr
 +BLOCK_END                         = ? synthetic token injected into the stream by ParseBlock
 +                                      immediately after it consumes DEDENT ? ;
 ```
+
+Assignment is no longer a general expression in this statement-oriented
+grammar, but a `for` loop still needs an assignment in its update field. I make
+that role explicit with `for-update`: it accepts either an assignment statement
+or an ordinary expression. In both cases the loop evaluates it after the body
+and discards its value.
 
 - **`suite`** — what follows a `:`. Either a single statement on the same line, or a newline followed by an indented block.
 - **`simple-statement`** — statements that fit on one line: `return`, `var`, assignment, or a bare expression.
@@ -1059,7 +1067,7 @@ Accumulator loop — the [chapter 11](chapter-11.md) workaround, now written nat
 ```pyxc
 ready> def sum_to(n):
     var acc = 0
-    for var i = 1, i <= n, 1:
+    for var i = 1, i <= n, i = i + 1:
         acc = acc + i
     return acc
 ```
